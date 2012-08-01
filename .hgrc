@@ -1,0 +1,11 @@
+[ui]
+username=Yehor Lvivski <lvivski@gmail.com>
+editor=vim
+commitsubrepos=False
+ssh=ssh -C
+ignore=~/.hgignore
+
+[alias]
+blame=annotate -u -n
+rec=record
+untrack=rm -Af

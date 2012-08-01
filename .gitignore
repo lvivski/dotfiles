@@ -1,0 +1,15 @@
+.DS_Store?
+Icon?
+Thumbs.db
+*.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+.project
+.settings
+*.esproj
+.hg
+.svn
+*~.nib
+*.swp
+*~
