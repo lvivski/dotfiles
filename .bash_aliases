@@ -1,3 +1,7 @@
+if [ "$TERM" != "dumb" ]; then
+    alias ls='ls -GF'
+    alias ll='ls -l'
+fi
 alias ps?='ps waux |grep'
 alias rmr='rm -r'
 alias ..='cd ..;'

@@ -1,9 +1,3 @@
-# Enable color support of ls.
-if [ "$TERM" != "dumb" ]; then
-    alias ls='ls -GF'
-    alias ll='ls -l'
-fi
-
 # Case-insensitive globbing (used in pathname expansion)
 shopt -s nocaseglob
 
