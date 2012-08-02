@@ -10,7 +10,7 @@ bindkey -k F2 next
 startup_message off
 hardstatus alwayslastline
 caption splitonly
-hardstatus string ' %{= wk}%-w%{= Kw} %n %t %{-}%+w %=%H %{=b}%c '
+hardstatus string ' %{= wk}%-w%{= bw} %n %t %{-}%+w %=%H %{=b}%c '
 caption string '%{= KW} %-='
 shell -$SHELL
 shelltitle '$ |bash'
