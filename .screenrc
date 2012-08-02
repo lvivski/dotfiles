@@ -3,11 +3,12 @@ altscreen on
 defbce on
 vbell off
 #escape ^Zz
+escape ``
 autodetach on
 defutf8 on
 bindkey -k F1 prev
 bindkey -k F2 next
-startup_message off  
+startup_message off
 hardstatus alwayslastline
 caption splitonly
 #hardstatus alwayslastline '%{= wk}%-Lw%{= kW}[%50>%n%f* %t]%{= wk}%+Lw%< %{= wk}%-=%d/%m %c %H%{-}'
@@ -18,4 +19,4 @@ caption string '%{= KW} %-='
 shell -$SHELL
 shelltitle '$ |bash'
 bind r eval "source $HOME/.screenrc"
-# termcapinfo xterm-256color|xterm-color|xterm|xterms|xs|rxvt ti@:te@
+#termcapinfo xterm-256color|xterm-color|xterm|xterms|xs|rxvt ti@:te@
