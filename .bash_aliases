@@ -30,13 +30,18 @@ alias rm_ds="find . -type f -name '*.DS_Store' -ls -delete"
 
 alias mkdir='mkdir -p'
 
+# Copy public key to clipboard
+function pubkey() {
+	more ~/.ssh/id_rsa$@.pub | pbcopy | echo '=> Public key copied to clipboard.';
+}
+
 # Create a new directory and enter it
 function mkd() {
 	mkdir -p "$@" && cd "$@"
 }
 
 # Create a data URL from an image (works for other file types too, if you tweak the Content-Type afterwards)
-dataurl() {
+function dataurl() {
 	echo "data:image/${1##*.};base64,$(openssl base64 -in "$1")" | tr -d '\n'
 }
 
