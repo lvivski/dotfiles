@@ -356,6 +356,10 @@ autocmd BufRead,BufNewFile *.dart set ft=dart
     Bundle 'wincent/Command-T'
     let g:CommandTAcceptSelectionMap='<C-e>'
     let g:CommandTAcceptSelectionTabMap='<CR>'
+    if has("gui_macvim")
+      macmenu &File.New\ Tab key=<nop>
+      map <D-t> :CommandT<CR>
+    endif
   endif
 
   Bundle 'altercation/vim-colors-solarized'
