@@ -32,7 +32,7 @@ alias mkdir='mkdir -p'
 
 # Copy public key to clipboard
 function pubkey() {
-	more ~/.ssh/id_rsa$@.pub | pbcopy | echo '=> Public key copied to clipboard.';
+	more ~/.ssh/id_rsa$t @.pub | pbcopy | echo '=> Public key copied to clipboard.';
 }
 
 # Create a new directory and enter it
@@ -42,7 +42,9 @@ function mkd() {
 
 # Create a data URL from an image (works for other file types too, if you tweak the Content-Type afterwards)
 function dataurl() {
-	echo "data:image/${1##*.};base64,$(openssl base64 -in "$1")" | tr -d '\n'
+	local mimeType=$(file --mime-type "$1" | cut -d ' ' -f2)
+	[[ $mimeType == text/* ]] && mimeType="${mimeType};charset=utf-8"
+	echo "data:${mimeType};base64,$(openssl base64 -in "$1" | tr -d '\n')"
 }
 
 # Start an HTTP server from a directory, optionally specifying the port
