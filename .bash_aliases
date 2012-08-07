@@ -81,3 +81,9 @@ function codepoint() {
 	perl -e "use utf8; print sprintf('U+%04X', ord(\"$@\"))"
 	echo # newline
 }
+
+# Take current repo and copy it to somewhere else minus the .git stuff.
+function gitexport() {
+	mkdir -p "$1"
+	git archive master | tar -x -C "$1"
+}
