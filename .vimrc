@@ -333,6 +333,7 @@ autocmd BufRead,BufNewFile *.dart set ft=dart
   Bundle 'ap/vim-css-color'
   "Bundle 'miripiruni/vim-better-css-indent'
   Bundle 'hail2u/vim-css3-syntax'
+  "Bundle 'groenewege/vim-less'
   "Bundle 'miripiruni/CSScomb-for-Vim'
 
 " Ruby
@@ -345,7 +346,7 @@ autocmd BufRead,BufNewFile *.dart set ft=dart
   "Bundle 'tpope/vim-cucumber'
 
 " Erlang
-  "Bundle 'oscarh/vimerl'
+  Bundle 'oscarh/vimerl'
 
 " Perl
   "Bundle 'git://github.com/petdance/vim-perl.git'
