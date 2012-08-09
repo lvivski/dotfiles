@@ -1,5 +1,11 @@
 // Settings in here override those in "Default/Preferences.sublime-settings", and
 // are overridden in turn by file type specific settings.
 {
-	"line_numbers": false
+	"color_scheme": "Packages/Color Scheme - Default/Solarized (Light).tmTheme",
+	"line_numbers": false,
+	"auto_match_enabled": false,
+	"font_size": 13,
+	"tab_size": 4,
+	"translate_tabs_to_spaces": true,
+	"trim_trailing_white_space_on_save": true
 }
