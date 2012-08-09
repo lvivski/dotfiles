@@ -36,7 +36,7 @@ alias mkdir='mkdir -p'
 
 # Copy public key to clipboard
 function pubkey() {
-	more ~/.ssh/id_rsa$t @.pub | pbcopy | echo '=> Public key copied to clipboard.';
+	more ~/.ssh/id_rsa$@.pub | pbcopy | echo '=> Public key copied to clipboard.';
 }
 
 # Create a new directory and enter it
