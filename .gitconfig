@@ -14,6 +14,7 @@
     up = pull
     dw = diff --color-words
     ll = log --stat --abbrev-commit
+    unpush = push -f origin HEAD^:master
 
 [color]
     ui = auto
