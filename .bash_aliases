@@ -91,3 +91,8 @@ function gitexport() {
 	mkdir -p "$1"
 	git archive master | tar -x -C "$1"
 }
+
+# Open man pages as nicely-formatted PostScript in OS X Preview
+function pman() {
+    man -t "$@" | open -f -a Preview;
+}
