@@ -94,5 +94,5 @@ function gitexport() {
 
 # Open man pages as nicely-formatted PostScript in OS X Preview
 function pman() {
-    man -t "$@" | open -f -a Preview;
+	man -t "$@" | open -f -a Preview;
 }
