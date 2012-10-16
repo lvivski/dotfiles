@@ -117,10 +117,18 @@ cnoremap <C-e> <End>
 " Move lines up/down
 nmap <S-k> :m-2<CR>
 nmap <S-j> :m+<CR>
-imap <S-k> <C-o>:m-2<CR>
-imap <S-j> <C-o>:m+<CR>
+"imap <S-k> <C-o>:m-2<CR>
+"imap <S-j> <C-o>:m+<CR>
 vmap <S-k> :m'<-2<CR>gv
 vmap <S-j> :m'>+<CR>gv
+
+" Copy lines up/down
+"nmap <C-k> :co-1<CR>
+"nmap <C-j> :co.<CR>
+"imap <C-k> <C-o>:co-1<CR><Down>
+"imap <C-j> <C-o>:co.<CR><Up>
+"vmap <C-k> :co-1<CR>gv
+"vmap <C-j> :co '><CR>gv
 
 " All commands work to the endof the line
 nnoremap Y y$
