@@ -3,7 +3,8 @@
     email = lvivski@gmail.com
 
 [alias]
-    co = checkout -B
+    cb = checkout -B
+    co = checkout
     ci = commit
     st = status
     br = branch
@@ -15,6 +16,9 @@
     dw = diff --color-words
     ll = log --stat --abbrev-commit
     unpush = push -f origin HEAD^:master
+    tags = tag -l
+    branches = branch -a
+    remotes = remote -v
 
 [color]
     ui = auto
@@ -31,12 +35,10 @@
     added = yellow
     changed = green
     untracked = cyan
-
 [core]
     excludesfile = ~/.gitignore
     editor = vim
     whitespace = space-before-tab,indent-with-non-tab,trailing-space
-
 [merge]
     log = true
 
