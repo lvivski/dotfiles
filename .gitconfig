@@ -6,7 +6,7 @@
     cb = checkout -B
     co = checkout
     ci = commit
-    st = status
+    st = status -sbu
     br = branch
     lg = log --pretty=oneline -n 20 --graph
     cs = commit -s
@@ -44,3 +44,6 @@
 
 [apply]
     whitespace = fix
+
+[help]
+    autocorrect = 1
