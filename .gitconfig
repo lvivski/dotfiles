@@ -38,10 +38,12 @@
     added = yellow
     changed = green
     untracked = cyan
+
 [core]
     excludesfile = ~/.gitignore
     editor = vim
     whitespace = space-before-tab,indent-with-non-tab,trailing-space
+
 [merge]
     log = true
 
