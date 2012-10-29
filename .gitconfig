@@ -16,6 +16,8 @@
     dw = diff --color-words
     ll = log --stat --abbrev-commit
     unpush = push -f origin HEAD^:master
+    undo = reset --soft HEAD^
+    count = shortlog -sn
     tags = tag -l
     branches = branch -a
     remotes = remote -v
