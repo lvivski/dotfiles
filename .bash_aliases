@@ -29,7 +29,6 @@ alias s='subl'
 alias cp='cp -i'
 alias mv='mv -i'
 alias rm='rm -i'
-alias rmr='rm -r'
 alias cleanup="find . -type f -name '*.DS_Store' -ls -delete"
 
 alias mkdir='mkdir -p'
