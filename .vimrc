@@ -104,6 +104,9 @@ let mapleader = ","
 " Toogle past mode
 set pastetoggle=<Leader>p
 
+" Search in current dir
+set path=.,,**
+
 " Keep selection after indentation
 vnoremap > >gv
 vnoremap < <gv
@@ -187,6 +190,7 @@ map <Leader>to :tabonly<CR>
 noremap <silent> <Esc><Esc> :nohlsearch<CR><Esc>
 
 noremap <Leader>s :%s//<Left>
+vnoremap <Leader>s :s//<Left>
 map <Leader>f :execute "Ack " . expand("<cword>") <Bar> cw<CR>
 nnoremap <Leader>S :%s/<C-r>=expand("<cword>")<CR>//<Left>
 
@@ -313,6 +317,7 @@ autocmd BufRead,BufNewFile *.dart set ft=dart
   Bundle 'pangloss/vim-javascript'
   Bundle 'itspriddle/vim-jquery'
   Bundle 'leshill/vim-json'
+  "Bundle 'git://github.com/walm/jshint.vim.git'
 
   "Bundle 'kchmck/vim-coffee-script'
 
