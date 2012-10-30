@@ -8,7 +8,7 @@
     ci = commit
     st = status -sbu
     br = branch
-    lg = log --pretty=oneline -n 20 --graph
+    lg = log --pretty=oneline --graph
     cs = commit -s
     sb = show-branch
     df = diff
@@ -38,12 +38,10 @@
     added = yellow
     changed = green
     untracked = cyan
-
 [core]
     excludesfile = ~/.gitignore
     editor = vim
     whitespace = space-before-tab,indent-with-non-tab,trailing-space
-
 [merge]
     log = true
 
