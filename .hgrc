@@ -3,7 +3,7 @@ username=Yehor Lvivski <lvivski@gmail.com>
 editor=vim
 commitsubrepos=False
 ssh=ssh -C
-ignore=~/.hgignore
+ignore=~/.hgignore_global
 
 [alias]
 blame=annotate -u -n
