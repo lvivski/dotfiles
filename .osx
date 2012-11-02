@@ -34,7 +34,7 @@ defaults write com.apple.iTunes disableGeniusSidebar -bool true
 defaults write com.apple.iTunes disablePingSidebar -bool true
 
 # Disable local Time Machine backups
-tmutil disablelocal
+sudo tmutil disablelocal
 
 # Use plain text mode for new TextEdit documents
 defaults write com.apple.TextEdit RichText -int 0
