@@ -1,8 +1,4 @@
-# Colourful listing
-if [ "$TERM" != "dumb" ]; then
-    alias ls='ls -GF'
-    alias ll='ls -l'
-fi
+alias ll='ls -l'
 alias la='ls -lAohF'
 
 # Get process PID
