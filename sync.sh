@@ -1,7 +1,7 @@
 #!/bin/bash
 cd "$(dirname "$0")"
+git pull
 function push() {
-	git pull
 	rsync --exclude ".git/" --exclude ".DS_Store" --exclude "sync.sh" --exclude "README.md" -av . ~
 }
 function pull() {
