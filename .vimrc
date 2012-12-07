@@ -18,6 +18,8 @@ set formatoptions+=o " Automatically insert the current comment leader after hit
 set formatoptions-=r " Do not automatically insert a comment leader after an enter
 set formatoptions-=t " Do no auto-wrap text using textwidth (does not apply to comments)
 
+set clipboard=unnamed " system clipboard
+
 " Autocomplete
 set wildmode=list:longest
 set wildmenu
