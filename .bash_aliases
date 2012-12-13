@@ -29,8 +29,15 @@ alias cleanup="find . -type f -name '*.DS_Store' -ls -delete"
 
 alias mkdir='mkdir -p'
 
+# Hide/show all desktop icons (useful when presenting)
+alias hidedesktop="defaults write com.apple.finder CreateDesktop -bool false && killall Finder"
+alias showdesktop="defaults write com.apple.finder CreateDesktop -bool true && killall Finder"
+
 # Enhanced WHOIS lookups
 alias whois="whois -h whois-servers.net"
+
+# find . -name .gitattributes | map dirname
+alias map="xargs -n1
 
 # OS X has no `md5sum`, so use `md5` as a fallback
 command -v md5sum > /dev/null || alias md5sum="md5"
