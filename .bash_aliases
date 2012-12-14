@@ -1,33 +1,33 @@
-alias ll='ls -l'
-alias la='ls -lAohF'
+alias ll="ls -l"
+alias la="ls -lAohF"
 
 # Get process PID
-alias ps?='ps waux |grep'
+alias ps?="ps waux |grep"
 
 # Easy navigation
-alias ..='cd ..;'
-alias ...='.. ..'
-alias ~='cd ~'
-alias -- -='cd -'
+alias ..="cd ..;"
+alias ...=".. .."
+alias ~="cd ~"
+alias -- -="cd -"
 
 # Shortcuts
-alias vim='/Applications/MacVim.app/Contents/MacOS/Vim'
-alias mvim='/Applications/MacVim.app/Contents/MacOS/Vim -g'
-alias subl='/Applications/Sublime\ Text\ 2.app/Contents/SharedSupport/bin/subl'
+alias vim="/Applications/MacVim.app/Contents/MacOS/Vim"
+alias mvim="/Applications/MacVim.app/Contents/MacOS/Vim -g"
+alias subl="/Applications/Sublime\ Text\ 2.app/Contents/SharedSupport/bin/subl"
 
-alias d='cd ~/Dropbox'
-alias p='cd ~/Projects'
-alias g='git'
-alias v='vim'
-alias e='vim'
-alias s='subl'
+alias d="cd ~/Dropbox"
+alias p="cd ~/Projects"
+alias g="git"
+alias v="vim"
+alias e="vim"
+alias s="subl"
 
-alias cp='cp -i'
-alias mv='mv -i'
-alias rm='rm -i'
+alias cp="cp -i"
+alias mv="mv -i"
+alias rm="rm -i"
 alias cleanup="find . -type f -name '*.DS_Store' -ls -delete"
 
-alias mkdir='mkdir -p'
+alias mkdir="mkdir -p"
 
 # Hide/show all desktop icons (useful when presenting)
 alias hidedesktop="defaults write com.apple.finder CreateDesktop -bool false && killall Finder"
@@ -37,7 +37,7 @@ alias showdesktop="defaults write com.apple.finder CreateDesktop -bool true && k
 alias whois="whois -h whois-servers.net"
 
 # find . -name .gitattributes | map dirname
-alias map="xargs -n1
+alias map="xargs -n1"
 
 # OS X has no `md5sum`, so use `md5` as a fallback
 command -v md5sum > /dev/null || alias md5sum="md5"
@@ -53,7 +53,7 @@ alias badge="tput bel"
 
 # Copy public key to clipboard
 function pubkey() {
-	more ~/.ssh/id_rsa$@.pub | pbcopy | echo '=> Public key copied to clipboard.';
+	more ~/.ssh/id_rsa$@.pub | pbcopy | echo "=> Public key copied to clipboard.";
 }
 
 # Create a new directory and enter it
