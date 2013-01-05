@@ -1,0 +1,16 @@
+# Version 1.0 -- Generated content!
+encoding         = UTF-8
+softTabs         = true
+tabSize          = 2
+theme            = 38E819D9-AE02-452F-9231-ECC3B204AFD7
+
+[ *.manifest ]
+fileType         = text.plain
+
+[ text ]
+softTabs         = true
+tabSize          = 2
+
+[ text.plain ]
+softTabs         = true
+tabSize          = 2
