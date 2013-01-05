@@ -12,6 +12,9 @@ defaults write com.apple.systemuiserver menuExtras -array "/System/Library/CoreS
 # Automatically hide and show the Dock
 defaults write com.apple.dock autohide -bool true
 
+# Disable Glass Shelf in Dock
+defaults write com.apple.dock no-glass -bool true
+
 # Add iOS Simulator to Launchpad
 ln -s /Applications/Xcode.app/Contents/Applications/iPhone\ Simulator.app /Applications/iOS\ Simulator.app
 
