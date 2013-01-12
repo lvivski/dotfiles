@@ -1,16 +1,60 @@
 # Version 1.0 -- Generated content!
 encoding         = UTF-8
+showInvisibles   = false
 softTabs         = true
+softWrap         = true
 tabSize          = 2
 theme            = 38E819D9-AE02-452F-9231-ECC3B204AFD7
+
+[ *.bemhtml ]
+fileType         = text.plain
+
+[ *.boss ]
+fileType         = text.plain
 
 [ *.manifest ]
 fileType         = text.plain
 
-[ text ]
+[ *.ometajs ]
+fileType         = source.js
+
+[ *.svg ]
+fileType         = text.plain
+
+[ .bash_aliases ]
+fileType         = text.plain
+
+[ .bash_completion ]
+fileType         = text.plain
+
+[ source ]
+showInvisibles   = false
+softTabs         = true
+softWrap         = true
+tabSize          = 2
+
+[ source.css ]
+softWrap         = true
+
+[ source.js ]
+showInvisibles   = false
 softTabs         = true
 tabSize          = 2
 
-[ text.plain ]
-softTabs         = true
+[ test ]
+fileType         = source.js
+
+[ text ]
+showInvisibles   = false
 tabSize          = 2
+
+[ text.html ]
+showInvisibles   = false
+tabSize          = 2
+
+[ text.html.basic ]
+showInvisibles   = false
+tabSize          = 2
+
+[ text.plain ]
+showInvisibles   = false
