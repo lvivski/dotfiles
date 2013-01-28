@@ -318,7 +318,7 @@ autocmd BufRead,BufNewFile *.dart set ft=dart
 
 " JavaScript
   Bundle 'pangloss/vim-javascript'
-  Bundle 'itspriddle/vim-jquery'
+  "Bundle 'itspriddle/vim-jquery'
   Bundle 'leshill/vim-json'
   "Bundle 'git://github.com/walm/jshint.vim.git'
 
