@@ -5,6 +5,7 @@ vbell off
 #escape ^Zz
 autodetach on
 defutf8 on
+utf8 on
 bindkey -k F1 prev
 bindkey -k F2 next
 startup_message off
