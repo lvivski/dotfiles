@@ -12,11 +12,23 @@ fileType         = text.plain
 [ *.boss ]
 fileType         = text.plain
 
+[ *.js.map ]
+fileType         = text.plain
+
+[ *.js.tmp ]
+fileType         = text.plain
+
 [ *.manifest ]
+fileType         = text.plain
+
+[ *.mk ]
 fileType         = text.plain
 
 [ *.ometajs ]
 fileType         = source.js
+
+[ *.sublime-settings ]
+fileType         = text.plain
 
 [ *.svg ]
 fileType         = text.plain
@@ -25,6 +37,9 @@ fileType         = text.plain
 fileType         = text.plain
 
 [ .bash_completion ]
+fileType         = text.plain
+
+[ .gitignore ]
 fileType         = text.plain
 
 [ source ]
@@ -46,14 +61,17 @@ fileType         = source.js
 
 [ text ]
 showInvisibles   = false
+softTabs         = true
 tabSize          = 2
 
 [ text.html ]
 showInvisibles   = false
+softTabs         = true
 tabSize          = 2
 
 [ text.html.basic ]
 showInvisibles   = false
+softTabs         = true
 tabSize          = 2
 
 [ text.plain ]
