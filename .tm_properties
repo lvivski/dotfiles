@@ -1,0 +1,8 @@
+excludeFiles   = "*.{so,pyc,o,scssc}"
+encoding       = UTF-8
+fontName       = "Menlo" 
+fontSize       = 13
+showInvisibles = true
+softTabs       = true
+softWrap       = false
+tabSize        = 2
