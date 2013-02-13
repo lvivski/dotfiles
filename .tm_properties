@@ -1,6 +1,7 @@
 excludeFiles   = "*.{so,pyc,o,scssc}"
-encoding       = UTF-8
-fontName       = "Menlo" 
+encoding       = "UTF-8"
+fontName       = "Menlo"
+theme          = "38E819D9-AE02-452F-9231-ECC3B204AFD7"
 fontSize       = 13
 showInvisibles = true
 softTabs       = true
