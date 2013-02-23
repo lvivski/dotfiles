@@ -13,6 +13,7 @@ alias -- -="cd -"
 # Shortcuts
 alias vim="/Applications/MacVim.app/Contents/MacOS/Vim"
 alias mvim="/Applications/MacVim.app/Contents/MacOS/Vim -g"
+alias mate="/Applications/TextMate.app/Contents/Resources/mate"
 alias subl="/Applications/Sublime\ Text\ 2.app/Contents/SharedSupport/bin/subl"
 
 alias d="cd ~/Dropbox"
