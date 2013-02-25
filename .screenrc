@@ -5,6 +5,7 @@ vbell off
 #escape ^Zz
 autodetach on
 defutf8 on
+defc1 off
 utf8 on
 bindkey -k F1 prev
 bindkey -k F2 next
@@ -19,5 +20,6 @@ setenv SSH_AUTH_SOCK "$HOME/.ssh/ssh_auth_sock"
 bind r eval "source $HOME/.screenrc"
 #termcapinfo xterm* ti@:te@
 attrcolor b ".I"
+attrcolor i "+b"
 termcapinfo xterm* "Co#256:AB=\E[48;5;%dm:AF=\E[38;5;%dm"
 term "xterm-256color"
