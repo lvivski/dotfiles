@@ -53,6 +53,9 @@ alias lscleanup="/System/Library/Frameworks/CoreServices.framework/Frameworks/La
 # Ring the terminal bell, and put a badge on Terminal.app’s Dock icon
 alias badge="tput bel"
 
+# Lists folders and files sizes in the current folder
+alias daisy="du -cksh * | sort -rn | head -11"
+
 # Simple calculator
 function calc() {
 	local result=""
