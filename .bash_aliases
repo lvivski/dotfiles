@@ -2,7 +2,7 @@ alias ll="ls -l"
 alias la="ls -lAohF"
 
 # Get process PID
-alias ps?="ps waux |grep"
+alias ps?="ps waux | grep"
 
 # Easy navigation
 alias ..="cd ..;"
@@ -11,8 +11,8 @@ alias ~="cd ~"
 alias -- -="cd -"
 
 # Shortcuts
-alias vim="/Applications/MacVim.app/Contents/MacOS/Vim"
-alias mvim="/Applications/MacVim.app/Contents/MacOS/Vim -g"
+# alias vim="/Applications/MacVim.app/Contents/MacOS/Vim"
+# alias mvim="/Applications/MacVim.app/Contents/MacOS/Vim -g"
 alias mate="/Applications/TextMate.app/Contents/Resources/mate"
 alias tw="open -a TextWrangler"
 alias subl="/Applications/Sublime\ Text\ 2.app/Contents/SharedSupport/bin/subl"
