@@ -21,8 +21,8 @@ set formatoptions-=t " Do no auto-wrap text using textwidth (does not apply to c
 set clipboard=unnamed " system clipboard
 
 " Autocomplete
-set wildmode=list:longest
 set wildmenu
+set wildmode=list:longest,full
 set wildignore+=.hg,.git,.svn                    " Version control
 set wildignore+=*.aux,*.out,*.toc                " LaTeX intermediate files
 set wildignore+=*.jpg,*.bmp,*.gif,*.png,*.jpeg   " binary images
@@ -110,14 +110,24 @@ set pastetoggle=<Leader>p
 set path=.,,**
 
 " Keep selection after indentation
-vnoremap > >gv
 vnoremap < <gv
-nmap > >>
+vnoremap > >gv
 nmap < <<
+nmap > >>
 
 " Navigate in command mode
 cnoremap <C-a> <Home>
 cnoremap <C-e> <End>
+
+" Nightmare mode
+"inoremap <Up> <NOP>
+"inoremap <Down> <NOP>
+"inoremap <Left> <NOP>
+"inoremap <Right> <NOP>
+"noremap <Up> <NOP>
+"noremap <Down> <NOP>
+"noremap <Left> <NOP>
+"noremap <Right> <NOP>
 
 " Move lines up/down
 nmap <S-k> :m-2<CR>
@@ -216,6 +226,11 @@ map <Leader>bd :bd<CR>
 " Tab to navigate braces
 nnoremap <Tab> %
 vnoremap <Tab> %
+
+" Auto complete {}()[]
+inoremap {<CR> {<CR>}<Esc>O
+inoremap (<CR> ()<Esc>i
+inoremap [<CR> []<Esc>i
 
 " Change current working directory
 noremap <Leader>cd :cd %:p:h<CR>:pwd<CR>
