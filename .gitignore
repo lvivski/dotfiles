@@ -7,6 +7,7 @@ Thumbs.db
 .Trashes
 .project
 .settings
+.idea
 *.esproj
 .hg
 .svn
