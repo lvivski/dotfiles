@@ -335,9 +335,9 @@ autocmd BufRead,BufNewFile *.dart set ft=dart
   Bundle 'pangloss/vim-javascript'
   "Bundle 'itspriddle/vim-jquery'
   Bundle 'leshill/vim-json'
-  "Bundle 'git://github.com/walm/jshint.vim.git'
+  "Bundle 'walm/jshint.vim'
 
-  "Bundle 'kchmck/vim-coffee-script'
+  Bundle 'kchmck/vim-coffee-script'
 
 " Node.JS
   "Bundle 'wavded/vim-stylus'
@@ -377,7 +377,7 @@ autocmd BufRead,BufNewFile *.dart set ft=dart
   "Bundle 'tpope/vim-cucumber'
 
 " Erlang
-  Bundle 'oscarh/vimerl'
+  "Bundle 'oscarh/vimerl'
 
 " Perl
   "Bundle 'git://github.com/petdance/vim-perl.git'
@@ -393,6 +393,6 @@ autocmd BufRead,BufNewFile *.dart set ft=dart
   "Bundle 'jnwhiteh/vim-golang'
 
 " Dart
-  "Bundle 'lvivski/vim-dart'
+  Bundle 'dart-lang/dart-vim-plugin'
 
 filetype plugin indent on
