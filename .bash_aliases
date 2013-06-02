@@ -35,6 +35,9 @@ alias showdesktop="defaults write com.apple.finder CreateDesktop -bool true && k
 # Enhanced WHOIS lookups
 alias whois="whois -h whois-servers.net"
 
+# IP
+alias localip="ipconfig getifaddr en0"
+
 # find . -name .gitattributes | map dirname
 alias map="xargs -n1"
 
