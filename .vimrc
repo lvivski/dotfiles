@@ -91,7 +91,8 @@ end
 " Cursor not blink
 set cursorline
 
-set shortmess+=I " No intro screen
+set shortmess+=asIT " No intro screen
+"set cmdheight=2 " No `Hit Enter to continue`
 
 " Lastline
 set showcmd
