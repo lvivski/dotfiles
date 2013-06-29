@@ -12,11 +12,7 @@ alias -- -="cd -"
 
 # Shortcuts
 alias mate="/Applications/TextMate.app/Contents/Resources/mate"
-alias tm="mate"
-alias tw="open -a TextWrangler"
 
-alias d="cd ~/Dropbox"
-alias p="cd ~/Projects"
 alias g="git"
 alias v="vim"
 alias e="vim"
