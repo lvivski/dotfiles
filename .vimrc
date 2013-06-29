@@ -3,15 +3,20 @@ set nocompatible
 filetype off
 set backspace=indent,eol,start
 
+set ttyfast
+set lazyredraw
+
 set nonumber
 set encoding=utf-8
 set fileencodings=utf-8,cp1251
 set ttimeoutlen=250
 "set colorcolumn=80
 "set textwidth=80
+
 set mouseshape=s:udsizing,m:no
 set mousehide
 set mouse=a
+
 set title
 "set scrolloff=999 " Focus mode
 set formatoptions+=o " Automatically insert the current comment leader after hitting 'o' or 'O' in Normal mode.
@@ -279,6 +284,7 @@ autocmd BufRead,BufNewFile *.dart set ft=dart
   Bundle 'mileszs/ack.vim'
   Bundle 'ervandew/supertab'
   Bundle 'scrooloose/nerdcommenter'
+  Bundle 'Lokaltog/vim-easymotion'
   Bundle 'scrooloose/nerdtree'
   nmap <Bs> :NERDTreeToggle<CR>
   map <Leader>n :NERDTreeFind<cr>
