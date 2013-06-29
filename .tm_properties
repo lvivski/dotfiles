@@ -1,4 +1,5 @@
 excludeFiles   = "*.{so,pyc,o,scssc}"
+includeFiles   = "{*,.tm_properties,.htaccess,.*rc,.bash*,.git*,.hg*,.ghci}"
 encoding       = "UTF-8"
 fontName       = "Menlo"
 theme          = "38E819D9-AE02-452F-9231-ECC3B204AFD7"
