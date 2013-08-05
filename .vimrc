@@ -296,6 +296,7 @@ autocmd BufRead,BufNewFile *.dart set ft=dart
   let g:NERDTreeShowBookmarks=1
   let g:NERDTreeQuitOnOpen = 1
   let g:NERDTreeShowHidden=0
+  let g:NERDTreeKeepTreeInNewTab=0
   let g:NERDTreeMinimalUI=1
   let g:NERDTreeDirArrows=1
 
