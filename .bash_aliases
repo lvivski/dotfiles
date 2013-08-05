@@ -11,10 +11,6 @@ alias ~="cd ~"
 alias -- -="cd -"
 
 # Shortcuts
-alias mate="/Applications/TextMate.app/Contents/Resources/mate"
-
-alias g="git"
-alias v="vim"
 alias e="vim"
 
 alias cp="cp -i"
