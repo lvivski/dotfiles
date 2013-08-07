@@ -76,6 +76,11 @@ function mkd() {
 	mkdir -p "$@" && cd "$@"
 }
 
+# Todo
+function todo() {
+	touch ~/Desktop/$@
+}
+
 # Determine size of a file or total size of a directory
 function fs() {
 	if du -b /dev/null > /dev/null 2>&1; then
