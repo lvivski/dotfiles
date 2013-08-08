@@ -78,7 +78,8 @@ function mkd() {
 
 # Todo
 function todo() {
-	touch ~/Desktop/$@
+	echo "{\rtf1\ansi{\fonttbl\f0\fswiss Helvetica;}\f0\b\fs192 ${@:2}}"\
+	> ~/Desktop/"$1".rtf && SetFile -a E ~/Desktop/"$1".rtf
 }
 
 # Determine size of a file or total size of a directory
