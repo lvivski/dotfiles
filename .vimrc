@@ -353,8 +353,8 @@ autocmd BufRead,BufNewFile *.dart set ft=dart
   "Bundle 'digitaltoad/vim-jade'
 
 " HTML
-  Bundle 'mattn/zencoding-vim'
-  let g:user_zen_settings = {
+  Bundle 'mattn/emmet-vim'
+  let g:user_emmet_settings = {
   \  'php' : {
   \    'extends' : 'html',
   \    'filters' : 'c',
