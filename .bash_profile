@@ -1,6 +1,9 @@
 # RC
 [[ -f ~/.bashrc ]] && . ~/.bashrc
 
+# Prompt
+[[ -f ~/.bash_prompt ]] && . ~/.bash_prompt
+
 # Aliases
 [[ -f ~/.bash_aliases ]] && . ~/.bash_aliases
 
