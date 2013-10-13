@@ -1,52 +1,54 @@
 [user]
-    name = Yehor Lvivski
-    email = lvivski@gmail.com
+	name = Yehor Lvivski
+	email = lvivski@gmail.com
 
 [alias]
-    cb = checkout -B
-    co = checkout
-    ci = commit
-    st = status -sbu
-    br = branch
-    lg = log --pretty=oneline --graph
-    cs = commit -s
-    sb = show-branch
-    df = diff
-    up = pull
-    dw = diff --color-words
-    ll = log --stat --abbrev-commit
-    unpush = push -f origin HEAD^:master
-    undo = reset --soft HEAD^
-    amend = commit --amend
-    count = shortlog -sn
-    tags = tag -l
-    branches = branch -a
-    remotes = remote -v
+	cb = checkout -B
+	co = checkout
+	ci = commit
+	st = status -sbu
+	br = branch
+	lg = log --pretty=oneline --graph
+	cs = commit -s
+	sb = show-branch
+	df = diff
+	up = pull
+	dw = diff --color-words
+	ll = log --stat --abbrev-commit
+	unpush = push -f origin HEAD^:master
+	undo = reset --soft HEAD^
+	amend = commit --amend
+	count = shortlog -sn
+	tags = tag -l
+	branches = branch -a
+	remotes = remote -v
 
 [color]
-    ui = auto
+	ui = auto
 [color "branch"]
-    current = yellow reverse
-    local = yellow
-    remote = green
+	current = yellow reverse
+	local = yellow
+	remote = green
 [color "diff"]
-    meta = yellow bold
-    frag = magenta bold
-    old = red bold
-    new = green bold
+	meta = yellow bold
+	frag = magenta bold
+	old = red bold
+	new = green bold
 [color "status"]
-    added = yellow
-    changed = green
-    untracked = cyan
+	added = yellow
+	changed = green
+	untracked = cyan
 [core]
-    excludesfile = ~/.gitignore
-    editor = vim
-    whitespace = space-before-tab,indent-with-non-tab,trailing-space
+	excludesfile = ~/.gitignore
+	editor = vim
+	whitespace = space-before-tab,indent-with-non-tab,trailing-space
 [merge]
-    log = true
+	log = true
 
 [apply]
-    whitespace = fix
+	whitespace = fix
 
 [help]
-    autocorrect = 1
+	autocorrect = 1
+[push]
+	default = simple
