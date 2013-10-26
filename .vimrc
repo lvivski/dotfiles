@@ -402,7 +402,7 @@ autocmd BufRead,BufNewFile *.dart set ft=dart
   "Bundle 'git://github.com/xolox/vim-lua-inspect.git'
 
 " Clojure
-  Bundle 'kotarak/vimclojure'
+  Bundle 'guns/vim-clojure-static'
 
 " Go
   "Bundle 'jnwhiteh/vim-golang'
