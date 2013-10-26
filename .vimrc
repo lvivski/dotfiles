@@ -388,6 +388,12 @@ autocmd BufRead,BufNewFile *.dart set ft=dart
 " Erlang
   "Bundle 'oscarh/vimerl'
 
+" Elixir
+  Bundle 'elixir-lang/vim-elixir'
+
+" Scala
+  Bundle 'derekwyatt/vim-scala'
+
 " Perl
   "Bundle 'git://github.com/petdance/vim-perl.git'
 
@@ -396,12 +402,12 @@ autocmd BufRead,BufNewFile *.dart set ft=dart
   "Bundle 'git://github.com/xolox/vim-lua-inspect.git'
 
 " Clojure
-  "Bundle 'kotarak/vimclojure'
+  Bundle 'kotarak/vimclojure'
 
 " Go
   "Bundle 'jnwhiteh/vim-golang'
 
 " Dart
-  Bundle 'dart-lang/dart-vim-plugin'
+  "Bundle 'dart-lang/dart-vim-plugin'
 
 filetype plugin indent on
