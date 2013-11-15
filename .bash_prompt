@@ -40,13 +40,10 @@
 function enrich {
 	flag=$1
 	symbol=$2
-	if [[ -n $3 ]]; then
-		coloron=$3
-	else
-		coloron=$on
-	fi
-	if [[ $use_color_off == false && $flag == false ]]; then symbol=' '; fi
-	if [[ $flag == true ]]; then color=$coloron; else color=$off; fi
+	color=$on
+	if [[ -n $3 ]]; then color=$3; fi
+	if [[ $flag != true ]]; then color=$off; fi
+	if [[ $use_color_off != true && $flag != true ]]; then symbol=' '; fi
 	PS1="${PS1}${color}${symbol}${reset} "
 }
 
@@ -55,7 +52,8 @@ function build_prompt {
 
 	# Git info
 	current_commit_hash=$(git rev-parse HEAD 2> /dev/null)
-	if [[ -n $current_commit_hash ]]; then is_a_git_repo=true; else is_a_git_repo=false; fi
+	is_a_git_repo=false
+	if [[ -n $current_commit_hash ]]; then is_a_git_repo=true; fi
 
 	if [[ $is_a_git_repo == true ]]; then
 		current_branch=$(git rev-parse --abbrev-ref HEAD 2> /dev/null)
@@ -70,40 +68,48 @@ function build_prompt {
 
 			git_status=$(git status --porcelain 2> /dev/null)
 
-			if [[ $(grep -c ^.M <<< "$git_status") -gt 0 ]]; then has_modifications=true; else has_modifications=false; fi
+			has_modifications=false
+			if [[ $git_status =~ ($'\n'|^).M ]]; then has_modifications=true; fi
 
-			if [[ $(grep -c ^M <<< "$git_status") -gt 0 ]]; then has_modifications_cached=true; else has_modifications_cached=false; fi
+			has_modifications_cached=false
+			if [[ $git_status =~ ($'\n'|^)M ]]; then has_modifications_cached=true; fi
 
-			if [[ $(grep -c ^A <<< "$git_status") -gt 0 ]]; then has_adds=true; else has_adds=false; fi
+			has_adds=false
+			if [[ $git_status =~ ($'\n'|^)A ]]; then has_adds=true; fi
 
-			if [[ $(grep -c ^.D <<< "$git_status") -gt 0 ]]; then has_deletions=true; else has_deletions=false; fi
+			has_deletions=false
+			if [[ $git_status =~ ($'\n'|^).D ]]; then has_deletions=true; fi
 
-			if [[ $(grep -c ^D <<< "$git_status") -gt 0 ]]; then has_deletions_cached=true; else has_deletions_cached=false; fi
+			has_deletions_cached=false
+			if [[ $git_status =~ ($'\n'|^)D ]]; then has_deletions_cached=true; fi
 
-			if [[ $(grep -c ^[MAD] <<< "$git_status") -gt 0 && $(grep -c ^.[MAD\?] <<< "$git_status") -eq 0 ]]; then ready_to_commit=true; else ready_to_commit=false; fi
+			ready_to_commit=false
+			if [[ $git_status =~ ($'\n'|^)[MAD] && ! $git_status =~ ($'\n'|^).[MAD\?] ]]; then ready_to_commit=true; fi
 
-			if [[ $(grep -c ^\?\? <<< "$git_status") -gt 0 ]]; then has_untracked_files=true; else has_untracked_files=false; fi
+			has_untracked_files=false
+			if [[ $git_status =~ ($'\n'|^)\?\? ]]; then has_untracked_files=true; fi
 
 			tag_at_current_commit=$(git describe --exact-match --tags $current_commit_hash 2> /dev/null)
-			if [[ -n $tag_at_current_commit ]]; then is_on_a_tag=true; else is_on_a_tag=false; fi
+			is_on_a_tag=false
+			if [[ -n $tag_at_current_commit ]]; then is_on_a_tag=true; fi
 
-			commits_diff=$(git log --pretty=oneline --topo-order --left-right ${current_commit_hash}...${upstream} 2> /dev/null)
-			commits_ahead=$(grep -c ^\< <<< "$commits_diff")
-			commits_behind=$(grep -c ^\> <<< "$commits_diff")
+			if [[ $has_upstream == true ]]; then
+				commits_diff=$(git log --pretty=oneline --topo-order --left-right ${current_commit_hash}...${upstream} 2> /dev/null)
+				commits_ahead=$(grep -c ^\< <<< "$commits_diff")
+				commits_behind=$(grep -c ^\> <<< "$commits_diff")
+			fi
 
 			has_diverged=false
+			if [[ $commits_ahead -gt 0 && $commits_behind -gt 0 ]]; then has_diverged=true; fi
+
 			can_fast_forward=false
-			if [[ $commits_ahead -gt 0 && $commits_behind -gt 0 ]]; then
-				has_diverged=true
-			fi
-			if [[ $commits_ahead -eq 0 && $commits_behind -gt 0 ]]; then
-				can_fast_forward=true
-			fi
+			if [[ $commits_ahead -eq 0 && $commits_behind -gt 0 ]]; then can_fast_forward=true; fi
 
 			will_rebase=$(git config --get branch.${current_branch}.rebase 2> /dev/null)
 
 			number_of_stashes=$(wc -l 2> /dev/null < ${GIT_DIR:-.git}/refs/stash)
-			if [[ $number_of_stashes -gt 0 ]]; then has_stashes=true; else has_stashes=false; fi
+			has_stashes=false
+			if [[ $number_of_stashes -gt 0 ]]; then has_stashes=true; fi
 		fi
 	fi
 
@@ -133,25 +139,22 @@ function build_prompt {
 			fi
 		else
 			if [[ $has_upstream == true ]]; then
-				if [[ $will_rebase == true ]]; then
-					type_of_upstream=$rebase_tracking_branch_symbol
-				else
-					type_of_upstream=$merge_tracking_branch_symbol
-				fi
+				type_of_upstream=$merge_tracking_branch_symbol
+				if [[ $will_rebase == true ]]; then type_of_upstream=$rebase_tracking_branch_symbol; fi
 
 				if [[ $has_diverged == true ]]; then
-					PS1="${PS1}-${commits_behind} ${has_diverged_symbol} +${commits_ahead} "
+					PS1="${PS1} -${commits_behind} ${has_diverged_symbol} +${commits_ahead}"
 				else
 					if [[ $commits_behind -gt 0 ]]; then
-						PS1="${PS1}${on} -${commits_behind} ${can_fast_forward_symbol} "
+						PS1="${PS1} ${on}-${commits_behind} ${can_fast_forward_symbol}"
 					fi
 					if [[ $commits_ahead -gt 0 ]]; then
-						PS1="${PS1}${on} ${should_push_symbol} +${commits_ahead} "
+						PS1="${PS1} ${on}${should_push_symbol} +${commits_ahead}"
 					fi
 				fi
-				PS1="${PS1}(${green}${current_branch}${reset} ${type_of_upstream} ${upstream//\/$current_branch/})"
+				PS1="${PS1} (${green}${current_branch}${reset} ${type_of_upstream} ${upstream//\/$current_branch/})"
 			else
-				PS1="${PS1}${on}(${green}${current_branch}${reset})"
+				PS1="${PS1} ${on}(${green}${current_branch}${reset})"
 			fi
 		fi
 
@@ -163,11 +166,8 @@ function build_prompt {
 		fi
 	fi
 
-	if [[ $two_lines == true && $is_a_git_repo == true ]]; then
-		break='\n'
-	else
-		break=''
-	fi
+	break=''
+	if [[ $two_lines == true && $is_a_git_repo == true ]]; then break='\n'; fi
 
 	PS1="${PS1}${reset}${break}${finally}"
 }
