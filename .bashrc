@@ -32,8 +32,6 @@ export LESS='-RI~egsw'
 
 [[ -d /usr/local/bin ]] && export PATH=/usr/local/bin:$PATH
 
-[[ -d /usr/local/share/npm/bin ]] && export PATH=/usr/local/share/npm/bin:$PATH
-
 [[ -d ~/.cabal/bin ]] && export PATH=~/.cabal/bin:$PATH
 
 export GEM_HOME=/usr/local/share/ruby

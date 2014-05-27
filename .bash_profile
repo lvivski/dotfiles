@@ -10,8 +10,6 @@
 # Homebrew
 [[ -f /usr/local/etc/bash_completion ]] && . /usr/local/etc/bash_completion
 
-# Node
-[[ -d  ~/.node-completion ]] && for file in ~/.node-completion/*
 do
     . $file
 done && unset file
