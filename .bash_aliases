@@ -24,9 +24,6 @@ alias mkdir="mkdir -p"
 alias hidedesktop="defaults write com.apple.finder CreateDesktop -bool false && killall Finder"
 alias showdesktop="defaults write com.apple.finder CreateDesktop -bool true && killall Finder"
 
-# Enhanced WHOIS lookups
-alias whois="whois -h whois-servers.net"
-
 # IP
 alias localip="ipconfig getifaddr en0"
 
