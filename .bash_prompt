@@ -57,7 +57,7 @@ function build_prompt {
 
 	if [[ $is_a_git_repo == true ]]; then
 		local current_branch=$(git rev-parse --abbrev-ref HEAD 2> /dev/null)
-		local detached = false
+		local detached=false
 		if [[ $current_branch == 'HEAD' ]]; then detached=true; fi
 
 		local number_of_logs=$(git log --pretty=oneline -n1 2> /dev/null | wc -l)
@@ -141,7 +141,7 @@ function build_prompt {
 			fi
 		else
 			if [[ $has_upstream == true ]]; then
-				type_of_upstream=$merge_tracking_branch_symbol
+				local type_of_upstream=$merge_tracking_branch_symbol
 				if [[ $will_rebase == true ]]; then type_of_upstream=$rebase_tracking_branch_symbol; fi
 
 				if [[ $has_diverged == true ]]; then
