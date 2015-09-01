@@ -24,11 +24,20 @@ alias mkdir="mkdir -p"
 alias hidedesktop="defaults write com.apple.finder CreateDesktop -bool false && killall Finder"
 alias showdesktop="defaults write com.apple.finder CreateDesktop -bool true && killall Finder"
 
+# Show/hide hidden files in Finder
+alias show="defaults write com.apple.finder AppleShowAllFiles -bool true && killall Finder"
+alias hide="defaults write com.apple.finder AppleShowAllFiles -bool false && killall Finder"
+
 # IP
+alias ip="dig +short myip.opendns.com @resolver1.opendns.com"
 alias localip="ipconfig getifaddr en0"
+alias ips="ifconfig -a | grep -o 'inet6\? \(addr:\)\?\s\?\(\(\([0-9]\+\.\)\{3\}[0-9]\+\)\|[a-fA-F0-9:]\+\)' | awk '{ sub(/inet6? (addr:)? ?/, \"\"); print }'"
 
 # find . -name .gitattributes | map dirname
 alias map="xargs -n1"
+
+# Canonical hex dump; some systems have this symlinked
+command -v hd > /dev/null || alias hd="hexdump -C"
 
 # OS X has no `md5sum`, so use `md5` as a fallback
 command -v md5sum > /dev/null || alias md5sum="md5"
@@ -39,11 +48,25 @@ command -v sha1sum > /dev/null || alias sha1sum="shasum"
 # Clean up LaunchServices to remove duplicates in the “Open With” menu
 alias lscleanup="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -kill -r -domain local -domain system -domain user && killall Finder"
 
+# View HTTP traffic
+alias sniff="sudo ngrep -d 'en1' -t '^(GET|POST) ' 'tcp and port 80'"
+alias httpdump="sudo tcpdump -i en1 -n -s 0 -w - | grep -a -o -E \"Host\: .*|GET \/.*\""
+
+# Trim new lines and copy to clipboard
+alias c="tr -d '\n' | pbcopy"
+
 # Ring the terminal bell, and put a badge on Terminal.app’s Dock icon
 alias badge="tput bel"
 
+# URL-encode strings
+alias urlencode='python -c "import sys, urllib as ul; print ul.quote_plus(sys.argv[1]);"'
+
 # Lists folders and files sizes in the current folder
 alias daisy="du -cksh * | sort -rn | head -11"
+
+# Kill all the tabs in Chrome to free up memory
+# [C] explained: http://www.commandlinefu.com/commands/view/402/exclude-grep-from-your-grepped-output-of-ps-alias-included-in-description
+alias chromekill="ps ux | grep '[C]hrome Helper --type=renderer' | grep -v extension-process | tr -s ' ' | cut -d ' ' -f2 | xargs kill"
 
 # Simple calculator
 function calc() {
@@ -65,12 +88,12 @@ function calc() {
 
 # Copy public key to clipboard
 function pubkey() {
-	more ~/.ssh/id_rsa$@.pub | pbcopy | echo "=> Public key copied to clipboard.";
+	more ~/.ssh/id_rsa$@.pub | pbcopy | echo "=> Public key copied to clipboard."
 }
 
 # Create a new directory and enter it
 function mkd() {
-	mkdir -p "$@" && cd "$@"
+	mkdir -p "$@" && cd "$_"
 }
 
 # Todo
