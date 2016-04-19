@@ -20,6 +20,7 @@ export HISTSIZE=1000
 export EDITOR=vim
 export VISUAL=$EDITOR
 export PAGER=less
+export MANPAGER='less -X'
 
 # R - Raw color codes in output (don't remove color codes)
 # e - quit on second eof
