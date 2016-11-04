@@ -17,7 +17,7 @@
 	ll = log --stat --abbrev-commit
 	unpush = push -f origin HEAD^:master
 	undo = reset --soft HEAD^
-	amend = commit --amend
+	amend = commit --amend --reuse-message=HEAD
 	count = shortlog -sn
 	tags = tag -l
 	branches = branch -a
@@ -25,23 +25,34 @@
 
 [color]
 	ui = auto
+
 [color "branch"]
 	current = yellow reverse
 	local = yellow
 	remote = green
+
 [color "diff"]
 	meta = yellow bold
 	frag = magenta bold
 	old = red bold
 	new = green bold
+
 [color "status"]
 	added = yellow
 	changed = green
 	untracked = cyan
+
 [core]
 	excludesfile = ~/.gitignore
 	editor = vim
 	whitespace = space-before-tab,indent-with-non-tab,trailing-space
+
+[diff]
+	renames = copies
+
+[diff "bin"]
+	textconv = hexdump -v -C
+
 [merge]
 	log = true
 
@@ -50,5 +61,12 @@
 
 [help]
 	autocorrect = 1
+
 [push]
 	default = simple
+	followTags = true
+
+[filter "lfs"]
+	clean = git-lfs clean %f
+	smudge = git-lfs smudge %f
+	required = true

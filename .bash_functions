@@ -1,21 +1,3 @@
-# Simple calculator
-function calc() {
-	local result=""
-	result="$(printf "scale=10;$*\n" | bc --mathlib | tr -d '\\\n')"
-	#                       └─ default (when `--mathlib` is used) is 20
-	#
-	if [[ "$result" == *.* ]]; then
-		# improve the output for decimal numbers
-		printf "$result" |
-		sed -e 's/^\./0./'        `# add "0" for cases like ".5"` \
-		    -e 's/^-\./-0./'      `# add "0" for cases like "-.5"`\
-		    -e 's/0*$//;s/\.$//'   # remove trailing zeros
-	else
-		printf "$result"
-	fi
-	printf "\n"
-}
-
 # Copy public key to clipboard
 function pubkey() {
 	more ~/.ssh/id_rsa$@.pub | pbcopy | echo "=> Public key copied to clipboard."
@@ -26,32 +8,37 @@ function mkd() {
 	mkdir -p "$@" && cd "$_"
 }
 
+# Change working directory to the top-most Finder window location
+function cdf() { # short for `cdfinder`
+	cd "$(osascript -e 'tell app "Finder" to POSIX path of (insertion location as alias)')"
+}
+
 # Create a .tar.gz archive, using `zopfli`, `pigz` or `gzip` for compression
 function targz() {
-	local tmpFile="${@%/}.tar";
-	tar -cvf "${tmpFile}" --exclude=".DS_Store" "${@}" || return 1;
+	local tmpFile="${@%/}.tar"
+	tar -cvf "${tmpFile}" --exclude=".DS_Store" "${@}" || return 1
 
 	size=$(
 		stat -f"%z" "${tmpFile}" 2> /dev/null; # OS X `stat`
 		stat -c"%s" "${tmpFile}" 2> /dev/null # GNU `stat`
-	);
+	)
 
-	local cmd="";
+	local cmd=""
 	if (( size < 52428800 )) && hash zopfli 2> /dev/null; then
 		# the .tar file is smaller than 50 MB and Zopfli is available; use it
-		cmd="zopfli";
+		cmd="zopfli"
 	else
 		if hash pigz 2> /dev/null; then
-			cmd="pigz";
+			cmd="pigz"
 		else
-			cmd="gzip";
-		fi;
-	fi;
+			cmd="gzip"
+		fi
+	fi
 
-	echo "Compressing .tar using \`${cmd}\`…";
-	"${cmd}" -v "${tmpFile}" || return 1;
-	[ -f "${tmpFile}" ] && rm "${tmpFile}";
-	echo "${tmpFile}.gz created successfully.";
+	echo "Compressing .tar using \`${cmd}\`…"
+	"${cmd}" -v "${tmpFile}" || return 1
+	[ -f "${tmpFile}" ] && rm "${tmpFile}"
+	echo "${tmpFile}.gz created successfully."
 }
 
 # Todo
@@ -70,7 +57,7 @@ function fs() {
 	if [[ -n "$@" ]]; then
 		du $arg -- "$@"
 	else
-		du $arg .[^.]* *
+		du $arg .[^.]* ./*
 	fi
 }
 
@@ -130,19 +117,25 @@ function json() {
 # Escape UTF-8 characters into their 3-byte format
 function escape() {
 	printf "\\\x%s" $(printf "$@" | xxd -p -c1 -u)
-	echo # newline
+	if [ -t 1 ]; then
+		echo "" # newline
+	fi
 }
 
 # Decode \x{ABCD}-style Unicode escape sequences
 function unidecode() {
 	perl -e "binmode(STDOUT, ':utf8'); print \"$@\""
-	echo # newline
+	if [ -t 1 ]; then
+		echo "" # newline
+	fi
 }
 
 # Get a character’s Unicode code point
 function codepoint() {
 	perl -e "use utf8; print sprintf('U+%04X', ord(\"$@\"))"
-	echo # newline
+	if [ -t 1 ]; then
+		echo "" # newline
+	fi
 }
 
 # Take current repo and copy it to somewhere else minus the .git stuff.
