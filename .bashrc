@@ -36,6 +36,8 @@ export LESS='-RI~egsw'
 
 [[ -d ~/.cabal/bin ]] && export PATH=~/.cabal/bin:$PATH
 
+export PATH=./node_modules/.bin:$PATH
+
 launchctl setenv PATH $PATH
 
 export GEM_HOME=/usr/local/share/ruby
