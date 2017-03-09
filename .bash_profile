@@ -13,4 +13,5 @@
 # Homebrew
 [[ -f /usr/local/etc/bash_completion ]] && . /usr/local/etc/bash_completion
 
-[[ -f $NVM_DIR/nvm.sh ]] && . $NVM_DIR/nvm.sh
+# NVM
+[[ -f /usr/local/opt/nvm/nvm.sh ]] && . /usr/local/opt/nvm/nvm.sh
