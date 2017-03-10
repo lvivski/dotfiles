@@ -278,7 +278,8 @@ autocmd BufRead,BufNewFile *.dart set ft=dart
 
 " Bundles
   set rtp+=~/.vim/bundle/Vundle.vim
-  call vundle#begin()
+  "call vundle#begin()
+  call vundle#rc()
   Plugin 'VundleVim/Vundle.vim'
 
 " Interface
@@ -410,5 +411,5 @@ autocmd BufRead,BufNewFile *.dart set ft=dart
 " Dart
   "Plugin 'dart-lang/dart-vim-plugin'
 
-call vundle#end()
+"call vundle#end()
 filetype plugin indent on
