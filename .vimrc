@@ -279,14 +279,14 @@ autocmd BufRead,BufNewFile *.dart set ft=dart
 " Bundles
   set rtp+=~/.vim/bundle/vundle/
   call vundle#rc()
-  Bundle 'gmarik/vundle'
+  Plugin 'gmarik/vundle'
 
 " Interface
-  Bundle 'mileszs/ack.vim'
-  Bundle 'ervandew/supertab'
-  Bundle 'scrooloose/nerdcommenter'
-  Bundle 'Lokaltog/vim-easymotion'
-  Bundle 'scrooloose/nerdtree'
+  Plugin 'mileszs/ack.vim'
+  Plugin 'ervandew/supertab'
+  Plugin 'scrooloose/nerdcommenter'
+  Plugin 'Lokaltog/vim-easymotion'
+  Plugin 'scrooloose/nerdtree'
   nmap <Bs> :NERDTreeToggle<CR>
   map <Leader>n :NERDTreeFind<cr>
   let g:NERDTreeWinPos='right'
@@ -300,21 +300,21 @@ autocmd BufRead,BufNewFile *.dart set ft=dart
   let g:NERDTreeMinimalUI=1
   let g:NERDTreeDirArrows=1
 
-  "Bundle 'msanders/snipmate'
+  "Plugin 'msanders/snipmate'
   if has("python")
-    Bundle 'SirVer/ultisnips'
+    Plugin 'SirVer/ultisnips'
     let g:UltiSnipsExpandTrigger="<Tab>"
     let g:UltiSnipsJumpForwardTrigger="<Tab>"
     let g:UltiSnipsJumpBackwardTrigger="<S-Tab>"
   endif
 
   if has("ruby")
-    Bundle 'wincent/Command-T'
+    Plugin 'wincent/Command-T'
     let g:CommandTAcceptSelectionMap='<C-e>'
     let g:CommandTAcceptSelectionTabMap='<CR>'
   endif
 
-  Bundle 'altercation/vim-colors-solarized'
+  Plugin 'altercation/vim-colors-solarized'
   syntax on
   if has('gui_running')
     set background=light
@@ -325,7 +325,7 @@ autocmd BufRead,BufNewFile *.dart set ft=dart
   endif
   colorscheme solarized
 
-  Bundle 'tpope/vim-fugitive'
+  Plugin 'tpope/vim-fugitive'
   nnoremap <Leader>gd :Gdiff<CR>
   nnoremap <Leader>gs :Gstatus<CR>
   nnoremap <Leader>gw :Gwrite<CR>
@@ -338,22 +338,22 @@ autocmd BufRead,BufNewFile *.dart set ft=dart
   nnoremap <leader>H :Gbrowse<cr>
   vnoremap <leader>H :Gbrowse<cr>
 
-  "Bundle 'tpope/vim-surround'
+  "Plugin 'tpope/vim-surround'
 
 " JavaScript
-  Bundle 'pangloss/vim-javascript'
-  "Bundle 'itspriddle/vim-jquery'
-  Bundle 'leshill/vim-json'
-  "Bundle 'walm/jshint.vim'
+  Plugin 'pangloss/vim-javascript'
+  "Plugin 'itspriddle/vim-jquery'
+  Plugin 'leshill/vim-json'
+  "Plugin 'walm/jshint.vim'
 
-  Bundle 'kchmck/vim-coffee-script'
+  Plugin 'kchmck/vim-coffee-script'
 
 " Node.JS
-  "Bundle 'wavded/vim-stylus'
-  "Bundle 'digitaltoad/vim-jade'
+  "Plugin 'wavded/vim-stylus'
+  "Plugin 'digitaltoad/vim-jade'
 
 " HTML
-  Bundle 'mattn/emmet-vim'
+  Plugin 'mattn/emmet-vim'
   let g:user_emmet_settings = {
   \  'php' : {
   \    'extends' : 'html',
@@ -367,47 +367,47 @@ autocmd BufRead,BufNewFile *.dart set ft=dart
   \  },
   \}
 
-  Bundle 'othree/html5.vim'
+  Plugin 'othree/html5.vim'
 
 " CSS
-  Bundle 'ap/vim-css-color'
-  "Bundle 'miripiruni/vim-better-css-indent'
-  Bundle 'hail2u/vim-css3-syntax'
-  "Bundle 'groenewege/vim-less'
-  "Bundle 'miripiruni/CSScomb-for-Vim'
+  Plugin 'ap/vim-css-color'
+  "Plugin 'miripiruni/vim-better-css-indent'
+  Plugin 'hail2u/vim-css3-syntax'
+  "Plugin 'groenewege/vim-less'
+  "Plugin 'miripiruni/CSScomb-for-Vim'
 
 " Ruby
-  "Bundle 'vim-ruby/vim-ruby'
-  "Bundle 'tpope/vim-endwise'
-  "Bundle 'tpope/vim-rails'
-  "Bundle 'tpope/vim-rake'
-  "Bundle 'tpope/vim-haml'
-  "Bundle 'groenewege/vim-less'
-  "Bundle 'tpope/vim-cucumber'
+  "Plugin 'vim-ruby/vim-ruby'
+  "Plugin 'tpope/vim-endwise'
+  "Plugin 'tpope/vim-rails'
+  "Plugin 'tpope/vim-rake'
+  "Plugin 'tpope/vim-haml'
+  "Plugin 'groenewege/vim-less'
+  "Plugin 'tpope/vim-cucumber'
 
 " Erlang
-  "Bundle 'oscarh/vimerl'
+  "Plugin 'oscarh/vimerl'
 
 " Elixir
-  Bundle 'elixir-lang/vim-elixir'
+  Plugin 'elixir-lang/vim-elixir'
 
 " Scala
-  Bundle 'derekwyatt/vim-scala'
+  Plugin 'derekwyatt/vim-scala'
 
 " Perl
-  "Bundle 'git://github.com/petdance/vim-perl.git'
+  "Plugin 'git://github.com/petdance/vim-perl.git'
 
 " Lua
-  "Bundle 'git://github.com/xolox/vim-lua-ftplugin.git'
-  "Bundle 'git://github.com/xolox/vim-lua-inspect.git'
+  "Plugin 'git://github.com/xolox/vim-lua-ftplugin.git'
+  "Plugin 'git://github.com/xolox/vim-lua-inspect.git'
 
 " Clojure
-  Bundle 'guns/vim-clojure-static'
+  Plugin 'guns/vim-clojure-static'
 
 " Go
-  "Bundle 'jnwhiteh/vim-golang'
+  "Plugin 'jnwhiteh/vim-golang'
 
 " Dart
-  "Bundle 'dart-lang/dart-vim-plugin'
+  "Plugin 'dart-lang/dart-vim-plugin'
 
 filetype plugin indent on
