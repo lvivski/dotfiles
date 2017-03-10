@@ -277,9 +277,9 @@ autocmd BufRead,BufNewFile {*.md,*.mkd,*.markdown} set ft=markdown
 autocmd BufRead,BufNewFile *.dart set ft=dart
 
 " Bundles
-  set rtp+=~/.vim/bundle/vundle/
-  call vundle#rc()
-  Plugin 'gmarik/vundle'
+  set rtp+=~/.vim/bundle/Vundle.vim
+  call vundle#begin()
+  Plugin 'VundleVim/Vundle.vim'
 
 " Interface
   Plugin 'mileszs/ack.vim'
@@ -346,7 +346,7 @@ autocmd BufRead,BufNewFile *.dart set ft=dart
   Plugin 'leshill/vim-json'
   "Plugin 'walm/jshint.vim'
 
-  Plugin 'kchmck/vim-coffee-script'
+  "Plugin 'kchmck/vim-coffee-script'
 
 " Node.JS
   "Plugin 'wavded/vim-stylus'
@@ -410,4 +410,5 @@ autocmd BufRead,BufNewFile *.dart set ft=dart
 " Dart
   "Plugin 'dart-lang/dart-vim-plugin'
 
+call vundle#end()
 filetype plugin indent on
