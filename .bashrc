@@ -40,7 +40,9 @@ export LESS='-RI~egsw'
 
 export PATH=./node_modules/.bin:$PATH
 
-launchctl setenv PATH $PATH
+launchctl setenv PATH "$PATH"
+gpgconf --launch gpg-agent
+export SSH_AUTH_SOCKET=$HOME/.gnupg/S.gpg-agent.ssh
 
 export GEM_HOME=/usr/local/share/ruby
 
