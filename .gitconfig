@@ -22,7 +22,7 @@
 	tags = tag -l
 	branches = branch -a
 	remotes = remote -v
-	cleanup = "!git branch --merged | grep -v '\*' | xargs -n 1 git branch -d"
+	cleanup = "!git branch --merged | grep -v '\\*' | xargs -n 1 git branch -d"
 
 [color]
 	ui = auto
