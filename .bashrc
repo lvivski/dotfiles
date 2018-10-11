@@ -36,6 +36,8 @@ export LESS='-RI~egsw'
 
 [[ -d /usr/local/bin ]] && export PATH=/usr/local/bin:$PATH
 
+[[ -d /usr/local/opt/flutter/bin ]] && export PATH=/usr/local/opt/flutter/bin:$PATH
+
 [[ -d ~/.cabal/bin ]] && export PATH=~/.cabal/bin:$PATH
 
 export PATH=./node_modules/.bin:$PATH
