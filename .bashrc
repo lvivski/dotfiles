@@ -44,7 +44,7 @@ export PATH=./node_modules/.bin:$PATH
 
 launchctl setenv PATH "$PATH"
 gpgconf --launch gpg-agent
-export SSH_AUTH_SOCKET=$HOME/.gnupg/S.gpg-agent.ssh
+export SSH_AUTH_SOCK=$HOME/.gnupg/S.gpg-agent.ssh
 
 export GEM_HOME=/usr/local/share/ruby
 
