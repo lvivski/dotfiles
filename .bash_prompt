@@ -23,19 +23,19 @@
 : ${display_tag:=false}
 : ${display_tag_name:=true}
 : ${two_lines:=true}
-: ${finally:='\w ∙ '}
+: ${finally:="${PWD/#$HOME/~} ∙ "}
 : ${use_color_off:=false}
 
 # Colors
-: ${on='\[\033[0;37m\]'}
-: ${off='\[\033[1;30m\]'}
-: ${red='\[\033[0;31m\]'}
-: ${green='\[\033[0;32m\]'}
-: ${yellow='\[\033[0;33m\]'}
-: ${violet='\[\033[0;35m\]'}
-: ${branch_color='\[\033[0;34m\]'}
-#: ${blinking='\[\033[1;5;17m\]'}
-: ${reset='\[\033[0m\]'}
+: ${on:=$'\e[0;37m'}
+: ${off:=$'\e[1;30m'}
+: ${red:=$'\e[0;31m'}
+: ${green:=$'\e[0;32m'}
+: ${yellow:=$'\e[0;33m'}
+: ${violet:=$'\e[0;35m'}
+: ${branch_color:=$'\e[0;34m'}
+#: ${blinking:=$'\e[1;5;17m'}
+: ${reset:=$'\e[0m'}
 
 function enrich {
 	local flag=$1
@@ -44,11 +44,11 @@ function enrich {
 	if [[ -n $3 ]]; then color=$3; fi
 	if [[ $flag != true ]]; then color=$off; fi
 	if [[ $use_color_off != true && $flag != true ]]; then symbol=' '; fi
-	PS1="${PS1}${color}${symbol}${reset} "
+	echo -n "${color}${symbol}${reset} "
 }
 
 function build_prompt {
-	PS1=""
+	local prompt=""
 
 	# Git info
 	local current_commit_hash=$(git rev-parse HEAD 2> /dev/null)
@@ -116,28 +116,28 @@ function build_prompt {
 	fi
 
 	if [[ $is_a_git_repo == true ]]; then
-		enrich $is_a_git_repo $is_a_git_repo_symbol $violet
-		enrich $has_stashes $has_stashes_symbol $yellow
-		enrich $has_untracked_files $has_untracked_files_symbol $red
-		enrich $has_adds $has_adds_symbol $yellow
+		prompt+=$(enrich $is_a_git_repo $is_a_git_repo_symbol $violet)
+		prompt+=$(enrich $has_stashes $has_stashes_symbol $yellow)
+		prompt+=$(enrich $has_untracked_files $has_untracked_files_symbol $red)
+		prompt+=$(enrich $has_adds $has_adds_symbol $yellow)
 
-		enrich $has_deletions $has_deletions_symbol $red
-		enrich $has_deletions_cached $has_deletions_cached_symbol $yellow
+		prompt+=$(enrich $has_deletions $has_deletions_symbol $red)
+		prompt+=$(enrich $has_deletions_cached $has_deletions_cached_symbol $yellow)
 
-		enrich $has_modifications $has_modifications_symbol $red
-		enrich $has_modifications_cached $has_modifications_cached_symbol $yellow
-		enrich $ready_to_commit $ready_to_commit_symbol $green
+		prompt+=$(enrich $has_modifications $has_modifications_symbol $red)
+		prompt+=$(enrich $has_modifications_cached $has_modifications_cached_symbol $yellow)
+		prompt+=$(enrich $ready_to_commit $ready_to_commit_symbol $green)
 
-		enrich $detached $detached_symbol $red
+		prompt+=$(enrich $detached $detached_symbol $red)
 
 		if [[ $display_has_upstream == true ]]; then
-			enrich $has_upstream $has_upstream_symbol
+			prompt+=$(enrich $has_upstream $has_upstream_symbol)
 		fi
 		if [[ $detached == true ]]; then
 			if [[ $just_init == true ]]; then
-				PS1="${PS1} ${red}detached"
+				prompt+=" ${red}detached"
 			else
-				PS1="${PS1} ${on}(${current_commit_hash:0:7})"
+				prompt+=" ${on}(${current_commit_hash:0:7})"
 			fi
 		else
 			if [[ $has_upstream == true ]]; then
@@ -145,35 +145,37 @@ function build_prompt {
 				if [[ $will_rebase == true ]]; then type_of_upstream=$rebase_tracking_branch_symbol; fi
 
 				if [[ $has_diverged == true ]]; then
-					PS1="${PS1} -${commits_behind} ${has_diverged_symbol} +${commits_ahead}"
+					prompt+=" -${commits_behind} ${has_diverged_symbol} +${commits_ahead}"
 				else
 					if [[ $commits_behind -gt 0 ]]; then
-						PS1="${PS1} ${on}-${commits_behind} ${can_fast_forward_symbol}"
+						prompt+=$" ${on}-${commits_behind} ${can_fast_forward_symbol}"
 					fi
 					if [[ $commits_ahead -gt 0 ]]; then
-						PS1="${PS1} ${on}${should_push_symbol} +${commits_ahead}"
+						prompt+=$" ${on}${should_push_symbol} +${commits_ahead}"
 					fi
 				fi
-				PS1="${PS1} (${green}${current_branch}${reset} ${type_of_upstream} ${upstream//\/$current_branch/})"
+				prompt+=" (${green}${current_branch}${reset} ${type_of_upstream} ${upstream//\/$current_branch/})"
 			else
-				PS1="${PS1} ${on}(${green}${current_branch}${reset})"
+				prompt+=" ${on}(${green}${current_branch}${reset})"
 			fi
 		fi
 
 		if [[ $display_tag == true && $is_on_a_tag == true ]]; then
-			PS1="${PS1} ${yellow}${is_on_a_tag_symbol}${reset}"
+			prompt+=" ${yellow}${is_on_a_tag_symbol}${reset}"
 		fi
 		if [[ $display_tag_name == true && $is_on_a_tag == true ]]; then
-			PS1="${PS1} ${yellow}[${tag_at_current_commit}]${reset}"
+			prompt+=" ${yellow}[${tag_at_current_commit}]${reset}"
 		fi
 	fi
 
 	break=''
-	if [[ $two_lines == true && $is_a_git_repo == true ]]; then break='\n'; fi
+	if [[ $two_lines == true && $is_a_git_repo == true ]]; then break=$'\n'; fi
 
-	PS1="${PS1}${reset}${break}${finally}"
+	prompt+="${reset}${break}${finally}"
+
+	PS1=$"${prompt}"
 }
 
-PS2="${yellow}→${reset} "
+PS2=$"${yellow}→${reset} "
 
 PROMPT_COMMAND=build_prompt

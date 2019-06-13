@@ -8,7 +8,7 @@
 [[ -f ~/.bash_aliases ]] && . ~/.bash_aliases
 
 # Functions
-[[ -f ~/.bash_aliases ]] && . ~/.bash_functions
+[[ -f ~/.bash_functions ]] && . ~/.bash_functions
 
 # Homebrew
 [[ -f /usr/local/etc/bash_completion ]] && . /usr/local/etc/bash_completion
