@@ -23,7 +23,7 @@
 : ${display_tag:=false}
 : ${display_tag_name:=true}
 : ${two_lines:=true}
-: ${finally:="${PWD/#$HOME/~} ∙ "}
+: ${finally:=" ∙ "}
 : ${use_color_off:=false}
 
 # Colors
@@ -109,9 +109,11 @@ function build_prompt {
 
 			local will_rebase=$(git config --get branch.${current_branch}.rebase 2> /dev/null)
 
-			local number_of_stashes=$(wc -l 2> /dev/null < ${GIT_DIR:-.git}/refs/stash)
 			local has_stashes=false
-			if [[ $number_of_stashes -gt 0 ]]; then has_stashes=true; fi
+			if [[ -f "${GIT_DIR:-.git}/refs/stash" ]]; then
+				local number_of_stashes=$(wc -l 2> /dev/null < ${GIT_DIR:-.git}/refs/stash)
+				if [[ $number_of_stashes -gt 0 ]]; then has_stashes=true; fi
+			fi
 		fi
 	fi
 
@@ -171,11 +173,11 @@ function build_prompt {
 	break=''
 	if [[ $two_lines == true && $is_a_git_repo == true ]]; then break=$'\n'; fi
 
-	prompt+="${reset}${break}${finally}"
-
+	prompt+="${reset}${break}${PWD/#$HOME/~}${finally}"
 	PS1=$"${prompt}"
 }
 
 PS2=$"${yellow}→${reset} "
 
-PROMPT_COMMAND=build_prompt
+[ ${ZSH_VERSION} ] && precmd() { build_prompt; }
+[ ${BASH_VERSION} ] && PROMPT_COMMAND=build_prompt

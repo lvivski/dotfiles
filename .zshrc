@@ -1,4 +1,7 @@
 # Prompt
+[[ -f ~/.zprofile ]] && . ~/.zprofile
+
+# Prompt
 [[ -f ~/.bash_prompt ]] && . ~/.bash_prompt
 
 # Functions
