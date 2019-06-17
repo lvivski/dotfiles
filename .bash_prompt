@@ -89,7 +89,7 @@ function build_prompt {
 			if [[ $git_status =~ ($'\n'|^)[MAD] && ! $git_status =~ ($'\n'|^).[MAD\?] ]]; then ready_to_commit=true; fi
 
 			local has_untracked_files=false
-			#if [[ $git_status =~ ($'\n'|^)\?\? ]]; then has_untracked_files=true; fi
+			if [[ $git_status =~ ($'\n'|^)[\?]{2} ]]; then has_untracked_files=true; fi
 
 			local tag_at_current_commit=$(git describe --exact-match --tags $current_commit_hash 2> /dev/null)
 			local is_on_a_tag=false
@@ -180,9 +180,9 @@ function build_prompt {
 
 PS2="${yellow}→${reset} "
 
-function bash_prompt() {
-	PS1="$(build_prompt)"
+function prompt_command() {
+	PS1=$(build_prompt)
 }
 
-[ ${ZSH_VERSION} ] && precmd() { bash_prompt; }
-[ ${BASH_VERSION} ] && PROMPT_COMMAND=bash_prompt
+[ ${ZSH_VERSION} ] && precmd() { prompt_command; }
+[ ${BASH_VERSION} ] && PROMPT_COMMAND=prompt_command
