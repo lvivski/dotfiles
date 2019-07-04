@@ -1,7 +1,6 @@
-.DS_Store?
-Icon?
-Thumbs.db
+Icon
 *.DS_Store
+Thumbs.db
 ._*
 .Spotlight-V100
 .Trashes
