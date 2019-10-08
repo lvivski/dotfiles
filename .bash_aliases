@@ -2,7 +2,7 @@ alias ll="ls -lFG"
 alias la="ls -laFG"
 
 # Get process PID
-alias ps?="ps waux | grep"
+alias psg="ps waux | grep"
 
 # Easy navigation
 alias ..="cd ..;"
