@@ -1,8 +1,5 @@
-# Prompt
+# RC
 [[ -f ~/.zshrc ]] && . ~/.zshrc
-
-# aliases
-[[ -f ~/.bash_aliases ]] && . ~/.bash_aliases
 
 # Prompt
 : ${on:=%{$'\e[0;37m'%}}
@@ -16,5 +13,11 @@
 : ${reset:=%{$'\e[0m'%}}
 [[ -f ~/.bash_prompt ]] && . ~/.bash_prompt
 
+# Aliases
+[[ -f ~/.bash_aliases ]] && . ~/.bash_aliases
+
 # Functions
 [[ -f ~/.bash_functions ]] && . ~/.bash_functions
+
+# Homebrew
+[[ -f /usr/local/etc/bash_completion ]] && . /usr/local/etc/bash_completion

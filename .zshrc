@@ -1,5 +1,5 @@
-autoload -U compinit
-compinit
+autoload -U compinit && compinit
+autoload -U bashcompinit && bashcompinit
 
 WORDCHARS=''
 
