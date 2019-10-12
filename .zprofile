@@ -1,3 +1,6 @@
+# Homebrew
+[[ -f /usr/local/share/zsh/site-functions ]] && FPATH=/usr/local/share/zsh/site-functions:$FPATH
+
 # RC
 [[ -f ~/.zshrc ]] && . ~/.zshrc
 
@@ -18,6 +21,3 @@
 
 # Functions
 [[ -f ~/.bash_functions ]] && . ~/.bash_functions
-
-# Homebrew
-[[ -f /usr/local/etc/bash_completion ]] && . /usr/local/etc/bash_completion
