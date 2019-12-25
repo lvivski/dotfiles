@@ -1,9 +1,9 @@
 excludeFiles   = "*.{so,pyc,o,scssc}"
 includeFiles   = "{*,.tm_properties,.htaccess,.*rc,.bash*,.git*,.hg*,.ghci}"
-encoding       = "UTF-8"
-fontName       = "Menlo"
-theme          = "38E819D9-AE02-452F-9231-ECC3B204AFD7"
+encoding       = UTF-8
+fontName       = "Fira Code"
 fontSize       = 13
+theme          = 766026CB-703D-4610-B070-8DE07D967C5F
 showInvisibles = true
 softTabs       = true
 softWrap       = false
