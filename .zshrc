@@ -17,8 +17,8 @@ zstyle ':completion:*:cd:*' tag-order local-directories directory-stack path-dir
 
 export HISTFILE=${HOME}/.zsh_history
 export HISTORY_IGNORE="&:l[ls]:ls *:cd *:[bf]g:exit:kill *:* --help:date:pwd:cd"
-export HISTSIZE=5000
-export SAVEHIST=1000
+export HISTSIZE=10000
+export SAVEHIST=10000
 
 setopt hist_expire_dups_first
 setopt hist_ignore_dups

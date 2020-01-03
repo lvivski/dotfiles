@@ -15,7 +15,8 @@ export GREP_OPTIONS='--color=auto'
 # Ignore duplicates in history.
 export HISTCONTROL=ignoreboth:erasedups
 export HISTIGNORE="&:l[ls]:ls *:cd *:[bf]g:exit:kill *:* --help:date:pwd:cd"
-export HISTSIZE=1000
+export HISTSIZE=10000
+export HISTFILESIZE=10000
 
 export EDITOR=vim
 export VISUAL=$EDITOR
