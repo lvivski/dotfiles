@@ -9,6 +9,8 @@ shopt -s cdspell
 
 export CLICOLOR=true
 
+export LC_ALL=en_US.UTF-8
+
 # Enable grep coloring unless command is piped.
 export GREP_OPTIONS='--color=auto'
 

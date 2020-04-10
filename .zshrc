@@ -20,6 +20,8 @@ export HISTORY_IGNORE="&:l[ls]:ls *:cd *:[bf]g:exit:kill *:* --help:date:pwd:cd"
 export HISTSIZE=10000
 export SAVEHIST=10000
 
+export LC_ALL=en_US.UTF-8
+
 setopt hist_expire_dups_first
 setopt hist_ignore_dups
 setopt hist_ignore_space
