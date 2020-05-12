@@ -187,3 +187,12 @@ function gitexport() {
 function pman() {
 	man -t "$@" | open -f -a Preview;
 }
+
+# Clean all submodules
+function gitreset() {
+	git clean -xfd
+	git submodule foreach --recursive git clean -xfd
+	git reset --hard
+	git submodule foreach --recursive git reset --hard
+	git submodule update --init --recursive
+}

@@ -12,7 +12,7 @@
 	cs = commit -s
 	sb = show-branch
 	df = diff
-	up = pull
+	up = pull --recurse-submodules
 	dw = diff --color-words
 	ll = log --stat --abbrev-commit
 	unpush = push -f origin HEAD^:master
@@ -23,6 +23,9 @@
 	branches = branch -a
 	remotes = remote -v
 	cleanup = "!git branch --merged | grep -v '\\*' | xargs -n 1 git branch -d"
+	whoami = config user.email
+	credit = "!f() { git commit --amend --author \"$1 <$2>\" -C HEAD; }; f"
+	aliases = config --get-regexp alias
 
 [color]
 	ui = auto
