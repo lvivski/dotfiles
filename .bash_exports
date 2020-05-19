@@ -38,7 +38,7 @@ export LESS='-RI~egsw'
 
 [[ -d ~/.cabal/bin ]] && export PATH=~/.cabal/bin:$PATH
 
-[[ -d ~/.cargo/bin ]] export PATH=~/.cargo/bin:$PATH
+[[ -d ~/.cargo/bin ]] && export PATH=~/.cargo/bin:$PATH
 
 export PATH=./node_modules/.bin:$PATH
 
