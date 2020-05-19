@@ -1,3 +1,5 @@
+#!/bin/bash
+
 # Symbols
 : ${is_a_git_repo_symbol:='❤'}
 : ${has_untracked_files_symbol:='∿'}

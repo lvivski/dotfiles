@@ -1,3 +1,5 @@
+#!/bin/bash
+
 export USER_BASH_COMPLETION_DIR=~/.bash_completion.d
 
 [[ -d $USER_BASH_COMPLETION_DIR ]] && for file in $USER_BASH_COMPLETION_DIR/*.bash

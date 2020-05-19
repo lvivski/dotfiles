@@ -4,6 +4,9 @@
 # RC
 [[ -f ~/.zshrc ]] && . ~/.zshrc
 
+# Exports
+[[ -f ~/.bash_exports ]] && ./.bash_exports
+
 # Prompt
 : ${on:=%{$'\e[0;37m'%}}
 : ${off:=%{$'\e[1;30m'%}}
@@ -21,3 +24,6 @@
 
 # Functions
 [[ -f ~/.bash_functions ]] && . ~/.bash_functions
+
+# Iterm
+[[ -f ~/.iterm2_shell_integration.zsh && $TERM_PROGRAM == "iTerm.app" ]] && . ~/.iterm2_shell_integration.zsh

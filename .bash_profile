@@ -1,6 +1,9 @@
 # RC
 [[ -f ~/.bashrc ]] && . ~/.bashrc
 
+# Exports
+[[ -f ~/.bash_exports ]] && ./.bash_exports
+
 # Prompt
 [[ -f ~/.bash_prompt ]] && . ~/.bash_prompt
 

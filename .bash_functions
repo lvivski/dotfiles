@@ -1,3 +1,5 @@
+#!/bin/bash
+
 # Copy public key to clipboard
 function pubkey() {
 	more ~/.ssh/id_rsa$@.pub | pbcopy | echo "=> Public key copied to clipboard."
