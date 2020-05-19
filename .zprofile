@@ -5,7 +5,7 @@
 [[ -f ~/.zshrc ]] && . ~/.zshrc
 
 # Exports
-[[ -f ~/.bash_exports ]] && ~/.bash_exports
+[[ -f ~/.bash_exports ]] && . ~/.bash_exports
 
 # Prompt
 : ${on:=%{$'\e[0;37m'%}}
