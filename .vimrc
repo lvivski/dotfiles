@@ -301,7 +301,7 @@ autocmd BufRead,BufNewFile *.dart set ft=dart
   let g:NERDTreeDirArrows=1
 
   "Plugin 'msanders/snipmate'
-  if has("python")
+  if has("python3")
     Plugin 'SirVer/ultisnips'
     let g:UltiSnipsExpandTrigger="<Tab>"
     let g:UltiSnipsJumpForwardTrigger="<Tab>"
