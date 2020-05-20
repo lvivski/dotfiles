@@ -41,11 +41,12 @@ export LESS='-RI~egsw'
 [[ -d ~/.cargo/bin ]] && export PATH=~/.cargo/bin:$PATH
 
 export PATH=./node_modules/.bin:$PATH
-
 launchctl setenv PATH "$PATH"
-gpgconf --launch gpg-agent
-export SSH_AUTH_SOCK=$HOME/.gnupg/S.gpg-agent.ssh
 
+if command -v gpgconf &> /dev/null; then
+  gpgconf --launch gpg-agent
+	export SSH_AUTH_SOCK=$HOME/.gnupg/S.gpg-agent.ssh
+fi
 
 export GEM_HOME=/usr/local/share/ruby
 export GOPATH=$HOME/.go
