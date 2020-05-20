@@ -41,7 +41,7 @@ alias hide="defaults write com.apple.finder AppleShowAllFiles -bool false && kil
 alias timer='echo "Timer started. Stop with Ctrl-D." && date && time cat && date'
 
 # Get macOS Software Updates, and update installed Ruby gems, Homebrew, npm, and their installed packages
-alias update='sudo softwareupdate -i -a; brew update; brew upgrade; brew cleanup; npm install npm -g; npm update -g'
+alias update='sudo softwareupdate -i -a; gem update; gem cleanup; brew update; brew upgrade; brew cleanup; npm install npm -g; npm update -g'
 
 # IP
 alias ip="dig +short myip.opendns.com @resolver1.opendns.com"
