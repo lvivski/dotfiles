@@ -5,8 +5,9 @@ alias la="ls -laFG"
 alias psg="ps waux | grep"
 
 # Easy navigation
-alias ..="cd ..;"
-alias ...=".. .."
+alias ..="cd .."
+alias ....="cd ../../.."
+alias .....="cd ../../../.."
 
 alias ~="cd ~"
 alias -- -="cd -"
