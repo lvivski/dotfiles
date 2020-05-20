@@ -308,11 +308,11 @@ autocmd BufRead,BufNewFile *.dart set ft=dart
     let g:UltiSnipsJumpBackwardTrigger="<S-Tab>"
   endif
 
-  if has("ruby")
-    Plugin 'wincent/Command-T'
-    let g:CommandTAcceptSelectionMap='<C-e>'
-    let g:CommandTAcceptSelectionTabMap='<CR>'
-  endif
+  "if has("ruby")
+  "  Plugin 'wincent/Command-T'
+  "  let g:CommandTAcceptSelectionMap='<C-e>'
+  "  let g:CommandTAcceptSelectionTabMap='<CR>'
+  "endif
 
   Plugin 'altercation/vim-colors-solarized'
   syntax on
@@ -348,6 +348,9 @@ autocmd BufRead,BufNewFile *.dart set ft=dart
 
   "Plugin 'kchmck/vim-coffee-script'
 
+" TypeScript
+  Plugin 'leafgarland/typescript-vim'
+
 " Node.JS
   "Plugin 'wavded/vim-stylus'
   "Plugin 'digitaltoad/vim-jade'
@@ -377,9 +380,9 @@ autocmd BufRead,BufNewFile *.dart set ft=dart
   "Plugin 'miripiruni/CSScomb-for-Vim'
 
 " Ruby
-  "Plugin 'vim-ruby/vim-ruby'
-  "Plugin 'tpope/vim-endwise'
-  "Plugin 'tpope/vim-rails'
+  Plugin 'vim-ruby/vim-ruby'
+  Plugin 'tpope/vim-endwise'
+  Plugin 'tpope/vim-rails'
   "Plugin 'tpope/vim-rake'
   "Plugin 'tpope/vim-haml'
   "Plugin 'groenewege/vim-less'
@@ -389,10 +392,10 @@ autocmd BufRead,BufNewFile *.dart set ft=dart
   "Plugin 'oscarh/vimerl'
 
 " Elixir
-  Plugin 'elixir-lang/vim-elixir'
+  "Plugin 'elixir-lang/vim-elixir'
 
 " Scala
-  Plugin 'derekwyatt/vim-scala'
+  "Plugin 'derekwyatt/vim-scala'
 
 " Perl
   "Plugin 'git://github.com/petdance/vim-perl.git'
@@ -402,10 +405,13 @@ autocmd BufRead,BufNewFile *.dart set ft=dart
   "Plugin 'git://github.com/xolox/vim-lua-inspect.git'
 
 " Clojure
-  Plugin 'guns/vim-clojure-static'
+  "Plugin 'guns/vim-clojure-static'
 
 " Go
-  "Plugin 'jnwhiteh/vim-golang'
+  Plugin 'fatih/vim-go'
+
+" Rust
+  Plugin 'rust-lang/rust.vim'
 
 " Dart
   "Plugin 'dart-lang/dart-vim-plugin'
