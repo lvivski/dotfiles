@@ -6,6 +6,7 @@ alias psg="ps waux | grep"
 
 # Easy navigation
 alias ..="cd .."
+alias ...="cd ../.."
 alias ....="cd ../../.."
 alias .....="cd ../../../.."
 
