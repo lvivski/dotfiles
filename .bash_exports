@@ -43,7 +43,7 @@ export LESS='-RI~egsw'
 export PATH=./node_modules/.bin:$PATH
 launchctl setenv PATH "$PATH"
 
-if command -v gpgconf &> /dev/null; then
+if [[ $(command -v gpgconf 2> /dev/null) ]]; then
   gpgconf --launch gpg-agent
 	export SSH_AUTH_SOCK=$HOME/.gnupg/S.gpg-agent.ssh
 fi
