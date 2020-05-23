@@ -9,6 +9,7 @@ set lazyredraw
 set nonumber
 set encoding=utf-8
 set fileencodings=utf-8,cp1251
+set fileformat=unix
 set ttimeoutlen=250
 "set colorcolumn=80
 "set textwidth=80
@@ -79,7 +80,7 @@ set noswapfile
 set list
 set wrap
 set listchars=tab:▸\ ,trail:·,extends:❯,precedes:❮,nbsp:×
-" set linebreak
+set linebreak
 let &sbr = nr2char(8618).' '
 set dictionary=/usr/share/dict/words
 if has('mac')
@@ -163,6 +164,10 @@ nmap <C-l> <C-w>l
 " Toggle normal/insert modes
 inoremap <C-space> <esc>
 nnoremap <C-space> i
+
+" Ctrl+s
+nnoremap <C-s> <esc>:w<CR>
+inoremap <C-s> <esc>:w<CR>
 
 " Easy search navigation
 nmap <Space> <PageDown>
