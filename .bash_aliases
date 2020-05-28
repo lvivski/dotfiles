@@ -1,5 +1,5 @@
-alias ll="ls -lFG"
-alias la="ls -laFG"
+alias ll="ls -lAFG"
+alias la="ls -AF"
 
 # Get process PID
 alias psg="ps waux | grep"
