@@ -6,7 +6,7 @@ set backspace=indent,eol,start
 set ttyfast
 set lazyredraw
 
-set nonumber
+set number relativenumber
 set encoding=utf-8
 set fileencodings=utf-8,cp1251
 set fileformat=unix
@@ -290,8 +290,10 @@ autocmd BufRead,BufNewFile *.dart set ft=dart
 " Interface
   Plugin 'mileszs/ack.vim'
   Plugin 'ervandew/supertab'
-  Plugin 'scrooloose/nerdcommenter'
-  Plugin 'Lokaltog/vim-easymotion'
+  "Plugin 'scrooloose/nerdcommenter'
+  Plugin 'tpope/vim-surround'
+  Plugin 'tpope/vim-commentary'
+  Plugin 'easymotion/vim-easymotion'
   Plugin 'scrooloose/nerdtree'
   nmap <Bs> :NERDTreeToggle<CR>
   map <Leader>n :NERDTreeFind<cr>
@@ -342,8 +344,6 @@ autocmd BufRead,BufNewFile *.dart set ft=dart
   nnoremap <Leader>grm :Gremove<CR>
   nnoremap <leader>H :Gbrowse<cr>
   vnoremap <leader>H :Gbrowse<cr>
-
-  "Plugin 'tpope/vim-surround'
 
 " JavaScript
   Plugin 'pangloss/vim-javascript'
