@@ -40,6 +40,8 @@ export LESS='-RI~egsw'
 
 [[ -d ~/.cargo/bin ]] && export PATH=~/.cargo/bin:$PATH
 
+[[ -d ~/.deno/bin ]] && export PATH=~/.deno/bin:$PATH
+
 export PATH=./node_modules/.bin:$PATH
 
 launchctl setenv PATH "$PATH"
