@@ -42,8 +42,9 @@ export LESS='-RI~egsw'
 
 [[ -d ~/.deno/bin ]] && export PATH=~/.deno/bin:$PATH
 
-export PATH=./node_modules/.bin:$PATH
+[[ -d ~/Library/Python/3.8/bin ]] && export PATH=~/Library/Python/3.8/bin:$PATH
 
+export PATH=./node_modules/.bin:$PATH
 launchctl setenv PATH "$PATH"
 
 if [[ $(command -v gpgconf 2> /dev/null) ]]; then
