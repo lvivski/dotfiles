@@ -16,7 +16,7 @@
                 },
                 "rules": [
                     {
-                        "description": "Fn keypad",
+                        "description": "Fn Keypad",
                         "manipulators": [
                             {
                                 "from": {
@@ -246,25 +246,25 @@
                                 ],
                                 "type": "basic"
                             },
-														{
-															"from": {
-																	"key_code": "6",
-																	"modifiers": {
-																			"mandatory": [
-																					"fn"
-																			],
-																			"optional": [
-																					"any"
-																			]
-																	}
-															},
-															"to": [
-																	{
-																			"key_code": "keypad_num_lock"
-																	}
-															],
-															"type": "basic"
-														},
+                            {
+                                "from": {
+                                    "key_code": "6",
+                                    "modifiers": {
+                                        "mandatory": [
+                                            "fn"
+                                        ],
+                                        "optional": [
+                                            "any"
+                                        ]
+                                    }
+                                },
+                                "to": [
+                                    {
+                                        "key_code": "keypad_num_lock"
+                                    }
+                                ],
+                                "type": "basic"
+                            },
                             {
                                 "from": {
                                     "key_code": "7",
@@ -363,7 +363,7 @@
                         ]
                     },
                     {
-                        "description": "Fn page nav",
+                        "description": "Fn Page Nav",
                         "manipulators": [
                             {
                                 "from": {
