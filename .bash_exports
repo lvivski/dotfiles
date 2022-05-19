@@ -34,15 +34,15 @@ export LESS='-RI~egsw'
 
 [[ -d /usr/local/bin ]] && export PATH=/usr/local/bin:$PATH
 
-[[ -d /usr/local/opt/flutter/bin ]] && export PATH=/usr/local/opt/flutter/bin:$PATH
+[[ -d /usr/local/opt ]] && export PATH=$(echo /usr/local/opt/{flutter,gnupg@2.2}/bin|tr ' ' ':'):$PATH
+
+[[ -d ~/Library/Python/3.8/bin ]] && export PATH=~/Library/Python/3.8/bin:$PATH
 
 [[ -d ~/.cabal/bin ]] && export PATH=~/.cabal/bin:$PATH
 
 [[ -d ~/.cargo/bin ]] && export PATH=~/.cargo/bin:$PATH
 
 [[ -d ~/.deno/bin ]] && export PATH=~/.deno/bin:$PATH
-
-[[ -d ~/Library/Python/3.8/bin ]] && export PATH=~/Library/Python/3.8/bin:$PATH
 
 export PATH=./node_modules/.bin:$PATH
 launchctl setenv PATH "$PATH"
