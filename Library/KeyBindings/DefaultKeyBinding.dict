@@ -1,0 +1,49 @@
+/*
+
+^ Ctrl
+~ Option
+$ Shift
+@ Command
+# Numeric
+
+\t Tab
+\n Enter
+\r Return
+\U001b Escape
+\U007f Delete
+\Uf700 Up
+\Uf701 Down
+\Uf702 Left
+\Uf703 Right
+\Uf704 F1
+\Uf705 F2
+\Uf706 F3
+\Uf707 F4
+\Uf708 F5
+\Uf709 F6
+\Uf70a F7
+\Uf70b F8
+\Uf70c F9
+\Uf70d F10
+\Uf70e F11
+\Uf70f F12
+\Uf710 F13
+\Uf711 F14
+\Uf712 F15
+\Uf713 F16
+\Uf714 F17
+\Uf715 F18
+\Uf716 F19
+\Uf717 F20
+\Uf728 Forward delete
+\Uf729 Home
+\Uf72b End
+\Uf72c Page up
+\Uf72d Page down
+\Uf739 Clear
+
+*/
+
+{
+
+}
