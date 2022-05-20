@@ -10,3 +10,10 @@ trim_trailing_whitespace = true
 
 indent_style = tab
 indent_size = 2
+tab_width = 2
+
+[*.{json,rb,js}]
+indent_style = space
+
+[karabiner.json]
+indent_size = 4
