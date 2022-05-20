@@ -42,6 +42,17 @@ $ Shift
 \Uf72d Page down
 \Uf739 Clear
 
+
+References:
+https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/EventOverview/TextDefaultsBindings/TextDefaultsBindings.html
+https://developer.apple.com/documentation/appkit/nsstandardkeybindingresponding
+
+https://github.com/ttscoff/KeyBindings
+https://gist.github.com/zsimic/1367779
+
+http://xahlee.info/kbd/osx_keybinding.html
+http://xahlee.info/kbd/osx_keybinding_action_code.html
+
 */
 
 {
