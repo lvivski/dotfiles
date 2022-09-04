@@ -282,144 +282,128 @@ autocmd BufRead,BufNewFile {*.md,*.mkd,*.markdown} set ft=markdown
 autocmd BufRead,BufNewFile *.dart set ft=dart
 
 " Bundles
-  set rtp+=~/.vim/bundle/Vundle.vim
-  "call vundle#begin()
-  call vundle#rc()
-  Plugin 'VundleVim/Vundle.vim'
+call plug#begin('~/.vim/bundle')
 
 " Interface
-  Plugin 'mileszs/ack.vim'
-  Plugin 'ervandew/supertab'
-  "Plugin 'scrooloose/nerdcommenter'
-  Plugin 'tpope/vim-surround'
-  Plugin 'tpope/vim-commentary'
-  Plugin 'easymotion/vim-easymotion'
-  Plugin 'scrooloose/nerdtree'
-  nmap <Bs> :NERDTreeToggle<CR>
-  map <Leader>n :NERDTreeFind<cr>
-  let g:NERDTreeWinPos='right'
-  let g:NERDTreeIgnore=['\.DS_Store$','\.swo$','\.swp$','\.gitignore$','\.git$','\.svn$','\.livereload$','node_modules$','Icon?']
-  let g:NERDTreeChDirMode=2
-  let g:NERDTreeShowHidden=1
-  let g:NERDTreeShowBookmarks=1
-  let g:NERDTreeQuitOnOpen = 1
-  let g:NERDTreeKeepTreeInNewTab=0
-  let g:NERDTreeMinimalUI=1
-  let g:NERDTreeDirArrows=1
+Plug 'mileszs/ack.vim'
+Plug 'ervandew/supertab'
+Plug 'tpope/vim-surround'
+Plug 'tpope/vim-commentary'
+Plug 'easymotion/vim-easymotion'
+"Plug 'scrooloose/nerdcommenter'
+Plug 'scrooloose/nerdtree', { 'on': 'NERDTreeToggle' }
+nmap <Bs> :NERDTreeToggle<CR>
+map <Leader>n :NERDTreeFind<cr>
+let g:NERDTreeWinPos='right'
+let g:NERDTreeIgnore=['\.DS_Store$','\.swo$','\.swp$','\.gitignore$','\.git$','\.svn$','\.livereload$','node_modules$','Icon?']
+let g:NERDTreeChDirMode=2
+let g:NERDTreeShowHidden=1
+let g:NERDTreeShowBookmarks=1
+let g:NERDTreeQuitOnOpen = 1
+let g:NERDTreeKeepTreeInNewTab=0
+let g:NERDTreeMinimalUI=1
+let g:NERDTreeDirArrows=1
 
-  "Plugin 'msanders/snipmate'
-  if has("python3")
-    Plugin 'SirVer/ultisnips'
-    let g:UltiSnipsExpandTrigger="<Tab>"
-    let g:UltiSnipsJumpForwardTrigger="<Tab>"
-    let g:UltiSnipsJumpBackwardTrigger="<S-Tab>"
-  endif
+if has("python3")
+	Plug 'SirVer/ultisnips'
+	let g:UltiSnipsExpandTrigger="<Tab>"
+	let g:UltiSnipsJumpForwardTrigger="<Tab>"
+	let g:UltiSnipsJumpBackwardTrigger="<S-Tab>"
+	Plug 'honza/vim-snippets'
+endif
 
-  "if has("ruby")
-  "  Plugin 'wincent/Command-T'
-  "  let g:CommandTAcceptSelectionMap='<C-e>'
-  "  let g:CommandTAcceptSelectionTabMap='<CR>'
-  "endif
+if has("ruby")
+	Plug 'wincent/Command-T'
+	let g:CommandTAcceptSelectionMap='<C-e>'
+	let g:CommandTAcceptSelectionTabMap='<CR>'
+endif
 
-  Plugin 'altercation/vim-colors-solarized'
-  syntax on
-  if has('gui_running')
-    set background=light
-  else
-    set t_Co=256
-    set background=dark
-    let g:solarized_termcolors=256
-  endif
-  colorscheme solarized
+Plug 'tpope/vim-fugitive'
+nnoremap <Leader>gd :Gdiff<CR>
+nnoremap <Leader>gs :Gstatus<CR>
+nnoremap <Leader>gw :Gwrite<CR>
+nnoremap <Leader>ga :Gadd<CR>
+nnoremap <Leader>gb :Gblame<CR>
+nnoremap <Leader>gco :Gcheckout<CR>
+nnoremap <Leader>gci :Gcommit<CR>
+nnoremap <Leader>gmv :Gmove<CR>
+nnoremap <Leader>grm :Gremove<CR>
+nnoremap <leader>H :Gbrowse<cr>
+vnoremap <leader>H :Gbrowse<cr>
 
-  Plugin 'tpope/vim-fugitive'
-  nnoremap <Leader>gd :Gdiff<CR>
-  nnoremap <Leader>gs :Gstatus<CR>
-  nnoremap <Leader>gw :Gwrite<CR>
-  nnoremap <Leader>ga :Gadd<CR>
-  nnoremap <Leader>gb :Gblame<CR>
-  nnoremap <Leader>gco :Gcheckout<CR>
-  nnoremap <Leader>gci :Gcommit<CR>
-  nnoremap <Leader>gmv :Gmove<CR>
-  nnoremap <Leader>grm :Gremove<CR>
-  nnoremap <leader>H :Gbrowse<cr>
-  vnoremap <leader>H :Gbrowse<cr>
+Plug 'airblade/vim-gitgutter'
 
 " JavaScript
-  Plugin 'pangloss/vim-javascript'
-  "Plugin 'itspriddle/vim-jquery'
-  Plugin 'leshill/vim-json'
-  "Plugin 'walm/jshint.vim'
-
-  "Plugin 'kchmck/vim-coffee-script'
+Plug 'pangloss/vim-javascript', { 'for': 'javascript' }
+Plug 'leshill/vim-json', { 'for': 'json' }
 
 " TypeScript
-  Plugin 'leafgarland/typescript-vim'
-
-" Node.JS
-  "Plugin 'wavded/vim-stylus'
-  "Plugin 'digitaltoad/vim-jade'
+Plug 'leafgarland/typescript-vim', { 'for': 'typescript' }
 
 " HTML
-  Plugin 'mattn/emmet-vim'
-  let g:user_emmet_settings = {
-  \  'php' : {
-  \    'extends' : 'html',
-  \    'filters' : 'c',
-  \  },
-  \  'xml' : {
-  \    'extends' : 'html',
-  \  },
-  \  'haml' : {
-  \    'extends' : 'html',
-  \  },
-  \}
+Plug 'mattn/emmet-vim', { 'for': ['html','javascript','typescript'] }
+let g:user_emmet_settings = {
+\  'php' : {
+\    'extends' : 'html',
+\    'filters' : 'c',
+\  },
+\  'xml' : {
+\    'extends' : 'html',
+\  },
+\  'haml' : {
+\    'extends' : 'html',
+\  },
+\}
 
-  Plugin 'othree/html5.vim'
+Plug 'othree/html5.vim', { 'for': 'html' }
 
 " CSS
-  Plugin 'ap/vim-css-color'
-  "Plugin 'miripiruni/vim-better-css-indent'
-  Plugin 'hail2u/vim-css3-syntax'
-  "Plugin 'groenewege/vim-less'
-  "Plugin 'miripiruni/CSScomb-for-Vim'
+Plug 'ap/vim-css-color', { 'for': 'css' }
+Plug 'hail2u/vim-css3-syntax', { 'for': 'css' }
 
 " Ruby
-  Plugin 'vim-ruby/vim-ruby'
-  Plugin 'tpope/vim-endwise'
-  Plugin 'tpope/vim-rails'
-  "Plugin 'tpope/vim-rake'
-  "Plugin 'tpope/vim-haml'
-  "Plugin 'groenewege/vim-less'
-  "Plugin 'tpope/vim-cucumber'
+Plug 'vim-ruby/vim-ruby', { 'for': 'ruby' }
+Plug 'tpope/vim-endwise', { 'for': 'ruby' }
+Plug 'tpope/vim-rails', { 'for': 'ruby' }
 
 " Erlang
-  "Plugin 'oscarh/vimerl'
+Plug 'oscarh/vimerl', { 'for': 'erlang' }
 
 " Elixir
-  "Plugin 'elixir-lang/vim-elixir'
+Plug 'elixir-lang/vim-elixir', { 'for': 'elixir' }
 
 " Scala
-  "Plugin 'derekwyatt/vim-scala'
+Plug 'derekwyatt/vim-scala', { 'for': 'scala' }
 
 " Perl
-  "Plugin 'git://github.com/petdance/vim-perl.git'
+Plug 'petdance/vim-perl', { 'for': 'perl' }
 
 " Lua
-  "Plugin 'git://github.com/xolox/vim-lua-ftplugin.git'
-  "Plugin 'git://github.com/xolox/vim-lua-inspect.git'
+Plug 'xolox/vim-lua-ftplugin', { 'for': 'lua' }
+Plug 'xolox/vim-lua-inspect', { 'for': 'lua' }
 
 " Clojure
-  "Plugin 'guns/vim-clojure-static'
+Plug 'guns/vim-clojure-static', { 'for': 'clojure' }
 
 " Go
-  Plugin 'fatih/vim-go'
+Plug 'fatih/vim-go', { 'for': 'go' }
 
 " Rust
-  Plugin 'rust-lang/rust.vim'
+Plug 'rust-lang/rust.vim', { 'for': 'rust' }
 
 " Dart
-  "Plugin 'dart-lang/dart-vim-plugin'
+Plug 'dart-lang/dart-vim-plugin', { 'for': 'dart' }
 
-"call vundle#end()
-filetype plugin indent on
+Plug 'altercation/vim-colors-solarized'
+
+call plug#end()
+
+syntax on
+if has('gui_running')
+	set background=light
+else
+	set t_Co=256
+	set background=dark
+	let g:solarized_termcolors=256
+endif
+colorscheme solarized
