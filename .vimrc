@@ -294,7 +294,7 @@ Plug 'easymotion/vim-easymotion'
 Plug 'scrooloose/nerdtree', { 'on': 'NERDTreeToggle' }
 nmap <Bs> :NERDTreeToggle<CR>
 map <Leader>n :NERDTreeFind<cr>
-let g:NERDTreeWinPos='right'
+let g:NERDTreeWinPos='left'
 let g:NERDTreeIgnore=['\.DS_Store$','\.swo$','\.swp$','\.gitignore$','\.git$','\.svn$','\.livereload$','node_modules$','Icon?']
 let g:NERDTreeChDirMode=2
 let g:NERDTreeShowHidden=1
