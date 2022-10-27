@@ -59,63 +59,40 @@ function build_prompt {
 
 	if [[ $is_a_git_repo == true ]]; then
 		local current_branch=$(git rev-parse --abbrev-ref HEAD 2> /dev/null)
-		local detached=false
-		if [[ $current_branch == 'HEAD' ]]; then detached=true; fi
+		if [[ $current_branch == 'HEAD' ]]; then local detached=true; fi
 
 		local number_of_logs=$(git log --pretty=oneline -n1 2> /dev/null | wc -l)
 		if [[ $number_of_logs -eq 0 ]]; then
 			local just_init=true
 		else
 			local upstream=$(git rev-parse --symbolic-full-name --abbrev-ref @{upstream} 2> /dev/null)
-			local has_upstream=false
-			if [[ -n $upstream ]]; then has_upstream=true; fi
+			if [[ -n "${upstream}" && "${upstream}" != "@{upstream}" ]]; then local has_upstream=true; fi
 
 			local git_status=$(git status --porcelain 2> /dev/null)
+			local action=$(get_current_action)
 
-			local has_modifications=false
-			if [[ $git_status =~ ($'\n'|^).M ]]; then has_modifications=true; fi
-
-			local has_modifications_cached=false
-			if [[ $git_status =~ ($'\n'|^)M ]]; then has_modifications_cached=true; fi
-
-			local has_adds=false
-			if [[ $git_status =~ ($'\n'|^)A ]]; then has_adds=true; fi
-
-			local has_deletions=false
-			if [[ $git_status =~ ($'\n'|^).D ]]; then has_deletions=true; fi
-
-			local has_deletions_cached=false
-			if [[ $git_status =~ ($'\n'|^)D ]]; then has_deletions_cached=true; fi
-
-			local ready_to_commit=false
-			if [[ $git_status =~ ($'\n'|^)[MAD] && ! $git_status =~ ($'\n'|^).[MAD\?] ]]; then ready_to_commit=true; fi
-
-			local has_untracked_files=false
-			if [[ $git_status =~ ($'\n'|^)[\?]{2} ]]; then has_untracked_files=true; fi
+			if [[ $git_status =~ ($'\n'|^).M ]]; then local has_modifications=true; fi
+			if [[ $git_status =~ ($'\n'|^)M ]]; then local has_modifications_cached=true; fi
+			if [[ $git_status =~ ($'\n'|^)A ]]; then local has_adds=true; fi
+			if [[ $git_status =~ ($'\n'|^).D ]]; then local has_deletions=true; fi
+			if [[ $git_status =~ ($'\n'|^)D ]]; then local has_deletions_cached=true; fi
+			if [[ $git_status =~ ($'\n'|^)[MAD] && ! $git_status =~ ($'\n'|^).[MAD\?] ]]; then local ready_to_commit=true; fi
+			if [[ $git_status =~ ($'\n'|^)[\?]{2} ]]; then local has_untracked_files=true; fi
 
 			local tag_at_current_commit=$(git describe --exact-match --tags $current_commit_hash 2> /dev/null)
-			local is_on_a_tag=false
-			if [[ -n $tag_at_current_commit ]]; then is_on_a_tag=true; fi
+			if [[ -n $tag_at_current_commit ]]; then local is_on_a_tag=true; fi
 
 			if [[ $has_upstream == true ]]; then
-				local commits_diff=$(git log --pretty=oneline --topo-order --left-right ${current_commit_hash}...${upstream} 2> /dev/null)
-				local commits_ahead=$(grep -c ^\< <<< "$commits_diff")
-				local commits_behind=$(grep -c ^\> <<< "$commits_diff")
+				local commits_ahead commits_behind
+				read -r commits_ahead commits_behind <<<$(git rev-list --left-right --count ${current_commit_hash}...${upstream} 2> /dev/null)
 			fi
 
-			local has_diverged=false
-			if [[ $commits_ahead -gt 0 && $commits_behind -gt 0 ]]; then has_diverged=true; fi
-
-			local can_fast_forward=false
-			if [[ $commits_ahead -eq 0 && $commits_behind -gt 0 ]]; then can_fast_forward=true; fi
+			if [[ $commits_ahead -gt 0 && $commits_behind -gt 0 ]]; then local has_diverged=true; fi
 
 			local will_rebase=$(git config --get branch.${current_branch}.rebase 2> /dev/null)
 
-			local has_stashes=false
-			if [[ -f "${GIT_DIR:-.git}/refs/stash" ]]; then
-				local number_of_stashes=$(wc -l 2> /dev/null < ${GIT_DIR:-.git}/refs/stash)
-				if [[ $number_of_stashes -gt 0 ]]; then has_stashes=true; fi
-			fi
+			local number_of_stashes="$(git stash list -n1 2> /dev/null | wc -l)"
+       if [[ $number_of_stashes -gt 0 ]]; then local has_stashes=true; fi
 		fi
 	fi
 
