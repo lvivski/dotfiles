@@ -69,7 +69,6 @@ function build_prompt {
 			if [[ -n "${upstream}" && "${upstream}" != "@{upstream}" ]]; then local has_upstream=true; fi
 
 			local git_status=$(git status --porcelain 2> /dev/null)
-			local action=$(get_current_action)
 
 			if [[ $git_status =~ ($'\n'|^).M ]]; then local has_modifications=true; fi
 			if [[ $git_status =~ ($'\n'|^)M ]]; then local has_modifications_cached=true; fi
