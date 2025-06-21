@@ -44,6 +44,8 @@ export LESS='-RI~egsw'
 
 [[ -d ~/.deno/bin ]] && export PATH=~/.deno/bin:$PATH
 
+[[ -d ~/.bun/bin ]] && export PATH=~/.bun/bin:$PATH
+
 export PATH=./node_modules/.bin:$PATH
 launchctl setenv PATH "$PATH"
 
@@ -51,6 +53,8 @@ if [[ $(command -v gpgconf 2> /dev/null) ]]; then
   gpgconf --launch gpg-agent
 	export SSH_AUTH_SOCK=$HOME/.gnupg/S.gpg-agent.ssh
 fi
+
+export DISPLAY=":0"
 
 export GEM_HOME=/usr/local/share/ruby
 export GOPATH=$HOME/.go
