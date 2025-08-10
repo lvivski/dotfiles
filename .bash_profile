@@ -16,5 +16,8 @@
 # Homebrew
 [[ -f /usr/local/etc/bash_completion ]] && . /usr/local/etc/bash_completion
 
+# Bun
+[ -f ~/.bun/_bun ] && . ~/.bun/_bun
+
 # Iterm
 [[ -f ~/.iterm2_shell_integration.bash && $TERM_PROGRAM == "iTerm.app" ]] && . ~/.iterm2_shell_integration.bash
