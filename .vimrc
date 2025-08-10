@@ -403,7 +403,12 @@ if has('gui_running')
 	set background=light
 else
 	set t_Co=256
-	set background=dark
+	let theme=system('defaults read -g AppleInterfaceStyle')
+	if theme =~ 'Dark'
+			set background=dark
+	else
+			set background=light
+	endif
 	let g:solarized_termcolors=256
 endif
 colorscheme solarized
