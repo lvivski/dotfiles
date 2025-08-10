@@ -33,6 +33,3 @@ bindkey "^[[A" up-line-or-beginning-search
 bindkey "^[[B" down-line-or-beginning-search
 # bindkey "^[[A" history-beginning-search-backward
 # bindkey "^[[B" history-beginning-search-forward
-
-# bun completions
-[ -s ~/.bun/_bun ] && . ~/.bun/_bun

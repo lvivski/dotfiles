@@ -25,5 +25,8 @@
 # Functions
 [[ -f ~/.bash_functions ]] && . ~/.bash_functions
 
+# Bun
+[ -f ~/.bun/_bun ] && . ~/.bun/_bun
+
 # Iterm
 [[ -f ~/.iterm2_shell_integration.zsh && $TERM_PROGRAM == "iTerm.app" ]] && . ~/.iterm2_shell_integration.zsh
