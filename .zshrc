@@ -8,6 +8,7 @@ unsetopt flowcontrol
 setopt auto_menu         # show completion menu on successive tab press
 setopt complete_in_word
 setopt always_to_end
+setopt autocd
 
 zstyle ':completion:*:*:*:*:*' menu select
 zstyle ':completion:*' matcher-list 'm:{a-zA-Z-_}={A-Za-z_-}' 'r:|=*' 'l:|=* r:|=*'
@@ -34,5 +35,4 @@ bindkey "^[[B" down-line-or-beginning-search
 # bindkey "^[[A" history-beginning-search-backward
 # bindkey "^[[B" history-beginning-search-forward
 
-# Bun
-[ -f ~/.bun/_bun ] && . ~/.bun/_bun
+if command -v wt >/dev/null 2>&1; then eval "$(command wt config shell init zsh)"; fi

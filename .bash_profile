@@ -21,3 +21,6 @@
 
 # Iterm
 [[ -f ~/.iterm2_shell_integration.bash && $TERM_PROGRAM == "iTerm.app" ]] && . ~/.iterm2_shell_integration.bash
+
+#Rust
+[[ -f ~/.cargo/env ]] && . ~/.cargo/env
