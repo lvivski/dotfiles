@@ -81,17 +81,36 @@ def _json_lines(stream) -> Iterator[dict]:
                 pass
 
 
+def _to_int(x) -> int:
+    try:
+        return int(x or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _to_float(x) -> float:
+    try:
+        return float(x or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _reduce(acc: dict, obj: dict) -> None:
-    """Fold one JSONL event into the running result accumulator."""
+    """Fold one JSONL event into the running result accumulator.
+
+    Numeric fields are cast defensively: a malformed (non-numeric) value must
+    never raise here, or it would escape ``run_agent`` and leak the timeout
+    timer / hang ``proc.wait()``.
+    """
     kind = obj.get("type")
     if kind == "assistant.message":
         data = obj.get("data") or {}
         acc["content"] = data.get("content") or acc["content"]   # last non-empty wins
-        acc["tokens"] += int(data.get("outputTokens") or 0)
+        acc["tokens"] += _to_int(data.get("outputTokens"))
         acc["model"] = data.get("model") or acc["model"]
     elif kind == "result":
         acc["session"] = obj.get("sessionId", acc["session"])
-        acc["premium"] += float((obj.get("usage") or {}).get("premiumRequests") or 0)
+        acc["premium"] += _to_float((obj.get("usage") or {}).get("premiumRequests"))
 
 
 def _result(spec: AgentSpec, acc: dict, exit_code: int, *,
@@ -107,7 +126,7 @@ def _result(spec: AgentSpec, acc: dict, exit_code: int, *,
     return AgentResult(
         content=content or "", session_id=acc["session"], premium_requests=acc["premium"],
         output_tokens=acc["tokens"], exit_code=exit_code, model=acc["model"], label=spec.label,
-        error=error, ok=exit_code == 0 and content is not None and not killed,
+        error=error, ok=exit_code == 0 and content is not None and not killed and error is None,
     )
 
 
@@ -126,10 +145,11 @@ def run_agent(spec: AgentSpec, *, copilot_bin: str = "copilot",
         try:
             proc = subprocess.Popen(
                 build_cmd(spec, copilot_bin), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                cwd=spec.cwd, env=env, text=True, bufsize=1)
+                cwd=spec.cwd, env=env, text=True, encoding="utf-8", errors="replace", bufsize=1)
         except FileNotFoundError:
             return _result(spec, acc, 127, error="copilot binary not found: %r" % copilot_bin)
 
+        stream_error: Optional[str] = None
         with proc:  # context manager closes the pipes (and waits) on exit
             # Drain stderr off-thread so a full stderr pipe can't deadlock the stdout read.
             drain = threading.Thread(target=_drain, args=(proc.stderr, stderr), daemon=True)
@@ -139,14 +159,23 @@ def run_agent(spec: AgentSpec, *, copilot_bin: str = "copilot",
                 timer = threading.Timer(spec.timeout, _on_timeout, args=(proc, killed))
                 timer.daemon = True
                 timer.start()
-            for obj in _json_lines(proc.stdout):
-                _reduce(acc, obj)
-            exit_code = proc.wait()
-            if timer:
-                timer.cancel()
-            drain.join(1.0)
+            try:
+                for obj in _json_lines(proc.stdout):
+                    _reduce(acc, obj)
+            except Exception as e:  # a read/parse error must not leak the timer or hang wait()
+                stream_error = "error reading subagent output: %s" % e
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            finally:
+                exit_code = proc.wait()
+                if timer:
+                    timer.cancel()
+                drain.join(1.0)
 
-    return _result(spec, acc, exit_code, killed=killed.is_set(), stderr="".join(stderr))
+    return _result(spec, acc, exit_code, killed=killed.is_set(),
+                   stderr="".join(stderr), error=stream_error)
 
 
 def _drain(pipe, sink: List[str]) -> None:

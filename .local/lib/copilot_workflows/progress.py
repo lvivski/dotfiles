@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sys
 import threading
@@ -12,9 +13,18 @@ from typing import Optional
 
 _SPIN = "|/-\\"
 
+# Control chars (C0/C7 incl. ESC/newline/CR) and the C1 range — any of these in a
+# subagent-supplied field (label/model/error/phase) would corrupt the live panel:
+# ANSI escapes move the cursor, and embedded newlines desync the repaint row count.
+_CTRL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def _san(s) -> str:
+    return _CTRL.sub(" ", str(s))
+
 
 def _clip(s, n: int) -> str:
-    s = str(s)
+    s = _san(s)
     if n <= 0:
         return ""
     return s if len(s) <= n else s[: n - 1] + "\u2026"
@@ -31,8 +41,8 @@ def format_agent_line(rec: dict) -> str:
         return "  SKIP %-24s (budget reached)" % label
     if rec.get("ok"):
         return "  OK   %-24s %.2f cr  %d tok  [%s]" % (
-            label, cr, int(rec.get("tok") or 0), rec.get("model") or "")
-    return "  ERR  %-24s ERROR: %s" % (label, rec.get("error") or "?")
+            label, cr, int(rec.get("tok") or 0), _san(rec.get("model") or ""))
+    return "  ERR  %-24s ERROR: %s" % (label, _san(rec.get("error") or "?"))
 
 
 class ProgressReporter:

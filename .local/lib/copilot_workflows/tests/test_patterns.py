@@ -22,6 +22,7 @@ from copilot_workflows import (  # noqa: E402
     build_cmd,
 )
 from copilot_workflows.patterns import Verdict, _extract_json  # noqa: E402
+from copilot_workflows.agent import _reduce  # noqa: E402
 
 FAKE = os.path.join(HERE, "fake_copilot.py")
 
@@ -74,6 +75,24 @@ class TestAgent(Base):
         r = wf.agent("hi")
         self.assertFalse(r.ok)
         self.assertEqual(r.exit_code, 127)
+
+    def test_timeout_kills_hung_agent(self):
+        wf = self.rt()
+        r = wf.agent("slow %s" % fake('{"_sleep": 5}'), timeout=0.2)
+        self.assertFalse(r.ok)
+        self.assertIn("timed out", (r.error or ""))
+
+    def test_reduce_tolerates_malformed_numbers(self):
+        # A non-numeric outputTokens/premiumRequests must not raise (it would
+        # otherwise escape run_agent, leak the timer and hang proc.wait()).
+        acc = {"content": None, "tokens": 0, "premium": 0.0, "session": None, "model": None}
+        _reduce(acc, {"type": "assistant.message",
+                      "data": {"content": "x", "outputTokens": "not-a-number"}})
+        _reduce(acc, {"type": "result", "sessionId": "s",
+                      "usage": {"premiumRequests": "oops"}})
+        self.assertEqual(acc["tokens"], 0)
+        self.assertEqual(acc["premium"], 0.0)
+        self.assertEqual(acc["content"], "x")
 
 
 class TestFanOut(Base):
@@ -235,6 +254,24 @@ class TestQuarantine(Base):
         joined = " ".join(cmd)
         self.assertIn("shell", joined)
         self.assertIn("write", joined)
+
+    def test_default_blocks_egress_and_mcp(self):
+        # Hardened default for an untrusted-content reader: no network, no MCP.
+        wf = self.rt()
+        spec = wf.spec("read untrusted", **wf.quarantine())
+        cmd = build_cmd(spec, "copilot")
+        self.assertIn("--deny-url", cmd)
+        self.assertIn("*", cmd)                       # deny all URLs by default
+        self.assertIn("--disable-builtin-mcps", cmd)  # drop GitHub etc.
+
+    def test_network_reader_opt_in(self):
+        # A research reader keeps the network but still loses shell/write.
+        wf = self.rt()
+        spec = wf.spec("research", **wf.quarantine(deny_url=[], disable_mcp=False))
+        cmd = build_cmd(spec, "copilot")
+        self.assertNotIn("--deny-url", cmd)
+        self.assertNotIn("--disable-builtin-mcps", cmd)
+        self.assertIn("write", " ".join(cmd))
 
     def test_custom_deny_url(self):
         wf = self.rt()

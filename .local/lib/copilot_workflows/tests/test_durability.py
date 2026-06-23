@@ -91,6 +91,28 @@ class TestCheckpointStore(Base):
         self.assertIsNone(s3.get("k1"))
         self.assertIsNotNone(s3.get("k2"))
 
+    def test_repairs_torn_trailing_line(self):
+        # A crash mid-write leaves a newline-less partial final line. On resume the
+        # store must drop it, or the next append fuses onto it and both records are
+        # lost on the following resume (premium spend undercounted -> double-charge).
+        d = self.tmpdir()
+        s = CheckpointStore(d, resume=False)
+        s.put("k1", AgentResult(content="good", session_id=None, premium_requests=0.5,
+                                output_tokens=1, exit_code=0))
+        with open(os.path.join(d, "results.ndjson"), "a") as fh:
+            fh.write('{"key": "k2", "result": {"content": "torn"')  # no brace, no newline
+
+        s2 = CheckpointStore(d, resume=True)       # repairs the torn tail
+        self.assertEqual(s2.get("k1").content, "good")
+        self.assertAlmostEqual(s2.prior_spent, 0.5)
+        s2.put("k3", AgentResult(content="new", session_id=None, premium_requests=0.2,
+                                 output_tokens=1, exit_code=0))
+
+        s3 = CheckpointStore(d, resume=True)       # both committed records survive
+        self.assertEqual(s3.get("k1").content, "good")
+        self.assertEqual(s3.get("k3").content, "new")
+        self.assertAlmostEqual(s3.prior_spent, 0.7)
+
 
 class TestResume(Base):
     def test_completed_agent_is_cached(self):
@@ -186,6 +208,22 @@ class TestWorktree(Base):
         mgr.remove(p)
         self.assertFalse(os.path.exists(p))
         self.assertEqual(mgr.create("branch-1"), p)      # reusable once removed
+        mgr.cleanup_all()
+
+    def test_dot_only_name_kept_inside_base(self):
+        # "." / ".." used to resolve to the base dir (or its parent), silently
+        # destroying isolation. They must now map to a real subdir under base.
+        repo = self._make_repo()
+        root = find_repo_root(repo)
+        base = self.tmpdir()
+        mgr = WorktreeManager(root, base)
+        rb = os.path.realpath(base)
+        for name in (".", ".."):
+            p = mgr.create(name)
+            self.assertNotEqual(os.path.realpath(p), rb)
+            self.assertTrue(os.path.realpath(p).startswith(rb + os.sep))
+            self.assertTrue(os.path.isfile(os.path.join(p, "f.txt")))
+            mgr.remove(p)
         mgr.cleanup_all()
 
     def test_runtime_worktree_context(self):

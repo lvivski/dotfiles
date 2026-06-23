@@ -25,6 +25,7 @@ def review(path):
         "Review the file `%s` for: %s. List concrete issues with line references, or reply "
         "exactly 'NO ISSUES' if there are none." % (path, concern),
         model="claude-haiku-4.5", label=path,
+        **wf.quarantine(),  # untrusted file content: read-only, no shell/write/network/MCP
     )
     return path, finding
 

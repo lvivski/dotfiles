@@ -244,14 +244,21 @@ class PatternsMixin:
         *,
         deny: Optional[Sequence[str]] = None,
         deny_url: Optional[Sequence[str]] = None,
+        disable_mcp: bool = True,
         **extra: Any,
     ) -> dict:
-        """kwargs for ``agent(...)`` that deny shell/write to an untrusted-content reader."""
+        """kwargs for ``agent(...)`` that lock down an untrusted-content reader.
+
+        Defaults are read-only with no egress: deny shell + write, deny all URLs
+        (``["*"]``), and disable built-in MCP servers (e.g. GitHub). Local file
+        reads still work. For a reader that legitimately needs the network
+        (e.g. web research), pass ``deny_url=[]`` and/or ``disable_mcp=False``.
+        """
         out = dict(
             allow_all_tools=True,  # keep non-interactive happy; deny wins anyway
             deny=list(deny) if deny is not None else ["shell", "write"],
+            deny_url=list(deny_url) if deny_url is not None else ["*"],
+            disable_mcp=disable_mcp,
         )
-        if deny_url is not None:
-            out["deny_url"] = list(deny_url)
         out.update(extra)
         return out

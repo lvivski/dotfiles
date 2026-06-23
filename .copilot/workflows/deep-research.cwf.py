@@ -50,6 +50,9 @@ with wf.phase("research"):
         "Research this question using web search. State concrete findings and cite EVERY claim "
         "with a source URL. If evidence is thin or conflicting, say so.\n\nQuestion: %s" % a,
         model="claude-haiku-4.5", label=a[:24],
+        # Reads untrusted web content -> deny shell/write to contain prompt injection,
+        # but keep network + MCP (web access is the whole point of this step).
+        **wf.quarantine(deny_url=[], disable_mcp=False),
     ))
 
 # ---- 3) adversarially verify each finding ---------------------------------

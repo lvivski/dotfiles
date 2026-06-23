@@ -83,6 +83,11 @@ def _parse_args_value(raw: "str | None"):
         return raw  # treat as a plain string
 
 
+def _is_skipped(r) -> bool:
+    """A budget-drained agent (graceful, non-strict mode): not an error."""
+    return (not r.ok) and str(getattr(r, "error", "") or "").startswith("skipped:")
+
+
 def cmd_run(a: argparse.Namespace) -> int:
     harness_path = os.path.abspath(a.harness)
     if not os.path.isfile(harness_path):
@@ -186,7 +191,8 @@ def cmd_run(a: argparse.Namespace) -> int:
         try:
             reporter({"ev": "run_end", "agents": len(rt.results),
                       "cr": sum(r.premium_requests for r in rt.results),
-                      "failed": sum(0 if r.ok else 1 for r in rt.results),
+                      "failed": sum(1 for r in rt.results if not r.ok and not _is_skipped(r)),
+                      "skipped": sum(1 for r in rt.results if _is_skipped(r)),
                       "t": time.time()})
         except Exception:
             pass
@@ -194,10 +200,11 @@ def cmd_run(a: argparse.Namespace) -> int:
 
     elapsed = time.time() - start
     total = sum(r.premium_requests for r in rt.results)
-    failures = sum(0 if r.ok else 1 for r in rt.results)
+    failures = sum(1 for r in rt.results if not r.ok and not _is_skipped(r))
+    skipped = sum(1 for r in rt.results if _is_skipped(r))
     cached = sum(1 if r.cached else 0 for r in rt.results)
-    logger("— cwf: %d agents (%d cached, %d failed), %.2f premium credits, %.1fs" % (
-        len(rt.results), cached, failures, total, elapsed,
+    logger("— cwf: %d agents (%d cached, %d skipped, %d failed), %.2f premium credits, %.1fs" % (
+        len(rt.results), cached, skipped, failures, total, elapsed,
     ))
     if status == 0 and failures:
         status = 4

@@ -37,8 +37,13 @@ class WorktreeManager:
         self._created: List[str] = []
 
     def create(self, name: str, base_ref: Optional[str] = None) -> str:
-        safe = _SAFE.sub("-", name).strip("-") or "wt"
+        safe = _SAFE.sub("-", name).strip("-.") or "wt"  # strip dots too: "." / ".." alias base_dir
         path = os.path.join(self.base_dir, safe)
+        real_base = os.path.realpath(self.base_dir)
+        real_path = os.path.realpath(path)
+        if real_path == real_base or not real_path.startswith(real_base + os.sep):
+            raise RuntimeError(
+                "unsafe worktree name %r resolves outside the worktree base" % name)
         ref = base_ref or self.base_ref
         with self._lock:
             if path in self._created:

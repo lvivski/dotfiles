@@ -33,9 +33,27 @@ class CheckpointStore:
         self._cache: Dict[str, AgentResult] = {}
         self._prior_spent = 0.0
         if resume and os.path.isfile(self._path):
+            self._repair_trailing()
             self._load()
         elif not resume and os.path.isfile(self._path):
             open(self._path, "w").close()  # fresh run reusing a run dir: drop stale checkpoints
+
+    def _repair_trailing(self) -> None:
+        """Drop an unterminated final line left by a crash mid-write.
+
+        Without this, the next ``put`` appends onto the torn line, fusing two
+        JSON records so both fail to parse on the following resume — silently
+        losing a committed result and its premium spend (double-charge on retry).
+        """
+        try:
+            with open(self._path, "rb+") as fh:
+                data = fh.read()
+                if not data or data.endswith(b"\n"):
+                    return
+                nl = data.rfind(b"\n")
+                fh.truncate(nl + 1)  # nl == -1 -> truncate to 0 (sole line was torn)
+        except OSError:
+            pass
 
     def _load(self) -> None:
         with open(self._path) as fh:
@@ -73,3 +91,4 @@ class CheckpointStore:
             with open(self._path, "a") as fh:
                 fh.write(json.dumps({"key": key, "result": asdict(result)}) + "\n")
                 fh.flush()
+                os.fsync(fh.fileno())  # durable: a crash here can't leave a torn line

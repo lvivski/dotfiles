@@ -11,12 +11,14 @@ Behavior is steered by directives embedded anywhere in the prompt:
     [[FAKE:{"_content": "hello"}]]    -> uses "hello" as the whole message content
     [[FAKE:{"_cr": 0.5, ...}]]        -> reports 0.5 premium credits
     [[FAKE:{"_exit": 2}]]             -> exits non-zero (simulate failure)
+    [[FAKE:{"_sleep": 1.0}]]          -> sleeps 1.0s before output (simulate a hang)
 
 The LAST directive in the prompt wins. With no directive, it echoes the prompt.
 """
 import json
 import re
 import sys
+import time
 import uuid
 
 
@@ -38,9 +40,11 @@ def main() -> int:
     cr = 0.01
     exit_code = 0
     content = None
+    sleep_s = 0.0
     if isinstance(payload, dict):
         cr = float(payload.pop("_cr", 0.01))
         exit_code = int(payload.pop("_exit", 0))
+        sleep_s = float(payload.pop("_sleep", 0.0))
         if "_content" in payload:
             content = str(payload.pop("_content"))
 
@@ -55,6 +59,9 @@ def main() -> int:
 
     def emit(obj):
         sys.stdout.write(json.dumps(obj) + "\n")
+
+    if sleep_s > 0:  # simulate a hung agent so the runtime's timeout/kill path can be tested
+        time.sleep(sleep_s)
 
     # ignorable events the parser must skip over
     emit({"type": "session.skills_loaded", "data": {"skills": []}, "ephemeral": True})
