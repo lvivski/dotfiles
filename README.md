@@ -1,4 +1,4 @@
 dotfiles
 ========
 
-Just use `. sync.sh`
+Just use `. sync`

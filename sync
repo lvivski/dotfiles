@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+cd "$(dirname "${BASH_SOURCE[0]}")" || return
+
+git pull
+
+push() {
+	rsync --exclude ".git/" --exclude ".DS_Store" --exclude "sync" --exclude "README.md" -av . ~
+}
+
+pull() {
+	find . -type f \( ! -path "*.git/*" ! -name ".DS_Store" ! -name "README.md" ! -name "sync" \) -exec cp ~/{} {} \;
+}
+
+case "$1" in
+	-p | --pull) pull ;;
+	-f | --force) push ;;
+	*)
+		read -p "This may overwrite existing files in your home directory. Are you sure? (y/n) " -n 1 -r
+		echo
+		[[ $REPLY =~ ^[Yy]$ ]] && push
+		;;
+esac
+
+unset -f push pull
+source ~/.bash_profile
