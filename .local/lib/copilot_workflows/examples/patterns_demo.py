@@ -1,0 +1,27 @@
+"""patterns_demo.py — exercise a few patterns against the real Copilot CLI.
+
+Validates that a real model emits JSON the patterns can parse (classify/verify).
+
+    cwf run examples/patterns_demo.py --disable-mcp
+"""
+
+ticket = (
+    "When I click 'Export', the app crashes with a NullPointerException in "
+    "ReportBuilder.java line 412. Happens every time on v2.3.1."
+)
+
+category = wf.classify(
+    ticket,
+    ["bug", "feature-request", "question", "documentation"],
+    model="claude-haiku-4.5",
+)
+print("classify -> %s" % category)
+
+claim = "The capital of Australia is Sydney."
+verdict = wf.verify(
+    claim,
+    rubric="The statement must be factually correct.",
+    model="claude-haiku-4.5",
+)
+print("verify   -> passed=%s score=%s reasons=%s" % (
+    verdict.passed, verdict.score, verdict.reasons[:80]))

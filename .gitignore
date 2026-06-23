@@ -13,3 +13,5 @@ Thumbs.db
 *~.nib
 *.swp
 *~
+__pycache__/
+*.pyc

@@ -1,0 +1,374 @@
+#!/usr/bin/env python3
+"""cwf — run dynamic workflows on top of the GitHub Copilot CLI.
+
+Usage:
+    cwf run <harness.py> [options]
+
+A harness is a plain synchronous Python script. cwf executes it with two names
+injected:
+    wf    -> the orchestration Runtime (wf.agent, wf.fan_out, wf.budget, ...)
+    args  -> parsed --args value (any JSON), or None
+
+Convention: the harness prints its final answer to STDOUT; cwf prints run stats
+and per-agent progress to STDERR. That keeps stdout clean for scripting and for
+the calling Copilot session to read back.
+
+Stdlib only; targets Python 3.9+.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime
+import json
+import os
+import random
+import shutil
+import string
+import sys
+import time
+
+
+def _bootstrap_path() -> None:
+    """Make `copilot_workflows` importable whether run from the repo or $HOME.
+
+    cwf lives at <root>/.local/bin/cwf, so the package sits at <root>/.local/lib.
+    Works in-place in the dotfiles repo and after `. sync` deploys to ~/.local.
+    """
+    here = os.path.dirname(os.path.realpath(__file__))
+    candidates = [
+        os.path.join(os.path.dirname(here), "lib"),   # <root>/.local/lib
+        os.path.expanduser("~/.local/lib"),
+    ]
+    for c in candidates:
+        if os.path.isdir(os.path.join(c, "copilot_workflows")):
+            if c not in sys.path:
+                sys.path.insert(0, c)
+            return
+
+
+_bootstrap_path()
+
+try:
+    from copilot_workflows import (
+        AgentResult,
+        AgentSpec,
+        CheckpointStore,
+        ProgressReporter,
+        Runtime,
+        default_runs_dir,
+        replay,
+    )
+    from copilot_workflows.runtime import BudgetExceeded
+except Exception as exc:  # pragma: no cover
+    sys.stderr.write("cwf: cannot import copilot_workflows (%s)\n" % exc)
+    sys.exit(2)
+
+
+def _new_run_id(harness_path: str) -> str:
+    stem = os.path.splitext(os.path.basename(harness_path))[0]
+    ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    rnd = "".join(random.choice(string.ascii_lowercase + string.digits) for _ in range(4))
+    return "%s-%s-%s" % (stem, ts, rnd)
+
+
+def _parse_args_value(raw: "str | None"):
+    if raw is None:
+        return None
+    if raw.startswith("@"):
+        with open(os.path.expanduser(raw[1:]), "r") as fh:
+            return json.load(fh)
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return raw  # treat as a plain string
+
+
+def cmd_run(a: argparse.Namespace) -> int:
+    harness_path = os.path.abspath(a.harness)
+    if not os.path.isfile(harness_path):
+        sys.stderr.write("cwf: harness not found: %s\n" % a.harness)
+        return 2
+
+    args_value = _parse_args_value(a.args)
+
+    def logger(*parts):
+        if not a.quiet:
+            sys.stderr.write(" ".join(str(p) for p in parts) + "\n")
+            sys.stderr.flush()
+
+    # ---- run directory + checkpoint store (skipped for dry runs) ----
+    runs_dir = a.runs_dir or default_runs_dir()
+    run_id = None
+    run_dir = None
+    store = None
+    resume = bool(a.resume)
+    if not a.dry_run:
+        if resume:
+            run_id = a.resume
+            run_dir = os.path.join(runs_dir, run_id)
+            if not os.path.isdir(run_dir):
+                sys.stderr.write("cwf: no such run to resume: %s\n" % run_id)
+                return 2
+        else:
+            run_id = a.run_id or _new_run_id(harness_path)
+            run_dir = os.path.join(runs_dir, run_id)
+            os.makedirs(run_dir, exist_ok=True)
+        # keep a readable copy of the harness with the run (Claude parity)
+        try:
+            shutil.copyfile(harness_path, os.path.join(run_dir, "harness.py"))
+        except Exception:
+            pass
+        _write_meta(run_dir, run_id, harness_path, args_value, resume)
+        store = CheckpointStore(run_dir, resume=resume)
+
+    progress_path = os.path.join(run_dir, "progress.ndjson") if run_dir else None
+    reporter = ProgressReporter(
+        ndjson_path=progress_path, title=run_id or os.path.basename(harness_path),
+        stream=open(os.devnull, "w") if a.quiet else None,
+        live=False if a.quiet else None)
+
+    rt = Runtime(
+        concurrency=a.concurrency,
+        copilot_bin=a.copilot_bin,
+        default_model=a.model,
+        default_disable_mcp=a.disable_mcp,
+        budget=a.budget,
+        strict_budget=a.strict_budget,
+        logger=logger,
+        progress=reporter,
+        dry_run=a.dry_run,
+        run_dir=run_dir,
+        checkpoints=store,
+    )
+
+    logger("— cwf run %s (concurrency=%d, model=%s, budget=%s%s%s)" % (
+        os.path.basename(harness_path), rt.concurrency, a.model or "default",
+        ("%.2f" % a.budget) if a.budget is not None else "none",
+        ", dry-run" if a.dry_run else "",
+        ", resume" if resume else "",
+    ))
+    if run_id:
+        cached = store.count if store else 0
+        logger("  run id: %s%s" % (run_id, ("  (%d cached)" % cached) if cached else ""))
+        logger("  resume: cwf run %s --resume %s" % (a.harness, run_id))
+
+    reporter({"ev": "run_start", "run_id": run_id, "harness": harness_path, "t": time.time()})
+
+    g = {
+        "wf": rt,
+        "args": args_value,
+        "AgentSpec": AgentSpec,
+        "AgentResult": AgentResult,
+        "__name__": "__main__",
+        "__file__": harness_path,
+    }
+
+    start = time.time()
+    status = 0
+    try:
+        with open(harness_path, "r") as fh:
+            src = fh.read()
+        code = compile(src, harness_path, "exec")
+        exec(code, g)
+    except BudgetExceeded as e:
+        logger("\n! %s — stopping" % e)
+        status = 3
+    except KeyboardInterrupt:
+        logger("\n! interrupted (resume with: cwf run %s --resume %s)" % (a.harness, run_id or "?"))
+        status = 130
+    except Exception:
+        import traceback
+        sys.stderr.write("\ncwf: harness raised:\n")
+        traceback.print_exc()
+        status = 1
+    finally:
+        rt.cleanup()
+        try:
+            reporter({"ev": "run_end", "agents": len(rt.results),
+                      "cr": sum(r.premium_requests for r in rt.results),
+                      "failed": sum(0 if r.ok else 1 for r in rt.results),
+                      "t": time.time()})
+        except Exception:
+            pass
+        reporter.close()
+
+    elapsed = time.time() - start
+    total = sum(r.premium_requests for r in rt.results)
+    failures = sum(0 if r.ok else 1 for r in rt.results)
+    cached = sum(1 if r.cached else 0 for r in rt.results)
+    logger("— cwf: %d agents (%d cached, %d failed), %.2f premium credits, %.1fs" % (
+        len(rt.results), cached, failures, total, elapsed,
+    ))
+    if status == 0 and failures:
+        status = 4
+    return status
+
+
+def _write_meta(run_dir, run_id, harness_path, args_value, resume):
+    meta_path = os.path.join(run_dir, "meta.json")
+    meta = {}
+    if resume and os.path.isfile(meta_path):
+        try:
+            with open(meta_path) as fh:
+                meta = json.load(fh)
+        except Exception:
+            meta = {}
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    meta.setdefault("run_id", run_id)
+    meta.setdefault("harness", harness_path)
+    meta.setdefault("created_at", now)
+    meta["args"] = args_value
+    meta["updated_at"] = now
+    try:
+        with open(meta_path, "w") as fh:
+            json.dump(meta, fh, indent=2)
+    except Exception:
+        pass
+
+
+def _mtime_iso(path):
+    try:
+        return datetime.datetime.fromtimestamp(os.path.getmtime(path)).isoformat(timespec="seconds")
+    except Exception:
+        return ""
+
+
+def cmd_runs(a: argparse.Namespace) -> int:
+    runs_dir = a.runs_dir or default_runs_dir()
+    if not os.path.isdir(runs_dir):
+        print("no runs in %s" % runs_dir)
+        return 0
+    rows = []
+    for name in os.listdir(runs_dir):
+        d = os.path.join(runs_dir, name)
+        if not os.path.isdir(d):
+            continue
+        meta = {}
+        mp = os.path.join(d, "meta.json")
+        if os.path.isfile(mp):
+            try:
+                with open(mp) as fh:
+                    meta = json.load(fh)
+            except Exception:
+                pass
+        n, cr = 0, 0.0
+        rp = os.path.join(d, "results.ndjson")
+        if os.path.isfile(rp):
+            try:
+                with open(rp) as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            rec = json.loads(line)
+                        except Exception:
+                            continue
+                        n += 1
+                        cr += float((rec.get("result") or {}).get("premium_requests") or 0.0)
+            except Exception:
+                pass
+        updated = meta.get("updated_at") or _mtime_iso(d)
+        rows.append((updated, name, os.path.basename(meta.get("harness", "")), n, cr))
+    if not rows:
+        print("no runs in %s" % runs_dir)
+        return 0
+    rows.sort(reverse=True)
+    print("%-32s %-20s %6s %8s  %s" % ("RUN ID", "HARNESS", "AGENTS", "CREDITS", "UPDATED"))
+    for updated, name, harness, n, cr in rows:
+        print("%-32s %-20s %6d %8.2f  %s" % (name[:32], harness[:20], n, cr, updated))
+    return 0
+
+
+def cmd_watch(a: argparse.Namespace) -> int:
+    runs_dir = a.runs_dir or default_runs_dir()
+    path = os.path.join(runs_dir, a.run_id, "progress.ndjson")
+    if not os.path.isfile(path):
+        sys.stderr.write("cwf: no progress file for run: %s\n" % a.run_id)
+        return 2
+    replay(path, follow=not a.no_follow)
+    return 0
+
+
+def _parse_duration(s: str) -> float:
+    s = str(s).strip().lower()
+    units = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+    if s and s[-1] in units:
+        return float(s[:-1]) * units[s[-1]]
+    return float(s)  # bare seconds
+
+
+def cmd_loop(a: argparse.Namespace) -> int:
+    try:
+        interval = _parse_duration(a.every)
+    except Exception:
+        sys.stderr.write("cwf: invalid --every value: %s\n" % a.every)
+        return 2
+    n = 0
+    last = 0
+    try:
+        while True:
+            n += 1
+            sys.stderr.write("\n— cwf loop: run %d%s —\n" % (
+                n, ("/%d" % a.max_runs) if a.max_runs else ""))
+            ra = argparse.Namespace(**vars(a))
+            ra.resume = None         # each tick is a fresh run, not a resume
+            ra.run_id = None
+            last = cmd_run(ra)
+            if a.max_runs and n >= a.max_runs:
+                break
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        sys.stderr.write("\n— cwf loop: stopped after %d run(s) —\n" % n)
+    return last
+
+
+def _add_run_args(pr: argparse.ArgumentParser) -> None:
+    pr.add_argument("harness", help="Path to the harness Python file.")
+    pr.add_argument("--args", help="JSON (or @file.json) passed to the harness as `args`.")
+    pr.add_argument("--model", help="Default model for agents that don't set one.")
+    pr.add_argument("--budget", type=float, help="Max premium-request credits for the run.")
+    pr.add_argument("--strict-budget", action="store_true",
+                    help="Raise/stop when budget is hit instead of gracefully skipping.")
+    pr.add_argument("--concurrency", type=int, help="Max concurrent subagents.")
+    pr.add_argument("--run-id", help="Explicit run id (default: auto-generated).")
+    pr.add_argument("--runs-dir", help="Where run state lives (default: ~/.copilot/workflows/runs).")
+    pr.add_argument("--disable-mcp", action="store_true",
+                    help="Default agents to --disable-builtin-mcps (faster startup).")
+    pr.add_argument("--copilot-bin", default=os.environ.get("CWF_COPILOT_BIN", "copilot"),
+                    help="Path to the copilot binary (default: copilot).")
+    pr.add_argument("--dry-run", action="store_true", help="Plan only; don't spawn agents.")
+    pr.add_argument("--quiet", action="store_true", help="Suppress cwf stderr diagnostics.")
+
+
+def main(argv=None) -> int:
+    p = argparse.ArgumentParser(prog="cwf", description="Dynamic workflows on the Copilot CLI.")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    r = sub.add_parser("run", help="Execute a workflow harness (.py).")
+    _add_run_args(r)
+    r.add_argument("--resume", metavar="RUN_ID", help="Resume a run; cached agents are skipped.")
+    r.set_defaults(func=cmd_run)
+
+    lp = sub.add_parser("loop", help="Re-run a workflow on an interval (e.g. recurring triage).")
+    _add_run_args(lp)
+    lp.add_argument("--every", required=True, help="Interval between runs: 30s, 5m, 2h, 1d.")
+    lp.add_argument("--max-runs", type=int, help="Stop after this many runs (default: unlimited).")
+    lp.set_defaults(func=cmd_loop)
+
+    ls = sub.add_parser("runs", help="List recent workflow runs.")
+    ls.add_argument("--runs-dir", help="Runs directory (default: ~/.copilot/workflows/runs).")
+    ls.set_defaults(func=cmd_runs)
+
+    w = sub.add_parser("watch", help="Watch a run's live progress (tails progress.ndjson).")
+    w.add_argument("run_id", help="Run id to watch.")
+    w.add_argument("--runs-dir", help="Runs directory (default: ~/.copilot/workflows/runs).")
+    w.add_argument("--no-follow", action="store_true", help="Render current state once and exit.")
+    w.set_defaults(func=cmd_watch)
+
+    a = p.parse_args(argv)
+    return a.func(a)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
