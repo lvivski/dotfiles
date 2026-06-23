@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
-cd "$(dirname "${BASH_SOURCE[0]}")" || return
+# Source this file — it reloads your shell:  source ./sync
+# The ./ matters: a bare `. sync` would source /bin/sync instead.
+
+# Resolve this script's directory whether sourced from bash or zsh.
+if [ -n "${ZSH_VERSION:-}" ]; then
+	cd "$(dirname "${(%):-%x}")" || return
+else
+	cd "$(dirname "${BASH_SOURCE[0]}")" || return
+fi
 
 git pull
 
@@ -15,11 +23,17 @@ case "$1" in
 	-p | --pull) pull ;;
 	-f | --force) push ;;
 	*)
-		read -p "This may overwrite existing files in your home directory. Are you sure? (y/n) " -n 1 -r
-		echo
+		printf 'This may overwrite existing files in your home directory. Are you sure? (y/n) '
+		read -r REPLY
 		[[ $REPLY =~ ^[Yy]$ ]] && push
 		;;
 esac
 
 unset -f push pull
-source ~/.bash_profile
+
+# Reload the current shell's config (zsh or bash), not the other's.
+if [ -n "${ZSH_VERSION:-}" ]; then
+	source ~/.zprofile
+else
+	source ~/.bash_profile
+fi
