@@ -96,6 +96,17 @@ class TestFanOut(Base):
         out = wf.fan_out([1, 2], outer)
         self.assertEqual(out, [["11", "12"], ["21", "22"]])
 
+    def test_reraises_branch_error(self):
+        wf = self.rt()
+
+        def fn(x):
+            if x == 1:
+                raise ValueError("boom")
+            return wf.agent("n%d" % x)
+
+        with self.assertRaises(ValueError):
+            wf.fan_out([0, 1, 2], fn)
+
 
 class TestSynthesize(Base):
     def test_merge(self):
@@ -124,6 +135,16 @@ class TestVerify(Base):
                       rubric="x")
         self.assertFalse(v.passed)
         self.assertFalse(bool(v))
+
+    def test_string_false_not_pass(self):
+        wf = self.rt()
+        v = wf.verify("x " + fake('{"passed": "false", "score": 0}'), rubric="r")
+        self.assertFalse(v.passed)
+
+    def test_string_true_passes(self):
+        wf = self.rt()
+        v = wf.verify("x " + fake('{"passed": "true", "score": 1}'), rubric="r")
+        self.assertTrue(v.passed)
 
 
 class TestTournament(Base):
@@ -274,6 +295,9 @@ class TestExtractJson(Base):
     def test_none(self):
         self.assertIsNone(_extract_json("no json here"))
         self.assertIsNone(_extract_json(""))
+
+    def test_deeply_nested_no_crash(self):
+        self.assertIsNone(_extract_json('{"a":' * 1500))  # RecursionError must not escape
 
 
 if __name__ == "__main__":

@@ -34,6 +34,8 @@ class CheckpointStore:
         self._prior_spent = 0.0
         if resume and os.path.isfile(self._path):
             self._load()
+        elif not resume and os.path.isfile(self._path):
+            open(self._path, "w").close()  # fresh run reusing a run dir: drop stale checkpoints
 
     def _load(self) -> None:
         with open(self._path) as fh:

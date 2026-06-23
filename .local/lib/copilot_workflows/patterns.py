@@ -40,6 +40,8 @@ def _extract_json(text: str) -> Optional[dict]:
                 found = obj
         except json.JSONDecodeError:
             i += 1
+        except RecursionError:  # pathologically deep braces: stop scanning
+            break
     return found
 
 
@@ -105,8 +107,10 @@ class PatternsMixin:
         ) % (persona, as_text(rubric), as_text(subject))
         res = self.agent(prompt, model=model, label=label, **kw)
         data = _extract_json(res.content) or {}
+        raw = data.get("passed", False)
+        passed = raw.strip().lower() == "true" if isinstance(raw, str) else bool(raw)
         return Verdict(
-            passed=bool(data.get("passed", False)),
+            passed=passed,
             score=_as_float(data.get("score")),
             reasons=str(data.get("reasons", res.content.strip())),
             raw=res,

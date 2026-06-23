@@ -71,7 +71,7 @@ label   = wf.classify(text, ["bug", "feature", "question"])
 hist    = wf.loop_until(step, done, max_iters=10)
 
 with wf.phase("name"): ...                  # group agents in the live view
-with wf.worktree("fix-1") as path:          # isolated git checkout for editing agents
+with wf.worktree(f"fix-{item}") as path:    # isolated checkout — unique name per branch
     wf.agent("apply the fix", cwd=path)
 q = wf.quarantine()                         # reader of untrusted content: no shell/write tools
 wf.budget(20); wf.log("..."); wf.spent      # cost controls

@@ -88,7 +88,7 @@ history  = wf.loop_until(lambda i: do_step(i), lambda r: r.ok, max_iters=10)
 # --- structure, isolation, safety, cost ------------------------------------
 with wf.phase("port files"):            # groups agents in the live view
     ...
-with wf.worktree("fix-123") as path:    # isolated git checkout for file-editing agents
+with wf.worktree(f"fix-{item}") as path:    # isolated checkout — use a UNIQUE name per branch
     wf.agent("apply the fix", cwd=path)
 q = wf.quarantine()                      # reader of untrusted content: no shell/write tools
 note = wf.agent(f"summarize this web page: {url}", **q)

@@ -41,10 +41,12 @@ class WorktreeManager:
         path = os.path.join(self.base_dir, safe)
         ref = base_ref or self.base_ref
         with self._lock:
+            if path in self._created:
+                raise RuntimeError(
+                    "worktree %r is already active — use a unique name per concurrent branch" % name)
             os.makedirs(self.base_dir, exist_ok=True)
-            if os.path.exists(path):
-                return path  # idempotent: resume reuses an existing worktree
-            _git(["worktree", "add", "--detach", path, ref], cwd=self.repo_root)
+            if not os.path.exists(path):  # reuse an on-disk leftover from a crashed run
+                _git(["worktree", "add", "--detach", path, ref], cwd=self.repo_root)
             self._created.append(path)
             self._log("  worktree + %s" % os.path.basename(path))
         return path

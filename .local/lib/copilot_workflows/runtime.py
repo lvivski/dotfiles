@@ -36,7 +36,7 @@ def _skipped_result(spec: AgentSpec) -> AgentResult:
 # Spec fields that define an agent's identity for checkpoint keys. Ephemeral or
 # cosmetic fields (resume session id, timeout, label) are deliberately excluded.
 _KEY_FIELDS = (
-    "prompt", "model", "agent", "effort", "cwd", "disable_mcp", "mcp",
+    "prompt", "model", "agent", "effort", "cwd", "resume", "disable_mcp", "mcp",
     "allow", "deny", "allow_url", "deny_url", "add_dir", "allow_all_tools",
     "extra_args",
 )
@@ -138,29 +138,31 @@ class Runtime(PatternsMixin):
             return res
 
         ckpt_key = key or self._agent_key(spec)
-        skipped = False
-        strict_stop = False
-
         cached = self.checkpoints.get(ckpt_key) if self.checkpoints is not None else None
         if cached is not None:
-            # 1) checkpoint cache (resume)
             cached.cached = True
-            res = cached
-        elif self._over_budget():
-            # 2) graceful budget gate
-            self._budget_hit.set()
-            if self.strict_budget:
-                self._finish(seq, label, _skipped_result(spec), skipped=True)
-                raise BudgetExceeded("budget %.2f reached (spent %.2f)" % (self._budget, self.spent))
-            res = _skipped_result(spec)
-            skipped = True
-        else:
-            # 3) run it
-            res = run_agent(spec, copilot_bin=self.copilot_bin, semaphore=self._sem)
-            self._charge(res.premium_requests)
-            if self.checkpoints is not None and res.ok:
-                self.checkpoints.put(ckpt_key, res)
-            strict_stop = self.strict_budget and self._over_budget()
+            self._finish(seq, label, cached, skipped=False)
+            return cached
+
+        # Acquire the concurrency slot, THEN gate on budget: an agent that waited
+        # behind the cap re-checks here, so a budget drained by in-flight agents
+        # stops it (bounding overspend to ~concurrency, not the whole batch).
+        skipped = False
+        strict_stop = False
+        with self._sem:
+            if self._over_budget():
+                self._budget_hit.set()
+                if self.strict_budget:
+                    self._finish(seq, label, _skipped_result(spec), skipped=True)
+                    raise BudgetExceeded("budget %.2f reached (spent %.2f)" % (self._budget, self.spent))
+                res = _skipped_result(spec)
+                skipped = True
+            else:
+                res = run_agent(spec, copilot_bin=self.copilot_bin)
+                self._charge(res.premium_requests)
+                if self.checkpoints is not None and res.ok:
+                    self.checkpoints.put(ckpt_key, res)
+                strict_stop = self.strict_budget and self._over_budget()
 
         self._finish(seq, label, res, skipped=skipped)
         if strict_stop:
@@ -196,7 +198,8 @@ class Runtime(PatternsMixin):
             return []
         workers = min(concurrency or self.concurrency, len(items))
         results: List[Any] = [None] * len(items)
-        budget_error: List[BudgetExceeded] = []
+        budget_error = None
+        branch_error = None
 
         def task(i: int, item: Any):
             return i, fn(item)
@@ -208,12 +211,14 @@ class Runtime(PatternsMixin):
                     i, r = fut.result()
                     results[i] = r
                 except BudgetExceeded as e:  # strict mode only
-                    if not budget_error:
-                        budget_error.append(e)
-                except Exception as e:
+                    budget_error = budget_error or e
+                except Exception as e:  # surface real branch bugs instead of leaving None
                     self._log("  ! fan_out branch failed: %s" % e)
-        if budget_error:
-            raise budget_error[0]
+                    branch_error = branch_error or e
+        if budget_error is not None:
+            raise budget_error
+        if branch_error is not None:
+            raise branch_error
         return results
 
     # ---- worktrees -----------------------------------------------------

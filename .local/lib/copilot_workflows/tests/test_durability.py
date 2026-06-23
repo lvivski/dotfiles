@@ -20,6 +20,7 @@ if LIB not in sys.path:
 
 from copilot_workflows import (  # noqa: E402
     AgentResult,
+    AgentSpec,
     CheckpointStore,
     Runtime,
     WorktreeManager,
@@ -76,6 +77,20 @@ class TestCheckpointStore(Base):
         self.assertIsNone(fresh.get("k"))
         self.assertEqual(fresh.prior_spent, 0.0)
 
+    def test_fresh_run_truncates_stale(self):
+        d = self.tmpdir()
+        old = AgentResult(content="old", session_id=None, premium_requests=0.1,
+                          output_tokens=1, exit_code=0)
+        new = AgentResult(content="new", session_id=None, premium_requests=0.2,
+                          output_tokens=1, exit_code=0)
+        CheckpointStore(d, resume=False).put("k1", old)
+        s2 = CheckpointStore(d, resume=False)   # fresh run reusing the dir drops stale
+        self.assertEqual(s2.count, 0)
+        s2.put("k2", new)
+        s3 = CheckpointStore(d, resume=True)    # resume sees only the fresh run's data
+        self.assertIsNone(s3.get("k1"))
+        self.assertIsNotNone(s3.get("k2"))
+
 
 class TestResume(Base):
     def test_completed_agent_is_cached(self):
@@ -113,6 +128,12 @@ class TestResume(Base):
         wf.agent("boom [[FAKE:{\"_exit\": 2}]]")
         self.assertEqual(wf.checkpoints.count, 0)  # only successful results persist
 
+    def test_resume_field_distinguishes_followups(self):
+        # follow_ups with the same prompt but different parent sessions must not collide.
+        a = AgentSpec(prompt="reply", model="m", resume="session-A")
+        b = AgentSpec(prompt="reply", model="m", resume="session-B")
+        self.assertNotEqual(Runtime._spec_fingerprint(a), Runtime._spec_fingerprint(b))
+
 
 class TestGracefulBudget(Base):
     def test_skips_after_budget(self):
@@ -128,6 +149,17 @@ class TestGracefulBudget(Base):
         self.assertLessEqual(wf.spent, 0.031)
         self.assertIn("budget", skipped[0].error)
 
+    def test_budget_enforced_under_concurrency(self):
+        d = self.tmpdir()
+        # concurrency>1: before the post-semaphore re-check, all 40 ran (spent 0.40).
+        wf = self.rt(d, CheckpointStore(d, resume=False), budget=0.05, concurrency=4)
+        out = wf.fan_out(list(range(40)), lambda x: wf.agent("u%d" % x))
+        ran = sum(1 for r in out if r.ok)
+        self.assertLess(wf.spent, 0.20)        # far below the 0.40 unconstrained total
+        self.assertLess(ran, 40)
+        self.assertGreater(sum(1 for r in out if not r.ok), 0)
+        self.assertTrue(wf.budget_hit)
+
 
 class TestWorktree(Base):
     def _make_repo(self):
@@ -141,17 +173,19 @@ class TestWorktree(Base):
              "commit", "-q", "-m", "init"], check=True)
         return d
 
-    def test_create_idempotent_remove(self):
+    def test_create_collision_and_reuse(self):
         repo = self._make_repo()
         root = find_repo_root(repo)
         self.assertEqual(os.path.realpath(root), os.path.realpath(repo))
         mgr = WorktreeManager(root, self.tmpdir())  # base dir outside the repo
         p = mgr.create("branch-1")
-        self.assertTrue(os.path.isdir(p))
         self.assertTrue(os.path.isfile(os.path.join(p, "f.txt")))
-        self.assertEqual(mgr.create("branch-1"), p)  # idempotent
+        self.assertNotEqual(mgr.create("branch-2"), p)   # distinct names are fine
+        with self.assertRaises(RuntimeError):            # same *active* name fails loud
+            mgr.create("branch-1")
         mgr.remove(p)
         self.assertFalse(os.path.exists(p))
+        self.assertEqual(mgr.create("branch-1"), p)      # reusable once removed
         mgr.cleanup_all()
 
     def test_runtime_worktree_context(self):
