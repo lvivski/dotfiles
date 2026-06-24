@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
+import io
 import json
 import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout
 from typing import Any, Callable, List, Optional, Sequence, Union
 
 from .agent import AgentResult, AgentSpec, run_agent
@@ -31,6 +33,33 @@ def _skipped_result(spec: AgentSpec) -> AgentResult:
         exit_code=-1, model=spec.model, label=spec.label,
         error="skipped: budget reached", ok=False,
     )
+
+
+def _positional_arity(fn: Callable) -> Optional[int]:
+    """How many positional args ``fn`` accepts (capped at 3), or None if unknown.
+
+    ``*args`` counts as 3 (give it everything). Used to call pipeline stages with as
+    many of ``(prev, item, index)`` as they want, mirroring JS's ignore-extra-args.
+    """
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (ValueError, TypeError):
+        return None
+    count = 0
+    for p in params:
+        if p.kind == inspect.Parameter.VAR_POSITIONAL:
+            return 3
+        if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD):
+            count += 1
+    return count
+
+
+def _call_stage(stage: Callable, prev: Any, item: Any, index: int) -> Any:
+    """Call a pipeline stage with as many of ``(prev, item, index)`` as it accepts."""
+    n = _positional_arity(stage)
+    if n is None:
+        return stage(prev)
+    return stage(*(prev, item, index)[:min(n, 3)])
 
 
 # Spec fields that define an agent's identity for checkpoint keys. Ephemeral or
@@ -87,12 +116,34 @@ class Runtime(PatternsMixin):
         self._repo_root = repo_root
         self._wt_mgr: Optional[WorktreeManager] = None
         self._wt_lock = threading.Lock()
+        # inline sub-workflow state (wf.workflow): a key-scope namespaces a child's
+        # checkpoint keys so they can't collide/misalign with the parent's on resume.
+        self._key_scope = ""
+        self._workflow_depth = 0
+        self._workflow_calls = 0
 
     # ---- introspection -------------------------------------------------
     @property
     def spent(self) -> float:
         with self._spent_lock:
             return self._spent
+
+    @property
+    def budget_total(self) -> Optional[float]:
+        """The premium-request cap for the run, or None if uncapped."""
+        return self._budget
+
+    def remaining(self) -> float:
+        """Premium credits left before the budget cap (``inf`` if uncapped).
+
+        Advisory — for dynamic ``while wf.remaining() > N:`` loops. With no budget set
+        this is ``inf``, so always pair such loops with ``wf.budget_total is not None``
+        and/or a ``max_iters`` guard to avoid runaway when ``--budget`` is omitted.
+        """
+        if self._budget is None:
+            return float("inf")
+        with self._spent_lock:
+            return max(0.0, self._budget - self._spent)
 
     @property
     def budget_hit(self) -> bool:
@@ -124,24 +175,28 @@ class Runtime(PatternsMixin):
         return AgentSpec(prompt=prompt, **kw)
 
     # ---- single agent --------------------------------------------------
-    def agent(self, prompt_or_spec: Union[str, AgentSpec], *, key: Optional[str] = None, **kw: Any) -> AgentResult:
+    def agent(self, prompt_or_spec: Union[str, AgentSpec], *, key: Optional[str] = None,
+              phase: Optional[str] = None, **kw: Any) -> AgentResult:
         spec = prompt_or_spec if isinstance(prompt_or_spec, AgentSpec) else self.spec(prompt_or_spec, **kw)
         label = spec.label or "agent"
+        # Explicit phase wins over the global phase() context — concurrent pipeline()
+        # / parallel() items would otherwise race on the shared self._phase.
+        eff_phase = phase if phase is not None else self._phase
         seq = self._next_seq()
         self._emit({"ev": "start", "seq": seq, "label": label, "model": spec.model,
-                    "phase": self._phase, "t": time.time()})
+                    "phase": eff_phase, "t": time.time()})
 
         if self.dry_run:
             res = AgentResult(content="[dry-run]", session_id=None, premium_requests=0.0,
                               output_tokens=0, exit_code=0, model=spec.model, label=spec.label)
-            self._finish(seq, label, res, skipped=False)
+            self._finish(seq, label, res, skipped=False, phase=eff_phase)
             return res
 
-        ckpt_key = key or self._agent_key(spec)
+        ckpt_key = self._scoped_key(key) if key is not None else self._agent_key(spec)
         cached = self.checkpoints.get(ckpt_key) if self.checkpoints is not None else None
         if cached is not None:
             cached.cached = True
-            self._finish(seq, label, cached, skipped=False)
+            self._finish(seq, label, cached, skipped=False, phase=eff_phase)
             return cached
 
         # Acquire the concurrency slot, THEN gate on budget: an agent that waited
@@ -153,7 +208,7 @@ class Runtime(PatternsMixin):
             if self._over_budget():
                 self._budget_hit.set()
                 if self.strict_budget:
-                    self._finish(seq, label, _skipped_result(spec), skipped=True)
+                    self._finish(seq, label, _skipped_result(spec), skipped=True, phase=eff_phase)
                     raise BudgetExceeded("budget %.2f reached (spent %.2f)" % (self._budget, self.spent))
                 res = _skipped_result(spec)
                 skipped = True
@@ -164,18 +219,19 @@ class Runtime(PatternsMixin):
                     self.checkpoints.put(ckpt_key, res)
                 strict_stop = self.strict_budget and self._over_budget()
 
-        self._finish(seq, label, res, skipped=skipped)
+        self._finish(seq, label, res, skipped=skipped, phase=eff_phase)
         if strict_stop:
             raise BudgetExceeded("budget %.2f exceeded (spent %.2f)" % (self._budget, self.spent))
         return res
 
-    def _finish(self, seq: int, label: str, res: AgentResult, *, skipped: bool) -> None:
+    def _finish(self, seq: int, label: str, res: AgentResult, *, skipped: bool,
+                phase: Optional[str] = None) -> None:
         with self._results_lock:
             self.results.append(res)
         self._emit({"ev": "end", "seq": seq, "label": label, "ok": res.ok,
                     "cached": res.cached, "skipped": skipped, "cr": res.premium_requests,
                     "tok": res.output_tokens, "error": res.error, "model": res.model,
-                    "phase": self._phase, "t": time.time()})
+                    "phase": phase if phase is not None else self._phase, "t": time.time()})
 
     def follow_up(self, result: AgentResult, prompt: str, **kw: Any) -> AgentResult:
         """Send another turn to the same session (multi-turn via --resume)."""
@@ -221,7 +277,101 @@ class Runtime(PatternsMixin):
             raise branch_error
         return results
 
-    # ---- worktrees -----------------------------------------------------
+    # ---- concurrency primitive shared by pipeline()/parallel() ---------
+    def _concurrent_map(
+        self,
+        n: int,
+        work: Callable[[int], Any],
+        *,
+        concurrency: Optional[int] = None,
+        drop_errors: bool = False,
+    ) -> List[Any]:
+        """Run ``work(i)`` for ``i`` in ``range(n)`` concurrently; results in order.
+
+        ``BudgetExceeded`` (strict mode) always aborts the whole map. Any other
+        exception either drops that slot to ``None`` (``drop_errors=True``) or aborts
+        by re-raising the first one (``drop_errors=False``).
+        """
+        if n <= 0:
+            return []
+        workers = min(concurrency or self.concurrency, n)
+        results: List[Any] = [None] * n
+        budget_error = None
+        branch_error = None
+
+        def run(i: int):
+            try:
+                return i, work(i)
+            except BudgetExceeded:
+                raise
+            except Exception as e:  # noqa: BLE001 — policy decided by drop_errors
+                if drop_errors:
+                    self._log("  ! dropped item %d: %s" % (i, e))
+                    return i, None
+                raise
+
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = [ex.submit(run, i) for i in range(n)]
+            for fut in as_completed(futs):
+                try:
+                    i, r = fut.result()
+                    results[i] = r
+                except BudgetExceeded as e:  # strict mode only
+                    budget_error = budget_error or e
+                except Exception as e:  # surfaces only when drop_errors=False
+                    branch_error = branch_error or e
+        if budget_error is not None:
+            raise budget_error
+        if branch_error is not None:
+            raise branch_error
+        return results
+
+    # ---- pipeline (streaming, NO barrier between stages) ---------------
+    def pipeline(self, items: Sequence[Any], *stages: Callable[..., Any],
+                 concurrency: Optional[int] = None) -> List[Any]:
+        """Stream each item through ``stages`` independently — no barrier between stages.
+
+        Unlike ``fan_out``/``synthesize`` (which are barriers), ``pipeline`` lets item A
+        reach stage 3 while item B is still in stage 1, so wall-clock is the slowest
+        single-item *chain*, not the sum of the slowest item per stage. Prefer this for
+        multi-stage work; use a barrier (``fan_out``/``parallel``) only when a stage
+        genuinely needs every prior result at once (dedupe/merge, zero-count early-exit,
+        cross-item comparison).
+
+        Each stage is invoked as ``stage(prev, item, index)`` and may accept 1, 2, or 3
+        positional args; ``prev`` is the previous stage's return (the item itself for the
+        first stage). A stage that raises drops that item to ``None`` and skips its
+        remaining stages. ``BudgetExceeded`` (strict mode) aborts the whole pipeline.
+        Returns one result per item, in input order.
+        """
+        items = list(items)
+        if not items:
+            return []
+        if not stages:
+            return items
+
+        def work(i: int) -> Any:
+            prev = items[i]
+            for stage in stages:
+                prev = _call_stage(stage, prev, items[i], i)
+            return prev
+
+        return self._concurrent_map(len(items), work, concurrency=concurrency, drop_errors=True)
+
+    # ---- parallel (barrier over zero-arg thunks; Claude-parity) --------
+    def parallel(self, thunks: Sequence[Callable[[], Any]], *,
+                 concurrency: Optional[int] = None) -> List[Any]:
+        """Run zero-arg ``thunks`` concurrently and return results in order (a BARRIER).
+
+        Convenience mirroring Claude's ``parallel(thunks)``: a thunk that raises resolves
+        to ``None`` in the result array (the call never rejects), so drop falsy entries
+        before use. ``BudgetExceeded`` (strict mode) still propagates. ``fan_out(items, fn)``
+        is the same barrier keyed by items; ``parallel`` takes pre-bound thunks and, unlike
+        ``fan_out``, swallows per-thunk errors to ``None`` instead of re-raising.
+        """
+        thunks = list(thunks)
+        return self._concurrent_map(
+            len(thunks), lambda i: thunks[i](), concurrency=concurrency, drop_errors=True)
     @contextmanager
     def worktree(self, name: str, base_ref: Optional[str] = None):
         """Give an agent its own git worktree for the duration of the block."""
@@ -256,13 +406,87 @@ class Runtime(PatternsMixin):
             except Exception as e:
                 self._log("  ! worktree cleanup failed: %s" % e)
 
+    # ---- inline sub-workflow composition -------------------------------
+    def workflow(self, target: str, args: Any = None) -> str:
+        """Run a saved harness inline as a sub-step and return what it printed.
+
+        The child runs against THIS runtime, so budget, concurrency, checkpoints, and
+        the progress view all compose; its agents appear under a ``workflow:<name>``
+        phase and its spend counts toward ``wf.spent``. ``target`` is a path to a
+        ``.py`` harness, or a bare name resolved from ``./<name>.cwf.py`` /
+        ``~/.copilot/workflows/<name>.py``. ``args`` becomes the child's ``args``.
+
+        cwf harnesses answer by ``print()``-ing to stdout, so the child's stdout is
+        captured and returned as the result string. Because that capture is
+        process-global, ``workflow()`` must be called from the **top level** (it raises
+        if invoked inside a fan_out/pipeline/parallel branch) and nests only one level
+        deep. Editing a child harness safely invalidates its cached agents (cache miss,
+        never a wrong hit) thanks to per-call key scoping.
+        """
+        if threading.current_thread() is not threading.main_thread():
+            raise RuntimeError(
+                "wf.workflow() must be called at the top level, not inside a "
+                "fan_out/pipeline/parallel branch (its stdout capture is process-global)")
+        if self._workflow_depth >= 1:
+            raise RuntimeError("wf.workflow() nesting is one level only")
+
+        path = self._resolve_workflow(target)
+        name = os.path.splitext(os.path.basename(path))[0]
+        with open(path, "r") as fh:
+            code = compile(fh.read(), path, "exec")
+        g = {
+            "wf": self, "args": args, "AgentSpec": AgentSpec, "AgentResult": AgentResult,
+            "__name__": "__main__", "__file__": path,
+        }
+
+        self._workflow_calls += 1
+        prev_scope = self._key_scope
+        self._key_scope = "wf%d:%s" % (self._workflow_calls, name)
+        self._workflow_depth += 1
+        buf = io.StringIO()
+        try:
+            with self.phase("workflow:%s" % name):
+                with redirect_stdout(buf):
+                    exec(code, g)
+        finally:
+            self._workflow_depth -= 1
+            self._key_scope = prev_scope
+        return buf.getvalue().strip()
+
+    def _resolve_workflow(self, target: str) -> str:
+        p = os.path.expanduser(str(target))
+        if p.endswith(".py") or os.sep in p:
+            ap = os.path.abspath(p)
+            if os.path.isfile(ap):
+                return ap
+            raise FileNotFoundError("wf.workflow: harness not found: %s" % target)
+        for cand in (
+            os.path.join(os.getcwd(), "%s.cwf.py" % p),
+            os.path.join(os.getcwd(), "%s.py" % p),
+            os.path.expanduser("~/.copilot/workflows/%s.cwf.py" % p),
+            os.path.expanduser("~/.copilot/workflows/%s.py" % p),
+        ):
+            if os.path.isfile(cand):
+                return cand
+        raise FileNotFoundError(
+            "wf.workflow: no harness named %r in cwd or ~/.copilot/workflows" % target)
+
     # ---- checkpoint keys -----------------------------------------------
+    def _scoped_key(self, key: str) -> str:
+        """Namespace an explicit checkpoint key by the active workflow scope (if any)."""
+        return ("%s-%s" % (self._key_scope, key)) if self._key_scope else key
+
     def _agent_key(self, spec: AgentSpec) -> str:
-        base = self._spec_fingerprint(spec)
+        fp = self._spec_fingerprint(spec)
+        # Scope folds into the occurrence counter AND the key prefix so a child
+        # workflow's agents never alias the parent's. Empty scope -> byte-identical
+        # to the pre-scope key (resume compatibility preserved).
+        occ_key = ("%s:%s" % (self._key_scope, fp)) if self._key_scope else fp
         with self._occ_lock:
-            n = self._occurrence.get(base, 0)
-            self._occurrence[base] = n + 1
-        return "%s-%d" % (base[:16], n)
+            n = self._occurrence.get(occ_key, 0)
+            self._occurrence[occ_key] = n + 1
+        prefix = ("%s-" % self._key_scope) if self._key_scope else ""
+        return "%s%s-%d" % (prefix, fp[:16], n)
 
     @staticmethod
     def _spec_fingerprint(spec: AgentSpec) -> str:

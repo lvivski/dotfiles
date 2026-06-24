@@ -8,6 +8,7 @@ this suite costs nothing and runs offline.
 import os
 import stat
 import sys
+import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -21,8 +22,15 @@ from copilot_workflows import (  # noqa: E402
     Runtime,
     build_cmd,
 )
-from copilot_workflows.patterns import Verdict, _extract_json  # noqa: E402
-from copilot_workflows.agent import _reduce  # noqa: E402
+from copilot_workflows.patterns import (  # noqa: E402
+    Structured,
+    Verdict,
+    _check_schema_def,
+    _extract_json,
+    _extract_last_json,
+    _validate_shape,
+)
+from copilot_workflows.agent import AgentResult, _reduce  # noqa: E402
 
 FAKE = os.path.join(HERE, "fake_copilot.py")
 
@@ -310,6 +318,299 @@ class TestBuildCmd(Base):
         cmd = build_cmd(spec, "copilot")
         self.assertNotIn("--allow-all-tools", cmd)
         self.assertIn("--allow-tool", cmd)
+
+
+class TestPipeline(Base):
+    def test_chain_order_and_stage_signature(self):
+        wf = self.rt()
+        # stage1 is 1-arg; stage2 is 3-arg (prev, item, index) — arity adapts.
+        out = wf.pipeline(
+            [1, 2, 3],
+            lambda it: it * 10,
+            lambda prev, it, i: (prev, it, i),
+        )
+        self.assertEqual(out, [(10, 1, 0), (20, 2, 1), (30, 3, 2)])
+
+    def test_with_agents_order(self):
+        wf = self.rt()
+        out = wf.pipeline(
+            ["x", "y", "z"],
+            lambda it: wf.agent("g %s" % fake('{"_content": "%s1"}' % it)),
+            lambda r, it, i: wf.agent("v %s" % fake('{"_content": "%s2"}' % it)),
+        )
+        self.assertEqual([r.content for r in out], ["x2", "y2", "z2"])
+        self.assertEqual(len(wf.results), 6)  # 3 items x 2 stages
+
+    def test_empty_items(self):
+        wf = self.rt()
+        self.assertEqual(wf.pipeline([], lambda it: it), [])
+
+    def test_no_stages_returns_items(self):
+        wf = self.rt()
+        self.assertEqual(wf.pipeline([1, 2, 3]), [1, 2, 3])
+
+    def test_stage_error_drops_item_to_none(self):
+        wf = self.rt()
+
+        def stage1(it):
+            if it == 2:
+                raise ValueError("boom")
+            return it * 10
+
+        out = wf.pipeline([1, 2, 3], stage1, lambda prev: prev + 1)
+        self.assertEqual(out, [11, None, 31])  # item 2 dropped, others flow on
+
+    def test_stage_arity_fallback_for_builtin(self):
+        wf = self.rt()
+        out = wf.pipeline([1, 2], str)  # str has no introspectable signature -> 1 arg
+        self.assertEqual(out, ["1", "2"])
+
+    def test_strict_budget_propagates(self):
+        wf = self.rt(budget=0.025, strict_budget=True, concurrency=1)
+        with self.assertRaises(BudgetExceeded):
+            wf.pipeline(list(range(10)), lambda it: wf.agent("n%d" % it))
+
+
+class TestParallel(Base):
+    def test_order_and_values(self):
+        wf = self.rt()
+        self.assertEqual(wf.parallel([lambda: 1, lambda: 2, lambda: 3]), [1, 2, 3])
+
+    def test_with_agents(self):
+        wf = self.rt()
+        out = wf.parallel([
+            lambda: wf.agent("a %s" % fake('{"_content": "A"}')),
+            lambda: wf.agent("b %s" % fake('{"_content": "B"}')),
+        ])
+        self.assertEqual([r.content for r in out], ["A", "B"])
+
+    def test_error_becomes_none(self):
+        wf = self.rt()
+
+        def boom():
+            raise RuntimeError("x")
+
+        self.assertEqual(wf.parallel([lambda: 1, boom, lambda: 3]), [1, None, 3])
+
+    def test_empty(self):
+        wf = self.rt()
+        self.assertEqual(wf.parallel([]), [])
+
+    def test_strict_budget_propagates(self):
+        wf = self.rt(budget=0.025, strict_budget=True, concurrency=1)
+        with self.assertRaises(BudgetExceeded):
+            wf.parallel([lambda: wf.agent("n") for _ in range(10)])
+
+
+class TestPhaseOverride(Base):
+    def _recs(self, **kw):
+        recs = []
+        wf = self.rt(progress=lambda r: recs.append(dict(r)), **kw)
+        return wf, recs
+
+    def test_explicit_phase_in_events(self):
+        wf, recs = self._recs()
+        wf.agent("x", phase="Verify")
+        phases = {r["phase"] for r in recs if r.get("ev") in ("start", "end")}
+        self.assertEqual(phases, {"Verify"})
+
+    def test_explicit_phase_overrides_context(self):
+        wf, recs = self._recs()
+        with wf.phase("Outer"):
+            wf.agent("inherits")
+            wf.agent("override", phase="Inner")
+        starts = [r for r in recs if r.get("ev") == "start"]
+        self.assertEqual(starts[0]["phase"], "Outer")
+        self.assertEqual(starts[1]["phase"], "Inner")
+
+
+class TestRemaining(Base):
+    def test_inf_without_budget(self):
+        wf = self.rt()
+        self.assertEqual(wf.remaining(), float("inf"))
+        self.assertIsNone(wf.budget_total)
+
+    def test_value_and_clamp(self):
+        wf = self.rt(budget=0.025)  # each fake agent costs 0.01
+        self.assertAlmostEqual(wf.remaining(), 0.025)
+        wf.agent("a")
+        wf.agent("b")  # spent 0.02
+        self.assertAlmostEqual(wf.remaining(), 0.005)
+        wf.agent("c")  # spent 0.03 -> clamp at 0
+        self.assertEqual(wf.remaining(), 0.0)
+        self.assertEqual(wf.budget_total, 0.025)
+
+    def test_reflects_budget_setter(self):
+        wf = self.rt()
+        self.assertEqual(wf.remaining(), float("inf"))
+        wf.budget(1.0)
+        self.assertAlmostEqual(wf.remaining(), 1.0)
+
+
+class TestExtractLastJson(Base):
+    def test_object_and_array(self):
+        self.assertEqual(_extract_last_json('x\n{"a": 1}'), {"a": 1})
+        self.assertEqual(_extract_last_json('x\n[1, 2, 3]'), [1, 2, 3])
+
+    def test_final_line_beats_restated_schema(self):
+        text = 'schema {"type":"object"}\nFinal answer:\n{"a": 2}'
+        self.assertEqual(_extract_last_json(text), {"a": 2})
+
+    def test_multiline_pretty(self):
+        self.assertEqual(_extract_last_json('Here:\n{\n  "k": 1\n}'), {"k": 1})
+
+    def test_fenced(self):
+        self.assertEqual(_extract_last_json('```\n{"k": "v"}\n```'), {"k": "v"})
+
+    def test_none(self):
+        self.assertIsNone(_extract_last_json("no json here"))
+        self.assertIsNone(_extract_last_json(""))
+
+    def test_deeply_nested_single_line_no_crash(self):
+        # A pathologically deep single-line value must not let RecursionError escape.
+        self.assertIsNone(_extract_last_json("here:\n" + "[" * 20000 + "]" * 20000))
+
+
+class TestShapeSchema(Base):
+    def test_required_and_type(self):
+        errs = _validate_shape(
+            {"a": "x"},
+            {"type": "object", "required": ["a", "b"], "properties": {"a": {"type": "integer"}}})
+        self.assertTrue(any("b" in e for e in errs))
+        self.assertTrue(any("a" in e for e in errs))
+
+    def test_additional_properties_false(self):
+        errs = _validate_shape(
+            {"a": 1, "x": 2},
+            {"type": "object", "additionalProperties": False, "properties": {"a": {"type": "integer"}}})
+        self.assertTrue(any("x" in e for e in errs))
+
+    def test_enum(self):
+        self.assertTrue(_validate_shape("z", {"enum": ["a", "b"]}))
+        self.assertEqual(_validate_shape("a", {"enum": ["a", "b"]}), [])
+
+    def test_array_items(self):
+        errs = _validate_shape([1, "x"], {"type": "array", "items": {"type": "integer"}})
+        self.assertEqual(len(errs), 1)
+
+    def test_check_rejects_unknown_keyword(self):
+        with self.assertRaises(ValueError):
+            _check_schema_def({"type": "object", "anyOf": []})
+
+    def test_check_rejects_unknown_type(self):
+        with self.assertRaises(ValueError):
+            _check_schema_def({"type": "frobnicate"})
+
+
+class TestStructured(Base):
+    SCHEMA = {"type": "object", "required": ["ok"], "properties": {"ok": {"type": "boolean"}}}
+
+    def test_valid_first_try(self):
+        wf = self.rt()
+        s = wf.structured("give me " + fake('{"_content": "{\\"ok\\": true}"}'), self.SCHEMA)
+        self.assertIsInstance(s, Structured)
+        self.assertTrue(s.ok)
+        self.assertEqual(s.value, {"ok": True})
+        self.assertEqual(s.attempts, 1)
+
+    def test_never_valid_exhausts_retries(self):
+        wf = self.rt()
+        s = wf.structured("x " + fake('{"_content": "{\\"nope\\": 1}"}'),
+                          {"type": "object", "required": ["ok"]}, retries=2)
+        self.assertFalse(s.ok)
+        self.assertEqual(s.attempts, 3)
+        self.assertEqual(s.value, {"nope": 1})  # last parsed value retained
+
+    def test_agent_failure_short_circuits(self):
+        wf = self.rt()
+        s = wf.structured("x " + fake('{"_exit": 2}'), {"type": "object"}, retries=3)
+        self.assertFalse(s.ok)
+        self.assertEqual(s.attempts, 1)  # no retries on a process failure
+
+    def test_retry_then_success_via_stub(self):
+        # The static fake can't vary by attempt, so stub wf.agent with queued results.
+        wf = self.rt()
+        queue = [
+            AgentResult(content='{"nope": 1}', session_id="s", premium_requests=0.0,
+                        output_tokens=1, exit_code=0),
+            AgentResult(content='{"ok": true}', session_id="s", premium_requests=0.0,
+                        output_tokens=1, exit_code=0),
+        ]
+        calls = {"n": 0}
+
+        def stub(prompt, **kw):
+            r = queue[calls["n"]]
+            calls["n"] += 1
+            return r
+
+        wf.agent = stub
+        s = wf.structured("anything", self.SCHEMA, retries=2)
+        self.assertTrue(s.ok)
+        self.assertEqual(s.value, {"ok": True})
+        self.assertEqual(s.attempts, 2)
+        self.assertEqual(calls["n"], 2)
+
+    def test_callable_validator(self):
+        wf = self.rt()
+
+        def validate(obj):
+            return "" if isinstance(obj, dict) and obj.get("n", 0) > 0 else "n must be > 0"
+
+        s = wf.structured("x " + fake('{"_content": "{\\"n\\": 5}"}'), validate)
+        self.assertTrue(s.ok)
+        self.assertEqual(s.value, {"n": 5})
+
+    def test_unsupported_keyword_raises_before_spending(self):
+        wf = self.rt()
+        with self.assertRaises(ValueError):
+            wf.structured("x", {"type": "object", "patternProperties": {}})
+        self.assertEqual(len(wf.results), 0)  # rejected before any agent ran
+
+
+class TestWorkflow(Base):
+    def _write(self, body: str) -> str:
+        d = tempfile.mkdtemp(prefix="cwf-wf-test-")
+        p = os.path.join(d, "child.py")
+        with open(p, "w") as fh:
+            fh.write(body)
+        return p
+
+    def test_runs_child_and_returns_stdout(self):
+        wf = self.rt()
+        directive = fake('{"_content": "AGENT"}')  # only double-quotes -> safe in '...'
+        child = self._write(
+            "r = wf.agent('hi %s')\nprint('child:', args['x'], r.content)\n" % directive)
+        out = wf.workflow(child, {"x": 42})
+        self.assertEqual(out, "child: 42 AGENT")
+        self.assertEqual(len(wf.results), 1)        # child agent counted on shared runtime
+        self.assertAlmostEqual(wf.spent, 0.01)
+
+    def test_missing_raises(self):
+        wf = self.rt()
+        with self.assertRaises(FileNotFoundError):
+            wf.workflow("/no/such/harness.py")
+
+    def test_nesting_raises(self):
+        wf = self.rt()
+        inner = self._write("print('inner')\n")
+        outer = self._write("wf.workflow(%r)\nprint('outer')\n" % inner)
+        with self.assertRaises(RuntimeError):
+            wf.workflow(outer)
+
+    def test_off_main_thread_raises(self):
+        wf = self.rt()
+        child = self._write("print('x')\n")
+        with self.assertRaises(RuntimeError):
+            wf.fan_out([1], lambda i: wf.workflow(child))
+
+    def test_child_agent_keys_are_scoped(self):
+        wf = self.rt()
+        spec = AgentSpec(prompt="dup", model="fake")
+        parent_key = wf._agent_key(spec)
+        wf._key_scope = "wf1:child"
+        child_key = wf._agent_key(spec)
+        self.assertNotEqual(parent_key, child_key)
+        self.assertTrue(child_key.startswith("wf1:child-"))
 
 
 class TestExtractJson(Base):

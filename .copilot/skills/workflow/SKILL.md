@@ -64,17 +64,34 @@ The harness is executed with two names injected: `wf` (the runtime) and `args` (
 
 ```python
 # --- one subagent -----------------------------------------------------------
-r = wf.agent(prompt, *, model=None, agent=None, effort=None, cwd=None,
+r = wf.agent(prompt, *, model=None, agent=None, effort=None, cwd=None, phase=None,
              disable_mcp=False, timeout=None, label=None,
              allow=None, deny=None, allow_url=None, deny_url=None, add_dir=None, mcp=None)
 # -> AgentResult: .content  .ok  .premium_requests  .output_tokens
 #                 .session_id  .model  .cached  .error   ; str(r) == r.content
+# phase= assigns this agent's progress group explicitly — use it inside pipeline()/
+# parallel() so concurrent items don't race on the wf.phase() context.
 
 wf.follow_up(r, prompt, **kw)            # another turn in the same session (multi-turn)
 
-# --- parallel map + barrier -------------------------------------------------
+# --- pipeline (streaming) — THE DEFAULT for multi-stage work -----------------
+rows = wf.pipeline(items, stage1, stage2, ...)
+# Each item streams through ALL stages independently — NO barrier between stages, so
+# item A can be in stage 3 while item B is still in stage 1 (wall-clock = slowest single
+# item *chain*, not sum-of-slowest-per-stage). A stage is called stage(prev, item, idx)
+# and may take 1–3 args; prev is the previous stage's return (the item itself for stage 1).
+# A stage that raises drops that item to None (others continue). Tag inner agents with
+# phase=/label= so the progress view groups them correctly. Example:
+#   rows = wf.pipeline(files,
+#       lambda f: wf.agent(f"review {f}", phase="review", label=f, model="claude-haiku-4.5"),
+#       lambda rev, f, i: wf.verify(rev, rubric="exploitable, with evidence"))
+
+# --- barriers: parallel(thunks) and fan_out(items, fn) ----------------------
 results = wf.fan_out(items, lambda x: wf.agent(make_prompt(x), label=str(x)))
-# fn may itself call wf.agent multiple times or nest another wf.fan_out.
+# fan_out is a BARRIER: it waits for every branch; fn may nest wf.agent/wf.fan_out.
+both = wf.parallel([lambda: wf.agent(a), lambda: wf.agent(b)])  # barrier over zero-arg thunks
+# Reach for a barrier ONLY when a stage needs ALL prior results at once (dedupe/merge,
+# zero-count early-exit, cross-item comparison). Otherwise prefer pipeline().
 
 # --- patterns (compose freely) ----------------------------------------------
 merged   = wf.synthesize(results, prompt="Merge into one report.", model="claude-sonnet-4.5")
@@ -85,6 +102,23 @@ kept     = wf.generate_and_filter("Propose a name for X", n=8, rubric="short, me
 label    = wf.classify(ticket_text, ["bug", "feature", "question"])
 history  = wf.loop_until(lambda i: do_step(i), lambda r: r.ok, max_iters=10)
 
+# --- guaranteed-shape output (validated, with retry) ------------------------
+s = wf.structured("List the failing tests as JSON.",
+                  {"type": "object", "required": ["tests"],
+                   "properties": {"tests": {"type": "array", "items": {"type": "string"}}}},
+                  retries=2)
+# -> Structured: .value (the validated object/array)  .ok (truthy)  .error  .attempts  .raw
+# schema is a shape-schema dict (type/properties/required/enum/items/additionalProperties)
+# OR a callable validate(obj) -> "" when ok else an error string. On a bad shape it feeds
+# the error back and retries; if the agent itself fails it stops immediately. Prefer this
+# over hand-parsing JSON out of .content.
+
+# --- composing saved workflows ----------------------------------------------
+report = wf.workflow("deep-research", args="What changed in HTTP/3 since 2022?")
+# Runs ~/.copilot/workflows/<name>.{cwf.,}py (or a path) inline on THIS runtime — shared
+# budget/concurrency/checkpoints/progress — and returns what the child printed. Call it at
+# the TOP LEVEL only (not inside fan_out/pipeline/parallel) and nest at most one level.
+
 # --- structure, isolation, safety, cost ------------------------------------
 with wf.phase("port files"):            # groups agents in the live view
     ...
@@ -93,6 +127,8 @@ with wf.worktree(f"fix-{item}") as path:    # isolated checkout — use a UNIQUE
 q = wf.quarantine()                      # reader of untrusted content: no shell/write tools
 note = wf.agent(f"summarize this web page: {url}", **q)
 wf.budget(20)                            # cap premium-request credits (also: cwf --budget)
+while wf.budget_total and wf.remaining() > 1:   # loop-until-budget (guard the inf case!)
+    wf.agent("find one more bug")
 wf.log("phase 2 complete")               # diagnostic line to stderr
 ```
 
@@ -100,8 +136,19 @@ Return the final answer by `print()`-ing it to stdout at the end of the harness.
 
 ## Patterns (recipes)
 
-* **Fan-out-and-synthesize** — split work, run one agent per piece, merge. The synthesize step is a
-  barrier; it waits for all branches.
+* **Pipeline (default for multi-stage work)** — stream each item through stages with no
+  barrier between them, so a slow item never holds up the fast ones. Reach for a barrier
+  (`fan_out`/`parallel`/`synthesize`) only when a stage truly needs every prior result at
+  once (dedupe/merge, zero-count early-exit, cross-item comparison).
+  ```python
+  # review each changed file, then verify that review — verification of file A starts as
+  # soon as A's review lands, while file B is still being reviewed.
+  rows = wf.pipeline(files,
+      lambda f: wf.agent(f"Review {f} for bugs", model="claude-haiku-4.5", phase="review", label=f),
+      lambda rev, f, i: {"file": f, "verdict": wf.verify(rev, rubric="real, reproducible bug")})
+  print(wf.synthesize([r for r in rows if r["verdict"].passed], prompt="Group by severity."))
+  ```
+* **Fan-out-and-synthesize** — split work, run one agent per piece, merge at a barrier.
   ```python
   parts = wf.fan_out(files, lambda f: wf.agent(f"Summarize {f}", model="claude-haiku-4.5", label=f))
   print(wf.synthesize(parts, prompt="Write one overview.", model="claude-sonnet-4.5"))
@@ -121,6 +168,22 @@ Return the final answer by `print()`-ing it to stdout at the end of the harness.
 * **Quarantine** (security) — agents that read untrusted/public content get `**wf.quarantine()**`
   (no shell/write); a separate trusted *actor* agent, fed only their structured output, takes any
   privileged action.
+
+## Quality guidance (how to size and harden a workflow)
+
+* **Scout inline first, then orchestrate.** Discover the work-list yourself (list files, scope the
+  diff, find the channels) in the conversation, *then* fan out over it. You only need to know the
+  shape before the *orchestration step*, not before the task.
+* **Scale to the ask.** "find any bugs" → a few finders, single-vote verify. "thoroughly audit" /
+  "be comprehensive" → larger finder pool + a 3–5-vote adversarial pass + a synthesis stage. Lean
+  thorough for research/review/audit; lean brief for quick checks.
+* **Diverse-lens verify.** When a finding can fail in more than one way, give each verifier a
+  distinct lens (correctness, security, perf, does-it-reproduce) instead of N identical refuters —
+  diversity catches failure modes that redundancy can't.
+* **Loop-until-dry** (unknown-size discovery) — keep spawning finders until K consecutive rounds
+  surface nothing new; dedupe against everything seen so far, not just what you kept.
+* **No silent caps.** If a workflow bounds coverage (top-N, sampling, no-retry), `wf.log()` what was
+  dropped — silent truncation reads as "covered everything" when it didn't.
 
 ## A complete minimal harness
 

@@ -54,31 +54,52 @@ A harness is executed with two names injected: `wf` (the runtime) and `args` (th
 value, or `None`). Everything is synchronous — never use `async`/`await`.
 
 ```python
-r = wf.agent(prompt, *, model=None, agent=None, effort=None, cwd=None,
+r = wf.agent(prompt, *, model=None, agent=None, effort=None, cwd=None, phase=None,
              disable_mcp=False, timeout=None, label=None,
              allow=None, deny=None, allow_url=None, deny_url=None, add_dir=None, mcp=None)
 #   -> AgentResult: .content .ok .premium_requests .output_tokens
 #                   .session_id .model .cached .error   (str(r) == r.content)
+#   phase= assigns the progress group explicitly (use inside pipeline()/parallel()).
 
 wf.follow_up(r, prompt, **kw)               # another turn in the same session
 
-results = wf.fan_out(items, fn)             # parallel map + barrier; fn may nest wf.agent/fan_out
+rows    = wf.pipeline(items, stage1, stage2, ...)   # DEFAULT for multi-stage work:
+#   each item streams through ALL stages independently — NO barrier between stages.
+#   stage is called stage(prev, item, idx) (1–3 args); prev is the prior stage's return
+#   (the item for stage 1). A stage that raises drops that item to None (others continue).
+results = wf.parallel([lambda: wf.agent(a), lambda: wf.agent(b)])  # barrier over thunks
+results = wf.fan_out(items, fn)             # barrier map keyed by items; fn may nest wf.agent
 merged  = wf.synthesize(results, prompt=..., model=...)
 verdict = wf.verify(work, rubric=..., refute=True)     # -> Verdict(.passed .score .reasons .raw)
 winner  = wf.tournament(candidates, criteria=...)
 kept    = wf.generate_and_filter(prompt, n=8, rubric=...)   # or keep=callable
 label   = wf.classify(text, ["bug", "feature", "question"])
 hist    = wf.loop_until(step, done, max_iters=10)
+s       = wf.structured(prompt, schema, retries=2)  # validated JSON + retry -> Structured(.value .ok .attempts)
+#   schema = a shape-schema dict (type/properties/required/enum/items/additionalProperties)
+#   or a callable validate(obj) -> "" when ok else error string. Feeds the error back and retries.
+out     = wf.workflow("name-or-path", args=...)     # run a saved harness inline; returns what it printed
 
 with wf.phase("name"): ...                  # group agents in the live view
 with wf.worktree(f"fix-{item}") as path:    # isolated checkout — unique name per branch
     wf.agent("apply the fix", cwd=path)
 q = wf.quarantine()                         # reader of untrusted content: no shell/write tools
 wf.budget(20); wf.log("..."); wf.spent      # cost controls
+wf.budget_total; wf.remaining()             # budget introspection (remaining() is inf if uncapped)
 ```
+
+> **pipeline vs barrier.** `pipeline()` streams — item A can be in stage 3 while B is in
+> stage 1, so wall-clock is the slowest single-item *chain*. `fan_out`/`parallel`/`synthesize`
+> are barriers — they wait for every branch. Default to `pipeline()`; use a barrier only when
+> a stage needs all prior results at once (dedupe/merge, zero-count early-exit, cross-refs).
+
+> **wf.workflow() composition.** Runs a saved harness inline on the same runtime (shared
+> budget/concurrency/checkpoints/progress) and returns its printed output. Top-level only (raises
+> inside a parallel branch), one level deep; child checkpoint keys are namespaced so resume stays sound.
 
 ## Patterns
 
+- **Pipeline (default)** — stream each item through stages with no inter-stage barrier.
 - **Fan-out-and-synthesize** — split work, one agent per piece, merge at a barrier.
 - **Adversarial verification** — a separate agent attacks each finding against a rubric; keep survivors.
 - **Tournament** — pairwise comparative judgment (more reliable than absolute scoring) for ranking/taste.

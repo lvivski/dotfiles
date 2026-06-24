@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .agent import AgentResult, AgentSpec, build_cmd, run_agent
 from .checkpoint import CheckpointStore, default_runs_dir
-from .patterns import PatternsMixin, Verdict
+from .patterns import PatternsMixin, Structured, Verdict
 from .progress import ProgressReporter, replay
 from .runtime import BudgetExceeded, Runtime, default_concurrency
 from .worktree import WorktreeManager, find_repo_root
@@ -18,6 +18,7 @@ __all__ = [
     "AgentResult",
     "BudgetExceeded",
     "Verdict",
+    "Structured",
     "PatternsMixin",
     "CheckpointStore",
     "WorktreeManager",
@@ -30,4 +31,4 @@ __all__ = [
     "default_concurrency",
 ]
 
-__version__ = "0.3.0"
+__version__ = "0.5.0"

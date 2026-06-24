@@ -45,6 +45,129 @@ def _extract_json(text: str) -> Optional[dict]:
     return found
 
 
+def _extract_last_json(text: str) -> Optional[Any]:
+    """Last top-level JSON value (object OR array) in ``text``, or None.
+
+    Prefers the final non-empty line parsed whole (the model's actual answer, not a
+    restated schema earlier in the reply); falls back to scanning embedded ``{``/``[``
+    and keeping the last that decodes (handles pretty-printed multi-line JSON).
+    """
+    if not text:
+        return None
+    for line in reversed(text.splitlines()):
+        s = line.strip().strip("`").strip()
+        if s and s[0] in "{[":
+            try:
+                return json.loads(s)
+            except (ValueError, RecursionError):  # JSONDecodeError is a ValueError
+                break  # not a clean single-line value (or too deep) -> scan
+    decoder = json.JSONDecoder()
+    found: Optional[Any] = None
+    i = 0
+    n = len(text)
+    while i < n:
+        if text[i] in "{[":
+            try:
+                obj, j = decoder.raw_decode(text, i)
+                found = obj
+                i = j
+                continue
+            except json.JSONDecodeError:
+                pass
+            except RecursionError:  # pathologically deep nesting: stop scanning
+                break
+        i += 1
+    return found
+
+
+_SHAPE_KEYWORDS = {"type", "properties", "required", "enum", "items",
+                   "additionalProperties", "description"}
+_SHAPE_TYPES = {"object", "array", "string", "number", "integer", "boolean", "null"}
+
+
+def _check_schema_def(schema: Any, path: str = "$") -> None:
+    """Validate a shape-schema *definition* up front, raising on unsupported keywords.
+
+    A "shape schema" is a small documented subset of JSON Schema (type, properties,
+    required, enum, items, additionalProperties). Anything else is rejected loudly so an
+    author never assumes unsupported keywords (anyOf, patternProperties, ...) are enforced.
+    """
+    if not isinstance(schema, dict):
+        raise ValueError("shape schema at %s must be a dict, got %s" % (path, type(schema).__name__))
+    unknown = set(schema) - _SHAPE_KEYWORDS
+    if unknown:
+        raise ValueError("unsupported shape-schema keyword(s) at %s: %s" % (path, ", ".join(sorted(unknown))))
+    t = schema.get("type")
+    if t is not None and t not in _SHAPE_TYPES:
+        raise ValueError("unknown type %r at %s" % (t, path))
+    for k, sub in (schema.get("properties") or {}).items():
+        _check_schema_def(sub, "%s.%s" % (path, k))
+    if "items" in schema:
+        _check_schema_def(schema["items"], "%s[]" % path)
+
+
+def _type_ok(obj: Any, t: str) -> bool:
+    if t == "object":
+        return isinstance(obj, dict)
+    if t == "array":
+        return isinstance(obj, list)
+    if t == "string":
+        return isinstance(obj, str)
+    if t == "integer":
+        return isinstance(obj, int) and not isinstance(obj, bool)
+    if t == "number":
+        return isinstance(obj, (int, float)) and not isinstance(obj, bool)
+    if t == "boolean":
+        return isinstance(obj, bool)
+    if t == "null":
+        return obj is None
+    return True
+
+
+def _validate_shape(obj: Any, schema: dict, path: str = "$") -> List[str]:
+    """Return a (deterministically ordered) list of human-readable shape violations."""
+    errors: List[str] = []
+    if "enum" in schema and obj not in schema["enum"]:
+        errors.append("%s: %r is not one of %r" % (path, obj, schema["enum"]))
+    t = schema.get("type")
+    if t is not None and not _type_ok(obj, t):
+        errors.append("%s: expected %s" % (path, t))
+        return errors  # type wrong -> deeper checks would be noise
+    if t == "object" or (t is None and isinstance(obj, dict)):
+        if isinstance(obj, dict):
+            props = schema.get("properties") or {}
+            for req in schema.get("required") or []:
+                if req not in obj:
+                    errors.append("%s.%s: required property missing" % (path, req))
+            if schema.get("additionalProperties") is False:
+                for k in sorted(obj):
+                    if k not in props:
+                        errors.append("%s.%s: unexpected property" % (path, k))
+            for k in sorted(props):
+                if k in obj:
+                    errors.extend(_validate_shape(obj[k], props[k], "%s.%s" % (path, k)))
+    elif t == "array" or (t is None and isinstance(obj, list)):
+        item_schema = schema.get("items")
+        if item_schema and isinstance(obj, list):
+            for idx, el in enumerate(obj):
+                errors.extend(_validate_shape(el, item_schema, "%s[%d]" % (path, idx)))
+    return errors
+
+
+@dataclass
+class Structured:
+    """Outcome of a schema-validated, retried structured-output call."""
+
+    value: Any
+    ok: bool
+    error: str
+    raw: AgentResult
+    attempts: int
+
+    def __bool__(self) -> bool:
+        return self.ok
+
+
 @dataclass
 class Verdict:
     """Outcome of an adversarial verification."""
@@ -63,6 +186,76 @@ class PatternsMixin:
     agent: Callable[..., AgentResult]
     fan_out: Callable[..., List[Any]]
     log: Callable[..., None]
+
+    # ---- schema-validated structured output ----------------------------
+    def structured(
+        self,
+        prompt: str,
+        schema: Union[dict, Callable[[Any], Any]],
+        *,
+        retries: int = 2,
+        model: Optional[str] = None,
+        label: str = "structured",
+        **kw: Any,
+    ) -> Structured:
+        """Get a JSON value matching ``schema``, retrying with the error fed back.
+
+        ``schema`` is either a **shape schema** dict (a documented JSON-Schema subset:
+        ``type``/``properties``/``required``/``enum``/``items``/``additionalProperties``)
+        or a callable ``validate(obj)`` returning a falsy value when valid, or an error
+        string / list of strings (or raising) when not.
+
+        Up to ``retries`` extra attempts are made; each attempt is a fresh ``agent()``
+        call with a distinct prompt (so it checkpoints/resumes cleanly). If the agent
+        itself fails (or is budget-skipped), returns immediately without burning retries.
+        Returns a ``Structured`` (truthy when ``ok``).
+        """
+        is_callable = callable(schema)
+        if not is_callable:
+            _check_schema_def(schema)  # raise on unsupported keywords before spending credits
+            schema_text = json.dumps(schema, sort_keys=True)
+            shape = ("\n\nThe JSON must satisfy this shape (a documented subset of JSON "
+                     "Schema):\n%s" % schema_text)
+        else:
+            shape = ""
+        base = ("%s\n\nReason briefly if needed, then on the FINAL line output ONLY one "
+                "JSON value (no code fences, nothing after it).%s" % (prompt, shape))
+
+        last_error = ""
+        value: Any = None
+        res: Optional[AgentResult] = None
+        attempts = 0
+        for attempt in range(retries + 1):
+            attempts = attempt + 1
+            ask = base if not last_error else (
+                "%s\n\nYour previous answer was rejected: %s\nReturn corrected JSON only."
+                % (base, last_error))
+            res = self.agent(ask, model=model, label=label, **kw)
+            if not res.ok:  # process failure / budget skip — retrying won't help
+                return Structured(value=None, ok=False,
+                                  error=res.error or "agent failed", raw=res, attempts=attempts)
+            value = _extract_last_json(res.content)
+            if value is None:
+                last_error = "no JSON value found in the response"
+                continue
+            errs = self._validate_value(value, schema, is_callable)
+            if not errs:
+                return Structured(value=value, ok=True, error="", raw=res, attempts=attempts)
+            last_error = "; ".join(errs)[:500]
+        return Structured(value=value, ok=False, error=last_error or "invalid",
+                          raw=res, attempts=attempts)
+
+    @staticmethod
+    def _validate_value(value: Any, schema: Any, is_callable: bool) -> List[str]:
+        if is_callable:
+            try:
+                errs = schema(value)
+            except Exception as e:  # a raising validator means "invalid"
+                return [str(e)]
+            if not errs:
+                return []
+            return [errs] if isinstance(errs, str) else [str(e) for e in errs]
+        return _validate_shape(value, schema)
 
     # ---- fan-out -> barrier merge --------------------------------------
     def synthesize(
