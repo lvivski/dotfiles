@@ -219,6 +219,14 @@ Run: `cwf run triage.cwf.py --budget 5 --disable-mcp --args '["ticket one", "tic
 * **Personas (optional)** — pass `agent="verifier"` (etc.) to `wf.agent` to use a reusable persona
   from `~/.copilot/agents/`. The built-in patterns already embed strong personas, so this is only
   for extra steering.
+* **Restricted mode** — `cwf run harness.py --restricted` runs the harness orchestration-only and
+  deterministically: no `open`/`exec`/`eval`, no fs/proc/net imports, and no `time`/`random`/
+  `datetime`/`uuid` (blocked imports fail fast; pass timestamps via `args`, vary randomness by index;
+  `wf.workflow` is limited to saved-workflow names). Use it when running a harness you don't fully
+  trust. It is **defense-in-depth + resume-safety, not a security jail** (in-process Python `exec` is
+  escapable) — pair it with an OS/agent sandbox (`copilot --cloud` / `/sandbox`) for untrusted authors.
+  This is a different layer from `wf.quarantine()`, which sandboxes the untrusted *content a subagent
+  reads*; `--restricted` sandboxes the untrusted *harness code*.
 
 ## Saving and reusing
 

@@ -15,6 +15,7 @@ from typing import Any, Callable, List, Optional, Sequence, Union
 from .agent import AgentResult, AgentSpec, run_agent
 from .patterns import PatternsMixin
 from .progress import format_agent_line
+from .sandbox import SandboxError, harness_globals, lint_imports
 from .worktree import WorktreeManager, find_repo_root
 
 
@@ -87,11 +88,13 @@ class Runtime(PatternsMixin):
         run_dir: Optional[str] = None,
         checkpoints: Any = None,            # CheckpointStore or None
         repo_root: Optional[str] = None,
+        restricted: bool = False,
     ):
         self.concurrency = concurrency or default_concurrency()
         self.copilot_bin = copilot_bin
         self.default_model = default_model
         self.default_disable_mcp = default_disable_mcp
+        self.restricted = restricted
         self._budget = budget
         self.strict_budget = strict_budget
         self._spent_lock = threading.Lock()
@@ -421,7 +424,9 @@ class Runtime(PatternsMixin):
         process-global, ``workflow()`` must be called from the **top level** (it raises
         if invoked inside a fan_out/pipeline/parallel branch) and nests only one level
         deep. Editing a child harness safely invalidates its cached agents (cache miss,
-        never a wrong hit) thanks to per-call key scoping.
+        never a wrong hit) thanks to per-call key scoping. In ``restricted`` mode the
+        child runs under the same restricted, deterministic environment, and ``target``
+        must be a saved-workflow *name* (no arbitrary file paths).
         """
         if threading.current_thread() is not threading.main_thread():
             raise RuntimeError(
@@ -433,11 +438,11 @@ class Runtime(PatternsMixin):
         path = self._resolve_workflow(target)
         name = os.path.splitext(os.path.basename(path))[0]
         with open(path, "r") as fh:
-            code = compile(fh.read(), path, "exec")
-        g = {
-            "wf": self, "args": args, "AgentSpec": AgentSpec, "AgentResult": AgentResult,
-            "__name__": "__main__", "__file__": path,
-        }
+            src = fh.read()
+        if self.restricted:
+            lint_imports(src, path)  # fail fast before the child spawns agents
+        code = compile(src, path, "exec")
+        g = harness_globals(self, args, path, restricted=self.restricted)
 
         self._workflow_calls += 1
         prev_scope = self._key_scope
@@ -454,6 +459,23 @@ class Runtime(PatternsMixin):
         return buf.getvalue().strip()
 
     def _resolve_workflow(self, target: str) -> str:
+        if self.restricted:
+            # Defense-in-depth: a restricted harness may compose only *registered* saved
+            # workflows, never an arbitrary local file path (which would re-open the
+            # filesystem/exec capability the restriction is meant to close).
+            t = str(target)
+            if os.sep in t or t.startswith("~") or t.startswith(".") or ".." in t:
+                raise SandboxError(
+                    "restricted mode: wf.workflow() takes a saved-workflow name, not a path: %r"
+                    % target)
+            for cand in (
+                os.path.expanduser("~/.copilot/workflows/%s.cwf.py" % t),
+                os.path.expanduser("~/.copilot/workflows/%s.py" % t),
+            ):
+                if os.path.isfile(cand):
+                    return cand
+            raise FileNotFoundError(
+                "restricted mode: no saved workflow named %r in ~/.copilot/workflows" % target)
         p = os.path.expanduser(str(target))
         if p.endswith(".py") or os.sep in p:
             ap = os.path.abspath(p)

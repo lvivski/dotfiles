@@ -97,24 +97,12 @@ wf.budget_total; wf.remaining()             # budget introspection (remaining() 
 > budget/concurrency/checkpoints/progress) and returns its printed output. Top-level only (raises
 > inside a parallel branch), one level deep; child checkpoint keys are namespaced so resume stays sound.
 
-## Patterns
-
-- **Pipeline (default)** — stream each item through stages with no inter-stage barrier.
-- **Fan-out-and-synthesize** — split work, one agent per piece, merge at a barrier.
-- **Adversarial verification** — a separate agent attacks each finding against a rubric; keep survivors.
-- **Tournament** — pairwise comparative judgment (more reliable than absolute scoring) for ranking/taste.
-- **Generate-and-filter** — generate N ideas, dedupe, keep those passing a rubric/predicate.
-- **Classify-and-route** — tag an item, then branch on the tag.
-- **Loop-until-done** — repeat until a stop condition (no new findings, tests pass).
-- **Quarantine** — agents reading untrusted content get no privileged tools; a separate trusted
-  actor agent, fed only their structured output, takes any privileged action.
-
 ## CLI
 
 ```
 cwf run <harness.py> [--args JSON|@file] [--model M] [--budget N] [--strict-budget]
                      [--concurrency K] [--disable-mcp] [--resume RUN_ID] [--run-id ID]
-                     [--runs-dir DIR] [--dry-run] [--quiet]
+                     [--runs-dir DIR] [--dry-run] [--quiet] [--restricted]
 cwf loop <harness.py> --every 5m [--max-runs N] [<same run flags>]   # recurring triage/research
 cwf runs [--runs-dir DIR]                                            # list recent runs
 cwf watch <run_id> [--no-follow]                                     # live/replay progress
@@ -128,6 +116,44 @@ cwf watch <run_id> [--no-follow]                                     # live/repl
 
 Run state lives under `~/.copilot/workflows/runs/<runId>/` (`harness.py`, `meta.json`,
 `results.ndjson`, `progress.ndjson`).
+
+## Restricted / deterministic mode (`--restricted`)
+
+For running a **harness you don't fully trust**, `--restricted` executes it in a restricted,
+deterministic environment:
+
+- **Orchestration-only** — the harness gets `wf`, `args`, `print`, and pure-stdlib helpers, but
+  **no** `open`/`exec`/`eval`/`compile` and **no** fs/proc/net imports (`os`, `subprocess`, `socket`,
+  `pathlib`, `urllib`, …). A blocked `import` fails fast (before any agent spends credits); a blocked
+  builtin is simply absent. Composition (`wf.workflow`) is limited to *registered* saved-workflow
+  names — no arbitrary file paths.
+- **Deterministic** — `time`, `datetime`, `random`, `uuid`, `secrets` are not importable and the
+  nondeterministic builtins `id`/`hash` are removed, so the harness can't silently change its agent
+  call-graph between a run and its `--resume`. Pass timestamps via `args`; vary randomness by item
+  index. (cwf keys checkpoints by a spec *fingerprint*, so nondeterminism mostly costs extra
+  re-runs rather than wrong results — restricted mode avoids that waste. Run with `PYTHONHASHSEED=0`
+  for fully reproducible `set`/`dict` ordering.)
+
+> **This is defense-in-depth + determinism, NOT a security jail.** In-process Python `exec` is
+> escapable (so is Node/Bun's `vm`) via object introspection. For genuinely adversarial authors, run
+> cwf itself inside an OS/agent sandbox — Copilot `--cloud` / `/sandbox`, a container, seccomp/landlock.
+> `--restricted` stops *accidental* damage and keeps *resume* sound; it does not contain a determined adversary.
+
+Note this is a **different layer** from `wf.quarantine()`, which sandboxes the untrusted *content a
+subagent reads* (no shell/write/egress for that agent). `--restricted` sandboxes the untrusted
+*harness code itself*.
+
+## Patterns
+
+- **Pipeline (default)** — stream each item through stages with no inter-stage barrier.
+- **Fan-out-and-synthesize** — split work, one agent per piece, merge at a barrier.
+- **Adversarial verification** — a separate agent attacks each finding against a rubric; keep survivors.
+- **Tournament** — pairwise comparative judgment (more reliable than absolute scoring) for ranking/taste.
+- **Generate-and-filter** — generate N ideas, dedupe, keep those passing a rubric/predicate.
+- **Classify-and-route** — tag an item, then branch on the tag.
+- **Loop-until-done** — repeat until a stop condition (no new findings, tests pass).
+- **Quarantine** — agents reading untrusted content get no privileged tools; a separate trusted
+  actor agent, fed only their structured output, takes any privileged action.
 
 ## Bundled workflows
 

@@ -50,12 +50,13 @@ _bootstrap_path()
 
 try:
     from copilot_workflows import (
-        AgentResult,
-        AgentSpec,
         CheckpointStore,
         ProgressReporter,
         Runtime,
+        SandboxError,
         default_runs_dir,
+        harness_globals,
+        lint_imports,
         replay,
     )
     from copilot_workflows.runtime import BudgetExceeded
@@ -123,7 +124,7 @@ def cmd_run(a: argparse.Namespace) -> int:
             shutil.copyfile(harness_path, os.path.join(run_dir, "harness.py"))
         except Exception:
             pass
-        _write_meta(run_dir, run_id, harness_path, args_value, resume)
+        _write_meta(run_dir, run_id, harness_path, args_value, resume, a.restricted)
         store = CheckpointStore(run_dir, resume=resume)
 
     progress_path = os.path.join(run_dir, "progress.ndjson") if run_dir else None
@@ -144,37 +145,40 @@ def cmd_run(a: argparse.Namespace) -> int:
         dry_run=a.dry_run,
         run_dir=run_dir,
         checkpoints=store,
+        restricted=a.restricted,
     )
 
-    logger("— cwf run %s (concurrency=%d, model=%s, budget=%s%s%s)" % (
+    logger("— cwf run %s (concurrency=%d, model=%s, budget=%s%s%s%s)" % (
         os.path.basename(harness_path), rt.concurrency, a.model or "default",
         ("%.2f" % a.budget) if a.budget is not None else "none",
         ", dry-run" if a.dry_run else "",
         ", resume" if resume else "",
+        ", restricted" if a.restricted else "",
     ))
     if run_id:
         cached = store.count if store else 0
         logger("  run id: %s%s" % (run_id, ("  (%d cached)" % cached) if cached else ""))
         logger("  resume: cwf run %s --resume %s" % (a.harness, run_id))
+    if a.restricted and sys.flags.hash_randomization:
+        logger("  ! restricted: hash randomization is ON — run with PYTHONHASHSEED=0 "
+               "for fully reproducible set/dict ordering")
 
     reporter({"ev": "run_start", "run_id": run_id, "harness": harness_path, "t": time.time()})
 
-    g = {
-        "wf": rt,
-        "args": args_value,
-        "AgentSpec": AgentSpec,
-        "AgentResult": AgentResult,
-        "__name__": "__main__",
-        "__file__": harness_path,
-    }
+    g = harness_globals(rt, args_value, harness_path, restricted=a.restricted)
 
     start = time.time()
     status = 0
     try:
         with open(harness_path, "r") as fh:
             src = fh.read()
+        if a.restricted:
+            lint_imports(src, harness_path)  # fail fast before any agent spends credits
         code = compile(src, harness_path, "exec")
         exec(code, g)
+    except SandboxError as e:
+        sys.stderr.write("\ncwf: blocked by restricted mode: %s\n" % e)
+        status = 2
     except BudgetExceeded as e:
         logger("\n! %s — stopping" % e)
         status = 3
@@ -211,7 +215,7 @@ def cmd_run(a: argparse.Namespace) -> int:
     return status
 
 
-def _write_meta(run_dir, run_id, harness_path, args_value, resume):
+def _write_meta(run_dir, run_id, harness_path, args_value, resume, restricted=False):
     meta_path = os.path.join(run_dir, "meta.json")
     meta = {}
     if resume and os.path.isfile(meta_path):
@@ -224,6 +228,7 @@ def _write_meta(run_dir, run_id, harness_path, args_value, resume):
     meta.setdefault("run_id", run_id)
     meta.setdefault("harness", harness_path)
     meta.setdefault("created_at", now)
+    meta.setdefault("restricted", restricted)
     meta["args"] = args_value
     meta["updated_at"] = now
     try:
@@ -346,6 +351,11 @@ def _add_run_args(pr: argparse.ArgumentParser) -> None:
                     help="Path to the copilot binary (default: copilot).")
     pr.add_argument("--dry-run", action="store_true", help="Plan only; don't spawn agents.")
     pr.add_argument("--quiet", action="store_true", help="Suppress cwf stderr diagnostics.")
+    pr.add_argument("--restricted", action="store_true",
+                    help="Run the harness orchestration-only + deterministic: no fs/proc/net "
+                         "imports, no open/exec/eval, no time/random/datetime/uuid. "
+                         "Defense-in-depth + resume-safety, NOT a security jail — pair with an "
+                         "OS/agent sandbox (copilot --cloud / /sandbox) for untrusted authors.")
 
 
 def main(argv=None) -> int:
