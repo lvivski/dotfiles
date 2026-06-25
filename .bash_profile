@@ -2,19 +2,19 @@
 [[ -f ~/.bashrc ]] && . ~/.bashrc
 
 # Exports
-[[ -f ~/.bash_exports ]] && . ~/.bash_exports
+[[ -f ~/.exports ]] && . ~/.exports
 
 # Prompt
-[[ -f ~/.bash_prompt ]] && . ~/.bash_prompt
+[[ -f ~/.prompt ]] && . ~/.prompt
 
 # Aliases
-[[ -f ~/.bash_aliases ]] && . ~/.bash_aliases
+[[ -f ~/.aliases ]] && . ~/.aliases
 
 # Functions
-[[ -f ~/.bash_functions ]] && . ~/.bash_functions
+[[ -f ~/.functions ]] && . ~/.functions
 
-# Homebrew
-[[ -f /usr/local/etc/bash_completion ]] && . /usr/local/etc/bash_completion
+# Homebrew bash completion (covers @1 and @2)
+[[ -f $HOMEBREW_PREFIX/etc/profile.d/bash_completion.sh ]] && . $HOMEBREW_PREFIX/etc/profile.d/bash_completion.sh
 
 #Rust
 [[ -f ~/.cargo/env ]] && . ~/.cargo/env

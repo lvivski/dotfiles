@@ -1,3 +1,5 @@
+#!/bin/bash
+
 alias ll="ls -lAFG"
 alias la="ls -AF"
 
@@ -95,7 +97,7 @@ alias mergepdf='/System/Library/Automator/Combine\ PDF\ Pages.action/Contents/Re
 alias badge="tput bel"
 
 # URL-encode strings
-alias urlencode='python -c "import sys, urllib as ul; print ul.quote_plus(sys.argv[1]);"'
+alias urlencode='python3 -c "import sys, urllib.parse as ul; print(ul.quote_plus(sys.argv[1]))"'
 
 # Lists folders and files sizes in the current folder
 alias daisy="du -cksh * | sort -rn | head -11"

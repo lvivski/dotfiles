@@ -1,5 +1,5 @@
 excludeFiles   = "*.{so,pyc,o,scssc}"
-includeFiles   = "{*,.tm_properties,.htaccess,.*rc,.bash*,.git*,.hg*,.ghci}"
+includeFiles   = "{*,.tm_properties,.htaccess,.*rc,.bash*,.exports,.aliases,.functions,.prompt,.git*,.hg*,.ghci}"
 encoding       = UTF-8
 fontName       = "Fira Code"
 fontSize       = 13

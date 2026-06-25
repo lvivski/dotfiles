@@ -34,5 +34,3 @@ bindkey "^[[A" up-line-or-beginning-search
 bindkey "^[[B" down-line-or-beginning-search
 # bindkey "^[[A" history-beginning-search-backward
 # bindkey "^[[B" history-beginning-search-forward
-
-if command -v wt >/dev/null 2>&1; then eval "$(command wt config shell init zsh)"; fi

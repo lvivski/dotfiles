@@ -27,16 +27,26 @@
 : ${finally:=" ∙ "}
 : ${use_color_off:=false}
 
-# Colors
-: ${on:=$'\e[0;37m'}
-: ${off:=$'\e[1;30m'}
-: ${red:=$'\e[0;31m'}
-: ${green:=$'\e[0;32m'}
-: ${yellow:=$'\e[0;33m'}
-: ${violet:=$'\e[0;35m'}
-: ${branch_color:=$'\e[0;34m'}
-#: ${blinking:=$'\e[1;5;17m'}
-: ${reset:=$'\e[0m'}
+# Colors (zsh needs %{ %} around non-printing escapes for correct prompt width)
+if [[ -n $ZSH_VERSION ]]; then
+	: ${on:=%{$'\e[0;37m'%}}
+	: ${off:=%{$'\e[1;30m'%}}
+	: ${red:=%{$'\e[0;31m'%}}
+	: ${green:=%{$'\e[0;32m'%}}
+	: ${yellow:=%{$'\e[0;33m'%}}
+	: ${violet:=%{$'\e[0;35m'%}}
+	: ${branch_color:=%{$'\e[0;34m'%}}
+	: ${reset:=%{$'\e[0m'%}}
+else
+	: ${on:=$'\e[0;37m'}
+	: ${off:=$'\e[1;30m'}
+	: ${red:=$'\e[0;31m'}
+	: ${green:=$'\e[0;32m'}
+	: ${yellow:=$'\e[0;33m'}
+	: ${violet:=$'\e[0;35m'}
+	: ${branch_color:=$'\e[0;34m'}
+	: ${reset:=$'\e[0m'}
+fi
 
 function enrich {
 	local flag=$1

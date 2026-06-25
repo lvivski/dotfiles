@@ -15,7 +15,7 @@
 	up = pull --recurse-submodules
 	dw = diff --color-words
 	ll = log --stat --abbrev-commit
-	unpush = push -f origin HEAD^:master
+	unpush = "!git push -f origin HEAD^:$(git rev-parse --abbrev-ref HEAD)"
 	undo = reset --soft HEAD^
 	amend = commit --amend --reuse-message=HEAD
 	count = shortlog -sn
