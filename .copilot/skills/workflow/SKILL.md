@@ -19,6 +19,11 @@ Use `cwf` to author and run a small synchronous Python harness that coordinates 
 subagents. The harness owns branching, loops, checkpoints, and intermediate results; this keeps the
 main conversation focused on the final synthesized answer.
 
+**Execution path.** When the cwf extension is loaded, run workflows via the native `run_workflow`
+tool — it streams progress into the session and returns a structured result. The `cwf` CLI commands
+shown below are the headless/fallback equivalent (used for `cwf loop`, scripting, or when the
+extension isn't loaded); tool params map 1:1 to the CLI flags.
+
 ## Decision boundary
 
 Use a workflow when the task genuinely benefits from independent contexts or repeatable quality
@@ -45,12 +50,16 @@ you can complete with a few direct tool calls. Workflows spend more time and pre
    reusable workflows. Harnesses are plain synchronous Python; never use `async`/`await`.
 4. **Preview and confirm paid runs.** Before spending credits, show the user phases, approximate
    subagent count, models, and a premium-credit budget. Ask for confirmation unless the user already
-   told you to go ahead. Use `cwf run harness.py --dry-run` for a free preview.
-5. **Run with a budget.** Use `cwf run harness.py --budget <N> ...`. Add `--disable-mcp` when agents
-   do not need GitHub/MCP. Start with a small slice for large or unknown-cost jobs.
-6. **Return stdout.** The harness prints the final answer to stdout; cwf progress and stats go to
-   stderr. Read stdout and present the result. If interrupted, tell the user to resume with
-   `cwf run harness.py --resume <runId>`.
+   told you to go ahead. Preview for free with the `run_workflow` tool (`dryRun: true`) — or
+   `cwf run harness.py --dry-run` headless.
+5. **Run with a budget.** Call `run_workflow` with `{ scriptPath, budget: <N> }` — params map 1:1 to
+   the CLI (`disableMcp`, `concurrency`, `model`, `restricted`, `strictBudget`, `args`). Headless:
+   `cwf run harness.py --budget <N> ...`. Set `disableMcp` when agents do not need GitHub/MCP. Start
+   with a small slice for large or unknown-cost jobs.
+6. **Return the result.** The `run_workflow` tool returns the harness's final answer plus its `runId`
+   and persisted harness path, and streams progress live; present the result. To iterate or continue,
+   re-invoke with the same `scriptPath` or `resume: <runId>`. (Headless: the harness prints the answer
+   to stdout and progress/stats to stderr; resume with `cwf run harness.py --resume <runId>`.)
 
 ## Defaults that avoid common mistakes
 
@@ -78,7 +87,13 @@ you can complete with a few direct tool calls. Workflows spend more time and pre
 Start from `examples/minimal-review.cwf.py`; copy it to `./<name>.cwf.py` and adapt the prompts,
 rubric, and input list. Keep examples as Python files so they are runnable and syntax-checkable.
 
-Run the copied harness:
+Run the copied harness via the `run_workflow` tool:
+
+```
+run_workflow({ scriptPath: "harness.cwf.py", budget: 10, disableMcp: true, args: ["one", "two"] })
+```
+
+Headless / fallback equivalent:
 
 ```bash
 cwf run harness.cwf.py --budget 10 --disable-mcp --args '["one", "two"]'
