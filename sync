@@ -13,6 +13,23 @@ git pull
 
 push() {
 	rsync --exclude ".git/" --exclude ".DS_Store" --exclude "sync" --exclude "README.md" -av . ~
+
+	# Stale copies of files renamed/removed in the repo. The rsync above is
+	# additive, so delete their leftovers from $HOME (after the new versions
+	# have been copied in).
+	local obsolete=(
+		.MacOSX
+		.launchd.conf
+		Library/KeyBindings/DefaultKeyBinding.dict
+		.bash_completion
+		.bash_completion.d
+		.bash_exports
+		.bash_functions
+		.bash_aliases
+		.bash_prompt
+	)
+	local f
+	for f in "${obsolete[@]}"; do [ -n "$f" ] && rm -rf ~/"$f"; done
 }
 
 pull() {
