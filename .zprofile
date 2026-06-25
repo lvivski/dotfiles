@@ -24,3 +24,9 @@
 
 # Functions
 [[ -f ~/.bash_functions ]] && . ~/.bash_functions
+
+#Rust
+[[ -f ~/.cargo/env ]] && . ~/.cargo/env
+
+# Bun
+[ -f ~/.bun/_bun ] && . ~/.bun/_bun
