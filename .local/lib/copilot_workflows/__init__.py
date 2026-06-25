@@ -6,7 +6,7 @@ Public API:
 from __future__ import annotations
 
 from .agent import AgentResult, AgentSpec, build_cmd, run_agent
-from .checkpoint import CheckpointStore, default_runs_dir
+from .checkpoint import CheckpointStore, default_runs_dir, default_workflows_dir
 from .patterns import PatternsMixin, Structured, Verdict
 from .progress import ProgressReporter, replay
 from .runtime import BudgetExceeded, Runtime, default_concurrency
@@ -26,6 +26,7 @@ __all__ = [
     "ProgressReporter",
     "replay",
     "default_runs_dir",
+    "default_workflows_dir",
     "find_repo_root",
     "build_cmd",
     "run_agent",

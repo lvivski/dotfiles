@@ -61,7 +61,7 @@ try:
     )
     from copilot_workflows.runtime import BudgetExceeded
 except Exception as exc:  # pragma: no cover
-    sys.stderr.write("cwf: cannot import copilot_workflows (%s)\n" % exc)
+    sys.stderr.write(f"cwf: cannot import copilot_workflows ({exc})\n")
     sys.exit(2)
 
 
@@ -69,14 +69,14 @@ def _new_run_id(harness_path: str) -> str:
     stem = os.path.splitext(os.path.basename(harness_path))[0]
     ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     rnd = "".join(random.choice(string.ascii_lowercase + string.digits) for _ in range(4))
-    return "%s-%s-%s" % (stem, ts, rnd)
+    return f"{stem}-{ts}-{rnd}"
 
 
-def _parse_args_value(raw: "str | None"):
+def _parse_args_value(raw: str | None):
     if raw is None:
         return None
     if raw.startswith("@"):
-        with open(os.path.expanduser(raw[1:]), "r") as fh:
+        with open(os.path.expanduser(raw.removeprefix("@")), "r") as fh:
             return json.load(fh)
     try:
         return json.loads(raw)
@@ -92,7 +92,7 @@ def _is_skipped(r) -> bool:
 def cmd_run(a: argparse.Namespace) -> int:
     harness_path = os.path.abspath(a.harness)
     if not os.path.isfile(harness_path):
-        sys.stderr.write("cwf: harness not found: %s\n" % a.harness)
+        sys.stderr.write(f"cwf: harness not found: {a.harness}\n")
         return 2
 
     args_value = _parse_args_value(a.args)
@@ -113,7 +113,7 @@ def cmd_run(a: argparse.Namespace) -> int:
             run_id = a.resume
             run_dir = os.path.join(runs_dir, run_id)
             if not os.path.isdir(run_dir):
-                sys.stderr.write("cwf: no such run to resume: %s\n" % run_id)
+                sys.stderr.write(f"cwf: no such run to resume: {run_id}\n")
                 return 2
         else:
             run_id = a.run_id or _new_run_id(harness_path)
@@ -128,10 +128,12 @@ def cmd_run(a: argparse.Namespace) -> int:
         store = CheckpointStore(run_dir, resume=resume)
 
     progress_path = os.path.join(run_dir, "progress.ndjson") if run_dir else None
+    if progress_path and not resume and os.path.isfile(progress_path):
+        open(progress_path, "w").close()  # fresh run reusing a dir: drop stale progress
+    devnull = open(os.devnull, "w") if a.quiet else None
     reporter = ProgressReporter(
         ndjson_path=progress_path, title=run_id or os.path.basename(harness_path),
-        stream=open(os.devnull, "w") if a.quiet else None,
-        live=False if a.quiet else None)
+        stream=devnull, live=False if a.quiet else None)
 
     rt = Runtime(
         concurrency=a.concurrency,
@@ -148,17 +150,17 @@ def cmd_run(a: argparse.Namespace) -> int:
         restricted=a.restricted,
     )
 
-    logger("— cwf run %s (concurrency=%d, model=%s, budget=%s%s%s%s)" % (
-        os.path.basename(harness_path), rt.concurrency, a.model or "default",
-        ("%.2f" % a.budget) if a.budget is not None else "none",
+    budget_str = f"{a.budget:.2f}" if a.budget is not None else "none"
+    logger("— cwf run {} (concurrency={}, model={}, budget={}{}{}{})".format(
+        os.path.basename(harness_path), rt.concurrency, a.model or "default", budget_str,
         ", dry-run" if a.dry_run else "",
         ", resume" if resume else "",
         ", restricted" if a.restricted else "",
     ))
     if run_id:
         cached = store.count if store else 0
-        logger("  run id: %s%s" % (run_id, ("  (%d cached)" % cached) if cached else ""))
-        logger("  resume: cwf run %s --resume %s" % (a.harness, run_id))
+        logger(f"  run id: {run_id}" + (f"  ({cached} cached)" if cached else ""))
+        logger(f"  resume: cwf run {a.harness} --resume {run_id}")
     if a.restricted and sys.flags.hash_randomization:
         logger("  ! restricted: hash randomization is ON — run with PYTHONHASHSEED=0 "
                "for fully reproducible set/dict ordering")
@@ -177,13 +179,13 @@ def cmd_run(a: argparse.Namespace) -> int:
         code = compile(src, harness_path, "exec")
         exec(code, g)
     except SandboxError as e:
-        sys.stderr.write("\ncwf: blocked by restricted mode: %s\n" % e)
+        sys.stderr.write(f"\ncwf: blocked by restricted mode: {e}\n")
         status = 2
     except BudgetExceeded as e:
-        logger("\n! %s — stopping" % e)
+        logger(f"\n! {e} — stopping")
         status = 3
     except KeyboardInterrupt:
-        logger("\n! interrupted (resume with: cwf run %s --resume %s)" % (a.harness, run_id or "?"))
+        logger(f"\n! interrupted (resume with: cwf run {a.harness} --resume {run_id or '?'})")
         status = 130
     except Exception:
         import traceback
@@ -201,13 +203,15 @@ def cmd_run(a: argparse.Namespace) -> int:
         except Exception:
             pass
         reporter.close()
+        if devnull is not None:
+            devnull.close()
 
     elapsed = time.time() - start
     total = sum(r.premium_requests for r in rt.results)
     failures = sum(1 for r in rt.results if not r.ok and not _is_skipped(r))
     skipped = sum(1 for r in rt.results if _is_skipped(r))
     cached = sum(1 if r.cached else 0 for r in rt.results)
-    logger("— cwf: %d agents (%d cached, %d skipped, %d failed), %.2f premium credits, %.1fs" % (
+    logger("— cwf: {} agents ({} cached, {} skipped, {} failed), {:.2f} premium credits, {:.1f}s".format(
         len(rt.results), cached, skipped, failures, total, elapsed,
     ))
     if status == 0 and failures:
@@ -248,7 +252,7 @@ def _mtime_iso(path):
 def cmd_runs(a: argparse.Namespace) -> int:
     runs_dir = a.runs_dir or default_runs_dir()
     if not os.path.isdir(runs_dir):
-        print("no runs in %s" % runs_dir)
+        print(f"no runs in {runs_dir}")
         return 0
     rows = []
     for name in os.listdir(runs_dir):
@@ -283,12 +287,12 @@ def cmd_runs(a: argparse.Namespace) -> int:
         updated = meta.get("updated_at") or _mtime_iso(d)
         rows.append((updated, name, os.path.basename(meta.get("harness", "")), n, cr))
     if not rows:
-        print("no runs in %s" % runs_dir)
+        print(f"no runs in {runs_dir}")
         return 0
     rows.sort(reverse=True)
-    print("%-32s %-20s %6s %8s  %s" % ("RUN ID", "HARNESS", "AGENTS", "CREDITS", "UPDATED"))
+    print(f"{'RUN ID':<32} {'HARNESS':<20} {'AGENTS':>6} {'CREDITS':>8}  UPDATED")
     for updated, name, harness, n, cr in rows:
-        print("%-32s %-20s %6d %8.2f  %s" % (name[:32], harness[:20], n, cr, updated))
+        print(f"{name[:32]:<32} {harness[:20]:<20} {n:>6} {cr:>8.2f}  {updated}")
     return 0
 
 
@@ -296,7 +300,7 @@ def cmd_watch(a: argparse.Namespace) -> int:
     runs_dir = a.runs_dir or default_runs_dir()
     path = os.path.join(runs_dir, a.run_id, "progress.ndjson")
     if not os.path.isfile(path):
-        sys.stderr.write("cwf: no progress file for run: %s\n" % a.run_id)
+        sys.stderr.write(f"cwf: no progress file for run: {a.run_id}\n")
         return 2
     replay(path, follow=not a.no_follow)
     return 0
@@ -314,15 +318,15 @@ def cmd_loop(a: argparse.Namespace) -> int:
     try:
         interval = _parse_duration(a.every)
     except Exception:
-        sys.stderr.write("cwf: invalid --every value: %s\n" % a.every)
+        sys.stderr.write(f"cwf: invalid --every value: {a.every}\n")
         return 2
     n = 0
     last = 0
     try:
         while True:
             n += 1
-            sys.stderr.write("\n— cwf loop: run %d%s —\n" % (
-                n, ("/%d" % a.max_runs) if a.max_runs else ""))
+            total_str = f"/{a.max_runs}" if a.max_runs else ""
+            sys.stderr.write(f"\n— cwf loop: run {n}{total_str} —\n")
             ra = argparse.Namespace(**vars(a))
             ra.resume = None         # each tick is a fresh run, not a resume
             ra.run_id = None
@@ -331,7 +335,7 @@ def cmd_loop(a: argparse.Namespace) -> int:
                 break
             time.sleep(interval)
     except KeyboardInterrupt:
-        sys.stderr.write("\n— cwf loop: stopped after %d run(s) —\n" % n)
+        sys.stderr.write(f"\n— cwf loop: stopped after {n} run(s) —\n")
     return last
 
 
@@ -344,7 +348,8 @@ def _add_run_args(pr: argparse.ArgumentParser) -> None:
                     help="Raise/stop when budget is hit instead of gracefully skipping.")
     pr.add_argument("--concurrency", type=int, help="Max concurrent subagents.")
     pr.add_argument("--run-id", help="Explicit run id (default: auto-generated).")
-    pr.add_argument("--runs-dir", help="Where run state lives (default: ~/.copilot/workflows/runs).")
+    pr.add_argument("--runs-dir", help="Where run state lives "
+                    "(default: $CWF_RUNS_DIR or <$CWF_WORKFLOWS_DIR|~/.copilot/workflows>/runs).")
     pr.add_argument("--disable-mcp", action="store_true",
                     help="Default agents to --disable-builtin-mcps (faster startup).")
     pr.add_argument("--copilot-bin", default=os.environ.get("CWF_COPILOT_BIN", "copilot"),

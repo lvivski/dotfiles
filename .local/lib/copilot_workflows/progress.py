@@ -9,7 +9,6 @@ import sys
 import threading
 import time
 from collections import deque
-from typing import Optional
 
 _SPIN = "|/-\\"
 
@@ -36,21 +35,20 @@ def format_agent_line(rec: dict) -> str:
     label = _clip(rec.get("label", "agent"), 24)
     cr = float(rec.get("cr") or 0.0)
     if rec.get("cached"):
-        return "  HIT  %-24s %.2f cr  (cached)" % (label, cr)
+        return f"  HIT  {label:<24} {cr:.2f} cr  (cached)"
     if rec.get("skipped"):
-        return "  SKIP %-24s (budget reached)" % label
+        return f"  SKIP {label:<24} (budget reached)"
     if rec.get("ok"):
-        return "  OK   %-24s %.2f cr  %d tok  [%s]" % (
-            label, cr, int(rec.get("tok") or 0), _san(rec.get("model") or ""))
-    return "  ERR  %-24s ERROR: %s" % (label, _san(rec.get("error") or "?"))
+        return f"  OK   {label:<24} {cr:.2f} cr  {int(rec.get('tok') or 0)} tok  [{_san(rec.get('model') or '')}]"
+    return f"  ERR  {label:<24} ERROR: {_san(rec.get('error') or '?')}"
 
 
 class ProgressReporter:
     def __init__(
         self,
         stream=None,
-        ndjson_path: Optional[str] = None,
-        live: Optional[bool] = None,
+        ndjson_path: str | None = None,
+        live: bool | None = None,
         title: str = "workflow",
         max_running: int = 8,
         max_recent: int = 5,
@@ -163,28 +161,28 @@ class ProgressReporter:
         el = int(time.time() - self._t0)
         parts = [self.title]
         if self._phase:
-            parts.append("phase: %s" % self._phase)
-        parts.append("%ds" % el)
-        parts.append("run %d" % len(self._running))
-        parts.append("done %d" % self._done)
+            parts.append(f"phase: {self._phase}")
+        parts.append(f"{el}s")
+        parts.append(f"run {len(self._running)}")
+        parts.append(f"done {self._done}")
         if self._failed:
-            parts.append("failed %d" % self._failed)
+            parts.append(f"failed {self._failed}")
         if self._cached:
-            parts.append("cached %d" % self._cached)
+            parts.append(f"cached {self._cached}")
         if self._skipped:
-            parts.append("skipped %d" % self._skipped)
-        parts.append("%.2f cr" % self._cr)
+            parts.append(f"skipped {self._skipped}")
+        parts.append(f"{self._cr:.2f} cr")
         return " \u00b7 ".join(parts)
 
     def _fmt_done(self, r: dict) -> str:
         label = _clip(r.get("label", "agent"), 22)
         if r.get("cached"):
-            return "\u21ba %-22s cached" % label
+            return f"\u21ba {label:<22} cached"
         if r.get("skipped"):
-            return "\u2014 %-22s skipped" % label
+            return f"\u2014 {label:<22} skipped"
         if r.get("ok"):
-            return "\u2713 %-22s %.2f cr" % (label, float(r.get("cr") or 0))
-        return "\u2717 %-22s %s" % (label, _clip(r.get("error") or "error", 28))
+            return f"\u2713 {label:<22} {float(r.get('cr') or 0):.2f} cr"
+        return f"\u2717 {label:<22} {_clip(r.get('error') or 'error', 28)}"
 
     def _fmt_line(self, r: dict) -> str:
         return format_agent_line(r)
@@ -206,12 +204,12 @@ class ProgressReporter:
         run_items = list(self._running.values())[: self.max_running]
         for r in run_items:
             age = int(now - (r.get("t") or now))
-            lines.append("  %s %-22s %-16s %ds" % (
-                _SPIN[self._spin], _clip(r.get("label", "agent"), 22),
-                _clip(r.get("model") or "", 16), age))
+            lines.append(
+                f"  {_SPIN[self._spin]} {_clip(r.get('label', 'agent'), 22):<22} "
+                f"{_clip(r.get('model') or '', 16):<16} {age}s")
         extra = len(self._running) - len(run_items)
         if extra > 0:
-            lines.append("  \u2026 +%d more running" % extra)
+            lines.append(f"  \u2026 +{extra} more running")
         for r in list(self._recent):
             lines.append("  " + self._fmt_done(r))
 
@@ -221,7 +219,7 @@ class ProgressReporter:
     def _blit(self, lines) -> None:
         buf = []
         if self._drawn:
-            buf.append("\x1b[%dA" % self._drawn)  # cursor up to panel top
+            buf.append(f"\x1b[{self._drawn}A")  # cursor up to panel top
         buf.append("\x1b[0J")                      # clear from cursor to end of screen
         buf.append("\n".join(lines))
         buf.append("\n")
@@ -233,7 +231,7 @@ class ProgressReporter:
             pass
 
 
-def replay(path: str, follow: bool = True, reporter: Optional[ProgressReporter] = None,
+def replay(path: str, follow: bool = True, reporter: ProgressReporter | None = None,
            poll: float = 0.2) -> ProgressReporter:
     """Feed a progress.ndjson into a reporter; optionally tail until run_end.
 

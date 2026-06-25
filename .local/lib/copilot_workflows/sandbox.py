@@ -22,7 +22,7 @@ What restricted mode DOES buy:
 from __future__ import annotations
 
 import ast
-from typing import Any, Dict
+from typing import Any
 
 # Pure, deterministic standard-library modules a harness may import. Deliberately EXCLUDES
 # anything nondeterministic (time, datetime, random, uuid, secrets, os) or capability-bearing
@@ -62,12 +62,12 @@ def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
     top = (name or "").split(".")[0]
     if top not in SAFE_MODULES:
         raise SandboxError(
-            "import of %r is blocked in restricted mode (allowed: %s)"
-            % (name or "?", ", ".join(sorted(SAFE_MODULES))))
+            f"import of {name or '?'!r} is blocked in restricted mode "
+            f"(allowed: {', '.join(sorted(SAFE_MODULES))})")
     return _real_import(name, globals, locals, fromlist, level)
 
 
-def restricted_builtins() -> Dict[str, Any]:
+def restricted_builtins() -> dict[str, Any]:
     """A copy of the real builtins minus dangerous/nondeterministic entries.
 
     A denylist (not an allowlist) so ``__build_class__``, the exception hierarchy, ``print``,
@@ -82,12 +82,12 @@ def restricted_builtins() -> Dict[str, Any]:
     return bi
 
 
-def harness_globals(wf: Any, args: Any, file: str, *, restricted: bool) -> Dict[str, Any]:
+def harness_globals(wf: Any, args: Any, file: str, *, restricted: bool) -> dict[str, Any]:
     """Build the exec globals for a harness — the single source of truth for both exec sites
     (the ``cwf`` CLI and ``wf.workflow``). In restricted mode, installs restricted builtins;
     otherwise leaves ``__builtins__`` unset so ``exec`` injects the real ones (unchanged)."""
     from .agent import AgentResult, AgentSpec
-    g: Dict[str, Any] = {
+    g: dict[str, Any] = {
         "wf": wf, "args": args,
         "AgentSpec": AgentSpec, "AgentResult": AgentResult,
         "__name__": "__main__", "__file__": file, "__package__": None,
@@ -115,11 +115,11 @@ def lint_imports(source: str, path: str) -> None:
             for alias in node.names:
                 if alias.name.split(".")[0] not in SAFE_MODULES:
                     raise SandboxError(
-                        "%s: import of %r is blocked in restricted mode" % (path, alias.name))
+                        f"{path}: import of {alias.name!r} is blocked in restricted mode")
         elif isinstance(node, ast.ImportFrom):
             if node.level:
                 raise SandboxError(
-                    "%s: relative imports are not allowed in restricted mode" % path)
+                    f"{path}: relative imports are not allowed in restricted mode")
             if (node.module or "").split(".")[0] not in SAFE_MODULES:
                 raise SandboxError(
-                    "%s: import from %r is blocked in restricted mode" % (path, node.module))
+                    f"{path}: import from {node.module!r} is blocked in restricted mode")

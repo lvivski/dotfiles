@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, Callable, List, Optional, Sequence, Union
+from typing import Any
 
 from .agent import AgentResult
 
@@ -19,19 +20,19 @@ def _norm(s: str) -> str:
     return " ".join((s or "").split()).lower()
 
 
-def _as_float(x: Any) -> Optional[float]:
+def _as_float(x: Any) -> float | None:
     try:
         return float(x)
     except (TypeError, ValueError):
         return None
 
 
-def _extract_json(text: str) -> Optional[dict]:
+def _extract_json(text: str) -> dict | None:
     """Last top-level JSON object embedded in ``text`` (via the real parser), or None."""
     if not text:
         return None
     decoder = json.JSONDecoder()
-    found: Optional[dict] = None
+    found: dict | None = None
     i = 0
     while (i := text.find("{", i)) != -1:
         try:
@@ -45,7 +46,7 @@ def _extract_json(text: str) -> Optional[dict]:
     return found
 
 
-def _extract_last_json(text: str) -> Optional[Any]:
+def _extract_last_json(text: str) -> Any | None:
     """Last top-level JSON value (object OR array) in ``text``, or None.
 
     Prefers the final non-empty line parsed whole (the model's actual answer, not a
@@ -54,15 +55,18 @@ def _extract_last_json(text: str) -> Optional[Any]:
     """
     if not text:
         return None
+    # 1) Prefer the final non-empty line parsed whole — the model's actual answer, and the
+    #    only place a top-level SCALAR (number/string/bool/null) answer can be recovered.
     for line in reversed(text.splitlines()):
         s = line.strip().strip("`").strip()
-        if s and s[0] in "{[":
-            try:
-                return json.loads(s)
-            except (ValueError, RecursionError):  # JSONDecodeError is a ValueError
-                break  # not a clean single-line value (or too deep) -> scan
+        if not s:
+            continue
+        try:
+            return json.loads(s)
+        except (ValueError, RecursionError):  # JSONDecodeError is a ValueError
+            break  # last content line isn't a clean value -> scan for embedded JSON
     decoder = json.JSONDecoder()
-    found: Optional[Any] = None
+    found: Any | None = None
     i = 0
     n = len(text)
     while i < n:
@@ -93,17 +97,17 @@ def _check_schema_def(schema: Any, path: str = "$") -> None:
     author never assumes unsupported keywords (anyOf, patternProperties, ...) are enforced.
     """
     if not isinstance(schema, dict):
-        raise ValueError("shape schema at %s must be a dict, got %s" % (path, type(schema).__name__))
+        raise ValueError(f"shape schema at {path} must be a dict, got {type(schema).__name__}")
     unknown = set(schema) - _SHAPE_KEYWORDS
     if unknown:
-        raise ValueError("unsupported shape-schema keyword(s) at %s: %s" % (path, ", ".join(sorted(unknown))))
+        raise ValueError(f"unsupported shape-schema keyword(s) at {path}: {', '.join(sorted(unknown))}")
     t = schema.get("type")
     if t is not None and t not in _SHAPE_TYPES:
-        raise ValueError("unknown type %r at %s" % (t, path))
+        raise ValueError(f"unknown type {t!r} at {path}")
     for k, sub in (schema.get("properties") or {}).items():
-        _check_schema_def(sub, "%s.%s" % (path, k))
+        _check_schema_def(sub, f"{path}.{k}")
     if "items" in schema:
-        _check_schema_def(schema["items"], "%s[]" % path)
+        _check_schema_def(schema["items"], f"{path}[]")
 
 
 def _type_ok(obj: Any, t: str) -> bool:
@@ -124,33 +128,33 @@ def _type_ok(obj: Any, t: str) -> bool:
     return True
 
 
-def _validate_shape(obj: Any, schema: dict, path: str = "$") -> List[str]:
+def _validate_shape(obj: Any, schema: dict, path: str = "$") -> list[str]:
     """Return a (deterministically ordered) list of human-readable shape violations."""
-    errors: List[str] = []
+    errors: list[str] = []
     if "enum" in schema and obj not in schema["enum"]:
-        errors.append("%s: %r is not one of %r" % (path, obj, schema["enum"]))
+        errors.append(f"{path}: {obj!r} is not one of {schema['enum']!r}")
     t = schema.get("type")
     if t is not None and not _type_ok(obj, t):
-        errors.append("%s: expected %s" % (path, t))
+        errors.append(f"{path}: expected {t}")
         return errors  # type wrong -> deeper checks would be noise
     if t == "object" or (t is None and isinstance(obj, dict)):
         if isinstance(obj, dict):
             props = schema.get("properties") or {}
             for req in schema.get("required") or []:
                 if req not in obj:
-                    errors.append("%s.%s: required property missing" % (path, req))
+                    errors.append(f"{path}.{req}: required property missing")
             if schema.get("additionalProperties") is False:
                 for k in sorted(obj):
                     if k not in props:
-                        errors.append("%s.%s: unexpected property" % (path, k))
+                        errors.append(f"{path}.{k}: unexpected property")
             for k in sorted(props):
                 if k in obj:
-                    errors.extend(_validate_shape(obj[k], props[k], "%s.%s" % (path, k)))
+                    errors.extend(_validate_shape(obj[k], props[k], f"{path}.{k}"))
     elif t == "array" or (t is None and isinstance(obj, list)):
         item_schema = schema.get("items")
         if item_schema and isinstance(obj, list):
             for idx, el in enumerate(obj):
-                errors.extend(_validate_shape(el, item_schema, "%s[%d]" % (path, idx)))
+                errors.extend(_validate_shape(el, item_schema, f"{path}[{idx}]"))
     return errors
 
 
@@ -173,7 +177,7 @@ class Verdict:
     """Outcome of an adversarial verification."""
 
     passed: bool
-    score: Optional[float]
+    score: float | None
     reasons: str
     raw: AgentResult
 
@@ -184,17 +188,17 @@ class Verdict:
 class PatternsMixin:
     # These are provided by Runtime; declared here for readers/type-checkers.
     agent: Callable[..., AgentResult]
-    fan_out: Callable[..., List[Any]]
+    fan_out: Callable[..., list[Any]]
     log: Callable[..., None]
 
     # ---- schema-validated structured output ----------------------------
     def structured(
         self,
         prompt: str,
-        schema: Union[dict, Callable[[Any], Any]],
+        schema: dict | Callable[[Any], Any],
         *,
         retries: int = 2,
-        model: Optional[str] = None,
+        model: str | None = None,
         label: str = "structured",
         **kw: Any,
     ) -> Structured:
@@ -215,21 +219,21 @@ class PatternsMixin:
             _check_schema_def(schema)  # raise on unsupported keywords before spending credits
             schema_text = json.dumps(schema, sort_keys=True)
             shape = ("\n\nThe JSON must satisfy this shape (a documented subset of JSON "
-                     "Schema):\n%s" % schema_text)
+                     f"Schema):\n{schema_text}")
         else:
             shape = ""
-        base = ("%s\n\nReason briefly if needed, then on the FINAL line output ONLY one "
-                "JSON value (no code fences, nothing after it).%s" % (prompt, shape))
+        base = (f"{prompt}\n\nReason briefly if needed, then on the FINAL line output ONLY one "
+                f"JSON value (no code fences, nothing after it).{shape}")
 
         last_error = ""
         value: Any = None
-        res: Optional[AgentResult] = None
+        res: AgentResult | None = None
         attempts = 0
         for attempt in range(retries + 1):
             attempts = attempt + 1
             ask = base if not last_error else (
-                "%s\n\nYour previous answer was rejected: %s\nReturn corrected JSON only."
-                % (base, last_error))
+                f"{base}\n\nYour previous answer was rejected: {last_error}\n"
+                "Return corrected JSON only.")
             res = self.agent(ask, model=model, label=label, **kw)
             if not res.ok:  # process failure / budget skip — retrying won't help
                 return Structured(value=None, ok=False,
@@ -246,7 +250,7 @@ class PatternsMixin:
                           raw=res, attempts=attempts)
 
     @staticmethod
-    def _validate_value(value: Any, schema: Any, is_callable: bool) -> List[str]:
+    def _validate_value(value: Any, schema: Any, is_callable: bool) -> list[str]:
         if is_callable:
             try:
                 errs = schema(value)
@@ -254,7 +258,12 @@ class PatternsMixin:
                 return [str(e)]
             if not errs:
                 return []
-            return [errs] if isinstance(errs, str) else [str(e) for e in errs]
+            if isinstance(errs, str):
+                return [errs]
+            try:
+                return [str(e) for e in errs]
+            except TypeError:  # truthy non-iterable (e.g. a bare True) -> one error
+                return [str(errs)]
         return _validate_shape(value, schema)
 
     # ---- fan-out -> barrier merge --------------------------------------
@@ -263,15 +272,14 @@ class PatternsMixin:
         results: Sequence[Any],
         *,
         prompt: str = "Synthesize the following inputs into one coherent, de-duplicated result.",
-        model: Optional[str] = None,
+        model: str | None = None,
         label: str = "synthesize",
         **kw: Any,
     ) -> AgentResult:
         """Merge many results/items into a single answer via one agent call."""
-        blocks = []
-        for idx, r in enumerate(results, 1):
-            blocks.append("=== Input %d ===\n%s" % (idx, as_text(r)))
-        full = "%s\n\n%s" % (prompt, "\n\n".join(blocks))
+        blocks = [f"=== Input {idx} ===\n{as_text(r)}" for idx, r in enumerate(results, 1)]
+        body = "\n\n".join(blocks)
+        full = f"{prompt}\n\n{body}"
         return self.agent(full, model=model, label=label, **kw)
 
     # ---- adversarial verification --------------------------------------
@@ -281,7 +289,7 @@ class PatternsMixin:
         *,
         rubric: Any,
         refute: bool = True,
-        model: Optional[str] = None,
+        model: str | None = None,
         label: str = "verify",
         **kw: Any,
     ) -> Verdict:
@@ -315,7 +323,7 @@ class PatternsMixin:
         candidates: Sequence[Any],
         *,
         criteria: str = "overall quality",
-        model: Optional[str] = None,
+        model: str | None = None,
         label: str = "judge",
     ) -> Any:
         """Single-elimination bracket; comparative judgment picks one winner."""
@@ -327,13 +335,13 @@ class PatternsMixin:
             round_no += 1
             pairs = [(items[i], items[i + 1]) for i in range(0, len(items) - 1, 2)]
             byes = items[-1:] if len(items) % 2 else []
-            self.log("  tournament round %d: %d pair(s), %d bye(s)" % (round_no, len(pairs), len(byes)))
+            self.log(f"  tournament round {round_no}: {len(pairs)} pair(s), {len(byes)} bye(s)")
             winners = self.fan_out(
                 pairs, lambda pr: self._judge_pair(pr[0], pr[1], criteria, model, label))
             items = list(winners) + byes
         return items[0]
 
-    def _judge_pair(self, a: Any, b: Any, criteria: str, model: Optional[str], label: str) -> Any:
+    def _judge_pair(self, a: Any, b: Any, criteria: str, model: str | None, label: str) -> Any:
         prompt = (
             "Compare two candidates on: %s.\n\n"
             "=== Candidate A ===\n%s\n\n=== Candidate B ===\n%s\n\n"
@@ -348,18 +356,18 @@ class PatternsMixin:
     # ---- generate -> dedupe -> filter ----------------------------------
     def generate_and_filter(
         self,
-        generate: Union[str, Sequence[str]],
+        generate: str | Sequence[str],
         *,
         n: int = 5,
-        keep: Optional[Callable[[AgentResult], bool]] = None,
-        rubric: Optional[Any] = None,
+        keep: Callable[[AgentResult], bool] | None = None,
+        rubric: Any | None = None,
         dedupe: bool = True,
-        model: Optional[str] = None,
+        model: str | None = None,
         label: str = "generate",
-    ) -> List[AgentResult]:
+    ) -> list[AgentResult]:
         """Generate candidates, drop duplicates, keep those passing a filter."""
         prompts = [generate] * n if isinstance(generate, str) else list(generate)
-        cands: List[AgentResult] = self.fan_out(
+        cands: list[AgentResult] = self.fan_out(
             prompts, lambda p: self.agent(p, model=model, label=label)
         )
         cands = [c for c in cands if isinstance(c, AgentResult) and c.ok]
@@ -389,9 +397,9 @@ class PatternsMixin:
         text: Any,
         classes: Sequence[str],
         *,
-        model: Optional[str] = None,
+        model: str | None = None,
         label: str = "classify",
-        instructions: Optional[str] = None,
+        instructions: str | None = None,
     ) -> str:
         """Return exactly one of ``classes`` for ``text`` (snapped to a valid label)."""
         classes = list(classes)
@@ -418,9 +426,9 @@ class PatternsMixin:
         done: Callable[[Any], bool],
         *,
         max_iters: int = 10,
-    ) -> List[Any]:
+    ) -> list[Any]:
         """Call ``step(i)`` until ``done(result)`` is true or ``max_iters`` reached."""
-        history: List[Any] = []
+        history: list[Any] = []
         for i in range(max_iters):
             r = step(i)
             history.append(r)
@@ -435,8 +443,8 @@ class PatternsMixin:
     def quarantine(
         self,
         *,
-        deny: Optional[Sequence[str]] = None,
-        deny_url: Optional[Sequence[str]] = None,
+        deny: Sequence[str] | None = None,
+        deny_url: Sequence[str] | None = None,
         disable_mcp: bool = True,
         **extra: Any,
     ) -> dict:

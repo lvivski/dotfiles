@@ -459,6 +459,17 @@ class TestExtractLastJson(Base):
     def test_multiline_pretty(self):
         self.assertEqual(_extract_last_json('Here:\n{\n  "k": 1\n}'), {"k": 1})
 
+    def test_multiline_pretty_array_not_inner_element(self):
+        # The whole array must win, not the inner object on its own line.
+        self.assertEqual(_extract_last_json('[\n  {"a": 1}\n]'), [{"a": 1}])
+
+    def test_top_level_scalars(self):
+        # number / bool / string / null answers on the final line are recoverable.
+        self.assertEqual(_extract_last_json("reasoning...\n42"), 42)
+        self.assertEqual(_extract_last_json("done\ntrue"), True)
+        self.assertEqual(_extract_last_json('answer:\n"ok"'), "ok")
+        self.assertIsNone(_extract_last_json("x\nnull"))  # JSON null -> Python None
+
     def test_fenced(self):
         self.assertEqual(_extract_last_json('```\n{"k": "v"}\n```'), {"k": "v"})
 
@@ -559,6 +570,15 @@ class TestStructured(Base):
         s = wf.structured("x " + fake('{"_content": "{\\"n\\": 5}"}'), validate)
         self.assertTrue(s.ok)
         self.assertEqual(s.value, {"n": 5})
+
+    def test_callable_validator_boolean_reject_does_not_crash(self):
+        # A predicate that returns a bare True for "invalid" must not raise (was a TypeError
+        # from iterating a non-iterable error value); it should just fail validation.
+        wf = self.rt()
+        s = wf.structured("x " + fake('{"_content": "{\\"n\\": 5}"}'),
+                          lambda obj: True, retries=0)
+        self.assertFalse(s.ok)
+        self.assertEqual(s.attempts, 1)
 
     def test_unsupported_keyword_raises_before_spending(self):
         wf = self.rt()

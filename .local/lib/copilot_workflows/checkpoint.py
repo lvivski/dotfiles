@@ -5,13 +5,21 @@ import json
 import os
 import threading
 from dataclasses import asdict, fields
-from typing import Dict, Optional
 
 from .agent import AgentResult
 
 
+def default_workflows_dir() -> str:
+    """Where saved harnesses + run state live. Override with ``CWF_WORKFLOWS_DIR``.
+
+    Defaults to ``~/.copilot/workflows`` — the GitHub Copilot CLI's config home, so cwf
+    co-locates with its ``agents/`` and ``skills/``.
+    """
+    return os.environ.get("CWF_WORKFLOWS_DIR") or os.path.expanduser("~/.copilot/workflows")
+
+
 def default_runs_dir() -> str:
-    return os.environ.get("CWF_RUNS_DIR") or os.path.expanduser("~/.copilot/workflows/runs")
+    return os.environ.get("CWF_RUNS_DIR") or os.path.join(default_workflows_dir(), "runs")
 
 
 _RESULT_FIELDS = {f.name for f in fields(AgentResult)}
@@ -30,7 +38,7 @@ class CheckpointStore:
         os.makedirs(run_dir, exist_ok=True)
         self._path = os.path.join(run_dir, "results.ndjson")
         self._lock = threading.Lock()
-        self._cache: Dict[str, AgentResult] = {}
+        self._cache: dict[str, AgentResult] = {}
         self._prior_spent = 0.0
         if resume and os.path.isfile(self._path):
             self._repair_trailing()
@@ -79,7 +87,7 @@ class CheckpointStore:
         with self._lock:
             return len(self._cache)
 
-    def get(self, key: str) -> Optional[AgentResult]:
+    def get(self, key: str) -> AgentResult | None:
         with self._lock:
             return self._cache.get(key)
 

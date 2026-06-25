@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
 import subprocess
 import threading
+from collections.abc import Iterator
 from contextlib import nullcontext
 from dataclasses import dataclass
-from typing import Iterator, List, Optional
 
 
 @dataclass
@@ -14,22 +16,29 @@ class AgentSpec:
     """Everything needed to launch one subagent. Building a spec does not run it."""
 
     prompt: str
-    model: Optional[str] = None
-    agent: Optional[str] = None          # --agent <custom persona>
-    effort: Optional[str] = None         # --effort none|low|medium|high|xhigh|max
-    cwd: Optional[str] = None            # -C <dir> (worktree / isolation)
-    allow: Optional[List[str]] = None    # extra --allow-tool values
-    deny: Optional[List[str]] = None     # --deny-tool values (precedence over allow)
-    allow_url: Optional[List[str]] = None
-    deny_url: Optional[List[str]] = None
-    add_dir: Optional[List[str]] = None  # --add-dir
-    mcp: Optional[str] = None            # --additional-mcp-config (json or @file)
+    model: str | None = None
+    agent: str | None = None             # --agent <custom persona>
+    effort: str | None = None            # --effort none|low|medium|high|xhigh|max
+    cwd: str | None = None               # -C <dir> (worktree / isolation)
+    allow: list[str] | None = None       # extra --allow-tool values
+    deny: list[str] | None = None        # --deny-tool values (precedence over allow)
+    allow_url: list[str] | None = None
+    deny_url: list[str] | None = None
+    add_dir: list[str] | None = None     # --add-dir
+    mcp: str | None = None               # --additional-mcp-config (json or @file)
     disable_mcp: bool = False            # --disable-builtin-mcps (faster startup)
     allow_all_tools: bool = True         # blanket pre-auth; off for quarantine
-    resume: Optional[str] = None         # session id to resume (follow-up turns)
-    timeout: Optional[float] = None      # seconds; kills the process if exceeded
-    label: Optional[str] = None          # human label for logs/progress
-    extra_args: Optional[List[str]] = None
+    resume: str | None = None            # session id to resume (follow-up turns)
+    timeout: float | None = None         # seconds; kills the process if exceeded
+    label: str | None = None             # human label for logs/progress
+    extra_args: list[str] | None = None
+
+    def __post_init__(self):
+        # Normalize a working dir to an absolute path so (a) the checkpoint fingerprint is
+        # stable regardless of where cwf was launched, and (b) ``-C`` and the subprocess cwd
+        # agree (a *relative* cwd would otherwise be applied twice — by Popen and by ``-C``).
+        if self.cwd is not None:
+            self.cwd = os.path.abspath(self.cwd)
 
 
 @dataclass
@@ -37,13 +46,13 @@ class AgentResult:
     """Structured outcome of a subagent run."""
 
     content: str
-    session_id: Optional[str]
+    session_id: str | None
     premium_requests: float
     output_tokens: int
     exit_code: int
-    model: Optional[str] = None
-    label: Optional[str] = None
-    error: Optional[str] = None
+    model: str | None = None
+    label: str | None = None
+    error: str | None = None
     ok: bool = True
     cached: bool = False  # True when returned from a resumed run's checkpoint
 
@@ -51,7 +60,7 @@ class AgentResult:
         return self.content
 
 
-def build_cmd(spec: AgentSpec, copilot_bin: str = "copilot") -> List[str]:
+def build_cmd(spec: AgentSpec, copilot_bin: str = "copilot") -> list[str]:
     """Translate an AgentSpec into a `copilot` argv (no shell)."""
     cmd = [copilot_bin, "-p", spec.prompt, "--output-format", "json", "--no-ask-user", "--no-color"]
     if spec.allow_all_tools:  # non-interactive needs tools pre-authorized
@@ -114,13 +123,13 @@ def _reduce(acc: dict, obj: dict) -> None:
 
 
 def _result(spec: AgentSpec, acc: dict, exit_code: int, *,
-            killed: bool = False, stderr: str = "", error: Optional[str] = None) -> AgentResult:
+            killed: bool = False, stderr: str = "", error: str | None = None) -> AgentResult:
     content = acc["content"]
     if error is None:
         if killed:
-            error = "timed out after %ss" % spec.timeout
+            error = f"timed out after {spec.timeout}s"
         elif exit_code != 0:
-            error = stderr.strip() or "exited with code %s" % exit_code
+            error = stderr.strip() or f"exited with code {exit_code}"
         elif content is None:
             error = "no assistant message in output"
     return AgentResult(
@@ -131,43 +140,45 @@ def _result(spec: AgentSpec, acc: dict, exit_code: int, *,
 
 
 def run_agent(spec: AgentSpec, *, copilot_bin: str = "copilot",
-              semaphore: "Optional[threading.Semaphore]" = None,
-              env: Optional[dict] = None) -> AgentResult:
+              semaphore: threading.Semaphore | None = None,
+              env: dict | None = None) -> AgentResult:
     """Run one subagent to completion and return a structured result.
 
     Blocking and thread-safe; ``semaphore`` bounds how many subprocesses run at once.
     """
     acc = {"content": None, "tokens": 0, "premium": 0.0, "session": None, "model": spec.model}
     killed = threading.Event()
-    stderr: List[str] = []
+    stderr: list[str] = []
+    # Run timeout-bearing agents in their own session so a kill takes down the whole process
+    # tree (Copilot + any shells/tools it spawned), not just the parent. Scoped to timeout
+    # agents only: a new session would otherwise detach normal agents from Ctrl-C.
+    new_session = bool(spec.timeout) and os.name == "posix"
 
     with (semaphore or nullcontext()):
         try:
             proc = subprocess.Popen(
                 build_cmd(spec, copilot_bin), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                cwd=spec.cwd, env=env, text=True, encoding="utf-8", errors="replace", bufsize=1)
+                cwd=spec.cwd, env=env, text=True, encoding="utf-8", errors="replace", bufsize=1,
+                start_new_session=new_session)
         except FileNotFoundError:
-            return _result(spec, acc, 127, error="copilot binary not found: %r" % copilot_bin)
+            return _result(spec, acc, 127, error=f"copilot binary not found: {copilot_bin!r}")
 
-        stream_error: Optional[str] = None
+        stream_error: str | None = None
         with proc:  # context manager closes the pipes (and waits) on exit
             # Drain stderr off-thread so a full stderr pipe can't deadlock the stdout read.
             drain = threading.Thread(target=_drain, args=(proc.stderr, stderr), daemon=True)
             drain.start()
             timer = None
             if spec.timeout:
-                timer = threading.Timer(spec.timeout, _on_timeout, args=(proc, killed))
+                timer = threading.Timer(spec.timeout, _on_timeout, args=(proc, killed, new_session))
                 timer.daemon = True
                 timer.start()
             try:
                 for obj in _json_lines(proc.stdout):
                     _reduce(acc, obj)
             except Exception as e:  # a read/parse error must not leak the timer or hang wait()
-                stream_error = "error reading subagent output: %s" % e
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
+                stream_error = f"error reading subagent output: {e}"
+                _kill(proc, new_session)
             finally:
                 exit_code = proc.wait()
                 if timer:
@@ -178,16 +189,24 @@ def run_agent(spec: AgentSpec, *, copilot_bin: str = "copilot",
                    stderr="".join(stderr), error=stream_error)
 
 
-def _drain(pipe, sink: List[str]) -> None:
+def _drain(pipe, sink: list[str]) -> None:
     try:
         sink.extend(pipe)
     except Exception:
         pass
 
 
-def _on_timeout(proc, killed: threading.Event) -> None:
-    killed.set()
+def _kill(proc, new_session: bool) -> None:
+    """Kill the subprocess — its whole process group when it has its own session."""
     try:
-        proc.kill()
-    except Exception:
+        if new_session:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        else:
+            proc.kill()
+    except Exception:  # already exited / no such group
         pass
+
+
+def _on_timeout(proc, killed: threading.Event, new_session: bool) -> None:
+    killed.set()
+    _kill(proc, new_session)
