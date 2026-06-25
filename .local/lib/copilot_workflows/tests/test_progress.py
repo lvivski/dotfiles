@@ -39,7 +39,7 @@ class TestRuntimeEmits(unittest.TestCase):
 
     def rt(self, recs, **kw):
         kw.setdefault("copilot_bin", FAKE)
-        kw.setdefault("default_model", "fake")
+        kw.setdefault("model", "fake")
         return Runtime(progress=recs.append, **kw)
 
     def test_start_end_pair(self):

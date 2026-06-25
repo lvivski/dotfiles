@@ -152,7 +152,7 @@ class TestWorkflowRestricted(unittest.TestCase):
         os.chmod(FAKE, st.st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
     def rt(self):
-        return Runtime(copilot_bin=FAKE, default_model="fake", restricted=True)
+        return Runtime(copilot_bin=FAKE, model="fake", restricted=True)
 
     def test_rejects_absolute_path(self):
         with self.assertRaises(SandboxError):
@@ -176,7 +176,7 @@ class TestWorkflowRestricted(unittest.TestCase):
         p = os.path.join(d, "child.py")
         with open(p, "w") as fh:
             fh.write("print('hi', args)\n")
-        wf = Runtime(copilot_bin=FAKE, default_model="fake")  # not restricted
+        wf = Runtime(copilot_bin=FAKE, model="fake")  # not restricted
         self.assertEqual(wf.workflow(p, 1), "hi 1")
 
 

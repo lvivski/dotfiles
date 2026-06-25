@@ -5,9 +5,13 @@ Everything is synchronous.
 
 ## Agents
 
-Call `wf.agent(prompt, model=None, agent=None, effort=None, cwd=None, phase=None,
+Call `wf.agent(prompt, model=None, agent=None, effort=None, context=None, cwd=None, phase=None,
 disable_mcp=False, timeout=None, label=None, allow=None, deny=None, allow_url=None,
 deny_url=None, add_dir=None, mcp=None)`.
+
+`effort` is the reasoning-effort level (`none|low|medium|high|xhigh|max`); `context` is the
+context-window tier (`default|long_context`). Each agent inherits the run's session default for
+these (and for `model`) unless it pins its own — the per-agent value wins (see below).
 
 Returns `AgentResult`:
 
@@ -104,6 +108,7 @@ budget, concurrency, checkpoints, and progress. Call only at top level, not insi
 
 ```bash
 cwf run <harness.py> --budget <N> [--args JSON|@file] [--model MODEL] [--disable-mcp]
+cwf run <harness.py> --model M --effort LEVEL --context TIER   # session defaults agents inherit
 cwf run <harness.py> --resume <runId>
 cwf run <harness.py> --dry-run
 cwf run <harness.py> --memory <state.md>                 # durable wf.memory, persists across runs
@@ -111,6 +116,15 @@ cwf loop <harness.py> --every 10m --memory <state.md>    # recurring loop that a
 cwf runs
 cwf watch <runId>
 ```
+
+`--model` (any model id), `--effort` (`none…max`), and `--context` (`default|long_context`) set the
+**session defaults** the workflow runs with. Each agent **inherits** them unless it pins its own
+value in the script, in which case the **per-agent value wins** — this mirrors Claude Code dynamic
+workflows ("omit to inherit the session effort"; a per-agent `model` "takes precedence … if omitted,
+inherits from the parent"). So a launch-time setting steers the agents that *don't* pin a model/effort
+and never forces one onto agents that do. The resolved value is part of an agent's resume-cache key,
+so a different inherited value re-runs rather than reusing a stale result. (Claude's `Workflow` tool
+has no model/effort param at all; `--context` is a Copilot-only tier with no Claude equivalent.)
 
 State lives under `~/.copilot/workflows/runs/<runId>/`: `harness.py`, `meta.json`,
 `results.ndjson`, and `progress.ndjson`.

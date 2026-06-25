@@ -48,6 +48,9 @@ def _bootstrap_path() -> None:
 
 _bootstrap_path()
 
+EFFORT_CHOICES = ("none", "low", "medium", "high", "xhigh", "max")
+CONTEXT_CHOICES = ("default", "long_context")
+
 try:
     from copilot_workflows import (
         CheckpointStore,
@@ -87,6 +90,13 @@ def _parse_args_value(raw: str | None):
 def _is_skipped(r) -> bool:
     """A budget-drained agent (graceful, non-strict mode): not an error."""
     return (not r.ok) and str(getattr(r, "error", "") or "").startswith("skipped:")
+
+
+def _tuning_note(a: argparse.Namespace) -> str:
+    """One-line summary of the session-default effort/context agents inherit, if set."""
+    parts = [f"{label}={value}" for label, value in
+             (("effort", a.effort), ("context", a.context)) if value]
+    return ", ".join(parts)
 
 
 def _system_exit_status(exc: SystemExit) -> int:
@@ -151,7 +161,9 @@ def cmd_run(a: argparse.Namespace) -> int:
     rt = Runtime(
         concurrency=a.concurrency,
         copilot_bin=a.copilot_bin,
-        default_model=a.model,
+        model=a.model,
+        effort=a.effort,
+        context=a.context,
         default_disable_mcp=a.disable_mcp,
         budget=a.budget,
         strict_budget=a.strict_budget,
@@ -171,6 +183,9 @@ def cmd_run(a: argparse.Namespace) -> int:
         ", resume" if resume else "",
         ", restricted" if a.restricted else "",
     ))
+    tuning = _tuning_note(a)
+    if tuning:
+        logger(f"  tuning: {tuning}")
     if run_id:
         cached = store.count if store else 0
         logger(f"  run id: {run_id}" + (f"  ({cached} cached)" if cached else ""))
@@ -361,7 +376,16 @@ def cmd_loop(a: argparse.Namespace) -> int:
 def _add_run_args(pr: argparse.ArgumentParser) -> None:
     pr.add_argument("harness", help="Path to the harness Python file.")
     pr.add_argument("--args", help="JSON (or @file.json) passed to the harness as `args`.")
-    pr.add_argument("--model", help="Default model for agents that don't set one.")
+    pr.add_argument("--model", help="Session default model that agents inherit unless they pin "
+                    "their own; the harness's per-agent choice wins. Any Copilot model "
+                    "(Claude/GPT/Gemini/BYOK) or 'auto'. Mirrors Claude Code.")
+    pr.add_argument("--effort", choices=EFFORT_CHOICES,
+                    help="Session default reasoning effort agents inherit unless they pin their "
+                         "own (the harness's per-agent choice wins). Only affects "
+                         "reasoning-capable models; Copilot enforces applicability.")
+    pr.add_argument("--context", choices=CONTEXT_CHOICES,
+                    help="Session default context-window tier agents inherit unless they pin "
+                         "their own (Copilot-specific; no Claude equivalent).")
     pr.add_argument("--budget", type=float,
                     help="Soft observed premium-credit cap; in-flight agents may overshoot.")
     pr.add_argument("--strict-budget", action="store_true",

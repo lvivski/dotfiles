@@ -54,12 +54,14 @@ A harness is executed with two names injected: `wf` (the runtime) and `args` (th
 value, or `None`). Everything is synchronous — never use `async`/`await`.
 
 ```python
-r = wf.agent(prompt, *, model=None, agent=None, effort=None, cwd=None, phase=None,
+r = wf.agent(prompt, *, model=None, agent=None, effort=None, context=None, cwd=None, phase=None,
              disable_mcp=False, timeout=None, label=None,
              allow=None, deny=None, allow_url=None, deny_url=None, add_dir=None, mcp=None)
 #   -> AgentResult: .content .ok .premium_requests .output_tokens
 #                   .session_id .model .cached .error   (str(r) == r.content)
-#   phase= assigns the progress group explicitly (use inside pipeline()/parallel()).
+#   phase=  assigns the progress group explicitly (use inside pipeline()/parallel()).
+#   effort= reasoning effort (none|low|medium|high|xhigh|max); context= window tier
+#           (default|long_context). Each inherits the run's --effort/--context (and --model) unless pinned here.
 
 wf.follow_up(r, prompt, **kw)               # another turn in the same session
 
@@ -102,6 +104,7 @@ wf.memory.read(); wf.memory.append("...")   # durable text shared ACROSS runs / 
 
 ```
 cwf run <harness.py> [--args JSON|@file] [--model M] [--budget N] [--strict-budget]
+                     [--effort L] [--context T]            # session defaults agents inherit
                      [--concurrency K] [--disable-mcp] [--resume RUN_ID] [--run-id ID]
                      [--runs-dir DIR] [--memory PATH] [--dry-run] [--quiet] [--restricted]
 cwf loop <harness.py> --every 5m [--max-runs N] [<same run flags>]   # recurring triage/research
@@ -109,6 +112,20 @@ cwf runs [--runs-dir DIR]                                            # list rece
 cwf watch <run_id> [--no-follow]                                     # live/replay progress
 ```
 
+- **Model / effort / context** — `--model` (any model id), `--effort`
+  (`none|low|medium|high|xhigh|max`), and `--context` (`default|long_context`) set the **session
+  defaults** the workflow runs with. Each agent **inherits** them unless it pins its own value, in
+  which case the **per-agent value wins**. This mirrors Claude Code dynamic workflows, where an
+  `agent()` "omit[s] to inherit the session effort" and a per-agent `model` "takes precedence … if
+  omitted, inherits from the parent" — Claude's `Workflow` launch tool has no model/effort param, so a
+  launch setting steers only the agents that don't pin one and never forces a model onto agents that
+  do. `--model` is any model string Copilot accepts — Claude, GPT, Gemini, a BYOK provider model, or
+  `auto` (let Copilot pick); cwf treats it as opaque and never branches on the name. `--effort` and
+  `--context` apply only to models that support them (reasoning effort is a reasoning-model feature);
+  Copilot enforces that, so pair a session `--effort` with models that honor it, or pin `effort=none`
+  / a different model on agents that don't (`--context` is a Copilot-only window tier with no Claude
+  equivalent). The resolved value is part of an agent's resume-cache key, so a different inherited
+  value re-runs rather than reusing a stale result.
 - **Budget** is a soft observed-spend cap in premium-request credits — always set `--budget`.
   Agents already in flight can finish and overshoot; once the cap is observed, new agents are
   skipped (graceful drain). `--strict-budget` raises/stops after the cap is observed.
@@ -177,9 +194,10 @@ to parameterize them.
 ## Cost & safety
 
 Dynamic workflows spend meaningfully more than a single session — use them for large, parallel,
-adversarial, or cross-checked work, not routine edits. Use a small model (`claude-haiku-4.5`) for
-wide fan-out and a strong one (`claude-sonnet-4.5`) only for synthesis/judging. Gauge cost by
-running a small slice first (`--dry-run` previews the plan for free). Use `wf.quarantine()` for any
+adversarial, or cross-checked work, not routine edits. Use a small, cheap model for wide fan-out and
+a strong one only for synthesis/judging — any model Copilot offers works (Claude, GPT, Gemini, a BYOK
+provider, or `auto`), e.g. `claude-haiku-4.5` for fan-out and `claude-sonnet-4.5` for synthesis. Gauge
+cost by running a small slice first (`--dry-run` previews the plan for free). Use `wf.quarantine()` for any
 agent that reads untrusted/public content, and keep later verifier/synthesis agents no-tools when
 they consume untrusted-derived text.
 

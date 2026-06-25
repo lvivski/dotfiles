@@ -19,6 +19,7 @@ class AgentSpec:
     model: str | None = None
     agent: str | None = None             # --agent <custom persona>
     effort: str | None = None            # --effort none|low|medium|high|xhigh|max
+    context: str | None = None           # --context default|long_context (context window tier)
     cwd: str | None = None               # -C <dir> (worktree / isolation)
     allow: list[str] | None = None       # extra --allow-tool values
     deny: list[str] | None = None        # --deny-tool values (precedence over allow)
@@ -68,7 +69,8 @@ def build_cmd(spec: AgentSpec, copilot_bin: str = "copilot") -> list[str]:
     if spec.disable_mcp:
         cmd.append("--disable-builtin-mcps")
     for flag, value in (("--resume", spec.resume), ("--model", spec.model), ("--agent", spec.agent),
-                        ("--effort", spec.effort), ("--additional-mcp-config", spec.mcp), ("-C", spec.cwd)):
+                        ("--effort", spec.effort), ("--context", spec.context),
+                        ("--additional-mcp-config", spec.mcp), ("-C", spec.cwd)):
         if value:
             cmd += [flag, value]
     for flag, values in (("--allow-tool", spec.allow), ("--deny-tool", spec.deny),

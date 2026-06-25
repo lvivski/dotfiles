@@ -48,7 +48,7 @@ class Base(unittest.TestCase):
 
     def rt(self, run_dir, store, **kw):
         kw.setdefault("copilot_bin", FAKE)
-        kw.setdefault("default_model", "fake")
+        kw.setdefault("model", "fake")
         return Runtime(run_dir=run_dir, checkpoints=store, **kw)
 
 
@@ -242,7 +242,7 @@ class TestWorktree(Base):
     def test_runtime_worktree_context(self):
         repo = self._make_repo()
         root = find_repo_root(repo)
-        wf = Runtime(copilot_bin=FAKE, default_model="fake",
+        wf = Runtime(copilot_bin=FAKE, model="fake",
                      run_dir=self.tmpdir(), repo_root=root)
         with wf.worktree("ctx-1") as path:
             self.assertTrue(os.path.isdir(path))
@@ -253,7 +253,7 @@ class TestWorktree(Base):
     def test_runtime_removes_owned_temp_worktree_base(self):
         repo = self._make_repo()
         root = find_repo_root(repo)
-        wf = Runtime(copilot_bin=FAKE, default_model="fake", repo_root=root)
+        wf = Runtime(copilot_bin=FAKE, model="fake", repo_root=root)
         with wf.worktree("ctx-1") as path:
             self.assertTrue(os.path.isdir(path))
         base = wf._wt_mgr.base_dir
@@ -265,7 +265,7 @@ class TestWorktree(Base):
 
     def test_worktree_requires_git(self):
         d = self.tmpdir()  # not a git repo
-        wf = Runtime(copilot_bin=FAKE, default_model="fake", run_dir=d, repo_root=None)
+        wf = Runtime(copilot_bin=FAKE, model="fake", run_dir=d, repo_root=None)
         # force detection from a non-repo dir
         cwd = os.getcwd()
         os.chdir(d)

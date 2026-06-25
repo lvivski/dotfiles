@@ -53,9 +53,9 @@ you can complete with a few direct tool calls. Workflows spend more time and pre
    told you to go ahead. Preview for free with the `run_workflow` tool (`dryRun: true`) — or
    `cwf run harness.py --dry-run` headless.
 5. **Run with a budget.** Call `run_workflow` with `{ scriptPath, budget: <N> }` — params map 1:1 to
-   the CLI (`disableMcp`, `concurrency`, `model`, `restricted`, `strictBudget`, `args`). Headless:
-   `cwf run harness.py --budget <N> ...`. Set `disableMcp` when agents do not need GitHub/MCP. Start
-   with a small slice for large or unknown-cost jobs.
+   the CLI (`disableMcp`, `concurrency`, `model`, `effort`, `context`, `restricted`, `strictBudget`,
+   `args`). Headless: `cwf run harness.py --budget <N> ...`. Set `disableMcp` when agents do not need
+   GitHub/MCP. Start with a small slice for large or unknown-cost jobs.
 6. **Return the result.** The `run_workflow` tool returns the harness's final answer plus its `runId`
    and persisted harness path, and streams progress live; present the result. To iterate or continue,
    re-invoke with the same `scriptPath` or `resume: <runId>`. (Headless: the harness prints the answer
@@ -63,8 +63,16 @@ you can complete with a few direct tool calls. Workflows spend more time and pre
 
 ## Defaults that avoid common mistakes
 
-- Use small models for wide fan-out and stronger models only for synthesis, judging, or hard
-  verification.
+- Use small, cheap models for wide fan-out and stronger models only for synthesis, judging, or hard
+  verification. Any model Copilot offers works — Claude, GPT, Gemini, a BYOK provider, or `auto` (let
+  Copilot pick); cwf passes the model string through opaquely.
+- Let the harness pick a model per agent, but honor the user when they want to choose: `model`,
+  `effort` (`none…max`), and `context` (`default|long_context`) set the **session defaults** agents
+  inherit, while a per-agent value pinned in the script wins (mirrors Claude Code: an `agent()`
+  inherits the session model/effort unless it sets its own). Surface them in the preview so the user
+  can pick the model, reasoning effort, or context-window tier before the run starts. Note `effort`
+  only affects reasoning-capable models (Copilot enforces this), so don't set a session `effort` when
+  the harness's agents run on models that don't support it.
 - Tag inner agents with `phase=` and `label=` so progress stays readable.
 - Prefer `wf.structured()` over hand-parsing JSON from agent text.
 - Treat `--budget` / `wf.budget()` as an observed-spend soft cap: in-flight agents may finish and

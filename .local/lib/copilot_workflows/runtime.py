@@ -79,7 +79,7 @@ def _call_stage(stage: Callable, prev: Any, item: Any, index: int) -> Any:
 # fields (timeout, label) are deliberately excluded; resume is included so follow-up
 # turns in different sessions never collide.
 _KEY_FIELDS = (
-    "prompt", "model", "agent", "effort", "cwd", "resume", "disable_mcp", "mcp",
+    "prompt", "model", "agent", "effort", "context", "cwd", "resume", "disable_mcp", "mcp",
     "allow", "deny", "allow_url", "deny_url", "add_dir", "allow_all_tools",
     "extra_args",
 )
@@ -91,7 +91,9 @@ class Runtime(PatternsMixin):
         *,
         concurrency: int | None = None,
         copilot_bin: str = "copilot",
-        default_model: str | None = None,
+        model: str | None = None,
+        effort: str | None = None,
+        context: str | None = None,
         default_disable_mcp: bool = False,
         budget: float | None = None,
         strict_budget: bool = False,
@@ -106,7 +108,9 @@ class Runtime(PatternsMixin):
     ):
         self.concurrency = _normalize_concurrency(concurrency)
         self.copilot_bin = copilot_bin
-        self.default_model = default_model
+        self.model = model
+        self.effort = effort
+        self.context = context
         self.default_disable_mcp = default_disable_mcp
         self.restricted = restricted
         self._budget = budget
@@ -223,16 +227,35 @@ class Runtime(PatternsMixin):
 
     # ---- spec building (no execution) ----------------------------------
     def spec(self, prompt: str, **kw: Any) -> AgentSpec:
-        if kw.get("model") is None:
-            kw["model"] = self.default_model
         kw.setdefault("disable_mcp", self.default_disable_mcp)
-        return AgentSpec(prompt=prompt, **kw)
+        return self._apply_run_settings(AgentSpec(prompt=prompt, **kw))
+
+    def _apply_run_settings(self, spec: AgentSpec) -> AgentSpec:
+        """Fill a spec's model/effort/context from the run-level (session) settings, but only
+        where the harness left them unset — mirroring Claude Code dynamic workflows.
+
+        In Claude an ``agent()`` *inherits the session* model/effort and a per-agent value
+        *overrides* it ("omit to inherit the session effort"; "if omitted or 'inherit', uses
+        the main model"). So the harness's explicit per-agent choice always WINS; the
+        launch-time ``--model``/``--effort``/``--context`` is just the inherited default for
+        agents that don't pin their own. (``context`` is a Copilot-only window tier with no
+        Claude equivalent; it follows the same inherit rule for consistency.) Applied at every
+        launch (see ``agent``) so it reaches a directly-constructed ``AgentSpec`` too. Mutates
+        and returns the spec; idempotent.
+        """
+        if spec.model is None:
+            spec.model = self.model
+        if spec.effort is None:
+            spec.effort = self.effort
+        if spec.context is None:
+            spec.context = self.context
+        return spec
 
     # ---- single agent --------------------------------------------------
     def agent(self, prompt_or_spec: str | AgentSpec, *, key: str | None = None,
               phase: str | None = None, **kw: Any) -> AgentResult:
         spec = (
-            prompt_or_spec
+            self._apply_run_settings(prompt_or_spec)
             if isinstance(prompt_or_spec, AgentSpec)
             else self.spec(prompt_or_spec, **kw)
         )

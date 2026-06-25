@@ -53,7 +53,7 @@ class Base(unittest.TestCase):
 
     def rt(self, **kw):
         kw.setdefault("copilot_bin", FAKE)
-        kw.setdefault("default_model", "fake")
+        kw.setdefault("model", "fake")
         return Runtime(**kw)
 
 
@@ -336,18 +336,59 @@ class TestBudget(Base):
 class TestBuildCmd(Base):
     def test_flags(self):
         spec = AgentSpec(prompt="hi", model="m", agent="verifier", effort="high",
-                         cwd="/tmp/wt", disable_mcp=True, resume="sid-1")
+                         context="long_context", cwd="/tmp/wt", disable_mcp=True, resume="sid-1")
         cmd = build_cmd(spec, "copilot")
         for token in ["copilot", "-p", "hi", "--output-format", "json", "--allow-all-tools",
                       "--no-ask-user", "--model", "m", "--agent", "verifier", "--effort",
-                      "high", "--disable-builtin-mcps", "--resume", "sid-1", "-C", "/tmp/wt"]:
+                      "high", "--context", "long_context", "--disable-builtin-mcps",
+                      "--resume", "sid-1", "-C", "/tmp/wt"]:
             self.assertIn(token, cmd)
+
+    def test_context_omitted_when_unset(self):
+        self.assertNotIn("--context", build_cmd(AgentSpec(prompt="hi"), "copilot"))
 
     def test_quarantine_no_allow_all(self):
         spec = AgentSpec(prompt="hi", allow_all_tools=False, allow=["view"])
         cmd = build_cmd(spec, "copilot")
         self.assertNotIn("--allow-all-tools", cmd)
         self.assertIn("--allow-tool", cmd)
+
+
+class TestRunSettings(Base):
+    def test_launcher_value_fills_unset_agent(self):
+        # The session default is inherited by an agent that doesn't pin its own.
+        wf = self.rt(model="session", effort="high", context="long_context")
+        spec = wf.spec("hi")
+        self.assertEqual((spec.model, spec.effort, spec.context),
+                         ("session", "high", "long_context"))
+
+    def test_harness_choice_wins_over_launcher(self):
+        # A per-agent model/effort/context pinned by the harness overrides the session default.
+        wf = self.rt(model="session", effort="high", context="long_context")
+        spec = wf.spec("hi", model="claude-haiku-4.5", effort="low", context="default")
+        self.assertEqual((spec.model, spec.effort, spec.context),
+                         ("claude-haiku-4.5", "low", "default"))
+
+    def test_unset_when_neither_side_sets(self):
+        wf = self.rt(model=None)
+        spec = wf.spec("hi")
+        self.assertEqual((spec.model, spec.effort, spec.context), (None, None, None))
+
+    def test_inherit_reaches_directly_built_spec(self):
+        # A harness may construct AgentSpec itself and hand it to wf.agent(); the session
+        # default must reach its unset fields (applied at the agent() launch chokepoint),
+        # while a field it pinned is preserved.
+        wf = self.rt(model="session", effort="high")
+        spec = AgentSpec(prompt="hi", model="claude-haiku-4.5")
+        wf._apply_run_settings(spec)
+        self.assertEqual((spec.model, spec.effort), ("claude-haiku-4.5", "high"))
+
+    def test_inherited_model_changes_checkpoint_key(self):
+        # An agent that inherits a different session model must not reuse a stale cached result.
+        a, b = self.rt(model="A"), self.rt(model="B")
+        key_a = a._agent_key(a._apply_run_settings(AgentSpec(prompt="hi")))
+        key_b = b._agent_key(b._apply_run_settings(AgentSpec(prompt="hi")))
+        self.assertNotEqual(key_a, key_b)
 
 
 class TestPipeline(Base):
