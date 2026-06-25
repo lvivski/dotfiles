@@ -383,6 +383,21 @@ class TestRunSettings(Base):
         wf._apply_run_settings(spec)
         self.assertEqual((spec.model, spec.effort), ("claude-haiku-4.5", "high"))
 
+    def test_agent_chokepoint_resolves_directly_built_spec(self):
+        # Drive the real agent() chokepoint (not the private helper): an unpinned model
+        # inherits the session, a pinned one wins. dry_run surfaces the resolved spec.model.
+        wf = self.rt(model="session", dry_run=True)
+        self.assertEqual(wf.agent(AgentSpec(prompt="x")).model, "session")
+        self.assertEqual(wf.agent(AgentSpec(prompt="x", model="claude-haiku-4.5")).model,
+                         "claude-haiku-4.5")
+
+    def test_agent_does_not_mutate_caller_spec(self):
+        # agent() resolves into a copy, so the harness's own AgentSpec stays "inherit".
+        wf = self.rt(model="session", dry_run=True)
+        spec = AgentSpec(prompt="x")
+        wf.agent(spec)
+        self.assertIsNone(spec.model)
+
     def test_inherited_model_changes_checkpoint_key(self):
         # An agent that inherits a different session model must not reuse a stale cached result.
         a, b = self.rt(model="A"), self.rt(model="B")

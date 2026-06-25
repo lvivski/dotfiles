@@ -12,6 +12,7 @@ import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 from contextlib import contextmanager, redirect_stdout
+from dataclasses import replace
 from typing import Any
 
 from .agent import AgentResult, AgentSpec, run_agent
@@ -254,8 +255,10 @@ class Runtime(PatternsMixin):
     # ---- single agent --------------------------------------------------
     def agent(self, prompt_or_spec: str | AgentSpec, *, key: str | None = None,
               phase: str | None = None, **kw: Any) -> AgentResult:
+        # For a caller-supplied AgentSpec, resolve run settings into a COPY so we never mutate
+        # the harness's object (it may reuse/inspect it, or hand it to another runtime).
         spec = (
-            self._apply_run_settings(prompt_or_spec)
+            self._apply_run_settings(replace(prompt_or_spec))
             if isinstance(prompt_or_spec, AgentSpec)
             else self.spec(prompt_or_spec, **kw)
         )
