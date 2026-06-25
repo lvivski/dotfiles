@@ -61,23 +61,39 @@ function enrich {
 function build_prompt {
 	local prompt=""
 
-	# Git info
-	local current_commit_hash=$(git rev-parse HEAD 2> /dev/null)
+	# Git info — one `git status --porcelain --branch` call yields repo state,
+	# branch, upstream and ahead/behind; file flags are parsed from the rest.
+	local git_status
+	git_status=$(git status --porcelain --branch 2> /dev/null)
+	local branch_line=${git_status%%$'\n'*}
+
 	local is_a_git_repo=false
-	if [[ -n $current_commit_hash ]]; then is_a_git_repo=true; fi
+	if [[ -n $git_status ]]; then is_a_git_repo=true; fi
 
 	if [[ $is_a_git_repo == true ]]; then
-		local current_branch=$(git rev-parse --abbrev-ref HEAD 2> /dev/null)
-		if [[ $current_branch == 'HEAD' ]]; then local detached=true; fi
+		local current_branch upstream current_commit_hash
+		local rest=${branch_line#\#\# }
 
-		local number_of_logs=$(git log --pretty=oneline -n1 2> /dev/null | wc -l)
-		if [[ $number_of_logs -eq 0 ]]; then
-			local just_init=true
+		if [[ $branch_line == *'No commits yet'* || $branch_line == *'Initial commit'* ]]; then
+			local detached=true just_init=true
 		else
-			local upstream=$(git rev-parse --symbolic-full-name --abbrev-ref @{upstream} 2> /dev/null)
-			if [[ -n "${upstream}" && "${upstream}" != "@{upstream}" ]]; then local has_upstream=true; fi
+			if [[ $rest == 'HEAD (no branch)'* ]]; then
+				local detached=true
+				current_branch=HEAD
+				current_commit_hash=$(git rev-parse HEAD 2> /dev/null)
+			else
+				current_branch=${rest%%...*}
+				if [[ $rest == *...* ]]; then
+					local after=${rest#*...}
+					upstream=${after%% *}
+					local has_upstream=true
+				fi
+			fi
 
-			local git_status=$(git status --porcelain 2> /dev/null)
+			local commits_ahead=0 commits_behind=0
+			if [[ $branch_line == *'ahead '* ]]; then local t=${branch_line#*ahead }; commits_ahead=${t%%[^0-9]*}; fi
+			if [[ $branch_line == *'behind '* ]]; then local t=${branch_line#*behind }; commits_behind=${t%%[^0-9]*}; fi
+			if [[ $commits_ahead -gt 0 && $commits_behind -gt 0 ]]; then local has_diverged=true; fi
 
 			if [[ $git_status =~ ($'\n'|^).M ]]; then local has_modifications=true; fi
 			if [[ $git_status =~ ($'\n'|^)M ]]; then local has_modifications_cached=true; fi
@@ -87,20 +103,18 @@ function build_prompt {
 			if [[ $git_status =~ ($'\n'|^)[MAD] && ! $git_status =~ ($'\n'|^).[MAD\?] ]]; then local ready_to_commit=true; fi
 			if [[ $git_status =~ ($'\n'|^)[\?]{2} ]]; then local has_untracked_files=true; fi
 
-			local tag_at_current_commit=$(git describe --exact-match --tags $current_commit_hash 2> /dev/null)
-			if [[ -n $tag_at_current_commit ]]; then local is_on_a_tag=true; fi
-
-			if [[ $has_upstream == true ]]; then
-				local commits_ahead commits_behind
-				read -r commits_ahead commits_behind <<<$(git rev-list --left-right --count ${current_commit_hash}...${upstream} 2> /dev/null)
+			local tag_at_current_commit
+			if [[ $display_tag == true || $display_tag_name == true ]]; then
+				tag_at_current_commit=$(git describe --exact-match --tags 2> /dev/null)
+				if [[ -n $tag_at_current_commit ]]; then local is_on_a_tag=true; fi
 			fi
 
-			if [[ $commits_ahead -gt 0 && $commits_behind -gt 0 ]]; then local has_diverged=true; fi
+			local will_rebase
+			if [[ $has_upstream == true ]]; then
+				will_rebase=$(git config --get branch.${current_branch}.rebase 2> /dev/null)
+			fi
 
-			local will_rebase=$(git config --get branch.${current_branch}.rebase 2> /dev/null)
-
-			local number_of_stashes="$(git stash list -n1 2> /dev/null | wc -l)"
-       if [[ $number_of_stashes -gt 0 ]]; then local has_stashes=true; fi
+			if [[ -n $(git stash list -n 1 2> /dev/null) ]]; then local has_stashes=true; fi
 		fi
 	fi
 
