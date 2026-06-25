@@ -1,24 +1,4 @@
-"""Restricted, determinism-assisting execution environment for workflow harnesses.
-
-This is **footgun prevention + determinism**, layered as defense-in-depth on top of an
-OS/agent sandbox — it is **NOT a security jail**. In-process Python ``exec`` is escapable
-(e.g. via object introspection such as ``().__class__.__mro__`` or ``wf.__class__``), just
-as Node/Bun's ``vm`` is. To run genuinely untrusted *authors* safely, run cwf itself inside
-an OS-level sandbox (Copilot ``--cloud`` / ``/sandbox``, a container, seccomp/landlock).
-
-What restricted mode DOES buy:
-
-* **Determinism** — the harness can't ``import`` time/random/datetime/uuid/os, and the
-  nondeterministic builtins ``id``/``hash`` are removed, so a harness is far less likely to
-  change its agent call-graph between a run and its ``--resume``. (cwf checkpoints by a
-  spec *fingerprint*, so nondeterminism mostly costs extra re-runs rather than producing
-  wrong results — but staying deterministic avoids that waste.) Authors pass timestamps via
-  ``args`` and vary randomness by item index.
-* **Orchestration-only** — no ``open``/``exec``/``eval``/``compile`` and no fs/proc/net
-  imports, so a harness can't accidentally read or write files, spawn processes, or reach
-  the network. The privileged work happens inside subagents, already gated per-agent by
-  ``--allow/deny-tool`` and ``wf.quarantine()``.
-"""
+"""Restricted, deterministic harness execution — footgun-prevention, NOT a security jail."""
 from __future__ import annotations
 
 import ast

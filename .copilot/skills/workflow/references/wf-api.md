@@ -88,6 +88,11 @@ propagate.
   over prior untrusted-derived text.
 - `wf.budget()` is a soft observed-spend cap. In-flight agents may overshoot before new agents are
   skipped.
+- `wf.memory` is a durable text file shared across runs and `cwf loop` ticks (enable with
+  `--memory PATH`). Call `wf.memory.read()` / `.append(text)` / `.write(text)` / `.clear()`. It is
+  disabled and no-ops without `--memory`, and read-only under `--dry-run`. Use it so a recurring loop
+  records "what's done / what's next" for its next tick; it works in `--restricted` (the runtime owns
+  the file I/O).
 
 ## Saved workflows
 
@@ -101,6 +106,8 @@ budget, concurrency, checkpoints, and progress. Call only at top level, not insi
 cwf run <harness.py> --budget <N> [--args JSON|@file] [--model MODEL] [--disable-mcp]
 cwf run <harness.py> --resume <runId>
 cwf run <harness.py> --dry-run
+cwf run <harness.py> --memory <state.md>                 # durable wf.memory, persists across runs
+cwf loop <harness.py> --every 10m --memory <state.md>    # recurring loop that accretes state
 cwf runs
 cwf watch <runId>
 ```

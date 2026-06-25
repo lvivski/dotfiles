@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from .agent import AgentResult, AgentSpec, build_cmd, run_agent
 from .checkpoint import CheckpointStore, default_runs_dir, default_workflows_dir
+from .memory import Memory
 from .patterns import PatternsMixin, Structured, Verdict
 from .progress import ProgressReporter, replay
 from .runtime import BudgetExceeded, Runtime, default_concurrency
@@ -22,6 +23,7 @@ __all__ = [
     "Structured",
     "PatternsMixin",
     "CheckpointStore",
+    "Memory",
     "WorktreeManager",
     "ProgressReporter",
     "replay",
@@ -37,4 +39,4 @@ __all__ = [
     "restricted_builtins",
 ]
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"

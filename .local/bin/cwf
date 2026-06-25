@@ -161,6 +161,7 @@ def cmd_run(a: argparse.Namespace) -> int:
         run_dir=run_dir,
         checkpoints=store,
         restricted=a.restricted,
+        memory_path=a.memory,
     )
 
     budget_str = f"{a.budget:.2f}" if a.budget is not None else "none"
@@ -174,6 +175,9 @@ def cmd_run(a: argparse.Namespace) -> int:
         cached = store.count if store else 0
         logger(f"  run id: {run_id}" + (f"  ({cached} cached)" if cached else ""))
         logger(f"  resume: cwf run {a.harness} --resume {run_id}")
+    if a.memory:
+        logger(f"  memory: {os.path.abspath(os.path.expanduser(a.memory))}"
+               + (" (read-only: dry-run)" if a.dry_run else ""))
     if a.restricted and sys.flags.hash_randomization:
         logger("  ! restricted: hash randomization is ON — run with PYTHONHASHSEED=0 "
                "for fully reproducible set/dict ordering")
@@ -364,6 +368,10 @@ def _add_run_args(pr: argparse.ArgumentParser) -> None:
                     help="Raise/stop after the cap is hit instead of gracefully skipping new agents.")
     pr.add_argument("--concurrency", type=int, help="Max concurrent subagents.")
     pr.add_argument("--run-id", help="Explicit run id (default: auto-generated).")
+    pr.add_argument("--memory", metavar="PATH",
+                    help="Durable text file the harness reads/appends via wf.memory. Unlike "
+                         "per-run checkpoints it persists ACROSS `cwf loop` ticks (relative to "
+                         "cwd). Works in --restricted (the runtime owns the file I/O).")
     pr.add_argument("--runs-dir", help="Where run state lives "
                     "(default: $CWF_RUNS_DIR or <$CWF_WORKFLOWS_DIR|~/.copilot/workflows>/runs).")
     pr.add_argument("--disable-mcp", action="store_true",

@@ -16,6 +16,7 @@ from typing import Any
 
 from .agent import AgentResult, AgentSpec, run_agent
 from .checkpoint import default_workflows_dir
+from .memory import Memory
 from .patterns import PatternsMixin
 from .progress import format_agent_line
 from .sandbox import SandboxError, harness_globals, lint_imports
@@ -101,6 +102,7 @@ class Runtime(PatternsMixin):
         checkpoints: Any = None,            # CheckpointStore or None
         repo_root: str | None = None,
         restricted: bool = False,
+        memory_path: str | None = None,
     ):
         self.concurrency = _normalize_concurrency(concurrency)
         self.copilot_bin = copilot_bin
@@ -114,6 +116,9 @@ class Runtime(PatternsMixin):
         self._budget_hit = threading.Event()
         self._sem = threading.BoundedSemaphore(self.concurrency)
         self._log = logger or (lambda *a, **k: None)
+        # Durable text shared ACROSS runs / loop ticks (vs per-run checkpoints). Exposed as
+        # wf.memory; usable from restricted harnesses since the runtime owns the file I/O.
+        self.memory = Memory(memory_path, read_only=dry_run, logger=self._log)
         self._progress = progress
         self._seq = 0
         self._seq_lock = threading.Lock()

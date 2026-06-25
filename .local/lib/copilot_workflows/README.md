@@ -86,6 +86,7 @@ with wf.worktree(f"fix-{item}") as path:    # isolated checkout — unique name 
 q = wf.quarantine()                         # reader of untrusted content: no shell/write tools
 wf.budget(20); wf.log("..."); wf.spent      # cost controls
 wf.budget_total; wf.remaining()             # budget introspection (remaining() is inf if uncapped)
+wf.memory.read(); wf.memory.append("...")   # durable text shared ACROSS runs / loop ticks (--memory)
 ```
 
 > **pipeline vs barrier.** `pipeline()` streams — item A can be in stage 3 while B is in
@@ -102,7 +103,7 @@ wf.budget_total; wf.remaining()             # budget introspection (remaining() 
 ```
 cwf run <harness.py> [--args JSON|@file] [--model M] [--budget N] [--strict-budget]
                      [--concurrency K] [--disable-mcp] [--resume RUN_ID] [--run-id ID]
-                     [--runs-dir DIR] [--dry-run] [--quiet] [--restricted]
+                     [--runs-dir DIR] [--memory PATH] [--dry-run] [--quiet] [--restricted]
 cwf loop <harness.py> --every 5m [--max-runs N] [<same run flags>]   # recurring triage/research
 cwf runs [--runs-dir DIR]                                            # list recent runs
 cwf watch <run_id> [--no-follow]                                     # live/replay progress
@@ -113,6 +114,12 @@ cwf watch <run_id> [--no-follow]                                     # live/repl
   skipped (graceful drain). `--strict-budget` raises/stops after the cap is observed.
 - **Resume** — every completed agent is checkpointed to `results.ndjson`. Re-run with
   `--resume <runId>` and finished agents return instantly.
+- **Memory** (`--memory PATH`) — a durable text file the harness reads/appends through
+  `wf.memory`. Unlike checkpoints (which are per-run), it persists **across `cwf loop`
+  ticks**, so a recurring loop can record "what's done / what's next" for its next run —
+  the *memory* primitive of loop engineering. It works in `--restricted` (the runtime
+  owns the I/O), and `--dry-run` reads it but never writes. `wf.memory` is always safe to
+  call: with no `--memory` it is disabled (`read()` → `""`, writes are no-ops).
 - **Live view** — a TTY shows a panel (running agents, credits, elapsed); pipes get one line per agent.
 
 Run state lives under `~/.copilot/workflows/runs/<runId>/` (`harness.py`, `meta.json`,
@@ -199,6 +206,7 @@ copilot_workflows/
   runtime.py      # the wf facade: agent/fan_out/patterns, concurrency, budget, checkpoints, worktrees
   patterns.py     # synthesize/verify/tournament/generate_and_filter/classify/loop_until/quarantine
   checkpoint.py   # append-only resumable result store
+  memory.py       # durable text shared across runs / loop ticks (wf.memory, --memory)
   worktree.py     # per-agent git worktree isolation
   progress.py     # live panel + progress.ndjson + replay (cwf watch)
   examples/       # hello.py, patterns_demo.py

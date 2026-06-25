@@ -61,6 +61,9 @@ you can complete with a few direct tool calls. Workflows spend more time and pre
 - Treat `--budget` / `wf.budget()` as an observed-spend soft cap: in-flight agents may finish and
   overshoot before new agents are skipped. Use `--strict-budget` only when the harness should raise
   after the cap is observed.
+- For recurring loops (`cwf loop --every ...`), persist progress with `--memory PATH`: each tick is a
+  fresh run, so read prior state with `wf.memory.read()` and record next steps with
+  `wf.memory.append(...)` (checkpoints are per-run only). Start from `examples/loop-memory.cwf.py`.
 - Quarantine agents that read untrusted/public content: `wf.quarantine()`. Later verifier or
   synthesis agents that consume untrusted-derived text should also avoid pre-authorized tools, e.g.
   `wf.quarantine(allow_all_tools=False)`.
