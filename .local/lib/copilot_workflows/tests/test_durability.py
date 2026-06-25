@@ -5,6 +5,7 @@ git repo and the real `git` CLI only.
 
     python3 -m unittest discover -s .local/lib/copilot_workflows/tests
 """
+import json
 import os
 import shutil
 import stat
@@ -112,6 +113,18 @@ class TestCheckpointStore(Base):
         self.assertEqual(s3.get("k1").content, "good")
         self.assertEqual(s3.get("k3").content, "new")
         self.assertAlmostEqual(s3.prior_spent, 0.7)
+
+    def test_loads_legacy_result_missing_new_fields(self):
+        d = self.tmpdir()
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "results.ndjson"), "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"key": "legacy", "result": {"content": "old"}}) + "\n")
+
+        store = CheckpointStore(d, resume=True)
+        got = store.get("legacy")
+        self.assertIsNotNone(got)
+        self.assertEqual(got.content, "old")
+        self.assertEqual(got.exit_code, 0)
 
 
 class TestResume(Base):
@@ -236,6 +249,19 @@ class TestWorktree(Base):
             captured = path
         self.assertFalse(os.path.exists(captured))  # removed on block exit
         wf.cleanup()
+
+    def test_runtime_removes_owned_temp_worktree_base(self):
+        repo = self._make_repo()
+        root = find_repo_root(repo)
+        wf = Runtime(copilot_bin=FAKE, default_model="fake", repo_root=root)
+        with wf.worktree("ctx-1") as path:
+            self.assertTrue(os.path.isdir(path))
+        base = wf._wt_mgr.base_dir
+        self.assertTrue(os.path.isdir(base))
+
+        wf.cleanup()
+
+        self.assertFalse(os.path.exists(base))
 
     def test_worktree_requires_git(self):
         d = self.tmpdir()  # not a git repo

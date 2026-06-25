@@ -19,29 +19,40 @@ if not paths:
     print('audit: provide files, e.g. --args \'{"paths":["a.py"],"concern":"..."}\'')
     raise SystemExit(2)
 
+no_tools = wf.quarantine(allow_all_tools=False)
+
 
 def review(path):
     finding = wf.agent(
         "Review the file `%s` for: %s. List concrete issues with line references, or reply "
         "exactly 'NO ISSUES' if there are none." % (path, concern),
-        model="claude-haiku-4.5", label=path,
+        model="claude-haiku-4.5", label=path, phase="audit",
         **wf.quarantine(),  # untrusted file content: read-only, no shell/write/network/MCP
     )
     return path, finding
 
 
-with wf.phase("audit"):
-    found = wf.fan_out(paths, review)
+def verify_review(reviewed):
+    path, finding = reviewed
+    if not finding.ok or "NO ISSUES" in finding.content.upper():
+        return path, finding, None
+    verdict = wf.verify(
+        finding,
+        rubric="each reported issue is real and relevant to: %s" % concern,
+        refute=True,
+        model="claude-haiku-4.5",
+        label=path,
+        phase="verify",
+        **no_tools,
+    )
+    return path, finding, verdict
 
-# keep only files that reported issues, then adversarially verify those
-flagged = [(p, f) for (p, f) in found if f.ok and "NO ISSUES" not in f.content.upper()]
-with wf.phase("verify"):
-    checked = wf.fan_out(flagged, lambda pf: (
-        pf[0], pf[1],
-        wf.verify(pf[1], rubric="each reported issue is real and relevant to: %s" % concern,
-                  refute=True, model="claude-haiku-4.5")))
 
-solid = [(p, f) for (p, f, v) in checked if v.passed]
+checked = [
+    row for row in wf.pipeline(paths, review, verify_review)
+    if row is not None
+]
+solid = [(p, f) for (p, f, v) in checked if v and v.passed]
 if not solid:
     print("audit: no verified issues found for: %s" % concern)
 else:
@@ -50,5 +61,6 @@ else:
         prompt="Summarize these verified findings about '%s'. Group by severity, most serious "
                "first, and give a one-line fix suggestion per issue." % concern,
         model="claude-sonnet-4.5", label="report",
+        **no_tools,
     )
     print(report.content)

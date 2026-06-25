@@ -6,10 +6,11 @@ import inspect
 import io
 import json
 import os
+import shutil
 import threading
 import time
 from collections.abc import Callable, Sequence
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 from contextlib import contextmanager, redirect_stdout
 from typing import Any
 
@@ -26,8 +27,16 @@ def default_concurrency() -> int:
     return min(16, max(2, cpu - 1))
 
 
+def _normalize_concurrency(value: int | None) -> int:
+    """Return a concrete positive concurrency value."""
+    concurrency = default_concurrency() if value is None else value
+    if concurrency < 1:
+        raise ValueError("concurrency must be >= 1")
+    return concurrency
+
+
 class BudgetExceeded(Exception):
-    """Raised (only in strict mode) when premium-request spend passes the cap."""
+    """Raised (only in strict mode) when observed premium-request spend passes the cap."""
 
 
 def _skipped_result(spec: AgentSpec) -> AgentResult:
@@ -65,8 +74,9 @@ def _call_stage(stage: Callable, prev: Any, item: Any, index: int) -> Any:
     return stage(*(prev, item, index)[:min(n, 3)])
 
 
-# Spec fields that define an agent's identity for checkpoint keys. Ephemeral or
-# cosmetic fields (resume session id, timeout, label) are deliberately excluded.
+# Spec fields that define an agent's identity for checkpoint keys. Cosmetic/operational
+# fields (timeout, label) are deliberately excluded; resume is included so follow-up
+# turns in different sessions never collide.
 _KEY_FIELDS = (
     "prompt", "model", "agent", "effort", "cwd", "resume", "disable_mcp", "mcp",
     "allow", "deny", "allow_url", "deny_url", "add_dir", "allow_all_tools",
@@ -92,7 +102,7 @@ class Runtime(PatternsMixin):
         repo_root: str | None = None,
         restricted: bool = False,
     ):
-        self.concurrency = concurrency or default_concurrency()
+        self.concurrency = _normalize_concurrency(concurrency)
         self.copilot_bin = copilot_bin
         self.default_model = default_model
         self.default_disable_mcp = default_disable_mcp
@@ -107,8 +117,8 @@ class Runtime(PatternsMixin):
         self._progress = progress
         self._seq = 0
         self._seq_lock = threading.Lock()
-        self._phase: str | None = None
-        self._phase_stack: list[str] = []
+        self._phase_local = threading.local()
+        self._key_local = threading.local()
         self.dry_run = dry_run
         self.run_dir = run_dir
         self.checkpoints = checkpoints
@@ -121,6 +131,7 @@ class Runtime(PatternsMixin):
         self._repo_root = repo_root
         self._wt_mgr: WorktreeManager | None = None
         self._wt_lock = threading.Lock()
+        self._owns_wt_base = False
         # inline sub-workflow state (wf.workflow): a key-scope namespaces a child's
         # checkpoint keys so they can't collide/misalign with the parent's on resume.
         self._key_scope = ""
@@ -135,11 +146,11 @@ class Runtime(PatternsMixin):
 
     @property
     def budget_total(self) -> float | None:
-        """The premium-request cap for the run, or None if uncapped."""
+        """The observed premium-request soft cap for the run, or None if uncapped."""
         return self._budget
 
     def remaining(self) -> float:
-        """Premium credits left before the budget cap (``inf`` if uncapped).
+        """Premium credits left before the observed-spend soft cap (``inf`` if uncapped).
 
         Advisory — for dynamic ``while wf.remaining() > N:`` loops. With no budget set
         this is ``inf``, so always pair such loops with ``wf.budget_total is not None``
@@ -155,7 +166,7 @@ class Runtime(PatternsMixin):
         return self._budget_hit.is_set()
 
     def budget(self, premium_requests: float | None) -> None:
-        """Set (or clear) the premium-request budget for the run."""
+        """Set (or clear) the observed-spend soft budget for the run."""
         self._budget = premium_requests
 
     def log(self, *args: Any) -> None:
@@ -164,13 +175,46 @@ class Runtime(PatternsMixin):
     @contextmanager
     def phase(self, name: str):
         """Group the agents launched inside this block under a phase label."""
-        self._phase_stack.append(name)
-        self._phase = name
+        stack = self._phase_stack()
+        stack.append(name)
         try:
             yield
         finally:
-            self._phase_stack.pop()
-            self._phase = self._phase_stack[-1] if self._phase_stack else None
+            stack.pop()
+
+    def _phase_stack(self) -> list[str]:
+        stack = getattr(self._phase_local, "stack", None)
+        if stack is None:
+            stack = []
+            self._phase_local.stack = stack
+        return stack
+
+    def _current_phase(self) -> str | None:
+        stack = self._phase_stack()
+        return stack[-1] if stack else None
+
+    @contextmanager
+    def _use_phase_stack(self, stack: tuple[str, ...]):
+        """Temporarily install the caller's phase context in a worker thread."""
+        local_stack = self._phase_stack()
+        previous = tuple(local_stack)
+        local_stack[:] = stack
+        try:
+            yield
+        finally:
+            local_stack[:] = previous
+
+    def _branch_path(self) -> tuple[int, ...]:
+        return getattr(self._key_local, "branch_path", ())
+
+    @contextmanager
+    def _use_branch_path(self, path: tuple[int, ...]):
+        previous = self._branch_path()
+        self._key_local.branch_path = path
+        try:
+            yield
+        finally:
+            self._key_local.branch_path = previous
 
     # ---- spec building (no execution) ----------------------------------
     def spec(self, prompt: str, **kw: Any) -> AgentSpec:
@@ -182,11 +226,14 @@ class Runtime(PatternsMixin):
     # ---- single agent --------------------------------------------------
     def agent(self, prompt_or_spec: str | AgentSpec, *, key: str | None = None,
               phase: str | None = None, **kw: Any) -> AgentResult:
-        spec = prompt_or_spec if isinstance(prompt_or_spec, AgentSpec) else self.spec(prompt_or_spec, **kw)
+        spec = (
+            prompt_or_spec
+            if isinstance(prompt_or_spec, AgentSpec)
+            else self.spec(prompt_or_spec, **kw)
+        )
         label = spec.label or "agent"
-        # Explicit phase wins over the global phase() context — concurrent pipeline()
-        # / parallel() items would otherwise race on the shared self._phase.
-        eff_phase = phase if phase is not None else self._phase
+        # Explicit phase wins over the inherited phase context.
+        eff_phase = phase if phase is not None else self._current_phase()
         seq = self._next_seq()
         self._emit({"ev": "start", "seq": seq, "label": label, "model": spec.model,
                     "phase": eff_phase, "t": time.time()})
@@ -214,7 +261,8 @@ class Runtime(PatternsMixin):
                 self._budget_hit.set()
                 if self.strict_budget:
                     self._finish(seq, label, _skipped_result(spec), skipped=True, phase=eff_phase)
-                    raise BudgetExceeded(f"budget {self._budget:.2f} reached (spent {self.spent:.2f})")
+                    raise BudgetExceeded(
+                        f"budget {self._budget:.2f} reached (spent {self.spent:.2f})")
                 res = _skipped_result(spec)
                 skipped = True
             else:
@@ -226,7 +274,8 @@ class Runtime(PatternsMixin):
 
         self._finish(seq, label, res, skipped=skipped, phase=eff_phase)
         if strict_stop:
-            raise BudgetExceeded(f"budget {self._budget:.2f} exceeded (spent {self.spent:.2f})")
+            raise BudgetExceeded(
+                f"budget {self._budget:.2f} exceeded (spent {self.spent:.2f})")
         return res
 
     def _finish(self, seq: int, label: str, res: AgentResult, *, skipped: bool,
@@ -236,7 +285,8 @@ class Runtime(PatternsMixin):
         self._emit({"ev": "end", "seq": seq, "label": label, "ok": res.ok,
                     "cached": res.cached, "skipped": skipped, "cr": res.premium_requests,
                     "tok": res.output_tokens, "error": res.error, "model": res.model,
-                    "phase": phase if phase is not None else self._phase, "t": time.time()})
+                    "phase": phase if phase is not None else self._current_phase(),
+                    "t": time.time()})
 
     def follow_up(self, result: AgentResult, prompt: str, **kw: Any) -> AgentResult:
         """Send another turn to the same session (multi-turn via --resume)."""
@@ -255,32 +305,12 @@ class Runtime(PatternsMixin):
     ) -> list[Any]:
         """Run ``fn(item)`` for every item in parallel; return results in order."""
         items = list(items)
-        if not items:
-            return []
-        workers = min(concurrency or self.concurrency, len(items))
-        results: list[Any] = [None] * len(items)
-        budget_error = None
-        branch_error = None
-
-        def task(i: int, item: Any):
-            return i, fn(item)
-
-        with ThreadPoolExecutor(max_workers=workers) as ex:
-            futs = [ex.submit(task, i, it) for i, it in enumerate(items)]
-            for fut in as_completed(futs):
-                try:
-                    i, r = fut.result()
-                    results[i] = r
-                except BudgetExceeded as e:  # strict mode only
-                    budget_error = budget_error or e
-                except Exception as e:  # surface real branch bugs instead of leaving None
-                    self._log(f"  ! fan_out branch failed: {e}")
-                    branch_error = branch_error or e
-        if budget_error is not None:
-            raise budget_error
-        if branch_error is not None:
-            raise branch_error
-        return results
+        return self._concurrent_map(
+            len(items),
+            lambda i: fn(items[i]),
+            concurrency=concurrency,
+            drop_errors=False,
+        )
 
     # ---- concurrency primitive shared by pipeline()/parallel() ---------
     def _concurrent_map(
@@ -299,21 +329,26 @@ class Runtime(PatternsMixin):
         """
         if n <= 0:
             return []
-        workers = min(concurrency or self.concurrency, n)
+        requested = self.concurrency if concurrency is None else concurrency
+        workers = min(_normalize_concurrency(requested), n)
         results: list[Any] = [None] * n
         budget_error = None
         branch_error = None
+        parent_phase_stack = tuple(self._phase_stack())
+        parent_branch_path = self._branch_path()
 
         def run(i: int):
-            try:
-                return i, work(i)
-            except BudgetExceeded:
-                raise
-            except Exception as e:  # noqa: BLE001 — policy decided by drop_errors
-                if drop_errors:
-                    self._log(f"  ! dropped item {i}: {e}")
-                    return i, None
-                raise
+            with self._use_phase_stack(parent_phase_stack):
+                with self._use_branch_path(parent_branch_path + (i,)):
+                    try:
+                        return i, work(i)
+                    except BudgetExceeded:
+                        raise
+                    except Exception as e:  # noqa: BLE001 — policy decided by drop_errors
+                        if drop_errors:
+                            self._log(f"  ! dropped item {i}: {e}")
+                            return i, None
+                        raise
 
         with ThreadPoolExecutor(max_workers=workers) as ex:
             futs = [ex.submit(run, i) for i in range(n)]
@@ -323,6 +358,10 @@ class Runtime(PatternsMixin):
                     results[i] = r
                 except BudgetExceeded as e:  # strict mode only
                     budget_error = budget_error or e
+                    for pending in futs:
+                        pending.cancel()
+                except CancelledError:
+                    pass
                 except Exception as e:  # surfaces only when drop_errors=False
                     branch_error = branch_error or e
         if budget_error is not None:
@@ -377,6 +416,7 @@ class Runtime(PatternsMixin):
         thunks = list(thunks)
         return self._concurrent_map(
             len(thunks), lambda i: thunks[i](), concurrency=concurrency, drop_errors=True)
+
     @contextmanager
     def worktree(self, name: str, base_ref: str | None = None):
         """Give an agent its own git worktree for the duration of the block."""
@@ -398,18 +438,27 @@ class Runtime(PatternsMixin):
                 )
             if self.run_dir:
                 base = os.path.join(self.run_dir, "worktrees")
+                self._owns_wt_base = False
             else:
                 import tempfile
                 base = tempfile.mkdtemp(prefix="cwf-wt-")
+                self._owns_wt_base = True
             self._wt_mgr = WorktreeManager(root, base, logger=self._log)
 
     def cleanup(self) -> None:
         """Remove any worktrees created during the run. Safe to call always."""
         if self._wt_mgr is not None:
+            base = self._wt_mgr.base_dir
+            cleanup_ok = True
             try:
                 self._wt_mgr.cleanup_all()
             except Exception as e:
+                cleanup_ok = False
                 self._log(f"  ! worktree cleanup failed: {e}")
+            if cleanup_ok and self._owns_wt_base:
+                shutil.rmtree(base, ignore_errors=True)
+            if cleanup_ok:
+                self._wt_mgr = None
 
     # ---- inline sub-workflow composition -------------------------------
     def workflow(self, target: str, args: Any = None) -> str:
@@ -495,20 +544,30 @@ class Runtime(PatternsMixin):
 
     # ---- checkpoint keys -----------------------------------------------
     def _scoped_key(self, key: str) -> str:
-        """Namespace an explicit checkpoint key by the active workflow scope (if any)."""
-        return f"{self._key_scope}-{key}" if self._key_scope else key
+        """Namespace an explicit checkpoint key by workflow/branch scope, if any."""
+        prefix = self._key_prefix()
+        return f"{prefix}-{key}" if prefix else key
 
     def _agent_key(self, spec: AgentSpec) -> str:
         fp = self._spec_fingerprint(spec)
-        # Scope folds into the occurrence counter AND the key prefix so a child
-        # workflow's agents never alias the parent's. Empty scope -> byte-identical
-        # to the pre-scope key (resume compatibility preserved).
-        occ_key = f"{self._key_scope}:{fp}" if self._key_scope else fp
+        # Scope folds into the occurrence counter AND the key prefix so child
+        # workflows and concurrent branches never alias each other. Empty scope
+        # remains byte-identical to the pre-scope key (resume compatibility).
+        prefix = self._key_prefix()
+        occ_key = f"{prefix}:{fp}" if prefix else fp
         with self._occ_lock:
             n = self._occurrence.get(occ_key, 0)
             self._occurrence[occ_key] = n + 1
-        prefix = f"{self._key_scope}-" if self._key_scope else ""
-        return f"{prefix}{fp[:16]}-{n}"
+        return f"{prefix + '-' if prefix else ''}{fp[:16]}-{n}"
+
+    def _key_prefix(self) -> str:
+        parts = []
+        if self._key_scope:
+            parts.append(self._key_scope)
+        branch = self._branch_path()
+        if branch:
+            parts.append("b" + ".".join(str(i) for i in branch))
+        return "-".join(parts)
 
     @staticmethod
     def _spec_fingerprint(spec: AgentSpec) -> str:

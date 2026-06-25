@@ -26,7 +26,14 @@ _RESULT_FIELDS = {f.name for f in fields(AgentResult)}
 
 
 def _result_from_dict(data: dict) -> AgentResult:
-    clean = {k: v for k, v in data.items() if k in _RESULT_FIELDS}
+    clean = {
+        "content": "",
+        "session_id": None,
+        "premium_requests": 0.0,
+        "output_tokens": 0,
+        "exit_code": 0,
+    }
+    clean.update({k: v for k, v in data.items() if k in _RESULT_FIELDS})
     return AgentResult(**clean)
 
 
@@ -44,7 +51,8 @@ class CheckpointStore:
             self._repair_trailing()
             self._load()
         elif not resume and os.path.isfile(self._path):
-            open(self._path, "w").close()  # fresh run reusing a run dir: drop stale checkpoints
+            with open(self._path, "w", encoding="utf-8"):
+                pass  # fresh run reusing a run dir: drop stale checkpoints
 
     def _repair_trailing(self) -> None:
         """Drop an unterminated final line left by a crash mid-write.
@@ -64,7 +72,7 @@ class CheckpointStore:
             pass
 
     def _load(self) -> None:
-        with open(self._path) as fh:
+        with open(self._path, encoding="utf-8") as fh:
             for line in fh:
                 try:
                     rec = json.loads(line)
@@ -96,7 +104,7 @@ class CheckpointStore:
             if key in self._cache:
                 return
             self._cache[key] = result
-            with open(self._path, "a") as fh:
+            with open(self._path, "a", encoding="utf-8") as fh:
                 fh.write(json.dumps({"key": key, "result": asdict(result)}) + "\n")
                 fh.flush()
                 os.fsync(fh.fileno())  # durable: a crash here can't leave a torn line

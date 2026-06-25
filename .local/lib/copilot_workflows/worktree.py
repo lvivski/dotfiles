@@ -10,13 +10,19 @@ import threading
 _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
-def _git(args: list[str], cwd: str, check: bool = True) -> str:
+def _git_result(args: list[str], cwd: str, check: bool = True) -> subprocess.CompletedProcess:
     proc = subprocess.run(
         ["git"] + args, cwd=cwd,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        encoding="utf-8", errors="replace",
     )
     if check and proc.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {proc.stderr.strip()}")
+    return proc
+
+
+def _git(args: list[str], cwd: str, check: bool = True) -> str:
+    proc = _git_result(args, cwd, check)
     return proc.stdout.strip()
 
 
@@ -63,12 +69,20 @@ class WorktreeManager:
 
     def remove(self, path: str) -> None:
         with self._lock:
-            if path in self._created:
-                self._created.remove(path)
             if not os.path.exists(path):
+                if path in self._created:
+                    self._created.remove(path)
                 return
-            _git(["worktree", "remove", "--force", path], cwd=self.repo_root, check=False)
-            self._log(f"  worktree - {os.path.basename(path)}")
+            proc = _git_result(["worktree", "remove", "--force", path],
+                               cwd=self.repo_root, check=False)
+            if proc.returncode == 0 or not os.path.exists(path):
+                if path in self._created:
+                    self._created.remove(path)
+                self._log(f"  worktree - {os.path.basename(path)}")
+            else:
+                self._log(
+                    f"  ! worktree remove failed for {os.path.basename(path)}: "
+                    f"{proc.stderr.strip()}")
 
     def cleanup_all(self) -> None:
         for path in list(self._created):

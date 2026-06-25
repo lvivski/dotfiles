@@ -149,6 +149,19 @@ class TestCwfCli(unittest.TestCase):
             capture_output=True, text=True)
         self.assertEqual(watch.returncode, 0, watch.stderr)
 
+    def test_harness_system_exit_sets_status(self):
+        runs = tempfile.mkdtemp(prefix="cwf-cli-")
+        harness = os.path.join(runs, "exit.py")
+        with open(harness, "w", encoding="utf-8") as fh:
+            fh.write("raise SystemExit(7)\n")
+
+        run = subprocess.run(
+            [sys.executable, CWF, "run", harness, "--copilot-bin", FAKE,
+             "--runs-dir", runs, "--run-id", "exit", "--quiet"],
+            capture_output=True, text=True)
+        self.assertEqual(run.returncode, 7, run.stderr)
+        self.assertNotIn("harness raised", run.stderr)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

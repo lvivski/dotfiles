@@ -6,8 +6,6 @@
 #
 # Note: research workers use whatever web-search/fetch tools the agent has, so run WITHOUT
 # --disable-mcp (network access is the point here).
-import json
-import re
 
 # ---- inputs ---------------------------------------------------------------
 if isinstance(args, dict):
@@ -23,44 +21,51 @@ if not question:
     wf.log("deep-research: no question supplied via --args; using a sample question.")
 
 
-def extract_str_array(text):
-    for block in reversed(re.findall(r"\[(?:[^\[\]]|\n)*\]", text or "", re.S)):
-        try:
-            val = json.loads(block)
-        except Exception:
-            continue
-        if isinstance(val, list) and val:
-            return [str(x).strip() for x in val if str(x).strip()]
-    return None
-
-
 # ---- 1) decompose into independent angles ---------------------------------
-plan = wf.agent(
+plan = wf.structured(
     "Break the following research question into %d independent sub-questions or angles "
-    "to investigate. Return ONLY a JSON array of strings on the final line.\n\nQuestion: %s"
+    "to investigate.\n\nQuestion: %s"
     % (max_angles, question),
+    {"type": "array", "items": {"type": "string"}},
     model="claude-sonnet-4.5", label="plan",
 )
-angles = extract_str_array(plan.content) or [question]
+angles = ([a.strip() for a in plan.value if str(a).strip()] if plan.ok else []) or [question]
 wf.log("deep-research: %d angle(s)" % len(angles))
+no_tools = wf.quarantine(allow_all_tools=False)
 
-# ---- 2) fan out: research each angle, citing sources ----------------------
-with wf.phase("research"):
-    findings = wf.fan_out(angles, lambda a: wf.agent(
+
+# ---- 2/3) research each angle, then verify as soon as it returns ------------
+def research(angle):
+    return angle, wf.agent(
         "Research this question using web search. State concrete findings and cite EVERY claim "
-        "with a source URL. If evidence is thin or conflicting, say so.\n\nQuestion: %s" % a,
-        model="claude-haiku-4.5", label=a[:24],
+        "with a source URL. If evidence is thin or conflicting, say so.\n\nQuestion: %s" % angle,
+        model="claude-haiku-4.5", label=angle[:24], phase="research",
         # Reads untrusted web content -> deny shell/write to contain prompt injection,
         # but keep network + MCP (web access is the whole point of this step).
         **wf.quarantine(deny_url=[], disable_mcp=False),
-    ))
+    )
 
-# ---- 3) adversarially verify each finding ---------------------------------
-with wf.phase("verify"):
-    checked = wf.fan_out(findings, lambda f: (
-        f, wf.verify(f, rubric="every factual claim is supported by a cited, credible source URL",
-                     refute=True, model="claude-haiku-4.5")))
-trusted = [f for (f, v) in checked if v.passed]
+
+def verify_finding(reviewed):
+    angle, finding = reviewed
+    verdict = wf.verify(
+        finding,
+        rubric="every factual claim is supported by a cited, credible source URL",
+        refute=True,
+        model="claude-haiku-4.5",
+        phase="verify",
+        label=angle[:24],
+        **no_tools,
+    )
+    return angle, finding, verdict
+
+
+checked = [
+    row for row in wf.pipeline(angles, research, verify_finding)
+    if row is not None
+]
+findings = [finding for (_, finding, _) in checked]
+trusted = [finding for (_, finding, verdict) in checked if verdict.passed]
 wf.log("deep-research: %d/%d findings survived verification" % (len(trusted), len(findings)))
 
 # ---- 4) synthesize a cited report -----------------------------------------
@@ -70,5 +75,6 @@ report = wf.synthesize(
             "findings. Keep only well-sourced claims; list any open questions at the end.\n\n"
             "Question: %s" % question),
     model="claude-sonnet-4.5", label="report",
+    **no_tools,
 )
 print(report.content)

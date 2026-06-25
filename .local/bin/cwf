@@ -68,7 +68,7 @@ except Exception as exc:  # pragma: no cover
 def _new_run_id(harness_path: str) -> str:
     stem = os.path.splitext(os.path.basename(harness_path))[0]
     ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    rnd = "".join(random.choice(string.ascii_lowercase + string.digits) for _ in range(4))
+    rnd = "".join(random.choices(string.ascii_lowercase + string.digits, k=4))
     return f"{stem}-{ts}-{rnd}"
 
 
@@ -76,7 +76,7 @@ def _parse_args_value(raw: str | None):
     if raw is None:
         return None
     if raw.startswith("@"):
-        with open(os.path.expanduser(raw.removeprefix("@")), "r") as fh:
+        with open(os.path.expanduser(raw.removeprefix("@")), "r", encoding="utf-8") as fh:
             return json.load(fh)
     try:
         return json.loads(raw)
@@ -89,8 +89,21 @@ def _is_skipped(r) -> bool:
     return (not r.ok) and str(getattr(r, "error", "") or "").startswith("skipped:")
 
 
+def _system_exit_status(exc: SystemExit) -> int:
+    """Normalize a harness-raised SystemExit to a process status."""
+    code = exc.code
+    if code is None:
+        return 0
+    if isinstance(code, bool):
+        return int(code)
+    if isinstance(code, int):
+        return code
+    sys.stderr.write(f"{code}\n")
+    return 1
+
+
 def cmd_run(a: argparse.Namespace) -> int:
-    harness_path = os.path.abspath(a.harness)
+    harness_path = os.path.abspath(os.path.expanduser(a.harness))
     if not os.path.isfile(harness_path):
         sys.stderr.write(f"cwf: harness not found: {a.harness}\n")
         return 2
@@ -172,7 +185,7 @@ def cmd_run(a: argparse.Namespace) -> int:
     start = time.time()
     status = 0
     try:
-        with open(harness_path, "r") as fh:
+        with open(harness_path, "r", encoding="utf-8") as fh:
             src = fh.read()
         if a.restricted:
             lint_imports(src, harness_path)  # fail fast before any agent spends credits
@@ -184,6 +197,8 @@ def cmd_run(a: argparse.Namespace) -> int:
     except BudgetExceeded as e:
         logger(f"\n! {e} — stopping")
         status = 3
+    except SystemExit as e:
+        status = _system_exit_status(e)
     except KeyboardInterrupt:
         logger(f"\n! interrupted (resume with: cwf run {a.harness} --resume {run_id or '?'})")
         status = 130
@@ -224,7 +239,7 @@ def _write_meta(run_dir, run_id, harness_path, args_value, resume, restricted=Fa
     meta = {}
     if resume and os.path.isfile(meta_path):
         try:
-            with open(meta_path) as fh:
+            with open(meta_path, encoding="utf-8") as fh:
                 meta = json.load(fh)
         except Exception:
             meta = {}
@@ -236,7 +251,7 @@ def _write_meta(run_dir, run_id, harness_path, args_value, resume, restricted=Fa
     meta["args"] = args_value
     meta["updated_at"] = now
     try:
-        with open(meta_path, "w") as fh:
+        with open(meta_path, "w", encoding="utf-8") as fh:
             json.dump(meta, fh, indent=2)
     except Exception:
         pass
@@ -263,7 +278,7 @@ def cmd_runs(a: argparse.Namespace) -> int:
         mp = os.path.join(d, "meta.json")
         if os.path.isfile(mp):
             try:
-                with open(mp) as fh:
+                with open(mp, encoding="utf-8") as fh:
                     meta = json.load(fh)
             except Exception:
                 pass
@@ -271,7 +286,7 @@ def cmd_runs(a: argparse.Namespace) -> int:
         rp = os.path.join(d, "results.ndjson")
         if os.path.isfile(rp):
             try:
-                with open(rp) as fh:
+                with open(rp, encoding="utf-8") as fh:
                     for line in fh:
                         line = line.strip()
                         if not line:
@@ -343,9 +358,10 @@ def _add_run_args(pr: argparse.ArgumentParser) -> None:
     pr.add_argument("harness", help="Path to the harness Python file.")
     pr.add_argument("--args", help="JSON (or @file.json) passed to the harness as `args`.")
     pr.add_argument("--model", help="Default model for agents that don't set one.")
-    pr.add_argument("--budget", type=float, help="Max premium-request credits for the run.")
+    pr.add_argument("--budget", type=float,
+                    help="Soft observed premium-credit cap; in-flight agents may overshoot.")
     pr.add_argument("--strict-budget", action="store_true",
-                    help="Raise/stop when budget is hit instead of gracefully skipping.")
+                    help="Raise/stop after the cap is hit instead of gracefully skipping new agents.")
     pr.add_argument("--concurrency", type=int, help="Max concurrent subagents.")
     pr.add_argument("--run-id", help="Explicit run id (default: auto-generated).")
     pr.add_argument("--runs-dir", help="Where run state lives "

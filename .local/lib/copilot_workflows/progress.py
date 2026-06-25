@@ -83,8 +83,10 @@ class ProgressReporter:
         self._fh = None
         if write and ndjson_path:
             try:
-                os.makedirs(os.path.dirname(ndjson_path), exist_ok=True)
-                self._fh = open(ndjson_path, "a")
+                directory = os.path.dirname(ndjson_path)
+                if directory:
+                    os.makedirs(directory, exist_ok=True)
+                self._fh = open(ndjson_path, "a", encoding="utf-8")
             except Exception:
                 self._fh = None
 
@@ -240,7 +242,7 @@ def replay(path: str, follow: bool = True, reporter: ProgressReporter | None = N
     rep = reporter or ProgressReporter(live=None, write=False, title=os.path.basename(os.path.dirname(path)))
     ended = False
     try:
-        with open(path, "r") as fh:
+        with open(path, "r", encoding="utf-8") as fh:
             while True:
                 line = fh.readline()
                 if line:

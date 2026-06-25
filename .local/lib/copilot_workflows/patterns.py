@@ -46,15 +46,18 @@ def _extract_json(text: str) -> dict | None:
     return found
 
 
-def _extract_last_json(text: str) -> Any | None:
-    """Last top-level JSON value (object OR array) in ``text``, or None.
+_JSON_NOT_FOUND = object()
+
+
+def _extract_last_json(text: str, *, default: Any = None) -> Any:
+    """Last top-level JSON value (object OR array) in ``text``, or ``default``.
 
     Prefers the final non-empty line parsed whole (the model's actual answer, not a
     restated schema earlier in the reply); falls back to scanning embedded ``{``/``[``
     and keeping the last that decodes (handles pretty-printed multi-line JSON).
     """
     if not text:
-        return None
+        return default
     # 1) Prefer the final non-empty line parsed whole — the model's actual answer, and the
     #    only place a top-level SCALAR (number/string/bool/null) answer can be recovered.
     for line in reversed(text.splitlines()):
@@ -66,7 +69,7 @@ def _extract_last_json(text: str) -> Any | None:
         except (ValueError, RecursionError):  # JSONDecodeError is a ValueError
             break  # last content line isn't a clean value -> scan for embedded JSON
     decoder = json.JSONDecoder()
-    found: Any | None = None
+    found: Any = _JSON_NOT_FOUND
     i = 0
     n = len(text)
     while i < n:
@@ -81,7 +84,7 @@ def _extract_last_json(text: str) -> Any | None:
             except RecursionError:  # pathologically deep nesting: stop scanning
                 break
         i += 1
-    return found
+    return default if found is _JSON_NOT_FOUND else found
 
 
 _SHAPE_KEYWORDS = {"type", "properties", "required", "enum", "items",
@@ -214,6 +217,8 @@ class PatternsMixin:
         itself fails (or is budget-skipped), returns immediately without burning retries.
         Returns a ``Structured`` (truthy when ``ok``).
         """
+        if retries < 0:
+            raise ValueError("retries must be >= 0")
         is_callable = callable(schema)
         if not is_callable:
             _check_schema_def(schema)  # raise on unsupported keywords before spending credits
@@ -238,8 +243,8 @@ class PatternsMixin:
             if not res.ok:  # process failure / budget skip — retrying won't help
                 return Structured(value=None, ok=False,
                                   error=res.error or "agent failed", raw=res, attempts=attempts)
-            value = _extract_last_json(res.content)
-            if value is None:
+            value = _extract_last_json(res.content, default=_JSON_NOT_FOUND)
+            if value is _JSON_NOT_FOUND:
                 last_error = "no JSON value found in the response"
                 continue
             errs = self._validate_value(value, schema, is_callable)
@@ -325,8 +330,12 @@ class PatternsMixin:
         criteria: str = "overall quality",
         model: str | None = None,
         label: str = "judge",
+        **kw: Any,
     ) -> Any:
-        """Single-elimination bracket; comparative judgment picks one winner."""
+        """Single-elimination bracket; comparative judgment picks one winner.
+
+        Raises if a judge agent fails or does not return a valid winner.
+        """
         items = list(candidates)
         if not items:
             return None
@@ -337,21 +346,28 @@ class PatternsMixin:
             byes = items[-1:] if len(items) % 2 else []
             self.log(f"  tournament round {round_no}: {len(pairs)} pair(s), {len(byes)} bye(s)")
             winners = self.fan_out(
-                pairs, lambda pr: self._judge_pair(pr[0], pr[1], criteria, model, label))
+                pairs, lambda pr: self._judge_pair(pr[0], pr[1], criteria, model, label, kw))
             items = list(winners) + byes
         return items[0]
 
-    def _judge_pair(self, a: Any, b: Any, criteria: str, model: str | None, label: str) -> Any:
+    def _judge_pair(self, a: Any, b: Any, criteria: str, model: str | None,
+                    label: str, kw: dict[str, Any]) -> Any:
         prompt = (
             "Compare two candidates on: %s.\n\n"
             "=== Candidate A ===\n%s\n\n=== Candidate B ===\n%s\n\n"
             "Pick the single better candidate. Give brief reasoning, then on the FINAL line "
             'output ONLY JSON: {"winner": "A"|"B", "why": "..."}'
         ) % (criteria, as_text(a), as_text(b))
-        res = self.agent(prompt, model=model, label=label)
+        res = self.agent(prompt, model=model, label=label, **kw)
+        if not res.ok:
+            raise RuntimeError(f"judge agent failed: {res.error or 'unknown error'}")
         data = _extract_json(res.content) or {}
         winner = str(data.get("winner", "A")).strip().upper()
-        return b if winner.startswith("B") else a
+        if winner.startswith("A"):
+            return a
+        if winner.startswith("B"):
+            return b
+        raise ValueError("judge did not return winner A or B")
 
     # ---- generate -> dedupe -> filter ----------------------------------
     def generate_and_filter(
@@ -400,24 +416,29 @@ class PatternsMixin:
         model: str | None = None,
         label: str = "classify",
         instructions: str | None = None,
+        **kw: Any,
     ) -> str:
-        """Return exactly one of ``classes`` for ``text`` (snapped to a valid label)."""
+        """Return exactly one of ``classes`` for ``text``; raise if no valid label is returned."""
         classes = list(classes)
+        if not classes:
+            raise ValueError("classes must contain at least one category")
         prompt = (
             "Classify the input into exactly one of these categories: %s.\n%sINPUT:\n%s\n\n"
             'FINAL line: ONLY JSON {"category": "<one of the categories>"}'
         ) % (", ".join(classes), (instructions + "\n") if instructions else "", as_text(text))
-        res = self.agent(prompt, model=model, label=label)
+        res = self.agent(prompt, model=model, label=label, **kw)
+        if not res.ok:
+            raise RuntimeError(f"classifier agent failed: {res.error or 'unknown error'}")
         data = _extract_json(res.content) or {}
         cat = str(data.get("category", "")).strip()
         for c in classes:
             if cat.lower() == c.lower():
                 return c
         low = res.content.lower()
-        for c in classes:
-            if c.lower() in low:
-                return c
-        return classes[0]
+        matches = [c for c in classes if c.lower() in low]
+        if len(matches) == 1:
+            return matches[0]
+        raise ValueError(f"classifier did not return exactly one valid category: {classes!r}")
 
     # ---- loop until a stop condition -----------------------------------
     def loop_until(
@@ -432,11 +453,8 @@ class PatternsMixin:
         for i in range(max_iters):
             r = step(i)
             history.append(r)
-            try:
-                if done(r):
-                    break
-            except Exception:
-                pass
+            if done(r):
+                break
         return history
 
     # ---- quarantine (security) -----------------------------------------

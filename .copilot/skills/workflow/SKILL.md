@@ -126,7 +126,7 @@ with wf.worktree(f"fix-{item}") as path:    # isolated checkout — use a UNIQUE
     wf.agent("apply the fix", cwd=path)
 q = wf.quarantine()                      # reader of untrusted content: no shell/write tools
 note = wf.agent(f"summarize this web page: {url}", **q)
-wf.budget(20)                            # cap premium-request credits (also: cwf --budget)
+wf.budget(20)                            # soft observed premium-credit cap (also: cwf --budget)
 while wf.budget_total and wf.remaining() > 1:   # loop-until-budget (guard the inf case!)
     wf.agent("find one more bug")
 wf.log("phase 2 complete")               # diagnostic line to stderr
@@ -166,8 +166,9 @@ Return the final answer by `print()`-ing it to stdout at the end of the harness.
 * **Loop-until-done** — repeat until a stop condition (no new findings, tests pass):
   `wf.loop_until(step, lambda r: done(r), max_iters=K)`.
 * **Quarantine** (security) — agents that read untrusted/public content get `**wf.quarantine()**`
-  (no shell/write); a separate trusted *actor* agent, fed only their structured output, takes any
-  privileged action.
+  (no shell/write/egress by default). Verifiers/synthesizers that consume untrusted-derived text
+  should also avoid pre-authorized tools, e.g. `**wf.quarantine(allow_all_tools=False)`. A separate
+  trusted *actor* agent, fed only structured output, takes any privileged action.
 
 ## Quality guidance (how to size and harden a workflow)
 
@@ -210,9 +211,10 @@ Run: `cwf run triage.cwf.py --budget 5 --disable-mcp --args '["ticket one", "tic
 
 ## Cost, resume, and visibility
 
-* **Budget** in premium-request credits. Always set `--budget`. By default, once the budget is hit,
-  remaining agents are skipped (the run "drains" gracefully) rather than aborting; `--strict-budget`
-  stops hard. Use a small/cheaper model for wide fan-out, a strong one only for synthesis/judging.
+* **Budget** in premium-request credits. Always set `--budget`. It is an observed-spend soft cap:
+  agents already in flight can finish and overshoot, then remaining agents are skipped (the run
+  "drains" gracefully) rather than aborting; `--strict-budget` raises/stops once the cap is observed.
+  Use a small/cheaper model for wide fan-out, a strong one only for synthesis/judging.
 * **Resume** — runs checkpoint each completed agent. If interrupted, rerun with
   `cwf run harness.py --resume <runId>`; finished agents return instantly.
 * **Watch / list** — `cwf runs` lists recent runs; `cwf watch <runId>` shows live progress.

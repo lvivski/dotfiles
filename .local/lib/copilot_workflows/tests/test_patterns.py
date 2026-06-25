@@ -19,6 +19,7 @@ if LIB not in sys.path:
 from copilot_workflows import (  # noqa: E402
     AgentSpec,
     BudgetExceeded,
+    CheckpointStore,
     Runtime,
     build_cmd,
 )
@@ -189,6 +190,16 @@ class TestTournament(Base):
         winner = wf.tournament(["A", "B"], criteria="quality " + fake('{"winner": "B"}'))
         self.assertEqual(winner, "B")
 
+    def test_judge_failure_raises(self):
+        wf = self.rt()
+        with self.assertRaises(RuntimeError):
+            wf.tournament(["A", "B"], criteria="quality " + fake('{"_exit": 2}'))
+
+    def test_invalid_winner_raises(self):
+        wf = self.rt()
+        with self.assertRaises(ValueError):
+            wf.tournament(["A", "B"], criteria="quality " + fake('{"winner": "C"}'))
+
     def test_bracket_with_bye(self):
         wf = self.rt()
         # 3 candidates -> round1: (c0,c1) judged + c2 bye; winner side = A
@@ -229,10 +240,20 @@ class TestClassify(Base):
         cat = wf.classify("t " + fake('{"category": "BUG"}'), ["bug", "feature"])
         self.assertEqual(cat, "bug")
 
-    def test_fallback_first(self):
+    def test_invalid_category_raises(self):
         wf = self.rt()
-        cat = wf.classify("t " + fake('{"category": "nonsense"}'), ["alpha", "beta"])
-        self.assertEqual(cat, "alpha")
+        with self.assertRaises(ValueError):
+            wf.classify("t " + fake('{"category": "nonsense"}'), ["alpha", "beta"])
+
+    def test_agent_failure_raises(self):
+        wf = self.rt()
+        with self.assertRaises(RuntimeError):
+            wf.classify("t " + fake('{"_exit": 2}'), ["bug", "feature"])
+
+    def test_empty_classes_raise(self):
+        wf = self.rt()
+        with self.assertRaises(ValueError):
+            wf.classify("ticket", [])
 
 
 class TestLoopUntil(Base):
@@ -250,6 +271,15 @@ class TestLoopUntil(Base):
         wf = self.rt()
         hist = wf.loop_until(lambda i: i, lambda r: False, max_iters=5)
         self.assertEqual(len(hist), 5)
+
+    def test_done_error_propagates(self):
+        wf = self.rt()
+
+        def done(_):
+            raise RuntimeError("boom")
+
+        with self.assertRaises(RuntimeError):
+            wf.loop_until(lambda i: i, done)
 
 
 class TestQuarantine(Base):
@@ -423,6 +453,45 @@ class TestPhaseOverride(Base):
         self.assertEqual(starts[0]["phase"], "Outer")
         self.assertEqual(starts[1]["phase"], "Inner")
 
+    def test_parallel_phase_context_is_isolated_per_branch(self):
+        wf, recs = self._recs(concurrency=2)
+
+        def branch(name):
+            wf.agent("before-%s" % name, label="before-%s" % name)
+            with wf.phase("Inner-%s" % name):
+                wf.agent("inner-%s" % name, label="inner-%s" % name)
+            wf.agent("after-%s" % name, label="after-%s" % name)
+
+        with wf.phase("Outer"):
+            wf.fan_out(["A", "B"], branch, concurrency=2)
+
+        phases = {
+            r["label"]: r["phase"]
+            for r in recs
+            if r.get("ev") == "start"
+        }
+        self.assertEqual(phases["before-A"], "Outer")
+        self.assertEqual(phases["before-B"], "Outer")
+        self.assertEqual(phases["inner-A"], "Inner-A")
+        self.assertEqual(phases["inner-B"], "Inner-B")
+        self.assertEqual(phases["after-A"], "Outer")
+        self.assertEqual(phases["after-B"], "Outer")
+
+
+class TestCheckpointKeys(Base):
+    def test_concurrent_branch_keys_are_scoped_by_index(self):
+        with tempfile.TemporaryDirectory(prefix="cwf-keys-") as d:
+            store = CheckpointStore(d, resume=False)
+            wf = self.rt(checkpoints=store, concurrency=2)
+
+            wf.fan_out([0, 1], lambda _: wf.agent("same prompt"), concurrency=2)
+
+            keys = sorted(store._cache)
+            self.assertEqual(len(keys), 2)
+            self.assertTrue(any("-b0-" in key or key.startswith("b0-") for key in keys))
+            self.assertTrue(any("-b1-" in key or key.startswith("b1-") for key in keys))
+            self.assertTrue(all(key.endswith("-0") for key in keys))
+
 
 class TestRemaining(Base):
     def test_inf_without_budget(self):
@@ -468,7 +537,7 @@ class TestExtractLastJson(Base):
         self.assertEqual(_extract_last_json("reasoning...\n42"), 42)
         self.assertEqual(_extract_last_json("done\ntrue"), True)
         self.assertEqual(_extract_last_json('answer:\n"ok"'), "ok")
-        self.assertIsNone(_extract_last_json("x\nnull"))  # JSON null -> Python None
+        self.assertIsNone(_extract_last_json("x\nnull"))  # JSON null is a real value
 
     def test_fenced(self):
         self.assertEqual(_extract_last_json('```\n{"k": "v"}\n```'), {"k": "v"})
@@ -523,6 +592,17 @@ class TestStructured(Base):
         self.assertTrue(s.ok)
         self.assertEqual(s.value, {"ok": True})
         self.assertEqual(s.attempts, 1)
+
+    def test_json_null_is_valid_value(self):
+        wf = self.rt()
+        s = wf.structured("give me " + fake('{"_content": "null"}'), {"type": "null"})
+        self.assertTrue(s.ok)
+        self.assertIsNone(s.value)
+
+    def test_negative_retries_raise(self):
+        wf = self.rt()
+        with self.assertRaises(ValueError):
+            wf.structured("x", {"type": "object"}, retries=-1)
 
     def test_never_valid_exhausts_retries(self):
         wf = self.rt()

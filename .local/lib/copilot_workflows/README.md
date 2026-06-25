@@ -73,7 +73,7 @@ merged  = wf.synthesize(results, prompt=..., model=...)
 verdict = wf.verify(work, rubric=..., refute=True)     # -> Verdict(.passed .score .reasons .raw)
 winner  = wf.tournament(candidates, criteria=...)
 kept    = wf.generate_and_filter(prompt, n=8, rubric=...)   # or keep=callable
-label   = wf.classify(text, ["bug", "feature", "question"])
+label   = wf.classify(text, ["bug", "feature", "question"], **wf.quarantine(allow_all_tools=False))
 hist    = wf.loop_until(step, done, max_iters=10)
 s       = wf.structured(prompt, schema, retries=2)  # validated JSON + retry -> Structured(.value .ok .attempts)
 #   schema = a shape-schema dict (type/properties/required/enum/items/additionalProperties)
@@ -108,8 +108,9 @@ cwf runs [--runs-dir DIR]                                            # list rece
 cwf watch <run_id> [--no-follow]                                     # live/replay progress
 ```
 
-- **Budget** is in premium-request credits — always set `--budget`. By default, once the budget is
-  hit, remaining agents are skipped (graceful drain); `--strict-budget` stops hard.
+- **Budget** is a soft observed-spend cap in premium-request credits — always set `--budget`.
+  Agents already in flight can finish and overshoot; once the cap is observed, new agents are
+  skipped (graceful drain). `--strict-budget` raises/stops after the cap is observed.
 - **Resume** — every completed agent is checkpointed to `results.ndjson`. Re-run with
   `--resume <runId>` and finished agents return instantly.
 - **Live view** — a TTY shows a panel (running agents, credits, elapsed); pipes get one line per agent.
@@ -172,7 +173,8 @@ Dynamic workflows spend meaningfully more than a single session — use them for
 adversarial, or cross-checked work, not routine edits. Use a small model (`claude-haiku-4.5`) for
 wide fan-out and a strong one (`claude-sonnet-4.5`) only for synthesis/judging. Gauge cost by
 running a small slice first (`--dry-run` previews the plan for free). Use `wf.quarantine()` for any
-agent that reads untrusted/public content.
+agent that reads untrusted/public content, and keep later verifier/synthesis agents no-tools when
+they consume untrusted-derived text.
 
 ## Persona agents
 
