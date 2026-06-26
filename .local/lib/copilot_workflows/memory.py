@@ -5,6 +5,8 @@ import os
 import threading
 from collections.abc import Callable
 
+from ._util import noop
+
 
 class Memory:
     """A durable text file shared across runs and loop ticks; thread-safe, no-op when unset."""
@@ -13,7 +15,7 @@ class Memory:
                  logger: Callable[..., None] | None = None):
         self.path = os.path.abspath(os.path.expanduser(path)) if path else None
         self._read_only = read_only
-        self._log = logger or (lambda *a, **k: None)
+        self._log = logger or noop
         self._lock = threading.Lock()
 
     @property

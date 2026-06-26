@@ -6,6 +6,9 @@ import re
 import shutil
 import subprocess
 import threading
+from collections.abc import Callable
+
+from ._util import noop
 
 _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -34,11 +37,12 @@ def find_repo_root(start: str) -> str | None:
 
 
 class WorktreeManager:
-    def __init__(self, repo_root: str, base_dir: str, logger=None, base_ref: str = "HEAD"):
+    def __init__(self, repo_root: str, base_dir: str,
+                 logger: Callable[..., None] | None = None, base_ref: str = "HEAD") -> None:
         self.repo_root = repo_root
         self.base_dir = base_dir
         self.base_ref = base_ref
-        self._log = logger or (lambda *a, **k: None)
+        self._log = logger or noop
         self._lock = threading.Lock()
         self._created: list[str] = []
 

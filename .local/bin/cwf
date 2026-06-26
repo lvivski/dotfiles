@@ -27,6 +27,7 @@ import signal
 import string
 import sys
 import time
+from contextlib import suppress
 
 
 def _bootstrap_path() -> None:
@@ -113,77 +114,43 @@ def _system_exit_status(exc: SystemExit) -> int:
     return 1
 
 
-def cmd_run(a: argparse.Namespace) -> int:
-    harness_path = os.path.abspath(os.path.expanduser(a.harness))
-    if not os.path.isfile(harness_path):
-        sys.stderr.write(f"cwf: harness not found: {a.harness}\n")
-        return 2
+def _prepare_run_dir(run_dir: str, run_id: str, harness_path: str, args_value,
+                     resume: bool, restricted: bool) -> "CheckpointStore":
+    """Create the run dir, snapshot the harness, write meta, open the checkpoint store."""
+    os.makedirs(run_dir, exist_ok=True)
+    # keep a readable copy of the harness with the run (Claude parity)
+    with suppress(Exception):
+        shutil.copyfile(harness_path, os.path.join(run_dir, "harness.py"))
+    _write_meta(run_dir, run_id, harness_path, args_value, resume, restricted)
+    return CheckpointStore(run_dir, resume=resume)
 
-    args_value = _parse_args_value(a.args)
 
-    def logger(*parts):
-        if not a.quiet:
-            sys.stderr.write(" ".join(str(p) for p in parts) + "\n")
-            sys.stderr.flush()
-
-    # ---- run directory + checkpoint store (skipped for dry runs) ----
-    runs_dir = a.runs_dir or default_runs_dir()
-    run_id = None
-    run_dir = None
-    store = None
-    resume = bool(a.resume)
-    if not a.dry_run:
-        if resume:
-            run_id = a.resume
-            run_dir = os.path.join(runs_dir, run_id)
-            if not os.path.isdir(run_dir):
-                sys.stderr.write(f"cwf: no such run to resume: {run_id}\n")
-                return 2
-        else:
-            run_id = a.run_id or _new_run_id(harness_path)
-            run_dir = os.path.join(runs_dir, run_id)
-            os.makedirs(run_dir, exist_ok=True)
-        # keep a readable copy of the harness with the run (Claude parity)
-        try:
-            shutil.copyfile(harness_path, os.path.join(run_dir, "harness.py"))
-        except Exception:
-            pass
-        _write_meta(run_dir, run_id, harness_path, args_value, resume, a.restricted)
-        store = CheckpointStore(run_dir, resume=resume)
-
+def _make_reporter(run_dir, run_id, harness_path, resume, quiet):
+    """Build the progress reporter (+ a devnull sink under --quiet, returned for closing)."""
     progress_path = os.path.join(run_dir, "progress.ndjson") if run_dir else None
     if progress_path and not resume and os.path.isfile(progress_path):
         open(progress_path, "w").close()  # fresh run reusing a dir: drop stale progress
-    devnull = open(os.devnull, "w") if a.quiet else None
+    devnull = open(os.devnull, "w") if quiet else None
     reporter = ProgressReporter(
         ndjson_path=progress_path, title=run_id or os.path.basename(harness_path),
-        stream=devnull, live=False if a.quiet else None)
+        stream=devnull, live=False if quiet else None)
+    return reporter, devnull
 
-    rt = Runtime(
-        concurrency=a.concurrency,
-        copilot_bin=a.copilot_bin,
-        model=a.model,
-        effort=a.effort,
-        context=a.context,
-        default_disable_mcp=a.disable_mcp,
-        budget=a.budget,
-        strict_budget=a.strict_budget,
-        logger=logger,
-        progress=reporter,
-        dry_run=a.dry_run,
-        run_dir=run_dir,
-        checkpoints=store,
-        restricted=a.restricted,
-        memory_path=a.memory,
-    )
 
+def _build_runtime(a: argparse.Namespace, run_dir, store, reporter, logger) -> "Runtime":
+    return Runtime(
+        concurrency=a.concurrency, copilot_bin=a.copilot_bin, model=a.model, effort=a.effort,
+        context=a.context, default_disable_mcp=a.disable_mcp, budget=a.budget,
+        strict_budget=a.strict_budget, logger=logger, progress=reporter, dry_run=a.dry_run,
+        run_dir=run_dir, checkpoints=store, restricted=a.restricted, memory_path=a.memory)
+
+
+def _log_run_header(logger, a: argparse.Namespace, harness_path, rt, run_id, store, resume) -> None:
     budget_str = f"{a.budget:.2f}" if a.budget is not None else "none"
-    logger("— cwf run {} (concurrency={}, model={}, budget={}{}{}{})".format(
-        os.path.basename(harness_path), rt.concurrency, a.model or "default", budget_str,
-        ", dry-run" if a.dry_run else "",
-        ", resume" if resume else "",
-        ", restricted" if a.restricted else "",
-    ))
+    flags = "".join((", dry-run" if a.dry_run else "", ", resume" if resume else "",
+                     ", restricted" if a.restricted else ""))
+    logger(f"— cwf run {os.path.basename(harness_path)} (concurrency={rt.concurrency}, "
+           f"model={a.model or 'default'}, budget={budget_str}{flags})")
     tuning = _tuning_note(a)
     if tuning:
         logger(f"  tuning: {tuning}")
@@ -198,8 +165,55 @@ def cmd_run(a: argparse.Namespace) -> int:
         logger("  ! restricted: hash randomization is ON — run with PYTHONHASHSEED=0 "
                "for fully reproducible set/dict ordering")
 
-    reporter({"ev": "run_start", "run_id": run_id, "harness": harness_path, "t": time.time()})
 
+def _run_end_event(rt: "Runtime") -> dict:
+    return {"ev": "run_end", "agents": len(rt.results),
+            "cr": sum(r.premium_requests for r in rt.results),
+            "failed": sum(1 for r in rt.results if not r.ok and not _is_skipped(r)),
+            "skipped": sum(1 for r in rt.results if _is_skipped(r)),
+            "t": time.time()}
+
+
+def _finalize(logger, rt: "Runtime", status: int, elapsed: float) -> int:
+    total = sum(r.premium_requests for r in rt.results)
+    failures = sum(1 for r in rt.results if not r.ok and not _is_skipped(r))
+    skipped = sum(1 for r in rt.results if _is_skipped(r))
+    cached = sum(1 for r in rt.results if r.cached)
+    logger(f"— cwf: {len(rt.results)} agents ({cached} cached, {skipped} skipped, "
+           f"{failures} failed), {total:.2f} premium credits, {elapsed:.1f}s")
+    return 4 if status == 0 and failures else status
+
+
+def cmd_run(a: argparse.Namespace) -> int:
+    harness_path = os.path.abspath(os.path.expanduser(a.harness))
+    if not os.path.isfile(harness_path):
+        sys.stderr.write(f"cwf: harness not found: {a.harness}\n")
+        return 2
+
+    args_value = _parse_args_value(a.args)
+    resume = bool(a.resume)
+    runs_dir = a.runs_dir or default_runs_dir()
+
+    def logger(*parts):
+        if not a.quiet:
+            sys.stderr.write(" ".join(str(p) for p in parts) + "\n")
+            sys.stderr.flush()
+
+    # ---- run directory + checkpoint store (skipped for dry runs) ----
+    run_id = run_dir = store = None
+    if not a.dry_run:
+        run_id = a.resume or a.run_id or _new_run_id(harness_path)
+        run_dir = os.path.join(runs_dir, run_id)
+        if resume and not os.path.isdir(run_dir):
+            sys.stderr.write(f"cwf: no such run to resume: {run_id}\n")
+            return 2
+        store = _prepare_run_dir(run_dir, run_id, harness_path, args_value, resume, a.restricted)
+
+    reporter, devnull = _make_reporter(run_dir, run_id, harness_path, resume, a.quiet)
+    rt = _build_runtime(a, run_dir, store, reporter, logger)
+    _log_run_header(logger, a, harness_path, rt, run_id, store, resume)
+
+    reporter({"ev": "run_start", "run_id": run_id, "harness": harness_path, "t": time.time()})
     g = harness_globals(rt, args_value, harness_path, restricted=a.restricted)
 
     start = time.time()
@@ -209,8 +223,7 @@ def cmd_run(a: argparse.Namespace) -> int:
             src = fh.read()
         if a.restricted:
             lint_imports(src, harness_path)  # fail fast before any agent spends credits
-        code = compile(src, harness_path, "exec")
-        exec(code, g)
+        exec(compile(src, harness_path, "exec"), g)
     except SandboxError as e:
         sys.stderr.write(f"\ncwf: blocked by restricted mode: {e}\n")
         status = 2
@@ -229,29 +242,13 @@ def cmd_run(a: argparse.Namespace) -> int:
         status = 1
     finally:
         rt.cleanup()
-        try:
-            reporter({"ev": "run_end", "agents": len(rt.results),
-                      "cr": sum(r.premium_requests for r in rt.results),
-                      "failed": sum(1 for r in rt.results if not r.ok and not _is_skipped(r)),
-                      "skipped": sum(1 for r in rt.results if _is_skipped(r)),
-                      "t": time.time()})
-        except Exception:
-            pass
+        with suppress(Exception):
+            reporter(_run_end_event(rt))
         reporter.close()
         if devnull is not None:
             devnull.close()
 
-    elapsed = time.time() - start
-    total = sum(r.premium_requests for r in rt.results)
-    failures = sum(1 for r in rt.results if not r.ok and not _is_skipped(r))
-    skipped = sum(1 for r in rt.results if _is_skipped(r))
-    cached = sum(1 if r.cached else 0 for r in rt.results)
-    logger("— cwf: {} agents ({} cached, {} skipped, {} failed), {:.2f} premium credits, {:.1f}s".format(
-        len(rt.results), cached, skipped, failures, total, elapsed,
-    ))
-    if status == 0 and failures:
-        status = 4
-    return status
+    return _finalize(logger, rt, status, time.time() - start)
 
 
 def _write_meta(run_dir, run_id, harness_path, args_value, resume, restricted=False):

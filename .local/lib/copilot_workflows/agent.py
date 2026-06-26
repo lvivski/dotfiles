@@ -7,7 +7,7 @@ import signal
 import subprocess
 import threading
 from collections.abc import Iterator
-from contextlib import nullcontext
+from contextlib import nullcontext, suppress
 from dataclasses import dataclass
 
 
@@ -244,23 +244,19 @@ def run_agent(spec: AgentSpec, *, copilot_bin: str = "copilot",
 
 
 def _drain(pipe, sink: list[str]) -> None:
-    try:
+    with suppress(Exception):
         sink.extend(pipe)
-    except Exception:
-        pass
 
 
 def _kill(proc, new_session: bool) -> None:
     """Kill the subprocess — its whole process group when it has its own session."""
-    try:
+    with suppress(Exception):  # already exited / no such group
         if new_session:
             # A session leader's PGID equals its PID; kill the group by PID directly rather
             # than via os.getpgid(), which could read a reused PID's group after it exits.
             os.killpg(proc.pid, signal.SIGKILL)
         else:
             proc.kill()
-    except Exception:  # already exited / no such group
-        pass
 
 
 def _on_timeout(proc, killed: threading.Event, new_session: bool) -> None:

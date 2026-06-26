@@ -7,6 +7,7 @@ import io
 import json
 import os
 import shutil
+import tempfile
 import threading
 import time
 from collections.abc import Callable, Sequence
@@ -15,11 +16,12 @@ from contextlib import contextmanager, redirect_stdout
 from dataclasses import replace
 from typing import Any
 
+from ._util import noop
 from .agent import AgentResult, AgentSpec, kill_all_agents, run_agent
-from .checkpoint import default_workflows_dir
+from .checkpoint import CheckpointStore, default_workflows_dir
 from .memory import Memory
 from .patterns import PatternsMixin
-from .progress import format_agent_line
+from .progress import ProgressEvent, format_agent_line
 from .sandbox import SandboxError, harness_globals, lint_imports
 from .worktree import WorktreeManager, find_repo_root
 
@@ -99,10 +101,10 @@ class Runtime(PatternsMixin):
         budget: float | None = None,
         strict_budget: bool = False,
         logger: Callable[..., None] | None = None,
-        progress: Callable[[dict], None] | None = None,
+        progress: Callable[[ProgressEvent], None] | None = None,
         dry_run: bool = False,
         run_dir: str | None = None,
-        checkpoints: Any = None,            # CheckpointStore or None
+        checkpoints: CheckpointStore | None = None,
         repo_root: str | None = None,
         restricted: bool = False,
         memory_path: str | None = None,
@@ -121,7 +123,7 @@ class Runtime(PatternsMixin):
         self._budget_hit = threading.Event()
         self._aborting = threading.Event()  # set on interrupt; gates new agent launches
         self._sem = threading.BoundedSemaphore(self.concurrency)
-        self._log = logger or (lambda *a, **k: None)
+        self._log = logger or noop
         # Durable text shared ACROSS runs / loop ticks (vs per-run checkpoints). Exposed as
         # wf.memory; usable from restricted harnesses since the runtime owns the file I/O.
         self.memory = Memory(memory_path, read_only=dry_run, logger=self._log)
@@ -136,7 +138,7 @@ class Runtime(PatternsMixin):
         self.results: list[AgentResult] = []
         self._results_lock = threading.Lock()
         # checkpoint key occurrence counter (per identical-spec fingerprint)
-        self._occurrence: dict = {}
+        self._occurrence: dict[str, int] = {}
         self._occ_lock = threading.Lock()
         # lazily-created worktree manager
         self._repo_root = repo_root
@@ -487,7 +489,6 @@ class Runtime(PatternsMixin):
                 base = os.path.join(self.run_dir, "worktrees")
                 self._owns_wt_base = False
             else:
-                import tempfile
                 base = tempfile.mkdtemp(prefix="cwf-wt-")
                 self._owns_wt_base = True
             self._wt_mgr = WorktreeManager(root, base, logger=self._log)
@@ -535,7 +536,7 @@ class Runtime(PatternsMixin):
 
         path = self._resolve_workflow(target)
         name = os.path.splitext(os.path.basename(path))[0]
-        with open(path, "r") as fh:
+        with open(path, "r", encoding="utf-8") as fh:
             src = fh.read()
         if self.restricted:
             lint_imports(src, path)  # fail fast before the child spawns agents
@@ -642,7 +643,7 @@ class Runtime(PatternsMixin):
             self._seq += 1
             return self._seq
 
-    def _emit(self, rec: dict) -> None:
+    def _emit(self, rec: ProgressEvent) -> None:
         prog = self._progress
         if prog is not None:
             try:

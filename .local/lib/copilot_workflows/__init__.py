@@ -40,4 +40,4 @@ __all__ = [
     "restricted_builtins",
 ]
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"

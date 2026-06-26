@@ -9,6 +9,8 @@ import sys
 import threading
 import time
 from collections import deque
+from contextlib import suppress
+from typing import TypedDict
 
 _SPIN = "|/-\\"
 
@@ -29,7 +31,31 @@ def _clip(s, n: int) -> str:
     return s if len(s) <= n else s[: n - 1] + "\u2026"
 
 
-def format_agent_line(rec: dict) -> str:
+class ProgressEvent(TypedDict, total=False):
+    """Wire schema for one progress NDJSON record (consumed by ``cwf watch`` and the cwf
+    extension). Heterogeneous by ``ev`` — run_start/start/end/run_end populate different
+    subsets — so every key is optional. Mirror any change in ``Runtime._emit``/``_finish``.
+    """
+
+    ev: str
+    seq: int
+    label: str
+    model: str | None
+    phase: str | None
+    ok: bool
+    cached: bool
+    skipped: bool
+    cr: float
+    tok: int
+    error: str | None
+    t: float
+    run_id: str
+    harness: str
+    agents: int
+    failed: int
+
+
+def format_agent_line(rec: ProgressEvent) -> str:
     """One tidy line for a finished-agent record. Shared by the reporter's line
     mode and the Runtime's no-reporter fallback (single source of truth)."""
     label = _clip(rec.get("label", "agent"), 24)
@@ -91,23 +117,19 @@ class ProgressReporter:
                 self._fh = None
 
     # -- public ----------------------------------------------------------
-    def __call__(self, rec: dict) -> None:
+    def __call__(self, rec: ProgressEvent) -> None:
         with self._lock:
             if self._fh is not None:
-                try:
+                with suppress(Exception):  # best-effort persist; must never crash the run
                     self._fh.write(json.dumps(rec) + "\n")
                     self._fh.flush()
-                except Exception:
-                    pass
             self._apply(rec)
-            try:
+            with suppress(Exception):  # best-effort display; rendering never crashes the run
                 if self.live:
                     self._render(force=rec.get("ev") in ("end", "run_end"))
                 elif rec.get("ev") == "end":
                     self.stream.write(self._fmt_line(rec) + "\n")
                     self.stream.flush()
-            except Exception:
-                pass
 
     @property
     def stats(self) -> dict:
@@ -124,19 +146,15 @@ class ProgressReporter:
                 return
             self._closed = True
             if self.live and self._drawn:
-                try:
+                with suppress(Exception):
                     self.stream.write("\n")
                     self.stream.flush()
-                except Exception:
-                    pass
             if self._fh is not None:
-                try:
+                with suppress(Exception):
                     self._fh.close()
-                except Exception:
-                    pass
 
     # -- state -----------------------------------------------------------
-    def _apply(self, rec: dict) -> None:
+    def _apply(self, rec: ProgressEvent) -> None:
         ev = rec.get("ev")
         if ev == "start":
             self._running[rec.get("seq")] = rec
@@ -176,7 +194,7 @@ class ProgressReporter:
         parts.append(f"{self._cr:.2f} cr")
         return " \u00b7 ".join(parts)
 
-    def _fmt_done(self, r: dict) -> str:
+    def _fmt_done(self, r: ProgressEvent) -> str:
         label = _clip(r.get("label", "agent"), 22)
         if r.get("cached"):
             return f"\u21ba {label:<22} cached"
@@ -186,7 +204,7 @@ class ProgressReporter:
             return f"\u2713 {label:<22} {float(r.get('cr') or 0):.2f} cr"
         return f"\u2717 {label:<22} {_clip(r.get('error') or 'error', 28)}"
 
-    def _fmt_line(self, r: dict) -> str:
+    def _fmt_line(self, r: ProgressEvent) -> str:
         return format_agent_line(r)
 
     def _render(self, force: bool = False) -> None:
@@ -226,11 +244,9 @@ class ProgressReporter:
         buf.append("\n".join(lines))
         buf.append("\n")
         self._drawn = len(lines)
-        try:
+        with suppress(Exception):
             self.stream.write("".join(buf))
             self.stream.flush()
-        except Exception:
-            pass
 
 
 def replay(path: str, follow: bool = True, reporter: ProgressReporter | None = None,

@@ -306,11 +306,12 @@ class PatternsMixin:
             "You are a careful, fair reviewer."
         )
         prompt = (
-            "%s\n\nRUBRIC / CRITERIA:\n%s\n\nWORK UNDER REVIEW:\n%s\n\n"
+            f"{persona}\n\nRUBRIC / CRITERIA:\n{as_text(rubric)}\n\n"
+            f"WORK UNDER REVIEW:\n{as_text(subject)}\n\n"
             "Decide whether the work satisfies the rubric. Give brief reasoning, then on the "
             'FINAL line output ONLY a JSON object: '
             '{"passed": true|false, "score": 0..1, "reasons": "..."}'
-        ) % (persona, as_text(rubric), as_text(subject))
+        )
         res = self.agent(prompt, model=model, label=label, **kw)
         data = _extract_json(res.content) or {}
         raw = data.get("passed", False)
@@ -353,11 +354,11 @@ class PatternsMixin:
     def _judge_pair(self, a: Any, b: Any, criteria: str, model: str | None,
                     label: str, kw: dict[str, Any]) -> Any:
         prompt = (
-            "Compare two candidates on: %s.\n\n"
-            "=== Candidate A ===\n%s\n\n=== Candidate B ===\n%s\n\n"
+            f"Compare two candidates on: {criteria}.\n\n"
+            f"=== Candidate A ===\n{as_text(a)}\n\n=== Candidate B ===\n{as_text(b)}\n\n"
             "Pick the single better candidate. Give brief reasoning, then on the FINAL line "
             'output ONLY JSON: {"winner": "A"|"B", "why": "..."}'
-        ) % (criteria, as_text(a), as_text(b))
+        )
         res = self.agent(prompt, model=model, label=label, **kw)
         if not res.ok:
             raise RuntimeError(f"judge agent failed: {res.error or 'unknown error'}")
@@ -422,10 +423,13 @@ class PatternsMixin:
         classes = list(classes)
         if not classes:
             raise ValueError("classes must contain at least one category")
+        cats = ", ".join(classes)
+        instr = f"{instructions}\n" if instructions else ""
         prompt = (
-            "Classify the input into exactly one of these categories: %s.\n%sINPUT:\n%s\n\n"
+            f"Classify the input into exactly one of these categories: {cats}.\n{instr}"
+            f"INPUT:\n{as_text(text)}\n\n"
             'FINAL line: ONLY JSON {"category": "<one of the categories>"}'
-        ) % (", ".join(classes), (instructions + "\n") if instructions else "", as_text(text))
+        )
         res = self.agent(prompt, model=model, label=label, **kw)
         if not res.ok:
             raise RuntimeError(f"classifier agent failed: {res.error or 'unknown error'}")

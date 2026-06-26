@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+from contextlib import suppress
 from dataclasses import asdict, fields
 
 from .agent import AgentResult
@@ -61,15 +62,13 @@ class CheckpointStore:
         JSON records so both fail to parse on the following resume — silently
         losing a committed result and its premium spend (double-charge on retry).
         """
-        try:
+        with suppress(OSError):
             with open(self._path, "rb+") as fh:
                 data = fh.read()
                 if not data or data.endswith(b"\n"):
                     return
                 nl = data.rfind(b"\n")
                 fh.truncate(nl + 1)  # nl == -1 -> truncate to 0 (sole line was torn)
-        except OSError:
-            pass
 
     def _load(self) -> None:
         with open(self._path, encoding="utf-8") as fh:
