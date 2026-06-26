@@ -38,7 +38,7 @@ const log = (message, ephemeral = false) => {
 };
 
 // Reap detached cwf process groups if this extension is torn down mid-run — otherwise the
-// `copilot` subagents orphan and keep spending credits. (`exit` runs on a clean exit only,
+// `copilot` subagents orphan and keep spending AIC. (`exit` runs on a clean exit only,
 // so the SIGTERM handler converts the CLI's shutdown signal into one.)
 const liveGroups = new Set();
 process.on("exit", () => {
@@ -127,8 +127,8 @@ function runCwf(argv, { cwd, timeoutSec, onLine }) {
 		createInterface({ input: child.stderr }).on("line", (raw) => {
 			const line = raw.trim();
 			if (!line) return;
-			onLine(line);
-			recent.push(line);
+			const shown = onLine(line) ?? line;
+			recent.push(shown);
 			if (recent.length > 120) recent.shift();
 		});
 
@@ -180,10 +180,24 @@ async function runWorkflow(input = {}) {
 
 		const label = input.name ?? input.scriptPath ?? "inline harness";
 		const note = input.script && !input.restricted ? " — UNRESTRICTED Python" : "";
-		log(`cwf: ${label} (${input.dryRun ? "dry-run" : `budget ${budget} cr`}, run ${runId}, cwd ${cwd})${note}`);
+		log(`cwf: ${label} (${input.dryRun ? "dry-run" : `budget ${budget} AIC`}, run ${runId}, cwd ${cwd})${note}`);
 
 		let streamed = 0;
-		const result = await runCwf(argv, { cwd, timeoutSec, onLine: (line) => streamed++ < 400 && log(line, true) });
+		let usedAic = 0;
+		const withAic = (line) => {
+			const m = line.match(/^\s*(OK|ERR)\s+.*?\s([0-9]+(?:\.[0-9]+)?)\s+AIC\b/);
+			if (m) usedAic += Number(m[2]);
+			return `${line}  [AIC used: ${usedAic.toFixed(1)}]`;
+		};
+		const result = await runCwf(argv, {
+			cwd,
+			timeoutSec,
+			onLine: (line) => {
+				const shown = withAic(line);
+				if (streamed++ < 400) log(shown, true);
+				return shown;
+			},
+		});
 
 		const ok = !result.spawnError && !result.timedOut && result.code === 0;
 		const persisted = join(runsDir(), runId, "harness.py");
@@ -198,7 +212,8 @@ async function runWorkflow(input = {}) {
 			status,
 			`runId: ${runId}${input.resume ? " (resumed)" : ""}`,
 			existsSync(persisted) ? `harness (edit, then re-run with scriptPath): ${persisted}` : `harness: ${harness}`,
-			input.dryRun ? "mode: dry-run (no agents spawned, no credits spent)" : `budget: ${budget} cr`,
+			input.dryRun ? "mode: dry-run (no agents spawned, no AIC spent)" : `budget: ${budget} AIC`,
+			input.dryRun ? "AIC used: 0.0" : `AIC used: ${usedAic.toFixed(1)}`,
 			`cwd: ${cwd}`,
 			!input.quiet && result.tail ? `\n--- cwf progress / stats (stderr) ---\n${result.tail}` : "",
 			answer ? `\n--- workflow output ---\n${answer}${result.truncated ? "\n…(stdout truncated at 8MB)" : ""}` : ok ? "\n(workflow produced no stdout)" : "",
@@ -221,14 +236,14 @@ session = await joinSession({
 		{
 			name: "run_workflow",
 			defer: "never", // always discoverable, no tool search
-			// No `skipPermission`: workflows spend premium-request credits, so the user approves each run.
+			// No `skipPermission`: workflows spend AIC, so the user approves each run.
 			description:
 				"Run a cwf DYNAMIC WORKFLOW: a Python harness that fans work out to many `copilot` " +
 				"subagents in parallel (fan-out/synthesize, adversarial verify, tournament, " +
 				"generate-and-filter, classify-and-route, loop-until-done). The harness owns the loop, " +
 				"branching, and intermediate results; only the final synthesis returns here. Use for " +
 				"large/parallel/adversarial/cross-checked work (codebase audits, deep research, ranking/" +
-				"triage) — NOT routine edits or quick lookups. Spends premium-request credits, so ALWAYS " +
+				"triage) — NOT routine edits or quick lookups. Spends AIC, so ALWAYS " +
 				"preview with dryRun:true first, then run with a deliberate budget. Provide EXACTLY ONE of: " +
 				"`script` (inline harness source using the injected `wf` + `args` API — see " +
 				"~/.local/lib/copilot_workflows/README.md), `scriptPath` (a .py harness on disk), or `name` " +
@@ -243,8 +258,8 @@ session = await joinSession({
 					scriptPath: { type: "string", description: "Path to an existing .py harness on disk. One of script|scriptPath|name." },
 					name: { type: "string", description: "Name of a saved workflow in ~/.copilot/workflows (resolves <name>.cwf.py or <name>.py). One of script|scriptPath|name." },
 					args: { description: "Value exposed to the harness as the global `args`. Pass an actual JSON value (string/array/object), NOT a JSON-encoded string." },
-					budget: { type: "number", exclusiveMinimum: 0, description: "Soft observed premium-credit cap. Default 10. Set deliberately for the task size." },
-					dryRun: { type: "boolean", description: "Plan only — show phases/approx agent count without spawning agents or spending credits. Preview here first." },
+					budget: { type: "number", exclusiveMinimum: 0, description: "Soft observed AIC cap. Default 10. Set deliberately for the task size." },
+					dryRun: { type: "boolean", description: "Plan only — show phases/approx agent count without spawning agents or spending AIC. Preview here first." },
 					resume: { type: "string", description: "RunId of a prior run to resume; unchanged agents return instantly. Pass the same scriptPath/name." },
 					model: { type: "string", description: "Session default model that agents inherit unless they pin their own in the script (the harness's per-agent choice wins). Any Copilot model — Claude, GPT, Gemini, a BYOK provider, or 'auto' to let Copilot pick. Mirrors Claude Code, whose Workflow tool has no model param — set the model the workflow inherits, not a force-override." },
 					effort: { type: "string", enum: ["none", "low", "medium", "high", "xhigh", "max"], description: "Session default reasoning effort agents inherit unless they pin their own (the harness's per-agent choice wins). Only affects reasoning-capable models; Copilot enforces applicability." },

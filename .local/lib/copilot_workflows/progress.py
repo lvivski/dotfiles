@@ -1,4 +1,4 @@
-"""Live progress panel + progress.ndjson persistence/replay for cwf runs."""
+"""Live progress panel + progress.jsonl persistence/replay for cwf runs."""
 from __future__ import annotations
 
 import json
@@ -45,35 +45,45 @@ class ProgressEvent(TypedDict, total=False):
     ok: bool
     cached: bool
     skipped: bool
-    cr: float
+    nano_aiu: int
     tok: int
     error: str | None
     t: float
     run_id: str
     harness: str
+    meta: dict
     agents: int
+    launched: int
+    cached: int
+    skipped: int
     failed: int
+    launched_nano_aiu: int
+    elapsed: float
 
 
 def format_agent_line(rec: ProgressEvent) -> str:
     """One tidy line for a finished-agent record. Shared by the reporter's line
     mode and the Runtime's no-reporter fallback (single source of truth)."""
     label = _clip(rec.get("label", "agent"), 24)
-    cr = float(rec.get("cr") or 0.0)
+    aic = _aic(rec)
     if rec.get("cached"):
-        return f"  HIT  {label:<24} {cr:.2f} cr  (cached)"
+        return f"  HIT  {label:<24} {aic:.4f} AIC  (cached)"
     if rec.get("skipped"):
-        return f"  SKIP {label:<24} (budget reached)"
+        return f"  SKIP {label:<24} ({_san(rec.get('error') or 'skipped')})"
     if rec.get("ok"):
-        return f"  OK   {label:<24} {cr:.2f} cr  {int(rec.get('tok') or 0)} tok  [{_san(rec.get('model') or '')}]"
-    return f"  ERR  {label:<24} ERROR: {_san(rec.get('error') or '?')}"
+        return f"  OK   {label:<24} {aic:.4f} AIC  {int(rec.get('tok') or 0)} tok  [{_san(rec.get('model') or '')}]"
+    return f"  ERR  {label:<24} {aic:.4f} AIC  ERROR: {_san(rec.get('error') or '?')}"
+
+
+def _aic(rec: ProgressEvent) -> float:
+    return float(rec.get("nano_aiu") or 0) / 1_000_000_000
 
 
 class ProgressReporter:
     def __init__(
         self,
         stream=None,
-        ndjson_path: str | None = None,
+        jsonl_path: str | None = None,
         live: bool | None = None,
         title: str = "workflow",
         max_running: int = 8,
@@ -97,7 +107,7 @@ class ProgressReporter:
         self._failed = 0
         self._cached = 0
         self._skipped = 0
-        self._cr = 0.0
+        self._nano_aiu = 0
         self._tok = 0
         self._phase = None
         self._t0 = time.time()
@@ -107,12 +117,12 @@ class ProgressReporter:
         self._closed = False
 
         self._fh = None
-        if write and ndjson_path:
+        if write and jsonl_path:
             try:
-                directory = os.path.dirname(ndjson_path)
+                directory = os.path.dirname(jsonl_path)
                 if directory:
                     os.makedirs(directory, exist_ok=True)
-                self._fh = open(ndjson_path, "a", encoding="utf-8")
+                self._fh = open(jsonl_path, "a", encoding="utf-8")
             except Exception:
                 self._fh = None
 
@@ -137,7 +147,8 @@ class ProgressReporter:
             return {
                 "running": len(self._running), "done": self._done,
                 "failed": self._failed, "cached": self._cached,
-                "skipped": self._skipped, "cr": round(self._cr, 4), "tok": self._tok,
+                "skipped": self._skipped, "nano_aiu": self._nano_aiu,
+                "aic": self._nano_aiu / 1_000_000_000, "tok": self._tok,
             }
 
     def close(self) -> None:
@@ -162,7 +173,7 @@ class ProgressReporter:
                 self._phase = rec["phase"]
         elif ev == "end":
             self._running.pop(rec.get("seq"), None)
-            self._cr += float(rec.get("cr") or 0.0)
+            self._nano_aiu += int(rec.get("nano_aiu") or 0)
             self._tok += int(rec.get("tok") or 0)
             if rec.get("skipped"):
                 self._skipped += 1
@@ -191,7 +202,7 @@ class ProgressReporter:
             parts.append(f"cached {self._cached}")
         if self._skipped:
             parts.append(f"skipped {self._skipped}")
-        parts.append(f"{self._cr:.2f} cr")
+        parts.append(f"{self._nano_aiu / 1_000_000_000:.1f} AIC")
         return " \u00b7 ".join(parts)
 
     def _fmt_done(self, r: ProgressEvent) -> str:
@@ -201,7 +212,7 @@ class ProgressReporter:
         if r.get("skipped"):
             return f"\u2014 {label:<22} skipped"
         if r.get("ok"):
-            return f"\u2713 {label:<22} {float(r.get('cr') or 0):.2f} cr"
+            return f"\u2713 {label:<22} {_aic(r):.1f} AIC"
         return f"\u2717 {label:<22} {_clip(r.get('error') or 'error', 28)}"
 
     def _fmt_line(self, r: ProgressEvent) -> str:
@@ -251,7 +262,7 @@ class ProgressReporter:
 
 def replay(path: str, follow: bool = True, reporter: ProgressReporter | None = None,
            poll: float = 0.2) -> ProgressReporter:
-    """Feed a progress.ndjson into a reporter; optionally tail until run_end.
+    """Feed a progress.jsonl into a reporter; optionally tail until run_end.
 
     Used by ``cwf watch``. Returns the reporter (already closed).
     """

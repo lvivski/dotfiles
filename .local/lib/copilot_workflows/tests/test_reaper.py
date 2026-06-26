@@ -1,6 +1,6 @@
 """Shutdown reaper tests: in-flight subagents must be killed, not orphaned.
 
-Zero credits — subagents use tests/fake_copilot.py (its ``_sleep`` directive simulates
+Zero AIC — subagents use tests/fake_copilot.py (its ``_sleep`` directive simulates
 a hung agent). A timeout-bearing agent is launched in its own session, so without the
 ``kill_all_agents`` registry an interrupted run would orphan it (reparented to init).
 

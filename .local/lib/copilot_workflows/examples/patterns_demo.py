@@ -13,7 +13,6 @@ ticket = (
 category = wf.classify(
     ticket,
     ["bug", "feature-request", "question", "documentation"],
-    model="claude-haiku-4.5",
 )
 print("classify -> %s" % category)
 
@@ -21,7 +20,6 @@ claim = "The capital of Australia is Sydney."
 verdict = wf.verify(
     claim,
     rubric="The statement must be factually correct.",
-    model="claude-haiku-4.5",
 )
 print("verify   -> passed=%s score=%s reasons=%s" % (
     verdict.passed, verdict.score, verdict.reasons[:80]))
@@ -30,9 +28,9 @@ print("verify   -> passed=%s score=%s reasons=%s" % (
 tickets = [ticket, "Please add a dark mode toggle.", "How do I reset my password?"]
 rows = wf.pipeline(
     tickets,
-    lambda t: wf.classify(t, ["bug", "feature-request", "question"], model="claude-haiku-4.5"),
+    lambda t: wf.classify(t, ["bug", "feature-request", "question"]),
     lambda kind, t, i: "%d. [%s] %s" % (i, kind, wf.agent(
         "In one short sentence, the next action for this %s: %s" % (kind, t),
-        model="claude-haiku-4.5", phase="triage", label=kind).content.strip()),
+        agent="worker", phase="triage", label=kind).content.strip()),
 )
 print("pipeline ->\n  " + "\n  ".join(rows))

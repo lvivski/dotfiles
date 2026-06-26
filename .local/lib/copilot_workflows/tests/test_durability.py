@@ -1,6 +1,6 @@
 """Phase 3 durability & cost tests: checkpoint/resume, worktrees, graceful budget.
 
-Zero credits — subagents use tests/fake_copilot.py; worktree tests use a throwaway
+Zero AIC — subagents use tests/fake_copilot.py; worktree tests use a throwaway
 git repo and the real `git` CLI only.
 
     python3 -m unittest discover -s .local/lib/copilot_workflows/tests
@@ -56,7 +56,7 @@ class TestCheckpointStore(Base):
     def test_roundtrip_and_resume(self):
         d = self.tmpdir()
         s = CheckpointStore(d, resume=False)
-        r = AgentResult(content="hi", session_id="s1", premium_requests=0.5,
+        r = AgentResult(content="hi", session_id="s1", nano_aiu=500_000_000,
                         output_tokens=3, exit_code=0, model="m")
         s.put("k1", r)
         self.assertEqual(s.count, 1)
@@ -73,16 +73,16 @@ class TestCheckpointStore(Base):
     def test_no_resume_starts_empty(self):
         d = self.tmpdir()
         CheckpointStore(d, resume=False).put("k", AgentResult(
-            content="x", session_id=None, premium_requests=0.1, output_tokens=1, exit_code=0))
+            content="x", session_id=None, nano_aiu=100_000_000, output_tokens=1, exit_code=0))
         fresh = CheckpointStore(d, resume=False)  # resume=False ignores prior file
         self.assertIsNone(fresh.get("k"))
         self.assertEqual(fresh.prior_spent, 0.0)
 
     def test_fresh_run_truncates_stale(self):
         d = self.tmpdir()
-        old = AgentResult(content="old", session_id=None, premium_requests=0.1,
+        old = AgentResult(content="old", session_id=None, nano_aiu=100_000_000,
                           output_tokens=1, exit_code=0)
-        new = AgentResult(content="new", session_id=None, premium_requests=0.2,
+        new = AgentResult(content="new", session_id=None, nano_aiu=200_000_000,
                           output_tokens=1, exit_code=0)
         CheckpointStore(d, resume=False).put("k1", old)
         s2 = CheckpointStore(d, resume=False)   # fresh run reusing the dir drops stale
@@ -95,36 +95,24 @@ class TestCheckpointStore(Base):
     def test_repairs_torn_trailing_line(self):
         # A crash mid-write leaves a newline-less partial final line. On resume the
         # store must drop it, or the next append fuses onto it and both records are
-        # lost on the following resume (premium spend undercounted -> double-charge).
+        # lost on the following resume (AIC spend undercounted -> double-charge).
         d = self.tmpdir()
         s = CheckpointStore(d, resume=False)
-        s.put("k1", AgentResult(content="good", session_id=None, premium_requests=0.5,
+        s.put("k1", AgentResult(content="good", session_id=None, nano_aiu=500_000_000,
                                 output_tokens=1, exit_code=0))
-        with open(os.path.join(d, "results.ndjson"), "a") as fh:
+        with open(os.path.join(d, "results.jsonl"), "a") as fh:
             fh.write('{"key": "k2", "result": {"content": "torn"')  # no brace, no newline
 
         s2 = CheckpointStore(d, resume=True)       # repairs the torn tail
         self.assertEqual(s2.get("k1").content, "good")
         self.assertAlmostEqual(s2.prior_spent, 0.5)
-        s2.put("k3", AgentResult(content="new", session_id=None, premium_requests=0.2,
+        s2.put("k3", AgentResult(content="new", session_id=None, nano_aiu=200_000_000,
                                  output_tokens=1, exit_code=0))
 
         s3 = CheckpointStore(d, resume=True)       # both committed records survive
         self.assertEqual(s3.get("k1").content, "good")
         self.assertEqual(s3.get("k3").content, "new")
         self.assertAlmostEqual(s3.prior_spent, 0.7)
-
-    def test_loads_legacy_result_missing_new_fields(self):
-        d = self.tmpdir()
-        os.makedirs(d, exist_ok=True)
-        with open(os.path.join(d, "results.ndjson"), "w", encoding="utf-8") as fh:
-            fh.write(json.dumps({"key": "legacy", "result": {"content": "old"}}) + "\n")
-
-        store = CheckpointStore(d, resume=True)
-        got = store.get("legacy")
-        self.assertIsNotNone(got)
-        self.assertEqual(got.content, "old")
-        self.assertEqual(got.exit_code, 0)
 
 
 class TestResume(Base):
@@ -162,6 +150,22 @@ class TestResume(Base):
         wf = self.rt(d, CheckpointStore(d, resume=False))
         wf.agent("boom [[FAKE:{\"_exit\": 2}]]")
         self.assertEqual(wf.checkpoints.count, 0)  # only successful results persist
+
+    def test_failed_spend_is_not_budget_gating_on_resume(self):
+        d = self.tmpdir()
+        wf1 = Runtime(copilot_bin=FAKE, model="fake", run_dir=d,
+                      checkpoints=CheckpointStore(d, resume=False), budget=0.005)
+        r1 = wf1.agent("boom [[FAKE:{\"_exit\": 2}]]")
+        self.assertFalse(r1.ok)
+        self.assertAlmostEqual(wf1.spent, 0.01)
+        self.assertEqual(wf1.checkpoints.count, 0)
+
+        wf2 = Runtime(copilot_bin=FAKE, model="fake", run_dir=d,
+                      checkpoints=CheckpointStore(d, resume=True), budget=0.005)
+        # Budget gating still uses committed successful checkpoints, not failed attempts.
+        self.assertAlmostEqual(wf2.spent, 0.0)
+        r2 = wf2.agent("retry")
+        self.assertTrue(r2.ok)
 
     def test_resume_field_distinguishes_followups(self):
         # follow_ups with the same prompt but different parent sessions must not collide.

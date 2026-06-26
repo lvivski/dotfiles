@@ -9,7 +9,9 @@ import os
 import stat
 import sys
 import tempfile
+import time
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LIB = os.path.dirname(os.path.dirname(HERE))  # .local/lib
@@ -31,7 +33,7 @@ from copilot_workflows.patterns import (  # noqa: E402
     _extract_last_json,
     _validate_shape,
 )
-from copilot_workflows.agent import AgentResult, _reduce  # noqa: E402
+from copilot_workflows.agent import AgentResult, _reduce, _session_nano_aiu  # noqa: E402
 
 FAKE = os.path.join(HERE, "fake_copilot.py")
 
@@ -63,7 +65,7 @@ class TestAgent(Base):
         r = wf.agent("hello world")
         self.assertTrue(r.ok)
         self.assertTrue(r.content.startswith("stub reply to:"))
-        self.assertAlmostEqual(r.premium_requests, 0.01)
+        self.assertAlmostEqual(r.aiu_credits, 0.01)
         self.assertGreater(r.output_tokens, 0)
         self.assertIsNotNone(r.session_id)
         self.assertEqual(wf.spent, 0.01)
@@ -92,16 +94,42 @@ class TestAgent(Base):
         self.assertIn("timed out", (r.error or ""))
 
     def test_reduce_tolerates_malformed_numbers(self):
-        # A non-numeric outputTokens/premiumRequests must not raise (it would
+        # A non-numeric outputTokens value must not raise (it would
         # otherwise escape run_agent, leak the timer and hang proc.wait()).
-        acc = {"content": None, "tokens": 0, "premium": 0.0, "session": None, "model": None}
+        acc = {"content": None, "tokens": 0, "session": None, "model": None}
         _reduce(acc, {"type": "assistant.message",
                       "data": {"content": "x", "outputTokens": "not-a-number"}})
         _reduce(acc, {"type": "result", "sessionId": "s",
                       "usage": {"premiumRequests": "oops"}})
         self.assertEqual(acc["tokens"], 0)
-        self.assertEqual(acc["premium"], 0.0)
+        self.assertEqual(acc["session"], "s")
         self.assertEqual(acc["content"], "x")
+
+    def test_reduce_ignores_premium_request_cost_for_budgeting(self):
+        acc = {"content": None, "tokens": 0, "session": None, "model": None}
+        _reduce(acc, {"type": "result", "sessionId": "s",
+                      "usage": {"premiumRequests": 999}})
+        self.assertNotIn("premium", acc)
+
+    def test_session_nano_aiu_reads_shutdown_nano_ai_units(self):
+        home = tempfile.mkdtemp(prefix="cwf-home-")
+        sid = "session-123"
+        d = os.path.join(home, ".copilot", "session-state", sid)
+        os.makedirs(d)
+        with open(os.path.join(d, "events.jsonl"), "w", encoding="utf-8") as fh:
+            fh.write('{"type":"session.shutdown","data":{"totalNanoAiu":5421200000}}\n')
+        with mock.patch.dict(os.environ, {"HOME": home}, clear=False):
+            self.assertEqual(_session_nano_aiu(sid), 5421200000)
+
+    def test_missing_cwd_reports_cwd_not_binary(self):
+        base = tempfile.mkdtemp(prefix="cwf-missing-cwd-")
+        self.addCleanup(os.rmdir, base)
+        missing = os.path.join(base, "missing")
+        wf = self.rt()
+        r = wf.agent("hi", cwd=missing)
+        self.assertFalse(r.ok)
+        self.assertIn("working directory not found", r.error)
+        self.assertNotIn("binary not found", r.error)
 
 
 class TestFanOut(Base):
@@ -134,6 +162,21 @@ class TestFanOut(Base):
 
         with self.assertRaises(ValueError):
             wf.fan_out([0, 1, 2], fn)
+
+    def test_branch_error_cancels_not_yet_started_work(self):
+        wf = self.rt(concurrency=1)
+        launched = []
+
+        def fn(x):
+            launched.append(x)
+            if x == 0:
+                raise ValueError("boom")
+            time.sleep(0.05)
+            return wf.agent("n%d" % x)
+
+        with self.assertRaises(ValueError):
+            wf.fan_out(list(range(20)), fn)
+        self.assertLess(len(launched), 20)
 
 
 class TestSynthesize(Base):
@@ -173,6 +216,14 @@ class TestVerify(Base):
         wf = self.rt()
         v = wf.verify("x " + fake('{"passed": "true", "score": 1}'), rubric="r")
         self.assertTrue(v.passed)
+
+    def test_agent_failure_is_fail_closed_but_observable(self):
+        wf = self.rt()
+        v = wf.verify("x " + fake('{"_exit": 2, "passed": true}'), rubric="r")
+        self.assertFalse(v.passed)
+        self.assertFalse(v.ok)
+        self.assertIn("exited with code 2", v.error)
+        self.assertFalse(bool(v))
 
 
 class TestTournament(Base):
@@ -678,9 +729,9 @@ class TestStructured(Base):
         # The static fake can't vary by attempt, so stub wf.agent with queued results.
         wf = self.rt()
         queue = [
-            AgentResult(content='{"nope": 1}', session_id="s", premium_requests=0.0,
+            AgentResult(content='{"nope": 1}', session_id="s", nano_aiu=0,
                         output_tokens=1, exit_code=0),
-            AgentResult(content='{"ok": true}', session_id="s", premium_requests=0.0,
+            AgentResult(content='{"ok": true}', session_id="s", nano_aiu=0,
                         output_tokens=1, exit_code=0),
         ]
         calls = {"n": 0}
@@ -721,52 +772,6 @@ class TestStructured(Base):
         with self.assertRaises(ValueError):
             wf.structured("x", {"type": "object", "patternProperties": {}})
         self.assertEqual(len(wf.results), 0)  # rejected before any agent ran
-
-
-class TestWorkflow(Base):
-    def _write(self, body: str) -> str:
-        d = tempfile.mkdtemp(prefix="cwf-wf-test-")
-        p = os.path.join(d, "child.py")
-        with open(p, "w") as fh:
-            fh.write(body)
-        return p
-
-    def test_runs_child_and_returns_stdout(self):
-        wf = self.rt()
-        directive = fake('{"_content": "AGENT"}')  # only double-quotes -> safe in '...'
-        child = self._write(
-            "r = wf.agent('hi %s')\nprint('child:', args['x'], r.content)\n" % directive)
-        out = wf.workflow(child, {"x": 42})
-        self.assertEqual(out, "child: 42 AGENT")
-        self.assertEqual(len(wf.results), 1)        # child agent counted on shared runtime
-        self.assertAlmostEqual(wf.spent, 0.01)
-
-    def test_missing_raises(self):
-        wf = self.rt()
-        with self.assertRaises(FileNotFoundError):
-            wf.workflow("/no/such/harness.py")
-
-    def test_nesting_raises(self):
-        wf = self.rt()
-        inner = self._write("print('inner')\n")
-        outer = self._write("wf.workflow(%r)\nprint('outer')\n" % inner)
-        with self.assertRaises(RuntimeError):
-            wf.workflow(outer)
-
-    def test_off_main_thread_raises(self):
-        wf = self.rt()
-        child = self._write("print('x')\n")
-        with self.assertRaises(RuntimeError):
-            wf.fan_out([1], lambda i: wf.workflow(child))
-
-    def test_child_agent_keys_are_scoped(self):
-        wf = self.rt()
-        spec = AgentSpec(prompt="dup", model="fake")
-        parent_key = wf._agent_key(spec)
-        wf._key_scope = "wf1:child"
-        child_key = wf._agent_key(spec)
-        self.assertNotEqual(parent_key, child_key)
-        self.assertTrue(child_key.startswith("wf1:child-"))
 
 
 class TestExtractJson(Base):

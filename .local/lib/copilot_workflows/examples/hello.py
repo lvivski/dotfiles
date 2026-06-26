@@ -15,11 +15,11 @@ QUESTIONS = [
 
 results = wf.fan_out(
     QUESTIONS,
-    lambda q: wf.agent(q, model="claude-haiku-4.5", label=q.rstrip("?").split()[-1], timeout=180),
+    lambda q: wf.agent(q, label=q.rstrip("?").split()[-1], timeout=180),
 )
 
 for r in results:
     print("\n## %s\n%s" % (r.label, r.content.strip()))
 
-total = sum(r.premium_requests for r in results)
-print("\n[smoke] %d agents, %.2f premium credits" % (len(results), total))
+total = sum(r.aiu_credits for r in results)
+print("\n[smoke] %d agents, %.2f AIC" % (len(results), total))

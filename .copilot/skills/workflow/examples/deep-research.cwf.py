@@ -4,7 +4,6 @@ no_tools = wf.quarantine(allow_all_tools=False)
 plan = wf.structured(
     f"Break this research question into 4 independent angles:\n\n{question}",
     {"type": "array", "items": {"type": "string"}},
-    model="claude-sonnet-4.5",
     label="plan",
     **no_tools,
 )
@@ -15,7 +14,7 @@ def research(angle):
     return angle, wf.agent(
         "Research this angle. Cite every factual claim with a source URL and flag uncertainty.\n\n"
         f"Angle: {angle}",
-        model="claude-haiku-4.5",
+        agent="researcher",
         phase="research",
         label=angle[:24],
         **wf.quarantine(deny_url=[], disable_mcp=False),
@@ -27,7 +26,6 @@ def verify_finding(reviewed):
     verdict = wf.verify(
         finding,
         rubric="every factual claim has a credible source URL and uncertainty is explicit",
-        model="claude-haiku-4.5",
         phase="verify",
         label=angle[:24],
         **no_tools,
@@ -42,7 +40,6 @@ fallback = [finding for _, finding, _ in checked]
 report = wf.synthesize(
     trusted or fallback,
     prompt=f"Answer the question with only sourced claims. Question: {question}",
-    model="claude-sonnet-4.5",
     label="report",
     **no_tools,
 )

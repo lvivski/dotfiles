@@ -183,6 +183,8 @@ class Verdict:
     score: float | None
     reasons: str
     raw: AgentResult
+    ok: bool = True
+    error: str = ""
 
     def __bool__(self) -> bool:
         return self.passed
@@ -221,7 +223,7 @@ class PatternsMixin:
             raise ValueError("retries must be >= 0")
         is_callable = callable(schema)
         if not is_callable:
-            _check_schema_def(schema)  # raise on unsupported keywords before spending credits
+            _check_schema_def(schema)  # raise on unsupported keywords before spending AIC
             schema_text = json.dumps(schema, sort_keys=True)
             shape = ("\n\nThe JSON must satisfy this shape (a documented subset of JSON "
                      f"Schema):\n{schema_text}")
@@ -313,6 +315,10 @@ class PatternsMixin:
             '{"passed": true|false, "score": 0..1, "reasons": "..."}'
         )
         res = self.agent(prompt, model=model, label=label, **kw)
+        if not res.ok:
+            error = res.error or "verifier agent failed"
+            return Verdict(
+                passed=False, score=None, reasons=error, raw=res, ok=False, error=error)
         data = _extract_json(res.content) or {}
         raw = data.get("passed", False)
         passed = raw.strip().lower() == "true" if isinstance(raw, str) else bool(raw)

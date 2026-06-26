@@ -3,6 +3,9 @@
 Harnesses are executed with `wf` (the runtime) and `args` (the parsed `--args` value or `None`).
 Everything is synchronous.
 
+Optional `META = {"name": "...", "description": "...", "phases": [...]}` must be a literal dict.
+cwf displays it in run headers/dry-runs and ignores invalid metadata.
+
 ## Agents
 
 Call `wf.agent(prompt, model=None, agent=None, effort=None, context=None, cwd=None, phase=None,
@@ -16,12 +19,15 @@ these (and for `model`) unless it pins its own — the per-agent value wins (see
 Returns `AgentResult`:
 
 - `content`, `ok`, `error`
-- `premium_requests`, `output_tokens`
+- `nano_aiu`, `aiu_credits`, `output_tokens`
 - `session_id`, `model`, `cached`
 - `str(result) == result.content`
 
 Use `wf.follow_up(result, prompt, **kw)` for another turn in the same subagent session. It raises if
 the result has no `session_id`.
+
+Custom personas deployed to `~/.copilot/agents/` can be selected with `agent="worker"` or
+`agent="researcher"` when a harness wants explicit role steering.
 
 ## Concurrency primitives
 
@@ -53,7 +59,7 @@ untrusted-derived text.
 
 ### `wf.verify(subject, rubric=..., refute=True, model=None, label="verify", **kw)`
 
-Returns `Verdict(passed, score, reasons, raw)`. Use for adversarial checking before reporting or
+Returns `Verdict(passed, score, reasons, raw, ok=True, error="")`. Use for adversarial checking before reporting or
 acting on findings.
 
 ### `wf.structured(prompt, schema, retries=2, model=None, label="structured", **kw)`
@@ -84,7 +90,9 @@ propagate.
 
 ## Safety, isolation, and cost
 
-- `wf.worktree()` requires a git repository and a unique name per concurrent branch.
+- `wf.worktree(name)` creates an isolated git worktree for a small edit/experiment. It requires a git
+  repository and a unique active name. Avoid one worktree per agent in large fan-outs; prefer running
+  the whole workflow from an already-isolated worktree when scale matters.
 - `wf.quarantine()` denies shell/write/egress by default and disables built-in MCPs.
 - Use `wf.quarantine(deny_url=[], disable_mcp=False)` only when a reader legitimately needs network
   or MCP access, such as web research.
@@ -97,12 +105,6 @@ propagate.
   disabled and no-ops without `--memory`, and read-only under `--dry-run`. Use it so a recurring loop
   records "what's done / what's next" for its next tick; it works in `--restricted` (the runtime owns
   the file I/O).
-
-## Saved workflows
-
-`wf.workflow(name_or_path, args=...)` runs a saved harness inline on the same runtime, sharing
-budget, concurrency, checkpoints, and progress. Call only at top level, not inside `fan_out`,
-`pipeline`, or `parallel`; nesting is limited to one level.
 
 ## CLI
 
@@ -127,4 +129,4 @@ so a different inherited value re-runs rather than reusing a stale result. (Clau
 has no model/effort param at all; `--context` is a Copilot-only tier with no Claude equivalent.)
 
 State lives under `~/.copilot/workflows/runs/<runId>/`: `harness.py`, `meta.json`,
-`results.ndjson`, and `progress.ndjson`.
+`results.jsonl`, and `progress.jsonl`.

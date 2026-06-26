@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import hashlib
 import inspect
-import io
 import json
 import os
 import shutil
@@ -12,17 +11,16 @@ import threading
 import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
-from contextlib import contextmanager, redirect_stdout
+from contextlib import contextmanager
 from dataclasses import replace
 from typing import Any
 
 from ._util import noop
 from .agent import AgentResult, AgentSpec, kill_all_agents, run_agent
-from .checkpoint import CheckpointStore, default_workflows_dir
+from .checkpoint import CheckpointStore
 from .memory import Memory
 from .patterns import PatternsMixin
 from .progress import ProgressEvent, format_agent_line
-from .sandbox import SandboxError, harness_globals, lint_imports
 from .worktree import WorktreeManager, find_repo_root
 
 
@@ -40,14 +38,14 @@ def _normalize_concurrency(value: int | None) -> int:
 
 
 class BudgetExceeded(Exception):
-    """Raised (only in strict mode) when observed premium-request spend passes the cap."""
+    """Raised (only in strict mode) when observed AIC spend passes the cap."""
 
 
-def _skipped_result(spec: AgentSpec) -> AgentResult:
+def _skipped_result(spec: AgentSpec, error: str = "skipped: budget reached") -> AgentResult:
     return AgentResult(
-        content="", session_id=None, premium_requests=0.0, output_tokens=0,
+        content="", session_id=None, nano_aiu=0, output_tokens=0,
         exit_code=-1, model=spec.model, label=spec.label,
-        error="skipped: budget reached", ok=False,
+        error=error, ok=False,
     )
 
 
@@ -145,11 +143,6 @@ class Runtime(PatternsMixin):
         self._wt_mgr: WorktreeManager | None = None
         self._wt_lock = threading.Lock()
         self._owns_wt_base = False
-        # inline sub-workflow state (wf.workflow): a key-scope namespaces a child's
-        # checkpoint keys so they can't collide/misalign with the parent's on resume.
-        self._key_scope = ""
-        self._workflow_depth = 0
-        self._workflow_calls = 0
 
     # ---- introspection -------------------------------------------------
     @property
@@ -159,11 +152,11 @@ class Runtime(PatternsMixin):
 
     @property
     def budget_total(self) -> float | None:
-        """The observed premium-request soft cap for the run, or None if uncapped."""
+        """The observed AIC soft cap for the run, or None if uncapped."""
         return self._budget
 
     def remaining(self) -> float:
-        """Premium credits left before the observed-spend soft cap (``inf`` if uncapped).
+        """AIC left before the observed-spend soft cap (``inf`` if uncapped).
 
         Advisory — for dynamic ``while wf.remaining() > N:`` loops. With no budget set
         this is ``inf``, so always pair such loops with ``wf.budget_total is not None``
@@ -178,9 +171,9 @@ class Runtime(PatternsMixin):
     def budget_hit(self) -> bool:
         return self._budget_hit.is_set()
 
-    def budget(self, premium_requests: float | None) -> None:
+    def budget(self, aic: float | None) -> None:
         """Set (or clear) the observed-spend soft budget for the run."""
-        self._budget = premium_requests
+        self._budget = aic
 
     def log(self, *args: Any) -> None:
         self._log(*args)
@@ -273,7 +266,7 @@ class Runtime(PatternsMixin):
                     "phase": eff_phase, "t": time.time()})
 
         if self.dry_run:
-            res = AgentResult(content="[dry-run]", session_id=None, premium_requests=0.0,
+            res = AgentResult(content="[dry-run]", session_id=None, nano_aiu=0,
                               output_tokens=0, exit_code=0, model=spec.model, label=spec.label)
             self._finish(seq, label, res, skipped=False, phase=eff_phase)
             return res
@@ -305,7 +298,7 @@ class Runtime(PatternsMixin):
                 skipped = True
             else:
                 res = run_agent(spec, copilot_bin=self.copilot_bin, abort=self._aborting)
-                self._charge(res.premium_requests)
+                self._charge(res.aiu_credits)
                 if self.checkpoints is not None and res.ok:
                     self.checkpoints.put(ckpt_key, res)
                 strict_stop = self.strict_budget and self._over_budget()
@@ -321,7 +314,7 @@ class Runtime(PatternsMixin):
         with self._results_lock:
             self.results.append(res)
         self._emit({"ev": "end", "seq": seq, "label": label, "ok": res.ok,
-                    "cached": res.cached, "skipped": skipped, "cr": res.premium_requests,
+                    "cached": res.cached, "skipped": skipped, "nano_aiu": res.nano_aiu,
                     "tok": res.output_tokens, "error": res.error, "model": res.model,
                     "phase": phase if phase is not None else self._current_phase(),
                     "t": time.time()})
@@ -403,6 +396,8 @@ class Runtime(PatternsMixin):
                         pass
                     except Exception as e:  # surfaces only when drop_errors=False
                         branch_error = branch_error or e
+                        for pending in futs:
+                            pending.cancel()
             except BaseException:
                 # Ctrl-C / SIGTERM unwinding on the main thread. Stop launching queued agents,
                 # cancel the not-yet-started ones, and kill those already running so the
@@ -508,98 +503,16 @@ class Runtime(PatternsMixin):
             if cleanup_ok:
                 self._wt_mgr = None
 
-    # ---- inline sub-workflow composition -------------------------------
-    def workflow(self, target: str, args: Any = None) -> str:
-        """Run a saved harness inline as a sub-step and return what it printed.
-
-        The child runs against THIS runtime, so budget, concurrency, checkpoints, and
-        the progress view all compose; its agents appear under a ``workflow:<name>``
-        phase and its spend counts toward ``wf.spent``. ``target`` is a path to a
-        ``.py`` harness, or a bare name resolved from ``./<name>.cwf.py`` /
-        ``~/.copilot/workflows/<name>.py``. ``args`` becomes the child's ``args``.
-
-        cwf harnesses answer by ``print()``-ing to stdout, so the child's stdout is
-        captured and returned as the result string. Because that capture is
-        process-global, ``workflow()`` must be called from the **top level** (it raises
-        if invoked inside a fan_out/pipeline/parallel branch) and nests only one level
-        deep. Editing a child harness safely invalidates its cached agents (cache miss,
-        never a wrong hit) thanks to per-call key scoping. In ``restricted`` mode the
-        child runs under the same restricted, deterministic environment, and ``target``
-        must be a saved-workflow *name* (no arbitrary file paths).
-        """
-        if threading.current_thread() is not threading.main_thread():
-            raise RuntimeError(
-                "wf.workflow() must be called at the top level, not inside a "
-                "fan_out/pipeline/parallel branch (its stdout capture is process-global)")
-        if self._workflow_depth >= 1:
-            raise RuntimeError("wf.workflow() nesting is one level only")
-
-        path = self._resolve_workflow(target)
-        name = os.path.splitext(os.path.basename(path))[0]
-        with open(path, "r", encoding="utf-8") as fh:
-            src = fh.read()
-        if self.restricted:
-            lint_imports(src, path)  # fail fast before the child spawns agents
-        code = compile(src, path, "exec")
-        g = harness_globals(self, args, path, restricted=self.restricted)
-
-        self._workflow_calls += 1
-        prev_scope = self._key_scope
-        self._key_scope = f"wf{self._workflow_calls}:{name}"
-        self._workflow_depth += 1
-        buf = io.StringIO()
-        try:
-            with self.phase(f"workflow:{name}"):
-                with redirect_stdout(buf):
-                    exec(code, g)
-        finally:
-            self._workflow_depth -= 1
-            self._key_scope = prev_scope
-        return buf.getvalue().strip()
-
-    def _resolve_workflow(self, target: str) -> str:
-        wdir = default_workflows_dir()
-        if self.restricted:
-            # Defense-in-depth: a restricted harness may compose only *registered* saved
-            # workflows, never an arbitrary local file path (which would re-open the
-            # filesystem/exec capability the restriction is meant to close).
-            t = str(target)
-            if os.sep in t or t.startswith("~") or t.startswith(".") or ".." in t:
-                raise SandboxError(
-                    "restricted mode: wf.workflow() takes a saved-workflow name, not a path: "
-                    f"{target!r}")
-            for cand in (os.path.join(wdir, f"{t}.cwf.py"), os.path.join(wdir, f"{t}.py")):
-                if os.path.isfile(cand):
-                    return cand
-            raise FileNotFoundError(
-                f"restricted mode: no saved workflow named {target!r} in {wdir}")
-        p = os.path.expanduser(str(target))
-        if p.endswith(".py") or os.sep in p:
-            ap = os.path.abspath(p)
-            if os.path.isfile(ap):
-                return ap
-            raise FileNotFoundError(f"wf.workflow: harness not found: {target}")
-        for cand in (
-            os.path.join(os.getcwd(), f"{p}.cwf.py"),
-            os.path.join(os.getcwd(), f"{p}.py"),
-            os.path.join(wdir, f"{p}.cwf.py"),
-            os.path.join(wdir, f"{p}.py"),
-        ):
-            if os.path.isfile(cand):
-                return cand
-        raise FileNotFoundError(
-            f"wf.workflow: no harness named {target!r} in cwd or ~/.copilot/workflows")
-
     # ---- checkpoint keys -----------------------------------------------
     def _scoped_key(self, key: str) -> str:
-        """Namespace an explicit checkpoint key by workflow/branch scope, if any."""
+        """Namespace an explicit checkpoint key by concurrent branch scope, if any."""
         prefix = self._key_prefix()
         return f"{prefix}-{key}" if prefix else key
 
     def _agent_key(self, spec: AgentSpec) -> str:
         fp = self._spec_fingerprint(spec)
-        # Scope folds into the occurrence counter AND the key prefix so child
-        # workflows and concurrent branches never alias each other. Empty scope
+        # Branch scope folds into the occurrence counter AND the key prefix so
+        # concurrent branches never alias each other. Empty scope
         # remains byte-identical to the pre-scope key (resume compatibility).
         prefix = self._key_prefix()
         occ_key = f"{prefix}:{fp}" if prefix else fp
@@ -610,8 +523,6 @@ class Runtime(PatternsMixin):
 
     def _key_prefix(self) -> str:
         parts = []
-        if self._key_scope:
-            parts.append(self._key_scope)
         branch = self._branch_path()
         if branch:
             parts.append("b" + ".".join(str(i) for i in branch))

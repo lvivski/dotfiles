@@ -42,7 +42,7 @@ phases + a credit budget, asks you to confirm, runs it, and returns the synthesi
 **2. Write/run a harness yourself.**
 
 ```bash
-cwf run ~/.copilot/workflows/deep-research.cwf.py --budget 30 \
+cwf run ~/.copilot/workflows/deep-research.cwf.py --budget 10000 \
     --args '"What changed in HTTP/3 adoption since 2022?"'
 ```
 
@@ -53,11 +53,18 @@ The harness prints its final answer to **stdout**; cwf prints progress + stats t
 A harness is executed with two names injected: `wf` (the runtime) and `args` (the parsed `--args`
 value, or `None`). Everything is synchronous — never use `async`/`await`.
 
+Optionally define a literal `META` dict near the top; cwf displays it in run headers and dry-runs,
+but ignores invalid/non-literal metadata and never uses it to change execution:
+
+```python
+META = {"name": "audit-auth", "description": "Audit auth checks", "phases": ["scan", "verify"]}
+```
+
 ```python
 r = wf.agent(prompt, *, model=None, agent=None, effort=None, context=None, cwd=None, phase=None,
              disable_mcp=False, timeout=None, label=None,
              allow=None, deny=None, allow_url=None, deny_url=None, add_dir=None, mcp=None)
-#   -> AgentResult: .content .ok .premium_requests .output_tokens
+#   -> AgentResult: .content .ok .nano_aiu .aiu_credits .output_tokens
 #                   .session_id .model .cached .error   (str(r) == r.content)
 #   phase=  assigns the progress group explicitly (use inside pipeline()/parallel()).
 #   effort= reasoning effort (none|low|medium|high|xhigh|max); context= window tier
@@ -72,7 +79,7 @@ rows    = wf.pipeline(items, stage1, stage2, ...)   # DEFAULT for multi-stage wo
 results = wf.parallel([lambda: wf.agent(a), lambda: wf.agent(b)])  # barrier over thunks
 results = wf.fan_out(items, fn)             # barrier map keyed by items; fn may nest wf.agent
 merged  = wf.synthesize(results, prompt=..., model=...)
-verdict = wf.verify(work, rubric=..., refute=True)     # -> Verdict(.passed .score .reasons .raw)
+verdict = wf.verify(work, rubric=..., refute=True)     # -> Verdict(.passed .score .reasons .raw .ok .error)
 winner  = wf.tournament(candidates, criteria=...)
 kept    = wf.generate_and_filter(prompt, n=8, rubric=...)   # or keep=callable
 label   = wf.classify(text, ["bug", "feature", "question"], **wf.quarantine(allow_all_tools=False))
@@ -80,10 +87,9 @@ hist    = wf.loop_until(step, done, max_iters=10)
 s       = wf.structured(prompt, schema, retries=2)  # validated JSON + retry -> Structured(.value .ok .attempts)
 #   schema = a shape-schema dict (type/properties/required/enum/items/additionalProperties)
 #   or a callable validate(obj) -> "" when ok else error string. Feeds the error back and retries.
-out     = wf.workflow("name-or-path", args=...)     # run a saved harness inline; returns what it printed
 
 with wf.phase("name"): ...                  # group agents in the live view
-with wf.worktree(f"fix-{item}") as path:    # isolated checkout — unique name per branch
+with wf.worktree("experiment") as path:      # optional isolated checkout
     wf.agent("apply the fix", cwd=path)
 q = wf.quarantine()                         # reader of untrusted content: no shell/write tools
 wf.budget(20); wf.log("..."); wf.spent      # cost controls
@@ -96,9 +102,9 @@ wf.memory.read(); wf.memory.append("...")   # durable text shared ACROSS runs / 
 > are barriers — they wait for every branch. Default to `pipeline()`; use a barrier only when
 > a stage needs all prior results at once (dedupe/merge, zero-count early-exit, cross-refs).
 
-> **wf.workflow() composition.** Runs a saved harness inline on the same runtime (shared
-> budget/concurrency/checkpoints/progress) and returns its printed output. Top-level only (raises
-> inside a parallel branch), one level deep; child checkpoint keys are namespaced so resume stays sound.
+> **worktrees for convenience.** `wf.worktree()` is handy when one branch should experiment or edit
+> without touching the main checkout. Avoid creating hundreds of per-agent worktrees in large fan-outs;
+> when scale matters, start the whole workflow from an already-isolated worktree instead.
 
 ## CLI
 
@@ -126,10 +132,10 @@ cwf watch <run_id> [--no-follow]                                     # live/repl
   / a different model on agents that don't (`--context` is a Copilot-only window tier with no Claude
   equivalent). The resolved value is part of an agent's resume-cache key, so a different inherited
   value re-runs rather than reusing a stale result.
-- **Budget** is a soft observed-spend cap in premium-request credits — always set `--budget`.
+- **Budget** is a soft observed-spend cap in AIC — always set `--budget`.
   Agents already in flight can finish and overshoot; once the cap is observed, new agents are
   skipped (graceful drain). `--strict-budget` raises/stops after the cap is observed.
-- **Resume** — every completed agent is checkpointed to `results.ndjson`. Re-run with
+- **Resume** — every completed agent is checkpointed to `results.jsonl`. Re-run with
   `--resume <runId>` and finished agents return instantly.
 - **Memory** (`--memory PATH`) — a durable text file the harness reads/appends through
   `wf.memory`. Unlike checkpoints (which are per-run), it persists **across `cwf loop`
@@ -137,10 +143,10 @@ cwf watch <run_id> [--no-follow]                                     # live/repl
   the *memory* primitive of loop engineering. It works in `--restricted` (the runtime
   owns the I/O), and `--dry-run` reads it but never writes. `wf.memory` is always safe to
   call: with no `--memory` it is disabled (`read()` → `""`, writes are no-ops).
-- **Live view** — a TTY shows a panel (running agents, credits, elapsed); pipes get one line per agent.
+- **Live view** — a TTY shows a panel (running agents, AIC, elapsed); pipes get one line per agent.
 
 Run state lives under `~/.copilot/workflows/runs/<runId>/` (`harness.py`, `meta.json`,
-`results.ndjson`, `progress.ndjson`).
+`results.jsonl`, `progress.jsonl`).
 
 ## Restricted / deterministic mode (`--restricted`)
 
@@ -149,9 +155,8 @@ deterministic environment:
 
 - **Orchestration-only** — the harness gets `wf`, `args`, `print`, and pure-stdlib helpers, but
   **no** `open`/`exec`/`eval`/`compile` and **no** fs/proc/net imports (`os`, `subprocess`, `socket`,
-  `pathlib`, `urllib`, …). A blocked `import` fails fast (before any agent spends credits); a blocked
-  builtin is simply absent. Composition (`wf.workflow`) is limited to *registered* saved-workflow
-  names — no arbitrary file paths.
+  `pathlib`, `urllib`, …). A blocked `import` fails fast (before any agent spends AIC); a blocked
+  builtin is simply absent.
 - **Deterministic** — `time`, `datetime`, `random`, `uuid`, `secrets` are not importable and the
   nondeterministic builtins `id`/`hash` are removed, so the harness can't silently change its agent
   call-graph between a run and its `--resume`. Pass timestamps via `args`; vary randomness by item
@@ -194,17 +199,20 @@ to parameterize them.
 ## Cost & safety
 
 Dynamic workflows spend meaningfully more than a single session — use them for large, parallel,
-adversarial, or cross-checked work, not routine edits. Use a small, cheap model for wide fan-out and
-a strong one only for synthesis/judging — any model Copilot offers works (Claude, GPT, Gemini, a BYOK
-provider, or `auto`), e.g. `claude-haiku-4.5` for fan-out and `claude-sonnet-4.5` for synthesis. Gauge
-cost by running a small slice first (`--dry-run` previews the plan for free). Use `wf.quarantine()` for any
+adversarial, or cross-checked work, not routine edits. Prefer generous budgets by default (thousands
+of AIC) so broad fan-out and verification are not accidentally starved; users can pass
+tighter budgets when cost is the constraint. Prefer modern, capable models by default rather than
+old/cheap defaults, and avoid provider-specific bias: any model Copilot offers works (GPT, Claude,
+Gemini, a BYOK provider, or `auto`). Use a fast current model for broad fan-out and a stronger
+current model for synthesis/judging. `--dry-run` previews the plan for free. Use `wf.quarantine()` for any
 agent that reads untrusted/public content, and keep later verifier/synthesis agents no-tools when
 they consume untrusted-derived text.
 
 ## Persona agents
 
-`~/.copilot/agents/` ships reusable subagent personas — `verifier`, `refuter`, `synthesizer`,
-`judge`, `researcher`, `classifier` — usable via `wf.agent(prompt, agent="verifier")` or
+`~/.copilot/agents/` ships reusable subagent personas — `worker`, `verifier`, `refuter`,
+`synthesizer`, `judge`, `researcher`, `classifier` — usable after `. sync` deploys them, e.g.
+`wf.agent(prompt, agent="worker")`, `wf.agent(prompt, agent="researcher")`, or
 `copilot --agent verifier`. The built-in patterns already embed strong personas, so these are for
 extra steering.
 
@@ -226,7 +234,7 @@ copilot_workflows/
   checkpoint.py   # append-only resumable result store
   memory.py       # durable text shared across runs / loop ticks (wf.memory, --memory)
   worktree.py     # per-agent git worktree isolation
-  progress.py     # live panel + progress.ndjson + replay (cwf watch)
+  progress.py     # live panel + progress.jsonl + replay (cwf watch)
   examples/       # hello.py, patterns_demo.py
   tests/          # fake_copilot.py + unittest suite
 ```
@@ -235,5 +243,5 @@ copilot_workflows/
 
 Same idea — an agent-authored harness that orchestrates many subagents with the plan held *outside*
 the model context — re-implemented on Copilot CLI primitives: each subagent is a
-`copilot -p … --output-format json` subprocess; cost is tracked in premium-request credits; the
+`copilot -p … --output-format json` subprocess; cost is tracked in AIC; the
 `workflow` skill plays the role of `ultracode`.

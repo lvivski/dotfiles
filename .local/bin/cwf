@@ -18,6 +18,7 @@ Stdlib only; targets Python 3.9+.
 from __future__ import annotations
 
 import argparse
+import ast
 import datetime
 import json
 import os
@@ -89,6 +90,36 @@ def _parse_args_value(raw: str | None):
         return raw  # treat as a plain string
 
 
+def _extract_meta(source: str, path: str) -> dict:
+    """Best-effort top-level ``META = {...}`` extraction. Never affects execution."""
+    try:
+        tree = ast.parse(source, filename=path)
+    except SyntaxError:
+        return {}
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(isinstance(t, ast.Name) and t.id == "META" for t in node.targets):
+            continue
+        try:
+            raw = ast.literal_eval(node.value)
+        except Exception:
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        meta = {}
+        for key in ("name", "description"):
+            if isinstance(raw.get(key), str) and raw[key].strip():
+                meta[key] = raw[key].strip()
+        phases = raw.get("phases")
+        if isinstance(phases, (list, tuple)):
+            vals = [p.strip() for p in phases if isinstance(p, str) and p.strip()]
+            if vals:
+                meta["phases"] = vals
+        return meta
+    return {}
+
+
 def _is_skipped(r) -> bool:
     """A budget-drained agent (graceful, non-strict mode): not an error."""
     return (not r.ok) and str(getattr(r, "error", "") or "").startswith("skipped:")
@@ -115,24 +146,24 @@ def _system_exit_status(exc: SystemExit) -> int:
 
 
 def _prepare_run_dir(run_dir: str, run_id: str, harness_path: str, args_value,
-                     resume: bool, restricted: bool) -> "CheckpointStore":
+                     resume: bool, restricted: bool, meta: dict):
     """Create the run dir, snapshot the harness, write meta, open the checkpoint store."""
     os.makedirs(run_dir, exist_ok=True)
     # keep a readable copy of the harness with the run (Claude parity)
     with suppress(Exception):
         shutil.copyfile(harness_path, os.path.join(run_dir, "harness.py"))
-    _write_meta(run_dir, run_id, harness_path, args_value, resume, restricted)
+    _write_meta(run_dir, run_id, harness_path, args_value, resume, restricted, meta)
     return CheckpointStore(run_dir, resume=resume)
 
 
 def _make_reporter(run_dir, run_id, harness_path, resume, quiet):
     """Build the progress reporter (+ a devnull sink under --quiet, returned for closing)."""
-    progress_path = os.path.join(run_dir, "progress.ndjson") if run_dir else None
+    progress_path = os.path.join(run_dir, "progress.jsonl") if run_dir else None
     if progress_path and not resume and os.path.isfile(progress_path):
         open(progress_path, "w").close()  # fresh run reusing a dir: drop stale progress
     devnull = open(os.devnull, "w") if quiet else None
     reporter = ProgressReporter(
-        ndjson_path=progress_path, title=run_id or os.path.basename(harness_path),
+        jsonl_path=progress_path, title=run_id or os.path.basename(harness_path),
         stream=devnull, live=False if quiet else None)
     return reporter, devnull
 
@@ -145,7 +176,8 @@ def _build_runtime(a: argparse.Namespace, run_dir, store, reporter, logger) -> "
         run_dir=run_dir, checkpoints=store, restricted=a.restricted, memory_path=a.memory)
 
 
-def _log_run_header(logger, a: argparse.Namespace, harness_path, rt, run_id, store, resume) -> None:
+def _log_run_header(logger, a: argparse.Namespace, harness_path, rt, run_id, store,
+                    resume, meta: dict) -> None:
     budget_str = f"{a.budget:.2f}" if a.budget is not None else "none"
     flags = "".join((", dry-run" if a.dry_run else "", ", resume" if resume else "",
                      ", restricted" if a.restricted else ""))
@@ -154,10 +186,16 @@ def _log_run_header(logger, a: argparse.Namespace, harness_path, rt, run_id, sto
     tuning = _tuning_note(a)
     if tuning:
         logger(f"  tuning: {tuning}")
+    if meta:
+        title = meta.get("name") or os.path.basename(harness_path)
+        desc = f" — {meta['description']}" if meta.get("description") else ""
+        logger(f"  workflow: {title}{desc}")
+        if meta.get("phases"):
+            logger("  phases: " + ", ".join(meta["phases"]))
     if run_id:
         cached = store.count if store else 0
         logger(f"  run id: {run_id}" + (f"  ({cached} cached)" if cached else ""))
-        logger(f"  resume: cwf run {a.harness} --resume {run_id}")
+        logger(f"  resume: cwf run {harness_path} --resume {run_id}")
     if a.memory:
         logger(f"  memory: {os.path.abspath(os.path.expanduser(a.memory))}"
                + (" (read-only: dry-run)" if a.dry_run else ""))
@@ -166,22 +204,32 @@ def _log_run_header(logger, a: argparse.Namespace, harness_path, rt, run_id, sto
                "for fully reproducible set/dict ordering")
 
 
-def _run_end_event(rt: "Runtime") -> dict:
-    return {"ev": "run_end", "agents": len(rt.results),
-            "cr": sum(r.premium_requests for r in rt.results),
-            "failed": sum(1 for r in rt.results if not r.ok and not _is_skipped(r)),
-            "skipped": sum(1 for r in rt.results if _is_skipped(r)),
-            "t": time.time()}
-
-
-def _finalize(logger, rt: "Runtime", status: int, elapsed: float) -> int:
-    total = sum(r.premium_requests for r in rt.results)
-    failures = sum(1 for r in rt.results if not r.ok and not _is_skipped(r))
-    skipped = sum(1 for r in rt.results if _is_skipped(r))
+def _run_summary(rt: "Runtime", elapsed: float) -> dict:
     cached = sum(1 for r in rt.results if r.cached)
-    logger(f"— cwf: {len(rt.results)} agents ({cached} cached, {skipped} skipped, "
-           f"{failures} failed), {total:.2f} premium credits, {elapsed:.1f}s")
-    return 4 if status == 0 and failures else status
+    skipped = sum(1 for r in rt.results if _is_skipped(r))
+    failed = sum(1 for r in rt.results if not r.ok and not _is_skipped(r))
+    launched = sum(1 for r in rt.results if not r.cached and not _is_skipped(r))
+    launched_nano_aiu = sum(r.nano_aiu for r in rt.results
+                            if not r.cached and not _is_skipped(r))
+    total_nano_aiu = sum(r.nano_aiu for r in rt.results)
+    return {"agents": len(rt.results), "launched": launched, "cached": cached,
+            "skipped": skipped, "failed": failed,
+            "nano_aiu": total_nano_aiu,
+            "launched_nano_aiu": launched_nano_aiu,
+            "elapsed": elapsed}
+
+
+def _run_end_event(summary: dict, run_id: str | None) -> dict:
+    rec = {"ev": "run_end", "run_id": run_id, "t": time.time()}
+    rec.update(summary)
+    return rec
+
+
+def _finalize(logger, summary: dict, status: int) -> int:
+    logger(f"— cwf: {summary['agents']} agents ({summary['cached']} cached, "
+           f"{summary['skipped']} skipped, {summary['failed']} failed), "
+           f"{summary['nano_aiu'] / 1_000_000_000:.1f} AIC, {summary['elapsed']:.1f}s")
+    return 4 if status == 0 and summary["failed"] else status
 
 
 def cmd_run(a: argparse.Namespace) -> int:
@@ -189,6 +237,13 @@ def cmd_run(a: argparse.Namespace) -> int:
     if not os.path.isfile(harness_path):
         sys.stderr.write(f"cwf: harness not found: {a.harness}\n")
         return 2
+    try:
+        with open(harness_path, "r", encoding="utf-8") as fh:
+            src = fh.read()
+    except OSError as e:
+        sys.stderr.write(f"cwf: cannot read harness {a.harness}: {e}\n")
+        return 2
+    meta = _extract_meta(src, harness_path)
 
     args_value = _parse_args_value(a.args)
     resume = bool(a.resume)
@@ -207,22 +262,22 @@ def cmd_run(a: argparse.Namespace) -> int:
         if resume and not os.path.isdir(run_dir):
             sys.stderr.write(f"cwf: no such run to resume: {run_id}\n")
             return 2
-        store = _prepare_run_dir(run_dir, run_id, harness_path, args_value, resume, a.restricted)
+        store = _prepare_run_dir(
+            run_dir, run_id, harness_path, args_value, resume, a.restricted, meta)
 
     reporter, devnull = _make_reporter(run_dir, run_id, harness_path, resume, a.quiet)
     rt = _build_runtime(a, run_dir, store, reporter, logger)
-    _log_run_header(logger, a, harness_path, rt, run_id, store, resume)
+    _log_run_header(logger, a, harness_path, rt, run_id, store, resume, meta)
 
-    reporter({"ev": "run_start", "run_id": run_id, "harness": harness_path, "t": time.time()})
+    reporter({"ev": "run_start", "run_id": run_id, "harness": harness_path,
+              "meta": meta, "t": time.time()})
     g = harness_globals(rt, args_value, harness_path, restricted=a.restricted)
 
     start = time.time()
     status = 0
     try:
-        with open(harness_path, "r", encoding="utf-8") as fh:
-            src = fh.read()
         if a.restricted:
-            lint_imports(src, harness_path)  # fail fast before any agent spends credits
+            lint_imports(src, harness_path)  # fail fast before any agent spends AIC
         exec(compile(src, harness_path, "exec"), g)
     except SandboxError as e:
         sys.stderr.write(f"\ncwf: blocked by restricted mode: {e}\n")
@@ -242,16 +297,19 @@ def cmd_run(a: argparse.Namespace) -> int:
         status = 1
     finally:
         rt.cleanup()
+        elapsed = time.time() - start
+        summary = _run_summary(rt, elapsed)
         with suppress(Exception):
-            reporter(_run_end_event(rt))
+            reporter(_run_end_event(summary, run_id))
         reporter.close()
         if devnull is not None:
             devnull.close()
 
-    return _finalize(logger, rt, status, time.time() - start)
+    return _finalize(logger, summary, status)
 
 
-def _write_meta(run_dir, run_id, harness_path, args_value, resume, restricted=False):
+def _write_meta(run_dir, run_id, harness_path, args_value, resume, restricted=False,
+                workflow_meta=None):
     meta_path = os.path.join(run_dir, "meta.json")
     meta = {}
     if resume and os.path.isfile(meta_path):
@@ -265,6 +323,8 @@ def _write_meta(run_dir, run_id, harness_path, args_value, resume, restricted=Fa
     meta.setdefault("harness", harness_path)
     meta.setdefault("created_at", now)
     meta.setdefault("restricted", restricted)
+    if workflow_meta:
+        meta["workflow"] = workflow_meta
     meta["args"] = args_value
     meta["updated_at"] = now
     try:
@@ -299,11 +359,12 @@ def cmd_runs(a: argparse.Namespace) -> int:
                     meta = json.load(fh)
             except Exception:
                 pass
-        n, cr = 0, 0.0
-        rp = os.path.join(d, "results.ndjson")
-        if os.path.isfile(rp):
+        n, aic = 0, 0.0
+        pp = os.path.join(d, "progress.jsonl")
+        run_end = None
+        if os.path.isfile(pp):
             try:
-                with open(rp, encoding="utf-8") as fh:
+                with open(pp, encoding="utf-8") as fh:
                     for line in fh:
                         line = line.strip()
                         if not line:
@@ -312,25 +373,28 @@ def cmd_runs(a: argparse.Namespace) -> int:
                             rec = json.loads(line)
                         except Exception:
                             continue
-                        n += 1
-                        cr += float((rec.get("result") or {}).get("premium_requests") or 0.0)
+                        if rec.get("ev") == "run_end":
+                            run_end = rec
             except Exception:
                 pass
+        if run_end is not None:
+            n = int(run_end.get("launched") or 0)
+            aic = float(run_end.get("launched_nano_aiu") or 0) / 1_000_000_000
         updated = meta.get("updated_at") or _mtime_iso(d)
-        rows.append((updated, name, os.path.basename(meta.get("harness", "")), n, cr))
+        rows.append((updated, name, os.path.basename(meta.get("harness", "")), n, aic))
     if not rows:
         print(f"no runs in {runs_dir}")
         return 0
     rows.sort(reverse=True)
-    print(f"{'RUN ID':<32} {'HARNESS':<20} {'AGENTS':>6} {'CREDITS':>8}  UPDATED")
+    print(f"{'RUN ID':<32} {'HARNESS':<20} {'AGENTS':>6} {'AIC':>8}  UPDATED")
     for updated, name, harness, n, cr in rows:
-        print(f"{name[:32]:<32} {harness[:20]:<20} {n:>6} {cr:>8.2f}  {updated}")
+        print(f"{name[:32]:<32} {harness[:20]:<20} {n:>6} {cr:>8.1f}  {updated}")
     return 0
 
 
 def cmd_watch(a: argparse.Namespace) -> int:
     runs_dir = a.runs_dir or default_runs_dir()
-    path = os.path.join(runs_dir, a.run_id, "progress.ndjson")
+    path = os.path.join(runs_dir, a.run_id, "progress.jsonl")
     if not os.path.isfile(path):
         sys.stderr.write(f"cwf: no progress file for run: {a.run_id}\n")
         return 2
@@ -387,7 +451,7 @@ def _add_run_args(pr: argparse.ArgumentParser) -> None:
                     help="Session default context-window tier agents inherit unless they pin "
                          "their own (Copilot-specific; no Claude equivalent).")
     pr.add_argument("--budget", type=float,
-                    help="Soft observed premium-credit cap; in-flight agents may overshoot.")
+                    help="Soft observed AIC cap; in-flight agents may overshoot.")
     pr.add_argument("--strict-budget", action="store_true",
                     help="Raise/stop after the cap is hit instead of gracefully skipping new agents.")
     pr.add_argument("--concurrency", type=int, help="Max concurrent subagents.")
@@ -449,7 +513,7 @@ def main(argv=None) -> int:
     ls.add_argument("--runs-dir", help="Runs directory (default: ~/.copilot/workflows/runs).")
     ls.set_defaults(func=cmd_runs)
 
-    w = sub.add_parser("watch", help="Watch a run's live progress (tails progress.ndjson).")
+    w = sub.add_parser("watch", help="Watch a run's live progress (tails progress.jsonl).")
     w.add_argument("run_id", help="Run id to watch.")
     w.add_argument("--runs-dir", help="Runs directory (default: ~/.copilot/workflows/runs).")
     w.add_argument("--no-follow", action="store_true", help="Render current state once and exit.")

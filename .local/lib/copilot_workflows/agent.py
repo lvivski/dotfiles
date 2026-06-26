@@ -81,7 +81,7 @@ class AgentResult:
 
     content: str
     session_id: str | None
-    premium_requests: float
+    nano_aiu: int
     output_tokens: int
     exit_code: int
     model: str | None = None
@@ -89,6 +89,10 @@ class AgentResult:
     error: str | None = None
     ok: bool = True
     cached: bool = False  # True when returned from a resumed run's checkpoint
+
+    @property
+    def aiu_credits(self) -> float:
+        return self.nano_aiu / 1_000_000_000
 
     def __str__(self) -> str:  # convenient when a harness treats a result as text
         return self.content
@@ -139,6 +143,28 @@ def _to_float(x) -> float:
         return 0.0
 
 
+def _session_nano_aiu(session_id: str | None) -> int:
+    """Actual nano-AI units from Copilot's session log (`totalNanoAiu`), if available."""
+    if not session_id:
+        return 0
+    path = os.path.expanduser(f"~/.copilot/session-state/{session_id}/events.jsonl")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if obj.get("type") != "session.shutdown":
+                    continue
+                nano = ((obj.get("data") or {}).get("totalNanoAiu"))
+                if nano is not None:
+                    return _to_int(nano)
+    except OSError:
+        return 0
+    return 0
+
+
 def _reduce(acc: dict, obj: dict) -> None:
     """Fold one JSONL event into the running result accumulator.
 
@@ -154,7 +180,6 @@ def _reduce(acc: dict, obj: dict) -> None:
         acc["model"] = data.get("model") or acc["model"]
     elif kind == "result":
         acc["session"] = obj.get("sessionId", acc["session"])
-        acc["premium"] += _to_float((obj.get("usage") or {}).get("premiumRequests"))
 
 
 def _result(spec: AgentSpec, acc: dict, exit_code: int, *,
@@ -168,7 +193,7 @@ def _result(spec: AgentSpec, acc: dict, exit_code: int, *,
         elif content is None:
             error = "no assistant message in output"
     return AgentResult(
-        content=content or "", session_id=acc["session"], premium_requests=acc["premium"],
+        content=content or "", session_id=acc["session"], nano_aiu=acc.get("nano_aiu") or 0,
         output_tokens=acc["tokens"], exit_code=exit_code, model=acc["model"], label=spec.label,
         error=error, ok=exit_code == 0 and content is not None and not killed and error is None,
     )
@@ -186,7 +211,7 @@ def run_agent(spec: AgentSpec, *, copilot_bin: str = "copilot",
     process can never slip through an interrupt unkilled (either the reaper sees it in the
     registry, or this check sees ``abort`` set and kills it).
     """
-    acc = {"content": None, "tokens": 0, "premium": 0.0, "session": None, "model": spec.model}
+    acc = {"content": None, "tokens": 0, "session": None, "model": spec.model}
     killed = threading.Event()
     stderr: list[str] = []
     stream_error: str | None = None
@@ -199,6 +224,10 @@ def run_agent(spec: AgentSpec, *, copilot_bin: str = "copilot",
 
     with (semaphore or nullcontext()):
         try:
+            if spec.cwd is not None and not os.path.isdir(spec.cwd):
+                return _result(
+                    spec, acc, 1,
+                    error=f"working directory not found: {spec.cwd!r}")
             proc = subprocess.Popen(
                 build_cmd(spec, copilot_bin), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 cwd=spec.cwd, env=env, text=True, encoding="utf-8", errors="replace", bufsize=1,
@@ -239,6 +268,7 @@ def run_agent(spec: AgentSpec, *, copilot_bin: str = "copilot",
                 proc.stderr.close()
                 _unregister(proc)
 
+    acc["nano_aiu"] = _session_nano_aiu(acc["session"])
     return _result(spec, acc, exit_code, killed=killed.is_set(),
                    stderr="".join(stderr), error=stream_error)
 

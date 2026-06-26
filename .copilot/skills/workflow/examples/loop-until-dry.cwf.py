@@ -8,7 +8,7 @@ def find_more(round_index):
     result = wf.agent(
         "Find new issues not already seen.\n\n"
         f"Question: {question}\n\nAlready seen:\n{sorted(seen)}",
-        model="claude-haiku-4.5",
+        agent="worker",
         phase="discover",
         label=f"round-{round_index}",
     )
@@ -25,7 +25,6 @@ wf.loop_until(find_more, lambda _: dry_rounds >= 2, max_iters=6)
 report = wf.synthesize(
     sorted(seen),
     prompt="Deduplicate and summarize these findings. Note uncertainty and evidence gaps.",
-    model="claude-sonnet-4.5",
     label="report",
 )
 print(report.content)

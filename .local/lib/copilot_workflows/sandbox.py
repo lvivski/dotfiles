@@ -63,8 +63,7 @@ def restricted_builtins() -> dict[str, Any]:
 
 
 def harness_globals(wf: Any, args: Any, file: str, *, restricted: bool) -> dict[str, Any]:
-    """Build the exec globals for a harness — the single source of truth for both exec sites
-    (the ``cwf`` CLI and ``wf.workflow``). In restricted mode, installs restricted builtins;
+    """Build the exec globals for a harness. In restricted mode, installs restricted builtins;
     otherwise leaves ``__builtins__`` unset so ``exec`` injects the real ones (unchanged)."""
     from .agent import AgentResult, AgentSpec
     g: dict[str, Any] = {
@@ -78,7 +77,7 @@ def harness_globals(wf: Any, args: Any, file: str, *, restricted: bool) -> dict[
 
 
 def lint_imports(source: str, path: str) -> None:
-    """Fail fast (before any agent spends credits) on a non-allowlisted import.
+    """Fail fast (before any agent spends AIC) on a non-allowlisted import.
 
     A conservative preflight: it flags every ``import``/``from`` statement that names a
     blocked top-level module, **including** ones under ``if TYPE_CHECKING:`` or in

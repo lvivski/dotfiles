@@ -6,7 +6,6 @@ def classify_ticket(ticket):
     return wf.classify(
         ticket,
         ["bug", "feature", "question"],
-        model="claude-haiku-4.5",
         label="classify",
         **no_tools,
     )
@@ -15,7 +14,7 @@ def classify_ticket(ticket):
 def suggest_action(kind, ticket):
     detail = wf.agent(
         f"In one sentence, suggest the next action for this {kind}: {ticket}",
-        model="claude-haiku-4.5",
+        agent="worker",
         phase="triage",
         label=kind,
         **no_tools,
@@ -27,7 +26,6 @@ rows = [row for row in wf.pipeline(tickets, classify_ticket, suggest_action) if 
 report = wf.synthesize(
     [f"{row['kind']}: {row['ticket']} -> {row['action']}" for row in rows],
     prompt="Group these by kind into a short triage report.",
-    model="claude-sonnet-4.5",
     label="report",
     **no_tools,
 )

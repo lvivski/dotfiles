@@ -4,9 +4,7 @@
 """
 import io
 import os
-import stat
 import sys
-import tempfile
 import unittest
 from contextlib import redirect_stdout
 
@@ -15,7 +13,6 @@ LIB = os.path.dirname(os.path.dirname(HERE))  # .local/lib
 if LIB not in sys.path:
     sys.path.insert(0, LIB)
 
-from copilot_workflows import Runtime  # noqa: E402
 from copilot_workflows.sandbox import (  # noqa: E402
     SAFE_MODULES,
     SandboxError,
@@ -24,8 +21,6 @@ from copilot_workflows.sandbox import (  # noqa: E402
     lint_imports,
     restricted_builtins,
 )
-
-FAKE = os.path.join(HERE, "fake_copilot.py")
 
 
 def _exec_restricted(src, *, wf=None, args=None):
@@ -143,41 +138,6 @@ class TestExecInRestricted(unittest.TestCase):
         self.assertNotIn("__builtins__", g)  # exec injects the real builtins
         exec(compile("import os\nhas_open = callable(open)\n", "h.py", "exec"), g)
         self.assertTrue(g["has_open"])
-
-
-class TestWorkflowRestricted(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        st = os.stat(FAKE)
-        os.chmod(FAKE, st.st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-
-    def rt(self):
-        return Runtime(copilot_bin=FAKE, model="fake", restricted=True)
-
-    def test_rejects_absolute_path(self):
-        with self.assertRaises(SandboxError):
-            self.rt().workflow("/tmp/evil.py")
-
-    def test_rejects_relative_path(self):
-        with self.assertRaises(SandboxError):
-            self.rt().workflow("./evil.py")
-
-    def test_rejects_parent_traversal(self):
-        with self.assertRaises(SandboxError):
-            self.rt().workflow("foo/../bar")
-
-    def test_missing_registered_name_raises(self):
-        with self.assertRaises(FileNotFoundError):
-            self.rt().workflow("definitely-not-a-saved-workflow-xyz")
-
-    def test_unrestricted_still_accepts_paths(self):
-        # sanity: the path constraint is restricted-mode only.
-        d = tempfile.mkdtemp(prefix="cwf-wf-")
-        p = os.path.join(d, "child.py")
-        with open(p, "w") as fh:
-            fh.write("print('hi', args)\n")
-        wf = Runtime(copilot_bin=FAKE, model="fake")  # not restricted
-        self.assertEqual(wf.workflow(p, 1), "hi 1")
 
 
 if __name__ == "__main__":

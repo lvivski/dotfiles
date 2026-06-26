@@ -1,6 +1,6 @@
 # loop-memory.cwf.py — durable cross-run memory for `cwf loop`.
 #
-#   cwf loop ./loop-memory.cwf.py --every 10m --budget 5 \
+#   cwf loop ./loop-memory.cwf.py --every 10m --budget 1000 \
 #       --memory ~/.copilot/workflows/state/sweep.md --args '"src/"'
 #
 # Each tick is a FRESH run (checkpoints reset every tick), but --memory persists ACROSS

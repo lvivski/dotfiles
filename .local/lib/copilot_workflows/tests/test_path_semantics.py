@@ -7,8 +7,6 @@ drift fails loudly. They must pass on the current code and keep passing after th
     fingerprint, so following symlinks would change keys and break ``--resume``.
   * the ``cwf`` bootstrap follows a symlinked script back to its real ``.local/lib``.
   * empty ``CWF_WORKFLOWS_DIR`` / ``CWF_RUNS_DIR`` env vars behave as UNSET (``or`` semantics).
-  * restricted ``wf.workflow()`` rejects path-like names (``~``/``..``/leading dot) and
-    accepts a bare registered name.
   * ``WorktreeManager.create`` returns a path under the GIVEN base (symlink retained).
   * ``build_cmd`` emits an all-``str`` argv (no ``Path`` leakage), exact leading shape.
   * the ``cwf`` CLI keeps answer->stdout / diagnostics->stderr and the failure exit code.
@@ -32,7 +30,6 @@ if LIB not in sys.path:
 from copilot_workflows import (  # noqa: E402
     AgentSpec,
     Runtime,
-    SandboxError,
     WorktreeManager,
     build_cmd,
     default_runs_dir,
@@ -113,37 +110,6 @@ class TestEnvDirDefaults(unittest.TestCase):
             self.assertEqual(
                 default_runs_dir(),
                 os.path.join(os.path.expanduser("~/.copilot/workflows"), "runs"))
-
-
-class TestRestrictedWorkflowNamePolicy(unittest.TestCase):
-    """Complements test_sandbox.TestWorkflowRestricted: tilde / dotdot-substring / dot."""
-
-    @classmethod
-    def setUpClass(cls):
-        _ensure_exec(FAKE)
-
-    def rt(self):
-        return Runtime(copilot_bin=FAKE, model="fake", restricted=True)
-
-    def test_rejects_tilde_prefixed_name(self):
-        with self.assertRaises(SandboxError):
-            self.rt().workflow("~secret")
-
-    def test_rejects_dotdot_substring_without_slash(self):
-        with self.assertRaises(SandboxError):
-            self.rt().workflow("foo..bar")
-
-    def test_rejects_leading_dot_name(self):
-        with self.assertRaises(SandboxError):
-            self.rt().workflow(".hidden")
-
-    def test_accepts_registered_name(self):
-        d = tempfile.mkdtemp(prefix="cwf-wf-")
-        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
-        with open(os.path.join(d, "good.cwf.py"), "w") as fh:
-            fh.write("print('ok', args)\n")
-        with mock.patch.dict(os.environ, {"CWF_WORKFLOWS_DIR": d}, clear=False):
-            self.assertEqual(self.rt().workflow("good", 7), "ok 7")
 
 
 @unittest.skipUnless(_have_git(), "git required")

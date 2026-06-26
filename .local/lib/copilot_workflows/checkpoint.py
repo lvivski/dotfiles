@@ -1,4 +1,4 @@
-"""Append-only, resumable cache of agent results (results.ndjson)."""
+"""Append-only, resumable cache of agent results (results.jsonl)."""
 from __future__ import annotations
 
 import json
@@ -26,16 +26,19 @@ def default_runs_dir() -> str:
 _RESULT_FIELDS = {f.name for f in fields(AgentResult)}
 
 
+def _repair_trailing_line(path: str) -> None:
+    """Drop an unterminated final JSONL record left by a crash mid-write."""
+    with suppress(OSError):
+        with open(path, "rb+") as fh:
+            data = fh.read()
+            if not data or data.endswith(b"\n"):
+                return
+            nl = data.rfind(b"\n")
+            fh.truncate(nl + 1)  # nl == -1 -> truncate to 0 (sole line was torn)
+
+
 def _result_from_dict(data: dict) -> AgentResult:
-    clean = {
-        "content": "",
-        "session_id": None,
-        "premium_requests": 0.0,
-        "output_tokens": 0,
-        "exit_code": 0,
-    }
-    clean.update({k: v for k, v in data.items() if k in _RESULT_FIELDS})
-    return AgentResult(**clean)
+    return AgentResult(**{k: v for k, v in data.items() if k in _RESULT_FIELDS})
 
 
 class CheckpointStore:
@@ -44,7 +47,7 @@ class CheckpointStore:
     def __init__(self, run_dir: str, resume: bool = False):
         self.run_dir = run_dir
         os.makedirs(run_dir, exist_ok=True)
-        self._path = os.path.join(run_dir, "results.ndjson")
+        self._path = os.path.join(run_dir, "results.jsonl")
         self._lock = threading.Lock()
         self._cache: dict[str, AgentResult] = {}
         self._prior_spent = 0.0
@@ -60,15 +63,9 @@ class CheckpointStore:
 
         Without this, the next ``put`` appends onto the torn line, fusing two
         JSON records so both fail to parse on the following resume — silently
-        losing a committed result and its premium spend (double-charge on retry).
+        losing a committed result and its AIC spend (double-charge on retry).
         """
-        with suppress(OSError):
-            with open(self._path, "rb+") as fh:
-                data = fh.read()
-                if not data or data.endswith(b"\n"):
-                    return
-                nl = data.rfind(b"\n")
-                fh.truncate(nl + 1)  # nl == -1 -> truncate to 0 (sole line was torn)
+        _repair_trailing_line(self._path)
 
     def _load(self) -> None:
         with open(self._path, encoding="utf-8") as fh:
@@ -83,7 +80,7 @@ class CheckpointStore:
                     continue
                 result.cached = True
                 self._cache[key] = result
-                self._prior_spent += result.premium_requests
+                self._prior_spent += result.aiu_credits
 
     @property
     def prior_spent(self) -> float:

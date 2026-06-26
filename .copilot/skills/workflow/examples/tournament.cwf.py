@@ -7,7 +7,6 @@ options = args or [
 winner = wf.tournament(
     options,
     criteria="clearest API design, lowest maintenance risk, and easiest migration path",
-    model="claude-sonnet-4.5",
     label="judge",
 )
 

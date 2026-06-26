@@ -3,19 +3,20 @@
 
 It speaks just enough of the real `copilot -p ... --output-format json` contract:
 emit some ignorable JSONL events, one `assistant.message` with `content`, and a
-terminal `result` carrying `sessionId`, `exitCode`, and `usage.premiumRequests`.
+terminal `result` carrying `sessionId`, `exitCode`, and a session shutdown AIC record.
 
 Behavior is steered by directives embedded anywhere in the prompt:
 
     [[FAKE:{"category": "bug"}]]      -> emits that JSON as the message's final line
     [[FAKE:{"_content": "hello"}]]    -> uses "hello" as the whole message content
-    [[FAKE:{"_cr": 0.5, ...}]]        -> reports 0.5 premium credits
+    [[FAKE:{"_cr": 0.5, ...}]]        -> reports 0.5 fallback cost units
     [[FAKE:{"_exit": 2}]]             -> exits non-zero (simulate failure)
     [[FAKE:{"_sleep": 1.0}]]          -> sleeps 1.0s before output (simulate a hang)
 
 The LAST directive in the prompt wins. With no directive, it echoes the prompt.
 """
 import json
+import os
 import re
 import sys
 import time
@@ -56,6 +57,13 @@ def main() -> int:
 
     sid = str(uuid.uuid4())
     out_tokens = max(1, len(content) // 4)
+    state = os.path.expanduser(os.path.join("~", ".copilot", "session-state", sid))
+    os.makedirs(state, exist_ok=True)
+    with open(os.path.join(state, "events.jsonl"), "w", encoding="utf-8") as fh:
+        fh.write(json.dumps({
+            "type": "session.shutdown",
+            "data": {"shutdownType": "routine", "totalNanoAiu": int(cr * 1_000_000_000)},
+        }) + "\n")
 
     def emit(obj):
         sys.stdout.write(json.dumps(obj) + "\n")
