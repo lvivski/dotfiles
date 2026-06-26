@@ -11,6 +11,39 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 
 
+# --- live-subprocess registry --------------------------------------------------
+# Timeout agents are launched in their own session (``start_new_session``) so a per-agent
+# timeout can ``killpg`` the whole tree — which also detaches them from a parent-directed
+# Ctrl-C. On interrupt a fan-out's worker threads sit blocked in ``proc.wait()``, unreachable
+# by the main thread's KeyboardInterrupt, so the main thread reaches in through this registry
+# to kill them (see ``kill_all_agents``); otherwise they orphan (reparent to init, still spending).
+_LIVE_LOCK = threading.Lock()
+_LIVE: dict[int, tuple[subprocess.Popen, bool]] = {}
+
+
+def _register(proc: subprocess.Popen, new_session: bool) -> None:
+    with _LIVE_LOCK:
+        _LIVE[proc.pid] = (proc, new_session)
+
+
+def _unregister(proc: subprocess.Popen) -> None:
+    with _LIVE_LOCK:
+        _LIVE.pop(proc.pid, None)
+
+
+def kill_all_agents() -> None:
+    """Kill every still-running subagent. Best-effort, idempotent.
+
+    Called by the runtime when a parallel run is interrupted: its worker threads are blocked
+    in ``proc.wait()`` and can't see the main thread's KeyboardInterrupt, so the main thread
+    kills their (possibly detached) processes here — unblocking the workers and avoiding orphans.
+    """
+    with _LIVE_LOCK:
+        live = list(_LIVE.values())
+    for proc, new_session in live:
+        _kill(proc, new_session)
+
+
 @dataclass
 class AgentSpec:
     """Everything needed to launch one subagent. Building a spec does not run it."""
@@ -143,17 +176,25 @@ def _result(spec: AgentSpec, acc: dict, exit_code: int, *,
 
 def run_agent(spec: AgentSpec, *, copilot_bin: str = "copilot",
               semaphore: threading.Semaphore | None = None,
-              env: dict | None = None) -> AgentResult:
+              env: dict | None = None,
+              abort: "threading.Event | None" = None) -> AgentResult:
     """Run one subagent to completion and return a structured result.
 
     Blocking and thread-safe; ``semaphore`` bounds how many subprocesses run at once.
+    ``abort`` is a shutdown flag checked immediately after the child is registered: the
+    registry lock makes spawn+register and the reaper's snapshot mutually exclusive, so a
+    process can never slip through an interrupt unkilled (either the reaper sees it in the
+    registry, or this check sees ``abort`` set and kills it).
     """
     acc = {"content": None, "tokens": 0, "premium": 0.0, "session": None, "model": spec.model}
     killed = threading.Event()
     stderr: list[str] = []
-    # Run timeout-bearing agents in their own session so a kill takes down the whole process
-    # tree (Copilot + any shells/tools it spawned), not just the parent. Scoped to timeout
-    # agents only: a new session would otherwise detach normal agents from Ctrl-C.
+    stream_error: str | None = None
+    exit_code = 1
+    proc = drain = timer = None
+    # Timeout agents get their own session so one kill takes down the whole tree (Copilot plus
+    # any shells/tools it spawned). That detachment also hides them from a parent-directed
+    # Ctrl-C, so the registry and ``abort`` flag are what guarantee they're reaped on exit.
     new_session = bool(spec.timeout) and os.name == "posix"
 
     with (semaphore or nullcontext()):
@@ -162,30 +203,41 @@ def run_agent(spec: AgentSpec, *, copilot_bin: str = "copilot",
                 build_cmd(spec, copilot_bin), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 cwd=spec.cwd, env=env, text=True, encoding="utf-8", errors="replace", bufsize=1,
                 start_new_session=new_session)
-        except FileNotFoundError:
-            return _result(spec, acc, 127, error=f"copilot binary not found: {copilot_bin!r}")
-
-        stream_error: str | None = None
-        with proc:  # context manager closes the pipes (and waits) on exit
+            _register(proc, new_session)
+            if abort is not None and abort.is_set():
+                _kill(proc, new_session)  # an interrupt is already underway
             # Drain stderr off-thread so a full stderr pipe can't deadlock the stdout read.
             drain = threading.Thread(target=_drain, args=(proc.stderr, stderr), daemon=True)
             drain.start()
-            timer = None
             if spec.timeout:
                 timer = threading.Timer(spec.timeout, _on_timeout, args=(proc, killed, new_session))
                 timer.daemon = True
                 timer.start()
-            try:
-                for obj in _json_lines(proc.stdout):
-                    _reduce(acc, obj)
-            except Exception as e:  # a read/parse error must not leak the timer or hang wait()
-                stream_error = f"error reading subagent output: {e}"
-                _kill(proc, new_session)
-            finally:
+            for obj in _json_lines(proc.stdout):
+                _reduce(acc, obj)
+        except FileNotFoundError:
+            if proc is None:  # the copilot binary itself is missing
+                return _result(spec, acc, 127, error=f"copilot binary not found: {copilot_bin!r}")
+            raise
+        except Exception as e:  # a read/parse error (other spawn failures re-raise below)
+            if proc is None:
+                raise
+            stream_error = f"error reading subagent output: {e}"
+        finally:
+            # One reaper for every abnormal exit: a read error, the timeout firing, an
+            # interrupt, or ``abort`` all leave the child still running, so kill it before
+            # waiting (so wait() can't hang) and always unregister.
+            if proc is not None:
+                if proc.poll() is None:
+                    _kill(proc, new_session)
                 exit_code = proc.wait()
-                if timer:
+                if timer is not None:
                     timer.cancel()
-                drain.join(1.0)
+                if drain is not None:
+                    drain.join(1.0)
+                proc.stdout.close()
+                proc.stderr.close()
+                _unregister(proc)
 
     return _result(spec, acc, exit_code, killed=killed.is_set(),
                    stderr="".join(stderr), error=stream_error)
@@ -202,7 +254,9 @@ def _kill(proc, new_session: bool) -> None:
     """Kill the subprocess — its whole process group when it has its own session."""
     try:
         if new_session:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            # A session leader's PGID equals its PID; kill the group by PID directly rather
+            # than via os.getpgid(), which could read a reused PID's group after it exits.
+            os.killpg(proc.pid, signal.SIGKILL)
         else:
             proc.kill()
     except Exception:  # already exited / no such group

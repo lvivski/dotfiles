@@ -5,7 +5,7 @@ Public API:
 """
 from __future__ import annotations
 
-from .agent import AgentResult, AgentSpec, build_cmd, run_agent
+from .agent import AgentResult, AgentSpec, build_cmd, kill_all_agents, run_agent
 from .checkpoint import CheckpointStore, default_runs_dir, default_workflows_dir
 from .memory import Memory
 from .patterns import PatternsMixin, Structured, Verdict
@@ -32,6 +32,7 @@ __all__ = [
     "find_repo_root",
     "build_cmd",
     "run_agent",
+    "kill_all_agents",
     "default_concurrency",
     "SandboxError",
     "harness_globals",

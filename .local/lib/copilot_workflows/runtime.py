@@ -15,7 +15,7 @@ from contextlib import contextmanager, redirect_stdout
 from dataclasses import replace
 from typing import Any
 
-from .agent import AgentResult, AgentSpec, run_agent
+from .agent import AgentResult, AgentSpec, kill_all_agents, run_agent
 from .checkpoint import default_workflows_dir
 from .memory import Memory
 from .patterns import PatternsMixin
@@ -119,6 +119,7 @@ class Runtime(PatternsMixin):
         self._spent_lock = threading.Lock()
         self._spent = checkpoints.prior_spent if checkpoints is not None else 0.0
         self._budget_hit = threading.Event()
+        self._aborting = threading.Event()  # set on interrupt; gates new agent launches
         self._sem = threading.BoundedSemaphore(self.concurrency)
         self._log = logger or (lambda *a, **k: None)
         # Durable text shared ACROSS runs / loop ticks (vs per-run checkpoints). Exposed as
@@ -288,7 +289,11 @@ class Runtime(PatternsMixin):
         skipped = False
         strict_stop = False
         with self._sem:
-            if self._over_budget():
+            if self._aborting.is_set():
+                # An interrupt is tearing the run down; don't launch a new subprocess.
+                res = _skipped_result(spec)
+                skipped = True
+            elif self._over_budget():
                 self._budget_hit.set()
                 if self.strict_budget:
                     self._finish(seq, label, _skipped_result(spec), skipped=True, phase=eff_phase)
@@ -297,7 +302,7 @@ class Runtime(PatternsMixin):
                 res = _skipped_result(spec)
                 skipped = True
             else:
-                res = run_agent(spec, copilot_bin=self.copilot_bin)
+                res = run_agent(spec, copilot_bin=self.copilot_bin, abort=self._aborting)
                 self._charge(res.premium_requests)
                 if self.checkpoints is not None and res.ok:
                     self.checkpoints.put(ckpt_key, res)
@@ -383,18 +388,29 @@ class Runtime(PatternsMixin):
 
         with ThreadPoolExecutor(max_workers=workers) as ex:
             futs = [ex.submit(run, i) for i in range(n)]
-            for fut in as_completed(futs):
-                try:
-                    i, r = fut.result()
-                    results[i] = r
-                except BudgetExceeded as e:  # strict mode only
-                    budget_error = budget_error or e
-                    for pending in futs:
-                        pending.cancel()
-                except CancelledError:
-                    pass
-                except Exception as e:  # surfaces only when drop_errors=False
-                    branch_error = branch_error or e
+            try:
+                for fut in as_completed(futs):
+                    try:
+                        i, r = fut.result()
+                        results[i] = r
+                    except BudgetExceeded as e:  # strict mode only
+                        budget_error = budget_error or e
+                        for pending in futs:
+                            pending.cancel()
+                    except CancelledError:
+                        pass
+                    except Exception as e:  # surfaces only when drop_errors=False
+                        branch_error = branch_error or e
+            except BaseException:
+                # Ctrl-C / SIGTERM unwinding on the main thread. Stop launching queued agents,
+                # cancel the not-yet-started ones, and kill those already running so the
+                # executor's shutdown(wait=True) drains immediately instead of blocking on
+                # detached subprocesses (which would otherwise re-hang and re-orphan them).
+                self._aborting.set()
+                for f in futs:
+                    f.cancel()
+                kill_all_agents()
+                raise
         if budget_error is not None:
             raise budget_error
         if branch_error is not None:

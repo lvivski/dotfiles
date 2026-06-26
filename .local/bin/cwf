@@ -23,6 +23,7 @@ import json
 import os
 import random
 import shutil
+import signal
 import string
 import sys
 import time
@@ -365,6 +366,8 @@ def cmd_loop(a: argparse.Namespace) -> int:
             ra.resume = None         # each tick is a fresh run, not a resume
             ra.run_id = None
             last = cmd_run(ra)
+            if last in (130, 143):  # SIGINT / SIGTERM during the run — stop, don't restart
+                break
             if a.max_runs and n >= a.max_runs:
                 break
             time.sleep(interval)
@@ -411,7 +414,26 @@ def _add_run_args(pr: argparse.ArgumentParser) -> None:
                          "OS/agent sandbox (copilot --cloud / /sandbox) for untrusted authors.")
 
 
+def _unwind_on_sigterm() -> None:
+    """Make SIGTERM unwind like Ctrl-C so a terminated run reaps its subagents.
+
+    Reaping lives in normal control flow (wf._concurrent_map's interrupt handler and
+    run_agent's finally), which only runs if the signal raises *through* Python rather than
+    killing the process outright. SIGINT already does that (KeyboardInterrupt); we just make
+    SIGTERM raise SystemExit(143) too. The handler stays trivial — no locks — so it's
+    signal-safe.
+    """
+    def _raise_exit(_signum, _frame):
+        raise SystemExit(143)
+
+    try:
+        signal.signal(signal.SIGTERM, _raise_exit)
+    except (ValueError, OSError):  # off the main thread / unsupported platform
+        pass
+
+
 def main(argv=None) -> int:
+    _unwind_on_sigterm()
     p = argparse.ArgumentParser(prog="cwf", description="Dynamic workflows on the Copilot CLI.")
     sub = p.add_subparsers(dest="cmd", required=True)
 
