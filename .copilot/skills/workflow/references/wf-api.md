@@ -90,9 +90,11 @@ propagate.
 
 ## Safety, isolation, and cost
 
-- `wf.worktree(name)` creates an isolated git worktree for a small edit/experiment. It requires a git
-  repository and a unique active name. Avoid one worktree per agent in large fan-outs; prefer running
-  the whole workflow from an already-isolated worktree when scale matters.
+- `wf.worktree(name, base_ref=None, repo=None, ref=None)` creates an isolated git worktree for a
+  small edit/experiment. Default is the launch repo; pass `repo` (a local path or clone URL) to
+  worktree a *different* repo — cloned once into a per-run cache and reused — and `ref` to fetch a
+  ref like `pull/7/head` into it (how a multi-repo workflow checks out many PRs in isolation). Avoid
+  one worktree per agent in large fan-outs; prefer running the whole workflow from an isolated tree.
 - `wf.quarantine()` denies shell/write/egress by default and disables built-in MCPs.
 - Use `wf.quarantine(deny_url=[], disable_mcp=False)` only when a reader legitimately needs network
   or MCP access, such as web research.

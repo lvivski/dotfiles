@@ -21,7 +21,7 @@ from .checkpoint import CheckpointStore
 from .memory import Memory
 from .patterns import PatternsMixin
 from .progress import ProgressEvent, format_agent_line
-from .worktree import WorktreeManager, find_repo_root
+from .worktree import WorktreeManager, _SAFE, ensure_clone, find_repo_root
 
 
 def default_concurrency() -> int:
@@ -138,11 +138,12 @@ class Runtime(PatternsMixin):
         # checkpoint key occurrence counter (per identical-spec fingerprint)
         self._occurrence: dict[str, int] = {}
         self._occ_lock = threading.Lock()
-        # lazily-created worktree manager
+        # lazily-created worktree managers (one per repo root; remotes cloned into a cache)
         self._repo_root = repo_root
-        self._wt_mgr: WorktreeManager | None = None
+        self._wt_mgr: WorktreeManager | None = None       # default-repo manager (back-compat)
+        self._wt_mgrs: dict[str, WorktreeManager] = {}     # one per repo root; remotes cloned in
+        self._wt_base: str | None = None
         self._wt_lock = threading.Lock()
-        self._owns_wt_base = False
 
     # ---- introspection -------------------------------------------------
     @property
@@ -462,46 +463,57 @@ class Runtime(PatternsMixin):
             len(thunks), lambda i: thunks[i](), concurrency=concurrency, drop_errors=True)
 
     @contextmanager
-    def worktree(self, name: str, base_ref: str | None = None):
-        """Give an agent its own git worktree for the duration of the block."""
-        self._ensure_worktree_manager()
-        path = self._wt_mgr.create(name, base_ref)
+    def worktree(self, name: str, base_ref: str | None = None,
+                 repo: str | None = None, ref: str | None = None):
+        """Give an agent its own git worktree for the duration of the block.
+
+        ``repo`` worktrees a repo *other* than the launch repo (a local path or clone URL),
+        cloned once into a per-run cache and reused. ``ref`` is a fetchable ref (e.g.
+        ``pull/7/head``) materialized into the worktree, so a multi-repo workflow can check out
+        many PRs across remotes in isolation.
+        """
+        mgr = self._manager_for(repo)
+        path = mgr.create(name, base_ref, fetch_ref=ref)
         try:
             yield path
         finally:
-            self._wt_mgr.remove(path)
+            mgr.remove(path)
 
-    def _ensure_worktree_manager(self) -> None:
+    def _manager_for(self, repo: str | None) -> WorktreeManager:
         with self._wt_lock:
-            if self._wt_mgr is not None:
-                return
-            root = self._repo_root or find_repo_root(os.getcwd())
-            if not root:
-                raise RuntimeError(
-                    f"wf.worktree requires a git repository (none found at {os.getcwd()})"
-                )
-            if self.run_dir:
-                base = os.path.join(self.run_dir, "worktrees")
-                self._owns_wt_base = False
+            if self._wt_base is None:
+                self._wt_base = tempfile.mkdtemp(prefix="cwf-wt-")
+            if repo is None:
+                root = self._repo_root or find_repo_root(os.getcwd())
+                if not root:
+                    raise RuntimeError(
+                        f"wf.worktree requires a git repository (none found at {os.getcwd()})")
             else:
-                base = tempfile.mkdtemp(prefix="cwf-wt-")
-                self._owns_wt_base = True
-            self._wt_mgr = WorktreeManager(root, base, logger=self._log)
+                safe = _SAFE.sub("-", repo).strip("-.")
+                root = ensure_clone(repo, os.path.join(self._wt_base, "_repos", safe), self._log)
+            if root not in self._wt_mgrs:
+                sub = self._wt_base if repo is None else os.path.join(self._wt_base, safe)
+                self._wt_mgrs[root] = WorktreeManager(root, sub, logger=self._log)
+                if repo is None:
+                    self._wt_mgr = self._wt_mgrs[root]  # back-compat handle
+            return self._wt_mgrs[root]
 
     def cleanup(self) -> None:
-        """Remove any worktrees created during the run. Safe to call always."""
-        if self._wt_mgr is not None:
-            base = self._wt_mgr.base_dir
-            cleanup_ok = True
+        """Remove every worktree + clone cache created during the run. Safe to call always."""
+        if not self._wt_mgrs:
+            return
+        ok = True
+        for mgr in list(self._wt_mgrs.values()):
             try:
-                self._wt_mgr.cleanup_all()
+                mgr.cleanup_all()
             except Exception as e:
-                cleanup_ok = False
+                ok = False
                 self._log(f"  ! worktree cleanup failed: {e}")
-            if cleanup_ok and self._owns_wt_base:
-                shutil.rmtree(base, ignore_errors=True)
-            if cleanup_ok:
-                self._wt_mgr = None
+        if ok:
+            shutil.rmtree(self._wt_base, ignore_errors=True)
+            self._wt_mgrs.clear()
+            self._wt_mgr = None
+            self._wt_base = None
 
     # ---- checkpoint keys -----------------------------------------------
     def _scoped_key(self, key: str) -> str:

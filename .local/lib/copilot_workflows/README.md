@@ -89,8 +89,10 @@ s       = wf.structured(prompt, schema, retries=2)  # validated JSON + retry -> 
 #   or a callable validate(obj) -> "" when ok else error string. Feeds the error back and retries.
 
 with wf.phase("name"): ...                  # group agents in the live view
-with wf.worktree("experiment") as path:      # optional isolated checkout
+with wf.worktree("experiment") as path:      # optional isolated checkout (launch repo)
     wf.agent("apply the fix", cwd=path)
+with wf.worktree("pr-7", repo="https://github.com/o/r.git", ref="pull/7/head") as p:  # any repo/PR
+    wf.agent("review the change", cwd=p)
 q = wf.quarantine()                         # reader of untrusted content: no shell/write tools
 wf.budget(20); wf.log("..."); wf.spent      # cost controls
 wf.budget_total; wf.remaining()             # budget introspection (remaining() is inf if uncapped)
@@ -103,7 +105,8 @@ wf.memory.read(); wf.memory.append("...")   # durable text shared ACROSS runs / 
 > a stage needs all prior results at once (dedupe/merge, zero-count early-exit, cross-refs).
 
 > **worktrees for convenience.** `wf.worktree()` is handy when one branch should experiment or edit
-> without touching the main checkout. Avoid creating hundreds of per-agent worktrees in large fan-outs;
+> without touching the main checkout; pass `repo=`/`ref=` to worktree another repo or a PR (cloned
+> once, reused). Avoid creating hundreds of per-agent worktrees in large fan-outs;
 > when scale matters, start the whole workflow from an already-isolated worktree instead.
 
 ## CLI

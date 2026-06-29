@@ -280,5 +280,21 @@ class TestWorktree(Base):
             os.chdir(cwd)
 
 
+    def test_runtime_worktree_other_repo(self):
+        remote = self._make_repo()  # acts as a separate "remote" repo
+        subprocess.run(["git", "-C", remote, "checkout", "-q", "-b", "feat"], check=True)
+        with open(os.path.join(remote, "g.txt"), "w") as fh:
+            fh.write("pr\n")
+        subprocess.run(["git", "-C", remote, "add", "."], check=True)
+        subprocess.run(["git", "-C", remote, "-c", "user.email=t@t", "-c", "user.name=t",
+                        "commit", "-q", "-m", "feat"], check=True)
+        wf = Runtime(copilot_bin=FAKE, model="fake", run_dir=self.tmpdir())
+        with wf.worktree("pr-1", repo=remote, ref="feat") as path:
+            self.assertTrue(os.path.isfile(os.path.join(path, "g.txt")))  # fetched PR ref
+            captured = path
+        self.assertFalse(os.path.exists(captured))
+        wf.cleanup()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
