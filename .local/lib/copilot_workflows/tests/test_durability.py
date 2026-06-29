@@ -295,6 +295,46 @@ class TestWorktree(Base):
         self.assertFalse(os.path.exists(captured))
         wf.cleanup()
 
+    def test_runtime_worktree_persistent_clone_dir(self):
+        remote = self._make_repo()
+        subprocess.run(["git", "-C", remote, "checkout", "-q", "-b", "feat"], check=True)
+        with open(os.path.join(remote, "g.txt"), "w") as fh:
+            fh.write("pr\n")
+        subprocess.run(["git", "-C", remote, "add", "."], check=True)
+        subprocess.run(["git", "-C", remote, "-c", "user.email=t@t", "-c", "user.name=t",
+                        "commit", "-q", "-m", "feat"], check=True)
+        clones = self.tmpdir()
+        wf = Runtime(copilot_bin=FAKE, model="fake", run_dir=self.tmpdir())
+        with wf.worktree("pr-1", repo="file://" + remote, ref="feat", clone_dir=clones) as path:
+            self.assertTrue(os.path.isfile(os.path.join(path, "g.txt")))
+            captured = path
+        clone = os.path.join(clones, os.path.basename(remote))
+        self.assertTrue(os.path.isdir(os.path.join(clone, ".git")))
+        self.assertFalse(os.path.exists(captured))
+        wf.cleanup()
+        self.assertTrue(os.path.isdir(os.path.join(clone, ".git")))  # persistent clone remains
+
+    def test_runtime_worktree_clone_dir_ignored_for_local_repo(self):
+        remote = self._make_repo()
+        clones = self.tmpdir()
+        wf = Runtime(copilot_bin=FAKE, model="fake", run_dir=self.tmpdir())
+        with wf.worktree("local", repo=remote, clone_dir=clones) as path:
+            self.assertTrue(os.path.isfile(os.path.join(path, "f.txt")))
+        self.assertEqual(os.listdir(clones), [])
+        wf.cleanup()
+
+    def test_runtime_worktree_clone_dir_origin_mismatch(self):
+        remote = self._make_repo()
+        other = self._make_repo()
+        clones = self.tmpdir()
+        dest = os.path.join(clones, os.path.basename(remote))
+        subprocess.run(["git", "clone", "-q", other, dest], check=True)
+        wf = Runtime(copilot_bin=FAKE, model="fake", run_dir=self.tmpdir())
+        with self.assertRaises(RuntimeError):
+            with wf.worktree("pr-1", repo="file://" + remote, ref="HEAD", clone_dir=clones):
+                pass
+        wf.cleanup()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

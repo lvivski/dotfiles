@@ -21,7 +21,7 @@ from .checkpoint import CheckpointStore
 from .memory import Memory
 from .patterns import PatternsMixin
 from .progress import ProgressEvent, format_agent_line
-from .worktree import WorktreeManager, _SAFE, ensure_clone, find_repo_root
+from .worktree import WorktreeManager, _SAFE, clone_path, ensure_clone, find_repo_root
 
 
 def default_concurrency() -> int:
@@ -464,22 +464,24 @@ class Runtime(PatternsMixin):
 
     @contextmanager
     def worktree(self, name: str, base_ref: str | None = None,
-                 repo: str | None = None, ref: str | None = None):
+                 repo: str | None = None, ref: str | None = None,
+                 clone_dir: str | None = None):
         """Give an agent its own git worktree for the duration of the block.
 
-        ``repo`` worktrees a repo *other* than the launch repo (a local path or clone URL),
-        cloned once into a per-run cache and reused. ``ref`` is a fetchable ref (e.g.
-        ``pull/7/head``) materialized into the worktree, so a multi-repo workflow can check out
-        many PRs across remotes in isolation.
+        ``repo`` worktrees a repo *other* than the launch repo (a local path or clone URL).
+        By default, non-launch repos are cloned once into a per-run cache. Pass ``clone_dir`` to
+        clone/reuse them persistently under that directory (for example ``~/Developer``). ``ref`` is
+        a fetchable ref (e.g. ``pull/7/head``) materialized into the worktree, so a multi-repo
+        workflow can check out many PRs across remotes in isolation.
         """
-        mgr = self._manager_for(repo)
+        mgr = self._manager_for(repo, clone_dir)
         path = mgr.create(name, base_ref, fetch_ref=ref)
         try:
             yield path
         finally:
             mgr.remove(path)
 
-    def _manager_for(self, repo: str | None) -> WorktreeManager:
+    def _manager_for(self, repo: str | None, clone_dir: str | None = None) -> WorktreeManager:
         with self._wt_lock:
             if self._wt_base is None:
                 self._wt_base = tempfile.mkdtemp(prefix="cwf-wt-")
@@ -489,11 +491,17 @@ class Runtime(PatternsMixin):
                     raise RuntimeError(
                         f"wf.worktree requires a git repository (none found at {os.getcwd()})")
             else:
-                safe = _SAFE.sub("-", repo).strip("-.")
-                root = ensure_clone(repo, os.path.join(self._wt_base, "_repos", safe), self._log)
+                if os.path.exists(repo):
+                    root = repo
+                else:
+                    dest = clone_path(repo, clone_dir) if clone_dir else os.path.join(
+                        self._wt_base, "_repos", _SAFE.sub("-", repo).strip("-."))
+                    root = ensure_clone(repo, dest, self._log)
             if root not in self._wt_mgrs:
+                safe = _SAFE.sub("-", root).strip("-.")
                 sub = self._wt_base if repo is None else os.path.join(self._wt_base, safe)
-                self._wt_mgrs[root] = WorktreeManager(root, sub, logger=self._log)
+                self._wt_mgrs[root] = WorktreeManager(
+                    root, sub, logger=self._log, fetch_remote=not (repo and os.path.exists(repo)))
                 if repo is None:
                     self._wt_mgr = self._wt_mgrs[root]  # back-compat handle
             return self._wt_mgrs[root]
