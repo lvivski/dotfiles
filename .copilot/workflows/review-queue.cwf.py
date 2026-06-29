@@ -35,7 +35,10 @@ def _owns(pr):
     files = pr.get("files") or []
     final = []
     for line in (pr.get("codeowners") or "").splitlines():
-        pat, *owners = line.split("#", 1)[0].split()
+        parts = line.split("#", 1)[0].split()
+        if not parts:
+            continue
+        pat, *owners = parts
         bare = pat.strip("/")
         if any(f == bare or f.startswith(bare + "/") or fnmatch.fnmatch(f, pat) for f in files):
             final = owners  # last matching rule wins, even if it reassigns ownership
@@ -86,7 +89,7 @@ def review(pr):
             "finding": _review_agent(pr)}
 
 
-def decide(row, suffix=""):
+def decide(row, *, suffix=""):
     required = (row["reason"] != "manual")
     verdict = wf.structured(
         "Given this review of %s#%s (I was added as: %s; required=%s), classify whether it is safe "
