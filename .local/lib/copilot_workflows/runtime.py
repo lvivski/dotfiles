@@ -40,6 +40,15 @@ def _normalize_concurrency(value: int | None) -> int:
     return concurrency
 
 
+def _drop_errors_policy(value: str) -> bool:
+    """Return whether a concurrency helper should drop branch errors to None."""
+    if value == "drop":
+        return True
+    if value == "raise":
+        return False
+    raise ValueError("errors must be 'raise' or 'drop'")
+
+
 class BudgetExceeded(Exception):
     """Raised (only in strict mode) when observed AIC spend passes the cap."""
 
@@ -144,7 +153,6 @@ class Runtime(PatternsMixin):
         self._occ_lock = threading.Lock()
         # lazily-created worktree managers (one per repo root; remotes cloned into a cache)
         self._repo_root = repo_root
-        self._wt_mgr: WorktreeManager | None = None       # default-repo manager (back-compat)
         self._wt_mgrs: dict[str, WorktreeManager] = {}     # one per repo root; remotes cloned in
         self._wt_base: str | None = None
         self._wt_lock = threading.Lock()
@@ -365,14 +373,20 @@ class Runtime(PatternsMixin):
         fn: Callable[[Any], Any],
         *,
         concurrency: int | None = None,
+        errors: str = "raise",
     ) -> list[Any]:
-        """Run ``fn(item)`` for every item in parallel; return results in order."""
+        """Run ``fn(item)`` for every item in parallel; return results in order.
+
+        ``errors="raise"`` (default) aborts on the first branch exception.
+        ``errors="drop"`` keeps other branches running and returns ``None`` for failed slots.
+        ``BudgetExceeded`` still propagates in strict mode.
+        """
         items = list(items)
         return self._concurrent_map(
             len(items),
             lambda i: fn(items[i]),
             concurrency=concurrency,
-            drop_errors=False,
+            drop_errors=_drop_errors_policy(errors),
         )
 
     # ---- concurrency primitive shared by pipeline()/parallel() ---------
@@ -448,7 +462,7 @@ class Runtime(PatternsMixin):
 
     # ---- pipeline (streaming, NO barrier between stages) ---------------
     def pipeline(self, items: Sequence[Any], *stages: Callable[..., Any],
-                 concurrency: int | None = None) -> list[Any]:
+                 concurrency: int | None = None, errors: str = "drop") -> list[Any]:
         """Stream each item through ``stages`` independently — no barrier between stages.
 
         Unlike ``fan_out``/``synthesize`` (which are barriers), ``pipeline`` lets item A
@@ -460,9 +474,10 @@ class Runtime(PatternsMixin):
 
         Each stage is invoked as ``stage(prev, item, index)`` and may accept 1, 2, or 3
         positional args; ``prev`` is the previous stage's return (the item itself for the
-        first stage). A stage that raises drops that item to ``None`` and skips its
-        remaining stages. ``BudgetExceeded`` (strict mode) aborts the whole pipeline.
-        Returns one result per item, in input order.
+        first stage). With ``errors="drop"`` (default), a stage that raises drops that item
+        to ``None`` and skips its remaining stages; with ``errors="raise"``, the first
+        branch exception aborts the whole pipeline. ``BudgetExceeded`` (strict mode) always
+        propagates. Returns one result per item, in input order.
         """
         items = list(items)
         if not items:
@@ -476,22 +491,25 @@ class Runtime(PatternsMixin):
                 prev = _call_stage(stage, prev, items[i], i)
             return prev
 
-        return self._concurrent_map(len(items), work, concurrency=concurrency, drop_errors=True)
+        return self._concurrent_map(
+            len(items), work, concurrency=concurrency,
+            drop_errors=_drop_errors_policy(errors))
 
     # ---- parallel (barrier over zero-arg thunks; Claude-parity) --------
     def parallel(self, thunks: Sequence[Callable[[], Any]], *,
-                 concurrency: int | None = None) -> list[Any]:
+                 concurrency: int | None = None, errors: str = "drop") -> list[Any]:
         """Run zero-arg ``thunks`` concurrently and return results in order (a BARRIER).
 
-        Convenience mirroring Claude's ``parallel(thunks)``: a thunk that raises resolves
-        to ``None`` in the result array (the call never rejects), so drop falsy entries
-        before use. ``BudgetExceeded`` (strict mode) still propagates. ``fan_out(items, fn)``
-        is the same barrier keyed by items; ``parallel`` takes pre-bound thunks and, unlike
-        ``fan_out``, swallows per-thunk errors to ``None`` instead of re-raising.
+        Convenience mirroring Claude's ``parallel(thunks)``: with ``errors="drop"`` (default),
+        a thunk that raises resolves to ``None`` in the result array, so filter/report those
+        slots explicitly. With ``errors="raise"``, the first thunk exception aborts the call.
+        ``BudgetExceeded`` (strict mode) always propagates. ``fan_out(items, fn)`` is the same
+        barrier keyed by items; ``parallel`` takes pre-bound thunks.
         """
         thunks = list(thunks)
         return self._concurrent_map(
-            len(thunks), lambda i: thunks[i](), concurrency=concurrency, drop_errors=True)
+            len(thunks), lambda i: thunks[i](), concurrency=concurrency,
+            drop_errors=_drop_errors_policy(errors))
 
     @contextmanager
     def worktree(self, name: str, base_ref: str | None = None,
@@ -505,12 +523,20 @@ class Runtime(PatternsMixin):
         a fetchable ref (e.g. ``pull/7/head``) materialized into the worktree, so a multi-repo
         workflow can check out many PRs across remotes in isolation.
         """
+        if self.dry_run:
+            yield self._dry_run_worktree_path(repo)
+            return
         mgr = self._manager_for(repo, clone_dir)
         path = mgr.create(name, base_ref, fetch_ref=ref)
         try:
             yield path
         finally:
             mgr.remove(path)
+
+    def _dry_run_worktree_path(self, repo: str | None = None) -> str:
+        if repo and os.path.exists(repo):
+            return os.path.abspath(repo)
+        return self._repo_root or find_repo_root(os.getcwd()) or os.getcwd()
 
     def _manager_for(self, repo: str | None, clone_dir: str | None = None) -> WorktreeManager:
         with self._wt_lock:
@@ -533,8 +559,6 @@ class Runtime(PatternsMixin):
                 sub = self._wt_base if repo is None else os.path.join(self._wt_base, safe)
                 self._wt_mgrs[root] = WorktreeManager(
                     root, sub, logger=self._log, fetch_remote=not (repo and os.path.exists(repo)))
-                if repo is None:
-                    self._wt_mgr = self._wt_mgrs[root]  # back-compat handle
             return self._wt_mgrs[root]
 
     def cleanup(self) -> None:
@@ -551,7 +575,6 @@ class Runtime(PatternsMixin):
         if ok:
             shutil.rmtree(self._wt_base, ignore_errors=True)
             self._wt_mgrs.clear()
-            self._wt_mgr = None
             self._wt_base = None
 
     # ---- checkpoint keys -----------------------------------------------

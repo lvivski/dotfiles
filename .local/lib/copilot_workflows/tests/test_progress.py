@@ -154,6 +154,8 @@ class TestCwfCli(unittest.TestCase):
         self.assertEqual(run_end["launched"], 3)
         self.assertEqual(run_end["cached"], 0)
         self.assertEqual(run_end["skipped"], 0)
+        self.assertEqual(run_end["nano_aiu"], 30_000_000)
+        self.assertEqual(run_end["launched_nano_aiu"], 30_000_000)
         self.assertIn("elapsed", run_end)
 
         listing = subprocess.run(

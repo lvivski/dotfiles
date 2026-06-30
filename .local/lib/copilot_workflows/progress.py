@@ -10,7 +10,7 @@ import threading
 import time
 from collections import deque
 from contextlib import suppress
-from typing import TypedDict
+from typing import TypedDict, Union
 
 _SPIN = "|/-\\"
 
@@ -31,13 +31,14 @@ def _clip(s, n: int) -> str:
     return s if len(s) <= n else s[: n - 1] + "\u2026"
 
 
-class ProgressEvent(TypedDict, total=False):
-    """Wire schema for one progress NDJSON record (consumed by ``cwf watch`` and the cwf
-    extension). Heterogeneous by ``ev`` — run_start/start/end/run_end populate different
-    subsets — so every key is optional. Mirror any change in ``Runtime._emit``/``_finish``.
-    """
-
+class _ProgressBase(TypedDict, total=False):
     ev: str
+    t: float
+
+
+class AgentProgressEvent(_ProgressBase, total=False):
+    """Wire schema for agent start/end progress records."""
+
     seq: int
     label: str
     model: str | None
@@ -48,17 +49,31 @@ class ProgressEvent(TypedDict, total=False):
     nano_aiu: int
     tok: int
     error: str | None
-    t: float
+
+
+class RunStartProgressEvent(_ProgressBase, total=False):
+    """Wire schema for the run_start progress record."""
+
     run_id: str
     harness: str
     meta: dict
+
+
+class RunEndProgressEvent(_ProgressBase, total=False):
+    """Wire schema for the run_end progress record."""
+
+    run_id: str
     agents: int
     launched: int
     cached: int
     skipped: int
     failed: int
+    nano_aiu: int
     launched_nano_aiu: int
     elapsed: float
+
+
+ProgressEvent = Union[AgentProgressEvent, RunStartProgressEvent, RunEndProgressEvent]
 
 
 def format_agent_line(rec: ProgressEvent) -> str:

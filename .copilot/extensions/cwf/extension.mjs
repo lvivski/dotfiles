@@ -6,7 +6,7 @@ import { joinSession } from "@github/copilot-sdk/extension";
 import { spawn, execFile } from "node:child_process";
 import { createInterface } from "node:readline";
 import { promisify } from "node:util";
-import { mkdtempSync, writeFileSync, existsSync, statSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, existsSync, statSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -18,6 +18,8 @@ const POSIX = process.platform !== "win32";
 const STDOUT_CAP = 8 * 1024 * 1024; // chars of synthesis retained
 const STATS_TAIL = 2500; // chars of stderr returned as stats
 const MAX_TIMEOUT_SEC = 7200; // hard ceiling on a single run
+const DEFAULT_BUDGET = 10000;
+const XTREME_BUDGET = 1000000;
 
 let session = null;
 
@@ -80,6 +82,40 @@ function resolveHarness(input, temps) {
 		return found;
 	}
 	return writeTemp(temps, "cwf-harness-", "harness.cwf.py", input.script);
+}
+
+function progressAic(runId) {
+	const progress = join(runsDir(), runId, "progress.jsonl");
+	if (!existsSync(progress)) return null;
+	let lastRunEnd = null;
+	let endNanoAiu = 0;
+	let sawEnd = false;
+	try {
+		for (const raw of readFileSync(progress, "utf8").split(/\n/)) {
+			const line = raw.trim();
+			if (!line) continue;
+			let rec;
+			try { rec = JSON.parse(line); } catch { continue; }
+			if (rec?.ev === "run_start") {
+				endNanoAiu = 0;
+				sawEnd = false;
+			} else if (rec?.ev === "run_end") lastRunEnd = rec;
+			else if (rec?.ev === "end" && rec.nano_aiu != null) {
+				const nano = Number(rec.nano_aiu);
+				if (Number.isFinite(nano)) {
+					endNanoAiu += nano;
+					sawEnd = true;
+				}
+			}
+		}
+		if (lastRunEnd?.nano_aiu != null) {
+			const nano = Number(lastRunEnd.nano_aiu);
+			if (Number.isFinite(nano)) return nano / 1_000_000_000;
+		}
+		return sawEnd ? endNanoAiu / 1_000_000_000 : null;
+	} catch {
+		return null;
+	}
 }
 
 // Spawn cwf in its own process group so a timeout kills the whole copilot subagent tree
@@ -149,7 +185,7 @@ async function runWorkflow(input = {}) {
 		const sources = ["script", "scriptPath", "name"].filter((key) => input[key]);
 		check(sources.length === 1, `provide EXACTLY ONE of script | scriptPath | name (got: ${sources.join(", ") || "none"}).`);
 
-		const budget = input.budget ?? (input.preset === "xtreme" ? 1000000 : 10000);
+		const budget = input.budget ?? (input.preset === "xtreme" ? XTREME_BUDGET : DEFAULT_BUDGET);
 		check(typeof budget === "number" && budget > 0, `budget must be a positive number (got ${budget}).`);
 		check(input.concurrency == null || (Number.isInteger(input.concurrency) && input.concurrency >= 1), `concurrency must be an integer >= 1 (got ${input.concurrency}).`);
 		const requestedTimeout = input.timeoutSec ?? 1800;
@@ -199,6 +235,7 @@ async function runWorkflow(input = {}) {
 				return shown;
 			},
 		});
+		const finalAic = input.dryRun ? 0 : (progressAic(runId) ?? usedAic);
 
 		const ok = !result.spawnError && !result.timedOut && result.code === 0;
 		const persisted = join(runsDir(), runId, "harness.py");
@@ -214,7 +251,7 @@ async function runWorkflow(input = {}) {
 			`runId: ${runId}${input.resume ? " (resumed)" : ""}`,
 			existsSync(persisted) ? `harness (edit, then re-run with scriptPath): ${persisted}` : `harness: ${harness}`,
 			input.dryRun ? "mode: dry-run (no agents spawned, no AIC spent)" : `budget: ${budget} AIC`,
-			input.dryRun ? "AIC used: 0.0" : `AIC used: ${usedAic.toFixed(1)}`,
+			input.dryRun ? "AIC used: 0.0" : `AIC used: ${finalAic.toFixed(1)}`,
 			`cwd: ${cwd}`,
 			!input.quiet && result.tail ? `\n--- cwf progress / stats (stderr) ---\n${result.tail}` : "",
 			answer ? `\n--- workflow output ---\n${answer}${result.truncated ? "\n…(stdout truncated at 8MB)" : ""}` : ok ? "\n(workflow produced no stdout)" : "",
@@ -259,13 +296,13 @@ session = await joinSession({
 					scriptPath: { type: "string", description: "Path to an existing .py harness on disk. One of script|scriptPath|name." },
 					name: { type: "string", description: "Name of a saved workflow in ~/.copilot/workflows (resolves <name>.cwf.py or <name>.py). One of script|scriptPath|name." },
 					args: { description: "Value exposed to the harness as the global `args`. Pass an actual JSON value (string/array/object), NOT a JSON-encoded string." },
-					budget: { type: "number", exclusiveMinimum: 0, description: "Soft observed AIC cap. Default 10000, or 1000000 with preset='xtreme'. Set deliberately for the task size." },
+					budget: { type: "number", exclusiveMinimum: 0, description: `Soft observed AIC cap. Default ${DEFAULT_BUDGET}, or ${XTREME_BUDGET} with preset='xtreme'. Set deliberately for the task size.` },
 					dryRun: { type: "boolean", description: "Plan only — show phases/approx agent count without spawning agents or spending AIC. Preview here first." },
 					resume: { type: "string", description: "RunId of a prior run to resume; unchanged agents return instantly. Pass the same scriptPath/name." },
 					model: { type: "string", description: "Session default model that agents inherit unless they pin their own in the script (the harness's per-agent choice wins). Any Copilot model — Claude, GPT, Gemini, a BYOK provider, or 'auto' to let Copilot pick. Mirrors Claude Code, whose Workflow tool has no model param — set the model the workflow inherits, not a force-override." },
 					effort: { type: "string", enum: ["none", "low", "medium", "high", "xhigh", "max"], description: "Session default reasoning effort agents inherit unless they pin their own (the harness's per-agent choice wins). Only affects reasoning-capable models; Copilot enforces applicability." },
 					context: { type: "string", enum: ["default", "long_context"], description: "Session default context-window tier agents inherit unless they pin their own (Copilot-specific; no Claude equivalent)." },
-					preset: { type: "string", enum: ["xtreme"], description: "Named run preset. 'xtreme' sets provider-neutral high-effort defaults (model=auto, effort=xhigh, context=long_context) and a 1,000,000 AIC budget when none is supplied." },
+					preset: { type: "string", enum: ["xtreme"], description: `Named run preset. 'xtreme' sets provider-neutral high-effort defaults (model=auto, effort=xhigh, context=long_context) and a ${XTREME_BUDGET.toLocaleString("en-US")} AIC budget when none is supplied.` },
 					concurrency: { type: "integer", minimum: 1, description: "Max concurrent subagents (default min(16, cpu-1))." },
 					enableMcp: { type: "boolean", description: "Start subagents with built-in MCP servers enabled. Use only when the harness needs GitHub/MCP/web tools." },
 					restricted: { type: "boolean", description: "Run the harness orchestration-only + deterministic (sandbox an untrusted harness author)." },

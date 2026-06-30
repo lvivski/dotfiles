@@ -27,22 +27,33 @@ def _as_float(x: Any) -> float | None:
         return None
 
 
-def _extract_json(text: str) -> dict | None:
+def _json_values(text: str, starts: str):
+    """Yield embedded top-level JSON values whose first char is in ``starts``."""
+    decoder = json.JSONDecoder()
+    i = 0
+    n = len(text)
+    while i < n:
+        if text[i] in starts:
+            try:
+                obj, j = decoder.raw_decode(text, i)
+                yield obj
+                i = j
+                continue
+            except json.JSONDecodeError:
+                pass
+            except RecursionError:  # pathologically deep braces: stop scanning
+                return
+        i += 1
+
+
+def _extract_last_json_object(text: str) -> dict | None:
     """Last top-level JSON object embedded in ``text`` (via the real parser), or None."""
     if not text:
         return None
-    decoder = json.JSONDecoder()
     found: dict | None = None
-    i = 0
-    while (i := text.find("{", i)) != -1:
-        try:
-            obj, i = decoder.raw_decode(text, i)
-            if isinstance(obj, dict):
-                found = obj
-        except json.JSONDecodeError:
-            i += 1
-        except RecursionError:  # pathologically deep braces: stop scanning
-            break
+    for obj in _json_values(text, "{"):
+        if isinstance(obj, dict):
+            found = obj
     return found
 
 
@@ -68,22 +79,9 @@ def _extract_last_json(text: str, *, default: Any = None) -> Any:
             return json.loads(s)
         except (ValueError, RecursionError):  # JSONDecodeError is a ValueError
             break  # last content line isn't a clean value -> scan for embedded JSON
-    decoder = json.JSONDecoder()
     found: Any = _JSON_NOT_FOUND
-    i = 0
-    n = len(text)
-    while i < n:
-        if text[i] in "{[":
-            try:
-                obj, j = decoder.raw_decode(text, i)
-                found = obj
-                i = j
-                continue
-            except json.JSONDecodeError:
-                pass
-            except RecursionError:  # pathologically deep nesting: stop scanning
-                break
-        i += 1
+    for obj in _json_values(text, "{["):
+        found = obj
     return default if found is _JSON_NOT_FOUND else found
 
 
@@ -342,7 +340,7 @@ class PatternsMixin:
             error = res.error or "verifier agent failed"
             return Verdict(
                 passed=False, score=None, reasons=error, raw=res, ok=False, error=error)
-        data = _extract_json(res.content) or {}
+        data = _extract_last_json_object(res.content) or {}
         raw = data.get("passed", False)
         passed = raw.strip().lower() == "true" if isinstance(raw, str) else bool(raw)
         return Verdict(
@@ -457,7 +455,7 @@ class PatternsMixin:
         res = self.agent(prompt, model=model, label=label, **kw)
         if not res.ok:
             raise RuntimeError(f"judge agent failed: {res.error or 'unknown error'}")
-        data = _extract_json(res.content) or {}
+        data = _extract_last_json_object(res.content) or {}
         winner = str(data.get("winner", "A")).strip().upper()
         if winner.startswith("A"):
             return a
@@ -528,7 +526,7 @@ class PatternsMixin:
         res = self.agent(prompt, model=model, label=label, **kw)
         if not res.ok:
             raise RuntimeError(f"classifier agent failed: {res.error or 'unknown error'}")
-        data = _extract_json(res.content) or {}
+        data = _extract_last_json_object(res.content) or {}
         cat = str(data.get("category", "")).strip()
         for c in classes:
             if cat.lower() == c.lower():

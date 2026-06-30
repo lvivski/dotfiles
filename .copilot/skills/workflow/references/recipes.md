@@ -5,11 +5,15 @@ Use these patterns as defaults, not a menu to present to the user.
 ## Pipeline: default for multi-stage work
 
 Use when each item has the same chain of stages and no stage needs all items at once.
+If a stage raises, that item becomes `None`; filter/report those rows explicitly. Pass
+`errors="raise"` when any failed item should abort the whole pipeline.
 Copy `examples/pipeline-review.cwf.py`.
 
 ## Fan-out and synthesize
 
 Use when the merge stage needs every result at once.
+`wf.fan_out()` defaults to re-raising branch errors; pass `errors="drop"` to keep partial results.
+`wf.parallel()` is the barrier helper for thunks and defaults to dropping branch errors to `None`.
 Copy `examples/fanout-synthesize.cwf.py`.
 
 ## Adversarial verification

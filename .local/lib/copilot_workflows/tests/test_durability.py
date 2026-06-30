@@ -173,6 +173,22 @@ class TestResume(Base):
         b = AgentSpec(prompt="reply", model="m", resume="session-B")
         self.assertNotEqual(Runtime._spec_fingerprint(a), Runtime._spec_fingerprint(b))
 
+    def test_agent_fingerprint_regression(self):
+        # Checkpoint identity is a curated AgentSpec subset; cosmetic/operational
+        # fields such as label and timeout are intentionally excluded.
+        spec = AgentSpec(
+            prompt="review", model="m", agent="worker", effort="high",
+            context="long_context", cwd="/tmp/repo", resume="sid",
+            enable_mcp=True, mcp="@mcp.json", allow=["view"], deny=["shell"],
+            allow_url=["https://example.com"], deny_url=["*"], add_dir=["/tmp/extra"],
+            allow_all_tools=False, extra_args=["--foo", "bar"], label="cosmetic",
+            timeout=5,
+        )
+        self.assertEqual(
+            Runtime._spec_fingerprint(spec),
+            "6a2c030396db32eb910af6003ffd91aa86fe9992f6a0a55786ce3c5d03ef1e03",
+        )
+
 
 class TestGracefulBudget(Base):
     def test_skips_after_budget(self):
@@ -260,12 +276,27 @@ class TestWorktree(Base):
         wf = Runtime(copilot_bin=FAKE, model="fake", repo_root=root)
         with wf.worktree("ctx-1") as path:
             self.assertTrue(os.path.isdir(path))
-        base = wf._wt_mgr.base_dir
+        base = next(iter(wf._wt_mgrs.values())).base_dir
         self.assertTrue(os.path.isdir(base))
 
         wf.cleanup()
 
         self.assertFalse(os.path.exists(base))
+
+    def test_dry_run_worktree_does_not_create_worktree_or_clone(self):
+        repo = self._make_repo()
+        root = find_repo_root(repo)
+        remote = self._make_repo()
+        clones = self.tmpdir()
+        wf = Runtime(copilot_bin=FAKE, model="fake", repo_root=root, dry_run=True)
+        self.assertTrue(wf.dry_run)
+
+        with wf.worktree("dry", repo="file://" + remote, ref="HEAD", clone_dir=clones) as path:
+            self.assertEqual(os.path.realpath(path), os.path.realpath(root))
+
+        self.assertEqual(wf._wt_mgrs, {})
+        self.assertIsNone(wf._wt_base)
+        self.assertEqual(os.listdir(clones), [])
 
     def test_worktree_requires_git(self):
         d = self.tmpdir()  # not a git repo

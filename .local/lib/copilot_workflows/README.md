@@ -74,12 +74,12 @@ r = wf.agent(prompt, *, model=None, agent=None, effort=None, context=None, cwd=N
 
 wf.follow_up(r, prompt, **kw)               # another turn in the same session
 
-rows    = wf.pipeline(items, stage1, stage2, ...)   # DEFAULT for multi-stage work:
+rows    = wf.pipeline(items, stage1, stage2, ..., errors="drop")   # DEFAULT for multi-stage work:
 #   each item streams through ALL stages independently — NO barrier between stages.
 #   stage is called stage(prev, item, idx) (1–3 args); prev is the prior stage's return
 #   (the item for stage 1). A stage that raises drops that item to None (others continue).
-results = wf.parallel([lambda: wf.agent(a), lambda: wf.agent(b)])  # barrier over thunks
-results = wf.fan_out(items, fn)             # barrier map keyed by items; fn may nest wf.agent
+results = wf.parallel([lambda: wf.agent(a), lambda: wf.agent(b)], errors="drop")  # barrier over thunks
+results = wf.fan_out(items, fn, errors="raise")  # barrier map keyed by items; fn may nest wf.agent
 merged  = wf.synthesize(results, prompt=..., model=...)
 verdict = wf.verify(work, rubric=..., refute=True)     # -> Verdict(.passed .score .reasons .raw .ok .error)
 vote    = wf.consensus(work, rubric=..., reviewers=3,
@@ -110,14 +110,19 @@ wf.memory.read(); wf.memory.append("...")   # durable text shared ACROSS runs / 
 
 > **pipeline vs barrier.** `pipeline()` streams — item A can be in stage 3 while B is in
 > stage 1, so wall-clock is the slowest single-item *chain*. `fan_out`/`parallel`/`synthesize`
-> are barriers — they wait for every branch. Default to `pipeline()`; use a barrier only when
-> a stage needs all prior results at once (dedupe/merge, zero-count early-exit, cross-refs).
+> are barriers — they wait for every branch. Each concurrency helper accepts
+> `errors="raise"|"drop"`: `fan_out()` defaults to `"raise"`, while `parallel()` and `pipeline()`
+> default to `"drop"` and put `None` in failed slots; filter/report those `None` values explicitly.
+> Default to `pipeline()`; use a barrier only when a stage needs all prior results at once
+> (dedupe/merge, zero-count early-exit, cross-refs).
 
 > **worktrees for convenience.** `wf.worktree()` is handy when one branch should experiment or edit
 > without touching the main checkout; pass `repo=`/`ref=` to worktree another repo or a PR (cloned
 > once, reused). Pass `clone_dir=` to persist/reuse those clones outside the run cache.
 > Avoid creating hundreds of per-agent worktrees in large fan-outs;
-> when scale matters, start the whole workflow from an already-isolated worktree instead.
+> when scale matters, start the whole workflow from an already-isolated worktree instead. In
+> `--dry-run`, `wf.worktree()` does not clone or create worktrees; it yields the launch repo/cwd as
+> a preview placeholder.
 
 ## CLI
 
@@ -223,6 +228,8 @@ operations until a namespaced shape is clearly better in real workflows.
 | `deep-research.cwf.py` | decompose a question → fan-out web research → adversarially verify claims → cited report |
 | `audit.cwf.py` | review files for a concern → verify findings → severity-grouped report |
 | `triage.cwf.py` | classify + summarize a batch of tickets |
+| `security-review.cwf.py` | curated security review workflow with scanning, state, git evidence, and reporting |
+| `review-queue.cwf.py` | curated PR review-queue triage workflow fed by the review-queue fetch script |
 
 Drop your own polished harnesses in `~/.copilot/workflows/` and rerun them any time; read `args`
 to parameterize them.

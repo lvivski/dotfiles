@@ -1,148 +1,43 @@
-# wf API reference
+# wf API quick reference
 
-Harnesses are executed with `wf` (the runtime) and `args` (the parsed `--args` value or `None`).
-Everything is synchronous.
+Harnesses run synchronously with injected globals: `wf` (the runtime) and `args` (parsed JSON or
+`None`). The implementation README, `.local/lib/copilot_workflows/README.md`, is the source of truth
+for signatures and exact semantics; keep this file as a compact index.
 
-Optional `META = {"name": "...", "description": "...", "phases": [...]}` must be a literal dict.
-cwf displays it in run headers/dry-runs and ignores invalid metadata.
+## Core calls
 
-## Agents
+- `wf.agent(prompt, ..., enable_mcp=False, label=None, phase=None, **tool_kwargs)` → `AgentResult`
+- `wf.follow_up(result, prompt, **kw)` resumes an agent session.
+- `wf.pipeline(items, stage1, stage2, ..., concurrency=None, errors="drop")` streams each item through stages; failed items become `None` unless `errors="raise"`.
+- `wf.fan_out(items, fn, concurrency=None, errors="raise")` runs a barrier map; use `errors="drop"` to return `None` for failed slots.
+- `wf.parallel(thunks, concurrency=None, errors="drop")` runs thunks as a barrier; use `errors="raise"` to abort on branch errors.
 
-Call `wf.agent(prompt, model=None, agent=None, effort=None, context=None, cwd=None, phase=None,
-enable_mcp=False, timeout=None, label=None, allow=None, deny=None, allow_url=None, deny_url=None,
-add_dir=None, mcp=None)`.
+## AI patterns
 
-`effort` is the reasoning-effort level (`none|low|medium|high|xhigh|max`); `context` is the
-context-window tier (`default|long_context`). Each agent inherits the run's session default for
-these (and for `model`) unless it pins its own — the per-agent value wins (see below).
+- `wf.synthesize(results, prompt=..., **kw)` merges many inputs.
+- `wf.verify(subject, rubric=..., refute=True, **kw)` returns a `Verdict`.
+- `wf.consensus(subject, rubric=..., reviewers=3, models=None, **kw)` runs quorum-backed multi-review.
+- `wf.structured(prompt, schema, validate=None, retries=2, **kw)` gets validated JSON.
+- `wf.tournament(candidates, criteria=..., **kw)` chooses a comparative winner.
+- `wf.generate_and_filter(generate, n=5, keep=None, rubric=None, dedupe=True, model=None)` creates and filters candidates.
+- `wf.classify(text, classes, instructions=None, **kw)` returns exactly one class.
+- `wf.loop_until(step, done, max_iters=10)` repeats until a stop condition.
 
-Returns `AgentResult`:
+## Safety, state, and execution helpers
 
-- `content`, `ok`, `error`
-- `nano_aiu`, `aiu_credits`, `output_tokens`
-- `session_id`, `model`, `cached`, `warnings`
-- `str(result) == result.content`
+- `wf.quarantine(...)` returns kwargs for read-only/no-egress agents; pass `enable_mcp=True` only
+  for stages that genuinely need MCP/network.
+- `wf.worktree(name, base_ref=None, repo=None, ref=None, clone_dir=None)` creates an isolated checkout.
+- `wf.phase(name)` groups progress.
+- `wf.budget(aic)`, `wf.remaining()`, `wf.spent`, and `wf.budget_total` expose budget controls.
+- `wf.memory.read()/append()/write()/clear()` use the durable `--memory` file.
+- `wf.xtreme()` fills unset defaults with the high-confidence preset.
 
-Use `wf.follow_up(result, prompt, **kw)` for another turn in the same subagent session. It raises if
-the result has no `session_id`.
-
-Custom personas deployed to `~/.copilot/agents/` can be selected with `agent="worker"` or
-`agent="researcher"` when a harness wants explicit role steering.
-
-## Concurrency primitives
-
-### `wf.pipeline(items, stage1, stage2, ..., concurrency=None)`
-
-Streams each item through all stages independently. Stage N for item A can run while item B is still
-in stage 1. Each stage receives `(prev, item, index)` and may accept 1, 2, or 3 positional arguments.
-If a stage raises, that item becomes `None` and the remaining items continue.
-
-Use this by default for multi-stage per-item work. Copy `examples/pipeline-review.cwf.py` when you
-need a runnable starting point.
-
-### `wf.fan_out(items, fn, concurrency=None)`
-
-Runs `fn(item)` for every item concurrently and returns results in input order. This is a barrier:
-later code waits for every branch. Use it when the next stage needs all results at once.
-
-### `wf.parallel(thunks, concurrency=None)`
-
-Runs zero-argument callables concurrently and returns results in order. Branch exceptions become
-`None`; `BudgetExceeded` still propagates in strict mode.
-
-## Patterns
-
-### `wf.synthesize(results, prompt=..., model=None, label="synthesize", **kw)`
-
-Merges many inputs into one `AgentResult`. Pass no-tool/quarantine kwargs if inputs include
-untrusted-derived text.
-
-### `wf.verify(subject, rubric=..., refute=True, model=None, label="verify", **kw)`
-
-Returns `Verdict(passed, score, reasons, raw, ok=True, error="")`. Use for adversarial checking before reporting or
-acting on findings.
-
-### `wf.consensus(subject, rubric=..., reviewers=3, refute=True, model=None, models=None, label="consensus", **kw)`
-
-Runs multiple independent verifiers and returns
-`Consensus(passed, passed_count, failed_count, errored_count, reviewers, reasons, dissent, verdicts,
-ok=True, error="")`. It requires a successful-reviewer quorum, then takes the majority among that
-quorum. Use when critical work needs dual/triple review and dissenting reasons preserved. By
-default, consensus inherits the run model; pass `models=[...]` to cycle reviewers across model
-families for critical checks. Do not pass both `model` and `models`.
-
-### `wf.structured(prompt, schema, validate=None, retries=2, model=None, label="structured", **kw)`
-
-Gets a JSON value matching a shape schema or callable validator. Prefer this over parsing JSON by
-hand. Pass `validate=obj -> "" | error` with a shape schema when you also need semantic checks
-(for example, IDs must be in the input set); semantic failures are fed back and retried. Returns
-`Structured(value, ok, error, raw, attempts)`.
-
-Supported shape-schema keywords: `type`, `properties`, `required`, `enum`, `items`,
-`additionalProperties`, and `description`.
-
-### `wf.tournament(candidates, criteria=..., model=None, label="judge", **kw)`
-
-Single-elimination pairwise judging for ranking/taste. Raises if a judge fails or does not return a
-valid winner.
-
-### `wf.generate_and_filter(generate, n=5, keep=None, rubric=None, dedupe=True, model=None)`
-
-Generates candidates, deduplicates, then filters with either `keep(result)` or `wf.verify()`.
-
-### `wf.classify(text, classes, model=None, label="classify", instructions=None, **kw)`
-
-Returns exactly one class. Raises if the classifier fails or returns no valid category.
-
-### `wf.loop_until(step, done, max_iters=10)`
-
-Runs `step(i)` until `done(result)` is true or `max_iters` is reached. Exceptions from `done`
-propagate.
-
-## Safety, isolation, and cost
-
-- `wf.worktree(name, base_ref=None, repo=None, ref=None)` creates an isolated git worktree for a
-  small edit/experiment. Default is the launch repo; pass `repo` (a local path or clone URL) to
-  worktree a *different* repo — cloned once into a per-run cache and reused — and `ref` to fetch a
-  ref like `pull/7/head` into it (how a multi-repo workflow checks out many PRs in isolation). Avoid
-  one worktree per agent in large fan-outs; prefer running the whole workflow from an isolated tree.
-- `wf.quarantine()` denies shell/write/egress by default and disables built-in MCPs.
-- Use `wf.quarantine(deny_url=[], enable_mcp=True)` only when a reader legitimately needs network
-  or MCP access, such as web research.
-- Use `wf.quarantine(allow_all_tools=False)` for verifier/synthesis agents that only need to reason
-  over prior untrusted-derived text.
-- `wf.xtreme()` fills unset defaults with `model=auto`, `effort=xhigh`, `context=long_context`, and a
-  1,000,000 AIC budget when none was supplied. Explicit launcher/harness choices still win.
-- `wf.budget()` is a soft observed-spend cap. In-flight agents may overshoot before new agents are
-  skipped.
-- `wf.memory` is a durable text file shared across runs and `cwf loop` ticks (enable with
-  `--memory PATH`). Call `wf.memory.read()` / `.append(text)` / `.write(text)` / `.clear()`. It is
-  disabled and no-ops without `--memory`, and read-only under `--dry-run`. Use it so a recurring loop
-  records "what's done / what's next" for its next tick; it works in `--restricted` (the runtime owns
-  the file I/O).
-
-## CLI
+## CLI reminders
 
 ```bash
 cwf run <harness.py> --budget <N> [--args JSON|@file] [--model MODEL] [--enable-mcp]
-cwf run <harness.py> --model M --effort LEVEL --context TIER   # session defaults agents inherit
 cwf run <harness.py> --preset xtreme
 cwf run <harness.py> --resume <runId>
-cwf run <harness.py> --dry-run
-cwf run <harness.py> --memory <state.md>                 # durable wf.memory, persists across runs
-cwf loop <harness.py> --every 10m --memory <state.md>    # recurring loop that accretes state
-cwf runs
-cwf watch <runId>
+cwf loop <harness.py> --every 10m --memory <state.md>
 ```
-
-`--model` (any model id), `--effort` (`none…max`), and `--context` (`default|long_context`) set the
-**session defaults** the workflow runs with. Each agent **inherits** them unless it pins its own
-value in the script, in which case the **per-agent value wins** — this mirrors Claude Code dynamic
-workflows ("omit to inherit the session effort"; a per-agent `model` "takes precedence … if omitted,
-inherits from the parent"). So a launch-time setting steers the agents that *don't* pin a model/effort
-and never forces one onto agents that do. The resolved value is part of an agent's resume-cache key,
-so a different inherited value re-runs rather than reusing a stale result. (Claude's `Workflow` tool
-has no model/effort param at all; `--context` is a Copilot-only tier with no Claude equivalent.)
-
-State lives under `~/.copilot/workflows/runs/<runId>/`: `harness.py`, `meta.json`,
-`results.jsonl`, and `progress.jsonl`.

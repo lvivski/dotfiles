@@ -30,8 +30,8 @@ from copilot_workflows.patterns import (  # noqa: E402
     Structured,
     Verdict,
     _check_schema_def,
-    _extract_json,
     _extract_last_json,
+    _extract_last_json_object,
     _validate_shape,
 )
 from copilot_workflows.agent import AgentResult, _reduce, _session_nano_aiu  # noqa: E402
@@ -193,6 +193,21 @@ class TestFanOut(Base):
 
         with self.assertRaises(ValueError):
             wf.fan_out([0, 1, 2], fn)
+
+    def test_can_drop_branch_errors(self):
+        wf = self.rt()
+
+        def fn(x):
+            if x == 1:
+                raise ValueError("boom")
+            return x * 10
+
+        self.assertEqual(wf.fan_out([0, 1, 2], fn, errors="drop"), [0, None, 20])
+
+    def test_invalid_error_policy_raises(self):
+        wf = self.rt()
+        with self.assertRaises(ValueError):
+            wf.fan_out([1], lambda x: x, errors="ignore")
 
     def test_branch_error_cancels_not_yet_started_work(self):
         wf = self.rt(concurrency=1)
@@ -647,6 +662,17 @@ class TestPipeline(Base):
         out = wf.pipeline([1, 2, 3], stage1, lambda prev: prev + 1)
         self.assertEqual(out, [11, None, 31])  # item 2 dropped, others flow on
 
+    def test_stage_error_can_raise(self):
+        wf = self.rt()
+
+        def stage1(it):
+            if it == 2:
+                raise ValueError("boom")
+            return it
+
+        with self.assertRaises(ValueError):
+            wf.pipeline([1, 2, 3], stage1, errors="raise")
+
     def test_stage_arity_fallback_for_builtin(self):
         wf = self.rt()
         out = wf.pipeline([1, 2], str)  # str has no introspectable signature -> 1 arg
@@ -678,6 +704,15 @@ class TestParallel(Base):
             raise RuntimeError("x")
 
         self.assertEqual(wf.parallel([lambda: 1, boom, lambda: 3]), [1, None, 3])
+
+    def test_error_can_raise(self):
+        wf = self.rt()
+
+        def boom():
+            raise RuntimeError("x")
+
+        with self.assertRaises(RuntimeError):
+            wf.parallel([lambda: 1, boom, lambda: 3], errors="raise")
 
     def test_empty(self):
         wf = self.rt()
@@ -968,29 +1003,33 @@ class TestStructured(Base):
         self.assertEqual(len(wf.results), 0)  # rejected before any agent ran
 
 
-class TestExtractJson(Base):
+class TestExtractLastJsonObject(Base):
     def test_trailing(self):
-        self.assertEqual(_extract_json('blah\n{"a": 1}')["a"], 1)
+        self.assertEqual(_extract_last_json_object('blah\n{"a": 1}')["a"], 1)
 
     def test_brace_in_string(self):
-        obj = _extract_json('reason\n{"why": "use a } brace", "ok": true}')
+        obj = _extract_last_json_object('reason\n{"why": "use a } brace", "ok": true}')
         self.assertEqual(obj["why"], "use a } brace")
         self.assertTrue(obj["ok"])
 
     def test_last_object_wins(self):
-        obj = _extract_json('{"x": 1} middle {"x": 2}')
+        obj = _extract_last_json_object('{"x": 1} middle {"x": 2}')
         self.assertEqual(obj["x"], 2)
 
+    def test_last_object_wins_even_when_final_line_is_scalar(self):
+        obj = _extract_last_json_object('schema {"x": 1}\nfinal:\ntrue')
+        self.assertEqual(obj["x"], 1)
+
     def test_fenced(self):
-        obj = _extract_json('```json\n{"k": "v"}\n```')
+        obj = _extract_last_json_object('```json\n{"k": "v"}\n```')
         self.assertEqual(obj["k"], "v")
 
     def test_none(self):
-        self.assertIsNone(_extract_json("no json here"))
-        self.assertIsNone(_extract_json(""))
+        self.assertIsNone(_extract_last_json_object("no json here"))
+        self.assertIsNone(_extract_last_json_object(""))
 
     def test_deeply_nested_no_crash(self):
-        self.assertIsNone(_extract_json('{"a":' * 1500))  # RecursionError must not escape
+        self.assertIsNone(_extract_last_json_object('{"a":' * 1500))  # RecursionError must not escape
 
 
 if __name__ == "__main__":
