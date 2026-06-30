@@ -1,6 +1,6 @@
 # security-review.cwf.py - security review modeled on cwf.
 #
-#   cwf run ~/.copilot/workflows/security-review.cwf.py --budget 10000 --disable-mcp \
+#   cwf run ~/.copilot/workflows/security-review.cwf.py --budget 10000 \
 #       --args '{"root":".","diff":"origin/main","state":".security-review/state.json"}'
 #   cwf run ~/.copilot/workflows/security-review.cwf.py --args '{"files":["src/app.ts"]}'
 #

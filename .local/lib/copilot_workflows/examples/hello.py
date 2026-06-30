@@ -4,7 +4,7 @@ Fans out three independent subagents and prints each answer plus the total cost.
 Exercises wf.fan_out -> wf.agent -> JSONL parsing -> credit accounting end to end.
 
 Run:
-    cwf run examples/hello.py --disable-mcp
+    cwf run examples/hello.py
 """
 
 QUESTIONS = [

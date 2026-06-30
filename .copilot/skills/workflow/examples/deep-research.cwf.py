@@ -17,7 +17,7 @@ def research(angle):
         agent="researcher",
         phase="research",
         label=angle[:24],
-        **wf.quarantine(deny_url=[], disable_mcp=False),
+        **wf.quarantine(deny_url=[], enable_mcp=True),
     )
 
 

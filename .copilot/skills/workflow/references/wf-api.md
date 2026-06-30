@@ -9,8 +9,8 @@ cwf displays it in run headers/dry-runs and ignores invalid metadata.
 ## Agents
 
 Call `wf.agent(prompt, model=None, agent=None, effort=None, context=None, cwd=None, phase=None,
-disable_mcp=False, timeout=None, label=None, allow=None, deny=None, allow_url=None,
-deny_url=None, add_dir=None, mcp=None)`.
+enable_mcp=False, timeout=None, label=None, allow=None, deny=None, allow_url=None, deny_url=None,
+add_dir=None, mcp=None)`.
 
 `effort` is the reasoning-effort level (`none|low|medium|high|xhigh|max`); `context` is the
 context-window tier (`default|long_context`). Each agent inherits the run's session default for
@@ -20,7 +20,7 @@ Returns `AgentResult`:
 
 - `content`, `ok`, `error`
 - `nano_aiu`, `aiu_credits`, `output_tokens`
-- `session_id`, `model`, `cached`
+- `session_id`, `model`, `cached`, `warnings`
 - `str(result) == result.content`
 
 Use `wf.follow_up(result, prompt, **kw)` for another turn in the same subagent session. It raises if
@@ -62,6 +62,15 @@ untrusted-derived text.
 Returns `Verdict(passed, score, reasons, raw, ok=True, error="")`. Use for adversarial checking before reporting or
 acting on findings.
 
+### `wf.consensus(subject, rubric=..., reviewers=3, refute=True, model=None, models=None, label="consensus", **kw)`
+
+Runs multiple independent verifiers and returns
+`Consensus(passed, passed_count, failed_count, errored_count, reviewers, reasons, dissent, verdicts,
+ok=True, error="")`. It requires a successful-reviewer quorum, then takes the majority among that
+quorum. Use when critical work needs dual/triple review and dissenting reasons preserved. By
+default, consensus inherits the run model; pass `models=[...]` to cycle reviewers across model
+families for critical checks. Do not pass both `model` and `models`.
+
 ### `wf.structured(prompt, schema, validate=None, retries=2, model=None, label="structured", **kw)`
 
 Gets a JSON value matching a shape schema or callable validator. Prefer this over parsing JSON by
@@ -98,10 +107,12 @@ propagate.
   ref like `pull/7/head` into it (how a multi-repo workflow checks out many PRs in isolation). Avoid
   one worktree per agent in large fan-outs; prefer running the whole workflow from an isolated tree.
 - `wf.quarantine()` denies shell/write/egress by default and disables built-in MCPs.
-- Use `wf.quarantine(deny_url=[], disable_mcp=False)` only when a reader legitimately needs network
+- Use `wf.quarantine(deny_url=[], enable_mcp=True)` only when a reader legitimately needs network
   or MCP access, such as web research.
 - Use `wf.quarantine(allow_all_tools=False)` for verifier/synthesis agents that only need to reason
   over prior untrusted-derived text.
+- `wf.xtreme()` fills unset defaults with `model=auto`, `effort=xhigh`, `context=long_context`, and a
+  1,000,000 AIC budget when none was supplied. Explicit launcher/harness choices still win.
 - `wf.budget()` is a soft observed-spend cap. In-flight agents may overshoot before new agents are
   skipped.
 - `wf.memory` is a durable text file shared across runs and `cwf loop` ticks (enable with
@@ -113,8 +124,9 @@ propagate.
 ## CLI
 
 ```bash
-cwf run <harness.py> --budget <N> [--args JSON|@file] [--model MODEL] [--disable-mcp]
+cwf run <harness.py> --budget <N> [--args JSON|@file] [--model MODEL] [--enable-mcp]
 cwf run <harness.py> --model M --effort LEVEL --context TIER   # session defaults agents inherit
+cwf run <harness.py> --preset xtreme
 cwf run <harness.py> --resume <runId>
 cwf run <harness.py> --dry-run
 cwf run <harness.py> --memory <state.md>                 # durable wf.memory, persists across runs

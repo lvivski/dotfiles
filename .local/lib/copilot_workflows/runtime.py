@@ -29,6 +29,9 @@ def default_concurrency() -> int:
     return min(16, max(2, cpu - 1))
 
 
+XTREME_DEFAULT_BUDGET = 1_000_000.0
+
+
 def _normalize_concurrency(value: int | None) -> int:
     """Return a concrete positive concurrency value."""
     concurrency = default_concurrency() if value is None else value
@@ -80,7 +83,7 @@ def _call_stage(stage: Callable, prev: Any, item: Any, index: int) -> Any:
 # fields (timeout, label) are deliberately excluded; resume is included so follow-up
 # turns in different sessions never collide.
 _KEY_FIELDS = (
-    "prompt", "model", "agent", "effort", "context", "cwd", "resume", "disable_mcp", "mcp",
+    "prompt", "model", "agent", "effort", "context", "cwd", "resume", "enable_mcp", "mcp",
     "allow", "deny", "allow_url", "deny_url", "add_dir", "allow_all_tools",
     "extra_args",
 )
@@ -95,9 +98,10 @@ class Runtime(PatternsMixin):
         model: str | None = None,
         effort: str | None = None,
         context: str | None = None,
-        default_disable_mcp: bool = False,
+        default_enable_mcp: bool = False,
         budget: float | None = None,
         strict_budget: bool = False,
+        preset: str | None = None,
         logger: Callable[..., None] | None = None,
         progress: Callable[[ProgressEvent], None] | None = None,
         dry_run: bool = False,
@@ -112,7 +116,7 @@ class Runtime(PatternsMixin):
         self.model = model
         self.effort = effort
         self.context = context
-        self.default_disable_mcp = default_disable_mcp
+        self.default_enable_mcp = default_enable_mcp
         self.restricted = restricted
         self._budget = budget
         self.strict_budget = strict_budget
@@ -144,6 +148,8 @@ class Runtime(PatternsMixin):
         self._wt_mgrs: dict[str, WorktreeManager] = {}     # one per repo root; remotes cloned in
         self._wt_base: str | None = None
         self._wt_lock = threading.Lock()
+        if preset:
+            self.apply_preset(preset)
 
     # ---- introspection -------------------------------------------------
     @property
@@ -175,6 +181,31 @@ class Runtime(PatternsMixin):
     def budget(self, aic: float | None) -> None:
         """Set (or clear) the observed-spend soft budget for the run."""
         self._budget = aic
+
+    def apply_preset(self, name: str) -> "Runtime":
+        """Apply a named run preset without overriding explicit harness/launcher choices."""
+        if name == "xtreme":
+            return self.xtreme()
+        raise ValueError(f"unknown preset: {name}")
+
+    def xtreme(
+        self,
+        *,
+        model: str = "auto",
+        effort: str = "xhigh",
+        context: str = "long_context",
+        budget: float | None = XTREME_DEFAULT_BUDGET,
+    ) -> "Runtime":
+        """Bias this run toward broad, high-confidence workflow execution."""
+        if self.model is None:
+            self.model = model
+        if self.effort is None:
+            self.effort = effort
+        if self.context is None:
+            self.context = context
+        if self._budget is None and budget is not None:
+            self._budget = budget
+        return self
 
     def log(self, *args: Any) -> None:
         self._log(*args)
@@ -225,7 +256,7 @@ class Runtime(PatternsMixin):
 
     # ---- spec building (no execution) ----------------------------------
     def spec(self, prompt: str, **kw: Any) -> AgentSpec:
-        kw.setdefault("disable_mcp", self.default_disable_mcp)
+        kw.setdefault("enable_mcp", self.default_enable_mcp)
         return self._apply_run_settings(AgentSpec(prompt=prompt, **kw))
 
     def _apply_run_settings(self, spec: AgentSpec) -> AgentSpec:

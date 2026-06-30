@@ -33,11 +33,12 @@ Two ways to use it.
 **1. Let Copilot author a workflow.** In an interactive `copilot` session, say:
 
 ```
-ultrawork: audit every endpoint under src/routes for missing auth checks
+workflow: audit every endpoint under src/routes for missing auth checks
 ```
 
 The `workflow` skill kicks in: Copilot decomposes the task, writes a harness, shows the planned
-phases + a credit budget, asks you to confirm, runs it, and returns the synthesis.
+phases + a credit budget, asks you to confirm, runs it, and returns the synthesis. Use
+`xtreme: <task>` for the same workflow path with the high-confidence `xtreme` preset.
 
 **2. Write/run a harness yourself.**
 
@@ -62,13 +63,14 @@ META = {"name": "audit-auth", "description": "Audit auth checks", "phases": ["sc
 
 ```python
 r = wf.agent(prompt, *, model=None, agent=None, effort=None, context=None, cwd=None, phase=None,
-             disable_mcp=False, timeout=None, label=None,
+             enable_mcp=False, timeout=None, label=None,
              allow=None, deny=None, allow_url=None, deny_url=None, add_dir=None, mcp=None)
 #   -> AgentResult: .content .ok .nano_aiu .aiu_credits .output_tokens
-#                   .session_id .model .cached .error   (str(r) == r.content)
+#                   .session_id .model .cached .error .warnings   (str(r) == r.content)
 #   phase=  assigns the progress group explicitly (use inside pipeline()/parallel()).
 #   effort= reasoning effort (none|low|medium|high|xhigh|max); context= window tier
 #           (default|long_context). Each inherits the run's --effort/--context (and --model) unless pinned here.
+#   Built-in MCP servers are disabled by default for subagents; pass enable_mcp=True only when needed.
 
 wf.follow_up(r, prompt, **kw)               # another turn in the same session
 
@@ -80,6 +82,8 @@ results = wf.parallel([lambda: wf.agent(a), lambda: wf.agent(b)])  # barrier ove
 results = wf.fan_out(items, fn)             # barrier map keyed by items; fn may nest wf.agent
 merged  = wf.synthesize(results, prompt=..., model=...)
 verdict = wf.verify(work, rubric=..., refute=True)     # -> Verdict(.passed .score .reasons .raw .ok .error)
+vote    = wf.consensus(work, rubric=..., reviewers=3,
+                       models=["gpt-...", "claude-...", "gemini-..."])  # optional diversity
 winner  = wf.tournament(candidates, criteria=...)
 kept    = wf.generate_and_filter(prompt, n=8, rubric=...)   # or keep=callable
 label   = wf.classify(text, ["bug", "feature", "question"], **wf.quarantine(allow_all_tools=False))
@@ -100,6 +104,7 @@ with wf.worktree("pr-8", repo="https://github.com/o/r.git", ref="pull/8/head",
 q = wf.quarantine()                         # reader of untrusted content: no shell/write tools
 wf.budget(20); wf.log("..."); wf.spent      # cost controls
 wf.budget_total; wf.remaining()             # budget introspection (remaining() is inf if uncapped)
+wf.xtreme()                                 # provider-neutral high-effort defaults if unset
 wf.memory.read(); wf.memory.append("...")   # durable text shared ACROSS runs / loop ticks (--memory)
 ```
 
@@ -119,7 +124,8 @@ wf.memory.read(); wf.memory.append("...")   # durable text shared ACROSS runs / 
 ```
 cwf run <harness.py> [--args JSON|@file] [--model M] [--budget N] [--strict-budget]
                      [--effort L] [--context T]            # session defaults agents inherit
-                     [--concurrency K] [--disable-mcp] [--resume RUN_ID] [--run-id ID]
+                     [--preset xtreme] [--concurrency K] [--enable-mcp]
+                     [--resume RUN_ID] [--run-id ID]
                      [--runs-dir DIR] [--memory PATH] [--dry-run] [--quiet] [--restricted]
 cwf loop <harness.py> --every 5m [--max-runs N] [<same run flags>]   # recurring triage/research
 cwf runs [--runs-dir DIR]                                            # list recent runs
@@ -140,6 +146,13 @@ cwf watch <run_id> [--no-follow]                                     # live/repl
   / a different model on agents that don't (`--context` is a Copilot-only window tier with no Claude
   equivalent). The resolved value is part of an agent's resume-cache key, so a different inherited
   value re-runs rather than reusing a stale result.
+- **Xtreme preset** — `--preset xtreme` (or `wf.xtreme()` inside a harness) fills unset run defaults
+  with `model=auto`, `effort=xhigh`, `context=long_context`, and a 1,000,000 AIC budget when no budget
+  was supplied. Explicit launcher/harness choices still win.
+- **MCP** — subagents default to `--disable-builtin-mcps` to avoid starting a full MCP server set in
+  every fan-out branch. Use `--enable-mcp` for a whole run, or `enable_mcp=True` on a specific
+  `wf.agent()` call, only when the workflow needs GitHub/MCP/web tools. `wf.quarantine()` remains
+  MCP-off unless explicitly overridden.
 - **Budget** is a soft observed-spend cap in AIC — always set `--budget`.
   Agents already in flight can finish and overshoot; once the cap is observed, new agents are
   skipped (graceful drain). `--strict-budget` raises/stops after the cap is observed.
@@ -186,12 +199,22 @@ subagent reads* (no shell/write/egress for that agent). `--restricted` sandboxes
 - **Pipeline (default)** — stream each item through stages with no inter-stage barrier.
 - **Fan-out-and-synthesize** — split work, one agent per piece, merge at a barrier.
 - **Adversarial verification** — a separate agent attacks each finding against a rubric; keep survivors.
+- **Consensus** — run multiple independent verifiers and take a quorum-backed majority, with dissent
+  retained. It inherits the run model by default; for critical checks, pass `models=[...]` to spread
+  reviewers across model families and reduce correlated blind spots.
 - **Tournament** — pairwise comparative judgment (more reliable than absolute scoring) for ranking/taste.
 - **Generate-and-filter** — generate N ideas, dedupe, keep those passing a rubric/predicate.
 - **Classify-and-route** — tag an item, then branch on the tag.
 - **Loop-until-done** — repeat until a stop condition (no new findings, tests pass).
 - **Quarantine** — agents reading untrusted content get no privileged tools; a separate trusted
   actor agent, fed only their structured output, takes any privileged action.
+
+## Future API considerations
+
+The `wf.*` API is intentionally flat today for small harnesses. If it grows further, consider adding
+only namespaces that group several related operations (for example `wf.flow.*`, `wf.ai.*`, or
+`wf.cost.*`) rather than one-method namespaces. Keep top-level aliases for the most common harness
+operations until a namespaced shape is clearly better in real workflows.
 
 ## Bundled workflows
 
@@ -212,9 +235,10 @@ of AIC) so broad fan-out and verification are not accidentally starved; users ca
 tighter budgets when cost is the constraint. Prefer modern, capable models by default rather than
 old/cheap defaults, and avoid provider-specific bias: any model Copilot offers works (GPT, Claude,
 Gemini, a BYOK provider, or `auto`). Use a fast current model for broad fan-out and a stronger
-current model for synthesis/judging. `--dry-run` previews the plan for free. Use `wf.quarantine()` for any
-agent that reads untrusted/public content, and keep later verifier/synthesis agents no-tools when
-they consume untrusted-derived text.
+current model for synthesis/judging. High concurrency multiplies per-process startup and auth/ExP
+cost; keep concurrency modest and leave MCP disabled unless a stage actually needs it. `--dry-run`
+previews the plan for free. Use `wf.quarantine()` for any agent that reads untrusted/public content,
+and keep later verifier/synthesis agents no-tools when they consume untrusted-derived text.
 
 ## Persona agents
 
@@ -252,4 +276,4 @@ copilot_workflows/
 Same idea — an agent-authored harness that orchestrates many subagents with the plan held *outside*
 the model context — re-implemented on Copilot CLI primitives: each subagent is a
 `copilot -p … --output-format json` subprocess; cost is tracked in AIC; the
-`workflow` skill plays the role of `ultracode`.
+`workflow` skill provides the high-confidence fan-out workflow mode.

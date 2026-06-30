@@ -21,7 +21,7 @@ Copy `examples/pipeline-review.cwf.py` and adapt the rubric/lens.
 
 1. Use `wf.structured()` to decompose the question into angles.
 2. Research each angle with quarantined reader agents. For web research, opt into network:
-   `wf.quarantine(deny_url=[], disable_mcp=False)`.
+   `wf.quarantine(deny_url=[], enable_mcp=True)`.
 3. Verify source support with no-tool verifier agents:
    `wf.quarantine(allow_all_tools=False)`.
 4. Synthesize only verified or explicitly caveated claims.
@@ -32,6 +32,14 @@ Copy `examples/deep-research.cwf.py`.
 Use comparative judgment for taste, ranking, or selecting a best option. It is usually more reliable
 than absolute scoring.
 Copy `examples/tournament.cwf.py`.
+
+## Consensus verification
+
+Use `wf.consensus(..., reviewers=3)` when critical work needs independent dual/triple review. It
+requires a successful-reviewer quorum, then keeps the majority verdict plus dissenting reasons.
+For high-stakes checks, prefer optional model-family diversity with `models=[...]` so reviewers are
+less likely to share the same blind spots; leave it unset for ordinary consensus so it inherits the
+run model.
 
 ## Generate and filter
 

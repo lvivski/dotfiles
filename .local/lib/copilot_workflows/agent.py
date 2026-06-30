@@ -60,7 +60,7 @@ class AgentSpec:
     deny_url: list[str] | None = None
     add_dir: list[str] | None = None     # --add-dir
     mcp: str | None = None               # --additional-mcp-config (json or @file)
-    disable_mcp: bool = False            # --disable-builtin-mcps (faster startup)
+    enable_mcp: bool = False             # omit --disable-builtin-mcps when true
     allow_all_tools: bool = True         # blanket pre-auth; off for quarantine
     resume: str | None = None            # session id to resume (follow-up turns)
     timeout: float | None = None         # seconds; kills the process if exceeded
@@ -89,6 +89,7 @@ class AgentResult:
     error: str | None = None
     ok: bool = True
     cached: bool = False  # True when returned from a resumed run's checkpoint
+    warnings: list[str] | None = None
 
     @property
     def aiu_credits(self) -> float:
@@ -103,7 +104,7 @@ def build_cmd(spec: AgentSpec, copilot_bin: str = "copilot") -> list[str]:
     cmd = [copilot_bin, "-p", spec.prompt, "--output-format", "json", "--no-ask-user", "--no-color"]
     if spec.allow_all_tools:  # non-interactive needs tools pre-authorized
         cmd.append("--allow-all-tools")
-    if spec.disable_mcp:
+    if not spec.enable_mcp:
         cmd.append("--disable-builtin-mcps")
     for flag, value in (("--resume", spec.resume), ("--model", spec.model), ("--agent", spec.agent),
                         ("--effort", spec.effort), ("--context", spec.context),
@@ -143,11 +144,15 @@ def _to_float(x) -> float:
         return 0.0
 
 
+def _copilot_home() -> str:
+    return os.environ.get("COPILOT_HOME") or os.path.expanduser("~/.copilot")
+
+
 def _session_nano_aiu(session_id: str | None) -> int:
     """Actual nano-AI units from Copilot's session log (`totalNanoAiu`), if available."""
     if not session_id:
         return 0
-    path = os.path.expanduser(f"~/.copilot/session-state/{session_id}/events.jsonl")
+    path = os.path.join(_copilot_home(), "session-state", session_id, "events.jsonl")
     try:
         with open(path, encoding="utf-8") as fh:
             for line in fh:
@@ -165,6 +170,18 @@ def _session_nano_aiu(session_id: str | None) -> int:
     return 0
 
 
+def _format_session_error(data: dict) -> str:
+    err_type = data.get("errorType") or data.get("type")
+    message = data.get("message") or data.get("error") or data.get("reason")
+    if err_type and message:
+        return f"{err_type}: {message}"
+    if message:
+        return str(message)
+    if err_type:
+        return str(err_type)
+    return "session.error"
+
+
 def _reduce(acc: dict, obj: dict) -> None:
     """Fold one JSONL event into the running result accumulator.
 
@@ -180,22 +197,29 @@ def _reduce(acc: dict, obj: dict) -> None:
         acc["model"] = data.get("model") or acc["model"]
     elif kind == "result":
         acc["session"] = obj.get("sessionId", acc["session"])
+    elif kind == "session.error":
+        acc["session_errors"].append(_format_session_error(obj.get("data") or {}))
 
 
 def _result(spec: AgentSpec, acc: dict, exit_code: int, *,
             killed: bool = False, stderr: str = "", error: str | None = None) -> AgentResult:
     content = acc["content"]
+    session_errors = list(acc.get("session_errors") or [])
+    warnings = session_errors or None
     if error is None:
         if killed:
             error = f"timed out after {spec.timeout}s"
         elif exit_code != 0:
             error = stderr.strip() or f"exited with code {exit_code}"
+        elif session_errors and not (content or "").strip():
+            error = "; ".join(session_errors)
         elif content is None:
             error = "no assistant message in output"
     return AgentResult(
         content=content or "", session_id=acc["session"], nano_aiu=acc.get("nano_aiu") or 0,
         output_tokens=acc["tokens"], exit_code=exit_code, model=acc["model"], label=spec.label,
         error=error, ok=exit_code == 0 and content is not None and not killed and error is None,
+        warnings=warnings,
     )
 
 
@@ -211,7 +235,8 @@ def run_agent(spec: AgentSpec, *, copilot_bin: str = "copilot",
     process can never slip through an interrupt unkilled (either the reaper sees it in the
     registry, or this check sees ``abort`` set and kills it).
     """
-    acc = {"content": None, "tokens": 0, "session": None, "model": spec.model}
+    acc = {"content": None, "tokens": 0, "session": None, "model": spec.model,
+           "session_errors": []}
     killed = threading.Event()
     stderr: list[str] = []
     stream_error: str | None = None

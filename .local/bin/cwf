@@ -53,6 +53,7 @@ _bootstrap_path()
 
 EFFORT_CHOICES = ("none", "low", "medium", "high", "xhigh", "max")
 CONTEXT_CHOICES = ("default", "long_context")
+PRESET_CHOICES = ("xtreme",)
 
 try:
     from copilot_workflows import (
@@ -125,10 +126,10 @@ def _is_skipped(r) -> bool:
     return (not r.ok) and str(getattr(r, "error", "") or "").startswith("skipped:")
 
 
-def _tuning_note(a: argparse.Namespace) -> str:
+def _tuning_note(rt: "Runtime") -> str:
     """One-line summary of the session-default effort/context agents inherit, if set."""
     parts = [f"{label}={value}" for label, value in
-             (("effort", a.effort), ("context", a.context)) if value]
+             (("effort", rt.effort), ("context", rt.context)) if value]
     return ", ".join(parts)
 
 
@@ -171,19 +172,22 @@ def _make_reporter(run_dir, run_id, harness_path, resume, quiet):
 def _build_runtime(a: argparse.Namespace, run_dir, store, reporter, logger) -> "Runtime":
     return Runtime(
         concurrency=a.concurrency, copilot_bin=a.copilot_bin, model=a.model, effort=a.effort,
-        context=a.context, default_disable_mcp=a.disable_mcp, budget=a.budget,
+        context=a.context, default_enable_mcp=a.enable_mcp, budget=a.budget, preset=a.preset,
         strict_budget=a.strict_budget, logger=logger, progress=reporter, dry_run=a.dry_run,
         run_dir=run_dir, checkpoints=store, restricted=a.restricted, memory_path=a.memory)
 
 
 def _log_run_header(logger, a: argparse.Namespace, harness_path, rt, run_id, store,
                     resume, meta: dict) -> None:
-    budget_str = f"{a.budget:.2f}" if a.budget is not None else "none"
+    budget = rt.budget_total
+    budget_str = f"{budget:.2f}" if budget is not None else "none"
     flags = "".join((", dry-run" if a.dry_run else "", ", resume" if resume else "",
-                     ", restricted" if a.restricted else ""))
+                     ", restricted" if a.restricted else "",
+                     f", preset={a.preset}" if a.preset else "",
+                     ", MCP on" if a.enable_mcp else ", MCP off"))
     logger(f"— cwf run {os.path.basename(harness_path)} (concurrency={rt.concurrency}, "
-           f"model={a.model or 'default'}, budget={budget_str}{flags})")
-    tuning = _tuning_note(a)
+           f"model={rt.model or 'default'}, budget={budget_str}{flags})")
+    tuning = _tuning_note(rt)
     if tuning:
         logger(f"  tuning: {tuning}")
     if meta:
@@ -450,6 +454,10 @@ def _add_run_args(pr: argparse.ArgumentParser) -> None:
     pr.add_argument("--context", choices=CONTEXT_CHOICES,
                     help="Session default context-window tier agents inherit unless they pin "
                          "their own (Copilot-specific; no Claude equivalent).")
+    pr.add_argument("--preset", choices=PRESET_CHOICES,
+                    help="Named run preset. 'xtreme' sets provider-neutral high-effort defaults "
+                         "(model=auto, effort=xhigh, context=long_context) and a 1,000,000 AIC budget "
+                         "when no explicit value is supplied.")
     pr.add_argument("--budget", type=float,
                     help="Soft observed AIC cap; in-flight agents may overshoot.")
     pr.add_argument("--strict-budget", action="store_true",
@@ -462,8 +470,8 @@ def _add_run_args(pr: argparse.ArgumentParser) -> None:
                          "cwd). Works in --restricted (the runtime owns the file I/O).")
     pr.add_argument("--runs-dir", help="Where run state lives "
                     "(default: $CWF_RUNS_DIR or <$CWF_WORKFLOWS_DIR|~/.copilot/workflows>/runs).")
-    pr.add_argument("--disable-mcp", action="store_true",
-                    help="Default agents to --disable-builtin-mcps (faster startup).")
+    pr.add_argument("--enable-mcp", action="store_true",
+                    help="Default agents to keep built-in MCP servers enabled.")
     pr.add_argument("--copilot-bin", default=os.environ.get("CWF_COPILOT_BIN", "copilot"),
                     help="Path to the copilot binary (default: copilot).")
     pr.add_argument("--dry-run", action="store_true", help="Plan only; don't spawn agents.")

@@ -26,6 +26,7 @@ from copilot_workflows import (  # noqa: E402
     build_cmd,
 )
 from copilot_workflows.patterns import (  # noqa: E402
+    Consensus,
     Structured,
     Verdict,
     _check_schema_def,
@@ -118,8 +119,38 @@ class TestAgent(Base):
         os.makedirs(d)
         with open(os.path.join(d, "events.jsonl"), "w", encoding="utf-8") as fh:
             fh.write('{"type":"session.shutdown","data":{"totalNanoAiu":5421200000}}\n')
-        with mock.patch.dict(os.environ, {"HOME": home}, clear=False):
+        with mock.patch.dict(os.environ, {"HOME": home, "COPILOT_HOME": ""}, clear=False):
             self.assertEqual(_session_nano_aiu(sid), 5421200000)
+
+    def test_session_nano_aiu_honors_copilot_home(self):
+        home = tempfile.mkdtemp(prefix="cwf-copilot-home-")
+        sid = "session-456"
+        d = os.path.join(home, "session-state", sid)
+        os.makedirs(d)
+        with open(os.path.join(d, "events.jsonl"), "w", encoding="utf-8") as fh:
+            fh.write('{"type":"session.shutdown","data":{"totalNanoAiu":123000000}}\n')
+        with mock.patch.dict(os.environ, {"COPILOT_HOME": home}, clear=False):
+            self.assertEqual(_session_nano_aiu(sid), 123000000)
+
+    def test_session_nano_aiu_missing_data_is_zero(self):
+        with mock.patch.dict(os.environ, {"COPILOT_HOME": tempfile.mkdtemp()}, clear=False):
+            self.assertEqual(_session_nano_aiu("missing-session"), 0)
+
+    def test_session_error_without_content_fails_result(self):
+        wf = self.rt()
+        r = wf.agent("soft fail " + fake(
+            '{"_session_error": "model call failed", "_error_type": "model_call", "_content": ""}'))
+        self.assertFalse(r.ok)
+        self.assertIn("model_call", r.error)
+        self.assertIn("model call failed", r.error)
+
+    def test_recovered_session_error_is_warning(self):
+        wf = self.rt()
+        r = wf.agent("recovered " + fake(
+            '{"_session_error": "retried once", "_error_type": "model_call", "_content": "done"}'))
+        self.assertTrue(r.ok)
+        self.assertIsNone(r.error)
+        self.assertIn("model_call: retried once", r.warnings)
 
     def test_missing_cwd_reports_cwd_not_binary(self):
         base = tempfile.mkdtemp(prefix="cwf-missing-cwd-")
@@ -224,6 +255,94 @@ class TestVerify(Base):
         self.assertFalse(v.ok)
         self.assertIn("exited with code 2", v.error)
         self.assertFalse(bool(v))
+
+
+class TestConsensus(Base):
+    def test_majority_pass_with_dissent(self):
+        wf = self.rt(concurrency=1)
+        queue = [
+            Verdict(True, 0.9, "looks good", AgentResult("{}", "s1", 0, 1, 0)),
+            Verdict(False, 0.2, "edge case", AgentResult("{}", "s2", 0, 1, 0)),
+            Verdict(True, 0.8, "acceptable", AgentResult("{}", "s3", 0, 1, 0)),
+        ]
+
+        def stub(*_args, **_kw):
+            return queue.pop(0)
+
+        wf.verify = stub
+        c = wf.consensus("work", rubric="rubric", reviewers=3)
+        self.assertIsInstance(c, Consensus)
+        self.assertTrue(c.passed)
+        self.assertTrue(bool(c))
+        self.assertEqual((c.passed_count, c.failed_count), (2, 1))
+        self.assertIn("reviewer 2 failed: edge case", c.dissent)
+
+    def test_verifier_failure_fails_closed(self):
+        wf = self.rt(concurrency=1)
+        queue = [
+            Verdict(True, 0.9, "ok", AgentResult("{}", "s1", 0, 1, 0)),
+            Verdict(False, None, "tool error", AgentResult("", "s2", 0, 0, 0),
+                    ok=False, error="tool error"),
+            Verdict(True, 0.8, "ok", AgentResult("{}", "s3", 0, 1, 0)),
+        ]
+
+        def stub(*_args, **_kw):
+            return queue.pop(0)
+
+        wf.verify = stub
+        c = wf.consensus("work", rubric="rubric", reviewers=3)
+        self.assertTrue(c.passed)
+        self.assertTrue(c.ok)
+        self.assertEqual(c.errored_count, 1)
+        self.assertIn("verifier error", c.reasons)
+
+    def test_verifier_failures_without_quorum_fail_closed(self):
+        wf = self.rt(concurrency=1)
+        queue = [
+            Verdict(True, 0.9, "ok", AgentResult("{}", "s1", 0, 1, 0)),
+            Verdict(False, None, "tool error 1", AgentResult("", "s2", 0, 0, 0),
+                    ok=False, error="tool error 1"),
+            Verdict(False, None, "tool error 2", AgentResult("", "s3", 0, 0, 0),
+                    ok=False, error="tool error 2"),
+        ]
+
+        def stub(*_args, **_kw):
+            return queue.pop(0)
+
+        wf.verify = stub
+        c = wf.consensus("work", rubric="rubric", reviewers=3)
+        self.assertFalse(c.passed)
+        self.assertFalse(c.ok)
+        self.assertEqual(c.errored_count, 2)
+        self.assertIn("quorum", c.error)
+
+    def test_requires_reviewer(self):
+        wf = self.rt()
+        with self.assertRaises(ValueError):
+            wf.consensus("work", rubric="rubric", reviewers=0)
+
+    def test_models_cycle_across_reviewers(self):
+        wf = self.rt(concurrency=1)
+        seen = []
+
+        def stub(*_args, **kw):
+            seen.append(kw.get("model"))
+            return Verdict(True, 0.9, "ok", AgentResult("{}", "s", 0, 1, 0))
+
+        wf.verify = stub
+        c = wf.consensus("work", rubric="rubric", reviewers=5, models=["gpt", "claude", "gemini"])
+        self.assertTrue(c.passed)
+        self.assertEqual(seen, ["gpt", "claude", "gemini", "gpt", "claude"])
+
+    def test_model_and_models_conflict(self):
+        wf = self.rt()
+        with self.assertRaises(ValueError):
+            wf.consensus("work", rubric="rubric", model="gpt", models=["claude"])
+
+    def test_models_reject_empty_names(self):
+        wf = self.rt()
+        with self.assertRaises(ValueError):
+            wf.consensus("work", rubric="rubric", models=["gpt", ""])
 
 
 class TestTournament(Base):
@@ -356,7 +475,7 @@ class TestQuarantine(Base):
     def test_network_reader_opt_in(self):
         # A research reader keeps the network but still loses shell/write.
         wf = self.rt()
-        spec = wf.spec("research", **wf.quarantine(deny_url=[], disable_mcp=False))
+        spec = wf.spec("research", **wf.quarantine(deny_url=[], enable_mcp=True))
         cmd = build_cmd(spec, "copilot")
         self.assertNotIn("--deny-url", cmd)
         self.assertNotIn("--disable-builtin-mcps", cmd)
@@ -387,7 +506,7 @@ class TestBudget(Base):
 class TestBuildCmd(Base):
     def test_flags(self):
         spec = AgentSpec(prompt="hi", model="m", agent="verifier", effort="high",
-                         context="long_context", cwd="/tmp/wt", disable_mcp=True, resume="sid-1")
+                         context="long_context", cwd="/tmp/wt", enable_mcp=False, resume="sid-1")
         cmd = build_cmd(spec, "copilot")
         for token in ["copilot", "-p", "hi", "--output-format", "json", "--allow-all-tools",
                       "--no-ask-user", "--model", "m", "--agent", "verifier", "--effort",
@@ -424,6 +543,37 @@ class TestRunSettings(Base):
         wf = self.rt(model=None)
         spec = wf.spec("hi")
         self.assertEqual((spec.model, spec.effort, spec.context), (None, None, None))
+
+    def test_runtime_disables_mcp_by_default(self):
+        wf = self.rt()
+        cmd = build_cmd(wf.spec("hi"), "copilot")
+        self.assertIn("--disable-builtin-mcps", cmd)
+
+    def test_enable_mcp_opt_in(self):
+        wf = self.rt()
+        cmd = build_cmd(wf.spec("hi", enable_mcp=True), "copilot")
+        self.assertNotIn("--disable-builtin-mcps", cmd)
+
+    def test_disable_mcp_is_not_a_public_agent_kwarg(self):
+        wf = self.rt()
+        with self.assertRaises(TypeError):
+            wf.spec("hi", disable_mcp=False)
+
+    def test_xtreme_preset_fills_unset_defaults(self):
+        wf = self.rt(model=None, effort=None, context=None, budget=None, preset="xtreme")
+        self.assertEqual((wf.model, wf.effort, wf.context),
+                         ("auto", "xhigh", "long_context"))
+        self.assertEqual(wf.budget_total, 1000000.0)
+        spec = wf.spec("hi")
+        self.assertEqual((spec.model, spec.effort, spec.context),
+                         ("auto", "xhigh", "long_context"))
+
+    def test_xtreme_preset_preserves_explicit_values(self):
+        wf = self.rt(model="manual", effort="low", context="default", budget=7,
+                     preset="xtreme")
+        self.assertEqual((wf.model, wf.effort, wf.context),
+                         ("manual", "low", "default"))
+        self.assertEqual(wf.budget_total, 7)
 
     def test_inherit_reaches_directly_built_spec(self):
         # A harness may construct AgentSpec itself and hand it to wf.agent(); the session

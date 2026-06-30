@@ -2,7 +2,7 @@
 
 Validates that a real model emits JSON the patterns can parse (classify/verify).
 
-    cwf run examples/patterns_demo.py --disable-mcp
+    cwf run examples/patterns_demo.py
 """
 
 ticket = (

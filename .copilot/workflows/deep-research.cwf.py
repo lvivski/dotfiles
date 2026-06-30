@@ -4,8 +4,8 @@
 #       --args '"What changed in the Python packaging ecosystem between 2020 and 2024?"'
 #   cwf run ~/.copilot/workflows/deep-research.cwf.py --args '{"question":"...","angles":6}'
 #
-# Note: research workers use whatever web-search/fetch tools the agent has, so run WITHOUT
-# --disable-mcp (network access is the point here).
+# Note: research workers use whatever web-search/fetch tools the agent has, so that stage opts into
+# MCP/network explicitly (network access is the point here).
 
 META = {
     "name": "deep-research",
@@ -48,7 +48,7 @@ def research(angle):
         agent="researcher", label=angle[:24], phase="research",
         # Reads untrusted web content -> deny shell/write to contain prompt injection,
         # but keep network + MCP (web access is the whole point of this step).
-        **wf.quarantine(deny_url=[], disable_mcp=False),
+        **wf.quarantine(deny_url=[], enable_mcp=True),
     )
 
 

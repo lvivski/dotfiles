@@ -12,6 +12,7 @@ Behavior is steered by directives embedded anywhere in the prompt:
     [[FAKE:{"_cr": 0.5, ...}]]        -> reports 0.5 fallback cost units
     [[FAKE:{"_exit": 2}]]             -> exits non-zero (simulate failure)
     [[FAKE:{"_sleep": 1.0}]]          -> sleeps 1.0s before output (simulate a hang)
+    [[FAKE:{"_session_error": "x"}]]  -> emits a soft session.error event
 
 The LAST directive in the prompt wins. With no directive, it echoes the prompt.
 """
@@ -42,10 +43,14 @@ def main() -> int:
     exit_code = 0
     content = None
     sleep_s = 0.0
+    session_error = None
+    error_type = "model_call"
     if isinstance(payload, dict):
         cr = float(payload.pop("_cr", 0.01))
         exit_code = int(payload.pop("_exit", 0))
         sleep_s = float(payload.pop("_sleep", 0.0))
+        session_error = payload.pop("_session_error", None)
+        error_type = str(payload.pop("_error_type", error_type))
         if "_content" in payload:
             content = str(payload.pop("_content"))
 
@@ -57,7 +62,8 @@ def main() -> int:
 
     sid = str(uuid.uuid4())
     out_tokens = max(1, len(content) // 4)
-    state = os.path.expanduser(os.path.join("~", ".copilot", "session-state", sid))
+    copilot_home = os.environ.get("COPILOT_HOME") or os.path.expanduser("~/.copilot")
+    state = os.path.join(copilot_home, "session-state", sid)
     os.makedirs(state, exist_ok=True)
     with open(os.path.join(state, "events.jsonl"), "w", encoding="utf-8") as fh:
         fh.write(json.dumps({
@@ -75,6 +81,10 @@ def main() -> int:
     emit({"type": "session.skills_loaded", "data": {"skills": []}, "ephemeral": True})
     emit({"type": "assistant.turn_start", "data": {"turnId": "0"}})
     emit({"type": "assistant.reasoning_delta", "data": {"deltaContent": "thinking"}, "ephemeral": True})
+    if session_error is not None:
+        emit({"type": "session.error", "data": {
+            "errorType": error_type, "message": str(session_error),
+        }})
     emit({"type": "assistant.message", "data": {
         "messageId": sid, "model": "fake", "content": content,
         "toolRequests": [], "outputTokens": out_tokens,

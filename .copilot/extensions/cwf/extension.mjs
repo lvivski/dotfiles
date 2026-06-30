@@ -149,7 +149,7 @@ async function runWorkflow(input = {}) {
 		const sources = ["script", "scriptPath", "name"].filter((key) => input[key]);
 		check(sources.length === 1, `provide EXACTLY ONE of script | scriptPath | name (got: ${sources.join(", ") || "none"}).`);
 
-		const budget = input.budget ?? 10;
+		const budget = input.budget ?? (input.preset === "xtreme" ? 1000000 : 10000);
 		check(typeof budget === "number" && budget > 0, `budget must be a positive number (got ${budget}).`);
 		check(input.concurrency == null || (Number.isInteger(input.concurrency) && input.concurrency >= 1), `concurrency must be an integer >= 1 (got ${input.concurrency}).`);
 		const requestedTimeout = input.timeoutSec ?? 1800;
@@ -169,8 +169,9 @@ async function runWorkflow(input = {}) {
 			...(input.model ? ["--model", String(input.model)] : []),
 			...(input.effort ? ["--effort", String(input.effort)] : []),
 			...(input.context ? ["--context", String(input.context)] : []),
+			...(input.preset ? ["--preset", String(input.preset)] : []),
 			...(input.concurrency != null ? ["--concurrency", String(input.concurrency)] : []),
-			...(input.disableMcp ? ["--disable-mcp"] : []),
+			...(input.enableMcp ? ["--enable-mcp"] : []),
 			...(input.restricted ? ["--restricted"] : []),
 			...(input.strictBudget ? ["--strict-budget"] : []),
 			...(input.quiet ? ["--quiet"] : []),
@@ -258,14 +259,15 @@ session = await joinSession({
 					scriptPath: { type: "string", description: "Path to an existing .py harness on disk. One of script|scriptPath|name." },
 					name: { type: "string", description: "Name of a saved workflow in ~/.copilot/workflows (resolves <name>.cwf.py or <name>.py). One of script|scriptPath|name." },
 					args: { description: "Value exposed to the harness as the global `args`. Pass an actual JSON value (string/array/object), NOT a JSON-encoded string." },
-					budget: { type: "number", exclusiveMinimum: 0, description: "Soft observed AIC cap. Default 10. Set deliberately for the task size." },
+					budget: { type: "number", exclusiveMinimum: 0, description: "Soft observed AIC cap. Default 10000, or 1000000 with preset='xtreme'. Set deliberately for the task size." },
 					dryRun: { type: "boolean", description: "Plan only — show phases/approx agent count without spawning agents or spending AIC. Preview here first." },
 					resume: { type: "string", description: "RunId of a prior run to resume; unchanged agents return instantly. Pass the same scriptPath/name." },
 					model: { type: "string", description: "Session default model that agents inherit unless they pin their own in the script (the harness's per-agent choice wins). Any Copilot model — Claude, GPT, Gemini, a BYOK provider, or 'auto' to let Copilot pick. Mirrors Claude Code, whose Workflow tool has no model param — set the model the workflow inherits, not a force-override." },
 					effort: { type: "string", enum: ["none", "low", "medium", "high", "xhigh", "max"], description: "Session default reasoning effort agents inherit unless they pin their own (the harness's per-agent choice wins). Only affects reasoning-capable models; Copilot enforces applicability." },
 					context: { type: "string", enum: ["default", "long_context"], description: "Session default context-window tier agents inherit unless they pin their own (Copilot-specific; no Claude equivalent)." },
+					preset: { type: "string", enum: ["xtreme"], description: "Named run preset. 'xtreme' sets provider-neutral high-effort defaults (model=auto, effort=xhigh, context=long_context) and a 1,000,000 AIC budget when none is supplied." },
 					concurrency: { type: "integer", minimum: 1, description: "Max concurrent subagents (default min(16, cpu-1))." },
-					disableMcp: { type: "boolean", description: "Start subagents with built-in MCP servers disabled (faster startup)." },
+					enableMcp: { type: "boolean", description: "Start subagents with built-in MCP servers enabled. Use only when the harness needs GitHub/MCP/web tools." },
 					restricted: { type: "boolean", description: "Run the harness orchestration-only + deterministic (sandbox an untrusted harness author)." },
 					strictBudget: { type: "boolean", description: "Stop/raise once the budget cap is observed instead of gracefully draining." },
 					quiet: { type: "boolean", description: "Suppress cwf stderr diagnostics (omits the progress/stats section from the result)." },

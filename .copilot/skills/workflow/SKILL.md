@@ -1,11 +1,12 @@
 ---
 name: workflow
 description: >-
-  Use this skill when the user asks for ultrawork, a workflow, parallel/fan-out agents,
-  cross-checking, adversarial verification, deep research, large codebase audits or migrations,
-  ranking/triage of many items, or work that one conversation context cannot reliably hold. Do not
-  use it for simple lookups, ordinary single-file edits, or tasks you can finish directly in a few
-  tool calls.
+  Use this skill when the user asks for a workflow, "workflow: <task>", "xtreme: <task>",
+  parallel/fan-out agents,
+  cross-checking, adversarial verification, large codebase audits or migrations, ranking/triage of
+  many items, custom research workflows, or work that one conversation context cannot reliably hold.
+  Prefer the deep-research skill for source-backed web research reports. Do not use it for simple
+  lookups, ordinary single-file edits, or tasks you can finish directly in a few tool calls.
 compatibility: GitHub Copilot CLI with cwf available on PATH; Python 3.9+ and the copilot CLI.
 metadata:
   copilot.user-invocable: "true"
@@ -24,13 +25,16 @@ tool — it streams progress into the session and returns a structured result. T
 shown below are the headless/fallback equivalent (used for `cwf loop`, scripting, or when the
 extension isn't loaded); tool params map 1:1 to the CLI flags.
 
+`workflow: <task>` is the general dynamic-workflow shortcut. `xtreme: <task>` uses the same workflow
+path but should set `preset: "xtreme"` / `--preset xtreme`.
+
 ## Decision boundary
 
 Use a workflow when the task genuinely benefits from independent contexts or repeatable quality
 gates:
 
 - Codebase-wide audits, sweeps, migrations, or multi-file reviews.
-- Deep research that should fan out over sources, angles, or claims.
+- Custom research workflows that need a harness beyond the saved `deep-research` workflow.
 - Large ranking, triage, clustering, or comparative-judgment tasks.
 - Plans or designs worth drafting from several independent angles before execution.
 - Any request where you would otherwise paste dozens of items into one prompt.
@@ -57,9 +61,10 @@ you can complete with a few direct tool calls. Workflows spend more time and AIC
    told you to go ahead. Preview for free with the `run_workflow` tool (`dryRun: true`) — or
    `cwf run harness.py --dry-run` headless.
 6. **Run with a budget.** Call `run_workflow` with `{ scriptPath, budget: <N> }` — params map 1:1 to
-   the CLI (`disableMcp`, `concurrency`, `model`, `effort`, `context`, `restricted`, `strictBudget`,
-   `args`). Headless: `cwf run harness.py --budget <N> ...`. Set `disableMcp` when agents do not need
-   GitHub/MCP. Bias generated workflows toward generous caps and let the user request tighter constraints when cost matters.
+   the CLI (`enableMcp`, `concurrency`, `model`, `effort`, `context`, `preset`, `restricted`,
+   `strictBudget`, `args`). Headless: `cwf run harness.py --budget <N> ...`. Built-in MCP is off by
+   default; set `enableMcp` / `--enable-mcp` only when agents need GitHub/MCP/web tools. Bias
+   generated workflows toward generous caps and let the user request tighter constraints when cost matters.
 7. **Return the result.** The `run_workflow` tool returns the harness's final answer plus its `runId`
    and persisted harness path, and streams progress live; when reporting progress or status, include
    the cumulative AIC used. To iterate or continue, re-invoke with the same
@@ -80,6 +85,14 @@ you can complete with a few direct tool calls. Workflows spend more time and AIC
   can pick the model, reasoning effort, or context-window tier before the run starts. Note `effort`
   only affects reasoning-capable models (Copilot enforces this), so don't set a session `effort` when
   the harness's agents run on models that don't support it.
+- Use `preset: "xtreme"` / `--preset xtreme` for big high-confidence runs: it fills unset defaults with provider-neutral
+  high-effort settings (`model=auto`, `effort=xhigh`, `context=long_context`) and a 1,000,000 AIC budget.
+  Treat a user request written as `xtreme: <task>` as a workflow request with this preset enabled.
+- For critical consensus checks, encourage model-family diversity without making it the default:
+  `wf.consensus(..., models=[...])` lets reviewers use different model families while ordinary
+  consensus still inherits the run model.
+- Leave MCP disabled by default for fan-out. Each subagent otherwise pays startup/auth/MCP overhead;
+  opt in with `enableMcp`, `--enable-mcp`, or per-agent `enable_mcp=True` only for stages that need it.
 - Tag inner agents with `phase=` and `label=` so progress stays readable.
 - Prefer `wf.structured()` over hand-parsing JSON from agent text.
 - Keep harness code clean and boring: small named helpers, explicit input normalization, clear
@@ -118,13 +131,13 @@ rubric, and input list. Keep examples as Python files so they are runnable and s
 Run the copied harness via the `run_workflow` tool:
 
 ```
-run_workflow({ scriptPath: "harness.cwf.py", budget: 1000, disableMcp: true, args: ["one", "two"] })
+run_workflow({ scriptPath: "harness.cwf.py", budget: 10000, args: ["one", "two"] })
 ```
 
 Headless / fallback equivalent:
 
 ```bash
-cwf run harness.cwf.py --budget 1000 --disable-mcp --args '["one", "two"]'
+cwf run harness.cwf.py --budget 10000 --args '["one", "two"]'
 ```
 
 ## Load more only when needed

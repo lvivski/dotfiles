@@ -1,6 +1,6 @@
 # audit.cwf.py — audit files for a concern, adversarially verify findings, synthesize a report.
 #
-#   cwf run ~/.copilot/workflows/audit.cwf.py --budget 1000 --disable-mcp \
+#   cwf run ~/.copilot/workflows/audit.cwf.py --budget 1000 \
 #       --args '{"paths":["src/a.py","src/b.py"],"concern":"missing input validation"}'
 #   cwf run ~/.copilot/workflows/audit.cwf.py --args '["src/a.py","src/b.py"]'
 #

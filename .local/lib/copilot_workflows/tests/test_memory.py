@@ -183,7 +183,7 @@ class TestMemoryCLI(Base):
         env = dict(os.environ, CWF_RUNS_DIR=os.path.join(d, "runs"))
         proc = subprocess.run(
             [sys.executable, CLI, "loop", harness, "--every", "0s", "--max-runs", "3",
-             "--memory", mem, "--copilot-bin", FAKE, "--disable-mcp"],
+             "--memory", mem, "--copilot-bin", FAKE],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, timeout=120,
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)

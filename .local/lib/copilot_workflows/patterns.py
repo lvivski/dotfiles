@@ -190,6 +190,25 @@ class Verdict:
         return self.passed
 
 
+@dataclass
+class Consensus:
+    """Outcome of independent verification by multiple reviewers."""
+
+    passed: bool
+    passed_count: int
+    failed_count: int
+    errored_count: int
+    reviewers: int
+    reasons: str
+    dissent: str
+    verdicts: list[Verdict]
+    ok: bool = True
+    error: str = ""
+
+    def __bool__(self) -> bool:
+        return self.passed
+
+
 class PatternsMixin:
     # These are provided by Runtime; declared here for readers/type-checkers.
     agent: Callable[..., AgentResult]
@@ -332,6 +351,72 @@ class PatternsMixin:
             reasons=str(data.get("reasons", res.content.strip())),
             raw=res,
         )
+
+    def consensus(
+        self,
+        subject: Any,
+        *,
+        rubric: Any,
+        reviewers: int = 3,
+        refute: bool = True,
+        model: str | None = None,
+        models: Sequence[str] | None = None,
+        label: str = "consensus",
+        **kw: Any,
+    ) -> Consensus:
+        """Run multiple independent verifiers and return a quorum-backed majority verdict."""
+        if reviewers < 1:
+            raise ValueError("reviewers must be >= 1")
+        model_cycle = list(models or [])
+        if model is not None and model_cycle:
+            raise ValueError("pass either model or models, not both")
+        if not all(str(m).strip() for m in model_cycle):
+            raise ValueError("models must contain non-empty model names")
+
+        def review(i: int) -> Verdict:
+            reviewer_model = model_cycle[i % len(model_cycle)] if model_cycle else model
+            return self.verify(
+                subject, rubric=rubric, refute=refute, model=reviewer_model,
+                label=f"{label}-{i + 1}", **kw)
+
+        verdicts = self.fan_out(list(range(reviewers)), review)
+        quorum = reviewers // 2 + 1
+        failed_verifiers = [v for v in verdicts if not v.ok]
+        good = [v for v in verdicts if v.ok]
+        passed_count = sum(1 for v in good if v.passed)
+        failed_count = len(good) - passed_count
+        errored_count = len(failed_verifiers)
+        if len(good) < quorum:
+            error = "%d/%d successful reviewers; quorum is %d" % (
+                len(good), reviewers, quorum)
+            if failed_verifiers:
+                error += "; " + "; ".join(v.error or v.reasons for v in failed_verifiers)
+            return Consensus(
+                passed=False, passed_count=passed_count, failed_count=failed_count,
+                errored_count=errored_count, reviewers=reviewers, reasons=error,
+                dissent="", verdicts=verdicts, ok=False, error=error)
+
+        threshold = len(good) // 2 + 1
+        majority_passed = passed_count >= threshold
+        dissenting = [
+            (i, v) for i, v in enumerate(verdicts, 1)
+            if v.ok and v.passed != majority_passed
+        ]
+        dissent = "\n".join(
+            "reviewer %d %s: %s" % (i, "passed" if v.passed else "failed", v.reasons)
+            for i, v in dissenting
+        )
+        reasons = "%d/%d successful reviewers passed" % (passed_count, len(good))
+        if failed_verifiers:
+            reasons += "; %d verifier error(s) ignored after quorum" % errored_count
+        if dissent:
+            reasons += "; dissent:\n" + dissent
+        else:
+            reasons += "; unanimous"
+        return Consensus(
+            passed=majority_passed, passed_count=passed_count, failed_count=failed_count,
+            errored_count=errored_count, reviewers=reviewers, reasons=reasons,
+            dissent=dissent, verdicts=verdicts)
 
     # ---- pairwise comparative judgment ---------------------------------
     def tournament(
@@ -477,7 +562,7 @@ class PatternsMixin:
         *,
         deny: Sequence[str] | None = None,
         deny_url: Sequence[str] | None = None,
-        disable_mcp: bool = True,
+        enable_mcp: bool = False,
         **extra: Any,
     ) -> dict:
         """kwargs for ``agent(...)`` that lock down an untrusted-content reader.
@@ -485,13 +570,13 @@ class PatternsMixin:
         Defaults are read-only with no egress: deny shell + write, deny all URLs
         (``["*"]``), and disable built-in MCP servers (e.g. GitHub). Local file
         reads still work. For a reader that legitimately needs the network
-        (e.g. web research), pass ``deny_url=[]`` and/or ``disable_mcp=False``.
+        (e.g. web research), pass ``deny_url=[]`` and/or ``enable_mcp=True``.
         """
         out = dict(
             allow_all_tools=True,  # keep non-interactive happy; deny wins anyway
             deny=list(deny) if deny is not None else ["shell", "write"],
             deny_url=list(deny_url) if deny_url is not None else ["*"],
-            disable_mcp=disable_mcp,
+            enable_mcp=enable_mcp,
         )
         out.update(extra)
         return out
