@@ -62,10 +62,12 @@ untrusted-derived text.
 Returns `Verdict(passed, score, reasons, raw, ok=True, error="")`. Use for adversarial checking before reporting or
 acting on findings.
 
-### `wf.structured(prompt, schema, retries=2, model=None, label="structured", **kw)`
+### `wf.structured(prompt, schema, validate=None, retries=2, model=None, label="structured", **kw)`
 
 Gets a JSON value matching a shape schema or callable validator. Prefer this over parsing JSON by
-hand. Returns `Structured(value, ok, error, raw, attempts)`.
+hand. Pass `validate=obj -> "" | error` with a shape schema when you also need semantic checks
+(for example, IDs must be in the input set); semantic failures are fed back and retried. Returns
+`Structured(value, ok, error, raw, attempts)`.
 
 Supported shape-schema keywords: `type`, `properties`, `required`, `enum`, `items`,
 `additionalProperties`, and `description`.

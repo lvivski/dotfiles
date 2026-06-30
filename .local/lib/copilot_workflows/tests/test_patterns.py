@@ -758,6 +758,50 @@ class TestStructured(Base):
         self.assertTrue(s.ok)
         self.assertEqual(s.value, {"n": 5})
 
+    def test_shape_plus_semantic_validator(self):
+        wf = self.rt()
+
+        def validate(obj):
+            return "" if obj.get("n", 0) > 0 else "n must be > 0"
+
+        s = wf.structured(
+            "x " + fake('{"_content": "{\\"n\\": 5}"}'),
+            {"type": "object", "required": ["n"], "properties": {"n": {"type": "integer"}}},
+            validate=validate,
+        )
+        self.assertTrue(s.ok)
+        self.assertEqual(s.value, {"n": 5})
+
+    def test_shape_plus_semantic_validator_retries(self):
+        wf = self.rt()
+        queue = [
+            AgentResult(content='{"n": 0}', session_id="s", nano_aiu=0,
+                        output_tokens=1, exit_code=0),
+            AgentResult(content='{"n": 2}', session_id="s", nano_aiu=0,
+                        output_tokens=1, exit_code=0),
+        ]
+        calls = {"n": 0}
+
+        def stub(prompt, **kw):
+            r = queue[calls["n"]]
+            calls["n"] += 1
+            return r
+
+        def validate(obj):
+            return "" if obj.get("n", 0) > 0 else "n must be > 0"
+
+        wf.agent = stub
+        s = wf.structured(
+            "anything",
+            {"type": "object", "required": ["n"], "properties": {"n": {"type": "integer"}}},
+            validate=validate,
+            retries=2,
+        )
+        self.assertTrue(s.ok)
+        self.assertEqual(s.value, {"n": 2})
+        self.assertEqual(s.attempts, 2)
+        self.assertEqual(calls["n"], 2)
+
     def test_callable_validator_boolean_reject_does_not_crash(self):
         # A predicate that returns a bare True for "invalid" must not raise (was a TypeError
         # from iterating a non-iterable error value); it should just fail validation.

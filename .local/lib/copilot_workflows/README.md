@@ -84,9 +84,10 @@ winner  = wf.tournament(candidates, criteria=...)
 kept    = wf.generate_and_filter(prompt, n=8, rubric=...)   # or keep=callable
 label   = wf.classify(text, ["bug", "feature", "question"], **wf.quarantine(allow_all_tools=False))
 hist    = wf.loop_until(step, done, max_iters=10)
-s       = wf.structured(prompt, schema, retries=2)  # validated JSON + retry -> Structured(.value .ok .attempts)
+s       = wf.structured(prompt, schema, validate=None, retries=2)  # validated JSON + retry -> Structured(.value .ok .attempts)
 #   schema = a shape-schema dict (type/properties/required/enum/items/additionalProperties)
-#   or a callable validate(obj) -> "" when ok else error string. Feeds the error back and retries.
+#   or a callable validate(obj) -> "" when ok else error string. Optional validate= adds
+#   semantic checks after shape validation. Feeds any error back and retries.
 
 with wf.phase("name"): ...                  # group agents in the live view
 with wf.worktree("experiment") as path:      # optional isolated checkout (launch repo)

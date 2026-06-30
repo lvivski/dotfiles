@@ -202,6 +202,7 @@ class PatternsMixin:
         prompt: str,
         schema: dict | Callable[[Any], Any],
         *,
+        validate: Callable[[Any], Any] | None = None,
         retries: int = 2,
         model: str | None = None,
         label: str = "structured",
@@ -212,7 +213,8 @@ class PatternsMixin:
         ``schema`` is either a **shape schema** dict (a documented JSON-Schema subset:
         ``type``/``properties``/``required``/``enum``/``items``/``additionalProperties``)
         or a callable ``validate(obj)`` returning a falsy value when valid, or an error
-        string / list of strings (or raising) when not.
+        string / list of strings (or raising) when not. ``validate`` is an optional
+        semantic validator that runs after the shape schema and participates in retries.
 
         Up to ``retries`` extra attempts are made; each attempt is a fresh ``agent()``
         call with a distinct prompt (so it checkpoints/resumes cleanly). If the agent
@@ -250,6 +252,8 @@ class PatternsMixin:
                 last_error = "no JSON value found in the response"
                 continue
             errs = self._validate_value(value, schema, is_callable)
+            if not errs and validate is not None:
+                errs = self._validate_value(value, validate, True)
             if not errs:
                 return Structured(value=value, ok=True, error="", raw=res, attempts=attempts)
             last_error = "; ".join(errs)[:500]

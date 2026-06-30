@@ -46,17 +46,21 @@ you can complete with a few direct tool calls. Workflows spend more time and AIC
 2. **Pick the pattern.** Default to `wf.pipeline()` for multi-stage per-item work. Use a barrier
    (`wf.fan_out`, `wf.parallel`, `wf.synthesize`) only when a stage needs all previous results at
    once.
-3. **Write a harness.** Use `./<name>.cwf.py` for one-offs or `~/.copilot/workflows/<name>.py` for
+3. **Rubber-duck reusable designs.** Before implementing a new reusable workflow, a broad audit, or
+   a large harness change, have an independent reviewer critique the plan for missing gates,
+   unsafe tool access, budget/coverage blind spots, and result-integrity issues. Fold in the
+   high-signal feedback before writing code.
+4. **Write a harness.** Use `./<name>.cwf.py` for one-offs or `~/.copilot/workflows/<name>.py` for
    reusable workflows. Harnesses are plain synchronous Python; never use `async`/`await`.
-4. **Preview and confirm paid runs.** Before spending AIC, show the user phases, approximate
+5. **Preview and confirm paid runs.** Before spending AIC, show the user phases, approximate
    subagent count, models, and an AIC budget. Ask for confirmation unless the user already
    told you to go ahead. Preview for free with the `run_workflow` tool (`dryRun: true`) — or
    `cwf run harness.py --dry-run` headless.
-5. **Run with a budget.** Call `run_workflow` with `{ scriptPath, budget: <N> }` — params map 1:1 to
+6. **Run with a budget.** Call `run_workflow` with `{ scriptPath, budget: <N> }` — params map 1:1 to
    the CLI (`disableMcp`, `concurrency`, `model`, `effort`, `context`, `restricted`, `strictBudget`,
    `args`). Headless: `cwf run harness.py --budget <N> ...`. Set `disableMcp` when agents do not need
    GitHub/MCP. Bias generated workflows toward generous caps and let the user request tighter constraints when cost matters.
-6. **Return the result.** The `run_workflow` tool returns the harness's final answer plus its `runId`
+7. **Return the result.** The `run_workflow` tool returns the harness's final answer plus its `runId`
    and persisted harness path, and streams progress live; when reporting progress or status, include
    the cumulative AIC used. To iterate or continue, re-invoke with the same
    `scriptPath` or `resume: <runId>`. (Headless: the harness prints the answer to stdout and
@@ -78,6 +82,13 @@ you can complete with a few direct tool calls. Workflows spend more time and AIC
   the harness's agents run on models that don't support it.
 - Tag inner agents with `phase=` and `label=` so progress stays readable.
 - Prefer `wf.structured()` over hand-parsing JSON from agent text.
+- Keep harness code clean and boring: small named helpers, explicit input normalization, clear
+  phase labels, no broad catches that turn failures into success, and no clever parsing when a
+  `wf` primitive exists.
+- Keep constants simple. Start with the smallest useful defaults, group related constants near the
+  logic that uses them, and avoid sprawling catalogs in the harness. If a constant set becomes large
+  or reused across workflows, move it into a shared helper or documented data file instead of
+  growing the harness indefinitely.
 - Treat `--budget` / `wf.budget()` as an observed-AIC soft cap: in-flight agents may finish and
   overshoot before new agents are skipped. Use `--strict-budget` only when the harness should raise
   after the cap is observed.
