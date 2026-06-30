@@ -31,7 +31,6 @@ from copilot_workflows.patterns import (  # noqa: E402
     Verdict,
     _check_schema_def,
     _extract_last_json,
-    _extract_last_json_object,
     _validate_shape,
 )
 from copilot_workflows.agent import AgentResult, _reduce, _session_nano_aiu  # noqa: E402
@@ -271,6 +270,22 @@ class TestVerify(Base):
         self.assertIn("exited with code 2", v.error)
         self.assertFalse(bool(v))
 
+    def test_no_json_fails_closed_with_raw_reasons(self):
+        wf = self.rt()
+        v = wf.verify("x " + fake('{"_content": "no structured answer"}'), rubric="r")
+        self.assertFalse(v.passed)
+        self.assertTrue(v.ok)
+        self.assertEqual(v.reasons, "no structured answer")
+
+    def test_fenced_json_passes(self):
+        wf = self.rt()
+        v = wf.verify(
+            "x " + fake('{"_content": "```json\\n{\\"passed\\": true, \\"score\\": 0.8, \\"reasons\\": \\"ok\\"}\\n```"}'),
+            rubric="r")
+        self.assertTrue(v.passed)
+        self.assertAlmostEqual(v.score, 0.8)
+        self.assertEqual(v.reasons, "ok")
+
 
 class TestConsensus(Base):
     def test_majority_pass_with_dissent(self):
@@ -385,6 +400,11 @@ class TestTournament(Base):
         with self.assertRaises(ValueError):
             wf.tournament(["A", "B"], criteria="quality " + fake('{"winner": "C"}'))
 
+    def test_no_json_raises(self):
+        wf = self.rt()
+        with self.assertRaises(ValueError):
+            wf.tournament(["A", "B"], criteria="quality " + fake('{"_content": "no json"}'))
+
     def test_bracket_with_bye(self):
         wf = self.rt()
         # 3 candidates -> round1: (c0,c1) judged + c2 bye; winner side = A
@@ -429,6 +449,13 @@ class TestClassify(Base):
         wf = self.rt()
         with self.assertRaises(ValueError):
             wf.classify("t " + fake('{"category": "nonsense"}'), ["alpha", "beta"])
+
+    def test_plain_text_category_raises(self):
+        wf = self.rt()
+        with self.assertRaises(ValueError):
+            wf.classify(
+                "t " + fake('{"_content": "This is definitely a bug."}'),
+                ["bug", "feature"])
 
     def test_agent_failure_raises(self):
         wf = self.rt()
@@ -1001,35 +1028,6 @@ class TestStructured(Base):
         with self.assertRaises(ValueError):
             wf.structured("x", {"type": "object", "patternProperties": {}})
         self.assertEqual(len(wf.results), 0)  # rejected before any agent ran
-
-
-class TestExtractLastJsonObject(Base):
-    def test_trailing(self):
-        self.assertEqual(_extract_last_json_object('blah\n{"a": 1}')["a"], 1)
-
-    def test_brace_in_string(self):
-        obj = _extract_last_json_object('reason\n{"why": "use a } brace", "ok": true}')
-        self.assertEqual(obj["why"], "use a } brace")
-        self.assertTrue(obj["ok"])
-
-    def test_last_object_wins(self):
-        obj = _extract_last_json_object('{"x": 1} middle {"x": 2}')
-        self.assertEqual(obj["x"], 2)
-
-    def test_last_object_wins_even_when_final_line_is_scalar(self):
-        obj = _extract_last_json_object('schema {"x": 1}\nfinal:\ntrue')
-        self.assertEqual(obj["x"], 1)
-
-    def test_fenced(self):
-        obj = _extract_last_json_object('```json\n{"k": "v"}\n```')
-        self.assertEqual(obj["k"], "v")
-
-    def test_none(self):
-        self.assertIsNone(_extract_last_json_object("no json here"))
-        self.assertIsNone(_extract_last_json_object(""))
-
-    def test_deeply_nested_no_crash(self):
-        self.assertIsNone(_extract_last_json_object('{"a":' * 1500))  # RecursionError must not escape
 
 
 if __name__ == "__main__":

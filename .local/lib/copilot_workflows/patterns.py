@@ -46,17 +46,6 @@ def _json_values(text: str, starts: str):
         i += 1
 
 
-def _extract_last_json_object(text: str) -> dict | None:
-    """Last top-level JSON object embedded in ``text`` (via the real parser), or None."""
-    if not text:
-        return None
-    found: dict | None = None
-    for obj in _json_values(text, "{"):
-        if isinstance(obj, dict):
-            found = obj
-    return found
-
-
 _JSON_NOT_FOUND = object()
 
 
@@ -294,6 +283,21 @@ class PatternsMixin:
                 return [str(errs)]
         return _validate_shape(value, schema)
 
+    def _structured_object(
+        self,
+        prompt: str,
+        *,
+        model: str | None,
+        label: str,
+        retries: int = 0,
+        **kw: Any,
+    ) -> Structured:
+        def validate(obj):
+            return "" if isinstance(obj, dict) else "expected JSON object"
+
+        return self.structured(
+            prompt, validate, retries=retries, model=model, label=label, **kw)
+
     # ---- fan-out -> barrier merge --------------------------------------
     def synthesize(
         self,
@@ -335,19 +339,20 @@ class PatternsMixin:
             'FINAL line output ONLY a JSON object: '
             '{"passed": true|false, "score": 0..1, "reasons": "..."}'
         )
-        res = self.agent(prompt, model=model, label=label, **kw)
-        if not res.ok:
-            error = res.error or "verifier agent failed"
+        structured = self._structured_object(prompt, model=model, label=label, retries=0, **kw)
+        if not structured.raw.ok:
+            error = structured.raw.error or "verifier agent failed"
             return Verdict(
-                passed=False, score=None, reasons=error, raw=res, ok=False, error=error)
-        data = _extract_last_json_object(res.content) or {}
+                passed=False, score=None, reasons=error, raw=structured.raw,
+                ok=False, error=error)
+        data = structured.value if structured.ok else {}
         raw = data.get("passed", False)
         passed = raw.strip().lower() == "true" if isinstance(raw, str) else bool(raw)
         return Verdict(
             passed=passed,
             score=_as_float(data.get("score")),
-            reasons=str(data.get("reasons", res.content.strip())),
-            raw=res,
+            reasons=str(data.get("reasons", structured.raw.content.strip())),
+            raw=structured.raw,
         )
 
     def consensus(
@@ -452,10 +457,13 @@ class PatternsMixin:
             "Pick the single better candidate. Give brief reasoning, then on the FINAL line "
             'output ONLY JSON: {"winner": "A"|"B", "why": "..."}'
         )
-        res = self.agent(prompt, model=model, label=label, **kw)
-        if not res.ok:
-            raise RuntimeError(f"judge agent failed: {res.error or 'unknown error'}")
-        data = _extract_last_json_object(res.content) or {}
+        structured = self._structured_object(prompt, model=model, label=label, retries=0, **kw)
+        if not structured.raw.ok:
+            raise RuntimeError(
+                f"judge agent failed: {structured.raw.error or 'unknown error'}")
+        if not structured.ok:
+            raise ValueError("judge did not return a JSON object")
+        data = structured.value
         winner = str(data.get("winner", "A")).strip().upper()
         if winner.startswith("A"):
             return a
@@ -523,18 +531,17 @@ class PatternsMixin:
             f"INPUT:\n{as_text(text)}\n\n"
             'FINAL line: ONLY JSON {"category": "<one of the categories>"}'
         )
-        res = self.agent(prompt, model=model, label=label, **kw)
-        if not res.ok:
-            raise RuntimeError(f"classifier agent failed: {res.error or 'unknown error'}")
-        data = _extract_last_json_object(res.content) or {}
+        structured = self._structured_object(prompt, model=model, label=label, retries=0, **kw)
+        if not structured.raw.ok:
+            raise RuntimeError(
+                f"classifier agent failed: {structured.raw.error or 'unknown error'}")
+        if not structured.ok:
+            raise ValueError(f"classifier did not return valid JSON category: {classes!r}")
+        data = structured.value
         cat = str(data.get("category", "")).strip()
         for c in classes:
             if cat.lower() == c.lower():
                 return c
-        low = res.content.lower()
-        matches = [c for c in classes if c.lower() in low]
-        if len(matches) == 1:
-            return matches[0]
         raise ValueError(f"classifier did not return exactly one valid category: {classes!r}")
 
     # ---- loop until a stop condition -----------------------------------
