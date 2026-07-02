@@ -269,9 +269,14 @@ async function runWorkflow(input = {}) {
 	}
 }
 
+// Subagents inherit CWF_DEPTH; once nested at/beyond CWF_MAX_DEPTH, don't register run_workflow
+// at all. A nested agent then has no tool to launch workflows, and it can't re-add the tool by
+// changing the env of its own running process.
+const nested = (Number.parseInt(process.env.CWF_DEPTH ?? "0", 10) || 0) >= (Number.parseInt(process.env.CWF_MAX_DEPTH ?? "1", 10) || 1);
+
 session = await joinSession({
 	tools: [
-		{
+		...(nested ? [] : [{
 			name: "run_workflow",
 			defer: "never", // always discoverable, no tool search
 			// No `skipPermission`: workflows spend AIC, so the user approves each run.
@@ -313,7 +318,7 @@ session = await joinSession({
 				},
 			},
 			handler: runWorkflow,
-		},
+		}]),
 		{
 			name: "list_workflow_runs",
 			skipPermission: true,

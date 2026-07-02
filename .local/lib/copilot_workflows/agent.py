@@ -223,6 +223,17 @@ def _result(spec: AgentSpec, acc: dict, exit_code: int, *,
     )
 
 
+def _child_env(env: "dict | None") -> dict:
+    """Child env with ``CWF_DEPTH`` incremented; runs beyond ``CWF_MAX_DEPTH`` are refused."""
+    base = dict(os.environ if env is None else env)
+    try:
+        depth = int(base.get("CWF_DEPTH", "0") or "0")
+    except (TypeError, ValueError):
+        depth = 0
+    base["CWF_DEPTH"] = str(depth + 1)
+    return base
+
+
 def run_agent(spec: AgentSpec, *, copilot_bin: str = "copilot",
               semaphore: threading.Semaphore | None = None,
               env: dict | None = None,
@@ -255,8 +266,8 @@ def run_agent(spec: AgentSpec, *, copilot_bin: str = "copilot",
                     error=f"working directory not found: {spec.cwd!r}")
             proc = subprocess.Popen(
                 build_cmd(spec, copilot_bin), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                cwd=spec.cwd, env=env, text=True, encoding="utf-8", errors="replace", bufsize=1,
-                start_new_session=new_session)
+                cwd=spec.cwd, env=_child_env(env), text=True, encoding="utf-8", errors="replace",
+                bufsize=1, start_new_session=new_session)
             _register(proc, new_session)
             if abort is not None and abort.is_set():
                 _kill(proc, new_session)  # an interrupt is already underway
