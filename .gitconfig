@@ -26,6 +26,7 @@
 	whoami = config user.email
 	credit = "!f() { git commit --amend --author \"$1 <$2>\" -C HEAD; }; f"
 	aliases = config --get-regexp alias
+	credential-manager = "!f() { git-credential-manager $@; }; f"
 
 [color]
 	ui = auto
@@ -80,7 +81,12 @@
 	user = lvivski
 
 [credential]
-	helper = osxkeychain
+    helper = osxkeychain
+
+[credential "https://dev.azure.com"]
+    helper =
+    helper = manager
+    useHttpPath = true
 
 [init]
 	templateDir = ~/.config/git/template/
