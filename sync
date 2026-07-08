@@ -28,16 +28,25 @@ push() {
 		.bash_aliases
 		.bash_prompt
 		.copilot/extensions/cwf
+		.copilot/workflows/audit.cwf.py
+		.copilot/workflows/deep-research.cwf.py
+		.copilot/workflows/review-queue.cwf.py
+		.copilot/workflows/security-review.cwf.py
+		.copilot/workflows/triage.cwf.py
+		.copilot/skills/workflow/examples/classify-route.cwf.py
+		.copilot/skills/workflow/examples/deep-research.cwf.py
+		.copilot/skills/workflow/examples/fanout-synthesize.cwf.py
+		.copilot/skills/workflow/examples/generate-filter.cwf.py
+		.copilot/skills/workflow/examples/loop-memory.cwf.py
+		.copilot/skills/workflow/examples/loop-until-dry.cwf.py
+		.copilot/skills/workflow/examples/minimal-review.cwf.py
+		.copilot/skills/workflow/examples/pipeline-review.cwf.py
+		.copilot/skills/workflow/examples/tournament.cwf.py
 		.local/bin/cwf
 		.local/lib/copilot_workflows
 	)
 	local f
 	for f in "${obsolete[@]}"; do [ -n "$f" ] && rm -rf ~/"$f"; done
-
-	# The deployed Python `.cwf.py` harnesses need a glob (they sit next to the kept `.mjs`), and
-	# it can't be an obsolete[] entry: this file is SOURCED, so it also runs under zsh, and zsh —
-	# unlike bash — does NOT glob-expand a variable's contents, only a glob written literally here.
-	rm -f ~/.copilot/workflows/*.cwf.py ~/.copilot/skills/workflow/examples/*.cwf.py
 }
 
 pull() {
