@@ -15,7 +15,10 @@ import { createReadStream, existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+import { appendBounded } from "./text-buffer.mjs";
+
 const POSIX = process.platform !== "win32";
+const MAX_STDERR_CHARS = 64_000;
 
 /**
  * A subagent launch spec. Only `prompt` is required; everything else tunes the `copilot` argv.
@@ -240,7 +243,7 @@ export async function runAgent(spec, opts = {}) {
 
 	const acc = { content: /** @type {string|null} */ (null), outputTokens: 0, sessionId: /** @type {string|null} */ (null), model, sessionErrors: /** @type {string[]} */ ([]) };
 	let killed = false;
-	const stderr = /** @type {string[]} */ ([]);
+	let stderr = "";
 
 	// Attach exit listeners immediately: an async spawn error (ENOENT) or an early close must not slip
 	// through unobserved, and an unhandled `error` event would otherwise crash the process. A spawn
@@ -270,7 +273,7 @@ export async function runAgent(spec, opts = {}) {
 
 	child.stderr?.setEncoding("utf8");
 	child.stderr?.on("data", (chunk) => {
-		if (stderr.length < 200) stderr.push(chunk);
+		stderr = appendBounded(stderr, chunk, MAX_STDERR_CHARS);
 	});
 
 	try {
@@ -301,7 +304,7 @@ export async function runAgent(spec, opts = {}) {
 		usage,
 		exitCode,
 		killed,
-		stderr: stderr.join(""),
+		stderr,
 		sessionErrors: acc.sessionErrors,
 	});
 }
@@ -366,8 +369,7 @@ function result(spec, p) {
 }
 
 /**
- * Format a `session.error` record, mirroring Python's `_format_session_error` fallbacks:
- * `errorType|type` + `message|error|reason`.
+ * Format a `session.error` record from the available type/message fields.
  * @param {any} d @returns {string}
  */
 export function formatSessionError(d) {

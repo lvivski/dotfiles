@@ -12,12 +12,14 @@ const reporter = (onLine) => new ProgressReporter({ runId: "r", write: false, on
 
 test("narration carries a log level: failures error, skips warning, ok/cached info", () => {
 	const levels = /** @type {(string|undefined)[]} */ ([]);
-	const p = new ProgressReporter({ runId: "r", write: false, onLine: (_line, level) => levels.push(level) });
+	const metas = /** @type {({ ephemeral?: boolean }|undefined)[]} */ ([]);
+	const p = new ProgressReporter({ runId: "r", write: false, onLine: (_line, level, meta) => (levels.push(level), metas.push(meta)) });
 	p.emit({ ev: "end", seq: 1, label: "ok", ok: true, nanoAiu: 0 });
 	p.emit({ ev: "end", seq: 2, label: "hit", cached: true, nanoAiu: 0 });
 	p.emit({ ev: "end", seq: 3, label: "skip", skipped: true, error: "budget" });
 	p.emit({ ev: "end", seq: 4, label: "err", ok: false, error: "boom" });
 	assert.deepEqual(levels, ["info", "info", "warning", "error"]);
+	assert.deepEqual(metas.map((m) => m?.ephemeral), [true, true, false, false]);
 });
 
 test("agent end events update counts, AIC, and tokens", () => {
@@ -37,7 +39,7 @@ test("agent end events update counts, AIC, and tokens", () => {
 	assert.equal(s.errors.length, 1);
 });
 
-test("narration matches Python format_agent_line (OK shows AIC/tok/model)", () => {
+test("narration shows AIC/tokens/model for successful agents", () => {
 	const lines = /** @type {string[]} */ ([]);
 	const p = reporter((l) => lines.push(l));
 	p.emit({ ev: "end", seq: 1, label: "ok", ok: true, nanoAiu: 500_000_000, outputTokens: 12, model: "gpt" });
@@ -64,6 +66,35 @@ test("group_start/group_end are narrated and tracked in the snapshot", () => {
 	assert.match(lines[1], /fanOut settled \(3\)/);
 });
 
+test("dashboard mode emits TUI snapshots and suppresses successful per-agent lines", () => {
+	const lines = /** @type {string[]} */ ([]);
+	const metas = /** @type {({ ephemeral?: boolean }|undefined)[]} */ ([]);
+	const p = new ProgressReporter({ runId: "r1", title: "demo", write: false, dashboard: true, dashboardIntervalMs: 0, onLine: (l, _level, meta) => (lines.push(l), metas.push(meta)) });
+	p.emit({ ev: "run_start", runId: "r1" });
+	p.emit({ ev: "start", seq: 1, label: "scan-file", model: "m", phase: "scan" });
+	p.emit({ ev: "end", seq: 1, label: "scan-file", ok: true, nanoAiu: 500_000_000, outputTokens: 12, model: "m", phase: "scan" });
+	p.close("complete");
+	assert.ok(lines.some((l) => /workflow: demo · running/.test(l)));
+	assert.ok(lines.some((l) => /phase: scan/.test(l)));
+	assert.ok(lines.some((l) => /└─ inspect: \/wf r1/.test(l)));
+	assert.ok(!lines.some((l) => /^\s*OK\s+scan-file/.test(l)));
+	assert.ok(metas.filter((m) => m?.ephemeral === true).length >= 2);
+});
+
+test("dashboard mode still surfaces failed/skipped agent lines", () => {
+	const lines = /** @type {string[]} */ ([]);
+	const levels = /** @type {(string|undefined)[]} */ ([]);
+	const metas = /** @type {({ ephemeral?: boolean }|undefined)[]} */ ([]);
+	const p = new ProgressReporter({ runId: "r2", write: false, dashboard: true, dashboardIntervalMs: 0, onLine: (l, level, meta) => (lines.push(l), levels.push(level), metas.push(meta)) });
+	p.emit({ ev: "end", seq: 1, label: "bad", ok: false, error: "boom", nanoAiu: 0 });
+	p.emit({ ev: "end", seq: 2, label: "skip", skipped: true, error: "skipped: budget", nanoAiu: 0 });
+	assert.ok(lines.some((l) => /ERR\s+bad/.test(l)));
+	assert.ok(lines.some((l) => /SKIP\s+skip/.test(l)));
+	assert.ok(levels.includes("error"));
+	assert.ok(levels.includes("warning"));
+	assert.ok(metas.some((m) => m?.ephemeral === false));
+});
+
 test("runSummary is a one-line workflow-style rollup", () => {
 	const p = reporter();
 	p.emit({ ev: "end", seq: 1, label: "a", ok: true, nanoAiu: 1_000_000_000, outputTokens: 1, model: "m" });
@@ -88,4 +119,16 @@ test("state.json is written and reflects status on close", () => {
 	const state = JSON.parse(readFileSync(join(dir, "state.json"), "utf8"));
 	assert.equal(state.status, "complete");
 	assert.equal(state.counts.done, 1);
+});
+
+test("progress.jsonl buffers events and flushes all records on close", () => {
+	const dir = tmpDir();
+	const path = join(dir, "progress.jsonl");
+	const p = new ProgressReporter({ runId: "r", jsonlPath: path, onLine: () => {} });
+	p.emit({ ev: "run_start", runId: "r" });
+	for (let i = 0; i < 5; i++) p.emit({ ev: "end", seq: i, label: "a" + i, ok: true, nanoAiu: 0 });
+	p.close("complete");
+	const lines = readFileSync(path, "utf8").trim().split("\n");
+	assert.equal(lines.length, 6);
+	assert.deepEqual(lines.map((l) => JSON.parse(l).ev), ["run_start", "end", "end", "end", "end", "end"]);
 });

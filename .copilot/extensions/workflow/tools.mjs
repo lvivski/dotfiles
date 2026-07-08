@@ -12,10 +12,13 @@ import { join, basename, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 
 import { executeWorkflow } from "./runtime.mjs";
+import { formatDashboard } from "./progress.mjs";
 
 export const DEFAULT_BUDGET = 10000;
 export const XTREME_BUDGET = 1_000_000;
 export const MAX_TIMEOUT_SEC = 7200;
+const RUN_LIST_LIMIT = 50;
+const PROGRESS_MODES = new Set(["dashboard", "events", "off"]);
 
 const HOME = homedir();
 
@@ -40,7 +43,7 @@ const isFile = (p) => {
 	}
 };
 
-/** In-flight runs, so a canvas action or caller can abort one by id. @type {Map<string, AbortController>} */
+/** In-flight runs, so callers can abort one by id. @type {Map<string, AbortController>} */
 const LIVE_RUNS = new Map();
 
 /** Abort an in-flight run by id. @param {string} runId @returns {boolean} true if a live run was aborted. */
@@ -61,25 +64,21 @@ function check(ok, msg) {
 /** @param {string} message @param {string} [resultType] */
 const failure = (message, resultType = "failure") => ({ textResultForLlm: `Error: ${message}`, resultType, error: message });
 
-/**
- * Resolve harness source text from exactly one of `script` / `scriptPath` / `name`; rejects legacy
- * `.cwf.py` workflows with a clear message.
- * @param {any} input
- * @returns {{ source: string, label: string }}
- */
+/** Resolve harness source text from exactly one of `script` / `scriptPath` / `name`. @param {any} input @returns {{ source: string, label: string }} */
 export function resolveSource(input) {
 	if (input.script) return { source: String(input.script), label: "inline harness" };
 	if (input.scriptPath) {
 		const p = /** @type {string} */ (expandHome(input.scriptPath));
 		check(existsSync(p) && statSync(p).isFile(), `scriptPath is not a readable file: ${p}`);
-		check(!p.endsWith(".py"), `Python workflows are no longer supported: ${p}. Convert it to .mjs.`);
+		check(!p.endsWith(".py"), `Python workflows are no longer supported: ${p}. Convert it to .mjs; see the workflow skill's migration guide.`);
+		check(p.endsWith(".mjs"), `scriptPath must point to a .mjs workflow: ${p}`);
 		return { source: readFileSync(p, "utf8"), label: basename(p) };
 	}
 	check(!/[\\/]|\.\./.test(input.name), `name must be a bare workflow name without path separators (got '${input.name}').`);
-	const mjs = [`${input.name}.mjs`, `${input.name}.cwf.mjs`].map((f) => join(workflowsDir(), f)).find(isFile);
-	if (mjs) return { source: readFileSync(mjs, "utf8"), label: input.name };
+	const mjs = join(workflowsDir(), `${input.name}.mjs`);
+	if (isFile(mjs)) return { source: readFileSync(mjs, "utf8"), label: input.name };
 	const py = [`${input.name}.cwf.py`, `${input.name}.py`].map((f) => join(workflowsDir(), f)).find(isFile);
-	check(!py, `saved workflow '${input.name}' is a legacy Python workflow (${py}) — convert it to ${input.name}.mjs.`);
+	check(!py, `saved workflow '${input.name}' is a Python workflow (${py}). Convert it to ${input.name}.mjs; see the workflow skill's migration guide.`);
 	throw new ValidationError(`no saved workflow named '${input.name}' in ${workflowsDir()} (looked for ${input.name}.mjs).`);
 }
 
@@ -146,6 +145,8 @@ export async function runWorkflow(input, ctx) {
 		const preset = input.preset === "xtreme";
 		const budget = input.dryRun ? input.budget ?? null : input.budget ?? (preset ? XTREME_BUDGET : DEFAULT_BUDGET);
 		if (!input.dryRun) check(typeof budget === "number" && budget > 0, `budget must be a positive number for non-dry runs (got ${budget}).`);
+		const progressMode = input.quiet ? "off" : input.progress ?? "dashboard";
+		check(PROGRESS_MODES.has(progressMode), `progress must be one of dashboard | events | off (got ${progressMode}).`);
 
 		const { source, label } = resolveSource(input);
 		const cwd = await resolveCwd(input.cwd, ctx);
@@ -171,6 +172,7 @@ export async function runWorkflow(input, ctx) {
 			dryRun: !!input.dryRun,
 			resume: !!input.resume,
 			memoryPath: input.memory ? resolve(cwd, /** @type {string} */ (expandHome(input.memory))) : null,
+			progressMode,
 			cwd,
 			title: input.name || undefined,
 		};
@@ -184,7 +186,10 @@ export async function runWorkflow(input, ctx) {
 		const timer = setTimeout(() => ac.abort(), timeoutSec * 1000);
 		if (typeof timer.unref === "function") timer.unref();
 		LIVE_RUNS.set(runId, ac);
-		const onLine = input.quiet ? undefined : (/** @type {string} */ m, /** @type {any} */ level) => ctx.log(m, true, level);
+		const onLine =
+			progressMode === "off"
+				? undefined
+				: (/** @type {string} */ m, /** @type {any} */ level, /** @type {{ ephemeral?: boolean }|undefined} */ meta) => ctx.log(m, meta?.ephemeral ?? true, level);
 
 		const background = input.background ?? true;
 		if (!background) {
@@ -242,14 +247,9 @@ function notifyError(runId, err, runDir, ctx) {
 export function listWorkflowRuns() {
 	const dir = runsDir();
 	if (!existsSync(dir)) return `No workflow runs in ${dir}.`;
+	const entries = listRunDirs(dir);
 	const rows = [];
-	for (const name of readdirSync(dir)) {
-		const d = join(dir, name);
-		try {
-			if (!statSync(d).isDirectory()) continue;
-		} catch {
-			continue;
-		}
+	for (const { name, d, mtime } of entries.slice(0, RUN_LIST_LIMIT)) {
 		const meta = readJson(join(d, "meta.json")) || {};
 		const rec = readJson(join(d, "run.json")) || readJson(join(d, "state.json")) || {};
 		rows.push({
@@ -257,7 +257,7 @@ export function listWorkflowRuns() {
 			status: rec.status || "?",
 			workflow: meta.workflow?.name || rec.workflow?.name || "",
 			aic: Number(rec.aic || 0),
-			updated: meta.updatedAt || rec.finishedAt || rec.updatedAt || "",
+			updated: meta.updatedAt || rec.finishedAt || rec.updatedAt || new Date(mtime).toISOString(),
 		});
 	}
 	if (!rows.length) return `No workflow runs in ${dir}.`;
@@ -266,7 +266,37 @@ export function listWorkflowRuns() {
 	const body = rows
 		.map((r) => `${r.runId.slice(0, 30).padEnd(30)} ${String(r.status).padEnd(9)} ${String(r.workflow).slice(0, 16).padEnd(16)} ${r.aic.toFixed(1).padStart(7)}  ${r.updated}`)
 		.join("\n");
-	return `${header}\n${body}`;
+	const footer = entries.length > RUN_LIST_LIMIT ? `\n(showing newest ${RUN_LIST_LIMIT} of ${entries.length} runs)` : "";
+	return `${header}\n${body}${footer}`;
+}
+
+/** @param {string} dir @returns {{ name: string, d: string, mtime: number }[]} newest dirs first. */
+function listRunDirs(dir) {
+	const rows = [];
+	for (const ent of readdirSync(dir, { withFileTypes: true })) {
+		if (!ent.isDirectory()) continue;
+		const d = join(dir, ent.name);
+		try {
+			rows.push({ name: ent.name, d, mtime: runMtime(d) });
+		} catch {
+			// vanished while listing
+		}
+	}
+	rows.sort((a, b) => b.mtime - a.mtime);
+	return rows;
+}
+
+/** @param {string} d @returns {number} latest artifact mtime for a run dir. */
+function runMtime(d) {
+	let mtime = statSync(d).mtimeMs;
+	for (const file of ["run.json", "state.json", "meta.json"]) {
+		try {
+			mtime = Math.max(mtime, statSync(join(d, file)).mtimeMs);
+		} catch {
+			// artifact may not exist yet
+		}
+	}
+	return mtime;
 }
 
 /** @param {string} path @returns {any} parsed JSON or null. */
@@ -294,23 +324,7 @@ function findRunDir(runId) {
 function latestRunId() {
 	const dir = runsDir();
 	if (!existsSync(dir)) return null;
-	let best = null;
-	let bestKey = "";
-	for (const name of readdirSync(dir)) {
-		const d = join(dir, name);
-		let updated = "";
-		try {
-			if (!statSync(d).isDirectory()) continue;
-			updated = readJson(join(d, "meta.json"))?.updatedAt || statSync(d).mtime.toISOString();
-		} catch {
-			continue;
-		}
-		if (updated >= bestKey) {
-			bestKey = updated;
-			best = name;
-		}
-	}
-	return best;
+	return listRunDirs(dir)[0]?.name || null;
 }
 
 /**
@@ -364,6 +378,13 @@ function formatRunSummary(runId, rec, dir) {
 		.join("\n");
 }
 
+/** @param {string} runId @param {string} dir @returns {string|null} dashboard text when state.json exists. */
+function formatRunDashboard(runId, dir) {
+	const state = readJson(join(dir, "state.json"));
+	if (!state) return null;
+	return formatDashboard({ ...state, runId: state.runId || runId });
+}
+
 /**
  * `/workflow`/`/wf` command dispatcher. Renders read-only run inspection via `ctx.log`.
  *   /wf | /wf latest | /wf <runId> | /wf runs | /wf result <id> | /wf artifacts <id>
@@ -393,7 +414,7 @@ export function workflowCommand(argsStr, ctx) {
 	if (!id) return void log("workflow: no workflow runs yet. Start one with run_workflow.");
 	const dir = findRunDir(id);
 	if (!dir) return void log(`workflow: no run found with id '${id}'. Try /workflow runs.`);
-	log(formatRunSummary(id, runRecordOf(dir), dir));
+	log(formatRunDashboard(id, dir) || formatRunSummary(id, runRecordOf(dir), dir));
 }
 
 /**
@@ -477,7 +498,8 @@ export function buildTools(ctx) {
 				restricted: { type: "boolean", description: "Run the harness determinism-only + orchestration-only (read-only memory, no worktree, no per-agent tool escalation). Footgun-prevention, not a security jail." },
 				strictBudget: { type: "boolean", description: "Raise/stop once the budget cap is observed instead of gracefully skipping new agents." },
 				memory: { type: "string", description: "Durable text file the harness reads/appends via `memory` (persists across runs; a relative path resolves against the workflow cwd, or use ~/)." },
-				quiet: { type: "boolean", description: "Suppress per-agent progress narration in the session timeline." },
+				progress: { type: "string", enum: ["dashboard", "events", "off"], description: "Progress output mode. dashboard (default) emits ephemeral TUI-like snapshots, events emits per-event lines, off suppresses progress output." },
+				quiet: { type: "boolean", description: "Suppress progress output (equivalent to progress:'off')." },
 				cwd: { type: "string", description: "Directory to run the workflow from (default: the session's working directory)." },
 				timeoutSec: { type: "number", minimum: 1, maximum: MAX_TIMEOUT_SEC, description: "Kill the run (and its subagents) after this many seconds (default 1800)." },
 			},

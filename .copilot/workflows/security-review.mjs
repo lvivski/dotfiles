@@ -3,12 +3,6 @@
 //   run_workflow({ name: "security-review", budget: 6000 })                       // staged/unstaged changes
 //   run_workflow({ name: "security-review", args: { root: "src/" } })             // a subtree
 //   run_workflow({ name: "security-review", args: ["src/a.js", "src/b.js"] })     // explicit files
-//
-// ADAPTATION NOTE: the Python security-review.cwf.py did deterministic in-process file walking,
-// regex scanning, `git` subprocesses, and JSON state files. The JS workflow harness runs in a
-// deterministic VM sandbox with no direct filesystem/process access (by design), so those steps are
-// delegated to a read-only *scanner agent* instead. The taxonomy, severity ordering, adversarial
-// verification, and severity-sorted report are preserved.
 export const meta = {
 	name: "security-review",
 	description: "Candidate scan, structured AI review, adversarial verification, and a severity-sorted report.",

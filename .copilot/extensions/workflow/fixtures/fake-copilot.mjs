@@ -16,6 +16,7 @@
  * - `CWF_FAKE_NANO_AIU` — session-wide nanoAIU to report (default `500000000` = 0.5 AIC)
  * - `CWF_FAKE_OUTPUT_TOKENS` — output tokens to report (default `42`)
  * - `CWF_FAKE_CONTENT` — assistant content (default `ECHO: <prompt>`)
+ * - `CWF_FAKE_STDERR` — stderr text for `fail` mode
  * - `CWF_FAKE_SESSION` — force a child session id (default: random)
  * - `COPILOT_HOME`     — where the child session log is written (default `~/.copilot`)
  */
@@ -85,7 +86,7 @@ const emit = (obj) => process.stdout.write(JSON.stringify(obj) + "\n");
 
 switch (mode) {
 	case "fail":
-		process.stderr.write("fake-copilot: simulated failure\n");
+		process.stderr.write(process.env.CWF_FAKE_STDERR ?? "fake-copilot: simulated failure\n");
 		process.exit(1);
 		break;
 	case "hang":

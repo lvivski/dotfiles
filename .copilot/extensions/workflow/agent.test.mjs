@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { runAgent, buildArgv, childEnv, killAllAgents, formatSessionError } from "./agent.mjs";
 import { withFakeEnv } from "./fixtures/support.mjs";
 
-test("formatSessionError falls back through type/error/reason (Python parity)", () => {
+test("formatSessionError falls back through type/error/reason", () => {
 	assert.equal(formatSessionError({ errorType: "RateLimit", message: "slow" }), "RateLimit: slow");
 	assert.equal(formatSessionError({ type: "X", reason: "R" }), "X: R");
 	assert.equal(formatSessionError({ error: "boom" }), "boom");
@@ -13,7 +13,7 @@ test("formatSessionError falls back through type/error/reason (Python parity)", 
 	assert.equal(formatSessionError({}), "session.error");
 });
 
-test("AIC reads the FIRST session.shutdown carrying totalNanoAiu (Python parity)", () =>
+test("AIC reads the first session.shutdown carrying totalNanoAiu", () =>
 	withFakeEnv({ CWF_FAKE_NANO_AIU: "500000000", CWF_FAKE_NANO_AIU_2: "999000000" }, async () => {
 		const r = await runAgent({ prompt: "hi" });
 		assert.equal(r.nanoAiu, 500_000_000); // the first shutdown, not the later 999e6
@@ -53,6 +53,13 @@ test("nonzero exit -> ok:false with stderr message", () =>
 		assert.equal(r.exitCode, 1);
 		assert.match(r.error ?? "", /simulated failure/);
 		assert.equal(r.aic, 0);
+	}));
+
+test("stderr is bounded by a tail buffer", () =>
+	withFakeEnv({ CWF_FAKE_MODE: "fail", CWF_FAKE_STDERR: "a".repeat(80_000) }, async () => {
+		const r = await runAgent({ prompt: "hi" });
+		assert.equal(r.ok, false);
+		assert.ok((r.error ?? "").length < 70_000);
 	}));
 
 test("no assistant message -> ok:false", () =>

@@ -1,17 +1,18 @@
 /** @module tools.test — run_workflow / list_workflow_runs handlers via an injected fake ctx. */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { runWorkflow, listWorkflowRuns, resolveSource, ValidationError, buildTools, isNested, workflowCommand, buildCommands, abortRun } from "./tools.mjs";
+import { runWorkflow, listWorkflowRuns, resolveSource, buildTools, isNested, workflowCommand, buildCommands, abortRun } from "./tools.mjs";
 import { withFakeEnv, tmpDir } from "./fixtures/support.mjs";
 
 /** A fake {@link import("./tools.mjs").ToolCtx} that captures logs/sends. @param {string} cwd */
 function fakeCtx(cwd) {
 	const logs = /** @type {string[]} */ ([]);
+	const metas = /** @type {({ ephemeral?: boolean }|undefined)[]} */ ([]);
 	const sends = /** @type {string[]} */ ([]);
-	return { logs, sends, log: (/** @type {string} */ m) => logs.push(String(m)), send: (/** @type {string} */ p) => sends.push(String(p)), getWorkspaceCwd: async () => cwd };
+	return { logs, metas, sends, log: (/** @type {string} */ m, /** @type {boolean|undefined} */ ephemeral) => (logs.push(String(m)), metas.push({ ephemeral })), send: (/** @type {string} */ p) => sends.push(String(p)), getWorkspaceCwd: async () => cwd };
 }
 
 /**
@@ -32,6 +33,8 @@ test("foreground inline run returns the workflow result", () =>
 		assert.equal(typeof out, "string");
 		assert.match(/** @type {string} */ (out), /workflow result/);
 		assert.match(/** @type {string} */ (out), /ECHO: hi/);
+		assert.ok(ctx.logs.some((l) => /┌─ workflow:/.test(l)), "default progress emits dashboard snapshots");
+		assert.ok(ctx.metas.some((m) => m?.ephemeral === false), "final summary is durable");
 	}));
 
 test("abortRun returns false for an unknown run id", () => {
@@ -81,13 +84,6 @@ test("validation: exactly one source, and a positive budget for non-dry", () =>
 		assert.match(JSON.stringify(badBudget), /budget must be a positive/);
 	}));
 
-test("legacy .cwf.py workflows are rejected with a clear message", () =>
-	withTool(async ({ wf }) => {
-		writeFileSync(join(wf, "old.cwf.py"), "wf.agent('x')", "utf8");
-		assert.throws(() => resolveSource({ name: "old" }), (e) => e instanceof ValidationError && /legacy Python workflow/.test(e.message));
-		assert.throws(() => resolveSource({ scriptPath: join(wf, "old.cwf.py") }), /no longer supported/);
-	}));
-
 test("saved .mjs workflow resolves and runs by name", () =>
 	withTool(async ({ wf }) => {
 		writeFileSync(join(wf, "greet.mjs"), `return (await agent("named")).content;`, "utf8");
@@ -97,6 +93,27 @@ test("saved .mjs workflow resolves and runs by name", () =>
 		const ctx = fakeCtx(tmpDir());
 		const out = await runWorkflow({ name: "greet", background: false, budget: 1 }, ctx);
 		assert.match(/** @type {string} */ (out), /ECHO: named/);
+	}));
+
+test("scriptPath must point to a .mjs workflow", () =>
+	withTool(async ({ wf }) => {
+		const path = join(wf, "plain.js");
+		writeFileSync(path, "return 1;", "utf8");
+		const ctx = fakeCtx(tmpDir());
+		const out = await runWorkflow({ scriptPath: path, background: false, budget: 1 }, ctx);
+		assert.match(JSON.stringify(out), /scriptPath must point to a .mjs workflow/);
+	}));
+
+test("Python workflows are rejected with conversion guidance", () =>
+	withTool(async ({ wf }) => {
+		const path = join(wf, "old.cwf.py");
+		writeFileSync(path, "wf.agent('x')", "utf8");
+		const ctx = fakeCtx(tmpDir());
+		const scriptPath = await runWorkflow({ scriptPath: path, background: false, budget: 1 }, ctx);
+		assert.match(JSON.stringify(scriptPath), /Convert it to .mjs/);
+		writeFileSync(join(wf, "old.py"), "wf.agent('x')", "utf8");
+		const named = await runWorkflow({ name: "old", background: false, budget: 1 }, ctx);
+		assert.match(JSON.stringify(named), /Convert it to old.mjs/);
 	}));
 
 test("unknown saved workflow name errors clearly", () =>
@@ -113,6 +130,19 @@ test("list_workflow_runs reads persisted artifacts newest-first", () =>
 		const listing = listWorkflowRuns();
 		assert.match(listing, /RUN ID/);
 		assert.match(listing, /complete/);
+	}));
+
+test("list_workflow_runs caps output to newest runs before parsing metadata", () =>
+	withTool(async ({ runs }) => {
+		for (let i = 0; i < 55; i++) {
+			const id = `run-${String(i).padStart(2, "0")}`;
+			const dir = join(runs, id);
+			mkdirSync(dir, { recursive: true });
+			writeFileSync(join(dir, "meta.json"), JSON.stringify({ workflow: { name: id }, updatedAt: `2024-01-01T00:00:${String(i).padStart(2, "0")}Z` }));
+		}
+		const listing = listWorkflowRuns();
+		assert.match(listing, /showing newest 50 of 55 runs/);
+		assert.doesNotMatch(listing, /run-00/);
 	}));
 
 test("background run returns immediately and wakes the agent on completion", () =>
@@ -132,7 +162,7 @@ test("buildTools registers run_workflow + list_workflow_runs with a valid schema
 	const rw = tools.find((t) => t.name === "run_workflow");
 	assert.equal(rw.defer, "never");
 	assert.equal(rw.parameters.type, "object");
-	assert.ok(rw.parameters.properties.script && rw.parameters.properties.budget && rw.parameters.properties.dryRun);
+	assert.ok(rw.parameters.properties.script && rw.parameters.properties.budget && rw.parameters.properties.dryRun && rw.parameters.properties.progress);
 	assert.equal(typeof rw.handler, "function");
 	const list = tools.find((t) => t.name === "list_workflow_runs");
 	assert.equal(list.skipPermission, true);
@@ -164,10 +194,10 @@ test("/workflow slash command: inspection dispatches (runs/latest/result/artifac
 		assert.match(ctx.logs.at(-1) ?? "", /RUN ID/);
 
 		workflowCommand("latest", ctx);
-		assert.match(ctx.logs.at(-1) ?? "", /workflow run .*\n?status: complete/s);
+		assert.match(ctx.logs.at(-1) ?? "", /┌─ workflow:/);
 
 		workflowCommand(runId, ctx);
-		assert.match(ctx.logs.at(-1) ?? "", new RegExp(`workflow run ${runId}`));
+		assert.match(ctx.logs.at(-1) ?? "", new RegExp(`inspect: /wf ${runId}`));
 
 		workflowCommand(`result ${runId}`, ctx);
 		assert.equal(ctx.logs.at(-1), "ECHO: hi");
@@ -177,6 +207,17 @@ test("/workflow slash command: inspection dispatches (runs/latest/result/artifac
 
 		workflowCommand("no-such-run", ctx);
 		assert.match(ctx.logs.at(-1) ?? "", /no run found/);
+	}));
+
+test("/workflow falls back to summary when state.json is absent", () =>
+	withTool(({ runs }) => {
+		const ctx = fakeCtx(tmpDir());
+		const runId = "summary-only";
+		const dir = join(runs, runId);
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "run.json"), JSON.stringify({ status: "complete", counts: { agents: 1, done: 1, cached: 0, skipped: 0, failed: 0 }, aic: 0.5 }));
+		workflowCommand(runId, ctx);
+		assert.match(ctx.logs.at(-1) ?? "", /workflow run summary-only/);
 	}));
 
 test("buildCommands registers 'workflow' and 'wf' commands", () => {

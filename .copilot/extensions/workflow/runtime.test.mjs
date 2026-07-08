@@ -48,7 +48,7 @@ return "count:" + rs.length + " ok:" + rs.filter(r => r.ok).length;`);
 	assert.equal(record.counts.done, 3);
 });
 
-test("parallel defaults errors:'drop' — a throwing thunk yields null, not an abort (Python parity)", async () => {
+test("parallel defaults errors:'drop' — a throwing thunk yields null, not an abort", async () => {
 	const { record } = await runWf(`
 const rs = await parallel([() => { throw new Error("boom"); }, () => 42]);
 return JSON.stringify(rs);`);
@@ -56,7 +56,7 @@ return JSON.stringify(rs);`);
 	assert.equal(record.result, "[null,42]");
 });
 
-test("fanOut defaults errors:'raise' — a throwing item aborts the run (Python parity)", async () => {
+test("fanOut defaults errors:'raise' — a throwing item aborts the run", async () => {
 	const { record } = await runWf(`
 await fanOut([1,2], (n) => { if (n === 1) throw new Error("boom"); return n; });
 return "unreached";`);
@@ -162,7 +162,7 @@ test("Runtime.parallel / pipeline / loopUntil / quarantine work over the fake ba
 		assert.deepEqual(q.deny, ["shell", "write"]);
 		assert.deepEqual(q.denyUrl, ["*"]);
 		assert.equal(q.enableMcp, false);
-		// extra kwargs pass through (parity with Python quarantine(**extra))
+		// extra options pass through
 		const q2 = rt.quarantine({ allowAllTools: false, label: "x" });
 		assert.equal(q2.allowAllTools, false);
 		assert.equal(q2.label, "x");
@@ -238,7 +238,7 @@ test("verify() is reachable from a harness and returns a verdict", () =>
 		assert.equal(rec.result, "PASS");
 	}));
 
-test("budget accessors expose total/spent/remaining/hit and a setter (Python parity)", () =>
+test("budget accessors expose total/spent/remaining/hit and a setter", () =>
 	withFakeEnv({}, async () => {
 		const rt = new Runtime({ budget: 0.4 });
 		assert.equal(rt.budget.total, 0.4);

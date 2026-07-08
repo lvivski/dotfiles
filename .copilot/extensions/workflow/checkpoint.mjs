@@ -7,11 +7,13 @@
  * repaired. Records carry a cache schema version so a future incompatible key change can invalidate
  * old entries instead of colliding.
  */
-import { openSync, readSync, writeSync, fsyncSync, closeSync, existsSync, statSync, truncateSync, readFileSync, mkdirSync } from "node:fs";
+import { openSync, readSync, writeSync, fsyncSync, closeSync, existsSync, statSync, truncateSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 
 /** Bump when the cache key algorithm or record shape changes incompatibly. */
 export const CACHE_SCHEMA = 2;
+const CHUNK = 64 * 1024;
 
 /** @typedef {import("./agent.mjs").AgentResult} AgentResult */
 
@@ -29,8 +31,18 @@ function repairTrailingLine(path) {
 			const tail = Buffer.alloc(1);
 			readSync(fd, tail, 0, 1, size - 1);
 			if (tail[0] === 0x0a) return; // ends with newline: intact
-			const nl = readFileSync(path).lastIndexOf(0x0a);
-			truncateSync(path, nl + 1); // nl === -1 -> truncate to 0 (sole line was torn)
+			const buf = Buffer.alloc(Math.min(CHUNK, size));
+			for (let pos = size; pos > 0;) {
+				const len = Math.min(buf.length, pos);
+				pos -= len;
+				readSync(fd, buf, 0, len, pos);
+				const nl = buf.subarray(0, len).lastIndexOf(0x0a);
+				if (nl >= 0) {
+					truncateSync(path, pos + nl + 1);
+					return;
+				}
+			}
+			truncateSync(path, 0);
 		} finally {
 			closeSync(fd);
 		}
@@ -59,27 +71,50 @@ export class CheckpointStore {
 			repairTrailingLine(this.#path);
 			this.#load();
 		} else if (!resume && exists) {
-			truncateSync(this.#path, 0); // fresh run reusing a dir: drop stale checkpoints eagerly (Python parity)
+			truncateSync(this.#path, 0); // fresh run reusing a dir: drop stale checkpoints eagerly
 		}
 	}
 
 	#load() {
-		const text = existsSync(this.#path) ? readFileSync(this.#path, "utf8") : "";
-		for (const line of text.split("\n")) {
-			if (!line.trim()) continue;
-			let rec;
-			try {
-				rec = JSON.parse(line);
-			} catch {
-				continue;
+		if (!existsSync(this.#path)) return;
+		const fd = openSync(this.#path, "r");
+		const buf = Buffer.alloc(CHUNK);
+		const decoder = new StringDecoder("utf8");
+		let carry = "";
+		try {
+			let n;
+			while ((n = readSync(fd, buf, 0, buf.length, null)) > 0) {
+				carry += decoder.write(buf.subarray(0, n));
+				let start = 0;
+				let nl;
+				while ((nl = carry.indexOf("\n", start)) >= 0) {
+					this.#loadLine(carry.slice(start, nl));
+					start = nl + 1;
+				}
+				carry = carry.slice(start);
 			}
-			if (rec.v !== CACHE_SCHEMA || typeof rec.key !== "string" || !rec.result) continue;
-			if (this.#cache.has(rec.key)) continue; // first write wins
-			/** @type {AgentResult} */
-			const result = { ...rec.result, cached: true };
-			this.#cache.set(rec.key, result);
-			this.#priorSpent += result.aic || 0;
+			carry += decoder.end();
+			if (carry.trim()) this.#loadLine(carry);
+		} finally {
+			closeSync(fd);
 		}
+	}
+
+	/** @param {string} line */
+	#loadLine(line) {
+		if (!line.trim()) return;
+		let rec;
+		try {
+			rec = JSON.parse(line);
+		} catch {
+			return;
+		}
+		if (rec.v !== CACHE_SCHEMA || typeof rec.key !== "string" || !rec.result) return;
+		if (this.#cache.has(rec.key)) return; // first write wins
+		/** @type {AgentResult} */
+		const result = { ...rec.result, cached: true };
+		this.#cache.set(rec.key, result);
+		this.#priorSpent += result.aic || 0;
 	}
 
 	/** AIC spent by completed results loaded on resume. */

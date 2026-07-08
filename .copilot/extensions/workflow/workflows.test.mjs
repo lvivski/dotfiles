@@ -1,4 +1,4 @@
-/** @module workflows.test — converted saved workflows: parse, meta, and control-flow smoke runs. */
+/** @module workflows.test — saved workflows: parse, meta, and control-flow smoke runs. */
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, existsSync } from "node:fs";
@@ -26,7 +26,7 @@ function fillObject(schema) {
 }
 
 /**
- * Build a permissive harness API that lets any converted workflow run its control flow to
+ * Build a permissive harness API that lets any workflow run its control flow to
  * completion (agents return benign findings; helpers return success shapes). Records call counts.
  * @param {unknown} args
  */
@@ -94,7 +94,7 @@ function smokeApi(args) {
 /** @param {string} dir @param {string} name @param {unknown} args */
 async function smoke(dir, name, args) {
 	const path = join(dir, `${name}.mjs`);
-	assert.ok(existsSync(path), `missing converted workflow ${name}.mjs`);
+	assert.ok(existsSync(path), `missing workflow ${name}.mjs`);
 	const src = readFileSync(path, "utf8");
 	const { api, calls } = smokeApi(args);
 	const result = await runHarness(stripExports(src), { api, log: () => {} });
@@ -171,13 +171,11 @@ test("skill examples: each converts, parses (meta), and runs to a non-empty resu
 	}
 });
 
-test("no legacy .cwf.mjs workflows remain in the repo workflow/example dirs after conversion", () => {
+test("repo workflow/example harnesses use .mjs names", () => {
 	for (const name of ["audit", "triage", "deep-research", "review-queue", "security-review"]) {
 		assert.ok(existsSync(join(WORKFLOWS, `${name}.mjs`)), `${name}.mjs exists`);
-		assert.equal(existsSync(join(WORKFLOWS, `${name}.cwf.mjs`)), false, `${name}.cwf.mjs is gone`);
 	}
 	for (const name of EXAMPLE_NAMES) {
 		assert.ok(existsSync(join(EXAMPLES, `${name}.mjs`)), `${name}.mjs exists`);
-		assert.equal(existsSync(join(EXAMPLES, `${name}.cwf.mjs`)), false, `${name}.cwf.mjs is gone`);
 	}
 });

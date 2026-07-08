@@ -1,12 +1,10 @@
 /**
  * @module worktree
  *
- * Per-agent detached git worktrees — a JS port of `worktree.py`. Serialized (async mutex),
- * idempotent, and auto-cleaned. Supports isolated worktrees for the launch repo, another local
- * repo, or a remote clone (blob-less, with a normal `--no-checkout` fallback when the server rejects
- * filtering), plus fetching a specific ref (e.g. a PR head). Two behaviours differ from the Python
- * reference, per the migration plan: a **clone `--filter=blob:none` fallback**, and **dirty
- * worktrees are preserved** for inspection instead of force-removed.
+ * Per-agent detached git worktrees. Serialized (async mutex), idempotent, and auto-cleaned. Supports
+ * isolated worktrees for the launch repo, another local repo, or a remote clone (blob-less, with a
+ * normal `--no-checkout` fallback when the server rejects filtering), plus fetching a specific ref
+ * (e.g. a PR head). Dirty worktrees are preserved for inspection instead of force-removed.
  *
  * Git runs asynchronously (`spawn`) so a clone never blocks the extension's event loop.
  */
@@ -14,7 +12,10 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, realpathSync, statSync } from "node:fs";
 import { join, dirname, basename, resolve, sep } from "node:path";
 
+import { appendBounded } from "./text-buffer.mjs";
+
 const SAFE = /[^A-Za-z0-9._-]+/g;
+const MAX_GIT_OUTPUT_CHARS = 64_000;
 /** Sanitized name segment (dots stripped so `.`/`..` can't alias). @param {string} s */
 const sanitize = (s) => s.replace(SAFE, "-").replace(/^[-.]+|[-.]+$/g, "") || "wt";
 
@@ -40,8 +41,8 @@ function gitResult(args, cwd) {
 		const child = spawn("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
 		let stdout = "";
 		let stderr = "";
-		child.stdout.setEncoding("utf8").on("data", (c) => (stdout += c));
-		child.stderr.setEncoding("utf8").on("data", (c) => (stderr += c));
+		child.stdout.setEncoding("utf8").on("data", (c) => (stdout = appendBounded(stdout, c, MAX_GIT_OUTPUT_CHARS)));
+		child.stderr.setEncoding("utf8").on("data", (c) => (stderr = appendBounded(stderr, c, MAX_GIT_OUTPUT_CHARS)));
 		child.on("error", (e) => res({ code: 127, stdout: "", stderr: String(e?.message || e) }));
 		child.on("close", (code) => res({ code: code ?? 1, stdout, stderr }));
 	});

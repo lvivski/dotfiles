@@ -27,6 +27,8 @@ import { WorktreeManager, findRepoRoot, ensureClone, clonePath, _sanitize } from
 
 /** @typedef {import("./agent.mjs").AgentResult} AgentResult */
 /** @typedef {import("./agent.mjs").AgentSpec} AgentSpec */
+/** @typedef {Pick<AgentResult, "ok"|"cached"|"skipped"|"error"|"nanoAiu">} ResultStats */
+/** @typedef {{ agents: number, launched: number, done: number, failed: number, cached: number, skipped: number }} RunCounts */
 
 /** Hard caps (overridable only by workflow-owned test/dev env, never by workflow source). */
 export const MAX_AGENTS = 1000;
@@ -83,6 +85,42 @@ class Semaphore {
 	}
 }
 
+/** Compact run accounting; full agent content stays in harness variables and checkpoints. */
+class RunStats {
+	/** @type {RunCounts} */
+	#counts = { agents: 0, launched: 0, done: 0, failed: 0, cached: 0, skipped: 0 };
+	#nanoAiu = 0;
+
+	/** @param {ResultStats} result */
+	record(result) {
+		this.#counts.agents++;
+		this.#nanoAiu += result.nanoAiu || 0;
+		const kind = classifyResult(result);
+		this.#counts[kind]++;
+		if (kind === "done" || kind === "failed") this.#counts.launched++;
+	}
+
+	get agentCount() {
+		return this.#counts.agents;
+	}
+
+	get nanoAiu() {
+		return this.#nanoAiu;
+	}
+
+	/** @returns {RunCounts} */
+	counts() {
+		return { ...this.#counts };
+	}
+}
+
+/** @param {ResultStats} r @returns {"done"|"failed"|"cached"|"skipped"} */
+function classifyResult(r) {
+	if (r.skipped || (!r.ok && String(r.error || "").startsWith("skipped:"))) return "skipped";
+	if (r.cached) return "cached";
+	return r.ok ? "done" : "failed";
+}
+
 const branchStore = new AsyncLocalStorage();
 
 /**
@@ -107,6 +145,7 @@ export class Runtime {
 	#occurrence = new Map();
 	/** @type {Set<Promise<void>>} in-flight agent() promises, so fire-and-forget calls can be drained. */
 	#inflight = new Set();
+	#stats = new RunStats();
 	#cwd = process.cwd();
 	/** @type {string|null} */
 	#repoRoot = null;
@@ -138,8 +177,6 @@ export class Runtime {
 		this.strictBudget = !!opts.strictBudget;
 		this.agentTimeout = opts.agentTimeout ?? null;
 		this.memory = opts.memory ?? new Memory(null);
-		/** @type {AgentResult[]} */
-		this.results = [];
 		this.#budgetTotal = opts.budget ?? null;
 		this.#checkpoints = opts.checkpoints ?? null;
 		this.#progress = opts.progress ?? (() => {});
@@ -170,6 +207,15 @@ export class Runtime {
 	/** @returns {boolean} whether the observed soft cap has been reached. */
 	get budgetHit() {
 		return this.#budgetHit;
+	}
+
+	get agentCount() {
+		return this.#stats.agentCount;
+	}
+
+	/** @returns {{ counts: RunCounts, nanoAiu: number }} */
+	stats() {
+		return { counts: this.#stats.counts(), nanoAiu: this.#stats.nanoAiu };
 	}
 
 	/** Abort the run: stop launching new agents and kill live subagents. */
@@ -328,7 +374,7 @@ export class Runtime {
 
 	/**
 	 * Stream each item through `stages` independently (no barrier between stages). An optional
-	 * trailing non-function argument is treated as `{ concurrency?, errors? }` (Python parity).
+	 * trailing non-function argument is treated as `{ concurrency?, errors? }`.
 	 * @param {any[]} items
 	 * @param {...((prev: any, item: any, index: number) => any) | { concurrency?: number, errors?: "raise"|"drop" }} stages
 	 * @returns {Promise<any[]>}
@@ -588,7 +634,7 @@ export class Runtime {
 	 * @param {string|null} phase
 	 */
 	#finish(seq, res, skipped, phase) {
-		this.results.push(res);
+		this.#stats.record(res);
 		this.#emit({
 			ev: "end",
 			seq,
@@ -800,7 +846,8 @@ export function extractMeta(source) {
  * @property {string} [cwd]
  * @property {string|null} [repoRoot]
  * @property {AbortSignal} [signal]
- * @property {(line: string, level?: "info"|"warning"|"error") => void} [onLine]
+ * @property {(line: string, level?: "info"|"warning"|"error", meta?: { ephemeral?: boolean }) => void} [onLine]
+ * @property {"dashboard"|"events"|"off"} [progressMode]
  * @property {string} [title]
  */
 
@@ -853,7 +900,7 @@ export async function executeWorkflow(cfg) {
 			args: cfg.args,
 			startedAt,
 			rt,
-			result: `dry-run plan: ${rt.results.length} agent call(s)` + (meta.name ? ` — ${meta.name}` : ""),
+			result: `dry-run plan: ${rt.agentCount} agent call(s)` + (meta.name ? ` — ${meta.name}` : ""),
 			preservedWorktrees,
 		});
 	}
@@ -870,11 +917,12 @@ export async function executeWorkflow(cfg) {
 		meta,
 		title,
 		onLine,
+		dashboard: cfg.progressMode === "dashboard",
 	});
 	const checkpoints = new CheckpointStore(cfg.runDir, { resume: !!cfg.resume });
 	// Memory is writable in a real run even under `restricted`: the runtime owns the file I/O, so a
-	// restricted harness may still persist cross-run state (matches Python's `read_only=dry_run`).
-	const memory = new Memory(cfg.memoryPath, { readOnly: false, log: onLine });
+	// restricted harness may still persist cross-run state.
+	const memory = new Memory(cfg.memoryPath, { readOnly: false, log: (m) => onLine(m, "info", { ephemeral: true }) });
 	const abortController = new AbortController();
 	if (cfg.signal) {
 		if (cfg.signal.aborted) abortController.abort();
@@ -886,7 +934,7 @@ export async function executeWorkflow(cfg) {
 		memory,
 		abortController,
 		progress: (e) => reporter.emit(e),
-		log: onLine,
+		log: (m) => onLine(m, "info", { ephemeral: true }),
 	});
 
 	reporter.emit({ ev: "run_start", runId: cfg.runId, meta });
@@ -899,23 +947,23 @@ export async function executeWorkflow(cfg) {
 	} catch (e) {
 		if (e instanceof BudgetExceeded) {
 			status = "complete";
-			onLine(`  budget reached: ${e.message}`, "warning");
+			onLine(`  budget reached: ${e.message}`, "warning", { ephemeral: false });
 		} else {
 			status = "error";
 			error = e instanceof Error ? e.message : String(e);
-			onLine(`  ! workflow error: ${error}`, "error");
+			onLine(`  ! workflow error: ${error}`, "error", { ephemeral: false });
 		}
 	}
 	if (cfg.signal?.aborted) status = "timeout";
 
 	await rt.drain(); // await any fire-and-forget agents so none outlive the run uncounted
 	const preservedWorktrees = await rt.cleanup();
-	if (preservedWorktrees.length) onLine(`  preserved ${preservedWorktrees.length} dirty worktree(s): ${preservedWorktrees.join(", ")}`, "warning");
+	if (preservedWorktrees.length) onLine(`  preserved ${preservedWorktrees.length} dirty worktree(s): ${preservedWorktrees.join(", ")}`, "warning", { ephemeral: false });
 	const record = finalize({ runId: cfg.runId, status, error, meta, args: cfg.args, startedAt, rt, result, preservedWorktrees });
 	writeFileSync(join(cfg.runDir, "run.json"), JSON.stringify(record, null, 2), "utf8");
 	writeFileSync(join(cfg.runDir, "result.json"), JSON.stringify({ runId: record.runId, status: record.status, aic: record.aic, result: record.result }, null, 2), "utf8");
-	reporter.emit({ ev: "run_end", runId: cfg.runId, ...record.counts, nanoAiu: rt.results.reduce((a, r) => a + r.nanoAiu, 0), aic: record.aic });
-	onLine(reporter.runSummary(), status === "error" || status === "timeout" ? "error" : "info");
+	reporter.emit({ ev: "run_end", runId: cfg.runId, ...record.counts, nanoAiu: rt.stats().nanoAiu, aic: record.aic });
+	onLine(reporter.runSummary(), status === "error" || status === "timeout" ? "error" : "info", { ephemeral: false });
 	reporter.close(status);
 	return record;
 }
@@ -943,8 +991,7 @@ function runtimeOpts(cfg) {
  */
 function finalize(p) {
 	const rt = p.rt;
-	const counts = summarize(rt.results);
-	const nanoAiu = rt.results.reduce((a, r) => a + r.nanoAiu, 0);
+	const { counts, nanoAiu } = rt.stats();
 	return {
 		runId: p.runId,
 		status: p.status,
@@ -965,23 +1012,6 @@ function finalize(p) {
 		preservedWorktrees: p.preservedWorktrees ?? [],
 		result: p.result,
 	};
-}
-
-/** @param {AgentResult[]} results */
-function summarize(results) {
-	let launched = 0, done = 0, failed = 0, cached = 0, skipped = 0;
-	for (const r of results) {
-		if (r.skipped || (!r.ok && String(r.error || "").startsWith("skipped:"))) skipped++;
-		else if (r.cached) cached++;
-		else if (r.ok) {
-			done++;
-			launched++;
-		} else {
-			failed++;
-			launched++;
-		}
-	}
-	return { agents: results.length, launched, done, failed, cached, skipped };
 }
 
 /** @param {unknown} value @returns {string} coerce a harness return value into the workflow result text. */

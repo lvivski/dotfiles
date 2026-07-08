@@ -2,11 +2,11 @@
  * @module patterns
  *
  * Composable orchestration helpers (`structured` / `verify` / `consensus` / `synthesize` /
- * `tournament` / `generateAndFilter` / `classify`), a faithful port of the Python `patterns.py`.
- * Each takes the {@link import("./runtime.mjs").Runtime} as its first arg and routes every model
- * call through `rt.agent` / `rt.fanOut`, so they inherit progress, cache, resume, budget, and AIC
- * accounting. Fail-closed semantics are preserved: `verify` returns a failed verdict when the
- * verifier errors; `classify`/`tournament` throw when the model fails or returns nothing valid.
+ * `tournament` / `generateAndFilter` / `classify`). Each takes the
+ * {@link import("./runtime.mjs").Runtime} as its first arg and routes every model call through
+ * `rt.agent` / `rt.fanOut`, so they inherit progress, cache, resume, budget, and AIC accounting.
+ * Fail-closed semantics are preserved: `verify` returns a failed verdict when the verifier errors;
+ * `classify`/`tournament` throw when the model fails or returns nothing valid.
  */
 
 /** @typedef {import("./runtime.mjs").Runtime} Runtime */
@@ -112,7 +112,7 @@ export function extractLastJson(text) {
 	return found;
 }
 
-// ---- shape-schema (a documented JSON-Schema subset; matches Python patterns.py) --------------
+// ---- shape-schema (a documented JSON-Schema subset) -----------------------------------------
 const SHAPE_KEYWORDS = new Set(["type", "properties", "required", "enum", "items", "additionalProperties", "description"]);
 const SHAPE_TYPES = new Set(["object", "array", "string", "number", "integer", "boolean", "null"]);
 

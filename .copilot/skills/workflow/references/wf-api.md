@@ -68,16 +68,19 @@ export const meta = {
 persists `script.mjs`, `run.json`, `result.json`, `state.json`, `progress.jsonl`, `journal.jsonl`, and
 `meta.json` under `~/.copilot/workflows/runs/<runId>/`.
 
-## Migrating from the old Python `wf` API
+## Migrating old Python workflows
 
-`wf.agent`→`agent`, `wf.fan_out`→`fanOut`, `wf.generate_and_filter`→`generateAndFilter`,
-`wf.loop_until`→`loopUntil`, `wf.follow_up`→`followUp`; `wf.budget_total`→`budget.total`,
-`wf.spent`→`budget.spent()`, `wf.remaining()`→`budget.remaining()`; `with wf.phase("x"):`→`phase("x")`
-(+ per-agent `phase`); `str(result)`/`as_text(result)`→`result.content`; keyword args
-(`agent="worker"`, `enable_mcp=True`) → the `opts` object (`{ agentType: "worker", enableMcp: true }`).
-Everything is `await`-ed (JS is async); there is no `wf.` prefix.
+Translate Python `wf.*` calls to injected JavaScript globals:
 
-**Intentionally not ported** (present in the Python `wf` API but unused by any workflow, and a poor
-fit for the JS idiom): `wf.spec()` (build `agent()` opts inline instead), `wf.xtreme()` /
-`wf.apply_preset()` (use the run-level `preset: "xtreme"`), and the injected `AgentSpec`/`AgentResult`
-classes (results are plain objects — test with `result.ok`, not `instanceof`).
+- `wf.agent(...)` → `await agent(...)`
+- `wf.fan_out(items, fn)` → `await fanOut(items, fn)`
+- `wf.generate_and_filter(...)` → `await generateAndFilter(...)`
+- `wf.loop_until(step, done)` → `await loopUntil(step, done)`
+- `wf.follow_up(result, prompt)` → `await followUp(result, prompt)`
+- `wf.budget_total` / `wf.spent` / `wf.remaining()` → `budget.total` / `budget.spent()` / `budget.remaining()`
+- `with wf.phase("x"):` → `phase("x")` plus explicit per-agent `phase` for concurrent work
+- `str(result)` / `as_text(result)` → `result.content`
+- Python keyword args become an options object, e.g. `agent="worker", enable_mcp=True` → `{ agentType: "worker", enableMcp: true }`
+
+Save converted workflows as `~/.copilot/workflows/<name>.mjs`. The JavaScript harness is async, uses
+top-level `await`, and ends with `return <value>`.

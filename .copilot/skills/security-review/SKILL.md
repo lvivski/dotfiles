@@ -47,8 +47,3 @@ Treat the report as **bounded coverage** — an agent-driven scan, not proof tha
 vulnerability-free. MCP stays off; the scanner uses read-only tools with no network egress. Do not use
 `restricted` (the scanner needs read/git tool access). Return the Markdown report plus `runId`, AIC
 used, and the coverage note.
-
-> Adaptation note: the earlier Python workflow did deterministic in-process regex scanning, `git`
-> subprocesses, and JSON state files. The JS harness runs in a sandbox with no direct
-> filesystem/process access, so that work is delegated to the scanner agent; deterministic
-> state/git-revalidation features are not part of this version.

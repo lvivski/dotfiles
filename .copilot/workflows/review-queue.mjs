@@ -23,7 +23,7 @@ const freshness = opts.freshness ?? "input queue; fetch default excludes PRs old
 const developerRoot = opts.developer_root || "~/Developer";
 const reviewConc = deep || autoDeep ? opts.concurrency || 6 : undefined; // throttle parallel checkouts
 
-/** Shell-style pattern match (Python fnmatch parity: `*` any, `?` one char, `[set]`). */
+/** Shell-style pattern match: `*` any, `?` one char, `[set]`. */
 function fnmatch(name, pat) {
 	let re = "";
 	for (let i = 0; i < pat.length; i++) {
