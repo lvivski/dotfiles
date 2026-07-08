@@ -8,14 +8,12 @@
  *
  * Git runs asynchronously (`spawn`) so a clone never blocks the extension's event loop.
  */
-import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, realpathSync, statSync } from "node:fs";
 import { join, dirname, basename, resolve, sep } from "node:path";
 
-import { appendBounded } from "./text-buffer.mjs";
+import { spawnGit } from "./git.mjs";
 
 const SAFE = /[^A-Za-z0-9._-]+/g;
-const MAX_GIT_OUTPUT_CHARS = 64_000;
 /** Sanitized name segment (dots stripped so `.`/`..` can't alias). @param {string} s */
 const sanitize = (s) => s.replace(SAFE, "-").replace(/^[-.]+|[-.]+$/g, "") || "wt";
 
@@ -33,24 +31,9 @@ class Mutex {
 	}
 }
 
-/** @typedef {{ code: number, stdout: string, stderr: string }} GitResult */
-
-/** Run a git command asynchronously. @param {string[]} args @param {string} cwd @returns {Promise<GitResult>} */
-function gitResult(args, cwd) {
-	return new Promise((res) => {
-		const child = spawn("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
-		let stdout = "";
-		let stderr = "";
-		child.stdout.setEncoding("utf8").on("data", (c) => (stdout = appendBounded(stdout, c, MAX_GIT_OUTPUT_CHARS)));
-		child.stderr.setEncoding("utf8").on("data", (c) => (stderr = appendBounded(stderr, c, MAX_GIT_OUTPUT_CHARS)));
-		child.on("error", (e) => res({ code: 127, stdout: "", stderr: String(e?.message || e) }));
-		child.on("close", (code) => res({ code: code ?? 1, stdout, stderr }));
-	});
-}
-
 /** Run git, returning trimmed stdout; throws on failure when `check`. @param {string[]} args @param {string} cwd @param {boolean} [check] */
 async function git(args, cwd, check = true) {
-	const r = await gitResult(args, cwd);
+	const r = await spawnGit(args, cwd);
 	if (check && r.code !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr.trim()}`);
 	return r.stdout.trim();
 }
@@ -101,7 +84,7 @@ export function clonePath(repo, cloneDir) {
 
 /** Detect the git repo root containing `start`, or null. @param {string} start @returns {Promise<string|null>} */
 export async function findRepoRoot(start) {
-	const r = await gitResult(["rev-parse", "--show-toplevel"], start);
+	const r = await spawnGit(["rev-parse", "--show-toplevel"], start);
 	return r.code === 0 ? r.stdout.trim() : null;
 }
 
@@ -119,7 +102,7 @@ export async function ensureClone(repo, dest, log = () => {}) {
 		return dest;
 	}
 	mkdirSync(dirname(dest) || ".", { recursive: true });
-	const filtered = await gitResult(["clone", "--filter=blob:none", "--no-checkout", repo, dest], process.cwd());
+	const filtered = await spawnGit(["clone", "--filter=blob:none", "--no-checkout", repo, dest], process.cwd());
 	if (filtered.code === 0) {
 		log(`  clone ${repo}`);
 		return dest;
@@ -184,7 +167,7 @@ export class WorktreeManager {
 			}
 			// Reuse a valid leftover worktree from a crashed run; rebuild non-worktree debris.
 			if (existsSync(path) && !existsSync(join(path, ".git"))) {
-				await gitResult(["worktree", "remove", "--force", path], this.repoRoot);
+				await spawnGit(["worktree", "remove", "--force", path], this.repoRoot);
 				rmSync(path, { recursive: true, force: true });
 			}
 			if (!existsSync(path)) await git(["worktree", "add", "--detach", path, ref], this.repoRoot);
@@ -196,7 +179,7 @@ export class WorktreeManager {
 
 	/** Whether the worktree has uncommitted changes. @param {string} path @returns {Promise<boolean>} */
 	async isDirty(path) {
-		const r = await gitResult(["status", "--porcelain"], path);
+		const r = await spawnGit(["status", "--porcelain"], path);
 		return r.code === 0 && r.stdout.trim().length > 0;
 	}
 
@@ -217,7 +200,7 @@ export class WorktreeManager {
 				this.#log(`  worktree ~ ${basename(path)} preserved (uncommitted changes)`);
 				return;
 			}
-			const r = await gitResult(["worktree", "remove", "--force", path], this.repoRoot);
+			const r = await spawnGit(["worktree", "remove", "--force", path], this.repoRoot);
 			if (r.code === 0 || !existsSync(path)) {
 				drop();
 				this.#log(`  worktree - ${basename(path)}`);
@@ -230,7 +213,7 @@ export class WorktreeManager {
 	/** Remove every created worktree (preserving dirty ones) and prune. @returns {Promise<string[]>} preserved dirty paths. */
 	async cleanupAll() {
 		for (const path of [...this.#created]) await this.remove(path);
-		await gitResult(["worktree", "prune"], this.repoRoot);
+		await spawnGit(["worktree", "prune"], this.repoRoot);
 		return this.preservedDirty;
 	}
 }

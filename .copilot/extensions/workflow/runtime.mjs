@@ -13,7 +13,7 @@
 import vm from "node:vm";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
-import { writeFileSync, mkdirSync, readFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import { writeFileSync, mkdirSync, readFileSync, existsSync, mkdtempSync, rmSync, copyFileSync } from "node:fs";
 import { cpus, tmpdir } from "node:os";
 import { join, resolve, basename } from "node:path";
 
@@ -24,6 +24,9 @@ import { ProgressReporter } from "./progress.mjs";
 import { runHarness, deterministicGlobals } from "./sandbox.mjs";
 import * as patterns from "./patterns.mjs";
 import { WorktreeManager, findRepoRoot, ensureClone, clonePath, _sanitize } from "./worktree.mjs";
+import { HostIO, parseDiff, pathHelpers } from "./hostio.mjs";
+import { loadHost, buildHostProxy } from "./effects.mjs";
+import { stableStringify } from "./json.mjs";
 
 /** @typedef {import("./agent.mjs").AgentResult} AgentResult */
 /** @typedef {import("./agent.mjs").AgentSpec} AgentSpec */
@@ -156,6 +159,12 @@ export class Runtime {
 	/** @type {string[]} */
 	#preservedDirty = [];
 	#isoCounter = 0;
+	/** @type {import("./effects.mjs").LoadedHost|null} */
+	#host = null;
+	/** @type {import("./effects.mjs").EffectCtx|null} */
+	#hostCtx = null;
+	/** True once an uncached effect ran, so we can warn the run isn't resume-safe. */
+	#nonResumable = false;
 	#groupSeq = 0;
 	/**
 	 * @param {{
@@ -700,6 +709,96 @@ export class Runtime {
 		return JSON.stringify(["a", branch, fp, n]);
 	}
 
+	// ---- host effects --------------------------------------------------
+	/** Install the loaded sidecar (its effect functions become the `host.*` namespace). @param {import("./effects.mjs").LoadedHost|null} loaded */
+	setHost(loaded) {
+		this.#host = loaded;
+	}
+
+	/** True once an uncached effect ran (the run can't be safely resumed from checkpoints). */
+	get nonResumable() {
+		return this.#nonResumable;
+	}
+
+	/**
+	 * The context object every sidecar effect receives as its 2nd arg: the run's cwd/mode plus the
+	 * host-realm toolkit (read-only git, curated fs, pure `parseDiff`/`path`) so sidecars compose
+	 * workflow-specific effects without fragile cross-directory imports. Built once per run.
+	 * @returns {import("./effects.mjs").EffectCtx}
+	 */
+	#effectCtx() {
+		if (!this.#hostCtx) {
+			const io = new HostIO({ cwd: this.#cwd, dryRun: this.dryRun, restricted: this.restricted, log: this.#log });
+			this.#hostCtx = { cwd: this.#cwd, dryRun: this.dryRun, restricted: this.restricted, log: (/** @type {unknown} */ m) => this.#log(String(m)), git: io.git, files: io.files, parseDiff, path: pathHelpers };
+		}
+		return this.#hostCtx;
+	}
+
+	/**
+	 * Run one sidecar effect and checkpoint its result — the code analogue of {@link Runtime#agent}.
+	 * Cached by (branch, name, canonical input, occurrence) so repeated calls and read-after-write
+	 * stay correct, and a resumed run replays recorded results instead of re-executing. Mutating
+	 * effects are skipped under dry-run; results must be JSON-serializable to be checkpointed.
+	 * @param {string} name @param {unknown} input @param {{ cache?: boolean }} [opts]
+	 * @returns {Promise<unknown>}
+	 */
+	async #effect(name, input, opts = {}) {
+		const host = this.#host;
+		const fn = host?.fns.get(name);
+		if (!host || !fn) throw new Error(`workflow: no host effect '${name}'`);
+		const cache = opts.cache !== false;
+		const mutates = host.mutates.has(name);
+		const label = `host.${name}`;
+
+		if (this.dryRun && mutates) {
+			this.#log(`  ${label}: [dry-run] skipped (mutating)`);
+			return undefined;
+		}
+
+		// Reuse the agent checkpoint journal: an effect record is `{ value, ok, aic:0 }`, keyed by
+		// (branch, name, canonical input, occurrence) so repeated calls and read-after-write are
+		// distinct and a resumed run replays in order. Cast at the store boundary since the store is
+		// typed for AgentResult.
+		const checkpoints = cache ? this.#checkpoints : null;
+		let key = null;
+		if (checkpoints) {
+			const branch = branchStore.getStore() || [];
+			const canon = stableStringify(input);
+			const base = JSON.stringify(["fx", branch, name, canon]);
+			const n = this.#occurrence.get(base) ?? 0;
+			this.#occurrence.set(base, n + 1);
+			key = JSON.stringify(["fx", branch, name, canon, n]);
+			const cached = /** @type {any} */ (checkpoints.get(key));
+			if (cached) {
+				this.#log(`  ${label} (cached)`);
+				return cached.value;
+			}
+		} else if (!cache) {
+			this.#nonResumable = true;
+		}
+
+		let value;
+		try {
+			value = await fn(input, this.#effectCtx());
+		} catch (e) {
+			throw new Error(`${label} failed: ${e instanceof Error ? e.message : e}`);
+		}
+
+		if (checkpoints && key) {
+			let record;
+			try {
+				record = { value: JSON.parse(JSON.stringify(value === undefined ? null : value)), ok: true, aic: 0 };
+			} catch {
+				throw new Error(`${label} result must be JSON-serializable to checkpoint — return plain data or call with { cache: false }`);
+			}
+			checkpoints.put(key, /** @type {any} */ (record));
+			this.#log(`  ${label}`);
+			return record.value;
+		}
+		this.#log(`  ${label}${cache ? "" : " (uncached)"}`);
+		return value;
+	}
+
 	/**
 	 * Build the object of globals injected into the harness VM.
 	 * @param {unknown} args
@@ -714,10 +813,18 @@ export class Runtime {
 			  }
 			: (/** @type {string} */ name, /** @type {any} */ a, /** @type {any} */ b) => this.#worktree(name, a, b);
 		if (!this.restricted) worktree.create = (/** @type {string} */ name, /** @type {any} */ opts) => this.#worktreeCreate(name, opts);
+		// host.* — checkpointed host effects from the loaded sidecar (restricted/absent → throwing proxy).
+		const host = buildHostProxy({
+			names: this.#host?.names ?? [],
+			invoke: (name, input, opts) => this.#effect(name, input, opts),
+			restricted: this.restricted,
+			hasSidecar: !!this.#host,
+		});
 		return {
 			args,
 			budget: this.budget,
 			memory: this.memory,
+			host,
 			agent: this.agent.bind(this),
 			followUp: this.followUp.bind(this),
 			parallel: this.parallel.bind(this),
@@ -843,6 +950,7 @@ export function extractMeta(source) {
  * @property {boolean} [dryRun]
  * @property {boolean} [resume]
  * @property {string|null} [memoryPath]
+ * @property {string|null} [hostPath]
  * @property {string} [cwd]
  * @property {string|null} [repoRoot]
  * @property {AbortSignal} [signal]
@@ -886,6 +994,7 @@ export async function executeWorkflow(cfg) {
 		const rt = new Runtime({ ...runtimeOpts(cfg), dryRun: true, checkpoints: null, memory: new Memory(cfg.memoryPath, { readOnly: true, log: onLine }), progress: () => {}, log: onLine });
 		let error = null;
 		try {
+			if (cfg.hostPath) rt.setHost(await loadHost(cfg.hostPath));
 			await runHarness(stripExports(cfg.source), { api: rt.buildApi(cfg.args), filename: `${cfg.runId}.mjs`, log: onLine });
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
@@ -908,6 +1017,13 @@ export async function executeWorkflow(cfg) {
 	// --- real run ---
 	mkdirSync(cfg.runDir, { recursive: true });
 	writeFileSync(join(cfg.runDir, "script.js"), cfg.source, "utf8");
+	if (cfg.hostPath) {
+		try {
+			copyFileSync(cfg.hostPath, join(cfg.runDir, "host.js")); // provenance copy alongside script.js
+		} catch {
+			// non-fatal: the sidecar is still loaded from cfg.hostPath below
+		}
+	}
 	writeMeta(cfg.runDir, cfg.runId, meta, cfg.args, !!cfg.restricted);
 
 	const reporter = new ProgressReporter({
@@ -942,6 +1058,7 @@ export async function executeWorkflow(cfg) {
 	let error = null;
 	let result = "";
 	try {
+		if (cfg.hostPath) rt.setHost(await loadHost(cfg.hostPath));
 		const value = await runHarness(stripExports(cfg.source), { api: rt.buildApi(cfg.args), filename: `${cfg.runId}.mjs`, log: (m) => rt.log(m) });
 		result = coerceResult(value);
 	} catch (e) {

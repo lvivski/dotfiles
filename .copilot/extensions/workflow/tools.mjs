@@ -12,6 +12,7 @@ import { join, basename, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 
 import { executeWorkflow } from "./runtime.mjs";
+import { sidecarPathFor } from "./effects.mjs";
 import { formatDashboard } from "./progress.mjs";
 
 export const DEFAULT_BUDGET = 10000;
@@ -64,22 +65,48 @@ function check(ok, msg) {
 /** @param {string} message @param {string} [resultType] */
 const failure = (message, resultType = "failure") => ({ textResultForLlm: `Error: ${message}`, resultType, error: message });
 
-/** Resolve harness source text from exactly one of `script` / `scriptPath` / `name`. @param {any} input @returns {{ source: string, label: string }} */
+/** Resolve harness source text (and its on-disk path, if any) from exactly one of `script` / `scriptPath` / `name`. @param {any} input @returns {{ source: string, label: string, path: string|null }} */
 export function resolveSource(input) {
-	if (input.script) return { source: String(input.script), label: "inline harness" };
+	if (input.script) return { source: String(input.script), label: "inline harness", path: null };
 	if (input.scriptPath) {
 		const p = /** @type {string} */ (expandHome(input.scriptPath));
 		check(existsSync(p) && statSync(p).isFile(), `scriptPath is not a readable file: ${p}`);
 		check(!p.endsWith(".py"), `Python workflows are no longer supported: ${p}. Convert it to .mjs; see the workflow skill's migration guide.`);
 		check(p.endsWith(".mjs"), `scriptPath must point to a .mjs workflow: ${p}`);
-		return { source: readFileSync(p, "utf8"), label: basename(p) };
+		return { source: readFileSync(p, "utf8"), label: basename(p), path: p };
 	}
 	check(!/[\\/]|\.\./.test(input.name), `name must be a bare workflow name without path separators (got '${input.name}').`);
 	const mjs = join(workflowsDir(), `${input.name}.mjs`);
-	if (isFile(mjs)) return { source: readFileSync(mjs, "utf8"), label: input.name };
+	if (isFile(mjs)) return { source: readFileSync(mjs, "utf8"), label: input.name, path: mjs };
 	const py = [`${input.name}.cwf.py`, `${input.name}.py`].map((f) => join(workflowsDir(), f)).find(isFile);
 	check(!py, `saved workflow '${input.name}' is a Python workflow (${py}). Convert it to ${input.name}.mjs; see the workflow skill's migration guide.`);
 	throw new ValidationError(`no saved workflow named '${input.name}' in ${workflowsDir()} (looked for ${input.name}.mjs).`);
+}
+
+/**
+ * Resolve the host-effects sidecar for a run: an explicit `host` path, else the sibling
+ * `<harness>.host.mjs` convention when it exists. @param {any} input @param {string|null} harnessPath
+ * @returns {string|null}
+ */
+export function resolveHostPath(input, harnessPath) {
+	if (input.host) {
+		// A bare token (no path separators / no `.mjs`) → a bundled sidecar in the workflows dir,
+		// mirroring `name` → `<workflowsDir>/<name>.mjs`.
+		if (!/[\\/]|\.\./.test(input.host) && !input.host.endsWith(".mjs")) {
+			const bundled = join(workflowsDir(), `${input.host}.host.mjs`);
+			check(isFile(bundled), `no bundled host capability '${input.host}' in ${workflowsDir()} (looked for ${input.host}.host.mjs)`);
+			return bundled;
+		}
+		const p = /** @type {string} */ (expandHome(input.host));
+		check(existsSync(p) && statSync(p).isFile(), `host is not a readable file: ${p}`);
+		check(p.endsWith(".mjs"), `host must point to a .mjs module: ${p}`);
+		return p;
+	}
+	if (harnessPath) {
+		const sib = sidecarPathFor(harnessPath);
+		if (isFile(sib)) return sib;
+	}
+	return null;
 }
 
 /** @param {string} label @returns {string} a fresh run id `<stem>-<ts>-<rand>`. */
@@ -148,7 +175,8 @@ export async function runWorkflow(input, ctx) {
 		const progressMode = input.quiet ? "off" : input.progress ?? "dashboard";
 		check(PROGRESS_MODES.has(progressMode), `progress must be one of dashboard | events | off (got ${progressMode}).`);
 
-		const { source, label } = resolveSource(input);
+		const { source, label, path: harnessPath } = resolveSource(input);
+		const hostPath = resolveHostPath(input, harnessPath);
 		const cwd = await resolveCwd(input.cwd, ctx);
 		if (input.runId) check(!/[\\/]|\.\./.test(input.runId), `runId must be a bare id without path separators (got '${input.runId}').`);
 		const runId = input.resume || input.runId || newRunId(input.name || label);
@@ -172,6 +200,7 @@ export async function runWorkflow(input, ctx) {
 			dryRun: !!input.dryRun,
 			resume: !!input.resume,
 			memoryPath: input.memory ? resolve(cwd, /** @type {string} */ (expandHome(input.memory))) : null,
+			hostPath,
 			progressMode,
 			cwd,
 			title: input.name || undefined,
@@ -509,6 +538,7 @@ export function buildTools(ctx) {
 				restricted: { type: "boolean", description: "Run the harness determinism-only + orchestration-only (read-only memory, no worktree, no per-agent tool escalation). Footgun-prevention, not a security jail." },
 				strictBudget: { type: "boolean", description: "Raise/stop once the budget cap is observed instead of gracefully skipping new agents." },
 				memory: { type: "string", description: "Durable text file the harness reads/appends via `memory` (persists across runs; a relative path resolves against the workflow cwd, or use ~/)." },
+				host: { type: "string", description: "Host-effects sidecar exposing the harness's `host.*` namespace (full-Node effects, checkpointed): a path to a `.mjs` module, or a bare name (e.g. \"standard\") resolving to a bundled `<name>.host.mjs` in the workflows dir. Defaults to a sibling `<name>.host.mjs` when present." },
 				progress: { type: "string", enum: ["dashboard", "events", "off"], description: "Progress output mode. dashboard (default) emits ephemeral TUI-like snapshots, events emits per-event lines, off suppresses progress output." },
 				quiet: { type: "boolean", description: "Suppress progress output (equivalent to progress:'off')." },
 				cwd: { type: "string", description: "Directory to run the workflow from (default: the session's working directory)." },
