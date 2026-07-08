@@ -1,9 +1,9 @@
 /**
  * @module extension
  *
- * cwf extension — the only SDK-coupled module. It joins the Copilot session, adapts it into a
+ * workflow extension — the only SDK-coupled module. It joins the Copilot session, adapts it into a
  * {@link import("./tools.mjs").ToolCtx} (`log` / `send` / `getWorkspaceCwd`), and registers the
- * cwf tools built by `tools.mjs`. The workflow engine (`runtime`/`agent`/`sandbox`/…) is pure Node
+ * workflow tools built by `tools.mjs`. The workflow engine (`runtime`/`agent`/`sandbox`/...) is pure Node
  * and imported transitively, keeping it unit-testable under plain `node --test`.
  */
 import { joinSession } from "@github/copilot-sdk/extension";
@@ -69,18 +69,18 @@ if (typeof createCanvas === "function") {
 		process.on("exit", () => panel?.close());
 		canvases.push(
 			createCanvas({
-				id: "cwf-progress",
-				displayName: "cwf Progress",
-				description: "Live fan-out / phase dashboard for a cwf workflow run (pass its runId).",
+				id: "workflow-progress",
+				displayName: "Copilot Workflow Progress",
+				description: "Live fan-out / phase dashboard for a workflow run (pass its runId).",
 				inputSchema: { type: "object", properties: { runId: { type: "string", description: "The run id to display." } }, required: ["runId"] },
 				open: (/** @type {any} */ req) => {
 					const runId = String(req?.input?.runId || "");
-					return { url: panel ? panel.url(runId) : "", title: `cwf · ${runId}`, status: "open" };
+					return { url: panel ? panel.url(runId) : "", title: `workflow · ${runId}`, status: "open" };
 				},
 				actions: [
 					{
 						name: "abort",
-						description: "Abort the in-flight cwf run shown in this panel.",
+						description: "Abort the in-flight workflow run shown in this panel.",
 						inputSchema: { type: "object", properties: { runId: { type: "string" } }, required: ["runId"] },
 						handler: (/** @type {any} */ req) => ({ aborted: abortRun(String(req?.input?.runId || "")) }),
 					},
@@ -88,7 +88,7 @@ if (typeof createCanvas === "function") {
 			}),
 		);
 	} catch (e) {
-		ctx.log(`cwf: progress canvas unavailable: ${e instanceof Error ? e.message : e}`, false, "warning");
+		ctx.log(`workflow: progress canvas unavailable: ${e instanceof Error ? e.message : e}`, false, "warning");
 	}
 }
 

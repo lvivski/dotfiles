@@ -1,4 +1,4 @@
-// generate-filter.cwf.mjs — generate many candidates, dedupe, and keep those passing a rubric.
+// generate-filter.mjs — generate many candidates, dedupe, and keep those passing a rubric.
 export const meta = { name: "generate-filter", description: "Generate candidates, deduplicate, and filter by a rubric." };
 
 const prompt = args || "Propose an API name for this feature.";

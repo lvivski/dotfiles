@@ -1,4 +1,4 @@
-// minimal-review.cwf.mjs — the smallest useful workflow: review, verify, synthesize.
+// minimal-review.mjs — the smallest useful workflow: review, verify, synthesize.
 export const meta = { name: "minimal-review", description: "Review items, verify findings, and synthesize a report." };
 
 const items = args || ["item one", "item two"];

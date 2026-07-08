@@ -1,4 +1,4 @@
-// loop-memory.cwf.mjs — durable cross-run memory (for scheduled/recurring workflow ticks).
+// loop-memory.mjs — durable cross-run memory (for scheduled/recurring workflow ticks).
 //
 //   run_workflow({ name: "loop-memory", budget: 1000,
 //                  memory: "~/.copilot/workflows/state/sweep.md", args: "src/" })

@@ -1,4 +1,4 @@
-// triage.cwf.mjs — classify, cross-check, and summarize a batch of tickets.
+// triage.mjs — classify, cross-check, and summarize a batch of tickets.
 //   run_workflow({ name: "triage", args: ["...", "..."] })
 export const meta = {
 	name: "triage",

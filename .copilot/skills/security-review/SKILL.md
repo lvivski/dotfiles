@@ -2,10 +2,10 @@
 name: security-review
 description: >-
   Use this skill when the user wants a security review, deep security review, or security audit.
-compatibility: GitHub Copilot CLI with the cwf extension loaded; git optional for change-scoped mode.
+compatibility: GitHub Copilot CLI with the workflow extension loaded; git optional for change-scoped mode.
 metadata:
   copilot.user-invocable: "true"
-  copilot.runtime: "cwf"
+  copilot.runtime: "workflow"
 user-invocable: true
 ---
 

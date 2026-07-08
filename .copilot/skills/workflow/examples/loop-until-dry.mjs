@@ -1,4 +1,4 @@
-// loop-until-dry.cwf.mjs — repeat discovery until two consecutive rounds find nothing new.
+// loop-until-dry.mjs — repeat discovery until two consecutive rounds find nothing new.
 export const meta = { name: "loop-until-dry", description: "Iteratively discover findings until the well runs dry, then summarize." };
 
 const question = args || "Find likely issues in this project.";

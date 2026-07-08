@@ -93,15 +93,15 @@ function smokeApi(args) {
 
 /** @param {string} dir @param {string} name @param {unknown} args */
 async function smoke(dir, name, args) {
-	const path = join(dir, `${name}.cwf.mjs`);
-	assert.ok(existsSync(path), `missing converted workflow ${name}.cwf.mjs`);
+	const path = join(dir, `${name}.mjs`);
+	assert.ok(existsSync(path), `missing converted workflow ${name}.mjs`);
 	const src = readFileSync(path, "utf8");
 	const { api, calls } = smokeApi(args);
 	const result = await runHarness(stripExports(src), { api, log: () => {} });
 	return { result, calls, meta: extractMeta(src) };
 }
 
-test("audit.cwf.mjs: verifies findings and synthesizes a report", async () => {
+test("audit.mjs: verifies findings and synthesizes a report", async () => {
 	const { result, calls, meta } = await smoke(WORKFLOWS, "audit", ["a.js", "b.js"]);
 	assert.equal(meta.name, "audit");
 	assert.equal(result, "SYNTHESIZED REPORT");
@@ -112,7 +112,7 @@ test("audit.cwf.mjs: verifies findings and synthesizes a report", async () => {
 	assert.match(/** @type {string} */ (empty.result), /provide files/);
 });
 
-test("triage.cwf.mjs: classifies then synthesizes", async () => {
+test("triage.mjs: classifies then synthesizes", async () => {
 	const { result, calls, meta } = await smoke(WORKFLOWS, "triage", ["t1", "t2"]);
 	assert.equal(meta.name, "triage");
 	assert.equal(result, "SYNTHESIZED REPORT");
@@ -120,7 +120,7 @@ test("triage.cwf.mjs: classifies then synthesizes", async () => {
 	assert.equal(calls.synthesize, 1);
 });
 
-test("deep-research.cwf.mjs: plans angles, verifies, synthesizes (and default question)", async () => {
+test("deep-research.mjs: plans angles, verifies, synthesizes (and default question)", async () => {
 	const { result, calls, meta } = await smoke(WORKFLOWS, "deep-research", "What is X?");
 	assert.equal(meta.name, "deep-research");
 	assert.equal(result, "SYNTHESIZED REPORT");
@@ -130,7 +130,7 @@ test("deep-research.cwf.mjs: plans angles, verifies, synthesizes (and default qu
 	assert.equal(dflt.result, "SYNTHESIZED REPORT");
 });
 
-test("review-queue.cwf.mjs: diff-only and deep-checkout PRs render a triage table", async () => {
+test("review-queue.mjs: diff-only and deep-checkout PRs render a triage table", async () => {
 	const prs = [
 		{ repo: "o/r", number: 1, title: "diff only", files: ["a.js"], diff: "x", me: "user", my_teams: [], reviewers: [{ required: false }], codeowners: "", coverage: "full diff", platform: "github", url: "http://x/1", updatedAt: "2024-01-01" },
 		{ repo: "o/r", number: 2, title: "needs deep", files: ["src/b.js"], diff: "y", me: "user", my_teams: ["team"], reviewers: [{ required: true }], codeowners: "src/* @team", coverage: "partial", clone_url: "https://github.com/o/r.git", pr_ref: "pull/2/head", platform: "github", url: "http://x/2", updatedAt: "2024-02-02" },
@@ -150,7 +150,7 @@ test("review-queue.cwf.mjs: diff-only and deep-checkout PRs render a triage tabl
 	assert.match(/** @type {string} */ (empty.result), /no PRs supplied/);
 });
 
-test("security-review.cwf.mjs: scans, investigates, verifies, and renders a report", async () => {
+test("security-review.mjs: scans, investigates, verifies, and renders a report", async () => {
 	const { result, calls, meta } = await smoke(WORKFLOWS, "security-review", { root: "src/" });
 	assert.equal(meta.name, "security-review");
 	assert.match(/** @type {string} */ (result), /# Security review/);
@@ -171,12 +171,13 @@ test("skill examples: each converts, parses (meta), and runs to a non-empty resu
 	}
 });
 
-test("no legacy .cwf.py workflows remain in the repo workflow/example dirs after conversion", () => {
-	// (security-review is converted separately; assert the batch handled here is fully migrated)
-	for (const name of ["audit", "triage", "deep-research", "review-queue"]) {
-		assert.ok(existsSync(join(WORKFLOWS, `${name}.cwf.mjs`)), `${name}.cwf.mjs exists`);
+test("no legacy .cwf.mjs workflows remain in the repo workflow/example dirs after conversion", () => {
+	for (const name of ["audit", "triage", "deep-research", "review-queue", "security-review"]) {
+		assert.ok(existsSync(join(WORKFLOWS, `${name}.mjs`)), `${name}.mjs exists`);
+		assert.equal(existsSync(join(WORKFLOWS, `${name}.cwf.mjs`)), false, `${name}.cwf.mjs is gone`);
 	}
 	for (const name of EXAMPLE_NAMES) {
-		assert.ok(existsSync(join(EXAMPLES, `${name}.cwf.mjs`)), `${name}.cwf.mjs exists`);
+		assert.ok(existsSync(join(EXAMPLES, `${name}.mjs`)), `${name}.mjs exists`);
+		assert.equal(existsSync(join(EXAMPLES, `${name}.cwf.mjs`)), false, `${name}.cwf.mjs is gone`);
 	}
 });

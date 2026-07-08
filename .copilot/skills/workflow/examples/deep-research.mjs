@@ -1,4 +1,4 @@
-// deep-research.cwf.mjs — decompose a question into angles, research + verify each, synthesize.
+// deep-research.mjs — decompose a question into angles, research + verify each, synthesize.
 export const meta = { name: "deep-research", description: "Fan out web research over angles, verify sourced claims, synthesize a cited answer." };
 
 const question = typeof args === "string" ? args : "What changed in this topic recently?";

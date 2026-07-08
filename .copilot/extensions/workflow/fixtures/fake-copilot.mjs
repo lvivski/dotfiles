@@ -2,7 +2,7 @@
 /**
  * @module fixtures/fake-copilot
  *
- * A zero-cost stand-in for the real `copilot` binary, used by the cwf test suite
+ * A zero-cost stand-in for the real `copilot` binary, used by the workflow test suite
  * (`CWF_COPILOT_BIN` points at this file). It mimics `copilot -p <prompt> --output-format json`:
  * it prints a JSONL event stream to stdout (an `assistant.message` then a `result`) and writes a
  * child session log at `$COPILOT_HOME/session-state/<id>/events.jsonl` containing a

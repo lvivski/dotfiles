@@ -1,6 +1,6 @@
 # Harness API quick reference
 
-A harness is an **async JavaScript body** (`.cwf.mjs`) run in a deterministic `node:vm` sandbox with
+A harness is an **async JavaScript body** (`.mjs`) run in a deterministic `node:vm` sandbox with
 injected globals (no `wf.` prefix). It ends with `return <value>` — the workflow result. Read an
 agent's text with `result.content` (JavaScript cannot overload `String(result)`). Blocked in the
 sandbox: `eval`/`new Function`, `Math.random`, `Date.now()`/argless `new Date()`, and direct
@@ -63,9 +63,10 @@ export const meta = {
 
 ## Inspecting runs
 
-`/cwf` (latest) · `/cwf <runId>` · `/cwf runs` · `/cwf result <runId>` · `/cwf artifacts <runId>`, or
-the `list_workflow_runs` tool. Each run persists `script.js`, `run.json`, `result.json`, `state.json`,
-`progress.jsonl`, `journal.jsonl`, and `meta.json` under `~/.copilot/workflows/runs/<runId>/`.
+`/workflow` or `/wf` (latest) · `/workflow <runId>` · `/workflow runs` ·
+`/workflow result <runId>` · `/workflow artifacts <runId>`, or the `list_workflow_runs` tool. Each run
+persists `script.mjs`, `run.json`, `result.json`, `state.json`, `progress.jsonl`, `journal.jsonl`, and
+`meta.json` under `~/.copilot/workflows/runs/<runId>/`.
 
 ## Migrating from the old Python `wf` API
 

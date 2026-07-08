@@ -1,4 +1,4 @@
-// audit.cwf.mjs — audit files for a concern, adversarially verify findings, synthesize a report.
+// audit.mjs — audit files for a concern, adversarially verify findings, synthesize a report.
 //
 //   run_workflow({ name: "audit", budget: 1000,
 //                  args: { paths: ["src/a.js", "src/b.js"], concern: "missing input validation" } })

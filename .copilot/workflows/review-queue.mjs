@@ -1,4 +1,4 @@
-// review-queue.cwf.mjs — triage every PR I'm asked to review (GitHub + Azure DevOps).
+// review-queue.mjs — triage every PR I'm asked to review (GitHub + Azure DevOps).
 //
 //   ~/.copilot/skills/review-queue/scripts/review-queue-fetch.sh > /tmp/prs.json
 //   run_workflow({ name: "review-queue", budget: 10000, args: <parsed /tmp/prs.json> })

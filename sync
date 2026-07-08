@@ -27,18 +27,17 @@ push() {
 		.bash_functions
 		.bash_aliases
 		.bash_prompt
-		# Python cwf engine — uncomment once no Python .cwf.py harnesses are still running in ~:
-		# .local/bin/cwf
-		# .local/lib/copilot_workflows
+		.copilot/extensions/cwf
+		.local/bin/cwf
+		.local/lib/copilot_workflows
 	)
 	local f
 	for f in "${obsolete[@]}"; do [ -n "$f" ] && rm -rf ~/"$f"; done
 
-	# The deployed Python `.cwf.py` harnesses need a glob (they sit next to the kept `.cwf.mjs`), and
+	# The deployed Python `.cwf.py` harnesses need a glob (they sit next to the kept `.mjs`), and
 	# it can't be an obsolete[] entry: this file is SOURCED, so it also runs under zsh, and zsh —
 	# unlike bash — does NOT glob-expand a variable's contents, only a glob written literally here.
-	# Uncomment together with the two `.local` entries above, once no Python harnesses remain:
-	# rm -f ~/.copilot/workflows/*.cwf.py ~/.copilot/skills/workflow/examples/*.cwf.py
+	rm -f ~/.copilot/workflows/*.cwf.py ~/.copilot/skills/workflow/examples/*.cwf.py
 }
 
 pull() {

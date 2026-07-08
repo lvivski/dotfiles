@@ -1,4 +1,4 @@
-// pipeline-review.cwf.mjs — stream files through review then adversarial verify, report survivors.
+// pipeline-review.mjs — stream files through review then adversarial verify, report survivors.
 export const meta = { name: "pipeline-review", description: "Review files for real bugs, verify, and group by severity." };
 
 const files = args || ["README.md"];

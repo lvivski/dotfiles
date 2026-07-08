@@ -7,23 +7,23 @@ description: >-
   many items, custom research workflows, or work that one conversation context cannot reliably hold.
   Prefer the deep-research skill for source-backed web research reports. Do not use it for simple
   lookups, ordinary single-file edits, or tasks you can finish directly in a few tool calls.
-compatibility: GitHub Copilot CLI with the cwf extension loaded.
+compatibility: GitHub Copilot CLI with the workflow extension loaded.
 metadata:
   copilot.user-invocable: "true"
-  copilot.runtime: "cwf"
+  copilot.runtime: "workflow"
 user-invocable: true
 ---
 
 # Dynamic workflows on the Copilot CLI
 
-Author and run a small **async JavaScript** harness (`.cwf.mjs`) that coordinates many `copilot`
+Author and run a small **async JavaScript** harness (`.mjs`) that coordinates many `copilot`
 subagents. The harness owns branching, loops, checkpoints, and intermediate results; this keeps the
 main conversation focused on the final synthesized answer.
 
-**Execution path.** The cwf extension exposes the native `run_workflow` tool. It runs the harness
+**Execution path.** The workflow extension exposes the native `run_workflow` tool. It runs the harness
 in-process (no Python), spawns `copilot` subagents, accounts AIC, persists durable run artifacts, and
-— for background runs — wakes you on completion. Inspect runs with the `/cwf` slash command or the
-`list_workflow_runs` tool.
+— for background runs — wakes you on completion. Inspect runs with the `/workflow` slash command
+(`/wf` for short) or the `list_workflow_runs` tool.
 
 `workflow: <task>` is the general dynamic-workflow shortcut. `xtreme: <task>` uses the same path but
 should set `preset: "xtreme"`.
@@ -53,7 +53,7 @@ you can complete with a few direct tool calls. Workflows spend more time and AIC
    a large harness change, have an independent reviewer critique the plan for missing gates, unsafe
    tool access, budget/coverage blind spots, and result-integrity issues. Fold in the high-signal
    feedback before writing code.
-4. **Write a harness.** Inline `script` for one-offs, or save `~/.copilot/workflows/<name>.cwf.mjs`
+4. **Write a harness.** Inline `script` for one-offs, or save `~/.copilot/workflows/<name>.mjs`
    for reusable workflows. Harnesses are an **async JavaScript body** using injected globals; a final
    `return <value>` is the workflow's result. Begin with a literal `export const meta = { name,
    description, phases }` block.
@@ -67,15 +67,16 @@ you can complete with a few direct tool calls. Workflows spend more time and AIC
    `timeoutSec`, `resume`. Built-in MCP is **off** by default; set `enableMcp` only when agents need
    GitHub/MCP/web tools.
 7. **Return the result.** `run_workflow` returns the harness's final answer (foreground) or a `runId`
-   + artifact paths (background). Inspect any run with `/cwf`, `/cwf <runId>`, `/cwf runs`,
-   `/cwf result <runId>`, `/cwf artifacts <runId>`, or `list_workflow_runs`. Re-invoke with
+   + artifact paths (background). Inspect any run with `/workflow` (or `/wf`), `/workflow <runId>`,
+   `/workflow runs`, `/workflow result <runId>`, `/workflow artifacts <runId>`, or
+   `list_workflow_runs`. Re-invoke with
    `resume: <runId>` to continue — unchanged agents return instantly from checkpoints.
 
 ## Defaults that avoid common mistakes
 
 - Prefer modern, capable models by default. Any model Copilot offers works — GPT, Claude, Gemini, a
-  BYOK provider, or `auto`; cwf passes the model string through opaquely. Use a fast current model for
-  broad fan-out and a stronger one for synthesis, judging, or hard verification.
+  BYOK provider, or `auto`; the workflow runtime passes the model string through opaquely. Use a fast
+  current model for broad fan-out and a stronger one for synthesis, judging, or hard verification.
 - Let the harness pick a model per agent, but honor the user when they want to choose: `model`,
   `effort` (`none…max`), and `context` (`default|long_context`) set the **session defaults** agents
   inherit, while a per-agent value pinned in the script wins. Note `effort` only affects
@@ -104,7 +105,7 @@ you can complete with a few direct tool calls. Workflows spend more time and AIC
 - For recurring workflows, persist progress with a `memory` file: read prior state with
   `memory.read()` and record next steps with `memory.append(...)` (per-run checkpoints reset each
   run). Drive recurrence from the CLI scheduler (`/every`) invoking `run_workflow` per tick. Start
-  from `examples/loop-memory.cwf.mjs`.
+  from `examples/loop-memory.mjs`.
 - Use `worktree()` as a convenience for small isolated edits or experiments (callback form
   `worktree(name, async (dir) => …)` or lifecycle `const wt = await worktree.create(name)`), or
   `agent(prompt, { isolation: "worktree" })`. Don't default to one worktree per agent in large
@@ -120,8 +121,8 @@ you can complete with a few direct tool calls. Workflows spend more time and AIC
 
 ## Minimal harness
 
-Start from `examples/minimal-review.cwf.mjs`; copy it and adapt the prompts, rubric, and input list.
-Keep examples as `.cwf.mjs` files so they stay runnable and syntax-checkable.
+Start from `examples/minimal-review.mjs`; copy it and adapt the prompts, rubric, and input list.
+Keep examples as `.mjs` files so they stay runnable and syntax-checkable.
 
 ```js
 export const meta = { name: "review", description: "Review items and summarize.", phases: ["review", "report"] };

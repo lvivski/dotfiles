@@ -1,7 +1,7 @@
 /**
  * @module tools
  *
- * SDK-free implementation of the cwf tools (`run_workflow`, `list_workflow_runs`). All host
+ * SDK-free implementation of the workflow tools (`run_workflow`, `list_workflow_runs`). All host
  * interaction goes through an injected {@link ToolCtx} (`log` / `send` / `getWorkspaceCwd`), so this
  * module runs — and is tested — under plain `node`. `extension.mjs` supplies a `ctx` backed by the
  * real Copilot session and registers the tools returned by {@link buildTools}.
@@ -27,7 +27,9 @@ const HOME = homedir();
  * @property {() => Promise<string | undefined>} getWorkspaceCwd session working directory
  */
 
+/** @returns {string} */
 const workflowsDir = () => process.env.CWF_WORKFLOWS_DIR || join(HOME, ".copilot/workflows");
+/** @returns {string} */
 export const runsDir = () => process.env.CWF_RUNS_DIR || join(workflowsDir(), "runs");
 /** @param {string} p @returns {boolean} true when `p` is an existing regular file. */
 const isFile = (p) => {
@@ -53,9 +55,9 @@ const expandHome = (p) => (p && p.startsWith("~/") ? join(HOME, p.slice(2)) : p)
 
 export class ValidationError extends Error {}
 /** @param {unknown} ok @param {string} msg @returns {asserts ok} */
-const check = (ok, msg) => {
+function check(ok, msg) {
 	if (!ok) throw new ValidationError(msg);
-};
+}
 /** @param {string} message @param {string} [resultType] */
 const failure = (message, resultType = "failure") => ({ textResultForLlm: `Error: ${message}`, resultType, error: message });
 
@@ -70,15 +72,15 @@ export function resolveSource(input) {
 	if (input.scriptPath) {
 		const p = /** @type {string} */ (expandHome(input.scriptPath));
 		check(existsSync(p) && statSync(p).isFile(), `scriptPath is not a readable file: ${p}`);
-		check(!p.endsWith(".py"), `Python workflows are no longer supported: ${p}. Convert it to .cwf.mjs.`);
+		check(!p.endsWith(".py"), `Python workflows are no longer supported: ${p}. Convert it to .mjs.`);
 		return { source: readFileSync(p, "utf8"), label: basename(p) };
 	}
 	check(!/[\\/]|\.\./.test(input.name), `name must be a bare workflow name without path separators (got '${input.name}').`);
-	const mjs = [`${input.name}.cwf.mjs`, `${input.name}.mjs`].map((f) => join(workflowsDir(), f)).find(isFile);
+	const mjs = [`${input.name}.mjs`, `${input.name}.cwf.mjs`].map((f) => join(workflowsDir(), f)).find(isFile);
 	if (mjs) return { source: readFileSync(mjs, "utf8"), label: input.name };
 	const py = [`${input.name}.cwf.py`, `${input.name}.py`].map((f) => join(workflowsDir(), f)).find(isFile);
-	check(!py, `saved workflow '${input.name}' is a legacy Python workflow (${py}) — convert it to ${input.name}.cwf.mjs.`);
-	throw new ValidationError(`no saved workflow named '${input.name}' in ${workflowsDir()} (looked for ${input.name}.cwf.mjs).`);
+	check(!py, `saved workflow '${input.name}' is a legacy Python workflow (${py}) — convert it to ${input.name}.mjs.`);
+	throw new ValidationError(`no saved workflow named '${input.name}' in ${workflowsDir()} (looked for ${input.name}.mjs).`);
 }
 
 /** @param {string} label @returns {string} a fresh run id `<stem>-<ts>-<rand>`. */
@@ -97,7 +99,7 @@ function newRunId(label) {
 function formatResult(rec, ctx) {
 	const c = rec.counts || {};
 	const text = [
-		ctx.dryRun ? "cwf dry-run complete (no agents spawned, no AIC spent)" : `cwf run ${rec.status}`,
+		ctx.dryRun ? "workflow dry-run complete (no agents spawned, no AIC spent)" : `workflow run ${rec.status}`,
 		`runId: ${rec.runId}`,
 		`artifacts: ${ctx.runDir}`,
 		ctx.dryRun ? "AIC used: 0.0" : `AIC used: ${Number(rec.aic || 0).toFixed(1)}`,
@@ -150,7 +152,7 @@ export async function runWorkflow(input, ctx) {
 		if (input.runId) check(!/[\\/]|\.\./.test(input.runId), `runId must be a bare id without path separators (got '${input.runId}').`);
 		const runId = input.resume || input.runId || newRunId(input.name || label);
 		const runDir = join(runsDir(), runId);
-		if (input.resume) check(existsSync(runDir) && statSync(runDir).isDirectory(), `cwf: no such run to resume: ${runId}`);
+		if (input.resume) check(existsSync(runDir) && statSync(runDir).isDirectory(), `workflow: no such run to resume: ${runId}`);
 
 		/** @type {import("./runtime.mjs").ExecuteConfig} */
 		const cfg = {
@@ -186,7 +188,7 @@ export async function runWorkflow(input, ctx) {
 
 		const background = input.background ?? true;
 		if (!background) {
-			ctx.log(`cwf: ${label} (budget ${budget} AIC, run ${runId}, cwd ${cwd})`);
+			ctx.log(`workflow: ${label} (budget ${budget} AIC, run ${runId}, cwd ${cwd})`);
 			try {
 				const rec = await executeWorkflow({ ...cfg, signal: ac.signal, onLine });
 				return formatResult(rec, { runDir, cwd });
@@ -196,10 +198,10 @@ export async function runWorkflow(input, ctx) {
 			}
 		}
 
-		// Background: the engine persists script.js/meta.json/state.json immediately, so `/cwf` and
+		// Background: the engine persists script.js/meta.json/state.json immediately, so `/workflow` and
 		// list_workflow_runs work at once. Return now; wake the agent on completion. NOTE: an
 		// extension reload aborts an in-host run — resume with the same runId if that happens.
-		ctx.log(`cwf: ${label} started in background (budget ${budget} AIC, run ${runId})`);
+		ctx.log(`workflow: ${label} started in background (budget ${budget} AIC, run ${runId})`);
 		executeWorkflow({ ...cfg, signal: ac.signal, onLine })
 			.then((rec) => notifyDone(rec, runDir, ctx))
 			.catch((e) => notifyError(runId, e, runDir, ctx))
@@ -208,7 +210,7 @@ export async function runWorkflow(input, ctx) {
 				LIVE_RUNS.delete(runId);
 			});
 		return [
-			"cwf run started in background",
+			"workflow run started in background",
 			`runId: ${runId}`,
 			`artifacts: ${runDir}`,
 			`inspect while running: read ${join(runDir, "state.json")}`,
@@ -218,20 +220,20 @@ export async function runWorkflow(input, ctx) {
 	} catch (e) {
 		if (e instanceof ValidationError) return failure(e.message);
 		ctx.log(`run_workflow internal error: ${e instanceof Error ? e.stack : e}`);
-		return failure(`internal cwf extension error: ${e instanceof Error ? e.message : e}`);
+		return failure(`internal workflow extension error: ${e instanceof Error ? e.message : e}`);
 	}
 }
 
 /** @param {any} rec @param {string} runDir @param {ToolCtx} ctx */
 function notifyDone(rec, runDir, ctx) {
-	const line = `cwf workflow ${rec.runId} ${rec.status}: ${Number(rec.aic || 0).toFixed(1)} AIC, ${rec.counts?.done ?? 0} done / ${rec.counts?.failed ?? 0} failed. Result: ${join(runDir, "result.json")}`;
+	const line = `workflow ${rec.runId} ${rec.status}: ${Number(rec.aic || 0).toFixed(1)} AIC, ${rec.counts?.done ?? 0} done / ${rec.counts?.failed ?? 0} failed. Result: ${join(runDir, "result.json")}`;
 	ctx.log(line);
 	ctx.send(line);
 }
 
 /** @param {string} runId @param {unknown} err @param {string} runDir @param {ToolCtx} ctx */
 function notifyError(runId, err, runDir, ctx) {
-	const line = `cwf workflow ${runId} FAILED: ${err instanceof Error ? err.message : err}. Artifacts: ${runDir}`;
+	const line = `workflow ${runId} FAILED: ${err instanceof Error ? err.message : err}. Artifacts: ${runDir}`;
 	ctx.log(line);
 	ctx.send(line);
 }
@@ -276,7 +278,7 @@ function readJson(path) {
 	}
 }
 
-// ---- /cwf slash-command inspection (read-only; renders via ctx.log) --------------------------
+// ---- /workflow slash-command inspection (read-only; renders via ctx.log) ---------------------
 
 /** @param {string} runId @returns {string|null} the run dir if it exists. */
 function findRunDir(runId) {
@@ -347,7 +349,7 @@ function replayProgress(runDir) {
 function formatRunSummary(runId, rec, dir) {
 	const c = rec?.counts;
 	return [
-		`cwf run ${runId}`,
+		`workflow run ${runId}`,
 		`status: ${rec?.status ?? "?"}`,
 		rec?.workflow?.name ? `workflow: ${rec.workflow.name}` : "",
 		c ? `agents: ${c.agents} (done ${c.done}, cached ${c.cached}, skipped ${c.skipped}, failed ${c.failed})` : "",
@@ -363,11 +365,11 @@ function formatRunSummary(runId, rec, dir) {
 }
 
 /**
- * `/cwf` command dispatcher. Renders read-only run inspection via `ctx.log`.
- *   /cwf | /cwf latest | /cwf <runId> | /cwf runs | /cwf result <id> | /cwf artifacts <id>
+ * `/workflow`/`/wf` command dispatcher. Renders read-only run inspection via `ctx.log`.
+ *   /wf | /wf latest | /wf <runId> | /wf runs | /wf result <id> | /wf artifacts <id>
  * @param {string} argsStr @param {ToolCtx} ctx
  */
-export function cwfCommand(argsStr, ctx) {
+export function workflowCommand(argsStr, ctx) {
 	const parts = String(argsStr || "").trim().split(/\s+/).filter(Boolean);
 	const sub = parts[0] || "latest";
 	const log = (/** @type {string} */ s) => ctx.log(s);
@@ -376,21 +378,21 @@ export function cwfCommand(argsStr, ctx) {
 
 	if (sub === "result" || sub === "artifacts") {
 		const id = parts[1] || latestRunId();
-		if (!id) return void log("cwf: no workflow runs yet.");
+		if (!id) return void log("workflow: no workflow runs yet.");
 		const dir = findRunDir(id);
-		if (!dir) return void log(`cwf: no run found with id '${id}'. Try /cwf runs.`);
+		if (!dir) return void log(`workflow: no run found with id '${id}'. Try /workflow runs.`);
 		if (sub === "result") {
 			const r = readJson(join(dir, "result.json"));
-			return void log(r ? r.result || "(no result text)" : "cwf: no result yet (run may still be in progress).");
+			return void log(r ? r.result || "(no result text)" : "workflow: no result yet (run may still be in progress).");
 		}
 		const files = readdirSync(dir).sort().map((f) => `  ${join(dir, f)}`);
-		return void log(`cwf artifacts for ${id}:\n${files.join("\n")}`);
+		return void log(`workflow artifacts for ${id}:\n${files.join("\n")}`);
 	}
 
 	const id = sub === "latest" ? latestRunId() : sub;
-	if (!id) return void log("cwf: no workflow runs yet. Start one with run_workflow.");
+	if (!id) return void log("workflow: no workflow runs yet. Start one with run_workflow.");
 	const dir = findRunDir(id);
-	if (!dir) return void log(`cwf: no run found with id '${id}'. Try /cwf runs.`);
+	if (!dir) return void log(`workflow: no run found with id '${id}'. Try /workflow runs.`);
 	log(formatRunSummary(id, runRecordOf(dir), dir));
 }
 
@@ -399,13 +401,19 @@ export function cwfCommand(argsStr, ctx) {
  * @param {ToolCtx} ctx @returns {any[]}
  */
 export function buildCommands(ctx) {
+	const handler = async (/** @type {any} */ context) => {
+		workflowCommand(context?.args || "", ctx);
+	};
 	return [
 		{
-			name: "cwf",
-			description: "Inspect cwf workflow runs: /cwf [runId] · /cwf runs · /cwf latest · /cwf result <id> · /cwf artifacts <id>",
-			handler: async (/** @type {any} */ context) => {
-				cwfCommand(context?.args || "", ctx);
-			},
+			name: "workflow",
+			description: "Inspect workflow runs: /workflow [runId] · /workflow runs · /workflow latest · /workflow result <id> · /workflow artifacts <id>",
+			handler,
+		},
+		{
+			name: "wf",
+			description: "Alias for /workflow: inspect workflow runs with /wf [runId] · /wf runs · /wf result <id> · /wf artifacts <id>",
+			handler,
 		},
 	];
 }
@@ -428,7 +436,7 @@ export function buildTools(ctx) {
 		{
 			name: "list_workflow_runs",
 			skipPermission: true,
-			description: "List recent cwf workflow runs (id, status, workflow, AIC) from persisted run artifacts. Use to find a runId to resume or inspect.",
+			description: "List recent workflow runs (id, status, workflow, AIC) from persisted run artifacts. Use to find a runId to resume or inspect.",
 			parameters: { type: "object", additionalProperties: false, properties: {} },
 			handler: async () => listWorkflowRuns(),
 		},
@@ -438,22 +446,22 @@ export function buildTools(ctx) {
 		name: "run_workflow",
 		defer: "never",
 		description:
-			"Run a cwf DYNAMIC WORKFLOW: a JavaScript (.cwf.mjs) harness that fans work out to many " +
+			"Run a Copilot Workflow dynamic workflow: a JavaScript (.mjs) harness that fans work out to many " +
 			"`copilot` subagents in parallel (fan-out/synthesize, adversarial verify, tournament, " +
 			"generate-and-filter, classify-and-route, loop-until-done). The harness (an async JS body " +
 			"using injected globals: agent, parallel, fanOut, pipeline, phase, log, args, budget, memory) " +
 			"owns the loop/branching; only the final `return` value comes back here. Use for large/parallel/" +
 			"adversarial/cross-checked work (audits, deep research, ranking/triage) — NOT routine edits or " +
 			"quick lookups. Spends AIC, so ALWAYS preview with dryRun:true first. Provide EXACTLY ONE of: " +
-			"`script` (inline .cwf.mjs source), `scriptPath` (a .cwf.mjs file), or `name` (a saved workflow " +
+			"`script` (inline .mjs source), `scriptPath` (a .mjs file), or `name` (a saved workflow " +
 			"in ~/.copilot/workflows). Non-dry runs default to background:true and notify on completion.",
 		parameters: {
 			type: "object",
 			additionalProperties: false,
 			properties: {
-				script: { type: "string", description: "Inline .cwf.mjs harness source (async JS body using injected globals + `args`). One of script|scriptPath|name." },
-				scriptPath: { type: "string", description: "Path to an existing .cwf.mjs harness on disk. One of script|scriptPath|name." },
-				name: { type: "string", description: "Name of a saved workflow in ~/.copilot/workflows (resolves <name>.cwf.mjs). One of script|scriptPath|name." },
+				script: { type: "string", description: "Inline .mjs harness source (async JS body using injected globals + `args`). One of script|scriptPath|name." },
+				scriptPath: { type: "string", description: "Path to an existing .mjs harness on disk. One of script|scriptPath|name." },
+				name: { type: "string", description: "Name of a saved workflow in ~/.copilot/workflows (resolves <name>.mjs). One of script|scriptPath|name." },
 				args: { description: "Value exposed to the harness as the global `args`. Pass an actual JSON value (string/array/object), NOT a JSON-encoded string." },
 				budget: { type: "number", exclusiveMinimum: 0, description: `Soft observed AIC cap. Default ${DEFAULT_BUDGET}, or ${XTREME_BUDGET} with preset='xtreme'. Required for non-dry runs.` },
 				dryRun: { type: "boolean", description: "Plan only — run the harness with stubbed agents to show fan-out shape without spawning subagents or spending AIC. Preview here first." },

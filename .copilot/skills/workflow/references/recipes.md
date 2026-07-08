@@ -1,6 +1,6 @@
 # Workflow recipes
 
-Use these patterns as defaults, not a menu to present to the user. Copy the matching `.cwf.mjs`
+Use these patterns as defaults, not a menu to present to the user. Copy the matching `.mjs`
 example from `examples/`.
 
 ## Pipeline: default for multi-stage work
@@ -8,19 +8,19 @@ example from `examples/`.
 Use when each item has the same chain of stages and no stage needs all items at once. If a stage
 throws, that item becomes `null`; filter/report those rows explicitly. Pass a trailing
 `{ errors: "raise" }` when any failed item should abort the whole pipeline, or `{ concurrency: N }`
-to throttle (e.g. parallel checkouts). Copy `examples/pipeline-review.cwf.mjs`.
+to throttle (e.g. parallel checkouts). Copy `examples/pipeline-review.mjs`.
 
 ## Fan-out and synthesize
 
 Use when the merge stage needs every result at once. `fanOut()` defaults to re-raising branch errors;
 pass `{ errors: "drop" }` to keep partial results. `parallel()` is the barrier helper for thunks and
-defaults to dropping branch errors to `null`. Copy `examples/fanout-synthesize.cwf.mjs`.
+defaults to dropping branch errors to `null`. Copy `examples/fanout-synthesize.mjs`.
 
 ## Adversarial verification
 
 Use for findings that may be false positives. Keep verifier lenses diverse when failure modes differ.
 `verify()` is fail-closed (a verifier failure yields a failed verdict, not a crash). Copy
-`examples/pipeline-review.cwf.mjs` and adapt the rubric/lens.
+`examples/pipeline-review.mjs` and adapt the rubric/lens.
 
 ## Deep research
 
@@ -30,12 +30,12 @@ Use for findings that may be false positives. Keep verifier lenses diverse when 
 3. Verify source support with no-tool verifier agents: `quarantine({ allowAllTools: false })`.
 4. Synthesize only verified or explicitly caveated claims.
 
-Copy `examples/deep-research.cwf.mjs`.
+Copy `examples/deep-research.mjs`.
 
 ## Tournament
 
 Use comparative judgment for taste, ranking, or selecting a best option — usually more reliable than
-absolute scoring. Copy `examples/tournament.cwf.mjs`.
+absolute scoring. Copy `examples/tournament.mjs`.
 
 ## Consensus verification
 
@@ -46,23 +46,23 @@ reviewers are less likely to share blind spots; leave it unset for ordinary cons
 
 ## Generate and filter
 
-Use for brainstorming names, approaches, prompts, or test ideas. Copy `examples/generate-filter.cwf.mjs`.
+Use for brainstorming names, approaches, prompts, or test ideas. Copy `examples/generate-filter.mjs`.
 
 ## Classify and route
 
 Use a closed class list. `classify()` throws if no valid class is returned — handle it. Copy
-`examples/classify-route.cwf.mjs`.
+`examples/classify-route.mjs`.
 
 ## Loop until dry
 
 Use when discovery size is unknown. Deduplicate against everything already seen, and stop after a
-fixed number of dry rounds. Copy `examples/loop-until-dry.cwf.mjs`.
+fixed number of dry rounds. Copy `examples/loop-until-dry.mjs`.
 
 ## Cross-run memory
 
 For recurring workflows, persist progress with a `memory` file: `memory.read()` prior state,
 `memory.append(...)` the next step (per-run checkpoints reset each run). Copy
-`examples/loop-memory.cwf.mjs`.
+`examples/loop-memory.mjs`.
 
 ## Quarantine untrusted content
 

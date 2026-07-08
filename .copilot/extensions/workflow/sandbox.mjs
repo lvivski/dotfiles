@@ -1,13 +1,13 @@
 /**
  * @module sandbox
  *
- * Executes a `.cwf.mjs` harness in a deterministic `node:vm` context. The context exposes only an
- * approved global set — determinism-safe built-ins plus the injected CWF API — and disables dynamic
+ * Executes a `.mjs` harness in a deterministic `node:vm` context. The context exposes only an
+ * approved global set — determinism-safe built-ins plus the injected workflow API — and disables dynamic
  * code generation (`eval`, `new Function`). `Math.random`, `Date.now()`, and argless `new Date()`
  * are removed/blocked.
  *
  * IMPORTANT: this is footgun-prevention + determinism, NOT a security jail. A pure vm context is
- * isolated, but the CWF API we inject is made of host-realm objects, and any one of them can be
+ * isolated, but the workflow API we inject is made of host-realm objects, and any one of them can be
  * used to reach the host realm (`fn.constructor.constructor("return process")()`). Sandbox genuinely
  * untrusted harness authors at the OS/agent level (`copilot --cloud` / `/sandbox`), not here.
  */
@@ -26,15 +26,15 @@ export function deterministicGlobals() {
 
 	const SafeDate = new Proxy(Date, {
 		apply() {
-			throw new Error("cwf: `Date()` is nondeterministic — use `new Date(timestamp)`");
+			throw new Error("workflow: `Date()` is nondeterministic — use `new Date(timestamp)`");
 		},
 		construct(target, argsList, newTarget) {
-			if (argsList.length === 0) throw new Error("cwf: `new Date()` is nondeterministic — pass an explicit timestamp");
+			if (argsList.length === 0) throw new Error("workflow: `new Date()` is nondeterministic — pass an explicit timestamp");
 			return Reflect.construct(target, argsList, newTarget);
 		},
 		get(target, prop, receiver) {
 			if (prop === "now") return () => {
-				throw new Error("cwf: `Date.now()` is nondeterministic — workflows must be reproducible");
+				throw new Error("workflow: `Date.now()` is nondeterministic — workflows must be reproducible");
 			};
 			return Reflect.get(target, prop, receiver);
 		},
@@ -65,13 +65,13 @@ function fmt(x) {
  * (the workflow's final result). The body runs inside an async IIFE, so top-level `await` and a
  * final `return` work.
  *
- * @param {string} source raw `.cwf.mjs` text
+ * @param {string} source raw `.mjs` text
  * @param {{ api: Record<string, unknown>, filename?: string, log?: (m: string) => void }} config
- *   `api` — the injected CWF globals (`agent`, `parallel`, `args`, `budget`, …); `log` — console sink.
+ *   `api` — the injected workflow globals (`agent`, `parallel`, `args`, `budget`, ...); `log` — console sink.
  * @returns {Promise<unknown>}
  */
 export async function runHarness(source, config) {
-	const { api, filename = "workflow.cwf.mjs", log } = config;
+	const { api, filename = "workflow.mjs", log } = config;
 	const sink = log || (() => {});
 	/** @type {Record<string, unknown>} */
 	const sandbox = {
@@ -86,7 +86,7 @@ export async function runHarness(source, config) {
 		},
 	};
 	const context = vm.createContext(sandbox, {
-		name: "cwf-harness",
+		name: "workflow-harness",
 		codeGeneration: { strings: false, wasm: false },
 	});
 
@@ -108,7 +108,7 @@ export async function runHarness(source, config) {
 function rewriteCompileError(e) {
 	const msg = e instanceof Error ? e.message : String(e);
 	if (/Missing initializer in const|Unexpected token|Type annotation|interface|: \w+\s*[,)=]/.test(msg)) {
-		return `workflow failed to parse — it must be plain JavaScript (.cwf.mjs), not TypeScript: ${msg}`;
+		return `workflow failed to parse — it must be plain JavaScript (.mjs), not TypeScript: ${msg}`;
 	}
 	return `workflow failed to parse: ${msg}`;
 }

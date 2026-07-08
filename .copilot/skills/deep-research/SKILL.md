@@ -5,10 +5,10 @@ description: >-
   current-state investigation, or a deep answer that should fan out across independent web research
   angles and verify cited claims. Do not use it for local codebase audits, PR review queues, or quick
   factual lookups that can be answered directly.
-compatibility: GitHub Copilot CLI with cwf on PATH; Python 3.9+.
+compatibility: GitHub Copilot CLI with the workflow extension loaded.
 metadata:
   copilot.user-invocable: "true"
-  copilot.runtime: "cwf"
+  copilot.runtime: "workflow"
 user-invocable: true
 ---
 

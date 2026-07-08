@@ -64,11 +64,11 @@ test("group_start/group_end are narrated and tracked in the snapshot", () => {
 	assert.match(lines[1], /fanOut settled \(3\)/);
 });
 
-test("runSummary is a one-line Python-cwf-style rollup", () => {
+test("runSummary is a one-line workflow-style rollup", () => {
 	const p = reporter();
 	p.emit({ ev: "end", seq: 1, label: "a", ok: true, nanoAiu: 1_000_000_000, outputTokens: 1, model: "m" });
 	p.emit({ ev: "end", seq: 2, label: "b", cached: true, nanoAiu: 0 });
-	assert.match(p.runSummary(), /— cwf: 2 agents \(1 cached, 0 skipped, 0 failed\), 1\.0 AIC, [\d.]+s/);
+	assert.match(p.runSummary(), /— workflow: 2 agents \(1 cached, 0 skipped, 0 failed\), 1\.0 AIC, [\d.]+s/);
 });
 
 test("control characters in labels/errors are sanitized in narration", () => {

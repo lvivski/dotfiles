@@ -155,12 +155,12 @@ export class ProgressReporter {
 		return { ...structuredClone(this.#state), ...this.#derived() };
 	}
 
-	/** A Python-`cwf`-style one-line run summary. */
+	/** A workflow-style one-line run summary. */
 	runSummary() {
 		const { counts: c, aic: total, startedAt } = this.#state;
 		const agents = c.launched + c.cached + c.skipped;
 		const secs = ((Date.now() - Date.parse(startedAt)) / 1000).toFixed(1);
-		return `— cwf: ${agents} agents (${c.cached} cached, ${c.skipped} skipped, ${c.failed} failed), ${total.toFixed(1)} AIC, ${secs}s`;
+		return `— workflow: ${agents} agents (${c.cached} cached, ${c.skipped} skipped, ${c.failed} failed), ${total.toFixed(1)} AIC, ${secs}s`;
 	}
 }
 

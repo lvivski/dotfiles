@@ -1,4 +1,4 @@
-// classify-route.cwf.mjs — classify each ticket into a category, suggest an action, summarize.
+// classify-route.mjs — classify each ticket into a category, suggest an action, summarize.
 export const meta = { name: "classify-route", description: "Classify tickets, suggest next actions, and synthesize a triage report." };
 
 const tickets = args || ["app crashes on export", "please add dark mode", "how do I reset my password?"];

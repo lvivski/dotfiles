@@ -28,7 +28,7 @@ import { WorktreeManager, findRepoRoot, ensureClone, clonePath, _sanitize } from
 /** @typedef {import("./agent.mjs").AgentResult} AgentResult */
 /** @typedef {import("./agent.mjs").AgentSpec} AgentSpec */
 
-/** Hard caps (overridable only by CWF-owned test/dev env, never by workflow source). */
+/** Hard caps (overridable only by workflow-owned test/dev env, never by workflow source). */
 export const MAX_AGENTS = 1000;
 export const MAX_FANOUT = 4096;
 const maxAgents = () => Number(process.env.CWF_MAX_AGENTS || MAX_AGENTS);
@@ -235,7 +235,7 @@ export class Runtime {
 			return this.#worktree(`iso-${++this.#isoCounter}`, {}, (dir) => this.agent(o.prompt, { ...o, isolation: undefined, cwd: dir }));
 		}
 		if (++this.#agentCount > maxAgents()) {
-			throw new Error(`cwf: agent cap exceeded (MAX_AGENTS=${maxAgents()}) — likely a runaway loop`);
+			throw new Error(`workflow: agent cap exceeded (MAX_AGENTS=${maxAgents()}) — likely a runaway loop`);
 		}
 		const spec = this.#buildSpec(o);
 		const label = spec.label || "agent";
@@ -296,7 +296,7 @@ export class Runtime {
 	 * @returns {Promise<AgentResult>}
 	 */
 	async followUp(result, prompt, opts = {}) {
-		if (!result || !result.sessionId) throw new Error("cwf: cannot follow up — result has no sessionId");
+		if (!result || !result.sessionId) throw new Error("workflow: cannot follow up — result has no sessionId");
 		return this.agent(prompt, { ...opts, resume: result.sessionId });
 	}
 
@@ -421,7 +421,7 @@ export class Runtime {
 	 * @returns {Promise<{ path: string, cleanup: () => Promise<void> }>}
 	 */
 	async #worktreeCreate(name, opts = {}) {
-		if (this.restricted) throw new Error("cwf: worktree() is forbidden in restricted mode");
+		if (this.restricted) throw new Error("workflow: worktree() is forbidden in restricted mode");
 		if (this.dryRun) {
 			const path = opts.repo && existsSync(opts.repo) ? resolve(opts.repo) : this.#repoRoot || (await findRepoRoot(this.#cwd)) || this.#cwd;
 			return { path, cleanup: async () => {} };
@@ -547,7 +547,7 @@ export class Runtime {
 	#buildSpec(o) {
 		if (this.restricted) {
 			const escalations = ["allowAllTools", "allow", "allowUrl", "addDir", "mcp", "isolation"].filter((k) => (k === "allowAllTools" ? o[k] === true : Array.isArray(o[k]) ? o[k].length : o[k]));
-			if (escalations.length) throw new Error(`cwf: restricted mode forbids tool-escalation options: ${escalations.join(", ")}`);
+			if (escalations.length) throw new Error(`workflow: restricted mode forbids tool-escalation options: ${escalations.join(", ")}`);
 		}
 		return applyRunSettings(o, { model: this.model, effort: this.effort, context: this.context, defaultEnableMcp: this.defaultEnableMcp, cwd: this.#cwd, agentTimeout: this.agentTimeout });
 	}
@@ -627,7 +627,7 @@ export class Runtime {
 	/** @param {number} count @param {"parallel"|"fanOut"|"pipeline"} kind */
 	#capItems(count, kind) {
 		if (count > maxFanout()) {
-			throw new Error(`cwf: ${kind} item cap exceeded (${count} > MAX_FANOUT=${maxFanout()})`);
+			throw new Error(`workflow: ${kind} item cap exceeded (${count} > MAX_FANOUT=${maxFanout()})`);
 		}
 	}
 
@@ -664,7 +664,7 @@ export class Runtime {
 		/** @type {any} */
 		const worktree = this.restricted
 			? () => {
-					throw new Error("cwf: worktree() is forbidden in restricted mode");
+					throw new Error("workflow: worktree() is forbidden in restricted mode");
 			  }
 			: (/** @type {string} */ name, /** @type {any} */ a, /** @type {any} */ b) => this.#worktree(name, a, b);
 		if (!this.restricted) worktree.create = (/** @type {string} */ name, /** @type {any} */ opts) => this.#worktreeCreate(name, opts);
@@ -782,7 +782,7 @@ export function extractMeta(source) {
 
 /**
  * @typedef {object} ExecuteConfig
- * @property {string} source        raw `.cwf.mjs` text
+ * @property {string} source        raw `.mjs` text
  * @property {unknown} [args]
  * @property {string} runId
  * @property {string} runDir
@@ -839,7 +839,7 @@ export async function executeWorkflow(cfg) {
 		const rt = new Runtime({ ...runtimeOpts(cfg), dryRun: true, checkpoints: null, memory: new Memory(cfg.memoryPath, { readOnly: true, log: onLine }), progress: () => {}, log: onLine });
 		let error = null;
 		try {
-			await runHarness(stripExports(cfg.source), { api: rt.buildApi(cfg.args), filename: `${cfg.runId}.cwf.mjs`, log: onLine });
+			await runHarness(stripExports(cfg.source), { api: rt.buildApi(cfg.args), filename: `${cfg.runId}.mjs`, log: onLine });
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
 		}
@@ -894,7 +894,7 @@ export async function executeWorkflow(cfg) {
 	let error = null;
 	let result = "";
 	try {
-		const value = await runHarness(stripExports(cfg.source), { api: rt.buildApi(cfg.args), filename: `${cfg.runId}.cwf.mjs`, log: (m) => rt.log(m) });
+		const value = await runHarness(stripExports(cfg.source), { api: rt.buildApi(cfg.args), filename: `${cfg.runId}.mjs`, log: (m) => rt.log(m) });
 		result = coerceResult(value);
 	} catch (e) {
 		if (e instanceof BudgetExceeded) {

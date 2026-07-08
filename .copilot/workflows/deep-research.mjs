@@ -1,4 +1,4 @@
-// deep-research.cwf.mjs — fan out research across angles, cross-check, synthesize a cited report.
+// deep-research.mjs — fan out research across angles, cross-check, synthesize a cited report.
 //
 //   run_workflow({ name: "deep-research", budget: 3000,
 //                  args: "What changed in Python packaging between 2020 and 2024?" })

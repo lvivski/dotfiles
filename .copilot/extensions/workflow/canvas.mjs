@@ -1,7 +1,7 @@
 /**
  * @module canvas
  *
- * (Experimental) A tiny localhost web panel that renders a cwf run's live progress as a dashboard,
+ * (Experimental) A tiny localhost web panel that renders a workflow run's live progress as a dashboard,
  * for the SDK `createCanvas` surface. Deliberately SDK-free (pure `node:http`) so it unit-tests
  * under plain `node --test`; `extension.mjs` declares the canvas and points its `open` handler at
  * {@link Panel.url}. The page polls the run's `state.json` (the engine's live snapshot) and
@@ -33,7 +33,7 @@ export function renderDashboardHtml(runId, state = {}) {
 	const title = escapeHtml(state.title || runId);
 	return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>cwf · ${title}</title>
+<title>workflow · ${title}</title>
 <style>
 :root{color-scheme:dark light}
 body{font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;margin:0;padding:16px;background:#0d1117;color:#c9d1d9}
@@ -53,7 +53,7 @@ td{padding:4px 8px;border-bottom:1px solid #21262d}
 .empty{color:#8b949e;font-style:italic;padding:4px 8px}
 </style></head>
 <body>
-<h1>cwf · <span id="title">${title}</span></h1>
+<h1>workflow · <span id="title">${title}</span></h1>
 <div class="sub"><span id="status" class="badge running">…</span> &nbsp; phase <span id="phase">—</span> &nbsp; <span id="elapsed" class="dim"></span></div>
 <div class="cards">
 	<div class="card"><div class="n ok" id="c-done">0</div><div class="k">done</div></div>

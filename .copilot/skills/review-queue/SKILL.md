@@ -5,10 +5,10 @@ description: >-
   they are assigned to review (directly or via a team) across GitHub and Azure DevOps, review them
   in parallel, and report which are safe to approve vs which need a real look, with focus hints and
   why they were added (CODEOWNERS / required policy vs manual). Do not use it for a single named PR.
-compatibility: GitHub Copilot CLI with cwf on PATH; gh + jq required, az optional; Python 3.9+.
+compatibility: GitHub Copilot CLI with the workflow extension loaded; gh + jq required, az optional.
 metadata:
   copilot.user-invocable: "true"
-  copilot.runtime: "cwf"
+  copilot.runtime: "workflow"
 user-invocable: true
 ---
 

@@ -1,4 +1,4 @@
-// security-review.cwf.mjs — agent-driven security review: scan, investigate, verify, report.
+// security-review.mjs — agent-driven security review: scan, investigate, verify, report.
 //
 //   run_workflow({ name: "security-review", budget: 6000 })                       // staged/unstaged changes
 //   run_workflow({ name: "security-review", args: { root: "src/" } })             // a subtree

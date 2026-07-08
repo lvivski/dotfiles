@@ -1,7 +1,7 @@
 /**
  * @module fixtures/support
  *
- * Shared helpers for the cwf `*.test.mjs` suites: point the engine at the fake `copilot` backend
+ * Shared helpers for the workflow `*.test.mjs` suites: point the engine at the fake `copilot` backend
  * with an isolated `COPILOT_HOME`, and build throwaway result objects. Not a test file itself.
  */
 import { mkdtempSync, rmSync } from "node:fs";

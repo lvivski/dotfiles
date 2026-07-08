@@ -1,4 +1,4 @@
-// fanout-synthesize.cwf.mjs — fan out summaries over items (a barrier), then merge into one overview.
+// fanout-synthesize.mjs — fan out summaries over items (a barrier), then merge into one overview.
 export const meta = { name: "fanout-synthesize", description: "Summarize each item in parallel, then synthesize one overview." };
 
 const items = args || ["README.md"];

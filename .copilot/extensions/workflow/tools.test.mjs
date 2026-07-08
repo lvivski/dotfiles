@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { runWorkflow, listWorkflowRuns, resolveSource, ValidationError, buildTools, isNested, cwfCommand, buildCommands, abortRun } from "./tools.mjs";
+import { runWorkflow, listWorkflowRuns, resolveSource, ValidationError, buildTools, isNested, workflowCommand, buildCommands, abortRun } from "./tools.mjs";
 import { withFakeEnv, tmpDir } from "./fixtures/support.mjs";
 
 /** A fake {@link import("./tools.mjs").ToolCtx} that captures logs/sends. @param {string} cwd */
@@ -42,7 +42,7 @@ test("abortRun aborts a live background run and clears it once settled", () =>
 	withTool(
 		async ({ wf }) => {
 			const ctx = fakeCtx(tmpDir());
-			const path = join(wf, "h.cwf.mjs");
+			const path = join(wf, "h.mjs");
 			writeFileSync(path, `await agent("x"); return "done";`);
 			const out = await runWorkflow({ scriptPath: path, runId: "abort-me", budget: 1, timeoutSec: 30 }, ctx);
 			assert.match(String(out), /started in background/);
@@ -64,7 +64,7 @@ test("dryRun returns a plan and spends nothing", () =>
 test("resume of a nonexistent run id is refused", () =>
 	withTool(async ({ wf }) => {
 		const ctx = fakeCtx(tmpDir());
-		const path = join(wf, "w.cwf.mjs");
+		const path = join(wf, "w.mjs");
 		writeFileSync(path, "return 1;");
 		const out = await runWorkflow({ scriptPath: path, background: false, budget: 1, resume: "does-not-exist" }, ctx);
 		assert.match(JSON.stringify(out), /no such run to resume/);
@@ -88,9 +88,9 @@ test("legacy .cwf.py workflows are rejected with a clear message", () =>
 		assert.throws(() => resolveSource({ scriptPath: join(wf, "old.cwf.py") }), /no longer supported/);
 	}));
 
-test("saved .cwf.mjs workflow resolves and runs by name", () =>
+test("saved .mjs workflow resolves and runs by name", () =>
 	withTool(async ({ wf }) => {
-		writeFileSync(join(wf, "greet.cwf.mjs"), `return (await agent("named")).content;`, "utf8");
+		writeFileSync(join(wf, "greet.mjs"), `return (await agent("named")).content;`, "utf8");
 		const { source, label } = resolveSource({ name: "greet" });
 		assert.match(source, /agent\("named"\)/);
 		assert.equal(label, "greet");
@@ -150,40 +150,42 @@ test("recursion guard: nested subagents get no run_workflow tool", () => {
 	}
 });
 
-test("/cwf slash command: inspection dispatches (runs/latest/result/artifacts/unknown)", () =>
+test("/workflow slash command: inspection dispatches (runs/latest/result/artifacts/unknown)", () =>
 	withTool(async () => {
 		const ctx = fakeCtx(tmpDir());
-		cwfCommand("", ctx);
+		workflowCommand("", ctx);
 		assert.match(ctx.logs.at(-1) ?? "", /no workflow runs yet/);
 
 		const out = await runWorkflow({ script: `return (await agent("hi")).content;`, background: false, budget: 1 }, ctx);
 		const runId = /** @type {string} */ (out).match(/runId: (\S+)/)?.[1];
 		assert.ok(runId);
 
-		cwfCommand("runs", ctx);
+		workflowCommand("runs", ctx);
 		assert.match(ctx.logs.at(-1) ?? "", /RUN ID/);
 
-		cwfCommand("latest", ctx);
-		assert.match(ctx.logs.at(-1) ?? "", /cwf run .*\n?status: complete/s);
+		workflowCommand("latest", ctx);
+		assert.match(ctx.logs.at(-1) ?? "", /workflow run .*\n?status: complete/s);
 
-		cwfCommand(runId, ctx);
-		assert.match(ctx.logs.at(-1) ?? "", new RegExp(`cwf run ${runId}`));
+		workflowCommand(runId, ctx);
+		assert.match(ctx.logs.at(-1) ?? "", new RegExp(`workflow run ${runId}`));
 
-		cwfCommand(`result ${runId}`, ctx);
+		workflowCommand(`result ${runId}`, ctx);
 		assert.equal(ctx.logs.at(-1), "ECHO: hi");
 
-		cwfCommand(`artifacts ${runId}`, ctx);
+		workflowCommand(`artifacts ${runId}`, ctx);
 		assert.match(ctx.logs.at(-1) ?? "", /result\.json/);
 
-		cwfCommand("no-such-run", ctx);
+		workflowCommand("no-such-run", ctx);
 		assert.match(ctx.logs.at(-1) ?? "", /no run found/);
 	}));
 
-test("buildCommands registers a single 'cwf' command", () => {
+test("buildCommands registers 'workflow' and 'wf' commands", () => {
 	const cmds = buildCommands(fakeCtx("/"));
-	assert.deepEqual(cmds.map((c) => c.name), ["cwf"]);
+	assert.deepEqual(cmds.map((c) => c.name), ["workflow", "wf"]);
 	assert.equal(typeof cmds[0].handler, "function");
-	assert.match(cmds[0].description, /\/cwf/);
+	assert.equal(typeof cmds[1].handler, "function");
+	assert.match(cmds[0].description, /\/workflow/);
+	assert.match(cmds[1].description, /\/wf/);
 });
 
 test("recursion guard: nested by CWF_DEPTH >= CWF_MAX_DEPTH", () => {
