@@ -1,11 +1,12 @@
 /** @module effects.test — host effects: sidecar load, canonical keying, proxy, and checkpoint replay. */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { writeFileSync, existsSync } from "node:fs";
+import { writeFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { loadHost, buildHostProxy, sidecarPathFor } from "./effects.mjs";
-import { Runtime, executeWorkflow } from "./runtime.mjs";
+import { Runtime } from "./runtime.mjs";
+import { executeWorkflow } from "./executor.mjs";
 import { CheckpointStore } from "./checkpoint.mjs";
 import { tmpDir, withFakeEnv } from "./fixtures/support.mjs";
 
@@ -82,6 +83,15 @@ test("effects are checkpointed and replayed on resume (not re-run)", async () =>
 	const api2 = /** @type {any} */ (rt2.buildApi(null));
 	assert.deepEqual([(await api2.host.ping({ x: 1 })).n, (await api2.host.ping({ x: 1 })).n], [1, 2]);
 	assert.equal(calls, 2); // NOT re-run
+});
+
+test("effect cache keys keep the journal-compatible tuple shape", async () => {
+	const runDir = tmpDir();
+	const rt = new Runtime({ checkpoints: new CheckpointStore(runDir), cwd: tmpDir() });
+	rt.setHost(fakeHost([["ping", async (input) => input]]));
+	await /** @type {any} */ (rt.buildApi(null)).host.ping({ b: 2, a: 1 });
+	const key = JSON.parse(readFileSync(join(runDir, "journal.jsonl"), "utf8").trim()).key;
+	assert.equal(key, JSON.stringify(["fx", [], "ping", "{\"a\":1,\"b\":2}", 0]));
 });
 
 test("dry-run runs read-only effects but skips mutating ones", async () => {

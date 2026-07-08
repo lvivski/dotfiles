@@ -4,13 +4,14 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { executeWorkflow, extractMeta, stripExports, Runtime, applyRunSettings, fingerprint } from "./runtime.mjs";
+import { Runtime, applyRunSettings, fingerprint } from "./runtime.mjs";
+import { executeWorkflow, extractMeta, stripExports } from "./executor.mjs";
 import { withFakeEnv, tmpDir } from "./fixtures/support.mjs";
 
 /**
  * Run a workflow source end-to-end against the fake backend into a temp run dir.
  * @param {string} source
- * @param {Partial<import("./runtime.mjs").ExecuteConfig>} [over]
+ * @param {Partial<import("./executor.mjs").ExecuteConfig>} [over]
  * @param {Record<string, string>} [env]
  * @returns {Promise<{ record: any, runDir: string }>}
  */
@@ -184,6 +185,21 @@ test("cache keys: identical prompts in different fanOut branches do not collide"
 		assert.equal(new Set(keys).size, 2, "two distinct branch-scoped keys");
 	}));
 
+test("cache keys: auto agent keys keep the journal-compatible tuple shape", () =>
+	withFakeEnv({}, async () => {
+		const dir = tmpDir();
+		await executeWorkflow({
+			source: `await fanOut([1,2], () => agent("same prompt")); return "ok";`,
+			runId: "k",
+			runDir: dir,
+			budget: 10,
+			onLine: () => {},
+		});
+		const fp = fingerprint(applyRunSettings({ prompt: "same prompt" }, { cwd: process.cwd() }));
+		const keys = readFileSync(join(dir, "journal.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l).key).sort();
+		assert.deepEqual(keys, [JSON.stringify(["a", [0], fp, 0]), JSON.stringify(["a", [1], fp, 0])].sort());
+	}));
+
 test("cache keys: an explicit key can't collide with a branch-scoped key (structured, not concatenated)", async () => {
 	// Old bug: explicit "b0-foo" at top level and key "foo" inside fanOut branch 0 both became "b0-foo".
 	const src = `
@@ -195,6 +211,16 @@ return top.content + "|" + inner[0].content;`;
 	assert.equal(record.counts.done, 2);
 	const keys = readFileSync(join(runDir, "journal.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l).key);
 	assert.equal(new Set(keys).size, 2, "distinct structured keys");
+});
+
+test("cache keys: explicit agent keys keep the journal-compatible tuple shape", async () => {
+	const src = `
+await agent("top", { key: "b0-foo", label: "top" });
+await fanOut([0], () => agent("inner", { key: "foo", label: "inner" }));
+return "ok";`;
+	const { runDir } = await runWf(src);
+	const keys = readFileSync(join(runDir, "journal.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l).key);
+	assert.deepEqual(keys, [JSON.stringify(["e", [], "b0-foo"]), JSON.stringify(["e", [0], "foo"])]);
 });
 
 test("extractMeta parses a literal meta block; ignores non-literal", () => {

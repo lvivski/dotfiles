@@ -1,0 +1,82 @@
+/** @module executor.test — workflow execution lifecycle and harness source helpers. */
+import test from "node:test";
+import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
+import { executeWorkflow, extractMeta, stripExports } from "./executor.mjs";
+import { withFakeEnv, tmpDir } from "./fixtures/support.mjs";
+
+test("stripExports removes ESM exports while leaving plain source alone", () => {
+	assert.equal(stripExports("export const meta = {}").trim(), "const meta = {}");
+	assert.equal(stripExports("export async function main() {}").trim(), "async function main() {}");
+	assert.equal(stripExports("export default answer").trim(), "answer");
+	assert.equal(stripExports("const x = 1;").trim(), "const x = 1;");
+});
+
+test("extractMeta reads a literal meta block and ignores dynamic/non-object values", () => {
+	const meta = extractMeta(`export const meta = { name: "audit", description: "scan", phases: ["plan"] }\nreturn "ok";`);
+	assert.equal(meta.name, "audit");
+	assert.equal(meta.description, "scan");
+	assert.deepEqual([.../** @type {any[]} */ (meta.phases)], ["plan"]);
+	assert.deepEqual(extractMeta(`const meta = { name: someVar }`), {});
+	assert.deepEqual(extractMeta(`const meta = null`), {});
+	assert.deepEqual(extractMeta(`return "no meta";`), {});
+});
+
+test("dry-run executes the harness plan without writing run artifacts or spending AIC", () =>
+	withFakeEnv({}, async () => {
+		const runDir = tmpDir();
+		const rec = await executeWorkflow({
+			source: `export const meta = { name: "preview" };\nawait fanOut([1,2,3], (n) => agent("x" + n)); return "ignored";`,
+			runId: "dry",
+			runDir,
+			budget: 10,
+			dryRun: true,
+			onLine: () => {},
+		});
+		assert.equal(rec.status, "complete");
+		assert.equal(rec.aic, 0);
+		assert.match(rec.result, /dry-run plan: 3 agent call\(s\) — preview/);
+		assert.equal(existsSync(join(runDir, "run.json")), false);
+		assert.equal(existsSync(join(runDir, "journal.jsonl")), false);
+	}));
+
+test("real run persists execution artifacts and a lean result file", () =>
+	withFakeEnv({}, async () => {
+		const runDir = tmpDir();
+		const rec = await executeWorkflow({
+			source: `export const meta = { name: "persist" };\nreturn (await agent("hi")).content;`,
+			runId: "real",
+			runDir,
+			budget: 10,
+			onLine: () => {},
+		});
+		assert.equal(rec.status, "complete");
+		assert.equal(rec.result, "ECHO: hi");
+		for (const file of ["script.js", "meta.json", "state.json", "progress.jsonl", "journal.jsonl", "run.json", "result.json"]) {
+			assert.ok(existsSync(join(runDir, file)), `expected ${file}`);
+		}
+		const meta = JSON.parse(readFileSync(join(runDir, "meta.json"), "utf8"));
+		assert.equal(meta.workflow.name, "persist");
+		const result = JSON.parse(readFileSync(join(runDir, "result.json"), "utf8"));
+		assert.deepEqual(Object.keys(result).sort(), ["aic", "result", "runId", "status"]);
+		assert.equal(result.result, "ECHO: hi");
+	}));
+
+test("harness failure is persisted as an error record instead of rejecting", () =>
+	withFakeEnv({}, async () => {
+		const runDir = tmpDir();
+		const rec = await executeWorkflow({
+			source: `throw new Error("boom");`,
+			runId: "fail",
+			runDir,
+			budget: 10,
+			onLine: () => {},
+		});
+		assert.equal(rec.status, "error");
+		assert.match(rec.error ?? "", /boom/);
+		assert.ok(existsSync(join(runDir, "script.js")));
+		assert.equal(JSON.parse(readFileSync(join(runDir, "run.json"), "utf8")).status, "error");
+		assert.equal(JSON.parse(readFileSync(join(runDir, "result.json"), "utf8")).status, "error");
+	}));

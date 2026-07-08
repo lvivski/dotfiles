@@ -4,7 +4,8 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { runWorkflow, listWorkflowRuns, resolveSource, buildTools, isNested, workflowCommand, buildCommands, abortRun } from "./tools.mjs";
+import { runWorkflow, resolveSource, buildTools, isNested, buildCommands, abortRun } from "./tools.mjs";
+import { listWorkflowRuns, workflowCommand } from "./runs.mjs";
 import { withFakeEnv, tmpDir } from "./fixtures/support.mjs";
 
 /** A fake {@link import("./tools.mjs").ToolCtx} that captures logs/sends. @param {string} cwd */

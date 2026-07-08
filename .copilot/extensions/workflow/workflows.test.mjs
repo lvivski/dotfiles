@@ -6,7 +6,7 @@ import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { runHarness } from "./sandbox.mjs";
-import { stripExports, extractMeta } from "./runtime.mjs";
+import { stripExports, extractMeta } from "./executor.mjs";
 
 const WORKFLOWS = resolve(dirname(fileURLToPath(import.meta.url)), "../../workflows");
 const EXAMPLES = resolve(dirname(fileURLToPath(import.meta.url)), "../../skills/workflow/examples");
