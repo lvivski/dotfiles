@@ -90,13 +90,6 @@ export function resolveSource(input) {
  */
 export function resolveHostPath(input, harnessPath) {
 	if (input.host) {
-		// A bare token (no path separators / no `.mjs`) → a bundled sidecar in the workflows dir,
-		// mirroring `name` → `<workflowsDir>/<name>.mjs`.
-		if (!/[\\/]|\.\./.test(input.host) && !input.host.endsWith(".mjs")) {
-			const bundled = join(workflowsDir(), `${input.host}.host.mjs`);
-			check(isFile(bundled), `no bundled host capability '${input.host}' in ${workflowsDir()} (looked for ${input.host}.host.mjs)`);
-			return bundled;
-		}
 		const p = /** @type {string} */ (expandHome(input.host));
 		check(existsSync(p) && statSync(p).isFile(), `host is not a readable file: ${p}`);
 		check(p.endsWith(".mjs"), `host must point to a .mjs module: ${p}`);
@@ -538,7 +531,7 @@ export function buildTools(ctx) {
 				restricted: { type: "boolean", description: "Run the harness determinism-only + orchestration-only (read-only memory, no worktree, no per-agent tool escalation). Footgun-prevention, not a security jail." },
 				strictBudget: { type: "boolean", description: "Raise/stop once the budget cap is observed instead of gracefully skipping new agents." },
 				memory: { type: "string", description: "Durable text file the harness reads/appends via `memory` (persists across runs; a relative path resolves against the workflow cwd, or use ~/)." },
-				host: { type: "string", description: "Host-effects sidecar exposing the harness's `host.*` namespace (full-Node effects, checkpointed): a path to a `.mjs` module, or a bare name (e.g. \"standard\") resolving to a bundled `<name>.host.mjs` in the workflows dir. Defaults to a sibling `<name>.host.mjs` when present." },
+				host: { type: "string", description: "Path to a `.mjs` host-effects sidecar exposing the harness's `host.*` namespace (full-Node effects, checkpointed). Defaults to a sibling `<name>.host.mjs` when present." },
 				progress: { type: "string", enum: ["dashboard", "events", "off"], description: "Progress output mode. dashboard (default) emits ephemeral TUI-like snapshots, events emits per-event lines, off suppresses progress output." },
 				quiet: { type: "boolean", description: "Suppress progress output (equivalent to progress:'off')." },
 				cwd: { type: "string", description: "Directory to run the workflow from (default: the session's working directory)." },

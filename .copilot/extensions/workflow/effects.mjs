@@ -17,19 +17,15 @@ import { statSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 /**
- * The context object every sidecar effect receives as its 2nd arg: the run's cwd/mode plus the
- * host-realm toolkit (read-only `git`, curated `files`, pure `parseDiff`/`path`). Bundled/workflow
- * sidecars type it via the ambient `EffectCtx` (shipped as `~/.copilot/workflows/workflow.d.ts`), so
- * no import is needed.
+ * The context every sidecar effect receives as its 2nd arg. Deliberately minimal: the run's cwd/mode,
+ * an AbortSignal, and a log sink. Sidecars implement any host I/O they need with raw Node — the
+ * framework intentionally provides no git/fs/parse toolkit.
  * @typedef {object} EffectCtx
  * @property {string} cwd
  * @property {boolean} dryRun
  * @property {boolean} restricted
+ * @property {AbortSignal} signal
  * @property {(m: unknown) => void} log
- * @property {import("./hostio.mjs").HostIO["git"]} git
- * @property {import("./hostio.mjs").HostIO["files"]} files
- * @property {typeof import("./hostio.mjs").parseDiff} parseDiff
- * @property {typeof import("./hostio.mjs").pathHelpers} path
  */
 
 /** Sibling sidecar path for a harness file: `foo.mjs` → `foo.host.mjs`. @param {string} harnessPath */
@@ -42,7 +38,12 @@ export function sidecarPathFor(harnessPath) {
 /**
  * Import a sidecar in the host realm and collect its exported effect functions. An effect is a named
  * function export; it is "mutating" if listed in `export const meta = { mutates: [...] }` or tagged
- * `fn.mutates = true`. A `default` export object of functions is also accepted.
+ * `fn.mutates = true` (prefer the tag — it survives `export * from` composition). A `default` export
+ * object of functions is also accepted.
+ *
+ * NOTE: only the top-level sidecar file is mtime-busted; modules it statically imports/re-exports
+ * stay in Node's cache. Editing an imported helper mid-process needs a touch of the sidecar itself
+ * (or an extension reload).
  * @param {string} path @returns {Promise<LoadedHost>}
  */
 export async function loadHost(path) {

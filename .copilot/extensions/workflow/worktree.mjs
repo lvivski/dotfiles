@@ -8,12 +8,14 @@
  *
  * Git runs asynchronously (`spawn`) so a clone never blocks the extension's event loop.
  */
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, realpathSync, statSync } from "node:fs";
 import { join, dirname, basename, resolve, sep } from "node:path";
 
-import { spawnGit } from "./git.mjs";
+import { appendBounded } from "./text-buffer.mjs";
 
 const SAFE = /[^A-Za-z0-9._-]+/g;
+const MAX_GIT_OUTPUT_CHARS = 64_000;
 /** Sanitized name segment (dots stripped so `.`/`..` can't alias). @param {string} s */
 const sanitize = (s) => s.replace(SAFE, "-").replace(/^[-.]+|[-.]+$/g, "") || "wt";
 
@@ -29,6 +31,21 @@ class Mutex {
 		);
 		return result;
 	}
+}
+
+/** @typedef {{ code: number, stdout: string, stderr: string }} GitResult */
+
+/** Run `git args` in `cwd`, capturing bounded stdout/stderr. Resolves (never rejects) with the exit code + streams. @param {string[]} args @param {string} cwd @returns {Promise<GitResult>} */
+function spawnGit(args, cwd) {
+	return new Promise((res) => {
+		const child = spawn("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
+		let stdout = "";
+		let stderr = "";
+		child.stdout.setEncoding("utf8").on("data", (c) => (stdout = appendBounded(stdout, c, MAX_GIT_OUTPUT_CHARS)));
+		child.stderr.setEncoding("utf8").on("data", (c) => (stderr = appendBounded(stderr, c, MAX_GIT_OUTPUT_CHARS)));
+		child.on("error", (e) => res({ code: 127, stdout: "", stderr: String(e?.message || e) }));
+		child.on("close", (code) => res({ code: code ?? 1, stdout, stderr }));
+	});
 }
 
 /** Run git, returning trimmed stdout; throws on failure when `check`. @param {string[]} args @param {string} cwd @param {boolean} [check] */
@@ -218,4 +235,4 @@ export class WorktreeManager {
 	}
 }
 
-export { sanitize as _sanitize, SAFE as _SAFE };
+export { sanitize as _sanitize, SAFE as _SAFE, spawnGit as _spawnGit };

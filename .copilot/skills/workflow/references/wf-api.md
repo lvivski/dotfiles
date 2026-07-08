@@ -77,22 +77,13 @@ the effects it needs — the core API never grows per workflow.
 - **Provide effects** two ways (either/both): a sibling `~/.copilot/workflows/<name>.host.mjs`, or
   `run_workflow({ host: "/path/to/effects.mjs" })`.
 - **Author an effect** as `export async function name(input, ctx) { … }`. Mark side-effecting ones
-  via `export const meta = { mutates: ["writeManifest"] }` (or `fn.mutates = true`); mutating effects
-  are **skipped under dry-run**, and all `host.*` is denied in **restricted** mode.
-- **`ctx`** hands each effect the run's `{ cwd, dryRun, restricted, log }` plus a host-realm toolkit so
-  sidecars compose without fragile imports (type it via the ambient `EffectCtx` from the co-located
-  `workflow.d.ts` — no import needed):
-  - `ctx.git(...args)` — read-only git (allowlist: `diff`/`log`/`show`/`status`/`rev-parse`/
-    `merge-base`/`rev-list`/`ls-files`/…); returns stdout, rejects on mutation or non-zero exit.
-  - `ctx.files.readText|readJson|exists(path)`, `ctx.files.glob(pattern, opts?)` (sorted; prunes
-    `node_modules`+dotfiles), `ctx.files.writeText|writeJson(path, …)` (byte-stable sorted JSON).
-  - `ctx.parseDiff(text)` → `FileDiff[]` (`{ path, oldPath, hunks:[{ header, oldStart, newStart,
-    changes:[{ type:"add"|"del"|"context", text, oldLine, newLine }] }] }`); `ctx.path.{basename,
-    dirname,join,relative,extname,sep}`.
-- **Standard capability:** a bundled `standard.host.mjs` (in `~/.copilot/workflows/`, beside the
-  standard harnesses) exposes generic `git`/`readText`/`readJson`/`exists`/`glob`/`writeText`/
-  `writeJson` effects — reference it with `host: "standard"`, or `export * from "./standard.host.mjs"`
-  in your own sidecar.
+  via `fn.mutates = true` (survives `export *`) or `export const meta = { mutates: [...] }`; mutating
+  effects are **skipped under dry-run**, and all `host.*` is denied in **restricted** mode.
+- **`ctx` is deliberately minimal** — `{ cwd, dryRun, restricted, signal, log }`, nothing else. The
+  framework provides **no** git/fs/parse toolkit; a sidecar implements whatever host I/O it needs with
+  raw Node (`node:child_process`, `node:fs`, `fetch`, npm), resolving paths against `ctx.cwd` and
+  passing `ctx.signal` to its own `spawn`/`fetch` for cancellation. Reusable helpers live in userland
+  (e.g. one shared sidecar that others `export *`), not in the framework.
 
 Keep exotic/nondeterministic-and-unrecordable work (network, long builds, branch creation) in an
 `agent()` — outside the determinism boundary by design.
@@ -117,10 +108,9 @@ Translate Python `wf.*` calls to injected JavaScript globals:
 - `with wf.phase("x"):` → `phase("x")` plus explicit per-agent `phase` for concurrent work
 - `str(result)` / `as_text(result)` → `result.content`
 - `subprocess`/`git diff`/`Path.read_text`/`json.dump` inline → move that deterministic work into a
-  **host sidecar** (`<name>.host.mjs`) as an effect and call it via `host.<name>(input)`; use the
-  `ctx` toolkit (`ctx.git`, `ctx.files.readJson`/`writeJson`, `ctx.parseDiff`) inside the effect.
-  Don't ask an agent to re-run a deterministic classifier — mine in the sidecar (checkpointed) and
-  reserve agents for judgment (safety assessment, reports).
+  **host sidecar** (`<name>.host.mjs`) as an effect and call it via `host.<name>(input)`; implement the
+  I/O with raw Node (`node:child_process`, `node:fs`) inside the effect. Don't ask an agent to re-run a
+  deterministic classifier — mine in the sidecar (checkpointed) and reserve agents for judgment.
 - Python keyword args become an options object, e.g. `agent="worker", enable_mcp=True` → `{ agentType: "worker", enableMcp: true }`
 
 Save converted workflows as `~/.copilot/workflows/<name>.mjs`. The JavaScript harness is async, uses

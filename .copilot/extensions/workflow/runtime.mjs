@@ -24,7 +24,6 @@ import { ProgressReporter } from "./progress.mjs";
 import { runHarness, deterministicGlobals } from "./sandbox.mjs";
 import * as patterns from "./patterns.mjs";
 import { WorktreeManager, findRepoRoot, ensureClone, clonePath, _sanitize } from "./worktree.mjs";
-import { HostIO, parseDiff, pathHelpers } from "./hostio.mjs";
 import { loadHost, buildHostProxy } from "./effects.mjs";
 import { stableStringify } from "./json.mjs";
 
@@ -163,8 +162,6 @@ export class Runtime {
 	#host = null;
 	/** @type {import("./effects.mjs").EffectCtx|null} */
 	#hostCtx = null;
-	/** True once an uncached effect ran, so we can warn the run isn't resume-safe. */
-	#nonResumable = false;
 	#groupSeq = 0;
 	/**
 	 * @param {{
@@ -264,9 +261,16 @@ export class Runtime {
 	 * @returns {Promise<AgentResult>}
 	 */
 	agent(prompt, opts = {}) {
-		const p = this.#agentRun(prompt, opts);
-		// A never-rejecting mirror: lets drain() await orphans without swallowing the caller's own
-		// rejection, and (by attaching a handler to `p`) prevents an unhandled-rejection on orphans.
+		return this.#track(this.#agentRun(prompt, opts));
+	}
+
+	/**
+	 * Register a task promise so {@link Runtime#drain} awaits it even when the harness never awaits it
+	 * (fire-and-forget). A never-rejecting mirror lets drain settle orphans without swallowing the
+	 * caller's own rejection and prevents unhandled-rejection warnings on orphans.
+	 * @template T @param {Promise<T>} p @returns {Promise<T>}
+	 */
+	#track(p) {
 		const tracked = p.then(
 			() => {},
 			() => {},
@@ -715,21 +719,16 @@ export class Runtime {
 		this.#host = loaded;
 	}
 
-	/** True once an uncached effect ran (the run can't be safely resumed from checkpoints). */
-	get nonResumable() {
-		return this.#nonResumable;
-	}
-
 	/**
-	 * The context object every sidecar effect receives as its 2nd arg: the run's cwd/mode plus the
-	 * host-realm toolkit (read-only git, curated fs, pure `parseDiff`/`path`) so sidecars compose
-	 * workflow-specific effects without fragile cross-directory imports. Built once per run.
+	 * The context object every sidecar effect receives as its 2nd arg: the run's cwd/mode + signal +
+	 * log. Deliberately minimal — sidecars implement whatever host I/O they need with raw Node
+	 * (`node:child_process`, `node:fs`, `fetch`, npm), so the framework carries no utility grab-bag.
+	 * Built once per run.
 	 * @returns {import("./effects.mjs").EffectCtx}
 	 */
 	#effectCtx() {
 		if (!this.#hostCtx) {
-			const io = new HostIO({ cwd: this.#cwd, dryRun: this.dryRun, restricted: this.restricted, log: this.#log });
-			this.#hostCtx = { cwd: this.#cwd, dryRun: this.dryRun, restricted: this.restricted, log: (/** @type {unknown} */ m) => this.#log(String(m)), git: io.git, files: io.files, parseDiff, path: pathHelpers };
+			this.#hostCtx = { cwd: this.#cwd, dryRun: this.dryRun, restricted: this.restricted, signal: this.#abort.signal, log: (/** @type {unknown} */ m) => this.#log(String(m)) };
 		}
 		return this.#hostCtx;
 	}
@@ -738,7 +737,9 @@ export class Runtime {
 	 * Run one sidecar effect and checkpoint its result — the code analogue of {@link Runtime#agent}.
 	 * Cached by (branch, name, canonical input, occurrence) so repeated calls and read-after-write
 	 * stay correct, and a resumed run replays recorded results instead of re-executing. Mutating
-	 * effects are skipped under dry-run; results must be JSON-serializable to be checkpointed.
+	 * effects are skipped under dry-run; execution is bounded by the run's concurrency semaphore and
+	 * cancelled with the run; every returned result is JSON-normalized (so it stays checkpointable and
+	 * dry-run/uncached behave like a cached real run).
 	 * @param {string} name @param {unknown} input @param {{ cache?: boolean }} [opts]
 	 * @returns {Promise<unknown>}
 	 */
@@ -754,6 +755,7 @@ export class Runtime {
 			this.#log(`  ${label}: [dry-run] skipped (mutating)`);
 			return undefined;
 		}
+		if (this.#abort.signal.aborted) throw new Error(`${label} skipped: run aborting`);
 
 		// Reuse the agent checkpoint journal: an effect record is `{ value, ok, aic:0 }`, keyed by
 		// (branch, name, canonical input, occurrence) so repeated calls and read-after-write are
@@ -773,30 +775,31 @@ export class Runtime {
 				this.#log(`  ${label} (cached)`);
 				return cached.value;
 			}
-		} else if (!cache) {
-			this.#nonResumable = true;
 		}
 
+		// Bound effect concurrency with the same semaphore agents use — a large fanOut of spawning/
+		// fetching effects can't outrun the limiter.
 		let value;
+		await this.#sem.acquire();
 		try {
 			value = await fn(input, this.#effectCtx());
 		} catch (e) {
 			throw new Error(`${label} failed: ${e instanceof Error ? e.message : e}`);
+		} finally {
+			this.#sem.release();
 		}
 
-		if (checkpoints && key) {
-			let record;
-			try {
-				record = { value: JSON.parse(JSON.stringify(value === undefined ? null : value)), ok: true, aic: 0 };
-			} catch {
-				throw new Error(`${label} result must be JSON-serializable to checkpoint — return plain data or call with { cache: false }`);
-			}
-			checkpoints.put(key, /** @type {any} */ (record));
-			this.#log(`  ${label}`);
-			return record.value;
+		// Normalize every returned result through a JSON round-trip so dry-run/uncached and cached runs
+		// behave identically and a non-serializable result fails loudly rather than silently.
+		let normalized;
+		try {
+			normalized = JSON.parse(JSON.stringify(value === undefined ? null : value));
+		} catch {
+			throw new Error(`${label} result must be JSON-serializable — return plain data or call with { cache: false }`);
 		}
+		if (checkpoints && key) checkpoints.put(key, /** @type {any} */ ({ value: normalized, ok: true, aic: 0 }));
 		this.#log(`  ${label}${cache ? "" : " (uncached)"}`);
-		return value;
+		return normalized;
 	}
 
 	/**
@@ -816,7 +819,7 @@ export class Runtime {
 		// host.* — checkpointed host effects from the loaded sidecar (restricted/absent → throwing proxy).
 		const host = buildHostProxy({
 			names: this.#host?.names ?? [],
-			invoke: (name, input, opts) => this.#effect(name, input, opts),
+			invoke: (name, input, opts) => this.#track(this.#effect(name, input, opts)),
 			restricted: this.restricted,
 			hasSidecar: !!this.#host,
 		});
@@ -994,7 +997,7 @@ export async function executeWorkflow(cfg) {
 		const rt = new Runtime({ ...runtimeOpts(cfg), dryRun: true, checkpoints: null, memory: new Memory(cfg.memoryPath, { readOnly: true, log: onLine }), progress: () => {}, log: onLine });
 		let error = null;
 		try {
-			if (cfg.hostPath) rt.setHost(await loadHost(cfg.hostPath));
+			if (cfg.hostPath && !cfg.restricted) rt.setHost(await loadHost(cfg.hostPath));
 			await runHarness(stripExports(cfg.source), { api: rt.buildApi(cfg.args), filename: `${cfg.runId}.mjs`, log: onLine });
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
@@ -1017,7 +1020,7 @@ export async function executeWorkflow(cfg) {
 	// --- real run ---
 	mkdirSync(cfg.runDir, { recursive: true });
 	writeFileSync(join(cfg.runDir, "script.js"), cfg.source, "utf8");
-	if (cfg.hostPath) {
+	if (cfg.hostPath && !cfg.restricted) {
 		try {
 			copyFileSync(cfg.hostPath, join(cfg.runDir, "host.js")); // provenance copy alongside script.js
 		} catch {
@@ -1058,7 +1061,7 @@ export async function executeWorkflow(cfg) {
 	let error = null;
 	let result = "";
 	try {
-		if (cfg.hostPath) rt.setHost(await loadHost(cfg.hostPath));
+		if (cfg.hostPath && !cfg.restricted) rt.setHost(await loadHost(cfg.hostPath));
 		const value = await runHarness(stripExports(cfg.source), { api: rt.buildApi(cfg.args), filename: `${cfg.runId}.mjs`, log: (m) => rt.log(m) });
 		result = coerceResult(value);
 	} catch (e) {

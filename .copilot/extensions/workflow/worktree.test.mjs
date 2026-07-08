@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import { writeFileSync, existsSync, realpathSync, symlinkSync } from "node:fs";
 import { join, sep, dirname } from "node:path";
 
-import { WorktreeManager, ensureClone, repoName, repoKey, clonePath, findRepoRoot, _sanitize } from "./worktree.mjs";
+import { WorktreeManager, ensureClone, repoName, repoKey, clonePath, findRepoRoot, _sanitize, _spawnGit } from "./worktree.mjs";
 import { Runtime } from "./runtime.mjs";
 import { tmpDir, withFakeEnv } from "./fixtures/support.mjs";
 
@@ -21,6 +21,22 @@ function makeRepo() {
 	run(["commit", "-q", "-m", "init"]);
 	return dir;
 }
+
+test("_spawnGit resolves { code:0, stdout } on success", async () => {
+	const r = await _spawnGit(["rev-parse", "HEAD"], makeRepo());
+	assert.equal(r.code, 0);
+	assert.match(r.stdout.trim(), /^[0-9a-f]{40}$/);
+});
+
+test("_spawnGit never rejects: a non-zero exit is returned as a code", async () => {
+	const r = await _spawnGit(["cat-file", "-e", "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"], makeRepo());
+	assert.notEqual(r.code, 0);
+});
+
+test("_spawnGit reports a spawn failure (bad cwd) as code 127", async () => {
+	const r = await _spawnGit(["status"], join(tmpDir(), "nope"));
+	assert.equal(r.code, 127);
+});
 
 test("repoName / repoKey normalize local, GitHub, and ADO forms", () => {
 	assert.equal(repoName("https://github.com/o/repo.git"), "repo");

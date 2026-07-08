@@ -9,6 +9,8 @@
  * `classify`/`tournament` throw when the model fails or returns nothing valid.
  */
 
+import { stableStringify } from "./json.mjs";
+
 /** @typedef {import("./runtime.mjs").Runtime} Runtime */
 /** @typedef {import("./agent.mjs").AgentResult} AgentResult */
 
@@ -35,19 +37,6 @@ const asFloat = (x) => {
 	const n = Number(x);
 	return Number.isFinite(n) ? n : null;
 };
-
-/** Stable JSON stringify (sorted keys) so schema prompts are deterministic. @param {any} v */
-function stableStringify(v) {
-	return JSON.stringify(v, (_k, val) => {
-		if (val && typeof val === "object" && !Array.isArray(val)) {
-			/** @type {Record<string, any>} */
-			const sorted = {};
-			for (const k of Object.keys(val).sort()) sorted[k] = val[k];
-			return sorted;
-		}
-		return val;
-	});
-}
 
 /**
  * Find the end index (exclusive) of a balanced JSON value starting at `open` in `text`, honoring

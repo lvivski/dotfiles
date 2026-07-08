@@ -1,13 +1,13 @@
 /** @module effects.test — host effects: sidecar load, canonical keying, proxy, and checkpoint replay. */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { writeFileSync } from "node:fs";
+import { writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
 import { loadHost, buildHostProxy, sidecarPathFor } from "./effects.mjs";
-import { Runtime } from "./runtime.mjs";
+import { Runtime, executeWorkflow } from "./runtime.mjs";
 import { CheckpointStore } from "./checkpoint.mjs";
-import { tmpDir } from "./fixtures/support.mjs";
+import { tmpDir, withFakeEnv } from "./fixtures/support.mjs";
 
 /** @param {string} body @returns {string} path to a temp sidecar module. */
 function sidecar(body) {
@@ -102,13 +102,13 @@ test("dry-run runs read-only effects but skips mutating ones", async () => {
 	assert.deepEqual([reads, writes], [1, 0]);
 });
 
-test("effects receive the ctx toolkit (cwd + git/files/parseDiff/path)", async () => {
+test("effects receive the minimal ctx (cwd/dryRun/restricted/signal/log)", async () => {
 	const dir = tmpDir();
-	const host = fakeHost([["probe", async (_i, ctx) => ({ cwd: ctx.cwd, git: typeof ctx.git, parseDiff: typeof ctx.parseDiff, base: ctx.path.basename("a/b.ts") })]]);
+	const host = fakeHost([["probe", async (_i, ctx) => ({ cwd: ctx.cwd, dryRun: ctx.dryRun, restricted: ctx.restricted, log: typeof ctx.log, signal: ctx.signal instanceof AbortSignal })]]);
 	const rt = new Runtime({ cwd: dir });
 	rt.setHost(host);
 	const out = await /** @type {any} */ (rt.buildApi(null)).host.probe({});
-	assert.deepEqual(out, { cwd: dir, git: "function", parseDiff: "function", base: "b.ts" });
+	assert.deepEqual(out, { cwd: dir, dryRun: false, restricted: false, log: "function", signal: true });
 });
 
 test("restricted mode and missing sidecar reject host calls", () => {
@@ -125,4 +125,25 @@ test("a non-JSON effect result is rejected (must be checkpointable)", async () =
 	// a function value survives JSON round-trip as undefined → fine; force a real failure with a BigInt
 	rt.setHost(fakeHost([["bad", async () => ({ big: 1n })]]));
 	await assert.rejects(/** @type {any} */ (rt.buildApi(null)).host.bad({}), /JSON-serializable/);
+});
+
+test("drain() awaits a fire-and-forget effect (bounded + tracked)", async () => {
+	let done = false;
+	const rt = new Runtime({ checkpoints: new CheckpointStore(tmpDir()), cwd: tmpDir() });
+	rt.setHost(fakeHost([["slow", async () => (await new Promise((r) => setTimeout(r, 20)), (done = true), 1)]]));
+	/** @type {any} */ (rt.buildApi(null)).host.slow({}); // NOT awaited
+	assert.equal(done, false);
+	await rt.drain();
+	assert.equal(done, true);
+});
+
+test("restricted mode never imports the sidecar (no top-level side effects)", async () => {
+	const marker = join(tmpDir(), "loaded.marker");
+	const sidecarPath = join(tmpDir(), "probe.host.mjs");
+	writeFileSync(sidecarPath, `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(marker)}, "1");\nexport const noop = () => 1;\n`);
+	const base = { source: 'return "ok";', hostPath: sidecarPath, budget: 10, onLine: () => {} };
+	await withFakeEnv({}, () => executeWorkflow({ ...base, runId: "r-restricted", runDir: tmpDir(), restricted: true }));
+	assert.equal(existsSync(marker), false, "restricted run must not import the sidecar");
+	await withFakeEnv({}, () => executeWorkflow({ ...base, runId: "r-normal", runDir: tmpDir() }));
+	assert.equal(existsSync(marker), true, "non-restricted run imports the sidecar");
 });
