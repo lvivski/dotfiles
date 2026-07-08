@@ -132,6 +132,18 @@ test("list_workflow_runs reads persisted artifacts newest-first", () =>
 		assert.match(listing, /complete/);
 	}));
 
+test("list_workflow_runs names old harness-only run artifacts", () =>
+	withTool(({ runs }) => {
+		const dir = join(runs, "old-run");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "meta.json"), JSON.stringify({ harness: "/tmp/mobius_deep_audit.cwf.py", updated_at: "2026-01-01T00:00:00" }));
+		writeFileSync(join(dir, "progress.jsonl"), JSON.stringify({ ev: "run_start", harness: "/tmp/mobius_deep_audit.cwf.py", meta: {} }) + "\n" + JSON.stringify({ ev: "run_end", agents: 1, launched: 1, cached: 0, skipped: 0, failed: 0, nano_aiu: 500_000_000, t: 1783308171 }) + "\n");
+		const listing = listWorkflowRuns();
+		assert.match(listing, /old-run/);
+		assert.match(listing, /mobius_deep_aud/);
+		assert.match(listing, /\s+0\.5\s+/);
+	}));
+
 test("list_workflow_runs caps output to newest runs before parsing metadata", () =>
 	withTool(async ({ runs }) => {
 		for (let i = 0; i < 55; i++) {

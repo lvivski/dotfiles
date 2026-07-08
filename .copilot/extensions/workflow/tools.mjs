@@ -251,13 +251,13 @@ export function listWorkflowRuns() {
 	const rows = [];
 	for (const { name, d, mtime } of entries.slice(0, RUN_LIST_LIMIT)) {
 		const meta = readJson(join(d, "meta.json")) || {};
-		const rec = readJson(join(d, "run.json")) || readJson(join(d, "state.json")) || {};
+		const rec = runRecordOf(d) || {};
 		rows.push({
 			runId: name,
 			status: rec.status || "?",
-			workflow: meta.workflow?.name || rec.workflow?.name || "",
+			workflow: workflowName(meta, rec),
 			aic: Number(rec.aic || 0),
-			updated: meta.updatedAt || rec.finishedAt || rec.updatedAt || new Date(mtime).toISOString(),
+			updated: meta.updatedAt || meta.updated_at || rec.finishedAt || rec.updatedAt || new Date(mtime).toISOString(),
 		});
 	}
 	if (!rows.length) return `No workflow runs in ${dir}.`;
@@ -308,6 +308,14 @@ function readJson(path) {
 	}
 }
 
+/** @param {any} meta @param {any} rec @returns {string} */
+function workflowName(meta, rec) {
+	const explicit = meta.workflow?.name || meta.name || rec.workflow?.name || rec.name;
+	if (explicit) return String(explicit);
+	const harness = meta.harness || rec.harness || rec.workflow?.harness;
+	return harness ? basename(String(harness)).replace(/(?:\.cwf)?\.(?:mjs|py)$/i, "") : "";
+}
+
 // ---- /workflow slash-command inspection (read-only; renders via ctx.log) ---------------------
 
 /** @param {string} runId @returns {string|null} the run dir if it exists. */
@@ -339,6 +347,7 @@ function runRecordOf(runDir) {
 function replayProgress(runDir) {
 	const path = join(runDir, "progress.jsonl");
 	if (!existsSync(path)) return null;
+	/** @type {any} */
 	let meta = {};
 	let end = null;
 	for (const line of readFileSync(path, "utf8").split("\n")) {
@@ -350,11 +359,13 @@ function replayProgress(runDir) {
 		} catch {
 			continue;
 		}
-		if (rec.ev === "run_start") meta = rec.meta || {};
+		if (rec.ev === "run_start") meta = { ...(rec.meta || {}), harness: rec.harness || rec.meta?.harness || "" };
 		else if (rec.ev === "run_end") end = rec;
 	}
-	if (!end) return { status: "running", workflow: meta, counts: null, aic: 0 };
-	return { status: "complete", workflow: meta, counts: { agents: end.agents, launched: end.launched, done: end.done, failed: end.failed, cached: end.cached, skipped: end.skipped }, aic: Number(end.aic || 0) };
+	if (!end) return { status: "running", workflow: meta, harness: meta.harness || "", counts: null, aic: 0 };
+	const aic = end.aic != null ? Number(end.aic || 0) : Number(end.nano_aiu || end.nanoAiu || 0) / 1_000_000_000;
+	const updatedAt = typeof end.t === "number" ? new Date(end.t * 1000).toISOString() : undefined;
+	return { status: "complete", workflow: meta, harness: meta.harness || "", counts: { agents: end.agents, launched: end.launched, done: end.done, failed: end.failed, cached: end.cached, skipped: end.skipped }, aic, updatedAt };
 }
 
 /**
