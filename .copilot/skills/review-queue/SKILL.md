@@ -27,13 +27,9 @@ triage only.
    report that nothing is assigned and stop.
 2. **Preview/run.** Show PR count, platforms, budget, and whether deep checkout is enabled. Then run:
    ```text
-   run_workflow({ scriptPath: "~/.copilot/workflows/review-queue.cwf.py",
+   run_workflow({ name: "review-queue",
                   budget: 10000,
                   args: { prs: <contents of /tmp/review-queue.json> } })
-   ```
-   Headless equivalent:
-   ```bash
-   cwf run ~/.copilot/workflows/review-queue.cwf.py --budget 10000 --args @/tmp/review-queue.json
    ```
 3. **Return the triage table** with linked PRs, platform/account, coverage, decision, risk,
    why-assigned, justification, focus hints, AIC used, and `runId`.

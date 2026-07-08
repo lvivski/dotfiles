@@ -1,78 +1,79 @@
 # Workflow recipes
 
-Use these patterns as defaults, not a menu to present to the user.
+Use these patterns as defaults, not a menu to present to the user. Copy the matching `.cwf.mjs`
+example from `examples/`.
 
 ## Pipeline: default for multi-stage work
 
-Use when each item has the same chain of stages and no stage needs all items at once.
-If a stage raises, that item becomes `None`; filter/report those rows explicitly. Pass
-`errors="raise"` when any failed item should abort the whole pipeline.
-Copy `examples/pipeline-review.cwf.py`.
+Use when each item has the same chain of stages and no stage needs all items at once. If a stage
+throws, that item becomes `null`; filter/report those rows explicitly. Pass a trailing
+`{ errors: "raise" }` when any failed item should abort the whole pipeline, or `{ concurrency: N }`
+to throttle (e.g. parallel checkouts). Copy `examples/pipeline-review.cwf.mjs`.
 
 ## Fan-out and synthesize
 
-Use when the merge stage needs every result at once.
-`wf.fan_out()` defaults to re-raising branch errors; pass `errors="drop"` to keep partial results.
-`wf.parallel()` is the barrier helper for thunks and defaults to dropping branch errors to `None`.
-Copy `examples/fanout-synthesize.cwf.py`.
+Use when the merge stage needs every result at once. `fanOut()` defaults to re-raising branch errors;
+pass `{ errors: "drop" }` to keep partial results. `parallel()` is the barrier helper for thunks and
+defaults to dropping branch errors to `null`. Copy `examples/fanout-synthesize.cwf.mjs`.
 
 ## Adversarial verification
 
 Use for findings that may be false positives. Keep verifier lenses diverse when failure modes differ.
-Copy `examples/pipeline-review.cwf.py` and adapt the rubric/lens.
+`verify()` is fail-closed (a verifier failure yields a failed verdict, not a crash). Copy
+`examples/pipeline-review.cwf.mjs` and adapt the rubric/lens.
 
 ## Deep research
 
-1. Use `wf.structured()` to decompose the question into angles.
+1. Use `structured()` to decompose the question into angles.
 2. Research each angle with quarantined reader agents. For web research, opt into network:
-   `wf.quarantine(deny_url=[], enable_mcp=True)`.
-3. Verify source support with no-tool verifier agents:
-   `wf.quarantine(allow_all_tools=False)`.
+   `quarantine({ denyUrl: [], enableMcp: true })`.
+3. Verify source support with no-tool verifier agents: `quarantine({ allowAllTools: false })`.
 4. Synthesize only verified or explicitly caveated claims.
-Copy `examples/deep-research.cwf.py`.
+
+Copy `examples/deep-research.cwf.mjs`.
 
 ## Tournament
 
-Use comparative judgment for taste, ranking, or selecting a best option. It is usually more reliable
-than absolute scoring.
-Copy `examples/tournament.cwf.py`.
+Use comparative judgment for taste, ranking, or selecting a best option — usually more reliable than
+absolute scoring. Copy `examples/tournament.cwf.mjs`.
 
 ## Consensus verification
 
-Use `wf.consensus(..., reviewers=3)` when critical work needs independent dual/triple review. It
-requires a successful-reviewer quorum, then keeps the majority verdict plus dissenting reasons.
-For high-stakes checks, prefer optional model-family diversity with `models=[...]` so reviewers are
-less likely to share the same blind spots; leave it unset for ordinary consensus so it inherits the
-run model.
+Use `consensus(subject, rubric, { reviewers: 3 })` when critical work needs independent dual/triple
+review. It requires a successful-reviewer quorum, then keeps the majority verdict plus dissenting
+reasons. For high-stakes checks, prefer optional model-family diversity with `{ models: [...] }` so
+reviewers are less likely to share blind spots; leave it unset for ordinary consensus.
 
 ## Generate and filter
 
-Use for brainstorming names, approaches, prompts, or test ideas.
-Copy `examples/generate-filter.cwf.py`.
+Use for brainstorming names, approaches, prompts, or test ideas. Copy `examples/generate-filter.cwf.mjs`.
 
 ## Classify and route
 
-Use a closed class list. Handle the possibility that classification raises.
-Copy `examples/classify-route.cwf.py`.
+Use a closed class list. `classify()` throws if no valid class is returned — handle it. Copy
+`examples/classify-route.cwf.mjs`.
 
 ## Loop until dry
 
 Use when discovery size is unknown. Deduplicate against everything already seen, and stop after a
-fixed number of dry rounds.
-Copy `examples/loop-until-dry.cwf.py`.
+fixed number of dry rounds. Copy `examples/loop-until-dry.cwf.mjs`.
+
+## Cross-run memory
+
+For recurring workflows, persist progress with a `memory` file: `memory.read()` prior state,
+`memory.append(...)` the next step (per-run checkpoints reset each run). Copy
+`examples/loop-memory.cwf.mjs`.
 
 ## Quarantine untrusted content
 
 - Reader agents that inspect user files, web pages, issues, PR comments, or model-generated text get
-  `wf.quarantine()`.
-- If a later verifier or synthesizer consumes that text, pass `wf.quarantine(allow_all_tools=False)`
+  `quarantine()`.
+- If a later verifier or synthesizer consumes that text, pass `quarantine({ allowAllTools: false })`
   unless it truly needs tools.
 - A trusted actor agent should receive only structured, verified outputs before taking privileged
   actions.
 
 ## Coverage and budget reporting
 
-If the workflow does not cover everything, log and report the boundary:
-
-Say the same boundary in the final answer. Silent sampling or budget truncation reads as complete
-coverage and is misleading.
+If the workflow does not cover everything, `log()` the boundary and say the same in the final answer.
+Silent sampling or budget truncation reads as complete coverage and is misleading.
