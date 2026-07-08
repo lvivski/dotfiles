@@ -5,8 +5,10 @@
  * these shims keep a repo-only `tsc --checkJs` from failing on an unresolved module.
  */
 declare module "@github/copilot-sdk/extension" {
-	/** Join the current foreground session, optionally contributing tools/commands/hooks. */
+	/** Join the current foreground session, optionally contributing tools/commands/canvases/hooks. */
 	export function joinSession(config?: any): Promise<any>;
+	/** (Experimental) Declare an extension-owned canvas (a web UI panel) with `open`/`actions` handlers. */
+	export function createCanvas(options: any): any;
 }
 
 declare module "@github/copilot-sdk/session.js" {

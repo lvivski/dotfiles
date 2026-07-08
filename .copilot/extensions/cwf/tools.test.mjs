@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { runWorkflow, listWorkflowRuns, resolveSource, ValidationError, buildTools, isNested, cwfCommand, buildCommands } from "./tools.mjs";
+import { runWorkflow, listWorkflowRuns, resolveSource, ValidationError, buildTools, isNested, cwfCommand, buildCommands, abortRun } from "./tools.mjs";
 import { withFakeEnv, tmpDir } from "./fixtures/support.mjs";
 
 /** A fake {@link import("./tools.mjs").ToolCtx} that captures logs/sends. @param {string} cwd */
@@ -33,6 +33,25 @@ test("foreground inline run returns the workflow result", () =>
 		assert.match(/** @type {string} */ (out), /workflow result/);
 		assert.match(/** @type {string} */ (out), /ECHO: hi/);
 	}));
+
+test("abortRun returns false for an unknown run id", () => {
+	assert.equal(abortRun("no-such-run"), false);
+});
+
+test("abortRun aborts a live background run and clears it once settled", () =>
+	withTool(
+		async ({ wf }) => {
+			const ctx = fakeCtx(tmpDir());
+			const path = join(wf, "h.cwf.mjs");
+			writeFileSync(path, `await agent("x"); return "done";`);
+			const out = await runWorkflow({ scriptPath: path, runId: "abort-me", budget: 1, timeoutSec: 30 }, ctx);
+			assert.match(String(out), /started in background/);
+			assert.equal(abortRun("abort-me"), true); // registered while running
+			for (let i = 0; i < 100 && abortRun("abort-me"); i++) await new Promise((r) => setTimeout(r, 20));
+			assert.equal(abortRun("abort-me"), false); // aborted run settled + deregistered
+		},
+		{ CWF_FAKE_MODE: "hang" },
+	));
 
 test("dryRun returns a plan and spends nothing", () =>
 	withTool(async () => {

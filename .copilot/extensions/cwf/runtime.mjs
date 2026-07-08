@@ -800,7 +800,7 @@ export function extractMeta(source) {
  * @property {string} [cwd]
  * @property {string|null} [repoRoot]
  * @property {AbortSignal} [signal]
- * @property {(line: string) => void} [onLine]
+ * @property {(line: string, level?: "info"|"warning"|"error") => void} [onLine]
  * @property {string} [title]
  */
 

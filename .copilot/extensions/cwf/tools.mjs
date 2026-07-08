@@ -28,7 +28,7 @@ const HOME = homedir();
  */
 
 const workflowsDir = () => process.env.CWF_WORKFLOWS_DIR || join(HOME, ".copilot/workflows");
-const runsDir = () => process.env.CWF_RUNS_DIR || join(workflowsDir(), "runs");
+export const runsDir = () => process.env.CWF_RUNS_DIR || join(workflowsDir(), "runs");
 /** @param {string} p @returns {boolean} true when `p` is an existing regular file. */
 const isFile = (p) => {
 	try {
@@ -37,6 +37,17 @@ const isFile = (p) => {
 		return false;
 	}
 };
+
+/** In-flight runs, so a canvas action or caller can abort one by id. @type {Map<string, AbortController>} */
+const LIVE_RUNS = new Map();
+
+/** Abort an in-flight run by id. @param {string} runId @returns {boolean} true if a live run was aborted. */
+export function abortRun(runId) {
+	const ac = LIVE_RUNS.get(runId);
+	if (!ac) return false;
+	ac.abort();
+	return true;
+}
 /** @param {string|undefined} p */
 const expandHome = (p) => (p && p.startsWith("~/") ? join(HOME, p.slice(2)) : p);
 
@@ -170,6 +181,7 @@ export async function runWorkflow(input, ctx) {
 		const ac = new AbortController();
 		const timer = setTimeout(() => ac.abort(), timeoutSec * 1000);
 		if (typeof timer.unref === "function") timer.unref();
+		LIVE_RUNS.set(runId, ac);
 		const onLine = input.quiet ? undefined : (/** @type {string} */ m, /** @type {any} */ level) => ctx.log(m, true, level);
 
 		const background = input.background ?? true;
@@ -180,6 +192,7 @@ export async function runWorkflow(input, ctx) {
 				return formatResult(rec, { runDir, cwd });
 			} finally {
 				clearTimeout(timer);
+				LIVE_RUNS.delete(runId);
 			}
 		}
 
@@ -190,7 +203,10 @@ export async function runWorkflow(input, ctx) {
 		executeWorkflow({ ...cfg, signal: ac.signal, onLine })
 			.then((rec) => notifyDone(rec, runDir, ctx))
 			.catch((e) => notifyError(runId, e, runDir, ctx))
-			.finally(() => clearTimeout(timer));
+			.finally(() => {
+				clearTimeout(timer);
+				LIVE_RUNS.delete(runId);
+			});
 		return [
 			"cwf run started in background",
 			`runId: ${runId}`,
