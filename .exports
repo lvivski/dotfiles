@@ -31,6 +31,8 @@ export LESS='-RI~egsw'
 [[ -x /opt/homebrew/bin/brew ]] && export HOMEBREW_PREFIX=/opt/homebrew || export HOMEBREW_PREFIX=/usr/local
 [[ -d $HOMEBREW_PREFIX/sbin ]] && export PATH=$HOMEBREW_PREFIX/sbin:$PATH
 [[ -d $HOMEBREW_PREFIX/bin ]] && export PATH=$HOMEBREW_PREFIX/bin:$PATH
+# rustup is keg-only because it conflicts with Homebrew's rust formula.
+[[ -d $HOMEBREW_PREFIX/opt/rustup/bin ]] && export PATH=$HOMEBREW_PREFIX/opt/rustup/bin:$PATH
 
 # pip --user bin (version-independent)
 [[ -d ~/Library/Python ]] && export PATH="$(python3 -m site --user-base)/bin:$PATH"
