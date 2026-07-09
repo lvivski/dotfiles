@@ -57,6 +57,21 @@ test("abortRun aborts a live background run and clears it once settled", () =>
 		{ CWF_FAKE_MODE: "hang" },
 	));
 
+test("duplicate live run ids are rejected without replacing the active run", () =>
+	withTool(
+		async ({ wf }) => {
+			const ctx = fakeCtx(tmpDir());
+			const path = join(wf, "h.mjs");
+			writeFileSync(path, `await agent("x"); return "done";`);
+			await runWorkflow({ scriptPath: path, runId: "same-id", budget: 1, timeoutSec: 30 }, ctx);
+			const duplicate = await runWorkflow({ scriptPath: path, runId: "same-id", budget: 1, timeoutSec: 30 }, ctx);
+			assert.match(JSON.stringify(duplicate), /already active/);
+			assert.equal(abortRun("same-id"), true);
+			for (let i = 0; i < 100 && abortRun("same-id"); i++) await new Promise((resolve) => setTimeout(resolve, 20));
+		},
+		{ CWF_FAKE_MODE: "hang" },
+	));
+
 test("dryRun returns a plan and spends nothing", () =>
 	withTool(async () => {
 		const ctx = fakeCtx(tmpDir());

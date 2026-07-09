@@ -4,7 +4,7 @@
  * Workflow execution lifecycle: artifacts, runtime setup, harness execution, cleanup, and results.
  */
 import vm from "node:vm";
-import { writeFileSync, mkdirSync, readFileSync, existsSync, copyFileSync } from "node:fs";
+import { writeFileSync, mkdirSync, readFileSync, existsSync, copyFileSync, rmSync } from "node:fs";
 import { join, basename } from "node:path";
 
 import { Runtime } from "./runtime.mjs";
@@ -169,6 +169,8 @@ async function executeDryRun(cfg, run) {
 async function executeRealRun(cfg, run) {
 	const { meta, title, onLine, startedAt } = run;
 	mkdirSync(cfg.runDir, { recursive: true });
+	const checkpoints = new CheckpointStore(cfg.runDir, { resume: !!cfg.resume });
+	resetRunArtifacts(cfg.runDir);
 	writeFileSync(join(cfg.runDir, "script.js"), cfg.source, "utf8");
 	copyHostArtifact(cfg);
 	writeMeta(cfg.runDir, cfg.runId, meta, cfg.args, !!cfg.restricted);
@@ -182,7 +184,6 @@ async function executeRealRun(cfg, run) {
 		onLine,
 		dashboard: cfg.progressMode === "dashboard",
 	});
-	const checkpoints = new CheckpointStore(cfg.runDir, { resume: !!cfg.resume });
 	const memory = new Memory(cfg.memoryPath, { readOnly: false, log: (m) => onLine(m, "info", { ephemeral: true }) });
 	const rt = new Runtime({
 		...runtimeOpts(cfg),
@@ -193,36 +194,48 @@ async function executeRealRun(cfg, run) {
 		log: (m) => onLine(m, "info", { ephemeral: true }),
 	});
 
-	reporter.emit({ ev: "run_start", runId: cfg.runId, meta });
 	let status = /** @type {RunStatus} */ ("complete");
-	let error = null;
-	let result = "";
+	let closeStatus = /** @type {RunStatus} */ ("error");
 	try {
-		if (cfg.hostPath && !cfg.restricted) rt.setHost(await loadHost(cfg.hostPath));
-		const value = await runHarness(stripExports(cfg.source), { api: rt.buildApi(cfg.args), filename: `${cfg.runId}.mjs`, log: (m) => rt.log(m) });
-		result = coerceResult(value);
-	} catch (e) {
-		if (e instanceof BudgetExceeded) {
-			status = "complete";
-			onLine(`  budget reached: ${e.message}`, "warning", { ephemeral: false });
-		} else {
-			status = "error";
-			error = e instanceof Error ? e.message : String(e);
-			onLine(`  ! workflow error: ${error}`, "error", { ephemeral: false });
+		reporter.emit({ ev: "run_start", runId: cfg.runId, meta });
+		let error = null;
+		let result = "";
+		try {
+			if (cfg.hostPath && !cfg.restricted) rt.setHost(await loadHost(cfg.hostPath));
+			const value = await runHarness(stripExports(cfg.source), { api: rt.buildApi(cfg.args), filename: `${cfg.runId}.mjs`, log: (m) => rt.log(m) });
+			result = coerceResult(value);
+		} catch (e) {
+			if (e instanceof BudgetExceeded) {
+				status = "complete";
+				onLine(`  budget reached: ${e.message}`, "warning", { ephemeral: false });
+			} else {
+				status = "error";
+				error = e instanceof Error ? e.message : String(e);
+				onLine(`  ! workflow error: ${error}`, "error", { ephemeral: false });
+			}
 		}
-	}
-	if (cfg.signal?.aborted) status = "timeout";
+		if (cfg.signal?.aborted) status = "timeout";
 
-	await rt.drain(); // await any fire-and-forget agents so none outlive the run uncounted
-	const preservedWorktrees = await rt.cleanup();
-	if (preservedWorktrees.length) onLine(`  preserved ${preservedWorktrees.length} dirty worktree(s): ${preservedWorktrees.join(", ")}`, "warning", { ephemeral: false });
-	const record = finalize({ runId: cfg.runId, status, error, meta, args: cfg.args, startedAt, rt, result, preservedWorktrees });
-	writeJson(join(cfg.runDir, "run.json"), record);
-	writeJson(join(cfg.runDir, "result.json"), { runId: record.runId, status: record.status, aic: record.aic, result: record.result });
-	reporter.emit({ ev: "run_end", runId: cfg.runId, ...record.counts, nanoAiu: rt.stats().nanoAiu, aic: record.aic });
-	onLine(reporter.runSummary(), status === "error" || status === "timeout" ? "error" : "info", { ephemeral: false });
-	reporter.close(status);
-	return record;
+		await rt.drain(); // await any fire-and-forget agents so none outlive the run uncounted
+		const preservedWorktrees = await rt.cleanup();
+		if (preservedWorktrees.length) onLine(`  preserved ${preservedWorktrees.length} dirty worktree(s): ${preservedWorktrees.join(", ")}`, "warning", { ephemeral: false });
+		const record = finalize({ runId: cfg.runId, status, error, meta, args: cfg.args, startedAt, rt, result, preservedWorktrees });
+		writeJson(join(cfg.runDir, "run.json"), record);
+		writeJson(join(cfg.runDir, "result.json"), { runId: record.runId, status: record.status, aic: record.aic, result: record.result });
+		reporter.emit({ ev: "run_end", runId: cfg.runId, status: record.status, error: record.error, ...record.counts, nanoAiu: rt.stats().nanoAiu, aic: record.aic });
+		closeStatus = status;
+		onLine(reporter.runSummary(), status === "error" || status === "timeout" ? "error" : "info", { ephemeral: false });
+		return record;
+	} finally {
+		reporter.close(closeStatus);
+	}
+}
+
+/** Remove stale presentation artifacts while preserving the checkpoint journal. @param {string} runDir */
+function resetRunArtifacts(runDir) {
+	for (const file of ["run.json", "result.json", "state.json", "progress.jsonl"]) {
+		rmSync(join(runDir, file), { force: true });
+	}
 }
 
 /** @param {ExecuteConfig} cfg */

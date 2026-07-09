@@ -78,6 +78,8 @@ export class ProgressReporter {
 	#lastDashboard = 0;
 	#seq = 0;
 	#lastStateWrite = 0;
+	/** @type {ReturnType<typeof setTimeout>|null} */
+	#stateTimer = null;
 	#jsonl;
 	/** @type {Map<number, any>} */
 	#running = new Map();
@@ -206,9 +208,31 @@ export class ProgressReporter {
 	#syncState(force) {
 		if (!this.#statePath) return;
 		const now = Date.now();
-		if (!force && now - this.#lastStateWrite < STATE_WRITE_INTERVAL_MS) return;
-		this.#lastStateWrite = now;
+		const elapsed = now - this.#lastStateWrite;
+		if (!force && elapsed < STATE_WRITE_INTERVAL_MS) {
+			if (!this.#stateTimer) {
+				this.#stateTimer = setTimeout(() => {
+					this.#stateTimer = null;
+					this.#writeState();
+				}, STATE_WRITE_INTERVAL_MS - elapsed);
+				this.#stateTimer.unref?.();
+			}
+			return;
+		}
+		this.#cancelStateTimer();
 		if (force) this.#jsonl.flush();
+		this.#writeState();
+	}
+
+	#cancelStateTimer() {
+		if (!this.#stateTimer) return;
+		clearTimeout(this.#stateTimer);
+		this.#stateTimer = null;
+	}
+
+	#writeState() {
+		if (!this.#statePath) return;
+		this.#lastStateWrite = Date.now();
 		Object.assign(this.#state, this.#derived());
 		try {
 			writeFileSync(this.#statePath, JSON.stringify(this.#state), "utf8");

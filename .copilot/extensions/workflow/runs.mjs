@@ -32,17 +32,23 @@ export function listWorkflowRuns() {
 			status: rec.status || "?",
 			workflow: workflowName(meta, rec),
 			aic: Number(rec.aic || 0),
-			updated: meta.updatedAt || meta.updated_at || rec.finishedAt || rec.updatedAt || new Date(mtime).toISOString(),
+			updated: rec.finishedAt || rec.updatedAt || meta.updatedAt || meta.updated_at || new Date(mtime).toISOString(),
 		});
 	}
 	if (!rows.length) return `No workflow runs in ${dir}.`;
-	rows.sort((a, b) => String(b.updated).localeCompare(String(a.updated)));
+	rows.sort((a, b) => timestampMs(b.updated) - timestampMs(a.updated));
 	const header = `${"RUN ID".padEnd(30)} ${"STATUS".padEnd(9)} ${"WORKFLOW".padEnd(16)} ${"AIC".padStart(7)}  UPDATED`;
 	const body = rows
 		.map((r) => `${r.runId.slice(0, 30).padEnd(30)} ${String(r.status).padEnd(9)} ${String(r.workflow).slice(0, 16).padEnd(16)} ${r.aic.toFixed(1).padStart(7)}  ${r.updated}`)
 		.join("\n");
 	const footer = entries.length > RUN_LIST_LIMIT ? `\n(showing newest ${RUN_LIST_LIMIT} of ${entries.length} runs)` : "";
 	return `${header}\n${body}${footer}`;
+}
+
+/** @param {unknown} value @returns {number} */
+function timestampMs(value) {
+	const parsed = Date.parse(String(value || ""));
+	return Number.isNaN(parsed) ? 0 : parsed;
 }
 
 /** @param {string} dir @returns {{ name: string, d: string, mtime: number }[]} newest dirs first. */
@@ -136,9 +142,25 @@ function replayProgress(runDir) {
 		else if (rec.ev === "run_end") end = rec;
 	}
 	if (!end) return { status: "running", workflow: meta, harness: meta.harness || "", counts: null, aic: 0 };
-	const aic = end.aic != null ? Number(end.aic || 0) : Number(end.nano_aiu || end.nanoAiu || 0) / 1_000_000_000;
-	const updatedAt = typeof end.t === "number" ? new Date(end.t * 1000).toISOString() : undefined;
-	return { status: "complete", workflow: meta, harness: meta.harness || "", counts: { agents: end.agents, launched: end.launched, done: end.done, failed: end.failed, cached: end.cached, skipped: end.skipped }, aic, updatedAt };
+	const nanoAiu = Number(end.nano_aiu ?? end.nanoAiu ?? 0);
+	return {
+		status: end.status || "complete",
+		error: end.error || null,
+		workflow: meta,
+		harness: meta.harness || "",
+		counts: { agents: end.agents, launched: end.launched, done: end.done, failed: end.failed, cached: end.cached, skipped: end.skipped },
+		aic: end.aic != null ? Number(end.aic || 0) : nanoAiu / 1_000_000_000,
+		updatedAt: progressTimestamp(end.t),
+	};
+}
+
+/** Current events use milliseconds; legacy workflow events used seconds. @param {unknown} value */
+function progressTimestamp(value) {
+	if (value == null) return undefined;
+	const raw = Number(value);
+	if (!Number.isFinite(raw)) return undefined;
+	const date = new Date(raw < 10_000_000_000 ? raw * 1000 : raw);
+	return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 }
 
 /**

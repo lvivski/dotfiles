@@ -96,6 +96,44 @@ test("resume reuses completed results (cached, no double-charge)", async () => {
 		assert.equal(second.counts.cached, 2);
 		assert.equal(second.counts.launched, 0);
 		assert.equal(second.aic, 1.0);
+		const progress = readFileSync(join(runDir, "progress.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+		assert.equal(progress.filter((event) => event.ev === "run_start").length, 1);
+		assert.equal(progress.at(-1).ev, "run_end");
+	});
+});
+
+test("resume replaces stale terminal artifacts before new work completes", async () => {
+	await withFakeEnv({}, async () => {
+		const runDir = tmpDir();
+		await executeWorkflow({
+			source: `return (await agent("old")).content;`,
+			runId: "r",
+			runDir,
+			budget: 10,
+			onLine: () => {},
+		});
+
+		process.env.CWF_FAKE_MODE = "hang";
+		const ac = new AbortController();
+		const resumed = executeWorkflow({
+			source: `return (await agent("new")).content;`,
+			runId: "r",
+			runDir,
+			budget: 10,
+			resume: true,
+			signal: ac.signal,
+			onLine: () => {},
+		});
+
+		for (let i = 0; i < 50 && !existsSync(join(runDir, "state.json")); i++) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		assert.equal(existsSync(join(runDir, "run.json")), false);
+		assert.equal(existsSync(join(runDir, "result.json")), false);
+		assert.equal(JSON.parse(readFileSync(join(runDir, "state.json"), "utf8")).status, "running");
+
+		ac.abort();
+		assert.equal((await resumed).status, "timeout");
 	});
 });
 

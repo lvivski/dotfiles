@@ -79,4 +79,26 @@ test("harness failure is persisted as an error record instead of rejecting", () 
 		assert.ok(existsSync(join(runDir, "script.js")));
 		assert.equal(JSON.parse(readFileSync(join(runDir, "run.json"), "utf8")).status, "error");
 		assert.equal(JSON.parse(readFileSync(join(runDir, "result.json"), "utf8")).status, "error");
+		const progress = readFileSync(join(runDir, "progress.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+		assert.equal(progress.at(-1).ev, "run_end");
+		assert.equal(progress.at(-1).status, "error");
+	}));
+
+test("reporter closes even when final logging throws", () =>
+	withFakeEnv({}, async () => {
+		const runDir = tmpDir();
+		await assert.rejects(
+			executeWorkflow({
+				source: `return (await agent("hi")).content;`,
+				runId: "log-fail",
+				runDir,
+				budget: 10,
+				onLine: (line) => {
+					if (line.startsWith("— workflow:")) throw new Error("log failed");
+				},
+			}),
+			/log failed/,
+		);
+		await new Promise((resolve) => setTimeout(resolve, 200));
+		assert.equal(JSON.parse(readFileSync(join(runDir, "state.json"), "utf8")).status, "complete");
 	}));

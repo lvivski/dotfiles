@@ -162,7 +162,12 @@ export class Runtime {
 	}
 
 	// ---- single agent --------------------------------------------------
-	/** Launch one subagent and track it so {@link Runtime#drain} can await fire-and-forget calls. */
+	/**
+	 * Launch one subagent and track it so {@link Runtime#drain} can await fire-and-forget calls.
+	 * @param {string|Record<string, any>} prompt
+	 * @param {Record<string, any>} [opts]
+	 * @returns {Promise<AgentResult>}
+	 */
 	agent(prompt, opts = {}) {
 		return this.#track(this.#agentRun(prompt, opts));
 	}

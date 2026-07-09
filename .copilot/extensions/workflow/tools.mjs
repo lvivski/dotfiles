@@ -266,6 +266,7 @@ function resolveProgressMode(input) {
 
 /** @param {RunPlan} run */
 function startLiveRun(run) {
+	check(!LIVE_RUNS.has(run.runId), `workflow run '${run.runId}' is already active.`);
 	const ac = new AbortController();
 	const timer = setTimeout(() => ac.abort(), run.timeoutSec * 1000);
 	timer.unref?.();

@@ -121,6 +121,22 @@ test("state.json is written and reflects status on close", () => {
 	assert.equal(state.counts.done, 1);
 });
 
+test("state.json receives the trailing state from a burst of events", async () => {
+	const dir = tmpDir();
+	const path = join(dir, "state.json");
+	const p = new ProgressReporter({ runId: "r", statePath: path, onLine: () => {} });
+	p.emit({ ev: "run_start", runId: "r" });
+	p.emit({ ev: "group_start", gid: 1, kind: "pipeline", n: 2, phase: "research" });
+	p.emit({ ev: "start", seq: 1, label: "slow", model: "m", phase: "research" });
+	await new Promise((resolve) => setTimeout(resolve, 200));
+	const state = JSON.parse(readFileSync(path, "utf8"));
+	assert.equal(state.phase, "research");
+	assert.equal(state.running.length, 1);
+	assert.equal(state.running[0].label, "slow");
+	assert.equal(state.groups.length, 1);
+	p.close("complete");
+});
+
 test("progress.jsonl buffers events and flushes all records on close", () => {
 	const dir = tmpDir();
 	const path = join(dir, "progress.jsonl");

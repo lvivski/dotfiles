@@ -46,9 +46,28 @@ test("listWorkflowRuns prefers persisted records and falls back to progress repl
 			"",
 		].join("\n"));
 
+		const errored = runDir(runs, "errored-run");
+		writeFileSync(join(errored, "progress.jsonl"), [
+			JSON.stringify({ ev: "run_start", meta: { name: "errored" } }),
+			JSON.stringify({ ev: "run_end", status: "error", error: "boom", agents: 0, launched: 0, done: 0, failed: 0, cached: 0, skipped: 0, nanoAiu: 0, t: Date.parse("2026-07-09T19:00:00.000Z") }),
+			"",
+		].join("\n"));
+
 		const listing = listWorkflowRuns();
 		assert.match(listing, /complete-run\s+complete\s+full\s+1\.3/);
 		assert.match(listing, /replayed-run\s+complete\s+legacy\s+0\.5/);
+		assert.match(listing, /errored-run\s+error\s+errored\s+0\.0\s+2026-07-09T19:00:00\.000Z/);
+	}));
+
+test("listWorkflowRuns sorts timestamps chronologically across fractional precision", () =>
+	withRuns((runs) => {
+		const older = runDir(runs, "older-run");
+		writeFileSync(join(older, "state.json"), JSON.stringify({ status: "running", updatedAt: "2026-01-01T00:00:00Z" }));
+		const newer = runDir(runs, "newer-run");
+		writeFileSync(join(newer, "state.json"), JSON.stringify({ status: "running", updatedAt: "2026-01-01T00:00:00.500Z" }));
+
+		const listing = listWorkflowRuns();
+		assert.ok(listing.indexOf("newer-run") < listing.indexOf("older-run"));
 	}));
 
 test("workflowCommand renders latest dashboard, result, artifacts, and summary fallback", () =>
