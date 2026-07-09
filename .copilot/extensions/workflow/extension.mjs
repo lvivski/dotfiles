@@ -34,7 +34,7 @@ const ctx = {
 			const p = session?.send?.({ prompt, mode: "enqueue" });
 			if (p && typeof p.catch === "function") p.catch(() => {});
 		} catch {
-			/* best-effort wake */
+			/* completion wakeups must not crash the extension */
 		}
 	},
 	async getWorkspaceCwd() {

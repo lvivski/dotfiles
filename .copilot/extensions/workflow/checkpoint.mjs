@@ -47,7 +47,7 @@ function repairTrailingLine(path) {
 			closeSync(fd);
 		}
 	} catch {
-		// best-effort repair
+		// A bad repair attempt should not prevent loading the remaining journal records.
 	}
 }
 

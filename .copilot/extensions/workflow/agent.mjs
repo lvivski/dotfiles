@@ -165,14 +165,14 @@ async function readShutdownUsage(sessionId) {
 	try {
 		for await (const line of readLines(path)) {
 			const rec = tryParse(line);
-			// Mirror Python: take the first shutdown that carries a totalNanoAiu.
+			// Use the first complete shutdown record; later records can come from resumed sessions.
 			if (rec && rec.type === "session.shutdown" && rec.data?.totalNanoAiu != null) {
 				shutdown = rec;
 				break;
 			}
 		}
 	} catch {
-		return { nanoAiu: 0, tokens: empty }; // log deleted/unreadable after existsSync — match Python's OSError -> 0
+		return { nanoAiu: 0, tokens: empty };
 	}
 	const data = shutdown?.data;
 	if (!data) return { nanoAiu: 0, tokens: empty };
@@ -245,9 +245,7 @@ export async function runAgent(spec, opts = {}) {
 	let killed = false;
 	let stderr = "";
 
-	// Attach exit listeners immediately: an async spawn error (ENOENT) or an early close must not slip
-	// through unobserved, and an unhandled `error` event would otherwise crash the process. A spawn
-	// error is classified like Python's FileNotFoundError -> 127.
+	// Attach exit listeners immediately so async spawn errors and early closes are observed.
 	let spawnError = /** @type {Error|null} */ (null);
 	const exited = new Promise((resolve) => {
 		child.once("error", (e) => {

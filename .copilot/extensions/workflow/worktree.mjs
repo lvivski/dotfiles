@@ -19,7 +19,7 @@ const MAX_GIT_OUTPUT_CHARS = 64_000;
 /** Sanitized name segment (dots stripped so `.`/`..` can't alias). @param {string} s */
 const sanitize = (s) => s.replace(SAFE, "-").replace(/^[-.]+|[-.]+$/g, "") || "wt";
 
-/** A tiny async mutex serializing a manager's create/remove (mirrors the Python threading.Lock). */
+/** A tiny async mutex serializing a manager's create/remove operations. */
 class Mutex {
 	#tail = Promise.resolve();
 	/** @template T @param {() => Promise<T>} fn @returns {Promise<T>} */
@@ -168,7 +168,7 @@ export class WorktreeManager {
 			const safe = sanitize(name);
 			const path = join(this.baseDir, safe);
 			mkdirSync(this.baseDir, { recursive: true });
-			// Contain the worktree within the base via realpath (resolves symlinks), like Python.
+			// Contain the worktree within the base via realpath so symlinks cannot escape it.
 			const realBase = realpathSync(this.baseDir);
 			const realPath = existsSync(path) ? realpathSync(path) : join(realBase, safe);
 			if (realPath === realBase || !realPath.startsWith(realBase + sep)) throw new Error(`unsafe worktree name ${JSON.stringify(name)} resolves outside the worktree base`);

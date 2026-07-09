@@ -30,6 +30,19 @@ const HOME = homedir();
  * @property {() => Promise<string | undefined>} getWorkspaceCwd session working directory
  */
 
+/**
+ * @typedef {object} RunPlan
+ * @property {import("./executor.mjs").ExecuteConfig} cfg
+ * @property {string} label
+ * @property {string} runId
+ * @property {string} runDir
+ * @property {string} cwd
+ * @property {number|null} budget
+ * @property {"dashboard"|"events"|"off"} progressMode
+ * @property {number} timeoutSec
+ * @property {boolean} background
+ */
+
 /** @returns {string} */
 const workflowsDir = () => process.env.CWF_WORKFLOWS_DIR || join(HOME, ".copilot/workflows");
 /** @param {string} p @returns {boolean} true when `p` is an existing regular file. */
@@ -151,101 +164,152 @@ async function resolveCwd(explicit, ctx) {
  */
 export async function runWorkflow(input, ctx) {
 	try {
-		const sources = ["script", "scriptPath", "name"].filter((k) => input[k]);
-		check(sources.length === 1, `provide EXACTLY ONE of script | scriptPath | name (got: ${sources.join(", ") || "none"}).`);
-		check(input.concurrency == null || (Number.isInteger(input.concurrency) && input.concurrency >= 1), `concurrency must be an integer >= 1 (got ${input.concurrency}).`);
-		check(!input.resume || !input.script, "resume requires scriptPath or name (the persisted harness), not an inline script.");
-		const requestedTimeout = input.timeoutSec ?? 1800;
-		check(typeof requestedTimeout === "number" && requestedTimeout >= 1, `timeoutSec must be a number >= 1 (got ${requestedTimeout}).`);
-		const timeoutSec = Math.min(requestedTimeout, MAX_TIMEOUT_SEC);
-
-		const preset = input.preset === "xtreme";
-		const budget = input.dryRun ? input.budget ?? null : input.budget ?? (preset ? XTREME_BUDGET : DEFAULT_BUDGET);
-		if (!input.dryRun) check(typeof budget === "number" && budget > 0, `budget must be a positive number for non-dry runs (got ${budget}).`);
-		const progressMode = input.quiet ? "off" : input.progress ?? "dashboard";
-		check(PROGRESS_MODES.has(progressMode), `progress must be one of dashboard | events | off (got ${progressMode}).`);
-
-		const { source, label, path: harnessPath } = resolveSource(input);
-		const hostPath = resolveHostPath(input, harnessPath);
-		const cwd = await resolveCwd(input.cwd, ctx);
-		if (input.runId) check(!/[\\/]|\.\./.test(input.runId), `runId must be a bare id without path separators (got '${input.runId}').`);
-		const runId = input.resume || input.runId || newRunId(input.name || label);
-		const runDir = join(runsDir(), runId);
-		if (input.resume) check(existsSync(runDir) && statSync(runDir).isDirectory(), `workflow: no such run to resume: ${runId}`);
-
-		/** @type {import("./executor.mjs").ExecuteConfig} */
-		const cfg = {
-			source,
-			args: input.args,
-			runId,
-			runDir,
-			budget,
-			model: input.model ?? (preset ? "auto" : null),
-			effort: input.effort ?? (preset ? "xhigh" : null),
-			context: input.context ?? (preset ? "long_context" : null),
-			concurrency: input.concurrency ?? null,
-			enableMcp: !!input.enableMcp,
-			restricted: !!input.restricted,
-			strictBudget: !!input.strictBudget,
-			dryRun: !!input.dryRun,
-			resume: !!input.resume,
-			memoryPath: input.memory ? resolve(cwd, /** @type {string} */ (expandHome(input.memory))) : null,
-			hostPath,
-			progressMode,
-			cwd,
-			title: input.name || undefined,
-		};
+		const run = await prepareRun(input, ctx);
 
 		if (input.dryRun) {
-			const rec = await executeWorkflow({ ...cfg, onLine: (m) => ctx.log(m, true) });
-			return formatResult(rec, { runDir, cwd, dryRun: true });
+			const rec = await executeWorkflow({ ...run.cfg, onLine: (m) => ctx.log(m, true) });
+			return formatResult(rec, { runDir: run.runDir, cwd: run.cwd, dryRun: true });
 		}
 
-		const ac = new AbortController();
-		const timer = setTimeout(() => ac.abort(), timeoutSec * 1000);
-		if (typeof timer.unref === "function") timer.unref();
-		LIVE_RUNS.set(runId, ac);
-		const onLine =
-			progressMode === "off"
-				? undefined
-				: (/** @type {string} */ m, /** @type {any} */ level, /** @type {{ ephemeral?: boolean }|undefined} */ meta) => ctx.log(m, meta?.ephemeral ?? true, level);
-
-		const background = input.background ?? true;
-		if (!background) {
-			ctx.log(`workflow: ${label} (budget ${budget} AIC, run ${runId}, cwd ${cwd})`);
+		const live = startLiveRun(run);
+		const onLine = lineLogger(run.progressMode, ctx);
+		if (!run.background) {
+			ctx.log(`workflow: ${run.label} (budget ${run.budget} AIC, run ${run.runId}, cwd ${run.cwd})`);
 			try {
-				const rec = await executeWorkflow({ ...cfg, signal: ac.signal, onLine });
-				return formatResult(rec, { runDir, cwd });
+				const rec = await executeWorkflow({ ...run.cfg, signal: live.signal, onLine });
+				return formatResult(rec, { runDir: run.runDir, cwd: run.cwd });
 			} finally {
-				clearTimeout(timer);
-				LIVE_RUNS.delete(runId);
+				live.close();
 			}
 		}
 
-		// Background: the engine persists script.js/meta.json/state.json immediately, so `/workflow` and
-		// list_workflow_runs work at once. Return now; wake the agent on completion. NOTE: an
-		// extension reload aborts an in-host run — resume with the same runId if that happens.
-		ctx.log(`workflow: ${label} started in background (budget ${budget} AIC, run ${runId})`);
-		executeWorkflow({ ...cfg, signal: ac.signal, onLine })
-			.then((rec) => notifyDone(rec, runDir, ctx))
-			.catch((e) => notifyError(runId, e, runDir, ctx))
-			.finally(() => {
-				clearTimeout(timer);
-				LIVE_RUNS.delete(runId);
-			});
-		return [
-			"workflow run started in background",
-			`runId: ${runId}`,
-			`artifacts: ${runDir}`,
-			`inspect while running: read ${join(runDir, "state.json")}`,
-			`final result: ${join(runDir, "result.json")}`,
-			"You will be notified when it completes.",
-		].join("\n");
+		startBackgroundRun(run, live, onLine, ctx);
+		return formatBackgroundStart(run);
 	} catch (e) {
 		if (e instanceof ValidationError) return failure(e.message);
 		ctx.log(`run_workflow internal error: ${e instanceof Error ? e.stack : e}`);
 		return failure(`internal workflow extension error: ${e instanceof Error ? e.message : e}`);
 	}
+}
+
+/**
+ * Resolve and validate all inputs before a workflow starts.
+ * @param {any} input
+ * @param {ToolCtx} ctx
+ * @returns {Promise<RunPlan>}
+ */
+async function prepareRun(input, ctx) {
+	const sources = ["script", "scriptPath", "name"].filter((k) => input[k]);
+	check(sources.length === 1, `provide EXACTLY ONE of script | scriptPath | name (got: ${sources.join(", ") || "none"}).`);
+	check(input.concurrency == null || (Number.isInteger(input.concurrency) && input.concurrency >= 1), `concurrency must be an integer >= 1 (got ${input.concurrency}).`);
+	check(!input.resume || !input.script, "resume requires scriptPath or name (the persisted harness), not an inline script.");
+
+	const timeoutSec = resolveTimeout(input.timeoutSec);
+	const preset = input.preset === "xtreme";
+	const budget = resolveBudget(input, preset);
+	const progressMode = resolveProgressMode(input);
+	const { source, label, path: harnessPath } = resolveSource(input);
+	const hostPath = resolveHostPath(input, harnessPath);
+	const cwd = await resolveCwd(input.cwd, ctx);
+
+	if (input.runId) check(!/[\\/]|\.\./.test(input.runId), `runId must be a bare id without path separators (got '${input.runId}').`);
+	const runId = input.resume || input.runId || newRunId(input.name || label);
+	const runDir = join(runsDir(), runId);
+	if (input.resume) check(existsSync(runDir) && statSync(runDir).isDirectory(), `workflow: no such run to resume: ${runId}`);
+
+	/** @type {import("./executor.mjs").ExecuteConfig} */
+	const cfg = {
+		source,
+		args: input.args,
+		runId,
+		runDir,
+		budget,
+		model: input.model ?? (preset ? "auto" : null),
+		effort: input.effort ?? (preset ? "xhigh" : null),
+		context: input.context ?? (preset ? "long_context" : null),
+		concurrency: input.concurrency ?? null,
+		enableMcp: !!input.enableMcp,
+		restricted: !!input.restricted,
+		strictBudget: !!input.strictBudget,
+		dryRun: !!input.dryRun,
+		resume: !!input.resume,
+		memoryPath: input.memory ? resolve(cwd, /** @type {string} */ (expandHome(input.memory))) : null,
+		hostPath,
+		progressMode,
+		cwd,
+		title: input.name || undefined,
+	};
+
+	return { cfg, label, runId, runDir, cwd, budget, progressMode, timeoutSec, background: input.background ?? true };
+}
+
+/** @param {unknown} value @returns {number} */
+function resolveTimeout(value) {
+	const requested = value ?? 1800;
+	check(typeof requested === "number" && requested >= 1, `timeoutSec must be a number >= 1 (got ${requested}).`);
+	return Math.min(requested, MAX_TIMEOUT_SEC);
+}
+
+/** @param {any} input @param {boolean} preset @returns {number|null} */
+function resolveBudget(input, preset) {
+	const budget = input.dryRun ? input.budget ?? null : input.budget ?? (preset ? XTREME_BUDGET : DEFAULT_BUDGET);
+	if (!input.dryRun) check(typeof budget === "number" && budget > 0, `budget must be a positive number for non-dry runs (got ${budget}).`);
+	return budget;
+}
+
+/** @param {any} input @returns {"dashboard"|"events"|"off"} */
+function resolveProgressMode(input) {
+	const progressMode = input.quiet ? "off" : input.progress ?? "dashboard";
+	check(PROGRESS_MODES.has(progressMode), `progress must be one of dashboard | events | off (got ${progressMode}).`);
+	return /** @type {"dashboard"|"events"|"off"} */ (progressMode);
+}
+
+/** @param {RunPlan} run */
+function startLiveRun(run) {
+	const ac = new AbortController();
+	const timer = setTimeout(() => ac.abort(), run.timeoutSec * 1000);
+	timer.unref?.();
+	LIVE_RUNS.set(run.runId, ac);
+	return {
+		signal: ac.signal,
+		close() {
+			clearTimeout(timer);
+			LIVE_RUNS.delete(run.runId);
+		},
+	};
+}
+
+/** @param {string} progressMode @param {ToolCtx} ctx */
+function lineLogger(progressMode, ctx) {
+	return progressMode === "off"
+		? undefined
+		: (/** @type {string} */ m, /** @type {any} */ level, /** @type {{ ephemeral?: boolean }|undefined} */ meta) => ctx.log(m, meta?.ephemeral ?? true, level);
+}
+
+/**
+ * @param {RunPlan} run
+ * @param {{ signal: AbortSignal, close: () => void }} live
+ * @param {import("./executor.mjs").ExecuteConfig["onLine"]} onLine
+ * @param {ToolCtx} ctx
+ */
+function startBackgroundRun(run, live, onLine, ctx) {
+	ctx.log(`workflow: ${run.label} started in background (budget ${run.budget} AIC, run ${run.runId})`);
+	executeWorkflow({ ...run.cfg, signal: live.signal, onLine })
+		.then((rec) => notifyDone(rec, run.runDir, ctx))
+		.catch((e) => notifyError(run.runId, e, run.runDir, ctx))
+		.finally(() => live.close());
+}
+
+/** @param {RunPlan} run */
+function formatBackgroundStart(run) {
+	return [
+		"workflow run started in background",
+		`runId: ${run.runId}`,
+		`artifacts: ${run.runDir}`,
+		`inspect while running: read ${join(run.runDir, "state.json")}`,
+		`final result: ${join(run.runDir, "result.json")}`,
+		"You will be notified when it completes.",
+	].join("\n");
 }
 
 /** @param {any} rec @param {string} runDir @param {ToolCtx} ctx */

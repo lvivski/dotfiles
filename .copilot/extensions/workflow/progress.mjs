@@ -1,11 +1,7 @@
 /**
  * @module progress
  *
- * Structured progress for a run: appends normalized events to `progress.jsonl` (each with a
- * monotonic `seq` for deterministic replay), maintains a live `state.json` snapshot (debounced,
- * always flushed on completion), and exposes a rolled-up summary. Subagent-supplied fields
- * (labels, models, errors) are sanitized so control characters cannot corrupt terminal output.
- * Rich TUI rendering (pipeline grids, run trees) is deferred to a later phase.
+ * Structured progress for workflow runs: JSONL events, live state snapshots, and terminal narration.
  *
  * @typedef {"queued"|"running"|"done"|"cached"|"skipped"|"error"} AgentStatus
  * @typedef {"running"|"complete"|"failed"|"error"|"timeout"} RunStatus
@@ -16,7 +12,10 @@ import { dirname } from "node:path";
 const CTRL = /[\u0000-\u001f\u007f-\u009f]/g;
 const MAX_BUFFERED_EVENTS = 32;
 const MAX_ERRORS = 20;
+const MAX_RECENT = 8;
 const DASHBOARD_INTERVAL_MS = 1500;
+const FLUSH_INTERVAL_MS = 150;
+const STATE_WRITE_INTERVAL_MS = 150;
 /** Strip control chars. @param {unknown} s */
 const san = (s) => String(s ?? "").replace(CTRL, " ");
 /** AIC from a raw nanoAiu field. @param {unknown} nano */
@@ -46,7 +45,7 @@ class BufferedJsonl {
 
 	#schedule() {
 		if (this.#timer) return;
-		this.#timer = setTimeout(() => this.flush(), 150);
+		this.#timer = setTimeout(() => this.flush(), FLUSH_INTERVAL_MS);
 		this.#timer.unref?.();
 	}
 
@@ -61,7 +60,7 @@ class BufferedJsonl {
 		try {
 			appendFileSync(this.#path, body, "utf8");
 		} catch {
-			// best-effort persistence
+			// Progress files are diagnostic; workflow execution must continue if they cannot be written.
 		}
 	}
 
@@ -128,14 +127,7 @@ export class ProgressReporter {
 		const rec = { seq: ++this.#seq, t: Date.now(), ...event };
 		this.#jsonl.write(rec);
 		this.#apply(rec);
-		if (this.#dashboard) {
-			if (rec.ev === "end" && (!rec.ok || rec.skipped) && !rec.cached) this.#onLine(formatEnd(rec), endLevel(rec), { ephemeral: false });
-			this.#maybeDashboard(rec.ev === "run_start" || rec.ev === "group_start" || rec.ev === "group_end");
-		} else if (rec.ev === "end") {
-			const level = endLevel(rec);
-			this.#onLine(formatEnd(rec), level, { ephemeral: level === "info" });
-		} else if (rec.ev === "group_start") this.#onLine(`  ${san(rec.kind)} launched (${rec.n})`, "info", { ephemeral: true });
-		else if (rec.ev === "group_end") this.#onLine(`  ${san(rec.kind)} settled (${rec.n})`, "info", { ephemeral: true });
+		this.#narrate(rec);
 		return rec;
 	}
 
@@ -148,47 +140,80 @@ export class ProgressReporter {
 				if (rec.phase) s.phase = san(rec.phase);
 				break;
 			case "group_start":
-				this.#groups.set(rec.gid, { gid: rec.gid, kind: san(rec.kind), phase: rec.phase ? san(rec.phase) : null, n: rec.n });
+				this.#applyGroupStart(rec);
 				break;
 			case "group_end":
 				this.#groups.delete(rec.gid);
 				break;
-			case "end": {
-				this.#running.delete(rec.seq);
-				s.nanoAiu += Number(rec.nanoAiu || 0);
-				s.aic = aic(s.nanoAiu);
-				s.outputTokens += Number(rec.outputTokens || 0);
-				if (rec.skipped) s.counts.skipped++;
-				else if (rec.cached) s.counts.cached++;
-				else if (rec.ok) s.counts.done++;
-				else {
-					s.counts.failed++;
-					s.errors.push({ label: san(rec.label), error: san(rec.error) });
-					if (s.errors.length > MAX_ERRORS) s.errors.splice(0, s.errors.length - MAX_ERRORS);
-				}
-				if (!rec.cached && !rec.skipped) s.counts.launched++;
-				this.#recent.push(rec);
-				if (this.#recent.length > 8) this.#recent.shift();
-				if (rec.phase) s.phase = san(rec.phase);
+			case "end":
+				this.#applyEnd(rec);
 				break;
-			}
 		}
 		s.updatedAt = new Date().toISOString();
 		this.#syncState(rec.ev === "run_end" || rec.ev === "run_start");
+	}
+
+	/** @param {any} rec */
+	#applyGroupStart(rec) {
+		this.#groups.set(rec.gid, { gid: rec.gid, kind: san(rec.kind), phase: rec.phase ? san(rec.phase) : null, n: rec.n });
+	}
+
+	/** @param {any} rec */
+	#applyEnd(rec) {
+		const s = this.#state;
+		this.#running.delete(rec.seq);
+		s.nanoAiu += Number(rec.nanoAiu || 0);
+		s.aic = aic(s.nanoAiu);
+		s.outputTokens += Number(rec.outputTokens || 0);
+
+		if (rec.skipped) s.counts.skipped++;
+		else if (rec.cached) s.counts.cached++;
+		else if (rec.ok) s.counts.done++;
+		else this.#recordError(rec);
+
+		if (!rec.cached && !rec.skipped) s.counts.launched++;
+		this.#recent.push(rec);
+		if (this.#recent.length > MAX_RECENT) this.#recent.shift();
+		if (rec.phase) s.phase = san(rec.phase);
+	}
+
+	/** @param {any} rec */
+	#recordError(rec) {
+		const { errors, counts } = this.#state;
+		counts.failed++;
+		errors.push({ label: san(rec.label), error: san(rec.error) });
+		if (errors.length > MAX_ERRORS) errors.splice(0, errors.length - MAX_ERRORS);
+	}
+
+	/** @param {any} rec */
+	#narrate(rec) {
+		if (this.#dashboard) {
+			if (rec.ev === "end" && (!rec.ok || rec.skipped) && !rec.cached) this.#onLine(formatEnd(rec), endLevel(rec), { ephemeral: false });
+			this.#maybeDashboard(rec.ev === "run_start" || rec.ev === "group_start" || rec.ev === "group_end");
+			return;
+		}
+		if (rec.ev === "end") {
+			const level = endLevel(rec);
+			this.#onLine(formatEnd(rec), level, { ephemeral: level === "info" });
+		} else if (rec.ev === "group_start") {
+			this.#onLine(`  ${san(rec.kind)} launched (${rec.n})`, "info", { ephemeral: true });
+		} else if (rec.ev === "group_end") {
+			this.#onLine(`  ${san(rec.kind)} settled (${rec.n})`, "info", { ephemeral: true });
+		}
 	}
 
 	/** Write state.json now (`force`) or debounced (~150ms). @param {boolean} force */
 	#syncState(force) {
 		if (!this.#statePath) return;
 		const now = Date.now();
-		if (!force && now - this.#lastStateWrite < 150) return;
+		if (!force && now - this.#lastStateWrite < STATE_WRITE_INTERVAL_MS) return;
 		this.#lastStateWrite = now;
 		if (force) this.#jsonl.flush();
 		Object.assign(this.#state, this.#derived());
 		try {
 			writeFileSync(this.#statePath, JSON.stringify(this.#state), "utf8");
 		} catch {
-			// best-effort
+			// Progress files are diagnostic; workflow execution must continue if they cannot be written.
 		}
 	}
 

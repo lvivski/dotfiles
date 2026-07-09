@@ -146,6 +146,22 @@ test("restricted mode rejects tool-escalation options", async () => {
 	assert.match(record.error ?? "", /restricted mode forbids tool-escalation/);
 });
 
+test("aborted runtime skips new agents without spawning", async () => {
+	const ac = new AbortController();
+	ac.abort();
+	const rt = new Runtime({ abortController: ac, budget: 10 });
+	const res = await rt.agent("x", { label: "aborted" });
+	assert.equal(res.skipped, true);
+	assert.equal(res.ok, false);
+	assert.match(res.error ?? "", /run aborting/);
+	assert.equal(rt.stats().counts.skipped, 1);
+});
+
+test("followUp requires a resumable agent result", async () => {
+	const rt = new Runtime({ budget: 10 });
+	await assert.rejects(() => rt.followUp(/** @type {any} */ ({ sessionId: null }), "next"), /no sessionId/);
+});
+
 test("Runtime.parallel / pipeline / loopUntil / quarantine work over the fake backend", () =>
 	withFakeEnv({}, async () => {
 		const rt = new Runtime({ budget: 10 });
@@ -201,7 +217,7 @@ test("cache keys: auto agent keys keep the journal-compatible tuple shape", () =
 	}));
 
 test("cache keys: an explicit key can't collide with a branch-scoped key (structured, not concatenated)", async () => {
-	// Old bug: explicit "b0-foo" at top level and key "foo" inside fanOut branch 0 both became "b0-foo".
+	// Explicit top-level keys and branch-scoped keys must stay distinct.
 	const src = `
 const top = await agent("top", { key: "b0-foo", label: "top" });
 const inner = await fanOut([0], () => agent("inner", { key: "foo", label: "inner" }));
@@ -307,6 +323,7 @@ test("cache keys: same spec shares a fingerprint; model changes it; label is exc
 	const b = fingerprint(applyRunSettings({ prompt: "p", label: "L2" })); // label not in the key
 	const c = fingerprint(applyRunSettings({ prompt: "p", model: "m2" })); // model is in the key
 	assert.equal(a, b);
+	assert.equal(a, "4dfea83d430fa9ba774283446de12eaa291e176bf5b373dc3f7f392415d5436e");
 	assert.notEqual(a, c);
 });
 

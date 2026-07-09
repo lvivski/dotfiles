@@ -1,8 +1,7 @@
 /**
  * @module executor
  *
- * Run lifecycle for one workflow: prepare artifacts, build runtime dependencies, execute the harness
- * in dry-run or real mode, drain/cleanup, and persist the final record.
+ * Workflow execution lifecycle: artifacts, runtime setup, harness execution, cleanup, and results.
  */
 import vm from "node:vm";
 import { writeFileSync, mkdirSync, readFileSync, existsSync, copyFileSync } from "node:fs";
@@ -121,41 +120,57 @@ export async function executeWorkflow(cfg) {
 	const onLine = cfg.onLine || (() => {});
 	const startedAt = Date.now();
 
-	// --- dry run: execute the harness with stubbed agents, persist nothing, return the plan. ---
-	if (cfg.dryRun) {
-		const rt = new Runtime({ ...runtimeOpts(cfg), dryRun: true, checkpoints: null, memory: new Memory(cfg.memoryPath, { readOnly: true, log: onLine }), progress: () => {}, log: onLine });
-		let error = null;
-		try {
-			if (cfg.hostPath && !cfg.restricted) rt.setHost(await loadHost(cfg.hostPath));
-			await runHarness(stripExports(cfg.source), { api: rt.buildApi(cfg.args), filename: `${cfg.runId}.mjs`, log: onLine });
-		} catch (e) {
-			error = e instanceof Error ? e.message : String(e);
-		}
-		await rt.drain();
-		const preservedWorktrees = await rt.cleanup();
-		return finalize({
-			runId: cfg.runId,
-			status: error ? "error" : "complete",
-			error,
-			meta,
-			args: cfg.args,
-			startedAt,
-			rt,
-			result: `dry-run plan: ${rt.agentCount} agent call(s)` + (meta.name ? ` — ${meta.name}` : ""),
-			preservedWorktrees,
-		});
-	}
+	if (cfg.dryRun) return executeDryRun(cfg, { meta, onLine, startedAt });
+	return executeRealRun(cfg, { meta, title, onLine, startedAt });
+}
 
-	// --- real run ---
+/**
+ * @param {ExecuteConfig} cfg
+ * @param {{ meta: object, onLine: NonNullable<ExecuteConfig["onLine"]>, startedAt: number }} run
+ * @returns {Promise<RunRecord>}
+ */
+async function executeDryRun(cfg, run) {
+	const { meta, onLine, startedAt } = run;
+	const rt = new Runtime({
+		...runtimeOpts(cfg),
+		dryRun: true,
+		checkpoints: null,
+		memory: new Memory(cfg.memoryPath, { readOnly: true, log: onLine }),
+		progress: () => {},
+		log: onLine,
+	});
+	let error = null;
+	try {
+		if (cfg.hostPath && !cfg.restricted) rt.setHost(await loadHost(cfg.hostPath));
+		await runHarness(stripExports(cfg.source), { api: rt.buildApi(cfg.args), filename: `${cfg.runId}.mjs`, log: onLine });
+	} catch (e) {
+		error = e instanceof Error ? e.message : String(e);
+	}
+	await rt.drain();
+	const preservedWorktrees = await rt.cleanup();
+	return finalize({
+		runId: cfg.runId,
+		status: error ? "error" : "complete",
+		error,
+		meta,
+		args: cfg.args,
+		startedAt,
+		rt,
+		result: `dry-run plan: ${rt.agentCount} agent call(s)` + (/** @type {any} */ (meta).name ? ` — ${/** @type {any} */ (meta).name}` : ""),
+		preservedWorktrees,
+	});
+}
+
+/**
+ * @param {ExecuteConfig} cfg
+ * @param {{ meta: object, title: string, onLine: NonNullable<ExecuteConfig["onLine"]>, startedAt: number }} run
+ * @returns {Promise<RunRecord>}
+ */
+async function executeRealRun(cfg, run) {
+	const { meta, title, onLine, startedAt } = run;
 	mkdirSync(cfg.runDir, { recursive: true });
 	writeFileSync(join(cfg.runDir, "script.js"), cfg.source, "utf8");
-	if (cfg.hostPath && !cfg.restricted) {
-		try {
-			copyFileSync(cfg.hostPath, join(cfg.runDir, "host.js")); // provenance copy alongside script.js
-		} catch {
-			// non-fatal: the sidecar is still loaded from cfg.hostPath below
-		}
-	}
+	copyHostArtifact(cfg);
 	writeMeta(cfg.runDir, cfg.runId, meta, cfg.args, !!cfg.restricted);
 
 	const reporter = new ProgressReporter({
@@ -168,19 +183,12 @@ export async function executeWorkflow(cfg) {
 		dashboard: cfg.progressMode === "dashboard",
 	});
 	const checkpoints = new CheckpointStore(cfg.runDir, { resume: !!cfg.resume });
-	// Memory is writable in a real run even under `restricted`: the runtime owns the file I/O, so a
-	// restricted harness may still persist cross-run state.
 	const memory = new Memory(cfg.memoryPath, { readOnly: false, log: (m) => onLine(m, "info", { ephemeral: true }) });
-	const abortController = new AbortController();
-	if (cfg.signal) {
-		if (cfg.signal.aborted) abortController.abort();
-		else cfg.signal.addEventListener("abort", () => abortController.abort(), { once: true });
-	}
 	const rt = new Runtime({
 		...runtimeOpts(cfg),
 		checkpoints,
 		memory,
-		abortController,
+		abortController: linkedAbortController(cfg.signal),
 		progress: (e) => reporter.emit(e),
 		log: (m) => onLine(m, "info", { ephemeral: true }),
 	});
@@ -209,12 +217,36 @@ export async function executeWorkflow(cfg) {
 	const preservedWorktrees = await rt.cleanup();
 	if (preservedWorktrees.length) onLine(`  preserved ${preservedWorktrees.length} dirty worktree(s): ${preservedWorktrees.join(", ")}`, "warning", { ephemeral: false });
 	const record = finalize({ runId: cfg.runId, status, error, meta, args: cfg.args, startedAt, rt, result, preservedWorktrees });
-	writeFileSync(join(cfg.runDir, "run.json"), JSON.stringify(record, null, 2), "utf8");
-	writeFileSync(join(cfg.runDir, "result.json"), JSON.stringify({ runId: record.runId, status: record.status, aic: record.aic, result: record.result }, null, 2), "utf8");
+	writeJson(join(cfg.runDir, "run.json"), record);
+	writeJson(join(cfg.runDir, "result.json"), { runId: record.runId, status: record.status, aic: record.aic, result: record.result });
 	reporter.emit({ ev: "run_end", runId: cfg.runId, ...record.counts, nanoAiu: rt.stats().nanoAiu, aic: record.aic });
 	onLine(reporter.runSummary(), status === "error" || status === "timeout" ? "error" : "info", { ephemeral: false });
 	reporter.close(status);
 	return record;
+}
+
+/** @param {ExecuteConfig} cfg */
+function copyHostArtifact(cfg) {
+	if (!cfg.hostPath || cfg.restricted) return;
+	try {
+		copyFileSync(cfg.hostPath, join(cfg.runDir, "host.js"));
+	} catch {
+		// The sidecar is loaded from cfg.hostPath; this provenance copy is diagnostic only.
+	}
+}
+
+/** @param {AbortSignal|undefined} signal */
+function linkedAbortController(signal) {
+	const ac = new AbortController();
+	if (!signal) return ac;
+	if (signal.aborted) ac.abort();
+	else signal.addEventListener("abort", () => ac.abort(), { once: true });
+	return ac;
+}
+
+/** @param {string} path @param {unknown} value */
+function writeJson(path, value) {
+	writeFileSync(path, JSON.stringify(value, null, 2), "utf8");
 }
 
 /** @param {ExecuteConfig} cfg */
@@ -303,8 +335,8 @@ function writeMeta(runDir, runId, meta, args, restricted) {
 		args: args ?? null,
 	};
 	try {
-		writeFileSync(path, JSON.stringify(record, null, 2), "utf8");
+		writeJson(path, record);
 	} catch {
-		/* best-effort */
+		// Metadata is useful for listing runs; execution artifacts still carry the final result.
 	}
 }

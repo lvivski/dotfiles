@@ -69,7 +69,7 @@ export class Memory {
 		}
 		try {
 			mkdirSync(dirname(this.path), { recursive: true });
-			// fsync every write: memory is durable cross-run/tick state (matches checkpoints + Python).
+			// Memory is durable cross-run state, so writes are fsync'd like checkpoints.
 			const body = append && text && !text.endsWith("\n") ? text + "\n" : text;
 			const fd = openSync(this.path, append ? "a" : "w");
 			try {

@@ -23,7 +23,7 @@ const NOT_FOUND = Symbol("not-found");
 const MAX_SCAN = 1_000_000; // cap embedded-JSON scanning to avoid pathological input
 const MAX_DEPTH = 200; // cap nesting depth while locating a balanced value
 
-/** @param {any} x @returns {string} best-effort text view (AgentResult -> its content). */
+/** @param {any} x @returns {string} text view (AgentResult -> its content). */
 export function asText(x) {
 	if (x && typeof x === "object" && typeof x.content === "string") return x.content;
 	return String(x);

@@ -1,12 +1,7 @@
 /**
  * @module runtime
  *
- * The `wf`-equivalent harness facade: spawns and coordinates subagents with a concurrency limiter,
- * an observed-spend AIC budget, resumable checkpoints, branch-scoped cache keys, hard caps, host
- * effects, worktrees, and progress events.
- *
- * Pure Node built-ins only — the SDK is imported solely by `extension.mjs`, keeping this testable
- * under plain `node`.
+ * Harness runtime: agents, fan-out, budgets, checkpoints, worktrees, host effects, and progress.
  */
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
@@ -110,7 +105,7 @@ export class Runtime {
 		if (opts.cwd) this.#cwd = opts.cwd;
 		this.#repoRoot = opts.repoRoot ?? null;
 
-		// Budget accessors. `total`/`hit` are live getters; `set()` mirrors Python's `wf.budget(aic)`.
+		// Budget accessors. `total` and `hit` are live; `set()` updates the run cap in-place.
 		const rt = this;
 		this.budget = {
 			get total() {
@@ -167,16 +162,7 @@ export class Runtime {
 	}
 
 	// ---- single agent --------------------------------------------------
-	/**
-	 * Launch one subagent (public entry). Registers the returned promise so a fire-and-forget
-	 * (un-awaited) call is still awaited, counted, and reaped by {@link Runtime#drain} before the run
-	 * finalizes — the async analogue of Python's blocking `wf.agent`.
-	 * @param {string|Record<string, any>} prompt prompt string, or an options object containing `prompt`.
-	 * @param {Record<string, any>} [opts] AgentSpec fields, plus runtime opts: `key` (explicit cache
-	 *   key), `phase` (override the current phase label), and `isolation:"worktree"` (run in a fresh
-	 *   detached worktree).
-	 * @returns {Promise<AgentResult>}
-	 */
+	/** Launch one subagent and track it so {@link Runtime#drain} can await fire-and-forget calls. */
 	agent(prompt, opts = {}) {
 		return this.#track(this.#agentRun(prompt, opts));
 	}
@@ -198,70 +184,91 @@ export class Runtime {
 	}
 
 	/**
-	 * Run one subagent (or return a cached/dry-run/skipped result). Never throws for ordinary
-	 * subagent failure; throws only for cap breaches and (strict mode) budget overrun.
+	 * Run one subagent, or return a cached/dry-run/skipped result.
 	 * @param {string|Record<string, any>} prompt
 	 * @param {Record<string, any>} [opts]
 	 * @returns {Promise<AgentResult>}
 	 */
 	async #agentRun(prompt, opts = {}) {
-		const o = /** @type {Record<string, any>} */ (typeof prompt === "string" ? { ...opts, prompt } : { ...prompt });
-		// isolation:"worktree" convenience — run this agent inside a fresh detached worktree.
+		const o = this.#agentOptions(prompt, opts);
 		if (o.isolation === "worktree" && !this.dryRun && !this.restricted) {
 			return this.#worktree(`iso-${++this.#isoCounter}`, {}, (dir) => this.agent(o.prompt, { ...o, isolation: undefined, cwd: dir }));
 		}
-		if (++this.#agentCount > maxAgents()) {
-			throw new Error(`workflow: agent cap exceeded (MAX_AGENTS=${maxAgents()}) — likely a runaway loop`);
-		}
+		this.#reserveAgentSlot();
+
 		const spec = this.#buildSpec(o);
-		const label = spec.label || "agent";
-		const phase = o.phase ?? this.#currentPhase ?? null;
-		const seq = ++this.#seq;
-		this.#emit({ ev: "start", seq, label, model: spec.model, phase });
+		const run = this.#startAgent(spec, o);
 
 		if (this.dryRun) {
 			const res = this.#synthetic("[dry-run]", spec);
-			this.#finish(seq, res, false, phase);
+			this.#finish(run.seq, res, false, run.phase);
 			return res;
 		}
 
-		const key = o.key != null ? this.#scopedKey(String(o.key)) : this.#agentKey(spec);
+		const key = this.#agentCacheKey(o, spec);
 		const cached = this.#checkpoints?.get(key);
 		if (cached) {
-			this.#finish(seq, cached, false, phase);
+			this.#finish(run.seq, cached, false, run.phase);
 			return cached;
 		}
 
 		await this.#sem.acquire();
-		let res;
-		let skipped = false;
-		let strictStop = false;
 		try {
-			if (this.#abort.signal.aborted) {
-				res = this.#synthetic("", spec, { skipped: true, error: "skipped: run aborting" });
-				skipped = true;
-			} else if (this.#overBudget()) {
-				this.#budgetHit = true;
-				if (this.strictBudget) {
-					res = this.#synthetic("", spec, { skipped: true, error: "skipped: budget reached" });
-					this.#finish(seq, res, true, phase);
-					throw new BudgetExceeded(`budget ${this.#budgetTotal} reached (spent ${this.#spent.toFixed(4)})`);
-				}
-				res = this.#synthetic("", spec, { skipped: true, error: "skipped: budget reached" });
-				skipped = true;
-			} else {
-				res = await runAgent(spec, { signal: this.#abort.signal });
-				this.#charge(res.aic);
-				if (this.#checkpoints && res.ok) this.#checkpoints.put(key, res);
-				strictStop = this.strictBudget && this.#overBudget();
-			}
+			const { res, skipped, strictStop } = await this.#executeAgent(spec, key, run);
+			this.#finish(run.seq, res, skipped, run.phase);
+			if (strictStop) throw new BudgetExceeded(`budget ${this.#budgetTotal} exceeded (spent ${this.#spent.toFixed(4)})`);
+			return res;
 		} finally {
 			this.#sem.release();
 		}
+	}
 
-		this.#finish(seq, res, skipped, phase);
-		if (strictStop) throw new BudgetExceeded(`budget ${this.#budgetTotal} exceeded (spent ${this.#spent.toFixed(4)})`);
-		return res;
+	/** @param {string|Record<string, any>} prompt @param {Record<string, any>} opts */
+	#agentOptions(prompt, opts) {
+		return /** @type {Record<string, any>} */ (typeof prompt === "string" ? { ...opts, prompt } : { ...prompt });
+	}
+
+	#reserveAgentSlot() {
+		if (++this.#agentCount > maxAgents()) throw new Error(`workflow: agent cap exceeded (MAX_AGENTS=${maxAgents()}) — likely a runaway loop`);
+	}
+
+	/** @param {AgentSpec} spec @param {Record<string, any>} opts */
+	#startAgent(spec, opts) {
+		const phase = opts.phase ?? this.#currentPhase ?? null;
+		const seq = ++this.#seq;
+		this.#emit({ ev: "start", seq, label: spec.label || "agent", model: spec.model, phase });
+		return { seq, phase };
+	}
+
+	/** @param {Record<string, any>} opts @param {AgentSpec} spec */
+	#agentCacheKey(opts, spec) {
+		return opts.key != null ? this.#scopedKey(String(opts.key)) : this.#agentKey(spec);
+	}
+
+	/**
+	 * @param {AgentSpec} spec
+	 * @param {string} key
+	 * @param {{ seq: number, phase: string|null }} run
+	 * @returns {Promise<{ res: AgentResult, skipped: boolean, strictStop: boolean }>}
+	 */
+	async #executeAgent(spec, key, run) {
+		if (this.#abort.signal.aborted) {
+			return { res: this.#synthetic("", spec, { skipped: true, error: "skipped: run aborting" }), skipped: true, strictStop: false };
+		}
+		if (this.#overBudget()) {
+			this.#budgetHit = true;
+			const res = this.#synthetic("", spec, { skipped: true, error: "skipped: budget reached" });
+			if (this.strictBudget) {
+				this.#finish(run.seq, res, true, run.phase);
+				throw new BudgetExceeded(`budget ${this.#budgetTotal} reached (spent ${this.#spent.toFixed(4)})`);
+			}
+			return { res, skipped: true, strictStop: false };
+		}
+
+		const res = await runAgent(spec, { signal: this.#abort.signal });
+		this.#charge(res.aic);
+		if (this.#checkpoints && res.ok) this.#checkpoints.put(key, res);
+		return { res, skipped: false, strictStop: this.strictBudget && this.#overBudget() };
 	}
 
 	/**
@@ -725,26 +732,11 @@ export class Runtime {
 	 * @returns {Record<string, unknown>}
 	 */
 	buildApi(args) {
-		// worktree() — callable (callback/lifecycle) with a `.create` for the explicit form.
-		/** @type {any} */
-		const worktree = this.restricted
-			? () => {
-					throw new Error("workflow: worktree() is forbidden in restricted mode");
-			  }
-			: (/** @type {string} */ name, /** @type {any} */ a, /** @type {any} */ b) => this.#worktree(name, a, b);
-		if (!this.restricted) worktree.create = (/** @type {string} */ name, /** @type {any} */ opts) => this.#worktreeCreate(name, opts);
-		// host.* — checkpointed host effects from the loaded sidecar (restricted/absent → throwing proxy).
-		const host = buildHostProxy({
-			names: this.#host?.names ?? [],
-			invoke: (name, input, opts) => this.#track(this.#effect(name, input, opts)),
-			restricted: this.restricted,
-			hasSidecar: !!this.#host,
-		});
 		return {
 			args,
 			budget: this.budget,
 			memory: this.memory,
-			host,
+			host: this.#hostApi(),
 			agent: this.agent.bind(this),
 			followUp: this.followUp.bind(this),
 			parallel: this.parallel.bind(this),
@@ -754,7 +746,33 @@ export class Runtime {
 			quarantine: this.quarantine.bind(this),
 			phase: this.phase.bind(this),
 			log: this.log.bind(this),
-			// Pattern helpers (Phase 5) — bound to this runtime, sharing the agent()/fanOut() path.
+			...this.#patternApi(),
+			worktree: this.#worktreeApi(),
+		};
+	}
+
+	#hostApi() {
+		return buildHostProxy({
+			names: this.#host?.names ?? [],
+			invoke: (name, input, opts) => this.#track(this.#effect(name, input, opts)),
+			restricted: this.restricted,
+			hasSidecar: !!this.#host,
+		});
+	}
+
+	#worktreeApi() {
+		/** @type {any} */
+		const worktree = this.restricted
+			? () => {
+					throw new Error("workflow: worktree() is forbidden in restricted mode");
+			  }
+			: (/** @type {string} */ name, /** @type {any} */ a, /** @type {any} */ b) => this.#worktree(name, a, b);
+		if (!this.restricted) worktree.create = (/** @type {string} */ name, /** @type {any} */ opts) => this.#worktreeCreate(name, opts);
+		return worktree;
+	}
+
+	#patternApi() {
+		return {
 			structured: (/** @type {string} */ prompt, /** @type {any} */ schema, /** @type {any} */ opts) => patterns.structured(this, prompt, schema, opts),
 			verify: (/** @type {any} */ subject, /** @type {any} */ rubric, /** @type {any} */ opts) => patterns.verify(this, subject, rubric, opts),
 			consensus: (/** @type {any} */ subject, /** @type {any} */ rubric, /** @type {any} */ opts) => patterns.consensus(this, subject, rubric, opts),
@@ -762,7 +780,6 @@ export class Runtime {
 			classify: (/** @type {any} */ text, /** @type {string[]} */ classes, /** @type {any} */ opts) => patterns.classify(this, text, classes, opts),
 			tournament: (/** @type {any[]} */ candidates, /** @type {any} */ criteria, /** @type {any} */ opts) => patterns.tournament(this, candidates, criteria, opts),
 			generateAndFilter: (/** @type {any} */ generate, /** @type {any} */ opts) => patterns.generateAndFilter(this, generate, opts),
-			worktree,
 		};
 	}
 }
