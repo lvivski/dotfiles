@@ -15,6 +15,11 @@ import { runHarness, deterministicGlobals } from "./sandbox.mjs";
 import { loadHost } from "./effects.mjs";
 import { BudgetExceeded } from "./scheduler.mjs";
 
+const ABORT_DRAIN_GRACE_MS = 2000;
+
+/** Internal sentinel used to distinguish run cancellation from a harness failure. */
+class RunAborted extends Error {}
+
 /**
  * Strip ESM `export` keywords so the harness runs as VM script text (it cannot import extension
  * internals). `export const meta = …` becomes `const meta = …`.
@@ -82,6 +87,7 @@ export function extractMeta(source) {
  * @property {boolean} [resume]
  * @property {string|null} [memoryPath]
  * @property {string|null} [hostPath]
+ * @property {number} [harnessSyncTimeoutMs]
  * @property {string} [cwd]
  * @property {string|null} [repoRoot]
  * @property {AbortSignal} [signal]
@@ -142,7 +148,12 @@ async function executeDryRun(cfg, run) {
 	let error = null;
 	try {
 		if (cfg.hostPath && !cfg.restricted) rt.setHost(await loadHost(cfg.hostPath));
-		await runHarness(stripExports(cfg.source), { api: rt.buildApi(cfg.args), filename: `${cfg.runId}.mjs`, log: onLine });
+		await runHarness(stripExports(cfg.source), {
+			api: rt.buildApi(cfg.args),
+			filename: `${cfg.runId}.mjs`,
+			log: onLine,
+			syncTimeoutMs: cfg.harnessSyncTimeoutMs,
+		});
 	} catch (e) {
 		error = e instanceof Error ? e.message : String(e);
 	}
@@ -202,21 +213,34 @@ async function executeRealRun(cfg, run) {
 		let result = "";
 		try {
 			if (cfg.hostPath && !cfg.restricted) rt.setHost(await loadHost(cfg.hostPath));
-			const value = await runHarness(stripExports(cfg.source), { api: rt.buildApi(cfg.args), filename: `${cfg.runId}.mjs`, log: (m) => rt.log(m) });
+			const value = await abortable(
+				runHarness(stripExports(cfg.source), {
+					api: rt.buildApi(cfg.args),
+					filename: `${cfg.runId}.mjs`,
+					log: (m) => rt.log(m),
+					syncTimeoutMs: cfg.harnessSyncTimeoutMs,
+				}),
+				cfg.signal,
+			);
 			result = coerceResult(value);
 		} catch (e) {
 			if (e instanceof BudgetExceeded) {
 				status = "complete";
 				onLine(`  budget reached: ${e.message}`, "warning", { ephemeral: false });
+			} else if (e instanceof RunAborted || cfg.signal?.aborted) {
+				status = "timeout";
 			} else {
 				status = "error";
 				error = e instanceof Error ? e.message : String(e);
 				onLine(`  ! workflow error: ${error}`, "error", { ephemeral: false });
 			}
 		}
-		if (cfg.signal?.aborted) status = "timeout";
 
-		await rt.drain(); // await any fire-and-forget agents so none outlive the run uncounted
+		const drained = await drainRuntime(rt, cfg.signal);
+		if (!drained) {
+			onLine(`  ! workflow cleanup exceeded ${ABORT_DRAIN_GRACE_MS}ms; host work may still be unwinding`, "warning", { ephemeral: false });
+		}
+		if (cfg.signal?.aborted) status = "timeout";
 		const preservedWorktrees = await rt.cleanup();
 		if (preservedWorktrees.length) onLine(`  preserved ${preservedWorktrees.length} dirty worktree(s): ${preservedWorktrees.join(", ")}`, "warning", { ephemeral: false });
 		const record = finalize({ runId: cfg.runId, status, error, meta, args: cfg.args, startedAt, rt, result, preservedWorktrees });
@@ -255,6 +279,73 @@ function linkedAbortController(signal) {
 	if (signal.aborted) ac.abort();
 	else signal.addEventListener("abort", () => ac.abort(), { once: true });
 	return ac;
+}
+
+/**
+ * Await a promise until it settles or the run aborts. The original promise keeps rejection handlers
+ * attached, so a later failure cannot become an unhandled rejection after cancellation wins.
+ * @template T
+ * @param {Promise<T>} promise
+ * @param {AbortSignal|undefined} signal
+ * @returns {Promise<T>}
+ */
+function abortable(promise, signal) {
+	if (!signal) return promise;
+	if (signal.aborted) {
+		promise.then(
+			() => {},
+			() => {},
+		);
+		return Promise.reject(new RunAborted("workflow aborted"));
+	}
+	return new Promise((resolve, reject) => {
+		const onAbort = () => reject(new RunAborted("workflow aborted"));
+		signal.addEventListener("abort", onAbort, { once: true });
+		promise.then(
+			(value) => {
+				signal.removeEventListener("abort", onAbort);
+				resolve(value);
+			},
+			(error) => {
+				signal.removeEventListener("abort", onAbort);
+				reject(error);
+			},
+		);
+	});
+}
+
+/**
+ * Drain fire-and-forget work normally, but after cancellation wait only a bounded grace period.
+ * Agent subprocesses receive the same signal and should settle immediately; the bound protects the
+ * extension from a host sidecar that ignores its AbortSignal.
+ * @param {Runtime} rt
+ * @param {AbortSignal|undefined} signal
+ * @returns {Promise<boolean>} true when every tracked task settled
+ */
+async function drainRuntime(rt, signal) {
+	const draining = rt.drain();
+	try {
+		await abortable(draining, signal);
+		return true;
+	} catch (e) {
+		if (!(e instanceof RunAborted)) throw e;
+		return settleWithin(draining, ABORT_DRAIN_GRACE_MS);
+	}
+}
+
+/** @param {Promise<unknown>} promise @param {number} timeoutMs @returns {Promise<boolean>} */
+async function settleWithin(promise, timeoutMs) {
+	let timer;
+	try {
+		return await Promise.race([
+			promise.then(() => true),
+			new Promise((resolve) => {
+				timer = setTimeout(() => resolve(false), timeoutMs);
+			}),
+		]);
+	} finally {
+		clearTimeout(timer);
+	}
 }
 
 /** @param {string} path @param {unknown} value */

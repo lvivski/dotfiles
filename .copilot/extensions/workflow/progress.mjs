@@ -4,9 +4,10 @@
  * Structured progress for workflow runs: JSONL events, live state snapshots, and terminal narration.
  *
  * @typedef {"queued"|"running"|"done"|"cached"|"skipped"|"error"} AgentStatus
- * @typedef {"running"|"complete"|"failed"|"error"|"timeout"} RunStatus
+ * @typedef {"running"|"complete"|"failed"|"error"|"timeout"|"interrupted"} RunStatus
  */
 import { writeFileSync, mkdirSync, appendFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 
 const CTRL = /[\u0000-\u001f\u007f-\u009f]/g;
@@ -16,6 +17,7 @@ const MAX_RECENT = 8;
 const DASHBOARD_INTERVAL_MS = 1500;
 const FLUSH_INTERVAL_MS = 150;
 const STATE_WRITE_INTERVAL_MS = 150;
+export const PROCESS_INSTANCE_ID = randomUUID();
 /** Strip control chars. @param {unknown} s */
 const san = (s) => String(s ?? "").replace(CTRL, " ");
 /** AIC from a raw nanoAiu field. @param {unknown} nano */
@@ -105,6 +107,8 @@ export class ProgressReporter {
 			runId,
 			title: title || runId,
 			meta,
+			ownerPid: process.pid,
+			ownerInstanceId: PROCESS_INSTANCE_ID,
 			status: /** @type {RunStatus} */ ("running"),
 			startedAt: now,
 			updatedAt: now,
@@ -113,9 +117,6 @@ export class ProgressReporter {
 			nanoAiu: 0,
 			aic: 0,
 			outputTokens: 0,
-			running: /** @type {any[]} */ ([]),
-			groups: /** @type {any[]} */ ([]),
-			recent: /** @type {any[]} */ ([]),
 			errors: /** @type {any[]} */ ([]),
 		};
 	}
@@ -219,15 +220,12 @@ export class ProgressReporter {
 			}
 			return;
 		}
-		this.#cancelStateTimer();
+		if (this.#stateTimer) {
+			clearTimeout(this.#stateTimer);
+			this.#stateTimer = null;
+		}
 		if (force) this.#jsonl.flush();
 		this.#writeState();
-	}
-
-	#cancelStateTimer() {
-		if (!this.#stateTimer) return;
-		clearTimeout(this.#stateTimer);
-		this.#stateTimer = null;
 	}
 
 	#writeState() {
@@ -308,7 +306,7 @@ export function formatDashboard(s) {
 	const recent = s.recent || [];
 	const errors = s.errors || [];
 	const total = Number(c.launched || 0) + Number(c.cached || 0) + Number(c.skipped || 0) + running.length;
-	const terminal = ["complete", "failed", "error", "timeout"].includes(s.status || "");
+	const terminal = ["complete", "failed", "error", "timeout", "interrupted"].includes(s.status || "");
 	const endMs = terminal && s.updatedAt ? Date.parse(s.updatedAt) : Date.now();
 	const elapsed = ((endMs - Date.parse(s.startedAt || new Date().toISOString())) / 1000).toFixed(0);
 	const lines = [

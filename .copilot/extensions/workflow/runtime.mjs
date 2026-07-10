@@ -9,7 +9,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { runAgent, killAllAgents, copilotBin } from "./agent.mjs";
+import { runAgent, copilotBin } from "./agent.mjs";
 import { Memory } from "./memory.mjs";
 import * as patterns from "./patterns.mjs";
 import { BudgetExceeded, defaultConcurrency, RunStats, Semaphore } from "./scheduler.mjs";
@@ -134,12 +134,6 @@ export class Runtime {
 	/** @returns {{ counts: RunCounts, nanoAiu: number }} */
 	stats() {
 		return { counts: this.#stats.counts(), nanoAiu: this.#stats.nanoAiu };
-	}
-
-	/** Abort the run: stop launching new agents and kill live subagents. */
-	abort() {
-		this.#abort.abort();
-		killAllAgents();
 	}
 
 	/**

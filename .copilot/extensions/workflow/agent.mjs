@@ -132,7 +132,7 @@ export function childEnv(base = process.env, guard = {}) {
 }
 
 // --- live-subprocess registry: reap children on interrupt/timeout so none orphan (keep spending).
-/** @type {Set<{ child: import("node:child_process").ChildProcess, group: boolean }>} */
+/** @type {Set<{ terminate: () => void }>} */
 const LIVE = new Set();
 
 /** @param {import("node:child_process").ChildProcess} child @param {boolean} group */
@@ -142,12 +142,18 @@ function killChild(child, group) {
 		else child.kill("SIGKILL");
 	} catch {
 		/* already exited / no such group */
+	} finally {
+		// Descendants can inherit these pipes and keep the async readers open after the direct child
+		// exits. Closing our ends guarantees cancellation can settle even if a platform cannot reap
+		// the full process tree.
+		child.stdout?.destroy();
+		child.stderr?.destroy();
 	}
 }
 
 /** Kill every still-running subagent. Best-effort, idempotent (called on run abort). */
 export function killAllAgents() {
-	for (const entry of [...LIVE]) killChild(entry.child, entry.group);
+	for (const entry of [...LIVE]) entry.terminate();
 }
 
 /**
@@ -223,8 +229,9 @@ export async function runAgent(spec, opts = {}) {
 		return result(spec, { started, model, error: `working directory not found: ${spec.cwd}`, exitCode: 1 });
 	}
 
-	// Timeout agents get their own process group so one kill takes down the whole tree.
-	const group = POSIX && !!spec.timeout;
+	// Every POSIX agent gets its own process group: run-level aborts and extension teardown must reap
+	// tool subprocesses too, not only the top-level `copilot` process.
+	const group = POSIX;
 	/** @type {import("node:child_process").ChildProcess} */
 	let child;
 	try {
@@ -238,24 +245,32 @@ export async function runAgent(spec, opts = {}) {
 		return result(spec, { started, model, error: `failed to spawn ${bin}: ${errMsg(e)}`, exitCode: 127 });
 	}
 
-	const entry = { child, group };
-	LIVE.add(entry);
-
 	const acc = { content: /** @type {string|null} */ (null), outputTokens: 0, sessionId: /** @type {string|null} */ (null), model, sessionErrors: /** @type {string[]} */ ([]) };
-	let killed = false;
+	const stdoutLines = child.stdout ? createInterface({ input: child.stdout, crlfDelay: Infinity }) : null;
+	/** @type {"timeout"|"aborted"|null} */
+	let termination = null;
 	let stderr = "";
 
-	// Attach exit listeners immediately so async spawn errors and early closes are observed.
+	// Attach exit listeners immediately so async spawn errors and early exits are observed. Use
+	// `exit`, not `close`: descendants may inherit stdio and delay/withhold `close` indefinitely.
 	let spawnError = /** @type {Error|null} */ (null);
 	const exited = new Promise((resolve) => {
 		child.once("error", (e) => {
 			spawnError = e instanceof Error ? e : new Error(String(e));
 			resolve(127);
 		});
-		child.once("close", (code) => resolve(code ?? (killed ? 143 : 1)));
+		child.once("exit", (code) => resolve(code ?? (termination ? 143 : 1)));
 	});
 
-	const onAbort = () => killChild(child, group);
+	/** @param {"timeout"|"aborted"} reason */
+	const terminate = (reason) => {
+		termination ??= reason;
+		stdoutLines?.close();
+		killChild(child, group);
+	};
+	const entry = { terminate: () => terminate("aborted") };
+	LIVE.add(entry);
+	const onAbort = () => terminate("aborted");
 	if (opts.signal) {
 		if (opts.signal.aborted) onAbort();
 		else opts.signal.addEventListener("abort", onAbort, { once: true });
@@ -263,8 +278,7 @@ export async function runAgent(spec, opts = {}) {
 	let timer = null;
 	if (spec.timeout) {
 		timer = setTimeout(() => {
-			killed = true;
-			killChild(child, group);
+			terminate("timeout");
 		}, Math.max(1, spec.timeout * 1000));
 		timer.unref?.();
 	}
@@ -275,10 +289,8 @@ export async function runAgent(spec, opts = {}) {
 	});
 
 	try {
-		if (child.stdout) {
-			for await (const line of createInterface({ input: child.stdout, crlfDelay: Infinity })) {
-				reduce(acc, tryParse(line));
-			}
+		if (stdoutLines) {
+			for await (const line of stdoutLines) reduce(acc, tryParse(line));
 		}
 	} catch {
 		/* stdout read error — the exit code / kill state below reports it */
@@ -301,7 +313,8 @@ export async function runAgent(spec, opts = {}) {
 		outputTokens: acc.outputTokens || usage.tokens.outputTokens,
 		usage,
 		exitCode,
-		killed,
+		timedOut: termination === "timeout",
+		aborted: termination === "aborted",
 		stderr,
 		sessionErrors: acc.sessionErrors,
 	});
@@ -329,7 +342,7 @@ function reduce(acc, obj) {
 /**
  * Assemble the final {@link AgentResult} and classify ok/error.
  * @param {AgentSpec} spec
- * @param {{ started: number, model: string|null, content?: string|null, sessionId?: string|null, outputTokens?: number, usage?: { nanoAiu: number, tokens: any }, exitCode: number, killed?: boolean, stderr?: string, sessionErrors?: string[], error?: string|null }} p
+ * @param {{ started: number, model: string|null, content?: string|null, sessionId?: string|null, outputTokens?: number, usage?: { nanoAiu: number, tokens: any }, exitCode: number, timedOut?: boolean, aborted?: boolean, stderr?: string, sessionErrors?: string[], error?: string|null }} p
  * @returns {AgentResult}
  */
 function result(spec, p) {
@@ -337,7 +350,8 @@ function result(spec, p) {
 	const sessionErrors = p.sessionErrors || [];
 	let error = p.error ?? null;
 	if (error == null) {
-		if (p.killed) error = `timed out after ${spec.timeout}s`;
+		if (p.timedOut) error = `timed out after ${spec.timeout}s`;
+		else if (p.aborted) error = "aborted";
 		else if (p.exitCode !== 0) error = (p.stderr || "").trim() || `exited with code ${p.exitCode}`;
 		else if (sessionErrors.length && !content.trim()) error = sessionErrors.join("; ");
 		else if (p.content == null) error = "no assistant message in output";
@@ -346,7 +360,7 @@ function result(spec, p) {
 	const tokens = p.usage?.tokens ?? { inputTokens: 0, outputTokens: p.outputTokens ?? 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 };
 	return {
 		content,
-		ok: p.exitCode === 0 && p.content != null && !p.killed && error == null,
+		ok: p.exitCode === 0 && p.content != null && !p.timedOut && !p.aborted && error == null,
 		error,
 		sessionId: p.sessionId ?? null,
 		model: p.model,

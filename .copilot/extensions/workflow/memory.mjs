@@ -5,7 +5,7 @@
  * be shared across recurring ticks. No-ops (reads return "") when no path is configured. Under
  * `dryRun` it is read-only: writes are logged as skipped and never mutate the file.
  */
-import { readFileSync, mkdirSync, existsSync, openSync, writeSync, fsyncSync, closeSync } from "node:fs";
+import { readFileSync, mkdirSync, openSync, writeSync, fsyncSync, closeSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { homedir } from "node:os";
 
@@ -38,9 +38,11 @@ export class Memory {
 	read() {
 		if (!this.path) return "";
 		try {
-			return existsSync(this.path) ? readFileSync(this.path, "utf8") : "";
+			return readFileSync(this.path, "utf8");
 		} catch (e) {
-			this.#log(`  ! memory read failed: ${e instanceof Error ? e.message : e}`);
+			if (/** @type {NodeJS.ErrnoException} */ (e).code !== "ENOENT") {
+				this.#log(`  ! memory read failed: ${e instanceof Error ? e.message : e}`);
+			}
 			return "";
 		}
 	}

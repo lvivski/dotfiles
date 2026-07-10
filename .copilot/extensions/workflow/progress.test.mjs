@@ -119,6 +119,8 @@ test("state.json is written and reflects status on close", () => {
 	const state = JSON.parse(readFileSync(join(dir, "state.json"), "utf8"));
 	assert.equal(state.status, "complete");
 	assert.equal(state.counts.done, 1);
+	assert.equal(state.ownerPid, process.pid);
+	assert.equal(typeof state.ownerInstanceId, "string");
 });
 
 test("state.json receives the trailing state from a burst of events", async () => {

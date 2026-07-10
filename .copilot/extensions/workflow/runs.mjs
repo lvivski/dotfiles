@@ -8,13 +8,15 @@ import { existsSync, statSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, basename } from "node:path";
 
-import { formatDashboard } from "./progress.mjs";
+import { formatDashboard, PROCESS_INSTANCE_ID } from "./progress.mjs";
 
 const RUN_LIST_LIMIT = 50;
+const STATUS_WIDTH = 11;
+const LEGACY_STALE_RUNNING_MS = (7200 + 300) * 1000;
 const HOME = homedir();
 
 /** @returns {string} */
-const workflowsDir = () => process.env.CWF_WORKFLOWS_DIR || join(HOME, ".copilot/workflows");
+export const workflowsDir = () => process.env.CWF_WORKFLOWS_DIR || join(HOME, ".copilot/workflows");
 /** @returns {string} */
 export const runsDir = () => process.env.CWF_RUNS_DIR || join(workflowsDir(), "runs");
 
@@ -37,9 +39,9 @@ export function listWorkflowRuns() {
 	}
 	if (!rows.length) return `No workflow runs in ${dir}.`;
 	rows.sort((a, b) => timestampMs(b.updated) - timestampMs(a.updated));
-	const header = `${"RUN ID".padEnd(30)} ${"STATUS".padEnd(9)} ${"WORKFLOW".padEnd(16)} ${"AIC".padStart(7)}  UPDATED`;
+	const header = `${"RUN ID".padEnd(30)} ${"STATUS".padEnd(STATUS_WIDTH)} ${"WORKFLOW".padEnd(16)} ${"AIC".padStart(7)}  UPDATED`;
 	const body = rows
-		.map((r) => `${r.runId.slice(0, 30).padEnd(30)} ${String(r.status).padEnd(9)} ${String(r.workflow).slice(0, 16).padEnd(16)} ${r.aic.toFixed(1).padStart(7)}  ${r.updated}`)
+		.map((r) => `${r.runId.slice(0, 30).padEnd(30)} ${String(r.status).padEnd(STATUS_WIDTH)} ${String(r.workflow).slice(0, 16).padEnd(16)} ${r.aic.toFixed(1).padStart(7)}  ${r.updated}`)
 		.join("\n");
 	const footer = entries.length > RUN_LIST_LIMIT ? `\n(showing newest ${RUN_LIST_LIMIT} of ${entries.length} runs)` : "";
 	return `${header}\n${body}${footer}`;
@@ -119,7 +121,43 @@ function latestRunId() {
  * @param {string} runDir @returns {any}
  */
 function runRecordOf(runDir) {
-	return readJson(join(runDir, "run.json")) || readJson(join(runDir, "state.json")) || replayProgress(runDir);
+	return reconcileRunning(readJson(join(runDir, "run.json")) || readJson(join(runDir, "state.json")) || replayProgress(runDir));
+}
+
+/**
+ * A process exit cannot finish asynchronous workflow cleanup, so persisted state may still say
+ * `running`. New records carry an owner PID + process-instance id; legacy records fall back to the
+ * maximum supported run timeout plus a small grace period.
+ * @param {any} rec
+ * @returns {any}
+ */
+function reconcileRunning(rec) {
+	if (!rec || rec.status !== "running") return rec;
+	const pid = Number(rec.ownerPid);
+	const hasOwner = Number.isInteger(pid) && pid > 0 && typeof rec.ownerInstanceId === "string";
+	let interrupted = false;
+	if (hasOwner) {
+		interrupted = (pid === process.pid && rec.ownerInstanceId !== PROCESS_INSTANCE_ID) || !processIsAlive(pid);
+	} else {
+		const updated = timestampMs(rec.updatedAt || rec.startedAt);
+		interrupted = updated > 0 && Date.now() - updated > LEGACY_STALE_RUNNING_MS;
+	}
+	if (!interrupted) return rec;
+	return {
+		...rec,
+		status: "interrupted",
+		error: rec.error || "workflow host process exited before completion",
+	};
+}
+
+/** @param {number} pid @returns {boolean} */
+function processIsAlive(pid) {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (e) {
+		return /** @type {NodeJS.ErrnoException} */ (e).code === "EPERM";
+	}
 }
 
 /** Reconstruct a minimal record from progress.jsonl when state/run json are missing. @param {string} runDir */
@@ -186,7 +224,7 @@ function formatRunSummary(runId, rec, dir) {
 
 /** @param {string} runId @param {string} dir @returns {string|null} dashboard text when state.json exists. */
 function formatRunDashboard(runId, dir) {
-	const state = readJson(join(dir, "state.json"));
+	const state = reconcileRunning(readJson(join(dir, "state.json")));
 	if (!state) return null;
 	return formatDashboard({ ...state, runId: state.runId || runId });
 }

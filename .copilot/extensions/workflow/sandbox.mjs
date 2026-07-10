@@ -13,6 +13,8 @@
  */
 import vm from "node:vm";
 
+export const DEFAULT_SYNC_TIMEOUT_MS = 5000;
+
 /**
  * Build the frozen determinism-safe built-in globals a harness may use.
  * Excludes nondeterministic surfaces: `Math.random`, `Date.now()`, argless `new Date()`.
@@ -66,24 +68,22 @@ function fmt(x) {
  * final `return` work.
  *
  * @param {string} source raw `.mjs` text
- * @param {{ api: Record<string, unknown>, filename?: string, log?: (m: string) => void }} config
+ * @param {{ api: Record<string, unknown>, filename?: string, log?: (m: string) => void, syncTimeoutMs?: number }} config
  *   `api` — the injected workflow globals (`agent`, `parallel`, `args`, `budget`, ...); `log` — console sink.
  * @returns {Promise<unknown>}
  */
 export async function runHarness(source, config) {
 	const { api, filename = "workflow.mjs", log } = config;
+	const syncTimeoutMs = Number.isFinite(config.syncTimeoutMs)
+		? Math.max(1, Math.trunc(/** @type {number} */ (config.syncTimeoutMs)))
+		: DEFAULT_SYNC_TIMEOUT_MS;
 	const sink = log || (() => {});
+	const writeConsole = (/** @type {unknown[]} */ ...a) => sink(a.map(fmt).join(" "));
 	/** @type {Record<string, unknown>} */
 	const sandbox = {
 		...deterministicGlobals(),
 		...api,
-		console: {
-			log: (/** @type {unknown[]} */ ...a) => sink(a.map(fmt).join(" ")),
-			info: (/** @type {unknown[]} */ ...a) => sink(a.map(fmt).join(" ")),
-			warn: (/** @type {unknown[]} */ ...a) => sink(a.map(fmt).join(" ")),
-			error: (/** @type {unknown[]} */ ...a) => sink(a.map(fmt).join(" ")),
-			debug: (/** @type {unknown[]} */ ...a) => sink(a.map(fmt).join(" ")),
-		},
+		console: Object.fromEntries(["log", "info", "warn", "error", "debug"].map((name) => [name, writeConsole])),
 	};
 	const context = vm.createContext(sandbox, {
 		name: "workflow-harness",
@@ -96,7 +96,9 @@ export async function runHarness(source, config) {
 	} catch (e) {
 		throw new Error(rewriteCompileError(e));
 	}
-	return await script.runInContext(context);
+	// AbortSignal timers cannot fire while harness JavaScript blocks the event loop. Bound each
+	// initial synchronous evaluation slice in the VM; normal async orchestration yields immediately.
+	return await script.runInContext(context, { timeout: syncTimeoutMs });
 }
 
 /**

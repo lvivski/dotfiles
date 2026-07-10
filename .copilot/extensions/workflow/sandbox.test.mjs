@@ -2,7 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { runHarness, deterministicGlobals } from "./sandbox.mjs";
+import { runHarness, deterministicGlobals, DEFAULT_SYNC_TIMEOUT_MS } from "./sandbox.mjs";
 
 /** @param {string} src @param {Record<string, unknown>} [api] */
 const run = (src, api = {}) => runHarness(src, { api, log: () => {} });
@@ -47,4 +47,12 @@ test("a compile error is reported clearly (plain-JS hint)", async () => {
 test("harness has no access to process / require / fs (sandbox isolation)", async () => {
 	assert.equal(await run(`return typeof process + "|" + typeof require + "|" + typeof globalThis.process;`), "undefined|undefined|undefined");
 	await assert.rejects(run(`return process.env.HOME;`), /process is not defined/);
+});
+
+test("a synchronous runaway harness is bounded by the VM timeout", async () => {
+	assert.equal(DEFAULT_SYNC_TIMEOUT_MS, 5000);
+	await assert.rejects(
+		runHarness(`while (true) {}`, { api: {}, syncTimeoutMs: 25 }),
+		/Script execution timed out after 25ms/,
+	);
 });

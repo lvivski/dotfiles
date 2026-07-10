@@ -25,7 +25,7 @@ export function withFakeEnv(overrides, fn) {
 	const saved = { ...process.env };
 	process.env.CWF_COPILOT_BIN = FAKE;
 	process.env.COPILOT_HOME = home;
-	for (const k of ["CWF_FAKE_MODE", "CWF_FAKE_CONTENT", "CWF_FAKE_STDERR", "CWF_MAX_FANOUT", "CWF_MAX_AGENTS"]) delete process.env[k];
+	for (const k of ["CWF_FAKE_MODE", "CWF_FAKE_CONTENT", "CWF_FAKE_STDERR", "CWF_FAKE_DELAY_MS", "CWF_FAKE_PID_FILE", "CWF_MAX_FANOUT", "CWF_MAX_AGENTS"]) delete process.env[k];
 	Object.assign(process.env, overrides);
 	return Promise.resolve(fn()).finally(() => {
 		for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
@@ -37,6 +37,31 @@ export function withFakeEnv(overrides, fn) {
 /** @returns {string} a fresh temp directory path. */
 export function tmpDir() {
 	return mkdtempSync(join(tmpdir(), "cwf-"));
+}
+
+/** @param {() => boolean} predicate @param {number} [timeoutMs] @param {number} [intervalMs] */
+export async function waitFor(predicate, timeoutMs = 3000, intervalMs = 20) {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		if (predicate()) return;
+		await new Promise((resolve) => setTimeout(resolve, intervalMs));
+	}
+	throw new Error(`condition did not become true within ${timeoutMs}ms`);
+}
+
+/** @template T @param {Promise<T>} promise @param {number} timeoutMs @returns {Promise<T>} */
+export async function within(promise, timeoutMs) {
+	let timer;
+	try {
+		return await Promise.race([
+			promise,
+			new Promise((_, reject) => {
+				timer = setTimeout(() => reject(new Error(`promise did not settle within ${timeoutMs}ms`)), timeoutMs);
+			}),
+		]);
+	} finally {
+		clearTimeout(timer);
+	}
 }
 
 /**

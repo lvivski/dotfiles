@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { executeWorkflow, extractMeta, stripExports } from "./executor.mjs";
-import { withFakeEnv, tmpDir } from "./fixtures/support.mjs";
+import { withFakeEnv, tmpDir, within } from "./fixtures/support.mjs";
 
 test("stripExports removes ESM exports while leaving plain source alone", () => {
 	assert.equal(stripExports("export const meta = {}").trim(), "const meta = {}");
@@ -84,6 +84,22 @@ test("harness failure is persisted as an error record instead of rejecting", () 
 		assert.equal(progress.at(-1).status, "error");
 	}));
 
+test("a synchronous runaway harness is bounded and persisted as an error", async () => {
+	const runDir = tmpDir();
+	const rec = await executeWorkflow({
+		source: `while (true) {}`,
+		runId: "runaway",
+		runDir,
+		budget: 10,
+		harnessSyncTimeoutMs: 25,
+		onLine: () => {},
+	});
+	assert.equal(rec.status, "error");
+	assert.match(rec.error ?? "", /Script execution timed out after 25ms/);
+	assert.equal(JSON.parse(readFileSync(join(runDir, "run.json"), "utf8")).status, "error");
+	assert.equal(JSON.parse(readFileSync(join(runDir, "result.json"), "utf8")).status, "error");
+});
+
 test("reporter closes even when final logging throws", () =>
 	withFakeEnv({}, async () => {
 		const runDir = tmpDir();
@@ -101,4 +117,64 @@ test("reporter closes even when final logging throws", () =>
 		);
 		await new Promise((resolve) => setTimeout(resolve, 200));
 		assert.equal(JSON.parse(readFileSync(join(runDir, "state.json"), "utf8")).status, "complete");
+	}));
+
+test("abort finalizes a harness that never resolves", async () => {
+	const runDir = tmpDir();
+	const ac = new AbortController();
+	const pending = executeWorkflow({
+		source: `await new Promise(() => {}); return "unreached";`,
+		runId: "never",
+		runDir,
+		budget: 10,
+		signal: ac.signal,
+		onLine: () => {},
+	});
+	setTimeout(() => ac.abort(), 50);
+
+	const rec = await within(pending, 1500);
+	assert.equal(rec.status, "timeout");
+	assert.equal(JSON.parse(readFileSync(join(runDir, "run.json"), "utf8")).status, "timeout");
+	assert.equal(JSON.parse(readFileSync(join(runDir, "state.json"), "utf8")).status, "timeout");
+});
+
+test("an already-aborted run consumes a later harness rejection", async () => {
+	const runDir = tmpDir();
+	const ac = new AbortController();
+	ac.abort();
+	const rec = await executeWorkflow({
+		source: `await Promise.resolve(); throw new Error("late harness failure");`,
+		runId: "already-aborted",
+		runDir,
+		budget: 10,
+		signal: ac.signal,
+		onLine: () => {},
+	});
+	assert.equal(rec.status, "timeout");
+	await new Promise((resolve) => setImmediate(resolve));
+});
+
+test("abort during fire-and-forget drain records timeout, not complete", () =>
+	withFakeEnv({ CWF_FAKE_MODE: "hang" }, async () => {
+		const runDir = tmpDir();
+		const ac = new AbortController();
+		const pending = executeWorkflow({
+			source: `agent("orphan", { label: "orphan" }); return "done";`,
+			runId: "drain-timeout",
+			runDir,
+			budget: 10,
+			signal: ac.signal,
+			onLine: () => {},
+		});
+
+		for (let i = 0; i < 100; i++) {
+			if (existsSync(join(runDir, "progress.jsonl")) && readFileSync(join(runDir, "progress.jsonl"), "utf8").includes('"ev":"start"')) break;
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		ac.abort();
+
+		const rec = await within(pending, 2000);
+		assert.equal(rec.status, "timeout");
+		assert.equal(rec.result, "done");
+		assert.equal(JSON.parse(readFileSync(join(runDir, "result.json"), "utf8")).status, "timeout");
 	}));

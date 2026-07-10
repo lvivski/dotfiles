@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 
 import { executeWorkflow } from "./executor.mjs";
 import { sidecarPathFor } from "./effects.mjs";
-import { listWorkflowRuns, runsDir, workflowCommand } from "./runs.mjs";
+import { listWorkflowRuns, runsDir, workflowCommand, workflowsDir } from "./runs.mjs";
 
 export const DEFAULT_BUDGET = 10000;
 export const XTREME_BUDGET = 1_000_000;
@@ -43,8 +43,6 @@ const HOME = homedir();
  * @property {boolean} background
  */
 
-/** @returns {string} */
-const workflowsDir = () => process.env.CWF_WORKFLOWS_DIR || join(HOME, ".copilot/workflows");
 /** @param {string} p @returns {boolean} true when `p` is an existing regular file. */
 const isFile = (p) => {
 	try {
@@ -315,14 +313,16 @@ function formatBackgroundStart(run) {
 
 /** @param {any} rec @param {string} runDir @param {ToolCtx} ctx */
 function notifyDone(rec, runDir, ctx) {
-	const line = `workflow ${rec.runId} ${rec.status}: ${Number(rec.aic || 0).toFixed(1)} AIC, ${rec.counts?.done ?? 0} done / ${rec.counts?.failed ?? 0} failed. Result: ${join(runDir, "result.json")}`;
-	ctx.log(line);
-	ctx.send(line);
+	notify(ctx, `workflow ${rec.runId} ${rec.status}: ${Number(rec.aic || 0).toFixed(1)} AIC, ${rec.counts?.done ?? 0} done / ${rec.counts?.failed ?? 0} failed. Result: ${join(runDir, "result.json")}`);
 }
 
 /** @param {string} runId @param {unknown} err @param {string} runDir @param {ToolCtx} ctx */
 function notifyError(runId, err, runDir, ctx) {
-	const line = `workflow ${runId} FAILED: ${err instanceof Error ? err.message : err}. Artifacts: ${runDir}`;
+	notify(ctx, `workflow ${runId} FAILED: ${err instanceof Error ? err.message : err}. Artifacts: ${runDir}`);
+}
+
+/** @param {ToolCtx} ctx @param {string} line */
+function notify(ctx, line) {
 	ctx.log(line);
 	ctx.send(line);
 }

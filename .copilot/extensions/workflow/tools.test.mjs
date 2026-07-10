@@ -1,12 +1,12 @@
 /** @module tools.test — run_workflow / list_workflow_runs handlers via an injected fake ctx. */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { runWorkflow, resolveSource, buildTools, isNested, buildCommands, abortRun } from "./tools.mjs";
 import { listWorkflowRuns, workflowCommand } from "./runs.mjs";
-import { withFakeEnv, tmpDir } from "./fixtures/support.mjs";
+import { withFakeEnv, tmpDir, waitFor } from "./fixtures/support.mjs";
 
 /** A fake {@link import("./tools.mjs").ToolCtx} that captures logs/sends. @param {string} cwd */
 function fakeCtx(cwd) {
@@ -51,7 +51,7 @@ test("abortRun aborts a live background run and clears it once settled", () =>
 			const out = await runWorkflow({ scriptPath: path, runId: "abort-me", budget: 1, timeoutSec: 30 }, ctx);
 			assert.match(String(out), /started in background/);
 			assert.equal(abortRun("abort-me"), true); // registered while running
-			for (let i = 0; i < 100 && abortRun("abort-me"); i++) await new Promise((r) => setTimeout(r, 20));
+			await waitFor(() => !abortRun("abort-me"), 2000);
 			assert.equal(abortRun("abort-me"), false); // aborted run settled + deregistered
 		},
 		{ CWF_FAKE_MODE: "hang" },
@@ -67,7 +67,7 @@ test("duplicate live run ids are rejected without replacing the active run", () 
 			const duplicate = await runWorkflow({ scriptPath: path, runId: "same-id", budget: 1, timeoutSec: 30 }, ctx);
 			assert.match(JSON.stringify(duplicate), /already active/);
 			assert.equal(abortRun("same-id"), true);
-			for (let i = 0; i < 100 && abortRun("same-id"); i++) await new Promise((resolve) => setTimeout(resolve, 20));
+			await waitFor(() => !abortRun("same-id"), 2000);
 		},
 		{ CWF_FAKE_MODE: "hang" },
 	));
@@ -178,11 +178,82 @@ test("background run returns immediately and wakes the agent on completion", () 
 		const ctx = fakeCtx(tmpDir());
 		const out = await runWorkflow({ script: `return (await agent("bg")).content;`, background: true, budget: 1 }, ctx);
 		assert.match(/** @type {string} */ (out), /started in background/);
-		// wait (bounded) for the completion notification to fire
-		for (let i = 0; i < 50 && ctx.sends.length === 0; i++) await new Promise((r) => setTimeout(r, 40));
+		await waitFor(() => ctx.sends.length > 0, 2000, 40);
 		assert.equal(ctx.sends.length, 1);
 		assert.match(ctx.sends[0], /complete/);
 	}));
+
+test("background run timeout settles, persists timeout, and clears the live registry", () =>
+	withTool(
+		async ({ runs }) => {
+			const ctx = fakeCtx(tmpDir());
+			const out = await runWorkflow({
+				script: `await agent("hang"); return "unreached";`,
+				runId: "timer-timeout",
+				background: true,
+				budget: 1,
+				timeoutSec: 1,
+			}, ctx);
+			assert.match(/** @type {string} */ (out), /started in background/);
+
+			await waitFor(() => ctx.sends.length > 0, 3000, 30);
+			assert.equal(ctx.sends.length, 1);
+			assert.match(ctx.sends[0], /timer-timeout timeout/);
+			assert.equal(abortRun("timer-timeout"), false);
+
+			const resultPath = join(runs, "timer-timeout", "result.json");
+			assert.equal(existsSync(resultPath), true);
+			assert.equal(JSON.parse(readFileSync(resultPath, "utf8")).status, "timeout");
+		},
+		{ CWF_FAKE_MODE: "hang" },
+	));
+
+test("aborting one concurrent workflow does not terminate another run's agent", () =>
+	withTool(
+		async ({ runs }) => {
+			const pidDir = tmpDir();
+			const firstPid = join(pidDir, "first.pid");
+			const secondPid = join(pidDir, "second.pid");
+			const firstCtx = fakeCtx(tmpDir());
+			const secondCtx = fakeCtx(tmpDir());
+			try {
+				process.env.CWF_FAKE_PID_FILE = firstPid;
+				await runWorkflow({
+					script: `const r = await agent("hang"); if (!r.ok) throw new Error(r.error); return r.content;`,
+					runId: "isolation-first",
+					background: true,
+					budget: 1,
+					timeoutSec: 30,
+				}, firstCtx);
+				await waitFor(() => existsSync(firstPid));
+
+				process.env.CWF_FAKE_MODE = "ok";
+				process.env.CWF_FAKE_DELAY_MS = "500";
+				process.env.CWF_FAKE_PID_FILE = secondPid;
+				await runWorkflow({
+					script: `const r = await agent("healthy"); if (!r.ok) throw new Error(r.error); return r.content;`,
+					runId: "isolation-second",
+					background: true,
+					budget: 1,
+					timeoutSec: 30,
+				}, secondCtx);
+				await waitFor(() => existsSync(secondPid));
+
+				assert.equal(abortRun("isolation-first"), true);
+				await waitFor(() => firstCtx.sends.some((line) => /isolation-first timeout/.test(line)));
+				await waitFor(() => secondCtx.sends.some((line) => /isolation-second complete/.test(line)));
+
+				assert.equal(JSON.parse(readFileSync(join(runs, "isolation-first", "result.json"), "utf8")).status, "timeout");
+				assert.equal(JSON.parse(readFileSync(join(runs, "isolation-second", "result.json"), "utf8")).status, "complete");
+				assert.equal(abortRun("isolation-second"), false);
+			} finally {
+				abortRun("isolation-first");
+				abortRun("isolation-second");
+				rmSync(pidDir, { recursive: true, force: true });
+			}
+		},
+		{ CWF_FAKE_MODE: "hang" },
+	));
 
 test("buildTools registers run_workflow + list_workflow_runs with a valid schema", () => {
 	const tools = buildTools(fakeCtx("/"));

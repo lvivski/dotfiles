@@ -1,9 +1,21 @@
 /** @module agent.test — subagent driver: spawn, JSONL reduce, AIC/token accounting, argv, env. */
 import test from "node:test";
 import assert from "node:assert/strict";
+import { existsSync, readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
 
 import { runAgent, buildArgv, childEnv, killAllAgents, formatSessionError } from "./agent.mjs";
-import { withFakeEnv } from "./fixtures/support.mjs";
+import { withFakeEnv, tmpDir, waitFor, within } from "./fixtures/support.mjs";
+
+/** @param {number} pid */
+function processIsAlive(pid) {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (e) {
+		return /** @type {NodeJS.ErrnoException} */ (e).code === "EPERM";
+	}
+}
 
 test("formatSessionError falls back through type/error/reason", () => {
 	assert.equal(formatSessionError({ errorType: "RateLimit", message: "slow" }), "RateLimit: slow");
@@ -162,4 +174,33 @@ test("abort signal kills an in-flight subagent", () =>
 		ac.abort();
 		const r = await p;
 		assert.equal(r.ok, false);
+		assert.equal(r.error, "aborted");
 	}));
+
+test(
+	"abort kills descendants that inherit the agent's stdio",
+	{ skip: process.platform === "win32" },
+	() =>
+		withFakeEnv({}, async () => {
+			const dir = tmpDir();
+			const pidFile = join(dir, "leaf.pid");
+			process.env.CWF_FAKE_MODE = "treehang";
+			process.env.CWF_FAKE_PID_FILE = pidFile;
+			let leafPid = 0;
+			try {
+				const ac = new AbortController();
+				const pending = runAgent({ prompt: "hi" }, { signal: ac.signal });
+				await waitFor(() => existsSync(pidFile));
+				leafPid = Number(readFileSync(pidFile, "utf8"));
+				assert.equal(processIsAlive(leafPid), true);
+
+				ac.abort();
+				const r = await within(pending, 2000);
+				assert.equal(r.error, "aborted");
+				await waitFor(() => !processIsAlive(leafPid));
+			} finally {
+				if (leafPid && processIsAlive(leafPid)) process.kill(leafPid, "SIGKILL");
+				rmSync(dir, { recursive: true, force: true });
+			}
+		}),
+);

@@ -5,6 +5,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { listWorkflowRuns, runsDir, workflowCommand } from "./runs.mjs";
+import { PROCESS_INSTANCE_ID } from "./progress.mjs";
 import { tmpDir } from "./fixtures/support.mjs";
 
 /** @template T @param {(runs: string) => T} fn @returns {T} */
@@ -68,6 +69,46 @@ test("listWorkflowRuns sorts timestamps chronologically across fractional precis
 
 		const listing = listWorkflowRuns();
 		assert.ok(listing.indexOf("newer-run") < listing.indexOf("older-run"));
+	}));
+
+test("dead-owner and legacy-stale runs render interrupted while a live owner stays running", () =>
+	withRuns((runs) => {
+		const now = new Date().toISOString();
+		const dead = runDir(runs, "dead-owner");
+		writeFileSync(join(dead, "state.json"), JSON.stringify({
+			runId: "dead-owner",
+			title: "dead",
+			status: "running",
+			ownerPid: 2_147_483_647,
+			ownerInstanceId: "dead-instance",
+			startedAt: now,
+			updatedAt: now,
+			counts: {},
+			running: [],
+			recent: [],
+			errors: [],
+		}));
+		const live = runDir(runs, "live-owner");
+		writeFileSync(join(live, "state.json"), JSON.stringify({
+			status: "running",
+			ownerPid: process.pid,
+			ownerInstanceId: PROCESS_INSTANCE_ID,
+			updatedAt: now,
+		}));
+		const legacy = runDir(runs, "legacy-stale");
+		writeFileSync(join(legacy, "state.json"), JSON.stringify({
+			status: "running",
+			updatedAt: "2000-01-01T00:00:00Z",
+		}));
+
+		const listing = listWorkflowRuns();
+		assert.match(listing, /dead-owner\s+interrupted/);
+		assert.match(listing, /legacy-stale\s+interrupted/);
+		assert.match(listing, /live-owner\s+running/);
+
+		const logs = /** @type {string[]} */ ([]);
+		workflowCommand("dead-owner", { log: (message) => logs.push(message) });
+		assert.match(logs.at(-1) ?? "", /interrupted/);
 	}));
 
 test("workflowCommand renders latest dashboard, result, artifacts, and summary fallback", () =>

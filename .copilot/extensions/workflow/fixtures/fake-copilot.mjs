@@ -12,14 +12,17 @@
  * Behaviour is driven entirely by env vars so tests can exercise every branch without spending
  * real AI credits:
  *
- * - `CWF_FAKE_MODE`   — `ok` (default) | `fail` | `hang` | `malformed` | `nojson` | `sessionerror`
+ * - `CWF_FAKE_MODE`   — `ok` (default) | `fail` | `hang` | `treehang` | `malformed` | `nojson` | `sessionerror`
  * - `CWF_FAKE_NANO_AIU` — session-wide nanoAIU to report (default `500000000` = 0.5 AIC)
  * - `CWF_FAKE_OUTPUT_TOKENS` — output tokens to report (default `42`)
  * - `CWF_FAKE_CONTENT` — assistant content (default `ECHO: <prompt>`)
  * - `CWF_FAKE_STDERR` — stderr text for `fail` mode
  * - `CWF_FAKE_SESSION` — force a child session id (default: random)
+ * - `CWF_FAKE_DELAY_MS` — delay a successful response (for concurrency tests)
+ * - `CWF_FAKE_PID_FILE` — write this fake process's PID to the given path
  * - `COPILOT_HOME`     — where the child session log is written (default `~/.copilot`)
  */
+import { spawn } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -45,6 +48,8 @@ const outputTokens = Number(process.env.CWF_FAKE_OUTPUT_TOKENS ?? 42);
 const content = process.env.CWF_FAKE_CONTENT ?? `ECHO: ${prompt}`;
 const sessionId = process.env.CWF_FAKE_SESSION ?? `fake-${randomBytes(6).toString("hex")}`;
 const copilotHome = process.env.COPILOT_HOME || join(homedir(), ".copilot");
+const delayMs = Math.max(0, Number(process.env.CWF_FAKE_DELAY_MS ?? 0));
+if (process.env.CWF_FAKE_PID_FILE) writeFileSync(process.env.CWF_FAKE_PID_FILE, String(process.pid), "utf8");
 
 /** Build one `session.shutdown` record with a given session-wide nanoAIU. @param {number} nano */
 function mkShutdown(nano) {
@@ -84,6 +89,13 @@ function writeShutdownLog() {
 /** @param {object} obj */
 const emit = (obj) => process.stdout.write(JSON.stringify(obj) + "\n");
 
+function finishOk() {
+	writeShutdownLog();
+	emit({ type: "assistant.message", data: { content, outputTokens, model } });
+	emit({ type: "result", sessionId });
+	process.exit(0);
+}
+
 switch (mode) {
 	case "fail":
 		process.stderr.write(process.env.CWF_FAKE_STDERR ?? "fake-copilot: simulated failure\n");
@@ -92,6 +104,16 @@ switch (mode) {
 	case "hang":
 		setInterval(() => {}, 1 << 30); // stay alive until the parent's timeout kills us
 		break;
+	case "treehang": {
+		// The leaf inherits stdout/stderr, reproducing the real failure where killing only `copilot`
+		// leaves a tool subprocess alive and keeps the parent's JSONL reader open forever.
+		const leaf = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)"], {
+			stdio: ["ignore", "inherit", "inherit"],
+		});
+		if (process.env.CWF_FAKE_PID_FILE && leaf.pid) writeFileSync(process.env.CWF_FAKE_PID_FILE, String(leaf.pid), "utf8");
+		setInterval(() => {}, 1 << 30);
+		break;
+	}
 	case "malformed":
 		writeShutdownLog();
 		process.stdout.write("not json at all\n");
@@ -114,8 +136,6 @@ switch (mode) {
 		break;
 	case "ok":
 	default:
-		writeShutdownLog();
-		emit({ type: "assistant.message", data: { content, outputTokens, model } });
-		emit({ type: "result", sessionId });
-		process.exit(0);
+		if (delayMs) setTimeout(finishOk, delayMs);
+		else finishOk();
 }
