@@ -6,21 +6,68 @@ export const meta = {
 	phases: ["triage", "report"],
 };
 
-const tickets = args || ["app crashes on export", "please add dark mode", "how do I reset my password?"];
+const input = args && typeof args === "object" && !Array.isArray(args) ? args.tickets : args;
+if (!Array.isArray(input) || !input.length) throw new Error("triage: provide a non-empty array of tickets or { tickets: [...] }");
+
+const MAX_TICKET_CHARS = 8000;
 const noTools = quarantine({ allowAllTools: false });
+const cell = (value) => String(value ?? "").replace(/\|/g, "\\|").replace(/\n/g, "<br>");
 
-const classifyTicket = (ticket) => classify(ticket, ["bug", "feature", "question"], noTools);
+const tickets = input.map((ticket, index) => {
+	if (typeof ticket === "string" && ticket.trim()) return { id: String(index + 1), text: ticket.trim(), truncated: ticket.length > MAX_TICKET_CHARS };
+	if (!ticket || typeof ticket !== "object" || Array.isArray(ticket)) throw new Error(`triage: ticket ${index + 1} must be a non-empty string or object`);
+	const title = String(ticket.title || ticket.summary || "").trim();
+	const body = String(ticket.body || ticket.description || "").trim();
+	const text = [title, body].filter(Boolean).join("\n\n");
+	if (!text) throw new Error(`triage: ticket ${index + 1} has no title, summary, body, or description`);
+	return { id: String(ticket.id ?? index + 1), text, truncated: text.length > MAX_TICKET_CHARS };
+});
 
-const suggestAction = async (kind, ticket) => {
-	const detail = await agent(`In one sentence, suggest next action for this ${kind}: ${ticket}`, { agentType: "worker", label: kind, ...noTools });
-	return { ticket, kind, action: detail.content.trim() };
+const triageTicket = async (ticket) => {
+	const detail = await structured(
+		`Triage this ticket. Choose a category and priority, state calibrated confidence, explain briefly, and give one concrete next action.\n\nTicket:\n${ticket.text.slice(0, MAX_TICKET_CHARS)}`,
+		{
+			type: "object",
+			properties: {
+				category: { enum: ["bug", "incident", "feature", "question", "task"] },
+				priority: { enum: ["p0", "p1", "p2", "p3"] },
+				confidence: { enum: ["high", "medium", "low"] },
+				rationale: { type: "string" },
+				action: { type: "string" },
+			},
+			required: ["category", "priority", "confidence", "rationale", "action"],
+		},
+		{
+			label: ticket.id,
+			phase: "triage",
+			...noTools,
+			validate: (value) => {
+				const errors = [];
+				if (!String(value.rationale || "").trim()) errors.push("rationale must be non-empty");
+				if (!String(value.action || "").trim()) errors.push("action must be non-empty");
+				return errors;
+			},
+		},
+	);
+	return detail.ok ? { ticket, ok: true, ...detail.value } : { ticket, ok: false, error: detail.error || "triage agent failed" };
 };
 
 phase("triage");
-const rows = (await pipeline(tickets, classifyTicket, suggestAction)).filter((r) => r !== null);
+const rows = await pipeline(tickets, triageTicket, { errors: "raise" });
 
-const report = await synthesize(
-	rows.map((r) => `${r.kind}: ${r.ticket} -> ${r.action}`),
-	{ prompt: "Group these by kind into a short triage report.", ...noTools },
-);
-return report.content;
+phase("report");
+const out = [
+	"| ID | Status | Category | Priority | Confidence | Rationale | Next action |",
+	"| --- | --- | --- | --- | --- | --- | --- |",
+];
+for (const row of rows) {
+	if (!row.ok) {
+		out.push(`| ${cell(row.ticket.id)} | Failed |  |  |  | ${cell(row.error)} | Retry triage |`);
+		continue;
+	}
+	out.push(`| ${cell(row.ticket.id)} | Triaged | ${cell(row.category)} | ${cell(row.priority.toUpperCase())} | ${cell(row.confidence)} | ${cell(row.rationale)} | ${cell(row.action)} |`);
+}
+const failed = rows.filter((row) => !row.ok).length;
+const truncated = tickets.filter((ticket) => ticket.truncated).length;
+out.push("", `_Coverage: ${rows.length}/${tickets.length} ticket(s) processed; ${rows.length - failed} triaged, ${failed} failed, ${truncated} input(s) truncated to ${MAX_TICKET_CHARS} characters for model review._`);
+return out.join("\n");

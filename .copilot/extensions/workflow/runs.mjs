@@ -186,7 +186,7 @@ function replayProgress(runDir) {
 		error: end.error || null,
 		workflow: meta,
 		harness: meta.harness || "",
-		counts: { agents: end.agents, launched: end.launched, done: end.done, failed: end.failed, cached: end.cached, skipped: end.skipped },
+		counts: { agents: end.agents, launched: end.launched, done: end.done, failed: end.failed, cached: end.cached, skipped: end.skipped, dropped: end.dropped || 0 },
 		aic: end.aic != null ? Number(end.aic || 0) : nanoAiu / 1_000_000_000,
 		updatedAt: progressTimestamp(end.t),
 	};
@@ -210,7 +210,7 @@ function formatRunSummary(runId, rec, dir) {
 		`workflow run ${runId}`,
 		`status: ${rec?.status ?? "?"}`,
 		rec?.workflow?.name ? `workflow: ${rec.workflow.name}` : "",
-		c ? `agents: ${c.agents} (done ${c.done}, cached ${c.cached}, skipped ${c.skipped}, failed ${c.failed})` : "",
+		c ? `agents: ${c.agents} (done ${c.done}, cached ${c.cached}, skipped ${c.skipped}, failed ${c.failed}, dropped ${c.dropped || 0})` : "",
 		rec?.aic != null ? `AIC: ${Number(rec.aic).toFixed(1)}` : "",
 		rec?.durationMs != null ? `duration: ${(rec.durationMs / 1000).toFixed(1)}s` : "",
 		rec?.preservedWorktrees?.length ? `preserved worktrees: ${rec.preservedWorktrees.join(", ")}` : "",

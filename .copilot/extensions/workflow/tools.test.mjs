@@ -111,6 +111,15 @@ test("saved .mjs workflow resolves and runs by name", () =>
 		assert.match(/** @type {string} */ (out), /ECHO: named/);
 	}));
 
+test("saved workflow automatically loads its sibling host sidecar", () =>
+	withTool(async ({ wf }) => {
+		writeFileSync(join(wf, "hosted.mjs"), `return (await host.ping({ value: "PONG" })).value;`, "utf8");
+		writeFileSync(join(wf, "hosted.host.mjs"), `export async function ping(input) { return input; }`, "utf8");
+		const ctx = fakeCtx(tmpDir());
+		const out = await runWorkflow({ name: "hosted", background: false, budget: 1 }, ctx);
+		assert.match(/** @type {string} */ (out), /PONG/);
+	}));
+
 test("scriptPath must point to a .mjs workflow", () =>
 	withTool(async ({ wf }) => {
 		const path = join(wf, "plain.js");

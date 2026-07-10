@@ -49,12 +49,14 @@ return "count:" + rs.length + " ok:" + rs.filter(r => r.ok).length;`);
 	assert.equal(record.counts.done, 3);
 });
 
-test("parallel defaults errors:'drop' — a throwing thunk yields null, not an abort", async () => {
+test("parallel defaults errors:'drop' — a throwing thunk preserves siblings but marks the run partial", async () => {
 	const { record } = await runWf(`
 const rs = await parallel([() => { throw new Error("boom"); }, () => 42]);
 return JSON.stringify(rs);`);
-	assert.equal(record.status, "complete");
+	assert.equal(record.status, "partial");
 	assert.equal(record.result, "[null,42]");
+	assert.equal(record.counts.dropped, 1);
+	assert.match(record.error ?? "", /1 dropped item/);
 });
 
 test("fanOut defaults errors:'raise' — a throwing item aborts the run", async () => {
@@ -137,24 +139,33 @@ test("resume replaces stale terminal artifacts before new work completes", async
 	});
 });
 
-test("soft budget skips new agents after the cap (not a failure)", async () => {
+test("soft budget preserves partial output but cannot report complete", async () => {
 	const { record } = await runWf(`
 const out = [];
 for (const n of [1,2,3]) out.push(await agent("n" + n, { label: "b" + n }));
 return "skipped:" + out.filter(r => r.skipped).length;`, { budget: 0.6 });
-	assert.equal(record.status, "complete");
+	assert.equal(record.status, "partial");
 	assert.equal(record.budget.hit, true);
 	assert.equal(record.counts.skipped, 1);
 	assert.equal(record.counts.done, 2);
+	assert.match(record.error ?? "", /skipped agent.*budget boundary/s);
 });
 
 test("strict budget aborts the run once the cap is observed", async () => {
 	const { record } = await runWf(`
 for (const n of [1,2,3]) await agent("n" + n, { label: "s" + n });
 return "unreached";`, { budget: 0.6, strictBudget: true });
-	assert.equal(record.status, "complete");
+	assert.equal(record.status, "failed");
 	assert.notEqual(record.result, "unreached"); // BudgetExceeded stopped the harness
 	assert.equal(record.budget.hit, true);
+	assert.match(record.error ?? "", /budget/);
+});
+
+test("a handled agent failure preserves its result with partial status", async () => {
+	const { record } = await runWf(`const r = await agent("x"); return "handled:" + r.ok;`, {}, { CWF_FAKE_MODE: "fail" });
+	assert.equal(record.status, "partial");
+	assert.equal(record.result, "handled:false");
+	assert.equal(record.counts.failed, 1);
 });
 
 test("fanOut over the cap is a fatal error", async () => {
@@ -168,6 +179,16 @@ test("dryRun spends no AIC, launches no subagents, returns a plan, writes no run
 	assert.equal(record.aic, 0);
 	assert.match(record.result, /dry-run plan: 3 agent/);
 	assert.ok(!existsSync(join(runDir, "run.json")));
+});
+
+test("dryRun reports dropped planning branches as partial", async () => {
+	const { record } = await runWf(
+		`const rows = await parallel([() => { throw new Error("preview branch"); }, () => 1]); return JSON.stringify(rows);`,
+		{ dryRun: true },
+	);
+	assert.equal(record.status, "partial");
+	assert.equal(record.counts.dropped, 1);
+	assert.match(record.error ?? "", /preview incomplete/);
 });
 
 test("a harness crash persists an error status (does not reject)", async () => {

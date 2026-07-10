@@ -108,7 +108,7 @@ export function extractMeta(source) {
  * @property {number} durationMs
  * @property {{ total: number|null, spent: number, remaining: number, hit: boolean }} budget
  * @property {number} aic
- * @property {{ agents: number, launched: number, done: number, failed: number, cached: number, skipped: number }} counts
+ * @property {{ agents: number, launched: number, done: number, failed: number, cached: number, skipped: number, dropped: number }} counts
  * @property {string[]} preservedWorktrees
  * @property {string} result
  */
@@ -159,9 +159,11 @@ async function executeDryRun(cfg, run) {
 	}
 	await rt.drain();
 	const preservedWorktrees = await rt.cleanup();
+	const dryRunReasons = error ? [] : incompleteReasons(rt);
+	if (dryRunReasons.length) error = `workflow preview incomplete: ${dryRunReasons.join(", ")}`;
 	return finalize({
 		runId: cfg.runId,
-		status: error ? "error" : "complete",
+		status: error ? (dryRunReasons.length ? "partial" : "error") : "complete",
 		error,
 		meta,
 		args: cfg.args,
@@ -225,7 +227,8 @@ async function executeRealRun(cfg, run) {
 			result = coerceResult(value);
 		} catch (e) {
 			if (e instanceof BudgetExceeded) {
-				status = "complete";
+				status = "failed";
+				error = e.message;
 				onLine(`  budget reached: ${e.message}`, "warning", { ephemeral: false });
 			} else if (e instanceof RunAborted || cfg.signal?.aborted) {
 				status = "timeout";
@@ -243,16 +246,36 @@ async function executeRealRun(cfg, run) {
 		if (cfg.signal?.aborted) status = "timeout";
 		const preservedWorktrees = await rt.cleanup();
 		if (preservedWorktrees.length) onLine(`  preserved ${preservedWorktrees.length} dirty worktree(s): ${preservedWorktrees.join(", ")}`, "warning", { ephemeral: false });
+		if (status === "complete") {
+			const reasons = incompleteReasons(rt);
+			if (reasons.length) {
+				status = result.trim() ? "partial" : "failed";
+				error = `workflow incomplete: ${reasons.join(", ")}`;
+				onLine(`  ! ${error}`, "warning", { ephemeral: false });
+			}
+		}
 		const record = finalize({ runId: cfg.runId, status, error, meta, args: cfg.args, startedAt, rt, result, preservedWorktrees });
 		writeJson(join(cfg.runDir, "run.json"), record);
 		writeJson(join(cfg.runDir, "result.json"), { runId: record.runId, status: record.status, aic: record.aic, result: record.result });
 		reporter.emit({ ev: "run_end", runId: cfg.runId, status: record.status, error: record.error, ...record.counts, nanoAiu: rt.stats().nanoAiu, aic: record.aic });
 		closeStatus = status;
-		onLine(reporter.runSummary(), status === "error" || status === "timeout" ? "error" : "info", { ephemeral: false });
+		const summaryLevel = status === "partial" ? "warning" : status === "complete" ? "info" : "error";
+		onLine(reporter.runSummary(), summaryLevel, { ephemeral: false });
 		return record;
 	} finally {
 		reporter.close(closeStatus);
 	}
+}
+
+/** @param {Runtime} rt @returns {string[]} */
+function incompleteReasons(rt) {
+	const counts = rt.stats().counts;
+	const reasons = [];
+	if (counts.failed) reasons.push(`${counts.failed} agent failure(s)`);
+	if (counts.skipped) reasons.push(`${counts.skipped} skipped agent(s)`);
+	if (counts.dropped) reasons.push(`${counts.dropped} dropped item(s)`);
+	if (rt.budgetHit) reasons.push("budget boundary reached");
+	return reasons;
 }
 
 /** Remove stale presentation artifacts while preserving the checkpoint journal. @param {string} runDir */

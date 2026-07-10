@@ -97,31 +97,36 @@ gh_accounts() {
 }
 
 gh_codeowners() {
-  local user="$1" repo="$2" path content
+  local user="$1" repo="$2" ref="$3" path content
   for path in .github/CODEOWNERS CODEOWNERS docs/CODEOWNERS; do
-    content="$(gh_as "$user" api "repos/$repo/contents/$path" -q .content 2>/dev/null | base64 -d 2>/dev/null || true)"
+    if [ -n "$ref" ]; then
+      content="$(gh_as "$user" api --method GET "repos/$repo/contents/$path" -f "ref=$ref" -q .content 2>/dev/null | base64 -d 2>/dev/null || true)"
+    else
+      content="$(gh_as "$user" api "repos/$repo/contents/$path" -q .content 2>/dev/null | base64 -d 2>/dev/null || true)"
+    fi
     [ -n "$content" ] && { printf "%s" "$content"; return; }
   done
   true
 }
 
 gh_emit() {
-  local user="$1" repo="$2" num="$3" me="$4" teams="$5" meta co diff="" coverage="no diff"
+  local user="$1" repo="$2" num="$3" me="$4" teams="$5" meta co base_ref diff="" coverage="no diff"
   meta="$(gh_as "$user" pr view "$num" --repo "$repo" \
-    --json title,url,author,isDraft,updatedAt,additions,deletions,files,reviewRequests 2>/dev/null)" || return
-  co="$(gh_codeowners "$user" "$repo")"
+    --json title,url,author,isDraft,updatedAt,additions,deletions,files,reviewRequests,baseRefName 2>/dev/null)" || return
+  base_ref="$(printf "%s" "$meta" | jq -r '.baseRefName // ""')"
+  co="$(gh_codeowners "$user" "$repo" "$base_ref")"
   if [ "$WANT_DIFF" -eq 1 ]; then
     diff="$(gh_as "$user" pr diff "$num" --repo "$repo" 2>/dev/null || true)"
     [ -n "$diff" ] && coverage="full diff" || coverage="diff unavailable"
   fi
   jq -nc --arg repo "$repo" --argjson num "$num" --arg me "$me" --argjson teams "$teams" \
-    --arg co "$co" --arg diff "$diff" --arg coverage "$coverage" --argjson m "$meta" '
+    --arg co "$co" --arg base_ref "$base_ref" --arg diff "$diff" --arg coverage "$coverage" --argjson m "$meta" '
     {platform:"github", repo:$repo, number:$num, title:$m.title, url:$m.url,
      author:($m.author.login // ""), draft:$m.isDraft, updatedAt:($m.updatedAt // ""),
      additions:$m.additions, deletions:$m.deletions, files:[($m.files[]?.path)],
      reviewers:[($m.reviewRequests[]? | {name:(.login // .slug // .name // ""), required:false})],
      teams:[($m.reviewRequests[]? | select(.slug) | (($repo | split("/")[0]) + "/" + .slug))],
-     me:$me, my_teams:$teams, codeowners:$co, diff:$diff, coverage:$coverage,
+     me:$me, my_teams:$teams, codeowners:$co, codeowners_ref:$base_ref, base_ref:$base_ref, diff:$diff, coverage:$coverage,
      clone_url:("https://github.com/" + $repo + ".git"), pr_ref:("pull/" + ($num|tostring) + "/head")}'
 }
 
@@ -256,7 +261,7 @@ az_emit() {
      updatedAt:($m.lastMergeSourceCommit.committer.date // $m.lastMergeCommit.committer.date // $m.creationDate // ""),
      additions:0, deletions:0, files:$files,
      reviewers:[($m.reviewers[]? | {name:(.uniqueName // .displayName // ""), required:(.isRequired // false)})],
-     teams:[], me:$me, my_teams:[], codeowners:"", diff:$diff, coverage:$coverage, clone_url:web_repo, pr_ref:$m.sourceRefName}'
+     teams:[], me:$me, my_teams:[], codeowners:"", base_ref:($m.targetRefName // ""), diff:$diff, coverage:$coverage, clone_url:web_repo, pr_ref:$m.sourceRefName}'
 }
 
 fetch_azure() {

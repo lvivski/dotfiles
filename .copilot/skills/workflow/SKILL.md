@@ -99,6 +99,13 @@ you can complete with a few direct tool calls. Workflows spend more time and AIC
 - Treat `budget` as an observed-AIC soft cap: in-flight agents may finish and overshoot before new
   agents are skipped. Use `strictBudget: true` only when the harness should stop after the cap is
   observed. Read it with `budget.total`, `budget.spent()`, `budget.remaining()`.
+- Run status is integrity-sensitive: handled agent failures, skipped agents, dropped branches, or a
+  reached soft budget produce `partial` (with the partial result preserved); strict-budget
+  termination produces `failed`. Inspect failed/skipped/dropped counts rather than treating any
+  non-error result as complete.
+- Harnesses can read the injected `dryRun` boolean. `structured()` supplies deterministic
+  schema-shaped placeholders during previews, but workflows with data-dependent arrays must derive
+  their own preview arity from inputs or deterministic host discovery.
 - Default paid workflow previews to enough budget for thorough fan-out and verification: roughly
   10,000 AIC for small/medium workflows and several hundred thousand (or more) for broad
   audits/research; only choose a tight budget when the user asks or the task is a small smoke run.

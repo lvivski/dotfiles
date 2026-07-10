@@ -66,6 +66,16 @@ test("group_start/group_end are narrated and tracked in the snapshot", () => {
 	assert.match(lines[1], /fanOut settled \(3\)/);
 });
 
+test("dropped group items are counted, persisted as errors, and narrated", () => {
+	const lines = /** @type {string[]} */ ([]);
+	const p = reporter((line) => lines.push(line));
+	p.emit({ ev: "drop", gid: 1, kind: "pipeline", index: 2, error: "bad item" });
+	const s = /** @type {any} */ (p.snapshot());
+	assert.equal(s.counts.dropped, 1);
+	assert.equal(s.errors[0].label, "pipeline[2]");
+	assert.match(lines[0], /DROP pipeline\[2\].*bad item/);
+});
+
 test("dashboard mode emits TUI snapshots and suppresses successful per-agent lines", () => {
 	const lines = /** @type {string[]} */ ([]);
 	const metas = /** @type {({ ephemeral?: boolean }|undefined)[]} */ ([]);
@@ -99,7 +109,7 @@ test("runSummary is a one-line workflow-style rollup", () => {
 	const p = reporter();
 	p.emit({ ev: "end", seq: 1, label: "a", ok: true, nanoAiu: 1_000_000_000, outputTokens: 1, model: "m" });
 	p.emit({ ev: "end", seq: 2, label: "b", cached: true, nanoAiu: 0 });
-	assert.match(p.runSummary(), /— workflow: 2 agents \(1 cached, 0 skipped, 0 failed\), 1\.0 AIC, [\d.]+s/);
+	assert.match(p.runSummary(), /— workflow: 2 agents \(1 cached, 0 skipped, 0 failed, 0 dropped\), 1\.0 AIC, [\d.]+s/);
 });
 
 test("control characters in labels/errors are sanitized in narration", () => {

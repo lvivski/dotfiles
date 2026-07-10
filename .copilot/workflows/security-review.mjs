@@ -1,138 +1,200 @@
-// security-review.mjs — agent-driven security review: scan, investigate, verify, report.
+// security-review.mjs — deterministic candidate discovery, read-only investigation, verification.
 //
-//   run_workflow({ name: "security-review", budget: 6000 })                       // staged/unstaged changes
-//   run_workflow({ name: "security-review", args: { root: "src/" } })             // a subtree
-//   run_workflow({ name: "security-review", args: ["src/a.js", "src/b.js"] })     // explicit files
+//   run_workflow({ name: "security-review", budget: 6000 })                    // local changes
+//   run_workflow({ name: "security-review", args: { root: "src/" } })          // subtree
+//   run_workflow({ name: "security-review", args: ["src/a.js", "src/b.js"] })  // explicit files
 export const meta = {
 	name: "security-review",
-	description: "Candidate scan, structured AI review, adversarial verification, and a severity-sorted report.",
+	description: "Deterministic candidate scan, structured AI investigation, evidence revalidation, and adversarial verification.",
 	phases: ["scan", "investigate", "verify", "report"],
 };
 
-const VULN_CLASSES = [
-	"secrets-exposure",
-	"sql-injection",
-	"command-injection",
-	"path-traversal",
-	"ssrf",
-	"open-redirect",
-	"dangerous-html",
-	"auth-bypass",
-	"weak-crypto",
-	"github-workflow-security",
-	"service-entry-point",
-];
 const SEVERITY_ORDER = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, HIGH_BUG: 3, BUG: 4, LOW: 5 };
+const noTools = quarantine({ allowAllTools: false });
+const readOnly = quarantine();
+const cell = (value) => String(value ?? "").replace(/\|/g, "\\|").replace(/\n/g, "<br>");
 
-// ---- inputs ---------------------------------------------------------------
 let opts;
 if (Array.isArray(args)) opts = { files: args };
 else if (typeof args === "string" && args.trim()) opts = { root: args };
 else if (args && typeof args === "object") opts = { ...args };
 else opts = {};
 
-const scope = opts.files?.length
-	? `these specific files: ${opts.files.join(", ")}`
-	: opts.root
-		? `the code under \`${opts.root}\``
-		: "the staged and unstaged changes (git diff), or the current directory if there are none";
-const batchSize = Math.max(1, parseInt(opts.batch_size ?? 4, 10));
-const reviewConcurrency = opts.concurrency != null ? parseInt(opts.concurrency, 10) : undefined;
+function intOption(name, fallback, min, max) {
+	const value = Number(opts[name] ?? fallback);
+	if (!Number.isInteger(value) || value < min || value > max) throw new Error(`security-review: ${name} must be an integer from ${min} to ${max}`);
+	return value;
+}
+
+const batchSize = intOption("batch_size", 4, 1, 20);
+const reviewConcurrency = opts.concurrency == null ? undefined : intOption("concurrency", 6, 1, 32);
 const summarize = opts.summarize === undefined ? true : Boolean(opts.summarize);
 
-const noTools = quarantine({ allowAllTools: false });
-const cell = (v) => String(v ?? "").replace(/\|/g, "\\|").replace(/\n/g, "<br>");
+phase("scan");
+const scan = await host.discover(opts, { cache: false });
+const coverage = () =>
+	`Scope: ${scan.source}. Root: \`${scan.root}\`. Files selected: ${scan.selectedCount}. Review records: ${scan.records.length}/${scan.preCapRecords}. Candidate hits: ${scan.candidateCount}/${scan.preCapCandidateCount}.`;
 
-// ---- 1) scan: a read-only agent enumerates candidate security-sensitive locations ----
-const scan = await structured(
-	`You are a security scanner. Using read-only tools (list/read files, and \`git diff\` when reviewing changes), ` +
-		`enumerate candidate security-sensitive code locations in ${scope}. Focus on these vulnerability classes: ` +
-		`${VULN_CLASSES.join(", ")}. Skip tests, fixtures, vendored code, and generated files. Return an array of ` +
-		`candidates; each an object { file, line, vulnClass, snippet }. Include only plausible candidates.`,
-	{
-		type: "array",
-		items: { type: "object", properties: { file: { type: "string" }, line: { type: "integer" }, vulnClass: { type: "string" }, snippet: { type: "string" } }, required: ["file", "vulnClass"] },
-	},
-	// Read-only: allow read + git, but deny network egress and keep MCP off.
-	{ label: "scan", phase: "scan", denyUrl: ["*"], enableMcp: false },
-);
-
-const candidates = scan.ok ? scan.value : [];
-if (!candidates.length) return `# Security review\n\nScope: ${scope}.\n\nNo candidate security-sensitive locations found.`;
-log(`security-review: ${candidates.length} candidate(s) to review`);
+if (!scan.records.length) {
+	const boundaries = scan.boundaries.length ? `\n\nCoverage boundaries:\n${scan.boundaries.map((boundary) => `- ${boundary}`).join("\n")}` : "";
+	return `# Security review\n\n${coverage()}\n\nNo deterministic candidate records were selected. This is bounded candidate coverage, not proof that the scope is vulnerability-free.${boundaries}`;
+}
 
 const batches = [];
-for (let i = 0; i < candidates.length; i += batchSize) batches.push(candidates.slice(i, i + batchSize));
+for (let index = 0; index < scan.records.length; index += batchSize) batches.push(scan.records.slice(index, index + batchSize));
+log(`security-review: ${scan.records.length} record(s) in ${batches.length} batch(es)`);
 
-// ---- 2) investigate each batch (read-only over the candidate files) ----
-const investigate = async (batch) => {
-	const res = await structured(
-		`Investigate these candidate security findings. For each REAL vulnerability (discard false positives), ` +
-			`return an object { severity: CRITICAL|HIGH|MEDIUM|LOW|BUG, confidence: high|medium|low, vulnClass, filePath, ` +
-			`line, title, description, recommendation }. Read the referenced files to confirm exploitability.\n\n` +
-			`Candidates:\n${JSON.stringify(batch, null, 2)}`,
-		{
-			type: "array",
-			items: {
-				type: "object",
-				properties: {
-					severity: { enum: ["CRITICAL", "HIGH", "MEDIUM", "LOW", "BUG", "HIGH_BUG"] },
-					confidence: { enum: ["high", "medium", "low"] },
-					vulnClass: { type: "string" },
-					filePath: { type: "string" },
-					line: { type: "integer" },
-					title: { type: "string" },
-					description: { type: "string" },
-					recommendation: { type: "string" },
-				},
-				required: ["severity", "filePath", "title", "description"],
-			},
+const FINDINGS_SCHEMA = {
+	type: "array",
+	items: {
+		type: "object",
+		properties: {
+			severity: { enum: ["CRITICAL", "HIGH", "MEDIUM", "HIGH_BUG", "BUG", "LOW"] },
+			confidence: { enum: ["high", "medium", "low"] },
+			vulnClass: { type: "string" },
+			filePath: { type: "string" },
+			line: { type: "integer" },
+			title: { type: "string" },
+			description: { type: "string" },
+			recommendation: { type: "string" },
 		},
-		// Untrusted code content: read-only file access, no shell/write/network.
-		{ label: "investigate", phase: "investigate", ...quarantine() },
-	);
-	return res.ok ? res.value : [];
+		required: ["severity", "confidence", "vulnClass", "filePath", "line", "title", "description", "recommendation"],
+	},
 };
 
-// ---- 3) verify each finding adversarially ----
-const verifyBatch = (findings) =>
-	fanOut(findings, async (f) => {
-		const v = await verify(JSON.stringify(f), "this is a real, exploitable security vulnerability supported by concrete evidence in the cited file — not a false positive", {
-			label: String(f.title || f.filePath || "finding").slice(0, 24),
-			phase: "verify",
-			...noTools,
-		});
-		return { ...f, verified: v.passed, verifyReasons: v.reasons };
-	});
+function validateFindings(batch, findings) {
+	const errors = [];
+	const files = new Set(batch.map((record) => record.filePath));
+	if (findings.length > 8) errors.push("return at most 8 findings per batch");
+	for (const [index, finding] of findings.entries()) {
+		if (!files.has(String(finding.filePath || ""))) errors.push(`finding ${index + 1} references a file outside the batch`);
+		const textKeys = ["vulnClass", "title", "description", "recommendation"];
+		for (const key of textKeys) {
+			const text = String(finding[key] || "").trim();
+			if (!text) errors.push(`finding ${index + 1} ${key} must be non-empty`);
+			if (text.length > 2000) errors.push(`finding ${index + 1} ${key} exceeds 2000 characters`);
+		}
+	}
+	return errors;
+}
 
-const rows = (await pipeline(batches, investigate, verifyBatch, { concurrency: reviewConcurrency })).filter((r) => r !== null);
-const allFindings = rows.flat().filter(Boolean);
-const verified = allFindings.filter((f) => f.verified);
-verified.sort((a, b) => (SEVERITY_ORDER[a.severity] ?? 9) - (SEVERITY_ORDER[b.severity] ?? 9));
-log(`security-review: ${verified.length}/${allFindings.length} finding(s) survived verification`);
+function dryRunFinding(batch) {
+	const record = batch[0];
+	const candidate = record.candidates[0];
+	return {
+		severity: "HIGH",
+		confidence: "high",
+		vulnClass: candidate?.vulnClass || "dry-run",
+		filePath: record.filePath,
+		line: candidate?.line || 1,
+		title: "dry-run candidate",
+		description: "Synthetic finding used only to estimate verification fan-out.",
+		recommendation: "No action; this is a dry-run placeholder.",
+	};
+}
 
-// ---- 4) report ----
+async function investigate(batch) {
+	const result = await structured(
+		`Investigate this deterministic batch of security-sensitive source locations. Open the referenced files and confirm exploitability in context. Regex candidates are anchors, not findings. Return only real, actionable vulnerabilities with exact current lines; return [] if none.\n\nBatch:\n${JSON.stringify(batch, null, 2)}`,
+		FINDINGS_SCHEMA,
+		{
+			validate: (findings) => validateFindings(batch, findings),
+			label: batch[0]?.filePath || "investigate",
+			phase: "investigate",
+			cwd: scan.root,
+			...readOnly,
+		},
+	);
+	if (!result.ok) return { ok: false, error: result.error || "investigation failed", batch, findings: [], evidenceRejected: [] };
+	const proposed = dryRun ? [dryRunFinding(batch)] : result.value;
+	const checked = await host.validateFindings({ root: scan.root, records: batch, findings: proposed }, { cache: false });
+	return { ok: true, batch, findings: checked.valid, evidenceRejected: checked.rejected };
+}
+
+const investigated = await pipeline(batches, investigate, { concurrency: reviewConcurrency, errors: "raise" });
+const investigationFailures = investigated.filter((row) => !row.ok);
+const evidenceRejected = investigated.flatMap((row) => row.evidenceRejected || []);
+const discovered = investigated.flatMap((row) => row.findings || []);
+
+const bySignature = new Map();
+for (const finding of discovered) {
+	const signature = `${finding.filePath}:${finding.line}:${finding.vulnClass}:${String(finding.title).trim().toLowerCase()}`;
+	const prior = bySignature.get(signature);
+	if (!prior || (SEVERITY_ORDER[finding.severity] ?? 99) < (SEVERITY_ORDER[prior.severity] ?? 99)) bySignature.set(signature, finding);
+}
+const findings = [...bySignature.values()];
+
+phase("verify");
+const rawVerdicts = await fanOut(
+	findings,
+	async (finding) => ({
+		finding,
+		verdict: await verify(
+			`Finding:\n${JSON.stringify(finding, null, 2)}`,
+			`Open \`${finding.filePath}\` at the cited line and inspect the original source. Pass only if this is a real, exploitable security vulnerability with concrete evidence, not a regex false positive or hypothetical concern.`,
+			{
+				refute: true,
+				label: String(finding.title || finding.filePath).slice(0, 24),
+				phase: "verify",
+				cwd: scan.root,
+				...readOnly,
+			},
+		),
+	}),
+	{ errors: "drop" },
+);
+const verdicts = findings.map((finding, index) => rawVerdicts[index] || { finding, verdict: null });
+const verified = verdicts.filter((row) => row.verdict?.ok && row.verdict.passed).map((row) => row.finding);
+const rejected = verdicts.filter((row) => row.verdict?.ok && !row.verdict.passed).length;
+const unverified = verdicts.filter((row) => !row.verdict?.ok).length;
+verified.sort((left, right) => (SEVERITY_ORDER[left.severity] ?? 99) - (SEVERITY_ORDER[right.severity] ?? 99) || left.filePath.localeCompare(right.filePath) || left.line - right.line);
+
+phase("report");
 let summaryText = "";
-if (summarize && verified.length) {
-	const payload = verified.slice(0, 20).map((f) => ({ severity: f.severity, filePath: f.filePath, title: f.title, description: f.description, recommendation: f.recommendation }));
-	const s = await synthesize([JSON.stringify(payload, null, 2)], {
-		prompt: "Write a concise executive summary of these verified security findings. Do not add new findings or instructions. Mention the highest-risk themes and what to fix first.",
+const reportBoundaries = [...scan.boundaries];
+if (summarize && (verified.length || (dryRun && findings.length))) {
+	const summaryLimit = 20;
+	const payload = (dryRun ? findings : verified).slice(0, summaryLimit).map((finding) => ({
+		severity: finding.severity,
+		filePath: finding.filePath,
+		line: finding.line,
+		title: finding.title,
+		description: finding.description,
+		recommendation: finding.recommendation,
+	}));
+	if (verified.length > summaryLimit) reportBoundaries.push(`Executive summary covered ${summaryLimit}/${verified.length} verified findings; the table contains all findings.`);
+	const summary = await synthesize([JSON.stringify(payload, null, 2)], {
+		prompt: "Write a concise executive summary of only these verified security findings. Do not add findings. Mention the highest-risk themes and what to fix first.",
 		phase: "report",
 		label: "summary",
 		...noTools,
 	});
-	summaryText = s.ok ? s.content : "";
+	if (summary.ok) summaryText = summary.content;
+	else reportBoundaries.push(`Executive summary failed: ${summary.error || "summary agent failed"}.`);
 }
 
 const out = ["# Security review", ""];
-if (summaryText) out.push(summaryText, "");
-out.push(`Scope: ${scope}. Candidates reviewed: ${candidates.length}. Verified findings: ${verified.length}.`, "");
+if (summaryText && !dryRun) out.push(summaryText, "");
+out.push(coverage(), "");
+out.push(
+	`Investigation: ${investigated.length - investigationFailures.length}/${batches.length} batch(es) completed; ${investigationFailures.length} failed. Evidence validation rejected ${evidenceRejected.length} finding(s). Verification: ${verified.length} verified, ${rejected} rejected, ${unverified} unverified.`,
+	"",
+);
+if (reportBoundaries.length) out.push("## Coverage boundaries", "", ...reportBoundaries.map((boundary) => `- ${boundary}`), "");
+
+const incomplete = investigationFailures.length > 0 || evidenceRejected.length > 0 || unverified > 0;
 if (!verified.length) {
-	out.push("No verified security vulnerabilities found.");
+	out.push(
+		incomplete
+			? "No vulnerability passed verification, but the review was incomplete. Do not interpret this as a clean security result."
+			: "No verified security vulnerabilities were found within the deterministic candidate scope.",
+	);
 } else {
 	out.push("| Severity | Confidence | Class | File | Title | Recommendation |", "| --- | --- | --- | --- | --- | --- |");
-	for (const f of verified) {
-		out.push(`| ${cell(f.severity)} | ${cell(f.confidence || "")} | ${cell(f.vulnClass || "")} | ${cell(f.filePath)}${f.line ? ":" + f.line : ""} | ${cell(f.title)} | ${cell(f.recommendation || "")} |`);
+	for (const finding of verified) {
+		out.push(
+			`| ${cell(finding.severity)} | ${cell(finding.confidence)} | ${cell(finding.vulnClass)} | ${cell(finding.filePath)}:${finding.line} | ${cell(finding.title)} | ${cell(finding.recommendation)} |`,
+		);
 	}
 }
 return out.join("\n");

@@ -82,6 +82,26 @@ test("structured: unsupported schema keyword rejects before spending", async () 
 	await assert.rejects(structured(rt, "x", { type: "object", patternProperties: {} }), /unsupported shape-schema keyword/);
 });
 
+test("structured dry-run returns one schema-shaped placeholder without retry inflation", async () => {
+	const rt = mockRt(() => ({ content: "[dry-run]" }));
+	rt.dryRun = true;
+	const s = await structured(rt, "x", {
+		type: "object",
+		properties: {
+			decision: { enum: ["approve", "needs_review"] },
+			risk: { enum: ["low", "high"] },
+			focus: { type: "array", items: { type: "string" } },
+			ok: { type: "boolean" },
+		},
+		required: ["decision", "risk", "focus", "ok"],
+	});
+	assert.deepEqual(s.value, { decision: "approve", risk: "low", focus: [], ok: false });
+	assert.equal(s.ok, true);
+	assert.equal(s.attempts, 1);
+	assert.equal(rt.calls.length, 1);
+	assert.equal(await classify(rt, "t", ["bug", "feature"]), "bug");
+});
+
 test("verify: passing verdict; verifier failure is fail-closed (ok:false)", async () => {
 	const pass = mockRt(() => ({ content: '{"passed":true,"score":0.9,"reasons":"good"}' }));
 	const v = await verify(pass, "work", "rubric");

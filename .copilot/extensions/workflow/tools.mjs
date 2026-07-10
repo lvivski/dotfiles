@@ -130,7 +130,7 @@ function formatResult(rec, ctx) {
 		`runId: ${rec.runId}`,
 		`artifacts: ${ctx.runDir}`,
 		ctx.dryRun ? "AIC used: 0.0" : `AIC used: ${Number(rec.aic || 0).toFixed(1)}`,
-		`agents: ${c.agents ?? 0} (done ${c.done ?? 0}, cached ${c.cached ?? 0}, skipped ${c.skipped ?? 0}, failed ${c.failed ?? 0})`,
+		`agents: ${c.agents ?? 0} (done ${c.done ?? 0}, cached ${c.cached ?? 0}, skipped ${c.skipped ?? 0}, failed ${c.failed ?? 0}, dropped ${c.dropped ?? 0})`,
 		ctx.cwd ? `cwd: ${ctx.cwd}` : "",
 		rec.error ? `error: ${rec.error}` : "",
 		rec.result ? `\n--- workflow result ---\n${rec.result}` : "",
@@ -313,7 +313,10 @@ function formatBackgroundStart(run) {
 
 /** @param {any} rec @param {string} runDir @param {ToolCtx} ctx */
 function notifyDone(rec, runDir, ctx) {
-	notify(ctx, `workflow ${rec.runId} ${rec.status}: ${Number(rec.aic || 0).toFixed(1)} AIC, ${rec.counts?.done ?? 0} done / ${rec.counts?.failed ?? 0} failed. Result: ${join(runDir, "result.json")}`);
+	notify(
+		ctx,
+		`workflow ${rec.runId} ${rec.status}: ${Number(rec.aic || 0).toFixed(1)} AIC, ${rec.counts?.done ?? 0} done / ${rec.counts?.failed ?? 0} failed / ${rec.counts?.skipped ?? 0} skipped / ${rec.counts?.dropped ?? 0} dropped. Result: ${join(runDir, "result.json")}`,
+	);
 }
 
 /** @param {string} runId @param {unknown} err @param {string} runDir @param {ToolCtx} ctx */
@@ -380,7 +383,7 @@ export function buildTools(ctx) {
 			"Run a Copilot Workflow dynamic workflow: a JavaScript (.mjs) harness that fans work out to many " +
 			"`copilot` subagents in parallel (fan-out/synthesize, adversarial verify, tournament, " +
 			"generate-and-filter, classify-and-route, loop-until-done). The harness (an async JS body " +
-			"using injected globals: agent, parallel, fanOut, pipeline, phase, log, args, budget, memory) " +
+			"using injected globals: agent, parallel, fanOut, pipeline, phase, log, args, dryRun, budget, memory) " +
 			"owns the loop/branching; only the final `return` value comes back here. Use for large/parallel/" +
 			"adversarial/cross-checked work (audits, deep research, ranking/triage) — NOT routine edits or " +
 			"quick lookups. Spends AIC, so ALWAYS preview with dryRun:true first. Provide EXACTLY ONE of: " +

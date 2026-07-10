@@ -25,42 +25,66 @@ if (args && typeof args === "object" && !Array.isArray(args)) {
 	concern = DEFAULT_CONCERN;
 }
 
-if (!paths.length) return 'audit: provide files, e.g. args {"paths":["a.js"],"concern":"..."}';
+if (!Array.isArray(paths) || !paths.length) throw new Error('audit: provide files, e.g. args {"paths":["a.js"],"concern":"..."}');
+paths = [...new Set(paths.map((path) => String(path).trim()).filter(Boolean))];
+if (!paths.length) throw new Error("audit: paths must contain at least one non-empty file path");
+concern = String(concern || "").trim();
+if (!concern) throw new Error("audit: concern must be a non-empty string");
 
 const noTools = quarantine({ allowAllTools: false });
+const readOnly = quarantine();
 
 const review = async (path) => {
 	const finding = await agent(
 		`Review the file \`${path}\` for: ${concern}. List concrete issues with line references, or reply exactly 'NO ISSUES' if there are none.`,
-		// untrusted file content: read-only, no shell/write/network/MCP
-		{ agentType: "worker", label: path, phase: "audit", ...quarantine() },
+		{ agentType: "worker", label: path, phase: "audit", ...readOnly },
 	);
-	return [path, finding];
+	return { path, finding };
 };
 
 const verifyReview = async (reviewed) => {
-	const [path, finding] = reviewed;
-	if (!finding.ok || finding.content.toUpperCase().includes("NO ISSUES")) return [path, finding, null];
-	const verdict = await verify(finding, `each reported issue is real and relevant to: ${concern}`, {
-		refute: true,
-		label: path,
-		phase: "verify",
-		...noTools,
-	});
-	return [path, finding, verdict];
+	const { path, finding } = reviewed;
+	if (!finding.ok) return { ...reviewed, status: "failed", error: finding.error || "review agent failed" };
+	const noIssues = finding.content.trim().toUpperCase() === "NO ISSUES";
+	const verdict = await verify(
+		`File under review: ${path}\n\nReviewer result:\n${finding.content}`,
+		`Open \`${path}\` and independently check the original file. The reviewer result must accurately cover '${concern}'. ` +
+			(noIssues ? "Pass only if the no-issues claim is supported by the file." : "Pass only if every reported issue is real, relevant, and supported by the cited lines."),
+		{
+			refute: true,
+			label: path,
+			phase: "verify",
+			...readOnly,
+		},
+	);
+	if (!verdict.ok) return { ...reviewed, verdict, noIssues, status: "failed", error: verdict.error || "verification failed" };
+	if (dryRun) return { ...reviewed, verdict, noIssues: false, status: "verified" };
+	return { ...reviewed, verdict, noIssues, status: verdict.passed ? (noIssues ? "clean" : "verified") : "rejected" };
 };
 
-const checked = (await pipeline(paths, review, verifyReview)).filter((row) => row !== null);
-const solid = checked.filter(([, , v]) => v && v.passed).map(([p, f]) => [p, f]);
+const checked = await pipeline(paths, review, verifyReview, { errors: "raise" });
+const solid = checked.filter((row) => row.status === "verified");
+const counts = {
+	verified: solid.length,
+	clean: checked.filter((row) => row.status === "clean").length,
+	rejected: checked.filter((row) => row.status === "rejected").length,
+	failed: checked.filter((row) => row.status === "failed").length,
+};
+const coverage = `Coverage: ${checked.length}/${paths.length} files processed; ${counts.verified} with verified issues, ${counts.clean} independently clean, ${counts.rejected} rejected review result(s), ${counts.failed} failed.`;
 
-if (!solid.length) return `audit: no verified issues found for: ${concern}`;
+if (!solid.length) {
+	const heading = counts.failed || counts.rejected ? "# Audit incomplete" : "# Audit";
+	const conclusion = counts.failed || counts.rejected ? "No issue report survived verification; do not interpret this as a clean audit." : `No verified issues found for: ${concern}.`;
+	return `${heading}\n\n${conclusion}\n\n_${coverage}_`;
+}
 
 const report = await synthesize(
-	solid.map(([p, f]) => `## ${p}\n${f.content}`),
+	solid.map(({ path, finding }) => `## ${path}\n${finding.content}`),
 	{
 		prompt: `Summarize these verified findings about '${concern}'. Group by severity, most serious first, and give a one-line fix suggestion per issue.`,
 		label: "report",
 		...noTools,
 	},
 );
-return report.content;
+if (!report.ok) return `# Audit incomplete\n\nVerified findings could not be synthesized: ${report.error || "report agent failed"}\n\n_${coverage}_`;
+return `${report.content}\n\n_${coverage}_`;

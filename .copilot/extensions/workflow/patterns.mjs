@@ -187,6 +187,30 @@ function validateValue(value, schema, isCallable) {
 	return validateShape(value, schema);
 }
 
+/** @typedef {null | boolean | number | string | DryRunJson[] | { [key: string]: DryRunJson }} DryRunJson */
+
+/** Produce one deterministic, schema-valid dry-run value without guessing array cardinality. @param {any} schema @returns {DryRunJson} */
+function dryRunValue(schema) {
+	if (schema?.enum?.length) return schema.enum[0];
+	switch (schema?.type) {
+		case "object":
+			return Object.fromEntries(Object.entries(schema.properties || {}).map(([key, value]) => [key, dryRunValue(value)]));
+		case "array":
+			return [];
+		case "string":
+			return "dry-run";
+		case "integer":
+		case "number":
+			return 0;
+		case "boolean":
+			return false;
+		case "null":
+			return null;
+		default:
+			return null;
+	}
+}
+
 /**
  * Get a JSON value matching `schema` (a shape-schema object or a `validate(obj)` callable),
  * retrying with the parse/validation error fed back. Returns a {@link Structured}.
@@ -217,6 +241,7 @@ export async function structured(rt, prompt, schema, opts = {}) {
 		const ask = lastError ? `${base}\n\nYour previous answer was rejected: ${lastError}\nReturn corrected JSON only.` : base;
 		res = await rt.agent(ask, { model, label, ...rest });
 		if (!res.ok) return { value: null, ok: false, error: res.error || "agent failed", raw: res, attempts };
+		if (rt.dryRun) return { value: isCallable ? {} : dryRunValue(schema), ok: true, error: "", raw: res, attempts };
 		const extracted = extractLastJson(res.content);
 		if (extracted === NOT_FOUND) {
 			lastError = "no JSON value found in the response";
@@ -408,6 +433,7 @@ export async function classify(rt, text, classes, opts = {}) {
 	const instr = instructions ? `${instructions}\n` : "";
 	const prompt = `Classify the input into exactly one of these categories: ${list.join(", ")}.\n${instr}INPUT:\n${asText(text)}\n\nFINAL line: ONLY JSON {"category": "<one of the categories>"}`;
 	const s = await structuredObject(rt, prompt, { model, label, retries: 0, ...rest });
+	if (rt.dryRun) return list[0];
 	if (!s.raw.ok) throw new Error(`classifier agent failed: ${s.raw.error || "unknown error"}`);
 	if (!s.ok) throw new Error(`classifier did not return valid JSON category: ${JSON.stringify(list)}`);
 	const cat = String(s.value.category ?? "").trim();

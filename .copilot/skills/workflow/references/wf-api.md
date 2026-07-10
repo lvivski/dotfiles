@@ -29,6 +29,10 @@ export const meta = {
 - `fanOut(items, fn, opts?)` runs a barrier map (`errors: "raise"` default; `"drop"` → `null` slots).
 - `parallel(thunks, opts?)` runs zero-arg thunks as a barrier (`errors: "drop"` default).
 
+Dropped slots are counted and make an otherwise usable run `partial`; they are never compatible with
+`complete`. A fail-fast outer stage should convert item-local model/parse failures to explicit
+sentinels and reserve thrown errors for systemic failures.
+
 ## AI patterns
 
 - `synthesize(inputs, opts?)` merges many inputs via one agent call → `AgentResult`.
@@ -37,7 +41,10 @@ export const meta = {
   `{ passed, passedCount, failedCount, erroredCount, reviewers, reasons, dissent, verdicts, ok, error }`.
 - `structured(prompt, schema, opts?)` gets validated JSON → `{ value, ok, error, raw, attempts }`.
   `schema` is a shape-schema (`type`/`properties`/`required`/`enum`/`items`/`additionalProperties`)
-  or a `validate(obj)` callable; retries feed the error back (default `retries: 2`).
+  or a `validate(obj)` callable; retries feed the error back (default `retries: 2`). During dry-run it
+  makes one synthetic call and returns a deterministic schema-shaped placeholder without retries;
+  array placeholders are empty, so data-dependent harnesses should use `dryRun` plus input-derived
+  arity when previewing fan-out.
 - `tournament(candidates, criteria, opts?)` returns the comparative winner (throws on judge failure).
 - `generateAndFilter(promptOrPrompts, opts?)` → array of kept `AgentResult`s (`{ n, keep, rubric,
   dedupe }`).
@@ -57,6 +64,7 @@ export const meta = {
   `phase` for concurrent work).
 - `budget.total`, `budget.spent()`, `budget.remaining()`, `budget.hit`, and `budget.set(aic)` expose
   and adjust the observed-AIC soft cap.
+- `dryRun` is `true` only during a no-AIC preview.
 - `memory.read()` / `memory.append(text)` / `memory.write(text)` / `memory.clear()` / `memory.enabled`
   use the durable `memory` file (disabled → reads `""`, writes no-op; dry-run → read-only).
 - `log(message)` narrates progress into the run.
@@ -73,7 +81,9 @@ the effects it needs — the core API never grows per workflow.
 
 - **Call:** `await host.mine({ base, head })`. Results must be plain JSON (like agent results).
   Repeated calls with the same input are distinct (occurrence-keyed), so read-after-write is correct.
-  `host.fn(input, { cache: false })` opts out of checkpointing (flags the run non-resume-safe).
+  `host.fn(input, { cache: false })` opts out of checkpointing. Use it for filesystem/git discovery
+  or evidence validation that must be fresh on resume; otherwise the raw input—not file state—is the
+  checkpoint key.
 - **Provide effects** two ways (either/both): a sibling `~/.copilot/workflows/<name>.host.mjs`, or
   `run_workflow({ host: "/path/to/effects.mjs" })`.
 - **Author an effect** as `export async function name(input, ctx) { … }`. Mark side-effecting ones

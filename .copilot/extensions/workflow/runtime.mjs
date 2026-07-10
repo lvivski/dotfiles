@@ -60,6 +60,7 @@ export class Runtime {
 	/** @type {Set<Promise<void>>} in-flight agent() promises, so fire-and-forget calls can be drained. */
 	#inflight = new Set();
 	#stats = new RunStats();
+	#droppedCount = 0;
 	#cwd = process.cwd();
 	/** @type {string|null} */
 	#repoRoot = null;
@@ -131,9 +132,9 @@ export class Runtime {
 		return this.#stats.agentCount;
 	}
 
-	/** @returns {{ counts: RunCounts, nanoAiu: number }} */
+	/** @returns {{ counts: RunCounts & { dropped: number }, nanoAiu: number }} */
 	stats() {
-		return { counts: this.#stats.counts(), nanoAiu: this.#stats.nanoAiu };
+		return { counts: { ...this.#stats.counts(), dropped: this.#droppedCount }, nanoAiu: this.#stats.nanoAiu };
 	}
 
 	/**
@@ -505,7 +506,10 @@ export class Runtime {
 						return;
 					}
 					if (drop) {
-						this.#log(`  ! dropped item ${i}: ${e instanceof Error ? e.message : e}`);
+						const error = e instanceof Error ? e.message : String(e);
+						this.#droppedCount++;
+						this.#log(`  ! dropped item ${i}: ${error}`);
+						this.#emit({ ev: "drop", gid, kind, phase, index: i, error });
 						results[i] = null;
 					} else {
 						firstError = firstError || e;
@@ -733,6 +737,7 @@ export class Runtime {
 	buildApi(args) {
 		return {
 			args,
+			dryRun: this.dryRun,
 			budget: this.budget,
 			memory: this.memory,
 			host: this.#hostApi(),

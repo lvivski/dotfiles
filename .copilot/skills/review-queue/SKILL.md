@@ -36,5 +36,12 @@ triage only.
 
 Useful knobs: fetch stale PRs with `--max-age-days N` / `--all-ages`; pass workflow args
 `auto_deep: false` for diff-only, `deep: true` to checkout every PR, or
-`approve_only_low_risk_manual: true` for conservative approval guidance. Big queues may need more
-than 10,000 AIC.
+`approve_only_low_risk_manual: true` for conservative approval guidance. Diff/checkouts are bounded
+into chunks (`diff_chunk_chars`, `file_chunk_size`, `max_chunks`, `max_total_chunks`) and every cap is
+reported. The default queue capacity is 300 chunks (up to roughly 7.2 MB of diff at the default chunk
+size, or 18 MB with `diff_chunk_chars: 60000`); larger queues must be split across runs. GitHub
+CODEOWNERS is fetched from the PR base branch and evaluated per changed file; Azure DevOps remains
+required-policy/manual attribution only. `Approve` is emitted only when every chunk is complete,
+low-risk, clean, and independently reverified against the original diff/files. A failed checkout, a
+missing/deleted/symlinked checkout path, or a binary/metadata-only diff is degraded coverage and
+cannot approve. Big queues may need more than 10,000 AIC.

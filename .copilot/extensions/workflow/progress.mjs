@@ -4,7 +4,7 @@
  * Structured progress for workflow runs: JSONL events, live state snapshots, and terminal narration.
  *
  * @typedef {"queued"|"running"|"done"|"cached"|"skipped"|"error"} AgentStatus
- * @typedef {"running"|"complete"|"failed"|"error"|"timeout"|"interrupted"} RunStatus
+ * @typedef {"running"|"complete"|"partial"|"failed"|"error"|"timeout"|"interrupted"} RunStatus
  */
 import { writeFileSync, mkdirSync, appendFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -113,7 +113,7 @@ export class ProgressReporter {
 			startedAt: now,
 			updatedAt: now,
 			phase: /** @type {string|null} */ (null),
-			counts: { launched: 0, done: 0, failed: 0, cached: 0, skipped: 0 },
+			counts: { launched: 0, done: 0, failed: 0, cached: 0, skipped: 0, dropped: 0 },
 			nanoAiu: 0,
 			aic: 0,
 			outputTokens: 0,
@@ -150,6 +150,9 @@ export class ProgressReporter {
 				break;
 			case "end":
 				this.#applyEnd(rec);
+				break;
+			case "drop":
+				this.#applyDrop(rec);
 				break;
 		}
 		s.updatedAt = new Date().toISOString();
@@ -189,9 +192,18 @@ export class ProgressReporter {
 	}
 
 	/** @param {any} rec */
+	#applyDrop(rec) {
+		const { errors, counts } = this.#state;
+		counts.dropped++;
+		errors.push({ label: `${san(rec.kind || "group")}[${Number(rec.index) || 0}]`, error: san(rec.error || "dropped") });
+		if (errors.length > MAX_ERRORS) errors.splice(0, errors.length - MAX_ERRORS);
+	}
+
+	/** @param {any} rec */
 	#narrate(rec) {
 		if (this.#dashboard) {
 			if (rec.ev === "end" && (!rec.ok || rec.skipped) && !rec.cached) this.#onLine(formatEnd(rec), endLevel(rec), { ephemeral: false });
+			if (rec.ev === "drop") this.#onLine(formatDrop(rec), "warning", { ephemeral: false });
 			this.#maybeDashboard(rec.ev === "run_start" || rec.ev === "group_start" || rec.ev === "group_end");
 			return;
 		}
@@ -202,6 +214,8 @@ export class ProgressReporter {
 			this.#onLine(`  ${san(rec.kind)} launched (${rec.n})`, "info", { ephemeral: true });
 		} else if (rec.ev === "group_end") {
 			this.#onLine(`  ${san(rec.kind)} settled (${rec.n})`, "info", { ephemeral: true });
+		} else if (rec.ev === "drop") {
+			this.#onLine(formatDrop(rec), "warning", { ephemeral: false });
 		}
 	}
 
@@ -274,7 +288,7 @@ export class ProgressReporter {
 		const { counts: c, aic: total, startedAt } = this.#state;
 		const agents = c.launched + c.cached + c.skipped;
 		const secs = ((Date.now() - Date.parse(startedAt)) / 1000).toFixed(1);
-		return `— workflow: ${agents} agents (${c.cached} cached, ${c.skipped} skipped, ${c.failed} failed), ${total.toFixed(1)} AIC, ${secs}s`;
+		return `— workflow: ${agents} agents (${c.cached} cached, ${c.skipped} skipped, ${c.failed} failed, ${c.dropped} dropped), ${total.toFixed(1)} AIC, ${secs}s`;
 	}
 }
 
@@ -299,6 +313,11 @@ function formatEnd(rec) {
 	return `  ERR  ${label}  ${cost} AIC  ERROR: ${san(rec.error || "?")}`;
 }
 
+/** One-line narration for a dropped group item. @param {any} rec */
+function formatDrop(rec) {
+	return `  DROP ${san(rec.kind || "group")}[${Number(rec.index) || 0}]  (${san(rec.error || "dropped")})`;
+}
+
 /** @param {any} s */
 export function formatDashboard(s) {
 	const c = s.counts || {};
@@ -306,13 +325,13 @@ export function formatDashboard(s) {
 	const recent = s.recent || [];
 	const errors = s.errors || [];
 	const total = Number(c.launched || 0) + Number(c.cached || 0) + Number(c.skipped || 0) + running.length;
-	const terminal = ["complete", "failed", "error", "timeout", "interrupted"].includes(s.status || "");
+	const terminal = ["complete", "partial", "failed", "error", "timeout", "interrupted"].includes(s.status || "");
 	const endMs = terminal && s.updatedAt ? Date.parse(s.updatedAt) : Date.now();
 	const elapsed = ((endMs - Date.parse(s.startedAt || new Date().toISOString())) / 1000).toFixed(0);
 	const lines = [
 		`┌─ workflow: ${clip(s.title || s.runId, 36)} · ${s.status || "running"} · ${Number(s.aic || 0).toFixed(1)} AIC · ${elapsed}s`,
 		`│ phase: ${clip(s.phase || "—", 48)}`,
-		`│ agents: ${total} total · ${c.done || 0} done · ${running.length} running · ${c.cached || 0} cached · ${c.skipped || 0} skipped · ${c.failed || 0} failed`,
+		`│ agents: ${total} total · ${c.done || 0} done · ${running.length} running · ${c.cached || 0} cached · ${c.skipped || 0} skipped · ${c.failed || 0} failed · ${c.dropped || 0} dropped`,
 	];
 	if (running.length) {
 		lines.push("├─ running");

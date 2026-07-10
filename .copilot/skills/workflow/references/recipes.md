@@ -8,13 +8,16 @@ example from `examples/`.
 Use when each item has the same chain of stages and no stage needs all items at once. If a stage
 throws, that item becomes `null`; filter/report those rows explicitly. Pass a trailing
 `{ errors: "raise" }` when any failed item should abort the whole pipeline, or `{ concurrency: N }`
-to throttle (e.g. parallel checkouts). Copy `examples/pipeline-review.mjs`.
+to throttle (e.g. parallel checkouts). A dropped item makes the run `partial`. For a fail-fast outer
+pipeline, catch item-local model/parse failures inside the stage and return a failure sentinel; let
+only systemic errors escape. Copy `examples/pipeline-review.mjs`.
 
 ## Fan-out and synthesize
 
 Use when the merge stage needs every result at once. `fanOut()` defaults to re-raising branch errors;
 pass `{ errors: "drop" }` to keep partial results. `parallel()` is the barrier helper for thunks and
-defaults to dropping branch errors to `null`. Copy `examples/fanout-synthesize.mjs`.
+defaults to dropping branch errors to `null`; either kind of drop is counted and makes the run
+`partial`. Copy `examples/fanout-synthesize.mjs`.
 
 ## Adversarial verification
 
@@ -27,7 +30,8 @@ Use for findings that may be false positives. Keep verifier lenses diverse when 
 1. Use `structured()` to decompose the question into angles.
 2. Research each angle with quarantined reader agents. For web research, opt into network:
    `quarantine({ denyUrl: [], enableMcp: true })`.
-3. Verify source support with no-tool verifier agents: `quarantine({ allowAllTools: false })`.
+3. Verify source support by opening the cited URLs with separately quarantined network/MCP readers;
+   shell and write remain denied.
 4. Synthesize only verified or explicitly caveated claims.
 
 Copy `examples/deep-research.mjs`.
@@ -51,7 +55,8 @@ Use for brainstorming names, approaches, prompts, or test ideas. Copy `examples/
 ## Classify and route
 
 Use a closed class list. `classify()` throws if no valid class is returned — handle it. Copy
-`examples/classify-route.mjs`.
+`examples/classify-route.mjs`. In batch workflows, convert that item-local error to an explicit row
+instead of aborting healthy siblings.
 
 ## Loop until dry
 
