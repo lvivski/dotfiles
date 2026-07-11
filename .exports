@@ -35,9 +35,6 @@ export LESS='-RI~egsw'
 # rustup is keg-only because it conflicts with Homebrew's rust formula.
 [[ -d $HOMEBREW_PREFIX/opt/rustup/bin ]] && export PATH=$HOMEBREW_PREFIX/opt/rustup/bin:$PATH
 
-# pip --user bin (version-independent)
-[[ -d ~/Library/Python ]] && export PATH="$(python3 -m site --user-base)/bin:$PATH"
-
 [[ -d ~/.cabal/bin ]] && export PATH=~/.cabal/bin:$PATH
 
 [[ -d ~/.cargo/bin ]] && export PATH=~/.cargo/bin:$PATH

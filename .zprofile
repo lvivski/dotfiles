@@ -15,6 +15,3 @@
 
 #Rust
 [[ -f ~/.cargo/env ]] && . ~/.cargo/env
-
-# Bun
-[ -f ~/.bun/_bun ] && . ~/.bun/_bun

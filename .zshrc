@@ -1,5 +1,8 @@
 autoload -U compinit && compinit
 
+# Bun
+[[ -f ~/.bun/_bun ]] && . ~/.bun/_bun
+
 WORDCHARS=''
 
 # Case-insensitive globbing (used in pathname expansion)
