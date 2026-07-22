@@ -41,7 +41,7 @@ const plan = await structured(
 	{ label: "plan", phase: "plan", ...noTools },
 );
 if (!plan.ok) return `# Research incomplete\n\nPlanning failed: ${plan.error || "planner agent failed"}. No research was performed.`;
-let angles = dryRun ? Array.from({ length: maxAngles }, (_, index) => `${question} — dry-run angle ${index + 1}`) : plan.value.map((angle) => String(angle).trim()).filter(Boolean);
+let angles = dryRun ? Array.from({ length: maxAngles }, (_, index) => `Dry-run angle ${index + 1}`) : plan.value.map((angle) => String(angle).trim()).filter(Boolean);
 const seen = new Set();
 angles = angles.filter((angle) => {
 	const key = angle.toLowerCase().replace(/\s+/g, " ");
@@ -55,10 +55,11 @@ if (!angles.length) return "# Research incomplete\n\nThe planner returned no usa
 log(`deep-research: ${angles.length} angle(s)`);
 
 // ---- 2/3) research each angle, then verify as soon as it returns -----------
+const contextFor = (angle) => `Original research question:\n${question}\n\nAssigned angle:\n${angle}`;
 const research = async (angle) => [
 	angle,
 	await agent(
-		`Research this question using web search. State concrete findings and cite EVERY claim with a source URL. If evidence is thin or conflicting, say so.\n\nQuestion: ${angle}`,
+		`Research the assigned angle using web search. Keep the work within that angle and use the original question only to resolve context. State concrete findings, cite EVERY material claim with a source URL, and flag thin or conflicting evidence.\n\n${contextFor(angle)}`,
 		{ agentType: "researcher", label: angle.slice(0, 24), phase: "research", ...sourceTools },
 	),
 ];
@@ -66,7 +67,8 @@ const research = async (angle) => [
 const verifyFinding = async (reviewed) => {
 	const [angle, finding] = reviewed;
 	if (!finding.ok) return [angle, finding, null];
-	const verdict = await verify(finding, "Open the cited URLs and pass only if every material factual claim is supported by a credible source. Reject inaccessible, mismatched, or circular citations.", {
+	const reviewSubject = `${contextFor(angle)}\n\nFinding:\n${finding.content}`;
+	const verdict = await verify(reviewSubject, "Open the cited URLs and pass only if every material factual claim is supported by a credible source. Reject inaccessible, mismatched, or circular citations. Treat source support as the primary gate; reject for relevance only when the finding is clearly off-topic or about a different subject.", {
 		refute: true,
 		phase: "verify",
 		label: angle.slice(0, 24),

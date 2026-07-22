@@ -255,6 +255,33 @@ test("deep-research.mjs: dry-run estimates requested research and verification a
 	assert.equal(run.calls.synthesize, 1);
 });
 
+test("deep-research: every worker and verifier retains context without duplicating it in the rubric", async () => {
+	const url = "https://www.ebay.com/itm/397770308844";
+	const question = `Review ${url} and determine whether it is a good deal.`;
+	const angles = ["Compare recent sold prices.", "Check condition and missing parts."];
+	assert.ok(angles.every((angle) => !angle.includes(url)), "test angles must not carry the original URL");
+
+	const structured = () => ({ value: angles, ok: true, error: "", raw: res("{}"), attempts: 1 });
+	for (const [dir, input] of [
+		[WORKFLOWS, { question, angles: angles.length }],
+		[EXAMPLES, question],
+	]) {
+		const run = await smoke(dir, "deep-research", input, { structured });
+		assert.equal(run.calls.agentArgs.length, angles.length);
+		assert.equal(run.calls.verifyArgs.length, angles.length);
+
+		run.calls.agentArgs.forEach(({ prompt }, index) => {
+			assert.ok(prompt.includes(question), "research worker lost the original question");
+			assert.ok(prompt.includes(`Assigned angle:\n${angles[index]}`), "research worker lost its assigned angle");
+		});
+		run.calls.verifyArgs.forEach(({ subject, rubric }, index) => {
+			assert.ok(String(subject).includes(question), "verifier lost the original question");
+			assert.ok(String(subject).includes(`Assigned angle:\n${angles[index]}`), "verifier lost its assigned angle");
+			assert.ok(!String(rubric).includes(question), "verifier rubric duplicates the original question");
+		});
+	}
+});
+
 test("review-queue.mjs: diff-only and deep-checkout PRs render a triage table", async () => {
 	const prs = [
 		{ repo: "o/r", number: 1, title: "diff only", files: ["a.js"], diff: textDiff("a.js"), me: "user", my_teams: [], reviewers: [{ required: false }], codeowners: "", coverage: "full diff", platform: "github", url: "http://x/1", updatedAt: "2024-01-01" },
