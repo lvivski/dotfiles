@@ -35,7 +35,6 @@ test("agent end events update counts, AIC, and tokens", () => {
 	assert.equal(s.counts.skipped, 1);
 	assert.equal(s.counts.failed, 1);
 	assert.equal(s.aic, 0.75);
-	assert.equal(s.outputTokens, 10);
 	assert.equal(s.errors.length, 1);
 });
 

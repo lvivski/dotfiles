@@ -71,6 +71,8 @@ export async function within(promise, timeoutMs) {
  */
 export function mkResult(over = {}) {
 	return {
+		kind: "agent",
+		value: "ok",
 		content: "ok",
 		ok: true,
 		error: null,
@@ -81,6 +83,7 @@ export function mkResult(over = {}) {
 		label: "a",
 		nanoAiu: 500_000_000,
 		aic: 0.5,
+		usageUnknown: false,
 		outputTokens: 10,
 		inputTokens: 20,
 		cacheReadTokens: 0,

@@ -1,12 +1,12 @@
 // loop-until-dry.mjs — repeat discovery until two consecutive rounds find nothing new.
 export const meta = { name: "loop-until-dry", description: "Iteratively discover findings until the well runs dry, then summarize." };
 
-const question = args || "Find likely issues in this project.";
+const question = context.args || "Find likely issues in this project.";
 const seen = new Set();
 let dryRounds = 0;
 
 const findMore = async (roundIndex) => {
-	const result = await agent(`Find new issues not already seen.\n\nQuestion: ${question}\n\nAlready seen:\n${[...seen].sort()}`, { agentType: "worker", phase: "discover", label: `round-${roundIndex}` });
+	const result = await phase("discover", () => agent(`Find new issues not already seen.\n\nQuestion: ${question}\n\nAlready seen:\n${[...seen].sort()}`, { agentType: "worker", label: `round-${roundIndex}` }));
 	const candidates = result.content.split("\n").map((line) => line.trim()).filter(Boolean);
 	const fresh = candidates.filter((line) => !seen.has(line));
 	fresh.forEach((line) => seen.add(line));
@@ -15,7 +15,7 @@ const findMore = async (roundIndex) => {
 	return fresh;
 };
 
-await loopUntil(findMore, () => dryRounds >= 2, { maxIters: 6 });
+for (let round = 0; round < 6 && dryRounds < 2; round++) await findMore(round);
 
-const report = await synthesize([...seen].sort(), { prompt: "Deduplicate and summarize these findings. Note uncertainty and evidence gaps.", label: "report" });
+const report = await agent(`Deduplicate and summarize these findings. Note uncertainty and evidence gaps.\n\n${[...seen].sort().join("\n")}`, { label: "report" });
 return report.content;

@@ -13,12 +13,13 @@ export const meta = {
 
 const DEFAULT_CONCERN = "bugs, security issues, and missing error handling";
 
+const input = context.args;
 let paths, concern;
-if (args && typeof args === "object" && !Array.isArray(args)) {
-	paths = args.paths || [];
-	concern = args.concern ?? DEFAULT_CONCERN;
-} else if (Array.isArray(args)) {
-	paths = args;
+if (input && typeof input === "object" && !Array.isArray(input)) {
+	paths = input.paths || [];
+	concern = input.concern ?? DEFAULT_CONCERN;
+} else if (Array.isArray(input)) {
+	paths = input;
 	concern = DEFAULT_CONCERN;
 } else {
 	paths = [];
@@ -31,13 +32,10 @@ if (!paths.length) throw new Error("audit: paths must contain at least one non-e
 concern = String(concern || "").trim();
 if (!concern) throw new Error("audit: concern must be a non-empty string");
 
-const noTools = quarantine({ allowAllTools: false });
-const readOnly = quarantine();
-
 const review = async (path) => {
 	const finding = await agent(
 		`Review the file \`${path}\` for: ${concern}. List concrete issues with line references, or reply exactly 'NO ISSUES' if there are none.`,
-		{ agentType: "worker", label: path, phase: "audit", ...readOnly },
+		{ agentType: "worker", label: path, profile: "read-only" },
 	);
 	return { path, finding };
 };
@@ -46,23 +44,22 @@ const verifyReview = async (reviewed) => {
 	const { path, finding } = reviewed;
 	if (!finding.ok) return { ...reviewed, status: "failed", error: finding.error || "review agent failed" };
 	const noIssues = finding.content.trim().toUpperCase() === "NO ISSUES";
-	const verdict = await verify(
+	const verdict = await phase("verify", () => verify(
 		`File under review: ${path}\n\nReviewer result:\n${finding.content}`,
 		`Open \`${path}\` and independently check the original file. The reviewer result must accurately cover '${concern}'. ` +
 			(noIssues ? "Pass only if the no-issues claim is supported by the file." : "Pass only if every reported issue is real, relevant, and supported by the cited lines."),
 		{
 			refute: true,
 			label: path,
-			phase: "verify",
-			...readOnly,
+			profile: "read-only",
 		},
-	);
+	));
 	if (!verdict.ok) return { ...reviewed, verdict, noIssues, status: "failed", error: verdict.error || "verification failed" };
-	if (dryRun) return { ...reviewed, verdict, noIssues: false, status: "verified" };
+	if (context.dryRun) return { ...reviewed, verdict, noIssues: false, status: "verified" };
 	return { ...reviewed, verdict, noIssues, status: verdict.passed ? (noIssues ? "clean" : "verified") : "rejected" };
 };
 
-const checked = await pipeline(paths, review, verifyReview, { errors: "raise" });
+const checked = await phase("audit", () => pipeline(paths, review, verifyReview));
 const solid = checked.filter((row) => row.status === "verified");
 const counts = {
 	verified: solid.length,
@@ -78,13 +75,12 @@ if (!solid.length) {
 	return `${heading}\n\n${conclusion}\n\n_${coverage}_`;
 }
 
-const report = await synthesize(
-	solid.map(({ path, finding }) => `## ${path}\n${finding.content}`),
-	{
-		prompt: `Summarize these verified findings about '${concern}'. Group by severity, most serious first, and give a one-line fix suggestion per issue.`,
-		label: "report",
-		...noTools,
-	},
+const findingsText = solid.map(({ path, finding }) => `## ${path}\n${finding.content}`).join("\n\n");
+const report = await phase("report", () =>
+	agent(
+		`Summarize these verified findings about '${concern}'. Group by severity, most serious first, and give a one-line fix suggestion per issue.\n\n${findingsText}`,
+		{ label: "report", profile: "none" },
+	),
 );
 if (!report.ok) return `# Audit incomplete\n\nVerified findings could not be synthesized: ${report.error || "report agent failed"}\n\n_${coverage}_`;
 return `${report.content}\n\n_${coverage}_`;

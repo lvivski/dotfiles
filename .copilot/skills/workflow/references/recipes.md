@@ -1,84 +1,84 @@
 # Workflow recipes
 
-Use these patterns as defaults, not a menu to present to the user. Copy the matching `.mjs`
-example from `examples/`.
+## Pipeline by default
 
-## Pipeline: default for multi-stage work
+Use `pipeline()` when each item follows the same stages. It lets fast items advance without waiting
+for the slowest sibling.
 
-Use when each item has the same chain of stages and no stage needs all items at once. If a stage
-throws, that item becomes `null`; filter/report those rows explicitly. Pass a trailing
-`{ errors: "raise" }` when any failed item should abort the whole pipeline, or `{ concurrency: N }`
-to throttle (e.g. parallel checkouts). A dropped item makes the run `partial`. For a fail-fast outer
-pipeline, catch item-local model/parse failures inside the stage and return a failure sentinel; let
-only systemic errors escape. Copy `examples/pipeline-review.mjs`.
+```js
+const checked = await pipeline(
+  files,
+  (file) => agent(`Review ${file}`, { profile: "read-only" }),
+  (review, file) => verify(review, `Verify against ${file}`, { profile: "read-only" }),
+);
+```
 
-## Fan-out and synthesize
+## Barrier only for cross-item work
 
-Use when the merge stage needs every result at once. `fanOut()` defaults to re-raising branch errors;
-pass `{ errors: "drop" }` to keep partial results. `parallel()` is the barrier helper for thunks and
-defaults to dropping branch errors to `null`; either kind of drop is counted and makes the run
-`partial`. Copy `examples/fanout-synthesize.mjs`.
+Use `parallel()` when the next step genuinely needs every result, such as global deduplication.
+
+```js
+const reviews = await parallel(files.map((file) => () => agent(`Review ${file}`)));
+const report = await agent(`Merge these reviews into one summary.\n\n${reviews.map((r) => r.content).join("\n\n")}`, { profile: "none" });
+```
+
+## Failure policy
+
+- `raise`: abort on the first failed outcome or callback exception.
+- `drop`: return `null`, mark the run partial, and preserve siblings.
+- `keep`: return the failed `AgentOutcome` so workflow code can report it explicitly.
+
+Choose deliberately; never rely on implicit partial success.
+
+## Structured output
+
+```js
+const result = await agent("Classify the ticket.", {
+  profile: "none",
+  schema: {
+    type: "object",
+    properties: { kind: { enum: ["bug", "feature"] } },
+    required: ["kind"],
+  },
+});
+```
 
 ## Adversarial verification
 
-Use for findings that may be false positives. Keep verifier lenses diverse when failure modes differ.
-`verify()` is fail-closed (a verifier failure yields a failed verdict, not a crash). Copy
-`examples/pipeline-review.mjs` and adapt the rubric/lens.
+Use `verify` for checks that must fail closed. For independent reviewers, run `verify` several times
+with `parallel()` and decide the quorum in the harness. Verifiers consuming untrusted findings should
+normally use `profile: "none"` or `"read-only"`.
 
 ## Deep research
 
-1. Use `structured()` to decompose the question into angles.
-2. Research each angle with quarantined reader agents. For web research, opt into network:
-   `quarantine({ denyUrl: [], enableMcp: true })`.
-3. Verify source support by opening the cited URLs with separately quarantined network/MCP readers;
-   shell and write remain denied.
-4. Synthesize only verified or explicitly caveated claims.
-
-Copy `examples/deep-research.mjs`.
-
-## Tournament
-
-Use comparative judgment for taste, ranking, or selecting a best option — usually more reliable than
-absolute scoring. Copy `examples/tournament.mjs`.
-
-## Consensus verification
-
-Use `consensus(subject, rubric, { reviewers: 3 })` when critical work needs independent dual/triple
-review. It requires a successful-reviewer quorum, then keeps the majority verdict plus dissenting
-reasons. For high-stakes checks, prefer optional model-family diversity with `{ models: [...] }` so
-reviewers are less likely to share blind spots; leave it unset for ordinary consensus.
-
-## Generate and filter
-
-Use for brainstorming names, approaches, prompts, or test ideas. Copy `examples/generate-filter.mjs`.
-
-## Classify and route
-
-Use a closed class list. `classify()` throws if no valid class is returned — handle it. Copy
-`examples/classify-route.mjs`. In batch workflows, convert that item-local error to an explicit row
-instead of aborting healthy siblings.
+1. Decompose with `agent(..., { schema, profile: "none" })`.
+2. Research each angle with `profile: "research"`.
+3. Verify source support with another research-profile agent.
+4. Synthesize only verified findings with `profile: "none"`.
 
 ## Loop until dry
 
-Use when discovery size is unknown. Deduplicate against everything already seen, and stop after a
-fixed number of dry rounds. Copy `examples/loop-until-dry.mjs`.
+Use normal JavaScript:
 
-## Cross-run memory
+```js
+let dry = 0;
+for (let round = 0; round < 10 && dry < 2; round++) {
+  const result = await agent(`Find new issues; round ${round}`);
+  dry = foundSomething(result) ? 0 : dry + 1;
+}
+```
 
-For recurring workflows, persist progress with a `memory` file: `memory.read()` prior state,
-`memory.append(...)` the next step (per-run checkpoints reset each run). Copy
-`examples/loop-memory.mjs`.
+## Durable memory
 
-## Quarantine untrusted content
+Use `context.memory`. A run must treat memory reads as external state; Persistence journals them for
+deterministic replay.
 
-- Reader agents that inspect user files, web pages, issues, PR comments, or model-generated text get
-  `quarantine()`.
-- If a later verifier or synthesizer consumes that text, pass `quarantine({ allowAllTools: false })`
-  unless it truly needs tools.
-- A trusted actor agent should receive only structured, verified outputs before taking privileged
-  actions.
+## Host effects
 
-## Coverage and budget reporting
+Put deterministic filesystem/git discovery in `.host.mjs`. Keep model judgment in `agent()`.
+Mutating effects must be declared and are skipped during preview.
 
-If the workflow does not cover everything, `log()` the boundary and say the same in the final answer.
-Silent sampling or budget truncation reads as complete coverage and is misleading.
+## Coverage reporting
+
+If a workflow caps, samples, truncates, drops, or cannot verify work, log the boundary and include it
+in the final result. Silent partial coverage is a correctness bug.

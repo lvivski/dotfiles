@@ -10,8 +10,9 @@ export const meta = {
 	phases: ["review", "verify", "report"],
 };
 
-const opts = args && typeof args === "object" && !Array.isArray(args) ? args : {};
-const input = opts.prs ?? args;
+const workflowArgs = context.args;
+const opts = workflowArgs && typeof workflowArgs === "object" && !Array.isArray(workflowArgs) ? workflowArgs : {};
+const input = opts.prs ?? workflowArgs;
 if (!Array.isArray(input) || !input.length) {
 	return "review-queue: no PRs supplied. Pipe review-queue-fetch.sh output via args.";
 }
@@ -35,8 +36,6 @@ const fileChunkSize = intOption("file_chunk_size", 20, 1, 50);
 const MAX_SAFE_CHUNKS = 300;
 const maxChunks = intOption("max_chunks", MAX_SAFE_CHUNKS, 1, MAX_SAFE_CHUNKS);
 const maxTotalChunks = intOption("max_total_chunks", MAX_SAFE_CHUNKS, 1, MAX_SAFE_CHUNKS);
-const noTools = quarantine({ allowAllTools: false });
-const readOnly = quarantine();
 
 const prs = input.map((raw, index) => {
 	if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`review-queue: PR ${index + 1} must be an object`);
@@ -294,23 +293,22 @@ async function reviewUnit(pr, unit, cwd) {
 		unit.kind === "checkout"
 			? `Changed files in the checkout:\n${unit.content}\n\nOpen these files, their immediate callers/imports, and directly related tests.`
 			: `Changed file(s): ${unit.files.join(", ") || "(unknown)"}\nOriginal self-contained diff chunk:\n${unit.content}`;
-	const review = await structured(
+	const review = await phase("review", () => agent(
 		`Review one bounded part of ${pr.repo}#${pr.number} (${pr.title || "untitled"}). Report only concrete bugs, risky behavior, missing tests, or uncertainty. Do not invent issues. Set needs_deep_review only when repository context outside this evidence could materially change a clean decision.\n\n${evidence}`,
-		REVIEW_SCHEMA,
 		{
+			schema: REVIEW_SCHEMA,
 			validate: validateReview,
 			retries: 0,
 			agentType: "worker",
 			label: `${pr.repo}#${pr.number}-${unit.id}`,
-			phase: "review",
-			...(cwd ? { cwd, ...readOnly } : noTools),
+			...(cwd ? { cwd, profile: "read-only" } : { profile: "none" }),
 		},
-	);
+	));
 	return review.ok ? { unit, ok: true, review: review.value } : { unit, ok: false, error: review.error || "review failed" };
 }
 
 async function reviewUnits(pr, evidence, cwd) {
-	const raw = await fanOut(evidence.units, (unit) => reviewUnit(pr, unit, cwd), { errors: "drop" });
+	const raw = await pipeline(evidence.units, (unit) => reviewUnit(pr, unit, cwd), { onFailure: "drop" });
 	return evidence.units.map((unit, index) => raw[index] || { unit, ok: false, error: "review branch failed" });
 }
 
@@ -381,17 +379,16 @@ async function verifyApproval(row, cwd) {
 			subject: `${evidence}\n\nPrimary review result:\n${JSON.stringify(item.review)}`,
 		};
 	});
-	const raw = await fanOut(
+	const raw = await phase("verify", () => pipeline(
 		subjects,
 		({ item, subject }) =>
 			verify(subject, "Independently inspect the original evidence. Pass only if the chunk is genuinely low risk, issue-free, sufficiently tested, and contains no uncertainty requiring human review.", {
 				refute: true,
 				label: `${row.pr.repo}#${row.pr.number}-${item.unit.id}`,
-				phase: "verify",
-				...(cwd ? { cwd, ...readOnly } : noTools),
+				...(cwd ? { cwd, profile: "read-only" } : { profile: "none" }),
 			}),
-		{ errors: "drop" },
-	);
+		{ onFailure: "drop" },
+	));
 	const passed = raw.filter((verdict) => verdict?.ok && verdict.passed).length;
 	if (passed === subjects.length) {
 		row.verdict.decision = "approve";
@@ -415,7 +412,7 @@ async function analyzeDiff(pr, reason) {
 
 async function analyzeCheckout(pr, reason) {
 	if (!pr.clone_url || !pr.pr_ref) throw new Error("missing clone URL or PR ref");
-	return worktree(String(pr.number), { repo: pr.clone_url, ref: pr.pr_ref, cloneDir: developerRoot }, async (path) => {
+	return workspace.worktree(String(pr.number), { repo: pr.clone_url, ref: pr.pr_ref, cloneDir: developerRoot }, async (path) => {
 		const inspection = await host.inspectCheckout({ root: path, files: pr.files }, { cache: false });
 		const evidence = checkoutUnits(pr, inspection);
 		const reviews = await reviewUnits(pr, evidence, path);
@@ -455,7 +452,7 @@ async function triagePr(pr) {
 	}
 }
 
-const rows = await pipeline(prs, triagePr, { concurrency: reviewConcurrency, errors: "raise" });
+const rows = await phase("review", () => pipeline(prs, triagePr, { concurrency: reviewConcurrency }));
 log(`review-queue: triaged ${rows.length}/${prs.length} PR(s)`);
 
 // ---- report ----------------------------------------------------------------

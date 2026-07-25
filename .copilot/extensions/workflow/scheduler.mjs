@@ -1,8 +1,8 @@
 /** @module scheduler — small scheduling primitives shared by the workflow runtime. */
 import { cpus } from "node:os";
 
-/** @typedef {Pick<import("./agent.mjs").AgentResult, "ok"|"cached"|"skipped"|"error"|"nanoAiu">} ResultStats */
-/** @typedef {{ agents: number, launched: number, done: number, failed: number, cached: number, skipped: number }} RunCounts */
+/** @typedef {Pick<import("./agent.mjs").AgentResult, "ok"|"cached"|"skipped"|"error"|"nanoAiu"|"usageUnknown">} ResultStats */
+/** @typedef {{ agents: number, launched: number, done: number, failed: number, cached: number, skipped: number, unknownUsage: number }} RunCounts */
 
 /** Raised (strict mode only) when observed AIC spend passes the cap. */
 export class BudgetExceeded extends Error {}
@@ -50,13 +50,14 @@ export class Semaphore {
 /** Compact run accounting; full agent content stays in harness variables and checkpoints. */
 export class RunStats {
 	/** @type {RunCounts} */
-	#counts = { agents: 0, launched: 0, done: 0, failed: 0, cached: 0, skipped: 0 };
+	#counts = { agents: 0, launched: 0, done: 0, failed: 0, cached: 0, skipped: 0, unknownUsage: 0 };
 	#nanoAiu = 0;
 
 	/** @param {ResultStats} result */
 	record(result) {
 		this.#counts.agents++;
 		this.#nanoAiu += result.nanoAiu || 0;
+		if (result.usageUnknown && !result.cached) this.#counts.unknownUsage++;
 		const kind = classifyResult(result);
 		this.#counts[kind]++;
 		if (kind === "done" || kind === "failed") this.#counts.launched++;

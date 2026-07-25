@@ -10,14 +10,12 @@ export const meta = {
 };
 
 const SEVERITY_ORDER = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, HIGH_BUG: 3, BUG: 4, LOW: 5 };
-const noTools = quarantine({ allowAllTools: false });
-const readOnly = quarantine();
 const cell = (value) => String(value ?? "").replace(/\|/g, "\\|").replace(/\n/g, "<br>");
 
 let opts;
-if (Array.isArray(args)) opts = { files: args };
-else if (typeof args === "string" && args.trim()) opts = { root: args };
-else if (args && typeof args === "object") opts = { ...args };
+if (Array.isArray(context.args)) opts = { files: context.args };
+else if (typeof context.args === "string" && context.args.trim()) opts = { root: context.args };
+else if (context.args && typeof context.args === "object") opts = { ...context.args };
 else opts = {};
 
 function intOption(name, fallback, min, max) {
@@ -30,8 +28,7 @@ const batchSize = intOption("batch_size", 4, 1, 20);
 const reviewConcurrency = opts.concurrency == null ? undefined : intOption("concurrency", 6, 1, 32);
 const summarize = opts.summarize === undefined ? true : Boolean(opts.summarize);
 
-phase("scan");
-const scan = await host.discover(opts, { cache: false });
+const scan = await phase("scan", () => host.discover(opts, { cache: false }));
 const coverage = () =>
 	`Scope: ${scan.source}. Root: \`${scan.root}\`. Files selected: ${scan.selectedCount}. Review records: ${scan.records.length}/${scan.preCapRecords}. Candidate hits: ${scan.candidateCount}/${scan.preCapCandidateCount}.`;
 
@@ -94,24 +91,23 @@ function dryRunFinding(batch) {
 }
 
 async function investigate(batch) {
-	const result = await structured(
+	const result = await phase("investigate", () => agent(
 		`Investigate this deterministic batch of security-sensitive source locations. Open the referenced files and confirm exploitability in context. Regex candidates are anchors, not findings. Return only real, actionable vulnerabilities with exact current lines; return [] if none.\n\nBatch:\n${JSON.stringify(batch, null, 2)}`,
-		FINDINGS_SCHEMA,
 		{
+			schema: FINDINGS_SCHEMA,
 			validate: (findings) => validateFindings(batch, findings),
 			label: batch[0]?.filePath || "investigate",
-			phase: "investigate",
 			cwd: scan.root,
-			...readOnly,
+			profile: "read-only",
 		},
-	);
+	));
 	if (!result.ok) return { ok: false, error: result.error || "investigation failed", batch, findings: [], evidenceRejected: [] };
-	const proposed = dryRun ? [dryRunFinding(batch)] : result.value;
+	const proposed = context.dryRun ? [dryRunFinding(batch)] : result.value;
 	const checked = await host.validateFindings({ root: scan.root, records: batch, findings: proposed }, { cache: false });
 	return { ok: true, batch, findings: checked.valid, evidenceRejected: checked.rejected };
 }
 
-const investigated = await pipeline(batches, investigate, { concurrency: reviewConcurrency, errors: "raise" });
+const investigated = await pipeline(batches, investigate, { concurrency: reviewConcurrency });
 const investigationFailures = investigated.filter((row) => !row.ok);
 const evidenceRejected = investigated.flatMap((row) => row.evidenceRejected || []);
 const discovered = investigated.flatMap((row) => row.findings || []);
@@ -124,8 +120,7 @@ for (const finding of discovered) {
 }
 const findings = [...bySignature.values()];
 
-phase("verify");
-const rawVerdicts = await fanOut(
+const rawVerdicts = await phase("verify", () => pipeline(
 	findings,
 	async (finding) => ({
 		finding,
@@ -135,26 +130,24 @@ const rawVerdicts = await fanOut(
 			{
 				refute: true,
 				label: String(finding.title || finding.filePath).slice(0, 24),
-				phase: "verify",
 				cwd: scan.root,
-				...readOnly,
+				profile: "read-only",
 			},
 		),
 	}),
-	{ errors: "drop" },
-);
+	{ onFailure: "drop" },
+));
 const verdicts = findings.map((finding, index) => rawVerdicts[index] || { finding, verdict: null });
 const verified = verdicts.filter((row) => row.verdict?.ok && row.verdict.passed).map((row) => row.finding);
 const rejected = verdicts.filter((row) => row.verdict?.ok && !row.verdict.passed).length;
 const unverified = verdicts.filter((row) => !row.verdict?.ok).length;
 verified.sort((left, right) => (SEVERITY_ORDER[left.severity] ?? 99) - (SEVERITY_ORDER[right.severity] ?? 99) || left.filePath.localeCompare(right.filePath) || left.line - right.line);
 
-phase("report");
 let summaryText = "";
 const reportBoundaries = [...scan.boundaries];
-if (summarize && (verified.length || (dryRun && findings.length))) {
+if (summarize && (verified.length || (context.dryRun && findings.length))) {
 	const summaryLimit = 20;
-	const payload = (dryRun ? findings : verified).slice(0, summaryLimit).map((finding) => ({
+	const payload = (context.dryRun ? findings : verified).slice(0, summaryLimit).map((finding) => ({
 		severity: finding.severity,
 		filePath: finding.filePath,
 		line: finding.line,
@@ -163,18 +156,18 @@ if (summarize && (verified.length || (dryRun && findings.length))) {
 		recommendation: finding.recommendation,
 	}));
 	if (verified.length > summaryLimit) reportBoundaries.push(`Executive summary covered ${summaryLimit}/${verified.length} verified findings; the table contains all findings.`);
-	const summary = await synthesize([JSON.stringify(payload, null, 2)], {
-		prompt: "Write a concise executive summary of only these verified security findings. Do not add findings. Mention the highest-risk themes and what to fix first.",
-		phase: "report",
-		label: "summary",
-		...noTools,
-	});
+	const summary = await phase("report", () =>
+		agent(
+			`Write a concise executive summary of only these verified security findings. Do not add findings. Mention the highest-risk themes and what to fix first.\n\n${JSON.stringify(payload, null, 2)}`,
+			{ label: "summary", profile: "none" },
+		),
+	);
 	if (summary.ok) summaryText = summary.content;
 	else reportBoundaries.push(`Executive summary failed: ${summary.error || "summary agent failed"}.`);
 }
 
 const out = ["# Security review", ""];
-if (summaryText && !dryRun) out.push(summaryText, "");
+if (summaryText && !context.dryRun) out.push(summaryText, "");
 out.push(coverage(), "");
 out.push(
 	`Investigation: ${investigated.length - investigationFailures.length}/${batches.length} batch(es) completed; ${investigationFailures.length} failed. Evidence validation rejected ${evidenceRejected.length} finding(s). Verification: ${verified.length} verified, ${rejected} rejected, ${unverified} unverified.`,

@@ -9,6 +9,8 @@ import { readFileSync, mkdirSync, openSync, writeSync, fsyncSync, closeSync } fr
 import { dirname, resolve } from "node:path";
 import { homedir } from "node:os";
 
+import { atomicWriteFile } from "./persistence.mjs";
+
 /** Expand a bare `~` or a leading `~/`. @param {string} p */
 const expandHome = (p) => (p === "~" ? homedir() : p.startsWith("~/") ? resolve(homedir(), p.slice(2)) : p);
 
@@ -72,10 +74,13 @@ export class Memory {
 		try {
 			mkdirSync(dirname(this.path), { recursive: true });
 			// Memory is durable cross-run state, so writes are fsync'd like checkpoints.
-			const body = append && text && !text.endsWith("\n") ? text + "\n" : text;
-			const fd = openSync(this.path, append ? "a" : "w");
+			if (!append) {
+				atomicWriteFile(this.path, text);
+				return;
+			}
+			const fd = openSync(this.path, "a");
 			try {
-				writeSync(fd, body, null, "utf8");
+				writeSync(fd, text && !text.endsWith("\n") ? text + "\n" : text, null, "utf8");
 				fsyncSync(fd);
 			} finally {
 				closeSync(fd);

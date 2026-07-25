@@ -115,12 +115,12 @@ test("ensureClone clones a local repo and validates origin on reuse", async () =
 	assert.equal(await findRepoRoot(repo), execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: repo }).toString().trim());
 });
 
-test("runtime worktree(): callback form runs in an isolated checkout and auto-cleans", async () => {
+test("runtime workspace.worktree(): callback form runs in an isolated checkout and auto-cleans", async () => {
 	const repo = makeRepo();
 	const rt = new Runtime({ cwd: repo });
 	const api = /** @type {any} */ (rt.buildApi(null));
 	let captured = "";
-	const out = await api.worktree("cb", async (/** @type {string} */ dir) => {
+	const out = await api.workspace.worktree("cb", async (/** @type {string} */ dir) => {
 		captured = dir;
 		assert.ok(existsSync(join(dir, "README.md")));
 		return "RESULT";
@@ -130,21 +130,21 @@ test("runtime worktree(): callback form runs in an isolated checkout and auto-cl
 	await rt.cleanup();
 });
 
-test("runtime worktree.create(): explicit lifecycle form", async () => {
+test("runtime workspace.worktree.create(): explicit lifecycle form", async () => {
 	const repo = makeRepo();
 	const rt = new Runtime({ cwd: repo });
 	const api = /** @type {any} */ (rt.buildApi(null));
-	const wt = await api.worktree.create("life");
+	const wt = await api.workspace.worktree.create("life");
 	assert.ok(existsSync(join(wt.path, ".git")));
 	await wt.cleanup();
 	assert.ok(!existsSync(wt.path));
 	await rt.cleanup();
 });
 
-test("restricted mode forbids worktree()", () => {
+test("restricted mode forbids workspace.worktree()", () => {
 	const rt = new Runtime({ restricted: true, cwd: tmpDir() });
 	const api = /** @type {any} */ (rt.buildApi(null));
-	assert.throws(() => api.worktree("x"), /forbidden in restricted mode/);
+	assert.throws(() => api.workspace.worktree("x"), /forbidden in restricted mode/);
 });
 
 test("agent isolation:'worktree' runs the subagent inside a fresh worktree", () =>
@@ -163,7 +163,7 @@ test("runtime worktrees live in a temp dir outside the repo; a clean run leaves 
 		const repo = makeRepo();
 		const rt = new Runtime({ cwd: repo });
 		const api = /** @type {any} */ (rt.buildApi(null));
-		const wt = await api.worktree.create("iso");
+		const wt = await api.workspace.worktree.create("iso");
 		assert.ok(existsSync(join(wt.path, ".git")), "a real worktree was created");
 		assert.ok(!existsSync(join(repo, ".worktrees")), "no .worktrees/ dir pollutes the repo");
 		assert.ok(!realpathSync(wt.path).startsWith(realpathSync(repo) + sep), `worktree lives outside the repo: ${wt.path}`);

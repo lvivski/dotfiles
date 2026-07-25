@@ -4,16 +4,21 @@
  * Workflow execution lifecycle: artifacts, runtime setup, harness execution, cleanup, and results.
  */
 import vm from "node:vm";
-import { writeFileSync, mkdirSync, readFileSync, existsSync, copyFileSync, rmSync } from "node:fs";
+import { readFileSync, existsSync, rmSync } from "node:fs";
 import { join, basename } from "node:path";
 
-import { Runtime } from "./runtime.mjs";
+import { Runtime, permissionCapability } from "./runtime.mjs";
 import { CheckpointStore } from "./checkpoint.mjs";
 import { Memory } from "./memory.mjs";
 import { ProgressReporter } from "./progress.mjs";
 import { runHarness, deterministicGlobals } from "./sandbox.mjs";
 import { loadHost } from "./effects.mjs";
 import { BudgetExceeded } from "./scheduler.mjs";
+import {
+	FORMAT_VERSION,
+	Persistence,
+	readJsonFile,
+} from "./persistence.mjs";
 
 const ABORT_DRAIN_GRACE_MS = 2000;
 
@@ -22,14 +27,16 @@ class RunAborted extends Error {}
 
 /**
  * Strip ESM `export` keywords so the harness runs as VM script text (it cannot import extension
- * internals). `export const meta = …` becomes `const meta = …`.
+ * internals). `export const meta = …` becomes `const meta = …`. The keywords are blanked in place
+ * rather than deleted, so every line and column in the stripped source still matches the original —
+ * stack frames and {@link Runtime} group identities depend on that.
  * @param {string} source
  * @returns {string}
  */
 export function stripExports(source) {
 	return source
-		.replace(/^(\s*)export\s+default\s+/gm, "$1")
-		.replace(/^(\s*)export\s+(?=(?:const|let|var|function|class|async))/gm, "$1");
+		.replace(/^([ \t]*)export(\s+)default(\s+)(?=\S)/gm, (_m, indent, gap1, gap2) => `${indent}      ${gap1}       ${gap2}`)
+		.replace(/^([ \t]*)export(\s+)(?=(?:const|let|var|function|class|async)\b)/gm, (_m, indent, gap) => `${indent}      ${gap}`);
 }
 
 /**
@@ -42,16 +49,7 @@ export function extractMeta(source) {
 	const m = /(?:^|\n)\s*(?:export\s+)?const\s+meta\s*=\s*\{/.exec(source);
 	if (!m) return {};
 	const open = source.indexOf("{", m.index);
-	let depth = 0;
-	let end = -1;
-	for (let i = open; i < source.length; i++) {
-		const c = source[i];
-		if (c === "{") depth++;
-		else if (c === "}" && --depth === 0) {
-			end = i;
-			break;
-		}
-	}
+	const end = objectLiteralEnd(source, open);
 	if (end < 0) return {};
 	const literal = source.slice(open, end + 1);
 	try {
@@ -67,6 +65,36 @@ export function extractMeta(source) {
 	} catch {
 		return {};
 	}
+}
+
+/** @param {string} source @param {number} open */
+function objectLiteralEnd(source, open) {
+	let depth = 0;
+	let state = "code";
+	for (let i = open; i < source.length; i++) {
+		const c = source[i];
+		const n = source[i + 1];
+		if (state === "code") {
+			if (c === "/" && n === "/") {
+				i++;
+				state = "line";
+			} else if (c === "/" && n === "*") {
+				i++;
+				state = "block";
+			} else if (c === "'" || c === '"' || c === "`") state = c;
+			else if (c === "{") depth++;
+			else if (c === "}" && --depth === 0) return i;
+		} else if (state === "line") {
+			if (c === "\n") state = "code";
+		} else if (state === "block") {
+			if (c === "*" && n === "/") {
+				i++;
+				state = "code";
+			}
+		} else if (c === "\\") i++;
+		else if (c === state) state = "code";
+	}
+	return -1;
 }
 
 /**
@@ -85,15 +113,22 @@ export function extractMeta(source) {
  * @property {boolean} [strictBudget]
  * @property {boolean} [dryRun]
  * @property {boolean} [resume]
+ * @property {number[][]} [invalidatedBranches]
  * @property {string|null} [memoryPath]
  * @property {string|null} [hostPath]
  * @property {number} [harnessSyncTimeoutMs]
  * @property {string} [cwd]
- * @property {string|null} [repoRoot]
+ * @property {string[]} [allowedDirs]
  * @property {AbortSignal} [signal]
  * @property {(line: string, level?: "info"|"warning"|"error", meta?: { ephemeral?: boolean }) => void} [onLine]
  * @property {"dashboard"|"events"|"off"} [progressMode]
  * @property {string} [title]
+ * @property {"off"|"on"|"auto"} [parentPermissionMode]
+ * @property {string} [parentSessionMode]
+ * @property {number|null} [maxAgents]
+ * @property {{ kind: string, run: Function }} [agentBackend]
+ * @property {string|null} [planId]
+ * @property {((request: { current: number, spent: number, increment: number, proposed: number }) => Promise<boolean|null>|boolean|null)|null} [requestBudgetIncrease]
  */
 
 /**
@@ -108,9 +143,10 @@ export function extractMeta(source) {
  * @property {number} durationMs
  * @property {{ total: number|null, spent: number, remaining: number, hit: boolean }} budget
  * @property {number} aic
- * @property {{ agents: number, launched: number, done: number, failed: number, cached: number, skipped: number, dropped: number }} counts
+ * @property {{ agents: number, launched: number, done: number, failed: number, cached: number, skipped: number, dropped: number, unknownUsage: number }} counts
  * @property {string[]} preservedWorktrees
  * @property {string} result
+ * @property {number} plannedMaxAgents
  */
 /** @typedef {import("./progress.mjs").RunStatus} RunStatus */
 
@@ -181,89 +217,131 @@ async function executeDryRun(cfg, run) {
  */
 async function executeRealRun(cfg, run) {
 	const { meta, title, onLine, startedAt } = run;
-	mkdirSync(cfg.runDir, { recursive: true });
-	const checkpoints = new CheckpointStore(cfg.runDir, { resume: !!cfg.resume });
-	resetRunArtifacts(cfg.runDir);
-	writeFileSync(join(cfg.runDir, "script.js"), cfg.source, "utf8");
-	copyHostArtifact(cfg);
-	writeMeta(cfg.runDir, cfg.runId, meta, cfg.args, !!cfg.restricted);
-
-	const reporter = new ProgressReporter({
-		jsonlPath: join(cfg.runDir, "progress.jsonl"),
-		statePath: join(cfg.runDir, "state.json"),
-		runId: cfg.runId,
-		meta,
-		title,
-		onLine,
-		dashboard: cfg.progressMode === "dashboard",
-	});
-	const memory = new Memory(cfg.memoryPath, { readOnly: false, log: (m) => onLine(m, "info", { ephemeral: true }) });
-	const rt = new Runtime({
-		...runtimeOpts(cfg),
-		checkpoints,
-		memory,
-		abortController: linkedAbortController(cfg.signal),
-		progress: (e) => reporter.emit(e),
-		log: (m) => onLine(m, "info", { ephemeral: true }),
-	});
-
-	let status = /** @type {RunStatus} */ ("complete");
-	let closeStatus = /** @type {RunStatus} */ ("error");
+	const persistence = new Persistence(cfg.runDir, { runId: cfg.runId });
+	const lease = persistence.acquire();
 	try {
-		reporter.emit({ ev: "run_start", runId: cfg.runId, meta });
-		let error = null;
-		let result = "";
-		try {
-			if (cfg.hostPath && !cfg.restricted) rt.setHost(await loadHost(cfg.hostPath));
-			const value = await abortable(
-				runHarness(stripExports(cfg.source), {
-					api: rt.buildApi(cfg.args),
-					filename: `${cfg.runId}.mjs`,
-					log: (m) => rt.log(m),
-					syncTimeoutMs: cfg.harnessSyncTimeoutMs,
-				}),
-				cfg.signal,
-			);
-			result = coerceResult(value);
-		} catch (e) {
-			if (e instanceof BudgetExceeded) {
-				status = "failed";
-				error = e.message;
-				onLine(`  budget reached: ${e.message}`, "warning", { ephemeral: false });
-			} else if (e instanceof RunAborted || cfg.signal?.aborted) {
-				status = "timeout";
-			} else {
-				status = "error";
-				error = e instanceof Error ? e.message : String(e);
-				onLine(`  ! workflow error: ${error}`, "error", { ephemeral: false });
-			}
-		}
+		const manifest = persistence.ensureManifest(
+			{
+				runId: cfg.runId,
+				formatVersion: FORMAT_VERSION,
+				backend: cfg.agentBackend?.kind ?? "cli",
+				parentPermissionMode: cfg.parentPermissionMode ?? "off",
+				parentSessionMode: cfg.parentSessionMode ?? "interactive",
+				permissionMode: permissionCapability(cfg.parentPermissionMode ?? "off"),
+				permissionInheritance: {
+					tools: "parent-mode-with-profile-denials",
+					paths: "workflow-approved-directories",
+					urls: "parent-mode-with-profile-denials",
+					mcp: "launch-opt-in-and-profile-narrowed",
+					fineGrainedRules: "not-exposed-by-parent-sdk",
+				},
+				hostPath: cfg.hostPath ?? null,
+				cwd: cfg.cwd || process.cwd(),
+				budget: cfg.budget ?? null,
+				model: cfg.model ?? null,
+				effort: cfg.effort ?? null,
+				context: cfg.context ?? null,
+				concurrency: cfg.concurrency ?? null,
+				enableMcp: !!cfg.enableMcp,
+				restricted: !!cfg.restricted,
+				strictBudget: !!cfg.strictBudget,
+				memoryPath: cfg.memoryPath ?? null,
+				progressMode: cfg.progressMode ?? "dashboard",
+				maxAgents: cfg.maxAgents ?? null,
+				planId: cfg.planId ?? null,
+				createdAt: new Date(startedAt).toISOString(),
+			},
+			{ resume: !!cfg.resume },
+		);
+		const backend = cfg.agentBackend?.kind ?? "cli";
+		if (manifest.backend !== backend) throw new Error(`workflow run '${cfg.runId}' is pinned to backend '${manifest.backend}' and cannot resume with '${backend}'`);
+		const checkpoints = new CheckpointStore(cfg.runDir, { resume: !!cfg.resume, lease });
+		if (cfg.invalidatedBranches?.length) checkpoints.invalidate(cfg.invalidatedBranches);
+		resetRunArtifacts(cfg.runDir);
+		persistence.writeFile(lease, "script.js", cfg.source);
+		copyHostArtifact(cfg, persistence, lease);
+		writeMeta(persistence, lease, cfg.runId, meta, cfg.args, !!cfg.restricted);
 
-		const drained = await drainRuntime(rt, cfg.signal);
-		if (!drained) {
-			onLine(`  ! workflow cleanup exceeded ${ABORT_DRAIN_GRACE_MS}ms; host work may still be unwinding`, "warning", { ephemeral: false });
-		}
-		if (cfg.signal?.aborted) status = "timeout";
-		const preservedWorktrees = await rt.cleanup();
-		if (preservedWorktrees.length) onLine(`  preserved ${preservedWorktrees.length} dirty worktree(s): ${preservedWorktrees.join(", ")}`, "warning", { ephemeral: false });
-		if (status === "complete") {
-			const reasons = incompleteReasons(rt);
-			if (reasons.length) {
-				status = result.trim() ? "partial" : "failed";
-				error = `workflow incomplete: ${reasons.join(", ")}`;
-				onLine(`  ! ${error}`, "warning", { ephemeral: false });
+		const reporter = new ProgressReporter({
+			jsonlPath: join(cfg.runDir, "progress.jsonl"),
+			statePath: join(cfg.runDir, "state.json"),
+			writeState: (state) => persistence.writeJson(lease, "state.json", state),
+			runId: cfg.runId,
+			meta,
+			title,
+			onLine,
+			dashboard: cfg.progressMode === "dashboard",
+		});
+		const memory = new Memory(cfg.memoryPath, { readOnly: false, log: (m) => onLine(m, "info", { ephemeral: true }) });
+		const rt = new Runtime({
+			...runtimeOpts(cfg),
+			checkpoints,
+			memory,
+			abortController: linkedAbortController(cfg.signal),
+			progress: (e) => reporter.emit(e),
+			log: (m, /** @type {"info"|"warning"|"error"} */ level = "info") => onLine(m, level, { ephemeral: true }),
+		});
+
+		let status = /** @type {RunStatus} */ ("complete");
+		let closeStatus = /** @type {RunStatus} */ ("error");
+		try {
+			reporter.emit({ ev: "run_start", runId: cfg.runId, meta });
+			let error = null;
+			let result = "";
+			try {
+				if (cfg.hostPath && !cfg.restricted) rt.setHost(await loadHost(cfg.hostPath));
+				const value = await abortable(
+					runHarness(stripExports(cfg.source), {
+						api: rt.buildApi(cfg.args),
+						filename: `${cfg.runId}.mjs`,
+						log: (m) => rt.log(m),
+						syncTimeoutMs: cfg.harnessSyncTimeoutMs,
+					}),
+					cfg.signal,
+				);
+				result = coerceResult(value);
+			} catch (e) {
+				if (e instanceof BudgetExceeded) {
+					status = "failed";
+					error = e.message;
+					onLine(`  budget reached: ${e.message}`, "warning", { ephemeral: false });
+				} else if (e instanceof RunAborted || cfg.signal?.aborted) {
+					status = statusForAbort(cfg.signal);
+				} else {
+					status = "error";
+					error = e instanceof Error ? e.message : String(e);
+					onLine(`  ! workflow error: ${error}`, "error", { ephemeral: false });
+				}
 			}
+
+			const drained = await drainRuntime(rt, cfg.signal);
+			if (!drained) {
+				onLine(`  ! workflow cleanup exceeded ${ABORT_DRAIN_GRACE_MS}ms; host work may still be unwinding`, "warning", { ephemeral: false });
+			}
+			if (cfg.signal?.aborted) status = statusForAbort(cfg.signal);
+			const preservedWorktrees = await rt.cleanup();
+			if (preservedWorktrees.length) onLine(`  preserved ${preservedWorktrees.length} dirty worktree(s): ${preservedWorktrees.join(", ")}`, "warning", { ephemeral: false });
+			if (status === "complete") {
+				const reasons = incompleteReasons(rt);
+				if (reasons.length) {
+					status = result.trim() ? "partial" : "failed";
+					error = `workflow incomplete: ${reasons.join(", ")}`;
+					onLine(`  ! ${error}`, "warning", { ephemeral: false });
+				}
+			}
+			const record = finalize({ runId: cfg.runId, status, error, meta, args: cfg.args, startedAt, rt, result, preservedWorktrees });
+			persistence.writeJson(lease, "run.json", record);
+			persistence.writeJson(lease, "result.json", { runId: record.runId, status: record.status, aic: record.aic, result: record.result });
+			reporter.emit({ ev: "run_end", runId: cfg.runId, status: record.status, error: record.error, ...record.counts, nanoAiu: rt.stats().nanoAiu, aic: record.aic });
+			closeStatus = status;
+			const summaryLevel = status === "partial" ? "warning" : status === "complete" ? "info" : "error";
+			onLine(reporter.runSummary(), summaryLevel, { ephemeral: false });
+			return record;
+		} finally {
+			reporter.close(closeStatus);
 		}
-		const record = finalize({ runId: cfg.runId, status, error, meta, args: cfg.args, startedAt, rt, result, preservedWorktrees });
-		writeJson(join(cfg.runDir, "run.json"), record);
-		writeJson(join(cfg.runDir, "result.json"), { runId: record.runId, status: record.status, aic: record.aic, result: record.result });
-		reporter.emit({ ev: "run_end", runId: cfg.runId, status: record.status, error: record.error, ...record.counts, nanoAiu: rt.stats().nanoAiu, aic: record.aic });
-		closeStatus = status;
-		const summaryLevel = status === "partial" ? "warning" : status === "complete" ? "info" : "error";
-		onLine(reporter.runSummary(), summaryLevel, { ephemeral: false });
-		return record;
 	} finally {
-		reporter.close(closeStatus);
+		lease.release();
 	}
 }
 
@@ -274,7 +352,8 @@ function incompleteReasons(rt) {
 	if (counts.failed) reasons.push(`${counts.failed} agent failure(s)`);
 	if (counts.skipped) reasons.push(`${counts.skipped} skipped agent(s)`);
 	if (counts.dropped) reasons.push(`${counts.dropped} dropped item(s)`);
-	if (rt.budgetHit) reasons.push("budget boundary reached");
+	if (rt.currentUnknownUsage) reasons.push(`${rt.currentUnknownUsage} agent(s) with unknown usage`);
+	if (rt.budget.hit) reasons.push("budget boundary reached");
 	return reasons;
 }
 
@@ -285,23 +364,34 @@ function resetRunArtifacts(runDir) {
 	}
 }
 
-/** @param {ExecuteConfig} cfg */
-function copyHostArtifact(cfg) {
+/**
+ * @param {ExecuteConfig} cfg
+ * @param {Persistence} persistence
+ * @param {import("./persistence.mjs").Lease} lease
+ */
+function copyHostArtifact(cfg, persistence, lease) {
 	if (!cfg.hostPath || cfg.restricted) return;
-	try {
-		copyFileSync(cfg.hostPath, join(cfg.runDir, "host.js"));
-	} catch {
-		// The sidecar is loaded from cfg.hostPath; this provenance copy is diagnostic only.
-	}
+	// Not a provenance copy: `preparePersistedResume` loads the sidecar from this file, so a run
+	// that fails to write it would resume with no `host.*` effects at all.
+	persistence.writeFile(lease, "host.mjs", readFileSync(cfg.hostPath));
 }
 
 /** @param {AbortSignal|undefined} signal */
 function linkedAbortController(signal) {
 	const ac = new AbortController();
 	if (!signal) return ac;
-	if (signal.aborted) ac.abort();
-	else signal.addEventListener("abort", () => ac.abort(), { once: true });
+	if (signal.aborted) ac.abort(signal.reason);
+	else signal.addEventListener("abort", () => ac.abort(signal.reason), { once: true });
 	return ac;
+}
+
+/** @param {AbortSignal|undefined} signal @returns {RunStatus} */
+function statusForAbort(signal) {
+	const reason = signal?.reason;
+	const kind = reason && typeof reason === "object" ? reason.kind : reason;
+	if (kind === "pause") return "paused";
+	if (kind === "cancel") return "cancelled";
+	return "timeout";
 }
 
 /**
@@ -371,11 +461,6 @@ async function settleWithin(promise, timeoutMs) {
 	}
 }
 
-/** @param {string} path @param {unknown} value */
-function writeJson(path, value) {
-	writeFileSync(path, JSON.stringify(value, null, 2), "utf8");
-}
-
 /** @param {ExecuteConfig} cfg */
 function runtimeOpts(cfg) {
 	return {
@@ -387,8 +472,14 @@ function runtimeOpts(cfg) {
 		budget: cfg.budget ?? null,
 		strictBudget: !!cfg.strictBudget,
 		restricted: !!cfg.restricted,
+		parentPermissionMode: cfg.parentPermissionMode,
+		parentSessionMode: cfg.parentSessionMode,
+		maxAgents: cfg.maxAgents,
+		agentBackend: cfg.agentBackend,
+		requestBudgetIncrease: cfg.requestBudgetIncrease,
 		cwd: cfg.cwd,
-		repoRoot: cfg.repoRoot ?? null,
+		allowedDirs: cfg.allowedDirs,
+		harness: { file: `${cfg.runId}.mjs`, source: stripExports(cfg.source) },
 	};
 }
 
@@ -413,12 +504,13 @@ function finalize(p) {
 			total: rt.budget.total,
 			spent: rt.budget.spent(),
 			remaining: rt.budget.remaining(),
-			hit: rt.budgetHit,
+			hit: rt.budget.hit,
 		},
 		aic: nanoAiu / 1_000_000_000,
 		counts,
 		preservedWorktrees: p.preservedWorktrees ?? [],
 		result: p.result,
+		plannedMaxAgents: rt.plannedMaxAgents,
 	};
 }
 
@@ -435,22 +527,19 @@ function coerceResult(value) {
 }
 
 /**
- * @param {string} runDir
+ * @param {Persistence} persistence
+ * @param {import("./persistence.mjs").Lease} lease
  * @param {string} runId
  * @param {object} meta
  * @param {unknown} args
  * @param {boolean} restricted
  */
-function writeMeta(runDir, runId, meta, args, restricted) {
-	const path = join(runDir, "meta.json");
+function writeMeta(persistence, lease, runId, meta, args, restricted) {
+	const path = join(persistence.runDir, "meta.json");
 	/** @type {any} */
 	let existing = {};
 	if (existsSync(path)) {
-		try {
-			existing = JSON.parse(readFileSync(path, "utf8"));
-		} catch {
-			existing = {};
-		}
+		existing = readJsonFile(path) || {};
 	}
 	const now = new Date().toISOString();
 	const record = {
@@ -461,9 +550,7 @@ function writeMeta(runDir, runId, meta, args, restricted) {
 		restricted,
 		args: args ?? null,
 	};
-	try {
-		writeJson(path, record);
-	} catch {
-		// Metadata is useful for listing runs; execution artifacts still carry the final result.
-	}
+	// Not just listing metadata: `preparePersistedResume` replays `args` from this file, so losing it
+	// would silently resume the workflow with different input.
+	persistence.writeJson(lease, "meta.json", record);
 }

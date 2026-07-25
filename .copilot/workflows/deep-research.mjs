@@ -13,12 +13,13 @@ export const meta = {
 };
 
 // ---- inputs ---------------------------------------------------------------
+const input = context.args;
 let question, maxAngles;
-if (args && typeof args === "object" && !Array.isArray(args)) {
-	question = args.question || args.q;
-	maxAngles = Number(args.angles ?? 5);
-} else if (typeof args === "string") {
-	question = args;
+if (input && typeof input === "object" && !Array.isArray(input)) {
+	question = input.question || input.q;
+	maxAngles = Number(input.angles ?? 5);
+} else if (typeof input === "string") {
+	question = input;
 	maxAngles = 5;
 } else {
 	question = null;
@@ -33,15 +34,12 @@ maxAngles = Math.min(maxAngles, 12);
 const angleBoundary = requestedAngles > maxAngles ? `Requested ${requestedAngles} angles; capped at ${maxAngles}.` : "";
 
 // ---- 1) decompose into independent angles ---------------------------------
-const noTools = quarantine({ allowAllTools: false });
-const sourceTools = quarantine({ denyUrl: [], enableMcp: true });
-const plan = await structured(
+const plan = await phase("plan", () => agent(
 	`Break the following research question into ${maxAngles} independent sub-questions or angles to investigate.\n\nQuestion: ${question}`,
-	{ type: "array", items: { type: "string" } },
-	{ label: "plan", phase: "plan", ...noTools },
-);
+	{ schema: { type: "array", items: { type: "string" } }, label: "plan", profile: "none" },
+));
 if (!plan.ok) return `# Research incomplete\n\nPlanning failed: ${plan.error || "planner agent failed"}. No research was performed.`;
-let angles = dryRun ? Array.from({ length: maxAngles }, (_, index) => `Dry-run angle ${index + 1}`) : plan.value.map((angle) => String(angle).trim()).filter(Boolean);
+let angles = context.dryRun ? Array.from({ length: maxAngles }, (_, index) => `Dry-run angle ${index + 1}`) : plan.value.map((angle) => String(angle).trim()).filter(Boolean);
 const seen = new Set();
 angles = angles.filter((angle) => {
 	const key = angle.toLowerCase().replace(/\s+/g, " ");
@@ -60,7 +58,7 @@ const research = async (angle) => [
 	angle,
 	await agent(
 		`Research the assigned angle using web search. Keep the work within that angle and use the original question only to resolve context. State concrete findings, cite EVERY material claim with a source URL, and flag thin or conflicting evidence.\n\n${contextFor(angle)}`,
-		{ agentType: "researcher", label: angle.slice(0, 24), phase: "research", ...sourceTools },
+		{ agentType: "researcher", label: angle.slice(0, 24), profile: "research" },
 	),
 ];
 
@@ -68,16 +66,15 @@ const verifyFinding = async (reviewed) => {
 	const [angle, finding] = reviewed;
 	if (!finding.ok) return [angle, finding, null];
 	const reviewSubject = `${contextFor(angle)}\n\nFinding:\n${finding.content}`;
-	const verdict = await verify(reviewSubject, "Open the cited URLs and pass only if every material factual claim is supported by a credible source. Reject inaccessible, mismatched, or circular citations. Treat source support as the primary gate; reject for relevance only when the finding is clearly off-topic or about a different subject.", {
+	const verdict = await phase("verify", () => verify(reviewSubject, "Open the cited URLs and pass only if every material factual claim is supported by a credible source. Reject inaccessible, mismatched, or circular citations. Treat source support as the primary gate; reject for relevance only when the finding is clearly off-topic or about a different subject.", {
 		refute: true,
-		phase: "verify",
 		label: angle.slice(0, 24),
-		...sourceTools,
-	});
+		profile: "research",
+	}));
 	return [angle, finding, verdict];
 };
 
-const checked = await pipeline(angles, research, verifyFinding, { errors: "raise" });
+const checked = await phase("research", () => pipeline(angles, research, verifyFinding));
 const findings = checked.map(([, f]) => f);
 const trusted = checked.filter(([, f, v]) => f.ok && v?.ok && v.passed).map(([, f]) => f);
 const failed = checked.filter(([, f, v]) => !f.ok || (v && !v.ok)).length;
@@ -86,13 +83,15 @@ log(`deep-research: ${trusted.length}/${findings.length} findings survived verif
 const boundaries = [angleBoundary, proposedAngles > angles.length ? `${proposedAngles - angles.length} planner angle(s) exceeded the cap.` : ""].filter(Boolean);
 const coverage = `Coverage: ${angles.length} angle(s) researched; ${trusted.length} source-verified, ${rejected} rejected, ${failed} failed.${boundaries.length ? ` Limits: ${boundaries.join(" ")}` : ""}`;
 
-if (!trusted.length && !dryRun) return `# Research unsupported\n\nNo research angle passed source verification. No unverified findings were synthesized.\n\n_${coverage}_`;
+if (!trusted.length && !context.dryRun) return `# Research unsupported\n\nNo research angle passed source verification. No unverified findings were synthesized.\n\n_${coverage}_`;
 
 // ---- 4) synthesize a cited report -----------------------------------------
-const report = await synthesize(dryRun ? findings : trusted, {
-	prompt: `Write a well-structured, cited report that answers the question below using the findings. Keep only well-sourced claims; list any open questions at the end.\n\nQuestion: ${question}`,
-	label: "report",
-	...noTools,
-});
+const sources = (context.dryRun ? findings : trusted).map((r, i) => `=== Finding ${i + 1} ===\n${typeof r === "string" ? r : r.content}`).join("\n\n");
+const report = await phase("report", () =>
+	agent(
+		`Write a well-structured, cited report that answers the question below using the findings. Keep only well-sourced claims; list any open questions at the end.\n\nQuestion: ${question}\n\n${sources}`,
+		{ label: "report", profile: "none" },
+	),
+);
 if (!report.ok) return `# Research incomplete\n\nVerified research could not be synthesized: ${report.error || "report agent failed"}\n\n_${coverage}_`;
 return `${report.content}\n\n_${coverage}_`;

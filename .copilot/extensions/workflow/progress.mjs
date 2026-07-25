@@ -4,7 +4,7 @@
  * Structured progress for workflow runs: JSONL events, live state snapshots, and terminal narration.
  *
  * @typedef {"queued"|"running"|"done"|"cached"|"skipped"|"error"} AgentStatus
- * @typedef {"running"|"complete"|"partial"|"failed"|"error"|"timeout"|"interrupted"} RunStatus
+ * @typedef {"preview"|"queued"|"running"|"pausing"|"paused"|"resuming"|"cancelling"|"cancelled"|"complete"|"partial"|"failed"|"error"|"timeout"|"interrupted"} RunStatus
  */
 import { writeFileSync, mkdirSync, appendFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -77,6 +77,7 @@ export class ProgressReporter {
 	#onLine;
 	#dashboard;
 	#dashboardIntervalMs;
+	#writeStateOverride;
 	#lastDashboard = 0;
 	#seq = 0;
 	#lastStateWrite = 0;
@@ -94,14 +95,15 @@ export class ProgressReporter {
 	/**
 	 * @param {{ jsonlPath?: string|null, statePath?: string|null, runId: string, meta?: object,
 	 *   title?: string, onLine?: (line: string, level?: "info"|"warning"|"error", meta?: { ephemeral?: boolean }) => void, write?: boolean,
-	 *   dashboard?: boolean, dashboardIntervalMs?: number }} config
+	 *   dashboard?: boolean, dashboardIntervalMs?: number, writeState?: ((state: any) => void)|null }} config
 	 */
-	constructor({ jsonlPath = null, statePath = null, runId, meta = {}, title, onLine = () => {}, write = true, dashboard = false, dashboardIntervalMs = DASHBOARD_INTERVAL_MS }) {
+	constructor({ jsonlPath = null, statePath = null, runId, meta = {}, title, onLine = () => {}, write = true, dashboard = false, dashboardIntervalMs = DASHBOARD_INTERVAL_MS, writeState = null }) {
 		this.#jsonl = new BufferedJsonl(write ? jsonlPath : null);
 		this.#statePath = write ? statePath : null;
 		this.#onLine = onLine;
 		this.#dashboard = dashboard;
 		this.#dashboardIntervalMs = dashboardIntervalMs;
+		this.#writeStateOverride = writeState;
 		const now = new Date().toISOString();
 		this.#state = {
 			runId,
@@ -113,10 +115,9 @@ export class ProgressReporter {
 			startedAt: now,
 			updatedAt: now,
 			phase: /** @type {string|null} */ (null),
-			counts: { launched: 0, done: 0, failed: 0, cached: 0, skipped: 0, dropped: 0 },
+			counts: { launched: 0, done: 0, failed: 0, cached: 0, skipped: 0, dropped: 0, unknownUsage: 0 },
 			nanoAiu: 0,
 			aic: 0,
-			outputTokens: 0,
 			errors: /** @type {any[]} */ ([]),
 		};
 	}
@@ -170,12 +171,12 @@ export class ProgressReporter {
 		this.#running.delete(rec.seq);
 		s.nanoAiu += Number(rec.nanoAiu || 0);
 		s.aic = aic(s.nanoAiu);
-		s.outputTokens += Number(rec.outputTokens || 0);
 
 		if (rec.skipped) s.counts.skipped++;
 		else if (rec.cached) s.counts.cached++;
 		else if (rec.ok) s.counts.done++;
 		else this.#recordError(rec);
+		if (rec.usageUnknown) s.counts.unknownUsage++;
 
 		if (!rec.cached && !rec.skipped) s.counts.launched++;
 		this.#recent.push(rec);
@@ -243,11 +244,12 @@ export class ProgressReporter {
 	}
 
 	#writeState() {
-		if (!this.#statePath) return;
+		if (!this.#statePath && !this.#writeStateOverride) return;
 		this.#lastStateWrite = Date.now();
 		Object.assign(this.#state, this.#derived());
 		try {
-			writeFileSync(this.#statePath, JSON.stringify(this.#state), "utf8");
+			if (this.#writeStateOverride) this.#writeStateOverride(this.#state);
+			else if (this.#statePath) writeFileSync(this.#statePath, JSON.stringify(this.#state), "utf8");
 		} catch {
 			// Progress files are diagnostic; workflow execution must continue if they cannot be written.
 		}
@@ -256,7 +258,13 @@ export class ProgressReporter {
 	/** Live-derived view fields (running/groups/recent). */
 	#derived() {
 		return {
-			running: [...this.#running.values()].map((r) => ({ seq: r.seq, label: san(r.label), model: san(r.model), phase: r.phase ? san(r.phase) : null })),
+			running: [...this.#running.values()].map((r) => ({
+				seq: r.seq,
+				label: san(r.label),
+				model: san(r.model),
+				phase: r.phase ? san(r.phase) : null,
+				branchPath: r.branchPath ? san(r.branchPath) : "/",
+			})),
 			groups: [...this.#groups.values()],
 			recent: this.#recent.map(formatRecent),
 		};
@@ -325,7 +333,7 @@ export function formatDashboard(s) {
 	const recent = s.recent || [];
 	const errors = s.errors || [];
 	const total = Number(c.launched || 0) + Number(c.cached || 0) + Number(c.skipped || 0) + running.length;
-	const terminal = ["complete", "partial", "failed", "error", "timeout", "interrupted"].includes(s.status || "");
+	const terminal = ["paused", "cancelled", "complete", "partial", "failed", "error", "timeout", "interrupted"].includes(s.status || "");
 	const endMs = terminal && s.updatedAt ? Date.parse(s.updatedAt) : Date.now();
 	const elapsed = ((endMs - Date.parse(s.startedAt || new Date().toISOString())) / 1000).toFixed(0);
 	const lines = [

@@ -14,6 +14,8 @@
  * sidecar. Pure Node built-ins only, so it stays unit-testable under plain `node --test`.
  */
 import { statSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 
 /**
@@ -33,7 +35,7 @@ export function sidecarPathFor(harnessPath) {
 	return harnessPath.replace(/\.mjs$/, ".host.mjs");
 }
 
-/** @typedef {{ fns: Map<string, Function>, mutates: Set<string>, names: string[] }} LoadedHost */
+/** @typedef {{ fns: Map<string, Function>, mutates: Set<string>, names: string[], hash: string }} LoadedHost */
 
 /**
  * Import a sidecar in the host realm and collect its exported effect functions. An effect is a named
@@ -71,7 +73,8 @@ export async function loadHost(path) {
 	}
 	if (mod.default && typeof mod.default === "object") for (const [k, val] of Object.entries(mod.default)) if (!fns.has(k)) add(k, val);
 	if (!fns.size) throw new Error(`host sidecar ${path} exports no effect functions`);
-	return { fns, mutates, names: [...fns.keys()] };
+	const hash = createHash("sha256").update(readFileSync(path)).digest("hex");
+	return { fns, mutates, names: [...fns.keys()], hash };
 }
 
 /**

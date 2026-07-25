@@ -1,17 +1,37 @@
 /** @module executor.test — workflow execution lifecycle and harness source helpers. */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { executeWorkflow, extractMeta, stripExports } from "./executor.mjs";
+import { executeWorkflow as executeRawWorkflow, extractMeta, stripExports } from "./executor.mjs";
 import { withFakeEnv, tmpDir, within } from "./fixtures/support.mjs";
+
+/** @param {any} config */
+const executeWorkflow = (config) => executeRawWorkflow(config);
 
 test("stripExports removes ESM exports while leaving plain source alone", () => {
 	assert.equal(stripExports("export const meta = {}").trim(), "const meta = {}");
 	assert.equal(stripExports("export async function main() {}").trim(), "async function main() {}");
 	assert.equal(stripExports("export default answer").trim(), "answer");
 	assert.equal(stripExports("const x = 1;").trim(), "const x = 1;");
+});
+
+test("stripExports preserves line and column positions", () => {
+	// Group identities index the stripped source by the line/column V8 reports, so blanking the
+	// keyword must never move any other character.
+	const source = "export const a = 1;\nexport\nconst b = 2;\nexport default\nfunction c() {}\nconst d = 3;\n";
+	const stripped = stripExports(source);
+	assert.equal(stripped.length, source.length);
+	assert.equal(stripped.split("\n").length, source.split("\n").length);
+	for (const [i, line] of stripped.split("\n").entries()) {
+		assert.equal(line.length, source.split("\n")[i].length, `line ${i + 1} width`);
+	}
+	assert.match(stripped, /^\s+const a = 1;$/m);
+	assert.match(stripped, /^const b = 2;$/m);
+	assert.match(stripped, /^function c\(\) \{\}$/m);
+	assert.doesNotMatch(stripped, /\bexport\b/);
+	assert.doesNotMatch(stripped, /\bdefault\b/);
 });
 
 test("extractMeta reads a literal meta block and ignores dynamic/non-object values", () => {
@@ -24,11 +44,15 @@ test("extractMeta reads a literal meta block and ignores dynamic/non-object valu
 	assert.deepEqual(extractMeta(`return "no meta";`), {});
 });
 
+test("extractMeta tolerates a harness with no meta block", () => {
+	assert.deepEqual(extractMeta(`return "ok";`), {});
+});
+
 test("dry-run executes the harness plan without writing run artifacts or spending AIC", () =>
 	withFakeEnv({}, async () => {
 		const runDir = tmpDir();
 		const rec = await executeWorkflow({
-			source: `export const meta = { name: "preview" };\nawait fanOut([1,2,3], (n) => agent("x" + n)); return "ignored";`,
+			source: `export const meta = { name: "preview" };\nawait pipeline([1,2,3], (n) => agent("x" + n)); return "ignored";`,
 			runId: "dry",
 			runDir,
 			budget: 10,
@@ -62,6 +86,29 @@ test("real run persists execution artifacts and a lean result file", () =>
 		const result = JSON.parse(readFileSync(join(runDir, "result.json"), "utf8"));
 		assert.deepEqual(Object.keys(result).sort(), ["aic", "result", "runId", "status"]);
 		assert.equal(result.result, "ECHO: hi");
+	}));
+
+test("manifest durably pins plan agent ceilings", () =>
+	withFakeEnv({}, async () => {
+		const runDir = tmpDir();
+		await executeWorkflow({
+			source: "export const meta = { name: \"planned\", description: \"test workflow\" };\nreturn \"ok\";",
+			runId: "planned",
+			runDir,
+			budget: 10,
+			parentPermissionMode: "auto",
+			parentSessionMode: "autopilot",
+			permissionMode: "parent-auto-profile-narrowed",
+			maxAgents: 3,
+			planId: "plan-test",
+			onLine: () => {},
+		});
+		const manifest = JSON.parse(readFileSync(join(runDir, "manifest.json"), "utf8"));
+		assert.equal(manifest.maxAgents, 3);
+		assert.equal(manifest.planId, "plan-test");
+		assert.equal(manifest.parentPermissionMode, "auto");
+		assert.equal(manifest.parentSessionMode, "autopilot");
+		assert.equal(manifest.permissionMode, "parent-auto-profile-narrowed");
 	}));
 
 test("harness failure is persisted as an error record instead of rejecting", () =>
@@ -109,7 +156,7 @@ test("reporter closes even when final logging throws", () =>
 				runId: "log-fail",
 				runDir,
 				budget: 10,
-				onLine: (line) => {
+				onLine: (/** @type {string} */ line) => {
 					if (line.startsWith("— workflow:")) throw new Error("log failed");
 				},
 			}),
@@ -177,4 +224,62 @@ test("abort during fire-and-forget drain records timeout, not complete", () =>
 		assert.equal(rec.status, "timeout");
 		assert.equal(rec.result, "done");
 		assert.equal(JSON.parse(readFileSync(join(runDir, "result.json"), "utf8")).status, "timeout");
+	}));
+
+// A resumed run reads its args from meta.json and its sidecar from host.mjs. If either write fails
+// the run must fail loudly: completing would leave a run that reports success but resumes with the
+// wrong input, or with no host effects at all.
+test("a run fails when it cannot persist the args a resume replays", () =>
+	withFakeEnv({}, async () => {
+		const runDir = tmpDir();
+		// Make meta.json unwritable by occupying the path with a directory.
+		mkdirSync(join(runDir, "meta.json"), { recursive: true });
+		await assert.rejects(
+			executeWorkflow({
+				source: `export const meta = { name: "meta-fail", description: "test workflow" };\nreturn "done";`,
+				runId: "meta-fail",
+				runDir,
+				budget: 1,
+				args: { important: "input" },
+				onLine: () => {},
+			}),
+			/EISDIR|meta\.json/,
+			"a run that cannot persist its args must fail loudly, not report success",
+		);
+		assert.ok(!existsSync(join(runDir, "result.json")), "no result artifact for a failed launch");
+	}));
+
+test("a run fails when it cannot persist the sidecar a resume loads", () =>
+	withFakeEnv({}, async () => {
+		const runDir = tmpDir();
+		const hostPath = join(tmpDir(), "effects.host.mjs");
+		writeFileSync(hostPath, "export async function ping() { return 1; }\n");
+		// Make host.mjs unwritable by occupying the path with a directory.
+		mkdirSync(join(runDir, "host.mjs"), { recursive: true });
+		await assert.rejects(
+			executeWorkflow({
+				source: `export const meta = { name: "host-fail", description: "test workflow" };\nreturn String(await host.ping());`,
+				runId: "host-fail",
+				runDir,
+				hostPath,
+				budget: 1,
+				onLine: () => {},
+			}),
+			/EISDIR|host\.mjs/,
+			"a run that cannot persist its sidecar must fail loudly, not report success",
+		);
+		assert.ok(!existsSync(join(runDir, "result.json")), "no result artifact for a failed launch");
+	}));
+
+test("a lost lease stops a run from writing artifacts", () =>
+	withFakeEnv({}, async () => {
+		const { Persistence } = await import("./persistence.mjs");
+		const runDir = tmpDir();
+		const store = new Persistence(runDir, { runId: "lease-fail" });
+		const lease = store.acquire();
+		// Another process takes the lock: the original lease is fenced off.
+		writeFileSync(store.ownerPath, JSON.stringify({ token: "other", generation: lease.generation + 1 }));
+		assert.throws(() => store.writeJson(lease, "meta.json", { runId: "lease-fail" }), /ownership changed/);
+		assert.throws(() => store.writeFile(lease, "host.mjs", "x"), /ownership changed/);
+		lease.release();
 	}));

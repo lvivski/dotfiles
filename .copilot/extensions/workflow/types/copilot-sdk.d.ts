@@ -11,6 +11,20 @@ declare module "@github/copilot-sdk/extension" {
 	export function createCanvas(options: any): any;
 }
 
+declare module "@github/copilot-sdk" {
+	export class CopilotClient {
+		constructor(options?: any);
+		createSession(config: any): Promise<any>;
+		resumeSession(sessionId: string, config: any): Promise<any>;
+		stop(): Promise<Error[]>;
+		forceStop(): Promise<void>;
+	}
+
+	export const RuntimeConnection: {
+		forStdio(options?: any): any;
+	};
+}
+
 declare module "@github/copilot-sdk/session.js" {
 	/** The live session handle (`log`, `send`, `on`, `rpc`, …). */
 	export type CopilotSession = any;

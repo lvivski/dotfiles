@@ -23,7 +23,7 @@
  * - `COPILOT_HOME`     — where the child session log is written (default `~/.copilot`)
  */
 import { spawn } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -46,13 +46,18 @@ const mode = process.env.CWF_FAKE_MODE ?? "ok";
 const nanoAiu = Number(process.env.CWF_FAKE_NANO_AIU ?? 500_000_000);
 const outputTokens = Number(process.env.CWF_FAKE_OUTPUT_TOKENS ?? 42);
 const content = process.env.CWF_FAKE_CONTENT ?? `ECHO: ${prompt}`;
-const sessionId = process.env.CWF_FAKE_SESSION ?? `fake-${randomBytes(6).toString("hex")}`;
+const resumedSessionId = argValue(argv, "--resume");
+const sessionId = resumedSessionId ?? process.env.CWF_FAKE_SESSION ?? `fake-${randomBytes(6).toString("hex")}`;
 const copilotHome = process.env.COPILOT_HOME || join(homedir(), ".copilot");
 const delayMs = Math.max(0, Number(process.env.CWF_FAKE_DELAY_MS ?? 0));
 if (process.env.CWF_FAKE_PID_FILE) writeFileSync(process.env.CWF_FAKE_PID_FILE, String(process.pid), "utf8");
 
-/** Build one `session.shutdown` record with a given session-wide nanoAIU. @param {number} nano */
-function mkShutdown(nano) {
+/**
+ * Build one cumulative `session.shutdown` record.
+ * @param {number} nano
+ * @param {{ inputTokens: number, outputTokens: number, cacheReadTokens: number, cacheWriteTokens: number, reasoningTokens: number }} usage
+ */
+function mkShutdown(nano, usage) {
 	return {
 		type: "session.shutdown",
 		sessionId,
@@ -67,7 +72,7 @@ function mkShutdown(nano) {
 				[model]: {
 					requests: { count: 1, cost: 1 },
 					totalNanoAiu: nano,
-					usage: { inputTokens: 100, outputTokens, cacheReadTokens: 10, cacheWriteTokens: 5, reasoningTokens: 7 },
+					usage,
 				},
 			},
 		},
@@ -75,15 +80,54 @@ function mkShutdown(nano) {
 }
 
 /**
- * Write the child session's events.jsonl with a realistic `session.shutdown` record. When
- * `CWF_FAKE_NANO_AIU_2` is set, append a SECOND shutdown so tests can assert first-shutdown selection.
+ * Write cumulative child usage. Resumed turns append a new shutdown to the same session log.
  */
 function writeShutdownLog() {
 	const dir = join(copilotHome, "session-state", sessionId);
 	mkdirSync(dir, { recursive: true });
-	let out = JSON.stringify(mkShutdown(nanoAiu)) + "\n";
-	if (process.env.CWF_FAKE_NANO_AIU_2) out += JSON.stringify(mkShutdown(Number(process.env.CWF_FAKE_NANO_AIU_2))) + "\n";
-	writeFileSync(join(dir, "events.jsonl"), out, "utf8");
+	const path = join(dir, "events.jsonl");
+	const previous = readPreviousUsage(path);
+	const usage = {
+		inputTokens: previous.inputTokens + 100,
+		outputTokens: previous.outputTokens + outputTokens,
+		cacheReadTokens: previous.cacheReadTokens + 10,
+		cacheWriteTokens: previous.cacheWriteTokens + 5,
+		reasoningTokens: previous.reasoningTokens + 7,
+	};
+	const total = previous.nanoAiu + nanoAiu;
+	const line = JSON.stringify(mkShutdown(total, usage)) + "\n";
+	if (resumedSessionId && existsSync(path)) appendFileSync(path, line, "utf8");
+	else writeFileSync(path, line, "utf8");
+	if (process.env.CWF_FAKE_NANO_AIU_2) {
+		appendFileSync(path, JSON.stringify(mkShutdown(Number(process.env.CWF_FAKE_NANO_AIU_2), usage)) + "\n", "utf8");
+	}
+}
+
+/** @param {string} path */
+function readPreviousUsage(path) {
+	const empty = { nanoAiu: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 };
+	if (!existsSync(path)) return empty;
+	let latest = null;
+	for (const line of readFileSync(path, "utf8").split("\n")) {
+		if (!line.trim()) continue;
+		try {
+			const rec = JSON.parse(line);
+			if (rec.type === "session.shutdown" && rec.data?.totalNanoAiu != null) latest = rec;
+		} catch {
+			// Ignore malformed history in the fake just like the production reader.
+		}
+	}
+	if (!latest) return empty;
+	const metric = Object.values(latest.data.modelMetrics || {})[0];
+	const usage = metric?.usage || {};
+	return {
+		nanoAiu: Number(latest.data.totalNanoAiu || 0),
+		inputTokens: Number(usage.inputTokens || 0),
+		outputTokens: Number(usage.outputTokens || 0),
+		cacheReadTokens: Number(usage.cacheReadTokens || 0),
+		cacheWriteTokens: Number(usage.cacheWriteTokens || 0),
+		reasoningTokens: Number(usage.reasoningTokens || 0),
+	};
 }
 
 /** @param {object} obj */
@@ -131,6 +175,11 @@ switch (mode) {
 	case "sessionerror":
 		writeShutdownLog();
 		emit({ type: "session.error", data: { errorType: "RateLimit", message: "slow down" } });
+		emit({ type: "result", sessionId });
+		process.exit(0);
+		break;
+	case "nousage":
+		emit({ type: "assistant.message", data: { content, outputTokens, model } });
 		emit({ type: "result", sessionId });
 		process.exit(0);
 		break;

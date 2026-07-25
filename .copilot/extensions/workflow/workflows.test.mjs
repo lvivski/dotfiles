@@ -1,7 +1,7 @@
 /** @module workflows.test — saved workflows: parse, meta, and control-flow smoke runs. */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, existsSync, mkdirSync, writeFileSync, symlinkSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync, readdirSync, writeFileSync, symlinkSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -22,7 +22,6 @@ const textDiff = (file = "a.js") => `diff --git a/${file} b/${file}\n--- a/${fil
  * @property {(prompt: string, options: any, index: number) => any} [agent]
  * @property {(prompt: string, schema: any, options: any, index: number) => any} [structured]
  * @property {(subject: any, rubric: any, options: any, index: number) => any} [verify]
- * @property {(inputs: any[], options: any, index: number) => any} [synthesize]
  * @property {{
  *   inspectCheckout?: (input: any, options: any) => any,
  *   discover?: (input: any, options: any) => any,
@@ -31,7 +30,7 @@ const textDiff = (file = "a.js") => `diff --git a/${file} b/${file}\n--- a/${fil
  */
 
 /** A permissive fake AgentResult. @param {string} content */
-const res = (content) => ({ content, ok: true, error: null, sessionId: "s", model: "m", cached: false, skipped: false, label: null, nanoAiu: 0, aic: 0, outputTokens: 0, inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, durationMs: 0, exitCode: 0, warnings: null });
+const res = (content) => ({ kind: "agent", value: content, content, ok: true, error: null, sessionId: "s", model: "m", cached: false, skipped: false, label: null, nanoAiu: 0, aic: 0, usageUnknown: false, outputTokens: 0, inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, durationMs: 0, exitCode: 0, warnings: null });
 
 /** Build a minimal object satisfying a shape-schema's declared property types. @param {any} schema */
 function fillObject(schema) {
@@ -55,11 +54,7 @@ function smokeApi(args, behavior = {}) {
 		agent: 0,
 		structured: 0,
 		verify: 0,
-		consensus: 0,
-		classify: 0,
-		synthesize: 0,
-		tournament: 0,
-		generateAndFilter: 0,
+		report: 0,
 		worktree: 0,
 		hostDiscover: 0,
 		hostValidate: 0,
@@ -76,11 +71,14 @@ function smokeApi(args, behavior = {}) {
 		return cb ? await cb("/tmp/cwf-smoke-wt") : { path: "/tmp/cwf-smoke-wt", cleanup: async () => {} };
 	};
 	worktree.create = async () => ({ path: "/tmp/cwf-smoke-wt", cleanup: async () => {} });
-	const api = {
-		args,
-		dryRun: Boolean(behavior.dryRun),
-		budget: { total: null, spent: () => 0, remaining: () => Infinity },
-		memory: { enabled: false, read: () => "", write() {}, append() {}, clear() {} },
+	const api = /** @type {any} */ ({
+		context: {
+			args,
+			dryRun: Boolean(behavior.dryRun),
+			budget: { total: null, spent: () => 0, remaining: () => Infinity },
+			capabilities: { backend: "fake", permissions: "coarse" },
+			memory: { enabled: false, read: () => "", write() {}, append() {}, clear() {} },
+		},
 		host: {
 			inspectCheckout: async (/** @type {any} */ input, /** @type {any} */ options) => {
 				calls.hostInspectCheckout++;
@@ -112,11 +110,25 @@ function smokeApi(args, behavior = {}) {
 		agent: async (/** @type {string} */ prompt, /** @type {any} */ opts = {}) => {
 			const index = calls.agent++;
 			calls.agentArgs.push({ prompt, opts });
+			if (opts.schema) {
+				const structuredIndex = calls.structured++;
+				calls.structuredArgs.push({ prompt, schema: opts.schema, options: opts });
+				if (behavior.structured) {
+					const structured = await behavior.structured(prompt, opts.schema, opts, structuredIndex);
+					return { ...structured.raw, ok: structured.ok, value: structured.value, error: structured.error || structured.raw?.error || null };
+				}
+				let value = /** @type {any} */ (["angle one", "angle two", "angle three"]);
+				if (opts.schema?.type === "object") value = fillObject(opts.schema);
+				else if (opts.schema?.type === "array" && opts.schema.items?.type === "object") value = [fillObject(opts.schema.items)];
+				return { ...res(JSON.stringify(value)), value };
+			}
+			if (["report", "summary"].includes(opts.label)) {
+				calls.report++;
+				if (!behavior.agent) return res("SYNTHESIZED REPORT");
+			}
 			return behavior.agent ? behavior.agent(prompt, opts, index) : res("finding at line 1");
 		},
-		followUp: async () => res("follow-up"),
 		parallel: async (/** @type {(() => any)[]} */ thunks) => Promise.all(thunks.map((t) => t())),
-		fanOut: async (/** @type {any[]} */ items, /** @type {(it: any, i: number) => any} */ fn) => Promise.all([...items].map((it, i) => fn(it, i))),
 		pipeline: async (/** @type {any[]} */ items, /** @type {any[]} */ ...stages) => {
 			if (stages.length && typeof stages[stages.length - 1] !== "function") stages.pop(); // trailing opts
 			return Promise.all(
@@ -127,46 +139,16 @@ function smokeApi(args, behavior = {}) {
 				}),
 			);
 		},
-		loopUntil: async (/** @type {(i: number) => any} */ step, /** @type {(r: any) => boolean} */ done, /** @type {any} */ opts = {}) => {
-			const h = [];
-			for (let i = 0; i < (opts.maxIters ?? 10); i++) {
-				const r = await step(i);
-				h.push(r);
-				if (done(r)) break;
-			}
-			return h;
-		},
-		quarantine: (/** @type {any} */ o = {}) => {
-			const { deny, denyUrl, enableMcp, ...extra } = o;
-			return { allowAllTools: true, deny: deny ?? ["shell", "write"], denyUrl: denyUrl ?? ["*"], enableMcp: enableMcp ?? false, ...extra };
-		},
-		phase() {},
+		phase: async (/** @type {string} */ _name, /** @type {Function} */ callback) => callback(),
 		log() {},
-		structured: async (/** @type {string} */ prompt, /** @type {any} */ schema, /** @type {any} */ options = {}) => {
-			const index = calls.structured++;
-			calls.structuredArgs.push({ prompt, schema, options });
-			if (behavior.structured) return behavior.structured(prompt, schema, options, index);
-			// Return a value that fits the requested shape (angles array, object verdict, or findings).
-			let value = /** @type {any} */ (["angle one", "angle two", "angle three"]);
-			if (schema?.type === "object") value = fillObject(schema);
-			else if (schema?.type === "array" && schema.items?.type === "object") value = [fillObject(schema.items)];
-			return { value, ok: true, error: "", raw: res("{}"), attempts: 1 };
-		},
 		verify: async (/** @type {any} */ subject, /** @type {any} */ rubric, /** @type {any} */ options = {}) => {
 			const index = calls.verify++;
 			calls.verifyArgs.push({ subject, rubric, options });
 			return behavior.verify ? behavior.verify(subject, rubric, options, index) : { passed: true, score: 1, reasons: "ok", raw: res("v"), ok: true, error: "" };
 		},
-		consensus: async () => (calls.consensus++, { passed: true, passedCount: 1, failedCount: 0, erroredCount: 0, reviewers: 1, reasons: "ok", dissent: "", verdicts: [], ok: true, error: "" }),
-		synthesize: async (/** @type {any[]} */ inputs, /** @type {any} */ options = {}) => {
-			const index = calls.synthesize++;
-			return behavior.synthesize ? behavior.synthesize(inputs, options, index) : res("SYNTHESIZED REPORT");
-		},
-		classify: async (/** @type {any} */ _t, /** @type {string[]} */ classes) => (calls.classify++, classes[0]),
-		tournament: async (/** @type {any[]} */ c) => (calls.tournament++, c[0]),
-		generateAndFilter: async () => (calls.generateAndFilter++, [res("candidate")]),
-		worktree,
-	};
+		workspace: { worktree },
+	});
+	api.agent.followUp = async () => res("follow-up");
 	return { api, calls };
 }
 
@@ -187,7 +169,7 @@ test("audit.mjs: verifies findings and synthesizes a report", async () => {
 	assert.match(/** @type {string} */ (result), /Coverage: 2\/2 files processed/);
 	assert.ok(calls.agent >= 2);
 	assert.ok(calls.verify >= 1);
-	assert.equal(calls.synthesize, 1);
+	assert.equal(calls.report, 1);
 	await assert.rejects(smoke(WORKFLOWS, "audit", []), /provide files/);
 });
 
@@ -198,8 +180,7 @@ test("audit.mjs: file/verifier failures stay explicit and verification can read 
 	assert.match(String(run.result), /1 failed/);
 	assert.match(String(run.result), /Coverage: 2\/2 files processed/);
 	assert.equal(run.calls.verify, 1, "healthy sibling still verifies");
-	assert.equal(run.calls.verifyArgs[0].options.allowAllTools, true);
-	assert.deepEqual(run.calls.verifyArgs[0].options.deny, ["shell", "write"]);
+	assert.equal(run.calls.verifyArgs[0].options.profile, "read-only");
 	assert.equal(run.calls.structuredArgs.length, 0);
 });
 
@@ -209,7 +190,7 @@ test("triage.mjs: emits structured priority/confidence/action rows", async () =>
 	assert.match(/** @type {string} */ (result), /\| ID \| Status \| Category \| Priority \| Confidence \|/);
 	assert.match(/** @type {string} */ (result), /2\/2 ticket\(s\) processed/);
 	assert.equal(calls.structured, 2);
-	assert.equal(calls.synthesize, 0);
+	assert.equal(calls.report, 0);
 	await assert.rejects(smoke(WORKFLOWS, "triage", []), /non-empty array/);
 });
 
@@ -240,19 +221,18 @@ test("deep-research.mjs: planner is no-tools, source checks can browse, and reje
 		verify: () => ({ passed: false, score: 0, reasons: "unsupported", raw: res("v"), ok: true, error: "" }),
 	});
 	assert.match(String(run.result), /# Research unsupported/);
-	assert.equal(run.calls.synthesize, 0);
-	assert.equal(run.calls.structuredArgs[0].options.allowAllTools, false);
-	assert.ok(run.calls.agentArgs.every(({ opts }) => opts.enableMcp === true));
-	assert.ok(run.calls.verifyArgs.every(({ options }) => options.enableMcp === true));
-	assert.ok(run.calls.verifyArgs.every(({ options }) => options.deny.includes("shell") && options.deny.includes("write")));
+	assert.equal(run.calls.report, 0);
+	assert.equal(run.calls.structuredArgs[0].options.profile, "none");
+	assert.ok(run.calls.agentArgs.filter(({ opts }) => !opts.schema).every(({ opts }) => opts.profile === "research"));
+	assert.ok(run.calls.verifyArgs.every(({ options }) => options.profile === "research"));
 });
 
 test("deep-research.mjs: dry-run estimates requested research and verification arity", async () => {
 	const run = await smoke(WORKFLOWS, "deep-research", { question: "What is X?", angles: 5 }, { dryRun: true });
 	assert.equal(run.calls.structured, 1);
-	assert.equal(run.calls.agent, 5);
+	assert.equal(run.calls.agentArgs.filter(({ opts }) => !opts.schema && opts.label !== "report").length, 5);
 	assert.equal(run.calls.verify, 5);
-	assert.equal(run.calls.synthesize, 1);
+	assert.equal(run.calls.report, 1);
 });
 
 test("deep-research: every worker and verifier retains context without duplicating it in the rubric", async () => {
@@ -262,15 +242,18 @@ test("deep-research: every worker and verifier retains context without duplicati
 	assert.ok(angles.every((angle) => !angle.includes(url)), "test angles must not carry the original URL");
 
 	const structured = () => ({ value: angles, ok: true, error: "", raw: res("{}"), attempts: 1 });
-	for (const [dir, input] of [
+	/** @type {[string, string|{ question: string, angles: number }][]} */
+	const cases = [
 		[WORKFLOWS, { question, angles: angles.length }],
 		[EXAMPLES, question],
-	]) {
+	];
+	for (const [dir, input] of cases) {
 		const run = await smoke(dir, "deep-research", input, { structured });
-		assert.equal(run.calls.agentArgs.length, angles.length);
+		const researchCalls = run.calls.agentArgs.filter(({ opts }) => !opts.schema && opts.label !== "report");
+		assert.equal(researchCalls.length, angles.length);
 		assert.equal(run.calls.verifyArgs.length, angles.length);
 
-		run.calls.agentArgs.forEach(({ prompt }, index) => {
+		researchCalls.forEach(({ prompt }, index) => {
 			assert.ok(prompt.includes(question), "research worker lost the original question");
 			assert.ok(prompt.includes(`Assigned angle:\n${angles[index]}`), "research worker lost its assigned angle");
 		});
@@ -323,11 +306,10 @@ test("review-queue.mjs: diff agents are no-tools while checkout agents are read-
 	const { calls } = await smoke(WORKFLOWS, "review-queue", prs);
 	const diff = calls.structuredArgs.find(({ options }) => !options.cwd);
 	const checkout = calls.structuredArgs.find(({ options }) => options.cwd);
-	assert.equal(diff.options.allowAllTools, false);
-	assert.equal(checkout.options.allowAllTools, true);
-	assert.deepEqual(checkout.options.deny, ["shell", "write"]);
-	assert.ok(calls.verifyArgs.some(({ options }) => options.allowAllTools === false));
-	assert.ok(calls.verifyArgs.some(({ options }) => options.cwd && options.deny.includes("write")));
+	assert.equal(diff.options.profile, "none");
+	assert.equal(checkout.options.profile, "read-only");
+	assert.ok(calls.verifyArgs.some(({ options }) => options.profile === "none"));
+	assert.ok(calls.verifyArgs.some(({ options }) => options.cwd && options.profile === "read-only"));
 });
 
 test("review-queue.mjs: CODEOWNERS uses documented per-file GitHub semantics", async () => {
@@ -570,11 +552,9 @@ test("security-review.mjs: scans, investigates, verifies, and renders a report",
 	assert.equal(calls.hostValidate, 1, "host evidence revalidation ran");
 	assert.ok(calls.structured >= 1, "at least one investigation");
 	assert.ok(calls.verify >= 1, "adversarial verification ran");
-	assert.equal(calls.synthesize, 1, "executive summary synthesized");
-	assert.equal(calls.structuredArgs[0].options.allowAllTools, true);
-	assert.deepEqual(calls.structuredArgs[0].options.deny, ["shell", "write"]);
-	assert.equal(calls.structuredArgs[0].options.enableMcp, false);
-	assert.equal(calls.verifyArgs[0].options.enableMcp, false);
+	assert.equal(calls.report, 1, "executive summary synthesized");
+	assert.equal(calls.structuredArgs[0].options.profile, "read-only");
+	assert.equal(calls.verifyArgs[0].options.profile, "read-only");
 });
 
 test("security-review host deterministically scopes, caps, and revalidates evidence", async () => {
@@ -674,10 +654,10 @@ test("security-review.mjs: dry-run follows discovered batch and verification fan
 	assert.equal(calls.structured, 1);
 	assert.equal(calls.hostValidate, 1);
 	assert.equal(calls.verify, 1);
-	assert.equal(calls.synthesize, 1);
+	assert.equal(calls.report, 1);
 });
 
-const EXAMPLE_NAMES = ["minimal-review", "pipeline-review", "fanout-synthesize", "classify-route", "tournament", "generate-filter", "loop-until-dry", "loop-memory", "deep-research"];
+const EXAMPLE_NAMES = ["minimal-review", "pipeline-review", "fanout-synthesize", "loop-until-dry", "loop-memory", "deep-research"];
 
 test("skill examples: each converts, parses (meta), and runs to a non-empty result", async () => {
 	for (const name of EXAMPLE_NAMES) {
@@ -693,5 +673,15 @@ test("repo workflow/example harnesses use .mjs names", () => {
 	}
 	for (const name of EXAMPLE_NAMES) {
 		assert.ok(existsSync(join(EXAMPLES, `${name}.mjs`)), `${name}.mjs exists`);
+	}
+});
+
+test("every checked-in workflow and example declares a usable meta block", () => {
+	for (const dir of [WORKFLOWS, EXAMPLES]) {
+		for (const name of readdirSync(dir).filter((file) => file.endsWith(".mjs") && !file.endsWith(".host.mjs"))) {
+			const meta = extractMeta(readFileSync(join(dir, name), "utf8"));
+			assert.equal(typeof meta.name, "string", `${name}: meta.name`);
+			assert.equal(typeof meta.description, "string", `${name}: meta.description`);
+		}
 	}
 });

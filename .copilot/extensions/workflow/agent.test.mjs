@@ -1,10 +1,10 @@
 /** @module agent.test — subagent driver: spawn, JSONL reduce, AIC/token accounting, argv, env. */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { runAgent, buildArgv, childEnv, killAllAgents, formatSessionError } from "./agent.mjs";
+import { autoPermissionDecision, buildArgv, childEnv, createAgentRunner, formatSessionError, killAllAgents, loadCustomAgentConfig, runAgent } from "./agent.mjs";
 import { withFakeEnv, tmpDir, waitFor, within } from "./fixtures/support.mjs";
 
 /** @param {number} pid */
@@ -25,11 +25,11 @@ test("formatSessionError falls back through type/error/reason", () => {
 	assert.equal(formatSessionError({}), "session.error");
 });
 
-test("AIC reads the first session.shutdown carrying totalNanoAiu", () =>
+test("AIC reads the latest cumulative session.shutdown", () =>
 	withFakeEnv({ CWF_FAKE_NANO_AIU: "500000000", CWF_FAKE_NANO_AIU_2: "999000000" }, async () => {
 		const r = await runAgent({ prompt: "hi" });
-		assert.equal(r.nanoAiu, 500_000_000); // the first shutdown, not the later 999e6
-		assert.equal(r.aic, 0.5);
+		assert.equal(r.nanoAiu, 999_000_000);
+		assert.equal(r.aic, 0.999);
 	}));
 
 test("a sub-second timeout is honored, not clamped up to 1s", () =>
@@ -53,6 +53,7 @@ test("ok run returns content, AIC, and token details from session.shutdown", () 
 		assert.equal(r.cacheReadTokens, 10);
 		assert.equal(r.cacheWriteTokens, 5);
 		assert.equal(r.reasoningTokens, 7);
+		assert.equal(r.usageUnknown, false);
 		assert.equal(r.label, "a");
 		assert.ok(r.sessionId);
 		assert.ok(r.durationMs >= 0);
@@ -64,7 +65,32 @@ test("nonzero exit -> ok:false with stderr message", () =>
 		assert.equal(r.ok, false);
 		assert.equal(r.exitCode, 1);
 		assert.match(r.error ?? "", /simulated failure/);
-		assert.equal(r.aic, 0);
+		assert.equal(r.aic, null);
+		assert.equal(r.usageUnknown, true);
+		assert.match(r.warnings?.join("; ") ?? "", /usage unavailable/);
+	}));
+
+test("resumed turns charge only their cumulative usage delta", () =>
+	withFakeEnv({ CWF_FAKE_NANO_AIU: "500000000" }, async () => {
+		const first = await runAgent({ prompt: "first" });
+		assert.equal(first.aic, 0.5);
+		process.env.CWF_FAKE_NANO_AIU = "250000000";
+		const second = await runAgent({ prompt: "second", resume: first.sessionId });
+		assert.equal(second.sessionId, first.sessionId);
+		assert.equal(second.nanoAiu, 250_000_000);
+		assert.equal(second.aic, 0.25);
+		assert.equal(second.inputTokens, 100);
+		assert.equal(second.outputTokens, 42);
+	}));
+
+test("successful output with missing usage is explicit, never zero-shaped", () =>
+	withFakeEnv({ CWF_FAKE_MODE: "nousage" }, async () => {
+		const r = await runAgent({ prompt: "hi" });
+		assert.equal(r.ok, true);
+		assert.equal(r.aic, null);
+		assert.equal(r.nanoAiu, null);
+		assert.equal(r.usageUnknown, true);
+		assert.match(r.warnings?.join("; ") ?? "", /usage unavailable/);
 	}));
 
 test("stderr is bounded by a tail buffer", () =>
@@ -128,19 +154,25 @@ test("buildArgv: deny wins layout + core flags", () => {
 	assert.ok(["--deny-url", "*"].every((x) => argv.includes(x)));
 });
 
-test("buildArgv: enableMcp omits --disable-builtin-mcps; quarantine drops --allow-all-tools", () => {
+test("buildArgv: enableMcp omits --disable-builtin-mcps; allowAllTools:false drops --allow-all-tools", () => {
 	const withMcp = buildArgv({ prompt: "P", enableMcp: true }, "copilot");
 	assert.ok(!withMcp.includes("--disable-builtin-mcps"));
-	const quarantined = buildArgv({ prompt: "P", allowAllTools: false }, "copilot");
-	assert.ok(!quarantined.includes("--allow-all-tools"));
+	const locked = buildArgv({ prompt: "P", allowAllTools: false }, "copilot");
+	assert.ok(!locked.includes("--allow-all-tools"));
+});
+
+test("buildArgv inherits allow-all URL, autopilot, and parent-approved directory flags", () => {
+	const argv = buildArgv({ prompt: "P", allowAllUrls: true, autopilot: true, addDir: ["/one", "/two"] }, "copilot");
+	assert.ok(argv.includes("--allow-all-urls"));
+	assert.ok(argv.includes("--autopilot"));
+	assert.deepEqual(argv.filter((value) => value === "--add-dir").length, 2);
+	assert.ok(argv.includes("/one") && argv.includes("/two"));
 });
 
 test("childEnv: increments CWF_DEPTH and disables nested workflow tools", () => {
-	const e1 = childEnv({}, { runId: "r1", agentId: "g1" });
+	const e1 = childEnv({});
 	assert.equal(e1.CWF_DEPTH, "1");
 	assert.equal(e1.CWF_DISABLE_WORKFLOW_TOOLS, "1");
-	assert.equal(e1.CWF_PARENT_RUN_ID, "r1");
-	assert.equal(e1.CWF_PARENT_AGENT_ID, "g1");
 	assert.equal(childEnv({ CWF_DEPTH: "2" }).CWF_DEPTH, "3");
 });
 
@@ -149,8 +181,191 @@ test("buildArgv: every argv element is a string", () => {
 	assert.ok(argv.every((x) => typeof x === "string"), "no non-string argv elements");
 });
 
+test("buildArgv cannot append raw flags or arbitrary MCP configuration", () => {
+	const argv = buildArgv(
+		/** @type {any} */ ({
+			prompt: "P",
+			extraArgs: ["--allow-all", "--add-dir", "/"],
+			mcp: '{"servers":{"evil":{"command":"sh"}}}',
+		}),
+		"copilot",
+	);
+	assert.equal(argv.includes("--allow-all"), false);
+	assert.equal(argv.includes("--additional-mcp-config"), false);
+});
+
+test("auto permission decisions preserve profile denials and honor only approve recommendations", () => {
+	const spec = /** @type {any} */ ({ deny: ["shell", "write"], denyUrl: ["blocked.example"] });
+	assert.equal(autoPermissionDecision(spec, { kind: "commands", autoApproval: { recommendation: "approve" } }).kind, "reject");
+	assert.equal(autoPermissionDecision(spec, { kind: "url", url: "https://blocked.example/x", autoApproval: { recommendation: "approve" } }).kind, "reject");
+	assert.equal(autoPermissionDecision(spec, { kind: "url", url: "https://safe.example", requestSandboxBypass: true, autoApproval: { recommendation: "approve" } }).kind, "reject");
+	assert.equal(autoPermissionDecision(spec, { kind: "read", autoApproval: { recommendation: "approve" } }).kind, "approve-once");
+	assert.equal(autoPermissionDecision(spec, { kind: "read", autoApproval: { recommendation: "requireApproval", reason: "sensitive" } }).kind, "reject");
+	assert.equal(autoPermissionDecision(spec, {
+		permissionRequest: { kind: "read", toolCallId: "read-1" },
+		promptRequest: { kind: "read", toolCallId: "read-1", autoApproval: { recommendation: "approve" } },
+	}).kind, "approve-once");
+});
+
+test("createAgentRunner uses an SDK child session for inherited allow-all auto", async () => {
+	/** @type {any[][]} */
+	const calls = [];
+	/** @type {any} */
+	let config = null;
+	/** @type {(event: any) => void} */
+	let handler = () => {};
+	const session = {
+		sessionId: "sdk-session",
+		rpc: {
+			permissions: {
+				paths: { add: async (/** @type {{ path: string }} */ { path }) => calls.push(["path", path]) },
+				setAllowAll: async (/** @type {{ mode: string }} */ { mode }) => (calls.push(["permission", mode]), { mode }),
+				configure: async (/** @type {{ rules: any }} */ { rules }) => (calls.push(["denied", rules.denied]), { success: true }),
+			},
+			agent: { select: async (/** @type {{ name: string }} */ { name }) => calls.push(["agent", name]) },
+			mode: { set: async (/** @type {{ mode: string }} */ { mode }) => calls.push(["mode", mode]) },
+		},
+		on(/** @type {(event: any) => void} */ fn) {
+			handler = fn;
+		},
+		async sendAndWait(/** @type {{ prompt: string }} */ { prompt }) {
+			const event = { type: "assistant.message", data: { content: `SDK: ${prompt}`, model: "sdk-model", outputTokens: 4 } };
+			handler(event);
+			return event;
+		},
+		async abort() {},
+	};
+	class FakeClient {
+		constructor(/** @type {any} */ options) {
+			calls.push(["client", options.workingDirectory]);
+		}
+		async createSession(/** @type {any} */ value) {
+			config = value;
+			return session;
+		}
+		async resumeSession() {
+			return session;
+		}
+		async stop() {
+			return [];
+		}
+		async forceStop() {}
+	}
+	const RuntimeConnection = {
+		forStdio(/** @type {any} */ options) {
+			calls.push(["connection", options.path]);
+			return {};
+		},
+	};
+	const cwd = tmpDir();
+	const runner = createAgentRunner(
+		{ CopilotClient: FakeClient, RuntimeConnection },
+		{
+			bin: "/absolute/copilot",
+			resolveAgent: () => ({ name: "worker", prompt: "worker prompt" }),
+		},
+	);
+	const approved = tmpDir();
+	const result = await runner.run({
+		prompt: "hello",
+		cwd,
+		permissionMode: "auto",
+		autopilot: true,
+		agentType: "worker",
+		// The middle entry no longer exists: a stale parent-approved directory must be skipped, not
+		// fail the agent.
+		addDir: [cwd, join(tmpDir(), "deleted-since-session-start"), approved],
+		enableMcp: false,
+		deny: ["write"],
+	});
+	assert.equal(result.ok, true);
+	assert.equal(result.content, "SDK: hello");
+	assert.equal(config.clientName, "workflow-extension");
+	assert.deepEqual(config.customAgents, [{ name: "worker", prompt: "worker prompt" }]);
+	assert.deepEqual(calls.find(([kind]) => kind === "connection"), ["connection", "/absolute/copilot"]);
+	assert.equal((await config.onPermissionRequest({ kind: "write", autoApproval: { recommendation: "approve" } })).kind, "reject");
+	assert.deepEqual(calls.filter(([kind]) => ["permission", "mode", "agent", "path", "denied"].includes(kind)), [
+		["path", approved],
+		["agent", "worker"],
+		["mode", "autopilot"],
+		["permission", "auto"],
+		["denied", [{ kind: "write", argument: null }]],
+	]);
+});
+
+test("loadCustomAgentConfig clones prompt metadata without MCP when disabled", () => {
+	const path = join(tmpDir(), "worker.md");
+	writeFileSync(path, `---\nname: worker\ndescription: worker\n---\n\nDo focused work.\n`);
+	const config = loadCustomAgentConfig({
+		name: "worker",
+		displayName: "Worker",
+		description: "worker",
+		path,
+		tools: ["*"],
+		model: "gpt-5-mini",
+		skills: ["workflow"],
+		mcpServers: { unsafe: { command: "sh" } },
+	});
+	assert.deepEqual(config, {
+		name: "worker",
+		displayName: "Worker",
+		description: "worker",
+		tools: ["*"],
+		prompt: "Do focused work.",
+		skills: ["workflow"],
+		model: "gpt-5-mini",
+	});
+});
+
+test("auto-mode abort during custom agent resolution never starts an SDK client", async () => {
+	const calls = [];
+	class FakeClient {
+		constructor() {
+			calls.push("client");
+		}
+	}
+	const RuntimeConnection = {
+		forStdio() {
+			calls.push("connection");
+			return {};
+		},
+	};
+	const runner = createAgentRunner(
+		{ CopilotClient: FakeClient, RuntimeConnection },
+		{
+			bin: "/absolute/copilot",
+			resolveAgent: () => new Promise((resolve) => setTimeout(() => resolve({ name: "worker", prompt: "worker" }), 50)),
+		},
+	);
+	const abort = new AbortController();
+	const pending = runner.run({ prompt: "hello", permissionMode: "auto", agentType: "worker" }, { signal: abort.signal });
+	setTimeout(() => abort.abort(), 10);
+	const result = await pending;
+	assert.equal(result.error, "aborted");
+	assert.deepEqual(calls, []);
+});
+
 test("childEnv: a non-integer CWF_DEPTH resets to 0 before incrementing", () => {
 	assert.equal(childEnv({ CWF_DEPTH: "not-a-number" }).CWF_DEPTH, "1");
+});
+
+test("childEnv allow-lists runtime/provider variables and drops arbitrary secrets", () => {
+	const env = childEnv({
+		PATH: "/bin",
+		COPILOT_HOME: "/tmp/copilot",
+		COPILOT_PROVIDER_API_KEY: "provider-secret",
+		LC_ALL: "C",
+		UNRELATED_SECRET: "must-not-leak",
+		CWF_CHILD_ENV_ALLOW: "EXPLICIT_VALUE",
+		EXPLICIT_VALUE: "forwarded",
+	});
+	assert.equal(env.PATH, "/bin");
+	assert.equal(env.COPILOT_HOME, "/tmp/copilot");
+	assert.equal(env.COPILOT_PROVIDER_API_KEY, "provider-secret");
+	assert.equal(env.LC_ALL, "C");
+	assert.equal(env.EXPLICIT_VALUE, "forwarded");
+	assert.equal(env.UNRELATED_SECRET, undefined);
+	assert.equal(env.CWF_CHILD_ENV_ALLOW, undefined);
 });
 
 test("killAllAgents: safe no-op when no agents are live", () => {

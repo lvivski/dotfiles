@@ -1,9 +1,10 @@
-/** @module patterns.test — structured/verify/consensus/classify/tournament/generateAndFilter/synthesize. */
+/** @module patterns.test — structured output parsing/validation and the verify verdict. */
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { structured, verify, consensus, classify, tournament, generateAndFilter, synthesize, extractLastJson, checkSchemaDef, validateShape, asText } from "./patterns.mjs";
+import { structured, verify, extractLastJson, checkSchemaDef, validateShape, asText } from "./patterns.mjs";
 import { mkResult } from "./fixtures/support.mjs";
+import { Runtime } from "./runtime.mjs";
 
 /**
  * A programmable mock runtime: `responder(prompt, opts, callIndex)` returns `{ content?, ok?, error? }`.
@@ -99,7 +100,6 @@ test("structured dry-run returns one schema-shaped placeholder without retry inf
 	assert.equal(s.ok, true);
 	assert.equal(s.attempts, 1);
 	assert.equal(rt.calls.length, 1);
-	assert.equal(await classify(rt, "t", ["bug", "feature"]), "bug");
 });
 
 test("verify: passing verdict; verifier failure is fail-closed (ok:false)", async () => {
@@ -114,53 +114,6 @@ test("verify: passing verdict; verifier failure is fail-closed (ok:false)", asyn
 	assert.equal(v2.ok, false);
 	assert.equal(v2.passed, false);
 	assert.match(v2.error, /verifier down/);
-});
-
-test("consensus: majority pass; quorum failure when reviewers error", async () => {
-	const rt = mockRt(() => ({ content: '{"passed":true}' }));
-	const c = await consensus(rt, "w", "r", { reviewers: 3 });
-	assert.equal(c.ok, true);
-	assert.equal(c.passed, true);
-	assert.equal(c.passedCount, 3);
-
-	const broken = mockRt(() => ({ ok: false, error: "x" }));
-	const c2 = await consensus(broken, "w", "r", { reviewers: 3 });
-	assert.equal(c2.ok, false);
-	assert.match(c2.error, /quorum/);
-});
-
-test("classify: valid category; invalid or failed classifier throws", async () => {
-	assert.equal(await classify(mockRt(() => ({ content: '{"category":"bug"}' })), "t", ["bug", "feature"]), "bug");
-	await assert.rejects(classify(mockRt(() => ({ content: '{"category":"other"}' })), "t", ["bug", "feature"]), /did not return exactly one valid/);
-	await assert.rejects(classify(mockRt(() => ({ ok: false, error: "z" })), "t", ["a"]), /classifier agent failed/);
-});
-
-test("tournament: bracket winner; single candidate; judge failure throws", async () => {
-	const rt = mockRt(() => ({ content: '{"winner":"A"}' })); // always the left candidate
-	assert.equal(await tournament(rt, ["a", "b", "c", "d"], "quality"), "a");
-	assert.equal(await tournament(mockRt(() => ({})), ["solo"]), "solo");
-	await assert.rejects(tournament(mockRt(() => ({ ok: false, error: "j" })), ["a", "b"], "q"), /judge agent failed/);
-});
-
-test("generateAndFilter: dedupe, keep filter, and rubric filter", async () => {
-	const dedup = mockRt((_p, _o, i) => ({ content: i < 2 ? "same" : "diff" }));
-	assert.equal((await generateAndFilter(dedup, "g", { n: 3 })).length, 2);
-
-	const kept = mockRt((_p, _o, i) => ({ content: "c" + i }));
-	const out = await generateAndFilter(kept, "g", { n: 3, dedupe: false, keep: (r) => r.content === "c1" });
-	assert.deepEqual(out.map((r) => r.content), ["c1"]);
-
-	const gens = ["keep me", "drop me"];
-	const rubric = mockRt((p, o, i) => (o.label === "verify" ? { content: `{"passed":${p.includes("keep me")}}` } : { content: gens[i] ?? "x" }));
-	const filtered = await generateAndFilter(rubric, "g", { n: 2, rubric: "r" });
-	assert.deepEqual(filtered.map((r) => r.content), ["keep me"]);
-});
-
-test("synthesize: single agent call merging labeled inputs", async () => {
-	const rt = mockRt((p) => ({ content: "MERGED " + (p.includes("=== Input 1 ===") ? "y" : "n") }));
-	const r = await synthesize(rt, ["a", "b"]);
-	assert.equal(r.content, "MERGED y");
-	assert.equal(rt.calls.length, 1);
 });
 
 test("asText: AgentResult -> content, otherwise String()", () => {

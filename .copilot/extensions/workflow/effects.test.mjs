@@ -8,7 +8,7 @@ import { loadHost, buildHostProxy, sidecarPathFor } from "./effects.mjs";
 import { Runtime } from "./runtime.mjs";
 import { executeWorkflow } from "./executor.mjs";
 import { CheckpointStore } from "./checkpoint.mjs";
-import { tmpDir, withFakeEnv } from "./fixtures/support.mjs";
+import { mkResult, tmpDir, withFakeEnv } from "./fixtures/support.mjs";
 
 /** @param {string} body @returns {string} path to a temp sidecar module. */
 function sidecar(body) {
@@ -61,7 +61,7 @@ test("buildHostProxy routes known names and rejects unknown ones", async () => {
 /** @param {[string, (input?: any, ctx?: any) => any][]} entries @param {string[]} [mutates] */
 const fakeHost = (entries, mutates = []) => {
 	const fns = new Map(entries);
-	return { fns, mutates: new Set(mutates), names: [...fns.keys()] };
+	return { fns, mutates: new Set(mutates), names: [...fns.keys()], hash: "fake-host-hash" };
 };
 
 test("effects are checkpointed and replayed on resume (not re-run)", async () => {
@@ -85,13 +85,40 @@ test("effects are checkpointed and replayed on resume (not re-run)", async () =>
 	assert.equal(calls, 2); // NOT re-run
 });
 
+test("cached mutating effects restore the branch epoch before later checkpoint lookups", async () => {
+	const runDir = tmpDir();
+	let effects = 0;
+	let agents = 0;
+	const cwd = tmpDir();
+	const host = fakeHost([["mutate", async () => ++effects]], ["mutate"]);
+	const backend = { kind: "test", run: async (/** @type {import("./agent.mjs").AgentSpec} */ spec) => (agents++, mkResult({ content: spec.prompt, label: spec.label })) };
+
+	const run = async (/** @type {boolean} */ resume, invalidate = false) => {
+		const checkpoints = new CheckpointStore(runDir, { resume });
+		if (invalidate) checkpoints.invalidate([[]]);
+		const rt = new Runtime({ parentPermissionMode: "on", checkpoints, cwd, agentBackend: backend });
+		rt.setHost(host);
+		const api = /** @type {any} */ (rt.buildApi(null));
+		await api.agent("before");
+		await api.host.mutate({});
+		await api.agent("after");
+	};
+	await run(false);
+	await run(true);
+	assert.equal(effects, 1);
+	assert.equal(agents, 2);
+	await run(true, true);
+	assert.equal(effects, 2);
+	assert.equal(agents, 4);
+});
+
 test("effect cache keys keep the journal-compatible tuple shape", async () => {
 	const runDir = tmpDir();
 	const rt = new Runtime({ checkpoints: new CheckpointStore(runDir), cwd: tmpDir() });
 	rt.setHost(fakeHost([["ping", async (input) => input]]));
 	await /** @type {any} */ (rt.buildApi(null)).host.ping({ b: 2, a: 1 });
 	const key = JSON.parse(readFileSync(join(runDir, "journal.jsonl"), "utf8").trim()).key;
-	assert.equal(key, JSON.stringify(["fx", [], "ping", "{\"a\":1,\"b\":2}", 0]));
+	assert.equal(key, JSON.stringify(["fx", [], 0, "fake-host-hash", "ping", "{\"a\":1,\"b\":2}", 0]));
 });
 
 test("dry-run runs read-only effects but skips mutating ones", async () => {
@@ -151,7 +178,7 @@ test("restricted mode never imports the sidecar (no top-level side effects)", as
 	const marker = join(tmpDir(), "loaded.marker");
 	const sidecarPath = join(tmpDir(), "probe.host.mjs");
 	writeFileSync(sidecarPath, `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(marker)}, "1");\nexport const noop = () => 1;\n`);
-	const base = { source: 'return "ok";', hostPath: sidecarPath, budget: 10, onLine: () => {} };
+	const base = { source: "export const meta = { name: \"test\", description: \"test workflow\" };\nreturn \"ok\";", hostPath: sidecarPath, budget: 10, onLine: () => {} };
 	await withFakeEnv({}, () => executeWorkflow({ ...base, runId: "r-restricted", runDir: tmpDir(), restricted: true }));
 	assert.equal(existsSync(marker), false, "restricted run must not import the sidecar");
 	await withFakeEnv({}, () => executeWorkflow({ ...base, runId: "r-normal", runDir: tmpDir() }));

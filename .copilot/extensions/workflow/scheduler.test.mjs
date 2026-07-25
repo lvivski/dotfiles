@@ -45,15 +45,15 @@ test("Semaphore clamps non-positive limits to one permit", async () => {
 
 test("RunStats classifies done, failed, cached, and skipped results", () => {
 	const stats = new RunStats();
-	stats.record({ ok: true, cached: false, skipped: false, error: null, nanoAiu: 500_000_000 });
-	stats.record({ ok: true, cached: true, skipped: false, error: null, nanoAiu: 500_000_000 });
-	stats.record({ ok: false, cached: false, skipped: true, error: "skipped: budget reached", nanoAiu: 0 });
-	stats.record({ ok: false, cached: false, skipped: false, error: "boom", nanoAiu: 250_000_000 });
-	stats.record({ ok: false, cached: false, skipped: false, error: "skipped: run aborting", nanoAiu: 0 });
+	stats.record({ ok: true, cached: false, skipped: false, error: null, nanoAiu: 500_000_000, usageUnknown: false });
+	stats.record({ ok: true, cached: true, skipped: false, error: null, nanoAiu: 500_000_000, usageUnknown: false });
+	stats.record({ ok: false, cached: false, skipped: true, error: "skipped: budget reached", nanoAiu: 0, usageUnknown: false });
+	stats.record({ ok: false, cached: false, skipped: false, error: "boom", nanoAiu: 250_000_000, usageUnknown: false });
+	stats.record({ ok: false, cached: false, skipped: false, error: "skipped: run aborting", nanoAiu: 0, usageUnknown: false });
 
 	assert.equal(stats.agentCount, 5);
 	assert.equal(stats.nanoAiu, 1_250_000_000);
-	assert.deepEqual(stats.counts(), { agents: 5, launched: 2, done: 1, failed: 1, cached: 1, skipped: 2 });
+	assert.deepEqual(stats.counts(), { agents: 5, launched: 2, done: 1, failed: 1, cached: 1, skipped: 2, unknownUsage: 0 });
 	const copy = stats.counts();
 	copy.done = 99;
 	assert.equal(stats.counts().done, 1, "counts() returns a defensive copy");

@@ -1,19 +1,44 @@
-/** @module tools.test — run_workflow / list_workflow_runs handlers via an injected fake ctx. */
+/** @module tools.test — workflow run/list/result handlers via an injected fake ctx. */
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { runWorkflow, resolveSource, buildTools, isNested, buildCommands, abortRun } from "./tools.mjs";
-import { listWorkflowRuns, workflowCommand } from "./runs.mjs";
-import { withFakeEnv, tmpDir, waitFor } from "./fixtures/support.mjs";
+import {
+	abortRun,
+	buildCommands,
+	buildTools,
+	controlWorkflowRun,
+	formatBackgroundCompletion,
+	isNested,
+	parseInvalidations,
+	resolveSource,
+	runWorkflow,
+} from "./tools.mjs";
+import { MAX_RESULT_CHUNK_CHARS, listWorkflowRuns, workflowCommand } from "./runs.mjs";
+import { mkResult, withFakeEnv, tmpDir, waitFor } from "./fixtures/support.mjs";
 
-/** A fake {@link import("./tools.mjs").ToolCtx} that captures logs/sends. @param {string} cwd */
+/**
+ * @typedef {import("./tools.mjs").ToolCtx & {
+ *   logs: string[],
+ *   metas: ({ ephemeral?: boolean }|undefined)[],
+ *   sends: string[]
+ * }} FakeToolCtx
+ */
+
+/** A fake {@link import("./tools.mjs").ToolCtx} that captures logs/sends. @param {string} cwd @returns {FakeToolCtx} */
 function fakeCtx(cwd) {
 	const logs = /** @type {string[]} */ ([]);
 	const metas = /** @type {({ ephemeral?: boolean }|undefined)[]} */ ([]);
 	const sends = /** @type {string[]} */ ([]);
-	return { logs, metas, sends, log: (/** @type {string} */ m, /** @type {boolean|undefined} */ ephemeral) => (logs.push(String(m)), metas.push({ ephemeral })), send: (/** @type {string} */ p) => sends.push(String(p)), getWorkspaceCwd: async () => cwd };
+	return /** @type {FakeToolCtx} */ ({
+		logs,
+		metas,
+		sends,
+		log: (/** @type {string} */ m, /** @type {boolean|undefined} */ ephemeral) => (logs.push(String(m)), metas.push({ ephemeral })),
+		send: (/** @type {string} */ p) => sends.push(String(p)),
+		getWorkspaceCwd: async () => cwd,
+	});
 }
 
 /**
@@ -24,13 +49,14 @@ function fakeCtx(cwd) {
 function withTool(fn, extraEnv = {}) {
 	const runs = tmpDir();
 	const wf = tmpDir();
-	return withFakeEnv({ CWF_RUNS_DIR: runs, CWF_WORKFLOWS_DIR: wf, ...extraEnv }, () => fn({ runs, wf }));
+	return withFakeEnv({ CWF_RUNS_DIR: runs, CWF_WORKFLOWS_DIR: wf, CWF_PLANS_DIR: join(wf, ".plans"), ...extraEnv }, () => fn({ runs, wf }));
 }
 
 test("foreground inline run returns the workflow result", () =>
 	withTool(async () => {
 		const ctx = fakeCtx(tmpDir());
-		const out = await runWorkflow({ script: `return (await agent("hi")).content;`, background: false, budget: 1 }, ctx);
+		const out = await runWorkflow({ script: `export const meta = { name: "test", description: "test workflow" };
+return (await agent("hi")).content;`, background: false, budget: 1 }, ctx);
 		assert.equal(typeof out, "string");
 		assert.match(/** @type {string} */ (out), /workflow result/);
 		assert.match(/** @type {string} */ (out), /ECHO: hi/);
@@ -47,11 +73,12 @@ test("abortRun aborts a live background run and clears it once settled", () =>
 		async ({ wf }) => {
 			const ctx = fakeCtx(tmpDir());
 			const path = join(wf, "h.mjs");
-			writeFileSync(path, `await agent("x"); return "done";`);
+			writeFileSync(path, `export const meta = { name: "test", description: "test workflow" };
+await agent("x"); return "done";`);
 			const out = await runWorkflow({ scriptPath: path, runId: "abort-me", budget: 1, timeoutSec: 30 }, ctx);
 			assert.match(String(out), /started in background/);
 			assert.equal(abortRun("abort-me"), true); // registered while running
-			await waitFor(() => !abortRun("abort-me"), 2000);
+			await waitFor(() => !abortRun("abort-me"), 3000);
 			assert.equal(abortRun("abort-me"), false); // aborted run settled + deregistered
 		},
 		{ CWF_FAKE_MODE: "hang" },
@@ -62,7 +89,8 @@ test("duplicate live run ids are rejected without replacing the active run", () 
 		async ({ wf }) => {
 			const ctx = fakeCtx(tmpDir());
 			const path = join(wf, "h.mjs");
-			writeFileSync(path, `await agent("x"); return "done";`);
+			writeFileSync(path, `export const meta = { name: "test", description: "test workflow" };
+await agent("x"); return "done";`);
 			await runWorkflow({ scriptPath: path, runId: "same-id", budget: 1, timeoutSec: 30 }, ctx);
 			const duplicate = await runWorkflow({ scriptPath: path, runId: "same-id", budget: 1, timeoutSec: 30 }, ctx);
 			assert.match(JSON.stringify(duplicate), /already active/);
@@ -75,34 +103,208 @@ test("duplicate live run ids are rejected without replacing the active run", () 
 test("dryRun returns a plan and spends nothing", () =>
 	withTool(async () => {
 		const ctx = fakeCtx(tmpDir());
-		const out = await runWorkflow({ script: `await fanOut([1,2], (n) => agent("x"+n)); return "z";`, dryRun: true }, ctx);
+		const out = await runWorkflow({ script: `export const meta = { name: "test", description: "test workflow" };
+await pipeline([1,2], (n) => agent("x"+n)); return "z";`, dryRun: true }, ctx);
 		assert.match(/** @type {string} */ (out), /dry-run complete/);
 		assert.match(/** @type {string} */ (out), /AIC used: 0\.0/);
+		assert.match(/** @type {string} */ (out), /planId: plan-/);
+	}));
+
+test("planId launches the bound source and enforces the previewed agent ceiling", () =>
+	withTool(async () => {
+		const ctx = fakeCtx(tmpDir());
+		const preview = await runWorkflow(
+			{
+				script: `export const meta = { name: "planned", description: "test workflow" };
+const items = context.dryRun ? [1] : [1,2,3,4,5]; await pipeline(items, (n) => agent("x" + n)); return "done";`,
+				dryRun: true,
+				budget: 10,
+			},
+			ctx,
+		);
+		const planId = String(preview).match(/planId: (\S+)/)?.[1];
+		assert.ok(planId);
+		const launched = await runWorkflow({ planId, background: false }, ctx);
+		assert.match(JSON.stringify(launched), /agent cap exceeded/);
+	}));
+
+test("resume replays the persisted plan ceiling from the manifest", () =>
+	withTool(async ({ runs }) => {
+		const ctx = fakeCtx(tmpDir());
+		const source = `export const meta = { name: "resume-plan", description: "test workflow" };
+const items = context.dryRun ? [1] : [1,2,3,4,5]; await pipeline(items, (n) => agent("x" + n)); return "done";`;
+		const preview = await runWorkflow({ script: source, dryRun: true, budget: 5 }, ctx);
+		const planId = String(preview).match(/planId: (\S+)/)?.[1];
+		const first = await runWorkflow({ planId, runId: "resume-plan-run", background: false }, ctx);
+		assert.match(JSON.stringify(first), /agent cap exceeded/);
+
+		// Resume takes every setting from the manifest, so the plan's ceiling still applies.
+		await controlWorkflowRun({ runId: "resume-plan-run", action: "resume" }, ctx);
+		await waitFor(() => existsSync(join(runs, "resume-plan-run", "run.json")) && JSON.parse(readFileSync(join(runs, "resume-plan-run", "run.json"), "utf8")).status !== "running", 5000);
+		const record = JSON.parse(readFileSync(join(runs, "resume-plan-run", "run.json"), "utf8"));
+		assert.match(String(record.error ?? ""), /agent cap exceeded/);
+	}));
+
+test("branch invalidation paths are canonicalized and ancestor-reduced", () => {
+	assert.deepEqual(parseInvalidations(["/2/1", "/0/3", "/0", "/2/1"]), [[0], [2, 1]]);
+	assert.deepEqual(parseInvalidations(["/", "/3"]), [[]]);
+	assert.throws(() => parseInvalidations(["0/1"]), /invalid branch path/);
+});
+
+test("run_workflow surfaces a failure when a resume-critical artifact cannot be persisted", () =>
+	withTool(async ({ runs }) => {
+		const ctx = fakeCtx(tmpDir());
+		// Occupy meta.json with a directory: a resume reads its args from that file, so the launch
+		// must fail rather than report a success that would silently resume with different input.
+		mkdirSync(join(runs, "artifact-fail", "meta.json"), { recursive: true });
+		const out = await runWorkflow({
+			script: `export const meta = { name: "artifact-fail", description: "test workflow" };\nreturn "done";`,
+			runId: "artifact-fail",
+			background: false,
+			budget: 1,
+			args: { important: "input" },
+		}, ctx);
+		assert.match(JSON.stringify(out), /internal workflow extension error/);
+		assert.ok(!existsSync(join(runs, "artifact-fail", "result.json")), "a failed launch leaves no result artifact");
+	}));
+
+test("foreground runs and foreground resumes return inline and never enqueue a completion notice", () =>
+	withTool(async ({ wf }) => {
+		const ctx = fakeCtx(tmpDir());
+		const path = join(wf, "quiet.mjs");
+		writeFileSync(path, `export const meta = { name: "quiet", description: "test workflow" };
+await pipeline([0,1], (n) => agent("q" + n)); return "done";`);
+
+		const first = await runWorkflow({ scriptPath: path, runId: "quiet-run", background: false, budget: 10 }, ctx);
+		assert.match(String(first), /done/);
+		assert.deepEqual(ctx.sends, [], "a foreground run must not enqueue a notice");
+
+		const resumed = await controlWorkflowRun({ runId: "quiet-run", action: "resume", background: false }, ctx);
+		assert.match(String(resumed), /done/);
+		assert.deepEqual(ctx.sends, [], "a foreground resume must not enqueue a notice either");
+	}));
+
+test("resume selectively invalidates requested branches", () =>
+	withTool(async ({ wf, runs }) => {
+		const ctx = fakeCtx(tmpDir());
+		const path = join(wf, "selective.mjs");
+		writeFileSync(path, `export const meta = { name: "selective", description: "test workflow" };
+await pipeline([0,1], (n) => agent("b" + n)); return "done";`);
+		await runWorkflow({ scriptPath: path, runId: "selective-run", background: false, budget: 10 }, ctx);
+		await controlWorkflowRun({ runId: "selective-run", action: "resume", invalidate: ["/0"] }, ctx);
+		await waitFor(() => existsSync(join(runs, "selective-run", "run.json")) && JSON.parse(readFileSync(join(runs, "selective-run", "run.json"), "utf8")).status === "complete", 5000);
+		const record = JSON.parse(readFileSync(join(runs, "selective-run", "run.json"), "utf8"));
+		assert.equal(record.counts.done, 1);
+		assert.equal(record.counts.cached, 1);
+		const controls = readFileSync(join(runs, "selective-run", "journal.jsonl"), "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line))
+			.filter((record) => record.type === "control" && record.action === "branches_invalidated");
+		assert.deepEqual(controls.map((record) => record.branches), [[[0]]]);
+	}));
+
+test("plan previews preserve worst-case content-dependent fan-out", () =>
+	withTool(async () => {
+		const ctx = fakeCtx(tmpDir());
+		const source = `export const meta = { name: "pattern-plan", description: "test workflow" };
+const kept = await pipeline(["a","b","c","d","e","f","g","h"], (p) => agent(p), (r) => verify(r, "good")); return String(kept.length);`;
+		const preview = await runWorkflow({ script: source, dryRun: true, budget: 20 }, ctx);
+		const planId = String(preview).match(/planId: (\S+)/)?.[1];
+		const launched = await runWorkflow({ planId, background: false }, ctx);
+		assert.doesNotMatch(JSON.stringify(launched), /agent cap exceeded/);
+	}));
+
+test("run_workflow applies a user-approved budget increase and persists it", () =>
+	withTool(async ({ runs }) => {
+		const ctx = fakeCtx(tmpDir());
+		let approvals = 0;
+		ctx.requestBudgetIncrease = async () => {
+			approvals++;
+			return true;
+		};
+		const out = await runWorkflow({
+			script: `export const meta = { name: "budget-approval", description: "test workflow" };
+await agent("one"); await agent("two"); return "done";`,
+			runId: "budget-approval",
+			background: false,
+			budget: 0.4,
+		}, ctx);
+		assert.match(String(out), /workflow run complete/);
+		assert.equal(approvals, 1);
+		const run = JSON.parse(readFileSync(join(runs, "budget-approval", "run.json"), "utf8"));
+		assert.ok(run.budget.total > 1);
+		const controls = readFileSync(join(runs, "budget-approval", "journal.jsonl"), "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line))
+			.filter((record) => record.type === "control" && record.action === "budget_increased");
+		assert.equal(controls.length, 1);
+	}));
+
+test("run_workflow inherits parent auto and autopilot posture into agents and provenance", () =>
+	withTool(async ({ runs }) => {
+		const cwd = tmpDir();
+		const ctx = fakeCtx(cwd);
+		/** @type {import("./agent.mjs").AgentSpec[]} */
+		const specs = [];
+		ctx.getPermissionContext = async () => ({ allowAll: false, mode: "auto", sessionMode: "autopilot", directories: [cwd] });
+		ctx.agentBackend = { kind: "cli", run: async (/** @type {import("./agent.mjs").AgentSpec} */ spec) => (specs.push(spec), mkResult({ content: "ok", value: "ok" })) };
+		await runWorkflow({
+			script: `export const meta = { name: "permission-auto", description: "test workflow" };
+return (await agent("research", { profile: "research" })).content;`,
+			runId: "permission-auto",
+			background: false,
+			budget: 10,
+		}, ctx);
+		assert.equal(specs[0].permissionMode, "auto");
+		assert.equal(specs[0].autopilot, true);
+		assert.deepEqual(specs[0].deny, ["shell", "write"]);
+		const manifest = JSON.parse(readFileSync(join(runs, "permission-auto", "manifest.json"), "utf8"));
+		assert.equal(manifest.parentPermissionMode, "auto");
+		assert.equal(manifest.parentSessionMode, "autopilot");
+		assert.equal(manifest.permissionMode, "parent-auto-profile-narrowed");
+		assert.equal(manifest.permissionInheritance.fineGrainedRules, "not-exposed-by-parent-sdk");
+	}));
+
+test("resume never exceeds the original or current parent permission posture", () =>
+	withTool(async ({ wf }) => {
+		const cwd = tmpDir();
+		const ctx = fakeCtx(cwd);
+		/** @type {"on"|"auto"} */
+		let mode = "on";
+		ctx.getPermissionContext = async () => ({ allowAll: mode === "on", mode, sessionMode: "interactive", directories: [cwd] });
+		const path = join(wf, "permission-resume.mjs");
+		writeFileSync(path, `export const meta = { name: "permission-resume", description: "test workflow" };
+return "done";`);
+		await runWorkflow({ scriptPath: path, runId: "permission-resume", background: false, budget: 1 }, ctx);
+		mode = "auto";
+		const resumed = await controlWorkflowRun({ runId: "permission-resume", action: "resume" }, ctx);
+		assert.match(JSON.stringify(resumed), /requires parent permission mode 'on'/);
 	}));
 
 test("resume of a nonexistent run id is refused", () =>
-	withTool(async ({ wf }) => {
+	withTool(async () => {
 		const ctx = fakeCtx(tmpDir());
-		const path = join(wf, "w.mjs");
-		writeFileSync(path, "return 1;");
-		const out = await runWorkflow({ scriptPath: path, background: false, budget: 1, resume: "does-not-exist" }, ctx);
-		assert.match(JSON.stringify(out), /no such run to resume/);
+		const out = await controlWorkflowRun({ runId: "does-not-exist", action: "resume" }, ctx);
+		assert.match(JSON.stringify(out), /has no durable manifest and is inspection-only/);
 	}));
 
 test("validation: exactly one source, and a positive budget for non-dry", () =>
 	withTool(async () => {
 		const ctx = fakeCtx(tmpDir());
-		const both = await runWorkflow({ script: "return 1;", name: "x", background: false }, ctx);
+		const both = await runWorkflow({ script: "export const meta = { name: \"test\", description: \"test workflow\" };\nreturn 1;", name: "x", background: false }, ctx);
 		assert.match(JSON.stringify(both), /EXACTLY ONE/);
 		const none = await runWorkflow({ background: false }, ctx);
 		assert.match(JSON.stringify(none), /EXACTLY ONE/);
-		const badBudget = await runWorkflow({ script: "return 1;", background: false, budget: 0 }, ctx);
+		const badBudget = await runWorkflow({ script: "export const meta = { name: \"test\", description: \"test workflow\" };\nreturn 1;", background: false, budget: 0 }, ctx);
 		assert.match(JSON.stringify(badBudget), /budget must be a positive/);
 	}));
 
 test("saved .mjs workflow resolves and runs by name", () =>
 	withTool(async ({ wf }) => {
-		writeFileSync(join(wf, "greet.mjs"), `return (await agent("named")).content;`, "utf8");
+		writeFileSync(join(wf, "greet.mjs"), `export const meta = { name: "greet", description: "test workflow" };
+return (await agent("named")).content;`, "utf8");
 		const { source, label } = resolveSource({ name: "greet" });
 		assert.match(source, /agent\("named"\)/);
 		assert.equal(label, "greet");
@@ -111,9 +313,27 @@ test("saved .mjs workflow resolves and runs by name", () =>
 		assert.match(/** @type {string} */ (out), /ECHO: named/);
 	}));
 
+test("generated run ids remain retrievable when a script filename contains dot runs", () =>
+	withTool(async ({ wf }) => {
+		const path = join(wf, "audit..v2.mjs");
+		writeFileSync(path, `export const meta = { name: "audit-v2", description: "test workflow" };
+return "retrievable";`, "utf8");
+		const ctx = fakeCtx(tmpDir());
+		const out = await runWorkflow({ scriptPath: path, background: false, budget: 1 }, ctx);
+		const runId = /** @type {string} */ (out).match(/runId: (\S+)/)?.[1];
+		assert.ok(runId);
+		assert.match(runId, /^audit\.\.v2\.mjs-/);
+
+		const get = buildTools(ctx).find((tool) => tool.name === "get_workflow_result");
+		const result = JSON.parse(await get.handler({ runId }));
+		assert.equal(result.resultAvailable, true);
+		assert.equal(result.result, "retrievable");
+	}));
+
 test("saved workflow automatically loads its sibling host sidecar", () =>
 	withTool(async ({ wf }) => {
-		writeFileSync(join(wf, "hosted.mjs"), `return (await host.ping({ value: "PONG" })).value;`, "utf8");
+		writeFileSync(join(wf, "hosted.mjs"), `export const meta = { name: "hosted", description: "test workflow" };
+return (await host.ping({ value: "PONG" })).value;`, "utf8");
 		writeFileSync(join(wf, "hosted.host.mjs"), `export async function ping(input) { return input; }`, "utf8");
 		const ctx = fakeCtx(tmpDir());
 		const out = await runWorkflow({ name: "hosted", background: false, budget: 1 }, ctx);
@@ -129,16 +349,15 @@ test("scriptPath must point to a .mjs workflow", () =>
 		assert.match(JSON.stringify(out), /scriptPath must point to a .mjs workflow/);
 	}));
 
-test("Python workflows are rejected with conversion guidance", () =>
+test("only .mjs workflow sources are accepted", () =>
 	withTool(async ({ wf }) => {
-		const path = join(wf, "old.cwf.py");
-		writeFileSync(path, "wf.agent('x')", "utf8");
+		const path = join(wf, "old.py");
+		writeFileSync(path, "print('x')", "utf8");
 		const ctx = fakeCtx(tmpDir());
-		const scriptPath = await runWorkflow({ scriptPath: path, background: false, budget: 1 }, ctx);
-		assert.match(JSON.stringify(scriptPath), /Convert it to .mjs/);
-		writeFileSync(join(wf, "old.py"), "wf.agent('x')", "utf8");
+		const byPath = await runWorkflow({ scriptPath: path, background: false, budget: 1 }, ctx);
+		assert.match(JSON.stringify(byPath), /must point to a \.mjs workflow/);
 		const named = await runWorkflow({ name: "old", background: false, budget: 1 }, ctx);
-		assert.match(JSON.stringify(named), /Convert it to old.mjs/);
+		assert.match(JSON.stringify(named), /no saved workflow named 'old'/);
 	}));
 
 test("unknown saved workflow name errors clearly", () =>
@@ -151,21 +370,22 @@ test("unknown saved workflow name errors clearly", () =>
 test("list_workflow_runs reads persisted artifacts newest-first", () =>
 	withTool(async () => {
 		const ctx = fakeCtx(tmpDir());
-		await runWorkflow({ script: `return (await agent("hi")).content;`, background: false, budget: 1, name: undefined }, ctx);
+		await runWorkflow({ script: `export const meta = { name: "test", description: "test workflow" };
+return (await agent("hi")).content;`, background: false, budget: 1, name: undefined }, ctx);
 		const listing = listWorkflowRuns();
 		assert.match(listing, /RUN ID/);
 		assert.match(listing, /complete/);
 	}));
 
-test("list_workflow_runs names old harness-only run artifacts", () =>
+test("list_workflow_runs names runs recovered from progress replay alone", () =>
 	withTool(({ runs }) => {
-		const dir = join(runs, "old-run");
+		const dir = join(runs, "replay-only-run");
 		mkdirSync(dir, { recursive: true });
-		writeFileSync(join(dir, "meta.json"), JSON.stringify({ harness: "/tmp/mobius_deep_audit.cwf.py", updated_at: "2026-01-01T00:00:00" }));
-		writeFileSync(join(dir, "progress.jsonl"), JSON.stringify({ ev: "run_start", harness: "/tmp/mobius_deep_audit.cwf.py", meta: {} }) + "\n" + JSON.stringify({ ev: "run_end", agents: 1, launched: 1, cached: 0, skipped: 0, failed: 0, nano_aiu: 500_000_000, t: 1783308171 }) + "\n");
+		writeFileSync(join(dir, "meta.json"), JSON.stringify({ workflow: { name: "deep-audit" }, updatedAt: "2026-01-01T00:00:00.000Z" }));
+		writeFileSync(join(dir, "progress.jsonl"), JSON.stringify({ ev: "run_start", meta: { name: "deep-audit" } }) + "\n" + JSON.stringify({ ev: "run_end", agents: 1, launched: 1, cached: 0, skipped: 0, failed: 0, nanoAiu: 500_000_000, t: Date.parse("2026-01-01T00:00:00.000Z") }) + "\n");
 		const listing = listWorkflowRuns();
-		assert.match(listing, /old-run/);
-		assert.match(listing, /mobius_deep_aud/);
+		assert.match(listing, /replay-only-run/);
+		assert.match(listing, /deep-audit/);
 		assert.match(listing, /\s+0\.5\s+/);
 	}));
 
@@ -185,19 +405,85 @@ test("list_workflow_runs caps output to newest runs before parsing metadata", ()
 test("background run returns immediately and wakes the agent on completion", () =>
 	withTool(async () => {
 		const ctx = fakeCtx(tmpDir());
-		const out = await runWorkflow({ script: `return (await agent("bg")).content;`, background: true, budget: 1 }, ctx);
+		const out = await runWorkflow({ script: `export const meta = { name: "test", description: "test workflow" };
+return (await agent("bg")).content;`, background: true, budget: 1 }, ctx);
 		assert.match(/** @type {string} */ (out), /started in background/);
+		assert.match(/** @type {string} */ (out), /inspect_workflow_run/);
+		assert.match(/** @type {string} */ (out), /get_workflow_result/);
+		assert.doesNotMatch(/** @type {string} */ (out), /state\.json/);
 		await waitFor(() => ctx.sends.length > 0, 2000, 40);
 		assert.equal(ctx.sends.length, 1);
 		assert.match(ctx.sends[0], /complete/);
+		assert.match(ctx.sends[0], /complete workflow result is included below/);
+		const block = ctx.sends[0].match(/BEGIN WORKFLOW RESULT ([0-9a-f]{8})\n([\s\S]*?)\nEND WORKFLOW RESULT \1/);
+		assert.ok(block);
+		assert.match(block[2], /ECHO: bg/);
+		const completionLog = ctx.logs.find((line) => /^workflow .* complete:/.test(line));
+		assert.ok(completionLog);
+		assert.doesNotMatch(completionLog, /ECHO: bg/);
 	}));
+
+test("background completion truncates oversized results with a retrieval-tool fallback", () => {
+	const runDir = join(tmpDir(), "large");
+	const notice = formatBackgroundCompletion(
+		{
+			runId: "large",
+			status: "complete",
+			aic: 1,
+			counts: { done: 1, failed: 0, skipped: 0, dropped: 0 },
+			result: "x".repeat(MAX_RESULT_CHUNK_CHARS + 17),
+		},
+		runDir,
+	);
+	const block = notice.prompt.match(/BEGIN WORKFLOW RESULT ([0-9a-f]{8})\n([\s\S]*?)\nEND WORKFLOW RESULT \1/);
+	assert.ok(block);
+	assert.equal(block[2].length, MAX_RESULT_CHUNK_CHARS);
+	assert.match(notice.prompt, /Inline result truncated by 17 characters/);
+	assert.match(notice.prompt, /get_workflow_result\(\{ "runId": "large" \}\)/);
+	assert.doesNotMatch(notice.prompt, /read .*result\.json/i);
+	assert.doesNotMatch(notice.logLine, /x{100}/);
+});
+
+test("background completion surfaces partial errors and preserved results", () => {
+	const runDir = join(tmpDir(), "partial");
+	const notice = formatBackgroundCompletion(
+		{
+			runId: "partial",
+			status: "partial",
+			error: "agent failed\nwith details",
+			aic: 2,
+			counts: { done: 2, failed: 1, skipped: 0, dropped: 0 },
+			result: "usable partial answer",
+		},
+		runDir,
+	);
+	assert.match(notice.prompt, /warning: workflow status is partial; any result below may be incomplete/);
+	assert.match(notice.prompt, /error: agent failed with details/);
+	assert.match(notice.prompt, /usable partial answer/);
+});
+
+test("background completion identifies an empty workflow result", () => {
+	const notice = formatBackgroundCompletion(
+		{
+			runId: "empty",
+			status: "complete",
+			aic: 0,
+			counts: { done: 0, failed: 0, skipped: 0, dropped: 0 },
+			result: " \n ",
+		},
+		join(tmpDir(), "empty"),
+	);
+	assert.match(notice.prompt, /workflow result: \(empty\)/);
+	assert.doesNotMatch(notice.prompt, /BEGIN WORKFLOW RESULT/);
+});
 
 test("background run timeout settles, persists timeout, and clears the live registry", () =>
 	withTool(
 		async ({ runs }) => {
 			const ctx = fakeCtx(tmpDir());
 			const out = await runWorkflow({
-				script: `await agent("hang"); return "unreached";`,
+				script: `export const meta = { name: "test", description: "test workflow" };
+await agent("hang"); return "unreached";`,
 				runId: "timer-timeout",
 				background: true,
 				budget: 1,
@@ -228,7 +514,8 @@ test("aborting one concurrent workflow does not terminate another run's agent", 
 			try {
 				process.env.CWF_FAKE_PID_FILE = firstPid;
 				await runWorkflow({
-					script: `const r = await agent("hang"); if (!r.ok) throw new Error(r.error); return r.content;`,
+					script: `export const meta = { name: "test", description: "test workflow" };
+const r = await agent("hang"); if (!r.ok) throw new Error(r.error); return r.content;`,
 					runId: "isolation-first",
 					background: true,
 					budget: 1,
@@ -240,7 +527,8 @@ test("aborting one concurrent workflow does not terminate another run's agent", 
 				process.env.CWF_FAKE_DELAY_MS = "500";
 				process.env.CWF_FAKE_PID_FILE = secondPid;
 				await runWorkflow({
-					script: `const r = await agent("healthy"); if (!r.ok) throw new Error(r.error); return r.content;`,
+					script: `export const meta = { name: "test", description: "test workflow" };
+const r = await agent("healthy"); if (!r.ok) throw new Error(r.error); return r.content;`,
 					runId: "isolation-second",
 					background: true,
 					budget: 1,
@@ -249,10 +537,10 @@ test("aborting one concurrent workflow does not terminate another run's agent", 
 				await waitFor(() => existsSync(secondPid));
 
 				assert.equal(abortRun("isolation-first"), true);
-				await waitFor(() => firstCtx.sends.some((line) => /isolation-first timeout/.test(line)));
+				await waitFor(() => firstCtx.sends.some((line) => /isolation-first cancelled/.test(line)));
 				await waitFor(() => secondCtx.sends.some((line) => /isolation-second complete/.test(line)));
 
-				assert.equal(JSON.parse(readFileSync(join(runs, "isolation-first", "result.json"), "utf8")).status, "timeout");
+				assert.equal(JSON.parse(readFileSync(join(runs, "isolation-first", "result.json"), "utf8")).status, "cancelled");
 				assert.equal(JSON.parse(readFileSync(join(runs, "isolation-second", "result.json"), "utf8")).status, "complete");
 				assert.equal(abortRun("isolation-second"), false);
 			} finally {
@@ -264,29 +552,95 @@ test("aborting one concurrent workflow does not terminate another run's agent", 
 		{ CWF_FAKE_MODE: "hang" },
 	));
 
-test("buildTools registers run_workflow + list_workflow_runs with a valid schema", () => {
+test("buildTools registers workflow run/control/list/inspect/result tools with valid schemas", () => {
 	const tools = buildTools(fakeCtx("/"));
-	assert.deepEqual(tools.map((t) => t.name).sort(), ["list_workflow_runs", "run_workflow"]);
+	assert.deepEqual(tools.map((t) => t.name).sort(), ["control_workflow_run", "get_workflow_result", "inspect_workflow_agent", "inspect_workflow_run", "list_workflow_runs", "run_workflow"]);
 	const rw = tools.find((t) => t.name === "run_workflow");
 	assert.equal(rw.defer, "never");
 	assert.equal(rw.parameters.type, "object");
 	assert.ok(rw.parameters.properties.script && rw.parameters.properties.budget && rw.parameters.properties.dryRun && rw.parameters.properties.progress);
 	assert.equal(typeof rw.handler, "function");
+	const get = tools.find((t) => t.name === "get_workflow_result");
+	assert.equal(get.skipPermission, true);
+	assert.deepEqual(get.parameters.required, ["runId"]);
+	assert.equal(get.parameters.properties.limit.maximum, 32_000);
 	const list = tools.find((t) => t.name === "list_workflow_runs");
 	assert.equal(list.skipPermission, true);
+	const inspect = tools.find((t) => t.name === "inspect_workflow_run");
+	assert.equal(inspect.skipPermission, true);
+	assert.deepEqual(inspect.parameters.required, ["runId"]);
+	const control = tools.find((t) => t.name === "control_workflow_run");
+	assert.equal(control.skipPermission, true);
+	assert.deepEqual(control.parameters.required, ["runId", "action"]);
 });
+
+test("get_workflow_result tool returns JSON chunks and structured validation failures", () =>
+	withTool(async ({ runs }) => {
+		const dir = join(runs, "tool-run");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "result.json"), JSON.stringify({ runId: "tool-run", status: "complete", aic: 1, result: "hello" }));
+		const get = buildTools(fakeCtx("/")).find((t) => t.name === "get_workflow_result");
+		const result = JSON.parse(await get.handler({ runId: "tool-run", limit: 2 }));
+		assert.equal(result.result, "he");
+		assert.equal(result.nextOffset, 2);
+
+		const invalid = await get.handler({ runId: "../outside" });
+		assert.equal(invalid.resultType, "failure");
+		assert.match(invalid.textResultForLlm, /bare workflow run id/);
+	}));
+
+test("inspect_workflow_run tool returns bounded status and structured validation failures", () =>
+	withTool(async ({ runs }) => {
+		const dir = join(runs, "inspect-tool-run");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "run.json"), JSON.stringify({ runId: "inspect-tool-run", status: "complete", result: "hidden", counts: {} }));
+		writeFileSync(join(dir, "result.json"), JSON.stringify({ runId: "inspect-tool-run", status: "complete", aic: 1, result: "hidden" }));
+		const inspect = buildTools(fakeCtx("/")).find((t) => t.name === "inspect_workflow_run");
+		const result = JSON.parse(await inspect.handler({ runId: "inspect-tool-run" }));
+		assert.equal(result.status, "complete");
+		assert.equal(result.result.available, true);
+		assert.doesNotMatch(JSON.stringify(result), /hidden/);
+
+		const invalid = await inspect.handler({ runId: "../outside" });
+		assert.equal(invalid.resultType, "failure");
+	}));
 
 test("recursion guard: nested subagents get no run_workflow tool", () => {
 	const saved = process.env.CWF_DISABLE_WORKFLOW_TOOLS;
 	process.env.CWF_DISABLE_WORKFLOW_TOOLS = "1";
 	try {
 		assert.equal(isNested(), true);
-		assert.deepEqual(buildTools(fakeCtx("/")).map((t) => t.name), ["list_workflow_runs"]);
+		assert.deepEqual(buildTools(fakeCtx("/")).map((t) => t.name), ["get_workflow_result", "list_workflow_runs", "inspect_workflow_run", "inspect_workflow_agent"]);
 	} finally {
 		if (saved === undefined) delete process.env.CWF_DISABLE_WORKFLOW_TOOLS;
 		else process.env.CWF_DISABLE_WORKFLOW_TOOLS = saved;
 	}
 });
+
+test("control_workflow_run pauses and resumes a run through durable replay", () =>
+	withTool(
+		async ({ runs }) => {
+			const ctx = fakeCtx(tmpDir());
+			process.env.CWF_FAKE_MODE = "hang";
+			await runWorkflow({
+				script: `export const meta = { name: "controlled", description: "test workflow" };
+const result = await agent("controlled"); return result.content;`,
+				runId: "paused-run",
+				background: true,
+				budget: 2,
+				timeoutSec: 30,
+			}, ctx);
+			const pause = JSON.parse(/** @type {string} */ (await controlWorkflowRun({ runId: "paused-run", action: "pause" }, ctx)));
+			assert.equal(pause.status, "pausing");
+			await waitFor(() => existsSync(join(runs, "paused-run", "run.json")) && JSON.parse(readFileSync(join(runs, "paused-run", "run.json"), "utf8")).status === "paused", 3000);
+
+			process.env.CWF_FAKE_MODE = "ok";
+			const resumed = await controlWorkflowRun({ runId: "paused-run", action: "resume" }, ctx);
+			assert.match(String(resumed), /started in background/);
+			await waitFor(() => existsSync(join(runs, "paused-run", "run.json")) && JSON.parse(readFileSync(join(runs, "paused-run", "run.json"), "utf8")).status === "complete", 4000);
+		},
+		{ CWF_FAKE_MODE: "hang" },
+	));
 
 test("/workflow slash command: inspection dispatches (runs/latest/result/artifacts/unknown)", () =>
 	withTool(async () => {
@@ -294,7 +648,8 @@ test("/workflow slash command: inspection dispatches (runs/latest/result/artifac
 		workflowCommand("", ctx);
 		assert.match(ctx.logs.at(-1) ?? "", /no workflow runs yet/);
 
-		const out = await runWorkflow({ script: `return (await agent("hi")).content;`, background: false, budget: 1 }, ctx);
+		const out = await runWorkflow({ script: `export const meta = { name: "test", description: "test workflow" };
+return (await agent("hi")).content;`, background: false, budget: 1 }, ctx);
 		const runId = /** @type {string} */ (out).match(/runId: (\S+)/)?.[1];
 		assert.ok(runId);
 

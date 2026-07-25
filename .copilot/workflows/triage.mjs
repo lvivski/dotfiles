@@ -6,11 +6,11 @@ export const meta = {
 	phases: ["triage", "report"],
 };
 
-const input = args && typeof args === "object" && !Array.isArray(args) ? args.tickets : args;
+const workflowArgs = context.args;
+const input = workflowArgs && typeof workflowArgs === "object" && !Array.isArray(workflowArgs) ? workflowArgs.tickets : workflowArgs;
 if (!Array.isArray(input) || !input.length) throw new Error("triage: provide a non-empty array of tickets or { tickets: [...] }");
 
 const MAX_TICKET_CHARS = 8000;
-const noTools = quarantine({ allowAllTools: false });
 const cell = (value) => String(value ?? "").replace(/\|/g, "\\|").replace(/\n/g, "<br>");
 
 const tickets = input.map((ticket, index) => {
@@ -24,23 +24,22 @@ const tickets = input.map((ticket, index) => {
 });
 
 const triageTicket = async (ticket) => {
-	const detail = await structured(
+	const detail = await agent(
 		`Triage this ticket. Choose a category and priority, state calibrated confidence, explain briefly, and give one concrete next action.\n\nTicket:\n${ticket.text.slice(0, MAX_TICKET_CHARS)}`,
 		{
-			type: "object",
-			properties: {
-				category: { enum: ["bug", "incident", "feature", "question", "task"] },
-				priority: { enum: ["p0", "p1", "p2", "p3"] },
-				confidence: { enum: ["high", "medium", "low"] },
-				rationale: { type: "string" },
-				action: { type: "string" },
+			schema: {
+				type: "object",
+				properties: {
+					category: { enum: ["bug", "incident", "feature", "question", "task"] },
+					priority: { enum: ["p0", "p1", "p2", "p3"] },
+					confidence: { enum: ["high", "medium", "low"] },
+					rationale: { type: "string" },
+					action: { type: "string" },
+				},
+				required: ["category", "priority", "confidence", "rationale", "action"],
 			},
-			required: ["category", "priority", "confidence", "rationale", "action"],
-		},
-		{
 			label: ticket.id,
-			phase: "triage",
-			...noTools,
+			profile: "none",
 			validate: (value) => {
 				const errors = [];
 				if (!String(value.rationale || "").trim()) errors.push("rationale must be non-empty");
@@ -52,10 +51,8 @@ const triageTicket = async (ticket) => {
 	return detail.ok ? { ticket, ok: true, ...detail.value } : { ticket, ok: false, error: detail.error || "triage agent failed" };
 };
 
-phase("triage");
-const rows = await pipeline(tickets, triageTicket, { errors: "raise" });
+const rows = await phase("triage", () => pipeline(tickets, triageTicket));
 
-phase("report");
 const out = [
 	"| ID | Status | Category | Priority | Confidence | Rationale | Next action |",
 	"| --- | --- | --- | --- | --- | --- | --- |",
