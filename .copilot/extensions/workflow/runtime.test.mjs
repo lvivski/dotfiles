@@ -537,7 +537,7 @@ test("a handled agent failure preserves its result with partial status", async (
 });
 
 test("pipeline over the cap is a fatal error", async () => {
-	const { record } = await runWf(`await pipeline([1,2,3], (n) => agent("x" + n)); return "nope";`, {}, { CWF_MAX_FANOUT: "2" });
+	const { record } = await runWf(`await pipeline([1,2,3], (n) => agent("x" + n)); return "nope";`, {}, { CWF_MAX_GROUP_ITEMS: "2" });
 	assert.equal(record.status, "error");
 	assert.match(record.error ?? "", /pipeline item cap exceeded/);
 });
@@ -610,7 +610,7 @@ test("Runtime.parallel / pipeline work over the fake backend", () =>
 		assert.deepEqual(piped, ["ECHO: N=1", "ECHO: N=2"]);
 	}));
 
-test("cache keys: identical prompts in different fanOut branches do not collide", () =>
+test("cache keys: identical prompts in different pipeline branches do not collide", () =>
 	withFakeEnv({}, async () => {
 		const dir = tmpDir();
 		// Two branches each run the SAME prompt; both must execute and be cached under distinct keys.

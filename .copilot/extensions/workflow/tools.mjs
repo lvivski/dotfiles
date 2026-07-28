@@ -403,7 +403,7 @@ function resolveBudget(input, preset) {
 
 /** @param {any} input @returns {"dashboard"|"events"|"off"} */
 function resolveProgressMode(input) {
-	const progressMode = input.quiet ? "off" : input.progress ?? "dashboard";
+	const progressMode = input.progress ?? "dashboard";
 	check(PROGRESS_MODES.has(progressMode), `progress must be one of dashboard | events | off (got ${progressMode}).`);
 	return /** @type {"dashboard"|"events"|"off"} */ (progressMode);
 }
@@ -838,7 +838,6 @@ export function buildTools(ctx) {
 				memory: { type: "string", description: "Durable text file exposed as context.memory (relative to workflow cwd, or use ~/)." },
 				host: { type: "string", description: "Path to a `.mjs` host-effects sidecar exposing the harness's `host.*` namespace (full-Node effects, checkpointed). Defaults to a sibling `<name>.host.mjs` when present." },
 				progress: { type: "string", enum: ["dashboard", "events", "off"], description: "Progress output mode. dashboard (default) emits ephemeral TUI-like snapshots, events emits per-event lines, off suppresses progress output." },
-				quiet: { type: "boolean", description: "Suppress progress output (equivalent to progress:'off')." },
 				cwd: { type: "string", description: "Directory to run the workflow from (default: the session's working directory)." },
 				timeoutSec: { type: "number", minimum: 1, maximum: MAX_TIMEOUT_SEC, description: "Kill the run (and its subagents) after this many seconds (default 1800)." },
 			},

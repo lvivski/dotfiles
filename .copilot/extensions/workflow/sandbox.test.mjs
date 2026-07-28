@@ -2,7 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { runHarness, deterministicGlobals, DEFAULT_SYNC_TIMEOUT_MS } from "./sandbox.mjs";
+import { runHarness, DEFAULT_SYNC_TIMEOUT_MS } from "./sandbox.mjs";
 
 /** @param {string} src @param {Record<string, unknown>} [api] */
 const run = (src, api = {}) => runHarness(src, { api, log: () => {} });
@@ -25,7 +25,36 @@ test("console.log is routed to the log sink, not stdout", async () => {
 
 test("Math.random is removed", async () => {
 	await assert.rejects(run(`return Math.random();`), /not a function/);
-	assert.equal("random" in /** @type {object} */ (deterministicGlobals().Math), false);
+	assert.equal(await run(`return "random" in Math;`), false);
+});
+
+test("a stray prototype write stays inside the run that made it", async () => {
+	await run(`Object.prototype.strayWrite = 1; return 1;`);
+	assert.equal(/** @type {any} */ ({}).strayWrite, undefined, "reached the extension's own realm");
+	assert.equal(await run(`return ({}).strayWrite;`), undefined, "reached the next run");
+});
+
+test("Error identity is shared with the host, so `instanceof Error` holds across the boundary", async () => {
+	const api = {
+		boom() {
+			throw new TypeError("from the host");
+		},
+	};
+	assert.equal(
+		await runHarness(`try { boom(); } catch (e) { return (e instanceof Error) + "|" + (e instanceof TypeError) + "|" + e.message; }`, { api, log: () => {} }),
+		"true|true|from the host",
+	);
+});
+
+test("deterministic web globals a bare vm context lacks are still available", async () => {
+	assert.equal(await run(`return new URL("https://x.dev/a?b=1").host;`), "x.dev");
+	assert.equal(await run(`return new TextEncoder().encode("hi").length;`), 2);
+	assert.equal(await run(`return structuredClone({ a: [1] }).a[0];`), 1);
+	assert.equal(await run(`return typeof Intl + "|" + btoa("hi");`), "object|aGk=");
+});
+
+test("dynamic import() is unavailable", async () => {
+	await assert.rejects(run(`return await import("node:fs");`), /dynamic import|not available|not supported/i);
 });
 
 test("Date.now() and argless new Date() are blocked; new Date(ms) works", async () => {

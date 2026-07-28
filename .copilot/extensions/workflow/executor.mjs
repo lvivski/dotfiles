@@ -11,7 +11,7 @@ import { Runtime, permissionCapability } from "./runtime.mjs";
 import { CheckpointStore } from "./checkpoint.mjs";
 import { Memory } from "./memory.mjs";
 import { ProgressReporter } from "./progress.mjs";
-import { runHarness, deterministicGlobals } from "./sandbox.mjs";
+import { runHarness, createDeterministicContext } from "./sandbox.mjs";
 import { loadHost } from "./effects.mjs";
 import { BudgetExceeded } from "./scheduler.mjs";
 import {
@@ -53,7 +53,7 @@ export function extractMeta(source) {
 	if (end < 0) return {};
 	const literal = source.slice(open, end + 1);
 	try {
-		const ctx = vm.createContext(deterministicGlobals(), { codeGeneration: { strings: false, wasm: false } });
+		const ctx = createDeterministicContext({}, "workflow-meta");
 		const value = new vm.Script(`(${literal})`).runInContext(ctx, { timeout: 200 });
 		if (!value || typeof value !== "object") return {};
 		/** @type {{ name?: string, description?: string, phases?: any[] }} */

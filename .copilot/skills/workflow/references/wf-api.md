@@ -51,6 +51,14 @@ A barrier over zero-argument functions. Results preserve input order.
 Streams each item independently through every stage. One-stage `pipeline(items, fn)` is the
 fan-out/map primitive.
 
+Every stage is called as `stage(prev, item, index)`, where `prev` is the previous stage's result, so
+on the first stage `prev` and `item` are the same value. The index is the third parameter —
+`pipeline(items, (item, i) => ...)` binds `i` to the item, not the index:
+
+```js
+await pipeline(files, (file, _same, index) => agent(`Review ${index}: ${file}`));
+```
+
 Both helpers accept:
 
 - `concurrency`
@@ -133,8 +141,9 @@ Inspect `context.capabilities.permissions` and the persisted run's permission in
 
 ## Run artifacts and control
 
-Runs persist `manifest.json`, `revisions.jsonl`, `journal.jsonl`, `script.js`, `state.json`,
-`run.json`, `result.json`, `progress.jsonl`, `meta.json`, and optional `host.mjs`.
+Runs persist `manifest.json`, `journal.jsonl`, `script.js`, `state.json`,
+`run.json`, `result.json`, `progress.jsonl`, `meta.json`, and optional `host.mjs`. A transient
+`.lock/owner.json` holds the run's lease and is removed when the lease is released.
 
 Use:
 

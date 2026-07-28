@@ -13,6 +13,10 @@ const checked = await pipeline(
 );
 ```
 
+Each stage receives `(prev, item, index)`. The first stage's `prev` is the item itself, which is why
+stage one above takes `(file)` and stage two takes `(review, file)`. The index is the third
+parameter.
+
 ## Barrier only for cross-item work
 
 Use `parallel()` when the next step genuinely needs every result, such as global deduplication.

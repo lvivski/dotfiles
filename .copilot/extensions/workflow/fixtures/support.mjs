@@ -25,7 +25,7 @@ export function withFakeEnv(overrides, fn) {
 	const saved = { ...process.env };
 	process.env.CWF_COPILOT_BIN = FAKE;
 	process.env.COPILOT_HOME = home;
-	for (const k of ["CWF_FAKE_MODE", "CWF_FAKE_CONTENT", "CWF_FAKE_STDERR", "CWF_FAKE_DELAY_MS", "CWF_FAKE_PID_FILE", "CWF_MAX_FANOUT", "CWF_MAX_AGENTS"]) delete process.env[k];
+	for (const k of ["CWF_FAKE_MODE", "CWF_FAKE_CONTENT", "CWF_FAKE_STDERR", "CWF_FAKE_DELAY_MS", "CWF_FAKE_PID_FILE", "CWF_MAX_GROUP_ITEMS", "CWF_MAX_AGENTS"]) delete process.env[k];
 	Object.assign(process.env, overrides);
 	return Promise.resolve(fn()).finally(() => {
 		for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];

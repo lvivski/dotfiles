@@ -261,8 +261,36 @@ function tryParse(line) {
  * @param {{ bin?: string, signal?: AbortSignal }} [opts]
  * @returns {Promise<AgentResult>}
  */
-export async function runAgent(spec, opts = {}) {
-	const bin = opts.bin || copilotBin();
+/**
+ * Mutable state both backends accumulate from their event stream.
+ * @typedef {object} AgentAccumulator
+ * @property {string|null} content
+ * @property {number} outputTokens
+ * @property {string|null} sessionId
+ * @property {string|null} model
+ * @property {string[]} sessionErrors
+ */
+
+/**
+ * Raw outcome a backend reports; {@link result} turns it into an {@link AgentResult}.
+ * @typedef {{ exitCode: number, stderr?: string, error?: string|null }} BackendOutcome
+ */
+
+/**
+ * Shared lifecycle around a backend's execution: usage snapshots either side of the run, cwd
+ * validation, the {@link LIVE} entry teardown uses to reap the agent, abort/timeout wiring, and
+ * assembly of the final {@link AgentResult}.
+ *
+ * `execute` supplies the strategy: start the work, hand back a stopper via `onStop`, return the raw
+ * exit shape. A termination that already happened short-circuits `execute`; one that lands during
+ * startup is replayed into the stopper when it registers.
+ *
+ * @param {AgentSpec} spec
+ * @param {{ signal?: AbortSignal }} opts
+ * @param {(ctx: { acc: AgentAccumulator, onStop: (stop: () => void) => void, terminated: () => "timeout"|"aborted"|null }) => Promise<BackendOutcome>} execute
+ * @returns {Promise<AgentResult>}
+ */
+async function runWithLifecycle(spec, opts, execute) {
 	const started = Date.now();
 	const model = spec.model ?? null;
 	const usageBefore = await readShutdownUsage(spec.resume ?? null);
@@ -271,44 +299,17 @@ export async function runAgent(spec, opts = {}) {
 		return result(spec, { started, model, error: `working directory not found: ${spec.cwd}`, exitCode: 1 });
 	}
 
-	// Every POSIX agent gets its own process group: run-level aborts and extension teardown must reap
-	// tool subprocesses too, not only the top-level `copilot` process.
-	const group = POSIX;
-	/** @type {import("node:child_process").ChildProcess} */
-	let child;
-	try {
-		child = spawn(bin, buildArgv(spec, bin).slice(1), {
-			cwd: spec.cwd || undefined,
-			env: childEnv(),
-			detached: group,
-			stdio: ["ignore", "pipe", "pipe"],
-		});
-	} catch (e) {
-		return result(spec, { started, model, error: `failed to spawn ${bin}: ${errMsg(e)}`, exitCode: 127 });
-	}
-
-	const acc = { content: /** @type {string|null} */ (null), outputTokens: 0, sessionId: /** @type {string|null} */ (null), model, sessionErrors: /** @type {string[]} */ ([]) };
-	const stdoutLines = child.stdout ? createInterface({ input: child.stdout, crlfDelay: Infinity }) : null;
+	/** @type {AgentAccumulator} */
+	const acc = { content: null, outputTokens: 0, sessionId: spec.resume ?? null, model, sessionErrors: [] };
 	/** @type {"timeout"|"aborted"|null} */
 	let termination = null;
-	let stderr = "";
-
-	// Attach exit listeners immediately so async spawn errors and early exits are observed. Use
-	// `exit`, not `close`: descendants may inherit stdio and delay/withhold `close` indefinitely.
-	let spawnError = /** @type {Error|null} */ (null);
-	const exited = new Promise((resolve) => {
-		child.once("error", (e) => {
-			spawnError = e instanceof Error ? e : new Error(String(e));
-			resolve(127);
-		});
-		child.once("exit", (code) => resolve(code ?? (termination ? 143 : 1)));
-	});
+	/** @type {(() => void)|null} */
+	let stop = null;
 
 	/** @param {"timeout"|"aborted"} reason */
 	const terminate = (reason) => {
 		termination ??= reason;
-		stdoutLines?.close();
-		killChild(child, group);
+		stop?.();
 	};
 	const entry = { terminate: () => terminate("aborted") };
 	LIVE.add(entry);
@@ -319,32 +320,32 @@ export async function runAgent(spec, opts = {}) {
 	}
 	let timer = null;
 	if (spec.timeout) {
-		timer = setTimeout(() => {
-			terminate("timeout");
-		}, Math.max(1, spec.timeout * 1000));
+		timer = setTimeout(() => terminate("timeout"), Math.max(1, spec.timeout * 1000));
 		timer.unref?.();
 	}
 
-	child.stderr?.setEncoding("utf8");
-	child.stderr?.on("data", (chunk) => {
-		stderr = appendBounded(stderr, chunk, MAX_STDERR_CHARS);
-	});
-
+	/** @type {BackendOutcome} */
+	let outcome;
 	try {
-		if (stdoutLines) {
-			for await (const line of stdoutLines) reduce(acc, tryParse(line));
+		// A termination before startup has no child to reap, and spawning one here would leave nothing
+		// to report its exit, so the run would never settle.
+		if (termination) {
+			outcome = { exitCode: 143 };
+		} else {
+			outcome = await execute({
+				acc,
+				onStop: (fn) => {
+					stop = fn;
+					if (termination) fn();
+				},
+				terminated: () => termination,
+			});
 		}
-	} catch {
-		/* stdout read error — the exit code / kill state below reports it */
+	} finally {
+		if (timer) clearTimeout(timer);
+		if (opts.signal) opts.signal.removeEventListener("abort", onAbort);
+		LIVE.delete(entry);
 	}
-
-	const exitCode = await exited;
-
-	if (timer) clearTimeout(timer);
-	if (opts.signal) opts.signal.removeEventListener("abort", onAbort);
-	LIVE.delete(entry);
-
-	if (spawnError) return result(spec, { started, model, error: `failed to spawn ${bin}: ${spawnError.message}`, exitCode: 127 });
 
 	const usageAfter = await readShutdownUsage(acc.sessionId ?? spec.resume ?? null);
 	const usage = usageDelta(usageAfter, usageBefore);
@@ -353,13 +354,80 @@ export async function runAgent(spec, opts = {}) {
 		model: acc.model,
 		content: acc.content,
 		sessionId: acc.sessionId,
+		// Fall back to the session log's token count only when the stream reported none.
 		outputTokens: acc.outputTokens || usage?.tokens.outputTokens || 0,
 		usage,
-		exitCode,
+		exitCode: outcome.exitCode,
 		timedOut: termination === "timeout",
 		aborted: termination === "aborted",
-		stderr,
+		stderr: outcome.stderr,
+		error: outcome.error,
 		sessionErrors: acc.sessionErrors,
+	});
+}
+
+/**
+ * Run one subagent as a `copilot -p` child process, reducing its JSONL stdout into an
+ * {@link AgentResult}. Default path: one exec, no session negotiation.
+ * @param {AgentSpec} spec
+ * @param {{ bin?: string, signal?: AbortSignal }} [opts]
+ * @returns {Promise<AgentResult>}
+ */
+export async function runAgent(spec, opts = {}) {
+	const bin = opts.bin || copilotBin();
+
+	return runWithLifecycle(spec, opts, async ({ acc, onStop, terminated }) => {
+		// Every POSIX agent gets its own process group: run-level aborts and extension teardown must
+		// reap tool subprocesses too, not only the top-level `copilot` process.
+		const group = POSIX;
+		/** @type {import("node:child_process").ChildProcess} */
+		let child;
+		try {
+			child = spawn(bin, buildArgv(spec, bin).slice(1), {
+				cwd: spec.cwd || undefined,
+				env: childEnv(),
+				detached: group,
+				stdio: ["ignore", "pipe", "pipe"],
+			});
+		} catch (e) {
+			return { exitCode: 127, error: `failed to spawn ${bin}: ${errMsg(e)}` };
+		}
+
+		const stdoutLines = child.stdout ? createInterface({ input: child.stdout, crlfDelay: Infinity }) : null;
+		let stderr = "";
+
+		// Attach exit listeners immediately so async spawn errors and early exits are observed. Use
+		// `exit`, not `close`: descendants may inherit stdio and delay/withhold `close` indefinitely.
+		let spawnError = /** @type {Error|null} */ (null);
+		const exited = new Promise((resolve) => {
+			child.once("error", (e) => {
+				spawnError = e instanceof Error ? e : new Error(String(e));
+				resolve(127);
+			});
+			child.once("exit", (code) => resolve(code ?? (terminated() ? 143 : 1)));
+		});
+
+		onStop(() => {
+			stdoutLines?.close();
+			killChild(child, group);
+		});
+
+		child.stderr?.setEncoding("utf8");
+		child.stderr?.on("data", (chunk) => {
+			stderr = appendBounded(stderr, chunk, MAX_STDERR_CHARS);
+		});
+
+		try {
+			if (stdoutLines) {
+				for await (const line of stdoutLines) reduce(acc, tryParse(line));
+			}
+		} catch {
+			/* stdout read error — the exit code / kill state below reports it */
+		}
+
+		const exitCode = await exited;
+		if (spawnError) return { exitCode: 127, error: `failed to spawn ${bin}: ${spawnError.message}` };
+		return { exitCode, stderr };
 	});
 }
 
@@ -420,139 +488,103 @@ export function autoPermissionDecision(spec, request) {
  */
 async function runAgentWithSdk(spec, opts, sdk) {
 	const bin = opts.bin || copilotBin();
-	const started = Date.now();
-	const model = spec.model ?? null;
-	const usageBefore = await readShutdownUsage(spec.resume ?? null);
-	if (spec.cwd && (!existsSync(spec.cwd) || !statSync(spec.cwd).isDirectory())) {
-		return result(spec, { started, model, error: `working directory not found: ${spec.cwd}`, exitCode: 1 });
-	}
 
-	const acc = { content: /** @type {string|null} */ (null), outputTokens: 0, sessionId: /** @type {string|null} */ (spec.resume ?? null), model, sessionErrors: /** @type {string[]} */ ([]) };
-	/** @type {any} */
-	let client = null;
-	/** @type {any} */
-	let session = null;
-	/** @type {"timeout"|"aborted"|null} */
-	let termination = null;
-	let executionError = /** @type {string|null} */ (null);
-	let timer = null;
-	const permissionPrompts = new Map();
+	return runWithLifecycle(spec, opts, async ({ acc, onStop, terminated }) => {
+		/** @type {any} */
+		let client = null;
+		/** @type {any} */
+		let session = null;
+		let executionError = /** @type {string|null} */ (null);
+		const permissionPrompts = new Map();
 
-	/** @param {"timeout"|"aborted"} reason */
-	const terminate = (reason) => {
-		termination ??= reason;
-		Promise.resolve(session?.abort?.())
-			.catch(() => {})
-			.finally(() => Promise.resolve(client?.forceStop?.()).catch(() => {}));
-	};
-	const entry = { terminate: () => terminate("aborted") };
-	LIVE.add(entry);
-	const onAbort = () => terminate("aborted");
-	if (opts.signal) {
-		if (opts.signal.aborted) onAbort();
-		else opts.signal.addEventListener("abort", onAbort, { once: true });
-	}
-	if (spec.timeout) {
-		timer = setTimeout(() => terminate("timeout"), Math.max(1, spec.timeout * 1000));
-		timer.unref?.();
-	}
-
-	try {
-		const customAgent = spec.agentType && opts.resolveAgent ? await opts.resolveAgent(spec.agentType, !!spec.enableMcp) : null;
-		if (termination) throw new Error(termination);
-		const connectionArgs = ["--no-auto-update", "--no-remote-export", "--no-color"];
-		if (!spec.enableMcp) connectionArgs.push("--disable-builtin-mcps");
-		const connection = sdk.RuntimeConnection.forStdio({
-			path: bin,
-			args: connectionArgs,
-			env: /** @type {Record<string, string>} */ (childEnv()),
+		// Registered before the client exists: the closure reads the live bindings, so a mid-startup
+		// abort tears down whatever has been created by then.
+		onStop(() => {
+			Promise.resolve(session?.abort?.())
+				.catch(() => {})
+				.finally(() => Promise.resolve(client?.forceStop?.()).catch(() => {}));
 		});
-		client = new sdk.CopilotClient({
-			connection,
-			workingDirectory: spec.cwd || process.cwd(),
-			mode: "copilot-cli",
-			logLevel: "error",
-		});
-		const excludedTools = [...new Set([...(spec.excludedTools || []), ...(!spec.enableMcp ? ["mcp:*"] : [])])];
-		const config = {
-			clientName: "workflow-extension",
-			model: spec.model || undefined,
-			reasoningEffort: spec.effort || undefined,
-			contextTier: spec.context || undefined,
-			availableTools: spec.availableTools || undefined,
-			excludedTools: excludedTools.length ? excludedTools : undefined,
-			enableConfigDiscovery: !!spec.enableMcp,
-			customAgents: customAgent ? [customAgent] : undefined,
-			onPermissionRequest: async (/** @type {any} */ request) => {
-				await Promise.resolve();
-				const toolCallId = request?.toolCallId;
-				const promptRequest = toolCallId ? permissionPrompts.get(toolCallId) : null;
-				if (toolCallId) permissionPrompts.delete(toolCallId);
-				return autoPermissionDecision(spec, { permissionRequest: request, promptRequest });
-			},
-		};
-		session = spec.resume ? await client.resumeSession(spec.resume, config) : await client.createSession(config);
-		acc.sessionId = session.sessionId || acc.sessionId;
-		session.on((/** @type {any} */ event) => {
-			if (event?.type === "permission.requested") {
-				const toolCallId = event.data?.permissionRequest?.toolCallId;
-				if (toolCallId && event.data?.promptRequest) permissionPrompts.set(toolCallId, event.data.promptRequest);
+
+		try {
+			const customAgent = spec.agentType && opts.resolveAgent ? await opts.resolveAgent(spec.agentType, !!spec.enableMcp) : null;
+			if (terminated()) throw new Error(terminated() ?? "aborted");
+			const connectionArgs = ["--no-auto-update", "--no-remote-export", "--no-color"];
+			if (!spec.enableMcp) connectionArgs.push("--disable-builtin-mcps");
+			const connection = sdk.RuntimeConnection.forStdio({
+				path: bin,
+				args: connectionArgs,
+				env: /** @type {Record<string, string>} */ (childEnv()),
+			});
+			client = new sdk.CopilotClient({
+				connection,
+				workingDirectory: spec.cwd || process.cwd(),
+				mode: "copilot-cli",
+				logLevel: "error",
+			});
+			const excludedTools = [...new Set([...(spec.excludedTools || []), ...(!spec.enableMcp ? ["mcp:*"] : [])])];
+			const config = {
+				clientName: "workflow-extension",
+				model: spec.model || undefined,
+				reasoningEffort: spec.effort || undefined,
+				contextTier: spec.context || undefined,
+				availableTools: spec.availableTools || undefined,
+				excludedTools: excludedTools.length ? excludedTools : undefined,
+				enableConfigDiscovery: !!spec.enableMcp,
+				customAgents: customAgent ? [customAgent] : undefined,
+				onPermissionRequest: async (/** @type {any} */ request) => {
+					await Promise.resolve();
+					const toolCallId = request?.toolCallId;
+					const promptRequest = toolCallId ? permissionPrompts.get(toolCallId) : null;
+					if (toolCallId) permissionPrompts.delete(toolCallId);
+					return autoPermissionDecision(spec, { permissionRequest: request, promptRequest });
+				},
+			};
+			session = spec.resume ? await client.resumeSession(spec.resume, config) : await client.createSession(config);
+			acc.sessionId = session.sessionId || acc.sessionId;
+			session.on((/** @type {any} */ event) => {
+				if (event?.type === "permission.requested") {
+					const toolCallId = event.data?.permissionRequest?.toolCallId;
+					if (toolCallId && event.data?.promptRequest) permissionPrompts.set(toolCallId, event.data.promptRequest);
+				}
+				reduce(acc, event);
+			});
+			for (const directory of spec.addDir || []) {
+				// A parent-approved directory can vanish (or be replaced by a file) after the session
+				// started. Granting it is best-effort: losing one extra root must not fail the agent.
+				if (directory === spec.cwd) continue;
+				try {
+					if (!isDirectory(directory)) continue;
+					await session.rpc.permissions.paths.add({ path: directory });
+				} catch (error) {
+					if (isDirectory(directory)) throw error;
+				}
 			}
-			reduce(acc, event);
-		});
-		for (const directory of spec.addDir || []) {
-			// A parent-approved directory can vanish (or be replaced by a file) after the session
-			// started. Granting it is best-effort: losing one extra root must not fail the agent.
-			if (directory === spec.cwd) continue;
-			try {
-				if (!isDirectory(directory)) continue;
-				await session.rpc.permissions.paths.add({ path: directory });
-			} catch (error) {
-				if (isDirectory(directory)) throw error;
+			if (spec.agentType) await session.rpc.agent.select({ name: spec.agentType });
+			if (spec.autopilot) await session.rpc.mode.set({ mode: "autopilot" });
+			const permission = await session.rpc.permissions.setAllowAll({ mode: "auto", source: "rpc" });
+			if (permission?.mode !== "auto") throw new Error("child session refused inherited allow-all auto mode");
+			const deniedRules = permissionRules(spec);
+			if (deniedRules.length) {
+				const configured = await session.rpc.permissions.configure({ rules: { approved: [], denied: deniedRules } });
+				if (configured?.success === false) throw new Error("child session refused workflow profile permission denials");
 			}
-		}
-		if (spec.agentType) await session.rpc.agent.select({ name: spec.agentType });
-		if (spec.autopilot) await session.rpc.mode.set({ mode: "autopilot" });
-		const permission = await session.rpc.permissions.setAllowAll({ mode: "auto", source: "rpc" });
-		if (permission?.mode !== "auto") throw new Error("child session refused inherited allow-all auto mode");
-		const deniedRules = permissionRules(spec);
-		if (deniedRules.length) {
-			const configured = await session.rpc.permissions.configure({ rules: { approved: [], denied: deniedRules } });
-			if (configured?.success === false) throw new Error("child session refused workflow profile permission denials");
-		}
-		if (termination) throw new Error(termination);
-		const response = await session.sendAndWait({ prompt: spec.prompt }, 24 * 60 * 60 * 1000);
-		reduce(acc, response);
-	} catch (e) {
-		executionError = errMsg(e);
-	} finally {
-		if (timer) clearTimeout(timer);
-		if (opts.signal) opts.signal.removeEventListener("abort", onAbort);
-		LIVE.delete(entry);
-		if (client && !termination) {
-			try {
-				const errors = await client.stop();
-				for (const error of errors || []) acc.sessionErrors.push(`SDK shutdown: ${errMsg(error)}`);
-			} catch (e) {
-				acc.sessionErrors.push(`SDK shutdown: ${errMsg(e)}`);
+			if (terminated()) throw new Error(terminated() ?? "aborted");
+			const response = await session.sendAndWait({ prompt: spec.prompt }, 24 * 60 * 60 * 1000);
+			reduce(acc, response);
+		} catch (e) {
+			executionError = errMsg(e);
+		} finally {
+			if (client && !terminated()) {
+				try {
+					const errors = await client.stop();
+					for (const error of errors || []) acc.sessionErrors.push(`SDK shutdown: ${errMsg(error)}`);
+				} catch (e) {
+					acc.sessionErrors.push(`SDK shutdown: ${errMsg(e)}`);
+				}
 			}
 		}
-	}
 
-	const usageAfter = await readShutdownUsage(acc.sessionId ?? spec.resume ?? null);
-	const usage = usageDelta(usageAfter, usageBefore);
-	return result(spec, {
-		started,
-		model: acc.model,
-		content: acc.content,
-		sessionId: acc.sessionId,
-		outputTokens: acc.outputTokens || usage?.tokens.outputTokens || 0,
-		usage,
-		exitCode: executionError && !termination ? 1 : 0,
-		timedOut: termination === "timeout",
-		aborted: termination === "aborted",
-		stderr: executionError ?? "",
-		sessionErrors: acc.sessionErrors,
+		return { exitCode: executionError && !terminated() ? 1 : 0, stderr: executionError ?? "" };
 	});
 }
 

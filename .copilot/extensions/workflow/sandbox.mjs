@@ -1,32 +1,52 @@
 /**
  * @module sandbox
  *
- * Executes a `.mjs` harness in a deterministic `node:vm` context. The context exposes only an
- * approved global set — determinism-safe built-ins plus the injected workflow API — and disables dynamic
- * code generation (`eval`, `new Function`). `Math.random`, `Date.now()`, and argless `new Date()`
- * are removed/blocked.
+ * Executes a `.mjs` harness in a deterministic `node:vm` context.
  *
- * IMPORTANT: this is footgun-prevention + determinism, NOT a security jail. A pure vm context is
- * isolated, but the workflow API we inject is made of host-realm objects, and any one of them can be
- * used to reach the host realm (`fn.constructor.constructor("return process")()`). Sandbox genuinely
- * untrusted harness authors at the OS/agent level (`copilot --cloud` / `/sandbox`), not here.
+ * Resume replays a harness against its checkpoint journal, so a re-run must take the same path.
+ * `Math.random`, `Date.now()` and argless `new Date()` therefore throw, and `eval` / `new Function`
+ * / dynamic `import()` are disabled by the context options.
+ *
+ * A fresh vm context owns a full set of intrinsics, so none of the host realm's are injected and
+ * the `Math`/`Date` replacements are applied to the context's own from inside it. Contexts are
+ * per-run, so a stray `Object.prototype.foo = 1` cannot reach the extension or a later run.
+ *
+ * Not a security boundary: the injected API is made of host-realm objects, which harness code can
+ * always follow back to the host. Guards here only need to catch accidents. Run untrusted harness
+ * authors under an OS/agent-level sandbox (`copilot --cloud` / `/sandbox`).
+ *
+ * `new Intl.DateTimeFormat().format()` with no argument is still a clock; `format` is an accessor
+ * that would need replacing per instance.
  */
 import vm from "node:vm";
 
 export const DEFAULT_SYNC_TIMEOUT_MS = 5000;
 
 /**
- * Build the frozen determinism-safe built-in globals a harness may use.
- * Excludes nondeterministic surfaces: `Math.random`, `Date.now()`, argless `new Date()`.
- * @returns {Record<string, unknown>}
+ * Shared with the host realm so `e instanceof Error` holds for errors the runtime, host effects and
+ * `onFailure: "raise"` throw into harness code — cross-realm `instanceof` is false.
  */
-export function deterministicGlobals() {
+const sharedErrorGlobals = () => ({ Error, TypeError, RangeError, SyntaxError, EvalError, ReferenceError, URIError, AggregateError });
+
+/** Deterministic web globals a bare vm context does not provide. */
+const hostUtilityGlobals = () => ({ structuredClone, URL, URLSearchParams, TextEncoder, TextDecoder, queueMicrotask, atob, btoa });
+
+/**
+ * Replace the context's own `Math` and `Date` with variants that refuse randomness and the clock.
+ * Serialized with `Function.prototype.toString` and evaluated inside the target context, so it must
+ * stay self-contained: no closure references, no imports.
+ */
+function makeRealmDeterministic() {
+	// Edits the vm context's realm, not this module's, so every lookup is dynamic.
+	const realm = /** @type {Record<string, any>} */ (/** @type {unknown} */ (globalThis));
+
+	const realMath = /** @type {Record<string, any>} */ (/** @type {unknown} */ (Math));
 	/** @type {Record<string, unknown>} */
 	const safeMath = {};
-	for (const k of Object.getOwnPropertyNames(Math)) if (k !== "random") safeMath[k] = /** @type {any} */ (Math)[k];
-	Object.freeze(safeMath);
+	for (const key of Object.getOwnPropertyNames(realMath)) if (key !== "random") safeMath[key] = realMath[key];
+	realm.Math = Object.freeze(safeMath);
 
-	const SafeDate = new Proxy(Date, {
+	realm.Date = new Proxy(Date, {
 		apply() {
 			throw new Error("workflow: `Date()` is nondeterministic — use `new Date(timestamp)`");
 		},
@@ -35,21 +55,32 @@ export function deterministicGlobals() {
 			return Reflect.construct(target, argsList, newTarget);
 		},
 		get(target, prop, receiver) {
-			if (prop === "now") return () => {
-				throw new Error("workflow: `Date.now()` is nondeterministic — workflows must be reproducible");
-			};
+			if (prop === "now")
+				return () => {
+					throw new Error("workflow: `Date.now()` is nondeterministic — workflows must be reproducible");
+				};
 			return Reflect.get(target, prop, receiver);
 		},
 	});
+}
 
-	return {
-		JSON, Array, Object, String, Number, Boolean, BigInt, Symbol, Set, Map, WeakMap, WeakSet,
-		Promise, RegExp, Proxy, Reflect, ArrayBuffer, Uint8Array, Int32Array, Float64Array, DataView,
-		Math: safeMath, Date: SafeDate, Intl, structuredClone, URL, URLSearchParams, TextEncoder, TextDecoder,
-		Error, TypeError, RangeError, SyntaxError, EvalError, ReferenceError, URIError, AggregateError,
-		parseInt, parseFloat, isNaN, isFinite, encodeURIComponent, decodeURIComponent, encodeURI, decodeURI,
-		queueMicrotask, atob, btoa,
-	};
+/**
+ * Create a deterministic context exposing `globals` (the workflow API) and nothing of the host
+ * realm's own intrinsics.
+ * @param {Record<string, unknown>} globals
+ * @param {string} name
+ * @returns {object} the contextified sandbox
+ */
+export function createDeterministicContext(globals, name) {
+	const context = vm.createContext(
+		{ ...sharedErrorGlobals(), ...hostUtilityGlobals(), ...globals },
+		{
+			name,
+			codeGeneration: { strings: false, wasm: false },
+		},
+	);
+	vm.runInContext(`(${makeRealmDeterministic})`, context)();
+	return context;
 }
 
 /** @param {unknown} x @returns {string} readable form for console routing. */
@@ -79,16 +110,13 @@ export async function runHarness(source, config) {
 		: DEFAULT_SYNC_TIMEOUT_MS;
 	const sink = log || (() => {});
 	const writeConsole = (/** @type {unknown[]} */ ...a) => sink(a.map(fmt).join(" "));
-	/** @type {Record<string, unknown>} */
-	const sandbox = {
-		...deterministicGlobals(),
-		...api,
-		console: Object.fromEntries(["log", "info", "warn", "error", "debug"].map((name) => [name, writeConsole])),
-	};
-	const context = vm.createContext(sandbox, {
-		name: "workflow-harness",
-		codeGeneration: { strings: false, wasm: false },
-	});
+	const context = createDeterministicContext(
+		{
+			...api,
+			console: Object.fromEntries(["log", "info", "warn", "error", "debug"].map((name) => [name, writeConsole])),
+		},
+		"workflow-harness",
+	);
 
 	let script;
 	try {

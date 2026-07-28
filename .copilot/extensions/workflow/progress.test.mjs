@@ -54,15 +54,15 @@ test("narration shows AIC/tokens/model for successful agents", () => {
 test("group_start/group_end are narrated and tracked in the snapshot", () => {
 	const lines = /** @type {string[]} */ ([]);
 	const p = reporter((l) => lines.push(l));
-	p.emit({ ev: "group_start", gid: 1, kind: "fanOut", n: 3, phase: "scan" });
+	p.emit({ ev: "group_start", gid: 1, kind: "pipeline", n: 3, phase: "scan" });
 	let s = /** @type {any} */ (p.snapshot());
 	assert.equal(s.groups.length, 1);
-	assert.equal(s.groups[0].kind, "fanOut");
-	p.emit({ ev: "group_end", gid: 1, kind: "fanOut", n: 3 });
+	assert.equal(s.groups[0].kind, "pipeline");
+	p.emit({ ev: "group_end", gid: 1, kind: "pipeline", n: 3 });
 	s = p.snapshot();
 	assert.equal(s.groups.length, 0);
-	assert.match(lines[0], /fanOut launched \(3\)/);
-	assert.match(lines[1], /fanOut settled \(3\)/);
+	assert.match(lines[0], /pipeline launched \(3\)/);
+	assert.match(lines[1], /pipeline settled \(3\)/);
 });
 
 test("dropped group items are counted, persisted as errors, and narrated", () => {

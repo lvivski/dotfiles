@@ -28,9 +28,9 @@ export class AgentCapExceeded extends Error {}
 
 /** Hard caps (overridable only by workflow-owned test/dev env, never by workflow source). */
 export const MAX_AGENTS = 1000;
-export const MAX_FANOUT = 4096;
+export const MAX_GROUP_ITEMS = 4096;
 const maxAgents = () => Number(process.env.CWF_MAX_AGENTS || MAX_AGENTS);
-const maxFanout = () => Number(process.env.CWF_MAX_FANOUT || MAX_FANOUT);
+const maxGroupItems = () => Number(process.env.CWF_MAX_GROUP_ITEMS || MAX_GROUP_ITEMS);
 
 /** Spec fields that define an agent's identity for checkpoint keys (excludes label/phase/timeout). */
 const KEY_FIELDS = [
@@ -433,19 +433,6 @@ export class Runtime {
 	}
 
 	/**
-	 * Run `fn(item)` for every item concurrently; results in order (a barrier).
-	 * @param {any[]} items
-	 * @param {(item: any, index: number) => any} fn
-	 * @param {{ concurrency?: number, onFailure?: "raise"|"drop"|"keep" }} [opts]
-	 * @returns {Promise<any[]>}
-	 */
-	async fanOut(items, fn, opts = {}) {
-		const list = [...items];
-		this.#capItems(list.length, "fanOut");
-		return this.#concurrentMap(list.length, (i) => fn(list[i], i), { ...opts, kind: "fanOut" });
-	}
-
-	/**
 	 * Stream each item through `stages` independently (no barrier between stages). An optional
 	 * trailing non-function argument is treated as `{ concurrency?, onFailure? }`.
 	 * @param {any[]} items
@@ -593,7 +580,7 @@ export class Runtime {
 	 * slot; `"raise"` (default) aborts on the first error. `BudgetExceeded` always propagates.
 	 * @param {number} n
 	 * @param {(i: number) => any} work
-	 * @param {{ concurrency?: number, onFailure?: "raise"|"drop"|"keep", kind?: "parallel"|"fanOut"|"pipeline" }} opts
+	 * @param {{ concurrency?: number, onFailure?: "raise"|"drop"|"keep", kind?: "parallel"|"pipeline" }} opts
 	 * @returns {Promise<any[]>}
 	 */
 	async #concurrentMap(n, work, opts) {
@@ -850,10 +837,10 @@ export class Runtime {
 		if (this.#budgetTotal != null && this.#spent >= this.#budgetTotal) this.#budgetHit = true;
 	}
 
-	/** @param {number} count @param {"parallel"|"fanOut"|"pipeline"} kind */
+	/** @param {number} count @param {"parallel"|"pipeline"} kind */
 	#capItems(count, kind) {
-		if (count > maxFanout()) {
-			throw new Error(`workflow: ${kind} item cap exceeded (${count} > MAX_FANOUT=${maxFanout()})`);
+		if (count > maxGroupItems()) {
+			throw new Error(`workflow: ${kind} item cap exceeded (${count} > MAX_GROUP_ITEMS=${maxGroupItems()})`);
 		}
 	}
 
@@ -961,7 +948,7 @@ export class Runtime {
 			}
 		}
 
-		// Bound effect concurrency with the same semaphore agents use — a large fanOut of spawning/
+		// Bound effect concurrency with the same semaphore agents use — a large pipeline of spawning/
 		// fetching effects can't outrun the limiter.
 		let value;
 		await this.#sem.acquire();

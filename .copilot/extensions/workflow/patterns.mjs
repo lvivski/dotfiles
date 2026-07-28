@@ -1,12 +1,14 @@
 /**
  * @module patterns
  *
- * Composable orchestration helpers (`structured` / `verify` / `consensus` / `synthesize` /
- * `tournament` / `generateAndFilter` / `classify`). Each takes the
+ * Composable orchestration helpers (`structured` / `verify`). Each takes the
  * {@link import("./runtime.mjs").Runtime} as its first arg and routes every model call through
- * `rt.agent` / `rt.fanOut`, so they inherit progress, cache, resume, budget, and AIC accounting.
- * Fail-closed semantics are preserved: `verify` returns a failed verdict when the verifier errors;
- * `classify`/`tournament` throw when the model fails or returns nothing valid.
+ * `rt.agent`, so they inherit progress, cache, resume, budget, and AIC accounting.
+ * Fail-closed semantics are preserved: `verify` returns a failed verdict when the verifier errors
+ * rather than throwing or silently passing.
+ *
+ * Anything richer (merging, ranking, classifying, generate-and-filter) is a prompt plus `agent()`,
+ * written in the harness.
  */
 
 import { stableStringify } from "./json.mjs";

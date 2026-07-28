@@ -23,10 +23,6 @@ function mockRt(responder) {
 			const ok = r.ok ?? true;
 			return mkResult({ content: r.content ?? "", ok, error: ok ? null : r.error ?? "agent failed", label: opts.label, model: opts.model });
 		},
-		/** @param {any[]} items @param {(it: any, i: number) => any} fn */
-		async fanOut(items, fn) {
-			return Promise.all([...items].map((it, i) => fn(it, i)));
-		},
 	};
 	return /** @type {any} */ (rt);
 }
