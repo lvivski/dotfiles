@@ -14,6 +14,7 @@ import { copilotBin, runAgent } from "./agent.mjs";
 import { Memory } from "./memory.mjs";
 import * as patterns from "./patterns.mjs";
 import { BudgetExceeded, defaultConcurrency, RunStats, Semaphore } from "./scheduler.mjs";
+import { deleteSessions, keepSessions } from "./sessions.mjs";
 import { WorktreeManager, findRepoRoot, ensureClone, clonePath, _sanitize } from "./worktree.mjs";
 import { buildHostProxy } from "./effects.mjs";
 import { stableStringify } from "./json.mjs";
@@ -97,6 +98,8 @@ export class Runtime {
 	#trustedWorktreeDirs = new Set();
 	/** @type {string[]} */
 	#preservedDirty = [];
+	/** Child sessions this run created, in creation order: id -> whether every turn on it succeeded. @type {Map<string, boolean>} */
+	#childSessions = new Map();
 	#isoCounter = 0;
 	/** @type {number|null} */
 	#maxAgents = null;
@@ -286,6 +289,7 @@ export class Runtime {
 		const key = this.#agentCacheKey(o, spec);
 		const cached = this.#checkpoints?.get(key);
 		if (cached) {
+			this.#noteSession(cached, spec);
 			this.#finish(run.seq, cached, false, run.phase);
 			return cached;
 		}
@@ -344,6 +348,7 @@ export class Runtime {
 
 		this.#checkpoints?.recordStarted(key, spec, run.branch);
 		const res = await this.#agentBackend.run(spec, { signal: this.#abort.signal });
+		this.#noteSession(res, spec);
 		this.#charge(res.aic ?? 0);
 		this.#checkpoints?.recordUsage(key, res);
 		if (this.#checkpoints && res.ok) this.#checkpoints.put(key, res);
@@ -573,6 +578,44 @@ export class Runtime {
 		this.#wtManagers.clear();
 		this.#trustedWorktreeDirs.clear();
 		return this.#preservedDirty;
+	}
+
+	/**
+	 * Track a child session this run owns, keyed by id so a multi-turn agent counts once. A session
+	 * the harness asked to `resume` was created elsewhere, so it is never adopted here — but a failed
+	 * follow-up still marks an owned session as one to preserve.
+	 * @param {AgentResult} res
+	 * @param {AgentSpec} spec
+	 */
+	#noteSession(res, spec) {
+		const id = res?.sessionId;
+		if (this.dryRun || typeof id !== "string" || !id) return;
+		if (spec.resume) {
+			if (!res.ok && this.#childSessions.has(id)) this.#childSessions.set(id, false);
+			return;
+		}
+		this.#childSessions.set(id, (this.#childSessions.get(id) ?? true) && res.ok !== false);
+	}
+
+	/**
+	 * Dispose of the sessions this run's subagents created. Mirrors worktree cleanup: a clean run
+	 * leaves no trace, while anything worth inspecting survives — sessions whose agent failed, and
+	 * every session of a run that did not complete, since such a run can still be resumed (a
+	 * `followUp` on a replayed result resumes the recorded session id). `CWF_KEEP_SESSIONS=1` keeps
+	 * them all. Safe to call always; never throws.
+	 * @param {{ status?: string }} [opts]
+	 * @returns {Promise<{ deleted: string[], preserved: string[] }>}
+	 */
+	async cleanupSessions(opts = {}) {
+		const owned = [...this.#childSessions];
+		this.#childSessions.clear();
+		if (!owned.length) return { deleted: [], preserved: [] };
+		const disposable = keepSessions() || opts.status !== "complete" ? new Set() : new Set(owned.filter(([, ok]) => ok).map(([id]) => id));
+		const preserved = owned.filter(([id]) => !disposable.has(id)).map(([id]) => id);
+		if (!disposable.size) return { deleted: [], preserved };
+		const { deleted, skipped, warnings } = await deleteSessions(disposable);
+		for (const warning of warnings) this.#log(`  ! session cleanup: ${warning}`, "warning");
+		return { deleted, preserved: [...preserved, ...skipped] };
 	}
 
 	/**

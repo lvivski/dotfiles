@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { autoPermissionDecision, buildArgv, childEnv, createAgentRunner, formatSessionError, killAllAgents, loadCustomAgentConfig, runAgent } from "./agent.mjs";
+import { autoPermissionDecision, buildArgv, childEnv, createAgentRunner, formatSessionError, killAllAgents, loadCustomAgentConfig, runAgent, withSessionId } from "./agent.mjs";
 import { withFakeEnv, tmpDir, waitFor, within } from "./fixtures/support.mjs";
 
 /** @param {number} pid */
@@ -168,6 +168,31 @@ test("buildArgv inherits allow-all URL, autopilot, and parent-approved directory
 	assert.deepEqual(argv.filter((value) => value === "--add-dir").length, 2);
 	assert.ok(argv.includes("/one") && argv.includes("/two"));
 });
+
+test("buildArgv assigns the child session id up front, but never alongside --resume", () => {
+	const fresh = buildArgv({ prompt: "P", sessionId: "abc-123" }, "copilot");
+	assert.deepEqual(fresh.slice(fresh.indexOf("--session-id"), fresh.indexOf("--session-id") + 2), ["--session-id", "abc-123"]);
+	const resumed = buildArgv({ prompt: "P", sessionId: "abc-123", resume: "old-1" }, "copilot");
+	assert.ok(!resumed.includes("--session-id"), "a resumed agent keeps the session it continues");
+	assert.ok(["--resume", "old-1"].every((x) => resumed.includes(x)));
+	assert.ok(!buildArgv({ prompt: "P" }, "copilot").includes("--session-id"));
+});
+
+test("withSessionId assigns exactly one id, and only to new sessions", () => {
+	const assigned = withSessionId({ prompt: "P" });
+	assert.match(String(assigned.sessionId), /^[0-9a-f-]{36}$/);
+	assert.notEqual(withSessionId({ prompt: "P" }).sessionId, assigned.sessionId, "ids are unique per agent");
+	assert.equal(withSessionId(assigned), assigned, "an already-assigned spec is untouched");
+	const resumed = { prompt: "P", resume: "old-1" };
+	assert.equal(withSessionId(resumed), resumed);
+});
+
+test("a killed agent still reports the session id the run assigned it", async () =>
+	withFakeEnv({ CWF_FAKE_MODE: "hang" }, async () => {
+		const res = await runAgent({ prompt: "P", timeout: 0.05 });
+		assert.equal(res.ok, false);
+		assert.match(String(res.sessionId), /^[0-9a-f-]{36}$/, "cleanup can still find the session of an agent that never answered");
+	}));
 
 test("childEnv: increments CWF_DEPTH and disables nested workflow tools", () => {
 	const e1 = childEnv({});

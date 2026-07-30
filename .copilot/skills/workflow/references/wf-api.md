@@ -42,6 +42,11 @@ Options:
 
 Use `agent.followUp(result, prompt, options?)` for another turn in the same session.
 
+Each agent runs in its own Copilot session, which the run disposes of when it completes: sessions
+whose agent failed, and every session of a run that ended in any state other than `complete`, are
+preserved for inspection (`copilot --resume <sessionId>`) and listed as `preservedSessions` in
+`run.json`. Set `CWF_KEEP_SESSIONS=1` to keep them all.
+
 ### `parallel(thunks, options?)`
 
 A barrier over zero-argument functions. Results preserve input order.

@@ -17,7 +17,7 @@
  * - `CWF_FAKE_OUTPUT_TOKENS` — output tokens to report (default `42`)
  * - `CWF_FAKE_CONTENT` — assistant content (default `ECHO: <prompt>`)
  * - `CWF_FAKE_STDERR` — stderr text for `fail` mode
- * - `CWF_FAKE_SESSION` — force a child session id (default: random)
+ * - `CWF_FAKE_SESSION` — force a child session id (default: the `--session-id` argument, else random)
  * - `CWF_FAKE_DELAY_MS` — delay a successful response (for concurrency tests)
  * - `CWF_FAKE_PID_FILE` — write this fake process's PID to the given path
  * - `COPILOT_HOME`     — where the child session log is written (default `~/.copilot`)
@@ -47,7 +47,7 @@ const nanoAiu = Number(process.env.CWF_FAKE_NANO_AIU ?? 500_000_000);
 const outputTokens = Number(process.env.CWF_FAKE_OUTPUT_TOKENS ?? 42);
 const content = process.env.CWF_FAKE_CONTENT ?? `ECHO: ${prompt}`;
 const resumedSessionId = argValue(argv, "--resume");
-const sessionId = resumedSessionId ?? process.env.CWF_FAKE_SESSION ?? `fake-${randomBytes(6).toString("hex")}`;
+const sessionId = resumedSessionId ?? process.env.CWF_FAKE_SESSION ?? argValue(argv, "--session-id") ?? `fake-${randomBytes(6).toString("hex")}`;
 const copilotHome = process.env.COPILOT_HOME || join(homedir(), ".copilot");
 const delayMs = Math.max(0, Number(process.env.CWF_FAKE_DELAY_MS ?? 0));
 if (process.env.CWF_FAKE_PID_FILE) writeFileSync(process.env.CWF_FAKE_PID_FILE, String(process.pid), "utf8");

@@ -5,10 +5,22 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { executeWorkflow as executeRawWorkflow, extractMeta, stripExports } from "./executor.mjs";
+import { sessionStateDir } from "./sessions.mjs";
 import { withFakeEnv, tmpDir, within } from "./fixtures/support.mjs";
 
 /** @param {any} config */
 const executeWorkflow = (config) => executeRawWorkflow(config);
+
+/** Child session ids a run journaled. @param {string} runId @param {string} runDir @returns {string[]} */
+function sessionIds(runId, runDir) {
+	const ids = readFileSync(join(runDir, "journal.jsonl"), "utf8")
+		.split("\n")
+		.filter(Boolean)
+		.map((line) => JSON.parse(line).sessionId)
+		.filter((id) => typeof id === "string");
+	assert.ok(ids.length, `run ${runId} journaled no child sessions`);
+	return ids;
+}
 
 test("stripExports removes ESM exports while leaving plain source alone", () => {
 	assert.equal(stripExports("export const meta = {}").trim(), "const meta = {}");
@@ -86,6 +98,35 @@ test("real run persists execution artifacts and a lean result file", () =>
 		const result = JSON.parse(readFileSync(join(runDir, "result.json"), "utf8"));
 		assert.deepEqual(Object.keys(result).sort(), ["aic", "result", "runId", "status"]);
 		assert.equal(result.result, "ECHO: hi");
+	}));
+
+test("a complete run leaves no agent sessions behind", () =>
+	withFakeEnv({}, async () => {
+		const runDir = tmpDir();
+		const rec = await executeWorkflow({
+			source: `return (await parallel([() => agent("a"), () => agent("b")])).map((r) => r.content).join("|");`,
+			runId: "clean-sessions",
+			runDir,
+			budget: 10,
+			onLine: () => {},
+		});
+		assert.equal(rec.status, "complete");
+		assert.deepEqual(rec.preservedSessions, []);
+		assert.deepEqual(sessionIds(rec.runId, runDir).filter((id) => existsSync(sessionStateDir(id))), [], "every child session directory is gone");
+	}));
+
+test("a run that did not complete preserves its agent sessions", () =>
+	withFakeEnv({ CWF_FAKE_MODE: "fail" }, async () => {
+		const runDir = tmpDir();
+		const rec = await executeWorkflow({
+			source: `const r = await agent("a"); return r.ok ? "ok" : "";`,
+			runId: "keep-sessions",
+			runDir,
+			budget: 10,
+			onLine: () => {},
+		});
+		assert.notEqual(rec.status, "complete");
+		assert.deepEqual(rec.preservedSessions, sessionIds(rec.runId, runDir), "a run that can still be resumed keeps every session it created");
 	}));
 
 test("manifest durably pins plan agent ceilings", () =>

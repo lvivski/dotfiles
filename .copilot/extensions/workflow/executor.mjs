@@ -145,6 +145,7 @@ function objectLiteralEnd(source, open) {
  * @property {number} aic
  * @property {{ agents: number, launched: number, done: number, failed: number, cached: number, skipped: number, dropped: number, unknownUsage: number }} counts
  * @property {string[]} preservedWorktrees
+ * @property {string[]} preservedSessions
  * @property {string} result
  * @property {number} plannedMaxAgents
  */
@@ -329,7 +330,14 @@ async function executeRealRun(cfg, run) {
 					onLine(`  ! ${error}`, "warning", { ephemeral: false });
 				}
 			}
-			const record = finalize({ runId: cfg.runId, status, error, meta, args: cfg.args, startedAt, rt, result, preservedWorktrees });
+			// After the final status: a run that did not complete keeps every agent session, since it
+			// can still be resumed or inspected.
+			const { deleted, preserved: preservedSessions } = await rt.cleanupSessions({ status });
+			if (deleted.length) onLine(`  cleaned up ${deleted.length} agent session(s)`, "info", { ephemeral: true });
+			if (preservedSessions.length) {
+				onLine(`  preserved ${preservedSessions.length} agent session(s): copilot --resume ${preservedSessions[0]}`, "info", { ephemeral: false });
+			}
+			const record = finalize({ runId: cfg.runId, status, error, meta, args: cfg.args, startedAt, rt, result, preservedWorktrees, preservedSessions });
 			persistence.writeJson(lease, "run.json", record);
 			persistence.writeJson(lease, "result.json", { runId: record.runId, status: record.status, aic: record.aic, result: record.result });
 			reporter.emit({ ev: "run_end", runId: cfg.runId, status: record.status, error: record.error, ...record.counts, nanoAiu: rt.stats().nanoAiu, aic: record.aic });
@@ -485,7 +493,7 @@ function runtimeOpts(cfg) {
 
 /**
  * @param {{ runId: string, status: RunStatus, error: string|null, meta: object, args: unknown,
- *   startedAt: number, rt: Runtime, result: string, preservedWorktrees?: string[] }} p
+ *   startedAt: number, rt: Runtime, result: string, preservedWorktrees?: string[], preservedSessions?: string[] }} p
  * @returns {RunRecord}
  */
 function finalize(p) {
@@ -509,6 +517,7 @@ function finalize(p) {
 		aic: nanoAiu / 1_000_000_000,
 		counts,
 		preservedWorktrees: p.preservedWorktrees ?? [],
+		preservedSessions: p.preservedSessions ?? [],
 		result: p.result,
 		plannedMaxAgents: rt.plannedMaxAgents,
 	};

@@ -10,6 +10,7 @@
  * record's `totalNanoAiu` + per-model `ShutdownModelMetricUsage` token breakdown.
  */
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -42,6 +43,7 @@ const MAX_STDERR_CHARS = 64_000;
  * @property {"off"|"on"|"auto"} [permissionMode] inherited parent permission mode
  * @property {boolean} [autopilot]         inherit parent autopilot interaction mode
  * @property {string|null} [resume]       session id to resume (follow-up turns)
+ * @property {string|null} [sessionId]    `--session-id`; id assigned to the new child session
  * @property {number|null} [timeout]      seconds; kills the process tree if exceeded
  * @property {string|null} [label]        human label for logs/progress
  * @property {string|null} [cacheCwd]     logical cwd identity used only for checkpoint keys
@@ -103,6 +105,9 @@ export function buildArgv(spec, bin = copilotBin()) {
 	/** @type {[string, string|null|undefined][]} */
 	const singles = [
 		["--resume", spec.resume],
+		// Assigning the id up front (instead of learning it from the child's first event) keeps a
+		// crashed or killed agent's session identifiable, so run cleanup can still dispose of it.
+		["--session-id", spec.resume ? null : spec.sessionId],
 		["--model", spec.model],
 		["--agent", spec.agentType],
 		["--effort", spec.effort],
@@ -122,6 +127,18 @@ export function buildArgv(spec, bin = copilotBin()) {
 	];
 	for (const [flag, values] of repeats) for (const v of values || []) argv.push(flag, v);
 	return argv;
+}
+
+/**
+ * Give a new agent an explicit child session id so the run owns (and can later dispose of) every
+ * session it creates, even one whose child died before reporting anything. Resumed agents keep the
+ * session they are continuing.
+ * @param {AgentSpec} spec
+ * @returns {AgentSpec}
+ */
+export function withSessionId(spec) {
+	if (spec.resume || spec.sessionId) return spec;
+	return { ...spec, sessionId: randomUUID() };
 }
 
 const CHILD_ENV_EXACT = new Set([
@@ -300,7 +317,7 @@ async function runWithLifecycle(spec, opts, execute) {
 	}
 
 	/** @type {AgentAccumulator} */
-	const acc = { content: null, outputTokens: 0, sessionId: spec.resume ?? null, model, sessionErrors: [] };
+	const acc = { content: null, outputTokens: 0, sessionId: spec.resume ?? spec.sessionId ?? null, model, sessionErrors: [] };
 	/** @type {"timeout"|"aborted"|null} */
 	let termination = null;
 	/** @type {(() => void)|null} */
@@ -375,6 +392,7 @@ async function runWithLifecycle(spec, opts, execute) {
  */
 export async function runAgent(spec, opts = {}) {
 	const bin = opts.bin || copilotBin();
+	spec = withSessionId(spec);
 
 	return runWithLifecycle(spec, opts, async ({ acc, onStop, terminated }) => {
 		// Every POSIX agent gets its own process group: run-level aborts and extension teardown must
