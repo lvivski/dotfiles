@@ -25,6 +25,7 @@ const textDiff = (file = "a.js") => `diff --git a/${file} b/${file}\n--- a/${fil
  * @property {{
  *   inspectCheckout?: (input: any, options: any) => any,
  *   discover?: (input: any, options: any) => any,
+ *   resolveContext?: (input: any, options: any) => any,
  *   validateFindings?: (input: any, options: any) => any,
  * }} [host]
  */
@@ -58,6 +59,7 @@ function smokeApi(args, behavior = {}) {
 		worktree: 0,
 		hostDiscover: 0,
 		hostValidate: 0,
+		hostContext: 0,
 		hostInspectCheckout: 0,
 		agentArgs: /** @type {any[]} */ ([]),
 		structuredArgs: /** @type {any[]} */ ([]),
@@ -88,23 +90,35 @@ function smokeApi(args, behavior = {}) {
 			discover: async (/** @type {any} */ input, /** @type {any} */ options) => {
 				calls.hostDiscover++;
 				if (behavior.host?.discover) return behavior.host.discover(input, options);
+				const records = [{ filePath: "src/x.js", fileHash: "hash", candidates: [{ vulnClass: "raw-sql", line: 1, snippet: "x", matchedPattern: "test", noiseTier: "precise" }] }];
 				return {
 					root: "/tmp/cwf-smoke",
 					source: "test scope",
 					direct: true,
+					matchersTotal: 22,
+					slugNotes: {},
 					selectedCount: 1,
 					preCapRecords: 1,
-					records: [{ filePath: "src/x.js", fileHash: "hash", candidates: [{ vulnClass: "test", line: 1, snippet: "x", matchedPattern: "test", noiseTier: "normal" }], reviewMode: "candidate-anchored" }],
+					records,
+					batches: [records],
+					manifest: ["src/x.js"],
+					manifestCount: 1,
+					reviewPaths: ["src/x.js"],
 					candidateCount: 1,
-					preCapCandidateCount: 1,
 					unreadable: 0,
 					boundaries: [],
 				};
 			},
+			resolveContext: async (/** @type {any} */ input, /** @type {any} */ options) => {
+				calls.hostContext++;
+				if (behavior.host?.resolveContext) return behavior.host.resolveContext(input, options);
+				return { source: null, text: "", truncated: false, trusted: false };
+			},
+			writeFindings: async (/** @type {any} */ input) => ({ path: ".security-review/findings-test.json", count: (input.findings || []).length }),
 			validateFindings: async (/** @type {any} */ input, /** @type {any} */ options) => {
 				calls.hostValidate++;
 				if (behavior.host?.validateFindings) return behavior.host.validateFindings(input, options);
-				return { valid: input.findings.map((/** @type {any} */ finding) => ({ ...finding, evidence: "1: x", fileHash: "hash" })), rejected: [] };
+				return { valid: input.findings.map((/** @type {any} */ finding) => ({ ...finding, severity: "HIGH", evidence: "1: x", fileHash: "hash" })), rejected: [], suppressed: 0 };
 			},
 		},
 		agent: async (/** @type {string} */ prompt, /** @type {any} */ opts = {}) => {
@@ -546,15 +560,14 @@ test("security-review.mjs: scans, investigates, verifies, and renders a report",
 	const { result, calls, meta } = await smoke(WORKFLOWS, "security-review", { root: "src/" });
 	assert.equal(meta.name, "security-review");
 	assert.match(/** @type {string} */ (result), /# Security review/);
-	assert.match(/** @type {string} */ (result), /Verification: 1 verified/);
+	assert.match(/** @type {string} */ (result), /Verification: 1 confirmed/);
 	assert.match(/** @type {string} */ (result), /\| Severity \| Confidence \|/);
 	assert.equal(calls.hostDiscover, 1, "deterministic host discovery ran");
+	assert.equal(calls.hostContext, 1, "project context resolution ran");
 	assert.equal(calls.hostValidate, 1, "host evidence revalidation ran");
-	assert.ok(calls.structured >= 1, "at least one investigation");
-	assert.ok(calls.verify >= 1, "adversarial verification ran");
-	assert.equal(calls.report, 1, "executive summary synthesized");
-	assert.equal(calls.structuredArgs[0].options.profile, "read-only");
-	assert.equal(calls.verifyArgs[0].options.profile, "read-only");
+	assert.equal(calls.structured, 2, "one investigation plus one adversarial verdict");
+	assert.equal(calls.report, 0, "no separate summary agent; the report is rendered deterministically");
+	for (const call of calls.structuredArgs) assert.equal(call.options.profile, "read-only", "model work stays read-only");
 });
 
 test("security-review host deterministically scopes, caps, and revalidates evidence", async () => {
@@ -569,11 +582,12 @@ test("security-review host deterministically scopes, caps, and revalidates evide
 	writeFileSync(join(outside, "secret.js"), "exec(secret);\n");
 	symlinkSync(join(outside, "secret.js"), join(root, "src/outside.js"));
 
-	const scan = await discoverSecurity({ root: "src", max_files: 10, max_candidates_per_file: 1 }, { cwd: root });
+	const scan = await discoverSecurity({ root: "src", max_files: 10 }, { cwd: root });
 	assert.equal(scan.selectedCount, 2, "out-of-scope symlink is excluded");
-	assert.deepEqual(scan.records.map((/** @type {any} */ record) => record.filePath), ["app.js"]);
-	assert.equal(scan.candidateCount, 1);
-	assert.ok(scan.boundaries.some((/** @type {string} */ boundary) => /omitted/.test(boundary)));
+	// Unanchored files are reviewed too: dropping them would make the matchers the real selector.
+	assert.deepEqual(scan.records.map((/** @type {any} */ record) => record.filePath).sort(), ["app.js", "safe.js"]);
+	assert.equal(scan.candidateCount, 2, "both shell-execution lines are anchored");
+	assert.ok(!scan.manifest.includes("../tests/ignored.js"), "the manifest cannot escape the root");
 	const escaped = await discoverSecurity({ files: ["src/outside.js"], max_files: 10 }, { cwd: root });
 	assert.equal(escaped.selectedCount, 0);
 	assert.equal(escaped.records.length, 0);
@@ -581,26 +595,15 @@ test("security-review host deterministically scopes, caps, and revalidates evide
 	const direct = await discoverSecurity({ files: ["src/safe.js"], max_files: 10 }, { cwd: root });
 	assert.equal(direct.records.length, 1, "explicit files are reviewed even without regex candidates");
 	const record = direct.records[0];
-	const valid = await validateSecurityFindings(
-		{
-			root,
-			records: [record],
-			findings: [{ severity: "HIGH", confidence: "high", vulnClass: "test", filePath: "src/safe.js", line: 1, title: "t", description: "d", recommendation: "r" }],
-		},
-		{ cwd: root },
-	);
+	const finding = { kind: "security", impact: "high", likelihood: "high", confidence: "high", vulnClass: "test", anchor: "a-b", filePath: "src/safe.js", line: 1, title: "t", description: "d", recommendation: "r" };
+	const args = { root, records: [record], manifest: direct.manifest, findings: [finding] };
+	const valid = await validateSecurityFindings(args, { cwd: root });
 	assert.equal(valid.valid.length, 1);
+	assert.equal(valid.valid[0].severity, "HIGH", "severity is derived by the host, never supplied by the model");
 	assert.match(valid.valid[0].evidence, /1: export const safe/);
 
 	writeFileSync(join(root, "src/safe.js"), "export const changed = true;\n");
-	const stale = await validateSecurityFindings(
-		{
-			root,
-			records: [record],
-			findings: [{ severity: "HIGH", confidence: "high", vulnClass: "test", filePath: "src/safe.js", line: 1, title: "t", description: "d", recommendation: "r" }],
-		},
-		{ cwd: root },
-	);
+	const stale = await validateSecurityFindings(args, { cwd: root });
 	assert.equal(stale.valid.length, 0);
 	assert.match(stale.rejected[0].reason, /changed after discovery/);
 });
@@ -609,8 +612,7 @@ test("security-review.mjs: uncached host evidence and failures stay explicit", a
 	const records = ["src/a.js", "src/b.js"].map((filePath) => ({
 		filePath,
 		fileHash: filePath,
-		candidates: [{ vulnClass: "command-injection", line: 1, snippet: "exec(x)", matchedPattern: "shell", noiseTier: "normal" }],
-		reviewMode: "candidate-anchored",
+		candidates: [{ vulnClass: "command-execution", line: 1, snippet: "exec(x)", matchedPattern: "shell", noiseTier: "precise" }],
 	}));
 	/** @type {NonNullable<SmokeBehavior["host"]>} */
 	const host = {
@@ -620,30 +622,38 @@ test("security-review.mjs: uncached host evidence and failures stay explicit", a
 				root: "/tmp/cwf-smoke",
 				source: "test scope",
 				direct: true,
+				matchersTotal: 22,
+				slugNotes: {},
 				selectedCount: 2,
 				preCapRecords: 2,
 				records,
+				batches: records.map((record) => [record]),
+				manifest: records.map((record) => record.filePath),
+				manifestCount: 2,
+				reviewPaths: records.map((record) => record.filePath),
 				candidateCount: 2,
-				preCapCandidateCount: 2,
 				unreadable: 0,
 				boundaries: ["bounded fixture"],
 			};
 		},
 		validateFindings: (input, options) => {
 			assert.equal(options.cache, false);
-			return { valid: input.findings, rejected: [] };
+			return { valid: input.findings.map((/** @type {any} */ finding) => ({ ...finding, severity: "HIGH" })), rejected: [], suppressed: 0 };
 		},
 	};
-	const run = await smoke(WORKFLOWS, "security-review", { root: "src", batch_size: 1 }, {
+	const run = await smoke(WORKFLOWS, "security-review", { root: "src" }, {
 		host,
-		structured: (_prompt, schema, _options, index) =>
-			index === 0
+		// First batch fails outright; the surviving finding then fails verification. Neither may
+		// be quietly dropped, and neither may be presented as a clean result.
+		structured: (_prompt, schema, _options, index) => {
+			if (schema.properties?.verdict) return { value: null, ok: false, error: "verifier unavailable", raw: res("bad"), attempts: 1 };
+			return index === 0
 				? { value: null, ok: false, error: "malformed investigation", raw: res("bad"), attempts: 3 }
-				: { value: [fillObject(schema.items)], ok: true, error: "", raw: res("{}"), attempts: 1 },
-		verify: () => ({ passed: false, score: null, reasons: "verifier unavailable", raw: { ...res(""), ok: false, error: "verifier unavailable" }, ok: false, error: "verifier unavailable" }),
+				: { value: [fillObject(schema.items)], ok: true, error: "", raw: res("{}"), attempts: 1 };
+		},
 	});
-	assert.match(String(run.result), /1\/2 batch\(es\) completed; 1 failed/);
-	assert.match(String(run.result), /0 verified, 0 rejected, 1 unverified/);
+	assert.match(String(run.result), /1\/2 batch run\(s\) completed; 1 failed/);
+	assert.match(String(run.result), /0 confirmed, 0 refuted, 0 uncertain, 1 unverified/);
 	assert.match(String(run.result), /review was incomplete/);
 	assert.match(String(run.result), /bounded fixture/);
 });
@@ -651,10 +661,9 @@ test("security-review.mjs: uncached host evidence and failures stay explicit", a
 test("security-review.mjs: dry-run follows discovered batch and verification fan-out", async () => {
 	const { calls } = await smoke(WORKFLOWS, "security-review", { root: "src" }, { dryRun: true });
 	assert.equal(calls.hostDiscover, 1);
-	assert.equal(calls.structured, 1);
+	assert.equal(calls.structured, 2, "one synthetic investigation plus its verdict");
 	assert.equal(calls.hostValidate, 1);
-	assert.equal(calls.verify, 1);
-	assert.equal(calls.report, 1);
+	assert.equal(calls.report, 0);
 });
 
 const EXAMPLE_NAMES = ["minimal-review", "pipeline-review", "fanout-synthesize", "loop-until-dry", "loop-memory", "deep-research"];
@@ -678,7 +687,7 @@ test("repo workflow/example harnesses use .mjs names", () => {
 
 test("every checked-in workflow and example declares a usable meta block", () => {
 	for (const dir of [WORKFLOWS, EXAMPLES]) {
-		for (const name of readdirSync(dir).filter((file) => file.endsWith(".mjs") && !file.endsWith(".host.mjs"))) {
+		for (const name of readdirSync(dir).filter((file) => file.endsWith(".mjs") && !file.endsWith(".host.mjs") && !file.endsWith(".test.mjs"))) {
 			const meta = extractMeta(readFileSync(join(dir, name), "utf8"));
 			assert.equal(typeof meta.name, "string", `${name}: meta.name`);
 			assert.equal(typeof meta.description, "string", `${name}: meta.description`);
