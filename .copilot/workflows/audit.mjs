@@ -1,8 +1,8 @@
 // audit.mjs — audit files for a concern, adversarially verify findings, synthesize a report.
 //
-//   run_workflow({ name: "audit", budget: 1000,
+//   run_copilot_workflow({ name: "audit", budget: 1000,
 //                  args: { paths: ["src/a.js", "src/b.js"], concern: "missing input validation" } })
-//   run_workflow({ name: "audit", args: ["src/a.js", "src/b.js"] })
+//   run_copilot_workflow({ name: "audit", args: ["src/a.js", "src/b.js"] })
 //
 // Read-only: agents view the files from the directory the workflow is launched in.
 export const meta = {

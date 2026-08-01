@@ -2,7 +2,7 @@
  * @module effects
  *
  * Host effects: the scalable boundary for deterministic (and impure-but-recorded) host work. A
- * workflow brings its own effect code in a **sidecar** (`<name>.host.mjs` or `run_workflow({ host })`)
+ * workflow brings its own effect code in a **sidecar** (`<name>.host.mjs` or `run_copilot_workflow({ host })`)
  * that the runtime imports in the **host realm** (full Node — `fs`, `child_process`, any npm). The
  * harness calls those effects through a single injected `host.<name>(input)` namespace; each call is
  * checkpointed by `(name, input)` in the same journal agents use, so on resume it replays instead of
@@ -97,7 +97,7 @@ export function buildHostProxy({ names = [], invoke = async () => {}, restricted
 			})
 		);
 	if (restricted) return thrower("workflow: host.* effects are forbidden in restricted mode");
-	if (!hasSidecar) return thrower("workflow: no host sidecar loaded — add <name>.host.mjs beside the harness or pass run_workflow({ host }), and declare the effect there");
+	if (!hasSidecar) return thrower("workflow: no host sidecar loaded — add <name>.host.mjs beside the harness or pass run_copilot_workflow({ host }), and declare the effect there");
 	const known = new Set(names);
 	return /** @type {any} */ (
 		new Proxy(Object.create(null), {

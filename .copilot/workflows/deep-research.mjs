@@ -1,8 +1,8 @@
 // deep-research.mjs — fan out research across angles, cross-check, synthesize a cited report.
 //
-//   run_workflow({ name: "deep-research", budget: 3000,
+//   run_copilot_workflow({ name: "deep-research", budget: 3000,
 //                  args: "What changed in Python packaging between 2020 and 2024?" })
-//   run_workflow({ name: "deep-research", args: { question: "...", angles: 6 } })
+//   run_copilot_workflow({ name: "deep-research", args: { question: "...", angles: 6 } })
 //
 // Research workers use whatever web-search/fetch tools the agent has, so that stage opts into
 // MCP/network explicitly (network access is the point here).

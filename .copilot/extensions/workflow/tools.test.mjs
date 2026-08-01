@@ -151,7 +151,7 @@ test("branch invalidation paths are canonicalized and ancestor-reduced", () => {
 	assert.throws(() => parseInvalidations(["0/1"]), /invalid branch path/);
 });
 
-test("run_workflow surfaces a failure when a resume-critical artifact cannot be persisted", () =>
+test("run_copilot_workflow surfaces a failure when a resume-critical artifact cannot be persisted", () =>
 	withTool(async ({ runs }) => {
 		const ctx = fakeCtx(tmpDir());
 		// Occupy meta.json with a directory: a resume reads its args from that file, so the launch
@@ -215,7 +215,7 @@ const kept = await pipeline(["a","b","c","d","e","f","g","h"], (p) => agent(p), 
 		assert.doesNotMatch(JSON.stringify(launched), /agent cap exceeded/);
 	}));
 
-test("run_workflow applies a user-approved budget increase and persists it", () =>
+test("run_copilot_workflow applies a user-approved budget increase and persists it", () =>
 	withTool(async ({ runs }) => {
 		const ctx = fakeCtx(tmpDir());
 		let approvals = 0;
@@ -242,7 +242,7 @@ await agent("one"); await agent("two"); return "done";`,
 		assert.equal(controls.length, 1);
 	}));
 
-test("run_workflow inherits parent auto and autopilot posture into agents and provenance", () =>
+test("run_copilot_workflow inherits parent auto and autopilot posture into agents and provenance", () =>
 	withTool(async ({ runs }) => {
 		const cwd = tmpDir();
 		const ctx = fakeCtx(cwd);
@@ -561,8 +561,8 @@ const r = await agent("healthy"); if (!r.ok) throw new Error(r.error); return r.
 
 test("buildTools registers workflow run/control/list/inspect/result tools with valid schemas", () => {
 	const tools = buildTools(fakeCtx("/"));
-	assert.deepEqual(tools.map((t) => t.name).sort(), ["control_workflow_run", "get_workflow_result", "inspect_workflow_agent", "inspect_workflow_run", "list_workflow_runs", "run_workflow"]);
-	const rw = tools.find((t) => t.name === "run_workflow");
+	assert.deepEqual(tools.map((t) => t.name).sort(), ["control_workflow_run", "get_workflow_result", "inspect_workflow_agent", "inspect_workflow_run", "list_workflow_runs", "run_copilot_workflow"]);
+	const rw = tools.find((t) => t.name === "run_copilot_workflow");
 	assert.equal(rw.defer, "never");
 	assert.equal(rw.parameters.type, "object");
 	assert.ok(rw.parameters.properties.script && rw.parameters.properties.budget && rw.parameters.properties.dryRun && rw.parameters.properties.progress);
@@ -612,7 +612,7 @@ test("inspect_workflow_run tool returns bounded status and structured validation
 		assert.equal(invalid.resultType, "failure");
 	}));
 
-test("recursion guard: nested subagents get no run_workflow tool", () => {
+test("recursion guard: nested subagents get no run_copilot_workflow tool", () => {
 	const saved = process.env.CWF_DISABLE_WORKFLOW_TOOLS;
 	process.env.CWF_DISABLE_WORKFLOW_TOOLS = "1";
 	try {

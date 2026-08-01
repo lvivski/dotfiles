@@ -1,6 +1,6 @@
 // loop-memory.mjs — durable cross-run memory (for scheduled/recurring workflow ticks).
 //
-//   run_workflow({ name: "loop-memory", budget: 1000,
+//   run_copilot_workflow({ name: "loop-memory", budget: 1000,
 //                  memory: "~/.copilot/workflows/state/sweep.md", args: "src/" })
 //
 // Each run is fresh (checkpoints reset), but `memory` persists ACROSS runs. The harness reads what

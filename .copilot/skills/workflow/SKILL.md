@@ -16,7 +16,7 @@ Do not use a workflow for routine edits or lookups that fit in a few direct tool
 2. Choose `pipeline()` for per-item stages; use `parallel()` only for genuine barriers.
 3. Rubber-duck reusable or high-risk designs.
 4. Write a plain `.mjs` harness; start it with a literal `meta` block so runs are named in listings.
-5. Preview with `run_workflow({ ..., dryRun: true })`.
+5. Preview with `run_copilot_workflow({ ..., dryRun: true })`.
 6. Show phases, projected agents, models/profiles, and budget before a paid run unless already approved.
 7. Run with an explicit budget.
 8. Inspect with `inspect_workflow_run`; retrieve results with `get_workflow_result`.
@@ -58,7 +58,7 @@ return report.content;
 - Parent `allow-all on`, `allow-all auto`, and autopilot posture are inherited; profiles can only
   narrow them. Fine-grained parent rules are not exposed, so tool-using profiles fail closed in
   normal permission mode.
-- MCP configuration and extra paths belong to `run_workflow`, never agent options.
+- MCP configuration and extra paths belong to `run_copilot_workflow`, never agent options.
 - The harness cannot mutate budget. The host may ask the user once to approve an increase at the boundary.
 - Dry-run executes read-only effects for accurate discovery and skips mutating effects.
 - The harness VM provides determinism, not a security boundary. Use an OS/cloud sandbox for

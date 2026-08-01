@@ -1,8 +1,8 @@
 // security-review.mjs — recon, open-ended investigation, evidence validation, adversarial verify.
 //
-//   run_workflow({ name: "security-review", budget: 6000 })                    // local changes
-//   run_workflow({ name: "security-review", args: { root: "src/" } })          // subtree
-//   run_workflow({ name: "security-review", args: ["src/a.js", "src/b.js"] })  // explicit files
+//   run_copilot_workflow({ name: "security-review", budget: 6000 })                    // local changes
+//   run_copilot_workflow({ name: "security-review", args: { root: "src/" } })          // subtree
+//   run_copilot_workflow({ name: "security-review", args: ["src/a.js", "src/b.js"] })  // explicit files
 export const meta = {
 	name: "security-review",
 	description: "Deterministic scope, open-ended investigation, evidence revalidation, and adversarial verification.",

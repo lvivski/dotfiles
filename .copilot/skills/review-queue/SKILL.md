@@ -27,7 +27,7 @@ triage only.
    report that nothing is assigned and stop.
 2. **Preview/run.** Show PR count, platforms, budget, and whether deep checkout is enabled. Then run:
    ```text
-   run_workflow({ name: "review-queue",
+   run_copilot_workflow({ name: "review-queue",
                   budget: 10000,
                   args: { prs: <contents of /tmp/review-queue.json> } })
    ```

@@ -22,10 +22,10 @@ input error; the workflow never substitutes a sample topic. Preview first, then 
 budget:
 
 ```text
-run_workflow({ name: "deep-research", dryRun: true, budget: 10000,
+run_copilot_workflow({ name: "deep-research", dryRun: true, budget: 10000,
                args: { "question": "<question>", "angles": 5 } })
 
-run_workflow({ name: "deep-research", budget: 10000,
+run_copilot_workflow({ name: "deep-research", budget: 10000,
                args: { "question": "<question>", "angles": 5 } })
 ```
 

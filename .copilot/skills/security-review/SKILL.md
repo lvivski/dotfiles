@@ -22,22 +22,22 @@ verifier returns `true-positive`, `false-positive`, or `uncertain` before the re
 Preview first (no AIC spent):
 
 ```text
-run_workflow({ name: "security-review", dryRun: true, budget: 6000 })
+run_copilot_workflow({ name: "security-review", dryRun: true, budget: 6000 })
 ```
 
 Then run. With no args it reviews staged, unstaged, and untracked changes, or the current directory
 if there are none:
 
 ```text
-run_workflow({ name: "security-review", budget: 6000,
+run_copilot_workflow({ name: "security-review", budget: 6000,
                model: "claude-opus-4.8", effort: "high", context: "long_context" })
 ```
 
 Scope it to a subtree or explicit files, or review a pull-request branch against its merge base:
 
 ```text
-run_workflow({ name: "security-review", budget: 6000, args: { root: "src/" } })
-run_workflow({ name: "security-review", budget: 6000, args: { base: "main" } })
+run_copilot_workflow({ name: "security-review", budget: 6000, args: { root: "src/" } })
+run_copilot_workflow({ name: "security-review", budget: 6000, args: { base: "main" } })
 ```
 
 Args:

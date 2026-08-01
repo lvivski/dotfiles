@@ -677,7 +677,7 @@ export function workflowCommand(argsStr, ctx) {
 	}
 
 	const id = sub === "latest" ? latestRunId() : sub;
-	if (!id) return void log("workflow: no workflow runs yet. Start one with run_workflow.");
+	if (!id) return void log("workflow: no workflow runs yet. Start one with run_copilot_workflow.");
 	const dir = findRunDir(id);
 	if (!dir) return void log(`workflow: no run found with id '${id}'. Try /workflow runs.`);
 	log(formatRunDashboard(id, dir) || formatRunSummary(id, runRecordOf(dir), dir));

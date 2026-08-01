@@ -1,7 +1,7 @@
 /**
  * @module tools
  *
- * SDK-free implementation of the workflow tools (`run_workflow`, `get_workflow_result`,
+ * SDK-free implementation of the workflow tools (`run_copilot_workflow`, `get_workflow_result`,
  * `list_workflow_runs`). All host interaction goes through an injected {@link ToolCtx}
  * (`log` / `send` / `getWorkspaceCwd`), so this module runs — and is tested — under plain `node`.
  * `extension.mjs` supplies a `ctx` backed by the real Copilot session and registers the tools
@@ -238,7 +238,7 @@ async function resolveCwd(explicit, ctx) {
 }
 
 /**
- * `run_workflow` implementation.
+ * `run_copilot_workflow` implementation.
  * @param {any} input
  * @param {ToolCtx} ctx
  */
@@ -274,7 +274,7 @@ export async function runWorkflow(input, ctx) {
 		return formatBackgroundStart(run);
 	} catch (e) {
 		if (e instanceof ValidationError) return failure(e.message);
-		ctx.log(`run_workflow internal error: ${e instanceof Error ? e.stack : e}`);
+		ctx.log(`run_copilot_workflow internal error: ${e instanceof Error ? e.stack : e}`);
 		return failure(`internal workflow extension error: ${e instanceof Error ? e.message : e}`);
 	}
 }
@@ -682,7 +682,7 @@ export function buildCommands(ctx) {
 	];
 }
 
-/** @returns {boolean} true when running nested inside a workflow subagent (don't offer run_workflow). */
+/** @returns {boolean} true when running nested inside a workflow subagent (don't offer run_copilot_workflow). */
 export function isNested() {
 	const depth = Number.parseInt(process.env.CWF_DEPTH || "0", 10) || 0;
 	const maxDepth = Number.parseInt(process.env.CWF_MAX_DEPTH || "1", 10) || 1;
@@ -709,7 +709,7 @@ export function buildTools(ctx) {
 				additionalProperties: false,
 				required: ["runId"],
 				properties: {
-					runId: { type: "string", minLength: 1, maxLength: 255, description: "Exact workflow run id from run_workflow or list_workflow_runs." },
+					runId: { type: "string", minLength: 1, maxLength: 255, description: "Exact workflow run id from run_copilot_workflow or list_workflow_runs." },
 					offset: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER, default: 0, description: "Offset returned as nextOffset by the previous call." },
 					limit: {
 						type: "integer",
@@ -748,7 +748,7 @@ export function buildTools(ctx) {
 				additionalProperties: false,
 				required: ["runId"],
 				properties: {
-					runId: { type: "string", minLength: 1, maxLength: 255, description: "Exact workflow run id from run_workflow or list_workflow_runs." },
+					runId: { type: "string", minLength: 1, maxLength: 255, description: "Exact workflow run id from run_copilot_workflow or list_workflow_runs." },
 				},
 			},
 			handler: async (/** @type {any} */ input) => {
@@ -810,7 +810,7 @@ export function buildTools(ctx) {
 		handler: (/** @type {any} */ input) => controlWorkflowRun(input, ctx),
 	});
 	tools.unshift({
-		name: "run_workflow",
+		name: "run_copilot_workflow",
 		defer: "never",
 		description:
 			"Run a JavaScript workflow harness across many Copilot agents. The harness exposes only agent, " +

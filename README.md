@@ -34,7 +34,7 @@ brew bundle dump --file=.Brewfile --force
 Copilot CLI subagents in parallel (fan-out/synthesize, adversarial verification, tournaments, ...)
 from an async JavaScript harness (`.mjs`), with checkpoint/resume, budgets, and a live progress
 view. Say `workflow: <task>` in a `copilot` session (or `xtreme: <task>` to use the high-confidence
-preset), invoke the `run_workflow` tool directly, and inspect runs with `/workflow` or `/wf`.
+preset), invoke the `run_copilot_workflow` tool directly, and inspect runs with `/workflow` or `/wf`.
 
 Runs inherit one transport for their full lifetime. The persistent SDK stdio backend is the default
 when available, with isolated CLI processes as the fallback. Override selection with
