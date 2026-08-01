@@ -36,4 +36,8 @@ from an async JavaScript harness (`.mjs`), with checkpoint/resume, budgets, and 
 view. Say `workflow: <task>` in a `copilot` session (or `xtreme: <task>` to use the high-confidence
 preset), invoke the `run_workflow` tool directly, and inspect runs with `/workflow` or `/wf`.
 
+Runs inherit one transport for their full lifetime. The persistent SDK stdio backend is the default
+when available, with isolated CLI processes as the fallback. Override selection with
+`CWF_AGENT_BACKEND=cli` or `CWF_AGENT_BACKEND=sdk`.
+
 See [`.copilot/skills/workflow/SKILL.md`](.copilot/skills/workflow/SKILL.md).

@@ -82,6 +82,7 @@ export async function deleteSessions(ids, opts = {}) {
  * @returns {Promise<{ rows: number, warnings: string[] }>}
  */
 export async function purgeSessionStore(ids) {
+	/** @type {string[]} */
 	const warnings = [];
 	const path = sessionStorePath();
 	if (!ids.length || !existsSync(path)) return { rows: 0, warnings };

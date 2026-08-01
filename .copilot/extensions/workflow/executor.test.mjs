@@ -4,9 +4,10 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { executeWorkflow as executeRawWorkflow, extractMeta, stripExports } from "./executor.mjs";
+import { executeWorkflow as executeRawWorkflow, extractMeta, normalizeBackend, stripExports } from "./executor.mjs";
+import { CLI_BACKEND } from "./agent.mjs";
 import { sessionStateDir } from "./sessions.mjs";
-import { withFakeEnv, tmpDir, within } from "./fixtures/support.mjs";
+import { mkResult, withFakeEnv, tmpDir, within } from "./fixtures/support.mjs";
 
 /** @param {any} config */
 const executeWorkflow = (config) => executeRawWorkflow(config);
@@ -77,6 +78,57 @@ test("dry-run executes the harness plan without writing run artifacts or spendin
 		assert.equal(existsSync(join(runDir, "run.json")), false);
 		assert.equal(existsSync(join(runDir, "journal.jsonl")), false);
 	}));
+
+test("backend ids default to cli and otherwise remain exact", () => {
+	assert.equal(normalizeBackend(undefined), CLI_BACKEND);
+	assert.equal(normalizeBackend("cli"), CLI_BACKEND);
+	assert.equal(normalizeBackend("sdk"), "sdk");
+});
+
+test("real runs open and close one run-scoped backend; dry runs do neither", async () => {
+	/** @type {any[][]} */
+	const calls = [];
+	let closed = false;
+	const factory = {
+		kindFor: () => "test-v1",
+		openRun() {
+			calls.push(["open"]);
+			return {
+				kind: "test-v1",
+				run: async () => mkResult({ sessionId: null, aic: 0, nanoAiu: 0 }),
+				abort: () => calls.push(["abort"]),
+				close: async () => {
+					if (closed) return;
+					closed = true;
+					calls.push(["close"]);
+				},
+			};
+		},
+	};
+	const realDir = tmpDir();
+	const real = await executeWorkflow({
+		source: `return (await agent("x")).content;`,
+		runId: "backend-real",
+		runDir: realDir,
+		budget: 10,
+		agentBackend: factory,
+		onLine: () => {},
+	});
+	assert.equal(real.status, "complete");
+	assert.deepEqual(calls, [["open"], ["close"]]);
+	assert.equal(JSON.parse(readFileSync(join(realDir, "manifest.json"), "utf8")).backend, "test-v1");
+
+	calls.length = 0;
+	await executeWorkflow({
+		source: `await agent("x"); return "preview";`,
+		runId: "backend-dry",
+		runDir: tmpDir(),
+		dryRun: true,
+		agentBackend: factory,
+		onLine: () => {},
+	});
+	assert.deepEqual(calls, []);
+});
 
 test("real run persists execution artifacts and a lean result file", () =>
 	withFakeEnv({}, async () => {

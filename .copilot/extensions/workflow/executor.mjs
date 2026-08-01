@@ -14,6 +14,8 @@ import { ProgressReporter } from "./progress.mjs";
 import { runHarness, createDeterministicContext } from "./sandbox.mjs";
 import { loadHost } from "./effects.mjs";
 import { BudgetExceeded } from "./scheduler.mjs";
+import { createAgentBackend, normalizeBackend } from "./agent.mjs";
+import { createCliBackend } from "./cli.mjs";
 import {
 	FORMAT_VERSION,
 	Persistence,
@@ -126,7 +128,7 @@ function objectLiteralEnd(source, open) {
  * @property {"off"|"on"|"auto"} [parentPermissionMode]
  * @property {string} [parentSessionMode]
  * @property {number|null} [maxAgents]
- * @property {{ kind: string, run: Function }} [agentBackend]
+ * @property {{ kindFor: Function, openRun: Function }} [agentBackend]
  * @property {string|null} [planId]
  * @property {((request: { current: number, spent: number, increment: number, proposed: number }) => Promise<boolean|null>|boolean|null)|null} [requestBudgetIncrease]
  */
@@ -221,11 +223,13 @@ async function executeRealRun(cfg, run) {
 	const persistence = new Persistence(cfg.runDir, { runId: cfg.runId });
 	const lease = persistence.acquire();
 	try {
+		const agentBackend = cfg.agentBackend ?? createAgentBackend({ backend: "cli", cli: createCliBackend() });
+		const requestedBackend = normalizeBackend(agentBackend.kindFor());
 		const manifest = persistence.ensureManifest(
 			{
 				runId: cfg.runId,
 				formatVersion: FORMAT_VERSION,
-				backend: cfg.agentBackend?.kind ?? "cli",
+				backend: requestedBackend,
 				parentPermissionMode: cfg.parentPermissionMode ?? "off",
 				parentSessionMode: cfg.parentSessionMode ?? "interactive",
 				permissionMode: permissionCapability(cfg.parentPermissionMode ?? "off"),
@@ -254,8 +258,10 @@ async function executeRealRun(cfg, run) {
 			},
 			{ resume: !!cfg.resume },
 		);
-		const backend = cfg.agentBackend?.kind ?? "cli";
-		if (manifest.backend !== backend) throw new Error(`workflow run '${cfg.runId}' is pinned to backend '${manifest.backend}' and cannot resume with '${backend}'`);
+		const backend = normalizeBackend(manifest.backend);
+		if (backend !== requestedBackend) {
+			throw new Error(`workflow run '${cfg.runId}' is pinned to backend '${backend}' and cannot resume with '${requestedBackend}'`);
+		}
 		const checkpoints = new CheckpointStore(cfg.runDir, { resume: !!cfg.resume, lease });
 		if (cfg.invalidatedBranches?.length) checkpoints.invalidate(cfg.invalidatedBranches);
 		resetRunArtifacts(cfg.runDir);
@@ -274,8 +280,13 @@ async function executeRealRun(cfg, run) {
 			dashboard: cfg.progressMode === "dashboard",
 		});
 		const memory = new Memory(cfg.memoryPath, { readOnly: false, log: (m) => onLine(m, "info", { ephemeral: true }) });
+		const runBackend = await agentBackend.openRun();
+		const abortBackend = () => runBackend.abort?.(cfg.signal?.reason);
+		if (cfg.signal?.aborted) abortBackend();
+		else cfg.signal?.addEventListener("abort", abortBackend, { once: true });
 		const rt = new Runtime({
 			...runtimeOpts(cfg),
+			agentBackend: runBackend,
 			checkpoints,
 			memory,
 			abortController: linkedAbortController(cfg.signal),
@@ -319,6 +330,7 @@ async function executeRealRun(cfg, run) {
 			if (!drained) {
 				onLine(`  ! workflow cleanup exceeded ${ABORT_DRAIN_GRACE_MS}ms; host work may still be unwinding`, "warning", { ephemeral: false });
 			}
+			await closeRunBackend(runBackend, onLine);
 			if (cfg.signal?.aborted) status = statusForAbort(cfg.signal);
 			const preservedWorktrees = await rt.cleanup();
 			if (preservedWorktrees.length) onLine(`  preserved ${preservedWorktrees.length} dirty worktree(s): ${preservedWorktrees.join(", ")}`, "warning", { ephemeral: false });
@@ -346,10 +358,24 @@ async function executeRealRun(cfg, run) {
 			onLine(reporter.runSummary(), summaryLevel, { ephemeral: false });
 			return record;
 		} finally {
+			cfg.signal?.removeEventListener("abort", abortBackend);
+			await closeRunBackend(runBackend, onLine);
 			reporter.close(closeStatus);
 		}
 	} finally {
 		lease.release();
+	}
+}
+
+export { normalizeBackend };
+
+/** @param {any} backend @param {NonNullable<ExecuteConfig["onLine"]>} onLine */
+async function closeRunBackend(backend, onLine) {
+	if (!backend) return;
+	try {
+		await backend.close?.();
+	} catch (error) {
+		onLine(`  ! workflow agent backend shutdown failed: ${error instanceof Error ? error.message : error}`, "warning", { ephemeral: false });
 	}
 }
 
@@ -483,7 +509,6 @@ function runtimeOpts(cfg) {
 		parentPermissionMode: cfg.parentPermissionMode,
 		parentSessionMode: cfg.parentSessionMode,
 		maxAgents: cfg.maxAgents,
-		agentBackend: cfg.agentBackend,
 		requestBudgetIncrease: cfg.requestBudgetIncrease,
 		cwd: cfg.cwd,
 		allowedDirs: cfg.allowedDirs,

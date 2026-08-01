@@ -17,7 +17,7 @@ function makeSessionDir(id) {
 }
 
 /** Build a session store with the CLI's per-session tables. @returns {Promise<any>} */
-async function makeStore(ids) {
+async function makeStore(/** @type {string[]} */ ids) {
 	const { DatabaseSync } = await import("node:sqlite");
 	const db = new DatabaseSync(sessionStorePath());
 	db.exec("CREATE TABLE sessions (id TEXT PRIMARY KEY, summary TEXT)");
@@ -72,9 +72,9 @@ test("deleteSessions purges every table holding the session's rows", async () =>
 			["SELECT count(*) AS n FROM session_files", 1],
 			["SELECT count(*) AS n FROM search_index", 1],
 		]) {
-			assert.equal(check.prepare(String(sql)).get().n, expected, String(sql));
+			assert.equal(/** @type {any} */ (check.prepare(String(sql)).get()).n, expected, String(sql));
 		}
-		assert.equal(check.prepare("SELECT id FROM sessions").get().id, "s2", "the untargeted session survives");
+		assert.equal(/** @type {any} */ (check.prepare("SELECT id FROM sessions").get()).id, "s2", "the untargeted session survives");
 		check.close();
 	});
 });
@@ -88,7 +88,7 @@ test("deleteSessions leaves the store alone when purging is disabled", async () 
 		assert.equal(res.purgedRows, 0);
 		const { DatabaseSync } = await import("node:sqlite");
 		const check = new DatabaseSync(sessionStorePath());
-		assert.equal(check.prepare("SELECT count(*) AS n FROM sessions").get().n, 1);
+		assert.equal(/** @type {any} */ (check.prepare("SELECT count(*) AS n FROM sessions").get()).n, 1);
 		check.close();
 	});
 });
@@ -106,10 +106,13 @@ test("keepSessions follows CWF_KEEP_SESSIONS", async () => {
 });
 
 /** Drive a runtime's agents through a stub backend that reports the given results. */
-function stubRuntime(results) {
+function stubRuntime(/** @type {import("./agent.mjs").AgentResult[]} */ results) {
 	let i = 0;
 	return new Runtime({
-		agentBackend: { kind: "stub", run: async () => results[Math.min(i++, results.length - 1)] },
+		agentBackend: {
+			kind: "stub",
+			run: async () => results[Math.min(i++, results.length - 1)],
+		},
 		progress: () => {},
 		log: () => {},
 	});

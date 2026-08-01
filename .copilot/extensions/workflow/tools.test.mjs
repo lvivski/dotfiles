@@ -249,7 +249,14 @@ test("run_workflow inherits parent auto and autopilot posture into agents and pr
 		/** @type {import("./agent.mjs").AgentSpec[]} */
 		const specs = [];
 		ctx.getPermissionContext = async () => ({ allowAll: false, mode: "auto", sessionMode: "autopilot", directories: [cwd] });
-		ctx.agentBackend = { kind: "cli", run: async (/** @type {import("./agent.mjs").AgentSpec} */ spec) => (specs.push(spec), mkResult({ content: "ok", value: "ok" })) };
+		ctx.agentBackend = {
+			kindFor: () => "cli",
+			openRun: () => ({
+				kind: "cli",
+				run: async (/** @type {import("./agent.mjs").AgentSpec} */ spec) => (specs.push(spec), mkResult({ content: "ok", value: "ok" })),
+				async close() {},
+			}),
+		};
 		await runWorkflow({
 			script: `export const meta = { name: "permission-auto", description: "test workflow" };
 return (await agent("research", { profile: "research" })).content;`,

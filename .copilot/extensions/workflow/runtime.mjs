@@ -10,7 +10,8 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { copilotBin, runAgent } from "./agent.mjs";
+import { resolveCopilotBin } from "./agent.mjs";
+import { createCliRunBackend } from "./cli.mjs";
 import { Memory } from "./memory.mjs";
 import * as patterns from "./patterns.mjs";
 import { BudgetExceeded, defaultConcurrency, RunStats, Semaphore } from "./scheduler.mjs";
@@ -136,7 +137,7 @@ export class Runtime {
 	 *   restricted?: boolean, checkpoints?: import("./checkpoint.mjs").CheckpointStore|null, memory?: Memory,
 	 *   progress?: (e: any) => void, log?: (m: string, level?: "info"|"warning"|"error") => void, abortController?: AbortController,
 	 *   cwd?: string, allowedDirs?: string[],
-	 *   parentPermissionMode?: "off"|"on"|"auto", parentSessionMode?: string, maxAgents?: number|null, agentBackend?: { kind: string, run: Function },
+	 *   parentPermissionMode?: "off"|"on"|"auto", parentSessionMode?: string, maxAgents?: number|null, agentBackend?: { kind: string, run: Function, close?: Function },
 	 *   harness?: { file: string, source: string },
 	 *   requestBudgetIncrease?: ((request: { current: number, spent: number, increment: number, proposed: number }) => Promise<boolean|null>|boolean|null)|null,
 	 * }} [opts]
@@ -153,7 +154,7 @@ export class Runtime {
 		this.#maxAgents = opts.maxAgents ?? null;
 		this.#parentPermissionMode = normalizePermissionMode(opts.parentPermissionMode);
 		this.#parentSessionMode = opts.parentSessionMode === "autopilot" ? "autopilot" : "interactive";
-		this.#agentBackend = opts.agentBackend ?? { kind: "cli", run: runAgent };
+		this.#agentBackend = opts.agentBackend ?? createCliRunBackend();
 		this.#harnessFile = opts.harness?.file ?? "";
 		this.#harnessLines = opts.harness?.source ? opts.harness.source.split("\n") : [];
 		this.#requestBudgetIncrease = opts.requestBudgetIncrease ?? null;
@@ -1135,8 +1136,7 @@ function harnessFrames() {
 		return out;
 	} finally {
 		Error.stackTraceLimit = previousLimit;
-		if (previousPrepare === undefined) delete Error.prepareStackTrace;
-		else Error.prepareStackTrace = previousPrepare;
+		Error.prepareStackTrace = previousPrepare;
 	}
 }
 
@@ -1253,4 +1253,4 @@ export function fingerprint(spec) {
 	return createHash("sha256").update(stableStringify(payload)).digest("hex");
 }
 
-export { copilotBin };
+export { resolveCopilotBin as copilotBin };

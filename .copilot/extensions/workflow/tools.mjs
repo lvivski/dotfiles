@@ -12,8 +12,8 @@ import { homedir } from "node:os";
 import { isAbsolute, join, basename, relative, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 
-import { executeWorkflow } from "./executor.mjs";
-import { extractMeta } from "./executor.mjs";
+import { executeWorkflow, extractMeta } from "./executor.mjs";
+import { normalizeBackend } from "./agent.mjs";
 import { sidecarPathFor } from "./effects.mjs";
 import { resolveWorkflowDefinition } from "./registry.mjs";
 import { FORMAT_VERSION, readJsonFile } from "./persistence.mjs";
@@ -50,7 +50,7 @@ const HOME = homedir();
  * @property {(prompt: string) => void} send inject a turn to wake the agent (background completion)
  * @property {() => Promise<string | undefined>} getWorkspaceCwd session working directory
  * @property {() => Promise<{ allowAll: boolean|null, mode?: "off"|"on"|"auto"|null, sessionMode?: string|null, directories: string[] }|undefined>} [getPermissionContext]
- * @property {{ kind: string, run: Function }} [agentBackend]
+ * @property {{ kindFor: Function, openRun: Function }} [agentBackend]
  * @property {(request: { runId: string, current: number, spent: number, increment: number, proposed: number }) => Promise<boolean|null>} [requestBudgetIncrease]
  */
 
@@ -419,7 +419,7 @@ function startLiveRun(run) {
 		resolveSettled = () => resolve();
 	});
 	/** @type {LiveRun} */
-	const entry = { controller: ac, action: null, settled, resolveSettled };
+	const entry = { controller: ac, settled, resolveSettled };
 	const timer = setTimeout(() => {
 		ac.abort({ kind: "timeout" });
 	}, run.timeoutSec * 1000);
@@ -437,7 +437,7 @@ function startLiveRun(run) {
 
 /**
  * Pause, cancel, or resume a persisted workflow.
- * @param {{ runId?: unknown, action?: unknown, invalidate?: unknown }} input
+ * @param {{ runId?: unknown, action?: unknown, invalidate?: unknown, background?: boolean }} input
  * @param {ToolCtx} ctx
  */
 export async function controlWorkflowRun(input, ctx) {
@@ -485,7 +485,6 @@ async function preparePersistedResume(runId, ctx, invalidatedBranches = []) {
 		manifest.formatVersion === FORMAT_VERSION,
 		`workflow run '${runId}' uses artifact format ${manifest.formatVersion ?? "(none)"}; this build reads format ${FORMAT_VERSION}, so the run is inspection-only.`,
 	);
-	check(manifest.backend === "cli", `workflow run '${runId}' is pinned to unsupported backend '${manifest.backend}'.`);
 	const latestBudget = new CheckpointStore(runDir, { resume: true, readOnly: true }).latestBudget ?? manifest.budget;
 	const sourcePath = join(runDir, "script.js");
 	check(isFile(sourcePath), `workflow run '${runId}' has no persisted script.`);
@@ -495,6 +494,12 @@ async function preparePersistedResume(runId, ctx, invalidatedBranches = []) {
 	const allowedDirs = permissionContext?.allowAll ? [cwd] : permissionContext?.directories?.length ? permissionContext.directories : [cwd];
 	const currentParentPermissionMode = normalizePermissionMode(permissionContext?.mode, permissionContext?.allowAll);
 	const parentPermissionMode = normalizePermissionMode(manifest.parentPermissionMode);
+	const pinnedBackend = normalizeBackend(manifest.backend);
+	const currentBackend = normalizeBackend(ctx.agentBackend?.kindFor());
+	check(
+		pinnedBackend === currentBackend,
+		`workflow run '${runId}' is pinned to backend '${pinnedBackend}' and cannot resume with '${currentBackend}'.`,
+	);
 	check(
 		permissionRank(currentParentPermissionMode) >= permissionRank(parentPermissionMode),
 		`resume requires parent permission mode '${parentPermissionMode}', but the current session is '${currentParentPermissionMode}'. Restore the original or a broader mode first.`,

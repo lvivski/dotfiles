@@ -10,26 +10,32 @@ import { joinSession } from "@github/copilot-sdk/extension";
 import { CopilotClient, RuntimeConnection } from "@github/copilot-sdk";
 
 import { buildTools, buildCommands } from "./tools.mjs";
-import { createAgentRunner, killAllAgents, loadCustomAgentConfig } from "./agent.mjs";
+import { createAgentBackend } from "./agent.mjs";
+import { createCliBackend } from "./cli.mjs";
+import { createSdkBackend, loadCustomAgentConfig } from "./sdk.mjs";
 
 /** @type {any} */
 let session = null;
-const agentBackend = createAgentRunner(
-	{ CopilotClient, RuntimeConnection },
-	{
-		bin: process.execPath,
-		async resolveAgent(name, enableMcp) {
-			const result = await session?.rpc?.agent?.list?.();
-			const info = result?.agents?.find?.((agent) => agent?.name === name || agent?.id === name);
-			return loadCustomAgentConfig(info, { enableMcp });
-		},
-	},
-);
+const resolveAgent = async (/** @type {string} */ name, /** @type {boolean} */ enableMcp) => {
+	const result = await session?.rpc?.agent?.list?.();
+	const info = result?.agents?.find?.((/** @type {any} */ agent) => agent?.name === name || agent?.id === name);
+	return loadCustomAgentConfig(info, { enableMcp });
+};
+const agentBackend = createAgentBackend({
+	cli: createCliBackend({ cliBin: process.execPath }),
+	sdk: createSdkBackend(
+		{ CopilotClient, RuntimeConnection },
+		{ sdkBin: process.execPath, resolveAgent },
+	),
+});
 
 // Reap any live subagents if the extension is torn down mid-run, so they don't orphan (and keep
 // spending). `exit` covers clean exits; the SIGTERM handler converts the CLI's shutdown signal.
-process.on("exit", () => killAllAgents());
-process.on("SIGTERM", () => process.exit());
+process.on("exit", () => agentBackend.emergencyAbort());
+process.on("SIGTERM", async () => {
+	await Promise.race([agentBackend.shutdown(), new Promise((resolve) => setTimeout(resolve, 3000))]);
+	process.exit();
+});
 
 /** @type {import("./tools.mjs").ToolCtx} */
 const ctx = {

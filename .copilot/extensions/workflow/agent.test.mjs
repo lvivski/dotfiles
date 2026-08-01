@@ -1,11 +1,32 @@
 /** @module agent.test — subagent driver: spawn, JSONL reduce, AIC/token accounting, argv, env. */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { autoPermissionDecision, buildArgv, childEnv, createAgentRunner, formatSessionError, killAllAgents, loadCustomAgentConfig, runAgent, withSessionId } from "./agent.mjs";
+import {
+	abortAllAgentTurns,
+	childEnv,
+	CLI_BACKEND,
+	createAgentBackend,
+	formatSessionError,
+	resolveCopilotBin,
+	SDK_STDIO_BACKEND,
+} from "./agent.mjs";
+import { buildArgv, createCliBackend, runAgent } from "./cli.mjs";
+import { createSdkBackend, createSdkRunBackend, loadCustomAgentConfig, permissionDecision } from "./sdk.mjs";
 import { withFakeEnv, tmpDir, waitFor, within } from "./fixtures/support.mjs";
+
+/** @param {any} [options] */
+function createTestAgentBackend(options = {}) {
+	return createAgentBackend({
+		backend: options.backend,
+		cli: createCliBackend({ cliBin: options.cliBin }),
+		sdk: options.sdk
+			? createSdkBackend(options.sdk, { sdkBin: options.sdkBin, resolveAgent: options.resolveAgent })
+			: null,
+	});
+}
 
 /** @param {number} pid */
 function processIsAlive(pid) {
@@ -170,21 +191,12 @@ test("buildArgv inherits allow-all URL, autopilot, and parent-approved directory
 });
 
 test("buildArgv assigns the child session id up front, but never alongside --resume", () => {
-	const fresh = buildArgv({ prompt: "P", sessionId: "abc-123" }, "copilot");
+	const fresh = buildArgv({ prompt: "P" }, "copilot", "abc-123");
 	assert.deepEqual(fresh.slice(fresh.indexOf("--session-id"), fresh.indexOf("--session-id") + 2), ["--session-id", "abc-123"]);
-	const resumed = buildArgv({ prompt: "P", sessionId: "abc-123", resume: "old-1" }, "copilot");
+	const resumed = buildArgv({ prompt: "P", resume: "old-1" }, "copilot", "abc-123");
 	assert.ok(!resumed.includes("--session-id"), "a resumed agent keeps the session it continues");
 	assert.ok(["--resume", "old-1"].every((x) => resumed.includes(x)));
 	assert.ok(!buildArgv({ prompt: "P" }, "copilot").includes("--session-id"));
-});
-
-test("withSessionId assigns exactly one id, and only to new sessions", () => {
-	const assigned = withSessionId({ prompt: "P" });
-	assert.match(String(assigned.sessionId), /^[0-9a-f-]{36}$/);
-	assert.notEqual(withSessionId({ prompt: "P" }).sessionId, assigned.sessionId, "ids are unique per agent");
-	assert.equal(withSessionId(assigned), assigned, "an already-assigned spec is untouched");
-	const resumed = { prompt: "P", resume: "old-1" };
-	assert.equal(withSessionId(resumed), resumed);
 });
 
 test("a killed agent still reports the session id the run assigned it", async () =>
@@ -219,20 +231,35 @@ test("buildArgv cannot append raw flags or arbitrary MCP configuration", () => {
 	assert.equal(argv.includes("--additional-mcp-config"), false);
 });
 
-test("auto permission decisions preserve profile denials and honor only approve recommendations", () => {
-	const spec = /** @type {any} */ ({ deny: ["shell", "write"], denyUrl: ["blocked.example"] });
-	assert.equal(autoPermissionDecision(spec, { kind: "commands", autoApproval: { recommendation: "approve" } }).kind, "reject");
-	assert.equal(autoPermissionDecision(spec, { kind: "url", url: "https://blocked.example/x", autoApproval: { recommendation: "approve" } }).kind, "reject");
-	assert.equal(autoPermissionDecision(spec, { kind: "url", url: "https://safe.example", requestSandboxBypass: true, autoApproval: { recommendation: "approve" } }).kind, "reject");
-	assert.equal(autoPermissionDecision(spec, { kind: "read", autoApproval: { recommendation: "approve" } }).kind, "approve-once");
-	assert.equal(autoPermissionDecision(spec, { kind: "read", autoApproval: { recommendation: "requireApproval", reason: "sensitive" } }).kind, "reject");
-	assert.equal(autoPermissionDecision(spec, {
+test("SDK permission decisions apply independent tool and URL allowlists with deny precedence", () => {
+	const spec = /** @type {any} */ ({ permissionMode: "auto", allowAllTools: true, deny: ["shell", "write"], denyUrl: ["blocked.example"] });
+	assert.equal(permissionDecision(spec, { kind: "commands", autoApproval: { recommendation: "approve" } }).kind, "reject");
+	assert.equal(permissionDecision(spec, { kind: "url", url: "https://blocked.example/x", autoApproval: { recommendation: "approve" } }).kind, "reject");
+	assert.equal(permissionDecision(spec, { kind: "url", url: "https://safe.example", requestSandboxBypass: true, autoApproval: { recommendation: "approve" } }).kind, "reject");
+	assert.equal(permissionDecision(spec, { kind: "read", autoApproval: { recommendation: "approve" } }).kind, "approve-once");
+	assert.equal(permissionDecision(spec, { kind: "read", autoApproval: { recommendation: "requireApproval", reason: "sensitive" } }).kind, "approve-once");
+	assert.equal(permissionDecision(spec, {
 		permissionRequest: { kind: "read", toolCallId: "read-1" },
 		promptRequest: { kind: "read", toolCallId: "read-1", autoApproval: { recommendation: "approve" } },
 	}).kind, "approve-once");
+	assert.equal(permissionDecision({ ...spec, allowAllTools: false }, { kind: "read", autoApproval: { recommendation: "approve" } }).kind, "reject");
+	const granular = /** @type {any} */ ({
+		allowAllTools: false,
+		allowAllUrls: false,
+		allow: ["read", "shell(git status)"],
+		allowUrl: ["safe.example"],
+		deny: ["shell(rm *)"],
+		denyUrl: ["blocked.safe.example"],
+	});
+	assert.equal(permissionDecision(granular, { kind: "read" }).kind, "approve-once");
+	assert.equal(permissionDecision(granular, { kind: "commands", commands: ["git status"] }).kind, "approve-once");
+	assert.equal(permissionDecision(granular, { kind: "commands", commands: ["rm -rf tmp"] }).kind, "reject");
+	assert.equal(permissionDecision(granular, { kind: "url", url: "https://safe.example/docs" }).kind, "approve-once");
+	assert.equal(permissionDecision(granular, { kind: "url", url: "https://blocked.safe.example" }).kind, "reject");
+	assert.equal(permissionDecision({ ...granular, allowAllUrls: true }, { kind: "url", url: "https://other.example" }).kind, "approve-once");
 });
 
-test("createAgentRunner uses an SDK child session for inherited allow-all auto", async () => {
+test("agent abstraction routes inherited auto mode through SDK", async () => {
 	/** @type {any[][]} */
 	const calls = [];
 	/** @type {any} */
@@ -245,7 +272,7 @@ test("createAgentRunner uses an SDK child session for inherited allow-all auto",
 			permissions: {
 				paths: { add: async (/** @type {{ path: string }} */ { path }) => calls.push(["path", path]) },
 				setAllowAll: async (/** @type {{ mode: string }} */ { mode }) => (calls.push(["permission", mode]), { mode }),
-				configure: async (/** @type {{ rules: any }} */ { rules }) => (calls.push(["denied", rules.denied]), { success: true }),
+				configure: async (/** @type {{ rules: any }} */ { rules }) => (calls.push(["rules", rules]), { success: true }),
 			},
 			agent: { select: async (/** @type {{ name: string }} */ { name }) => calls.push(["agent", name]) },
 			mode: { set: async (/** @type {{ mode: string }} */ { mode }) => calls.push(["mode", mode]) },
@@ -283,15 +310,14 @@ test("createAgentRunner uses an SDK child session for inherited allow-all auto",
 		},
 	};
 	const cwd = tmpDir();
-	const runner = createAgentRunner(
-		{ CopilotClient: FakeClient, RuntimeConnection },
-		{
-			bin: "/absolute/copilot",
+	const runner = createTestAgentBackend({
+		sdk: { CopilotClient: FakeClient, RuntimeConnection },
+			sdkBin: "/absolute/copilot",
 			resolveAgent: () => ({ name: "worker", prompt: "worker prompt" }),
-		},
-	);
+	});
+	const run = runner.openRun();
 	const approved = tmpDir();
-	const result = await runner.run({
+	const result = await run.run({
 		prompt: "hello",
 		cwd,
 		permissionMode: "auto",
@@ -301,21 +327,299 @@ test("createAgentRunner uses an SDK child session for inherited allow-all auto",
 		// fail the agent.
 		addDir: [cwd, join(tmpDir(), "deleted-since-session-start"), approved],
 		enableMcp: false,
+		allow: ["read"],
+		allowUrl: ["safe.example"],
 		deny: ["write"],
+		denyUrl: ["blocked.example"],
 	});
+	await run.close();
 	assert.equal(result.ok, true);
 	assert.equal(result.content, "SDK: hello");
 	assert.equal(config.clientName, "workflow-extension");
 	assert.deepEqual(config.customAgents, [{ name: "worker", prompt: "worker prompt" }]);
 	assert.deepEqual(calls.find(([kind]) => kind === "connection"), ["connection", "/absolute/copilot"]);
 	assert.equal((await config.onPermissionRequest({ kind: "write", autoApproval: { recommendation: "approve" } })).kind, "reject");
-	assert.deepEqual(calls.filter(([kind]) => ["permission", "mode", "agent", "path", "denied"].includes(kind)), [
+	assert.deepEqual(calls.filter(([kind]) => ["permission", "mode", "agent", "path", "rules"].includes(kind)), [
 		["path", approved],
 		["agent", "worker"],
 		["mode", "autopilot"],
-		["permission", "auto"],
-		["denied", [{ kind: "write", argument: null }]],
+		["permission", "off"],
+		["rules", {
+			approved: [
+				{ kind: "read", argument: null },
+				{ kind: "url", argument: "safe.example" },
+			],
+			denied: [
+				{ kind: "write", argument: null },
+				{ kind: "url", argument: "blocked.example" },
+			],
+		}],
 	]);
+});
+
+test("agent abstraction selects backend identities", () => {
+	class FakeClient {}
+	const sdk = { CopilotClient: FakeClient, RuntimeConnection: { forStdio: () => ({}) } };
+	const saved = process.env.CWF_AGENT_BACKEND;
+	try {
+		delete process.env.CWF_AGENT_BACKEND;
+		const backend = createTestAgentBackend({ sdk });
+		assert.equal(backend.kindFor(), SDK_STDIO_BACKEND);
+		process.env.CWF_AGENT_BACKEND = "cli";
+		assert.equal(createTestAgentBackend({ sdk }).kindFor(), CLI_BACKEND);
+		delete process.env.CWF_AGENT_BACKEND;
+		assert.equal(createTestAgentBackend().kindFor(), CLI_BACKEND);
+	} finally {
+		if (saved === undefined) delete process.env.CWF_AGENT_BACKEND;
+		else process.env.CWF_AGENT_BACKEND = saved;
+	}
+});
+
+test("backend selection is stable and transport identities remain distinct", async () => {
+	class FakeClient {}
+	const backend = createTestAgentBackend({
+		sdk: { CopilotClient: FakeClient, RuntimeConnection: { forStdio: () => ({}) } },
+		backend: "sdk",
+	});
+	assert.equal(backend.kindFor(), SDK_STDIO_BACKEND);
+	const run = backend.openRun();
+	assert.equal(run.kind, SDK_STDIO_BACKEND);
+	await run.close();
+	assert.notEqual(CLI_BACKEND, SDK_STDIO_BACKEND);
+});
+
+test("CWF_COPILOT_BIN takes precedence over configured transport executables", () =>
+	withFakeEnv({ CWF_COPILOT_BIN: "/operator/copilot" }, () => {
+		assert.equal(resolveCopilotBin("/extension/copilot"), "/operator/copilot");
+	}));
+
+test("run-scoped SDK backend reuses clients by cwd and closes them once", async () => {
+	/** @type {any[][]} */
+	const calls = [];
+	let nextSession = 0;
+	const makeSession = () => {
+		/** @type {(event: any) => void} */
+		let handler = () => {};
+		return {
+			sessionId: `sdk-${++nextSession}`,
+			rpc: {
+				permissions: {
+					paths: { add: async () => {} },
+					setAllowAll: async (/** @type {any} */ value) => (calls.push(["permission", value.mode]), value),
+					configure: async () => ({ success: true }),
+				},
+				agent: { select: async () => {} },
+				mode: { set: async () => {} },
+				shutdown: async () => calls.push(["shutdown"]),
+			},
+			on(/** @type {(event: any) => void} */ fn) {
+				handler = fn;
+			},
+			async sendAndWait(/** @type {{ prompt: string }} */ { prompt }) {
+				const event = { type: "assistant.message", data: { content: `SDK: ${prompt}`, outputTokens: 3, model: "sdk" } };
+				handler(event);
+				return event;
+			},
+			async abort() {},
+			async disconnect() {
+				calls.push(["disconnect"]);
+			},
+		};
+	};
+	class FakeClient {
+		constructor(/** @type {any} */ options) {
+			this.cwd = options.workingDirectory;
+			calls.push(["client", this.cwd]);
+		}
+		async createSession() {
+			return makeSession();
+		}
+		async resumeSession() {
+			return makeSession();
+		}
+		async stop() {
+			calls.push(["stop", this.cwd]);
+			return [];
+		}
+		async forceStop() {}
+	}
+	const backend = createSdkRunBackend(
+		{ CopilotClient: FakeClient, RuntimeConnection: { forStdio: () => ({}) } },
+		{ sdkBin: "/absolute/copilot" },
+	);
+	const cwd = tmpDir();
+	const [a, b] = await Promise.all([
+		backend.run({ prompt: "a", cwd, permissionMode: "off" }),
+		backend.run({ prompt: "b", cwd, permissionMode: "on" }),
+	]);
+	assert.equal(a.content, "SDK: a");
+	assert.equal(b.content, "SDK: b");
+	assert.equal(a.outputTokens, 3, "the returned terminal event is not counted twice");
+	assert.equal(calls.filter(([kind]) => kind === "client").length, 1);
+	assert.deepEqual(calls.filter(([kind]) => kind === "permission").map(([, mode]) => mode), ["off", "off"]);
+	assert.equal(calls.filter(([kind]) => kind === "shutdown").length, 2);
+	assert.equal(calls.filter(([kind]) => kind === "disconnect").length, 2);
+	await backend.close();
+	await backend.close();
+	assert.equal(calls.filter(([kind]) => kind === "stop").length, 1);
+});
+
+test("run-scoped SDK backend separates MCP startup capability", async () => {
+	/** @type {string[][]} */
+	const args = [];
+	class FakeClient {
+		constructor() {}
+		async createSession() {
+			return {
+				sessionId: `test-${Math.random().toString(16).slice(2)}`,
+				rpc: {
+					permissions: { paths: { add: async () => {} }, setAllowAll: async (/** @type {any} */ value) => value, configure: async () => ({ success: true }) },
+					agent: { select: async () => {} },
+					mode: { set: async () => {} },
+				},
+				on() {},
+				async sendAndWait() {
+					return { type: "assistant.message", data: { content: "ok" } };
+				},
+				async abort() {},
+			};
+		}
+		async stop() {
+			return [];
+		}
+		async forceStop() {}
+	}
+	const backend = createSdkRunBackend({
+		CopilotClient: FakeClient,
+		RuntimeConnection: { forStdio: (/** @type {any} */ options) => (args.push(options.args), {}) },
+	});
+	const cwd = tmpDir();
+	await backend.run({ prompt: "plain", cwd, enableMcp: false, permissionMode: "off" });
+	await backend.run({ prompt: "mcp", cwd, enableMcp: true, permissionMode: "off" });
+	assert.equal(args.length, 2);
+	assert.equal(args[0].includes("--disable-builtin-mcps"), true);
+	assert.equal(args[1].includes("--disable-builtin-mcps"), false);
+	await backend.close();
+});
+
+test("run-scoped SDK backend shuts down each session before reading usage", () =>
+	withFakeEnv({}, async () => {
+		const sessionId = "sdk-usage";
+		class FakeClient {
+			constructor() {}
+			async createSession() {
+				return {
+					sessionId,
+					rpc: {
+						permissions: { paths: { add: async () => {} }, setAllowAll: async (/** @type {any} */ value) => value, configure: async () => ({ success: true }) },
+						agent: { select: async () => {} },
+						mode: { set: async () => {} },
+						shutdown: async () => {
+							const dir = join(String(process.env.COPILOT_HOME), "session-state", sessionId);
+							mkdirSync(dir, { recursive: true });
+							writeFileSync(join(dir, "events.jsonl"), JSON.stringify({
+								type: "session.shutdown",
+								sessionId,
+								data: {
+									totalNanoAiu: 500_000_000,
+									modelMetrics: {
+										sdk: {
+											usage: {
+												inputTokens: 10,
+												outputTokens: 2,
+												cacheReadTokens: 1,
+												cacheWriteTokens: 0,
+												reasoningTokens: 3,
+											},
+										},
+									},
+								},
+							}) + "\n");
+						},
+					},
+					on() {},
+					async sendAndWait() {
+						return { type: "assistant.message", data: { content: "ok", outputTokens: 2, model: "sdk" } };
+					},
+					async abort() {},
+					async disconnect() {},
+				};
+			}
+			async stop() {
+				return [];
+			}
+			async forceStop() {}
+		}
+		const backend = createSdkRunBackend({ CopilotClient: FakeClient, RuntimeConnection: { forStdio: () => ({}) } });
+		const result = await backend.run({ prompt: "usage", cwd: tmpDir(), permissionMode: "off" });
+		assert.equal(result.usageUnknown, false);
+		assert.equal(result.aic, 0.5);
+		assert.equal(result.inputTokens, 10);
+		assert.equal(result.outputTokens, 2);
+		await backend.close();
+	}));
+
+test("run-scoped SDK backend cancels a hung session creation", async () => {
+	class FakeClient {
+		constructor() {}
+		createSession() {
+			return new Promise(() => {});
+		}
+		async stop() {
+			return [];
+		}
+		async forceStop() {}
+	}
+	const backend = createSdkRunBackend({ CopilotClient: FakeClient, RuntimeConnection: { forStdio: () => ({}) } });
+	const result = await within(backend.run({ prompt: "hang", cwd: tmpDir(), permissionMode: "off", timeout: 0.05 }), 500);
+	assert.match(result.error ?? "", /timed out/);
+	await within(backend.close(), 500);
+});
+
+test("run-scoped SDK backend drains aborted turns before stopping its client", async () => {
+	/** @type {string[]} */
+	const calls = [];
+	/** @type {(error: Error) => void} */
+	let rejectTurn = () => {};
+	class FakeClient {
+		constructor() {}
+		async createSession() {
+			return {
+				sessionId: "drain",
+				rpc: {
+					permissions: { paths: { add: async () => {} }, setAllowAll: async (/** @type {any} */ value) => value, configure: async () => ({ success: true }) },
+					agent: { select: async () => {} },
+					mode: { set: async () => {} },
+					shutdown: async () => calls.push("shutdown"),
+				},
+				on() {},
+				sendAndWait() {
+					return new Promise((_, reject) => {
+						rejectTurn = reject;
+					});
+				},
+				async abort() {
+					calls.push("abort");
+					rejectTurn(new Error("aborted"));
+				},
+				async disconnect() {},
+			};
+		}
+		async stop() {
+			calls.push("stop");
+			return [];
+		}
+		async forceStop() {
+			calls.push("force");
+		}
+	}
+	const backend = createSdkRunBackend({ CopilotClient: FakeClient, RuntimeConnection: { forStdio: () => ({}) } });
+	const turn = backend.run({ prompt: "hang", cwd: tmpDir(), permissionMode: "off" });
+	await new Promise((resolve) => setTimeout(resolve, 10));
+	await within(backend.close(), 500);
+	await within(turn, 500);
+	assert.deepEqual(calls.filter((call) => ["abort", "shutdown", "stop"].includes(call)), ["abort", "shutdown", "stop"]);
+	assert.equal(calls.includes("force"), false);
 });
 
 test("loadCustomAgentConfig clones prompt metadata without MCP when disabled", () => {
@@ -343,6 +647,7 @@ test("loadCustomAgentConfig clones prompt metadata without MCP when disabled", (
 });
 
 test("auto-mode abort during custom agent resolution never starts an SDK client", async () => {
+	/** @type {string[]} */
 	const calls = [];
 	class FakeClient {
 		constructor() {
@@ -355,17 +660,17 @@ test("auto-mode abort during custom agent resolution never starts an SDK client"
 			return {};
 		},
 	};
-	const runner = createAgentRunner(
-		{ CopilotClient: FakeClient, RuntimeConnection },
-		{
-			bin: "/absolute/copilot",
+	const runner = createTestAgentBackend({
+		sdk: { CopilotClient: FakeClient, RuntimeConnection },
+			sdkBin: "/absolute/copilot",
 			resolveAgent: () => new Promise((resolve) => setTimeout(() => resolve({ name: "worker", prompt: "worker" }), 50)),
-		},
-	);
+	});
+	const run = runner.openRun();
 	const abort = new AbortController();
-	const pending = runner.run({ prompt: "hello", permissionMode: "auto", agentType: "worker" }, { signal: abort.signal });
+	const pending = run.run({ prompt: "hello", permissionMode: "auto", agentType: "worker" }, { signal: abort.signal });
 	setTimeout(() => abort.abort(), 10);
 	const result = await pending;
+	await run.close();
 	assert.equal(result.error, "aborted");
 	assert.deepEqual(calls, []);
 });
@@ -393,15 +698,15 @@ test("childEnv allow-lists runtime/provider variables and drops arbitrary secret
 	assert.equal(env.CWF_CHILD_ENV_ALLOW, undefined);
 });
 
-test("killAllAgents: safe no-op when no agents are live", () => {
-	assert.doesNotThrow(() => killAllAgents());
+test("abortAllAgentTurns: safe no-op when no agents are live", () => {
+	assert.doesNotThrow(() => abortAllAgentTurns());
 });
 
-test("killAllAgents: reaps an in-flight subagent", () =>
+test("abortAllAgentTurns: reaps an in-flight subagent", () =>
 	withFakeEnv({ CWF_FAKE_MODE: "hang" }, async () => {
 		const p = runAgent({ prompt: "hi" });
 		await new Promise((r) => setTimeout(r, 250)); // let it spawn + register
-		killAllAgents();
+		abortAllAgentTurns();
 		const r = await p;
 		assert.equal(r.ok, false);
 	}));
