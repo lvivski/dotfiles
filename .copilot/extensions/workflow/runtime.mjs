@@ -41,6 +41,7 @@ const KEY_FIELDS = [
 	"allowAllUrls", "addDir", "permissionMode", "autopilot",
 ];
 const SET_LIKE_KEY_FIELDS = new Set(["allow", "deny", "allowUrl", "denyUrl", "availableTools", "excludedTools", "addDir"]);
+const ALL_TOOL_SOURCE_WILDCARDS = ["builtin:*", "mcp:*", "custom:*"];
 
 const branchStore = new AsyncLocalStorage();
 const phaseStore = new AsyncLocalStorage();
@@ -1191,8 +1192,8 @@ function applyAgentProfile(o, inherited) {
 	const paths = stringListOption(permissions.paths, "permissions.paths");
 	const deny = stringListOption(permissions.deny, "permissions.deny");
 	const denyUrls = stringListOption(permissions.denyUrls, "permissions.denyUrls");
-	const availableTools = stringListOption(tools.available, "tools.available");
-	const excludedTools = stringListOption(tools.excluded, "tools.excluded");
+	const availableTools = toolListOption(tools.available, "tools.available");
+	const excludedTools = toolListOption(tools.excluded, "tools.excluded");
 	if (paths.length > 1) throw new Error("workflow: one permissions.paths root is supported per agent; use separate agents for disjoint roots");
 	const permissionMode = profile === "none" ? "off" : inherited.parentPermissionMode;
 	const parentAllowAll = permissionMode === "on";
@@ -1200,7 +1201,7 @@ function applyAgentProfile(o, inherited) {
 	/** @type {Record<string, any>} */
 	const base =
 		profile === "none" || coarseInherit
-			? { allowAllTools: false, allowAllUrls: false, enableMcp: false, denyUrl: ["*"], excludedTools: ["*"] }
+			? { allowAllTools: false, allowAllUrls: false, enableMcp: false, denyUrl: ["*"], excludedTools: ALL_TOOL_SOURCE_WILDCARDS }
 			: profile === "read-only"
 				? { allowAllTools: parentAllowAll, allowAllUrls: false, enableMcp: false, deny: ["shell", "write"], denyUrl: ["*"] }
 				: profile === "research"
@@ -1229,6 +1230,11 @@ function stringListOption(value, name) {
 		throw new Error(`workflow: ${name} must be a string or array of non-empty strings`);
 	}
 	return values;
+}
+
+/** @param {unknown} value @param {string} name */
+function toolListOption(value, name) {
+	return [...new Set(stringListOption(value, name).flatMap((item) => item === "*" ? ALL_TOOL_SOURCE_WILDCARDS : item))];
 }
 
 /** @param {unknown} value @returns {"off"|"on"|"auto"} */

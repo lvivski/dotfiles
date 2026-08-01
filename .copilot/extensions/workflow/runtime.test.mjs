@@ -946,7 +946,11 @@ test("V2 scalar permission and tool restrictions remain whole narrowing rules", 
 	assert.deepEqual(specs[0].excludedTools, ["bash", "mcp:*"]);
 
 	await api.agent("locked", { profile: "none", tools: { excluded: "bash" } });
-	assert.deepEqual(specs[1].excludedTools, ["*", "bash", "mcp:*"]);
+	assert.deepEqual(specs[1].excludedTools, ["builtin:*", "mcp:*", "custom:*", "bash"]);
+
+	await api.agent("wildcards", { profile: "inherit", tools: { available: "*", excluded: "*" } });
+	assert.deepEqual(specs[2].availableTools, ["builtin:*", "mcp:*", "custom:*"]);
+	assert.deepEqual(specs[2].excludedTools, ["builtin:*", "mcp:*", "custom:*"]);
 });
 
 test("V2 memory reads replay their original value after external state changes", () =>
