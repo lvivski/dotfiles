@@ -11,10 +11,13 @@ import {
 	controlWorkflowRun,
 	formatBackgroundCompletion,
 	isNested,
+	MAX_TIMEOUT_SEC,
 	parseInvalidations,
+	resolveTimeout,
 	resolveSource,
 	runWorkflow,
 } from "./tools.mjs";
+import { executeWorkflow } from "./executor.mjs";
 import { MAX_RESULT_CHUNK_CHARS, listWorkflowRuns, workflowCommand } from "./runs.mjs";
 import { mkResult, withFakeEnv, tmpDir, waitFor } from "./fixtures/support.mjs";
 
@@ -53,20 +56,70 @@ function withTool(fn, extraEnv = {}) {
 }
 
 test("foreground inline run returns the workflow result", () =>
-	withTool(async () => {
+	withTool(async ({ runs }) => {
 		const ctx = fakeCtx(tmpDir());
 		const out = await runWorkflow({ script: `export const meta = { name: "test", description: "test workflow" };
-return (await agent("hi")).content;`, background: false, budget: 1 }, ctx);
+return (await agent("hi")).content;`, runId: "untimed-foreground", background: false, budget: 1 }, ctx);
 		assert.equal(typeof out, "string");
 		assert.match(/** @type {string} */ (out), /workflow result/);
 		assert.match(/** @type {string} */ (out), /ECHO: hi/);
 		assert.ok(ctx.logs.some((l) => /┌─ workflow:/.test(l)), "default progress emits dashboard snapshots");
 		assert.ok(ctx.metas.some((m) => m?.ephemeral === false), "final summary is durable");
+		assert.equal(JSON.parse(readFileSync(join(runs, "untimed-foreground", "manifest.json"), "utf8")).timeoutSec, null);
 	}));
 
 test("abortRun returns false for an unknown run id", () => {
 	assert.equal(abortRun("no-such-run"), false);
 });
+
+test("workflow run timeouts are opt-in and bounded", () => {
+	assert.equal(resolveTimeout(undefined), null);
+	assert.equal(resolveTimeout(null), null);
+	assert.equal(resolveTimeout(30), 30);
+	assert.equal(resolveTimeout(MAX_TIMEOUT_SEC + 1), MAX_TIMEOUT_SEC);
+	assert.throws(() => resolveTimeout(0), /timeoutSec must be a number >= 1/);
+});
+
+test("xtreme plans bind the preview session model and reject launch-time preset mutation", () =>
+	withTool(async ({ runs }) => {
+		const ctx = fakeCtx(tmpDir());
+		let parentModel = "gpt-5.6-sol";
+		ctx.getModelContext = async () => ({
+			modelId: parentModel,
+			models: [
+				{ id: "gpt-5.6-sol", supportedReasoningEfforts: ["xhigh"] },
+				{ id: "claude-opus-5", supportedReasoningEfforts: ["xhigh"] },
+			],
+		});
+		/** @type {import("./agent.mjs").AgentSpec[]} */
+		const specs = [];
+		ctx.agentBackend = {
+			kindFor: () => "cli",
+			openRun: () => ({
+				kind: "cli",
+				run: async (/** @type {import("./agent.mjs").AgentSpec} */ spec) => (specs.push(spec), mkResult({ content: "ok", value: "ok" })),
+				async close() {},
+			}),
+		};
+		const preview = await runWorkflow({
+			script: `export const meta = { name: "xtreme-plan", description: "test workflow" };
+return (await agent("work")).content;`,
+			dryRun: true,
+			preset: "xtreme",
+		}, ctx);
+		assert.match(String(preview), /model: gpt-5\.6-sol/);
+		const planId = String(preview).match(/planId: (\S+)/)?.[1];
+		parentModel = "claude-opus-5";
+		const launched = await runWorkflow({ planId, runId: "xtreme-bound", background: false }, ctx);
+		assert.match(String(launched), /model: gpt-5\.6-sol/);
+		assert.equal(specs[0].model, "gpt-5.6-sol");
+		assert.equal(specs[0].effort, "xhigh");
+		assert.equal(specs[0].context, "long_context");
+		const manifest = JSON.parse(readFileSync(join(runs, "xtreme-bound", "manifest.json"), "utf8"));
+		assert.equal(manifest.model, "gpt-5.6-sol");
+		const conflicting = await runWorkflow({ planId, preset: "xtreme", runId: "xtreme-conflict" }, ctx);
+		assert.match(JSON.stringify(conflicting), /planId cannot be combined.*preset/);
+	}));
 
 test("abortRun aborts a live background run and clears it once settled", () =>
 	withTool(
@@ -430,6 +483,24 @@ return (await agent("bg")).content;`, background: true, budget: 1 }, ctx);
 		assert.doesNotMatch(completionLog, /ECHO: bg/);
 	}));
 
+test("background launch logging failure releases Work ownership", () =>
+	withTool(async ({ runs }) => {
+		const ctx = fakeCtx(tmpDir());
+		ctx.log = () => {
+			throw new Error("log failed");
+		};
+		const out = await runWorkflow({
+			script: `export const meta = { name: "log-failure", description: "test workflow" };
+return "unreached";`,
+			runId: "log-failure",
+			background: true,
+			budget: 1,
+		}, ctx);
+		assert.match(JSON.stringify(out), /log failed/);
+		assert.equal(existsSync(join(runs, "log-failure", ".lock")), false);
+		assert.equal(abortRun("log-failure"), false);
+	}));
+
 test("background completion truncates oversized results with a retrieval-tool fallback", () => {
 	const runDir = join(tmpDir(), "large");
 	const notice = formatBackgroundCompletion(
@@ -506,6 +577,12 @@ await agent("hang"); return "unreached";`,
 			const resultPath = join(runs, "timer-timeout", "result.json");
 			assert.equal(existsSync(resultPath), true);
 			assert.equal(JSON.parse(readFileSync(resultPath, "utf8")).status, "timeout");
+			assert.equal(JSON.parse(readFileSync(join(runs, "timer-timeout", "manifest.json"), "utf8")).timeoutSec, 1);
+
+			const resumed = await controlWorkflowRun({ runId: "timer-timeout", action: "resume" }, ctx);
+			assert.match(String(resumed), /started in background/);
+			await waitFor(() => ctx.sends.length > 1, 3000, 30);
+			assert.match(ctx.sends[1], /timer-timeout timeout/);
 		},
 		{ CWF_FAKE_MODE: "hang" },
 	));
@@ -645,6 +722,53 @@ const result = await agent("controlled"); return result.content;`,
 			const resumed = await controlWorkflowRun({ runId: "paused-run", action: "resume" }, ctx);
 			assert.match(String(resumed), /started in background/);
 			await waitFor(() => existsSync(join(runs, "paused-run", "run.json")) && JSON.parse(readFileSync(join(runs, "paused-run", "run.json"), "utf8")).status === "complete", 4000);
+		},
+		{ CWF_FAKE_MODE: "hang" },
+	));
+
+test("control_workflow_run cancels a run owned by another extension instance", () =>
+	withTool(
+		async ({ runs }) => {
+			const nonce = `${Date.now()}-${Math.random()}`;
+			const ownerModule = await import(`./work.mjs?owner=${nonce}`);
+			const remoteCtx = fakeCtx(tmpDir());
+			const runDir = join(runs, "remote-control");
+			const ownerWork = ownerModule.Work.open({
+				runId: "remote-control",
+				runDir,
+				controlPollMs: 20,
+				heartbeatIntervalMs: 20,
+			});
+			const execution = executeWorkflow({
+				source: `export const meta = { name: "remote-control", description: "test workflow" };
+await agent("hang"); return "unreached";`,
+				runId: "remote-control",
+				runDir,
+				cwd: tmpDir(),
+				budget: 1,
+				work: ownerWork,
+			}).finally(() => ownerWork.close());
+			try {
+				await waitFor(() => existsSync(join(runs, "remote-control", ".lock", "owner.json")), 3000);
+				const pause = JSON.parse(/** @type {string} */ (await controlWorkflowRun({
+					runId: "remote-control",
+					action: "pause",
+				}, remoteCtx)));
+				const response = JSON.parse(/** @type {string} */ (await controlWorkflowRun({
+					runId: "remote-control",
+					action: "cancel",
+				}, remoteCtx)));
+				assert.equal(pause.queued, true);
+				assert.equal(response.accepted, true);
+				assert.equal(response.queued, true);
+				assert.equal(response.durable, true);
+				const record = await execution;
+				assert.equal(record.status, "cancelled");
+				assert.equal(JSON.parse(readFileSync(join(runs, "remote-control", "result.json"), "utf8")).status, "cancelled");
+			} finally {
+				ownerWork.request("cancel");
+				ownerWork.close();
+			}
 		},
 		{ CWF_FAKE_MODE: "hang" },
 	));

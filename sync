@@ -31,6 +31,8 @@ push() {
 		.copilot/agents/judge.md
 		.copilot/agents/synthesizer.md
 		.copilot/extensions/cwf
+		.copilot/extensions/workflow/control.mjs
+		.copilot/extensions/workflow/control.test.mjs
 		.copilot/workflows/audit.cwf.py
 		.copilot/workflows/deep-research.cwf.py
 		.copilot/workflows/review-queue.cwf.py

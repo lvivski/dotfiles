@@ -18,9 +18,9 @@ import { createAgentBackend, normalizeBackend } from "./agent.mjs";
 import { createCliBackend } from "./cli.mjs";
 import {
 	FORMAT_VERSION,
-	Persistence,
 	readJsonFile,
 } from "./persistence.mjs";
+import { Work } from "./work.mjs";
 
 const ABORT_DRAIN_GRACE_MS = 2000;
 
@@ -105,6 +105,8 @@ function objectLiteralEnd(source, open) {
  * @property {unknown} [args]
  * @property {string} runId
  * @property {string} runDir
+ * @property {Work} [work]
+ * @property {number|null} [timeoutSec]
  * @property {number|null} [budget]
  * @property {string|null} [model]
  * @property {string|null} [effort]
@@ -220,8 +222,18 @@ async function executeDryRun(cfg, run) {
  */
 async function executeRealRun(cfg, run) {
 	const { meta, title, onLine, startedAt } = run;
-	const persistence = new Persistence(cfg.runDir, { runId: cfg.runId });
-	const lease = persistence.acquire();
+	const ownsWork = !cfg.work;
+	const work = cfg.work ?? Work.open({
+		runId: cfg.runId,
+		runDir: cfg.runDir,
+		timeoutSec: cfg.timeoutSec ?? null,
+		signal: cfg.signal,
+	});
+	if (work.runId !== cfg.runId || work.runDir !== cfg.runDir) {
+		throw new Error(`supplied Work '${work.runId}' at '${work.runDir}' does not match workflow '${cfg.runId}' at '${cfg.runDir}'`);
+	}
+	cfg = { ...cfg, signal: work.signal };
+	const { persistence, lease } = work;
 	try {
 		const agentBackend = cfg.agentBackend ?? createAgentBackend({ backend: "cli", cli: createCliBackend() });
 		const requestedBackend = normalizeBackend(agentBackend.kindFor());
@@ -242,6 +254,7 @@ async function executeRealRun(cfg, run) {
 				},
 				hostPath: cfg.hostPath ?? null,
 				cwd: cfg.cwd || process.cwd(),
+				timeoutSec: cfg.timeoutSec ?? null,
 				budget: cfg.budget ?? null,
 				model: cfg.model ?? null,
 				effort: cfg.effort ?? null,
@@ -278,6 +291,7 @@ async function executeRealRun(cfg, run) {
 			title,
 			onLine,
 			dashboard: cfg.progressMode === "dashboard",
+			ownerGeneration: lease.generation,
 		});
 		const memory = new Memory(cfg.memoryPath, { readOnly: false, log: (m) => onLine(m, "info", { ephemeral: true }) });
 		const runBackend = await agentBackend.openRun();
@@ -363,7 +377,7 @@ async function executeRealRun(cfg, run) {
 			reporter.close(closeStatus);
 		}
 	} finally {
-		lease.release();
+		if (ownsWork) work.close();
 	}
 }
 

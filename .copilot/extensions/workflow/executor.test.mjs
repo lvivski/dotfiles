@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { executeWorkflow as executeRawWorkflow, extractMeta, normalizeBackend, stripExports } from "./executor.mjs";
 import { CLI_BACKEND } from "./agent.mjs";
 import { sessionStateDir } from "./sessions.mjs";
+import { Work } from "./work.mjs";
 import { mkResult, withFakeEnv, tmpDir, within } from "./fixtures/support.mjs";
 
 /** @param {any} config */
@@ -77,7 +78,45 @@ test("dry-run executes the harness plan without writing run artifacts or spendin
 		assert.match(rec.result, /dry-run plan: 3 agent call\(s\) — preview/);
 		assert.equal(existsSync(join(runDir, "run.json")), false);
 		assert.equal(existsSync(join(runDir, "journal.jsonl")), false);
+		assert.equal(existsSync(join(runDir, ".lock")), false);
+		assert.equal(existsSync(join(runDir, "heartbeat.json")), false);
 	}));
+
+test("executeWorkflow closes only Work that it opens", async () => {
+	const runDir = tmpDir();
+	const work = Work.open({ runId: "supplied-work", runDir });
+	const rec = await executeWorkflow({
+		source: `return "ok";`,
+		runId: "supplied-work",
+		runDir,
+		budget: 1,
+		work,
+		onLine: () => {},
+	});
+	assert.equal(rec.status, "complete");
+	assert.equal(Work.find("supplied-work"), work);
+	assert.equal(existsSync(join(runDir, ".lock")), true);
+	work.close();
+	assert.equal(Work.find("supplied-work"), null);
+	assert.equal(existsSync(join(runDir, ".lock")), false);
+});
+
+test("executeWorkflow rejects a supplied Work for a different identity", async () => {
+	const work = Work.open({ runId: "actual", runDir: tmpDir() });
+	try {
+		await assert.rejects(executeWorkflow({
+			source: `return "ok";`,
+			runId: "different",
+			runDir: tmpDir(),
+			budget: 1,
+			work,
+			onLine: () => {},
+		}), /supplied Work 'actual'.*does not match/);
+		assert.equal(Work.find("actual"), work);
+	} finally {
+		work.close();
+	}
+});
 
 test("backend ids default to cli and otherwise remain exact", () => {
 	assert.equal(normalizeBackend(undefined), CLI_BACKEND);

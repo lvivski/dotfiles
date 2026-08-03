@@ -30,7 +30,9 @@ run_copilot_workflow({ name: "deep-research", budget: 10000,
 ```
 
 For broad/high-stakes research, use `preset: "xtreme"` instead of manually raising every tuning
-knob. The harness uses `profile: "research"` only for research and source-verification agents.
+knob. The preset binds the parent session's concrete model with `xhigh` effort and long context. If
+the parent uses Auto routing, the selected model's defaults are retained. The harness uses
+`profile: "research"` only for research and source-verification agents.
 
 Research verifiers independently open cited URLs. If no angle passes source verification, the
 workflow returns an explicitly unsupported report and never synthesizes unverified findings. Return

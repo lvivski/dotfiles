@@ -27,6 +27,7 @@ import { stableStringify } from "./json.mjs";
  * record shape, or cache-key algorithm changes incompatibly; older runs then become inspection-only.
  */
 export const FORMAT_VERSION = 1;
+export const PROCESS_INSTANCE_ID = randomUUID();
 
 export class PersistenceError extends Error {}
 export class LockedError extends PersistenceError {}
@@ -111,11 +112,13 @@ export function hashFile(path) {
 export class Lease {
 	#released = false;
 
-	/** @param {Persistence} persistence @param {{ token: string, generation: number }} owner */
+	/** @param {Persistence} persistence @param {{ token: string, generation: number, pid: number, instanceId: string }} owner */
 	constructor(persistence, owner) {
 		this.persistence = persistence;
 		this.token = owner.token;
 		this.generation = owner.generation;
+		this.pid = owner.pid;
+		this.instanceId = owner.instanceId;
 	}
 
 	/**
@@ -162,8 +165,8 @@ export class Persistence {
 			mkdirSync(candidate);
 			const previous = Number(readFileSafe(this.generationPath) || 0);
 			const generation = Number.isSafeInteger(previous) && previous >= 0 ? previous + 1 : 1;
-			const owner = { token: randomUUID(), generation };
-			atomicWriteJson(join(candidate, "owner.json"), { ...owner, pid: process.pid });
+			const owner = { token: randomUUID(), generation, pid: process.pid, instanceId: PROCESS_INSTANCE_ID };
+			atomicWriteJson(join(candidate, "owner.json"), owner);
 			try {
 				renameSync(candidate, this.lockPath);
 				atomicWriteFile(this.generationPath, String(generation));

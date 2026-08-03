@@ -37,6 +37,16 @@ function runDir(runs, id) {
 	return dir;
 }
 
+/** @param {string} dir @param {string} [token] */
+function writeLiveOwner(dir, token = "live-owner") {
+	mkdirSync(join(dir, ".lock"), { recursive: true });
+	writeFileSync(join(dir, ".lock", "owner.json"), JSON.stringify({
+		token,
+		generation: 1,
+		pid: process.pid,
+	}));
+}
+
 test("runsDir follows CWF_RUNS_DIR and listWorkflowRuns reports an empty directory", () =>
 	withRuns((runs) => {
 		assert.equal(runsDir(), runs);
@@ -140,6 +150,7 @@ test("getWorkflowResult distinguishes running from terminal resultless runs", ()
 				aic: 0.5,
 			}),
 		);
+		writeLiveOwner(running);
 		const pending = JSON.parse(getWorkflowResult({ runId: "running-run" }));
 		assert.equal(pending.resultAvailable, false);
 		assert.equal(pending.status, "running");
@@ -211,6 +222,7 @@ test("inspectWorkflowRun returns bounded running metadata without result text or
 				errors: [{ label: huge, error: huge }],
 			}),
 		);
+		writeLiveOwner(dir);
 
 		const inspected = JSON.parse(inspectWorkflowRun({ runId: "running-inspect" }));
 		assert.equal(inspected.status, "running");
@@ -333,6 +345,7 @@ test("inspectWorkflowAgent returns bounded summary, prompt, result, events, and 
 test("a dead owner renders interrupted while a live owner stays running", () =>
 	withRuns((runs) => {
 		const now = new Date().toISOString();
+		const old = new Date(Date.now() - 60_000).toISOString();
 		const dead = runDir(runs, "dead-owner");
 		writeFileSync(join(dead, "state.json"), JSON.stringify({
 			runId: "dead-owner",
@@ -354,9 +367,28 @@ test("a dead owner renders interrupted while a live owner stays running", () =>
 			ownerInstanceId: PROCESS_INSTANCE_ID,
 			updatedAt: now,
 		}));
+		writeLiveOwner(live);
+		const legacy = runDir(runs, "legacy-stale");
+		writeFileSync(join(legacy, "state.json"), JSON.stringify({
+			status: "running",
+			updatedAt: old,
+		}));
+		const locked = runDir(runs, "legacy-locked");
+		writeFileSync(join(locked, "state.json"), JSON.stringify({
+			status: "running",
+			updatedAt: old,
+		}));
+		mkdirSync(join(locked, ".lock"));
+		writeFileSync(join(locked, ".lock", "owner.json"), JSON.stringify({
+			token: "live",
+			generation: 1,
+			pid: process.pid,
+		}));
 		const listing = listWorkflowRuns();
 		assert.match(listing, /dead-owner\s+interrupted/);
 		assert.match(listing, /live-owner\s+running/);
+		assert.match(listing, /legacy-stale\s+interrupted/);
+		assert.match(listing, /legacy-locked\s+running/);
 
 		const logs = /** @type {string[]} */ ([]);
 		workflowCommand("dead-owner", { log: (message) => logs.push(message) });

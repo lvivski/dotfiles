@@ -9,8 +9,9 @@ import { existsSync, lstatSync, statSync, readFileSync, readdirSync } from "node
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { formatDashboard, PROCESS_INSTANCE_ID } from "./progress.mjs";
+import { formatDashboard } from "./progress.mjs";
 import { FORMAT_VERSION } from "./persistence.mjs";
+import { reconcileWorkRecord, workHeartbeatAt } from "./work.mjs";
 
 const RUN_LIST_LIMIT = 50;
 const STATUS_WIDTH = 11;
@@ -399,6 +400,7 @@ export function inspectWorkflowRun(input) {
 
 	const workflow = inspectString(workflowName(meta, rec), INSPECT_LABEL_CHARS);
 	const resumable = status !== "running" && manifest.formatVersion === FORMAT_VERSION && existsSync(join(dir, "script.js"));
+	const heartbeatAt = workHeartbeatAt(dir, state.heartbeatAt);
 	return JSON.stringify(
 		{
 			runId,
@@ -423,6 +425,8 @@ export function inspectWorkflowRun(input) {
 			timing: {
 				startedAt: inspectString(rec.startedAt ?? state.startedAt, 128),
 				updatedAt: inspectString(state.updatedAt ?? rec.updatedAt ?? meta.updatedAt, 128),
+				heartbeatAt: inspectString(heartbeatAt, 128),
+				heartbeatAgeMs: heartbeatAge(heartbeatAt),
 				finishedAt: inspectString(rec.finishedAt, 128),
 				durationMs: finiteNumber(rec.durationMs),
 			},
@@ -544,37 +548,13 @@ function latestRunId() {
  * @param {string} runDir @returns {any}
  */
 function runRecordOf(runDir) {
-	return reconcileRunning(readJson(join(runDir, "run.json")) || readJson(join(runDir, "state.json")) || replayProgress(runDir));
+	return reconcileWorkRecord(readJson(join(runDir, "run.json")) || readJson(join(runDir, "state.json")) || replayProgress(runDir), runDir);
 }
 
-/**
- * A process exit cannot finish asynchronous workflow cleanup, so persisted state may still say
- * `running`. New records carry an owner PID + process-instance id; legacy records fall back to the
- * maximum supported run timeout plus a small grace period.
- * @param {any} rec
- * @returns {any}
- */
-function reconcileRunning(rec) {
-	if (!rec || rec.status !== "running") return rec;
-	const pid = Number(rec.ownerPid);
-	if (!Number.isInteger(pid) || pid <= 0) return rec;
-	const interrupted = (pid === process.pid && rec.ownerInstanceId !== PROCESS_INSTANCE_ID) || !processIsAlive(pid);
-	if (!interrupted) return rec;
-	return {
-		...rec,
-		status: "interrupted",
-		error: rec.error || "workflow host process exited before completion",
-	};
-}
-
-/** @param {number} pid @returns {boolean} */
-function processIsAlive(pid) {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch (e) {
-		return /** @type {NodeJS.ErrnoException} */ (e).code === "EPERM";
-	}
+/** @param {unknown} value */
+function heartbeatAge(value) {
+	const timestamp = timestampMs(value);
+	return timestamp > 0 ? Math.max(0, Date.now() - timestamp) : null;
 }
 
 /** Reconstruct a minimal record from progress.jsonl when state/run json are missing. @param {string} runDir */
@@ -641,7 +621,7 @@ function formatRunSummary(runId, rec, dir) {
 
 /** @param {string} runId @param {string} dir @returns {string|null} dashboard text when state.json exists. */
 function formatRunDashboard(runId, dir) {
-	const state = reconcileRunning(readJson(join(dir, "state.json")));
+	const state = reconcileWorkRecord(readJson(join(dir, "state.json")), dir);
 	if (!state) return null;
 	return formatDashboard({ ...state, runId: state.runId || runId });
 }

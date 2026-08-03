@@ -148,6 +148,24 @@ test("state.json receives the trailing state from a burst of events", async () =
 	p.close("complete");
 });
 
+test("state heartbeat tracks progress events and terminal close", async () => {
+	const dir = tmpDir();
+	const path = join(dir, "state.json");
+	const p = new ProgressReporter({ runId: "heartbeat", statePath: path, onLine: () => {} });
+	p.emit({ ev: "run_start", runId: "heartbeat" });
+	const first = JSON.parse(readFileSync(path, "utf8")).heartbeatAt;
+	await new Promise((resolve) => setTimeout(resolve, 5));
+	p.emit({ ev: "start", seq: 1, label: "active" });
+	await new Promise((resolve) => setTimeout(resolve, 200));
+	const live = JSON.parse(readFileSync(path, "utf8"));
+	assert.equal(live.status, "running");
+	assert.ok(Date.parse(live.heartbeatAt) > Date.parse(first));
+	p.close("complete");
+	const closed = JSON.parse(readFileSync(path, "utf8"));
+	assert.equal(closed.status, "complete");
+	assert.equal(closed.ownerGeneration, null);
+});
+
 test("progress.jsonl buffers events and flushes all records on close", () => {
 	const dir = tmpDir();
 	const path = join(dir, "progress.jsonl");

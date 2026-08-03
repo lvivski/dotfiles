@@ -82,6 +82,21 @@ const ctx = {
 			return undefined;
 		}
 	},
+	async getModelContext() {
+		try {
+			const [current, catalog] = await Promise.allSettled([
+				session?.rpc?.model?.getCurrent?.(),
+				session?.rpc?.model?.list?.(),
+			]);
+			if (current.status !== "fulfilled" || !current.value) return undefined;
+			return {
+				modelId: typeof current.value.modelId === "string" ? current.value.modelId : null,
+				models: catalog.status === "fulfilled" && Array.isArray(catalog.value?.list) ? catalog.value.list : [],
+			};
+		} catch {
+			return undefined;
+		}
+	},
 	agentBackend,
 	async requestBudgetIncrease({ runId, current, spent, increment, proposed }) {
 		try {

@@ -740,6 +740,7 @@ test("run settings fill agent model/effort/context only when unset (per-agent wi
 	const overridden = applyRunSettings({ prompt: "x", model: "m2" }, defaults);
 	assert.equal(overridden.model, "m2");
 	assert.equal(overridden.effort, "e1"); // still inherited
+	assert.throws(() => applyRunSettings({ prompt: "x", model: "auto" }, defaults), /cannot be combined with reasoning effort/);
 });
 
 test("explicit per-agent phase wins over the current phase", () =>

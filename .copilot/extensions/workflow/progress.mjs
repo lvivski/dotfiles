@@ -7,8 +7,8 @@
  * @typedef {"preview"|"queued"|"running"|"pausing"|"paused"|"resuming"|"cancelling"|"cancelled"|"complete"|"partial"|"failed"|"error"|"timeout"|"interrupted"} RunStatus
  */
 import { writeFileSync, mkdirSync, appendFileSync } from "node:fs";
-import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
+import { PROCESS_INSTANCE_ID } from "./persistence.mjs";
 
 const CTRL = /[\u0000-\u001f\u007f-\u009f]/g;
 const MAX_BUFFERED_EVENTS = 32;
@@ -17,7 +17,7 @@ const MAX_RECENT = 8;
 const DASHBOARD_INTERVAL_MS = 1500;
 const FLUSH_INTERVAL_MS = 150;
 const STATE_WRITE_INTERVAL_MS = 150;
-export const PROCESS_INSTANCE_ID = randomUUID();
+export { PROCESS_INSTANCE_ID };
 /** Strip control chars. @param {unknown} s */
 const san = (s) => String(s ?? "").replace(CTRL, " ");
 /** AIC from a raw nanoAiu field. @param {unknown} nano */
@@ -95,9 +95,22 @@ export class ProgressReporter {
 	/**
 	 * @param {{ jsonlPath?: string|null, statePath?: string|null, runId: string, meta?: object,
 	 *   title?: string, onLine?: (line: string, level?: "info"|"warning"|"error", meta?: { ephemeral?: boolean }) => void, write?: boolean,
-	 *   dashboard?: boolean, dashboardIntervalMs?: number, writeState?: ((state: any) => void)|null }} config
+	 *   dashboard?: boolean, dashboardIntervalMs?: number,
+	 *   ownerGeneration?: number|null, writeState?: ((state: any) => void)|null }} config
 	 */
-	constructor({ jsonlPath = null, statePath = null, runId, meta = {}, title, onLine = () => {}, write = true, dashboard = false, dashboardIntervalMs = DASHBOARD_INTERVAL_MS, writeState = null }) {
+	constructor({
+		jsonlPath = null,
+		statePath = null,
+		runId,
+		meta = {},
+		title,
+		onLine = () => {},
+		write = true,
+		dashboard = false,
+		dashboardIntervalMs = DASHBOARD_INTERVAL_MS,
+		ownerGeneration = null,
+		writeState = null,
+	}) {
 		this.#jsonl = new BufferedJsonl(write ? jsonlPath : null);
 		this.#statePath = write ? statePath : null;
 		this.#onLine = onLine;
@@ -111,9 +124,11 @@ export class ProgressReporter {
 			meta,
 			ownerPid: process.pid,
 			ownerInstanceId: PROCESS_INSTANCE_ID,
+			ownerGeneration,
 			status: /** @type {RunStatus} */ ("running"),
 			startedAt: now,
 			updatedAt: now,
+			heartbeatAt: now,
 			phase: /** @type {string|null} */ (null),
 			counts: { launched: 0, done: 0, failed: 0, cached: 0, skipped: 0, dropped: 0, unknownUsage: 0 },
 			nanoAiu: 0,
@@ -157,6 +172,7 @@ export class ProgressReporter {
 				break;
 		}
 		s.updatedAt = new Date().toISOString();
+		s.heartbeatAt = s.updatedAt;
 		this.#syncState(rec.ev === "run_end" || rec.ev === "run_start");
 	}
 
@@ -281,7 +297,10 @@ export class ProgressReporter {
 
 	/** Finalize the run: set status, flush state.json. @param {RunStatus} status */
 	close(status) {
+		const now = new Date().toISOString();
 		this.#state.status = status;
+		this.#state.updatedAt = now;
+		this.#state.heartbeatAt = now;
 		this.#jsonl.close();
 		this.#syncState(true);
 	}

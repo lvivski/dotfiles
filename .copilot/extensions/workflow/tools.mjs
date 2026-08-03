@@ -19,6 +19,8 @@ import { resolveWorkflowDefinition } from "./registry.mjs";
 import { FORMAT_VERSION, readJsonFile } from "./persistence.mjs";
 import { loadWorkflowPlan, persistWorkflowPlan } from "./plans.mjs";
 import { CheckpointStore } from "./checkpoint.mjs";
+import { resolveModelSettings } from "./models.mjs";
+import { Work, WorkError, abortWork, processIsAlive, readWorkOwner, requestWorkControl } from "./work.mjs";
 import {
 	MAX_RESULT_CHUNK_CHARS,
 	WorkflowResultError,
@@ -50,6 +52,7 @@ const HOME = homedir();
  * @property {(prompt: string) => void} send inject a turn to wake the agent (background completion)
  * @property {() => Promise<string | undefined>} getWorkspaceCwd session working directory
  * @property {() => Promise<{ allowAll: boolean|null, mode?: "off"|"on"|"auto"|null, sessionMode?: string|null, directories: string[] }|undefined>} [getPermissionContext]
+ * @property {() => Promise<{ modelId?: string|null, models?: unknown[] }|undefined>} [getModelContext]
  * @property {{ kindFor: Function, openRun: Function }} [agentBackend]
  * @property {(request: { runId: string, current: number, spent: number, increment: number, proposed: number }) => Promise<boolean|null>} [requestBudgetIncrease]
  */
@@ -63,7 +66,7 @@ const HOME = homedir();
  * @property {string} cwd
  * @property {number|null} budget
  * @property {"dashboard"|"events"|"off"} progressMode
- * @property {number} timeoutSec
+ * @property {number|null} timeoutSec
  * @property {boolean} background
  */
 
@@ -76,16 +79,9 @@ const isFile = (p) => {
 	}
 };
 
-/** @typedef {{ controller: AbortController, settled: Promise<void>, resolveSettled: () => void }} LiveRun */
-/** In-flight runs owned by this extension process. @type {Map<string, LiveRun>} */
-const LIVE_RUNS = new Map();
-
 /** Abort an in-flight run by id. @param {string} runId @returns {boolean} true if a live run was aborted. */
 export function abortRun(runId) {
-	const live = LIVE_RUNS.get(runId);
-	if (!live) return false;
-	live.controller.abort({ kind: "cancel" });
-	return true;
+	return abortWork(runId);
 }
 /** @param {string|undefined} p */
 const expandHome = (p) => (p && p.startsWith("~/") ? join(HOME, p.slice(2)) : p);
@@ -200,7 +196,7 @@ function newRunId(label) {
 /**
  * Format a finished/dry-run {@link import("./executor.mjs").RunRecord} into a tool result.
  * @param {any} rec
- * @param {{ runDir: string, cwd?: string, dryRun?: boolean, planId?: string }} ctx
+ * @param {{ runDir: string, cwd?: string, dryRun?: boolean, planId?: string, model?: string|null }} ctx
  * @returns {string | { textResultForLlm: string, resultType: string, error: string }}
  */
 function formatResult(rec, ctx) {
@@ -209,6 +205,7 @@ function formatResult(rec, ctx) {
 		ctx.dryRun ? "workflow dry-run complete (no agents spawned, no AIC spent)" : `workflow run ${rec.status}`,
 		ctx.planId ? `planId: ${ctx.planId}` : "",
 		ctx.dryRun ? `approved max agents: ${rec.plannedMaxAgents ?? rec.counts?.agents ?? 0}` : "",
+		ctx.model ? `model: ${ctx.model}` : "",
 		`runId: ${rec.runId}`,
 		`artifacts: ${ctx.runDir}`,
 		ctx.dryRun ? "AIC used: 0.0" : `AIC used: ${Number(rec.aic || 0).toFixed(1)}`,
@@ -255,26 +252,30 @@ export async function runWorkflow(input, ctx) {
 				cfg: { ...run.cfg, budget: run.cfg.budget ?? DEFAULT_BUDGET },
 				plannedAgents: rec.plannedMaxAgents,
 			});
-			return formatResult(rec, { runDir: run.runDir, cwd: run.cwd, dryRun: true, planId: plan.planId });
+			return formatResult(rec, { runDir: run.runDir, cwd: run.cwd, dryRun: true, planId: plan.planId, model: run.cfg.model });
 		}
 
-		const live = startLiveRun(run);
+		const work = Work.open({ runId: run.runId, runDir: run.runDir, timeoutSec: run.timeoutSec });
 		const onLine = lineLogger(run.progressMode, ctx);
 		if (!run.background) {
 			ctx.log(`workflow: ${run.label} (budget ${run.budget} AIC, run ${run.runId}, cwd ${run.cwd})`);
 			try {
-				const rec = await executeWorkflow({ ...run.cfg, signal: live.signal, onLine });
-				return formatResult(rec, { runDir: run.runDir, cwd: run.cwd });
+				const rec = await executeWorkflow({ ...run.cfg, work, onLine });
+				return formatResult(rec, { runDir: run.runDir, cwd: run.cwd, model: run.cfg.model });
 			} finally {
-				live.close();
+				work.close();
 			}
 		}
 
-		startBackgroundRun(run, live, onLine, ctx);
+		startBackgroundRun(run, work, onLine, ctx);
 		return formatBackgroundStart(run);
 	} catch (e) {
-		if (e instanceof ValidationError) return failure(e.message);
-		ctx.log(`run_copilot_workflow internal error: ${e instanceof Error ? e.stack : e}`);
+		if (e instanceof ValidationError || e instanceof WorkError) return failure(e.message);
+		try {
+			ctx.log(`run_copilot_workflow internal error: ${e instanceof Error ? e.stack : e}`);
+		} catch {
+			// Logging cannot be allowed to hide the structured tool failure.
+		}
 		return failure(`internal workflow extension error: ${e instanceof Error ? e.message : e}`);
 	}
 }
@@ -298,7 +299,13 @@ async function prepareRun(input, ctx) {
 	const cwd = await resolveCwd(input.cwd, ctx);
 	const { source, label, path: harnessPath } = resolveSource(input, cwd);
 	const hostPath = resolveHostPath(input, harnessPath);
-	const permissionContext = await ctx.getPermissionContext?.();
+	const [permissionContext, modelContext] = await Promise.all([
+		ctx.getPermissionContext?.(),
+		ctx.getModelContext?.(),
+	]);
+	const settings = resolveModelSettings(input, preset, modelContext);
+	check(!settings.error, settings.error || "invalid model settings");
+	if (settings.warning) ctx.log(settings.warning, false, "warning");
 	const allowedDirs = permissionContext?.allowAll ? [cwd] : permissionContext?.directories?.length ? permissionContext.directories : [cwd];
 	const currentParentPermissionMode = normalizePermissionMode(permissionContext?.mode, permissionContext?.allowAll);
 	const parentPermissionMode = currentParentPermissionMode;
@@ -320,10 +327,11 @@ async function prepareRun(input, ctx) {
 		args: input.args,
 		runId,
 		runDir,
+		timeoutSec,
 		budget,
-		model: input.model ?? (preset ? "auto" : null),
-		effort: input.effort ?? (preset ? "xhigh" : null),
-		context: input.context ?? (preset ? "long_context" : null),
+		model: settings.model,
+		effort: settings.effort,
+		context: settings.context,
 		concurrency: input.concurrency ?? null,
 		enableMcp: !!input.enableMcp,
 		restricted: !!input.restricted,
@@ -350,7 +358,7 @@ async function prepareRun(input, ctx) {
 /** @param {any} input */
 function expandPlanInput(input) {
 	if (!input?.planId) return input;
-	const conflicting = ["script", "scriptPath", "name", "args", "budget", "model", "effort", "context", "concurrency", "enableMcp", "restricted", "strictBudget", "memory", "host", "cwd"].filter(
+	const conflicting = ["script", "scriptPath", "name", "args", "budget", "model", "effort", "context", "preset", "concurrency", "enableMcp", "restricted", "strictBudget", "memory", "host", "cwd"].filter(
 		(key) => input[key] != null,
 	);
 	check(!conflicting.length, `planId cannot be combined with bound plan fields: ${conflicting.join(", ")}`);
@@ -387,11 +395,11 @@ function pathWithinAny(path, roots) {
 	});
 }
 
-/** @param {unknown} value @returns {number} */
-function resolveTimeout(value) {
-	const requested = value ?? 1800;
-	check(typeof requested === "number" && requested >= 1, `timeoutSec must be a number >= 1 (got ${requested}).`);
-	return Math.min(requested, MAX_TIMEOUT_SEC);
+/** @param {unknown} value @returns {number|null} */
+export function resolveTimeout(value) {
+	if (value == null) return null;
+	check(typeof value === "number" && Number.isFinite(value) && value >= 1, `timeoutSec must be a number >= 1 (got ${value}).`);
+	return Math.min(value, MAX_TIMEOUT_SEC);
 }
 
 /** @param {any} input @param {boolean} preset @returns {number|null} */
@@ -408,33 +416,6 @@ function resolveProgressMode(input) {
 	return /** @type {"dashboard"|"events"|"off"} */ (progressMode);
 }
 
-/** @param {RunPlan} run */
-function startLiveRun(run) {
-	check(!LIVE_RUNS.has(run.runId), `workflow run '${run.runId}' is already active.`);
-	const ac = new AbortController();
-	/** @type {() => void} */
-	let resolveSettled = () => {};
-	/** @type {Promise<void>} */
-	const settled = new Promise((resolve) => {
-		resolveSettled = () => resolve();
-	});
-	/** @type {LiveRun} */
-	const entry = { controller: ac, settled, resolveSettled };
-	const timer = setTimeout(() => {
-		ac.abort({ kind: "timeout" });
-	}, run.timeoutSec * 1000);
-	timer.unref?.();
-	LIVE_RUNS.set(run.runId, entry);
-	return {
-		signal: ac.signal,
-		close() {
-			clearTimeout(timer);
-			LIVE_RUNS.delete(run.runId);
-			entry.resolveSettled();
-		},
-	};
-}
-
 /**
  * Pause, cancel, or resume a persisted workflow.
  * @param {{ runId?: unknown, action?: unknown, invalidate?: unknown, background?: boolean }} input
@@ -448,30 +429,43 @@ export async function controlWorkflowRun(input, ctx) {
 		check(["pause", "resume", "cancel"].includes(action), "action must be pause, resume, or cancel.");
 		const invalidatedBranches = parseInvalidations(input?.invalidate);
 		check(!invalidatedBranches.length || action === "resume", "invalidate is only valid when action is resume.");
-		const live = LIVE_RUNS.get(runId);
+		const local = Work.find(runId);
 		if (action === "pause" || action === "cancel") {
-			check(live, `workflow run '${runId}' is not active in this process.`);
-			live.controller.abort({ kind: action });
-			return JSON.stringify({ runId, action, accepted: true, status: action === "pause" ? "pausing" : "cancelling" }, null, 2);
+			if (local?.request(/** @type {"pause"|"cancel"} */ (action))) {
+				return JSON.stringify({ runId, action, accepted: true, durable: false, status: action === "pause" ? "pausing" : "cancelling" }, null, 2);
+			}
+			const request = requestWorkControl(join(runsDir(), runId), /** @type {"pause"|"cancel"} */ (action));
+			return JSON.stringify({
+				runId,
+				action,
+				accepted: true,
+				queued: true,
+				durable: true,
+				requestId: request.id,
+				ownerPid: request.target.pid,
+				status: action === "pause" ? "pausing" : "cancelling",
+			}, null, 2);
 		}
-		if (live?.controller.signal.aborted) await live.settled;
-		else check(!live, `workflow run '${runId}' is still active; pause or cancel it before resuming.`);
+		if (local?.signal.aborted) await local.settled;
+		else check(!local, `workflow run '${runId}' is still active; pause or cancel it before resuming.`);
+		const owner = readWorkOwner(join(runsDir(), runId));
+		check(!owner || !processIsAlive(owner.pid), `workflow run '${runId}' is still active in process ${owner?.pid}; pause or cancel it before resuming.`);
 		const run = await preparePersistedResume(runId, ctx, invalidatedBranches);
-		const resumed = startLiveRun(run);
+		const work = Work.open({ runId: run.runId, runDir: run.runDir, timeoutSec: run.timeoutSec });
 		const onLine = lineLogger(run.progressMode, ctx);
 		// Foreground resume returns the result to the caller, so there is nothing to notify about.
 		if (input?.background === false) {
 			try {
-				const rec = await executeWorkflow({ ...run.cfg, signal: resumed.signal, onLine });
-				return formatResult(rec, { runDir: run.runDir, cwd: run.cwd });
+				const rec = await executeWorkflow({ ...run.cfg, work, onLine });
+				return formatResult(rec, { runDir: run.runDir, cwd: run.cwd, model: run.cfg.model });
 			} finally {
-				resumed.close();
+				work.close();
 			}
 		}
-		startBackgroundRun(run, resumed, onLine, ctx);
+		startBackgroundRun(run, work, onLine, ctx);
 		return formatBackgroundStart(run);
 	} catch (e) {
-		if (e instanceof ValidationError) return failure(e.message);
+		if (e instanceof ValidationError || e instanceof WorkError) return failure(e.message);
 		throw e;
 	}
 }
@@ -486,6 +480,14 @@ async function preparePersistedResume(runId, ctx, invalidatedBranches = []) {
 		`workflow run '${runId}' uses artifact format ${manifest.formatVersion ?? "(none)"}; this build reads format ${FORMAT_VERSION}, so the run is inspection-only.`,
 	);
 	const latestBudget = new CheckpointStore(runDir, { resume: true, readOnly: true }).latestBudget ?? manifest.budget;
+	const timeoutSec = resolveTimeout(manifest.timeoutSec);
+	let effort = manifest.effort;
+	let context = manifest.context;
+	if (manifest.model === "auto" && effort) {
+		effort = null;
+		context = null;
+		ctx.log("workflow: resumed a legacy Auto run without its incompatible effort/context overrides", false, "warning");
+	}
 	const sourcePath = join(runDir, "script.js");
 	check(isFile(sourcePath), `workflow run '${runId}' has no persisted script.`);
 	const source = readFileSync(sourcePath, "utf8");
@@ -515,10 +517,11 @@ async function preparePersistedResume(runId, ctx, invalidatedBranches = []) {
 			args: readJsonFile(join(runDir, "meta.json"))?.args ?? null,
 			runId,
 			runDir,
+			timeoutSec,
 			budget: latestBudget,
 			model: manifest.model,
-			effort: manifest.effort,
-			context: manifest.context,
+			effort,
+			context,
 			concurrency: manifest.concurrency,
 			enableMcp: !!manifest.enableMcp,
 			restricted: !!manifest.restricted,
@@ -545,7 +548,7 @@ async function preparePersistedResume(runId, ctx, invalidatedBranches = []) {
 		cwd,
 		budget: latestBudget,
 		progressMode: manifest.progressMode || "dashboard",
-		timeoutSec: 1800,
+		timeoutSec,
 		background: true,
 	};
 }
@@ -559,16 +562,34 @@ function lineLogger(progressMode, ctx) {
 
 /**
  * @param {RunPlan} run
- * @param {{ signal: AbortSignal, close: () => void }} live
+ * @param {Work} work
  * @param {import("./executor.mjs").ExecuteConfig["onLine"]} onLine
  * @param {ToolCtx} ctx
  */
-function startBackgroundRun(run, live, onLine, ctx) {
-	ctx.log(`workflow: ${run.label} started in background (budget ${run.budget} AIC, run ${run.runId})`);
-	executeWorkflow({ ...run.cfg, signal: live.signal, onLine })
+function startBackgroundRun(run, work, onLine, ctx) {
+	try {
+		ctx.log(`workflow: ${run.label} started in background (budget ${run.budget} AIC, run ${run.runId})`);
+	} catch (error) {
+		closeBackgroundWork(work, ctx);
+		throw error;
+	}
+	executeWorkflow({ ...run.cfg, work, onLine })
 		.then((rec) => notifyDone(rec, run.runDir, ctx))
 		.catch((e) => notifyError(run.runId, e, run.runDir, ctx))
-		.finally(() => live.close());
+		.finally(() => closeBackgroundWork(work, ctx));
+}
+
+/** @param {Work} work @param {ToolCtx} ctx */
+function closeBackgroundWork(work, ctx) {
+	try {
+		work.close();
+	} catch (error) {
+		try {
+			ctx.log(`workflow: failed to release Work '${work.runId}': ${error instanceof Error ? error.message : error}`, false, "warning");
+		} catch {
+			// Background cleanup must never create an unhandled rejection.
+		}
+	}
 }
 
 /** @param {unknown} runId @returns {string} */
@@ -586,6 +607,7 @@ function formatBackgroundStart(run) {
 	return [
 		"workflow run started in background",
 		`runId: ${run.runId}`,
+		run.cfg.model ? `model: ${run.cfg.model}` : "",
 		`artifacts: ${run.runDir}`,
 		`inspect while running: ${runInspectionCall(run.runId)}`,
 		`retrieve later: ${resultRetrievalCall(run.runId)}`,
@@ -790,7 +812,7 @@ export function buildTools(ctx) {
 	tools.push({
 		name: "control_workflow_run",
 		skipPermission: true,
-		description: "Pause, resume, or cancel a workflow run. Resume may invalidate selected parallel/pipeline branch paths before deterministic checkpoint replay.",
+		description: "Pause or cancel an active workflow from any session, or resume a settled run. Resume may invalidate selected parallel/pipeline branch paths before deterministic checkpoint replay.",
 		parameters: {
 			type: "object",
 			additionalProperties: false,
@@ -832,10 +854,10 @@ export function buildTools(ctx) {
 				dryRun: { type: "boolean", description: "Preview without agent spend. Read-only host effects may run for accurate discovery; returns a launchable planId." },
 				runId: { type: "string", description: "Explicit run id for a fresh run (default: auto-generated). Bare id, no path separators." },
 				background: { type: "boolean", description: "Run asynchronously (default true for non-dry) and notify with a bounded inline result on completion. Set false for small/test runs that should return the final result directly from the tool call." },
-				model: { type: "string", description: "Default model agents inherit unless they pin their own (the harness's per-agent choice wins). Any Copilot model or 'auto'." },
-				effort: { type: "string", enum: ["none", "low", "medium", "high", "xhigh", "max"], description: "Default reasoning effort agents inherit unless they pin their own." },
+				model: { type: "string", description: "Default model agents inherit unless they pin their own. Use a concrete model id, 'auto' for model routing, or 'inherit' for the parent session's selected model." },
+				effort: { type: "string", enum: ["none", "low", "medium", "high", "xhigh", "max"], description: "Default reasoning effort agents inherit unless they pin their own. Explicit effort cannot be combined with model='auto'." },
 				context: { type: "string", enum: ["default", "long_context"], description: "Default context-window tier agents inherit unless they pin their own." },
-				preset: { type: "string", enum: ["xtreme"], description: `Named run preset. 'xtreme' sets model=auto, effort=xhigh, context=long_context and a ${XTREME_BUDGET.toLocaleString("en-US")} AIC default budget.` },
+				preset: { type: "string", enum: ["xtreme"], description: `Named run preset. 'xtreme' binds the parent session's concrete model with effort=xhigh, context=long_context and a ${XTREME_BUDGET.toLocaleString("en-US")} AIC default budget. If the parent uses Auto, model defaults are retained instead.` },
 				concurrency: { type: "integer", minimum: 1, description: "Max concurrent subagents (default min(16, max(2, cpu-1)))." },
 				enableMcp: { type: "boolean", description: "Launch-level MCP default inherited by agent profiles; default off." },
 				restricted: { type: "boolean", description: "Administrative host restriction: no host effects or worktrees. Use agent profile:'read-only' for model permissions." },
@@ -844,7 +866,7 @@ export function buildTools(ctx) {
 				host: { type: "string", description: "Path to a `.mjs` host-effects sidecar exposing the harness's `host.*` namespace (full-Node effects, checkpointed). Defaults to a sibling `<name>.host.mjs` when present." },
 				progress: { type: "string", enum: ["dashboard", "events", "off"], description: "Progress output mode. dashboard (default) emits ephemeral TUI-like snapshots, events emits per-event lines, off suppresses progress output." },
 				cwd: { type: "string", description: "Directory to run the workflow from (default: the session's working directory)." },
-				timeoutSec: { type: "number", minimum: 1, maximum: MAX_TIMEOUT_SEC, description: "Kill the run (and its subagents) after this many seconds (default 1800)." },
+				timeoutSec: { type: "number", minimum: 1, maximum: MAX_TIMEOUT_SEC, description: "Optional hard deadline in seconds. Runs are unbounded when omitted." },
 			},
 		},
 		handler: (/** @type {any} */ input) => runWorkflow(input, ctx),

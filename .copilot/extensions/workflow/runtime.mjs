@@ -20,6 +20,7 @@ import { WorktreeManager, findRepoRoot, ensureClone, clonePath, _sanitize } from
 import { buildHostProxy } from "./effects.mjs";
 import { stableStringify } from "./json.mjs";
 import { formatBranchPath } from "./checkpoint.mjs";
+import { modelEffortError } from "./models.mjs";
 
 /** @typedef {import("./agent.mjs").AgentResult} AgentResult */
 /** @typedef {import("./agent.mjs").AgentSpec} AgentSpec */
@@ -1152,7 +1153,7 @@ function harnessFrames() {
 export function applyRunSettings(o, defaults = {}) {
 	const cwd = o.cwd ? resolve(defaults.cwd ?? process.cwd(), String(o.cwd)) : defaults.cwd ?? null;
 	const addDir = Array.isArray(o.addDir) ? o.addDir.map((dir) => resolve(defaults.cwd ?? process.cwd(), String(dir))) : null;
-	return {
+	const spec = {
 		prompt: String(o.prompt ?? ""),
 		model: o.model ?? defaults.model ?? null,
 		effort: o.effort ?? defaults.effort ?? null,
@@ -1176,6 +1177,9 @@ export function applyRunSettings(o, defaults = {}) {
 		label: o.label ?? null,
 		cacheCwd: cwd,
 	};
+	const error = modelEffortError(spec.model, spec.effort);
+	if (error) throw new Error(`workflow: ${error}`);
+	return spec;
 }
 
 /**
