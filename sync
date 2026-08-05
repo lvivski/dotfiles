@@ -12,7 +12,7 @@ fi
 git pull
 
 push() {
-	rsync --exclude ".git/" --exclude ".DS_Store" --exclude "sync" --exclude "README.md" -av . ~
+	rsync --exclude ".git/" --exclude ".DS_Store" --exclude "sync" --exclude "README.md" -av . ~ || return
 
 	# Stale copies of files renamed/removed in the repo. The rsync above is
 	# additive, so delete their leftovers from $HOME (after the new versions
@@ -31,22 +31,9 @@ push() {
 		.copilot/agents/judge.md
 		.copilot/agents/synthesizer.md
 		.copilot/extensions/cwf
-		.copilot/extensions/workflow/control.mjs
-		.copilot/extensions/workflow/control.test.mjs
-		.copilot/workflows/audit.cwf.py
-		.copilot/workflows/deep-research.cwf.py
-		.copilot/workflows/review-queue.cwf.py
-		.copilot/workflows/security-review.cwf.py
-		.copilot/workflows/triage.cwf.py
-		.copilot/skills/workflow/examples/classify-route.cwf.py
-		.copilot/skills/workflow/examples/deep-research.cwf.py
-		.copilot/skills/workflow/examples/fanout-synthesize.cwf.py
-		.copilot/skills/workflow/examples/generate-filter.cwf.py
-		.copilot/skills/workflow/examples/loop-memory.cwf.py
-		.copilot/skills/workflow/examples/loop-until-dry.cwf.py
-		.copilot/skills/workflow/examples/minimal-review.cwf.py
-		.copilot/skills/workflow/examples/pipeline-review.cwf.py
-		.copilot/skills/workflow/examples/tournament.cwf.py
+		.copilot/extensions/workflow
+		.copilot/skills/workflow
+		.copilot/workflows
 		.local/bin/cwf
 		.local/lib/copilot_workflows
 	)

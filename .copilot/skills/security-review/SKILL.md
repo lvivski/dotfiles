@@ -2,16 +2,16 @@
 name: security-review
 description: >-
   Use this skill when the user wants a security review, deep security review, or security audit.
-compatibility: GitHub Copilot CLI with the workflow extension loaded; git optional for change-scoped mode.
+compatibility: GitHub Copilot CLI with the conveyor extension loaded; git optional for change-scoped mode.
 metadata:
   copilot.user-invocable: "true"
-  copilot.runtime: "workflow"
+  copilot.runtime: "conveyor"
 user-invocable: true
 ---
 
 # Security review
 
-Invoke the saved workflow; do not write a new harness. A read-only host sidecar enumerates the
+Invoke the saved conveyor; do not write a new harness. A read-only host sidecar enumerates the
 git/filesystem scope, hashes every eligible file, and runs 22 generic matchers to rank attention and
 bound cost. One cheap orientation pass produces a working threat model. Investigation agents then
 review directory-shaped batches, read whole files, follow imports, and report anything they can
@@ -22,22 +22,22 @@ verifier returns `true-positive`, `false-positive`, or `uncertain` before the re
 Preview first (no AIC spent):
 
 ```text
-run_copilot_workflow({ name: "security-review", dryRun: true, budget: 6000 })
+run_conveyor({ name: "security-review", dryRun: true, budget: 6000 })
 ```
 
 Then run. With no args it reviews staged, unstaged, and untracked changes, or the current directory
 if there are none:
 
 ```text
-run_copilot_workflow({ name: "security-review", budget: 6000,
+run_conveyor({ name: "security-review", budget: 6000,
                model: "claude-opus-4.8", effort: "high", context: "long_context" })
 ```
 
 Scope it to a subtree or explicit files, or review a pull-request branch against its merge base:
 
 ```text
-run_copilot_workflow({ name: "security-review", budget: 6000, args: { root: "src/" } })
-run_copilot_workflow({ name: "security-review", budget: 6000, args: { base: "main" } })
+run_conveyor({ name: "security-review", budget: 6000, args: { root: "src/" } })
+run_conveyor({ name: "security-review", budget: 6000, args: { base: "main" } })
 ```
 
 Args:
@@ -89,5 +89,5 @@ MCP/network stays off and model agents are read-only. Do not use `restricted` be
 are required. Return the Markdown report plus `runId`, AIC used, and the coverage note.
 
 Matcher, severity, scope, and evidence invariants are covered by
-`node --test .copilot/workflows/security-review.test.mjs`. Run it after changing any matcher; a
+`node --test .copilot/conveyors/security-review.test.mjs`. Run it after changing any matcher; a
 matcher must match its own examples and none of its counter-examples.

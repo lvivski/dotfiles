@@ -28,16 +28,17 @@ From this repository, refresh the file after changing installed tools with:
 brew bundle dump --file=.Brewfile --force
 ```
 
-## Copilot Workflow — dynamic workflows on the Copilot CLI
+## Copilot Conveyor — dynamic workflows on the Copilot CLI
 
-`source ./sync` also installs the **workflow** Copilot extension, which orchestrates many GitHub
-Copilot CLI subagents in parallel (fan-out/synthesize, adversarial verification, tournaments, ...)
-from an async JavaScript harness (`.mjs`), with checkpoint/resume, budgets, and a live progress
-view. Say `workflow: <task>` in a `copilot` session (or `xtreme: <task>` to use the high-confidence
-preset), invoke the `run_copilot_workflow` tool directly, and inspect runs with `/workflow` or `/wf`.
+`source ./sync` also installs the **Conveyor** Copilot extension, which orchestrates workflows across
+many GitHub Copilot CLI subagents in parallel (fan-out/synthesize, adversarial verification,
+tournaments, ...) from an async JavaScript workflow harness (`.mjs`), with checkpoint/resume,
+budgets, and a live progress view. Say `conveyor: <task>` in a `copilot` session (or `xtreme: <task>`
+to use the high-confidence preset), invoke the `run_conveyor` tool directly, and inspect runs with
+`/conveyor`.
 
 Runs inherit one transport for their full lifetime. The persistent SDK stdio backend is the default
 when available, with isolated CLI processes as the fallback. Override selection with
-`CWF_AGENT_BACKEND=cli` or `CWF_AGENT_BACKEND=sdk`.
+`CONVEYOR_AGENT_BACKEND=cli` or `CONVEYOR_AGENT_BACKEND=sdk`.
 
-See [`.copilot/skills/workflow/SKILL.md`](.copilot/skills/workflow/SKILL.md).
+See [`.copilot/skills/conveyor/SKILL.md`](.copilot/skills/conveyor/SKILL.md).

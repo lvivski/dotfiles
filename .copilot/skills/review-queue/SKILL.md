@@ -5,16 +5,16 @@ description: >-
   they are assigned to review (directly or via a team) across GitHub and Azure DevOps, review them
   in parallel, and report which are safe to approve vs which need a real look, with focus hints and
   why they were added (CODEOWNERS / required policy vs manual). Do not use it for a single named PR.
-compatibility: GitHub Copilot CLI with the workflow extension loaded; gh + jq required, az optional.
+compatibility: GitHub Copilot CLI with the conveyor extension loaded; gh + jq required, az optional.
 metadata:
   copilot.user-invocable: "true"
-  copilot.runtime: "workflow"
+  copilot.runtime: "conveyor"
 user-invocable: true
 ---
 
 # Review queue
 
-Fetch first, then invoke the saved workflow. Do not write a new harness and never approve PRs; report
+Fetch first, then invoke the saved conveyor. Do not write a new harness and never approve PRs; report
 triage only.
 
 1. **Fetch queue data (free).**
@@ -27,14 +27,14 @@ triage only.
    report that nothing is assigned and stop.
 2. **Preview/run.** Show PR count, platforms, budget, and whether deep checkout is enabled. Then run:
    ```text
-   run_copilot_workflow({ name: "review-queue",
+   run_conveyor({ name: "review-queue",
                   budget: 10000,
                   args: { prs: <contents of /tmp/review-queue.json> } })
    ```
 3. **Return the triage table** with linked PRs, platform/account, coverage, decision, risk,
    why-assigned, justification, focus hints, AIC used, and `runId`.
 
-Useful knobs: fetch stale PRs with `--max-age-days N` / `--all-ages`; pass workflow args
+Useful knobs: fetch stale PRs with `--max-age-days N` / `--all-ages`; pass conveyor args
 `auto_deep: false` for diff-only, `deep: true` to checkout every PR, or
 `approve_only_low_risk_manual: true` for conservative approval guidance. Diff/checkouts are bounded
 into chunks (`diff_chunk_chars`, `file_chunk_size`, `max_chunks`, `max_total_chunks`) and every cap is
