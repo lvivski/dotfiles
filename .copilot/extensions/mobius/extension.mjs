@@ -1,0 +1,41 @@
+// Synced to the user extension directory by this dotfiles repository.
+import { joinSession } from "@github/copilot-sdk/extension";
+
+import { createMobiusCanvas } from "./canvas.mjs";
+import { publishPlanChange, subscribeToPlan } from "./events.mjs";
+import { buildMobiusHooks } from "./hooks.mjs";
+import { createMobiusOperations } from "./operations.mjs";
+import { buildMobiusTools } from "./tools.mjs";
+
+let session = null;
+const operations = createMobiusOperations({
+    getWorkspacePath: () => session?.workspacePath,
+    notify: publishPlanChange,
+});
+
+session = await joinSession({
+    tools: buildMobiusTools(operations),
+    hooks: buildMobiusHooks({ operations }),
+    canvases: [
+        createMobiusCanvas({
+            operations,
+            getWorkspacePath: () => session?.workspacePath,
+            subscribe: subscribeToPlan,
+        }),
+    ],
+});
+
+try {
+    const recovery = await operations.recoverStorage();
+    if (recovery.recovered.length > 0) {
+        await session.log(
+            `Mobius recovered ${recovery.recovered.length} stale write lock(s).`,
+            { level: "warning" },
+        );
+    }
+} catch (error) {
+    await session.log(
+        `Mobius storage recovery could not complete: ${error?.message ?? String(error)}`,
+        { level: "warning" },
+    );
+}

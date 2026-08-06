@@ -1,0 +1,87 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { buildMobiusTools } from "./tools.mjs";
+
+function operationsStub() {
+    return new Proxy({}, {
+        get: (_target, name) => async (input) => ({ operation: String(name), input }),
+    });
+}
+
+test("Mobius registers the complete globally unique tool surface", () => {
+    const tools = buildMobiusTools(operationsStub());
+    assert.deepEqual(tools.map((tool) => tool.name), [
+        "mobius_prepare_plan",
+        "mobius_create_plan",
+        "mobius_get_plan",
+        "mobius_list_plans",
+        "mobius_submit_plan",
+        "mobius_approve_plan",
+        "mobius_next_tasks",
+        "mobius_start_task",
+        "mobius_complete_task",
+        "mobius_retry_task",
+        "mobius_prepare_verification",
+        "mobius_begin_verification",
+        "mobius_complete_verification",
+        "mobius_cancel",
+        "mobius_activate_plan",
+        "mobius_deactivate_plan",
+    ]);
+    assert.equal(new Set(tools.map((tool) => tool.name)).size, tools.length);
+    const approve = tools.find((tool) => tool.name === "mobius_approve_plan");
+    assert.equal(approve.parameters.properties.retryStatus.const, "running");
+    const create = tools.find((tool) => tool.name === "mobius_create_plan");
+    assert.deepEqual(create.parameters.required, [
+        "expectedRevision",
+        "id",
+        "runId",
+        "repository",
+    ]);
+    const completeVerification = tools.find(
+        (tool) => tool.name === "mobius_complete_verification",
+    );
+    assert.deepEqual(completeVerification.parameters.required, [
+        "planId",
+        "expectedRevision",
+        "runId",
+    ]);
+});
+
+test("tool handlers return structured success and failure envelopes", async () => {
+    const successTools = buildMobiusTools(operationsStub());
+    const success = await successTools.find((tool) => tool.name === "mobius_get_plan")
+        .handler({ planId: "sample-plan" }, {
+            sessionId: "session",
+            toolCallId: "call",
+            toolName: "mobius_get_plan",
+        });
+    assert.equal(success.resultType, "success");
+    assert.equal(JSON.parse(success.textResultForLlm).ok, true);
+
+    const failureTools = buildMobiusTools(new Proxy({}, {
+        get: () => async () => {
+            const error = new Error("stale revision");
+            error.code = "revision_conflict";
+            error.details = { latestRevision: 3 };
+            throw error;
+        },
+    }));
+    const failure = await failureTools.find((tool) => tool.name === "mobius_submit_plan")
+        .handler({ planId: "sample-plan", expectedRevision: 2 }, {
+            sessionId: "session",
+            toolCallId: "call",
+            toolName: "mobius_submit_plan",
+        });
+    assert.equal(failure.resultType, "failure");
+    assert.deepEqual(JSON.parse(failure.textResultForLlm), {
+        ok: false,
+        error: {
+            code: "revision_conflict",
+            message: "stale revision",
+            path: null,
+            details: { latestRevision: 3 },
+        },
+    });
+});

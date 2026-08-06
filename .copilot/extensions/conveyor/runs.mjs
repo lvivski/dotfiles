@@ -26,6 +26,7 @@ const CTRL = /[\u0000-\u001f\u007f-\u009f]/g;
 const HOME = homedir();
 
 export const MAX_RESULT_CHUNK_CHARS = 32_000;
+export const CONVEYOR_IMPORT_CONTRACT_VERSION = 1;
 
 export class ConveyorResultError extends Error {}
 
@@ -450,6 +451,7 @@ export function loadConveyorRunForImport(requestedRunId) {
 	}
 	return {
 		...loaded,
+		importContractVersion: CONVEYOR_IMPORT_CONTRACT_VERSION,
 		conveyor: conveyorName(manifest, run) || null,
 		args,
 		argsSha256: hashValue(args),

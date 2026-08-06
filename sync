@@ -31,6 +31,17 @@ push() {
 		.copilot/agents/judge.md
 		.copilot/agents/synthesizer.md
 		.copilot/extensions/cwf
+		.copilot/extensions/mobius/factories.mjs
+		.copilot/extensions/mobius/factory-helpers.mjs
+		.copilot/extensions/mobius/canvas-server.mjs
+		.copilot/extensions/mobius/conveyor-adapter.mjs
+		.copilot/extensions/mobius/conveyor-scripts.mjs
+		.copilot/extensions/mobius/conveyors/mobius-plan.mjs
+		.copilot/extensions/mobius/conveyors/mobius-verify.mjs
+		.copilot/extensions/mobius/test
+		.copilot/extensions/mobius/test/factory-helpers.test.mjs
+		.copilot/conveyors/mobius-plan.mjs
+		.copilot/conveyors/mobius-verify.mjs
 		.copilot/extensions/workflow
 		.copilot/skills/workflow
 		.copilot/workflows

@@ -132,6 +132,7 @@ test("loadConveyorRunForImport returns source and argument identity", () =>
 		writeFileSync(
 			join(dir, "manifest.json"),
 			JSON.stringify({
+				formatVersion: 4,
 				runId: "import-run",
 				restricted: true,
 				enableMcp: false,
@@ -165,6 +166,7 @@ test("loadConveyorRunForImport returns source and argument identity", () =>
 		);
 
 		const imported = loadConveyorRunForImport("import-run");
+		assert.equal(imported.importContractVersion, 1);
 		assert.equal(imported.status, "complete");
 		assert.equal(imported.conveyor, "mobius-plan");
 		assert.equal(imported.restricted, true);

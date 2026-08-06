@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="mobius-token" content="__MOBIUS_TOKEN__" />
+    <meta name="mobius-plan-id" content="__MOBIUS_PLAN_ID__" />
+    <title>Mobius</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <header class="toolbar">
+      <div>
+        <p class="eyebrow">Mobius engineering plan</p>
+        <h1 id="plan-title">Loading…</h1>
+        <p id="plan-objective" class="muted"></p>
+      </div>
+      <div class="toolbar-actions">
+        <button id="refresh-button" type="button">Refresh</button>
+        <button id="approve-button" type="button" hidden>Approve</button>
+        <button id="cancel-plan-button" class="danger" type="button" hidden>Cancel plan</button>
+      </div>
+    </header>
+    <main>
+      <section id="summary" class="summary" aria-live="polite"></section>
+      <section>
+        <h2>Tasks</h2>
+        <div id="tasks" class="task-groups"></div>
+      </section>
+      <section>
+        <h2>Verification</h2>
+        <div id="verification" class="panel"></div>
+      </section>
+      <p id="error" class="error" role="alert"></p>
+    </main>
+  </body>
+</html>
