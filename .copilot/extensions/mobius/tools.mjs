@@ -118,6 +118,15 @@ export function buildMobiusTools(operations) {
             handler: handler((args) => operations.getPlan(args)),
         },
         {
+            name: "mobius_upgrade_plan",
+            description: "Explicitly upgrade a persisted schema-v1 plan after preserving its exact source bytes in Mobius history.",
+            parameters: objectSchema(
+                ["planId", "expectedRevision"],
+                { planId: PLAN_ID, expectedRevision: REVISION },
+            ),
+            handler: handler((args) => operations.upgradePlan(args)),
+        },
+        {
             name: "mobius_list_plans",
             skipPermission: true,
             description: "List bounded Mobius plan summaries for the current Copilot session.",
@@ -248,7 +257,7 @@ export function buildMobiusTools(operations) {
         },
         {
             name: "mobius_cancel",
-            description: "Cancel a Mobius task or entire plan with an explicit reason. Every v1 task is required, so cancelling one task cancels the entire plan.",
+            description: "Cancel a Mobius task or entire plan with an explicit reason. Every task is required, so cancelling one task cancels the entire plan.",
             parameters: objectSchema(
                 ["planId", "expectedRevision", "target", "reason"],
                 {

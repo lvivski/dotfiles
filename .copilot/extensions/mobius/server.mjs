@@ -2,7 +2,12 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 
-import { PLAN_STATUS, TASK_STATUS } from "./domain.mjs";
+import {
+    ACTOR_SOURCE,
+    PLAN_STATUS,
+    TASK_STATUS,
+    actorProvenance,
+} from "./domain.mjs";
 
 const BODY_LIMIT = 32 * 1024;
 const MAX_SSE_CLIENTS = 16;
@@ -190,7 +195,7 @@ export async function startServer(options) {
                     plan = await operations.approve({
                         planId,
                         expectedRevision: body.revision,
-                        approvedBy: "canvas-user",
+                        approvedBy: actorProvenance("canvas-user", ACTOR_SOURCE.CANVAS),
                         approvalType: body.approvalType,
                     });
                 } else if (body.action === "retry") {

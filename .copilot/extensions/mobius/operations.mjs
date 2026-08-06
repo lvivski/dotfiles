@@ -2,6 +2,7 @@ import {
     PLAN_STATUS,
     TASK_STATUS,
     approvePlan,
+    assertPlanMutable,
     cancelPlan,
     completeVerification,
     createDraftPlan,
@@ -63,6 +64,7 @@ export function createMobiusOperations(options) {
 
     const readForMutation = async (planId, expectedRevision) => {
         const plan = await storeFor().read(planId);
+        assertPlanMutable(plan);
         if (plan.revision !== expectedRevision) {
             throw revisionConflict(planId, expectedRevision, plan.revision);
         }
@@ -110,6 +112,13 @@ export function createMobiusOperations(options) {
         const created = await storeFor(workspacePath).create(plan, expectedRevision);
         notify({ workspacePath, planId: created.id, revision: created.revision });
         return created;
+    };
+
+    const upgradePlan = async ({ planId, expectedRevision }) => {
+        const workspacePath = workspace();
+        const upgraded = await storeFor(workspacePath).upgrade(planId, expectedRevision);
+        notify({ workspacePath, planId, revision: upgraded.revision });
+        return upgraded;
     };
 
     const submitPlan = async ({ planId, expectedRevision }) => {
@@ -345,6 +354,7 @@ export function createMobiusOperations(options) {
     return Object.freeze({
         preparePlan,
         createPlan,
+        upgradePlan,
         getPlan: ({ planId }) => storeFor().read(planId),
         listPlans: ({ limit }) => storeFor().list({ limit }),
         submitPlan,

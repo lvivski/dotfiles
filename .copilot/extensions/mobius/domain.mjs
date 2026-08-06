@@ -1,7 +1,40 @@
 // Pure plan semantics; no SDK or storage dependencies.
 import path from "node:path";
 
-export const SCHEMA_VERSION = 1;
+export const LEGACY_SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
+export const MAX_GENERATION = 16;
+
+export const ACTOR_SOURCE = Object.freeze({
+    CALLER: "caller",
+    CANVAS: "canvas",
+    LEGACY: "legacy",
+});
+
+export const DELIVERY_AVAILABILITY = Object.freeze({
+    MERGED_TO_BASE: "merged-to-base",
+    BRANCH: "branch",
+});
+
+export const EVIDENCE_KIND = Object.freeze({
+    COMMAND_RESULT: "command-result",
+    TEST_RESULT: "test-result",
+    COMMIT: "commit",
+    PULL_REQUEST: "pull-request",
+    CI_RUN: "ci-run",
+    ARTIFACT: "artifact",
+});
+
+export const OBSERVATION_SOURCE = Object.freeze({
+    CHILD: "child",
+    EXTERNAL: "external",
+});
+
+export const OBSERVATION_KIND = Object.freeze({
+    SESSION: "session",
+    PULL_REQUEST: "pull-request",
+    CI_RUN: "ci-run",
+});
 
 export const PLAN_STATUS = Object.freeze({
     DRAFT: "draft",
@@ -61,6 +94,16 @@ export const LIMITS = Object.freeze({
     missingEvidenceItem: 2_000,
     telemetry: 64,
     telemetryEvent: 96,
+    deliveries: 16,
+    evidenceRecords: 256,
+    observations: 256,
+    integrationRefs: 64,
+    recordId: 256,
+    externalId: 256,
+    deliveryRepository: 512,
+    deliveryRef: 512,
+    generationFeedback: 4_000,
+    canonicalValueBytes: 65_536,
 });
 
 const PLAN_ID_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
@@ -69,8 +112,13 @@ const TASK_KINDS = new Set(["implement"]);
 const PLAN_STATUS_VALUES = new Set(Object.values(PLAN_STATUS));
 const TASK_STATUS_VALUES = new Set(Object.values(TASK_STATUS));
 const VERIFICATION_STATUS_VALUES = new Set(Object.values(VERIFICATION_STATUS));
+const ACTOR_SOURCE_VALUES = new Set(Object.values(ACTOR_SOURCE));
+const DELIVERY_AVAILABILITY_VALUES = new Set(Object.values(DELIVERY_AVAILABILITY));
+const EVIDENCE_KIND_VALUES = new Set(Object.values(EVIDENCE_KIND));
+const OBSERVATION_SOURCE_VALUES = new Set(Object.values(OBSERVATION_SOURCE));
+const OBSERVATION_KIND_VALUES = new Set(Object.values(OBSERVATION_KIND));
 
-const PLAN_KEYS = new Set([
+const PLAN_KEYS_V1 = new Set([
     "schemaVersion",
     "revision",
     "id",
@@ -86,6 +134,13 @@ const PLAN_KEYS = new Set([
     "telemetry",
     "createdAt",
     "updatedAt",
+]);
+const PLAN_KEYS_V2 = new Set([
+    ...PLAN_KEYS_V1,
+    "generation",
+    "evidenceRecords",
+    "observations",
+    "integrationRefs",
 ]);
 
 const REPOSITORY_KEYS = new Set(["workingDirectory", "baseBranch"]);
@@ -108,7 +163,7 @@ const VERIFICATION_KEYS = new Set([
     "completedAt",
 ]);
 const TELEMETRY_KEYS = new Set(["event", "at"]);
-const TASK_KEYS = new Set([
+const TASK_KEYS_V1 = new Set([
     "id",
     "title",
     "kind",
@@ -125,6 +180,75 @@ const TASK_KEYS = new Set([
     "error",
     "startedAt",
     "completedAt",
+]);
+const TASK_KEYS_V2 = new Set([
+    ...TASK_KEYS_V1,
+    "reservation",
+    "deliveries",
+]);
+const ACTOR_KEYS = new Set(["label", "source", "externalId", "verified"]);
+const RESERVATION_KEYS = new Set([
+    "reservationId",
+    "generation",
+    "reservedBy",
+    "reservedAt",
+    "expiresAt",
+    "scopeOverride",
+]);
+const SCOPE_OVERRIDE_KEYS = new Set(["reason", "actor"]);
+const DELIVERY_KEYS = new Set([
+    "repository",
+    "availability",
+    "ref",
+    "commitSha",
+    "prUrl",
+    "observedBySessionId",
+    "observedAt",
+]);
+const EVIDENCE_RECORD_KEYS = new Set([
+    "evidenceId",
+    "kind",
+    "binding",
+    "payload",
+    "digest",
+    "recordedBy",
+    "recordedAt",
+]);
+const OBSERVATION_KEYS = new Set([
+    "observationId",
+    "source",
+    "kind",
+    "taskId",
+    "externalId",
+    "value",
+    "observedBy",
+    "observedAt",
+]);
+const INTEGRATION_REF_KEYS = new Set([
+    "integrationId",
+    "generation",
+    "taskIds",
+    "repository",
+    "ref",
+    "commitSha",
+    "prUrl",
+    "observedBySessionId",
+    "observedAt",
+]);
+const GENERATION_KEYS = new Set(["current", "history"]);
+const GENERATION_RECORD_KEYS = new Set([
+    "number",
+    "createdAt",
+    "createdBy",
+    "planningRunId",
+    "feedback",
+    "diffDigest",
+]);
+const GENERATION_INPUT_KEYS = new Set([
+    "createdBy",
+    "planningRunId",
+    "feedback",
+    "diffDigest",
 ]);
 const DRAFT_INPUT_KEYS = new Set([
     "id",
@@ -249,10 +373,10 @@ function assertPlainObject(value, fieldPath) {
     }
 }
 
-function assertKnownKeys(value, keys, fieldPath) {
+function assertKnownKeys(value, keys, fieldPath, schemaVersion = SCHEMA_VERSION) {
     for (const key of Object.keys(value)) {
         if (!keys.has(key)) {
-            fail("unknown_field", `${fieldPath}.${key} is not supported by schema version ${SCHEMA_VERSION}`, {
+            fail("unknown_field", `${fieldPath}.${key} is not supported by schema version ${schemaVersion}`, {
                 path: `${fieldPath}.${key}`,
             });
         }
@@ -282,6 +406,26 @@ function assertNullableString(value, fieldPath, maximum) {
         return;
     }
     assertString(value, fieldPath, maximum);
+}
+
+function assertNullableDigest(value, fieldPath) {
+    if (value === null) {
+        return;
+    }
+    if (typeof value !== "string" || !/^[a-f0-9]{64}$/.test(value)) {
+        fail("invalid_digest", `${fieldPath} must be a lowercase SHA-256 digest or null`, {
+            path: fieldPath,
+        });
+    }
+}
+
+function assertPositiveInteger(value, fieldPath, maximum = Number.MAX_SAFE_INTEGER) {
+    if (!Number.isSafeInteger(value) || value < 1 || value > maximum) {
+        fail("invalid_integer", `${fieldPath} must be an integer from 1 through ${maximum}`, {
+            path: fieldPath,
+            details: { maximum, value },
+        });
+    }
 }
 
 function assertStringArray(value, fieldPath, options) {
@@ -335,6 +479,18 @@ function assertTimestampPair(at, by, prefix) {
     assertNullableString(by, `${prefix}By`, LIMITS.actor);
 }
 
+function assertActorTimestampPair(at, actor, prefix) {
+    if ((at === null) !== (actor === null)) {
+        fail("invalid_gate", `${prefix} timestamp and actor must either both be set or both be null`, {
+            path: prefix,
+        });
+    }
+    assertTimestamp(at, `${prefix}At`, { nullable: true });
+    if (actor !== null) {
+        validateActorProvenance(actor, `${prefix}By`);
+    }
+}
+
 function assertHttpUrl(value, fieldPath) {
     if (value === null) {
         return;
@@ -348,6 +504,122 @@ function assertHttpUrl(value, fieldPath) {
     }
     if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
         fail("invalid_url", `${fieldPath} must use http or https`, { path: fieldPath });
+    }
+}
+
+function canonicalValueViolation(value, fieldPath, ancestors) {
+    if (value === null) {
+        return null;
+    }
+    const valueType = typeof value;
+    if (valueType === "boolean" || valueType === "string") {
+        return null;
+    }
+    if (valueType === "number") {
+        return Number.isFinite(value)
+            ? null
+            : { path: fieldPath, reason: "numbers must be finite" };
+    }
+    if (valueType !== "object") {
+        return { path: fieldPath, reason: `${valueType} values are not canonical JSON values` };
+    }
+    if (ancestors.has(value)) {
+        return { path: fieldPath, reason: "cycles are not canonical JSON values" };
+    }
+
+    ancestors.add(value);
+    try {
+        if (Array.isArray(value)) {
+            const ownKeys = Reflect.ownKeys(value);
+            for (const key of ownKeys) {
+                if (key === "length") {
+                    continue;
+                }
+                if (typeof key !== "string"
+                    || !/^(?:0|[1-9]\d*)$/.test(key)
+                    || Number(key) >= value.length) {
+                    return {
+                        path: fieldPath,
+                        reason: "arrays may contain only indexed canonical values",
+                    };
+                }
+            }
+            for (let index = 0; index < value.length; index += 1) {
+                const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+                if (!descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) {
+                    return {
+                        path: `${fieldPath}[${index}]`,
+                        reason: "array items must be enumerable data properties",
+                    };
+                }
+                const violation = canonicalValueViolation(
+                    descriptor.value,
+                    `${fieldPath}[${index}]`,
+                    ancestors,
+                );
+                if (violation) {
+                    return violation;
+                }
+            }
+            return null;
+        }
+
+        const prototype = Object.getPrototypeOf(value);
+        if (prototype !== Object.prototype && prototype !== null) {
+            return { path: fieldPath, reason: "objects must have Object.prototype or null" };
+        }
+        for (const key of Reflect.ownKeys(value)) {
+            if (typeof key !== "string") {
+                return { path: fieldPath, reason: "symbol object keys are not canonical" };
+            }
+            const descriptor = Object.getOwnPropertyDescriptor(value, key);
+            if (!descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) {
+                return {
+                    path: `${fieldPath}.${key}`,
+                    reason: "object properties must be enumerable data properties",
+                };
+            }
+            const violation = canonicalValueViolation(
+                descriptor.value,
+                `${fieldPath}.${key}`,
+                ancestors,
+            );
+            if (violation) {
+                return violation;
+            }
+        }
+        return null;
+    } finally {
+        ancestors.delete(value);
+    }
+}
+
+export function assertCanonicalValue(value, fieldPath = "value") {
+    const violation = canonicalValueViolation(value, fieldPath, new WeakSet());
+    if (violation) {
+        fail("invalid_evidence", `${violation.path} ${violation.reason}`, {
+            path: violation.path,
+            details: { reason: violation.reason },
+        });
+    }
+    return value;
+}
+
+function assertBoundedCanonicalValue(value, fieldPath) {
+    assertCanonicalValue(value, fieldPath);
+    const byteLength = new TextEncoder().encode(JSON.stringify(value)).byteLength;
+    if (byteLength > LIMITS.canonicalValueBytes) {
+        fail(
+            "invalid_evidence",
+            `${fieldPath} exceeds the ${LIMITS.canonicalValueBytes}-byte canonical value limit`,
+            {
+                path: fieldPath,
+                details: {
+                    maximum: LIMITS.canonicalValueBytes,
+                    actual: byteLength,
+                },
+            },
+        );
     }
 }
 
@@ -368,8 +640,309 @@ function taskMap(tasks) {
     return new Map(tasks.map((task) => [task.id, task]));
 }
 
-function requireActor(actor, fieldPath) {
-    assertString(actor, fieldPath, LIMITS.actor);
+export function validateActorProvenance(actor, fieldPath = "actor") {
+    assertPlainObject(actor, fieldPath);
+    assertKnownKeys(actor, ACTOR_KEYS, fieldPath);
+    assertString(actor.label, `${fieldPath}.label`, LIMITS.actor);
+    if (!ACTOR_SOURCE_VALUES.has(actor.source)) {
+        fail("invalid_actor_source", `${fieldPath}.source is not supported`, {
+            path: `${fieldPath}.source`,
+            details: { value: actor.source },
+        });
+    }
+    assertNullableString(actor.externalId, `${fieldPath}.externalId`, LIMITS.externalId);
+    if (typeof actor.verified !== "boolean") {
+        fail("invalid_actor", `${fieldPath}.verified must be a boolean`, {
+            path: `${fieldPath}.verified`,
+        });
+    }
+    if (actor.verified === true) {
+        fail(
+            "actor_verified_invalid",
+            `${fieldPath}.source ${actor.source} cannot claim a verified identity`,
+            { path: `${fieldPath}.verified`, details: { source: actor.source } },
+        );
+    }
+    return actor;
+}
+
+export function actorProvenance(label, source = ACTOR_SOURCE.CALLER, externalId = null) {
+    const actor = {
+        label,
+        source,
+        externalId,
+        verified: false,
+    };
+    validateActorProvenance(actor);
+    return actor;
+}
+
+function normalizeActor(actor, source = ACTOR_SOURCE.CALLER) {
+    if (typeof actor === "string") {
+        return actorProvenance(actor, source);
+    }
+    validateActorProvenance(actor);
+    return clone(actor);
+}
+
+function assertTaskId(value, fieldPath, options = {}) {
+    if (options.nullable && value === null) {
+        return;
+    }
+    if (typeof value !== "string" || !TASK_ID_PATTERN.test(value)) {
+        fail("invalid_task_id", `${fieldPath} must use the T-001 format`, {
+            path: fieldPath,
+        });
+    }
+}
+
+function assertCommitSha(value, fieldPath) {
+    if (value === null) {
+        return;
+    }
+    if (typeof value !== "string"
+        || (!/^[a-f0-9]{40}$/.test(value) && !/^[a-f0-9]{64}$/.test(value))) {
+        fail("invalid_commit_sha", `${fieldPath} must be a 40- or 64-character lowercase hex SHA`, {
+            path: fieldPath,
+        });
+    }
+}
+
+export function validateTaskReservation(
+    reservation,
+    fieldPath = "reservation",
+    currentGeneration = MAX_GENERATION,
+) {
+    assertPlainObject(reservation, fieldPath);
+    assertKnownKeys(reservation, RESERVATION_KEYS, fieldPath);
+    assertString(
+        reservation.reservationId,
+        `${fieldPath}.reservationId`,
+        LIMITS.recordId,
+    );
+    assertPositiveInteger(
+        reservation.generation,
+        `${fieldPath}.generation`,
+        currentGeneration,
+    );
+    validateActorProvenance(reservation.reservedBy, `${fieldPath}.reservedBy`);
+    assertTimestamp(reservation.reservedAt, `${fieldPath}.reservedAt`);
+    assertTimestamp(reservation.expiresAt, `${fieldPath}.expiresAt`);
+    if (Date.parse(reservation.expiresAt) <= Date.parse(reservation.reservedAt)) {
+        fail("invalid_reservation", `${fieldPath}.expiresAt must follow reservedAt`, {
+            path: `${fieldPath}.expiresAt`,
+        });
+    }
+    if (reservation.scopeOverride !== null) {
+        assertPlainObject(reservation.scopeOverride, `${fieldPath}.scopeOverride`);
+        assertKnownKeys(
+            reservation.scopeOverride,
+            SCOPE_OVERRIDE_KEYS,
+            `${fieldPath}.scopeOverride`,
+        );
+        assertString(
+            reservation.scopeOverride.reason,
+            `${fieldPath}.scopeOverride.reason`,
+            LIMITS.error,
+        );
+        validateActorProvenance(
+            reservation.scopeOverride.actor,
+            `${fieldPath}.scopeOverride.actor`,
+        );
+    }
+    return reservation;
+}
+
+export function validateDeliveryProvenance(delivery, fieldPath = "delivery") {
+    assertPlainObject(delivery, fieldPath);
+    assertKnownKeys(delivery, DELIVERY_KEYS, fieldPath);
+    assertString(
+        delivery.repository,
+        `${fieldPath}.repository`,
+        LIMITS.deliveryRepository,
+    );
+    if (!DELIVERY_AVAILABILITY_VALUES.has(delivery.availability)) {
+        fail("delivery_provenance_invalid", `${fieldPath}.availability is not supported`, {
+            path: `${fieldPath}.availability`,
+            details: { value: delivery.availability },
+        });
+    }
+    assertString(delivery.ref, `${fieldPath}.ref`, LIMITS.deliveryRef);
+    assertCommitSha(delivery.commitSha, `${fieldPath}.commitSha`);
+    assertHttpUrl(delivery.prUrl, `${fieldPath}.prUrl`);
+    assertString(
+        delivery.observedBySessionId,
+        `${fieldPath}.observedBySessionId`,
+        LIMITS.sessionId,
+    );
+    assertTimestamp(delivery.observedAt, `${fieldPath}.observedAt`);
+    return delivery;
+}
+
+export function validateEvidenceRecord(record, fieldPath = "evidence") {
+    assertPlainObject(record, fieldPath);
+    assertKnownKeys(record, EVIDENCE_RECORD_KEYS, fieldPath);
+    if (typeof record.evidenceId !== "string"
+        || !/^ev-[a-f0-9]{24}$/.test(record.evidenceId)) {
+        fail("invalid_evidence", `${fieldPath}.evidenceId must use ev- plus 24 lowercase hex characters`, {
+            path: `${fieldPath}.evidenceId`,
+        });
+    }
+    if (!EVIDENCE_KIND_VALUES.has(record.kind)) {
+        fail("invalid_evidence", `${fieldPath}.kind is not supported`, {
+            path: `${fieldPath}.kind`,
+            details: { value: record.kind },
+        });
+    }
+    assertPlainObject(record.binding, `${fieldPath}.binding`);
+    assertBoundedCanonicalValue(record.binding, `${fieldPath}.binding`);
+    assertBoundedCanonicalValue(record.payload, `${fieldPath}.payload`);
+    if (typeof record.digest !== "string" || !/^[a-f0-9]{64}$/.test(record.digest)) {
+        fail("invalid_evidence", `${fieldPath}.digest must be a lowercase SHA-256 digest`, {
+            path: `${fieldPath}.digest`,
+        });
+    }
+    validateActorProvenance(record.recordedBy, `${fieldPath}.recordedBy`);
+    assertTimestamp(record.recordedAt, `${fieldPath}.recordedAt`);
+    return record;
+}
+
+export function validateObservation(observation, fieldPath = "observation") {
+    assertPlainObject(observation, fieldPath);
+    assertKnownKeys(observation, OBSERVATION_KEYS, fieldPath);
+    assertString(
+        observation.observationId,
+        `${fieldPath}.observationId`,
+        LIMITS.recordId,
+    );
+    if (!OBSERVATION_SOURCE_VALUES.has(observation.source)) {
+        fail("invalid_observation", `${fieldPath}.source is not supported`, {
+            path: `${fieldPath}.source`,
+            details: { value: observation.source },
+        });
+    }
+    if (!OBSERVATION_KIND_VALUES.has(observation.kind)) {
+        fail("invalid_observation", `${fieldPath}.kind is not supported`, {
+            path: `${fieldPath}.kind`,
+            details: { value: observation.kind },
+        });
+    }
+    assertTaskId(observation.taskId, `${fieldPath}.taskId`, { nullable: true });
+    assertString(
+        observation.externalId,
+        `${fieldPath}.externalId`,
+        LIMITS.externalId,
+    );
+    assertBoundedCanonicalValue(observation.value, `${fieldPath}.value`);
+    validateActorProvenance(observation.observedBy, `${fieldPath}.observedBy`);
+    assertTimestamp(observation.observedAt, `${fieldPath}.observedAt`);
+    return observation;
+}
+
+export function validateIntegrationRef(
+    integration,
+    fieldPath = "integrationRef",
+    currentGeneration = MAX_GENERATION,
+) {
+    assertPlainObject(integration, fieldPath);
+    assertKnownKeys(integration, INTEGRATION_REF_KEYS, fieldPath);
+    assertString(
+        integration.integrationId,
+        `${fieldPath}.integrationId`,
+        LIMITS.recordId,
+    );
+    assertPositiveInteger(
+        integration.generation,
+        `${fieldPath}.generation`,
+        currentGeneration,
+    );
+    assertStringArray(integration.taskIds, `${fieldPath}.taskIds`, {
+        minimum: 1,
+        maximum: LIMITS.tasks,
+        itemMaximum: 5,
+    });
+    const uniqueTaskIds = new Set();
+    integration.taskIds.forEach((taskId, index) => {
+        assertTaskId(taskId, `${fieldPath}.taskIds[${index}]`);
+        if (uniqueTaskIds.has(taskId)) {
+            fail("duplicate_task_id", `${fieldPath}.taskIds repeats ${taskId}`, {
+                path: `${fieldPath}.taskIds[${index}]`,
+            });
+        }
+        uniqueTaskIds.add(taskId);
+    });
+    assertString(
+        integration.repository,
+        `${fieldPath}.repository`,
+        LIMITS.deliveryRepository,
+    );
+    assertString(integration.ref, `${fieldPath}.ref`, LIMITS.deliveryRef);
+    assertCommitSha(integration.commitSha, `${fieldPath}.commitSha`);
+    assertHttpUrl(integration.prUrl, `${fieldPath}.prUrl`);
+    assertString(
+        integration.observedBySessionId,
+        `${fieldPath}.observedBySessionId`,
+        LIMITS.sessionId,
+    );
+    assertTimestamp(integration.observedAt, `${fieldPath}.observedAt`);
+    return integration;
+}
+
+export function validateGenerationMetadata(generation, fieldPath = "generation") {
+    assertPlainObject(generation, fieldPath);
+    assertKnownKeys(generation, GENERATION_KEYS, fieldPath);
+    assertPositiveInteger(generation.current, `${fieldPath}.current`, MAX_GENERATION);
+    if (!Array.isArray(generation.history)
+        || generation.history.length !== generation.current
+        || generation.history.length > MAX_GENERATION) {
+        fail(
+            "invalid_generation",
+            `${fieldPath}.history must contain one sequential record per generation`,
+            {
+                path: `${fieldPath}.history`,
+                details: {
+                    current: generation.current,
+                    actual: Array.isArray(generation.history)
+                        ? generation.history.length
+                        : null,
+                },
+            },
+        );
+    }
+    let previousCreatedAt = null;
+    generation.history.forEach((record, index) => {
+        const recordPath = `${fieldPath}.history[${index}]`;
+        assertPlainObject(record, recordPath);
+        assertKnownKeys(record, GENERATION_RECORD_KEYS, recordPath);
+        if (record.number !== index + 1) {
+            fail("invalid_generation", `${recordPath}.number must be ${index + 1}`, {
+                path: `${recordPath}.number`,
+            });
+        }
+        assertTimestamp(record.createdAt, `${recordPath}.createdAt`);
+        if (previousCreatedAt !== null
+            && Date.parse(record.createdAt) < Date.parse(previousCreatedAt)) {
+            fail("invalid_generation", `${recordPath}.createdAt precedes the prior generation`, {
+                path: `${recordPath}.createdAt`,
+            });
+        }
+        previousCreatedAt = record.createdAt;
+        if (record.createdBy !== null) {
+            validateActorProvenance(record.createdBy, `${recordPath}.createdBy`);
+        }
+        assertNullableString(
+            record.planningRunId,
+            `${recordPath}.planningRunId`,
+            LIMITS.verificationRunId,
+        );
+        assertNullableString(
+            record.feedback,
+            `${recordPath}.feedback`,
+            LIMITS.generationFeedback,
+        );
+        assertNullableDigest(record.diffDigest, `${recordPath}.diffDigest`);
+    });
+    return generation;
 }
 
 export function assertPlanId(id, fieldPath = "id") {
@@ -460,10 +1033,16 @@ export function validateDependencyGraph(tasks) {
     return true;
 }
 
-function validateTask(task, index) {
+function validateTask(task, index, options = {}) {
     const fieldPath = `tasks[${index}]`;
+    const schemaVersion = options.schemaVersion ?? SCHEMA_VERSION;
     assertPlainObject(task, fieldPath);
-    assertKnownKeys(task, TASK_KEYS, fieldPath);
+    assertKnownKeys(
+        task,
+        schemaVersion === LEGACY_SCHEMA_VERSION ? TASK_KEYS_V1 : TASK_KEYS_V2,
+        fieldPath,
+        schemaVersion,
+    );
 
     if (typeof task.id !== "string" || !TASK_ID_PATTERN.test(task.id)) {
         fail("invalid_task_id", `${fieldPath}.id must use the T-001 format`, {
@@ -472,7 +1051,7 @@ function validateTask(task, index) {
     }
     assertString(task.title, `${fieldPath}.title`, LIMITS.taskTitle);
     if (!TASK_KINDS.has(task.kind)) {
-        fail("invalid_task_kind", `${fieldPath}.kind must be "implement" in schema version ${SCHEMA_VERSION}`, {
+        fail("invalid_task_kind", `${fieldPath}.kind must be "implement" in schema version ${schemaVersion}`, {
             path: `${fieldPath}.kind`,
         });
     }
@@ -507,6 +1086,36 @@ function validateTask(task, index) {
     assertNullableString(task.error, `${fieldPath}.error`, LIMITS.error);
     assertTimestamp(task.startedAt, `${fieldPath}.startedAt`, { nullable: true });
     assertTimestamp(task.completedAt, `${fieldPath}.completedAt`, { nullable: true });
+
+    if (schemaVersion === SCHEMA_VERSION) {
+        if (task.reservation !== null) {
+            validateTaskReservation(
+                task.reservation,
+                `${fieldPath}.reservation`,
+                options.currentGeneration,
+            );
+            if (task.status !== TASK_STATUS.READY && task.status !== TASK_STATUS.RUNNING) {
+                fail(
+                    "invalid_task_state",
+                    `${fieldPath}.reservation is only valid while ready or running`,
+                    { path: `${fieldPath}.reservation` },
+                );
+            }
+        }
+        if (!Array.isArray(task.deliveries) || task.deliveries.length > LIMITS.deliveries) {
+            fail(
+                "invalid_delivery",
+                `${fieldPath}.deliveries must contain at most ${LIMITS.deliveries} records`,
+                { path: `${fieldPath}.deliveries` },
+            );
+        }
+        task.deliveries.forEach((delivery, deliveryIndex) => {
+            validateDeliveryProvenance(
+                delivery,
+                `${fieldPath}.deliveries[${deliveryIndex}]`,
+            );
+        });
+    }
 
     if (task.startedAt !== null && task.completedAt !== null
         && Date.parse(task.completedAt) < Date.parse(task.startedAt)) {
@@ -711,16 +1320,28 @@ function validatePlanning(planning) {
 
 export function validatePlan(plan) {
     assertPlainObject(plan, "plan");
-    assertKnownKeys(plan, PLAN_KEYS, "plan");
-
-    if (plan.schemaVersion !== SCHEMA_VERSION) {
-        fail("unsupported_schema_version", `schemaVersion must be ${SCHEMA_VERSION}`, {
-            path: "schemaVersion",
-            details: { value: plan.schemaVersion },
-        });
+    const schemaVersion = plan.schemaVersion;
+    if (schemaVersion !== LEGACY_SCHEMA_VERSION && schemaVersion !== SCHEMA_VERSION) {
+        fail(
+            "unsupported_schema_version",
+            `schemaVersion must be ${LEGACY_SCHEMA_VERSION} or ${SCHEMA_VERSION}`,
+            {
+                path: "schemaVersion",
+                details: { value: schemaVersion },
+            },
+        );
     }
+    assertKnownKeys(
+        plan,
+        schemaVersion === LEGACY_SCHEMA_VERSION ? PLAN_KEYS_V1 : PLAN_KEYS_V2,
+        "plan",
+        schemaVersion,
+    );
+
     if (!Number.isSafeInteger(plan.revision) || plan.revision < 1) {
-        fail("invalid_revision", "revision must be a positive safe integer", { path: "revision" });
+        fail("invalid_revision", "revision must be a positive safe integer", {
+            path: "revision",
+        });
     }
     assertPlanId(plan.id);
     assertString(plan.title, "title", LIMITS.planTitle);
@@ -746,6 +1367,9 @@ export function validatePlan(plan) {
     }
     assertString(plan.repository.baseBranch, "repository.baseBranch", LIMITS.baseBranch);
     validatePlanning(plan.planning);
+    if (schemaVersion === SCHEMA_VERSION) {
+        validateGenerationMetadata(plan.generation);
+    }
 
     if (!Array.isArray(plan.tasks) || plan.tasks.length === 0) {
         fail("invalid_tasks", "tasks must contain at least one task", { path: "tasks" });
@@ -756,7 +1380,12 @@ export function validatePlan(plan) {
             details: { maximum: LIMITS.tasks, actual: plan.tasks.length },
         });
     }
-    plan.tasks.forEach(validateTask);
+    plan.tasks.forEach((task, index) => validateTask(task, index, {
+        schemaVersion,
+        currentGeneration: schemaVersion === SCHEMA_VERSION
+            ? plan.generation.current
+            : null,
+    }));
     validateDependencyGraph(plan.tasks);
 
     const byId = taskMap(plan.tasks);
@@ -797,12 +1426,29 @@ export function validatePlan(plan) {
 
     assertPlainObject(plan.gates, "gates");
     assertKnownKeys(plan.gates, GATE_KEYS, "gates");
-    assertTimestampPair(plan.gates.planApprovedAt, plan.gates.planApprovedBy, "gates.planApproved");
-    assertTimestampPair(
-        plan.gates.completionApprovedAt,
-        plan.gates.completionApprovedBy,
-        "gates.completionApproved",
-    );
+    if (schemaVersion === LEGACY_SCHEMA_VERSION) {
+        assertTimestampPair(
+            plan.gates.planApprovedAt,
+            plan.gates.planApprovedBy,
+            "gates.planApproved",
+        );
+        assertTimestampPair(
+            plan.gates.completionApprovedAt,
+            plan.gates.completionApprovedBy,
+            "gates.completionApproved",
+        );
+    } else {
+        assertActorTimestampPair(
+            plan.gates.planApprovedAt,
+            plan.gates.planApprovedBy,
+            "gates.planApproved",
+        );
+        assertActorTimestampPair(
+            plan.gates.completionApprovedAt,
+            plan.gates.completionApprovedBy,
+            "gates.completionApproved",
+        );
+    }
 
     const approvalRequired = new Set([
         PLAN_STATUS.APPROVED,
@@ -895,10 +1541,99 @@ export function validatePlan(plan) {
         assertTimestamp(event.at, `${fieldPath}.at`);
     });
 
+    if (schemaVersion === SCHEMA_VERSION) {
+        if (!Array.isArray(plan.evidenceRecords)
+            || plan.evidenceRecords.length > LIMITS.evidenceRecords) {
+            fail(
+                "invalid_evidence",
+                `evidenceRecords must contain at most ${LIMITS.evidenceRecords} records`,
+                { path: "evidenceRecords" },
+            );
+        }
+        const evidenceIds = new Set();
+        plan.evidenceRecords.forEach((record, index) => {
+            validateEvidenceRecord(record, `evidenceRecords[${index}]`);
+            if (evidenceIds.has(record.evidenceId)) {
+                fail("invalid_evidence", `evidenceRecords repeats ${record.evidenceId}`, {
+                    path: `evidenceRecords[${index}].evidenceId`,
+                });
+            }
+            evidenceIds.add(record.evidenceId);
+        });
+
+        if (!Array.isArray(plan.observations)
+            || plan.observations.length > LIMITS.observations) {
+            fail(
+                "invalid_observation",
+                `observations must contain at most ${LIMITS.observations} records`,
+                { path: "observations" },
+            );
+        }
+        const observationIds = new Set();
+        plan.observations.forEach((observation, index) => {
+            validateObservation(observation, `observations[${index}]`);
+            if (observation.taskId !== null && !byId.has(observation.taskId)) {
+                fail(
+                    "unknown_task",
+                    `observations[${index}].taskId refers to unknown task ${observation.taskId}`,
+                    { path: `observations[${index}].taskId` },
+                );
+            }
+            if (observationIds.has(observation.observationId)) {
+                fail(
+                    "invalid_observation",
+                    `observations repeats ${observation.observationId}`,
+                    { path: `observations[${index}].observationId` },
+                );
+            }
+            observationIds.add(observation.observationId);
+        });
+
+        if (!Array.isArray(plan.integrationRefs)
+            || plan.integrationRefs.length > LIMITS.integrationRefs) {
+            fail(
+                "invalid_integration_ref",
+                `integrationRefs must contain at most ${LIMITS.integrationRefs} records`,
+                { path: "integrationRefs" },
+            );
+        }
+        const integrationIds = new Set();
+        plan.integrationRefs.forEach((integration, index) => {
+            validateIntegrationRef(
+                integration,
+                `integrationRefs[${index}]`,
+                plan.generation.current,
+            );
+            for (const taskId of integration.taskIds) {
+                if (!byId.has(taskId)) {
+                    fail(
+                        "unknown_task",
+                        `integrationRefs[${index}] refers to unknown task ${taskId}`,
+                        { path: `integrationRefs[${index}].taskIds` },
+                    );
+                }
+            }
+            if (integrationIds.has(integration.integrationId)) {
+                fail(
+                    "invalid_integration_ref",
+                    `integrationRefs repeats ${integration.integrationId}`,
+                    { path: `integrationRefs[${index}].integrationId` },
+                );
+            }
+            integrationIds.add(integration.integrationId);
+        });
+    }
+
     assertTimestamp(plan.createdAt, "createdAt");
     assertTimestamp(plan.updatedAt, "updatedAt");
     if (Date.parse(plan.updatedAt) < Date.parse(plan.createdAt)) {
         fail("invalid_plan_timestamps", "updatedAt precedes createdAt", { path: "updatedAt" });
+    }
+    if (schemaVersion === SCHEMA_VERSION
+        && Date.parse(plan.generation.history[0].createdAt) < Date.parse(plan.createdAt)) {
+        fail("invalid_generation", "The first generation cannot precede plan creation", {
+            path: "generation.history[0].createdAt",
+        });
     }
     return plan;
 }
@@ -941,6 +1676,8 @@ export function createDraftPlan(input, options = {}) {
                 error: null,
                 startedAt: null,
                 completedAt: null,
+                reservation: null,
+                deliveries: [],
             };
         }),
         gates: {
@@ -950,6 +1687,20 @@ export function createDraftPlan(input, options = {}) {
             completionApprovedBy: null,
         },
         verification: emptyVerification(),
+        generation: {
+            current: 1,
+            history: [{
+                number: 1,
+                createdAt: timestamp,
+                createdBy: null,
+                planningRunId: input.planning?.runId ?? null,
+                feedback: null,
+                diffDigest: null,
+            }],
+        },
+        evidenceRecords: [],
+        observations: [],
+        integrationRefs: [],
         telemetry: [{
             event: "plan-created",
             at: timestamp,
@@ -961,8 +1712,108 @@ export function createDraftPlan(input, options = {}) {
     return plan;
 }
 
-export function transitionPlan(plan, nextStatus, options = {}) {
+export function assertPlanMutable(plan) {
     validatePlan(plan);
+    if (plan.schemaVersion === LEGACY_SCHEMA_VERSION) {
+        fail(
+            "upgrade_required",
+            `Plan ${plan.id} must be upgraded to schema version ${SCHEMA_VERSION} before mutation`,
+            { path: "schemaVersion", details: { id: plan.id, schemaVersion: plan.schemaVersion } },
+        );
+    }
+    return plan;
+}
+
+export function upgradePlanToV2(plan) {
+    validatePlan(plan);
+    if (plan.schemaVersion === SCHEMA_VERSION) {
+        fail("already_upgraded", `Plan ${plan.id} already uses schema version ${SCHEMA_VERSION}`, {
+            path: "schemaVersion",
+            details: { id: plan.id, schemaVersion: plan.schemaVersion },
+        });
+    }
+
+    const upgraded = clone(plan);
+    upgraded.schemaVersion = SCHEMA_VERSION;
+    upgraded.tasks = upgraded.tasks.map((task) => ({
+        ...task,
+        reservation: null,
+        deliveries: [],
+    }));
+    for (const key of ["planApprovedBy", "completionApprovedBy"]) {
+        if (upgraded.gates[key] !== null) {
+            upgraded.gates[key] = actorProvenance(
+                upgraded.gates[key],
+                ACTOR_SOURCE.LEGACY,
+            );
+        }
+    }
+    upgraded.generation = {
+        current: 1,
+        history: [{
+            number: 1,
+            createdAt: upgraded.createdAt,
+            createdBy: null,
+            planningRunId: upgraded.planning?.runId ?? null,
+            feedback: null,
+            diffDigest: null,
+        }],
+    };
+    upgraded.evidenceRecords = [];
+    upgraded.observations = [];
+    upgraded.integrationRefs = [];
+    validatePlan(upgraded);
+    return upgraded;
+}
+
+export function appendPlanGeneration(plan, input, options = {}) {
+    assertPlanMutable(plan);
+    if (plan.generation.current >= MAX_GENERATION) {
+        fail(
+            "generation_limit",
+            `Plan ${plan.id} already has the maximum ${MAX_GENERATION} generations`,
+            {
+                path: "generation.current",
+                details: { maximum: MAX_GENERATION, current: plan.generation.current },
+            },
+        );
+    }
+    assertPlainObject(input, "generation");
+    assertKnownKeys(input, GENERATION_INPUT_KEYS, "generation");
+    if (input.createdBy !== null) {
+        validateActorProvenance(input.createdBy, "generation.createdBy");
+    }
+    assertNullableString(
+        input.planningRunId,
+        "generation.planningRunId",
+        LIMITS.verificationRunId,
+    );
+    assertNullableString(
+        input.feedback,
+        "generation.feedback",
+        LIMITS.generationFeedback,
+    );
+    assertNullableDigest(input.diffDigest, "generation.diffDigest");
+
+    const candidate = clone(plan);
+    const timestamp = nowIso(options.at);
+    const number = plan.generation.current + 1;
+    candidate.generation.current = number;
+    candidate.generation.history.push({
+        number,
+        createdAt: timestamp,
+        createdBy: clone(input.createdBy),
+        planningRunId: input.planningRunId,
+        feedback: input.feedback,
+        diffDigest: input.diffDigest,
+    });
+    candidate.updatedAt = timestamp;
+    validatePlan(candidate);
+    return candidate;
+}
+
+export function transitionPlan(plan, nextStatus, options = {}) {
+    assertPlanMutable(plan);
     if (!PLAN_STATUS_VALUES.has(nextStatus)) {
         fail("invalid_plan_status", `Unknown target plan status ${String(nextStatus)}`, {
             path: "status",
@@ -1034,14 +1885,14 @@ export function transitionPlan(plan, nextStatus, options = {}) {
         };
     }
     if (nextStatus === PLAN_STATUS.APPROVED) {
-        requireActor(options.actor, "actor");
+        const actor = normalizeActor(options.actor);
         candidate.gates.planApprovedAt = timestamp;
-        candidate.gates.planApprovedBy = options.actor;
+        candidate.gates.planApprovedBy = actor;
     }
     if (nextStatus === PLAN_STATUS.COMPLETED) {
-        requireActor(options.actor, "actor");
+        const actor = normalizeActor(options.actor);
         candidate.gates.completionApprovedAt = timestamp;
-        candidate.gates.completionApprovedBy = options.actor;
+        candidate.gates.completionApprovedBy = actor;
     }
 
     validatePlan(candidate);
@@ -1049,7 +1900,7 @@ export function transitionPlan(plan, nextStatus, options = {}) {
 }
 
 export function completeVerification(plan, result, options = {}) {
-    validatePlan(plan);
+    assertPlanMutable(plan);
     if (plan.status !== PLAN_STATUS.VERIFYING
         || plan.verification.status !== VERIFICATION_STATUS.RUNNING) {
         fail("verification_not_running", "Verification can only complete from a running verification", {
@@ -1117,7 +1968,7 @@ export function completeVerification(plan, result, options = {}) {
 }
 
 export function cancelPlan(plan, reason, options = {}) {
-    validatePlan(plan);
+    assertPlanMutable(plan);
     if (!PLAN_TRANSITIONS[plan.status].has(PLAN_STATUS.CANCELLED)) {
         fail("invalid_plan_transition", `Cannot cancel a plan in ${plan.status} state`, {
             path: "status",
@@ -1134,6 +1985,7 @@ export function cancelPlan(plan, reason, options = {}) {
         task.status = TASK_STATUS.CANCELLED;
         task.error = reason;
         task.completedAt = timestamp;
+        task.reservation = null;
     }
     if (candidate.verification.status === VERIFICATION_STATUS.RUNNING) {
         candidate.verification = {
@@ -1151,7 +2003,7 @@ export function cancelPlan(plan, reason, options = {}) {
 }
 
 export function reconcileTaskReadiness(plan, options = {}) {
-    validatePlan(plan);
+    assertPlanMutable(plan);
     if (plan.status !== PLAN_STATUS.APPROVED && plan.status !== PLAN_STATUS.RUNNING) {
         fail("plan_not_approved", `Cannot resolve ready tasks while the plan is ${plan.status}`, {
             path: "status",
@@ -1174,6 +2026,7 @@ export function reconcileTaskReadiness(plan, options = {}) {
         if (failed.length > 0) {
             task.status = TASK_STATUS.BLOCKED;
             task.error = `Blocked by failed or cancelled dependencies: ${failed.map((item) => item.id).join(", ")}`;
+            task.reservation = null;
             changed = true;
             continue;
         }
@@ -1222,7 +2075,7 @@ function assertTaskDependenciesDone(plan, task) {
 }
 
 export function transitionTask(plan, taskId, nextStatus, options = {}) {
-    validatePlan(plan);
+    assertPlanMutable(plan);
     if (!TASK_STATUS_VALUES.has(nextStatus)) {
         fail("invalid_task_status", `Unknown target task status ${String(nextStatus)}`, {
             path: "status",
@@ -1277,6 +2130,7 @@ export function transitionTask(plan, taskId, nextStatus, options = {}) {
             error: null,
             startedAt: null,
             completedAt: null,
+            reservation: null,
         });
     } else if (nextStatus === TASK_STATUS.RUNNING) {
         assertString(options.sessionId, "sessionId", LIMITS.sessionId);
@@ -1298,6 +2152,7 @@ export function transitionTask(plan, taskId, nextStatus, options = {}) {
         task.prUrl = options.prUrl ?? task.prUrl;
         task.error = null;
         task.completedAt = timestamp;
+        task.reservation = null;
     } else if (nextStatus === TASK_STATUS.FAILED) {
         assertString(options.error, "error", LIMITS.error);
         task.status = TASK_STATUS.FAILED;
@@ -1307,15 +2162,18 @@ export function transitionTask(plan, taskId, nextStatus, options = {}) {
         task.branch = options.branch ?? task.branch;
         task.prUrl = options.prUrl ?? task.prUrl;
         task.completedAt = timestamp;
+        task.reservation = null;
     } else if (nextStatus === TASK_STATUS.BLOCKED) {
         assertString(options.error, "error", LIMITS.error);
         task.status = TASK_STATUS.BLOCKED;
         task.error = options.error;
+        task.reservation = null;
     } else if (nextStatus === TASK_STATUS.CANCELLED) {
         assertString(options.error, "error", LIMITS.error);
         task.status = TASK_STATUS.CANCELLED;
         task.error = options.error;
         task.completedAt = timestamp;
+        task.reservation = null;
     }
 
     candidate.updatedAt = timestamp;

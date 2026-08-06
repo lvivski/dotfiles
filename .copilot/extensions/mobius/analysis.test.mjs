@@ -6,8 +6,12 @@ import {
     analysisInputDigest,
     buildPlanningArgs,
     buildVerificationInput,
+    canonicalEvidenceDigest,
+    canonicalEvidenceStringify,
     normalizePlanningInput,
     normalizeVerificationInput,
+    stableStringify,
+    validateCanonicalEvidenceValue,
     validatePlanBlueprint,
     validatePlanningResult,
     validateVerificationResult,
@@ -63,6 +67,7 @@ test("planning arguments are bounded and digested canonically", () => {
         objective: "Build a reviewed feature",
         repositoryContext: "Node extension with no dependencies",
     });
+
     assert.equal(normalized.maxTasks, 6);
     assert.deepEqual(normalized.constraints, []);
     const args = buildPlanningArgs(normalized);
@@ -79,6 +84,65 @@ test("planning arguments are bounded and digested canonically", () => {
         }),
         MobiusAnalysisError,
     );
+});
+
+test("canonical evidence values accept JSON data and reject lossy or cyclic values", () => {
+    const nullPrototype = Object.create(null);
+    nullPrototype.answer = 42;
+    for (const value of [
+        null,
+        true,
+        false,
+        "text",
+        0,
+        -1.25,
+        [null, true, "text", 3],
+        { nested: { ok: true } },
+        nullPrototype,
+    ]) {
+        assert.equal(validateCanonicalEvidenceValue(value), value);
+    }
+
+    const cycle = {};
+    cycle.self = cycle;
+    for (const value of [
+        undefined,
+        1n,
+        new Date("2026-08-05T00:00:00.000Z"),
+        new Map(),
+        Number.NaN,
+        Number.POSITIVE_INFINITY,
+        () => {},
+        Symbol("evidence"),
+        { missing: undefined },
+        cycle,
+    ]) {
+        assert.throws(
+            () => validateCanonicalEvidenceValue(value),
+            (error) => error.code === "invalid_evidence",
+        );
+    }
+});
+
+test("canonical evidence strings pin key ordering, UTF-8 bytes, and digest", () => {
+    const value = {
+        z: [3, { b: false, a: null }],
+        a: "é",
+    };
+    const canonical = "{\"a\":\"é\",\"z\":[3,{\"a\":null,\"b\":false}]}";
+    assert.equal(canonicalEvidenceStringify(value), canonical);
+    assert.equal(
+        Buffer.from(canonical, "utf8").toString("hex"),
+        "7b2261223a22c3a9222c227a223a5b332c7b2261223a6e756c6c2c2262223a66616c73657d5d7d",
+    );
+    assert.equal(
+        canonicalEvidenceDigest(value),
+        "de7f2d136d2317b1ef5e7aa2f1b9dc86567d436fd7571bf94b35aa2446fadcaa",
+    );
+
+    assert.equal(stableStringify(undefined), "null");
+    assert.equal(stableStringify(new Date("2026-08-05T00:00:00.000Z")), "{}");
+    assert.equal(stableStringify(["second", "first"]), "[\"second\",\"first\"]");
 });
 
 test("planning results reuse the strict domain validator and fail closed", () => {

@@ -91,6 +91,7 @@ source-specific test, branch, PR, commit, or diff evidence with each task.
 | `mobius_prepare_plan` | Build the pinned restricted planning launch spec. |
 | `mobius_create_plan` | Import a completed ready planning run as a draft. |
 | `mobius_get_plan` / `mobius_list_plans` | Read validated state. |
+| `mobius_upgrade_plan` | Snapshot and explicitly upgrade a schema-v1 plan. |
 | `mobius_submit_plan` | Request plan approval. |
 | `mobius_approve_plan` | Record plan/completion approval or explicit plan retry. |
 | `mobius_next_tasks` | Return ready tasks, prompts, and scope conflicts. |
@@ -139,6 +140,19 @@ Mobius validates complete documents, rejects symlink escapes, serializes
 multi-process writers, atomically replaces artifacts, and preserves invalid
 existing JSON. Startup removes stale locks only when the recorded owner is gone.
 
+New plans use schema version 2. Persisted schema-v1 plans remain read-only until
+`mobius_upgrade_plan` is called with their current revision. Upgrade first
+preserves the exact source bytes at:
+
+```text
+<session.workspacePath>/files/mobius/.history/<plan-id>/schema-v1-r<revision>-<sha256>.json
+```
+
+Schema v2 adds bounded actor, reservation, delivery, typed-evidence,
+observation, integration-ref, and generation records. Actor sources `caller`,
+`canvas`, and `legacy` are always unverified. Generations start at 1 and stop at
+16; generation replacement uses the same non-destructive history foundation.
+
 Conveyor persists run identity, source, arguments, budgets, checkpoints,
 progress, and results under its user run directory. Mobius imports through
 Conveyor's versioned read-only run API rather than reading raw artifacts.
@@ -167,7 +181,7 @@ agents are tool-free.
   dependency.
 - No automatic pull-request approval/merge, branch cleanup, cross-repository
   transaction, or long-term team memory.
-- Every v1 task is required; cancelling one task cancels the plan.
+- Every task is required; cancelling one task cancels the plan.
 
 ## Minions boundary
 

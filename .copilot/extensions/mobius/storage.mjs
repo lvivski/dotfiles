@@ -1,6 +1,7 @@
 // Session-scoped persistence; the plan document remains the authority.
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import {
     link,
     lstat,
@@ -14,10 +15,13 @@ import {
 } from "node:fs/promises";
 
 import {
+    LEGACY_SCHEMA_VERSION,
+    MAX_GENERATION,
     PLAN_STATUS,
     SCHEMA_VERSION,
     assertPlanId,
     summarizePlan,
+    upgradePlanToV2,
     validatePlan,
 } from "./domain.mjs";
 
@@ -108,6 +112,17 @@ function planTarget(baseDirectory, id) {
 
 function fingerprint(source) {
     return createHash("sha256").update(source).digest("hex");
+}
+
+function decodeUtf8(source, label) {
+    try {
+        return new TextDecoder("utf-8", { fatal: true }).decode(source);
+    } catch (error) {
+        throw storageError("artifact_invalid", `${label} is not valid UTF-8`, {
+            details: { encoding: "utf-8" },
+            cause: error,
+        });
+    }
 }
 
 function isMissing(error) {
@@ -530,7 +545,7 @@ async function readSafeFile(target, expectedId, anchor) {
                 details: { id: expectedId },
             });
         }
-        return await handle.readFile("utf8");
+        return await handle.readFile();
     } catch (error) {
         if (error instanceof MobiusStorageError) {
             throw error;
@@ -547,7 +562,8 @@ async function readSafeFile(target, expectedId, anchor) {
 }
 
 async function readPlanAt(target, expectedId, anchor) {
-    const source = await readSafeFile(target, expectedId, anchor);
+    const sourceBytes = await readSafeFile(target, expectedId, anchor);
+    const source = decodeUtf8(sourceBytes, `Plan ${expectedId}`);
 
     let plan;
     try {
@@ -579,7 +595,8 @@ async function readPlanAt(target, expectedId, anchor) {
     }
     return {
         plan,
-        fingerprint: fingerprint(source),
+        fingerprint: fingerprint(sourceBytes),
+        sourceBytes,
     };
 }
 
@@ -695,6 +712,219 @@ async function retryRename(source, target) {
     throw lastError;
 }
 
+async function ensureAnchoredDirectory(directory, expectedRealParent, label) {
+    if (!await assertDirectory(directory, label)) {
+        try {
+            await mkdir(directory, { mode: 0o700 });
+        } catch (error) {
+            if (error?.code !== "EEXIST") {
+                throw storageError("artifact_directory_unreadable", `${label} could not be created`, {
+                    details: { filesystemCode: error?.code ?? null },
+                    cause: error,
+                });
+            }
+        }
+        await assertDirectory(directory, label);
+    }
+    let resolved;
+    let metadata;
+    try {
+        [resolved, metadata] = await Promise.all([
+            realpath(directory),
+            lstat(directory),
+        ]);
+    } catch (error) {
+        throw storageError("artifact_directory_unreadable", `${label} could not be resolved`, {
+            details: { filesystemCode: error?.code ?? null },
+            cause: error,
+        });
+    }
+    if (path.dirname(resolved) !== expectedRealParent
+        || metadata.isSymbolicLink()
+        || !metadata.isDirectory()) {
+        throw storageError("path_outside_workspace", `${label} escaped Mobius storage`, {
+            details: { directory, resolved },
+        });
+    }
+    return {
+        path: directory,
+        realPath: resolved,
+        device: metadata.dev,
+        inode: metadata.ino,
+    };
+}
+
+async function verifyDirectoryAnchor(directory, expected, label) {
+    let resolved;
+    let metadata;
+    try {
+        [resolved, metadata] = await Promise.all([
+            realpath(directory),
+            lstat(directory),
+        ]);
+    } catch (error) {
+        throw storageError("path_outside_workspace", `${label} changed during the operation`, {
+            details: { filesystemCode: error?.code ?? null },
+            cause: error,
+        });
+    }
+    if (resolved !== expected.realPath
+        || metadata.dev !== expected.device
+        || metadata.ino !== expected.inode
+        || metadata.isSymbolicLink()
+        || !metadata.isDirectory()) {
+        throw storageError("path_outside_workspace", `${label} changed during the operation`, {
+            details: { expected: expected.realPath, actual: resolved },
+        });
+    }
+}
+
+async function ensureHistoryDirectory(baseDirectory, id, anchor) {
+    assertPlanId(id);
+    await verifyStorageAnchor(baseDirectory, anchor);
+    const historyRoot = path.join(baseDirectory, ".history");
+    const history = await ensureAnchoredDirectory(
+        historyRoot,
+        anchor.realBase,
+        "Mobius history directory",
+    );
+    const planHistoryPath = path.join(historyRoot, id);
+    const planHistory = await ensureAnchoredDirectory(
+        planHistoryPath,
+        history.realPath,
+        `Mobius history directory for ${id}`,
+    );
+    return { history, planHistory };
+}
+
+async function readExistingSnapshot(target, planHistory, id) {
+    let before;
+    let resolved;
+    try {
+        [before, resolved] = await Promise.all([
+            lstat(target),
+            realpath(target),
+        ]);
+    } catch (error) {
+        if (isMissing(error)) {
+            return null;
+        }
+        throw storageError("history_unreadable", `History snapshot for ${id} could not be inspected`, {
+            details: { filesystemCode: error?.code ?? null },
+            cause: error,
+        });
+    }
+    if (path.dirname(resolved) !== planHistory.realPath
+        || before.isSymbolicLink()
+        || !before.isFile()) {
+        throw storageError("path_outside_workspace", `History snapshot for ${id} is unsafe`, {
+            details: { target, resolved },
+        });
+    }
+    if ((before.mode & 0o777) !== 0o600) {
+        throw storageError("history_unreadable", `History snapshot for ${id} is not mode 0600`, {
+            details: { target, mode: before.mode & 0o777 },
+        });
+    }
+    let handle;
+    try {
+        handle = await open(target, "r");
+        const after = await handle.stat();
+        if (!after.isFile() || before.dev !== after.dev || before.ino !== after.ino) {
+            throw storageError("artifact_changed", `History snapshot for ${id} changed while opening`, {
+                details: { target },
+            });
+        }
+        return await handle.readFile();
+    } catch (error) {
+        if (error instanceof MobiusStorageError) {
+            throw error;
+        }
+        throw storageError("history_unreadable", `History snapshot for ${id} could not be read`, {
+            details: { filesystemCode: error?.code ?? null },
+            cause: error,
+        });
+    } finally {
+        if (handle) {
+            await handle.close();
+        }
+    }
+}
+
+async function preserveHistorySnapshot(
+    baseDirectory,
+    id,
+    filename,
+    sourceBytes,
+    anchor,
+) {
+    const target = path.join(baseDirectory, ".history", id, filename);
+    const directories = await ensureHistoryDirectory(baseDirectory, id, anchor);
+    const existing = await readExistingSnapshot(target, directories.planHistory, id);
+    if (existing !== null) {
+        if (Buffer.compare(existing, sourceBytes) !== 0) {
+            throw storageError("history_conflict", `History snapshot for ${id} has unexpected bytes`, {
+                details: { target },
+            });
+        }
+        return target;
+    }
+
+    const temporary = await writeTemporaryFile(
+        baseDirectory,
+        target,
+        sourceBytes,
+        anchor,
+    );
+    try {
+        await verifyStorageAnchor(baseDirectory, anchor);
+        await verifyDirectoryAnchor(
+            path.join(baseDirectory, ".history"),
+            directories.history,
+            "Mobius history directory",
+        );
+        await verifyDirectoryAnchor(
+            path.join(baseDirectory, ".history", id),
+            directories.planHistory,
+            `Mobius history directory for ${id}`,
+        );
+        const raced = await readExistingSnapshot(target, directories.planHistory, id);
+        if (raced !== null) {
+            if (Buffer.compare(raced, sourceBytes) !== 0) {
+                throw storageError(
+                    "history_conflict",
+                    `History snapshot for ${id} changed before publication`,
+                    { details: { target } },
+                );
+            }
+            await unlink(temporary);
+            return target;
+        }
+        await retryRename(temporary, target);
+        const metadata = await lstat(target);
+        if (!metadata.isFile() || metadata.isSymbolicLink()
+            || (metadata.mode & 0o777) !== 0o600) {
+            throw storageError("history_write_failed", `History snapshot for ${id} is not mode 0600`, {
+                details: { target, mode: metadata.mode & 0o777 },
+            });
+        }
+        return target;
+    } catch (error) {
+        try {
+            await unlink(temporary);
+        } catch {
+            // Preserve the snapshot publication error.
+        }
+        if (error instanceof MobiusStorageError) {
+            throw error;
+        }
+        throw storageError("history_write_failed", `History snapshot for ${id} could not be preserved`, {
+            details: { target, filesystemCode: error?.code ?? null },
+            cause: error,
+        });
+    }
+}
+
 async function atomicCreate(baseDirectory, target, persisted, anchor) {
     const temporary = await writeTemporaryFile(baseDirectory, target, persisted.payload, anchor);
     try {
@@ -775,6 +1005,25 @@ async function atomicReplacePayload(baseDirectory, target, payload, anchor) {
     }
 }
 
+async function revalidatePlanFingerprint(target, id, anchor, initial, expectedRevision) {
+    const latest = await readPlanAt(target, id, anchor);
+    if (latest.fingerprint === initial.fingerprint) {
+        return latest;
+    }
+    if (latest.plan.revision !== expectedRevision) {
+        throw storageError("revision_conflict", `Plan ${id} changed during the update`, {
+            details: {
+                id,
+                expectedRevision,
+                latestRevision: latest.plan.revision,
+            },
+        });
+    }
+    throw storageError("artifact_changed", `Plan ${id} changed during the update`, {
+        details: { id, expectedRevision },
+    });
+}
+
 function summaryForList(plan) {
     const summary = summarizePlan(plan);
     return {
@@ -798,6 +1047,13 @@ export function createPlanStore(options = {}) {
         throw storageError("invalid_lock_options", "lockWaitMs and lockPollMs must be positive integers");
     }
     const lockOptions = { lockWaitMs, lockPollMs };
+    const beforeUpgradeReplace = options.beforeUpgradeReplace ?? null;
+    if (beforeUpgradeReplace !== null && typeof beforeUpgradeReplace !== "function") {
+        throw storageError(
+            "invalid_upgrade_hook",
+            "beforeUpgradeReplace must be a function when provided",
+        );
+    }
 
     const baseDirectory = path.resolve(workspacePath, "files", "mobius");
     const filesRoot = path.resolve(workspacePath, "files");
@@ -823,11 +1079,16 @@ export function createPlanStore(options = {}) {
             "invalid_new_plan",
             "The serialized new plan failed validation",
         );
-        if (persisted.plan.revision !== 1 || persisted.plan.status !== PLAN_STATUS.DRAFT) {
-            throw storageError("invalid_new_plan", "A new plan must be a draft at revision 1", {
+        if (persisted.plan.schemaVersion !== SCHEMA_VERSION
+            || persisted.plan.revision !== 1
+            || persisted.plan.status !== PLAN_STATUS.DRAFT
+            || persisted.plan.generation.current !== 1) {
+            throw storageError("invalid_new_plan", "A new plan must be a first-generation schema-v2 draft at revision 1", {
                 details: {
+                    schemaVersion: persisted.plan.schemaVersion,
                     revision: persisted.plan.revision,
                     status: persisted.plan.status,
+                    generation: persisted.plan.generation.current,
                 },
             });
         }
@@ -859,6 +1120,13 @@ export function createPlanStore(options = {}) {
         return withWriteLock(target, baseDirectory, anchor, lockOptions, async () => {
             const initial = await readPlanAt(target, id, anchor);
             const current = initial.plan;
+            if (current.schemaVersion === LEGACY_SCHEMA_VERSION) {
+                throw storageError(
+                    "upgrade_required",
+                    `Plan ${id} must be upgraded before mutation`,
+                    { details: { id, schemaVersion: current.schemaVersion } },
+                );
+            }
             if (current.revision !== expectedRevision) {
                 throw storageError("revision_conflict", `Plan ${id} has changed`, {
                     details: {
@@ -882,7 +1150,7 @@ export function createPlanStore(options = {}) {
                 `Serialized plan ${id} failed validation`,
             );
             if (persisted.plan.id !== current.id
-                || persisted.plan.schemaVersion !== SCHEMA_VERSION
+                || persisted.plan.schemaVersion !== current.schemaVersion
                 || persisted.plan.createdAt !== current.createdAt) {
                 throw storageError(
                     "immutable_plan_identity",
@@ -890,25 +1158,201 @@ export function createPlanStore(options = {}) {
                     { details: { id } },
                 );
             }
+            if (!isDeepStrictEqual(persisted.plan.generation, current.generation)) {
+                throw storageError(
+                    "generation_change_requires_replace",
+                    "Generation changes require the non-destructive generation replacement primitive",
+                    { details: { id } },
+                );
+            }
 
-            await atomicReplace(baseDirectory, target, persisted, anchor, async () => {
-                const latest = await readPlanAt(target, id, anchor);
-                if (latest.fingerprint === initial.fingerprint) {
-                    return;
-                }
-                if (latest.plan.revision !== expectedRevision) {
-                    throw storageError("revision_conflict", `Plan ${id} changed during the update`, {
+            await atomicReplace(
+                baseDirectory,
+                target,
+                persisted,
+                anchor,
+                () => revalidatePlanFingerprint(
+                    target,
+                    id,
+                    anchor,
+                    initial,
+                    expectedRevision,
+                ),
+            );
+            return clone(persisted.plan);
+        });
+    };
+
+    const upgrade = async (id, expectedRevision) => {
+        validateExpectedRevision(expectedRevision);
+        const target = planTarget(baseDirectory, id);
+        const anchor = await ensureStorageDirectory(workspacePath, filesRoot, baseDirectory);
+        return withWriteLock(target, baseDirectory, anchor, lockOptions, async () => {
+            const initial = await readPlanAt(target, id, anchor);
+            const current = initial.plan;
+            if (current.schemaVersion === SCHEMA_VERSION) {
+                throw storageError("already_upgraded", `Plan ${id} already uses schema version ${SCHEMA_VERSION}`, {
+                    details: { id, schemaVersion: current.schemaVersion },
+                });
+            }
+            if (current.revision !== expectedRevision) {
+                throw storageError("revision_conflict", `Plan ${id} has changed`, {
+                    details: {
+                        id,
+                        expectedRevision,
+                        latestRevision: current.revision,
+                    },
+                });
+            }
+
+            const timestamp = resolveTimestamp(clock);
+            const snapshot = upgradePlanToV2(current);
+            snapshot.revision = current.revision + 1;
+            snapshot.updatedAt = timestamp;
+            const persisted = serializeValidatedPlan(
+                snapshot,
+                "upgrade_invalid",
+                `Upgraded plan ${id} failed validation`,
+            );
+
+            await revalidatePlanFingerprint(
+                target,
+                id,
+                anchor,
+                initial,
+                expectedRevision,
+            );
+            const snapshotFilename = `schema-v1-r${current.revision}-${initial.fingerprint}.json`;
+            const snapshotPath = await preserveHistorySnapshot(
+                baseDirectory,
+                id,
+                snapshotFilename,
+                initial.sourceBytes,
+                anchor,
+            );
+            if (beforeUpgradeReplace) {
+                await beforeUpgradeReplace({
+                    id,
+                    expectedRevision,
+                    fingerprint: initial.fingerprint,
+                    snapshotPath,
+                });
+            }
+            await atomicReplace(
+                baseDirectory,
+                target,
+                persisted,
+                anchor,
+                () => revalidatePlanFingerprint(
+                    target,
+                    id,
+                    anchor,
+                    initial,
+                    expectedRevision,
+                ),
+            );
+            return clone(persisted.plan);
+        });
+    };
+
+    const replaceGeneration = async (id, expectedRevision, candidate) => {
+        validateExpectedRevision(expectedRevision);
+        const target = planTarget(baseDirectory, id);
+        const anchor = await ensureStorageDirectory(workspacePath, filesRoot, baseDirectory);
+        return withWriteLock(target, baseDirectory, anchor, lockOptions, async () => {
+            const initial = await readPlanAt(target, id, anchor);
+            const current = initial.plan;
+            if (current.schemaVersion === LEGACY_SCHEMA_VERSION) {
+                throw storageError(
+                    "upgrade_required",
+                    `Plan ${id} must be upgraded before mutation`,
+                    { details: { id, schemaVersion: current.schemaVersion } },
+                );
+            }
+            if (current.generation.current >= MAX_GENERATION) {
+                throw storageError(
+                    "generation_limit",
+                    `Plan ${id} already has the maximum ${MAX_GENERATION} generations`,
+                    {
                         details: {
                             id,
-                            expectedRevision,
-                            latestRevision: latest.plan.revision,
+                            maximum: MAX_GENERATION,
+                            current: current.generation.current,
                         },
-                    });
-                }
-                throw storageError("artifact_changed", `Plan ${id} changed during the update`, {
-                    details: { id, expectedRevision },
+                    },
+                );
+            }
+            if (current.revision !== expectedRevision) {
+                throw storageError("revision_conflict", `Plan ${id} has changed`, {
+                    details: {
+                        id,
+                        expectedRevision,
+                        latestRevision: current.revision,
+                    },
                 });
-            });
+            }
+
+            const snapshot = ownSnapshot(
+                candidate,
+                "candidate_invalid",
+                `Next generation for ${id} is not serializable`,
+            );
+            snapshot.revision = current.revision + 1;
+            snapshot.updatedAt = resolveTimestamp(clock);
+            const persisted = serializeValidatedPlan(
+                snapshot,
+                "candidate_invalid",
+                `Next generation for ${id} failed validation`,
+            );
+            if (persisted.plan.id !== current.id
+                || persisted.plan.schemaVersion !== current.schemaVersion
+                || persisted.plan.createdAt !== current.createdAt) {
+                throw storageError(
+                    "immutable_plan_identity",
+                    "A generation replacement cannot change id, schemaVersion, or createdAt",
+                    { details: { id } },
+                );
+            }
+            if (persisted.plan.generation.current !== current.generation.current + 1
+                || !isDeepStrictEqual(
+                    persisted.plan.generation.history.slice(0, -1),
+                    current.generation.history,
+                )) {
+                throw storageError(
+                    "invalid_generation",
+                    "A generation replacement must append exactly one generation record",
+                    { details: { id, current: current.generation.current } },
+                );
+            }
+
+            await revalidatePlanFingerprint(
+                target,
+                id,
+                anchor,
+                initial,
+                expectedRevision,
+            );
+            const generation = String(current.generation.current).padStart(2, "0");
+            await preserveHistorySnapshot(
+                baseDirectory,
+                id,
+                `generation-${generation}-r${current.revision}-${initial.fingerprint}.json`,
+                initial.sourceBytes,
+                anchor,
+            );
+            await atomicReplace(
+                baseDirectory,
+                target,
+                persisted,
+                anchor,
+                () => revalidatePlanFingerprint(
+                    target,
+                    id,
+                    anchor,
+                    initial,
+                    expectedRevision,
+                ),
+            );
             return clone(persisted.plan);
         });
     };
@@ -967,9 +1411,9 @@ export function createPlanStore(options = {}) {
     const activationTarget = path.join(baseDirectory, ".active-plan.json");
 
     const readActivationMarker = async (anchor) => {
-        let source;
+        let sourceBytes;
         try {
-            source = await readSafeFile(activationTarget, "active-plan", anchor);
+            sourceBytes = await readSafeFile(activationTarget, "active-plan", anchor);
         } catch (error) {
             if (error?.code === "plan_not_found") {
                 return null;
@@ -978,7 +1422,7 @@ export function createPlanStore(options = {}) {
         }
         let marker;
         try {
-            marker = JSON.parse(source);
+            marker = JSON.parse(decodeUtf8(sourceBytes, "Mobius activation marker"));
         } catch (error) {
             throw storageError("activation_invalid", "Mobius activation marker contains invalid JSON", {
                 cause: error,
@@ -1016,6 +1460,13 @@ export function createPlanStore(options = {}) {
             lockOptions,
             async () => {
                 const plan = (await readPlanAt(target, planId, anchor)).plan;
+                if (plan.schemaVersion === LEGACY_SCHEMA_VERSION) {
+                    throw storageError(
+                        "upgrade_required",
+                        `Plan ${planId} must be upgraded before activation`,
+                        { details: { planId, schemaVersion: plan.schemaVersion } },
+                    );
+                }
                 if (plan.revision !== expectedRevision) {
                     throw storageError("revision_conflict", `Plan ${planId} has changed`, {
                         details: { planId, expectedRevision, latestRevision: plan.revision },
@@ -1174,7 +1625,9 @@ export function createPlanStore(options = {}) {
         create,
         read,
         update,
+        upgrade,
         replace,
+        replaceGeneration,
         list,
         activate,
         getActive,

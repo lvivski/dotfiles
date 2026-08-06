@@ -15,6 +15,7 @@ test("Mobius registers the complete globally unique tool surface", () => {
         "mobius_prepare_plan",
         "mobius_create_plan",
         "mobius_get_plan",
+        "mobius_upgrade_plan",
         "mobius_list_plans",
         "mobius_submit_plan",
         "mobius_approve_plan",
@@ -39,6 +40,8 @@ test("Mobius registers the complete globally unique tool surface", () => {
         "runId",
         "repository",
     ]);
+    const upgrade = tools.find((tool) => tool.name === "mobius_upgrade_plan");
+    assert.deepEqual(upgrade.parameters.required, ["planId", "expectedRevision"]);
     const completeVerification = tools.find(
         (tool) => tool.name === "mobius_complete_verification",
     );

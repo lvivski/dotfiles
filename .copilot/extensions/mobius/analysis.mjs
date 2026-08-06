@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import {
     LIMITS,
     TASK_STATUS,
+    assertCanonicalValue,
     createDraftPlan,
     validatePlan,
 } from "./domain.mjs";
@@ -73,6 +74,32 @@ function sortKeysDeep(value, seen = new WeakSet()) {
 
 export function stableStringify(value) {
     return JSON.stringify(sortKeysDeep(value === undefined ? null : value));
+}
+
+export function validateCanonicalEvidenceValue(value, fieldPath = "evidence") {
+    try {
+        assertCanonicalValue(value, fieldPath);
+    } catch (error) {
+        if (error?.code === "invalid_evidence") {
+            fail("invalid_evidence", error.message, {
+                path: error.path ?? fieldPath,
+                reason: error.details?.reason ?? null,
+            });
+        }
+        throw error;
+    }
+    return value;
+}
+
+export function canonicalEvidenceStringify(value) {
+    validateCanonicalEvidenceValue(value);
+    return stableStringify(value);
+}
+
+export function canonicalEvidenceDigest(value) {
+    return createHash("sha256")
+        .update(canonicalEvidenceStringify(value), "utf8")
+        .digest("hex");
 }
 
 export function analysisInputDigest(value) {

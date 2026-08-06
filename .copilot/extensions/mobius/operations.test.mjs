@@ -1,10 +1,17 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { PLAN_STATUS, TASK_STATUS, VERIFICATION_STATUS } from "./domain.mjs";
+import {
+    ACTOR_SOURCE,
+    PLAN_STATUS,
+    TASK_STATUS,
+    VERIFICATION_STATUS,
+    actorProvenance,
+    createDraftPlan,
+} from "./domain.mjs";
 import { createMobiusOperations } from "./operations.mjs";
 
 async function withOperations(operation, options = {}) {
@@ -59,6 +66,27 @@ function createInput(workspacePath) {
             baseBranch: "main",
         },
     };
+}
+
+function legacyPlan(workspacePath) {
+    const plan = createDraftPlan({
+        id: "legacy-plan",
+        repository: {
+            workingDirectory: workspacePath,
+            baseBranch: "main",
+        },
+        ...planBlueprint(),
+    }, { now: "2026-08-05T00:00:00.000Z" });
+    plan.schemaVersion = 1;
+    delete plan.generation;
+    delete plan.evidenceRecords;
+    delete plan.observations;
+    delete plan.integrationRefs;
+    for (const task of plan.tasks) {
+        delete task.reservation;
+        delete task.deliveries;
+    }
+    return plan;
 }
 
 function analysisStub(blueprint = planBlueprint()) {
@@ -214,8 +242,45 @@ test("operations drive a plan through approval, child sessions, verification, an
             approvalType: "completion",
         });
         assert.equal(plan.status, PLAN_STATUS.COMPLETED);
-        assert.equal(plan.gates.completionApprovedBy, "octocat");
+        assert.deepEqual(
+            plan.gates.completionApprovedBy,
+            actorProvenance("octocat", ACTOR_SOURCE.CALLER),
+        );
         assert.equal(notifications.at(-1).revision, plan.revision);
+    })
+));
+
+test("operations require explicit v1 upgrade and reject duplicate upgrade", () => (
+    withOperations(async ({ operations, notifications, workspacePath }) => {
+        const store = operations.storeFor(workspacePath);
+        await mkdir(store.directory, { recursive: true });
+        const legacy = legacyPlan(workspacePath);
+        await writeFile(
+            path.join(store.directory, `${legacy.id}.json`),
+            `${JSON.stringify(legacy, null, 2)}\n`,
+            "utf8",
+        );
+
+        await assert.rejects(
+            operations.submitPlan({
+                planId: legacy.id,
+                expectedRevision: legacy.revision,
+            }),
+            (error) => error.code === "upgrade_required",
+        );
+        const upgraded = await operations.upgradePlan({
+            planId: legacy.id,
+            expectedRevision: legacy.revision,
+        });
+        assert.equal(upgraded.schemaVersion, 2);
+        assert.equal(notifications.at(-1).revision, upgraded.revision);
+        await assert.rejects(
+            operations.upgradePlan({
+                planId: legacy.id,
+                expectedRevision: upgraded.revision,
+            }),
+            (error) => error.code === "already_upgraded",
+        );
     })
 ));
 
@@ -343,7 +408,7 @@ test("whole-plan cancellation is atomic before approval", () => (
     })
 ));
 
-test("cancelling one required task cancels the v1 plan instead of stranding it", () => (
+test("cancelling one required task cancels the plan instead of stranding it", () => (
     withOperations(async ({ operations, workspacePath }) => {
         let plan = await operations.createPlan(createInput(workspacePath));
         plan = await operations.submitPlan({

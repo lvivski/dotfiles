@@ -1,13 +1,23 @@
 // Storage tests use disposable session-workspace lookalikes.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import {
+    mkdtemp,
+    mkdir,
+    readFile,
+    readdir,
+    rm,
+    stat,
+    symlink,
+    writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { createDraftPlan } from "./domain.mjs";
+import { appendPlanGeneration, createDraftPlan } from "./domain.mjs";
 import {
     STORAGE_PROCESS_INSTANCE_ID,
     createPlanStore,
@@ -36,6 +46,20 @@ function makePlan(repositoryPath, id = "sample-plan") {
             expectedFiles: ["src/storage.mjs"],
         }],
     }, { now: CREATED_AT });
+}
+
+function makeLegacyPlan(repositoryPath, id = "sample-plan") {
+    const plan = structuredClone(makePlan(repositoryPath, id));
+    plan.schemaVersion = 1;
+    delete plan.generation;
+    delete plan.evidenceRecords;
+    delete plan.observations;
+    delete plan.integrationRefs;
+    for (const task of plan.tasks) {
+        delete task.reservation;
+        delete task.deliveries;
+    }
+    return plan;
 }
 
 async function withWorkspace(operation) {
@@ -116,6 +140,95 @@ test("create, read, and list persist validated plans under the session workspace
     })
 ));
 
+test("explicit upgrade snapshots exact v1 bytes before replacing with v2 defaults", () => (
+    withWorkspace(async (workspace) => {
+        const store = createPlanStore({
+            workspacePath: workspace,
+            clock: () => UPDATED_AT,
+        });
+        await mkdir(store.directory, { recursive: true });
+        const legacy = makeLegacyPlan("/tmp/schema-v1-source");
+        const source = `\n${JSON.stringify(legacy, null, 1)} \n`;
+        const sourceBytes = Buffer.from(source, "utf8");
+        const digest = createHash("sha256").update(sourceBytes).digest("hex");
+        assert.equal(
+            digest,
+            "fe86c9d2a1f87b51aad7dde4fe590aa802cbab50c1c30a5745a8bd027b5c1724",
+        );
+        const artifactPath = path.join(store.directory, "sample-plan.json");
+        await writeFile(artifactPath, sourceBytes);
+
+        assert.deepEqual(await store.read("sample-plan"), legacy);
+        const candidate = structuredClone(legacy);
+        candidate.title = "Mutation must not land";
+        await rejectsCode(
+            store.update("sample-plan", legacy.revision, candidate),
+            "upgrade_required",
+        );
+        assert.deepEqual(await readFile(artifactPath), sourceBytes);
+
+        const upgraded = await store.upgrade("sample-plan", legacy.revision);
+        assert.equal(upgraded.schemaVersion, 2);
+        assert.equal(upgraded.revision, legacy.revision + 1);
+        assert.equal(upgraded.updatedAt, UPDATED_AT);
+        assert.deepEqual(upgraded.generation, {
+            current: 1,
+            history: [{
+                number: 1,
+                createdAt: CREATED_AT,
+                createdBy: null,
+                planningRunId: null,
+                feedback: null,
+                diffDigest: null,
+            }],
+        });
+        assert.equal(upgraded.tasks[0].reservation, null);
+        assert.deepEqual(upgraded.tasks[0].deliveries, []);
+        assert.deepEqual(upgraded.evidenceRecords, []);
+        assert.deepEqual(upgraded.observations, []);
+        assert.deepEqual(upgraded.integrationRefs, []);
+
+        const historyDirectory = path.join(store.directory, ".history", legacy.id);
+        const expectedFilename = `schema-v1-r1-${digest}.json`;
+        assert.deepEqual(await readdir(historyDirectory), [expectedFilename]);
+        const snapshotPath = path.join(historyDirectory, expectedFilename);
+        assert.deepEqual(await readFile(snapshotPath), sourceBytes);
+        assert.equal((await stat(snapshotPath)).mode & 0o777, 0o600);
+        assert.equal(JSON.parse(await readFile(artifactPath, "utf8")).schemaVersion, 2);
+        await rejectsCode(
+            store.upgrade("sample-plan", upgraded.revision),
+            "already_upgraded",
+        );
+    })
+));
+
+test("injected pre-replace failure leaves authoritative v1 bytes unchanged", () => (
+    withWorkspace(async (workspace) => {
+        const injected = Object.assign(new Error("stop before replacement"), {
+            code: "injected_pre_replace",
+        });
+        const store = createPlanStore({
+            workspacePath: workspace,
+            clock: () => UPDATED_AT,
+            beforeUpgradeReplace: () => {
+                throw injected;
+            },
+        });
+        await mkdir(store.directory, { recursive: true });
+        const legacy = makeLegacyPlan("/tmp/schema-v1-source");
+        const sourceBytes = Buffer.from(`\n${JSON.stringify(legacy, null, 1)} \n`, "utf8");
+        const artifactPath = path.join(store.directory, "sample-plan.json");
+        await writeFile(artifactPath, sourceBytes);
+
+        await rejectsCode(
+            store.upgrade("sample-plan", legacy.revision),
+            "injected_pre_replace",
+        );
+        assert.deepEqual(await readFile(artifactPath), sourceBytes);
+        assert.equal((await store.read("sample-plan")).schemaVersion, 1);
+    })
+));
+
 test("stale revisions fail with the latest revision and preserve the winning write", () => (
     withWorkspace(async (workspace) => {
         const store = createPlanStore({
@@ -140,6 +253,37 @@ test("stale revisions fail with the latest revision and preserve the winning wri
             (error) => assert.equal(error.details.latestRevision, 2),
         );
         assert.equal((await store.read(plan.id)).title, "Winning update");
+    })
+));
+
+test("generation replacement stops at 16 without changing plan or history", () => (
+    withWorkspace(async (workspace) => {
+        const store = createPlanStore({
+            workspacePath: workspace,
+            clock: () => UPDATED_AT,
+        });
+        let plan = await store.create(makePlan(workspace), 0);
+        while (plan.generation.current < 16) {
+            const candidate = appendPlanGeneration(plan, {
+                createdBy: null,
+                planningRunId: null,
+                feedback: null,
+                diffDigest: null,
+            }, { at: CREATED_AT });
+            plan = await store.replaceGeneration(plan.id, plan.revision, candidate);
+        }
+        assert.equal(plan.generation.current, 16);
+
+        const artifactPath = path.join(store.directory, `${plan.id}.json`);
+        const historyDirectory = path.join(store.directory, ".history", plan.id);
+        const beforeSource = await readFile(artifactPath);
+        const beforeHistory = (await readdir(historyDirectory)).sort();
+        await rejectsCode(
+            store.replaceGeneration(plan.id, plan.revision, structuredClone(plan)),
+            "generation_limit",
+        );
+        assert.deepEqual(await readFile(artifactPath), beforeSource);
+        assert.deepEqual((await readdir(historyDirectory)).sort(), beforeHistory);
     })
 ));
 
