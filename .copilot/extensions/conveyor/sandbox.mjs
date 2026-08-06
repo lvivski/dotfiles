@@ -3,7 +3,7 @@
  *
  * Executes a `.mjs` harness in a deterministic `node:vm` context.
  *
- * Resume replays a harness against its checkpoint journal, so a re-run must take the same path.
+ * Resume replays a harness against its durable ledger, so a re-run must take the same path.
  * `Math.random`, `Date.now()` and argless `new Date()` therefore throw, and `eval` / `new Function`
  * / dynamic `import()` are disabled by the context options.
  *

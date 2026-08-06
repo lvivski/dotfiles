@@ -6,11 +6,21 @@ A workflow is a plain JavaScript async body. It must start with:
 export const meta = {
   name: "audit",
   description: "Audit files and report verified findings.",
-  phases: ["review", "verify", "report"],
+  phases: [
+    { title: "review", detail: "Inspect each target" },
+    { title: "verify" },
+    { title: "report" },
+  ],
+  limits: {
+    maxConcurrentAgents: 4,
+    maxTotalAgents: 30,
+    timeoutSeconds: 600,
+    maxAiCredits: 20,
+  },
 };
 ```
 
-The harness has five core orchestration primitives and four namespaces.
+The harness has six core orchestration primitives and four namespaces.
 
 ## Core primitives
 
@@ -85,13 +95,31 @@ const findings = await phase("review", () =>
 
 Adds a workflow progress message. Treat data derived from files, web pages, or agents as untrusted.
 
+### `step(key, producer, options?)`
+
+Runs a branch-scoped durable JSON producer:
+
+```js
+const inventory = await step("inventory", () => host.scan({ root: "src" }), {
+  version: 2,
+  input: { root: "src" },
+});
+```
+
+The cache identity includes the current branch, invalidation generation, key, version, and input.
+Producers are at-least-once, so external mutations still need idempotency keys or another durable
+deduplication mechanism.
+
 ## Namespaces
 
 ### `context`
 
 - `context.args`
+- `context.runId`
+- `context.signal`
 - `context.dryRun`
 - `context.budget.total`, `spent()`, `remaining()`, `hit`
+- `context.limits.approved`, `context.limits.consumed()`
 - `context.capabilities`
 - `context.memory.read()`, `append()`, `write()`, `clear()`, `enabled`
 
@@ -99,6 +127,9 @@ The harness cannot mutate the launch budget. When a non-strict run reaches the b
 host to approve more headroom, and repeats that each time the raised ceiling is exhausted, so a long
 run is never silently truncated. Declining stops the asking for the rest of the run — including
 after a resume. Every decision is journaled, and the newest approved ceiling is restored on resume.
+Timeout, spawned-agent, and AIC consumption are cumulative across attempts; time between attempts
+does not count. An attempt's deadline is fixed when that attempt starts; raised timeout limits apply
+to a later resume rather than re-arming an already-running attempt.
 
 ### `verify(subject, rubric, options?)`
 
@@ -120,6 +151,10 @@ write it in the harness where you can see it.
 `host.<effect>(input, options?)` invokes a function exported by the adjacent `.host.mjs` sidecar.
 Effects run as trusted host code, are checkpointed, and receive `{ cwd, dryRun, restricted, signal,
 log }`. Mark mutating effects with `fn.mutates = true`; they are skipped during dry-run.
+
+Single-file sidecars must be self-contained. Multi-file hosts use a sibling bundle directory
+`<name>.host/index.mjs`; Conveyor snapshots and verifies the complete bundle for plans, initial runs,
+and resumes.
 
 ### `workspace`
 
@@ -146,14 +181,15 @@ Inspect `context.capabilities.permissions` and the persisted run's permission in
 
 ## Run artifacts and control
 
-Runs persist `manifest.json`, `journal.jsonl`, `script.js`, `state.json`,
-`run.json`, `result.json`, `progress.jsonl`, `meta.json`, and optional `host.mjs`. A transient
-`.lock/owner.json` holds the run's lease and is removed when the lease is released.
+Runs persist `manifest.json`, `ledger.jsonl`, `script.js`, `state.json`, `run.json`, `heartbeat.json`,
+and an optional `host/` snapshot. A transient `.lock/owner.json` holds the run's lease; cross-process
+pause/cancel requests briefly live under `control/`.
 
 Use:
 
 - `list_conveyor_runs`
 - `inspect_conveyor_run({ runId })`
+- `get_conveyor_progress({ runId, afterSeq?, beforeSeq?, phaseId?, limit? })`
 - `get_conveyor_result({ runId, offset?, limit? })`
 - `control_conveyor_run({ runId, action: "pause" | "resume" | "cancel", invalidate? })`
 
@@ -163,3 +199,15 @@ pipeline branches, pass canonical branch paths such as `invalidate: ["/0", "/2/1
 root and invalidates the entire workflow; invalidating a parent includes every descendant while
 sibling checkpoints remain reusable. `inspect_conveyor_run` and `inspect_conveyor_agent` expose
 branch paths and prior invalidation generations.
+
+Final harness values must be strict JSON or `undefined`. `get_conveyor_result` returns the JSON value
+directly by default; use `format: "text"` for paginated serialization.
+
+Agent summaries, usage, and activity are prompt-safe. Full prompt/result text is available only
+through the permission-gated `get_conveyor_agent_content` tool, and full prompts are persisted only
+when the run opts into `retainAgentContent`. Successful agent result content is retained in the ledger because deterministic resume requires it.
+
+`run.json` contains the canonical terminal envelope. `manifest.json` contains immutable source
+identity, arguments, metadata, and declared limits; `ledger.jsonl` contains every durable event.
+Trusted local integrations should use the validated import seam rather than reading these files
+directly; it validates the manifest identity and host snapshot and returns the pinned source bytes.

@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { loadHost, buildHostProxy, sidecarPathFor } from "./effects.mjs";
 import { Runtime } from "./runtime.mjs";
 import { executeConveyor } from "./executor.mjs";
-import { CheckpointStore } from "./checkpoint.mjs";
+import { Ledger } from "./ledger.mjs";
 import { mkResult, tmpDir, withFakeEnv } from "./fixtures/support.mjs";
 
 /** @param {string} body @returns {string} path to a temp sidecar module. */
@@ -69,7 +69,7 @@ test("effects are checkpointed and replayed on resume (not re-run)", async () =>
 	let calls = 0;
 	const host = fakeHost([["ping", async (input) => ({ n: ++calls, input })]]);
 
-	const rt1 = new Runtime({ checkpoints: new CheckpointStore(runDir), cwd: tmpDir() });
+	const rt1 = new Runtime({ ledger: new Ledger(runDir), cwd: tmpDir() });
 	rt1.setHost(host);
 	const api1 = /** @type {any} */ (rt1.buildApi(null));
 	const a = await api1.host.ping({ x: 1 });
@@ -78,7 +78,7 @@ test("effects are checkpointed and replayed on resume (not re-run)", async () =>
 	assert.equal(calls, 2);
 
 	// resume: same call order replays recorded results without invoking the effect
-	const rt2 = new Runtime({ checkpoints: new CheckpointStore(runDir, { resume: true }), cwd: tmpDir() });
+	const rt2 = new Runtime({ ledger: new Ledger(runDir), cwd: tmpDir() });
 	rt2.setHost(host);
 	const api2 = /** @type {any} */ (rt2.buildApi(null));
 	assert.deepEqual([(await api2.host.ping({ x: 1 })).n, (await api2.host.ping({ x: 1 })).n], [1, 2]);
@@ -94,9 +94,9 @@ test("cached mutating effects restore the branch epoch before later checkpoint l
 	const backend = { kind: "test", run: async (/** @type {import("./agent.mjs").AgentSpec} */ spec) => (agents++, mkResult({ content: spec.prompt, label: spec.label })) };
 
 	const run = async (/** @type {boolean} */ resume, invalidate = false) => {
-		const checkpoints = new CheckpointStore(runDir, { resume });
-		if (invalidate) checkpoints.invalidate([[]]);
-		const rt = new Runtime({ parentPermissionMode: "on", checkpoints, cwd, agentBackend: backend });
+		const ledger = new Ledger(runDir);
+		if (invalidate) ledger.invalidate([[]]);
+		const rt = new Runtime({ parentPermissionMode: "on", ledger, cwd, agentBackend: backend });
 		rt.setHost(host);
 		const api = /** @type {any} */ (rt.buildApi(null));
 		await api.agent("before");
@@ -114,10 +114,10 @@ test("cached mutating effects restore the branch epoch before later checkpoint l
 
 test("effect cache keys keep the journal-compatible tuple shape", async () => {
 	const runDir = tmpDir();
-	const rt = new Runtime({ checkpoints: new CheckpointStore(runDir), cwd: tmpDir() });
+	const rt = new Runtime({ ledger: new Ledger(runDir), cwd: tmpDir() });
 	rt.setHost(fakeHost([["ping", async (input) => input]]));
 	await /** @type {any} */ (rt.buildApi(null)).host.ping({ b: 2, a: 1 });
-	const key = JSON.parse(readFileSync(join(runDir, "journal.jsonl"), "utf8").trim()).key;
+	const key = readFileSync(join(runDir, "ledger.jsonl"), "utf8").trim().split("\n").map(JSON.parse).find((record) => record.type === "result").key;
 	assert.equal(key, JSON.stringify(["fx", [], 0, "fake-host-hash", "ping", "{\"a\":1,\"b\":2}", 0]));
 });
 
@@ -157,7 +157,7 @@ test("restricted mode and missing sidecar reject host calls", () => {
 });
 
 test("a non-JSON effect result is rejected (must be checkpointable)", async () => {
-	const rt = new Runtime({ checkpoints: new CheckpointStore(tmpDir()), cwd: tmpDir() });
+	const rt = new Runtime({ ledger: new Ledger(tmpDir()), cwd: tmpDir() });
 	rt.setHost(fakeHost([["bad", async () => ({ fn: () => 1, circular: undefined })]]));
 	// a function value survives JSON round-trip as undefined → fine; force a real failure with a BigInt
 	rt.setHost(fakeHost([["bad", async () => ({ big: 1n })]]));
@@ -166,7 +166,7 @@ test("a non-JSON effect result is rejected (must be checkpointable)", async () =
 
 test("drain() awaits a fire-and-forget effect (bounded + tracked)", async () => {
 	let done = false;
-	const rt = new Runtime({ checkpoints: new CheckpointStore(tmpDir()), cwd: tmpDir() });
+	const rt = new Runtime({ ledger: new Ledger(tmpDir()), cwd: tmpDir() });
 	rt.setHost(fakeHost([["slow", async () => (await new Promise((r) => setTimeout(r, 20)), (done = true), 1)]]));
 	/** @type {any} */ (rt.buildApi(null)).host.slow({}); // NOT awaited
 	assert.equal(done, false);

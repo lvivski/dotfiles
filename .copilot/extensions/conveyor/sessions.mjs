@@ -5,7 +5,7 @@
  * session: a `$COPILOT_HOME/session-state/<id>/` directory plus rows in `session-store.db`, which
  * is what the `--resume` picker lists. A fan-out therefore leaves dozens of dead sessions behind
  * per run even though nothing reads them afterwards — the durable record of an agent is the run's
- * own `journal.jsonl` / `progress.jsonl`, and AIC accounting reads the child log while the agent is
+ * own event logs, and AIC accounting reads the child log while the agent is
  * still running (see `agent.mjs`).
  *
  * Removal mirrors worktree disposal (`worktree.mjs`): clean runs leave no trace, anything that

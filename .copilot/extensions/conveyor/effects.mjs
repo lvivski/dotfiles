@@ -5,18 +5,19 @@
  * workflow brings its own effect code in a **sidecar** (`<name>.host.mjs` or `run_conveyor({ host })`)
  * that the runtime imports in the **host realm** (full Node — `fs`, `child_process`, any npm). The
  * harness calls those effects through a single injected `host.<name>(input)` namespace; each call is
- * checkpointed by `(name, input)` in the same journal agents use, so on resume it replays instead of
+ * recorded by `(name, input)` in the same ledger agents use, so on resume it replays instead of
  * re-running. This keeps the harness a pure function of `(args, agent results, effect results)` while
  * letting each workflow define exactly the host operations it needs — the core interface never grows.
  *
  * This module owns only the pure glue (loading, canonical keying, the injected proxy). The
- * checkpointing + execution live on the Runtime (`#effect`), and the per-workflow logic lives in the
+ * recording + execution live on the Runtime (`#effect`), and the per-workflow logic lives in the
  * sidecar. Pure Node built-ins only, so it stays unit-testable under plain `node --test`.
  */
 import { statSync } from "node:fs";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
+import { hostEntry, verifyHostSnapshot } from "./snapshot.mjs";
 
 /**
  * The context every sidecar effect receives as its 2nd arg. Deliberately minimal: the run's cwd/mode,
@@ -49,6 +50,8 @@ export function sidecarPathFor(harnessPath) {
  * @param {string} path @returns {Promise<LoadedHost>}
  */
 export async function loadHost(path) {
+	if (statSync(path).isDirectory()) path = verifyHostSnapshot(path).entry;
+	else path = hostEntry(path);
 	// Cache-bust by mtime so an edited sidecar is picked up across runs in a long-lived process.
 	let v = "";
 	try {

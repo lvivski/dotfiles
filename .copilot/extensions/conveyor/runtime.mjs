@@ -1,10 +1,10 @@
 /**
  * @module runtime
  *
- * Harness runtime: agents, fan-out, budgets, checkpoints, worktrees, host effects, and progress.
+ * Harness runtime: agents, fan-out, limits, durable replay, worktrees, host effects, and progress.
  */
 import { AsyncLocalStorage } from "node:async_hooks";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
@@ -14,19 +14,20 @@ import { resolveCopilotBin } from "./agent.mjs";
 import { createCliRunBackend } from "./cli.mjs";
 import { Memory } from "./memory.mjs";
 import * as patterns from "./patterns.mjs";
-import { BudgetExceeded, defaultConcurrency, RunStats, Semaphore } from "./scheduler.mjs";
+import { defaultConcurrency, RunStats, Semaphore } from "./scheduler.mjs";
 import { deleteSessions, keepSessions } from "./sessions.mjs";
 import { WorktreeManager, findRepoRoot, ensureClone, clonePath, _sanitize } from "./worktree.mjs";
 import { buildHostProxy } from "./effects.mjs";
 import { stableStringify } from "./json.mjs";
-import { formatBranchPath } from "./checkpoint.mjs";
+import { formatBranchPath } from "./ledger.mjs";
 import { modelEffortError } from "./models.mjs";
+import { AccountingError, assertJson, LimitError } from "./schema.mjs";
 
 /** @typedef {import("./agent.mjs").AgentResult} AgentResult */
 /** @typedef {import("./agent.mjs").AgentSpec} AgentSpec */
 /** @typedef {import("./scheduler.mjs").RunCounts} RunCounts */
 
-export { BudgetExceeded, defaultConcurrency };
+export { defaultConcurrency };
 export class AgentCapExceeded extends Error {}
 
 /** Hard caps (overridable only by conveyor-owned test/dev env, never by conveyor source). */
@@ -65,8 +66,19 @@ function isUnsuccessfulAgentOutcome(value) {
 export class Runtime {
 	/** @type {number|null} */
 	#budgetTotal;
-	/** @type {import("./checkpoint.mjs").CheckpointStore|null} */
-	#checkpoints;
+	/** @type {import("./ledger.mjs").Ledger|null} */
+	#ledger;
+	/** @type {Record<string, number>} */
+	#limits = {};
+	#retainAgentContent = false;
+	#runId = "";
+	#attemptId = null;
+	/** @type {Error|null} */
+	#durableError = null;
+	/** @type {Map<string, Promise<unknown>>} */
+	#steps = new Map();
+	/** @type {Map<string, { id: string, ordinal: number|null, title: string, detail?: string }>} */
+	#phases = new Map();
 	/** @type {(e: any) => void} */
 	#progress;
 	/** @type {(m: string, level?: "info"|"warning"|"error") => void} */
@@ -74,13 +86,10 @@ export class Runtime {
 	#sem;
 	#abort;
 	#spent = 0;
-	#priorUnknownUsage = 0;
 	#budgetHit = false;
 	#seq = 0;
 	#agentCount = 0;
 	#retryHeadroom = 0;
-	/** @type {string|null} */
-	#currentPhase = null;
 	/** @type {Map<string, number>} */
 	#occurrence = new Map();
 	/** @type {Map<string, number>} */
@@ -114,7 +123,7 @@ export class Runtime {
 	/** @type {{ kind: string, run: Function }} */
 	#agentBackend;
 	/** @type {((request: { current: number, spent: number, increment: number, proposed: number }) => Promise<boolean|null>|boolean|null)|null} */
-	#requestBudgetIncrease;
+	#requestLimitApproval;
 	/** @type {Promise<boolean>|null} */
 	#budgetIncreasePromise = null;
 	/** True once the host declined (or could not be asked): approvals do not latch, refusals do. */
@@ -134,18 +143,32 @@ export class Runtime {
 	#harnessLines = [];
 	/**
 	 * @param {{
-	 *   concurrency?: number|null, model?: string|null, effort?: string|null, context?: string|null,
-	 *   defaultEnableMcp?: boolean, budget?: number|null, strictBudget?: boolean, dryRun?: boolean,
-	 *   restricted?: boolean, checkpoints?: import("./checkpoint.mjs").CheckpointStore|null, memory?: Memory,
+	 *   model?: string|null, effort?: string|null, context?: string|null,
+	 *   defaultEnableMcp?: boolean, strictBudget?: boolean, dryRun?: boolean,
+	 *   restricted?: boolean, ledger?: import("./ledger.mjs").Ledger|null, memory?: Memory,
+	 *   limits?: Record<string, number>,
+	 *   phases?: { id: string, ordinal: number|null, title: string, detail?: string }[],
+	 *   retainAgentContent?: boolean,
+	 *   runId?: string,
+	 *   attemptId?: string|null,
 	 *   progress?: (e: any) => void, log?: (m: string, level?: "info"|"warning"|"error") => void, abortController?: AbortController,
 	 *   cwd?: string, allowedDirs?: string[],
 	 *   parentPermissionMode?: "off"|"on"|"auto", parentSessionMode?: string, maxAgents?: number|null, agentBackend?: { kind: string, run: Function, close?: Function },
 	 *   harness?: { file: string, source: string },
-	 *   requestBudgetIncrease?: ((request: { current: number, spent: number, increment: number, proposed: number }) => Promise<boolean|null>|boolean|null)|null,
+	 *   requestLimitApproval?: ((request: { current: Record<string, number>, proposed: Record<string, number> }) => Promise<boolean|null>|boolean|null)|null,
 	 * }} [opts]
 	 */
 	constructor(opts = {}) {
-		this.concurrency = opts.concurrency && opts.concurrency > 0 ? opts.concurrency : defaultConcurrency();
+		this.#ledger = opts.ledger ?? null;
+		this.#limits = {
+			...(opts.limits || {}),
+			...(this.#ledger?.approvedLimits || {}),
+		};
+		this.#retainAgentContent = opts.retainAgentContent === true;
+		this.#runId = String(opts.runId || "");
+		this.#attemptId = opts.attemptId ?? null;
+		for (const phase of opts.phases || []) this.#phases.set(phase.title, phase);
+		this.concurrency = this.#limits.maxConcurrentAgents || defaultConcurrency();
 		this.model = opts.model ?? null;
 		this.effort = opts.effort ?? null;
 		this.context = opts.context ?? null;
@@ -159,17 +182,15 @@ export class Runtime {
 		this.#agentBackend = opts.agentBackend ?? createCliRunBackend();
 		this.#harnessFile = opts.harness?.file ?? "";
 		this.#harnessLines = opts.harness?.source ? opts.harness.source.split("\n") : [];
-		this.#requestBudgetIncrease = opts.requestBudgetIncrease ?? null;
+		this.#requestLimitApproval = opts.requestLimitApproval ?? null;
 		this.memory = opts.memory ?? new Memory(null);
-		this.#checkpoints = opts.checkpoints ?? null;
-		this.#budgetTotal = this.#checkpoints?.latestBudget ?? opts.budget ?? null;
-		this.#budgetIncreaseDeclined = this.#checkpoints?.budgetIncreaseDeclined ?? false;
+		this.#budgetTotal = this.#limits.maxAiCredits ?? null;
+		this.#budgetIncreaseDeclined = this.#ledger?.budgetIncreaseDeclined ?? false;
 		this.#progress = opts.progress ?? (() => {});
 		this.#log = opts.log ?? (() => {});
 		this.#sem = new Semaphore(this.concurrency);
 		this.#abort = opts.abortController ?? new AbortController();
-		this.#spent = this.#checkpoints ? this.#checkpoints.priorSpent : 0;
-		this.#priorUnknownUsage = this.#checkpoints ? this.#checkpoints.priorUnknownUsage : 0;
+		this.#spent = this.#ledger ? this.#ledger.consumed.nanoAiu / 1_000_000_000 : 0;
 		if (opts.cwd) this.#cwd = opts.cwd;
 		this.#allowedDirs = (opts.allowedDirs?.length ? opts.allowedDirs : [this.#cwd]).map((dir) => resolve(dir));
 
@@ -195,6 +216,10 @@ export class Runtime {
 		return this.#stats.counts().unknownUsage;
 	}
 
+	get durableError() {
+		return this.#durableError;
+	}
+
 	get plannedMaxAgents() {
 		const observed = this.#stats.agentCount;
 		return Math.min(maxAgents(), Math.max(observed + this.#retryHeadroom, Math.ceil(observed * 1.25) + (observed ? 2 : 0)));
@@ -203,7 +228,9 @@ export class Runtime {
 	/** @returns {{ counts: RunCounts & { dropped: number }, nanoAiu: number }} */
 	stats() {
 		const counts = this.#stats.counts();
-		return { counts: { ...counts, unknownUsage: counts.unknownUsage + this.#priorUnknownUsage, dropped: this.#droppedCount }, nanoAiu: this.#stats.nanoAiu };
+		const unknownUsage = this.#ledger?.consumed.unknownUsage ?? counts.unknownUsage;
+		const nanoAiu = this.#ledger?.consumed.nanoAiu ?? this.#stats.nanoAiu;
+		return { counts: { ...counts, unknownUsage, dropped: this.#droppedCount }, nanoAiu };
 	}
 
 	/**
@@ -222,10 +249,30 @@ export class Runtime {
 	}
 
 	/** @param {string|null} name @param {(() => any)} [callback] set the current phase for subsequently-launched agents. */
-	phase(name, callback) {
+	async phase(name, callback) {
 		const phase = name ? String(name) : null;
-		if (typeof callback === "function") return phaseStore.run(phase, callback);
-		this.#currentPhase = phase;
+		if (typeof callback === "function") {
+			if (!phase) throw new Error("conveyor: phase title must not be empty");
+			const declared = this.#phases.get(phase);
+			const phaseId = declared?.id ?? `dynamic:${createHash("sha256").update(phase).digest("hex").slice(0, 12)}`;
+			if (!declared) this.#phases.set(phase, { id: phaseId, ordinal: null, title: phase });
+			const invocationId = randomUUID();
+			const startedAt = Date.now();
+			this.#emit({
+				ev: "phase_enter",
+				phase,
+				phaseId,
+				invocationId,
+				ordinal: declared?.ordinal ?? null,
+				detail: declared?.detail,
+			});
+			try {
+				return await phaseStore.run(phase, callback);
+			} finally {
+				this.#emit({ ev: "phase_exit", phase, phaseId, invocationId, durationMs: Math.max(0, Date.now() - startedAt) });
+			}
+		}
+		throw new Error("conveyor: phase(name, callback) requires a callback");
 	}
 
 	// ---- single agent --------------------------------------------------
@@ -290,7 +337,7 @@ export class Runtime {
 		}
 
 		const key = this.#agentCacheKey(o, spec);
-		const cached = this.#checkpoints?.get(key);
+		const cached = this.#ledger?.get(key);
 		if (cached) {
 			this.#noteSession(cached, spec);
 			this.#finish(run.seq, cached, false, run.phase);
@@ -305,9 +352,19 @@ export class Runtime {
 			this.#sem.release();
 		}
 		try {
+			try {
+				this.#admitAgent();
+			} catch (error) {
+				const failed = this.#synthetic("", spec, {
+					skipped: true,
+					error: error instanceof Error ? error.message : String(error),
+				});
+				this.#finish(run.seq, failed, true, run.phase, run.phaseId);
+				throw error;
+			}
 			const { res, skipped, strictStop } = await this.#executeAgent(spec, key, run);
-			this.#finish(run.seq, res, skipped, run.phase);
-			if (strictStop) throw new BudgetExceeded(`budget ${this.#budgetTotal} exceeded (spent ${this.#spent.toFixed(4)})`);
+			this.#finish(run.seq, res, skipped, run.phase, run.phaseId);
+			if (strictStop) throw new LimitError("maxAiCredits", this.#budgetTotal ?? 0, this.#spent);
 			return res;
 		} finally {
 			this.#sem.release();
@@ -324,13 +381,21 @@ export class Runtime {
 		if (++this.#agentCount > cap) throw new AgentCapExceeded(`conveyor: agent cap exceeded (MAX_AGENTS=${cap}) — the run exceeded its approved plan or entered a runaway loop`);
 	}
 
+	#admitAgent() {
+		const limit = this.#limits.maxTotalAgents;
+		const consumed = this.#ledger?.consumed.spawnedAgents ?? 0;
+		if (limit != null && consumed >= limit) throw new LimitError("maxTotalAgents", limit, consumed);
+		this.#ledger?.admitAgent();
+	}
+
 	/** @param {AgentSpec} spec @param {Record<string, any>} opts */
 	#startAgent(spec, opts) {
-		const phase = opts.phase ?? phaseStore.getStore() ?? this.#currentPhase ?? null;
+		const phase = opts.phase ?? phaseStore.getStore() ?? null;
+		const phaseId = phase ? this.#phases.get(phase)?.id ?? null : null;
 		const branch = [...(branchStore.getStore() || [])];
 		const seq = ++this.#seq;
-		this.#emit({ ev: "start", seq, label: spec.label || "agent", model: spec.model, phase, branchPath: formatBranchPath(branch) });
-		return { seq, phase, branch };
+		this.#emit({ ev: "start", agentSeq: seq, label: spec.label || "agent", model: spec.model, phase, phaseId, branchPath: formatBranchPath(branch) });
+		return { seq, phase, phaseId, branch };
 	}
 
 	/** @param {Record<string, any>} opts @param {AgentSpec} spec */
@@ -341,7 +406,7 @@ export class Runtime {
 	/**
 	 * @param {AgentSpec} spec
 	 * @param {string} key
-	 * @param {{ seq: number, phase: string|null, branch: number[] }} run
+	 * @param {{ seq: number, phase: string|null, phaseId: string|null, branch: number[] }} run
 	 * @returns {Promise<{ res: AgentResult, skipped: boolean, strictStop: boolean }>}
 	 */
 	async #executeAgent(spec, key, run) {
@@ -349,12 +414,15 @@ export class Runtime {
 			return { res: this.#synthetic("", spec, { skipped: true, error: "skipped: run aborting" }), skipped: true, strictStop: false };
 		}
 
-		this.#checkpoints?.recordStarted(key, spec, run.branch);
+		this.#ledger?.recordStarted(key, spec, run.branch, this.#retainAgentContent, run.seq, this.#attemptId);
 		const res = await this.#agentBackend.run(spec, { signal: this.#abort.signal });
 		this.#noteSession(res, spec);
 		this.#charge(res.aic ?? 0);
-		this.#checkpoints?.recordUsage(key, res);
-		if (this.#checkpoints && res.ok) this.#checkpoints.put(key, res);
+		this.#ledger?.recordUsage(key, res);
+		if (this.#ledger && res.ok) this.#ledger.put(key, res);
+		if (res.ok && res.usageUnknown && this.#budgetTotal != null) {
+			throw new AccountingError("AI-credit accounting was unavailable for a budgeted Conveyor agent");
+		}
 		return { res, skipped: false, strictStop: this.strictBudget && this.#overBudget() };
 	}
 
@@ -370,20 +438,21 @@ export class Runtime {
 		if (!this.strictBudget && (await this.#tryBudgetIncrease())) return null;
 		const res = this.#synthetic("", spec, { skipped: true, error: "skipped: budget reached" });
 		this.#finish(run.seq, res, true, run.phase);
-		if (this.strictBudget) throw new BudgetExceeded(`budget ${this.#budgetTotal} reached (spent ${this.#spent.toFixed(4)})`);
+		if (this.strictBudget) throw new LimitError("maxAiCredits", this.#budgetTotal ?? 0, this.#spent);
 		return res;
 	}
 
 	async #tryBudgetIncrease() {
-		const requestBudgetIncrease = this.#requestBudgetIncrease;
-		if (!requestBudgetIncrease || this.#budgetTotal == null) return false;
+		const requestLimitApproval = this.#requestLimitApproval;
+		if (!requestLimitApproval || this.#budgetTotal == null) return false;
 		if (this.#budgetIncreasePromise) return this.#budgetIncreasePromise;
 		if (this.#budgetIncreaseDeclined) return false;
 		const current = this.#budgetTotal;
 		const increment = Math.max(1, current);
 		const proposed = Math.max(current + increment, this.#spent + increment);
 		this.#log(`  budget: ${this.#spent.toFixed(2)}/${current.toFixed(2)} AIC used; awaiting approval for ${increment.toFixed(2)} additional AIC`, "warning");
-		this.#budgetIncreasePromise = Promise.resolve(requestBudgetIncrease({ current, spent: this.#spent, increment, proposed }))
+		const proposedLimits = { ...this.#limits, maxAiCredits: proposed };
+		this.#budgetIncreasePromise = Promise.resolve(requestLimitApproval({ current: { ...this.#limits }, proposed: proposedLimits }))
 			.then((approved) => {
 				if (approved == null) {
 					// Not journaled: a later resume in a session that can prompt may still ask.
@@ -393,14 +462,16 @@ export class Runtime {
 				}
 				if (!approved) {
 					this.#budgetIncreaseDeclined = true;
-					this.#checkpoints?.recordControl({ action: "budget_increase_declined", from: current, proposed, spent: this.#spent, decidedAt: new Date().toISOString() });
+					this.#ledger?.declineLimits({ ...this.#limits, maxAiCredits: proposed });
 					this.#log("  budget: increase declined", "warning");
 					return false;
 				}
 				const approvedTotal = Math.max(proposed, this.#spent + increment);
 				this.#budgetTotal = approvedTotal;
+				this.#limits = this.#ledger
+					? this.#ledger.approve({}, { maxAiCredits: approvedTotal })
+					: { ...this.#limits, maxAiCredits: approvedTotal };
 				this.#budgetHit = false;
-				this.#checkpoints?.recordControl({ action: "budget_increased", from: current, proposed, to: approvedTotal, increment, spent: this.#spent, approvedAt: new Date().toISOString() });
 				this.#log(`  budget: approved ${increment.toFixed(2)} additional AIC; ceiling is now ${approvedTotal.toFixed(2)}`, "info");
 				return true;
 			})
@@ -425,6 +496,36 @@ export class Runtime {
 	async followUp(result, prompt, opts = {}) {
 		if (!result || !result.sessionId) throw new Error("conveyor: cannot follow up — result has no sessionId");
 		return this.agent(prompt, { ...opts, resume: result.sessionId });
+	}
+
+	/**
+	 * Run a branch-scoped durable JSON producer.
+	 * @param {string} key
+	 * @param {() => unknown|Promise<unknown>} producer
+	 * @param {{ version?: string|number, input?: unknown }} [opts]
+	 */
+	async step(key, producer, opts = {}) {
+		if (typeof key !== "string" || !key) throw new Error("conveyor: step key must be a non-empty string");
+		if (typeof producer !== "function") throw new Error("conveyor: step producer must be a function");
+		const branch = branchStore.getStore() || [];
+		const epoch = this.#currentEpoch(branch);
+		const version = opts.version ?? 1;
+		assertJson(opts.input ?? null, { label: `Conveyor step '${key}' input` });
+		const checkpointKey = JSON.stringify(["step", branch, epoch, key, version, stableStringify(opts.input ?? null)]);
+		const cached = this.#ledger?.lookup(checkpointKey);
+		if (cached?.hit) return cached.value;
+		const existing = this.#steps.get(checkpointKey);
+		if (existing) return existing;
+		const pending = Promise.resolve()
+			.then(producer)
+			.then((produced) => {
+				const value = assertJson(produced, { label: `Conveyor step '${key}' result` });
+				this.#ledger?.put(checkpointKey, value, "step");
+				return value;
+			})
+			.finally(() => this.#steps.delete(checkpointKey));
+		this.#steps.set(checkpointKey, pending);
+		return pending;
 	}
 
 	// ---- barriers & pipeline ------------------------------------------
@@ -623,7 +724,7 @@ export class Runtime {
 
 	/**
 	 * Shared concurrent map with branch-scoped cache keys. `errors:"drop"` returns null for a failed
-	 * slot; `"raise"` (default) aborts on the first error. `BudgetExceeded` always propagates.
+	 * slot; `"raise"` (default) aborts on the first error. Limit errors always propagate.
 	 * @param {number} n
 	 * @param {(i: number) => any} work
 	 * @param {{ concurrency?: number, onFailure?: "raise"|"drop"|"keep", kind?: "parallel"|"pipeline" }} opts
@@ -641,8 +742,9 @@ export class Runtime {
 		let next = 0;
 		let firstError = /** @type {any} */ (null);
 		const gid = ++this.#groupSeq;
-		const phase = this.#currentPhase ?? null;
-		this.#emit({ ev: "group_start", gid, kind, phase, n });
+		const phase = phaseStore.getStore() ?? null;
+		const phaseId = phase ? this.#phases.get(phase)?.id ?? null : null;
+		this.#emit({ ev: "group_start", gid, kind, phase, phaseId, n });
 
 		const runOne = async () => {
 			while (true) {
@@ -652,20 +754,20 @@ export class Runtime {
 					const value = await branchStore.run([...parent, base + i], () => work(i));
 					if (isFailedAgentOutcome(value)) {
 						if (failureMode === "keep") results[i] = value;
-						else if (failureMode === "drop") this.#dropGroupItem({ results, i, gid, kind, phase, error: value.error || "agent failed" });
+						else if (failureMode === "drop") this.#dropGroupItem({ results, i, gid, kind, phase, phaseId, error: value.error || "agent failed" });
 						else firstError = new Error(value.error || "agent failed");
 						continue;
 					}
 					results[i] = value;
 				} catch (e) {
-					if (e instanceof BudgetExceeded || e instanceof AgentCapExceeded) {
+					if (e instanceof AgentCapExceeded || e instanceof LimitError || e instanceof AccountingError) {
 						firstError = firstError || e;
 						return;
 					}
 					if (failureMode === "keep") {
 						results[i] = this.#callbackFailure(e);
 					} else if (failureMode === "drop") {
-						this.#dropGroupItem({ results, i, gid, kind, phase, error: e instanceof Error ? e.message : String(e) });
+						this.#dropGroupItem({ results, i, gid, kind, phase, phaseId, error: e instanceof Error ? e.message : String(e) });
 					} else {
 						firstError = firstError || e;
 						return;
@@ -677,7 +779,7 @@ export class Runtime {
 		try {
 			await Promise.all(Array.from({ length: limit }, runOne));
 		} finally {
-			this.#emit({ ev: "group_end", gid, kind, phase, n });
+			this.#emit({ ev: "group_end", gid, kind, phase, phaseId, n });
 		}
 		if (firstError) throw firstError;
 		return results;
@@ -695,7 +797,7 @@ export class Runtime {
 		const seen = JSON.stringify([parent, identity]);
 		const occurrence = this.#groupSites.get(seen) ?? 0;
 		this.#groupSites.set(seen, occurrence + 1);
-		if (this.#checkpoints) return this.#checkpoints.reserveBranches(parent, `${identity}#${occurrence}|${size}`, size);
+		if (this.#ledger) return this.#ledger.reserveBranches(parent, `${identity}#${occurrence}|${size}`, size);
 		const parentKey = JSON.stringify(parent);
 		const base = this.#nextBranchIndex.get(parentKey) ?? 0;
 		this.#nextBranchIndex.set(parentKey, base + size);
@@ -731,11 +833,11 @@ export class Runtime {
 		return `${text}@${ordinal}`;
 	}
 
-	/** @param {{ results: any[], i: number, gid: number, kind: string, phase: string|null, error: string }} p */
+	/** @param {{ results: any[], i: number, gid: number, kind: string, phase: string|null, phaseId: string|null, error: string }} p */
 	#dropGroupItem(p) {
 		this.#droppedCount++;
 		this.#log(`  ! dropped item ${p.i}: ${p.error}`);
-		this.#emit({ ev: "drop", gid: p.gid, kind: p.kind, phase: p.phase, index: p.i, error: p.error });
+		this.#emit({ ev: "drop", gid: p.gid, kind: p.kind, phase: p.phase, phaseId: p.phaseId, index: p.i, error: p.error });
 		p.results[p.i] = null;
 	}
 
@@ -844,12 +946,13 @@ export class Runtime {
 	 * @param {AgentResult} res
 	 * @param {boolean} skipped
 	 * @param {string|null} phase
+	 * @param {string|null} [phaseId]
 	 */
-	#finish(seq, res, skipped, phase) {
+	#finish(seq, res, skipped, phase, phaseId = phase ? this.#phases.get(phase)?.id ?? null : null) {
 		this.#stats.record(res);
 		this.#emit({
 			ev: "end",
-			seq,
+			agentSeq: seq,
 			label: res.label || "agent",
 			ok: res.ok,
 			cached: res.cached,
@@ -860,13 +963,26 @@ export class Runtime {
 			usageUnknown: res.usageUnknown,
 			model: res.model,
 			phase,
+			phaseId,
 		});
 	}
 
 	/** @param {any} rec */
 	#emit(rec) {
+		let revision = null;
+		let progressSeq = null;
 		try {
-			this.#progress({ ...rec, t: Date.now() });
+			const event = { ...rec, attemptId: this.#attemptId };
+			const progress = this.#ledger?.progress(event);
+			revision = progress?.revision ?? null;
+			progressSeq = progress?.progressSeq ?? null;
+			const warning = this.#ledger?.takeProgressWarning();
+			if (warning) this.#log(`  ! conveyor progress was not persisted: ${warning.message}`, "warning");
+		} catch (error) {
+			this.#durableError ??= error instanceof Error ? error : new Error(String(error));
+		}
+		try {
+			this.#progress({ ...rec, attemptId: this.#attemptId, revision, progressSeq, t: Date.now() });
 		} catch {
 			/* progress must never crash the run */
 		}
@@ -918,7 +1034,7 @@ export class Runtime {
 	/** @param {number[]} [branch] */
 	#currentEpoch(branch = branchStore.getStore() || []) {
 		const sideEffectEpoch = this.#sideEffectEpoch.get(JSON.stringify(branch)) ?? 0;
-		const invalidationEpoch = this.#checkpoints?.invalidationEpoch(branch) ?? 0;
+		const invalidationEpoch = this.#ledger?.invalidationEpoch(branch) ?? 0;
 		return invalidationEpoch ? `i${invalidationEpoch}:s${sideEffectEpoch}` : sideEffectEpoch;
 	}
 
@@ -972,13 +1088,13 @@ export class Runtime {
 		}
 		if (this.#abort.signal.aborted) throw new Error(`${label} skipped: run aborting`);
 
-		// Reuse the agent checkpoint journal: an effect record is `{ value, ok, aic:0 }`, keyed by
+		// Reuse the durable ledger: an effect record is `{ value, ok, aic:0 }`, keyed by
 		// (branch, name, canonical input, occurrence) so repeated calls and read-after-write are
 		// distinct and a resumed run replays in order. Cast at the store boundary since the store is
 		// typed for AgentResult.
-		const checkpoints = cache ? this.#checkpoints : null;
+		const ledger = cache ? this.#ledger : null;
 		let key = null;
-		if (checkpoints) {
+		if (ledger) {
 			const branch = branchStore.getStore() || [];
 			const epoch = this.#currentEpoch(branch);
 			const canon = stableStringify(input);
@@ -986,7 +1102,7 @@ export class Runtime {
 			const n = this.#occurrence.get(base) ?? 0;
 			this.#occurrence.set(base, n + 1);
 			key = JSON.stringify(["fx", branch, epoch, host.hash, name, canon, n]);
-			const cached = /** @type {any} */ (checkpoints.get(key));
+			const cached = /** @type {any} */ (ledger.get(key));
 			if (cached) {
 				if (mutates) this.#bumpEpoch();
 				this.#log(`  ${label} (cached)`);
@@ -1014,7 +1130,7 @@ export class Runtime {
 		} catch {
 			throw new Error(`${label} result must be JSON-serializable — return plain data or call with { cache: false }`);
 		}
-		if (checkpoints && key) checkpoints.put(key, /** @type {any} */ ({ value: normalized, ok: true, aic: 0 }));
+		if (ledger && key) ledger.put(key, /** @type {any} */ ({ value: normalized, ok: true, aic: 0 }), "effect");
 		if (mutates) this.#bumpEpoch();
 		this.#log(`  ${label}${cache ? "" : " (uncached)"}`);
 		return normalized;
@@ -1026,9 +1142,11 @@ export class Runtime {
 	 * @returns {Record<string, unknown>}
 	 */
 	buildApi(args) {
+		const rt = this;
 		const agent = /** @type {any} */ (this.agent.bind(this));
 		agent.followUp = this.followUp.bind(this);
 		const context = Object.freeze({
+			runId: this.#runId,
 			args,
 			dryRun: this.dryRun,
 			budget: Object.freeze(this.budget),
@@ -1039,6 +1157,13 @@ export class Runtime {
 				structuredOutput: "parse-repair",
 			}),
 			memory: this.#memoryApi(),
+			limits: Object.freeze({
+				get approved() {
+					return Object.freeze({ ...rt.#limits });
+				},
+				consumed: () => ({ ...(this.#ledger?.consumed || {}) }),
+			}),
+			signal: this.#abort.signal,
 		});
 		const phase = (/** @type {string} */ name, /** @type {() => any} */ callback) => {
 			if (typeof callback !== "function") throw new Error("conveyor: phase(name, callback) requires a callback");
@@ -1051,6 +1176,7 @@ export class Runtime {
 			pipeline: this.pipeline.bind(this),
 			phase,
 			log: this.log.bind(this),
+			step: this.step.bind(this),
 			verify: (/** @type {any} */ subject, /** @type {any} */ rubric, /** @type {any} */ opts) => patterns.verify(this, subject, rubric, opts),
 			host: this.#hostApi(),
 			workspace: Object.freeze({ worktree: this.#worktreeApi() }),
@@ -1090,10 +1216,10 @@ export class Runtime {
 				const occurrence = rt.#occurrence.get(base) ?? 0;
 				rt.#occurrence.set(base, occurrence + 1);
 				const key = JSON.stringify(["memory-read", branch, epoch, rt.memory.path || null, occurrence]);
-				const cached = /** @type {any} */ (rt.#checkpoints?.get(key));
+				const cached = /** @type {any} */ (rt.#ledger?.get(key));
 				if (cached) return String(cached.value ?? "");
 				const value = rt.memory.read();
-				rt.#checkpoints?.put(key, /** @type {any} */ ({ value, ok: true, aic: 0 }));
+				rt.#ledger?.put(key, /** @type {any} */ ({ value, ok: true, aic: 0 }), "memory");
 				return value;
 			},
 			write(/** @type {string} */ text) {

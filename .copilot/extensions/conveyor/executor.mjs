@@ -4,23 +4,32 @@
  * Workflow execution lifecycle: artifacts, runtime setup, harness execution, cleanup, and results.
  */
 import vm from "node:vm";
-import { readFileSync, existsSync, rmSync } from "node:fs";
-import { join, basename } from "node:path";
+import { existsSync, rmSync } from "node:fs";
+import { join, basename, resolve } from "node:path";
 
 import { Runtime, permissionCapability } from "./runtime.mjs";
-import { CheckpointStore } from "./checkpoint.mjs";
 import { Memory } from "./memory.mjs";
 import { ProgressReporter } from "./progress.mjs";
 import { runHarness, createDeterministicContext } from "./sandbox.mjs";
 import { loadHost } from "./effects.mjs";
-import { BudgetExceeded } from "./scheduler.mjs";
 import { createAgentBackend, normalizeBackend } from "./agent.mjs";
 import { createCliBackend } from "./cli.mjs";
-import {
-	FORMAT_VERSION,
-	readJsonFile,
-} from "./persistence.mjs";
+import { readJsonFile } from "./persistence.mjs";
 import { Work } from "./work.mjs";
+import { snapshotHost, verifyHostSnapshot } from "./snapshot.mjs";
+import { Ledger } from "./ledger.mjs";
+import {
+	assertJson,
+	durableFailure,
+	AccountingError,
+	harnessFailure,
+	interruptionFailure,
+	limitFailure,
+	LimitError,
+	normalizeLimits,
+	normalizePhases,
+	runEnvelope,
+} from "./schema.mjs";
 
 const ABORT_DRAIN_GRACE_MS = 2000;
 
@@ -45,7 +54,7 @@ export function stripExports(source) {
  * Extract and validate the harness's `meta` object as a pure literal (before any agent runs).
  * Evaluates only the object literal in a fresh deterministic context; returns `{}` on any error.
  * @param {string} source
- * @returns {{ name?: string, description?: string, phases?: any[] }}
+ * @returns {{ name?: string, description?: string, phases?: any[], limits?: Record<string, number> }}
  */
 export function extractMeta(source) {
 	const m = /(?:^|\n)\s*(?:export\s+)?const\s+meta\s*=\s*\{/.exec(source);
@@ -54,19 +63,21 @@ export function extractMeta(source) {
 	const end = objectLiteralEnd(source, open);
 	if (end < 0) return {};
 	const literal = source.slice(open, end + 1);
+	let value;
 	try {
 		const ctx = createDeterministicContext({}, "conveyor-meta");
-		const value = new vm.Script(`(${literal})`).runInContext(ctx, { timeout: 200 });
-		if (!value || typeof value !== "object") return {};
-		/** @type {{ name?: string, description?: string, phases?: any[] }} */
-		const meta = {};
-		if (typeof value.name === "string") meta.name = value.name;
-		if (typeof value.description === "string") meta.description = value.description;
-		if (Array.isArray(value.phases)) meta.phases = value.phases;
-		return meta;
+		value = new vm.Script(`(${literal})`).runInContext(ctx, { timeout: 200 });
 	} catch {
 		return {};
 	}
+	if (!value || typeof value !== "object") return {};
+	/** @type {{ name?: string, description?: string, phases?: any[], limits?: Record<string, number> }} */
+	const meta = {};
+	if (typeof value.name === "string") meta.name = value.name;
+	if (typeof value.description === "string") meta.description = value.description;
+	if (value.phases != null) meta.phases = normalizePhases(value.phases);
+	if (value.limits != null) meta.limits = normalizeLimits(value.limits);
+	return meta;
 }
 
 /** @param {string} source @param {number} open */
@@ -106,12 +117,11 @@ function objectLiteralEnd(source, open) {
  * @property {string} runId
  * @property {string} runDir
  * @property {Work} [work]
- * @property {number|null} [timeoutSec]
- * @property {number|null} [budget]
+ * @property {number|null} [attemptTimeoutSeconds]
+ * @property {Record<string, number>} [limits]
  * @property {string|null} [model]
  * @property {string|null} [effort]
  * @property {string|null} [context]
- * @property {number|null} [concurrency]
  * @property {boolean} [enableMcp]
  * @property {boolean} [restricted]
  * @property {boolean} [strictBudget]
@@ -132,7 +142,8 @@ function objectLiteralEnd(source, open) {
  * @property {number|null} [maxAgents]
  * @property {{ kindFor: Function, openRun: Function }} [agentBackend]
  * @property {string|null} [planId]
- * @property {((request: { current: number, spent: number, increment: number, proposed: number }) => Promise<boolean|null>|boolean|null)|null} [requestBudgetIncrease]
+ * @property {boolean} [retainAgentContent]
+ * @property {((request: { current: Record<string, number>, proposed: Record<string, number> }) => Promise<boolean|null>|boolean|null)|null} [requestLimitApproval]
  */
 
 /**
@@ -140,6 +151,8 @@ function objectLiteralEnd(source, open) {
  * @property {string} runId
  * @property {RunStatus} status
  * @property {string|null} error
+ * @property {unknown} [failure]
+ * @property {number} revision
  * @property {object} conveyor
  * @property {unknown} args
  * @property {string} startedAt
@@ -150,7 +163,7 @@ function objectLiteralEnd(source, open) {
  * @property {{ agents: number, launched: number, done: number, failed: number, cached: number, skipped: number, dropped: number, unknownUsage: number }} counts
  * @property {string[]} preservedWorktrees
  * @property {string[]} preservedSessions
- * @property {string} result
+ * @property {unknown} [result]
  * @property {number} plannedMaxAgents
  */
 /** @typedef {import("./progress.mjs").RunStatus} RunStatus */
@@ -179,9 +192,8 @@ export async function executeConveyor(cfg) {
 async function executeDryRun(cfg, run) {
 	const { meta, onLine, startedAt } = run;
 	const rt = new Runtime({
-		...runtimeOpts(cfg),
+		...runtimeOpts(cfg, meta),
 		dryRun: true,
-		checkpoints: null,
 		memory: new Memory(cfg.memoryPath, { readOnly: true, log: onLine }),
 		progress: () => {},
 		log: onLine,
@@ -226,7 +238,7 @@ async function executeRealRun(cfg, run) {
 	const work = cfg.work ?? Work.open({
 		runId: cfg.runId,
 		runDir: cfg.runDir,
-		timeoutSec: cfg.timeoutSec ?? null,
+		timeoutSec: cfg.attemptTimeoutSeconds ?? null,
 		signal: cfg.signal,
 	});
 	if (work.runId !== cfg.runId || work.runDir !== cfg.runDir) {
@@ -237,10 +249,13 @@ async function executeRealRun(cfg, run) {
 	try {
 		const agentBackend = cfg.agentBackend ?? createAgentBackend({ backend: "cli", cli: createCliBackend() });
 		const requestedBackend = normalizeBackend(agentBackend.kindFor());
+		const declaredLimits = normalizeLimits(cfg.limits ?? meta.limits ?? {});
+		const requestedLimits = normalizeLimits(cfg.limits ?? declaredLimits);
 		const manifest = persistence.ensureManifest(
 			{
 				runId: cfg.runId,
-				formatVersion: FORMAT_VERSION,
+				conveyor: meta,
+				args: cfg.args ?? null,
 				backend: requestedBackend,
 				parentPermissionMode: cfg.parentPermissionMode ?? "off",
 				parentSessionMode: cfg.parentSessionMode ?? "interactive",
@@ -252,14 +267,10 @@ async function executeRealRun(cfg, run) {
 					mcp: "launch-opt-in-and-profile-narrowed",
 					fineGrainedRules: "not-exposed-by-parent-sdk",
 				},
-				hostPath: cfg.hostPath ?? null,
 				cwd: cfg.cwd || process.cwd(),
-				timeoutSec: cfg.timeoutSec ?? null,
-				budget: cfg.budget ?? null,
 				model: cfg.model ?? null,
 				effort: cfg.effort ?? null,
 				context: cfg.context ?? null,
-				concurrency: cfg.concurrency ?? null,
 				enableMcp: !!cfg.enableMcp,
 				restricted: !!cfg.restricted,
 				strictBudget: !!cfg.strictBudget,
@@ -267,6 +278,8 @@ async function executeRealRun(cfg, run) {
 				progressMode: cfg.progressMode ?? "dashboard",
 				maxAgents: cfg.maxAgents ?? null,
 				planId: cfg.planId ?? null,
+				declaredLimits,
+				retainAgentContent: cfg.retainAgentContent === true,
 				createdAt: new Date(startedAt).toISOString(),
 			},
 			{ resume: !!cfg.resume },
@@ -275,16 +288,16 @@ async function executeRealRun(cfg, run) {
 		if (backend !== requestedBackend) {
 			throw new Error(`conveyor run '${cfg.runId}' is pinned to backend '${backend}' and cannot resume with '${requestedBackend}'`);
 		}
-		const checkpoints = new CheckpointStore(cfg.runDir, { resume: !!cfg.resume, lease });
-		if (cfg.invalidatedBranches?.length) checkpoints.invalidate(cfg.invalidatedBranches);
+		const ledger = new Ledger(cfg.runDir, { lease });
+		if (!Object.keys(ledger.approvedLimits).length) ledger.approve(declaredLimits, requestedLimits);
+		else if (JSON.stringify(ledger.approvedLimits) !== JSON.stringify(requestedLimits)) ledger.approve(declaredLimits, requestedLimits);
+		const attempt = ledger.startAttempt();
+		if (cfg.invalidatedBranches?.length) ledger.invalidate(cfg.invalidatedBranches);
 		resetRunArtifacts(cfg.runDir);
 		persistence.writeFile(lease, "script.js", cfg.source);
-		copyHostArtifact(cfg, persistence, lease);
-		writeMeta(persistence, lease, cfg.runId, meta, cfg.args, !!cfg.restricted);
+		const hostPath = copyHostArtifact(cfg, persistence, lease);
 
 		const reporter = new ProgressReporter({
-			jsonlPath: join(cfg.runDir, "progress.jsonl"),
-			statePath: join(cfg.runDir, "state.json"),
 			writeState: (state) => persistence.writeJson(lease, "state.json", state),
 			runId: cfg.runId,
 			meta,
@@ -299,9 +312,11 @@ async function executeRealRun(cfg, run) {
 		if (cfg.signal?.aborted) abortBackend();
 		else cfg.signal?.addEventListener("abort", abortBackend, { once: true });
 		const rt = new Runtime({
-			...runtimeOpts(cfg),
+			...runtimeOpts(cfg, meta),
 			agentBackend: runBackend,
-			checkpoints,
+			ledger,
+			attemptId: attempt.attemptId,
+			limits: ledger.approvedLimits,
 			memory,
 			abortController: linkedAbortController(cfg.signal),
 			progress: (e) => reporter.emit(e),
@@ -310,12 +325,14 @@ async function executeRealRun(cfg, run) {
 
 		let status = /** @type {RunStatus} */ ("complete");
 		let closeStatus = /** @type {RunStatus} */ ("error");
+		let failure = null;
 		try {
-			reporter.emit({ ev: "run_start", runId: cfg.runId, meta });
+			const startEvent = { ev: "run_start", runId: cfg.runId, attemptId: attempt.attemptId, meta };
+			reporter.emit({ ...startEvent, ...ledger.progress(startEvent) });
 			let error = null;
-			let result = "";
+			let result;
 			try {
-				if (cfg.hostPath && !cfg.restricted) rt.setHost(await loadHost(cfg.hostPath));
+				if (hostPath && !cfg.restricted) rt.setHost(await loadHost(hostPath));
 				const value = await abortable(
 					runHarness(stripExports(cfg.source), {
 						api: rt.buildApi(cfg.args),
@@ -325,17 +342,28 @@ async function executeRealRun(cfg, run) {
 					}),
 					cfg.signal,
 				);
-				result = coerceResult(value);
+				result = assertJson(value, { allowUndefined: true, label: "Conveyor result" });
 			} catch (e) {
-				if (e instanceof BudgetExceeded) {
+				if (e instanceof LimitError) {
 					status = "failed";
 					error = e.message;
+					failure = limitFailure(
+						e.kind,
+						e.value,
+						e.consumed,
+					);
 					onLine(`  budget reached: ${e.message}`, "warning", { ephemeral: false });
+				} else if (e instanceof AccountingError) {
+					status = "error";
+					error = e.message;
+					failure = durableFailure("accounting", e);
 				} else if (e instanceof RunAborted || cfg.signal?.aborted) {
 					status = statusForAbort(cfg.signal);
+					failure = interruptionFailure(cfg.signal?.reason);
 				} else {
 					status = "error";
 					error = e instanceof Error ? e.message : String(e);
+					failure = harnessFailure(e);
 					onLine(`  ! conveyor error: ${error}`, "error", { ephemeral: false });
 				}
 			}
@@ -346,13 +374,19 @@ async function executeRealRun(cfg, run) {
 			}
 			await closeRunBackend(runBackend, onLine);
 			if (cfg.signal?.aborted) status = statusForAbort(cfg.signal);
+			if (rt.durableError) {
+				status = "error";
+				error = `durable progress failed: ${rt.durableError.message}`;
+				failure = durableFailure("progress", rt.durableError);
+			}
 			const preservedWorktrees = await rt.cleanup();
 			if (preservedWorktrees.length) onLine(`  preserved ${preservedWorktrees.length} dirty worktree(s): ${preservedWorktrees.join(", ")}`, "warning", { ephemeral: false });
 			if (status === "complete") {
 				const reasons = incompleteReasons(rt);
 				if (reasons.length) {
-					status = result.trim() ? "partial" : "failed";
+					status = result !== undefined ? "partial" : "failed";
 					error = `conveyor incomplete: ${reasons.join(", ")}`;
+					failure = { type: "incomplete", reasons };
 					onLine(`  ! ${error}`, "warning", { ephemeral: false });
 				}
 			}
@@ -363,10 +397,38 @@ async function executeRealRun(cfg, run) {
 			if (preservedSessions.length) {
 				onLine(`  preserved ${preservedSessions.length} agent session(s): copilot --resume ${preservedSessions[0]}`, "info", { ephemeral: false });
 			}
-			const record = finalize({ runId: cfg.runId, status, error, meta, args: cfg.args, startedAt, rt, result, preservedWorktrees, preservedSessions });
-			persistence.writeJson(lease, "run.json", record);
-			persistence.writeJson(lease, "result.json", { runId: record.runId, status: record.status, aic: record.aic, result: record.result });
-			reporter.emit({ ev: "run_end", runId: cfg.runId, status: record.status, error: record.error, ...record.counts, nanoAiu: rt.stats().nanoAiu, aic: record.aic });
+			const terminalEvent = {
+				ev: "run_end",
+				runId: cfg.runId,
+				attemptId: attempt.attemptId,
+				status,
+				error,
+				...rt.stats().counts,
+				nanoAiu: rt.stats().nanoAiu,
+			};
+			const terminalRevision = ledger.record("terminal_reserved", { status, failure });
+			const record = finalize({
+				runId: cfg.runId,
+				status,
+				error,
+				failure,
+				revision: terminalRevision,
+				meta,
+				args: cfg.args,
+				startedAt,
+				rt,
+				result,
+				preservedWorktrees,
+				preservedSessions,
+			});
+			const envelope = runEnvelope(record);
+			persistence.writeJson(lease, "run.json", envelope);
+			ledger.finishAttempt(attempt, status, failure);
+			const terminalProgress = ledger.progress(terminalEvent);
+			ledger.flushProgress();
+			const progressWarning = ledger.takeProgressWarning();
+			if (progressWarning) onLine(`  ! terminal progress was not persisted: ${progressWarning.message}`, "warning", { ephemeral: false });
+			reporter.emit({ ...terminalEvent, aic: record.aic, ...terminalProgress, revision: terminalRevision });
 			closeStatus = status;
 			const summaryLevel = status === "partial" ? "warning" : status === "complete" ? "info" : "error";
 			onLine(reporter.runSummary(), summaryLevel, { ephemeral: false });
@@ -405,9 +467,9 @@ function incompleteReasons(rt) {
 	return reasons;
 }
 
-/** Remove stale presentation artifacts while preserving the checkpoint journal. @param {string} runDir */
+/** Remove the stale live view before a new attempt starts. @param {string} runDir */
 function resetRunArtifacts(runDir) {
-	for (const file of ["run.json", "result.json", "state.json", "progress.jsonl"]) {
+	for (const file of ["state.json"]) {
 		rmSync(join(runDir, file), { force: true });
 	}
 }
@@ -418,10 +480,16 @@ function resetRunArtifacts(runDir) {
  * @param {import("./persistence.mjs").Lease} lease
  */
 function copyHostArtifact(cfg, persistence, lease) {
-	if (!cfg.hostPath || cfg.restricted) return;
-	// Not a provenance copy: `preparePersistedResume` loads the sidecar from this file, so a run
-	// that fails to write it would resume with no `host.*` effects at all.
-	persistence.writeFile(lease, "host.mjs", readFileSync(cfg.hostPath));
+	if (!cfg.hostPath || cfg.restricted) return null;
+	lease.assertOwned();
+	const target = join(cfg.runDir, "host");
+	if (cfg.resume && resolve(cfg.hostPath) === resolve(target)) {
+		verifyHostSnapshot(target);
+		return target;
+	}
+	const snapshot = snapshotHost(cfg.hostPath, target);
+	lease.assertOwned();
+	return snapshot.root;
 }
 
 /** @param {AbortSignal|undefined} signal */
@@ -510,29 +578,32 @@ async function settleWithin(promise, timeoutMs) {
 }
 
 /** @param {ExecuteConfig} cfg */
-function runtimeOpts(cfg) {
+function runtimeOpts(cfg, meta = {}) {
 	return {
-		concurrency: cfg.concurrency ?? null,
 		model: cfg.model ?? null,
 		effort: cfg.effort ?? null,
 		context: cfg.context ?? null,
 		defaultEnableMcp: !!cfg.enableMcp,
-		budget: cfg.budget ?? null,
+		limits: cfg.limits ?? {},
 		strictBudget: !!cfg.strictBudget,
 		restricted: !!cfg.restricted,
 		parentPermissionMode: cfg.parentPermissionMode,
 		parentSessionMode: cfg.parentSessionMode,
 		maxAgents: cfg.maxAgents,
-		requestBudgetIncrease: cfg.requestBudgetIncrease,
+		requestLimitApproval: cfg.requestLimitApproval,
 		cwd: cfg.cwd,
 		allowedDirs: cfg.allowedDirs,
 		harness: { file: `${cfg.runId}.mjs`, source: stripExports(cfg.source) },
+		phases: Array.isArray(meta.phases) ? meta.phases : [],
+		retainAgentContent: cfg.retainAgentContent === true,
+		runId: cfg.runId,
 	};
 }
 
 /**
- * @param {{ runId: string, status: RunStatus, error: string|null, meta: object, args: unknown,
- *   startedAt: number, rt: Runtime, result: string, preservedWorktrees?: string[], preservedSessions?: string[] }} p
+ * @param {{ runId: string, status: RunStatus, error: string|null, failure?: unknown, revision?: number,
+ *   meta: object, args: unknown, startedAt: number, rt: Runtime, result?: unknown,
+ *   preservedWorktrees?: string[], preservedSessions?: string[] }} p
  * @returns {RunRecord}
  */
 function finalize(p) {
@@ -542,6 +613,8 @@ function finalize(p) {
 		runId: p.runId,
 		status: p.status,
 		error: p.error,
+		failure: p.failure ?? null,
+		revision: p.revision ?? 0,
 		conveyor: p.meta,
 		args: p.args ?? null,
 		startedAt: new Date(p.startedAt).toISOString(),
@@ -550,55 +623,14 @@ function finalize(p) {
 		budget: {
 			total: rt.budget.total,
 			spent: rt.budget.spent(),
-			remaining: rt.budget.remaining(),
+			remaining: Number.isFinite(rt.budget.remaining()) ? rt.budget.remaining() : null,
 			hit: rt.budget.hit,
 		},
 		aic: nanoAiu / 1_000_000_000,
 		counts,
 		preservedWorktrees: p.preservedWorktrees ?? [],
 		preservedSessions: p.preservedSessions ?? [],
-		result: p.result,
+		...(p.result !== undefined ? { result: p.result } : {}),
 		plannedMaxAgents: rt.plannedMaxAgents,
 	};
-}
-
-/** @param {unknown} value @returns {string} coerce a harness return value into the workflow result text. */
-function coerceResult(value) {
-	if (value == null) return "";
-	if (typeof value === "string") return value;
-	if (typeof value === "object" && typeof (/** @type {any} */ (value).content) === "string") return /** @type {any} */ (value).content;
-	try {
-		return JSON.stringify(value);
-	} catch {
-		return String(value);
-	}
-}
-
-/**
- * @param {Persistence} persistence
- * @param {import("./persistence.mjs").Lease} lease
- * @param {string} runId
- * @param {object} meta
- * @param {unknown} args
- * @param {boolean} restricted
- */
-function writeMeta(persistence, lease, runId, meta, args, restricted) {
-	const path = join(persistence.runDir, "meta.json");
-	/** @type {any} */
-	let existing = {};
-	if (existsSync(path)) {
-		existing = readJsonFile(path) || {};
-	}
-	const now = new Date().toISOString();
-	const record = {
-		runId,
-		conveyor: meta,
-		createdAt: existing.createdAt || now,
-		updatedAt: now,
-		restricted,
-		args: args ?? null,
-	};
-	// Not just listing metadata: `preparePersistedResume` replays `args` from this file, so losing it
-	// would silently resume the workflow with different input.
-	persistence.writeJson(lease, "meta.json", record);
 }

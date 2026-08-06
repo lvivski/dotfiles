@@ -4,9 +4,6 @@ import { cpus } from "node:os";
 /** @typedef {Pick<import("./agent.mjs").AgentResult, "ok"|"cached"|"skipped"|"error"|"nanoAiu"|"usageUnknown">} ResultStats */
 /** @typedef {{ agents: number, launched: number, done: number, failed: number, cached: number, skipped: number, unknownUsage: number }} RunCounts */
 
-/** Raised (strict mode only) when observed AIC spend passes the cap. */
-export class BudgetExceeded extends Error {}
-
 /** @returns {number} default concurrency: min(16, max(2, cpuCount - 1)). */
 export function defaultConcurrency() {
 	const cpu = cpus()?.length || 4;
@@ -47,7 +44,7 @@ export class Semaphore {
 	}
 }
 
-/** Compact run accounting; full agent content stays in harness variables and checkpoints. */
+/** Compact current-attempt accounting; durable totals live in the ledger. */
 export class RunStats {
 	/** @type {RunCounts} */
 	#counts = { agents: 0, launched: 0, done: 0, failed: 0, cached: 0, skipped: 0, unknownUsage: 0 };

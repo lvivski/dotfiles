@@ -73,7 +73,7 @@ export class Memory {
 		}
 		try {
 			mkdirSync(dirname(this.path), { recursive: true });
-			// Memory is durable cross-run state, so writes are fsync'd like checkpoints.
+			// Memory is durable cross-run state, so writes are fsync'd like ledger records.
 			if (!append) {
 				atomicWriteFile(this.path, text);
 				return;

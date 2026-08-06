@@ -1,9 +1,9 @@
-/** @module scheduler.test — semaphore, run stats, and budget-stop primitives. */
+/** @module scheduler.test — semaphore and run statistics. */
 import test from "node:test";
 import assert from "node:assert/strict";
 import { cpus } from "node:os";
 
-import { BudgetExceeded, defaultConcurrency, RunStats, Semaphore } from "./scheduler.mjs";
+import { defaultConcurrency, RunStats, Semaphore } from "./scheduler.mjs";
 
 test("defaultConcurrency follows the documented CPU-derived bounds", () => {
 	const cpu = cpus()?.length || 4;
@@ -57,11 +57,4 @@ test("RunStats classifies done, failed, cached, and skipped results", () => {
 	const copy = stats.counts();
 	copy.done = 99;
 	assert.equal(stats.counts().done, 1, "counts() returns a defensive copy");
-});
-
-test("BudgetExceeded is an Error subclass with the supplied message", () => {
-	const err = new BudgetExceeded("budget reached");
-	assert.ok(err instanceof Error);
-	assert.ok(err instanceof BudgetExceeded);
-	assert.equal(err.message, "budget reached");
 });

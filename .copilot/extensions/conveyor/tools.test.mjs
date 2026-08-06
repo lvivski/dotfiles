@@ -65,7 +65,7 @@ return (await agent("hi")).content;`, runId: "untimed-foreground", background: f
 		assert.match(/** @type {string} */ (out), /ECHO: hi/);
 		assert.ok(ctx.logs.some((l) => /┌─ conveyor:/.test(l)), "default progress emits dashboard snapshots");
 		assert.ok(ctx.metas.some((m) => m?.ephemeral === false), "final summary is durable");
-		assert.equal(JSON.parse(readFileSync(join(runs, "untimed-foreground", "manifest.json"), "utf8")).timeoutSec, null);
+		assert.equal(JSON.parse(readFileSync(join(runs, "untimed-foreground", "manifest.json"), "utf8")).declaredLimits.timeoutSeconds, undefined);
 	}));
 
 test("abortRun returns false for an unknown run id", () => {
@@ -79,6 +79,22 @@ test("conveyor run timeouts are opt-in and bounded", () => {
 	assert.equal(resolveTimeout(MAX_TIMEOUT_SEC + 1), MAX_TIMEOUT_SEC);
 	assert.throws(() => resolveTimeout(0), /timeoutSec must be a number >= 1/);
 });
+
+test("declared timeout limit arms the first attempt", () =>
+	withTool(
+		async ({ runs }) => {
+			const ctx = fakeCtx(tmpDir());
+			await runConveyor({
+				script: `export const meta = { name: "declared-timeout", limits: { timeoutSeconds: 0.05, maxAiCredits: 1 } };
+await agent("hang"); return "unreached";`,
+				runId: "declared-timeout",
+				background: true,
+			}, ctx);
+			await waitFor(() => existsSync(join(runs, "declared-timeout", "run.json")), 2000, 20);
+			assert.equal(JSON.parse(readFileSync(join(runs, "declared-timeout", "run.json"), "utf8")).status, "timeout");
+		},
+		{ CONVEYOR_FAKE_MODE: "hang" },
+	));
 
 test("xtreme plans bind the preview session model and reject launch-time preset mutation", () =>
 	withTool(async ({ runs }) => {
@@ -204,12 +220,10 @@ test("branch invalidation paths are canonicalized and ancestor-reduced", () => {
 	assert.throws(() => parseInvalidations(["0/1"]), /invalid branch path/);
 });
 
-test("run_conveyor surfaces a failure when a resume-critical artifact cannot be persisted", () =>
+test("run_conveyor surfaces a failure when its manifest cannot be persisted", () =>
 	withTool(async ({ runs }) => {
 		const ctx = fakeCtx(tmpDir());
-		// Occupy meta.json with a directory: a resume reads its args from that file, so the launch
-		// must fail rather than report a success that would silently resume with different input.
-		mkdirSync(join(runs, "artifact-fail", "meta.json"), { recursive: true });
+		mkdirSync(join(runs, "artifact-fail", "manifest.json"), { recursive: true });
 		const out = await runConveyor({
 			script: `export const meta = { name: "artifact-fail", description: "test conveyor" };\nreturn "done";`,
 			runId: "artifact-fail",
@@ -218,7 +232,7 @@ test("run_conveyor surfaces a failure when a resume-critical artifact cannot be 
 			args: { important: "input" },
 		}, ctx);
 		assert.match(JSON.stringify(out), /internal conveyor extension error/);
-		assert.ok(!existsSync(join(runs, "artifact-fail", "result.json")), "a failed launch leaves no result artifact");
+		assert.ok(!existsSync(join(runs, "artifact-fail", "run.json")), "a failed launch leaves no terminal artifact");
 	}));
 
 test("foreground runs and foreground resumes return inline and never enqueue a completion notice", () =>
@@ -237,6 +251,37 @@ await pipeline([0,1], (n) => agent("q" + n)); return "done";`);
 		assert.deepEqual(ctx.sends, [], "a foreground resume must not enqueue a notice either");
 	}));
 
+test("implicit default budget remains declared and enforced on ordinary resume", () =>
+	withTool(async ({ runs }) => {
+		const ctx = fakeCtx(tmpDir());
+		const source = `export const meta = { name: "defaults", description: "default limits" };
+return (await agent("one")).content;`;
+		const first = await runConveyor({ script: source, runId: "default-resume", background: false }, ctx);
+		assert.match(String(first), /complete/);
+		const manifest = JSON.parse(readFileSync(join(runs, "default-resume", "manifest.json"), "utf8"));
+		assert.equal(manifest.declaredLimits.maxAiCredits, 10_000);
+		const resumed = await controlConveyorRun({ runId: "default-resume", action: "resume", background: false }, ctx);
+		assert.match(String(resumed), /complete/);
+		assert.equal(existsSync(join(runs, "default-resume", "run.json")), true);
+		const ledger = readFileSync(join(runs, "default-resume", "ledger.jsonl"), "utf8");
+		assert.match(ledger, /"maxAiCredits":10000/);
+	}));
+
+test("meta maxAiCredits is not weakened by the default budget", () =>
+	withTool(async ({ runs }) => {
+		const ctx = fakeCtx(tmpDir());
+		await runConveyor({
+			script: `export const meta = { name: "meta-budget", limits: { maxAiCredits: 20 } }; return "done";`,
+			runId: "meta-budget",
+			background: false,
+		}, ctx);
+		const manifest = JSON.parse(readFileSync(join(runs, "meta-budget", "manifest.json"), "utf8"));
+		assert.equal(manifest.declaredLimits.maxAiCredits, 20);
+		const approvals = readFileSync(join(runs, "meta-budget", "ledger.jsonl"), "utf8");
+		assert.match(approvals, /"maxAiCredits":20/);
+		assert.doesNotMatch(approvals, /"maxAiCredits":10000/);
+	}));
+
 test("resume selectively invalidates requested branches", () =>
 	withTool(async ({ wf, runs }) => {
 		const ctx = fakeCtx(tmpDir());
@@ -244,16 +289,17 @@ test("resume selectively invalidates requested branches", () =>
 		writeFileSync(path, `export const meta = { name: "selective", description: "test conveyor" };
 await pipeline([0,1], (n) => agent("b" + n)); return "done";`);
 		await runConveyor({ scriptPath: path, runId: "selective-run", background: false, budget: 10 }, ctx);
+		const priorRevision = JSON.parse(readFileSync(join(runs, "selective-run", "run.json"), "utf8")).revision;
 		await controlConveyorRun({ runId: "selective-run", action: "resume", invalidate: ["/0"] }, ctx);
-		await waitFor(() => existsSync(join(runs, "selective-run", "run.json")) && JSON.parse(readFileSync(join(runs, "selective-run", "run.json"), "utf8")).status === "complete", 5000);
+		await waitFor(() => existsSync(join(runs, "selective-run", "run.json")) && JSON.parse(readFileSync(join(runs, "selective-run", "run.json"), "utf8")).revision > priorRevision, 5000);
 		const record = JSON.parse(readFileSync(join(runs, "selective-run", "run.json"), "utf8"));
 		assert.equal(record.counts.done, 1);
 		assert.equal(record.counts.cached, 1);
-		const controls = readFileSync(join(runs, "selective-run", "journal.jsonl"), "utf8")
+		const controls = readFileSync(join(runs, "selective-run", "ledger.jsonl"), "utf8")
 			.trim()
 			.split("\n")
 			.map((line) => JSON.parse(line))
-			.filter((record) => record.type === "control" && record.action === "branches_invalidated");
+			.filter((record) => record.type === "branches_invalidated");
 		assert.deepEqual(controls.map((record) => record.branches), [[[0]]]);
 	}));
 
@@ -272,7 +318,7 @@ test("run_conveyor applies a user-approved budget increase and persists it", () 
 	withTool(async ({ runs }) => {
 		const ctx = fakeCtx(tmpDir());
 		let approvals = 0;
-		ctx.requestBudgetIncrease = async () => {
+		ctx.requestLimitApproval = async () => {
 			approvals++;
 			return true;
 		};
@@ -287,11 +333,11 @@ await agent("one"); await agent("two"); return "done";`,
 		assert.equal(approvals, 1);
 		const run = JSON.parse(readFileSync(join(runs, "budget-approval", "run.json"), "utf8"));
 		assert.ok(run.budget.total > 1);
-		const controls = readFileSync(join(runs, "budget-approval", "journal.jsonl"), "utf8")
+		const controls = readFileSync(join(runs, "budget-approval", "ledger.jsonl"), "utf8")
 			.trim()
 			.split("\n")
 			.map((line) => JSON.parse(line))
-			.filter((record) => record.type === "control" && record.action === "budget_increased");
+			.filter((record) => record.type === "limits_approved" && record.limits.maxAiCredits > 0.4);
 		assert.equal(controls.length, 1);
 	}));
 
@@ -347,7 +393,7 @@ test("resume of a nonexistent run id is refused", () =>
 	withTool(async () => {
 		const ctx = fakeCtx(tmpDir());
 		const out = await controlConveyorRun({ runId: "does-not-exist", action: "resume" }, ctx);
-		assert.match(JSON.stringify(out), /has no durable manifest and is inspection-only/);
+		assert.match(JSON.stringify(out), /has no manifest/);
 	}));
 
 test("validation: exactly one source, and a positive budget for non-dry", () =>
@@ -359,6 +405,21 @@ test("validation: exactly one source, and a positive budget for non-dry", () =>
 		assert.match(JSON.stringify(none), /EXACTLY ONE/);
 		const badBudget = await runConveyor({ script: "export const meta = { name: \"test\", description: \"test conveyor\" };\nreturn 1;", background: false, budget: 0 }, ctx);
 		assert.match(JSON.stringify(badBudget), /budget must be a positive/);
+	}));
+
+test("invalid declared phase and limit metadata is surfaced", () =>
+	withTool(async () => {
+		const ctx = fakeCtx(tmpDir());
+		const badLimit = await runConveyor({
+			script: `export const meta = { name: "bad", limits: { typoLimit: 1 } }; return "x";`,
+			background: false,
+		}, ctx);
+		assert.match(JSON.stringify(badLimit), /invalid Conveyor metadata.*unknown Conveyor limit/);
+		const badPhase = await runConveyor({
+			script: `export const meta = { name: "bad", phases: ["same", "same"] }; return "x";`,
+			background: false,
+		}, ctx);
+		assert.match(JSON.stringify(badPhase), /invalid Conveyor metadata.*declared more than once/);
 	}));
 
 test("saved .mjs conveyor resolves and runs by name", () =>
@@ -437,12 +498,15 @@ return (await agent("hi")).content;`, background: false, budget: 1, name: undefi
 		assert.match(listing, /complete/);
 	}));
 
-test("list_conveyor_runs names runs recovered from progress replay alone", () =>
+test("list_conveyor_runs names runs recovered from ledger replay alone", () =>
 	withTool(({ runs }) => {
 		const dir = join(runs, "replay-only-run");
 		mkdirSync(dir, { recursive: true });
-		writeFileSync(join(dir, "meta.json"), JSON.stringify({ conveyor: { name: "deep-audit" }, updatedAt: "2026-01-01T00:00:00.000Z" }));
-		writeFileSync(join(dir, "progress.jsonl"), JSON.stringify({ ev: "run_start", meta: { name: "deep-audit" } }) + "\n" + JSON.stringify({ ev: "run_end", agents: 1, launched: 1, cached: 0, skipped: 0, failed: 0, nanoAiu: 500_000_000, t: Date.parse("2026-01-01T00:00:00.000Z") }) + "\n");
+		writeFileSync(join(dir, "manifest.json"), JSON.stringify({ conveyor: { name: "deep-audit" }, createdAt: "2026-01-01T00:00:00.000Z" }));
+		writeFileSync(join(dir, "ledger.jsonl"), [
+			JSON.stringify({ type: "progress", revision: 1, recordedAt: 1, record: { ev: "run_start", meta: { name: "deep-audit" } } }),
+			JSON.stringify({ type: "progress", revision: 2, recordedAt: 2, record: { ev: "run_end", status: "complete", agents: 1, launched: 1, cached: 0, skipped: 0, failed: 0, nanoAiu: 500_000_000, t: Date.parse("2026-01-01T00:00:00.000Z") } }),
+		].join("\n") + "\n");
 		const listing = listConveyorRuns();
 		assert.match(listing, /replay-only-run/);
 		assert.match(listing, /deep-audit/);
@@ -455,7 +519,7 @@ test("list_conveyor_runs caps output to newest runs before parsing metadata", ()
 			const id = `run-${String(i).padStart(2, "0")}`;
 			const dir = join(runs, id);
 			mkdirSync(dir, { recursive: true });
-			writeFileSync(join(dir, "meta.json"), JSON.stringify({ conveyor: { name: id }, updatedAt: `2024-01-01T00:00:${String(i).padStart(2, "0")}Z` }));
+			writeFileSync(join(dir, "manifest.json"), JSON.stringify({ conveyor: { name: id }, createdAt: `2024-01-01T00:00:${String(i).padStart(2, "0")}Z` }));
 		}
 		const listing = listConveyorRuns();
 		assert.match(listing, /showing newest 50 of 55 runs/);
@@ -574,15 +638,14 @@ await agent("hang"); return "unreached";`,
 			assert.match(ctx.sends[0], /timer-timeout timeout/);
 			assert.equal(abortRun("timer-timeout"), false);
 
-			const resultPath = join(runs, "timer-timeout", "result.json");
+			const resultPath = join(runs, "timer-timeout", "run.json");
 			assert.equal(existsSync(resultPath), true);
 			assert.equal(JSON.parse(readFileSync(resultPath, "utf8")).status, "timeout");
-			assert.equal(JSON.parse(readFileSync(join(runs, "timer-timeout", "manifest.json"), "utf8")).timeoutSec, 1);
+			assert.equal(JSON.parse(readFileSync(join(runs, "timer-timeout", "manifest.json"), "utf8")).declaredLimits.timeoutSeconds, 1);
 
 			const resumed = await controlConveyorRun({ runId: "timer-timeout", action: "resume" }, ctx);
-			assert.match(String(resumed), /started in background/);
-			await waitFor(() => ctx.sends.length > 1, 3000, 30);
-			assert.match(ctx.sends[1], /timer-timeout timeout/);
+			assert.match(JSON.stringify(resumed), /exhausted its cumulative timeoutSeconds limit/);
+			assert.equal(ctx.sends.length, 1);
 		},
 		{ CONVEYOR_FAKE_MODE: "hang" },
 	));
@@ -624,8 +687,8 @@ const r = await agent("healthy"); if (!r.ok) throw new Error(r.error); return r.
 				await waitFor(() => firstCtx.sends.some((line) => /isolation-first cancelled/.test(line)));
 				await waitFor(() => secondCtx.sends.some((line) => /isolation-second complete/.test(line)));
 
-				assert.equal(JSON.parse(readFileSync(join(runs, "isolation-first", "result.json"), "utf8")).status, "cancelled");
-				assert.equal(JSON.parse(readFileSync(join(runs, "isolation-second", "result.json"), "utf8")).status, "complete");
+				assert.equal(JSON.parse(readFileSync(join(runs, "isolation-first", "run.json"), "utf8")).status, "cancelled");
+				assert.equal(JSON.parse(readFileSync(join(runs, "isolation-second", "run.json"), "utf8")).status, "complete");
 				assert.equal(abortRun("isolation-second"), false);
 			} finally {
 				abortRun("isolation-first");
@@ -638,7 +701,7 @@ const r = await agent("healthy"); if (!r.ok) throw new Error(r.error); return r.
 
 test("buildTools registers conveyor run/control/list/inspect/result tools with valid schemas", () => {
 	const tools = buildTools(fakeCtx("/"));
-	assert.deepEqual(tools.map((t) => t.name).sort(), ["control_conveyor_run", "get_conveyor_result", "inspect_conveyor_agent", "inspect_conveyor_run", "list_conveyor_runs", "run_conveyor"]);
+	assert.deepEqual(tools.map((t) => t.name).sort(), ["control_conveyor_run", "get_conveyor_agent_content", "get_conveyor_progress", "get_conveyor_result", "inspect_conveyor_agent", "inspect_conveyor_run", "list_conveyor_runs", "run_conveyor"]);
 	const rw = tools.find((t) => t.name === "run_conveyor");
 	assert.equal(rw.defer, "never");
 	assert.equal(rw.parameters.type, "object");
@@ -662,9 +725,9 @@ test("get_conveyor_result tool returns JSON chunks and structured validation fai
 	withTool(async ({ runs }) => {
 		const dir = join(runs, "tool-run");
 		mkdirSync(dir, { recursive: true });
-		writeFileSync(join(dir, "result.json"), JSON.stringify({ runId: "tool-run", status: "complete", aic: 1, result: "hello" }));
+		writeFileSync(join(dir, "run.json"), JSON.stringify({ runId: "tool-run", status: "complete", aic: 1, result: "hello" }));
 		const get = buildTools(fakeCtx("/")).find((t) => t.name === "get_conveyor_result");
-		const result = JSON.parse(await get.handler({ runId: "tool-run", limit: 2 }));
+		const result = JSON.parse(await get.handler({ runId: "tool-run", format: "text", limit: 2 }));
 		assert.equal(result.result, "he");
 		assert.equal(result.nextOffset, 2);
 
@@ -678,7 +741,6 @@ test("inspect_conveyor_run tool returns bounded status and structured validation
 		const dir = join(runs, "inspect-tool-run");
 		mkdirSync(dir, { recursive: true });
 		writeFileSync(join(dir, "run.json"), JSON.stringify({ runId: "inspect-tool-run", status: "complete", result: "hidden", counts: {} }));
-		writeFileSync(join(dir, "result.json"), JSON.stringify({ runId: "inspect-tool-run", status: "complete", aic: 1, result: "hidden" }));
 		const inspect = buildTools(fakeCtx("/")).find((t) => t.name === "inspect_conveyor_run");
 		const result = JSON.parse(await inspect.handler({ runId: "inspect-tool-run" }));
 		assert.equal(result.status, "complete");
@@ -764,7 +826,7 @@ await agent("hang"); return "unreached";`,
 				assert.equal(response.durable, true);
 				const record = await execution;
 				assert.equal(record.status, "cancelled");
-				assert.equal(JSON.parse(readFileSync(join(runs, "remote-control", "result.json"), "utf8")).status, "cancelled");
+				assert.equal(JSON.parse(readFileSync(join(runs, "remote-control", "run.json"), "utf8")).status, "cancelled");
 			} finally {
 				ownerWork.request("cancel");
 				ownerWork.close();
@@ -797,7 +859,7 @@ return (await agent("hi")).content;`, background: false, budget: 1 }, ctx);
 		assert.equal(ctx.logs.at(-1), "ECHO: hi");
 
 		conveyorCommand(`artifacts ${runId}`, ctx);
-		assert.match(ctx.logs.at(-1) ?? "", /result\.json/);
+		assert.match(ctx.logs.at(-1) ?? "", /run\.json/);
 
 		conveyorCommand("no-such-run", ctx);
 		assert.match(ctx.logs.at(-1) ?? "", /no run found/);

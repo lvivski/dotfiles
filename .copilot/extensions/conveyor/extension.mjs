@@ -98,13 +98,12 @@ const ctx = {
 		}
 	},
 	agentBackend,
-	async requestBudgetIncrease({ runId, current, spent, increment, proposed }) {
+	async requestLimitApproval({ runId, current, proposed }) {
 		try {
 			if (!session?.capabilities?.ui?.elicitation) return null;
-			const approved = await session.ui.confirm(
-				`Conveyor ${runId} reached its ${current.toFixed(2)} AIC budget after spending ${spent.toFixed(2)} AIC. Add ${increment.toFixed(2)} AIC of headroom once? In-flight work may make the resulting ceiling higher than ${proposed.toFixed(2)} AIC.`,
+			return await session.ui.confirm(
+				`Resume Conveyor ${runId} with raised limits?\nCurrent: ${JSON.stringify(current)}\nProposed: ${JSON.stringify(proposed)}`,
 			);
-			return approved;
 		} catch {
 			return null;
 		}

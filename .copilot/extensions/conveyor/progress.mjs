@@ -6,16 +6,13 @@
  * @typedef {"queued"|"running"|"done"|"cached"|"skipped"|"error"} AgentStatus
  * @typedef {"preview"|"queued"|"running"|"pausing"|"paused"|"resuming"|"cancelling"|"cancelled"|"complete"|"partial"|"failed"|"error"|"timeout"|"interrupted"} RunStatus
  */
-import { writeFileSync, mkdirSync, appendFileSync } from "node:fs";
-import { dirname } from "node:path";
 import { PROCESS_INSTANCE_ID } from "./persistence.mjs";
+import { isTerminalStatus } from "./schema.mjs";
 
 const CTRL = /[\u0000-\u001f\u007f-\u009f]/g;
-const MAX_BUFFERED_EVENTS = 32;
 const MAX_ERRORS = 20;
 const MAX_RECENT = 8;
 const DASHBOARD_INTERVAL_MS = 1500;
-const FLUSH_INTERVAL_MS = 150;
 const STATE_WRITE_INTERVAL_MS = 150;
 export { PROCESS_INSTANCE_ID };
 /** Strip control chars. @param {unknown} s */
@@ -23,84 +20,37 @@ const san = (s) => String(s ?? "").replace(CTRL, " ");
 /** AIC from a raw nanoAiu field. @param {unknown} nano */
 const aic = (nano) => Number(nano || 0) / 1_000_000_000;
 
-/** Small buffered JSONL appender for progress events. */
-class BufferedJsonl {
-	#path;
-	/** @type {string[]} */
-	#buffer = [];
-	/** @type {ReturnType<typeof setTimeout>|null} */
-	#timer = null;
-
-	/** @param {string|null|undefined} path */
-	constructor(path) {
-		this.#path = path || null;
-		if (this.#path) mkdirSync(dirname(this.#path), { recursive: true });
-	}
-
-	/** @param {any} rec */
-	write(rec) {
-		if (!this.#path) return;
-		this.#buffer.push(JSON.stringify(rec) + "\n");
-		if (this.#buffer.length >= MAX_BUFFERED_EVENTS) this.flush();
-		else this.#schedule();
-	}
-
-	#schedule() {
-		if (this.#timer) return;
-		this.#timer = setTimeout(() => this.flush(), FLUSH_INTERVAL_MS);
-		this.#timer.unref?.();
-	}
-
-	flush() {
-		if (this.#timer) {
-			clearTimeout(this.#timer);
-			this.#timer = null;
-		}
-		if (!this.#path || !this.#buffer.length) return;
-		const body = this.#buffer.join("");
-		this.#buffer.length = 0;
-		try {
-			appendFileSync(this.#path, body, "utf8");
-		} catch {
-			// Progress files are diagnostic; conveyor execution must continue if they cannot be written.
-		}
-	}
-
-	close() {
-		this.flush();
-	}
-}
-
 /** Minimal, persistence-focused progress reporter. */
 export class ProgressReporter {
-	#statePath;
+	/** @type {((state: any) => void)|null} */
+	#writeState;
 	#onLine;
 	#dashboard;
 	#dashboardIntervalMs;
-	#writeStateOverride;
 	#lastDashboard = 0;
 	#seq = 0;
 	#lastStateWrite = 0;
 	/** @type {ReturnType<typeof setTimeout>|null} */
 	#stateTimer = null;
-	#jsonl;
 	/** @type {Map<number, any>} */
 	#running = new Map();
 	/** @type {any[]} */
 	#recent = [];
 	/** @type {Map<number, any>} */
 	#groups = new Map();
+	/** @type {Map<string, any>} */
+	#phases = new Map();
+	/** @type {Map<string, { phaseId: string, startedAt: number }>} */
+	#phaseInvocations = new Map();
 	#state;
 
 	/**
-	 * @param {{ jsonlPath?: string|null, statePath?: string|null, runId: string, meta?: object,
+	 * @param {{ runId: string, meta?: object,
 	 *   title?: string, onLine?: (line: string, level?: "info"|"warning"|"error", meta?: { ephemeral?: boolean }) => void, write?: boolean,
 	 *   dashboard?: boolean, dashboardIntervalMs?: number,
 	 *   ownerGeneration?: number|null, writeState?: ((state: any) => void)|null }} config
 	 */
 	constructor({
-		jsonlPath = null,
-		statePath = null,
 		runId,
 		meta = {},
 		title,
@@ -111,12 +61,10 @@ export class ProgressReporter {
 		ownerGeneration = null,
 		writeState = null,
 	}) {
-		this.#jsonl = new BufferedJsonl(write ? jsonlPath : null);
-		this.#statePath = write ? statePath : null;
+		this.#writeState = write ? writeState : null;
 		this.#onLine = onLine;
 		this.#dashboard = dashboard;
 		this.#dashboardIntervalMs = dashboardIntervalMs;
-		this.#writeStateOverride = writeState;
 		const now = new Date().toISOString();
 		this.#state = {
 			runId,
@@ -128,23 +76,42 @@ export class ProgressReporter {
 			status: /** @type {RunStatus} */ ("running"),
 			startedAt: now,
 			updatedAt: now,
-			heartbeatAt: now,
 			phase: /** @type {string|null} */ (null),
 			counts: { launched: 0, done: 0, failed: 0, cached: 0, skipped: 0, dropped: 0, unknownUsage: 0 },
 			nanoAiu: 0,
 			aic: 0,
 			errors: /** @type {any[]} */ ([]),
+			revision: 0,
 		};
+		for (const [ordinal, raw] of (Array.isArray(meta.phases) ? meta.phases : []).entries()) {
+			const phase = typeof raw === "string" ? { id: `phase:${ordinal}`, ordinal, title: raw } : raw;
+			if (!phase?.title) continue;
+			this.#phases.set(phase.id, {
+				id: phase.id,
+				ordinal: phase.ordinal ?? ordinal,
+				title: san(phase.title),
+				detail: phase.detail ? san(phase.detail) : undefined,
+				status: "pending",
+				entryCount: 0,
+				accumulatedActiveMs: 0,
+				totalAgentCount: 0,
+				liveAgentCount: 0,
+			});
+		}
 	}
 
 	/**
 	 * Record one progress event (adds `seq` + `t`). Recognized `ev`: `run_start`, `start`, `end`,
-	 * `group_start`, `group_end`, `run_end`. Persists to `progress.jsonl` and updates the snapshot.
+	 * `group_start`, `group_end`, `run_end`. Updates the live state snapshot.
 	 * @param {any} event
 	 */
 	emit(event) {
-		const rec = { seq: ++this.#seq, t: Date.now(), ...event };
-		this.#jsonl.write(rec);
+		const agentSeq = event.agentSeq;
+		const requestedSeq = Number(event.progressSeq);
+		const seq = Number.isSafeInteger(requestedSeq) && requestedSeq > 0 ? requestedSeq : this.#seq + 1;
+		this.#seq = Math.max(this.#seq, seq);
+		const rec = { t: Date.now(), ...event, seq };
+		if (event.ev === "start" || event.ev === "end") rec.agentSeq = agentSeq;
 		this.#apply(rec);
 		this.#narrate(rec);
 		return rec;
@@ -155,8 +122,12 @@ export class ProgressReporter {
 		const s = this.#state;
 		switch (rec.ev) {
 			case "start":
-				this.#running.set(rec.seq, rec);
+				this.#running.set(rec.agentSeq, rec);
 				if (rec.phase) s.phase = san(rec.phase);
+				{
+					const phase = [...this.#phases.values()].find((item) => item.title === san(rec.phase));
+					if (phase) phase.liveAgentCount++;
+				}
 				break;
 			case "group_start":
 				this.#applyGroupStart(rec);
@@ -170,9 +141,15 @@ export class ProgressReporter {
 			case "drop":
 				this.#applyDrop(rec);
 				break;
+			case "phase_enter":
+				this.#applyPhaseEnter(rec);
+				break;
+			case "phase_exit":
+				this.#applyPhaseExit(rec);
+				break;
 		}
+		s.revision = Math.max(Number(s.revision) || 0, Number(rec.revision) || 0);
 		s.updatedAt = new Date().toISOString();
-		s.heartbeatAt = s.updatedAt;
 		this.#syncState(rec.ev === "run_end" || rec.ev === "run_start");
 	}
 
@@ -184,7 +161,7 @@ export class ProgressReporter {
 	/** @param {any} rec */
 	#applyEnd(rec) {
 		const s = this.#state;
-		this.#running.delete(rec.seq);
+		this.#running.delete(rec.agentSeq);
 		s.nanoAiu += Number(rec.nanoAiu || 0);
 		s.aic = aic(s.nanoAiu);
 
@@ -198,6 +175,48 @@ export class ProgressReporter {
 		this.#recent.push(rec);
 		if (this.#recent.length > MAX_RECENT) this.#recent.shift();
 		if (rec.phase) s.phase = san(rec.phase);
+		const phase = [...this.#phases.values()].find((item) => item.title === san(rec.phase));
+		if (phase) {
+			phase.totalAgentCount++;
+			phase.liveAgentCount = Math.max(0, phase.liveAgentCount - 1);
+		}
+	}
+
+	/** @param {any} rec */
+	#applyPhaseEnter(rec) {
+		let phase = this.#phases.get(rec.phaseId);
+		if (!phase) {
+			phase = {
+				id: rec.phaseId,
+				ordinal: rec.ordinal ?? null,
+				title: san(rec.phase),
+				detail: rec.detail ? san(rec.detail) : undefined,
+				status: "pending",
+				entryCount: 0,
+				accumulatedActiveMs: 0,
+				totalAgentCount: 0,
+				liveAgentCount: 0,
+			};
+			this.#phases.set(rec.phaseId, phase);
+		}
+		phase.status = "active";
+		phase.entryCount++;
+		phase.startedAt ??= rec.t;
+		this.#phaseInvocations.set(rec.invocationId, { phaseId: rec.phaseId, startedAt: rec.t });
+		this.#state.phase = phase.title;
+	}
+
+	/** @param {any} rec */
+	#applyPhaseExit(rec) {
+		const invocation = this.#phaseInvocations.get(rec.invocationId);
+		const phase = this.#phases.get(rec.phaseId);
+		if (!phase || !invocation) return;
+		this.#phaseInvocations.delete(rec.invocationId);
+		phase.accumulatedActiveMs += Math.max(0, Number(rec.durationMs) || rec.t - invocation.startedAt);
+		if (![...this.#phaseInvocations.values()].some((item) => item.phaseId === rec.phaseId)) {
+			phase.status = "completed";
+			phase.completedAt = rec.t;
+		}
 	}
 
 	/** @param {any} rec */
@@ -238,14 +257,14 @@ export class ProgressReporter {
 
 	/** Write state.json now (`force`) or debounced (~150ms). @param {boolean} force */
 	#syncState(force) {
-		if (!this.#statePath) return;
+		if (!this.#writeState) return;
 		const now = Date.now();
 		const elapsed = now - this.#lastStateWrite;
 		if (!force && elapsed < STATE_WRITE_INTERVAL_MS) {
 			if (!this.#stateTimer) {
 				this.#stateTimer = setTimeout(() => {
 					this.#stateTimer = null;
-					this.#writeState();
+					this.#persistState();
 				}, STATE_WRITE_INTERVAL_MS - elapsed);
 				this.#stateTimer.unref?.();
 			}
@@ -255,17 +274,15 @@ export class ProgressReporter {
 			clearTimeout(this.#stateTimer);
 			this.#stateTimer = null;
 		}
-		if (force) this.#jsonl.flush();
-		this.#writeState();
+		this.#persistState();
 	}
 
-	#writeState() {
-		if (!this.#statePath && !this.#writeStateOverride) return;
+	#persistState() {
+		if (!this.#writeState) return;
 		this.#lastStateWrite = Date.now();
 		Object.assign(this.#state, this.#derived());
 		try {
-			if (this.#writeStateOverride) this.#writeStateOverride(this.#state);
-			else if (this.#statePath) writeFileSync(this.#statePath, JSON.stringify(this.#state), "utf8");
+			this.#writeState(this.#state);
 		} catch {
 			// Progress files are diagnostic; conveyor execution must continue if they cannot be written.
 		}
@@ -275,7 +292,7 @@ export class ProgressReporter {
 	#derived() {
 		return {
 			running: [...this.#running.values()].map((r) => ({
-				seq: r.seq,
+				seq: r.agentSeq,
 				label: san(r.label),
 				model: san(r.model),
 				phase: r.phase ? san(r.phase) : null,
@@ -283,6 +300,7 @@ export class ProgressReporter {
 			})),
 			groups: [...this.#groups.values()],
 			recent: this.#recent.map(formatRecent),
+			phases: [...this.#phases.values()].map((phase) => ({ ...phase })),
 		};
 	}
 
@@ -300,8 +318,13 @@ export class ProgressReporter {
 		const now = new Date().toISOString();
 		this.#state.status = status;
 		this.#state.updatedAt = now;
-		this.#state.heartbeatAt = now;
-		this.#jsonl.close();
+		for (const phase of this.#phases.values()) {
+			if (phase.status === "pending") phase.status = "skipped";
+			else if (phase.status === "active") {
+				phase.status = "completed";
+				phase.completedAt = Date.now();
+			}
+		}
 		this.#syncState(true);
 	}
 
@@ -352,7 +375,7 @@ export function formatDashboard(s) {
 	const recent = s.recent || [];
 	const errors = s.errors || [];
 	const total = Number(c.launched || 0) + Number(c.cached || 0) + Number(c.skipped || 0) + running.length;
-	const terminal = ["paused", "cancelled", "complete", "partial", "failed", "error", "timeout", "interrupted"].includes(s.status || "");
+	const terminal = isTerminalStatus(s.status);
 	const endMs = terminal && s.updatedAt ? Date.parse(s.updatedAt) : Date.now();
 	const elapsed = ((endMs - Date.parse(s.startedAt || new Date().toISOString())) / 1000).toFixed(0);
 	const lines = [

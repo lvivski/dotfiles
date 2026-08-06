@@ -4,7 +4,6 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
-	FORMAT_VERSION,
 	LostLeaseError,
 	LockedError,
 	Persistence,
@@ -15,7 +14,6 @@ import { tmpDir } from "./fixtures/support.mjs";
 
 const manifest = (/** @type {string} */ runId) => ({
 	runId,
-	formatVersion: FORMAT_VERSION,
 	backend: "cli",
 });
 
@@ -55,7 +53,7 @@ test("dead-owner takeover fences the stale lease", () => {
 	lease2.release();
 });
 
-test("manifest is immutable and old runs are inspection-only", () => {
+test("manifest is immutable and required for resume", () => {
 	const dir = tmpDir();
 	const store = new Persistence(dir, { runId: "r" });
 	store.ensureManifest(manifest("r"));
@@ -64,18 +62,7 @@ test("manifest is immutable and old runs are inspection-only", () => {
 	assert.doesNotThrow(() => store.ensureManifest(manifest("r"), { resume: true }));
 
 	const old = new Persistence(tmpDir(), { runId: "old" });
-	assert.throws(() => old.ensureManifest(manifest("old"), { resume: true }), /inspection-only/);
-});
-
-test("a run written by a different artifact format is inspection-only", () => {
-	const dir = tmpDir();
-	const store = new Persistence(dir, { runId: "r" });
-	// Simulate artifacts left by an older build: same runId, different (or absent) format.
-	atomicWriteJson(join(dir, "manifest.json"), { ...manifest("r"), formatVersion: FORMAT_VERSION - 1 });
-	assert.throws(() => store.ensureManifest(manifest("r"), { resume: true }), /inspection-only/);
-
-	atomicWriteJson(join(dir, "manifest.json"), { runId: "r", backend: "cli", journalVersion: 4, keyAlgorithm: "content-v4" });
-	assert.throws(() => store.ensureManifest(manifest("r"), { resume: true }), /inspection-only/);
+	assert.throws(() => old.ensureManifest(manifest("old"), { resume: true }), /has no manifest/);
 });
 
 test("stale leases cannot write run artifacts", () => {

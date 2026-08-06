@@ -15,15 +15,19 @@ import { randomUUID } from "node:crypto";
 import { executeConveyor, extractMeta } from "./executor.mjs";
 import { normalizeBackend } from "./agent.mjs";
 import { sidecarPathFor } from "./effects.mjs";
+import { verifyHostSnapshot } from "./snapshot.mjs";
 import { resolveConveyorDefinition } from "./registry.mjs";
-import { FORMAT_VERSION, readJsonFile } from "./persistence.mjs";
+import { readJsonFile } from "./persistence.mjs";
 import { loadConveyorPlan, persistConveyorPlan } from "./plans.mjs";
-import { CheckpointStore } from "./checkpoint.mjs";
 import { resolveModelSettings } from "./models.mjs";
+import { Ledger } from "./ledger.mjs";
+import { approveLimits, normalizeLimits } from "./schema.mjs";
 import { Work, WorkError, abortWork, processIsAlive, readWorkOwner, requestWorkControl } from "./work.mjs";
 import {
 	MAX_RESULT_CHUNK_CHARS,
 	ConveyorResultError,
+	getConveyorAgentContent,
+	getConveyorProgress,
 	getConveyorResult,
 	inspectConveyorAgent,
 	inspectConveyorRun,
@@ -42,6 +46,7 @@ const PROGRESS_MODES = new Set(["dashboard", "events", "off"]);
 const MAX_INVALIDATION_BRANCHES = 100;
 const MAX_BRANCH_DEPTH = 64;
 const MAX_BRANCH_INDEX = 1_000_000;
+const MIN_RESUME_TIMEOUT_SECONDS = 0.05;
 
 const HOME = homedir();
 
@@ -54,7 +59,7 @@ const HOME = homedir();
  * @property {() => Promise<{ allowAll: boolean|null, mode?: "off"|"on"|"auto"|null, sessionMode?: string|null, directories: string[] }|undefined>} [getPermissionContext]
  * @property {() => Promise<{ modelId?: string|null, models?: unknown[] }|undefined>} [getModelContext]
  * @property {{ kindFor: Function, openRun: Function }} [agentBackend]
- * @property {(request: { runId: string, current: number, spent: number, increment: number, proposed: number }) => Promise<boolean|null>} [requestBudgetIncrease]
+ * @property {(request: { runId: string, current: Record<string, number>, proposed: Record<string, number> }) => Promise<boolean|null>} [requestLimitApproval]
  */
 
 /**
@@ -175,13 +180,19 @@ export function resolveSource(input, cwd = process.cwd()) {
 export function resolveHostPath(input, harnessPath) {
 	if (input.host) {
 		const p = /** @type {string} */ (expandHome(input.host));
-		check(existsSync(p) && statSync(p).isFile(), `host is not a readable file: ${p}`);
-		check(p.endsWith(".mjs"), `host must point to a .mjs module: ${p}`);
+		check(existsSync(p) && (statSync(p).isFile() || statSync(p).isDirectory()), `host is not a readable file or bundle directory: ${p}`);
+		if (statSync(p).isFile()) check(p.endsWith(".mjs"), `host must point to a .mjs module or bundle directory: ${p}`);
 		return p;
 	}
 	if (harnessPath) {
 		const sib = sidecarPathFor(harnessPath);
 		if (isFile(sib)) return sib;
+		const bundle = sib.replace(/\.mjs$/, "");
+		try {
+			if (statSync(bundle).isDirectory() && isFile(join(bundle, "index.mjs"))) return bundle;
+		} catch {
+			// no sibling bundle
+		}
 	}
 	return null;
 }
@@ -201,6 +212,7 @@ function newRunId(label) {
  */
 function formatResult(rec, ctx) {
 	const c = rec.counts || {};
+	const resultText = serializeResult(rec.result);
 	const text = [
 		ctx.dryRun ? "conveyor dry-run complete (no agents spawned, no AIC spent)" : `conveyor run ${rec.status}`,
 		ctx.planId ? `planId: ${ctx.planId}` : "",
@@ -212,12 +224,18 @@ function formatResult(rec, ctx) {
 		`agents: ${c.agents ?? 0} (done ${c.done ?? 0}, cached ${c.cached ?? 0}, skipped ${c.skipped ?? 0}, failed ${c.failed ?? 0}, dropped ${c.dropped ?? 0}, unknown usage ${c.unknownUsage ?? 0})`,
 		ctx.cwd ? `cwd: ${ctx.cwd}` : "",
 		rec.error ? `error: ${rec.error}` : "",
-		rec.result ? `\n--- conveyor result ---\n${rec.result}` : "",
+		rec.result !== undefined ? `\n--- conveyor result ---\n${resultText}` : "",
 	]
 		.filter(Boolean)
 		.join("\n");
 	if (rec.status === "complete") return text;
 	return { textResultForLlm: text, resultType: "failure", error: rec.error ?? rec.status };
+}
+
+/** @param {unknown} value */
+function serializeResult(value) {
+	if (value === undefined) return "";
+	return typeof value === "string" ? value : JSON.stringify(value, null, 2);
 }
 
 /**
@@ -249,7 +267,7 @@ export async function runConveyor(input, ctx) {
 				source: run.cfg.source,
 				hostPath: run.cfg.hostPath,
 				args: run.cfg.args,
-				cfg: { ...run.cfg, budget: run.cfg.budget ?? DEFAULT_BUDGET },
+				cfg: run.cfg,
 				plannedAgents: rec.plannedMaxAgents,
 			});
 			return formatResult(rec, { runDir: run.runDir, cwd: run.cwd, dryRun: true, planId: plan.planId, model: run.cfg.model });
@@ -292,13 +310,19 @@ async function prepareRun(input, ctx) {
 	check(sources.length === 1, `provide EXACTLY ONE of script | scriptPath | name (got: ${sources.join(", ") || "none"}).`);
 	check(input.concurrency == null || (Number.isInteger(input.concurrency) && input.concurrency >= 1), `concurrency must be an integer >= 1 (got ${input.concurrency}).`);
 
-	const timeoutSec = resolveTimeout(input.timeoutSec);
 	const preset = input.preset === "xtreme";
-	const budget = resolveBudget(input, preset);
+	const timeoutSec = resolveTimeout(input.timeoutSec);
 	const progressMode = resolveProgressMode(input);
 	const cwd = await resolveCwd(input.cwd, ctx);
 	const { source, label, path: harnessPath } = resolveSource(input, cwd);
 	const hostPath = resolveHostPath(input, harnessPath);
+	let meta;
+	try {
+		meta = extractMeta(source);
+	} catch (error) {
+		throw new ValidationError(`invalid Conveyor metadata: ${error instanceof Error ? error.message : error}`);
+	}
+	const budget = resolveBudget(input, preset, meta.limits);
 	const [permissionContext, modelContext] = await Promise.all([
 		ctx.getPermissionContext?.(),
 		ctx.getModelContext?.(),
@@ -314,7 +338,15 @@ async function prepareRun(input, ctx) {
 		`resume requires parent permission mode '${parentPermissionMode}', but the current session is '${currentParentPermissionMode}'. Restore the original or a broader mode first.`,
 	);
 	const parentSessionMode = normalizeSessionMode(permissionContext?.sessionMode);
-	const requestBudgetIncrease = ctx.requestBudgetIncrease;
+	const requestLimitApproval = ctx.requestLimitApproval;
+	const declaredLimits = resolveLimits(input, meta.limits, {
+		budget: input.dryRun ? budget ?? DEFAULT_BUDGET : budget,
+		timeoutSec,
+		concurrency: input.concurrency ?? null,
+	});
+	const attemptTimeoutSeconds = declaredLimits.timeoutSeconds == null
+		? null
+		: Math.min(declaredLimits.timeoutSeconds, MAX_TIMEOUT_SEC);
 	check(pathWithinAny(cwd, allowedDirs), `cwd is outside the parent session's allowed directories: ${cwd}`);
 
 	if (input.runId != null) check(isValidRunId(input.runId), `runId must be a bare id without path separators (got '${input.runId}').`);
@@ -327,12 +359,11 @@ async function prepareRun(input, ctx) {
 		args: input.args,
 		runId,
 		runDir,
-		timeoutSec,
-		budget,
+		attemptTimeoutSeconds,
+		limits: declaredLimits,
 		model: settings.model,
 		effort: settings.effort,
 		context: settings.context,
-		concurrency: input.concurrency ?? null,
 		enableMcp: !!input.enableMcp,
 		restricted: !!input.restricted,
 		strictBudget: !!input.strictBudget,
@@ -349,16 +380,17 @@ async function prepareRun(input, ctx) {
 		title: input.name || undefined,
 		maxAgents: input._planMaxAgents ?? null,
 		planId: input._planId ?? null,
-		requestBudgetIncrease: requestBudgetIncrease ? (request) => requestBudgetIncrease({ runId, ...request }) : null,
+		retainAgentContent: input.retainAgentContent === true,
+		requestLimitApproval: requestLimitApproval ? (request) => requestLimitApproval({ runId, ...request }) : null,
 	};
 
-	return { cfg, label, runId, runDir, cwd, budget, progressMode, timeoutSec, background: input.background ?? true };
+	return { cfg, label, runId, runDir, cwd, budget, progressMode, timeoutSec: attemptTimeoutSeconds, background: input.background ?? true };
 }
 
 /** @param {any} input */
 function expandPlanInput(input) {
 	if (!input?.planId) return input;
-	const conflicting = ["script", "scriptPath", "name", "args", "budget", "model", "effort", "context", "preset", "concurrency", "enableMcp", "restricted", "strictBudget", "memory", "host", "cwd"].filter(
+	const conflicting = ["script", "scriptPath", "name", "args", "budget", "model", "effort", "context", "preset", "concurrency", "limits", "enableMcp", "restricted", "strictBudget", "retainAgentContent", "memory", "host", "cwd"].filter(
 		(key) => input[key] != null,
 	);
 	check(!conflicting.length, `planId cannot be combined with bound plan fields: ${conflicting.join(", ")}`);
@@ -369,11 +401,11 @@ function expandPlanInput(input) {
 		planId: undefined,
 		scriptPath: plan.scriptPath,
 		args: plan.args,
-		budget: plan.budget ?? DEFAULT_BUDGET,
+		budget: plan.limits?.maxAiCredits ?? DEFAULT_BUDGET,
 		model: plan.model,
 		effort: plan.effort,
 		context: plan.context,
-		concurrency: plan.concurrency,
+		concurrency: plan.limits?.maxConcurrentAgents,
 		enableMcp: plan.enableMcp,
 		restricted: plan.restricted,
 		strictBudget: plan.strictBudget,
@@ -383,7 +415,20 @@ function expandPlanInput(input) {
 		cwd: plan.cwd,
 		_planMaxAgents: plan.maxAgents,
 		_planId: plan.planId,
+		_declaredLimits: plan.limits,
+		retainAgentContent: plan.retainAgentContent === true,
 	};
+}
+
+/** @param {any} input @param {unknown} metaLimits @param {{ budget: number|null, timeoutSec: number|null, concurrency: number|null }} resolved */
+function resolveLimits(input, metaLimits, resolved) {
+	const explicit = normalizeLimits(input._declaredLimits ?? input.limits ?? metaLimits ?? {});
+	return normalizeLimits({
+		...explicit,
+		...(resolved.concurrency != null ? { maxConcurrentAgents: resolved.concurrency } : {}),
+		...(resolved.timeoutSec != null ? { timeoutSeconds: resolved.timeoutSec } : {}),
+		...(resolved.budget != null ? { maxAiCredits: resolved.budget } : {}),
+	});
 }
 
 /** @param {string} path @param {string[]} roots */
@@ -402,9 +447,12 @@ export function resolveTimeout(value) {
 	return Math.min(value, MAX_TIMEOUT_SEC);
 }
 
-/** @param {any} input @param {boolean} preset @returns {number|null} */
-function resolveBudget(input, preset) {
-	const budget = input.dryRun ? input.budget ?? null : input.budget ?? (preset ? XTREME_BUDGET : DEFAULT_BUDGET);
+/** @param {any} input @param {boolean} preset @param {Record<string, number>|undefined} metaLimits @returns {number|null} */
+function resolveBudget(input, preset, metaLimits) {
+	const declared = metaLimits?.maxAiCredits;
+	const budget = input.dryRun
+		? input.budget ?? (preset ? XTREME_BUDGET : declared ?? null)
+		: input.budget ?? (preset ? XTREME_BUDGET : declared ?? DEFAULT_BUDGET);
 	if (!input.dryRun) check(typeof budget === "number" && budget > 0, `budget must be a positive number for non-dry runs (got ${budget}).`);
 	return budget;
 }
@@ -418,7 +466,7 @@ function resolveProgressMode(input) {
 
 /**
  * Pause, cancel, or resume a persisted conveyor.
- * @param {{ runId?: unknown, action?: unknown, invalidate?: unknown, background?: boolean }} input
+ * @param {{ runId?: unknown, action?: unknown, invalidate?: unknown, background?: boolean, limits?: unknown }} input
  * @param {ToolCtx} ctx
  */
 export async function controlConveyorRun(input, ctx) {
@@ -450,7 +498,7 @@ export async function controlConveyorRun(input, ctx) {
 		else check(!local, `conveyor run '${runId}' is still active; pause or cancel it before resuming.`);
 		const owner = readWorkOwner(join(runsDir(), runId));
 		check(!owner || !processIsAlive(owner.pid), `conveyor run '${runId}' is still active in process ${owner?.pid}; pause or cancel it before resuming.`);
-		const run = await preparePersistedResume(runId, ctx, invalidatedBranches);
+		const run = await preparePersistedResume(runId, ctx, invalidatedBranches, input?.limits);
 		const work = Work.open({ runId: run.runId, runDir: run.runDir, timeoutSec: run.timeoutSec });
 		const onLine = lineLogger(run.progressMode, ctx);
 		// Foreground resume returns the result to the caller, so there is nothing to notify about.
@@ -471,16 +519,21 @@ export async function controlConveyorRun(input, ctx) {
 }
 
 /** @param {string} runId @param {ToolCtx} ctx @param {number[][]} [invalidatedBranches] @returns {Promise<RunPlan>} */
-async function preparePersistedResume(runId, ctx, invalidatedBranches = []) {
+async function preparePersistedResume(runId, ctx, invalidatedBranches = [], requestedLimits = null) {
 	const runDir = join(runsDir(), runId);
 	const manifest = readJsonFile(join(runDir, "manifest.json"));
-	check(manifest, `conveyor run '${runId}' has no durable manifest and is inspection-only.`);
-	check(
-		manifest.formatVersion === FORMAT_VERSION,
-		`conveyor run '${runId}' uses artifact format ${manifest.formatVersion ?? "(none)"}; this build reads format ${FORMAT_VERSION}, so the run is inspection-only.`,
-	);
-	const latestBudget = new CheckpointStore(runDir, { resume: true, readOnly: true }).latestBudget ?? manifest.budget;
-	const timeoutSec = resolveTimeout(manifest.timeoutSec);
+	check(manifest, `conveyor run '${runId}' has no manifest.`);
+	const priorLedger = new Ledger(runDir, { readOnly: true });
+	const declaredLimits = normalizeLimits(manifest.declaredLimits || {});
+	const proposedLimits = approveLimits(declaredLimits, priorLedger.approvedLimits, requestedLimits, priorLedger.consumed);
+	const changedLimits = JSON.stringify(proposedLimits) !== JSON.stringify(priorLedger.approvedLimits);
+	if (changedLimits && requestedLimits != null) {
+		const approved = await ctx.requestLimitApproval?.({ runId, current: priorLedger.approvedLimits, proposed: proposedLimits });
+		check(approved === true, approved === false ? "Conveyor limit increase was declined." : "Conveyor limit increase requires an approval-capable host.");
+	}
+	const timeoutTotal = proposedLimits.timeoutSeconds ?? null;
+	const timeoutSec = timeoutTotal == null ? null : Math.max(0, timeoutTotal - priorLedger.consumed.activeMs / 1000);
+	check(timeoutSec == null || timeoutSec > MIN_RESUME_TIMEOUT_SECONDS, `conveyor run '${runId}' has exhausted its cumulative timeoutSeconds limit.`);
 	let effort = manifest.effort;
 	let context = manifest.context;
 	if (manifest.model === "auto" && effort) {
@@ -507,22 +560,29 @@ async function preparePersistedResume(runId, ctx, invalidatedBranches = []) {
 		`resume requires parent permission mode '${parentPermissionMode}', but the current session is '${currentParentPermissionMode}'. Restore the original or a broader mode first.`,
 	);
 	const parentSessionMode = normalizeSessionMode(manifest.parentSessionMode);
-	const requestBudgetIncrease = ctx.requestBudgetIncrease;
+	const requestLimitApproval = ctx.requestLimitApproval;
 	check(pathWithinAny(cwd, allowedDirs), `cwd is outside the parent session's allowed directories: ${cwd}`);
-	const hostPath = isFile(join(runDir, "host.mjs")) ? join(runDir, "host.mjs") : null;
+	const hostPath = (() => {
+		const path = join(runDir, "host");
+		try {
+			return statSync(path).isDirectory() ? path : null;
+		} catch {
+			return null;
+		}
+	})();
+	if (hostPath) verifyHostSnapshot(hostPath);
 	const meta = extractMeta(source);
 	return {
 		cfg: {
 			source,
-			args: readJsonFile(join(runDir, "meta.json"))?.args ?? null,
+			args: manifest.args ?? null,
 			runId,
 			runDir,
-			timeoutSec,
-			budget: latestBudget,
+			attemptTimeoutSeconds: timeoutSec,
+			limits: proposedLimits,
 			model: manifest.model,
 			effort,
 			context,
-			concurrency: manifest.concurrency,
 			enableMcp: !!manifest.enableMcp,
 			restricted: !!manifest.restricted,
 			strictBudget: !!manifest.strictBudget,
@@ -539,14 +599,15 @@ async function preparePersistedResume(runId, ctx, invalidatedBranches = []) {
 			agentBackend: ctx.agentBackend,
 			maxAgents: manifest.maxAgents,
 			planId: manifest.planId,
-			requestBudgetIncrease: requestBudgetIncrease ? (request) => requestBudgetIncrease({ runId, ...request }) : null,
+			retainAgentContent: manifest.retainAgentContent === true,
+			requestLimitApproval: requestLimitApproval ? (request) => requestLimitApproval({ runId, ...request }) : null,
 			title: meta.name,
 		},
 		label: meta.name || runId,
 		runId,
 		runDir,
 		cwd,
-		budget: latestBudget,
+		budget: proposedLimits.maxAiCredits ?? null,
 		progressMode: manifest.progressMode || "dashboard",
 		timeoutSec,
 		background: true,
@@ -628,7 +689,7 @@ function formatNoticeError(value) {
  * @returns {{ logLine: string, prompt: string }}
  */
 export function formatBackgroundCompletion(rec, runDir) {
-	const result = typeof rec.result === "string" ? rec.result.trim() : "";
+	const result = serializeResult(rec.result).trim();
 	const page = pageText(result, 0, MAX_RESULT_CHUNK_CHARS);
 	const omitted = page.nextOffset === null ? 0 : result.length - page.nextOffset;
 	const inline = page.text;
@@ -718,9 +779,9 @@ export function buildTools(ctx) {
 			name: "get_conveyor_result",
 			skipPermission: true,
 			description:
-				"Retrieve a persisted conveyor's final result by runId without reading result.json directly. " +
-				"Returns JSON status metadata plus a bounded result chunk. Use offset/limit and follow " +
-				"nextOffset for large results. If resultAvailable is false, follow its guidance instead of polling.",
+				"Retrieve a persisted conveyor's final result by runId without reading run.json directly. " +
+				"Returns the strict JSON value by default. Use format:'text' with offset/limit for paginated " +
+				"serialization. If resultAvailable is false, follow its guidance instead of polling.",
 			parameters: {
 				type: "object",
 				additionalProperties: false,
@@ -735,6 +796,7 @@ export function buildTools(ctx) {
 						default: MAX_RESULT_CHUNK_CHARS,
 						description: `Maximum result characters to return (default and max ${MAX_RESULT_CHUNK_CHARS}).`,
 					},
+					format: { type: "string", enum: ["value", "text"], default: "value", description: "Return the JSON value directly, or a paginated serialized text representation." },
 				},
 			},
 			handler: async (/** @type {any} */ input) => {
@@ -780,7 +842,7 @@ export function buildTools(ctx) {
 		{
 			name: "inspect_conveyor_agent",
 			skipPermission: true,
-			description: "Inspect one conveyor agent by journal key, sessionId, or label. Returns bounded summary, prompt, result, event, or usage data.",
+			description: "Inspect prompt-safe conveyor agent summary, usage, or progress events by journal key, sessionId, or label.",
 			parameters: {
 				type: "object",
 				additionalProperties: false,
@@ -788,7 +850,7 @@ export function buildTools(ctx) {
 				properties: {
 					runId: { type: "string", minLength: 1, maxLength: 255 },
 					agent: { type: "string", minLength: 1, maxLength: 512 },
-					section: { type: "string", enum: ["summary", "prompt", "result", "events", "usage"], default: "summary" },
+					section: { type: "string", enum: ["summary", "events", "usage"], default: "summary" },
 					offset: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER, default: 0 },
 					limit: { type: "integer", minimum: 1, maximum: MAX_RESULT_CHUNK_CHARS, default: MAX_RESULT_CHUNK_CHARS },
 				},
@@ -802,12 +864,61 @@ export function buildTools(ctx) {
 				}
 			},
 		},
+		{
+			name: "get_conveyor_progress",
+			skipPermission: true,
+			description: "Page revisioned durable progress for one Conveyor run.",
+			parameters: {
+				type: "object",
+				additionalProperties: false,
+				required: ["runId"],
+				properties: {
+					runId: { type: "string", minLength: 1, maxLength: 255 },
+					phaseId: { type: "string" },
+					afterSeq: { type: "integer", minimum: 0 },
+					beforeSeq: { type: "integer", minimum: 0 },
+					limit: { type: "integer", minimum: 1, maximum: 500, default: 200 },
+				},
+			},
+			handler: async (/** @type {any} */ input) => {
+				try {
+					return getConveyorProgress(input);
+				} catch (e) {
+					if (e instanceof ConveyorResultError) return failure(e.message);
+					throw e;
+				}
+			},
+		},
+		{
+			name: "get_conveyor_agent_content",
+			description: "Retrieve a Conveyor agent's raw prompt or result. This content may contain sensitive repository or user data.",
+			parameters: {
+				type: "object",
+				additionalProperties: false,
+				required: ["runId", "agent", "section"],
+				properties: {
+					runId: { type: "string", minLength: 1, maxLength: 255 },
+					agent: { type: "string", minLength: 1, maxLength: 512 },
+					section: { type: "string", enum: ["prompt", "result"] },
+					offset: { type: "integer", minimum: 0, default: 0 },
+					limit: { type: "integer", minimum: 1, maximum: MAX_RESULT_CHUNK_CHARS, default: MAX_RESULT_CHUNK_CHARS },
+				},
+			},
+			handler: async (/** @type {any} */ input) => {
+				try {
+					return getConveyorAgentContent(input);
+				} catch (e) {
+					if (e instanceof ConveyorResultError) return failure(e.message);
+					throw e;
+				}
+			},
+		},
 	];
-	if (isNested()) return tools;
+	if (isNested()) return tools.filter((tool) => !["get_conveyor_progress", "get_conveyor_agent_content"].includes(tool.name));
 	tools.push({
 		name: "control_conveyor_run",
 		skipPermission: true,
-		description: "Pause or cancel an active conveyor from any session, or resume a settled run. Resume may invalidate selected parallel/pipeline branch paths before deterministic checkpoint replay.",
+		description: "Pause or cancel an active conveyor from any session, or resume a settled run. Resume may invalidate selected parallel/pipeline branch paths before deterministic ledger replay.",
 		parameters: {
 			type: "object",
 			additionalProperties: false,
@@ -822,6 +933,17 @@ export function buildTools(ctx) {
 					items: { type: "string", pattern: "^/(?:$|(?:0|[1-9]\\d*)(?:/(?:0|[1-9]\\d*))*)$" },
 					description: "For resume only: branch paths to rerun, e.g. ['/0', '/2/1']; '/' reruns the whole conveyor. Descendants are included.",
 				},
+				limits: {
+					type: "object",
+					additionalProperties: false,
+					properties: {
+						maxConcurrentAgents: { type: "integer", minimum: 1 },
+						maxTotalAgents: { type: "integer", minimum: 1 },
+						timeoutSeconds: { type: "number", exclusiveMinimum: 0 },
+						maxAiCredits: { type: "number", exclusiveMinimum: 0 },
+					},
+					description: "Resume only: approved cumulative resource ceilings. Existing ceilings can only be raised.",
+				},
 			},
 		},
 		handler: (/** @type {any} */ input) => controlConveyorRun(input, ctx),
@@ -831,7 +953,7 @@ export function buildTools(ctx) {
 		defer: "never",
 		description:
 			"Run a JavaScript workflow harness across many Copilot agents. The harness exposes only agent, " +
-			"parallel, pipeline, phase, verify, and log plus context/host/workspace namespaces. Use it for " +
+			"parallel, pipeline, phase, step, verify, and log plus context/host/workspace namespaces. Use it for " +
 			"large parallel or cross-checked work, not routine edits. ALWAYS preview with dryRun:true; the " +
 			"preview returns a planId binding source, args, sidecar, budget, and a hard max-agent ceiling. " +
 			"Launch with exactly one of script, scriptPath, name, or planId. Non-dry runs default to background:true; completion notifications " +
@@ -854,11 +976,23 @@ export function buildTools(ctx) {
 				context: { type: "string", enum: ["default", "long_context"], description: "Default context-window tier agents inherit unless they pin their own." },
 				preset: { type: "string", enum: ["xtreme"], description: `Named run preset. 'xtreme' binds the parent session's concrete model with effort=xhigh, context=long_context and a ${XTREME_BUDGET.toLocaleString("en-US")} AIC default budget. If the parent uses Auto, model defaults are retained instead.` },
 				concurrency: { type: "integer", minimum: 1, description: "Max concurrent subagents (default min(16, max(2, cpu-1)))." },
+				limits: {
+					type: "object",
+					additionalProperties: false,
+					properties: {
+						maxConcurrentAgents: { type: "integer", minimum: 1 },
+						maxTotalAgents: { type: "integer", minimum: 1 },
+						timeoutSeconds: { type: "number", exclusiveMinimum: 0 },
+						maxAiCredits: { type: "number", exclusiveMinimum: 0 },
+					},
+					description: "Declared cumulative resource ceilings. Flat budget, timeoutSec, and concurrency options override their corresponding fields.",
+				},
 				enableMcp: { type: "boolean", description: "Launch-level MCP default inherited by agent profiles; default off." },
 				restricted: { type: "boolean", description: "Administrative host restriction: no host effects or worktrees. Use agent profile:'read-only' for model permissions." },
+				retainAgentContent: { type: "boolean", description: "Persist full agent prompts for permission-gated forensic inspection. Default false." },
 				strictBudget: { type: "boolean", description: "Raise/stop once the budget cap is observed instead of gracefully skipping new agents." },
 				memory: { type: "string", description: "Durable text file exposed as context.memory (relative to conveyor cwd, or use ~/)." },
-				host: { type: "string", description: "Path to a `.mjs` host-effects sidecar exposing the harness's `host.*` namespace (full-Node effects, checkpointed). Defaults to a sibling `<name>.host.mjs` when present." },
+				host: { type: "string", description: "Path to a `.mjs` host-effects sidecar exposing the harness's `host.*` namespace (full-Node effects, durably replayed). Defaults to a sibling `<name>.host.mjs` when present." },
 				progress: { type: "string", enum: ["dashboard", "events", "off"], description: "Progress output mode. dashboard (default) emits ephemeral TUI-like snapshots, events emits per-event lines, off suppresses progress output." },
 				cwd: { type: "string", description: "Directory to run the conveyor from (default: the session's working directory)." },
 				timeoutSec: { type: "number", minimum: 1, maximum: MAX_TIMEOUT_SEC, description: "Optional hard deadline in seconds. Runs are unbounded when omitted." },

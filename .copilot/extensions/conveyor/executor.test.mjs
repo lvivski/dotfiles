@@ -11,11 +11,19 @@ import { Work } from "./work.mjs";
 import { mkResult, withFakeEnv, tmpDir, within } from "./fixtures/support.mjs";
 
 /** @param {any} config */
-const executeConveyor = (config) => executeRawConveyor(config);
+const executeConveyor = (config) => executeRawConveyor({
+	...config,
+	limits: {
+		...(config.concurrency != null ? { maxConcurrentAgents: config.concurrency } : {}),
+		...(config.budget != null ? { maxAiCredits: config.budget } : {}),
+		...(config.limits || {}),
+	},
+	attemptTimeoutSeconds: config.timeoutSec ?? config.attemptTimeoutSeconds,
+});
 
-/** Child session ids a run journaled. @param {string} runId @param {string} runDir @returns {string[]} */
+/** Child session ids a run ledger recorded. @param {string} runId @param {string} runDir @returns {string[]} */
 function sessionIds(runId, runDir) {
-	const ids = readFileSync(join(runDir, "journal.jsonl"), "utf8")
+	const ids = readFileSync(join(runDir, "ledger.jsonl"), "utf8")
 		.split("\n")
 		.filter(Boolean)
 		.map((line) => JSON.parse(line).sessionId)
@@ -52,7 +60,7 @@ test("extractMeta reads a literal meta block and ignores dynamic/non-object valu
 	const meta = extractMeta(`export const meta = { name: "audit", description: "scan", phases: ["plan"] }\nreturn "ok";`);
 	assert.equal(meta.name, "audit");
 	assert.equal(meta.description, "scan");
-	assert.deepEqual([.../** @type {any[]} */ (meta.phases)], ["plan"]);
+	assert.deepEqual([.../** @type {any[]} */ (meta.phases)], [{ id: "phase:0", ordinal: 0, title: "plan" }]);
 	assert.deepEqual(extractMeta(`const meta = { name: someVar }`), {});
 	assert.deepEqual(extractMeta(`const meta = null`), {});
 	assert.deepEqual(extractMeta(`return "no meta";`), {});
@@ -77,7 +85,7 @@ test("dry-run executes the harness plan without writing run artifacts or spendin
 		assert.equal(rec.aic, 0);
 		assert.match(rec.result, /dry-run plan: 3 agent call\(s\) — preview/);
 		assert.equal(existsSync(join(runDir, "run.json")), false);
-		assert.equal(existsSync(join(runDir, "journal.jsonl")), false);
+		assert.equal(existsSync(join(runDir, "ledger.jsonl")), false);
 		assert.equal(existsSync(join(runDir, ".lock")), false);
 		assert.equal(existsSync(join(runDir, "heartbeat.json")), false);
 	}));
@@ -169,7 +177,7 @@ test("real runs open and close one run-scoped backend; dry runs do neither", asy
 	assert.deepEqual(calls, []);
 });
 
-test("real run persists execution artifacts and a lean result file", () =>
+test("real run persists the simplified artifact set", () =>
 	withFakeEnv({}, async () => {
 		const runDir = tmpDir();
 		const rec = await executeConveyor({
@@ -181,14 +189,28 @@ test("real run persists execution artifacts and a lean result file", () =>
 		});
 		assert.equal(rec.status, "complete");
 		assert.equal(rec.result, "ECHO: hi");
-		for (const file of ["script.js", "meta.json", "state.json", "progress.jsonl", "journal.jsonl", "run.json", "result.json"]) {
+		for (const file of ["manifest.json", "script.js", "state.json", "ledger.jsonl", "run.json"]) {
 			assert.ok(existsSync(join(runDir, file)), `expected ${file}`);
 		}
-		const meta = JSON.parse(readFileSync(join(runDir, "meta.json"), "utf8"));
-		assert.equal(meta.conveyor.name, "persist");
-		const result = JSON.parse(readFileSync(join(runDir, "result.json"), "utf8"));
-		assert.deepEqual(Object.keys(result).sort(), ["aic", "result", "runId", "status"]);
+		const manifest = JSON.parse(readFileSync(join(runDir, "manifest.json"), "utf8"));
+		assert.equal(manifest.conveyor.name, "persist");
+		const result = JSON.parse(readFileSync(join(runDir, "run.json"), "utf8"));
 		assert.equal(result.result, "ECHO: hi");
+	}));
+
+test("plain object results from the harness VM persist as strict JSON", () =>
+	withFakeEnv({}, async () => {
+		const runDir = tmpDir();
+		const rec = await executeConveyor({
+			source: `return { ok: true, values: [0, false, null] };`,
+			runId: "json-result",
+			runDir,
+			budget: 1,
+			onLine: () => {},
+		});
+		assert.equal(rec.status, "complete");
+		assert.deepEqual(rec.result, { ok: true, values: [0, false, null] });
+		assert.deepEqual(JSON.parse(readFileSync(join(runDir, "run.json"), "utf8")).result, rec.result);
 	}));
 
 test("a complete run leaves no agent sessions behind", () =>
@@ -257,10 +279,36 @@ test("harness failure is persisted as an error record instead of rejecting", () 
 		assert.match(rec.error ?? "", /boom/);
 		assert.ok(existsSync(join(runDir, "script.js")));
 		assert.equal(JSON.parse(readFileSync(join(runDir, "run.json"), "utf8")).status, "error");
-		assert.equal(JSON.parse(readFileSync(join(runDir, "result.json"), "utf8")).status, "error");
-		const progress = readFileSync(join(runDir, "progress.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+		const progress = readFileSync(join(runDir, "ledger.jsonl"), "utf8").trim().split("\n").map(JSON.parse).filter((record) => record.type === "progress").map((record) => record.record);
 		assert.equal(progress.at(-1).ev, "run_end");
 		assert.equal(progress.at(-1).status, "error");
+	}));
+
+test("run.json remains authoritative when attempt completion fails after terminal persistence", () =>
+	withFakeEnv({}, async () => {
+		const { Ledger } = await import("./ledger.mjs");
+		const original = Ledger.prototype.finishAttempt;
+		Ledger.prototype.finishAttempt = function () {
+			throw new Error("finish failed");
+		};
+		const runDir = tmpDir();
+		try {
+			await assert.rejects(
+				executeConveyor({
+					source: `return { ok: true };`,
+					runId: "terminal-first",
+					runDir,
+					limits: { maxAiCredits: 1 },
+					onLine: () => {},
+				}),
+				/finish failed/,
+			);
+			const terminal = JSON.parse(readFileSync(join(runDir, "run.json"), "utf8"));
+			assert.equal(terminal.status, "complete");
+			assert.deepEqual(terminal.result, { ok: true });
+		} finally {
+			Ledger.prototype.finishAttempt = original;
+		}
 	}));
 
 test("a synchronous runaway harness is bounded and persisted as an error", async () => {
@@ -276,7 +324,6 @@ test("a synchronous runaway harness is bounded and persisted as an error", async
 	assert.equal(rec.status, "error");
 	assert.match(rec.error ?? "", /Script execution timed out after 25ms/);
 	assert.equal(JSON.parse(readFileSync(join(runDir, "run.json"), "utf8")).status, "error");
-	assert.equal(JSON.parse(readFileSync(join(runDir, "result.json"), "utf8")).status, "error");
 });
 
 test("reporter closes even when final logging throws", () =>
@@ -347,7 +394,7 @@ test("abort during fire-and-forget drain records timeout, not complete", () =>
 		});
 
 		for (let i = 0; i < 100; i++) {
-			if (existsSync(join(runDir, "progress.jsonl")) && readFileSync(join(runDir, "progress.jsonl"), "utf8").includes('"ev":"start"')) break;
+			if (existsSync(join(runDir, "ledger.jsonl")) && readFileSync(join(runDir, "ledger.jsonl"), "utf8").includes('"ev":"start"')) break;
 			await new Promise((resolve) => setTimeout(resolve, 10));
 		}
 		ac.abort();
@@ -355,17 +402,13 @@ test("abort during fire-and-forget drain records timeout, not complete", () =>
 		const rec = await within(pending, 2000);
 		assert.equal(rec.status, "timeout");
 		assert.equal(rec.result, "done");
-		assert.equal(JSON.parse(readFileSync(join(runDir, "result.json"), "utf8")).status, "timeout");
+		assert.equal(JSON.parse(readFileSync(join(runDir, "run.json"), "utf8")).status, "timeout");
 	}));
 
-// A resumed run reads its args from meta.json and its sidecar from host.mjs. If either write fails
-// the run must fail loudly: completing would leave a run that reports success but resumes with the
-// wrong input, or with no host effects at all.
-test("a run fails when it cannot persist the args a resume replays", () =>
+test("a run fails when it cannot persist its manifest identity", () =>
 	withFakeEnv({}, async () => {
 		const runDir = tmpDir();
-		// Make meta.json unwritable by occupying the path with a directory.
-		mkdirSync(join(runDir, "meta.json"), { recursive: true });
+		mkdirSync(join(runDir, "manifest.json"), { recursive: true });
 		await assert.rejects(
 			executeConveyor({
 				source: `export const meta = { name: "meta-fail", description: "test conveyor" };\nreturn "done";`,
@@ -375,32 +418,50 @@ test("a run fails when it cannot persist the args a resume replays", () =>
 				args: { important: "input" },
 				onLine: () => {},
 			}),
-			/EISDIR|meta\.json/,
-			"a run that cannot persist its args must fail loudly, not report success",
+			/EISDIR|manifest\.json/,
+			"a run that cannot persist its identity must fail loudly",
 		);
-		assert.ok(!existsSync(join(runDir, "result.json")), "no result artifact for a failed launch");
+		assert.ok(!existsSync(join(runDir, "run.json")), "no terminal artifact for a failed launch");
 	}));
 
-test("a run fails when it cannot persist the sidecar a resume loads", () =>
+test("host snapshots replace stale target artifacts before execution", () =>
 	withFakeEnv({}, async () => {
 		const runDir = tmpDir();
 		const hostPath = join(tmpDir(), "effects.host.mjs");
 		writeFileSync(hostPath, "export async function ping() { return 1; }\n");
-		// Make host.mjs unwritable by occupying the path with a directory.
-		mkdirSync(join(runDir, "host.mjs"), { recursive: true });
-		await assert.rejects(
-			executeConveyor({
-				source: `export const meta = { name: "host-fail", description: "test conveyor" };\nreturn String(await host.ping());`,
-				runId: "host-fail",
-				runDir,
-				hostPath,
-				budget: 1,
-				onLine: () => {},
-			}),
-			/EISDIR|host\.mjs/,
-			"a run that cannot persist its sidecar must fail loudly, not report success",
-		);
-		assert.ok(!existsSync(join(runDir, "result.json")), "no result artifact for a failed launch");
+		// A stale file at the snapshot root is removed before the complete bundle is written.
+		writeFileSync(join(runDir, "host"), "blocked");
+		const result = await executeConveyor({
+			source: `export const meta = { name: "host-snapshot", description: "test conveyor" };\nreturn String(await host.ping());`,
+			runId: "host-snapshot",
+			runDir,
+			hostPath,
+			budget: 1,
+			onLine: () => {},
+		});
+		assert.equal(result.status, "complete");
+		assert.ok(existsSync(join(runDir, "host", "manifest.json")));
+	}));
+
+test("a bundled host uses the same complete snapshot on initial run and resume", () =>
+	withFakeEnv({}, async () => {
+		const runDir = tmpDir();
+		const hostPath = tmpDir();
+		writeFileSync(join(hostPath, "index.mjs"), `import { value } from "./helper.mjs";\nexport const ping = () => value;\n`);
+		writeFileSync(join(hostPath, "helper.mjs"), `export const value = "bundled";\n`);
+		const source = `export const meta = { name: "bundle" };\nreturn await host.ping();`;
+		const first = await executeConveyor({ source, runId: "bundle", runDir, hostPath, budget: 1, onLine: () => {} });
+		assert.equal(first.result, "bundled");
+		const resumed = await executeConveyor({
+			source,
+			runId: "bundle",
+			runDir,
+			hostPath: join(runDir, "host"),
+			budget: 1,
+			resume: true,
+			onLine: () => {},
+		});
+		assert.equal(resumed.result, "bundled");
 	}));
 
 test("a lost lease stops a run from writing artifacts", () =>
@@ -411,7 +472,7 @@ test("a lost lease stops a run from writing artifacts", () =>
 		const lease = store.acquire();
 		// Another process takes the lock: the original lease is fenced off.
 		writeFileSync(store.ownerPath, JSON.stringify({ token: "other", generation: lease.generation + 1 }));
-		assert.throws(() => store.writeJson(lease, "meta.json", { runId: "lease-fail" }), /ownership changed/);
+		assert.throws(() => store.writeJson(lease, "manifest.json", { runId: "lease-fail" }), /ownership changed/);
 		assert.throws(() => store.writeFile(lease, "host.mjs", "x"), /ownership changed/);
 		lease.release();
 	}));

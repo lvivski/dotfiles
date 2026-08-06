@@ -60,6 +60,7 @@ return report.content;
   normal permission mode.
 - MCP configuration and extra paths belong to `run_conveyor`, never agent options.
 - The harness cannot mutate budget. The host may ask the user once to approve an increase at the boundary.
+- Declared timeout, total-agent, and AIC limits are cumulative across resumes.
 - Dry-run executes read-only effects for accurate discovery and skips mutating effects.
 - The harness VM provides determinism, not a security boundary. Use an OS/cloud sandbox for
   untrusted workflow authors.
@@ -74,6 +75,7 @@ Use:
 ```text
 inspect_conveyor_run({ runId })
 get_conveyor_result({ runId })
+get_conveyor_progress({ runId, afterSeq?, beforeSeq?, phaseId?, limit? })
 control_conveyor_run({ runId, action: "pause" | "resume" | "cancel", invalidate?: ["/0", "/2/1"] })
 ```
 

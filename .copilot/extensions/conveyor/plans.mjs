@@ -1,10 +1,11 @@
 /** @module plans — durable dry-run plans that bind identity and hard execution ceilings. */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
-import { FORMAT_VERSION, atomicWriteFile, atomicWriteJson, hashFile, hashValue, readJsonFile } from "./persistence.mjs";
+import { atomicWriteFile, atomicWriteJson, hashValue, readJsonFile } from "./persistence.mjs";
+import { snapshotHost, verifyHostSnapshot } from "./snapshot.mjs";
 const HOME = homedir();
 export const plansDir = () => process.env.CONVEYOR_PLANS_DIR || join(process.env.CONVEYOR_DIR || join(HOME, ".copilot/conveyors"), "plans");
 
@@ -16,11 +17,10 @@ export function persistConveyorPlan(input) {
 	atomicWriteFile(scriptPath, input.source);
 	let hostPath = null;
 	if (input.hostPath) {
-		hostPath = join(dir, "host.mjs");
-		atomicWriteFile(hostPath, readFileSync(input.hostPath));
+		hostPath = join(dir, "host");
+		snapshotHost(input.hostPath, hostPath);
 	}
 	const plan = {
-		formatVersion: FORMAT_VERSION,
 		planId,
 		createdAt: new Date().toISOString(),
 		scriptPath,
@@ -28,19 +28,19 @@ export function persistConveyorPlan(input) {
 		sourceHash: hashValue(input.source),
 		args: input.args ?? null,
 		argsHash: hashValue(input.args),
-		hostHash: hashFile(input.hostPath),
+		hostHash: hostPath ? hashValue(verifyHostSnapshot(hostPath).manifest) : null,
 		cwd: input.cfg.cwd,
-		budget: input.cfg.budget,
 		model: input.cfg.model,
 		effort: input.cfg.effort,
 		context: input.cfg.context,
-		concurrency: input.cfg.concurrency,
 		enableMcp: !!input.cfg.enableMcp,
 		restricted: !!input.cfg.restricted,
 		strictBudget: !!input.cfg.strictBudget,
 		memoryPath: input.cfg.memoryPath,
 		progressMode: input.cfg.progressMode,
 		maxAgents: input.plannedAgents,
+		limits: input.cfg.limits || {},
+		retainAgentContent: input.cfg.retainAgentContent === true,
 	};
 	atomicWriteJson(join(dir, "plan.json"), plan);
 	return plan;
@@ -50,10 +50,16 @@ export function persistConveyorPlan(input) {
 export function loadConveyorPlan(planId) {
 	if (!/^plan-[A-Za-z0-9-]+$/.test(planId)) return null;
 	const plan = readJsonFile(join(plansDir(), planId, "plan.json"));
-	if (!plan || plan.formatVersion !== FORMAT_VERSION || plan.planId !== planId) return null;
+	if (!plan || plan.planId !== planId) return null;
 	if (!existsSync(plan.scriptPath)) return null;
 	if (hashValue(readFileSync(plan.scriptPath, "utf8")) !== plan.sourceHash) return null;
-	if (plan.hostPath && hashFile(plan.hostPath) !== plan.hostHash) return null;
+	if (plan.hostPath) {
+		try {
+			if (!statSync(plan.hostPath).isDirectory() || hashValue(verifyHostSnapshot(plan.hostPath).manifest) !== plan.hostHash) return null;
+		} catch {
+			return null;
+		}
+	}
 	if (hashValue(plan.args) !== plan.argsHash) return null;
 	return plan;
 }

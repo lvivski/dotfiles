@@ -1,21 +1,28 @@
 /** @module runs.test — persisted run inspection: listing, replay, and slash-command rendering. */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
 	MAX_RESULT_CHUNK_CHARS,
 	ConveyorResultError,
+	getConveyorAgentContent,
+	getConveyorProgress,
 	getConveyorResult,
+	getConveyorRunActivity,
 	inspectConveyorAgent,
 	inspectConveyorRun,
 	listConveyorRuns,
+	loadConveyorResult,
+	loadConveyorRunForImport,
 	runsDir,
 	conveyorCommand,
 } from "./runs.mjs";
 import { PROCESS_INSTANCE_ID } from "./progress.mjs";
 import { tmpDir } from "./fixtures/support.mjs";
+import { Ledger } from "./ledger.mjs";
+import { snapshotHost } from "./snapshot.mjs";
 
 /** @template T @param {(runs: string) => T} fn @returns {T} */
 function withRuns(fn) {
@@ -56,20 +63,20 @@ test("runsDir follows CONVEYOR_RUNS_DIR and listConveyorRuns reports an empty di
 test("listConveyorRuns prefers persisted records and falls back to progress replay", () =>
 	withRuns((runs) => {
 		const complete = runDir(runs, "complete-run");
-		writeFileSync(join(complete, "meta.json"), JSON.stringify({ conveyor: { name: "full" }, updatedAt: "2026-01-01T00:00:01Z" }));
+		writeFileSync(join(complete, "manifest.json"), JSON.stringify({ conveyor: { name: "full" }, createdAt: "2026-01-01T00:00:01Z" }));
 		writeFileSync(join(complete, "run.json"), JSON.stringify({ status: "complete", conveyor: { name: "full" }, aic: 1.25, finishedAt: "2026-01-01T00:00:01Z" }));
 
 		const replayed = runDir(runs, "replayed-run");
-		writeFileSync(join(replayed, "progress.jsonl"), [
-			JSON.stringify({ ev: "run_start", meta: { name: "replayed" } }),
-			JSON.stringify({ ev: "run_end", agents: 2, launched: 2, done: 2, failed: 0, cached: 0, skipped: 0, nanoAiu: 500_000_000, t: Date.parse("2026-07-09T18:00:00.000Z") }),
+		writeFileSync(join(replayed, "ledger.jsonl"), [
+			JSON.stringify({ type: "progress", revision: 1, recordedAt: Date.parse("2026-07-09T18:00:00.000Z"), record: { ev: "run_start", meta: { name: "replayed" } } }),
+			JSON.stringify({ type: "progress", revision: 2, recordedAt: Date.parse("2026-07-09T18:00:00.000Z"), record: { ev: "run_end", status: "complete", agents: 2, launched: 2, done: 2, failed: 0, cached: 0, skipped: 0, nanoAiu: 500_000_000, t: Date.parse("2026-07-09T18:00:00.000Z") } }),
 			"",
 		].join("\n"));
 
 		const errored = runDir(runs, "errored-run");
-		writeFileSync(join(errored, "progress.jsonl"), [
-			JSON.stringify({ ev: "run_start", meta: { name: "errored" } }),
-			JSON.stringify({ ev: "run_end", status: "error", error: "boom", agents: 0, launched: 0, done: 0, failed: 0, cached: 0, skipped: 0, nanoAiu: 0, t: Date.parse("2026-07-09T19:00:00.000Z") }),
+		writeFileSync(join(errored, "ledger.jsonl"), [
+			JSON.stringify({ type: "progress", revision: 1, recordedAt: Date.parse("2026-07-09T19:00:00.000Z"), record: { ev: "run_start", meta: { name: "errored" } } }),
+			JSON.stringify({ type: "progress", revision: 2, recordedAt: Date.parse("2026-07-09T19:00:00.000Z"), record: { ev: "run_end", status: "error", error: "boom", agents: 0, launched: 0, done: 0, failed: 0, cached: 0, skipped: 0, nanoAiu: 0, t: Date.parse("2026-07-09T19:00:00.000Z") } }),
 			"",
 		].join("\n"));
 
@@ -93,10 +100,9 @@ test("listConveyorRuns sorts timestamps chronologically across fractional precis
 test("getConveyorResult paginates results and includes terminal error metadata", () =>
 	withRuns((runs) => {
 		const dir = runDir(runs, "paged-run");
-		writeFileSync(join(dir, "run.json"), JSON.stringify({ runId: "paged-run", status: "partial", error: "one worker failed", aic: 1.25 }));
-		writeFileSync(join(dir, "result.json"), JSON.stringify({ runId: "paged-run", status: "partial", aic: 1.25, result: "A😀B🧪C" }));
+		writeFileSync(join(dir, "run.json"), JSON.stringify({ runId: "paged-run", status: "partial", error: "one worker failed", aic: 1.25, result: "A😀B🧪C" }));
 
-		const first = JSON.parse(getConveyorResult({ runId: "paged-run", limit: 3 }));
+		const first = JSON.parse(getConveyorResult({ runId: "paged-run", format: "text", limit: 3 }));
 		assert.deepEqual(
 			{
 				status: first.status,
@@ -113,24 +119,126 @@ test("getConveyorResult paginates results and includes terminal error metadata",
 				result: "A😀",
 			},
 		);
-		const second = JSON.parse(getConveyorResult({ runId: "paged-run", offset: first.nextOffset, limit: 3 }));
-		const third = JSON.parse(getConveyorResult({ runId: "paged-run", offset: second.nextOffset, limit: 3 }));
+		const second = JSON.parse(getConveyorResult({ runId: "paged-run", format: "text", offset: first.nextOffset, limit: 3 }));
+		const third = JSON.parse(getConveyorResult({ runId: "paged-run", format: "text", offset: second.nextOffset, limit: 3 }));
 		assert.equal(first.result + second.result + third.result, "A😀B🧪C");
 		assert.equal(third.nextOffset, null);
+	}));
+
+test("loadConveyorRunForImport returns source and argument identity", () =>
+	withRuns((runs) => {
+		const dir = runDir(runs, "import-run");
+		const args = { z: 1, a: ["x"] };
+		writeFileSync(
+			join(dir, "manifest.json"),
+			JSON.stringify({
+				runId: "import-run",
+				restricted: true,
+				enableMcp: false,
+				strictBudget: true,
+				model: null,
+				effort: null,
+				context: null,
+				planId: "preview-plan",
+				progressMode: "dashboard",
+				maxAgents: 15,
+				declaredLimits: {
+					maxConcurrentAgents: 2,
+					maxTotalAgents: 8,
+					timeoutSeconds: 300,
+					maxAiCredits: 30,
+				},
+				conveyor: { name: "mobius-plan" },
+				args,
+			}),
+		);
+		writeFileSync(join(dir, "script.js"), "return { ok: true };\n");
+		writeFileSync(
+			join(dir, "run.json"),
+			JSON.stringify({
+				runId: "import-run",
+				status: "complete",
+				revision: 2,
+				result: { ok: true },
+				preservedWorktrees: [],
+			}),
+		);
+
+		const imported = loadConveyorRunForImport("import-run");
+		assert.equal(imported.status, "complete");
+		assert.equal(imported.conveyor, "mobius-plan");
+		assert.equal(imported.restricted, true);
+		assert.equal(imported.enableMcp, false);
+		assert.equal(imported.strictBudget, true);
+		assert.equal(imported.previewPlanId, "preview-plan");
+		assert.equal(imported.maxAgents, 15);
+		assert.equal(imported.declaredLimits.maxTotalAgents, 8);
+		assert.equal(imported.hostPath, null);
+		assert.equal(imported.source, "return { ok: true };\n");
+		assert.deepEqual(imported.args, args);
+		assert.match(imported.argsSha256, /^[a-f0-9]{64}$/);
+		assert.match(imported.scriptSha256, /^[a-f0-9]{64}$/);
+		assert.deepEqual(imported.preservedWorktrees, []);
+	}));
+
+test("loadConveyorRunForImport validates manifest identity and host snapshots", () =>
+	withRuns((runs) => {
+		const makeRun = (id) => {
+			const dir = runDir(runs, id);
+			writeFileSync(join(dir, "manifest.json"), JSON.stringify({ runId: id, args: null }));
+			writeFileSync(join(dir, "script.js"), "return null;\n");
+			writeFileSync(join(dir, "run.json"), JSON.stringify({ runId: id, status: "complete", revision: 1, result: null }));
+			return dir;
+		};
+
+		const mismatch = makeRun("mismatch");
+		writeFileSync(join(mismatch, "manifest.json"), JSON.stringify({ runId: "other", args: null }));
+		assert.throws(() => loadConveyorRunForImport("mismatch"), /manifest id/);
+
+		const symlinked = makeRun("symlinked");
+		symlinkSync(tmpDir(), join(symlinked, "host"));
+		assert.throws(() => loadConveyorRunForImport("symlinked"), /host snapshot/);
+
+		const tampered = makeRun("tampered");
+		const source = tmpDir();
+		writeFileSync(join(source, "index.mjs"), "export const effect = () => 1;\n");
+		snapshotHost(source, join(tampered, "host"));
+		writeFileSync(join(tampered, "host", "index.mjs"), "tampered");
+		assert.throws(() => loadConveyorRunForImport("tampered"), /integrity verification/);
+	}));
+
+test("getConveyorRunActivity reads terminal status", () =>
+	withRuns((runs) => {
+		const dir = runDir(runs, "unsupported-terminal");
+		writeFileSync(join(dir, "manifest.json"), JSON.stringify({ runId: "unsupported-terminal" }));
+		writeFileSync(join(dir, "run.json"), JSON.stringify({
+			runId: "unsupported-terminal",
+			status: "timeout",
+			revision: 1,
+		}));
+		assert.deepEqual(
+			getConveyorRunActivity("unsupported-terminal"),
+			{
+				runId: "unsupported-terminal",
+				exists: true,
+				status: "timeout",
+				active: false,
+			},
+		);
 	}));
 
 test("getConveyorResult handles empty results and offsets past the end", () =>
 	withRuns((runs) => {
 		const empty = runDir(runs, "empty-run");
-		writeFileSync(join(empty, "result.json"), JSON.stringify({ runId: "empty-run", status: "complete", aic: 0, result: "" }));
-		const emptyResult = JSON.parse(getConveyorResult({ runId: "empty-run", offset: 99 }));
+		writeFileSync(join(empty, "run.json"), JSON.stringify({ runId: "empty-run", status: "complete", aic: 0, result: "" }));
+		const emptyResult = JSON.parse(getConveyorResult({ runId: "empty-run", format: "text", offset: 99 }));
 		assert.equal(emptyResult.resultAvailable, true);
 		assert.equal(emptyResult.nextOffset, null);
 		assert.equal(emptyResult.result, "");
 
 		const short = runDir(runs, "short-run");
-		writeFileSync(join(short, "result.json"), JSON.stringify({ runId: "short-run", status: "complete", aic: 0, result: "abc" }));
-		const pastEnd = JSON.parse(getConveyorResult({ runId: "short-run", offset: 50, limit: 2 }));
+		writeFileSync(join(short, "run.json"), JSON.stringify({ runId: "short-run", status: "complete", aic: 0, result: "abc" }));
+		const pastEnd = JSON.parse(getConveyorResult({ runId: "short-run", format: "text", offset: 50, limit: 2 }));
 		assert.equal(pastEnd.offset, 50);
 		assert.equal(pastEnd.nextOffset, null);
 		assert.equal(pastEnd.result, "");
@@ -144,6 +252,7 @@ test("getConveyorResult distinguishes running from terminal resultless runs", ()
 			join(running, "state.json"),
 			JSON.stringify({
 				status: "running",
+				revision: 6,
 				ownerPid: process.pid,
 				ownerInstanceId: PROCESS_INSTANCE_ID,
 				updatedAt: now,
@@ -183,16 +292,16 @@ test("getConveyorResult rejects unsafe inputs and malformed artifacts", () =>
 		assert.throws(() => getConveyorResult({ runId: "missing", limit: MAX_RESULT_CHUNK_CHARS + 1 }), /limit must be between/);
 
 		const malformed = runDir(runs, "malformed-run");
-		writeFileSync(join(malformed, "result.json"), "{not json");
+		writeFileSync(join(malformed, "run.json"), "{not json");
 		assert.throws(() => getConveyorResult({ runId: "malformed-run" }), /malformed JSON/);
 
 		const primitive = runDir(runs, "primitive-run");
-		writeFileSync(join(primitive, "result.json"), "false");
+		writeFileSync(join(primitive, "run.json"), "false");
 		assert.throws(() => getConveyorResult({ runId: "primitive-run" }), /must be a JSON object/);
 
 		const invalid = runDir(runs, "invalid-run");
-		writeFileSync(join(invalid, "result.json"), JSON.stringify({ runId: "invalid-run", status: "complete", result: { text: "no" } }));
-		assert.throws(() => getConveyorResult({ runId: "invalid-run" }), /non-string result/);
+		writeFileSync(join(invalid, "run.json"), JSON.stringify({ runId: "invalid-run", status: "complete", result: { text: "no" } }));
+		assert.deepEqual(JSON.parse(getConveyorResult({ runId: "invalid-run" })).result, { text: "no" });
 
 		const logs = /** @type {string[]} */ ([]);
 		conveyorCommand("result ../outside", { log: (message) => logs.push(message) });
@@ -203,7 +312,7 @@ test("inspectConveyorRun returns bounded running metadata without result text or
 	withRuns((runs) => {
 		const dir = runDir(runs, "running-inspect");
 		const huge = "x".repeat(5000);
-		writeFileSync(join(dir, "meta.json"), JSON.stringify({ conveyor: { name: huge }, updatedAt: "2026-01-01T00:00:00Z" }));
+		writeFileSync(join(dir, "manifest.json"), JSON.stringify({ conveyor: { name: huge }, createdAt: "2026-01-01T00:00:00Z" }));
 		writeFileSync(
 			join(dir, "state.json"),
 			JSON.stringify({
@@ -255,6 +364,7 @@ test("inspectConveyorRun prefers terminal records, suppresses phantom running ag
 			JSON.stringify({
 				runId: "terminal-inspect",
 				status: "complete",
+				revision: 4,
 				conveyor: { name: "terminal" },
 				args: { secret: "must-not-leak" },
 				result: "must-not-leak",
@@ -265,14 +375,12 @@ test("inspectConveyorRun prefers terminal records, suppresses phantom running ag
 		writeFileSync(
 			join(dir, "manifest.json"),
 			JSON.stringify({
-				persistenceVersion: 3,
 				parentPermissionMode: "auto",
 				parentSessionMode: "autopilot",
 				permissionMode: "parent-auto-profile-narrowed",
 				permissionInheritance: { fineGrainedRules: "not-exposed-by-parent-sdk" },
 			}),
 		);
-		writeFileSync(join(dir, "result.json"), JSON.stringify({ runId: "terminal-inspect", status: "complete", aic: 1, result: "must-not-leak" }));
 
 		const text = inspectConveyorRun({ runId: "terminal-inspect" });
 		const inspected = JSON.parse(text);
@@ -288,25 +396,56 @@ test("inspectConveyorRun prefers terminal records, suppresses phantom running ag
 		assert.doesNotMatch(text, /must-not-leak/);
 	}));
 
-test("inspectConveyorRun replays progress and surfaces malformed result artifacts", () =>
+test("inspectConveyorRun replays ledger progress", () =>
 	withRuns((runs) => {
 		const replayed = runDir(runs, "legacy-inspect");
 		writeFileSync(
-			join(replayed, "progress.jsonl"),
+			join(replayed, "ledger.jsonl"),
 			[
-				JSON.stringify({ ev: "run_start", meta: { name: "replayed" } }),
-				JSON.stringify({ ev: "run_end", status: "partial", error: "legacy failure", agents: 2, launched: 2, done: 1, failed: 1, cached: 0, skipped: 0, nanoAiu: 500_000_000 }),
+				JSON.stringify({ type: "progress", revision: 1, recordedAt: 1, record: { ev: "run_start", meta: { name: "replayed" } } }),
+				JSON.stringify({ type: "progress", revision: 2, recordedAt: 2, record: { ev: "run_end", status: "partial", error: "failure", agents: 2, launched: 2, done: 1, failed: 1, cached: 0, skipped: 0, nanoAiu: 500_000_000 } }),
 				"",
 			].join("\n"),
 		);
-		writeFileSync(join(replayed, "result.json"), "{not json");
 
 		const inspected = JSON.parse(inspectConveyorRun({ runId: "legacy-inspect" }));
 		assert.equal(inspected.status, "partial");
 		assert.equal(inspected.conveyor, "replayed");
 		assert.equal(inspected.counts.failed, 1);
 		assert.equal(inspected.result.available, false);
-		assert.match(inspected.result.error, /malformed JSON/);
+	}));
+
+test("inspectConveyorRun keeps a previous process instance interrupted after reload", () =>
+	withRuns((runs) => {
+		const dir = runDir(runs, "reloaded-owner");
+		mkdirSync(join(dir, ".lock"), { recursive: true });
+		writeFileSync(join(dir, ".lock", "owner.json"), JSON.stringify({
+			token: "previous-owner",
+			generation: 1,
+			pid: process.pid,
+			instanceId: "previous-process-instance",
+		}));
+		writeFileSync(join(dir, "manifest.json"), JSON.stringify({
+			conveyor: { name: "reload-test" },
+			args: {},
+		}));
+		writeFileSync(join(dir, "state.json"), JSON.stringify({
+			runId: "reloaded-owner",
+			status: "running",
+			ownerPid: process.pid,
+			ownerInstanceId: "previous-process-instance",
+			revision: 1,
+			updatedAt: new Date().toISOString(),
+		}));
+		writeFileSync(join(dir, "run.json"), JSON.stringify({
+			runId: "reloaded-owner",
+			status: "complete",
+			revision: 1,
+			result: "older attempt",
+		}));
+
+		const inspected = JSON.parse(inspectConveyorRun({ runId: "reloaded-owner" }));
+		assert.equal(inspected.status, "interrupted");
 	}));
 
 test("inspectConveyorRun rejects unsafe and missing run ids", () =>
@@ -315,31 +454,90 @@ test("inspectConveyorRun rejects unsafe and missing run ids", () =>
 		assert.throws(() => inspectConveyorRun({ runId: "missing" }), /Use list_conveyor_runs/);
 	}));
 
-test("inspectConveyorAgent returns bounded summary, prompt, result, events, and usage", () =>
+test("agent inspection keeps summaries safe and gates prompt/result content", () =>
 	withRuns((runs) => {
 		const dir = runDir(runs, "agent-run");
 		const key = '["a",[],0,"fp",0]';
 		writeFileSync(
-			join(dir, "journal.jsonl"),
+			join(dir, "ledger.jsonl"),
 			[
-				JSON.stringify({ v: 3, type: "control", action: "branches_invalidated", generation: 1, branches: [[0]], invalidatedAt: "2026-01-01T00:00:00Z" }),
-				JSON.stringify({ v: 3, type: "agent_started", key, branch: [0, 2], branchPath: "/0/2", label: "reviewer", prompt: "review this file", model: "m" }),
-				JSON.stringify({ v: 3, type: "usage", key, label: "reviewer", sessionId: "session-1", model: "m", outcome: "ok", aic: 0.5, usageUnknown: false }),
-				JSON.stringify({ v: 3, type: "result", key, result: { label: "reviewer", sessionId: "session-1", model: "m", ok: true, content: "long result" } }),
+				JSON.stringify({ type: "branches_invalidated", revision: 1, generation: 1, branches: [[0]], invalidatedAt: "2026-01-01T00:00:00Z" }),
+				JSON.stringify({ type: "agent_started", revision: 2, key, agentSeq: 7, branch: [0, 2], branchPath: "/0/2", label: "reviewer", prompt: "review this file", model: "m" }),
+				JSON.stringify({ type: "agent_usage", revision: 3, key, label: "reviewer", sessionId: "session-1", model: "m", outcome: "ok", nanoAiu: 500_000_000, unknownUsage: false }),
+				JSON.stringify({ type: "result", revision: 4, kind: "agent", key, value: { label: "reviewer", sessionId: "session-1", model: "m", ok: true, content: "long result" } }),
+				JSON.stringify({ type: "progress", revision: 5, recordedAt: 5, record: { ev: "end", agentSeq: 7, label: "reviewer", ok: true } }),
 				"",
 			].join("\n"),
 		);
-		writeFileSync(join(dir, "progress.jsonl"), JSON.stringify({ ev: "end", label: "reviewer", ok: true }) + "\n");
 		const summary = JSON.parse(inspectConveyorAgent({ runId: "agent-run", agent: "session-1" }));
 		assert.equal(summary.label, "reviewer");
 		assert.equal(summary.branchPath, "/0/2");
 		assert.equal(summary.aic, 0.5);
 		assert.equal(summary.hasPrompt, true);
-		assert.equal(JSON.parse(inspectConveyorAgent({ runId: "agent-run", agent: "reviewer", section: "prompt", limit: 6 })).text, "review");
-		assert.equal(JSON.parse(inspectConveyorAgent({ runId: "agent-run", agent: key, section: "result", offset: 5 })).text, "result");
+		assert.equal(JSON.parse(getConveyorAgentContent({ runId: "agent-run", agent: "reviewer", section: "prompt", limit: 6 })).text, "review");
+		assert.equal(JSON.parse(getConveyorAgentContent({ runId: "agent-run", agent: key, section: "result", offset: 5 })).text, "result");
 		assert.match(JSON.parse(inspectConveyorAgent({ runId: "agent-run", agent: "reviewer", section: "events" })).text, /"ev":"end"/);
 		assert.equal(JSON.parse(inspectConveyorAgent({ runId: "agent-run", agent: "reviewer", section: "usage" })).usage.length, 1);
 		assert.throws(() => inspectConveyorAgent({ runId: "agent-run", agent: "missing" }), /no conveyor agent matched/);
+	}));
+
+test("agent event inspection scopes repeated agent sequences by attempt", () =>
+	withRuns((runs) => {
+		const dir = runDir(runs, "attempt-events");
+		const records = [
+			{ type: "agent_started", revision: 1, key: "a", attemptId: "attempt-a", agentSeq: 1, label: "worker" },
+			{ type: "progress", revision: 2, recordedAt: 2, record: { ev: "end", attemptId: "attempt-a", agentSeq: 1, label: "worker", error: "first" } },
+			{ type: "agent_started", revision: 3, key: "b", attemptId: "attempt-b", agentSeq: 1, label: "worker" },
+			{ type: "progress", revision: 4, recordedAt: 4, record: { ev: "end", attemptId: "attempt-b", agentSeq: 1, label: "worker", error: "second" } },
+		];
+		writeFileSync(join(dir, "ledger.jsonl"), records.map(JSON.stringify).join("\n") + "\n");
+		const events = JSON.parse(inspectConveyorAgent({ runId: "attempt-events", agent: "a", section: "events" })).text;
+		assert.match(events, /first/);
+		assert.doesNotMatch(events, /second/);
+	}));
+
+test("getConveyorProgress pages authoritative revisioned ledger records", () =>
+	withRuns((runs) => {
+		const dir = runDir(runs, "progress-run");
+		const ledger = new Ledger(dir);
+		ledger.record("progress", { record: { ev: "phase_enter", phaseId: "phase:0", phase: "review" } });
+		ledger.record("progress", { record: { ev: "end", phaseId: "phase:0", phase: "review", agentSeq: 1, label: "a" } });
+		ledger.record("progress", { record: { ev: "run_end", status: "complete" } });
+		const latest = JSON.parse(getConveyorProgress({ runId: "progress-run", limit: 2 }));
+		assert.equal(latest.records.length, 2);
+		assert.equal(latest.records.at(-1).ev, "run_end");
+		assert.equal(latest.hasMoreOlder, true);
+		const older = JSON.parse(getConveyorProgress({ runId: "progress-run", beforeSeq: latest.oldestSeq, limit: 2 }));
+		assert.equal(older.records[0].ev, "phase_enter");
+		const phase = JSON.parse(getConveyorProgress({ runId: "progress-run", phaseId: "phase:0" }));
+		assert.equal(phase.records.length, 2);
+		assert.equal(phase.hasMoreNewer, false);
+	}));
+
+test("progress and usage inspection are bounded and paginated", () =>
+	withRuns((runs) => {
+		const dir = runDir(runs, "bounded-inspection");
+		const ledger = new Ledger(dir);
+		ledger.recordStarted("k", { prompt: "p", label: "worker", model: "m", cacheCwd: "/" }, [], false, 1);
+		for (let i = 0; i < 3; i++) {
+			ledger.recordUsage("k", {
+				nanoAiu: i,
+				usageUnknown: false,
+				ok: true,
+				label: "worker",
+				sessionId: "s",
+				model: "m",
+			});
+		}
+		ledger.progress({ ev: "end", agentSeq: 1, label: "worker", error: `bad\u0007${"x".repeat(5000)}` });
+		ledger.flushProgress();
+		const progress = JSON.parse(getConveyorProgress({ runId: "bounded-inspection" }));
+		assert.ok(progress.records[0].error.length <= 2000);
+		assert.doesNotMatch(progress.records[0].error, /[\u0000-\u001f]/);
+		const usage = JSON.parse(inspectConveyorAgent({ runId: "bounded-inspection", agent: "k", section: "usage", offset: 1, limit: 1 }));
+		assert.equal(usage.usage.length, 1);
+		assert.equal(usage.offset, 1);
+		assert.equal(usage.nextOffset, 2);
 	}));
 
 test("a dead owner renders interrupted while a live owner stays running", () =>
@@ -360,6 +558,7 @@ test("a dead owner renders interrupted while a live owner stays running", () =>
 			recent: [],
 			errors: [],
 		}));
+
 		const live = runDir(runs, "live-owner");
 		writeFileSync(join(live, "state.json"), JSON.stringify({
 			status: "running",
@@ -367,16 +566,37 @@ test("a dead owner renders interrupted while a live owner stays running", () =>
 			ownerInstanceId: PROCESS_INSTANCE_ID,
 			updatedAt: now,
 		}));
+
 		writeLiveOwner(live);
 		const legacy = runDir(runs, "legacy-stale");
 		writeFileSync(join(legacy, "state.json"), JSON.stringify({
 			status: "running",
 			updatedAt: old,
 		}));
+
 		const locked = runDir(runs, "legacy-locked");
 		writeFileSync(join(locked, "state.json"), JSON.stringify({
 			status: "running",
 			updatedAt: old,
+		}));
+
+test("a newer interrupted resume state supersedes an older terminal result", () =>
+		withRuns((runs) => {
+			const dir = runDir(runs, "interrupted-resume");
+			writeFileSync(join(dir, "run.json"), JSON.stringify({ runId: "interrupted-resume", status: "complete", revision: 0, result: "old" }));
+			const ledger = new Ledger(dir);
+			ledger.startAttempt();
+			writeFileSync(join(dir, "state.json"), JSON.stringify({
+				runId: "interrupted-resume",
+				status: "running",
+				revision: 9,
+				ownerPid: 2_147_483_647,
+				ownerInstanceId: "dead",
+				updatedAt: new Date().toISOString(),
+			}));
+			const loaded = loadConveyorResult("interrupted-resume");
+			assert.equal(loaded.status, "interrupted");
+			assert.equal(loaded.resultAvailable, false);
 		}));
 		mkdirSync(join(locked, ".lock"));
 		writeFileSync(join(locked, ".lock", "owner.json"), JSON.stringify({
@@ -418,14 +638,17 @@ test("conveyorCommand renders latest dashboard, result, artifacts, and summary f
 			recent: [],
 			errors: [],
 		}));
-		writeFileSync(join(full, "result.json"), JSON.stringify({ result: "hello" }));
+		writeFileSync(join(full, "run.json"), JSON.stringify({ runId: "full-run", status: "complete", revision: 1, result: "hello" }));
 
 		conveyorCommand("latest", ctx);
 		assert.match(logs.at(-1) ?? "", /conveyor: demo/);
 		conveyorCommand("result full-run", ctx);
 		assert.equal(logs.at(-1), "hello");
+		writeFileSync(join(full, "run.json"), JSON.stringify({ runId: "full-run", status: "complete", revision: 2, result: { ok: true } }));
+		conveyorCommand("result full-run", ctx);
+		assert.equal(logs.at(-1), '{\n  "ok": true\n}');
 		conveyorCommand("artifacts full-run", ctx);
-		assert.match(logs.at(-1) ?? "", /result\.json/);
+		assert.match(logs.at(-1) ?? "", /run\.json/);
 
 		const summary = runDir(runs, "summary-run");
 		writeFileSync(join(summary, "run.json"), JSON.stringify({ status: "complete", counts: { agents: 1, done: 1, cached: 0, skipped: 0, failed: 0 }, aic: 0.5 }));

@@ -1,7 +1,7 @@
 /** @module progress.test — event application, narration fidelity, group tracking, persistence. */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { ProgressReporter } from "./progress.mjs";
@@ -38,6 +38,14 @@ test("agent end events update counts, AIC, and tokens", () => {
 	assert.equal(s.errors.length, 1);
 });
 
+test("different progress revisions retain one agent identity from start through end", () => {
+	const p = reporter();
+	p.emit({ ev: "start", agentSeq: 9, revision: 20, label: "a" });
+	assert.equal(/** @type {any} */ (p.snapshot()).running.length, 1);
+	p.emit({ ev: "end", agentSeq: 9, revision: 21, label: "a", ok: true, nanoAiu: 0 });
+	assert.equal(/** @type {any} */ (p.snapshot()).running.length, 0);
+});
+
 test("narration shows AIC/tokens/model for successful agents", () => {
 	const lines = /** @type {string[]} */ ([]);
 	const p = reporter((l) => lines.push(l));
@@ -63,6 +71,24 @@ test("group_start/group_end are narrated and tracked in the snapshot", () => {
 	assert.equal(s.groups.length, 0);
 	assert.match(lines[0], /pipeline launched \(3\)/);
 	assert.match(lines[1], /pipeline settled \(3\)/);
+});
+
+test("declared phase observations track entries, duration, agents, and revision", () => {
+	const p = new ProgressReporter({
+		runId: "r",
+		write: false,
+		meta: { phases: [{ id: "phase:0", ordinal: 0, title: "review", detail: "Inspect" }] },
+	});
+	p.emit({ ev: "phase_enter", revision: 4, phaseId: "phase:0", phase: "review", invocationId: "i", ordinal: 0 });
+	p.emit({ ev: "start", revision: 5, seq: 1, label: "a", phase: "review" });
+	p.emit({ ev: "end", revision: 6, seq: 1, label: "a", phase: "review", ok: true, nanoAiu: 0 });
+	p.emit({ ev: "phase_exit", revision: 7, phaseId: "phase:0", phase: "review", invocationId: "i", durationMs: 12 });
+	const state = /** @type {any} */ (p.snapshot());
+	assert.equal(state.revision, 7);
+	assert.equal(state.phases[0].status, "completed");
+	assert.equal(state.phases[0].entryCount, 1);
+	assert.equal(state.phases[0].totalAgentCount, 1);
+	assert.equal(state.phases[0].accumulatedActiveMs, 12);
 });
 
 test("dropped group items are counted, persisted as errors, and narrated", () => {
@@ -120,7 +146,8 @@ test("control characters in labels/errors are sanitized in narration", () => {
 
 test("state.json is written and reflects status on close", () => {
 	const dir = tmpDir();
-	const p = new ProgressReporter({ runId: "r", statePath: join(dir, "state.json"), onLine: () => {} });
+	const path = join(dir, "state.json");
+	const p = new ProgressReporter({ runId: "r", writeState: (state) => writeFileSync(path, JSON.stringify(state)), onLine: () => {} });
 	p.emit({ ev: "run_start", runId: "r" });
 	p.emit({ ev: "end", seq: 1, label: "a", ok: true, nanoAiu: 0, outputTokens: 0, model: "m" });
 	p.close("complete");
@@ -135,7 +162,7 @@ test("state.json is written and reflects status on close", () => {
 test("state.json receives the trailing state from a burst of events", async () => {
 	const dir = tmpDir();
 	const path = join(dir, "state.json");
-	const p = new ProgressReporter({ runId: "r", statePath: path, onLine: () => {} });
+	const p = new ProgressReporter({ runId: "r", writeState: (state) => writeFileSync(path, JSON.stringify(state)), onLine: () => {} });
 	p.emit({ ev: "run_start", runId: "r" });
 	p.emit({ ev: "group_start", gid: 1, kind: "pipeline", n: 2, phase: "research" });
 	p.emit({ ev: "start", seq: 1, label: "slow", model: "m", phase: "research" });
@@ -148,32 +175,20 @@ test("state.json receives the trailing state from a burst of events", async () =
 	p.close("complete");
 });
 
-test("state heartbeat tracks progress events and terminal close", async () => {
+test("state updatedAt tracks progress events and terminal close", async () => {
 	const dir = tmpDir();
 	const path = join(dir, "state.json");
-	const p = new ProgressReporter({ runId: "heartbeat", statePath: path, onLine: () => {} });
+	const p = new ProgressReporter({ runId: "heartbeat", writeState: (state) => writeFileSync(path, JSON.stringify(state)), onLine: () => {} });
 	p.emit({ ev: "run_start", runId: "heartbeat" });
-	const first = JSON.parse(readFileSync(path, "utf8")).heartbeatAt;
+	const first = JSON.parse(readFileSync(path, "utf8")).updatedAt;
 	await new Promise((resolve) => setTimeout(resolve, 5));
 	p.emit({ ev: "start", seq: 1, label: "active" });
 	await new Promise((resolve) => setTimeout(resolve, 200));
 	const live = JSON.parse(readFileSync(path, "utf8"));
 	assert.equal(live.status, "running");
-	assert.ok(Date.parse(live.heartbeatAt) > Date.parse(first));
+	assert.ok(Date.parse(live.updatedAt) > Date.parse(first));
 	p.close("complete");
 	const closed = JSON.parse(readFileSync(path, "utf8"));
 	assert.equal(closed.status, "complete");
 	assert.equal(closed.ownerGeneration, null);
-});
-
-test("progress.jsonl buffers events and flushes all records on close", () => {
-	const dir = tmpDir();
-	const path = join(dir, "progress.jsonl");
-	const p = new ProgressReporter({ runId: "r", jsonlPath: path, onLine: () => {} });
-	p.emit({ ev: "run_start", runId: "r" });
-	for (let i = 0; i < 5; i++) p.emit({ ev: "end", seq: i, label: "a" + i, ok: true, nanoAiu: 0 });
-	p.close("complete");
-	const lines = readFileSync(path, "utf8").trim().split("\n");
-	assert.equal(lines.length, 6);
-	assert.deepEqual(lines.map((l) => JSON.parse(l).ev), ["run_start", "end", "end", "end", "end", "end"]);
 });

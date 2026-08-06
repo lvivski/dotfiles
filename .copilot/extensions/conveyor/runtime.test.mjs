@@ -4,9 +4,35 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { Runtime, applyRunSettings, fingerprint } from "./runtime.mjs";
-import { executeConveyor, extractMeta, stripExports } from "./executor.mjs";
+import { Runtime as RuntimeImpl, applyRunSettings, fingerprint } from "./runtime.mjs";
+import { executeConveyor as executeRawConveyor, extractMeta, stripExports } from "./executor.mjs";
+import { getConveyorProgress, loadConveyorResult } from "./runs.mjs";
+import { Ledger } from "./ledger.mjs";
 import { mkResult, withFakeEnv, tmpDir } from "./fixtures/support.mjs";
+
+class Runtime extends RuntimeImpl {
+	constructor(options = {}) {
+		super({
+			...options,
+			limits: {
+				...(options.concurrency != null ? { maxConcurrentAgents: options.concurrency } : {}),
+				...(options.budget != null ? { maxAiCredits: options.budget } : {}),
+				...(options.limits || {}),
+			},
+		});
+	}
+}
+
+const executeConveyor = (config) => executeRawConveyor({
+	...config,
+	limits: {
+		...(config.concurrency != null ? { maxConcurrentAgents: config.concurrency } : {}),
+		...(config.budget != null ? { maxAiCredits: config.budget } : {}),
+		...(config.declaredLimits || {}),
+		...(config.limits || {}),
+	},
+	attemptTimeoutSeconds: config.timeoutSec ?? config.attemptTimeoutSeconds,
+});
 
 /**
  * Run a conveyor source end-to-end against the fake backend into a temp run dir.
@@ -33,10 +59,10 @@ return a.content + " | " + b.content;`;
 	assert.equal(record.result, "ECHO: one | ECHO: two");
 	assert.equal(record.counts.done, 2);
 	assert.equal(record.aic, 1.0);
-	for (const f of ["script.js", "meta.json", "run.json", "result.json", "state.json", "progress.jsonl", "journal.jsonl"]) {
+	for (const f of ["manifest.json", "script.js", "run.json", "state.json", "ledger.jsonl"]) {
 		assert.ok(existsSync(join(runDir, f)), `expected artifact ${f}`);
 	}
-	const lean = JSON.parse(readFileSync(join(runDir, "result.json"), "utf8"));
+	const lean = JSON.parse(readFileSync(join(runDir, "run.json"), "utf8"));
 	assert.equal(lean.result, "ECHO: one | ECHO: two");
 	assert.equal(lean.status, "complete");
 });
@@ -101,8 +127,8 @@ await agent("one", { label: "a1" }); await agent("two", { label: "a2" }); return
 		assert.equal(second.counts.cached, 2);
 		assert.equal(second.counts.launched, 0);
 		assert.equal(second.aic, 1.0);
-		const progress = readFileSync(join(runDir, "progress.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
-		assert.equal(progress.filter((event) => event.ev === "run_start").length, 1);
+		const progress = readFileSync(join(runDir, "ledger.jsonl"), "utf8").trim().split("\n").map(JSON.parse).filter((record) => record.type === "progress").map((record) => record.record);
+		assert.equal(progress.filter((event) => event.ev === "run_start").length, 2);
 		assert.equal(progress.at(-1).ev, "run_end");
 	});
 });
@@ -131,11 +157,11 @@ const rows = await pipeline([0,1], (n) => agent("branch-" + n, { label: "b" + n 
 		const replayed = await executeConveyor({ source, runId: "selective", runDir, budget: 10, resume: true, onLine: () => {} });
 		assert.equal(replayed.counts.cached, 2);
 		assert.equal(replayed.counts.launched, 0);
-		const invalidations = readFileSync(join(runDir, "journal.jsonl"), "utf8")
+		const invalidations = readFileSync(join(runDir, "ledger.jsonl"), "utf8")
 			.trim()
 			.split("\n")
 			.map((line) => JSON.parse(line))
-			.filter((record) => record.type === "control" && record.action === "branches_invalidated");
+			.filter((record) => record.type === "branches_invalidated");
 		assert.deepEqual(invalidations.map((record) => record.branches), [[[0]]]);
 	}));
 
@@ -148,7 +174,7 @@ const second = await pipeline([0,1], (n) => agent("second-" + n, { label: "secon
 return [...first, ...second].map((row) => row.content).join("|");`;
 		const first = await executeConveyor({ source, runId: "distinct-groups", runDir, budget: 10, onLine: () => {} });
 		assert.equal(first.counts.done, 4);
-		const started = readFileSync(join(runDir, "journal.jsonl"), "utf8")
+		const started = readFileSync(join(runDir, "ledger.jsonl"), "utf8")
 			.trim()
 			.split("\n")
 			.map((line) => JSON.parse(line))
@@ -318,9 +344,10 @@ return JSON.stringify({ slow: a[0], fast: b[0] });`;
 		assert.equal(resumed.counts.launched, 0);
 	}));
 
-test("resume replaces stale terminal artifacts before new work completes", async () => {
-	await withFakeEnv({}, async () => {
-		const runDir = tmpDir();
+test("resume preserves prior terminal artifacts until replacement is durable", async () => {
+	const runs = tmpDir();
+	await withFakeEnv({ CONVEYOR_RUNS_DIR: runs }, async () => {
+		const runDir = join(runs, "r");
 		await executeConveyor({
 			source: `export const meta = { name: "test", description: "test conveyor" };
 return (await agent("old")).content;`,
@@ -346,9 +373,10 @@ return (await agent("new")).content;`,
 		for (let i = 0; i < 50 && !existsSync(join(runDir, "state.json")); i++) {
 			await new Promise((resolve) => setTimeout(resolve, 10));
 		}
-		assert.equal(existsSync(join(runDir, "run.json")), false);
-		assert.equal(existsSync(join(runDir, "result.json")), false);
+		assert.equal(existsSync(join(runDir, "run.json")), true);
+		assert.equal(existsSync(join(runDir, "run.json")), true);
 		assert.equal(JSON.parse(readFileSync(join(runDir, "state.json"), "utf8")).status, "running");
+		assert.equal(loadConveyorResult("r").resultAvailable, false);
 
 		ac.abort();
 		assert.equal((await resumed).status, "timeout");
@@ -384,11 +412,12 @@ test("budget boundary requests a host-approved increase and continues queued age
 		parentPermissionMode: "on",
 		budget: 0.4,
 		agentBackend: backend,
-		requestBudgetIncrease: () => {
+		requestLimitApproval: () => {
 			approvals++;
 			return true;
 		},
 	});
+	const context = /** @type {any} */ (rt.buildApi(null)).context;
 	const first = await rt.agent("one");
 	const second = await rt.agent("two");
 	assert.equal(first.ok, true);
@@ -396,6 +425,7 @@ test("budget boundary requests a host-approved increase and continues queued age
 	assert.equal(approvals, 1);
 	assert.ok((rt.budget.total ?? 0) > 1);
 	assert.equal(rt.budget.spent(), 1);
+	assert.equal(context.limits.approved.maxAiCredits, rt.budget.total);
 });
 
 test("each exhausted ceiling asks again; a refusal stops the asking", async () => {
@@ -407,8 +437,8 @@ test("each exhausted ceiling asks again; a refusal stops the asking", async () =
 		budget: 0.4,
 		agentBackend: backend,
 		// Approve the first two boundaries, refuse the third.
-		requestBudgetIncrease: ({ current }) => {
-			asked.push(current);
+		requestLimitApproval: ({ current }) => {
+			asked.push(current.maxAiCredits);
 			return asked.length <= 2;
 		},
 	});
@@ -432,7 +462,7 @@ test("declined budget increase skips queued agents and does not ask twice", asyn
 		parentPermissionMode: "on",
 		budget: 0.4,
 		agentBackend: { kind: "test", run: async () => mkResult({ aic: 0.5, nanoAiu: 500_000_000 }) },
-		requestBudgetIncrease: () => {
+		requestLimitApproval: () => {
 			approvals++;
 			return false;
 		},
@@ -448,13 +478,13 @@ test("declined budget increase skips queued agents and does not ask twice", asyn
 
 test("approved budget increment remains valid while in-flight agents continue spending", async () => {
 	const dir = tmpDir();
-	const checkpoints = new (await import("./checkpoint.mjs")).CheckpointStore(dir);
+	const ledger = new Ledger(dir);
 	let approvals = 0;
 	const rt = new Runtime({
 		parentPermissionMode: "on",
 		budget: 100,
 		concurrency: 8,
-		checkpoints,
+		ledger,
 		agentBackend: {
 			kind: "test",
 			run: async () => {
@@ -462,7 +492,7 @@ test("approved budget increment remains valid while in-flight agents continue sp
 				return mkResult({ aic: 20, nanoAiu: 20_000_000_000 });
 			},
 		},
-		requestBudgetIncrease: async () => {
+		requestLimitApproval: async () => {
 			approvals++;
 			await new Promise((resolve) => setTimeout(resolve, 200));
 			return true;
@@ -471,28 +501,26 @@ test("approved budget increment remains valid while in-flight agents continue sp
 	const results = await rt.parallel(Array.from({ length: 16 }, (_, index) => () => rt.agent(`agent-${index}`)), { onFailure: "keep" });
 	assert.equal(approvals, 1);
 	assert.ok(results.some((result) => result.ok));
-	const controls = readFileSync(join(dir, "journal.jsonl"), "utf8")
+	const controls = readFileSync(join(dir, "ledger.jsonl"), "utf8")
 		.trim()
 		.split("\n")
 		.map((line) => JSON.parse(line))
-		.filter((record) => record.type === "control");
-	assert.equal(controls.filter((record) => record.action === "budget_increased").length, 1);
-	assert.equal(controls.filter((record) => record.action === "budget_increase_declined").length, 0);
-	assert.ok(controls[0].to > controls[0].proposed || controls[0].to >= controls[0].spent);
+		.filter((record) => record.type === "limits_approved");
+	assert.equal(controls.length, 1);
+	assert.ok(controls[0].limits.maxAiCredits > 1);
 });
 
 test("a resumed run restores the approved ceiling and may ask for more", async () => {
-	const { CheckpointStore } = await import("./checkpoint.mjs");
 	const dir = tmpDir();
-	const checkpoints = new CheckpointStore(dir);
-	checkpoints.recordUsage("prior", mkResult({ aic: 4, nanoAiu: 4_000_000_000 }));
-	checkpoints.recordControl({ action: "budget_increased", from: 1, to: 4, spent: 1 });
+	const ledger = new Ledger(dir);
+	ledger.recordUsage("prior", mkResult({ aic: 4, nanoAiu: 4_000_000_000 }));
+	ledger.approve({ maxAiCredits: 1 }, { maxAiCredits: 4 });
 	let approvals = 0;
 	const rt = new Runtime({
 		budget: 1,
-		checkpoints: new CheckpointStore(dir, { resume: true }),
+		ledger: new Ledger(dir),
 		agentBackend: { kind: "test", run: async () => mkResult() },
-		requestBudgetIncrease: () => (approvals++, true),
+		requestLimitApproval: () => (approvals++, true),
 	});
 	assert.equal(rt.budget.total, 4, "the newest approved ceiling is restored, not the launch budget");
 	const result = await rt.agent("past-the-restored-ceiling");
@@ -501,18 +529,17 @@ test("a resumed run restores the approved ceiling and may ask for more", async (
 });
 
 test("a resumed run never re-asks after the host declined", async () => {
-	const { CheckpointStore } = await import("./checkpoint.mjs");
 	const dir = tmpDir();
-	const checkpoints = new CheckpointStore(dir);
-	checkpoints.recordUsage("prior", mkResult({ aic: 4, nanoAiu: 4_000_000_000 }));
-	checkpoints.recordControl({ action: "budget_increased", from: 1, to: 4, spent: 1 });
-	checkpoints.recordControl({ action: "budget_increase_declined", from: 4, proposed: 8, spent: 4 });
+	const ledger = new Ledger(dir);
+	ledger.recordUsage("prior", mkResult({ aic: 4, nanoAiu: 4_000_000_000 }));
+	ledger.approve({ maxAiCredits: 1 }, { maxAiCredits: 4 });
+	ledger.declineLimits({ maxAiCredits: 8 });
 	let approvals = 0;
 	const rt = new Runtime({
 		budget: 1,
-		checkpoints: new CheckpointStore(dir, { resume: true }),
+		ledger: new Ledger(dir),
 		agentBackend: { kind: "test", run: async () => mkResult() },
-		requestBudgetIncrease: () => (approvals++, true),
+		requestLimitApproval: () => (approvals++, true),
 	});
 	const result = await rt.agent("after-decline");
 	assert.equal(result.skipped, true);
@@ -524,12 +551,12 @@ test("strict budget aborts the run once the cap is observed", async () => {
 for (const n of [1,2,3]) await agent("n" + n, { label: "s" + n });
 return "unreached";`, { budget: 0.6, strictBudget: true });
 	assert.equal(record.status, "failed");
-	assert.notEqual(record.result, "unreached"); // BudgetExceeded stopped the harness
+	assert.notEqual(record.result, "unreached"); // The limit error stopped the harness.
 	assert.equal(record.budget.hit, true);
-	assert.match(record.error ?? "", /budget/);
+	assert.match(record.error ?? "", /maxAiCredits/);
 });
 
-test("a handled agent failure preserves its result with partial status", async () => {
+test("failed agents preserve rich outcomes even when usage is unavailable", async () => {
 	const { record } = await runWf(`const r = await agent("x"); return "handled:" + r.ok;`, {}, { CONVEYOR_FAKE_MODE: "fail" });
 	assert.equal(record.status, "partial");
 	assert.equal(record.result, "handled:false");
@@ -595,13 +622,13 @@ test("aborted runtime skips new agents without spawning", async () => {
 });
 
 test("followUp requires a resumable agent result", async () => {
-	const rt = new Runtime({ budget: 10 });
+	const rt = new Runtime({ budget: null });
 	await assert.rejects(() => rt.followUp(/** @type {any} */ ({ sessionId: null }), "next"), /no sessionId/);
 });
 
 test("Runtime.parallel / pipeline work over the fake backend", () =>
 	withFakeEnv({}, async () => {
-		const rt = new Runtime({ budget: 10 });
+		const rt = new Runtime({ budget: null });
 		const par = await rt.parallel([() => rt.agent("a"), () => rt.agent("b")]);
 		assert.equal(par.length, 2);
 		assert.ok(par.every((r) => r.ok));
@@ -623,7 +650,7 @@ await pipeline([1,2], () => agent("same prompt")); return "ok";`,
 			onLine: () => {},
 		});
 		assert.equal(rec.counts.done, 2);
-		const keys = readFileSync(join(dir, "journal.jsonl"), "utf8")
+		const keys = readFileSync(join(dir, "ledger.jsonl"), "utf8")
 			.trim()
 			.split("\n")
 			.map((line) => JSON.parse(line))
@@ -643,7 +670,7 @@ await pipeline([1,2], () => agent("same prompt")); return "ok";`,
 			budget: 10,
 			onLine: () => {},
 		});
-		const keys = readFileSync(join(dir, "journal.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)).filter((rec) => rec.type === "result").map((rec) => JSON.parse(rec.key)).sort((a, b) => a[1][0] - b[1][0]);
+		const keys = readFileSync(join(dir, "ledger.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)).filter((rec) => rec.type === "result").map((rec) => JSON.parse(rec.key)).sort((a, b) => a[1][0] - b[1][0]);
 		assert.deepEqual(keys.map((key) => [key[0], key[1], key[2], key[4]]), [["a", [0], 0, 0], ["a", [1], 0, 0]]);
 		assert.match(keys[0][3], /^[0-9a-f]{64}$/);
 		assert.equal(keys[0][3], keys[1][3]);
@@ -658,7 +685,7 @@ return top.content + "|" + inner[0].content;`;
 	const { record, runDir } = await runWf(src);
 	assert.equal(record.result, "ECHO: top|ECHO: inner"); // no false cache hit swapping inner for top
 	assert.equal(record.counts.done, 2);
-	const keys = readFileSync(join(runDir, "journal.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)).filter((rec) => rec.type === "result").map((rec) => rec.key);
+	const keys = readFileSync(join(runDir, "ledger.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)).filter((rec) => rec.type === "result").map((rec) => rec.key);
 	assert.equal(new Set(keys).size, 2, "distinct structured keys");
 });
 
@@ -668,7 +695,7 @@ await agent("top", { key: "b0-foo", label: "top" });
 await pipeline([0], () => agent("inner", { key: "foo", label: "inner" }));
 return "ok";`;
 	const { runDir } = await runWf(src);
-	const keys = readFileSync(join(runDir, "journal.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)).filter((rec) => rec.type === "result").map((rec) => rec.key);
+	const keys = readFileSync(join(runDir, "ledger.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)).filter((rec) => rec.type === "result").map((rec) => rec.key);
 	const parsed = keys.map((key) => JSON.parse(key));
 	assert.deepEqual(parsed.map((key) => key.slice(0, 4)), [["e", [], 0, "b0-foo"], ["e", [0], 0, "foo"]]);
 	assert.ok(parsed.every((key) => /^[0-9a-f]{64}$/.test(key[4])));
@@ -743,16 +770,15 @@ test("run settings fill agent model/effort/context only when unset (per-agent wi
 	assert.throws(() => applyRunSettings({ prompt: "x", model: "auto" }, defaults), /cannot be combined with reasoning effort/);
 });
 
-test("explicit per-agent phase wins over the current phase", () =>
+test("explicit per-agent phase is recorded without a lexical phase", () =>
 	withFakeEnv({}, async () => {
 		const events = /** @type {any[]} */ ([]);
 		const rt = new Runtime({ budget: 10, progress: (e) => events.push(e) });
-		rt.phase("current");
 		await rt.agent("x", { phase: "explicit", label: "a" });
 		await rt.agent("y", { label: "b" });
 		const ends = events.filter((e) => e.ev === "end");
 		assert.equal(ends[0].phase, "explicit");
-		assert.equal(ends[1].phase, "current");
+		assert.equal(ends[1].phase, null);
 	}));
 
 test("cache keys: same spec shares a fingerprint; model changes it; label is excluded", () => {
@@ -788,8 +814,8 @@ test("agent options cannot expand MCP, argv, directories, or cwd outside approve
 test("the harness API exposes only the simplified orchestration surface", () => {
 	const rt = new Runtime({});
 	const api = rt.buildApi({ target: "x" });
-	assert.deepEqual(Object.keys(api).sort(), ["agent", "context", "host", "log", "parallel", "phase", "pipeline", "verify", "workspace"]);
-	assert.deepEqual(Object.keys(/** @type {any} */ (api).context).sort(), ["args", "budget", "capabilities", "dryRun", "memory"]);
+	assert.deepEqual(Object.keys(api).sort(), ["agent", "context", "host", "log", "parallel", "phase", "pipeline", "step", "verify", "workspace"]);
+	assert.deepEqual(Object.keys(/** @type {any} */ (api).context).sort(), ["args", "budget", "capabilities", "dryRun", "limits", "memory", "runId", "signal"]);
 	assert.equal(typeof /** @type {any} */ (api).agent.followUp, "function");
 	assert.equal("fanOut" in api, false);
 	assert.equal("patterns" in api, false);
@@ -800,7 +826,7 @@ test("the harness API exposes only the simplified orchestration surface", () => 
 test("API V2 lexical phase returns callback values and scopes concurrent agents", () =>
 	withFakeEnv({}, async () => {
 		const events = /** @type {any[]} */ ([]);
-		const rt = new Runtime({ budget: 10, progress: (event) => events.push(event) });
+		const rt = new Runtime({ budget: null, progress: (event) => events.push(event) });
 		const api = /** @type {any} */ (rt.buildApi(null));
 		const value = await api.phase("verify", async () => {
 			await Promise.all([api.agent("a"), api.agent("b")]);
@@ -810,6 +836,20 @@ test("API V2 lexical phase returns callback values and scopes concurrent agents"
 		assert.deepEqual(events.filter((event) => event.ev === "end").map((event) => event.phase), ["verify", "verify"]);
 		assert.throws(() => api.phase("bad"), /requires a callback/);
 	}));
+
+test("real phase-filtered progress includes agent starts and completions", () =>
+	(() => {
+		const runs = tmpDir();
+		return withFakeEnv({ CONVEYOR_RUNS_DIR: runs }, async () => {
+		const runDir = join(runs, "phase-run");
+		const source = `export const meta = { name: "phase-progress", phases: ["review"] };
+await phase("review", () => agent("a")); return "done";`;
+		await executeConveyor({ source, runId: "phase-run", runDir, budget: 10, onLine: () => {} });
+		const page = JSON.parse(getConveyorProgress({ runId: "phase-run", phaseId: "phase:0" }));
+		assert.ok(page.records.some((record) => record.ev === "start"));
+		assert.ok(page.records.some((record) => record.ev === "end"));
+		});
+	})());
 
 test("API V2 agent schema returns a validated value on AgentOutcome", () =>
 	withFakeEnv({ CONVEYOR_FAKE_CONTENT: '{"passed":true}' }, async () => {
@@ -836,7 +876,7 @@ test("dry-run structured output reserves retry headroom in the approved agent ce
 
 test("API V2 group onFailure handles failed outcomes and callback exceptions uniformly", () =>
 	withFakeEnv({ CONVEYOR_FAKE_MODE: "fail" }, async () => {
-		const rt = new Runtime({ budget: 10 });
+		const rt = new Runtime({ budget: null });
 		const api = /** @type {any} */ (rt.buildApi(null));
 		const kept = await api.parallel([() => api.agent("x"), () => {
 			throw new Error("callback boom");
@@ -846,6 +886,33 @@ test("API V2 group onFailure handles failed outcomes and callback exceptions uni
 		assert.match(kept[1].error, /callback boom/);
 		await assert.rejects(() => api.parallel([() => api.agent("x")]), /simulated failure/);
 	}));
+
+test("accounting failures propagate through tolerant groups", () =>
+	withFakeEnv({ CONVEYOR_FAKE_MODE: "nousage" }, async () => {
+		const rt = new Runtime({ budget: 10 });
+		const api = /** @type {any} */ (rt.buildApi(null));
+		await assert.rejects(
+			() => api.parallel([() => api.agent("x")], { onFailure: "keep" }),
+			/accounting was unavailable/,
+		);
+	}));
+
+test("concurrent identical durable steps share one producer", async () => {
+	const ledger = new Ledger(tmpDir());
+	const api = /** @type {any} */ (new Runtime({ ledger }).buildApi(null));
+	let calls = 0;
+	const producer = async () => {
+		calls++;
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		return { value: calls };
+	};
+	const values = await Promise.all([
+		api.step("same", producer, { input: { x: 1 } }),
+		api.step("same", producer, { input: { x: 1 } }),
+	]);
+	assert.equal(calls, 1);
+	assert.deepEqual(values, [{ value: 1 }, { value: 1 }]);
+});
 
 test("V2 mcp:'inherit' honors the launch default and restricted mode permits mcp:'off'", async () => {
 	/** @type {import("./agent.mjs").AgentSpec[]} */
@@ -968,15 +1035,23 @@ return context.memory.read();`;
 		assert.equal(resumed.result, "first");
 	}));
 
-test("cached unknown usage is not counted twice on resume", () =>
+test("successful unknown-usage agents fail closed once and replay from checkpoint", () =>
 	withFakeEnv({ CONVEYOR_FAKE_MODE: "nousage" }, async () => {
 		const runDir = tmpDir();
 		const source = `export const meta = { name: "unknown-usage", description: "test conveyor" };
 return (await agent("unknown")).content;`;
 		const first = await executeConveyor({ source, runId: "unknown", runDir, budget: 10, onLine: () => {} });
-		assert.equal(first.counts.unknownUsage, 1);
+		assert.equal(first.status, "error");
+		assert.equal(first.failure.type, "durable_failure");
 		const resumed = await executeConveyor({ source, runId: "unknown", runDir, budget: 10, resume: true, onLine: () => {} });
+		assert.equal(resumed.status, "complete");
 		assert.equal(resumed.counts.unknownUsage, 1);
+		const admissions = readFileSync(join(runDir, "ledger.jsonl"), "utf8")
+			.split("\n")
+			.filter(Boolean)
+			.map((line) => JSON.parse(line))
+			.filter((record) => record.type === "agent_admitted");
+		assert.equal(admissions.length, 1);
 	}));
 
 test("historical unknown usage does not make a successful resume partial", () =>
@@ -985,7 +1060,7 @@ test("historical unknown usage does not make a successful resume partial", () =>
 		const source = `export const meta = { name: "unknown-usage-retry", description: "test conveyor" };
 return (await agent("retry")).content;`;
 		const first = await executeConveyor({ source, runId: "unknown-retry", runDir, budget: 10, onLine: () => {} });
-		assert.equal(first.status, "failed");
+		assert.equal(first.status, "partial");
 		assert.equal(first.counts.unknownUsage, 1);
 
 		process.env.CONVEYOR_FAKE_MODE = "ok";
@@ -998,8 +1073,8 @@ return (await agent("retry")).content;`;
 test("mutating host effects advance the branch epoch for later agent cache keys", () =>
 	withFakeEnv({}, async () => {
 		const runDir = tmpDir();
-		const checkpoints = new (await import("./checkpoint.mjs")).CheckpointStore(runDir);
-		const rt = new Runtime({ parentPermissionMode: "on", checkpoints, cwd: tmpDir(), budget: 10 });
+		const ledger = new Ledger(runDir);
+		const rt = new Runtime({ parentPermissionMode: "on", ledger, cwd: tmpDir(), budget: 10 });
 		const mutate = async () => ({ ok: true });
 		mutate.mutates = true;
 		rt.setHost({ fns: new Map([["mutate", mutate]]), mutates: new Set(["mutate"]), names: ["mutate"], hash: "host" });
@@ -1007,11 +1082,25 @@ test("mutating host effects advance the branch epoch for later agent cache keys"
 		await api.agent("same");
 		await api.host.mutate({});
 		await api.agent("same");
-		const keys = readFileSync(join(runDir, "journal.jsonl"), "utf8")
+		const keys = readFileSync(join(runDir, "ledger.jsonl"), "utf8")
 			.trim()
 			.split("\n")
 			.map((line) => JSON.parse(line))
 			.filter((record) => record.type === "result" && String(record.key).startsWith('["a"'))
 			.map((record) => JSON.parse(record.key));
 		assert.deepEqual(keys.map((key) => key[2]), [0, 1]);
+	}));
+
+test("cumulative spawned-agent limits ignore cache hits and stop invalidated work", () =>
+	withFakeEnv({}, async () => {
+		const runDir = tmpDir();
+		const source = `export const meta = { name: "total", limits: { maxTotalAgents: 1 } };\nreturn (await agent("one")).content;`;
+		const first = await executeConveyor({ source, runId: "total", runDir, budget: 10, declaredLimits: { maxTotalAgents: 1, maxAiCredits: 10 }, onLine: () => {} });
+		assert.equal(first.status, "complete");
+		const cached = await executeConveyor({ source, runId: "total", runDir, budget: 10, declaredLimits: { maxTotalAgents: 1, maxAiCredits: 10 }, resume: true, onLine: () => {} });
+		assert.equal(cached.status, "complete");
+		const rerun = await executeConveyor({ source, runId: "total", runDir, budget: 10, declaredLimits: { maxTotalAgents: 1, maxAiCredits: 10 }, resume: true, invalidatedBranches: [[]], onLine: () => {} });
+		assert.equal(rerun.status, "failed");
+		assert.equal(rerun.failure.kind, "maxTotalAgents");
+		assert.deepEqual(JSON.parse(readFileSync(join(runDir, "state.json"), "utf8")).running, []);
 	}));
