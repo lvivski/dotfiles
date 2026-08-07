@@ -6,9 +6,12 @@
     "module": "nodenext",
     "target": "es2023",
     "moduleResolution": "nodenext",
+    "noImplicitAny": false,
     "strict": true,
+    "useUnknownInCatchVariables": false,
     "skipLibCheck": true,
     "resolveJsonModule": true,
+    "types": ["node"],
     "lib": ["es2023"]
   },
   "typeAcquisition": {

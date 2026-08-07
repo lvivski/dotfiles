@@ -10,6 +10,7 @@ import { startServer } from "./server.mjs";
 
 async function fixture() {
     const workspacePath = await mkdtemp(path.join(os.tmpdir(), "mobius-canvas-"));
+    /** @type {((event: any) => void) | null} */
     let subscriber = null;
     const operations = createMobiusOperations({
         getWorkspacePath: () => workspacePath,
@@ -76,7 +77,10 @@ test("canvas server renders assets and exposes the validated plan snapshot", asy
     try {
         const htmlResponse = await fetch(current.server.url);
         assert.equal(htmlResponse.status, 200);
-        assert.match(htmlResponse.headers.get("content-security-policy"), /default-src 'none'/);
+        assert.match(
+            htmlResponse.headers.get("content-security-policy") ?? "",
+            /default-src 'none'/,
+        );
         const html = await htmlResponse.text();
         assert.match(html, /<title>Mobius<\/title>/);
         assert.doesNotMatch(html, /__MOBIUS_/);
@@ -84,8 +88,9 @@ test("canvas server renders assets and exposes the validated plan snapshot", asy
         const snapshotResponse = await fetch(new URL("/api/plan", current.server.url));
         const snapshot = await snapshotResponse.json();
         assert.equal(snapshot.ok, true);
-        assert.equal(snapshot.value.id, "canvas-plan");
-        assert.equal(snapshot.value.status, "awaiting-approval");
+        assert.equal(snapshot.value.plan.id, "canvas-plan");
+        assert.equal(snapshot.value.plan.status, "awaiting-approval");
+        assert.equal(snapshot.value.projection.nextAction.kind, "approve-plan");
 
         const reboundStatus = await new Promise((resolve, reject) => {
             const url = new URL("/api/plan", current.server.url);
@@ -147,7 +152,7 @@ test("canvas mutations require a token, explicit confirmation, and current revis
         });
         assert.equal(approved.status, 200);
         const approvedBody = await approved.json();
-        assert.equal(approvedBody.value.status, "approved");
+        assert.equal(approvedBody.value.plan.status, "approved");
 
         const stale = await fetch(actionUrl, {
             method: "POST",

@@ -3,7 +3,7 @@
 //   run_conveyor({ name: "loop-memory", budget: 1000,
 //                  memory: "~/.copilot/conveyors/state/sweep.md", args: "src/" })
 //
-// Each run is fresh (checkpoints reset), but `memory` persists ACROSS runs. The harness reads what
+// Each run is fresh (replay values reset), but `memory` persists ACROSS runs. The harness reads what
 // prior runs recorded and appends one new note, so a recurring loop makes incremental progress
 // instead of repeating itself. Works in restricted mode: the runtime owns the file I/O, so the
 // harness needs no fs access. `memory` is always safe to call: with no memory path it is disabled

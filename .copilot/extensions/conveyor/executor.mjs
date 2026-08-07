@@ -18,6 +18,7 @@ import { readJsonFile } from "./persistence.mjs";
 import { Work } from "./work.mjs";
 import { snapshotHost, verifyHostSnapshot } from "./snapshot.mjs";
 import { Ledger } from "./ledger.mjs";
+import { consumeConveyorPlan } from "./plans.mjs";
 import {
 	assertJson,
 	durableFailure,
@@ -118,6 +119,7 @@ function objectLiteralEnd(source, open) {
  * @property {string} runDir
  * @property {Work} [work]
  * @property {number|null} [attemptTimeoutSeconds]
+ * @property {number|null} [budget] legacy alias accepted by callers
  * @property {Record<string, number>} [limits]
  * @property {string|null} [model]
  * @property {string|null} [effort]
@@ -158,7 +160,7 @@ function objectLiteralEnd(source, open) {
  * @property {string} startedAt
  * @property {string} finishedAt
  * @property {number} durationMs
- * @property {{ total: number|null, spent: number, remaining: number, hit: boolean }} budget
+ * @property {{ total: number|null, spent: number, remaining: number|null, hit: boolean }} budget
  * @property {number} aic
  * @property {{ agents: number, launched: number, done: number, failed: number, cached: number, skipped: number, dropped: number, unknownUsage: number }} counts
  * @property {string[]} preservedWorktrees
@@ -198,6 +200,7 @@ async function executeDryRun(cfg, run) {
 		progress: () => {},
 		log: onLine,
 	});
+	/** @type {string|null} */
 	let error = null;
 	try {
 		if (cfg.hostPath && !cfg.restricted) rt.setHost(await loadHost(cfg.hostPath));
@@ -249,7 +252,7 @@ async function executeRealRun(cfg, run) {
 	try {
 		const agentBackend = cfg.agentBackend ?? createAgentBackend({ backend: "cli", cli: createCliBackend() });
 		const requestedBackend = normalizeBackend(agentBackend.kindFor());
-		const declaredLimits = normalizeLimits(cfg.limits ?? meta.limits ?? {});
+		const declaredLimits = normalizeLimits(cfg.limits ?? (/** @type {{ limits?: Record<string, number> }} */ (meta)).limits ?? {});
 		const requestedLimits = normalizeLimits(cfg.limits ?? declaredLimits);
 		const manifest = persistence.ensureManifest(
 			{
@@ -325,10 +328,20 @@ async function executeRealRun(cfg, run) {
 
 		let status = /** @type {RunStatus} */ ("complete");
 		let closeStatus = /** @type {RunStatus} */ ("error");
+		/** @type {unknown} */
 		let failure = null;
 		try {
 			const startEvent = { ev: "run_start", runId: cfg.runId, attemptId: attempt.attemptId, meta };
 			reporter.emit({ ...startEvent, ...ledger.progress(startEvent) });
+			ledger.flushProgress();
+			if (cfg.planId) {
+				try {
+					consumeConveyorPlan(cfg.planId);
+				} catch (error) {
+					onLine(`  ! conveyor plan cleanup failed: ${error instanceof Error ? error.message : error}`, "warning", { ephemeral: false });
+				}
+			}
+			/** @type {string|null} */
 			let error = null;
 			let result;
 			try {
@@ -476,7 +489,7 @@ function resetRunArtifacts(runDir) {
 
 /**
  * @param {ExecuteConfig} cfg
- * @param {Persistence} persistence
+ * @param {import("./persistence.mjs").Persistence} persistence
  * @param {import("./persistence.mjs").Lease} lease
  */
 function copyHostArtifact(cfg, persistence, lease) {

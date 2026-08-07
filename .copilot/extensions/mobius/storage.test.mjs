@@ -1,7 +1,16 @@
 // Storage tests use disposable session-workspace lookalikes.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import {
+    mkdtemp,
+    mkdir,
+    readFile,
+    readdir,
+    rm,
+    symlink,
+    utimes,
+    writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -48,7 +57,7 @@ async function withWorkspace(operation) {
 }
 
 async function rejectsCode(promise, code, check) {
-    await assert.rejects(promise, (error) => {
+    await assert.rejects(promise, (/** @type {any} */ error) => {
         assert.equal(error.code, code);
         check?.(error);
         return true;
@@ -137,7 +146,7 @@ test("stale revisions fail with the latest revision and preserve the winning wri
                 title: "Stale update",
             }),
             "revision_conflict",
-            (error) => assert.equal(error.details.latestRevision, 2),
+            (/** @type {any} */ error) => assert.equal(error.details.latestRevision, 2),
         );
         assert.equal((await store.read(plan.id)).title, "Winning update");
     })
@@ -216,7 +225,7 @@ test("invalid candidate documents are rejected before atomic replacement", () =>
         await rejectsCode(
             store.update(plan.id, 1, candidate),
             "candidate_invalid",
-            (error) => assert.equal(error.details.validationCode, "array_too_short"),
+            (/** @type {any} */ error) => assert.equal(error.details.validationCode, "array_too_short"),
         );
 
         const stored = await store.read(plan.id);
@@ -440,5 +449,62 @@ test("startup recovery immediately removes locks whose owner process is gone", (
             staleMs: 30_000,
         });
         assert.deepEqual(reusedRecovery.recovered, [".reused-pid.lock"]);
+
+        const holder = spawn(process.execPath, [
+            "-e",
+            "setTimeout(() => {}, 10000)",
+        ], { stdio: "ignore" });
+        try {
+            const foreignLock = path.join(store.directory, ".foreign-live.lock");
+            await writeFile(foreignLock, JSON.stringify({
+                token: "foreign-token",
+                pid: holder.pid,
+                instanceId: "foreign-live-instance",
+                createdAt: "2020-01-01T00:00:00.000Z",
+            }), "utf8");
+            const foreignRecovery = await store.recoverStaleLocks({
+                staleMs: 30_000,
+            });
+            assert.equal(foreignRecovery.recovered.length, 0);
+            assert.ok((await readdir(store.directory)).includes(".foreign-live.lock"));
+        } finally {
+            holder.kill("SIGTERM");
+            await new Promise((resolve) => holder.once("close", resolve));
+        }
+    })
+));
+
+test("recovery does not unlink a lock refreshed during stale-owner inspection", () => (
+    withWorkspace(async (workspace) => {
+        const store = createPlanStore({ workspacePath: workspace });
+        await store.create(makePlan(workspace), 0);
+        const ownerPath = path.join(store.directory, ".race.lock");
+        const holder = spawn(process.execPath, [
+            "-e",
+            "setTimeout(() => {}, 10000)",
+        ], { stdio: "ignore" });
+        try {
+            await writeFile(ownerPath, JSON.stringify({
+                token: "race-token",
+                pid: holder.pid,
+                instanceId: "foreign-instance",
+                createdAt: "2020-01-01T00:00:00.000Z",
+            }), "utf8");
+            const old = new Date(Date.now() - 60_000);
+            await utimes(ownerPath, old, old);
+            const recovery = await store.recoverStaleLocks({
+                staleMs: 1_000,
+                beforeReclaim: async (target) => {
+                    if (target !== ownerPath) return;
+                    const now = new Date();
+                    await utimes(ownerPath, now, now);
+                },
+            });
+            assert.ok(!recovery.recovered.includes(".race.lock"));
+            assert.ok((await readdir(store.directory)).includes(".race.lock"));
+        } finally {
+            holder.kill("SIGTERM");
+            await new Promise((resolve) => holder.once("close", resolve));
+        }
     })
 ));

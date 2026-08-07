@@ -44,7 +44,6 @@ push() {
 		.copilot/conveyors/mobius-verify.mjs
 		.copilot/extensions/workflow
 		.copilot/skills/workflow
-		.copilot/workflows
 		.local/bin/cwf
 		.local/lib/copilot_workflows
 	)

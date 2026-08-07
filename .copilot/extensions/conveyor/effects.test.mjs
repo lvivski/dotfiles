@@ -1,4 +1,4 @@
-/** @module effects.test — host effects: sidecar load, canonical keying, proxy, and checkpoint replay. */
+/** @module effects.test — host effects: sidecar load, canonical keying, proxy, and ledger replay. */
 import test from "node:test";
 import assert from "node:assert/strict";
 import { writeFileSync, existsSync, readFileSync } from "node:fs";
@@ -64,7 +64,7 @@ const fakeHost = (entries, mutates = []) => {
 	return { fns, mutates: new Set(mutates), names: [...fns.keys()], hash: "fake-host-hash" };
 };
 
-test("effects are checkpointed and replayed on resume (not re-run)", async () => {
+test("effects are recorded and replayed on resume (not re-run)", async () => {
 	const runDir = tmpDir();
 	let calls = 0;
 	const host = fakeHost([["ping", async (input) => ({ n: ++calls, input })]]);
@@ -85,7 +85,7 @@ test("effects are checkpointed and replayed on resume (not re-run)", async () =>
 	assert.equal(calls, 2); // NOT re-run
 });
 
-test("cached mutating effects restore the branch epoch before later checkpoint lookups", async () => {
+test("cached mutating effects restore the branch epoch before later ledger lookups", async () => {
 	const runDir = tmpDir();
 	let effects = 0;
 	let agents = 0;
@@ -112,12 +112,12 @@ test("cached mutating effects restore the branch epoch before later checkpoint l
 	assert.equal(agents, 4);
 });
 
-test("effect cache keys keep the journal-compatible tuple shape", async () => {
+test("effect cache keys keep a stable tuple shape", async () => {
 	const runDir = tmpDir();
 	const rt = new Runtime({ ledger: new Ledger(runDir), cwd: tmpDir() });
 	rt.setHost(fakeHost([["ping", async (input) => input]]));
 	await /** @type {any} */ (rt.buildApi(null)).host.ping({ b: 2, a: 1 });
-	const key = readFileSync(join(runDir, "ledger.jsonl"), "utf8").trim().split("\n").map(JSON.parse).find((record) => record.type === "result").key;
+	const key = readFileSync(join(runDir, "ledger.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line)).find((record) => record.type === "result").key;
 	assert.equal(key, JSON.stringify(["fx", [], 0, "fake-host-hash", "ping", "{\"a\":1,\"b\":2}", 0]));
 });
 
@@ -156,7 +156,7 @@ test("restricted mode and missing sidecar reject host calls", () => {
 	assert.throws(() => /** @type {any} */ (noHost.buildApi(null)).host.ping({}), /no host sidecar loaded/);
 });
 
-test("a non-JSON effect result is rejected (must be checkpointable)", async () => {
+test("a non-JSON effect result is rejected (must be replayable)", async () => {
 	const rt = new Runtime({ ledger: new Ledger(tmpDir()), cwd: tmpDir() });
 	rt.setHost(fakeHost([["bad", async () => ({ fn: () => 1, circular: undefined })]]));
 	// a function value survives JSON round-trip as undefined → fine; force a real failure with a BigInt

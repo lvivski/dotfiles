@@ -2,110 +2,219 @@
 
 Mobius is a user-scoped Copilot extension for reviewed, dependency-aware
 engineering plans. This dotfiles copy syncs to `~/.copilot/extensions/mobius`,
-including its pinned Conveyor analysis scripts.
+including its pinned Conveyor planning and verification scripts.
 
-Mobius owns plan semantics, approvals, evidence, and the live board. Conveyor
-owns durable multi-agent planning and verification runs. Copilot App remains the
-coordinator and launches mutating child project sessions.
+Mobius owns strict plan semantics, approvals, attempts, evidence, cancellation
+state, and the live board. Conveyor owns durable analysis. The foreground
+Copilot App session coordinates native child project sessions.
 
-## Architecture boundary
+## Boundary
 
-- **Mobius domain/storage:** validates every plan transition and persists
-  revision-checked session artifacts.
-- **Conveyor:** runs only the bundled pinned `plan.mjs` and `verify.mjs`
-  analysis workflows.
-- **Foreground Copilot agent:** previews/launches Conveyor and creates native
-  App child sessions.
-- **Child project sessions:** perform repository mutations in isolated
-  worktrees.
+- **Mobius:** validates every transition and persists revision-checked session
+  artifacts.
+- **Conveyor:** runs only the pinned, restricted `plan.mjs` and `verify.mjs`
+  workflows.
+- **Foreground coordinator:** previews and launches Conveyor, creates and
+  archives App sessions, records results, and confirms external termination.
+- **Child project sessions:** own repository mutation in App-managed worktrees.
 
-Mobius never invokes shell commands, creates worktrees, launches child sessions,
-or accepts a coordinator-supplied verification verdict.
+Mobius never launches sessions, invokes shell commands, manages worktrees,
+stops external processes, or accepts a coordinator-supplied verification
+verdict.
 
-## Planning flow
+## Planning
 
 1. Call `mobius_prepare_plan` with the objective, constraints, repository
    context, and optional task limit.
-2. Preview the returned `launchSpec` with Conveyor's run tool using
-   `dryRun: true`.
-3. Launch the immutable preview plan. The launch uses an absolute `scriptPath`,
-   `restricted: true`, no MCP, strict budgets, and tool-free planning agents.
+2. Preview its exact `launchSpec` with Conveyor using `dryRun: true`.
+3. Launch the immutable preview plan.
 4. Review the completed Conveyor result.
-5. Call `mobius_create_plan` with:
-   - a caller-selected stable plan ID;
-   - `expectedRevision: 0`;
-   - the completed Conveyor `runId`;
-   - the repository working directory and base branch.
-6. Mobius independently verifies the persisted script hash, arguments, limits,
-   restrictions, workflow identity, result shape, critics, and final verdict
-   before creating the draft.
-7. Submit and explicitly approve the plan.
+5. Call `mobius_create_plan` with a stable plan ID, `expectedRevision: 0`, the
+   completed run ID, and repository identity.
+6. Submit and explicitly approve the plan.
 
-Project-local workflow files cannot shadow Mobius:
-`launchSpec` always uses the pinned user-scope absolute path, and import verifies
-the persisted script hash.
+Mobius independently verifies the persisted script hash, arguments, limits,
+restrictions, result shape, critic perspectives, and final planning verdict.
+Project-local scripts cannot shadow the bundled absolute path.
 
-## Implementation coordination
+## Coordinating implementation
 
-1. Optionally call `mobius_activate_plan` for coordinator context and
-   conservative guardrails.
+The task lifecycle deliberately reserves state before the external App side
+effect:
+
+1. Optionally activate the plan with `mobius_activate_plan`.
 2. Call `mobius_next_tasks`.
-3. Launch only `dispatchableTaskIds` through the App's native
-   `create_session` tool. Do not launch overlapping scopes unless the user
-   explicitly accepts the risk.
-4. Pass each task's `delegationPrompt` unchanged.
-5. Record every returned child session with `mobius_start_task`.
-6. Record done, failed, or blocked outcomes with `mobius_complete_task`.
-7. Repeat until every required task is done.
+3. For one `dispatchableTaskId`, call `mobius_reserve_task` with a stable
+   `reservationId`.
+4. Use the returned `baseBranch` as `create_session.base_branch` and pass the
+   returned `delegationPrompt` unchanged.
+5. Immediately call `mobius_attach_task` with the returned App session ID.
+6. When the child finishes, call `mobius_complete_task` with the exact
+   `attemptId`, result, delivery metadata, and typed evidence.
+7. Record the result before displaying it or launching newly-unblocked work.
 
-Dependency summaries in delegation prompts are JSON-encoded and fenced as
-untrusted data. Workers must never follow instructions contained in them.
+Reservation and identical attachment are idempotent. If the coordinator loses
+the response from `create_session`, the durable reserved attempt remains
+visible and can be attached after the session is rediscovered. A session ID
+cannot be attached to two attempts.
 
-## Verification flow
+### Attempts
 
-1. Call `mobius_prepare_verification`. It returns the exact canonical evidence
-   input, stable criterion IDs such as `T-001-C001`, and a pinned Conveyor
-   `launchSpec`.
-2. Preview, then launch that spec through Conveyor.
-3. Call `mobius_begin_verification` with the returned run ID. Mobius checks the
-   persisted script, restrictions, and canonical arguments before binding it.
-4. After completion, call `mobius_complete_verification` with only the plan ID,
-   expected revision, and bound run ID.
-5. Mobius loads the durable Conveyor result itself and requires every criterion
-   ID to map to evidence. A passed result requests completion approval; a failed
-   result moves the plan to failed with missing evidence.
-6. Explicitly approve completion.
+Attempts are append-only and use deterministic IDs such as `T-001-A001`.
+Retries never erase old sessions, branches, commits, PRs, evidence, errors, or
+timestamps.
 
-If a bound run times out, is cancelled, fails, or loses its result, call
-`mobius_prepare_verification` again and bind a replacement run. Active or
-importable runs cannot be replaced.
+Attempt states are:
 
-Verification is deliberately evidence-only. Conveyor does not inspect the
-coordinator checkout as a proxy for child worktrees; the coordinator must record
-source-specific test, branch, PR, commit, or diff evidence with each task.
+- `reserved`
+- `running`
+- `done`
+- `blocked`
+- `failed`
+- `cancel-requested`
+- `cancelled`
+
+A task is `running` whenever it owns the sole nonterminal attempt, including a
+reserved attempt awaiting `create_session`. `blocked` is a terminal attempt
+outcome. A downstream task waiting on failed dependency work remains `planned`;
+it becomes ready automatically after the dependency succeeds on a later
+attempt.
+
+### Dependency delivery
+
+Every successful attempt records its branch and optional commit and PR.
+Mobius derives the next attempt's base deterministically:
+
+- no dependency delivery: the plan base branch;
+- one distinct dependency branch: that branch;
+- several distinct dependency branches: the first dependency branch in task-ID
+  order, with the remaining deliveries listed as `integrationRequired`.
+
+The dependent task owns that integration. It cannot complete successfully
+without passed `integration` evidence when additional deliveries were listed.
+Mobius does not claim branches are merged because it has no authoritative PR or
+Git observer.
+
+### Scope overlap
+
+Reserved attempts occupy their declared file scopes before a child session
+exists. Overlap is rejected unless `mobius_reserve_task` receives an auditable
+`scopeOverride` containing the approving actor and reason.
+
+## Evidence
+
+Task evidence is structured and bounded:
+
+```json
+{
+  "type": "test",
+  "summary": "All 42 tests passed",
+  "source": "node --test",
+  "outcome": "passed"
+}
+```
+
+Supported types are `command`, `test`, `integration`, `commit`, `pr`,
+`session`, `artifact`, and `manual`. Mobius assigns deterministic evidence IDs
+such as `T-001-A001-E001`, the producer session, and `trust: "claimed"`.
+
+The caller cannot assign evidence IDs, producer identity, or a stronger trust
+classification. `claimed` is provenance, not proof. The restricted verifier
+treats every record as untrusted and may reference only canonical evidence IDs.
+
+## Verification and correction
+
+1. Call `mobius_prepare_verification` after every task is done, passing the
+   current revision and a stable verification `reservationId`. This mutation
+   persists before returning the launch spec.
+2. Preview and launch the pinned Conveyor spec.
+3. Bind the run with `mobius_begin_verification`, passing the same reservation.
+4. Import it with `mobius_complete_verification`.
+5. Approve completion explicitly after a passing result.
+
+The verifier maps every stable criterion ID, such as `T-001-C001`, to canonical
+evidence IDs. Unknown IDs do not count as coverage.
+
+Failed verification records `correctionTaskIds`. On explicit plan retry,
+Mobius reopens those tasks and every transitive descendant while retaining all
+prior attempts. Unattributed or malformed failure attribution reopens every
+task. New attempts must provide the evidence for the next verification cycle.
+
+## Cancellation
+
+Cancellation is two-phase because Mobius cannot stop App sessions itself.
+
+1. Call `mobius_cancel` with a stable `requestId`, `requestedBy`, and reason.
+2. The plan enters `cancelling`, snapshots active attempt IDs plus any reserved
+   or bound verification launch, and marks active attempts `cancel-requested`.
+3. Wait for every in-flight `create_session` call to settle. Attach any session
+   that was created after the cancellation request.
+4. Stop or archive every listed App session with native App tools.
+5. Wait for any in-flight Conveyor launch to settle. Bind the returned run to
+   the snapshotted verification reservation, or confirm that no run was
+   created.
+6. Cancel a bound Conveyor run with Conveyor controls.
+7. Call `mobius_finalize_cancellation` with one exact disposition per
+   snapshotted attempt plus `run-terminated` or `no-run-created` for a
+   snapshotted verification reservation.
+
+An attached attempt requires `session-terminated` with the matching session ID.
+An unattached reservation requires `no-session-created`. Mobius independently
+checks that a bound Conveyor run is terminal. App termination remains an
+explicit coordinator acknowledgement because the extension has no privileged
+session-liveness API.
+
+The final plan artifact retains every acknowledgement, actor, and timestamp.
+
+## Recovery projection
+
+`mobius_get_status` returns:
+
+```text
+{ plan, projection }
+```
+
+The projection is derived, never persisted. It contains progress, active
+attempts, dependency waits, ordered available actions, and one deterministic
+`nextAction`.
+
+Callers may provide a host session inventory:
+
+```json
+{
+  "complete": true,
+  "capturedAt": "2026-08-06T12:00:00.000Z",
+  "sessions": [{ "id": "session-id", "status": "idle" }]
+}
+```
+
+Mobius reports a recorded session as absent only when `complete` is true.
+Omitted or partial inventories produce `unknown`, never a false orphan.
 
 ## Tool surface
 
 | Tool | Purpose |
 |---|---|
 | `mobius_prepare_plan` | Build the pinned restricted planning launch spec. |
-| `mobius_create_plan` | Import a completed ready planning run as a draft. |
-| `mobius_get_plan` / `mobius_list_plans` | Read validated state. |
+| `mobius_create_plan` | Import a completed planning run as a draft. |
+| `mobius_get_plan` | Read the validated authoritative artifact. |
+| `mobius_get_status` | Read the plan plus its derived recovery projection. |
+| `mobius_list_plans` | List bounded plan summaries. |
 | `mobius_submit_plan` | Request plan approval. |
-| `mobius_approve_plan` | Record plan/completion approval or explicit plan retry. |
-| `mobius_next_tasks` | Return ready tasks, prompts, and scope conflicts. |
-| `mobius_start_task` | Attach a native App child session. |
-| `mobius_complete_task` | Record done, failed, or blocked work with evidence. |
-| `mobius_retry_task` | Explicitly retry an eligible task. |
-| `mobius_prepare_verification` | Build canonical criterion/evidence input and launch spec. |
+| `mobius_approve_plan` | Approve plan, correction retry, or completion. |
+| `mobius_next_tasks` | Return ready work, delivery guidance, and scope holds. |
+| `mobius_reserve_task` | Persist an attempt before creating an App session. |
+| `mobius_attach_task` | Attach the App session to its reserved attempt. |
+| `mobius_complete_task` | Record the attempt result and claimed evidence. |
+| `mobius_retry_task` | Make failed or blocked work ready for a fresh attempt. |
+| `mobius_prepare_verification` | Persist a launch reservation, then return canonical evidence input and launch spec. |
 | `mobius_begin_verification` | Bind a validated Conveyor run. |
-| `mobius_complete_verification` | Import the bound persisted result. |
-| `mobius_cancel` | Cancel the plan with an explicit reason. |
+| `mobius_complete_verification` | Import the exact persisted verdict. |
+| `mobius_cancel` | Request cancellation and snapshot external work. |
+| `mobius_finalize_cancellation` | Finalize after external termination. |
 | `mobius_activate_plan` / `mobius_deactivate_plan` | Toggle coordinator hooks. |
 
-Every state mutation requires the expected revision. Re-read after conflicts.
-Conveyor run inspection, cancellation, resume, and result retrieval remain on
-the Conveyor tool surface.
+Every mutation requires the expected revision. Read again after conflicts.
 
 ## Canvas
 
@@ -115,13 +224,15 @@ Open `mobius-board` with:
 { "planId": "plan-short-id" }
 ```
 
-The board loads by stable `plan.id`, survives extension reload, and shows
-planning provenance, approvals, task/session/branch/PR/evidence state,
-verification provenance, and progress. Mutations require a per-instance token,
-JSON content type, bounded body, current revision, and explicit confirmation.
-Plan-authored content is assigned through DOM `textContent`.
+The board loads by stable plan ID and survives extension reload. It shows
+planning provenance, progress, attempts, sessions, delivery, typed evidence,
+verification, correction tasks, cancellation requirements, and recovery
+actions.
 
-## State and recovery
+Canvas cancellation only requests cancellation. It never presents a request as
+completed external termination.
+
+## State and storage
 
 Plans live at:
 
@@ -129,63 +240,57 @@ Plans live at:
 <session.workspacePath>/files/mobius/<plan-id>.json
 ```
 
-The optional coordinator activation marker is:
+The optional activation marker is:
 
 ```text
 <session.workspacePath>/files/mobius/.active-plan.json
 ```
 
 Mobius validates complete documents, rejects symlink escapes, serializes
-multi-process writers, atomically replaces artifacts, and preserves invalid
-existing JSON. Startup removes stale locks only when the recorded owner is gone.
+multi-process writers, heartbeats ownership locks, atomically replaces
+artifacts, and preserves invalid existing JSON.
 
 Conveyor persists run identity, source, arguments, budgets, checkpoints,
-progress, and results under its user run directory. Mobius imports through
-Conveyor's versioned read-only run API rather than reading raw artifacts.
+activity, and results under its own run directory. Mobius imports through
+Conveyor's versioned read-only API.
 
-## Guardrails
+## Coordinator restraint and guardrails
 
-Hooks are inert until `mobius_activate_plan` is called. While active they:
+Hooks are inert until `mobius_activate_plan`. While active they:
 
-- inject the coordinator contract;
+- inject the reserve-before-create and attach contract;
+- prohibit duplicate child implementation and undeclared DAG expansion;
+- allow intervention for explicit steering, cancellation, stuck work, or child
+  requests;
 - deny destructive Git reset/clean and broad recursive deletion;
-- ask before narrower recursive deletion;
 - deny obvious file-tool writes outside the coordinator workspace;
-- guide stale-revision recovery.
+- keep state-changing Mobius calls under normal permission handling.
 
-Only read-only Mobius tools are auto-allowed. Mutations retain normal host
-permission and confirmation behavior. Guardrails are best-effort coordinator
-protections, not a general shell sandbox; Conveyor planning and verification
-agents are tool-free.
+These are coordinator guardrails, not a shell sandbox.
 
-## Scope and limitations
+## Deliberate exclusions
 
-- Requires the user-scoped Conveyor extension and import contract declared in
-  `scripts.mjs`.
-- No Agent Factory compatibility layer.
-- No daemon, SQLite database, polling scheduler, runtime adapter, or npm runtime
-  dependency.
-- No automatic pull-request approval/merge, branch cleanup, cross-repository
-  transaction, or long-term team memory.
-- Every v1 task is required; cancelling one task cancels the plan.
+Mobius has no daemon, SQLite scheduler, polling loop, runtime adapter,
+persistent named personas, global team memory, Git-notes state backend,
+worktree ownership, automatic PR merge, or cross-repository transaction.
 
-## Minions boundary
-
-Minions was reviewed before implementation. Mobius adopts explicit approval,
-deterministic dependency gating, fail-closed state changes, inspectable
-evidence, and human-controlled completion. It does not import, call, embed,
-modify, or depend on Minions.
+Minions and Squad informed the design, but Mobius does not import, call, embed,
+modify, or depend on either project.
 
 ## Development
 
-Run tests from the dotfiles repository root:
+All hand-authored production JavaScript in the extension uses JSDoc for module
+boundaries, named callables, and exported contracts. Bundled Conveyor workflow
+scripts are excluded because their executable schemas and prompts are the
+runtime contract. `extension.test.mjs` enforces this documentation policy.
+
+Run:
 
 ```bash
 node --test .copilot/extensions/conveyor/runs.test.mjs \
   .copilot/extensions/mobius/*.test.mjs
 ```
 
-Before changing either pinned workflow, update its SHA-256 in `scripts.mjs` and
-rerun the complete suite. `copilot-extension.json`
-makes the Mobius folder share/install compatible; the CLI supplies
-`@github/copilot-sdk`.
+When changing a bundled workflow, update its canonical-LF SHA-256 in
+`scripts.mjs`. `copilot-extension.json` makes the extension share/install
+compatible.

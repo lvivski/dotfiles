@@ -13,12 +13,15 @@ import {
     validateVerificationResult,
 } from "./analysis.mjs";
 import {
+    ATTEMPT_STATUS,
+    EVIDENCE_TYPE,
     PLAN_STATUS,
-    TASK_STATUS,
     approvePlan,
+    attachTaskAttempt,
+    completeTaskAttempt,
     createDraftPlan,
+    reserveTaskAttempt,
     transitionPlan,
-    transitionTask,
 } from "./domain.mjs";
 
 function completedPlan() {
@@ -44,16 +47,25 @@ function completedPlan() {
         at: "2026-08-05T00:01:00.000Z",
     });
     plan = approvePlan(plan, "tester", { at: "2026-08-05T00:02:00.000Z" });
-    plan = transitionPlan(plan, PLAN_STATUS.RUNNING, {
+    plan = reserveTaskAttempt(plan, "T-001", {
+        reservationId: "analysis-reservation",
         at: "2026-08-05T00:03:00.000Z",
     });
-    plan = transitionTask(plan, "T-001", TASK_STATUS.RUNNING, {
+    plan = attachTaskAttempt(plan, "T-001", "T-001-A001", {
         sessionId: "session-1",
+        branch: "work/analysis",
         at: "2026-08-05T00:04:00.000Z",
     });
-    return transitionTask(plan, "T-001", TASK_STATUS.DONE, {
+    return completeTaskAttempt(plan, "T-001", "T-001-A001", ATTEMPT_STATUS.DONE, {
         resultSummary: "Implemented",
-        evidence: ["node --test passed"],
+        evidence: [{
+            type: EVIDENCE_TYPE.TEST,
+            summary: "node --test passed",
+            source: "node --test",
+            outcome: "passed",
+        }],
+        branch: "work/analysis",
+        commit: "a".repeat(40),
         at: "2026-08-05T00:05:00.000Z",
     });
 }
@@ -155,6 +167,7 @@ test("verification inputs use stable criterion IDs and exact digests", () => {
         input.tasks[0].criteria.map((criterion) => criterion.id),
         ["T-001-C001", "T-001-C002"],
     );
+    assert.equal(input.tasks[0].evidence[0].id, "T-001-A001-E001");
     assert.deepEqual(normalizeVerificationInput(input), input);
     assert.throws(
         () => normalizeVerificationInput({
@@ -169,7 +182,7 @@ test("verification result requires every criterion ID to have evidence", () => {
     const input = buildVerificationInput(completedPlan());
     const fullCoverage = input.tasks[0].criteria.map((criterion) => ({
         criterionId: criterion.id,
-        evidence: "node --test passed",
+        evidenceIds: ["T-001-A001-E001"],
     }));
     const result = {
         kind: "mobius-verification-result-v1",
@@ -177,11 +190,22 @@ test("verification result requires every criterion ID to have evidence", () => {
         planId: input.planId,
         passed: true,
         summary: "Verified",
-        evidence: ["node --test passed"],
+        evidenceIds: ["T-001-A001-E001"],
         missingEvidence: [],
+        correctionTaskIds: [],
         reviews: [
-            { coverage: fullCoverage, missingEvidence: [], risks: [] },
-            { coverage: [], missingEvidence: [], risks: [] },
+            {
+                coverage: fullCoverage,
+                missingEvidence: [],
+                integrationFindings: [],
+                risks: [],
+            },
+            {
+                coverage: [],
+                missingEvidence: [],
+                integrationFindings: [],
+                risks: [],
+            },
         ],
     };
     assert.equal(validateVerificationResult(result, input).passed, true);
@@ -189,10 +213,86 @@ test("verification result requires every criterion ID to have evidence", () => {
         () => validateVerificationResult({
             ...result,
             reviews: [
-                { coverage: fullCoverage.slice(0, 1), missingEvidence: [], risks: [] },
-                { coverage: [], missingEvidence: [], risks: [] },
+                {
+                    coverage: fullCoverage.slice(0, 1),
+                    missingEvidence: [],
+                    integrationFindings: [],
+                    risks: [],
+                },
+                {
+                    coverage: [],
+                    missingEvidence: [],
+                    integrationFindings: [],
+                    risks: [],
+                },
             ],
         }, input),
         /coverage/,
+    );
+});
+
+test("failed or omitted evidence IDs cannot satisfy passing verification", () => {
+    const failedEvidencePlan = completedPlan();
+    failedEvidencePlan.tasks[0].attempts[0].evidence[0].outcome = "failed";
+    const input = buildVerificationInput(failedEvidencePlan);
+    const coverage = input.tasks[0].criteria.map((criterion) => ({
+        criterionId: criterion.id,
+        evidenceIds: ["T-001-A001-E001"],
+    }));
+    const result = {
+        kind: "mobius-verification-result-v1",
+        inputDigest: input.inputDigest,
+        planId: input.planId,
+        passed: true,
+        summary: "Incorrectly passed",
+        evidenceIds: ["T-001-A001-E001"],
+        missingEvidence: [],
+        correctionTaskIds: [],
+        reviews: [
+            {
+                coverage,
+                missingEvidence: [],
+                integrationFindings: [],
+                risks: [],
+            },
+            {
+                coverage: [],
+                missingEvidence: [],
+                integrationFindings: [],
+                risks: [],
+            },
+        ],
+    };
+    assert.throws(
+        () => validateVerificationResult(result, input),
+        /unknown evidence|coverage/,
+    );
+
+    const validInput = buildVerificationInput(completedPlan());
+    const validCoverage = validInput.tasks[0].criteria.map((criterion) => ({
+        criterionId: criterion.id,
+        evidenceIds: ["T-001-A001-E001"],
+    }));
+    assert.throws(
+        () => validateVerificationResult({
+            ...result,
+            inputDigest: validInput.inputDigest,
+            evidenceIds: [],
+            reviews: [
+                {
+                    coverage: validCoverage,
+                    missingEvidence: [],
+                    integrationFindings: [],
+                    risks: [],
+                },
+                {
+                    coverage: [],
+                    missingEvidence: [],
+                    integrationFindings: [],
+                    risks: [],
+                },
+            ],
+        }, validInput),
+        /omits evidence|coverage/,
     );
 });

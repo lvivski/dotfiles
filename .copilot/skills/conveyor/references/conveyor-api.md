@@ -126,7 +126,7 @@ deduplication mechanism.
 The harness cannot mutate the launch budget. When a non-strict run reaches the boundary it asks the
 host to approve more headroom, and repeats that each time the raised ceiling is exhausted, so a long
 run is never silently truncated. Declining stops the asking for the rest of the run — including
-after a resume. Every decision is journaled, and the newest approved ceiling is restored on resume.
+after a resume. Every decision is recorded in the ledger, and the newest approved ceiling is restored on resume.
 Timeout, spawned-agent, and AIC consumption are cumulative across attempts; time between attempts
 does not count. An attempt's deadline is fixed when that attempt starts; raised timeout limits apply
 to a later resume rather than re-arming an already-running attempt.
@@ -149,7 +149,7 @@ write it in the harness where you can see it.
 ### `host`
 
 `host.<effect>(input, options?)` invokes a function exported by the adjacent `.host.mjs` sidecar.
-Effects run as trusted host code, are checkpointed, and receive `{ cwd, dryRun, restricted, signal,
+Effects run as trusted host code, have their results recorded for replay, and receive `{ cwd, dryRun, restricted, signal,
 log }`. Mark mutating effects with `fn.mutates = true`; they are skipped during dry-run.
 
 Single-file sidecars must be self-contained. Multi-file hosts use a sibling bundle directory
@@ -181,6 +181,9 @@ Inspect `context.capabilities.permissions` and the persisted run's permission in
 
 ## Run artifacts and control
 
+Dry-run previews return an immutable, single-use `planId`. The plan is consumed after its first real
+run durably reaches `run_start`; startup failures before that point preserve it for retry.
+
 Runs persist `manifest.json`, `ledger.jsonl`, `script.js`, `state.json`, `run.json`, `heartbeat.json`,
 and an optional `host/` snapshot. A transient `.lock/owner.json` holds the run's lease; cross-process
 pause/cancel requests briefly live under `control/`.
@@ -194,10 +197,10 @@ Use:
 - `control_conveyor_run({ runId, action: "pause" | "resume" | "cancel", invalidate? })`
 
 Pause quiesces and persists the run. Resume re-executes from the beginning and replays durable
-checkpoints; JavaScript continuations are never serialized. To rerun only selected parallel or
+ledger values; JavaScript continuations are never serialized. To rerun only selected parallel or
 pipeline branches, pass canonical branch paths such as `invalidate: ["/0", "/2/1"]`. `/` is the
 root and invalidates the entire workflow; invalidating a parent includes every descendant while
-sibling checkpoints remain reusable. `inspect_conveyor_run` and `inspect_conveyor_agent` expose
+sibling ledger values remain reusable. `inspect_conveyor_run` and `inspect_conveyor_agent` expose
 branch paths and prior invalidation generations.
 
 Final harness values must be strict JSON or `undefined`. `get_conveyor_result` returns the JSON value

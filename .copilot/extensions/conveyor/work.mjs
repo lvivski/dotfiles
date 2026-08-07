@@ -19,6 +19,8 @@ export const HEARTBEAT_STALE_MS = HEARTBEAT_INTERVAL_MS * 6;
 const ACTIONS = new Set(["pause", "cancel"]);
 /** @type {Map<string, Work>} */
 const ACTIVE = new Map();
+/** @typedef {{ token: string, generation: number, pid: number, instanceId: string|null }} WorkOwner */
+/** @typedef {{ id: string, action: "pause"|"cancel", requestedAt: string, requesterPid: number, target: WorkOwner }} WorkControlRequest */
 /** @typedef {{ runId: string, runDir: string, timeoutSec?: number|null, signal?: AbortSignal,
  *   controlPollMs?: number, heartbeatIntervalMs?: number }} WorkOptions */
 
@@ -204,7 +206,7 @@ export function processIsAlive(pid) {
 	}
 }
 
-/** @param {string} runDir */
+/** @param {string} runDir @returns {WorkOwner|null} */
 export function readWorkOwner(runDir) {
 	const owner = readJsonFile(join(runDir, ".lock", "owner.json"));
 	const pid = Number(owner?.pid);
@@ -249,7 +251,7 @@ export function requestWorkControl(runDir, action) {
 	return request;
 }
 
-/** @param {string} runDir */
+/** @param {string} runDir @returns {WorkControlRequest|null} */
 export function takeWorkControl(runDir) {
 	const owner = readWorkOwner(runDir);
 	if (!owner || owner.pid !== process.pid) return null;
@@ -260,6 +262,7 @@ export function takeWorkControl(runDir) {
 	} catch {
 		return null;
 	}
+	/** @type {WorkControlRequest|null} */
 	let selected = null;
 	for (const name of files) {
 		const path = join(dir, name);
@@ -309,7 +312,7 @@ function readHeartbeat(runDir, owner) {
 	return sameOwner(owner, heartbeat) && timestampMs(heartbeat?.heartbeatAt) > 0 ? heartbeat : null;
 }
 
-/** @param {any} request */
+/** @param {any} request @returns {request is WorkControlRequest} */
 function validRequest(request) {
 	return request && typeof request === "object" && typeof request.id === "string" && ACTIONS.has(request.action);
 }

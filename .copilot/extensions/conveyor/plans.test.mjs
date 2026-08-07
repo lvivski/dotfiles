@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync } from "node:fs";
 
-import { loadConveyorPlan, persistConveyorPlan } from "./plans.mjs";
+import { consumeConveyorPlan, loadConveyorPlan, persistConveyorPlan } from "./plans.mjs";
 import { tmpDir, withFakeEnv } from "./fixtures/support.mjs";
 
 test("persisted conveyor plans bind script, args, and hard limits", () =>
@@ -18,4 +18,19 @@ test("persisted conveyor plans bind script, args, and hard limits", () =>
 		assert.deepEqual(loaded.args, { x: 1 });
 		appendFileSync(loaded.scriptPath, "\n// changed");
 		assert.equal(loadConveyorPlan(plan.planId), null);
+	}));
+
+test("consuming a persisted plan removes it once and rejects unsafe ids", () =>
+	withFakeEnv({ CONVEYOR_PLANS_DIR: tmpDir() }, () => {
+		const plan = persistConveyorPlan({
+			source: `return "ok";`,
+			args: null,
+			cfg: { cwd: tmpDir(), limits: { maxAiCredits: 1 } },
+			plannedAgents: 1,
+		});
+		assert.equal(existsSync(plan.scriptPath), true);
+		assert.equal(consumeConveyorPlan(plan.planId), true);
+		assert.equal(loadConveyorPlan(plan.planId), null);
+		assert.equal(consumeConveyorPlan(plan.planId), false);
+		assert.equal(consumeConveyorPlan("../outside"), false);
 	}));

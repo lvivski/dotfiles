@@ -9,27 +9,47 @@ import {
 
 test("guardrail classifiers target only broad destructive behavior", () => {
     assert.equal(
-        classifyShellCommand("git reset --hard HEAD", "/repo").decision,
+        classifyShellCommand("git reset --hard HEAD", "/repo")?.decision,
         "deny",
     );
     assert.equal(
-        classifyShellCommand("git -C /repo reset --hard HEAD", "/repo").decision,
+        classifyShellCommand("git -C /repo reset --hard HEAD", "/repo")?.decision,
         "deny",
     );
     assert.equal(
-        classifyShellCommand("git clean -d -f", "/repo").decision,
+        classifyShellCommand("git clean -d -f", "/repo")?.decision,
         "deny",
     );
     assert.equal(
-        classifyShellCommand("git clean --force -d", "/repo").decision,
+        classifyShellCommand("git clean --force -d", "/repo")?.decision,
         "deny",
     );
     assert.equal(
-        classifyShellCommand("git --no-pager reset --hard HEAD", "/repo").decision,
+        classifyShellCommand("git --no-pager reset --hard HEAD", "/repo")?.decision,
         "deny",
     );
     assert.equal(
-        classifyShellCommand("git status && git clean -fd", "/repo").decision,
+        classifyShellCommand("git status && git clean -fd", "/repo")?.decision,
+        "deny",
+    );
+    assert.equal(
+        classifyShellCommand("git -p reset --hard HEAD", "/repo")?.decision,
+        "deny",
+    );
+    assert.equal(
+        classifyShellCommand("(git reset --hard HEAD)", "/repo")?.decision,
+        "deny",
+    );
+    assert.equal(
+        classifyShellCommand("git --no-advice reset --hard HEAD", "/repo")?.decision,
+        "deny",
+    );
+    assert.equal(
+        classifyShellCommand("git --exec-path=/tmp reset --hard HEAD", "/repo")?.decision,
+        "deny",
+    );
+    assert.equal(
+        classifyShellCommand('rm -r -f "$HOME"', "/repo")?.decision,
         "deny",
     );
     assert.equal(
@@ -37,16 +57,16 @@ test("guardrail classifiers target only broad destructive behavior", () => {
         null,
     );
     assert.equal(
-        classifyShellCommand("rm -rf /", "/repo").decision,
+        classifyShellCommand("rm -rf /", "/repo")?.decision,
         "deny",
     );
     assert.equal(
-        classifyShellCommand("rm -rf build-cache", "/repo").decision,
+        classifyShellCommand("rm -rf build-cache", "/repo")?.decision,
         "ask",
     );
     assert.equal(classifyShellCommand("npm test", "/repo"), null);
     assert.equal(
-        inspectWriteBoundary("edit", { path: "/outside/file" }, "/repo").decision,
+        inspectWriteBoundary("edit", { path: "/outside/file" }, "/repo")?.decision,
         "deny",
     );
     assert.equal(
@@ -58,7 +78,7 @@ test("guardrail classifiers target only broad destructive behavior", () => {
             "edit",
             { path: "/srv/REPO/file" },
             "/srv/repo",
-        ).decision,
+        )?.decision,
         "deny",
     );
     assert.equal(
@@ -70,7 +90,7 @@ test("guardrail classifiers target only broad destructive behavior", () => {
         null,
     );
     assert.equal(
-        inspectWriteBoundary("edit", { path: "../outside/file" }, "/repo").decision,
+        inspectWriteBoundary("edit", { path: "../outside/file" }, "/repo")?.decision,
         "deny",
     );
     assert.equal(
@@ -78,7 +98,7 @@ test("guardrail classifiers target only broad destructive behavior", () => {
             "apply_patch",
             "*** Update File: src/a.mjs\n*** Move to: /outside/a.mjs\n",
             "/repo",
-        ).decision,
+        )?.decision,
         "deny",
     );
 });
@@ -110,6 +130,7 @@ test("active hooks inject coordinator context and revision-conflict guidance", a
     const start = await hooks.onSessionStart({});
     assert.match(start.additionalContext, /Mobius plan active-plan/);
     assert.match(start.additionalContext, /mobius_next_tasks/);
+    assert.match(start.additionalContext, /reserve_task BEFORE create_session/);
 
     const denied = await hooks.onPreToolUse({
         toolName: "bash",
@@ -124,6 +145,12 @@ test("active hooks inject coordinator context and revision-conflict guidance", a
         workingDirectory: "/repo",
     });
     assert.equal(mutation.permissionDecision, undefined);
+    const verificationReservation = await hooks.onPreToolUse({
+        toolName: "mobius_prepare_verification",
+        toolArgs: {},
+        workingDirectory: "/repo",
+    });
+    assert.equal(verificationReservation.permissionDecision, undefined);
 
     const read = await hooks.onPreToolUse({
         toolName: "mobius_get_plan",

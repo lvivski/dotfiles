@@ -67,7 +67,7 @@ return report.content;
 
 ## Durable runs
 
-The runtime atomically persists ownership, checkpoints, usage, state, and results.
+The runtime atomically persists ownership, replay values, usage, state, and results.
 Pause/resume is deterministic replay, not continuation serialization.
 
 Use:
@@ -80,7 +80,7 @@ control_conveyor_run({ runId, action: "pause" | "resume" | "cancel", invalidate?
 ```
 
 On resume, `invalidate` reruns selected parallel/pipeline branches and their descendants while
-retaining sibling checkpoints. Use `/` to rerun the whole workflow.
+retaining sibling replay values. Use `/` to rerun the whole workflow.
 
 Replay identifies each `parallel`/`pipeline` group by the text of the harness line that
 created it, so comments, reordering and edits elsewhere keep a group's cached branches. Two groups

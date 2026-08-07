@@ -58,6 +58,7 @@ test("durable control targets the current generation and cancel supersedes pause
 	requestWorkControl(runDir, "pause");
 	const cancel = requestWorkControl(runDir, "cancel");
 	const consumed = takeWorkControl(runDir);
+	assert.ok(consumed);
 	assert.equal(consumed.id, cancel.id);
 	assert.equal(consumed.action, "cancel");
 	assert.equal(takeWorkControl(runDir), null);
@@ -89,11 +90,11 @@ test("Work reconciliation uses owner identity and heartbeat freshness", () => {
 	assert.equal(reconcileWorkRecord({ status: "running" }, staleDir).status, "running");
 	assert.doesNotThrow(() => requestWorkControl(staleDir, "cancel"));
 
-	const legacyDir = tmpDir();
+	const ownerlessDir = tmpDir();
 	assert.equal(reconcileWorkRecord({
 		status: "running",
 		updatedAt: new Date(Date.now() - HEARTBEAT_STALE_MS - 1000).toISOString(),
-	}, legacyDir).status, "interrupted");
+	}, ownerlessDir).status, "interrupted");
 });
 
 test("abortWork addresses only process-local Work", () => {

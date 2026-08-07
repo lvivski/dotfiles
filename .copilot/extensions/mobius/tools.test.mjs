@@ -15,17 +15,20 @@ test("Mobius registers the complete globally unique tool surface", () => {
         "mobius_prepare_plan",
         "mobius_create_plan",
         "mobius_get_plan",
+        "mobius_get_status",
         "mobius_list_plans",
         "mobius_submit_plan",
         "mobius_approve_plan",
         "mobius_next_tasks",
-        "mobius_start_task",
+        "mobius_reserve_task",
+        "mobius_attach_task",
         "mobius_complete_task",
         "mobius_retry_task",
         "mobius_prepare_verification",
         "mobius_begin_verification",
         "mobius_complete_verification",
         "mobius_cancel",
+        "mobius_finalize_cancellation",
         "mobius_activate_plan",
         "mobius_deactivate_plan",
     ]);
@@ -47,6 +50,30 @@ test("Mobius registers the complete globally unique tool surface", () => {
         "expectedRevision",
         "runId",
     ]);
+    const prepareVerification = tools.find(
+        (tool) => tool.name === "mobius_prepare_verification",
+    );
+    assert.deepEqual(prepareVerification.parameters.required, [
+        "planId",
+        "expectedRevision",
+        "reservationId",
+    ]);
+    assert.equal(prepareVerification.skipPermission, undefined);
+    const reserve = tools.find((tool) => tool.name === "mobius_reserve_task");
+    assert.deepEqual(reserve.parameters.required, [
+        "planId",
+        "taskId",
+        "expectedRevision",
+        "reservationId",
+    ]);
+    const completeTask = tools.find((tool) => tool.name === "mobius_complete_task");
+    assert.equal(
+        completeTask.parameters.properties.evidence.items.properties.trust,
+        undefined,
+    );
+    const cancel = tools.find((tool) => tool.name === "mobius_cancel");
+    assert.ok(cancel.parameters.required.includes("requestedBy"));
+    assert.ok(cancel.parameters.required.includes("requestId"));
 });
 
 test("tool handlers return structured success and failure envelopes", async () => {
@@ -62,6 +89,7 @@ test("tool handlers return structured success and failure envelopes", async () =
 
     const failureTools = buildMobiusTools(new Proxy({}, {
         get: () => async () => {
+            /** @type {Error & {code?: string, details?: any}} */
             const error = new Error("stale revision");
             error.code = "revision_conflict";
             error.details = { latestRevision: 3 };

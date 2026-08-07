@@ -46,7 +46,7 @@ export class Ledger {
 	/** @type {Map<string, { startedAt: number, lastAt: number }>} */
 	#openAttempts = new Map();
 
-	/** @param {string} runDir @param {{ lease?: import("./persistence.mjs").Lease|null, readOnly?: boolean, mode?: "runtime"|"summary"|"records", types?: string[] }} [options] */
+	/** @param {string} runDir @param {{ lease?: { assertOwned: () => void }|null, readOnly?: boolean, mode?: "runtime"|"summary"|"records", types?: string[]|null }} [options] */
 	constructor(runDir, { lease = null, readOnly = false, mode = "runtime", types = null } = {}) {
 		this.runDir = runDir;
 		this.#path = join(runDir, "ledger.jsonl");
@@ -173,6 +173,10 @@ export class Ledger {
 		this.#append({ type: "result", kind, key, value });
 	}
 
+	/**
+	 * @param {string} key @param {any} spec @param {number[]} [branch]
+	 * @param {boolean} [retainPrompt] @param {number|null} [agentSeq] @param {string|null} [attemptId]
+	 */
 	recordStarted(key, spec, branch = [], retainPrompt = false, agentSeq = null, attemptId = null) {
 		const prompt = String(spec.prompt || "");
 		this.#append({

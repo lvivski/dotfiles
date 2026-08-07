@@ -47,6 +47,7 @@ export function createSdkRunBackend(sdk, defaults = {}) {
 	/** @type {Map<string, Promise<any>>} */
 	const agents = new Map();
 	let accepting = true;
+	/** @type {Promise<void>|null} */
 	let closePromise = null;
 
 	const backend = {

@@ -1,5 +1,5 @@
 /** @module plans — durable dry-run plans that bind identity and hard execution ceilings. */
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -15,6 +15,7 @@ export function persistConveyorPlan(input) {
 	const dir = join(plansDir(), planId);
 	const scriptPath = join(dir, "script.mjs");
 	atomicWriteFile(scriptPath, input.source);
+	/** @type {string|null} */
 	let hostPath = null;
 	if (input.hostPath) {
 		hostPath = join(dir, "host");
@@ -62,4 +63,13 @@ export function loadConveyorPlan(planId) {
 	}
 	if (hashValue(plan.args) !== plan.argsHash) return null;
 	return plan;
+}
+
+/** Delete one validated plan after its first real run has started. @param {string} planId */
+export function consumeConveyorPlan(planId) {
+	if (!/^plan-[A-Za-z0-9-]+$/.test(planId)) return false;
+	const dir = join(plansDir(), planId);
+	if (!existsSync(dir)) return false;
+	rmSync(dir, { recursive: true, force: true });
+	return true;
 }

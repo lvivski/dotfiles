@@ -28,7 +28,7 @@ function sessionIds(runId, runDir) {
 		.filter(Boolean)
 		.map((line) => JSON.parse(line).sessionId)
 		.filter((id) => typeof id === "string");
-	assert.ok(ids.length, `run ${runId} journaled no child sessions`);
+	assert.ok(ids.length, `run ${runId} recorded no child sessions`);
 	return ids;
 }
 
@@ -83,6 +83,7 @@ test("dry-run executes the harness plan without writing run artifacts or spendin
 		});
 		assert.equal(rec.status, "complete");
 		assert.equal(rec.aic, 0);
+		if (typeof rec.result !== "string") throw new Error("expected string dry-run result");
 		assert.match(rec.result, /dry-run plan: 3 agent call\(s\) — preview/);
 		assert.equal(existsSync(join(runDir, "run.json")), false);
 		assert.equal(existsSync(join(runDir, "ledger.jsonl")), false);
@@ -279,7 +280,7 @@ test("harness failure is persisted as an error record instead of rejecting", () 
 		assert.match(rec.error ?? "", /boom/);
 		assert.ok(existsSync(join(runDir, "script.js")));
 		assert.equal(JSON.parse(readFileSync(join(runDir, "run.json"), "utf8")).status, "error");
-		const progress = readFileSync(join(runDir, "ledger.jsonl"), "utf8").trim().split("\n").map(JSON.parse).filter((record) => record.type === "progress").map((record) => record.record);
+		const progress = readFileSync(join(runDir, "ledger.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((record) => record.type === "progress").map((record) => record.record);
 		assert.equal(progress.at(-1).ev, "run_end");
 		assert.equal(progress.at(-1).status, "error");
 	}));

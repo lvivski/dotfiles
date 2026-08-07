@@ -36,7 +36,7 @@ export const MAX_GROUP_ITEMS = 4096;
 const maxAgents = () => Number(process.env.CONVEYOR_MAX_AGENTS || MAX_AGENTS);
 const maxGroupItems = () => Number(process.env.CONVEYOR_MAX_GROUP_ITEMS || MAX_GROUP_ITEMS);
 
-/** Spec fields that define an agent's identity for checkpoint keys (excludes label/phase/timeout). */
+/** Spec fields that define an agent's durable replay identity (excludes label/phase/timeout). */
 const KEY_FIELDS = [
 	"prompt", "model", "agentType", "effort", "context", "cacheCwd", "resume", "enableMcp",
 	"allow", "deny", "allowUrl", "denyUrl", "availableTools", "excludedTools", "allowAllTools",
@@ -72,6 +72,7 @@ export class Runtime {
 	#limits = {};
 	#retainAgentContent = false;
 	#runId = "";
+	/** @type {string|null} */
 	#attemptId = null;
 	/** @type {Error|null} */
 	#durableError = null;
@@ -122,7 +123,7 @@ export class Runtime {
 	/** @type {string} */
 	/** @type {{ kind: string, run: Function }} */
 	#agentBackend;
-	/** @type {((request: { current: number, spent: number, increment: number, proposed: number }) => Promise<boolean|null>|boolean|null)|null} */
+	/** @type {((request: { current: Record<string, number>, proposed: Record<string, number> }) => Promise<boolean|null>|boolean|null)|null} */
 	#requestLimitApproval;
 	/** @type {Promise<boolean>|null} */
 	#budgetIncreasePromise = null;
@@ -135,7 +136,7 @@ export class Runtime {
 	#groupSeq = 0;
 	/** Occurrences of each `[parent, group identity]`, so one call site reached twice gets two blocks. @type {Map<string, number>} */
 	#groupSites = new Map();
-	/** Next free branch index per parent, used when there is no journal (dry runs). @type {Map<string, number>} */
+	/** Next free branch index per parent, used when there is no ledger (dry runs). @type {Map<string, number>} */
 	#nextBranchIndex = new Map();
 	/** Harness filename as V8 reports it, plus its source lines, for durable group identity. */
 	#harnessFile = "";
@@ -143,7 +144,7 @@ export class Runtime {
 	#harnessLines = [];
 	/**
 	 * @param {{
-	 *   model?: string|null, effort?: string|null, context?: string|null,
+	 *   model?: string|null, effort?: string|null, context?: string|null, budget?: number|null,
 	 *   defaultEnableMcp?: boolean, strictBudget?: boolean, dryRun?: boolean,
 	 *   restricted?: boolean, ledger?: import("./ledger.mjs").Ledger|null, memory?: Memory,
 	 *   limits?: Record<string, number>,
@@ -337,7 +338,7 @@ export class Runtime {
 		}
 
 		const key = this.#agentCacheKey(o, spec);
-		const cached = this.#ledger?.get(key);
+		const cached = /** @type {AgentResult|undefined} */ (this.#ledger?.get(key));
 		if (cached) {
 			this.#noteSession(cached, spec);
 			this.#finish(run.seq, cached, false, run.phase);
@@ -455,7 +456,7 @@ export class Runtime {
 		this.#budgetIncreasePromise = Promise.resolve(requestLimitApproval({ current: { ...this.#limits }, proposed: proposedLimits }))
 			.then((approved) => {
 				if (approved == null) {
-					// Not journaled: a later resume in a session that can prompt may still ask.
+					// Not recorded: a later resume in a session that can prompt may still ask.
 					this.#budgetIncreaseDeclined = true;
 					this.#log("  budget: approval UI unavailable", "warning");
 					return false;
@@ -511,20 +512,20 @@ export class Runtime {
 		const epoch = this.#currentEpoch(branch);
 		const version = opts.version ?? 1;
 		assertJson(opts.input ?? null, { label: `Conveyor step '${key}' input` });
-		const checkpointKey = JSON.stringify(["step", branch, epoch, key, version, stableStringify(opts.input ?? null)]);
-		const cached = this.#ledger?.lookup(checkpointKey);
+		const stepKey = JSON.stringify(["step", branch, epoch, key, version, stableStringify(opts.input ?? null)]);
+		const cached = this.#ledger?.lookup(stepKey);
 		if (cached?.hit) return cached.value;
-		const existing = this.#steps.get(checkpointKey);
+		const existing = this.#steps.get(stepKey);
 		if (existing) return existing;
 		const pending = Promise.resolve()
 			.then(producer)
 			.then((produced) => {
 				const value = assertJson(produced, { label: `Conveyor step '${key}' result` });
-				this.#ledger?.put(checkpointKey, value, "step");
+				this.#ledger?.put(stepKey, value, "step");
 				return value;
 			})
-			.finally(() => this.#steps.delete(checkpointKey));
-		this.#steps.set(checkpointKey, pending);
+			.finally(() => this.#steps.delete(stepKey));
+		this.#steps.set(stepKey, pending);
 		return pending;
 	}
 
@@ -581,9 +582,11 @@ export class Runtime {
 	 * @returns {Promise<any>}
 	 */
 	async #worktree(name, optsOrCb, maybeCb) {
+		/** @type {Record<string, any>} */
 		let opts = {};
+		/** @type {((dir: string) => any)|null} */
 		let cb = null;
-		if (typeof optsOrCb === "function") cb = optsOrCb;
+		if (typeof optsOrCb === "function") cb = (dir) => optsOrCb(dir);
 		else {
 			opts = optsOrCb || {};
 			cb = maybeCb || null;
@@ -788,7 +791,7 @@ export class Runtime {
 	/**
 	 * Claim a contiguous block of `size` branch indices under `parent`. The block is identified by
 	 * the harness code that created the group (see {@link Runtime#groupIdentity}) and recorded in
-	 * the journal, so a resume gives each logical group the branches it had originally no matter
+	 * the ledger, so a resume gives each logical group the branches it had originally no matter
 	 * what order the groups start in.
 	 * @param {number[]} parent @param {number} size
 	 */
@@ -969,7 +972,9 @@ export class Runtime {
 
 	/** @param {any} rec */
 	#emit(rec) {
+		/** @type {number|null} */
 		let revision = null;
+		/** @type {number|null} */
 		let progressSeq = null;
 		try {
 			const event = { ...rec, attemptId: this.#attemptId };
@@ -1065,11 +1070,11 @@ export class Runtime {
 	}
 
 	/**
-	 * Run one sidecar effect and checkpoint its result — the code analogue of {@link Runtime#agent}.
+	 * Run one sidecar effect and record its result — the code analogue of {@link Runtime#agent}.
 	 * Cached by (branch, name, canonical input, occurrence) so repeated calls and read-after-write
 	 * stay correct, and a resumed run replays recorded results instead of re-executing. Mutating
 	 * effects are skipped under dry-run; execution is bounded by the run's concurrency semaphore and
-	 * cancelled with the run; every returned result is JSON-normalized (so it stays checkpointable and
+	 * cancelled with the run; every returned result is JSON-normalized (so it stays replayable and
 	 * dry-run/uncached behave like a cached real run).
 	 * @param {string} name @param {unknown} input @param {{ cache?: boolean }} [opts]
 	 * @returns {Promise<unknown>}
@@ -1093,6 +1098,7 @@ export class Runtime {
 		// distinct and a resumed run replays in order. Cast at the store boundary since the store is
 		// typed for AgentResult.
 		const ledger = cache ? this.#ledger : null;
+		/** @type {string|null} */
 		let key = null;
 		if (ledger) {
 			const branch = branchStore.getStore() || [];

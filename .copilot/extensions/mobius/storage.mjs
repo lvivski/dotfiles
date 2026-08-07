@@ -1,4 +1,12 @@
-// Session-scoped persistence; the plan document remains the authority.
+/**
+ * Session-scoped, revisioned, atomically replaced Mobius plan storage.
+ *
+ * The complete plan document is authoritative. Every write validates the full
+ * candidate, rejects symlink escapes, and coordinates local and cross-process
+ * writers through heartbeated owner files.
+ *
+ * @module mobius/storage
+ */
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -11,6 +19,7 @@ import {
     realpath,
     rename,
     unlink,
+    utimes,
 } from "node:fs/promises";
 
 import {
@@ -21,15 +30,67 @@ import {
     validatePlan,
 } from "./domain.mjs";
 
+/**
+ * @typedef {object} StorageAnchor
+ * @property {string} realBase
+ * @property {number} device
+ * @property {number} inode
+ */
+
+/**
+ * @typedef {object} PlanStoreOptions
+ * @property {string} [workspacePath]
+ * @property {() => Date|string|number} [clock]
+ * @property {number} [lockWaitMs]
+ * @property {number} [lockPollMs]
+ * @property {(value: object) => string} [serialize]
+ */
+
+/**
+ * @typedef {object} PlanStore
+ * @property {(plan: any, expectedRevision?: 0) => Promise<any>} create
+ * @property {(id: string) => Promise<any>} read
+ * @property {(id: string, expectedRevision: number, candidate: any) => Promise<any>} update
+ * @property {(id: string, expectedRevision: number, candidate: any) => Promise<any>} replace
+ * @property {(options?: {limit?: number}) => Promise<any>} list
+ * @property {(planId: string, expectedRevision: number) => Promise<any>} activate
+ * @property {() => Promise<any>} getActive
+ * @property {() => Promise<any>} deactivate
+ * @property {(options?: any) => Promise<any>} recoverStaleLocks
+ * @property {string} directory
+ */
+
+/** Default number of plan summaries returned by a list operation. */
 const DEFAULT_LIST_LIMIT = 50;
+
+/** Hard upper bound for one list operation. */
 const MAX_LIST_LIMIT = 100;
+
+/** Maximum time to wait for another writer before failing. */
 const DEFAULT_LOCK_WAIT_MS = 5_000;
+
+/** Poll cadence while waiting for another process's owner file. */
 const DEFAULT_LOCK_POLL_MS = 20;
+
+/** Owner-file name that serializes startup lock recovery. */
 const RECOVERY_BARRIER_NAME = ".mobius-recovery.lock";
+
+/** Heartbeat cadence for active owner files. */
+const OWNER_HEARTBEAT_MS = 1_000;
+
+/** Unique identity for this extension process, distinct from the reusable PID. */
 export const STORAGE_PROCESS_INSTANCE_ID = randomUUID();
+
+/** In-process promise chains keyed by target path. */
 const writeLocks = new Map();
 
+/** Typed error surfaced by the plan store. */
 export class MobiusStorageError extends Error {
+    /**
+     * @param {string} code Stable machine-readable error code.
+     * @param {string} message Human-readable failure summary.
+     * @param {{details?: unknown, cause?: unknown}} [options]
+     */
     constructor(code, message, options = {}) {
         super(message);
         this.name = "MobiusStorageError";
@@ -38,6 +99,11 @@ export class MobiusStorageError extends Error {
         this.cause = options.cause;
     }
 
+    /**
+     * Serializes the safe public error fields.
+     *
+     * @returns {{code: string, message: string, details: unknown}}
+     */
     toJSON() {
         return {
             code: this.code,
@@ -47,14 +113,35 @@ export class MobiusStorageError extends Error {
     }
 }
 
+/**
+ * Creates a typed storage error.
+ *
+ * @param {string} code
+ * @param {string} message
+ * @param {{details?: unknown, cause?: unknown}} [options]
+ * @returns {MobiusStorageError}
+ */
 function storageError(code, message, options) {
     return new MobiusStorageError(code, message, options);
 }
 
+/**
+ * Creates an owned structured clone of caller data.
+ *
+ * @template T
+ * @param {T} value
+ * @returns {T}
+ */
 function clone(value) {
     return structuredClone(value);
 }
 
+/**
+ * Resolves the configured storage clock to canonical UTC.
+ *
+ * @param {() => Date|string|number} clock
+ * @returns {string}
+ */
 function resolveTimestamp(clock) {
     const value = clock();
     const date = value instanceof Date ? value : new Date(value);
@@ -64,6 +151,12 @@ function resolveTimestamp(clock) {
     return date.toISOString();
 }
 
+/**
+ * Validates and normalizes a session workspace path.
+ *
+ * @param {unknown} workspacePath
+ * @returns {string}
+ */
 function validateWorkspacePath(workspacePath) {
     if (typeof workspacePath !== "string" || workspacePath.trim().length === 0) {
         throw storageError(
@@ -77,6 +170,12 @@ function validateWorkspacePath(workspacePath) {
     return path.resolve(workspacePath);
 }
 
+/**
+ * Requires a positive mutation revision.
+ *
+ * @param {any} expectedRevision
+ * @returns {void}
+ */
 function validateExpectedRevision(expectedRevision) {
     if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) {
         throw storageError(
@@ -87,6 +186,12 @@ function validateExpectedRevision(expectedRevision) {
     }
 }
 
+/**
+ * Requires a bounded plan-list limit.
+ *
+ * @param {any} limit
+ * @returns {void}
+ */
 function validateLimit(limit) {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_LIST_LIMIT) {
         throw storageError(
@@ -97,6 +202,13 @@ function validateLimit(limit) {
     }
 }
 
+/**
+ * Resolves a contained artifact path for a validated plan ID.
+ *
+ * @param {string} baseDirectory
+ * @param {string} id
+ * @returns {string}
+ */
 function planTarget(baseDirectory, id) {
     assertPlanId(id);
     const target = path.resolve(baseDirectory, `${id}.json`);
@@ -106,14 +218,33 @@ function planTarget(baseDirectory, id) {
     return target;
 }
 
+/**
+ * Computes a source fingerprint used to detect artifact replacement.
+ *
+ * @param {string|Uint8Array} source
+ * @returns {string}
+ */
 function fingerprint(source) {
     return createHash("sha256").update(source).digest("hex");
 }
 
+/**
+ * Tests whether an error represents a missing filesystem entry.
+ *
+ * @param {any} error
+ * @returns {boolean}
+ */
 function isMissing(error) {
     return error?.code === "ENOENT";
 }
 
+/**
+ * Requires a real, non-symlink directory when it exists.
+ *
+ * @param {string} pathname
+ * @param {string} label
+ * @returns {Promise<boolean>} Whether the directory already exists.
+ */
 async function assertDirectory(pathname, label) {
     let metadata;
     try {
@@ -135,6 +266,14 @@ async function assertDirectory(pathname, label) {
     return true;
 }
 
+/**
+ * Creates and anchors `<workspace>/files/mobius` without following symlinks.
+ *
+ * @param {string} workspacePath
+ * @param {string} filesRoot
+ * @param {string} baseDirectory
+ * @returns {Promise<StorageAnchor>}
+ */
 async function ensureStorageDirectory(workspacePath, filesRoot, baseDirectory) {
     let workspaceMetadata;
     try {
@@ -204,6 +343,13 @@ async function ensureStorageDirectory(workspacePath, filesRoot, baseDirectory) {
     };
 }
 
+/**
+ * Revalidates that the storage directory still matches its anchored inode.
+ *
+ * @param {string} baseDirectory
+ * @param {StorageAnchor} anchor
+ * @returns {Promise<void>}
+ */
 async function verifyStorageAnchor(baseDirectory, anchor) {
     let metadata;
     let resolved;
@@ -227,6 +373,14 @@ async function verifyStorageAnchor(baseDirectory, anchor) {
     }
 }
 
+/**
+ * Serializes writes to one target within this process.
+ *
+ * @template T
+ * @param {string} key
+ * @param {() => Promise<T>} operation
+ * @returns {Promise<T>}
+ */
 async function withLocalWriteLock(key, operation) {
     const previous = writeLocks.get(key);
     let release;
@@ -248,6 +402,14 @@ async function withLocalWriteLock(key, operation) {
     }
 }
 
+/**
+ * Acquires a cross-process owner file after respecting startup recovery.
+ *
+ * @param {string} target
+ * @param {StorageAnchor} anchor
+ * @param {{lockWaitMs: number, lockPollMs: number}} options
+ * @returns {Promise<{handle: import("node:fs/promises").FileHandle, heartbeat: NodeJS.Timeout, lockPath: string, token: string}>}
+ */
 async function acquireFileLock(target, anchor, options) {
     const lockPath = path.join(path.dirname(target), `.${path.basename(target)}.lock`);
     const recoveryBarrier = path.join(path.dirname(target), RECOVERY_BARRIER_NAME);
@@ -289,7 +451,12 @@ async function acquireFileLock(target, anchor, options) {
                     details: { lockPath: resolvedLock },
                 });
             }
-            return { handle, lockPath, token };
+            return {
+                handle,
+                heartbeat: startOwnerHeartbeat(lockPath),
+                lockPath,
+                token,
+            };
         } catch (error) {
             if (error?.code === "EEXIST"
                 && await removeRecoverableOwnerFile(lockPath, 30_000)) {
@@ -315,6 +482,13 @@ async function acquireFileLock(target, anchor, options) {
     }
 }
 
+/**
+ * Publishes an owner file atomically with hard-link create-if-absent semantics.
+ *
+ * @param {string} target
+ * @param {any} payload
+ * @returns {Promise<import("node:fs/promises").FileHandle>}
+ */
 async function publishOwnerFile(target, payload) {
     const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
     let handle;
@@ -346,7 +520,14 @@ async function publishOwnerFile(target, payload) {
     }
 }
 
+/**
+ * Releases an owner file only after verifying its token still belongs to us.
+ *
+ * @param {{handle: import("node:fs/promises").FileHandle, heartbeat: NodeJS.Timeout, lockPath: string, token: string}} lock
+ * @returns {Promise<void>}
+ */
 async function releaseFileLock(lock) {
+    clearInterval(lock.heartbeat);
     await lock.handle.close();
     let payload;
     try {
@@ -381,6 +562,12 @@ async function releaseFileLock(lock) {
     }
 }
 
+/**
+ * Conservatively probes whether an operating-system process may still exist.
+ *
+ * @param {number} pid
+ * @returns {boolean}
+ */
 function processIsAlive(pid) {
     try {
         process.kill(pid, 0);
@@ -390,7 +577,15 @@ function processIsAlive(pid) {
     }
 }
 
-function ownerIsActive(payload, staleMs) {
+/**
+ * Determines whether owner metadata and heartbeat still represent live work.
+ *
+ * @param {any} payload
+ * @param {import("node:fs").Stats} metadata
+ * @param {number} staleMs
+ * @returns {boolean}
+ */
+function ownerIsActive(payload, metadata, staleMs) {
     const pid = Number(payload?.pid);
     const createdAt = Date.parse(payload?.createdAt);
     if (!Number.isSafeInteger(pid)
@@ -403,11 +598,22 @@ function ownerIsActive(payload, staleMs) {
         && payload.instanceId !== STORAGE_PROCESS_INSTANCE_ID) {
         return false;
     }
-    return payload.instanceId === STORAGE_PROCESS_INSTANCE_ID
-        || Date.now() - createdAt < staleMs;
+    if (payload.instanceId === STORAGE_PROCESS_INSTANCE_ID) {
+        return true;
+    }
+    return Number.isFinite(metadata?.mtimeMs)
+        && Date.now() - metadata.mtimeMs < staleMs;
 }
 
+/**
+ * Quarantines and removes a conclusively stale owner file without racing refresh.
+ *
+ * @param {string} ownerPath
+ * @param {number} staleMs
+ * @returns {Promise<boolean>} Whether the stale owner was removed.
+ */
 async function removeRecoverableOwnerFile(ownerPath, staleMs) {
+    const quarantine = `${ownerPath}.stale.${process.pid}.${randomUUID()}`;
     try {
         const metadata = await lstat(ownerPath);
         if (metadata.isSymbolicLink() || !metadata.isFile() || metadata.size > 4_096) {
@@ -415,23 +621,67 @@ async function removeRecoverableOwnerFile(ownerPath, staleMs) {
         }
         const source = await readFile(ownerPath, "utf8");
         const payload = JSON.parse(source);
-        if (ownerIsActive(payload, staleMs)) {
+        if (ownerIsActive(payload, metadata, staleMs)) {
             return false;
         }
-        const currentMetadata = await lstat(ownerPath);
-        const currentSource = await readFile(ownerPath, "utf8");
+        await rename(ownerPath, quarantine);
+        const currentMetadata = await lstat(quarantine);
+        const currentSource = await readFile(quarantine, "utf8");
         if (currentMetadata.dev !== metadata.dev
             || currentMetadata.ino !== metadata.ino
             || currentSource !== source) {
+            await restoreQuarantine(quarantine, ownerPath);
             return false;
         }
-        await unlink(ownerPath);
+        if (ownerIsActive(payload, currentMetadata, staleMs)) {
+            await restoreQuarantine(quarantine, ownerPath);
+            return false;
+        }
+        await unlink(quarantine);
         return true;
     } catch {
+        try {
+            await restoreQuarantine(quarantine, ownerPath);
+        } catch {
+            // A competing owner at the original path remains authoritative.
+        }
         return false;
     }
 }
 
+/**
+ * Restores a quarantined owner when reclamation loses a race.
+ *
+ * @param {string} quarantine
+ * @param {string} ownerPath
+ * @returns {Promise<void>}
+ */
+async function restoreQuarantine(quarantine, ownerPath) {
+    try {
+        await link(quarantine, ownerPath);
+        await unlink(quarantine);
+    } catch (error) {
+        if (error?.code === "EEXIST") {
+            try {
+                await unlink(quarantine);
+            } catch {
+                // The competing owner remains authoritative.
+            }
+            return;
+        }
+        if (error?.code !== "ENOENT" && error?.code !== "EEXIST") {
+            throw error;
+        }
+    }
+}
+
+/**
+ * Acquires the singleton startup-recovery barrier.
+ *
+ * @param {string} barrierPath
+ * @param {number} staleMs
+ * @returns {Promise<{handle: import("node:fs/promises").FileHandle, heartbeat: NodeJS.Timeout, token: string} | null>}
+ */
 async function acquireRecoveryBarrier(barrierPath, staleMs) {
     for (let attempt = 0; attempt < 2; attempt += 1) {
         try {
@@ -442,7 +692,11 @@ async function acquireRecoveryBarrier(barrierPath, staleMs) {
                 instanceId: STORAGE_PROCESS_INSTANCE_ID,
                 createdAt: new Date().toISOString(),
             });
-            return { handle, token };
+            return {
+                handle,
+                heartbeat: startOwnerHeartbeat(barrierPath),
+                token,
+            };
         } catch (error) {
             if (error?.code === "EEXIST"
                 && attempt === 0
@@ -461,6 +715,32 @@ async function acquireRecoveryBarrier(barrierPath, staleMs) {
     return null;
 }
 
+/**
+ * Starts an unreferenced mtime heartbeat for an active owner file.
+ *
+ * @param {string} ownerPath
+ * @returns {NodeJS.Timeout}
+ */
+function startOwnerHeartbeat(ownerPath) {
+    const heartbeat = setInterval(() => {
+        const now = new Date();
+        utimes(ownerPath, now, now).catch(() => {});
+    }, OWNER_HEARTBEAT_MS);
+    heartbeat.unref?.();
+    return heartbeat;
+}
+
+/**
+ * Executes a mutation under both local and cross-process locks.
+ *
+ * @template T
+ * @param {string} target
+ * @param {string} baseDirectory
+ * @param {StorageAnchor} anchor
+ * @param {{lockWaitMs: number, lockPollMs: number}} options
+ * @param {() => Promise<T>} operation
+ * @returns {Promise<T>}
+ */
 async function withWriteLock(target, baseDirectory, anchor, options, operation) {
     return withLocalWriteLock(target, async () => {
         await verifyStorageAnchor(baseDirectory, anchor);
@@ -490,6 +770,14 @@ async function withWriteLock(target, baseDirectory, anchor, options, operation) 
     });
 }
 
+/**
+ * Opens and reads a regular contained file without following replacement races.
+ *
+ * @param {string} target
+ * @param {string} expectedId
+ * @param {StorageAnchor} anchor
+ * @returns {Promise<string>}
+ */
 async function readSafeFile(target, expectedId, anchor) {
     let before;
     try {
@@ -546,6 +834,14 @@ async function readSafeFile(target, expectedId, anchor) {
     }
 }
 
+/**
+ * Reads, parses, validates, and fingerprints one plan artifact.
+ *
+ * @param {string} target
+ * @param {string} expectedId
+ * @param {StorageAnchor} anchor
+ * @returns {Promise<{plan: any, fingerprint: string}>}
+ */
 async function readPlanAt(target, expectedId, anchor) {
     const source = await readSafeFile(target, expectedId, anchor);
 
@@ -583,6 +879,15 @@ async function readPlanAt(target, expectedId, anchor) {
     };
 }
 
+/**
+ * Takes an owned snapshot or translates clone failures into storage errors.
+ *
+ * @template T
+ * @param {T} value
+ * @param {string} errorCode
+ * @param {string} message
+ * @returns {T}
+ */
 function ownSnapshot(value, errorCode, message) {
     try {
         return structuredClone(value);
@@ -594,6 +899,14 @@ function ownSnapshot(value, errorCode, message) {
     }
 }
 
+/**
+ * Serializes and reparses a plan before full domain validation.
+ *
+ * @param {object} value
+ * @param {string} errorCode
+ * @param {string} message
+ * @returns {{payload: string, plan: any}}
+ */
 function serializeValidatedPlan(value, errorCode, message) {
     let payload;
     let plan;
@@ -621,6 +934,15 @@ function serializeValidatedPlan(value, errorCode, message) {
     return { payload, plan };
 }
 
+/**
+ * Writes and fsyncs a sibling temporary file inside the anchored directory.
+ *
+ * @param {string} baseDirectory
+ * @param {string} target
+ * @param {string} payload
+ * @param {StorageAnchor} anchor
+ * @returns {Promise<string>} Temporary file path.
+ */
 async function writeTemporaryFile(baseDirectory, target, payload, anchor) {
     const temporary = path.join(
         baseDirectory,
@@ -677,6 +999,13 @@ async function writeTemporaryFile(baseDirectory, target, payload, anchor) {
     }
 }
 
+/**
+ * Retries transient cross-platform rename failures with bounded backoff.
+ *
+ * @param {string} source
+ * @param {string} target
+ * @returns {Promise<void>}
+ */
 async function retryRename(source, target) {
     const retryable = new Set(["EACCES", "EBUSY", "EPERM"]);
     let lastError;
@@ -695,6 +1024,15 @@ async function retryRename(source, target) {
     throw lastError;
 }
 
+/**
+ * Creates a new plan without replacing an existing artifact.
+ *
+ * @param {string} baseDirectory
+ * @param {string} target
+ * @param {{payload: string, plan: any}} persisted
+ * @param {StorageAnchor} anchor
+ * @returns {Promise<void>}
+ */
 async function atomicCreate(baseDirectory, target, persisted, anchor) {
     const temporary = await writeTemporaryFile(baseDirectory, target, persisted.payload, anchor);
     try {
@@ -732,6 +1070,16 @@ async function atomicCreate(baseDirectory, target, persisted, anchor) {
     }
 }
 
+/**
+ * Replaces a plan only after rechecking the expected current artifact.
+ *
+ * @param {string} baseDirectory
+ * @param {string} target
+ * @param {{payload: string, plan: any}} persisted
+ * @param {StorageAnchor} anchor
+ * @param {() => Promise<void>} verifyCurrent
+ * @returns {Promise<void>}
+ */
 async function atomicReplace(baseDirectory, target, persisted, anchor, verifyCurrent) {
     const temporary = await writeTemporaryFile(baseDirectory, target, persisted.payload, anchor);
     try {
@@ -754,6 +1102,15 @@ async function atomicReplace(baseDirectory, target, persisted, anchor, verifyCur
     }
 }
 
+/**
+ * Atomically replaces a non-plan session marker payload.
+ *
+ * @param {string} baseDirectory
+ * @param {string} target
+ * @param {string} payload
+ * @param {StorageAnchor} anchor
+ * @returns {Promise<void>}
+ */
 async function atomicReplacePayload(baseDirectory, target, payload, anchor) {
     const temporary = await writeTemporaryFile(baseDirectory, target, payload, anchor);
     try {
@@ -775,6 +1132,12 @@ async function atomicReplacePayload(baseDirectory, target, payload, anchor) {
     }
 }
 
+/**
+ * Builds a bounded list projection without exposing the full plan document.
+ *
+ * @param {any} plan
+ * @returns {any}
+ */
 function summaryForList(plan) {
     const summary = summarizePlan(plan);
     return {
@@ -785,6 +1148,12 @@ function summaryForList(plan) {
     };
 }
 
+/**
+ * Creates a session-scoped plan and activation-marker store.
+ *
+ * @param {PlanStoreOptions} options
+ * @returns {Readonly<PlanStore>}
+ */
 export function createPlanStore(options = {}) {
     const workspacePath = validateWorkspacePath(options.workspacePath);
     const clock = options.clock ?? (() => new Date());
@@ -805,13 +1174,26 @@ export function createPlanStore(options = {}) {
         throw storageError("path_outside_workspace", "Mobius storage must remain under workspacePath/files");
     }
 
+    /**
+     * Reads and clones one validated plan.
+     *
+     * @param {string} id
+     * @returns {Promise<any>}
+     */
     const read = async (id) => {
         const target = planTarget(baseDirectory, id);
         const anchor = await ensureStorageDirectory(workspacePath, filesRoot, baseDirectory);
         return clone((await readPlanAt(target, id, anchor)).plan);
     };
 
-    const create = async (plan, expectedRevision) => {
+    /**
+     * Creates a revision-one draft without replacing existing data.
+     *
+     * @param {any} plan
+     * @param {0} [expectedRevision]
+     * @returns {Promise<any>}
+     */
+    const create = async (plan, expectedRevision = undefined) => {
         if (expectedRevision !== 0) {
             throw storageError("invalid_expected_revision", "Creating a plan requires expectedRevision 0", {
                 details: { expectedRevision },
@@ -852,6 +1234,14 @@ export function createPlanStore(options = {}) {
         });
     };
 
+    /**
+     * Validates and atomically writes the next revision of a plan.
+     *
+     * @param {string} id
+     * @param {number} expectedRevision
+     * @param {any} candidate
+     * @returns {Promise<any>}
+     */
     const update = async (id, expectedRevision, candidate) => {
         validateExpectedRevision(expectedRevision);
         const target = planTarget(baseDirectory, id);
@@ -913,10 +1303,24 @@ export function createPlanStore(options = {}) {
         });
     };
 
+    /**
+     * Alias for revision-checked update semantics.
+     *
+     * @param {string} id
+     * @param {number} expectedRevision
+     * @param {object} candidate
+     * @returns {Promise<object>}
+     */
     const replace = async (id, expectedRevision, candidate) => (
         update(id, expectedRevision, candidate)
     );
 
+    /**
+     * Lists bounded valid summaries and separately reports invalid artifacts.
+     *
+     * @param {{limit?: number}} [listOptions]
+     * @returns {Promise<{plans: object[], invalid: object[], truncated: boolean}>}
+     */
     const list = async (listOptions = {}) => {
         const limit = listOptions.limit ?? DEFAULT_LIST_LIMIT;
         validateLimit(limit);
@@ -966,6 +1370,12 @@ export function createPlanStore(options = {}) {
 
     const activationTarget = path.join(baseDirectory, ".active-plan.json");
 
+    /**
+     * Reads and validates the optional session-local activation marker.
+     *
+     * @param {StorageAnchor} anchor
+     * @returns {Promise<{schemaVersion: number, planId: string, activatedAt: string} | null>}
+     */
     const readActivationMarker = async (anchor) => {
         let source;
         try {
@@ -992,6 +1402,7 @@ export function createPlanStore(options = {}) {
             throw storageError("activation_invalid", "Mobius activation marker failed validation");
         }
         assertPlanId(marker.planId, "planId");
+        /** @type {string | null} */
         let canonicalTimestamp = null;
         try {
             canonicalTimestamp = new Date(marker.activatedAt).toISOString();
@@ -1005,6 +1416,13 @@ export function createPlanStore(options = {}) {
         return marker;
     };
 
+    /**
+     * Activates one exact plan revision for coordinator hooks.
+     *
+     * @param {string} planId
+     * @param {number} expectedRevision
+     * @returns {Promise<object>}
+     */
     const activate = async (planId, expectedRevision) => {
         validateExpectedRevision(expectedRevision);
         const anchor = await ensureStorageDirectory(workspacePath, filesRoot, baseDirectory);
@@ -1043,6 +1461,11 @@ export function createPlanStore(options = {}) {
         );
     };
 
+    /**
+     * Reads the activation marker and its current validated plan.
+     *
+     * @returns {Promise<object | null>}
+     */
     const getActive = async () => {
         const anchor = await ensureStorageDirectory(workspacePath, filesRoot, baseDirectory);
         const marker = await readActivationMarker(anchor);
@@ -1057,6 +1480,11 @@ export function createPlanStore(options = {}) {
         return { ...marker, plan };
     };
 
+    /**
+     * Removes the activation marker under its own write lock.
+     *
+     * @returns {Promise<{deactivated: boolean, planId: string | null}>}
+     */
     const deactivate = async () => {
         const anchor = await ensureStorageDirectory(workspacePath, filesRoot, baseDirectory);
         return withWriteLock(
@@ -1083,6 +1511,12 @@ export function createPlanStore(options = {}) {
         );
     };
 
+    /**
+     * Reclaims owner files only when process and heartbeat evidence are stale.
+     *
+     * @param {{staleMs?: number, beforeReclaim?: (lockPath: string) => Promise<void>}} [recoverOptions]
+     * @returns {Promise<{recovered: string[], skipped: object[]}>}
+     */
     const recoverStaleLocks = async (recoverOptions = {}) => {
         const staleMs = recoverOptions.staleMs ?? 30_000;
         if (!Number.isSafeInteger(staleMs) || staleMs < 1) {
@@ -1129,21 +1563,19 @@ export function createPlanStore(options = {}) {
                         skipped.push({ lock: entry.name, reason: "invalid-lock-metadata" });
                         continue;
                     }
-                    if (ownerIsActive(payload, staleMs)) {
+                    if (ownerIsActive(payload, metadata, staleMs)) {
                         skipped.push({ lock: entry.name, reason: "owner-alive" });
                         continue;
                     }
-                    await verifyStorageAnchor(baseDirectory, anchor);
-                    const currentMetadata = await lstat(lockPath);
-                    const currentSource = await readFile(lockPath, "utf8");
-                    if (currentMetadata.dev !== metadata.dev
-                        || currentMetadata.ino !== metadata.ino
-                        || currentSource !== source) {
-                        skipped.push({ lock: entry.name, reason: "lock-changed" });
-                        continue;
+                    if (typeof recoverOptions.beforeReclaim === "function") {
+                        await recoverOptions.beforeReclaim(lockPath);
                     }
-                    await unlink(lockPath);
-                    recovered.push(entry.name);
+                    await verifyStorageAnchor(baseDirectory, anchor);
+                    if (await removeRecoverableOwnerFile(lockPath, staleMs)) {
+                        recovered.push(entry.name);
+                    } else {
+                        skipped.push({ lock: entry.name, reason: "lock-active-or-changed" });
+                    }
                 } catch (error) {
                     if (!isMissing(error)) {
                         skipped.push({
@@ -1154,6 +1586,7 @@ export function createPlanStore(options = {}) {
                 }
             }
         } finally {
+            clearInterval(barrier.heartbeat);
             await barrier.handle.close();
             try {
                 const persistedBarrier = JSON.parse(await readFile(barrierPath, "utf8"));

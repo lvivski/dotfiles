@@ -15,14 +15,18 @@ import {
     preparePlanningConveyor,
     prepareVerificationConveyor,
     verificationRunCanBeReplaced,
+    verificationRunIsTerminal,
 } from "./conveyor.mjs";
 import {
+    ATTEMPT_STATUS,
+    EVIDENCE_TYPE,
     PLAN_STATUS,
-    TASK_STATUS,
     approvePlan,
+    attachTaskAttempt,
+    completeTaskAttempt,
     createDraftPlan,
+    reserveTaskAttempt,
     transitionPlan,
-    transitionTask,
 } from "./domain.mjs";
 
 const CONVEYORS = path.resolve(
@@ -45,6 +49,9 @@ async function withRuns(operation) {
 async function writeRun(runs, options) {
     const dir = path.join(runs, options.runId);
     await mkdir(dir, { recursive: true });
+    if (options.active) {
+        await mkdir(path.join(dir, ".lock"), { recursive: true });
+    }
     const verification = options.name === "mobius-verify";
     const script = options.script ?? await readFile(
         path.join(
@@ -91,6 +98,21 @@ async function writeRun(runs, options) {
             ...(options.result === undefined ? {} : { result: options.result }),
             preservedWorktrees: options.preservedWorktrees ?? [],
         })),
+        ...(options.active
+            ? [
+                writeFile(path.join(dir, "state.json"), JSON.stringify({
+                    runId: options.runId,
+                    status: "running",
+                    revision: 1,
+                    heartbeatAt: new Date().toISOString(),
+                })),
+                writeFile(path.join(dir, ".lock", "owner.json"), JSON.stringify({
+                    token: "mobius-test-owner",
+                    generation: 1,
+                    pid: process.pid,
+                })),
+            ]
+            : []),
     ]);
 }
 
@@ -117,16 +139,25 @@ function completedPlan() {
         at: "2026-08-05T00:01:00.000Z",
     });
     plan = approvePlan(plan, "tester", { at: "2026-08-05T00:02:00.000Z" });
-    plan = transitionPlan(plan, PLAN_STATUS.RUNNING, {
+    plan = reserveTaskAttempt(plan, "T-001", {
+        reservationId: "adapter-reservation",
         at: "2026-08-05T00:03:00.000Z",
     });
-    plan = transitionTask(plan, "T-001", TASK_STATUS.RUNNING, {
+    plan = attachTaskAttempt(plan, "T-001", "T-001-A001", {
         sessionId: "session-1",
+        branch: "work/adapter",
         at: "2026-08-05T00:04:00.000Z",
     });
-    return transitionTask(plan, "T-001", TASK_STATUS.DONE, {
+    return completeTaskAttempt(plan, "T-001", "T-001-A001", ATTEMPT_STATUS.DONE, {
         resultSummary: "Implemented",
-        evidence: ["node --test passed"],
+        evidence: [{
+            type: EVIDENCE_TYPE.TEST,
+            summary: "node --test passed",
+            source: "node --test",
+            outcome: "passed",
+        }],
+        branch: "work/adapter",
+        commit: "a".repeat(40),
         at: "2026-08-05T00:05:00.000Z",
     });
 }
@@ -178,7 +209,7 @@ test("script pinning canonicalizes CRLF line endings", () => (
         });
         await assert.rejects(
             importPlanningConveyor("crlf-run"),
-            (error) => error.code === "analysis_needs_review",
+            (/** @type {any} */ error) => error.code === "analysis_needs_review",
         );
     })
 ));
@@ -240,7 +271,7 @@ test("planning import accepts only a pinned complete ready run", () => (
         });
         await assert.rejects(
             importPlanningConveyor("shadowed-run"),
-            (error) => error.code === "conveyor_run_identity_mismatch",
+            (/** @type {any} */ error) => error.code === "conveyor_run_identity_mismatch",
         );
 
         await writeRun(runs, {
@@ -264,7 +295,7 @@ test("planning import accepts only a pinned complete ready run", () => (
         });
         await assert.rejects(
             importPlanningConveyor("direct-run"),
-            (error) => error.code === "conveyor_launch_mismatch",
+            (/** @type {any} */ error) => error.code === "conveyor_launch_mismatch",
         );
     })
 ));
@@ -283,18 +314,25 @@ test("verification import binds canonical args and criterion coverage", () => (
                 planId: plan.id,
                 passed: true,
                 summary: "Verified",
-                evidence: ["node --test passed"],
+                evidenceIds: ["T-001-A001-E001"],
                 missingEvidence: [],
+                correctionTaskIds: [],
                 reviews: [
                     {
                         coverage: [{
                             criterionId: "T-001-C001",
-                            evidence: "node --test passed",
+                            evidenceIds: ["T-001-A001-E001"],
                         }],
                         missingEvidence: [],
+                        integrationFindings: [],
                         risks: [],
                     },
-                    { coverage: [], missingEvidence: [], risks: [] },
+                    {
+                        coverage: [],
+                        missingEvidence: [],
+                        integrationFindings: [],
+                        risks: [],
+                    },
                 ],
             },
         });
@@ -315,14 +353,23 @@ test("verification import binds canonical args and criterion coverage", () => (
             await verificationRunCanBeReplaced("timed-out-run", plan),
             true,
         );
+        assert.equal(await verificationRunIsTerminal("timed-out-run"), true);
         await assert.rejects(
             inspectVerificationConveyor(
                 "timed-out-run",
                 plan,
                 { requireComplete: true },
             ),
-            (error) => error.code === "conveyor_result_unavailable",
+            (/** @type {any} */ error) => error.code === "conveyor_result_unavailable",
         );
+        await writeRun(runs, {
+            runId: "active-run",
+            name: "mobius-verify",
+            args,
+            status: "running",
+            active: true,
+        });
+        assert.equal(await verificationRunIsTerminal("active-run"), false);
 
         await writeRun(runs, {
             runId: "old-pinned-run",
@@ -335,8 +382,9 @@ test("verification import binds canonical args and criterion coverage", () => (
                 planId: plan.id,
                 passed: true,
                 summary: "Old script result",
-                evidence: ["evidence"],
+                evidenceIds: ["T-001-A001-E001"],
                 missingEvidence: [],
+                correctionTaskIds: [],
                 reviews: [],
             },
         });

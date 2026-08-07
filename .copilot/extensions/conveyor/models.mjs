@@ -50,15 +50,15 @@ export function resolveModelSettings(input, preset, parent) {
 	let model = inherit ? parentModel || "auto" : requested;
 	let effort = input.effort ?? (preset ? "xhigh" : null);
 	let context = input.context ?? (preset ? "long_context" : null);
+	/** @type {string|null} */
 	let warning = null;
-	const legacyPlan = !!input._planId;
-	if (model === "auto" && effort && ((preset && input.effort == null) || legacyPlan)) {
+	if (model === "auto" && effort && preset && input.effort == null) {
 		effort = null;
-		if ((preset && input.context == null) || legacyPlan) context = null;
+		if (input.context == null) context = null;
 		warning = "conveyor: Auto routing cannot apply the xtreme effort/context overrides; using the selected Auto model's defaults";
 	}
 	let error = modelEffortError(model, effort, parent?.models);
-	if (error && effort && ((preset && input.effort == null) || legacyPlan)) {
+	if (error && effort && preset && input.effort == null) {
 		effort = null;
 		warning = `conveyor: ${error}; using the model's default reasoning effort`;
 		error = null;

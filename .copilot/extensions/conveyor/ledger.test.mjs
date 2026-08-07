@@ -60,8 +60,10 @@ test("ledger persists cache values, branch blocks, and invalidation epochs", () 
 	assert.equal(ledger.invalidate([[0], [2, 1]]), 1);
 
 	const resumed = new Ledger(dir);
-	assert.equal(resumed.get("agent")?.content, "one");
-	assert.equal(resumed.get("agent")?.cached, true);
+	const cachedAgent = resumed.get("agent");
+	assert.ok(cachedAgent && typeof cachedAgent === "object" && "content" in cachedAgent && "cached" in cachedAgent);
+	assert.equal(cachedAgent.content, "one");
+	assert.equal(cachedAgent.cached, true);
 	for (const [key, value] of [["null", null], ["false", false], ["zero", 0], ["empty", ""]]) {
 		assert.deepEqual(resumed.lookup(key), { hit: true, value });
 	}
@@ -85,10 +87,12 @@ test("ledger records agent details once and persists limit refusal", () => {
 
 	const resumed = new Ledger(dir);
 	assert.equal(resumed.consumed.nanoAiu, 500_000_000);
-	assert.equal(resumed.get("k")?.content, "one");
+	const cached = resumed.get("k");
+	assert.ok(cached && typeof cached === "object" && "content" in cached);
+	assert.equal(cached.content, "one");
 	assert.deepEqual(resumed.approvedLimits, { maxAiCredits: 3 });
 	assert.equal(resumed.budgetIncreaseDeclined, true);
-	const records = readFileSync(join(dir, "ledger.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+	const records = readFileSync(join(dir, "ledger.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
 	assert.equal(records.filter((record) => record.type === "agent_usage").length, 1);
 	assert.equal(records.find((record) => record.type === "agent_started").prompt, undefined);
 	assert.equal(typeof records.find((record) => record.type === "agent_started").promptHash, "string");
@@ -103,7 +107,7 @@ test("progress revisions become durable only on flush and stay ordered before cr
 	assert.equal(second.revision, 0);
 	assert.equal(ledger.revision, 0);
 	ledger.admitAgent();
-	const records = readFileSync(join(dir, "ledger.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+	const records = readFileSync(join(dir, "ledger.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
 	assert.deepEqual(records.map((record) => record.type), ["progress", "progress", "agent_admitted"]);
 	assert.deepEqual(records.map((record) => record.revision), [1, 2, 3]);
 });
@@ -135,7 +139,7 @@ test("buffered progress flushes on its timer without consuming revisions early",
 	ledger.progress({ ev: "tick" });
 	assert.equal(ledger.revision, 0);
 	await new Promise((resolve) => setTimeout(resolve, 200));
-	const records = readFileSync(join(dir, "ledger.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+	const records = readFileSync(join(dir, "ledger.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
 	assert.equal(records.length, 1);
 	assert.equal(records[0].revision, 1);
 });

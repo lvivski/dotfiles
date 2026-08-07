@@ -89,29 +89,31 @@ export async function purgeSessionStore(ids) {
 	const sqlite = await loadSqlite();
 	if (!sqlite) return { rows: 0, warnings: ["session store purge skipped: node:sqlite is unavailable"] };
 
+	/** @type {import("node:sqlite").DatabaseSync|null} */
 	let db = null;
 	let rows = 0;
 	try {
-		db = new sqlite.DatabaseSync(path);
+		const opened = new sqlite.DatabaseSync(path);
+		db = opened;
 		// The CLI holds this store open; wait for its writes instead of failing on SQLITE_BUSY.
-		db.exec("PRAGMA busy_timeout = 5000");
+		opened.exec("PRAGMA busy_timeout = 5000");
 		for (const chunk of chunks(ids, PURGE_CHUNK)) {
 			const placeholders = chunk.map(() => "?").join(",");
-			db.exec("BEGIN IMMEDIATE");
+			opened.exec("BEGIN IMMEDIATE");
 			try {
-				for (const table of sessionTables(db)) {
+				for (const table of sessionTables(opened)) {
 					try {
-						rows += Number(db.prepare(`DELETE FROM "${table}" WHERE session_id IN (${placeholders})`).run(...chunk).changes ?? 0);
+						rows += Number(opened.prepare(`DELETE FROM "${table}" WHERE session_id IN (${placeholders})`).run(...chunk).changes ?? 0);
 					} catch (e) {
 						// One unpurgeable table (e.g. a contentless FTS index) must not abandon the rest.
 						warnings.push(`session store: ${table}: ${errMsg(e)}`);
 					}
 				}
-				rows += Number(db.prepare(`DELETE FROM sessions WHERE id IN (${placeholders})`).run(...chunk).changes ?? 0);
-				db.exec("COMMIT");
+				rows += Number(opened.prepare(`DELETE FROM sessions WHERE id IN (${placeholders})`).run(...chunk).changes ?? 0);
+				opened.exec("COMMIT");
 			} catch (e) {
 				try {
-					db.exec("ROLLBACK");
+					opened.exec("ROLLBACK");
 				} catch {
 					/* no open transaction */
 				}

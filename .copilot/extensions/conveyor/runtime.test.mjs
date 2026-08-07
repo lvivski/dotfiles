@@ -127,13 +127,13 @@ await agent("one", { label: "a1" }); await agent("two", { label: "a2" }); return
 		assert.equal(second.counts.cached, 2);
 		assert.equal(second.counts.launched, 0);
 		assert.equal(second.aic, 1.0);
-		const progress = readFileSync(join(runDir, "ledger.jsonl"), "utf8").trim().split("\n").map(JSON.parse).filter((record) => record.type === "progress").map((record) => record.record);
+		const progress = readFileSync(join(runDir, "ledger.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((record) => record.type === "progress").map((record) => record.record);
 		assert.equal(progress.filter((event) => event.ev === "run_start").length, 2);
 		assert.equal(progress.at(-1).ev, "run_end");
 	});
 });
 
-test("selective resume reruns invalidated branches while retaining sibling checkpoints", () =>
+test("selective resume reruns invalidated branches while retaining sibling ledger values", () =>
 	withFakeEnv({}, async () => {
 		const runDir = tmpDir();
 		const source = `export const meta = { name: "selective", description: "test conveyor" };
@@ -315,10 +315,12 @@ const b = await pipeline([1], () => host.next()); // group B
 return JSON.stringify({ a: a[0], b: b[0] });`;
 
 		const first = await executeConveyor({ source: build("[1]"), runId: "resize", runDir, hostPath, budget: 10, onLine: () => {} });
+		if (typeof first.result !== "string") throw new Error("expected string conveyor result");
 		const bBefore = JSON.parse(first.result).b;
 
 		const resumed = await executeConveyor({ source: build("[1,2]"), runId: "resize", runDir, hostPath, budget: 10, resume: true, onLine: () => {} });
 		assert.equal(resumed.status, "complete");
+		if (typeof resumed.result !== "string") throw new Error("expected string conveyor result");
 		assert.equal(JSON.parse(resumed.result).b, bBefore, "group B must keep its own cached effect value");
 	}));
 
@@ -659,7 +661,7 @@ await pipeline([1,2], () => agent("same prompt")); return "ok";`,
 		assert.equal(new Set(keys).size, 2, "two distinct branch-scoped keys");
 	}));
 
-test("cache keys: auto agent keys keep the journal-compatible tuple shape", () =>
+test("cache keys: auto agent keys keep a stable tuple shape", () =>
 	withFakeEnv({}, async () => {
 		const dir = tmpDir();
 		await executeConveyor({
@@ -689,7 +691,7 @@ return top.content + "|" + inner[0].content;`;
 	assert.equal(new Set(keys).size, 2, "distinct structured keys");
 });
 
-test("cache keys: explicit agent keys keep the journal-compatible tuple shape", async () => {
+test("cache keys: explicit agent keys keep a stable tuple shape", async () => {
 	const src = `
 await agent("top", { key: "b0-foo", label: "top" });
 await pipeline([0], () => agent("inner", { key: "foo", label: "inner" }));
@@ -1035,13 +1037,14 @@ return context.memory.read();`;
 		assert.equal(resumed.result, "first");
 	}));
 
-test("successful unknown-usage agents fail closed once and replay from checkpoint", () =>
+test("successful unknown-usage agents fail closed once and replay from the ledger", () =>
 	withFakeEnv({ CONVEYOR_FAKE_MODE: "nousage" }, async () => {
 		const runDir = tmpDir();
 		const source = `export const meta = { name: "unknown-usage", description: "test conveyor" };
 return (await agent("unknown")).content;`;
 		const first = await executeConveyor({ source, runId: "unknown", runDir, budget: 10, onLine: () => {} });
 		assert.equal(first.status, "error");
+		assert.ok(first.failure && typeof first.failure === "object" && "type" in first.failure);
 		assert.equal(first.failure.type, "durable_failure");
 		const resumed = await executeConveyor({ source, runId: "unknown", runDir, budget: 10, resume: true, onLine: () => {} });
 		assert.equal(resumed.status, "complete");
@@ -1101,6 +1104,7 @@ test("cumulative spawned-agent limits ignore cache hits and stop invalidated wor
 		assert.equal(cached.status, "complete");
 		const rerun = await executeConveyor({ source, runId: "total", runDir, budget: 10, declaredLimits: { maxTotalAgents: 1, maxAiCredits: 10 }, resume: true, invalidatedBranches: [[]], onLine: () => {} });
 		assert.equal(rerun.status, "failed");
+		assert.ok(rerun.failure && typeof rerun.failure === "object" && "kind" in rerun.failure);
 		assert.equal(rerun.failure.kind, "maxTotalAgents");
 		assert.deepEqual(JSON.parse(readFileSync(join(runDir, "state.json"), "utf8")).running, []);
 	}));

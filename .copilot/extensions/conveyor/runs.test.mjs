@@ -132,7 +132,6 @@ test("loadConveyorRunForImport returns source and argument identity", () =>
 		writeFileSync(
 			join(dir, "manifest.json"),
 			JSON.stringify({
-				formatVersion: 4,
 				runId: "import-run",
 				restricted: true,
 				enableMcp: false,
@@ -218,6 +217,27 @@ test("getConveyorRunActivity reads terminal status", () =>
 			status: "timeout",
 			revision: 1,
 		}));
+
+test("ownerless partial ledgers are interrupted, not permanently running", () =>
+		withRuns((runs) => {
+			const dir = runDir(runs, "ownerless-partial");
+			writeFileSync(join(dir, "ledger.jsonl"), [
+				JSON.stringify({
+					type: "progress",
+					revision: 1,
+					recordedAt: Date.now(),
+					record: {
+						ev: "run_start",
+						meta: { name: "partial" },
+					},
+				}),
+				"",
+			].join("\n"));
+			assert.equal(
+				getConveyorRunActivity("ownerless-partial").status,
+				"interrupted",
+			);
+		}));
 		assert.deepEqual(
 			getConveyorRunActivity("unsupported-terminal"),
 			{
@@ -284,6 +304,51 @@ test("getConveyorResult distinguishes running from terminal resultless runs", ()
 		assert.match(terminal.error, /host process exited/);
 	}));
 
+test("newer interrupted attempts suppress older terminal results", () =>
+	withRuns((runs) => {
+		const dir = runDir(runs, "stale-terminal");
+		writeFileSync(join(dir, "run.json"), JSON.stringify({
+			runId: "stale-terminal",
+			status: "complete",
+			revision: 1,
+			result: { stale: true },
+		}));
+		writeFileSync(join(dir, "state.json"), JSON.stringify({
+			runId: "stale-terminal",
+			status: "interrupted",
+			revision: 1,
+			updatedAt: new Date().toISOString(),
+		}));
+		writeFileSync(join(dir, "ledger.jsonl"), [
+			JSON.stringify({
+				type: "attempt_started",
+				revision: 2,
+				attemptId: "attempt-2",
+				startedAt: Date.now(),
+			}),
+			"",
+		].join("\n"));
+		const loaded = loadConveyorResult("stale-terminal");
+		assert.equal(loaded.status, "interrupted");
+		assert.equal(loaded.resultAvailable, false);
+	}));
+
+test("stale running state without a fresh owner heartbeat is interrupted", () =>
+	withRuns((runs) => {
+		const dir = runDir(runs, "stale-heartbeat");
+		writeFileSync(join(dir, "state.json"), JSON.stringify({
+			runId: "stale-heartbeat",
+			status: "running",
+			revision: 1,
+			heartbeatAt: "2020-01-01T00:00:00.000Z",
+			updatedAt: "2020-01-01T00:00:00.000Z",
+		}));
+		assert.equal(
+			getConveyorRunActivity("stale-heartbeat").status,
+			"interrupted",
+		);
+	}));
+
 test("getConveyorResult rejects unsafe inputs and malformed artifacts", () =>
 	withRuns((runs) => {
 		assert.throws(() => getConveyorResult({ runId: "../outside" }), ConveyorResultError);
@@ -314,6 +379,7 @@ test("inspectConveyorRun returns bounded running metadata without result text or
 	withRuns((runs) => {
 		const dir = runDir(runs, "running-inspect");
 		const huge = "x".repeat(5000);
+		const now = new Date().toISOString();
 		writeFileSync(join(dir, "manifest.json"), JSON.stringify({ conveyor: { name: huge }, createdAt: "2026-01-01T00:00:00Z" }));
 		writeFileSync(
 			join(dir, "state.json"),
@@ -324,7 +390,8 @@ test("inspectConveyorRun returns bounded running metadata without result text or
 				ownerPid: process.pid,
 				ownerInstanceId: PROCESS_INSTANCE_ID,
 				startedAt: "2026-01-01T00:00:00Z",
-				updatedAt: "2026-01-01T00:00:01Z",
+				heartbeatAt: now,
+				updatedAt: now,
 				phase: huge,
 				counts: { launched: 1, done: 0, failed: 0, cached: 0, skipped: 0, dropped: 0 },
 				running: [{ seq: 1, label: huge, model: huge, phase: huge, branchPath: "/0/2" }],
@@ -400,7 +467,7 @@ test("inspectConveyorRun prefers terminal records, suppresses phantom running ag
 
 test("inspectConveyorRun replays ledger progress", () =>
 	withRuns((runs) => {
-		const replayed = runDir(runs, "legacy-inspect");
+		const replayed = runDir(runs, "replay-inspect");
 		writeFileSync(
 			join(replayed, "ledger.jsonl"),
 			[
@@ -410,7 +477,7 @@ test("inspectConveyorRun replays ledger progress", () =>
 			].join("\n"),
 		);
 
-		const inspected = JSON.parse(inspectConveyorRun({ runId: "legacy-inspect" }));
+		const inspected = JSON.parse(inspectConveyorRun({ runId: "replay-inspect" }));
 		assert.equal(inspected.status, "partial");
 		assert.equal(inspected.conveyor, "replayed");
 		assert.equal(inspected.counts.failed, 1);
@@ -492,7 +559,7 @@ test("agent event inspection scopes repeated agent sequences by attempt", () =>
 			{ type: "agent_started", revision: 3, key: "b", attemptId: "attempt-b", agentSeq: 1, label: "worker" },
 			{ type: "progress", revision: 4, recordedAt: 4, record: { ev: "end", attemptId: "attempt-b", agentSeq: 1, label: "worker", error: "second" } },
 		];
-		writeFileSync(join(dir, "ledger.jsonl"), records.map(JSON.stringify).join("\n") + "\n");
+		writeFileSync(join(dir, "ledger.jsonl"), records.map((record) => JSON.stringify(record)).join("\n") + "\n");
 		const events = JSON.parse(inspectConveyorAgent({ runId: "attempt-events", agent: "a", section: "events" })).text;
 		assert.match(events, /first/);
 		assert.doesNotMatch(events, /second/);
@@ -566,39 +633,22 @@ test("a dead owner renders interrupted while a live owner stays running", () =>
 			status: "running",
 			ownerPid: process.pid,
 			ownerInstanceId: PROCESS_INSTANCE_ID,
+			heartbeatAt: now,
 			updatedAt: now,
 		}));
 
 		writeLiveOwner(live);
-		const legacy = runDir(runs, "legacy-stale");
-		writeFileSync(join(legacy, "state.json"), JSON.stringify({
+		const ownerless = runDir(runs, "ownerless-stale");
+		writeFileSync(join(ownerless, "state.json"), JSON.stringify({
 			status: "running",
 			updatedAt: old,
 		}));
 
-		const locked = runDir(runs, "legacy-locked");
+		const locked = runDir(runs, "stale-locked");
 		writeFileSync(join(locked, "state.json"), JSON.stringify({
 			status: "running",
+			heartbeatAt: old,
 			updatedAt: old,
-		}));
-
-test("a newer interrupted resume state supersedes an older terminal result", () =>
-		withRuns((runs) => {
-			const dir = runDir(runs, "interrupted-resume");
-			writeFileSync(join(dir, "run.json"), JSON.stringify({ runId: "interrupted-resume", status: "complete", revision: 0, result: "old" }));
-			const ledger = new Ledger(dir);
-			ledger.startAttempt();
-			writeFileSync(join(dir, "state.json"), JSON.stringify({
-				runId: "interrupted-resume",
-				status: "running",
-				revision: 9,
-				ownerPid: 2_147_483_647,
-				ownerInstanceId: "dead",
-				updatedAt: new Date().toISOString(),
-			}));
-			const loaded = loadConveyorResult("interrupted-resume");
-			assert.equal(loaded.status, "interrupted");
-			assert.equal(loaded.resultAvailable, false);
 		}));
 		mkdirSync(join(locked, ".lock"));
 		writeFileSync(join(locked, ".lock", "owner.json"), JSON.stringify({
@@ -609,8 +659,8 @@ test("a newer interrupted resume state supersedes an older terminal result", () 
 		const listing = listConveyorRuns();
 		assert.match(listing, /dead-owner\s+interrupted/);
 		assert.match(listing, /live-owner\s+running/);
-		assert.match(listing, /legacy-stale\s+interrupted/);
-		assert.match(listing, /legacy-locked\s+running/);
+		assert.match(listing, /ownerless-stale\s+interrupted/);
+		assert.match(listing, /stale-locked\s+interrupted/);
 
 		const logs = /** @type {string[]} */ ([]);
 		conveyorCommand("dead-owner", { log: (message) => logs.push(message) });
@@ -618,6 +668,30 @@ test("a newer interrupted resume state supersedes an older terminal result", () 
 		const inspected = JSON.parse(inspectConveyorRun({ runId: "dead-owner" }));
 		assert.equal(inspected.status, "interrupted");
 		assert.deepEqual(inspected.running, []);
+	}));
+
+test("a newer interrupted resume state supersedes an older terminal result", () =>
+	withRuns((runs) => {
+		const dir = runDir(runs, "interrupted-resume");
+		writeFileSync(join(dir, "run.json"), JSON.stringify({
+			runId: "interrupted-resume",
+			status: "complete",
+			revision: 0,
+			result: "old",
+		}));
+		const ledger = new Ledger(dir);
+		ledger.startAttempt();
+		writeFileSync(join(dir, "state.json"), JSON.stringify({
+			runId: "interrupted-resume",
+			status: "running",
+			revision: 9,
+			ownerPid: 2_147_483_647,
+			ownerInstanceId: "dead",
+			updatedAt: new Date().toISOString(),
+		}));
+		const loaded = loadConveyorResult("interrupted-resume");
+		assert.equal(loaded.status, "interrupted");
+		assert.equal(loaded.resultAvailable, false);
 	}));
 
 test("conveyorCommand renders latest dashboard, result, artifacts, and summary fallback", () =>

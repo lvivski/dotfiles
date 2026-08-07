@@ -155,6 +155,12 @@ p {
   color: var(--true-color-red, #cf222e);
 }
 
+.status-running,
+.status-cancelling,
+.warning {
+  color: var(--true-color-orange, #9a6700);
+}
+
 .details {
   display: grid;
   gap: 4px;
@@ -168,4 +174,31 @@ p {
 
 .panel {
   padding: 14px;
+}
+
+.attempts {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.attempt {
+  border-top: 1px solid var(--border-color-default, #d0d7de);
+  padding-top: 8px;
+}
+
+.attempt summary {
+  cursor: pointer;
+  font-family: var(--font-mono, "SFMono-Regular", Consolas, monospace);
+}
+
+.evidence-list,
+.action-list {
+  margin: 8px 0 0;
+  padding-left: 20px;
+}
+
+.evidence-item {
+  margin-bottom: 4px;
+  overflow-wrap: anywhere;
 }

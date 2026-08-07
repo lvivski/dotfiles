@@ -1,4 +1,11 @@
-// Synced to the user extension directory by this dotfiles repository.
+/**
+ * Mobius extension entry point.
+ *
+ * Registers the tool, hook, and canvas surfaces against the current foreground
+ * Copilot session, then performs conservative stale-lock recovery.
+ *
+ * @module mobius/extension
+ */
 import { joinSession } from "@github/copilot-sdk/extension";
 
 import { createMobiusCanvas } from "./canvas.mjs";
@@ -7,7 +14,10 @@ import { buildMobiusHooks } from "./hooks.mjs";
 import { createMobiusOperations } from "./operations.mjs";
 import { buildMobiusTools } from "./tools.mjs";
 
+/** @type {import("@github/copilot-sdk").CopilotSession | null} */
 let session = null;
+
+/** Shared service boundary used by tools, hooks, and canvases. */
 const operations = createMobiusOperations({
     getWorkspacePath: () => session?.workspacePath,
     notify: publishPlanChange,

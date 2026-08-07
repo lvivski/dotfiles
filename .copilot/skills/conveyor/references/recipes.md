@@ -74,7 +74,7 @@ for (let round = 0; round < 10 && dry < 2; round++) {
 
 ## Durable memory
 
-Use `context.memory`. A run must treat memory reads as external state; Persistence journals them for
+Use `context.memory`. A run must treat memory reads as external state; the ledger records them for
 deterministic replay.
 
 ## Host effects

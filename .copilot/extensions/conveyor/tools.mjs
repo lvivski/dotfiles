@@ -138,10 +138,10 @@ function branchStartsWith(branch, prefix) {
 	return prefix.length <= branch.length && prefix.every((part, index) => branch[index] === part);
 }
 
-/** @param {unknown} value @param {unknown} legacyAllowAll @returns {"off"|"on"|"auto"} */
-function normalizePermissionMode(value, legacyAllowAll = false) {
+/** @param {unknown} value @param {unknown} allowAllEnabled @returns {"off"|"on"|"auto"} */
+function normalizePermissionMode(value, allowAllEnabled = false) {
 	if (value === "on" || value === "auto") return value;
-	return legacyAllowAll === true ? "on" : "off";
+	return allowAllEnabled === true ? "on" : "off";
 }
 
 /** @param {"off"|"on"|"auto"} mode */
@@ -378,8 +378,8 @@ async function prepareRun(input, ctx) {
 		parentSessionMode,
 		agentBackend: ctx.agentBackend,
 		title: input.name || undefined,
-		maxAgents: input._planMaxAgents ?? null,
-		planId: input._planId ?? null,
+		maxAgents: input._boundMaxAgents ?? null,
+		planId: input._boundPlanId ?? null,
 		retainAgentContent: input.retainAgentContent === true,
 		requestLimitApproval: requestLimitApproval ? (request) => requestLimitApproval({ runId, ...request }) : null,
 	};
@@ -413,16 +413,16 @@ function expandPlanInput(input) {
 		host: plan.hostPath,
 		progress: plan.progressMode,
 		cwd: plan.cwd,
-		_planMaxAgents: plan.maxAgents,
-		_planId: plan.planId,
-		_declaredLimits: plan.limits,
+		_boundMaxAgents: plan.maxAgents,
+		_boundPlanId: plan.planId,
+		_boundLimits: plan.limits,
 		retainAgentContent: plan.retainAgentContent === true,
 	};
 }
 
 /** @param {any} input @param {unknown} metaLimits @param {{ budget: number|null, timeoutSec: number|null, concurrency: number|null }} resolved */
 function resolveLimits(input, metaLimits, resolved) {
-	const explicit = normalizeLimits(input._declaredLimits ?? input.limits ?? metaLimits ?? {});
+	const explicit = normalizeLimits(input._boundLimits ?? input.limits ?? metaLimits ?? {});
 	return normalizeLimits({
 		...explicit,
 		...(resolved.concurrency != null ? { maxConcurrentAgents: resolved.concurrency } : {}),
@@ -519,6 +519,10 @@ export async function controlConveyorRun(input, ctx) {
 }
 
 /** @param {string} runId @param {ToolCtx} ctx @param {number[][]} [invalidatedBranches] @returns {Promise<RunPlan>} */
+/**
+ * @param {string} runId @param {ToolCtx} ctx @param {number[][]} [invalidatedBranches]
+ * @param {unknown} [requestedLimits]
+ */
 async function preparePersistedResume(runId, ctx, invalidatedBranches = [], requestedLimits = null) {
 	const runDir = join(runsDir(), runId);
 	const manifest = readJsonFile(join(runDir, "manifest.json"));
@@ -534,13 +538,6 @@ async function preparePersistedResume(runId, ctx, invalidatedBranches = [], requ
 	const timeoutTotal = proposedLimits.timeoutSeconds ?? null;
 	const timeoutSec = timeoutTotal == null ? null : Math.max(0, timeoutTotal - priorLedger.consumed.activeMs / 1000);
 	check(timeoutSec == null || timeoutSec > MIN_RESUME_TIMEOUT_SECONDS, `conveyor run '${runId}' has exhausted its cumulative timeoutSeconds limit.`);
-	let effort = manifest.effort;
-	let context = manifest.context;
-	if (manifest.model === "auto" && effort) {
-		effort = null;
-		context = null;
-		ctx.log("conveyor: resumed a legacy Auto run without its incompatible effort/context overrides", false, "warning");
-	}
 	const sourcePath = join(runDir, "script.js");
 	check(isFile(sourcePath), `conveyor run '${runId}' has no persisted script.`);
 	const source = readFileSync(sourcePath, "utf8");
@@ -581,8 +578,8 @@ async function preparePersistedResume(runId, ctx, invalidatedBranches = [], requ
 			attemptTimeoutSeconds: timeoutSec,
 			limits: proposedLimits,
 			model: manifest.model,
-			effort,
-			context,
+			effort: manifest.effort,
+			context: manifest.context,
 			enableMcp: !!manifest.enableMcp,
 			restricted: !!manifest.restricted,
 			strictBudget: !!manifest.strictBudget,
@@ -842,7 +839,7 @@ export function buildTools(ctx) {
 		{
 			name: "inspect_conveyor_agent",
 			skipPermission: true,
-			description: "Inspect prompt-safe conveyor agent summary, usage, or progress events by journal key, sessionId, or label.",
+			description: "Inspect prompt-safe conveyor agent summary, usage, or progress events by durable key, sessionId, or label.",
 			parameters: {
 				type: "object",
 				additionalProperties: false,
@@ -956,7 +953,8 @@ export function buildTools(ctx) {
 			"parallel, pipeline, phase, step, verify, and log plus context/host/workspace namespaces. Use it for " +
 			"large parallel or cross-checked work, not routine edits. ALWAYS preview with dryRun:true; the " +
 			"preview returns a planId binding source, args, sidecar, budget, and a hard max-agent ceiling. " +
-			"Launch with exactly one of script, scriptPath, name, or planId. Non-dry runs default to background:true; completion notifications " +
+			"A planId is single-use and is consumed once its real run starts. Launch with exactly one of script, scriptPath, name, or planId. " +
+			"Non-dry runs default to background:true; completion notifications " +
 			"include the final result inline when reasonably sized, with get_conveyor_result as the fallback.",
 		parameters: {
 			type: "object",
@@ -965,7 +963,7 @@ export function buildTools(ctx) {
 				script: { type: "string", description: "Inline .mjs source; may export a literal `meta` block with name/description/phases." },
 				scriptPath: { type: "string", description: "Path to an existing .mjs conveyor." },
 				name: { type: "string", description: "Saved conveyor name; nearest project .copilot/conveyors wins, then user scope." },
-				planId: { type: "string", description: "Launch an immutable dry-run plan with its bound source, args, permissions, budget, and max-agent ceiling." },
+				planId: { type: "string", description: "Launch a single-use immutable dry-run plan with its bound source, args, permissions, budget, and max-agent ceiling." },
 				args: { description: "Actual JSON value exposed as context.args; do not JSON-encode arrays or objects." },
 				budget: { type: "number", exclusiveMinimum: 0, description: `Observed AIC cap. A non-strict run asks the host to raise the ceiling each time it is exhausted; declining stops the asking. Default ${DEFAULT_BUDGET}, or ${XTREME_BUDGET} with preset='xtreme'.` },
 				dryRun: { type: "boolean", description: "Preview without agent spend. Read-only host effects may run for accurate discovery; returns a launchable planId." },

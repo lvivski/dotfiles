@@ -5,13 +5,39 @@
  * these shims keep a repo-only `tsc --checkJs` from failing on an unresolved module.
  */
 declare module "@github/copilot-sdk/extension" {
+	export interface CanvasAction {
+		name: string;
+		description?: string;
+		inputSchema?: any;
+		handler: (context: any) => any;
+	}
+	export interface CanvasOptions {
+		id: string;
+		displayName: string;
+		description: string;
+		inputSchema?: any;
+		actions?: CanvasAction[];
+		open: (context: any) => any;
+		onClose?: (context: any) => any;
+	}
+	export class CanvasError extends Error {
+		readonly code: string;
+		constructor(code: string, message: string);
+		static noHandler(): CanvasError;
+	}
+	export class Canvas {
+		readonly declaration: any;
+		readonly open: (context: any) => any;
+		readonly onClose?: (context: any) => any;
+	}
 	/** Join the current foreground session, optionally contributing tools/commands/canvases/hooks. */
 	export function joinSession(config?: any): Promise<any>;
 	/** (Experimental) Declare an extension-owned canvas (a web UI panel) with `open`/`actions` handlers. */
-	export function createCanvas(options: any): any;
+	export function createCanvas(options: CanvasOptions): Canvas;
 }
 
 declare module "@github/copilot-sdk" {
+	export type CopilotSession = any;
 	export class CopilotClient {
 		constructor(options?: any);
 		createSession(config: any): Promise<any>;

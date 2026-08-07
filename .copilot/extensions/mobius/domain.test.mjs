@@ -1,26 +1,39 @@
-// Domain behavior is intentionally testable without the Copilot SDK.
 import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+    ATTEMPT_STATUS,
+    EVIDENCE_TYPE,
     PLAN_STATUS,
+    SCHEMA_VERSION,
     TASK_STATUS,
     approvePlan,
+    attachTaskAttempt,
+    bindVerificationRun,
+    completeTaskAttempt,
     completeVerification,
     createDraftPlan,
+    finalizePlanCancellation,
     getReadyTasks,
+    latestSuccessfulAttempt,
     reconcileTaskReadiness,
+    requestPlanCancellation,
+    reserveTaskAttempt,
+    reserveVerification,
+    retryFailedPlan,
     retryTask,
     summarizePlan,
+    taskLaunchGuidance,
     transitionPlan,
-    transitionTask,
     validatePlan,
 } from "./domain.mjs";
 
 const CREATED_AT = "2026-08-05T16:00:00.000Z";
 const APPROVED_AT = "2026-08-05T16:01:00.000Z";
-const STARTED_AT = "2026-08-05T16:02:00.000Z";
-const COMPLETED_AT = "2026-08-05T16:03:00.000Z";
+const RESERVED_AT = "2026-08-05T16:02:00.000Z";
+const STARTED_AT = "2026-08-05T16:03:00.000Z";
+const COMPLETED_AT = "2026-08-05T16:04:00.000Z";
+const CANCELLED_AT = "2026-08-05T16:05:00.000Z";
 
 function task(id, dependsOn = []) {
     return {
@@ -45,85 +58,84 @@ function draft(options = {}) {
         },
         planning: options.planning ?? null,
         tasks: options.tasks ?? [
-            task("T-002"),
             task("T-001"),
-            task("T-003", ["T-001"]),
+            task("T-002", ["T-001"]),
         ],
     }, { now: CREATED_AT });
 }
 
+function approved(options = {}) {
+    const submitted = transitionPlan(draft(options), PLAN_STATUS.AWAITING_APPROVAL, {
+        at: CREATED_AT,
+    });
+    return approvePlan(submitted, "octocat", { at: APPROVED_AT });
+}
+
+function claimedEvidence(summary = "node --test passed") {
+    return [{
+        type: EVIDENCE_TYPE.TEST,
+        summary,
+        source: "node --test",
+        outcome: "passed",
+    }];
+}
+
+/**
+ * Requires a value in test setup and narrows its type.
+ *
+ * @template T
+ * @param {T | null | undefined} value
+ * @param {string} [message]
+ * @returns {T}
+ */
+function required(value, message = "Expected test fixture value") {
+    assert.ok(value, message);
+    return value;
+}
+
+function completeTask(plan, taskId, options = {}) {
+    const reservationId = options.reservationId ?? `reserve-${taskId}-${plan.revision}`;
+    let candidate = reserveTaskAttempt(plan, taskId, {
+        reservationId,
+        scopeOverride: options.scopeOverride ?? null,
+        at: RESERVED_AT,
+    });
+    const taskRecord = required(candidate.tasks.find((entry) => entry.id === taskId));
+    const attempt = required(taskRecord.attempts.at(-1));
+    candidate = attachTaskAttempt(candidate, taskId, attempt.id, {
+        sessionId: options.sessionId ?? `session-${attempt.id}`,
+        branch: options.branch ?? `work/${attempt.id.toLowerCase()}`,
+        at: STARTED_AT,
+    });
+    candidate = completeTaskAttempt(candidate, taskId, attempt.id, ATTEMPT_STATUS.DONE, {
+        resultSummary: options.resultSummary ?? `Implemented ${taskId}`,
+        evidence: options.evidence ?? claimedEvidence(),
+        branch: options.branch ?? `work/${attempt.id.toLowerCase()}`,
+        commit: options.commit ?? "a".repeat(40),
+        prUrl: options.prUrl ?? null,
+        at: COMPLETED_AT,
+    });
+    return { plan: reconcileTaskReadiness(candidate, { at: COMPLETED_AT }), attemptId: attempt.id };
+}
+
 function throwsCode(operation, code) {
-    assert.throws(operation, (error) => {
+    assert.throws(operation, (/** @type {any} */ error) => {
         assert.equal(error.code, code);
         return true;
     });
 }
 
-test("createDraftPlan produces a valid schema-versioned draft", () => {
+test("createDraftPlan produces the strict initial schema", () => {
     const plan = draft();
-
+    assert.equal(SCHEMA_VERSION, 1);
     assert.equal(plan.schemaVersion, 1);
-    assert.equal(plan.revision, 1);
     assert.equal(plan.status, PLAN_STATUS.DRAFT);
-    assert.equal(plan.planning, null);
-    assert.equal(plan.tasks[0].status, TASK_STATUS.PLANNED);
-    assert.deepEqual(plan.gates, {
-        planApprovedAt: null,
-        planApprovedBy: null,
-        completionApprovedAt: null,
-        completionApprovedBy: null,
-    });
+    assert.equal(plan.cancellation, null);
+    assert.deepEqual(plan.tasks[0].attempts, []);
     assert.equal(validatePlan(plan), plan);
 });
 
-test("plan summaries expose planning provenance without changing existing fields", () => {
-    const omittedPlanningPlan = draft();
-    const explicitNullPlan = draft({ planning: null });
-    const withoutPlanning = summarizePlan(omittedPlanningPlan);
-    assert.equal(omittedPlanningPlan.planning, null);
-    assert.equal(explicitNullPlan.planning, null);
-    assert.equal(withoutPlanning.planningRunId, omittedPlanningPlan.planning);
-    assert.equal(summarizePlan(explicitNullPlan).planningRunId, explicitNullPlan.planning);
-    assert.equal(withoutPlanning.id, "sample-plan");
-    assert.equal(withoutPlanning.status, PLAN_STATUS.DRAFT);
-    assert.equal(withoutPlanning.tasksTotal, 3);
-
-    const planning = {
-        backend: "conveyor",
-        runId: "planning-run-1",
-        inputDigest: "a".repeat(64),
-    };
-    const withPlanning = summarizePlan(draft({ planning }));
-    assert.equal(withPlanning.planningRunId, planning.runId);
-    assert.deepEqual(
-        Object.keys(withPlanning),
-        [
-            "id",
-            "title",
-            "objective",
-            "status",
-            "revision",
-            "tasksTotal",
-            "tasksDone",
-            "tasksByStatus",
-            "planningRunId",
-            "verificationStatus",
-            "updatedAt",
-        ],
-    );
-});
-
-test("timestamps must be canonical UTC values with valid calendar dates", () => {
-    const invalidDate = draft();
-    invalidDate.updatedAt = "2026-02-30T16:00:00.000Z";
-    throwsCode(() => validatePlan(invalidDate), "invalid_timestamp");
-
-    const localTime = draft();
-    localTime.updatedAt = "2026-08-05T16:00:00.000";
-    throwsCode(() => validatePlan(localTime), "invalid_timestamp");
-});
-
-test("plan validation rejects malformed identifiers and dependency graphs", async (context) => {
+test("plan validation rejects malformed timestamps and dependency graphs", async (context) => {
     const cases = [
         {
             name: "malformed plan id",
@@ -144,329 +156,389 @@ test("plan validation rejects malformed identifiers and dependency graphs", asyn
             name: "dependency cycle",
             code: "dependency_cycle",
             build: () => draft({
-                tasks: [
-                    task("T-001", ["T-002"]),
-                    task("T-002", ["T-001"]),
-                ],
+                tasks: [task("T-001", ["T-002"]), task("T-002", ["T-001"])],
             }),
         },
-        {
-            name: "empty acceptance criteria",
-            code: "array_too_short",
-            build: () => {
-                const invalidTask = task("T-001");
-                invalidTask.acceptanceCriteria = [];
-                return draft({ tasks: [invalidTask] });
-            },
-        },
     ];
-
     for (const current of cases) {
-        await context.test(current.name, () => {
-            throwsCode(current.build, current.code);
-        });
+        await context.test(current.name, () => throwsCode(current.build, current.code));
     }
+    const invalidDate = draft();
+    invalidDate.updatedAt = "2026-02-30T16:00:00.000Z";
+    throwsCode(() => validatePlan(invalidDate), "invalid_timestamp");
 });
 
-test("approval records the gate and resolves ready tasks deterministically", () => {
-    const submitted = transitionPlan(draft(), PLAN_STATUS.AWAITING_APPROVAL, {
-        at: CREATED_AT,
+test("approval resolves ready tasks deterministically", () => {
+    const plan = approved({
+        tasks: [task("T-002"), task("T-001"), task("T-003", ["T-001"])],
     });
-    const approved = approvePlan(submitted, "octocat", { at: APPROVED_AT });
-
-    assert.equal(approved.status, PLAN_STATUS.APPROVED);
-    assert.equal(approved.gates.planApprovedAt, APPROVED_AT);
-    assert.equal(approved.gates.planApprovedBy, "octocat");
-    assert.deepEqual(
-        getReadyTasks(approved).map((current) => current.id),
-        ["T-001", "T-002"],
-    );
+    assert.deepEqual(getReadyTasks(plan).map((entry) => entry.id), ["T-001", "T-002"]);
     assert.equal(
-        approved.tasks.find((current) => current.id === "T-003").status,
+        required(plan.tasks.find((entry) => entry.id === "T-003")).status,
         TASK_STATUS.PLANNED,
     );
 });
 
-test("task completion unlocks dependents without inferring dependencies", () => {
-    const submitted = transitionPlan(draft(), PLAN_STATUS.AWAITING_APPROVAL, {
-        at: CREATED_AT,
+test("reservation closes the create-session race and completion retains provenance", () => {
+    let plan = approved({ tasks: [task("T-001")] });
+    plan = reserveTaskAttempt(plan, "T-001", {
+        reservationId: "reserve-t001-first",
+        at: RESERVED_AT,
     });
-    let plan = approvePlan(submitted, "octocat", { at: APPROVED_AT });
-    plan = transitionPlan(plan, PLAN_STATUS.RUNNING, { at: STARTED_AT });
-    plan = transitionTask(plan, "T-001", TASK_STATUS.RUNNING, {
+    const taskRecord = plan.tasks[0];
+    const attempt = taskRecord.attempts[0];
+    assert.equal(plan.status, PLAN_STATUS.RUNNING);
+    assert.equal(taskRecord.status, TASK_STATUS.RUNNING);
+    assert.equal(attempt.id, "T-001-A001");
+    assert.equal(attempt.status, ATTEMPT_STATUS.RESERVED);
+    assert.equal(attempt.baseBranch, "main");
+    assert.equal(attempt.sessionId, null);
+
+    plan = attachTaskAttempt(plan, "T-001", attempt.id, {
         sessionId: "session-1",
         branch: "work/t-001",
         at: STARTED_AT,
     });
-    plan = transitionTask(plan, "T-001", TASK_STATUS.DONE, {
-        resultSummary: "Implemented T-001",
-        evidence: ["node --test passed"],
-        prUrl: "https://github.com/example/repo/pull/1",
+    const attached = plan.tasks[0].attempts[0];
+    assert.equal(attached.status, ATTEMPT_STATUS.RUNNING);
+    assert.equal(attached.sessionId, "session-1");
+
+    const idempotent = attachTaskAttempt(plan, "T-001", attempt.id, {
+        sessionId: "session-1",
+        branch: "work/t-001",
         at: COMPLETED_AT,
     });
-    plan = reconcileTaskReadiness(plan, { at: COMPLETED_AT });
+    assert.deepEqual(idempotent, plan);
+    throwsCode(
+        () => attachTaskAttempt(plan, "T-001", attempt.id, {
+            sessionId: "session-1",
+            at: COMPLETED_AT,
+        }),
+        "attempt_already_attached",
+    );
+    throwsCode(
+        () => attachTaskAttempt(plan, "T-001", attempt.id, {
+            sessionId: "replacement-session",
+            at: COMPLETED_AT,
+        }),
+        "attempt_already_attached",
+    );
 
-    assert.deepEqual(
-        getReadyTasks(plan).map((current) => current.id),
-        ["T-002", "T-003"],
+    plan = completeTaskAttempt(plan, "T-001", attempt.id, ATTEMPT_STATUS.DONE, {
+        resultSummary: "Implemented",
+        evidence: claimedEvidence(),
+        branch: "work/t-001",
+        commit: "b".repeat(40),
+        at: COMPLETED_AT,
+    });
+    const completed = plan.tasks[0].attempts[0];
+    assert.equal(plan.tasks[0].status, TASK_STATUS.DONE);
+    assert.equal(completed.evidence[0].id, "T-001-A001-E001");
+    assert.equal(completed.evidence[0].producer, "session-1");
+    assert.equal(completed.evidence[0].trust, "claimed");
+    const forged = structuredClone(plan);
+    forged.tasks[0].attempts[0].evidence[0].producer = "forged-session";
+    throwsCode(() => validatePlan(forged), "invalid_evidence_producer");
+});
+
+test("reservation IDs are unique across the complete plan", () => {
+    let plan = approved({
+        tasks: [task("T-001"), task("T-002")],
+    });
+    plan = reserveTaskAttempt(plan, "T-001", {
+        reservationId: "reserve-unique-one",
+        at: RESERVED_AT,
+    });
+    plan = reserveTaskAttempt(plan, "T-002", {
+        reservationId: "reserve-unique-two",
+        at: RESERVED_AT,
+    });
+    const forged = structuredClone(plan);
+    forged.tasks[1].attempts[0].reservationId = "reserve-unique-one";
+    throwsCode(() => validatePlan(forged), "duplicate_request_id");
+
+    let completed = approved({ tasks: [task("T-001")] });
+    completed = reserveTaskAttempt(completed, "T-001", {
+        reservationId: "shared-task-verification-reservation",
+        at: RESERVED_AT,
+    });
+    completed = attachTaskAttempt(completed, "T-001", "T-001-A001", {
+        sessionId: "shared-reservation-session",
+        branch: "work/shared-reservation",
+        at: STARTED_AT,
+    });
+    completed = completeTaskAttempt(
+        completed,
+        "T-001",
+        "T-001-A001",
+        ATTEMPT_STATUS.DONE,
+        {
+            resultSummary: "Done",
+            evidence: claimedEvidence(),
+            branch: "work/shared-reservation",
+            at: COMPLETED_AT,
+        },
+    );
+    throwsCode(
+        () => reserveVerification(completed, {
+            reservationId: "shared-task-verification-reservation",
+            inputDigest: "d".repeat(64),
+            at: CANCELLED_AT,
+        }),
+        "duplicate_request_id",
     );
 });
 
-test("failed dependencies block dependents until both work and retry are explicit", () => {
-    const initial = draft({
-        tasks: [
-            task("T-001"),
-            task("T-002", ["T-001"]),
-        ],
+test("retries retain attempts and dependency waits wake automatically", () => {
+    let plan = approved();
+    plan = reserveTaskAttempt(plan, "T-001", {
+        reservationId: "reserve-first-failure",
+        at: RESERVED_AT,
     });
-    const submitted = transitionPlan(initial, PLAN_STATUS.AWAITING_APPROVAL, {
-        at: CREATED_AT,
-    });
-    let plan = approvePlan(submitted, "octocat", { at: APPROVED_AT });
-    plan = transitionPlan(plan, PLAN_STATUS.RUNNING, { at: STARTED_AT });
-    plan = transitionTask(plan, "T-001", TASK_STATUS.RUNNING, {
-        sessionId: "session-1",
-        at: STARTED_AT,
-    });
-    plan = transitionTask(plan, "T-001", TASK_STATUS.FAILED, {
-        error: "Tests failed",
-        evidence: ["node --test failed"],
+    const firstAttempt = plan.tasks[0].attempts[0];
+    plan = completeTaskAttempt(plan, "T-001", firstAttempt.id, ATTEMPT_STATUS.FAILED, {
+        error: "create_session failed",
         at: COMPLETED_AT,
     });
     plan = reconcileTaskReadiness(plan, { at: COMPLETED_AT });
-
-    assert.equal(
-        plan.tasks.find((current) => current.id === "T-002").status,
-        TASK_STATUS.BLOCKED,
-    );
-    throwsCode(
-        () => transitionTask(plan, "T-002", TASK_STATUS.READY, { at: COMPLETED_AT }),
-        "explicit_retry_required",
-    );
-    throwsCode(
-        () => retryTask(plan, "T-002", { at: COMPLETED_AT }),
-        "dependency_unmet",
-    );
+    assert.equal(plan.tasks[1].status, TASK_STATUS.PLANNED);
+    assert.equal(plan.tasks[0].attempts.length, 1);
 
     plan = retryTask(plan, "T-001", { at: COMPLETED_AT });
-    plan = transitionTask(plan, "T-001", TASK_STATUS.RUNNING, {
+    plan = reserveTaskAttempt(plan, "T-001", {
+        reservationId: "reserve-second-success",
+        at: RESERVED_AT,
+    });
+    const second = required(required(plan.tasks[0]).attempts.at(-1));
+    assert.equal(second.id, "T-001-A002");
+    plan = attachTaskAttempt(plan, "T-001", second.id, {
         sessionId: "session-2",
+        branch: "work/t-001-retry",
         at: STARTED_AT,
     });
-    plan = transitionTask(plan, "T-001", TASK_STATUS.DONE, {
-        resultSummary: "Fixed and completed",
-        evidence: ["node --test passed"],
+    plan = completeTaskAttempt(plan, "T-001", second.id, ATTEMPT_STATUS.DONE, {
+        resultSummary: "Fixed",
+        evidence: claimedEvidence(),
+        branch: "work/t-001-retry",
+        commit: "c".repeat(40),
         at: COMPLETED_AT,
     });
-    plan = retryTask(plan, "T-002", { at: COMPLETED_AT });
-
-    assert.equal(
-        plan.tasks.find((current) => current.id === "T-002").status,
-        TASK_STATUS.READY,
-    );
+    plan = reconcileTaskReadiness(plan, { at: COMPLETED_AT });
+    assert.equal(plan.tasks[1].status, TASK_STATUS.READY);
+    assert.equal(plan.tasks[0].attempts[0].status, ATTEMPT_STATUS.FAILED);
+    assert.equal(plan.tasks[0].attempts[1].status, ATTEMPT_STATUS.DONE);
 });
 
-test("invalid plan and task transitions fail instead of being coerced", () => {
-    const plan = draft();
-    throwsCode(
-        () => transitionTask(plan, "T-001", TASK_STATUS.READY, { at: APPROVED_AT }),
-        "plan_not_approved",
-    );
-    throwsCode(
-        () => transitionPlan(plan, PLAN_STATUS.APPROVED, {
-            actor: "octocat",
-            at: APPROVED_AT,
-        }),
-        "invalid_plan_transition",
-    );
-
-    const submitted = transitionPlan(plan, PLAN_STATUS.AWAITING_APPROVAL, {
-        at: CREATED_AT,
-    });
-    const approved = approvePlan(submitted, "octocat", { at: APPROVED_AT });
-    throwsCode(
-        () => transitionTask(approved, "T-001", TASK_STATUS.RUNNING, {
-            sessionId: "session-1",
-            at: STARTED_AT,
-        }),
-        "plan_not_running",
-    );
-    throwsCode(
-        () => transitionTask(approved, "T-001", TASK_STATUS.DONE, {
-            resultSummary: "Skipped running",
-            evidence: ["none"],
-            at: COMPLETED_AT,
-        }),
-        "invalid_task_transition",
-    );
-    throwsCode(
-        () => transitionPlan(approved, PLAN_STATUS.VERIFYING, {
-            at: COMPLETED_AT,
-        }),
-        "invalid_plan_transition",
-    );
-});
-
-test("failed and cancelled dependencies both block downstream tasks", () => {
-    for (const terminalStatus of [TASK_STATUS.FAILED, TASK_STATUS.CANCELLED]) {
-        const initial = draft({
-            tasks: [
-                task("T-001"),
-                task("T-002", ["T-001"]),
-            ],
-        });
-        const submitted = transitionPlan(initial, PLAN_STATUS.AWAITING_APPROVAL, {
-            at: CREATED_AT,
-        });
-        let plan = approvePlan(submitted, "octocat", { at: APPROVED_AT });
-        plan = transitionPlan(plan, PLAN_STATUS.RUNNING, { at: STARTED_AT });
-        if (terminalStatus === TASK_STATUS.FAILED) {
-            plan = transitionTask(plan, "T-001", TASK_STATUS.RUNNING, {
-                sessionId: "session-1",
-                at: STARTED_AT,
-            });
-            plan = transitionTask(plan, "T-001", TASK_STATUS.FAILED, {
-                error: "Implementation failed",
-                at: COMPLETED_AT,
-            });
-        } else {
-            plan = transitionTask(plan, "T-001", TASK_STATUS.CANCELLED, {
-                error: "Cancelled by the user",
-                at: COMPLETED_AT,
-            });
-        }
-        plan = reconcileTaskReadiness(plan, { at: COMPLETED_AT });
-        const dependent = plan.tasks.find((current) => current.id === "T-002");
-        assert.equal(dependent.status, TASK_STATUS.BLOCKED);
-        assert.match(dependent.error, /T-001/);
-    }
-});
-
-test("validation rejects a running task whose dependency is not done", () => {
-    const initial = draft({
+test("dependency delivery chooses a deterministic base and requires integration evidence", () => {
+    let plan = approved({
         tasks: [
             task("T-001"),
-            task("T-002", ["T-001"]),
+            task("T-002"),
+            task("T-003", ["T-001", "T-002"]),
         ],
     });
-    const submitted = transitionPlan(initial, PLAN_STATUS.AWAITING_APPROVAL, {
-        at: CREATED_AT,
+    ({ plan } = completeTask(plan, "T-001", { branch: "work/one" }));
+    ({ plan } = completeTask(plan, "T-002", { branch: "work/two" }));
+    const guidance = taskLaunchGuidance(plan, "T-003");
+    assert.equal(guidance.baseBranch, "work/one");
+    assert.deepEqual(guidance.integrationRequired.map((entry) => entry.taskId), ["T-002"]);
+
+    plan = reserveTaskAttempt(plan, "T-003", {
+        reservationId: "reserve-integration",
+        at: RESERVED_AT,
     });
-    let plan = approvePlan(submitted, "octocat", { at: APPROVED_AT });
-    plan = transitionPlan(plan, PLAN_STATUS.RUNNING, { at: STARTED_AT });
-    plan = transitionTask(plan, "T-001", TASK_STATUS.RUNNING, {
-        sessionId: "session-1",
+    const attempt = plan.tasks[2].attempts[0];
+    plan = attachTaskAttempt(plan, "T-003", attempt.id, {
+        sessionId: "session-integration",
+        branch: "work/integration",
         at: STARTED_AT,
     });
-    plan = transitionTask(plan, "T-001", TASK_STATUS.FAILED, {
-        error: "Implementation failed",
+    throwsCode(
+        () => completeTaskAttempt(plan, "T-003", attempt.id, ATTEMPT_STATUS.DONE, {
+            resultSummary: "Integrated",
+            evidence: claimedEvidence(),
+            branch: "work/integration",
+            at: COMPLETED_AT,
+        }),
+        "invalid_attempt_state",
+    );
+    plan = completeTaskAttempt(plan, "T-003", attempt.id, ATTEMPT_STATUS.DONE, {
+        resultSummary: "Integrated",
+        evidence: [
+            ...claimedEvidence(),
+            {
+                type: EVIDENCE_TYPE.INTEGRATION,
+                summary: "Merged dependency branch and ran integration tests",
+                source: "git merge work/two && node --test",
+                outcome: "passed",
+            },
+        ],
+        branch: "work/integration",
         at: COMPLETED_AT,
     });
-
-    const invalid = structuredClone(plan);
-    const dependent = invalid.tasks.find((current) => current.id === "T-002");
-    dependent.status = TASK_STATUS.RUNNING;
-    dependent.sessionId = "session-2";
-    dependent.startedAt = STARTED_AT;
-    throwsCode(() => validatePlan(invalid), "dependency_unmet");
+    assert.equal(plan.tasks[2].status, TASK_STATUS.DONE);
 });
 
-test("completion requires all work done and explicit completion approval", () => {
-    const initial = draft({ tasks: [task("T-001")] });
-    const submitted = transitionPlan(initial, PLAN_STATUS.AWAITING_APPROVAL, {
-        at: CREATED_AT,
+test("cancellation snapshots attempts and cannot finalize an in-flight create as absent", () => {
+    let plan = approved({ tasks: [task("T-001")] });
+    plan = reserveTaskAttempt(plan, "T-001", {
+        reservationId: "reserve-before-cancel",
+        at: RESERVED_AT,
     });
-    let plan = approvePlan(submitted, "octocat", { at: APPROVED_AT });
-    plan = transitionPlan(plan, PLAN_STATUS.RUNNING, { at: STARTED_AT });
-    throwsCode(
-        () => transitionPlan(plan, PLAN_STATUS.VERIFYING, { at: STARTED_AT }),
-        "implementation_incomplete",
-    );
+    const attemptId = plan.tasks[0].attempts[0].id;
+    plan = requestPlanCancellation(plan, {
+        requestId: "cancel-request-1",
+        target: "plan",
+        reason: "User stopped work",
+        requestedBy: "octocat",
+        at: COMPLETED_AT,
+    });
+    assert.equal(plan.status, PLAN_STATUS.CANCELLING);
+    assert.deepEqual(plan.cancellation.requiredAttemptIds, [attemptId]);
+    assert.equal(plan.tasks[0].attempts[0].status, ATTEMPT_STATUS.CANCEL_REQUESTED);
 
-    plan = transitionTask(plan, "T-001", TASK_STATUS.RUNNING, {
-        sessionId: "session-1",
-        at: STARTED_AT,
+    plan = attachTaskAttempt(plan, "T-001", attemptId, {
+        sessionId: "late-session",
+        branch: "work/late",
+        at: CANCELLED_AT,
     });
-    plan = transitionTask(plan, "T-001", TASK_STATUS.DONE, {
-        resultSummary: "Implemented",
-        evidence: ["node --test passed"],
-        at: COMPLETED_AT,
+    throwsCode(
+        () => finalizePlanCancellation(plan, [{
+            attemptId,
+            disposition: "no-session-created",
+        }], {
+            finalizedBy: "octocat",
+            verificationTerminated: true,
+            at: CANCELLED_AT,
+        }),
+        "invalid_cancellation_disposition",
+    );
+    plan = finalizePlanCancellation(plan, [{
+        attemptId,
+        disposition: "session-terminated",
+        sessionId: "late-session",
+    }], {
+        finalizedBy: "octocat",
+        verificationTerminated: true,
+        at: CANCELLED_AT,
     });
-    plan = transitionPlan(plan, PLAN_STATUS.VERIFYING, {
-        at: COMPLETED_AT,
-        backend: "conveyor",
-        runId: "verify-run-1",
+    assert.equal(plan.status, PLAN_STATUS.CANCELLED);
+    assert.equal(plan.tasks[0].attempts[0].status, ATTEMPT_STATUS.CANCELLED);
+    assert.equal(plan.cancellation.acknowledgements[0].sessionId, "late-session");
+});
+
+test("verification cancellation requires observed Conveyor termination", () => {
+    let plan = approved({ tasks: [task("T-001")] });
+    ({ plan } = completeTask(plan, "T-001"));
+    plan = reserveVerification(plan, {
+        reservationId: "reserve-verification-cancel",
         inputDigest: "a".repeat(64),
-    });
-    plan = completeVerification(plan, {
-        passed: true,
-        summary: "All acceptance criteria verified",
-        evidence: ["node --test passed"],
-        missingEvidence: [],
-    }, { at: COMPLETED_AT, runId: "verify-run-1" });
-    assert.equal(plan.status, PLAN_STATUS.AWAITING_COMPLETION_APPROVAL);
-    throwsCode(
-        () => transitionPlan(plan, PLAN_STATUS.COMPLETED, { at: COMPLETED_AT }),
-        "invalid_string",
-    );
-    plan = transitionPlan(plan, PLAN_STATUS.COMPLETED, {
-        actor: "octocat",
         at: COMPLETED_AT,
     });
-
-    assert.equal(plan.status, PLAN_STATUS.COMPLETED);
-    assert.equal(plan.gates.completionApprovedBy, "octocat");
+    plan = bindVerificationRun(plan, {
+        reservationId: "reserve-verification-cancel",
+        runId: "verification-run",
+        inputDigest: "a".repeat(64),
+        at: COMPLETED_AT,
+    });
+    plan = requestPlanCancellation(plan, {
+        requestId: "cancel-verification",
+        target: "plan",
+        reason: "Stop verification",
+        requestedBy: "octocat",
+        at: CANCELLED_AT,
+    });
+    throwsCode(
+        () => finalizePlanCancellation(plan, [], {
+            finalizedBy: "octocat",
+            verificationTerminated: false,
+            verificationDisposition: "run-terminated",
+            at: CANCELLED_AT,
+        }),
+        "cancellation_incomplete",
+    );
+    plan = finalizePlanCancellation(plan, [], {
+        finalizedBy: "octocat",
+        verificationTerminated: true,
+        verificationDisposition: "run-terminated",
+        at: CANCELLED_AT,
+    });
+    assert.equal(plan.verification.status, "failed");
+    assert.equal(plan.cancellation.verificationTerminatedAt, CANCELLED_AT);
 });
 
-test("failed verification records missing evidence and requires explicit plan retry", () => {
-    const initial = draft({ tasks: [task("T-001")] });
-    const submitted = transitionPlan(initial, PLAN_STATUS.AWAITING_APPROVAL, {
-        at: CREATED_AT,
-    });
-    let plan = approvePlan(submitted, "octocat", { at: APPROVED_AT });
-    plan = transitionPlan(plan, PLAN_STATUS.RUNNING, { at: STARTED_AT });
-    plan = transitionTask(plan, "T-001", TASK_STATUS.RUNNING, {
-        sessionId: "session-1",
-        at: STARTED_AT,
-    });
-    plan = transitionTask(plan, "T-001", TASK_STATUS.DONE, {
-        resultSummary: "Implemented",
-        evidence: ["unit tests passed"],
-        at: COMPLETED_AT,
-    });
-    plan = transitionPlan(plan, PLAN_STATUS.VERIFYING, {
-        at: COMPLETED_AT,
-        backend: "conveyor",
-        runId: "verify-run-failed",
+test("failed verification reopens attributed tasks and all descendants", () => {
+    let plan = approved();
+    ({ plan } = completeTask(plan, "T-001"));
+    ({ plan } = completeTask(plan, "T-002"));
+    const firstAttempts = plan.tasks.map((entry) => entry.attempts[0].id);
+    plan = reserveVerification(plan, {
+        reservationId: "reserve-verification-failed",
         inputDigest: "b".repeat(64),
+        at: COMPLETED_AT,
+    });
+    plan = bindVerificationRun(plan, {
+        reservationId: "reserve-verification-failed",
+        runId: "verification-failed",
+        inputDigest: "b".repeat(64),
+        at: COMPLETED_AT,
     });
     plan = completeVerification(plan, {
         passed: false,
-        summary: "Integration evidence is missing",
-        evidence: ["unit tests passed"],
-        missingEvidence: ["End-to-end smoke test"],
-    }, { at: COMPLETED_AT, runId: "verify-run-failed" });
+        summary: "Foundation evidence is insufficient",
+        evidence: ["T-001-A001-E001"],
+        missingEvidence: ["No evidence mapped for T-001-C001"],
+        correctionTaskIds: ["T-001"],
+    }, {
+        runId: "verification-failed",
+        at: CANCELLED_AT,
+    });
     assert.equal(plan.status, PLAN_STATUS.FAILED);
-    assert.equal(plan.verification.status, "failed");
-
-    throwsCode(
-        () => transitionPlan(plan, PLAN_STATUS.APPROVED, {
-            actor: "octocat",
-            at: COMPLETED_AT,
-        }),
-        "explicit_retry_required",
-    );
-    plan = transitionPlan(plan, PLAN_STATUS.RUNNING, {
-        actor: "octocat",
-        retry: true,
-        at: COMPLETED_AT,
-    });
+    plan = retryFailedPlan(plan, "octocat", { at: CANCELLED_AT });
+    assert.equal(plan.status, PLAN_STATUS.RUNNING);
+    assert.equal(plan.tasks[0].status, TASK_STATUS.READY);
+    assert.equal(plan.tasks[1].status, TASK_STATUS.PLANNED);
+    assert.deepEqual(plan.tasks.map((entry) => entry.attempts[0].id), firstAttempts);
     assert.equal(plan.verification.status, "not-started");
-    plan = transitionPlan(plan, PLAN_STATUS.VERIFYING, {
-        at: COMPLETED_AT,
-        backend: "conveyor",
-        runId: "verify-run-retry",
+});
+
+test("passed verification still requires explicit completion approval", () => {
+    let plan = approved({ tasks: [task("T-001")] });
+    ({ plan } = completeTask(plan, "T-001"));
+    plan = reserveVerification(plan, {
+        reservationId: "reserve-verification-passed",
         inputDigest: "c".repeat(64),
+        at: COMPLETED_AT,
     });
-    assert.equal(plan.verification.status, "running");
+    plan = bindVerificationRun(plan, {
+        reservationId: "reserve-verification-passed",
+        runId: "verification-passed",
+        inputDigest: "c".repeat(64),
+        at: COMPLETED_AT,
+    });
+    plan = completeVerification(plan, {
+        passed: true,
+        summary: "Verified",
+        evidence: ["T-001-A001-E001"],
+        missingEvidence: [],
+        correctionTaskIds: [],
+    }, {
+        runId: "verification-passed",
+        at: CANCELLED_AT,
+    });
+    assert.equal(plan.status, PLAN_STATUS.AWAITING_COMPLETION_APPROVAL);
+    plan = transitionPlan(plan, PLAN_STATUS.COMPLETED, {
+        actor: "octocat",
+        at: CANCELLED_AT,
+    });
+    assert.equal(plan.status, PLAN_STATUS.COMPLETED);
+});
+
+test("summaries include attempt counts without duplicating attempt state", () => {
+    let plan = approved({ tasks: [task("T-001")] });
+    ({ plan } = completeTask(plan, "T-001"));
+    const summary = summarizePlan(plan);
+    assert.equal(summary.tasksDone, 1);
+    assert.equal(summary.attemptsTotal, 1);
+    assert.equal(latestSuccessfulAttempt(required(plan.tasks[0]))?.id, "T-001-A001");
 });

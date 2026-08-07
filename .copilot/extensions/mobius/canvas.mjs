@@ -1,9 +1,28 @@
+/**
+ * Copilot canvas declaration for the Mobius plan board.
+ *
+ * @module mobius/canvas
+ */
 import { CanvasError, createCanvas } from "@github/copilot-sdk/extension";
 
 import { startServer } from "./server.mjs";
 
+/**
+ * @typedef {object} MobiusCanvasOptions
+ * @property {ReturnType<typeof import("./operations.mjs").createMobiusOperations>} operations
+ * @property {() => string | undefined} getWorkspacePath
+ * @property {(workspacePath: string, planId: string, listener: (event: any) => void) => () => void} subscribe
+ */
+
+/** JSON Schema pattern shared with the domain plan-ID validator. */
 const PLAN_ID_PATTERN = "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$";
 
+/**
+ * Converts arbitrary provider failures into structured canvas errors.
+ *
+ * @param {any} error
+ * @returns {CanvasError}
+ */
 function canvasFailure(error) {
     if (error instanceof CanvasError) {
         return error;
@@ -14,9 +33,23 @@ function canvasFailure(error) {
     );
 }
 
+/**
+ * Creates the Mobius board canvas declaration and per-instance server registry.
+ *
+ * @param {MobiusCanvasOptions} options
+ * @returns {import("@github/copilot-sdk/extension").Canvas}
+ */
 export function createMobiusCanvas(options) {
+    /** @type {Map<string, Promise<Awaited<ReturnType<typeof startServer>>>>} */
     const instances = new Map();
 
+    /**
+     * Resolves an open instance for an agent-invoked canvas action.
+     *
+     * @param {string} instanceId
+     * @returns {Promise<Awaited<ReturnType<typeof startServer>>>}
+     * @throws {CanvasError} When the instance is not open.
+     */
     const entryForAction = async (instanceId) => {
         const entryPromise = instances.get(instanceId);
         if (!entryPromise) {
@@ -48,9 +81,14 @@ export function createMobiusCanvas(options) {
                 handler: async (context) => {
                     try {
                         const entry = await entryForAction(context.instanceId);
-                        const plan = await entry.snapshot();
-                        entry.broadcast({ revision: plan.revision });
-                        return { planId: plan.id, revision: plan.revision, status: plan.status };
+                        const snapshot = await entry.snapshot();
+                        entry.broadcast({ revision: snapshot.plan.revision });
+                        return {
+                            planId: snapshot.plan.id,
+                            revision: snapshot.plan.revision,
+                            status: snapshot.plan.status,
+                            nextAction: snapshot.projection.nextAction,
+                        };
                     } catch (error) {
                         throw canvasFailure(error);
                     }
@@ -79,7 +117,7 @@ export function createMobiusCanvas(options) {
                         "Mobius requires a Copilot session workspace",
                     );
                 }
-                await options.operations.getPlan({ planId });
+                const plan = await options.operations.getPlan({ planId });
                 let entryPromise = instances.get(context.instanceId);
                 if (entryPromise) {
                     const existing = await entryPromise;
@@ -102,7 +140,7 @@ export function createMobiusCanvas(options) {
                 }
                 const entry = await entryPromise;
                 return {
-                    title: `Mobius — ${planId}`,
+                    title: `Mobius — ${plan.title}`,
                     status: "Ready",
                     url: entry.url,
                 };

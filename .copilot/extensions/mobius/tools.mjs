@@ -1,5 +1,32 @@
-import { LIMITS, PLAN_STATUS, TASK_STATUS } from "./domain.mjs";
+/**
+ * Agent-facing Mobius tool declarations and JSON Schemas.
+ *
+ * @module mobius/tools
+ */
+import {
+    EVIDENCE_OUTCOME,
+    EVIDENCE_TYPE,
+    LIMITS,
+    PLAN_STATUS,
+    TASK_STATUS,
+} from "./domain.mjs";
 
+/**
+ * @typedef {object} ToolResult
+ * @property {string} textResultForLlm
+ * @property {"success"|"failure"|"rejected"|"denied"} resultType
+ * @property {{extension: string, outcome: string}} toolTelemetry
+ */
+
+/** @typedef {Record<string, any>} JsonSchema */
+
+/**
+ * Wraps a value in the structured SDK tool-result contract.
+ *
+ * @param {unknown} value
+ * @param {"success"|"failure"|"rejected"|"denied"} [resultType]
+ * @returns {ToolResult}
+ */
 function result(value, resultType = "success") {
     return {
         textResultForLlm: JSON.stringify(value),
@@ -11,6 +38,12 @@ function result(value, resultType = "success") {
     };
 }
 
+/**
+ * Converts an arbitrary thrown value into the stable Mobius error envelope.
+ *
+ * @param {any} error
+ * @returns {{ok: false, error: {code: string, message: string, path: unknown, details: unknown}}}
+ */
 function errorPayload(error) {
     return {
         ok: false,
@@ -23,6 +56,12 @@ function errorPayload(error) {
     };
 }
 
+/**
+ * Adapts an operation to the SDK tool handler contract.
+ *
+ * @param {(args: any, invocation: any) => unknown | Promise<unknown>} operation
+ * @returns {(args: any, invocation: any) => Promise<ToolResult>}
+ */
 function handler(operation) {
     return async (args, invocation) => {
         try {
@@ -34,31 +73,67 @@ function handler(operation) {
     };
 }
 
+/** JSON Schema for stable plan IDs. */
 const PLAN_ID = {
     type: "string",
     pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
     maxLength: LIMITS.planId,
 };
+/** JSON Schema for task IDs. */
 const TASK_ID = {
     type: "string",
     pattern: "^T-\\d{3}$",
 };
+/** JSON Schema for task-attempt IDs. */
+const ATTEMPT_ID = {
+    type: "string",
+    pattern: "^T-\\d{3}-A\\d{3}$",
+    maxLength: LIMITS.attemptId,
+};
+/** JSON Schema for idempotency and cancellation request IDs. */
+const REQUEST_ID = {
+    type: "string",
+    pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+    maxLength: LIMITS.requestId,
+};
+/** JSON Schema for optimistic-concurrency revisions. */
 const REVISION = {
     type: "integer",
     minimum: 0,
     maximum: Number.MAX_SAFE_INTEGER,
 };
+/**
+ * Creates a bounded non-empty string schema.
+ *
+ * @param {number} maximum
+ * @returns {JsonSchema}
+ */
 const NON_EMPTY = (maximum) => ({
     type: "string",
     minLength: 1,
     maxLength: maximum,
 });
+/**
+ * Creates a bounded array-of-strings schema.
+ *
+ * @param {number} maximum
+ * @param {number} itemMaximum
+ * @param {number} [minimum]
+ * @returns {JsonSchema}
+ */
 const STRING_LIST = (maximum, itemMaximum, minimum = 0) => ({
     type: "array",
     minItems: minimum,
     maxItems: maximum,
     items: NON_EMPTY(itemMaximum),
 });
+/**
+ * Creates a closed object schema.
+ *
+ * @param {string[]} required
+ * @param {Record<string, unknown>} properties
+ * @returns {JsonSchema}
+ */
 function objectSchema(required, properties) {
     return {
         type: "object",
@@ -68,6 +143,43 @@ function objectSchema(required, properties) {
     };
 }
 
+/** JSON Schema for caller-supplied claimed evidence. */
+const EVIDENCE_INPUT = objectSchema(
+    ["type", "summary", "outcome"],
+    {
+        type: { type: "string", enum: Object.values(EVIDENCE_TYPE) },
+        summary: NON_EMPTY(LIMITS.evidenceItem),
+        source: NON_EMPTY(LIMITS.evidenceSource),
+        outcome: { type: "string", enum: Object.values(EVIDENCE_OUTCOME) },
+    },
+);
+
+/** JSON Schema for an explicitly complete or partial App session inventory. */
+const SESSION_INVENTORY = objectSchema(
+    ["complete", "capturedAt", "sessions"],
+    {
+        complete: { type: "boolean" },
+        capturedAt: NON_EMPTY(64),
+        sessions: {
+            type: "array",
+            maxItems: 1_000,
+            items: objectSchema(
+                ["id", "status"],
+                {
+                    id: NON_EMPTY(LIMITS.sessionId),
+                    status: NON_EMPTY(64),
+                },
+            ),
+        },
+    },
+);
+
+/**
+ * Builds the complete globally unique Mobius tool catalog.
+ *
+ * @param {any} operations
+ * @returns {any[]} SDK tool declarations.
+ */
 export function buildMobiusTools(operations) {
     return [
         {
@@ -118,6 +230,19 @@ export function buildMobiusTools(operations) {
             handler: handler((args) => operations.getPlan(args)),
         },
         {
+            name: "mobius_get_status",
+            skipPermission: true,
+            description: "Return the validated plan plus a derived recovery projection. Session absence is reported only when the caller supplies a complete host session inventory.",
+            parameters: objectSchema(
+                ["planId"],
+                {
+                    planId: PLAN_ID,
+                    sessionInventory: SESSION_INVENTORY,
+                },
+            ),
+            handler: handler((args) => operations.getStatus(args)),
+        },
+        {
             name: "mobius_list_plans",
             skipPermission: true,
             description: "List bounded Mobius plan summaries for the current Copilot session.",
@@ -159,42 +284,74 @@ export function buildMobiusTools(operations) {
         {
             name: "mobius_next_tasks",
             skipPermission: true,
-            description: "Return every dependency-ready task in deterministic ID order, complete child-session prompts, and file-scope overlap warnings. Launch only dispatchableTaskIds unless the user explicitly accepts overlap risk.",
+            description: "Return dependency-ready tasks, deterministic delivery guidance, and scope holds. Reserve a dispatchable task before creating its App child session.",
             parameters: objectSchema(["planId"], { planId: PLAN_ID }),
             handler: handler((args) => operations.nextTasks(args)),
         },
         {
-            name: "mobius_start_task",
-            description: "Record the App-created child session ID and optional branch for one ready Mobius task.",
+            name: "mobius_reserve_task",
+            description: "Atomically reserve one ready task before create_session. Returns the attempt ID, exact base branch, integration requirements, and delegation prompt. Reusing reservationId returns the same reservation.",
             parameters: objectSchema(
-                ["planId", "taskId", "expectedRevision", "sessionId"],
+                ["planId", "taskId", "expectedRevision", "reservationId"],
                 {
                     planId: PLAN_ID,
                     taskId: TASK_ID,
+                    expectedRevision: REVISION,
+                    reservationId: REQUEST_ID,
+                    scopeOverride: objectSchema(
+                        ["approvedBy", "reason"],
+                        {
+                            approvedBy: NON_EMPTY(LIMITS.actor),
+                            reason: NON_EMPTY(LIMITS.error),
+                        },
+                    ),
+                },
+            ),
+            handler: handler((args) => operations.reserveTask(args)),
+        },
+        {
+            name: "mobius_attach_task",
+            description: "Attach the App-created child session to an existing reserved attempt. Identical attachment is idempotent; replacement is rejected.",
+            parameters: objectSchema(
+                ["planId", "taskId", "attemptId", "expectedRevision", "sessionId"],
+                {
+                    planId: PLAN_ID,
+                    taskId: TASK_ID,
+                    attemptId: ATTEMPT_ID,
                     expectedRevision: REVISION,
                     sessionId: NON_EMPTY(LIMITS.sessionId),
                     branch: NON_EMPTY(LIMITS.branch),
                 },
             ),
-            handler: handler((args) => operations.startTask(args)),
+            handler: handler((args) => operations.attachTask(args)),
         },
         {
             name: "mobius_complete_task",
-            description: "Record a child task's done, failed, or blocked result with evidence, branch, and optional pull request URL.",
+            description: "Record the active attempt's done, failed, or blocked result. Evidence is assigned canonical IDs and stored as untrusted claimed provenance.",
             parameters: objectSchema(
-                ["planId", "taskId", "expectedRevision", "status"],
+                ["planId", "taskId", "attemptId", "expectedRevision", "status"],
                 {
                     planId: PLAN_ID,
                     taskId: TASK_ID,
+                    attemptId: ATTEMPT_ID,
                     expectedRevision: REVISION,
                     status: {
                         type: "string",
                         enum: [TASK_STATUS.DONE, TASK_STATUS.FAILED, TASK_STATUS.BLOCKED],
                     },
                     resultSummary: NON_EMPTY(LIMITS.resultSummary),
-                    evidence: STRING_LIST(LIMITS.evidence, LIMITS.evidenceItem),
+                    evidence: {
+                        type: "array",
+                        maxItems: LIMITS.evidence,
+                        items: EVIDENCE_INPUT,
+                    },
                     error: NON_EMPTY(LIMITS.error),
                     branch: NON_EMPTY(LIMITS.branch),
+                    commit: {
+                        type: "string",
+                        pattern: "^[a-f0-9]{7,64}$",
+                        maxLength: LIMITS.commit,
+                    },
                     prUrl: NON_EMPTY(LIMITS.prUrl),
                 },
             ),
@@ -215,19 +372,26 @@ export function buildMobiusTools(operations) {
         },
         {
             name: "mobius_prepare_verification",
-            skipPermission: true,
-            description: "Return the exact restricted Conveyor launchSpec for verifying a Mobius plan whose implementation tasks are done. Preview and launch it before binding the returned run ID.",
-            parameters: objectSchema(["planId"], { planId: PLAN_ID }),
+            description: "Persist a verification launch reservation before returning the exact restricted Conveyor launchSpec. Reusing reservationId returns the same reservation.",
+            parameters: objectSchema(
+                ["planId", "expectedRevision", "reservationId"],
+                {
+                    planId: PLAN_ID,
+                    expectedRevision: REVISION,
+                    reservationId: REQUEST_ID,
+                },
+            ),
             handler: handler((args) => operations.prepareVerification(args)),
         },
         {
             name: "mobius_begin_verification",
             description: "Bind a running or completed pinned mobius-verify Conveyor run to the plan. Rebinding is allowed only after the prior run terminated without an importable result.",
             parameters: objectSchema(
-                ["planId", "expectedRevision", "runId"],
+                ["planId", "expectedRevision", "reservationId", "runId"],
                 {
                     planId: PLAN_ID,
                     expectedRevision: REVISION,
+                    reservationId: REQUEST_ID,
                     runId: NON_EMPTY(LIMITS.verificationRunId),
                 },
             ),
@@ -248,18 +412,59 @@ export function buildMobiusTools(operations) {
         },
         {
             name: "mobius_cancel",
-            description: "Cancel a Mobius task or entire plan with an explicit reason. Every v1 task is required, so cancelling one task cancels the entire plan.",
+            description: "Request plan cancellation and snapshot active task attempts plus the bound verification run. This does not claim external sessions have stopped.",
             parameters: objectSchema(
-                ["planId", "expectedRevision", "target", "reason"],
+                [
+                    "planId",
+                    "expectedRevision",
+                    "requestId",
+                    "target",
+                    "reason",
+                    "requestedBy",
+                ],
                 {
                     planId: PLAN_ID,
                     expectedRevision: REVISION,
+                    requestId: REQUEST_ID,
                     target: { type: "string", enum: ["plan", "task"] },
                     taskId: TASK_ID,
                     reason: NON_EMPTY(LIMITS.error),
+                    requestedBy: NON_EMPTY(LIMITS.actor),
                 },
             ),
             handler: handler((args) => operations.cancel(args)),
+        },
+        {
+            name: "mobius_finalize_cancellation",
+            description: "Finalize a requested cancellation only after every snapshotted App attempt has an explicit disposition and Mobius observes the bound Conveyor run as terminal.",
+            parameters: objectSchema(
+                ["planId", "expectedRevision", "dispositions", "finalizedBy"],
+                {
+                    planId: PLAN_ID,
+                    expectedRevision: REVISION,
+                    finalizedBy: NON_EMPTY(LIMITS.actor),
+                    verificationDisposition: {
+                        type: "string",
+                        enum: ["run-terminated", "no-run-created"],
+                    },
+                    dispositions: {
+                        type: "array",
+                        maxItems: LIMITS.tasks,
+                        items: objectSchema(
+                            ["attemptId", "disposition"],
+                            {
+                                attemptId: ATTEMPT_ID,
+                                disposition: {
+                                    type: "string",
+                                    enum: ["session-terminated", "no-session-created"],
+                                },
+                                sessionId: NON_EMPTY(LIMITS.sessionId),
+                            },
+                        ),
+                    },
+                },
+            ),
+            handler: handler((args) => operations.finalizeCancellation(args)),
         },
         {
             name: "mobius_activate_plan",

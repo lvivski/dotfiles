@@ -83,7 +83,8 @@ export class ProgressReporter {
 			errors: /** @type {any[]} */ ([]),
 			revision: 0,
 		};
-		for (const [ordinal, raw] of (Array.isArray(meta.phases) ? meta.phases : []).entries()) {
+		const phases = /** @type {{ phases?: any[] }} */ (meta).phases;
+		for (const [ordinal, raw] of (Array.isArray(phases) ? phases : []).entries()) {
 			const phase = typeof raw === "string" ? { id: `phase:${ordinal}`, ordinal, title: raw } : raw;
 			if (!phase?.title) continue;
 			this.#phases.set(phase.id, {

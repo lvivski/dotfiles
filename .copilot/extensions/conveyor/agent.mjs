@@ -136,6 +136,7 @@ export async function runWithLifecycle(spec, opts, execute) {
 		if (opts.signal.aborted) onAbort();
 		else opts.signal.addEventListener("abort", onAbort, { once: true });
 	}
+	/** @type {ReturnType<typeof setTimeout>|null} */
 	let timer = null;
 	if (spec.timeout) {
 		timer = setTimeout(() => terminate("timeout"), Math.max(1, spec.timeout * 1000));
@@ -264,6 +265,7 @@ async function readShutdownUsage(sessionId) {
 	if (!sessionId) return { found: false, nanoAiu: 0, tokens: empty };
 	const path = join(process.env.COPILOT_HOME || join(homedir(), ".copilot"), "session-state", sessionId, "events.jsonl");
 	if (!existsSync(path)) return { found: false, nanoAiu: 0, tokens: empty };
+	/** @type {{ data?: { totalNanoAiu?: unknown, modelMetrics?: Record<string, { usage?: Partial<TokenUsage> }> } }|null} */
 	let shutdown = null;
 	try {
 		for await (const line of createInterface({ input: createReadStream(path, "utf8"), crlfDelay: Infinity })) {

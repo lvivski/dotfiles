@@ -1,17 +1,68 @@
+/**
+ * Hardened loopback HTTP and SSE server for one Mobius canvas instance.
+ *
+ * @module mobius/server
+ */
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 
 import { PLAN_STATUS, TASK_STATUS } from "./domain.mjs";
 
+/**
+ * @typedef {object} MobiusServerOptions
+ * @property {string} instanceId
+ * @property {string} planId
+ * @property {string} workspacePath
+ * @property {ReturnType<typeof import("./operations.mjs").createMobiusOperations>} operations
+ * @property {(workspacePath: string, planId: string, listener: (event: any) => void) => () => void} subscribe
+ */
+
+/**
+ * @typedef {object} MobiusServerEntry
+ * @property {string} instanceId
+ * @property {string} planId
+ * @property {import("node:http").Server} server
+ * @property {string} url
+ * @property {(event?: {revision?: number}) => void} broadcast
+ * @property {() => Promise<any>} snapshot
+ * @property {() => Promise<void>} close
+ */
+
+/** Maximum accepted JSON mutation body size. */
 const BODY_LIMIT = 32 * 1024;
+
+/** Maximum concurrent SSE subscribers for one canvas instance. */
 const MAX_SSE_CLIENTS = 16;
+
+/** Lazily loaded renderer assets shared by all canvas instances. */
 const ASSETS = {
     html: readFile(new URL("./renderer/index.html", import.meta.url), "utf8"),
     script: readFile(new URL("./renderer/app.js", import.meta.url), "utf8"),
     styles: readFile(new URL("./renderer/styles.css", import.meta.url), "utf8"),
 };
 
+/** HTTP-aware error for request validation failures. */
+class MobiusHttpError extends Error {
+    /**
+     * @param {number} statusCode
+     * @param {string} message
+     */
+    constructor(statusCode, message) {
+        super(message);
+        this.name = "MobiusHttpError";
+        this.statusCode = statusCode;
+    }
+}
+
+/**
+ * Sends a non-cacheable JSON response.
+ *
+ * @param {import("node:http").ServerResponse} response
+ * @param {number} status
+ * @param {unknown} value
+ * @returns {void}
+ */
 function json(response, status, value) {
     response.writeHead(status, {
         "Cache-Control": "no-store",
@@ -21,6 +72,15 @@ function json(response, status, value) {
     response.end(JSON.stringify(value));
 }
 
+/**
+ * Sends a CSP-protected static text response.
+ *
+ * @param {import("node:http").ServerResponse} response
+ * @param {number} status
+ * @param {string} contentType
+ * @param {string} value
+ * @returns {void}
+ */
 function text(response, status, contentType, value) {
     response.writeHead(status, {
         "Cache-Control": "no-store",
@@ -31,33 +91,41 @@ function text(response, status, contentType, value) {
     response.end(value);
 }
 
+/**
+ * Reads and parses a bounded JSON request body.
+ *
+ * @param {import("node:http").IncomingMessage} request
+ * @returns {Promise<any>}
+ * @throws {Error} With an HTTP-compatible `statusCode` for invalid input.
+ */
 async function readJson(request) {
     const contentType = String(request.headers["content-type"] ?? "").split(";", 1)[0].trim();
     if (contentType !== "application/json") {
-        const error = new Error("Content-Type must be application/json");
-        error.statusCode = 415;
-        throw error;
+        throw new MobiusHttpError(415, "Content-Type must be application/json");
     }
     let size = 0;
     const chunks = [];
     for await (const chunk of request) {
         size += chunk.length;
         if (size > BODY_LIMIT) {
-            const error = new Error("Request body exceeds the 32 KiB limit");
-            error.statusCode = 413;
-            throw error;
+            throw new MobiusHttpError(413, "Request body exceeds the 32 KiB limit");
         }
         chunks.push(chunk);
     }
     try {
         return JSON.parse(Buffer.concat(chunks).toString("utf8"));
     } catch {
-        const error = new Error("Request body must contain valid JSON");
-        error.statusCode = 400;
-        throw error;
+        throw new MobiusHttpError(400, "Request body must contain valid JSON");
     }
 }
 
+/**
+ * Compares action tokens without leaking a length-matched timing signal.
+ *
+ * @param {string} expected
+ * @param {unknown} actual
+ * @returns {boolean}
+ */
 function tokenMatches(expected, actual) {
     if (typeof actual !== "string") {
         return false;
@@ -68,6 +136,12 @@ function tokenMatches(expected, actual) {
         && timingSafeEqual(expectedBuffer, actualBuffer);
 }
 
+/**
+ * Maps Mobius failures to HTTP response status codes.
+ *
+ * @param {any} error
+ * @returns {number}
+ */
 function statusFor(error) {
     if (Number.isInteger(error?.statusCode)) {
         return error.statusCode;
@@ -84,6 +158,12 @@ function statusFor(error) {
     return 500;
 }
 
+/**
+ * Redacts an error to the stable canvas error envelope.
+ *
+ * @param {any} error
+ * @returns {{code: string, message: string, path: unknown, details: unknown}}
+ */
 function publicError(error) {
     return {
         code: error?.code ?? "mobius_canvas_error",
@@ -93,6 +173,12 @@ function publicError(error) {
     };
 }
 
+/**
+ * Starts one ephemeral loopback server bound to a stable plan.
+ *
+ * @param {MobiusServerOptions} options
+ * @returns {Promise<MobiusServerEntry>}
+ */
 export async function startServer(options) {
     const {
         instanceId,
@@ -102,11 +188,21 @@ export async function startServer(options) {
         subscribe,
     } = options;
     const actionToken = randomBytes(24).toString("hex");
+    /** @type {Set<import("node:http").ServerResponse>} */
     const clients = new Set();
+    /** @type {string | null} */
     let origin = null;
+    /** @type {string | null} */
     let expectedHost = null;
+    /** @type {() => void} */
     let unsubscribe = () => {};
 
+    /**
+     * Broadcasts a plan revision hint to every connected SSE client.
+     *
+     * @param {{revision?: number}} [event]
+     * @returns {void}
+     */
     const broadcast = (event = {}) => {
         const payload = `event: change\ndata: ${JSON.stringify({
             planId,
@@ -150,8 +246,8 @@ export async function startServer(options) {
                 return;
             }
             if (request.method === "GET" && url.pathname === "/api/plan") {
-                const plan = await operations.getPlan({ planId });
-                json(response, 200, { ok: true, value: plan });
+                const status = await operations.getStatus({ planId });
+                json(response, 200, { ok: true, value: status });
                 return;
             }
             if (request.method === "GET" && url.pathname === "/events") {
@@ -185,33 +281,37 @@ export async function startServer(options) {
                     json(response, 400, { ok: false, error: { message: "Explicit confirmation is required" } });
                     return;
                 }
-                let plan;
                 if (body.action === "approve") {
-                    plan = await operations.approve({
+                    await operations.approve({
                         planId,
                         expectedRevision: body.revision,
                         approvedBy: "canvas-user",
                         approvalType: body.approvalType,
                     });
                 } else if (body.action === "retry") {
-                    plan = await operations.retry({
+                    await operations.retry({
                         planId,
                         taskId: body.taskId,
                         expectedRevision: body.revision,
                     });
                 } else if (body.action === "cancel") {
-                    plan = await operations.cancel({
+                    await operations.cancel({
                         planId,
                         taskId: body.taskId,
                         expectedRevision: body.revision,
+                        requestId: body.requestId,
                         target: body.target,
                         reason: body.reason,
+                        requestedBy: "canvas-user",
                     });
                 } else {
                     json(response, 404, { ok: false, error: { message: "Unknown canvas action" } });
                     return;
                 }
-                json(response, 200, { ok: true, value: plan });
+                json(response, 200, {
+                    ok: true,
+                    value: await operations.getStatus({ planId }),
+                });
                 return;
             }
             json(response, 404, { ok: false, error: { message: "Not found" } });
@@ -224,7 +324,7 @@ export async function startServer(options) {
         server.once("error", reject);
         server.listen(0, "127.0.0.1", () => {
             server.off("error", reject);
-            resolve();
+            resolve(undefined);
         });
     });
     const address = server.address();
@@ -237,7 +337,7 @@ export async function startServer(options) {
     try {
         unsubscribe = subscribe(workspacePath, planId, broadcast);
     } catch (error) {
-        await new Promise((resolve) => server.close(() => resolve()));
+        await new Promise((resolve) => server.close(() => resolve(undefined)));
         throw error;
     }
 
@@ -247,9 +347,19 @@ export async function startServer(options) {
         server,
         url: `${origin}/`,
         broadcast,
+        /**
+         * Reads the complete plan and derived projection.
+         *
+         * @returns {Promise<any>}
+         */
         async snapshot() {
-            return operations.getPlan({ planId });
+            return operations.getStatus({ planId });
         },
+        /**
+         * Stops subscriptions, SSE streams, and the loopback server.
+         *
+         * @returns {Promise<void>}
+         */
         async close() {
             unsubscribe();
             for (const client of clients) {
@@ -257,12 +367,13 @@ export async function startServer(options) {
             }
             clients.clear();
             await new Promise((resolve, reject) => {
-                server.close((error) => error ? reject(error) : resolve());
+                server.close((error) => error ? reject(error) : resolve(undefined));
             });
         },
     };
 }
 
+/** Plan states in which the board may expose mutations. */
 export const CANVAS_MUTABLE_PLAN_STATUSES = new Set([
     PLAN_STATUS.AWAITING_APPROVAL,
     PLAN_STATUS.APPROVED,
@@ -272,6 +383,7 @@ export const CANVAS_MUTABLE_PLAN_STATUSES = new Set([
     PLAN_STATUS.FAILED,
 ]);
 
+/** Task states eligible for an explicit fresh-attempt retry. */
 export const CANVAS_RETRYABLE_TASK_STATUSES = new Set([
     TASK_STATUS.BLOCKED,
     TASK_STATUS.FAILED,

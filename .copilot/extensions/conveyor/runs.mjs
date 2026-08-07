@@ -347,7 +347,7 @@ function readResultArtifact(runId, resultPath) {
 /**
  * Load the canonical persisted result state for a conveyor run.
  * @param {unknown} requestedRunId
- * @returns {{ runId: string, status: string, error: string|null, failure: unknown, revision: number, resultAvailable: boolean, result?: unknown }}
+ * @returns {{ runId: string, status: string, error: string|null, aic: number|null, failure: unknown, revision: number, resultAvailable: boolean, result?: unknown }}
  */
 export function loadConveyorResult(requestedRunId) {
 	if (!isValidRunId(requestedRunId)) throw new ConveyorResultError("runId must be a bare conveyor run id (1-255 characters, no path separators).");
@@ -382,6 +382,24 @@ export function loadConveyorResult(requestedRunId) {
 
 	if (!artifact || typeof artifact !== "object" || Array.isArray(artifact)) {
 		throw new ConveyorResultError(`conveyor result for '${runId}' must be a JSON object.`);
+	}
+	const interruptedRevision = new Ledger(dir, {
+		readOnly: true,
+		mode: "summary",
+	}).interruptedRevision;
+	if (interruptedRevision > Number(artifact.revision || 0)) {
+		return {
+			runId,
+			status: "interrupted",
+			error: "conveyor host process exited before completion",
+			aic: finiteNumber(rec?.aic),
+			failure: rec?.failure ?? null,
+			revision: Math.max(
+				interruptedRevision,
+				inspectInteger(rec?.revision) ?? 0,
+			),
+			resultAvailable: false,
+		};
 	}
 	if (
 		Number.isSafeInteger(rec?.revision) &&
@@ -438,6 +456,7 @@ export function loadConveyorRunForImport(requestedRunId) {
 	const args = assertJson(manifest.args ?? null, { label: `Conveyor arguments '${runId}'` });
 	const run = readResultArtifact(runId, join(dir, "run.json")) ?? {};
 	const hostDir = join(dir, "host");
+	/** @type {string|null} */
 	let hostPath = null;
 	try {
 		const hostStat = lstatSync(hostDir);
@@ -501,7 +520,7 @@ export function getConveyorRunActivity(requestedRunId) {
 
 /**
  * `get_conveyor_result` implementation. Returns JSON so pagination metadata remains machine-readable.
- * @param {{ runId?: unknown, offset?: unknown, limit?: unknown }} input
+ * @param {{ runId?: unknown, offset?: unknown, limit?: unknown, format?: unknown }} input
  * @returns {string}
  */
 export function getConveyorResult(input) {
@@ -525,7 +544,7 @@ export function getConveyorResult(input) {
 		);
 	}
 	const format = input?.format ?? "value";
-	if (!["value", "text"].includes(format)) throw new ConveyorResultError("format must be value or text.");
+	if (format !== "value" && format !== "text") throw new ConveyorResultError("format must be value or text.");
 	if (format === "value") {
 		const encoded = JSON.stringify(loaded.result);
 		if (encoded.length > MAX_RESULT_CHUNK_CHARS) {
@@ -636,7 +655,7 @@ export function inspectConveyorRun(input) {
 }
 
 /**
- * Inspect one conveyor agent from the typed journal.
+ * Inspect one conveyor agent from typed ledger records.
  * @param {{ runId?: unknown, agent?: unknown, section?: unknown, offset?: unknown, limit?: unknown }} input
  */
 export function inspectConveyorAgent(input) {
@@ -645,7 +664,7 @@ export function inspectConveyorAgent(input) {
 	const dir = findRunDir(runId);
 	if (!dir) throw new ConveyorResultError(`no conveyor run found with id '${runId}'. Use list_conveyor_runs to find a runId.`);
 	const agent = String(input?.agent || "").trim();
-	if (!agent) throw new ConveyorResultError("agent must be a journal key, sessionId, or label.");
+	if (!agent) throw new ConveyorResultError("agent must be a durable key, sessionId, or label.");
 	const section = String(input?.section || "summary");
 	if (!["summary", "events", "usage"].includes(section)) throw new ConveyorResultError("section must be summary, events, or usage; use get_conveyor_agent_content for prompt or result text.");
 	const offset = resultInteger(input?.offset ?? 0, "offset");
@@ -703,7 +722,7 @@ export function getConveyorAgentContent(input) {
 	const dir = findRunDir(runId);
 	if (!dir) throw new ConveyorResultError(`no conveyor run found with id '${runId}'.`);
 	const agent = String(input?.agent || "").trim();
-	if (!agent) throw new ConveyorResultError("agent must be a journal key, sessionId, or label.");
+	if (!agent) throw new ConveyorResultError("agent must be a durable key, sessionId, or label.");
 	const records = new Ledger(dir, { readOnly: true, mode: "records", types: ["agent_started", "result"] }).records;
 	const keys = new Set();
 	for (const record of records) {
@@ -747,40 +766,17 @@ export function getConveyorProgress(input) {
 	if (afterSeq != null) records = records.filter((record) => Number(record.seq) > afterSeq).slice(0, limit);
 	else if (beforeSeq != null) records = records.filter((record) => Number(record.seq) < beforeSeq).slice(-limit);
 	else records = records.slice(-limit);
+	const oldest = records[0];
+	const newest = records.at(-1);
 	return JSON.stringify({
 		runId,
 		records,
-		oldestSeq: records.length ? records[0].seq : null,
-		newestSeq: records.length ? records.at(-1).seq : null,
+		oldestSeq: oldest?.seq ?? null,
+		newestSeq: newest?.seq ?? null,
 		revision: ledger.revision,
-		hasMoreOlder: records.length > 0 && scoped.some((record) => Number(record.seq) < Number(records[0].seq)),
-		hasMoreNewer: records.length > 0 && scoped.some((record) => Number(record.seq) > Number(records.at(-1).seq)),
+		hasMoreOlder: oldest != null && scoped.some((record) => Number(record.seq) < Number(oldest.seq)),
+		hasMoreNewer: newest != null && scoped.some((record) => Number(record.seq) > Number(newest.seq)),
 	}, null, 2);
-}
-
-/** Wait for a run to settle; aborting the wait does not cancel the Conveyor. */
-export async function waitForConveyorRun(runId, { signal, intervalMs = 250 } = {}) {
-	if (!isValidRunId(runId)) throw new ConveyorResultError("runId must be a bare conveyor run id.");
-	while (true) {
-		if (signal?.aborted) throw signal.reason ?? new DOMException("Conveyor wait aborted", "AbortError");
-		const dir = findRunDir(runId);
-		if (!dir) throw new ConveyorResultError(`no conveyor run found with id '${runId}'.`);
-		const record = runRecordOf(dir) || {};
-		if (isTerminalStatus(record.status)) return record;
-		await new Promise((resolve, reject) => {
-			const done = () => {
-				signal?.removeEventListener("abort", abort);
-				resolve();
-			};
-			const timer = setTimeout(done, Math.max(25, intervalMs));
-			timer.unref?.();
-			const abort = () => {
-				clearTimeout(timer);
-				reject(signal.reason ?? new DOMException("Conveyor wait aborted", "AbortError"));
-			};
-			if (signal) signal.addEventListener("abort", abort, { once: true });
-		});
-	}
 }
 
 /** @param {any[]} records @param {unknown} agentSeq @param {unknown} attemptId */
@@ -809,7 +805,12 @@ function runRecordOf(runDir) {
 	const state = reconcileWorkRecord(readJson(join(runDir, "state.json")), runDir);
 	const owner = readWorkOwner(runDir);
 	const terminal = readJson(join(runDir, "run.json"));
-	const ownerLive = !!owner && processIsAlive(owner.pid);
+	const heartbeat = state ? heartbeatAge(state.heartbeatAt ?? state.updatedAt) : null;
+	const ownerLive = !!owner
+		&& state?.status === "running"
+		&& processIsAlive(owner.pid)
+		&& heartbeat != null
+		&& heartbeat <= 30_000;
 	if (state?.status === "interrupted") return state;
 	if (terminal && isTerminalStatus(terminal.status)) {
 		const ledger = new Ledger(runDir, { readOnly: true, mode: "summary" });
@@ -829,6 +830,13 @@ function runRecordOf(runDir) {
 		return state?.status === "running"
 			? state
 			: { status: "running", revision: Number(terminal?.revision || 0), updatedAt: new Date().toISOString() };
+	}
+	if (state?.status === "running") {
+		return {
+			...state,
+			status: "interrupted",
+			error: "conveyor has no current owner heartbeat",
+		};
 	}
 	if (state) return state;
 	if (owner && !processIsAlive(owner.pid)) {
@@ -850,13 +858,22 @@ function replayLedger(runDir) {
 	if (!progress.length) return null;
 	/** @type {any} */
 	let meta = {};
+	/** @type {{ nanoAiu?: unknown, status?: unknown, error?: unknown, agents?: unknown, launched?: unknown, done?: unknown, failed?: unknown, cached?: unknown, skipped?: unknown, dropped?: unknown, aic?: unknown, t?: unknown }|null} */
 	let end = null;
 	for (const entry of progress) {
 		const rec = entry.record;
 		if (rec.ev === "run_start") meta = { ...(rec.meta || {}) };
 		else if (rec.ev === "run_end") end = rec;
 	}
-	if (!end) return { status: "running", conveyor: meta, counts: null, aic: 0 };
+	if (!end) {
+		return {
+			status: "interrupted",
+			conveyor: meta,
+			counts: null,
+			aic: 0,
+			error: "conveyor has no active owner or terminal record",
+		};
+	}
 	const nanoAiu = Number(end.nanoAiu ?? 0);
 	return {
 		status: end.status || "complete",

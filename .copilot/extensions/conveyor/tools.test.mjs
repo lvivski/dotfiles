@@ -18,6 +18,7 @@ import {
 	runConveyor,
 } from "./tools.mjs";
 import { executeConveyor } from "./executor.mjs";
+import { loadConveyorPlan } from "./plans.mjs";
 import { MAX_RESULT_CHUNK_CHARS, listConveyorRuns, conveyorCommand } from "./runs.mjs";
 import { mkResult, withFakeEnv, tmpDir, waitFor } from "./fixtures/support.mjs";
 
@@ -195,6 +196,23 @@ const items = context.dryRun ? [1] : [1,2,3,4,5]; await pipeline(items, (n) => a
 		assert.ok(planId);
 		const launched = await runConveyor({ planId, background: false }, ctx);
 		assert.match(JSON.stringify(launched), /agent cap exceeded/);
+		assert.equal(loadConveyorPlan(planId), null, "a real run consumes its source plan after startup");
+	}));
+
+test("plan cleanup waits until a real run has started", () =>
+	withTool(async ({ runs }) => {
+		const ctx = fakeCtx(tmpDir());
+		const preview = await runConveyor({
+			script: `return "done";`,
+			dryRun: true,
+			budget: 1,
+		}, ctx);
+		const planId = String(preview).match(/planId: (\S+)/)?.[1];
+		assert.ok(planId);
+		mkdirSync(join(runs, "blocked-start", "manifest.json"), { recursive: true });
+		const failed = await runConveyor({ planId, runId: "blocked-start", background: false }, ctx);
+		assert.match(JSON.stringify(failed), /internal conveyor extension error/);
+		assert.ok(loadConveyorPlan(planId), "startup failure preserves the plan for retry");
 	}));
 
 test("resume replays the persisted plan ceiling from the manifest", () =>

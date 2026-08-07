@@ -1,9 +1,90 @@
-const token = document.querySelector('meta[name="mobius-token"]').content;
-const planId = document.querySelector('meta[name="mobius-plan-id"]').content;
+/**
+ * Browser renderer for the Mobius loopback canvas.
+ *
+ * @module mobius/renderer
+ */
+
+/**
+ * @typedef {object} EvidenceRecord
+ * @property {string} id
+ * @property {string} type
+ * @property {string} summary
+ * @property {string | null} source
+ * @property {string} outcome
+ * @property {string} producer
+ * @property {string} trust
+ */
+
+/**
+ * @typedef {object} PlanSnapshot
+ * @property {any} plan Authoritative Mobius plan document.
+ * @property {any} projection Derived operational projection.
+ */
+
+/**
+ * Requires an HTML element that must exist in the static renderer template.
+ *
+ * @param {string} selector
+ * @returns {HTMLElement}
+ */
+function requiredElement(selector) {
+    const node = document.querySelector(selector);
+    if (!(node instanceof HTMLElement)) {
+        throw new Error(`Missing required renderer element: ${selector}`);
+    }
+    return node;
+}
+
+/**
+ * Requires a metadata element embedded by the loopback server.
+ *
+ * @param {string} selector
+ * @returns {HTMLMetaElement}
+ */
+function requiredMeta(selector) {
+    const node = document.querySelector(selector);
+    if (!(node instanceof HTMLMetaElement)) {
+        throw new Error(`Missing required renderer metadata: ${selector}`);
+    }
+    return node;
+}
+
+/** Per-instance action token embedded by the loopback server. */
+const token = requiredMeta('meta[name="mobius-token"]').content;
+
+/** Stable plan ID embedded by the loopback server. */
+const planId = requiredMeta('meta[name="mobius-plan-id"]').content;
+
+/** Plan statuses that no longer permit cancellation requests. */
 const terminalPlanStatuses = new Set(["completed", "cancelled"]);
-const cancellableTaskStatuses = new Set(["planned", "ready", "running", "blocked", "failed"]);
+
+/** Error returned by a failed loopback API envelope. */
+class MobiusRequestError extends Error {
+    /**
+     * @param {string} message
+     * @param {string | undefined} code
+     */
+    constructor(message, code) {
+        super(message);
+        this.name = "MobiusRequestError";
+        this.code = code;
+    }
+}
+
+/** @type {any} */
 let currentPlan = null;
 
+/** @type {any} */
+let currentProjection = null;
+
+/**
+ * Creates a DOM element and assigns text through `textContent`.
+ *
+ * @param {string} tag
+ * @param {string} className
+ * @param {unknown} [text]
+ * @returns {HTMLElement}
+ */
 function element(tag, className, text) {
     const node = document.createElement(tag);
     if (className) node.className = className;
@@ -11,6 +92,14 @@ function element(tag, className, text) {
     return node;
 }
 
+/**
+ * Adds a labeled row when the value is present.
+ *
+ * @param {HTMLElement} parent
+ * @param {string} label
+ * @param {unknown} value
+ * @returns {void}
+ */
 function addLabeledValue(parent, label, value) {
     if (value === null || value === undefined || value === "") return;
     const row = element("div", "detail-row");
@@ -19,27 +108,58 @@ function addLabeledValue(parent, label, value) {
     parent.append(row);
 }
 
+/**
+ * Calls a loopback API endpoint and unwraps the Mobius response envelope.
+ *
+ * @param {string} path
+ * @param {RequestInit} [options]
+ * @returns {Promise<any>}
+ * @throws {Error} When the server returns a failed Mobius envelope.
+ */
 async function request(path, options) {
     const response = await fetch(path, options);
     const payload = await response.json();
     if (!response.ok || payload.ok !== true) {
-        const error = new Error(payload.error?.message ?? `Request failed with ${response.status}`);
-        error.code = payload.error?.code;
-        throw error;
+        throw new MobiusRequestError(
+            payload.error?.message ?? `Request failed with ${response.status}`,
+            payload.error?.code,
+        );
     }
     return payload.value;
 }
 
+/**
+ * Replaces renderer state with a complete server snapshot.
+ *
+ * @param {PlanSnapshot} snapshot
+ * @returns {void}
+ */
+function acceptSnapshot(snapshot) {
+    currentPlan = snapshot.plan;
+    currentProjection = snapshot.projection;
+    render();
+    requiredElement("#error").textContent = "";
+}
+
+/**
+ * Reloads the authoritative plan and derived projection.
+ *
+ * @returns {Promise<void>}
+ */
 async function loadPlan() {
     try {
-        currentPlan = await request("/api/plan");
-        render(currentPlan);
-        document.querySelector("#error").textContent = "";
+        acceptSnapshot(await request("/api/plan"));
     } catch (error) {
-        document.querySelector("#error").textContent = error.message;
+        requiredElement("#error").textContent = error.message;
     }
 }
 
+/**
+ * Executes a confirmed, token-authenticated canvas mutation.
+ *
+ * @param {Record<string, unknown>} body
+ * @returns {Promise<PlanSnapshot>}
+ */
 async function action(body) {
     return request("/api/action", {
         method: "POST",
@@ -51,19 +171,27 @@ async function action(body) {
     });
 }
 
-function renderSummary(plan) {
-    const summary = document.querySelector("#summary");
+/**
+ * Renders plan-level progress and provenance cards.
+ *
+ * @returns {void}
+ */
+function renderSummary() {
+    const summary = requiredElement("#summary");
     summary.replaceChildren();
-    const done = plan.tasks.filter((task) => task.status === "done").length;
     for (const [label, value] of [
-        ["Status", plan.status],
-        ["Revision", plan.revision],
-        ["Progress", `${done}/${plan.tasks.length}`],
-        ["Planning", plan.planning
-            ? `${plan.planning.backend} · ${plan.planning.runId}`
+        ["Status", currentPlan.status],
+        ["Revision", currentPlan.revision],
+        [
+            "Progress",
+            `${currentProjection.progress.done}/${currentProjection.progress.total} (${currentProjection.progress.percent}%)`,
+        ],
+        ["Attempts", currentProjection.progress.attempts],
+        ["Planning", currentPlan.planning
+            ? `${currentPlan.planning.backend} · ${currentPlan.planning.runId}`
             : "Unlinked"],
-        ["Base branch", plan.repository.baseBranch],
-        ["Updated", plan.updatedAt],
+        ["Base branch", currentPlan.repository.baseBranch],
+        ["Updated", currentPlan.updatedAt],
     ]) {
         const item = element("div", "summary-item");
         item.append(element("span", "muted", label));
@@ -72,6 +200,79 @@ function renderSummary(plan) {
     }
 }
 
+/**
+ * Renders one typed evidence record.
+ *
+ * @param {EvidenceRecord} entry
+ * @returns {HTMLElement}
+ */
+function makeEvidence(entry) {
+    const item = element("li", "evidence-item");
+    item.append(element("code", "", entry.id));
+    item.append(document.createTextNode(
+        ` · ${entry.type}/${entry.outcome} · ${entry.summary} · ${entry.trust} by ${entry.producer}`,
+    ));
+    if (entry.source) item.append(document.createTextNode(` · ${entry.source}`));
+    return item;
+}
+
+/**
+ * Renders one immutable task-attempt history entry.
+ *
+ * @param {any} attempt
+ * @returns {HTMLElement}
+ */
+function makeAttempt(attempt) {
+    const details = element("details", "attempt");
+    const summary = element(
+        "summary",
+        "",
+        `${attempt.id} · ${attempt.status}${attempt.sessionId ? ` · ${attempt.sessionId}` : ""}`,
+    );
+    details.append(summary);
+    const body = element("div", "details");
+    addLabeledValue(body, "Reservation", attempt.reservationId);
+    addLabeledValue(body, "Base", attempt.baseBranch);
+    addLabeledValue(body, "Branch", attempt.branch);
+    addLabeledValue(body, "Commit", attempt.commit);
+    addLabeledValue(body, "PR", attempt.prUrl);
+    addLabeledValue(body, "Result", attempt.resultSummary);
+    addLabeledValue(body, "Error", attempt.error);
+    addLabeledValue(body, "Reserved", attempt.reservedAt);
+    addLabeledValue(body, "Started", attempt.startedAt);
+    addLabeledValue(body, "Cancel requested", attempt.cancelRequestedAt);
+    addLabeledValue(body, "Completed", attempt.completedAt);
+    if (attempt.scopeOverride) {
+        addLabeledValue(
+            body,
+            "Scope override",
+            `${attempt.scopeOverride.approvedBy}: ${attempt.scopeOverride.reason}`,
+        );
+    }
+    if (attempt.integrationRequired.length > 0) {
+        addLabeledValue(
+            body,
+            "Integrated deliveries",
+            attempt.integrationRequired
+                .map((entry) => `${entry.taskId}/${entry.attemptId}`)
+                .join(", "),
+        );
+    }
+    if (attempt.evidence.length > 0) {
+        const evidence = element("ul", "evidence-list");
+        for (const entry of attempt.evidence) evidence.append(makeEvidence(entry));
+        body.append(evidence);
+    }
+    details.append(body);
+    return details;
+}
+
+/**
+ * Renders a task card, attempt history, and eligible controls.
+ *
+ * @param {any} task
+ * @returns {HTMLElement}
+ */
 function makeTaskCard(task) {
     const card = element("article", "task-card");
     const heading = element("div", "task-heading");
@@ -82,75 +283,45 @@ function makeTaskCard(task) {
     const details = element("div", "details");
     addLabeledValue(details, "Depends on", task.dependsOn.join(", ") || "None");
     addLabeledValue(details, "Expected scope", task.expectedFiles.join(", ") || "Unspecified");
-    addLabeledValue(details, "Session", task.sessionId);
-    addLabeledValue(details, "Branch", task.branch);
-    addLabeledValue(details, "Result", task.resultSummary);
-    addLabeledValue(details, "Blocked/error", task.error);
-    if (task.prUrl) {
-        const row = element("div", "detail-row");
-        row.append(element("strong", "", "Pull request: "));
-        const link = element("a", "", task.prUrl);
-        link.href = task.prUrl;
-        link.target = "_blank";
-        link.rel = "noreferrer";
-        row.append(link);
-        details.append(row);
-    }
-    if (task.evidence.length > 0) {
-        addLabeledValue(details, "Evidence", task.evidence.join(" · "));
-    }
     card.append(details);
+    if (task.attempts.length > 0) {
+        const attempts = element("div", "attempts");
+        for (const attempt of [...task.attempts].reverse()) attempts.append(makeAttempt(attempt));
+        card.append(attempts);
+    }
 
-    const controls = element("div", "card-actions");
     if (task.status === "blocked" || task.status === "failed") {
+        const controls = element("div", "card-actions");
         const retry = element("button", "", "Retry");
-        retry.type = "button";
+        retry.setAttribute("type", "button");
         retry.addEventListener("click", async () => {
-            if (!window.confirm(`Retry ${task.id}?`)) return;
+            if (!window.confirm(`Retry ${task.id} with a fresh attempt?`)) return;
             try {
-                currentPlan = await action({
+                acceptSnapshot(await action({
                     action: "retry",
                     revision: currentPlan.revision,
                     taskId: task.id,
-                });
-                render(currentPlan);
+                }));
             } catch (error) {
-                document.querySelector("#error").textContent = error.message;
+                requiredElement("#error").textContent = error.message;
             }
         });
         controls.append(retry);
+        card.append(controls);
     }
-    if ((currentPlan.status === "approved" || currentPlan.status === "running")
-        && cancellableTaskStatuses.has(task.status)) {
-        const cancel = element("button", "danger-secondary", "Cancel task and plan");
-        cancel.type = "button";
-        cancel.addEventListener("click", async () => {
-            const reason = window.prompt(`Why should ${task.id} be cancelled?`);
-            if (!reason || !window.confirm(`Cancel required task ${task.id} and the entire plan?`)) return;
-            try {
-                currentPlan = await action({
-                    action: "cancel",
-                    revision: currentPlan.revision,
-                    target: "task",
-                    taskId: task.id,
-                    reason,
-                });
-                render(currentPlan);
-            } catch (error) {
-                document.querySelector("#error").textContent = error.message;
-            }
-        });
-        controls.append(cancel);
-    }
-    if (controls.childNodes.length > 0) card.append(controls);
     return card;
 }
 
-function renderTasks(plan) {
-    const host = document.querySelector("#tasks");
+/**
+ * Groups and renders tasks in lifecycle order.
+ *
+ * @returns {void}
+ */
+function renderTasks() {
+    const host = requiredElement("#tasks");
     host.replaceChildren();
     const groups = new Map();
-    for (const task of plan.tasks) {
+    for (const task of currentPlan.tasks) {
         if (!groups.has(task.status)) groups.set(task.status, []);
         groups.get(task.status).push(task);
     }
@@ -164,79 +335,149 @@ function renderTasks(plan) {
     }
 }
 
-function renderVerification(plan) {
-    const host = document.querySelector("#verification");
+/**
+ * Renders the bound verification reservation, run, and outcome.
+ *
+ * @returns {void}
+ */
+function renderVerification() {
+    const host = requiredElement("#verification");
     host.replaceChildren();
-    addLabeledValue(host, "Status", plan.verification.status);
-    addLabeledValue(host, "Backend", plan.verification.backend);
-    addLabeledValue(host, "Run", plan.verification.runId);
-    addLabeledValue(host, "Input digest", plan.verification.inputDigest);
-    addLabeledValue(host, "Summary", plan.verification.summary);
-    addLabeledValue(host, "Evidence", plan.verification.evidence.join(" · "));
-    addLabeledValue(host, "Missing evidence", plan.verification.missingEvidence.join(" · "));
+    addLabeledValue(host, "Status", currentPlan.verification.status);
+    addLabeledValue(host, "Backend", currentPlan.verification.backend);
+    addLabeledValue(host, "Run", currentPlan.verification.runId);
+    addLabeledValue(host, "Input digest", currentPlan.verification.inputDigest);
+    addLabeledValue(host, "Summary", currentPlan.verification.summary);
+    addLabeledValue(host, "Evidence IDs", currentPlan.verification.evidence.join(" · "));
+    addLabeledValue(host, "Missing evidence", currentPlan.verification.missingEvidence.join(" · "));
+    addLabeledValue(
+        host,
+        "Correction tasks",
+        currentPlan.verification.correctionTaskIds.join(", "),
+    );
 }
 
-function renderControls(plan) {
-    const approve = document.querySelector("#approve-button");
-    if (plan.status === "awaiting-approval") {
+/**
+ * Renders derived recovery guidance and cancellation requirements.
+ *
+ * @returns {void}
+ */
+function renderRecovery() {
+    const host = requiredElement("#recovery");
+    host.replaceChildren();
+    addLabeledValue(host, "Next action", currentProjection.nextAction.kind);
+    if (currentProjection.dependencyWaits.length > 0) {
+        addLabeledValue(
+            host,
+            "Dependency waits",
+            currentProjection.dependencyWaits
+                .map((entry) => `${entry.taskId} ← ${entry.dependencies
+                    .map((dependency) => `${dependency.taskId} (${dependency.status})`)
+                    .join(", ")}`)
+                .join(" · "),
+        );
+    }
+    if (currentPlan.cancellation) {
+        addLabeledValue(host, "Cancellation reason", currentPlan.cancellation.reason);
+        addLabeledValue(
+            host,
+            "Required attempts",
+            currentPlan.cancellation.requiredAttemptIds.join(", ") || "None",
+        );
+        addLabeledValue(
+            host,
+            "Verification reservation",
+            currentPlan.cancellation.verificationReservationId,
+        );
+        addLabeledValue(host, "Verification run", currentPlan.cancellation.verificationRunId);
+        host.append(element(
+            "p",
+            "warning",
+            "Mobius has only requested cancellation. Stop or archive every listed App session and cancel the listed Conveyor run before finalization.",
+        ));
+    }
+    const actions = element("ol", "action-list");
+    for (const entry of currentProjection.actions) {
+        actions.append(element("li", "", JSON.stringify(entry)));
+    }
+    if (actions.childNodes.length > 0) host.append(actions);
+}
+
+/**
+ * Shows only controls valid for the current plan status.
+ *
+ * @returns {void}
+ */
+function renderControls() {
+    const approve = requiredElement("#approve-button");
+    if (currentPlan.status === "awaiting-approval") {
         approve.hidden = false;
         approve.textContent = "Approve plan";
         approve.dataset.type = "plan";
-    } else if (plan.status === "awaiting-completion-approval") {
+    } else if (currentPlan.status === "awaiting-completion-approval") {
         approve.hidden = false;
         approve.textContent = "Approve completion";
         approve.dataset.type = "completion";
     } else {
         approve.hidden = true;
     }
-    document.querySelector("#cancel-plan-button").hidden = terminalPlanStatuses.has(plan.status);
+    requiredElement("#cancel-plan-button").hidden =
+        terminalPlanStatuses.has(currentPlan.status) || currentPlan.status === "cancelling";
 }
 
-function render(plan) {
-    document.querySelector("#plan-title").textContent = plan.title;
-    document.querySelector("#plan-objective").textContent = plan.objective;
-    renderSummary(plan);
-    renderTasks(plan);
-    renderVerification(plan);
-    renderControls(plan);
+/**
+ * Renders the current complete snapshot.
+ *
+ * @returns {void}
+ */
+function render() {
+    requiredElement("#plan-title").textContent = currentPlan.title;
+    requiredElement("#plan-objective").textContent = currentPlan.objective;
+    renderSummary();
+    renderTasks();
+    renderVerification();
+    renderRecovery();
+    renderControls();
 }
 
-document.querySelector("#refresh-button").addEventListener("click", loadPlan);
-document.querySelector("#approve-button").addEventListener("click", async (event) => {
+requiredElement("#refresh-button").addEventListener("click", loadPlan);
+requiredElement("#approve-button").addEventListener("click", async (event) => {
+    if (!(event.currentTarget instanceof HTMLElement)) return;
     const approvalType = event.currentTarget.dataset.type;
     if (!window.confirm(approvalType === "completion"
         ? "Approve this entire plan as complete?"
         : "Approve this plan and make dependency-ready tasks available?")) return;
     try {
-        currentPlan = await action({
+        acceptSnapshot(await action({
             action: "approve",
             revision: currentPlan.revision,
             approvalType,
-        });
-        render(currentPlan);
+        }));
     } catch (error) {
-        document.querySelector("#error").textContent = error.message;
+        requiredElement("#error").textContent = error.message;
     }
 });
-document.querySelector("#cancel-plan-button").addEventListener("click", async () => {
-    const reason = window.prompt("Why should this plan be cancelled?");
-    if (!reason || !window.confirm(`Cancel Mobius plan ${planId}?`)) return;
+requiredElement("#cancel-plan-button").addEventListener("click", async () => {
+    const reason = window.prompt("Why should this plan enter cancellation?");
+    if (!reason || !window.confirm(
+        `Request cancellation for ${planId}? External App sessions keep running until explicitly stopped.`,
+    )) return;
     try {
-        currentPlan = await action({
+        acceptSnapshot(await action({
             action: "cancel",
             revision: currentPlan.revision,
+            requestId: crypto.randomUUID(),
             target: "plan",
             reason,
-        });
-        render(currentPlan);
+        }));
     } catch (error) {
-        document.querySelector("#error").textContent = error.message;
+        requiredElement("#error").textContent = error.message;
     }
 });
 
 const events = new EventSource("/events");
 events.addEventListener("change", loadPlan);
 events.onerror = () => {
-    document.querySelector("#error").textContent = "Live updates disconnected; use Refresh.";
+    requiredElement("#error").textContent = "Live updates disconnected; use Refresh.";
 };
 loadPlan();

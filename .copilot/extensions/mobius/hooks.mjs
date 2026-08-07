@@ -1,13 +1,23 @@
+/**
+ * Opt-in coordinator context and conservative tool-use guardrails.
+ *
+ * @module mobius/hooks
+ */
 import path from "node:path";
 
+/** Prefix shared by every Mobius-owned tool. */
 const MOBIUS_TOOL_PREFIX = "mobius_";
+
+/** Mobius tools safe to auto-allow while a plan is active. */
 const READ_ONLY_MOBIUS_TOOLS = new Set([
     "mobius_prepare_plan",
     "mobius_get_plan",
+    "mobius_get_status",
     "mobius_list_plans",
     "mobius_next_tasks",
-    "mobius_prepare_verification",
 ]);
+
+/** File-oriented tools whose arguments can be checked against the workspace. */
 const FILE_WRITE_TOOLS = new Set([
     "apply_patch",
     "create",
@@ -15,6 +25,16 @@ const FILE_WRITE_TOOLS = new Set([
     "write",
 ]);
 
+/**
+ * Tests whether a candidate path remains inside a workspace root.
+ *
+ * Handles POSIX, Windows absolute, drive-relative, and UNC path families
+ * without allowing cross-platform path aliases.
+ *
+ * @param {string} root
+ * @param {string} candidate
+ * @returns {boolean}
+ */
 function inside(root, candidate) {
     const windowsRoot = /^[A-Za-z]:[\\/]/.test(root) || /^\\\\/.test(root);
     const windowsCandidate = /^[A-Za-z]:[\\/]/.test(candidate)
@@ -33,6 +53,13 @@ function inside(root, candidate) {
         || (!relative.startsWith("..") && !implementation.isAbsolute(relative));
 }
 
+/**
+ * Extracts path-like arguments from supported file-write tools.
+ *
+ * @param {string} toolName
+ * @param {unknown} toolArgs
+ * @returns {string[]}
+ */
 function absolutePathsFromArgs(toolName, toolArgs) {
     const found = [];
     if (toolArgs && typeof toolArgs === "object") {
@@ -51,15 +78,29 @@ function absolutePathsFromArgs(toolName, toolArgs) {
     return found;
 }
 
+/**
+ * Classifies broad destructive shell commands while a plan is active.
+ *
+ * @param {unknown} command
+ * @param {string | undefined} workingDirectory
+ * @returns {{decision: "deny"|"ask", reason: string} | null}
+ */
 export function classifyShellCommand(command, workingDirectory) {
     const value = String(command ?? "");
-    if (splitShellCommands(value).some(isDestructiveGitCommand)) {
+    const commands = splitShellCommands(value);
+    if (commands.some(isDestructiveGitCommand)) {
         return {
             decision: "deny",
             reason: "Mobius blocks destructive Git reset/clean commands while a plan is active.",
         };
     }
-    if (/\b(?:rm\s+-[a-z]*r[a-z]*f|rm\s+-[a-z]*f[a-z]*r|Remove-Item\b[^\n]*-Recurse|del\s+\/s)\b/i.test(value)) {
+    const rmDecision = commands
+        .map((entry) => classifyRmCommand(entry, workingDirectory))
+        .find(Boolean);
+    if (rmDecision) {
+        return rmDecision;
+    }
+    if (/\b(?:Remove-Item\b[^\n]*-Recurse|del\s+\/s)\b/i.test(value)) {
         const broadTarget = /(?:^|[\s;])(?:\/|~|\$HOME|\.\.?|\*)?(?:[\s;&]|$)/.test(value)
             || (workingDirectory && value.includes(path.resolve(workingDirectory)));
         return {
@@ -72,9 +113,16 @@ export function classifyShellCommand(command, workingDirectory) {
     return null;
 }
 
+/**
+ * Splits compound shell input without splitting inside quotes.
+ *
+ * @param {string} command
+ * @returns {string[]}
+ */
 function splitShellCommands(command) {
     const segments = [];
     let current = "";
+    /** @type {"'"|'"'|null} */
     let quote = null;
     let escaped = false;
     for (let index = 0; index < command.length; index += 1) {
@@ -113,15 +161,97 @@ function splitShellCommands(command) {
     return segments;
 }
 
-function isDestructiveGitCommand(command) {
-    const tokens = String(command)
+/**
+ * Tokenizes the shell subset needed by the guardrail classifiers.
+ *
+ * @param {string} command
+ * @returns {string[]}
+ */
+function shellTokens(command) {
+    return String(command)
         .match(/"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|\S+/g)
-        ?.map((token) => token.replace(/^(["'])|(["'])$/g, "")) ?? [];
+        ?.map((token) => token
+            .replace(/^(["'])|(["'])$/g, "")
+            .replace(/^[({]+|[)}]+$/g, ""))
+        .filter(Boolean) ?? [];
+}
+
+/**
+ * Accepts only direct commands or known non-semantic wrappers before a command.
+ *
+ * @param {string[]} tokens
+ * @param {number} commandIndex
+ * @returns {boolean}
+ */
+function allowedPrefix(tokens, commandIndex) {
+    const prefix = tokens.slice(0, commandIndex);
+    return prefix.length === 0
+        || ["sudo", "command", "env"].includes(prefix[0].toLowerCase());
+}
+
+/**
+ * Classifies recursive forced `rm` invocations by target breadth.
+ *
+ * @param {string} command
+ * @param {string | undefined} workingDirectory
+ * @returns {{decision: "deny"|"ask", reason: string} | null}
+ */
+function classifyRmCommand(command, workingDirectory) {
+    const tokens = shellTokens(command);
+    const rmIndex = tokens.findIndex((token) => token.toLowerCase() === "rm");
+    if (rmIndex === -1 || !allowedPrefix(tokens, rmIndex)) return null;
+    let recursive = false;
+    let force = false;
+    const targets = [];
+    let optionsDone = false;
+    for (const token of tokens.slice(rmIndex + 1)) {
+        const lower = token.toLowerCase();
+        if (!optionsDone && lower === "--") {
+            optionsDone = true;
+            continue;
+        }
+        if (!optionsDone && lower.startsWith("--")) {
+            if (lower === "--recursive") recursive = true;
+            else if (lower === "--force") force = true;
+            continue;
+        }
+        if (!optionsDone && /^-[^-]+$/.test(lower)) {
+            const flags = lower.slice(1);
+            if (flags.includes("r") || flags.includes("R".toLowerCase())) recursive = true;
+            if (flags.includes("f")) force = true;
+            continue;
+        }
+        targets.push(token);
+    }
+    if (!recursive || !force) return null;
+    const root = workingDirectory ? path.resolve(workingDirectory) : null;
+    const broad = targets.length === 0 || targets.some((target) => {
+        if (["/", "~", "$HOME", "${HOME}", ".", "..", "*"].includes(target)) {
+            return true;
+        }
+        if (!root) return false;
+        const resolved = path.resolve(root, target);
+        return resolved === root || root.startsWith(`${resolved}${path.sep}`);
+    });
+    return {
+        decision: broad ? "deny" : "ask",
+        reason: broad
+            ? "Mobius blocks broad recursive deletion while a plan is active."
+            : "Mobius requires confirmation for recursive deletion while a plan is active.",
+    };
+}
+
+/**
+ * Detects destructive Git reset and clean invocations through global options.
+ *
+ * @param {string} command
+ * @returns {boolean}
+ */
+function isDestructiveGitCommand(command) {
+    const tokens = shellTokens(command);
     const gitIndex = tokens.findIndex((token) => token.toLowerCase() === "git");
     if (gitIndex === -1) return false;
-    const prefix = tokens.slice(0, gitIndex);
-    if (prefix.length > 0
-        && !["sudo", "command", "env"].includes(prefix[0].toLowerCase())) {
+    if (!allowedPrefix(tokens, gitIndex)) {
         return false;
     }
     let index = gitIndex + 1;
@@ -133,6 +263,9 @@ function isDestructiveGitCommand(command) {
         "--no-pager",
         "--no-replace-objects",
         "--paginate",
+        "--exec-path",
+        "-p",
+        "-P",
     ]);
     while (index < tokens.length) {
         const token = tokens[index];
@@ -142,11 +275,15 @@ function isDestructiveGitCommand(command) {
             index += 2;
             continue;
         }
-        if (/^--(?:git-dir|work-tree|namespace|config-env)=/.test(token)) {
+        if (/^--(?:git-dir|work-tree|namespace|config-env|exec-path)=/.test(token)) {
             index += 1;
             continue;
         }
         if (noArgumentOptions.has(token.toLowerCase())) {
+            index += 1;
+            continue;
+        }
+        if (token.toLowerCase().startsWith("--no-")) {
             index += 1;
             continue;
         }
@@ -167,6 +304,14 @@ function isDestructiveGitCommand(command) {
     return false;
 }
 
+/**
+ * Denies obvious file-tool writes outside the active workspace.
+ *
+ * @param {string} toolName
+ * @param {unknown} toolArgs
+ * @param {string | undefined} workingDirectory
+ * @returns {{decision: "deny", reason: string} | null}
+ */
 export function inspectWriteBoundary(toolName, toolArgs, workingDirectory) {
     if (!workingDirectory) {
         return null;
@@ -186,22 +331,44 @@ export function inspectWriteBoundary(toolName, toolArgs, workingDirectory) {
     };
 }
 
+/**
+ * Renders the durable coordinator workflow injected for an active plan.
+ *
+ * @param {any} active
+ * @returns {string}
+ */
 function coordinatorContext(active) {
     const plan = active.plan;
     return `Mobius plan ${plan.id} is active at revision ${plan.revision} (${plan.status}).
 
 Coordinator contract:
-1. Use mobius_next_tasks and launch only dependency-ready App project sessions.
-2. Do not launch overlapping declared file scopes without explicit user approval.
-3. Record every returned session ID with mobius_start_task.
-4. Record child results and evidence with mobius_complete_task; failed or blocked work must not be represented as done.
-5. Re-read the plan after revision conflicts.
-6. Conveyor agents are restricted analysis only; App-native child sessions own repository mutation.
-7. Use each Mobius prepare tool's absolute pinned launchSpec with Conveyor: preview first, launch the immutable preview plan, then import or bind only the persisted run ID.
-8. After mobius_prepare_verification, launch Conveyor, bind the returned run with mobius_begin_verification, import it with mobius_complete_verification, then request explicit completion approval.`;
+1. Use mobius_next_tasks, then mobius_reserve_task BEFORE create_session.
+2. Pass the returned delegationPrompt unchanged and use its exact baseBranch.
+3. Attach the returned App session immediately with mobius_attach_task.
+4. Record the attempt result before displaying it or launching newly-unblocked work. Failed or blocked work must not be represented as done.
+5. Do not duplicate active child work or expand the approved DAG. Intervene only for explicit steering, cancellation, stuck sessions, or child requests.
+6. Do not launch overlapping declared scopes without an auditable scopeOverride.
+7. Use mobius_get_status with a complete App session inventory before treating a recorded session as absent.
+8. mobius_cancel only requests cancellation. Stop/archive every listed App session and cancel the listed Conveyor run before mobius_finalize_cancellation.
+9. Re-read the plan after revision conflicts; reservation and attachment replays are idempotent only when their exact postcondition already exists.
+10. Conveyor agents are restricted analysis only; App-native child sessions own repository mutation.
+11. Use each prepare tool's absolute pinned launchSpec with Conveyor: preview first, launch the immutable preview plan, then import or bind only the persisted run ID.
+12. mobius_prepare_verification is a mutation: call it with expectedRevision and a stable reservationId BEFORE launching Conveyor, then bind that exact reservation and run.
+13. Import the bound verification result and request explicit completion approval.`;
 }
 
+/**
+ * Builds inert-until-activated SDK hooks for Mobius coordination.
+ *
+ * @param {{operations: {getActive: () => Promise<any>}}} options
+ * @returns {any} Copilot SDK hook declarations.
+ */
 export function buildMobiusHooks(options) {
+    /**
+     * Reads the current activation marker and plan.
+     *
+     * @returns {Promise<object | null>}
+     */
     const active = async () => options.operations.getActive();
 
     return {

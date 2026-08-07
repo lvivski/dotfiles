@@ -1,3 +1,8 @@
+/**
+ * Trusted adapter between Mobius state and persisted Conveyor runs.
+ *
+ * @module mobius/conveyor
+ */
 import { createHash } from "node:crypto";
 import { lstat, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -16,7 +21,32 @@ import {
     MOBIUS_CONVEYORS,
 } from "./scripts.mjs";
 
+/**
+ * @typedef {object} MobiusConveyorSpecification
+ * @property {string} name
+ * @property {string} relativePath
+ * @property {string} scriptSha256
+ * @property {number} budget
+ * @property {number} concurrency
+ * @property {number} maxTotalAgents
+ * @property {number} maxAgents
+ * @property {number} timeoutSec
+ * @property {string} model
+ * @property {string} effort
+ */
+
+/** @typedef {Record<string, any>} ImportedConveyorRun */
+
+/**
+ * Error raised when a Conveyor workflow or persisted run violates Mobius's
+ * pinned, restricted execution contract.
+ */
 export class MobiusConveyorError extends Error {
+    /**
+     * @param {string} code Stable machine-readable error code.
+     * @param {string} message Human-readable failure summary.
+     * @param {unknown} [details] Structured diagnostic context.
+     */
     constructor(code, message, details = null) {
         super(message);
         this.name = "MobiusConveyorError";
@@ -25,22 +55,54 @@ export class MobiusConveyorError extends Error {
     }
 }
 
+/**
+ * Throws a typed Conveyor adapter failure.
+ *
+ * @param {string} code
+ * @param {string} message
+ * @param {unknown} [details]
+ * @returns {never}
+ */
 function fail(code, message, details) {
     throw new MobiusConveyorError(code, message, details);
 }
 
+/**
+ * Resolves a bundled workflow path relative to this module.
+ *
+ * @param {MobiusConveyorSpecification} specification
+ * @returns {string}
+ */
 function scriptPath(specification) {
     return fileURLToPath(new URL(specification.relativePath, import.meta.url));
 }
 
+/**
+ * Computes a lowercase SHA-256 digest.
+ *
+ * @param {string | Uint8Array} value
+ * @returns {string}
+ */
 function sha256(value) {
     return createHash("sha256").update(value).digest("hex");
 }
 
+/**
+ * Canonicalizes line endings before workflow pin comparison.
+ *
+ * @param {unknown} value
+ * @returns {string}
+ */
 function canonicalSource(value) {
     return String(value).replace(/\r\n?/g, "\n");
 }
 
+/**
+ * Loads and verifies a bundled workflow against its committed hash.
+ *
+ * @param {MobiusConveyorSpecification} specification
+ * @returns {Promise<{pathname: string, source: string}>}
+ */
 async function currentScript(specification) {
     const pathname = scriptPath(specification);
     let source;
@@ -75,6 +137,11 @@ async function currentScript(specification) {
     return { pathname, source };
 }
 
+/**
+ * Loads Conveyor's versioned read-only run API.
+ *
+ * @returns {Promise<typeof import("../conveyor/runs.mjs")>}
+ */
 async function conveyorApi() {
     try {
         return await import("../conveyor/runs.mjs");
@@ -87,6 +154,14 @@ async function conveyorApi() {
     }
 }
 
+/**
+ * Builds the exact restricted launch settings Mobius will later verify.
+ *
+ * @param {MobiusConveyorSpecification} specification
+ * @param {string} pathname
+ * @param {object} args
+ * @returns {any}
+ */
 function launchSpec(specification, pathname, args) {
     return {
         scriptPath: pathname,
@@ -104,6 +179,13 @@ function launchSpec(specification, pathname, args) {
     };
 }
 
+/**
+ * Loads a persisted run and verifies workflow identity and launch settings.
+ *
+ * @param {string} runId
+ * @param {MobiusConveyorSpecification} specification
+ * @returns {Promise<{run: ImportedConveyorRun, script: {pathname: string, source: string}}>}
+ */
 async function loadRun(runId, specification) {
     const script = await currentScript(specification);
     const api = await conveyorApi();
@@ -191,6 +273,13 @@ async function loadRun(runId, specification) {
     return { run, script };
 }
 
+/**
+ * Requires exact canonical argument identity for an imported run.
+ *
+ * @param {ImportedConveyorRun} run
+ * @param {object} expectedArgs
+ * @returns {void}
+ */
 function assertArgs(run, expectedArgs) {
     const expectedSha256 = analysisInputDigest(expectedArgs);
     if (run.argsSha256 !== expectedSha256
@@ -206,6 +295,12 @@ function assertArgs(run, expectedArgs) {
     }
 }
 
+/**
+ * Requires a terminal run with an importable result.
+ *
+ * @param {ImportedConveyorRun} run
+ * @returns {void}
+ */
 function assertComplete(run) {
     if (run.status !== "complete" || run.resultAvailable !== true) {
         fail(
@@ -220,6 +315,12 @@ function assertComplete(run) {
     }
 }
 
+/**
+ * Builds the pinned planning launch specification.
+ *
+ * @param {object} input Raw planning request.
+ * @returns {Promise<any>}
+ */
 export async function preparePlanningConveyor(input) {
     const args = buildPlanningArgs(input);
     const specification = MOBIUS_CONVEYORS.plan;
@@ -232,6 +333,12 @@ export async function preparePlanningConveyor(input) {
     };
 }
 
+/**
+ * Imports and validates a completed planning run.
+ *
+ * @param {string} runId
+ * @returns {Promise<any>}
+ */
 export async function importPlanningConveyor(runId) {
     const specification = MOBIUS_CONVEYORS.plan;
     const { run } = await loadRun(runId, specification);
@@ -260,6 +367,12 @@ export async function importPlanningConveyor(runId) {
     };
 }
 
+/**
+ * Builds the pinned evidence-only verification launch specification.
+ *
+ * @param {any} plan Validated plan with completed implementation tasks.
+ * @returns {Promise<any>}
+ */
 export async function prepareVerificationConveyor(plan) {
     const args = buildVerificationInput(plan);
     const specification = MOBIUS_CONVEYORS.verify;
@@ -272,6 +385,14 @@ export async function prepareVerificationConveyor(plan) {
     };
 }
 
+/**
+ * Verifies a bound verification run against the plan's canonical evidence.
+ *
+ * @param {string} runId
+ * @param {any} plan
+ * @param {{requireComplete?: boolean}} [options]
+ * @returns {Promise<any>}
+ */
 export async function inspectVerificationConveyor(runId, plan, options = {}) {
     const specification = MOBIUS_CONVEYORS.verify;
     const { run } = await loadRun(runId, specification);
@@ -296,12 +417,21 @@ export async function inspectVerificationConveyor(runId, plan, options = {}) {
     };
 }
 
+/**
+ * Determines whether a terminated, non-importable verification run may be
+ * replaced without losing an active or valid result.
+ *
+ * @param {string} runId
+ * @param {any} plan
+ * @returns {Promise<boolean>}
+ */
 export async function verificationRunCanBeReplaced(runId, plan) {
     const api = await conveyorApi();
     const activity = api.getConveyorRunActivity(runId);
     if (!activity.exists) {
         return true;
     }
+
     if (activity.active) {
         return false;
     }
@@ -320,4 +450,16 @@ export async function verificationRunCanBeReplaced(runId, plan) {
         }
         throw error;
     }
+}
+
+/**
+ * Observes whether a persisted Conveyor run exists and is no longer active.
+ *
+ * @param {string} runId
+ * @returns {Promise<boolean>}
+ */
+export async function verificationRunIsTerminal(runId) {
+    const api = await conveyorApi();
+    const activity = api.getConveyorRunActivity(runId);
+    return activity.exists === true && activity.active === false;
 }

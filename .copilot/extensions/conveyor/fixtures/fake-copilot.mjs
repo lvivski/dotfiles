@@ -107,6 +107,7 @@ function writeShutdownLog() {
 function readPreviousUsage(path) {
 	const empty = { nanoAiu: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 };
 	if (!existsSync(path)) return empty;
+	/** @type {{ data: { totalNanoAiu?: unknown, modelMetrics?: Record<string, { usage?: Record<string, unknown> }> } }|null} */
 	let latest = null;
 	for (const line of readFileSync(path, "utf8").split("\n")) {
 		if (!line.trim()) continue;
