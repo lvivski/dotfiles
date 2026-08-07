@@ -6,10 +6,11 @@
  *
  * @module mobius/extension
  */
-import { joinSession } from "@github/copilot-sdk/extension";
+import { defineFactory, joinSession } from "@github/copilot-sdk/extension";
 
 import { createMobiusCanvas } from "./canvas.mjs";
 import { publishPlanChange, subscribeToPlan } from "./events.mjs";
+import { createFactoryAnalysis, MOBIUS_FACTORIES } from "./factory.mjs";
 import { buildMobiusHooks } from "./hooks.mjs";
 import { createMobiusOperations } from "./operations.mjs";
 import { buildMobiusTools } from "./tools.mjs";
@@ -17,13 +18,17 @@ import { buildMobiusTools } from "./tools.mjs";
 /** @type {import("@github/copilot-sdk").CopilotSession | null} */
 let session = null;
 
+const factories = Object.values(MOBIUS_FACTORIES).map((definition) => defineFactory(definition));
+
 /** Shared service boundary used by tools, hooks, and canvases. */
 const operations = createMobiusOperations({
     getWorkspacePath: () => session?.workspacePath,
+    analysis: createFactoryAnalysis(() => session?.factory),
     notify: publishPlanChange,
 });
 
 session = await joinSession({
+    factories,
     tools: buildMobiusTools(operations),
     hooks: buildMobiusHooks({ operations }),
     canvases: [

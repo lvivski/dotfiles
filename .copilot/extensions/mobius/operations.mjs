@@ -1,6 +1,6 @@
 /**
  * Application service boundary joining domain transitions, storage, prompts,
- * projections, and trusted Conveyor imports.
+ * projections, and trusted native Factory results.
  *
  * @module mobius/operations
  */
@@ -27,14 +27,6 @@ import {
     taskLaunchGuidance,
     transitionPlan,
 } from "./domain.mjs";
-import {
-    importPlanningConveyor,
-    inspectVerificationConveyor,
-    preparePlanningConveyor,
-    prepareVerificationConveyor,
-    verificationRunCanBeReplaced,
-    verificationRunIsTerminal,
-} from "./conveyor.mjs";
 import { buildDelegationPrompt, findScopeConflicts, selectNonOverlappingTasks } from "./prompts.mjs";
 import { projectPlan } from "./projection.mjs";
 import { MobiusStorageError, createPlanStore } from "./storage.mjs";
@@ -43,7 +35,7 @@ import { MobiusStorageError, createPlanStore } from "./storage.mjs";
  * @typedef {object} MobiusOperationsOptions
  * @property {() => string | undefined} getWorkspacePath
  * @property {(event: {workspacePath: string, planId: string, revision: number}) => void} [notify]
- * @property {any} [analysis] Injectable Conveyor adapter used by tests.
+ * @property {any} analysis Native Factory adapter.
  */
 
 /**
@@ -144,16 +136,12 @@ export function createMobiusOperations(options) {
     if (!options || typeof options.getWorkspacePath !== "function") {
         throw new TypeError("createMobiusOperations requires getWorkspacePath");
     }
+    if (!options.analysis) {
+		throw new TypeError("createMobiusOperations requires analysis");
+    }
     const stores = new Map();
     const notify = typeof options.notify === "function" ? options.notify : () => {};
-    const analysis = options.analysis ?? {
-        importPlanning: importPlanningConveyor,
-        inspectVerification: inspectVerificationConveyor,
-        preparePlanning: preparePlanningConveyor,
-        prepareVerification: prepareVerificationConveyor,
-        verificationRunCanBeReplaced,
-        verificationRunIsTerminal,
-    };
+    const analysis = options.analysis;
 
     /**
      * Resolves the current session workspace or fails closed.
@@ -229,7 +217,7 @@ export function createMobiusOperations(options) {
     };
 
     /**
-     * Builds the pinned planning launch specification.
+     * Builds the native planning Factory launch specification.
      *
      * @param {any} input
      * @returns {Promise<any>}
@@ -267,7 +255,7 @@ export function createMobiusOperations(options) {
             id,
             repository,
             planning: {
-                backend: "conveyor",
+				backend: "factory",
                 runId,
                 inputDigest: imported.inputDigest,
             },
@@ -594,7 +582,7 @@ export function createMobiusOperations(options) {
     };
 
     /**
-     * Binds a persisted Conveyor run to its verification reservation.
+     * Binds a native Factory run to its verification reservation.
      *
      * @param {any} input
      * @returns {Promise<any>}

@@ -1269,7 +1269,7 @@ function validateVerification(verification) {
         }
     } else if (verification.status === VERIFICATION_STATUS.RESERVED) {
         if (verification.reservationId === null
-            || verification.backend !== "conveyor"
+			|| verification.backend !== "factory"
             || verification.runId !== null
             || !/^[a-f0-9]{64}$/.test(verification.inputDigest ?? "")
             || verification.reservedAt === null
@@ -1284,7 +1284,7 @@ function validateVerification(verification) {
             });
         }
     } else if (verification.status === VERIFICATION_STATUS.RUNNING) {
-        if (verification.backend !== "conveyor"
+		if (verification.backend !== "factory"
             || verification.reservationId === null
             || verification.runId === null
             || !/^[a-f0-9]{64}$/.test(verification.inputDigest ?? "")
@@ -1298,7 +1298,7 @@ function validateVerification(verification) {
             });
         }
     } else if (verification.status === VERIFICATION_STATUS.PASSED) {
-        if (verification.backend !== "conveyor"
+		if (verification.backend !== "factory"
             || verification.reservationId === null
             || verification.runId === null
             || !/^[a-f0-9]{64}$/.test(verification.inputDigest ?? "")
@@ -1320,7 +1320,7 @@ function validateVerification(verification) {
             });
         }
     } else if (verification.status === VERIFICATION_STATUS.FAILED) {
-        if (verification.backend !== "conveyor"
+		if (verification.backend !== "factory"
             || verification.reservationId === null
             || verification.runId === null
             || !/^[a-f0-9]{64}$/.test(verification.inputDigest ?? "")
@@ -1593,8 +1593,8 @@ function validatePlanning(planning) {
     }
     assertPlainObject(planning, "planning");
     assertKnownKeys(planning, PLANNING_KEYS, "planning");
-    if (planning.backend !== "conveyor") {
-        fail("invalid_planning_backend", "planning.backend must be conveyor", {
+    if (planning.backend !== "factory") {
+		fail("invalid_planning_backend", "planning.backend must be factory", {
             path: "planning.backend",
         });
     }
@@ -2033,7 +2033,7 @@ export function transitionPlan(plan, nextStatus, options = {}) {
 }
 
 /**
- * Persists a verification launch reservation before Conveyor is invoked.
+ * Persists a verification launch reservation before the Factory is invoked.
  *
  * @param {MobiusPlan} plan
  * @param {any} [options]
@@ -2064,7 +2064,7 @@ export function reserveVerification(plan, options = {}) {
     candidate.verification = {
         status: VERIFICATION_STATUS.RESERVED,
         reservationId: options.reservationId,
-        backend: "conveyor",
+		backend: "factory",
         runId: null,
         inputDigest: options.inputDigest,
         summary: null,
@@ -2081,7 +2081,7 @@ export function reserveVerification(plan, options = {}) {
 }
 
 /**
- * Binds a persisted Conveyor run to its exact verification reservation.
+ * Binds a native Factory run to its exact verification reservation.
  *
  * @param {MobiusPlan} plan
  * @param {any} [options]
@@ -2797,7 +2797,7 @@ export function finalizePlanCancellation(plan, dispositions, options = {}) {
         }
     } else if (options.verificationDisposition !== "run-terminated"
         || options.verificationTerminated !== true) {
-        fail("cancellation_incomplete", "The bound Conveyor run is not confirmed terminal", {
+		fail("cancellation_incomplete", "The bound Factory run is not confirmed terminal", {
             path: "verificationDisposition",
             details: { runId: plan.cancellation.verificationRunId },
         });

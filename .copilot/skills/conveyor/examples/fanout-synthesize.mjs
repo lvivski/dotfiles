@@ -1,11 +1,21 @@
-// fanout-synthesize.mjs — fan out summaries over items (a barrier), then merge into one overview.
-export const meta = { name: "fanout-synthesize", description: "Summarize each item in parallel, then synthesize one overview." };
+export const meta = {
+	name: "fanout-synthesize",
+	description: "Summarize each item concurrently, then synthesize one overview.",
+	limits: { maxConcurrentSubagents: 6, maxTotalSubagents: 30, maxAiCredits: 30 },
+};
 
 const items = context.args || ["README.md"];
-
-const parts = await pipeline(items, (item) =>
-	phase("summarize", () => agent(`Summarize the relevant facts from ${item}.`, { agentType: "worker", label: String(item).slice(0, 24) })),
+phase("Summarize");
+const parts = await parallel(
+	items.map((item, index) => () =>
+		agent(`Summarize the relevant facts from ${item}.`, {
+			label: `summary:${index}`,
+		}),
+	),
 );
 
-const report = await agent(`Write one coherent overview from these summaries.\n\n${parts.map((p) => p.content).join("\n\n")}`, { label: "report" });
-return report.content;
+phase("Report");
+return agent(
+	`Write one coherent overview from these summaries:\n\n${parts.filter((value) => value !== null).join("\n\n")}`,
+	{ label: "report" },
+);

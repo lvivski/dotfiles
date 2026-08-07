@@ -1,14 +1,13 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { MOBIUS_CONVEYORS } from "./scripts.mjs";
+import { MOBIUS_FACTORIES } from "./factory.mjs";
 
 const ROOT = path.resolve(fileURLToPath(new URL(".", import.meta.url)));
-const CONVEYOR_ROOT = path.resolve(ROOT, "conveyors");
+const FACTORY_ROOT = path.resolve(ROOT, "factories");
 
 /**
  * Recursively lists production JavaScript used by extension safety checks.
@@ -35,7 +34,7 @@ async function sourceFiles(directory = ROOT) {
 /**
  * Lists hand-authored production modules covered by the JSDoc policy.
  *
- * Bundled Conveyor scripts are executable workflow artifacts with their own
+ * Bundled Factory scripts are executable workflow artifacts with their own
  * schemas and prompts, so they are intentionally excluded.
  *
  * @returns {Promise<string[]>}
@@ -126,7 +125,8 @@ test("share manifest and extension entry point satisfy discovery contracts", asy
     assert.match(entry, /joinSession\(/);
     assert.match(entry, /buildMobiusTools/);
     assert.match(entry, /buildMobiusHooks/);
-    assert.doesNotMatch(entry, /factor/i);
+    assert.match(entry, /defineFactory/);
+    assert.match(entry, /factories/);
 });
 
 test("production source has no stdout logging or Minions dependency", async () => {
@@ -156,19 +156,17 @@ test("hand-authored production modules keep applicable declarations documented",
     }
 });
 
-test("pinned Mobius conveyors are restricted analysis-only scripts", async () => {
-    for (const specification of Object.values(MOBIUS_CONVEYORS)) {
-        const filename = path.join(
-            CONVEYOR_ROOT,
-            path.basename(specification.relativePath),
-        );
+test("bundled Mobius workflows use only native Factory primitives", async () => {
+    for (const specification of Object.values(MOBIUS_FACTORIES)) {
+		assert.ok(
+			specification.meta.phases.every(
+				(phase) => typeof phase?.title === "string" && phase.title.trim(),
+			),
+		);
+		const filename = path.join(FACTORY_ROOT, `${specification.meta.name.replace("mobius-", "")}.mjs`);
         const source = await readFile(filename, "utf8");
-        assert.equal(
-            createHash("sha256").update(source).digest("hex"),
-            specification.scriptSha256,
-        );
-        assert.match(source, /profile:\s*"none"/);
-        assert.doesNotMatch(source, /profile:\s*"(?:inherit|research)"/);
+		assert.match(source, new RegExp(`name:\\s*"${specification.meta.name}"`));
+		assert.doesNotMatch(source, /\b(?:profile|agentType|effort|cwd|validate|retries):/);
         assert.doesNotMatch(source, /\bhost\./);
         assert.doesNotMatch(source, /\bworkspace\./);
     }

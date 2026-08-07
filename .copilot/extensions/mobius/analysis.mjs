@@ -294,7 +294,7 @@ export function validatePlanningResult(value, expectedInput, maxTasks) {
     const normalizedInput = normalizePlanningInput(expectedInput);
     const expectedDigest = analysisInputDigest(normalizedInput);
     const result = plainObject(value, "result");
-    if (result.kind !== "mobius-plan-result-v1") {
+    if (result.kind !== "mobius-plan-result") {
         fail("invalid_analysis_result", "Planning result kind is not supported");
     }
     if (result.inputDigest !== expectedDigest) {
@@ -635,11 +635,15 @@ export function normalizeVerificationInput(value) {
 export function validateVerificationResult(value, expectedInput) {
     const input = normalizeVerificationInput(expectedInput);
     const result = plainObject(value, "result");
-    if (result.kind !== "mobius-verification-result-v1") {
+    if (result.kind !== "mobius-verification-result") {
         fail("invalid_analysis_result", "Verification result kind is not supported");
     }
     if (result.inputDigest !== input.inputDigest || result.planId !== input.planId) {
         fail("analysis_input_mismatch", "Verification result does not match the persisted input");
+    }
+    const returnedInput = normalizeVerificationInput(result.input);
+    if (stableStringify(returnedInput) !== stableStringify(input)) {
+		fail("analysis_input_mismatch", "Verification result changed the canonical Factory input");
     }
     const taskIds = input.tasks.map((task) => task.id);
     const taskIdSet = new Set(taskIds);

@@ -3,9 +3,9 @@
  *
  * Executes a `.mjs` harness in a deterministic `node:vm` context.
  *
- * Resume replays a harness against its durable ledger, so a re-run must take the same path.
- * `Math.random`, `Date.now()` and argless `new Date()` therefore throw, and `eval` / `new Function`
- * / dynamic `import()` are disabled by the context options.
+ * Native Factory resume re-executes the harness around durable agent calls and steps, so a run must
+ * take the same path. `Math.random`, `Date.now()` and argless `new Date()` therefore throw, and
+ * `eval` / `new Function` / dynamic `import()` are disabled by the context options.
  *
  * A fresh vm context owns a full set of intrinsics, so none of the host realm's are injected and
  * the `Math`/`Date` replacements are applied to the context's own from inside it. Contexts are
@@ -23,8 +23,8 @@ import vm from "node:vm";
 export const DEFAULT_SYNC_TIMEOUT_MS = 5000;
 
 /**
- * Shared with the host realm so `e instanceof Error` holds for errors the runtime, host effects and
- * `onFailure: "raise"` throw into harness code — cross-realm `instanceof` is false.
+ * Shared with the host realm so `e instanceof Error` holds for native Factory failures thrown into
+ * harness code — cross-realm `instanceof` is false.
  */
 const sharedErrorGlobals = () => ({ Error, TypeError, RangeError, SyntaxError, EvalError, ReferenceError, URIError, AggregateError });
 
@@ -100,7 +100,7 @@ function fmt(x) {
  *
  * @param {string} source raw `.mjs` text
  * @param {{ api: Record<string, unknown>, filename?: string, log?: (m: string) => void, syncTimeoutMs?: number }} config
- *   `api` — the injected workflow globals (`agent`, `parallel`, `args`, `budget`, ...); `log` — console sink.
+ *   `api` — the injected Factory globals; `log` — console sink.
  * @returns {Promise<unknown>}
  */
 export async function runHarness(source, config) {

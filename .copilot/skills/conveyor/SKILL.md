@@ -1,93 +1,77 @@
 ---
 name: conveyor
-description: Run deterministic JavaScript orchestration over many Copilot agents.
+description: Run plain JavaScript orchestration on the native Agent Factory runtime.
 ---
 
-# Dynamic workflows on the Copilot CLI
+# Conveyor
 
-Use a workflow for broad audits, migrations, ranking, research, adversarial verification, or any task
-whose branching/intermediate state should live in code instead of the main conversation.
+Conveyor resolves inline, path-based, or saved `.mjs` harnesses and executes them as native Agent
+Factory runs. Use it for substantial fan-out, pipelines, repeated discovery, and independent
+verification. Use direct tools for routine edits and lookups.
 
-Do not use a workflow for routine edits or lookups that fit in a few direct tool calls.
+## Process
 
-## Required process
+1. Identify the real work list before launching agents.
+2. Use `pipeline()` when each item advances independently; use `parallel()` only for a real barrier.
+3. Write plain JavaScript with a literal `meta` block and native Factory limits.
+4. Give every independent `agent()` call a unique `label`.
+5. Launch with `run_conveyor`.
+6. Resume by run ID with `run_factory({ resumeFromRunId, limits? })`.
+7. Inspect runs with `factories_manage` operations `runs` and `inspect`.
 
-1. Scout inline first and identify the real work list.
-2. Choose `pipeline()` for per-item stages; use `parallel()` only for genuine barriers.
-3. Rubber-duck reusable or high-risk designs.
-4. Write a plain `.mjs` harness; start it with a literal `meta` block so runs are named in listings.
-5. Preview with `run_conveyor({ ..., dryRun: true })`.
-6. Show phases, projected agents, models/profiles, and budget before a paid run unless already approved.
-7. Run with an explicit budget.
-8. Inspect with `inspect_conveyor_run`; retrieve results with `get_conveyor_result`.
-
-## Minimal workflow
+## Minimal harness
 
 ```js
 export const meta = {
   name: "review",
-  description: "Review items and summarize verified findings.",
-  phases: ["review", "report"],
+  description: "Review items and summarize the findings.",
+  limits: {
+    maxConcurrentSubagents: 4,
+    maxTotalSubagents: 20,
+    timeoutSeconds: 600,
+    maxAiCredits: 20,
+  },
 };
 
-const items = context.args || ["one", "two"];
-const findings = await phase("review", () =>
-  pipeline(items, (item) =>
-    agent(`Review: ${item}`, {
-      agentType: "worker",
-      profile: "read-only",
-      label: String(item).slice(0, 24),
-    }),
-  ),
+const items = context.args;
+
+phase("Review");
+const findings = await pipeline(items, (item, _original, index) =>
+  agent(`Review: ${item}`, { label: `review:${index}` }),
 );
-const report = await phase("report", () =>
-  agent(`Summarize the findings.\n\n${findings.map((f) => f.content).join("\n\n")}`, {
-    profile: "none",
-    label: "report",
-  }),
+
+phase("Report");
+const report = await agent(
+  `Summarize these findings:\n\n${findings.filter((v) => v !== null).join("\n\n")}`,
+  { label: "report" },
 );
-return report.content;
+return report;
 ```
 
-## Defaults
-
-- `onFailure` defaults to `raise`.
-- `profile: "none"` for planners, judges, and synthesis that need no tools.
-- `profile: "read-only"` for repository inspection.
-- `profile: "research"` only when web/MCP access is required.
-- Parent `allow-all on`, `allow-all auto`, and autopilot posture are inherited; profiles can only
-  narrow them. Fine-grained parent rules are not exposed, so tool-using profiles fail closed in
-  normal permission mode.
-- MCP configuration and extra paths belong to `run_conveyor`, never agent options.
-- The harness cannot mutate budget. The host may ask the user once to approve an increase at the boundary.
-- Declared timeout, total-agent, and AIC limits are cumulative across resumes.
-- Dry-run executes read-only effects for accurate discovery and skips mutating effects.
-- The harness VM provides determinism, not a security boundary. Use an OS/cloud sandbox for
-  untrusted workflow authors.
-
-## Durable runs
-
-The runtime atomically persists ownership, replay values, usage, state, and results.
-Pause/resume is deterministic replay, not continuation serialization.
-
-Use:
+Invoke it with exactly one source selector:
 
 ```text
-inspect_conveyor_run({ runId })
-get_conveyor_result({ runId })
-get_conveyor_progress({ runId, afterSeq?, beforeSeq?, phaseId?, limit? })
-control_conveyor_run({ runId, action: "pause" | "resume" | "cancel", invalidate?: ["/0", "/2/1"] })
+run_conveyor({
+  name: "review",
+  args: ["one", "two"],
+  limits: { maxAiCredits: 30 }
+})
 ```
 
-On resume, `invalidate` reruns selected parallel/pipeline branches and their descendants while
-retaining sibling replay values. Use `/` to rerun the whole workflow.
+## Native semantics
 
-Replay identifies each `parallel`/`pipeline` group by the text of the harness line that
-created it, so comments, reordering and edits elsewhere keep a group's cached branches. Two groups
-that share one identity — created from the same line by a shared helper, or from two byte-identical
-lines — are ordered by when they start. Create such groups synchronously (`items.map(helper)`,
-`Promise.all([...])`, or an enclosing `parallel([...])`) rather than behind independent awaits, or
-they may exchange cached results on resume.
+- `agent(prompt, { label?, schema?, model? })` returns text, structured JSON, or `null`.
+- Ordinary agent failures return `null`; cancellation and hard Factory failures reject the run.
+- Identical prompt/options calls memoize to one subagent. Use unique labels for independent work.
+- `parallel(thunks)` is a barrier and converts ordinary thunk failures to `null`.
+- `pipeline(items, ...stages)` advances each item independently; failed items become `null`.
+- `phase(title)` is run-global. Call it only at run-level transitions.
+- `step(key, producer, { volatile? })` uses the key as its complete durable identity.
+- The harness receives `context.args`, `context.runId`, and `context.signal`.
+- Harness results must be strict JSON or `undefined`.
+
+The native Factory runtime owns limits, durable replay, accounting, resume, cancellation, progress,
+and results.
 
 ## References
 

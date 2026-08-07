@@ -427,7 +427,7 @@ test("cancellation snapshots attempts and cannot finalize an in-flight create as
     assert.equal(plan.cancellation.acknowledgements[0].sessionId, "late-session");
 });
 
-test("verification cancellation requires observed Conveyor termination", () => {
+test("verification cancellation requires observed Factory termination", () => {
     let plan = approved({ tasks: [task("T-001")] });
     ({ plan } = completeTask(plan, "T-001"));
     plan = reserveVerification(plan, {

@@ -17,23 +17,22 @@ user-invocable: true
 Invoke the saved workflow; do not write a new harness.
 
 Use `name: "deep-research"` with args as either a string question or
-`{ "question": "...", "angles": 5 }` (`angles` is clamped to at most 12). A missing question is an
-input error; the workflow never substitutes a sample topic. Preview first, then run with a deliberate
-budget:
+`{ "question": "...", "angles": 5 }` (`angles` is capped at 12). A missing question is an input
+error.
 
 ```text
-run_conveyor({ name: "deep-research", dryRun: true, budget: 10000,
-               args: { "question": "<question>", "angles": 5 } })
-
-run_conveyor({ name: "deep-research", budget: 10000,
-               args: { "question": "<question>", "angles": 5 } })
+run_conveyor({
+  name: "deep-research",
+  args: { "question": "<question>", "angles": 5 },
+  limits: {
+    maxConcurrentSubagents: 6,
+    maxTotalSubagents: 40,
+    timeoutSeconds: 1800,
+    maxAiCredits: 200
+  }
+})
 ```
-
-For broad/high-stakes research, use `preset: "xtreme"` instead of manually raising every tuning
-knob. The preset binds the parent session's concrete model with `xhigh` effort and long context. If
-the parent uses Auto routing, the selected model's defaults are retained. The harness uses
-`profile: "research"` only for research and source-verification agents.
 
 Research verifiers independently open cited URLs. If no angle passes source verification, the
 workflow returns an explicitly unsupported report and never synthesizes unverified findings. Return
-the cited report, `runId`, AIC used, and any explicit limits/open questions from the workflow.
+the cited report and any explicit limitations or open questions.

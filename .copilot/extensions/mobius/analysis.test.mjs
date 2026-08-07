@@ -115,7 +115,7 @@ test("planning results reuse the strict domain validator and fail closed", () =>
         }],
     };
     const result = {
-        kind: "mobius-plan-result-v1",
+		kind: "mobius-plan-result",
         inputDigest: input.inputDigest,
         status: "ready",
         plan,
@@ -185,7 +185,8 @@ test("verification result requires every criterion ID to have evidence", () => {
         evidenceIds: ["T-001-A001-E001"],
     }));
     const result = {
-        kind: "mobius-verification-result-v1",
+		kind: "mobius-verification-result",
+		input,
         inputDigest: input.inputDigest,
         planId: input.planId,
         passed: true,
@@ -209,6 +210,22 @@ test("verification result requires every criterion ID to have evidence", () => {
         ],
     };
     assert.equal(validateVerificationResult(result, input).passed, true);
+	assert.throws(
+		() => validateVerificationResult({
+			...result,
+			input: {
+				...input,
+				tasks: input.tasks.map((task) => ({
+					...task,
+					criteria: task.criteria.map((criterion) => ({
+						...criterion,
+						text: "weakened criterion",
+					})),
+				})),
+			},
+		}, input),
+		/input digest|canonical Factory input/,
+	);
     assert.throws(
         () => validateVerificationResult({
             ...result,
@@ -240,7 +257,8 @@ test("failed or omitted evidence IDs cannot satisfy passing verification", () =>
         evidenceIds: ["T-001-A001-E001"],
     }));
     const result = {
-        kind: "mobius-verification-result-v1",
+		kind: "mobius-verification-result",
+		input,
         inputDigest: input.inputDigest,
         planId: input.planId,
         passed: true,
@@ -276,6 +294,7 @@ test("failed or omitted evidence IDs cannot satisfy passing verification", () =>
     assert.throws(
         () => validateVerificationResult({
             ...result,
+			input: validInput,
             inputDigest: validInput.inputDigest,
             evidenceIds: [],
             reviews: [

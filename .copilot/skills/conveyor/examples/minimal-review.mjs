@@ -1,18 +1,36 @@
-// minimal-review.mjs — the smallest useful workflow: review, verify, synthesize.
-export const meta = { name: "minimal-review", description: "Review items, verify findings, and synthesize a report." };
+export const meta = {
+	name: "minimal-review",
+	description: "Review items, verify findings, and synthesize a report.",
+	limits: { maxConcurrentSubagents: 4, maxTotalSubagents: 20, maxAiCredits: 20 },
+};
 
 const items = context.args || ["item one", "item two"];
+const VERDICT = {
+	type: "object",
+	properties: { passed: { type: "boolean" }, reason: { type: "string" } },
+	required: ["passed", "reason"],
+};
 
-const review = (item) => phase("review", () => agent(`Review this item and report concrete findings: ${item}`, { agentType: "worker", label: String(item).slice(0, 24) }));
+phase("Review");
+const rows = await pipeline(
+	items,
+	(item, _original, index) =>
+		agent(`Review this item and report concrete findings: ${item}`, {
+			label: `review:${index}`,
+		}),
+	async (finding, item, index) => {
+		if (finding === null) return null;
+		const verdict = await agent(
+			`Is this finding specific, supported, and actionable?\n\nItem: ${item}\n\nFinding: ${finding}`,
+			{ label: `verify:${index}`, schema: VERDICT },
+		);
+		return verdict?.passed ? finding : null;
+	},
+);
 
-const verifyRow = async (result, item) => ({
-	item,
-	finding: result,
-	verdict: await phase("verify", () => verify(result, "specific, supported, and actionable", { label: String(item).slice(0, 24) })),
-});
-
-const rows = (await pipeline(items, review, verifyRow)).filter((row) => row !== null);
-const kept = rows.filter((row) => row.verdict.passed).map((row) => row.finding);
-
-const report = await agent(`Deduplicate and summarize these verified findings.\n\n${kept.map((r) => r.content).join("\n\n")}`, { label: "report" });
-return report.content;
+phase("Report");
+const report = await agent(
+	`Deduplicate and summarize these verified findings:\n\n${rows.filter(Boolean).join("\n\n")}`,
+	{ label: "report" },
+);
+return report;

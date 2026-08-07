@@ -1,23 +1,37 @@
-// pipeline-review.mjs — stream files through review then adversarial verify, report survivors.
-export const meta = { name: "pipeline-review", description: "Review files for real bugs, verify, and group by severity." };
+export const meta = {
+	name: "pipeline-review",
+	description: "Review files, independently verify findings, and group survivors by severity.",
+	limits: { maxConcurrentSubagents: 4, maxTotalSubagents: 30, maxAiCredits: 30 },
+};
 
 const files = context.args || ["README.md"];
+const VERDICT = {
+	type: "object",
+	properties: { passed: { type: "boolean" }, reason: { type: "string" } },
+	required: ["passed", "reason"],
+};
 
-const review = (path) => phase("review", () => agent(`Review ${path} for real, reproducible bugs. Say NO ISSUES if none.`, { agentType: "worker", label: path }));
-
-const verifyRow = async (reviewResult, path) => ({
-	path,
-	review: reviewResult,
-	verdict: await phase("verify", () => verify(reviewResult, "real, reproducible bug with enough evidence to act", { label: path })),
-});
-
-const rows = (await pipeline(files, review, verifyRow)).filter((row) => row !== null);
-const solid = rows.filter((row) => row.verdict.passed);
-
+phase("Review");
+const rows = await pipeline(
+	files,
+	(path, _original, index) =>
+		agent(`Review ${path} for real, reproducible bugs. Say NO ISSUES if none.`, {
+			label: `review:${index}`,
+		}),
+	async (review, path, index) => {
+		if (review === null || review.trim().toUpperCase() === "NO ISSUES") return null;
+		const verdict = await agent(
+			`Independently open ${path} and verify this claimed bug:\n\n${review}`,
+			{ label: `verify:${index}`, schema: VERDICT },
+		);
+		return verdict?.passed ? { path, review } : null;
+	},
+);
+const solid = rows.filter(Boolean);
 if (!solid.length) return "No verified issues found.";
 
-const report = await agent(
-	`Group these verified findings by severity.\n\n${solid.map((row) => `${row.path}:\n${row.review.content}`).join("\n\n")}`,
+phase("Report");
+return agent(
+	`Group these verified findings by severity:\n\n${solid.map((row) => `${row.path}:\n${row.review}`).join("\n\n")}`,
 	{ label: "report" },
 );
-return report.content;

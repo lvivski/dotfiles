@@ -1,14 +1,21 @@
+// Native Mobius verification Factory harness.
 export const meta = {
 	name: "mobius-verify",
 	description: "Map Mobius acceptance criteria to evidence and produce a fail-closed integration verdict.",
-	phases: ["review", "verdict"],
+	phases: [{ title: "review" }, { title: "verdict" }],
 	limits: {
-		maxConcurrentAgents: 2,
-		maxTotalAgents: 6,
+		maxConcurrentSubagents: 2,
+		maxTotalSubagents: 6,
 		timeoutSeconds: 300,
 		maxAiCredits: 100,
 	},
 };
+
+export async function run(factory) {
+const context = { args: factory.args };
+const agent = (...args) => factory.agent(...args);
+const parallel = (...args) => factory.parallel(...args);
+const phase = (...args) => factory.phase(...args);
 
 const PLAN_ID = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 const TASK_ID = /^T-\d{3}$/;
@@ -206,14 +213,15 @@ const evidenceById = new Map(input.tasks.flatMap(
 	(task) => task.evidence.map((entry) => [entry.id, { ...entry, taskId: task.id }]),
 ));
 
-const reviewOutcomes = await phase("review", () => parallel([
+phase("review");
+const reviews = await parallel([
 	() => agent(
 		`Map every criterion ID to one or more exact evidence IDs from the canonical input. Never invent or rewrite evidence. Record missing criteria as structured task-attributed gaps. ${EVIDENCE_POLICY} ${UNTRUSTED} Return JSON only.
 
 <UNTRUSTED-PLAN-EVIDENCE>
 ${safeJson(input)}
 </UNTRUSTED-PLAN-EVIDENCE>`,
-		{ label: "mobius-verify:coverage-reviewer", profile: "none", schema: COVERAGE_SCHEMA },
+		{ label: "mobius-verify:coverage-reviewer", schema: COVERAGE_SCHEMA },
 	),
 	() => agent(
 		`Review the same recorded evidence for concrete cross-task integration gaps, incompatible assumptions, overlapping changes, and missing end-to-end proof. Attribute every blocking gap to task IDs and exact evidence IDs when available. ${EVIDENCE_POLICY} Return no findings when no concrete blocker is present. ${UNTRUSTED} Return JSON only.
@@ -221,26 +229,12 @@ ${safeJson(input)}
 <UNTRUSTED-PLAN-EVIDENCE>
 ${safeJson(input)}
 </UNTRUSTED-PLAN-EVIDENCE>`,
-		{ label: "mobius-verify:integration-skeptic", profile: "none", schema: COVERAGE_SCHEMA },
+		{ label: "mobius-verify:integration-skeptic", schema: COVERAGE_SCHEMA },
 	),
-], { concurrency: 2, onFailure: "keep" }));
+]);
 
-const reviews = context.dryRun
-	? [
-			{
-			coverage: expectedCriteria.map((criterionId) => ({
-				criterionId,
-				evidenceIds: [expectedEvidenceIds[0]],
-			})),
-			missingEvidence: [],
-			integrationFindings: [],
-			risks: [],
-		},
-		{ coverage: [], missingEvidence: [], integrationFindings: [], risks: [] },
-	]
-	: reviewOutcomes.map((outcome) => outcome?.ok ? outcome.value : null);
-
-const verdictOutcome = await phase("verdict", () => agent(
+phase("verdict");
+const verdict = await agent(
 	`Produce the final evidence-based Mobius verification verdict. Review risks are advisory: resolve them against the recorded evidence and put only real blockers into missingEvidence. ${EVIDENCE_POLICY} ${UNTRUSTED}
 
 Expected criterion IDs:
@@ -255,20 +249,8 @@ ${safeJson(reviews)}
 </UNTRUSTED-REVIEWS>
 
 Pass only when every criterion ID has concrete evidence and no integration gap remains. Return exact canonical evidenceIds. On failure, attribute every gap to taskIds and list correctionTaskIds; use an empty taskIds list only when the gap cannot be attributed. Return JSON only.`,
-	{ label: "mobius-verify:verifier", profile: "none", schema: VERDICT_SCHEMA },
-));
-
-const verdict = context.dryRun
-	? {
-			passed: true,
-			summary: "Dry-run verification result",
-			evidenceIds: [expectedEvidenceIds[0]],
-			missingEvidence: [],
-			correctionTaskIds: [],
-		}
-	: verdictOutcome.ok
-		? verdictOutcome.value
-		: null;
+	{ label: "mobius-verify:verifier", schema: VERDICT_SCHEMA },
+);
 const covered = new Set();
 const coverageEvidenceIds = new Set();
 for (const review of reviews) {
@@ -305,7 +287,7 @@ const missingEvidence = [
 	...reviews.flatMap((review) => review?.integrationFindings || []),
 	...(verdict?.missingEvidence || []),
 	...(verdict ? [] : [{
-		summary: verdictOutcome.error || "The verdict agent returned no valid result",
+		summary: "The verdict agent returned no valid result",
 		taskIds: [],
 	}]),
 ].slice(0, 64);
@@ -323,7 +305,8 @@ const passed = Boolean(
 );
 
 return {
-	kind: "mobius-verification-result-v1",
+	kind: "mobius-verification-result",
+	input,
 	inputDigest: input.inputDigest,
 	planId: input.planId,
 	passed,
@@ -337,3 +320,4 @@ return {
 		: [],
 	reviews,
 };
+}

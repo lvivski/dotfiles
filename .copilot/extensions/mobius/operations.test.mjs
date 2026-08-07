@@ -77,10 +77,10 @@ function analysisStub(options = {}) {
     };
     return {
         preparePlanning: async () => ({
-            backend: "conveyor",
-            workflow: "mobius-plan",
+			backend: "factory",
+			factory: "mobius-plan",
             inputDigest: "a".repeat(64),
-            launchSpec: { scriptPath: "/pinned/plan.mjs" },
+			launchSpec: { name: "mobius-plan", args: {}, limits: {} },
         }),
         importPlanning: async (runId) => ({
             runId,
@@ -88,16 +88,15 @@ function analysisStub(options = {}) {
             plan: structuredClone(blueprint),
         }),
         prepareVerification: async () => ({
-            backend: "conveyor",
-            workflow: "mobius-verify",
+			backend: "factory",
+			factory: "mobius-verify",
             inputDigest: "b".repeat(64),
-            launchSpec: { scriptPath: "/pinned/verify.mjs" },
+			launchSpec: { name: "mobius-verify", args: {}, limits: {} },
         }),
         inspectVerification: async (runId, _plan, inspectOptions = {}) => ({
             run: {
                 runId,
-                status: inspectOptions.requireComplete ? "complete" : "running",
-                resultAvailable: inspectOptions.requireComplete,
+				status: inspectOptions.requireComplete ? "completed" : "running",
             },
             inputDigest: "b".repeat(64),
             ...(inspectOptions.requireComplete ? { result: verificationResult } : {}),
@@ -237,19 +236,19 @@ test("operations drive reservation, App attachment, verification, and approval",
             expectedRevision: plan.revision,
             reservationId: "reserve-verification-success",
         });
-        assert.equal(verificationLaunch.workflow, "mobius-verify");
+		assert.equal(verificationLaunch.factory, "mobius-verify");
         plan = verificationLaunch.plan;
         plan = await operations.beginVerification({
             planId: plan.id,
             expectedRevision: plan.revision,
             reservationId: "reserve-verification-success",
-            runId: "conveyor-run-1",
+			runId: "factory-run-1",
         });
         assert.equal(plan.verification.status, VERIFICATION_STATUS.RUNNING);
         plan = await operations.finishVerification({
             planId: plan.id,
             expectedRevision: plan.revision,
-            runId: "conveyor-run-1",
+			runId: "factory-run-1",
         });
         assert.equal(plan.status, PLAN_STATUS.AWAITING_COMPLETION_APPROVAL);
         plan = await operations.approve({
@@ -372,7 +371,7 @@ test("cancellation request is idempotent and finalization needs exact dispositio
     })
 ));
 
-test("Conveyor cancellation must be observed terminal before finalization", () => {
+test("Factory cancellation must be observed terminal before finalization", () => {
     let terminal = false;
     return withOperations(async ({ operations, workspacePath }) => {
         let plan = await createApproved(operations, workspacePath);
@@ -424,7 +423,7 @@ test("Conveyor cancellation must be observed terminal before finalization", () =
     });
 });
 
-test("cancellation resolves a verification launch reserved before Conveyor starts", () => (
+test("cancellation resolves a verification launch reserved before the Factory starts", () => (
     withOperations(async ({ operations, workspacePath }) => {
         let plan = await createApproved(operations, workspacePath);
         ({ plan } = await runTask(operations, plan, "T-001"));
@@ -438,7 +437,7 @@ test("cancellation resolves a verification launch reserved before Conveyor start
         plan = await operations.cancel({
             planId: plan.id,
             expectedRevision: plan.revision,
-            requestId: "cancel-before-conveyor",
+			requestId: "cancel-before-factory",
             target: "plan",
             reason: "Do not launch verification",
             requestedBy: "octocat",

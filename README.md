@@ -32,13 +32,9 @@ brew bundle dump --file=.Brewfile --force
 
 `source ./sync` also installs the **Conveyor** Copilot extension, which orchestrates workflows across
 many GitHub Copilot CLI subagents in parallel (fan-out/synthesize, adversarial verification,
-tournaments, ...) from an async JavaScript workflow harness (`.mjs`), with checkpoint/resume,
-budgets, and a live progress view. Say `conveyor: <task>` in a `copilot` session (or `xtreme: <task>`
-to use the high-confidence preset), invoke the `run_conveyor` tool directly, and inspect runs with
-`/conveyor`.
-
-Runs inherit one transport for their full lifetime. The persistent SDK stdio backend is the default
-when available, with isolated CLI processes as the fallback. Override selection with
-`CONVEYOR_AGENT_BACKEND=cli` or `CONVEYOR_AGENT_BACKEND=sdk`.
+tournaments, ...) from an async JavaScript workflow harness (`.mjs`). Conveyor resolves source and
+launches it on the native Agent Factory runtime, which owns limits, durable steps, resume,
+cancellation, progress, and results. Invoke `run_conveyor` for a fresh harness and use the native
+Factory tools for later lifecycle operations.
 
 See [`.copilot/skills/conveyor/SKILL.md`](.copilot/skills/conveyor/SKILL.md).

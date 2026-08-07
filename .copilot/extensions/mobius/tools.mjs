@@ -185,7 +185,7 @@ export function buildMobiusTools(operations) {
         {
             name: "mobius_prepare_plan",
             skipPermission: true,
-            description: "Validate planning input and return the exact restricted Conveyor launchSpec. Preview that spec with the Conveyor run tool, then launch the immutable preview plan before importing its run.",
+			description: "Validate planning input and return the exact native mobius-plan Factory launchSpec. Run it once with run_factory, then import the completed run.",
             parameters: objectSchema(
                 ["objective", "repositoryContext"],
                 {
@@ -204,7 +204,7 @@ export function buildMobiusTools(operations) {
         },
         {
             name: "mobius_create_plan",
-            description: "Import a completed, pinned, restricted mobius-plan Conveyor run as a new draft. The caller supplies the stable plan ID and repository; creating requires expectedRevision: 0.",
+			description: "Import a completed native mobius-plan Factory run as a new draft. The caller supplies the stable plan ID and repository; creating requires expectedRevision: 0.",
             parameters: objectSchema(
                 ["expectedRevision", "id", "runId", "repository"],
                 {
@@ -372,7 +372,7 @@ export function buildMobiusTools(operations) {
         },
         {
             name: "mobius_prepare_verification",
-            description: "Persist a verification launch reservation before returning the exact restricted Conveyor launchSpec. Reusing reservationId returns the same reservation.",
+			description: "Persist a verification launch reservation before returning the exact native mobius-verify Factory launchSpec. Reusing reservationId returns the same reservation.",
             parameters: objectSchema(
                 ["planId", "expectedRevision", "reservationId"],
                 {
@@ -385,7 +385,7 @@ export function buildMobiusTools(operations) {
         },
         {
             name: "mobius_begin_verification",
-            description: "Bind a running or completed pinned mobius-verify Conveyor run to the plan. Rebinding is allowed only after the prior run terminated without an importable result.",
+			description: "Bind a running or completed native mobius-verify Factory run to the plan. Rebinding is allowed only after the prior run terminated without an importable result.",
             parameters: objectSchema(
                 ["planId", "expectedRevision", "reservationId", "runId"],
                 {
@@ -399,7 +399,7 @@ export function buildMobiusTools(operations) {
         },
         {
             name: "mobius_complete_verification",
-            description: "Import the exact persisted result of the bound completed mobius-verify Conveyor run. No caller-supplied verdict is accepted.",
+			description: "Import the exact native result of the bound completed mobius-verify Factory run. No caller-supplied verdict is accepted.",
             parameters: objectSchema(
                 ["planId", "expectedRevision", "runId"],
                 {
@@ -436,7 +436,7 @@ export function buildMobiusTools(operations) {
         },
         {
             name: "mobius_finalize_cancellation",
-            description: "Finalize a requested cancellation only after every snapshotted App attempt has an explicit disposition and Mobius observes the bound Conveyor run as terminal.",
+			description: "Finalize a requested cancellation only after every snapshotted App attempt has an explicit disposition and Mobius observes the bound Factory run as terminal.",
             parameters: objectSchema(
                 ["planId", "expectedRevision", "dispositions", "finalizedBy"],
                 {

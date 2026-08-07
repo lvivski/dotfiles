@@ -25,23 +25,24 @@ triage only.
    accounts. Azure DevOps is optional and uses `az login` plus configured/default org/project or
    explicit `--ado-org` / `--ado-project` / repeated `--ado-scope ORG PROJECT`. If the JSON is `[]`,
    report that nothing is assigned and stop.
-2. **Preview/run.** Show PR count, platforms, budget, and whether deep checkout is enabled. Then run:
+2. **Run.** Show PR count, platforms, and supplied diff coverage, then launch:
    ```text
-   run_conveyor({ name: "review-queue",
-                  budget: 10000,
-                  args: { prs: <contents of /tmp/review-queue.json> } })
+   run_conveyor({
+     name: "review-queue",
+     args: { prs: <contents of /tmp/review-queue.json> },
+     limits: {
+       maxConcurrentSubagents: 8,
+       maxTotalSubagents: 700,
+       timeoutSeconds: 3600,
+       maxAiCredits: 1000
+     }
+   })
    ```
 3. **Return the triage table** with linked PRs, platform/account, coverage, decision, risk,
-   why-assigned, justification, focus hints, AIC used, and `runId`.
+   why-assigned, justification, and focus hints.
 
-Useful knobs: fetch stale PRs with `--max-age-days N` / `--all-ages`; pass conveyor args
-`auto_deep: false` for diff-only, `deep: true` to checkout every PR, or
-`approve_only_low_risk_manual: true` for conservative approval guidance. Diff/checkouts are bounded
-into chunks (`diff_chunk_chars`, `file_chunk_size`, `max_chunks`, `max_total_chunks`) and every cap is
-reported. The default queue capacity is 300 chunks (up to roughly 7.2 MB of diff at the default chunk
-size, or 18 MB with `diff_chunk_chars: 60000`); larger queues must be split across runs. GitHub
-CODEOWNERS is fetched from the PR base branch and evaluated per changed file; Azure DevOps remains
-required-policy/manual attribution only. `Approve` is emitted only when every chunk is complete,
-low-risk, clean, and independently reverified against the original diff/files. A failed checkout, a
-missing/deleted/symlinked checkout path, or a binary/metadata-only diff is degraded coverage and
-cannot approve. Big queues may need more than 10,000 AIC.
+Useful knobs: fetch stale PRs with `--max-age-days N` / `--all-ages`; pass
+`approve_only_low_risk_manual: true`, `diff_chunk_chars`, or `max_total_chunks`. The workflow reviews
+only supplied diff evidence. Missing, binary-only, or partial diffs cannot produce `Approve`.
+GitHub CODEOWNERS is evaluated per changed file; Azure DevOps uses required-policy/manual
+attribution. Every low-risk chunk must also pass independent verification.

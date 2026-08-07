@@ -1,97 +1,29 @@
 /**
  * @module fixtures/support
  *
- * Shared helpers for the conveyor `*.test.mjs` suites: point the engine at the fake `copilot` backend
- * with an isolated `COPILOT_HOME`, and build throwaway result objects. Not a test file itself.
+ * Shared temporary-directory and environment helpers for Conveyor tests.
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-
-/** Absolute path to the mock `copilot` binary. */
-export const FAKE = join(dirname(fileURLToPath(import.meta.url)), "fake-copilot.mjs");
+import { join } from "node:path";
 
 /**
- * Run `fn` with the engine pointed at the fake copilot + a fresh isolated `COPILOT_HOME`, then
- * restore env and clean up. `overrides` sets extra env (e.g. `CONVEYOR_FAKE_MODE`) for the body.
+ * Run `fn` with temporary environment overrides, then restore the original environment.
  * @template T
  * @param {Record<string, string>} overrides
  * @param {() => Promise<T> | T} fn
  * @returns {Promise<T>}
  */
 export function withFakeEnv(overrides, fn) {
-	const home = mkdtempSync(join(tmpdir(), "conveyor-home-"));
 	const saved = { ...process.env };
-	process.env.CONVEYOR_COPILOT_BIN = FAKE;
-	process.env.COPILOT_HOME = home;
-	for (const k of ["CONVEYOR_FAKE_MODE", "CONVEYOR_FAKE_CONTENT", "CONVEYOR_FAKE_STDERR", "CONVEYOR_FAKE_DELAY_MS", "CONVEYOR_FAKE_PID_FILE", "CONVEYOR_MAX_GROUP_ITEMS", "CONVEYOR_MAX_AGENTS"]) delete process.env[k];
 	Object.assign(process.env, overrides);
 	return Promise.resolve(fn()).finally(() => {
 		for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
 		Object.assign(process.env, saved);
-		rmSync(home, { recursive: true, force: true });
 	});
 }
 
 /** @returns {string} a fresh temp directory path. */
 export function tmpDir() {
 	return mkdtempSync(join(tmpdir(), "conveyor-"));
-}
-
-/** @param {() => boolean} predicate @param {number} [timeoutMs] @param {number} [intervalMs] */
-export async function waitFor(predicate, timeoutMs = 3000, intervalMs = 20) {
-	const deadline = Date.now() + timeoutMs;
-	while (Date.now() < deadline) {
-		if (predicate()) return;
-		await new Promise((resolve) => setTimeout(resolve, intervalMs));
-	}
-	throw new Error(`condition did not become true within ${timeoutMs}ms`);
-}
-
-/** @template T @param {Promise<T>} promise @param {number} timeoutMs @returns {Promise<T>} */
-export async function within(promise, timeoutMs) {
-	let timer;
-	try {
-		return await Promise.race([
-			promise,
-			new Promise((_, reject) => {
-				timer = setTimeout(() => reject(new Error(`promise did not settle within ${timeoutMs}ms`)), timeoutMs);
-			}),
-		]);
-	} finally {
-		clearTimeout(timer);
-	}
-}
-
-/**
- * Build a complete {@link import("../agent.mjs").AgentResult} for store/cache tests.
- * @param {Partial<import("../agent.mjs").AgentResult>} [over]
- * @returns {import("../agent.mjs").AgentResult}
- */
-export function mkResult(over = {}) {
-	return {
-		kind: "agent",
-		value: "ok",
-		content: "ok",
-		ok: true,
-		error: null,
-		sessionId: "s",
-		model: "m",
-		cached: false,
-		skipped: false,
-		label: "a",
-		nanoAiu: 500_000_000,
-		aic: 0.5,
-		usageUnknown: false,
-		outputTokens: 10,
-		inputTokens: 20,
-		cacheReadTokens: 0,
-		cacheWriteTokens: 0,
-		reasoningTokens: 0,
-		durationMs: 1,
-		exitCode: 0,
-		warnings: null,
-		...over,
-	};
 }
