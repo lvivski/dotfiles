@@ -25,7 +25,6 @@ test("Mobius registers the complete globally unique tool surface", () => {
         "mobius_complete_task",
         "mobius_retry_task",
         "mobius_prepare_verification",
-        "mobius_begin_verification",
         "mobius_complete_verification",
         "mobius_cancel",
         "mobius_finalize_cancellation",
@@ -74,6 +73,8 @@ test("Mobius registers the complete globally unique tool surface", () => {
     const cancel = tools.find((tool) => tool.name === "mobius_cancel");
     assert.ok(cancel.parameters.required.includes("requestedBy"));
     assert.ok(cancel.parameters.required.includes("requestId"));
+	const finalize = tools.find((tool) => tool.name === "mobius_finalize_cancellation");
+	assert.ok(finalize.parameters.required.includes("sessionInventory"));
 });
 
 test("tool handlers return structured success and failure envelopes", async () => {

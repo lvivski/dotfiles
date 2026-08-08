@@ -630,9 +630,10 @@ export function normalizeVerificationInput(value) {
  *
  * @param {unknown} value
  * @param {unknown} expectedInput
+ * @param {string} expectedReservationId
  * @returns {VerificationOutcome}
  */
-export function validateVerificationResult(value, expectedInput) {
+export function validateVerificationResult(value, expectedInput, expectedReservationId) {
     const input = normalizeVerificationInput(expectedInput);
     const result = plainObject(value, "result");
     if (result.kind !== "mobius-verification-result") {
@@ -640,6 +641,9 @@ export function validateVerificationResult(value, expectedInput) {
     }
     if (result.inputDigest !== input.inputDigest || result.planId !== input.planId) {
         fail("analysis_input_mismatch", "Verification result does not match the persisted input");
+    }
+    if (result.reservationId !== expectedReservationId) {
+		fail("analysis_input_mismatch", "Verification result does not match the launch reservation");
     }
     const returnedInput = normalizeVerificationInput(result.input);
     if (stableStringify(returnedInput) !== stableStringify(input)) {

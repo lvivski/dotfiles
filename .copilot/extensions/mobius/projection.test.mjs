@@ -55,6 +55,7 @@ test("projection treats omitted and incomplete session inventories as unknown", 
         reservationId: "projection-reservation",
         at: "2026-08-06T00:03:00.000Z",
     });
+
     plan = attachTaskAttempt(plan, "T-001", "T-001-A001", {
         sessionId: "projection-session",
         at: "2026-08-06T00:04:00.000Z",
@@ -88,6 +89,32 @@ test("projection treats omitted and incomplete session inventories as unknown", 
             sessions: [],
         },
     }).activeAttempts[0].sessionState, "absent");
+});
+
+test("projection replaces attach guidance for stale task reservations", () => {
+	let plan = approvedPlan();
+	plan = reserveTaskAttempt(plan, "T-001", {
+		reservationId: "stale-projection",
+		at: "2026-08-06T00:03:00.000Z",
+	});
+	const fresh = projectPlan(plan, {
+		sessionInventory: {
+			complete: true,
+			capturedAt: "2026-08-06T00:20:00.000Z",
+			sessions: [],
+		},
+	});
+	assert.equal(fresh.nextAction.kind, "create-or-attach-session");
+
+	const stale = projectPlan(plan, {
+		sessionInventory: {
+			complete: true,
+			capturedAt: "2026-08-06T00:34:00.001Z",
+			sessions: [],
+		},
+	});
+	assert.equal(stale.activeAttempts[0].staleReservation, true);
+	assert.equal(stale.nextAction.kind, "resolve-stale-reservation");
 });
 
 test("projection reports dependency waits and deterministic ready work", () => {

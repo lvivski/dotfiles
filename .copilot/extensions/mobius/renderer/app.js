@@ -188,7 +188,7 @@ function renderSummary() {
         ],
         ["Attempts", currentProjection.progress.attempts],
         ["Planning", currentPlan.planning
-            ? `${currentPlan.planning.backend} · ${currentPlan.planning.runId}`
+			? `Factory · ${currentPlan.planning.runId}`
             : "Unlinked"],
         ["Base branch", currentPlan.repository.baseBranch],
         ["Updated", currentPlan.updatedAt],
@@ -344,7 +344,6 @@ function renderVerification() {
     const host = requiredElement("#verification");
     host.replaceChildren();
     addLabeledValue(host, "Status", currentPlan.verification.status);
-    addLabeledValue(host, "Backend", currentPlan.verification.backend);
     addLabeledValue(host, "Run", currentPlan.verification.runId);
     addLabeledValue(host, "Input digest", currentPlan.verification.inputDigest);
     addLabeledValue(host, "Summary", currentPlan.verification.summary);

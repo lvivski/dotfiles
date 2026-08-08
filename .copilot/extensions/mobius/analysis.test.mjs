@@ -180,12 +180,14 @@ test("verification inputs use stable criterion IDs and exact digests", () => {
 
 test("verification result requires every criterion ID to have evidence", () => {
     const input = buildVerificationInput(completedPlan());
+    const reservationId = "verification-reservation";
     const fullCoverage = input.tasks[0].criteria.map((criterion) => ({
         criterionId: criterion.id,
         evidenceIds: ["T-001-A001-E001"],
     }));
     const result = {
 		kind: "mobius-verification-result",
+		reservationId,
 		input,
         inputDigest: input.inputDigest,
         planId: input.planId,
@@ -209,7 +211,15 @@ test("verification result requires every criterion ID to have evidence", () => {
             },
         ],
     };
-    assert.equal(validateVerificationResult(result, input).passed, true);
+    assert.equal(validateVerificationResult(result, input, reservationId).passed, true);
+	assert.throws(
+		() => validateVerificationResult(
+			{ ...result, reservationId: "other-reservation" },
+			input,
+			reservationId,
+		),
+		/launch reservation/,
+	);
 	assert.throws(
 		() => validateVerificationResult({
 			...result,
@@ -223,7 +233,7 @@ test("verification result requires every criterion ID to have evidence", () => {
 					})),
 				})),
 			},
-		}, input),
+		}, input, reservationId),
 		/input digest|canonical Factory input/,
 	);
     assert.throws(
@@ -243,7 +253,7 @@ test("verification result requires every criterion ID to have evidence", () => {
                     risks: [],
                 },
             ],
-        }, input),
+		}, input, reservationId),
         /coverage/,
     );
 });
@@ -252,12 +262,14 @@ test("failed or omitted evidence IDs cannot satisfy passing verification", () =>
     const failedEvidencePlan = completedPlan();
     failedEvidencePlan.tasks[0].attempts[0].evidence[0].outcome = "failed";
     const input = buildVerificationInput(failedEvidencePlan);
+    const reservationId = "failed-evidence-reservation";
     const coverage = input.tasks[0].criteria.map((criterion) => ({
         criterionId: criterion.id,
         evidenceIds: ["T-001-A001-E001"],
     }));
     const result = {
 		kind: "mobius-verification-result",
+		reservationId,
 		input,
         inputDigest: input.inputDigest,
         planId: input.planId,
@@ -282,7 +294,7 @@ test("failed or omitted evidence IDs cannot satisfy passing verification", () =>
         ],
     };
     assert.throws(
-        () => validateVerificationResult(result, input),
+		() => validateVerificationResult(result, input, reservationId),
         /unknown evidence|coverage/,
     );
 
@@ -311,7 +323,7 @@ test("failed or omitted evidence IDs cannot satisfy passing verification", () =>
                     risks: [],
                 },
             ],
-        }, validInput),
+		}, validInput, reservationId),
         /omits evidence|coverage/,
     );
 });

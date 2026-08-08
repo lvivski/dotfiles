@@ -11,121 +11,14 @@ import {
     activeTaskAttempt,
     validatePlan,
 } from "./domain.mjs";
+import {
+    TERMINAL_SESSION_STATUSES,
+    normalizeInventory,
+    sessionState,
+} from "./inventory.mjs";
 
-/**
- * @typedef {object} HostSessionInventory
- * @property {boolean} complete Whether the inventory covers every visible App session.
- * @property {string} capturedAt Canonical UTC capture timestamp.
- * @property {Array<{id: string, status: string}>} sessions Session observations.
- */
-
-/**
- * @typedef {object} NormalizedSessionInventory
- * @property {boolean} supplied
- * @property {boolean} complete
- * @property {string | null} capturedAt
- * @property {Map<string, string>} sessions
- */
-
-/** App session states that imply result collection rather than continued work. */
-const TERMINAL_SESSION_STATUSES = new Set([
-    "completed",
-    "failed",
-    "cancelled",
-    "archived",
-]);
-
-/** Typed validation error for host session inventories. */
-class MobiusProjectionError extends TypeError {
-    /**
-     * @param {string} message
-     */
-    constructor(message) {
-        super(message);
-        this.name = "MobiusProjectionError";
-        this.code = "invalid_session_inventory";
-    }
-}
-
-/**
- * Validates and indexes an optional host session inventory.
- *
- * @param {HostSessionInventory | null | undefined} inventory
- * @returns {NormalizedSessionInventory}
- * @throws {TypeError} When the supplied inventory is incomplete or malformed.
- */
-function normalizeInventory(inventory) {
-    if (inventory === undefined || inventory === null) {
-        return {
-            supplied: false,
-            complete: false,
-            capturedAt: null,
-            sessions: new Map(),
-        };
-    }
-    if (typeof inventory !== "object"
-        || Array.isArray(inventory)
-        || typeof inventory.complete !== "boolean"
-        || !Array.isArray(inventory.sessions)) {
-        throw new MobiusProjectionError("sessionInventory must contain complete and sessions");
-    }
-    /** @type {string | null} */
-    let capturedAt = null;
-    try {
-        capturedAt = typeof inventory.capturedAt === "string"
-            ? new Date(inventory.capturedAt).toISOString()
-            : null;
-    } catch {
-        capturedAt = null;
-    }
-    if (capturedAt !== inventory.capturedAt) {
-        throw new MobiusProjectionError(
-            "sessionInventory.capturedAt must be a canonical timestamp",
-        );
-    }
-    const sessions = new Map();
-    for (const entry of inventory.sessions) {
-        if (!entry
-            || typeof entry !== "object"
-            || Array.isArray(entry)
-            || typeof entry.id !== "string"
-            || !entry.id.trim()
-            || typeof entry.status !== "string"
-            || !entry.status.trim()
-            || sessions.has(entry.id)) {
-            throw new MobiusProjectionError(
-                "sessionInventory contains an invalid or duplicate session",
-            );
-        }
-        sessions.set(entry.id, entry.status);
-    }
-    return {
-        supplied: true,
-        complete: inventory.complete,
-        capturedAt: inventory.capturedAt,
-        sessions,
-    };
-}
-
-/**
- * Resolves the best-known App session state for an attempt.
- *
- * @param {import("./domain.mjs").MobiusAttempt} attempt
- * @param {NormalizedSessionInventory} inventory
- * @returns {string}
- */
-function sessionState(attempt, inventory) {
-    if (attempt.sessionId === null) return "unattached";
-    if (!inventory.supplied) return "unknown";
-    const status = inventory.sessions.get(attempt.sessionId);
-    if (status !== undefined) return status;
-    const attemptObservedAt = attempt.startedAt ?? attempt.reservedAt;
-    return inventory.complete
-        && inventory.capturedAt !== null
-        && Date.parse(inventory.capturedAt) > Date.parse(attemptObservedAt)
-        ? "absent"
-        : "unknown";
-}
+/** Reservation age after which recovery guidance replaces normal attach guidance. */
+export const STALE_RESERVATION_MS = 30 * 60 * 1000;
 
 /**
  * Creates a normalized recovery action record.
@@ -151,6 +44,9 @@ function action(kind, details = {}) {
 export function projectPlan(plan, options = {}) {
     validatePlan(plan);
     const inventory = normalizeInventory(options.sessionInventory);
+    const inventoryAt = inventory.complete && inventory.capturedAt !== null
+		? Date.parse(inventory.capturedAt)
+		: null;
     const byId = new Map(plan.tasks.map((task) => [task.id, task]));
     const byStatus = Object.fromEntries(
         Object.values(TASK_STATUS).map((status) => [status, 0]),
@@ -171,6 +67,10 @@ export function projectPlan(plan, options = {}) {
             integrationRequired: attempt.integrationRequired,
             reservedAt: attempt.reservedAt,
             startedAt: attempt.startedAt,
+			staleReservation:
+				attempt.status === ATTEMPT_STATUS.RESERVED
+				&& inventoryAt !== null
+				&& inventoryAt - Date.parse(attempt.reservedAt) > STALE_RESERVATION_MS,
         });
     }
     activeAttempts.sort((left, right) => left.taskId.localeCompare(right.taskId));
@@ -229,11 +129,20 @@ export function projectPlan(plan, options = {}) {
     } else {
         for (const entry of activeAttempts) {
             if (entry.status === ATTEMPT_STATUS.RESERVED) {
-                actions.push(action("create-or-attach-session", {
-                    taskId: entry.taskId,
-                    attemptId: entry.attemptId,
-                    baseBranch: entry.baseBranch,
-                }));
+				actions.push(entry.staleReservation
+					? action("resolve-stale-reservation", {
+						taskId: entry.taskId,
+						attemptId: entry.attemptId,
+						recommendedTools: [
+							"mobius_complete_task(status:blocked)",
+							"mobius_retry_task",
+						],
+					})
+					: action("create-or-attach-session", {
+						taskId: entry.taskId,
+						attemptId: entry.attemptId,
+						baseBranch: entry.baseBranch,
+					}));
             } else if (entry.sessionState === "absent") {
                 actions.push(action("inspect-missing-session", {
                     taskId: entry.taskId,
@@ -273,10 +182,6 @@ export function projectPlan(plan, options = {}) {
             actions.push(action("approve-plan"));
         } else if (plan.status === PLAN_STATUS.AWAITING_COMPLETION_APPROVAL) {
             actions.push(action("approve-completion"));
-        } else if (plan.status === PLAN_STATUS.VERIFYING) {
-            actions.push(action("inspect-verification", {
-                runId: plan.verification.runId,
-            }));
         } else if (plan.status === PLAN_STATUS.FAILED
             && plan.verification.status === VERIFICATION_STATUS.FAILED) {
             actions.push(action("approve-correction", {

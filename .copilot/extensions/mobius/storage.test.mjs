@@ -383,7 +383,6 @@ test("bounded summaries preserve planning provenance and objective boundaries", 
         const exact = makePlan(workspace, "exact-plan");
         exact.objective = "x".repeat(240);
         exact.planning = {
-			backend: "factory",
             runId: "planning-run-1",
             inputDigest: "a".repeat(64),
         };

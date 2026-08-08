@@ -372,34 +372,22 @@ export function buildMobiusTools(operations) {
         },
         {
             name: "mobius_prepare_verification",
-			description: "Persist a verification launch reservation before returning the exact native mobius-verify Factory launchSpec. Reusing reservationId returns the same reservation.",
+			description: "Persist a verification launch reservation before returning the exact native mobius-verify Factory launchSpec. Inconclusive discovery never relaunches; replacing a terminal non-importable run requires a new reservation plus replacementReason and requestedBy.",
             parameters: objectSchema(
                 ["planId", "expectedRevision", "reservationId"],
                 {
                     planId: PLAN_ID,
                     expectedRevision: REVISION,
                     reservationId: REQUEST_ID,
+					replacementReason: NON_EMPTY(LIMITS.error),
+					requestedBy: NON_EMPTY(LIMITS.actor),
                 },
             ),
             handler: handler((args) => operations.prepareVerification(args)),
         },
         {
-            name: "mobius_begin_verification",
-			description: "Bind a running or completed native mobius-verify Factory run to the plan. Rebinding is allowed only after the prior run terminated without an importable result.",
-            parameters: objectSchema(
-                ["planId", "expectedRevision", "reservationId", "runId"],
-                {
-                    planId: PLAN_ID,
-                    expectedRevision: REVISION,
-                    reservationId: REQUEST_ID,
-                    runId: NON_EMPTY(LIMITS.verificationRunId),
-                },
-            ),
-            handler: handler((args) => operations.beginVerification(args)),
-        },
-        {
             name: "mobius_complete_verification",
-			description: "Import the exact native result of the bound completed mobius-verify Factory run. No caller-supplied verdict is accepted.",
+			description: "Import the exact terminal mobius-verify Factory result for the active reservation. No caller-supplied verdict is accepted.",
             parameters: objectSchema(
                 ["planId", "expectedRevision", "runId"],
                 {
@@ -412,7 +400,7 @@ export function buildMobiusTools(operations) {
         },
         {
             name: "mobius_cancel",
-            description: "Request plan cancellation and snapshot active task attempts plus the bound verification run. This does not claim external sessions have stopped.",
+			description: "Request plan cancellation and snapshot active task attempts plus any Factory run discovered for the verification reservation. This does not claim external work has stopped.",
             parameters: objectSchema(
                 [
                     "planId",
@@ -436,9 +424,15 @@ export function buildMobiusTools(operations) {
         },
         {
             name: "mobius_finalize_cancellation",
-			description: "Finalize a requested cancellation only after every snapshotted App attempt has an explicit disposition and Mobius observes the bound Factory run as terminal.",
+			description: "Finalize cancellation using a complete causal session inventory and terminal Factory evidence. Inconclusive evidence requires an attributed finalizationOverride.",
             parameters: objectSchema(
-                ["planId", "expectedRevision", "dispositions", "finalizedBy"],
+				[
+					"planId",
+					"expectedRevision",
+					"dispositions",
+					"finalizedBy",
+					"sessionInventory",
+				],
                 {
                     planId: PLAN_ID,
                     expectedRevision: REVISION,
@@ -447,6 +441,14 @@ export function buildMobiusTools(operations) {
                         type: "string",
                         enum: ["run-terminated", "no-run-created"],
                     },
+					finalizationOverride: objectSchema(
+						["reason", "attestedBy"],
+						{
+							reason: NON_EMPTY(LIMITS.error),
+							attestedBy: NON_EMPTY(LIMITS.actor),
+						},
+					),
+					sessionInventory: SESSION_INVENTORY,
                     dispositions: {
                         type: "array",
                         maxItems: LIMITS.tasks,

@@ -1,4 +1,6 @@
 // Native Mobius verification Factory harness.
+import { verificationMarker } from "../marker.mjs";
+
 export const meta = {
 	name: "mobius-verify",
 	description: "Map Mobius acceptance criteria to evidence and produce a fail-closed integration verdict.",
@@ -12,6 +14,13 @@ export const meta = {
 };
 
 export async function run(factory) {
+const reservationId = typeof factory.args?.reservationId === "string"
+	&& /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(factory.args.reservationId)
+	? factory.args.reservationId
+	: null;
+if (reservationId === null) throw new Error("mobius-verify: reservationId must be a stable request identifier");
+factory.log(verificationMarker(reservationId));
+
 const context = { args: factory.args };
 const agent = (...args) => factory.agent(...args);
 const parallel = (...args) => factory.parallel(...args);
@@ -52,6 +61,10 @@ function strings(value, field, maximum, itemMaximum, minimum = 0) {
 
 function normalizeInput(value) {
 	const input = plain(value, "args");
+	const reservationId = text(input.reservationId, "reservationId", 128);
+	if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(reservationId)) {
+		fail("reservationId must be a stable request identifier");
+	}
 	const planId = text(input.planId, "planId", 64);
 	if (!PLAN_ID.test(planId)) fail("planId must be a lowercase Mobius slug");
 	const inputDigest = text(input.inputDigest, "inputDigest", 64);
@@ -128,6 +141,7 @@ function normalizeInput(value) {
 		};
 	});
 	return {
+		reservationId,
 		planId,
 		objective: text(input.objective, "objective", 8000),
 		tasks,
@@ -204,6 +218,7 @@ function safeJson(value) {
 }
 
 const input = normalizeInput(context.args);
+const { reservationId: normalizedReservationId, ...canonicalInput } = input;
 const expectedCriteria = input.tasks.flatMap((task) => task.criteria.map((criterion) => criterion.id));
 const expectedEvidenceIds = input.tasks.flatMap((task) => task.evidence.map((entry) => entry.id));
 const criterionOwners = new Map(input.tasks.flatMap(
@@ -306,7 +321,8 @@ const passed = Boolean(
 
 return {
 	kind: "mobius-verification-result",
-	input,
+	reservationId: normalizedReservationId,
+	input: canonicalInput,
 	inputDigest: input.inputDigest,
 	planId: input.planId,
 	passed,

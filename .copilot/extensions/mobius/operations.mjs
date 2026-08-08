@@ -6,13 +6,13 @@
  */
 import {
     ATTEMPT_STATUS,
+    LIMITS,
     PLAN_STATUS,
     TASK_STATUS,
     VERIFICATION_STATUS,
     approvePlan,
     activeTaskAttempt,
     attachTaskAttempt,
-    bindVerificationRun,
     completeTaskAttempt,
     completeVerification,
     createDraftPlan,
@@ -29,6 +29,11 @@ import {
 } from "./domain.mjs";
 import { buildDelegationPrompt, findScopeConflicts, selectNonOverlappingTasks } from "./prompts.mjs";
 import { projectPlan } from "./projection.mjs";
+import {
+    isTerminatedSessionState,
+    normalizeInventory,
+    sessionState,
+} from "./inventory.mjs";
 import { MobiusStorageError, createPlanStore } from "./storage.mjs";
 
 /**
@@ -53,7 +58,6 @@ import { MobiusStorageError, createPlanStore } from "./storage.mjs";
  * @property {(input: any) => Promise<any>} completeTask
  * @property {(input: any) => Promise<any>} retry
  * @property {(input: any) => Promise<any>} prepareVerification
- * @property {(input: any) => Promise<any>} beginVerification
  * @property {(input: any) => Promise<any>} finishVerification
  * @property {(input: any) => Promise<any>} cancel
  * @property {(input: any) => Promise<any>} finalizeCancellation
@@ -106,6 +110,15 @@ function findAttempt(plan, taskId, attemptId) {
         ?.attempts.find((attempt) => attempt.id === attemptId) ?? null;
 }
 
+/** Find one attempt by its globally unique attempt ID. */
+function findAttemptById(plan, attemptId) {
+    for (const task of plan.tasks) {
+		const attempt = task.attempts.find((candidate) => candidate.id === attemptId);
+		if (attempt) return attempt;
+    }
+    return null;
+}
+
 /**
  * Finds the task attempt that owns an idempotent reservation ID.
  *
@@ -142,6 +155,17 @@ export function createMobiusOperations(options) {
     const stores = new Map();
     const notify = typeof options.notify === "function" ? options.notify : () => {};
     const analysis = options.analysis;
+
+    /** Discover a native run launched for the plan's active verification reservation. */
+    const discoverReservedVerification = async (plan) => {
+		if (plan.verification.status !== VERIFICATION_STATUS.RESERVED) {
+			return { state: "absent" };
+		}
+		return analysis.discoverVerificationRun(
+			plan.verification.reservationId,
+			plan.verification.reservedAt,
+		);
+    };
 
     /**
      * Resolves the current session workspace or fails closed.
@@ -255,7 +279,6 @@ export function createMobiusOperations(options) {
             id,
             repository,
             planning: {
-				backend: "factory",
                 runId,
                 inputDigest: imported.inputDigest,
             },
@@ -526,18 +549,45 @@ export function createMobiusOperations(options) {
         planId,
         expectedRevision,
         reservationId,
+		replacementReason,
+		requestedBy,
     }) => {
         const plan = await storeFor().read(planId);
+		if (plan.status !== PLAN_STATUS.RUNNING) {
+			throw new MobiusOperationError(
+				"invalid_plan_transition",
+				`Verification can only be prepared from running, not ${plan.status}`,
+			);
+		}
         if (plan.verification.reservationId === reservationId
             && plan.verification.status === VERIFICATION_STATUS.RESERVED) {
-            const prepared = await analysis.prepareVerification(plan);
+			const prepared = await analysis.prepareVerification(plan, reservationId);
             if (prepared.inputDigest !== plan.verification.inputDigest) {
                 throw new MobiusOperationError(
                     "verification_input_mismatch",
                     "Reserved verification input changed",
                 );
             }
-            return { plan, reservationId, ...prepared };
+			const discovery = await analysis.discoverVerificationRun(
+				reservationId,
+				plan.verification.reservedAt,
+			);
+			if (discovery.state === "inconclusive") {
+				throw new MobiusOperationError(
+					"verification_launch_indeterminate",
+					"Verification launch is not yet observable; retry preparation",
+					{ discovery },
+				);
+			}
+			return discovery.state === "found"
+				? {
+					plan,
+					reservationId,
+					...prepared,
+					runId: discovery.run.runId,
+					launchSpec: null,
+				}
+				: { plan, reservationId, ...prepared };
         }
         if (plan.verification.reservationId === reservationId) {
             throw new MobiusOperationError(
@@ -548,78 +598,78 @@ export function createMobiusOperations(options) {
         if (plan.revision !== expectedRevision) {
             throw revisionConflict(planId, expectedRevision, plan.revision);
         }
-        if (plan.status === PLAN_STATUS.VERIFYING) {
-            const replaceable = await analysis.verificationRunCanBeReplaced(
-                plan.verification.runId,
-                plan,
-            );
-            if (!replaceable) {
-                throw new MobiusOperationError(
-                    "verification_run_not_replaceable",
-                    `Verification run ${plan.verification.runId} is still active or has an importable result`,
-                );
-            }
-        } else if (plan.status !== PLAN_STATUS.RUNNING) {
-            throw new MobiusOperationError(
-                "invalid_plan_transition",
-                `Verification can only be prepared from running or verifying, not ${plan.status}`,
-            );
-        }
-        const prepared = await analysis.prepareVerification(plan);
+		let replacement = null;
+		if (plan.verification.status === VERIFICATION_STATUS.RESERVED) {
+			if (
+				typeof replacementReason !== "string"
+				|| !replacementReason.trim()
+				|| replacementReason.length > LIMITS.error
+				|| typeof requestedBy !== "string"
+				|| !requestedBy.trim()
+				|| requestedBy.length > LIMITS.actor
+			) {
+				throw new MobiusOperationError(
+					"verification_replacement_requires_approval",
+					"Replacing a verification reservation requires reason and actor",
+				);
+			}
+			const discovery = await discoverReservedVerification(plan);
+			if (
+				discovery.state === "inconclusive"
+				&& Array.isArray(discovery.candidates)
+				&& discovery.candidates.length > 1
+			) {
+				throw new MobiusOperationError(
+					"verification_duplicate_runs",
+					"Multiple Factory runs carry the same verification reservation",
+					{ discovery },
+				);
+			}
+			if (discovery.state === "found") {
+				const assessment = await analysis.assessVerificationRun(
+					discovery.run.runId,
+					plan,
+				);
+				if (assessment.state === "active") {
+					throw new MobiusOperationError(
+						"verification_already_reserved",
+						`Verification run ${discovery.run.runId} is still active`,
+					);
+				}
+				if (assessment.state === "importable") {
+					throw new MobiusOperationError(
+						"verification_result_available",
+						`Verification run ${discovery.run.runId} must be imported`,
+					);
+				}
+			}
+			replacement = {
+				supersededReservationId: plan.verification.reservationId,
+				supersededRunId:
+					discovery.state === "found" ? discovery.run.runId : null,
+				reason: replacementReason.trim(),
+				requestedBy: requestedBy.trim(),
+			};
+		}
+		const prepared = await analysis.prepareVerification(plan, reservationId);
         const candidate = reserveVerification(plan, {
             reservationId,
             inputDigest: prepared.inputDigest,
+			replacement,
         });
         const updated = await persist(
             planId,
             expectedRevision,
             candidate,
-            plan.status === PLAN_STATUS.VERIFYING
-                ? "verification-reserved:replacement"
-                : "verification-reserved",
+			plan.verification.status === VERIFICATION_STATUS.RESERVED
+				? "verification-replaced"
+				: "verification-reserved",
         );
         return { plan: updated, reservationId, ...prepared };
     };
 
     /**
-     * Binds a native Factory run to its verification reservation.
-     *
-     * @param {any} input
-     * @returns {Promise<any>}
-     */
-    const beginVerification = async ({
-        planId,
-        expectedRevision,
-        reservationId,
-        runId,
-    }) => {
-        const plan = await storeFor().read(planId);
-        if (plan.verification.reservationId === reservationId
-            && plan.verification.runId === runId
-            && plan.verification.status === VERIFICATION_STATUS.RUNNING) {
-            return plan;
-        }
-        if (plan.revision !== expectedRevision) {
-            throw revisionConflict(planId, expectedRevision, plan.revision);
-        }
-        const inspected = await analysis.inspectVerification(runId, plan);
-        const candidate = bindVerificationRun(plan, {
-            reservationId,
-            runId,
-            inputDigest: inspected.inputDigest,
-        });
-        return persist(
-            planId,
-            expectedRevision,
-            candidate,
-            plan.status === PLAN_STATUS.CANCELLING
-                ? "verification-attached:during-cancellation"
-                : "verification-started",
-        );
-    };
-
-    /**
-     * Imports the exact persisted result of the bound verification run.
+     * Imports the exact terminal result for the active verification reservation.
      *
      * @param {any} input
      * @returns {Promise<any>}
@@ -630,19 +680,35 @@ export function createMobiusOperations(options) {
         runId,
     }) => {
         const plan = await readForMutation(planId, expectedRevision);
-        if (plan.verification.runId !== runId) {
+		if (plan.verification.status !== VERIFICATION_STATUS.RESERVED) {
             throw new MobiusOperationError(
-                "verification_run_mismatch",
-                `Verification run ${runId} is not bound to plan ${planId}`,
+				"verification_not_reserved",
+				`Plan ${planId} has no active verification reservation`,
             );
         }
-        const inspected = await analysis.inspectVerification(
-            runId,
-            plan,
-            { requireComplete: true },
-        );
+		const discovery = await discoverReservedVerification(plan);
+		if (discovery.state !== "found") {
+			throw new MobiusOperationError(
+				"verification_launch_indeterminate",
+				"Verification reservation does not resolve to exactly one Factory run",
+				{ discovery },
+			);
+		}
+		if (discovery.run.runId !== runId) {
+			throw new MobiusOperationError(
+				"verification_run_mismatch",
+				`Verification run ${runId} is not authoritative for this reservation`,
+				{ expectedRunId: discovery.run.runId, runId },
+			);
+		}
+		const inspected = await analysis.importVerification(runId, plan);
         const result = inspected.result;
-        const candidate = completeVerification(plan, result, { runId });
+		const candidate = completeVerification(plan, result, {
+			runId,
+			at: Number.isFinite(inspected.detail.completedAt)
+				? inspected.detail.completedAt
+				: undefined,
+		});
         return persist(
             planId,
             expectedRevision,
@@ -685,6 +751,7 @@ export function createMobiusOperations(options) {
         if (plan.revision !== expectedRevision) {
             throw revisionConflict(planId, expectedRevision, plan.revision);
         }
+		const discovery = await discoverReservedVerification(plan);
         const candidate = requestPlanCancellation(plan, {
             requestId,
             target,
@@ -693,6 +760,8 @@ export function createMobiusOperations(options) {
                 ? `Required task ${taskId} was cancelled: ${reason}`
                 : reason,
             requestedBy,
+			verificationRunId:
+				discovery.state === "found" ? discovery.run.runId : undefined,
         });
         return persist(
             planId,
@@ -713,19 +782,72 @@ export function createMobiusOperations(options) {
         expectedRevision,
         dispositions,
         verificationDisposition,
-        finalizedBy,
+		finalizationOverride,
+		sessionInventory,
+		finalizedBy,
     }) => {
-        const plan = await readForMutation(planId, expectedRevision);
+		const plan = await readForMutation(planId, expectedRevision);
+		if (plan.status !== PLAN_STATUS.CANCELLING || plan.cancellation === null) {
+			throw new MobiusOperationError(
+				"invalid_plan_transition",
+				`Cancellation cannot be finalized from ${plan.status}`,
+			);
+		}
+		const inventory = normalizeInventory(sessionInventory);
+		if (!inventory.complete
+			|| inventory.capturedAt === null
+			|| Date.parse(inventory.capturedAt)
+				<= Date.parse(plan.cancellation.requestedAt)) {
+			throw new MobiusOperationError(
+				"cancellation_inventory_incomplete",
+				"Cancellation finalization requires a complete, current session inventory",
+			);
+		}
+		for (const disposition of dispositions) {
+			if (disposition.disposition !== "session-terminated") continue;
+			const attempt = findAttemptById(plan, disposition.attemptId);
+			const observedAt = attempt?.startedAt ?? attempt?.reservedAt;
+			if (!observedAt
+				|| Date.parse(inventory.capturedAt) <= Date.parse(observedAt)) {
+				throw new MobiusOperationError(
+					"cancellation_inventory_stale",
+					`Session inventory predates attempt ${disposition.attemptId}`,
+				);
+			}
+			const state = attempt ? sessionState(attempt, inventory) : "unknown";
+			if (!isTerminatedSessionState(state) && !finalizationOverride) {
+				throw new MobiusOperationError(
+					"cancellation_session_not_terminated",
+					`Session ${disposition.sessionId || "(unknown)"} remains ${state}`,
+					{ attemptId: disposition.attemptId, state },
+				);
+			}
+		}
+		const discovery =
+			plan.cancellation?.verificationReservationId
+				&& !plan.cancellation.verificationRunId
+				? await discoverReservedVerification(plan)
+				: { state: "absent" };
+		if (discovery.state === "inconclusive" && !finalizationOverride) {
+			throw new MobiusOperationError(
+				"verification_launch_indeterminate",
+				"Verification launch cannot be resolved for cancellation",
+				{ discovery },
+			);
+		}
+		const verificationRunId =
+			plan.cancellation?.verificationRunId
+			?? (discovery.state === "found" ? discovery.run.runId : null);
         let verificationTerminated = true;
-        if (plan.cancellation?.verificationRunId) {
+		if (verificationRunId) {
             verificationTerminated = await analysis.verificationRunIsTerminal(
-                plan.cancellation.verificationRunId,
+				verificationRunId,
             );
-            if (!verificationTerminated) {
+			if (!verificationTerminated && !finalizationOverride) {
                 throw new MobiusOperationError(
                     "verification_not_terminated",
-                    `Verification run ${plan.cancellation.verificationRunId} is still active or unobservable`,
-                    { runId: plan.cancellation.verificationRunId },
+					`Verification run ${verificationRunId} is still active or unobservable`,
+					{ runId: verificationRunId },
                 );
             }
         }
@@ -733,6 +855,8 @@ export function createMobiusOperations(options) {
             finalizedBy,
             verificationTerminated,
             verificationDisposition,
+			verificationRunId,
+			finalizationOverride,
         });
         return persist(planId, expectedRevision, candidate, "plan-cancellation-finalized");
     };
@@ -766,7 +890,6 @@ export function createMobiusOperations(options) {
         completeTask,
         retry,
         prepareVerification,
-        beginVerification,
         finishVerification,
         cancel,
         finalizeCancellation,

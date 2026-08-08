@@ -1,5 +1,6 @@
 /** @module factory — Mobius adapters for native Agent Factory runs. */
 import {
+	MobiusAnalysisError,
 	analysisInputDigest,
 	buildPlanningArgs,
 	buildVerificationInput,
@@ -9,6 +10,7 @@ import {
 } from "./analysis.mjs";
 import { meta as planMeta, run as runPlan } from "./factories/plan.mjs";
 import { meta as verifyMeta, run as runVerify } from "./factories/verify.mjs";
+import { parseVerificationMarker } from "./marker.mjs";
 
 /** Native Mobius Factory definitions shared by registration and launch preparation. */
 export const MOBIUS_FACTORIES = Object.freeze({
@@ -16,7 +18,6 @@ export const MOBIUS_FACTORIES = Object.freeze({
 	verify: Object.freeze({ meta: verifyMeta, run: runVerify }),
 });
 
-const ACTIVE = new Set(["pending", "running"]);
 const TERMINAL = new Set(["completed", "error", "halted", "cancelled"]);
 
 /** Typed failure raised when a native Factory run cannot satisfy Mobius invariants. */
@@ -63,7 +64,9 @@ export function createFactoryAnalysis(getFactoryApi) {
 		if (
 			!value ||
 			typeof value.getRun !== "function" ||
-			typeof value.getRunDetail !== "function"
+			typeof value.getRunDetail !== "function" ||
+			typeof value.getRunProgress !== "function" ||
+			typeof value.listRuns !== "function"
 		) {
 			fail(
 				"factory_backend_unavailable",
@@ -108,18 +111,126 @@ export function createFactoryAnalysis(getFactoryApi) {
 		return { run, detail };
 	};
 
+	/** Read reservation markers from bounded, base-agnostic progress pages. */
+	const readReservationMarkers = async (runId) => {
+		try {
+			const detail = await api().getRunDetail(runId);
+			let page = detail?.progress;
+			const markers = new Set();
+			for (let pageNumber = 0; pageNumber < 10; pageNumber++) {
+				if (!page || !Array.isArray(page.records)) {
+					return { state: "inconclusive", reason: "progress-unavailable" };
+				}
+				for (const record of page.records) {
+					if (record?.kind !== "log") continue;
+					const marker = parseVerificationMarker(record.text);
+					if (marker) markers.add(marker);
+				}
+				if (markers.size > 0) {
+					return { state: "readable", markers: [...markers] };
+				}
+				if (page.hasMoreOlder !== true) {
+					return { state: "readable", markers: [...markers] };
+				}
+				if (!Number.isSafeInteger(page.oldestSeq)) {
+					return { state: "inconclusive", reason: "progress-cursor-unavailable" };
+				}
+				page = await api().getRunProgress(runId, {
+					beforeSeq: page.oldestSeq,
+					limit: 500,
+				});
+			}
+			return { state: "inconclusive", reason: "progress-unbounded" };
+		} catch (error) {
+			return {
+				state: "inconclusive",
+				reason: error instanceof Error ? error.message : String(error),
+			};
+		}
+	};
+
+	/** Discover the native verification run associated with one reservation. */
+	const discoverVerificationRun = async (reservationId, reservedAt) => {
+		const threshold = Date.parse(String(reservedAt));
+		if (!Number.isFinite(threshold)) {
+			fail("factory_reservation_invalid", "Verification reservation timestamp is invalid");
+		}
+		let summaries;
+		try {
+			summaries = await api().listRuns();
+		} catch (error) {
+			return {
+				state: "inconclusive",
+				reason: error instanceof Error ? error.message : String(error),
+				candidates: [],
+			};
+		}
+		if (!Array.isArray(summaries)) {
+			return {
+				state: "inconclusive",
+				reason: "factory run listing is unavailable",
+				candidates: [],
+			};
+		}
+		const matches = [];
+		const inconclusive = [];
+		for (const summary of summaries
+			.filter((entry) => (
+				entry?.factoryName === MOBIUS_FACTORIES.verify.meta.name
+				&& Number.isFinite(entry.createdAt)
+				&& entry.createdAt >= threshold
+			))
+			.sort((left, right) => left.createdAt - right.createdAt)) {
+			const progress = await readReservationMarkers(summary.runId);
+			if (progress.state === "inconclusive") {
+				inconclusive.push({ ...summary, reason: progress.reason });
+				continue;
+			}
+			if (progress.markers.includes(reservationId)) {
+				matches.push(summary);
+				continue;
+			}
+			if (progress.markers.length > 0) continue;
+			if (
+				!TERMINAL.has(summary.status)
+			) {
+				inconclusive.push({ ...summary, reason: "run has not emitted a reservation marker" });
+			}
+		}
+		if (matches.length > 1) {
+			return {
+				state: "inconclusive",
+				reason: "multiple Factory runs carry the verification reservation",
+				candidates: matches,
+			};
+		}
+		if (matches.length === 1) {
+			return {
+				state: "found",
+				run: matches[0],
+				duplicates: [],
+			};
+		}
+		if (inconclusive.length > 0) {
+			return {
+				state: "inconclusive",
+				reason: "verification launch is not yet observable",
+				candidates: inconclusive,
+			};
+		}
+		return { state: "absent" };
+	};
+
 	/** Build the exact native planning Factory invocation. */
 	const preparePlanning = async (input) => {
 		const args = buildPlanningArgs(input);
 		const specification = MOBIUS_FACTORIES.plan;
 		return {
-			backend: "factory",
 			factory: specification.meta.name,
 			inputDigest: args.inputDigest,
 			launchSpec: {
 				name: specification.meta.name,
 				args,
-				limits: specification.meta.limits,
 			},
 		};
 	};
@@ -150,65 +261,97 @@ export function createFactoryAnalysis(getFactoryApi) {
 	};
 
 	/** Build the exact native verification Factory invocation. */
-	const prepareVerification = async (plan) => {
-		const args = buildVerificationInput(plan);
+	const prepareVerification = async (plan, reservationId) => {
+		const canonicalInput = buildVerificationInput(plan);
+		const args = { ...canonicalInput, reservationId };
 		const specification = MOBIUS_FACTORIES.verify;
 		return {
-			backend: "factory",
 			factory: specification.meta.name,
-			inputDigest: args.inputDigest,
+			inputDigest: canonicalInput.inputDigest,
 			launchSpec: {
 				name: specification.meta.name,
 				args,
-				limits: specification.meta.limits,
 			},
 		};
 	};
 
-	/** Bind or import one verification Factory run against canonical plan evidence. */
-	const inspectVerification = async (runId, plan, options = {}) => {
+	/** Import one terminal verification Factory result against its reservation. */
+	const importVerification = async (runId, plan) => {
 		const { run, detail } = await loadRun(runId, MOBIUS_FACTORIES.verify);
 		const expectedArgs = buildVerificationInput(plan);
-		if (options.requireComplete) {
-			assertCompleted(run);
-		} else if (!ACTIVE.has(run.status) && run.status !== "completed") {
+		const reservationId = String(plan.verification.reservationId || "");
+		const reservedAt = Date.parse(String(plan.verification.reservedAt || ""));
+		if (!reservationId || !Number.isFinite(reservedAt)) {
 			fail(
-				"factory_result_unavailable",
-				`Factory run ${runId} cannot be bound from ${run.status}`,
-				{ status: run.status },
+				"factory_reservation_invalid",
+				"Verification inspection requires its reservation identity and timestamp",
 			);
 		}
-		const result =
-			run.status === "completed"
-				? validateVerificationResult(run.result, expectedArgs)
-				: undefined;
+		if (!Number.isFinite(detail.createdAt) || detail.createdAt < reservedAt) {
+			fail(
+				"factory_run_identity_mismatch",
+				`Factory run ${runId} predates verification reservation ${reservationId}`,
+				{ runId, reservationId, createdAt: detail.createdAt, reservedAt },
+			);
+		}
+		const progress = await readReservationMarkers(runId);
+		if (progress.state !== "readable") {
+			fail(
+				"factory_progress_inconclusive",
+				`Factory run ${runId} progress cannot establish reservation identity`,
+				{ runId, reservationId, reason: progress.reason },
+			);
+		}
+		if (!progress.markers.includes(reservationId)) {
+			fail(
+				"factory_run_identity_mismatch",
+				`Factory run ${runId} does not carry verification reservation ${reservationId}`,
+				{ runId, reservationId },
+			);
+		}
+		assertCompleted(run);
+		const result = validateVerificationResult(
+			run.result,
+			expectedArgs,
+			reservationId,
+		);
 		return {
 			run,
 			detail,
-			inputDigest: expectedArgs.inputDigest,
-			...(result === undefined ? {} : { result }),
+			result,
 		};
 	};
 
-	/** Decide whether a non-active, non-importable verification run can be replaced. */
-	const verificationRunCanBeReplaced = async (runId, plan) => {
-		let run;
-		try {
-			run = await api().getRun(runId);
-		} catch (error) {
-			if (isMissingRun(error)) return true;
-			throw error;
-		}
-		if (ACTIVE.has(run.status)) return false;
-		if (!TERMINAL.has(run.status)) return false;
-		if (run.status !== "completed") return true;
-		try {
-			await inspectVerification(runId, plan, { requireComplete: true });
-			return false;
-		} catch (error) {
-			if (error?.code === "factory_backend_unavailable") throw error;
-			return true;
-		}
+	/** Classify whether one discovered verification run can be superseded. */
+	const assessVerificationRun = async (runId, plan) => {
+			const run = await api().getRun(runId);
+			if (!TERMINAL.has(run.status)) return { state: "active", run };
+			if (run.status !== "completed") {
+				return { state: "terminal-nonimportable", run };
+			}
+			try {
+				const imported = await importVerification(runId, plan);
+				return { state: "importable", run, imported };
+			} catch (error) {
+				if (
+					error instanceof MobiusAnalysisError
+					|| (error instanceof MobiusFactoryError
+						&& [
+							"factory_input_missing",
+							"factory_input_mismatch",
+							"factory_result_invalid",
+							"factory_result_unavailable",
+							"factory_run_identity_mismatch",
+						].includes(error.code))
+				) {
+					return {
+						state: "terminal-nonimportable",
+						run,
+						reason: error instanceof Error ? error.message : String(error),
+					};
+				}
+				throw error;
+			}
 	};
 
 	/** Observe whether a verification Factory run is terminal. */
@@ -224,10 +367,11 @@ export function createFactoryAnalysis(getFactoryApi) {
 
 	return Object.freeze({
 		importPlanning,
-		inspectVerification,
+		importVerification,
+		assessVerificationRun,
+		discoverVerificationRun,
 		preparePlanning,
 		prepareVerification,
-		verificationRunCanBeReplaced,
 		verificationRunIsTerminal,
 	});
 }

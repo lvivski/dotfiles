@@ -352,9 +352,10 @@ Coordinator contract:
 8. mobius_cancel only requests cancellation. Stop/archive every listed App session and cancel the listed Factory run before mobius_finalize_cancellation.
 9. Re-read the plan after revision conflicts; reservation and attachment replays are idempotent only when their exact postcondition already exists.
 10. Mobius Factory agents perform analysis only; App-native child sessions own repository mutation.
-11. Use each prepare tool's exact launchSpec with run_factory, then import or bind only the native Factory run ID.
-12. mobius_prepare_verification is a mutation: call it with expectedRevision and a stable reservationId BEFORE launching the Factory, then bind that exact reservation and run.
-13. Import the bound verification result and request explicit completion approval.`;
+11. Use each prepare tool's exact launchSpec with run_factory. If prepare returns launchSpec:null, do not launch again; use its returned runId.
+12. mobius_prepare_verification is a mutation: call it with expectedRevision and a stable reservationId BEFORE launching the Factory.
+13. Import the terminal Factory result with mobius_complete_verification, then request explicit completion approval.
+14. Finalize cancellation only with a complete, causally newer App session inventory; use finalizationOverride only as an explicit attributed escape hatch.`;
 }
 
 /**

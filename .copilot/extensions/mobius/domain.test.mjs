@@ -9,7 +9,6 @@ import {
     TASK_STATUS,
     approvePlan,
     attachTaskAttempt,
-    bindVerificationRun,
     completeTaskAttempt,
     completeVerification,
     createDraftPlan,
@@ -435,17 +434,12 @@ test("verification cancellation requires observed Factory termination", () => {
         inputDigest: "a".repeat(64),
         at: COMPLETED_AT,
     });
-    plan = bindVerificationRun(plan, {
-        reservationId: "reserve-verification-cancel",
-        runId: "verification-run",
-        inputDigest: "a".repeat(64),
-        at: COMPLETED_AT,
-    });
     plan = requestPlanCancellation(plan, {
         requestId: "cancel-verification",
         target: "plan",
         reason: "Stop verification",
         requestedBy: "octocat",
+		verificationRunId: "verification-run",
         at: CANCELLED_AT,
     });
     throwsCode(
@@ -477,12 +471,6 @@ test("failed verification reopens attributed tasks and all descendants", () => {
         inputDigest: "b".repeat(64),
         at: COMPLETED_AT,
     });
-    plan = bindVerificationRun(plan, {
-        reservationId: "reserve-verification-failed",
-        runId: "verification-failed",
-        inputDigest: "b".repeat(64),
-        at: COMPLETED_AT,
-    });
     plan = completeVerification(plan, {
         passed: false,
         summary: "Foundation evidence is insufficient",
@@ -507,12 +495,6 @@ test("passed verification still requires explicit completion approval", () => {
     ({ plan } = completeTask(plan, "T-001"));
     plan = reserveVerification(plan, {
         reservationId: "reserve-verification-passed",
-        inputDigest: "c".repeat(64),
-        at: COMPLETED_AT,
-    });
-    plan = bindVerificationRun(plan, {
-        reservationId: "reserve-verification-passed",
-        runId: "verification-passed",
         inputDigest: "c".repeat(64),
         at: COMPLETED_AT,
     });

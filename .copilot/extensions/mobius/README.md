@@ -17,6 +17,9 @@ evidence, and gates completion through a native verification Factory.
 There is no separate Conveyor artifact or import protocol. Mobius registers its bundled scripts as
 native factories and reads their native run envelopes.
 
+Mobius plan files and native Factory runs share the same Copilot session scope. A new `/clear`
+session receives a new workspace and cannot read the prior plan.
+
 ## Planning
 
 1. Call `mobius_prepare_plan`.
@@ -37,15 +40,12 @@ Example launch specification:
     "repositoryContext": "Repository summary",
     "maxTasks": 6,
     "inputDigest": "..."
-  },
-  "limits": {
-    "maxConcurrentSubagents": 2,
-    "maxTotalSubagents": 8,
-    "timeoutSeconds": 300,
-    "maxAiCredits": 20
   }
 }
 ```
+
+Factory definitions own their default limits. A coordinator supplies overrides only when deliberately
+raising or narrowing a run.
 
 ## Task delivery
 
@@ -65,25 +65,43 @@ After every task is done:
 
 1. Call `mobius_prepare_verification` with a stable reservation ID.
 2. Run the returned `mobius-verify` launch specification with `run_factory`.
-3. Bind the native run with `mobius_begin_verification`.
-4. Import its completed result with `mobius_complete_verification`.
-5. If verification passes, explicitly approve completion.
-6. If it fails, Mobius reopens attributed tasks and their dependants for a correction wave.
+3. Import its terminal result with `mobius_complete_verification`.
+4. If verification passes, explicitly approve completion.
+5. If it fails, Mobius reopens attributed tasks and their dependants for a correction wave.
 
-The verifier consumes canonical criterion IDs and evidence IDs. A passing result must cover every
-criterion with passed evidence and contain no unresolved integration gap.
+If preparation returns `launchSpec: null`, the reservation already launched: do not launch it again;
+pass the returned `runId` to completion. The verifier emits the reservation as its first progress record and echoes
+the reservation ID plus complete canonical input in its result. Mobius validates all three because
+native Factory inspection does not expose run arguments.
+
+A passing result must cover every criterion with passed evidence and contain no unresolved
+integration gap.
+
+If a terminal run cannot be imported, prepare a new reservation with `replacementReason` and
+`requestedBy`. Active, valid-completed, and inconclusive runs cannot be replaced; native resume
+remains preferred for resumable Factory failures.
 
 ## Cancellation
 
-`mobius_cancel` records a cancellation request and snapshots active task attempts plus the bound
-Factory run. The coordinator must then:
+`mobius_cancel` records a cancellation request and snapshots active task attempts plus any Factory
+run discovered for the verification reservation. The coordinator must then:
 
 1. Stop or archive every listed App session.
 2. Cancel the listed Factory run through the native Factory API.
 3. Supply exact attempt dispositions to `mobius_finalize_cancellation`.
 
-Finalization succeeds only after every snapshotted attempt is resolved and any bound Factory run is
-observed terminal.
+Finalization succeeds only after every snapshotted attempt is resolved and any discovered Factory run is
+observed terminal. Before accepting `no-run-created`, Mobius reconciles native Factory summaries and
+the reservation progress marker so a launched-but-unbound run cannot be discarded.
+
+Finalization also requires a complete App session inventory captured after cancellation and the
+observed attempts. Unknown session or Factory state blocks unless an explicit attributed
+`finalizationOverride` is supplied. `no-session-created` remains a coordinator attestation because no
+session ID exists to verify.
+
+Reservations older than 30 minutes are surfaced as stale recovery guidance. Resolve them explicitly
+with `mobius_complete_task(status:"blocked")` followed by `mobius_retry_task`; Mobius never expires or
+relaunches them automatically.
 
 ## Persistence
 
@@ -98,7 +116,7 @@ Activation is session-local and enables conservative coordinator hooks.
 | Planning | `mobius_prepare_plan`, `mobius_create_plan`, `mobius_submit_plan`, `mobius_approve_plan` |
 | Inspection | `mobius_get_plan`, `mobius_get_status`, `mobius_list_plans` |
 | Tasks | `mobius_next_tasks`, `mobius_reserve_task`, `mobius_attach_task`, `mobius_complete_task`, `mobius_retry_task` |
-| Verification | `mobius_prepare_verification`, `mobius_begin_verification`, `mobius_complete_verification` |
+| Verification | `mobius_prepare_verification`, `mobius_complete_verification` |
 | Cancellation | `mobius_cancel`, `mobius_finalize_cancellation` |
 | Session hooks | `mobius_activate_plan`, `mobius_deactivate_plan` |
 

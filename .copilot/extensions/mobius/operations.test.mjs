@@ -8,7 +8,6 @@ import {
     EVIDENCE_TYPE,
     PLAN_STATUS,
     TASK_STATUS,
-    VERIFICATION_STATUS,
 } from "./domain.mjs";
 import { createMobiusOperations } from "./operations.mjs";
 
@@ -77,31 +76,35 @@ function analysisStub(options = {}) {
     };
     return {
         preparePlanning: async () => ({
-			backend: "factory",
 			factory: "mobius-plan",
             inputDigest: "a".repeat(64),
-			launchSpec: { name: "mobius-plan", args: {}, limits: {} },
+			launchSpec: { name: "mobius-plan", args: {} },
         }),
         importPlanning: async (runId) => ({
             runId,
             inputDigest: "a".repeat(64),
             plan: structuredClone(blueprint),
         }),
-        prepareVerification: async () => ({
-			backend: "factory",
+		prepareVerification: async (_plan, reservationId) => ({
 			factory: "mobius-verify",
             inputDigest: "b".repeat(64),
-			launchSpec: { name: "mobius-verify", args: {}, limits: {} },
+			launchSpec: {
+				name: "mobius-verify",
+				args: { reservationId },
+			},
         }),
-        inspectVerification: async (runId, _plan, inspectOptions = {}) => ({
+		importVerification: async (runId) => ({
             run: {
                 runId,
-				status: inspectOptions.requireComplete ? "completed" : "running",
+				status: "completed",
             },
-            inputDigest: "b".repeat(64),
-            ...(inspectOptions.requireComplete ? { result: verificationResult } : {}),
+			detail: { completedAt: Date.now() },
+			result: verificationResult,
         }),
-        verificationRunCanBeReplaced: async () => true,
+		discoverVerificationRun:
+			options.discoverVerificationRun ?? (async () => ({ state: "absent" })),
+		assessVerificationRun:
+			options.assessVerificationRun ?? (async () => ({ state: "active" })),
         verificationRunIsTerminal: options.verificationRunIsTerminal
             ?? (async () => true),
     };
@@ -114,6 +117,14 @@ function evidence(summary) {
         source: "node --test",
         outcome: "passed",
     }];
+}
+
+function completeInventory(sessions = []) {
+	return {
+		complete: true,
+		capturedAt: new Date(Date.now() + 1000).toISOString(),
+		sessions,
+	};
 }
 
 async function createApproved(operations, workspacePath) {
@@ -160,6 +171,19 @@ async function runTask(operations, plan, taskId, options = {}) {
         prUrl: options.prUrl,
     });
     return { plan, reserved };
+}
+
+async function completeImplementation(operations, workspacePath) {
+	let plan = await createApproved(operations, workspacePath);
+	({ plan } = await runTask(operations, plan, "T-001", {
+		reservationId: "complete-foundation",
+		sessionId: "complete-foundation-session",
+	}));
+	({ plan } = await runTask(operations, plan, "T-002", {
+		reservationId: "complete-integration",
+		sessionId: "complete-integration-session",
+	}));
+	return plan;
 }
 
 test("operations drive reservation, App attachment, verification, and approval", () => (
@@ -238,13 +262,6 @@ test("operations drive reservation, App attachment, verification, and approval",
         });
 		assert.equal(verificationLaunch.factory, "mobius-verify");
         plan = verificationLaunch.plan;
-        plan = await operations.beginVerification({
-            planId: plan.id,
-            expectedRevision: plan.revision,
-            reservationId: "reserve-verification-success",
-			runId: "factory-run-1",
-        });
-        assert.equal(plan.verification.status, VERIFICATION_STATUS.RUNNING);
         plan = await operations.finishVerification({
             planId: plan.id,
             expectedRevision: plan.revision,
@@ -259,7 +276,15 @@ test("operations drive reservation, App attachment, verification, and approval",
         });
         assert.equal(plan.status, PLAN_STATUS.COMPLETED);
         assert.equal(notifications.at(-1).revision, plan.revision);
-    })
+    }, {
+		analysis: analysisStub({
+			discoverVerificationRun: async () => ({
+				state: "found",
+				run: { runId: "factory-run-1", status: "completed" },
+				duplicates: [],
+			}),
+		}),
+	})
 ));
 
 test("scope overlap needs an auditable override and running scopes stay occupied", () => (
@@ -312,6 +337,303 @@ test("scope overlap needs an auditable override and running scopes stay occupied
     })
 ));
 
+test("verification completion rejects duplicate reservation runs", () => (
+	withOperations(async ({ operations, workspacePath }) => {
+		let plan = await completeImplementation(operations, workspacePath);
+		const prepared = await operations.prepareVerification({
+			planId: plan.id,
+			expectedRevision: plan.revision,
+			reservationId: "duplicate-completion",
+		});
+		plan = prepared.plan;
+		await assert.rejects(
+			operations.finishVerification({
+				planId: plan.id,
+				expectedRevision: plan.revision,
+				runId: "first-run",
+			}),
+			(error) => error.code === "verification_launch_indeterminate",
+		);
+		await assert.rejects(
+			operations.prepareVerification({
+				planId: plan.id,
+				expectedRevision: plan.revision,
+				reservationId: "duplicate-replacement",
+				replacementReason: "Attempt to override duplicate runs.",
+				requestedBy: "octocat",
+			}),
+			(error) => error.code === "verification_duplicate_runs",
+		);
+	}, {
+		analysis: analysisStub({
+			discoverVerificationRun: async () => ({
+				state: "inconclusive",
+				reason: "multiple Factory runs carry the verification reservation",
+				candidates: [
+					{ runId: "first-run" },
+					{ runId: "second-run" },
+				],
+			}),
+		}),
+	})
+));
+
+test("repeated verification preparation reports an already launched run", () => {
+	const found = {
+		runId: "discovered-verification",
+		status: "running",
+		createdAt: Date.parse("2026-08-07T00:10:00.000Z"),
+	};
+	return withOperations(async ({ operations, workspacePath }) => {
+		let plan = await completeImplementation(operations, workspacePath);
+		const first = await operations.prepareVerification({
+			planId: plan.id,
+			expectedRevision: plan.revision,
+			reservationId: "discover-existing-run",
+		});
+		plan = first.plan;
+		const replay = await operations.prepareVerification({
+			planId: plan.id,
+			expectedRevision: plan.revision - 1,
+			reservationId: "discover-existing-run",
+		});
+		assert.equal(replay.runId, found.runId);
+		assert.equal(replay.launchSpec, null);
+		assert.equal(replay.plan.revision, plan.revision);
+		await assert.rejects(
+			operations.prepareVerification({
+				planId: plan.id,
+				expectedRevision: plan.revision,
+				reservationId: "replacement-reservation",
+			}),
+			(error) => error.code === "verification_replacement_requires_approval",
+		);
+		await assert.rejects(
+			operations.prepareVerification({
+				planId: plan.id,
+				expectedRevision: plan.revision,
+				reservationId: "replacement-reservation",
+				replacementReason: "Attempted replacement while active.",
+				requestedBy: "octocat",
+			}),
+			(error) => error.code === "verification_already_reserved",
+		);
+	}, {
+		analysis: analysisStub({
+			discoverVerificationRun: async () => ({
+				state: "found",
+				run: found,
+				duplicates: [],
+			}),
+		}),
+	});
+});
+
+test("terminal non-importable verification can move to a new reservation explicitly", () => (
+	withOperations(async ({ operations, workspacePath }) => {
+		let plan = await completeImplementation(operations, workspacePath);
+		const first = await operations.prepareVerification({
+			planId: plan.id,
+			expectedRevision: plan.revision,
+			reservationId: "failed-reservation",
+		});
+		plan = first.plan;
+		await assert.rejects(
+			operations.prepareVerification({
+				planId: plan.id,
+				expectedRevision: plan.revision,
+				reservationId: "replacement-reservation",
+			}),
+			(error) => error.code === "verification_replacement_requires_approval",
+		);
+		const replacement = await operations.prepareVerification({
+			planId: plan.id,
+			expectedRevision: plan.revision,
+			reservationId: "replacement-reservation",
+			replacementReason: "The previous Factory run was cancelled.",
+			requestedBy: "octocat",
+		});
+		assert.equal(
+			replacement.plan.verification.reservationId,
+			"replacement-reservation",
+		);
+		assert.deepEqual(replacement.plan.verification.replacement, {
+			supersededReservationId: "failed-reservation",
+			supersededRunId: "failed-run",
+			reason: "The previous Factory run was cancelled.",
+			requestedBy: "octocat",
+			at: replacement.plan.verification.reservedAt,
+		});
+		assert.equal(replacement.plan.telemetry.at(-1).event, "verification-replaced");
+	}, {
+		analysis: analysisStub({
+			discoverVerificationRun: async () => ({
+				state: "found",
+				run: { runId: "failed-run", status: "cancelled" },
+				duplicates: [],
+			}),
+			assessVerificationRun: async () => ({
+				state: "terminal-nonimportable",
+			}),
+		}),
+	})
+));
+
+test("verification preparation never relaunches on inconclusive discovery", () => (
+	withOperations(async ({ operations, workspacePath }) => {
+		let plan = await completeImplementation(operations, workspacePath);
+		const first = await operations.prepareVerification({
+			planId: plan.id,
+			expectedRevision: plan.revision,
+			reservationId: "inconclusive-prepare",
+		});
+		plan = first.plan;
+		await assert.rejects(
+			operations.prepareVerification({
+				planId: plan.id,
+				expectedRevision: plan.revision,
+				reservationId: "inconclusive-prepare",
+			}),
+			(error) => error.code === "verification_launch_indeterminate",
+		);
+		const replacement = await operations.prepareVerification({
+			planId: plan.id,
+			expectedRevision: plan.revision,
+			reservationId: "inconclusive-replacement",
+			replacementReason: "Factory progress remained unreadable.",
+			requestedBy: "octocat",
+		});
+		assert.equal(
+			replacement.plan.verification.replacement.supersededRunId,
+			null,
+		);
+	}, {
+		analysis: analysisStub({
+			discoverVerificationRun: async () => ({
+				state: "inconclusive",
+				reason: "pending run has no marker",
+				candidates: [{ runId: "pending-run" }],
+			}),
+		}),
+	})
+));
+
+test("cancellation reconciliation prevents a launched run from being declared absent", () => {
+	let launched = false;
+	const found = {
+		runId: "unbound-verification",
+		status: "completed",
+		createdAt: 0,
+	};
+	return withOperations(async ({ operations, workspacePath }) => {
+		let plan = await completeImplementation(operations, workspacePath);
+		const prepared = await operations.prepareVerification({
+			planId: plan.id,
+			expectedRevision: plan.revision,
+			reservationId: "unbound-cancellation",
+		});
+		plan = prepared.plan;
+		found.createdAt = Date.parse(plan.verification.reservedAt) + 1;
+		plan = await operations.cancel({
+			planId: plan.id,
+			expectedRevision: plan.revision,
+			requestId: "cancel-unbound-verification",
+			target: "plan",
+			reason: "Stop",
+			requestedBy: "octocat",
+		});
+		assert.equal(plan.cancellation.verificationRunId, null);
+
+		launched = true;
+		await assert.rejects(
+			operations.finalizeCancellation({
+				planId: plan.id,
+				expectedRevision: plan.revision,
+				dispositions: [],
+				verificationDisposition: "no-run-created",
+				finalizedBy: "octocat",
+				sessionInventory: completeInventory(),
+			}),
+			/bound Factory run|run-terminated/,
+		);
+		const latest = await operations.getPlan({ planId: plan.id });
+		assert.equal(latest.cancellation.verificationRunId, null);
+		const finalized = await operations.finalizeCancellation({
+			planId: plan.id,
+			expectedRevision: plan.revision,
+			dispositions: [],
+			verificationDisposition: "run-terminated",
+			finalizedBy: "octocat",
+			sessionInventory: completeInventory(),
+		});
+		assert.equal(finalized.status, PLAN_STATUS.CANCELLED);
+		assert.equal(finalized.cancellation.verificationRunId, found.runId);
+	}, {
+		analysis: analysisStub({
+			discoverVerificationRun: async () => launched
+				? { state: "found", run: found, duplicates: [] }
+				: { state: "absent" },
+			verificationRunIsTerminal: async () => true,
+		}),
+	});
+});
+
+test("cancellation remains requestable when Factory discovery is inconclusive", () => (
+	withOperations(async ({ operations, workspacePath }) => {
+		let plan = await completeImplementation(operations, workspacePath);
+		const prepared = await operations.prepareVerification({
+			planId: plan.id,
+			expectedRevision: plan.revision,
+			reservationId: "inconclusive-cancellation",
+		});
+		plan = await operations.cancel({
+			planId: plan.id,
+			expectedRevision: prepared.plan.revision,
+			requestId: "cancel-inconclusive-verification",
+			target: "plan",
+			reason: "Stop despite unavailable Factory observation",
+			requestedBy: "octocat",
+		});
+		assert.equal(plan.status, PLAN_STATUS.CANCELLING);
+		await assert.rejects(
+			operations.finalizeCancellation({
+				planId: plan.id,
+				expectedRevision: plan.revision,
+				dispositions: [],
+				verificationDisposition: "no-run-created",
+				finalizedBy: "octocat",
+				sessionInventory: completeInventory(),
+			}),
+			(error) => error.code === "verification_launch_indeterminate",
+		);
+		const finalized = await operations.finalizeCancellation({
+			planId: plan.id,
+			expectedRevision: plan.revision,
+			dispositions: [],
+			verificationDisposition: "no-run-created",
+			finalizationOverride: {
+				reason: "Factory observation remained unavailable.",
+				attestedBy: "octocat",
+			},
+			finalizedBy: "octocat",
+			sessionInventory: completeInventory(),
+		});
+		assert.equal(finalized.status, PLAN_STATUS.CANCELLED);
+		assert.equal(
+			finalized.cancellation.finalizationOverride.attestedBy,
+			"octocat",
+		);
+	}, {
+		analysis: analysisStub({
+			discoverVerificationRun: async () => ({
+				state: "inconclusive",
+				reason: "Factory API unavailable",
+				candidates: [],
+			}),
+		}),
+	})
+));
+
 test("cancellation request is idempotent and finalization needs exact dispositions", () => (
     withOperations(async ({ operations, workspacePath }) => {
         let plan = await createApproved(operations, workspacePath);
@@ -354,9 +676,45 @@ test("cancellation request is idempotent and finalization needs exact dispositio
                 expectedRevision: plan.revision,
                 dispositions: [],
                 finalizedBy: "octocat",
+				sessionInventory: completeInventory(),
             }),
             (/** @type {any} */ error) => error.code === "cancellation_incomplete",
         );
+		await assert.rejects(
+			operations.finalizeCancellation({
+				planId: plan.id,
+				expectedRevision: plan.revision,
+				dispositions: [{
+					attemptId: reserved.attemptId,
+					disposition: "session-terminated",
+					sessionId: "session-to-stop",
+				}],
+				finalizedBy: "octocat",
+				sessionInventory: completeInventory([{
+					id: "session-to-stop",
+					status: "running",
+				}]),
+			}),
+			(error) => error.code === "cancellation_session_not_terminated",
+		);
+		await assert.rejects(
+			operations.finalizeCancellation({
+				planId: plan.id,
+				expectedRevision: plan.revision,
+				dispositions: [{
+					attemptId: reserved.attemptId,
+					disposition: "session-terminated",
+					sessionId: "session-to-stop",
+				}],
+				finalizedBy: "octocat",
+				sessionInventory: {
+					complete: true,
+					capturedAt: plan.cancellation.requestedAt,
+					sessions: [],
+				},
+			}),
+			(error) => error.code === "cancellation_inventory_incomplete",
+		);
         plan = await operations.finalizeCancellation({
             planId: plan.id,
             expectedRevision: plan.revision,
@@ -366,6 +724,10 @@ test("cancellation request is idempotent and finalization needs exact dispositio
                 sessionId: "session-to-stop",
             }],
             finalizedBy: "octocat",
+			sessionInventory: completeInventory([{
+				id: "session-to-stop",
+				status: "archived",
+			}]),
         });
         assert.equal(plan.status, PLAN_STATUS.CANCELLED);
     })
@@ -383,12 +745,6 @@ test("Factory cancellation must be observed terminal before finalization", () =>
             reservationId: "reserve-active-verification",
         });
         plan = verification.plan;
-        plan = await operations.beginVerification({
-            planId: plan.id,
-            expectedRevision: plan.revision,
-            reservationId: "reserve-active-verification",
-            runId: "active-verification",
-        });
         plan = await operations.cancel({
             planId: plan.id,
             expectedRevision: plan.revision,
@@ -404,6 +760,7 @@ test("Factory cancellation must be observed terminal before finalization", () =>
                 dispositions: [],
                 verificationDisposition: "run-terminated",
                 finalizedBy: "octocat",
+				sessionInventory: completeInventory(),
             }),
             (/** @type {any} */ error) => error.code === "verification_not_terminated",
         );
@@ -414,10 +771,20 @@ test("Factory cancellation must be observed terminal before finalization", () =>
             dispositions: [],
             verificationDisposition: "run-terminated",
             finalizedBy: "octocat",
+			sessionInventory: completeInventory(),
         });
         assert.equal(plan.status, PLAN_STATUS.CANCELLED);
     }, {
         analysis: analysisStub({
+			discoverVerificationRun: async () => ({
+				state: "found",
+				run: {
+					runId: "active-verification",
+					status: "running",
+					createdAt: Date.now(),
+				},
+				duplicates: [],
+			}),
             verificationRunIsTerminal: async () => terminal,
         }),
     });
@@ -446,12 +813,21 @@ test("cancellation resolves a verification launch reserved before the Factory st
             (await operations.getStatus({ planId: plan.id })).projection.nextAction.kind,
             "resolve-verification-launch",
         );
+		await assert.rejects(
+			operations.prepareVerification({
+				planId: plan.id,
+				expectedRevision: plan.revision,
+				reservationId: "reserve-cancelled-launch",
+			}),
+			(error) => error.code === "invalid_plan_transition",
+		);
         await assert.rejects(
             operations.finalizeCancellation({
                 planId: plan.id,
                 expectedRevision: plan.revision,
                 dispositions: [],
                 finalizedBy: "octocat",
+				sessionInventory: completeInventory(),
             }),
             (/** @type {any} */ error) => error.code === "cancellation_incomplete",
         );
@@ -461,47 +837,10 @@ test("cancellation resolves a verification launch reserved before the Factory st
             dispositions: [],
             verificationDisposition: "no-run-created",
             finalizedBy: "octocat",
+			sessionInventory: completeInventory(),
         });
         assert.equal(plan.status, PLAN_STATUS.CANCELLED);
         assert.equal(plan.cancellation.verificationDisposition, "no-run-created");
-    })
-));
-
-test("a verification run created during cancellation can still attach to its reservation", () => (
-    withOperations(async ({ operations, workspacePath }) => {
-        let plan = await createApproved(operations, workspacePath);
-        ({ plan } = await runTask(operations, plan, "T-001"));
-        ({ plan } = await runTask(operations, plan, "T-002"));
-        const verification = await operations.prepareVerification({
-            planId: plan.id,
-            expectedRevision: plan.revision,
-            reservationId: "reserve-late-verification",
-        });
-        plan = verification.plan;
-        plan = await operations.cancel({
-            planId: plan.id,
-            expectedRevision: plan.revision,
-            requestId: "cancel-late-verification",
-            target: "plan",
-            reason: "Stop after launch settles",
-            requestedBy: "octocat",
-        });
-        plan = await operations.beginVerification({
-            planId: plan.id,
-            expectedRevision: plan.revision,
-            reservationId: "reserve-late-verification",
-            runId: "late-verification-run",
-        });
-        assert.equal(plan.status, PLAN_STATUS.CANCELLING);
-        assert.equal(plan.cancellation.verificationRunId, "late-verification-run");
-        plan = await operations.finalizeCancellation({
-            planId: plan.id,
-            expectedRevision: plan.revision,
-            dispositions: [],
-            verificationDisposition: "run-terminated",
-            finalizedBy: "octocat",
-        });
-        assert.equal(plan.status, PLAN_STATUS.CANCELLED);
     })
 ));
 
@@ -516,12 +855,6 @@ test("failed verification retry opens a fresh correction wave", () => (
             reservationId: "reserve-failed-verification",
         });
         plan = verification.plan;
-        plan = await operations.beginVerification({
-            planId: plan.id,
-            expectedRevision: plan.revision,
-            reservationId: "reserve-failed-verification",
-            runId: "failed-verification",
-        });
         plan = await operations.finishVerification({
             planId: plan.id,
             expectedRevision: plan.revision,
@@ -540,6 +873,11 @@ test("failed verification retry opens a fresh correction wave", () => (
         assert.equal(plan.tasks[0].attempts.length, 1);
     }, {
         analysis: analysisStub({
+			discoverVerificationRun: async () => ({
+				state: "found",
+				run: { runId: "failed-verification", status: "completed" },
+				duplicates: [],
+			}),
             verificationResult: {
                 passed: false,
                 summary: "Foundation evidence missing",

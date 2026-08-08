@@ -17,7 +17,6 @@ export const PLAN_STATUS = Object.freeze({
     AWAITING_APPROVAL: "awaiting-approval",
     APPROVED: "approved",
     RUNNING: "running",
-    VERIFYING: "verifying",
     AWAITING_COMPLETION_APPROVAL: "awaiting-completion-approval",
     CANCELLING: "cancelling",
     COMPLETED: "completed",
@@ -70,7 +69,6 @@ export const EVIDENCE_OUTCOME = Object.freeze({
 export const VERIFICATION_STATUS = Object.freeze({
     NOT_STARTED: "not-started",
     RESERVED: "reserved",
-    RUNNING: "running",
     PASSED: "passed",
     FAILED: "failed",
 });
@@ -236,7 +234,7 @@ const PLAN_KEYS = new Set([
 ]);
 
 const REPOSITORY_KEYS = new Set(["workingDirectory", "baseBranch"]);
-const PLANNING_KEYS = new Set(["backend", "runId", "inputDigest"]);
+const PLANNING_KEYS = new Set(["runId", "inputDigest"]);
 const GATE_KEYS = new Set([
     "planApprovedAt",
     "planApprovedBy",
@@ -246,16 +244,22 @@ const GATE_KEYS = new Set([
 const VERIFICATION_KEYS = new Set([
     "status",
     "reservationId",
-    "backend",
     "runId",
     "inputDigest",
     "summary",
     "evidence",
     "missingEvidence",
     "correctionTaskIds",
+    "replacement",
     "reservedAt",
-    "startedAt",
     "completedAt",
+]);
+const VERIFICATION_REPLACEMENT_KEYS = new Set([
+    "supersededReservationId",
+    "supersededRunId",
+    "reason",
+    "requestedBy",
+    "at",
 ]);
 const TELEMETRY_KEYS = new Set(["event", "at"]);
 const TASK_KEYS = new Set([
@@ -323,6 +327,7 @@ const CANCELLATION_KEYS = new Set([
     "verificationRunId",
     "acknowledgements",
     "verificationDisposition",
+    "finalizationOverride",
     "verificationTerminatedAt",
     "finalizedBy",
     "finalizedAt",
@@ -334,6 +339,7 @@ const CANCELLATION_ACK_KEYS = new Set([
     "acknowledgedBy",
     "acknowledgedAt",
 ]);
+const CANCELLATION_OVERRIDE_KEYS = new Set(["reason", "attestedBy"]);
 const DRAFT_INPUT_KEYS = new Set([
     "id",
     "title",
@@ -373,12 +379,6 @@ const PLAN_TRANSITIONS = Object.freeze({
         PLAN_STATUS.CANCELLING,
     ]),
     [PLAN_STATUS.RUNNING]: new Set([
-        PLAN_STATUS.VERIFYING,
-        PLAN_STATUS.FAILED,
-        PLAN_STATUS.CANCELLING,
-    ]),
-    [PLAN_STATUS.VERIFYING]: new Set([
-        PLAN_STATUS.VERIFYING,
         PLAN_STATUS.AWAITING_COMPLETION_APPROVAL,
         PLAN_STATUS.FAILED,
         PLAN_STATUS.CANCELLING,
@@ -1206,7 +1206,6 @@ function validateVerification(verification) {
     if (verification.reservationId !== null) {
         assertRequestId(verification.reservationId, "verification.reservationId");
     }
-    assertNullableString(verification.backend, "verification.backend", 32);
     assertNullableString(
         verification.runId,
         "verification.runId",
@@ -1234,34 +1233,54 @@ function validateVerification(verification) {
         maximum: LIMITS.tasks,
         itemMaximum: 5,
     });
-    assertTimestamp(verification.reservedAt, "verification.reservedAt", { nullable: true });
-    assertTimestamp(verification.startedAt, "verification.startedAt", { nullable: true });
-    assertTimestamp(verification.completedAt, "verification.completedAt", { nullable: true });
-    if (verification.startedAt !== null && verification.completedAt !== null
-        && Date.parse(verification.completedAt) < Date.parse(verification.startedAt)) {
-        fail("invalid_verification_timestamps", "verification.completedAt precedes startedAt", {
-            path: "verification.completedAt",
-        });
+    if (verification.replacement !== null) {
+		assertPlainObject(verification.replacement, "verification.replacement");
+		assertKnownKeys(
+			verification.replacement,
+			VERIFICATION_REPLACEMENT_KEYS,
+			"verification.replacement",
+		);
+		assertRequestId(
+			verification.replacement.supersededReservationId,
+			"verification.replacement.supersededReservationId",
+		);
+		assertNullableString(
+			verification.replacement.supersededRunId,
+			"verification.replacement.supersededRunId",
+			LIMITS.verificationRunId,
+		);
+		assertString(
+			verification.replacement.reason,
+			"verification.replacement.reason",
+			LIMITS.error,
+		);
+		assertString(
+			verification.replacement.requestedBy,
+			"verification.replacement.requestedBy",
+			LIMITS.actor,
+		);
+		assertTimestamp(verification.replacement.at, "verification.replacement.at");
     }
+    assertTimestamp(verification.reservedAt, "verification.reservedAt", { nullable: true });
+    assertTimestamp(verification.completedAt, "verification.completedAt", { nullable: true });
     if (verification.reservedAt !== null
-        && verification.startedAt !== null
-        && Date.parse(verification.startedAt) < Date.parse(verification.reservedAt)) {
-        fail("invalid_verification_timestamps", "verification.startedAt precedes reservedAt", {
-            path: "verification.startedAt",
+		&& verification.completedAt !== null
+		&& Date.parse(verification.completedAt) < Date.parse(verification.reservedAt)) {
+		fail("invalid_verification_timestamps", "verification.completedAt precedes reservedAt", {
+			path: "verification.completedAt",
         });
     }
 
     if (verification.status === VERIFICATION_STATUS.NOT_STARTED) {
         if (verification.reservationId !== null
             || verification.runId !== null
-            || verification.backend !== null
             || verification.inputDigest !== null
             || verification.summary !== null
             || verification.evidence.length > 0
             || verification.missingEvidence.length > 0
             || verification.correctionTaskIds.length > 0
+			|| verification.replacement !== null
             || verification.reservedAt !== null
-            || verification.startedAt !== null
             || verification.completedAt !== null) {
             fail("invalid_verification_state", "Unstarted verification cannot contain run data", {
                 path: "verification",
@@ -1269,11 +1288,9 @@ function validateVerification(verification) {
         }
     } else if (verification.status === VERIFICATION_STATUS.RESERVED) {
         if (verification.reservationId === null
-			|| verification.backend !== "factory"
             || verification.runId !== null
             || !/^[a-f0-9]{64}$/.test(verification.inputDigest ?? "")
             || verification.reservedAt === null
-            || verification.startedAt !== null
             || verification.summary !== null
             || verification.evidence.length > 0
             || verification.missingEvidence.length > 0
@@ -1283,27 +1300,11 @@ function validateVerification(verification) {
                 path: "verification",
             });
         }
-    } else if (verification.status === VERIFICATION_STATUS.RUNNING) {
-		if (verification.backend !== "factory"
-            || verification.reservationId === null
-            || verification.runId === null
-            || !/^[a-f0-9]{64}$/.test(verification.inputDigest ?? "")
-            || verification.reservedAt === null
-            || verification.startedAt === null
-            || verification.summary !== null
-            || verification.correctionTaskIds.length > 0
-            || verification.completedAt !== null) {
-            fail("invalid_verification_state", "Running verification requires startedAt and no result", {
-                path: "verification",
-            });
-        }
     } else if (verification.status === VERIFICATION_STATUS.PASSED) {
-		if (verification.backend !== "factory"
-            || verification.reservationId === null
+		if (verification.reservationId === null
             || verification.runId === null
             || !/^[a-f0-9]{64}$/.test(verification.inputDigest ?? "")
             || verification.reservedAt === null
-            || verification.startedAt === null
             || verification.completedAt === null
             || verification.summary === null
             || verification.evidence.length === 0
@@ -1320,12 +1321,10 @@ function validateVerification(verification) {
             });
         }
     } else if (verification.status === VERIFICATION_STATUS.FAILED) {
-		if (verification.backend !== "factory"
-            || verification.reservationId === null
+		if (verification.reservationId === null
             || verification.runId === null
             || !/^[a-f0-9]{64}$/.test(verification.inputDigest ?? "")
             || verification.reservedAt === null
-            || verification.startedAt === null
             || verification.completedAt === null
             || verification.summary === null
             || verification.missingEvidence.length === 0
@@ -1348,15 +1347,14 @@ function emptyVerification() {
     return {
         status: VERIFICATION_STATUS.NOT_STARTED,
         reservationId: null,
-        backend: null,
         runId: null,
         inputDigest: null,
         summary: null,
         evidence: [],
         missingEvidence: [],
         correctionTaskIds: [],
+		replacement: null,
         reservedAt: null,
-        startedAt: null,
         completedAt: null,
     };
 }
@@ -1433,6 +1431,24 @@ function validateCancellation(cancellation, planStatus, tasks) {
         "cancellation.verificationRunId",
         LIMITS.verificationRunId,
     );
+    if (cancellation.finalizationOverride !== null) {
+		assertPlainObject(cancellation.finalizationOverride, "cancellation.finalizationOverride");
+		assertKnownKeys(
+			cancellation.finalizationOverride,
+			CANCELLATION_OVERRIDE_KEYS,
+			"cancellation.finalizationOverride",
+		);
+		assertString(
+			cancellation.finalizationOverride.reason,
+			"cancellation.finalizationOverride.reason",
+			LIMITS.error,
+		);
+		assertString(
+			cancellation.finalizationOverride.attestedBy,
+			"cancellation.finalizationOverride.attestedBy",
+			LIMITS.actor,
+		);
+    }
     if (!Array.isArray(cancellation.acknowledgements)
         || cancellation.acknowledgements.length > LIMITS.tasks) {
         fail("invalid_cancellation_acknowledgements", "Cancellation acknowledgements are invalid", {
@@ -1540,6 +1556,7 @@ function validateCancellation(cancellation, planStatus, tasks) {
             });
         }
         if (cancellation.verificationDisposition !== null
+			|| cancellation.finalizationOverride !== null
             || cancellation.verificationTerminatedAt !== null) {
             fail("invalid_cancellation_verification", "Cancelling plan cannot contain a final verification disposition", {
                 path: "cancellation.verificationDisposition",
@@ -1593,11 +1610,6 @@ function validatePlanning(planning) {
     }
     assertPlainObject(planning, "planning");
     assertKnownKeys(planning, PLANNING_KEYS, "planning");
-    if (planning.backend !== "factory") {
-		fail("invalid_planning_backend", "planning.backend must be factory", {
-            path: "planning.backend",
-        });
-    }
     assertString(planning.runId, "planning.runId", LIMITS.verificationRunId);
     if (typeof planning.inputDigest !== "string"
         || !/^[a-f0-9]{64}$/.test(planning.inputDigest)) {
@@ -1736,7 +1748,6 @@ export function validatePlan(plan) {
     const approvalRequired = new Set([
         PLAN_STATUS.APPROVED,
         PLAN_STATUS.RUNNING,
-        PLAN_STATUS.VERIFYING,
         PLAN_STATUS.AWAITING_COMPLETION_APPROVAL,
         PLAN_STATUS.COMPLETED,
         PLAN_STATUS.FAILED,
@@ -1764,7 +1775,6 @@ export function validatePlan(plan) {
     }
 
     const verificationStates = new Set([
-        PLAN_STATUS.VERIFYING,
         PLAN_STATUS.AWAITING_COMPLETION_APPROVAL,
         PLAN_STATUS.COMPLETED,
     ]);
@@ -1837,13 +1847,6 @@ export function validatePlan(plan) {
             path: "tasks",
         });
     }
-    if (plan.verification.status === VERIFICATION_STATUS.RUNNING
-        && plan.status !== PLAN_STATUS.VERIFYING
-        && plan.status !== PLAN_STATUS.CANCELLING) {
-        fail("invalid_verification_state", "Running verification requires plan status verifying", {
-            path: "verification.status",
-        });
-    }
     if ((plan.status === PLAN_STATUS.AWAITING_COMPLETION_APPROVAL
         || plan.status === PLAN_STATUS.COMPLETED)
         && plan.verification.status !== VERIFICATION_STATUS.PASSED) {
@@ -1852,10 +1855,9 @@ export function validatePlan(plan) {
         });
     }
     if (plan.verification.status === VERIFICATION_STATUS.FAILED
-        && plan.status !== PLAN_STATUS.VERIFYING
         && plan.status !== PLAN_STATUS.FAILED
         && plan.status !== PLAN_STATUS.CANCELLED) {
-        fail("invalid_verification_state", "Failed verification requires a verifying or failed plan", {
+		fail("invalid_verification_state", "Failed verification requires a failed or cancelled plan", {
             path: "verification.status",
         });
     }
@@ -1865,13 +1867,6 @@ export function validatePlan(plan) {
         && plan.cancellation.verificationReservationId !== plan.verification.reservationId) {
         fail("invalid_cancellation_verification", "Cancellation reservation does not match verification", {
             path: "cancellation.verificationReservationId",
-        });
-    }
-    if (plan.cancellation?.verificationRunId !== null
-        && plan.cancellation?.verificationRunId !== undefined
-        && plan.cancellation.verificationRunId !== plan.verification.runId) {
-        fail("invalid_cancellation_verification", "Cancellation run does not match verification", {
-            path: "cancellation.verificationRunId",
         });
     }
     if (plan.status === PLAN_STATUS.CANCELLING
@@ -1995,11 +1990,6 @@ export function transitionPlan(plan, nextStatus, options = {}) {
             path: "status",
         });
     }
-    if (nextStatus === PLAN_STATUS.VERIFYING) {
-        fail("specialized_transition_required", "Verification must be reserved before launch", {
-            path: "status",
-        });
-    }
     const allowed = PLAN_TRANSITIONS[plan.status];
     if (!allowed.has(nextStatus)) {
         fail("invalid_plan_transition", `Cannot move plan from ${plan.status} to ${nextStatus}`, {
@@ -2041,7 +2031,7 @@ export function transitionPlan(plan, nextStatus, options = {}) {
  */
 export function reserveVerification(plan, options = {}) {
     validatePlan(plan);
-    if (plan.status !== PLAN_STATUS.RUNNING && plan.status !== PLAN_STATUS.VERIFYING) {
+    if (plan.status !== PLAN_STATUS.RUNNING) {
         fail("invalid_plan_transition", `Verification cannot be reserved from ${plan.status}`, {
             path: "status",
         });
@@ -2064,67 +2054,24 @@ export function reserveVerification(plan, options = {}) {
     candidate.verification = {
         status: VERIFICATION_STATUS.RESERVED,
         reservationId: options.reservationId,
-		backend: "factory",
         runId: null,
         inputDigest: options.inputDigest,
         summary: null,
         evidence: [],
         missingEvidence: [],
         correctionTaskIds: [],
+		replacement: options.replacement
+			? {
+				supersededReservationId: options.replacement.supersededReservationId,
+				supersededRunId: options.replacement.supersededRunId ?? null,
+				reason: options.replacement.reason,
+				requestedBy: options.replacement.requestedBy,
+				at: timestamp,
+			}
+			: null,
         reservedAt: timestamp,
-        startedAt: null,
         completedAt: null,
     };
-    candidate.updatedAt = timestamp;
-    validatePlan(candidate);
-    return candidate;
-}
-
-/**
- * Binds a native Factory run to its exact verification reservation.
- *
- * @param {MobiusPlan} plan
- * @param {any} [options]
- * @returns {MobiusPlan}
- */
-export function bindVerificationRun(plan, options = {}) {
-    validatePlan(plan);
-    if (plan.verification.status !== VERIFICATION_STATUS.RESERVED
-        || plan.verification.reservationId !== options.reservationId) {
-        fail("verification_not_reserved", "Verification run does not match the active reservation", {
-            path: "reservationId",
-        });
-    }
-    if (plan.status !== PLAN_STATUS.RUNNING && plan.status !== PLAN_STATUS.CANCELLING) {
-        fail("invalid_plan_transition", `Verification cannot bind while the plan is ${plan.status}`, {
-            path: "status",
-        });
-    }
-    assertString(options.runId, "runId", LIMITS.verificationRunId);
-    if (options.inputDigest !== plan.verification.inputDigest) {
-        fail("verification_input_mismatch", "Verification run input does not match its reservation", {
-            path: "inputDigest",
-        });
-    }
-    if (plan.status === PLAN_STATUS.CANCELLING
-        && plan.cancellation.verificationReservationId !== options.reservationId) {
-        fail("invalid_cancellation_verification", "Verification reservation was not active at cancellation", {
-            path: "reservationId",
-        });
-    }
-    const timestamp = nowIso(options.at);
-    const candidate = clone(plan);
-    candidate.verification = {
-        ...candidate.verification,
-        status: VERIFICATION_STATUS.RUNNING,
-        runId: options.runId,
-        startedAt: timestamp,
-    };
-    if (candidate.status === PLAN_STATUS.CANCELLING) {
-        candidate.cancellation.verificationRunId = options.runId;
-    } else {
-        candidate.status = PLAN_STATUS.VERIFYING;
-    }
     candidate.updatedAt = timestamp;
     validatePlan(candidate);
     return candidate;
@@ -2140,22 +2087,13 @@ export function bindVerificationRun(plan, options = {}) {
  */
 export function completeVerification(plan, result, options = {}) {
     validatePlan(plan);
-    if (plan.status !== PLAN_STATUS.VERIFYING
-        || plan.verification.status !== VERIFICATION_STATUS.RUNNING) {
-        fail("verification_not_running", "Verification can only complete from a running verification", {
+    if (plan.status !== PLAN_STATUS.RUNNING
+		|| plan.verification.status !== VERIFICATION_STATUS.RESERVED) {
+		fail("verification_not_reserved", "Verification can only complete from a reservation", {
             path: "verification.status",
         });
     }
     assertString(options.runId, "runId", LIMITS.verificationRunId);
-    if (plan.verification.runId !== null && plan.verification.runId !== options.runId) {
-        fail("verification_run_mismatch", "Verification completion runId does not match the active run", {
-            path: "runId",
-            details: {
-                expectedRunId: plan.verification.runId,
-                actualRunId: options.runId,
-            },
-        });
-    }
     assertPlainObject(result, "result");
     assertString(result.summary, "result.summary", LIMITS.resultSummary);
     assertStringArray(result.evidence, "result.evidence", {
@@ -2204,26 +2142,22 @@ export function completeVerification(plan, result, options = {}) {
     candidate.verification = {
         status: result.passed ? VERIFICATION_STATUS.PASSED : VERIFICATION_STATUS.FAILED,
         reservationId: candidate.verification.reservationId,
-        backend: candidate.verification.backend,
         runId: options.runId,
         inputDigest: candidate.verification.inputDigest,
         summary: result.summary,
         evidence: clone(result.evidence),
         missingEvidence: clone(result.missingEvidence),
         correctionTaskIds: clone(result.correctionTaskIds),
+		replacement: candidate.verification.replacement,
         reservedAt: candidate.verification.reservedAt,
-        startedAt: candidate.verification.startedAt,
         completedAt: timestamp,
     };
+    candidate.status = result.passed
+		? PLAN_STATUS.AWAITING_COMPLETION_APPROVAL
+		: PLAN_STATUS.FAILED;
     candidate.updatedAt = timestamp;
     validatePlan(candidate);
-    return transitionPlan(
-        candidate,
-        result.passed
-            ? PLAN_STATUS.AWAITING_COMPLETION_APPROVAL
-            : PLAN_STATUS.FAILED,
-        { at: timestamp },
-    );
+    return candidate;
 }
 
 /**
@@ -2711,6 +2645,22 @@ export function requestPlanCancellation(plan, options = {}) {
         attempt.cancelRequestedAt = timestamp;
         attempt.error = options.reason;
     }
+    const verificationReserved =
+		candidate.verification.status === VERIFICATION_STATUS.RESERVED;
+    if (options.verificationRunId != null) {
+		assertString(
+			options.verificationRunId,
+			"verificationRunId",
+			LIMITS.verificationRunId,
+		);
+		if (!verificationReserved) {
+			fail(
+				"invalid_cancellation_verification",
+				"A verification run requires an active reservation",
+				{ path: "verificationRunId" },
+			);
+		}
+    }
     candidate.status = PLAN_STATUS.CANCELLING;
     candidate.cancellation = {
         requestId: options.requestId,
@@ -2720,17 +2670,15 @@ export function requestPlanCancellation(plan, options = {}) {
         requestedBy: options.requestedBy,
         requestedAt: timestamp,
         requiredAttemptIds,
-        verificationReservationId: [
-            VERIFICATION_STATUS.RESERVED,
-            VERIFICATION_STATUS.RUNNING,
-        ].includes(candidate.verification.status)
+		verificationReservationId: verificationReserved
             ? candidate.verification.reservationId
             : null,
-        verificationRunId: candidate.verification.status === VERIFICATION_STATUS.RUNNING
-            ? candidate.verification.runId
+		verificationRunId: verificationReserved
+			? options.verificationRunId ?? null
             : null,
         acknowledgements: [],
         verificationDisposition: null,
+		finalizationOverride: null,
         verificationTerminatedAt: null,
         finalizedBy: null,
         finalizedAt: null,
@@ -2782,28 +2730,42 @@ export function finalizePlanCancellation(plan, dispositions, options = {}) {
             details: { requiredAttemptIds: required },
         });
     }
+    const verificationRunId =
+		options.verificationRunId ?? plan.cancellation.verificationRunId;
+    if (plan.cancellation.verificationRunId !== null
+		&& verificationRunId !== plan.cancellation.verificationRunId) {
+		fail("invalid_cancellation_verification", "Verification run identity changed", {
+			path: "verificationRunId",
+		});
+    }
     if (plan.cancellation.verificationReservationId === null) {
+		if (verificationRunId !== null) {
+			fail("invalid_cancellation_verification", "No verification launch was reserved", {
+				path: "verificationRunId",
+			});
+		}
         if (options.verificationDisposition !== undefined
             && options.verificationDisposition !== null) {
             fail("invalid_cancellation_verification", "No verification launch was reserved", {
                 path: "verificationDisposition",
             });
         }
-    } else if (plan.cancellation.verificationRunId === null) {
+    } else if (verificationRunId === null) {
         if (options.verificationDisposition !== "no-run-created") {
             fail("cancellation_incomplete", "The reserved verification launch needs a no-run-created disposition", {
                 path: "verificationDisposition",
             });
         }
     } else if (options.verificationDisposition !== "run-terminated"
-        || options.verificationTerminated !== true) {
+		|| (options.verificationTerminated !== true && !options.finalizationOverride)) {
 		fail("cancellation_incomplete", "The bound Factory run is not confirmed terminal", {
             path: "verificationDisposition",
-            details: { runId: plan.cancellation.verificationRunId },
+			details: { runId: verificationRunId },
         });
     }
     const timestamp = nowIso(options.at);
     const candidate = clone(plan);
+    candidate.cancellation.verificationRunId = verificationRunId;
     const acknowledgements = [];
     for (const attemptId of required) {
         const task = candidate.tasks.find(
@@ -2855,6 +2817,7 @@ export function finalizePlanCancellation(plan, dispositions, options = {}) {
         candidate.verification = {
             ...candidate.verification,
             status: VERIFICATION_STATUS.FAILED,
+			runId: candidate.cancellation.verificationRunId,
             summary: "Verification was cancelled with the plan",
             evidence: [],
             missingEvidence: ["Verification did not complete"],
@@ -2869,6 +2832,8 @@ export function finalizePlanCancellation(plan, dispositions, options = {}) {
         candidate.cancellation.verificationReservationId === null
             ? null
             : options.verificationDisposition;
+    candidate.cancellation.finalizationOverride =
+		options.finalizationOverride ?? null;
     candidate.cancellation.verificationTerminatedAt =
         candidate.cancellation.verificationRunId === null ? null : timestamp;
     candidate.cancellation.finalizedBy = options.finalizedBy;
