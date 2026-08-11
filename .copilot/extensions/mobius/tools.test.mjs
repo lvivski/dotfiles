@@ -27,6 +27,7 @@ test("Mobius registers the complete globally unique tool surface", () => {
         "mobius_prepare_verification",
         "mobius_complete_verification",
         "mobius_cancel",
+		"mobius_cancel_verification_run",
         "mobius_finalize_cancellation",
         "mobius_activate_plan",
         "mobius_deactivate_plan",
@@ -70,9 +71,19 @@ test("Mobius registers the complete globally unique tool surface", () => {
         completeTask.parameters.properties.evidence.items.properties.trust,
         undefined,
     );
+	assert.ok(completeTask.parameters.properties.evidence.items.properties.checkId);
+	assert.ok(completeTask.parameters.properties.sessionInventory);
     const cancel = tools.find((tool) => tool.name === "mobius_cancel");
     assert.ok(cancel.parameters.required.includes("requestedBy"));
     assert.ok(cancel.parameters.required.includes("requestId"));
+	const cancelVerification = tools.find(
+		(tool) => tool.name === "mobius_cancel_verification_run",
+	);
+	assert.deepEqual(cancelVerification.parameters.required, [
+		"planId",
+		"expectedRevision",
+		"requestId",
+	]);
 	const finalize = tools.find((tool) => tool.name === "mobius_finalize_cancellation");
 	assert.ok(finalize.parameters.required.includes("sessionInventory"));
 });

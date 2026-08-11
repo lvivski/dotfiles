@@ -1,113 +1,88 @@
 # Mobius
 
-Mobius is a dependency-aware engineering coordinator for Copilot sessions. It stores a validated plan
-in the session workspace, dispatches one App-native child session per task attempt, records claimed
-evidence, and gates completion through a native verification Factory.
+Mobius coordinates a dependency-aware engineering plan across App-native project sessions. It owns
+the plan state machine, task attempts, reservations, evidence, approvals, recovery, cancellation,
+and final Factory verdict. App sessions own repository work.
 
-## Runtime boundaries
+## Plan shape
 
-- **Native Agent Factories:** `mobius-plan` creates and critiques a plan; `mobius-verify` reviews
-  recorded evidence and produces the final verdict.
-- **Mobius:** owns plan state, optimistic revisions, task dependencies, reservations, evidence,
-  cancellation, recovery, hooks, and the board projection.
-- **App sessions:** own repository mutation and task delivery.
-- **Foreground coordinator:** invokes tools, creates child sessions, attaches their IDs, and records
-  outcomes.
+A plan contains:
 
-There is no separate Conveyor artifact or import protocol. Mobius registers its bundled scripts as
-native factories and reads their native run envelopes.
+- one or more `implement` tasks;
+- exactly one final `verify` task;
+- one dependency path from every implementation task into the verifier's single implementation
+  dependency.
 
-Mobius plan files and native Factory runs share the same Copilot session scope. A new `/clear`
-session receives a new workspace and cannot read the prior plan.
+The final implementation task must deliver a full commit or PR. The verifier is an ordinary Mobius
+task with `deliveryRequirement: "commit"`, no authored files, and no authored acceptance criteria.
+It reuses the same reservation, session attachment, retry, cancellation, and projection machinery
+as implementation tasks.
 
 ## Planning
 
 1. Call `mobius_prepare_plan`.
-2. Run the returned `launchSpec` exactly with `run_factory`.
-3. Review the completed Factory result.
-4. Call `mobius_create_plan` with the Factory `runId`, a stable plan ID, repository identity, and
-   `expectedRevision: 0`.
-5. Submit and explicitly approve the plan.
+2. Run its exact `launchSpec` with `run_factory`.
+3. Import the completed run with `mobius_create_plan`.
+4. Submit the draft and obtain explicit plan approval.
+5. Activate the plan to enable coordinator context and conservative hooks.
 
-Example launch specification:
-
-```json
-{
-  "name": "mobius-plan",
-  "args": {
-    "objective": "Implement the feature",
-    "constraints": [],
-    "repositoryContext": "Repository summary",
-    "maxTasks": 6,
-    "inputDigest": "..."
-  }
-}
-```
-
-Factory definitions own their default limits. A coordinator supplies overrides only when deliberately
-raising or narrowing a run.
+`maxTasks` counts implementation tasks; the planning Factory adds the verifier task.
 
 ## Task delivery
 
-1. Read dependency-ready work with `mobius_next_tasks`.
-2. Reserve one task with `mobius_reserve_task` before creating a session.
-3. Create the App child session using the returned base branch and delegation prompt.
-4. Attach the resulting session with `mobius_attach_task`.
-5. Record `done`, `failed`, or `blocked` with `mobius_complete_task`.
-6. Retry eligible work explicitly with `mobius_retry_task`.
+For every ready task:
 
-Reservations close the session-creation race. Attempts retain session, branch, commit, PR, summary,
-and evidence provenance. Claimed evidence is untrusted input to verification, not proof by itself.
+1. Call `mobius_reserve_task` before `create_session`.
+2. Create the App child session from the returned `baseBranch` and unchanged
+   `delegationPrompt`.
+3. Attach the returned session with `mobius_attach_task`.
+4. Record `done`, `failed`, or `blocked` with `mobius_complete_task`.
+5. Retry terminal failures explicitly with `mobius_retry_task`.
 
-## Verification
+Delivery requirements are:
+
+- `branch`: attached branch;
+- `commit`: branch plus a full 40- or 64-character commit;
+- `pr`: full commit plus an HTTP(S) PR URL.
+
+Attached failed or blocked attempts require a complete, causally newer App session inventory proving
+that their session is terminal. This prevents a retry from orphaning a still-running child.
+
+## Verifier task
+
+The verifier prompt is read-only and binds to its dependency's exact commit. It returns one evidence
+record per canonical `checkId`:
+
+- every implementation criterion (`T-001-C001`, and so on);
+- `final-integration`;
+- `workspace-integrity`.
+
+Mobius canonicalizes verifier evidence by `checkId`, rejects missing/extra/duplicate checks, stamps it
+as `independent-claim`, and records the verifier's final observed commit in the normal attempt
+`commit` field. Failed checks still produce a successful verifier report (`task.status: done`); the
+Factory turns those failures into an attributed correction wave.
+
+## Final Factory verification
 
 After every task is done:
 
 1. Call `mobius_prepare_verification` with a stable reservation ID.
-2. Run the returned `mobius-verify` launch specification with `run_factory`.
-3. Import its terminal result with `mobius_complete_verification`.
-4. If verification passes, explicitly approve completion.
-5. If it fails, Mobius reopens attributed tasks and their dependants for a correction wave.
+2. Run the exact `mobius-verify` launch specification once.
+3. Import the authoritative terminal result with `mobius_complete_verification`.
+4. Request explicit completion approval after a pass.
 
-If preparation returns `launchSpec: null`, the reservation already launched: do not launch it again;
-pass the returned `runId` to completion. The verifier emits the reservation as its first progress record and echoes
-the reservation ID plus complete canonical input in its result. Mobius validates all three because
-native Factory inspection does not expose run arguments.
+Task-owner evidence is context only. A pass requires the verifier's observed commit to match the
+target commit and every canonical verifier check to pass. Evidence remains reported data, not
+cryptographic attestation.
 
-A passing result must cover every criterion with passed evidence and contain no unresolved
-integration gap.
+## Cancellation and recovery
 
-If a terminal run cannot be imported, prepare a new reservation with `replacementReason` and
-`requestedBy`. Active, valid-completed, and inconclusive runs cannot be replaced; native resume
-remains preferred for resumable Factory failures.
+`mobius_cancel` snapshots every active task attempt and any verification Factory run. The
+coordinator stops or archives the listed App sessions, calls `mobius_cancel_verification_run`, then
+calls `mobius_finalize_cancellation` with exact dispositions and a fresh complete session inventory.
 
-## Cancellation
-
-`mobius_cancel` records a cancellation request and snapshots active task attempts plus any Factory
-run discovered for the verification reservation. The coordinator must then:
-
-1. Stop or archive every listed App session.
-2. Cancel the listed Factory run through the native Factory API.
-3. Supply exact attempt dispositions to `mobius_finalize_cancellation`.
-
-Finalization succeeds only after every snapshotted attempt is resolved and any discovered Factory run is
-observed terminal. Before accepting `no-run-created`, Mobius reconciles native Factory summaries and
-the reservation progress marker so a launched-but-unbound run cannot be discarded.
-
-Finalization also requires a complete App session inventory captured after cancellation and the
-observed attempts. Unknown session or Factory state blocks unless an explicit attributed
-`finalizationOverride` is supplied. `no-session-created` remains a coordinator attestation because no
-session ID exists to verify.
-
-Reservations older than 30 minutes are surfaced as stale recovery guidance. Resolve them explicitly
-with `mobius_complete_task(status:"blocked")` followed by `mobius_retry_task`; Mobius never expires or
-relaunches them automatically.
-
-## Persistence
-
-Plans are stored under the Copilot session workspace with strict schema validation, atomic writes,
-optimistic revisions, and stale-lock recovery. Invalid or unreadable artifacts are never overwritten.
-Activation is session-local and enables conservative coordinator hooks.
+Plans use optimistic revisions, atomic file replacement, strict validation, stale-lock recovery, and
+deterministic recovery projections. Invalid artifacts are reported and never overwritten.
 
 ## Tool surface
 
@@ -117,12 +92,11 @@ Activation is session-local and enables conservative coordinator hooks.
 | Inspection | `mobius_get_plan`, `mobius_get_status`, `mobius_list_plans` |
 | Tasks | `mobius_next_tasks`, `mobius_reserve_task`, `mobius_attach_task`, `mobius_complete_task`, `mobius_retry_task` |
 | Verification | `mobius_prepare_verification`, `mobius_complete_verification` |
-| Cancellation | `mobius_cancel`, `mobius_finalize_cancellation` |
-| Session hooks | `mobius_activate_plan`, `mobius_deactivate_plan` |
+| Cancellation | `mobius_cancel`, `mobius_cancel_verification_run`, `mobius_finalize_cancellation` |
+| Hooks | `mobius_activate_plan`, `mobius_deactivate_plan` |
 
 ## Validation
 
 ```sh
-node --test .copilot/extensions/conveyor/*.test.mjs
 node --test .copilot/extensions/mobius/*.test.mjs
 ```

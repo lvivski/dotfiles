@@ -7,13 +7,17 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 
 import {
+	DELIVERY_REQUIREMENT,
     EVIDENCE_OUTCOME,
     EVIDENCE_TYPE,
     LIMITS,
     TASK_STATUS,
     createDraftPlan,
+	effectiveDeliveryRequirement,
     latestSuccessfulAttempt,
+	validateTaskTopology,
     validatePlan,
+	verificationCheckIds,
 } from "./domain.mjs";
 
 /**
@@ -239,11 +243,11 @@ export function buildPlanningArgs(value) {
 export function validatePlanBlueprint(value, maxTasks) {
     const blueprint = plainObject(value, "plan");
     if (!Array.isArray(blueprint.tasks)
-        || blueprint.tasks.length < 1
-        || blueprint.tasks.length > maxTasks) {
+		|| blueprint.tasks.length < 2
+		|| blueprint.tasks.length > maxTasks + 1) {
         fail(
             "invalid_analysis_result",
-            `plan.tasks must contain 1-${maxTasks} tasks`,
+			`plan.tasks must contain 1-${maxTasks} implementation tasks plus one verifier`,
         );
     }
     let draft;
@@ -278,6 +282,7 @@ export function validatePlanBlueprint(value, maxTasks) {
             dependsOn: task.dependsOn,
             acceptanceCriteria: task.acceptanceCriteria,
             expectedFiles: task.expectedFiles,
+			deliveryRequirement: effectiveDeliveryRequirement(task),
         })),
     };
 }
@@ -361,10 +366,19 @@ export function buildVerificationInput(plan) {
             "Verification input requires every implementation task to be done",
         );
     }
+	const { verifyTask, targetTask } = validateTaskTopology(plan.tasks);
+	const verifier = latestSuccessfulAttempt(verifyTask);
+	const target = latestSuccessfulAttempt(targetTask);
+	if (!verifier || !target || verifier.sessionId === null) {
+		fail("implementation_incomplete", "Verification input requires a completed verifier report");
+	}
     const normalized = {
         planId: plan.id,
         objective: plan.objective,
-        tasks: plan.tasks.map((task) => {
+		tasks: plan.tasks
+			.filter((task) => task.kind === "implement")
+			.sort((left, right) => left.id.localeCompare(right.id))
+			.map((task) => {
             const attempt = latestSuccessfulAttempt(task);
             if (!attempt) {
                 fail("implementation_incomplete", `Task ${task.id} has no successful attempt`);
@@ -382,6 +396,7 @@ export function buildVerificationInput(plan) {
                     attemptId: attempt.id,
                 })),
                 delivery: {
+					requirement: effectiveDeliveryRequirement(task),
                     baseBranch: attempt.baseBranch,
                     branch: attempt.branch,
                     commit: attempt.commit,
@@ -390,6 +405,24 @@ export function buildVerificationInput(plan) {
                 },
             };
         }),
+		verificationReport: {
+			taskId: verifyTask.id,
+			attemptId: verifier.id,
+			sessionId: verifier.sessionId,
+			target: {
+				taskId: targetTask.id,
+				attemptId: target.id,
+				branch: target.branch,
+				commit: target.commit,
+				prUrl: target.prUrl,
+			},
+			observedCommit: verifier.commit,
+			resultSummary: verifier.resultSummary,
+			evidence: verifier.evidence.map((entry) => ({
+				...entry,
+				attemptId: verifier.id,
+			})),
+		},
     };
     return {
         ...normalized,
@@ -495,6 +528,9 @@ export function normalizeVerificationInput(value) {
                 if (evidenceEntry.trust !== "claimed") {
                     fail("invalid_analysis_input", `Evidence ${expectedId} must remain claimed`);
                 }
+				if (evidenceEntry.checkId !== null) {
+					fail("invalid_analysis_input", `Evidence ${expectedId} cannot set checkId`);
+				}
                 return {
                     id: expectedId,
                     type: evidenceEntry.type,
@@ -516,6 +552,7 @@ export function normalizeVerificationInput(value) {
                         `input.tasks[${taskIndex}].evidence[${evidenceIndex}].producer`,
                         LIMITS.producer,
                     ),
+					checkId: null,
                     trust: "claimed",
                     attemptId,
                 };
@@ -535,6 +572,13 @@ export function normalizeVerificationInput(value) {
             const normalizeNullable = (value, field, maximum) => value === null
                 ? null
                 : text(value, field, maximum);
+			const requirement = delivery.requirement;
+			if (!Object.values(DELIVERY_REQUIREMENT).includes(requirement)) {
+				fail(
+					"invalid_analysis_input",
+					`input.tasks[${taskIndex}].delivery.requirement is invalid`,
+				);
+			}
             if (!Array.isArray(delivery.integrationRequired)
                 || delivery.integrationRequired.length > LIMITS.dependencies) {
                 fail(
@@ -581,6 +625,48 @@ export function normalizeVerificationInput(value) {
                     ),
                 };
             });
+			const branch = normalizeNullable(
+				delivery.branch,
+				`input.tasks[${taskIndex}].delivery.branch`,
+				LIMITS.branch,
+			);
+			const commit = normalizeNullable(
+				delivery.commit,
+				`input.tasks[${taskIndex}].delivery.commit`,
+				LIMITS.commit,
+			);
+			const prUrl = normalizeNullable(
+				delivery.prUrl,
+				`input.tasks[${taskIndex}].delivery.prUrl`,
+				LIMITS.prUrl,
+			);
+			if (prUrl !== null) {
+				let parsed;
+				try {
+					parsed = new URL(prUrl);
+				} catch {
+					fail(
+						"invalid_analysis_input",
+						`input.tasks[${taskIndex}].delivery.prUrl must be a valid URL`,
+					);
+				}
+				if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+					fail(
+						"invalid_analysis_input",
+						`input.tasks[${taskIndex}].delivery.prUrl must use http or https`,
+					);
+				}
+			}
+			const fullCommit = typeof commit === "string"
+				&& /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(commit);
+			if (branch === null
+				|| (requirement !== DELIVERY_REQUIREMENT.BRANCH && !fullCommit)
+				|| (requirement === DELIVERY_REQUIREMENT.PR && prUrl === null)) {
+				fail(
+					"invalid_analysis_input",
+					`input.tasks[${taskIndex}].delivery does not satisfy ${requirement}`,
+				);
+			}
             return {
                 id,
                 attemptId,
@@ -592,31 +678,130 @@ export function normalizeVerificationInput(value) {
                 ),
                 evidence,
                 delivery: {
+					requirement,
                     baseBranch: text(
                         delivery.baseBranch,
                         `input.tasks[${taskIndex}].delivery.baseBranch`,
                         LIMITS.baseBranch,
                     ),
-                    branch: normalizeNullable(
-                        delivery.branch,
-                        `input.tasks[${taskIndex}].delivery.branch`,
-                        LIMITS.branch,
-                    ),
-                    commit: normalizeNullable(
-                        delivery.commit,
-                        `input.tasks[${taskIndex}].delivery.commit`,
-                        LIMITS.commit,
-                    ),
-                    prUrl: normalizeNullable(
-                        delivery.prUrl,
-                        `input.tasks[${taskIndex}].delivery.prUrl`,
-                        LIMITS.prUrl,
-                    ),
+					branch,
+					commit,
+					prUrl,
                     integrationRequired,
                 },
             };
         }),
     };
+	const report = plainObject(input.verificationReport, "input.verificationReport");
+	const reportTaskId = text(
+		report.taskId,
+		"input.verificationReport.taskId",
+		5,
+	);
+	const reportAttemptId = text(
+		report.attemptId,
+		"input.verificationReport.attemptId",
+		LIMITS.attemptId,
+	);
+	if (!/^T-\d{3}$/.test(reportTaskId)
+		|| !new RegExp(`^${reportTaskId}-A\\d{3}$`).test(reportAttemptId)
+		|| normalized.tasks.some((task) => task.id === reportTaskId)) {
+		fail("invalid_analysis_input", "input.verificationReport identity is invalid");
+	}
+	const sessionId = text(
+		report.sessionId,
+		"input.verificationReport.sessionId",
+		LIMITS.sessionId,
+	);
+	const target = plainObject(report.target, "input.verificationReport.target");
+	const targetTaskId = text(target.taskId, "input.verificationReport.target.taskId", 5);
+	const targetAttemptId = text(
+		target.attemptId,
+		"input.verificationReport.target.attemptId",
+		LIMITS.attemptId,
+	);
+	const targetTask = normalized.tasks.find((task) => task.id === targetTaskId);
+	if (!targetTask
+		|| targetAttemptId !== targetTask.attemptId
+		|| target.branch !== targetTask.delivery.branch
+		|| target.commit !== targetTask.delivery.commit
+		|| target.prUrl !== targetTask.delivery.prUrl) {
+		fail("invalid_analysis_input", "input.verificationReport target is invalid");
+	}
+	const observedCommit = text(
+		report.observedCommit,
+		"input.verificationReport.observedCommit",
+		LIMITS.commit,
+	);
+	if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(observedCommit)) {
+		fail("invalid_analysis_input", "input.verificationReport.observedCommit is invalid");
+	}
+	const expectedChecks = [
+		...normalized.tasks.flatMap((task) => task.criteria.map((criterion) => criterion.id)),
+		"final-integration",
+		"workspace-integrity",
+	];
+	if (!Array.isArray(report.evidence)
+		|| report.evidence.length !== expectedChecks.length) {
+		fail("invalid_analysis_input", "input.verificationReport evidence is incomplete");
+	}
+	const evidence = report.evidence.map((rawEvidence, evidenceIndex) => {
+		const entry = plainObject(
+			rawEvidence,
+			`input.verificationReport.evidence[${evidenceIndex}]`,
+		);
+		const expectedId = `${reportAttemptId}-E${String(evidenceIndex + 1).padStart(3, "0")}`;
+		const expectedCheckId = expectedChecks[evidenceIndex];
+		if (entry.id !== expectedId
+			|| entry.attemptId !== reportAttemptId
+			|| entry.checkId !== expectedCheckId
+			|| entry.producer !== sessionId
+			|| entry.trust !== "independent-claim"
+			|| !Object.values(EVIDENCE_TYPE).includes(entry.type)
+			|| !Object.values(EVIDENCE_OUTCOME).includes(entry.outcome)) {
+			fail("invalid_analysis_input", `Verifier evidence ${expectedId} is invalid`);
+		}
+		return {
+			id: expectedId,
+			attemptId: reportAttemptId,
+			type: entry.type,
+			summary: text(
+				entry.summary,
+				`input.verificationReport.evidence[${evidenceIndex}].summary`,
+				LIMITS.evidenceItem,
+			),
+			source: entry.source === null
+				? null
+				: text(
+					entry.source,
+					`input.verificationReport.evidence[${evidenceIndex}].source`,
+					LIMITS.evidenceSource,
+				),
+			outcome: entry.outcome,
+			producer: sessionId,
+			checkId: expectedCheckId,
+			trust: "independent-claim",
+		};
+	});
+	normalized.verificationReport = {
+		taskId: reportTaskId,
+		attemptId: reportAttemptId,
+		sessionId,
+		target: {
+			taskId: targetTaskId,
+			attemptId: targetAttemptId,
+			branch: target.branch,
+			commit: target.commit,
+			prUrl: target.prUrl,
+		},
+		observedCommit,
+		resultSummary: text(
+			report.resultSummary,
+			"input.verificationReport.resultSummary",
+			LIMITS.resultSummary,
+		),
+		evidence,
+	};
     const expectedDigest = analysisInputDigest(normalized);
     if (input.inputDigest !== expectedDigest) {
         fail("analysis_input_mismatch", "Verification input digest is invalid");
@@ -625,8 +810,7 @@ export function normalizeVerificationInput(value) {
 }
 
 /**
- * Validates a persisted verification result against canonical criterion and
- * evidence identities.
+ * Validates a persisted verification result against canonical checks.
  *
  * @param {unknown} value
  * @param {unknown} expectedInput
@@ -634,156 +818,148 @@ export function normalizeVerificationInput(value) {
  * @returns {VerificationOutcome}
  */
 export function validateVerificationResult(value, expectedInput, expectedReservationId) {
-    const input = normalizeVerificationInput(expectedInput);
-    const result = plainObject(value, "result");
-    if (result.kind !== "mobius-verification-result") {
-        fail("invalid_analysis_result", "Verification result kind is not supported");
-    }
-    if (result.inputDigest !== input.inputDigest || result.planId !== input.planId) {
-        fail("analysis_input_mismatch", "Verification result does not match the persisted input");
-    }
-    if (result.reservationId !== expectedReservationId) {
-		fail("analysis_input_mismatch", "Verification result does not match the launch reservation");
-    }
-    const returnedInput = normalizeVerificationInput(result.input);
-    if (stableStringify(returnedInput) !== stableStringify(input)) {
+	const input = normalizeVerificationInput(expectedInput);
+	const result = plainObject(value, "result");
+	if (result.kind !== "mobius-verification-result") {
+		fail("invalid_analysis_result", "Verification result kind is not supported");
+	}
+	if (result.inputDigest !== input.inputDigest
+		|| result.planId !== input.planId
+		|| result.reservationId !== expectedReservationId) {
+		fail("analysis_input_mismatch", "Verification result does not match its run");
+	}
+	const returnedInput = normalizeVerificationInput(result.input);
+	if (stableStringify(returnedInput) !== stableStringify(input)) {
 		fail("analysis_input_mismatch", "Verification result changed the canonical Factory input");
-    }
-    const taskIds = input.tasks.map((task) => task.id);
-    const taskIdSet = new Set(taskIds);
-    const criterionOwners = new Map(input.tasks.flatMap(
-        (task) => task.criteria.map((criterion) => [criterion.id, task.id]),
-    ));
-    const expectedCriterionIds = new Set(criterionOwners.keys());
-    const evidenceById = new Map(input.tasks.flatMap(
-        (task) => task.evidence.map((entry) => [entry.id, {
-            ...entry,
-            taskId: task.id,
-        }]),
-    ));
-    const evidenceIds = new Set(evidenceById.keys());
-    const covered = new Set();
-    const coverageEvidenceIds = new Set();
-    const correctionTaskIds = new Set();
-    /** @type {string[]} */
-    const missingSummaries = [];
-    let unattributed = false;
-    /**
-     * Collects task attribution and missing-evidence prose from one finding.
-     *
-     * @param {any} entry
-     * @param {string} field
-     * @returns {void}
-     */
-    const consumeAttribution = (entry, field) => {
-        if (!entry || typeof entry.summary !== "string" || !entry.summary.trim()) {
-            fail("invalid_analysis_result", `${field} is invalid`);
-        }
-        const ids = Array.isArray(entry.taskIds)
-            ? entry.taskIds.filter((id) => taskIdSet.has(id))
-            : [];
-        if (!Array.isArray(entry.taskIds)
-            || ids.length !== entry.taskIds.length
-            || ids.length === 0) {
-            unattributed = true;
-        }
-        ids.forEach((id) => correctionTaskIds.add(id));
-        missingSummaries.push(entry.summary);
-    };
-    if (!Array.isArray(result.reviews) || result.reviews.length !== 2) {
-        fail("invalid_analysis_result", "Verification result requires two reviewers");
-    }
-    for (let reviewIndex = 0; reviewIndex < result.reviews.length; reviewIndex += 1) {
-        const review = result.reviews[reviewIndex];
-        if (!review
-            || !Array.isArray(review.coverage)
-            || !Array.isArray(review.missingEvidence)
-            || !Array.isArray(review.integrationFindings)) {
-            fail("invalid_analysis_result", "Verification reviewer is missing");
-        }
-        for (const mapping of review.coverage) {
-            const ownerTaskId = criterionOwners.get(mapping?.criterionId);
-            if (expectedCriterionIds.has(mapping?.criterionId)
-                && Array.isArray(mapping.evidenceIds)
-                && mapping.evidenceIds.length > 0
-                && mapping.evidenceIds.every((id) => {
-                    const evidence = evidenceById.get(id);
-                    return evidence?.taskId === ownerTaskId
-                        && evidence.outcome === EVIDENCE_OUTCOME.PASSED;
-                })) {
-                covered.add(mapping.criterionId);
-                mapping.evidenceIds.forEach((id) => coverageEvidenceIds.add(id));
-            }
-        }
-        review.missingEvidence.forEach((entry, gapIndex) => {
-            consumeAttribution(
-                entry,
-                `result.reviews[${reviewIndex}].missingEvidence[${gapIndex}]`,
-            );
-        });
-        review.integrationFindings.forEach((entry, findingIndex) => {
-            if (!entry
-                || !Array.isArray(entry.evidenceIds)
-                || entry.evidenceIds.some((id) => !evidenceIds.has(id))) {
-                unattributed = true;
-            }
-            consumeAttribution(
-                entry,
-                `result.reviews[${reviewIndex}].integrationFindings[${findingIndex}]`,
-            );
-        });
-    }
-    const uncovered = [...expectedCriterionIds].filter((id) => !covered.has(id));
-    uncovered.forEach((id) => correctionTaskIds.add(criterionOwners.get(id)));
-    if (!Array.isArray(result.missingEvidence)
-        || result.missingEvidence.length > LIMITS.missingEvidence) {
-        fail("invalid_analysis_result", "Verification result missingEvidence is invalid");
-    }
-    result.missingEvidence.forEach((entry, index) => {
-        consumeAttribution(entry, `result.missingEvidence[${index}]`);
-    });
-    if (!Array.isArray(result.correctionTaskIds)) {
-        fail("invalid_analysis_result", "Verification result correctionTaskIds is invalid");
-    }
-    for (const id of result.correctionTaskIds) {
-        if (taskIdSet.has(id)) correctionTaskIds.add(id);
-        else unattributed = true;
-    }
-    if (!Array.isArray(result.evidenceIds)
-        || result.evidenceIds.length > LIMITS.evidence
-        || result.evidenceIds.some((id) => evidenceById.get(id)?.outcome
-            !== EVIDENCE_OUTCOME.PASSED)) {
-        fail("invalid_analysis_result", "Verification result references unknown evidence");
-    }
-    const evidence = [...new Set(result.evidenceIds)];
-    if ([...coverageEvidenceIds].some((id) => !evidence.includes(id))) {
-        fail("invalid_analysis_result", "Verification result omits evidence used for criterion coverage");
-    }
-    const missingEvidence = [...new Set([
-        ...uncovered.map((id) => `No evidence mapped for ${id}`),
-        ...missingSummaries,
-    ])].slice(0, LIMITS.missingEvidence);
-    const passed = result.passed === true
-        && uncovered.length === 0
-        && missingEvidence.length === 0
-        && evidence.length > 0;
-    if (result.passed === true && !passed) {
-        fail("invalid_analysis_result", "Passing verification result lacks complete criterion coverage");
-    }
-    if (!passed && missingEvidence.length === 0) {
-        unattributed = true;
-    }
-    if (!passed && (unattributed || correctionTaskIds.size === 0)) {
-        taskIds.forEach((id) => correctionTaskIds.add(id));
-    }
-    if (!passed && missingEvidence.length === 0) {
-        missingEvidence.push("Verification failed without an attributed evidence gap");
-    }
-    return {
-        passed,
-        summary: text(result.summary, "result.summary", LIMITS.resultSummary),
-        evidence,
-        missingEvidence,
-        correctionTaskIds: passed ? [] : [...correctionTaskIds].sort(),
-    };
+	}
+
+	const taskIds = input.tasks.map((task) => task.id);
+	const taskIdSet = new Set(taskIds);
+	const criterionOwners = new Map(input.tasks.flatMap(
+		(task) => task.criteria.map((criterion) => [criterion.id, task.id]),
+	));
+	const reportByCheck = new Map(
+		input.verificationReport.evidence.map((entry) => [entry.checkId, entry]),
+	);
+	const correctionTaskIds = new Set();
+	const missingSummaries = [];
+	for (const [criterionId, ownerTaskId] of criterionOwners) {
+		if (reportByCheck.get(criterionId)?.outcome !== EVIDENCE_OUTCOME.PASSED) {
+			correctionTaskIds.add(ownerTaskId);
+			missingSummaries.push(`Independent check failed for ${criterionId}`);
+		}
+	}
+	const targetTaskId = input.verificationReport.target.taskId;
+	if (input.verificationReport.observedCommit
+		!== input.verificationReport.target.commit) {
+		correctionTaskIds.add(targetTaskId);
+		missingSummaries.push("Verifier observed a different target commit");
+	}
+	for (const checkId of ["final-integration", "workspace-integrity"]) {
+		if (reportByCheck.get(checkId)?.outcome !== EVIDENCE_OUTCOME.PASSED) {
+			correctionTaskIds.add(targetTaskId);
+			missingSummaries.push(`Independent check failed for ${checkId}`);
+		}
+	}
+	const hardPassed = missingSummaries.length === 0;
+
+	const allEvidence = new Map([
+		...input.tasks.flatMap(
+			(task) => task.evidence.map((entry) => [entry.id, entry]),
+		),
+		...input.verificationReport.evidence.map((entry) => [entry.id, entry]),
+	]);
+	let unattributed = false;
+	/** Adds one attributed reviewer or verdict gap. */
+	const consumeAttribution = (entry, field) => {
+		if (!entry || typeof entry.summary !== "string" || !entry.summary.trim()) {
+			fail("invalid_analysis_result", `${field} is invalid`);
+		}
+		if (!Array.isArray(entry.taskIds)
+			|| entry.taskIds.length === 0
+			|| entry.taskIds.some((id) => !taskIdSet.has(id))) {
+			unattributed = true;
+		} else {
+			entry.taskIds.forEach((id) => correctionTaskIds.add(id));
+		}
+		missingSummaries.push(entry.summary);
+	};
+	if (!Array.isArray(result.reviews) || result.reviews.length !== 2) {
+		fail("invalid_analysis_result", "Verification result requires two reviewers");
+	}
+	result.reviews.forEach((review, reviewIndex) => {
+		if (!review
+			|| !Array.isArray(review.coverage)
+			|| !Array.isArray(review.missingEvidence)
+			|| !Array.isArray(review.integrationFindings)) {
+			fail("invalid_analysis_result", `Verification reviewer ${reviewIndex + 1} is invalid`);
+		}
+		review.missingEvidence.forEach((entry, index) => (
+			consumeAttribution(
+				entry,
+				`result.reviews[${reviewIndex}].missingEvidence[${index}]`,
+			)
+		));
+		review.integrationFindings.forEach((entry, index) => {
+			if (!Array.isArray(entry?.evidenceIds)
+				|| entry.evidenceIds.some((id) => !allEvidence.has(id))) {
+				unattributed = true;
+			}
+			consumeAttribution(
+				entry,
+				`result.reviews[${reviewIndex}].integrationFindings[${index}]`,
+			);
+		});
+	});
+	if (!Array.isArray(result.missingEvidence)
+		|| result.missingEvidence.length > LIMITS.missingEvidence) {
+		fail("invalid_analysis_result", "Verification result missingEvidence is invalid");
+	}
+	result.missingEvidence.forEach((entry, index) => (
+		consumeAttribution(entry, `result.missingEvidence[${index}]`)
+	));
+	if (!Array.isArray(result.correctionTaskIds)) {
+		fail("invalid_analysis_result", "Verification result correctionTaskIds is invalid");
+	}
+	for (const taskId of result.correctionTaskIds) {
+		if (taskIdSet.has(taskId)) correctionTaskIds.add(taskId);
+		else unattributed = true;
+	}
+
+	if (!Array.isArray(result.evidenceIds)
+		|| result.evidenceIds.length > LIMITS.verificationEvidence
+		|| result.evidenceIds.some((id) => allEvidence.get(id)?.outcome
+			!== EVIDENCE_OUTCOME.PASSED)) {
+		fail("invalid_analysis_result", "Verification result references unknown evidence");
+	}
+	const evidence = [...new Set(result.evidenceIds)];
+	const requiredEvidence = input.verificationReport.evidence
+		.filter((entry) => entry.outcome === EVIDENCE_OUTCOME.PASSED)
+		.map((entry) => entry.id);
+	if (result.passed === true
+		&& requiredEvidence.some((id) => !evidence.includes(id))) {
+		fail("invalid_analysis_result", "Passing verification omits verifier evidence");
+	}
+	const missingEvidence = [...new Set(missingSummaries)]
+		.slice(0, LIMITS.missingEvidence);
+	const passed = result.passed === true
+		&& hardPassed
+		&& missingEvidence.length === 0
+		&& evidence.length > 0;
+	if (result.passed === true && !passed) {
+		fail("invalid_analysis_result", "Passing verification contradicts canonical checks");
+	}
+	if (!passed && (unattributed || correctionTaskIds.size === 0)) {
+		taskIds.forEach((taskId) => correctionTaskIds.add(taskId));
+	}
+	if (!passed && missingEvidence.length === 0) {
+		missingEvidence.push("Verification failed without an attributed evidence gap");
+	}
+	return {
+		passed,
+		summary: text(result.summary, "result.summary", LIMITS.resultSummary),
+		evidence,
+		missingEvidence,
+		correctionTaskIds: passed ? [] : [...correctionTaskIds].sort(),
+	};
 }

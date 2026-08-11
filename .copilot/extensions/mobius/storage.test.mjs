@@ -36,14 +36,28 @@ function makePlan(repositoryPath, id = "sample-plan") {
             workingDirectory: repositoryPath,
             baseBranch: "main",
         },
-        tasks: [{
-            id: "T-001",
-            title: "Implement storage",
-            description: "Persist the plan safely",
-            dependsOn: [],
-            acceptanceCriteria: ["The plan survives a fresh read"],
-            expectedFiles: ["src/storage.mjs"],
-        }],
+		tasks: [
+			{
+				id: "T-001",
+				title: "Implement storage",
+				kind: "implement",
+				description: "Persist the plan safely",
+				dependsOn: [],
+				acceptanceCriteria: ["The plan survives a fresh read"],
+				expectedFiles: ["src/storage.mjs"],
+				deliveryRequirement: "commit",
+			},
+			{
+				id: "T-002",
+				title: "Verify storage",
+				kind: "verify",
+				description: "Verify the persisted plan",
+				dependsOn: ["T-001"],
+				acceptanceCriteria: [],
+				expectedFiles: [],
+				deliveryRequirement: "commit",
+			},
+		],
     }, { now: CREATED_AT });
 }
 

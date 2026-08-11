@@ -20,6 +20,7 @@ import {
     attachTaskAttempt,
     completeTaskAttempt,
     createDraftPlan,
+	reconcileTaskReadiness,
     reserveTaskAttempt,
     transitionPlan,
 } from "./domain.mjs";
@@ -34,14 +35,28 @@ function completedPlan() {
             workingDirectory: "/tmp/analysis-plan",
             baseBranch: "main",
         },
-        tasks: [{
-            id: "T-001",
-            title: "Implement",
-            description: "Implement the change",
-            dependsOn: [],
-            acceptanceCriteria: ["Tests pass", "Output is documented"],
-            expectedFiles: ["src/change.mjs"],
-        }],
+		tasks: [
+			{
+				id: "T-001",
+				title: "Implement",
+				kind: "implement",
+				description: "Implement the change",
+				dependsOn: [],
+				acceptanceCriteria: ["Tests pass", "Output is documented"],
+				expectedFiles: ["src/change.mjs"],
+				deliveryRequirement: "commit",
+			},
+			{
+				id: "T-002",
+				title: "Verify",
+				kind: "verify",
+				description: "Verify the final delivery",
+				dependsOn: ["T-001"],
+				acceptanceCriteria: [],
+				expectedFiles: [],
+				deliveryRequirement: "commit",
+			},
+		],
     }, { now: "2026-08-05T00:00:00.000Z" });
     plan = transitionPlan(plan, PLAN_STATUS.AWAITING_APPROVAL, {
         at: "2026-08-05T00:01:00.000Z",
@@ -56,7 +71,7 @@ function completedPlan() {
         branch: "work/analysis",
         at: "2026-08-05T00:04:00.000Z",
     });
-    return completeTaskAttempt(plan, "T-001", "T-001-A001", ATTEMPT_STATUS.DONE, {
+	plan = completeTaskAttempt(plan, "T-001", "T-001-A001", ATTEMPT_STATUS.DONE, {
         resultSummary: "Implemented",
         evidence: [{
             type: EVIDENCE_TYPE.TEST,
@@ -68,6 +83,52 @@ function completedPlan() {
         commit: "a".repeat(40),
         at: "2026-08-05T00:05:00.000Z",
     });
+	plan = reconcileTaskReadiness(plan, { at: "2026-08-05T00:06:00.000Z" });
+	plan = reserveTaskAttempt(plan, "T-002", {
+		reservationId: "analysis-verifier",
+		at: "2026-08-05T00:07:00.000Z",
+	});
+	plan = attachTaskAttempt(plan, "T-002", "T-002-A001", {
+		sessionId: "session-2",
+		branch: "work/analysis-verifier",
+		at: "2026-08-05T00:08:00.000Z",
+	});
+	return completeTaskAttempt(plan, "T-002", "T-002-A001", ATTEMPT_STATUS.DONE, {
+		resultSummary: "Independent report complete",
+		evidence: [
+			{
+				checkId: "T-001-C001",
+				type: EVIDENCE_TYPE.TEST,
+				summary: "Tests pass",
+				source: "node --test",
+				outcome: "passed",
+			},
+			{
+				checkId: "T-001-C002",
+				type: EVIDENCE_TYPE.MANUAL,
+				summary: "Documentation is present",
+				source: "README.md",
+				outcome: "passed",
+			},
+			{
+				checkId: "final-integration",
+				type: EVIDENCE_TYPE.INTEGRATION,
+				summary: "Integration passes",
+				source: "node --test",
+				outcome: "passed",
+			},
+			{
+				checkId: "workspace-integrity",
+				type: EVIDENCE_TYPE.COMMAND,
+				summary: "Workspace is clean",
+				source: "git status --porcelain",
+				outcome: "passed",
+			},
+		],
+		branch: "work/analysis-verifier",
+		commit: "a".repeat(40),
+		at: "2026-08-05T00:09:00.000Z",
+	});
 }
 
 test("planning arguments are bounded and digested canonically", () => {
@@ -104,15 +165,28 @@ test("planning results reuse the strict domain validator and fail closed", () =>
         title: "Plan",
         objective: input.objective,
         constraints: [],
-        tasks: [{
-            id: "T-001",
-            title: "Implement",
-            kind: "implement",
-            description: "Implement",
-            dependsOn: [],
-            acceptanceCriteria: ["Tests pass"],
-            expectedFiles: ["src/change.mjs"],
-        }],
+		tasks: [
+			{
+				id: "T-001",
+				title: "Implement",
+				kind: "implement",
+				description: "Implement",
+				dependsOn: [],
+				acceptanceCriteria: ["Tests pass"],
+				expectedFiles: ["src/change.mjs"],
+				deliveryRequirement: "commit",
+			},
+			{
+				id: "T-002",
+				title: "Verify",
+				kind: "verify",
+				description: "Verify",
+				dependsOn: ["T-001"],
+				acceptanceCriteria: [],
+				expectedFiles: [],
+				deliveryRequirement: "commit",
+			},
+		],
     };
     const result = {
 		kind: "mobius-plan-result",
@@ -150,7 +224,7 @@ test("planning results reuse the strict domain validator and fail closed", () =>
                 result.critiques[1],
             ],
         }, input, 2).tasks.length,
-        1,
+		2,
     );
     assert.throws(
         () => validatePlanningResult({
@@ -181,9 +255,9 @@ test("verification inputs use stable criterion IDs and exact digests", () => {
 test("verification result requires every criterion ID to have evidence", () => {
     const input = buildVerificationInput(completedPlan());
     const reservationId = "verification-reservation";
-    const fullCoverage = input.tasks[0].criteria.map((criterion) => ({
+	const fullCoverage = input.tasks[0].criteria.map((criterion, index) => ({
         criterionId: criterion.id,
-        evidenceIds: ["T-001-A001-E001"],
+		evidenceIds: [input.verificationReport.evidence[index].id],
     }));
     const result = {
 		kind: "mobius-verification-result",
@@ -193,7 +267,7 @@ test("verification result requires every criterion ID to have evidence", () => {
         planId: input.planId,
         passed: true,
         summary: "Verified",
-        evidenceIds: ["T-001-A001-E001"],
+		evidenceIds: input.verificationReport.evidence.map((entry) => entry.id),
         missingEvidence: [],
         correctionTaskIds: [],
         reviews: [
@@ -218,7 +292,7 @@ test("verification result requires every criterion ID to have evidence", () => {
 			input,
 			reservationId,
 		),
-		/launch reservation/,
+		/match its run/,
 	);
 	assert.throws(
 		() => validateVerificationResult({
@@ -236,37 +310,21 @@ test("verification result requires every criterion ID to have evidence", () => {
 		}, input, reservationId),
 		/input digest|canonical Factory input/,
 	);
-    assert.throws(
-        () => validateVerificationResult({
-            ...result,
-            reviews: [
-                {
-                    coverage: fullCoverage.slice(0, 1),
-                    missingEvidence: [],
-                    integrationFindings: [],
-                    risks: [],
-                },
-                {
-                    coverage: [],
-                    missingEvidence: [],
-                    integrationFindings: [],
-                    risks: [],
-                },
-            ],
+	assert.throws(
+		() => validateVerificationResult({
+			...result,
+			evidenceIds: [],
 		}, input, reservationId),
-        /coverage/,
-    );
+		/omits verifier evidence/,
+	);
 });
 
 test("failed or omitted evidence IDs cannot satisfy passing verification", () => {
-    const failedEvidencePlan = completedPlan();
-    failedEvidencePlan.tasks[0].attempts[0].evidence[0].outcome = "failed";
-    const input = buildVerificationInput(failedEvidencePlan);
+	const input = buildVerificationInput(completedPlan());
+	input.verificationReport.evidence[0].outcome = "failed";
+	const { inputDigest: _discarded, ...canonical } = input;
+	input.inputDigest = analysisInputDigest(canonical);
     const reservationId = "failed-evidence-reservation";
-    const coverage = input.tasks[0].criteria.map((criterion) => ({
-        criterionId: criterion.id,
-        evidenceIds: ["T-001-A001-E001"],
-    }));
     const result = {
 		kind: "mobius-verification-result",
 		reservationId,
@@ -275,12 +333,14 @@ test("failed or omitted evidence IDs cannot satisfy passing verification", () =>
         planId: input.planId,
         passed: true,
         summary: "Incorrectly passed",
-        evidenceIds: ["T-001-A001-E001"],
+		evidenceIds: input.verificationReport.evidence
+			.filter((entry) => entry.outcome === "passed")
+			.map((entry) => entry.id),
         missingEvidence: [],
         correctionTaskIds: [],
         reviews: [
             {
-                coverage,
+				coverage: [],
                 missingEvidence: [],
                 integrationFindings: [],
                 risks: [],
@@ -295,14 +355,10 @@ test("failed or omitted evidence IDs cannot satisfy passing verification", () =>
     };
     assert.throws(
 		() => validateVerificationResult(result, input, reservationId),
-        /unknown evidence|coverage/,
+		/canonical checks/,
     );
 
     const validInput = buildVerificationInput(completedPlan());
-    const validCoverage = validInput.tasks[0].criteria.map((criterion) => ({
-        criterionId: criterion.id,
-        evidenceIds: ["T-001-A001-E001"],
-    }));
     assert.throws(
         () => validateVerificationResult({
             ...result,
@@ -311,7 +367,7 @@ test("failed or omitted evidence IDs cannot satisfy passing verification", () =>
             evidenceIds: [],
             reviews: [
                 {
-                    coverage: validCoverage,
+					coverage: [],
                     missingEvidence: [],
                     integrationFindings: [],
                     risks: [],
@@ -324,6 +380,6 @@ test("failed or omitted evidence IDs cannot satisfy passing verification", () =>
                 },
             ],
 		}, validInput, reservationId),
-        /omits evidence|coverage/,
+		/omits verifier evidence/,
     );
 });

@@ -19,6 +19,7 @@ import {
 	attachTaskAttempt,
 	completeTaskAttempt,
 	createDraftPlan,
+	reconcileTaskReadiness,
 	reserveTaskAttempt,
 	reserveVerification,
 	transitionPlan,
@@ -87,6 +88,17 @@ function fakeApi(records = {}) {
 				),
 			};
 		},
+		async cancel(runId) {
+			const record = records[runId];
+			if (!record) throw new Error(`Factory run ${runId} not found`);
+			record.run = { ...record.run, status: "cancelled" };
+			return record.run;
+		},
+		async waitForRun(runId) {
+			const record = records[runId];
+			if (!record) throw new Error(`Factory run ${runId} not found`);
+			return record.run;
+		},
 	};
 }
 
@@ -137,15 +149,28 @@ function planningResult(input) {
 			title: "Plan",
 			objective: input.objective,
 			constraints: input.constraints,
-			tasks: [{
-				id: "T-001",
-				title: "Implement",
-				kind: "implement",
-				description: "Implement",
-				dependsOn: [],
-				acceptanceCriteria: ["Tests pass"],
-				expectedFiles: ["src/change.mjs"],
-			}],
+			tasks: [
+				{
+					id: "T-001",
+					title: "Implement",
+					kind: "implement",
+					description: "Implement",
+					dependsOn: [],
+					acceptanceCriteria: ["Tests pass"],
+					expectedFiles: ["src/change.mjs"],
+					deliveryRequirement: "commit",
+				},
+				{
+					id: "T-002",
+					title: "Verify",
+					kind: "verify",
+					description: "Verify the final delivery",
+					dependsOn: ["T-001"],
+					acceptanceCriteria: [],
+					expectedFiles: [],
+					deliveryRequirement: "commit",
+				},
+			],
 		},
 		critiques: [
 			{ verdict: "accept", risks: [], requiredChanges: [] },
@@ -164,14 +189,28 @@ function completedPlan() {
 		objective: "Validate native Factory integration",
 		constraints: [],
 		repository: { workingDirectory: "/tmp/factory-plan", baseBranch: "main" },
-		tasks: [{
-			id: "T-001",
-			title: "Implement",
-			description: "Implement",
-			dependsOn: [],
-			acceptanceCriteria: ["Tests pass"],
-			expectedFiles: ["src/change.mjs"],
-		}],
+		tasks: [
+			{
+				id: "T-001",
+				title: "Implement",
+				kind: "implement",
+				description: "Implement",
+				dependsOn: [],
+				acceptanceCriteria: ["Tests pass"],
+				expectedFiles: ["src/change.mjs"],
+				deliveryRequirement: "commit",
+			},
+			{
+				id: "T-002",
+				title: "Verify",
+				kind: "verify",
+				description: "Verify",
+				dependsOn: ["T-001"],
+				acceptanceCriteria: [],
+				expectedFiles: [],
+				deliveryRequirement: "commit",
+			},
+		],
 	}, { now: "2026-08-07T00:00:00.000Z" });
 	plan = transitionPlan(plan, PLAN_STATUS.AWAITING_APPROVAL, {
 		at: "2026-08-07T00:01:00.000Z",
@@ -186,7 +225,7 @@ function completedPlan() {
 		branch: "work/factory",
 		at: "2026-08-07T00:04:00.000Z",
 	});
-	return completeTaskAttempt(plan, "T-001", "T-001-A001", ATTEMPT_STATUS.DONE, {
+	plan = completeTaskAttempt(plan, "T-001", "T-001-A001", ATTEMPT_STATUS.DONE, {
 		resultSummary: "Implemented",
 		evidence: [{
 			type: EVIDENCE_TYPE.TEST,
@@ -197,6 +236,45 @@ function completedPlan() {
 		branch: "work/factory",
 		commit: "a".repeat(40),
 		at: "2026-08-07T00:05:00.000Z",
+	});
+	plan = reconcileTaskReadiness(plan, { at: "2026-08-07T00:06:00.000Z" });
+	plan = reserveTaskAttempt(plan, "T-002", {
+		reservationId: "factory-verifier",
+		at: "2026-08-07T00:07:00.000Z",
+	});
+	plan = attachTaskAttempt(plan, "T-002", "T-002-A001", {
+		sessionId: "session-2",
+		branch: "work/factory-verifier",
+		at: "2026-08-07T00:08:00.000Z",
+	});
+	return completeTaskAttempt(plan, "T-002", "T-002-A001", ATTEMPT_STATUS.DONE, {
+		resultSummary: "Independent report",
+		evidence: [
+			{
+				checkId: "T-001-C001",
+				type: EVIDENCE_TYPE.TEST,
+				summary: "Tests pass",
+				source: "node --test",
+				outcome: "passed",
+			},
+			{
+				checkId: "final-integration",
+				type: EVIDENCE_TYPE.INTEGRATION,
+				summary: "Integration passes",
+				source: "node --test",
+				outcome: "passed",
+			},
+			{
+				checkId: "workspace-integrity",
+				type: EVIDENCE_TYPE.COMMAND,
+				summary: "Workspace is clean",
+				source: "git status --porcelain",
+				outcome: "passed",
+			},
+		],
+		branch: "work/factory-verifier",
+		commit: "a".repeat(40),
+		at: "2026-08-07T00:09:00.000Z",
 	});
 }
 
@@ -246,15 +324,28 @@ test("bundled planning harness executes with native Factory result semantics", a
 		title: "Plan",
 		objective: args.objective,
 		constraints: args.constraints,
-		tasks: [{
-			id: "T-001",
-			title: "Implement",
-			kind: "implement",
-			description: "Implement",
-			dependsOn: [],
-			acceptanceCriteria: ["Tests pass"],
-			expectedFiles: ["src/change.mjs"],
-		}],
+		tasks: [
+			{
+				id: "T-001",
+				title: "Implement",
+				kind: "implement",
+				description: "Implement",
+				dependsOn: [],
+				acceptanceCriteria: ["Tests pass"],
+				expectedFiles: ["src/change.mjs"],
+				deliveryRequirement: "commit",
+			},
+			{
+				id: "T-002",
+				title: "Verify",
+				kind: "verify",
+				description: "Verify",
+				dependsOn: ["T-001"],
+				acceptanceCriteria: [],
+				expectedFiles: [],
+				deliveryRequirement: "commit",
+			},
+		],
 	};
 	assert.equal(planMeta.name, "mobius-plan");
 	const result = await runPlan(executionContext(args, {
@@ -274,16 +365,16 @@ test("bundled planning harness executes with native Factory result semantics", a
 	}));
 	assert.equal(result.kind, "mobius-plan-result");
 	assert.equal(result.status, "ready");
-	assert.equal(validatePlanningResult(result, args, 2).tasks.length, 1);
+	assert.equal(validatePlanningResult(result, args, 2).tasks.length, 2);
 });
 
 test("bundled verification harness echoes its complete native Factory input", async () => {
 	const args = buildVerificationInput(completedPlan());
 	const reservationId = "verification-reservation";
-	const evidenceId = args.tasks[0].evidence[0].id;
+	const evidenceIds = args.verificationReport.evidence.map((entry) => entry.id);
 	const coverage = args.tasks[0].criteria.map((criterion) => ({
 		criterionId: criterion.id,
-		evidenceIds: [evidenceId],
+		evidenceIds: [evidenceIds[0]],
 	}));
 	assert.equal(verifyMeta.name, "mobius-verify");
 	const factory = executionContext({ ...args, reservationId }, {
@@ -302,7 +393,7 @@ test("bundled verification harness echoes its complete native Factory input", as
 		"mobius-verify:verifier": {
 			passed: true,
 			summary: "Verified",
-			evidenceIds: [evidenceId],
+			evidenceIds,
 			missingEvidence: [],
 			correctionTaskIds: [],
 		},
@@ -371,9 +462,9 @@ test("verification import validates the terminal result and reservation", async 
 	const args = buildVerificationInput(plan);
 	const reservationId = plan.verification.reservationId;
 	const marker = verificationMarker(reservationId);
-	const coverage = args.tasks[0].criteria.map((criterion) => ({
+	const coverage = args.tasks[0].criteria.map((criterion, index) => ({
 		criterionId: criterion.id,
-		evidenceIds: [args.tasks[0].evidence[0].id],
+		evidenceIds: [args.verificationReport.evidence[index].id],
 	}));
 	const result = {
 		kind: "mobius-verification-result",
@@ -383,7 +474,7 @@ test("verification import validates the terminal result and reservation", async 
 		planId: plan.id,
 		passed: true,
 		summary: "Passed",
-		evidenceIds: [args.tasks[0].evidence[0].id],
+		evidenceIds: args.verificationReport.evidence.map((entry) => entry.id),
 		missingEvidence: [],
 		correctionTaskIds: [],
 		reviews: [
@@ -545,5 +636,28 @@ test("unrelated Factory read failures are never treated as missing runs", async 
 	await assert.rejects(
 		analysis.verificationRunIsTerminal("run"),
 		/unknown accounting state/,
+	);
+});
+
+test("verification cancellation checks Factory identity and reaches terminal state", async () => {
+	const records = {
+		active: {
+			factoryName: "mobius-verify",
+			run: { runId: "active", status: "running" },
+		},
+		wrong: {
+			factoryName: "other",
+			run: { runId: "wrong", status: "running" },
+		},
+	};
+	const analysis = createFactoryAnalysis(() => fakeApi(records));
+	assert.deepEqual(await analysis.cancelVerificationRun("active"), {
+		runId: "active",
+		status: "cancelled",
+		alreadyTerminal: false,
+	});
+	await assert.rejects(
+		analysis.cancelVerificationRun("wrong"),
+		(error) => error.code === "factory_run_identity_mismatch",
 	);
 });

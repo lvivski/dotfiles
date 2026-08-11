@@ -36,19 +36,33 @@ function planBlueprint() {
             {
                 id: "T-001",
                 title: "Foundation",
+				kind: "implement",
                 description: "Create the foundation",
                 dependsOn: [],
                 acceptanceCriteria: ["Foundation is present"],
                 expectedFiles: ["src/foundation.mjs"],
+				deliveryRequirement: "branch",
             },
             {
                 id: "T-002",
                 title: "Integration",
+				kind: "implement",
                 description: "Integrate the foundation",
                 dependsOn: ["T-001"],
                 acceptanceCriteria: ["Integration is complete"],
                 expectedFiles: ["src/integration.mjs"],
+				deliveryRequirement: "commit",
             },
+			{
+				id: "T-003",
+				title: "Verify",
+				kind: "verify",
+				description: "Verify the final delivery",
+				dependsOn: ["T-002"],
+				acceptanceCriteria: [],
+				expectedFiles: [],
+				deliveryRequirement: "commit",
+			},
         ],
     };
 }
@@ -70,7 +84,12 @@ function analysisStub(options = {}) {
     const verificationResult = options.verificationResult ?? {
         passed: true,
         summary: "All acceptance criteria covered",
-        evidence: ["T-001-A001-E001", "T-002-A001-E001"],
+		evidence: [
+			"T-003-A001-E001",
+			"T-003-A001-E002",
+			"T-003-A001-E003",
+			"T-003-A001-E004",
+		],
         missingEvidence: [],
         correctionTaskIds: [],
     };
@@ -105,6 +124,12 @@ function analysisStub(options = {}) {
 			options.discoverVerificationRun ?? (async () => ({ state: "absent" })),
 		assessVerificationRun:
 			options.assessVerificationRun ?? (async () => ({ state: "active" })),
+		cancelVerificationRun:
+			options.cancelVerificationRun ?? (async (runId) => ({
+				runId,
+				status: "cancelled",
+				alreadyTerminal: false,
+			})),
         verificationRunIsTerminal: options.verificationRunIsTerminal
             ?? (async () => true),
     };
@@ -142,6 +167,37 @@ async function createApproved(operations, workspacePath) {
 }
 
 async function runTask(operations, plan, taskId, options = {}) {
+	const task = plan.tasks.find((entry) => entry.id === taskId);
+	const taskEvidence = task?.kind === "verify"
+		? [
+				...plan.tasks
+					.filter((entry) => entry.kind === "implement")
+					.sort((left, right) => left.id.localeCompare(right.id))
+					.flatMap((entry) => entry.acceptanceCriteria.map(
+						(_criterion, index) => ({
+							checkId: `${entry.id}-C${String(index + 1).padStart(3, "0")}`,
+							type: EVIDENCE_TYPE.TEST,
+							summary: `${entry.id} criterion passed`,
+							source: "node --test",
+							outcome: "passed",
+						}),
+					)),
+				{
+					checkId: "final-integration",
+					type: EVIDENCE_TYPE.INTEGRATION,
+					summary: "Integration passed",
+					source: "node --test",
+					outcome: "passed",
+				},
+				{
+					checkId: "workspace-integrity",
+					type: EVIDENCE_TYPE.COMMAND,
+					summary: "HEAD and worktree are unchanged",
+					source: "git status --porcelain",
+					outcome: "passed",
+				},
+			]
+		: evidence(`${taskId} tests passed`);
     const reserved = await operations.reserveTask({
         planId: plan.id,
         taskId,
@@ -165,7 +221,7 @@ async function runTask(operations, plan, taskId, options = {}) {
         expectedRevision: plan.revision,
         status: TASK_STATUS.DONE,
         resultSummary: `${taskId} complete`,
-        evidence: options.evidence ?? evidence(`${taskId} tests passed`),
+		evidence: options.evidence ?? taskEvidence,
         branch: options.branch ?? `work/${taskId.toLowerCase()}`,
         commit: options.commit ?? "a".repeat(40),
         prUrl: options.prUrl,
@@ -182,6 +238,12 @@ async function completeImplementation(operations, workspacePath) {
 	({ plan } = await runTask(operations, plan, "T-002", {
 		reservationId: "complete-integration",
 		sessionId: "complete-integration-session",
+	}));
+	({ plan } = await runTask(operations, plan, "T-003", {
+		reservationId: "complete-verifier",
+		sessionId: "complete-verifier-session",
+		branch: "work/complete-verifier",
+		commit: "a".repeat(40),
 	}));
 	return plan;
 }
@@ -254,6 +316,12 @@ test("operations drive reservation, App attachment, verification, and approval",
             commit: "c".repeat(40),
         });
         plan = second.plan;
+		({ plan } = await runTask(operations, plan, "T-003", {
+			reservationId: "reserve-verifier",
+			sessionId: "session-verifier",
+			branch: "work/verifier",
+			commit: "c".repeat(40),
+		}));
 
         const verificationLaunch = await operations.prepareVerification({
             planId: plan.id,
@@ -284,6 +352,53 @@ test("operations drive reservation, App attachment, verification, and approval",
 				duplicates: [],
 			}),
 		}),
+	})
+));
+
+test("attached task failures require terminal session inventory", () => (
+	withOperations(async ({ operations, workspacePath }) => {
+		let plan = await createApproved(operations, workspacePath);
+		const reserved = await operations.reserveTask({
+			planId: plan.id,
+			taskId: "T-001",
+			expectedRevision: plan.revision,
+			reservationId: "failed-session-proof",
+		});
+		plan = await operations.attachTask({
+			planId: plan.id,
+			taskId: "T-001",
+			attemptId: reserved.attemptId,
+			expectedRevision: reserved.plan.revision,
+			sessionId: "failed-session",
+			branch: "work/failed-session",
+		});
+		await assert.rejects(
+			operations.completeTask({
+				planId: plan.id,
+				taskId: "T-001",
+				attemptId: reserved.attemptId,
+				expectedRevision: plan.revision,
+				status: TASK_STATUS.FAILED,
+				error: "Worker failed",
+			}),
+			(error) => error.code === "task_session_not_terminated",
+		);
+		plan = await operations.completeTask({
+			planId: plan.id,
+			taskId: "T-001",
+			attemptId: reserved.attemptId,
+			expectedRevision: plan.revision,
+			status: TASK_STATUS.FAILED,
+			error: "Worker failed",
+			sessionInventory: completeInventory([{
+				id: "failed-session",
+				status: "archived",
+			}]),
+		});
+		assert.equal(
+			plan.tasks[0].attempts[0].sessionTerminatedAt,
+			plan.tasks[0].attempts[0].completedAt,
+		);
 	})
 ));
 
@@ -327,11 +442,28 @@ test("scope overlap needs an auditable override and running scopes stay occupied
         analysis: analysisStub({
             plan: {
                 ...planBlueprint(),
-                tasks: planBlueprint().tasks.map((task) => ({
-                    ...task,
-                    dependsOn: [],
-                    expectedFiles: ["src/**"],
-                })),
+				tasks: [
+					...planBlueprint().tasks.slice(0, 2).map((task) => ({
+						...task,
+						dependsOn: [],
+						expectedFiles: ["src/**"],
+					})),
+					{
+						id: "T-003",
+						title: "Integrate",
+						kind: "implement",
+						description: "Integrate both tasks",
+						dependsOn: ["T-001", "T-002"],
+						acceptanceCriteria: ["Integration is complete"],
+						expectedFiles: ["src/integration.mjs"],
+						deliveryRequirement: "commit",
+					},
+					{
+						...planBlueprint().tasks[2],
+						id: "T-004",
+						dependsOn: ["T-003"],
+					},
+				],
             },
         }),
     })
@@ -739,6 +871,7 @@ test("Factory cancellation must be observed terminal before finalization", () =>
         let plan = await createApproved(operations, workspacePath);
         ({ plan } = await runTask(operations, plan, "T-001"));
         ({ plan } = await runTask(operations, plan, "T-002"));
+		({ plan } = await runTask(operations, plan, "T-003"));
         const verification = await operations.prepareVerification({
             planId: plan.id,
             expectedRevision: plan.revision,
@@ -764,7 +897,13 @@ test("Factory cancellation must be observed terminal before finalization", () =>
             }),
             (/** @type {any} */ error) => error.code === "verification_not_terminated",
         );
-        terminal = true;
+		const cancelled = await operations.cancelVerificationRun({
+			planId: plan.id,
+			expectedRevision: plan.revision,
+			requestId: "cancel-verification",
+		});
+		assert.equal(cancelled.runId, "active-verification");
+		assert.equal(cancelled.verificationDisposition, "run-terminated");
         plan = await operations.finalizeCancellation({
             planId: plan.id,
             expectedRevision: plan.revision,
@@ -785,7 +924,11 @@ test("Factory cancellation must be observed terminal before finalization", () =>
 				},
 				duplicates: [],
 			}),
-            verificationRunIsTerminal: async () => terminal,
+			cancelVerificationRun: async (runId) => {
+				terminal = true;
+				return { runId, status: "cancelled", alreadyTerminal: false };
+			},
+			verificationRunIsTerminal: async () => terminal,
         }),
     });
 });
@@ -795,6 +938,7 @@ test("cancellation resolves a verification launch reserved before the Factory st
         let plan = await createApproved(operations, workspacePath);
         ({ plan } = await runTask(operations, plan, "T-001"));
         ({ plan } = await runTask(operations, plan, "T-002"));
+		({ plan } = await runTask(operations, plan, "T-003"));
         const verification = await operations.prepareVerification({
             planId: plan.id,
             expectedRevision: plan.revision,
@@ -849,6 +993,7 @@ test("failed verification retry opens a fresh correction wave", () => (
         let plan = await createApproved(operations, workspacePath);
         ({ plan } = await runTask(operations, plan, "T-001"));
         ({ plan } = await runTask(operations, plan, "T-002"));
+		({ plan } = await runTask(operations, plan, "T-003"));
         const verification = await operations.prepareVerification({
             planId: plan.id,
             expectedRevision: plan.revision,

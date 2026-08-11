@@ -151,6 +151,7 @@ const EVIDENCE_INPUT = objectSchema(
         summary: NON_EMPTY(LIMITS.evidenceItem),
         source: NON_EMPTY(LIMITS.evidenceSource),
         outcome: { type: "string", enum: Object.values(EVIDENCE_OUTCOME) },
+		checkId: NON_EMPTY(32),
     },
 );
 
@@ -327,7 +328,7 @@ export function buildMobiusTools(operations) {
         },
         {
             name: "mobius_complete_task",
-            description: "Record the active attempt's done, failed, or blocked result. Evidence is assigned canonical IDs and stored as untrusted claimed provenance.",
+			description: "Record the active attempt's done, failed, or blocked result. Verifier evidence is canonicalized by checkId; attached failures require terminal session inventory.",
             parameters: objectSchema(
                 ["planId", "taskId", "attemptId", "expectedRevision", "status"],
                 {
@@ -353,6 +354,7 @@ export function buildMobiusTools(operations) {
                         maxLength: LIMITS.commit,
                     },
                     prUrl: NON_EMPTY(LIMITS.prUrl),
+					sessionInventory: SESSION_INVENTORY,
                 },
             ),
             handler: handler((args) => operations.completeTask(args)),
@@ -422,7 +424,20 @@ export function buildMobiusTools(operations) {
             ),
             handler: handler((args) => operations.cancel(args)),
         },
-        {
+		{
+			name: "mobius_cancel_verification_run",
+			description: "Cancel only the authoritative verification Factory run owned by the active cancellation request. Returns the exact disposition required for finalization and never accepts a caller-supplied run ID.",
+			parameters: objectSchema(
+				["planId", "expectedRevision", "requestId"],
+				{
+					planId: PLAN_ID,
+					expectedRevision: REVISION,
+					requestId: REQUEST_ID,
+				},
+			),
+			handler: handler((args) => operations.cancelVerificationRun(args)),
+		},
+		{
             name: "mobius_finalize_cancellation",
 			description: "Finalize cancellation using a complete causal session inventory and terminal Factory evidence. Inconclusive evidence requires an attributed finalizationOverride.",
             parameters: objectSchema(
@@ -451,11 +466,11 @@ export function buildMobiusTools(operations) {
 					sessionInventory: SESSION_INVENTORY,
                     dispositions: {
                         type: "array",
-                        maxItems: LIMITS.tasks,
+						maxItems: LIMITS.tasks,
                         items: objectSchema(
                             ["attemptId", "disposition"],
                             {
-                                attemptId: ATTEMPT_ID,
+								attemptId: ATTEMPT_ID,
                                 disposition: {
                                     type: "string",
                                     enum: ["session-terminated", "no-session-created"],

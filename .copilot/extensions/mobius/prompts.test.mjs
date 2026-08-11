@@ -76,19 +76,33 @@ test("dependency summaries are encoded inside an explicit untrusted-data fence",
             {
                 id: "T-001",
                 title: "Dependency",
+				kind: "implement",
                 description: "Complete dependency",
                 dependsOn: [],
                 acceptanceCriteria: ["Dependency is done"],
                 expectedFiles: ["src/dependency.mjs"],
+				deliveryRequirement: "branch",
             },
             {
                 id: "T-002",
                 title: "Dependent",
+				kind: "implement",
                 description: "Use dependency",
                 dependsOn: ["T-001"],
                 acceptanceCriteria: ["Dependent is done"],
                 expectedFiles: ["src/dependent.mjs"],
+				deliveryRequirement: "commit",
             },
+			{
+				id: "T-003",
+				title: "Verify",
+				kind: "verify",
+				description: "Verify the final delivery",
+				dependsOn: ["T-002"],
+				acceptanceCriteria: [],
+				expectedFiles: [],
+				deliveryRequirement: "commit",
+			},
         ],
     }, { now: "2026-08-05T00:00:00.000Z" });
     plan = transitionPlan(plan, PLAN_STATUS.AWAITING_APPROVAL, {
@@ -132,4 +146,37 @@ test("dependency summaries are encoded inside an explicit untrusted-data fence",
     );
     assert.match(prompt, /attempt T-002-A001/);
     assert.match(prompt, /Base branch: work\/dependency/);
+
+	plan = attachTaskAttempt(plan, "T-002", "T-002-A001", {
+		sessionId: "session-2",
+		branch: "work/dependent",
+		at: "2026-08-05T00:08:00.000Z",
+	});
+	plan = completeTaskAttempt(plan, "T-002", "T-002-A001", ATTEMPT_STATUS.DONE, {
+		resultSummary: "Dependent complete",
+		evidence: [{
+			type: EVIDENCE_TYPE.TEST,
+			summary: "tests passed",
+			source: "node --test",
+			outcome: "passed",
+		}],
+		branch: "work/dependent",
+		commit: "b".repeat(40),
+		at: "2026-08-05T00:09:00.000Z",
+	});
+	plan = reconcileTaskReadiness(plan, { at: "2026-08-05T00:10:00.000Z" });
+	plan = reserveTaskAttempt(plan, "T-003", {
+		reservationId: "prompt-verifier",
+		at: "2026-08-05T00:11:00.000Z",
+	});
+	const verifier = required(plan.tasks.find((task) => task.id === "T-003"));
+	const verifierPrompt = buildDelegationPrompt(
+		plan,
+		verifier,
+		required(verifier.attempts[0]),
+	);
+	assert.match(verifierPrompt, /independent, read-only verification/);
+	assert.match(verifierPrompt, new RegExp("b".repeat(40)));
+	assert.match(verifierPrompt, /T-001-C001/);
+	assert.match(verifierPrompt, /workspace-integrity/);
 });

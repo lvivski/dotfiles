@@ -281,8 +281,10 @@ function makeTaskCard(task) {
     card.append(heading, element("p", "", task.description));
 
     const details = element("div", "details");
+	addLabeledValue(details, "Kind", task.kind);
     addLabeledValue(details, "Depends on", task.dependsOn.join(", ") || "None");
     addLabeledValue(details, "Expected scope", task.expectedFiles.join(", ") || "Unspecified");
+	addLabeledValue(details, "Required delivery", task.deliveryRequirement || "branch");
     card.append(details);
     if (task.attempts.length > 0) {
         const attempts = element("div", "attempts");
@@ -392,7 +394,7 @@ function renderRecovery() {
         host.append(element(
             "p",
             "warning",
-            "Mobius has only requested cancellation. Stop or archive every listed App session and cancel the listed Conveyor run before finalization.",
+			"Mobius has only requested cancellation. Stop or archive every listed App session and cancel the authoritative Factory run before finalization.",
         ));
     }
     const actions = element("ol", "action-list");

@@ -26,19 +26,33 @@ function approvedPlan() {
             {
                 id: "T-001",
                 title: "Foundation",
+				kind: "implement",
                 description: "Build the foundation",
                 dependsOn: [],
                 acceptanceCriteria: ["Foundation works"],
                 expectedFiles: ["src/foundation.mjs"],
+				deliveryRequirement: "branch",
             },
             {
                 id: "T-002",
                 title: "Dependent",
+				kind: "implement",
                 description: "Use the foundation",
                 dependsOn: ["T-001"],
                 acceptanceCriteria: ["Dependent works"],
                 expectedFiles: ["src/dependent.mjs"],
+				deliveryRequirement: "commit",
             },
+			{
+				id: "T-003",
+				title: "Verify",
+				kind: "verify",
+				description: "Verify the final delivery",
+				dependsOn: ["T-002"],
+				acceptanceCriteria: [],
+				expectedFiles: [],
+				deliveryRequirement: "commit",
+			},
         ],
     }, { now: "2026-08-06T00:00:00.000Z" });
     plan = transitionPlan(plan, PLAN_STATUS.AWAITING_APPROVAL, {
@@ -124,7 +138,10 @@ test("projection reports dependency waits and deterministic ready work", () => {
     assert.deepEqual(projection.dependencyWaits, [{
         taskId: "T-002",
         dependencies: [{ taskId: "T-001", status: "ready" }],
-    }]);
+	}, {
+		taskId: "T-003",
+		dependencies: [{ taskId: "T-002", status: "planned" }],
+	}]);
     assert.equal(projection.progress.percent, 0);
 });
 

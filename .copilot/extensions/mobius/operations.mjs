@@ -27,7 +27,11 @@ import {
     taskLaunchGuidance,
     transitionPlan,
 } from "./domain.mjs";
-import { buildDelegationPrompt, findScopeConflicts, selectNonOverlappingTasks } from "./prompts.mjs";
+import {
+	buildDelegationPrompt,
+	findScopeConflicts,
+	selectNonOverlappingTasks,
+} from "./prompts.mjs";
 import { projectPlan } from "./projection.mjs";
 import {
     isTerminatedSessionState,
@@ -60,6 +64,7 @@ import { MobiusStorageError, createPlanStore } from "./storage.mjs";
  * @property {(input: any) => Promise<any>} prepareVerification
  * @property {(input: any) => Promise<any>} finishVerification
  * @property {(input: any) => Promise<any>} cancel
+ * @property {(input: any) => Promise<any>} cancelVerificationRun
  * @property {(input: any) => Promise<any>} finalizeCancellation
  * @property {(input: any) => Promise<any>} activate
  * @property {() => Promise<any>} deactivate
@@ -116,7 +121,7 @@ function findAttemptById(plan, attemptId) {
 		const attempt = task.attempts.find((candidate) => candidate.id === attemptId);
 		if (attempt) return attempt;
     }
-    return null;
+	return null;
 }
 
 /**
@@ -511,8 +516,29 @@ export function createMobiusOperations(options) {
         branch,
         commit,
         prUrl,
+		sessionInventory,
     }) => {
         const plan = await readForMutation(planId, expectedRevision);
+		const current = findAttempt(plan, taskId, attemptId);
+		let sessionTerminatedAt;
+		if ([TASK_STATUS.FAILED, TASK_STATUS.BLOCKED].includes(status)
+			&& current
+			&& current.sessionId !== null) {
+			const inventory = normalizeInventory(sessionInventory);
+			const observedAt = current?.startedAt ?? current?.reservedAt;
+			if (!inventory.complete
+				|| inventory.capturedAt === null
+				|| !observedAt
+				|| Date.parse(inventory.capturedAt) <= Date.parse(observedAt)
+				|| !isTerminatedSessionState(sessionState(current, inventory))) {
+				throw new MobiusOperationError(
+					"task_session_not_terminated",
+					"Attached task failure requires a complete current terminal session inventory",
+					{ taskId, attemptId, sessionId: current?.sessionId ?? null },
+				);
+			}
+			sessionTerminatedAt = inventory.capturedAt;
+		}
         let candidate = completeTaskAttempt(plan, taskId, attemptId, status, {
             resultSummary,
             evidence,
@@ -520,6 +546,8 @@ export function createMobiusOperations(options) {
             branch,
             commit,
             prUrl,
+			sessionTerminatedAt,
+			at: sessionTerminatedAt,
         });
         if (candidate.status === PLAN_STATUS.RUNNING) {
             candidate = reconcileTaskReadiness(candidate);
@@ -539,7 +567,7 @@ export function createMobiusOperations(options) {
         return persist(planId, expectedRevision, candidate, `task-retried:${taskId}`);
     };
 
-    /**
+	/**
      * Persists a verification launch reservation before returning a run spec.
      *
      * @param {any} input
@@ -771,6 +799,83 @@ export function createMobiusOperations(options) {
         );
     };
 
+	/**
+	 * Cancels only the verification Factory run owned by an active cancellation.
+	 *
+	 * @param {any} input
+	 * @returns {Promise<any>}
+	 */
+	const cancelVerificationRun = async ({
+		planId,
+		expectedRevision,
+		requestId,
+	}) => {
+		const plan = await readForMutation(planId, expectedRevision);
+		if (plan.status !== PLAN_STATUS.CANCELLING || plan.cancellation === null) {
+			throw new MobiusOperationError(
+				"invalid_plan_transition",
+				`Verification cancellation cannot run while the plan is ${plan.status}`,
+			);
+		}
+		if (plan.cancellation.requestId !== requestId) {
+			throw new MobiusOperationError(
+				"cancellation_request_mismatch",
+				`Cancellation request ${requestId} is not active for plan ${planId}`,
+				{
+					expectedRequestId: plan.cancellation.requestId,
+					requestId,
+				},
+			);
+		}
+		if (plan.cancellation.verificationReservationId === null) {
+			return {
+				planId,
+				revision: plan.revision,
+				requestId,
+				state: "not-required",
+				runId: null,
+				status: null,
+				alreadyTerminal: true,
+				verificationDisposition: null,
+			};
+		}
+		let runId = plan.cancellation.verificationRunId;
+		if (runId === null) {
+			const discovery = await discoverReservedVerification(plan);
+			if (discovery.state === "inconclusive") {
+				throw new MobiusOperationError(
+					"verification_launch_indeterminate",
+					"Verification launch cannot be resolved for cancellation",
+					{ discovery },
+				);
+			}
+			if (discovery.state === "absent") {
+				return {
+					planId,
+					revision: plan.revision,
+					requestId,
+					state: "absent",
+					runId: null,
+					status: null,
+					alreadyTerminal: true,
+					verificationDisposition: "no-run-created",
+				};
+			}
+			runId = discovery.run.runId;
+		}
+		const outcome = await analysis.cancelVerificationRun(runId);
+		return {
+			planId,
+			revision: plan.revision,
+			requestId,
+			state: "terminated",
+			runId,
+			status: outcome.status,
+			alreadyTerminal: outcome.alreadyTerminal,
+			verificationDisposition: "run-terminated",
+		};
+	};
+
     /**
      * Finalizes cancellation after every external action has a disposition.
      *
@@ -892,6 +997,7 @@ export function createMobiusOperations(options) {
         prepareVerification,
         finishVerification,
         cancel,
+		cancelVerificationRun,
         finalizeCancellation,
         activate,
         /** Removes the session-local activation marker. */

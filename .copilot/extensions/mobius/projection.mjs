@@ -99,13 +99,15 @@ export function projectPlan(plan, options = {}) {
             const task = plan.tasks.find(
                 (candidate) => candidate.attempts.some((attempt) => attempt.id === attemptId),
             );
-            if (!task) continue;
-            const attempt = task.attempts.find((candidate) => candidate.id === attemptId);
+			const attempt = task?.attempts.find((candidate) => candidate.id === attemptId);
             if (!attempt) continue;
             actions.push(attempt.sessionId === null
-                ? action("resolve-session-creation", { taskId: task.id, attemptId })
+				? action("resolve-session-creation", {
+					taskId: task.id,
+					attemptId,
+				})
                 : action("terminate-session", {
-                    taskId: task.id,
+					taskId: task.id,
                     attemptId,
                     sessionId: attempt.sessionId,
                     sessionState: sessionState(attempt, inventory),
@@ -194,7 +196,7 @@ export function projectPlan(plan, options = {}) {
             }));
         } else if (plan.status === PLAN_STATUS.RUNNING
             && plan.tasks.every((task) => task.status === TASK_STATUS.DONE)) {
-            actions.push(action("prepare-verification"));
+			actions.push(action("prepare-verification"));
         }
     }
 

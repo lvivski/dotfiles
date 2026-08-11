@@ -25,6 +25,7 @@ import {
     taskLaunchGuidance,
     transitionPlan,
     validatePlan,
+	verificationCheckIds,
 } from "./domain.mjs";
 
 const CREATED_AT = "2026-08-05T16:00:00.000Z";
@@ -38,14 +39,45 @@ function task(id, dependsOn = []) {
     return {
         id,
         title: `Task ${id}`,
+		kind: "implement",
         description: `Implement ${id}`,
         dependsOn,
         acceptanceCriteria: [`${id} is observable`],
         expectedFiles: [`src/${id.toLowerCase()}.mjs`],
+		deliveryRequirement: "commit",
     };
 }
 
+function withVerifier(tasks) {
+	if (tasks.some((entry) => entry.kind === "verify")) return tasks;
+	const dependedOn = new Set(tasks.flatMap((entry) => entry.dependsOn));
+	const sinks = tasks.filter((entry) => !dependedOn.has(entry.id));
+	let normalized = [...tasks];
+	let target = sinks[0];
+	if (sinks.length !== 1) {
+		target = task("T-998", sinks.map((entry) => entry.id));
+		normalized.push(target);
+	}
+	return [
+		...normalized,
+		{
+			id: "T-997",
+			title: "Verify",
+			kind: "verify",
+			description: "Verify the final delivery",
+			dependsOn: [target.id],
+			acceptanceCriteria: [],
+			expectedFiles: [],
+			deliveryRequirement: "commit",
+		},
+	];
+}
+
 function draft(options = {}) {
+	const tasks = withVerifier(options.tasks ?? [
+		task("T-001"),
+		task("T-002", ["T-001"]),
+	]);
     return createDraftPlan({
         id: options.id ?? "sample-plan",
         title: options.title ?? "Sample plan",
@@ -56,10 +88,7 @@ function draft(options = {}) {
             baseBranch: "main",
         },
         planning: options.planning ?? null,
-        tasks: options.tasks ?? [
-            task("T-001"),
-            task("T-002", ["T-001"]),
-        ],
+		tasks,
     }, { now: CREATED_AT });
 }
 
@@ -106,9 +135,39 @@ function completeTask(plan, taskId, options = {}) {
         branch: options.branch ?? `work/${attempt.id.toLowerCase()}`,
         at: STARTED_AT,
     });
+	const taskEvidence = taskRecord.kind === "verify"
+		? [
+				...candidate.tasks
+					.filter((entry) => entry.kind === "implement")
+					.sort((left, right) => left.id.localeCompare(right.id))
+					.flatMap((entry) => entry.acceptanceCriteria.map(
+						(_criterion, index) => ({
+							checkId: `${entry.id}-C${String(index + 1).padStart(3, "0")}`,
+							type: EVIDENCE_TYPE.TEST,
+							summary: "Independent check passed",
+							source: "node --test",
+							outcome: "passed",
+						}),
+					)),
+				{
+					checkId: "final-integration",
+					type: EVIDENCE_TYPE.INTEGRATION,
+					summary: "Integration passed",
+					source: "node --test",
+					outcome: "passed",
+				},
+				{
+					checkId: "workspace-integrity",
+					type: EVIDENCE_TYPE.COMMAND,
+					summary: "Workspace remained clean",
+					source: "git status --porcelain",
+					outcome: "passed",
+				},
+			]
+		: claimedEvidence();
     candidate = completeTaskAttempt(candidate, taskId, attempt.id, ATTEMPT_STATUS.DONE, {
         resultSummary: options.resultSummary ?? `Implemented ${taskId}`,
-        evidence: options.evidence ?? claimedEvidence(),
+		evidence: options.evidence ?? taskEvidence,
         branch: options.branch ?? `work/${attempt.id.toLowerCase()}`,
         commit: options.commit ?? "a".repeat(40),
         prUrl: options.prUrl ?? null,
@@ -126,12 +185,53 @@ function throwsCode(operation, code) {
 
 test("createDraftPlan produces the strict initial schema", () => {
     const plan = draft();
-    assert.equal(SCHEMA_VERSION, 1);
-    assert.equal(plan.schemaVersion, 1);
+	assert.equal(SCHEMA_VERSION, 2);
+	assert.equal(plan.schemaVersion, 2);
     assert.equal(plan.status, PLAN_STATUS.DRAFT);
     assert.equal(plan.cancellation, null);
     assert.deepEqual(plan.tasks[0].attempts, []);
     assert.equal(validatePlan(plan), plan);
+});
+
+test("the verifier is the unique sink and canonicalizes checkId evidence", () => {
+	const invalid = structuredClone(draft());
+	invalid.tasks.push({ ...invalid.tasks[2], id: "T-996" });
+	throwsCode(() => validatePlan(invalid), "invalid_task_topology");
+
+	let plan = approved();
+	({ plan } = completeTask(plan, "T-001"));
+	({ plan } = completeTask(plan, "T-002"));
+	const checks = verificationCheckIds(plan.tasks);
+	const evidence = checks.map((checkId) => ({
+		checkId,
+		type: checkId === "final-integration"
+			? EVIDENCE_TYPE.INTEGRATION
+			: EVIDENCE_TYPE.TEST,
+		summary: `${checkId} checked`,
+		source: "node --test",
+		outcome: "passed",
+	})).reverse();
+	({ plan } = completeTask(plan, "T-997", { evidence }));
+	assert.deepEqual(
+		plan.tasks[2].attempts[0].evidence.map((entry) => entry.checkId),
+		checks,
+	);
+
+	let blocked = approved();
+	({ plan: blocked } = completeTask(blocked, "T-001"));
+	({ plan: blocked } = completeTask(blocked, "T-002"));
+	blocked = reserveTaskAttempt(blocked, "T-997", {
+		reservationId: "blocked-verifier",
+		at: RESERVED_AT,
+	});
+	blocked = completeTaskAttempt(
+		blocked,
+		"T-997",
+		"T-997-A001",
+		ATTEMPT_STATUS.BLOCKED,
+		{ error: "create_session failed", evidence: [], at: COMPLETED_AT },
+	);
+	assert.equal(blocked.tasks[2].status, TASK_STATUS.BLOCKED);
 });
 
 test("plan validation rejects malformed timestamps and dependency graphs", async (context) => {
@@ -149,7 +249,7 @@ test("plan validation rejects malformed timestamps and dependency graphs", async
         {
             name: "unknown dependency",
             code: "unknown_dependency",
-            build: () => draft({ tasks: [task("T-001", ["T-999"])] }),
+			build: () => draft({ tasks: [task("T-001", ["T-996"])] }),
         },
         {
             name: "dependency cycle",
@@ -275,9 +375,14 @@ test("reservation IDs are unique across the complete plan", () => {
             resultSummary: "Done",
             evidence: claimedEvidence(),
             branch: "work/shared-reservation",
+			commit: "d".repeat(40),
             at: COMPLETED_AT,
         },
     );
+	completed = reconcileTaskReadiness(completed, { at: COMPLETED_AT });
+	({ plan: completed } = completeTask(completed, "T-997", {
+		commit: "d".repeat(40),
+	}));
     throwsCode(
         () => reserveVerification(completed, {
             reservationId: "shared-task-verification-reservation",
@@ -357,6 +462,7 @@ test("dependency delivery chooses a deterministic base and requires integration 
             resultSummary: "Integrated",
             evidence: claimedEvidence(),
             branch: "work/integration",
+			commit: "f".repeat(40),
             at: COMPLETED_AT,
         }),
         "invalid_attempt_state",
@@ -373,6 +479,7 @@ test("dependency delivery chooses a deterministic base and requires integration 
             },
         ],
         branch: "work/integration",
+		commit: "f".repeat(40),
         at: COMPLETED_AT,
     });
     assert.equal(plan.tasks[2].status, TASK_STATUS.DONE);
@@ -429,6 +536,7 @@ test("cancellation snapshots attempts and cannot finalize an in-flight create as
 test("verification cancellation requires observed Factory termination", () => {
     let plan = approved({ tasks: [task("T-001")] });
     ({ plan } = completeTask(plan, "T-001"));
+	({ plan } = completeTask(plan, "T-997"));
     plan = reserveVerification(plan, {
         reservationId: "reserve-verification-cancel",
         inputDigest: "a".repeat(64),
@@ -465,6 +573,7 @@ test("failed verification reopens attributed tasks and all descendants", () => {
     let plan = approved();
     ({ plan } = completeTask(plan, "T-001"));
     ({ plan } = completeTask(plan, "T-002"));
+	({ plan } = completeTask(plan, "T-997"));
     const firstAttempts = plan.tasks.map((entry) => entry.attempts[0].id);
     plan = reserveVerification(plan, {
         reservationId: "reserve-verification-failed",
@@ -493,6 +602,7 @@ test("failed verification reopens attributed tasks and all descendants", () => {
 test("passed verification still requires explicit completion approval", () => {
     let plan = approved({ tasks: [task("T-001")] });
     ({ plan } = completeTask(plan, "T-001"));
+	({ plan } = completeTask(plan, "T-997"));
     plan = reserveVerification(plan, {
         reservationId: "reserve-verification-passed",
         inputDigest: "c".repeat(64),

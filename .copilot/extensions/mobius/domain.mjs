@@ -8,8 +8,8 @@
  */
 import path from "node:path";
 
-/** Initial persisted plan schema identifier. */
-export const SCHEMA_VERSION = 1;
+/** Persisted plan schema identifier. */
+export const SCHEMA_VERSION = 2;
 
 /** Immutable plan lifecycle status values. */
 export const PLAN_STATUS = Object.freeze({
@@ -73,6 +73,13 @@ export const VERIFICATION_STATUS = Object.freeze({
     FAILED: "failed",
 });
 
+/** Minimum delivery metadata required before an implementation task can complete. */
+export const DELIVERY_REQUIREMENT = Object.freeze({
+	BRANCH: "branch",
+	COMMIT: "commit",
+	PR: "pr",
+});
+
 /** Central field and collection bounds for plan artifacts and tool schemas. */
 export const LIMITS = Object.freeze({
     planId: 64,
@@ -97,6 +104,7 @@ export const LIMITS = Object.freeze({
     prUrl: 2_048,
     resultSummary: 8_000,
     evidence: 64,
+	verificationEvidence: 64,
     evidenceItem: 2_000,
     evidenceId: 15,
     evidenceSource: 2_048,
@@ -106,7 +114,7 @@ export const LIMITS = Object.freeze({
     baseBranch: 512,
     actor: 256,
     verificationRunId: 256,
-    missingEvidence: 64,
+	missingEvidence: 128,
     missingEvidenceItem: 2_000,
     telemetry: 64,
     telemetryEvent: 96,
@@ -120,7 +128,8 @@ export const LIMITS = Object.freeze({
  * @property {string | null} source Command, URL, file, or other source reference.
  * @property {string} outcome Passed, failed, or informational.
  * @property {string} producer Attached session ID or coordinator.
- * @property {"claimed"} trust Explicit non-verified trust classification.
+ * @property {string | null} checkId Stable verifier check identity.
+ * @property {"claimed"|"independent-claim"} trust Explicit trust classification.
  */
 
 /**
@@ -140,6 +149,7 @@ export const LIMITS = Object.freeze({
  * @property {string | null} error Terminal error or cancellation reason.
  * @property {string} reservedAt
  * @property {string | null} startedAt
+ * @property {string | null} sessionTerminatedAt
  * @property {string | null} cancelRequestedAt
  * @property {string | null} completedAt
  */
@@ -148,12 +158,13 @@ export const LIMITS = Object.freeze({
  * @typedef {object} MobiusTask
  * @property {string} id
  * @property {string} title
- * @property {"implement"} kind
+ * @property {"implement"|"verify"} kind
  * @property {string} description
  * @property {string[]} dependsOn
  * @property {string} status
  * @property {string[]} acceptanceCriteria
  * @property {string[]} expectedFiles
+ * @property {"branch"|"commit"|"pr"} deliveryRequirement
  * @property {MobiusAttempt[]} attempts
  */
 
@@ -187,7 +198,7 @@ const ATTEMPT_ID_PATTERN = /^T-\d{3}-A\d{3}$/;
 const EVIDENCE_ID_PATTERN = /^T-\d{3}-A\d{3}-E\d{3}$/;
 /** Stable idempotency request ID syntax. */
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
-const TASK_KINDS = new Set(["implement"]);
+const TASK_KINDS = new Set(["implement", "verify"]);
 /** @type {Set<string>} */
 const PLAN_STATUS_VALUES = new Set(Object.values(PLAN_STATUS));
 /** @type {Set<string>} */
@@ -200,6 +211,8 @@ const EVIDENCE_TYPE_VALUES = new Set(Object.values(EVIDENCE_TYPE));
 const EVIDENCE_OUTCOME_VALUES = new Set(Object.values(EVIDENCE_OUTCOME));
 /** @type {Set<string>} */
 const VERIFICATION_STATUS_VALUES = new Set(Object.values(VERIFICATION_STATUS));
+/** @type {Set<string>} */
+const DELIVERY_REQUIREMENT_VALUES = new Set(Object.values(DELIVERY_REQUIREMENT));
 /** Attempt states that hold task execution ownership. */
 /** @type {Set<string>} */
 const ACTIVE_ATTEMPT_STATUSES = new Set([
@@ -271,6 +284,7 @@ const TASK_KEYS = new Set([
     "status",
     "acceptanceCriteria",
     "expectedFiles",
+	"deliveryRequirement",
     "attempts",
 ]);
 const ATTEMPT_KEYS = new Set([
@@ -289,6 +303,7 @@ const ATTEMPT_KEYS = new Set([
     "error",
     "reservedAt",
     "startedAt",
+	"sessionTerminatedAt",
     "cancelRequestedAt",
     "completedAt",
 ]);
@@ -307,6 +322,7 @@ const EVIDENCE_KEYS = new Set([
     "source",
     "outcome",
     "producer",
+	"checkId",
     "trust",
 ]);
 const EVIDENCE_INPUT_KEYS = new Set([
@@ -314,6 +330,7 @@ const EVIDENCE_INPUT_KEYS = new Set([
     "summary",
     "source",
     "outcome",
+	"checkId",
 ]);
 const CANCELLATION_KEYS = new Set([
     "requestId",
@@ -357,6 +374,7 @@ const DRAFT_TASK_KEYS = new Set([
     "dependsOn",
     "acceptanceCriteria",
     "expectedFiles",
+	"deliveryRequirement",
 ]);
 
 /**
@@ -781,6 +799,83 @@ export function validateDependencyGraph(tasks) {
 }
 
 /**
+ * Validates the implementation DAG and its unique final verifier task.
+ *
+ * @param {MobiusTask[]} tasks
+ * @returns {{verifyTask: MobiusTask, targetTask: MobiusTask}}
+ */
+export function validateTaskTopology(tasks) {
+	const implementTasks = tasks.filter((task) => task.kind === "implement");
+	const verifyTasks = tasks.filter((task) => task.kind === "verify");
+	if (implementTasks.length === 0 || verifyTasks.length !== 1) {
+		fail(
+			"invalid_task_topology",
+			"Plans require implementation tasks and exactly one verifier task",
+			{ path: "tasks" },
+		);
+	}
+	const verifyTask = verifyTasks[0];
+	const dependedOn = new Set(tasks.flatMap((task) => task.dependsOn));
+	const sinks = tasks.filter((task) => !dependedOn.has(task.id));
+	if (sinks.length !== 1 || sinks[0].id !== verifyTask.id) {
+		fail("invalid_task_topology", "The verifier task must be the only sink", {
+			path: "tasks",
+			details: { sinkTaskIds: sinks.map((task) => task.id) },
+		});
+	}
+	if (verifyTask.dependsOn.length !== 1) {
+		fail("invalid_task_topology", "The verifier must depend on one final implementation task", {
+			path: `tasks[${tasks.indexOf(verifyTask)}].dependsOn`,
+		});
+	}
+	const byId = taskMap(tasks);
+	const targetTask = byId.get(verifyTask.dependsOn[0]);
+	if (!targetTask || targetTask.kind !== "implement") {
+		fail("invalid_task_topology", "The verifier dependency must be an implementation task", {
+			path: `tasks[${tasks.indexOf(verifyTask)}].dependsOn`,
+		});
+	}
+	const reachable = new Set();
+	/** Walks dependencies into the final implementation closure. */
+	const visit = (taskId) => {
+		if (reachable.has(taskId)) return;
+		reachable.add(taskId);
+		for (const dependencyId of byId.get(taskId).dependsOn) visit(dependencyId);
+	};
+	visit(targetTask.id);
+	const missing = implementTasks
+		.map((task) => task.id)
+		.filter((taskId) => !reachable.has(taskId));
+	if (missing.length > 0) {
+		fail("invalid_task_topology", "Every implementation task must converge before verification", {
+			path: "tasks",
+			details: { unreachableTaskIds: missing },
+		});
+	}
+	if (![DELIVERY_REQUIREMENT.COMMIT, DELIVERY_REQUIREMENT.PR].includes(
+		effectiveDeliveryRequirement(targetTask),
+	)) {
+		fail(
+			"invalid_task_topology",
+			"The final implementation task must require commit or pr delivery",
+			{ path: `tasks[${tasks.indexOf(targetTask)}].deliveryRequirement` },
+		);
+	}
+	const criterionCount = implementTasks.reduce(
+		(total, task) => total + task.acceptanceCriteria.length,
+		0,
+	);
+	if (criterionCount > LIMITS.evidence - 2) {
+		fail(
+			"too_many_verification_checks",
+			`Implementation criteria must not exceed ${LIMITS.evidence - 2}`,
+			{ path: "tasks", details: { criterionCount } },
+		);
+	}
+	return { verifyTask, targetTask };
+}
+
+/**
  * Derives the next canonical attempt ID for a task-local index.
  *
  * @param {string} taskId
@@ -800,6 +895,20 @@ function expectedAttemptId(taskId, index) {
  */
 function expectedEvidenceId(attemptId, index) {
     return `${attemptId}-E${String(index + 1).padStart(3, "0")}`;
+}
+
+/** Returns the canonical verifier check IDs in stable order. */
+export function verificationCheckIds(tasks) {
+	return [
+		...tasks
+			.filter((task) => task.kind === "implement")
+			.sort((left, right) => left.id.localeCompare(right.id))
+			.flatMap((task) => task.acceptanceCriteria.map(
+				(_criterion, index) => `${task.id}-C${String(index + 1).padStart(3, "0")}`,
+			)),
+		"final-integration",
+		"workspace-integrity",
+	];
 }
 
 /**
@@ -831,6 +940,65 @@ function assertCommit(value, fieldPath) {
             path: fieldPath,
         });
     }
+}
+
+/**
+ * Validates and returns a task's minimum delivery requirement.
+ *
+ * @param {MobiusTask | any} task
+ * @param {string} [fieldPath]
+ * @returns {"branch"|"commit"|"pr"}
+ */
+export function effectiveDeliveryRequirement(task, fieldPath = "deliveryRequirement") {
+	const requirement = task.deliveryRequirement;
+	if (!DELIVERY_REQUIREMENT_VALUES.has(requirement)) {
+		fail(
+			"invalid_delivery_requirement",
+			`${fieldPath} must be branch, commit, or pr`,
+			{ path: fieldPath, details: { value: requirement } },
+		);
+	}
+	return requirement;
+}
+
+/**
+ * Requires one successful attempt to satisfy its task's delivery contract.
+ *
+ * Commit and PR delivery must carry a full SHA-1 or SHA-256 object ID; PR
+ * delivery also needs a URL.
+ *
+ * @param {MobiusTask} task
+ * @param {MobiusTask} task
+ * @param {MobiusAttempt} attempt
+ * @param {string} fieldPath
+ * @returns {void}
+ */
+function assertAttemptDelivery(task, attempt, fieldPath) {
+	const requirement = effectiveDeliveryRequirement(
+		task,
+		`${fieldPath}.deliveryRequirement`,
+	);
+	const fullCommit = typeof attempt.commit === "string"
+		&& /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(attempt.commit);
+	const satisfied = attempt.branch !== null
+		&& (requirement === DELIVERY_REQUIREMENT.BRANCH
+			|| (fullCommit
+				&& (requirement !== DELIVERY_REQUIREMENT.PR || attempt.prUrl !== null)));
+	if (!satisfied) {
+		fail(
+			"delivery_requirement_unsatisfied",
+			`Attempt ${attempt.id} does not satisfy ${requirement} delivery`,
+			{
+				path: fieldPath,
+				details: {
+					requirement,
+					branch: attempt.branch,
+					commit: attempt.commit,
+					prUrl: attempt.prUrl,
+				},
+			},
+		);
+	}
 }
 
 /**
@@ -889,7 +1057,7 @@ function validateScopeOverride(value, fieldPath) {
  * @param {string} fieldPath
  * @returns {void}
  */
-function validateEvidence(entry, attempt, index, fieldPath) {
+function validateEvidence(entry, task, attempt, index, fieldPath) {
     assertPlainObject(entry, fieldPath);
     assertKnownKeys(entry, EVIDENCE_KEYS, fieldPath);
     const expectedId = expectedEvidenceId(attempt.id, index);
@@ -922,11 +1090,19 @@ function validateEvidence(entry, attempt, index, fieldPath) {
             path: `${fieldPath}.producer`,
         });
     }
-    if (entry.trust !== "claimed") {
-        fail("invalid_evidence_trust", `${fieldPath}.trust must be claimed`, {
+	const expectedTrust = task.kind === "verify" ? "independent-claim" : "claimed";
+	if (entry.trust !== expectedTrust) {
+		fail("invalid_evidence_trust", `${fieldPath}.trust must be ${expectedTrust}`, {
             path: `${fieldPath}.trust`,
         });
     }
+	if (task.kind === "verify") {
+		assertString(entry.checkId, `${fieldPath}.checkId`, 32);
+	} else if (entry.checkId !== null) {
+		fail("invalid_evidence_check", `${fieldPath}.checkId must be null`, {
+			path: `${fieldPath}.checkId`,
+		});
+	}
 }
 
 /**
@@ -955,15 +1131,15 @@ export function latestSuccessfulAttempt(task) {
  * Validates one attempt and all status-dependent field invariants.
  *
  * @param {any} attempt
- * @param {string} taskId
+ * @param {MobiusTask} task
  * @param {number} index
  * @param {string} fieldPath
  * @returns {void}
  */
-function validateAttempt(attempt, taskId, index, fieldPath) {
+function validateAttempt(attempt, task, index, fieldPath) {
     assertPlainObject(attempt, fieldPath);
     assertKnownKeys(attempt, ATTEMPT_KEYS, fieldPath);
-    const expectedId = expectedAttemptId(taskId, index);
+	const expectedId = expectedAttemptId(task.id, index);
     if (attempt.id !== expectedId || !ATTEMPT_ID_PATTERN.test(attempt.id)) {
         fail("invalid_attempt_id", `${fieldPath}.id must be ${expectedId}`, {
             path: `${fieldPath}.id`,
@@ -1000,11 +1176,16 @@ function validateAttempt(attempt, taskId, index, fieldPath) {
         });
     }
     attempt.evidence.forEach((entry, evidenceIndex) => {
-        validateEvidence(entry, attempt, evidenceIndex, `${fieldPath}.evidence[${evidenceIndex}]`);
+		validateEvidence(entry, task, attempt, evidenceIndex, `${fieldPath}.evidence[${evidenceIndex}]`);
     });
     assertNullableString(attempt.error, `${fieldPath}.error`, LIMITS.error);
     assertTimestamp(attempt.reservedAt, `${fieldPath}.reservedAt`);
     assertTimestamp(attempt.startedAt, `${fieldPath}.startedAt`, { nullable: true });
+	assertTimestamp(
+		attempt.sessionTerminatedAt,
+		`${fieldPath}.sessionTerminatedAt`,
+		{ nullable: true },
+	);
     assertTimestamp(attempt.cancelRequestedAt, `${fieldPath}.cancelRequestedAt`, { nullable: true });
     assertTimestamp(attempt.completedAt, `${fieldPath}.completedAt`, { nullable: true });
     if (attempt.startedAt !== null
@@ -1029,6 +1210,7 @@ function validateAttempt(attempt, taskId, index, fieldPath) {
             || attempt.evidence.length > 0
             || attempt.error !== null
             || attempt.startedAt !== null
+			|| attempt.sessionTerminatedAt !== null
             || attempt.cancelRequestedAt !== null
             || attempt.completedAt !== null) {
             fail("invalid_attempt_state", `${fieldPath} contains data before attachment`, {
@@ -1041,6 +1223,7 @@ function validateAttempt(attempt, taskId, index, fieldPath) {
             || attempt.resultSummary !== null
             || attempt.evidence.length > 0
             || attempt.error !== null
+			|| attempt.sessionTerminatedAt !== null
             || attempt.cancelRequestedAt !== null
             || attempt.completedAt !== null) {
             fail("invalid_attempt_state", `${fieldPath} is not a valid running attempt`, {
@@ -1058,6 +1241,7 @@ function validateAttempt(attempt, taskId, index, fieldPath) {
             || attempt.resultSummary === null
             || attempt.evidence.length === 0
             || attempt.error !== null
+			|| attempt.sessionTerminatedAt !== null
             || attempt.cancelRequestedAt !== null
             || attempt.completedAt === null
             || (attempt.integrationRequired.length > 0 && !integrationEvidence)) {
@@ -1070,7 +1254,9 @@ function validateAttempt(attempt, taskId, index, fieldPath) {
         if (attempt.error === null
             || attempt.completedAt === null
             || attempt.cancelRequestedAt !== null
-            || (attempt.sessionId !== null && attempt.startedAt === null)) {
+			|| (attempt.sessionId === null && attempt.sessionTerminatedAt !== null)
+			|| (attempt.sessionId !== null
+				&& (attempt.startedAt === null || attempt.sessionTerminatedAt === null))) {
             fail("invalid_attempt_state", `${fieldPath} is not a valid terminal attempt`, {
                 path: fieldPath,
             });
@@ -1079,6 +1265,7 @@ function validateAttempt(attempt, taskId, index, fieldPath) {
         if (attempt.cancelRequestedAt === null
             || attempt.completedAt !== null
             || attempt.error === null
+			|| attempt.sessionTerminatedAt !== null
             || (attempt.sessionId !== null && attempt.startedAt === null)) {
             fail("invalid_attempt_state", `${fieldPath} is not awaiting cancellation`, {
                 path: fieldPath,
@@ -1088,7 +1275,9 @@ function validateAttempt(attempt, taskId, index, fieldPath) {
         && (attempt.cancelRequestedAt === null
             || attempt.completedAt === null
             || attempt.error === null
-            || (attempt.sessionId !== null && attempt.startedAt === null))) {
+			|| (attempt.sessionId === null && attempt.sessionTerminatedAt !== null)
+			|| (attempt.sessionId !== null
+				&& (attempt.startedAt === null || attempt.sessionTerminatedAt === null)))) {
         fail("invalid_attempt_state", `${fieldPath} is not a valid cancelled attempt`, {
             path: fieldPath,
         });
@@ -1102,7 +1291,7 @@ function validateAttempt(attempt, taskId, index, fieldPath) {
  * @param {number} index
  * @returns {void}
  */
-function validateTask(task, index) {
+function validateTask(task, index, tasks) {
     const fieldPath = `tasks[${index}]`;
     assertPlainObject(task, fieldPath);
     assertKnownKeys(task, TASK_KEYS, fieldPath);
@@ -1113,7 +1302,7 @@ function validateTask(task, index) {
     }
     assertString(task.title, `${fieldPath}.title`, LIMITS.taskTitle);
     if (!TASK_KINDS.has(task.kind)) {
-        fail("invalid_task_kind", `${fieldPath}.kind must be "implement" in schema version ${SCHEMA_VERSION}`, {
+		fail("invalid_task_kind", `${fieldPath}.kind must be implement or verify`, {
             path: `${fieldPath}.kind`,
         });
     }
@@ -1129,7 +1318,7 @@ function validateTask(task, index) {
         });
     }
     assertStringArray(task.acceptanceCriteria, `${fieldPath}.acceptanceCriteria`, {
-        minimum: 1,
+		minimum: task.kind === "verify" ? 0 : 1,
         maximum: LIMITS.acceptanceCriteria,
         itemMaximum: LIMITS.acceptanceCriterion,
     });
@@ -1137,13 +1326,57 @@ function validateTask(task, index) {
         maximum: LIMITS.expectedFiles,
         itemMaximum: LIMITS.expectedFile,
     });
+	effectiveDeliveryRequirement(task, `${fieldPath}.deliveryRequirement`);
+	if (task.kind === "verify"
+		&& (task.acceptanceCriteria.length !== 0
+			|| task.expectedFiles.length !== 0
+			|| task.deliveryRequirement !== DELIVERY_REQUIREMENT.COMMIT)) {
+		fail(
+			"invalid_verifier_task",
+			"Verifier tasks require no authored criteria/files and commit delivery",
+			{ path: fieldPath },
+		);
+	}
     if (!Array.isArray(task.attempts) || task.attempts.length > LIMITS.attempts) {
         fail("invalid_attempts", `${fieldPath}.attempts is invalid`, {
             path: `${fieldPath}.attempts`,
         });
     }
     task.attempts.forEach((attempt, attemptIndex) => {
-        validateAttempt(attempt, task.id, attemptIndex, `${fieldPath}.attempts[${attemptIndex}]`);
+		validateAttempt(attempt, task, attemptIndex, `${fieldPath}.attempts[${attemptIndex}]`);
+		const expectedChecks = task.kind === "verify"
+			? verificationCheckIds(tasks)
+			: [];
+		const actualChecks = attempt.evidence.map((entry) => entry.checkId);
+		if (task.kind === "verify"
+			&& (new Set(actualChecks).size !== actualChecks.length
+				|| actualChecks.some((checkId) => !expectedChecks.includes(checkId)))) {
+			fail(
+				"invalid_verifier_report",
+				`${fieldPath}.attempts[${attemptIndex}] contains invalid check IDs`,
+				{ path: `${fieldPath}.attempts[${attemptIndex}].evidence` },
+			);
+		}
+		if (attempt.status === ATTEMPT_STATUS.DONE) {
+			assertAttemptDelivery(
+				task,
+				attempt,
+				`${fieldPath}.attempts[${attemptIndex}]`,
+			);
+			if (task.kind === "verify") {
+				if (actualChecks.length !== expectedChecks.length
+					|| actualChecks.some((checkId, checkIndex) => (
+						checkId !== expectedChecks[checkIndex]
+					))
+					|| attempt.prUrl !== null) {
+					fail(
+						"invalid_verifier_report",
+						`${fieldPath}.attempts[${attemptIndex}] lacks the canonical verifier report`,
+						{ path: `${fieldPath}.attempts[${attemptIndex}]` },
+					);
+				}
+			}
+		}
     });
     const active = task.attempts.filter((attempt) => [
         ATTEMPT_STATUS.RESERVED,
@@ -1222,7 +1455,7 @@ function validateVerification(verification) {
         LIMITS.resultSummary,
     );
     assertStringArray(verification.evidence, "verification.evidence", {
-        maximum: LIMITS.evidence,
+		maximum: LIMITS.verificationEvidence,
         itemMaximum: LIMITS.evidenceItem,
     });
     assertStringArray(verification.missingEvidence, "verification.missingEvidence", {
@@ -1401,10 +1634,10 @@ function validateCancellation(cancellation, planStatus, tasks) {
     assertString(cancellation.requestedBy, "cancellation.requestedBy", LIMITS.actor);
     assertTimestamp(cancellation.requestedAt, "cancellation.requestedAt");
     assertStringArray(cancellation.requiredAttemptIds, "cancellation.requiredAttemptIds", {
-        maximum: LIMITS.tasks,
+		maximum: LIMITS.tasks,
         itemMaximum: LIMITS.attemptId,
     });
-    /** @type {Map<string, MobiusAttempt>} */
+	/** @type {Map<string, any>} */
     const attemptsById = new Map(tasks.flatMap(
         (task) => task.attempts.map((attempt) => [attempt.id, attempt]),
     ));
@@ -1450,7 +1683,7 @@ function validateCancellation(cancellation, planStatus, tasks) {
 		);
     }
     if (!Array.isArray(cancellation.acknowledgements)
-        || cancellation.acknowledgements.length > LIMITS.tasks) {
+		|| cancellation.acknowledgements.length > LIMITS.tasks + 1) {
         fail("invalid_cancellation_acknowledgements", "Cancellation acknowledgements are invalid", {
             path: "cancellation.acknowledgements",
         });
@@ -1674,6 +1907,7 @@ export function validatePlan(plan) {
     }
     plan.tasks.forEach(validateTask);
     validateDependencyGraph(plan.tasks);
+	validateTaskTopology(plan.tasks);
     const sessionIds = new Set();
     const reservationIds = new Set();
     for (const task of plan.tasks) {
@@ -1695,7 +1929,6 @@ export function validatePlan(plan) {
             sessionIds.add(attempt.sessionId);
         }
     }
-
     const byId = taskMap(plan.tasks);
     for (let index = 0; index < plan.tasks.length; index += 1) {
         const task = plan.tasks[index];
@@ -1861,7 +2094,7 @@ export function validatePlan(plan) {
             path: "verification.status",
         });
     }
-    validateCancellation(plan.cancellation, plan.status, plan.tasks);
+	validateCancellation(plan.cancellation, plan.status, plan.tasks);
     if (plan.status === PLAN_STATUS.CANCELLING
         && plan.cancellation.verificationReservationId !== null
         && plan.cancellation.verificationReservationId !== plan.verification.reservationId) {
@@ -1939,12 +2172,13 @@ export function createDraftPlan(input, options = {}) {
             return {
                 id: task.id,
                 title: task.title,
-                kind: task.kind ?? "implement",
+				kind: task.kind,
                 description: task.description,
                 dependsOn: clone(task.dependsOn ?? []),
                 status: TASK_STATUS.PLANNED,
                 acceptanceCriteria: clone(task.acceptanceCriteria ?? []),
                 expectedFiles: clone(task.expectedFiles ?? []),
+				deliveryRequirement: task.deliveryRequirement,
                 attempts: [],
             };
         }),
@@ -2097,7 +2331,7 @@ export function completeVerification(plan, result, options = {}) {
     assertPlainObject(result, "result");
     assertString(result.summary, "result.summary", LIMITS.resultSummary);
     assertStringArray(result.evidence, "result.evidence", {
-        maximum: LIMITS.evidence,
+		maximum: LIMITS.verificationEvidence,
         itemMaximum: LIMITS.evidenceItem,
     });
     assertStringArray(result.missingEvidence, "result.missingEvidence", {
@@ -2387,6 +2621,7 @@ export function reserveTaskAttempt(plan, taskId, options = {}) {
         error: null,
         reservedAt: timestamp,
         startedAt: null,
+		sessionTerminatedAt: null,
         cancelRequestedAt: null,
         completedAt: null,
     });
@@ -2464,21 +2699,24 @@ export function attachTaskAttempt(plan, taskId, attemptId, options = {}) {
 }
 
 /**
- * Assigns canonical IDs and claimed provenance to caller evidence records.
+ * Assigns canonical IDs, check identities, and task-kind provenance.
  *
  * @param {any} value
+ * @param {MobiusPlan} plan
+ * @param {MobiusTask} task
  * @param {MobiusAttempt} attempt
+ * @param {string} status
  * @param {string} [fieldPath]
  * @returns {MobiusEvidence[]}
  */
-function normalizeEvidence(value, attempt, fieldPath = "evidence") {
+function normalizeEvidence(value, plan, task, attempt, status, fieldPath = "evidence") {
     if (!Array.isArray(value) || value.length > LIMITS.evidence) {
         fail("invalid_evidence", `${fieldPath} must contain at most ${LIMITS.evidence} entries`, {
             path: fieldPath,
         });
     }
     const producer = attempt.sessionId ?? "coordinator";
-    return value.map((entry, index) => {
+	const parsed = value.map((entry, index) => {
         const entryPath = `${fieldPath}[${index}]`;
         assertPlainObject(entry, entryPath);
         assertKnownKeys(entry, EVIDENCE_INPUT_KEYS, entryPath);
@@ -2503,15 +2741,53 @@ function normalizeEvidence(value, attempt, fieldPath = "evidence") {
             });
         }
         return {
-            id: expectedEvidenceId(attempt.id, index),
             type: entry.type,
             summary: entry.summary,
             source,
             outcome,
             producer,
-            trust: "claimed",
+			checkId: entry.checkId ?? null,
+			trust: task.kind === "verify" ? "independent-claim" : "claimed",
         };
     });
+	if (task.kind !== "verify") {
+		if (parsed.some((entry) => entry.checkId !== null)) {
+			fail("invalid_evidence_check", "Implementation evidence cannot set checkId", {
+				path: fieldPath,
+			});
+		}
+		return parsed.map((entry, index) => ({
+			id: expectedEvidenceId(attempt.id, index),
+			...entry,
+		}));
+	}
+	const expectedChecks = verificationCheckIds(plan.tasks);
+	const byCheck = new Map();
+	for (const entry of parsed) {
+		if (typeof entry.checkId !== "string"
+			|| !expectedChecks.includes(entry.checkId)
+			|| byCheck.has(entry.checkId)) {
+			fail("invalid_evidence_check", "Verifier evidence has an unknown or duplicate checkId", {
+				path: fieldPath,
+				details: { checkId: entry.checkId },
+			});
+		}
+		byCheck.set(entry.checkId, entry);
+	}
+	if (status === ATTEMPT_STATUS.DONE && byCheck.size !== expectedChecks.length) {
+		fail("invalid_evidence_check", "Verifier evidence must cover every canonical check", {
+			path: fieldPath,
+			details: {
+				missingCheckIds: expectedChecks.filter((checkId) => !byCheck.has(checkId)),
+			},
+		});
+	}
+	return expectedChecks
+		.filter((checkId) => byCheck.has(checkId))
+		.map((checkId, index) => ({
+			id: expectedEvidenceId(attempt.id, index),
+			...byCheck.get(checkId),
+		}));
 }
 
 /**
@@ -2566,13 +2842,24 @@ export function completeTaskAttempt(plan, taskId, attemptId, status, options = {
     }
     assertCommit(options.commit ?? null, "commit");
     assertHttpUrl(options.prUrl ?? null, "prUrl");
+	if (options.sessionTerminatedAt !== undefined
+		&& options.sessionTerminatedAt !== null) {
+		assertTimestamp(options.sessionTerminatedAt, "sessionTerminatedAt");
+	}
     const timestamp = nowIso(options.at);
     attempt.status = status;
     attempt.commit = options.commit ?? null;
     attempt.prUrl = options.prUrl ?? null;
     attempt.resultSummary = options.resultSummary ?? null;
-    attempt.evidence = normalizeEvidence(options.evidence ?? [], attempt);
+	attempt.evidence = normalizeEvidence(
+		options.evidence ?? [],
+		candidate,
+		task,
+		attempt,
+		status,
+	);
     attempt.error = options.error ?? null;
+	attempt.sessionTerminatedAt = options.sessionTerminatedAt ?? null;
     attempt.completedAt = timestamp;
     task.status = status;
     candidate.updatedAt = timestamp;
@@ -2771,12 +3058,12 @@ export function finalizePlanCancellation(plan, dispositions, options = {}) {
         const task = candidate.tasks.find(
             (item) => item.attempts.some((attempt) => attempt.id === attemptId),
         );
-        if (!task) {
+		if (!task) {
             fail("cancellation_incomplete", `Attempt ${attemptId} has no owning task`, {
                 path: "dispositions",
             });
         }
-        const attempt = findAttempt(task, attemptId);
+		const attempt = findAttempt(task, attemptId);
         const disposition = byAttemptId.get(attemptId);
         if (!disposition) {
             fail("cancellation_incomplete", `Attempt ${attemptId} has no disposition`, {
@@ -2798,8 +3085,9 @@ export function finalizePlanCancellation(plan, dispositions, options = {}) {
         }
         attempt.status = ATTEMPT_STATUS.CANCELLED;
         attempt.completedAt = timestamp;
+		attempt.sessionTerminatedAt = attempt.sessionId === null ? null : timestamp;
         attempt.error = candidate.cancellation.reason;
-        task.status = TASK_STATUS.CANCELLED;
+		task.status = TASK_STATUS.CANCELLED;
         acknowledgements.push({
             attemptId,
             disposition: disposition.disposition,

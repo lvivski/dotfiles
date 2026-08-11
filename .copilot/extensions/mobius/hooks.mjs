@@ -349,13 +349,15 @@ Coordinator contract:
 5. Do not duplicate active child work or expand the approved DAG. Intervene only for explicit steering, cancellation, stuck sessions, or child requests.
 6. Do not launch overlapping declared scopes without an auditable scopeOverride.
 7. Use mobius_get_status with a complete App session inventory before treating a recorded session as absent.
-8. mobius_cancel only requests cancellation. Stop/archive every listed App session and cancel the listed Factory run before mobius_finalize_cancellation.
+8. mobius_cancel only requests cancellation. Stop/archive every listed App session, call mobius_cancel_verification_run with the same request ID, then use its disposition with mobius_finalize_cancellation.
 9. Re-read the plan after revision conflicts; reservation and attachment replays are idempotent only when their exact postcondition already exists.
 10. Mobius Factory agents perform analysis only; App-native child sessions own repository mutation.
 11. Use each prepare tool's exact launchSpec with run_factory. If prepare returns launchSpec:null, do not launch again; use its returned runId.
-12. mobius_prepare_verification is a mutation: call it with expectedRevision and a stable reservationId BEFORE launching the Factory.
-13. Import the terminal Factory result with mobius_complete_verification, then request explicit completion approval.
-14. Finalize cancellation only with a complete, causally newer App session inventory; use finalizationOverride only as an explicit attributed escape hatch.`;
+12. The final verify task uses the ordinary reserve/create/attach/complete flow. Its child session is read-only and must report canonical checkId evidence plus the final observed commit.
+13. Failed or blocked attached tasks require a complete, causally newer terminal App session inventory before mobius_complete_task.
+14. mobius_prepare_verification is a mutation: call it with expectedRevision and a stable reservationId only after every task, including the verifier, is done.
+15. Import the terminal Factory result with mobius_complete_verification, then request explicit completion approval.
+16. Finalize cancellation only with a complete, causally newer App session inventory; use finalizationOverride only as an explicit attributed escape hatch.`;
 }
 
 /**

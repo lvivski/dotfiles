@@ -204,6 +204,13 @@ export function createFactoryAnalysis(getFactoryApi) {
 				candidates: matches,
 			};
 		}
+		if (matches.length === 1 && inconclusive.length > 0) {
+			return {
+				state: "inconclusive",
+				reason: "a matching verification run exists alongside unresolved candidates",
+				candidates: [...matches, ...inconclusive],
+			};
+		}
 		if (matches.length === 1) {
 			return {
 				state: "found",
@@ -365,10 +372,70 @@ export function createFactoryAnalysis(getFactoryApi) {
 		}
 	};
 
+	/** Cancel the exact Mobius verification run and observe a terminal envelope. */
+	const cancelVerificationRun = async (runId) => {
+		const { run } = await loadRun(runId, MOBIUS_FACTORIES.verify);
+		if (TERMINAL.has(run.status)) {
+			return {
+				runId,
+				status: run.status,
+				alreadyTerminal: true,
+			};
+		}
+		const factoryApi = api();
+		if (typeof factoryApi.cancel !== "function") {
+			fail(
+				"factory_backend_unavailable",
+				"Mobius requires the native Factory cancellation API",
+			);
+		}
+		let settled;
+		try {
+			settled = await factoryApi.cancel(runId);
+		} catch (error) {
+			fail(
+				"factory_cancel_failed",
+				error instanceof Error ? error.message : String(error),
+				{ runId },
+			);
+		}
+		if (!TERMINAL.has(settled?.status)) {
+			if (typeof factoryApi.waitForRun !== "function") {
+				fail(
+					"factory_cancel_incomplete",
+					`Factory run ${runId} did not reach a terminal state`,
+					{ runId, status: settled?.status ?? null },
+				);
+			}
+			try {
+				settled = await factoryApi.waitForRun(runId);
+			} catch (error) {
+				fail(
+					"factory_cancel_failed",
+					error instanceof Error ? error.message : String(error),
+					{ runId },
+				);
+			}
+		}
+		if (!TERMINAL.has(settled?.status)) {
+			fail(
+				"factory_cancel_incomplete",
+				`Factory run ${runId} did not reach a terminal state`,
+				{ runId, status: settled?.status ?? null },
+			);
+		}
+		return {
+			runId,
+			status: settled.status,
+			alreadyTerminal: false,
+		};
+	};
+
 	return Object.freeze({
 		importPlanning,
 		importVerification,
 		assessVerificationRun,
+		cancelVerificationRun,
 		discoverVerificationRun,
 		preparePlanning,
 		prepareVerification,
