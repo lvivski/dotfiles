@@ -85,7 +85,7 @@
 
 [credential "https://github.com"]
     helper =
-    helper = !gh auth git-credential
+    helper = manager
 
 [credential "https://dev.azure.com"]
     helper =
