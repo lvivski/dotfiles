@@ -151,6 +151,37 @@ test("canvas mutations require a token, explicit confirmation, and current revis
         });
         assert.equal(unconfirmed.status, 400);
 
+		const missingApprover = await fetch(actionUrl, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				"x-foundry-token": token,
+			},
+			body: JSON.stringify({
+				action: "approve",
+				approvalType: "plan",
+				revision: current.plan.revision,
+				confirmed: true,
+			}),
+		});
+		assert.equal(missingApprover.status, 400);
+
+		const retryApproval = await fetch(actionUrl, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				"x-foundry-token": token,
+			},
+			body: JSON.stringify({
+				action: "approve",
+				approvalType: "retry",
+				approvedBy: "octocat",
+				revision: current.plan.revision,
+				confirmed: true,
+			}),
+		});
+		assert.equal(retryApproval.status, 400);
+
         const approved = await fetch(actionUrl, {
             method: "POST",
             headers: {
@@ -160,6 +191,7 @@ test("canvas mutations require a token, explicit confirmation, and current revis
             body: JSON.stringify({
                 action: "approve",
                 approvalType: "plan",
+				approvedBy: "octocat",
                 revision: current.plan.revision,
                 confirmed: true,
             }),
@@ -167,6 +199,7 @@ test("canvas mutations require a token, explicit confirmation, and current revis
         assert.equal(approved.status, 200);
         const approvedBody = await approved.json();
         assert.equal(approvedBody.value.plan.status, "approved");
+		assert.equal(approvedBody.value.plan.gates.planApprovedBy, "octocat");
 
         const stale = await fetch(actionUrl, {
             method: "POST",
@@ -176,8 +209,8 @@ test("canvas mutations require a token, explicit confirmation, and current revis
             },
             body: JSON.stringify({
                 action: "cancel",
-                target: "plan",
                 reason: "stale request",
+				requestedBy: "octocat",
                 revision: current.plan.revision,
                 confirmed: true,
             }),

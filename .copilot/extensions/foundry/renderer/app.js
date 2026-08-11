@@ -445,6 +445,8 @@ requiredElement("#refresh-button").addEventListener("click", loadPlan);
 requiredElement("#approve-button").addEventListener("click", async (event) => {
     if (!(event.currentTarget instanceof HTMLElement)) return;
     const approvalType = event.currentTarget.dataset.type;
+	const approvedBy = window.prompt("Who is approving this action?");
+	if (!approvedBy?.trim()) return;
     if (!window.confirm(approvalType === "completion"
         ? "Approve this entire plan as complete?"
         : "Approve this plan and make dependency-ready tasks available?")) return;
@@ -453,6 +455,7 @@ requiredElement("#approve-button").addEventListener("click", async (event) => {
             action: "approve",
             revision: currentPlan.revision,
             approvalType,
+			approvedBy: approvedBy.trim(),
         }));
     } catch (error) {
         requiredElement("#error").textContent = error.message;
@@ -460,7 +463,8 @@ requiredElement("#approve-button").addEventListener("click", async (event) => {
 });
 requiredElement("#cancel-plan-button").addEventListener("click", async () => {
     const reason = window.prompt("Why should this plan enter cancellation?");
-    if (!reason || !window.confirm(
+	const requestedBy = window.prompt("Who is requesting cancellation?");
+    if (!reason || !requestedBy?.trim() || !window.confirm(
         `Request cancellation for ${planId}? External App sessions keep running until explicitly stopped.`,
     )) return;
     try {
@@ -468,8 +472,8 @@ requiredElement("#cancel-plan-button").addEventListener("click", async () => {
             action: "cancel",
             revision: currentPlan.revision,
             requestId: crypto.randomUUID(),
-            target: "plan",
             reason,
+			requestedBy: requestedBy.trim(),
         }));
     } catch (error) {
         requiredElement("#error").textContent = error.message;

@@ -139,27 +139,6 @@ test("create, read, and list persist validated plans under the session workspace
     })
 ));
 
-test("legacy Mobius plan storage migrates into Foundry on first access", () => (
-    withWorkspace(async (workspace) => {
-        const plan = makePlan(workspace);
-        const legacyDirectory = path.join(workspace, "files", "mobius");
-        const foundryDirectory = path.join(workspace, "files", "foundry");
-        await mkdir(legacyDirectory, { recursive: true });
-        await writeFile(
-            path.join(legacyDirectory, `${plan.id}.json`),
-            `${JSON.stringify(plan, null, 2)}\n`,
-        );
-
-        const store = createPlanStore({ workspacePath: workspace });
-        assert.deepEqual(await store.read(plan.id), plan);
-        assert.deepEqual(
-            JSON.parse(await readFile(path.join(foundryDirectory, `${plan.id}.json`), "utf8")),
-            plan,
-        );
-        await assert.rejects(readdir(legacyDirectory), { code: "ENOENT" });
-    })
-));
-
 test("stale revisions fail with the latest revision and preserve the winning write", () => (
     withWorkspace(async (workspace) => {
         const store = createPlanStore({

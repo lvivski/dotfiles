@@ -59,13 +59,13 @@ const TRIAGE = {
 };
 
 factory.phase("Triage");
-const results = await factory.pipeline(tickets, async (ticket) => {
+const results = await factory.pipeline(tickets, async (ticket, _original, index) => {
 	const detail = await factory.agent(
 		`Triage this ticket. Choose category and priority, state calibrated confidence, explain briefly, and give one concrete next action.
 
 Ticket:
 ${ticket.text.slice(0, MAX_TICKET_CHARS)}`,
-		{ label: `ticket:${ticket.id}`, schema: TRIAGE },
+		{ label: `ticket:${index + 1}:${ticket.id}`, schema: TRIAGE },
 	);
 	if (
 		detail === null ||

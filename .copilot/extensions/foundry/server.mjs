@@ -7,7 +7,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 
-import { PLAN_STATUS, TASK_STATUS } from "./domain.mjs";
+import { LIMITS } from "./domain.mjs";
 
 /**
  * @typedef {object} FoundryServerOptions
@@ -53,6 +53,25 @@ class FoundryHttpError extends Error {
         this.name = "FoundryHttpError";
         this.statusCode = statusCode;
     }
+}
+
+/**
+ * Validates an explicitly supplied actor identity.
+ *
+ * @param {unknown} value
+ * @param {string} field
+ * @returns {string}
+ */
+function requireActor(value, field) {
+	if (typeof value !== "string"
+		|| value.trim().length === 0
+		|| value.length > LIMITS.actor) {
+		throw new FoundryHttpError(
+			400,
+			`${field} must be a non-empty string of at most ${LIMITS.actor} characters`,
+		);
+	}
+	return value.trim();
 }
 
 /**
@@ -282,10 +301,16 @@ export async function startServer(options) {
                     return;
                 }
                 if (body.action === "approve") {
+					if (!["plan", "completion"].includes(body.approvalType)) {
+						throw new FoundryHttpError(
+							400,
+							"Canvas approvalType must be plan or completion",
+						);
+					}
                     await operations.approve({
                         planId,
                         expectedRevision: body.revision,
-                        approvedBy: "canvas-user",
+						approvedBy: requireActor(body.approvedBy, "approvedBy"),
                         approvalType: body.approvalType,
                     });
                 } else if (body.action === "retry") {
@@ -297,12 +322,10 @@ export async function startServer(options) {
                 } else if (body.action === "cancel") {
                     await operations.cancel({
                         planId,
-                        taskId: body.taskId,
                         expectedRevision: body.revision,
                         requestId: body.requestId,
-                        target: body.target,
                         reason: body.reason,
-                        requestedBy: "canvas-user",
+						requestedBy: requireActor(body.requestedBy, "requestedBy"),
                     });
                 } else {
                     json(response, 404, { ok: false, error: { message: "Unknown canvas action" } });
@@ -372,18 +395,3 @@ export async function startServer(options) {
         },
     };
 }
-
-/** Plan states in which the board may expose mutations. */
-export const CANVAS_MUTABLE_PLAN_STATUSES = new Set([
-    PLAN_STATUS.AWAITING_APPROVAL,
-    PLAN_STATUS.APPROVED,
-    PLAN_STATUS.RUNNING,
-    PLAN_STATUS.AWAITING_COMPLETION_APPROVAL,
-    PLAN_STATUS.FAILED,
-]);
-
-/** Task states eligible for an explicit fresh-attempt retry. */
-export const CANVAS_RETRYABLE_TASK_STATUSES = new Set([
-    TASK_STATUS.BLOCKED,
-    TASK_STATUS.FAILED,
-]);

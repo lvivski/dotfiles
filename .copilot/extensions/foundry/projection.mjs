@@ -17,6 +17,13 @@ import {
     sessionState,
 } from "./inventory.mjs";
 
+/**
+ * @typedef {object} HostSessionInventory
+ * @property {boolean} complete
+ * @property {string} capturedAt
+ * @property {Array<{id: string, status: string}>} sessions
+ */
+
 /** Reservation age after which recovery guidance replaces normal attach guidance. */
 export const STALE_RESERVATION_MS = 30 * 60 * 1000;
 
@@ -99,7 +106,8 @@ export function projectPlan(plan, options = {}) {
             const task = plan.tasks.find(
                 (candidate) => candidate.attempts.some((attempt) => attempt.id === attemptId),
             );
-			const attempt = task?.attempts.find((candidate) => candidate.id === attemptId);
+			if (!task) continue;
+			const attempt = task.attempts.find((candidate) => candidate.id === attemptId);
             if (!attempt) continue;
             actions.push(attempt.sessionId === null
 				? action("resolve-session-creation", {

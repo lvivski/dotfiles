@@ -19,9 +19,9 @@
     "include": ["node"]
   },
   "include": [
-    "foundry/*.mjs",
-    "foundry/factories/*.mjs",
-    "foundry/renderer/*.js",
+    "*.mjs",
+    "factories/*.mjs",
+    "renderer/*.js",
     "types/*.d.ts"
   ]
 }

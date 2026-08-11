@@ -153,7 +153,6 @@ test("cancellation actions require attempt resolution before finalization", () =
     });
     plan = requestPlanCancellation(plan, {
         requestId: "projection-cancel-request",
-        target: "plan",
         reason: "Stop",
         requestedBy: "tester",
         at: "2026-08-06T00:04:00.000Z",

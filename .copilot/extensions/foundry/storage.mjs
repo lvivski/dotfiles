@@ -43,7 +43,6 @@ import {
  * @property {() => Date|string|number} [clock]
  * @property {number} [lockWaitMs]
  * @property {number} [lockPollMs]
- * @property {(value: object) => string} [serialize]
  */
 
 /**
@@ -51,7 +50,6 @@ import {
  * @property {(plan: any, expectedRevision?: 0) => Promise<any>} create
  * @property {(id: string) => Promise<any>} read
  * @property {(id: string, expectedRevision: number, candidate: any) => Promise<any>} update
- * @property {(id: string, expectedRevision: number, candidate: any) => Promise<any>} replace
  * @property {(options?: {limit?: number}) => Promise<any>} list
  * @property {(planId: string, expectedRevision: number) => Promise<any>} activate
  * @property {() => Promise<any>} getActive
@@ -1169,104 +1167,10 @@ export function createPlanStore(options = {}) {
     const lockOptions = { lockWaitMs, lockPollMs };
 
     const baseDirectory = path.resolve(workspacePath, "files", "foundry");
-    const legacyDirectory = path.resolve(workspacePath, "files", "mobius");
     const filesRoot = path.resolve(workspacePath, "files");
     if (baseDirectory !== path.join(filesRoot, "foundry")) {
         throw storageError("path_outside_workspace", "Foundry storage must remain under workspacePath/files");
     }
-    let legacyMigration = null;
-
-    /**
-     * Moves the former Mobius plan directory into the Foundry namespace once.
-     *
-     * @returns {Promise<void>}
-     */
-    const migrateLegacyStorage = async () => {
-        if (legacyMigration) {
-            return legacyMigration;
-        }
-        legacyMigration = (async () => {
-            try {
-                await lstat(baseDirectory);
-                return;
-            } catch (error) {
-                if (!isMissing(error)) {
-                    throw storageError(
-                        "artifact_directory_unreadable",
-                        "Foundry storage directory could not be inspected",
-                        { details: { filesystemCode: error?.code ?? null }, cause: error },
-                    );
-                }
-            }
-
-            let legacyMetadata;
-            try {
-                legacyMetadata = await lstat(legacyDirectory);
-            } catch (error) {
-                if (isMissing(error)) {
-                    return;
-                }
-                throw storageError(
-                    "legacy_storage_unreadable",
-                    "Legacy plan storage could not be inspected",
-                    { details: { filesystemCode: error?.code ?? null }, cause: error },
-                );
-            }
-            if (legacyMetadata.isSymbolicLink() || !legacyMetadata.isDirectory()) {
-                throw storageError(
-                    "legacy_storage_unsafe",
-                    "Legacy plan storage must be a regular directory",
-                );
-            }
-
-            let realWorkspace;
-            let realLegacy;
-            try {
-                [realWorkspace, realLegacy] = await Promise.all([
-                    realpath(workspacePath),
-                    realpath(legacyDirectory),
-                ]);
-            } catch (error) {
-                throw storageError(
-                    "legacy_storage_unreadable",
-                    "Legacy plan storage paths could not be resolved",
-                    { details: { filesystemCode: error?.code ?? null }, cause: error },
-                );
-            }
-            if (path.relative(realWorkspace, realLegacy) !== path.join("files", "mobius")) {
-                throw storageError(
-                    "legacy_storage_unsafe",
-                    "Legacy plan storage resolved outside workspacePath/files/mobius",
-                );
-            }
-
-            try {
-                await rename(legacyDirectory, baseDirectory);
-            } catch (error) {
-                if (error?.code === "EEXIST" || error?.code === "ENOTEMPTY") {
-                    return;
-                }
-                if (error?.code === "ENOENT") {
-                    try {
-                        await lstat(baseDirectory);
-                        return;
-                    } catch {
-                        // Fall through to the attributed migration error.
-                    }
-                }
-                throw storageError(
-                    "legacy_storage_migration_failed",
-                    "Legacy plan storage could not be moved into Foundry",
-                    { details: { filesystemCode: error?.code ?? null }, cause: error },
-                );
-            }
-        })().catch((error) => {
-            legacyMigration = null;
-            throw error;
-        });
-        await legacyMigration;
-    };
-
     /**
      * Reads and clones one validated plan.
      *
@@ -1274,7 +1178,6 @@ export function createPlanStore(options = {}) {
      * @returns {Promise<any>}
      */
     const read = async (id) => {
-        await migrateLegacyStorage();
         const target = planTarget(baseDirectory, id);
         const anchor = await ensureStorageDirectory(workspacePath, filesRoot, baseDirectory);
         return clone((await readPlanAt(target, id, anchor)).plan);
@@ -1288,7 +1191,6 @@ export function createPlanStore(options = {}) {
      * @returns {Promise<any>}
      */
     const create = async (plan, expectedRevision = undefined) => {
-        await migrateLegacyStorage();
         if (expectedRevision !== 0) {
             throw storageError("invalid_expected_revision", "Creating a plan requires expectedRevision 0", {
                 details: { expectedRevision },
@@ -1338,7 +1240,6 @@ export function createPlanStore(options = {}) {
      * @returns {Promise<any>}
      */
     const update = async (id, expectedRevision, candidate) => {
-        await migrateLegacyStorage();
         validateExpectedRevision(expectedRevision);
         const target = planTarget(baseDirectory, id);
         const anchor = await ensureStorageDirectory(workspacePath, filesRoot, baseDirectory);
@@ -1400,25 +1301,12 @@ export function createPlanStore(options = {}) {
     };
 
     /**
-     * Alias for revision-checked update semantics.
-     *
-     * @param {string} id
-     * @param {number} expectedRevision
-     * @param {object} candidate
-     * @returns {Promise<object>}
-     */
-    const replace = async (id, expectedRevision, candidate) => (
-        update(id, expectedRevision, candidate)
-    );
-
-    /**
      * Lists bounded valid summaries and separately reports invalid artifacts.
      *
      * @param {{limit?: number}} [listOptions]
      * @returns {Promise<{plans: object[], invalid: object[], truncated: boolean}>}
      */
     const list = async (listOptions = {}) => {
-        await migrateLegacyStorage();
         const limit = listOptions.limit ?? DEFAULT_LIST_LIMIT;
         validateLimit(limit);
         const anchor = await ensureStorageDirectory(workspacePath, filesRoot, baseDirectory);
@@ -1521,7 +1409,6 @@ export function createPlanStore(options = {}) {
      * @returns {Promise<object>}
      */
     const activate = async (planId, expectedRevision) => {
-        await migrateLegacyStorage();
         validateExpectedRevision(expectedRevision);
         const anchor = await ensureStorageDirectory(workspacePath, filesRoot, baseDirectory);
         const target = planTarget(baseDirectory, planId);
@@ -1565,7 +1452,6 @@ export function createPlanStore(options = {}) {
      * @returns {Promise<object | null>}
      */
     const getActive = async () => {
-        await migrateLegacyStorage();
         const anchor = await ensureStorageDirectory(workspacePath, filesRoot, baseDirectory);
         const marker = await readActivationMarker(anchor);
         if (!marker) {
@@ -1585,7 +1471,6 @@ export function createPlanStore(options = {}) {
      * @returns {Promise<{deactivated: boolean, planId: string | null}>}
      */
     const deactivate = async () => {
-        await migrateLegacyStorage();
         const anchor = await ensureStorageDirectory(workspacePath, filesRoot, baseDirectory);
         return withWriteLock(
             activationTarget,
@@ -1618,7 +1503,6 @@ export function createPlanStore(options = {}) {
      * @returns {Promise<{recovered: string[], skipped: object[]}>}
      */
     const recoverStaleLocks = async (recoverOptions = {}) => {
-        await migrateLegacyStorage();
         const staleMs = recoverOptions.staleMs ?? 30_000;
         if (!Number.isSafeInteger(staleMs) || staleMs < 1) {
             throw storageError("invalid_lock_options", "staleMs must be a positive integer");
@@ -1708,7 +1592,6 @@ export function createPlanStore(options = {}) {
         create,
         read,
         update,
-        replace,
         list,
         activate,
         getActive,

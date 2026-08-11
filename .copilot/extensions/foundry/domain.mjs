@@ -8,8 +8,8 @@
  */
 import path from "node:path";
 
-/** Persisted plan schema identifier. */
-export const SCHEMA_VERSION = 2;
+/** Persisted Foundry v1 plan schema identifier. */
+export const SCHEMA_VERSION = 1;
 
 /** Immutable plan lifecycle status values. */
 export const PLAN_STATUS = Object.freeze({
@@ -106,7 +106,6 @@ export const LIMITS = Object.freeze({
     evidence: 64,
 	verificationEvidence: 64,
     evidenceItem: 2_000,
-    evidenceId: 15,
     evidenceSource: 2_048,
     producer: 256,
     error: 4_000,
@@ -334,8 +333,6 @@ const EVIDENCE_INPUT_KEYS = new Set([
 ]);
 const CANCELLATION_KEYS = new Set([
     "requestId",
-    "target",
-    "taskId",
     "reason",
     "requestedBy",
     "requestedAt",
@@ -405,11 +402,7 @@ const PLAN_TRANSITIONS = Object.freeze({
         PLAN_STATUS.COMPLETED,
         PLAN_STATUS.CANCELLING,
     ]),
-    [PLAN_STATUS.FAILED]: new Set([
-        PLAN_STATUS.APPROVED,
-        PLAN_STATUS.RUNNING,
-        PLAN_STATUS.CANCELLING,
-    ]),
+    [PLAN_STATUS.FAILED]: new Set([PLAN_STATUS.CANCELLING]),
     [PLAN_STATUS.CANCELLING]: new Set([PLAN_STATUS.CANCELLED]),
     [PLAN_STATUS.COMPLETED]: new Set(),
     [PLAN_STATUS.CANCELLED]: new Set(),
@@ -672,8 +665,9 @@ function nowIso(now) {
 /**
  * Indexes tasks by stable task ID.
  *
- * @param {FoundryTask[]} tasks
- * @returns {Map<string, FoundryTask>}
+ * @template {{id: string}} T
+ * @param {T[]} tasks
+ * @returns {Map<string, T>}
  */
 function taskMap(tasks) {
     return new Map(tasks.map((task) => [task.id, task]));
@@ -801,8 +795,15 @@ export function validateDependencyGraph(tasks) {
 /**
  * Validates the implementation DAG and its unique final verifier task.
  *
- * @param {FoundryTask[]} tasks
- * @returns {{verifyTask: FoundryTask, targetTask: FoundryTask}}
+ * @template {{
+ *   id: string,
+ *   kind: "implement"|"verify",
+ *   dependsOn: string[],
+ *   acceptanceCriteria: string[],
+ *   deliveryRequirement: "branch"|"commit"|"pr"
+ * }} T
+ * @param {T[]} tasks
+ * @returns {{verifyTask: T, targetTask: T}}
  */
 export function validateTaskTopology(tasks) {
 	const implementTasks = tasks.filter((task) => task.kind === "implement");
@@ -840,7 +841,13 @@ export function validateTaskTopology(tasks) {
 	const visit = (taskId) => {
 		if (reachable.has(taskId)) return;
 		reachable.add(taskId);
-		for (const dependencyId of byId.get(taskId).dependsOn) visit(dependencyId);
+		const task = byId.get(taskId);
+		if (!task) {
+			fail("unknown_dependency", `Task ${taskId} is missing from the dependency graph`, {
+				path: "tasks",
+			});
+		}
+		for (const dependencyId of task.dependsOn) visit(dependencyId);
 	};
 	visit(targetTask.id);
 	const missing = implementTasks
@@ -852,9 +859,9 @@ export function validateTaskTopology(tasks) {
 			details: { unreachableTaskIds: missing },
 		});
 	}
-	if (![DELIVERY_REQUIREMENT.COMMIT, DELIVERY_REQUIREMENT.PR].includes(
-		effectiveDeliveryRequirement(targetTask),
-	)) {
+	const targetDelivery = effectiveDeliveryRequirement(targetTask);
+	if (targetDelivery !== DELIVERY_REQUIREMENT.COMMIT
+		&& targetDelivery !== DELIVERY_REQUIREMENT.PR) {
 		fail(
 			"invalid_task_topology",
 			"The final implementation task must require commit or pr delivery",
@@ -935,8 +942,9 @@ function assertRequestId(value, fieldPath) {
  */
 function assertCommit(value, fieldPath) {
     if (value === null) return;
-    if (typeof value !== "string" || !/^[a-f0-9]{7,64}$/.test(value)) {
-        fail("invalid_commit", `${fieldPath} must be a lowercase Git object ID`, {
+    if (typeof value !== "string"
+		|| !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(value)) {
+		fail("invalid_commit", `${fieldPath} must be a full lowercase Git object ID`, {
             path: fieldPath,
         });
     }
@@ -1342,11 +1350,11 @@ function validateTask(task, index, tasks) {
             path: `${fieldPath}.attempts`,
         });
     }
+	const expectedChecks = task.kind === "verify"
+		? verificationCheckIds(tasks)
+		: [];
     task.attempts.forEach((attempt, attemptIndex) => {
 		validateAttempt(attempt, task, attemptIndex, `${fieldPath}.attempts[${attemptIndex}]`);
-		const expectedChecks = task.kind === "verify"
-			? verificationCheckIds(tasks)
-			: [];
 		const actualChecks = attempt.evidence.map((entry) => entry.checkId);
 		if (task.kind === "verify"
 			&& (new Set(actualChecks).size !== actualChecks.length
@@ -1612,24 +1620,6 @@ function validateCancellation(cancellation, planStatus, tasks) {
     assertPlainObject(cancellation, "cancellation");
     assertKnownKeys(cancellation, CANCELLATION_KEYS, "cancellation");
     assertRequestId(cancellation.requestId, "cancellation.requestId");
-    if (!["plan", "task"].includes(cancellation.target)) {
-        fail("invalid_cancellation_target", "cancellation.target must be plan or task", {
-            path: "cancellation.target",
-        });
-    }
-    if (cancellation.target === "task") {
-        if (typeof cancellation.taskId !== "string"
-            || !TASK_ID_PATTERN.test(cancellation.taskId)
-            || !tasks.some((task) => task.id === cancellation.taskId)) {
-            fail("invalid_cancellation_task", "cancellation.taskId must identify a plan task", {
-                path: "cancellation.taskId",
-            });
-        }
-    } else if (cancellation.taskId !== null) {
-        fail("invalid_cancellation_task", "Plan cancellation cannot identify one task", {
-            path: "cancellation.taskId",
-        });
-    }
     assertString(cancellation.reason, "cancellation.reason", LIMITS.error);
     assertString(cancellation.requestedBy, "cancellation.requestedBy", LIMITS.actor);
     assertTimestamp(cancellation.requestedAt, "cancellation.requestedAt");
@@ -1929,9 +1919,11 @@ export function validatePlan(plan) {
             sessionIds.add(attempt.sessionId);
         }
     }
-    const byId = taskMap(plan.tasks);
-    for (let index = 0; index < plan.tasks.length; index += 1) {
-        const task = plan.tasks[index];
+	/** @type {FoundryTask[]} */
+	const tasks = plan.tasks;
+    const byId = taskMap(tasks);
+    for (let index = 0; index < tasks.length; index += 1) {
+		const task = tasks[index];
         if (task.status === TASK_STATUS.READY
             || task.status === TASK_STATUS.RUNNING
             || task.status === TASK_STATUS.DONE) {
@@ -2231,11 +2223,6 @@ export function transitionPlan(plan, nextStatus, options = {}) {
             details: { from: plan.status, to: nextStatus },
         });
     }
-    if (plan.status === PLAN_STATUS.FAILED) {
-        fail("specialized_transition_required", "Failed plans must use correction retry", {
-            path: "status",
-        });
-    }
     const timestamp = nowIso(options.at);
     const candidate = clone(plan);
     candidate.status = nextStatus;
@@ -2427,11 +2414,6 @@ export function reconcileTaskReadiness(plan, options = {}) {
             return dependency;
         });
         const ready = dependencies.every((dependency) => dependency.status === TASK_STATUS.DONE);
-        if (task.status === TASK_STATUS.READY && !ready) {
-            task.status = TASK_STATUS.PLANNED;
-            changed = true;
-            continue;
-        }
         if (task.status === TASK_STATUS.PLANNED && ready) {
             task.status = TASK_STATUS.READY;
             changed = true;
@@ -2740,6 +2722,8 @@ function normalizeEvidence(value, plan, task, attempt, status, fieldPath = "evid
                 path: `${entryPath}.outcome`,
             });
         }
+		/** @type {"claimed"|"independent-claim"} */
+		const trust = task.kind === "verify" ? "independent-claim" : "claimed";
         return {
             type: entry.type,
             summary: entry.summary,
@@ -2747,7 +2731,7 @@ function normalizeEvidence(value, plan, task, attempt, status, fieldPath = "evid
             outcome,
             producer,
 			checkId: entry.checkId ?? null,
-			trust: task.kind === "verify" ? "independent-claim" : "claimed",
+			trust,
         };
     });
 	if (task.kind !== "verify") {
@@ -2911,16 +2895,8 @@ export function requestPlanCancellation(plan, options = {}) {
         });
     }
     assertRequestId(options.requestId, "requestId");
-    if (!["plan", "task"].includes(options.target)) {
-        fail("invalid_cancellation_target", "target must be plan or task", {
-            path: "target",
-        });
-    }
     assertString(options.reason, "reason", LIMITS.error);
     requireActor(options.requestedBy, "requestedBy");
-    if (options.target === "task") {
-        findTask(plan, options.taskId);
-    }
     const timestamp = nowIso(options.at);
     const candidate = clone(plan);
     const requiredAttemptIds = [];
@@ -2951,8 +2927,6 @@ export function requestPlanCancellation(plan, options = {}) {
     candidate.status = PLAN_STATUS.CANCELLING;
     candidate.cancellation = {
         requestId: options.requestId,
-        target: options.target,
-        taskId: options.target === "task" ? options.taskId : null,
         reason: options.reason,
         requestedBy: options.requestedBy,
         requestedAt: timestamp,
@@ -2973,6 +2947,46 @@ export function requestPlanCancellation(plan, options = {}) {
     candidate.updatedAt = timestamp;
     validatePlan(candidate);
     return candidate;
+}
+
+/**
+ * Durably binds the verification run discovered after cancellation began.
+ *
+ * @param {FoundryPlan} plan
+ * @param {string} runId
+ * @param {{at?: Date|string|number}} [options]
+ * @returns {FoundryPlan}
+ */
+export function bindCancellationVerificationRun(plan, runId, options = {}) {
+	validatePlan(plan);
+	if (plan.status !== PLAN_STATUS.CANCELLING || plan.cancellation === null) {
+		fail(
+			"invalid_plan_transition",
+			`Cannot bind a cancellation run while the plan is ${plan.status}`,
+			{ path: "status" },
+		);
+	}
+	if (plan.cancellation.verificationReservationId === null) {
+		fail(
+			"invalid_cancellation_verification",
+			"Cancellation has no verification reservation to bind",
+			{ path: "cancellation.verificationReservationId" },
+		);
+	}
+	assertString(runId, "runId", LIMITS.verificationRunId);
+	if (plan.cancellation.verificationRunId !== null) {
+		if (plan.cancellation.verificationRunId === runId) return clone(plan);
+		fail(
+			"invalid_cancellation_verification",
+			"Cancellation is already bound to another verification run",
+			{ path: "cancellation.verificationRunId" },
+		);
+	}
+	const candidate = clone(plan);
+	candidate.cancellation.verificationRunId = runId;
+	candidate.updatedAt = nowIso(options.at);
+	validatePlan(candidate);
+	return candidate;
 }
 
 /**
@@ -3196,10 +3210,8 @@ export function getReadyTasks(plan) {
     if (plan.status !== PLAN_STATUS.APPROVED && plan.status !== PLAN_STATUS.RUNNING) {
         return [];
     }
-    const byId = taskMap(plan.tasks);
     return plan.tasks
-        .filter((task) => task.status === TASK_STATUS.READY
-            && task.dependsOn.every((id) => byId.get(id)?.status === TASK_STATUS.DONE))
+		.filter((task) => task.status === TASK_STATUS.READY)
         .sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0)
         .map(clone);
 }

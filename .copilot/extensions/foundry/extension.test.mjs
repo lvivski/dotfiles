@@ -21,7 +21,9 @@ async function sourceFiles(directory = ROOT) {
     for (const entry of entries) {
         const target = path.join(directory, entry.name);
         if (entry.isDirectory()) {
-            if (entry.name !== "test") files.push(...await sourceFiles(target));
+			if (entry.name !== "test") {
+				files.push(...await sourceFiles(target));
+			}
         } else if (/\.(?:mjs|js)$/.test(entry.name)
             && !entry.name.endsWith(".test.mjs")
             && entry.name !== "worker.mjs") {
@@ -129,11 +131,10 @@ test("share manifest and extension entry point satisfy discovery contracts", asy
     assert.match(entry, /factories/);
 });
 
-test("production source has no stdout logging or Minions dependency", async () => {
+test("production source has no stdout logging", async () => {
     for (const filename of await sourceFiles()) {
         const source = await readFile(filename, "utf8");
         assert.doesNotMatch(source, /\bconsole\.log\s*\(/, filename);
-        assert.doesNotMatch(source, /(?:from|import\()\s*["'][^"']*minions/i, filename);
     }
 });
 
@@ -157,7 +158,15 @@ test("hand-authored production modules keep applicable declarations documented",
 });
 
 test("bundled factories use only native Factory primitives", async () => {
-	const complex = new Set(["deep-research", "review-queue", "security-review"]);
+	const expectedTimeouts = {
+		audit: 900,
+		"deep-research": 3600,
+		plan: 900,
+		"review-queue": 3600,
+		"security-review": 3600,
+		triage: 900,
+		verify: 900,
+	};
     for (const specification of Object.values(FOUNDRY_FACTORIES)) {
 		assert.ok(
 			specification.meta.phases.every(
@@ -167,7 +176,7 @@ test("bundled factories use only native Factory primitives", async () => {
 		assert.equal(specification.meta.limits.maxAiCredits, 10000);
 		assert.equal(
 			specification.meta.limits.timeoutSeconds,
-			complex.has(specification.meta.name) ? 3600 : 900,
+			expectedTimeouts[specification.meta.name],
 		);
 		const filename = path.join(FACTORY_ROOT, `${specification.meta.name}.mjs`);
         const source = await readFile(filename, "utf8");

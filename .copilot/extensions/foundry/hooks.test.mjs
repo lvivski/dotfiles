@@ -104,8 +104,14 @@ test("guardrail classifiers target only broad destructive behavior", () => {
 });
 
 test("hooks are inert without an explicitly active plan", async () => {
+    let activeReads = 0;
     const hooks = buildFoundryHooks({
-        operations: { getActive: async () => null },
+		operations: {
+			getActive: async () => {
+				activeReads++;
+				return null;
+			},
+		},
     });
     assert.deepEqual(await hooks.onSessionStart({}), {});
     assert.deepEqual(await hooks.onPreToolUse({
@@ -113,6 +119,9 @@ test("hooks are inert without an explicitly active plan", async () => {
         toolArgs: { command: "git reset --hard" },
         workingDirectory: "/repo",
     }), {});
+    assert.deepEqual(await hooks.onPostToolUse({ toolName: "bash" }), {});
+    assert.deepEqual(await hooks.onPostToolUseFailure({ toolName: "view" }), {});
+    assert.equal(activeReads, 2);
 });
 
 test("active hooks inject coordinator context and revision-conflict guidance", async () => {
@@ -129,8 +138,8 @@ test("active hooks inject coordinator context and revision-conflict guidance", a
     });
     const start = await hooks.onSessionStart({});
     assert.match(start.additionalContext, /Foundry plan active-plan/);
-    assert.match(start.additionalContext, /foundry_next_tasks/);
-    assert.match(start.additionalContext, /reserve_task BEFORE create_session/);
+	assert.match(start.additionalContext, /Reserve before create_session/);
+	assert.match(start.additionalContext, /Cancellation is two-phase/);
 
     const denied = await hooks.onPreToolUse({
         toolName: "bash",

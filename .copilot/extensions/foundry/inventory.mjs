@@ -34,6 +34,7 @@ export function normalizeInventory(inventory) {
 		|| !Array.isArray(inventory.sessions)) {
 		throw new FoundryInventoryError("sessionInventory must contain complete and sessions");
 	}
+	/** @type {string | null} */
 	let capturedAt = null;
 	try {
 		capturedAt = typeof inventory.capturedAt === "string"
@@ -66,7 +67,7 @@ export function normalizeInventory(inventory) {
 	return {
 		supplied: true,
 		complete: inventory.complete,
-		capturedAt: inventory.capturedAt,
+		capturedAt,
 		sessions,
 	};
 }

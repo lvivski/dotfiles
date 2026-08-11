@@ -185,8 +185,8 @@ function throwsCode(operation, code) {
 
 test("createDraftPlan produces the strict initial schema", () => {
     const plan = draft();
-	assert.equal(SCHEMA_VERSION, 2);
-	assert.equal(plan.schemaVersion, 2);
+	assert.equal(SCHEMA_VERSION, 1);
+	assert.equal(plan.schemaVersion, 1);
     assert.equal(plan.status, PLAN_STATUS.DRAFT);
     assert.equal(plan.cancellation, null);
     assert.deepEqual(plan.tasks[0].attempts, []);
@@ -494,7 +494,6 @@ test("cancellation snapshots attempts and cannot finalize an in-flight create as
     const attemptId = plan.tasks[0].attempts[0].id;
     plan = requestPlanCancellation(plan, {
         requestId: "cancel-request-1",
-        target: "plan",
         reason: "User stopped work",
         requestedBy: "octocat",
         at: COMPLETED_AT,
@@ -544,7 +543,6 @@ test("verification cancellation requires observed Factory termination", () => {
     });
     plan = requestPlanCancellation(plan, {
         requestId: "cancel-verification",
-        target: "plan",
         reason: "Stop verification",
         requestedBy: "octocat",
 		verificationRunId: "verification-run",

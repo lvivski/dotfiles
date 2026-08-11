@@ -107,7 +107,7 @@ imported, and never launch a replacement merely because the first run is tempora
 
 Cancellation is a two-phase protocol:
 
-1. Call `foundry_cancel` once with a stable request ID, reason, target, and user identity.
+1. Call `foundry_cancel` once with a stable request ID, reason, and user identity.
 2. Archive or stop every attached App child session listed by the cancellation snapshot. Only
    archive sessions this coordinator created. Record `no-session-created` only for an attempt that
    never attached a session.

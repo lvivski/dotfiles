@@ -41,7 +41,12 @@ export class FoundryFactoryError extends Error {
 	}
 }
 
-/** @param {string} code @param {string} message @param {unknown} [details] */
+/**
+ * @param {string} code
+ * @param {string} message
+ * @param {unknown} [details]
+ * @returns {never}
+ */
 function fail(code, message, details) {
 	throw new FoundryFactoryError(code, message, details);
 }
@@ -121,10 +126,19 @@ export function createFactoryAnalysis(getFactoryApi) {
 		return { run, detail };
 	};
 
-	/** Read reservation markers from bounded, base-agnostic progress pages. */
-	const readReservationMarkers = async (runId) => {
+	/**
+	 * Read reservation markers from bounded, base-agnostic progress pages.
+	 *
+	 * @param {string} runId
+	 * @param {any} [existingDetail]
+	 * @returns {Promise<
+	 *   {state: "readable", markers: string[]}
+	 *   | {state: "inconclusive", reason: string}
+	 * >}
+	 */
+	const readReservationMarkers = async (runId, existingDetail = null) => {
 		try {
-			const detail = await api().getRunDetail(runId);
+			const detail = existingDetail ?? await api().getRunDetail(runId);
 			let page = detail?.progress;
 			const markers = new Set();
 			for (let pageNumber = 0; pageNumber < 10; pageNumber++) {
@@ -185,15 +199,18 @@ export function createFactoryAnalysis(getFactoryApi) {
 		const matches = [];
 		const inconclusive = [];
 		for (const summary of summaries
-			.filter((entry) => (
-				entry?.factoryName === FOUNDRY_FACTORIES.verify.meta.name
-				&& Number.isFinite(entry.createdAt)
-				&& entry.createdAt >= threshold
-			))
-			.sort((left, right) => left.createdAt - right.createdAt)) {
+			.filter((entry) => entry?.factoryName === FOUNDRY_FACTORIES.verify.meta.name)
+			.filter((entry) => !Number.isFinite(entry.createdAt) || entry.createdAt >= threshold)
+			.sort((left, right) => (
+				(Number.isFinite(left.createdAt) ? left.createdAt : Number.POSITIVE_INFINITY)
+				- (Number.isFinite(right.createdAt) ? right.createdAt : Number.POSITIVE_INFINITY)
+			))) {
+			const createdAtKnown = Number.isFinite(summary.createdAt);
 			const progress = await readReservationMarkers(summary.runId);
 			if (progress.state === "inconclusive") {
-				inconclusive.push({ ...summary, reason: progress.reason });
+				if (createdAtKnown || !TERMINAL.has(summary.status)) {
+					inconclusive.push({ ...summary, reason: progress.reason });
+				}
 				continue;
 			}
 			if (progress.markers.includes(reservationId)) {
@@ -304,14 +321,14 @@ export function createFactoryAnalysis(getFactoryApi) {
 				"Verification inspection requires its reservation identity and timestamp",
 			);
 		}
-		if (!Number.isFinite(detail.createdAt) || detail.createdAt < reservedAt) {
+		if (Number.isFinite(detail.createdAt) && detail.createdAt < reservedAt) {
 			fail(
 				"factory_run_identity_mismatch",
 				`Factory run ${runId} predates verification reservation ${reservationId}`,
 				{ runId, reservationId, createdAt: detail.createdAt, reservedAt },
 			);
 		}
-		const progress = await readReservationMarkers(runId);
+		const progress = await readReservationMarkers(runId, detail);
 		if (progress.state !== "readable") {
 			fail(
 				"factory_progress_inconclusive",

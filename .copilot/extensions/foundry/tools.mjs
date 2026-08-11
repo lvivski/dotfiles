@@ -350,7 +350,7 @@ export function buildFoundryTools(operations) {
                     branch: NON_EMPTY(LIMITS.branch),
                     commit: {
                         type: "string",
-                        pattern: "^[a-f0-9]{7,64}$",
+						pattern: "^(?:[a-f0-9]{40}|[a-f0-9]{64})$",
                         maxLength: LIMITS.commit,
                     },
                     prUrl: NON_EMPTY(LIMITS.prUrl),
@@ -408,7 +408,6 @@ export function buildFoundryTools(operations) {
                     "planId",
                     "expectedRevision",
                     "requestId",
-                    "target",
                     "reason",
                     "requestedBy",
                 ],
@@ -416,8 +415,6 @@ export function buildFoundryTools(operations) {
                     planId: PLAN_ID,
                     expectedRevision: REVISION,
                     requestId: REQUEST_ID,
-                    target: { type: "string", enum: ["plan", "task"] },
-                    taskId: TASK_ID,
                     reason: NON_EMPTY(LIMITS.error),
                     requestedBy: NON_EMPTY(LIMITS.actor),
                 },
@@ -426,7 +423,7 @@ export function buildFoundryTools(operations) {
         },
 		{
 			name: "foundry_cancel_verification_run",
-			description: "Cancel only the authoritative verification Factory run owned by the active cancellation request. Returns the exact disposition required for finalization and never accepts a caller-supplied run ID.",
+			description: "Durably bind and cancel only the authoritative verification Factory run owned by the active cancellation request. Returns the new revision and exact disposition required for finalization; never accepts a caller-supplied run ID.",
 			parameters: objectSchema(
 				["planId", "expectedRevision", "requestId"],
 				{

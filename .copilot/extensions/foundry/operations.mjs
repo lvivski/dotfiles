@@ -6,6 +6,9 @@
  */
 import {
     ATTEMPT_STATUS,
+	DELIVERY_REQUIREMENT,
+	EVIDENCE_OUTCOME,
+	EVIDENCE_TYPE,
     LIMITS,
     PLAN_STATUS,
     TASK_STATUS,
@@ -13,9 +16,11 @@ import {
     approvePlan,
     activeTaskAttempt,
     attachTaskAttempt,
+	bindCancellationVerificationRun,
     completeTaskAttempt,
     completeVerification,
     createDraftPlan,
+	effectiveDeliveryRequirement,
     finalizePlanCancellation,
     getReadyTasks,
     reconcileTaskReadiness,
@@ -113,6 +118,58 @@ function revisionConflict(planId, expectedRevision, latestRevision) {
 function findAttempt(plan, taskId, attemptId) {
     return plan.tasks.find((task) => task.id === taskId)
         ?.attempts.find((attempt) => attempt.id === attemptId) ?? null;
+}
+
+/**
+ * Surfaces actionable requirements before constructing a completed attempt.
+ *
+ * @param {any} plan
+ * @param {string} taskId
+ * @param {any} attempt
+ * @param {{resultSummary?: unknown, evidence?: unknown, branch?: unknown, commit?: unknown, prUrl?: unknown}} input
+ * @returns {void}
+ */
+function validateDonePayload(plan, taskId, attempt, input) {
+	const task = plan.tasks.find((candidate) => candidate.id === taskId);
+	if (!task || !attempt) return;
+	const requirement = effectiveDeliveryRequirement(task);
+	const missing = [];
+	if (attempt.sessionId === null) missing.push("attached session");
+	if (typeof input.resultSummary !== "string" || !input.resultSummary.trim()) {
+		missing.push("resultSummary");
+	}
+	if (!Array.isArray(input.evidence) || input.evidence.length === 0) {
+		missing.push("evidence");
+	}
+	if (typeof input.branch !== "string" || !input.branch.trim()) {
+		missing.push("branch");
+	}
+	if (requirement === DELIVERY_REQUIREMENT.COMMIT
+		|| requirement === DELIVERY_REQUIREMENT.PR) {
+		if (typeof input.commit !== "string"
+			|| !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(input.commit)) {
+			missing.push("full commit");
+		}
+	}
+	if (requirement === DELIVERY_REQUIREMENT.PR
+		&& (typeof input.prUrl !== "string" || !/^https?:\/\//.test(input.prUrl))) {
+		missing.push("prUrl");
+	}
+	if (attempt.integrationRequired.length > 0
+		&& (!Array.isArray(input.evidence)
+			|| !input.evidence.some((entry) => (
+				entry?.type === EVIDENCE_TYPE.INTEGRATION
+				&& entry?.outcome === EVIDENCE_OUTCOME.PASSED
+			)))) {
+		missing.push("passed integration evidence");
+	}
+	if (missing.length > 0) {
+		throw new FoundryOperationError(
+			"task_completion_incomplete",
+			`Task ${taskId} cannot complete without ${missing.join(", ")}`,
+			{ taskId, attemptId: attempt.id, requirement, missing },
+		);
+	}
 }
 
 /** Find one attempt by its globally unique attempt ID. */
@@ -235,7 +292,7 @@ export function createFoundryOperations(options) {
             event,
             at: new Date().toISOString(),
         });
-        recorded.telemetry = recorded.telemetry.slice(-64);
+		recorded.telemetry = recorded.telemetry.slice(-LIMITS.telemetry);
         const updated = await storeFor(workspacePath).update(
             planId,
             expectedRevision,
@@ -520,6 +577,15 @@ export function createFoundryOperations(options) {
     }) => {
         const plan = await readForMutation(planId, expectedRevision);
 		const current = findAttempt(plan, taskId, attemptId);
+		if (status === TASK_STATUS.DONE) {
+			validateDonePayload(plan, taskId, current, {
+				resultSummary,
+				evidence,
+				branch,
+				commit,
+				prUrl,
+			});
+		}
 		let sessionTerminatedAt;
 		if ([TASK_STATUS.FAILED, TASK_STATUS.BLOCKED].includes(status)
 			&& current
@@ -626,6 +692,12 @@ export function createFoundryOperations(options) {
         if (plan.revision !== expectedRevision) {
             throw revisionConflict(planId, expectedRevision, plan.revision);
         }
+		/** @type {null | {
+		 *   supersededReservationId: string,
+		 *   supersededRunId: string | null,
+		 *   reason: string,
+		 *   requestedBy: string
+		 * }} */
 		let replacement = null;
 		if (plan.verification.status === VERIFICATION_STATUS.RESERVED) {
 			if (
@@ -755,19 +827,12 @@ export function createFoundryOperations(options) {
         planId,
         expectedRevision,
         requestId,
-        target,
-        taskId,
         reason,
         requestedBy,
     }) => {
         const plan = await storeFor().read(planId);
         if (plan.cancellation && plan.cancellation.requestId === requestId) {
-            const expectedReason = target === "task"
-                ? `Required task ${taskId} was cancelled: ${reason}`
-                : reason;
-            if (plan.cancellation.target === target
-                && plan.cancellation.taskId === (target === "task" ? taskId : null)
-                && plan.cancellation.reason === expectedReason
+			if (plan.cancellation.reason === reason
                 && plan.cancellation.requestedBy === requestedBy) {
                 return plan;
             }
@@ -782,11 +847,7 @@ export function createFoundryOperations(options) {
 		const discovery = await discoverReservedVerification(plan);
         const candidate = requestPlanCancellation(plan, {
             requestId,
-            target,
-            taskId,
-            reason: target === "task"
-                ? `Required task ${taskId} was cancelled: ${reason}`
-                : reason,
+			reason,
             requestedBy,
 			verificationRunId:
 				discovery.state === "found" ? discovery.run.runId : undefined,
@@ -795,7 +856,7 @@ export function createFoundryOperations(options) {
             planId,
             expectedRevision,
             candidate,
-            target === "task" ? `task-cancellation-requested:${taskId}` : "plan-cancellation-requested",
+			"plan-cancellation-requested",
         );
     };
 
@@ -810,7 +871,7 @@ export function createFoundryOperations(options) {
 		expectedRevision,
 		requestId,
 	}) => {
-		const plan = await readForMutation(planId, expectedRevision);
+		let plan = await readForMutation(planId, expectedRevision);
 		if (plan.status !== PLAN_STATUS.CANCELLING || plan.cancellation === null) {
 			throw new FoundryOperationError(
 				"invalid_plan_transition",
@@ -862,6 +923,13 @@ export function createFoundryOperations(options) {
 				};
 			}
 			runId = discovery.run.runId;
+			const bound = bindCancellationVerificationRun(plan, runId);
+			plan = await persist(
+				planId,
+				expectedRevision,
+				bound,
+				"verification-cancellation-bound",
+			);
 		}
 		const outcome = await analysis.cancelVerificationRun(runId);
 		return {
@@ -896,6 +964,12 @@ export function createFoundryOperations(options) {
 			throw new FoundryOperationError(
 				"invalid_plan_transition",
 				`Cancellation cannot be finalized from ${plan.status}`,
+			);
+		}
+		if (!Array.isArray(dispositions)) {
+			throw new FoundryOperationError(
+				"invalid_cancellation_dispositions",
+				"Cancellation dispositions must be an array",
 			);
 		}
 		const inventory = normalizeInventory(sessionInventory);

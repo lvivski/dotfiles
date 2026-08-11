@@ -1,5 +1,8 @@
 // Native Foundry verification Factory.
-import { normalizeVerificationInput } from "../analysis.mjs";
+import {
+	assessDeterministicVerification,
+	normalizeVerificationInput,
+} from "../analysis.mjs";
 import { verificationMarker } from "../marker.mjs";
 
 export const meta = {
@@ -124,50 +127,16 @@ function safeJson(value) {
 const input = normalizeInput(factory.args);
 const { reservationId: normalizedReservationId, ...canonicalInput } = input;
 const expectedCriteria = input.tasks.flatMap((task) => task.criteria.map((criterion) => criterion.id));
-const criterionOwners = new Map(input.tasks.flatMap(
-	(task) => task.criteria.map((criterion) => [criterion.id, task.id]),
-));
 const evidenceById = new Map(input.tasks.flatMap(
 	(task) => task.evidence.map((entry) => [entry.id, { ...entry, taskId: task.id }]),
 ));
-const reportByCheck = new Map(
-	input.verificationReport.evidence.map((entry) => [entry.checkId, entry]),
-);
 for (const [id, entry] of input.verificationReport.evidence.map(
 	(entry) => [entry.id, entry],
 )) {
 	evidenceById.set(id, { ...entry, taskId: null });
 }
-const correctionTaskIds = new Set();
-const hardGaps = [];
-for (const criterionId of expectedCriteria) {
-	if (reportByCheck.get(criterionId)?.outcome !== "passed") {
-		correctionTaskIds.add(criterionOwners.get(criterionId));
-		hardGaps.push({
-			summary: `Independent check failed for ${criterionId}`,
-			taskIds: [criterionOwners.get(criterionId)],
-		});
-	}
-}
-const targetTaskId = input.verificationReport.target.taskId;
-if (input.verificationReport.observedCommit
-	!== input.verificationReport.target.commit) {
-	correctionTaskIds.add(targetTaskId);
-	hardGaps.push({
-		summary: "Verifier observed a different target commit",
-		taskIds: [targetTaskId],
-	});
-}
-for (const checkId of ["final-integration", "workspace-integrity"]) {
-	if (reportByCheck.get(checkId)?.outcome !== "passed") {
-		correctionTaskIds.add(targetTaskId);
-		hardGaps.push({
-			summary: `Independent check failed for ${checkId}`,
-			taskIds: [targetTaskId],
-		});
-	}
-}
-const hardPassed = hardGaps.length === 0;
+const deterministic = assessDeterministicVerification(input);
+const correctionTaskIds = new Set(deterministic.correctionTaskIds);
 
 factory.phase("review");
 const reviews = await factory.parallel([
@@ -219,7 +188,7 @@ const missingReviewers = reviews
 	.filter(Boolean);
 const missingEvidence = [
 	...missingReviewers,
-	...hardGaps,
+	...deterministic.hardGaps,
 	...reviews.flatMap((review) => review?.missingEvidence || []),
 	...reviews.flatMap((review) => review?.integrationFindings || []),
 	...(verdict?.missingEvidence || []),
@@ -233,15 +202,12 @@ const evidenceIds = Array.isArray(verdict?.evidenceIds)
 		.filter((id) => evidenceById.get(id)?.outcome === "passed")
 		.slice(0, 64)
 	: [];
-const requiredEvidenceIds = input.verificationReport.evidence
-	.filter((entry) => entry.outcome === "passed")
-	.map((entry) => entry.id);
 const passed = Boolean(
 	verdict?.passed === true
-	&& hardPassed
+	&& deterministic.hardPassed
 	&& reviews.every((review) => review !== null)
 	&& evidenceIds.length > 0
-	&& requiredEvidenceIds.every((id) => evidenceIds.includes(id))
+	&& deterministic.requiredEvidenceIds.every((id) => evidenceIds.includes(id))
 	&& missingEvidence.length === 0,
 );
 

@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
 	buildPlanningArgs,
@@ -7,7 +10,11 @@ import {
 	validatePlanningResult,
 	validateVerificationResult,
 } from "./analysis.mjs";
-import { createFactoryAnalysis, FoundryFactoryError } from "./factory.mjs";
+import {
+	FOUNDRY_FACTORIES,
+	FoundryFactoryError,
+	createFactoryAnalysis,
+} from "./factory.mjs";
 import { meta as planMeta, run as runPlan } from "./factories/plan.mjs";
 import { meta as verifyMeta, run as runVerify } from "./factories/verify.mjs";
 import { verificationMarker } from "./marker.mjs";
@@ -24,6 +31,114 @@ import {
 	reserveVerification,
 	transitionPlan,
 } from "./domain.mjs";
+
+const ROOT = fileURLToPath(new URL(".", import.meta.url));
+const FACTORY_DIR = join(ROOT, "factories");
+const CONTROL_PLANE_FACTORIES = new Set(["plan", "verify"]);
+const ADDITIONAL_FACTORIES = Object.freeze(Object.fromEntries(
+	Object.entries(FOUNDRY_FACTORIES).filter(
+		([, definition]) => !CONTROL_PLANE_FACTORIES.has(definition.meta.name),
+	),
+));
+
+/**
+ * @param {any} args
+ * @param {((prompt: string, options: any) => unknown) | null} [responseFor]
+ */
+function createWorkflowFactory(args, responseFor = null) {
+	const phases = [];
+	const logs = [];
+	const calls = [];
+	return {
+		args,
+		runId: "factory-run",
+		signal: new AbortController().signal,
+		phases,
+		logs,
+		calls,
+		async agent(prompt, options = {}) {
+			calls.push({ prompt, options });
+			const configured = responseFor?.(prompt, options);
+			if (configured !== undefined) return structuredClone(configured);
+			const schema = options.schema;
+			if (!schema) return "NO ISSUES";
+			if (schema.type === "array") {
+				return schema.items?.type === "string" ? ["primary angle"] : [];
+			}
+			const properties = schema.properties ?? {};
+			if (properties.authModel) {
+				return {
+					authModel: "unknown",
+					assets: [],
+					trustBoundaries: [],
+					attackerInputs: [],
+				};
+			}
+			if (properties.passed) return { passed: true, reasons: "supported" };
+			if (properties.risk) {
+				return {
+					risk: "low",
+					issues: [],
+					missingTests: [],
+					uncertainty: [],
+					summary: "clean",
+				};
+			}
+			if (properties.category) {
+				return {
+					category: "bug",
+					priority: "p2",
+					confidence: "high",
+					rationale: "reproducible",
+					action: "fix it",
+				};
+			}
+			if (properties.verdict) {
+				return { verdict: "true-positive", reasoning: "reachable" };
+			}
+			throw new Error("unhandled test schema");
+		},
+		async parallel(thunks) {
+			return Promise.all(
+				thunks.map(async (thunk) => {
+					try {
+						return await thunk();
+					} catch {
+						return null;
+					}
+				}),
+			);
+		},
+		async pipeline(items, ...stages) {
+			return Promise.all(
+				items.map(async (item, index) => {
+					let previous = item;
+					for (const stage of stages) {
+						try {
+							previous = await stage(previous, item, index);
+						} catch {
+							return null;
+						}
+					}
+					return previous;
+				}),
+			);
+		},
+		phase(title) {
+			phases.push(title);
+		},
+		log(message) {
+			logs.push(message);
+		},
+	};
+}
+
+function factoryWithResponses(args, responses) {
+	return createWorkflowFactory(
+		args,
+		(_prompt, options) => responses[options.label] ?? null,
+	);
+}
 
 function fakeApi(records = {}) {
 	return {
@@ -99,43 +214,6 @@ function fakeApi(records = {}) {
 			if (!record) throw new Error(`Factory run ${runId} not found`);
 			return record.run;
 		},
-	};
-}
-
-function executionContext(args, responses) {
-	const logs = [];
-	return {
-		args,
-		logs,
-		runId: "native-run",
-		signal: new AbortController().signal,
-		phase() {
-			assert.equal(this.runId, "native-run");
-		},
-		log(message) {
-			assert.equal(this.runId, "native-run");
-			logs.push(message);
-		},
-		async agent(_prompt, options = {}) {
-			assert.equal(this.runId, "native-run");
-			return structuredClone(responses[options.label] ?? null);
-		},
-		async parallel(thunks) {
-			assert.equal(this.runId, "native-run");
-			return Promise.all(thunks.map(async (thunk) => {
-				try {
-					return await thunk();
-				} catch {
-					return null;
-				}
-			}));
-		},
-		pipeline: async (items, ...stages) => Promise.all(items.map(async (item, index) => {
-			let previous = item;
-			for (const stage of stages) previous = await stage(previous, item, index);
-			return previous;
-		})),
-		step: async (_key, producer) => producer(),
 	};
 }
 
@@ -348,7 +426,7 @@ test("bundled planning factory executes with native result semantics", async () 
 		],
 	};
 	assert.equal(planMeta.name, "plan");
-	const result = await runPlan(executionContext(args, {
+	const result = await runPlan(factoryWithResponses(args, {
 		"plan:decomposer": blueprint,
 		"plan:architecture-critic": {
 			verdict: "accept",
@@ -368,6 +446,83 @@ test("bundled planning factory executes with native result semantics", async () 
 	assert.equal(validatePlanningResult(result, args, 2).tasks.length, 2);
 });
 
+test("planning factory repairs invalid decomposition and reports invalid synthesis", async () => {
+	const args = buildPlanningArgs({
+		objective: "Build",
+		constraints: [],
+		repositoryContext: "Node repository",
+		maxTasks: 2,
+	});
+	const valid = {
+		title: "Plan",
+		objective: args.objective,
+		constraints: args.constraints,
+		tasks: [
+			{
+				id: "T-001",
+				title: "Implement",
+				kind: "implement",
+				description: "Implement",
+				dependsOn: [],
+				acceptanceCriteria: ["Tests pass"],
+				expectedFiles: ["src/change.mjs"],
+				deliveryRequirement: "commit",
+			},
+			{
+				id: "T-002",
+				title: "Verify",
+				kind: "verify",
+				description: "Verify",
+				dependsOn: ["T-001"],
+				acceptanceCriteria: [],
+				expectedFiles: [],
+				deliveryRequirement: "commit",
+			},
+		],
+	};
+	const invalid = {
+		...valid,
+		tasks: [
+			valid.tasks[0],
+			{
+				...valid.tasks[0],
+				id: "T-003",
+				title: "Orphan",
+			},
+			valid.tasks[1],
+		],
+	};
+	const critics = {
+		"plan:architecture-critic": {
+			verdict: "revise",
+			risks: ["Orphan task"],
+			requiredChanges: ["Converge every task"],
+		},
+		"plan:delivery-risk-critic": {
+			verdict: "accept",
+			risks: [],
+			requiredChanges: [],
+		},
+		"plan:verifier": { passed: true, issues: [] },
+	};
+
+	const repaired = await runPlan(factoryWithResponses(args, {
+		"plan:decomposer": invalid,
+		"plan:synthesizer": valid,
+		...critics,
+	}));
+	assert.equal(repaired.status, "ready");
+	assert.equal(repaired.plan.tasks.length, 2);
+
+	const rejected = await runPlan(factoryWithResponses(args, {
+		"plan:decomposer": valid,
+		"plan:synthesizer": invalid,
+		...critics,
+	}));
+	assert.equal(rejected.status, "needs-review");
+	assert.match(rejected.issues.join("\n"), /Synthesis rejected/);
+});
+
 test("bundled verification factory echoes its complete native input", async () => {
 	const args = buildVerificationInput(completedPlan());
 	const reservationId = "verification-reservation";
@@ -377,7 +532,7 @@ test("bundled verification factory echoes its complete native input", async () =
 		evidenceIds: [evidenceIds[0]],
 	}));
 	assert.equal(verifyMeta.name, "verify");
-	const factory = executionContext({ ...args, reservationId }, {
+	const factory = factoryWithResponses({ ...args, reservationId }, {
 		"verify:coverage-reviewer": {
 			coverage,
 			missingEvidence: [],
@@ -407,7 +562,7 @@ test("bundled verification factory echoes its complete native input", async () =
 
 test("verification factory emits its marker before full input validation", async () => {
 	const reservationId = "invalid-input-reservation";
-	const factory = executionContext({ reservationId }, {});
+	const factory = factoryWithResponses({ reservationId }, {});
 	await assert.rejects(runVerify(factory), /planId must be a non-empty string/);
 	assert.equal(factory.logs[0], verificationMarker(reservationId));
 });
@@ -498,10 +653,28 @@ test("verification import validates the terminal result and reservation", async 
 			run: { runId: "complete", status: "completed", result },
 			progress: [marker],
 		},
+		unknownTimestamp: {
+			factoryName: "verify",
+			run: { runId: "unknownTimestamp", status: "completed", result },
+			createdAt: "2026-08-07T00:10:00.000Z",
+			progress: [marker],
+		},
 	};
-	const analysis = createFactoryAnalysis(() => fakeApi(records));
+	const api = fakeApi(records);
+	const getRunDetail = api.getRunDetail.bind(api);
+	let detailReads = 0;
+	api.getRunDetail = async (runId) => {
+		detailReads++;
+		return getRunDetail(runId);
+	};
+	const analysis = createFactoryAnalysis(() => api);
 	const complete = await analysis.importVerification("complete", plan);
 	assert.equal(complete.result.passed, true);
+	assert.equal(detailReads, 1);
+	assert.equal(
+		(await analysis.importVerification("unknownTimestamp", plan)).result.passed,
+		true,
+	);
 	assert.equal(await analysis.verificationRunIsTerminal("complete"), true);
 });
 
@@ -561,6 +734,21 @@ test("discoverVerificationRun is base-agnostic and reports duplicates", async ()
 	assert.equal(found.state, "found");
 	assert.equal(found.run.runId, "match");
 
+	const malformedTimestamp = createFactoryAnalysis(() => fakeApi({
+		match: {
+			factoryName: "verify",
+			run: { runId: "match", status: "running" },
+			createdAt: Number.NaN,
+			progress: [marker],
+		},
+	}));
+	const recovered = await malformedTimestamp.discoverVerificationRun(
+		plan.verification.reservationId,
+		plan.verification.reservedAt,
+	);
+	assert.equal(recovered.state, "found");
+	assert.equal(recovered.run.runId, "match");
+
 	const ambiguous = createFactoryAnalysis(() => fakeApi({
 		first: {
 			factoryName: "verify",
@@ -578,7 +766,7 @@ test("discoverVerificationRun is base-agnostic and reports duplicates", async ()
 		plan.verification.reservedAt,
 	);
 	assert.equal(duplicate.state, "inconclusive");
-	assert.deepEqual(duplicate.candidates.map((run) => run.runId), [
+	assert.deepEqual(duplicate.candidates?.map((run) => run.runId), [
 		"first",
 		"second",
 	]);
@@ -614,6 +802,22 @@ test("discoverVerificationRun distinguishes absent from inconclusive", async () 
 			plan.verification.reservedAt,
 		),
 		{ state: "absent" },
+	);
+
+	const malformedActive = createFactoryAnalysis(() => fakeApi({
+		pending: {
+			factoryName: "verify",
+			run: { runId: "pending", status: "pending" },
+			createdAt: Number.NaN,
+			progress: [],
+		},
+	}));
+	assert.equal(
+		(await malformedActive.discoverVerificationRun(
+			plan.verification.reservationId,
+			plan.verification.reservedAt,
+		)).state,
+		"inconclusive",
 	);
 });
 
@@ -658,6 +862,148 @@ test("verification cancellation checks Factory identity and reaches terminal sta
 	});
 	await assert.rejects(
 		analysis.cancelVerificationRun("wrong"),
-		(error) => error.code === "factory_run_identity_mismatch",
+		(/** @type {any} */ error) =>
+			error.code === "factory_run_identity_mismatch",
 	);
+});
+
+test("registered factory modules match metadata and declared phases", () => {
+	const filenames = readdirSync(FACTORY_DIR)
+		.filter((entry) => entry.endsWith(".mjs"))
+		.sort();
+	const definitions = Object.values(FOUNDRY_FACTORIES);
+	assert.deepEqual(
+		filenames,
+		definitions.map(({ meta }) => `${meta.name}.mjs`).sort(),
+	);
+
+	for (const { meta, run } of definitions) {
+		assert.equal(typeof run, "function");
+		assert.ok(meta.phases.length > 0);
+		assert.equal(new Set(meta.phases.map(({ title }) => title)).size, meta.phases.length);
+		for (const value of Object.values(meta.limits)) {
+			assert.equal(typeof value, "number");
+			assert.ok(value > 0);
+		}
+
+		const filename = join(FACTORY_DIR, `${meta.name}.mjs`);
+		const source = readFileSync(filename, "utf8");
+		const usedPhases = [...source.matchAll(/\bphase\("([^"]+)"\)/g)]
+			.map((match) => match[1]);
+		assert.deepEqual(usedPhases, meta.phases.map(({ title }) => title), filename);
+		assert.match(source, /export async function run\(factory\)/);
+		assert.doesNotMatch(
+			source,
+			/run_conveyor|runHarness|stripExports|scriptPath|node:vm|context\.args/,
+			filename,
+		);
+	}
+});
+
+test("additional factories expose argument contracts", () => {
+	const definitions = Object.values(ADDITIONAL_FACTORIES);
+	assert.equal(definitions.length, 5);
+	assert.equal(new Set(definitions.map(({ meta }) => meta.name)).size, definitions.length);
+	for (const { meta } of definitions) {
+		assert.match(meta.description, /Args:/);
+	}
+});
+
+test("additional factories execute through native primitives", async () => {
+	const cases = [
+		{
+			key: "audit",
+			args: { paths: ["src/a.js"] },
+			expected: /No verified issues found/,
+		},
+		{
+			key: "deepResearch",
+			args: { question: "What changed?", angles: 1 },
+			expected: /Coverage: 1 angles researched/,
+		},
+		{
+			key: "reviewQueue",
+			args: {
+				prs: [{
+					repo: "owner/repo",
+					number: 1,
+					title: "Small fix",
+					diff: "+const answer = 42;",
+					files: ["src/a.js"],
+					me: "octocat",
+					coverage: "full diff",
+					platform: "github",
+					url: "https://example.test/owner/repo/pull/1",
+					updatedAt: "2026-08-11T00:00:00Z",
+				}],
+			},
+			expected: /\| Approve \| low \|/,
+		},
+		{
+			key: "securityReview",
+			args: { root: "src", perspectives: 1 },
+			expected: /No finding survived independent verification/,
+		},
+		{
+			key: "triage",
+			args: { tickets: ["The button crashes"] },
+			expected: /\| 1 \| Triaged \| bug \| P2 \|/,
+		},
+	];
+
+	for (const { key, args, expected } of cases) {
+		const definition = ADDITIONAL_FACTORIES[key];
+		const factory = createWorkflowFactory(args);
+		const result = await definition.run(factory);
+		if (typeof result !== "string") {
+			assert.fail(`${definition.meta.name} returned a non-text result`);
+		}
+		assert.match(result, expected, definition.meta.name);
+		assert.ok(factory.calls.length > 0, definition.meta.name);
+		const declared = new Set(definition.meta.phases.map(({ title }) => title));
+		assert.ok(factory.phases.every((title) => declared.has(title)), definition.meta.name);
+	}
+});
+
+test("item-oriented factories use unique memoization labels", async () => {
+	const sharedPrefix = "Regulatory landscape for Example in ";
+	const researchFactory = createWorkflowFactory(
+		{ question: "Compare regions", angles: 2 },
+		(_prompt, options) => options.label === "plan"
+			? [`${sharedPrefix}the European Union`, `${sharedPrefix}the United States`]
+			: undefined,
+	);
+	await ADDITIONAL_FACTORIES.deepResearch.run(researchFactory);
+	const researchLabels = researchFactory.calls.map((call) => call.options.label);
+	assert.equal(new Set(researchLabels).size, researchLabels.length);
+
+	const triageFactory = createWorkflowFactory({
+		tickets: [
+			{ id: "duplicate", title: "First ticket" },
+			{ id: "duplicate", title: "Second ticket" },
+		],
+	});
+	await ADDITIONAL_FACTORIES.triage.run(triageFactory);
+	const ticketLabels = triageFactory.calls
+		.map((call) => call.options.label)
+		.filter((label) => label.startsWith("ticket:"));
+	assert.equal(new Set(ticketLabels).size, ticketLabels.length);
+});
+
+test("Factory test runtime matches native item-failure semantics", async () => {
+	const factory = createWorkflowFactory({});
+	assert.deepEqual(await factory.parallel([
+		() => 1,
+		() => {
+			throw new Error("ordinary failure");
+		},
+	]), [1, null]);
+	assert.deepEqual(await factory.pipeline(
+		[1, 2],
+		(value) => {
+			if (value === 2) throw new Error("ordinary failure");
+			return value + 1;
+		},
+		(value) => value * 2,
+	), [4, null]);
 });

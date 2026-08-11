@@ -3,7 +3,6 @@
  *
  * @module foundry/analysis
  */
-import path from "node:path";
 import { createHash } from "node:crypto";
 
 import {
@@ -12,12 +11,11 @@ import {
     EVIDENCE_TYPE,
     LIMITS,
     TASK_STATUS,
-    createDraftPlan,
 	effectiveDeliveryRequirement,
     latestSuccessfulAttempt,
+	validateDependencyGraph,
 	validateTaskTopology,
     validatePlan,
-	verificationCheckIds,
 } from "./domain.mjs";
 
 /**
@@ -43,6 +41,7 @@ import {
  * @property {string} planId
  * @property {string} objective
  * @property {any[]} tasks
+ * @property {any} verificationReport
  * @property {string} inputDigest
  */
 
@@ -241,50 +240,103 @@ export function buildPlanningArgs(value) {
  * @returns {PlanBlueprint}
  */
 export function validatePlanBlueprint(value, maxTasks) {
-    const blueprint = plainObject(value, "plan");
-    if (!Array.isArray(blueprint.tasks)
+	const blueprint = plainObject(value, "plan");
+	if (!Array.isArray(blueprint.tasks)
 		|| blueprint.tasks.length < 2
 		|| blueprint.tasks.length > maxTasks + 1) {
-        fail(
-            "invalid_analysis_result",
+		fail(
+			"invalid_analysis_result",
 			`plan.tasks must contain 1-${maxTasks} implementation tasks plus one verifier`,
-        );
-    }
-    let draft;
-    try {
-        draft = createDraftPlan({
-            id: "analysis-plan",
-            title: blueprint.title,
-            objective: blueprint.objective,
-            constraints: blueprint.constraints,
-            repository: {
-                workingDirectory: path.resolve(process.cwd()),
-                baseBranch: "main",
-            },
-            tasks: blueprint.tasks,
-        }, { now: "2026-01-01T00:00:00.000Z" });
-    } catch (error) {
-        fail(
-            "invalid_analysis_result",
-            `Plan blueprint failed validation: ${error.message}`,
-            { causeCode: error.code ?? null },
-        );
-    }
-    return {
-        title: draft.title,
-        objective: draft.objective,
-        constraints: draft.constraints,
-        tasks: draft.tasks.map((task) => ({
-            id: task.id,
-            title: task.title,
-            kind: task.kind,
-            description: task.description,
-            dependsOn: task.dependsOn,
-            acceptanceCriteria: task.acceptanceCriteria,
-            expectedFiles: task.expectedFiles,
-			deliveryRequirement: effectiveDeliveryRequirement(task),
-        })),
-    };
+		);
+	}
+	const ids = new Set();
+	const tasks = blueprint.tasks.map((rawTask, index) => {
+		const task = plainObject(rawTask, `plan.tasks[${index}]`);
+		const id = text(task.id, `plan.tasks[${index}].id`, 5);
+		if (!/^T-\d{3}$/.test(id) || ids.has(id)) {
+			fail(
+				"invalid_analysis_result",
+				`plan.tasks[${index}].id must be a unique T-001 identifier`,
+			);
+		}
+		ids.add(id);
+		if (!["implement", "verify"].includes(task.kind)) {
+			fail(
+				"invalid_analysis_result",
+				`plan.tasks[${index}].kind must be implement or verify`,
+			);
+		}
+		if (!Object.values(DELIVERY_REQUIREMENT).includes(task.deliveryRequirement)) {
+			fail(
+				"invalid_analysis_result",
+				`plan.tasks[${index}].deliveryRequirement must be branch, commit, or pr`,
+			);
+		}
+		/** @type {"implement"|"verify"} */
+		const kind = task.kind;
+		/** @type {"branch"|"commit"|"pr"} */
+		const deliveryRequirement = task.deliveryRequirement;
+		return {
+			id,
+			title: text(task.title, `plan.tasks[${index}].title`, LIMITS.taskTitle),
+			kind,
+			description: text(
+				task.description,
+				`plan.tasks[${index}].description`,
+				LIMITS.taskDescription,
+			),
+			dependsOn: stringList(
+				task.dependsOn,
+				`plan.tasks[${index}].dependsOn`,
+				LIMITS.dependencies,
+				5,
+			),
+			acceptanceCriteria: stringList(
+				task.acceptanceCriteria,
+				`plan.tasks[${index}].acceptanceCriteria`,
+				LIMITS.acceptanceCriteria,
+				LIMITS.acceptanceCriterion,
+				kind === "verify" ? 0 : 1,
+			),
+			expectedFiles: stringList(
+				task.expectedFiles,
+				`plan.tasks[${index}].expectedFiles`,
+				LIMITS.expectedFiles,
+				LIMITS.expectedFile,
+			),
+			deliveryRequirement,
+		};
+	});
+	try {
+		validateDependencyGraph(tasks);
+		const { verifyTask } = validateTaskTopology(tasks);
+		if (verifyTask.deliveryRequirement !== DELIVERY_REQUIREMENT.COMMIT
+			|| verifyTask.acceptanceCriteria.length !== 0
+			|| verifyTask.expectedFiles.length !== 0) {
+			fail(
+				"invalid_analysis_result",
+				"The verifier must use commit delivery with no authored criteria or files",
+			);
+		}
+	} catch (error) {
+		if (error instanceof FoundryAnalysisError) throw error;
+		fail(
+			"invalid_analysis_result",
+			`Plan blueprint failed validation: ${error.message}`,
+			{ causeCode: error.code ?? null },
+		);
+	}
+	return {
+		title: text(blueprint.title, "plan.title", LIMITS.planTitle),
+		objective: text(blueprint.objective, "plan.objective", LIMITS.objective),
+		constraints: stringList(
+			blueprint.constraints,
+			"plan.constraints",
+			LIMITS.constraints,
+			LIMITS.constraint,
+		),
+		tasks,
+	};
 }
 
 /**
@@ -366,12 +418,15 @@ export function buildVerificationInput(plan) {
             "Verification input requires every implementation task to be done",
         );
     }
-	const { verifyTask, targetTask } = validateTaskTopology(plan.tasks);
+	/** @type {import("./domain.mjs").FoundryTask[]} */
+	const tasks = plan.tasks;
+	const { verifyTask, targetTask } = validateTaskTopology(tasks);
 	const verifier = latestSuccessfulAttempt(verifyTask);
 	const target = latestSuccessfulAttempt(targetTask);
 	if (!verifier || !target || verifier.sessionId === null) {
 		fail("implementation_incomplete", "Verification input requires a completed verifier report");
 	}
+	/** @type {Omit<VerificationInput, "inputDigest">} */
     const normalized = {
         planId: plan.id,
         objective: plan.objective,
@@ -450,9 +505,11 @@ export function normalizeVerificationInput(value) {
             `input.tasks must contain 1-${LIMITS.tasks} tasks`,
         );
     }
+	/** @type {Omit<VerificationInput, "inputDigest">} */
     const normalized = {
         planId,
         objective: text(input.objective, "input.objective", LIMITS.objective),
+		verificationReport: null,
         tasks: input.tasks.map((rawTask, taskIndex) => {
             const task = plainObject(rawTask, `input.tasks[${taskIndex}]`);
             const id = text(task.id, `input.tasks[${taskIndex}].id`, 5);
@@ -810,6 +867,63 @@ export function normalizeVerificationInput(value) {
 }
 
 /**
+ * Computes the deterministic verification gaps shared by the Factory and importer.
+ *
+ * @param {any} input Canonical normalized verification input.
+ * @returns {{
+ *   hardPassed: boolean,
+ *   hardGaps: Array<{summary: string, taskIds: string[]}>,
+ *   correctionTaskIds: string[],
+ *   requiredEvidenceIds: string[]
+ * }}
+ */
+export function assessDeterministicVerification(input) {
+	const criterionOwners = new Map(input.tasks.flatMap(
+		(task) => task.criteria.map((criterion) => [criterion.id, task.id]),
+	));
+	const reportByCheck = new Map(
+		input.verificationReport.evidence.map((entry) => [entry.checkId, entry]),
+	);
+	const correctionTaskIds = new Set();
+	const hardGaps = [];
+	for (const [criterionId, ownerTaskId] of criterionOwners) {
+		if (reportByCheck.get(criterionId)?.outcome !== EVIDENCE_OUTCOME.PASSED) {
+			correctionTaskIds.add(ownerTaskId);
+			hardGaps.push({
+				summary: `Independent check failed for ${criterionId}`,
+				taskIds: [ownerTaskId],
+			});
+		}
+	}
+	const targetTaskId = input.verificationReport.target.taskId;
+	if (input.verificationReport.observedCommit
+		!== input.verificationReport.target.commit) {
+		correctionTaskIds.add(targetTaskId);
+		hardGaps.push({
+			summary: "Verifier observed a different target commit",
+			taskIds: [targetTaskId],
+		});
+	}
+	for (const checkId of ["final-integration", "workspace-integrity"]) {
+		if (reportByCheck.get(checkId)?.outcome !== EVIDENCE_OUTCOME.PASSED) {
+			correctionTaskIds.add(targetTaskId);
+			hardGaps.push({
+				summary: `Independent check failed for ${checkId}`,
+				taskIds: [targetTaskId],
+			});
+		}
+	}
+	return {
+		hardPassed: hardGaps.length === 0,
+		hardGaps,
+		correctionTaskIds: [...correctionTaskIds],
+		requiredEvidenceIds: input.verificationReport.evidence
+			.filter((entry) => entry.outcome === EVIDENCE_OUTCOME.PASSED)
+			.map((entry) => entry.id),
+	};
+}
+
+/**
  * Validates a persisted verification result against canonical checks.
  *
  * @param {unknown} value
@@ -835,33 +949,9 @@ export function validateVerificationResult(value, expectedInput, expectedReserva
 
 	const taskIds = input.tasks.map((task) => task.id);
 	const taskIdSet = new Set(taskIds);
-	const criterionOwners = new Map(input.tasks.flatMap(
-		(task) => task.criteria.map((criterion) => [criterion.id, task.id]),
-	));
-	const reportByCheck = new Map(
-		input.verificationReport.evidence.map((entry) => [entry.checkId, entry]),
-	);
-	const correctionTaskIds = new Set();
-	const missingSummaries = [];
-	for (const [criterionId, ownerTaskId] of criterionOwners) {
-		if (reportByCheck.get(criterionId)?.outcome !== EVIDENCE_OUTCOME.PASSED) {
-			correctionTaskIds.add(ownerTaskId);
-			missingSummaries.push(`Independent check failed for ${criterionId}`);
-		}
-	}
-	const targetTaskId = input.verificationReport.target.taskId;
-	if (input.verificationReport.observedCommit
-		!== input.verificationReport.target.commit) {
-		correctionTaskIds.add(targetTaskId);
-		missingSummaries.push("Verifier observed a different target commit");
-	}
-	for (const checkId of ["final-integration", "workspace-integrity"]) {
-		if (reportByCheck.get(checkId)?.outcome !== EVIDENCE_OUTCOME.PASSED) {
-			correctionTaskIds.add(targetTaskId);
-			missingSummaries.push(`Independent check failed for ${checkId}`);
-		}
-	}
-	const hardPassed = missingSummaries.length === 0;
+	const deterministic = assessDeterministicVerification(input);
+	const correctionTaskIds = new Set(deterministic.correctionTaskIds);
+	const missingSummaries = deterministic.hardGaps.map((entry) => entry.summary);
 
 	const allEvidence = new Map([
 		...input.tasks.flatMap(
@@ -933,17 +1023,14 @@ export function validateVerificationResult(value, expectedInput, expectedReserva
 		fail("invalid_analysis_result", "Verification result references unknown evidence");
 	}
 	const evidence = [...new Set(result.evidenceIds)];
-	const requiredEvidence = input.verificationReport.evidence
-		.filter((entry) => entry.outcome === EVIDENCE_OUTCOME.PASSED)
-		.map((entry) => entry.id);
 	if (result.passed === true
-		&& requiredEvidence.some((id) => !evidence.includes(id))) {
+		&& deterministic.requiredEvidenceIds.some((id) => !evidence.includes(id))) {
 		fail("invalid_analysis_result", "Passing verification omits verifier evidence");
 	}
 	const missingEvidence = [...new Set(missingSummaries)]
 		.slice(0, LIMITS.missingEvidence);
 	const passed = result.passed === true
-		&& hardPassed
+		&& deterministic.hardPassed
 		&& missingEvidence.length === 0
 		&& evidence.length > 0;
 	if (result.passed === true && !passed) {

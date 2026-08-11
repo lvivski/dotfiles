@@ -72,7 +72,7 @@ const VERDICT = {
 factory.phase("Research");
 const checked = await factory.pipeline(
 	angles,
-	async (angle) => ({
+	async (angle, _original, index) => ({
 		angle,
 		finding: await factory.agent(
 			`Research this assigned angle using web search. Cite every material claim with a source URL and flag thin or conflicting evidence.
@@ -82,10 +82,10 @@ ${question}
 
 Assigned angle:
 ${angle}`,
-			{ label: `research:${angle.slice(0, 32)}` },
+			{ label: `research:${index + 1}:${angle.slice(0, 32)}` },
 		),
 	}),
-	async (row) => {
+	async (row, _original, index) => {
 		if (row.finding === null) return { ...row, verdict: null };
 		const verdict = await factory.agent(
 			`Independently check every material claim and cited URL below. Pass only when the sources are credible, accessible, relevant, and support the claims.
@@ -98,7 +98,10 @@ ${row.angle}
 
 Finding:
 ${row.finding}`,
-			{ label: `verify:${row.angle.slice(0, 32)}`, schema: VERDICT },
+			{
+				label: `verify:${index + 1}:${row.angle.slice(0, 32)}`,
+				schema: VERDICT,
+			},
 		);
 		return { ...row, verdict };
 	},

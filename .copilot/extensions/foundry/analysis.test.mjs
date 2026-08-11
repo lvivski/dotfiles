@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
     FoundryAnalysisError,
+	assessDeterministicVerification,
     analysisInputDigest,
     buildPlanningArgs,
     buildVerificationInput,
@@ -233,6 +234,26 @@ test("planning results reuse the strict domain validator and fail closed", () =>
         }, input, 2),
         /canonical objective/,
     );
+	assert.throws(
+		() => validatePlanBlueprint({
+			...plan,
+			tasks: plan.tasks.map((task) => {
+				if (task.id !== "T-001") return task;
+				const { deliveryRequirement: _discarded, ...withoutDelivery } = task;
+				return withoutDelivery;
+			}),
+		}, 2),
+		/deliveryRequirement/,
+	);
+	assert.throws(
+		() => validatePlanBlueprint({
+			...plan,
+			tasks: plan.tasks.map((task) => task.id === "T-001"
+				? { ...task, dependsOn: ["T-002"] }
+				: task),
+		}, 2),
+		/[Cc]ycle/,
+	);
 });
 
 test("verification inputs use stable criterion IDs and exact digests", () => {
@@ -317,6 +338,35 @@ test("verification result requires every criterion ID to have evidence", () => {
 		}, input, reservationId),
 		/omits verifier evidence/,
 	);
+});
+
+test("deterministic verification gaps preserve stable order and attribution", () => {
+	const input = buildVerificationInput(completedPlan());
+	input.verificationReport.evidence[0].outcome = "failed";
+	input.verificationReport.evidence.at(-2).outcome = "failed";
+	input.verificationReport.observedCommit = "0".repeat(40);
+
+	assert.deepEqual(assessDeterministicVerification(input), {
+		hardPassed: false,
+		hardGaps: [
+			{
+				summary: "Independent check failed for T-001-C001",
+				taskIds: ["T-001"],
+			},
+			{
+				summary: "Verifier observed a different target commit",
+				taskIds: ["T-001"],
+			},
+			{
+				summary: "Independent check failed for final-integration",
+				taskIds: ["T-001"],
+			},
+		],
+		correctionTaskIds: ["T-001"],
+		requiredEvidenceIds: input.verificationReport.evidence
+			.filter((entry) => entry.outcome === "passed")
+			.map((entry) => entry.id),
+	});
 });
 
 test("failed or omitted evidence IDs cannot satisfy passing verification", () => {

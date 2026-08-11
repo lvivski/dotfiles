@@ -342,22 +342,15 @@ function coordinatorContext(active) {
     return `Foundry plan ${plan.id} is active at revision ${plan.revision} (${plan.status}).
 
 Coordinator contract:
-1. Use foundry_next_tasks, then foundry_reserve_task BEFORE create_session.
-2. Pass the returned delegationPrompt unchanged and use its exact baseBranch.
-3. Attach the returned App session immediately with foundry_attach_task.
-4. Record the attempt result before displaying it or launching newly-unblocked work. Failed or blocked work must not be represented as done.
-5. Do not duplicate active child work or expand the approved DAG. Intervene only for explicit steering, cancellation, stuck sessions, or child requests.
-6. Do not launch overlapping declared scopes without an auditable scopeOverride.
-7. Use foundry_get_status with a complete App session inventory before treating a recorded session as absent.
-8. foundry_cancel only requests cancellation. Stop/archive every listed App session, call foundry_cancel_verification_run with the same request ID, then use its disposition with foundry_finalize_cancellation.
-9. Re-read the plan after revision conflicts; reservation and attachment replays are idempotent only when their exact postcondition already exists.
-10. Foundry Factory agents perform analysis only; App-native child sessions own repository mutation.
-11. Use each prepare tool's exact launchSpec with run_factory. If prepare returns launchSpec:null, do not launch again; use its returned runId.
-12. The final verify task uses the ordinary reserve/create/attach/complete flow. Its child session is read-only and must report canonical checkId evidence plus the final observed commit.
-13. Failed or blocked attached tasks require a complete, causally newer terminal App session inventory before foundry_complete_task.
-14. foundry_prepare_verification is a mutation: call it with expectedRevision and a stable reservationId only after every task, including the verifier, is done.
-15. Import the terminal Factory result with foundry_complete_verification, then request explicit completion approval.
-16. Finalize cancellation only with a complete, causally newer App session inventory; use finalizationOverride only as an explicit attributed escape hatch.`;
+1. Reserve before create_session, use the exact baseBranch and delegationPrompt, then attach immediately.
+2. Record terminal attempt state before dispatching newly-unblocked work; never duplicate active work or expand the approved DAG.
+3. Overlapping declared scopes require an auditable scopeOverride.
+4. Re-read after revision conflicts; replay only when the exact postcondition already exists.
+5. Factory agents perform analysis only; App-native child sessions own repository mutation.
+6. Use each prepare result once: launch its exact launchSpec, or reuse its runId when launchSpec is null.
+7. The final verify task follows the ordinary task flow and must report canonical checkId evidence plus its observed commit.
+8. Failed or blocked attached tasks require a complete, causally newer terminal session inventory.
+9. Cancellation is two-phase: stop owned sessions, terminate the bound verification run, then finalize with fresh complete inventory; overrides must be explicit and attributed.`;
 }
 
 /**
@@ -429,6 +422,10 @@ export function buildFoundryHooks(options) {
             return {};
         },
         onPostToolUse: async (input) => {
+			const toolName = String(input.toolName ?? "");
+			if (!toolName.startsWith(FOUNDRY_TOOL_PREFIX)) {
+				return {};
+			}
             let current;
             try {
                 current = await active();
@@ -437,13 +434,12 @@ export function buildFoundryHooks(options) {
                     additionalContext: "Foundry activation state is unreadable. Repair or deactivate it before coordinating more plan work.",
                 };
             }
-            const toolName = String(input.toolName ?? "");
             if (toolName === "foundry_deactivate_plan") {
                 return {
                     additionalContext: "Foundry coordinator context and guardrails are now deactivated for this session.",
                 };
             }
-            if (!current || !toolName.startsWith(FOUNDRY_TOOL_PREFIX)) {
+			if (!current) {
                 return {};
             }
             if (toolName === "foundry_activate_plan") {
@@ -454,6 +450,9 @@ export function buildFoundryHooks(options) {
             };
         },
         onPostToolUseFailure: async (input) => {
+			if (!String(input.toolName ?? "").startsWith(FOUNDRY_TOOL_PREFIX)) {
+				return {};
+			}
             let current;
             try {
                 current = await active();
@@ -462,7 +461,7 @@ export function buildFoundryHooks(options) {
                     additionalContext: "Foundry activation state is unreadable. Do not retry plan mutations until it is repaired.",
                 };
             }
-            if (!current || !String(input.toolName ?? "").startsWith(FOUNDRY_TOOL_PREFIX)) {
+			if (!current) {
                 return {};
             }
             return {

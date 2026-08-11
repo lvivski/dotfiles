@@ -12,10 +12,13 @@ fi
 git pull
 
 push() {
-	rsync --exclude ".git/" --exclude ".DS_Store" --exclude "sync" --exclude "README.md" -av . ~ || return
+	rsync --exclude ".git/" --exclude ".DS_Store" --exclude "sync" --exclude "/README.md" -av . ~ || return
 	# Extension and skill directories are mirrors, not additive overlays.
 	rsync --delete -av .copilot/extensions/foundry/ ~/.copilot/extensions/foundry/ || return
 	rsync --delete -av .copilot/skills/foundry/ ~/.copilot/skills/foundry/ || return
+	rsync --delete -av .copilot/skills/deep-research/ ~/.copilot/skills/deep-research/ || return
+	rsync --delete -av .copilot/skills/review-queue/ ~/.copilot/skills/review-queue/ || return
+	rsync --delete -av .copilot/skills/security-review/ ~/.copilot/skills/security-review/ || return
 
 	# Stale copies of files renamed/removed in the repo. The rsync above is
 	# additive, so delete their leftovers from $HOME (after the new versions
@@ -23,6 +26,7 @@ push() {
 	local obsolete=(
 		.MacOSX
 		.launchd.conf
+		.gitattributes
 		Library/KeyBindings/DefaultKeyBinding.dict
 		.bash_completion
 		.bash_completion.d
@@ -35,7 +39,9 @@ push() {
 		.copilot/agents/synthesizer.md
 		.copilot/extensions/cwf
 		.copilot/extensions/conveyor
+		.copilot/extensions/jsconfig.json
 		.copilot/extensions/mobius
+		.copilot/extensions/types
 		.copilot/conveyors
 		.copilot/extensions/workflow
 		.copilot/skills/conveyor
@@ -49,7 +55,7 @@ push() {
 }
 
 pull() {
-	find . -type f \( ! -path "*.git/*" ! -name ".DS_Store" ! -name "README.md" ! -name "sync" \) -exec cp ~/{} {} \;
+	find . -type f \( ! -path "*.git/*" ! -name ".DS_Store" ! -path "./README.md" ! -name "sync" \) -exec cp ~/{} {} \;
 }
 
 case "$1" in
