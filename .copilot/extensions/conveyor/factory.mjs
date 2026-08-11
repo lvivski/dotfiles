@@ -13,7 +13,7 @@ export const CONVEYOR_FACTORY_META = Object.freeze({
 		maxConcurrentSubagents: 8,
 		maxTotalSubagents: 700,
 		timeoutSeconds: 3600,
-		maxAiCredits: 1000,
+		maxAiCredits: 10000,
 	},
 });
 

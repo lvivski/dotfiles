@@ -28,7 +28,7 @@ run_conveyor({
     maxConcurrentSubagents: 6,
     maxTotalSubagents: 40,
     timeoutSeconds: 1800,
-    maxAiCredits: 200
+    maxAiCredits: 10000
   }
 })
 ```
