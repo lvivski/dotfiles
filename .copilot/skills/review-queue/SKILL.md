@@ -5,17 +5,15 @@ description: >-
   they are assigned to review (directly or via a team) across GitHub and Azure DevOps, review them
   in parallel, and report which are safe to approve vs which need a real look, with focus hints and
   why they were added (CODEOWNERS / required policy vs manual). Do not use it for a single named PR.
-compatibility: GitHub Copilot CLI with the conveyor extension loaded; gh + jq required, az optional.
+compatibility: GitHub Copilot CLI with the Foundry extension loaded; gh + jq required, az optional.
 metadata:
   copilot.user-invocable: "true"
-  copilot.runtime: "conveyor"
 user-invocable: true
 ---
 
 # Review queue
 
-Fetch first, then invoke the saved conveyor. Do not write a new harness and never approve PRs; report
-triage only.
+Fetch first, then run `review-queue`. Never approve PRs; report triage only.
 
 1. **Fetch queue data (free).**
    ```bash
@@ -27,18 +25,12 @@ triage only.
    report that nothing is assigned and stop.
 2. **Run.** Show PR count, platforms, and supplied diff coverage, then launch:
    ```text
-   run_conveyor({
+   run_factory({
      name: "review-queue",
-     args: { prs: <contents of /tmp/review-queue.json> },
-     limits: {
-       maxConcurrentSubagents: 8,
-       maxTotalSubagents: 700,
-       timeoutSeconds: 3600,
-       maxAiCredits: 1000
-     }
+     args: { prs: <contents of /tmp/review-queue.json> }
    })
    ```
-3. **Return the triage table** with linked PRs, platform/account, coverage, decision, risk,
+3. **Return** the resulting triage table with linked PRs, platform/account, coverage, decision, risk,
    why-assigned, justification, and focus hints.
 
 Useful knobs: fetch stale PRs with `--max-age-days N` / `--all-ages`; pass

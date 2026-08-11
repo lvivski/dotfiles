@@ -2,16 +2,15 @@
 name: security-review
 description: >-
   Use this skill when the user wants a security review, deep security review, or security audit.
-compatibility: GitHub Copilot CLI with the conveyor extension loaded.
+compatibility: GitHub Copilot CLI with the Foundry extension loaded.
 metadata:
   copilot.user-invocable: "true"
-  copilot.runtime: "conveyor"
 user-invocable: true
 ---
 
 # Security review
 
-Invoke the saved `security-review` Conveyor. It uses native Factory agents to orient around the
+Invoke the registered `security-review` factory. It uses native Factory agents to orient around the
 repository, investigate the requested scope from independent security perspectives, deduplicate
 candidates, and send every candidate through a skeptical verifier.
 
@@ -19,19 +18,13 @@ With no args it reviews the current repository. Scope it to a subtree, explicit 
 comparison:
 
 ```text
-run_conveyor({
+run_factory({
   name: "security-review",
-  args: { root: "src/", perspectives: 8 },
-  limits: {
-    maxConcurrentSubagents: 6,
-    maxTotalSubagents: 80,
-    timeoutSeconds: 3600,
-    maxAiCredits: 1000
-  }
+  args: { root: "src/", perspectives: 8 }
 })
 
-run_conveyor({ name: "security-review", args: { files: ["src/a.js", "src/b.js"] } })
-run_conveyor({ name: "security-review", args: { base: "main", head: "HEAD" } })
+run_factory({ name: "security-review", args: { files: ["src/a.js", "src/b.js"] } })
+run_factory({ name: "security-review", args: { base: "main", head: "HEAD" } })
 ```
 
 Args:

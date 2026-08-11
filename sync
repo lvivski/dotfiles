@@ -14,10 +14,8 @@ git pull
 push() {
 	rsync --exclude ".git/" --exclude ".DS_Store" --exclude "sync" --exclude "README.md" -av . ~ || return
 	# Extension and skill directories are mirrors, not additive overlays.
-	rsync --delete -av .copilot/extensions/conveyor/ ~/.copilot/extensions/conveyor/ || return
-	rsync --delete -av .copilot/extensions/mobius/ ~/.copilot/extensions/mobius/ || return
-	rsync --delete -av .copilot/skills/conveyor/ ~/.copilot/skills/conveyor/ || return
-	rsync --delete -av .copilot/skills/mobius/ ~/.copilot/skills/mobius/ || return
+	rsync --delete -av .copilot/extensions/foundry/ ~/.copilot/extensions/foundry/ || return
+	rsync --delete -av .copilot/skills/foundry/ ~/.copilot/skills/foundry/ || return
 
 	# Stale copies of files renamed/removed in the repo. The rsync above is
 	# additive, so delete their leftovers from $HOME (after the new versions
@@ -36,22 +34,12 @@ push() {
 		.copilot/agents/judge.md
 		.copilot/agents/synthesizer.md
 		.copilot/extensions/cwf
-		.copilot/extensions/mobius/factories.mjs
-		.copilot/extensions/mobius/factory-helpers.mjs
-		.copilot/extensions/mobius/canvas-server.mjs
-		.copilot/extensions/mobius/conveyor-adapter.mjs
-		.copilot/extensions/mobius/conveyor-scripts.mjs
-		.copilot/extensions/mobius/conveyors
-		.copilot/extensions/mobius/test
-		.copilot/extensions/mobius/test/factory-helpers.test.mjs
-		.copilot/conveyors/mobius-plan.mjs
-		.copilot/conveyors/mobius-verify.mjs
-		.copilot/conveyors/review-queue.host.mjs
-		.copilot/conveyors/security-review.host.mjs
-		.copilot/conveyors/security-review.test.mjs
-		.copilot/conveyors/plans
-		.copilot/conveyors/runs
+		.copilot/extensions/conveyor
+		.copilot/extensions/mobius
+		.copilot/conveyors
 		.copilot/extensions/workflow
+		.copilot/skills/conveyor
+		.copilot/skills/mobius
 		.copilot/skills/workflow
 		.local/bin/cwf
 		.local/lib/copilot_workflows

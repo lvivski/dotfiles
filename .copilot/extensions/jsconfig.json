@@ -19,10 +19,9 @@
     "include": ["node"]
   },
   "include": [
-    "conveyor/*.mjs",
-    "conveyor/fixtures/*.mjs",
-    "conveyor/types/*.d.ts",
-    "mobius/*.mjs",
-    "mobius/renderer/*.js"
+    "foundry/*.mjs",
+    "foundry/factories/*.mjs",
+    "foundry/renderer/*.js",
+    "types/*.d.ts"
   ]
 }

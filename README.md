@@ -28,13 +28,12 @@ From this repository, refresh the file after changing installed tools with:
 brew bundle dump --file=.Brewfile --force
 ```
 
-## Copilot Conveyor — dynamic workflows on the Copilot CLI
+## Copilot Foundry — control plane and Agent Factories
 
-`source ./sync` also installs the **Conveyor** Copilot extension, which orchestrates workflows across
-many GitHub Copilot CLI subagents in parallel (fan-out/synthesize, adversarial verification,
-tournaments, ...) from an async JavaScript workflow harness (`.mjs`). Conveyor resolves source and
-launches it on the native Agent Factory runtime, which owns limits, durable steps, resume,
-cancellation, progress, and results. Invoke `run_conveyor` for a fresh harness and use the native
-Factory tools for later lifecycle operations.
+`source ./sync` also installs the **Foundry** Copilot extension. Foundry coordinates dependency-aware
+engineering plans and registers the `plan`, `verify`, `audit`, `deep-research`,
+`review-queue`, `security-review`, and `triage` native Agent Factories. Invoke factories with
+`run_factory`; the native runtime owns limits, durable steps, resume, cancellation, progress, and
+results.
 
-See [`.copilot/skills/conveyor/SKILL.md`](.copilot/skills/conveyor/SKILL.md).
+See [`.copilot/skills/foundry/SKILL.md`](.copilot/skills/foundry/SKILL.md).
