@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import {
     mkdtemp,
+	lstat,
     mkdir,
     readFile,
     readdir,
@@ -353,6 +354,18 @@ test("symlinked plan artifacts are reported and never followed", () => (
             await symlink(externalFile, path.join(store.directory, "sample-plan.json"), "file");
 
             await rejectsCode(store.read("sample-plan"), "artifact_unsafe");
+			await rejectsCode(
+				store.quarantineInvalidPlan("sample-plan", {
+					reason: "Do not follow this link.",
+					requestedBy: "octocat",
+				}),
+				"artifact_unsafe",
+			);
+			assert.equal(
+				(await lstat(path.join(store.directory, "sample-plan.json")))
+					.isSymbolicLink(),
+				true,
+			);
             const listed = await store.list();
             assert.equal(listed.plans.length, 0);
             assert.equal(listed.invalid.length, 1);
@@ -385,6 +398,36 @@ test("bounded listing reports malformed artifacts instead of hiding them", () =>
         assert.equal(complete.invalid.length, 1);
         assert.equal(complete.invalid[0].filename, "broken-plan.json");
         assert.equal(complete.invalid[0].code, "artifact_invalid");
+		assert.equal(complete.invalid[0].details.id, "broken-plan");
+
+		const quarantined = await store.quarantineInvalidPlan("broken-plan", {
+			reason: "Replace a stale artifact shape.",
+			requestedBy: "octocat",
+		});
+		assert.match(quarantined.quarantineFile, /^\.broken-plan\.invalid\..+\.json$/);
+		assert.equal(quarantined.reason, "Replace a stale artifact shape.");
+		assert.equal(quarantined.requestedBy, "octocat");
+		await rejectsCode(store.read("broken-plan"), "plan_not_found");
+		assert.equal(
+			await readFile(
+				path.join(store.directory, quarantined.quarantineFile),
+				"utf8",
+			),
+			"{",
+		);
+
+		const replacement = await store.create(
+			makePlan(workspace, "broken-plan"),
+			0,
+		);
+		assert.equal(replacement.id, "broken-plan");
+		await rejectsCode(
+			store.quarantineInvalidPlan("alpha-plan", {
+				reason: "Should not move valid state.",
+				requestedBy: "octocat",
+			}),
+			"artifact_valid",
+		);
     })
 ));
 

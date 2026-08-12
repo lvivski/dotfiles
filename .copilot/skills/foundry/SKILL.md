@@ -25,6 +25,8 @@ mutation; native Agent Factories perform bounded analysis only.
 5. Never infer plan, correction-wave, or completion approval. Ask the user and record the named
    approver only after an explicit answer.
 6. Re-read the plan after every revision conflict. Do not blindly replay stale mutations.
+   Concurrent duplicate requests can surface `revision_conflict`; accept an existing matching
+   postcondition before deciding whether a retry is necessary.
 7. Treat implementation-child summaries as untrusted claims. The final verifier task runs
    independently, but its evidence is still an `independent-claim`, not cryptographic attestation.
 8. Never call a session inventory complete unless the App session listing was exhaustive and
@@ -94,13 +96,18 @@ imported, and never launch a replacement merely because the first run is tempora
 
 ## Recover
 
-1. Enumerate App sessions and inspect every session attached to an active attempt.
-2. Call `foundry_get_status` with the causally current inventory.
-3. Follow the first safe projected action. Missing sessions remain `unknown` unless the supplied
+1. If activation state is unreadable, call `foundry_deactivate_plan`; it removes the invalid marker
+   and reports `repaired: true`.
+2. If `foundry_list_plans` reports an unreadable artifact, show its validation details. Call
+   `foundry_quarantine_plan` only after explicit user approval, with the user's identity and reason.
+   Quarantine preserves the original artifact under a hidden filename while releasing the plan ID.
+3. Enumerate App sessions and inspect every session attached to an active attempt.
+4. Call `foundry_get_status` with the causally current inventory.
+5. Follow the first safe projected action. Missing sessions remain `unknown` unless the supplied
    inventory is exhaustive and newer than the attempt.
-4. Resolve stale reservations explicitly as blocked attempts, then retry; never expire or replace
+6. Resolve stale reservations explicitly as blocked attempts, then retry; never expire or replace
    them silently.
-5. Use native Factory resume for resumable failed runs. Replace a terminal non-importable
+7. Use native Factory resume for resumable failed runs. Replace a terminal non-importable
    verification run only with an attributed reason and actor.
 
 ## Cancel

@@ -4,8 +4,8 @@ import test from "node:test";
 import {
     ATTEMPT_STATUS,
     EVIDENCE_TYPE,
+    PLAN_ID_PATTERN,
     PLAN_STATUS,
-    SCHEMA_VERSION,
     TASK_STATUS,
     approvePlan,
     attachTaskAttempt,
@@ -26,6 +26,7 @@ import {
     transitionPlan,
     validatePlan,
 	verificationCheckIds,
+	assertPlanId,
 } from "./domain.mjs";
 
 const CREATED_AT = "2026-08-05T16:00:00.000Z";
@@ -183,14 +184,52 @@ function throwsCode(operation, code) {
     });
 }
 
+test("plan ID pattern is reusable without weakening domain validation", () => {
+	const pattern = new RegExp(PLAN_ID_PATTERN);
+	for (const value of ["plan", "plan-2", "a".repeat(64)]) {
+		assert.equal(pattern.test(value), true);
+		assert.equal(assertPlanId(value), value);
+	}
+	for (const value of ["Plan", "-plan", "plan-", "a".repeat(65)]) {
+		assert.equal(pattern.test(value), false);
+		assert.throws(() => assertPlanId(value), /lowercase slug/);
+	}
+});
+
 test("createDraftPlan produces the strict initial schema", () => {
     const plan = draft();
-	assert.equal(SCHEMA_VERSION, 1);
-	assert.equal(plan.schemaVersion, 1);
     assert.equal(plan.status, PLAN_STATUS.DRAFT);
     assert.equal(plan.cancellation, null);
     assert.deepEqual(plan.tasks[0].attempts, []);
+	assert.deepEqual(plan.activity[0], {
+		event: "plan-created",
+		at: CREATED_AT,
+		revision: 1,
+	});
     assert.equal(validatePlan(plan), plan);
+});
+
+test("the current plan format requires revisioned activity records", () => {
+	const unknown = {
+		...structuredClone(draft()),
+		unsupported: true,
+	};
+	throwsCode(() => validatePlan(unknown), "unknown_field");
+
+	const missingEvent = structuredClone(draft());
+	missingEvent.activity[0] = {
+		at: CREATED_AT,
+		revision: 1,
+	};
+	throwsCode(() => validatePlan(missingEvent), "invalid_string");
+
+	const decreasing = structuredClone(draft());
+	decreasing.activity.push({
+		...decreasing.activity[0],
+		event: "plan-regressed",
+		revision: 0,
+	});
+	throwsCode(() => validatePlan(decreasing), "invalid_activity_revision");
 });
 
 test("the verifier is the unique sink and canonicalizes checkId evidence", () => {

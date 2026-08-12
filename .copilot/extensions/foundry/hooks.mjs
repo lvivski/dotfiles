@@ -190,6 +190,16 @@ function allowedPrefix(tokens, commandIndex) {
 }
 
 /**
+ * Detects shell constructs whose target cannot be resolved statically.
+ *
+ * @param {string} value
+ * @returns {boolean}
+ */
+function containsCommandSubstitution(value) {
+    return value.includes("$(") || value.includes("`");
+}
+
+/**
  * Classifies recursive forced `rm` invocations by target breadth.
  *
  * @param {string} command
@@ -226,6 +236,9 @@ function classifyRmCommand(command, workingDirectory) {
     if (!recursive || !force) return null;
     const root = workingDirectory ? path.resolve(workingDirectory) : null;
     const broad = targets.length === 0 || targets.some((target) => {
+		if (containsCommandSubstitution(target)) {
+			return true;
+		}
         if (["/", "~", "$HOME", "${HOME}", ".", "..", "*"].includes(target)) {
             return true;
         }
@@ -398,7 +411,7 @@ export function buildFoundryHooks(options) {
             if (toolName.startsWith(FOUNDRY_TOOL_PREFIX)) {
                 return {};
             }
-            if (toolName === "bash" || toolName === "shell" || toolName === "powershell") {
+			if (toolName === "bash" || toolName === "shell" || toolName === "powershell") {
                 const command = input.toolArgs?.command ?? input.toolArgs;
                 const classified = classifyShellCommand(command, input.workingDirectory);
                 if (classified) {

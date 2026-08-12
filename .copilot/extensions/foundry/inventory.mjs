@@ -36,14 +36,15 @@ export function normalizeInventory(inventory) {
 	}
 	/** @type {string | null} */
 	let capturedAt = null;
+	const suppliedCapturedAt = inventory.capturedAt ?? null;
 	try {
-		capturedAt = typeof inventory.capturedAt === "string"
-			? new Date(inventory.capturedAt).toISOString()
+		capturedAt = typeof suppliedCapturedAt === "string"
+			? new Date(suppliedCapturedAt).toISOString()
 			: null;
 	} catch {
 		capturedAt = null;
 	}
-	if (capturedAt !== inventory.capturedAt) {
+	if (capturedAt !== suppliedCapturedAt) {
 		throw new FoundryInventoryError(
 			"sessionInventory.capturedAt must be a canonical timestamp",
 		);

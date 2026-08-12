@@ -33,7 +33,8 @@ Foundry owns:
 - causal session inventories for retry and cancellation safety;
 - canonical evidence, correction waves, and final Factory verification;
 - atomic storage, cross-process locks, stale-lock recovery, and deterministic recovery projections;
-- session-local guardrails and the interactive `foundry-board` canvas.
+- session-local guardrails and the interactive `foundry-board` canvas;
+- a bounded, revisioned activity timeline rendered from the authoritative plan document.
 
 Factory agents perform analysis only. App-native project sessions own repository mutation.
 
@@ -43,6 +44,7 @@ Factory agents perform analysis only. App-native project sessions own repository
 | --- | --- |
 | Planning | `foundry_prepare_plan`, `foundry_create_plan`, `foundry_submit_plan`, `foundry_approve_plan` |
 | Inspection | `foundry_get_plan`, `foundry_get_status`, `foundry_list_plans` |
+| Recovery | `foundry_quarantine_plan` |
 | Tasks | `foundry_next_tasks`, `foundry_reserve_task`, `foundry_attach_task`, `foundry_complete_task`, `foundry_retry_task` |
 | Verification | `foundry_prepare_verification`, `foundry_complete_verification` |
 | Cancellation | `foundry_cancel`, `foundry_cancel_verification_run`, `foundry_finalize_cancellation` |
@@ -50,6 +52,20 @@ Factory agents perform analysis only. App-native project sessions own repository
 
 The coordinator protocol lives in
 [`../../skills/foundry/SKILL.md`](../../skills/foundry/SKILL.md).
+
+Activation and plan storage are local to the current Copilot session. The shell classifiers are
+conservative friction, not a sandbox or a complete shell parser; indirect execution remains subject
+to the host permission boundary. Deactivation removes an unreadable activation marker and reports
+that repair instead of leaving the session stuck behind a corrupt marker.
+
+The board can request cancellation, but the coordinator must still stop owned App sessions, cancel
+the authoritative verification Factory run, and finalize with a fresh causal inventory.
+
+Plan artifacts have one strict current shape. Activity entries contain only the event, timestamp,
+and resulting revision. Unsupported fields and stale artifact shapes are rejected rather than
+migrated. `foundry_list_plans` reports
+their validation details; after explicit approval, `foundry_quarantine_plan` preserves an unreadable
+artifact under a hidden filename and returns the requester and reason so the plan ID can be reused.
 
 ## Validation
 

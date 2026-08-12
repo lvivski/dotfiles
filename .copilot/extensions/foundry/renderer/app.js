@@ -405,6 +405,33 @@ function renderRecovery() {
 }
 
 /**
+ * Renders the newest bounded plan activity retained in the authoritative document.
+ *
+ * @returns {void}
+ */
+function renderActivity() {
+    const host = requiredElement("#activity");
+    host.replaceChildren();
+    const entries = [...currentPlan.activity].reverse().slice(0, 20);
+    if (entries.length === 0) {
+		host.append(element("p", "muted", "No activity has been recorded."));
+		return;
+    }
+    const list = element("ol", "activity-list");
+    for (const entry of entries) {
+		const item = element("li", "activity-item");
+		item.append(element("code", "", entry.event));
+		item.append(element(
+			"span",
+			"muted",
+			`revision ${entry.revision} · ${entry.at}`,
+		));
+		list.append(item);
+    }
+    host.append(list);
+}
+
+/**
  * Shows only controls valid for the current plan status.
  *
  * @returns {void}
@@ -438,6 +465,7 @@ function render() {
     renderTasks();
     renderVerification();
     renderRecovery();
+    renderActivity();
     renderControls();
 }
 

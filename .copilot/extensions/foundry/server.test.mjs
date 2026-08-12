@@ -97,6 +97,7 @@ test("canvas server renders assets and exposes the validated plan snapshot", asy
         );
         const html = await htmlResponse.text();
         assert.match(html, /<title>Foundry<\/title>/);
+		assert.match(html, /id="activity"/);
         assert.doesNotMatch(html, /__FOUNDRY_/);
 
         const snapshotResponse = await fetch(new URL("/api/plan", current.server.url));
@@ -104,6 +105,8 @@ test("canvas server renders assets and exposes the validated plan snapshot", asy
         assert.equal(snapshot.ok, true);
         assert.equal(snapshot.value.plan.id, "canvas-plan");
         assert.equal(snapshot.value.plan.status, "awaiting-approval");
+		assert.ok(snapshot.value.plan.activity.length > 0);
+		assert.equal(snapshot.value.plan.activity[0].revision, 1);
         assert.equal(snapshot.value.projection.nextAction.kind, "approve-plan");
 
         const reboundStatus = await new Promise((resolve, reject) => {

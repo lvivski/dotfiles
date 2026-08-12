@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import {
+	mkdtemp,
+	readFile,
+	rm,
+	symlink,
+	writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -168,12 +174,13 @@ async function createApproved(operations, workspacePath) {
     });
 }
 
-test("telemetry stays within the domain limit after persistence", () => (
+test("activity stays bounded and records resulting revisions", () => (
     withOperations(async ({ operations, workspacePath }) => {
 		let plan = await operations.createPlan(createInput(workspacePath));
-		plan.telemetry = Array.from({ length: LIMITS.telemetry }, (_, index) => ({
+		plan.activity = Array.from({ length: LIMITS.activity }, (_, index) => ({
 			event: `event-${index}`,
 			at: plan.updatedAt,
+			revision: 1,
 		}));
 		const store = createPlanStore({ workspacePath });
 		plan = await store.update(plan.id, plan.revision, plan);
@@ -182,9 +189,10 @@ test("telemetry stays within the domain limit after persistence", () => (
 			planId: plan.id,
 			expectedRevision: plan.revision,
 		});
-		assert.equal(submitted.telemetry.length, LIMITS.telemetry);
-		assert.equal(submitted.telemetry.at(-1).event, "plan-submitted");
-		assert.equal(submitted.telemetry[0].event, "event-1");
+		assert.equal(submitted.activity.length, LIMITS.activity);
+		assert.equal(submitted.activity.at(-1).event, "plan-submitted");
+		assert.equal(submitted.activity.at(-1).revision, submitted.revision);
+		assert.equal(submitted.activity[0].event, "event-1");
     })
 ));
 
@@ -361,6 +369,11 @@ test("operations drive reservation, App attachment, verification, and approval",
         plan = first.plan;
         assert.equal(first.attemptId, "T-001-A001");
         assert.match(first.delegationPrompt, /attempt T-001-A001/);
+		assert.equal(plan.activity.at(-1).revision, plan.revision);
+		assert.equal(
+			plan.activity.at(-1).event,
+			"task-reserved:T-001:T-001-A001",
+		);
         const replay = await operations.reserveTask({
             planId: plan.id,
             taskId: "T-001",
@@ -439,6 +452,7 @@ test("operations drive reservation, App attachment, verification, and approval",
             approvalType: "completion",
         });
         assert.equal(plan.status, PLAN_STATUS.COMPLETED);
+		assert.equal(plan.activity.at(-1).revision, plan.revision);
         assert.equal(notifications.at(-1).revision, plan.revision);
     }, {
 		analysis: analysisStub({
@@ -698,7 +712,7 @@ test("terminal non-importable verification can move to a new reservation explici
 			requestedBy: "octocat",
 			at: replacement.plan.verification.reservedAt,
 		});
-		assert.equal(replacement.plan.telemetry.at(-1).event, "verification-replaced");
+		assert.equal(replacement.plan.activity.at(-1).event, "verification-replaced");
 	}, {
 		analysis: analysisStub({
 			discoverVerificationRun: async () => ({
@@ -729,7 +743,8 @@ test("verification preparation never relaunches on inconclusive discovery", () =
 				reservationId: "inconclusive-prepare",
 			}),
 			(/** @type {any} */ error) =>
-				error.code === "verification_launch_indeterminate",
+				error.code === "verification_launch_indeterminate"
+				&& /new reservation/.test(error.message),
 		);
 		const replacement = await operations.prepareVerification({
 			planId: plan.id,
@@ -746,8 +761,40 @@ test("verification preparation never relaunches on inconclusive discovery", () =
 		analysis: analysisStub({
 			discoverVerificationRun: async () => ({
 				state: "inconclusive",
-				reason: "pending run has no marker",
-				candidates: [{ runId: "pending-run" }],
+				reason: "terminal run progress is unreadable",
+				candidates: [{ runId: "failed-run", status: "error" }],
+			}),
+		}),
+	})
+));
+
+test("verification replacement cannot orphan one active inconclusive run", () => (
+	withOperations(async ({ operations, workspacePath }) => {
+		let plan = await completeImplementation(operations, workspacePath);
+		const first = await operations.prepareVerification({
+			planId: plan.id,
+			expectedRevision: plan.revision,
+			reservationId: "active-inconclusive",
+		});
+		plan = first.plan;
+		await assert.rejects(
+			operations.prepareVerification({
+				planId: plan.id,
+				expectedRevision: plan.revision,
+				reservationId: "active-replacement",
+				replacementReason: "Progress is temporarily unreadable.",
+				requestedBy: "octocat",
+			}),
+			(/** @type {any} */ error) =>
+				error.code === "verification_already_reserved"
+				&& /active-run/.test(error.message),
+		);
+	}, {
+		analysis: analysisStub({
+			discoverVerificationRun: async () => ({
+				state: "inconclusive",
+				reason: "active run has no readable marker yet",
+				candidates: [{ runId: "active-run", status: "running" }],
 			}),
 		}),
 	})
@@ -1259,8 +1306,58 @@ test("plan guardrails require explicit session-local activation", () => (
             expectedRevision: plan.revision,
         });
         assert.equal(marker.planId, plan.id);
+		const persistedMarker = JSON.parse(await readFile(
+			path.join(workspacePath, "files", "foundry", ".active-plan.json"),
+			"utf8",
+		));
+		assert.deepEqual(Object.keys(persistedMarker).sort(), ["activatedAt", "planId"]);
         assert.equal((await operations.getActive()).plan.id, plan.id);
-        await operations.deactivate();
+		assert.deepEqual(await operations.deactivate(), {
+			deactivated: true,
+			planId: plan.id,
+			repaired: false,
+		});
         assert.equal(await operations.getActive(), null);
+
+		const markerPath = path.join(
+			workspacePath,
+			"files",
+			"foundry",
+			".active-plan.json",
+		);
+		await writeFile(markerPath, JSON.stringify({
+			...persistedMarker,
+			unsupported: true,
+		}), "utf8");
+		await assert.rejects(
+			operations.getActive(),
+			(/** @type {any} */ error) => error.code === "activation_invalid",
+		);
+		assert.deepEqual(await operations.deactivate(), {
+			deactivated: true,
+			planId: null,
+			repaired: true,
+		});
+		assert.equal(await operations.getActive(), null);
+
+		await writeFile(markerPath, JSON.stringify({
+			planId: "../invalid",
+			activatedAt: persistedMarker.activatedAt,
+		}), "utf8");
+		await assert.rejects(
+			operations.getActive(),
+			(/** @type {any} */ error) => error.code === "invalid_plan_id",
+		);
+		assert.equal((await operations.deactivate()).repaired, true);
+
+		const markerTarget = path.join(workspacePath, "marker-target.json");
+		await writeFile(markerTarget, JSON.stringify(persistedMarker), "utf8");
+		await symlink(markerTarget, markerPath);
+		await assert.rejects(
+			operations.getActive(),
+			(/** @type {any} */ error) => error.code === "artifact_unsafe",
+		);
+		assert.equal((await operations.deactivate()).repaired, true);
+		assert.equal(JSON.parse(await readFile(markerTarget, "utf8")).planId, plan.id);
     })
 ));

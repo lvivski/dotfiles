@@ -17,6 +17,7 @@ test("Foundry registers the complete globally unique tool surface", () => {
         "foundry_get_plan",
         "foundry_get_status",
         "foundry_list_plans",
+		"foundry_quarantine_plan",
         "foundry_submit_plan",
         "foundry_approve_plan",
         "foundry_next_tasks",
@@ -76,6 +77,13 @@ test("Foundry registers the complete globally unique tool surface", () => {
     const cancel = tools.find((tool) => tool.name === "foundry_cancel");
     assert.ok(cancel.parameters.required.includes("requestedBy"));
     assert.ok(cancel.parameters.required.includes("requestId"));
+	const quarantine = tools.find((tool) => tool.name === "foundry_quarantine_plan");
+	assert.equal(quarantine.skipPermission, undefined);
+	assert.deepEqual(quarantine.parameters.required, [
+		"planId",
+		"reason",
+		"requestedBy",
+	]);
 	const cancelVerification = tools.find(
 		(tool) => tool.name === "foundry_cancel_verification_run",
 	);

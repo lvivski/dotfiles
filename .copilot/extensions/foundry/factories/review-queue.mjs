@@ -1,4 +1,9 @@
 // Triage assigned PRs from supplied metadata and diff evidence.
+import {
+	UNTRUSTED_DATA_WARNING,
+	untrustedBlock,
+} from "../prompts.mjs";
+
 export const meta = {
 	name: "review-queue",
 	description:
@@ -14,6 +19,9 @@ export const meta = {
 	},
 };
 
+const MAX_PRS = 200;
+const MAX_FILES_PER_PR = 3_000;
+
 export async function run(factory) {
 const factoryArgs = factory.args;
 const opts =
@@ -23,6 +31,9 @@ const opts =
 const input = opts.prs ?? factoryArgs;
 if (!Array.isArray(input) || !input.length) {
 	return "review-queue: no PRs supplied. Fetch the queue first and pass { prs: [...] }.";
+}
+if (input.length > MAX_PRS) {
+	throw new Error(`review-queue: ${input.length} PRs exceed the ${MAX_PRS}-PR limit`);
 }
 
 function integer(name, fallback, minimum, maximum) {
@@ -34,10 +45,12 @@ function integer(name, fallback, minimum, maximum) {
 }
 
 const chunkChars = integer("diff_chunk_chars", 24000, 4000, 60000);
-const maxChunks = integer("max_total_chunks", 300, 1, 1000);
+const supportedChunks = Math.floor(meta.limits.maxTotalSubagents / 2);
+const maxChunks = integer("max_total_chunks", 300, 1, supportedChunks);
 const approveOnlyLowRiskManual = Boolean(opts.approve_only_low_risk_manual);
 const freshness = String(opts.freshness ?? "input queue");
 
+const identities = new Set();
 const prs = input.map((raw, index) => {
 	if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
 		throw new Error(`review-queue: PR ${index + 1} must be an object`);
@@ -47,13 +60,30 @@ const prs = input.map((raw, index) => {
 	if (!repo || !Number.isInteger(number) || number < 1) {
 		throw new Error(`review-queue: PR ${index + 1} needs repo and a positive number`);
 	}
+	const identityKey = `${repo.toLowerCase()}#${number}`;
+	if (identities.has(identityKey)) {
+		throw new Error(`review-queue: duplicate PR ${repo}#${number}`);
+	}
+	identities.add(identityKey);
+	const rawFiles = Array.isArray(raw.files) ? raw.files : [];
+	if (rawFiles.length > MAX_FILES_PER_PR) {
+		throw new Error(
+			`review-queue: PR ${index + 1} files exceeds ${MAX_FILES_PER_PR} entries`,
+		);
+	}
+	const files = [...new Set(rawFiles.map(String).filter(Boolean))];
+	const diff = String(raw.diff || "");
+	if (diff.length > chunkChars * maxChunks) {
+		throw new Error(
+			`review-queue: PR ${index + 1} diff exceeds the configured chunk budget`,
+		);
+	}
 	return {
-		...raw,
 		repo,
 		number,
 		title: String(raw.title || ""),
-		diff: String(raw.diff || ""),
-		files: [...new Set((Array.isArray(raw.files) ? raw.files : []).map(String).filter(Boolean))],
+		diff,
+		files,
 		me: String(raw.me || ""),
 		myTeams: (Array.isArray(raw.my_teams) ? raw.my_teams : []).map(String),
 		reviewers: (Array.isArray(raw.reviewers) ? raw.reviewers : []).filter(Boolean),
@@ -137,6 +167,7 @@ const evidenceCount = prs.reduce((total, pr) => total + chunks(pr).length, 0);
 if (evidenceCount > maxChunks) {
 	throw new Error(`review-queue: ${evidenceCount} diff chunks exceed max_total_chunks=${maxChunks}`);
 }
+factory.log(`review-queue: ${prs.length} PR(s), ${evidenceCount} diff chunk(s)`);
 
 const REVIEW = {
 	type: "object",
@@ -175,12 +206,18 @@ const reviewed = await factory.pipeline(prs, async (pr) => {
 		units.map((unit) => async () => ({
 			unit,
 			result: await factory.agent(
-				`Review this bounded diff chunk from ${pr.repo}#${pr.number} (${pr.title || "untitled"}).
+				`Review this bounded pull-request diff chunk.
 Report only concrete correctness bugs, risky behavior, missing tests, or genuine uncertainty.
 
-Changed files: ${pr.files.join(", ") || "(unknown)"}
-Diff chunk ${unit.id}/${units.length}:
-${unit.content}`,
+${UNTRUSTED_DATA_WARNING}
+${untrustedBlock("PULL-REQUEST-DIFF", {
+	repository: pr.repo,
+	number: pr.number,
+	title: pr.title || "untitled",
+	changedFiles: pr.files,
+	chunk: `${unit.id}/${units.length}`,
+	content: unit.content,
+})}`,
 				{ label: `${pr.repo}#${pr.number}:review:${unit.id}`, schema: REVIEW },
 			),
 		})),
@@ -249,11 +286,10 @@ const rows = await factory.pipeline(reviewed, async (row, _original, index) => {
 			factory.agent(
 				`Independently inspect this original diff evidence and primary review. Pass only if it is genuinely low risk, issue-free, sufficiently tested, and contains no unresolved uncertainty.
 
-Diff:
-${item.unit.content}
+${UNTRUSTED_DATA_WARNING}
+${untrustedBlock("PULL-REQUEST-DIFF", item.unit.content)}
 
-Primary review:
-${JSON.stringify(item.result)}`,
+${untrustedBlock("PRIMARY-REVIEW", item.result)}`,
 				{ label: `${row.pr.repo}#${row.pr.number}:verify:${item.unit.id}`, schema: VERDICT },
 			),
 		),

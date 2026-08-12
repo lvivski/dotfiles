@@ -1,4 +1,9 @@
 // Classify and summarize a batch of tickets using native Factory structured agents.
+import {
+	UNTRUSTED_DATA_WARNING,
+	untrustedBlock,
+} from "../prompts.mjs";
+
 export const meta = {
 	name: "triage",
 	description:
@@ -22,14 +27,21 @@ const input =
 if (!Array.isArray(input) || !input.length) {
 	throw new Error("triage: provide a non-empty array of tickets or { tickets: [...] }");
 }
+if (input.length > meta.limits.maxTotalSubagents) {
+	throw new Error(
+		`triage: ${input.length} tickets exceed the ${meta.limits.maxTotalSubagents}-subagent limit`,
+	);
+}
+factory.log(`triage: ${input.length} ticket(s)`);
 
 const MAX_TICKET_CHARS = 8000;
 const tickets = input.map((ticket, index) => {
 	if (typeof ticket === "string" && ticket.trim()) {
+		const text = ticket.trim();
 		return {
 			id: String(index + 1),
-			text: ticket.trim(),
-			truncated: ticket.length > MAX_TICKET_CHARS,
+			text: text.slice(0, MAX_TICKET_CHARS),
+			truncated: text.length > MAX_TICKET_CHARS,
 		};
 	}
 	if (!ticket || typeof ticket !== "object" || Array.isArray(ticket)) {
@@ -39,9 +51,13 @@ const tickets = input.map((ticket, index) => {
 	const body = String(ticket.body || ticket.description || "").trim();
 	const text = [title, body].filter(Boolean).join("\n\n");
 	if (!text) throw new Error(`triage: ticket ${index + 1} has no usable text`);
+	const id = String(ticket.id ?? index + 1).trim() || String(index + 1);
+	if (id.length > 256) {
+		throw new Error(`triage: ticket ${index + 1} id exceeds 256 characters`);
+	}
 	return {
-		id: String(ticket.id ?? index + 1),
-		text,
+		id,
+		text: text.slice(0, MAX_TICKET_CHARS),
 		truncated: text.length > MAX_TICKET_CHARS,
 	};
 });
@@ -63,8 +79,8 @@ const results = await factory.pipeline(tickets, async (ticket, _original, index)
 	const detail = await factory.agent(
 		`Triage this ticket. Choose category and priority, state calibrated confidence, explain briefly, and give one concrete next action.
 
-Ticket:
-${ticket.text.slice(0, MAX_TICKET_CHARS)}`,
+${UNTRUSTED_DATA_WARNING}
+${untrustedBlock("TICKET", ticket.text)}`,
 		{ label: `ticket:${index + 1}:${ticket.id}`, schema: TRIAGE },
 	);
 	if (

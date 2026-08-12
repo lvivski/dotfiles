@@ -198,6 +198,7 @@ export function createFactoryAnalysis(getFactoryApi) {
 		}
 		const matches = [];
 		const inconclusive = [];
+		const unattributable = [];
 		for (const summary of summaries
 			.filter((entry) => entry?.factoryName === FOUNDRY_FACTORIES.verify.meta.name)
 			.filter((entry) => !Number.isFinite(entry.createdAt) || entry.createdAt >= threshold)
@@ -205,11 +206,13 @@ export function createFactoryAnalysis(getFactoryApi) {
 				(Number.isFinite(left.createdAt) ? left.createdAt : Number.POSITIVE_INFINITY)
 				- (Number.isFinite(right.createdAt) ? right.createdAt : Number.POSITIVE_INFINITY)
 			))) {
-			const createdAtKnown = Number.isFinite(summary.createdAt);
 			const progress = await readReservationMarkers(summary.runId);
 			if (progress.state === "inconclusive") {
-				if (createdAtKnown || !TERMINAL.has(summary.status)) {
-					inconclusive.push({ ...summary, reason: progress.reason });
+				const candidate = { ...summary, reason: progress.reason };
+				if (!Number.isFinite(summary.createdAt) && TERMINAL.has(summary.status)) {
+					unattributable.push(candidate);
+				} else {
+					inconclusive.push(candidate);
 				}
 				continue;
 			}
@@ -250,6 +253,15 @@ export function createFactoryAnalysis(getFactoryApi) {
 				state: "inconclusive",
 				reason: "verification launch is not yet observable",
 				candidates: inconclusive,
+				unattributable,
+			};
+		}
+		if (unattributable.length > 0) {
+			return {
+				state: "inconclusive",
+				reason: "terminal Factory runs cannot be attributed to this reservation",
+				candidates: [],
+				unattributable,
 			};
 		}
 		return { state: "absent" };

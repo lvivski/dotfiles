@@ -64,6 +64,18 @@ test("guardrail classifiers target only broad destructive behavior", () => {
         classifyShellCommand("rm -rf build-cache", "/repo")?.decision,
         "ask",
     );
+    assert.equal(
+		classifyShellCommand('rm -rf "$(pwd)"', "/repo")?.decision,
+		"deny",
+    );
+    assert.equal(
+		classifyShellCommand("rm -rf `pwd`", "/repo")?.decision,
+		"deny",
+    );
+    assert.equal(
+		classifyShellCommand('rm -rf "${BUILD_DIR}"', "/repo")?.decision,
+		"ask",
+    );
     assert.equal(classifyShellCommand("npm test", "/repo"), null);
     assert.equal(
         inspectWriteBoundary("edit", { path: "/outside/file" }, "/repo")?.decision,
@@ -142,7 +154,7 @@ test("active hooks inject coordinator context and revision-conflict guidance", a
 	assert.match(start.additionalContext, /Cancellation is two-phase/);
 
     const denied = await hooks.onPreToolUse({
-        toolName: "bash",
+		toolName: "bash",
         toolArgs: { command: "git clean -fdx" },
         workingDirectory: "/repo",
     });

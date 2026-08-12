@@ -8,9 +8,6 @@
  */
 import path from "node:path";
 
-/** Persisted Foundry v1 plan schema identifier. */
-export const SCHEMA_VERSION = 1;
-
 /** Immutable plan lifecycle status values. */
 export const PLAN_STATUS = Object.freeze({
     DRAFT: "draft",
@@ -115,8 +112,8 @@ export const LIMITS = Object.freeze({
     verificationRunId: 256,
 	missingEvidence: 128,
     missingEvidenceItem: 2_000,
-    telemetry: 64,
-    telemetryEvent: 96,
+	activity: 128,
+	activityEvent: 96,
 });
 
 /**
@@ -169,7 +166,6 @@ export const LIMITS = Object.freeze({
 
 /**
  * @typedef {object} FoundryPlan
- * @property {number} schemaVersion
  * @property {number} revision
  * @property {string} id
  * @property {string} title
@@ -182,13 +178,15 @@ export const LIMITS = Object.freeze({
  * @property {any} gates
  * @property {any} verification
  * @property {any} cancellation
- * @property {object[]} telemetry
+ * @property {object[]} activity
  * @property {string} createdAt
  * @property {string} updatedAt
  */
 
-/** Strict persisted plan ID syntax. */
-const PLAN_ID_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
+/** Strict persisted plan ID syntax shared by domain and provider schemas. */
+export const PLAN_ID_PATTERN = "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$";
+/** Compiled strict persisted plan ID syntax. */
+const PLAN_ID_REGEX = new RegExp(PLAN_ID_PATTERN);
 /** Strict task ID syntax. */
 const TASK_ID_PATTERN = /^T-\d{3}$/;
 /** Strict task-attempt ID syntax. */
@@ -227,7 +225,6 @@ const TERMINAL_ATTEMPT_RESULTS = new Set([
 ]);
 
 const PLAN_KEYS = new Set([
-    "schemaVersion",
     "revision",
     "id",
     "title",
@@ -240,7 +237,7 @@ const PLAN_KEYS = new Set([
     "gates",
     "verification",
     "cancellation",
-    "telemetry",
+	"activity",
     "createdAt",
     "updatedAt",
 ]);
@@ -273,7 +270,11 @@ const VERIFICATION_REPLACEMENT_KEYS = new Set([
     "requestedBy",
     "at",
 ]);
-const TELEMETRY_KEYS = new Set(["event", "at"]);
+const ACTIVITY_KEYS = new Set([
+	"event",
+	"at",
+	"revision",
+]);
 const TASK_KEYS = new Set([
     "id",
     "title",
@@ -488,7 +489,7 @@ function assertPlainObject(value, fieldPath) {
 function assertKnownKeys(value, keys, fieldPath) {
     for (const key of Object.keys(value)) {
         if (!keys.has(key)) {
-            fail("unknown_field", `${fieldPath}.${key} is not supported by schema version ${SCHEMA_VERSION}`, {
+			fail("unknown_field", `${fieldPath}.${key} is not supported by the current plan format`, {
                 path: `${fieldPath}.${key}`,
             });
         }
@@ -692,7 +693,7 @@ function requireActor(actor, fieldPath) {
  * @returns {string}
  */
 export function assertPlanId(id, fieldPath = "id") {
-    if (typeof id !== "string" || id.length > LIMITS.planId || !PLAN_ID_PATTERN.test(id)) {
+    if (typeof id !== "string" || id.length > LIMITS.planId || !PLAN_ID_REGEX.test(id)) {
         fail(
             "invalid_plan_id",
             `${fieldPath} must be a lowercase slug of 1-${LIMITS.planId} letters, digits, or hyphens`,
@@ -1852,12 +1853,6 @@ export function validatePlan(plan) {
     assertPlainObject(plan, "plan");
     assertKnownKeys(plan, PLAN_KEYS, "plan");
 
-    if (plan.schemaVersion !== SCHEMA_VERSION) {
-        fail("unsupported_schema_version", `schemaVersion must be ${SCHEMA_VERSION}`, {
-            path: "schemaVersion",
-            details: { value: plan.schemaVersion },
-        });
-    }
     if (!Number.isSafeInteger(plan.revision) || plan.revision < 1) {
         fail("invalid_revision", "revision must be a positive safe integer", { path: "revision" });
     }
@@ -2111,19 +2106,33 @@ export function validatePlan(plan) {
         });
     }
 
-    if (plan.telemetry !== undefined
-        && (!Array.isArray(plan.telemetry) || plan.telemetry.length > LIMITS.telemetry)) {
-        fail("invalid_telemetry", `telemetry must contain at most ${LIMITS.telemetry} events`, {
-            path: "telemetry",
-        });
-    }
-    (plan.telemetry ?? []).forEach((event, index) => {
-        const fieldPath = `telemetry[${index}]`;
-        assertPlainObject(event, fieldPath);
-        assertKnownKeys(event, TELEMETRY_KEYS, fieldPath);
-        assertString(event.event, `${fieldPath}.event`, LIMITS.telemetryEvent);
-        assertTimestamp(event.at, `${fieldPath}.at`);
-    });
+	if (!Array.isArray(plan.activity)
+		|| plan.activity.length < 1
+		|| plan.activity.length > LIMITS.activity) {
+		fail(
+			"invalid_activity",
+			`activity must contain 1-${LIMITS.activity} events`,
+			{ path: "activity" },
+		);
+	}
+	let previousActivityRevision = 0;
+	plan.activity.forEach((event, index) => {
+		const fieldPath = `activity[${index}]`;
+		assertPlainObject(event, fieldPath);
+		assertKnownKeys(event, ACTIVITY_KEYS, fieldPath);
+		assertString(event.event, `${fieldPath}.event`, LIMITS.activityEvent);
+		assertTimestamp(event.at, `${fieldPath}.at`);
+		if (!Number.isSafeInteger(event.revision)
+			|| event.revision < 1
+			|| event.revision < previousActivityRevision) {
+			fail(
+				"invalid_activity_revision",
+				`${fieldPath}.revision must be a non-decreasing positive safe integer`,
+				{ path: `${fieldPath}.revision` },
+			);
+		}
+		previousActivityRevision = event.revision;
+	});
 
     assertTimestamp(plan.createdAt, "createdAt");
     assertTimestamp(plan.updatedAt, "updatedAt");
@@ -2149,7 +2158,6 @@ export function createDraftPlan(input, options = {}) {
 
     const timestamp = nowIso(options.now);
     const plan = {
-        schemaVersion: SCHEMA_VERSION,
         revision: 1,
         id: input.id,
         title: input.title,
@@ -2182,10 +2190,11 @@ export function createDraftPlan(input, options = {}) {
         },
         verification: emptyVerification(),
         cancellation: null,
-        telemetry: [{
-            event: "plan-created",
-            at: timestamp,
-        }],
+		activity: [{
+			event: "plan-created",
+			at: timestamp,
+			revision: 1,
+		}],
         createdAt: timestamp,
         updatedAt: timestamp,
     };

@@ -10,7 +10,40 @@ import {
     reserveTaskAttempt,
     transitionPlan,
 } from "./domain.mjs";
+import { normalizeInventory } from "./inventory.mjs";
 import { projectPlan } from "./projection.mjs";
+
+test("inventory accepts omitted timestamps as unknown", () => {
+    const omitted = normalizeInventory({ complete: false, sessions: [] });
+    const explicit = normalizeInventory({
+		complete: false,
+		capturedAt: null,
+		sessions: [],
+    });
+    assert.equal(omitted.capturedAt, null);
+    assert.deepEqual(
+		{
+			supplied: omitted.supplied,
+			complete: omitted.complete,
+			capturedAt: omitted.capturedAt,
+			sessions: [...omitted.sessions],
+		},
+		{
+			supplied: explicit.supplied,
+			complete: explicit.complete,
+			capturedAt: explicit.capturedAt,
+			sessions: [...explicit.sessions],
+		},
+    );
+    assert.throws(
+		() => normalizeInventory({
+			complete: false,
+			capturedAt: "2026-08-12T10:00:00Z",
+			sessions: [],
+		}),
+		/canonical timestamp/,
+    );
+});
 
 function approvedPlan() {
     let plan = createDraftPlan({

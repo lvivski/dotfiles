@@ -45,6 +45,13 @@ import {
 } from "./inventory.mjs";
 import { FoundryStorageError, createPlanStore } from "./storage.mjs";
 
+const TERMINAL_FACTORY_STATUSES = new Set([
+	"completed",
+	"error",
+	"halted",
+	"cancelled",
+]);
+
 /**
  * @typedef {object} FoundryOperationsOptions
  * @property {() => string | undefined} getWorkspacePath
@@ -59,6 +66,7 @@ import { FoundryStorageError, createPlanStore } from "./storage.mjs";
  * @property {(input: any) => Promise<any>} getPlan
  * @property {(input: any) => Promise<any>} getStatus
  * @property {(input: any) => Promise<any>} listPlans
+ * @property {(input: any) => Promise<any>} quarantinePlan
  * @property {(input: any) => Promise<any>} submitPlan
  * @property {(input: any) => Promise<any>} approve
  * @property {(input: any) => Promise<any>} nextTasks
@@ -276,7 +284,7 @@ export function createFoundryOperations(options) {
     };
 
     /**
-     * Adds bounded telemetry, atomically persists, and notifies canvases.
+     * Adds bounded correlated activity, atomically persists, and notifies canvases.
      *
      * @param {string} planId
      * @param {number} expectedRevision
@@ -284,15 +292,20 @@ export function createFoundryOperations(options) {
      * @param {string} event
      * @returns {Promise<any>}
      */
-    const persist = async (planId, expectedRevision, candidate, event) => {
+    const persist = async (
+		planId,
+		expectedRevision,
+		candidate,
+		event,
+	) => {
         const workspacePath = workspace();
         const recorded = structuredClone(candidate);
-        recorded.telemetry ??= [];
-        recorded.telemetry.push({
-            event,
-            at: new Date().toISOString(),
-        });
-		recorded.telemetry = recorded.telemetry.slice(-LIMITS.telemetry);
+		recorded.activity.push({
+			event,
+			at: new Date().toISOString(),
+			revision: expectedRevision + 1,
+		});
+		recorded.activity = recorded.activity.slice(-LIMITS.activity);
         const updated = await storeFor(workspacePath).update(
             planId,
             expectedRevision,
@@ -323,6 +336,30 @@ export function createFoundryOperations(options) {
             projection: projectPlan(plan, { sessionInventory }),
         };
     };
+
+	/**
+	 * Quarantines one unreadable plan artifact with an attributed reason.
+	 *
+	 * @param {{planId: string, reason: string, requestedBy: string}} input
+	 * @returns {Promise<any>}
+	 */
+	const quarantinePlan = ({ planId, reason, requestedBy }) => {
+		if (typeof reason !== "string"
+			|| !reason.trim()
+			|| reason.length > LIMITS.error
+			|| typeof requestedBy !== "string"
+			|| !requestedBy.trim()
+			|| requestedBy.length > LIMITS.actor) {
+			throw new FoundryOperationError(
+				"invalid_quarantine_request",
+				"Quarantining a plan requires a bounded reason and requestedBy",
+			);
+		}
+		return storeFor().quarantineInvalidPlan(planId, {
+			reason: reason.trim(),
+			requestedBy: requestedBy.trim(),
+		});
+	};
 
     /**
      * Imports a completed planning run as a new draft artifact.
@@ -361,7 +398,12 @@ export function createFoundryOperations(options) {
     const submitPlan = async ({ planId, expectedRevision }) => {
         const plan = await readForMutation(planId, expectedRevision);
         const candidate = transitionPlan(plan, PLAN_STATUS.AWAITING_APPROVAL);
-        return persist(planId, expectedRevision, candidate, "plan-submitted");
+		return persist(
+			planId,
+			expectedRevision,
+			candidate,
+			"plan-submitted",
+		);
     };
 
     /**
@@ -396,7 +438,12 @@ export function createFoundryOperations(options) {
         } else {
             throw new TypeError(`Unknown approvalType ${approvalType}`);
         }
-        return persist(planId, expectedRevision, candidate, `plan-approved:${approvalType}`);
+		return persist(
+			planId,
+			expectedRevision,
+			candidate,
+			`plan-approved:${approvalType}`,
+		);
     };
 
     /**
@@ -552,7 +599,12 @@ export function createFoundryOperations(options) {
             sessionId,
             branch: branch ?? null,
         });
-        return persist(planId, expectedRevision, candidate, `task-attached:${taskId}:${attemptId}`);
+		return persist(
+			planId,
+			expectedRevision,
+			candidate,
+			`task-attached:${taskId}:${attemptId}`,
+		);
     };
 
     /**
@@ -618,7 +670,12 @@ export function createFoundryOperations(options) {
         if (candidate.status === PLAN_STATUS.RUNNING) {
             candidate = reconcileTaskReadiness(candidate);
         }
-        return persist(planId, expectedRevision, candidate, `task-${status}:${taskId}:${attemptId}`);
+		return persist(
+			planId,
+			expectedRevision,
+			candidate,
+			`task-${status}:${taskId}:${attemptId}`,
+		);
     };
 
     /**
@@ -630,7 +687,12 @@ export function createFoundryOperations(options) {
     const retry = async ({ planId, taskId, expectedRevision }) => {
         const plan = await readForMutation(planId, expectedRevision);
         const candidate = retryTask(plan, taskId);
-        return persist(planId, expectedRevision, candidate, `task-retried:${taskId}`);
+		return persist(
+			planId,
+			expectedRevision,
+			candidate,
+			`task-retried:${taskId}`,
+		);
     };
 
 	/**
@@ -669,7 +731,7 @@ export function createFoundryOperations(options) {
 			if (discovery.state === "inconclusive") {
 				throw new FoundryOperationError(
 					"verification_launch_indeterminate",
-					"Verification launch is not yet observable; retry preparation",
+					"Verification launch is not yet observable; retry preparation, or replace a persistently uninspectable terminal run with a new reservation, reason, and actor",
 					{ discovery },
 				);
 			}
@@ -722,6 +784,19 @@ export function createFoundryOperations(options) {
 				throw new FoundryOperationError(
 					"verification_duplicate_runs",
 					"Multiple Factory runs carry the same verification reservation",
+					{ discovery },
+				);
+			}
+			const activeCandidate = discovery.state === "inconclusive"
+				&& Array.isArray(discovery.candidates)
+				? discovery.candidates.find(
+					(candidate) => !TERMINAL_FACTORY_STATUSES.has(candidate.status),
+				)
+				: null;
+			if (activeCandidate) {
+				throw new FoundryOperationError(
+					"verification_already_reserved",
+					`Verification run ${activeCandidate.runId} may still be active`,
 					{ discovery },
 				);
 			}
@@ -809,7 +884,7 @@ export function createFoundryOperations(options) {
 				? inspected.detail.completedAt
 				: undefined,
 		});
-        return persist(
+		return persist(
             planId,
             expectedRevision,
             candidate,
@@ -1037,7 +1112,12 @@ export function createFoundryOperations(options) {
 			verificationRunId,
 			finalizationOverride,
         });
-        return persist(planId, expectedRevision, candidate, "plan-cancellation-finalized");
+		return persist(
+			planId,
+			expectedRevision,
+			candidate,
+			"plan-cancellation-finalized",
+		);
     };
 
     /**
@@ -1061,6 +1141,7 @@ export function createFoundryOperations(options) {
         getStatus,
         /** Lists bounded validated plan summaries. */
         listPlans: ({ limit }) => storeFor().list({ limit }),
+		quarantinePlan,
         submitPlan,
         approve,
         nextTasks,
@@ -1074,7 +1155,7 @@ export function createFoundryOperations(options) {
 		cancelVerificationRun,
         finalizeCancellation,
         activate,
-        /** Removes the session-local activation marker. */
+		/** Removes the session-local activation marker. */
         deactivate: () => storeFor().deactivate(),
         /** Reads the activated plan, or `null` when inactive. */
         getActive: () => storeFor().getActive(),

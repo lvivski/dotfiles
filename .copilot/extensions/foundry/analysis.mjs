@@ -10,6 +10,7 @@ import {
     EVIDENCE_OUTCOME,
     EVIDENCE_TYPE,
     LIMITS,
+	PLAN_ID_PATTERN,
     TASK_STATUS,
 	effectiveDeliveryRequirement,
     latestSuccessfulAttempt,
@@ -17,6 +18,8 @@ import {
 	validateTaskTopology,
     validatePlan,
 } from "./domain.mjs";
+
+const PLAN_ID_REGEX = new RegExp(PLAN_ID_PATTERN);
 
 /**
  * @typedef {object} PlanningInput
@@ -494,7 +497,7 @@ export function buildVerificationInput(plan) {
 export function normalizeVerificationInput(value) {
     const input = plainObject(value, "input");
     const planId = text(input.planId, "input.planId", LIMITS.planId);
-    if (!/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(planId)) {
+    if (!PLAN_ID_REGEX.test(planId)) {
         fail("invalid_analysis_input", "input.planId must be a lowercase Foundry plan slug");
     }
     if (!Array.isArray(input.tasks)

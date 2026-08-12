@@ -198,6 +198,18 @@ p {
   padding-left: 20px;
 }
 
+.activity-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-left: 24px;
+}
+
+.activity-item {
+  display: grid;
+  gap: 2px;
+}
+
 .evidence-item {
   margin-bottom: 4px;
   overflow-wrap: anywhere;

@@ -24,7 +24,6 @@ import {
 
 import {
     PLAN_STATUS,
-    SCHEMA_VERSION,
     assertPlanId,
     summarizePlan,
     validatePlan,
@@ -50,6 +49,7 @@ import {
  * @property {(plan: any, expectedRevision?: 0) => Promise<any>} create
  * @property {(id: string) => Promise<any>} read
  * @property {(id: string, expectedRevision: number, candidate: any) => Promise<any>} update
+ * @property {(id: string, options: {reason: string, requestedBy: string}) => Promise<any>} quarantineInvalidPlan
  * @property {(options?: {limit?: number}) => Promise<any>} list
  * @property {(planId: string, expectedRevision: number) => Promise<any>} activate
  * @property {() => Promise<any>} getActive
@@ -833,16 +833,13 @@ async function readSafeFile(target, expectedId, anchor) {
 }
 
 /**
- * Reads, parses, validates, and fingerprints one plan artifact.
+ * Parses and validates one captured plan payload.
  *
- * @param {string} target
+ * @param {string} source
  * @param {string} expectedId
- * @param {StorageAnchor} anchor
- * @returns {Promise<{plan: any, fingerprint: string}>}
+ * @returns {any}
  */
-async function readPlanAt(target, expectedId, anchor) {
-    const source = await readSafeFile(target, expectedId, anchor);
-
+function parsePlanSource(source, expectedId) {
     let plan;
     try {
         plan = JSON.parse(source);
@@ -871,6 +868,20 @@ async function readPlanAt(target, expectedId, anchor) {
             details: { expectedId, actualId: plan.id },
         });
     }
+	return plan;
+}
+
+/**
+ * Reads, parses, validates, and fingerprints one plan artifact.
+ *
+ * @param {string} target
+ * @param {string} expectedId
+ * @param {StorageAnchor} anchor
+ * @returns {Promise<{plan: any, fingerprint: string}>}
+ */
+async function readPlanAt(target, expectedId, anchor) {
+    const source = await readSafeFile(target, expectedId, anchor);
+	const plan = parsePlanSource(source, expectedId);
     return {
         plan,
         fingerprint: fingerprint(source),
@@ -1269,11 +1280,10 @@ export function createPlanStore(options = {}) {
                 `Serialized plan ${id} failed validation`,
             );
             if (persisted.plan.id !== current.id
-                || persisted.plan.schemaVersion !== SCHEMA_VERSION
                 || persisted.plan.createdAt !== current.createdAt) {
                 throw storageError(
                     "immutable_plan_identity",
-                    "An update cannot change id, schemaVersion, or createdAt",
+					"An update cannot change id or createdAt",
                     { details: { id } },
                 );
             }
@@ -1299,6 +1309,82 @@ export function createPlanStore(options = {}) {
             return clone(persisted.plan);
         });
     };
+
+	/**
+	 * Moves one unreadable regular plan artifact aside after an attributed request.
+	 *
+	 * @param {string} id
+	 * @param {{reason: string, requestedBy: string}} quarantineOptions
+	 * @returns {Promise<{
+	 *   planId: string,
+	 *   quarantineFile: string,
+	 *   reason: string,
+	 *   requestedBy: string,
+	 *   quarantinedAt: string
+	 * }>}
+	 */
+	const quarantineInvalidPlan = async (id, quarantineOptions) => {
+		assertPlanId(id);
+		const reason = String(quarantineOptions?.reason ?? "").trim();
+		const requestedBy = String(quarantineOptions?.requestedBy ?? "").trim();
+		if (!reason || !requestedBy) {
+			throw storageError(
+				"invalid_quarantine_request",
+				"Quarantining a plan requires reason and requestedBy",
+				{ details: { id } },
+			);
+		}
+		const target = planTarget(baseDirectory, id);
+		const anchor = await ensureStorageDirectory(workspacePath, filesRoot, baseDirectory);
+		return withWriteLock(target, baseDirectory, anchor, lockOptions, async () => {
+			const source = await readSafeFile(target, id, anchor);
+			let invalidError = null;
+			try {
+				parsePlanSource(source, id);
+			} catch (error) {
+				if (!["artifact_invalid", "artifact_identity_mismatch"].includes(error?.code)) {
+					throw error;
+				}
+				invalidError = error;
+			}
+			if (invalidError === null) {
+				throw storageError(
+					"artifact_valid",
+					`Plan ${id} is valid and cannot be quarantined`,
+					{ details: { id } },
+				);
+			}
+
+			const quarantinedAt = resolveTimestamp(clock);
+			const token = `${Date.now()}.${randomUUID()}`;
+			const quarantineFile = `.${id}.invalid.${token}.json`;
+			const quarantineTarget = path.join(baseDirectory, quarantineFile);
+			try {
+				await verifyStorageAnchor(baseDirectory, anchor);
+				await rename(target, quarantineTarget);
+			} catch (error) {
+				throw storageError(
+					"artifact_quarantine_failed",
+					`Plan ${id} could not be moved into quarantine`,
+					{
+						details: {
+							id,
+							quarantineFile,
+							causeCode: error?.code ?? null,
+						},
+						cause: error,
+					},
+				);
+			}
+			return {
+				planId: id,
+				quarantineFile,
+				reason,
+				requestedBy,
+				quarantinedAt,
+			};
+		});
+	};
 
     /**
      * Lists bounded valid summaries and separately reports invalid artifacts.
@@ -1342,6 +1428,7 @@ export function createPlanStore(options = {}) {
                     filename,
                     code: error?.code ?? "artifact_invalid",
                     message: error?.message ?? String(error),
+					details: error?.details ?? null,
                 });
             }
         }
@@ -1359,7 +1446,7 @@ export function createPlanStore(options = {}) {
      * Reads and validates the optional session-local activation marker.
      *
      * @param {StorageAnchor} anchor
-     * @returns {Promise<{schemaVersion: number, planId: string, activatedAt: string} | null>}
+     * @returns {Promise<{planId: string, activatedAt: string} | null>}
      */
     const readActivationMarker = async (anchor) => {
         let source;
@@ -1380,8 +1467,7 @@ export function createPlanStore(options = {}) {
             });
         }
         const keys = Object.keys(marker ?? {}).sort();
-        if (keys.join(",") !== "activatedAt,planId,schemaVersion"
-            || marker.schemaVersion !== 1
+		if (keys.join(",") !== "activatedAt,planId"
             || typeof marker.planId !== "string"
             || typeof marker.activatedAt !== "string") {
             throw storageError("activation_invalid", "Foundry activation marker failed validation");
@@ -1425,7 +1511,6 @@ export function createPlanStore(options = {}) {
                     });
                 }
                 const marker = {
-                    schemaVersion: 1,
                     planId,
                     activatedAt: resolveTimestamp(clock),
                 };
@@ -1468,7 +1553,7 @@ export function createPlanStore(options = {}) {
     /**
      * Removes the activation marker under its own write lock.
      *
-     * @returns {Promise<{deactivated: boolean, planId: string | null}>}
+     * @returns {Promise<{deactivated: boolean, planId: string | null, repaired: boolean}>}
      */
     const deactivate = async () => {
         const anchor = await ensureStorageDirectory(workspacePath, filesRoot, baseDirectory);
@@ -1478,9 +1563,16 @@ export function createPlanStore(options = {}) {
             anchor,
             lockOptions,
             async () => {
-                const marker = await readActivationMarker(anchor);
-                if (!marker) {
-                    return { deactivated: false, planId: null };
+				/** @type {{planId: string, activatedAt: string} | null} */
+				let marker = null;
+				let repaired = false;
+				try {
+					marker = await readActivationMarker(anchor);
+				} catch {
+					repaired = true;
+				}
+				if (!marker && !repaired) {
+					return { deactivated: false, planId: null, repaired: false };
                 }
                 try {
                     await verifyStorageAnchor(baseDirectory, anchor);
@@ -1491,7 +1583,11 @@ export function createPlanStore(options = {}) {
                         cause: error,
                     });
                 }
-                return { deactivated: true, planId: marker.planId };
+				return {
+					deactivated: true,
+					planId: marker?.planId ?? null,
+					repaired,
+				};
             },
         );
     };
@@ -1592,6 +1688,7 @@ export function createPlanStore(options = {}) {
         create,
         read,
         update,
+		quarantineInvalidPlan,
         list,
         activate,
         getActive,

@@ -1,4 +1,10 @@
 // Audit files for a concern, independently verify each review, and synthesize a report.
+import {
+	UNTRUSTED_DATA_WARNING,
+	safeJson,
+	untrustedBlock,
+} from "../prompts.mjs";
+
 export const meta = {
 	name: "audit",
 	description:
@@ -28,9 +34,26 @@ const concern =
 if (!Array.isArray(rawPaths) || !rawPaths.length) {
 	throw new Error('audit: provide {"paths":["src/a.js"],"concern":"..."} or an array of paths');
 }
-const paths = [...new Set(rawPaths.map((path) => String(path).trim()).filter(Boolean))];
+if (concern.length > 4_000) {
+	throw new Error("audit: concern must contain at most 4000 characters");
+}
+const normalizedPaths = rawPaths.map((path, index) => {
+	const value = String(path).trim();
+	if (value.length > 4_096) {
+		throw new Error(`audit: path ${index + 1} exceeds 4096 characters`);
+	}
+	return value;
+});
+const paths = [...new Set(normalizedPaths.filter(Boolean))];
 if (!paths.length) throw new Error("audit: paths must contain at least one non-empty path");
 if (!concern) throw new Error("audit: concern must be non-empty");
+const maxPaths = Math.floor((meta.limits.maxTotalSubagents - 1) / 2);
+if (paths.length > maxPaths) {
+	throw new Error(
+		`audit: ${paths.length} paths require more than ${meta.limits.maxTotalSubagents} subagents; maximum is ${maxPaths}`,
+	);
+}
+factory.log(`audit: ${paths.length} path(s)`);
 
 const VERDICT = {
 	type: "object",
@@ -47,7 +70,7 @@ const checked = await factory.pipeline(
 	async (path) => ({
 		path,
 		finding: await factory.agent(
-			`Open \`${path}\` and review it for ${concern}. Give concrete issues with line references, or reply exactly "NO ISSUES".`,
+			`Open the file at ${safeJson(path)} and review it for ${concern}. Give concrete issues with line references, or reply exactly "NO ISSUES".`,
 			{ label: `review:${path}` },
 		),
 	}),
@@ -57,11 +80,11 @@ const checked = await factory.pipeline(
 		}
 		const noIssues = reviewed.finding.trim().toUpperCase() === "NO ISSUES";
 		const verdict = await factory.agent(
-			`Independently open \`${reviewed.path}\` and check this review for ${concern}.
+			`Independently open the file at ${safeJson(reviewed.path)} and check this review for ${concern}.
 Pass only when every reported issue is real and supported by the file, or when the NO ISSUES claim is accurate.
 
-Review:
-${reviewed.finding}`,
+${UNTRUSTED_DATA_WARNING}
+${untrustedBlock("PRIMARY-REVIEW", reviewed.finding)}`,
 			{ label: `verify:${reviewed.path}`, schema: VERDICT },
 		);
 		if (verdict === null) return { ...reviewed, status: "failed", reason: "verification agent failed" };
@@ -103,7 +126,8 @@ const findings = verified
 const report = await factory.agent(
 	`Summarize these independently verified findings about ${concern}. Group by severity and include a concise fix for each issue.
 
-${findings}`,
+${UNTRUSTED_DATA_WARNING}
+${untrustedBlock("VERIFIED-FINDINGS", findings)}`,
 	{ label: "report" },
 );
 if (report === null) {

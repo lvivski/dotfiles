@@ -7,6 +7,7 @@ import {
     EVIDENCE_OUTCOME,
     EVIDENCE_TYPE,
     LIMITS,
+    PLAN_ID_PATTERN,
     PLAN_STATUS,
     TASK_STATUS,
 } from "./domain.mjs";
@@ -76,7 +77,7 @@ function handler(operation) {
 /** JSON Schema for stable plan IDs. */
 const PLAN_ID = {
     type: "string",
-    pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
+    pattern: PLAN_ID_PATTERN,
     maxLength: LIMITS.planId,
 };
 /** JSON Schema for task IDs. */
@@ -246,13 +247,26 @@ export function buildFoundryTools(operations) {
         {
             name: "foundry_list_plans",
             skipPermission: true,
-            description: "List bounded Foundry plan summaries for the current Copilot session.",
+			description: "List bounded Foundry plan summaries for the current Copilot session.",
             parameters: objectSchema([], {
                 limit: { type: "integer", minimum: 1, maximum: 100, default: 50 },
             }),
             handler: handler((args) => operations.listPlans(args)),
         },
-        {
+		{
+			name: "foundry_quarantine_plan",
+			description: "Move one unreadable plan artifact into hidden quarantine so its ID can be reused. Valid plans and unsafe filesystem entries are never quarantined; reason and requester are required and returned.",
+			parameters: objectSchema(
+				["planId", "reason", "requestedBy"],
+				{
+					planId: PLAN_ID,
+					reason: NON_EMPTY(LIMITS.error),
+					requestedBy: NON_EMPTY(LIMITS.actor),
+				},
+			),
+			handler: handler((args) => operations.quarantinePlan(args)),
+		},
+		{
             name: "foundry_submit_plan",
             description: "Submit a draft Foundry plan for explicit user approval.",
             parameters: objectSchema(
@@ -482,7 +496,7 @@ export function buildFoundryTools(operations) {
         },
         {
             name: "foundry_activate_plan",
-            description: "Explicitly activate one Foundry plan's coordinator context and conservative guardrail hooks for this Copilot session.",
+			description: "Explicitly activate one Foundry plan's coordinator context and conservative guardrail hooks for this Copilot session.",
             parameters: objectSchema(
                 ["planId", "expectedRevision"],
                 {
@@ -494,7 +508,7 @@ export function buildFoundryTools(operations) {
         },
         {
             name: "foundry_deactivate_plan",
-            description: "Deactivate Foundry coordinator context and guardrail hooks for this Copilot session.",
+			description: "Deactivate Foundry coordinator context and guardrail hooks for this Copilot session. An unreadable activation marker is removed as a reported repair.",
             parameters: objectSchema([], {}),
             handler: handler(() => operations.deactivate()),
         },

@@ -1,4 +1,9 @@
 // Fan out research across independent angles, verify sourced claims, and synthesize a report.
+import {
+	UNTRUSTED_DATA_WARNING,
+	untrustedBlock,
+} from "../prompts.mjs";
+
 export const meta = {
 	name: "deep-research",
 	description:
@@ -80,8 +85,9 @@ const checked = await factory.pipeline(
 Original question:
 ${question}
 
-Assigned angle:
-${angle}`,
+Assigned angle from the planning agent:
+${UNTRUSTED_DATA_WARNING}
+${untrustedBlock("RESEARCH-ANGLE", angle)}`,
 			{ label: `research:${index + 1}:${angle.slice(0, 32)}` },
 		),
 	}),
@@ -93,11 +99,10 @@ ${angle}`,
 Question:
 ${question}
 
-Angle:
-${row.angle}
+${UNTRUSTED_DATA_WARNING}
+${untrustedBlock("RESEARCH-ANGLE", row.angle)}
 
-Finding:
-${row.finding}`,
+${untrustedBlock("RESEARCH-FINDING", row.finding)}`,
 			{
 				label: `verify:${index + 1}:${row.angle.slice(0, 32)}`,
 				schema: VERDICT,
@@ -133,7 +138,8 @@ const report = await factory.agent(
 Question:
 ${question}
 
-${findings}`,
+${UNTRUSTED_DATA_WARNING}
+${untrustedBlock("VERIFIED-RESEARCH", findings)}`,
 	{ label: "report" },
 );
 if (report === null) {

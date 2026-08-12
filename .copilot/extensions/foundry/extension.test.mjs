@@ -121,7 +121,7 @@ test("share manifest and extension entry point satisfy discovery contracts", asy
         path.join(ROOT, "copilot-extension.json"),
         "utf8",
     ));
-    assert.deepEqual(manifest, { name: "foundry", version: 1 });
+    assert.deepEqual(manifest, { name: "foundry" });
 
     const entry = await readFile(path.join(ROOT, "extension.mjs"), "utf8");
     assert.match(entry, /joinSession\(/);

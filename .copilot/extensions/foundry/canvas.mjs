@@ -5,6 +5,7 @@
  */
 import { CanvasError, createCanvas } from "@github/copilot-sdk/extension";
 
+import { PLAN_ID_PATTERN } from "./domain.mjs";
 import { startServer } from "./server.mjs";
 
 /**
@@ -13,9 +14,6 @@ import { startServer } from "./server.mjs";
  * @property {() => string | undefined} getWorkspacePath
  * @property {(workspacePath: string, planId: string, listener: (event: any) => void) => () => void} subscribe
  */
-
-/** JSON Schema pattern shared with the domain plan-ID validator. */
-const PLAN_ID_PATTERN = "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$";
 
 /**
  * Converts arbitrary provider failures into structured canvas errors.
