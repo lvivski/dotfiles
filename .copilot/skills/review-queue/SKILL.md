@@ -30,6 +30,8 @@ Fetch first, then run `review-queue`. Never approve PRs; report triage only.
      args: { prs: <contents of /tmp/review-queue.json> }
    })
    ```
+   Do not pass `limits` to `run_factory`; use the factory's declared limits unless the user explicitly
+   requests an override. Never lower a declared limit without an explicit user request.
 3. **Return** the resulting triage table with linked PRs, platform/account, coverage, decision, risk,
    why-assigned, justification, and focus hints.
 

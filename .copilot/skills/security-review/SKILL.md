@@ -27,6 +27,9 @@ run_factory({ name: "security-review", args: { files: ["src/a.js", "src/b.js"] }
 run_factory({ name: "security-review", args: { base: "main", head: "HEAD" } })
 ```
 
+Do not pass `limits` to `run_factory`; use the factory's declared limits unless the user explicitly
+requests an override. Never lower a declared limit without an explicit user request.
+
 Args:
 
 - Scope: `root`, `files`, or `base` plus optional `head`.

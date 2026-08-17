@@ -38,6 +38,10 @@ mutation; native Agent Factories perform bounded analysis only.
     `commit` also needs a full 40- or 64-character commit ID; `pr` additionally needs a PR URL.
     These delivery fields remain child-reported claims; the final verify task checks the exact commit
     from a separate read-only App session.
+12. Never modify a `launchSpec` returned by a Foundry prepare tool, including its limits. For any
+    direct `run_factory` call not based on a returned `launchSpec`, do not pass `limits`; use the
+    factory's declared limits unless the user explicitly requests an override. Never lower a declared
+    or returned limit without an explicit user request.
 
 ## Plan
 
