@@ -9,6 +9,25 @@ export const meta = {
 	name: "verify",
 	description: "Map Foundry acceptance criteria to evidence and produce a fail-closed integration verdict.",
 	phases: [{ title: "review" }, { title: "verdict" }],
+	argsSchema: {
+		type: "object",
+		required: [
+			"reservationId",
+			"planId",
+			"objective",
+			"tasks",
+			"verificationReport",
+			"inputDigest",
+		],
+		properties: {
+			reservationId: { type: "string" },
+			planId: { type: "string" },
+			objective: { type: "string" },
+			tasks: { type: "array", items: { type: "object" } },
+			verificationReport: { type: "object" },
+			inputDigest: { type: "string" },
+		},
+	},
 	limits: {
 		maxConcurrentSubagents: 2,
 		maxTotalSubagents: 6,

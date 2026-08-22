@@ -3,6 +3,19 @@ import {
 	UNTRUSTED_DATA_WARNING,
 	untrustedBlock,
 } from "../prompts.mjs";
+const SECURITY_OPTIONS_SCHEMA = {
+	type: "object",
+	properties: {
+		root: { type: "string" },
+		files: { type: "array", items: { type: "string" } },
+		base: { type: "string" },
+		head: { type: "string" },
+		perspectives: { type: "integer" },
+		context: { type: "string" },
+		model: { type: "string" },
+	},
+};
+const MAX_SUBAGENTS_PER_STRUCTURED_CALL = 2;
 
 export const meta = {
 	name: "security-review",
@@ -16,6 +29,13 @@ export const meta = {
 		{ title: "Verify" },
 		{ title: "Report" },
 	],
+	argsSchema: {
+		anyOf: [
+			{ type: "string" },
+			{ type: "array", items: { type: "string" } },
+			SECURITY_OPTIONS_SCHEMA,
+		],
+	},
 	limits: {
 		maxConcurrentSubagents: 6,
 		maxTotalSubagents: 80,
@@ -45,7 +65,9 @@ const scope = Array.isArray(opts.files)
 		: `Review the repository subtree ${String(opts.root || ".")}.`;
 const projectContext = String(opts.context || "").trim();
 const verificationBudget =
-	meta.limits.maxTotalSubagents - 1 - perspectives;
+	Math.floor(meta.limits.maxTotalSubagents / MAX_SUBAGENTS_PER_STRUCTURED_CALL)
+		- 1
+		- perspectives;
 const maxFindingsPerPerspective = Math.floor(verificationBudget / perspectives);
 
 const UNTRUSTED =
@@ -125,6 +147,9 @@ ${untrustedBlock("REVIEW-SCOPE", scope)}
 ${projectContext ? `\n${untrustedBlock("OPERATOR-CONTEXT", projectContext)}` : ""}`,
 	{ label: "orientation", schema: THREAT_MODEL, ...(model ? { model } : {}) },
 );
+if (threatModel === null) {
+	return "# Security review incomplete\n\nThreat-model orientation failed. No security conclusion was produced.";
+}
 
 const lenses = [
 	"authentication and session state",
@@ -163,6 +188,7 @@ ${projectContext ? `\n${untrustedBlock("OPERATOR-CONTEXT", projectContext)}` : "
 		),
 	),
 );
+const failedInvestigations = investigations.filter((batch) => batch === null).length;
 
 const unique = new Map();
 for (const batch of investigations) {
@@ -200,10 +226,15 @@ ${untrustedBlock("SECURITY-FINDING", finding)}`,
 			...(model ? { model } : {}),
 		},
 	);
-	return verdict?.verdict === "true-positive" ? { finding, verdict } : null;
+	return { finding, verdict };
 });
 
-const confirmed = verified.filter(Boolean);
+const failedVerifications = verified.filter(
+	(row) => row === null || row.verdict === null,
+).length;
+const confirmed = verified.filter(
+	(row) => row?.verdict?.verdict === "true-positive",
+);
 const severityOrder = { critical: 0, high: 1, medium: 2, low: 3 };
 confirmed.sort(
 	(left, right) =>
@@ -219,9 +250,18 @@ const out = [
 	`Scope: ${scope.replace(/\n/g, " ")}. Perspectives: ${lenses.length}. Candidates: ${candidates.length}. Confirmed: ${confirmed.length}.`,
 	"",
 ];
+const incomplete = failedInvestigations > 0 || failedVerifications > 0;
+if (incomplete) {
+	out.push(
+		`Coverage incomplete: ${failedInvestigations} investigation branch(es) and ${failedVerifications} verification branch(es) failed.`,
+		"",
+	);
+}
 if (!confirmed.length) {
 	out.push(
-		"No finding survived independent verification. This is bounded static coverage, not proof that the code is vulnerability-free.",
+		incomplete
+			? "No finding survived independent verification, but failed review branches mean this must not be interpreted as a clean security review."
+			: "No finding survived independent verification. This is bounded static coverage, not proof that the code is vulnerability-free.",
 	);
 	return out.join("\n");
 }

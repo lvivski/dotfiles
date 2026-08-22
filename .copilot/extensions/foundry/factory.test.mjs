@@ -953,6 +953,7 @@ test("registered factory modules match metadata and declared phases", () => {
 	for (const { meta, run } of definitions) {
 		assert.equal(typeof run, "function");
 		assert.ok(meta.phases.length > 0);
+		assert.ok(meta.argsSchema && typeof meta.argsSchema === "object");
 		assert.equal(new Set(meta.phases.map(({ title }) => title)).size, meta.phases.length);
 		for (const value of Object.values(meta.limits)) {
 			assert.equal(typeof value, "number");
@@ -979,7 +980,22 @@ test("additional factories expose argument contracts", () => {
 	assert.equal(new Set(definitions.map(({ meta }) => meta.name)).size, definitions.length);
 	for (const { meta } of definitions) {
 		assert.match(meta.description, /Args:/);
+		assert.ok(meta.argsSchema);
 	}
+});
+
+test("declared limits reserve structured-output retries", () => {
+	assert.equal(
+		planMeta.limits.maxTotalSubagents,
+		10,
+	);
+	assert.equal(
+		verifyMeta.limits.maxTotalSubagents,
+		6,
+	);
+	const deepResearch = ADDITIONAL_FACTORIES.deepResearch.meta.limits;
+	const deepResearchWorstCase = 3 + 12 * 3;
+	assert.ok(deepResearch.maxTotalSubagents >= deepResearchWorstCase);
 });
 
 test("additional factories execute through native primitives", async () => {
@@ -1042,7 +1058,7 @@ test("item factories reject impossible workloads before dispatch", async () => {
 	const auditFactory = createWorkflowFactory({
 		paths: Array.from(
 			{ length: Math.floor(
-				(ADDITIONAL_FACTORIES.audit.meta.limits.maxTotalSubagents - 1) / 2,
+				(ADDITIONAL_FACTORIES.audit.meta.limits.maxTotalSubagents - 1) / 3,
 			) + 1 },
 			(_, index) => `src/${index}.js`,
 		),
@@ -1055,20 +1071,22 @@ test("item factories reject impossible workloads before dispatch", async () => {
 
 	const triageFactory = createWorkflowFactory({
 		tickets: Array.from(
-			{ length: ADDITIONAL_FACTORIES.triage.meta.limits.maxTotalSubagents + 1 },
+			{ length: Math.floor(
+				ADDITIONAL_FACTORIES.triage.meta.limits.maxTotalSubagents / 2,
+			) + 1 },
 			(_, index) => `Ticket ${index}`,
 		),
 	});
 	await assert.rejects(
 		ADDITIONAL_FACTORIES.triage.run(triageFactory),
-		/subagent limit/,
+		/retry-safe/,
 	);
 	assert.equal(triageFactory.calls.length, 0);
 
 	const reviewFactory = createWorkflowFactory({
 		prs: [{ repo: "owner/repo", number: 1, diff: "+change" }],
 		max_total_chunks: Math.floor(
-			ADDITIONAL_FACTORIES.reviewQueue.meta.limits.maxTotalSubagents / 2,
+			ADDITIONAL_FACTORIES.reviewQueue.meta.limits.maxTotalSubagents / 4,
 		) + 1,
 	});
 	await assert.rejects(
@@ -1091,7 +1109,9 @@ test("item factories reject impossible workloads before dispatch", async () => {
 	assert.equal(metadataFactory.calls.length, 0);
 
 	const securityBudget =
-		ADDITIONAL_FACTORIES.securityReview.meta.limits.maxTotalSubagents - 2;
+		Math.floor(
+			ADDITIONAL_FACTORIES.securityReview.meta.limits.maxTotalSubagents / 2,
+		) - 2;
 	const securityFactory = createWorkflowFactory(
 		{ root: "src", perspectives: 1 },
 		(_prompt, options) => options.label.startsWith("investigate:")
@@ -1120,6 +1140,55 @@ test("item factories reject impossible workloads before dispatch", async () => {
 		securityFactory.calls.some((call) => call.options.label.startsWith("verify:")),
 		false,
 	);
+});
+
+test("security review reports failed coverage instead of a clean result", async () => {
+	const orientationFailure = createWorkflowFactory(
+		{ root: "src", perspectives: 1 },
+		(_prompt, options) => options.label === "orientation" ? null : undefined,
+	);
+	assert.match(
+		await ADDITIONAL_FACTORIES.securityReview.run(orientationFailure),
+		/Security review incomplete/,
+	);
+	assert.equal(orientationFailure.calls.length, 1);
+
+	const investigationFailure = createWorkflowFactory(
+		{ root: "src", perspectives: 1 },
+		(_prompt, options) => options.label.startsWith("investigate:") ? null : undefined,
+	);
+	const investigationResult =
+		await ADDITIONAL_FACTORIES.securityReview.run(investigationFailure);
+	assert.match(investigationResult, /Coverage incomplete/);
+	assert.match(investigationResult, /must not be interpreted as a clean security review/);
+
+	const finding = {
+		title: "Reachable injection",
+		severity: "high",
+		confidence: "high",
+		vulnerabilityClass: "injection",
+		file: "src/a.js",
+		line: 1,
+		source: "input",
+		control: "none",
+		sink: "eval",
+		attack: "execute",
+		contraryEvidence: "none",
+		description: "reachable",
+		recommendation: "validate",
+	};
+	const verificationFailure = createWorkflowFactory(
+		{ root: "src", perspectives: 1 },
+		(_prompt, options) => {
+			if (options.label.startsWith("investigate:")) return [finding];
+			if (options.label.startsWith("verify:")) return null;
+			return undefined;
+		},
+	);
+	const verificationResult =
+		await ADDITIONAL_FACTORIES.securityReview.run(verificationFailure);
+	assert.match(verificationResult, /1 verification branch\(es\) failed/);
+	assert.match(verificationResult, /must not be interpreted as a clean security review/);
 });
 
 test("item-oriented factories use unique memoization labels", async () => {

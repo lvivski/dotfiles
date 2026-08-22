@@ -3,6 +3,16 @@ import {
 	UNTRUSTED_DATA_WARNING,
 	untrustedBlock,
 } from "../prompts.mjs";
+const TICKETS_SCHEMA = {
+	type: "array",
+	items: {
+		anyOf: [
+			{ type: "string" },
+			{ type: "object" },
+		],
+	},
+};
+const MAX_SUBAGENTS_PER_TICKET = 2;
 
 export const meta = {
 	name: "triage",
@@ -10,6 +20,16 @@ export const meta = {
 		"Classify tickets, suggest next actions, and render a triage table. " +
 		"Args: { tickets: Array<string|object> } or a ticket array.",
 	phases: [{ title: "Triage" }],
+	argsSchema: {
+		anyOf: [
+			TICKETS_SCHEMA,
+			{
+				type: "object",
+				required: ["tickets"],
+				properties: { tickets: TICKETS_SCHEMA },
+			},
+		],
+	},
 	limits: {
 		maxConcurrentSubagents: 8,
 		maxTotalSubagents: 100,
@@ -27,9 +47,12 @@ const input =
 if (!Array.isArray(input) || !input.length) {
 	throw new Error("triage: provide a non-empty array of tickets or { tickets: [...] }");
 }
-if (input.length > meta.limits.maxTotalSubagents) {
+const maxTickets = Math.floor(
+	meta.limits.maxTotalSubagents / MAX_SUBAGENTS_PER_TICKET,
+);
+if (input.length > maxTickets) {
 	throw new Error(
-		`triage: ${input.length} tickets exceed the ${meta.limits.maxTotalSubagents}-subagent limit`,
+		`triage: ${input.length} tickets exceed the retry-safe ${maxTickets}-ticket limit`,
 	);
 }
 factory.log(`triage: ${input.length} ticket(s)`);

@@ -5,7 +5,6 @@ import {
 	safeJson,
 	untrustedBlock,
 } from "../prompts.mjs";
-
 export const meta = {
 	name: "plan",
 	description: "Create, critique, synthesize, and verify one dependency-aware Foundry plan.",
@@ -15,9 +14,26 @@ export const meta = {
 		{ title: "synthesize" },
 		{ title: "verify" },
 	],
+	argsSchema: {
+		type: "object",
+		required: [
+			"objective",
+			"constraints",
+			"repositoryContext",
+			"maxTasks",
+			"inputDigest",
+		],
+		properties: {
+			objective: { type: "string" },
+			constraints: { type: "array", items: { type: "string" } },
+			repositoryContext: { type: "string" },
+			maxTasks: { type: "integer" },
+			inputDigest: { type: "string" },
+		},
+	},
 	limits: {
 		maxConcurrentSubagents: 2,
-		maxTotalSubagents: 8,
+		maxTotalSubagents: 10,
 		timeoutSeconds: 900,
 		maxAiCredits: 10000,
 	},

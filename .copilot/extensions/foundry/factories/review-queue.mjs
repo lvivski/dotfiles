@@ -3,6 +3,31 @@ import {
 	UNTRUSTED_DATA_WARNING,
 	untrustedBlock,
 } from "../prompts.mjs";
+const PR_SCHEMA = {
+	type: "object",
+	required: ["repo", "number"],
+	properties: {
+		repo: { type: "string" },
+		number: { type: "integer" },
+		title: { type: "string" },
+		diff: { type: "string" },
+		files: { type: "array", items: { type: "string" } },
+		me: { type: "string" },
+		my_teams: { type: "array", items: { type: "string" } },
+		reviewers: { type: "array", items: { type: "object" } },
+		codeowners: { type: "string" },
+		coverage: { type: "string" },
+		platform: { type: "string" },
+		url: { type: "string" },
+		updatedAt: { type: "string" },
+	},
+};
+
+const PRS_SCHEMA = {
+	type: "array",
+	items: PR_SCHEMA,
+};
+const MAX_SUBAGENTS_PER_CHUNK = 4;
 
 export const meta = {
 	name: "review-queue",
@@ -11,6 +36,22 @@ export const meta = {
 		"Args: { prs: object[], diff_chunk_chars?: number, max_total_chunks?: number, " +
 		"approve_only_low_risk_manual?: boolean, freshness?: string }.",
 	phases: [{ title: "Review" }, { title: "Verify" }, { title: "Report" }],
+	argsSchema: {
+		anyOf: [
+			PRS_SCHEMA,
+			{
+				type: "object",
+				required: ["prs"],
+				properties: {
+					prs: PRS_SCHEMA,
+					diff_chunk_chars: { type: "integer" },
+					max_total_chunks: { type: "integer" },
+					approve_only_low_risk_manual: { type: "boolean" },
+					freshness: { type: "string" },
+				},
+			},
+		],
+	},
 	limits: {
 		maxConcurrentSubagents: 8,
 		maxTotalSubagents: 700,
@@ -45,8 +86,15 @@ function integer(name, fallback, minimum, maximum) {
 }
 
 const chunkChars = integer("diff_chunk_chars", 24000, 4000, 60000);
-const supportedChunks = Math.floor(meta.limits.maxTotalSubagents / 2);
-const maxChunks = integer("max_total_chunks", 300, 1, supportedChunks);
+const supportedChunks = Math.floor(
+	meta.limits.maxTotalSubagents / MAX_SUBAGENTS_PER_CHUNK,
+);
+const maxChunks = integer(
+	"max_total_chunks",
+	Math.min(300, supportedChunks),
+	1,
+	supportedChunks,
+);
 const approveOnlyLowRiskManual = Boolean(opts.approve_only_low_risk_manual);
 const freshness = String(opts.freshness ?? "input queue");
 

@@ -18,6 +18,9 @@ engineering plans across App-native project sessions.
 The five general factories use the native Factory lifecycle directly and never mutate Foundry plan
 state.
 
+Every factory declares an SDK argument schema so malformed model invocations fail before approval or
+credit spend. Workload bounds also reserve capacity for the SDK's automatic structured-output retry.
+
 ## Plan model
 
 A plan contains one or more implementation tasks and exactly one final verifier task. Every

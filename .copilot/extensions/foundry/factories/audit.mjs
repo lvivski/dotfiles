@@ -4,6 +4,11 @@ import {
 	safeJson,
 	untrustedBlock,
 } from "../prompts.mjs";
+const PATHS_SCHEMA = {
+	type: "array",
+	items: { type: "string" },
+};
+const MAX_SUBAGENTS_PER_PATH = 3;
 
 export const meta = {
 	name: "audit",
@@ -11,6 +16,19 @@ export const meta = {
 		"Audit files for a concern, verify findings, and summarize actionable issues. " +
 		"Args: { paths: string[], concern?: string } or a string array.",
 	phases: [{ title: "Audit" }, { title: "Report" }],
+	argsSchema: {
+		anyOf: [
+			PATHS_SCHEMA,
+			{
+				type: "object",
+				required: ["paths"],
+				properties: {
+					paths: PATHS_SCHEMA,
+					concern: { type: "string" },
+				},
+			},
+		],
+	},
 	limits: {
 		maxConcurrentSubagents: 4,
 		maxTotalSubagents: 40,
@@ -47,7 +65,9 @@ const normalizedPaths = rawPaths.map((path, index) => {
 const paths = [...new Set(normalizedPaths.filter(Boolean))];
 if (!paths.length) throw new Error("audit: paths must contain at least one non-empty path");
 if (!concern) throw new Error("audit: concern must be non-empty");
-const maxPaths = Math.floor((meta.limits.maxTotalSubagents - 1) / 2);
+const maxPaths = Math.floor(
+	(meta.limits.maxTotalSubagents - 1) / MAX_SUBAGENTS_PER_PATH,
+);
 if (paths.length > maxPaths) {
 	throw new Error(
 		`audit: ${paths.length} paths require more than ${meta.limits.maxTotalSubagents} subagents; maximum is ${maxPaths}`,

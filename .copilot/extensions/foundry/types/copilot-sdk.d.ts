@@ -43,6 +43,9 @@ declare module "@github/copilot-sdk/extension" {
 				label?: string;
 				schema?: Record<string, any>;
 				model?: string;
+				reasoningEffort?: string;
+				contextTier?: "default" | "long_context";
+				agent?: string;
 			},
 		): Promise<any | null>;
 		/** Ordinary thunk failures resolve to null; cancellation and runtime failures reject. */
@@ -58,6 +61,8 @@ declare module "@github/copilot-sdk/extension" {
 		): Promise<any[]>;
 		phase(title: string): void;
 		log(message: string): void;
+		factory(name: string, args?: any): Promise<any>;
+		readonly session: import("@github/copilot-sdk").CopilotSession;
 		step(
 			key: string,
 			producer: () => any | Promise<any>,
@@ -70,6 +75,7 @@ declare module "@github/copilot-sdk/extension" {
 			readonly name: string;
 			readonly description: string;
 			readonly phases: ReadonlyArray<{ title: string; detail?: string }>;
+			readonly argsSchema?: Readonly<Record<string, any>>;
 			readonly limits?: Readonly<Record<string, number>>;
 		};
 	}
@@ -79,6 +85,7 @@ declare module "@github/copilot-sdk/extension" {
 			name: string;
 			description: string;
 			phases: Array<{ title: string; detail?: string }>;
+			argsSchema?: Record<string, any>;
 			limits?: Record<string, number>;
 		};
 		run: (context: FactoryContext) => Promise<any>;

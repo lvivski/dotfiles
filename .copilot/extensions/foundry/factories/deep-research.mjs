@@ -3,6 +3,16 @@ import {
 	UNTRUSTED_DATA_WARNING,
 	untrustedBlock,
 } from "../prompts.mjs";
+const RESEARCH_OPTIONS_SCHEMA = {
+	type: "object",
+	required: ["question"],
+	properties: {
+		question: { type: "string" },
+		angles: { type: "integer" },
+	},
+};
+const MAX_FIXED_SUBAGENTS = 3;
+const MAX_SUBAGENTS_PER_ANGLE = 3;
 
 export const meta = {
 	name: "deep-research",
@@ -10,6 +20,20 @@ export const meta = {
 		"Fan out web research, verify sourced claims, and synthesize a cited report. " +
 		"Args: { question: string, angles?: number } or a question string.",
 	phases: [{ title: "Plan" }, { title: "Research" }, { title: "Report" }],
+	argsSchema: {
+		anyOf: [
+			{ type: "string" },
+			RESEARCH_OPTIONS_SCHEMA,
+			{
+				type: "object",
+				required: ["q"],
+				properties: {
+					q: { type: "string" },
+					angles: { type: "integer" },
+				},
+			},
+		],
+	},
 	limits: {
 		maxConcurrentSubagents: 6,
 		maxTotalSubagents: 40,
@@ -34,7 +58,11 @@ if (!question) throw new Error("deep-research: provide a non-empty question");
 if (!Number.isInteger(requestedAngles) || requestedAngles < 1) {
 	throw new Error("deep-research: angles must be a positive integer");
 }
-const maxAngles = Math.min(requestedAngles, 12);
+const budgetedAngles = Math.floor(
+	(meta.limits.maxTotalSubagents - MAX_FIXED_SUBAGENTS) /
+		MAX_SUBAGENTS_PER_ANGLE,
+);
+const maxAngles = Math.min(requestedAngles, 12, budgetedAngles);
 
 factory.phase("Plan");
 const planned = await factory.agent(
