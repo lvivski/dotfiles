@@ -49,6 +49,7 @@ function createWorkflowFactory(args, responseFor = null) {
 	const phases = [];
 	const logs = [];
 	const calls = [];
+	const pipelineBatches = [];
 	return {
 		args,
 		runId: "factory-run",
@@ -56,6 +57,7 @@ function createWorkflowFactory(args, responseFor = null) {
 		phases,
 		logs,
 		calls,
+		pipelineBatches,
 		async agent(prompt, options = {}) {
 			calls.push({ prompt, options });
 			const configured = responseFor?.(prompt, options);
@@ -110,6 +112,7 @@ function createWorkflowFactory(args, responseFor = null) {
 			);
 		},
 		async pipeline(items, ...stages) {
+			pipelineBatches.push(items.length);
 			return Promise.all(
 				items.map(async (item, index) => {
 					let previous = item;
@@ -995,6 +998,7 @@ test("declared limits reserve structured-output retries", () => {
 	);
 	const deepResearch = ADDITIONAL_FACTORIES.deepResearch.meta.limits;
 	const deepResearchWorstCase = 3 + 12 * 3;
+	assert.equal(deepResearch.maxConcurrentSubagents, 2);
 	assert.ok(deepResearch.maxTotalSubagents >= deepResearchWorstCase);
 });
 
@@ -1207,6 +1211,21 @@ test("deep research delegates angle work to the built-in research agent", async 
 	assert.match(researchCalls[0].prompt, /agent_type: "research"/);
 	assert.match(researchCalls[0].prompt, /mode: "sync"/);
 	assert.match(researchCalls[0].prompt, /Do not research the angle yourself/);
+});
+
+test("deep research limits nested research fan-out to two angles", async () => {
+	const researchFactory = createWorkflowFactory(
+		{ question: "Compare regions", angles: 5 },
+		(_prompt, options) => options.label === "plan"
+			? ["one", "two", "three", "four", "five"]
+			: undefined,
+	);
+	await ADDITIONAL_FACTORIES.deepResearch.run(researchFactory);
+	assert.deepEqual(researchFactory.pipelineBatches, [2, 2, 1]);
+	const researchLabels = researchFactory.calls
+		.map((call) => call.options.label)
+		.filter((label) => label.startsWith("research:"));
+	assert.equal(new Set(researchLabels).size, 5);
 });
 
 test("item-oriented factories use unique memoization labels", async () => {

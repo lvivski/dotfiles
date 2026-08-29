@@ -24,7 +24,8 @@ Do not pass `limits` to `run_factory`; use the factory's declared limits unless 
 requests an override. Never lower a declared limit without an explicit user request.
 
 `question` is required; `angles` defaults to 5 and is capped at 12. Factory-owned routing agents
-synchronously delegate each angle to the built-in `research` agent, and verifiers independently open
-cited URLs. If no angle passes source verification, the factory returns an explicitly unsupported
-report and never synthesizes unverified findings. Return the cited report and its explicit limitations
-or open questions.
+synchronously delegate each angle to the built-in `research` agent. Angle pipelines run in batches of
+two to avoid multiplying parallel searches and upstream timeouts. Verifiers independently open cited
+URLs. If no angle passes source verification, the factory returns an explicitly unsupported report
+and never synthesizes unverified findings. Return the cited report and its explicit limitations or
+open questions.
