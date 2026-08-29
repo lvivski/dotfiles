@@ -107,8 +107,13 @@ const checked = await factory.pipeline(
 	angles,
 	async (angle, _original, index) => ({
 		angle,
+		// Factory agent profiles are not selectable yet, so use a factory-owned router.
 		finding: await factory.agent(
-			`Research this assigned angle using web search. Cite every material claim with a source URL and flag thin or conflicting evidence.
+			`Act only as a routing agent. Call the task tool exactly once with:
+- agent_type: "research"
+- mode: "sync"
+
+In the delegated prompt, instruct the research agent to use web search, cite every material claim with a source URL, and flag thin or conflicting evidence. Return the research agent's report without adding unsupported claims. Do not research the angle yourself or silently fall back; report a delegation failure explicitly.
 
 Original question:
 ${question}

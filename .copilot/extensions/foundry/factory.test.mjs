@@ -1191,6 +1191,24 @@ test("security review reports failed coverage instead of a clean result", async 
 	assert.match(verificationResult, /must not be interpreted as a clean security review/);
 });
 
+test("deep research delegates angle work to the built-in research agent", async () => {
+	const researchFactory = createWorkflowFactory(
+		{ question: "Compare regions", angles: 1 },
+		(_prompt, options) => options.label === "plan"
+			? ["Regulatory landscape for Example in the European Union"]
+			: undefined,
+	);
+	await ADDITIONAL_FACTORIES.deepResearch.run(researchFactory);
+	const researchCalls = researchFactory.calls.filter(
+		(call) => call.options.label.startsWith("research:"),
+	);
+	assert.equal(researchCalls.length, 1);
+	assert.equal(researchCalls[0].options.agent, undefined);
+	assert.match(researchCalls[0].prompt, /agent_type: "research"/);
+	assert.match(researchCalls[0].prompt, /mode: "sync"/);
+	assert.match(researchCalls[0].prompt, /Do not research the angle yourself/);
+});
+
 test("item-oriented factories use unique memoization labels", async () => {
 	const sharedPrefix = "Regulatory landscape for Example in ";
 	const researchFactory = createWorkflowFactory(

@@ -34,9 +34,7 @@ push() {
 		.bash_functions
 		.bash_aliases
 		.bash_prompt
-		.copilot/agents/classifier.md
-		.copilot/agents/judge.md
-		.copilot/agents/synthesizer.md
+		.copilot/agents
 		.copilot/extensions/cwf
 		.copilot/extensions/conveyor
 		.copilot/extensions/jsconfig.json
