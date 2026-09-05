@@ -3,6 +3,18 @@
 Foundry is the Copilot extension control plane for native Agent Factories and dependency-aware
 engineering plans across App-native project sessions.
 
+## When to use Foundry
+
+Foundry coordination is already opt-in. Routine changes can use native plan mode and direct tools;
+ordinary multi-session work and dependent PRs can use the native `orchestrate` and `pr-stack` flows.
+Those flows do not require a Foundry plan.
+
+Use Foundry when explicitly requesting a durable dependency-aware plan with approval gates,
+reserved task attempts, delivery/evidence contracts, and cross-session recovery. Native Factory
+journals and session tools provide the execution primitives, not an equivalent to those policies.
+An explicit Foundry request still follows the complete coordinator protocol, including importing
+its planning Factory result; native plan mode is not a substitute for that result.
+
 ## Factories
 
 | Factory | Purpose |
@@ -20,6 +32,11 @@ state.
 
 Every factory declares an SDK argument schema so malformed model invocations fail before approval or
 credit spend. Workload bounds also reserve capacity for the SDK's automatic structured-output retry.
+
+The review queue pipelines each PR through review and verification independently. A PR must still
+finish every chunk review before it can enter verification, and only complete, clean evidence that
+passes the configured policy can be recommended for approval. The final queue report waits for all
+PRs; pipelining does not reduce reviewer count or expand the supplied-evidence scope.
 
 ## Plan model
 
@@ -60,6 +77,10 @@ Activation and plan storage are local to the current Copilot session. The shell 
 conservative friction, not a sandbox or a complete shell parser; indirect execution remains subject
 to the host permission boundary. Deactivation removes an unreadable activation marker and reports
 that repair instead of leaving the session stuck behind a corrupt marker.
+
+Coordinator context is supplied on activation and session start. Ordinary successful Foundry tool
+calls do not add repetitive reminders; activation, deactivation, unreadable-state, and failure
+guidance remain available. This does not change permission checks or revision enforcement.
 
 The board can request cancellation, but the coordinator must still stop owned App sessions, cancel
 the authoritative verification Factory run, and finalize with a fresh causal inventory.

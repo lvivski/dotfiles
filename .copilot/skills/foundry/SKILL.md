@@ -16,6 +16,17 @@ Foundry is the authority for plan, task, attempt, evidence, verification, and ca
 This skill drives App-native tools around that state machine. App project sessions own repository
 mutation; native Agent Factories perform bounded analysis only.
 
+## Scope
+
+Use this protocol when the user explicitly requests Foundry coordination. For routine changes,
+prefer native plan mode and direct tools; for ordinary multi-session or stacked-PR work, use the
+native `orchestrate` or `pr-stack` flows without creating a Foundry plan.
+
+Foundry's additional value is its durable approval, reservation, delivery, evidence, and recovery
+state. When Foundry is requested, keep the complete protocol below even for a small task. Do not
+substitute a native plan-mode document for the completed planning Factory result required by
+`foundry_create_plan`.
+
 ## Hard rules
 
 1. Never create a child session before `foundry_reserve_task`.

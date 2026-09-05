@@ -36,4 +36,9 @@ engineering plans and registers the `plan`, `verify`, `audit`, `deep-research`,
 `run_factory`; the native runtime owns limits, durable steps, resume, cancellation, progress, and
 results.
 
+Foundry coordination is opt-in. Use native plan mode and direct tools for routine changes, and
+the native `orchestrate` or `pr-stack` flows for ordinary multi-session or stacked-PR work. Choose
+Foundry when you explicitly want its durable dependency plan, approval gates, task reservations,
+and recovery protocol; installing it does not put every task through that protocol.
+
 See [`.copilot/skills/foundry/SKILL.md`](.copilot/skills/foundry/SKILL.md).

@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { EventEmitter, once } from "node:events";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -41,6 +42,9 @@ const ADDITIONAL_FACTORIES = Object.freeze(Object.fromEntries(
 	),
 ));
 
+// Test sentinel for run failures that the native runtime propagates instead of returning null.
+class FatalFactoryFailure extends Error {}
+
 /**
  * @param {any} args
  * @param {((prompt: string, options: any) => unknown) | null} [responseFor]
@@ -60,7 +64,7 @@ function createWorkflowFactory(args, responseFor = null) {
 		pipelineBatches,
 		async agent(prompt, options = {}) {
 			calls.push({ prompt, options });
-			const configured = responseFor?.(prompt, options);
+			const configured = await responseFor?.(prompt, options);
 			if (configured !== undefined) return structuredClone(configured);
 			const schema = options.schema;
 			if (!schema) return "NO ISSUES";
@@ -105,7 +109,8 @@ function createWorkflowFactory(args, responseFor = null) {
 				thunks.map(async (thunk) => {
 					try {
 						return await thunk();
-					} catch {
+					} catch (error) {
+						if (error instanceof FatalFactoryFailure) throw error;
 						return null;
 					}
 				}),
@@ -119,7 +124,8 @@ function createWorkflowFactory(args, responseFor = null) {
 					for (const stage of stages) {
 						try {
 							previous = await stage(previous, item, index);
-						} catch {
+						} catch (error) {
+							if (error instanceof FatalFactoryFailure) throw error;
 							return null;
 						}
 					}
@@ -1570,6 +1576,218 @@ test("item factories reject impossible workloads before dispatch", async () => {
 		securityFactory.calls.some((call) => call.options.label.startsWith("verify:")),
 		false,
 	);
+});
+
+/** @param {number} number @param {any} [overrides] */
+function reviewPullRequest(number, overrides = {}) {
+	return {
+		repo: "owner/repo",
+		number,
+		title: `Change ${number}`,
+		diff: "+const answer = 42;",
+		files: ["src/a.js"],
+		me: "octocat",
+		coverage: "full diff",
+		platform: "github",
+		url: `https://example.test/owner/repo/pull/${number}`,
+		updatedAt: "2026-08-11T00:00:00Z",
+		...overrides,
+	};
+}
+
+/** @param {unknown} report */
+function reviewQueueRows(report) {
+	assert.ok(typeof report === "string");
+	return report.split("\n").filter((line) => /^\| (Approve|Needs review) \|/.test(line));
+}
+
+test("review queue preserves coverage, policy, and failed-evidence decisions", async (t) => {
+	for (const manualOnly of [false, true]) {
+		await t.test(`manual-only policy: ${manualOnly}`, async () => {
+			const prs = [
+				reviewPullRequest(1),
+				reviewPullRequest(2, { codeowners: "* @octocat" }),
+				reviewPullRequest(3, { reviewers: [{ name: "octocat", required: true }] }),
+				reviewPullRequest(4, { coverage: "partial diff" }),
+				reviewPullRequest(5, { coverage: "" }),
+				reviewPullRequest(6, { diff: "" }),
+				reviewPullRequest(7, { diff: "+change\n".repeat(600) }),
+				...Array.from({ length: 6 }, (_, index) => reviewPullRequest(index + 8)),
+			];
+			const factory = createWorkflowFactory({
+				prs,
+				diff_chunk_chars: 4000,
+				approve_only_low_risk_manual: manualOnly,
+			}, (_prompt, options) => {
+				if (["owner/repo#8:review:1", "owner/repo#9:verify:1"].includes(options.label)) {
+					return null;
+				}
+				if (options.label === "owner/repo#10:review:1") {
+					return {
+						risk: "high",
+						issues: ["Concrete regression"],
+						missingTests: ["Regression coverage"],
+						uncertainty: ["Unclear compatibility"],
+						summary: "Needs review",
+					};
+				}
+				if (["owner/repo#11:review:1", "owner/repo#13:verify:1"].includes(options.label)) {
+					throw new Error("ordinary agent failure");
+				}
+				if (options.label === "owner/repo#12:verify:1") {
+					return { passed: false, reasons: "Unresolved issue" };
+				}
+				return undefined;
+			});
+			const report = await ADDITIONAL_FACTORIES.reviewQueue.run(factory);
+			const rows = reviewQueueRows(report);
+			const approved = manualOnly ? [1, 7] : [1, 2, 3, 7];
+			const needsReview = prs.map((pr) => pr.number).filter((number) => !approved.includes(number));
+			assert.deepEqual(
+				rows.map((row) => row.match(/\[owner\/repo#(\d+)\]/)?.[1]),
+				[...needsReview, ...approved].map(String),
+			);
+			const rowFor = (number) => {
+				const row = rows.find((entry) => entry.includes(`[owner/repo#${number}]`));
+				assert.ok(row);
+				return row;
+			};
+			for (const pr of prs) {
+				assert.ok(rowFor(pr.number).startsWith(
+					approved.includes(pr.number) ? "| Approve |" : "| Needs review |",
+				));
+			}
+			assert.match(rowFor(2), /\| CODEOWNERS \|/);
+			assert.match(rowFor(3), /\| Required policy \|/);
+			assert.match(rowFor(4), /\| high \|.*1\/1 diff chunks; partial diff/);
+			assert.match(rowFor(5), /\| high \|.*coverage unknown/);
+			assert.match(rowFor(6), /\| high \|.*0\/0 diff chunks/);
+			assert.match(rowFor(7), /2\/2 diff chunks/);
+			assert.match(rowFor(8), /\| high \|.*0\/1 diff chunks/);
+			assert.match(rowFor(9), /\| medium \|.*0\/1 passed/);
+			assert.match(rowFor(10), /Concrete regression.*Missing test: Regression coverage/);
+			assert.match(rowFor(11), /\| high \|.*0\/1 diff chunks/);
+			assert.match(rowFor(12), /\| medium \|.*0\/1 passed/);
+			assert.match(rowFor(13), /\| medium \|.*0\/1 passed/);
+			assert.equal(factory.calls.length, manualOnly ? 19 : 21);
+			assert.equal(new Set(factory.calls.map((call) => call.options.label)).size, factory.calls.length);
+			assert.deepEqual(factory.pipelineBatches, [prs.length]);
+			assert.deepEqual(factory.phases, ["Review and verify", "Report"]);
+		});
+	}
+});
+
+test("review queue verifies ready PRs while waiting for every chunk of slower PRs", {
+	timeout: 5000,
+}, async (t) => {
+	const events = new EventEmitter();
+	const releaseSlowReview = once(events, "release", { signal: t.signal });
+	const fastVerification = once(events, "fast-verification", { signal: t.signal });
+	t.after(() => events.emit("release"));
+	const factory = createWorkflowFactory({
+		prs: [
+			reviewPullRequest(1, { diff: "+change\n".repeat(600) }),
+			reviewPullRequest(2),
+		],
+		diff_chunk_chars: 4000,
+	}, async (_prompt, options) => {
+		if (options.label === "owner/repo#1:review:2") await releaseSlowReview;
+		if (options.label === "owner/repo#2:verify:1") events.emit("fast-verification");
+		return undefined;
+	});
+	const pending = ADDITIONAL_FACTORIES.reviewQueue.run(factory);
+	try {
+		await Promise.race([
+			fastVerification,
+			pending.then(() => assert.fail("Report finished before the ready PR was verified")),
+		]);
+		assert.ok(factory.calls.some((call) => call.options.label === "owner/repo#1:review:2"));
+		assert.equal(factory.calls.some((call) => call.options.label.startsWith("owner/repo#1:verify:")), false);
+		assert.deepEqual(factory.phases, ["Review and verify"]);
+	} finally {
+		events.emit("release");
+	}
+	const rows = reviewQueueRows(await pending);
+	assert.equal(rows.length, 2);
+	assert.match(rows[0], /^\| Approve \|.*\[owner\/repo#1\]/);
+	assert.match(rows[1], /^\| Approve \|.*\[owner\/repo#2\]/);
+	assert.equal(factory.calls.length, 6);
+	assert.deepEqual(factory.pipelineBatches, [2]);
+});
+
+test("review queue completes when agent admissions are serialized", async () => {
+	let active = 0;
+	let peak = 0;
+	const factory = createWorkflowFactory({
+		prs: [reviewPullRequest(1), reviewPullRequest(2), reviewPullRequest(3)],
+	}, async () => {
+		active += 1;
+		peak = Math.max(peak, active);
+		await Promise.resolve();
+		active -= 1;
+		return undefined;
+	});
+	const agent = factory.agent;
+	let tail = Promise.resolve();
+	factory.agent = (prompt, options) => {
+		const result = tail.then(() => agent(prompt, options));
+		tail = result.then(() => {});
+		return result;
+	};
+	const rows = reviewQueueRows(await ADDITIONAL_FACTORIES.reviewQueue.run(factory));
+	assert.equal(peak, 1);
+	assert.equal(rows.length, 3);
+	assert.ok(rows.every((row) => row.startsWith("| Approve |")));
+	assert.equal(factory.calls.length, 6);
+	assert.deepEqual(factory.pipelineBatches, [3]);
+});
+
+test("review queue keeps a report row when either pipeline stage fails", async (t) => {
+	for (const failedStage of [0, 1]) {
+		await t.test(`failed stage ${failedStage}`, async () => {
+			const factory = createWorkflowFactory({
+				prs: [reviewPullRequest(1), reviewPullRequest(2)],
+			});
+			const pipeline = factory.pipeline;
+			factory.pipeline = (items, ...stages) => pipeline(
+				items,
+				...stages.map((stage, stageIndex) => (previous, item, itemIndex) => {
+					if (stageIndex === failedStage && itemIndex === 0) {
+						throw new Error("ordinary stage failure");
+					}
+					return stage(previous, item, itemIndex);
+				}),
+			);
+			const rows = reviewQueueRows(await ADDITIONAL_FACTORIES.reviewQueue.run(factory));
+			assert.equal(rows.length, 2);
+			assert.match(rows[0], /^\| Needs review \| high \|.*\[owner\/repo#1\].*branch failed/);
+			assert.match(rows[1], /^\| Approve \| low \|.*\[owner\/repo#2\]/);
+			assert.equal(factory.calls.some((call) => call.options.label === "owner/repo#1:verify:1"), false);
+			assert.equal(factory.calls.length, failedStage === 0 ? 2 : 3);
+			assert.deepEqual(factory.pipelineBatches, [2]);
+		});
+	}
+});
+
+test("review queue propagates simulated cancellation and hard runtime failures", async (t) => {
+	for (const stage of ["review", "verify"]) {
+		for (const message of ["cancelled", "connection lost", "limit reached"]) {
+			await t.test(`${stage}: ${message}`, async () => {
+				const failure = new FatalFactoryFailure(message);
+				const factory = createWorkflowFactory({
+					prs: [reviewPullRequest(1)],
+				}, (_prompt, options) => {
+					if (options.label === `owner/repo#1:${stage}:1`) throw failure;
+					return undefined;
+				});
+				await assert.rejects(
+					ADDITIONAL_FACTORIES.reviewQueue.run(factory),
+					(error) => error === failure,
+				);
+				assert.equal(factory.phases.includes("Report"), false);
+			});
+		}
+	}
 });
 
 test("security review reports failed coverage instead of a clean result", async () => {

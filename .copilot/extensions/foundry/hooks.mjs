@@ -458,9 +458,7 @@ export function buildFoundryHooks(options) {
             if (toolName === "foundry_activate_plan") {
                 return { additionalContext: coordinatorContext(current) };
             }
-            return {
-                additionalContext: "A Foundry tool completed. Use the revision in its result for the next mutation.",
-            };
+			return {};
         },
         onPostToolUseFailure: async (input) => {
 			if (!String(input.toolName ?? "").startsWith(FOUNDRY_TOOL_PREFIX)) {

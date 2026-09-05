@@ -35,7 +35,7 @@ export const meta = {
 		"Review supplied PR diffs, verify low-risk candidates, and render a triage queue. " +
 		"Args: { prs: object[], diff_chunk_chars?: number, max_total_chunks?: number, " +
 		"approve_only_low_risk_manual?: boolean, freshness?: string }.",
-	phases: [{ title: "Review" }, { title: "Verify" }, { title: "Report" }],
+	phases: [{ title: "Review and verify" }, { title: "Report" }],
 	argsSchema: {
 		anyOf: [
 			PRS_SCHEMA,
@@ -237,8 +237,7 @@ const VERDICT = {
 	required: ["passed", "reasons"],
 };
 
-factory.phase("Review");
-const reviewed = await factory.pipeline(prs, async (pr) => {
+async function reviewPullRequest(pr) {
 	const units = chunks(pr);
 	if (!units.length) {
 		return {
@@ -291,21 +290,9 @@ ${untrustedBlock("PULL-REQUEST-DIFF", {
 		coverageComplete: sourceComplete && complete,
 		candidate: sourceComplete && clean && policyAllows,
 	};
-});
+}
 
-factory.phase("Verify");
-const rows = await factory.pipeline(reviewed, async (row, _original, index) => {
-	if (row === null) {
-		return {
-			pr: prs[index],
-			reason: codeownerReason(prs[index]),
-			decision: "needs_review",
-			risk: "high",
-			coverage: "review branch failed",
-			justification: "The review branch failed.",
-			focus: ["Retry the review"],
-		};
-	}
+async function verifyPullRequest(row) {
 	const successful = row.reviews.filter((item) => item?.result);
 	const risks = successful.map((item) => item.result.risk);
 	const risk = risks.includes("high") ? "high" : risks.includes("medium") ? "medium" : "low";
@@ -357,7 +344,20 @@ ${untrustedBlock("PRIMARY-REVIEW", item.result)}`,
 				? []
 				: [`Independent approval verification: ${passed}/${verdicts.length} passed`],
 	};
-});
+}
+
+factory.phase("Review and verify");
+const results = await factory.pipeline(prs, reviewPullRequest, verifyPullRequest);
+// Failed pipeline items skip later stages, so restore their report rows here.
+const rows = results.map((row, index) => row ?? ({
+	pr: prs[index],
+	reason: codeownerReason(prs[index]),
+	decision: "needs_review",
+	risk: "high",
+	coverage: "review branch failed",
+	justification: "The review branch failed.",
+	focus: ["Retry the review"],
+}));
 
 factory.phase("Report");
 const cell = (value) => String(value ?? "").replace(/\|/g, "\\|").replace(/\n/g, "<br>");

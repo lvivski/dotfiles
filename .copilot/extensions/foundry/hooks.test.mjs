@@ -185,3 +185,44 @@ test("active hooks inject coordinator context and revision-conflict guidance", a
     });
     assert.match(failure.additionalContext, /Re-read the current plan revision/);
 });
+
+test("successful hooks stay quiet except for activation and deactivation", async () => {
+	/** @type {{plan: {id: string, revision: number, status: string}} | null} */
+	let current = { plan: { id: "active-plan", revision: 4, status: "running" } };
+	const hooks = buildFoundryHooks({
+		operations: { getActive: async () => current },
+	});
+	for (const toolName of ["foundry_get_plan", "foundry_complete_task", "bash"]) {
+		assert.deepEqual(await hooks.onPostToolUse({ toolName }), {});
+	}
+	const activated = await hooks.onPostToolUse({ toolName: "foundry_activate_plan" });
+	assert.match(activated.additionalContext, /Foundry plan active-plan/);
+	assert.match(activated.additionalContext, /Reserve before create_session/);
+
+	current = null;
+	const deactivated = await hooks.onPostToolUse({ toolName: "foundry_deactivate_plan" });
+	assert.match(deactivated.additionalContext, /guardrails are now deactivated/);
+	assert.deepEqual(await hooks.onPostToolUse({ toolName: "foundry_get_plan" }), {});
+	assert.deepEqual(await hooks.onPostToolUseFailure({ toolName: "foundry_complete_task" }), {});
+});
+
+test("unreadable activation retains repair guidance and confirmation", async () => {
+	const hooks = buildFoundryHooks({
+		operations: {
+			getActive: async () => {
+				throw Object.assign(new Error("Unreadable marker"), { code: "invalid_activation" });
+			},
+		},
+	});
+	const start = await hooks.onSessionStart({});
+	assert.match(start.additionalContext, /invalid_activation.*repaired or deactivated/);
+	const permission = await hooks.onPreToolUse({ toolName: "view" });
+	assert.equal(permission.permissionDecision, "ask");
+	assert.match(permission.permissionDecisionReason, /invalid_activation/);
+	const success = await hooks.onPostToolUse({ toolName: "foundry_get_plan" });
+	assert.match(success.additionalContext, /Repair or deactivate/);
+	const failure = await hooks.onPostToolUseFailure({ toolName: "foundry_complete_task" });
+	assert.match(failure.additionalContext, /Do not retry plan mutations until it is repaired/);
+	assert.deepEqual(await hooks.onPostToolUse({ toolName: "bash" }), {});
+	assert.deepEqual(await hooks.onPostToolUseFailure({ toolName: "view" }), {});
+});
