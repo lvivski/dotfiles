@@ -124,17 +124,6 @@ function storageError(code, message, options) {
 }
 
 /**
- * Creates an owned structured clone of caller data.
- *
- * @template T
- * @param {T} value
- * @returns {T}
- */
-function clone(value) {
-    return structuredClone(value);
-}
-
-/**
  * Resolves the configured storage clock to canonical UTC.
  *
  * @param {() => Date|string|number} clock
@@ -381,10 +370,15 @@ async function verifyStorageAnchor(baseDirectory, anchor) {
  */
 async function withLocalWriteLock(key, operation) {
     const previous = writeLocks.get(key);
+	/** @type {(() => void) | undefined} */
     let release;
+	/** @type {Promise<void>} */
     const current = new Promise((resolve) => {
         release = resolve;
     });
+	if (!release) {
+		throw storageError("lock_initialization_failed", "Foundry could not initialize its local write lock");
+	}
     writeLocks.set(key, current);
 
     if (previous) {
@@ -743,27 +737,21 @@ async function withWriteLock(target, baseDirectory, anchor, options, operation) 
     return withLocalWriteLock(target, async () => {
         await verifyStorageAnchor(baseDirectory, anchor);
         const lock = await acquireFileLock(target, anchor, options);
-        let operationError;
         let result;
         try {
             result = await operation();
-        } catch (error) {
-            operationError = error;
-        }
-        try {
-            await releaseFileLock(lock);
-        } catch (releaseError) {
-            if (!operationError) {
-                throw releaseError;
-            }
-            operationError.lockReleaseError = releaseError.toJSON?.() ?? {
-                code: releaseError.code,
-                message: releaseError.message,
-            };
-        }
-        if (operationError) {
-            throw operationError;
-        }
+		} catch (operationError) {
+			try {
+				await releaseFileLock(lock);
+			} catch (releaseError) {
+				operationError.lockReleaseError = releaseError.toJSON?.() ?? {
+					code: releaseError.code,
+					message: releaseError.message,
+				};
+			}
+			throw operationError;
+		}
+		await releaseFileLock(lock);
         return result;
     });
 }
@@ -1080,65 +1068,35 @@ async function atomicCreate(baseDirectory, target, persisted, anchor) {
 }
 
 /**
- * Replaces a plan only after rechecking the expected current artifact.
- *
- * @param {string} baseDirectory
- * @param {string} target
- * @param {{payload: string, plan: any}} persisted
- * @param {StorageAnchor} anchor
- * @param {() => Promise<void>} verifyCurrent
- * @returns {Promise<void>}
- */
-async function atomicReplace(baseDirectory, target, persisted, anchor, verifyCurrent) {
-    const temporary = await writeTemporaryFile(baseDirectory, target, persisted.payload, anchor);
-    try {
-        await verifyCurrent();
-        await verifyStorageAnchor(baseDirectory, anchor);
-        await retryRename(temporary, target);
-    } catch (error) {
-        try {
-            await unlink(temporary);
-        } catch {
-            // Preserve the original replacement error.
-        }
-        if (error instanceof FoundryStorageError) {
-            throw error;
-        }
-        throw storageError("artifact_replace_failed", `Plan ${persisted.plan.id} could not be replaced`, {
-            details: { id: persisted.plan.id, filesystemCode: error?.code ?? null },
-            cause: error,
-        });
-    }
-}
-
-/**
- * Atomically replaces a non-plan session marker payload.
+ * Atomically replaces a payload after any required current-artifact check.
  *
  * @param {string} baseDirectory
  * @param {string} target
  * @param {string} payload
  * @param {StorageAnchor} anchor
+ * @param {{verifyCurrent?: () => Promise<void>, message: string, details?: Record<string, unknown>}} options
  * @returns {Promise<void>}
  */
-async function atomicReplacePayload(baseDirectory, target, payload, anchor) {
-    const temporary = await writeTemporaryFile(baseDirectory, target, payload, anchor);
-    try {
-        await verifyStorageAnchor(baseDirectory, anchor);
-        await retryRename(temporary, target);
-    } catch (error) {
-        try {
-            await unlink(temporary);
-        } catch {
-            // Preserve the replacement error.
-        }
-        if (error instanceof FoundryStorageError) {
-            throw error;
-        }
-        throw storageError("artifact_replace_failed", "Foundry could not replace the session marker", {
-            details: { filesystemCode: error?.code ?? null },
-            cause: error,
-        });
-    }
+async function atomicReplacePayload(baseDirectory, target, payload, anchor, options) {
+	const temporary = await writeTemporaryFile(baseDirectory, target, payload, anchor);
+	try {
+		if (options.verifyCurrent) await options.verifyCurrent();
+		await verifyStorageAnchor(baseDirectory, anchor);
+		await retryRename(temporary, target);
+	} catch (error) {
+		try {
+			await unlink(temporary);
+		} catch {
+			// Preserve the replacement error.
+		}
+		if (error instanceof FoundryStorageError) {
+			throw error;
+		}
+		throw storageError("artifact_replace_failed", options.message, {
+			details: { ...options.details, filesystemCode: error?.code ?? null },
+			cause: error,
+		});
+	}
 }
 
 /**
@@ -1183,7 +1141,7 @@ export function createPlanStore(options = {}) {
         throw storageError("path_outside_workspace", "Foundry storage must remain under workspacePath/files");
     }
     /**
-     * Reads and clones one validated plan.
+     * Reads one validated plan into a caller-owned document.
      *
      * @param {string} id
      * @returns {Promise<any>}
@@ -1191,7 +1149,7 @@ export function createPlanStore(options = {}) {
     const read = async (id) => {
         const target = planTarget(baseDirectory, id);
         const anchor = await ensureStorageDirectory(workspacePath, filesRoot, baseDirectory);
-        return clone((await readPlanAt(target, id, anchor)).plan);
+		return (await readPlanAt(target, id, anchor)).plan;
     };
 
     /**
@@ -1238,7 +1196,7 @@ export function createPlanStore(options = {}) {
                 }
             }
             await atomicCreate(baseDirectory, target, persisted, anchor);
-            return clone(persisted.plan);
+			return persisted.plan;
         });
     };
 
@@ -1288,25 +1246,29 @@ export function createPlanStore(options = {}) {
                 );
             }
 
-            await atomicReplace(baseDirectory, target, persisted, anchor, async () => {
-                const latest = await readPlanAt(target, id, anchor);
-                if (latest.fingerprint === initial.fingerprint) {
-                    return;
-                }
-                if (latest.plan.revision !== expectedRevision) {
-                    throw storageError("revision_conflict", `Plan ${id} changed during the update`, {
-                        details: {
-                            id,
-                            expectedRevision,
-                            latestRevision: latest.plan.revision,
-                        },
-                    });
-                }
-                throw storageError("artifact_changed", `Plan ${id} changed during the update`, {
-                    details: { id, expectedRevision },
-                });
-            });
-            return clone(persisted.plan);
+			await atomicReplacePayload(baseDirectory, target, persisted.payload, anchor, {
+				message: `Plan ${id} could not be replaced`,
+				details: { id },
+				verifyCurrent: async () => {
+					const latest = await readPlanAt(target, id, anchor);
+					if (latest.fingerprint === initial.fingerprint) {
+						return;
+					}
+					if (latest.plan.revision !== expectedRevision) {
+						throw storageError("revision_conflict", `Plan ${id} changed during the update`, {
+							details: {
+								id,
+								expectedRevision,
+								latestRevision: latest.plan.revision,
+							},
+						});
+					}
+					throw storageError("artifact_changed", `Plan ${id} changed during the update`, {
+						details: { id, expectedRevision },
+					});
+				},
+			});
+			return persisted.plan;
         });
     };
 
@@ -1524,6 +1486,7 @@ export function createPlanStore(options = {}) {
                         activationTarget,
                         `${JSON.stringify(marker, null, 2)}\n`,
                         anchor,
+						{ message: "Foundry could not replace the session marker" },
                     ),
                 );
                 return marker;

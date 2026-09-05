@@ -176,8 +176,10 @@ export function projectPlan(plan, options = {}) {
             }
         }
         for (const task of plan.tasks
-            .filter((candidate) => candidate.status === TASK_STATUS.BLOCKED
-                || candidate.status === TASK_STATUS.FAILED)
+			.filter((candidate) =>
+				(plan.status === PLAN_STATUS.APPROVED || plan.status === PLAN_STATUS.RUNNING)
+				&& (candidate.status === TASK_STATUS.BLOCKED || candidate.status === TASK_STATUS.FAILED)
+				&& candidate.dependsOn.every((id) => byId.get(id)?.status === TASK_STATUS.DONE))
             .sort((left, right) => left.id.localeCompare(right.id))) {
             actions.push(action("retry-task", { taskId: task.id }));
         }

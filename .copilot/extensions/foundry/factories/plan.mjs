@@ -1,5 +1,5 @@
 // Native Foundry planning Factory.
-import { validatePlanBlueprint } from "../analysis.mjs";
+import { validatePlanBlueprint, validatePlanningArgs } from "../analysis.mjs";
 import {
 	UNTRUSTED_DATA_WARNING as UNTRUSTED,
 	safeJson,
@@ -40,46 +40,6 @@ export const meta = {
 };
 
 export async function run(factory) {
-
-function fail(message) {
-	throw new Error(`plan: ${message}`);
-}
-
-function plain(value, field) {
-	if (!value || typeof value !== "object" || Array.isArray(value)) fail(`${field} must be an object`);
-	return value;
-}
-
-function text(value, field, maximum) {
-	if (typeof value !== "string" || !value.trim() || value.length > maximum) {
-		fail(`${field} must be a non-empty string of at most ${maximum} characters`);
-	}
-	return value;
-}
-
-function strings(value, field, maximum, itemMaximum, minimum = 0) {
-	if (!Array.isArray(value) || value.length < minimum || value.length > maximum) {
-		fail(`${field} must contain ${minimum}-${maximum} strings`);
-	}
-	return value.map((item, index) => text(item, `${field}[${index}]`, itemMaximum));
-}
-
-function normalizeInput(value) {
-	const input = plain(value, "args");
-	const maxTasks = input.maxTasks ?? 6;
-	if (!Number.isInteger(maxTasks) || maxTasks < 1 || maxTasks > 12) {
-		fail("maxTasks must be an integer from 1 through 12");
-	}
-	const inputDigest = text(input.inputDigest, "inputDigest", 64);
-	if (!/^[a-f0-9]{64}$/.test(inputDigest)) fail("inputDigest must be a lowercase SHA-256 digest");
-	return {
-		objective: text(input.objective, "objective", 8000),
-		constraints: strings(input.constraints ?? [], "constraints", 32, 1000),
-		repositoryContext: text(input.repositoryContext, "repositoryContext", 16000),
-		maxTasks,
-		inputDigest,
-	};
-}
 
 const TASK_SCHEMA = {
 	type: "object",
@@ -140,7 +100,7 @@ function inspectBlueprint(value, maxTasks, stage) {
 	}
 }
 
-const input = normalizeInput(factory.args);
+const input = validatePlanningArgs(factory.args);
 
 factory.phase("decompose");
 const decomposed = await factory.agent(

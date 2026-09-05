@@ -52,7 +52,10 @@ function requiredMeta(selector) {
 /** Per-instance action token embedded by the loopback server. */
 const token = requiredMeta('meta[name="foundry-token"]').content;
 
-/** Stable plan ID embedded by the loopback server. */
+/**
+ * Immutable document binding embedded by the loopback server.
+ * Rebinding opens a new server/document, resetting snapshots and refresh state.
+ */
 const planId = requiredMeta('meta[name="foundry-plan-id"]').content;
 
 /** Plan statuses that no longer permit cancellation requests. */
@@ -76,6 +79,24 @@ let currentPlan = null;
 
 /** @type {any} */
 let currentProjection = null;
+
+/** Refreshes coalesce, but a signal received during a GET requires another GET. */
+let refreshing = false;
+let refreshPending = false;
+
+/** Supported projection actions only; recovery guidance is not HTTP authority. */
+const approvalControls = new Map([
+    ["approve-plan", {
+        label: "Approve plan",
+        approvalType: "plan",
+        confirmation: "Approve this plan and make dependency-ready tasks available?",
+    }],
+    ["approve-completion", {
+        label: "Approve completion",
+        approvalType: "completion",
+        confirmation: "Approve this entire plan as complete?",
+    }],
+]);
 
 /**
  * Creates a DOM element and assigns text through `textContent`.
@@ -129,12 +150,15 @@ async function request(path, options) {
 }
 
 /**
- * Replaces renderer state with a complete server snapshot.
+ * Accepts only snapshots for this binding that cannot regress its revision.
+ * Equal revisions may carry fresher non-persisted projection information.
  *
  * @param {PlanSnapshot} snapshot
  * @returns {void}
  */
 function acceptSnapshot(snapshot) {
+    if (snapshot.plan.id !== planId
+        || (currentPlan && snapshot.plan.revision < currentPlan.revision)) return;
     currentPlan = snapshot.plan;
     currentProjection = snapshot.projection;
     render();
@@ -147,10 +171,20 @@ function acceptSnapshot(snapshot) {
  * @returns {Promise<void>}
  */
 async function loadPlan() {
+    refreshPending = true;
+    if (refreshing) return;
+    refreshing = true;
     try {
-        acceptSnapshot(await request("/api/plan"));
-    } catch (error) {
-        requiredElement("#error").textContent = error.message;
+        while (refreshPending) {
+            refreshPending = false;
+            try {
+                acceptSnapshot(await request("/api/plan"));
+            } catch (error) {
+                requiredElement("#error").textContent = error.message;
+            }
+        }
+    } finally {
+        refreshing = false;
     }
 }
 
@@ -158,17 +192,17 @@ async function loadPlan() {
  * Executes a confirmed, token-authenticated canvas mutation.
  *
  * @param {Record<string, unknown>} body
- * @returns {Promise<PlanSnapshot>}
+ * @returns {Promise<void>}
  */
 async function action(body) {
-    return request("/api/action", {
+    acceptSnapshot(await request("/api/action", {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
             "x-foundry-token": token,
         },
         body: JSON.stringify({ ...body, confirmed: true }),
-    });
+    }));
 }
 
 /**
@@ -292,18 +326,20 @@ function makeTaskCard(task) {
         card.append(attempts);
     }
 
-    if (task.status === "blocked" || task.status === "failed") {
+    if (currentProjection.actions.some(
+        (entry) => entry.kind === "retry-task" && entry.taskId === task.id,
+    )) {
         const controls = element("div", "card-actions");
         const retry = element("button", "", "Retry");
         retry.setAttribute("type", "button");
         retry.addEventListener("click", async () => {
             if (!window.confirm(`Retry ${task.id} with a fresh attempt?`)) return;
             try {
-                acceptSnapshot(await action({
+                await action({
                     action: "retry",
                     revision: currentPlan.revision,
                     taskId: task.id,
-                }));
+                });
             } catch (error) {
                 requiredElement("#error").textContent = error.message;
             }
@@ -432,23 +468,17 @@ function renderActivity() {
 }
 
 /**
- * Shows only controls valid for the current plan status.
+ * Maps supported semantic approval actions to controls.
  *
  * @returns {void}
  */
 function renderControls() {
     const approve = requiredElement("#approve-button");
-    if (currentPlan.status === "awaiting-approval") {
-        approve.hidden = false;
-        approve.textContent = "Approve plan";
-        approve.dataset.type = "plan";
-    } else if (currentPlan.status === "awaiting-completion-approval") {
-        approve.hidden = false;
-        approve.textContent = "Approve completion";
-        approve.dataset.type = "completion";
-    } else {
-        approve.hidden = true;
-    }
+    const approval = currentProjection.actions
+        .map((entry) => approvalControls.get(entry.kind))
+        .find(Boolean);
+    approve.hidden = !approval;
+    if (approval) approve.textContent = approval.label;
     requiredElement("#cancel-plan-button").hidden =
         terminalPlanStatuses.has(currentPlan.status) || currentPlan.status === "cancelling";
 }
@@ -470,21 +500,21 @@ function render() {
 }
 
 requiredElement("#refresh-button").addEventListener("click", loadPlan);
-requiredElement("#approve-button").addEventListener("click", async (event) => {
-    if (!(event.currentTarget instanceof HTMLElement)) return;
-    const approvalType = event.currentTarget.dataset.type;
+requiredElement("#approve-button").addEventListener("click", async () => {
+    const approval = currentProjection?.actions
+        .map((entry) => approvalControls.get(entry.kind))
+        .find(Boolean);
+    if (!approval) return;
 	const approvedBy = window.prompt("Who is approving this action?");
 	if (!approvedBy?.trim()) return;
-    if (!window.confirm(approvalType === "completion"
-        ? "Approve this entire plan as complete?"
-        : "Approve this plan and make dependency-ready tasks available?")) return;
+    if (!window.confirm(approval.confirmation)) return;
     try {
-        acceptSnapshot(await action({
+        await action({
             action: "approve",
             revision: currentPlan.revision,
-            approvalType,
+            approvalType: approval.approvalType,
 			approvedBy: approvedBy.trim(),
-        }));
+        });
     } catch (error) {
         requiredElement("#error").textContent = error.message;
     }
@@ -496,13 +526,13 @@ requiredElement("#cancel-plan-button").addEventListener("click", async () => {
         `Request cancellation for ${planId}? External App sessions keep running until explicitly stopped.`,
     )) return;
     try {
-        acceptSnapshot(await action({
+        await action({
             action: "cancel",
             revision: currentPlan.revision,
             requestId: crypto.randomUUID(),
             reason,
 			requestedBy: requestedBy.trim(),
-        }));
+        });
     } catch (error) {
         requiredElement("#error").textContent = error.message;
     }

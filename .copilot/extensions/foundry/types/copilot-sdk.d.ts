@@ -100,13 +100,67 @@ declare module "@github/copilot-sdk/extension" {
 }
 
 declare module "@github/copilot-sdk" {
+	export type FactoryRunStatus =
+		| "pending"
+		| "running"
+		| "completed"
+		| "halted"
+		| "cancelled"
+		| "error";
+
+	export type JsonValue = null | boolean | number | string | JsonValue[]
+		| { [key: string]: JsonValue };
+
+	/** Native envelope. Failure variants are opaque to this inspection boundary. */
+	export interface FactoryRunResult {
+		runId: string;
+		attempt?: number;
+		status: FactoryRunStatus;
+		result?: JsonValue;
+		error?: string;
+		failure?: unknown;
+		reason?: string;
+		snapshot?: JsonValue;
+	}
+
+	/** Fields consumed from native summaries; other observability fields are omitted here. */
+	export interface FactoryRunSummary {
+		runId: string;
+		factoryName: string;
+		status: FactoryRunStatus;
+		createdAt: number;
+	}
+
+	export interface FactoryListRunsOptions {
+		/** Exclusive forward cursor. */
+		afterSeq?: number;
+		/** Exclusive backward cursor. */
+		beforeSeq?: number;
+		/** Maximum terminal runs, default 200 and capped at 500. */
+		limit?: number;
+	}
+
+	export interface FactoryRunsPage {
+		/** Summaries in durable creation order, including active runs. */
+		runs: FactoryRunSummary[];
+		/** Terminal-window cursors, null when the terminal window is empty. */
+		oldestSeq?: number | null;
+		newestSeq?: number | null;
+		/** Whether newer terminal runs exist. */
+		hasMoreNewer?: boolean;
+		/** Number of older terminal runs; omission is not evidence of zero. */
+		omittedOlder?: number;
+	}
+
 	export interface SessionFactoryApi {
-		getRun(runId: string): Promise<any>;
+		getRun(runId: string): Promise<FactoryRunResult>;
 		getRunDetail(runId: string): Promise<any>;
 		getRunProgress(runId: string, options?: Record<string, any>): Promise<any>;
-		listRuns(): Promise<any[]>;
-		cancel(runId: string): Promise<any>;
-		waitForRun(runId: string, options?: { signal?: AbortSignal }): Promise<any>;
+		listRuns(): Promise<FactoryRunSummary[]>;
+		listRuns(options: FactoryListRunsOptions): Promise<FactoryRunsPage>;
+		/** Returns the terminal envelope, not a cancellation acknowledgement. */
+		cancel(runId: string): Promise<FactoryRunResult>;
+		waitForRun(runId: string, options?: { signal?: AbortSignal }): Promise<FactoryRunResult>;
 	}
 
 	export interface CopilotSession {

@@ -143,14 +143,22 @@ function factoryWithResponses(args, responses) {
 	);
 }
 
-function fakeApi(records = {}) {
+function fakeApi(records = {}, { pageSize = 200, seqBase = 0 } = {}) {
+	const listCalls = [];
+	const detailCalls = [];
+	const cancelCalls = [];
+	const terminalStatuses = new Set(["completed", "error", "halted", "cancelled"]);
 	return {
+		listCalls,
+		detailCalls,
+		cancelCalls,
 		async getRun(runId) {
 			const record = records[runId];
 			if (!record) throw new Error(`Factory run ${runId} not found`);
 			return record.run;
 		},
 		async getRunDetail(runId) {
+			detailCalls.push(runId);
 			const record = records[runId];
 			if (!record) throw new Error(`Factory run ${runId} not found`);
 			const all = (record.progress ?? []).map((text, index) => ({
@@ -175,13 +183,48 @@ function fakeApi(records = {}) {
 					},
 			};
 		},
-		async listRuns() {
-			return Object.entries(records).map(([runId, record]) => ({
-				runId,
-				factoryName: record.factoryName,
-				status: record.run.status,
-				createdAt: record.createdAt ?? Date.parse("2026-08-07T00:10:00.000Z"),
+		/**
+		 * @param {import("@github/copilot-sdk").FactoryListRunsOptions} [options]
+		 * @returns {Promise<any>} Also allows deliberately malformed pages in boundary tests.
+		 */
+		async listRuns(options = undefined) {
+			listCalls.push(options);
+			const { afterSeq, beforeSeq, limit = 200 } = options ?? {};
+			const all = Object.entries(records).map(([runId, record], index) => ({
+				seq: seqBase + index,
+				summary: {
+					runId,
+					factoryName: record.factoryName,
+					status: record.run.status,
+					createdAt: record.createdAt ?? Date.parse("2026-08-07T00:10:00.000Z"),
+				},
 			}));
+			const terminal = all.filter((entry) => terminalStatuses.has(entry.summary.status));
+			const eligible = terminal.filter((entry) =>
+				(afterSeq === undefined || entry.seq > afterSeq)
+				&& (beforeSeq === undefined || entry.seq < beforeSeq),
+			);
+			const size = Math.min(limit, pageSize, 500);
+			const window = afterSeq === undefined
+				? eligible.slice(-size)
+				: eligible.slice(0, size);
+			// Native paging limits terminals; active runs remain visible across pages.
+			const runs = [
+				...window,
+				...all.filter((entry) => !terminalStatuses.has(entry.summary.status)),
+			].sort((left, right) => left.seq - right.seq).map((entry) => entry.summary);
+			const page = {
+				runs,
+				oldestSeq: window[0]?.seq ?? null,
+				newestSeq: window.at(-1)?.seq ?? null,
+				hasMoreNewer: terminal.some((entry) =>
+					entry.seq > (window.at(-1)?.seq ?? afterSeq ?? Number.POSITIVE_INFINITY),
+				),
+				omittedOlder: terminal.filter((entry) =>
+					entry.seq < (window[0]?.seq ?? beforeSeq ?? Number.NEGATIVE_INFINITY),
+				).length,
+			};
+			return options === undefined ? page.runs : page;
 		},
 		async getRunProgress(runId, options = {}) {
 			const record = records[runId];
@@ -209,14 +252,10 @@ function fakeApi(records = {}) {
 			};
 		},
 		async cancel(runId) {
+			cancelCalls.push(runId);
 			const record = records[runId];
 			if (!record) throw new Error(`Factory run ${runId} not found`);
 			record.run = { ...record.run, status: "cancelled" };
-			return record.run;
-		},
-		async waitForRun(runId) {
-			const record = records[runId];
-			if (!record) throw new Error(`Factory run ${runId} not found`);
 			return record.run;
 		},
 	};
@@ -889,12 +928,315 @@ test("discoverVerificationRun distinguishes absent from inconclusive", async () 
 			progressUnavailable: true,
 		},
 	}));
-	const foundDespiteStale = await attributableMatch.discoverVerificationRun(
+	const unresolvedHistory = await attributableMatch.discoverVerificationRun(
 		plan.verification.reservationId,
 		plan.verification.reservedAt,
 	);
-	assert.equal(foundDespiteStale.state, "found");
-	assert.equal(foundDespiteStale.run.runId, "matched");
+	assert.equal(unresolvedHistory.state, "inconclusive");
+	assert.deepEqual(unresolvedHistory.candidates.map((run) => run.runId), ["matched"]);
+	assert.deepEqual(unresolvedHistory.unattributable?.map((run) => run.runId), ["stale"]);
+});
+
+test("discovery finds an older terminal run using native terminal-window cursors", async () => {
+	const plan = reservedPlan("older-run");
+	const marker = verificationMarker(plan.verification.reservationId);
+	for (const seqBase of [0, 1, 37]) {
+		const api = fakeApi({
+			match: {
+				factoryName: "verify",
+				run: { runId: "match", status: "completed" },
+				progress: [marker, ...Array.from({ length: 220 }, () => "later progress")],
+				seqBase,
+			},
+			active: {
+				factoryName: "verify",
+				run: { runId: "active", status: "running" },
+				progress: [verificationMarker("foreign-reservation")],
+			},
+			newest: {
+				factoryName: "plan",
+				run: { runId: "newest", status: "completed" },
+			},
+		}, { pageSize: 1, seqBase });
+		const result = await createFactoryAnalysis(() => api).discoverVerificationRun(
+			plan.verification.reservationId,
+			plan.verification.reservedAt,
+		);
+		assert.equal(result.state, "found");
+		assert.equal(result.run.runId, "match");
+		assert.deepEqual(api.listCalls, [
+			{ limit: 200 },
+			{ limit: 200, beforeSeq: seqBase + 2 },
+		]);
+		assert.equal(api.detailCalls.filter((runId) => runId === "active").length, 1);
+	}
+});
+
+test("discovery rejects duplicate reservations across terminal pages", async () => {
+	const plan = reservedPlan("paged-duplicates");
+	const marker = verificationMarker(plan.verification.reservationId);
+	const api = fakeApi(Object.fromEntries(["older", "newer"].map((runId) => [
+		runId,
+		{
+			factoryName: "verify",
+			run: { runId, status: "completed" },
+			progress: [marker],
+		},
+	])), { pageSize: 1 });
+	const result = await createFactoryAnalysis(() => api).discoverVerificationRun(
+		plan.verification.reservationId,
+		plan.verification.reservedAt,
+	);
+	assert.equal(result.state, "inconclusive");
+	assert.match(result.reason, /multiple Factory runs/);
+	assert.deepEqual(result.candidates.map((run) => run.runId).sort(), ["newer", "older"]);
+	assert.equal(api.listCalls.length, 2);
+});
+
+test("repeated active runs are inspected once and unmarked runs still block uniqueness", async () => {
+	const plan = reservedPlan("repeated-active");
+	for (const unmarked of [false, true]) {
+		const api = fakeApi({
+			older: {
+				factoryName: "plan",
+				run: { runId: "older", status: "completed" },
+			},
+			active: {
+				factoryName: "verify",
+				run: { runId: "active", status: "running" },
+				progress: [verificationMarker(plan.verification.reservationId)],
+			},
+			pending: {
+				factoryName: "verify",
+				run: { runId: "pending", status: "pending" },
+				progress: unmarked ? [] : [verificationMarker("another-reservation")],
+			},
+			newer: {
+				factoryName: "plan",
+				run: { runId: "newer", status: "completed" },
+			},
+		}, { pageSize: 1 });
+		const result = await createFactoryAnalysis(() => api).discoverVerificationRun(
+			plan.verification.reservationId,
+			plan.verification.reservedAt,
+		);
+		if (unmarked) {
+			assert.equal(result.state, "inconclusive");
+			assert.deepEqual(result.candidates.map((run) => run.runId), ["active", "pending"]);
+		} else {
+			assert.equal(result.state, "found");
+			assert.equal(result.run.runId, "active");
+		}
+		assert.deepEqual(api.detailCalls, ["active", "pending"]);
+		assert.equal(api.listCalls.length, 2);
+	}
+});
+
+test("discovery establishes absence only after complete native history", async () => {
+	const plan = reservedPlan("complete-absence");
+	const api = fakeApi({
+		stale: {
+			factoryName: "verify",
+			run: { runId: "stale", status: "completed" },
+			createdAt: Date.parse(plan.verification.reservedAt) - 1,
+			progressUnavailable: true,
+		},
+		foreign: {
+			factoryName: "verify",
+			run: { runId: "foreign", status: "completed" },
+			progress: [verificationMarker("another-reservation")],
+		},
+		unmarked: {
+			factoryName: "verify",
+			run: { runId: "unmarked", status: "error" },
+			progress: [],
+		},
+	}, { pageSize: 1 });
+	assert.deepEqual(
+		await createFactoryAnalysis(() => api).discoverVerificationRun(
+			plan.verification.reservationId,
+			plan.verification.reservedAt,
+		),
+		{ state: "absent" },
+	);
+	assert.equal(api.listCalls.length, 3);
+	assert.equal(api.detailCalls.includes("stale"), false);
+	assert.deepEqual(
+		await createFactoryAnalysis(() => fakeApi()).discoverVerificationRun(
+			plan.verification.reservationId,
+			plan.verification.reservedAt,
+		),
+		{ state: "absent" },
+	);
+});
+
+test("discovery budget exhaustion cannot prove absence or uniqueness", async () => {
+	const plan = reservedPlan("bounded-history");
+	const marker = verificationMarker(plan.verification.reservationId);
+	for (const visibleMatch of [false, true]) {
+		const api = fakeApi(Object.fromEntries(Array.from({ length: 11 }, (_, index) => {
+			const runId = `run-${index}`;
+			return [runId, {
+				factoryName: index === 0 || (visibleMatch && index === 10) ? "verify" : "plan",
+				run: { runId, status: "completed" },
+				progress: [marker],
+			}];
+		})), { pageSize: 1 });
+		const result = await createFactoryAnalysis(() => api).discoverVerificationRun(
+			plan.verification.reservationId,
+			plan.verification.reservedAt,
+		);
+		assert.equal(result.state, "inconclusive");
+		assert.match(result.reason, /discovery page budget/);
+		assert.equal(api.listCalls.length, 10);
+		assert.deepEqual(result.candidates.map((run) => run.runId), visibleMatch ? ["run-10"] : []);
+		assert.equal(api.detailCalls.includes("run-0"), false);
+	}
+});
+
+test("empty pages with older cursors continue discovery rather than proving absence", async () => {
+	const plan = reservedPlan("empty-page");
+	const api = fakeApi({
+		match: {
+			factoryName: "verify",
+			run: { runId: "match", status: "completed" },
+			progress: [verificationMarker(plan.verification.reservationId)],
+		},
+		newer: {
+			factoryName: "plan",
+			run: { runId: "newer", status: "completed" },
+		},
+	}, { pageSize: 1 });
+	const listRuns = api.listRuns;
+	api.listRuns = async (options) => {
+		const page = await listRuns(options);
+		return options?.beforeSeq === undefined ? { ...page, runs: [] } : page;
+	};
+	const result = await createFactoryAnalysis(() => api).discoverVerificationRun(
+		plan.verification.reservationId,
+		plan.verification.reservedAt,
+	);
+	assert.equal(result.state, "found");
+	assert.equal(result.run.runId, "match");
+	assert.equal(api.listCalls.length, 2);
+});
+
+test("missing or unusable run-history metadata is inconclusive even with a match", async () => {
+	const plan = reservedPlan("unknown-history");
+	const record = {
+		factoryName: "verify",
+		run: { runId: "match", status: "completed" },
+		progress: [verificationMarker(plan.verification.reservationId)],
+	};
+	const summary = {
+		runId: "match",
+		factoryName: "verify",
+		status: "completed",
+		createdAt: Date.parse(plan.verification.reservedAt),
+	};
+	/** @type {Array<[Record<string, unknown>, RegExp]>} */
+	const cases = [
+		[{ hasMoreNewer: false }, /unknown omitted older history/],
+		[{ hasMoreNewer: false, omittedOlder: -1 }, /unknown omitted older history/],
+		[{ hasMoreNewer: false, omittedOlder: 1, oldestSeq: null }, /older cursor/],
+		[{ hasMoreNewer: false, omittedOlder: 1, oldestSeq: 0.5 }, /older cursor/],
+		[{ hasMoreNewer: true, omittedOlder: 0 }, /unresolved newer history/],
+		[{ omittedOlder: 0 }, /unresolved newer history/],
+	];
+	for (const runs of [[], [summary]]) {
+		for (const [metadata, reason] of cases) {
+			const api = fakeApi({ match: record });
+			api.listRuns = async () => ({ runs, ...metadata });
+			const result = await createFactoryAnalysis(() => api).discoverVerificationRun(
+				plan.verification.reservationId,
+				plan.verification.reservedAt,
+			);
+			assert.equal(result.state, "inconclusive");
+			assert.match(result.reason, reason);
+			assert.deepEqual(result.candidates.map((run) => run.runId), runs.map((run) => run.runId));
+		}
+	}
+	for (const invalidPage of [null, [], { runs: null }]) {
+		const api = fakeApi();
+		api.listRuns = async () => invalidPage;
+		const result = await createFactoryAnalysis(() => api).discoverVerificationRun(
+			plan.verification.reservationId,
+			plan.verification.reservedAt,
+		);
+		assert.equal(result.state, "inconclusive");
+		assert.match(result.reason, /listing is unavailable/);
+	}
+});
+
+test("discovery stops on a nonadvancing older cursor", async () => {
+	const plan = reservedPlan("stalled-cursor");
+	for (const nextCursor of [42, 43]) {
+		const api = fakeApi();
+		let reads = 0;
+		api.listRuns = async () => ({
+			runs: [],
+			hasMoreNewer: reads > 0,
+			oldestSeq: reads++ === 0 ? 42 : nextCursor,
+			omittedOlder: 1,
+		});
+		const result = await createFactoryAnalysis(() => api).discoverVerificationRun(
+			plan.verification.reservationId,
+			plan.verification.reservedAt,
+		);
+		assert.equal(result.state, "inconclusive");
+		assert.match(result.reason, /no advancing older cursor/);
+		assert.equal(reads, 2);
+	}
+});
+
+test("unreadable run pages and progress never establish absence or uniqueness", async () => {
+	const plan = reservedPlan("unreadable-history");
+	const marker = verificationMarker(plan.verification.reservationId);
+	const failures = [new Error("run page unavailable"), new Error(), ""];
+	for (const { failOnPage, failure } of [0, 1].flatMap((failOnPage) =>
+		failures.map((failure) => ({ failOnPage, failure })),
+	)) {
+		const api = fakeApi({
+			older: {
+				factoryName: "plan",
+				run: { runId: "older", status: "completed" },
+			},
+			match: {
+				factoryName: "verify",
+				run: { runId: "match", status: "completed" },
+				progress: [marker],
+			},
+		}, { pageSize: 1 });
+		const listRuns = api.listRuns;
+		api.listRuns = async (options) => {
+			if (api.listCalls.length === failOnPage) throw failure;
+			return listRuns(options);
+		};
+		const result = await createFactoryAnalysis(() => api).discoverVerificationRun(
+			plan.verification.reservationId,
+			plan.verification.reservedAt,
+		);
+		assert.equal(result.state, "inconclusive");
+		assert.equal(result.reason, failure instanceof Error ? failure.message : failure);
+		assert.deepEqual(result.candidates.map((run) => run.runId), failOnPage ? ["match"] : []);
+	}
+	for (const failedMethod of ["getRunDetail", "getRunProgress"]) {
+		const api = fakeApi({
+			unreadable: {
+				factoryName: "verify",
+				run: { runId: "unreadable", status: "completed" },
+				progress: [marker, ...Array.from({ length: 220 }, () => "later progress")],
+			},
+		});
+		api[failedMethod] = async () => { throw new Error("progress unavailable"); };
+		const result = await createFactoryAnalysis(() => api).discoverVerificationRun(
+			plan.verification.reservationId,
+			plan.verification.reservedAt,
+		);
+		assert.equal(result.state, "inconclusive");
+		assert.deepEqual(result.candidates.map((run) => run.runId), ["unreadable"]);
+		assert.match(result.candidates[0].reason ?? "", /progress unavailable/);
+	}
 });
 
 test("unrelated Factory read failures are never treated as missing runs", async () => {
@@ -941,6 +1283,90 @@ test("verification cancellation checks Factory identity and reaches terminal sta
 		(/** @type {any} */ error) =>
 			error.code === "factory_run_identity_mismatch",
 	);
+});
+
+test("verification cancellation returns already-terminal outcomes without cancelling", async () => {
+	for (const status of ["completed", "error", "halted", "cancelled"]) {
+		const api = fakeApi({
+			settled: { factoryName: "verify", run: { runId: "settled", status } },
+			wrong: { factoryName: "other", run: { runId: "wrong", status } },
+		});
+		const analysis = createFactoryAnalysis(() => api);
+		assert.deepEqual(await analysis.cancelVerificationRun("settled"), {
+			runId: "settled",
+			status,
+			alreadyTerminal: true,
+		});
+		await assert.rejects(
+			analysis.cancelVerificationRun("wrong"),
+			(/** @type {any} */ error) => error.code === "factory_run_identity_mismatch",
+		);
+		assert.deepEqual(api.cancelCalls, []);
+	}
+});
+
+test("verification cancellation translates native errors without waiting", async () => {
+	const api = fakeApi({
+		active: { factoryName: "verify", run: { runId: "active", status: "running" } },
+	});
+	api.cancel = async () => { throw new Error("native cancellation failed"); };
+	const analysis = createFactoryAnalysis(() => api);
+	await assert.rejects(
+		analysis.cancelVerificationRun("active"),
+		(/** @type {any} */ error) => error.code === "factory_cancel_failed"
+			&& error.message === "native cancellation failed"
+			&& error.details.runId === "active",
+	);
+	await assert.rejects(
+		analysis.cancelVerificationRun("missing"),
+		(/** @type {any} */ error) => error.code === "factory_run_not_found",
+	);
+	const { cancel, ...withoutCancellation } = api;
+	await assert.rejects(
+		createFactoryAnalysis(() => withoutCancellation).cancelVerificationRun("active"),
+		(/** @type {any} */ error) => error.code === "factory_backend_unavailable",
+	);
+});
+
+test("verification cancellation rejects nonterminal acknowledgements without a wait fallback", async () => {
+	for (const response of [null, {}, { status: "running" }, { status: "pending" }]) {
+		const api = fakeApi({
+			active: { factoryName: "verify", run: { runId: "active", status: "running" } },
+		});
+		api.cancel = async () => response;
+		let waits = 0;
+		const analysis = createFactoryAnalysis(() => ({
+			...api,
+			async waitForRun() {
+				waits++;
+				return { runId: "active", status: "cancelled" };
+			},
+		}));
+		await assert.rejects(
+			analysis.cancelVerificationRun("active"),
+			(/** @type {any} */ error) => error.code === "factory_cancel_incomplete",
+		);
+		assert.equal(waits, 0);
+	}
+});
+
+test("verification cancellation accepts only a terminal envelope for the requested run", async () => {
+	for (const status of ["completed", "error", "halted", "cancelled"]) {
+		const api = fakeApi({
+			active: { factoryName: "verify", run: { runId: "active", status: "running" } },
+		});
+		api.cancel = async () => ({ runId: "active", status });
+		assert.deepEqual(await createFactoryAnalysis(() => api).cancelVerificationRun("active"), {
+			runId: "active",
+			status,
+			alreadyTerminal: false,
+		});
+		api.cancel = async () => ({ runId: "different", status });
+		await assert.rejects(
+			createFactoryAnalysis(() => api).cancelVerificationRun("active"),
+			(/** @type {any} */ error) => error.code === "factory_run_identity_mismatch",
+		);
+	}
 });
 
 test("registered factory modules match metadata and declared phases", () => {
@@ -1151,10 +1577,10 @@ test("security review reports failed coverage instead of a clean result", async 
 		{ root: "src", perspectives: 1 },
 		(_prompt, options) => options.label === "orientation" ? null : undefined,
 	);
-	assert.match(
-		await ADDITIONAL_FACTORIES.securityReview.run(orientationFailure),
-		/Security review incomplete/,
-	);
+	const orientationResult =
+		await ADDITIONAL_FACTORIES.securityReview.run(orientationFailure);
+	assert.ok(typeof orientationResult === "string");
+	assert.match(orientationResult, /Security review incomplete/);
 	assert.equal(orientationFailure.calls.length, 1);
 
 	const investigationFailure = createWorkflowFactory(
@@ -1163,6 +1589,7 @@ test("security review reports failed coverage instead of a clean result", async 
 	);
 	const investigationResult =
 		await ADDITIONAL_FACTORIES.securityReview.run(investigationFailure);
+	assert.ok(typeof investigationResult === "string");
 	assert.match(investigationResult, /Coverage incomplete/);
 	assert.match(investigationResult, /must not be interpreted as a clean security review/);
 
@@ -1191,6 +1618,7 @@ test("security review reports failed coverage instead of a clean result", async 
 	);
 	const verificationResult =
 		await ADDITIONAL_FACTORIES.securityReview.run(verificationFailure);
+	assert.ok(typeof verificationResult === "string");
 	assert.match(verificationResult, /1 verification branch\(es\) failed/);
 	assert.match(verificationResult, /must not be interpreted as a clean security review/);
 });

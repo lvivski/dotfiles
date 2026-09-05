@@ -184,6 +184,30 @@ test("canvas mutations require a token, explicit confirmation, and current revis
 			}),
 		});
 		assert.equal(retryApproval.status, 400);
+		assert.match((await retryApproval.json()).error.message, /must be plan or completion/);
+		assert.equal((await current.operations.getPlan({ planId: current.plan.id })).revision, current.plan.revision);
+
+		for (const action of ["approve-correction", "reserve-task", "finalize-cancellation"]) {
+			const unsupported = await fetch(actionUrl, {
+				method: "POST",
+				headers: { "Content-Type": "application/json", "x-foundry-token": token },
+				body: JSON.stringify({ action, confirmed: true }),
+			});
+			assert.equal(unsupported.status, 404);
+		}
+		const foreignOrigin = await fetch(actionUrl, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				"x-foundry-token": token,
+				Origin: "https://attacker.example",
+			},
+			body: JSON.stringify({
+				action: "approve", approvalType: "plan", approvedBy: "tester",
+				revision: current.plan.revision, confirmed: true,
+			}),
+		});
+		assert.equal(foreignOrigin.status, 403);
 
         const approved = await fetch(actionUrl, {
             method: "POST",
@@ -222,6 +246,55 @@ test("canvas mutations require a token, explicit confirmation, and current revis
     } finally {
         await current.close();
     }
+});
+
+test("HTTP task retry follows projected eligibility without granting correction approval", async () => {
+	const current = await fixture();
+	try {
+		const html = await (await fetch(current.server.url)).text();
+		const token = html.match(/name="foundry-token" content="([a-f0-9]+)"/)?.[1];
+		assert.ok(token);
+		const post = (body) => fetch(new URL("/api/action", current.server.url), {
+			method: "POST",
+			headers: { "Content-Type": "application/json", "x-foundry-token": token },
+			body: JSON.stringify({ ...body, confirmed: true }),
+		});
+		let plan = await current.operations.approve({
+			planId: current.plan.id,
+			expectedRevision: current.plan.revision,
+			approvalType: "plan",
+			approvedBy: "tester",
+		});
+		const reserved = await current.operations.reserveTask({
+			planId: plan.id, expectedRevision: plan.revision,
+			taskId: "T-001", reservationId: "retry-reservation",
+		});
+		plan = await current.operations.completeTask({
+			planId: plan.id, expectedRevision: reserved.plan.revision,
+			taskId: "T-001", attemptId: reserved.attemptId, status: "blocked",
+			error: "Session was not created",
+		});
+		const blocked = await current.server.snapshot();
+		assert.ok(blocked.projection.actions.some((entry) => entry.kind === "retry-task"));
+		const retried = await post({ action: "retry", taskId: "T-001", revision: plan.revision });
+		assert.equal(retried.status, 200);
+		const retriedState = (await retried.json()).value;
+		assert.equal(retriedState.plan.tasks[0].status, "ready");
+		assert.ok(!retriedState.projection.actions.some((entry) => entry.kind === "retry-task"));
+		const repeated = await post({
+			action: "retry", taskId: "T-001", revision: retriedState.plan.revision,
+		});
+		assert.equal(repeated.status, 400);
+		assert.equal((await repeated.json()).error.code, "invalid_task_transition");
+		const correction = await post({
+			action: "approve", approvalType: "retry", approvedBy: "tester",
+			revision: retriedState.plan.revision,
+		});
+		assert.equal(correction.status, 400);
+		assert.match((await correction.json()).error.message, /must be plan or completion/);
+	} finally {
+		await current.close();
+	}
 });
 
 test("renderer assigns plan-authored content through textContent", async () => {

@@ -1,10 +1,9 @@
 /** @module factory — Foundry control-plane adapters and registered native Agent Factories. */
 import {
 	FoundryAnalysisError,
-	analysisInputDigest,
 	buildPlanningArgs,
 	buildVerificationInput,
-	normalizePlanningInput,
+	validatePlanningArgs,
 	validatePlanningResult,
 	validateVerificationResult,
 } from "./analysis.mjs";
@@ -29,6 +28,8 @@ export const FOUNDRY_FACTORIES = Object.freeze({
 });
 
 const TERMINAL = new Set(["completed", "error", "halted", "cancelled"]);
+const RUN_DISCOVERY_PAGE_SIZE = 200;
+const RUN_DISCOVERY_MAX_PAGES = 10;
 
 /** Typed failure raised when a native Factory run cannot satisfy Foundry invariants. */
 export class FoundryFactoryError extends Error {
@@ -173,33 +174,81 @@ export function createFactoryAnalysis(getFactoryApi) {
 		}
 	};
 
-	/** Discover the native verification run associated with one reservation. */
+	/**
+	 * Discover the native verification run associated with one reservation.
+	 * @param {string} reservationId
+	 * @param {string} reservedAt
+	 * @returns {Promise<
+	 *   {state: "absent"}
+	 *   | {state: "found", run: import("@github/copilot-sdk").FactoryRunSummary, duplicates: []}
+	 *   | {state: "inconclusive", reason: string,
+	 *     candidates: Array<import("@github/copilot-sdk").FactoryRunSummary & {reason?: string}>,
+	 *     unattributable?: Array<import("@github/copilot-sdk").FactoryRunSummary & {reason?: string}>}
+	 * >}
+	 */
 	const discoverVerificationRun = async (reservationId, reservedAt) => {
 		const threshold = Date.parse(String(reservedAt));
 		if (!Number.isFinite(threshold)) {
 			fail("factory_reservation_invalid", "Verification reservation timestamp is invalid");
 		}
-		let summaries;
-		try {
-			summaries = await api().listRuns();
-		} catch (error) {
-			return {
-				state: "inconclusive",
-				reason: error instanceof Error ? error.message : String(error),
-				candidates: [],
-			};
-		}
-		if (!Array.isArray(summaries)) {
-			return {
-				state: "inconclusive",
-				reason: "factory run listing is unavailable",
-				candidates: [],
-			};
+		/** @type {Map<string, import("@github/copilot-sdk").FactoryRunSummary>} */
+		const summaries = new Map();
+		let beforeSeq;
+		/** @type {string | null} */
+		let historyReason = "factory run history exceeds the discovery page budget";
+		for (let pageNumber = 0; pageNumber < RUN_DISCOVERY_MAX_PAGES; pageNumber++) {
+			/** @type {import("@github/copilot-sdk").FactoryRunsPage} */
+			let page;
+			try {
+				page = await api().listRuns({
+					limit: RUN_DISCOVERY_PAGE_SIZE,
+					...(beforeSeq === undefined ? {} : { beforeSeq }),
+				});
+			} catch (error) {
+				historyReason = error instanceof Error ? error.message : String(error);
+				break;
+			}
+			if (!page || !Array.isArray(page.runs)) {
+				historyReason = "factory run listing is unavailable";
+				break;
+			}
+			for (const summary of page.runs) {
+				// Active runs can accompany every terminal window. They are not duplicates.
+				if (summary && !summaries.has(summary.runId)) {
+					summaries.set(summary.runId, summary);
+				}
+			}
+			if (pageNumber === 0 && page.hasMoreNewer !== false) {
+				historyReason = "factory run listing has unresolved newer history";
+				break;
+			}
+			if (
+				typeof page.omittedOlder !== "number"
+				|| !Number.isSafeInteger(page.omittedOlder)
+				|| page.omittedOlder < 0
+			) {
+				historyReason = "factory run listing has unknown omitted older history";
+				break;
+			}
+			if (page.omittedOlder === 0) {
+				historyReason = null;
+				break;
+			}
+			// These are terminal-run cursors, not offsets into runs (which includes active runs).
+			if (
+				typeof page.oldestSeq !== "number"
+				|| !Number.isSafeInteger(page.oldestSeq)
+				|| (beforeSeq !== undefined && page.oldestSeq >= beforeSeq)
+			) {
+				historyReason = "factory run listing has no advancing older cursor";
+				break;
+			}
+			beforeSeq = page.oldestSeq;
 		}
 		const matches = [];
 		const inconclusive = [];
 		const unattributable = [];
-		for (const summary of summaries
+		for (const summary of [...summaries.values()]
 			.filter((entry) => entry?.factoryName === FOUNDRY_FACTORIES.verify.meta.name)
 			.filter((entry) => !Number.isFinite(entry.createdAt) || entry.createdAt >= threshold)
 			.sort((left, right) => (
@@ -234,11 +283,20 @@ export function createFactoryAnalysis(getFactoryApi) {
 				candidates: matches,
 			};
 		}
-		if (matches.length === 1 && inconclusive.length > 0) {
+		if (historyReason !== null) {
+			return {
+				state: "inconclusive",
+				reason: historyReason,
+				candidates: [...matches, ...inconclusive],
+				unattributable,
+			};
+		}
+		if (matches.length === 1 && (inconclusive.length > 0 || unattributable.length > 0)) {
 			return {
 				state: "inconclusive",
 				reason: "a matching verification run exists alongside unresolved candidates",
 				candidates: [...matches, ...inconclusive],
+				unattributable,
 			};
 		}
 		if (matches.length === 1) {
@@ -293,10 +351,17 @@ export function createFactoryAnalysis(getFactoryApi) {
 		if (!persistedInput || typeof persistedInput !== "object" || Array.isArray(persistedInput)) {
 			fail("factory_input_missing", `Planning run ${runId} did not return its canonical input`);
 		}
-		const { inputDigest, ...rawInput } = persistedInput;
-		const normalized = normalizePlanningInput(rawInput);
-		const expectedDigest = analysisInputDigest(normalized);
-		if (inputDigest !== expectedDigest || result.inputDigest !== expectedDigest) {
+		let normalized;
+		try {
+			normalized = validatePlanningArgs(persistedInput);
+		} catch (error) {
+			if (error instanceof FoundryAnalysisError && error.code === "analysis_input_mismatch") {
+				fail("factory_input_mismatch", `Planning run ${runId} carries an invalid input digest`);
+			}
+			throw error;
+		}
+		const { inputDigest } = normalized;
+		if (result.inputDigest !== inputDigest) {
 			fail("factory_input_mismatch", `Planning run ${runId} carries an invalid input digest`);
 		}
 		return {
@@ -439,28 +504,17 @@ export function createFactoryAnalysis(getFactoryApi) {
 			);
 		}
 		if (!TERMINAL.has(settled?.status)) {
-			if (typeof factoryApi.waitForRun !== "function") {
-				fail(
-					"factory_cancel_incomplete",
-					`Factory run ${runId} did not reach a terminal state`,
-					{ runId, status: settled?.status ?? null },
-				);
-			}
-			try {
-				settled = await factoryApi.waitForRun(runId);
-			} catch (error) {
-				fail(
-					"factory_cancel_failed",
-					error instanceof Error ? error.message : String(error),
-					{ runId },
-				);
-			}
-		}
-		if (!TERMINAL.has(settled?.status)) {
 			fail(
 				"factory_cancel_incomplete",
 				`Factory run ${runId} did not reach a terminal state`,
 				{ runId, status: settled?.status ?? null },
+			);
+		}
+		if (settled.runId !== runId) {
+			fail(
+				"factory_run_identity_mismatch",
+				`Factory cancellation returned a different run than ${runId}`,
+				{ runId, actualRunId: settled.runId },
 			);
 		}
 		return {

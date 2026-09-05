@@ -23,6 +23,7 @@ import {
     retryTask,
     summarizePlan,
     taskLaunchGuidance,
+	taskCompletionRequirements,
     transitionPlan,
     validatePlan,
 	verificationCheckIds,
@@ -315,6 +316,64 @@ test("approval resolves ready tasks deterministically", () => {
         required(plan.tasks.find((entry) => entry.id === "T-003")).status,
         TASK_STATUS.PLANNED,
     );
+});
+
+test("completed attempts use the shared delivery requirements and keep field validation", () => {
+	for (const requirement of ["branch", "commit", "pr"]) {
+		const first = { ...task("T-001"), deliveryRequirement: requirement };
+		let plan = approved({ tasks: [first, task("T-002", ["T-001"])] });
+		plan = reserveTaskAttempt(plan, first.id, {
+			reservationId: `delivery-${requirement}`,
+			at: RESERVED_AT,
+		});
+		plan = attachTaskAttempt(plan, first.id, "T-001-A001", {
+			sessionId: "delivery-session",
+			branch: "work/delivery",
+			at: STARTED_AT,
+		});
+		const current = plan.tasks[0];
+		const attempt = current.attempts[0];
+		const payload = {
+			resultSummary: "Delivered",
+			evidence: claimedEvidence(),
+			at: COMPLETED_AT,
+		};
+		const missing = taskCompletionRequirements(current, { ...attempt, ...payload });
+		assert.deepEqual(missing.missing, []);
+		assert.deepEqual(
+			missing.missingDelivery,
+			requirement === "branch" ? [] : requirement === "commit"
+				? ["full commit"] : ["full commit", "prUrl"],
+		);
+		if (requirement !== "branch") {
+			throwsCode(
+				() => completeTaskAttempt(plan, first.id, attempt.id, ATTEMPT_STATUS.DONE, payload),
+				"delivery_requirement_unsatisfied",
+			);
+		}
+		const delivery = {
+			...payload,
+			commit: requirement === "branch" ? null : "a".repeat(64),
+			prUrl: requirement === "pr" ? "https://github.com/test/repo/pull/1" : null,
+		};
+		const completed = completeTaskAttempt(plan, first.id, attempt.id, ATTEMPT_STATUS.DONE, delivery);
+		assert.equal(completed.tasks[0].attempts[0].branch, "work/delivery");
+		assert.equal(attempt.status, ATTEMPT_STATUS.RUNNING);
+		throwsCode(
+			() => completeTaskAttempt(plan, first.id, attempt.id, ATTEMPT_STATUS.DONE, {
+				...delivery,
+				branch: "work/other",
+			}),
+			"branch_mismatch",
+		);
+		throwsCode(
+			() => completeTaskAttempt(plan, first.id, attempt.id, ATTEMPT_STATUS.DONE, {
+				...delivery,
+				prUrl: "ftp://example.com/pull/1",
+			}),
+			"invalid_url",
+		);
+	}
 });
 
 test("reservation closes the create-session race and completion retains provenance", () => {

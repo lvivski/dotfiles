@@ -224,7 +224,21 @@ test("done attempts report actionable missing delivery fields", () => (
 			(/** @type {any} */ error) =>
 				error.code === "task_completion_incomplete"
 				&& error.details.missing.includes("resultSummary")
-				&& error.details.missing.includes("evidence"),
+				&& error.details.missing.includes("evidence")
+				&& !error.details.missing.includes("branch"),
+		);
+		await assert.rejects(
+			operations.completeTask({
+				planId: plan.id,
+				taskId: "T-001",
+				attemptId: first.attemptId,
+				expectedRevision: plan.revision,
+				status: TASK_STATUS.DONE,
+				resultSummary: "Foundation complete",
+				evidence: evidence("Foundation passed"),
+				branch: "work/wrong-branch",
+			}),
+			{ code: "branch_mismatch" },
 		);
 		plan = await operations.completeTask({
 			planId: plan.id,
@@ -234,8 +248,8 @@ test("done attempts report actionable missing delivery fields", () => (
 			status: TASK_STATUS.DONE,
 			resultSummary: "Foundation complete",
 			evidence: evidence("Foundation passed"),
-			branch: "work/missing-completion",
 		});
+		assert.equal(plan.tasks[0].attempts[0].branch, "work/missing-completion");
 
 		const second = await operations.reserveTask({
 			planId: plan.id,
@@ -267,6 +281,41 @@ test("done attempts report actionable missing delivery fields", () => (
 				error.code === "task_completion_incomplete"
 				&& error.details.missing.includes("full commit"),
 		);
+	})
+));
+
+test("completion only reuses a branch when one was attached", () => (
+	withOperations(async ({ operations, workspacePath }) => {
+		let plan = await createApproved(operations, workspacePath);
+		const reserved = await operations.reserveTask({
+			planId: plan.id,
+			taskId: "T-001",
+			expectedRevision: plan.revision,
+			reservationId: "branch-not-attached",
+		});
+		plan = await operations.attachTask({
+			planId: plan.id,
+			taskId: "T-001",
+			attemptId: reserved.attemptId,
+			expectedRevision: reserved.plan.revision,
+			sessionId: "branchless-session",
+		});
+		const result = {
+			planId: plan.id,
+			taskId: "T-001",
+			attemptId: reserved.attemptId,
+			expectedRevision: plan.revision,
+			status: TASK_STATUS.DONE,
+			resultSummary: "Delivered",
+			evidence: evidence("Passed"),
+		};
+		await assert.rejects(operations.completeTask(result), (/** @type {any} */ error) => {
+			assert.equal(error.code, "task_completion_incomplete");
+			assert.deepEqual(error.details.missing, ["branch"]);
+			return true;
+		});
+		plan = await operations.completeTask({ ...result, branch: "work/reported" });
+		assert.equal(plan.tasks[0].attempts[0].branch, "work/reported");
 	})
 ));
 

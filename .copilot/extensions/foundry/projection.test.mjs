@@ -5,10 +5,17 @@ import {
     PLAN_STATUS,
     approvePlan,
     attachTaskAttempt,
+	completeTaskAttempt,
+	completeVerification,
     createDraftPlan,
+	finalizePlanCancellation,
+	reconcileTaskReadiness,
     requestPlanCancellation,
     reserveTaskAttempt,
+	reserveVerification,
+	retryTask,
     transitionPlan,
+	verificationCheckIds,
 } from "./domain.mjs";
 import { normalizeInventory } from "./inventory.mjs";
 import { projectPlan } from "./projection.mjs";
@@ -45,8 +52,8 @@ test("inventory accepts omitted timestamps as unknown", () => {
     );
 });
 
-function approvedPlan() {
-    let plan = createDraftPlan({
+function draftPlan() {
+    return createDraftPlan({
         id: "projection-plan",
         title: "Projection plan",
         objective: "Derive recovery without duplicate state",
@@ -88,13 +95,129 @@ function approvedPlan() {
 			},
         ],
     }, { now: "2026-08-06T00:00:00.000Z" });
-    plan = transitionPlan(plan, PLAN_STATUS.AWAITING_APPROVAL, {
+}
+
+function approvedPlan() {
+    const plan = transitionPlan(draftPlan(), PLAN_STATUS.AWAITING_APPROVAL, {
         at: "2026-08-06T00:01:00.000Z",
     });
     return approvePlan(plan, "tester", {
         at: "2026-08-06T00:02:00.000Z",
     });
 }
+
+function finishTask(plan, taskId, status = "done") {
+	plan = reserveTaskAttempt(plan, taskId, { reservationId: `reserve-${taskId}` });
+	if (status !== "done") {
+		return completeTaskAttempt(plan, taskId, `${taskId}-A001`, status, { error: "Task stopped" });
+	}
+	plan = attachTaskAttempt(plan, taskId, `${taskId}-A001`, {
+		sessionId: `session-${taskId}`,
+		branch: `work/${taskId}`,
+	});
+	const task = plan.tasks.find((entry) => entry.id === taskId);
+	const checks = task.kind === "verify" ? verificationCheckIds(plan.tasks) : [null];
+	plan = completeTaskAttempt(plan, taskId, `${taskId}-A001`, status, {
+		resultSummary: "Task result",
+		commit: "a".repeat(40),
+		evidence: checks.map((checkId) => ({
+			...(checkId ? { checkId } : {}),
+			type: checkId === "final-integration" ? "integration" : "test",
+			summary: "Check passed",
+			source: "node --test",
+			outcome: "passed",
+		})),
+	});
+	return reconcileTaskReadiness(plan);
+}
+
+test("projection distinguishes initial, completion, and correction approvals", () => {
+	const draft = draftPlan();
+	const submitted = transitionPlan(draft, PLAN_STATUS.AWAITING_APPROVAL);
+	let delivered = approvedPlan();
+	for (const task of delivered.tasks) delivered = finishTask(delivered, task.id);
+	const reserved = reserveVerification(delivered, {
+		reservationId: "verify-projection",
+		inputDigest: "a".repeat(64),
+	});
+	const result = {
+		summary: "Verification result",
+		evidence: delivered.tasks.flatMap((task) => task.attempts[0].evidence.map((entry) => entry.id)),
+		missingEvidence: [],
+		correctionTaskIds: [],
+	};
+	const passed = completeVerification(reserved, { ...result, passed: true }, {
+		runId: "passed-run",
+	});
+	const failed = completeVerification(reserved, {
+		...result,
+		passed: false,
+		missingEvidence: ["Needs correction"],
+		correctionTaskIds: ["T-001"],
+	}, { runId: "failed-run" });
+	const completed = transitionPlan(passed, PLAN_STATUS.COMPLETED, { actor: "tester" });
+	const cancelling = requestPlanCancellation(approvedPlan(), {
+		requestId: "cancel-projection",
+		reason: "Stop",
+		requestedBy: "tester",
+	});
+	const cancelled = finalizePlanCancellation(cancelling, [], { finalizedBy: "tester" });
+	/** @type {Array<[import("./domain.mjs").FoundryPlan, string[]]>} */
+	const cases = [
+		[draft, []],
+		[submitted, ["approve-plan"]],
+		[approvedPlan(), []],
+		[delivered, []],
+		[reserved, []],
+		[passed, ["approve-completion"]],
+		[failed, ["approve-correction"]],
+		[completed, []],
+		[cancelling, []],
+		[cancelled, []],
+	];
+	for (const [plan, expected] of cases) {
+		assert.deepEqual(
+			projectPlan(plan).actions.filter((entry) => entry.kind.startsWith("approve-"))
+				.map((entry) => entry.kind),
+			expected,
+			plan.status,
+		);
+		assert.ok(!projectPlan(plan).actions.some((entry) => entry.kind === "retry-task"));
+	}
+});
+
+test("projected retries agree with domain phase, task status, and dependency requirements", () => {
+	for (const taskStatus of ["blocked", "failed"]) {
+		const failedTask = finishTask(finishTask(approvedPlan(), "T-001"), "T-002", taskStatus);
+		const unmet = structuredClone(failedTask);
+		unmet.tasks[0].status = "planned";
+		const cancelling = requestPlanCancellation(failedTask, {
+			requestId: `cancel-${taskStatus}`,
+			reason: "Stop",
+			requestedBy: "tester",
+		});
+		/** @type {Array<[import("./domain.mjs").FoundryPlan, string[]]>} */
+		const cases = [
+			[{ ...failedTask, status: PLAN_STATUS.APPROVED }, ["T-002"]],
+			[failedTask, ["T-002"]],
+			[{ ...failedTask, status: PLAN_STATUS.FAILED }, []],
+			[unmet, []],
+			[cancelling, []],
+		];
+		for (const [plan, expected] of cases) {
+			const retries = projectPlan(plan).actions
+				.filter((entry) => entry.kind === "retry-task").map((entry) => entry.taskId);
+			assert.deepEqual(retries, expected, `${plan.status}/${taskStatus}`);
+			for (const task of plan.tasks) {
+				if (retries.includes(task.id)) {
+					assert.equal(retryTask(plan, task.id).tasks.find((entry) => entry.id === task.id)?.status, "ready");
+				} else {
+					assert.throws(() => retryTask(plan, task.id));
+				}
+			}
+		}
+	}
+});
 
 test("projection treats omitted and incomplete session inventories as unknown", () => {
     let plan = approvedPlan();

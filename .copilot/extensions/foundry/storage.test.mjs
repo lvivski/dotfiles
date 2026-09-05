@@ -1,6 +1,7 @@
 // Storage tests use disposable session-workspace lookalikes.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
 import {
     mkdtemp,
 	lstat,
@@ -139,6 +140,67 @@ test("create, read, and list persist validated plans under the session workspace
         assert.deepEqual(JSON.parse(await readFile(artifactPath, "utf8")), plan);
     })
 ));
+
+test("storage results own nested data without retaining caller mutations", () => (
+	withWorkspace(async (workspace) => {
+		const store = createPlanStore({
+			workspacePath: workspace,
+			clock: () => UPDATED_AT,
+		});
+		const input = makePlan(workspace);
+		const expected = structuredClone(input);
+		const created = await store.create(input, 0);
+
+		input.tasks[0].acceptanceCriteria[0] = "Input mutation";
+		assert.deepEqual(created, expected);
+		created.tasks[0].acceptanceCriteria.push("Created-result mutation");
+		assert.deepEqual(await store.read(input.id), expected);
+
+		const read = await store.read(input.id);
+		read.tasks[0].expectedFiles.push("src/caller.mjs");
+		assert.deepEqual(await store.read(input.id), expected);
+
+		const candidate = await store.read(input.id);
+		candidate.tasks[0].acceptanceCriteria[0] = "Updated criterion";
+		const updated = await store.update(input.id, 1, candidate);
+		const expectedUpdated = structuredClone(updated);
+		assert.equal(candidate.revision, 1);
+		assert.equal(candidate.updatedAt, CREATED_AT);
+
+		candidate.tasks[0].acceptanceCriteria[0] = "Candidate mutation";
+		assert.deepEqual(updated, expectedUpdated);
+		updated.tasks[0].acceptanceCriteria.push("Updated-result mutation");
+		assert.deepEqual(await store.read(input.id), expectedUpdated);
+	})
+));
+
+test("failed writes preserve thrown values and release both write locks", async () => {
+	for (const failure of [new Error("clock failed"), "", null, undefined, false, 0]) {
+		await withWorkspace(async (workspace) => {
+			let failClock = true;
+			const store = createPlanStore({
+				workspacePath: workspace,
+				clock: () => {
+					if (failClock) throw failure;
+					return UPDATED_AT;
+				},
+			});
+			const plan = await store.create(makePlan(workspace), 0);
+			await assert.rejects(store.update(plan.id, 1, plan), (error) => {
+				assert.equal(error, failure);
+				return true;
+			});
+			assert.deepEqual(await store.read(plan.id), plan);
+			assert.deepEqual(
+				(await readdir(store.directory)).filter((name) => name.startsWith(".")),
+				[],
+			);
+			failClock = false;
+			const updated = await store.update(plan.id, 1, plan);
+			assert.equal(updated.revision, 2);
+		});
+	}
+});
 
 test("stale revisions fail with the latest revision and preserve the winning write", () => (
     withWorkspace(async (workspace) => {
@@ -312,6 +374,93 @@ test("an artifact corrupted before an update is preserved instead of overwritten
             [],
         );
     })
+));
+
+test("updates recheck the current artifact before replacing it", async (context) => {
+	for (const { revision, code } of [
+		{ revision: 1, code: "artifact_changed" },
+		{ revision: 2, code: "revision_conflict" },
+	]) {
+		await context.test(code, () => withWorkspace(async (workspace) => {
+			const plan = makePlan(workspace);
+			const artifactPath = path.join(workspace, "files", "foundry", `${plan.id}.json`);
+			const replacement = JSON.stringify({
+				...plan,
+				revision,
+				title: "Concurrent replacement",
+				updatedAt: UPDATED_AT,
+			});
+			const store = createPlanStore({
+				workspacePath: workspace,
+				clock: () => {
+					// Interleave a replacement after update has read the original artifact.
+					writeFileSync(artifactPath, replacement, "utf8");
+					return UPDATED_AT;
+				},
+			});
+			await store.create(plan, 0);
+
+			await rejectsCode(
+				store.update(plan.id, 1, { ...plan, title: "Must not land" }),
+				code,
+				(/** @type {any} */ error) => {
+					assert.equal(error.details.id, plan.id);
+					assert.equal(error.details.expectedRevision, 1);
+					if (code === "revision_conflict") {
+						assert.equal(error.details.latestRevision, revision);
+					}
+				},
+			);
+			assert.equal(await readFile(artifactPath, "utf8"), replacement);
+			assert.deepEqual(
+				(await readdir(store.directory)).filter((name) => name.startsWith(".")),
+				[],
+			);
+		}));
+	}
+});
+
+test("activation replaces an existing marker with the selected plan", () => (
+	withWorkspace(async (workspace) => {
+		const store = createPlanStore({
+			workspacePath: workspace,
+			clock: () => UPDATED_AT,
+		});
+		const first = await store.create(makePlan(workspace, "first-plan"), 0);
+		const second = await store.create(makePlan(workspace, "second-plan"), 0);
+		await store.activate(first.id, first.revision);
+		const marker = await store.activate(second.id, second.revision);
+
+		assert.deepEqual(await store.getActive(), { ...marker, plan: second });
+		assert.deepEqual(
+			(await readdir(store.directory)).filter((name) => name.startsWith(".")),
+			[".active-plan.json"],
+		);
+	})
+));
+
+test("marker replacement preserves filesystem errors and cleans temporary files", () => (
+	withWorkspace(async (workspace) => {
+		const store = createPlanStore({ workspacePath: workspace });
+		const plan = await store.create(makePlan(workspace), 0);
+		const markerPath = path.join(store.directory, ".active-plan.json");
+		await mkdir(markerPath);
+
+		await rejectsCode(
+			store.activate(plan.id, plan.revision),
+			"artifact_replace_failed",
+			(/** @type {any} */ error) => {
+				assert.equal(error.message, "Foundry could not replace the session marker");
+				assert.equal(typeof error.cause.code, "string");
+				assert.deepEqual(error.details, { filesystemCode: error.cause.code });
+			},
+		);
+		assert.equal((await lstat(markerPath)).isDirectory(), true);
+		assert.deepEqual(
+			(await readdir(store.directory)).filter((name) => name.startsWith(".")),
+			[".active-plan.json"],
+		);
+	})
 ));
 
 test("plan IDs cannot traverse outside the Foundry artifact directory", () => (

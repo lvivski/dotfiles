@@ -6,9 +6,6 @@
  */
 import {
     ATTEMPT_STATUS,
-	DELIVERY_REQUIREMENT,
-	EVIDENCE_OUTCOME,
-	EVIDENCE_TYPE,
     LIMITS,
     PLAN_STATUS,
     TASK_STATUS,
@@ -20,7 +17,6 @@ import {
     completeTaskAttempt,
     completeVerification,
     createDraftPlan,
-	effectiveDeliveryRequirement,
     finalizePlanCancellation,
     getReadyTasks,
     reconcileTaskReadiness,
@@ -30,6 +26,7 @@ import {
     retryFailedPlan,
     retryTask,
     taskLaunchGuidance,
+	taskCompletionRequirements,
     transitionPlan,
 } from "./domain.mjs";
 import {
@@ -140,37 +137,13 @@ function findAttempt(plan, taskId, attemptId) {
 function validateDonePayload(plan, taskId, attempt, input) {
 	const task = plan.tasks.find((candidate) => candidate.id === taskId);
 	if (!task || !attempt) return;
-	const requirement = effectiveDeliveryRequirement(task);
-	const missing = [];
-	if (attempt.sessionId === null) missing.push("attached session");
-	if (typeof input.resultSummary !== "string" || !input.resultSummary.trim()) {
-		missing.push("resultSummary");
-	}
-	if (!Array.isArray(input.evidence) || input.evidence.length === 0) {
-		missing.push("evidence");
-	}
-	if (typeof input.branch !== "string" || !input.branch.trim()) {
-		missing.push("branch");
-	}
-	if (requirement === DELIVERY_REQUIREMENT.COMMIT
-		|| requirement === DELIVERY_REQUIREMENT.PR) {
-		if (typeof input.commit !== "string"
-			|| !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(input.commit)) {
-			missing.push("full commit");
-		}
-	}
-	if (requirement === DELIVERY_REQUIREMENT.PR
-		&& (typeof input.prUrl !== "string" || !/^https?:\/\//.test(input.prUrl))) {
-		missing.push("prUrl");
-	}
-	if (attempt.integrationRequired.length > 0
-		&& (!Array.isArray(input.evidence)
-			|| !input.evidence.some((entry) => (
-				entry?.type === EVIDENCE_TYPE.INTEGRATION
-				&& entry?.outcome === EVIDENCE_OUTCOME.PASSED
-			)))) {
-		missing.push("passed integration evidence");
-	}
+	const requirements = taskCompletionRequirements(task, {
+		...attempt,
+		...input,
+		branch: input.branch ?? attempt.branch,
+	});
+	const { requirement } = requirements;
+	const missing = [...requirements.missing, ...requirements.missingDelivery];
 	if (missing.length > 0) {
 		throw new FoundryOperationError(
 			"task_completion_incomplete",

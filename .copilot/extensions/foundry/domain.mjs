@@ -195,6 +195,7 @@ const ATTEMPT_ID_PATTERN = /^T-\d{3}-A\d{3}$/;
 const EVIDENCE_ID_PATTERN = /^T-\d{3}-A\d{3}-E\d{3}$/;
 /** Stable idempotency request ID syntax. */
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const COMMIT_PATTERN = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 const TASK_KINDS = new Set(["implement", "verify"]);
 /** @type {Set<string>} */
 const PLAN_STATUS_VALUES = new Set(Object.values(PLAN_STATUS));
@@ -944,7 +945,7 @@ function assertRequestId(value, fieldPath) {
 function assertCommit(value, fieldPath) {
     if (value === null) return;
     if (typeof value !== "string"
-		|| !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(value)) {
+		|| !COMMIT_PATTERN.test(value)) {
 		fail("invalid_commit", `${fieldPath} must be a full lowercase Git object ID`, {
             path: fieldPath,
         });
@@ -971,43 +972,48 @@ export function effectiveDeliveryRequirement(task, fieldPath = "deliveryRequirem
 }
 
 /**
- * Requires one successful attempt to satisfy its task's delivery contract.
- *
- * Commit and PR delivery must carry a full SHA-1 or SHA-256 object ID; PR
- * delivery also needs a URL.
+ * Reports missing completion requirements for an effective attempt.
+ * Field shape and provenance validation remain separate from these requirements.
  *
  * @param {FoundryTask} task
- * @param {FoundryTask} task
- * @param {FoundryAttempt} attempt
- * @param {string} fieldPath
- * @returns {void}
+ * @param {{sessionId?: unknown, branch?: unknown, commit?: unknown, prUrl?: unknown,
+ * resultSummary?: unknown, evidence?: unknown, integrationRequired: object[]}} attempt
+ * @returns {{requirement: "branch"|"commit"|"pr", missing: string[], missingDelivery: string[]}}
  */
-function assertAttemptDelivery(task, attempt, fieldPath) {
-	const requirement = effectiveDeliveryRequirement(
-		task,
-		`${fieldPath}.deliveryRequirement`,
-	);
-	const fullCommit = typeof attempt.commit === "string"
-		&& /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(attempt.commit);
-	const satisfied = attempt.branch !== null
-		&& (requirement === DELIVERY_REQUIREMENT.BRANCH
-			|| (fullCommit
-				&& (requirement !== DELIVERY_REQUIREMENT.PR || attempt.prUrl !== null)));
-	if (!satisfied) {
-		fail(
-			"delivery_requirement_unsatisfied",
-			`Attempt ${attempt.id} does not satisfy ${requirement} delivery`,
-			{
-				path: fieldPath,
-				details: {
-					requirement,
-					branch: attempt.branch,
-					commit: attempt.commit,
-					prUrl: attempt.prUrl,
-				},
-			},
-		);
+export function taskCompletionRequirements(task, attempt) {
+	const requirement = effectiveDeliveryRequirement(task);
+	const missing = [];
+	const missingDelivery = [];
+	if (typeof attempt.sessionId !== "string" || !attempt.sessionId.trim()) {
+		missing.push("attached session");
 	}
+	if (typeof attempt.resultSummary !== "string" || !attempt.resultSummary.trim()) {
+		missing.push("resultSummary");
+	}
+	if (!Array.isArray(attempt.evidence) || attempt.evidence.length === 0) {
+		missing.push("evidence");
+	}
+	if (typeof attempt.branch !== "string" || !attempt.branch.trim()) {
+		missing.push("branch");
+	}
+	if (requirement !== DELIVERY_REQUIREMENT.BRANCH
+		&& (typeof attempt.commit !== "string"
+			|| !COMMIT_PATTERN.test(attempt.commit))) {
+		missingDelivery.push("full commit");
+	}
+	if (requirement === DELIVERY_REQUIREMENT.PR
+		&& (typeof attempt.prUrl !== "string" || !attempt.prUrl.trim())) {
+		missingDelivery.push("prUrl");
+	}
+	if (attempt.integrationRequired.length > 0
+		&& (!Array.isArray(attempt.evidence)
+			|| !attempt.evidence.some((entry) => (
+				entry?.type === EVIDENCE_TYPE.INTEGRATION
+				&& entry?.outcome === EVIDENCE_OUTCOME.PASSED
+			)))) {
+		missing.push("passed integration evidence");
+	}
+	return { requirement, missing, missingDelivery };
 }
 
 /**
@@ -1240,24 +1246,32 @@ function validateAttempt(attempt, task, index, fieldPath) {
             });
         }
     } else if (attempt.status === ATTEMPT_STATUS.DONE) {
-        const integrationEvidence = attempt.evidence.some(
-            (entry) => entry.type === EVIDENCE_TYPE.INTEGRATION
-                && entry.outcome === EVIDENCE_OUTCOME.PASSED,
-        );
-        if (attempt.sessionId === null
-            || attempt.startedAt === null
-            || attempt.branch === null
-            || attempt.resultSummary === null
-            || attempt.evidence.length === 0
-            || attempt.error !== null
+		const { requirement, missing, missingDelivery } = taskCompletionRequirements(task, attempt);
+		if (missing.length > 0
+			|| attempt.startedAt === null
+			|| attempt.error !== null
 			|| attempt.sessionTerminatedAt !== null
-            || attempt.cancelRequestedAt !== null
-            || attempt.completedAt === null
-            || (attempt.integrationRequired.length > 0 && !integrationEvidence)) {
-            fail("invalid_attempt_state", `${fieldPath} is not a valid completed attempt`, {
-                path: fieldPath,
-            });
-        }
+			|| attempt.cancelRequestedAt !== null
+			|| attempt.completedAt === null) {
+			fail("invalid_attempt_state", `${fieldPath} is not a valid completed attempt`, {
+				path: fieldPath,
+			});
+		}
+		if (missingDelivery.length > 0) {
+			fail(
+				"delivery_requirement_unsatisfied",
+				`Attempt ${attempt.id} does not satisfy ${requirement} delivery`,
+				{
+					path: fieldPath,
+					details: {
+						requirement,
+						branch: attempt.branch,
+						commit: attempt.commit,
+						prUrl: attempt.prUrl,
+					},
+				},
+			);
+		}
     } else if (attempt.status === ATTEMPT_STATUS.BLOCKED
         || attempt.status === ATTEMPT_STATUS.FAILED) {
         if (attempt.error === null
@@ -1367,11 +1381,6 @@ function validateTask(task, index, tasks) {
 			);
 		}
 		if (attempt.status === ATTEMPT_STATUS.DONE) {
-			assertAttemptDelivery(
-				task,
-				attempt,
-				`${fieldPath}.attempts[${attemptIndex}]`,
-			);
 			if (task.kind === "verify") {
 				if (actualChecks.length !== expectedChecks.length
 					|| actualChecks.some((checkId, checkIndex) => (

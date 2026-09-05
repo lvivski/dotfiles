@@ -236,6 +236,21 @@ export function buildPlanningArgs(value) {
 }
 
 /**
+ * Validates a supplied planning digest against the shared canonical input.
+ *
+ * @param {unknown} value
+ * @returns {PlanningArgs}
+ */
+export function validatePlanningArgs(value) {
+	const input = plainObject(value, "args");
+	const canonical = buildPlanningArgs(input);
+	if (input.inputDigest !== canonical.inputDigest) {
+		fail("analysis_input_mismatch", "Planning arguments do not match their canonical digest");
+	}
+	return canonical;
+}
+
+/**
  * Validates a generated plan blueprint through the authoritative domain model.
  *
  * @param {unknown} value
@@ -949,12 +964,45 @@ export function validateVerificationResult(value, expectedInput, expectedReserva
 	if (stableStringify(returnedInput) !== stableStringify(input)) {
 		fail("analysis_input_mismatch", "Verification result changed the canonical Factory input");
 	}
+	const evaluated = evaluateVerification(input, result);
+	const missingReviewer = result.reviews.findIndex((review) => review === null);
+	if (missingReviewer !== -1) {
+		fail("invalid_analysis_result", `Verification reviewer ${missingReviewer + 1} is invalid`);
+	}
+	if (evaluated.invalidEvidence) {
+		fail("invalid_analysis_result", "Verification result references unknown evidence");
+	}
+	if (result.passed === true && evaluated.missingRequiredEvidence) {
+		fail("invalid_analysis_result", "Passing verification omits verifier evidence");
+	}
+	if (result.passed === true && !evaluated.outcome.passed) {
+		fail("invalid_analysis_result", "Passing verification contradicts canonical checks");
+	}
+	return evaluated.outcome;
+}
 
+/**
+ * Evaluates review and verdict claims without trusting a proposed passing flag.
+ * The Factory selects valid proposed evidence; import rejects invalid persisted
+ * references, missing reviewers, and contradicted passes instead of repairing them.
+ *
+ * @param {VerificationInput} input Canonical normalized input.
+ * @param {unknown} value Review results and proposed verdict fields.
+ * @returns {{
+ *   outcome: VerificationOutcome,
+ *   gaps: Array<{summary: string, taskIds: string[]}>,
+ *   missingRequiredEvidence: boolean,
+ *   invalidEvidence: boolean
+ * }}
+ */
+export function evaluateVerification(input, value) {
+	const result = plainObject(value, "result");
 	const taskIds = input.tasks.map((task) => task.id);
 	const taskIdSet = new Set(taskIds);
 	const deterministic = assessDeterministicVerification(input);
 	const correctionTaskIds = new Set(deterministic.correctionTaskIds);
-	const missingSummaries = deterministic.hardGaps.map((entry) => entry.summary);
+	/** @type {Map<string, Set<string>>} */
+	const gapsBySummary = new Map();
 
 	const allEvidence = new Map([
 		...input.tasks.flatMap(
@@ -963,24 +1011,41 @@ export function validateVerificationResult(value, expectedInput, expectedReserva
 		...input.verificationReport.evidence.map((entry) => [entry.id, entry]),
 	]);
 	let unattributed = false;
-	/** Adds one attributed reviewer or verdict gap. */
+	/** Merge repeated findings without losing attribution from either source. */
 	const consumeAttribution = (entry, field) => {
 		if (!entry || typeof entry.summary !== "string" || !entry.summary.trim()) {
 			fail("invalid_analysis_result", `${field} is invalid`);
+		}
+		let owners = gapsBySummary.get(entry.summary);
+		if (!owners) {
+			owners = new Set();
+			gapsBySummary.set(entry.summary, owners);
 		}
 		if (!Array.isArray(entry.taskIds)
 			|| entry.taskIds.length === 0
 			|| entry.taskIds.some((id) => !taskIdSet.has(id))) {
 			unattributed = true;
 		} else {
-			entry.taskIds.forEach((id) => correctionTaskIds.add(id));
+			for (const id of entry.taskIds) {
+				correctionTaskIds.add(id);
+				owners.add(id);
+			}
 		}
-		missingSummaries.push(entry.summary);
 	};
+	deterministic.hardGaps.forEach((entry) => consumeAttribution(entry, "deterministic gap"));
 	if (!Array.isArray(result.reviews) || result.reviews.length !== 2) {
 		fail("invalid_analysis_result", "Verification result requires two reviewers");
 	}
 	result.reviews.forEach((review, reviewIndex) => {
+		if (review === null) {
+			consumeAttribution({
+				summary: reviewIndex === 0
+					? "Coverage reviewer returned no result"
+					: "Integration skeptic returned no result",
+				taskIds: [],
+			}, `result.reviews[${reviewIndex}]`);
+			return;
+		}
 		if (!review
 			|| !Array.isArray(review.coverage)
 			|| !Array.isArray(review.missingEvidence)
@@ -1019,37 +1084,44 @@ export function validateVerificationResult(value, expectedInput, expectedReserva
 		else unattributed = true;
 	}
 
-	if (!Array.isArray(result.evidenceIds)
-		|| result.evidenceIds.length > LIMITS.verificationEvidence
-		|| result.evidenceIds.some((id) => allEvidence.get(id)?.outcome
-			!== EVIDENCE_OUTCOME.PASSED)) {
+	if (!Array.isArray(result.evidenceIds)) {
 		fail("invalid_analysis_result", "Verification result references unknown evidence");
 	}
-	const evidence = [...new Set(result.evidenceIds)];
-	if (result.passed === true
-		&& deterministic.requiredEvidenceIds.some((id) => !evidence.includes(id))) {
-		fail("invalid_analysis_result", "Passing verification omits verifier evidence");
-	}
-	const missingEvidence = [...new Set(missingSummaries)]
-		.slice(0, LIMITS.missingEvidence);
+	const passingIds = result.evidenceIds.filter(
+		(id) => allEvidence.get(id)?.outcome === EVIDENCE_OUTCOME.PASSED,
+	);
+	const invalidEvidence = result.evidenceIds.length > LIMITS.verificationEvidence
+		|| passingIds.length !== result.evidenceIds.length;
+	const evidence = [...new Set(passingIds.slice(0, LIMITS.verificationEvidence))];
+	const missingRequiredEvidence =
+		deterministic.requiredEvidenceIds.some((id) => !evidence.includes(id));
 	const passed = result.passed === true
 		&& deterministic.hardPassed
-		&& missingEvidence.length === 0
+		&& !missingRequiredEvidence
+		&& gapsBySummary.size === 0
 		&& evidence.length > 0;
-	if (result.passed === true && !passed) {
-		fail("invalid_analysis_result", "Passing verification contradicts canonical checks");
-	}
 	if (!passed && (unattributed || correctionTaskIds.size === 0)) {
 		taskIds.forEach((taskId) => correctionTaskIds.add(taskId));
 	}
-	if (!passed && missingEvidence.length === 0) {
-		missingEvidence.push("Verification failed without an attributed evidence gap");
+	if (!passed && gapsBySummary.size === 0) {
+		gapsBySummary.set(
+			"Verification failed without an attributed evidence gap",
+			new Set(correctionTaskIds),
+		);
 	}
+	const gaps = [...gapsBySummary]
+		.slice(0, LIMITS.missingEvidence)
+		.map(([summary, owners]) => ({ summary, taskIds: [...owners].sort() }));
 	return {
-		passed,
-		summary: text(result.summary, "result.summary", LIMITS.resultSummary),
-		evidence,
-		missingEvidence,
-		correctionTaskIds: passed ? [] : [...correctionTaskIds].sort(),
+		outcome: {
+			passed,
+			summary: text(result.summary, "result.summary", LIMITS.resultSummary),
+			evidence,
+			missingEvidence: gaps.map((entry) => entry.summary),
+			correctionTaskIds: passed ? [] : [...correctionTaskIds].sort(),
+		},
+		gaps,
+		missingRequiredEvidence,
+		invalidEvidence,
 	};
 }
