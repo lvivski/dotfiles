@@ -13,8 +13,50 @@ ADO_EXTRA_ORGS=()
 ADO_EXTRA_PROJECTS=()
 
 warn() { echo "review-queue-fetch: $*" >&2; }
-need() { [ "$1" -ge "$2" ] || { warn "$3"; exit 2; }; }
+need() { [ "$1" -ge "$2" ] || { warn "$3. Use --help for usage."; exit 2; }; }
 jr() { printf "%s" "$1" | jq -r "$2"; }
+
+usage() {
+  printf '%s\n' 'Usage: review-queue-fetch.sh [OPTIONS]
+Gather assigned GitHub and Azure DevOps PRs as a JSON array on stdout.
+Warnings go to stderr. Fetching is read-only and never approves PRs.
+
+Options:
+  --limit N             Positive result limit per lookup (default: 100).
+  --max-age-days N      Non-negative age filter in days (default: 30; 0: all).
+  --all-ages            Disable the age filter.
+  --github-only         Fetch GitHub only; cannot combine with --azure-only.
+  --azure-only          Fetch Azure DevOps only.
+  --ado-org ORG         Azure organization name or URL.
+  --ado-project PROJECT Azure project; "*" lists all accessible projects.
+  --ado-scope ORG PROJ  Add an Azure scope; repeat for multiple scopes.
+  --no-diff             Fetch metadata only; insufficient for approval triage.
+  --max-diff N          Deprecated and ignored; diffs are never truncated.
+  -h, --help            Show this help without dependencies or authentication.
+
+Dependencies:
+  Bash and jq are required to fetch. GitHub needs gh with authenticated accounts.
+  Azure needs az, its Azure DevOps extension, and az login.
+  All authenticated github.com accounts are queried without switching accounts.
+
+Azure defaults:
+  AZURE_DEVOPS_ORG and AZURE_DEVOPS_PROJECT select the default scope.
+  AZURE_DEVOPS_EXTRA_SCOPES (or AZURE_DEVOPS_SCOPES) accepts ORG|PROJECT;ORG|PROJECT.
+  Otherwise the configured Azure CLI scope is used.
+
+Examples:
+  review-queue-fetch.sh --github-only --limit 25
+  review-queue-fetch.sh --azure-only --ado-scope example platform --all-ages
+
+Exit codes:
+  0: completed or help; inspect stderr for skipped/failed platform warnings.
+  2: invalid arguments. 3: jq is missing. Other nonzero codes indicate failure.'
+}
+
+valid_integer() {
+  case "$1" in ""|*[!0-9]*) return 1 ;; esac
+  [ "$1" -ge "$2" ] 2>/dev/null
+}
 
 ado_norm_org() {
   local org="$1"
@@ -42,6 +84,7 @@ add_ado_scope() {
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    -h|--help) usage; exit 0 ;;
     --limit) need $# 2 "--limit needs a value"; LIMIT="$2"; shift 2 ;;
     --max-diff) need $# 2 "--max-diff is no longer supported; diffs are never truncated"; warn "--max-diff ignored; diffs are never truncated"; shift 2 ;;
     --max-age-days) need $# 2 "--max-age-days needs a value"; MAX_AGE_DAYS="$2"; shift 2 ;;
@@ -52,9 +95,13 @@ while [ $# -gt 0 ]; do
     --ado-org) need $# 2 "--ado-org needs a value"; ADO_ORG="$2"; shift 2 ;;
     --ado-project) need $# 2 "--ado-project needs a value"; ADO_PROJECT="$2"; shift 2 ;;
     --ado-scope) need $# 3 "--ado-scope needs ORG and PROJECT"; add_ado_scope "$2" "$3"; shift 3 ;;
-    *) warn "unknown arg $1"; exit 2 ;;
+    *) warn "unknown arg $1. Use --help for usage."; exit 2 ;;
   esac
 done
+
+valid_integer "$LIMIT" 1 || { warn "--limit must be a positive integer; received '$LIMIT'."; exit 2; }
+valid_integer "$MAX_AGE_DAYS" 0 || { warn "--max-age-days must be a non-negative integer; received '$MAX_AGE_DAYS'."; exit 2; }
+[ "$DO_GH" -eq 1 ] || [ "$DO_AZ" -eq 1 ] || { warn "--github-only and --azure-only are mutually exclusive."; exit 2; }
 
 command -v jq >/dev/null 2>&1 || { warn "jq is required"; exit 3; }
 

@@ -23,7 +23,7 @@ its planning Factory result; native plan mode is not a substitute for that resul
 | `verify` | Produce the final fail-closed evidence verdict |
 | `audit` | Audit files for a specified concern |
 | `deep-research` | Research independent angles and verify cited claims |
-| `review-queue` | Triage supplied pull-request diffs |
+| `review-queue` | Triage correctness and maintainability risks in supplied diffs |
 | `security-review` | Run a multi-perspective static security review |
 | `triage` | Classify and prioritize tickets |
 
@@ -37,6 +37,13 @@ The review queue pipelines each PR through review and verification independently
 finish every chunk review before it can enter verification, and only complete, clean evidence that
 passes the configured policy can be recommended for approval. The final queue report waits for all
 PRs; pipelining does not reduce reviewer count or expand the supplied-evidence scope.
+
+Review covers correctness and maintainability. The report includes observed line changes and
+actionable concerns rather than quality scores; counts alone do not block approval. Material
+concerns and incomplete evidence require human review. The workflow remains diff-only, without
+additional checkouts, analyzers, or reviewers. Start with the
+[review-queue skill](../../skills/review-queue/SKILL.md); load its local references only when adjusting
+queue options or interpreting the detailed review criteria and metric limits.
 
 ## Plan model
 

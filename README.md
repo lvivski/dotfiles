@@ -28,6 +28,21 @@ From this repository, refresh the file after changing installed tools with:
 brew bundle dump --file=.Brewfile --force
 ```
 
+## Copilot skills
+
+The four skills in `.copilot/skills/` use standard Agent Skills frontmatter, with client-specific
+settings under namespaced `metadata` keys. Each `SKILL.md` holds its default workflow and essential
+safeguards; directly linked local references provide phase protocols or options only when needed.
+Bundled script paths are resolved from the skill directory, not a hard-coded installation path.
+`source ./sync` installs these skills along with their references and scripts.
+
+The queue fetcher's offline CLI tests use Bash and standard OS utilities, with no additional
+runtime or test framework:
+
+```sh
+bash .copilot/skills/review-queue/scripts/review-queue-fetch.test.sh
+```
+
 ## Copilot Foundry — control plane and Agent Factories
 
 `source ./sync` also installs the **Foundry** Copilot extension. Foundry coordinates dependency-aware

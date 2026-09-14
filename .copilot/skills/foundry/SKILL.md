@@ -1,13 +1,13 @@
 ---
 name: foundry
 description: >-
-  Use this skill when the user wants Foundry to coordinate a dependency-aware engineering plan
-  across App-native child sessions, including planning, approval, dispatch, recovery,
-  verification, retry, or cancellation.
-compatibility: GitHub Copilot CLI/App with the Foundry extension loaded.
+  Use this skill when the user explicitly requests Foundry to plan, approve, dispatch, recover,
+  verify, retry, or cancel dependency-aware engineering work across App-native child sessions.
+  Do not use it for routine coding, ordinary multi-session work, or stacked PRs without an
+  explicit Foundry request.
+compatibility: Requires GitHub Copilot CLI/App with the Foundry extension and App session tools.
 metadata:
   copilot.user-invocable: "true"
-user-invocable: true
 ---
 
 # Foundry coordinator
@@ -22,10 +22,8 @@ Use this protocol when the user explicitly requests Foundry coordination. For ro
 prefer native plan mode and direct tools; for ordinary multi-session or stacked-PR work, use the
 native `orchestrate` or `pr-stack` flows without creating a Foundry plan.
 
-Foundry's additional value is its durable approval, reservation, delivery, evidence, and recovery
-state. When Foundry is requested, keep the complete protocol below even for a small task. Do not
-substitute a native plan-mode document for the completed planning Factory result required by
-`foundry_create_plan`.
+Keep the complete coordinator protocol even for a small task. A native plan-mode document is not
+a substitute for the completed planning Factory result required by `foundry_create_plan`.
 
 ## Hard rules
 
@@ -54,91 +52,19 @@ substitute a native plan-mode document for the completed planning Factory result
     factory's declared limits unless the user explicitly requests an override. Never lower a declared
     or returned limit without an explicit user request.
 
-## Plan
+## Choose the current phase
 
-1. Gather a bounded repository summary: working directory, base branch, relevant architecture,
-   likely files, constraints, and existing validation commands.
-2. Choose a stable lowercase plan ID and call `foundry_prepare_plan`.
-3. Invoke the returned `launchSpec` exactly once with `run_factory`.
-4. Inspect the terminal Factory result. Import only a completed run with `foundry_create_plan`,
-   using `expectedRevision: 0` and the exact repository identity.
-5. Call `foundry_submit_plan`, present the plan to the user, and wait for explicit approval.
-6. After approval, call `foundry_approve_plan` with `approvalType: "plan"` and the user's identity,
-   then activate it with `foundry_activate_plan`.
+Read the matching reference **before issuing tools for that phase**. Each contains a required,
+ordered protocol, not optional background reading. Load the next phase only when its prerequisites
+are satisfied. If the current state is uncertain, recover before dispatching or relaunching work.
 
-Planning currently has no pre-launch reservation. Keep the completed planning `runId` until it is
-imported, and never launch a replacement merely because the first run is temporarily unobservable.
+| Current need | Required reference |
+| --- | --- |
+| Create a plan and obtain approval | [Planning and approval](references/planning.md) |
+| Reserve, create, attach, and record task attempts | [Task dispatch](references/dispatch.md) |
+| Verify delivery, approve correction waves, and finish | [Verification and completion](references/verification.md); also [task dispatch](references/dispatch.md) before creating the verifier session |
+| Resume work, reconcile missing state, or repair artifacts | [Recovery](references/recovery.md) |
+| Stop owned work and finalize cancellation | [Cancellation](references/cancellation.md) |
 
-## Dispatch
-
-1. Call `foundry_next_tasks`.
-2. Dispatch only IDs in `dispatchableTaskIds`. An overlapping task needs a user-attributed
-   `scopeOverride`; never manufacture one.
-3. Reserve each task with a unique stable `reservationId` and the current revision.
-4. Resolve the current repository's App project, then call `create_session` with:
-   - `base_branch` equal to the reservation's `baseBranch`;
-   - `kickoff.prompt` equal to `delegationPrompt`;
-   - coordination enabled and an idle notification requested.
-5. Immediately attach the returned session ID and branch with `foundry_attach_task`.
-6. If session creation fails after reservation, record the unattached attempt as `blocked`; retry
-   only through `foundry_retry_task`.
-7. Wait for idle notifications rather than polling. Intervene only for a child request, explicit
-   steering, a stuck session, or cancellation.
-8. Record `done`, `failed`, or `blocked` with the child result, branch, commit/PR when present, and
-   concrete evidence. Resolve and record the full commit and PR metadata required by the task before
-   recording `done`. Before recording an attached failure, terminate/archive its session and supply
-   a fresh complete terminal inventory. Then re-read ready work.
-
-## Verify and finish
-
-1. The approved DAG ends in one ordinary `verify` task. Dispatch it through the same
-   reserve/create/attach flow as every other task, using its unchanged read-only prompt.
-2. The verifier detach-checks out the target commit and returns one evidence record per required
-   `checkId`, including `final-integration` and `workspace-integrity`. It reports the final observed
-   commit as the attempt commit. Failed checks still produce a `done` verifier report.
-3. Once every task is done, call `foundry_prepare_verification` with a stable reservation ID.
-4. If it returns `launchSpec`, run it exactly once. If it returns `launchSpec: null`, use the
-   returned `runId` and do not relaunch.
-5. Import the authoritative terminal run with `foundry_complete_verification`. Verification cannot
-   pass from task-owner evidence alone: every criterion and final integration must use the
-   independently reported evidence.
-6. On failure, show the attributed gaps and correction tasks. Start a correction wave only after
-   explicit user approval through `foundry_approve_plan` with `approvalType: "retry"`.
-7. On success, request explicit completion approval, then call `foundry_approve_plan` with
-   `approvalType: "completion"`.
-8. If the current session is linked to a GitHub issue, preserve the approved plan and final
-   verification report as issue artifacts. Do not create artifacts without a linked issue.
-
-## Recover
-
-1. If activation state is unreadable, call `foundry_deactivate_plan`; it removes the invalid marker
-   and reports `repaired: true`.
-2. If `foundry_list_plans` reports an unreadable artifact, show its validation details. Call
-   `foundry_quarantine_plan` only after explicit user approval, with the user's identity and reason.
-   Quarantine preserves the original artifact under a hidden filename while releasing the plan ID.
-3. Enumerate App sessions and inspect every session attached to an active attempt.
-4. Call `foundry_get_status` with the causally current inventory.
-5. Follow the first safe projected action. Missing sessions remain `unknown` unless the supplied
-   inventory is exhaustive and newer than the attempt.
-6. Resolve stale reservations explicitly as blocked attempts, then retry; never expire or replace
-   them silently.
-7. Use native Factory resume for resumable failed runs. Replace a terminal non-importable
-   verification run only with an attributed reason and actor.
-
-## Cancel
-
-Cancellation is a two-phase protocol:
-
-1. Call `foundry_cancel` once with a stable request ID, reason, and user identity.
-2. Archive or stop every attached App child session listed by the cancellation snapshot. Only
-   archive sessions this coordinator created. Record `no-session-created` only for an attempt that
-   never attached a session.
-3. Call `foundry_cancel_verification_run` with the current revision and the same cancellation request
-   ID. Use its `verificationDisposition`; never supply an arbitrary Factory run ID.
-4. Capture a fresh exhaustive App session inventory after those termination attempts.
-5. Call `foundry_finalize_cancellation` with exact attempt dispositions, the returned verification
-   disposition when present, and the fresh inventory.
-
-An absent, ambiguous, unreadable, or still-active session/Factory state blocks finalization.
-Use `finalizationOverride` only after the user explicitly accepts the uncertainty and supplies the
-attributed reason.
+When handing back control, report the stable plan ID, recorded state, and any blocker or explicit
+approval still needed. Do not describe a requested action as completed before its state is recorded.

@@ -86,6 +86,7 @@ function createWorkflowFactory(args, responseFor = null) {
 					risk: "low",
 					issues: [],
 					missingTests: [],
+					maintainability: [],
 					uncertainty: [],
 					summary: "clean",
 				};
@@ -1578,13 +1579,25 @@ test("item factories reject impossible workloads before dispatch", async () => {
 	);
 });
 
+/** @param {string[]} lines @param {string} [file] */
+function addedReviewDiff(lines, file = "src/a.js") {
+	return [
+		`diff --git a/${file} b/${file}`,
+		"--- /dev/null",
+		`+++ b/${file}`,
+		`@@ -0,0 +1,${lines.length} @@`,
+		...lines.map((line) => `+${line}`),
+		"",
+	].join("\n");
+}
+
 /** @param {number} number @param {any} [overrides] */
 function reviewPullRequest(number, overrides = {}) {
 	return {
 		repo: "owner/repo",
 		number,
 		title: `Change ${number}`,
-		diff: "+const answer = 42;",
+		diff: addedReviewDiff(["const answer = 42;"]),
 		files: ["src/a.js"],
 		me: "octocat",
 		coverage: "full diff",
@@ -1611,7 +1624,7 @@ test("review queue preserves coverage, policy, and failed-evidence decisions", a
 				reviewPullRequest(4, { coverage: "partial diff" }),
 				reviewPullRequest(5, { coverage: "" }),
 				reviewPullRequest(6, { diff: "" }),
-				reviewPullRequest(7, { diff: "+change\n".repeat(600) }),
+				reviewPullRequest(7, { diff: addedReviewDiff(Array(600).fill("change")) }),
 				...Array.from({ length: 6 }, (_, index) => reviewPullRequest(index + 8)),
 			];
 			const factory = createWorkflowFactory({
@@ -1627,6 +1640,7 @@ test("review queue preserves coverage, policy, and failed-evidence decisions", a
 						risk: "high",
 						issues: ["Concrete regression"],
 						missingTests: ["Regression coverage"],
+						maintainability: [],
 						uncertainty: ["Unclear compatibility"],
 						summary: "Needs review",
 					};
@@ -1663,6 +1677,7 @@ test("review queue preserves coverage, policy, and failed-evidence decisions", a
 			assert.match(rowFor(5), /\| high \|.*coverage unknown/);
 			assert.match(rowFor(6), /\| high \|.*0\/0 diff chunks/);
 			assert.match(rowFor(7), /2\/2 diff chunks/);
+			assert.match(rowFor(7), /\+600\/-0; net \+600/);
 			assert.match(rowFor(8), /\| high \|.*0\/1 diff chunks/);
 			assert.match(rowFor(9), /\| medium \|.*0\/1 passed/);
 			assert.match(rowFor(10), /Concrete regression.*Missing test: Regression coverage/);
@@ -1677,6 +1692,223 @@ test("review queue preserves coverage, policy, and failed-evidence decisions", a
 	}
 });
 
+test("review queue measures supplied text hunks without inventing source metrics", async (t) => {
+	const cases = [
+		{
+			name: "GitHub headers, context, marker-like code, blank lines, and CRLF",
+			overrides: {
+				diff: [
+					"diff --git a/src/a.js b/src/a.js",
+					"index 1234567..abcdef0 100644",
+					"--- a/src/a.js",
+					"+++ b/src/a.js",
+					"@@ -10,3 +10,5 @@ function execute() {",
+					" context",
+					"---old-marker",
+					"+++new-marker",
+					"+",
+					"+return next;",
+					" tail",
+					"\\ No newline at end of file",
+					"@@ -30 +32 @@",
+					"-before",
+					"+after",
+					"",
+				].join("\r\n"),
+			},
+			expected: "+4/-2; net +2",
+			approve: true,
+		},
+		{
+			name: "Azure multi-file unified diff ignores placeholder API counts",
+			overrides: {
+				platform: "azure",
+				additions: 0,
+				deletions: 0,
+				files: ["src/a.js", "docs/guide.md"],
+				diff: "--- a/src/a.js\n+++ b/src/a.js\n@@ -1,2 +1 @@\n-old1\n-old2\n+new\n" +
+					"--- a/docs/guide.md\n+++ b/docs/guide.md\n@@ -0,0 +1,2 @@\n+first\n+second\n",
+			},
+			expected: "+3/-2; net +1",
+			approve: true,
+		},
+		{
+			name: "deleted file",
+			overrides: { diff: "--- a/src/a.js\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-old1\n-old2\n" },
+			expected: "+0/-2; net -2",
+			approve: true,
+		},
+		{
+			name: "observed context is a measured zero, not unavailable",
+			overrides: { diff: "@@ -1 +1 @@\n unchanged\n" },
+			expected: "+0/-0; net 0",
+			approve: true,
+		},
+		{
+			name: "explicit partial coverage",
+			overrides: { coverage: "partial diff" },
+			expected: "+1/-0; net +1; partial",
+			approve: false,
+		},
+		{
+			name: "truncated hunk cannot claim full coverage",
+			overrides: { diff: "@@ -0,0 +1,2 @@\n+observed\n" },
+			expected: "+1/-0; net +1; partial",
+			approve: false,
+		},
+		{
+			name: "unexpected content interrupts a hunk",
+			overrides: { diff: "@@ -1 +1 @@\n-old\nunavailable\n" },
+			expected: "+0/-1; net -1; partial",
+			approve: false,
+		},
+		{
+			name: "binary-only evidence is not zero line growth",
+			overrides: { diff: "diff --git a/image.png b/image.png\nBinary files a/image.png and b/image.png differ\n" },
+			expected: "Unavailable (no text hunks)",
+			approve: false,
+		},
+		{
+			name: "Git binary patch is opaque",
+			overrides: { diff: "diff --git a/image.png b/image.png\nGIT binary patch\nliteral 3\nabc\n" },
+			expected: "Unavailable (no text hunks)",
+			approve: false,
+		},
+		{
+			name: "mixed text and binary evidence reports only observed text",
+			overrides: {
+				diff: addedReviewDiff(["const answer = 42;"]) +
+					"diff --git a/image.png b/image.png\nBinary files a/image.png and b/image.png differ\n",
+			},
+			expected: "+1/-0; net +1; partial",
+			approve: false,
+		},
+		{
+			name: "Azure missing content is partial even when mislabeled",
+			overrides: {
+				platform: "azure",
+				diff: "Azure content unavailable for base: src/a.js\n" + addedReviewDiff(["const answer = 42;"]),
+			},
+			expected: "+1/-0; net +1; partial",
+			approve: false,
+		},
+		{
+			name: "summary-only file listings are not deletions",
+			overrides: { coverage: "summary only", diff: "Azure DevOps changed files (summary only):\n- edit src/a.js\n" },
+			expected: "Unavailable (no text hunks)",
+			approve: false,
+		},
+		{
+			name: "missing evidence",
+			overrides: { diff: "" },
+			expected: "Unavailable (no text hunks)",
+			approve: false,
+		},
+		{
+			name: "unmeasured metrics alone do not block a metadata-only change",
+			overrides: { diff: "diff --git a/src/a.js b/src/a.js\nold mode 100644\nnew mode 100755\n" },
+			expected: "Unavailable (no text hunks)",
+			approve: true,
+		},
+	];
+	for (const { name, overrides, expected, approve } of cases) {
+		await t.test(name, async () => {
+			const factory = createWorkflowFactory({ prs: [reviewPullRequest(1, overrides)] });
+			const report = await ADDITIONAL_FACTORIES.reviewQueue.run(factory);
+			assert.ok(typeof report === "string");
+			const [row] = reviewQueueRows(report);
+			assert.ok(row.includes(`| ${expected} |`), row);
+			assert.ok(row.startsWith(approve ? "| Approve | low |" : "| Needs review | high |"), row);
+			assert.equal(factory.calls.some((call) => call.options.label.includes(":verify:")), approve);
+			assert.match(report, /Verbosity and erosion: not measured/);
+			assert.match(report, /not source LOC or an approval threshold/);
+			assert.match(report, /Independent model agreement is not proof of quality/);
+		});
+	}
+});
+
+test("review queue gates material maintainability concerns even with low correctness risk", async () => {
+	const finding = {
+		category: "duplication",
+		location: "src/a.js:1-2",
+		evidence: "validUser and validAdmin both repeat value.id && value.active",
+		impact: "Changes to eligibility must be kept in sync in both implementations.",
+		simplification: "Reuse one eligibility predicate while preserving both entry points.",
+	};
+	const factory = createWorkflowFactory({
+		prs: [reviewPullRequest(1, {
+			diff: addedReviewDiff([
+				"const validUser = value => value.id && value.active;",
+				"const validAdmin = value => value.id && value.active;",
+			]),
+		})],
+	}, (_prompt, options) => options.label.includes(":review:") ? {
+		risk: "low",
+		issues: [],
+		missingTests: [],
+		maintainability: [finding],
+		uncertainty: [],
+		summary: "Correct behavior with duplicated eligibility logic",
+	} : undefined);
+	const [row] = reviewQueueRows(await ADDITIONAL_FACTORIES.reviewQueue.run(factory));
+	assert.match(row, /^\| Needs review \| medium \|/);
+	for (const detail of Object.values(finding)) assert.ok(row.includes(detail), detail);
+	assert.match(row, /Maintainability \(duplication\)/);
+	assert.equal(factory.calls.length, 1);
+	assert.ok(factory.calls[0].options.schema.required.includes("maintainability"));
+	assert.deepEqual(
+		factory.calls[0].options.schema.properties.maintainability.items.required,
+		["category", "location", "evidence", "impact", "simplification"],
+	);
+});
+
+test("review queue applies the structural rubric independently and preserves rejection evidence", async () => {
+	const reason = "src/a.js:1: a single-use wrapper adds another API to maintain; call the existing helper directly.";
+	const diff = addedReviewDiff(["const wrapper = value => existingHelper(value);"]);
+	const factory = createWorkflowFactory({
+		prs: [reviewPullRequest(1, { diff })],
+	}, (_prompt, options) => options.label.includes(":verify:") ? {
+		passed: false,
+		reasons: reason,
+	} : undefined);
+	const [row] = reviewQueueRows(await ADDITIONAL_FACTORIES.reviewQueue.run(factory));
+	assert.match(row, /^\| Needs review \| medium \|/);
+	assert.ok(row.includes(`Chunk 1: ${reason}`));
+	assert.equal(factory.calls.length, 2);
+	for (const { prompt } of factory.calls) {
+		assert.match(prompt, /Assess maintainability separately from correctness/);
+		assert.match(prompt, /introduced or worsened duplication, unnecessary abstractions/);
+		assert.match(prompt, /complex branching/);
+		assert.match(prompt, /simpler behavior-preserving approach/);
+		assert.match(prompt, /not a quality score or an approval threshold/);
+		assert.match(prompt, /tests, documentation, generated code, lockfiles/);
+		assert.match(prompt, /Never invent numeric sloppiness scores, verbosity ratios, or erosion values/);
+		assert.match(prompt, /unavailable metrics alone are not a concern/);
+		assert.match(prompt, /Do not infer AI authorship/);
+		const block = /<UNTRUSTED-PULL-REQUEST-DIFF>\n([\s\S]+?)\n<\/UNTRUSTED-PULL-REQUEST-DIFF>/.exec(prompt);
+		assert.ok(block);
+		const evidence = JSON.parse(block[1]);
+		assert.equal(evidence.content, diff);
+		assert.deepEqual(evidence.observedLineChanges, {
+			additions: 1,
+			deletions: 0,
+			net: 1,
+			incomplete: false,
+		});
+	}
+});
+
+test("review queue requires a verdict for every reviewed chunk", async () => {
+	const factory = createWorkflowFactory({ prs: [reviewPullRequest(1)] });
+	const parallel = factory.parallel;
+	let batches = 0;
+	factory.parallel = async (thunks) => ++batches === 2 ? [] : parallel(thunks);
+	const [row] = reviewQueueRows(await ADDITIONAL_FACTORIES.reviewQueue.run(factory));
+	assert.match(row, /^\| Needs review \| medium \|/);
+	assert.match(row, /Independent verification was incomplete/);
+	assert.match(row, /0\/1 passed/);
+});
+
 test("review queue verifies ready PRs while waiting for every chunk of slower PRs", {
 	timeout: 5000,
 }, async (t) => {
@@ -1686,7 +1918,7 @@ test("review queue verifies ready PRs while waiting for every chunk of slower PR
 	t.after(() => events.emit("release"));
 	const factory = createWorkflowFactory({
 		prs: [
-			reviewPullRequest(1, { diff: "+change\n".repeat(600) }),
+			reviewPullRequest(1, { diff: addedReviewDiff(Array(600).fill("change")) }),
 			reviewPullRequest(2),
 		],
 		diff_chunk_chars: 4000,

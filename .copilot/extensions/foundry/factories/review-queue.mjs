@@ -32,7 +32,8 @@ const MAX_SUBAGENTS_PER_CHUNK = 4;
 export const meta = {
 	name: "review-queue",
 	description:
-		"Review supplied PR diffs, verify low-risk candidates, and render a triage queue. " +
+		"Review supplied PR diffs for correctness and maintainability, measure line changes, " +
+		"verify low-risk candidates, and render a triage queue. " +
 		"Args: { prs: object[], diff_chunk_chars?: number, max_total_chunks?: number, " +
 		"approve_only_low_risk_manual?: boolean, freshness?: string }.",
 	phases: [{ title: "Review and verify" }, { title: "Report" }],
@@ -62,6 +63,57 @@ export const meta = {
 
 const MAX_PRS = 200;
 const MAX_FILES_PER_PR = 3_000;
+const MAINTAINABILITY_GUIDANCE = `Assess maintainability separately from correctness, using only the supplied diff and metadata. Do not fetch a checkout, modify code, or approve PRs.
+Look for introduced or worsened duplication, unnecessary abstractions or indirection, verbose scaffolding, and functions accumulating unrelated responsibilities or complex branching.
+Report only material concerns: cite a visible file/hunk (or chunk and exact excerpt if location context is missing), quote the changed code, explain the concrete future maintenance cost, and suggest a simpler behavior-preserving approach.
+Do not invent locations, unseen duplicates, or baseline behavior. Do not flag pre-existing debt, formatting preferences, or speculative future requirements. Put material uncertainty from missing context in the review, not an invented finding.
+PR-wide observed line changes are context, not a quality score or an approval threshold. More code can be necessary; fewer lines can hide complexity. Distinguish production logic from tests, documentation, generated code, lockfiles, and justified compatibility code before judging growth.
+Never invent numeric sloppiness scores, verbosity ratios, or erosion values. Verbosity needs AST-grep and clone-line analysis; erosion needs full-function cyclomatic complexity and source-line counts. Neither is measured by this diff-only workflow, and unavailable metrics alone are not a concern.
+Do not infer AI authorship. Model agreement is a triage check, not an objective quality evaluation or a substitute for human judgment.`;
+
+function diffLineChanges(diff) {
+	let additions = 0;
+	let deletions = 0;
+	let hunks = 0;
+	let oldLines = 0;
+	let newLines = 0;
+	let incomplete = false;
+	for (const line of diff.split(/\r?\n/)) {
+		const hunk = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/.exec(line);
+		if (hunk) {
+			incomplete ||= oldLines !== 0 || newLines !== 0;
+			oldLines = Number(hunk[1] ?? 1);
+			newLines = Number(hunk[2] ?? 1);
+			hunks++;
+			continue;
+		}
+		if (/^(?:Binary files |GIT binary patch|@@@|Azure content unavailable)/.test(line)) {
+			incomplete = true;
+		}
+		if (!oldLines && !newLines) continue;
+		if (line === "\\ No newline at end of file") continue;
+		if (line.startsWith("+") && newLines > 0) {
+			additions++;
+			newLines--;
+		} else if (line.startsWith("-") && oldLines > 0) {
+			deletions++;
+			oldLines--;
+		} else if (line.startsWith(" ") && oldLines > 0 && newLines > 0) {
+			oldLines--;
+			newLines--;
+		} else {
+			incomplete = true;
+			oldLines = 0;
+			newLines = 0;
+		}
+	}
+	return {
+		additions: hunks ? additions : null,
+		deletions: hunks ? deletions : null,
+		net: hunks ? additions - deletions : null,
+		incomplete: incomplete || oldLines !== 0 || newLines !== 0,
+	};
+}
 
 export async function run(factory) {
 const factoryArgs = factory.args;
@@ -131,6 +183,7 @@ const prs = input.map((raw, index) => {
 		number,
 		title: String(raw.title || ""),
 		diff,
+		lineChanges: diffLineChanges(diff),
 		files,
 		me: String(raw.me || ""),
 		myTeams: (Array.isArray(raw.my_teams) ? raw.my_teams : []).map(String),
@@ -223,10 +276,24 @@ const REVIEW = {
 		risk: { enum: ["low", "medium", "high"] },
 		issues: { type: "array", items: { type: "string" } },
 		missingTests: { type: "array", items: { type: "string" } },
+		maintainability: {
+			type: "array",
+			items: {
+				type: "object",
+				properties: {
+					category: { enum: ["duplication", "unnecessary-abstraction", "complexity", "unnecessary-growth"] },
+					location: { type: "string" },
+					evidence: { type: "string" },
+					impact: { type: "string" },
+					simplification: { type: "string" },
+				},
+				required: ["category", "location", "evidence", "impact", "simplification"],
+			},
+		},
 		uncertainty: { type: "array", items: { type: "string" } },
 		summary: { type: "string" },
 	},
-	required: ["risk", "issues", "missingTests", "uncertainty", "summary"],
+	required: ["risk", "issues", "missingTests", "maintainability", "uncertainty", "summary"],
 };
 const VERDICT = {
 	type: "object",
@@ -236,6 +303,19 @@ const VERDICT = {
 	},
 	required: ["passed", "reasons"],
 };
+
+function diffEvidence(pr, unit, total) {
+	return untrustedBlock("PULL-REQUEST-DIFF", {
+		repository: pr.repo,
+		number: pr.number,
+		title: pr.title || "untitled",
+		changedFiles: pr.files,
+		observedLineChanges: pr.lineChanges,
+		coverage: pr.coverage || "unknown",
+		chunk: `${unit.id}/${total}`,
+		content: unit.content,
+	});
+}
 
 async function reviewPullRequest(pr) {
 	const units = chunks(pr);
@@ -254,17 +334,13 @@ async function reviewPullRequest(pr) {
 			unit,
 			result: await factory.agent(
 				`Review this bounded pull-request diff chunk.
-Report only concrete correctness bugs, risky behavior, missing tests, or genuine uncertainty.
+Report only concrete correctness bugs, risky behavior, missing tests, material maintainability concerns, or genuine uncertainty.
+Keep correctness issues in issues and structural concerns in maintainability. An empty maintainability array means no material concern was supported by this chunk, not that whole-repository quality was measured.
+
+${MAINTAINABILITY_GUIDANCE}
 
 ${UNTRUSTED_DATA_WARNING}
-${untrustedBlock("PULL-REQUEST-DIFF", {
-	repository: pr.repo,
-	number: pr.number,
-	title: pr.title || "untitled",
-	changedFiles: pr.files,
-	chunk: `${unit.id}/${units.length}`,
-	content: unit.content,
-})}`,
+${diffEvidence(pr, unit, units.length)}`,
 				{ label: `${pr.repo}#${pr.number}:review:${unit.id}`, schema: REVIEW },
 			),
 		})),
@@ -277,10 +353,11 @@ ${untrustedBlock("PULL-REQUEST-DIFF", {
 				row.result.risk === "low" &&
 				row.result.issues.length === 0 &&
 				row.result.missingTests.length === 0 &&
+				row.result.maintainability.length === 0 &&
 				row.result.uncertainty.length === 0,
 		);
 	const reason = codeownerReason(pr);
-	const sourceComplete = pr.coverage === "full diff";
+	const sourceComplete = pr.coverage === "full diff" && !pr.lineChanges.incomplete;
 	const policyAllows = !approveOnlyLowRiskManual || reason === "manual";
 	return {
 		pr,
@@ -295,13 +372,19 @@ ${untrustedBlock("PULL-REQUEST-DIFF", {
 async function verifyPullRequest(row) {
 	const successful = row.reviews.filter((item) => item?.result);
 	const risks = successful.map((item) => item.result.risk);
-	const risk = risks.includes("high") ? "high" : risks.includes("medium") ? "medium" : "low";
+	const maintainability = successful.flatMap((item) => item.result.maintainability);
+	const risk = risks.includes("high")
+		? "high"
+		: risks.includes("medium") || maintainability.length > 0 ? "medium" : "low";
 	const focus = successful.flatMap((item) => [
 		...item.result.issues,
 		...item.result.missingTests.map((value) => `Missing test: ${value}`),
+		...item.result.maintainability.map(
+			(finding) => `Maintainability (${finding.category}) at ${finding.location}: ${finding.evidence} Impact: ${finding.impact} Simpler approach: ${finding.simplification}`,
+		),
 		...item.result.uncertainty.map((value) => `Uncertainty: ${value}`),
 	]);
-	const coverage = `${successful.length}/${row.units.length} diff chunks; ${row.pr.coverage || "coverage unknown"}`;
+	const coverage = `${successful.length}/${row.units.length} diff chunks; ${row.pr.coverage || "coverage unknown"}${row.pr.lineChanges.incomplete ? "; incomplete text evidence" : ""}`;
 	if (!row.candidate) {
 		return {
 			...row,
@@ -319,10 +402,13 @@ async function verifyPullRequest(row) {
 	const verdicts = await factory.parallel(
 		row.reviews.map((item) => async () =>
 			factory.agent(
-				`Independently inspect this original diff evidence and primary review. Pass only if it is genuinely low risk, issue-free, sufficiently tested, and contains no unresolved uncertainty.
+				`Independently inspect the original diff before considering the primary review. Pass only if it is genuinely low risk, issue-free, sufficiently tested, and contains no material maintainability concern or unresolved uncertainty.
+If you reject it, include the concrete evidence and maintenance impact or correctness reason in reasons so the human reviewer can act on it.
+
+${MAINTAINABILITY_GUIDANCE}
 
 ${UNTRUSTED_DATA_WARNING}
-${untrustedBlock("PULL-REQUEST-DIFF", item.unit.content)}
+${diffEvidence(row.pr, item.unit, row.units.length)}
 
 ${untrustedBlock("PRIMARY-REVIEW", item.result)}`,
 				{ label: `${row.pr.repo}#${row.pr.number}:verify:${item.unit.id}`, schema: VERDICT },
@@ -330,19 +416,23 @@ ${untrustedBlock("PRIMARY-REVIEW", item.result)}`,
 		),
 	);
 	const passed = verdicts.filter((verdict) => verdict?.passed === true).length;
+	const verified = verdicts.length === row.reviews.length && passed === verdicts.length;
+	const rejectionReasons = verdicts.flatMap((verdict, index) => verdict?.passed === true
+		? []
+		: [`Chunk ${row.reviews[index].unit.id}: ${verdict?.reasons || "Independent verification returned no usable verdict."}`]);
 	return {
 		...row,
-		decision: passed === verdicts.length ? "approve" : "needs_review",
-		risk: passed === verdicts.length ? "low" : "medium",
+		decision: verified ? "approve" : "needs_review",
+		risk: verified ? "low" : "medium",
 		coverage,
 		justification:
-			passed === verdicts.length
+			verified
 				? `All ${passed} complete low-risk chunks passed independent verification.`
-				: `${verdicts.length - passed}/${verdicts.length} approval checks failed or rejected the evidence.`,
+				: rejectionReasons[0] || "Independent verification was incomplete.",
 		focus:
-			passed === verdicts.length
+			verified
 				? []
-				: [`Independent approval verification: ${passed}/${verdicts.length} passed`],
+				: [`Independent approval verification: ${passed}/${row.reviews.length} passed`, ...rejectionReasons],
 	};
 }
 
@@ -362,13 +452,19 @@ const rows = results.map((row, index) => row ?? ({
 factory.phase("Report");
 const cell = (value) => String(value ?? "").replace(/\|/g, "\\|").replace(/\n/g, "<br>");
 const label = (value) => ({ codeowner: "CODEOWNERS", "required-policy": "Required policy", manual: "Manual" })[value] || value;
+const lineChanges = (pr) => {
+	const { additions, deletions, net, incomplete } = pr.lineChanges;
+	if (net === null) return "Unavailable (no text hunks)";
+	const scope = incomplete || pr.coverage !== "full diff" ? "; partial" : "";
+	return `+${additions}/-${deletions}; net ${net > 0 ? "+" : ""}${net}${scope}`;
+};
 const sorted = [...rows].sort((left, right) => {
 	const decision = { needs_review: 0, approve: 1 };
 	return (decision[left.decision] ?? 2) - (decision[right.decision] ?? 2);
 });
 const out = [
-	"| Decision | Risk | Source | Updated | Files | Coverage | Why | PR | Justification | Focus |",
-	"| --- | --- | --- | --- | ---: | --- | --- | --- | --- | --- |",
+	"| Decision | Risk | Source | Updated | Files | Diff lines | Coverage | Why | PR | Justification | Focus |",
+	"| --- | --- | --- | --- | ---: | --- | --- | --- | --- | --- | --- |",
 ];
 for (const row of sorted) {
 	const pr = row.pr;
@@ -376,7 +472,7 @@ for (const row of sorted) {
 	out.push(
 		`| ${row.decision === "approve" ? "Approve" : "Needs review"} | ${cell(row.risk)} | ${cell(
 			`${pr.platform || ""}<br>${pr.me || ""}`,
-		)} | ${cell(pr.updatedAt.slice(0, 10))} | ${pr.files.length} | ${cell(row.coverage)} | ${cell(
+		)} | ${cell(pr.updatedAt.slice(0, 10))} | ${pr.files.length} | ${cell(lineChanges(pr))} | ${cell(row.coverage)} | ${cell(
 			label(row.reason),
 		)} | ${link} | ${cell(row.justification)} | ${cell(row.focus.join("; ") || "—")} |`,
 	);
@@ -384,6 +480,8 @@ for (const row of sorted) {
 out.push(
 	"",
 	`_Coverage: ${rows.length}/${prs.length} PRs triaged from supplied diff evidence (${evidenceCount} chunks). Freshness: ${freshness}. Deep checkout is not part of the Factory-native workflow._`,
+	"",
+	"_Diff lines count added/deleted textual hunk lines, including comments, blanks, tests, docs, generated code, and lockfiles; they are not source LOC or an approval threshold. Partial counts cover only observed text. Verbosity and erosion: not measured (full-source AST/clone and complexity analysis required). Maintainability findings are evidence-backed review prompts, not numeric quality scores or claims of AI authorship. Independent model agreement is not proof of quality._",
 );
 return out.join("\n");
 }
