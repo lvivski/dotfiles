@@ -13,6 +13,6 @@ that external work has stopped.
 5. Call `foundry_finalize_cancellation` with exact attempt dispositions, the returned verification
    disposition when present, and the fresh inventory.
 
-An absent, ambiguous, unreadable, or still-active session/Factory state blocks finalization.
+An absent, ambiguous, unreadable, paused, or still-active session/Factory state blocks finalization.
 Use `finalizationOverride` only after the user explicitly accepts the uncertainty and supplies the
 attributed reason.

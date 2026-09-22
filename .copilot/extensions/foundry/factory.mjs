@@ -27,6 +27,7 @@ export const FOUNDRY_FACTORIES = Object.freeze({
 	verify: Object.freeze({ meta: verifyMeta, run: runVerify }),
 });
 
+// Paused runs retain their reservation and are not cancellation evidence.
 const TERMINAL = new Set(["completed", "error", "halted", "cancelled"]);
 const RUN_DISCOVERY_PAGE_SIZE = 200;
 const RUN_DISCOVERY_MAX_PAGES = 10;
@@ -436,6 +437,7 @@ export function createFactoryAnalysis(getFactoryApi) {
 	/** Classify whether one discovered verification run can be superseded. */
 	const assessVerificationRun = async (runId, plan) => {
 			const run = await api().getRun(runId);
+			if (run.status === "paused") return { state: "paused", run };
 			if (!TERMINAL.has(run.status)) return { state: "active", run };
 			if (run.status !== "completed") {
 				return { state: "terminal-nonimportable", run };

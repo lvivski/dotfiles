@@ -14,8 +14,8 @@ run_factory({
 })
 ```
 
-Factory-owned routing agents synchronously delegate each angle to the built-in `research` agent.
-Angle pipelines run in batches of two to avoid multiplying searches and upstream timeouts.
+Each angle runs directly as the built-in `research` agent in one native pipeline.
+The runtime's two-agent concurrency limit replaces manual batching.
 Verifiers independently open cited URLs and check material claims. These mechanics belong to
 the factory; do not duplicate them with another pool of agents.
 
@@ -31,7 +31,8 @@ the factory; do not duplicate them with another pool of agents.
 ## Recovery
 
 Inspect the original `runId` with `factories_manage` using `operation: "inspect-run"`. Wait for a
-running run instead of polling or relaunching it. Resume a resumable failed run with
+running run instead of polling or relaunching it. After the user asks to continue, resume a paused
+or failed run with native `canResume: true` using
 `run_factory({ resumeFromRunId: "<run-id>" })` so completed work is reused.
 
 A limit failure requires explicit user authorization before increasing the reached limit.

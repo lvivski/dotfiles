@@ -769,7 +769,7 @@ export function createFoundryOperations(options) {
 			if (activeCandidate) {
 				throw new FoundryOperationError(
 					"verification_already_reserved",
-					`Verification run ${activeCandidate.runId} may still be active`,
+					`Verification run ${activeCandidate.runId} may still be active or paused`,
 					{ discovery },
 				);
 			}
@@ -778,10 +778,10 @@ export function createFoundryOperations(options) {
 					discovery.run.runId,
 					plan,
 				);
-				if (assessment.state === "active") {
+				if (assessment.state === "active" || assessment.state === "paused") {
 					throw new FoundryOperationError(
 						"verification_already_reserved",
-						`Verification run ${discovery.run.runId} is still active`,
+						`Verification run ${discovery.run.runId} is ${assessment.state}; inspect or cancel that run before replacing its reservation`,
 					);
 				}
 				if (assessment.state === "importable") {
@@ -1073,7 +1073,7 @@ export function createFoundryOperations(options) {
 			if (!verificationTerminated && !finalizationOverride) {
                 throw new FoundryOperationError(
                     "verification_not_terminated",
-					`Verification run ${verificationRunId} is still active or unobservable`,
+					`Verification run ${verificationRunId} is still active, paused, or unobservable`,
 					{ runId: verificationRunId },
                 );
             }

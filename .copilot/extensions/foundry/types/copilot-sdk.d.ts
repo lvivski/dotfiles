@@ -105,6 +105,7 @@ declare module "@github/copilot-sdk" {
 		| "running"
 		| "completed"
 		| "halted"
+		| "paused"
 		| "cancelled"
 		| "error";
 

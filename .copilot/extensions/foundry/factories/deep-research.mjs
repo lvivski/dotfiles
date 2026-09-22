@@ -13,7 +13,6 @@ const RESEARCH_OPTIONS_SCHEMA = {
 };
 const MAX_FIXED_SUBAGENTS = 3;
 const MAX_SUBAGENTS_PER_ANGLE = 3;
-const MAX_PARALLEL_ANGLES = 2;
 
 export const meta = {
 	name: "deep-research",
@@ -36,7 +35,7 @@ export const meta = {
 		],
 	},
 	limits: {
-		maxConcurrentSubagents: MAX_PARALLEL_ANGLES,
+		maxConcurrentSubagents: 2,
 		maxTotalSubagents: 40,
 		timeoutSeconds: 3600,
 		maxAiCredits: 10000,
@@ -104,28 +103,13 @@ const VERDICT = {
 };
 
 factory.phase("Research");
-const checked = [];
-for (let offset = 0; offset < angles.length; offset += MAX_PARALLEL_ANGLES) {
-	const batch = angles.slice(offset, offset + MAX_PARALLEL_ANGLES).map(
-		(angle, index) => ({ angle, index: offset + index }),
-	);
-	factory.log(
-		`deep-research: angle batch ${Math.floor(offset / MAX_PARALLEL_ANGLES) + 1}/${
-			Math.ceil(angles.length / MAX_PARALLEL_ANGLES)
-		}`,
-	);
-	const batchResults = await factory.pipeline(
-		batch,
-		async ({ angle, index }) => ({
-			angle,
-			index,
-			// Factory agent profiles are not selectable yet, so use a factory-owned router.
-			finding: await factory.agent(
-				`Act only as a routing agent. Call the task tool exactly once with:
-- agent_type: "research"
-- mode: "sync"
-
-In the delegated prompt, instruct the research agent to use web search, cite every material claim with a source URL, and flag thin or conflicting evidence. Return the research agent's report without adding unsupported claims. Do not research the angle yourself or silently fall back; report a delegation failure explicitly.
+const checked = await factory.pipeline(
+	angles,
+	async (angle, _original, index) => ({
+		angle,
+		index,
+		finding: await factory.agent(
+			`Research the assigned angle using web search. Cite every material claim with a source URL and flag thin or conflicting evidence. Do not add unsupported claims.
 
 Original question:
 ${question}
@@ -133,13 +117,16 @@ ${question}
 Assigned angle from the planning agent:
 ${UNTRUSTED_DATA_WARNING}
 ${untrustedBlock("RESEARCH-ANGLE", angle)}`,
-				{ label: `research:${index + 1}:${angle.slice(0, 32)}` },
-			),
-		}),
-		async (row) => {
-			if (row.finding === null) return { ...row, verdict: null };
-			const verdict = await factory.agent(
-				`Independently check every material claim and cited URL below. Pass only when the sources are credible, accessible, relevant, and support the claims.
+			{
+				agent: "research",
+				label: `research:${index + 1}:${angle.slice(0, 32)}`,
+			},
+		),
+	}),
+	async (row) => {
+		if (row.finding === null) return { ...row, verdict: null };
+		const verdict = await factory.agent(
+			`Independently check every material claim and cited URL below. Pass only when the sources are credible, accessible, relevant, and support the claims.
 
 Question:
 ${question}
@@ -148,16 +135,14 @@ ${UNTRUSTED_DATA_WARNING}
 ${untrustedBlock("RESEARCH-ANGLE", row.angle)}
 
 ${untrustedBlock("RESEARCH-FINDING", row.finding)}`,
-				{
-					label: `verify:${row.index + 1}:${row.angle.slice(0, 32)}`,
-					schema: VERDICT,
-				},
-			);
-			return { ...row, verdict };
-		},
-	);
-	checked.push(...batchResults);
-}
+			{
+				label: `verify:${row.index + 1}:${row.angle.slice(0, 32)}`,
+				schema: VERDICT,
+			},
+		);
+		return { ...row, verdict };
+	},
+);
 
 const rows = checked.map((row, index) =>
 	row ?? { angle: angles[index], finding: null, verdict: null },

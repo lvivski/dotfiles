@@ -154,7 +154,7 @@ function fakeApi(records = {}, { pageSize = 200, seqBase = 0 } = {}) {
 	const listCalls = [];
 	const detailCalls = [];
 	const cancelCalls = [];
-	const terminalStatuses = new Set(["completed", "error", "halted", "cancelled"]);
+	const terminalStatuses = new Set(["completed", "error", "halted", "paused", "cancelled"]);
 	return {
 		listCalls,
 		detailCalls,
@@ -1268,11 +1268,11 @@ test("unrelated Factory read failures are never treated as missing runs", async 
 	);
 });
 
-test("verification cancellation checks Factory identity and reaches terminal state", async () => {
+for (const status of ["running", "paused"]) test(`verification cancellation handles ${status} runs and checks identity`, async () => {
 	const records = {
 		active: {
 			factoryName: "verify",
-			run: { runId: "active", status: "running" },
+			run: { runId: "active", status },
 		},
 		wrong: {
 			factoryName: "other",
@@ -1280,6 +1280,8 @@ test("verification cancellation checks Factory identity and reaches terminal sta
 		},
 	};
 	const analysis = createFactoryAnalysis(() => fakeApi(records));
+	assert.equal((await analysis.assessVerificationRun("active", null)).state, status === "paused" ? "paused" : "active");
+	assert.equal(await analysis.verificationRunIsTerminal("active"), false);
 	assert.deepEqual(await analysis.cancelVerificationRun("active"), {
 		runId: "active",
 		status: "cancelled",
@@ -1335,8 +1337,8 @@ test("verification cancellation translates native errors without waiting", async
 	);
 });
 
-test("verification cancellation rejects nonterminal acknowledgements without a wait fallback", async () => {
-	for (const response of [null, {}, { status: "running" }, { status: "pending" }]) {
+test("verification cancellation rejects active or paused envelopes without a wait fallback", async () => {
+	for (const response of [null, {}, { status: "running" }, { status: "pending" }, { runId: "active", status: "paused" }]) {
 		const api = fakeApi({
 			active: { factoryName: "verify", run: { runId: "active", status: "running" } },
 		});
@@ -2073,7 +2075,7 @@ test("security review reports failed coverage instead of a clean result", async 
 	assert.match(verificationResult, /must not be interpreted as a clean security review/);
 });
 
-test("deep research delegates angle work to the built-in research agent", async () => {
+test("deep research calls the built-in research agent directly", async () => {
 	const researchFactory = createWorkflowFactory(
 		{ question: "Compare regions", angles: 1 },
 		(_prompt, options) => options.label === "plan"
@@ -2085,13 +2087,14 @@ test("deep research delegates angle work to the built-in research agent", async 
 		(call) => call.options.label.startsWith("research:"),
 	);
 	assert.equal(researchCalls.length, 1);
-	assert.equal(researchCalls[0].options.agent, undefined);
-	assert.match(researchCalls[0].prompt, /agent_type: "research"/);
-	assert.match(researchCalls[0].prompt, /mode: "sync"/);
-	assert.match(researchCalls[0].prompt, /Do not research the angle yourself/);
+	assert.equal(researchCalls[0].options.agent, "research");
+	assert.deepEqual(Object.keys(researchCalls[0].options).sort(), ["agent", "label"]);
+	assert.match(researchCalls[0].prompt, /Cite every material claim with a source URL/);
+	assert.doesNotMatch(researchCalls[0].prompt, /routing agent|task tool|agent_type/);
+	assert.equal(researchFactory.calls.length, 4);
 });
 
-test("deep research limits nested research fan-out to two angles", async () => {
+test("deep research uses one native pipeline under its concurrency limit", async () => {
 	const researchFactory = createWorkflowFactory(
 		{ question: "Compare regions", angles: 5 },
 		(_prompt, options) => options.label === "plan"
@@ -2099,7 +2102,9 @@ test("deep research limits nested research fan-out to two angles", async () => {
 			: undefined,
 	);
 	await ADDITIONAL_FACTORIES.deepResearch.run(researchFactory);
-	assert.deepEqual(researchFactory.pipelineBatches, [2, 2, 1]);
+	assert.equal(ADDITIONAL_FACTORIES.deepResearch.meta.limits.maxConcurrentSubagents, 2);
+	assert.equal(researchFactory.calls.length, 12);
+	assert.deepEqual(researchFactory.pipelineBatches, [5]);
 	const researchLabels = researchFactory.calls
 		.map((call) => call.options.label)
 		.filter((label) => label.startsWith("research:"));

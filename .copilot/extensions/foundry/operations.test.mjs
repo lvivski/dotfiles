@@ -672,10 +672,10 @@ test("verification completion rejects duplicate reservation runs", () => (
 	})
 ));
 
-test("repeated verification preparation reports an already launched run", () => {
+for (const state of ["active", "paused"]) test(`repeated verification preparation preserves ${state} runs`, () => {
 	const found = {
 		runId: "discovered-verification",
-		status: "running",
+		status: state === "active" ? "running" : "paused",
 		createdAt: Date.parse("2026-08-07T00:10:00.000Z"),
 	};
 	return withOperations(async ({ operations, workspacePath }) => {
@@ -721,6 +721,7 @@ test("repeated verification preparation reports an already launched run", () => 
 				run: found,
 				duplicates: [],
 			}),
+			assessVerificationRun: async () => ({ state }),
 		}),
 	});
 });
@@ -817,7 +818,7 @@ test("verification preparation never relaunches on inconclusive discovery", () =
 	})
 ));
 
-test("verification replacement cannot orphan one active inconclusive run", () => (
+for (const status of ["running", "paused"]) test(`verification replacement cannot orphan a ${status} inconclusive run`, () => (
 	withOperations(async ({ operations, workspacePath }) => {
 		let plan = await completeImplementation(operations, workspacePath);
 		const first = await operations.prepareVerification({
@@ -843,7 +844,7 @@ test("verification replacement cannot orphan one active inconclusive run", () =>
 			discoverVerificationRun: async () => ({
 				state: "inconclusive",
 				reason: "active run has no readable marker yet",
-				candidates: [{ runId: "active-run", status: "running" }],
+				candidates: [{ runId: "active-run", status }],
 			}),
 		}),
 	})
@@ -1074,7 +1075,7 @@ test("cancellation request is idempotent and finalization needs exact dispositio
     })
 ));
 
-test("Factory cancellation must be observed terminal before finalization", () => {
+for (const status of ["running", "paused"]) test(`${status} Factory runs require cancellation before finalization`, () => {
     let terminal = false;
     return withOperations(async ({ operations, workspacePath }) => {
         let plan = await createApproved(operations, workspacePath);
@@ -1127,7 +1128,7 @@ test("Factory cancellation must be observed terminal before finalization", () =>
 				state: "found",
 				run: {
 					runId: "active-verification",
-					status: "running",
+					status,
 					createdAt: Date.now(),
 				},
 				duplicates: [],
@@ -1138,7 +1139,7 @@ test("Factory cancellation must be observed terminal before finalization", () =>
 			},
 			verificationRunIsTerminal: async () => terminal,
         }),
-    });
+	});
 });
 
 test("late verification discovery is persisted before Factory cancellation", () => {
