@@ -1,6 +1,6 @@
 # Foundry
 
-Foundry is the Copilot extension control plane for native Agent Factories and dependency-aware
+Foundry is the Copilot extension control plane for native Dynamic Workflows and dependency-aware
 engineering plans across App-native project sessions.
 
 ## When to use Foundry
@@ -10,14 +10,14 @@ ordinary multi-session work and dependent PRs can use the native `orchestrate` a
 Those flows do not require a Foundry plan.
 
 Use Foundry when explicitly requesting a durable dependency-aware plan with approval gates,
-reserved task attempts, delivery/evidence contracts, and cross-session recovery. Native Factory
+reserved task attempts, delivery/evidence contracts, and cross-session recovery. Native workflow
 journals and session tools provide the execution primitives, not an equivalent to those policies.
 An explicit Foundry request still follows the complete coordinator protocol, including importing
-its planning Factory result; native plan mode is not a substitute for that result.
+its planning workflow result; native plan mode is not a substitute for that result.
 
-## Factories
+## Dynamic workflows
 
-| Factory | Purpose |
+| Workflow | Purpose |
 | --- | --- |
 | `plan` | Create, critique, synthesize, and verify a dependency-aware plan |
 | `verify` | Produce the final fail-closed evidence verdict |
@@ -27,10 +27,15 @@ its planning Factory result; native plan mode is not a substitute for that resul
 | `security-review` | Run a multi-perspective static security review |
 | `triage` | Classify and prioritize tickets |
 
-The five general factories use the native Factory lifecycle directly and never mutate Foundry plan
-state.
+Invoke these workflows with `run_dynamic_workflow` and inspect the returned `runId` with
+`dynamic_workflows_manage` (`inspect-run`). The five general workflows use the native workflow
+lifecycle directly and never mutate Foundry plan state.
 
-Every factory declares an SDK argument schema so malformed model invocations fail before approval or
+Definitions live in `workflows/` and register through `defineWorkflow` and `joinSession({ workflows })`.
+The control-plane adapter uses `session.workflow` for run inspection and cancellation. Registered
+names, reservation markers, and persisted Foundry plan fields are unchanged.
+
+Every workflow declares an SDK argument schema so malformed model invocations fail before approval or
 credit spend. Workload bounds also reserve capacity for the SDK's automatic structured-output retry.
 
 The review queue pipelines each PR through review and verification independently. A PR must still
@@ -58,12 +63,12 @@ Foundry owns:
 - reserve-before-create task attempts and immediate App-session attachment;
 - delivery requirements for branches, commits, and pull requests;
 - causal session inventories for retry and cancellation safety;
-- canonical evidence, correction waves, and final Factory verification;
+- canonical evidence, correction waves, and final workflow verification;
 - atomic storage, cross-process locks, stale-lock recovery, and deterministic recovery projections;
 - session-local guardrails and the interactive `foundry-board` canvas;
 - a bounded, revisioned activity timeline rendered from the authoritative plan document.
 
-Factory agents perform analysis only. App-native project sessions own repository mutation.
+Workflow agents perform analysis only. App-native project sessions own repository mutation.
 
 ## Tool surface
 
@@ -90,7 +95,7 @@ calls do not add repetitive reminders; activation, deactivation, unreadable-stat
 guidance remain available. This does not change permission checks or revision enforcement.
 
 The board can request cancellation, but the coordinator must still stop owned App sessions, cancel
-the authoritative verification Factory run, and finalize with a fresh causal inventory.
+the authoritative verification workflow run, and finalize with a fresh causal inventory.
 
 Plan artifacts have one strict current shape. Activity entries contain only the event, timestamp,
 and resulting revision. Unsupported fields and stale artifact shapes are rejected rather than
@@ -103,3 +108,14 @@ artifact under a hidden filename and returns the requester and reason so the pla
 ```sh
 node --test .copilot/extensions/foundry/*.test.mjs
 ```
+
+With TypeScript and Node.js type declarations available, check the offline SDK contracts and
+compile-only regression cases with:
+
+```sh
+tsc --project .copilot/extensions/foundry/jsconfig.json
+```
+
+The local SDK declarations cover the surfaces Foundry consumes. Tool results use namespaced
+telemetry, and workflow inspection preserves typed failure and pause metadata. A paused attempt
+is settled in the SDK, but is still not terminal evidence for Foundry cancellation.

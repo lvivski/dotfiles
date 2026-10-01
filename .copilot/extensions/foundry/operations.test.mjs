@@ -103,7 +103,7 @@ function analysisStub(options = {}) {
     };
     return {
         preparePlanning: async () => ({
-			factory: "plan",
+			workflow: "plan",
             inputDigest: "a".repeat(64),
 			launchSpec: { name: "plan", args: {} },
         }),
@@ -113,7 +113,7 @@ function analysisStub(options = {}) {
             plan: structuredClone(blueprint),
         }),
 		prepareVerification: async (_plan, reservationId) => ({
-			factory: "verify",
+			workflow: "verify",
             inputDigest: "b".repeat(64),
 			launchSpec: {
 				name: "verify",
@@ -486,12 +486,12 @@ test("operations drive reservation, App attachment, verification, and approval",
             expectedRevision: plan.revision,
             reservationId: "reserve-verification-success",
         });
-		assert.equal(verificationLaunch.factory, "verify");
+		assert.equal(verificationLaunch.workflow, "verify");
         plan = verificationLaunch.plan;
         plan = await operations.finishVerification({
             planId: plan.id,
             expectedRevision: plan.revision,
-			runId: "factory-run-1",
+			runId: "workflow-run-1",
         });
         assert.equal(plan.status, PLAN_STATUS.AWAITING_COMPLETION_APPROVAL);
         plan = await operations.approve({
@@ -507,7 +507,7 @@ test("operations drive reservation, App attachment, verification, and approval",
 		analysis: analysisStub({
 			discoverVerificationRun: async () => ({
 				state: "found",
-				run: { runId: "factory-run-1", status: "completed" },
+				run: { runId: "workflow-run-1", status: "completed" },
 				duplicates: [],
 			}),
 		}),
@@ -662,7 +662,7 @@ test("verification completion rejects duplicate reservation runs", () => (
 		analysis: analysisStub({
 			discoverVerificationRun: async () => ({
 				state: "inconclusive",
-				reason: "multiple Factory runs carry the verification reservation",
+				reason: "multiple Workflow runs carry the verification reservation",
 				candidates: [
 					{ runId: "first-run" },
 					{ runId: "second-run" },
@@ -748,7 +748,7 @@ test("terminal non-importable verification can move to a new reservation explici
 			planId: plan.id,
 			expectedRevision: plan.revision,
 			reservationId: "replacement-reservation",
-			replacementReason: "The previous Factory run was cancelled.",
+			replacementReason: "The previous Workflow run was cancelled.",
 			requestedBy: "octocat",
 		});
 		assert.equal(
@@ -758,7 +758,7 @@ test("terminal non-importable verification can move to a new reservation explici
 		assert.deepEqual(replacement.plan.verification.replacement, {
 			supersededReservationId: "failed-reservation",
 			supersededRunId: "failed-run",
-			reason: "The previous Factory run was cancelled.",
+			reason: "The previous Workflow run was cancelled.",
 			requestedBy: "octocat",
 			at: replacement.plan.verification.reservedAt,
 		});
@@ -800,7 +800,7 @@ test("verification preparation never relaunches on inconclusive discovery", () =
 			planId: plan.id,
 			expectedRevision: plan.revision,
 			reservationId: "inconclusive-replacement",
-			replacementReason: "Factory progress remained unreadable.",
+			replacementReason: "Workflow progress remained unreadable.",
 			requestedBy: "octocat",
 		});
 		assert.equal(
@@ -885,7 +885,7 @@ test("cancellation reconciliation prevents a launched run from being declared ab
 				finalizedBy: "octocat",
 				sessionInventory: completeInventory(),
 			}),
-			/bound Factory run|run-terminated/,
+			/bound Workflow run|run-terminated/,
 		);
 		const latest = await operations.getPlan({ planId: plan.id });
 		assert.equal(latest.cancellation.verificationRunId, null);
@@ -909,7 +909,7 @@ test("cancellation reconciliation prevents a launched run from being declared ab
 	});
 });
 
-test("cancellation remains requestable when Factory discovery is inconclusive", () => (
+test("cancellation remains requestable when Workflow discovery is inconclusive", () => (
 	withOperations(async ({ operations, workspacePath }) => {
 		let plan = await completeImplementation(operations, workspacePath);
 		const prepared = await operations.prepareVerification({
@@ -921,7 +921,7 @@ test("cancellation remains requestable when Factory discovery is inconclusive", 
 			planId: plan.id,
 			expectedRevision: prepared.plan.revision,
 			requestId: "cancel-inconclusive-verification",
-			reason: "Stop despite unavailable Factory observation",
+			reason: "Stop despite unavailable Workflow observation",
 			requestedBy: "octocat",
 		});
 		assert.equal(plan.status, PLAN_STATUS.CANCELLING);
@@ -943,7 +943,7 @@ test("cancellation remains requestable when Factory discovery is inconclusive", 
 			dispositions: [],
 			verificationDisposition: "no-run-created",
 			finalizationOverride: {
-				reason: "Factory observation remained unavailable.",
+				reason: "Workflow observation remained unavailable.",
 				attestedBy: "octocat",
 			},
 			finalizedBy: "octocat",
@@ -958,7 +958,7 @@ test("cancellation remains requestable when Factory discovery is inconclusive", 
 		analysis: analysisStub({
 			discoverVerificationRun: async () => ({
 				state: "inconclusive",
-				reason: "Factory API unavailable",
+				reason: "Workflow API unavailable",
 				candidates: [],
 			}),
 		}),
@@ -1075,7 +1075,7 @@ test("cancellation request is idempotent and finalization needs exact dispositio
     })
 ));
 
-for (const status of ["running", "paused"]) test(`${status} Factory runs require cancellation before finalization`, () => {
+for (const status of ["running", "paused"]) test(`${status} Workflow runs require cancellation before finalization`, () => {
     let terminal = false;
     return withOperations(async ({ operations, workspacePath }) => {
         let plan = await createApproved(operations, workspacePath);
@@ -1142,7 +1142,7 @@ for (const status of ["running", "paused"]) test(`${status} Factory runs require
 	});
 });
 
-test("late verification discovery is persisted before Factory cancellation", () => {
+test("late verification discovery is persisted before Workflow cancellation", () => {
 	let discoveryState = "absent";
 	return withOperations(async ({ operations, workspacePath }) => {
 		let plan = await completeImplementation(operations, workspacePath);
@@ -1215,7 +1215,7 @@ test("late verification discovery is persisted before Factory cancellation", () 
 	});
 });
 
-test("cancellation resolves a verification launch reserved before the Factory starts", () => (
+test("cancellation resolves a verification launch reserved before the Workflow starts", () => (
     withOperations(async ({ operations, workspacePath }) => {
         let plan = await createApproved(operations, workspacePath);
         ({ plan } = await runTask(operations, plan, "T-001"));
@@ -1230,7 +1230,7 @@ test("cancellation resolves a verification launch reserved before the Factory st
         plan = await operations.cancel({
             planId: plan.id,
             expectedRevision: plan.revision,
-			requestId: "cancel-before-factory",
+			requestId: "cancel-before-workflow",
             reason: "Do not launch verification",
             requestedBy: "octocat",
         });

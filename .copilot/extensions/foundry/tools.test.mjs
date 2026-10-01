@@ -9,6 +9,13 @@ function operationsStub() {
     });
 }
 
+/** @param {ReturnType<typeof buildFoundryTools>} tools @param {string} name */
+function toolNamed(tools, name) {
+    const tool = tools.find((entry) => entry.name === name);
+    assert.ok(tool, `Missing tool ${name}`);
+    return tool;
+}
+
 test("Foundry registers the complete globally unique tool surface", () => {
     const tools = buildFoundryTools(operationsStub());
     assert.deepEqual(tools.map((tool) => tool.name), [
@@ -34,77 +41,74 @@ test("Foundry registers the complete globally unique tool surface", () => {
         "foundry_deactivate_plan",
     ]);
     assert.equal(new Set(tools.map((tool) => tool.name)).size, tools.length);
-    const approve = tools.find((tool) => tool.name === "foundry_approve_plan");
+    const approve = toolNamed(tools, "foundry_approve_plan");
     assert.equal(approve.parameters.properties.retryStatus.const, "running");
-    const create = tools.find((tool) => tool.name === "foundry_create_plan");
+    const create = toolNamed(tools, "foundry_create_plan");
     assert.deepEqual(create.parameters.required, [
         "expectedRevision",
         "id",
         "runId",
         "repository",
     ]);
-    const completeVerification = tools.find(
-        (tool) => tool.name === "foundry_complete_verification",
-    );
+    const completeVerification = toolNamed(tools, "foundry_complete_verification");
     assert.deepEqual(completeVerification.parameters.required, [
         "planId",
         "expectedRevision",
         "runId",
     ]);
-    const prepareVerification = tools.find(
-        (tool) => tool.name === "foundry_prepare_verification",
-    );
+    const prepareVerification = toolNamed(tools, "foundry_prepare_verification");
     assert.deepEqual(prepareVerification.parameters.required, [
         "planId",
         "expectedRevision",
         "reservationId",
     ]);
     assert.equal(prepareVerification.skipPermission, undefined);
-    const reserve = tools.find((tool) => tool.name === "foundry_reserve_task");
+    const reserve = toolNamed(tools, "foundry_reserve_task");
     assert.deepEqual(reserve.parameters.required, [
         "planId",
         "taskId",
         "expectedRevision",
         "reservationId",
     ]);
-    const completeTask = tools.find((tool) => tool.name === "foundry_complete_task");
+    const completeTask = toolNamed(tools, "foundry_complete_task");
     assert.equal(
         completeTask.parameters.properties.evidence.items.properties.trust,
         undefined,
     );
 	assert.ok(completeTask.parameters.properties.evidence.items.properties.checkId);
 	assert.ok(completeTask.parameters.properties.sessionInventory);
-    const cancel = tools.find((tool) => tool.name === "foundry_cancel");
+    const cancel = toolNamed(tools, "foundry_cancel");
     assert.ok(cancel.parameters.required.includes("requestedBy"));
     assert.ok(cancel.parameters.required.includes("requestId"));
-	const quarantine = tools.find((tool) => tool.name === "foundry_quarantine_plan");
+	const quarantine = toolNamed(tools, "foundry_quarantine_plan");
 	assert.equal(quarantine.skipPermission, undefined);
 	assert.deepEqual(quarantine.parameters.required, [
 		"planId",
 		"reason",
 		"requestedBy",
 	]);
-	const cancelVerification = tools.find(
-		(tool) => tool.name === "foundry_cancel_verification_run",
-	);
+	const cancelVerification = toolNamed(tools, "foundry_cancel_verification_run");
 	assert.deepEqual(cancelVerification.parameters.required, [
 		"planId",
 		"expectedRevision",
 		"requestId",
 	]);
-	const finalize = tools.find((tool) => tool.name === "foundry_finalize_cancellation");
+	const finalize = toolNamed(tools, "foundry_finalize_cancellation");
 	assert.ok(finalize.parameters.required.includes("sessionInventory"));
 });
 
 test("tool handlers return structured success and failure envelopes", async () => {
     const successTools = buildFoundryTools(operationsStub());
-    const success = await successTools.find((tool) => tool.name === "foundry_get_plan")
-        .handler({ planId: "sample-plan" }, {
+    const successArgs = { planId: "sample-plan" };
+    const success = await toolNamed(successTools, "foundry_get_plan")
+		.handler(successArgs, {
             sessionId: "session",
             toolCallId: "call",
             toolName: "foundry_get_plan",
+			arguments: successArgs,
         });
     assert.equal(success.resultType, "success");
+    assert.deepEqual(success.toolTelemetry, { foundry: { outcome: "success" } });
     assert.equal(JSON.parse(success.textResultForLlm).ok, true);
 
     const failureTools = buildFoundryTools(new Proxy({}, {
@@ -116,13 +120,16 @@ test("tool handlers return structured success and failure envelopes", async () =
             throw error;
         },
     }));
-    const failure = await failureTools.find((tool) => tool.name === "foundry_submit_plan")
-        .handler({ planId: "sample-plan", expectedRevision: 2 }, {
+    const failureArgs = { planId: "sample-plan", expectedRevision: 2 };
+    const failure = await toolNamed(failureTools, "foundry_submit_plan")
+		.handler(failureArgs, {
             sessionId: "session",
             toolCallId: "call",
             toolName: "foundry_submit_plan",
+			arguments: failureArgs,
         });
     assert.equal(failure.resultType, "failure");
+    assert.deepEqual(failure.toolTelemetry, { foundry: { outcome: "failure" } });
     assert.deepEqual(JSON.parse(failure.textResultForLlm), {
         ok: false,
         error: {

@@ -1,4 +1,4 @@
-// Classify and summarize a batch of tickets using native Factory structured agents.
+// Classify and summarize a batch of tickets using native workflow structured agents.
 import {
 	UNTRUSTED_DATA_WARNING,
 	untrustedBlock,
@@ -14,6 +14,7 @@ const TICKETS_SCHEMA = {
 };
 const MAX_SUBAGENTS_PER_TICKET = 2;
 
+/** @type {import("@github/copilot-sdk").WorkflowMeta & {limits: Required<import("@github/copilot-sdk").WorkflowLimits>}} */
 export const meta = {
 	name: "triage",
 	description:
@@ -38,12 +39,12 @@ export const meta = {
 	},
 };
 
-export async function run(factory) {
-const factoryArgs = factory.args;
+export async function run(workflow) {
+const workflowArgs = workflow.args;
 const input =
-	factoryArgs && typeof factoryArgs === "object" && !Array.isArray(factoryArgs)
-		? factoryArgs.tickets
-		: factoryArgs;
+	workflowArgs && typeof workflowArgs === "object" && !Array.isArray(workflowArgs)
+		? workflowArgs.tickets
+		: workflowArgs;
 if (!Array.isArray(input) || !input.length) {
 	throw new Error("triage: provide a non-empty array of tickets or { tickets: [...] }");
 }
@@ -55,7 +56,7 @@ if (input.length > maxTickets) {
 		`triage: ${input.length} tickets exceed the retry-safe ${maxTickets}-ticket limit`,
 	);
 }
-factory.log(`triage: ${input.length} ticket(s)`);
+workflow.log(`triage: ${input.length} ticket(s)`);
 
 const MAX_TICKET_CHARS = 8000;
 const tickets = input.map((ticket, index) => {
@@ -97,9 +98,9 @@ const TRIAGE = {
 	required: ["category", "priority", "confidence", "rationale", "action"],
 };
 
-factory.phase("Triage");
-const results = await factory.pipeline(tickets, async (ticket, _original, index) => {
-	const detail = await factory.agent(
+workflow.phase("Triage");
+const results = await workflow.pipeline(tickets, async (ticket, _original, index) => {
+	const detail = await workflow.agent(
 		`Triage this ticket. Choose category and priority, state calibrated confidence, explain briefly, and give one concrete next action.
 
 ${UNTRUSTED_DATA_WARNING}

@@ -20,8 +20,8 @@
   },
   "include": [
     "*.mjs",
-    "factories/*.mjs",
+    "workflows/*.mjs",
     "renderer/*.js",
-    "types/*.d.ts"
+    "types/*.ts"
   ]
 }

@@ -885,7 +885,7 @@ export function normalizeVerificationInput(value) {
 }
 
 /**
- * Computes the deterministic verification gaps shared by the Factory and importer.
+ * Computes the deterministic verification gaps shared by the Workflow and importer.
  *
  * @param {any} input Canonical normalized verification input.
  * @returns {{
@@ -962,7 +962,7 @@ export function validateVerificationResult(value, expectedInput, expectedReserva
 	}
 	const returnedInput = normalizeVerificationInput(result.input);
 	if (stableStringify(returnedInput) !== stableStringify(input)) {
-		fail("analysis_input_mismatch", "Verification result changed the canonical Factory input");
+		fail("analysis_input_mismatch", "Verification result changed the canonical Workflow input");
 	}
 	const evaluated = evaluateVerification(input, result);
 	const missingReviewer = result.reviews.findIndex((review) => review === null);
@@ -983,7 +983,7 @@ export function validateVerificationResult(value, expectedInput, expectedReserva
 
 /**
  * Evaluates review and verdict claims without trusting a proposed passing flag.
- * The Factory selects valid proposed evidence; import rejects invalid persisted
+ * The Workflow selects valid proposed evidence; import rejects invalid persisted
  * references, missing reviewers, and contradicted passes instead of repairing them.
  *
  * @param {VerificationInput} input Canonical normalized input.

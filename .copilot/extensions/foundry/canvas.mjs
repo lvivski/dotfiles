@@ -5,7 +5,7 @@
  */
 import { CanvasError, createCanvas } from "@github/copilot-sdk/extension";
 
-import { PLAN_ID_PATTERN } from "./domain.mjs";
+import { PLAN_ID_PATTERN, assertPlanId } from "./domain.mjs";
 import { startServer } from "./server.mjs";
 
 /**
@@ -105,7 +105,6 @@ export function createFoundryCanvas(options) {
             },
         ],
         open: async (context) => {
-            const planId = context.input?.planId;
             let createdEntry = false;
             try {
                 const workspacePath = options.getWorkspacePath();
@@ -115,6 +114,13 @@ export function createFoundryCanvas(options) {
                         "Foundry requires a Copilot session workspace",
                     );
                 }
+				const input = context.input;
+				const planId = assertPlanId(
+					input && typeof input === "object" && !Array.isArray(input)
+						? input.planId
+						: undefined,
+					"planId",
+				);
                 const plan = await options.operations.getPlan({ planId });
                 let entryPromise = instances.get(context.instanceId);
                 if (entryPromise) {

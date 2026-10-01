@@ -1,5 +1,14 @@
 /** Minimal offline declarations for the Copilot extension APIs used by Foundry. */
 declare module "@github/copilot-sdk/extension" {
+	import type {
+		CopilotSession,
+		JsonValue,
+		Tool,
+		WorkflowDefinition,
+		WorkflowJsonSchema,
+		WorkflowMeta,
+	} from "@github/copilot-sdk";
+
 	export class CanvasError extends Error {
 		readonly code: string;
 		constructor(code: string, message: string);
@@ -15,7 +24,7 @@ declare module "@github/copilot-sdk/extension" {
 
 	export interface CanvasContext {
 		instanceId: string;
-		input?: Record<string, any>;
+		input?: JsonValue;
 	}
 
 	export function createCanvas(options: {
@@ -33,74 +42,136 @@ declare module "@github/copilot-sdk/extension" {
 		onClose?: (context: CanvasContext) => void | Promise<void>;
 	}): Canvas;
 
-	export interface FactoryContext {
-		readonly args: any;
+	export interface WorkflowContext<TArgs extends JsonValue = JsonValue> {
+		args: TArgs;
 		readonly runId: string;
 		readonly signal: AbortSignal;
 		agent(
 			prompt: string,
 			options?: {
 				label?: string;
-				schema?: Record<string, any>;
+				schema?: WorkflowJsonSchema;
 				model?: string;
 				reasoningEffort?: string;
 				contextTier?: "default" | "long_context";
 				agent?: string;
 			},
-		): Promise<any | null>;
+		): Promise<unknown>;
 		/** Ordinary thunk failures resolve to null; cancellation and runtime failures reject. */
 		parallel<T>(
 			thunks: Array<() => T | Promise<T>>,
 		): Promise<Array<T | null>>;
 		/** Ordinary stage failures resolve that item to null and skip its remaining stages. */
 		pipeline(
-			items: any[],
+			items: unknown[],
 			...stages: Array<
-				(previous: any, original: any, index: number) => any | Promise<any>
+				(previous: unknown, original: unknown, index: number) => unknown | Promise<unknown>
 			>
-		): Promise<any[]>;
+		): Promise<unknown[]>;
 		phase(title: string): void;
 		log(message: string): void;
-		factory(name: string, args?: any): Promise<any>;
-		readonly session: import("@github/copilot-sdk").CopilotSession;
+		/** Nested workflows are not supported; this method rejects. */
+		workflow(name: string, args?: JsonValue): Promise<JsonValue | void>;
+		readonly session: CopilotSession;
 		step(
 			key: string,
-			producer: () => any | Promise<any>,
+			producer: () => JsonValue | Promise<JsonValue>,
 			options?: { volatile?: boolean },
-		): Promise<any>;
+		): Promise<JsonValue>;
+		pause(key: string): Promise<void>;
 	}
 
-	export interface FactoryHandle {
-		readonly meta: {
-			readonly name: string;
-			readonly description: string;
-			readonly phases: ReadonlyArray<{ title: string; detail?: string }>;
-			readonly argsSchema?: Readonly<Record<string, any>>;
-			readonly limits?: Readonly<Record<string, number>>;
-		};
+	type DeepReadonly<T> = T extends (infer U)[] ? readonly DeepReadonly<U>[]
+		: T extends object ? { readonly [K in keyof T]: DeepReadonly<T[K]> } : T;
+
+	const workflowHandleBrand: unique symbol;
+
+	export interface WorkflowHandle<TArgs extends JsonValue = JsonValue, TResult extends JsonValue | void = JsonValue | void> {
+		readonly meta: DeepReadonly<WorkflowMeta>;
+		readonly [workflowHandleBrand]: { readonly args: TArgs; readonly result: TResult };
 	}
 
-	export function defineFactory(definition: {
-		meta: {
-			name: string;
-			description: string;
-			phases: Array<{ title: string; detail?: string }>;
-			argsSchema?: Record<string, any>;
-			limits?: Record<string, number>;
-		};
-		run: (context: FactoryContext) => Promise<any>;
-	}): FactoryHandle;
+	export function defineWorkflow<
+		TArgs extends JsonValue = JsonValue,
+		TResult extends JsonValue | void = JsonValue | void,
+	>(definition: WorkflowDefinition<TArgs, TResult>): WorkflowHandle<TArgs, TResult>;
 
 	export function joinSession(config?: {
-		factories?: FactoryHandle[];
-		tools?: any[];
+		workflows?: WorkflowHandle[];
+		tools?: Tool[];
 		hooks?: Record<string, any>;
 		canvases?: Canvas[];
-	}): Promise<import("@github/copilot-sdk").CopilotSession>;
+	}): Promise<CopilotSession>;
 }
 
 declare module "@github/copilot-sdk" {
-	export type FactoryRunStatus =
+	export type { WorkflowContext, WorkflowHandle } from "@github/copilot-sdk/extension";
+
+	export type JsonValue = null | boolean | number | string | JsonValue[]
+		| { [key: string]: JsonValue };
+
+	export type ToolTelemetry = Record<string, Record<string, JsonValue> | undefined>;
+
+	export interface ToolResultObject {
+		textResultForLlm: string;
+		resultType: "success" | "failure" | "rejected" | "denied" | "timeout";
+		error?: string;
+		sessionLog?: string;
+		toolTelemetry?: ToolTelemetry;
+		toolReferences?: string[];
+		binaryResultsForLlm?: Array<{
+			data: string;
+			mimeType: string;
+			type: "image" | "resource";
+			description?: string;
+		}>;
+	}
+
+	export interface ToolInvocation {
+		sessionId: string;
+		toolCallId: string;
+		toolName: string;
+		arguments: unknown;
+		signal?: AbortSignal;
+	}
+
+	export type ToolHandler<TArgs = unknown> = (
+		args: TArgs,
+		invocation: ToolInvocation,
+	) => unknown | Promise<unknown>;
+
+	/** Foundry uses raw JSON schemas, not the SDK's optional Zod schema support. */
+	export interface Tool<TArgs = unknown> {
+		name: string;
+		description?: string;
+		parameters?: Record<string, unknown>;
+		handler?: ToolHandler<TArgs>;
+		skipPermission?: boolean;
+	}
+
+	export type WorkflowJsonSchema = { [key: string]: JsonValue };
+
+	export interface WorkflowLimits {
+		maxConcurrentSubagents?: number;
+		maxTotalSubagents?: number;
+		maxAiCredits?: number;
+		timeoutSeconds?: number;
+	}
+
+	export interface WorkflowMeta {
+		name: string;
+		description: string;
+		phases: Array<{ title: string; detail?: string }>;
+		argsSchema?: WorkflowJsonSchema;
+		limits?: WorkflowLimits;
+	}
+
+	export interface WorkflowDefinition<TArgs extends JsonValue = JsonValue, TResult extends JsonValue | void = JsonValue | void> {
+		meta: WorkflowMeta;
+		run(context: import("@github/copilot-sdk/extension").WorkflowContext<TArgs>): Promise<TResult>;
+	}
+
+	export type WorkflowRunStatus =
 		| "pending"
 		| "running"
 		| "completed"
@@ -109,30 +180,70 @@ declare module "@github/copilot-sdk" {
 		| "cancelled"
 		| "error";
 
-	export type JsonValue = null | boolean | number | string | JsonValue[]
-		| { [key: string]: JsonValue };
-
-	/** Native envelope. Failure variants are opaque to this inspection boundary. */
-	export interface FactoryRunResult {
+	export interface WorkflowRunResult {
 		runId: string;
 		attempt?: number;
-		status: FactoryRunStatus;
+		status: WorkflowRunStatus;
 		result?: JsonValue;
 		error?: string;
-		failure?: unknown;
+		failure?:
+			| {
+				type: "workflow_limit_reached";
+				runId: string;
+				kind: "maxTotalSubagents" | "timeoutSeconds" | "maxAiCredits";
+				value: number;
+				suggestedValue?: number;
+			}
+			| { type: "workflow_resume_declined"; runId: string; reason: string }
+			| {
+				type: "workflow_durable_failure";
+				runId: string;
+				code: string;
+				operation: "createRun" | "markRunStarted" | "finishRun" | "reserveAgent"
+					| "releaseAgent" | "chargeCredit" | "addElapsed" | "reconcileCreditTotal"
+					| "journalGet" | "journalPut" | "refreshLease";
+			}
+			| { type: "workflow_accounting_incomplete"; runId: string; drainedNanoAiu: number }
+			| { type: "workflow_provider_disconnected"; runId: string };
 		reason?: string;
 		snapshot?: JsonValue;
+		pauseInfo?: { type: "user" } | { type: "checkpoint"; key: string };
 	}
 
-	/** Fields consumed from native summaries; other observability fields are omitted here. */
-	export interface FactoryRunSummary {
+	/** Native identity and recovery fields; unrelated observability fields are omitted. */
+	export interface WorkflowRunSummary {
 		runId: string;
-		factoryName: string;
-		status: FactoryRunStatus;
+		workflowName: string;
+		status: WorkflowRunStatus;
+		revision: number;
 		createdAt: number;
+		completedAt: number | null;
+		canResume: boolean;
 	}
 
-	export interface FactoryListRunsOptions {
+	export interface WorkflowProgressLine {
+		seq: number;
+		attempt: number;
+		phaseId: string | null;
+		recordedAt: number;
+		kind: "log" | "phase";
+		text: string;
+	}
+
+	export interface WorkflowProgressPage {
+		records: WorkflowProgressLine[];
+		oldestSeq: number | null;
+		newestSeq: number | null;
+		hasMoreOlder: boolean;
+		hasMoreNewer: boolean;
+		revision: number;
+	}
+
+	export interface WorkflowRunDetail extends WorkflowRunSummary {
+		progress: WorkflowProgressPage;
+	}
+
+	export interface WorkflowListRunsOptions {
 		/** Exclusive forward cursor. */
 		afterSeq?: number;
 		/** Exclusive backward cursor. */
@@ -141,9 +252,9 @@ declare module "@github/copilot-sdk" {
 		limit?: number;
 	}
 
-	export interface FactoryRunsPage {
+	export interface WorkflowRunsPage {
 		/** Summaries in durable creation order, including active runs. */
-		runs: FactoryRunSummary[];
+		runs: WorkflowRunSummary[];
 		/** Terminal-window cursors, null when the terminal window is empty. */
 		oldestSeq?: number | null;
 		newestSeq?: number | null;
@@ -153,20 +264,25 @@ declare module "@github/copilot-sdk" {
 		omittedOlder?: number;
 	}
 
-	export interface SessionFactoryApi {
-		getRun(runId: string): Promise<FactoryRunResult>;
-		getRunDetail(runId: string): Promise<any>;
-		getRunProgress(runId: string, options?: Record<string, any>): Promise<any>;
-		listRuns(): Promise<FactoryRunSummary[]>;
-		listRuns(options: FactoryListRunsOptions): Promise<FactoryRunsPage>;
+	export interface SessionWorkflowApi {
+		getRun(runId: string): Promise<WorkflowRunResult>;
+		getRunDetail(runId: string): Promise<WorkflowRunDetail>;
+		getRunProgress(runId: string, options?: {
+			phaseId?: string;
+			afterSeq?: number;
+			beforeSeq?: number;
+			limit?: number;
+		}): Promise<WorkflowProgressPage>;
+		listRuns(): Promise<WorkflowRunSummary[]>;
+		listRuns(options: WorkflowListRunsOptions): Promise<WorkflowRunsPage>;
 		/** Returns the terminal envelope, not a cancellation acknowledgement. */
-		cancel(runId: string): Promise<FactoryRunResult>;
-		waitForRun(runId: string, options?: { signal?: AbortSignal }): Promise<FactoryRunResult>;
+		cancel(runId: string): Promise<WorkflowRunResult>;
+		waitForRun(runId: string, options?: { signal?: AbortSignal }): Promise<WorkflowRunResult>;
 	}
 
 	export interface CopilotSession {
 		readonly workspacePath?: string;
-		readonly factory: SessionFactoryApi;
+		readonly workflow: SessionWorkflowApi;
 		readonly rpc: any;
 		log(message: string, options?: Record<string, any>): Promise<void>;
 	}

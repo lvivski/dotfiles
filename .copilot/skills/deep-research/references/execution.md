@@ -5,10 +5,10 @@ Read when adjusting research breadth or interpreting a run that did not produce 
 ## Inputs and execution
 
 `question` is required and must be non-empty. Optional `angles` must be a positive integer; the
-default is five, capped at twelve and the factory's supported workload.
+default is five, capped at twelve and the workflow's supported workload.
 
 ```text
-run_factory({
+run_dynamic_workflow({
   name: "deep-research",
   args: { question: "<bounded research question>", angles: 3 }
 })
@@ -17,7 +17,7 @@ run_factory({
 Each angle runs directly as the built-in `research` agent in one native pipeline.
 The runtime's two-agent concurrency limit replaces manual batching.
 Verifiers independently open cited URLs and check material claims. These mechanics belong to
-the factory; do not duplicate them with another pool of agents.
+the workflow; do not duplicate them with another pool of agents.
 
 ## Result handling
 
@@ -30,12 +30,12 @@ the factory; do not duplicate them with another pool of agents.
 
 ## Recovery
 
-Inspect the original `runId` with `factories_manage` using `operation: "inspect-run"`. Wait for a
+Inspect the original `runId` with `dynamic_workflows_manage` using `operation: "inspect-run"`. Wait for a
 running run instead of polling or relaunching it. After the user asks to continue, resume a paused
 or failed run with native `canResume: true` using
-`run_factory({ resumeFromRunId: "<run-id>" })` so completed work is reused.
+`run_dynamic_workflow({ resumeFromRunId: "<run-id>" })` so completed work is reused.
 
 A limit failure requires explicit user authorization before increasing the reached limit.
 Do not invent ceilings, lower declared limits, or start a replacement to evade the limit.
-If the factory is unavailable, report the missing Foundry prerequisite rather than silently
+If the workflow is unavailable, report the missing Foundry prerequisite rather than silently
 substituting another workflow.

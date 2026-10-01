@@ -1,6 +1,6 @@
 /**
  * Application service boundary joining domain transitions, storage, prompts,
- * projections, and trusted native Factory results.
+ * projections, and trusted native Workflow results.
  *
  * @module foundry/operations
  */
@@ -42,7 +42,7 @@ import {
 } from "./inventory.mjs";
 import { FoundryStorageError, createPlanStore } from "./storage.mjs";
 
-const TERMINAL_FACTORY_STATUSES = new Set([
+const TERMINAL_WORKFLOW_STATUSES = new Set([
 	"completed",
 	"error",
 	"halted",
@@ -53,7 +53,7 @@ const TERMINAL_FACTORY_STATUSES = new Set([
  * @typedef {object} FoundryOperationsOptions
  * @property {() => string | undefined} getWorkspacePath
  * @property {(event: {workspacePath: string, planId: string, revision: number}) => void} [notify]
- * @property {any} analysis Native Factory adapter.
+ * @property {any} analysis Native Workflow adapter.
  */
 
 /**
@@ -289,7 +289,7 @@ export function createFoundryOperations(options) {
     };
 
     /**
-     * Builds the native planning Factory launch specification.
+     * Builds the native planning Workflow launch specification.
      *
      * @param {any} input
      * @returns {Promise<any>}
@@ -756,14 +756,14 @@ export function createFoundryOperations(options) {
 			) {
 				throw new FoundryOperationError(
 					"verification_duplicate_runs",
-					"Multiple Factory runs carry the same verification reservation",
+					"Multiple Workflow runs carry the same verification reservation",
 					{ discovery },
 				);
 			}
 			const activeCandidate = discovery.state === "inconclusive"
 				&& Array.isArray(discovery.candidates)
 				? discovery.candidates.find(
-					(candidate) => !TERMINAL_FACTORY_STATUSES.has(candidate.status),
+					(candidate) => !TERMINAL_WORKFLOW_STATUSES.has(candidate.status),
 				)
 				: null;
 			if (activeCandidate) {
@@ -838,7 +838,7 @@ export function createFoundryOperations(options) {
 		if (discovery.state !== "found") {
 			throw new FoundryOperationError(
 				"verification_launch_indeterminate",
-				"Verification reservation does not resolve to exactly one Factory run",
+				"Verification reservation does not resolve to exactly one Workflow run",
 				{ discovery },
 			);
 		}
@@ -909,7 +909,7 @@ export function createFoundryOperations(options) {
     };
 
 	/**
-	 * Cancels only the verification Factory run owned by an active cancellation.
+	 * Cancels only the verification Workflow run owned by an active cancellation.
 	 *
 	 * @param {any} input
 	 * @returns {Promise<any>}

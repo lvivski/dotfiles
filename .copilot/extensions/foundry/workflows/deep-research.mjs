@@ -14,6 +14,7 @@ const RESEARCH_OPTIONS_SCHEMA = {
 const MAX_FIXED_SUBAGENTS = 3;
 const MAX_SUBAGENTS_PER_ANGLE = 3;
 
+/** @type {import("@github/copilot-sdk").WorkflowMeta & {limits: Required<import("@github/copilot-sdk").WorkflowLimits>}} */
 export const meta = {
 	name: "deep-research",
 	description:
@@ -42,8 +43,8 @@ export const meta = {
 	},
 };
 
-export async function run(factory) {
-const input = factory.args;
+export async function run(workflow) {
+const input = workflow.args;
 const question = String(
 	input && typeof input === "object" && !Array.isArray(input)
 		? input.question || input.q || ""
@@ -64,8 +65,8 @@ const budgetedAngles = Math.floor(
 );
 const maxAngles = Math.min(requestedAngles, 12, budgetedAngles);
 
-factory.phase("Plan");
-const planned = await factory.agent(
+workflow.phase("Plan");
+const planned = await workflow.agent(
 	`Break this research question into ${maxAngles} independent, non-overlapping angles.
 
 Question: ${question}`,
@@ -91,7 +92,7 @@ const angles = planned
 if (!angles.length) {
 	return "# Research incomplete\n\nThe planner returned no usable research angles.";
 }
-factory.log(`deep-research: ${angles.length} angle(s)`);
+workflow.log(`deep-research: ${angles.length} angle(s)`);
 
 const VERDICT = {
 	type: "object",
@@ -102,13 +103,13 @@ const VERDICT = {
 	required: ["passed", "reasons"],
 };
 
-factory.phase("Research");
-const checked = await factory.pipeline(
+workflow.phase("Research");
+const checked = await workflow.pipeline(
 	angles,
 	async (angle, _original, index) => ({
 		angle,
 		index,
-		finding: await factory.agent(
+		finding: await workflow.agent(
 			`Research the assigned angle using web search. Cite every material claim with a source URL and flag thin or conflicting evidence. Do not add unsupported claims.
 
 Original question:
@@ -125,7 +126,7 @@ ${untrustedBlock("RESEARCH-ANGLE", angle)}`,
 	}),
 	async (row) => {
 		if (row.finding === null) return { ...row, verdict: null };
-		const verdict = await factory.agent(
+		const verdict = await workflow.agent(
 			`Independently check every material claim and cited URL below. Pass only when the sources are credible, accessible, relevant, and support the claims.
 
 Question:
@@ -160,11 +161,11 @@ if (!trusted.length) {
 	return `# Research unsupported\n\nNo research angle passed source verification.\n\n_${coverage}_`;
 }
 
-factory.phase("Report");
+workflow.phase("Report");
 const findings = trusted
 	.map((row, index) => `=== Finding ${index + 1}: ${row.angle} ===\n${row.finding}`)
 	.join("\n\n");
-const report = await factory.agent(
+const report = await workflow.agent(
 	`Write a well-structured cited report answering the question from these verified findings. Keep only supported claims and list open questions.
 
 Question:

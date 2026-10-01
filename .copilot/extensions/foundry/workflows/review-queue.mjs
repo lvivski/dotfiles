@@ -29,6 +29,7 @@ const PRS_SCHEMA = {
 };
 const MAX_SUBAGENTS_PER_CHUNK = 4;
 
+/** @type {import("@github/copilot-sdk").WorkflowMeta & {limits: Required<import("@github/copilot-sdk").WorkflowLimits>}} */
 export const meta = {
 	name: "review-queue",
 	description:
@@ -115,13 +116,13 @@ function diffLineChanges(diff) {
 	};
 }
 
-export async function run(factory) {
-const factoryArgs = factory.args;
+export async function run(workflow) {
+const workflowArgs = workflow.args;
 const opts =
-	factoryArgs && typeof factoryArgs === "object" && !Array.isArray(factoryArgs)
-		? factoryArgs
+	workflowArgs && typeof workflowArgs === "object" && !Array.isArray(workflowArgs)
+		? workflowArgs
 		: {};
-const input = opts.prs ?? factoryArgs;
+const input = opts.prs ?? workflowArgs;
 if (!Array.isArray(input) || !input.length) {
 	return "review-queue: no PRs supplied. Fetch the queue first and pass { prs: [...] }.";
 }
@@ -268,7 +269,7 @@ const evidenceCount = prs.reduce((total, pr) => total + chunks(pr).length, 0);
 if (evidenceCount > maxChunks) {
 	throw new Error(`review-queue: ${evidenceCount} diff chunks exceed max_total_chunks=${maxChunks}`);
 }
-factory.log(`review-queue: ${prs.length} PR(s), ${evidenceCount} diff chunk(s)`);
+workflow.log(`review-queue: ${prs.length} PR(s), ${evidenceCount} diff chunk(s)`);
 
 const REVIEW = {
 	type: "object",
@@ -329,10 +330,10 @@ async function reviewPullRequest(pr) {
 			candidate: false,
 		};
 	}
-	const reviews = await factory.parallel(
+	const reviews = await workflow.parallel(
 		units.map((unit) => async () => ({
 			unit,
-			result: await factory.agent(
+			result: await workflow.agent(
 				`Review this bounded pull-request diff chunk.
 Report only concrete correctness bugs, risky behavior, missing tests, material maintainability concerns, or genuine uncertainty.
 Keep correctness issues in issues and structural concerns in maintainability. An empty maintainability array means no material concern was supported by this chunk, not that whole-repository quality was measured.
@@ -399,9 +400,9 @@ async function verifyPullRequest(row) {
 			focus,
 		};
 	}
-	const verdicts = await factory.parallel(
+	const verdicts = await workflow.parallel(
 		row.reviews.map((item) => async () =>
-			factory.agent(
+			workflow.agent(
 				`Independently inspect the original diff before considering the primary review. Pass only if it is genuinely low risk, issue-free, sufficiently tested, and contains no material maintainability concern or unresolved uncertainty.
 If you reject it, include the concrete evidence and maintenance impact or correctness reason in reasons so the human reviewer can act on it.
 
@@ -436,8 +437,8 @@ ${untrustedBlock("PRIMARY-REVIEW", item.result)}`,
 	};
 }
 
-factory.phase("Review and verify");
-const results = await factory.pipeline(prs, reviewPullRequest, verifyPullRequest);
+workflow.phase("Review and verify");
+const results = await workflow.pipeline(prs, reviewPullRequest, verifyPullRequest);
 // Failed pipeline items skip later stages, so restore their report rows here.
 const rows = results.map((row, index) => row ?? ({
 	pr: prs[index],
@@ -449,7 +450,7 @@ const rows = results.map((row, index) => row ?? ({
 	focus: ["Retry the review"],
 }));
 
-factory.phase("Report");
+workflow.phase("Report");
 const cell = (value) => String(value ?? "").replace(/\|/g, "\\|").replace(/\n/g, "<br>");
 const label = (value) => ({ codeowner: "CODEOWNERS", "required-policy": "Required policy", manual: "Manual" })[value] || value;
 const lineChanges = (pr) => {
@@ -479,7 +480,7 @@ for (const row of sorted) {
 }
 out.push(
 	"",
-	`_Coverage: ${rows.length}/${prs.length} PRs triaged from supplied diff evidence (${evidenceCount} chunks). Freshness: ${freshness}. Deep checkout is not part of the Factory-native workflow._`,
+	`_Coverage: ${rows.length}/${prs.length} PRs triaged from supplied diff evidence (${evidenceCount} chunks). Freshness: ${freshness}. Deep checkout is not part of the native dynamic workflow._`,
 	"",
 	"_Diff lines count added/deleted textual hunk lines, including comments, blanks, tests, docs, generated code, and lockfiles; they are not source LOC or an approval threshold. Partial counts cover only observed text. Verbosity and erosion: not measured (full-source AST/clone and complexity analysis required). Maintainability findings are evidence-backed review prompts, not numeric quality scores or claims of AI authorship. Independent model agreement is not proof of quality._",
 );

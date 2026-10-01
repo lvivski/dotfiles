@@ -2262,7 +2262,7 @@ export function transitionPlan(plan, nextStatus, options = {}) {
 }
 
 /**
- * Persists a verification launch reservation before the Factory is invoked.
+ * Persists a verification launch reservation before the Workflow is invoked.
  *
  * @param {FoundryPlan} plan
  * @param {any} [options]
@@ -3077,7 +3077,7 @@ export function finalizePlanCancellation(plan, dispositions, options = {}) {
         }
     } else if (options.verificationDisposition !== "run-terminated"
 		|| (options.verificationTerminated !== true && !options.finalizationOverride)) {
-		fail("cancellation_incomplete", "The bound Factory run is not confirmed terminal", {
+		fail("cancellation_incomplete", "The bound Workflow run is not confirmed terminal", {
             path: "verificationDisposition",
 			details: { runId: verificationRunId },
         });

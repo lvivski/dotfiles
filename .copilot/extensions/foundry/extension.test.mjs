@@ -4,10 +4,10 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { FOUNDRY_FACTORIES } from "./factory.mjs";
+import { FOUNDRY_WORKFLOWS } from "./workflow.mjs";
 
 const ROOT = path.resolve(fileURLToPath(new URL(".", import.meta.url)));
-const FACTORY_ROOT = path.resolve(ROOT, "factories");
+const WORKFLOW_ROOT = path.resolve(ROOT, "workflows");
 
 /**
  * Recursively lists production JavaScript used by extension safety checks.
@@ -44,8 +44,9 @@ test("share manifest and extension entry point satisfy discovery contracts", asy
     assert.match(entry, /joinSession\(/);
     assert.match(entry, /buildFoundryTools/);
     assert.match(entry, /buildFoundryHooks/);
-    assert.match(entry, /defineFactory/);
-    assert.match(entry, /factories/);
+    assert.match(entry, /defineWorkflow/);
+    assert.match(entry, /joinSession\(\{\s+workflows,/);
+    assert.match(entry, /session\?\.workflow\b/);
 });
 
 test("production source has no stdout logging", async () => {
@@ -55,7 +56,7 @@ test("production source has no stdout logging", async () => {
     }
 });
 
-test("bundled factories use only native Factory primitives", async () => {
+test("bundled workflows use only native Workflow primitives", async () => {
 	const expectedTimeouts = {
 		audit: 900,
 		"deep-research": 3600,
@@ -65,7 +66,7 @@ test("bundled factories use only native Factory primitives", async () => {
 		triage: 900,
 		verify: 900,
 	};
-    for (const specification of Object.values(FOUNDRY_FACTORIES)) {
+    for (const specification of Object.values(FOUNDRY_WORKFLOWS)) {
 		assert.ok(
 			specification.meta.phases.every(
 				(phase) => typeof phase?.title === "string" && phase.title.trim(),
@@ -76,7 +77,7 @@ test("bundled factories use only native Factory primitives", async () => {
 			specification.meta.limits.timeoutSeconds,
 			expectedTimeouts[specification.meta.name],
 		);
-		const filename = path.join(FACTORY_ROOT, `${specification.meta.name}.mjs`);
+		const filename = path.join(WORKFLOW_ROOT, `${specification.meta.name}.mjs`);
         const source = await readFile(filename, "utf8");
 		assert.match(source, new RegExp(`name:\\s*"${specification.meta.name}"`));
 		assert.doesNotMatch(source, /\b(?:profile|agentType|effort|cwd|validate|retries):/);

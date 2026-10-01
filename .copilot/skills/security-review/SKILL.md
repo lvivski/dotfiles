@@ -16,12 +16,12 @@ metadata:
 1. Use the current repository unless the user specified a narrower scope. Read
    [scope and execution options](references/options.md) before selecting files, a subtree,
    a branch comparison, custom review controls, or recovery of a failed run.
-2. Launch the registered factory once:
+2. Launch the registered workflow once:
    ```text
-   run_factory({ name: "security-review" })
+   run_dynamic_workflow({ name: "security-review" })
    ```
 3. Keep the returned `runId`, wait for completion, and inspect that run with
-   `factories_manage` using `operation: "inspect-run"`. Do not relaunch a pending or temporarily
+   `dynamic_workflows_manage` using `operation: "inspect-run"`. Do not relaunch a pending or temporarily
    unobservable run.
 4. Return independently confirmed findings with their locations, severity, exploit evidence,
    and recommendations. Preserve the scope and any failed-coverage warnings. No confirmed
@@ -29,7 +29,7 @@ metadata:
 
 ## Essential safeguards
 
-Do not pass `limits` to `run_factory`; use the factory's declared limits unless the user explicitly
+Do not pass `limits` to `run_dynamic_workflow`; use the workflow's declared limits unless the user explicitly
 requests an override. Never lower a declared limit without an explicit user request.
 
 Review is read-only and static: do not execute proofs of concept, send attack requests, or modify code.

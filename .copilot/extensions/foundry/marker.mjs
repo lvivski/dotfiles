@@ -1,8 +1,8 @@
-/** @module marker — stable progress markers for correlating native Factory runs. */
+/** @module marker — stable progress markers for correlating native Workflow runs. */
 
 const RESERVATION = "foundry:verification-reservation:";
 
-/** Build the exact progress marker emitted by a verification Factory. @param {string} reservationId */
+/** Build the exact progress marker emitted by a verification Workflow. @param {string} reservationId */
 export function verificationMarker(reservationId) {
 	return `${RESERVATION}${reservationId}`;
 }

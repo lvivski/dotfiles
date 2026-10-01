@@ -1,7 +1,7 @@
 # Review criteria and metric limits
 
 Use this reference when explaining a result, interpreting a metric, or revising review behavior.
-The factory includes its review instructions directly in each agent prompt; normal runs do not
+The workflow includes its review instructions directly in each agent prompt; normal runs do not
 require another review pass or external material.
 
 ## Decision contract
@@ -39,7 +39,7 @@ Missing context for a specific material concern is uncertainty, not a fabricated
 
 ## Observed line changes
 
-The factory counts added and deleted textual hunk lines and their net difference before chunking,
+The workflow counts added and deleted textual hunk lines and their net difference before chunking,
 for both GitHub and Azure DevOps. File headers are excluded; comments, blank lines, tests, docs,
 generated files, and lockfiles are included. These are observed diff-line counts, not source LOC.
 

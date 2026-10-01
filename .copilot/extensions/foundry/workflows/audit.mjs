@@ -10,6 +10,7 @@ const PATHS_SCHEMA = {
 };
 const MAX_SUBAGENTS_PER_PATH = 3;
 
+/** @type {import("@github/copilot-sdk").WorkflowMeta & {limits: Required<import("@github/copilot-sdk").WorkflowLimits>}} */
 export const meta = {
 	name: "audit",
 	description:
@@ -37,9 +38,9 @@ export const meta = {
 	},
 };
 
-export async function run(factory) {
+export async function run(workflow) {
 const DEFAULT_CONCERN = "bugs, security issues, and missing error handling";
-const input = factory.args;
+const input = workflow.args;
 const rawPaths =
 	input && typeof input === "object" && !Array.isArray(input)
 		? input.paths
@@ -73,7 +74,7 @@ if (paths.length > maxPaths) {
 		`audit: ${paths.length} paths require more than ${meta.limits.maxTotalSubagents} subagents; maximum is ${maxPaths}`,
 	);
 }
-factory.log(`audit: ${paths.length} path(s)`);
+workflow.log(`audit: ${paths.length} path(s)`);
 
 const VERDICT = {
 	type: "object",
@@ -84,12 +85,12 @@ const VERDICT = {
 	required: ["passed", "reasons"],
 };
 
-factory.phase("Audit");
-const checked = await factory.pipeline(
+workflow.phase("Audit");
+const checked = await workflow.pipeline(
 	paths,
 	async (path) => ({
 		path,
-		finding: await factory.agent(
+		finding: await workflow.agent(
 			`Open the file at ${safeJson(path)} and review it for ${concern}. Give concrete issues with line references, or reply exactly "NO ISSUES".`,
 			{ label: `review:${path}` },
 		),
@@ -99,7 +100,7 @@ const checked = await factory.pipeline(
 			return { ...reviewed, status: "failed", reason: "review agent failed" };
 		}
 		const noIssues = reviewed.finding.trim().toUpperCase() === "NO ISSUES";
-		const verdict = await factory.agent(
+		const verdict = await workflow.agent(
 			`Independently open the file at ${safeJson(reviewed.path)} and check this review for ${concern}.
 Pass only when every reported issue is real and supported by the file, or when the NO ISSUES claim is accurate.
 
@@ -139,11 +140,11 @@ if (!verified.length) {
 	}\n\n_${coverage}_`;
 }
 
-factory.phase("Report");
+workflow.phase("Report");
 const findings = verified
 	.map((row) => `## ${row.path}\n${row.finding}`)
 	.join("\n\n");
-const report = await factory.agent(
+const report = await workflow.agent(
 	`Summarize these independently verified findings about ${concern}. Group by severity and include a concise fix for each issue.
 
 ${UNTRUSTED_DATA_WARNING}

@@ -43,13 +43,13 @@ runtime or test framework:
 bash .copilot/skills/review-queue/scripts/review-queue-fetch.test.sh
 ```
 
-## Copilot Foundry — control plane and Agent Factories
+## Copilot Foundry — control plane and Dynamic Workflows
 
 `source ./sync` also installs the **Foundry** Copilot extension. Foundry coordinates dependency-aware
 engineering plans and registers the `plan`, `verify`, `audit`, `deep-research`,
-`review-queue`, `security-review`, and `triage` native Agent Factories. Invoke factories with
-`run_factory`; the native runtime owns limits, durable steps, resume, cancellation, progress, and
-results.
+`review-queue`, `security-review`, and `triage` native Dynamic Workflows. Invoke workflows with
+`run_dynamic_workflow` and inspect runs with `dynamic_workflows_manage`; the native runtime owns
+limits, durable steps, resume, cancellation, progress, and results.
 
 Foundry coordination is opt-in. Use native plan mode and direct tools for routine changes, and
 the native `orchestrate` or `pr-stack` flows for ordinary multi-session or stacked-PR work. Choose

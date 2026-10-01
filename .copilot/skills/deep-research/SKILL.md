@@ -14,22 +14,22 @@ metadata:
 ## Workflow
 
 1. Form a bounded question from the user's request, retaining its scope, time frame, and constraints.
-2. Launch the registered factory once; its default is five research angles:
+2. Launch the registered workflow once; its default is five research angles:
    ```text
-   run_factory({
+   run_dynamic_workflow({
      name: "deep-research",
      args: { question: "<bounded research question>" }
    })
    ```
 3. Keep the returned `runId`, wait for completion, and inspect that run with
-   `factories_manage` using `operation: "inspect-run"`. A pending or temporarily unobservable run
+   `dynamic_workflows_manage` using `operation: "inspect-run"`. A pending or temporarily unobservable run
    is not permission to launch another.
 4. Return the cited report with its coverage, limitations, and open questions. Preserve unsupported
    or incomplete results rather than filling gaps with unverified claims.
 
 ## Essential safeguards
 
-Do not pass `limits` to `run_factory`; use the factory's declared limits unless the user explicitly
+Do not pass `limits` to `run_dynamic_workflow`; use the workflow's declared limits unless the user explicitly
 requests an override. Never lower a declared limit without an explicit user request.
 
 Only source-verified findings may support the synthesis. Failed or rejected research is not evidence.

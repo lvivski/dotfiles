@@ -23,19 +23,19 @@ Fetch first, then run `review-queue`. Never approve PRs; report triage only.
    skipped or failed platforms.
 2. **Run.** Show PR count, platforms, and supplied diff coverage, then launch:
    ```text
-   run_factory({
+   run_dynamic_workflow({
      name: "review-queue",
      args: { prs: <parsed array from the session's queue file> }
    })
    ```
-   Do not pass `limits` to `run_factory`; use the factory's declared limits unless the user explicitly
+   Do not pass `limits` to `run_dynamic_workflow`; use the workflow's declared limits unless the user explicitly
    requests an override. Never lower a declared limit without an explicit user request.
-3. **Wait.** Keep the returned `runId` and inspect that run with `factories_manage` using
+3. **Wait.** Keep the returned `runId` and inspect that run with `dynamic_workflows_manage` using
    `operation: "inspect-run"` after completion. Do not refetch or relaunch merely because the run
    is pending or temporarily unobservable.
 4. **Return** the resulting triage table with linked PRs, platform/account, observed diff-line changes,
    coverage, decision, risk, why-assigned, justification, and focus hints. Preserve the metric-limit
-   note; do not turn the output into a numeric code-quality ranking. Once the factory has persisted
+   note; do not turn the output into a numeric code-quality ranking. Once the workflow has persisted
    the input and produced its result, remove only this run's temporary queue file before replying.
 
 ## Essential safeguards
@@ -51,5 +51,5 @@ threshold.
 - [Queue options](references/options.md): read when changing platform scope, freshness, chunk sizing,
   assignment policy, or recovering a failed run.
 - [Review criteria and metric limits](references/review-criteria.md): read when explaining findings,
-  interpreting metrics, or changing the review rubric. Factory agents already receive the rubric
+  interpreting metrics, or changing the review rubric. Workflow agents already receive the rubric
   directly; ordinary queue runs do not need an extra review pass or these reference files loaded.

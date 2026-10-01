@@ -128,7 +128,7 @@ export function projectPlan(plan, options = {}) {
             }));
         } else if (plan.cancellation.verificationRunId !== null
             && plan.cancellation.verificationTerminatedAt === null) {
-			actions.push(action("cancel-factory", {
+			actions.push(action("cancel-workflow", {
                 runId: plan.cancellation.verificationRunId,
             }));
         }

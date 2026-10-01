@@ -14,8 +14,8 @@ unusable verification run.
    inventory is exhaustive and newer than the attempt.
 6. Resolve stale reservations explicitly as blocked attempts, then retry; never expire or replace
    them silently.
-7. Inspect paused or failed runs with `factories_manage` (`inspect-run`). After the user asks to
-   continue, use native `canResume` and `run_factory({ resumeFromRunId: "<run-id>" })`; never
+7. Inspect paused or failed runs with `dynamic_workflows_manage` (`inspect-run`). After the user asks to
+   continue, use native `canResume` and `run_dynamic_workflow({ resumeFromRunId: "<run-id>" })`; never
    infer eligibility from status alone. A paused run retains its reservation until explicitly
    cancelled. Replace a terminal non-importable verification run only with an attributed reason
    and actor.

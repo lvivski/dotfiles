@@ -12,12 +12,7 @@ import {
     TASK_STATUS,
 } from "./domain.mjs";
 
-/**
- * @typedef {object} ToolResult
- * @property {string} textResultForLlm
- * @property {"success"|"failure"|"rejected"|"denied"} resultType
- * @property {{extension: string, outcome: string}} toolTelemetry
- */
+/** @typedef {import("@github/copilot-sdk").ToolResultObject} ToolResult */
 
 /** @typedef {Record<string, any>} JsonSchema */
 
@@ -25,7 +20,7 @@ import {
  * Wraps a value in the structured SDK tool-result contract.
  *
  * @param {unknown} value
- * @param {"success"|"failure"|"rejected"|"denied"} [resultType]
+ * @param {ToolResult["resultType"]} [resultType]
  * @returns {ToolResult}
  */
 function result(value, resultType = "success") {
@@ -33,8 +28,7 @@ function result(value, resultType = "success") {
         textResultForLlm: JSON.stringify(value),
         resultType,
         toolTelemetry: {
-            extension: "foundry",
-            outcome: resultType,
+			foundry: { outcome: resultType },
         },
     };
 }
@@ -60,8 +54,8 @@ function errorPayload(error) {
 /**
  * Adapts an operation to the SDK tool handler contract.
  *
- * @param {(args: any, invocation: any) => unknown | Promise<unknown>} operation
- * @returns {(args: any, invocation: any) => Promise<ToolResult>}
+ * @param {import("@github/copilot-sdk").ToolHandler} operation
+ * @returns {(args: unknown, invocation: import("@github/copilot-sdk").ToolInvocation) => Promise<ToolResult>}
  */
 function handler(operation) {
     return async (args, invocation) => {
@@ -180,14 +174,14 @@ const SESSION_INVENTORY = objectSchema(
  * Builds the complete globally unique Foundry tool catalog.
  *
  * @param {any} operations
- * @returns {any[]} SDK tool declarations.
  */
 export function buildFoundryTools(operations) {
-    return [
+    /** @satisfies {import("@github/copilot-sdk").Tool[]} */
+    const tools = [
         {
             name: "foundry_prepare_plan",
             skipPermission: true,
-			description: "Validate planning input and return the exact native plan Factory launchSpec. Run it once with run_factory, then import the completed run.",
+			description: "Validate planning input and return the exact native plan Workflow launchSpec. Run it once with run_dynamic_workflow, then import the completed run.",
             parameters: objectSchema(
                 ["objective", "repositoryContext"],
                 {
@@ -206,7 +200,7 @@ export function buildFoundryTools(operations) {
         },
         {
             name: "foundry_create_plan",
-			description: "Import a completed native plan Factory run as a new draft. The caller supplies the stable plan ID and repository; creating requires expectedRevision: 0.",
+			description: "Import a completed native plan Workflow run as a new draft. The caller supplies the stable plan ID and repository; creating requires expectedRevision: 0.",
             parameters: objectSchema(
                 ["expectedRevision", "id", "runId", "repository"],
                 {
@@ -388,7 +382,7 @@ export function buildFoundryTools(operations) {
         },
         {
             name: "foundry_prepare_verification",
-			description: "Persist a verification launch reservation before returning the exact native verify Factory launchSpec. Inconclusive discovery never relaunches; replacing a terminal non-importable run requires a new reservation plus replacementReason and requestedBy.",
+			description: "Persist a verification launch reservation before returning the exact native verify Workflow launchSpec. Inconclusive discovery never relaunches; replacing a terminal non-importable run requires a new reservation plus replacementReason and requestedBy.",
             parameters: objectSchema(
                 ["planId", "expectedRevision", "reservationId"],
                 {
@@ -403,7 +397,7 @@ export function buildFoundryTools(operations) {
         },
         {
             name: "foundry_complete_verification",
-			description: "Import the exact terminal verify Factory result for the active reservation. No caller-supplied verdict is accepted.",
+			description: "Import the exact terminal verify Workflow result for the active reservation. No caller-supplied verdict is accepted.",
             parameters: objectSchema(
                 ["planId", "expectedRevision", "runId"],
                 {
@@ -416,7 +410,7 @@ export function buildFoundryTools(operations) {
         },
         {
             name: "foundry_cancel",
-			description: "Request plan cancellation and snapshot active task attempts plus any Factory run discovered for the verification reservation. This does not claim external work has stopped.",
+			description: "Request plan cancellation and snapshot active task attempts plus any Workflow run discovered for the verification reservation. This does not claim external work has stopped.",
             parameters: objectSchema(
                 [
                     "planId",
@@ -437,7 +431,7 @@ export function buildFoundryTools(operations) {
         },
 		{
 			name: "foundry_cancel_verification_run",
-			description: "Durably bind and cancel only the authoritative verification Factory run owned by the active cancellation request. Returns the new revision and exact disposition required for finalization; never accepts a caller-supplied run ID.",
+			description: "Durably bind and cancel only the authoritative verification Workflow run owned by the active cancellation request. Returns the new revision and exact disposition required for finalization; never accepts a caller-supplied run ID.",
 			parameters: objectSchema(
 				["planId", "expectedRevision", "requestId"],
 				{
@@ -450,7 +444,7 @@ export function buildFoundryTools(operations) {
 		},
 		{
             name: "foundry_finalize_cancellation",
-			description: "Finalize cancellation using a complete causal session inventory and terminal Factory evidence. Inconclusive evidence requires an attributed finalizationOverride.",
+			description: "Finalize cancellation using a complete causal session inventory and terminal Workflow evidence. Inconclusive evidence requires an attributed finalizationOverride.",
             parameters: objectSchema(
 				[
 					"planId",
@@ -513,4 +507,5 @@ export function buildFoundryTools(operations) {
             handler: handler(() => operations.deactivate()),
         },
     ];
+    return tools;
 }

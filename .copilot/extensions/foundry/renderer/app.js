@@ -222,7 +222,7 @@ function renderSummary() {
         ],
         ["Attempts", currentProjection.progress.attempts],
         ["Planning", currentPlan.planning
-			? `Factory · ${currentPlan.planning.runId}`
+			? `Workflow · ${currentPlan.planning.runId}`
             : "Unlinked"],
         ["Base branch", currentPlan.repository.baseBranch],
         ["Updated", currentPlan.updatedAt],
@@ -430,7 +430,7 @@ function renderRecovery() {
         host.append(element(
             "p",
             "warning",
-			"Foundry has only requested cancellation. Stop or archive every listed App session and cancel the authoritative Factory run before finalization.",
+			"Foundry has only requested cancellation. Stop or archive every listed App session and cancel the authoritative workflow run before finalization.",
         ));
     }
     const actions = element("ol", "action-list");

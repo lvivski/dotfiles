@@ -27,8 +27,8 @@ import {
     reserveTaskAttempt,
     transitionPlan,
 } from "./domain.mjs";
-import { run as runPlanning } from "./factories/plan.mjs";
-import { run as runVerification } from "./factories/verify.mjs";
+import { run as runPlanning } from "./workflows/plan.mjs";
+import { run as runVerification } from "./workflows/verify.mjs";
 
 function completedPlan() {
     let plan = createDraftPlan({
@@ -159,7 +159,7 @@ test("planning arguments are bounded and digested canonically", () => {
     );
 });
 
-test("the planning Factory uses canonical defaults and rejects invalid args before agent work", async () => {
+test("the planning Workflow uses canonical defaults and rejects invalid args before agent work", async () => {
 	const minimal = { objective: "Build", repositoryContext: "Node repo" };
 	const canonical = buildPlanningArgs(minimal);
 	const minimalArgs = { ...minimal, inputDigest: canonical.inputDigest };
@@ -370,7 +370,7 @@ test("verification result requires every criterion ID to have evidence", () => {
 				})),
 			},
 		}, input, reservationId),
-		/input digest|canonical Factory input/,
+		/input digest|canonical Workflow input/,
 	);
 	assert.throws(
 		() => validateVerificationResult({
@@ -597,7 +597,7 @@ test("the shared evaluator cannot promote contradicted or incomplete verifier ev
 	}
 });
 
-test("Factory evidence normalization does not weaken strict verification import", async () => {
+test("Workflow evidence normalization does not weaken strict verification import", async () => {
 	for (const malformed of ["reviewer", "evidence", "failed-evidence", "gap-limit"]) {
 		const { input, reviews, verdict } = verificationFixture();
 		const rawReviews = malformed === "reviewer" ? [null, reviews[1]] : reviews;

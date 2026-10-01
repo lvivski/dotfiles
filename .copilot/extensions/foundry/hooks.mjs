@@ -359,7 +359,7 @@ Coordinator contract:
 2. Record terminal attempt state before dispatching newly-unblocked work; never duplicate active work or expand the approved DAG.
 3. Overlapping declared scopes require an auditable scopeOverride.
 4. Re-read after revision conflicts; replay only when the exact postcondition already exists.
-5. Factory agents perform analysis only; App-native child sessions own repository mutation.
+5. Workflow agents perform analysis only; App-native child sessions own repository mutation.
 6. Use each prepare result once: launch its exact launchSpec, or reuse its runId when launchSpec is null.
 7. The final verify task follows the ordinary task flow and must report canonical checkId evidence plus its observed commit.
 8. Failed or blocked attached tasks require a complete, causally newer terminal session inventory.

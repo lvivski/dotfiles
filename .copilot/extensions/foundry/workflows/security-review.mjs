@@ -1,4 +1,4 @@
-// Multi-perspective static security review using native Factory agents.
+// Multi-perspective static security review using native workflow agents.
 import {
 	UNTRUSTED_DATA_WARNING,
 	untrustedBlock,
@@ -17,6 +17,7 @@ const SECURITY_OPTIONS_SCHEMA = {
 };
 const MAX_SUBAGENTS_PER_STRUCTURED_CALL = 2;
 
+/** @type {import("@github/copilot-sdk").WorkflowMeta & {limits: Required<import("@github/copilot-sdk").WorkflowLimits>}} */
 export const meta = {
 	name: "security-review",
 	description:
@@ -44,8 +45,8 @@ export const meta = {
 	},
 };
 
-export async function run(factory) {
-const input = factory.args;
+export async function run(workflow) {
+const input = workflow.args;
 const opts = Array.isArray(input)
 	? { files: input }
 	: typeof input === "string"
@@ -136,8 +137,8 @@ const THREAT_MODEL = {
 	required: ["authModel", "assets", "trustBoundaries", "attackerInputs"],
 };
 
-factory.phase("Orient");
-const threatModel = await factory.agent(
+workflow.phase("Orient");
+const threatModel = await workflow.agent(
 	`Orient a security review of this scope. Inspect entry points, authentication, authorization, tenancy, sensitive assets, and attacker-controlled inputs. Return only facts supported by the code and say "unclear" where necessary.
 
 ${RULES}
@@ -166,10 +167,10 @@ const lenses = [
 	"completeness critic: attack surfaces other reviewers may miss",
 ].slice(0, perspectives);
 
-factory.phase("Investigate");
-const investigations = await factory.parallel(
+workflow.phase("Investigate");
+const investigations = await workflow.parallel(
 	lenses.map((lens, index) => async () =>
-		factory.agent(
+		workflow.agent(
 			`Perform a deep static security review focused on ${lens}. Open and follow the relevant code in the requested scope. Return [] when no concrete exploitable issue survives scrutiny.
 
 ${RULES}
@@ -206,14 +207,14 @@ if (unique.size > verificationBudget) {
 		`security-review: ${unique.size} unique findings exceed the ${verificationBudget}-candidate verification budget; narrow the scope or reduce perspectives`,
 	);
 }
-factory.log(
+workflow.log(
 	`security-review: ${unique.size}/${verificationBudget} candidate finding(s)`,
 );
 
-factory.phase("Verify");
+workflow.phase("Verify");
 const candidates = [...unique.values()];
-const verified = await factory.pipeline(candidates, async (finding, _original, index) => {
-	const verdict = await factory.agent(
+const verified = await workflow.pipeline(candidates, async (finding, _original, index) => {
+	const verdict = await workflow.agent(
 		`Try to disprove this security finding. Open every cited location and trace the exact source-control-sink path. Choose true-positive only when a realistic lower-privileged attacker can execute the stated attack.
 
 ${RULES}
@@ -242,7 +243,7 @@ confirmed.sort(
 		(severityOrder[right.finding.severity] ?? 9),
 );
 
-factory.phase("Report");
+workflow.phase("Report");
 const cell = (value) => String(value ?? "").replace(/\|/g, "\\|").replace(/\n/g, "<br>");
 const out = [
 	"# Security review",

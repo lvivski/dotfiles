@@ -1,4 +1,4 @@
-/** @module factory — Foundry control-plane adapters and registered native Agent Factories. */
+/** @module workflow — Foundry control-plane adapters and registered native Dynamic Workflows. */
 import {
 	FoundryAnalysisError,
 	buildPlanningArgs,
@@ -7,17 +7,17 @@ import {
 	validatePlanningResult,
 	validateVerificationResult,
 } from "./analysis.mjs";
-import { meta as auditMeta, run as runAudit } from "./factories/audit.mjs";
-import { meta as deepResearchMeta, run as runDeepResearch } from "./factories/deep-research.mjs";
-import { meta as planMeta, run as runPlan } from "./factories/plan.mjs";
-import { meta as reviewQueueMeta, run as runReviewQueue } from "./factories/review-queue.mjs";
-import { meta as securityReviewMeta, run as runSecurityReview } from "./factories/security-review.mjs";
-import { meta as triageMeta, run as runTriage } from "./factories/triage.mjs";
-import { meta as verifyMeta, run as runVerify } from "./factories/verify.mjs";
+import { meta as auditMeta, run as runAudit } from "./workflows/audit.mjs";
+import { meta as deepResearchMeta, run as runDeepResearch } from "./workflows/deep-research.mjs";
+import { meta as planMeta, run as runPlan } from "./workflows/plan.mjs";
+import { meta as reviewQueueMeta, run as runReviewQueue } from "./workflows/review-queue.mjs";
+import { meta as securityReviewMeta, run as runSecurityReview } from "./workflows/security-review.mjs";
+import { meta as triageMeta, run as runTriage } from "./workflows/triage.mjs";
+import { meta as verifyMeta, run as runVerify } from "./workflows/verify.mjs";
 import { parseVerificationMarker } from "./marker.mjs";
 
-/** Native Factory definitions registered by the Foundry control plane. */
-export const FOUNDRY_FACTORIES = Object.freeze({
+/** Native Workflow definitions registered by the Foundry control plane. */
+export const FOUNDRY_WORKFLOWS = Object.freeze({
 	audit: Object.freeze({ meta: auditMeta, run: runAudit }),
 	deepResearch: Object.freeze({ meta: deepResearchMeta, run: runDeepResearch }),
 	plan: Object.freeze({ meta: planMeta, run: runPlan }),
@@ -32,12 +32,27 @@ const TERMINAL = new Set(["completed", "error", "halted", "cancelled"]);
 const RUN_DISCOVERY_PAGE_SIZE = 200;
 const RUN_DISCOVERY_MAX_PAGES = 10;
 
-/** Typed failure raised when a native Factory run cannot satisfy Foundry invariants. */
-export class FoundryFactoryError extends Error {
+/**
+ * @typedef {Pick<import("@github/copilot-sdk").SessionWorkflowApi,
+ *   "getRun" | "getRunDetail" | "getRunProgress" | "listRuns">
+ *   & Partial<Pick<import("@github/copilot-sdk").SessionWorkflowApi, "cancel">>} WorkflowInspectionApi
+ */
+
+/** @param {unknown} value @returns {value is WorkflowInspectionApi} */
+function hasInspectionApi(value) {
+	return typeof value === "object" && value !== null
+		&& "getRun" in value && typeof value.getRun === "function"
+		&& "getRunDetail" in value && typeof value.getRunDetail === "function"
+		&& "getRunProgress" in value && typeof value.getRunProgress === "function"
+		&& "listRuns" in value && typeof value.listRuns === "function";
+}
+
+/** Typed failure raised when a native Workflow run cannot satisfy Foundry invariants. */
+export class FoundryWorkflowError extends Error {
 	/** @param {string} code @param {string} message @param {unknown} [details] */
 	constructor(code, message, details = null) {
 		super(message);
-		this.name = "FoundryFactoryError";
+		this.name = "FoundryWorkflowError";
 		this.code = code;
 		this.details = details;
 	}
@@ -50,7 +65,7 @@ export class FoundryFactoryError extends Error {
  * @returns {never}
  */
 function fail(code, message, details) {
-	throw new FoundryFactoryError(code, message, details);
+	throw new FoundryWorkflowError(code, message, details);
 }
 
 /** @param {any} error */
@@ -61,39 +76,33 @@ function isMissingRun(error) {
 		error?.cause?.code,
 		error?.cause?.data?.code,
 	].filter((value) => typeof value === "string");
-	if (codes.some((code) => code === "factory_run_not_found" || code === "not_found")) {
+	if (codes.some((code) => code === "workflow_run_not_found" || code === "not_found")) {
 		return true;
 	}
-	return /\b(?:factory )?run\b.*\bnot found\b/i.test(error?.message ?? String(error));
+	return /\b(?:workflow )?run\b.*\bnot found\b/i.test(error?.message ?? String(error));
 }
 
 /**
- * Build the Foundry analysis boundary over the current session's native Factory API.
- * @param {() => any} getFactoryApi
+ * Build the Foundry analysis boundary over the current session's native Workflow API.
+ * @param {() => unknown} getWorkflowApi
  */
-export function createFactoryAnalysis(getFactoryApi) {
-	if (typeof getFactoryApi !== "function") {
-		throw new TypeError("createFactoryAnalysis requires getFactoryApi");
+export function createWorkflowAnalysis(getWorkflowApi) {
+	if (typeof getWorkflowApi !== "function") {
+		throw new TypeError("createWorkflowAnalysis requires getWorkflowApi");
 	}
-	/** Resolve the current session's Factory API or fail closed. */
+	/** Resolve the current session's Workflow API or fail closed. */
 	const api = () => {
-		const value = getFactoryApi();
-		if (
-			!value ||
-			typeof value.getRun !== "function" ||
-			typeof value.getRunDetail !== "function" ||
-			typeof value.getRunProgress !== "function" ||
-			typeof value.listRuns !== "function"
-		) {
+		const value = getWorkflowApi();
+		if (!hasInspectionApi(value)) {
 			fail(
-				"factory_backend_unavailable",
-				"Foundry requires native Factory run inspection APIs",
+				"workflow_backend_unavailable",
+				"Foundry requires native Workflow run inspection APIs",
 			);
 		}
 		return value;
 	};
 
-	/** @param {string} runId @param {any} specification */
+	/** @param {string} runId @param {Pick<import("@github/copilot-sdk").WorkflowHandle, "meta">} specification */
 	const loadRun = async (runId, specification) => {
 		let run;
 		let detail;
@@ -104,25 +113,25 @@ export function createFactoryAnalysis(getFactoryApi) {
 			]);
 		} catch (error) {
 			if (
-				error instanceof FoundryFactoryError &&
-				error.code === "factory_backend_unavailable"
+				error instanceof FoundryWorkflowError &&
+				error.code === "workflow_backend_unavailable"
 			) {
 				throw error;
 			}
 			const message = error?.message ?? String(error);
 			fail(
 				isMissingRun(error)
-					? "factory_run_not_found"
-					: "factory_run_invalid",
+					? "workflow_run_not_found"
+					: "workflow_run_invalid",
 				message,
 				{ runId },
 			);
 		}
-		if (detail.factoryName !== specification.meta.name) {
+		if (detail.workflowName !== specification.meta.name) {
 			fail(
-				"factory_run_identity_mismatch",
-				`Factory run ${runId} belongs to ${detail.factoryName}, not ${specification.meta.name}`,
-				{ runId, actualFactory: detail.factoryName },
+				"workflow_run_identity_mismatch",
+				`Workflow run ${runId} belongs to ${detail.workflowName}, not ${specification.meta.name}`,
+				{ runId, actualWorkflow: detail.workflowName },
 			);
 		}
 		return { run, detail };
@@ -132,7 +141,7 @@ export function createFactoryAnalysis(getFactoryApi) {
 	 * Read reservation markers from bounded, base-agnostic progress pages.
 	 *
 	 * @param {string} runId
-	 * @param {any} [existingDetail]
+	 * @param {import("@github/copilot-sdk").WorkflowRunDetail | null} [existingDetail]
 	 * @returns {Promise<
 	 *   {state: "readable", markers: string[]}
 	 *   | {state: "inconclusive", reason: string}
@@ -158,7 +167,7 @@ export function createFactoryAnalysis(getFactoryApi) {
 				if (page.hasMoreOlder !== true) {
 					return { state: "readable", markers: [...markers] };
 				}
-				if (!Number.isSafeInteger(page.oldestSeq)) {
+				if (typeof page.oldestSeq !== "number" || !Number.isSafeInteger(page.oldestSeq)) {
 					return { state: "inconclusive", reason: "progress-cursor-unavailable" };
 				}
 				page = await api().getRunProgress(runId, {
@@ -181,24 +190,24 @@ export function createFactoryAnalysis(getFactoryApi) {
 	 * @param {string} reservedAt
 	 * @returns {Promise<
 	 *   {state: "absent"}
-	 *   | {state: "found", run: import("@github/copilot-sdk").FactoryRunSummary, duplicates: []}
+	 *   | {state: "found", run: import("@github/copilot-sdk").WorkflowRunSummary, duplicates: []}
 	 *   | {state: "inconclusive", reason: string,
-	 *     candidates: Array<import("@github/copilot-sdk").FactoryRunSummary & {reason?: string}>,
-	 *     unattributable?: Array<import("@github/copilot-sdk").FactoryRunSummary & {reason?: string}>}
+	 *     candidates: Array<import("@github/copilot-sdk").WorkflowRunSummary & {reason?: string}>,
+	 *     unattributable?: Array<import("@github/copilot-sdk").WorkflowRunSummary & {reason?: string}>}
 	 * >}
 	 */
 	const discoverVerificationRun = async (reservationId, reservedAt) => {
 		const threshold = Date.parse(String(reservedAt));
 		if (!Number.isFinite(threshold)) {
-			fail("factory_reservation_invalid", "Verification reservation timestamp is invalid");
+			fail("workflow_reservation_invalid", "Verification reservation timestamp is invalid");
 		}
-		/** @type {Map<string, import("@github/copilot-sdk").FactoryRunSummary>} */
+		/** @type {Map<string, import("@github/copilot-sdk").WorkflowRunSummary>} */
 		const summaries = new Map();
 		let beforeSeq;
 		/** @type {string | null} */
-		let historyReason = "factory run history exceeds the discovery page budget";
+		let historyReason = "workflow run history exceeds the discovery page budget";
 		for (let pageNumber = 0; pageNumber < RUN_DISCOVERY_MAX_PAGES; pageNumber++) {
-			/** @type {import("@github/copilot-sdk").FactoryRunsPage} */
+			/** @type {import("@github/copilot-sdk").WorkflowRunsPage} */
 			let page;
 			try {
 				page = await api().listRuns({
@@ -210,7 +219,7 @@ export function createFactoryAnalysis(getFactoryApi) {
 				break;
 			}
 			if (!page || !Array.isArray(page.runs)) {
-				historyReason = "factory run listing is unavailable";
+				historyReason = "workflow run listing is unavailable";
 				break;
 			}
 			for (const summary of page.runs) {
@@ -220,7 +229,7 @@ export function createFactoryAnalysis(getFactoryApi) {
 				}
 			}
 			if (pageNumber === 0 && page.hasMoreNewer !== false) {
-				historyReason = "factory run listing has unresolved newer history";
+				historyReason = "workflow run listing has unresolved newer history";
 				break;
 			}
 			if (
@@ -228,7 +237,7 @@ export function createFactoryAnalysis(getFactoryApi) {
 				|| !Number.isSafeInteger(page.omittedOlder)
 				|| page.omittedOlder < 0
 			) {
-				historyReason = "factory run listing has unknown omitted older history";
+				historyReason = "workflow run listing has unknown omitted older history";
 				break;
 			}
 			if (page.omittedOlder === 0) {
@@ -241,7 +250,7 @@ export function createFactoryAnalysis(getFactoryApi) {
 				|| !Number.isSafeInteger(page.oldestSeq)
 				|| (beforeSeq !== undefined && page.oldestSeq >= beforeSeq)
 			) {
-				historyReason = "factory run listing has no advancing older cursor";
+				historyReason = "workflow run listing has no advancing older cursor";
 				break;
 			}
 			beforeSeq = page.oldestSeq;
@@ -250,7 +259,7 @@ export function createFactoryAnalysis(getFactoryApi) {
 		const inconclusive = [];
 		const unattributable = [];
 		for (const summary of [...summaries.values()]
-			.filter((entry) => entry?.factoryName === FOUNDRY_FACTORIES.verify.meta.name)
+			.filter((entry) => entry?.workflowName === FOUNDRY_WORKFLOWS.verify.meta.name)
 			.filter((entry) => !Number.isFinite(entry.createdAt) || entry.createdAt >= threshold)
 			.sort((left, right) => (
 				(Number.isFinite(left.createdAt) ? left.createdAt : Number.POSITIVE_INFINITY)
@@ -280,7 +289,7 @@ export function createFactoryAnalysis(getFactoryApi) {
 		if (matches.length > 1) {
 			return {
 				state: "inconclusive",
-				reason: "multiple Factory runs carry the verification reservation",
+				reason: "multiple Workflow runs carry the verification reservation",
 				candidates: matches,
 			};
 		}
@@ -318,7 +327,7 @@ export function createFactoryAnalysis(getFactoryApi) {
 		if (unattributable.length > 0) {
 			return {
 				state: "inconclusive",
-				reason: "terminal Factory runs cannot be attributed to this reservation",
+				reason: "terminal Workflow runs cannot be attributed to this reservation",
 				candidates: [],
 				unattributable,
 			};
@@ -326,12 +335,12 @@ export function createFactoryAnalysis(getFactoryApi) {
 		return { state: "absent" };
 	};
 
-	/** Build the exact native planning Factory invocation. */
+	/** Build the exact native planning Workflow invocation. */
 	const preparePlanning = async (input) => {
 		const args = buildPlanningArgs(input);
-		const specification = FOUNDRY_FACTORIES.plan;
+		const specification = FOUNDRY_WORKFLOWS.plan;
 		return {
-			factory: specification.meta.name,
+			workflow: specification.meta.name,
 			inputDigest: args.inputDigest,
 			launchSpec: {
 				name: specification.meta.name,
@@ -340,30 +349,30 @@ export function createFactoryAnalysis(getFactoryApi) {
 		};
 	};
 
-	/** Import and validate one completed planning Factory run. */
+	/** Import and validate one completed planning Workflow run. */
 	const importPlanning = async (runId) => {
-		const { run } = await loadRun(runId, FOUNDRY_FACTORIES.plan);
+		const { run } = await loadRun(runId, FOUNDRY_WORKFLOWS.plan);
 		assertCompleted(run);
 		const result = run.result;
 		if (!result || typeof result !== "object" || Array.isArray(result)) {
-			fail("factory_result_invalid", `Factory run ${runId} returned no planning object`);
+			fail("workflow_result_invalid", `Workflow run ${runId} returned no planning object`);
 		}
 		const persistedInput = result.input;
 		if (!persistedInput || typeof persistedInput !== "object" || Array.isArray(persistedInput)) {
-			fail("factory_input_missing", `Planning run ${runId} did not return its canonical input`);
+			fail("workflow_input_missing", `Planning run ${runId} did not return its canonical input`);
 		}
 		let normalized;
 		try {
 			normalized = validatePlanningArgs(persistedInput);
 		} catch (error) {
 			if (error instanceof FoundryAnalysisError && error.code === "analysis_input_mismatch") {
-				fail("factory_input_mismatch", `Planning run ${runId} carries an invalid input digest`);
+				fail("workflow_input_mismatch", `Planning run ${runId} carries an invalid input digest`);
 			}
 			throw error;
 		}
 		const { inputDigest } = normalized;
 		if (result.inputDigest !== inputDigest) {
-			fail("factory_input_mismatch", `Planning run ${runId} carries an invalid input digest`);
+			fail("workflow_input_mismatch", `Planning run ${runId} carries an invalid input digest`);
 		}
 		return {
 			runId,
@@ -372,13 +381,13 @@ export function createFactoryAnalysis(getFactoryApi) {
 		};
 	};
 
-	/** Build the exact native verification Factory invocation. */
+	/** Build the exact native verification Workflow invocation. */
 	const prepareVerification = async (plan, reservationId) => {
 		const canonicalInput = buildVerificationInput(plan);
 		const args = { ...canonicalInput, reservationId };
-		const specification = FOUNDRY_FACTORIES.verify;
+		const specification = FOUNDRY_WORKFLOWS.verify;
 		return {
-			factory: specification.meta.name,
+			workflow: specification.meta.name,
 			inputDigest: canonicalInput.inputDigest,
 			launchSpec: {
 				name: specification.meta.name,
@@ -387,37 +396,37 @@ export function createFactoryAnalysis(getFactoryApi) {
 		};
 	};
 
-	/** Import one terminal verification Factory result against its reservation. */
+	/** Import one terminal verification Workflow result against its reservation. */
 	const importVerification = async (runId, plan) => {
-		const { run, detail } = await loadRun(runId, FOUNDRY_FACTORIES.verify);
+		const { run, detail } = await loadRun(runId, FOUNDRY_WORKFLOWS.verify);
 		const expectedArgs = buildVerificationInput(plan);
 		const reservationId = String(plan.verification.reservationId || "");
 		const reservedAt = Date.parse(String(plan.verification.reservedAt || ""));
 		if (!reservationId || !Number.isFinite(reservedAt)) {
 			fail(
-				"factory_reservation_invalid",
+				"workflow_reservation_invalid",
 				"Verification inspection requires its reservation identity and timestamp",
 			);
 		}
 		if (Number.isFinite(detail.createdAt) && detail.createdAt < reservedAt) {
 			fail(
-				"factory_run_identity_mismatch",
-				`Factory run ${runId} predates verification reservation ${reservationId}`,
+				"workflow_run_identity_mismatch",
+				`Workflow run ${runId} predates verification reservation ${reservationId}`,
 				{ runId, reservationId, createdAt: detail.createdAt, reservedAt },
 			);
 		}
 		const progress = await readReservationMarkers(runId, detail);
 		if (progress.state !== "readable") {
 			fail(
-				"factory_progress_inconclusive",
-				`Factory run ${runId} progress cannot establish reservation identity`,
+				"workflow_progress_inconclusive",
+				`Workflow run ${runId} progress cannot establish reservation identity`,
 				{ runId, reservationId, reason: progress.reason },
 			);
 		}
 		if (!progress.markers.includes(reservationId)) {
 			fail(
-				"factory_run_identity_mismatch",
-				`Factory run ${runId} does not carry verification reservation ${reservationId}`,
+				"workflow_run_identity_mismatch",
+				`Workflow run ${runId} does not carry verification reservation ${reservationId}`,
 				{ runId, reservationId },
 			);
 		}
@@ -448,13 +457,13 @@ export function createFactoryAnalysis(getFactoryApi) {
 			} catch (error) {
 				if (
 					error instanceof FoundryAnalysisError
-					|| (error instanceof FoundryFactoryError
+					|| (error instanceof FoundryWorkflowError
 						&& [
-							"factory_input_missing",
-							"factory_input_mismatch",
-							"factory_result_invalid",
-							"factory_result_unavailable",
-							"factory_run_identity_mismatch",
+							"workflow_input_missing",
+							"workflow_input_mismatch",
+							"workflow_result_invalid",
+							"workflow_result_unavailable",
+							"workflow_run_identity_mismatch",
 						].includes(error.code))
 				) {
 					return {
@@ -467,7 +476,7 @@ export function createFactoryAnalysis(getFactoryApi) {
 			}
 	};
 
-	/** Observe whether a verification Factory run is terminal. */
+	/** Observe whether a verification Workflow run is terminal. */
 	const verificationRunIsTerminal = async (runId) => {
 		try {
 			const run = await api().getRun(runId);
@@ -480,7 +489,7 @@ export function createFactoryAnalysis(getFactoryApi) {
 
 	/** Cancel the exact Foundry verification run and observe a terminal envelope. */
 	const cancelVerificationRun = async (runId) => {
-		const { run } = await loadRun(runId, FOUNDRY_FACTORIES.verify);
+		const { run } = await loadRun(runId, FOUNDRY_WORKFLOWS.verify);
 		if (TERMINAL.has(run.status)) {
 			return {
 				runId,
@@ -488,34 +497,34 @@ export function createFactoryAnalysis(getFactoryApi) {
 				alreadyTerminal: true,
 			};
 		}
-		const factoryApi = api();
-		if (typeof factoryApi.cancel !== "function") {
+		const workflowApi = api();
+		if (typeof workflowApi.cancel !== "function") {
 			fail(
-				"factory_backend_unavailable",
-				"Foundry requires the native Factory cancellation API",
+				"workflow_backend_unavailable",
+				"Foundry requires the native Workflow cancellation API",
 			);
 		}
 		let settled;
 		try {
-			settled = await factoryApi.cancel(runId);
+			settled = await workflowApi.cancel(runId);
 		} catch (error) {
 			fail(
-				"factory_cancel_failed",
+				"workflow_cancel_failed",
 				error instanceof Error ? error.message : String(error),
 				{ runId },
 			);
 		}
 		if (!TERMINAL.has(settled?.status)) {
 			fail(
-				"factory_cancel_incomplete",
-				`Factory run ${runId} did not reach a terminal state`,
+				"workflow_cancel_incomplete",
+				`Workflow run ${runId} did not reach a terminal state`,
 				{ runId, status: settled?.status ?? null },
 			);
 		}
 		if (settled.runId !== runId) {
 			fail(
-				"factory_run_identity_mismatch",
-				`Factory cancellation returned a different run than ${runId}`,
+				"workflow_run_identity_mismatch",
+				`Workflow cancellation returned a different run than ${runId}`,
 				{ runId, actualRunId: settled.runId },
 			);
 		}
@@ -538,12 +547,16 @@ export function createFactoryAnalysis(getFactoryApi) {
 	});
 }
 
-/** @param {any} run */
+/**
+ * @param {import("@github/copilot-sdk").WorkflowRunResult | null | undefined} run
+ * @returns {asserts run is import("@github/copilot-sdk").WorkflowRunResult
+ *   & {status: "completed"}}
+ */
 function assertCompleted(run) {
 	if (run?.status !== "completed" || !Object.hasOwn(run, "result")) {
 		fail(
-			"factory_result_unavailable",
-			`Factory run ${run?.runId ?? "(unknown)"} is ${run?.status ?? "unknown"} and has no result`,
+			"workflow_result_unavailable",
+			`Workflow run ${run?.runId ?? "(unknown)"} is ${run?.status ?? "unknown"} and has no result`,
 			{ status: run?.status, failure: run?.failure ?? null },
 		);
 	}

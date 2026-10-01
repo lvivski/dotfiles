@@ -14,7 +14,7 @@ metadata:
 
 Foundry is the authority for plan, task, attempt, evidence, verification, and cancellation state.
 This skill drives App-native tools around that state machine. App project sessions own repository
-mutation; native Agent Factories perform bounded analysis only.
+mutation; native Dynamic Workflows perform bounded analysis only.
 
 ## Scope
 
@@ -23,7 +23,7 @@ prefer native plan mode and direct tools; for ordinary multi-session or stacked-
 native `orchestrate` or `pr-stack` flows without creating a Foundry plan.
 
 Keep the complete coordinator protocol even for a small task. A native plan-mode document is not
-a substitute for the completed planning Factory result required by `foundry_create_plan`.
+a substitute for the completed planning Workflow result required by `foundry_create_plan`.
 
 ## Hard rules
 
@@ -42,14 +42,14 @@ a substitute for the completed planning Factory result required by `foundry_crea
    captured after the state it is used to prove.
 9. Do not expand the approved DAG. New work requires a new or revised plan.
 10. Do not claim cancellation is complete until every owned child session and the authoritative
-    verification Factory run have terminal dispositions.
+    verification Workflow run have terminal dispositions.
 11. A successful task must satisfy its delivery requirement: `branch` needs the attached branch;
     `commit` also needs a full 40- or 64-character commit ID; `pr` additionally needs a PR URL.
     These delivery fields remain child-reported claims; the final verify task checks the exact commit
     from a separate read-only App session.
 12. Never modify a `launchSpec` returned by a Foundry prepare tool, including its limits. For any
-    direct `run_factory` call not based on a returned `launchSpec`, do not pass `limits`; use the
-    factory's declared limits unless the user explicitly requests an override. Never lower a declared
+    direct `run_dynamic_workflow` call not based on a returned `launchSpec`, do not pass `limits`; use the
+    workflow's declared limits unless the user explicitly requests an override. Never lower a declared
     or returned limit without an explicit user request.
 
 ## Choose the current phase

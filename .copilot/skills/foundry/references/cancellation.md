@@ -8,11 +8,11 @@ that external work has stopped.
    archive sessions this coordinator created. Record `no-session-created` only for an attempt that
    never attached a session.
 3. Call `foundry_cancel_verification_run` with the current revision and the same cancellation request
-   ID. Use its `verificationDisposition`; never supply an arbitrary Factory run ID.
+   ID. Use its `verificationDisposition`; never supply an arbitrary Workflow run ID.
 4. Capture a fresh exhaustive App session inventory after those termination attempts.
 5. Call `foundry_finalize_cancellation` with exact attempt dispositions, the returned verification
    disposition when present, and the fresh inventory.
 
-An absent, ambiguous, unreadable, paused, or still-active session/Factory state blocks finalization.
+An absent, ambiguous, unreadable, paused, or still-active session/Workflow state blocks finalization.
 Use `finalizationOverride` only after the user explicitly accepts the uncertainty and supplies the
 attributed reason.

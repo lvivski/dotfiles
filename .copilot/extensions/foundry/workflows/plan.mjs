@@ -1,10 +1,11 @@
-// Native Foundry planning Factory.
+// Native Foundry planning workflow.
 import { validatePlanBlueprint, validatePlanningArgs } from "../analysis.mjs";
 import {
 	UNTRUSTED_DATA_WARNING as UNTRUSTED,
 	safeJson,
 	untrustedBlock,
 } from "../prompts.mjs";
+/** @type {import("@github/copilot-sdk").WorkflowMeta & {limits: Required<import("@github/copilot-sdk").WorkflowLimits>}} */
 export const meta = {
 	name: "plan",
 	description: "Create, critique, synthesize, and verify one dependency-aware Foundry plan.",
@@ -39,7 +40,7 @@ export const meta = {
 	},
 };
 
-export async function run(factory) {
+export async function run(workflow) {
 
 const TASK_SCHEMA = {
 	type: "object",
@@ -100,10 +101,10 @@ function inspectBlueprint(value, maxTasks, stage) {
 	}
 }
 
-const input = validatePlanningArgs(factory.args);
+const input = validatePlanningArgs(workflow.args);
 
-factory.phase("decompose");
-const decomposed = await factory.agent(
+workflow.phase("decompose");
+const decomposed = await workflow.agent(
 	`Decompose this objective into at most ${input.maxTasks} independently deliverable implementation tasks.
 
 Objective:
@@ -139,9 +140,9 @@ const decompositionReview = inspectBlueprint(
 const decomposition = decompositionReview.plan;
 const decompositionForReview = decomposition ?? decomposed;
 
-factory.phase("critique");
-const critiques = await factory.parallel([
-	() => factory.agent(
+workflow.phase("critique");
+const critiques = await workflow.parallel([
+	() => workflow.agent(
 		`Review the proposed engineering plan for architecture boundaries, dependency correctness, and integration seams. ${UNTRUSTED} Return JSON only.
 
 <UNTRUSTED-PLAN>
@@ -149,7 +150,7 @@ ${safeJson(decompositionForReview)}
 </UNTRUSTED-PLAN>`,
 		{ label: "plan:architecture-critic", schema: CRITIQUE_SCHEMA },
 	),
-	() => factory.agent(
+	() => workflow.agent(
 		`Review the proposed engineering plan for delivery risk, task overlap, missing tests, and acceptance criteria that cannot be measured. ${UNTRUSTED} Return JSON only.
 
 <UNTRUSTED-PLAN>
@@ -159,8 +160,8 @@ ${safeJson(decompositionForReview)}
 	),
 ]);
 
-factory.phase("synthesize");
-const synthesized = await factory.agent(
+workflow.phase("synthesize");
+const synthesized = await workflow.agent(
 	`Produce the final Foundry plan blueprint from the decomposition and critiques. Preserve one final verify sink task and a convergent implementation DAG. ${UNTRUSTED}
 
 <UNTRUSTED-DECOMPOSITION>
@@ -190,8 +191,8 @@ const synthesisReview = synthesized
 	: { plan: null, issue: "The synthesis agent returned no valid result" };
 const synthesis = synthesisReview.plan;
 
-factory.phase("verify");
-const verification = await factory.agent(
+workflow.phase("verify");
+const verification = await workflow.agent(
 	`Verify this Foundry plan for objective coverage, dependency correctness, one final verifier sink, convergent implementation work, scope overlap, delivery requirements, and measurable implementation criteria. ${UNTRUSTED}
 
 Objective:

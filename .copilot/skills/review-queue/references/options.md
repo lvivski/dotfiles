@@ -23,9 +23,9 @@ Use a positive integer for `--limit` and a non-negative integer for `--max-age-d
 disables the age filter. The two platform-only flags are mutually exclusive. `--no-diff` produces
 metadata-only evidence that cannot support an approval recommendation.
 
-## Factory arguments
+## Workflow arguments
 
-Pass these optional fields alongside `prs` in `run_factory`'s `args`.
+Pass these optional fields alongside `prs` in `run_dynamic_workflow`'s `args`.
 
 | Field | Effect |
 | --- | --- |
@@ -36,13 +36,13 @@ Pass these optional fields alongside `prs` in `run_factory`'s `args`.
 
 GitHub CODEOWNERS is evaluated per changed file. Azure DevOps uses required-policy/manual attribution.
 Assignment policy never bypasses evidence or verification requirements. Chunk controls do not override
-the factory's declared runtime limits; pass `limits` only for an explicitly requested user override,
+the workflow's declared runtime limits; pass `limits` only for an explicitly requested user override,
 and never lower a declared limit without an explicit user request.
 
 ## Recovery
 
 Inspect the original `runId` before deciding whether work failed. Resume a resumable failed run with
-`run_factory({ resumeFromRunId: "<run-id>" })` to reuse completed work. A reached limit needs explicit
+`run_dynamic_workflow({ resumeFromRunId: "<run-id>" })` to reuse completed work. A reached limit needs explicit
 user authorization before it is raised; do not refetch or start another run to evade it.
-If the factory is unavailable, report the missing Foundry prerequisite instead of running a
+If the workflow is unavailable, report the missing Foundry prerequisite instead of running a
 replacement review pool.

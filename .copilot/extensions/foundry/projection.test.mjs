@@ -320,3 +320,24 @@ test("cancellation actions require attempt resolution before finalization", () =
     );
     assert.equal(projection.nextAction.attemptId, "T-001-A001");
 });
+
+test("cancellation projects the authoritative workflow before finalization", () => {
+	let plan = approvedPlan();
+	for (const task of plan.tasks) plan = finishTask(plan, task.id);
+	plan = reserveVerification(plan, {
+		reservationId: "cancel-workflow-reservation",
+		inputDigest: "a".repeat(64),
+	});
+	plan = requestPlanCancellation(plan, {
+		requestId: "cancel-workflow-request",
+		reason: "Stop verification",
+		requestedBy: "tester",
+		verificationRunId: "verification-run",
+	});
+	const projection = projectPlan(plan);
+	assert.deepEqual(
+		projection.actions.map((entry) => entry.kind),
+		["cancel-workflow", "finalize-cancellation"],
+	);
+	assert.equal(projection.nextAction.runId, "verification-run");
+});

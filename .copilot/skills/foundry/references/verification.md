@@ -9,8 +9,8 @@ or completion.
    `checkId`, including `final-integration` and `workspace-integrity`. It reports the final observed
    commit as the attempt commit. Failed checks still produce a `done` verifier report.
 3. Once every task is done, call `foundry_prepare_verification` with a stable reservation ID.
-4. If it returns `launchSpec`, run it exactly once. If it returns `launchSpec: null`, use the
-   returned `runId` and do not relaunch.
+4. If it returns `launchSpec`, invoke it exactly once with `run_dynamic_workflow`. If it returns
+   `launchSpec: null`, use the returned `runId` and do not relaunch.
 5. Import the authoritative terminal run with `foundry_complete_verification`. Verification cannot
    pass from task-owner evidence alone: every criterion and final integration must use the
    independently reported evidence.

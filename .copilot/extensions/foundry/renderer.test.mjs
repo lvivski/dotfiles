@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 
-import { approvePlan, createDraftPlan, transitionPlan } from "./domain.mjs";
+import { approvePlan, createDraftPlan, requestPlanCancellation, transitionPlan } from "./domain.mjs";
 import { projectPlan } from "./projection.mjs";
 
 const script = await readFile(new URL("./renderer/app.js", import.meta.url), "utf8");
@@ -121,6 +121,21 @@ function buttons(node) {
 	return node.childNodes.flatMap((child) => typeof child === "string"
 		? [] : [...(child.tagName === "button" ? [child] : []), ...buttons(child)]);
 }
+
+test("planning provenance and cancellation guidance use workflow terminology", async () => {
+	const board = browser();
+	const state = snapshot(1, { approved: true });
+	state.plan.planning = { runId: "planning-run", inputDigest: "a".repeat(64) };
+	state.plan = requestPlanCancellation(state.plan, {
+		requestId: "cancel-renderer-workflow",
+		reason: "Stop",
+		requestedBy: "tester",
+	});
+	state.projection = projectPlan(state.plan);
+	await board.respond(0, state);
+	assert.match(board.nodes.get("#summary").textContent, /Workflow.*planning-run/);
+	assert.match(board.nodes.get("#recovery").textContent, /cancel the authoritative workflow run/);
+});
 
 test("a delayed GET cannot undo a newer action or restore approval controls", async () => {
 	const board = browser();
