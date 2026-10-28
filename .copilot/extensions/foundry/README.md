@@ -22,7 +22,7 @@ its planning workflow result; native plan mode is not a substitute for that resu
 | `plan` | Create, critique, synthesize, and verify a dependency-aware plan |
 | `verify` | Produce the final fail-closed evidence verdict |
 | `audit` | Audit files for a specified concern |
-| `deep-research` | Research independent angles and verify cited claims |
+| `deep-research` | Verify individual sourced findings, correct unresolved claims once, and retain partial results |
 | `review-queue` | Triage correctness and maintainability risks in supplied diffs |
 | `security-review` | Run a multi-perspective static security review |
 | `triage` | Classify and prioritize tickets |
@@ -37,6 +37,19 @@ names, reservation markers, and persisted Foundry plan fields are unchanged.
 
 Every workflow declares an SDK argument schema so malformed model invocations fail before approval or
 credit spend. Workload bounds also reserve capacity for the SDK's automatic structured-output retry.
+
+Deep research batches atomic claim verdicts within each angle, preserving supported findings while
+distinguishing incorrect claims, inaccessible sources, and insufficient evidence. Only unresolved
+findings get one targeted correction and independent re-verification. Synthesis receives supported
+claims and their source evidence, not unverified drafts; rejection reasons, correction history, and
+stage failures remain in the returned report. If synthesis fails, verified claims and citations are
+returned directly with the failure stated.
+
+Explicitly supplied `drafts` can recover saved research without repeating planning or broad discovery.
+The existing limits are unchanged: capacity is reserved for correction and schema retries, allowing
+up to six fresh angles or seven saved drafts under the current subagent limit. Oversized recovery
+input is rejected, not truncated. See the
+[deep-research skill](../../skills/deep-research/SKILL.md) for approval and recovery rules.
 
 The review queue pipelines each PR through review and verification independently. A PR must still
 finish every chunk review before it can enter verification, and only complete, clean evidence that
