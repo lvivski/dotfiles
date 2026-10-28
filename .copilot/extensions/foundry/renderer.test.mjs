@@ -85,6 +85,7 @@ function browser(planId = "renderer-plan") {
 	return {
 		nodes, requests, window, events, confirmations, prompts,
 		change: () => listeners.get("change")({ data: JSON.stringify({ planId }) }),
+		ready: () => listeners.get("ready")(),
 		async respond(index, value) {
 			requests[index].reply({ ok: true, value });
 			await flush();
@@ -121,6 +122,71 @@ function buttons(node) {
 	return node.childNodes.flatMap((child) => typeof child === "string"
 		? [] : [...(child.tagName === "button" ? [child] : []), ...buttons(child)]);
 }
+
+function workflowSnapshot(revision, status = "paused") {
+	return {
+		...snapshot(1),
+		workflows: {
+			state: "available", omittedOlder: 1,
+			runs: [{
+				runId: "research-run", workflowName: "deep-research", revision, status,
+				canResume: status === "paused", currentPhase: { title: "Plan" }, liveAgentCount: 0,
+				terminal: status === "paused"
+					? { pauseInfo: { type: "checkpoint", key: "research-scope:v1" } } : null,
+				progress: { records: [{ text: "Prepared scope: <unsafe-markup>" }] },
+				actions: [status === "paused" ? "resume" : "pause"],
+			}],
+		},
+	};
+}
+
+test("native progress stays live during resume and newer workflow revisions win", async () => {
+	const board = browser();
+	await board.respond(0, workflowSnapshot(4));
+	const host = board.nodes.get("#workflows");
+	assert.match(host.textContent, /research-scope:v1/);
+	assert.match(host.textContent, /Prepared scope: <unsafe-markup>/);
+	buttons(host)[0].click();
+	assert.deepEqual(JSON.parse(board.requests[1].options.body), {
+		action: "resume-workflow", runId: "research-run", revision: 1, confirmed: true,
+	});
+	assert.match(board.confirmations[0], /existing journal and limits/);
+	assert.equal(buttons(host)[0].attributes.disabled, "");
+	assert.equal(buttons(host)[0].textContent, "Resuming...");
+	buttons(host)[0].click();
+	assert.equal(board.requests.length, 2);
+	board.change();
+	await board.respond(2, workflowSnapshot(5, "running"));
+	assert.equal(buttons(host)[0].textContent, "Pause");
+	buttons(host)[0].click();
+	assert.equal(JSON.parse(board.requests[3].options.body).action, "pause-workflow");
+	await board.respond(3, workflowSnapshot(6));
+	await board.respond(1, workflowSnapshot(5, "running"));
+	assert.match(host.textContent, /paused/);
+	assert.equal(buttons(host)[0].textContent, "Resume");
+	assert.equal(board.nodes.get("#approve-button").hidden, false);
+	board.ready();
+	assert.equal(board.requests[4].url, "/api/plan");
+	await board.respond(4, workflowSnapshot(6));
+});
+
+test("workflow errors survive native events and unavailable state grants no controls", async () => {
+	const board = browser();
+	await board.respond(0, workflowSnapshot(1));
+	buttons(board.nodes.get("#workflows"))[0].click();
+	board.requests[1].reply({ ok: false, error: { message: "Run is no longer resumable" } }, 400);
+	await flush();
+	assert.match(board.nodes.get("#workflows").textContent, /no longer resumable/);
+	board.change();
+	await board.respond(2, workflowSnapshot(2, "running"));
+	assert.match(board.nodes.get("#workflows").textContent, /no longer resumable/);
+	board.nodes.get("#refresh-button").click();
+	const unavailable = { ...snapshot(1), workflows: { state: "unavailable", error: "Backend offline" } };
+	await board.respond(3, unavailable);
+	assert.match(board.nodes.get("#workflows").textContent, /Backend offline.*Refresh/);
+	assert.deepEqual(buttons(board.nodes.get("#workflows")), []);
+	assert.equal(board.nodes.get("#approve-button").hidden, false);
+});
 
 test("planning provenance and cancellation guidance use workflow terminology", async () => {
 	const board = browser();

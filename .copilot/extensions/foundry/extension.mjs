@@ -9,7 +9,7 @@
 import { defineWorkflow, joinSession } from "@github/copilot-sdk/extension";
 
 import { createFoundryCanvas } from "./canvas.mjs";
-import { publishPlanChange, subscribeToPlan } from "./events.mjs";
+import { publishPlanChange, publishWorkflowChange, subscribeToPlan } from "./events.mjs";
 import { createWorkflowAnalysis, FOUNDRY_WORKFLOWS } from "./workflow.mjs";
 import { buildFoundryHooks } from "./hooks.mjs";
 import { createFoundryOperations } from "./operations.mjs";
@@ -42,6 +42,8 @@ session = await joinSession({
         }),
     ],
 });
+
+session.on("workflow.run_updated", (event) => publishWorkflowChange(event.data));
 
 try {
     const recovery = await operations.recoverStorage();

@@ -1,6 +1,7 @@
 // Classify and summarize a batch of tickets using native workflow structured agents.
 import {
 	UNTRUSTED_DATA_WARNING,
+	safeJson,
 	untrustedBlock,
 } from "../prompts.mjs";
 const TICKETS_SCHEMA = {
@@ -12,14 +13,13 @@ const TICKETS_SCHEMA = {
 		],
 	},
 };
-const MAX_SUBAGENTS_PER_TICKET = 2;
 
 /** @type {import("@github/copilot-sdk").WorkflowMeta & {limits: Required<import("@github/copilot-sdk").WorkflowLimits>}} */
 export const meta = {
 	name: "triage",
 	description:
 		"Classify tickets, suggest next actions, and render a triage table. " +
-		"Args: { tickets: Array<string|object> } or a ticket array.",
+		"Args: { tickets: Array<string|object>, pauseBeforeWork?: boolean } or a ticket array.",
 	phases: [{ title: "Triage" }],
 	argsSchema: {
 		anyOf: [
@@ -27,7 +27,10 @@ export const meta = {
 			{
 				type: "object",
 				required: ["tickets"],
-				properties: { tickets: TICKETS_SCHEMA },
+				properties: {
+					tickets: TICKETS_SCHEMA,
+					pauseBeforeWork: { type: "boolean" },
+				},
 			},
 		],
 	},
@@ -41,31 +44,29 @@ export const meta = {
 
 export async function run(workflow) {
 const workflowArgs = workflow.args;
-const input =
+const opts =
 	workflowArgs && typeof workflowArgs === "object" && !Array.isArray(workflowArgs)
-		? workflowArgs.tickets
-		: workflowArgs;
+		? workflowArgs
+		: {};
+if (opts.pauseBeforeWork !== undefined && typeof opts.pauseBeforeWork !== "boolean") {
+	throw new Error("triage: pauseBeforeWork must be a boolean");
+}
+const input = Array.isArray(workflowArgs) ? workflowArgs : opts.tickets;
 if (!Array.isArray(input) || !input.length) {
 	throw new Error("triage: provide a non-empty array of tickets or { tickets: [...] }");
 }
-const maxTickets = Math.floor(
-	meta.limits.maxTotalSubagents / MAX_SUBAGENTS_PER_TICKET,
-);
+const maxTickets = meta.limits.maxTotalSubagents;
 if (input.length > maxTickets) {
 	throw new Error(
-		`triage: ${input.length} tickets exceed the retry-safe ${maxTickets}-ticket limit`,
+		`triage: ${input.length} tickets exceed the ${maxTickets}-ticket limit`,
 	);
 }
-workflow.log(`triage: ${input.length} ticket(s)`);
-
 const MAX_TICKET_CHARS = 8000;
-const tickets = input.map((ticket, index) => {
+const normalized = input.map((ticket, index) => {
 	if (typeof ticket === "string" && ticket.trim()) {
-		const text = ticket.trim();
 		return {
 			id: String(index + 1),
-			text: text.slice(0, MAX_TICKET_CHARS),
-			truncated: text.length > MAX_TICKET_CHARS,
+			text: ticket.trim(),
 		};
 	}
 	if (!ticket || typeof ticket !== "object" || Array.isArray(ticket)) {
@@ -79,19 +80,28 @@ const tickets = input.map((ticket, index) => {
 	if (id.length > 256) {
 		throw new Error(`triage: ticket ${index + 1} id exceeds 256 characters`);
 	}
-	return {
-		id,
-		text: text.slice(0, MAX_TICKET_CHARS),
-		truncated: text.length > MAX_TICKET_CHARS,
-	};
+	return { id, text };
 });
+const tickets = await workflow.step("triage:prepared-tickets:v1", () => normalized.map(({ id, text }) => ({
+	id,
+	text: text.slice(0, MAX_TICKET_CHARS),
+	truncated: text.length > MAX_TICKET_CHARS,
+})));
+workflow.log(`triage: ${tickets.length} ticket(s)`);
+if (opts.pauseBeforeWork) {
+	workflow.log(`triage: prepared tickets ${safeJson(tickets.map(({ id, text, truncated }) => ({
+		id, preview: text.slice(0, 200), truncated,
+	})), 0)}`);
+	await workflow.pause("triage:before-triage:v1");
+}
 
 const TRIAGE = {
 	type: "object",
+	additionalProperties: false,
 	properties: {
-		category: { enum: ["bug", "incident", "feature", "question", "task"] },
-		priority: { enum: ["p0", "p1", "p2", "p3"] },
-		confidence: { enum: ["high", "medium", "low"] },
+		category: { type: "string", enum: ["bug", "incident", "feature", "question", "task"] },
+		priority: { type: "string", enum: ["p0", "p1", "p2", "p3"] },
+		confidence: { type: "string", enum: ["high", "medium", "low"] },
 		rationale: { type: "string" },
 		action: { type: "string" },
 	},

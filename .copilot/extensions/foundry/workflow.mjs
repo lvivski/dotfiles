@@ -35,7 +35,8 @@ const RUN_DISCOVERY_MAX_PAGES = 10;
 /**
  * @typedef {Pick<import("@github/copilot-sdk").SessionWorkflowApi,
  *   "getRun" | "getRunDetail" | "getRunProgress" | "listRuns">
- *   & Partial<Pick<import("@github/copilot-sdk").SessionWorkflowApi, "cancel">>} WorkflowInspectionApi
+ *   & Partial<Pick<import("@github/copilot-sdk").SessionWorkflowApi,
+ *     "cancel" | "pause" | "resume" | "waitForRun">>} WorkflowInspectionApi
  */
 
 /** @param {unknown} value @returns {value is WorkflowInspectionApi} */
@@ -66,6 +67,22 @@ export class FoundryWorkflowError extends Error {
  */
 function fail(code, message, details) {
 	throw new FoundryWorkflowError(code, message, details);
+}
+
+/**
+ * Native pause/resume have no AbortSignal option; interrupt only the caller's wait.
+ * @param {Promise<import("@github/copilot-sdk").WorkflowRunResult>} pending
+ * @param {AbortSignal | undefined} signal
+ * @returns {Promise<import("@github/copilot-sdk").WorkflowRunResult>}
+ */
+function waitForControl(pending, signal) {
+	if (!signal) return pending;
+	return new Promise((resolve, reject) => {
+		const aborted = () => reject(signal.reason);
+		signal.addEventListener("abort", aborted, { once: true });
+		if (signal.aborted) aborted();
+		pending.then(resolve, reject).finally(() => signal.removeEventListener("abort", aborted));
+	});
 }
 
 /** @param {any} error */
@@ -135,6 +152,88 @@ export function createWorkflowAnalysis(getWorkflowApi) {
 			);
 		}
 		return { run, detail };
+	};
+
+	/**
+	 * @param {string} runId
+	 * @param {Pick<import("@github/copilot-sdk").WorkflowHandle, "meta">} specification
+	 * @param {Awaited<ReturnType<typeof loadRun>>} inspected
+	 * @param {{signal?: AbortSignal, wait?: boolean}} [options]
+	 */
+	const settleRun = async (runId, specification, inspected, { signal, wait = true } = {}) => {
+		signal?.throwIfAborted();
+		if (wait && (inspected.run.status === "pending" || inspected.run.status === "running")) {
+			const backend = api();
+			if (typeof backend.waitForRun !== "function") {
+				fail("workflow_backend_unavailable", "Importing an active Workflow requires native waitForRun");
+			}
+			await backend.waitForRun(runId, { signal });
+			signal?.throwIfAborted();
+			inspected = await loadRun(runId, specification);
+		}
+		assertCompleted(inspected.run);
+		return inspected;
+	};
+
+	/** @param {string} runId */
+	const inspectWorkflow = async (runId) => {
+		if (typeof runId !== "string" || !runId.trim()) {
+			fail("workflow_run_invalid", "A non-empty native Workflow run ID is required");
+		}
+		const detail = await api().getRunDetail(runId);
+		if (detail.runId !== runId || !Object.values(FOUNDRY_WORKFLOWS)
+			.some(({ meta }) => meta.name === detail.workflowName)) {
+			fail("workflow_run_identity_mismatch", `Run ${runId} is not a Foundry Workflow`);
+		}
+		return detail;
+	};
+
+	const listWorkflowRuns = async () => {
+		const page = await api().listRuns({ limit: 20 });
+		const names = new Set(Object.values(FOUNDRY_WORKFLOWS).map(({ meta }) => meta.name));
+		const runs = await Promise.all(page.runs.filter((run) => names.has(run.workflowName))
+			.map((run) => run.status === "paused" ? inspectWorkflow(run.runId) : run));
+		return { ...page, runs };
+	};
+
+	/** @param {string} runId @param {"pause" | "resume"} action @param {{signal?: AbortSignal}} [options] */
+	const controlWorkflow = async (runId, action, { signal } = {}) => {
+		signal?.throwIfAborted();
+		const detail = await inspectWorkflow(runId);
+		if (action !== "pause" && action !== "resume") {
+			fail("workflow_action_invalid", "Workflow action must be pause or resume");
+		}
+		if (action === "pause" && detail.status !== "running") {
+			fail("workflow_not_active", `Run ${runId} is ${detail.status}; refresh its state`);
+		}
+		if (action === "resume" && !detail.canResume) {
+			fail("workflow_not_resumable", `The native runtime cannot resume run ${runId}`);
+		}
+		if (action === "resume" && detail.terminal?.failure?.type === "workflow_limit_reached") {
+			fail("workflow_limit_reached", "Use run_dynamic_workflow to resume with an explicitly approved increase to the reached limit");
+		}
+		const backend = api();
+		signal?.throwIfAborted();
+		let pending;
+		if (action === "pause") {
+			if (typeof backend.pause !== "function") {
+				fail("workflow_backend_unavailable", "Native Workflow pause is unavailable");
+			}
+			pending = backend.pause(runId);
+		} else {
+			if (typeof backend.resume !== "function") {
+				fail("workflow_backend_unavailable", "Native Workflow resume is unavailable");
+			}
+			pending = backend.resume(runId, { notifyOnComplete: true, logPhaseNames: true });
+		}
+		const settled = await waitForControl(pending, signal);
+		if (settled.runId !== runId) {
+			fail("workflow_run_identity_mismatch", `Workflow ${action} returned a different run`);
+		}
+		if (!TERMINAL.has(settled.status) && settled.status !== "paused") {
+			fail("workflow_control_incomplete", `Workflow ${action} has not settled`, { runId, status: settled.status });
+		}
+		return settled;
 	};
 
 	/**
@@ -349,10 +448,14 @@ export function createWorkflowAnalysis(getWorkflowApi) {
 		};
 	};
 
-	/** Import and validate one completed planning Workflow run. */
-	const importPlanning = async (runId) => {
-		const { run } = await loadRun(runId, FOUNDRY_WORKFLOWS.plan);
-		assertCompleted(run);
+	/**
+	 * Wait for and validate a planning result without starting or resuming its run.
+	 * @param {string} runId
+	 * @param {{signal?: AbortSignal}} [options]
+	 */
+	const importPlanning = async (runId, options = {}) => {
+		const inspected = await loadRun(runId, FOUNDRY_WORKFLOWS.plan);
+		const { run } = await settleRun(runId, FOUNDRY_WORKFLOWS.plan, inspected, options);
 		const result = run.result;
 		if (!result || typeof result !== "object" || Array.isArray(result)) {
 			fail("workflow_result_invalid", `Workflow run ${runId} returned no planning object`);
@@ -396,8 +499,12 @@ export function createWorkflowAnalysis(getWorkflowApi) {
 		};
 	};
 
-	/** Import one terminal verification Workflow result against its reservation. */
-	const importVerification = async (runId, plan) => {
+	/**
+	 * @param {string} runId
+	 * @param {any} plan
+	 * @param {{signal?: AbortSignal, wait?: boolean}} [options]
+	 */
+	const importVerification = async (runId, plan, options = {}) => {
 		const { run, detail } = await loadRun(runId, FOUNDRY_WORKFLOWS.verify);
 		const expectedArgs = buildVerificationInput(plan);
 		const reservationId = String(plan.verification.reservationId || "");
@@ -430,15 +537,14 @@ export function createWorkflowAnalysis(getWorkflowApi) {
 				{ runId, reservationId },
 			);
 		}
-		assertCompleted(run);
+		const settled = await settleRun(runId, FOUNDRY_WORKFLOWS.verify, { run, detail }, options);
 		const result = validateVerificationResult(
-			run.result,
+			settled.run.result,
 			expectedArgs,
 			reservationId,
 		);
 		return {
-			run,
-			detail,
+			...settled,
 			result,
 		};
 	};
@@ -452,7 +558,7 @@ export function createWorkflowAnalysis(getWorkflowApi) {
 				return { state: "terminal-nonimportable", run };
 			}
 			try {
-				const imported = await importVerification(runId, plan);
+				const imported = await importVerification(runId, plan, { wait: false });
 				return { state: "importable", run, imported };
 			} catch (error) {
 				if (
@@ -536,6 +642,9 @@ export function createWorkflowAnalysis(getWorkflowApi) {
 	};
 
 	return Object.freeze({
+		controlWorkflow,
+		inspectWorkflow,
+		listWorkflowRuns,
 		importPlanning,
 		importVerification,
 		assessVerificationRun,

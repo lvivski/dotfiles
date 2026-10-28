@@ -8,14 +8,14 @@ const PATHS_SCHEMA = {
 	type: "array",
 	items: { type: "string" },
 };
-const MAX_SUBAGENTS_PER_PATH = 3;
+const MAX_SUBAGENTS_PER_PATH = 2;
 
 /** @type {import("@github/copilot-sdk").WorkflowMeta & {limits: Required<import("@github/copilot-sdk").WorkflowLimits>}} */
 export const meta = {
 	name: "audit",
 	description:
 		"Audit files for a concern, verify findings, and summarize actionable issues. " +
-		"Args: { paths: string[], concern?: string } or a string array.",
+		"Args: { paths: string[], concern?: string, pauseBeforeWork?: boolean } or a string array.",
 	phases: [{ title: "Audit" }, { title: "Report" }],
 	argsSchema: {
 		anyOf: [
@@ -26,6 +26,7 @@ export const meta = {
 				properties: {
 					paths: PATHS_SCHEMA,
 					concern: { type: "string" },
+					pauseBeforeWork: { type: "boolean" },
 				},
 			},
 		],
@@ -41,19 +42,20 @@ export const meta = {
 export async function run(workflow) {
 const DEFAULT_CONCERN = "bugs, security issues, and missing error handling";
 const input = workflow.args;
-const rawPaths =
+const opts =
 	input && typeof input === "object" && !Array.isArray(input)
-		? input.paths
-		: input;
-const concern =
-	input && typeof input === "object" && !Array.isArray(input)
-		? String(input.concern ?? DEFAULT_CONCERN).trim()
-		: DEFAULT_CONCERN;
+		? input
+		: {};
+if (opts.pauseBeforeWork !== undefined && typeof opts.pauseBeforeWork !== "boolean") {
+	throw new Error("audit: pauseBeforeWork must be a boolean");
+}
+const rawPaths = Array.isArray(input) ? input : opts.paths;
+const requestedConcern = String(opts.concern ?? DEFAULT_CONCERN).trim();
 
 if (!Array.isArray(rawPaths) || !rawPaths.length) {
 	throw new Error('audit: provide {"paths":["src/a.js"],"concern":"..."} or an array of paths');
 }
-if (concern.length > 4_000) {
+if (requestedConcern.length > 4_000) {
 	throw new Error("audit: concern must contain at most 4000 characters");
 }
 const normalizedPaths = rawPaths.map((path, index) => {
@@ -63,21 +65,30 @@ const normalizedPaths = rawPaths.map((path, index) => {
 	}
 	return value;
 });
-const paths = [...new Set(normalizedPaths.filter(Boolean))];
-if (!paths.length) throw new Error("audit: paths must contain at least one non-empty path");
-if (!concern) throw new Error("audit: concern must be non-empty");
+const selectedPaths = [...new Set(normalizedPaths.filter(Boolean))];
+if (!selectedPaths.length) throw new Error("audit: paths must contain at least one non-empty path");
+if (!requestedConcern) throw new Error("audit: concern must be non-empty");
 const maxPaths = Math.floor(
 	(meta.limits.maxTotalSubagents - 1) / MAX_SUBAGENTS_PER_PATH,
 );
-if (paths.length > maxPaths) {
+if (selectedPaths.length > maxPaths) {
 	throw new Error(
-		`audit: ${paths.length} paths require more than ${meta.limits.maxTotalSubagents} subagents; maximum is ${maxPaths}`,
+		`audit: ${selectedPaths.length} paths require more than ${meta.limits.maxTotalSubagents} subagents; maximum is ${maxPaths}`,
 	);
 }
+const { paths, concern } = await workflow.step("audit:prepared-scope:v1", () => ({
+	paths: selectedPaths,
+	concern: requestedConcern,
+}));
 workflow.log(`audit: ${paths.length} path(s)`);
+if (opts.pauseBeforeWork) {
+	workflow.log(`audit: prepared scope ${safeJson({ paths, concern }, 0)}`);
+	await workflow.pause("audit:before-audit:v1");
+}
 
 const VERDICT = {
 	type: "object",
+	additionalProperties: false,
 	properties: {
 		passed: { type: "boolean" },
 		reasons: { type: "string" },

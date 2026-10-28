@@ -19,6 +19,15 @@
  * @typedef {object} PlanSnapshot
  * @property {any} plan Authoritative Foundry plan document.
  * @property {any} projection Derived operational projection.
+ * @property {WorkflowListing} [workflows]
+ */
+
+/**
+ * @typedef {import("@github/copilot-sdk").WorkflowRunSummary & {
+ *   actions: string[], progress?: import("@github/copilot-sdk").WorkflowProgressPage
+ * }} NativeWorkflow
+ * @typedef {{state: "available", runs: NativeWorkflow[], omittedOlder?: number, warning?: string | null}
+ *   | {state: "unavailable", error: string}} WorkflowListing
  */
 
 /**
@@ -79,6 +88,11 @@ let currentPlan = null;
 
 /** @type {any} */
 let currentProjection = null;
+
+/** @type {WorkflowListing | null} */
+let currentWorkflows = null;
+const pendingWorkflowActions = new Set();
+let workflowControlError = "";
 
 /** Refreshes coalesce, but a signal received during a GET requires another GET. */
 let refreshing = false;
@@ -159,6 +173,25 @@ async function request(path, options) {
 function acceptSnapshot(snapshot) {
     if (snapshot.plan.id !== planId
         || (currentPlan && snapshot.plan.revision < currentPlan.revision)) return;
+	if (snapshot.workflows) {
+		const previous = new Map(currentWorkflows?.state === "available"
+			? currentWorkflows.runs.map((run) => [run.runId, run]) : []);
+		currentWorkflows = snapshot.workflows.state === "available"
+			? {
+				...snapshot.workflows,
+				runs: snapshot.workflows.runs.map((run) => {
+					const newer = previous.get(run.runId);
+					return newer && newer.revision > run.revision
+						? {
+							...newer,
+							actions: run.workflowName === "verify" && snapshot.plan.status !== "running"
+								? [] : newer.actions,
+						}
+						: run;
+				}),
+			}
+			: snapshot.workflows;
+	}
     currentPlan = snapshot.plan;
     currentProjection = snapshot.projection;
     render();
@@ -232,6 +265,89 @@ function renderSummary() {
         item.append(element("strong", "", value));
         summary.append(item);
     }
+}
+
+function renderWorkflows() {
+	const host = requiredElement("#workflows");
+	host.replaceChildren();
+	if (workflowControlError) {
+		const error = element("p", "error", workflowControlError);
+		error.setAttribute("role", "alert");
+		host.append(error);
+	}
+	if (!currentWorkflows || currentWorkflows.state === "unavailable") {
+		const message = currentWorkflows?.state === "unavailable"
+			? `Workflow status unavailable: ${currentWorkflows.error} Use Refresh to retry.`
+			: "Workflow status has not been loaded. Use Refresh to retry.";
+		host.append(element("p", "warning", message));
+		return;
+	}
+	if (currentWorkflows.warning) host.append(element("p", "warning", currentWorkflows.warning));
+	if (currentWorkflows.runs.length === 0) {
+		host.append(element("p", "muted", "No recent Foundry workflows in this session. Start one through Copilot to see its progress here."));
+	}
+	for (const run of currentWorkflows.runs) {
+		const row = element("article", "workflow-run");
+		const heading = element("div", "task-heading");
+		heading.append(element("h3", "", run.workflowName));
+		heading.append(element("span", `status status-${run.status}`, run.status));
+		row.append(heading);
+		addLabeledValue(row, "Run", run.runId);
+		addLabeledValue(row, "Phase", run.currentPhase?.title);
+		addLabeledValue(row, "Live agents", run.liveAgentCount);
+		const pause = run.terminal?.pauseInfo;
+		if (pause?.type === "checkpoint") addLabeledValue(row, "Review checkpoint", pause.key);
+		if (pause?.type === "user") addLabeledValue(row, "Paused by", "User");
+		addLabeledValue(row, "Error", run.terminal?.error);
+		if (run.terminal?.failure?.type === "workflow_limit_reached") {
+			row.append(element("p", "warning", "A runtime limit was reached. Ask Copilot to resume with an approved increase to that limit."));
+		}
+		if (run.progress?.records.length) {
+			const progress = element("details", "workflow-progress");
+			progress.append(element("summary", "", "Recent progress and prepared scope"));
+			progress.append(element("pre", "", run.progress.records.map((entry) => entry.text).join("\n")));
+			row.append(progress);
+		}
+		const controls = element("div", "card-actions");
+		for (const operation of run.actions) {
+			const key = `${run.runId}:${operation}`;
+			const pending = pendingWorkflowActions.has(key);
+			const label = operation === "pause" ? "Pause" : "Resume";
+			const button = element("button", "", pending
+				? operation === "pause" ? "Pausing..." : "Resuming..."
+				: label);
+			button.setAttribute("type", "button");
+			button.setAttribute("aria-label", `${label} ${run.workflowName} workflow ${run.runId}`);
+			if (pending) {
+				button.setAttribute("disabled", "");
+				button.setAttribute("aria-busy", "true");
+			}
+			button.addEventListener("click", async () => {
+				if (pendingWorkflowActions.has(key) || !window.confirm(operation === "pause"
+					? `Pause workflow ${run.runId}? In-flight work may need to repeat on resume. App task sessions keep running.`
+					: `Resume workflow ${run.runId} with its existing journal and limits? This does not approve the plan.`)) return;
+				pendingWorkflowActions.add(key);
+				workflowControlError = "";
+				renderWorkflows();
+				try {
+					await action({
+						action: `${operation}-workflow`, runId: run.runId, revision: currentPlan.revision,
+					});
+				} catch (error) {
+					workflowControlError = error.message;
+				} finally {
+					pendingWorkflowActions.delete(key);
+					renderWorkflows();
+				}
+			});
+			controls.append(button);
+		}
+		row.append(controls);
+		host.append(row);
+	}
+	if (currentWorkflows.omittedOlder) {
+		host.append(element("p", "muted", "Older runs are available in native Workflow history."));
+	}
 }
 
 /**
@@ -492,6 +608,7 @@ function render() {
     requiredElement("#plan-title").textContent = currentPlan.title;
     requiredElement("#plan-objective").textContent = currentPlan.objective;
     renderSummary();
+	renderWorkflows();
     renderTasks();
     renderVerification();
     renderRecovery();
@@ -499,7 +616,10 @@ function render() {
     renderControls();
 }
 
-requiredElement("#refresh-button").addEventListener("click", loadPlan);
+requiredElement("#refresh-button").addEventListener("click", () => {
+	workflowControlError = "";
+	return loadPlan();
+});
 requiredElement("#approve-button").addEventListener("click", async () => {
     const approval = currentProjection?.actions
         .map((entry) => approvalControls.get(entry.kind))
@@ -540,6 +660,7 @@ requiredElement("#cancel-plan-button").addEventListener("click", async () => {
 
 const events = new EventSource("/events");
 events.addEventListener("change", loadPlan);
+events.addEventListener("ready", loadPlan);
 events.onerror = () => {
     requiredElement("#error").textContent = "Live updates disconnected; use Refresh.";
 };

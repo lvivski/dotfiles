@@ -1,6 +1,7 @@
 // Triage assigned PRs from supplied metadata and diff evidence.
 import {
 	UNTRUSTED_DATA_WARNING,
+	safeJson,
 	untrustedBlock,
 } from "../prompts.mjs";
 const PR_SCHEMA = {
@@ -27,7 +28,7 @@ const PRS_SCHEMA = {
 	type: "array",
 	items: PR_SCHEMA,
 };
-const MAX_SUBAGENTS_PER_CHUNK = 4;
+const MAX_SUBAGENTS_PER_CHUNK = 2;
 
 /** @type {import("@github/copilot-sdk").WorkflowMeta & {limits: Required<import("@github/copilot-sdk").WorkflowLimits>}} */
 export const meta = {
@@ -36,7 +37,7 @@ export const meta = {
 		"Review supplied PR diffs for correctness and maintainability, measure line changes, " +
 		"verify low-risk candidates, and render a triage queue. " +
 		"Args: { prs: object[], diff_chunk_chars?: number, max_total_chunks?: number, " +
-		"approve_only_low_risk_manual?: boolean, freshness?: string }.",
+		"approve_only_low_risk_manual?: boolean, freshness?: string, pauseBeforeWork?: boolean }.",
 	phases: [{ title: "Review and verify" }, { title: "Report" }],
 	argsSchema: {
 		anyOf: [
@@ -50,6 +51,7 @@ export const meta = {
 					max_total_chunks: { type: "integer" },
 					approve_only_low_risk_manual: { type: "boolean" },
 					freshness: { type: "string" },
+					pauseBeforeWork: { type: "boolean" },
 				},
 			},
 		],
@@ -122,6 +124,9 @@ const opts =
 	workflowArgs && typeof workflowArgs === "object" && !Array.isArray(workflowArgs)
 		? workflowArgs
 		: {};
+if (opts.pauseBeforeWork !== undefined && typeof opts.pauseBeforeWork !== "boolean") {
+	throw new Error("review-queue: pauseBeforeWork must be a boolean");
+}
 const input = opts.prs ?? workflowArgs;
 if (!Array.isArray(input) || !input.length) {
 	return "review-queue: no PRs supplied. Fetch the queue first and pass { prs: [...] }.";
@@ -148,11 +153,8 @@ const maxChunks = integer(
 	1,
 	supportedChunks,
 );
-const approveOnlyLowRiskManual = Boolean(opts.approve_only_low_risk_manual);
-const freshness = String(opts.freshness ?? "input queue");
-
 const identities = new Set();
-const prs = input.map((raw, index) => {
+const normalized = input.map((raw, index) => {
 	if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
 		throw new Error(`review-queue: PR ${index + 1} must be an object`);
 	}
@@ -253,36 +255,60 @@ function codeownerReason(pr) {
 	return "manual";
 }
 
-function chunks(pr) {
-	if (!pr.diff.trim()) return [];
+function preparePullRequest(pr) {
+	const { diff, ...metadata } = pr;
 	const parts = [];
-	for (let offset = 0; offset < pr.diff.length; offset += chunkChars) {
-		parts.push({
-			id: String(parts.length + 1),
-			content: pr.diff.slice(offset, offset + chunkChars),
-		});
+	if (diff.trim()) {
+		for (let offset = 0; offset < diff.length; offset += chunkChars) {
+			parts.push({
+				id: String(parts.length + 1),
+				content: diff.slice(offset, offset + chunkChars),
+			});
+		}
 	}
-	return parts;
+	return { ...metadata, units: parts, reason: codeownerReason(pr) };
 }
 
-const evidenceCount = prs.reduce((total, pr) => total + chunks(pr).length, 0);
-if (evidenceCount > maxChunks) {
-	throw new Error(`review-queue: ${evidenceCount} diff chunks exceed max_total_chunks=${maxChunks}`);
+const selectedChunks = normalized.reduce(
+	(total, pr) => total + (pr.diff.trim() ? Math.ceil(pr.diff.length / chunkChars) : 0), 0,
+);
+if (selectedChunks > maxChunks) {
+	throw new Error(`review-queue: ${selectedChunks} diff chunks exceed max_total_chunks=${maxChunks}`);
 }
+const { prs, evidenceCount, approveOnlyLowRiskManual, freshness } = await workflow.step(
+	"review-queue:prepared-queue:v1",
+	() => ({
+		prs: normalized.map(preparePullRequest),
+		evidenceCount: selectedChunks,
+		approveOnlyLowRiskManual: Boolean(opts.approve_only_low_risk_manual),
+		freshness: String(opts.freshness ?? "input queue"),
+	}),
+);
 workflow.log(`review-queue: ${prs.length} PR(s), ${evidenceCount} diff chunk(s)`);
+if (opts.pauseBeforeWork) {
+	workflow.log(`review-queue: prepared queue ${safeJson({
+		prs: prs.map(({ repo, number, title, files, coverage, updatedAt, reason, units }) => ({
+			repo, number, title, files, coverage, updatedAt, reason, chunks: units.length,
+		})),
+		approveOnlyLowRiskManual, freshness,
+	}, 0)}`);
+	await workflow.pause("review-queue:before-review:v1");
+}
 
 const REVIEW = {
 	type: "object",
+	additionalProperties: false,
 	properties: {
-		risk: { enum: ["low", "medium", "high"] },
+		risk: { type: "string", enum: ["low", "medium", "high"] },
 		issues: { type: "array", items: { type: "string" } },
 		missingTests: { type: "array", items: { type: "string" } },
 		maintainability: {
 			type: "array",
 			items: {
 				type: "object",
+				additionalProperties: false,
 				properties: {
-					category: { enum: ["duplication", "unnecessary-abstraction", "complexity", "unnecessary-growth"] },
+					category: { type: "string", enum: ["duplication", "unnecessary-abstraction", "complexity", "unnecessary-growth"] },
 					location: { type: "string" },
 					evidence: { type: "string" },
 					impact: { type: "string" },
@@ -298,6 +324,7 @@ const REVIEW = {
 };
 const VERDICT = {
 	type: "object",
+	additionalProperties: false,
 	properties: {
 		passed: { type: "boolean" },
 		reasons: { type: "string" },
@@ -319,11 +346,11 @@ function diffEvidence(pr, unit, total) {
 }
 
 async function reviewPullRequest(pr) {
-	const units = chunks(pr);
+	const { units, reason } = pr;
 	if (!units.length) {
 		return {
 			pr,
-			reason: codeownerReason(pr),
+			reason,
 			units,
 			reviews: [],
 			coverageComplete: false,
@@ -357,7 +384,6 @@ ${diffEvidence(pr, unit, units.length)}`,
 				row.result.maintainability.length === 0 &&
 				row.result.uncertainty.length === 0,
 		);
-	const reason = codeownerReason(pr);
 	const sourceComplete = pr.coverage === "full diff" && !pr.lineChanges.incomplete;
 	const policyAllows = !approveOnlyLowRiskManual || reason === "manual";
 	return {
@@ -442,7 +468,7 @@ const results = await workflow.pipeline(prs, reviewPullRequest, verifyPullReques
 // Failed pipeline items skip later stages, so restore their report rows here.
 const rows = results.map((row, index) => row ?? ({
 	pr: prs[index],
-	reason: codeownerReason(prs[index]),
+	reason: prs[index].reason,
 	decision: "needs_review",
 	risk: "high",
 	coverage: "review branch failed",

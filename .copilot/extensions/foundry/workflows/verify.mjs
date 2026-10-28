@@ -78,12 +78,14 @@ function normalizeInput(value) {
 
 const COVERAGE_SCHEMA = {
 	type: "object",
+	additionalProperties: false,
 	required: ["coverage", "missingEvidence", "integrationFindings", "risks"],
 	properties: {
 		coverage: {
 			type: "array",
 			items: {
 				type: "object",
+				additionalProperties: false,
 				required: ["criterionId", "evidenceIds"],
 				properties: {
 					criterionId: { type: "string" },
@@ -95,6 +97,7 @@ const COVERAGE_SCHEMA = {
 			type: "array",
 			items: {
 				type: "object",
+				additionalProperties: false,
 				required: ["summary", "taskIds"],
 				properties: {
 					summary: { type: "string" },
@@ -106,6 +109,7 @@ const COVERAGE_SCHEMA = {
 			type: "array",
 			items: {
 				type: "object",
+				additionalProperties: false,
 				required: ["summary", "taskIds", "evidenceIds"],
 				properties: {
 					summary: { type: "string" },
@@ -120,6 +124,7 @@ const COVERAGE_SCHEMA = {
 
 const VERDICT_SCHEMA = {
 	type: "object",
+	additionalProperties: false,
 	required: ["passed", "summary", "evidenceIds", "missingEvidence", "correctionTaskIds"],
 	properties: {
 		passed: { type: "boolean" },
@@ -129,6 +134,7 @@ const VERDICT_SCHEMA = {
 			type: "array",
 			items: {
 				type: "object",
+				additionalProperties: false,
 				required: ["summary", "taskIds"],
 				properties: {
 					summary: { type: "string" },

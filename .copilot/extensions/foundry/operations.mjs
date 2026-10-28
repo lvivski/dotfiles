@@ -59,9 +59,10 @@ const TERMINAL_WORKFLOW_STATUSES = new Set([
 /**
  * @typedef {object} FoundryOperations
  * @property {(input: any) => Promise<any>} preparePlan
- * @property {(input: any) => Promise<any>} createPlan
+ * @property {(input: any, options?: {signal?: AbortSignal}) => Promise<any>} createPlan
  * @property {(input: any) => Promise<any>} getPlan
  * @property {(input: any) => Promise<any>} getStatus
+ * @property {(input: any, options?: {signal?: AbortSignal}) => Promise<any>} controlWorkflow
  * @property {(input: any) => Promise<any>} listPlans
  * @property {(input: any) => Promise<any>} quarantinePlan
  * @property {(input: any) => Promise<any>} submitPlan
@@ -72,7 +73,7 @@ const TERMINAL_WORKFLOW_STATUSES = new Set([
  * @property {(input: any) => Promise<any>} completeTask
  * @property {(input: any) => Promise<any>} retry
  * @property {(input: any) => Promise<any>} prepareVerification
- * @property {(input: any) => Promise<any>} finishVerification
+ * @property {(input: any, options?: {signal?: AbortSignal}) => Promise<any>} finishVerification
  * @property {(input: any) => Promise<any>} cancel
  * @property {(input: any) => Promise<any>} cancelVerificationRun
  * @property {(input: any) => Promise<any>} finalizeCancellation
@@ -210,6 +211,24 @@ export function createFoundryOperations(options) {
 		);
     };
 
+	const assertVerificationRun = async (plan, runId) => {
+		const discovery = await discoverReservedVerification(plan);
+		if (discovery.state !== "found") {
+			throw new FoundryOperationError(
+				"verification_launch_indeterminate",
+				"Verification reservation does not resolve to exactly one Workflow run",
+				{ discovery },
+			);
+		}
+		if (discovery.run.runId !== runId) {
+			throw new FoundryOperationError(
+				"verification_run_mismatch",
+				`Verification run ${runId} is not authoritative for this reservation`,
+				{ expectedRunId: discovery.run.runId, runId },
+			);
+		}
+	};
+
     /**
      * Resolves the current session workspace or fails closed.
      *
@@ -291,7 +310,7 @@ export function createFoundryOperations(options) {
     /**
      * Builds the native planning Workflow launch specification.
      *
-     * @param {any} input
+     * @param {{runId: string, action: "pause" | "resume", planId?: string, expectedRevision?: number}} input
      * @returns {Promise<any>}
      */
     const preparePlan = (input) => analysis.preparePlanning(input);
@@ -299,16 +318,77 @@ export function createFoundryOperations(options) {
     /**
      * Reads the authoritative plan and derives recovery guidance.
      *
-     * @param {{planId: string, sessionInventory?: any}} input
-     * @returns {Promise<{plan: object, projection: object}>}
+     * @param {{planId: string, sessionInventory?: any, includeWorkflows?: boolean}} input
+     * @returns {Promise<{plan: object, projection: object, workflows?: any}>}
      */
-    const getStatus = async ({ planId, sessionInventory }) => {
+    const getStatus = async ({ planId, sessionInventory, includeWorkflows = false }) => {
         const plan = await storeFor().read(planId);
         return {
             plan,
             projection: projectPlan(plan, { sessionInventory }),
+			...(includeWorkflows ? { workflows: await workflowStatus(plan) } : {}),
         };
     };
+
+	const workflowStatus = async (plan) => {
+		try {
+			const [page, discovery] = await Promise.all([
+				analysis.listWorkflowRuns(),
+				discoverReservedVerification(plan),
+			]);
+			const verificationRunId = discovery.state === "found"
+				? discovery.run.runId : plan.verification.runId;
+			if (verificationRunId && !page.runs.some((run) => run.runId === verificationRunId)) {
+				page.runs.push(await analysis.inspectWorkflow(verificationRunId));
+			}
+			const runs = page.runs
+				.filter((run) => run.workflowName !== "verify" || run.runId === verificationRunId)
+				.map((run) => ({
+					...run,
+					actions: run.workflowName === "verify"
+						&& (discovery.state !== "found" || plan.status !== PLAN_STATUS.RUNNING)
+						? []
+						: run.status === "running"
+							? ["pause"]
+							: run.canResume && run.terminal?.failure?.type !== "workflow_limit_reached"
+								? ["resume"] : [],
+				}))
+				.sort((left, right) => right.createdAt - left.createdAt);
+			return {
+				state: "available", runs, omittedOlder: page.omittedOlder,
+				warning: discovery.state === "inconclusive" ? discovery.reason
+					: plan.verification.status === VERIFICATION_STATUS.RESERVED && discovery.state === "absent"
+						? "The reserved verification run has not been observed yet." : null,
+			};
+		} catch (error) {
+			return { state: "unavailable", error: error?.message ?? String(error) };
+		}
+	};
+
+	/**
+	 * Native controls never change plan approval or App task-attempt state.
+	 * @param {any} input
+	 * @param {{signal?: AbortSignal}} [options]
+	 */
+	const controlWorkflow = async ({ runId, action, planId, expectedRevision }, { signal } = {}) => {
+		signal?.throwIfAborted();
+		if (action !== "pause" && action !== "resume") {
+			throw new FoundryOperationError("workflow_action_invalid", "Workflow action must be pause or resume");
+		}
+		const detail = await analysis.inspectWorkflow(runId);
+		if (detail.workflowName === "verify") {
+			if (!planId || !Number.isSafeInteger(expectedRevision)) {
+				throw new FoundryOperationError("verification_plan_required", "Verification controls require planId and expectedRevision");
+			}
+			const plan = await readForMutation(planId, expectedRevision);
+			if (plan.status !== PLAN_STATUS.RUNNING || plan.verification.status !== VERIFICATION_STATUS.RESERVED) {
+				throw new FoundryOperationError("verification_not_reserved", "Only the running plan's active verification reservation can be controlled");
+			}
+			await assertVerificationRun(plan, runId);
+			await readForMutation(planId, expectedRevision);
+		}
+		return analysis.controlWorkflow(runId, action, { signal });
+	};
 
 	/**
 	 * Quarantines one unreadable plan artifact with an attributed reason.
@@ -338,6 +418,7 @@ export function createFoundryOperations(options) {
      * Imports a completed planning run as a new draft artifact.
      *
      * @param {any} input
+     * @param {{signal?: AbortSignal}} [options]
      * @returns {Promise<any>}
      */
     const createPlan = async ({
@@ -345,8 +426,9 @@ export function createFoundryOperations(options) {
         id,
         repository,
         runId,
-    }) => {
-        const imported = await analysis.importPlanning(runId);
+    }, { signal } = {}) => {
+		const imported = await analysis.importPlanning(runId, { signal });
+		signal?.throwIfAborted();
         const plan = createDraftPlan({
             id,
             repository,
@@ -820,36 +902,26 @@ export function createFoundryOperations(options) {
      * Imports the exact terminal result for the active verification reservation.
      *
      * @param {any} input
+     * @param {{signal?: AbortSignal}} [options]
      * @returns {Promise<any>}
      */
     const finishVerification = async ({
         planId,
         expectedRevision,
         runId,
-    }) => {
-        const plan = await readForMutation(planId, expectedRevision);
+    }, { signal } = {}) => {
+		let plan = await readForMutation(planId, expectedRevision);
 		if (plan.verification.status !== VERIFICATION_STATUS.RESERVED) {
             throw new FoundryOperationError(
 				"verification_not_reserved",
 				`Plan ${planId} has no active verification reservation`,
             );
         }
-		const discovery = await discoverReservedVerification(plan);
-		if (discovery.state !== "found") {
-			throw new FoundryOperationError(
-				"verification_launch_indeterminate",
-				"Verification reservation does not resolve to exactly one Workflow run",
-				{ discovery },
-			);
-		}
-		if (discovery.run.runId !== runId) {
-			throw new FoundryOperationError(
-				"verification_run_mismatch",
-				`Verification run ${runId} is not authoritative for this reservation`,
-				{ expectedRunId: discovery.run.runId, runId },
-			);
-		}
-		const inspected = await analysis.importVerification(runId, plan);
+		await assertVerificationRun(plan, runId);
+		const inspected = await analysis.importVerification(runId, plan, { signal });
+		plan = await readForMutation(planId, expectedRevision);
+		await assertVerificationRun(plan, runId);
+		signal?.throwIfAborted();
         const result = inspected.result;
 		const candidate = completeVerification(plan, result, {
 			runId,
@@ -1112,6 +1184,7 @@ export function createFoundryOperations(options) {
         /** Reads one validated plan. */
         getPlan: ({ planId }) => storeFor().read(planId),
         getStatus,
+		controlWorkflow,
         /** Lists bounded validated plan summaries. */
         listPlans: ({ limit }) => storeFor().list({ limit }),
 		quarantinePlan,

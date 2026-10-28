@@ -12,10 +12,26 @@ async function fixture() {
     const workspacePath = await mkdtemp(path.join(os.tmpdir(), "foundry-canvas-"));
     /** @type {((event: any) => void) | null} */
     let subscriber = null;
+	const workflow = {
+		runId: "native-run", workflowName: "audit", status: "running", revision: 1,
+		createdAt: Date.now(), canResume: false, currentPhase: { title: "Audit" },
+		liveAgentCount: 1, totalSpawnedAgentCount: 1, terminal: null,
+	};
+	const workflowCalls = [];
     const operations = createFoundryOperations({
         getWorkspacePath: () => workspacePath,
         notify: (event) => subscriber?.(event),
         analysis: {
+			listWorkflowRuns: async () => ({ runs: [workflow], omittedOlder: 0 }),
+			inspectWorkflow: async () => workflow,
+			controlWorkflow: async (runId, action) => {
+				workflowCalls.push({ runId, action });
+				workflow.status = action === "pause" ? "paused" : "completed";
+				workflow.canResume = action === "pause";
+				workflow.revision++;
+				subscriber?.({ workflowRunId: runId, workflowRevision: workflow.revision });
+				return { runId, status: workflow.status };
+			},
             importPlanning: async (runId) => ({
                 runId,
                 inputDigest: "a".repeat(64),
@@ -79,6 +95,7 @@ async function fixture() {
         operations,
         plan,
         server,
+		workflowCalls,
         async close() {
             await server.close();
             await rm(workspacePath, { recursive: true, force: true });
@@ -108,6 +125,8 @@ test("canvas server renders assets and exposes the validated plan snapshot", asy
 		assert.ok(snapshot.value.plan.activity.length > 0);
 		assert.equal(snapshot.value.plan.activity[0].revision, 1);
         assert.equal(snapshot.value.projection.nextAction.kind, "approve-plan");
+		assert.equal(snapshot.value.workflows.runs[0].currentPhase.title, "Audit");
+		assert.deepEqual(snapshot.value.workflows.runs[0].actions, ["pause"]);
 
         const reboundStatus = await new Promise((resolve, reject) => {
             const url = new URL("/api/plan", current.server.url);
@@ -127,6 +146,41 @@ test("canvas server renders assets and exposes the validated plan snapshot", asy
     } finally {
         await current.close();
     }
+});
+
+test("canvas pause and resume use confirmed native controls without granting approval", async () => {
+	const current = await fixture();
+	try {
+		const html = await (await fetch(current.server.url)).text();
+		const token = html.match(/name="foundry-token" content="([a-f0-9]+)"/)?.[1];
+		assert.ok(token);
+		const actionUrl = new URL("/api/action", current.server.url);
+		for (const [action, expectedStatus] of [["pause", "paused"], ["resume", "completed"]]) {
+			const body = { action: `${action}-workflow`, runId: "native-run", revision: current.plan.revision };
+			const unconfirmed = await fetch(actionUrl, {
+				method: "POST",
+				headers: { "Content-Type": "application/json", "x-foundry-token": token },
+				body: JSON.stringify(body),
+			});
+			assert.equal(unconfirmed.status, 400);
+			const response = await fetch(actionUrl, {
+				method: "POST",
+				headers: { "Content-Type": "application/json", "x-foundry-token": token },
+				body: JSON.stringify({ ...body, confirmed: true }),
+			});
+			assert.equal(response.status, 200);
+			const value = (await response.json()).value;
+			assert.equal(value.workflows.runs[0].status, expectedStatus);
+			assert.equal(value.plan.status, "awaiting-approval");
+			assert.equal(value.plan.revision, current.plan.revision);
+		}
+		assert.deepEqual(current.workflowCalls, [
+			{ runId: "native-run", action: "pause" },
+			{ runId: "native-run", action: "resume" },
+		]);
+	} finally {
+		await current.close();
+	}
 });
 
 test("canvas mutations require a token, explicit confirmation, and current revision", async () => {

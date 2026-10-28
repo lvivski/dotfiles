@@ -44,21 +44,23 @@ export async function run(workflow) {
 
 const TASK_SCHEMA = {
 	type: "object",
+	additionalProperties: false,
 	required: ["id", "title", "kind", "description", "dependsOn", "acceptanceCriteria", "expectedFiles", "deliveryRequirement"],
 	properties: {
 		id: { type: "string" },
 		title: { type: "string" },
-		kind: { enum: ["implement", "verify"] },
+		kind: { type: "string", enum: ["implement", "verify"] },
 		description: { type: "string" },
 		dependsOn: { type: "array", items: { type: "string" } },
 		acceptanceCriteria: { type: "array", items: { type: "string" } },
 		expectedFiles: { type: "array", items: { type: "string" } },
-		deliveryRequirement: { enum: ["branch", "commit", "pr"] },
+		deliveryRequirement: { type: "string", enum: ["branch", "commit", "pr"] },
 	},
 };
 
 const PLAN_SCHEMA = {
 	type: "object",
+	additionalProperties: false,
 	required: ["title", "objective", "constraints", "tasks"],
 	properties: {
 		title: { type: "string" },
@@ -70,9 +72,10 @@ const PLAN_SCHEMA = {
 
 const CRITIQUE_SCHEMA = {
 	type: "object",
+	additionalProperties: false,
 	required: ["verdict", "risks", "requiredChanges"],
 	properties: {
-		verdict: { enum: ["accept", "revise"] },
+		verdict: { type: "string", enum: ["accept", "revise"] },
 		risks: { type: "array", items: { type: "string" } },
 		requiredChanges: { type: "array", items: { type: "string" } },
 	},
@@ -80,6 +83,7 @@ const CRITIQUE_SCHEMA = {
 
 const VERDICT_SCHEMA = {
 	type: "object",
+	additionalProperties: false,
 	required: ["passed", "issues"],
 	properties: {
 		passed: { type: "boolean" },

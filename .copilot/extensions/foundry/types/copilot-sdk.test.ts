@@ -1,5 +1,6 @@
 // Compile-only contract regressions, checked by the extension's jsconfig.
 import type {
+	CopilotSession,
 	SessionWorkflowApi,
 	ToolResultObject,
 	WorkflowContext,
@@ -21,6 +22,18 @@ const canResume: boolean = detail.canResume;
 const revision: number = progress.revision;
 const completedAt: number | null = detail.completedAt;
 const recordKind: "log" | "phase" = progress.records[0].kind;
+const settled: Promise<WorkflowRunResult> = api.waitForRun("run", { signal: new AbortController().signal });
+const pausedRun: Promise<WorkflowRunResult> = api.pause("run");
+const resumedRun: Promise<WorkflowRunResult> = api.resume("run", { notifyOnComplete: true, logPhaseNames: true });
+// @ts-expect-error Waiting accepts a host AbortSignal, not model-supplied text.
+api.waitForRun("run", { signal: "cancel" });
+declare const session: CopilotSession;
+const unsubscribe: () => void = session.on("workflow.run_updated", (event) => {
+	const nativeRevision: number = event.data.revision;
+	const runId: string = event.data.runId;
+	// @ts-expect-error Invalidation hints are not workflow state snapshots.
+	event.data.status;
+});
 // @ts-expect-error Native detail uses workflowName.
 detail.factoryName;
 // @ts-expect-error Native progress is a page, not a run envelope.

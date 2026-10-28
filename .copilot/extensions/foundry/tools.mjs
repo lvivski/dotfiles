@@ -43,7 +43,7 @@ function errorPayload(error) {
     return {
         ok: false,
         error: {
-            code: error?.code ?? "foundry_internal_error",
+			code: error?.name === "AbortError" ? "foundry_operation_aborted" : error?.code ?? "foundry_internal_error",
             message: error?.message ?? String(error),
             path: error?.path ?? null,
             details: error?.details ?? null,
@@ -200,7 +200,7 @@ export function buildFoundryTools(operations) {
         },
         {
             name: "foundry_create_plan",
-			description: "Import a completed native plan Workflow run as a new draft. The caller supplies the stable plan ID and repository; creating requires expectedRevision: 0.",
+			description: "Wait for a native plan Workflow and import its completed result as a new draft. Interrupting the wait does not cancel the run. Creating requires expectedRevision: 0.",
             parameters: objectSchema(
                 ["expectedRevision", "id", "runId", "repository"],
                 {
@@ -216,8 +216,19 @@ export function buildFoundryTools(operations) {
                     ),
                 },
             ),
-            handler: handler((args) => operations.createPlan(args)),
+			handler: handler((args, invocation) => operations.createPlan(args, { signal: invocation.signal })),
         },
+		{
+			name: "foundry_control_workflow",
+			description: "Pause or resume a Foundry native Workflow only when the user asks. Resume keeps the same run, journal, and limits and awaits its next settlement; interrupting stops waiting, not the run. Verification runs require planId and expectedRevision. App task sessions and approvals are unaffected.",
+			parameters: objectSchema(["runId", "action"], {
+				runId: NON_EMPTY(LIMITS.verificationRunId),
+				action: { type: "string", enum: ["pause", "resume"] },
+				planId: PLAN_ID,
+				expectedRevision: REVISION,
+			}),
+			handler: handler((args, invocation) => operations.controlWorkflow(args, { signal: invocation.signal })),
+		},
         {
             name: "foundry_get_plan",
             skipPermission: true,
@@ -234,6 +245,7 @@ export function buildFoundryTools(operations) {
                 {
                     planId: PLAN_ID,
                     sessionInventory: SESSION_INVENTORY,
+					includeWorkflows: { type: "boolean", description: "Include live native workflow state and available controls." },
                 },
             ),
             handler: handler((args) => operations.getStatus(args)),
@@ -397,7 +409,7 @@ export function buildFoundryTools(operations) {
         },
         {
             name: "foundry_complete_verification",
-			description: "Import the exact terminal verify Workflow result for the active reservation. No caller-supplied verdict is accepted.",
+			description: "Wait for the authoritative verify Workflow and import its completed result for the active reservation. Interrupting the wait does not cancel the run. No caller-supplied verdict is accepted.",
             parameters: objectSchema(
                 ["planId", "expectedRevision", "runId"],
                 {
@@ -406,7 +418,7 @@ export function buildFoundryTools(operations) {
                     runId: NON_EMPTY(LIMITS.verificationRunId),
                 },
             ),
-            handler: handler((args) => operations.finishVerification(args)),
+			handler: handler((args, invocation) => operations.finishVerification(args, { signal: invocation.signal })),
         },
         {
             name: "foundry_cancel",

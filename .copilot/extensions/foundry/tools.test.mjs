@@ -21,6 +21,7 @@ test("Foundry registers the complete globally unique tool surface", () => {
     assert.deepEqual(tools.map((tool) => tool.name), [
         "foundry_prepare_plan",
         "foundry_create_plan",
+		"foundry_control_workflow",
         "foundry_get_plan",
         "foundry_get_status",
         "foundry_list_plans",
@@ -41,6 +42,12 @@ test("Foundry registers the complete globally unique tool surface", () => {
         "foundry_deactivate_plan",
     ]);
     assert.equal(new Set(tools.map((tool) => tool.name)).size, tools.length);
+	const control = toolNamed(tools, "foundry_control_workflow");
+	assert.equal(control.skipPermission, undefined);
+	assert.deepEqual(control.parameters.required, ["runId", "action"]);
+	assert.deepEqual(control.parameters.properties.action.enum, ["pause", "resume"]);
+	assert.ok(control.parameters.properties.planId);
+	assert.ok(control.parameters.properties.expectedRevision);
     const approve = toolNamed(tools, "foundry_approve_plan");
     assert.equal(approve.parameters.properties.retryStatus.const, "running");
     const create = toolNamed(tools, "foundry_create_plan");
@@ -95,6 +102,32 @@ test("Foundry registers the complete globally unique tool surface", () => {
 	]);
 	const finalize = toolNamed(tools, "foundry_finalize_cancellation");
 	assert.ok(finalize.parameters.required.includes("sessionInventory"));
+});
+
+test("waiting tools forward host cancellation signals outside model arguments", async () => {
+	const controller = new AbortController();
+	const tools = buildFoundryTools(new Proxy({}, {
+		get: () => async (_input, options) => {
+			assert.equal(options.signal, controller.signal);
+			options.signal.throwIfAborted();
+			return null;
+		},
+	}));
+	for (const name of ["foundry_create_plan", "foundry_complete_verification", "foundry_control_workflow"]) {
+		const tool = toolNamed(tools, name);
+		const invocation = {
+			sessionId: "session", toolCallId: "call", toolName: name, arguments: {}, signal: controller.signal,
+		};
+		const success = await tool.handler({}, invocation);
+		assert.equal(success.resultType, "success");
+		assert.equal(tool.parameters.properties.signal, undefined);
+	}
+	controller.abort();
+	const failure = await toolNamed(tools, "foundry_create_plan").handler({}, {
+		sessionId: "session", toolCallId: "call", toolName: "foundry_create_plan", arguments: {}, signal: controller.signal,
+	});
+	assert.equal(failure.resultType, "failure");
+	assert.equal(JSON.parse(failure.textResultForLlm).error.code, "foundry_operation_aborted");
 });
 
 test("tool handlers return structured success and failure envelopes", async () => {

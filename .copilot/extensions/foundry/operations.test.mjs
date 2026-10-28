@@ -401,6 +401,111 @@ async function completeImplementation(operations, workspacePath) {
 	return plan;
 }
 
+test("verification revalidates ownership, revision, and interruption after waiting", async (t) => {
+	for (const change of ["ownership", "revision", "interrupted"]) {
+		await t.test(change, async () => {
+			const controller = new AbortController();
+			const interrupted = new Error("Import interrupted");
+			let unique = true;
+			let duringImport = async (_plan) => {};
+			const base = analysisStub({
+				discoverVerificationRun: async () => unique
+					? { state: "found", run: { runId: "verify-run", status: "running" }, duplicates: [] }
+					: { state: "inconclusive", reason: "A duplicate run appeared" },
+			});
+			const analysis = {
+				...base,
+				async importVerification(runId, plan, { signal }) {
+					assert.equal(signal, controller.signal);
+					await duringImport(plan);
+					return base.importVerification(runId);
+				},
+			};
+			await withOperations(async ({ operations, workspacePath }) => {
+				let plan = await completeImplementation(operations, workspacePath);
+				({ plan } = await operations.prepareVerification({
+					planId: plan.id, expectedRevision: plan.revision, reservationId: "wait-reservation",
+				}));
+				duringImport = async (snapshot) => {
+					if (change === "ownership") unique = false;
+					if (change === "interrupted") controller.abort(interrupted);
+					if (change === "revision") {
+						await operations.storeFor().update(snapshot.id, snapshot.revision, {
+							...snapshot, title: "Concurrent update",
+						});
+					}
+				};
+				const importing = operations.finishVerification({
+					planId: plan.id, expectedRevision: plan.revision, runId: "verify-run",
+				}, { signal: controller.signal });
+				await assert.rejects(importing, change === "interrupted"
+					? (error) => error === interrupted
+					: { code: change === "revision" ? "revision_conflict" : "verification_launch_indeterminate" });
+				const persisted = await operations.getPlan({ planId: plan.id });
+				assert.equal(persisted.status, plan.status);
+				assert.equal(persisted.revision, plan.revision + (change === "revision" ? 1 : 0));
+				assert.equal(persisted.verification.status, "reserved");
+			}, { analysis });
+		});
+	}
+});
+
+test("workflow controls enforce verification ownership without changing approvals or attempts", async () => {
+	let unique = true;
+	const calls = [];
+	const verify = { runId: "verify-run", workflowName: "verify", status: "paused", canResume: true };
+	const analysis = {
+		...analysisStub({
+			discoverVerificationRun: async () => unique
+				? { state: "found", run: verify, duplicates: [] }
+				: { state: "inconclusive", reason: "Duplicate reservation" },
+		}),
+		inspectWorkflow: async () => verify,
+		listWorkflowRuns: async () => ({
+			runs: [verify, { ...verify, runId: "foreign-run" }], omittedOlder: 0,
+		}),
+		controlWorkflow: async (runId, action) => {
+			calls.push({ runId, action });
+			return { runId, status: action === "pause" ? "paused" : "completed" };
+		},
+	};
+	await withOperations(async ({ operations, workspacePath }) => {
+		let plan = await completeImplementation(operations, workspacePath);
+		({ plan } = await operations.prepareVerification({
+			planId: plan.id, expectedRevision: plan.revision, reservationId: "control-reservation",
+		}));
+		const input = { planId: plan.id, expectedRevision: plan.revision, runId: "verify-run", action: "resume" };
+		await assert.rejects(operations.controlWorkflow({ runId: "verify-run", action: "resume" }),
+			{ code: "verification_plan_required" });
+		await assert.rejects(operations.controlWorkflow({ ...input, expectedRevision: plan.revision - 1 }),
+			{ code: "revision_conflict" });
+		const status = await operations.getStatus({ planId: plan.id, includeWorkflows: true });
+		assert.deepEqual(status.workflows.runs.map((run) => run.runId), ["verify-run"]);
+		assert.deepEqual(status.workflows.runs[0].actions, ["resume"]);
+		await operations.controlWorkflow(input);
+		assert.deepEqual(await operations.getPlan({ planId: plan.id }), plan);
+		unique = false;
+		await assert.rejects(operations.controlWorkflow(input), { code: "verification_launch_indeterminate" });
+		const ambiguous = await operations.getStatus({ planId: plan.id, includeWorkflows: true });
+		assert.equal(ambiguous.workflows.warning, "Duplicate reservation");
+		assert.deepEqual(ambiguous.workflows.runs, []);
+		unique = true;
+		plan = await operations.cancel({
+			planId: plan.id, expectedRevision: plan.revision, requestId: "cancel-controls",
+			reason: "Stop", requestedBy: "tester",
+		});
+		await assert.rejects(operations.controlWorkflow({ ...input, expectedRevision: plan.revision }),
+			{ code: "verification_not_reserved" });
+		assert.equal(calls.length, 1);
+		const cancelling = await operations.getStatus({ planId: plan.id, includeWorkflows: true });
+		assert.deepEqual(cancelling.workflows.runs[0].actions, []);
+		analysis.listWorkflowRuns = async () => { throw new Error("Native state unavailable"); };
+		const unavailable = await operations.getStatus({ planId: plan.id, includeWorkflows: true });
+		assert.equal(unavailable.plan.id, plan.id);
+		assert.deepEqual(unavailable.workflows, { state: "unavailable", error: "Native state unavailable" });
+	}, { analysis });
+});
+
 test("operations drive reservation, App attachment, verification, and approval", () => (
     withOperations(async ({ operations, notifications, workspacePath }) => {
         let plan = await createApproved(operations, workspacePath);

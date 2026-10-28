@@ -219,6 +219,15 @@ declare module "@github/copilot-sdk" {
 		createdAt: number;
 		completedAt: number | null;
 		canResume: boolean;
+		currentPhase: { title: string } | null;
+		liveAgentCount: number;
+		totalSpawnedAgentCount: number;
+		terminal: {
+			reason?: string;
+			error?: string;
+			failure?: WorkflowRunResult["failure"];
+			pauseInfo: WorkflowRunResult["pauseInfo"] | null;
+		} | null;
 	}
 
 	export interface WorkflowProgressLine {
@@ -277,6 +286,12 @@ declare module "@github/copilot-sdk" {
 		listRuns(options: WorkflowListRunsOptions): Promise<WorkflowRunsPage>;
 		/** Returns the terminal envelope, not a cancellation acknowledgement. */
 		cancel(runId: string): Promise<WorkflowRunResult>;
+		pause(runId: string): Promise<WorkflowRunResult>;
+		resume(runId: string, options?: {
+			limits?: WorkflowLimits;
+			notifyOnComplete?: boolean;
+			logPhaseNames?: boolean;
+		}): Promise<WorkflowRunResult>;
 		waitForRun(runId: string, options?: { signal?: AbortSignal }): Promise<WorkflowRunResult>;
 	}
 
@@ -284,6 +299,9 @@ declare module "@github/copilot-sdk" {
 		readonly workspacePath?: string;
 		readonly workflow: SessionWorkflowApi;
 		readonly rpc: any;
+		on(type: "workflow.run_updated", handler: (event: {
+			data: { runId: string; revision: number };
+		}) => void): () => void;
 		log(message: string, options?: Record<string, any>): Promise<void>;
 	}
 }

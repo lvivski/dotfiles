@@ -45,15 +45,38 @@ const ADDITIONAL_WORKFLOWS = Object.freeze(Object.fromEntries(
 // Test sentinel for run failures that the native runtime propagates instead of returning null.
 class FatalWorkflowFailure extends Error {}
 
+class WorkflowCheckpointPause extends FatalWorkflowFailure {
+	constructor(key) {
+		super(`Paused at ${key}`);
+		this.name = "AbortError";
+		this.key = key;
+	}
+}
+
+function freezePrepared(value) {
+	if (value !== null && typeof value === "object") {
+		Object.values(value).forEach(freezePrepared);
+		Object.freeze(value);
+	}
+	return value;
+}
+
 /**
  * @param {any} args
  * @param {((prompt: string, options: any) => unknown) | null} [responseFor]
+ * @param {{agents: Map<string, Promise<unknown>>, steps: Map<string, unknown>, checkpoints: Set<string>}} [journal]
  */
-function createWorkflowContext(args, responseFor = null) {
+function createWorkflowContext(args, responseFor = null, journal = {
+	agents: new Map(), steps: new Map(), checkpoints: new Set(),
+}) {
 	const phases = [];
 	const logs = [];
 	const calls = [];
 	const pipelineBatches = [];
+	const parallelBatches = [];
+	const stepCalls = [];
+	const stepExecutions = [];
+	const pauseCalls = [];
 	return {
 		args,
 		runId: "workflow-run",
@@ -62,53 +85,91 @@ function createWorkflowContext(args, responseFor = null) {
 		logs,
 		calls,
 		pipelineBatches,
+		parallelBatches,
+		stepCalls,
+		stepExecutions,
+		pauseCalls,
+		journal,
 		async agent(prompt, options = {}) {
-			calls.push({ prompt, options });
-			const configured = await responseFor?.(prompt, options);
-			if (configured !== undefined) return structuredClone(configured);
-			const schema = options.schema;
-			if (!schema) return "NO ISSUES";
-			if (schema.type === "array") {
-				return schema.items?.type === "string" ? ["primary angle"] : [];
+			const key = JSON.stringify({ prompt, options });
+			if (journal.agents.has(key)) {
+				return structuredClone(await journal.agents.get(key));
 			}
-			const properties = schema.properties ?? {};
-			if (properties.authModel) {
-				return {
-					authModel: "unknown",
-					assets: [],
-					trustBoundaries: [],
-					attackerInputs: [],
-				};
+			const result = (async () => {
+				calls.push({ prompt, options });
+				const configured = await responseFor?.(prompt, options);
+				if (configured !== undefined) return structuredClone(configured);
+				const schema = options.schema;
+				if (!schema) return "NO ISSUES";
+				if (schema.type === "array") {
+					return schema.items?.type === "string" ? ["primary angle"] : [];
+				}
+				const properties = schema.properties ?? {};
+				if (properties.authModel) {
+					return {
+						authModel: "unknown",
+						assets: [],
+						trustBoundaries: [],
+						attackerInputs: [],
+					};
+				}
+				if (properties.findings) {
+					return { findings: [researchFinding()], limitations: [] };
+				}
+				if (properties.passed) return { passed: true, reasons: "supported" };
+				if (properties.risk) {
+					return {
+						risk: "low",
+						issues: [],
+						missingTests: [],
+						maintainability: [],
+						uncertainty: [],
+						summary: "clean",
+					};
+				}
+				if (properties.category) {
+					return {
+						category: "bug",
+						priority: "p2",
+						confidence: "high",
+						rationale: "reproducible",
+						action: "fix it",
+					};
+				}
+				if (properties.verdict) {
+					return { verdict: "true-positive", reasoning: "reachable" };
+				}
+				throw new Error("unhandled test schema");
+			})();
+			journal.agents.set(key, result);
+			try {
+				return structuredClone(await result);
+			} catch (error) {
+				journal.agents.delete(key);
+				throw error;
 			}
-			if (properties.findings) {
-				return { findings: [researchFinding()], limitations: [] };
+		},
+		async step(key, producer) {
+			stepCalls.push(key);
+			if (!journal.steps.has(key)) {
+				stepExecutions.push(key);
+				const prepared = await producer();
+				const json = JSON.parse(JSON.stringify(prepared));
+				assert.deepEqual(json, prepared, "Prepared scopes must contain only JSON data");
+				// Freezing catches accidental mutations of durable scope by later stages.
+				journal.steps.set(key, freezePrepared(json));
 			}
-			if (properties.passed) return { passed: true, reasons: "supported" };
-			if (properties.risk) {
-				return {
-					risk: "low",
-					issues: [],
-					missingTests: [],
-					maintainability: [],
-					uncertainty: [],
-					summary: "clean",
-				};
+			return journal.steps.get(key);
+		},
+		async pause(key) {
+			pauseCalls.push(key);
+			if (!journal.checkpoints.has(key)) {
+				journal.checkpoints.add(key);
+				throw new WorkflowCheckpointPause(key);
 			}
-			if (properties.category) {
-				return {
-					category: "bug",
-					priority: "p2",
-					confidence: "high",
-					rationale: "reproducible",
-					action: "fix it",
-				};
-			}
-			if (properties.verdict) {
-				return { verdict: "true-positive", reasoning: "reachable" };
-			}
-			throw new Error("unhandled test schema");
 		},
 		async parallel(thunks) {
+			parallelBatches.push(thunks.length);
 			return Promise.all(
 				thunks.map(async (thunk) => {
 					try {
@@ -153,6 +214,45 @@ function workflowWithResponses(args, responses) {
 	);
 }
 
+function assertClosedOutputSchema(schema) {
+	assert.ok(["object", "array", "string", "integer", "number", "boolean"].includes(schema.type));
+	if (schema.enum) {
+		assert.ok(schema.enum.every((value) => typeof value === schema.type));
+	}
+	if (schema.type === "object") {
+		assert.equal(schema.additionalProperties, false);
+		assert.ok(Object.keys(schema.properties).length > 0);
+		assert.deepEqual([...schema.required].sort(), Object.keys(schema.properties).sort());
+		Object.values(schema.properties).forEach(assertClosedOutputSchema);
+	} else if (schema.type === "array") {
+		assertClosedOutputSchema(schema.items);
+	}
+}
+
+function assertOutputSchemas(workflow) {
+	const structured = workflow.calls.filter((call) => call.options.schema);
+	assert.ok(structured.length > 0);
+	for (const { options } of structured) assertClosedOutputSchema(options.schema);
+}
+
+function securityFinding(index = 0) {
+	return {
+		title: `Reachable injection ${index + 1}`,
+		severity: "high",
+		confidence: "high",
+		vulnerabilityClass: "injection",
+		file: `src/${index}.js`,
+		line: index + 1,
+		source: "input",
+		control: "none",
+		sink: "eval",
+		attack: "execute",
+		contraryEvidence: "none",
+		description: "reachable",
+		recommendation: "validate",
+	};
+}
+
 function fakeApi(records = {}, { pageSize = 200, seqBase = 0 } = {}) {
 	const listCalls = [];
 	const detailCalls = [];
@@ -182,6 +282,7 @@ function fakeApi(records = {}, { pageSize = 200, seqBase = 0 } = {}) {
 				workflowName: record.workflowName,
 				status: record.run.status,
 				createdAt: record.createdAt ?? Date.parse("2026-08-07T00:10:00.000Z"),
+				completedAt: record.completedAt ?? null,
 				progress: record.progressUnavailable
 					? null
 					: {
@@ -482,7 +583,7 @@ test("bundled planning workflow executes with native result semantics", async ()
 		],
 	};
 	assert.equal(planMeta.name, "plan");
-	const result = await runPlan(workflowWithResponses(args, {
+	const workflow = workflowWithResponses(args, {
 		"plan:decomposer": blueprint,
 		"plan:architecture-critic": {
 			verdict: "accept",
@@ -496,10 +597,13 @@ test("bundled planning workflow executes with native result semantics", async ()
 		},
 		"plan:synthesizer": blueprint,
 		"plan:verifier": { passed: true, issues: [] },
-	}));
+	});
+	const result = await runPlan(workflow);
 	assert.equal(result.kind, "foundry-plan-result");
 	assert.equal(result.status, "ready");
 	assert.equal(validatePlanningResult(result, args, 2).tasks.length, 2);
+	assert.equal(workflow.calls.length, 5);
+	assertOutputSchemas(workflow);
 });
 
 test("planning workflow repairs invalid decomposition and reports invalid synthesis", async () => {
@@ -642,6 +746,8 @@ test("bundled verification workflow echoes its complete native input", async () 
 	assert.deepEqual(result.input, args);
 	assert.equal(result.reservationId, reservationId);
 	assert.equal(validateVerificationResult(result, args, reservationId).passed, true);
+	assert.equal(workflow.calls.length, 3);
+	assertOutputSchemas(workflow);
 });
 
 test("verification workflow emits its marker before full input validation", async () => {
@@ -651,33 +757,63 @@ test("verification workflow emits its marker before full input validation", asyn
 	assert.equal(workflow.logs[0], verificationMarker(reservationId));
 });
 
-test("imports a completed planning Workflow result", async () => {
+test("planning imports use native settlement without resuming or cancelling runs", async () => {
 	const input = buildPlanningArgs({
 		objective: "Build",
 		constraints: [],
 		repositoryContext: "Node repository",
 		maxTasks: 2,
 	});
-	const analysis = createWorkflowAnalysis(() => fakeApi({
-		planning: {
-			workflowName: "plan",
-			run: {
-				runId: "planning",
-				status: "completed",
-				result: planningResult(input),
+	for (const outcome of ["completed", "pending", "running", "paused", "error", "interrupted"]) {
+		const controller = new AbortController();
+		const interrupted = new Error("Import interrupted");
+		/** @type {import("@github/copilot-sdk").WorkflowRunResult} */
+		const run = {
+			runId: "planning",
+			status: outcome === "completed" ? "completed" : outcome === "pending" ? "pending" : "running",
+		};
+		if (outcome === "completed") run.result = planningResult(input);
+		let waits = 0;
+		const api = Object.assign(fakeApi({ planning: { workflowName: "plan", run } }), {
+			async waitForRun(runId, { signal }) {
+				assert.equal(runId, run.runId);
+				assert.equal(signal, controller.signal);
+				waits++;
+				await new Promise((resolve) => setImmediate(resolve));
+				if (outcome === "interrupted") {
+					controller.abort(interrupted);
+					signal.throwIfAborted();
+				}
+				run.status = outcome === "paused" ? "paused" : outcome === "error" ? "error" : "completed";
+				if (run.status === "completed") run.result = planningResult(input);
+				return run;
 			},
-		},
-	}));
-	const imported = await analysis.importPlanning("planning");
-	assert.equal(imported.plan.objective, "Build");
-	assert.equal(imported.inputDigest, input.inputDigest);
+		});
+		const analysis = createWorkflowAnalysis(() => api);
+		const importing = analysis.importPlanning("planning", { signal: controller.signal });
+		if (outcome === "interrupted") {
+			await assert.rejects(importing, (error) => error === interrupted);
+			assert.equal(run.status, "running");
+		} else if (outcome === "paused" || outcome === "error") {
+			await assert.rejects(importing, {
+				code: "workflow_result_unavailable",
+				details: { status: outcome, failure: null },
+			});
+		} else {
+			const imported = await importing;
+			assert.equal(imported.plan.objective, "Build");
+			assert.equal(imported.inputDigest, input.inputDigest);
+		}
+		assert.equal(waits, outcome === "completed" ? 0 : 1);
+		assert.deepEqual(api.cancelCalls, []);
+	}
 });
 
 test("rejects a run owned by the wrong Workflow", async () => {
 	const analysis = createWorkflowAnalysis(() => fakeApi({
 		wrong: {
 			workflowName: "other",
-			run: { runId: "wrong", status: "completed", result: {} },
+			run: { runId: "wrong", status: "running" },
 		},
 	}));
 	await assert.rejects(
@@ -793,8 +929,23 @@ test("verification import validates the terminal result and reservation", async 
 			createdAt: "2026-08-07T00:10:00.000Z",
 			progress: [marker],
 		},
+		active: {
+			workflowName: "verify",
+			run: { runId: "active", status: "running", result },
+			completedAt: /** @type {number | null} */ (null),
+			progress: [marker],
+		},
 	};
-	const api = fakeApi(records);
+	const completedAt = Date.parse("2026-08-07T00:11:00.000Z");
+	const api = Object.assign(fakeApi(records), {
+		async waitForRun(runId) {
+			assert.equal(runId, "active");
+			await new Promise((resolve) => setImmediate(resolve));
+			records.active.run.status = "completed";
+			records.active.completedAt = completedAt;
+			return records.active.run;
+		},
+	});
 	const getRunDetail = api.getRunDetail.bind(api);
 	let detailReads = 0;
 	api.getRunDetail = async (runId) => {
@@ -810,21 +961,25 @@ test("verification import validates the terminal result and reservation", async 
 		true,
 	);
 	assert.equal(await analysis.verificationRunIsTerminal("complete"), true);
+	const active = await analysis.importVerification("active", plan);
+	assert.equal(active.result.passed, true);
+	assert.equal(active.detail.completedAt, completedAt);
+	assert.equal(detailReads, 4);
 });
 
-test("verification import rejects stale runs and foreign reservation markers", async () => {
+test("verification import rejects stale and foreign runs before waiting", async () => {
 	const plan = reservedPlan("expected-reservation");
 	const marker = verificationMarker(plan.verification.reservationId);
 	const records = {
 		stale: {
 			workflowName: "verify",
-			run: { runId: "stale", status: "completed", result: {} },
+			run: { runId: "stale", status: "running" },
 			createdAt: Date.parse("2026-08-07T00:05:00.000Z"),
 			progress: [marker],
 		},
 		foreign: {
 			workflowName: "verify",
-			run: { runId: "foreign", status: "completed", result: {} },
+			run: { runId: "foreign", status: "running" },
 			progress: [verificationMarker("other-reservation")],
 		},
 		late: {
@@ -1498,10 +1653,21 @@ test("additional workflows expose argument contracts", () => {
 	for (const { meta } of definitions) {
 		assert.match(meta.description, /Args:/);
 		assert.ok(meta.argsSchema);
+		const forms = meta.argsSchema.anyOf;
+		assert.ok(Array.isArray(forms));
+		for (const form of forms) {
+			if (form === null || typeof form !== "object" || Array.isArray(form) || form.type !== "object") continue;
+			const properties = form.properties;
+			assert.ok(properties !== null && typeof properties === "object" && !Array.isArray(properties));
+			assert.deepEqual(properties.pauseBeforeWork, { type: "boolean" });
+			const required = form.required ?? [];
+			assert.ok(Array.isArray(required));
+			assert.equal(required.includes("pauseBeforeWork"), false);
+		}
 	}
 });
 
-test("declared limits reserve structured-output retries", () => {
+test("declared execution limits remain unchanged", () => {
 	assert.equal(
 		planMeta.limits.maxTotalSubagents,
 		10,
@@ -1510,10 +1676,20 @@ test("declared limits reserve structured-output retries", () => {
 		verifyMeta.limits.maxTotalSubagents,
 		6,
 	);
-	const deepResearch = ADDITIONAL_WORKFLOWS.deepResearch.meta.limits;
-	const deepResearchWorstCase = 3 + 6 * 6;
-	assert.equal(deepResearch.maxConcurrentSubagents, 2);
-	assert.ok(deepResearch.maxTotalSubagents >= deepResearchWorstCase);
+	for (const [key, concurrent, total, timeout] of [
+		["audit", 4, 40, 900],
+		["deepResearch", 2, 40, 3600],
+		["reviewQueue", 8, 700, 3600],
+		["securityReview", 6, 80, 3600],
+		["triage", 8, 100, 900],
+	]) {
+		assert.deepEqual(ADDITIONAL_WORKFLOWS[key].meta.limits, {
+			maxConcurrentSubagents: concurrent,
+			maxTotalSubagents: total,
+			timeoutSeconds: timeout,
+			maxAiCredits: 10000,
+		});
+	}
 });
 
 test("additional workflows execute through native primitives", async () => {
@@ -1567,8 +1743,203 @@ test("additional workflows execute through native primitives", async () => {
 		}
 		assert.match(result, expected, definition.meta.name);
 		assert.ok(workflow.calls.length > 0, definition.meta.name);
+		assert.deepEqual(workflow.pauseCalls, []);
+		assertOutputSchemas(workflow);
 		const declared = new Set(definition.meta.phases.map(({ title }) => title));
 		assert.ok(workflow.phases.every((title) => declared.has(title)), definition.meta.name);
+	}
+});
+
+const CHECKPOINT_CASES = [
+	{
+		key: "audit",
+		args: { paths: [" src/a.js ", "src/a.js", ""], concern: " error handling " },
+		step: "audit:prepared-scope:v1",
+		checkpoint: "audit:before-audit:v1",
+		earlyLabels: [],
+		phase: "Audit",
+		scope: /prepared scope.*"paths":\["src\/a\.js"\].*"concern":"error handling"/,
+		response: (_prompt, options) => options.label.startsWith("review:") ? "Concrete issue" : undefined,
+	},
+	{
+		key: "deepResearch",
+		args: { q: "Compare evidence", angles: 2 },
+		step: "deep-research:prepared-angles:v1",
+		checkpoint: "deep-research:before-research:v1",
+		earlyLabels: ["plan"],
+		phase: "Research",
+		scope: /prepared scope.*"question":"Compare evidence".*"angles":\["Evidence","Costs"\]/,
+		response: (_prompt, options) => options.label === "plan" ? [" Evidence ", "EVIDENCE", " Costs "] : undefined,
+	},
+	{
+		key: "deepResearch",
+		name: "saved research",
+		args: {
+			question: "Recover evidence",
+			drafts: [{ angle: " Saved angle ", text: " Saved draft ", feedback: " Edition mismatch " }],
+		},
+		step: "deep-research:prepared-angles:v1",
+		checkpoint: "deep-research:before-research:v1",
+		earlyLabels: [],
+		phase: "Research",
+		scope: /prepared scope.*"angles":\["Saved angle"\].*"savedDrafts":true/,
+		response: mixedResearchResponse,
+	},
+	{
+		key: "reviewQueue",
+		args: {
+			prs: [reviewPullRequest(7, { diff: addedReviewDiff(["x".repeat(4100)]) })],
+			diff_chunk_chars: 4000,
+			max_total_chunks: 2,
+			approve_only_low_risk_manual: true,
+			freshness: "saved queue",
+		},
+		step: "review-queue:prepared-queue:v1",
+		checkpoint: "review-queue:before-review:v1",
+		earlyLabels: [],
+		phase: "Review and verify",
+		scope: /prepared queue.*"repo":"owner\/repo","number":7.*"chunks":2.*"freshness":"saved queue"/,
+	},
+	{
+		key: "securityReview",
+		args: { root: "src", perspectives: 2, context: " App context ", model: " review-model " },
+		step: "security-review:prepared-scope:v1",
+		checkpoint: "security-review:before-investigate:v1",
+		earlyLabels: ["orientation"],
+		phase: "Investigate",
+		scope: /prepared investigation.*repository subtree src.*"model":"review-model".*"lenses":.*"threatModel":/,
+		response: (_prompt, options) => options.label.startsWith("investigate:") ? [securityFinding()] : undefined,
+	},
+	{
+		key: "triage",
+		args: { tickets: [
+			{ id: " duplicate ", summary: " Crash ", description: "x".repeat(8100) },
+			{ id: "duplicate", title: "Other ticket" },
+		] },
+		step: "triage:prepared-tickets:v1",
+		checkpoint: "triage:before-triage:v1",
+		earlyLabels: [],
+		phase: "Triage",
+		scope: /prepared tickets.*"id":"duplicate","preview":"Crash.*"truncated":true/,
+	},
+];
+
+test("standalone checkpoints preserve prepared scope, output, and native agent accounting on replay", async (t) => {
+	for (const { key, name, args, step, checkpoint, earlyLabels, phase, scope, response } of CHECKPOINT_CASES) {
+		await t.test(name ?? key, async () => {
+			const definition = ADDITIONAL_WORKFLOWS[key];
+			const baseline = createWorkflowContext(args, response);
+			const expected = await definition.run(baseline);
+			const disabled = createWorkflowContext({ ...args, pauseBeforeWork: false }, response);
+			assert.equal(await definition.run(disabled), expected);
+			assert.deepEqual(disabled.calls, baseline.calls);
+			assert.deepEqual(disabled.pauseCalls, []);
+
+			const pausedArgs = freezePrepared({ ...args, pauseBeforeWork: true });
+			const first = createWorkflowContext(pausedArgs, response);
+			await assert.rejects(definition.run(first), (error) =>
+				error instanceof WorkflowCheckpointPause && error.key === checkpoint && error.name === "AbortError");
+			assert.deepEqual(first.calls.map((call) => call.options.label), earlyLabels);
+			assert.deepEqual(first.stepCalls, [step]);
+			assert.deepEqual(first.stepExecutions, [step]);
+			assert.deepEqual(first.pauseCalls, [checkpoint]);
+			assert.deepEqual(first.pipelineBatches, []);
+			assert.deepEqual(first.parallelBatches, []);
+			assert.equal(first.phases.includes(phase), false);
+			assert.ok(first.logs.some((message) => scope.test(message)));
+			const prepared = JSON.stringify(first.journal.steps.get(step));
+
+			const resumed = createWorkflowContext(pausedArgs, response, first.journal);
+			assert.equal(await definition.run(resumed), expected);
+			assert.deepEqual(resumed.stepCalls, [step]);
+			assert.deepEqual(resumed.stepExecutions, []);
+			assert.deepEqual(resumed.pauseCalls, [checkpoint]);
+			assert.ok(resumed.phases.includes(phase));
+			assert.deepEqual([...first.calls, ...resumed.calls], baseline.calls);
+			assert.equal(first.journal.agents.size, baseline.calls.length);
+			assert.equal(JSON.stringify(first.journal.steps.get(step)), prepared);
+			assert.ok(resumed.logs.some((message) => scope.test(message)));
+
+			const replay = createWorkflowContext(pausedArgs, response, first.journal);
+			assert.equal(await definition.run(replay), expected);
+			assert.deepEqual(replay.calls, []);
+			assert.deepEqual(replay.stepExecutions, []);
+		});
+	}
+});
+
+test("standalone workflows reject malformed pause options before agents or journals", async (t) => {
+	for (const { key, name, args } of [
+		...CHECKPOINT_CASES,
+		{ key: "reviewQueue", name: "empty review queue", args: { prs: [] } },
+	]) {
+		await t.test(name ?? key, async () => {
+			for (const pauseBeforeWork of [null, 0, 1, "true", "false", [], {}]) {
+				const workflow = createWorkflowContext({ ...args, pauseBeforeWork });
+				await assert.rejects(ADDITIONAL_WORKFLOWS[key].run(workflow), /pauseBeforeWork must be a boolean/);
+				assert.deepEqual(workflow.calls, []);
+				assert.deepEqual(workflow.stepCalls, []);
+				assert.deepEqual(workflow.pauseCalls, []);
+			}
+		});
+	}
+});
+
+test("invalid work selection is rejected before scope journaling", async () => {
+	/** @type {Array<[key: string, args: Record<string, unknown>]>} */
+	const cases = [
+		["audit", { paths: [" "] }],
+		["audit", { paths: ["src/a.js"], concern: "" }],
+		["triage", { tickets: [""] }],
+		["triage", { tickets: [{ id: "x".repeat(257), title: "Ticket" }] }],
+		["reviewQueue", { prs: [reviewPullRequest(1), reviewPullRequest(1)] }],
+		["reviewQueue", { prs: [reviewPullRequest(1), reviewPullRequest(2)], max_total_chunks: 1 }],
+		["securityReview", { perspectives: 13 }],
+		["deepResearch", { question: "Question", angles: 0 }],
+	];
+	for (const [key, args] of cases) {
+		const workflow = createWorkflowContext({ ...args, pauseBeforeWork: true });
+		await assert.rejects(ADDITIONAL_WORKFLOWS[key].run(workflow));
+		assert.deepEqual(workflow.calls, [], key);
+		assert.deepEqual(workflow.stepCalls, [], key);
+		assert.deepEqual(workflow.pauseCalls, [], key);
+	}
+});
+
+test("standalone workflows retain array/string shorthand and question aliases without pausing", async () => {
+	/** @type {Array<[key: string, args: Record<string, unknown>, shorthand: string | string[] | Record<string, unknown> | Record<string, unknown>[]]>} */
+	const cases = [
+		["audit", { paths: ["src/a.js"] }, ["src/a.js"]],
+		["triage", { tickets: ["A bug"] }, ["A bug"]],
+		["reviewQueue", { prs: [reviewPullRequest(1)] }, [reviewPullRequest(1)]],
+		["deepResearch", { question: "Question" }, "Question"],
+		["deepResearch", { question: "Question" }, { q: "Question" }],
+		["securityReview", { root: "src" }, "src"],
+		["securityReview", { files: ["src/a.js"] }, ["src/a.js"]],
+	];
+	for (const [key, args, shorthand] of cases) {
+		const baseline = createWorkflowContext(args);
+		const workflow = createWorkflowContext(shorthand);
+		assert.equal(await ADDITIONAL_WORKFLOWS[key].run(workflow), await ADDITIONAL_WORKFLOWS[key].run(baseline));
+		assert.deepEqual(workflow.calls, baseline.calls);
+		assert.deepEqual(workflow.pauseCalls, []);
+	}
+});
+
+test("failed preparation never reaches an opt-in checkpoint", async () => {
+	/** @type {Array<[key: string, args: Record<string, unknown>, response: null | []]>} */
+	const cases = [
+		["deepResearch", { question: "Question" }, null],
+		["deepResearch", { question: "Question" }, []],
+		["securityReview", { root: "src" }, null],
+	];
+	for (const [key, args, response] of cases) {
+		const workflow = createWorkflowContext({ ...args, pauseBeforeWork: true }, () => response);
+		const result = await ADDITIONAL_WORKFLOWS[key].run(workflow);
+		assert.ok(typeof result === "string");
+		assert.match(result, /incomplete/);
+		assert.equal(workflow.calls.length, 1);
+		assert.deepEqual(workflow.pauseCalls, []);
 	}
 });
 
@@ -1576,7 +1947,7 @@ test("item workflows reject impossible workloads before dispatch", async () => {
 	const auditWorkflow = createWorkflowContext({
 		paths: Array.from(
 			{ length: Math.floor(
-				(ADDITIONAL_WORKFLOWS.audit.meta.limits.maxTotalSubagents - 1) / 3,
+				(ADDITIONAL_WORKFLOWS.audit.meta.limits.maxTotalSubagents - 1) / 2,
 			) + 1 },
 			(_, index) => `src/${index}.js`,
 		),
@@ -1586,25 +1957,25 @@ test("item workflows reject impossible workloads before dispatch", async () => {
 		/maximum is/,
 	);
 	assert.equal(auditWorkflow.calls.length, 0);
+	assert.deepEqual(auditWorkflow.stepCalls, []);
 
 	const triageWorkflow = createWorkflowContext({
 		tickets: Array.from(
-			{ length: Math.floor(
-				ADDITIONAL_WORKFLOWS.triage.meta.limits.maxTotalSubagents / 2,
-			) + 1 },
+			{ length: ADDITIONAL_WORKFLOWS.triage.meta.limits.maxTotalSubagents + 1 },
 			(_, index) => `Ticket ${index}`,
 		),
 	});
 	await assert.rejects(
 		ADDITIONAL_WORKFLOWS.triage.run(triageWorkflow),
-		/retry-safe/,
+		/ticket limit/,
 	);
 	assert.equal(triageWorkflow.calls.length, 0);
+	assert.deepEqual(triageWorkflow.stepCalls, []);
 
 	const reviewWorkflow = createWorkflowContext({
 		prs: [{ repo: "owner/repo", number: 1, diff: "+change" }],
 		max_total_chunks: Math.floor(
-			ADDITIONAL_WORKFLOWS.reviewQueue.meta.limits.maxTotalSubagents / 4,
+			ADDITIONAL_WORKFLOWS.reviewQueue.meta.limits.maxTotalSubagents / 2,
 		) + 1,
 	});
 	await assert.rejects(
@@ -1612,6 +1983,7 @@ test("item workflows reject impossible workloads before dispatch", async () => {
 		/max_total_chunks must be an integer/,
 	);
 	assert.equal(reviewWorkflow.calls.length, 0);
+	assert.deepEqual(reviewWorkflow.stepCalls, []);
 
 	const metadataWorkflow = createWorkflowContext({
 		prs: [{
@@ -1625,29 +1997,13 @@ test("item workflows reject impossible workloads before dispatch", async () => {
 		/files exceeds 3000 entries/,
 	);
 	assert.equal(metadataWorkflow.calls.length, 0);
+	assert.deepEqual(metadataWorkflow.stepCalls, []);
 
-	const securityBudget =
-		Math.floor(
-			ADDITIONAL_WORKFLOWS.securityReview.meta.limits.maxTotalSubagents / 2,
-		) - 2;
+	const securityBudget = ADDITIONAL_WORKFLOWS.securityReview.meta.limits.maxTotalSubagents - 2;
 	const securityWorkflow = createWorkflowContext(
 		{ root: "src", perspectives: 1 },
 		(_prompt, options) => options.label.startsWith("investigate:")
-			? Array.from({ length: securityBudget + 1 }, (_, index) => ({
-				title: `Finding ${index}`,
-				severity: "high",
-				confidence: "high",
-				vulnerabilityClass: "injection",
-				file: `src/${index}.js`,
-				line: index + 1,
-				source: "input",
-				control: "none",
-				sink: "eval",
-				attack: "execute",
-				contraryEvidence: "none",
-				description: "reachable",
-				recommendation: "validate",
-			}))
+			? Array.from({ length: securityBudget + 1 }, (_, index) => securityFinding(index))
 			: undefined,
 	);
 	await assert.rejects(
@@ -1658,6 +2014,105 @@ test("item workflows reject impossible workloads before dispatch", async () => {
 		securityWorkflow.calls.some((call) => call.options.label.startsWith("verify:")),
 		false,
 	);
+});
+
+test("flat verdict and ticket schemas fit provider-native structured output", async () => {
+	const cases = [
+		{ key: "audit", args: { paths: ["src/a.js"] }, label: "verify:" },
+		{ key: "triage", args: { tickets: ["A bug"] }, label: "ticket:" },
+		{
+			key: "reviewQueue",
+			args: { prs: [reviewPullRequest(1)] },
+			label: "owner/repo#1:verify:",
+		},
+		{ key: "securityReview", args: { perspectives: 1 }, label: "verify:" },
+	];
+	for (const { key, args, label } of cases) {
+		const workflow = createWorkflowContext(args, (_prompt, options) =>
+			options.label.startsWith("investigate:") ? [securityFinding()] : undefined);
+		await ADDITIONAL_WORKFLOWS[key].run(workflow);
+		const call = workflow.calls.find((entry) => entry.options.label.startsWith(label));
+		assert.ok(call, key);
+		const { schema } = call.options;
+		assertClosedOutputSchema(schema);
+		assert.equal(schema.type, "object");
+		assert.ok(Object.values(schema.properties).every((property) =>
+			["string", "boolean"].includes(property.type)));
+	}
+});
+
+test("item budgets count actual agents without reserving schema-correction agents", async (t) => {
+	await t.test("audit reserves a separate verifier per path and one report", async () => {
+		const workflow = createWorkflowContext(
+			{ paths: Array.from({ length: 19 }, (_, index) => `src/${index}.js`) },
+			(_prompt, options) => options.label.startsWith("review:") ? "Concrete issue" : undefined,
+		);
+		const result = await ADDITIONAL_WORKFLOWS.audit.run(workflow);
+		assert.ok(typeof result === "string");
+		assert.match(result, /19\/19 files processed; 19 verified/);
+		assert.equal(workflow.calls.length, 39);
+		assert.equal(workflow.calls.filter((call) => call.options.label.startsWith("verify:")).length, 19);
+	});
+
+	await t.test("triage admits 100 tickets under its 100-agent ceiling", async () => {
+		const workflow = createWorkflowContext({
+			tickets: Array.from({ length: 100 }, (_, index) => `Ticket ${index}`),
+		});
+		const result = await ADDITIONAL_WORKFLOWS.triage.run(workflow);
+		assert.ok(typeof result === "string");
+		assert.match(result, /100\/100 processed; 100 triaged/);
+		assert.equal(workflow.calls.length, 100);
+	});
+
+	await t.test("review queue independently verifies all 350 admitted chunks", async () => {
+		const workflow = createWorkflowContext({
+			diff_chunk_chars: 4000,
+			max_total_chunks: 350,
+			prs: [reviewPullRequest(1, {
+				diff: addedReviewDiff(["x".repeat(4000 * 350 - 100)]),
+			})],
+		});
+		const result = await ADDITIONAL_WORKFLOWS.reviewQueue.run(workflow);
+		assert.ok(typeof result === "string");
+		assert.match(result, /All 350 complete low-risk chunks passed independent verification/);
+		assert.equal(workflow.calls.length, 700);
+		assert.equal(workflow.calls.filter((call) => call.options.label.includes(":verify:")).length, 350);
+	});
+
+	await t.test("review queue defaults to 300 chunks without raising runtime limits", async () => {
+		for (const count of [300, 301]) {
+			const workflow = createWorkflowContext({
+				diff_chunk_chars: 4000,
+				prs: [reviewPullRequest(1, {
+					diff: addedReviewDiff(["x".repeat(4000 * count - 100)]),
+				})],
+			});
+			if (count === 300) {
+				const result = await ADDITIONAL_WORKFLOWS.reviewQueue.run(workflow);
+				assert.ok(typeof result === "string");
+				assert.match(result, /All 300 complete low-risk chunks passed independent verification/);
+				assert.equal(workflow.calls.length, 600);
+			} else {
+				await assert.rejects(ADDITIONAL_WORKFLOWS.reviewQueue.run(workflow), /configured chunk budget/);
+				assert.equal(workflow.calls.length, 0);
+			}
+		}
+	});
+
+	await t.test("security review preserves a verifier for every admitted finding", async () => {
+		const workflow = createWorkflowContext(
+			{ perspectives: 1 },
+			(_prompt, options) => options.label.startsWith("investigate:")
+				? Array.from({ length: 78 }, (_, index) => securityFinding(index))
+				: undefined,
+		);
+		const result = await ADDITIONAL_WORKFLOWS.securityReview.run(workflow);
+		assert.ok(typeof result === "string");
+		assert.match(result, /Candidates: 78\. Confirmed: 78/);
+		assert.equal(workflow.calls.length, 80);
+		assert.equal(workflow.calls.filter((call) => call.options.label.startsWith("verify:")).length, 78);
+		assertOutputSchemas(workflow);
+	});
 });
 
 /** @param {string[]} lines @param {string} [file] */
@@ -2124,21 +2579,7 @@ test("security review reports failed coverage instead of a clean result", async 
 	assert.match(investigationResult, /Coverage incomplete/);
 	assert.match(investigationResult, /must not be interpreted as a clean security review/);
 
-	const finding = {
-		title: "Reachable injection",
-		severity: "high",
-		confidence: "high",
-		vulnerabilityClass: "injection",
-		file: "src/a.js",
-		line: 1,
-		source: "input",
-		control: "none",
-		sink: "eval",
-		attack: "execute",
-		contraryEvidence: "none",
-		description: "reachable",
-		recommendation: "validate",
-	};
+	const finding = securityFinding();
 	const verificationFailure = createWorkflowContext(
 		{ root: "src", perspectives: 1 },
 		(_prompt, options) => {
@@ -2447,25 +2888,26 @@ test("deep research caps fresh work and rejects oversized recovery before spendi
 		return mixedResearchResponse(prompt, options);
 	});
 	const result = await FOUNDRY_WORKFLOWS.deepResearch.run(workflow);
-	assert.match(result, /Requested 12 angles; capped at 6/);
-	assert.ok(workflow.logs.some((message) => message.includes("capped at 6")));
-	assert.deepEqual(workflow.pipelineBatches, [6]);
-	const reserved = workflow.calls.reduce((count, call) => count + (call.options.schema ? 2 : 1), 0);
-	assert.equal(reserved, 39);
-	assert.ok(reserved <= ADDITIONAL_WORKFLOWS.deepResearch.meta.limits.maxTotalSubagents);
+	assert.match(result, /Requested 12 angles; capped at 9/);
+	assert.ok(workflow.logs.some((message) => message.includes("capped at 9")));
+	assert.deepEqual(workflow.pipelineBatches, [9]);
+	assert.equal(workflow.calls.length, 38);
+	assert.ok(workflow.calls.length <= ADDITIONAL_WORKFLOWS.deepResearch.meta.limits.maxTotalSubagents);
+	assertOutputSchemas(workflow);
 
 	const recovery = createWorkflowContext({
 		question: "Recover",
-		drafts: Array.from({ length: 8 }, () => ({ angle: "Saved", text: "Draft" })),
+		drafts: Array.from({ length: 13 }, () => ({ angle: "Saved", text: "Draft" })),
 	});
-	await assert.rejects(FOUNDRY_WORKFLOWS.deepResearch.run(recovery), /at most 7 saved drafts/);
+	await assert.rejects(FOUNDRY_WORKFLOWS.deepResearch.run(recovery), /at most 12 saved drafts/);
 	assert.equal(recovery.calls.length, 0);
+	assert.deepEqual(recovery.stepCalls, []);
 });
 
-test("deep research reserves schema retries for all seven saved drafts", async () => {
+test("deep research preserves correction and reverification for all twelve saved drafts", async () => {
 	const workflow = createWorkflowContext({
 		question: "Recover",
-		drafts: Array.from({ length: 7 }, (_, index) => ({ angle: `Saved ${index}`, text: `Draft ${index}` })),
+		drafts: Array.from({ length: 12 }, (_, index) => ({ angle: `Saved ${index}`, text: `Draft ${index}` })),
 	}, (prompt, options) => {
 		if (options.label.startsWith("reverify-findings:")) {
 			return { findings: [researchFinding("supported", { id: `${options.label.split(":")[1]}.2` })], limitations: [] };
@@ -2473,26 +2915,20 @@ test("deep research reserves schema retries for all seven saved drafts", async (
 		return mixedResearchResponse(prompt, options);
 	});
 	const result = await FOUNDRY_WORKFLOWS.deepResearch.run(workflow);
-	assert.match(result, /7 angles reused from saved drafts/);
-	assert.deepEqual(workflow.pipelineBatches, [7]);
-	assert.equal(workflow.calls.reduce((count, call) => count + (call.options.schema ? 2 : 1), 0), 36);
+	assert.match(result, /12 angles reused from saved drafts/);
+	assert.deepEqual(workflow.pipelineBatches, [12]);
+	assert.equal(workflow.calls.length, 37);
 	assert.equal(workflow.calls.some((call) => call.options.label === "plan" || call.options.label.startsWith("research:")), false);
 });
 
 test("deep research uses stable distinct calls that native journals can replay", async () => {
 	const workflow = createWorkflowContext({ question: "Compare evidence", angles: 1 }, mixedResearchResponse);
-	const agent = workflow.agent;
-	const journal = new Map();
-	workflow.agent = async (prompt, options) => {
-		const key = JSON.stringify({ prompt, options });
-		if (!journal.has(key)) journal.set(key, await agent(prompt, options));
-		return structuredClone(journal.get(key));
-	};
 	const first = await FOUNDRY_WORKFLOWS.deepResearch.run(workflow);
 	const second = await FOUNDRY_WORKFLOWS.deepResearch.run(workflow);
 	assert.equal(second, first);
 	assert.equal(workflow.calls.length, 6);
-	assert.equal(journal.size, 6);
+	assert.equal(workflow.journal.agents.size, 6);
+	assert.deepEqual(workflow.stepExecutions, ["deep-research:prepared-angles:v1"]);
 	assert.notEqual(
 		workflow.calls.find((call) => call.options.label.startsWith("verify-findings:")).prompt,
 		workflow.calls.find((call) => call.options.label.startsWith("reverify-findings:")).prompt,
@@ -2514,6 +2950,7 @@ test("deep research validates recovery arguments before spawning agents", async 
 			const workflow = createWorkflowContext(args);
 			await assert.rejects(FOUNDRY_WORKFLOWS.deepResearch.run(workflow), /deep-research:/);
 			assert.equal(workflow.calls.length, 0);
+			assert.deepEqual(workflow.stepCalls, []);
 		});
 	}
 	for (const args of ["Question", { q: "Question" }]) {
@@ -2575,4 +3012,36 @@ test("Workflow test runtime matches native item-failure semantics", async () => 
 		},
 		(value) => value * 2,
 	), [4, null]);
+});
+
+test("Workflow test runtime replays JSON steps and durable one-shot checkpoints", async () => {
+	const workflow = createWorkflowContext({});
+	const prepared = await workflow.step("scope:v1", () => ({ files: ["src/a.js"] }));
+	assert.deepEqual(prepared, { files: ["src/a.js"] });
+	assert.ok(Object.isFrozen(prepared.files));
+	assert.equal(await workflow.step("scope:v1", () => assert.fail("Cached producer ran")), prepared);
+	for (const value of [undefined, { missing: undefined }, new Set(["src/a.js"]), NaN]) {
+		await assert.rejects(workflow.step("invalid:v1", () => value));
+	}
+	assert.equal(workflow.journal.steps.size, 1);
+	await assert.rejects(workflow.pause("ready:v1"), { name: "AbortError", key: "ready:v1" });
+	await workflow.pause("ready:v1");
+	const resumed = createWorkflowContext({}, null, workflow.journal);
+	assert.equal(await resumed.step("scope:v1", () => assert.fail("Resumed producer ran")), prepared);
+	await resumed.pause("ready:v1");
+	assert.deepEqual(resumed.stepExecutions, []);
+});
+
+test("Workflow test runtime bills identical agent calls once without merging independent labels", async () => {
+	const workflow = createWorkflowContext({});
+	await Promise.all([
+		workflow.agent("Review", { label: "first" }),
+		workflow.agent("Review", { label: "first" }),
+		workflow.agent("Review", { label: "second" }),
+	]);
+	assert.equal(workflow.calls.length, 2);
+	const resumed = createWorkflowContext({}, null, workflow.journal);
+	await resumed.agent("Review", { label: "first" });
+	await resumed.agent("Review", { label: "second" });
+	assert.deepEqual(resumed.calls, []);
 });

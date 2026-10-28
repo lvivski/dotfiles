@@ -24,7 +24,7 @@ import { LIMITS } from "./domain.mjs";
  * @property {string} planId
  * @property {import("node:http").Server} server
  * @property {string} url
- * @property {(event?: {revision?: number}) => void} broadcast
+ * @property {(event?: {revision?: number, workflowRunId?: string, workflowRevision?: number}) => void} broadcast
  * @property {() => Promise<any>} snapshot
  * @property {() => Promise<void>} close
  */
@@ -83,6 +83,7 @@ function requireActor(value, field) {
  * @returns {void}
  */
 function json(response, status, value) {
+	if (response.destroyed) return;
     response.writeHead(status, {
         "Cache-Control": "no-store",
         "Content-Type": "application/json; charset=utf-8",
@@ -219,13 +220,15 @@ export async function startServer(options) {
     /**
      * Broadcasts a plan revision hint to every connected SSE client.
      *
-     * @param {{revision?: number}} [event]
+     * @param {{revision?: number, workflowRunId?: string, workflowRevision?: number}} [event]
      * @returns {void}
      */
     const broadcast = (event = {}) => {
         const payload = `event: change\ndata: ${JSON.stringify({
             planId,
             revision: event.revision ?? null,
+			workflowRunId: event.workflowRunId ?? null,
+			workflowRevision: event.workflowRevision ?? null,
         })}\n\n`;
         for (const client of clients) {
             client.write(payload);
@@ -265,7 +268,7 @@ export async function startServer(options) {
                 return;
             }
             if (request.method === "GET" && url.pathname === "/api/plan") {
-                const status = await operations.getStatus({ planId });
+				const status = await operations.getStatus({ planId, includeWorkflows: true });
                 json(response, 200, { ok: true, value: status });
                 return;
             }
@@ -300,7 +303,21 @@ export async function startServer(options) {
                     json(response, 400, { ok: false, error: { message: "Explicit confirmation is required" } });
                     return;
                 }
-                if (body.action === "approve") {
+				if (body.action === "pause-workflow" || body.action === "resume-workflow") {
+					const controller = new AbortController();
+					const disconnected = () => controller.abort();
+					response.once("close", disconnected);
+					try {
+						await operations.controlWorkflow({
+							runId: body.runId,
+							action: body.action === "pause-workflow" ? "pause" : "resume",
+							planId,
+							expectedRevision: body.revision,
+						}, { signal: controller.signal });
+					} finally {
+						response.off("close", disconnected);
+					}
+				} else if (body.action === "approve") {
 					if (!["plan", "completion"].includes(body.approvalType)) {
 						throw new FoundryHttpError(
 							400,
@@ -333,7 +350,7 @@ export async function startServer(options) {
                 }
                 json(response, 200, {
                     ok: true,
-                    value: await operations.getStatus({ planId }),
+					value: await operations.getStatus({ planId, includeWorkflows: true }),
                 });
                 return;
             }
@@ -376,7 +393,7 @@ export async function startServer(options) {
          * @returns {Promise<any>}
          */
         async snapshot() {
-            return operations.getStatus({ planId });
+			return operations.getStatus({ planId, includeWorkflows: true });
         },
         /**
          * Stops subscriptions, SSE streams, and the loopback server.
@@ -389,6 +406,7 @@ export async function startServer(options) {
                 client.end();
             }
             clients.clear();
+			server.closeAllConnections();
             await new Promise((resolve, reject) => {
                 server.close((error) => error ? reject(error) : resolve(undefined));
             });

@@ -31,6 +31,49 @@ a:focus-visible {
   outline-offset: 2px;
 }
 
+button:hover:not(:disabled) {
+  border-color: var(--color-focus-outline, #0969da);
+}
+
+button:active:not(:disabled) {
+  background: var(--background-color-default, #ffffff);
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.workflow-run + .workflow-run {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-color-default, #d0d7de);
+}
+
+.workflow-run .task-heading {
+  flex-wrap: wrap;
+}
+
+.workflow-run h3 {
+  margin-bottom: 8px;
+  overflow-wrap: anywhere;
+}
+
+.workflow-run .card-actions,
+.workflow-progress {
+  margin-top: 12px;
+}
+
+.workflow-progress summary {
+  cursor: pointer;
+}
+
+.workflow-progress pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono, "SFMono-Regular", Consolas, monospace);
+}
+
 .danger {
   background: var(--true-color-red, #cf222e);
   color: var(--color-white, #ffffff);
@@ -156,6 +199,7 @@ p {
 }
 
 .status-running,
+.status-paused,
 .status-cancelling,
 .warning {
   color: var(--true-color-orange, #9a6700);

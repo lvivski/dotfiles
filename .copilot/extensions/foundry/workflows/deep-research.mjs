@@ -1,6 +1,7 @@
 // Verify atomic findings, repair unresolved claims once, and preserve partial evidence.
 import {
 	UNTRUSTED_DATA_WARNING,
+	safeJson,
 	untrustedBlock,
 } from "../prompts.mjs";
 const DRAFTS_SCHEMA = {
@@ -22,12 +23,13 @@ const RESEARCH_OPTIONS_SCHEMA = {
 		question: { type: "string" },
 		angles: { type: "integer" },
 		drafts: DRAFTS_SCHEMA,
+		pauseBeforeWork: { type: "boolean" },
 	},
 };
-// Reserve automatic schema retries as well as one correction/reverification pass.
-const MAX_FIXED_SUBAGENTS = 3;
-const MAX_SUBAGENTS_PER_ANGLE = 6;
-const MAX_SUBAGENTS_PER_DRAFT = 5;
+// Schema correction reuses its agent; independent correction and verification do not.
+const MAX_FIXED_SUBAGENTS = 2;
+const MAX_SUBAGENTS_PER_ANGLE = 4;
+const MAX_SUBAGENTS_PER_DRAFT = 3;
 const STATUSES = ["supported", "incorrect", "inaccessible", "insufficient"];
 const FINDING_PROPERTIES = {
 	claim: { type: "string" },
@@ -37,6 +39,7 @@ const FINDING_PROPERTIES = {
 		type: "array",
 		items: {
 			type: "object",
+			additionalProperties: false,
 			required: ["url", "evidence"],
 			properties: {
 				url: { type: "string" },
@@ -47,12 +50,14 @@ const FINDING_PROPERTIES = {
 };
 const REVIEW_SCHEMA = {
 	type: "object",
+	additionalProperties: false,
 	required: ["findings", "limitations"],
 	properties: {
 		findings: {
 			type: "array",
 			items: {
 				type: "object",
+				additionalProperties: false,
 				required: Object.keys(FINDING_PROPERTIES),
 				properties: FINDING_PROPERTIES,
 			},
@@ -68,6 +73,7 @@ const REVISION_SCHEMA = {
 			type: "array",
 			items: {
 				type: "object",
+				additionalProperties: false,
 				required: ["id", ...Object.keys(FINDING_PROPERTIES)],
 				properties: { id: { type: "string" }, ...FINDING_PROPERTIES },
 			},
@@ -93,7 +99,7 @@ export const meta = {
 	name: "deep-research",
 	description:
 		"Research and verify individual claims, correct unresolved findings once, and report partial evidence. " +
-		"Args: { question: string, angles?: number, drafts?: { angle: string, text: string, feedback?: string }[] } or a question string. Use drafts instead of angles to recover saved research.",
+		"Args: { question: string, angles?: number, drafts?: { angle: string, text: string, feedback?: string }[], pauseBeforeWork?: boolean } or a question string. Use drafts instead of angles to recover saved research.",
 	phases: [{ title: "Plan" }, { title: "Research" }, { title: "Report" }],
 	argsSchema: {
 		anyOf: [
@@ -106,6 +112,7 @@ export const meta = {
 					q: { type: "string" },
 					angles: { type: "integer" },
 					drafts: DRAFTS_SCHEMA,
+					pauseBeforeWork: { type: "boolean" },
 				},
 			},
 		],
@@ -224,6 +231,9 @@ function reviewNotes(rows) {
 export async function run(workflow) {
 	const input = workflow.args;
 	const options = isRecord(input) ? input : {};
+	if (options.pauseBeforeWork !== undefined && typeof options.pauseBeforeWork !== "boolean") {
+		throw new Error("deep-research: pauseBeforeWork must be a boolean");
+	}
 	const question = text(typeof input === "string" ? input : options.question || options.q);
 	if (!question) throw new Error("deep-research: provide a non-empty question");
 
@@ -251,10 +261,10 @@ export async function run(workflow) {
 	);
 	const maxAngles = Math.min(requestedAngles, 12, budgetedAngles);
 	if (recovering && drafts.length > maxAngles) {
-		throw new Error(`deep-research: at most ${maxAngles} saved drafts fit the correction budget; none were processed`);
+		throw new Error(`deep-research: at most ${maxAngles} saved drafts are supported by the angle and correction limits; none were processed`);
 	}
 	const boundaries = requestedAngles > maxAngles
-		? ` Requested ${requestedAngles} angles; capped at ${maxAngles} to reserve correction and schema retries.`
+		? ` Requested ${requestedAngles} angles; capped at ${maxAngles} to reserve independent correction and reverification.`
 		: "";
 
 	workflow.phase("Plan");
@@ -267,23 +277,33 @@ Question: ${question}`,
 	if (!Array.isArray(planned)) {
 		return "# Research incomplete\n\nPlanning failed. No research was performed.";
 	}
-	const seen = new Set();
-	const angles = planned.map(text).filter(Boolean).filter((angle) => {
-		const key = angle.toLowerCase().replace(/\s+/g, " ");
-		if (!recovering && seen.has(key)) return false;
-		seen.add(key);
-		return true;
-	}).slice(0, maxAngles);
-	if (!angles.length) {
+	const prepared = await workflow.step("deep-research:prepared-angles:v1", () => {
+		const seen = new Set();
+		return planned.map(text).filter(Boolean).filter((angle) => {
+			const key = angle.toLowerCase().replace(/\s+/g, " ");
+			if (!recovering && seen.has(key)) return false;
+			seen.add(key);
+			return true;
+		}).slice(0, maxAngles).map((angle, index) => ({
+			angle,
+			draft: recovering ? text(drafts[index].text) : null,
+			feedback: recovering ? text(drafts[index].feedback) : "",
+		}));
+	});
+	if (!prepared.length) {
 		return "# Research incomplete\n\nThe planner returned no usable research angles.";
 	}
-	workflow.log(`deep-research: ${angles.length} angle(s)${recovering ? " from saved drafts" : ""}.${boundaries}`);
+	workflow.log(`deep-research: ${prepared.length} angle(s)${recovering ? " from saved drafts" : ""}.${boundaries}`);
+	if (options.pauseBeforeWork) {
+		workflow.log(`deep-research: prepared scope ${safeJson({
+			question, angles: prepared.map(({ angle }) => angle), savedDrafts: recovering,
+		}, 0)}`);
+		await workflow.pause("deep-research:before-research:v1");
+	}
 
 	/** @type {ResearchRow[]} */
-	const rows = angles.map((angle, index) => ({
-		index, angle,
-		draft: recovering ? text(drafts[index].text) : null,
-		feedback: recovering ? text(drafts[index].feedback) : "",
+	const rows = prepared.map((scope, index) => ({
+		index, ...scope,
 		findings: [], limitations: [], failures: [],
 		correction: null, correctionAttempted: false,
 	}));
