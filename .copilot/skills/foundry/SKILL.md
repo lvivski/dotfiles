@@ -12,9 +12,10 @@ metadata:
 
 # Foundry coordinator
 
-Foundry is the authority for plan, task, attempt, evidence, verification, and cancellation state.
-This skill drives App-native tools around that state machine. App project sessions own repository
-mutation; native Dynamic Workflows perform bounded analysis only.
+Foundry evolves verified capabilities and the connected knowledge needed to rebuild them.
+Repository-scoped SQLite owns capability boundaries, immutable knowledge and accepted contracts,
+candidate lineage, assurance and renewal. Session-local SQLite owns plans, attempts and cancellation.
+App project sessions own work surfaces; native Dynamic Workflows own execution, replay and budgets.
 
 ## Scope
 
@@ -22,8 +23,11 @@ Use this protocol when the user explicitly requests Foundry coordination. For ro
 prefer native plan mode and direct tools; for ordinary multi-session or stacked-PR work, use the
 native `orchestrate` or `pr-stack` flows without creating a Foundry plan.
 
-Keep the complete coordinator protocol even for a small task. A native plan-mode document is not
-a substitute for the completed planning Workflow result required by `foundry_create_plan`.
+Keep the complete coordinator protocol even for a small task. Begin with the
+[factory lifecycle](references/factory.md). Exploration can precede specification; discoveries are
+non-governing until explicitly accepted. Reconstruct from a sealed accepted contract with
+`foundry_create_factory_plan`, or import a factory-scoped planning Workflow with
+`foundry_create_plan`. Both create drafts requiring explicit plan approval.
 
 ## Hard rules
 
@@ -51,6 +55,15 @@ a substitute for the completed planning Workflow result required by `foundry_cre
     direct `run_dynamic_workflow` call not based on a returned `launchSpec`, do not pass `limits`; use the
     workflow's declared limits unless the user explicitly requests an override. Never lower a declared
     or returned limit without an explicit user request.
+13. Never equate task completion, workflow replay, a generated specification, or a passing
+    implementation test with regeneration. Retain the incumbent until a fresh candidate has
+    independent pinned evaluations, preservation evidence and explicit replacement acceptance.
+14. Keep generation inputs separate from comparison-only prior implementation. A manifest and
+    distinct session IDs support claims, not OS-level source isolation or cryptographic truth.
+    Record exposure or missing evidence; do not silently weaken the acceptance contract.
+15. Repository revisions and plan revisions are separate. A sibling can inspect knowledge and
+    lineage, but cannot take ownership of another session's native runs. Recover pending factory
+    receipts with `foundry_sync_factory`; do not rerun completed work to repair bookkeeping.
 
 ## Choose the current phase
 
@@ -60,6 +73,7 @@ are satisfied. If the current state is uncertain, recover before dispatching or 
 
 | Current need | Required reference |
 | --- | --- |
+| Discover intent, accept contracts, reconstruct, compare or renew a capability | [Factory lifecycle](references/factory.md) |
 | Create a plan and obtain approval | [Planning and approval](references/planning.md) |
 | Reserve, create, attach, and record task attempts | [Task dispatch](references/dispatch.md) |
 | Verify delivery, approve correction waves, and finish | [Verification and completion](references/verification.md); also [task dispatch](references/dispatch.md) before creating the verifier session |

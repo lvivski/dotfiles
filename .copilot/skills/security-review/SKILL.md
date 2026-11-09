@@ -26,6 +26,11 @@ metadata:
 4. Return independently confirmed findings with their locations, severity, exploit evidence,
    and recommendations. Preserve the scope and any failed-coverage warnings. No confirmed
    finding means bounded static coverage, not proof that the code is vulnerability-free.
+5. When an explicit Foundry capability context exists, retain appropriately scoped findings,
+   proposals and failed-coverage gaps as non-governing knowledge. Use `foundry_capture_analysis`
+   for a matching completed current-session report, or `foundry_record_knowledge` for scoped
+   entries with source/provenance. A static finding is not replacement acceptance; changed
+   obligations or executable security evaluations require an explicit contract decision.
 
 ## Essential safeguards
 

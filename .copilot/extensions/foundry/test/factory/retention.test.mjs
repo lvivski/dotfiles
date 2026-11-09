@@ -1,0 +1,61 @@
+import assert from "node:assert/strict";
+import { mkdir } from "node:fs/promises";
+import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import test from "node:test";
+import { parseJson, readRecord } from "../../data.mjs";
+import { createFactoryService } from "../../factory.mjs";
+import { must } from "../assertions.mjs";
+import { fixture, freshCode } from "./fixture.mjs";
+import { factoryDocument } from "./accessors.mjs";
+
+test("retirement compacts views but preserves reasons and refuses current implementation or pinned knowledge", async (t) => {
+	const f = await fixture(t);
+	f.createUnit();
+	f.contract();
+	const first = f.prepare("first", 1, "implementation");
+	assert.throws(() => f.call("compactFactory", { actor: "owner", reason: "Premature compaction" }), { code: "factory_compaction_unsafe" });
+	f.evaluate(first, await f.deliver(first, freshCode), 1);
+	f.decide(first, "accept", null);
+	/** @param {string} type @param {string} id @param {number} [revision] */
+	const retire = (type, id, revision = undefined) => f.call("retire", { type, id, ...(revision ? { revision } : {}), actor: "owner", reason: "Superseded", summary: "Retain the original boundary lesson" });
+	assert.throws(() => retire("candidate", first.id), { code: "factory_retirement_unsafe" });
+	assert.throws(() => retire("knowledge", "balance-contract", 1), { code: "factory_retirement_unsafe" });
+	const second = f.prepare("second", 1);
+	f.evaluate(second, await f.deliver(second, freshCode), 1);
+	f.decide(second, "accept", first.id);
+	retire("candidate", first.id);
+	assert.equal(f.factory.inspect().candidates.length, 1);
+	assert.equal(f.factory.inspect({ includeRetired: true }).candidates.length, 2);
+	assert.equal(f.factory.snapshot().retirements[0].summary, "Retain the original boundary lesson");
+	assert.ok(f.factory.exportFactory().includes("evidence-first"));
+	const before = factoryDocument(f.factory.exportFactory());
+	const generation = f.factory.generation(second.id);
+	const compacted = f.call("compactFactory", { actor: "owner", reason: "Compact retained superseded implementation evidence without deleting it" });
+	const storage = must(compacted.storage);
+	assert.equal(storage.encoding, "segmented-records");
+	assert.ok(storage.previousDocumentBytes !== null);
+	assert.ok(storage.documentBytes < storage.previousDocumentBytes);
+	const db = new DatabaseSync(f.factory.databasePath);
+	try {
+		const row = db.prepare("SELECT first_revision, document FROM factory_archives ORDER BY first_revision LIMIT 1").get();
+		assert.ok(row);
+		assert.ok(f.factory.storageInfo().archiveSegments > 0);
+		assert.equal(typeof row.document, "string");
+		const saved = String(row.document);
+		const envelope = readRecord(parseJson(saved));
+		assert.equal(envelope.codec, "deflate-raw");
+		envelope.digest = "0".repeat(64);
+		db.prepare("UPDATE factory_archives SET document = ? WHERE first_revision = ?").run(JSON.stringify(envelope), row.first_revision);
+		assert.throws(() => f.factory.snapshot(), { code: "factory_document_integrity" });
+		db.prepare("UPDATE factory_archives SET document = ? WHERE first_revision = ?").run(saved, row.first_revision);
+	} finally { db.close(); }
+	assert.deepEqual(factoryDocument(f.factory.exportFactory()).events.slice(0, -1), before.events);
+	assert.deepEqual(f.factory.generation(second.id), generation);
+	const restoredRoot = path.join(f.root, "compacted-restore");
+	await mkdir(restoredRoot);
+	const restored = createFactoryService({ repositoryPath: f.repositoryPath, storageRoot: restoredRoot, clock: f.clock });
+	restored.importFactory({ source: f.factory.exportFactory(), expectedRevision: 0 });
+	assert.equal(restored.exportFactory(), f.factory.exportFactory());
+	assert.equal(restored.inspect().units[0].currentCandidateId, second.id);
+});

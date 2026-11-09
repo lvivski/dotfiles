@@ -1,4 +1,8 @@
 /** @module inventory — validation and causal interpretation of App session inventories. */
+import { isList, isRecord } from "./data.mjs";
+
+/** @typedef {{complete: boolean, capturedAt?: string | null, sessions: {id: string, status: string}[]}} SessionInventory */
+/** @typedef {{supplied: boolean, complete: boolean, capturedAt: string | null, sessions: Map<string, string>}} NormalizedInventory */
 
 /** App session states that imply result collection rather than continued work. */
 export const TERMINAL_SESSION_STATUSES = new Set([
@@ -18,7 +22,7 @@ export class FoundryInventoryError extends TypeError {
 	}
 }
 
-/** Validate and index an optional host session inventory. */
+/** Validate and index an optional host session inventory. @param {unknown} inventory @returns {NormalizedInventory} */
 export function normalizeInventory(inventory) {
 	if (inventory === undefined || inventory === null) {
 		return {
@@ -28,10 +32,9 @@ export function normalizeInventory(inventory) {
 			sessions: new Map(),
 		};
 	}
-	if (typeof inventory !== "object"
-		|| Array.isArray(inventory)
+	if (!isRecord(inventory)
 		|| typeof inventory.complete !== "boolean"
-		|| !Array.isArray(inventory.sessions)) {
+		|| !isList(inventory.sessions)) {
 		throw new FoundryInventoryError("sessionInventory must contain complete and sessions");
 	}
 	/** @type {string | null} */
@@ -49,11 +52,10 @@ export function normalizeInventory(inventory) {
 			"sessionInventory.capturedAt must be a canonical timestamp",
 		);
 	}
+	/** @type {Map<string, string>} */
 	const sessions = new Map();
 	for (const entry of inventory.sessions) {
-		if (!entry
-			|| typeof entry !== "object"
-			|| Array.isArray(entry)
+		if (!isRecord(entry)
 			|| typeof entry.id !== "string"
 			|| !entry.id.trim()
 			|| typeof entry.status !== "string"
@@ -73,7 +75,10 @@ export function normalizeInventory(inventory) {
 	};
 }
 
-/** Resolve the best-known App session state for an attempt. */
+/** Resolve the best-known App session state for an attempt.
+ * @param {Pick<import("./types/plan.js").FoundryAttempt, "sessionId" | "startedAt" | "reservedAt">} attempt
+ * @param {NormalizedInventory} inventory
+ */
 export function sessionState(attempt, inventory) {
 	if (attempt.sessionId === null) return "unattached";
 	if (!inventory.supplied) return "unknown";
@@ -87,7 +92,7 @@ export function sessionState(attempt, inventory) {
 		: "unknown";
 }
 
-/** Whether an observed session state is terminal enough for cancellation finalization. */
+/** Whether an observed session state is terminal enough for cancellation finalization. @param {string} state */
 export function isTerminatedSessionState(state) {
 	return state === "absent" || TERMINAL_SESSION_STATUSES.has(state);
 }

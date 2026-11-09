@@ -16,7 +16,9 @@ import { EventEmitter } from "node:events";
 const emitter = new EventEmitter();
 emitter.setMaxListeners(100);
 
-/** Native revisions are invalidation hints, never plan revisions or approval evidence. */
+/** @typedef {{workflowRunId: string, workflowRevision: number}} WorkflowChangeEvent */
+/** @typedef {PlanChangeEvent | WorkflowChangeEvent} FoundryChangeEvent */
+/** Native revisions are invalidation hints, never plan revisions or approval evidence. @type {Map<string, number>} */
 const workflowRevisions = new Map();
 
 /** @param {{runId: string, revision: number}} event */
@@ -34,7 +36,7 @@ export function publishWorkflowChange({ runId, revision }) {
  * @returns {string}
  */
 function key(workspacePath, planId) {
-    return `${workspacePath}\0${planId}`;
+	return `${workspacePath}\0${planId}`;
 }
 
 /**
@@ -44,7 +46,7 @@ function key(workspacePath, planId) {
  * @returns {void}
  */
 export function publishPlanChange(event) {
-    emitter.emit(key(event.workspacePath, event.planId), event);
+	emitter.emit(key(event.workspacePath, event.planId), event);
 }
 
 /**
@@ -52,12 +54,12 @@ export function publishPlanChange(event) {
  *
  * @param {string} workspacePath
  * @param {string} planId
- * @param {(event: PlanChangeEvent) => void} listener
+ * @param {(event: FoundryChangeEvent) => void} listener
  * @returns {() => void} Unsubscribe callback.
  */
 export function subscribeToPlan(workspacePath, planId, listener) {
-    const eventName = key(workspacePath, planId);
-    emitter.on(eventName, listener);
+	const eventName = key(workspacePath, planId);
+	emitter.on(eventName, listener);
 	emitter.on("workflow", listener);
 	return () => {
 		emitter.off(eventName, listener);

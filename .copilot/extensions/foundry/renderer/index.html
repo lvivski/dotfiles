@@ -3,16 +3,17 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
     <meta name="foundry-token" content="__FOUNDRY_TOKEN__" />
     <meta name="foundry-plan-id" content="__FOUNDRY_PLAN_ID__" />
     <title>Foundry</title>
-    <link rel="stylesheet" href="/styles.css" />
-    <script src="/app.js" defer></script>
+    <link rel="stylesheet" href="styles.css" />
+    <script type="module" src="app.mjs"></script>
   </head>
   <body>
     <header class="toolbar">
       <div>
-        <p class="eyebrow">Foundry engineering plan</p>
+	<p id="surface-label" class="eyebrow">Foundry engineering plan</p>
         <h1 id="plan-title">Loading…</h1>
         <p id="plan-objective" class="muted"></p>
       </div>
@@ -24,24 +25,29 @@
     </header>
     <main>
       <section id="summary" class="summary" aria-live="polite"></section>
-      <section aria-labelledby="workflows-title">
+      <section aria-labelledby="factory-title">
+	<h2 id="factory-title">Repository factory</h2>
+	<p class="muted">Durable capabilities, governed knowledge, candidate comparison and current assurance. Plan completion alone is not regeneration.</p>
+	<div id="factory" class="panel">Loading repository authority...</div>
+      </section>
+      <section id="workflow-section" aria-labelledby="workflows-title">
 	<h2 id="workflows-title">Native workflows</h2>
 	<p class="muted">Pause or resume workflow agents without changing plan approvals or App task sessions.</p>
 	<div id="workflows" class="panel">Loading workflow status...</div>
       </section>
-      <section>
+      <section id="task-section">
         <h2>Tasks</h2>
         <div id="tasks" class="task-groups"></div>
       </section>
-      <section>
+      <section id="verification-section">
         <h2>Verification</h2>
         <div id="verification" class="panel"></div>
       </section>
-      <section>
+      <section id="recovery-section">
         <h2>Recovery</h2>
         <div id="recovery" class="panel"></div>
       </section>
-      <section>
+      <section id="activity-section">
 	<h2>Activity</h2>
 	<div id="activity" class="panel"></div>
       </section>

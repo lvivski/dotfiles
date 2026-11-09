@@ -26,7 +26,8 @@ button {
 }
 
 button:focus-visible,
-a:focus-visible {
+a:focus-visible,
+summary:focus-visible {
   outline: 2px solid var(--color-focus-outline, #0969da);
   outline-offset: 2px;
 }
@@ -50,6 +51,33 @@ button:disabled {
   border-top: 1px solid var(--border-color-default, #d0d7de);
 }
 
+.factory-record {
+  padding: 12px 0;
+  border-top: 1px solid var(--border-color-default, #d0d7de);
+  overflow-wrap: anywhere;
+}
+
+.factory-record > summary,
+.factory-detail summary {
+  cursor: pointer;
+}
+
+.factory-detail {
+  padding-top: 12px;
+}
+
+.factory-detail pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono, "SFMono-Regular", Consolas, monospace);
+  max-height: 22rem;
+  overflow: auto;
+}
+
+.factory-detail .card-actions {
+  margin-top: 12px;
+}
+
 .workflow-run .task-heading {
   flex-wrap: wrap;
 }
@@ -68,10 +96,44 @@ button:disabled {
   cursor: pointer;
 }
 
+.workflow-progress > h4 {
+  margin: 20px 0 8px;
+}
+
 .workflow-progress pre {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   font-family: var(--font-mono, "SFMono-Regular", Consolas, monospace);
+  max-height: 22rem;
+  overflow: auto;
+}
+
+.workflow-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 6px 16px;
+}
+
+.workflow-metrics .warning {
+  grid-column: 1 / -1;
+  margin-bottom: 0;
+}
+
+.workflow-observations {
+  margin-top: 16px;
+}
+
+.workflow-agent {
+  padding: 8px 0;
+  overflow-wrap: anywhere;
+}
+
+.workflow-agent + .workflow-agent {
+  border-top: 1px solid var(--border-color-default, #d0d7de);
+}
+
+.workflow-observations h4:not(:first-child) {
+  margin-top: 20px;
 }
 
 .danger {

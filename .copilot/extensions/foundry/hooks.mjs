@@ -1,358 +1,29 @@
-/**
- * Opt-in coordinator context and conservative tool-use guardrails.
- *
- * @module foundry/hooks
- */
-import path from "node:path";
+import { errorCode, property } from "./data.mjs";
+import { inspectWriteBoundary } from "./hooks/paths.mjs";
+import { classifyShellCommand } from "./hooks/shell.mjs";
+
+/** @typedef {{plan: {id: string, revision: number, status: string, factory?: import("./types/plan.js").PlanFactoryBinding | null}}} ActivePlan */
 
 /** Prefix shared by every Foundry-owned tool. */
 const FOUNDRY_TOOL_PREFIX = "foundry_";
 
 /** Foundry tools safe to auto-allow while a plan is active. */
 const READ_ONLY_FOUNDRY_TOOLS = new Set([
-    "foundry_prepare_plan",
-    "foundry_get_plan",
-    "foundry_get_status",
-    "foundry_list_plans",
-    "foundry_next_tasks",
+	"foundry_prepare_plan",
+	"foundry_get_status",
+	"foundry_list_plans",
+	"foundry_export_plan",
 ]);
-
-/** File-oriented tools whose arguments can be checked against the workspace. */
-const FILE_WRITE_TOOLS = new Set([
-    "apply_patch",
-    "create",
-    "edit",
-    "write",
-]);
-
-/**
- * Tests whether a candidate path remains inside a workspace root.
- *
- * Handles POSIX, Windows absolute, drive-relative, and UNC path families
- * without allowing cross-platform path aliases.
- *
- * @param {string} root
- * @param {string} candidate
- * @returns {boolean}
- */
-function inside(root, candidate) {
-    const windowsRoot = /^[A-Za-z]:[\\/]/.test(root) || /^\\\\/.test(root);
-    const windowsCandidate = /^[A-Za-z]:[\\/]/.test(candidate)
-        || /^\\\\/.test(candidate);
-    const posixCandidate = path.posix.isAbsolute(candidate);
-    if (windowsRoot ? (posixCandidate && !windowsCandidate) : windowsCandidate) {
-        return false;
-    }
-    const implementation = windowsRoot ? path.win32 : path.posix;
-    const resolvedRoot = implementation.resolve(root);
-    const resolvedCandidate = implementation.isAbsolute(candidate)
-        ? implementation.resolve(candidate)
-        : implementation.resolve(resolvedRoot, candidate);
-    const relative = implementation.relative(resolvedRoot, resolvedCandidate);
-    return relative === ""
-        || (!relative.startsWith("..") && !implementation.isAbsolute(relative));
-}
-
-/**
- * Extracts path-like arguments from supported file-write tools.
- *
- * @param {string} toolName
- * @param {unknown} toolArgs
- * @returns {string[]}
- */
-function absolutePathsFromArgs(toolName, toolArgs) {
-    const found = [];
-    if (toolArgs && typeof toolArgs === "object") {
-        for (const key of ["path", "file", "target", "destination", "outputPath"]) {
-            const value = toolArgs[key];
-            if (typeof value === "string") {
-                found.push(value);
-            }
-        }
-    }
-    if (toolName === "apply_patch" && typeof toolArgs === "string") {
-        for (const match of toolArgs.matchAll(/^\*\*\* (?:(?:Add|Update|Delete) File:|Move to:) (.+)$/gm)) {
-            found.push(match[1].trim());
-        }
-    }
-    return found;
-}
-
-/**
- * Classifies broad destructive shell commands while a plan is active.
- *
- * @param {unknown} command
- * @param {string | undefined} workingDirectory
- * @returns {{decision: "deny"|"ask", reason: string} | null}
- */
-export function classifyShellCommand(command, workingDirectory) {
-    const value = String(command ?? "");
-    const commands = splitShellCommands(value);
-    if (commands.some(isDestructiveGitCommand)) {
-        return {
-            decision: "deny",
-            reason: "Foundry blocks destructive Git reset/clean commands while a plan is active.",
-        };
-    }
-    const rmDecision = commands
-        .map((entry) => classifyRmCommand(entry, workingDirectory))
-        .find(Boolean);
-    if (rmDecision) {
-        return rmDecision;
-    }
-    if (/\b(?:Remove-Item\b[^\n]*-Recurse|del\s+\/s)\b/i.test(value)) {
-        const broadTarget = /(?:^|[\s;])(?:\/|~|\$HOME|\.\.?|\*)?(?:[\s;&]|$)/.test(value)
-            || (workingDirectory && value.includes(path.resolve(workingDirectory)));
-        return {
-            decision: broadTarget ? "deny" : "ask",
-            reason: broadTarget
-                ? "Foundry blocks broad recursive deletion while a plan is active."
-                : "Foundry requires confirmation for recursive deletion while a plan is active.",
-        };
-    }
-    return null;
-}
-
-/**
- * Splits compound shell input without splitting inside quotes.
- *
- * @param {string} command
- * @returns {string[]}
- */
-function splitShellCommands(command) {
-    const segments = [];
-    let current = "";
-    /** @type {"'"|'"'|null} */
-    let quote = null;
-    let escaped = false;
-    for (let index = 0; index < command.length; index += 1) {
-        const character = command[index];
-        if (escaped) {
-            current += character;
-            escaped = false;
-            continue;
-        }
-        if (character === "\\") {
-            current += character;
-            escaped = true;
-            continue;
-        }
-        if (quote) {
-            current += character;
-            if (character === quote) quote = null;
-            continue;
-        }
-        if (character === "'" || character === "\"") {
-            quote = character;
-            current += character;
-            continue;
-        }
-        const pair = command.slice(index, index + 2);
-        if (character === ";" || character === "\n"
-            || character === "|" || character === "&") {
-            if (current.trim()) segments.push(current.trim());
-            current = "";
-            if (pair === "&&" || pair === "||") index += 1;
-            continue;
-        }
-        current += character;
-    }
-    if (current.trim()) segments.push(current.trim());
-    return segments;
-}
-
-/**
- * Tokenizes the shell subset needed by the guardrail classifiers.
- *
- * @param {string} command
- * @returns {string[]}
- */
-function shellTokens(command) {
-    return String(command)
-        .match(/"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|\S+/g)
-        ?.map((token) => token
-            .replace(/^(["'])|(["'])$/g, "")
-            .replace(/^[({]+|[)}]+$/g, ""))
-        .filter(Boolean) ?? [];
-}
-
-/**
- * Accepts only direct commands or known non-semantic wrappers before a command.
- *
- * @param {string[]} tokens
- * @param {number} commandIndex
- * @returns {boolean}
- */
-function allowedPrefix(tokens, commandIndex) {
-    const prefix = tokens.slice(0, commandIndex);
-    return prefix.length === 0
-        || ["sudo", "command", "env"].includes(prefix[0].toLowerCase());
-}
-
-/**
- * Detects shell constructs whose target cannot be resolved statically.
- *
- * @param {string} value
- * @returns {boolean}
- */
-function containsCommandSubstitution(value) {
-    return value.includes("$(") || value.includes("`");
-}
-
-/**
- * Classifies recursive forced `rm` invocations by target breadth.
- *
- * @param {string} command
- * @param {string | undefined} workingDirectory
- * @returns {{decision: "deny"|"ask", reason: string} | null}
- */
-function classifyRmCommand(command, workingDirectory) {
-    const tokens = shellTokens(command);
-    const rmIndex = tokens.findIndex((token) => token.toLowerCase() === "rm");
-    if (rmIndex === -1 || !allowedPrefix(tokens, rmIndex)) return null;
-    let recursive = false;
-    let force = false;
-    const targets = [];
-    let optionsDone = false;
-    for (const token of tokens.slice(rmIndex + 1)) {
-        const lower = token.toLowerCase();
-        if (!optionsDone && lower === "--") {
-            optionsDone = true;
-            continue;
-        }
-        if (!optionsDone && lower.startsWith("--")) {
-            if (lower === "--recursive") recursive = true;
-            else if (lower === "--force") force = true;
-            continue;
-        }
-        if (!optionsDone && /^-[^-]+$/.test(lower)) {
-            const flags = lower.slice(1);
-            if (flags.includes("r") || flags.includes("R".toLowerCase())) recursive = true;
-            if (flags.includes("f")) force = true;
-            continue;
-        }
-        targets.push(token);
-    }
-    if (!recursive || !force) return null;
-    const root = workingDirectory ? path.resolve(workingDirectory) : null;
-    const broad = targets.length === 0 || targets.some((target) => {
-		if (containsCommandSubstitution(target)) {
-			return true;
-		}
-        if (["/", "~", "$HOME", "${HOME}", ".", "..", "*"].includes(target)) {
-            return true;
-        }
-        if (!root) return false;
-        const resolved = path.resolve(root, target);
-        return resolved === root || root.startsWith(`${resolved}${path.sep}`);
-    });
-    return {
-        decision: broad ? "deny" : "ask",
-        reason: broad
-            ? "Foundry blocks broad recursive deletion while a plan is active."
-            : "Foundry requires confirmation for recursive deletion while a plan is active.",
-    };
-}
-
-/**
- * Detects destructive Git reset and clean invocations through global options.
- *
- * @param {string} command
- * @returns {boolean}
- */
-function isDestructiveGitCommand(command) {
-    const tokens = shellTokens(command);
-    const gitIndex = tokens.findIndex((token) => token.toLowerCase() === "git");
-    if (gitIndex === -1) return false;
-    if (!allowedPrefix(tokens, gitIndex)) {
-        return false;
-    }
-    let index = gitIndex + 1;
-    const noArgumentOptions = new Set([
-        "--bare",
-        "--literal-pathspecs",
-        "--no-lazy-fetch",
-        "--no-optional-locks",
-        "--no-pager",
-        "--no-replace-objects",
-        "--paginate",
-        "--exec-path",
-        "-p",
-        "-P",
-    ]);
-    while (index < tokens.length) {
-        const token = tokens[index];
-        if (token === "-C" || token === "-c"
-            || token === "--git-dir" || token === "--work-tree"
-            || token === "--namespace" || token === "--config-env") {
-            index += 2;
-            continue;
-        }
-        if (/^--(?:git-dir|work-tree|namespace|config-env|exec-path)=/.test(token)) {
-            index += 1;
-            continue;
-        }
-        if (noArgumentOptions.has(token.toLowerCase())) {
-            index += 1;
-            continue;
-        }
-        if (token.toLowerCase().startsWith("--no-")) {
-            index += 1;
-            continue;
-        }
-        break;
-    }
-    const subcommand = tokens[index]?.toLowerCase();
-    const args = tokens.slice(index + 1);
-    if (subcommand === "reset") {
-        return args.some((token) => token.toLowerCase() === "--hard");
-    }
-    if (subcommand === "clean") {
-        return args.some((token) => {
-            const lower = token.toLowerCase();
-            return lower === "--force"
-                || (/^-[^-]+$/.test(lower) && lower.slice(1).includes("f"));
-        });
-    }
-    return false;
-}
-
-/**
- * Denies obvious file-tool writes outside the active workspace.
- *
- * @param {string} toolName
- * @param {unknown} toolArgs
- * @param {string | undefined} workingDirectory
- * @returns {{decision: "deny", reason: string} | null}
- */
-export function inspectWriteBoundary(toolName, toolArgs, workingDirectory) {
-    if (!workingDirectory) {
-        return null;
-    }
-    const normalizedName = String(toolName ?? "").toLowerCase();
-    if (!FILE_WRITE_TOOLS.has(normalizedName)) {
-        return null;
-    }
-    const outside = absolutePathsFromArgs(normalizedName, toolArgs)
-        .find((candidate) => !inside(workingDirectory, candidate));
-    if (!outside) {
-        return null;
-    }
-    return {
-        decision: "deny",
-        reason: `Foundry blocks writes outside the active workspace: ${outside}`,
-    };
-}
 
 /**
  * Renders the durable coordinator workflow injected for an active plan.
  *
- * @param {any} active
+ * @param {ActivePlan} active
  * @returns {string}
  */
 function coordinatorContext(active) {
-    const plan = active.plan;
-    return `Foundry plan ${plan.id} is active at revision ${plan.revision} (${plan.status}).
+	const plan = active.plan;
+	return `Foundry plan ${plan.id} is active at revision ${plan.revision} (${plan.status}).
 
 Coordinator contract:
 1. Reserve before create_session, use the exact baseBranch and delegationPrompt, then attach immediately.
@@ -363,121 +34,119 @@ Coordinator contract:
 6. Use each prepare result once: launch its exact launchSpec, or reuse its runId when launchSpec is null.
 7. The final verify task follows the ordinary task flow and must report canonical checkId evidence plus its observed commit.
 8. Failed or blocked attached tasks require a complete, causally newer terminal session inventory.
-9. Cancellation is two-phase: stop owned sessions, terminate the bound verification run, then finalize with fresh complete inventory; overrides must be explicit and attributed.`;
+9. Cancellation is two-phase: stop owned sessions, terminate the bound verification run, then finalize with fresh complete inventory; overrides must be explicit and attributed.
+10. Repository capability ${plan.factory?.unitId ?? "(missing factory context)"} governs durable intent, conserved boundaries and shared dependencies. Inspect accepted versus non-governing knowledge with foundry_get_factory.
+11. Capture implementation learning and scoped analysis observations without promoting them to requirements. Pinned contract changes and replacement selection require explicit attributed decisions.
+12. Reconstruction uses fresh candidate context, never a retry label or comparison-only prior source. The verifier reports pinned factoryEvaluations; completion alone is not regeneration. Missing/stale/independence evidence blocks replacement.
+13. Recover factory_sync_pending with foundry_sync_factory, not repeated external work. A sibling may inspect repository knowledge but never acquire this session's native workflow ownership.`;
 }
 
 /**
  * Builds inert-until-activated SDK hooks for Foundry coordination.
  *
- * @param {{operations: {getActive: () => Promise<any>}}} options
- * @returns {any} Copilot SDK hook declarations.
+ * @param {{operations: {getActive: () => Promise<ActivePlan | null>, getActivation: () => Promise<object | null>}}} options
  */
 export function buildFoundryHooks(options) {
-    /**
-     * Reads the current activation marker and plan.
-     *
-     * @returns {Promise<object | null>}
-     */
-    const active = async () => options.operations.getActive();
+	/**
+	 * Reads the current activation marker and plan.
+	 *
+	 * @returns {Promise<ActivePlan | null>}
+	 */
+	const active = async () => options.operations.getActive();
 
-    return {
-        onSessionStart: async () => {
-            try {
-                const current = await active();
-                return current ? { additionalContext: coordinatorContext(current) } : {};
-            } catch (error) {
-                return {
-                    additionalContext: `Foundry activation state could not be read (${error.code ?? "error"}). Do not assume a plan is active until the marker is repaired or deactivated.`,
-                };
-            }
-        },
-        onPreToolUse: async (input) => {
-            let current;
-            try {
-                current = await active();
-            } catch (error) {
-                return {
-                    permissionDecision: "ask",
-                    permissionDecisionReason: `Foundry activation state is unreadable (${error.code ?? "error"}); confirm this tool call before proceeding.`,
-                };
-            }
-            if (!current) {
-                return {};
-            }
-            const toolName = String(input.toolName ?? "");
-            if (READ_ONLY_FOUNDRY_TOOLS.has(toolName)) {
-                return { permissionDecision: "allow" };
-            }
-            if (toolName.startsWith(FOUNDRY_TOOL_PREFIX)) {
-                return {};
-            }
-			if (toolName === "bash" || toolName === "shell" || toolName === "powershell") {
-                const command = input.toolArgs?.command ?? input.toolArgs;
-                const classified = classifyShellCommand(command, input.workingDirectory);
-                if (classified) {
-                    return {
-                        permissionDecision: classified.decision,
-                        permissionDecisionReason: classified.reason,
-                    };
-                }
-            }
-            const boundary = inspectWriteBoundary(
-                toolName,
-                input.toolArgs,
-                input.workingDirectory,
-            );
-            if (boundary) {
-                return {
-                    permissionDecision: boundary.decision,
-                    permissionDecisionReason: boundary.reason,
-                };
-            }
-            return {};
-        },
-        onPostToolUse: async (input) => {
-			const toolName = String(input.toolName ?? "");
-			if (!toolName.startsWith(FOUNDRY_TOOL_PREFIX)) {
+	return /** @satisfies {import("@github/copilot-sdk").SessionHooks} */ ({
+		/** @param {Partial<Parameters<NonNullable<import("@github/copilot-sdk").SessionHooks["onSessionStart"]>>[0]>} [_input] */
+		onSessionStart: async (_input = {}) => {
+			try {
+				const current = await active();
+				return current ? { additionalContext: coordinatorContext(current) } : {};
+			} catch (error) {
+				return {
+					additionalContext: `Foundry activation state could not be read (${errorCode(error) ?? "error"}). Do not assume a plan is active until the marker is repaired or deactivated.`,
+				};
+			}
+		},
+		/** @param {{toolName?: string, toolArgs?: unknown, workingDirectory?: string}} input */
+		onPreToolUse: async (input) => {
+			let current;
+			try {
+				current = await options.operations.getActivation();
+			} catch (error) {
+				return {
+					permissionDecision: "ask",
+					permissionDecisionReason: `Foundry activation state is unreadable (${errorCode(error) ?? "error"}); confirm this tool call before proceeding.`,
+				};
+			}
+			if (!current) {
 				return {};
 			}
-            let current;
-            try {
-                current = await active();
-            } catch {
-                return {
-                    additionalContext: "Foundry activation state is unreadable. Repair or deactivate it before coordinating more plan work.",
-                };
-            }
-            if (toolName === "foundry_deactivate_plan") {
-                return {
-                    additionalContext: "Foundry coordinator context and guardrails are now deactivated for this session.",
-                };
-            }
-			if (!current) {
-                return {};
-            }
-            if (toolName === "foundry_activate_plan") {
-                return { additionalContext: coordinatorContext(current) };
-            }
+			const toolName = String(input.toolName ?? "");
+			if (READ_ONLY_FOUNDRY_TOOLS.has(toolName)) {
+				return { permissionDecision: "allow" };
+			}
+			if (toolName.startsWith(FOUNDRY_TOOL_PREFIX)) {
+				return {};
+			}
+			if (toolName === "bash" || toolName === "shell" || toolName === "powershell") {
+				const command = property(input.toolArgs, "command") ?? input.toolArgs;
+				const classified = classifyShellCommand(command, input.workingDirectory);
+				if (classified) {
+					return {
+						permissionDecision: classified.decision,
+						permissionDecisionReason: classified.reason,
+					};
+				}
+			}
+			const boundary = inspectWriteBoundary(
+				toolName,
+				input.toolArgs,
+				input.workingDirectory,
+			);
+			if (boundary) {
+				return {
+					permissionDecision: boundary.decision,
+					permissionDecisionReason: boundary.reason,
+				};
+			}
 			return {};
-        },
-        onPostToolUseFailure: async (input) => {
+		},
+		/** @param {{toolName?: string, toolResult?: unknown}} input */
+		onPostToolUse: async (input) => {
+			const toolName = String(input.toolName ?? "");
+			if (toolName === "foundry_deactivate_plan") {
+				return {
+					additionalContext: "Foundry coordinator context and guardrails are now deactivated for this session.",
+				};
+			}
+			if (toolName === "foundry_activate_plan") {
+				try {
+					const current = await active();
+					return current ? { additionalContext: coordinatorContext(current) } : {};
+				} catch {
+					return { additionalContext: "Foundry activation state is unreadable. Repair or deactivate it before coordinating more plan work." };
+				}
+			}
+			return {};
+		},
+		/** @param {{toolName?: string, error?: unknown}} input */
+		onPostToolUseFailure: async (input) => {
 			if (!String(input.toolName ?? "").startsWith(FOUNDRY_TOOL_PREFIX)) {
 				return {};
 			}
-            let current;
-            try {
-                current = await active();
-            } catch {
-                return {
-                    additionalContext: "Foundry activation state is unreadable. Do not retry plan mutations until it is repaired.",
-                };
-            }
+			let current;
+			try {
+				current = await options.operations.getActivation();
+			} catch {
+				return {
+					additionalContext: "Foundry activation state is unreadable. Do not retry plan mutations until it is repaired.",
+				};
+			}
 			if (!current) {
-                return {};
-            }
-            return {
-                additionalContext: "The Foundry operation failed. Re-read the current plan revision before retrying; do not blindly replay a stale mutation.",
-            };
-        },
-    };
+				return {};
+			}
+			return {
+				additionalContext: "The Foundry operation failed. Re-read the current plan revision before retrying; do not blindly replay a stale mutation.",
+			};
+		},
+	});
 }

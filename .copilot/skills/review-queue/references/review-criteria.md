@@ -10,6 +10,11 @@ Recommend `Approve` only when all supplied diff evidence is complete, every chun
 clean, every independent check passes, and assignment policy permits it. This is a recommendation,
 never permission to approve a PR on the user's behalf.
 
+Completeness comes from the fetcher's versioned source/revision identity, complete file/diff/
+assignment flags, and failure ledger, including the queue-level fetch manifest. A `full diff`
+label or complete-looking text hunk cannot establish it. File/assignment discovery failures and
+missing provenance fail closed even when the visible diff looks harmless.
+
 Material correctness or maintainability concerns, missing tests, unresolved uncertainty, incomplete
 evidence, and failed review or verification results require `Needs review`. Preserve concrete
 findings and independent verifier rejection reasons in the report. Model agreement is a triage

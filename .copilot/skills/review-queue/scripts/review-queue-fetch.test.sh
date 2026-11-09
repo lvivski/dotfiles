@@ -52,7 +52,7 @@ expect() {
   fi
 }
 
-printf '1..6\n'
+printf '1..5\n'
 
 for flag in --help -h; do
   expect 0 "" "$flag"
@@ -60,7 +60,7 @@ for flag in --help -h; do
     "Usage: review-queue-fetch.sh"*) ;;
     *) fail "Expected help to start with usage." ;;
   esac
-  for text in "JSON array on stdout" "--ado-scope ORG PROJ" "--max-age-days N" "jq is missing"; do
+  for text in "{prs, fetch} JSON on stdout" "--ado-scope ORG PROJ" "--max-age-days N" "jq is missing"; do
     assert_contains "$stdout" "$text"
   done
 done
@@ -69,6 +69,7 @@ printf 'ok 1 - help works without fetch tools or authentication\n'
 oversized=99999999999999999999999999999999999999999999999999
 for value in "" 0 -1 1.5 abc "$oversized"; do
   expect 2 "--limit must be a positive integer" --limit "$value"
+  expect 2 "--max-groups must be a positive integer" --max-groups "$value"
 done
 for value in "" -1 1.5 abc "$oversized"; do
   expect 2 "--max-age-days must be a non-negative integer" --max-age-days "$value"
@@ -79,7 +80,7 @@ expect 2 "mutually exclusive" --github-only --azure-only
 expect 2 "mutually exclusive" --azure-only --github-only
 printf 'ok 3 - conflicting platform options fail explicitly\n'
 
-for flag in --limit --max-age-days --max-diff --ado-org --ado-project --unknown; do
+for flag in --limit --max-groups --max-age-days --max-diff --ado-org --ado-project --unknown; do
   expect 2 "Use --help for usage" "$flag"
   assert_contains "$stderr" "$flag"
 done
@@ -93,8 +94,5 @@ expect 3 "jq is required" --limit 001 --max-age-days 030
 expect 3 "jq is required" --all-ages --github-only
 expect 3 "jq is required" --azure-only --ado-org example --ado-project platform
 expect 3 "jq is required" --ado-scope example platform --ado-scope second other --no-diff
+expect 3 "jq is required" --azure-only --max-groups 2
 printf 'ok 5 - valid options reach the dependency check without fetching\n'
-
-expect 3 "--max-diff ignored; diffs are never truncated" --max-diff 10
-assert_contains "$stderr" "jq is required"
-printf 'ok 6 - deprecated diff limits remain ignored\n'

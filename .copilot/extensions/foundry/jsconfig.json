@@ -2,26 +2,24 @@
   "compilerOptions": {
     "allowJs": true,
     "checkJs": true,
-    "lib": ["es2023", "dom"],
+    "lib": ["es2023", "dom", "dom.iterable"],
     "module": "nodenext",
     "moduleResolution": "nodenext",
-    "noImplicitAny": false,
+    "moduleDetection": "legacy",
     "noEmit": true,
     "resolveJsonModule": true,
-    "skipLibCheck": true,
+    "skipLibCheck": false,
     "strict": true,
     "target": "es2023",
-    "types": ["node"],
-    "useUnknownInCatchVariables": false
+    "types": ["node"]
   },
   "typeAcquisition": {
     "enable": true,
     "include": ["node"]
   },
   "include": [
-    "*.mjs",
-    "workflows/*.mjs",
-    "renderer/*.js",
-    "types/*.ts"
+    "**/*.mjs",
+    "**/*.js",
+    "**/*.ts"
   ]
 }
