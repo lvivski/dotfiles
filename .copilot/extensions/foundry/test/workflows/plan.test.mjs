@@ -61,6 +61,11 @@ test("bundled planning workflow executes with native result semantics", async ()
 	assert.deepEqual(must(result.plan).constraints, args.constraints);
 	assert.equal(validatePlanningResult(result, args, 2).tasks.length, 2);
 	assert.equal(workflow.calls.length, 5);
+	for (const { prompt } of workflow.calls) {
+		assert.match(prompt, /have empty acceptanceCriteria and expectedFiles/);
+		assert.match(prompt, /read-only verifier checks those criteria rather than authoring its own/);
+		assert.match(prompt, /Commit or PR delivery still requires user authorization/);
+	}
 	for (const { options } of workflow.calls.filter(({ options }) => ["plan:decomposer", "plan:synthesizer"].includes(options.label ?? ""))) {
 		assert.deepEqual(must(options.schema).required, ["title", "tasks"]);
 	}

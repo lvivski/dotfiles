@@ -33,7 +33,7 @@ export const meta = {
 	limits: {
 		maxConcurrentSubagents: 2,
 		maxTotalSubagents: 10,
-		timeoutSeconds: 900,
+		timeoutSeconds: 7200,
 		maxAiCredits: 10000,
 	},
 };
@@ -113,6 +113,7 @@ export async function run(workflow) {
 
 	const input = validatePlanningArgs(workflow.args);
 	const factoryContext = input.factoryContext ? untrustedBlock("PINNED-FACTORY-CONTEXT", input.factoryContext) : "";
+	const topologyRules = `Foundry plan invariants: use at most ${input.maxTasks} implement tasks plus exactly one final verify task. The verify task must be the only sink, depend on exactly one commit- or pr-delivered final implementation task, use deliveryRequirement commit, and have empty acceptanceCriteria and expectedFiles. Every implementation task must be an ancestor of that final implementation task, or be that task. Put measurable criteria and authored checks on implementation tasks; the read-only verifier checks those criteria rather than authoring its own. Critiques cannot override these invariants. Commit or PR delivery still requires user authorization; if constraints prohibit the required delivery, report the conflict rather than weakening verification.`;
 	const simplificationReview = "Bounded simplification review: consider at most three opportunities to remove unnecessary internal concepts, duplicate authority, or accidental complexity while conserving external meaning, interfaces, data and user contracts. Name the conserved obligations/evaluations and tradeoffs. Put conditional suggestions in risks prefixed 'Simplification proposal:'; they remain non-governing, and judgment or contract changes require explicit acceptance. Do not use byte counts or fewer lines as a correctness metric.";
 
 	workflow.phase("decompose");
@@ -131,7 +132,9 @@ ${untrustedBlock("REPOSITORY-CONTEXT", input.repositoryContext)}
 ${input.factoryContext ? untrustedBlock("FACTORY-CONTEXT", input.factoryContext) : ""}
 The durable capability is not the task DAG. Preserve its authority boundaries, stable interfaces, conserved data/user contracts and shared dependencies. Accepted obligation and evaluation revisions govern; observations, inferences and proposals are non-governing discovery material. Recover lessons as outputs for explicit acceptance, not silent scope changes.
 
-Return one plan blueprint. Use task IDs T-001, T-002, and so on. Create at most ${input.maxTasks} implement tasks plus exactly one final verify task. Every implement task needs measurable acceptance criteria, likely file scope, and deliveryRequirement branch, commit, or pr. The verify task must be the only sink, depend on exactly one commit- or pr-delivered final implementation task, use deliveryRequirement commit, and have empty acceptanceCriteria and expectedFiles. Every implementation task must be an ancestor of its dependency. Return JSON only.`,
+Return one plan blueprint. Use task IDs T-001, T-002, and so on. Every implement task needs measurable acceptance criteria, likely file scope, and deliveryRequirement branch, commit, or pr.
+${topologyRules}
+Return JSON only.`,
 		{ label: "plan:decomposer", schema: PLAN_SCHEMA },
 	);
 	if (!decomposed) {
@@ -161,6 +164,8 @@ Return one plan blueprint. Use task IDs T-001, T-002, and so on. Create at most 
 		async () => readCritique(await workflow.agent(
 			`Review the proposed engineering plan for architecture boundaries, dependency correctness, and integration seams. ${simplificationReview} Accepted governing definitions constrain this review; rationale and proposals are non-governing. ${UNTRUSTED} Return JSON only.
 
+${topologyRules}
+
 ${factoryContext}
 
 <UNTRUSTED-PLAN>
@@ -170,6 +175,8 @@ ${safeJson(decompositionForReview)}
 		)),
 		async () => readCritique(await workflow.agent(
 			`Review the proposed engineering plan for delivery risk, task overlap, missing tests, and acceptance criteria that cannot be measured. Check conservation against the same pinned definitions, not only the proposed task text. ${UNTRUSTED} Return JSON only.
+
+${topologyRules}
 
 ${factoryContext}
 
@@ -183,6 +190,8 @@ ${safeJson(decompositionForReview)}
 	workflow.phase("synthesize");
 	const synthesized = await workflow.agent(
 		`Produce the final Foundry plan blueprint from the decomposition and critiques. Preserve one final verify sink task and a convergent implementation DAG. Preserve pinned governing contracts; do not silently promote rationale or simplification proposals into requirements. ${UNTRUSTED}
+
+${topologyRules}
 
 ${factoryContext}
 
@@ -212,6 +221,8 @@ Keep at most ${input.maxTasks} implementation tasks plus one verifier. Remove ov
 	workflow.phase("verify");
 	const verification = nullable(recordOf({ passed: readBoolean, issues: arrayOf(readString) }))(await workflow.agent(
 		`Verify this Foundry plan for objective coverage, dependency correctness, one final verifier sink, convergent implementation work, scope overlap, delivery requirements, and measurable implementation criteria against the same pinned governing definitions. Rationale and proposals remain non-governing. ${UNTRUSTED}
+
+${topologyRules}
 
 ${factoryContext}
 

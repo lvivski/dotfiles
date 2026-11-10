@@ -134,6 +134,16 @@ the new source paths.
 | `security-review` | Run a multi-perspective static security review |
 | `triage` | Classify and prioritize tickets |
 
+The `plan` workflow defaults to two hours (7,200 seconds) of accumulated active
+execution across attempts. Its concurrency, agent-count, and credit limits are
+unchanged. Other workflows retain their own limits, and existing runs retain
+their approved limits until an explicit override is approved.
+
+All planning stages share the same task-graph rules. The read-only final verifier
+has no authored criteria or files: it evaluates the implementation tasks' criteria
+against the committed integration snapshot. Critics must not invent a conflicting
+verifier contract or bypass required commit authorization.
+
 Invoke these workflows with `run_dynamic_workflow` and inspect the returned `runId` with
 `dynamic_workflows_manage` (`inspect-run`). The five general workflows use the native workflow
 lifecycle directly and never mutate Foundry plan state. When an explicit capability context exists,
