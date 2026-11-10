@@ -1,5 +1,5 @@
 import { handler } from "./results.mjs";
-import { DIGEST, FACTORY_ARTIFACT, FACTORY_ID, FACTORY_SOURCE, KNOWLEDGE_REF, NON_EMPTY, objectSchema, REFERENCES, REVISION, STRING_LIST } from "./schema.mjs";
+import { DIGEST, EVALUATOR_BUNDLE, FACTORY_ARTIFACT, FACTORY_ID, FACTORY_SOURCE, KNOWLEDGE_REF, NON_EMPTY, objectSchema, REFERENCES, REVISION, STRING_LIST } from "./schema.mjs";
 
 /** @typedef {import("../types/json.js").JsonSchema} JsonSchema */
 /** Tool transport deliberately does not depend on operation result internals.
@@ -26,9 +26,11 @@ export function factoryTools(operations) {
 	const mutation = (name, action, description, required, properties) =>
 		tool(name, action, description, ["expectedRevision", ...required], { expectedRevision: REVISION, ...properties });
 	return [
-		tool("get_factory", "inspect", "Inspect bounded repository capability knowledge, accepted versus proposed authority, candidate lineage/current assurance, and renewal needs. Survives sibling sessions; never imports native run ownership.", [], {
+		tool("get_factory", "inspect", "Inspect repository capability knowledge, authority and assurance. Filter knowledge by kinds, subject query or linked references; continue with page.nextCursor and the same filters/limit for stable historical pages during appends. Bounds and omissions are explicit; no native execution ownership is imported.", [], {
 			unitId: FACTORY_ID, candidateId: FACTORY_ID, limit: { type: "integer", minimum: 1, maximum: 100 },
 			includeRetired: { type: "boolean" }, environment: NON_EMPTY(2048), workload: NON_EMPTY(2048),
+			kinds: { type: "array", maxItems: 5, items: { type: "string", enum: ["observation", "inference", "proposal", "obligation", "evaluation"] } },
+			query: NON_EMPTY(8000), relatedTo: REFERENCES, cursor: NON_EMPTY(4096),
 		}, true),
 		mutation("define_unit", "createUnit", "Define or revise a coherent capability and its exclusive authority boundaries, conserved contracts and shared dependencies. Revisions are proposals until explicitly pinned in an accepted contract.", ["id", "name", "purpose", "boundary", "dependencies", "relationshipCoverage", "actor"], {
 			id: FACTORY_ID, name: NON_EMPTY(160), purpose: NON_EMPTY(8000),
@@ -52,9 +54,13 @@ export function factoryTools(operations) {
 			},
 			evaluation: objectSchema(["modality", "procedure", "obligations", "environment", "workload", "maxAgeSeconds", "independent", "preservation"], {
 				modality: { type: "string", enum: ["implementation-test", "boundary", "operational", "human"] },
-				procedure: objectSchema(["kind", "ref", "digest"], {
-					kind: { type: "string", enum: ["command", "reference", "judgment"] }, ref: NON_EMPTY(4096), digest: DIGEST,
-				}),
+				procedure: {
+					oneOf: [
+						objectSchema(["kind", "ref", "bundle"], { kind: { const: "command" }, ref: NON_EMPTY(4096), digest: DIGEST, bundle: EVALUATOR_BUNDLE }),
+						objectSchema(["kind", "ref", "digest"], { kind: { type: "string", enum: ["reference", "judgment"] }, ref: NON_EMPTY(4096), digest: DIGEST }),
+					],
+					description: "Executable commands require a full-commit, complete-directory bundle including declared helpers, fixtures and dependency manifests/locks. The service computes the canonical digest from Git bytes and invocation; a supplied digest must match. References and human rubrics are not executable checks.",
+				},
 				obligations: REFERENCES, environment: NON_EMPTY(2048), workload: NON_EMPTY(2048),
 				maxAgeSeconds: { type: "integer", minimum: 1, maximum: 31536000 }, independent: { type: "boolean" }, preservation: { type: "boolean" },
 			}),
@@ -78,11 +84,11 @@ export function factoryTools(operations) {
 				}),
 			}),
 		}),
-		mutation("record_delivery", "recordDelivery", "Record exact external/adopted candidate delivery and original producer provenance. Bound App candidates instead synchronize from their completed task attempt. The artifact and commit remain claims, not attestation.", ["candidateId", "commit", "artifact", "source"], {
+		mutation("record_delivery", "recordDelivery", "Record exact external/adopted candidate delivery after checking that its full commit exists in this repository. Bound App candidates instead synchronize from their completed task attempt. Producer and artifact provenance remain claims, not attestation.", ["candidateId", "commit", "artifact", "source"], {
 			candidateId: FACTORY_ID, commit: { type: "string", pattern: "^(?:[a-f0-9]{40}|[a-f0-9]{64})$" },
 			artifact: FACTORY_ARTIFACT, source: FACTORY_SOURCE,
 		}),
-		mutation("record_evaluation", "recordEvaluation", "Record actual external evaluation output against an exact candidate, contract/context, evaluator digest, commit and environment/workload. Distinct producer identities establish independent claims, not cryptographic or OS isolation. Bound App reports come through complete_task.", ["id", "candidateId", "evaluation", "contractDigest", "contextDigest", "commit", "procedureDigest", "outcome", "source", "environment", "workload", "independence", "report"], {
+		mutation("record_evaluation", "recordEvaluation", "Record external evaluation output after independently comparing the accepted Git bundle and invocation digest with the protected candidate material. Missing objects, legacy unpinned commands and changed evaluator/helpers/fixtures/dependencies are rejected. Mechanical content identity does not attest execution, producer identity or OS isolation. Bound App reports come through complete_task.", ["id", "candidateId", "evaluation", "contractDigest", "contextDigest", "commit", "procedureDigest", "outcome", "source", "environment", "workload", "independence", "report"], {
 			id: FACTORY_ID, candidateId: FACTORY_ID, evaluation: KNOWLEDGE_REF, contractDigest: DIGEST, contextDigest: DIGEST,
 			commit: { type: "string", pattern: "^(?:[a-f0-9]{40}|[a-f0-9]{64})$" }, procedureDigest: DIGEST,
 			outcome: { type: "string", enum: ["passed", "failed", "inconclusive"] }, source: FACTORY_SOURCE,
@@ -115,6 +121,7 @@ export function factoryTools(operations) {
 			expectedRevision: { const: 0 }, importId: FACTORY_ID,
 			page: objectSchema(["format", "repository", "revision", "throughDigest", "afterRevision", "events", "nextRevision", "complete"], {
 				format: { const: "foundry-factory-v2" },
+				portable: { const: true },
 				repository: objectSchema(["id", "commonDirectory"], { id: DIGEST, commonDirectory: NON_EMPTY(4096) }),
 				revision: REVISION, throughDigest: DIGEST, afterRevision: REVISION, nextRevision: REVISION, complete: { type: "boolean" },
 				events: {
@@ -129,6 +136,9 @@ export function factoryTools(operations) {
 		}),
 		mutation("import_factory", "importFactory", "Explicitly restore current-format factory JSON only into an empty authority for the same canonical repository. Replays all validation and decisions; never activates plans or adopts another session's native runs.", ["source"], {
 			expectedRevision: { const: 0 }, source: { type: "string", minLength: 1, maxLength: 33554432 },
+		}),
+		mutation("migrate_factory", "migrateFactory", "Explicitly publish legacy local capability knowledge into repository-owned .foundry artifacts with an attributed reason. Retains the original journal and historical seals, omits private reports and native execution ownership, and never commits files.", ["actor", "reason"], {
+			actor: NON_EMPTY(256), reason: NON_EMPTY(8000),
 		}),
 	];
 }

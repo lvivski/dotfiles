@@ -4,7 +4,7 @@ import { validateEvidence } from "../evidence.mjs";
 import { assertCommit, assertHttpUrl, assertKnownKeys, assertNullableString, assertPlainObject, assertRequestId, assertString, assertStringArray, assertTimestamp, fail } from "../fields.mjs";
 import { verificationCheckIds } from "../graph.mjs";
 import { ATTEMPT_ID_PATTERN, ATTEMPT_STATUS, ATTEMPT_STATUS_VALUES, DELIVERY_REQUIREMENT, LIMITS, TASK_ID_PATTERN, TASK_KINDS, TASK_STATUS, TASK_STATUS_VALUES } from "../values.mjs";
-import { validateFactoryEvaluations, validateFactoryLearning } from "./factory.mjs";
+import { validateFactoryEvaluations, validateFactoryLearning, validateRepositoryCheck, validateVerifierWorktree } from "./factory.mjs";
 
 /** @typedef {import("../../types/plan.js").FoundryTask} FoundryTask */
 /** @typedef {import("../../types/plan.js").FoundryAttempt} FoundryAttempt */
@@ -44,6 +44,8 @@ const ATTEMPT_KEYS = new Set([
 	"sessionTerminatedAt",
 	"cancelRequestedAt",
 	"completedAt",
+	"verifierWorktree",
+	"repositoryCheck",
 ]);
 
 const INTEGRATION_KEYS = new Set([
@@ -168,6 +170,15 @@ function validateAttempt(attempt, task, index, fieldPath) {
 	});
 	if (attempt.learning !== undefined) validateFactoryLearning(attempt.learning);
 	if (attempt.factoryEvaluations !== undefined) validateFactoryEvaluations(attempt.factoryEvaluations);
+	if (attempt.verifierWorktree !== undefined) {
+		validateVerifierWorktree(attempt.verifierWorktree);
+		if (task.kind !== "verify" || attempt.sessionId === null) fail("invalid_verifier_worktree", "Only an attached verifier can pin a worktree");
+	}
+	if (attempt.repositoryCheck !== undefined) {
+		validateRepositoryCheck(attempt.repositoryCheck);
+		if (attempt.status !== ATTEMPT_STATUS.DONE || attempt.repositoryCheck.commit !== attempt.commit) fail("invalid_repository_check", "Repository observations belong to the exact completed attempt");
+		if (task.kind === "verify" && (!attempt.repositoryCheck.worktree || attempt.verifierWorktree?.status !== "available")) fail("invalid_repository_check", "A verified repository observation requires the pinned verifier worktree");
+	}
 	if (task.kind !== "verify" && attempt.factoryEvaluations?.length) {
 		fail("invalid_factory_evidence", "Only the independent verifier can report factory evaluations");
 	}

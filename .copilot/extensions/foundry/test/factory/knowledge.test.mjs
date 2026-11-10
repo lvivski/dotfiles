@@ -29,7 +29,7 @@ test("accepted authority is immutable, observations cannot govern, and evaluator
 	}), { code: "factory_context_contaminated" });
 });
 
-test("v2 seals dependency contracts and non-governing rationale without leaking source artifacts", async (t) => {
+test("accepted seals retain dependency contracts and non-governing rationale without leaking source artifacts", async (t) => {
 	const f = await fixture(t);
 	f.createUnit("identity");
 	const source = f.source();
@@ -37,7 +37,7 @@ test("v2 seals dependency contracts and non-governing rationale without leaking 
 	f.call("appendKnowledge", {
 		id: "identity-oracle", unitId: "identity", kind: "evaluation", statement: "Evaluate identity preservation", source,
 		evaluation: {
-			modality: "boundary", procedure: { kind: "command", ref: "node identity-test.mjs", digest: hash("identity evaluator") },
+			modality: "boundary", procedure: f.procedure(),
 			obligations: [{ id: "identity-obligation", revision: 1 }], environment: "node", workload: "identity", maxAgeSeconds: 86400, independent: true, preservation: true
 		},
 	});
@@ -60,7 +60,7 @@ test("v2 seals dependency contracts and non-governing rationale without leaking 
 		id: "sealed", unitId: "ledger", contractRevision: 2, actor: "generator",
 		context: { generation: [], comparisonOnly: [secret], independence: { method: "fresh-process", reason: "New bounded generator" } },
 	});
-	assert.equal(prepared.generation.sealVersion, 2);
+	assert.equal(prepared.generation.sealVersion, contract.sealVersion);
 	assert.equal(prepared.generation.rationale.find((entry) => entry.id === "input-discovery")?.authority, "non-governing");
 	assert.equal(prepared.generation.decisionLineage.length, 2);
 	assert.ok(!JSON.stringify(prepared.generation).includes(secret.ref));
@@ -100,7 +100,7 @@ test("revised boundaries and renewal decisions link a new candidate without decl
 	f.call("appendKnowledge", {
 		id: "weighted-oracle", unitId: "ledger", kind: "evaluation", statement: "Independently evaluate old and weighted workloads", source: f.source(),
 		evaluation: {
-			modality: "boundary", procedure: { kind: "command", ref: "node weighted-test.mjs", digest: hash("new weighted evaluator") },
+			modality: "boundary", procedure: f.procedure(2),
 			obligations: [{ id: "weighted-obligation", revision: 1 }], environment: "node", workload: "unit-and-weighted",
 			maxAgeSeconds: 86400, independent: true, preservation: true
 		},

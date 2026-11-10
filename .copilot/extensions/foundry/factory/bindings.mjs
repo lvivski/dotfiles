@@ -12,7 +12,7 @@ import { candidateFor, contractFor, evaluationFor, key, retired, same, unitFor }
 export function bindPlan(state, event, options = {}) {
 	const { action, input, at, revision } = event;
 	const evaluating = action === "bindEvaluationPlan";
-	object(input, ["unitId", "unitRevision", "contractRevision", "contractDigest", "contextDigest", "candidateId", "planId", "owner", "blueprintDigest", ...(evaluating ? ["evaluations", "targetCommit"] : [])], action);
+	object(input, ["unitId", "unitRevision", "contractRevision", "contractDigest", "contextDigest", "candidateId", "planId", "owner", "blueprintDigest", "knowledgeHead", ...(evaluating ? ["evaluations", "targetCommit"] : [])], action);
 	const unit = unitFor(state, input.unitId, integer(input.unitRevision, "unitRevision"));
 	let contract = null;
 	if (input.contractRevision === null) {
@@ -36,6 +36,7 @@ export function bindPlan(state, event, options = {}) {
 		contractDigest: contract?.digest ?? null, contextDigest,
 		planId: text(input.planId, "planId", 64), owner: text(input.owner, "owner", 512),
 		blueprintDigest: digest(input.blueprintDigest, "blueprintDigest"), at,
+		...(input.knowledgeHead !== undefined ? { knowledgeHead: digest(input.knowledgeHead, "knowledgeHead") } : {}),
 	};
 	const existing = state.bindings.find((entry) => entry.planId === binding.planId && entry.owner === binding.owner);
 	if (existing) fail("factory_plan_bound", "This session plan already has a factory binding");

@@ -1,20 +1,21 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
+import { randomUUID } from "node:crypto";
+import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { createFactoryService } from "../../factory.mjs";
 import { createFoundryOperations } from "../../operations.mjs";
 import { startServer } from "../../server.mjs";
 import { factoryMutator } from "../factory/accessors.mjs";
 import { analysisFixture, workflowDetail } from "../native/fixture.mjs";
+import { PROCEDURE, seedRepository } from "../git.mjs";
 
 /** @typedef {Pick<import("@github/copilot-sdk").SessionUiApi, "confirm" | "select" | "elicitation">} TestUi */
 
 /** @param {{getUi?: () => import("../../server.mjs").FoundryUi | undefined, control?: (runId: string, action: string) => Promise<import("@github/copilot-sdk").WorkflowRunResult>}} [options] */
 export async function fixture({ getUi, control } = {}) {
-	const workspacePath = await mkdtemp(path.join(os.tmpdir(), "foundry-canvas-"));
-	execFileSync("git", ["-C", workspacePath, "init", "--quiet"]);
+	const workspacePath = path.resolve(`.foundry-canvas-${randomUUID()}`);
+	await mkdir(workspacePath, { mode: 0o700 });
+	seedRepository(workspacePath);
 	const factory = createFactoryService({ repositoryPath: workspacePath, storageRoot: workspacePath });
 	const { unit } = factory.createUnit({
 		expectedRevision: 0, id: "board", name: "Board", purpose: "Render a safe plan board",
@@ -188,7 +189,7 @@ export function prepareBoardCandidate(current) {
 	call("appendKnowledge", {
 		id: "board-oracle", unitId: "board", kind: "evaluation", statement: "Evaluate the boundary", source,
 		evaluation: {
-			modality: "boundary", procedure: { kind: "command", ref: "node board-test.mjs", digest: "a".repeat(64) },
+			modality: "boundary", procedure: structuredClone(PROCEDURE),
 			obligations: [{ id: "board-contract", revision: 1 }], environment: "node", workload: "board", maxAgeSeconds: 86400, independent: true, preservation: true
 		}
 	});

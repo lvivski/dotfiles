@@ -71,6 +71,10 @@ export function candidateAssurance(state, candidate, at, context = {}, ancestors
 		else {
 			if (observation.conflicting) gaps.push("conflicting-observations");
 			if (evidence.outcome !== "passed") gaps.push(evidence.outcome);
+			if (!historicalPublicationOrder && !requiresHumanJudgment(definition)) {
+				if (definition.procedure.kind === "reference") gaps.push("non-executable-reference");
+				else if (!definition.procedure.bundle || !evidence.identity) gaps.push("evaluator-unverified");
+			}
 			if (definition.independent && evidence.trust !== "independent-claim") gaps.push("independence-missing");
 			if (evidence.environment !== (context.environment ?? definition.environment)) gaps.push("environment-mismatch");
 			if (evidence.workload !== (context.workload ?? definition.workload)) gaps.push("workload-mismatch");

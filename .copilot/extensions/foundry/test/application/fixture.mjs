@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
-	mkdtemp,
+	mkdir,
 	rm
 } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { createFactoryService } from "../../factory.mjs";
 import { createFoundryOperations } from "../../operations.mjs";
 import { EVIDENCE_TYPE, TASK_STATUS } from "../../plan/values.mjs";
 import { createWorkflowAnalysis } from "../../workflow.mjs";
+import { COMMIT, git, seedRepository } from "../git.mjs";
 
 /** @typedef {import("../../types/workflow.js").WorkflowAnalysisPort} AnalysisPort */
 /** @typedef {import("../../operations.mjs").FoundryOperations} Operations */
@@ -17,8 +17,9 @@ import { createWorkflowAnalysis } from "../../workflow.mjs";
 
 /** @template T @param {(fixture: OperationsFixture) => T | Promise<T>} operation @param {Partial<import("../../operations.mjs").FoundryOperationsOptions>} [options] */
 export async function withOperations(operation, options = {}) {
-	const workspacePath = await mkdtemp(path.join(os.tmpdir(), "foundry-operations-"));
-	execFileSync("git", ["-C", workspacePath, "init", "--quiet"]);
+	const workspacePath = path.resolve(`.foundry-operations-${randomUUID()}`);
+	await mkdir(workspacePath, { mode: 0o700 });
+	seedRepository(workspacePath);
 	const factory = createFactoryService({ repositoryPath: workspacePath, storageRoot: workspacePath });
 	const { unit } = factory.createUnit({
 		expectedRevision: 0, id: "operation-capability", name: "Operation capability", purpose: "Exercise the coordinator",
@@ -239,14 +240,22 @@ export async function runTask(operations, plan, taskId, options = {}) {
 		scopeOverride: options.scopeOverride,
 	});
 	plan = reserved.plan;
+	const branch = options.branch ?? `work/${taskId.toLowerCase()}`;
+	const commit = options.commit ?? COMMIT;
+	const worktree = path.join(plan.repository.workingDirectory, "worktrees", `${taskId}-${plan.revision}`);
+	if (task?.kind === "verify") {
+		git(plan.repository.workingDirectory, "update-ref", `refs/heads/${branch}`, commit);
+		git(plan.repository.workingDirectory, "worktree", "add", "--quiet", worktree, branch);
+	} else if (commit === COMMIT) git(plan.repository.workingDirectory, "update-ref", `refs/heads/${branch}`, commit);
 	plan = await operations.attachTask({
 		planId: plan.id,
 		taskId,
 		attemptId: reserved.attemptId,
 		expectedRevision: plan.revision,
 		sessionId: options.sessionId ?? `session-${taskId}`,
-		branch: options.branch ?? `work/${taskId.toLowerCase()}`,
+		branch,
 	});
+	if (task?.kind === "verify") git(worktree, "checkout", "--quiet", "--detach", commit);
 	plan = await operations.completeTask({
 		planId: plan.id,
 		taskId,
@@ -255,8 +264,8 @@ export async function runTask(operations, plan, taskId, options = {}) {
 		status: TASK_STATUS.DONE,
 		resultSummary: `${taskId} complete`,
 		evidence: options.evidence ?? taskEvidence,
-		branch: options.branch ?? `work/${taskId.toLowerCase()}`,
-		commit: options.commit ?? "a".repeat(40),
+		branch,
+		commit,
 		prUrl: options.prUrl,
 	});
 	return { plan, reserved };
@@ -277,7 +286,7 @@ export async function completeImplementation(operations, workspacePath) {
 		reservationId: "complete-verifier",
 		sessionId: "complete-verifier-session",
 		branch: "work/complete-verifier",
-		commit: "a".repeat(40),
+		commit: COMMIT,
 	}));
 	return plan;
 }

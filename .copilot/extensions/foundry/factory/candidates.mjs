@@ -1,6 +1,6 @@
 import { analysisInputDigest, stableStringify } from "../digest.mjs";
 import { candidateAssurance } from "./assurance.mjs";
-import { checkContextSize, generationPackage } from "./context.mjs";
+import { assertGenerationAuthority, checkContextSize, generationPackage } from "./context.mjs";
 import { artifact, source } from "./definitions.mjs";
 import { COMMIT, actorReason, enumeration, fail, integer, list, object, text } from "./fields.mjs";
 import { candidateFor, contractFor, currentCandidate, retired, same, uniqueId } from "./records.mjs";
@@ -18,6 +18,7 @@ export function prepareCandidate(state, event, options = {}) {
 	object(input, ["id", "unitId", "contractRevision", "mode", "context", "actor", "renewalSignalIds"], action);
 	const id = uniqueId(state.candidates, input.id);
 	const contract = contractFor(state, input.unitId, integer(input.contractRevision, "contractRevision"));
+	assertGenerationAuthority(state, contract);
 	if (contractFor(state, input.unitId).digest !== contract.digest) fail("factory_contract_superseded", "New candidates must use the current accepted contract");
 	object(input.context, ["generation", "comparisonOnly", "independence"], "context");
 	object(input.context.independence, ["method", "reason"], "context.independence");

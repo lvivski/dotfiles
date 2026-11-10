@@ -1,6 +1,7 @@
 import { analysisInputDigest, stableStringify } from "../digest.mjs";
 import { errorCode, errorMessage } from "../data.mjs";
 import { origin, pendingReceipts, receiptPresent, receiptsFor } from "./receipts.mjs";
+import { fail } from "../factory/fields.mjs";
 
 /** @typedef {import("../types/plan.js").FoundryPlan} FoundryPlan */
 
@@ -10,9 +11,10 @@ import { origin, pendingReceipts, receiptPresent, receiptsFor } from "./receipts
  */
 export function createSynchronization(stateFor, activateEvaluation) {
 
-	/** @param {FoundryPlan} rawPlan */
-	const preflight = (rawPlan) => {
+	/** @param {FoundryPlan} rawPlan @param {number | undefined} [expectedRevision] */
+	const preflight = (rawPlan, expectedRevision) => {
 		const { factory, state, plan } = stateFor(rawPlan);
+		if (expectedRevision !== undefined && state.revision !== expectedRevision) fail("revision_conflict", "Factory authority changed after external evidence validation", { expectedRevision, latestRevision: state.revision });
 		factory.preview(pendingReceipts(plan, state));
 	};
 

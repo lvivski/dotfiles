@@ -1,7 +1,7 @@
 # Foundry
 
-Foundry is a capability factory: it produces and evolves verified software and the durable connected
-knowledge needed to rebuild it. Repository-scoped authority governs meaning, boundaries, accepted
+Foundry is a dedicated capability factory: it produces and evolves verified software and the durable connected
+knowledge needed to rebuild it. Repository-owned `.foundry` artifacts govern meaning, boundaries, accepted
 contracts and candidate replacement. Session plans coordinate bounded work through App-native
 project sessions and native Dynamic Workflows, without a second execution runtime.
 
@@ -39,11 +39,17 @@ Implementation tests, durable boundary checks, operational evidence and human ju
 Boundary/preservation evaluations require independent evidence; human evaluations require a human
 source. Evidence binds exact candidate, contract/context/evaluator revisions, commit, task/attempt or
 external run, source/time, environment and workload. Procedures are pinned by digest, so changing an
-oracle cannot make the same contract pass. Coverage, expiry, context and independence gaps block
+oracle cannot make the same contract pass through the supported executable path: the service resolves
+the actual immutable Git bundle, protects its entire root and support paths, and checks that the
+candidate contains the unchanged bundle. The digest includes the invocation, not only an entry file.
+Commit existence and dependency ancestry are checked before accepting delivery. Registered verifier
+worktree HEAD and cleanliness are checked at the actual attached worktree, never a substitute checkout.
+Coverage, expiry, context and independence gaps block
 unsupported selection; a completed task or successful Workflow replay is not a regeneration proof.
 
-The current factory format and generation seal remain `foundry-factory-v2` / seal version 2.
-Physical SQLite storage is schema 3; current v2 documents upgrade without changing their events,
+The factory ledger format remains `foundry-factory-v2`; new accepted contexts use seal version 3,
+with source and statement commitments that survive portable projection. Existing v2 seals are retained.
+Physical SQLite storage is schema 4; current v2 documents upgrade without changing their events,
 seals or ownership, and cached older writers fail closed until restarted. There is no provisional-v1
 migration. Accepted context pins dependency contracts, bounded non-governing causal rationale and
 decision lineage. Generation omits source artifact/run paths, and rejects comparison-only references
@@ -57,13 +63,22 @@ OS-level isolation, authenticated human identity, deterministic generation or cr
 App work surfaces may contain incumbent source; declared separation must be established and
 reported honestly. Selection records authority, not a deployment, merge or data migration.
 
-`factory.mjs` exposes `createFactoryService({repositoryPath, storageRoot?, clock?})` for bounded local
+`factory.mjs` exposes `createFactoryService({repositoryPath, storageRoot?, clock?})` for bounded
 experiments. Mutations use a repository-wide `expectedRevision` and return the new `revision` plus
 their record (`unit`, `knowledge`, `contract`, `candidate`, `evidence`, `decision`, or `signal`/`renewal`).
-`snapshot()` is the internal complete view; `inspect()` is bounded and filters by unit/candidate.
+`snapshot()` is the current complete view; `executionSnapshot()` retains pinned owned execution
+history when a checked-out knowledge conflict holds new dispatch. `inspect()` is bounded and filters
+by unit/candidate, kinds, query and related knowledge. Its opaque cursor pins a snapshot; continuation
+uses the same filters and limit. Discovery retrieves connected relevant knowledge ahead of generic
+attempt noise and reports its selection reasons and omissions.
 `bridge.mjs` composes the repository-to-session bridge over the existing execution state machine.
-The source fixtures execute actual generated modules and independent boundary assertions; they
-demonstrate the bounded lifecycle, not arbitrary regeneration of substantial production systems.
+The source fixtures execute prewritten modules and boundary assertions in a genuine separate
+process. They demonstrate lifecycle behavior, not generation. Live reconstruction is a separately
+approved App-native experiment, never an implicit part of the test suite or proof of arbitrary
+regeneration. `knowledge: "local"` is an explicit low-level service option for legacy storage
+maintenance and isolated ledger tests; normal App tools always use repository-owned knowledge.
+The [proof coverage record](test/proof/README.md) documents the blocked native experiment
+and its retry conditions; no successful live reconstruction is claimed.
 
 ## Module boundaries
 
@@ -326,12 +341,31 @@ IDs, scope holds, and launch guidance.
 ## Persistence
 
 Session execution authority is `files/foundry/foundry.sqlite` under the Copilot session workspace.
-Repository capability authority is `$COPILOT_HOME/foundry/repositories/<repository-id>/foundry.sqlite`
-(default `~/.copilot/foundry/...`). The identity hashes the real canonical Git common-directory path,
-so sibling worktrees share knowledge while separate clones or moved repositories do not silently
-inherit it. No committed database or Git-ref mutation is used.
+Portable capability authority is `.foundry/repository.json`, pointing to immutable, content-addressed
+JSON objects under `.foundry/objects/`. Its logical repository ID travels with committed knowledge.
+Local execution history and the rebuildable projection remain at
+`$COPILOT_HOME/foundry/repositories/<local-checkout-id>/foundry.sqlite`
+(default `~/.copilot/foundry/...`). The local ID hashes the canonical Git common directory, so
+independent clones do not collide in one runtime store. Sibling worktrees can share that local
+history only while their checked-out knowledge heads agree. Neither publication nor migration stages,
+commits or pushes files.
 
-Both use the same private-artifact SQLite safety and synchronous transaction implementation in
+Portable objects retain capability/knowledge revisions, accepted contracts, causal links and
+historical selection summaries. Raw native reports, worktree paths, active bindings and execution
+authority remain local. Reports have explicit opaque statement/source commitments in portable
+context; they are not replaced with invented summaries. A fresh clone can reconstruct knowledge
+without inheriting native sessions or current candidate assurance. Historical v2 contexts that
+needed private report contents remain `historyOnly` and require explicit re-acceptance before
+generation.
+
+Publication uses a private Git-common-directory SQLite mutex, immutable objects and an atomic head.
+The local journal is a durable outbox: `factory_publication_pending` can recover publication after a
+restart without repeating the mutation. A divergent checked-out head holds new work rather than
+overwriting another branch. Existing owned attempts can still record terminal results and cancel
+against their local pinned history. Legacy local ledgers require attributed `foundry_migrate_factory`;
+the original journal and historical seals remain intact. Migration cannot replace divergent knowledge.
+
+The local stores use the same private-artifact SQLite safety and synchronous transaction implementation in
 `storage.mjs`, including symlink/hard-link rejection, anchored directories/database identity,
 revision checks and SQLite rollback. Native `node:sqlite` (Node.js 22.13+) is required; unsupported
 runtimes fail explicitly. No transaction crosses a Workflow wait or external App action.
@@ -371,12 +405,13 @@ completion/abandonment releases the hold, but replaying an old completion does n
 Terminal cancellation publishes abandonment before learning and does not require invalid assurance
 to be published. This is not a distributed transaction or a parallel orchestration runtime.
 
-These stores start fresh. Old JSON plans, activation files, and lock artifacts are ignored and left
+Old JSON plans, activation files, and lock artifacts are ignored and left
 untouched; there is no migration or backward-compatibility layer. Explicit JSON import/export
 supports the current format only. Import preserves the supplied plan state but does not launch
 external work, activate a plan, or bypass subsequent ownership checks.
 Factory import replays current-format authority only into an empty store for the same canonical
 repository. Foreign session plans remain inspectable but cannot activate or control native work.
+This plan-import restriction is distinct from repository knowledge migration and normal Git cloning.
 
 ## Tool surface
 
@@ -390,7 +425,7 @@ there is no separate catalog state machine.
 | Candidates | `foundry_prepare_candidate`, `foundry_create_factory_plan`, `foundry_record_delivery`, `foundry_record_evaluation`, `foundry_decide_candidate` |
 | Assurance renewal | `foundry_create_evaluation_plan`, `foundry_record_human_judgment` |
 | Renewal and retention | `foundry_record_signal`, `foundry_retire_artifact`, `foundry_compact_factory`, `foundry_sync_factory` |
-| Factory interchange | `foundry_export_factory`, `foundry_import_factory`, `foundry_export_factory_page`, `foundry_import_factory_page`, `foundry_abandon_factory_import` |
+| Factory interchange | `foundry_migrate_factory`, `foundry_export_factory`, `foundry_import_factory`, `foundry_export_factory_page`, `foundry_import_factory_page`, `foundry_abandon_factory_import` |
 | Planning | `foundry_prepare_plan`, `foundry_create_plan`, `foundry_submit_plan`, `foundry_approve_plan` |
 | Inspection | `foundry_get_status`, `foundry_list_plans` |
 | Interchange | `foundry_import_plan`, `foundry_export_plan` |

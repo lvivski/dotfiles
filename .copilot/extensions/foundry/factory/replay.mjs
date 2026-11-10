@@ -1,7 +1,7 @@
 import { abandonPlan, activateEvaluationPlan, bindPlan, recordCompletion, recordEvaluationCompletion } from "./bindings.mjs";
 import { decideCandidate, prepareCandidate, recordDelivery } from "./candidates.mjs";
 import { recordEvaluation } from "./evaluation.mjs";
-import { fail, integer, object, timestamp } from "./fields.mjs";
+import { digest, fail, integer, list, object, timestamp } from "./fields.mjs";
 import { acceptContract, appendKnowledge, createUnit, ingestAnalysis } from "./knowledge.mjs";
 import { same } from "./records.mjs";
 import { compactFactory, retire } from "./retention.mjs";
@@ -15,6 +15,21 @@ import { recordSignal } from "./signals.mjs";
 /** @typedef {import("../types/factory.js").FactoryResults} FactoryResults */
 
 export const FACTORY_FORMAT = "foundry-factory-v2";
+/** @type {readonly FactoryAction[]} */
+export const FACTORY_ACTIONS = Object.freeze(["createUnit", "appendKnowledge", "acceptContract", "prepareCandidate",
+	"bindPlan", "bindEvaluationPlan", "activateEvaluationPlan", "recordDelivery", "recordEvaluation",
+	"recordCompletion", "recordEvaluationCompletion", "abandonPlan", "decideCandidate",
+	"recordSignal", "ingestAnalysis", "retire", "compactFactory", "checkpoint"]);
+
+/** Service-owned metadata must be identical in prospective validation and persistence.
+ * @param {FactoryAction} action @param {Record<string, unknown>} input */
+export function prepareCommand(action, input) {
+	const prepared = { ...input };
+	if (action === "acceptContract") prepared.sealVersion = 3;
+	if (action === "appendKnowledge" && isRecord(prepared.source)) prepared.sourceCommitment = analysisInputDigest(prepared.source);
+	if (action === "appendKnowledge" && typeof prepared.statement === "string") prepared.statementCommitment = analysisInputDigest(prepared.statement);
+	return prepared;
+}
 
 /** @returns {FactoryState} */
 function emptyState() {
@@ -26,16 +41,25 @@ function emptyState() {
  * @overload
  * @param {FactoryState} state
  * @param {import("../types/factory.js").FactoryEvent<A>} event
- * @param {{historical?: boolean}} [options]
+ * @param {{historical?: boolean, portable?: boolean}} [options]
  * @returns {FactoryResults[A]}
  */
 /** Apply one attributed event; old incomplete bindings remain inspectable, not proof of process origin.
- * @param {FactoryState} state @param {FactoryEvent} event @param {{historical?: boolean}} [options]
+ * @param {FactoryState} state @param {FactoryEvent} event @param {{historical?: boolean, portable?: boolean}} [options]
  * @returns {FactoryResults[FactoryAction]}
  */
 
 export function applyEvent(state, event, options = {}) {
 	switch (event.action) {
+		case "checkpoint":
+			if (!options.historical || !options.portable) fail("factory_action_invalid", "Private checkpoints are historical portable knowledge, not executable authority");
+			object(event.input, ["digest", "knowledge"], "checkpoint");
+			for (const input of list(event.input.knowledge ?? [], "checkpoint knowledge", 16)) {
+				object(input, ["id", "unitId", "kind", "statement", "source", "links", "uncertainty", "evaluation", "sourceCommitment", "statementCommitment"], "private knowledge");
+				if (input.kind !== "observation") fail("factory_context_invalid", "Private checkpoints retain observations, never governing acceptance");
+				appendKnowledge(state, { ...event, action: "appendKnowledge", input }, options);
+			}
+			return { retainedDigest: digest(event.input.digest, "checkpoint.digest") };
 		case "createUnit":
 			return createUnit(state, event, options);
 		case "appendKnowledge":
@@ -75,8 +99,9 @@ export function applyEvent(state, event, options = {}) {
 
 /** @param {FactoryDocument} document @param {RepositoryIdentity} identity */
 export function replay(document, identity) {
-	object(document, ["format", "repository", "revision", "events"], "factory document");
+	object(document, ["format", "repository", "revision", "events", "portable"], "factory document");
 	if (document.format !== FACTORY_FORMAT) fail("factory_format_unsupported", "Only the current factory format is supported");
+	if (document.portable !== undefined && document.portable !== true) fail("factory_format_unsupported", "Portable knowledge must declare its historical projection");
 	if (!same(document.repository, identity)) fail("factory_repository_mismatch", "Factory JSON belongs to another canonical repository");
 	integer(document.revision, "factory revision", 0);
 	const events = document.events;
@@ -90,7 +115,9 @@ export function replay(document, identity) {
 		timestamp(event.at, "event.at");
 		if (previous && event.at < previous) fail("factory_time_invalid", "Factory events must be causally ordered");
 		previous = event.at;
-		applyEvent(state, event, { historical: true });
+		applyEvent(state, event, { historical: true, portable: document.portable === true });
 	}
 	return state;
 }
+import { isRecord } from "../data.mjs";
+import { analysisInputDigest } from "../digest.mjs";

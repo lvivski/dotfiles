@@ -3,6 +3,7 @@ import test from "node:test";
 import { candidateAssurance } from "../../factory/assurance.mjs";
 import { must } from "../assertions.mjs";
 import { COMMIT, DIGEST, fixture, source } from "../bridge/fixture.mjs";
+import { PROCEDURE } from "../git.mjs";
 
 test("shared-foundation assurance visits a 22-node preceding-two DAG once per candidate", () => {
 	/** @type {import("../../types/factory.js").FactoryState} */
@@ -20,7 +21,7 @@ test("shared-foundation assurance visits a 22-node preceding-two DAG once per ca
 		const evaluator = {
 			id: `e${index}`, revision: 1, unitId: id, kind: "evaluation", statement: "Fixture oracle", source: provenance, recordedAt: provenance.at, uncertainty: null, links: [],
 			evaluation: {
-				modality: "boundary", procedure: { kind: "command", ref: "fixture:evaluate", digest: DIGEST }, obligations: [{ id: obligation.id, revision: 1 }],
+				modality: "boundary", procedure: structuredClone(PROCEDURE), obligations: [{ id: obligation.id, revision: 1 }],
 				environment: "fixture", workload: "fixture", independent: true, preservation: true, maxAgeSeconds: 86400
 			}
 		};
@@ -48,7 +49,8 @@ test("shared-foundation assurance visits a 22-node preceding-two DAG once per ca
 				return [{
 					id: `proof${index}`, candidateId: `c${index}`, contractDigest: contract.digest, contextDigest: DIGEST, commit: COMMIT, procedureDigest: DIGEST, report: "DAG proof", reportDigest: DIGEST, recordedAt: provenance.at, evaluation: { id: evaluator.id, revision: 1 }, outcome: "passed", trust: "independent-claim",
 					environment: "fixture", workload: "fixture", independence: { method: "separate-process", reason: "Fixture" },
-					source: provenance
+					source: provenance,
+					identity: { version: 1, method: "protected-git-bundle", digest: DIGEST, evaluatorCommit: COMMIT, candidateCommit: COMMIT }
 				}];
 			},
 		});
@@ -64,7 +66,7 @@ test("knowledge-scoped signals invalidate only covered evaluators within the dir
 	f.mutate("appendKnowledge", {
 		id: "other-oracle", unitId: "unit", kind: "evaluation", statement: "Evaluate output order", source: source(),
 		evaluation: {
-			modality: "implementation-test", procedure: { kind: "command", ref: "order-test", digest: DIGEST },
+			modality: "implementation-test", procedure: structuredClone(PROCEDURE),
 			obligations: [{ id: "other-obligation", revision: 1 }], environment: "fixture-node", workload: "fixture-workload",
 			maxAgeSeconds: 86400, independent: true, preservation: false
 		}

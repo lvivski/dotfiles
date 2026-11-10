@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { buildPlanningArgs } from "../../analysis/planning.mjs";
 import { validateVerificationResult } from "../../analysis/verdicts.mjs";
@@ -12,14 +10,13 @@ import { verificationCheckIds } from "../../plan/graph.mjs";
 import { must } from "../assertions.mjs";
 import { factoryMutator } from "../factory/accessors.mjs";
 import { analysisFixture } from "../native/fixture.mjs";
+import { COMMIT, DIGEST, PROCEDURE, fixtureRoot, git, seedRepository } from "../git.mjs";
 
 /** @typedef {import("../../operations.mjs").FoundryOperations} Operations */
 /** @typedef {import("../../types/plan.js").FoundryPlan} Plan */
 /** @typedef {import("../../types/analysis.js").VerificationInput} VerificationInput */
 
-export const COMMIT = "c".repeat(40);
-
-export const DIGEST = "d".repeat(64);
+export { COMMIT, DIGEST };
 
 export const source = () => ({ kind: "discovery", ref: "fixture:recovered-intent", actor: "researcher", at: new Date().toISOString() });
 
@@ -28,12 +25,11 @@ const evidence = (checkId) => ({ ...(checkId ? { checkId } : {}), type: "test", 
 
 /** @param {import("node:test").TestContext} t @param {{human?: boolean}} [options] */
 export async function fixture(t, { human = false } = {}) {
-	const root = await mkdtemp(path.join(os.tmpdir(), "foundry-review-"));
-	t.after(() => rm(root, { recursive: true, force: true }));
+	const root = await fixtureRoot(t, "review");
 	const repo = path.join(root, "repo");
 	const storageRoot = path.join(root, "authority");
 	await mkdir(repo); await mkdir(storageRoot);
-	execFileSync("git", ["-C", repo, "init", "--quiet"]);
+	seedRepository(repo);
 	const factory = createFactoryService({ repositoryPath: repo, storageRoot });
 	const mutate = factoryMutator(factory);
 	mutate("createUnit", {
@@ -45,7 +41,7 @@ export async function fixture(t, { human = false } = {}) {
 	mutate("appendKnowledge", {
 		id: "oracle", unitId: "unit", kind: "evaluation", statement: "Independently evaluate the conserved boundary", source: source(),
 		evaluation: {
-			modality: "boundary", procedure: { kind: "command", ref: "fixture-boundary-test", digest: DIGEST },
+			modality: "boundary", procedure: structuredClone(PROCEDURE),
 			obligations: [{ id: "obligation", revision: 1 }], environment: "fixture-node", workload: "fixture-workload",
 			maxAgeSeconds: 86400, independent: true, preservation: true
 		}
@@ -121,10 +117,18 @@ export async function fixture(t, { human = false } = {}) {
 	const attach = async (operations, plan, taskId) => {
 		const counter = must(plan.tasks.find((task) => task.id === taskId)).attempts.length + 1;
 		const reservation = await operations.reserveTask({ planId: plan.id, expectedRevision: plan.revision, taskId, reservationId: `${plan.id}-${taskId}-${counter}` });
-		return operations.attachTask({
+		const branch = `fixture/${plan.id}-${taskId}-${counter}`;
+		const task = must(plan.tasks.find((task) => task.id === taskId));
+		const verifier = task.kind === "verify";
+		const targetCommit = plan.evaluationTarget?.commit ?? plan.tasks.find((entry) => entry.id === task.dependsOn[0])?.attempts.at(-1)?.commit ?? COMMIT;
+		const worktree = path.join(root, `${plan.id}-${taskId}-${counter}`);
+		if (verifier) git(repo, "worktree", "add", "--quiet", "-b", branch, worktree, targetCommit);
+		const attached = await operations.attachTask({
 			planId: plan.id, expectedRevision: reservation.plan.revision, taskId, attemptId: reservation.attemptId,
-			sessionId: `${path.basename(must(backends.get(operations)).workspace)}-${plan.id}-${taskId}-${counter}`, branch: `fixture/${plan.id}`
+			sessionId: `${path.basename(must(backends.get(operations)).workspace)}-${plan.id}-${taskId}-${counter}`, branch,
 		});
+		if (verifier) git(worktree, "checkout", "--quiet", "--detach", targetCommit);
+		return attached;
 	};
 	/** @param {Plan} plan @param {string} taskId @param {Partial<import("../../requests.mjs").Request<"completeTask">>} [extra] */
 	const payload = (plan, taskId, extra = {}) => {
@@ -174,5 +178,5 @@ export async function fixture(t, { human = false } = {}) {
 		const context = must(factoryInput.context);
 		return { plan, input: { ...input, factory: { ...factoryInput, context } } };
 	};
-	return { root, repo, storageRoot, factory, mutate, candidate, ops, createOps, approve, generationPlan, attach, payload, implement, verify, finish };
+	return { root, repo, storageRoot, factory, mutate, candidate, ops, createOps, approve, generationPlan, attach, payload, implement, verify, finish, procedure: PROCEDURE };
 }

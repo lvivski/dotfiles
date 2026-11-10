@@ -4,9 +4,9 @@ import { FACTORY_ACTIONS } from "../../factory/storage.mjs";
 
 /** @param {ReturnType<typeof import("../../factory.mjs").createFactoryService>} service */
 export function factoryMutator(service) {
-	/** @type {{[A in import("../../types/factory.js").FactoryAction]: (input: Record<string, unknown>) => import("../../types/factory.js").FactoryMutationResult<A>}} */
+	/** @type {{[A in import("../../types/factory.js").FactoryCommand]: (input: Record<string, unknown>) => import("../../types/factory.js").FactoryMutationResult<A>}} */
 	const methods = service;
-	/** @template {import("../../types/factory.js").FactoryAction} A
+	/** @template {import("../../types/factory.js").FactoryCommand} A
 	 * @param {A} action @param {Record<string, unknown>} input @returns {import("../../types/factory.js").FactoryMutationResult<A>}
 	 */
 	return (action, input) => methods[action]({ expectedRevision: service.snapshot().revision, ...input });

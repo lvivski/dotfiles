@@ -8,6 +8,7 @@ import { latestSuccessfulAttempt } from "../plan/queries.mjs";
 import { validateFactoryEvaluations } from "../plan/schemas/factory.mjs";
 import { selectEvaluations } from "./pinning.mjs";
 import { evaluationId, pendingReceipts } from "./receipts.mjs";
+import { checkEvaluator } from "../evidence/bundles.mjs";
 
 /** @typedef {import("../types/plan.js").FoundryPlan} FoundryPlan */
 /** @typedef {FoundryPlan & {factory: NonNullable<FoundryPlan["factory"]>}} BoundPlan */
@@ -20,13 +21,17 @@ import { evaluationId, pendingReceipts } from "./receipts.mjs";
  */
 export function createEvidenceBridge(stateFor, workspace) {
 
-	/** @param {FoundryPlan} plan @param {string} taskId @param {unknown} rawReports @param {unknown} evidence */
-	const validateReports = (plan, taskId, rawReports, evidence) => {
+	/** External evaluator reads happen before the plan writer transaction.
+	 * @param {FoundryPlan} plan @param {string} taskId @param {unknown} rawReports @param {unknown} evidence
+	 * @param {string | null | undefined} [commit] */
+	const validateReports = (plan, taskId, rawReports, evidence, commit) => {
 		const reports = rawReports ?? [];
 		validateFactoryEvaluations(reports);
-		if (!plan.factory?.candidateId || plan.tasks.find((task) => task.id === taskId)?.kind !== "verify") return;
-		const { factory } = stateFor(plan);
+		const { factory, state } = stateFor(plan);
+		if (!plan.factory?.candidateId || plan.tasks.find((task) => task.id === taskId)?.kind !== "verify") return state.revision;
 		const generation = factory.generation(plan.factory.candidateId);
+		const candidate = state.candidates.find((entry) => entry.id === plan.factory?.candidateId);
+		if (!candidate?.delivery || candidate.delivery.commit !== commit) fail("factory_evidence_subject_mismatch", "Verifier must name the exact immutable delivered candidate");
 		const definitions = selectEvaluations(generation.evaluations, plan.evaluationTarget?.evaluations);
 		const automatic = definitions.filter((entry) => !requiresHumanJudgment(entry.evaluation));
 		if ((reports?.length ?? 0) !== automatic.length) fail("factory_evaluation_coverage", "Verifier must report every selected executable evaluation; human judgments are recorded separately");
@@ -35,7 +40,10 @@ export function createEvidenceBridge(stateFor, workspace) {
 			if (!report || report.procedureDigest !== entry.evaluation.procedure.digest) fail("factory_evaluator_changed", "Verifier report must use the exact accepted evaluation revision and procedure");
 			const check = isList(evidence) ? evidence.find((item) => property(item, "checkId") === `T-001-C${String(index + 1).padStart(3, "0")}`) : undefined;
 			if (property(check, "outcome") !== (report.outcome === "passed" ? "passed" : "failed")) fail("factory_evidence_contradiction", "Canonical verifier checks and factory evaluation outcomes disagree");
+			if (entry.evaluation.procedure.kind === "reference" && report.outcome !== "inconclusive") fail("factory_evaluator_unsupported", "Non-executable references cannot be reported as executed checks", { disposition: "unsupported" });
+			checkEvaluator(plan.repository.workingDirectory, entry.evaluation, candidate.delivery.commit);
 		}
+		return state.revision;
 	};
 
 	/** @param {BoundPlan} plan @param {FactoryService} factory @param {FactorySnapshot} state @returns {import("../types/factory.js").FactoryDefinitions} */

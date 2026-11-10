@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { arrayOf, parseJson, readNumber, readString, recordOf } from "../../data.mjs";
 import { initialContract, reconstructionContract } from "./contracts.mjs";
 import { evaluate, readSchedule } from "./evaluators/policy.mjs";
 import { digest } from "./lab.mjs";
@@ -29,15 +31,28 @@ export function append(service, id, kind, statement, extras = {}) {
 	}).knowledge;
 }
 
-/** @param {Factory} service @param {string} candidateId @param {{digest: string}} evaluatorArtifact @param {{conservation?: boolean}} [options] */
-export async function recordAssertions(service, candidateId, evaluatorArtifact, { conservation = true } = {}) {
+/** @param {Factory} service @param {string} candidateId @param {{conservation?: boolean}} [options] */
+export async function recordAssertions(service, candidateId, { conservation = true } = {}) {
 	const candidate = service.snapshot().candidates.find((entry) => entry.id === candidateId);
 	assert.ok(candidate?.delivery);
 	const bytes = await readFile(candidate.delivery.artifact.ref);
 	assert.equal(digest(bytes), candidate.delivery.artifact.digest);
-	const schedule = readSchedule(await import(pathToFileURL(candidate.delivery.artifact.ref).href));
-	const receipts = evaluate(schedule, { conservation });
-	for (const receipt of receipts) service.recordEvaluation({
+	const run = spawnSync(process.execPath, [path.join(path.dirname(candidate.delivery.artifact.ref), "evaluators/check.mjs"), candidate.delivery.artifact.ref],
+		{ encoding: "utf8", timeout: 30000, maxBuffer: 1024 * 1024 });
+	if (run.error) throw run.error;
+	assert.equal(run.status, 0, run.stderr);
+	const observed = recordOf({
+		processId: readNumber, observedAt: readString,
+		receipts: arrayOf(recordOf({ evaluationId: readString, outcome: readString, detail: readString })),
+	})(parseJson(run.stdout));
+	assert.equal(observed.processId, run.pid);
+	assert.notEqual(observed.processId, process.pid);
+	const receipts = observed.receipts.filter((entry) => conservation || entry.evaluationId !== "input-conservation");
+	const definitions = service.generation(candidateId).evaluations;
+	for (const receipt of receipts) {
+		const definition = definitions.find((entry) => entry.id === `evaluate-${receipt.evaluationId}`);
+		assert.ok(definition);
+		service.recordEvaluation({
 		expectedRevision: revision(service),
 		id: `${candidateId}-${receipt.evaluationId}`,
 		candidateId,
@@ -45,18 +60,19 @@ export async function recordAssertions(service, candidateId, evaluatorArtifact, 
 		contractDigest: candidate.contractDigest,
 		contextDigest: candidate.contextDigest,
 		commit: candidate.delivery.commit,
-		procedureDigest: evaluatorArtifact.digest,
+		procedureDigest: definition.evaluation.procedure.digest,
 		outcome: receipt.outcome,
 		source: {
-			kind: "external-run", ref: `pinned Node evaluator, process ${process.pid}`,
-			actor: "proof-evaluator", at: new Date().toISOString(),
-			runId: `node-evaluation-${process.pid}`, owner: `node-evaluator-process-${process.pid}`,
+			kind: "external-run", ref: `fixture Node evaluator, process ${observed.processId}`,
+			actor: "proof-evaluator", at: observed.observedAt,
+			runId: `node-evaluation-${observed.processId}-${observed.observedAt}`, owner: `node-evaluator-process-${observed.processId}`,
 		},
 		environment: `node/${process.version}`,
 		workload: "unit-weight",
 		independence: { method: "separate-process", reason: "Actual artifact evaluated independently of its original generation origin." },
 		report: JSON.stringify(receipt),
 	});
+	}
 	return receipts;
 }
 
@@ -77,14 +93,15 @@ export function adopt(service, id, contract, delivery, comparisonOnly = [deliver
 }
 
 /**
- * Recovered knowledge and a rejected artifact precede the real fresh-session step.
+ * Prepare a generation package; this fixture does not run reconstruction.
  * @param {Awaited<ReturnType<typeof import("./lab.mjs").createLab>>} lab
  * @param {{alternativeSource?: {kind: string, ref: string, actor: string, at: string, runId: string, owner: string, sessionId?: string}}} [options]
  */
 export async function seedReconstruction(lab, { alternativeSource } = {}) {
+	await lab.commitArtifact("evaluators/policy.mjs", await sourceFile("evaluators/policy"));
+	const evaluator = await lab.commitArtifact("evaluators/check.mjs", await sourceFile("evaluators/check"));
 	const initial = await lab.commitArtifact("initial-policy.mjs", await sourceFile("policies/initial"));
 	const alternative = await lab.commitArtifact("recorded-alternative.mjs", await sourceFile("policies/alternative"));
-	const evaluator = await lab.commitArtifact("evaluator.mjs", await sourceFile("evaluators/policy"));
 	/** @param {ArtifactDelivery} delivery */
 	const existingSource = (delivery) => ({
 		kind: "external-run", ref: `existing fixture commit ${delivery.commit}`,
@@ -113,7 +130,13 @@ export async function seedReconstruction(lab, { alternativeSource } = {}) {
 		{
 			evaluation: {
 				modality: "boundary",
-				procedure: { kind: "reference", ref: `git:${evaluator.commit}:evaluator.mjs#${obligation.id}`, digest: evaluator.artifact.digest },
+				procedure: {
+					kind: "command", ref: `git:${evaluator.commit}:evaluators/check.mjs#${obligation.id}`,
+					bundle: {
+						version: 1, commit: evaluator.commit, root: "evaluators", entryPoint: "evaluators/check.mjs", support: [],
+						invocation: { argv: ["node", "evaluators/check.mjs", "{candidate}"], cwd: "." },
+					},
+				},
 				obligations: [obligation], environment: `node/${process.version}`, workload: "unit-weight",
 				maxAgeSeconds: 86400, independent: true, preservation,
 			},
@@ -126,7 +149,7 @@ export async function seedReconstruction(lab, { alternativeSource } = {}) {
 		actor: "fixture-steward", reason: "Accept the explicitly limited recovered baseline contract.",
 	}).contract;
 	adopt(service, "baseline", contract1, { ...initial, source: existingSource(initial) });
-	assert.ok((await recordAssertions(service, "baseline", evaluator.artifact, { conservation: false }))
+	assert.ok((await recordAssertions(service, "baseline", { conservation: false }))
 		.every((entry) => entry.outcome === "passed"));
 	service.decideCandidate({
 		expectedRevision: revision(service), candidateId: "baseline", action: "accept", expectedIncumbentId: null,
@@ -151,7 +174,7 @@ export async function seedReconstruction(lab, { alternativeSource } = {}) {
 		actor: "fixture-steward", reason: "Explicitly accept input conservation; the observation was not automatically authoritative.",
 	}).contract;
 	adopt(service, "baseline-reconsidered", contract2, { ...initial, source: existingSource(initial) });
-	const failed = await recordAssertions(service, "baseline-reconsidered", evaluator.artifact);
+	const failed = await recordAssertions(service, "baseline-reconsidered");
 	assert.deepEqual(failed.filter((entry) => entry.outcome === "failed").map((entry) => entry.evaluationId), ["input-conservation"]);
 	assert.throws(() => service.decideCandidate({
 		expectedRevision: revision(service), candidateId: "baseline-reconsidered", action: "accept", expectedIncumbentId: "baseline",
@@ -163,7 +186,7 @@ export async function seedReconstruction(lab, { alternativeSource } = {}) {
 	});
 	adopt(service, "recorded-alternative", contract2, { ...alternative, source: alternativeSource ?? existingSource(alternative) },
 		[initial.artifact, alternative.artifact]);
-	assert.ok((await recordAssertions(service, "recorded-alternative", evaluator.artifact)).every((entry) => entry.outcome === "passed"));
+	assert.ok((await recordAssertions(service, "recorded-alternative")).every((entry) => entry.outcome === "passed"));
 	const prepared = service.prepareCandidate({
 		expectedRevision: revision(service), id: "fresh-reconstruction", unitId: "admission-policy", contractRevision: contract2.revision,
 		mode: "reconstruction", actor: "fixture-steward",
@@ -174,7 +197,7 @@ export async function seedReconstruction(lab, { alternativeSource } = {}) {
 		},
 	});
 	const generation = service.generation(prepared.candidate.id);
-	assert.equal(generation.sealVersion, 2);
+	assert.equal(generation.sealVersion, 3);
 	for (const artifact of [initial.artifact, alternative.artifact]) {
 		assert.ok(!JSON.stringify(generation).includes(artifact.ref));
 		assert.ok(!JSON.stringify(generation).includes(artifact.digest));

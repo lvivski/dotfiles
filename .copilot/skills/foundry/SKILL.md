@@ -13,8 +13,9 @@ metadata:
 # Foundry coordinator
 
 Foundry evolves verified capabilities and the connected knowledge needed to rebuild them.
-Repository-scoped SQLite owns capability boundaries, immutable knowledge and accepted contracts,
-candidate lineage, assurance and renewal. Session-local SQLite owns plans, attempts and cancellation.
+Repository-owned `.foundry` artifacts own portable capability knowledge and accepted contracts.
+Local SQLite retains execution provenance, candidate evidence and the rebuildable knowledge cache;
+session-local SQLite owns plans, attempts and cancellation.
 App project sessions own work surfaces; native Dynamic Workflows own execution, replay and budgets.
 
 ## Scope
@@ -23,11 +24,14 @@ Use this protocol when the user explicitly requests Foundry coordination. For ro
 prefer native plan mode and direct tools; for ordinary multi-session or stacked-PR work, use the
 native `orchestrate` or `pr-stack` flows without creating a Foundry plan.
 
-Keep the complete coordinator protocol even for a small task. Begin with the
-[factory lifecycle](references/factory.md). Exploration can precede specification; discoveries are
-non-governing until explicitly accepted. Reconstruct from a sealed accepted contract with
-`foundry_create_factory_plan`, or import a factory-scoped planning Workflow with
-`foundry_create_plan`. Both create drafts requiring explicit plan approval.
+Foundry is a dedicated capability factory, not another mode for ordinary tasks.
+Its happy path is: inspect a capability, accept its recovered contract and protected
+evaluators, prepare a sealed candidate, approve a bounded plan, dispatch and verify it,
+then explicitly select or reject the replacement. Begin with the
+[factory lifecycle](references/factory.md); open only the reference for the current phase.
+Discovery can precede specification. Accepted contracts use deterministic
+`foundry_create_factory_plan`; only discovery needs a planning Workflow.
+Migration, transfer and retention are recovery operations, not prerequisites for every task.
 
 ## Hard rules
 
@@ -49,8 +53,9 @@ non-governing until explicitly accepted. Reconstruct from a sealed accepted cont
     verification Workflow run have terminal dispositions.
 11. A successful task must satisfy its delivery requirement: `branch` needs the attached branch;
     `commit` also needs a full 40- or 64-character commit ID; `pr` additionally needs a PR URL.
-    These delivery fields remain child-reported claims; the final verify task checks the exact commit
-    from a separate read-only App session.
+    Commit existence, required ancestry and protected evaluator identity are mechanically checked.
+    The verifier's registered worktree is captured before it runs; its session association and
+    execution narrative remain claims, not authenticated attestation.
 12. Never modify a `launchSpec` returned by a Foundry prepare tool, including its limits. For any
     direct `run_dynamic_workflow` call not based on a returned `launchSpec`, do not pass `limits`; use the
     workflow's declared limits unless the user explicitly requests an override. Never lower a declared

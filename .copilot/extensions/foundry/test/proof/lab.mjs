@@ -15,7 +15,7 @@ export async function createLab(parent = os.tmpdir()) {
 	const directory = await mkdtemp(path.join(parent, "foundry-proof-"));
 	await mkdir(path.join(directory, "repository"));
 	await mkdir(path.join(directory, "storage"));
-	await writeFile(path.join(directory, "fixture.json"), JSON.stringify({ kind: "foundry-regeneration-proof" }));
+	await writeFile(path.join(directory, "fixture.json"), JSON.stringify({ kind: "foundry-lifecycle-fixture" }));
 	const lab = await openLab(directory, true);
 	lab.git(["init", "--quiet", "--initial-branch=main", "--template=", "."]);
 	return lab;
@@ -25,7 +25,7 @@ export async function createLab(parent = os.tmpdir()) {
 export async function openLab(directory, initializing = false) {
 	const root = await realpath(directory);
 	assert.ok(path.basename(root).startsWith("foundry-proof-"));
-	assert.equal(readRecord(parseJson(await readFile(path.join(root, "fixture.json"), "utf8"))).kind, "foundry-regeneration-proof");
+	assert.equal(readRecord(parseJson(await readFile(path.join(root, "fixture.json"), "utf8"))).kind, "foundry-lifecycle-fixture");
 	const repositoryPath = await realpath(path.join(root, "repository"));
 	assert.equal(repositoryPath, path.join(root, "repository"));
 	const storageRoot = await realpath(path.join(root, "storage"));
@@ -58,8 +58,9 @@ export async function openLab(directory, initializing = false) {
 		service: (options = {}) => createFactoryService({ repositoryPath, storageRoot, ...options }),
 		/** @param {string} filename @param {string} content */
 		async commitArtifact(filename, content) {
-			assert.match(filename, /^[a-z][a-z0-9-]*\.mjs$/);
+			assert.match(filename, /^(?:[a-z][a-z0-9-]*\/)*[a-z][a-z0-9-]*\.mjs$/);
 			assert.equal(await realpath(git(["rev-parse", "--show-toplevel"])), repositoryPath);
+			await mkdir(path.dirname(path.join(repositoryPath, filename)), { recursive: true });
 			await writeFile(path.join(repositoryPath, filename), content);
 			git(["add", "--", filename]);
 			git(["commit", "--quiet", "-m", `Proof artifact: ${filename}`]);

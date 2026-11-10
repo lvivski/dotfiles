@@ -29,7 +29,8 @@ export function createStatusOperations({ storeFor, workspace, factory, workflowS
 		const projection = projectPlan(plan, { sessionInventory });
 		const foreign = !plan.factory || plan.factory.owner !== workspace();
 		const currentContract = factoryView.state === "available" ? factoryView.contracts.filter((entry) => entry.unitId === plan.factory?.unitId).at(-1) : undefined;
-		const contextChanged = factoryView.state === "available" && (currentContract?.digest ?? null) !== plan.factory?.contractDigest;
+		const contextChanged = factoryView.state === "available" && !plan.evaluationTarget && Boolean(plan.factory?.contractDigest)
+			&& (currentContract?.digest ?? null) !== plan.factory?.contractDigest;
 		const pending = factoryView.state === "available" && factoryView.synchronization.pending.length > 0;
 		const humanPending = factoryView.state === "available" && factoryView.pendingHuman.length > 0 && plan.tasks.every((task) => task.status === "done");
 		if (foreign || factoryView.state !== "available" || contextChanged || pending) {

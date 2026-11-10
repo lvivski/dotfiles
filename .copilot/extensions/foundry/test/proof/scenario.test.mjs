@@ -25,14 +25,14 @@ test("functional success cannot substitute for a learned conservation obligation
 	);
 });
 
-for (const name of /** @type {const} */ (["recorded-alternative", "reconstructed-policy"])) test(`recorded ${name} meets the recovered boundary contract`, async () => {
+for (const name of /** @type {const} */ (["recorded-alternative", "reconstructed-policy"])) test(`prewritten ${name} fixture meets the recovered boundary contract`, async () => {
 	const { schedule } = policies[name];
 	const evidence = evaluate(schedule);
 	assert.equal(evidence.length, 6);
 	assert.deepEqual(evidence.filter((entry) => entry.outcome !== "passed"), []);
 });
 
-test("the independently renewed artifact preserves old behavior and satisfies the changed workload", async () => {
+test("the prewritten weighted fixture preserves old behavior and satisfies the changed workload", async () => {
 	const { schedule } = weightedPolicy;
 	assert.deepEqual(evaluate(schedule).filter((entry) => entry.outcome !== "passed"), []);
 	assert.equal(evaluateWeighted(schedule).outcome, "passed");
@@ -58,7 +58,7 @@ test("real artifact failures drive explicit knowledge acceptance and restorable 
 	const lab = await createLab();
 	t.after(() => rm(lab.directory, { recursive: true, force: true }));
 	const { service, generation, prepared } = await seedReconstruction(lab);
-	assert.equal(generation.sealVersion, 2);
+	assert.equal(generation.sealVersion, 3);
 	assert.equal(prepared.candidate.delivery, null);
 	assert.equal(prepared.candidate.context.independence.method, "fresh-session");
 	assert.ok(generation.rationale.every((entry) => entry.authority === "non-governing"));

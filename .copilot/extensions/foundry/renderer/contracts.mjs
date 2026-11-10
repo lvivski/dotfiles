@@ -145,6 +145,11 @@ const FoundryWire = (() => {
 		pendingHuman: optional(array(object({ evaluation: reference, definition: object({ procedure: object({ ref: text }) }) }))),
 		renewalNeeds: optional(array(object({ candidateId: text, scope: text, affectedUnitIds: strings, uncertainUnitIds: strings }))),
 		truncated: optional((/** @type {unknown} */ value) => Object.fromEntries(Object.entries(record(value)).map(([key, value]) => [key, boolean(value)]))),
+		page: optional(object({
+			revision: number, offset: number, limit: number, nextCursor: nullable(text),
+			omittedBefore: (/** @type {unknown} */ value) => Object.fromEntries(Object.entries(record(value)).map(([key, value]) => [key, number(value)])),
+			omittedAfter: (/** @type {unknown} */ value) => Object.fromEntries(Object.entries(record(value)).map(([key, value]) => [key, number(value)])),
+		})),
 		units: array(object({
 			id: text, name: text, purpose: text, revision: number, acceptedUnitRevision: optional(nullable(number)), currentCandidateId: optional(nullable(text)),
 			boundary: object({ owns: strings, exposes: strings, consumes: strings, preserves: strings }),
@@ -160,6 +165,7 @@ const FoundryWire = (() => {
 		})),
 		knowledge: array(object({
 			id: text, revision: number, authority: text, kind: text, statement: text, uncertainty: nullable(text),
+			selectionReasons: optional(strings), revisionStatus: optional(text), supersededBy: optional(array(reference)), omittedSuperseders: optional(number),
 			source, links: array(object({ relation: text, target: reference })), evaluation: optional(nullable(evaluation)),
 		})),
 		candidates: array(candidate),

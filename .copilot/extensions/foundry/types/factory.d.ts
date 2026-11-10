@@ -23,9 +23,20 @@ export type CapabilityUnit = KnowledgeRef & {
 	actor: string; at: string; reason: string;
 };
 
+export type EvaluatorBundle = {
+	version: 1; commit: string; root: string; entryPoint: string; support: string[];
+	invocation: { argv: string[]; cwd: string };
+};
+
+/** Mechanical identity of declared material only; execution/session provenance remains a claim. */
+export type EvaluationIdentity = {
+	version: 1; method: "protected-git-bundle"; digest: string;
+	evaluatorCommit: string; candidateCommit: string;
+};
+
 export type EvaluationDefinition = {
 	modality: "implementation-test" | "boundary" | "operational" | "human";
-	procedure: { kind: "command" | "reference" | "judgment"; ref: string; digest: string };
+	procedure: { kind: "command" | "reference" | "judgment"; ref: string; digest: string; bundle?: EvaluatorBundle };
 	obligations: KnowledgeRef[]; environment: string; workload: string;
 	maxAgeSeconds: number; independent: boolean; preservation: boolean;
 };
@@ -41,6 +52,8 @@ export type Knowledge = KnowledgeRef & {
 	unitId: string; kind: KnowledgeKind; statement: string; source: Provenance;
 	links: KnowledgeLink[]; uncertainty: string | null;
 	evaluation: EvaluationDefinition | null; recordedAt: string;
+	sourceCommitment?: string;
+	statementCommitment?: string;
 };
 
 export type ProjectedKnowledge = Pick<Knowledge,
@@ -50,12 +63,31 @@ export type ProjectedKnowledge = Pick<Knowledge,
 
 export type ProjectedEvaluation = ProjectedKnowledge & { evaluation: EvaluationDefinition };
 
+export type KnowledgeQuery = {
+	unitId?: string; kinds?: KnowledgeKind[]; query?: string; relatedTo?: KnowledgeRef[]; includeRetired?: boolean;
+};
+
+export type FactoryInspectionInput = KnowledgeQuery & {
+	candidateId?: string; limit?: number; cursor?: string; environment?: string; workload?: string;
+};
+
+export type FactoryInspectionCursor = {
+	version: 1; repositoryId: string; revision: number; throughDigest: string;
+	offset: number; observedAt: string; filtersDigest: string;
+};
+
+export type RetrievedKnowledge = ProjectedKnowledge & {
+	selectionReasons: string[]; revisionStatus: "current" | "superseded" | "retired";
+	supersededBy: KnowledgeRef[]; omittedSuperseders: number;
+};
+
 export type ContractDependency = {
 	unitId: string; unitRevision: number; contractRevision: number; contractDigest: string;
 };
 
 export type FactoryContract = {
 	sealVersion: number; unitId: string; unitRevision: number; revision: number;
+	historyOnly?: true;
 	obligations: KnowledgeRef[]; evaluations: KnowledgeRef[]; rationale: KnowledgeRef[];
 	decisionId: string; acceptedAt: string; previousDigest: string | null;
 	dependencies: ContractDependency[]; decisionIds: string[]; omittedEarlierDecisions: number;
@@ -98,6 +130,7 @@ export type FactoryBinding = {
 	unitId: string; candidateId: string | null; unitRevision: number;
 	contractRevision: number | null; contractDigest: string | null; contextDigest: string | null;
 	planId: string; owner: string; blueprintDigest: string; at: string;
+	knowledgeHead?: string;
 	purpose?: "evaluation"; evaluations?: KnowledgeRef[]; targetCommit?: string;
 	completion?: Completion | null; completions?: Completion[]; active?: boolean; activatedAt?: string;
 };
@@ -108,6 +141,7 @@ export type EvaluationEvidence = {
 	source: Provenance; environment: string; workload: string;
 	independence: { method: "separate-session" | "separate-process" | "human-review" | "same-context"; reason: string };
 	report: string; reportDigest: string; trust: Trust; recordedAt: string;
+	identity?: EvaluationIdentity;
 };
 
 export type Candidate = {
@@ -171,6 +205,7 @@ export type GenerationPackage = Omit<FactoryDefinitions, "contract"> & {
 };
 
 export type FactoryResults = {
+	checkpoint: { retainedDigest: string };
 	createUnit: { unit: CapabilityUnit };
 	appendKnowledge: { knowledge: Knowledge };
 	acceptContract: { contract: FactoryContract; decision: ContractDecision };
@@ -194,19 +229,20 @@ export type FactoryResults = {
 };
 
 export type FactoryAction = keyof FactoryResults;
+export type FactoryCommand = Exclude<FactoryAction, "checkpoint">;
 
 /** Event inputs stay untrusted until the action-specific replay validator runs. */
 export type FactoryEvent<A extends FactoryAction = FactoryAction> = {
 	revision: number; at: string; action: A; input: Record<string, unknown>;
 };
 
-export type FactoryDocument = { format: string; repository: RepositoryIdentity; revision: number; events: FactoryEvent[] };
+export type FactoryDocument = { format: string; repository: RepositoryIdentity; revision: number; events: FactoryEvent[]; portable?: true };
 
 export type FactoryExportPage = FactoryDocument & {
 	throughDigest: string; afterRevision: number; nextRevision: number; complete: boolean;
 };
 
-export type FactoryReceipt = { action: FactoryAction; input: Record<string, unknown>; label?: string };
+export type FactoryReceipt = { action: FactoryCommand; input: Record<string, unknown>; label?: string };
 
 export type FactoryMutationResult<A extends FactoryAction> = FactoryResults[A] & {
 	repository: RepositoryIdentity; revision: number;
@@ -214,5 +250,5 @@ export type FactoryMutationResult<A extends FactoryAction> = FactoryResults[A] &
 };
 
 export type ApplyFactoryEvent = <A extends FactoryAction>(
-	state: FactoryState, event: FactoryEvent<A>, options?: { historical?: boolean },
+	state: FactoryState, event: FactoryEvent<A>, options?: { historical?: boolean; portable?: boolean },
 ) => FactoryResults[A];

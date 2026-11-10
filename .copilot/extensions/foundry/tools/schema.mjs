@@ -147,3 +147,10 @@ export const FACTORY_REPORT = objectSchema(["evaluation", "procedureDigest", "en
 	outcome: { type: "string", enum: ["passed", "failed", "inconclusive"] },
 	report: NON_EMPTY(16000), independenceReason: NON_EMPTY(2048),
 });
+
+export const EVALUATOR_BUNDLE = objectSchema(["version", "commit", "root", "entryPoint", "support", "invocation"], {
+	version: { const: 1 },
+	commit: { type: "string", pattern: "^(?:[a-f0-9]{40}|[a-f0-9]{64})$" },
+	root: NON_EMPTY(1024), entryPoint: NON_EMPTY(1024), support: STRING_LIST(32, 1024),
+	invocation: objectSchema(["argv", "cwd"], { argv: STRING_LIST(64, 4096, 2), cwd: NON_EMPTY(1024) }),
+});

@@ -84,7 +84,7 @@ export function reserveTaskAttempt(plan, taskId, options = {}) {
  * @param {FoundryPlan} plan
  * @param {string} taskId
  * @param {string} attemptId
- * @param {{sessionId?: string, branch?: string | null, at?: ClockValue}} [options]
+ * @param {{sessionId?: string, branch?: string | null, at?: ClockValue, verifierWorktree?: import("../types/plan.js").VerifierWorktree}} [options]
  * @returns {FoundryPlan}
  */
 export function attachTaskAttempt(plan, taskId, attemptId, options = {}) {
@@ -133,6 +133,7 @@ export function attachTaskAttempt(plan, taskId, attemptId, options = {}) {
 	const timestamp = nowIso(options.at);
 	attempt.sessionId = options.sessionId;
 	attempt.branch = options.branch ?? null;
+	if (options.verifierWorktree) attempt.verifierWorktree = clone(options.verifierWorktree);
 	attempt.startedAt = timestamp;
 	if (attempt.status === ATTEMPT_STATUS.RESERVED) {
 		attempt.status = ATTEMPT_STATUS.RUNNING;
@@ -151,7 +152,8 @@ export function attachTaskAttempt(plan, taskId, attemptId, options = {}) {
  * @param {string} status
  * @param {{branch?: string | null, commit?: string | null, prUrl?: string | null, resultSummary?: string | null,
  * evidence?: unknown, error?: string | null, learning?: import("../types/plan.js").Learning[],
- * factoryEvaluations?: import("../types/plan.js").EvaluationReport[], sessionTerminatedAt?: string | null, at?: ClockValue}} [options]
+ * factoryEvaluations?: import("../types/plan.js").EvaluationReport[], sessionTerminatedAt?: string | null, at?: ClockValue,
+ * repositoryCheck?: import("../types/plan.js").RepositoryCheck}} [options]
  * @returns {FoundryPlan}
  */
 export function completeTaskAttempt(plan, taskId, attemptId, status, options = {}) {
@@ -207,6 +209,7 @@ export function completeTaskAttempt(plan, taskId, attemptId, status, options = {
 	attempt.resultSummary = options.resultSummary ?? null;
 	attempt.learning = clone(options.learning ?? []);
 	attempt.factoryEvaluations = clone(options.factoryEvaluations ?? []);
+	if (options.repositoryCheck) attempt.repositoryCheck = clone(options.repositoryCheck);
 	attempt.evidence = normalizeEvidence(
 		options.evidence ?? [],
 		candidate,

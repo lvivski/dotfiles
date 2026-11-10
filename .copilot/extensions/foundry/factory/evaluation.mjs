@@ -5,6 +5,7 @@ import { requiresHumanJudgment, source } from "./definitions.mjs";
 import { enumeration, fail, object, reference, text } from "./fields.mjs";
 import { evaluationObservation, sameEvaluationOrigin } from "./observations.mjs";
 import { candidateFor, contractFor, evaluationFor, key, same, uniqueId } from "./records.mjs";
+import { evaluationIdentity } from "./procedures.mjs";
 
 /** @typedef {import("../types/factory.js").FactoryEvent} FactoryEvent */
 /** @typedef {import("../types/factory.js").FactoryState} FactoryState */
@@ -15,7 +16,7 @@ import { candidateFor, contractFor, evaluationFor, key, same, uniqueId } from ".
  * @param {{historical?: boolean}} [options] @returns {FactoryResults["recordEvaluation"]} */
 export function recordEvaluation(state, event, options = {}) {
 	const { action, input, at, revision } = event;
-	object(input, ["id", "candidateId", "evaluation", "contractDigest", "contextDigest", "commit", "outcome", "source", "environment", "workload", "independence", "report", "procedureDigest"], action);
+	object(input, ["id", "candidateId", "evaluation", "contractDigest", "contextDigest", "commit", "outcome", "source", "environment", "workload", "independence", "report", "procedureDigest", "identity"], action);
 	const candidate = candidateFor(state, input.candidateId);
 	if (!candidate.delivery) fail("factory_delivery_required", "Evaluation requires an immutable delivered candidate");
 	const ref = reference(input.evaluation);
@@ -28,6 +29,15 @@ export function recordEvaluation(state, event, options = {}) {
 	const origin = source(input.source, at);
 	if (Date.parse(origin.at) < Date.parse(candidate.delivery.source.at)) fail("factory_evidence_predates_delivery", "Evaluation must follow the actual delivery");
 	const human = requiresHumanJudgment(definition);
+	const identity = input.identity === undefined ? undefined : evaluationIdentity(input.identity);
+	if (identity && (human || definition.procedure.kind !== "command" || !definition.procedure.bundle
+		|| identity.evaluatorCommit !== definition.procedure.bundle.commit
+		|| identity.candidateCommit !== candidate.delivery.commit || identity.digest !== definition.procedure.digest)) {
+		fail("factory_evaluator_changed", "Mechanical identity must name this exact executable bundle and delivered candidate");
+	}
+	if (!options.historical && !human && definition.procedure.kind === "reference" && input.outcome !== "inconclusive") {
+		fail("factory_evaluator_unsupported", "A non-executable reference cannot establish a passed executable check", { disposition: "unsupported" });
+	}
 	const binding = state.bindings.find((entry) => entry.candidateId === candidate.id && entry.owner === origin["owner"] && entry.planId === origin["planId"]);
 	const retirement = state.retirements.find((entry) => entry.type === "candidate" && entry.id === candidate.id);
 	if (retirement && !(origin.kind === "app-task" && binding?.purpose === "evaluation" && binding.at <= retirement.at)) {
@@ -77,6 +87,7 @@ export function recordEvaluation(state, event, options = {}) {
 		report: text(input.report, "evidence.report", 16000),
 		reportDigest: analysisInputDigest(input.report),
 		trust: independent ? "independent-claim" : "claimed", recordedAt: at,
+		...(identity ? { identity } : {}),
 	};
 	candidate.evidence.push(evidence);
 	const observation = evaluationObservation(candidate, ref);

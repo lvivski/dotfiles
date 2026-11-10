@@ -11,6 +11,7 @@ import { available } from "../assertions.mjs";
 import { factoryMutator } from "../factory/accessors.mjs";
 import { analysisFixture } from "../native/fixture.mjs";
 import { analysisStub, createApproved, evidence, withOperations } from "./fixture.mjs";
+import { COMMIT, DIGEST, PROCEDURE, git } from "../git.mjs";
 
 test("sealed candidates use normal App dispatch, capture learning, bind independent evidence and require separate replacement approval", async () => {
 	const analysis = analysisStub({
@@ -28,7 +29,7 @@ test("sealed candidates use normal App dispatch, capture learning, bind independ
 		mutation("appendKnowledge", {
 			id: "oracle", unitId: "operation-capability", kind: "evaluation", statement: "Run the independent boundary oracle", source,
 			evaluation: {
-				modality: "boundary", procedure: { kind: "command", ref: "node --test boundary.test.mjs", digest: "a".repeat(64) },
+				modality: "boundary", procedure: structuredClone(PROCEDURE),
 				obligations: [{ id: "obligation", revision: 1 }], environment: "node-fixture", workload: "fixture",
 				maxAgeSeconds: 86400, independent: true, preservation: true,
 			},
@@ -59,18 +60,21 @@ test("sealed candidates use normal App dispatch, capture learning, bind independ
 			const reservation = await operations.reserveTask({ planId: plan.id, expectedRevision: plan.revision, taskId, reservationId: `reserve-${taskId}` });
 			assert.match(reservation.delegationPrompt, /pinned|sealed/i);
 			assert.equal(reservation.delegationPrompt.includes("comparison-only-prior-source"), taskId === "T-002");
+			const worktree = path.join(workspacePath, "verifier");
+			if (taskId === "T-002") git(workspacePath, "worktree", "add", "--quiet", "-b", `fixture/${taskId}`, worktree, COMMIT);
 			plan = await operations.attachTask({
 				planId: plan.id, expectedRevision: reservation.plan.revision, taskId, attemptId: reservation.attemptId,
 				sessionId, branch: `fixture/${taskId}`,
 			});
+			if (taskId === "T-002") git(worktree, "checkout", "--quiet", "--detach", COMMIT);
 			const reports = taskId === "T-002" ? [{
-				evaluation: { id: "oracle", revision: 1 }, procedureDigest: "a".repeat(64),
+				evaluation: { id: "oracle", revision: 1 }, procedureDigest: DIGEST,
 				environment: "node-fixture", workload: "fixture", outcome: "passed", report: "Boundary and conservation assertions passed",
 				independenceReason: "Read-only App child is distinct from the implementation child",
 			}] : [];
 			const payload = {
 				planId: plan.id, expectedRevision: plan.revision, taskId, attemptId: reservation.attemptId,
-				status: "done", commit: "c".repeat(40), resultSummary: "Delivered exact fixture commit",
+				status: "done", commit: COMMIT, resultSummary: "Delivered exact fixture commit",
 				learning: [{ kind: "observation", statement: "Discovered a caller-owned input boundary", uncertainty: "Needs explicit obligation review" }],
 				evidence: taskId === "T-002" ? verificationCheckIds(plan.tasks).map((checkId) => ({
 					checkId, type: "test", summary: "Passed", source: "node --test boundary.test.mjs", outcome: "passed",

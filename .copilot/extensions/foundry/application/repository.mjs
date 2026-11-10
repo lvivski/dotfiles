@@ -3,12 +3,44 @@ import { errorCode, errorMessage, isOneOf } from "../data.mjs";
 import { requiresHumanJudgment } from "../factory/definitions.mjs";
 import { decodeRequest } from "../requests.mjs";
 import { FoundryOperationError } from "./errors.mjs";
+import { branchCommit, requireAncestor, requireCommit } from "../evidence/git.mjs";
+import { checkVerifierWorktree } from "../evidence/worktrees.mjs";
+import { fail } from "../factory/fields.mjs";
+import { latestSuccessfulAttempt } from "../plan/queries.mjs";
 
 /** @typedef {import("../types/plan.js").FoundryPlan} FoundryPlan */
 /** @typedef {import("../types/workflow.js").WorkflowAnalysisPort} WorkflowAnalysis */
 /** @template {keyof typeof import("../requests.mjs").requestShapes} K @typedef {import("../requests.mjs").Request<K>} Request */
 /** @typedef {ReturnType<typeof import("../factory.mjs").createFactoryService>} FactoryService */
-/** @typedef {"inspect" | "createUnit" | "appendKnowledge" | "acceptContract" | "prepareCandidate" | "recordDelivery" | "recordEvaluation" | "decideCandidate" | "recordSignal" | "retire" | "compactFactory" | "exportFactory" | "importFactory" | "exportFactoryPage" | "importFactoryPage" | "abandonFactoryImport"} PublicFactoryAction */
+/** @typedef {"inspect" | "createUnit" | "appendKnowledge" | "acceptContract" | "prepareCandidate" | "recordDelivery" | "recordEvaluation" | "decideCandidate" | "recordSignal" | "retire" | "compactFactory" | "exportFactory" | "importFactory" | "exportFactoryPage" | "importFactoryPage" | "abandonFactoryImport" | "migrateFactory"} PublicFactoryAction */
+
+/** Reads repository/worktree facts before the task writer transaction.
+ * @param {FoundryPlan} plan @param {string} taskId @param {import("../types/plan.js").FoundryAttempt} attempt
+ * @param {string | null | undefined} commit @returns {import("../types/plan.js").RepositoryCheck | undefined} */
+export function checkTaskRepository(plan, taskId, attempt, commit) {
+	if (commit == null) return undefined;
+	const directory = plan.repository.workingDirectory;
+	const target = requireCommit(directory, commit);
+	const task = plan.tasks.find((entry) => entry.id === taskId);
+	if (!task) fail("factory_execution_mismatch", "Repository checks require the exact task");
+	const dependencies = task.dependsOn.map((id) => {
+		const dependency = plan.tasks.find((entry) => entry.id === id);
+		const delivery = dependency ? latestSuccessfulAttempt(dependency) : null;
+		if (!delivery) fail("factory_integration_unsupported", "A dependency has no successful immutable delivery", { disposition: "inconclusive" });
+		return delivery.commit ?? (delivery.branch ? branchCommit(directory, delivery.branch) : fail("factory_integration_unsupported", "Dependency ancestry cannot be established from a PR URL alone", { disposition: "unsupported" }));
+	});
+	for (const dependency of dependencies) requireAncestor(directory, dependency, target);
+	let worktree;
+	if (task.kind === "verify") {
+		const expected = plan.evaluationTarget?.commit ?? dependencies[0];
+		if (expected !== target) fail("factory_evidence_subject_mismatch", "A verifier must report the exact delivered target, not a different integration commit");
+		worktree = checkVerifierWorktree(directory, attempt.verifierWorktree, target);
+	}
+	return {
+		version: 1, commit: target, integrationCommits: [...new Set(dependencies)].sort(),
+		...(worktree ? { worktree } : {}),
+	};
+}
 
 /** @param {{
  * workspace: () => string,
@@ -43,7 +75,7 @@ export function createRepositoryOperations({ workspace, storeFor, notify, factor
 	async function factoryAction(value) {
 		const { repositoryPath, action, input = {} } = decodeRequest("factoryAction", value);
 		const service = factory.factoryFor(repositoryPath);
-		const allowed = /** @type {const} */ (["inspect", "createUnit", "appendKnowledge", "acceptContract", "prepareCandidate", "recordDelivery", "recordEvaluation", "decideCandidate", "recordSignal", "retire", "compactFactory", "exportFactory", "importFactory", "exportFactoryPage", "importFactoryPage", "abandonFactoryImport"]);
+		const allowed = /** @type {const} */ (["inspect", "createUnit", "appendKnowledge", "acceptContract", "prepareCandidate", "recordDelivery", "recordEvaluation", "decideCandidate", "recordSignal", "retire", "compactFactory", "exportFactory", "importFactory", "exportFactoryPage", "importFactoryPage", "abandonFactoryImport", "migrateFactory"]);
 		if (!isOneOf(action, allowed)) throw new FoundryOperationError("factory_action_invalid", `Unsupported factory action ${action}`);
 		if (["recordDelivery", "recordEvaluation"].includes(action)) {
 			const candidate = service.snapshot().candidates.find((entry) => entry.id === input.candidateId);
@@ -59,6 +91,7 @@ export function createRepositoryOperations({ workspace, storeFor, notify, factor
 				return service.importFactoryPage({ ...parsed, page: parsed.page });
 			}
 			case "abandonFactoryImport": return service.abandonFactoryImport(decodeRequest("factoryAbandonImport", input));
+			case "migrateFactory": return service.migrateFactory(decodeRequest("factoryMigrate", input));
 			default: return service[action](input);
 		}
 	}

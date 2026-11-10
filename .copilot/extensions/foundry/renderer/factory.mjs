@@ -60,7 +60,12 @@ export function createFactoryView(planAction, getPlanRevision) {
 			}
 		}
 		const bounded = Object.entries(currentFactory.truncated ?? {}).filter(([, truncated]) => truncated).map(([name]) => name);
-		if (bounded.length) info.append(element("p", "warning", `Showing bounded recent ${bounded.join(", ")}. Use factory inspection filters or export for full history.`));
+		if (currentFactory.page) {
+			const page = currentFactory.page;
+			const omitted = Object.entries(page.omittedAfter).filter(([, count]) => count).map(([name, count]) => `${count} ${name}`).join(", ");
+			info.append(element("p", "muted", `Inspection snapshot ${page.revision}: at most ${page.limit} records per collection.${omitted ? ` Older records omitted here: ${omitted}.` : ""}`));
+		}
+		if (bounded.length) info.append(element("p", "warning", `Showing bounded ${bounded.join(", ")}. Use foundry_get_factory filters and page.nextCursor with the same filters and limit for stable older pages; board refreshes show current authority.`));
 		/** @type {HTMLElement[]} */
 		const rows = [info];
 		const seen = new Set();
@@ -111,6 +116,10 @@ export function createFactoryView(planAction, getPlanRevision) {
 		for (const entry of currentFactory.knowledge ?? []) addRow(`knowledge:${entry.id}:${entry.revision}`, `${entry.id}@${entry.revision} - ${entry.authority} ${entry.kind}`, entry, (body) => {
 			body.append(element("p", "", entry.statement));
 			addLabeledValue(body, "Uncertainty", entry.uncertainty);
+			addLabeledValue(body, "Revision status", entry.revisionStatus);
+			addLabeledValue(body, "Selected because", entry.selectionReasons?.join("; "));
+			addLabeledValue(body, "Superseded by", entry.supersededBy?.map((ref) => `${ref.id}@${ref.revision}`).join(", "));
+			if (entry.omittedSuperseders) body.append(element("p", "muted", `${entry.omittedSuperseders} additional superseding references are outside this bounded view.`));
 			addLabeledValue(body, "Provenance", `${entry.source.kind}: ${entry.source.ref}; ${entry.source.actor}; ${entry.source.at}`);
 			for (const link of entry.links) addLabeledValue(body, link.relation, `${link.target.id}@${link.target.revision}`);
 			if (entry.evaluation) {

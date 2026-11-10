@@ -41,6 +41,14 @@ export type EvaluationReport = {
 	outcome: Outcome; report: string; independenceReason: string;
 };
 
+export type VerifierWorktree = { status: "available"; path: string; gitDirectory: string }
+	| { status: "unsupported"; reason: string };
+
+export type RepositoryCheck = {
+	version: 1; commit: string; integrationCommits: string[];
+	worktree?: { head: string; clean: true };
+};
+
 export type FoundryAttempt = {
 	id: string; reservationId: string; status: AttemptStatus; baseBranch: string;
 	integrationRequired: IntegrationEntry[]; scopeOverride: ScopeOverride | null;
@@ -49,6 +57,7 @@ export type FoundryAttempt = {
 	factoryEvaluations?: EvaluationReport[]; error: string | null; reservedAt: string;
 	startedAt: string | null; sessionTerminatedAt: string | null;
 	cancelRequestedAt: string | null; completedAt: string | null;
+	verifierWorktree?: VerifierWorktree; repositoryCheck?: RepositoryCheck;
 };
 
 export type BlueprintTask = {

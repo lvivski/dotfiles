@@ -6,6 +6,7 @@ import { LIMITS, PLAN_STATUS, TASK_STATUS } from "../../plan/values.mjs";
 import { createPlanStore } from "../../storage.mjs";
 import { must } from "../assertions.mjs";
 import { analysisStub, createApproved, createInput, evidence, runTask, withOperations } from "./fixture.mjs";
+import { COMMIT } from "../git.mjs";
 
 test("activity stays bounded and records resulting revisions", () => (
 	withOperations(async ({ operations, workspacePath }) => {
@@ -106,7 +107,7 @@ test("operations drive reservation, App attachment, verification, and approval",
 			resultSummary: "Foundation complete",
 			evidence: evidence("foundation tests passed"),
 			branch: "work/foundation",
-			commit: "b".repeat(40),
+			commit: COMMIT,
 			prUrl: "https://github.com/example/repo/pull/1",
 		});
 		assert.equal(plan.tasks[1].status, TASK_STATUS.PLANNED);
@@ -118,14 +119,14 @@ test("operations drive reservation, App attachment, verification, and approval",
 			reservationId: "reserve-integration",
 			sessionId: "session-integration",
 			branch: "work/integration",
-			commit: "c".repeat(40),
+			commit: COMMIT,
 		});
 		plan = second.plan;
 		({ plan } = await runTask(operations, plan, "T-003", {
 			reservationId: "reserve-verifier",
 			sessionId: "session-verifier",
 			branch: "work/verifier",
-			commit: "c".repeat(40),
+			commit: COMMIT,
 		}));
 
 		const verificationLaunch = await operations.prepareVerification({

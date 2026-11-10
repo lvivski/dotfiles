@@ -43,6 +43,7 @@ test("Foundry registers the complete globally unique tool surface", () => {
 		"foundry_import_factory_page",
 		"foundry_abandon_factory_import",
 		"foundry_import_factory",
+		"foundry_migrate_factory",
 		"foundry_capture_analysis",
 		"foundry_create_evaluation_plan",
 		"foundry_record_human_judgment",

@@ -8,16 +8,21 @@ Read before dispatching ready work or recording an attempt's result.
    An overlapping task needs a user-attributed
    `scopeOverride`; never manufacture one.
 3. Reserve each task with a unique stable `reservationId` and the current revision.
-4. Resolve the current repository's App project, then call `create_session` with:
+4. Resolve the plan repository's App project, then call `create_session` with:
    - `base_branch` equal to the reservation's `baseBranch`;
-   - `kickoff.prompt` equal to `delegationPrompt`;
+   - no kickoff yet, so the child cannot change its branch before attachment;
    - coordination enabled and an idle notification requested.
 5. Immediately attach the returned session ID and branch with `foundry_attach_task`.
-6. If session creation fails after reservation, record the unattached attempt as `blocked`; retry
+6. Send the reservation's exact `delegationPrompt` to the attached child with
+   `send_session_message`. Do not add implementation or comparison-only material.
+   The verifier's registered worktree is captured at attachment; only then may it
+   detach to the exact target commit. Never substitute the coordinator's checkout
+   for that verifier worktree.
+7. If session creation fails after reservation, record the unattached attempt as `blocked`; retry
    only through `foundry_retry_task`.
-7. Wait for idle notifications rather than polling. Intervene only for a child request, explicit
+8. Wait for idle notifications rather than polling. Intervene only for a child request, explicit
    steering, a stuck session, or cancellation.
-8. Record `done`, `failed`, or `blocked` with the child result, branch, commit/PR when present, and
+9. Record `done`, `failed`, or `blocked` with the child result, branch, commit/PR when present, and
    concrete evidence. Resolve and record the full commit and PR metadata required by the task before
    recording `done`. Before recording an attached failure, terminate/archive its session and supply
    a fresh complete terminal inventory. Then re-read ready work.
@@ -31,3 +36,6 @@ Verifier-only renewal plans retain an external immutable target; they do not con
 implementation task.
 If factory synchronization fails after task completion, recover with `foundry_sync_factory`;
 the persisted attempt is the outbox, so never rerun the child to repair a receipt.
+New work requires the current portable knowledge head. A divergent branch does not
+authorize more dispatch, but existing owned attempts can still report results or
+cancel against their pinned execution history.

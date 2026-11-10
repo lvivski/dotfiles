@@ -31,6 +31,13 @@ function boolean(value) {
 	return value;
 }
 /** @param {unknown} value */
+function knowledgeKind(value) {
+	switch (value) {
+		case "observation": case "inference": case "proposal": case "obligation": case "evaluation": return value;
+		default: throw new TypeError("Expected a knowledge kind");
+	}
+}
+/** @param {unknown} value */
 const opaque = (value) => value;
 /** Preserve extra keys so closed domain validators, rather than a decoder, reject them.
  * @template {Record<string, Decoder<unknown>>} T @param {T} fields @returns {Decoder<Decoded<T>>} */
@@ -97,10 +104,15 @@ export const requestShapes = {
 	syncFactory: planId,
 	captureAnalysis: { repositoryPath: string, unitId: string, runId: string, expectedRevision: number, actor: string },
 	factoryAction: { repositoryPath: string, action: string, input: optional(record) },
-	factoryInspect: { unitId: optional(string), candidateId: optional(string), limit: optional(number), includeRetired: optional(boolean), environment: optional(string), workload: optional(string) },
+	factoryInspect: {
+		unitId: optional(string), candidateId: optional(string), limit: optional(number), includeRetired: optional(boolean),
+		environment: optional(string), workload: optional(string), kinds: optional(array(knowledgeKind)), query: optional(string),
+		relatedTo: optional(array(reference)), cursor: optional(string),
+	},
 	factoryExportPage: { afterRevision: optional(number), throughRevision: optional(number), throughDigest: optional(string), limit: optional(number) },
 	factoryImportPage: { importId: string, page: opaque, expectedRevision: number },
 	factoryAbandonImport: { importId: string, expectedRevision: number, actor: string, reason: string },
+	factoryMigrate: { expectedRevision: number, actor: string, reason: string },
 };
 
 /** @template {keyof typeof requestShapes} K @typedef {Decoded<(typeof requestShapes)[K]>} Request */

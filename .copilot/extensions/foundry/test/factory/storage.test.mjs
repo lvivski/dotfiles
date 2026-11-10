@@ -38,7 +38,7 @@ test("record storage retains exact v2 exports across upgrade, former ceiling, ar
 		},
 	});
 	oldStore.transaction((db) => db.prepare("SELECT revision FROM factory").get());
-	const upgraded = createFactoryService({ repositoryPath: f.repo, storageRoot: upgradedRoot });
+	const upgraded = createFactoryService({ repositoryPath: f.repo, storageRoot: upgradedRoot, knowledge: "local" });
 	assert.deepEqual(parseJson(upgraded.exportFactory()), initial);
 	assert.throws(() => oldStore.transaction((db) => db.prepare("UPDATE factory SET revision=0").run(), { write: true }), { code: "old_writer_closed" });
 	const mutate = factoryMutator(upgraded);
@@ -111,10 +111,10 @@ test("genuinely old-valid schema-2 duplicate receipts and their accepted selecti
 		},
 	});
 	oldStore.transaction((db) => db.prepare("SELECT revision FROM factory").get());
-	const upgraded = createFactoryService({ repositoryPath: f.repo, storageRoot: root, clock: () => "2026-01-01T00:13:00.000Z" });
+	const upgraded = createFactoryService({ repositoryPath: f.repo, storageRoot: root, clock: () => "2026-01-01T00:13:00.000Z", knowledge: "local" });
 	assert.deepEqual(parseJson(upgraded.exportFactory()), legacy.document);
 	const view = upgraded.inspect({ candidateId: legacy.candidateId });
-	assert.equal(view.storage.version, 3);
+	assert.equal(view.storage.version, 4);
 	assert.equal(view.units[0].currentCandidateId, legacy.candidateId);
 	assert.equal(view.candidates[0].selection?.kind, "accept-candidate");
 	assert.equal(view.candidates[0].selection?.reason, legacy.selection.reason);
@@ -134,11 +134,12 @@ test("genuinely old-valid schema-2 duplicate receipts and their accepted selecti
 		expectedRevision: upgraded.snapshot().revision, id: "prospective", unitId: "legacy-unit", contractRevision: 1, mode: "adoption", actor: "owner",
 		context: { generation: [], comparisonOnly: [delivery.artifact], independence: { method: "existing-artifact", reason: "A new decision must use current support" } },
 	});
-	upgraded.recordDelivery({ expectedRevision: upgraded.snapshot().revision, ...delivery, candidateId: candidate.id });
-	upgraded.recordEvaluation({
+	assert.throws(() => upgraded.recordDelivery({ expectedRevision: upgraded.snapshot().revision, ...delivery, candidateId: candidate.id }), { code: "factory_commit_missing" });
+	upgraded.recordDelivery({ expectedRevision: upgraded.snapshot().revision, ...delivery, candidateId: candidate.id, commit: COMMIT });
+	assert.throws(() => upgraded.recordEvaluation({
 		expectedRevision: upgraded.snapshot().revision, ...legacy.original, id: "prospective-old-proof",
-		candidateId: candidate.id, contractDigest: candidate.contractDigest, contextDigest: candidate.contextDigest
-	});
+		candidateId: candidate.id, contractDigest: candidate.contractDigest, contextDigest: candidate.contextDigest, commit: COMMIT,
+	}), { code: "factory_evaluator_unpinned" });
 	assert.throws(() => upgraded.decideCandidate({
 		expectedRevision: upgraded.snapshot().revision, candidateId: candidate.id, action: "accept", expectedIncumbentId: legacy.candidateId, actor: "owner", reason: "Must not use historical admission rules",
 	}), { code: "factory_assurance_incomplete" });

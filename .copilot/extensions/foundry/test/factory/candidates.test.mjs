@@ -80,9 +80,9 @@ test("context/expiry and incomplete relationships surface missing support withou
 test("adoption discovers a contract after the implementation without inventing retrospective generation", async (t) => {
 	const f = await fixture(t);
 	f.createUnit();
-	const filename = path.join(f.repositoryPath, "already-existing.mjs");
+	const filename = path.join(f.repositoryPath, "implementation.mjs");
 	await writeFile(filename, initialCode);
-	f.git("add", "already-existing.mjs");
+	f.git("add", "implementation.mjs");
 	f.git("-c", "user.name=Factory fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "Original discovery");
 	const commit = f.git("rev-parse", "HEAD");
 	const originalSource = f.source("external-run", "original-discovery-process");
@@ -152,7 +152,7 @@ test("known generation origins cannot masquerade as fresh sessions or processes,
 			...(method === "fresh-session" ? { sessionId: "original-session" } : {}),
 		};
 		const payload = {
-			candidateId: first.id, commit: "a".repeat(40),
+			candidateId: first.id, commit: f.git("rev-parse", "HEAD"),
 			artifact: { kind: "implementation", ref: "fixture:delivered", digest: hash(freshCode) }, source: origin
 		};
 		f.call("recordDelivery", payload);

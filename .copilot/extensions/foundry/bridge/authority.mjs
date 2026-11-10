@@ -1,5 +1,6 @@
 import { property } from "../data.mjs";
 import { createFactoryService } from "../factory.mjs";
+import { checkContextSize, discoveryContext } from "../factory/context.mjs";
 import { fail } from "../factory/fields.mjs";
 import { same as sameRefs } from "../factory/records.mjs";
 import { blueprintDigest } from "./pinning.mjs";
@@ -40,7 +41,7 @@ export function createAuthority({ workspace, storageRoot, clock }) {
 		const authority = plan.factory;
 		const factory = factoryFor(plan.repository.workingDirectory);
 		if (plan.factory?.repositoryId !== factory.repository.id) fail("factory_repository_mismatch", "Plan factory identity does not match this repository");
-		const state = factory.snapshot();
+		const state = factory.executionSnapshot();
 		const binding = state.bindings.find((entry) => entry.owner === authority.owner && entry.planId === plan.id);
 		if (!binding || binding.blueprintDigest !== blueprintDigest(plan)
 			|| binding.blueprintDigest !== plan.factory.blueprintDigest
@@ -54,24 +55,35 @@ export function createAuthority({ workspace, storageRoot, clock }) {
 		return { factory, state, binding, plan: { ...plan, factory: authority } };
 	};
 
-	/** @param {string} repositoryPath @param {string} unitId */
-	const context = (repositoryPath, unitId) => {
+	/** @param {string} repositoryPath @param {string} unitId
+	 * @param {{binding?: import("../types/factory.js").FactoryBinding, query?: string}} [input] */
+	const context = (repositoryPath, unitId, input = {}) => {
 		const factory = factoryFor(repositoryPath);
 		const state = factory.snapshot();
 		const unit = state.units.filter((entry) => entry.id === unitId).at(-1);
 		if (!unit) fail("factory_unit_missing", "Define the capability's behavior, boundaries and shared dependencies before planning");
-		const contract = state.contracts.filter((entry) => entry.unitId === unitId).at(-1) ?? null;
-		const governingUnit = contract ? state.units.find((entry) => entry.id === unitId && entry.revision === contract.unitRevision) : unit;
+		const contracts = state.contracts.filter((entry) => entry.unitId === unitId);
+		const contract = input.binding ? input.binding.contractRevision === null ? null
+			: contracts.find((entry) => entry.revision === input.binding?.contractRevision) ?? null : contracts.at(-1) ?? null;
+		if (input.binding && (input.binding.unitId !== unitId || (contract?.digest ?? null) !== input.binding.contractDigest)) {
+			fail("factory_plan_mismatch", "The pinned discovery authority no longer matches its durable binding");
+		}
+		const revision = input.binding?.unitRevision ?? contract?.unitRevision ?? unit.revision;
+		const governingUnit = state.units.find((entry) => entry.id === unitId && entry.revision === revision);
 		if (!governingUnit) fail("factory_unit_missing", "Accepted contract references a missing boundary");
 		const pinned = contract ? factory.contractContext(unitId, contract.revision) : null;
-		return {
+		const retrieved = pinned ? null : discoveryContext(state, unitId, { query: input.query });
+		const result = {
 			repositoryId: factory.repository.id, unitId, unitRevision: governingUnit.revision, owner: workspace(),
-			unit: governingUnit, proposedUnit: governingUnit.revision !== unit.revision ? unit : null, contract,
+			unit: governingUnit, proposedUnit: !input.binding && governingUnit.revision !== unit.revision ? unit : null, contract,
 			governing: pinned ? { unit: pinned.unit, contract, obligations: pinned.obligations, evaluations: pinned.evaluations, foundations: pinned.foundations } : null,
-			rationale: pinned?.rationale ?? state.knowledge.filter((entry) => entry.unitId === unitId).slice(-16).map((entry) => ({ ...entry, authority: "non-governing" })),
+			rationale: pinned?.rationale ?? retrieved?.rationale ?? [],
 			decisionLineage: pinned?.decisionLineage ?? [],
 			authority: contract ? "accepted-contract" : "discovery-only",
+			...(retrieved ? { signals: retrieved.signals, retrieval: retrieved.retrieval } : {}),
 		};
+		checkContextSize(result);
+		return result;
 	};
 	return { factoryFor, requireOwner, stateFor, context };
 }

@@ -5,8 +5,10 @@ ordinary question, or authorize paid workflows, additional agents, commits, depl
 
 ## Authority and discovery
 
-1. Read `foundry_get_factory` with the actual Git `repositoryPath`. The canonical common-directory
-   identity shares authority across sibling worktrees and sessions, not across unrelated clones.
+1. Read `foundry_get_factory` with the actual Git `repositoryPath`. The logical identity in
+   `.foundry/repository.json` travels with the repository; the canonical common directory
+   identifies its local execution journal. Clones recover knowledge, never native execution
+   ownership. Sibling worktrees must agree on the checked-out knowledge head.
    `expectedRevision` on factory tools guards the repository ledger, not the session plan.
 2. Use `foundry_define_unit` for coherent behavior, not a file or task. Declare exclusive named
    authority in `boundary.owns`, stable `exposes`/`consumes` interfaces, conserved data and user
@@ -20,8 +22,14 @@ ordinary question, or authorize paid workflows, additional agents, commits, depl
    Draft obligations and evaluation definitions are still non-governing. Use `derived-from` to
    retain discoveries, `contradicts` for conflicting evidence, and `supersedes` for revisions.
    A revision of an existing knowledge ID must link to its preceding revision; no record is edited.
-4. Recover a specification as connected obligation/evaluation revisions. Evaluations pin a
-   procedure reference and SHA-256 digest, covered obligation revisions, modality, environment,
+4. Recover a specification as connected obligation/evaluation revisions. Executable evaluations
+   pin a `command` procedure with a version-1 Git bundle: immutable `commit`, directory `root`,
+   repository-relative `entryPoint`, additional `support` paths, and `invocation: {argv, cwd}`.
+   The root is protected recursively; include applicable manifests, locks, helpers and fixtures.
+   Omit the procedure digest when recording a new bundle to have the service compute it;
+   a supplied digest must match actual Git content and the invocation. References are
+   non-executable and cannot report a passing executable check. Also declare covered
+   obligation revisions, modality, environment,
    workload and maximum evidence age. Distinguish implementation tests, durable boundary checks,
    operational evidence and human judgment. Boundary and preservation checks require independent
    evidence; human evaluations require an attributed human judgment, not an AI review verdict.
@@ -51,7 +59,8 @@ Adoption does not create a fresh-generation plan or count as a reconstruction pr
    and how context separation will actually be established. Prior implementation cannot be a
    generation input. The returned `generation` package is the future implementation input; it does
    not include comparison-only artifacts. The current implementation is unchanged.
-   Current format is `foundry-factory-v2` / seal version 2. Source refs, run/session paths and
+   The ledger format remains `foundry-factory-v2`; new accepted contexts use seal version 3.
+   Historical version-2 seals are retained, never silently rewritten. Source refs, run/session paths and
    source artifacts remain in the inspectable ledger rather than leaking through generation
    provenance. Comparison-only refs/digests in generation text are rejected explicitly.
    Sealed generation context is bounded to 128 KiB.
@@ -107,7 +116,10 @@ Changing only one of those identities does not create another assessment. A genu
 assessment needs its own claimed source identity and actual observation time.
 Evidence names the candidate, contract/context digests, exact commit and evaluator revision/digest,
 source/time, environment/workload, independence method/reason and actual report.
-These are `claimed` or `independent-claim` records, not a sandbox or attestation service.
+Process/session/human provenance remains `claimed` or `independent-claim`, not a sandbox or
+attestation service. Mechanical evaluator `identity` is service-owned; never supply it yourself.
+Candidate commits must contain the unchanged protected evaluator material. An unavailable
+commit, evaluator or verifier worktree is explicit missing/unsupported evidence, not success.
 Never use an external record to fabricate ownership of a native workflow.
 
 ## Learning, renewal and retention
@@ -153,14 +165,34 @@ Content integrity is checked on decode; this is not authenticated attestation. N
 deleted. SQLite file size may not shrink (pages can be reused). The former 8,192-event lifetime
 ceiling is gone explicitly: bounds now apply per event (128 KiB), archive segment (8,192 events /
 32 MiB), and transfer page (256 events / 4 MiB), not to lifetime receipt publication.
+Use `foundry_get_factory` filters (`kinds`, `query`, `relatedTo`) and its opaque `cursor`
+to retrieve older relevant knowledge. Keep filters and limit unchanged when following a cursor.
+Selection is bounded, deterministic and explains omissions; accepted sealed contexts do not
+grow merely because new observations arrive.
+
+Portable knowledge is published through `.foundry/repository.json` and immutable content-addressed
+objects. Raw reports remain local; portable observations retain explicit source/statement
+commitments and causal links. Capturing a report does not publish its contents or make it a
+requirement. Historical candidate decisions travel as bounded summaries, not live candidates
+or current assurance. Imported private-context v2 contracts marked `historyOnly` require a new
+explicit portable acceptance before reconstruction.
+
+For an existing local ledger, use `foundry_migrate_factory` with its exact revision, actor and
+reason. Migration retains the original journal and seal lineage. It never commits files or
+transfers native ownership. A conflicting checked-out head holds new work rather than merging
+authority automatically. `factory_publication_pending` means the local mutation is durable;
+inspect/reopen to recover its publication instead of repeating it.
+
 Use explicit current-format `foundry_export_factory` / `foundry_import_factory` for an empty store
 of the same canonical repository. No legacy migration or automatic identity retargeting exists.
 Single JSON transfers are bounded to 32 MiB. For larger histories use `foundry_export_factory_page`,
 pin its `revision`/`throughDigest`, and advance with `nextRevision`. `foundry_import_factory_page`
 stages that exact sequence under an `importId`; it becomes authoritative only after complete validation.
-Partial transfers survive restart, and explicit `foundry_abandon_factory_import` retains their received
-data rather than deleting it. Current v2 SQLite documents upgrade non-destructively to physical schema 3;
-cached older writers fail closed and must restart. Logical v2 JSON, generation seals and ownership do not change.
+Partial transfers survive restart and take precedence over automatic cache reconstruction.
+Explicit `foundry_abandon_factory_import` retains their received
+data rather than deleting it. Current v2 SQLite documents upgrade non-destructively to physical schema 4;
+cached older writers fail closed and must restart. Historical v2 JSON, seals and ownership remain
+historical; new acceptance uses version-3 portable commitments.
 Already-recorded v2 receipts and selection decisions remain readable under their original publication
 rules. Current assurance coalesces duplicate origins at their earliest claimed observation time;
 historical duplicate publication cannot manufacture fresh support. New publication and prospective

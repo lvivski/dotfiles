@@ -19,7 +19,7 @@ export function createPlanningOperations({ analysis, factory, persist, syncFacto
 	 * @param {Request<"preparePlan">} input
 	 */
 	const preparePlan = async (input) => {
-		const factoryContext = factory.context(input.repositoryPath, input.unitId);
+		const factoryContext = factory.context(input.repositoryPath, input.unitId, { query: input.objective });
 		if (input.intent !== undefined && input.intent !== "discovery") {
 			throw new FoundryOperationError("factory_planning_intent", "Native planning intent must be discovery; accepted reconstruction uses a sealed candidate");
 		}

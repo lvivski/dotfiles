@@ -77,4 +77,35 @@ export function validateFactoryEvaluations(evaluations) {
 			assertString(entry[field], `factoryEvaluation.${field}`, field === "report" ? 16000 : 2048);
 		}
 	}
+
+}
+
+/** @param {unknown} value @returns {asserts value is import("../../types/plan.js").VerifierWorktree} */
+export function validateVerifierWorktree(value) {
+	assertPlainObject(value, "verifierWorktree");
+	if (value.status === "available") {
+		assertKnownKeys(value, new Set(["status", "path", "gitDirectory"]), "verifierWorktree");
+		assertString(value.path, "verifierWorktree.path", 4096);
+		assertString(value.gitDirectory, "verifierWorktree.gitDirectory", 4096);
+	} else {
+		assertKnownKeys(value, new Set(["status", "reason"]), "verifierWorktree");
+		if (value.status !== "unsupported") fail("invalid_verifier_worktree", "Verifier worktree status must be available or unsupported");
+		assertString(value.reason, "verifierWorktree.reason", 2048);
+	}
+}
+
+/** @param {unknown} value @returns {asserts value is import("../../types/plan.js").RepositoryCheck} */
+export function validateRepositoryCheck(value) {
+	assertPlainObject(value, "repositoryCheck");
+	assertKnownKeys(value, new Set(["version", "commit", "integrationCommits", "worktree"]), "repositoryCheck");
+	if (value.version !== 1) fail("invalid_repository_check", "Unknown repository identity check version");
+	assertCommit(value.commit, "repositoryCheck.commit");
+	if (value.commit === null) fail("invalid_repository_check", "Repository checks require a commit");
+	assertStringArray(value.integrationCommits, "repositoryCheck.integrationCommits", { maximum: 32, itemMaximum: 64 });
+	for (const commit of value.integrationCommits) assertCommit(commit, "repositoryCheck.integrationCommit");
+	if (value.worktree !== undefined) {
+		assertPlainObject(value.worktree, "repositoryCheck.worktree");
+		assertKnownKeys(value.worktree, new Set(["head", "clean"]), "repositoryCheck.worktree");
+		if (value.worktree.head !== value.commit || value.worktree.clean !== true) fail("invalid_repository_check", "A checked verifier must be clean at the exact candidate commit");
+	}
 }

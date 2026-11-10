@@ -1,4 +1,4 @@
-import { stableStringify } from "../digest.mjs";
+import { analysisInputDigest, stableStringify } from "../digest.mjs";
 import { fail, identifier, reference } from "./fields.mjs";
 
 /** @typedef {import("../types/factory.js").KnowledgeRef} KnowledgeRef */
@@ -13,6 +13,14 @@ export const key = (ref) => `${ref.id}@${ref.revision}`;
 
 /** @param {unknown} left @param {unknown} right */
 export const same = (left, right) => stableStringify(left) === stableStringify(right);
+
+/** @param {Knowledge} entry */
+export const privateKnowledge = (entry) => entry.kind === "observation"
+	&& (entry.source.kind === "app-task" || (entry.id.startsWith("analysis-")
+		&& ["audit", "research", "review", "security", "triage"].includes(entry.source.kind)));
+
+/** @param {Knowledge} entry */
+export const privateStatement = (entry) => `Local report omitted; statement commitment ${entry.statementCommitment ?? analysisInputDigest(entry.statement)}. Inspect the originating session for the raw evidence.`;
 
 /** @type {WeakMap<object, RecordIndex<KnowledgeRef>>} */
 const recordIndexes = new WeakMap();

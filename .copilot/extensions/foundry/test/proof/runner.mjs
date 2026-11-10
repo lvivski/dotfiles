@@ -9,6 +9,7 @@ import { evaluateWeighted } from "./evaluators/weighted.mjs";
 const input = readRecord(parseJson(readString(process.argv[2])));
 if (typeof input.mode !== "string" || typeof input.policy !== "string") throw new TypeError("Proof evaluation requires its mode and policy path");
 if (!["policy", "weighted", "api", "weighted-api"].includes(input.mode)) throw new TypeError("Unknown proof evaluation mode");
+if (input.conservation !== undefined && typeof input.conservation !== "boolean") throw new TypeError("Conservation must be a boolean");
 /** @param {Uint8Array} content */
 const hash = (content) => createHash("sha256").update(content).digest("hex");
 const policyBytes = await readFile(input.policy);
@@ -41,7 +42,7 @@ if (input.mode.endsWith("api")) {
 	const api = createAdmissionApi(policy);
 	schedule = checkedSchedule(api);
 }
-const checks = evaluate(schedule);
+const checks = evaluate(schedule, { conservation: input.conservation !== false });
 if (weighted) checks.push(evaluateWeighted(schedule));
 const receipts = delegation ? [
 	delegation,

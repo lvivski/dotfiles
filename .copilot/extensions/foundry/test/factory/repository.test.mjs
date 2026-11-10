@@ -18,7 +18,7 @@ test("repository authority shares worktree identity, rejects stale writers and r
 		expectedRevision: stale, id: "stale", unitId: "ledger", kind: "observation", statement: "Stale writer", source: f.source(),
 	}), { code: "revision_conflict" });
 	await writeFile(path.join(f.repositoryPath, "seed"), "fixture");
-	f.git("add", "seed");
+	f.git("add", "seed", ".foundry");
 	f.git("-c", "user.name=Factory fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "seed");
 	const siblingPath = path.join(f.root, "sibling");
 	f.git("worktree", "add", "--quiet", "--detach", siblingPath);
@@ -28,7 +28,7 @@ test("repository authority shares worktree identity, rejects stale writers and r
 	const exportJson = f.factory.exportFactory();
 	const restoreRoot = path.join(f.root, "restored");
 	await mkdir(restoreRoot);
-	const restored = createFactoryService({ repositoryPath: siblingPath, storageRoot: restoreRoot, clock: f.clock });
+	const restored = createFactoryService({ repositoryPath: siblingPath, storageRoot: restoreRoot, clock: f.clock, knowledge: "local" });
 	assert.equal(restored.importFactory({ source: exportJson, expectedRevision: 0 }).executionOwnership, "not-transferred");
 	assert.equal(restored.exportFactory(), exportJson);
 	assert.throws(() => restored.importFactory({ source: exportJson, expectedRevision: 0 }), { code: "factory_import_conflict" });
@@ -36,7 +36,7 @@ test("repository authority shares worktree identity, rejects stale writers and r
 	wrong.repository.id = "0".repeat(64);
 	const emptyRoot = path.join(f.root, "empty");
 	await mkdir(emptyRoot);
-	const empty = createFactoryService({ repositoryPath: f.repositoryPath, storageRoot: emptyRoot, clock: f.clock });
+	const empty = createFactoryService({ repositoryPath: f.repositoryPath, storageRoot: emptyRoot, clock: f.clock, knowledge: "local" });
 	assert.throws(() => empty.importFactory({ source: JSON.stringify(wrong), expectedRevision: 0 }), { code: "factory_repository_mismatch" });
 	assert.equal(empty.snapshot().revision, 0);
 	wrong.repository = f.factory.repository;

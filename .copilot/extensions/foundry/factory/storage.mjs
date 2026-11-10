@@ -7,19 +7,16 @@ import { deflateRawSync, inflateRawSync } from "node:zlib";
 import { analysisInputDigest, stableStringify } from "../digest.mjs";
 import { errorCode, errorMessage, isList, isOneOf, isRecord, parseJson } from "../data.mjs";
 import { createArtifactDatabase } from "../storage/database.mjs";
+import { FACTORY_ACTIONS, prepareCommand } from "./replay.mjs";
 
 /** @typedef {import("../types/factory.js").FactoryAction} FactoryAction */
 /** @typedef {import("../types/factory.js").FactoryEvent} FactoryEvent */
 /** @typedef {import("../types/factory.js").FactoryDocument} FactoryDocument */
 /** @typedef {import("node:sqlite").DatabaseSync} Database */
-/** @type {readonly FactoryAction[]} */
-export const FACTORY_ACTIONS = Object.freeze(["createUnit", "appendKnowledge", "acceptContract", "prepareCandidate",
-	"bindPlan", "bindEvaluationPlan", "activateEvaluationPlan", "recordDelivery", "recordEvaluation",
-	"recordCompletion", "recordEvaluationCompletion", "abandonPlan", "decideCandidate",
-	"recordSignal", "ingestAnalysis", "retire", "compactFactory"]);
+export { FACTORY_ACTIONS };
 
 const APPLICATION_ID = 0x46414354;
-const STORAGE_VERSION = 3;
+const STORAGE_VERSION = 4;
 export const FACTORY_STORAGE_LIMITS = Object.freeze({
 	eventBytes: 128 * 1024, segmentEvents: 8192, segmentBytes: 32 * 1024 * 1024,
 	transferEvents: 256, transferBytes: 4 * 1024 * 1024, jsonBytes: 32 * 1024 * 1024,
@@ -39,8 +36,8 @@ export function createFactoryLedger({ repository, format, storageRoot, busyTimeo
 	/** @returns {FactoryDocument} */
 	const empty = () => ({ format, repository, revision: 0, events: [] });
 	/** @param {FactoryEvent[]} entries */
-	const historyDigest = (entries) => {
-		let digest = analysisInputDigest(empty());
+	const historyDigest = (entries, portable = false) => {
+		let digest = analysisInputDigest({ ...empty(), ...(portable ? { portable: true } : {}) });
 		for (const event of entries) digest = analysisInputDigest([digest, analysisInputDigest(event)]);
 		return digest;
 	};
@@ -119,13 +116,17 @@ export function createFactoryLedger({ repository, format, storageRoot, busyTimeo
 	};
 	const database = createArtifactDatabase({
 		workspacePath: storageRoot ?? process.env.COPILOT_HOME ?? os.homedir(),
-		directoryParts: storageRoot ? ["repositories", repository.id]
-			: process.env.COPILOT_HOME ? ["foundry", "repositories", repository.id] : [".copilot", "foundry", "repositories", repository.id],
+		directoryParts: storageRoot ? ["repositories", analysisInputDigest(repository.commonDirectory)]
+			: process.env.COPILOT_HOME ? ["foundry", "repositories", analysisInputDigest(repository.commonDirectory)] : [".copilot", "foundry", "repositories", analysisInputDigest(repository.commonDirectory)],
 		busyTimeoutMs, schemaVersion: STORAGE_VERSION,
 		initialize(db) {
 			const version = db.prepare("PRAGMA user_version").get()?.user_version;
 			const application = db.prepare("PRAGMA application_id").get()?.application_id;
 			if (version === STORAGE_VERSION && application === APPLICATION_ID) return;
+			if (version === 3 && application === APPLICATION_ID) {
+				db.exec("CREATE TABLE factory_knowledge (singleton INTEGER PRIMARY KEY CHECK(singleton=1), mode TEXT NOT NULL, head TEXT) STRICT; INSERT INTO factory_knowledge VALUES(1,'local',NULL); ALTER TABLE factory_transfers ADD COLUMN portable INTEGER NOT NULL DEFAULT 0; PRAGMA user_version=4;");
+				return;
+			}
 			if (version === 2 && application === APPLICATION_ID) {
 				const row = db.prepare("SELECT revision, document FROM factory WHERE singleton = 1").get();
 				const base = row ? decode(row.document) : empty();
@@ -144,8 +145,10 @@ export function createFactoryLedger({ repository, format, storageRoot, busyTimeo
 				INSERT INTO factory_head SELECT singleton, revision FROM factory;
 				CREATE TABLE factory_events (revision INTEGER PRIMARY KEY, document TEXT NOT NULL CHECK(length(CAST(document AS BLOB)) <= ${bounds.eventBytes}), digest TEXT NOT NULL) STRICT;
 				CREATE TABLE factory_archives (first_revision INTEGER PRIMARY KEY, last_revision INTEGER NOT NULL, document TEXT NOT NULL, digest TEXT NOT NULL) STRICT;
-				CREATE TABLE factory_transfers (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, digest TEXT NOT NULL, cursor INTEGER NOT NULL, status TEXT NOT NULL, reason TEXT, actor TEXT) STRICT;
+				CREATE TABLE factory_transfers (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, digest TEXT NOT NULL, cursor INTEGER NOT NULL, status TEXT NOT NULL, reason TEXT, actor TEXT, portable INTEGER NOT NULL DEFAULT 0) STRICT;
 				CREATE TABLE factory_transfer_events (transfer_id TEXT NOT NULL, revision INTEGER NOT NULL, document TEXT NOT NULL CHECK(length(CAST(document AS BLOB)) <= ${bounds.eventBytes}), PRIMARY KEY(transfer_id, revision)) STRICT;
+				CREATE TABLE factory_knowledge (singleton INTEGER PRIMARY KEY CHECK(singleton=1), mode TEXT NOT NULL, head TEXT) STRICT;
+				INSERT INTO factory_knowledge VALUES(1,'local',NULL);
 				PRAGMA application_id = ${APPLICATION_ID};
 				PRAGMA user_version = ${STORAGE_VERSION};
 			`);
@@ -210,7 +213,7 @@ export function createFactoryLedger({ repository, format, storageRoot, busyTimeo
 	/** @param {Database} db */
 	const read = (db) => {
 		const revision = head(db);
-		const document = { format, repository, revision, events: [...events(db, revision)] };
+		const document = { format, repository, revision, events: [...events(db, revision)], ...(base(db).portable ? { portable: /** @type {const} */ (true) } : {}) };
 		return { document, state: replay(document, repository) };
 	};
 	/** @param {Database} db */
@@ -256,20 +259,24 @@ export function createFactoryLedger({ repository, format, storageRoot, busyTimeo
 	const assertUnused = (db, expectedRevision) => {
 		if (expectedRevision !== 0 || head(db) !== 0) fail("factory_import_conflict", "Import requires empty authority and expectedRevision 0");
 	};
-	/** @template {FactoryAction} A @param {A} action @param {Record<string, unknown>} request @returns {import("../types/factory.js").FactoryMutationResult<A>} */
-	const append = (action, request) => database.transaction((db) => {
+	/** @template {FactoryAction} A @param {A} action @param {Record<string, unknown>} request
+	 * @param {((document: FactoryDocument, state: import("../types/factory.js").FactoryState) => void)} [validate]
+	 * @returns {import("../types/factory.js").FactoryMutationResult<A>} */
+	const append = (action, request, validate) => database.transaction((db) => {
 		if (db.prepare("SELECT id FROM factory_transfers WHERE status='pending' LIMIT 1").get()) fail("factory_import_pending", "Complete or explicitly abandon the staged import before appending authority");
 		const { document, state } = read(db);
 		if (checkRevision(request?.expectedRevision, "expectedRevision") !== document.revision) fail("revision_conflict", "Repository factory has changed", { expectedRevision: request.expectedRevision, latestRevision: document.revision });
 		let owned;
 		try { owned = structuredClone(request); } catch (error) { fail("factory_input_invalid", "Factory mutations require owned JSON data", { message: errorMessage(error) }); }
-		const { expectedRevision, ...input } = owned;
+		const { expectedRevision, ...payload } = owned;
+		const input = prepareCommand(action, payload);
 		const at = now();
 		const last = document.events.at(-1);
 		if (last && last.at > at) fail("factory_clock_invalid", "Factory clock moved behind its last event");
 		const event = checkEvent({ revision: checkRevision(document.revision + 1, "next revision"), at, action, input });
 		const result = applyEvent(state, event);
 		if ("idempotent" in result && result.idempotent) return structuredClone({ repository, revision: document.revision, ...result });
+		validate?.({ ...document, revision: event.revision, events: [...document.events, event] }, state);
 		const serialized = JSON.stringify(event);
 		const before = action === "compactFactory" ? storedBytes(db) : null;
 		db.prepare("INSERT INTO factory_events VALUES (?, ?, ?)").run(event.revision, serialized, analysisInputDigest(parseJson(serialized)));
@@ -284,11 +291,12 @@ export function createFactoryLedger({ repository, format, storageRoot, busyTimeo
 		const { document, state } = read(db);
 		return { repository, revision: document.revision, ...state };
 	});
+	const readDocument = () => database.transaction((db) => structuredClone(read(db).document));
 	/** @param {import("../types/factory.js").FactoryReceipt[]} receipts */
 	const preview = (receipts) => database.transaction((db) => {
 		const { document, state } = read(db);
 		for (const [index, receipt] of receipts.entries()) applyEvent(state, checkEvent({
-			revision: document.revision + index + 1, at: now(), action: receipt.action, input: structuredClone(receipt.input),
+			revision: document.revision + index + 1, at: now(), action: receipt.action, input: prepareCommand(receipt.action, structuredClone(receipt.input)),
 		}));
 		return { revision: document.revision, valid: true };
 	});
@@ -304,7 +312,7 @@ export function createFactoryLedger({ repository, format, storageRoot, busyTimeo
 		checkRevision(revision, "throughRevision");
 		if (revision > head(db) || afterRevision > revision || !Number.isSafeInteger(limit) || limit < 1 || limit > bounds.transferEvents) fail("factory_export_cursor", "Invalid bounded export cursor");
 		const selected = [];
-		let digest = analysisInputDigest(empty());
+		let digest = analysisInputDigest({ ...empty(), ...(base(db).portable ? { portable: true } : {}) });
 		let bytes = 0;
 		let full = false;
 		for (const event of events(db, revision)) {
@@ -317,7 +325,8 @@ export function createFactoryLedger({ repository, format, storageRoot, busyTimeo
 		}
 		if (throughDigest !== undefined && throughDigest !== digest) fail("factory_export_changed", "Pinned logical export identity changed");
 		const nextRevision = selected.at(-1)?.revision ?? afterRevision;
-		return { format, repository, revision, throughDigest: digest, afterRevision, events: selected, nextRevision, complete: nextRevision === revision };
+		return { format, repository, revision, throughDigest: digest, afterRevision, events: selected, nextRevision, complete: nextRevision === revision,
+			...(base(db).portable ? { portable: /** @type {const} */ (true) } : {}) };
 	});
 	/** @param {{source: unknown, expectedRevision: unknown}} input */
 	const importFactory = ({ source, expectedRevision }) => database.transaction((db) => {
@@ -345,18 +354,19 @@ export function createFactoryLedger({ repository, format, storageRoot, busyTimeo
 		if (typeof importId !== "string" || !/^[a-z0-9][a-z0-9._-]{0,95}$/.test(importId)) fail("factory_import_invalid", "A stable importId is required");
 		if (!isRecord(page) || page.format !== format || stableStringify(page.repository) !== stableStringify(repository)
 			|| !isList(page.events) || page.events.length > bounds.transferEvents
+			|| (page.portable !== undefined && page.portable !== true)
 			|| Buffer.byteLength(JSON.stringify(page)) > bounds.transferBytes
 			|| typeof page.throughDigest !== "string" || !/^[a-f0-9]{64}$/.test(page.throughDigest)) fail("factory_import_invalid", "Invalid bounded current-format export page");
 		const pageRevision = checkRevision(page.revision, "import head");
 		const afterRevision = checkRevision(page.afterRevision, "import cursor");
-		let transfer = db.prepare("SELECT revision,digest,cursor,status FROM factory_transfers WHERE id=?").get(importId);
+		let transfer = db.prepare("SELECT revision,digest,cursor,status,portable FROM factory_transfers WHERE id=?").get(importId);
 		if (!transfer) {
 			if (page.afterRevision !== 0 || db.prepare("SELECT id FROM factory_transfers WHERE status='pending' LIMIT 1").get()) fail("factory_import_cursor", "Start one import from revision zero");
-			db.prepare("INSERT INTO factory_transfers VALUES (?, ?, ?, 0, 'pending', NULL, NULL)").run(importId, pageRevision, page.throughDigest);
-			transfer = { revision: pageRevision, digest: page.throughDigest, cursor: 0, status: "pending" };
+			db.prepare("INSERT INTO factory_transfers VALUES (?, ?, ?, 0, 'pending', NULL, NULL, ?)").run(importId, pageRevision, page.throughDigest, Number(page.portable === true));
+			transfer = { revision: pageRevision, digest: page.throughDigest, cursor: 0, status: "pending", portable: Number(page.portable === true) };
 		}
 		if (transfer.status !== "pending" || transfer.revision !== page.revision || transfer.digest !== page.throughDigest
-			|| transfer.cursor !== page.afterRevision) fail("factory_import_cursor", "Import page does not follow its pinned staged prefix");
+			|| transfer.cursor !== page.afterRevision || transfer.portable !== Number(page.portable === true)) fail("factory_import_cursor", "Import page does not follow its pinned staged prefix");
 		/** @type {FactoryEvent[]} */
 		const prior = [];
 		let stagedCursor = 0;
@@ -375,7 +385,7 @@ export function createFactoryLedger({ repository, format, storageRoot, busyTimeo
 		const cursor = combined.length;
 		if (cursor > pageRevision || page.nextRevision !== cursor || page.complete !== (cursor === pageRevision)
 			|| (!page.events.length && cursor !== page.revision)) fail("factory_import_cursor", "Import page has a gap, duplicate or invalid completion marker");
-		const document = { format, repository, revision: cursor, events: combined };
+		const document = { format, repository, revision: cursor, events: combined, ...(page.portable ? { portable: /** @type {const} */ (true) } : {}) };
 		replay(document, repository);
 		const last = combined.at(-1);
 		if (last && last.at > now()) fail("factory_import_invalid", "Imported evidence is from the future");
@@ -385,9 +395,10 @@ export function createFactoryLedger({ repository, format, storageRoot, busyTimeo
 		}
 		db.prepare("UPDATE factory_transfers SET cursor=? WHERE id=?").run(cursor, importId);
 		if (!page.complete) return { importId, revision: 0, stagedRevision: cursor, complete: false };
-		const digest = historyDigest(combined);
+		const digest = historyDigest(combined, page.portable === true);
 		if (digest !== page.throughDigest) fail("factory_import_invalid", "Completed import differs from the pinned export head");
 		for (const event of combined) db.prepare("INSERT INTO factory_events VALUES (?, ?, ?)").run(event.revision, JSON.stringify(event), analysisInputDigest(event));
+		if (page.portable) db.prepare("UPDATE factory SET document=? WHERE singleton=1").run(encode({ ...empty(), portable: true }));
 		db.prepare("UPDATE factory_head SET revision=? WHERE singleton=1").run(cursor);
 		db.prepare("UPDATE factory_transfers SET status='completed' WHERE id=?").run(importId);
 		archive(db, true);
@@ -409,5 +420,17 @@ export function createFactoryLedger({ repository, format, storageRoot, busyTimeo
 		limits: bounds, lifetimeEventCeiling: null,
 		transfers: db.prepare("SELECT id,revision,cursor,status,actor,reason FROM factory_transfers ORDER BY rowid DESC LIMIT 50").all(),
 	}));
-	return { databasePath: database.databasePath, append, snapshot, preview, exportFactory, importFactory, exportFactoryPage, importFactoryPage, abandonFactoryImport, storageInfo };
+	const knowledgeMetadata = () => database.transaction((db) => {
+		const row = db.prepare("SELECT mode,head FROM factory_knowledge WHERE singleton=1").get();
+		if (!row || (row.mode !== "local" && row.mode !== "repository")
+			|| (row.head !== null && (typeof row.head !== "string" || !/^[a-f0-9]{64}$/.test(row.head)))) fail("factory_document_invalid", "Factory knowledge cache metadata is invalid");
+		return { mode: row.mode, head: row.head };
+	});
+	/** @param {{mode: "local" | "repository", head: string | null}} input */
+	const setKnowledgeMetadata = (input) => database.transaction((db) => {
+		if (!["local", "repository"].includes(input.mode) || (input.head !== null && !/^[a-f0-9]{64}$/.test(input.head))) fail("factory_input_invalid", "Invalid knowledge cache head");
+		db.prepare("UPDATE factory_knowledge SET mode=?,head=? WHERE singleton=1").run(input.mode, input.head);
+	}, { write: true });
+	return { databasePath: database.databasePath, append, snapshot, preview, readDocument, exportFactory, importFactory, exportFactoryPage, importFactoryPage, abandonFactoryImport, storageInfo,
+		knowledgeMetadata, setKnowledgeMetadata };
 }

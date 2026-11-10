@@ -1,11 +1,12 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createFactoryService } from "../../factory.mjs";
 import { factoryMutator } from "./accessors.mjs";
+import { fixtureRoot, seedRepository } from "../git.mjs";
+import { resolveEvaluatorBundle } from "../../evidence/bundles.mjs";
 
 /** @param {string} value */
 export const hash = (value) => createHash("sha256").update(value).digest("hex");
@@ -32,13 +33,26 @@ console.log('Balance, identity conservation${conserveInput ? " and caller author
 
 /** @param {import("node:test").TestContext} t */
 export async function fixture(t) {
-	const root = await mkdtemp(path.join(os.tmpdir(), "foundry-factory-"));
-	t.after(() => rm(root, { recursive: true, force: true }));
+	const root = await fixtureRoot(t, "factory");
 	const repositoryPath = path.join(root, "repo");
 	await mkdir(repositoryPath);
 	/** @param {string[]} args */
 	const git = (...args) => execFileSync("git", ["-C", repositoryPath, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
-	git("init", "--quiet");
+	seedRepository(repositoryPath);
+	for (const version of [1, 2]) {
+		await mkdir(path.join(repositoryPath, "oracles", `v${version}`), { recursive: true });
+		await writeFile(path.join(repositoryPath, "oracles", `v${version}`, "check.mjs"), evaluator(version > 1).replace("process.argv[1]", "new URL('../../implementation.mjs', import.meta.url).href"));
+	}
+	git("add", "oracles");
+	git("-c", "user.name=Factory fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "Preserved fixture evaluators");
+	const evaluatorCommit = git("rev-parse", "HEAD");
+	const procedure = (version = 1) => {
+		const resolved = resolveEvaluatorBundle(repositoryPath, {
+			version: 1, commit: evaluatorCommit, root: `oracles/v${version}`, entryPoint: `oracles/v${version}/check.mjs`,
+			support: ["package-lock.json", "package.json"], invocation: { argv: ["node", `oracles/v${version}/check.mjs`], cwd: "." },
+		});
+		return { kind: /** @type {const} */ ("command"), ref: `node oracles/v${version}/check.mjs`, bundle: resolved.bundle, digest: resolved.digest };
+	};
 	let time = Date.now();
 	const clock = () => new Date(time += 1000);
 	const factory = createFactoryService({ repositoryPath, storageRoot: root, clock });
@@ -66,7 +80,7 @@ export async function fixture(t) {
 			source: source(), uncertainty: null,
 			links: revision === 1 ? [] : [{ relation: "supersedes", target: { id: "boundary-eval", revision: revision - 1 } }],
 			evaluation: {
-				modality: "boundary", procedure: { kind: "command", ref: "node boundary-evaluator.mjs", digest: hash(evaluator(revision > 1)) },
+				modality: "boundary", procedure: procedure(revision),
 				obligations: [ref(obligation)], environment: "node-fixture", workload: "single-debit",
 				maxAgeSeconds: 86400, independent: true, preservation: true,
 			},
@@ -80,19 +94,19 @@ export async function fixture(t) {
 	const prepare = (id, contractRevision, mode = "reconstruction") => call("prepareCandidate", {
 		id, unitId: "ledger", contractRevision, mode, actor: "fixture-generator",
 		context: {
-			generation: [{ kind: "test", ref: `fixture-evaluator-v${contractRevision}`, digest: hash(evaluator(contractRevision > 1)) }],
+			generation: [{ kind: "test", ref: `fixture-evaluator-v${contractRevision}`, digest: procedure(contractRevision).digest }],
 			comparisonOnly: mode === "reconstruction" ? [{ kind: "implementation", ref: "incumbent", digest: hash(initialCode) }] : [],
 			independence: { method: "fresh-process", reason: "The bounded fixture generator runs in a new Node process; no OS isolation is claimed." },
 		},
 	}).candidate;
 	/** @param {import("../../types/factory.js").Candidate} candidate @param {string} code */
 	const deliver = async (candidate, code) => {
-		const filename = `${candidate.id}.mjs`;
+		const filename = "implementation.mjs";
 		const output = path.join(repositoryPath, filename);
 		// This generator receives only the explicitly supplied fixture implementation.
 		execFileSync(process.execPath, ["--input-type=module", "-e", "import {writeFileSync} from 'node:fs'; writeFileSync(process.argv[1], process.argv[2]);", output, code]);
 		git("add", filename);
-		git("-c", "user.name=Factory fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", candidate.id);
+		git("-c", "user.name=Factory fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "--allow-empty", "-m", candidate.id);
 		const commit = git("rev-parse", "HEAD");
 		call("recordDelivery", {
 			candidateId: candidate.id, commit, artifact: { kind: "implementation", ref: pathToFileURL(output).href, digest: hash(code) },
@@ -102,12 +116,12 @@ export async function fixture(t) {
 	};
 	/** @param {import("../../types/factory.js").Candidate} candidate @param {Awaited<ReturnType<typeof deliver>>} delivery @param {number} revision */
 	const evaluate = (candidate, delivery, revision) => {
-		const script = evaluator(revision > 1);
-		const run = spawnSync(process.execPath, ["--input-type=module", "-e", script, delivery.filename], { encoding: "utf8" });
+		const pinned = procedure(revision);
+		const run = spawnSync(process.execPath, pinned.bundle.invocation.argv.slice(1), { cwd: repositoryPath, encoding: "utf8" });
 		const result = call("recordEvaluation", {
 			id: `evidence-${candidate.id}`, candidateId: candidate.id,
 			evaluation: { id: "boundary-eval", revision }, contractDigest: candidate.contractDigest,
-			contextDigest: candidate.contextDigest, commit: delivery.commit, procedureDigest: hash(script),
+			contextDigest: candidate.contextDigest, commit: delivery.commit, procedureDigest: pinned.digest,
 			outcome: run.status === 0 ? "passed" : "failed", source: source("external-run", `evaluate-${candidate.id}`),
 			environment: "node-fixture", workload: "single-debit",
 			independence: { method: "separate-process", reason: "A distinct Node evaluator imports the delivered module and runs the pinned assertions." },
@@ -120,5 +134,5 @@ export async function fixture(t) {
 		candidateId: candidate.id, action, expectedIncumbentId: incumbentId, actor: "owner",
 		reason: action === "accept" ? "Select against the same pinned obligations with preserved identity" : "Independent boundary oracle rejects caller-input mutation",
 	});
-	return { root, repositoryPath, git, factory, source, call, createUnit, contract, prepare, deliver, evaluate, decide, clock, advance: (/** @type {number} */ seconds) => { time += seconds * 1000; } };
+	return { root, repositoryPath, git, factory, source, call, createUnit, contract, prepare, deliver, evaluate, decide, procedure, clock, advance: (/** @type {number} */ seconds) => { time += seconds * 1000; } };
 }

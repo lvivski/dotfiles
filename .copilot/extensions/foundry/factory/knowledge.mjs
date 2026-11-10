@@ -51,10 +51,10 @@ export function createUnit(state, event, options = {}) {
 }
 
 /** @param {FactoryState} state @param {FactoryEvent} event
- * @param {{historical?: boolean}} [options] @returns {FactoryResults["appendKnowledge"]} */
+ * @param {{historical?: boolean, portable?: boolean}} [options] @returns {FactoryResults["appendKnowledge"]} */
 export function appendKnowledge(state, event, options = {}) {
 	const { action, input, at, revision } = event;
-	object(input, ["id", "unitId", "kind", "statement", "source", "links", "uncertainty", "evaluation"], action);
+	object(input, ["id", "unitId", "kind", "statement", "source", "links", "uncertainty", "evaluation", "sourceCommitment", "statementCommitment"], action);
 	const id = identifier(input.id);
 	const unit = unitFor(state, input.unitId);
 	const previous = latest(state.knowledge, id);
@@ -80,16 +80,30 @@ export function appendKnowledge(state, event, options = {}) {
 		evaluation: kind === "evaluation" ? evaluation(input.evaluation, state, unit.id) : null,
 		recordedAt: at,
 	};
+	if (input.sourceCommitment !== undefined) {
+		entry.sourceCommitment = digest(input.sourceCommitment, "sourceCommitment");
+		if (!options.portable && entry.sourceCommitment !== analysisInputDigest(entry.source)) {
+			fail("factory_provenance_changed", "Source commitment does not match the recorded provenance");
+		}
+		if (input.statementCommitment !== undefined) {
+			entry.statementCommitment = digest(input.statementCommitment, "statementCommitment");
+			if (!options.portable && entry.statementCommitment !== analysisInputDigest(entry.statement)) {
+				fail("factory_provenance_changed", "Statement commitment does not match the recorded knowledge");
+			}
+		}
+	}
 	state.knowledge.push(entry);
 	return { knowledge: entry };
 
 }
 
 /** @param {FactoryState} state @param {FactoryEvent} event
- * @param {{historical?: boolean}} [options] @returns {FactoryResults["acceptContract"]} */
+ * @param {{historical?: boolean, portable?: boolean}} [options] @returns {FactoryResults["acceptContract"]} */
 export function acceptContract(state, event, options = {}) {
 	const { action, input, at, revision } = event;
-	object(input, ["unitId", "unitRevision", "obligations", "evaluations", "actor", "reason", "resolutions", "rationale", "renewalSignalIds"], action);
+	object(input, ["unitId", "unitRevision", "obligations", "evaluations", "actor", "reason", "resolutions", "rationale", "renewalSignalIds", "sealVersion",
+		...(options.portable ? ["historicalSeal", "contextSeal", "historicalOnly"] : [])], action);
+	const sealVersion = input.sealVersion === undefined ? 2 : integer(input.sealVersion, "sealVersion", 2, 3);
 	const unit = unitFor(state, input.unitId, integer(input.unitRevision, "unitRevision"));
 	/** @param {unknown} refs @param {"obligation" | "evaluation"} kind */
 	const selected = (refs, kind) => {
@@ -106,6 +120,9 @@ export function acceptContract(state, event, options = {}) {
 	const obligations = selected(input.obligations, "obligation");
 	const evaluations = selected(input.evaluations, "evaluation");
 	const definitions = evaluations.map((ref) => evaluationFor(state, ref));
+	if (!options.historical && definitions.some((definition) => definition.procedure.kind === "command" && !definition.procedure.bundle)) {
+		fail("factory_evaluator_unpinned", "New executable contract acceptance requires an immutable Git evaluator bundle, not a legacy command reference");
+	}
 	if (definitions.some((definition) => definition.obligations.some((ref) => !obligations.some((item) => key(item) === key(ref))))
 		|| obligations.some((ref) => !definitions.some((definition) => definition.obligations.some((item) => key(item) === key(ref))))) {
 		fail("factory_evaluation_coverage", "Every obligation must have a pinned evaluation and every evaluation must cover selected obligation revisions");
@@ -132,7 +149,7 @@ export function acceptContract(state, event, options = {}) {
 	if (rationale.some((ref) => retired(state, "knowledge", ref.id, ref.revision))) {
 		fail("factory_context_invalid", "Retired explanatory knowledge cannot enter a new accepted context");
 	}
-	const dependencies = assertAcceptedDependencies(state, unit);
+	const dependencies = assertAcceptedDependencies(state, unit, options.historical === true);
 	const disputed = disputedKnowledge(state, selectedRefs);
 	if (disputed.some((entry) => !resolutions.some((resolution) => key(resolution.knowledge) === key(entry)))) {
 		fail("factory_unresolved_knowledge", "Acceptance needs attributed reasons resolving selected uncertainty and known contradictions", { knowledge: disputed.map(key) });
@@ -147,7 +164,7 @@ export function acceptContract(state, event, options = {}) {
 	const priorDecisionIds = state.contracts.filter((entry) => entry.unitId === unit.id).map((entry) => entry.decisionId);
 	/** @type {FactoryContract} */
 	const contract = {
-		sealVersion: 2,
+		sealVersion,
 		unitId: unit.id, unitRevision: unit.revision, revision: (previous?.revision ?? 0) + 1,
 		obligations, evaluations, decisionId: decision.id, acceptedAt: at,
 		previousDigest: previous?.digest ?? null,
@@ -160,8 +177,24 @@ export function acceptContract(state, event, options = {}) {
 	checkContextSize(sealedContext);
 	contract.digest = analysisInputDigest({
 		...contract, sealedContext,
-		provenance: [...selectedRefs, ...rationale].map((ref) => knowledgeFor(state, ref)),
+		provenance: [...selectedRefs, ...rationale].map((ref) => {
+			const entry = knowledgeFor(state, ref);
+			if (sealVersion === 2) return entry;
+			const { source: origin, sourceCommitment, statement, statementCommitment, ...knowledge } = entry;
+			return { ...knowledge, sourceCommitment: sourceCommitment ?? analysisInputDigest(origin),
+				statementCommitment: statementCommitment ?? analysisInputDigest(statement) };
+		}),
 	});
+	if (input.historicalSeal !== undefined) {
+		if (!options.portable || !options.historical || sealVersion !== 2) {
+			fail("factory_context_invalid", "A historical seal must retain its exact accepted context");
+		}
+		if (input.contextSeal !== analysisInputDigest(sealedContext)) {
+			if (input.historicalOnly !== true) fail("factory_context_invalid", "A historical seal must retain its exact accepted context");
+			contract.historyOnly = true;
+		}
+		contract.digest = digest(input.historicalSeal, "historicalSeal");
+	}
 	state.contracts.push(contract);
 	return { contract, decision };
 

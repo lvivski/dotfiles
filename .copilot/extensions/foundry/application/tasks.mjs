@@ -8,6 +8,8 @@ import { activeTaskAttempt } from "../plan/queries.mjs";
 import { findScopeConflicts, selectNonOverlappingTasks } from "../plan/scope.mjs";
 import { ATTEMPT_STATUS, TASK_STATUS } from "../plan/values.mjs";
 import { FoundryOperationError, revisionConflict } from "./errors.mjs";
+import { attachVerifierWorktree } from "../evidence/worktrees.mjs";
+import { checkTaskRepository } from "./repository.mjs";
 
 /** @typedef {import("../types/plan.js").FoundryPlan} FoundryPlan */
 /** @typedef {import("../types/plan.js").FoundryAttempt} FoundryAttempt */
@@ -202,12 +204,15 @@ export function createTaskOperations({ storeFor, persist, factory, syncFactoryPl
 		if (plan.revision !== expectedRevision) {
 			throw revisionConflict(planId, expectedRevision, plan.revision);
 		}
+		const verifierWorktree = plan.tasks.find((task) => task.id === taskId)?.kind === "verify"
+			? attachVerifierWorktree(plan.repository.workingDirectory, branch ?? null) : undefined;
 		return persist(
 			planId,
 			expectedRevision,
 			(current) => attachTaskAttempt(current, taskId, attemptId, {
 				sessionId,
 				branch: branch ?? null,
+				...(verifierWorktree ? { verifierWorktree } : {}),
 			}),
 			`task-attached:${taskId}:${attemptId}`,
 		);
@@ -237,8 +242,22 @@ export function createTaskOperations({ storeFor, persist, factory, syncFactoryPl
 		factory.validateLearning(learning ?? []);
 		let updated;
 		try {
+			/** @type {import("../types/plan.js").RepositoryCheck | undefined} */
+			let repositoryCheck;
+			/** @type {number | undefined} */
+			let factoryRevision;
+			if (status === TASK_STATUS.DONE) {
+				const plan = await storeFor().read(planId);
+				factory.requireOwner(plan);
+				if (plan.revision !== expectedRevision) throw revisionConflict(planId, expectedRevision, plan.revision);
+				const current = findAttempt(plan, taskId, attemptId);
+				validateDonePayload(plan, taskId, current, { resultSummary, evidence, branch, commit, prUrl });
+				// Reject stale subjects and malformed reports before reading external Git state.
+				completeTaskAttempt(plan, taskId, attemptId, status, { resultSummary, evidence, error, branch, commit, prUrl, learning, factoryEvaluations });
+				factoryRevision = factory.validateReports(plan, taskId, factoryEvaluations, evidence, commit);
+				if (current) repositoryCheck = checkTaskRepository(plan, taskId, current, commit);
+			}
 			updated = await persist(planId, expectedRevision, (plan) => {
-				if (status === TASK_STATUS.DONE) factory.validateReports(plan, taskId, factoryEvaluations, evidence);
 				const current = findAttempt(plan, taskId, attemptId);
 				if (status === TASK_STATUS.DONE) {
 					validateDonePayload(plan, taskId, current, {
@@ -279,13 +298,14 @@ export function createTaskOperations({ storeFor, persist, factory, syncFactoryPl
 					at: sessionTerminatedAt,
 					learning,
 					factoryEvaluations,
+					repositoryCheck,
 				});
-				factory.preflight(completed);
+				factory.preflight(completed, factoryRevision);
 				return completed;
 			}, `task-${status}:${taskId}:${attemptId}`);
 		} catch (failure) {
 			if (failure instanceof FoundryFactoryError
-				&& /^factory_(?:evidence|evaluator|human|generation|execution|provenance)/.test(failure.code)) {
+				&& /^factory_(?:evidence|evaluator|human|generation|execution|provenance|commit|integration|worktree|repository)/.test(failure.code)) {
 				let retained;
 				try {
 					const current = await storeFor().read(planId);
