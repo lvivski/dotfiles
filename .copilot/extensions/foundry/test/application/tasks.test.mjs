@@ -1,11 +1,87 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import test from "node:test";
 import { arrayOf, errorCode, property, readString } from "../../data.mjs";
 import { TASK_STATUS } from "../../plan/values.mjs";
 import { analysisStub, createApproved, evidence, planBlueprint, withOperations } from "./fixture.mjs";
+import { git } from "../git.mjs";
 
 /** @param {unknown} error */
 const missingFields = (error) => arrayOf(readString)(property(property(error, "details"), "missing"));
+
+test("App branch reconciliation retains the attached session, attempt and rename history", () => (
+	withOperations(async ({ operations, workspacePath }) => {
+		let plan = await createApproved(operations, workspacePath);
+		const reserved = await operations.reserveTask({
+			planId: plan.id, taskId: "T-001", expectedRevision: plan.revision, reservationId: "renamed-child",
+		});
+		const worktree = path.join(workspacePath, "child");
+		git(workspacePath, "worktree", "add", "--quiet", "-b", "work/generated", worktree);
+		const identity = { planId: plan.id, taskId: "T-001", attemptId: reserved.attemptId, sessionId: "same-child" };
+		plan = await operations.attachTask({ ...identity, expectedRevision: reserved.plan.revision, branch: "work/generated" });
+		const original = structuredClone(plan.tasks[0].attempts[0]);
+		git(worktree, "branch", "-m", "work/meaningful");
+		const request = {
+			...identity, expectedRevision: plan.revision, branch: "work/meaningful",
+			rename: { fromBranch: "work/generated", worktreePath: worktree, actor: "owner", reason: "App-required initial rename" },
+		};
+		await assert.rejects(operations.attachTask({ ...request, expectedRevision: plan.revision - 1 }), { code: "revision_conflict" });
+		await assert.rejects(operations.attachTask({ ...request, sessionId: "replacement" }), { code: "task_branch_rename_mismatch" });
+		await assert.rejects(operations.attachTask({ ...request, rename: { ...request.rename, worktreePath: workspacePath } }), { code: "task_branch_rename_mismatch" });
+		await assert.rejects(operations.attachTask({ ...identity, expectedRevision: plan.revision, branch: request.branch }), { code: "attempt_already_attached" });
+		assert.equal((await operations.getPlan({ planId: plan.id })).revision, plan.revision);
+		plan = await operations.attachTask(request);
+		const renamed = plan.tasks[0].attempts[0];
+		assert.deepEqual({ ...renamed, branch: original.branch, branchRenames: undefined }, { ...original, branchRenames: undefined });
+		assert.equal(renamed.branch, request.branch);
+		assert.equal(renamed.branchRenames?.[0].from, original.branch);
+		assert.equal(renamed.branchRenames?.[0].worktree.path, worktree);
+		assert.equal(plan.activity.at(-1)?.event, "task-branch-reconciled:T-001:T-001-A001");
+		assert.equal((await operations.attachTask(request)).revision, plan.revision);
+		git(worktree, "branch", "-m", "work/final");
+		plan = await operations.attachTask({
+			...request, expectedRevision: plan.revision, branch: "work/final",
+			rename: { ...request.rename, fromBranch: request.branch },
+		});
+		assert.equal(plan.tasks[0].attempts[0].branchRenames?.length, 2);
+		await assert.rejects(operations.completeTask({
+			...identity, expectedRevision: plan.revision, status: "done", branch: original.branch,
+			resultSummary: "Delivered", evidence: evidence("Passed"),
+		}), { code: "branch_mismatch" });
+		plan = await operations.completeTask({
+			...identity, expectedRevision: plan.revision, status: "done", branch: "work/final",
+			resultSummary: "Delivered", evidence: evidence("Passed"),
+		});
+		git(worktree, "branch", "-m", "work/too-late");
+		await assert.rejects(operations.attachTask({
+			...request, expectedRevision: plan.revision, branch: "work/too-late",
+			rename: { ...request.rename, fromBranch: "work/final" },
+		}), { code: "attempt_already_attached" });
+		assert.equal((await operations.getPlan({ planId: plan.id })).tasks[0].attempts[0].branch, "work/final");
+	})
+));
+
+test("branch reconciliation does not mutate a cancelling attempt", () => (
+	withOperations(async ({ operations, workspacePath }) => {
+		const approved = await createApproved(operations, workspacePath);
+		const reserved = await operations.reserveTask({
+			planId: approved.id, taskId: "T-001", expectedRevision: approved.revision, reservationId: "cancelled-rename",
+		});
+		const worktree = path.join(workspacePath, "child");
+		git(workspacePath, "worktree", "add", "--quiet", "-b", "work/before", worktree);
+		const identity = { planId: approved.id, taskId: "T-001", attemptId: reserved.attemptId, sessionId: "cancelled-child" };
+		let plan = await operations.attachTask({ ...identity, expectedRevision: reserved.plan.revision, branch: "work/before" });
+		git(worktree, "branch", "-m", "work/after");
+		plan = await operations.cancel({
+			planId: plan.id, expectedRevision: plan.revision, requestId: "cancel-before-reconcile", requestedBy: "owner", reason: "Stop",
+		});
+		await assert.rejects(operations.attachTask({
+			...identity, expectedRevision: plan.revision, branch: "work/after",
+			rename: { fromBranch: "work/before", worktreePath: worktree, actor: "owner", reason: "App rename" },
+		}), { code: "attempt_already_attached" });
+		assert.equal((await operations.getPlan({ planId: plan.id })).revision, plan.revision);
+	})
+));
 
 test("done attempts report actionable missing delivery fields", () => (
 	withOperations(async ({ operations, workspacePath }) => {

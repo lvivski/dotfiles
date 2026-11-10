@@ -39,3 +39,14 @@ the persisted attempt is the outbox, so never rerun the child to repair a receip
 New work requires the current portable knowledge head. A divergent branch does not
 authorize more dispatch, but existing owned attempts can still report results or
 cancel against their pinned execution history.
+
+If the App renames a branch after attachment, do not restore it with raw Git or replace the
+attached session. Inspect the same App session's actual branch and canonical worktree path,
+then call `foundry_attach_task` with the original session ID, current revision and new branch,
+plus `rename: { fromBranch, worktreePath, actor, reason }`. This explicit reconciliation requires
+an absent old ref, a direct post-attachment rename in the latest 256 Git reflog entries and the
+same registered repository. Existing verifier or prior-reconciliation worktree pins cannot change;
+a pinned detached verifier is supported if the new branch is not checked out elsewhere.
+Session association remains a claim, not authenticated attestation. Missing evidence, unsupported
+hosts or terminal/cancelling attempts remain blockers. Re-read state on conflicts; never edit
+stored attempts or weaken completion's branch checks to bypass a mismatch.

@@ -40,9 +40,45 @@ export function attachVerifierWorktree(repository, branch) {
 	}
 }
 
-/** @param {string} repository @param {import("../types/plan.js").VerifierWorktree | undefined} binding @param {string} commit */
-export function checkVerifierWorktree(repository, binding, commit) {
-	if (!binding || binding.status !== "available") fail("factory_worktree_unsupported", binding?.reason ?? "No actual verifier worktree was pinned at attachment", { disposition: "unsupported" });
+/** Corroborates a local ref rename; the App session association remains a claim.
+ * @param {string} repository @param {string} from @param {string} to
+ * @param {string} worktreePath @param {string} startedAt
+ * @param {import("../types/plan.js").VerifierWorktree | undefined} pinned */
+export function checkTaskBranchRename(repository, from, to, worktreePath, startedAt, pinned) {
+	if (from === to || [from, to].some((branch) => git(repository, ["check-ref-format", `refs/heads/${branch}`]).status !== 0)) {
+		fail("task_branch_rename_invalid", "Branch reconciliation requires distinct valid local branch names");
+	}
+	let worktree = attachVerifierWorktree(repository, to);
+	if (worktree.status !== "available" && pinned?.status === "available") {
+		const registered = checkPinnedWorktree(repository, pinned);
+		if (registered.detached !== undefined && registered.branch === undefined
+			&& !worktrees(repository).some((entry) => entry.branch === `refs/heads/${to}`)) {
+			worktree = pinned;
+		}
+	}
+	if (worktree.status !== "available") fail("task_branch_rename_unsupported", worktree.reason);
+	if (worktree.path !== worktreePath
+		|| (pinned && (pinned.status !== "available" || pinned.path !== worktree.path || pinned.gitDirectory !== worktree.gitDirectory))) {
+		fail("task_branch_rename_mismatch", "The renamed branch does not identify the claimed or pinned child worktree");
+	}
+	const oldRef = git(repository, ["show-ref", "--verify", "--quiet", `refs/heads/${from}`]);
+	if (oldRef.error || oldRef.status !== 1) {
+		fail("task_branch_rename_unproven", "The original branch must be absent; copying or replacing an existing branch is not reconciliation");
+	}
+	const log = git(repository, ["reflog", "show", "-256", "--date=unix", "--format=%gD%x00%gs", `refs/heads/${to}`, "--"]);
+	if (log.error || log.status !== 0) fail("task_branch_rename_unsupported", "The branch rename reflog is unavailable");
+	const message = `Branch: renamed refs/heads/${from} to refs/heads/${to}`;
+	const entry = log.stdout.toString("utf8").split("\n").find((line) => line.split("\0")[1] === message);
+	const seconds = entry?.split("\0")[0].match(/@\{(\d+)\}$/)?.[1];
+	const time = seconds === undefined ? NaN : Number(seconds) * 1000;
+	if (!Number.isFinite(time) || time < Math.floor(Date.parse(startedAt) / 1000) * 1000 || time > Date.now()) {
+		fail("task_branch_rename_unproven", "No direct post-attachment rename appears in the bounded Git reflog");
+	}
+	return { worktree, renamedAt: new Date(time).toISOString() };
+}
+
+/** @param {string} repository @param {Extract<import("../types/plan.js").VerifierWorktree, {status: "available"}>} binding */
+function checkPinnedWorktree(repository, binding) {
 	let actualPath;
 	try { actualPath = realpathSync(binding.path); }
 	catch { return fail("factory_worktree_unsupported", "The attached verifier worktree is no longer accessible", { disposition: "unsupported" }); }
@@ -53,6 +89,13 @@ export function checkVerifierWorktree(repository, binding, commit) {
 		|| gitPath(binding.path, "--git-common-dir") !== gitPath(repository, "--git-common-dir")) {
 		fail("factory_worktree_mismatch", "The verifier's pinned worktree was replaced, moved or belongs to a different repository");
 	}
+	return registered[0];
+}
+
+/** @param {string} repository @param {import("../types/plan.js").VerifierWorktree | undefined} binding @param {string} commit */
+export function checkVerifierWorktree(repository, binding, commit) {
+	if (!binding || binding.status !== "available") fail("factory_worktree_unsupported", binding?.reason ?? "No actual verifier worktree was pinned at attachment", { disposition: "unsupported" });
+	checkPinnedWorktree(repository, binding);
 	const head = git(binding.path, ["rev-parse", "--verify", "HEAD"]);
 	if (head.error || head.status !== 0) fail("factory_worktree_unsupported", "The attached verifier HEAD is unavailable", { disposition: "inconclusive" });
 	const observed = head.stdout.toString("utf8").trim();

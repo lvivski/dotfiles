@@ -3,7 +3,7 @@ import { rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { checkTaskRepository } from "../../application/repository.mjs";
-import { attachVerifierWorktree, checkVerifierWorktree } from "../../evidence/worktrees.mjs";
+import { attachVerifierWorktree, checkTaskBranchRename, checkVerifierWorktree } from "../../evidence/worktrees.mjs";
 import { fixture } from "../bridge/fixture.mjs";
 import { must } from "../assertions.mjs";
 import { COMMIT, git } from "../git.mjs";
@@ -23,6 +23,44 @@ async function candidateCommit(repo, text) {
 	git(repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "Candidate implementation");
 	return git(repo, "rev-parse", "HEAD");
 }
+
+test("rename reconciliation rejects extant old refs, unrelated branches, old or missing reflogs and changed worktrees", async (t) => {
+	const f = await fixture(t);
+	const worktree = path.join(f.root, "renamed-child");
+	git(f.repo, "worktree", "add", "--quiet", "-b", "before", worktree);
+	const startedAt = new Date().toISOString();
+	const pinned = attachVerifierWorktree(f.repo, "before");
+	git(worktree, "branch", "-m", "after");
+	const check = (at = startedAt, binding = pinned) => checkTaskBranchRename(f.repo, "before", "after", worktree, at, binding);
+	assert.equal(check().worktree.path, worktree);
+	git(f.repo, "branch", "before", "after");
+	assert.throws(() => check(), { code: "task_branch_rename_unproven" });
+	git(f.repo, "branch", "-d", "before");
+	assert.throws(() => check(new Date(Date.now() + 2000).toISOString()), { code: "task_branch_rename_unproven" });
+	assert.throws(() => checkTaskBranchRename(f.repo, "unrelated", "after", worktree, startedAt, pinned), { code: "task_branch_rename_unproven" });
+	assert.throws(() => checkTaskBranchRename(f.repo, "before", "not-local", worktree, startedAt, pinned), { code: "task_branch_rename_unsupported" });
+	assert.throws(() => check(startedAt, { status: "unsupported", reason: "Original verifier was unavailable" }), { code: "task_branch_rename_mismatch" });
+	assert.ok(pinned.status === "available");
+	assert.throws(() => check(startedAt, { ...pinned, gitDirectory: `${pinned.gitDirectory}-replacement` }), { code: "task_branch_rename_mismatch" });
+	git(worktree, "reflog", "expire", "--expire=all", "refs/heads/after");
+	assert.throws(() => check(), { code: "task_branch_rename_unproven" });
+});
+
+test("an App-renamed verifier preserves its original pinned worktree through completion", async (t) => {
+	const f = await fixture(t);
+	let plan = await f.attach(f.ops, await f.implement(await f.generationPlan()), "T-002");
+	const { attempt, worktree } = verifier(plan);
+	git(f.repo, "branch", "-m", must(attempt.branch), "fixture/renamed-verifier");
+	plan = await f.ops.attachTask({
+		planId: plan.id, taskId: "T-002", attemptId: attempt.id, expectedRevision: plan.revision,
+		sessionId: must(attempt.sessionId), branch: "fixture/renamed-verifier",
+		rename: { fromBranch: must(attempt.branch), worktreePath: worktree.path, actor: "owner", reason: "App initial rename" },
+	});
+	assert.deepEqual(verifier(plan).worktree, worktree);
+	assert.equal(verifier(plan).attempt.startedAt, attempt.startedAt);
+	plan = await f.ops.completeTask(f.payload(plan, "T-002"));
+	assert.equal(verifier(plan).attempt.repositoryCheck?.worktree?.clean, true);
+});
 
 test("verifier cleanliness belongs to its pinned worktree, never the coordinator repository directory", async (t) => {
 	const f = await fixture(t);

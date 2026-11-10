@@ -8,7 +8,7 @@ import { activeTaskAttempt } from "../plan/queries.mjs";
 import { findScopeConflicts, selectNonOverlappingTasks } from "../plan/scope.mjs";
 import { ATTEMPT_STATUS, TASK_STATUS } from "../plan/values.mjs";
 import { FoundryOperationError, revisionConflict } from "./errors.mjs";
-import { attachVerifierWorktree } from "../evidence/worktrees.mjs";
+import { attachVerifierWorktree, checkTaskBranchRename } from "../evidence/worktrees.mjs";
 import { checkTaskRepository } from "./repository.mjs";
 
 /** @typedef {import("../types/plan.js").FoundryPlan} FoundryPlan */
@@ -193,6 +193,7 @@ export function createTaskOperations({ storeFor, persist, factory, syncFactoryPl
 		expectedRevision,
 		sessionId,
 		branch,
+		rename,
 	}) => {
 		const plan = await storeFor().read(planId);
 		factory.requireOwner(plan);
@@ -203,6 +204,29 @@ export function createTaskOperations({ storeFor, persist, factory, syncFactoryPl
 		}
 		if (plan.revision !== expectedRevision) {
 			throw revisionConflict(planId, expectedRevision, plan.revision);
+		}
+		if (rename) {
+			if (!current || current.sessionId !== sessionId || !current.startedAt
+				|| current.branch !== rename.fromBranch || !branch) {
+				throw new FoundryOperationError("task_branch_rename_mismatch", "Reconciliation must retain the exact attached session and previous branch");
+			}
+			const pinned = current.verifierWorktree ?? current.branchRenames?.at(-1)?.worktree;
+			if (plan.tasks.find((task) => task.id === taskId)?.kind === "verify" && !pinned) {
+				throw new FoundryOperationError("task_branch_rename_unsupported", "The verifier's original worktree identity was not captured");
+			}
+			const observed = checkTaskBranchRename(
+				plan.repository.workingDirectory, rename.fromBranch, branch, rename.worktreePath,
+				current.startedAt, pinned,
+			);
+			const branchRename = {
+				from: rename.fromBranch, to: branch, actor: rename.actor, reason: rename.reason,
+				at: new Date().toISOString(), ...observed,
+			};
+			return persist(
+				planId, expectedRevision,
+				(candidate) => attachTaskAttempt(candidate, taskId, attemptId, { sessionId, branch, branchRename }),
+				`task-branch-reconciled:${taskId}:${attemptId}`,
+			);
 		}
 		const verifierWorktree = plan.tasks.find((task) => task.id === taskId)?.kind === "verify"
 			? attachVerifierWorktree(plan.repository.workingDirectory, branch ?? null) : undefined;

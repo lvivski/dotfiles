@@ -336,6 +336,18 @@ Foundry owns:
 
 - optimistic plan revisions and explicit approval gates;
 - reserve-before-create task attempts and immediate App-session attachment;
+- explicit same-session branch-rename reconciliation through `foundry_attach_task.rename`,
+  retaining the attempt, start time and a bounded audit history. Supply the recorded old branch,
+  App-observed canonical worktree path, actor and reason. The old ref must be absent and the new
+  branch must have a direct post-attachment rename in its latest 256 reflog entries (Git timestamps
+  have one-second precision). A unique local linked worktree in the same repository is required;
+  an existing verifier pin or prior rename worktree identity cannot change. A pinned worktree may
+  already be detached for exact-commit verification, provided the renamed branch is not checked
+  out elsewhere. Initial implementation
+  attachments do not pin worktrees, so retrospective reconciliation corroborates local Git evidence
+  and the caller's App-session association, not authenticated identity. Missing evidence, remote
+  worktrees, replacement sessions, terminal/cancelling attempts and ordinary branch mismatches
+  remain rejected; never rename App-managed branches with raw Git to repair bookkeeping;
 - delivery requirements for branches, commits, and pull requests;
 - causal session inventories for retry and cancellation safety;
 - canonical evidence, correction waves, and final workflow verification;

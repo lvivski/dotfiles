@@ -76,7 +76,10 @@ export const requestShapes = {
 	approve: { ...revision, approvedBy: string, approvalType: optional(string), retryStatus: optional(string) },
 	nextTasks: planId,
 	reserveTask: { ...task, reservationId: string, scopeOverride: optional(nullable(object({ approvedBy: string, reason: string }))) },
-	attachTask: { ...attempt, sessionId: string, branch: nullableText },
+	attachTask: {
+		...attempt, sessionId: string, branch: nullableText,
+		rename: optional(object({ fromBranch: string, worktreePath: string, actor: string, reason: string })),
+	},
 	completeTask: {
 		...attempt, status: string, resultSummary: nullableText, evidence: opaque, error: nullableText,
 		branch: nullableText, commit: nullableText, prUrl: nullableText, sessionInventory: opaque,

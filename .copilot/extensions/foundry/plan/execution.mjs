@@ -84,7 +84,8 @@ export function reserveTaskAttempt(plan, taskId, options = {}) {
  * @param {FoundryPlan} plan
  * @param {string} taskId
  * @param {string} attemptId
- * @param {{sessionId?: string, branch?: string | null, at?: ClockValue, verifierWorktree?: import("../types/plan.js").VerifierWorktree}} [options]
+ * @param {{sessionId?: string, branch?: string | null, at?: ClockValue, verifierWorktree?: import("../types/plan.js").VerifierWorktree,
+ * branchRename?: import("../types/plan.js").BranchRename}} [options]
  * @returns {FoundryPlan}
  */
 export function attachTaskAttempt(plan, taskId, attemptId, options = {}) {
@@ -106,10 +107,21 @@ export function attachTaskAttempt(plan, taskId, attemptId, options = {}) {
 			&& attempt.branch === (options.branch ?? null)) {
 			return candidate;
 		}
+		if (options.branchRename && attempt.sessionId === options.sessionId
+			&& plan.status === PLAN_STATUS.RUNNING && attempt.status === ATTEMPT_STATUS.RUNNING
+			&& activeTaskAttempt(task)?.id === attemptId
+			&& options.branchRename.from === attempt.branch && options.branchRename.to === options.branch) {
+			attempt.branchRenames = [...(attempt.branchRenames ?? []), clone(options.branchRename)];
+			attempt.branch = options.branchRename.to;
+			candidate.updatedAt = options.branchRename.at;
+			validatePlan(candidate);
+			return candidate;
+		}
 		fail("attempt_already_attached", `Attempt ${attemptId} is already attached`, {
 			path: "attemptId",
 		});
 	}
+	if (options.branchRename) fail("attempt_not_attached", "Branch reconciliation cannot create an attachment");
 	if (attempt.status !== ATTEMPT_STATUS.RESERVED
 		&& attempt.status !== ATTEMPT_STATUS.CANCEL_REQUESTED) {
 		fail("invalid_attempt_transition", `Attempt ${attemptId} cannot attach from ${attempt.status}`, {

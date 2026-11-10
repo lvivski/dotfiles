@@ -223,7 +223,7 @@ export function buildFoundryTools(operations) {
 		},
 		{
 			name: "foundry_attach_task",
-			description: "Attach the App-created child session to an existing reserved attempt. Identical attachment is idempotent; replacement is rejected.",
+			description: "Attach the App-created child session to a reserved attempt. Identical attachment is idempotent; session replacement is rejected. To reconcile an App-renamed branch, keep the original attached sessionId and supply rename with the old branch, App-observed worktree path, actor and reason. A unique local linked worktree, absent old ref and post-attachment Git rename reflog are required; verifier worktree identity cannot change.",
 			parameters: objectSchema(
 				["planId", "taskId", "attemptId", "expectedRevision", "sessionId"],
 				{
@@ -233,6 +233,15 @@ export function buildFoundryTools(operations) {
 					expectedRevision: REVISION,
 					sessionId: NON_EMPTY(LIMITS.sessionId),
 					branch: NON_EMPTY(LIMITS.branch),
+					rename: objectSchema(
+						["fromBranch", "worktreePath", "actor", "reason"],
+						{
+							fromBranch: NON_EMPTY(LIMITS.branch),
+							worktreePath: NON_EMPTY(4096),
+							actor: NON_EMPTY(LIMITS.actor),
+							reason: NON_EMPTY(LIMITS.error),
+						},
+					),
 				},
 			),
 			handler: handler((args) => operations.attachTask(args)),

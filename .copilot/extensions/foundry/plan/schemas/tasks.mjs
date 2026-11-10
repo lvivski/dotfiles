@@ -46,6 +46,7 @@ const ATTEMPT_KEYS = new Set([
 	"completedAt",
 	"verifierWorktree",
 	"repositoryCheck",
+	"branchRenames",
 ]);
 
 const INTEGRATION_KEYS = new Set([
@@ -156,6 +157,36 @@ function validateAttempt(attempt, task, index, fieldPath) {
 	validateScopeOverride(attempt.scopeOverride, `${fieldPath}.scopeOverride`);
 	assertNullableString(attempt.sessionId, `${fieldPath}.sessionId`, LIMITS.sessionId);
 	assertNullableString(attempt.branch, `${fieldPath}.branch`, LIMITS.branch);
+	assertTimestamp(attempt.startedAt, `${fieldPath}.startedAt`, { nullable: true });
+	if (attempt.branchRenames !== undefined) {
+		if (!isList(attempt.branchRenames) || attempt.branchRenames.length < 1 || attempt.branchRenames.length > 8) {
+			fail("invalid_branch_renames", "Branch rename history must contain one through eight observations");
+		}
+		/** @type {{to: string, at: string, worktree: Extract<import("../../types/plan.js").VerifierWorktree, {status: "available"}>} | undefined} */
+		let previous;
+		for (const entry of attempt.branchRenames) {
+			assertPlainObject(entry, "branchRename");
+			assertKnownKeys(entry, new Set(["from", "to", "actor", "reason", "at", "renamedAt", "worktree"]), "branchRename");
+			assertString(entry.from, "branchRename.from", LIMITS.branch);
+			assertString(entry.to, "branchRename.to", LIMITS.branch);
+			assertString(entry.actor, "branchRename.actor", LIMITS.actor);
+			assertString(entry.reason, "branchRename.reason", LIMITS.error);
+			assertTimestamp(entry.at, "branchRename.at");
+			assertTimestamp(entry.renamedAt, "branchRename.renamedAt");
+			validateVerifierWorktree(entry.worktree);
+			if (entry.worktree.status !== "available" || entry.from === entry.to
+				|| (previous && (previous.to !== entry.from || Date.parse(previous.at) > Date.parse(entry.at)
+					|| previous.worktree.path !== entry.worktree.path || previous.worktree.gitDirectory !== entry.worktree.gitDirectory))
+				|| attempt.sessionId === null || attempt.startedAt === null
+				|| Date.parse(entry.at) < Date.parse(attempt.startedAt)
+				|| Date.parse(entry.renamedAt) < Math.floor(Date.parse(attempt.startedAt) / 1000) * 1000
+				|| Date.parse(entry.renamedAt) > Date.parse(entry.at)) {
+				fail("invalid_branch_renames", "Branch rename observations must preserve attached-session lineage and chronology");
+			}
+			previous = { to: entry.to, at: entry.at, worktree: entry.worktree };
+		}
+		if (previous?.to !== attempt.branch) fail("invalid_branch_renames", "The branch must match the latest rename observation");
+	}
 	assertCommit(attempt.commit, `${fieldPath}.commit`);
 	assertHttpUrl(attempt.prUrl, `${fieldPath}.prUrl`);
 	assertNullableString(attempt.resultSummary, `${fieldPath}.resultSummary`, LIMITS.resultSummary);
@@ -184,7 +215,6 @@ function validateAttempt(attempt, task, index, fieldPath) {
 	}
 	assertNullableString(attempt.error, `${fieldPath}.error`, LIMITS.error);
 	assertTimestamp(attempt.reservedAt, `${fieldPath}.reservedAt`);
-	assertTimestamp(attempt.startedAt, `${fieldPath}.startedAt`, { nullable: true });
 	assertTimestamp(
 		attempt.sessionTerminatedAt,
 		`${fieldPath}.sessionTerminatedAt`,

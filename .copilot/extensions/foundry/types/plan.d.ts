@@ -44,6 +44,11 @@ export type EvaluationReport = {
 export type VerifierWorktree = { status: "available"; path: string; gitDirectory: string }
 	| { status: "unsupported"; reason: string };
 
+export type BranchRename = {
+	from: string; to: string; actor: string; reason: string; at: string; renamedAt: string;
+	worktree: Extract<VerifierWorktree, { status: "available" }>;
+};
+
 export type RepositoryCheck = {
 	version: 1; commit: string; integrationCommits: string[];
 	worktree?: { head: string; clean: true };
@@ -58,6 +63,7 @@ export type FoundryAttempt = {
 	startedAt: string | null; sessionTerminatedAt: string | null;
 	cancelRequestedAt: string | null; completedAt: string | null;
 	verifierWorktree?: VerifierWorktree; repositoryCheck?: RepositoryCheck;
+	branchRenames?: BranchRename[];
 };
 
 export type BlueprintTask = {
