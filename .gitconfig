@@ -87,6 +87,10 @@
     helper =
     helper = manager
 
+[credential "https://*.ghe.com"]
+    helper =
+    helper = manager
+
 [credential "https://dev.azure.com"]
     helper =
     helper = manager
