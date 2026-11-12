@@ -4,6 +4,8 @@ import { analysisInputDigest } from "../../digest.mjs";
 import { FoundryAnalysisError } from "../../errors.mjs";
 import { buildPlanningArgs, normalizePlanningInput, validatePlanBlueprint, validatePlanningArgs, validatePlanningResult } from "../../analysis/planning.mjs";
 import { run as runPlanning } from "../../workflows/plan.mjs";
+import { LIMITS } from "../../plan/values.mjs";
+import { planningResult } from "../native/plans.mjs";
 
 test("planning arguments are bounded and digested canonically", () => {
 	const normalized = normalizePlanningInput({
@@ -66,6 +68,43 @@ test("the planning Workflow uses canonical defaults and rejects invalid args bef
 		const args = buildPlanningArgs({ ...minimal, maxTasks });
 		assert.deepEqual((await execute(args)).input, args);
 	}
+});
+
+test("generated plan field bounds accept exact limits and reject overflow or blank criteria", () => {
+	const input = buildPlanningArgs({ objective: "Build", repositoryContext: "Node repo", maxTasks: 2 });
+	const plan = planningResult(input).plan;
+	assert.equal(validatePlanBlueprint({ ...plan, title: "x".repeat(LIMITS.planTitle) }, 2).title.length, LIMITS.planTitle);
+	assert.throws(() => validatePlanBlueprint({ ...plan, title: "x".repeat(LIMITS.planTitle + 1) }, 2), /plan.title/);
+	for (const [field, maximum] of Object.entries({
+		title: LIMITS.taskTitle, description: LIMITS.taskDescription,
+	})) {
+		const candidate = structuredClone(plan);
+		candidate.tasks[0] = { ...candidate.tasks[0], [field]: "x".repeat(maximum) };
+		assert.deepEqual(validatePlanBlueprint(candidate, 2), candidate);
+		candidate.tasks[0] = { ...candidate.tasks[0], [field]: "x".repeat(maximum + 1) };
+		assert.throws(() => validatePlanBlueprint(candidate, 2), /plan.tasks\[0\]/);
+	}
+	for (const { field, count, length } of [
+		{ field: "acceptanceCriteria", count: LIMITS.acceptanceCriteria, length: LIMITS.acceptanceCriterion },
+		{ field: "expectedFiles", count: LIMITS.expectedFiles, length: LIMITS.expectedFile },
+	]) {
+		const candidate = structuredClone(plan);
+		candidate.tasks[0] = { ...candidate.tasks[0], [field]: ["x".repeat(length)] };
+		assert.deepEqual(validatePlanBlueprint(candidate, 2), candidate);
+		candidate.tasks[0] = { ...candidate.tasks[0], [field]: ["x".repeat(length + 1)] };
+		assert.throws(() => validatePlanBlueprint(candidate, 2), /plan.tasks\[0\]/);
+		candidate.tasks[0] = { ...candidate.tasks[0], [field]: Array.from({ length: count }, (_, index) => `check-${index}`) };
+		assert.deepEqual(validatePlanBlueprint(candidate, 2), candidate);
+		candidate.tasks[0] = { ...candidate.tasks[0], [field]: Array.from({ length: count + 1 }, (_, index) => `check-${index}`) };
+		assert.throws(() => validatePlanBlueprint(candidate, 2), /plan.tasks\[0\]/);
+	}
+	for (const acceptanceCriteria of [[], [" \t\n"]]) {
+		const candidate = structuredClone(plan);
+		candidate.tasks[0].acceptanceCriteria = acceptanceCriteria;
+		assert.throws(() => validatePlanBlueprint(candidate, 2), /acceptanceCriteria/);
+	}
+	assert.throws(() => validatePlanBlueprint({ ...plan, tasks: [plan.tasks[0]] }, 2), /plus one verifier/);
+	assert.throws(() => validatePlanBlueprint({ ...plan, tasks: [...plan.tasks, plan.tasks[0]] }, 1), /plus one verifier/);
 });
 
 test("planning results reuse the strict domain validator and fail closed", () => {

@@ -24,5 +24,13 @@ Read before creating or submitting a Foundry plan.
 Interrupting the import wait does not cancel the Workflow. A paused or failed run is not imported
 or automatically resumed; follow the recovery protocol with the same `runId`.
 
+The workflow gives invalid synthesis one bounded repair attempt within the same native run.
+Field limits are size bounds, not permission to drop requirements or weaken governing contracts.
+Repair retains task identities and dependency intent and must pass domain validation plus independent
+verification. Inspect `synthesisRepair` for the rejected candidate and exact diagnostic, even after
+successful repair; unresolved validation or conservation failures remain `needs-review` and cannot
+be imported. Do not truncate criteria, approve a fallback, raise caps, or restart the whole pipeline
+to conceal an invalid result. Approval and provenance requirements are unchanged.
+
 Planning currently has no pre-launch reservation. Keep the planning `runId` until it is imported,
 and never launch a replacement merely because the first run is temporarily unobservable.

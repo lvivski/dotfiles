@@ -144,6 +144,17 @@ has no authored criteria or files: it evaluates the implementation tasks' criter
 against the committed integration snapshot. Critics must not invent a conflicting
 verifier contract or bypass required commit authorization.
 
+Generation schemas and instructions use the central plan field bounds, including the
+2,000-character acceptance-criterion limit. An invalid synthesis gets one bounded repair agent
+in the same native run, with its exact diagnostic, original candidate, canonical input, pinned
+authority, decomposition and critiques. Repair must conserve requirements, task identities and
+dependency intent, not truncate or drop content. The repaired candidate passes the same domain
+validator and independent verifier; missing or invalid repair never promotes a fallback plan.
+The result's `synthesisRepair` retains the rejected original, diagnostic, repair candidate and
+repair validation issue (or `null`). Resolved diagnostics remain history rather than unresolved
+`issues`; uncertain conservation or missing review keeps `needs-review`. Valid synthesis adds
+no repair agent, and native replay reuses completed agents without restarting planning.
+
 Invoke these workflows with `run_dynamic_workflow` and inspect the returned `runId` with
 `dynamic_workflows_manage` (`inspect-run`). The five general workflows use the native workflow
 lifecycle directly and never mutate Foundry plan state. When an explicit capability context exists,
