@@ -366,7 +366,7 @@ test("production journal reads reject changed persisted schema identity instead 
 			() => storage.journal.outcomes(attempt("T-003"), receipt().id),
 		]) assert.throws(read, { code: "parallel_database_version" });
 		assert.throws(open, { code: "parallel_database_version" });
-		fixture.left.db.exec("PRAGMA user_version = 2; PRAGMA application_id = 0x464e4144");
+		fixture.left.db.exec("PRAGMA user_version = 3; PRAGMA application_id = 0x464e4144");
 	}
 	assert.deepEqual(storage.admission.read(active.identity), before);
 	assert.deepEqual(storage.journal.read(attempt("T-003")), [receipt()]);

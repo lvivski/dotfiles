@@ -70,12 +70,17 @@ extension-RPC route cannot inherit support from the primary App route or trigger
 No non-destructive App child termination port is currently exposed; idle is not terminal and
 archiving removes worktrees, so uncertain cancellation remains held.
 
-There is also a source-level cancellation join hold: the current admission port can fence
-every observed owned row, but has no durable plan-wide claim fence for a stale reservation
-writer that crashes before settling. Parallel cancel and finalization therefore retain
-`parallel_cancellation_join_pending`, even after all currently known admissions reconcile.
-This is not a native-platform or unchanged SDK-conformance failure; host observations alone
-cannot repair it, and legacy finalization cannot bypass it.
+Parallel cancellation persists the native plan request, then uses the actual admission
+`cancelPlan` transaction to install a permanent owner/plan fence and fence its current rows.
+Shared admission schema 3 rejects new and replayed claims even after every prior row is released;
+unchanged v1/v2 writers reject the upgraded database. The shared journal requires that same schema.
+Cancellation still does not settle effects, release claims or terminate native work.
+`readCancellation` supplies a consistent census including released history and whole observations.
+Finalization requires every admission released through its writer, fresh trusted terminal evidence
+for all retained bound attempts (including completed producers), and the existing native plan/
+verification guards. Unresolved joins retain `parallel_cancellation_join_pending`; caller inventory,
+idle state or `finalizationOverride` cannot substitute for the parallel native proof. Interrupted
+plan/store joins remain held until the same cancellation request or explicit reconciliation resumes.
 
 Registered tiny-Git fixtures execute two-producer consumption, immutable provenance, convergence,
 independent verification preparation and human gates through these production modules with

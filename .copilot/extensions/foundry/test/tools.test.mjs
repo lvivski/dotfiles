@@ -454,9 +454,20 @@ test("registered cancellation recovery joins actual plan fencing and sourced ter
 	const cancelled = await f.invoke("foundry_cancel", {
 		planId: current.id, expectedRevision: current.revision, requestId: "owner-stop", reason: "Stop fixture work", requestedBy: "owner",
 	});
-	assert.equal(cancelled.value.code, "parallel_cancellation_join_pending");
-	assert.equal(must(f.storage.admission.read(record.identity)).phase, "cancelling", "Normal cancel fences admissions before returning its hold");
-	assert.equal(readRecord(cancelled.value.details).reservationsQuiescent, false);
+	assert.equal(cancelled.value.status, "cancelling");
+	assert.equal(must(f.storage.admission.read(record.identity)).phase, "cancelling");
+	const planIdentity = { repositoryId: record.identity.repositoryId, owner: record.identity.owner, planId: current.id };
+	const fenced = f.storage.admission.readCancellation(planIdentity);
+	assert.ok(fenced.fence);
+	f.reopen();
+	assert.deepEqual(f.storage.admission.readCancellation(planIdentity), fenced);
+	const finalization = {
+		planId: current.id, expectedRevision: Number(cancelled.value.revision), finalizedBy: "owner",
+		dispositions: [{ attemptId: must(record.attempt).attemptId, disposition: "session-terminated", sessionId: "child-1" }],
+		sessionInventory: { complete: true, capturedAt: new Date(Date.now() + 4000).toISOString(), sessions: [{ id: "child-1", status: "completed" }] },
+	};
+	assert.equal((await f.invoke("foundry_finalize_cancellation", finalization)).value.code, "parallel_cancellation_join_pending",
+		"Installing the plan fence does not settle uncertain native obligations");
 	const request = { planId: current.id, taskId: record.identity.taskId, reservationId: record.identity.reservationId };
 	const first = await f.invoke("foundry_reconcile_parallel", request);
 	assert.equal(first.value.state, "held");
@@ -469,16 +480,47 @@ test("registered cancellation recovery joins actual plan fencing and sourced ter
 	assert.equal(must(f.storage.admission.read(record.identity)).phase, "released");
 	assert.equal(f.children.size, 1);
 	const lateIdentity = { ...record.identity, taskId: "T-002", reservationId: "stale-writer-after-census" };
-	const late = f.storage.admission.claim({ identity: lateIdentity, expectedRevision: 0, resources: [], team: null });
-	assert.equal(late.phase, "claim-held", "The current leaf port has no durable plan-wide claim fence for a crashed stale writer");
-	const held = await f.operations().getPlan({ planId: current.id });
-	const finalized = await f.invoke("foundry_finalize_cancellation", {
-		planId: held.id, expectedRevision: held.revision, finalizedBy: "owner",
-		dispositions: [], sessionInventory: { complete: true, capturedAt: new Date().toISOString(), sessions: [] },
-	});
-	assert.equal(finalized.value.code, "parallel_cancellation_join_pending", "Legacy finalization cannot bypass an unresolved parallel cancellation join");
+	assert.throws(() => f.storage.admission.claim({ identity: lateIdentity, expectedRevision: 0, resources: [], team: null }),
+		{ code: "parallel_fenced" }, "The permanent plan fence rejects a restarted stale writer after every previous admission was released");
+	assert.equal(f.storage.admission.read(lateIdentity), null);
+	f.control.terminal = false;
+	assert.equal((await f.invoke("foundry_finalize_cancellation", finalization)).value.code, "parallel_cancellation_join_pending",
+		"Released claims and caller-supplied terminal inventory cannot replace fresh native termination evidence");
 	assert.equal((await f.operations().getPlan({ planId: current.id })).status, "cancelling");
-	assert.equal(must(f.storage.admission.read(lateIdentity)).phase, "cancelling");
+	const observe = f.host.observeRecovery;
+	delete f.host.observeRecovery;
+	assert.equal((await f.invoke("foundry_finalize_cancellation", finalization)).value.code, "parallel_observation_unavailable");
+	f.host.observeRecovery = observe;
+	f.control.terminal = true;
+	const finalized = await f.invoke("foundry_finalize_cancellation", finalization);
+	assert.equal(finalized.value.status, "cancelled", JSON.stringify(finalized.value));
+	assert.equal((await f.invoke("foundry_finalize_cancellation", finalization)).value.status, "cancelled", "Response-loss retry retains the same terminal receipt");
+	assert.equal(f.storage.admission.readCancellation(planIdentity).fence?.cancelledAt, fenced.fence.cancelledAt);
+});
+
+test("registered finalization checks native ownership retained by already-delivered admissions", async t => {
+	const f = await publicParallelFixture(t);
+	await f.invoke("foundry_dispatch_ready", { planId: f.plan.id, limit: 1 });
+	let plan = await f.operations().getPlan({ planId: f.plan.id });
+	await f.invoke("foundry_complete_task", f.f.payload(plan, "T-001"));
+	const delivered = must(f.storage.admission.list()[0]);
+	assert.equal(delivered.phase, "released");
+	assert.ok(delivered.delivery);
+	plan = await f.operations().getPlan({ planId: f.plan.id });
+	await f.invoke("foundry_cancel", {
+		planId: plan.id, expectedRevision: plan.revision, requestId: "stop-after-delivery",
+		reason: "Stop remaining work after producer delivery", requestedBy: "owner",
+	});
+	plan = await f.operations().getPlan({ planId: f.plan.id });
+	assert.deepEqual(plan.cancellation?.requiredAttemptIds, [], "Legacy active-attempt cancellation does not include this completed producer");
+	const input = {
+		planId: plan.id, expectedRevision: plan.revision, finalizedBy: "owner", dispositions: [],
+		sessionInventory: { complete: true, capturedAt: new Date(Date.now() + 4000).toISOString(), sessions: [] },
+	};
+	assert.equal((await f.invoke("foundry_finalize_cancellation", input)).value.code, "parallel_cancellation_join_pending");
+	f.control.terminal = true;
+	assert.equal((await f.invoke("foundry_finalize_cancellation", input)).value.status, "cancelled");
+	assert.deepEqual(f.storage.admission.read(delivered.identity), delivered, "Finalization does not rewrite delivery or released history");
 });
 
 test("registered cancellation fences every current owned admission before a stale create or handoff status resumes", async t => {
@@ -516,7 +558,7 @@ test("registered cancellation fences every current owned admission before a stal
 					planId: plan.id, expectedRevision: plan.revision, requestId: "stale-status-stop",
 					reason: "Cancel before the retained status resumes", requestedBy: "owner",
 				});
-				assert.equal(cancellation.value.code, "parallel_cancellation_join_pending");
+				assert.equal(cancellation.value.status, "cancelling");
 				const owned = f.storage.admission.list().filter(entry => entry.identity.owner === identity.owner);
 				assert.equal(owned.length, 2);
 				assert.ok(owned.every(entry => entry.phase === "cancelling"));
@@ -568,7 +610,7 @@ test("the executor boundary rechecks a plan cancelled after journal start withou
 			planId: plan.id, expectedRevision: plan.revision, requestId: "between-databases",
 			reason: "Stop before native invocation", requestedBy: "owner",
 		});
-		assert.equal(outcome.value.code, "parallel_cancellation_join_pending");
+		assert.equal(outcome.value.status, "cancelling");
 		assert.equal(must(f.storage.admission.read(record.identity)).phase, "cancelling");
 		assert.equal(must(f.storage.admission.read(record.identity)).receipts.find(receipt => receipt.id === uncertain.id)?.state, "uncertain");
 	});
@@ -595,8 +637,15 @@ test("a delayed offered reservation cannot admit work after registered cancellat
 			planId: f.plan.id, expectedRevision: f.plan.revision, requestId: "reservation-stop",
 			reason: "Stop while the offered reserve call is delayed", requestedBy: "owner",
 		});
-		assert.equal(cancellation.value.code, "parallel_cancellation_join_pending");
+		assert.equal(cancellation.value.status, "cancelling");
 		assert.deepEqual(f.storage.admission.list(), []);
+		const noHost = createFoundryOperations({
+			getWorkspacePath: () => f.host.session.workspacePath, factoryStorageRoot: f.f.storageRoot, analysis: analysisFixture(),
+		});
+		await assert.rejects(noHost.finalizeCancellation({
+			planId: f.plan.id, expectedRevision: Number(cancellation.value.revision), finalizedBy: "owner", dispositions: [],
+			sessionInventory: { complete: true, capturedAt: new Date(Date.now() + 4000).toISOString(), sessions: [] },
+		}), { code: "parallel_host_unavailable" }, "Even an empty durable fence cannot downgrade to legacy finalization after host loss");
 	} finally { resume.resolve(); }
 	await dispatch;
 	assert.deepEqual(f.storage.admission.list(), []);

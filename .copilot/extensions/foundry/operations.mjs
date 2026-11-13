@@ -24,6 +24,7 @@ import { object, strings, text, timestamp } from "./factory/fields.mjs";
 import { normalizeRecoveryInventory } from "./inventory.mjs";
 import { createNativeAdmission, createOfferedDispatchTransport } from "./native/admission.mjs";
 import { createNativeDispatch, dispatchReservation } from "./native/dispatch.mjs";
+import { reconcileCancellationObligations } from "./plan/cancellation.mjs";
 import { assertKnownKeys } from "./plan/fields.mjs";
 import { commitId } from "./plan/parallel-contracts.mjs";
 import { requestHandler, requestShapes } from "./requests.mjs";
@@ -158,8 +159,9 @@ function createParallelComposition({ options, workspace, storeFor, factory, pers
 		// Once admitted, losing the host callback cannot downgrade a plan to legacy
 		// writes. Untouched omitted-decomposition plans still use the legacy path.
 		const repository = factory.factoryFor(plan.repository.workingDirectory).repository;
-		return existsSync(path.join(repository.commonDirectory, "foundry", "parallel"))
-			&& storageFor(plan).admission.list().some(record => record.identity.owner === workspace() && record.identity.planId === plan.id);
+		if (!existsSync(path.join(repository.commonDirectory, "foundry", "parallel"))) return false;
+		const retained = storageFor(plan).admission.readCancellation(planIdentityFor(plan));
+		return retained.fence !== null || retained.admissions.length > 0;
 	}
 	/** @param {ParallelPlan} plan */
 	function storageFor(plan) {
@@ -177,8 +179,8 @@ function createParallelComposition({ options, workspace, storeFor, factory, pers
 		}
 		return ports;
 	}
-	/** Fence the complete observed owned inventory, without cancelling journal intents
-	 * or claiming that separate plan/admission transactions prevent all late writers.
+	/** Install the shared writer's permanent fence after durable plan cancellation.
+	 * Pending effects and native termination remain separate recovery obligations.
 	 * @param {ParallelPlan} plan */
 	function fenceCancelledAdmissions(plan) {
 		const current = storeFor().readCurrent(plan.id);
@@ -188,27 +190,9 @@ function createParallelComposition({ options, workspace, storeFor, factory, pers
 			return fail("parallel_plan_fence_required", "Admission cancellation requires the current durable plan cancellation fence");
 		}
 		const { admission } = storageFor(current);
-		const owner = workspace();
-		const list = () => admission.list().filter(record => record.identity.owner === owner && record.identity.planId === current.id);
-		const before = list();
-		for (const record of before) {
-			if (!["claim-held", "reserved"].includes(record.phase)) continue;
-			try { admission.cancel(admissionFence(record)); }
-			catch (error) {
-				if (errorCode(error) !== "revision_conflict") throw error;
-				// A conflict never permits a stale replay. The complete after-read
-				// below reports any row that did not acquire its cancellation fence.
-			}
-		}
-		const after = list();
-		const identities = after.map(record => record.identity);
-		const unfenced = after.filter(record => ["claim-held", "reserved"].includes(record.phase)).map(record => record.identity);
-		if (unfenced.length || !same(before.map(record => record.identity), identities)) {
-			throw new FoundryOperationError("parallel_cancellation_fence_incomplete", "The owned admission inventory changed or a fence conflicted; retain all claims and reconcile explicitly", {
-				planId: current.id, revision: current.revision, planCancellationPersisted: true, observedIdentities: identities, unfenced,
-			});
-		}
-		return { plan: current, identities };
+		const state = admission.cancelPlan(planIdentityFor(current));
+		if (!state.fence) return fail("parallel_plan_fence_required", "The shared writer did not retain the owner/plan cancellation fence");
+		return { plan: current, state };
 	}
 	/** @param {OperationContext | undefined} context */
 	function requireHost(context) {
@@ -224,11 +208,28 @@ function createParallelComposition({ options, workspace, storeFor, factory, pers
 		}
 		return host;
 	}
-	/** @param {ParallelPlan} plan @param {string} taskId @param {string} reservationId */
-	function identityFor(plan, taskId, reservationId) {
+	/** @param {OperationContext | undefined} context */
+	function hostFor(context) {
+		const host = requireHost(context);
+		const { sessionId, projectId, workspacePath: owner } = host.session;
+		const currentHost = () => {
+			const current = requireHost(context);
+			if (current.session.projectId !== projectId || current.session.sessionId !== sessionId || current.session.workspacePath !== owner) {
+				fail("parallel_invocation_owner", "The owning App coordinator or project changed");
+			}
+			return current;
+		};
+		return { host, currentHost };
+	}
+	/** @param {ParallelPlan} plan */
+	function planIdentityFor(plan) {
 		factory.requireOwner(plan);
 		if (!plan.factory) return fail("parallel_foreign_owner", "An owned factory binding is required");
-		return { repositoryId: plan.factory.repositoryId, owner: workspace(), planId: plan.id, taskId, reservationId };
+		return { repositoryId: plan.factory.repositoryId, owner: workspace(), planId: plan.id };
+	}
+	/** @param {ParallelPlan} plan @param {string} taskId @param {string} reservationId */
+	function identityFor(plan, taskId, reservationId) {
+		return { ...planIdentityFor(plan), taskId, reservationId };
 	}
 	/** @param {ParallelPlan} plan */
 	function admissionFor(plan) {
@@ -296,15 +297,8 @@ function createParallelComposition({ options, workspace, storeFor, factory, pers
 	/** @param {ParallelPlan} plan @param {OperationContext | undefined} context */
 	function environment(plan, context) {
 		factory.requireOwner(plan);
-		const host = requireHost(context);
+		const { host, currentHost } = hostFor(context);
 		const { sessionId, projectId, workspacePath: owner } = host.session;
-		const currentHost = () => {
-			const current = requireHost(context);
-			if (current.session.projectId !== projectId || current.session.sessionId !== sessionId || current.session.workspacePath !== owner) {
-				fail("parallel_invocation_owner", "The owning App coordinator or project changed");
-			}
-			return current;
-		};
 		factory.packageContext(plan);
 		const { admission, journal } = storageFor(plan);
 		const transport = createOfferedDispatchTransport({
@@ -435,28 +429,58 @@ function createParallelComposition({ options, workspace, storeFor, factory, pers
 		const before = await storeFor().read(input.planId);
 		if (!enabled(before)) return cancelPlan(input);
 		assertKnownKeys(input, new Set(Object.keys(requestShapes.cancel)), "cancel");
-		requireHost(context);
+		const { currentHost } = hostFor(context);
 		const cancelled = await cancelPlan(input);
-		const { plan, identities } = fenceCancelledAdmissions(cancelled);
-		// AdmissionPort has no plan-scoped claim fence or writer-quiescence read.
-		// A process can crash after a stale claim but before reserveTask's finally.
-		// Report that limitation, rather than treating this census as global closure.
-		throw new FoundryOperationError("parallel_cancellation_join_pending",
-			"Plan cancellation and the complete observed owned admission fences are durable. Concurrent reservation quiescence cannot be proven by the current ports; hold for explicit reconciliation. No native effect or claim was released.", {
-				planId: plan.id, revision: plan.revision, requestId: plan.cancellation?.requestId,
-				planCancellationPersisted: true, observedInventoryComplete: true, observedIdentities: identities,
-				reservationsQuiescent: false, pendingEffectsRetained: true,
-			});
+		currentHost();
+		return fenceCancelledAdmissions(cancelled).plan;
 	}
 	/** @param {Request<"finalizeCancellation">} input @param {OperationContext} [context] */
 	async function finalizeCancellation(input, context) {
 		const plan = await storeFor().read(input.planId);
 		if (!enabled(plan)) return finalizePlanCancellation(input);
 		assertKnownKeys(input, new Set(Object.keys(requestShapes.finalizeCancellation)), "finalizeCancellation");
-		requireHost(context);
-		fenceCancelledAdmissions(plan);
-		return fail("parallel_cancellation_join_pending",
-			"Terminal observations for the known admissions do not prove reservation-writer quiescence. The current admission port cannot close this plan-scoped cancellation join.");
+		const { currentHost } = hostFor(context);
+		const { plan: current, state } = fenceCancelledAdmissions(plan);
+		const { admission } = storageFor(current);
+		if (state.admissions.some(entry => entry.admission.phase !== "released")) {
+			return fail("parallel_cancellation_join_pending", "Every retained admission must be reconciled and released by its shared writer before finalization");
+		}
+		const attempts = new Set(state.admissions.flatMap(entry => entry.admission.attempt ? [entry.admission.attempt.attemptId] : []));
+		if (current.tasks.some(task => task.attempts.some(attempt =>
+			(attempt.sessionId || current.cancellation?.requiredAttemptIds.includes(attempt.id)) && !attempts.has(attempt.id)))) {
+			return fail("parallel_cancellation_join_pending", "The native plan retains attempt ownership outside the shared admission census");
+		}
+		if (current.status === "cancelled") return finalizePlanCancellation(input);
+		for (const { admission: record, observations } of state.admissions) {
+			if (!record.attempt) continue;
+			const observe = currentHost().observeRecovery;
+			if (!observe) return fail("parallel_observation_unavailable", "Finalization requires fresh sourced native observations, including released historical admissions");
+			const after = new Date().toISOString();
+			const inventory = normalizeRecoveryInventory(await observe({ identity: record.identity, after }));
+			currentHost();
+			const latest = storeFor().readCurrent(current.id);
+			factory.requireOwner(latest);
+			if (latest.revision !== current.revision || !same(latest.cancellation, current.cancellation)
+				|| !same(state, admission.readCancellation(state.identity))) {
+				return fail("parallel_cancellation_context_changed", "Cancellation ownership changed during native observation; reread and reconcile explicitly");
+			}
+			const decision = reconcileCancellationObligations(record, inventory, {
+				sessionIds: observations.flatMap(entry => entry.sessionIds),
+				runIds: observations.flatMap(entry => entry.runIds),
+			});
+			const retainedAt = Math.max(
+				Date.parse(after), Date.parse(current.cancellation?.requestedAt ?? after),
+				...observations.map(entry => Date.parse(entry.capturedAt)),
+				...record.obligations.flatMap(entry => entry.inventory ? [Date.parse(entry.inventory.capturedAt)] : []),
+			);
+			if (Date.parse(inventory.capturedAt) < retainedAt) decision.holds.push("native-inventory-stale");
+			if (decision.holds.length) {
+				throw new FoundryOperationError("parallel_cancellation_join_pending", "Fresh native evidence does not establish termination of every retained owned effect, child and run", {
+					identity: record.identity, holds: decision.holds, inventory,
+				});
+			}
+		}
+		return finalizePlanCancellation(input);
 	}
 	/** @param {Request<"attachTask">} input @param {OperationContext} [context] */
 	async function attachTask(input, context) {
@@ -531,19 +555,20 @@ function createParallelComposition({ options, workspace, storeFor, factory, pers
 			runtime.transport.ensure("foundry_reserve_task");
 			return runtime.dispatcher.dispatch(identity);
 		}
+		fenceCancelledAdmissions(plan);
 		const observe = runtime.host.observeRecovery;
 		if (!observe) return fail("parallel_observation_unavailable", "Recovery requires supported, sourced native session/run observations; idle or absent is not terminal");
 		const listAdmissions = () => ({
 			complete: true,
-			identities: runtime.admission.list().filter(entry => entry.identity.owner === identity.owner
-				&& entry.identity.planId === plan.id).map(entry => entry.identity),
+			identities: runtime.admission.readCancellation(planIdentityFor(plan)).admissions.map(entry => entry.admission.identity),
 		});
 		const assertPlanFence = () => {
 			runtime.currentHost();
 			const current = storeFor().readCurrent(plan.id);
 			factory.requireOwner(current);
 			if (!["cancelling", "cancelled"].includes(current.status) || !current.cancellation
-				|| !same(current.cancellation.requestId, plan.cancellation?.requestId)) {
+				|| !same(current.cancellation.requestId, plan.cancellation?.requestId)
+				|| !runtime.admission.readCancellation(planIdentityFor(current)).fence) {
 				fail("parallel_plan_fence_required", "The current owned plan no longer retains this cancellation fence");
 			}
 		};

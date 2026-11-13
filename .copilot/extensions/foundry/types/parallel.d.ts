@@ -94,6 +94,16 @@ export type AdmissionPort = {
 	deliver(fence: Fence, receipt: DeliveryReceipt): AdmissionRecord;
 	release(fence: Fence): AdmissionRecord;
 };
+export type PlanAdmissionIdentity = Pick<AdmissionIdentity, "repositoryId" | "owner" | "planId">;
+export type PlanCancellationState = {
+	identity: PlanAdmissionIdentity;
+	fence: { identity: PlanAdmissionIdentity; cancelledAt: string } | null;
+	admissions: { admission: AdmissionRecord; observations: import("../inventory.mjs").RecoveryObservation[] }[];
+};
+export type PlanCancellationPort = {
+	cancelPlan(identity: PlanAdmissionIdentity): PlanCancellationState;
+	readCancellation(identity: PlanAdmissionIdentity): PlanCancellationState;
+};
 export type DispatchJournalPort = {
 	read(attempt: AttemptIdentity): EffectReceipt[];
 	intent(transaction: FencedTransaction, receipt: EffectReceipt): EffectReceipt;

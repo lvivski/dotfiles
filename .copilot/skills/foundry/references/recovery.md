@@ -35,6 +35,11 @@ attached, executing, delivered and independently verified; metadata, missing not
 idle flag cannot advance stages. No polling timers or fabricated cross-child event subscription.
 The admission owner alone settles/releases shared claims; recovery uses its fenced transitions,
 not a second writer. Separate-store gaps and late native outcomes remain obligations.
+During cancellation, reconciliation installs/reads the permanent owner/plan fence in shared
+admission schema 3 before consuming native observations. Its census includes released history;
+an empty active-attempt list is not proof of no owned work. A lost host callback cannot downgrade
+even an empty retained plan fence to legacy writes. The admission owner migrates v1/v2; old cached
+writers reject schema 3 and must restart, never clear the fence or overwrite the database.
 
 For [original-owner corrections](dispatch.md#supplemental-original-owner-corrections), retain the
 delivery hold until an explicit authorized correction decision and an existing supported current

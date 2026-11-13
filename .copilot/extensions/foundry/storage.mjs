@@ -41,17 +41,18 @@ export function createParallelStorage(options) {
 		directoryParts: Array.isArray(directoryParts) ? [...directoryParts] : directoryParts,
 		busyTimeoutMs: options.busyTimeoutMs,
 	};
+	/** @satisfies {import("./types/parallel.js").PlanCancellationPort} */
 	const admission = createAdmissionStore({
 		...location, repositoryId: options.repositoryId, owner: options.owner, clock: options.clock,
 	});
 	// Only the admission owner may initialize or migrate the shared schema.
 	admission.list();
 	const storage = createArtifactDatabase({
-		...location, schemaVersion: 2,
+		...location, schemaVersion: 3,
 		initialize(db) {
 			const version = db.prepare("PRAGMA user_version").get()?.user_version;
 			const application = db.prepare("PRAGMA application_id").get()?.application_id;
-			if (version !== 2 || application !== 0x464e4144) {
+			if (version !== 3 || application !== 0x464e4144) {
 				throw storageError("parallel_database_version", "The journal requires the existing admission database", {
 					details: { version, application },
 				});
