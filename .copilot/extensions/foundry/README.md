@@ -25,6 +25,11 @@ delegation through the same mechanism. Historical grants remain initial-only; cl
 authoritative verification/delivery binding and current independent/human evidence. It does not
 accept design, replace a capability, authorize correction waves or grant external/resource actions.
 
+The [parallel implementation contracts](../../skills/foundry/references/parallel-contracts.md)
+define the shared package/input, admission-fence and native-receipt ports, exact leaf ownership,
+captured host schemas and confined test runner. These are implementation foundations, not an
+installed parallel dispatcher or an accepted capability contract; public composition remains separate.
+
 ## Repository capability lifecycle
 
 A capability is coherent behavior with named exclusive authority, stable interfaces, conserved data

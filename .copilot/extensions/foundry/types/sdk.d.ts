@@ -424,6 +424,10 @@ declare module "@github/copilot-sdk" {
 		readonly capabilities: { ui?: { elicitation?: boolean } };
 		readonly ui: SessionUiApi;
 		readonly rpc: {
+			tools?: {
+				/** Raw native result must be decoded; metadata availability does not prove execution availability. */
+				execute(input: { name: string; arguments: JsonValue; toolCallId?: string }): Promise<unknown>;
+			};
 			extensions: {
 				list(): Promise<{ extensions: Array<{
 					id: string;

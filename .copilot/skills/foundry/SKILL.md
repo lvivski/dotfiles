@@ -33,6 +33,12 @@ Discovery can precede specification. Accepted contracts use deterministic
 `foundry_create_factory_plan`; only discovery needs a planning Workflow.
 Migration, transfer and retention are recovery operations, not prerequisites for every task.
 
+For the approved parallel-engineering increment, use the
+[shared contracts and ownership map](references/parallel-contracts.md) before dividing
+implementation. It distinguishes admitted work from observations, preserves exact native
+handoff and input bindings, and keeps claim authority with one writer. Shared fixtures
+and compiled ports alone do not establish an installed autonomous execution path.
+
 ## Hard rules
 
 1. Never create a child session before `foundry_reserve_task`.

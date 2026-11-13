@@ -1,0 +1,33 @@
+{
+  "sdkDirectory": "/Applications/GitHub Copilot.app/Contents/Resources/copilot-sdk",
+  "files": {
+    "session.d.ts": {
+      "sha256": "e7697b40bcef0289bb2e05cdde0dc3dd379f8928f9ac569ce3ee94985c8e7aa2",
+      "bytes": 19249
+    },
+    "generated/rpc.d.ts": {
+      "sha256": "14febd2c4b55a6c77b73cd17f31b73464a6b9237bc0163e8b783f7877b8b085e",
+      "bytes": 1507094
+    },
+    "workflow.d.ts": {
+      "sha256": "4e3094f9130f678812eb324ebb4dd93a3f9209eef98c7a05585f43ed0917eafa",
+      "bytes": 17126
+    },
+    "types.d.ts": {
+      "sha256": "819873114d258979d3f5a513e3e4544ea3e683531eba33b25eb12d062268ede7",
+      "bytes": 146108
+    },
+    "generated/session-events.d.ts": {
+      "sha256": "c5efd8806095c43246199e10bca42c74b943e723f5d59ac92bd6e08fc97af881",
+      "bytes": 562249
+    },
+    "cliVersion.d.ts": {
+      "sha256": "61cb2434d9e0feda4208648f919708a4d6371fce97ffbe415e4a4191267be844",
+      "bytes": 145
+    },
+    "sdkProtocolVersion.d.ts": {
+      "sha256": "ae088957f936521a2eede3dfaf39082622eaf2c7683181901ff7ded75cee5375",
+      "bytes": 294
+    }
+  }
+}
