@@ -4,6 +4,9 @@ import { requiresHumanJudgment } from "../factory/definitions.mjs";
 import { fail } from "../factory/fields.mjs";
 import { createDraftPlan } from "../plan/lifecycle.mjs";
 import { assertPlanningContext, blueprintDigest, evaluationCriterion, selectEvaluations } from "./pinning.mjs";
+import { declaredVisual, visualCriterion } from "../factory/visual.mjs";
+import { validateTaskTopology } from "../plan/graph.mjs";
+import { checkVisualReferences } from "../evidence/visual.mjs";
 
 /** @typedef {{id: string, repository: import("../types/plan.js").Repository, expectedRevision: number, expectedFactoryRevision?: number, candidateId: string, expectedFiles?: string[], evaluations?: KnowledgeRef[]}} FactoryPlanInput */
 /** @typedef {import("../types/factory.js").KnowledgeRef} KnowledgeRef */
@@ -34,6 +37,16 @@ export function createBoundPlans({ workspace, storeFor, notify, factoryFor, cont
 			fail("factory_plan_bound", "Plan identity is reserved for different factory work");
 		}
 		const canonicalContext = context(repository.workingDirectory, factoryContext.unitId);
+		const unitRevision = binding?.unitRevision ?? (candidate ? factory.generation(candidate.id).unit.revision : factoryContext.unitRevision);
+		const unit = state.units.find((entry) => entry.id === factoryContext.unitId && entry.revision === unitRevision);
+		if (!unit) fail("factory_unit_missing", "Plan capability revision is missing");
+		const visual = declaredVisual(state, unit);
+		if (visual) {
+			checkVisualReferences(repository.workingDirectory, visual.evaluation);
+			const { targetTask } = validateTaskTopology(blueprint.tasks, blueprint.evaluationTarget);
+			const criteria = blueprint.evaluationTarget?.criteria ?? targetTask?.acceptanceCriteria ?? [];
+			if (!criteria.includes(visualCriterion(visual))) fail("factory_visual_required", "UI plans cannot omit the declared reference-to-output visual gate; use a declared successor for changed scope");
+		}
 		if (factoryContext.repositoryId !== factory.repository.id || factoryContext.owner !== workspace()
 			|| (!binding && !evaluating && (factoryContext.unitRevision !== canonicalContext.unitRevision
 				|| (factoryContext.contract?.digest ?? null) !== (canonicalContext.contract?.digest ?? null)

@@ -9,6 +9,9 @@ import { validateFactoryEvaluations } from "../plan/schemas/factory.mjs";
 import { selectEvaluations } from "./pinning.mjs";
 import { evaluationId, pendingReceipts } from "./receipts.mjs";
 import { checkEvaluator } from "../evidence/bundles.mjs";
+import { checkVisualReport } from "../evidence/visual.mjs";
+import { declaredVisual, visualCriterion } from "../factory/visual.mjs";
+import { validateTaskTopology } from "../plan/graph.mjs";
 
 /** @typedef {import("../types/plan.js").FoundryPlan} FoundryPlan */
 /** @typedef {FoundryPlan & {factory: NonNullable<FoundryPlan["factory"]>}} BoundPlan */
@@ -28,7 +31,26 @@ export function createEvidenceBridge(stateFor, workspace) {
 		const reports = rawReports ?? [];
 		validateFactoryEvaluations(reports);
 		const { factory, state } = stateFor(plan);
-		if (!plan.factory?.candidateId || plan.tasks.find((task) => task.id === taskId)?.kind !== "verify") return state.revision;
+		if (plan.tasks.find((task) => task.id === taskId)?.kind !== "verify") return state.revision;
+		const unit = state.units.find((entry) => entry.id === plan.factory?.unitId && entry.revision === plan.factory.unitRevision);
+		const visual = unit ? declaredVisual(state, unit) : null;
+		if (!plan.factory?.candidateId) {
+			if (visual) {
+				const report = reports.find((entry) => refKey(entry.evaluation) === refKey(visual));
+				if (reports.length !== 1 || !report || report.procedureDigest !== visual.evaluation.procedure.digest
+					|| report.environment !== visual.evaluation.environment || report.workload !== visual.evaluation.workload || !commit) {
+					fail("factory_visual_required", "UI discovery needs its declared independent visual report, even without an accepted contract/candidate");
+				}
+				const target = validateTaskTopology(plan.tasks).targetTask;
+				const index = target?.acceptanceCriteria.indexOf(visualCriterion(visual)) ?? -1;
+				const checkId = `${target?.id}-C${String(index + 1).padStart(3, "0")}`;
+				const check = isList(evidence) ? evidence.find((item) => property(item, "checkId") === checkId) : undefined;
+				if (index < 0 || property(check, "outcome") !== (report.outcome === "passed" ? "passed" : "failed")) fail("factory_visual_contradiction", "Visual report must agree with the declared canonical visual criterion");
+				checkEvaluator(plan.repository.workingDirectory, visual.evaluation, commit);
+				checkVisualReport(plan.repository.workingDirectory, visual.evaluation, report.report, commit, report.outcome);
+			}
+			return state.revision;
+		}
 		const generation = factory.generation(plan.factory.candidateId);
 		const candidate = state.candidates.find((entry) => entry.id === plan.factory?.candidateId);
 		if (!candidate?.delivery || candidate.delivery.commit !== commit) fail("factory_evidence_subject_mismatch", "Verifier must name the exact immutable delivered candidate");
@@ -42,6 +64,7 @@ export function createEvidenceBridge(stateFor, workspace) {
 			if (property(check, "outcome") !== (report.outcome === "passed" ? "passed" : "failed")) fail("factory_evidence_contradiction", "Canonical verifier checks and factory evaluation outcomes disagree");
 			if (entry.evaluation.procedure.kind === "reference" && report.outcome !== "inconclusive") fail("factory_evaluator_unsupported", "Non-executable references cannot be reported as executed checks", { disposition: "unsupported" });
 			checkEvaluator(plan.repository.workingDirectory, entry.evaluation, candidate.delivery.commit);
+			checkVisualReport(plan.repository.workingDirectory, entry.evaluation, report.report, candidate.delivery.commit, report.outcome);
 		}
 		return state.revision;
 	};
@@ -50,12 +73,15 @@ export function createEvidenceBridge(stateFor, workspace) {
 	const pinnedDefinitions = (plan, factory, state) => {
 		const unit = state.units.find((entry) => entry.id === plan.factory.unitId && entry.revision === plan.factory.unitRevision);
 		if (!unit) fail("factory_unit_missing", "Plan references a missing capability boundary");
+		const visual = declaredVisual(state, unit);
 		if (!plan.factory.contractRevision) return {
 			unit,
 			contract: null, obligations: [], evaluations: [], rationale: [], decisionLineage: [], foundations: [],
+			...(visual ? { visualEvaluation: visual } : {}),
 		};
 		const context = factory.contractContext(plan.factory.unitId, plan.factory.contractRevision);
-		return { ...context, evaluations: selectEvaluations(context.evaluations, plan.evaluationTarget?.evaluations) };
+		return { ...context, evaluations: selectEvaluations(context.evaluations, plan.evaluationTarget?.evaluations),
+			...(visual ? { visualEvaluation: visual } : {}) };
 	};
 
 	/** @param {BoundPlan} plan @param {FactoryService} factory @param {FactorySnapshot} state */
@@ -98,15 +124,25 @@ export function createEvidenceBridge(stateFor, workspace) {
 		return { version: /** @type {const} */ (1), definitions, humanEvidence, observations };
 	};
 
-	/** @param {FoundryPlan} rawPlan @param {boolean} [passing] */
-	const verificationGate = (rawPlan, passing = false) => {
+	/** @param {FoundryPlan} rawPlan @param {boolean} [passing] @param {boolean} [visualOnly] */
+	const verificationGate = (rawPlan, passing = false, visualOnly = false) => {
 		const { factory, state, plan } = stateFor(rawPlan);
+		const definitions = pinnedDefinitions(plan, factory, state);
+		const visual = definitions.visualEvaluation;
+		if (visualOnly && !visual) return;
+		if (visual) {
+			const verifier = plan.tasks.find((task) => task.kind === "verify");
+			const attempt = verifier ? latestSuccessfulAttempt(verifier) : null;
+			const report = attempt?.factoryEvaluations?.find((entry) => refKey(entry.evaluation) === refKey(visual));
+			if (!attempt?.commit || !report) fail("factory_visual_required", "Declared UI work cannot finish without independent visual evidence");
+			checkVisualReport(plan.repository.workingDirectory, visual.evaluation, report.report, attempt.commit, report.outcome);
+			if (passing && report.outcome !== "passed") fail("factory_visual_required", "Missing capture or failed reference-to-output assessment blocks completion");
+		}
 		if (!plan.factory.candidateId) return;
 		const candidate = state.candidates.find((entry) => entry.id === plan.factory.candidateId);
 		if (!candidate) fail("factory_candidate_missing", "Plan references a missing candidate");
 		if (pendingHumanFor(plan, factory, state).length) fail("factory_human_judgment_pending", "Pinned human judgments are missing or stale; collect an explicit human review, never an agent verdict");
 		const assurance = candidateAssurance(state, candidate, new Date().toISOString());
-		const definitions = pinnedDefinitions(plan, factory, state);
 		const verifyTask = plan.tasks.find((task) => task.kind === "verify");
 		if (!verifyTask) fail("factory_execution_mismatch", "Plan requires a verifier");
 		const verifier = latestSuccessfulAttempt(verifyTask);

@@ -4,6 +4,7 @@ import { checkContextSize, discoveryContext } from "../factory/context.mjs";
 import { fail } from "../factory/fields.mjs";
 import { same as sameRefs } from "../factory/records.mjs";
 import { blueprintDigest } from "./pinning.mjs";
+import { declaredVisual } from "../factory/visual.mjs";
 
 /** @typedef {import("../types/plan.js").FoundryPlan} FoundryPlan */
 /** @typedef {ReturnType<typeof createFactoryService>} FactoryService */
@@ -73,6 +74,7 @@ export function createAuthority({ workspace, storageRoot, clock }) {
 		if (!governingUnit) fail("factory_unit_missing", "Accepted contract references a missing boundary");
 		const pinned = contract ? factory.contractContext(unitId, contract.revision) : null;
 		const retrieved = pinned ? null : discoveryContext(state, unitId, { query: input.query });
+		const visual = declaredVisual(state, governingUnit);
 		const result = {
 			repositoryId: factory.repository.id, unitId, unitRevision: governingUnit.revision, owner: workspace(),
 			unit: governingUnit, proposedUnit: !input.binding && governingUnit.revision !== unit.revision ? unit : null, contract,
@@ -80,6 +82,7 @@ export function createAuthority({ workspace, storageRoot, clock }) {
 			rationale: pinned?.rationale ?? retrieved?.rationale ?? [],
 			decisionLineage: pinned?.decisionLineage ?? [],
 			authority: contract ? "accepted-contract" : "discovery-only",
+			...(visual ? { visualEvaluation: visual } : {}),
 			...(retrieved ? { signals: retrieved.signals, retrieval: retrieved.retrieval } : {}),
 		};
 		checkContextSize(result);

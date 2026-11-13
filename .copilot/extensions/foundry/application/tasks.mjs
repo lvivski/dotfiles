@@ -3,12 +3,12 @@ import { FoundryFactoryError } from "../factory/fields.mjs";
 import { isTerminatedSessionState, normalizeInventory, sessionState } from "../inventory.mjs";
 import { taskCompletionRequirements } from "../plan/delivery.mjs";
 import { attachTaskAttempt, completeTaskAttempt, reserveTaskAttempt, retryTask } from "../plan/execution.mjs";
-import { buildDelegationPrompt } from "../plan/prompt.mjs";
+import { buildDelegationPrompt, buildTaskInitialization } from "../plan/prompt.mjs";
 import { activeTaskAttempt } from "../plan/queries.mjs";
 import { findScopeConflicts, selectNonOverlappingTasks } from "../plan/scope.mjs";
 import { ATTEMPT_STATUS, TASK_STATUS } from "../plan/values.mjs";
 import { FoundryOperationError, revisionConflict } from "./errors.mjs";
-import { attachVerifierWorktree, checkTaskBranchRename } from "../evidence/worktrees.mjs";
+import { attachVerifierWorktree, checkTaskBootstrap, checkTaskBranchRename } from "../evidence/worktrees.mjs";
 import { checkTaskRepository } from "./repository.mjs";
 
 /** @typedef {import("../types/plan.js").FoundryPlan} FoundryPlan */
@@ -120,6 +120,7 @@ export function createTaskOperations({ storeFor, persist, factory, syncFactoryPl
 				attemptId: existing.attempt.id,
 				baseBranch: existing.attempt.baseBranch,
 				integrationRequired: existing.attempt.integrationRequired,
+				initialization: buildTaskInitialization(plan, existing.task, existing.attempt),
 				delegationPrompt: `${factory.prompt(plan, existing.task)}\n${buildDelegationPrompt(plan, existing.task, existing.attempt)}`,
 			};
 		}
@@ -177,6 +178,7 @@ export function createTaskOperations({ storeFor, persist, factory, syncFactoryPl
 			attemptId: attempt.id,
 			baseBranch: attempt.baseBranch,
 			integrationRequired: attempt.integrationRequired,
+			initialization: buildTaskInitialization(updated, updatedTask, attempt),
 			delegationPrompt: `${factory.prompt(updated, updatedTask)}\n${buildDelegationPrompt(updated, updatedTask, attempt)}`,
 		};
 	};
@@ -194,6 +196,7 @@ export function createTaskOperations({ storeFor, persist, factory, syncFactoryPl
 		sessionId,
 		branch,
 		rename,
+		bootstrap,
 	}) => {
 		const plan = await storeFor().read(planId);
 		factory.requireOwner(plan);
@@ -204,6 +207,9 @@ export function createTaskOperations({ storeFor, persist, factory, syncFactoryPl
 		}
 		if (plan.revision !== expectedRevision) {
 			throw revisionConflict(planId, expectedRevision, plan.revision);
+		}
+		if (bootstrap && (!current || current.sessionId !== null || current.status !== ATTEMPT_STATUS.RESERVED || rename)) {
+			throw new FoundryOperationError("task_bootstrap_mismatch", "Setup corroboration applies only to the same unattached reserved attempt, not a replacement or rename");
 		}
 		if (rename) {
 			if (!current || current.sessionId !== sessionId || !current.startedAt
@@ -228,8 +234,10 @@ export function createTaskOperations({ storeFor, persist, factory, syncFactoryPl
 				`task-branch-reconciled:${taskId}:${attemptId}`,
 			);
 		}
+		const bootstrapWorktree = bootstrap && current
+			? checkTaskBootstrap(plan.repository.workingDirectory, current.baseBranch, branch ?? null, bootstrap) : undefined;
 		const verifierWorktree = plan.tasks.find((task) => task.id === taskId)?.kind === "verify"
-			? attachVerifierWorktree(plan.repository.workingDirectory, branch ?? null) : undefined;
+			? bootstrapWorktree ?? attachVerifierWorktree(plan.repository.workingDirectory, branch ?? null) : undefined;
 		return persist(
 			planId,
 			expectedRevision,
@@ -329,7 +337,7 @@ export function createTaskOperations({ storeFor, persist, factory, syncFactoryPl
 			}, `task-${status}:${taskId}:${attemptId}`);
 		} catch (failure) {
 			if (failure instanceof FoundryFactoryError
-				&& /^factory_(?:evidence|evaluator|human|generation|execution|provenance|commit|integration|worktree|repository)/.test(failure.code)) {
+				&& /^factory_(?:evidence|evaluator|visual|human|generation|execution|provenance|commit|integration|worktree|repository)/.test(failure.code)) {
 				let retained;
 				try {
 					const current = await storeFor().read(planId);

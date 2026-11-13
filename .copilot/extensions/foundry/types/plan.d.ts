@@ -118,6 +118,38 @@ export type FoundryActivity = {
 	event: string; at: string; revision: number; actor?: string; verificationRunId?: string;
 };
 
+export type DelegatedApprovalType = "plan" | "completion";
+export type ApprovalScope = {
+	owner: string; coordinatorSessionId: string; repositoryId: string; repositoryPath: string;
+	unitId: string; unitRevision: number; contractDigest: string | null;
+	/** Missing on historical grants means initial plan approval only. */
+	approvalType?: DelegatedApprovalType;
+};
+export type ApprovalInstructionSource =
+	| { kind: "direct-user"; sessionId: string; messageRef: string }
+	| { kind: "relayed-user"; sessionId: string; messageRef: string; relayedBySessionId: string };
+export type ApprovalInstruction = {
+	instruction: string; grantedBy: string; source: ApprovalInstructionSource;
+};
+type ApprovalGrant = {
+	grantedBy: string; at: string; toolCallId: string; statement: string; planId: string; planRevision: number;
+} & (
+	| { method: "native-ui-elicitation" }
+	| { method: "user-instruction-attestation"; attestedBy: string; source: ApprovalInstructionSource }
+);
+export type ApprovalDelegation = {
+	id: string; scope: ApprovalScope;
+	grant: ApprovalGrant;
+	revocation: { at: string; actor: string; reason: string; toolCallId: string } | null;
+};
+export type DelegatedApproval = {
+	delegation: ApprovalDelegation; planId: string; planRevision: number; blueprintDigest: string;
+	sessionId: string; toolCallId: string; review: string;
+};
+export type DelegatedCompletion = DelegatedApproval & {
+	verification: { reservationId: string; runId: string; inputDigest: string; targetCommit: string };
+};
+
 export type FoundryPlan = {
 	revision: number; id: string; title: string; objective: string; constraints: string[]; status: PlanStatus;
 	repository: Repository; planning: Planning | null; factory?: PlanFactoryBinding | null;
@@ -125,7 +157,7 @@ export type FoundryPlan = {
 	/** Persisted JSON is validated as a frozen context by analysis before use. */
 	factoryVerification?: Record<string, unknown> | null;
 	tasks: FoundryTask[];
-	gates: { planApprovedAt: string | null; planApprovedBy: string | null; completionApprovedAt: string | null; completionApprovedBy: string | null };
+	gates: { planApprovedAt: string | null; planApprovedBy: string | null; completionApprovedAt: string | null; completionApprovedBy: string | null; delegatedApproval?: DelegatedApproval; delegatedCompletion?: DelegatedCompletion };
 	verification: Verification; cancellation: Cancellation | null; activity: FoundryActivity[];
 	createdAt: string; updatedAt: string;
 };

@@ -32,6 +32,7 @@ const workflows = Object.values(FOUNDRY_WORKFLOWS).map(
 /** Shared service boundary used by tools, hooks, and canvases. */
 const operations = createFoundryOperations({
 	getWorkspacePath: () => session?.workspacePath,
+	getSession: () => session,
 	analysis: createWorkflowAnalysis(() => session?.workflow),
 	notify: publishPlanChange,
 });
@@ -40,7 +41,7 @@ session = await joinSession({
 	workflows,
 	tools: buildFoundryTools(operations),
 	hooks: {
-		...buildFoundryHooks({ operations }),
+		...buildFoundryHooks({ operations, getSession: () => session }),
 		onSessionEnd: () => {
 			timeReviews?.close();
 			unsubscribeWorkflows();

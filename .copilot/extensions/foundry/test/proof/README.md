@@ -34,8 +34,9 @@ substitute the older global implementation, direct module calls, mocked Workflow
 or caller-supplied verdicts.
 
 Supply a fresh App generation session with the sealed contract and allowed foundations,
-without incumbent source or implementation history. Reserve, create an idle child,
-attach it, then send its exact delegation prompt. Attach the distinct verifier before it
+without incumbent source or implementation history. Follow the [dispatch protocol](../../../../skills/foundry/references/dispatch.md):
+reserve, create with setup-only kickoff, corroborate completion and the unchanged base/worktree,
+attach, then send its exact delegation prompt coordinator-only. Attach the distinct verifier before it
 detaches to the immutable target commit. Run the pinned evaluator and the real native
 verification Workflow, retaining exact inputs, commits, process/session/run identities
 and output.

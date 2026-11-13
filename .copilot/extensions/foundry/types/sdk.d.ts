@@ -142,6 +142,7 @@ declare module "@github/copilot-sdk" {
 	export interface ToolInvocation {
 		sessionId: string;
 		toolCallId: string;
+		agentId?: string;
 		toolName: string;
 		arguments: unknown;
 		signal?: AbortSignal;
@@ -417,12 +418,22 @@ declare module "@github/copilot-sdk" {
 	}
 
 	export interface CopilotSession {
+		readonly sessionId: string;
 		readonly workspacePath?: string;
 		readonly workflow: SessionWorkflowApi;
 		readonly capabilities: { ui?: { elicitation?: boolean } };
 		readonly ui: SessionUiApi;
-		/** Foundry consumes the friendly APIs; raw RPC must be modeled before use. */
-		readonly rpc: unknown;
+		readonly rpc: {
+			extensions: {
+				list(): Promise<{ extensions: Array<{
+					id: string;
+					/** Directory name supplied by runtime discovery. */
+					name: string;
+					source: "project" | "user" | "plugin" | "session";
+					status: "running" | "disabled" | "failed" | "starting";
+				}> }>;
+			};
+		};
 		on(type: "workflow.run_updated", handler: (event: {
 			data: { runId: string; revision: number };
 		}) => void): () => void;

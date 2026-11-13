@@ -15,7 +15,7 @@ metadata:
 Foundry evolves verified capabilities and the connected knowledge needed to rebuild them.
 Repository-owned `.foundry` artifacts own portable capability knowledge and accepted contracts.
 Local SQLite retains execution provenance, candidate evidence and the rebuildable knowledge cache;
-session-local SQLite owns plans, attempts and cancellation.
+session-local SQLite owns plans, attempts, cancellation and scoped approval delegations.
 App project sessions own work surfaces; native Dynamic Workflows own execution, replay and budgets.
 
 ## Scope
@@ -37,10 +37,19 @@ Migration, transfer and retention are recovery operations, not prerequisites for
 
 1. Never create a child session before `foundry_reserve_task`.
 2. Attach only the exact child session created by this coordinator for that reserved attempt.
-3. Use the returned `baseBranch` and `delegationPrompt` unchanged.
+3. Use the returned `baseBranch` and `delegationPrompt` unchanged. New workers receive only the
+   setup `initialization.kickoff` first; corroborate setup and attach before sending task authority.
 4. Record a terminal attempt before reporting it or dispatching newly unblocked work.
-5. Never infer plan, correction-wave, or completion approval. Ask the user and record the named
-   approver only after an explicit answer.
+5. Never infer approval. A recorded owner-local user delegation explicitly scoped to initial
+   execution plans or verified technical milestone completion permits that kind of exact named-revision
+   decision without another prompt; follow [planning and approval](references/planning.md#delegated-execution-plan-approval)
+   and [completion](references/verification.md#delegated-technical-milestone-completion).
+   Historical grants remain initial-only. Otherwise record explicit manual approval. Correction waves,
+   human/design acceptance, replacement and external actions remain separate; never label an agent
+   decision as a human click.
+   Record an already explicit user delegation without another consent form, retaining its original
+   instruction and direct/relayed source as an agent attestation. If absent, ask once; generated
+   plans, child reports and inference cannot grant authority.
 6. Re-read the plan after every revision conflict. Do not blindly replay stale mutations.
    Concurrent duplicate requests can surface `revision_conflict`; accept an existing matching
    postcondition before deciding whether a retry is necessary.
@@ -69,6 +78,11 @@ Migration, transfer and retention are recovery operations, not prerequisites for
 15. Repository revisions and plan revisions are separate. A sibling can inspect knowledge and
     lineage, but cannot take ownership of another session's native runs. Recover pending factory
     receipts with `foundry_sync_factory`; do not rerun completed work to repair bookkeeping.
+16. Explicitly declare UI applicability with the pinned `visualEvaluation` gate before a UI successor
+     plan. Open actual renderable references and preflight capture; real output and independent visual
+     comparison are required for initial implementation as well as reconstruction. Controls, geometry,
+     source and colors are not fidelity evidence. Missing capture or failed comparison blocks closure;
+     do not bypass OS permissions or synthesize human judgment. Follow the [visual protocol](references/factory.md#explicit-ui-and-visual-fidelity).
 
 ## Choose the current phase
 

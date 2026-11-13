@@ -6,6 +6,7 @@ import { enumeration, fail, object, reference, text } from "./fields.mjs";
 import { evaluationObservation, sameEvaluationOrigin } from "./observations.mjs";
 import { candidateFor, contractFor, evaluationFor, key, same, uniqueId } from "./records.mjs";
 import { evaluationIdentity } from "./procedures.mjs";
+import { visualReport } from "./visual.mjs";
 
 /** @typedef {import("../types/factory.js").FactoryEvent} FactoryEvent */
 /** @typedef {import("../types/factory.js").FactoryState} FactoryState */
@@ -25,6 +26,7 @@ export function recordEvaluation(state, event, options = {}) {
 		|| input.contractDigest !== candidate.contractDigest || input.contextDigest !== candidate.contextDigest
 		|| input.commit !== candidate.delivery.commit) fail("factory_evidence_subject_mismatch", "Evidence must name the exact candidate commit and pinned contract/context/evaluation revisions");
 	const definition = evaluationFor(state, ref);
+	visualReport(definition, text(input.report, "evidence.report", 16000), candidate.delivery.commit, String(input.outcome));
 	if (input.procedureDigest !== definition.procedure.digest) fail("factory_evaluator_changed", "Evidence does not use the pinned evaluator");
 	const origin = source(input.source, at);
 	if (Date.parse(origin.at) < Date.parse(candidate.delivery.source.at)) fail("factory_evidence_predates_delivery", "Evaluation must follow the actual delivery");

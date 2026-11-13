@@ -44,7 +44,7 @@ test("create, restart, read, and list use a real SQLite database", () => withWor
 	assert.deepEqual(await readdir(store.directory), ["foundry.sqlite"]);
 	assert.deepEqual(withDatabase(store, (db) => db.prepare(
 		"SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name",
-	).all().map(({ name }) => name)), ["activation", "plans", "quarantine"]);
+	).all().map(({ name }) => name)), ["activation", "approval_delegations", "plans", "quarantine"]);
 	assert.equal(withDatabase(store, (db) => db.prepare("PRAGMA integrity_check").get()?.integrity_check), "ok");
 }));
 

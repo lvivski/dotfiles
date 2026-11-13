@@ -3,7 +3,7 @@ import test from "node:test";
 import { parseJson, readRecord } from "../../data.mjs";
 import { attachTaskAttempt, completeTaskAttempt, reserveTaskAttempt } from "../../plan/execution.mjs";
 import { approvePlan, createDraftPlan, transitionPlan } from "../../plan/lifecycle.mjs";
-import { buildDelegationPrompt } from "../../plan/prompt.mjs";
+import { buildDelegationPrompt, buildTaskInitialization } from "../../plan/prompt.mjs";
 import { ATTEMPT_STATUS, EVIDENCE_TYPE, PLAN_STATUS } from "../../plan/values.mjs";
 
 /**
@@ -144,6 +144,11 @@ test("dependency summaries are encoded inside an explicit untrusted-data fence",
 		verifier,
 		required(verifier.attempts[0]),
 	);
+	const initialization = required(buildTaskInitialization(plan, verifier, required(verifier.attempts[0])));
+	assert.equal(initialization.kickoff.prompt.includes("b".repeat(40)), false);
+	assert.equal(initialization.kickoff.prompt.includes("Detach-checkout"), false);
+	assert.equal(initialization.kickoff.prompt.includes(plan.objective), false);
+	assert.match(initialization.acknowledgement, /T-003\/T-003-A001/);
 	assert.match(verifierPrompt, /independent, read-only verification/);
 	assert.match(verifierPrompt, new RegExp("b".repeat(40)));
 	assert.match(verifierPrompt, /T-001-C001/);

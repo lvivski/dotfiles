@@ -8,24 +8,76 @@ Read before dispatching ready work or recording an attempt's result.
    An overlapping task needs a user-attributed
    `scopeOverride`; never manufacture one.
 3. Reserve each task with a unique stable `reservationId` and the current revision.
-4. Resolve the plan repository's App project, then call `create_session` with:
+4. Retain the reservation and complete create/admission receipts in the coordinator's session
+   artifacts. Before creation, resolve the exact `baseBranch` to a full commit ID on the execution
+   host and retain it as `baseCommit`; do not recalculate it after setup to excuse drift. Resolve
+   the plan repository's App project, then call native `create_session` **once** with:
    - `base_branch` equal to the reservation's `baseBranch`;
-   - no kickoff yet, so the child cannot change its branch before attachment;
-   - coordination enabled and an idle notification requested.
-5. Immediately attach the returned session ID and branch with `foundry_attach_task`.
+   - a distinct `workspace_type: "worktree"` and an explicit short `name`;
+   - `kickoff` equal to the returned `initialization.kickoff` (setup only, interactive);
+   - `coordinate_with_creator: true` and `notify_on_idle: "always"` so setup does not consume
+     the task-completion notification. Do not pass the task prompt, task attachments or a schedule.
+   A null `initialization` on replay means no new kickoff. Even a non-null one is not permission
+   to create twice: reconcile the first admission and retained child identity before doing anything.
+5. Wait for actual setup-turn completion and its exact `initialization.acknowledgement`, then
+   corroborate the same created child as described below. An accepted kickoff, navigation, an idle
+   flag alone or `active_session_id` presence/absence is not setup-completion proof.
+   Re-read the plan and attach with `foundry_attach_task`, the current revision, canonical native
+   child ID, freshly observed branch and
+   `bootstrap: { worktreePath: "<retained canonical child path>", baseCommit: "<pre-create SHA>" }`.
+   This checks the distinct registered repository worktree, exact unchanged HEAD, clean tracked
+   and untracked state/index, and unchanged reserved base. Missing local access fails closed;
+   never substitute the coordinator checkout. Preserve the input observations with the receipt.
 6. Send the reservation's exact `delegationPrompt` to the attached child with
-   `send_session_message`. Do not add implementation or comparison-only material.
+   native `send_session_message`, `coordinator_only: true`, `delivery_mode: "immediate"` and
+   `mode: "autopilot"`, **only after successful attachment**. Do not add implementation or
+   comparison-only material, drop attribution flags, or manufacture a user-source quote.
    The verifier's registered worktree is captured at attachment; only then may it
    detach to the exact target commit. Never substitute the coordinator's checkout
    for that verifier worktree.
-7. If session creation fails after reservation, record the unattached attempt as `blocked`; retry
-   only through `foundry_retry_task`.
+7. Record an unattached attempt as `blocked` only when creation definitively produced no worker.
+   If any child exists, setup fails, its identity is ambiguous, or admission is uncertain, retain
+   the reservation/scope and failure receipts. Do not create a replacement, free scope through an
+   unattached failure, or pretend setup/task delivery succeeded. Follow [recovery](recovery.md);
+   retries require reconciliation, not merely a new tool call ID.
 8. Wait for idle notifications rather than polling. Intervene only for a child request, explicit
    steering, a stuck session, or cancellation.
 9. Record `done`, `failed`, or `blocked` with the child result, branch, commit/PR when present, and
    concrete evidence. Resolve and record the full commit and PR metadata required by the task before
    recording `done`. Before recording an attached failure, terminate/archive its session and supply
    a fresh complete terminal inventory. Then re-read ready work.
+
+## Setup corroboration and failure holds
+
+Native kickoff initializes a new local child's backing session before submitting its first turn;
+it avoids the cold-target `send_session_message` classification path. It does not await a completed
+setup response. Normal App startup, repository trust and resource permission still apply.
+The setup prompt is a behavioral instruction, **not** enforced inactivity or worker revocation.
+Inspect its response/activity and retain any unexpected command, edit, branch change or failure.
+No implementation or verification is authorized until attachment and the separate task handoff.
+
+Use fresh public `get_session`/inventory evidence: the returned created ID and any App-resolved
+canonical alias must identify the SAME retained project, creator AND coordinating creator,
+worktree path and reserved base. Preserve both IDs; never infer alias equivalence from similar names
+or paths, change providers to reinterpret an ID, or bind an unrelated worker. Inspect the existing
+child's canonical path and actual checked-out branch on its host. The bootstrap check corroborates
+Git state; session association and setup acknowledgement remain claims, not host attestation.
+
+Creation's response may precede naming or metadata refresh. An explicit name suppresses automatic
+kickoff title generation, not every possible branch rename. If only the branch name changed before
+attachment, corroborate the SAME worktree/Git directory, absent old ref and direct rename reflog
+since creation, with unchanged HEAD/base and clean files; then attach its fresh branch. Retain this
+pre-attachment rename evidence, rather than fabricating a post-attachment rename receipt. Unexpected
+history, detached HEAD, moved paths, changed owner/base or dirty state holds dispatch. Recheck after
+revision conflicts; do not resend setup or task work merely because attachment was replayed.
+After attachment, use the existing rename reconciliation below if necessary.
+
+An explicit handoff rejection is retained as a failure, not success; ambiguous delivery must be
+reconciled against the same child's history before any retry. Never initialize an existing cold
+worker by stripping `coordinator_only`, sending a peer/oversight message, or requesting another
+manual bootstrap as the normal dispatch path. If native kickoff cannot initialize the same owned
+worker, hold and report the host limitation; do not bypass native admission. This sequence needs
+owner-run live validation on the next normally reserved worker, not speculative test children.
 
 Factory context is included in the reserved prompt. Do not add comparison-only prior implementation
 to a reconstruction child's inputs. Keep the incumbent until explicit replacement selection.
@@ -50,3 +102,30 @@ a pinned detached verifier is supported if the new branch is not checked out els
 Session association remains a claim, not authenticated attestation. Missing evidence, unsupported
 hosts or terminal/cancelling attempts remain blockers. Re-read state on conflicts; never edit
 stored attempts or weaken completion's branch checks to bypass a mismatch.
+
+## Supplemental original-owner corrections
+
+Only when the approved integration task explicitly permits this route, an original owner may
+contribute a bounded correction under the **active integration attempt**, preserving its original
+task's terminal delivery. This is not `foundry_retry_task` (failed/blocked tasks only), reopening a
+DONE task, or a [failed-verification correction wave](verification.md).
+
+Before coordinator-only handoff, retain an append-only coordinator artifact binding the governing
+clause, active integration attempt, existing original attached owner session/worktree, immutable
+base commit, exact failure/evidence and bounded original-owned paths. The artifact records prior
+authority; it grants no permission or automatic native enforcement. An acceptance criterion is not
+a native lease operation. Do not create a child, task or repair worker, grant broad imported-file
+permission, change protected evaluators, or rewrite the original terminal attempt/receipt.
+
+Historical DONE is not current inactivity: track the supplemental worker through completion and
+retain all relevant [cancellation](cancellation.md) and [verification](verification.md) holds.
+The owner returns an exact clean descendant commit, changed scope and evidence, preserving ancestry
+from the pinned base and original delivery. The coordinator verifies these claims; integration
+ancestry-merges that exact SHA, reruns affected checks and retains failures and correction provenance
+under its existing attempt. Do not substitute a mutable branch tip or treat a failed contribution
+as successful delivery.
+
+Existing authority, synchronization, scope and native permission checks still apply. An actual guard
+rejection means stop, not bypass. If the approved task lacks this explicit route, or the correction
+needs new scope or protected changes, this section supplies no authority. Documenting this existing
+route neither reapproves nor suspends already-authorized in-attempt work.

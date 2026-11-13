@@ -16,7 +16,14 @@ reserved task attempts, delivery/evidence contracts, and cross-session recovery.
 journals and session tools provide the execution primitives, not an equivalent to those policies.
 An explicit Foundry request follows the complete coordinator protocol. Discovery planning imports
 a factory-scoped planning Workflow. A pinned accepted contract can instead assemble a bounded draft
-deterministically, with no paid planning agents. Both paths require explicit plan approval.
+deterministically, with no paid planning agents. Both paths require recorded plan approval:
+manual user approval, or an exact named-revision agent decision under an owner-local delegation
+recorded from explicit user instruction without a redundant form (historical native-form grants
+remain valid). See the [approval protocol](../../skills/foundry/references/planning.md#delegated-execution-plan-approval).
+Verified technical milestone completion may use a separately recorded `approvalType: "completion"`
+delegation through the same mechanism. Historical grants remain initial-only; closure rechecks the
+authoritative verification/delivery binding and current independent/human evidence. It does not
+accept design, replace a capability, authorize correction waves or grant external/resource actions.
 
 ## Repository capability lifecycle
 
@@ -36,6 +43,13 @@ The [factory protocol](../../skills/foundry/references/factory.md) describes the
    context-mismatched evidence identify bounded renewal needs and known downstream dependents.
 
 Implementation tests, durable boundary checks, operational evidence and human judgment are distinct.
+Explicit UI-producing successors declare `unit.visualEvaluation`, a pinned independent command
+evaluator with a `visual` state/reference/capture profile. Initial discovery and deterministic
+reconstruction both conserve its gate. Actual renderable references and output image identities,
+state/environment/delivery bindings and independent visual findings are required; controls, geometry,
+source and palette checks cannot replace them. Missing capture and failed comparison hold closure.
+This adds no agents or automatic capture; image identity and reported perception remain distinct.
+See the [visual protocol](../../skills/foundry/references/factory.md#explicit-ui-and-visual-fidelity).
 Boundary/preservation evaluations require independent evidence; human evaluations require a human
 source. Evidence binds exact candidate, contract/context/evaluator revisions, commit, task/attempt or
 external run, source/time, environment and workload. Procedures are pinned by digest, so changing an
@@ -459,7 +473,7 @@ there is no separate catalog state machine.
 | Assurance renewal | `foundry_create_evaluation_plan`, `foundry_record_human_judgment` |
 | Renewal and retention | `foundry_record_signal`, `foundry_retire_artifact`, `foundry_compact_factory`, `foundry_sync_factory` |
 | Factory interchange | `foundry_migrate_factory`, `foundry_export_factory`, `foundry_import_factory`, `foundry_export_factory_page`, `foundry_import_factory_page`, `foundry_abandon_factory_import` |
-| Planning | `foundry_prepare_plan`, `foundry_create_plan`, `foundry_submit_plan`, `foundry_approve_plan` |
+| Planning | `foundry_prepare_plan`, `foundry_create_plan`, `foundry_submit_plan`, `foundry_approve_plan`, `foundry_plan_approval_delegation` |
 | Inspection | `foundry_get_status`, `foundry_list_plans` |
 | Interchange | `foundry_import_plan`, `foundry_export_plan` |
 | Native workflows | `foundry_control_workflow` |
@@ -477,9 +491,21 @@ conservative friction, not a sandbox or a complete shell parser; indirect execut
 to the host permission boundary. Deactivation removes an unreadable activation record and reports
 that repair instead of leaving the session stuck behind corrupt metadata.
 
+Session-plan SQLite schema 2 adds durable approval grants and irreversible revocations; schema 1
+upgrades transactionally without changing plan documents or activation. This is separate from factory
+SQLite schema 4 and its logical-format/seal compatibility. Approval checks its grant in the same
+transaction as the plan revision update. Exported plan receipts are historical evidence, not live grants.
+
 Coordinator context is supplied on activation and session start. Ordinary successful Foundry tool
 calls do not add repetitive reminders; activation, deactivation, unreadable-state, and failure
 guidance remain available. This does not change permission checks or revision enforcement.
+
+New task reservations return a separate setup-only `initialization.kickoff`. Native creation starts
+the backing child; the coordinator waits for its acknowledgement, verifies the same owner/identity
+and worktree, then attaches with the pre-create immutable `bootstrap.baseCommit` and observed path.
+Git corroboration rejects wrong/dirty/substitute worktrees or base drift. Only then is the unchanged
+task prompt sent with `coordinator_only`. Setup is not OS-enforced inactivity; failed or uncertain
+creation/delivery keeps the reservation occupied. See the [dispatch protocol](../../skills/foundry/references/dispatch.md).
 
 The board can request cancellation, but the coordinator must still stop owned App sessions, cancel
 the authoritative verification workflow run, and finalize with a fresh causal inventory.

@@ -6,6 +6,21 @@ import test from "node:test";
 import { createPlanStore } from "../../storage.mjs";
 import { makePlan, rejectsCode, UPDATED_AT, withDatabase, withWorkspace } from "./fixture.mjs";
 
+test("session storage adds delegation rows to schema 1 without changing plans or activation", () => (
+	withWorkspace(async ({ workspace, store }) => {
+		const plan = await store.create(makePlan(workspace), 0);
+		const activation = await store.activate(plan.id, plan.revision);
+		withDatabase(store, (db) => db.exec("DROP TABLE approval_delegations; PRAGMA user_version = 1"));
+		const restarted = createPlanStore({ workspacePath: workspace });
+		assert.equal(await restarted.getApprovalDelegation("not-granted"), null);
+		assert.deepEqual(await restarted.read(plan.id), plan);
+		assert.deepEqual(await restarted.getActivation(), activation);
+		assert.equal(withDatabase(store, (db) => db.prepare("PRAGMA user_version").get()?.user_version), 2);
+		withDatabase(store, (db) => db.exec("PRAGMA user_version = 99"));
+		await rejectsCode(restarted.getApprovalDelegation("not-granted"), "database_version_unsupported");
+	})
+));
+
 test("activation is revision-checked, durable, replaceable, and session-local", () => (
 	withWorkspace(async ({ workspace, store }) => {
 		const first = await store.create(makePlan(workspace, "first-plan"), 0);

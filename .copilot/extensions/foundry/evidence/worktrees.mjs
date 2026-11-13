@@ -1,6 +1,6 @@
 import { realpathSync } from "node:fs";
 import { fail } from "../factory/fields.mjs";
-import { git, gitPath } from "./git.mjs";
+import { branchCommit, git, gitPath, requireCommit } from "./git.mjs";
 
 /** @param {string} repository */
 function worktrees(repository) {
@@ -90,6 +90,21 @@ function checkPinnedWorktree(repository, binding) {
 		fail("factory_worktree_mismatch", "The verifier's pinned worktree was replaced, moved or belongs to a different repository");
 	}
 	return registered[0];
+}
+
+/** Corroborates setup without treating a child acknowledgement as proof of inactivity or ownership.
+ * @param {string} repository @param {string} baseBranch @param {string | null} branch
+ * @param {{worktreePath: string, baseCommit: string}} bootstrap */
+export function checkTaskBootstrap(repository, baseBranch, branch, bootstrap) {
+	requireCommit(repository, bootstrap.baseCommit);
+	const worktree = attachVerifierWorktree(repository, branch);
+	if (worktree.status !== "available") fail("task_bootstrap_unsupported", worktree.reason);
+	if (worktree.path !== bootstrap.worktreePath) fail("task_bootstrap_mismatch", "Setup must retain the exact App-observed canonical child worktree");
+	if (branchCommit(repository, baseBranch) !== bootstrap.baseCommit) {
+		fail("task_bootstrap_base_changed", "The reserved base branch changed after its immutable pre-create snapshot; hold dispatch");
+	}
+	checkVerifierWorktree(repository, worktree, bootstrap.baseCommit);
+	return worktree;
 }
 
 /** @param {string} repository @param {import("../types/plan.js").VerifierWorktree | undefined} binding @param {string} commit */

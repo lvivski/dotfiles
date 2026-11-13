@@ -32,7 +32,7 @@ export function factoryTools(operations) {
 			kinds: { type: "array", maxItems: 5, items: { type: "string", enum: ["observation", "inference", "proposal", "obligation", "evaluation"] } },
 			query: NON_EMPTY(8000), relatedTo: REFERENCES, cursor: NON_EMPTY(4096),
 		}, true),
-		mutation("define_unit", "createUnit", "Define or revise a coherent capability and its exclusive authority boundaries, conserved contracts and shared dependencies. Revisions are proposals until explicitly pinned in an accepted contract.", ["id", "name", "purpose", "boundary", "dependencies", "relationshipCoverage", "actor"], {
+		mutation("define_unit", "createUnit", "Define or revise a coherent capability and its exclusive authority boundaries, conserved contracts and shared dependencies. UI-producing work must explicitly declare visualEvaluation, an exact previously recorded visual evaluator revision; no keyword inference. This gate applies to initial discovery and accepted reconstruction. Preserve historical units/plans with a declared successor. Revisions are proposals until explicitly pinned in an accepted contract.", ["id", "name", "purpose", "boundary", "dependencies", "relationshipCoverage", "actor"], {
 			id: FACTORY_ID, name: NON_EMPTY(160), purpose: NON_EMPTY(8000),
 			boundary: objectSchema(["owns", "exposes", "consumes", "preserves"], {
 				owns: STRING_LIST(32, 2048, 1), exposes: STRING_LIST(32, 2048, 1),
@@ -41,6 +41,7 @@ export function factoryTools(operations) {
 			dependencies: { type: "array", maxItems: 32, items: FACTORY_ID },
 			relationshipCoverage: { type: "string", enum: ["complete", "partial"] },
 			actor: NON_EMPTY(256), reason: NON_EMPTY(8000),
+			visualEvaluation: KNOWLEDGE_REF,
 		}),
 		mutation("record_knowledge", "appendKnowledge", "Append attributed observation, inference, proposal, draft obligation or evaluator. This never approves requirements. Revisions explicitly supersede the prior revision; retain reasons and linked discoveries.", ["id", "unitId", "kind", "statement", "source"], {
 			id: FACTORY_ID, unitId: FACTORY_ID,
@@ -63,6 +64,13 @@ export function factoryTools(operations) {
 				},
 				obligations: REFERENCES, environment: NON_EMPTY(2048), workload: NON_EMPTY(2048),
 				maxAgeSeconds: { type: "integer", minimum: 1, maximum: 31536000 }, independent: { type: "boolean" }, preservation: { type: "boolean" },
+				visual: objectSchema(["capture", "states"], {
+					capture: { ...NON_EMPTY(2048), description: "Capture procedure/environment feasibility to preflight before implementation. Permission denial is a blocker, not a bypass." },
+					states: { type: "array", minItems: 1, maxItems: 8, items: objectSchema(["id", "intent", "reference"], {
+						id: FACTORY_ID, intent: NON_EMPTY(2048),
+						reference: objectSchema(["path", "digest"], { path: NON_EMPTY(1024), digest: DIGEST }),
+					}) },
+				}),
 			}),
 		}),
 		mutation("accept_contract", "acceptContract", "Record explicit human acceptance of immutable obligation/evaluation revisions and boundary ownership. Requires complete evaluation coverage plus independent boundary/preservation checks. Never infer approval from a generated spec.", ["unitId", "unitRevision", "obligations", "evaluations", "actor", "reason"], {
@@ -88,7 +96,7 @@ export function factoryTools(operations) {
 			candidateId: FACTORY_ID, commit: { type: "string", pattern: "^(?:[a-f0-9]{40}|[a-f0-9]{64})$" },
 			artifact: FACTORY_ARTIFACT, source: FACTORY_SOURCE,
 		}),
-		mutation("record_evaluation", "recordEvaluation", "Record external evaluation output after independently comparing the accepted Git bundle and invocation digest with the protected candidate material. Missing objects, legacy unpinned commands and changed evaluator/helpers/fixtures/dependencies are rejected. Mechanical content identity does not attest execution, producer identity or OS isolation. Bound App reports come through complete_task.", ["id", "candidateId", "evaluation", "contractDigest", "contextDigest", "commit", "procedureDigest", "outcome", "source", "environment", "workload", "independence", "report"], {
+		mutation("record_evaluation", "recordEvaluation", "Record external evaluation output after independently comparing the accepted Git bundle and invocation digest with the protected candidate material. Missing objects, legacy unpinned commands and changed evaluator/helpers/fixtures/dependencies are rejected. A visual profile requires a foundry-visual-report-v1 JSON report covering actual output captures and independent reference-to-output findings for every declared state; blocked capture and failed findings cannot pass. Mechanical content identity does not attest execution, perception, producer identity or OS isolation. Bound App reports come through complete_task.", ["id", "candidateId", "evaluation", "contractDigest", "contextDigest", "commit", "procedureDigest", "outcome", "source", "environment", "workload", "independence", "report"], {
 			id: FACTORY_ID, candidateId: FACTORY_ID, evaluation: KNOWLEDGE_REF, contractDigest: DIGEST, contextDigest: DIGEST,
 			commit: { type: "string", pattern: "^(?:[a-f0-9]{40}|[a-f0-9]{64})$" }, procedureDigest: DIGEST,
 			outcome: { type: "string", enum: ["passed", "failed", "inconclusive"] }, source: FACTORY_SOURCE,

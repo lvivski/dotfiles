@@ -73,11 +73,13 @@ export const requestShapes = {
 	importPlan: { source: opaque, expectedRevision: zero },
 	exportPlan: planId,
 	submitPlan: revision,
-	approve: { ...revision, approvedBy: string, approvalType: optional(string), retryStatus: optional(string) },
+	approve: { ...revision, approvedBy: optional(string), approvalType: optional(string), retryStatus: optional(string), delegationId: optional(assertPlanId), review: optional(string) },
+	planApprovalDelegation: { action: string, id: assertPlanId, planId: optional(assertPlanId), expectedRevision: optional(number), reason: optional(string), authority: opaque, approvalType: optional(string) },
 	nextTasks: planId,
 	reserveTask: { ...task, reservationId: string, scopeOverride: optional(nullable(object({ approvedBy: string, reason: string }))) },
 	attachTask: {
 		...attempt, sessionId: string, branch: nullableText,
+		bootstrap: optional(object({ worktreePath: string, baseCommit: string })),
 		rename: optional(object({ fromBranch: string, worktreePath: string, actor: string, reason: string })),
 	},
 	completeTask: {
@@ -125,12 +127,15 @@ export function decodeRequest(name, value) {
 }
 
 /**
+ * @typedef {{signal?: AbortSignal, invocation?: Pick<import("@github/copilot-sdk").ToolInvocation, "sessionId" | "toolCallId" | "agentId">}} OperationContext
+ */
+/**
  * Keep external JSON unknown while giving the implementation its decoded input.
  * @template {keyof typeof requestShapes} K
  * @template R
  * @param {K} name
- * @param {(input: Request<K>, options?: {signal?: AbortSignal}) => R | Promise<R>} operation
- * @returns {(input: unknown, options?: {signal?: AbortSignal}) => Promise<R>}
+ * @param {(input: Request<K>, options?: OperationContext) => R | Promise<R>} operation
+ * @returns {(input: unknown, options?: OperationContext) => Promise<R>}
  */
 export function requestHandler(name, operation) {
 	return async (input, options) => await operation(decodeRequest(name, input), options);

@@ -5,7 +5,8 @@ export type FrozenFactoryContext = {
 	version: 1;
 	/** Only fields checked at the frozen-input boundary are exposed to analysis. */
 	definitions: {
-		unit: Pick<CapabilityUnit, "id" | "revision" | "name" | "purpose" | "boundary" | "dependencies">;
+		unit: Pick<CapabilityUnit, "id" | "revision" | "name" | "purpose" | "boundary" | "dependencies" | "visualEvaluation">;
+		visualEvaluation?: KnowledgeRef & { statement: string; evaluation: EvaluationDefinition };
 		obligations: (KnowledgeRef & { kind: "obligation"; unitId: string; authority: "accepted"; statement: string })[];
 		evaluations: (KnowledgeRef & { kind: "evaluation"; unitId: string; authority: "accepted"; statement: string; evaluation: EvaluationDefinition })[];
 		rationale: (KnowledgeRef & { authority: "non-governing"; statement: string })[];

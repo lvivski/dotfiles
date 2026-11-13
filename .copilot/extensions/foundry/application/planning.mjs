@@ -1,5 +1,6 @@
 import { approvePlan, retryFailedPlan, transitionPlan } from "../plan/lifecycle.mjs";
-import { PLAN_STATUS } from "../plan/values.mjs";
+import { assertString } from "../plan/fields.mjs";
+import { LIMITS, PLAN_STATUS } from "../plan/values.mjs";
 import { FoundryOperationError } from "./errors.mjs";
 
 /** @typedef {import("../types/workflow.js").WorkflowAnalysisPort} WorkflowAnalysis */
@@ -7,11 +8,12 @@ import { FoundryOperationError } from "./errors.mjs";
 
 /** @param {{
  * analysis: Pick<WorkflowAnalysis, "preparePlanning" | "importPlanning">,
- * factory: Pick<ReturnType<typeof import("../bridge.mjs").createFactoryBridge>, "context" | "createBoundDraft" | "requireRetry" | "activateEvaluation">,
+ * factory: Pick<ReturnType<typeof import("../bridge.mjs").createFactoryBridge>, "context" | "createBoundDraft" | "requireRetry" | "activateEvaluation" | "verificationGate">,
  * persist: ReturnType<typeof import("./mutation.mjs").createPlanMutations>["persist"],
  * syncFactoryPlan: ReturnType<typeof import("./repository.mjs").createRepositoryOperations>["syncFactoryPlan"],
+ * approveDelegated: ReturnType<typeof import("./approval.mjs").createApprovalOperations>["approveDelegated"],
  * }} dependencies */
-export function createPlanningOperations({ analysis, factory, persist, syncFactoryPlan }) {
+export function createPlanningOperations({ analysis, factory, persist, syncFactoryPlan, approveDelegated }) {
 
 	/**
 	 * Builds the native planning Workflow launch specification.
@@ -73,6 +75,7 @@ export function createPlanningOperations({ analysis, factory, persist, syncFacto
 	 * Records initial approval, correction retry, or completion approval.
 	 *
 	 * @param {Request<"approve">} input
+	 * @param {import("../requests.mjs").OperationContext} [options]
 	 */
 	const approve = async ({
 		planId,
@@ -80,13 +83,22 @@ export function createPlanningOperations({ analysis, factory, persist, syncFacto
 		approvedBy,
 		approvalType = "plan",
 		retryStatus = PLAN_STATUS.RUNNING,
-	}) => {
+		delegationId,
+		review,
+	}, options = {}) => {
+		if (delegationId && (!["plan", "completion"].includes(approvalType) || approvedBy !== undefined)) {
+			throw new FoundryOperationError("delegation_approval_type", "Delegation supports only its explicitly granted initial-plan or technical-completion kind; its native agent attribution cannot be supplied by the caller");
+		}
+		if (!delegationId) assertString(approvedBy, "approvedBy", LIMITS.actor);
 		const updated = await persist(
 			planId,
 			expectedRevision,
-			(plan) => {
+			(plan, delegation) => {
+				if (delegationId) return approveDelegated(plan, delegation, review, options, approvalType === "completion" ? "completion" : "plan");
+				assertString(approvedBy, "approvedBy", LIMITS.actor);
 				if (approvalType === "plan") return approvePlan(plan, approvedBy);
 				if (approvalType === "completion") {
+					factory.verificationGate(plan, true, true);
 					return transitionPlan(plan, PLAN_STATUS.COMPLETED, { actor: approvedBy });
 				}
 				if (approvalType !== "retry") throw new TypeError(`Unknown approvalType ${approvalType}`);
@@ -99,7 +111,8 @@ export function createPlanningOperations({ analysis, factory, persist, syncFacto
 				factory.activateEvaluation(retry);
 				return retry;
 			},
-			approvalType === "retry" ? null : `plan-approved:${approvalType}`,
+			approvalType === "retry" ? null : delegationId ? approvalType === "completion" ? "completion-approved:delegated" : "plan-approved:delegated" : `plan-approved:${approvalType}`,
+			{ delegationId },
 		);
 		if (approvalType === "completion") syncFactoryPlan(updated);
 		return updated;

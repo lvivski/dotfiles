@@ -4,6 +4,7 @@ import { evaluation, source } from "./definitions.mjs";
 import { actorReason, digest, enumeration, fail, identifier, integer, list, object, reference, strings, text } from "./fields.mjs";
 import { contractFor, disputedKnowledge, evaluationFor, key, knowledgeFor, latest, retired, unitFor } from "./records.mjs";
 import { renewalSignals } from "./signals.mjs";
+import { declaredVisual } from "./visual.mjs";
 
 /** @typedef {import("../types/factory.js").FactoryEvent} FactoryEvent */
 /** @typedef {import("../types/factory.js").FactoryState} FactoryState */
@@ -16,7 +17,7 @@ import { renewalSignals } from "./signals.mjs";
  * @param {{historical?: boolean}} [options] @returns {FactoryResults["createUnit"]} */
 export function createUnit(state, event, options = {}) {
 	const { action, input, at, revision } = event;
-	object(input, ["id", "name", "purpose", "boundary", "dependencies", "relationshipCoverage", "actor", "reason"], action);
+	object(input, ["id", "name", "purpose", "boundary", "dependencies", "relationshipCoverage", "actor", "reason", "visualEvaluation"], action);
 	const id = identifier(input.id);
 	const previous = latest(state.units, id);
 	object(input.boundary, ["owns", "exposes", "consumes", "preserves"], "boundary");
@@ -36,7 +37,9 @@ export function createUnit(state, event, options = {}) {
 		dependencies, relationshipCoverage: enumeration(input.relationshipCoverage, ["complete", "partial"], "relationshipCoverage"),
 		actor: text(input.actor, "actor", 256), at,
 		reason: previous ? text(input.reason, "revision reason") : input.reason ? text(input.reason, "reason") : "Initial capability definition",
+		...(input.visualEvaluation === undefined ? {} : { visualEvaluation: reference(input.visualEvaluation) }),
 	};
+	declaredVisual(state, unit);
 	/** @param {string} target @param {Set<string>} seen */
 	const visit = (target, seen) => {
 		if (target === id) fail("factory_dependency_cycle", "Capability dependencies must be acyclic");
@@ -120,6 +123,10 @@ export function acceptContract(state, event, options = {}) {
 	const obligations = selected(input.obligations, "obligation");
 	const evaluations = selected(input.evaluations, "evaluation");
 	const definitions = evaluations.map((ref) => evaluationFor(state, ref));
+	const visualEvaluation = unit.visualEvaluation;
+	if (visualEvaluation && !evaluations.some((ref) => key(ref) === key(visualEvaluation))) {
+		fail("factory_visual_required", "A UI contract cannot omit its declared visual evaluator; accept a successor rather than rewriting historical authority");
+	}
 	if (!options.historical && definitions.some((definition) => definition.procedure.kind === "command" && !definition.procedure.bundle)) {
 		fail("factory_evaluator_unpinned", "New executable contract acceptance requires an immutable Git evaluator bundle, not a legacy command reference");
 	}

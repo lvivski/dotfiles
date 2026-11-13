@@ -42,6 +42,35 @@ ordinary question, or authorize paid workflows, additional agents, commits, depl
    revisions) and decision lineage (16 recent decisions with an explicit earlier-history count).
    Optional `rationale` references add explanatory context but never governing obligations.
 
+## Explicit UI and visual fidelity
+
+At capability/plan review, explicitly identify whether the work produces UI. Do not infer this from
+filenames or keywords. For UI work, record a visual obligation and an independent `command` evaluator
+with `evaluation.visual: { capture, states: [{ id, intent, reference: { path, digest } }] }`.
+Pin the real renderable references inside its protected Git bundle/support; `path` is relative to that
+bundle's immutable commit and `digest` is SHA-256 of the file bytes. `capture` describes the actual
+target-platform procedure to preflight, not a permission grant. Choose ordinary and applicable empty/
+error states explicitly and explain scope omissions; retain the reference's intended composition,
+navigation, pane boundaries, content hierarchy/density, typography and action placement, not an
+invented feature catalog or arbitrary similarity threshold.
+
+Then declare a successor unit revision with `visualEvaluation: { id, revision }` pointing to that
+evaluator. The explicit pointer makes it a mandatory plan gate even for initial implementation
+without an accepted contract/candidate; it does not accept a product contract. A new accepted
+contract must include this exact evaluation, and deterministic reconstruction retains it. Historical
+units, plans and evaluators remain unchanged; never rewrite them to claim retrospective coverage.
+Non-UI/legacy units without this declaration retain their existing behavior. Absence of the field
+is compatibility, not evidence that a known UI deliverable has adequate acceptance coverage.
+
+Preflight viewing the actual reference and capturing output on the intended platform before UI
+implementation/fan-out. Permission-blocked capture is a visible hold; never bypass OS permission or
+quietly substitute controls, source, geometry, palette or compilation evidence. Both producer and
+verifier must open/render the pinned reference material, not work solely from a summary.
+The existing App verifier makes the independent visual assessment and reports the structured
+[visual evidence](verification.md#visual-evidence) through the existing evaluation path. No new
+agent or paid workflow is implied. Mandatory human modalities remain separate explicit judgments;
+automated/model visual assessment is `independent-claim`, not aesthetic approval by a human.
+
 ## Adoption is not reconstruction
 
 An implementation may predate its specification. After recovering and accepting its contract, use

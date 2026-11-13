@@ -5,6 +5,7 @@ import { stableStringify } from "../digest.mjs";
 import { plainObject, text } from "./fields.mjs";
 import { fail } from "../errors.mjs";
 import { criterionId, normalizeVerificationInput } from "./verification.mjs";
+import { visualReport } from "../factory/visual.mjs";
 
 /** @typedef {import("../types/analysis.js").VerificationInput} VerificationInput */
 /** @typedef {import("../types/analysis.js").VerificationOutcome} VerificationOutcome */
@@ -52,6 +53,18 @@ export function assessDeterministicVerification(input) {
 	}
 	const targetTaskId = input.verificationReport.target.taskId ?? input.verificationReport.taskId;
 	const definitions = input.factory?.context?.definitions?.evaluations ?? [];
+	const visual = input.factory?.context?.definitions?.visualEvaluation;
+	if (visual) {
+		const report = input.factory?.evaluations.find((entry) => entry.evaluation.id === visual.id && entry.evaluation.revision === visual.revision);
+		try {
+			if (!report || !input.verificationReport.target.commit) throw new Error("Missing visual report");
+			visualReport(visual.evaluation, report.report, input.verificationReport.target.commit, report.outcome);
+			if (report.outcome !== "passed") throw new Error("Visual findings did not pass");
+		} catch (error) {
+			correctionTaskIds.add(targetTaskId);
+			hardGaps.push({ summary: `Declared visual fidelity is unestablished: ${error instanceof Error ? error.message : String(error)}`, taskIds: [targetTaskId] });
+		}
+	}
 	const human = definitions.filter((entry) => requiresHumanJudgment(entry.evaluation));
 	const humanFailed = human.some((entry) => {
 		const evidence = input.factory?.context?.humanEvidence.find((report) => report.evaluation.id === entry.id && report.evaluation.revision === entry.revision);

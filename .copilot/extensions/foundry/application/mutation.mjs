@@ -31,22 +31,24 @@ export function createPlanMutations({ workspace, storeFor, notify, factory }) {
 	 *
 	 * @param {string} planId
 	 * @param {number} expectedRevision
-	 * @param {(plan: import("../types/plan.js").FoundryPlan) => import("../types/plan.js").FoundryPlan} change
+	 * @param {(plan: import("../types/plan.js").FoundryPlan, delegation: import("../types/plan.js").ApprovalDelegation | null) => import("../types/plan.js").FoundryPlan} change
 	 * @param {string | null | ((plan: import("../types/plan.js").FoundryPlan) => string)} event
+	 * @param {{delegationId?: string}} [settings]
 	 */
 	const persist = async (
 		planId,
 		expectedRevision,
 		change,
 		event,
+		settings = {},
 	) => {
 		const workspacePath = workspace();
 		const updated = await storeFor(workspacePath).mutate(
 			planId,
 			expectedRevision,
-			(plan) => {
+			(plan, delegation) => {
 				factory.requireOwner(plan);
-				const candidate = change(plan);
+				const candidate = change(plan, delegation);
 				const name = typeof event === "function" ? event(candidate) : event;
 				if (name !== null) candidate.activity.push({
 					event: name,
@@ -56,6 +58,7 @@ export function createPlanMutations({ workspace, storeFor, notify, factory }) {
 				candidate.activity = candidate.activity.slice(-LIMITS.activity);
 				return candidate;
 			},
+			settings,
 		);
 		notify({ workspacePath, planId, revision: updated.revision });
 		return updated;

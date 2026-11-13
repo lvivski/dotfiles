@@ -4,6 +4,7 @@ import { DELIVERY_REQUIREMENT, LIMITS } from "../plan/values.mjs";
 import { analysisInputDigest, stableStringify } from "../digest.mjs";
 import { plainObject, stringList, text } from "./fields.mjs";
 import { fail, FoundryAnalysisError } from "../errors.mjs";
+import { visualCriterion } from "../factory/visual.mjs";
 
 /**
  * @typedef {object} PlanningInput
@@ -97,9 +98,10 @@ export function validatePlanningArgs(value) {
  *
  * @param {unknown} value
  * @param {number} maxTasks
+ * @param {unknown} [visual]
  * @returns {PlanBlueprint}
  */
-export function validatePlanBlueprint(value, maxTasks) {
+export function validatePlanBlueprint(value, maxTasks, visual) {
 	const blueprint = plainObject(value, "plan");
 	if (!isList(blueprint.tasks)
 		|| blueprint.tasks.length < 2
@@ -169,7 +171,10 @@ export function validatePlanBlueprint(value, maxTasks) {
 	});
 	try {
 		validateDependencyGraph(tasks);
-		const { verifyTask } = validateTaskTopology(tasks);
+		const { verifyTask, targetTask } = validateTaskTopology(tasks);
+		if (visual !== undefined && !targetTask?.acceptanceCriteria.includes(visualCriterion(visual))) {
+			fail("invalid_analysis_result", "UI-producing plans must retain the exact declared visual fidelity criterion on their final implementation target");
+		}
 		if (verifyTask.deliveryRequirement !== DELIVERY_REQUIREMENT.COMMIT
 			|| verifyTask.acceptanceCriteria.length !== 0
 			|| verifyTask.expectedFiles.length !== 0) {
@@ -241,7 +246,7 @@ export function validatePlanningResult(value, expectedInput, maxTasks) {
 		))) {
 		fail("invalid_analysis_result", "Ready planning result requires two complete critic perspectives");
 	}
-	const plan = validatePlanBlueprint(result.plan, maxTasks);
+	const plan = validatePlanBlueprint(result.plan, maxTasks, normalizedInput.factoryContext?.visualEvaluation);
 	if (plan.objective !== normalizedInput.objective
 		|| stableStringify(plan.constraints)
 		!== stableStringify(normalizedInput.constraints)) {

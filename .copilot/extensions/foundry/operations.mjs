@@ -1,4 +1,5 @@
 import { createCancellationOperations } from "./application/cancellation.mjs";
+import { createApprovalOperations } from "./application/approval.mjs";
 import { createPlanMutations } from "./application/mutation.mjs";
 import { createVerificationOwnership } from "./application/ownership.mjs";
 import { createPlanningOperations } from "./application/planning.mjs";
@@ -20,6 +21,7 @@ import { requestHandler } from "./requests.mjs";
  * @property {(event: {workspacePath: string, planId: string, revision: number}) => void} [notify]
  * @property {WorkflowAnalysis} analysis Native Workflow adapter.
  * @property {string} [factoryStorageRoot] Private root override for isolated fixtures.
+ * @property {() => import("./application/approval.mjs").ApprovalSession | null | undefined} [getSession]
  */
 /** @typedef {import("./types/workflow.js").WorkflowAnalysisPort} WorkflowAnalysis */
 
@@ -46,7 +48,10 @@ export function createFoundryOperations(options) {
 	const { discoverReservedVerification, assertVerificationRun } = createVerificationOwnership(analysis);
 	const { workflowStatus, getWorkflow, controlWorkflow } = createWorkflowOperations({ analysis, factory, storeFor, readForMutation, discoverReservedVerification, assertVerificationRun });
 	const { getStatus, nextTasks } = createStatusOperations({ storeFor, workspace, factory, workflowStatus });
-	const { preparePlan, createPlan, submitPlan, approve } = createPlanningOperations({ analysis, factory, persist, syncFactoryPlan });
+	const { planApprovalDelegation, approveDelegated } = createApprovalOperations({
+		workspace, storeFor, readForMutation, factory, getSession: options.getSession,
+	});
+	const { preparePlan, createPlan, submitPlan, approve } = createPlanningOperations({ analysis, factory, persist, syncFactoryPlan, approveDelegated });
 	const { reserveTask, attachTask, completeTask, retry } = createTaskOperations({ storeFor, persist, factory, syncFactoryPlan });
 	const { prepareVerification, finishVerification } = createVerificationOperations({ storeFor, persist, readForMutation, factory, analysis, discoverReservedVerification, assertVerificationRun, syncFactoryPlan });
 	const { cancel, cancelVerificationRun, finalizeCancellation } = createCancellationOperations({ storeFor, persist, readForMutation, factory, analysis, discoverReservedVerification, syncFactoryPlan });
@@ -67,6 +72,7 @@ export function createFoundryOperations(options) {
 		exportPlan: requestHandler("exportPlan", exportPlan),
 		submitPlan: requestHandler("submitPlan", submitPlan),
 		approve: requestHandler("approve", approve),
+		planApprovalDelegation: requestHandler("planApprovalDelegation", planApprovalDelegation),
 		nextTasks: requestHandler("nextTasks", nextTasks),
 		reserveTask: requestHandler("reserveTask", reserveTask),
 		attachTask: requestHandler("attachTask", attachTask),

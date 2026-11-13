@@ -2,6 +2,7 @@ import { property } from "../data.mjs";
 import { digest, enumeration, fail, integer, list, object, reference, text, timestamp } from "./fields.mjs";
 import { key, knowledgeFor } from "./records.mjs";
 import { evaluatorBundle } from "./procedures.mjs";
+import { visualSpecification } from "./visual.mjs";
 
 /** @typedef {import("../types/factory.js").FactoryState} FactoryState */
 /** @typedef {import("../types/factory.js").EvaluationDefinition} EvaluationDefinition */
@@ -51,9 +52,10 @@ export function artifact(value) {
 	};
 }
 
-/** @param {unknown} value @param {FactoryState} state @param {string} unitId @returns {EvaluationDefinition} */
+/** A null state validates frozen syntax; the caller must separately bind governing references.
+ * @param {unknown} value @param {FactoryState | null} state @param {string} unitId @returns {EvaluationDefinition} */
 export function evaluation(value, state, unitId) {
-	object(value, ["modality", "procedure", "obligations", "environment", "workload", "maxAgeSeconds", "independent", "preservation"], "evaluation");
+	object(value, ["modality", "procedure", "obligations", "environment", "workload", "maxAgeSeconds", "independent", "preservation", "visual"], "evaluation");
 	object(value.procedure, ["kind", "ref", "digest", "bundle"], "evaluation.procedure");
 	const kind = enumeration(value.procedure.kind, ["command", "reference", "judgment"], "procedure.kind");
 	if (value.procedure.bundle !== undefined && (kind !== "command" || value.modality === "human")) {
@@ -62,6 +64,7 @@ export function evaluation(value, state, unitId) {
 	const refs = list(value.obligations, "evaluation.obligations", 32, 1).map(reference);
 	if (new Set(refs.map(key)).size !== refs.length) fail("factory_input_invalid", "Evaluation obligations contain duplicates");
 	for (const ref of refs) {
+		if (!state) continue;
 		const obligation = knowledgeFor(state, ref);
 		if (obligation.unitId !== unitId || obligation.kind !== "obligation") fail("factory_contract_invalid", "Evaluation must refer to this unit's obligation revisions");
 	}
@@ -69,6 +72,9 @@ export function evaluation(value, state, unitId) {
 		fail("factory_input_invalid", "Evaluation independent and preservation must be booleans");
 	}
 	const modality = enumeration(value.modality, MODALITIES, "evaluation.modality");
+	if (value.visual !== undefined && (kind !== "command" || !value.procedure.bundle || !value.independent || modality === "human")) {
+		fail("factory_visual_required", "Visual agent assessment requires an independent pinned command/report evaluator; human judgment stays separate");
+	}
 	if ((modality === "boundary" || value.preservation) && !value.independent) {
 		fail("factory_independence_required", "Boundary and preservation evaluations require independent evidence");
 	}
@@ -86,6 +92,7 @@ export function evaluation(value, state, unitId) {
 		maxAgeSeconds: integer(value.maxAgeSeconds, "evaluation.maxAgeSeconds", 1, 31536000),
 		independent: value.independent,
 		preservation: value.preservation,
+		...(value.visual === undefined ? {} : { visual: visualSpecification(value.visual) }),
 	};
 }
 

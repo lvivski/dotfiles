@@ -21,6 +21,7 @@ export type CapabilityUnit = KnowledgeRef & {
 	boundary: { owns: string[]; exposes: string[]; consumes: string[]; preserves: string[] };
 	dependencies: string[]; relationshipCoverage: "complete" | "partial";
 	actor: string; at: string; reason: string;
+	visualEvaluation?: KnowledgeRef;
 };
 
 export type EvaluatorBundle = {
@@ -34,11 +35,16 @@ export type EvaluationIdentity = {
 	evaluatorCommit: string; candidateCommit: string;
 };
 
+export type VisualSpecification = {
+	capture: string;
+	states: { id: string; intent: string; reference: { path: string; digest: string } }[];
+};
 export type EvaluationDefinition = {
 	modality: "implementation-test" | "boundary" | "operational" | "human";
 	procedure: { kind: "command" | "reference" | "judgment"; ref: string; digest: string; bundle?: EvaluatorBundle };
 	obligations: KnowledgeRef[]; environment: string; workload: string;
 	maxAgeSeconds: number; independent: boolean; preservation: boolean;
+	visual?: VisualSpecification;
 };
 
 export type KnowledgeKind = "observation" | "inference" | "proposal" | "obligation" | "evaluation";
@@ -196,6 +202,7 @@ export type FactoryDefinitions = {
 	decisionLineage: FactoryDecision[]; omittedEarlierDecisions?: number;
 	foundations: (ContractDependency & { usage: string; boundary: CapabilityUnit["boundary"] })[];
 	contract: FactoryContract | null;
+	visualEvaluation?: Pick<Knowledge, "id" | "revision" | "statement"> & { evaluation: EvaluationDefinition };
 };
 
 export type GenerationPackage = Omit<FactoryDefinitions, "contract"> & {

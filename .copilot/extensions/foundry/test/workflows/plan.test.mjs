@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildPlanningArgs, validatePlanningResult } from "../../analysis/planning.mjs";
+import { buildPlanningArgs, validatePlanBlueprint, validatePlanningResult } from "../../analysis/planning.mjs";
 import { readRecord } from "../../data.mjs";
 import { LIMITS, TASK_ID_PATTERN } from "../../plan/values.mjs";
+import { visualCriterion } from "../../factory/visual.mjs";
 import { meta as planMeta, run as runPlan } from "../../workflows/plan.mjs";
 import { must } from "../assertions.mjs";
 import { planningResult } from "../native/plans.mjs";
@@ -49,6 +50,27 @@ function assertGenerationBounds(workflow, maxTasks) {
 	}
 }
 
+/** @param {ReturnType<typeof createWorkflowContext>} workflow */
+function assertExecutionPlanningGuidance(workflow) {
+	for (const { prompt, options } of workflow.calls) {
+		for (const requirement of [
+			/critical path and unavoidable serial tail/,
+			/independent, disjoint workstreams/,
+			/justify dependency edges by actual prerequisites/,
+			/runnable focused behavior check.*command or entry point/,
+			/shared runner\/fixture\/interface scaffolding before fan-out/,
+			/Compilation and typechecking are build evidence, not execution/,
+			/non-runnable\/platform gap.*blocker, missing evidence/,
+			/isolated outputs.*exclusive shared-file writes, foreground-native-input checks/,
+			/exact-package\/final-verification steps/,
+			/not the first execution of leaf behavior/,
+			/not new schema fields/,
+			/Do not invent parallel work or mandatory agent counts/,
+			/synthesis repair, conserve task identities and dependency intent/,
+		]) assert.match(prompt, requirement, `${options.label} must receive executable-workstream review guidance`);
+	}
+}
+
 function repairFixture() {
 	const args = buildPlanningArgs({
 		objective: "Conserve the original objective",
@@ -77,6 +99,35 @@ function repairFixture() {
 	};
 	return { args, decomposition, oversized, repaired, sentinel, responses };
 }
+
+test("declared visual coverage reaches every planning perspective and omitted synthesis is repaired without extra workflow machinery", async () => {
+	const entry = {
+		id: "visual", revision: 1, statement: "Preserve the provided ordinary UI",
+		evaluation: {
+			modality: "boundary", independent: true, preservation: true, maxAgeSeconds: 86400,
+			procedure: { kind: "command", ref: "node evaluator.mjs", digest: "a".repeat(64), bundle: { commit: "b".repeat(40) } },
+			obligations: [{ id: "visual-intent", revision: 1 }], environment: "native", workload: "ordinary",
+			visual: { capture: "Preflight native screenshot permissions",
+				states: [{ id: "ordinary", intent: "Single main pane", reference: { path: "design/reference.svg", digest: "c".repeat(64) } }] },
+		},
+	};
+	const f = repairFixture();
+	const args = buildPlanningArgs({ ...f.args, factoryContext: { visualEvaluation: entry } });
+	const valid = validatePlanBlueprint(f.decomposition, 2);
+	valid.tasks[0].acceptanceCriteria.push(visualCriterion(entry));
+	const workflow = workflowWithResponses(args, {
+		...f.responses, "plan:decomposer": valid, "plan:synthesizer": f.decomposition, "plan:synthesis-repair": valid,
+	});
+	const result = await runPlan(workflow);
+	assert.equal(result.status, "ready");
+	assert.equal(workflow.calls.filter((call) => call.options.label === "plan:synthesis-repair").length, 1);
+	for (const { prompt } of workflow.calls) {
+		assert.ok(prompt.includes(visualCriterion(entry)));
+		assert.ok(prompt.includes("design/reference.svg"));
+		assert.match(prompt, /Preflight.*capture/);
+		assert.match(prompt, /geometry, controls, source or palette/);
+	}
+});
 
 test("bundled planning workflow executes with native result semantics", async () => {
 	const args = buildPlanningArgs({
@@ -140,6 +191,7 @@ test("bundled planning workflow executes with native result semantics", async ()
 		assert.match(prompt, /Commit or PR delivery still requires user authorization/);
 	}
 	assertGenerationBounds(workflow, args.maxTasks);
+	assertExecutionPlanningGuidance(workflow);
 	assertOutputSchemas(workflow);
 });
 
@@ -174,6 +226,7 @@ test("oversized synthesis is repaired once, independently verified, and retains 
 	const verifierPrompt = must(workflow.calls.find(({ options }) => options.label === "plan:verifier")).prompt;
 	assert.match(verifierPrompt, /uncertain conservation even if the candidate is structurally valid/);
 	assertGenerationBounds(workflow, args.maxTasks);
+	assertExecutionPlanningGuidance(workflow);
 	assertOutputSchemas(workflow);
 });
 

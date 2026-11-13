@@ -22,6 +22,21 @@ unusable verification run.
    until explicitly cancelled. Replace a terminal non-importable verification run only with an
    attributed reason and actor.
 
+Scope and dispatch holds apply to the target plan, not automatically to every plan in the repository.
+An independent, explicitly approved new plan with distinct workers/worktrees and pinned immutable
+inputs may proceed while an older plan remains unresolved. Activation selects context; it neither
+closes the older plan nor releases its attempts. Preserve older attempts and evidence: do not reuse
+the old worker or mutable branch, or treat failed/uncompleted results as successful delivery.
+The new plan must still pass native provenance, approval, authority, synchronization and scope checks;
+shared writable-resource conflicts remain blocking. Follow [dispatch](dispatch.md) and
+[factory guidance](factory.md); creating a new plan is not a bypass.
+
+For uncertain planning admission, follow the
+[owner-local transport receipt protocol](planning.md#owner-local-large-payload-transport), not a
+replacement launch. A completed `needs-review` plan with a delivery-contract conflict requires
+revisiting [route selection](planning.md#choose-the-route-first); successful transport does not
+authorize commits or make the plan importable. Preserve the failed report's original provenance.
+
 The current store starts fresh in `files/foundry/foundry.sqlite` in the session workspace.
 Old JSON files and runs are not migrated or interpreted; leave them untouched. Use
 `foundry_export_plan` and explicit `foundry_import_plan` for current-format interchange only.
@@ -45,7 +60,7 @@ Before retrying a failed evaluation plan, synchronize its prior terminal receipt
 and owned synchronization restore conservative evaluation retirement holds; a historical completion
 replay cannot clear a later active retry. Complete or explicitly abandon the current work to release it.
 
-Current v2 authority upgrades non-destructively to physical SQLite schema 3. Old cached writers
+Current v2 authority upgrades non-destructively to physical SQLite schema 4. Old cached writers
 must restart; there is no seal or logical JSON migration. Record/segment bounds replace the old
 lifetime event ceiling so in-flight receipts and retirement can progress. Use pinned export pages
 and staged import for histories above the single-JSON bound. Incomplete import data is not authority;

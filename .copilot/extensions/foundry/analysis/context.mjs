@@ -1,5 +1,5 @@
 import { isList, isOneOf, isRecord } from "../data.mjs";
-import { requiresHumanJudgment } from "../factory/definitions.mjs";
+import { evaluation as decodeEvaluation, requiresHumanJudgment } from "../factory/definitions.mjs";
 import { validateFactoryBinding, validateFactoryEvaluations } from "../plan/schemas/factory.mjs";
 import { analysisInputDigest, stableStringify } from "../digest.mjs";
 import { plainObject, stringList, text } from "./fields.mjs";
@@ -43,6 +43,14 @@ export function validateFrozenFactoryContext(factory) {
 	};
 	/** @param {unknown} ref */
 	const refKey = (ref) => { const value = reference(ref); return `${value.id}@${value.revision}`; };
+	if (unit.visualEvaluation !== undefined) {
+		const visual = plainObject(definitions.visualEvaluation, "declared visual evaluator");
+		const definition = decodeEvaluation(visual.evaluation, null, String(unit.id));
+		if (!definition.visual || refKey(visual) !== refKey(unit.visualEvaluation)) fail("analysis_input_mismatch", "Frozen UI applicability must retain the exact declared visual evaluator");
+		const report = factory.evaluations.find((entry) => refKey(entry.evaluation) === refKey(visual));
+		if (!report || report.procedureDigest !== definition.procedure.digest || report.environment !== definition.environment
+			|| report.workload !== definition.workload) fail("invalid_analysis_input", "Declared visual evaluator report or environment is missing/mismatched");
+	} else if (definitions.visualEvaluation !== undefined) fail("analysis_input_mismatch", "Visual applicability cannot be invented inside verification");
 	/** @param {"obligations" | "evaluations" | "rationale"} field @returns {Array<KnowledgeRef & Record<string, unknown>>} */
 	const knowledgeList = (field) => {
 		const entries = definitions[field];
@@ -58,6 +66,13 @@ export function validateFrozenFactoryContext(factory) {
 	};
 	const obligations = knowledgeList("obligations");
 	const evaluations = knowledgeList("evaluations");
+	if (unit.visualEvaluation !== undefined && binding.contractDigest !== null) {
+		const selected = evaluations.find((entry) => refKey(entry) === refKey(unit.visualEvaluation));
+		if (!selected || !isRecord(definitions.visualEvaluation)
+			|| stableStringify(selected.evaluation) !== stableStringify(definitions.visualEvaluation.evaluation)) {
+			fail("analysis_input_mismatch", "Accepted UI verification cannot omit or change its declared visual evaluator");
+		}
+	}
 	knowledgeList("rationale");
 	const contract = definitions.contract;
 	if (binding.contractDigest !== null) {

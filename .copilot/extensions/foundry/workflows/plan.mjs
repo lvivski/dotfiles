@@ -1,5 +1,6 @@
 // Native Foundry planning workflow.
 import { validatePlanBlueprint, validatePlanningArgs } from "../analysis/planning.mjs";
+import { visualCriterion } from "../factory/visual.mjs";
 import { arrayOf, nullable, readBoolean, readJsonValue, readString, recordOf } from "../data.mjs";
 import { LIMITS } from "../plan/values.mjs";
 import { UNTRUSTED_DATA_WARNING as UNTRUSTED, safeJson, untrustedBlock } from "../prompt.mjs";
@@ -101,7 +102,7 @@ export async function run(workflow) {
 		};
 		try {
 			return {
-				plan: validatePlanBlueprint(blueprint, input.maxTasks),
+				plan: validatePlanBlueprint(blueprint, input.maxTasks, input.factoryContext?.visualEvaluation),
 				blueprint,
 				issue: null,
 			};
@@ -117,6 +118,15 @@ export async function run(workflow) {
 	const factoryContext = input.factoryContext ? untrustedBlock("PINNED-FACTORY-CONTEXT", input.factoryContext) : "";
 	const topologyRules = `Foundry plan invariants: use at most ${input.maxTasks} implement tasks plus exactly one final verify task. The verify task must be the only sink, depend on exactly one commit- or pr-delivered final implementation task, use deliveryRequirement commit, and have empty acceptanceCriteria and expectedFiles. Every implementation task must be an ancestor of that final implementation task, or be that task. Put measurable criteria and authored checks on implementation tasks; the read-only verifier checks those criteria rather than authoring its own. Critiques cannot override these invariants. Commit or PR delivery still requires user authorization; if constraints prohibit the required delivery, report the conflict rather than weakening verification.`;
 	const fieldLimits = `Generation bounds: plan.title <= ${LIMITS.planTitle} characters; task.title <= ${LIMITS.taskTitle}; task.description <= ${LIMITS.taskDescription}; each acceptance criterion <= ${LIMITS.acceptanceCriterion}; each expected file <= ${LIMITS.expectedFile}. Per task: at most ${LIMITS.dependencies} dependencies, ${LIMITS.acceptanceCriteria} criteria, and ${LIMITS.expectedFiles} expected files. All text entries must be non-empty. Rephrase or split criteria within these bounds without losing any requirement; never truncate or silently drop content to fit.`;
+	const executionPlanning = `Execution planning review:
+${input.factoryContext?.visualEvaluation ? `Required final-target criterion (verbatim): ${visualCriterion(input.factoryContext.visualEvaluation)}` : ""}
+When factoryContext.visualEvaluation is declared, retain its exact visual fidelity criterion on the final implementation target. Pin and open the actual renderable reference files at the evaluator bundle commit, including each declared ordinary/empty/error state. Preflight the declared capture procedure and OS permissions before implementation; denied/unavailable capture is a blocker, never permission to substitute geometry, controls, source or palette checks. Require real output captures tied to the exact delivery, environment and state plus an independent reference-to-output assessment of composition, navigation, pane boundaries, hierarchy/density, typography and action placement against the declared intent. Preserve failed visual findings and separate human judgments. Do not invent references, visual passes, paid agents, similarity thresholds or contract acceptance.
+- Identify the critical path and unavoidable serial tail in existing task descriptions. Name genuinely independent, disjoint workstreams; justify dependency edges by actual prerequisites, not presentation order. Do not invent parallel work or mandatory agent counts.
+- Expose a runnable focused behavior check for each implementation leaf: command or entry point, required environment and observable expected result in its description/criteria. Where needed and feasible, deliver minimal shared runner/fixture/interface scaffolding before fan-out; do not block unrelated work on that scaffolding.
+- Compilation and typechecking are build evidence, not execution of fixtures or behavior. For an unavoidable non-runnable/platform gap, state the specific blocker, missing evidence, and which later task/environment supplies it; do not invent commands or call the gap a pass.
+- Separate independently runnable worktree builds and focused fixture checks with isolated outputs from exclusive shared-file writes, foreground-native-input checks, and exact-package/final-verification steps. Serialize only real resource or artifact dependencies; disjoint paths alone do not prove resource independence.
+- Keep integration focused on seams, whole-app evidence and the necessary package/native checks, not the first execution of leaf behavior. Move independent checks out of the serial tail where feasible; explain any unavoidable deferral without weakening accepted criteria.
+Use existing descriptions/criteria and critique risks/requiredChanges or verifier issues, not new schema fields. Preserve accepted contracts, protected evaluators, scope/reservation/approval/identity/resource gates and task limits. During bounded synthesis repair, conserve task identities and dependency intent; report planning shortcomings rather than redesigning the DAG.`;
 	const simplificationReview = "Bounded simplification review: consider at most three opportunities to remove unnecessary internal concepts, duplicate authority, or accidental complexity while conserving external meaning, interfaces, data and user contracts. Name the conserved obligations/evaluations and tradeoffs. Put conditional suggestions in risks prefixed 'Simplification proposal:'; they remain non-governing, and judgment or contract changes require explicit acceptance. Do not use byte counts or fewer lines as a correctness metric.";
 
 	workflow.phase("decompose");
@@ -138,6 +148,7 @@ The durable capability is not the task DAG. Preserve its authority boundaries, s
 Return one plan blueprint. Use task IDs T-001, T-002, and so on. Every implement task needs measurable acceptance criteria, likely file scope, and deliveryRequirement branch, commit, or pr.
 ${topologyRules}
 ${fieldLimits}
+${executionPlanning}
 Return JSON only.`,
 		{ label: "plan:decomposer", schema: PLAN_SCHEMA },
 	);
@@ -170,6 +181,7 @@ Return JSON only.`,
 			`Review the proposed engineering plan for architecture boundaries, dependency correctness, and integration seams. ${simplificationReview} Accepted governing definitions constrain this review; rationale and proposals are non-governing. ${UNTRUSTED} Return JSON only.
 
 ${topologyRules}
+${executionPlanning}
 
 ${factoryContext}
 
@@ -182,6 +194,7 @@ ${safeJson(decompositionForReview)}
 			`Review the proposed engineering plan for delivery risk, task overlap, missing tests, and acceptance criteria that cannot be measured. Check conservation against the same pinned definitions, not only the proposed task text. ${UNTRUSTED} Return JSON only.
 
 ${topologyRules}
+${executionPlanning}
 
 ${factoryContext}
 
@@ -198,6 +211,7 @@ ${safeJson(decompositionForReview)}
 
 ${topologyRules}
 ${fieldLimits}
+${executionPlanning}
 
 ${factoryContext}
 
@@ -239,6 +253,7 @@ ${untrustedBlock("CRITIQUES", critiques)}`
 
 ${topologyRules}
 ${fieldLimits}
+${executionPlanning}
 
 Objective:
 ${safeJson(input.objective)}
@@ -273,6 +288,7 @@ Return JSON only.`,
 		`Verify this Foundry plan for objective coverage, dependency correctness, one final verifier sink, convergent implementation work, scope overlap, delivery requirements, and measurable implementation criteria against the same pinned governing definitions. Rationale and proposals remain non-governing. ${UNTRUSTED}
 
 ${topologyRules}
+${executionPlanning}
 
 ${factoryContext}
 

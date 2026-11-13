@@ -2,13 +2,15 @@ import { analysisInputDigest } from "../digest.mjs";
 import { isRecord } from "../data.mjs";
 import { FoundryFactoryError, fail } from "../factory/fields.mjs";
 import { key as refKey } from "../factory/records.mjs";
+import { visualCriterion } from "../factory/visual.mjs";
 
 /** @typedef {import("../types/factory.js").KnowledgeRef} KnowledgeRef */
 /** @typedef {import("../types/factory.js").ProjectedEvaluation} ProjectedEvaluation */
 /** @typedef {{repositoryId: string, unitId: string, unitRevision: number, owner: string, contract: {digest: string, revision: number} | null}} PlanningContext */
 
 /** @param {ProjectedEvaluation} entry */
-export const evaluationCriterion = (entry) => `Pass pinned ${entry.evaluation.modality} evaluation ${refKey(entry)} (${entry.evaluation.procedure.digest}).`;
+export const evaluationCriterion = (entry) => entry.evaluation.visual ? visualCriterion(entry)
+	: `Pass pinned ${entry.evaluation.modality} evaluation ${refKey(entry)} (${entry.evaluation.procedure.digest}).`;
 
 /** @param {ProjectedEvaluation[]} definitions @param {KnowledgeRef[] | undefined} refs */
 export function selectEvaluations(definitions, refs) {

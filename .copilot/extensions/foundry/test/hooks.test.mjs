@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { link, mkdir, mkdtemp, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import { buildFoundryHooks } from "../hooks.mjs";
@@ -6,7 +9,7 @@ import { inspectWriteBoundary } from "../hooks/paths.mjs";
 import { classifyShellCommand } from "../hooks/shell.mjs";
 import { must } from "./assertions.mjs";
 
-test("guardrail classifiers target only broad destructive behavior", () => {
+test("guardrail classifiers target only broad destructive behavior", async () => {
 	assert.equal(
 		classifyShellCommand("git reset --hard HEAD", "/repo")?.decision,
 		"deny",
@@ -77,23 +80,23 @@ test("guardrail classifiers target only broad destructive behavior", () => {
 	);
 	assert.equal(classifyShellCommand("npm test", "/repo"), null);
 	assert.equal(
-		inspectWriteBoundary("edit", { path: "/outside/file" }, "/repo")?.decision,
+		(await inspectWriteBoundary("edit", { path: "/outside/file" }, "/repo"))?.decision,
 		"deny",
 	);
 	assert.equal(
-		inspectWriteBoundary("edit", { path: "/repo/file" }, "/repo"),
+		await inspectWriteBoundary("edit", { path: "/repo/file" }, "/repo"),
 		null,
 	);
 	assert.equal(
-		inspectWriteBoundary(
+		(await inspectWriteBoundary(
 			"edit",
 			{ path: "/srv/REPO/file" },
 			"/srv/repo",
-		)?.decision,
+		))?.decision,
 		"deny",
 	);
 	assert.equal(
-		inspectWriteBoundary(
+		await inspectWriteBoundary(
 			"edit",
 			{ path: "C:\\REPO\\file" },
 			"C:\\repo",
@@ -101,17 +104,174 @@ test("guardrail classifiers target only broad destructive behavior", () => {
 		null,
 	);
 	assert.equal(
-		inspectWriteBoundary("edit", { path: "../outside/file" }, "/repo")?.decision,
+		(await inspectWriteBoundary("edit", { path: "../outside/file" }, "/repo"))?.decision,
 		"deny",
 	);
 	assert.equal(
-		inspectWriteBoundary(
+		(await inspectWriteBoundary(
 			"apply_patch",
 			"*** Update File: src/a.mjs\n*** Move to: /outside/a.mjs\n",
 			"/repo",
-		)?.decision,
+		))?.decision,
 		"deny",
 	);
+});
+
+/** @param {import("node:test").TestContext} t */
+async function helperFixture(t) {
+	const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "foundry-hooks-")));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const repository = path.join(root, "repository");
+	const workspacePath = path.join(root, "owner");
+	const helper = path.join(workspacePath, "extensions", "foundry-exact-relay");
+	const foreign = path.join(root, "foreign", "extensions", "foundry-exact-relay");
+	for (const directory of [repository, helper, foreign]) await mkdir(directory, { recursive: true });
+	const entry = path.join(helper, "extension.mjs");
+	await writeFile(entry, "// helper fixture\n");
+	await writeFile(path.join(foreign, "extension.mjs"), "// foreign fixture\n");
+	/** @type {Awaited<ReturnType<import("../hooks/paths.mjs").HelperSession["rpc"]["extensions"]["list"]>>} */
+	const registry = { extensions: [{
+		id: "session:foundry-exact-relay",
+		name: "foundry-exact-relay",
+		source: "session",
+		status: "running",
+	}] };
+	let registryReads = 0;
+	const session = {
+		sessionId: "owner-session",
+		workspacePath,
+		rpc: { extensions: { list: async () => { registryReads++; return registry; } } },
+	};
+	const operations = {
+		getActive: async () => null,
+		getActivation: async () => ({ planId: "active-plan" }),
+	};
+	const hooks = buildFoundryHooks({ operations, getSession: () => session });
+	const identity = { sessionId: session.sessionId };
+	/** @param {string} toolName @param {unknown} toolArgs */
+	const input = (toolName, toolArgs) => ({ ...identity, toolName, toolArgs, workingDirectory: repository });
+	/** @param {string} toolName @param {unknown} toolArgs */
+	const call = (toolName, toolArgs) => hooks.onPreToolUse(input(toolName, toolArgs), identity);
+	return { root, repository, helper, foreign, entry, session, registry, operations, hooks, identity, input, call, registryReads: () => registryReads };
+}
+
+test("registered owner helper writes retain native permission checks and repository behavior", async (t) => {
+	const fixture = await helperFixture(t);
+	const { repository, helper, entry, registry, call } = fixture;
+	assert.deepEqual(await call("edit", { path: entry }), {});
+	assert.deepEqual(await call("create", { path: path.join(helper, "new", "transport.mjs") }), {});
+	assert.deepEqual(await call("write", { path: entry }), {});
+	assert.deepEqual(await call("apply_patch", `*** Update File: ${entry}\n*** Add File: ${path.join(repository, "test.mjs")}\n`), {});
+	assert.equal(fixture.registryReads(), 4);
+
+	registry.extensions = [];
+	assert.deepEqual(await call("edit", { path: path.join(repository, "file.mjs") }), {});
+	assert.deepEqual(await call("run_dynamic_workflow", { name: "plan", args: {} }), {});
+	assert.equal(fixture.registryReads(), 4);
+});
+
+test("helper exception rejects foreign, unregistered, traversing and mixed write targets", async (t) => {
+	const { repository, helper, foreign, entry, session, call } = await helperFixture(t);
+	for (const candidate of [
+		path.join(foreign, "extension.mjs"),
+		path.join(session.workspacePath, "extensions", "unregistered", "extension.mjs"),
+		path.join(session.workspacePath, "files", "payload.json"),
+		path.join(`${helper}-other`, "extension.mjs"),
+		`${helper}/../foundry-exact-relay/extension.mjs`,
+		path.relative(repository, entry),
+		helper,
+	]) {
+		assert.equal((await call("edit", {
+			path: candidate,
+			workspacePath: session.workspacePath,
+			sessionId: session.sessionId,
+			helperRoot: path.dirname(candidate),
+		})).permissionDecision, "deny", candidate);
+	}
+	for (const patch of [
+		`*** Update File: ${entry}\n*** Add File: ${path.join(foreign, "new.mjs")}\n`,
+		`*** Update File: ${entry}\n*** Move to: ${path.join(foreign, "moved.mjs")}\n`,
+		`*** Update File: ${path.join(foreign, "extension.mjs")}\n*** Move to: ${entry}\n`,
+		`*** Add File: ${path.join(repository, "file.mjs")}\n*** Delete File: ${path.join(foreign, "extension.mjs")}\n`,
+	]) {
+		assert.equal((await call("apply_patch", patch)).permissionDecision, "deny");
+	}
+	assert.equal((await call("edit", { path: entry, destination: path.join(foreign, "file.mjs") })).permissionDecision, "deny");
+});
+
+test("helper exception requires matching native identities and trusted workspace context", async (t) => {
+	const { entry, session, operations, hooks, identity, input } = await helperFixture(t);
+	const write = input("edit", { path: entry });
+	assert.equal((await hooks.onPreToolUse(write)).permissionDecision, "deny");
+	assert.equal((await hooks.onPreToolUse(write, { sessionId: "foreign-session" })).permissionDecision, "deny");
+	assert.equal((await hooks.onPreToolUse({ ...write, sessionId: "foreign-session" }, identity)).permissionDecision, "deny");
+	assert.equal((await hooks.onPreToolUse({ ...write, sessionId: undefined }, identity)).permissionDecision, "deny");
+	assert.equal((await hooks.onPreToolUse({ ...write, workingDirectory: undefined }, identity)).permissionDecision, "deny");
+	for (const getSession of [
+		undefined,
+		() => null,
+		() => ({ ...session, sessionId: "" }),
+		() => ({ ...session, workspacePath: undefined }),
+		() => ({ ...session, workspacePath: "relative-session" }),
+	]) {
+		const untrusted = buildFoundryHooks({ operations, getSession });
+		assert.equal((await untrusted.onPreToolUse(write, identity)).permissionDecision, "deny");
+	}
+});
+
+test("helper exception rechecks runtime registration and fails closed on registry errors", async (t) => {
+	const { entry, registry, session, call } = await helperFixture(t);
+	const registered = must(registry.extensions[0]);
+	for (const extensions of [
+		[],
+		[{ ...registered, source: /** @type {const} */ ("user") }],
+		[{ ...registered, source: /** @type {const} */ ("project") }],
+		[{ ...registered, source: /** @type {const} */ ("plugin") }],
+		[{ ...registered, name: "different-helper" }],
+		[{ ...registered, id: "" }],
+		[{ ...registered, status: /** @type {const} */ ("disabled") }],
+		[{ ...registered, status: /** @type {const} */ ("failed") }],
+		[{ ...registered, status: /** @type {const} */ ("starting") }],
+		[registered, registered],
+	]) {
+		registry.extensions = extensions;
+		assert.equal((await call("edit", { path: entry })).permissionDecision, "deny");
+	}
+	registry.extensions = [registered];
+	assert.deepEqual(await call("edit", { path: entry }), {});
+	registry.extensions = [];
+	assert.equal((await call("edit", { path: entry })).permissionDecision, "deny");
+
+	session.rpc.extensions.list = async () => { throw new Error("extensions.list unavailable"); };
+	const denied = await call("edit", { path: entry });
+	assert.equal(denied.permissionDecision, "deny");
+	assert.match(must(denied.permissionDecisionReason), /extensions\.list unavailable/);
+});
+
+test("helper exception rejects linked files, ancestors and registered roots", async (t) => {
+	const { root, helper, foreign, entry, session, call } = await helperFixture(t);
+	const foreignEntry = path.join(foreign, "extension.mjs");
+	const linkedFile = path.join(helper, "linked.mjs");
+	const linkedDirectory = path.join(helper, "linked");
+	const hardlink = path.join(helper, "hardlink.mjs");
+	await symlink(foreignEntry, linkedFile, "file");
+	await symlink(foreign, linkedDirectory, "dir");
+	await link(foreignEntry, hardlink);
+	for (const candidate of [linkedFile, path.join(linkedDirectory, "new.mjs"), hardlink]) {
+		assert.equal((await call("edit", { path: candidate })).permissionDecision, "deny");
+	}
+	assert.equal((await call("apply_patch", `*** Update File: ${entry}\n*** Add File: ${path.join(linkedDirectory, "new.mjs")}\n`)).permissionDecision, "deny");
+
+	const missingHelper = path.join(root, "retained-helper");
+	await rename(helper, missingHelper);
+	assert.equal((await call("create", { path: entry })).permissionDecision, "deny");
+	await symlink(foreign, helper, "dir");
+	assert.equal((await call("edit", { path: entry })).permissionDecision, "deny");
+
+	const linkedWorkspace = path.join(root, "linked-owner");
+	await symlink(session.workspacePath, linkedWorkspace, "dir");
+	session.workspacePath = linkedWorkspace;
+	assert.equal((await call("edit", { path: path.join(linkedWorkspace, "extensions", "foundry-exact-relay", "extension.mjs") })).permissionDecision, "deny");
 });
 
 test("hooks are inert without an explicitly active plan", async () => {

@@ -4,12 +4,167 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
+import { buildVerificationInput } from "../../analysis/verification.mjs";
 import { createFactoryService } from "../../factory.mjs";
 import { retryFailedPlan } from "../../plan/lifecycle.mjs";
+import { validatePlan } from "../../plan/validation.mjs";
 import { createPlanStore } from "../../storage.mjs";
 import { must } from "../assertions.mjs";
 import { factoryDocument } from "../factory/accessors.mjs";
 import { COMMIT, DIGEST, fixture, source } from "./fixture.mjs";
+
+const nativeOwner = { sessionId: "coordinator", toolCallId: "technical-closure" };
+const completionReview = "Reviewed the exact independently verified milestone delivery and remaining gates; technical closure only, not design acceptance or deployment.";
+const completionAuthority = {
+	instruction: "Delegate bounded technical milestone closure after independent verification passes; do not accept design, replace capabilities or deploy.",
+	grantedBy: "requesting-user",
+	source: { kind: "relayed-user", sessionId: "oversight", messageRef: "explicit-completion-instruction@revision:21", relayedBySessionId: "oversight" },
+};
+
+/** @param {Awaited<ReturnType<typeof fixture>>} f @param {import("../../types/plan.js").FoundryPlan} plan */
+const grantCompletion = (f, plan) => f.ops.planApprovalDelegation({
+	action: "grant", id: "technical-completion", approvalType: "completion",
+	planId: plan.id, expectedRevision: plan.revision, authority: completionAuthority,
+}, { invocation: { ...nativeOwner, toolCallId: "completion-grant" } });
+
+test("explicit technical-completion delegation closes only the pinned verified milestone and is not transferable authority", async (t) => {
+	const f = await fixture(t);
+	let plan = await f.verify(f.ops, await f.implement(await f.generationPlan()));
+	({ plan } = await f.finish(f.ops, plan, { complete: false }));
+	const grant = must(await grantCompletion(f, plan));
+	assert.equal(grant.scope.approvalType, "completion");
+	assert.equal(grant.grant.statement, completionAuthority.instruction);
+	assert.ok(grant.grant.method === "user-instruction-attestation");
+	assert.deepEqual(grant.grant.source, completionAuthority.source);
+	assert.equal(grant.grant.attestedBy, "agent-session:coordinator");
+	assert.deepEqual(await grantCompletion(f, plan), grant);
+	await assert.rejects(f.ops.approve({
+		planId: plan.id, expectedRevision: plan.revision, delegationId: grant.id, review: completionReview,
+	}, { invocation: nativeOwner }), { code: "delegation_out_of_scope" });
+	const verification = structuredClone(plan.verification);
+	const decisions = structuredClone(f.factory.snapshot().decisions);
+	const request = { planId: plan.id, expectedRevision: plan.revision, approvalType: "completion", delegationId: grant.id, review: completionReview };
+	const results = await Promise.allSettled([
+		f.ops.approve(request, { invocation: nativeOwner }),
+		f.ops.approve(request, { invocation: nativeOwner }),
+	]);
+	const success = results.find((result) => result.status === "fulfilled");
+	assert.ok(success && success.status === "fulfilled");
+	assert.equal(results.filter((result) => result.status === "rejected" && result.reason.code === "revision_conflict").length, 1);
+	plan = success.value;
+	assert.equal(plan.status, "completed");
+	assert.equal(plan.gates.planApprovedBy, "owner");
+	assert.equal(plan.gates.completionApprovedBy, "agent-session:coordinator");
+	assert.equal(plan.activity.at(-1)?.event, "completion-approved:delegated");
+	assert.deepEqual(plan.verification, verification);
+	assert.deepEqual(plan.gates.delegatedCompletion, {
+		delegation: grant, planId: plan.id, planRevision: request.expectedRevision,
+		blueprintDigest: plan.factory?.blueprintDigest, ...nativeOwner, review: completionReview,
+		verification: { reservationId: verification.reservationId, runId: verification.runId, inputDigest: verification.inputDigest, targetCommit: COMMIT },
+	});
+	assert.equal(f.factory.snapshot().candidates[0].completion?.passed, true);
+	assert.deepEqual(f.factory.snapshot().decisions, decisions, "Technical closure does not select or replace a capability");
+	for (const changed of [{ runId: "another-run" }, { reservationId: "another-reservation" }, { inputDigest: "f".repeat(64) }, { targetCommit: "f".repeat(40) }]) {
+		assert.throws(() => validatePlan({
+			...plan, gates: { ...plan.gates, delegatedCompletion: {
+				...plan.gates.delegatedCompletion, verification: { ...plan.gates.delegatedCompletion?.verification, ...changed },
+			} },
+		}), { code: "invalid_delegated_completion" });
+	}
+	await assert.rejects(f.ops.approve({ ...request, expectedRevision: plan.revision }, { invocation: nativeOwner }), { code: "delegation_verified_completion_required" });
+	await f.ops.planApprovalDelegation({ action: "revoke", id: grant.id, reason: "Stop future closure" }, { invocation: nativeOwner });
+	assert.deepEqual((await f.ops.getPlan({ planId: plan.id })).gates, plan.gates, "Revocation does not rewrite historical decisions");
+	const importer = await f.createOps("import-only");
+	const restored = await importer.importPlan({ source: await f.ops.exportPlan({ planId: plan.id }), expectedRevision: 0 });
+	assert.deepEqual(restored.gates, plan.gates);
+	assert.equal(await importer.storeFor().getApprovalDelegation(grant.id), null);
+});
+
+test("technical completion requires a separately recorded grant and cannot close incomplete or failed verification", async (t) => {
+	const f = await fixture(t);
+	let plan = await f.generationPlan();
+	const grantRequest = { action: "grant", id: "technical-completion", approvalType: "completion", planId: plan.id, expectedRevision: plan.revision };
+	await assert.rejects(f.ops.planApprovalDelegation(grantRequest, { invocation: nativeOwner }), { code: "delegation_instruction_required" });
+	await assert.rejects(f.ops.planApprovalDelegation({ ...grantRequest, approvalType: "all", authority: completionAuthority }, { invocation: nativeOwner }), { code: "delegation_approval_type" });
+	await assert.rejects(f.ops.planApprovalDelegation({ ...grantRequest, expectedRevision: plan.revision - 1, authority: completionAuthority }, { invocation: nativeOwner }), { code: "revision_conflict" });
+	const grant = must(await grantCompletion(f, plan));
+	const approve = () => f.ops.approve({ planId: plan.id, expectedRevision: plan.revision, approvalType: "completion", delegationId: grant.id, review: completionReview }, { invocation: nativeOwner });
+	await assert.rejects(approve(), { code: "delegation_verified_completion_required" });
+	plan = await f.verify(f.ops, await f.implement(plan));
+	await assert.rejects(approve(), { code: "delegation_verified_completion_required" });
+	({ plan } = await f.finish(f.ops, plan, { failed: true }));
+	await assert.rejects(approve(), { code: "delegation_verified_completion_required" });
+	assert.equal((await f.ops.getPlan({ planId: plan.id })).status, "failed");
+});
+
+test("legacy, revoked, foreign and stale evidence cannot authorize delegated technical completion", async (t) => {
+	const f = await fixture(t);
+	let plan = await f.generationPlan();
+	const initial = must(await f.ops.planApprovalDelegation({
+		action: "grant", id: "initial-only", planId: plan.id, expectedRevision: plan.revision, authority: {
+			...completionAuthority, instruction: "Approve only initial execution plans.",
+		},
+	}, { invocation: nativeOwner }));
+	const grant = must(await grantCompletion(f, plan));
+	plan = await f.verify(f.ops, await f.implement(plan));
+	({ plan } = await f.finish(f.ops, plan, { complete: false }));
+	const request = { planId: plan.id, expectedRevision: plan.revision, approvalType: "completion", delegationId: grant.id, review: completionReview };
+	const approve = () => f.ops.approve(request, { invocation: nativeOwner });
+	await assert.rejects(f.ops.approve({ ...request, delegationId: "missing" }, { invocation: nativeOwner }), { code: "delegation_unavailable" });
+	await assert.rejects(f.ops.approve({ ...request, expectedRevision: plan.revision - 1 }, { invocation: nativeOwner }), { code: "revision_conflict" });
+	await assert.rejects(f.ops.approve(request), { code: "delegation_identity_required" });
+	await assert.rejects(f.ops.approve(request, { invocation: { ...nativeOwner, sessionId: "foreign" } }), { code: "delegation_identity_required" });
+	await assert.rejects(f.ops.approve({ ...request, review: "" }, { invocation: nativeOwner }), { code: "empty_string" });
+	const db = new DatabaseSync(f.ops.storeFor().databasePath);
+	try {
+		const legacy = structuredClone(initial);
+		delete legacy.scope.approvalType;
+		db.prepare("UPDATE approval_delegations SET document = ? WHERE id = ?").run(JSON.stringify(legacy), legacy.id);
+		await assert.rejects(f.ops.approve({ ...request, delegationId: legacy.id }, { invocation: nativeOwner }), { code: "delegation_out_of_scope" });
+		assert.deepEqual(await f.ops.storeFor().getApprovalDelegation(legacy.id), legacy);
+		for (const change of [
+			{ owner: "foreign-owner" }, { repositoryId: "foreign-repo" }, { repositoryPath: `${f.repo}/other` },
+			{ unitId: "another-unit" }, { unitRevision: 2 }, { contractDigest: "f".repeat(64) },
+		]) {
+			db.prepare("UPDATE approval_delegations SET document = ? WHERE id = ?").run(JSON.stringify({ ...grant, scope: { ...grant.scope, ...change } }), grant.id);
+			await assert.rejects(approve(), { code: change.owner ? "delegation_foreign" : "delegation_out_of_scope" });
+		}
+		db.prepare("UPDATE approval_delegations SET document = ? WHERE id = ?").run(JSON.stringify(grant), grant.id);
+		db.prepare("UPDATE plans SET document = ? WHERE id = ?").run(JSON.stringify({
+			...plan, verification: { ...plan.verification, runId: null },
+		}), plan.id);
+		await assert.rejects(approve(), { code: "artifact_invalid" });
+		for (const mutation of [
+			{ ...plan, verification: { ...plan.verification, inputDigest: "f".repeat(64) } },
+			{ ...plan, verification: { ...plan.verification, evidence: plan.verification.evidence.slice(1) } },
+		]) {
+			db.prepare("UPDATE plans SET document = ? WHERE id = ?").run(JSON.stringify(mutation), plan.id);
+			await assert.rejects(approve(), { code: "delegation_verification_mismatch" });
+		}
+		const failedEvidence = structuredClone(plan);
+		const report = must(must(failedEvidence.tasks.find((task) => task.kind === "verify")).attempts.at(-1));
+		report.evidence[0].outcome = "failed";
+		failedEvidence.verification.evidence = failedEvidence.verification.evidence.filter((id) => id !== report.evidence[0].id);
+		failedEvidence.verification.inputDigest = buildVerificationInput(failedEvidence).inputDigest;
+		db.prepare("UPDATE plans SET document = ? WHERE id = ?").run(JSON.stringify(failedEvidence), plan.id);
+		await assert.rejects(approve(), { code: "delegation_verification_mismatch" });
+		const stale = structuredClone(plan);
+		must(stale.tasks[0].attempts.at(-1)).resultSummary = "Changed delivery after authoritative verification";
+		db.prepare("UPDATE plans SET document = ? WHERE id = ?").run(JSON.stringify(stale), plan.id);
+		await assert.rejects(approve(), { code: "factory_receipt_conflict" });
+	} finally {
+		db.prepare("UPDATE plans SET document = ? WHERE id = ?").run(JSON.stringify(plan), plan.id);
+		db.close();
+	}
+	assert.equal((await f.ops.getPlan({ planId: plan.id })).revision, plan.revision);
+	await f.ops.planApprovalDelegation({ action: "revoke", id: grant.id, reason: "Withdraw technical closure" }, { invocation: nativeOwner });
+	await assert.rejects(approve(), { code: "delegation_unavailable" });
+	await assert.rejects(grantCompletion(f, plan), { code: "delegation_conflict" });
+	const manual = await f.ops.approve({ planId: plan.id, expectedRevision: plan.revision, approvalType: "completion", approvedBy: "explicit-human" });
+	assert.equal(manual.status, "completed");
+	assert.equal(manual.gates.completionApprovedBy, "explicit-human");
+	assert.equal(manual.gates.delegatedCompletion, undefined);
+});
 
 test("fresh-process generation is rejected before an App plan binding exists", async (t) => {
 	const f = await fixture(t);

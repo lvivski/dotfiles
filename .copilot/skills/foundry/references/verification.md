@@ -18,6 +18,8 @@ or completion.
    The launch reservation freezes governing definitions,
    separately non-governing rationale and human evidence; retries never substitute mutable current
    context into an existing reservation.
+   For an explicitly UI-producing unit, the declared visual report is required even on an initial
+   discovery plan with no accepted candidate. Apply the visual evidence protocol below.
 3. Once every task is done, call `foundry_prepare_verification` with a stable reservation ID.
 4. If it returns `launchSpec`, invoke it exactly once with `run_dynamic_workflow`. If it returns
    `launchSpec: null`, use the returned `runId` and do not relaunch.
@@ -35,10 +37,95 @@ or completion.
    Its frozen context distinguishes that plan's observations from current repository support. A valid
    delayed receipt can complete a historical evaluation even when a newer observation fails; it cannot
    override the newer failure or renew support after a later signal.
-7. On success, request explicit completion approval, then call `foundry_approve_plan` with
-   `approvalType: "completion"`.
+7. On success, review the exact awaiting-completion revision. With an explicitly completion-scoped
+   delegation, follow the technical-closure protocol below without another user prompt. Otherwise
+   request explicit manual completion approval and call `foundry_approve_plan` with
+   `approvalType: "completion"` and `approvedBy`.
 8. If the current session is linked to a GitHub issue, preserve the approved plan and final
    verification report as issue artifacts. Do not create artifacts without a linked issue.
+
+## Delegated technical milestone completion
+
+Only an explicit user instruction authorizing bounded **technical milestone closure** enables this
+route. Record it once through `foundry_plan_approval_delegation`, `action: "grant"`,
+`approvalType: "completion"`, a new stable `id`, exact reference `planId`/`expectedRevision` and
+`authority`. Follow the [instruction provenance protocol](planning.md#delegated-execution-plan-approval):
+retain the original instruction verbatim, direct/relayed source and revision; this is agent-attested
+authority, not authenticated user identity or a per-milestone human click. Do not repeat a consent
+form for an instruction already given. Without explicit authority, ask once or retain manual approval.
+Existing initial-only/native-form grants stay immutable and usable for initial plans only.
+
+Inspect the completion grant and review the exact named plan, immutable delivery, authoritative
+independent verification and unresolved holds. Every task must be done and the plan must be
+`awaiting-completion-approval`, with its bound verification PASSED. The runtime rebuilds the canonical
+verification input, compares its digest, checks independent passing evidence and the exact delivered
+target, and rechecks current factory/human evidence gates. Missing, stale, failed or mismatched
+evidence is a hold, never something delegation can waive. Do not rerun or substitute a verification
+Workflow merely to obtain approval.
+
+If eligible, call `foundry_approve_plan` with `approvalType: "completion"`, exact `planId` and
+`expectedRevision`, `delegationId` and a substantive technical `review`; omit `approvedBy`.
+The receipt retains the original grant, native approving session/call, exact pre-approval revision,
+blueprint digest, verification reservation/run/input digest and immutable target commit. Revision
+conflicts require a fresh read and comparison with the recorded result, not a duplicate decision.
+Owner/repository/capability/contract scope and revocation are checked through the existing transaction.
+Exported receipts are history, not transferable active authority; revoke stops future decisions
+without rewriting closed milestones.
+
+This closes only the verified technical milestone. It does not supply missing human-modality
+judgments, aesthetic/visual or final-design acceptance, authorize a correction wave, replace a
+capability/contract, deploy, push, create/merge a PR, use real accounts, override shared resources or
+skip native permissions. Keep those separately gated even after technical closure.
+
+## Visual evidence
+
+For `unit.visualEvaluation`, return the exact evaluator in `factoryEvaluations` alongside the ordinary
+canonical check evidence. Its `report` is JSON with this shape (placeholders are not evidence):
+
+```json
+{
+  "format": "foundry-visual-report-v1",
+  "deliveryCommit": "<exact full delivered commit>",
+  "environment": "<declared evaluator environment>",
+  "states": [{
+    "id": "<declared state>",
+    "referenceDigest": "<declared reference SHA-256>",
+    "capture": {
+      "path": "<absolute durable regular PNG/JPEG/WebP capture file>",
+      "digest": "<capture bytes SHA-256>",
+      "capturedAt": "<ISO instant>",
+      "method": "native-screenshot",
+      "viewport": "<actual viewport, scale and relevant display configuration>"
+    },
+    "assessment": {
+      "composition": { "outcome": "passed", "finding": "<actual comparison against reference intent>" },
+      "navigation": { "outcome": "passed", "finding": "<actual comparison>" },
+      "paneBoundaries": { "outcome": "passed", "finding": "<actual comparison>" },
+      "hierarchyDensity": { "outcome": "passed", "finding": "<actual comparison>" },
+      "typography": { "outcome": "passed", "finding": "<actual comparison>" },
+      "actionPlacement": { "outcome": "passed", "finding": "<actual comparison>" }
+    }
+  }]
+}
+```
+
+`browser-screenshot` is also supported. Cover every declared state exactly once; record concrete
+findings relative to the actual reference, including scoped normal/empty/error behavior. Outcomes
+may be `failed` or `inconclusive`; do not turn mismatches into advisory prose. If capture is blocked,
+use `capture: null`, a concrete `blocker`, nonpassing assessment and nonpassing outer evaluator/
+canonical check outcomes. A terminal verifier report can retain failure, but verification/completion
+cannot pass it. Never fabricate captures, replace screenshots with SVG/code/geometry reports, or
+reuse a reference as an alleged output capture. Keep capture files outside the immutable delivered
+worktree, retain them through verification/closure and explicitly transfer artifacts for later reuse.
+
+The existing independent App verifier must actually view both the renderable reference and output.
+The protected command evaluator checks the report/artifacts; the restricted verification Workflow
+reviews recorded evidence, not images it cannot access. Foundry checks exact reference material,
+capture bytes/digests, delivery/state/environment bindings and nonpassing findings. These are identity
+and consistency checks, not proof of capture provenance or that an agent saw pixels: visual verdicts
+remain independent agent claims. A correctly fabricated image/inspection narrative cannot be
+cryptographically detected by this API. Native permissions and any required human judgment remain
+separate. No automatic capture, additional agent, image-diff service or paid budget increase is added.
 
 Plan completion is not capability replacement or a regeneration proof. Inspect current factory
 assurance and compare alternatives against the same pinned obligations. Record explicit selection

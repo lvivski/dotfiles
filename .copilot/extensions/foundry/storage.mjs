@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { errorCode, errorMessage, parseJson, property } from "./data.mjs";
 import { assertPlanId } from "./plan/fields.mjs";
+import { approvalScope, sameApprovalScope, validateApprovalDelegation } from "./plan/schemas/approval.mjs";
 import { summarizePlan } from "./plan/queries.mjs";
 import { PLAN_STATUS } from "./plan/values.mjs";
 import { createArtifactDatabase } from "./storage/database.mjs";
@@ -14,8 +15,10 @@ import { storageError } from "./storage/errors.mjs";
  * @property {number} [busyTimeoutMs]
  */
 /** @typedef {import("./types/plan.js").FoundryPlan} FoundryPlan */
+/** @typedef {import("./types/plan.js").ApprovalDelegation} ApprovalDelegation */
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
+const DELEGATION_TABLE = "CREATE TABLE approval_delegations (id TEXT PRIMARY KEY NOT NULL, document TEXT NOT NULL) STRICT;";
 
 const APPLICATION_ID = 0x464e4452;
 
@@ -63,6 +66,10 @@ function initialize(db) {
 	const version = db.prepare("PRAGMA user_version").get()?.user_version;
 	const application = db.prepare("PRAGMA application_id").get()?.application_id;
 	if (version === SCHEMA_VERSION && application === APPLICATION_ID) return;
+	if (version === 1 && application === APPLICATION_ID) {
+		db.exec(`${DELEGATION_TABLE} PRAGMA user_version = ${SCHEMA_VERSION};`);
+		return;
+	}
 	if (version !== 0 || application !== 0
 		|| db.prepare("SELECT name FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' LIMIT 1").get()) {
 		throw storageError("database_version_unsupported", "The Foundry database has an unknown schema or owner", {
@@ -89,9 +96,22 @@ function initialize(db) {
 			requested_by TEXT NOT NULL,
 			quarantined_at TEXT NOT NULL
 		) STRICT;
+		${DELEGATION_TABLE}
 		PRAGMA application_id = ${APPLICATION_ID};
 		PRAGMA user_version = ${SCHEMA_VERSION};
 	`);
+}
+
+/** @param {import("node:sqlite").DatabaseSync} db @param {string} id @returns {ApprovalDelegation | null} */
+function readDelegation(db, id) {
+	assertPlanId(id);
+	const row = db.prepare("SELECT document FROM approval_delegations WHERE id = ?").get(id);
+	if (!row) return null;
+	if (typeof row.document !== "string") throw storageError("delegation_invalid", "Stored approval delegation is not JSON");
+	const delegation = parseJson(row.document);
+	validateApprovalDelegation(delegation);
+	if (delegation.id !== id) throw storageError("delegation_invalid", "Approval delegation identity changed");
+	return delegation;
 }
 
 /** @param {PlanStoreOptions} [options] */
@@ -139,9 +159,10 @@ export function createPlanStore(options = {}) {
 	 *
 	 * @param {string} id
 	 * @param {number} expectedRevision
-	 * @param {(current: FoundryPlan) => unknown} mutate
+	 * @param {(current: FoundryPlan, delegation: ApprovalDelegation | null) => unknown} mutate
+	 * @param {{delegationId?: string}} [settings]
 	 */
-	const mutatePlan = async (id, expectedRevision, mutate) => {
+	const mutatePlan = async (id, expectedRevision, mutate, settings = {}) => {
 		assertPlanId(id);
 		validateExpectedRevision(expectedRevision);
 		if (typeof mutate !== "function" || mutate.constructor?.name === "AsyncFunction") {
@@ -151,7 +172,8 @@ export function createPlanStore(options = {}) {
 			const current = readPlan(db, id);
 			if (current.revision !== expectedRevision) throw revisionConflict(id, expectedRevision, current.revision);
 			const createdAt = current.createdAt;
-			const candidate = mutate(current);
+			const delegation = settings.delegationId ? readDelegation(db, settings.delegationId) : null;
+			const candidate = mutate(current, delegation);
 			if (candidate && (typeof candidate === "object" || typeof candidate === "function")
 				&& "then" in candidate && typeof candidate.then === "function") {
 				// Observe a rejected Promise without allowing it to outlive a commit.
@@ -312,6 +334,39 @@ export function createPlanStore(options = {}) {
 	/** @param {string} id */
 	const exportPlan = async (id) => `${JSON.stringify(await read(id), null, 2)}\n`;
 
+	/** @param {string} id */
+	const getApprovalDelegation = async (id) => transaction((db) => readDelegation(db, id));
+
+	/** @param {ApprovalDelegation} delegation */
+	const createApprovalDelegation = async (delegation) => {
+		validateApprovalDelegation(delegation);
+		if (delegation.revocation !== null) throw storageError("delegation_invalid", "A new delegation cannot be revoked");
+		return transaction((db) => {
+			const plan = readPlan(db, delegation.grant.planId);
+			if (plan.revision !== delegation.grant.planRevision) throw revisionConflict(plan.id, delegation.grant.planRevision, plan.revision);
+			if (!sameApprovalScope(delegation.scope, approvalScope(plan, delegation.scope.coordinatorSessionId, delegation.scope.approvalType))) {
+				throw storageError("delegation_scope_changed", "Plan authority changed during delegation confirmation");
+			}
+			if (readDelegation(db, delegation.id)) throw storageError("delegation_exists", "This delegation ID is already recorded; never replace or reactivate it");
+			db.prepare("INSERT INTO approval_delegations(id, document) VALUES (?, ?)").run(delegation.id, JSON.stringify(delegation));
+			return delegation;
+		}, { write: true });
+	};
+
+	/** @param {string} id @param {string} owner @param {string} sessionId @param {NonNullable<ApprovalDelegation["revocation"]>} revocation */
+	const revokeApprovalDelegation = async (id, owner, sessionId, revocation) => transaction((db) => {
+		const delegation = readDelegation(db, id);
+		if (!delegation) throw storageError("delegation_missing", "Approval delegation does not exist");
+		if (delegation.scope.owner !== owner || delegation.scope.coordinatorSessionId !== sessionId) {
+			throw storageError("delegation_foreign", "Only the owning coordinator can revoke this delegation");
+		}
+		if (delegation.revocation) return delegation;
+		const updated = { ...delegation, revocation };
+		validateApprovalDelegation(updated);
+		db.prepare("UPDATE approval_delegations SET document = ? WHERE id = ?").run(JSON.stringify(updated), id);
+		return updated;
+	}, { write: true });
+
 	return Object.freeze({
 		create,
 		read,
@@ -325,6 +380,9 @@ export function createPlanStore(options = {}) {
 		deactivate,
 		importPlan,
 		exportPlan,
+		getApprovalDelegation,
+		createApprovalDelegation,
+		revokeApprovalDelegation,
 		directory,
 		databasePath,
 	});

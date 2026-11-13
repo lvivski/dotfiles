@@ -2,7 +2,8 @@ import path from "node:path";
 import { isList, isOneOf } from "../data.mjs";
 import { assertKnownKeys, assertPlainObject, assertPlanId, assertString, assertStringArray, assertTimestamp, assertTimestampPair, fail, validateConceptualReview } from "./fields.mjs";
 import { validateDependencyGraph, validateTaskTopology } from "./graph.mjs";
-import { activeTaskAttempt, taskMap } from "./queries.mjs";
+import { activeTaskAttempt, latestSuccessfulAttempt, taskMap } from "./queries.mjs";
+import { validateDelegatedApproval } from "./schemas/approval.mjs";
 import { validateCancellation } from "./schemas/cancellation.mjs";
 import { validateEvaluationTarget, validateFactoryBinding } from "./schemas/factory.mjs";
 import { validateTasks } from "./schemas/tasks.mjs";
@@ -42,6 +43,8 @@ const GATE_KEYS = new Set([
 	"planApprovedBy",
 	"completionApprovedAt",
 	"completionApprovedBy",
+	"delegatedApproval",
+	"delegatedCompletion",
 ]);
 
 const ACTIVITY_KEYS = new Set([
@@ -93,7 +96,7 @@ function assertValidPlan(plan) {
 	if (typeof plan.revision !== "number" || !Number.isSafeInteger(plan.revision) || plan.revision < 1) {
 		fail("invalid_revision", "revision must be a positive safe integer", { path: "revision" });
 	}
-	assertPlanId(plan.id);
+	const planId = assertPlanId(plan.id);
 	assertString(plan.title, "title", LIMITS.planTitle);
 	assertString(plan.objective, "objective", LIMITS.objective);
 	assertStringArray(plan.constraints, "constraints", {
@@ -138,7 +141,7 @@ function assertValidPlan(plan) {
 	}
 	validateTasks(plan.tasks, plan.evaluationTarget ?? null);
 	validateDependencyGraph(plan.tasks);
-	validateTaskTopology(plan.tasks, plan.evaluationTarget ?? null);
+	const { targetTask } = validateTaskTopology(plan.tasks, plan.evaluationTarget ?? null);
 	const sessionIds = new Set();
 	const reservationIds = new Set();
 	for (const task of plan.tasks) {
@@ -196,6 +199,10 @@ function assertValidPlan(plan) {
 	assertPlainObject(plan.gates, "gates");
 	assertKnownKeys(plan.gates, GATE_KEYS, "gates");
 	assertTimestampPair(plan.gates.planApprovedAt, plan.gates.planApprovedBy, "gates.planApproved");
+	validateDelegatedApproval(plan.gates.delegatedApproval, {
+		id: planId, revision: plan.revision, factory: plan.factory,
+		repository: { workingDirectory: plan.repository.workingDirectory }, gates: plan.gates,
+	});
 	assertTimestampPair(
 		plan.gates.completionApprovedAt,
 		plan.gates.completionApprovedBy,
@@ -245,6 +252,11 @@ function assertValidPlan(plan) {
 	}
 
 	validateVerification(plan.verification);
+	validateDelegatedApproval(plan.gates.delegatedCompletion, {
+		id: planId, revision: plan.revision, factory: plan.factory, gates: plan.gates,
+		repository: { workingDirectory: plan.repository.workingDirectory }, verification: plan.verification,
+		targetCommit: plan.evaluationTarget?.commit ?? (targetTask ? latestSuccessfulAttempt(targetTask)?.commit : null),
+	}, "completion");
 	if (plan.verification.reservationId !== null
 		&& reservationIds.has(plan.verification.reservationId)) {
 		fail(

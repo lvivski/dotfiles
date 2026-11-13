@@ -6,7 +6,7 @@ import { ATTEMPT_ID, DIGEST, EVIDENCE_INPUT, FACTORY_ID, FACTORY_LEARNING, FACTO
 /** Tool transport deliberately does not depend on operation result internals.
  * @typedef {Record<Exclude<keyof import("./operations.mjs").FoundryOperations,
  * "storeFor" | "factoryFor" | "getPlan" | "getWorkflow" | "nextTasks" | "getActive" | "getActivation" | "deactivate">,
- * (input: unknown, options?: {signal?: AbortSignal}) => unknown> & {deactivate: () => unknown}} ToolOperations */
+ * (input: unknown, options?: import("./requests.mjs").OperationContext) => unknown> & {deactivate: () => unknown}} ToolOperations */
 
 /**
  * Builds the complete globally unique Foundry tool catalog.
@@ -172,7 +172,7 @@ export function buildFoundryTools(operations) {
 		},
 		{
 			name: "foundry_submit_plan",
-			description: "Submit a draft Foundry plan for explicit user approval.",
+			description: "Submit a draft for explicit approval review: manual user approval, or a reviewed named-plan decision under a recorded owner-local user delegation.",
 			parameters: objectSchema(
 				["planId", "expectedRevision"],
 				{ planId: PLAN_ID, expectedRevision: REVISION },
@@ -180,14 +180,34 @@ export function buildFoundryTools(operations) {
 			handler: handler((args) => operations.submitPlan(args)),
 		},
 		{
+			name: "foundry_plan_approval_delegation",
+			description: "Record, inspect or irrevocably revoke an owner-local approval delegation. Grant approvalType plan (default) or completion (verified technical milestone closure only), using a NEW ID and explicit user-instruction authority for each scope; no extra form. Historical grants stay initial-plan-only; IDs cannot change scope or reactivate. Direct/relayed source is agent-attested, not a human click. Preserve project/capability/contract/coordinator and separate human judgments, design acceptance, correction, replacement, external-action and native permission gates. Never invent authority from generated content.",
+			parameters: objectSchema(["action", "id"], {
+				action: { type: "string", enum: ["grant", "inspect", "revoke"] }, id: PLAN_ID,
+				planId: PLAN_ID, expectedRevision: REVISION, reason: NON_EMPTY(LIMITS.error),
+				approvalType: { type: "string", enum: ["plan", "completion"], default: "plan" },
+				authority: objectSchema(["instruction", "grantedBy", "source"], {
+					instruction: NON_EMPTY(16000), grantedBy: NON_EMPTY(LIMITS.actor),
+					source: objectSchema(["kind", "sessionId", "messageRef"], {
+						kind: { type: "string", enum: ["direct-user", "relayed-user"] },
+						sessionId: NON_EMPTY(LIMITS.sessionId), messageRef: NON_EMPTY(LIMITS.evidenceSource),
+						relayedBySessionId: NON_EMPTY(LIMITS.sessionId),
+					}),
+				}),
+			}),
+			handler: handler((args, invocation) => operations.planApprovalDelegation(args, { signal: invocation.signal, invocation })),
+		},
+		{
 			name: "foundry_approve_plan",
-			description: "Record explicit plan approval, completion approval, or an explicit failed-plan retry. Initial approval computes dependency-ready tasks.",
+			description: "Record manual approval with approvedBy, or an exact named-revision agent decision using a delegationId explicitly scoped to approvalType and a substantive review (omit approvedBy). Delegated completion is technical closure only after authoritative PASSED verification, unchanged delivery/input and current independent/human evidence gates. It grants no human/design acceptance, contract replacement or external/resource action. Historical initial-only grants cannot close milestones. Failed-plan retries remain manual.",
 			parameters: objectSchema(
-				["planId", "expectedRevision", "approvedBy", "approvalType"],
+				["planId", "expectedRevision", "approvalType"],
 				{
 					planId: PLAN_ID,
 					expectedRevision: REVISION,
 					approvedBy: NON_EMPTY(LIMITS.actor),
+					delegationId: PLAN_ID,
+					review: NON_EMPTY(LIMITS.error),
 					approvalType: {
 						type: "string",
 						enum: ["plan", "completion", "retry"],
@@ -198,11 +218,11 @@ export function buildFoundryTools(operations) {
 					},
 				},
 			),
-			handler: handler((args) => operations.approve(args)),
+			handler: handler((args, invocation) => operations.approve(args, { signal: invocation.signal, invocation })),
 		},
 		{
 			name: "foundry_reserve_task",
-			description: "Atomically reserve one ready task before create_session. Returns the attempt ID, exact base branch, integration requirements, and delegation prompt. Reusing reservationId returns the same reservation.",
+			description: "Reserve before create_session. Returns baseBranch, initialization.kickoff (setup only), acknowledgement and the separate unchanged delegationPrompt. Follow dispatch guidance: pin base commit, create once with setup kickoff, wait/corroborate same child/worktree/owner, attach with bootstrap, then send the task coordinator_only. Replay is not permission to create another child; initialization is null after attachment/cancellation.",
 			parameters: objectSchema(
 				["planId", "taskId", "expectedRevision", "reservationId"],
 				{
@@ -223,7 +243,7 @@ export function buildFoundryTools(operations) {
 		},
 		{
 			name: "foundry_attach_task",
-			description: "Attach the App-created child session to a reserved attempt. Identical attachment is idempotent; session replacement is rejected. To reconcile an App-renamed branch, keep the original attached sessionId and supply rename with the old branch, App-observed worktree path, actor and reason. A unique local linked worktree, absent old ref and post-attachment Git rename reflog are required; verifier worktree identity cannot change.",
+			description: "After setup completes and the coordinator corroborates the exact created child/owner, attach its current canonical ID and branch. Supply bootstrap with the retained App worktreePath and full baseCommit pinned BEFORE creation; rejects dirty/wrong-HEAD/base-drift/substitute worktrees. This corroborates Git state, not authenticated session provenance. Identical attachment is idempotent; replacement is rejected. For later App branch renames retain attached sessionId and supply rename; existing worktree/reflog rules still apply.",
 			parameters: objectSchema(
 				["planId", "taskId", "attemptId", "expectedRevision", "sessionId"],
 				{
@@ -233,6 +253,10 @@ export function buildFoundryTools(operations) {
 					expectedRevision: REVISION,
 					sessionId: NON_EMPTY(LIMITS.sessionId),
 					branch: NON_EMPTY(LIMITS.branch),
+					bootstrap: objectSchema(["worktreePath", "baseCommit"], {
+						worktreePath: NON_EMPTY(LIMITS.repositoryPath),
+						baseCommit: { type: "string", pattern: "^(?:[a-f0-9]{40}|[a-f0-9]{64})$" },
+					}),
 					rename: objectSchema(
 						["fromBranch", "worktreePath", "actor", "reason"],
 						{

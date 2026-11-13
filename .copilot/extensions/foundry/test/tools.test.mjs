@@ -7,13 +7,13 @@ import { buildFoundryTools } from "../tools.mjs";
 import { must } from "./assertions.mjs";
 import { analysisFixture } from "./native/fixture.mjs";
 
-/** @param {(name: string, input: unknown, options?: {signal?: AbortSignal}) => unknown} [call]
+/** @param {(name: string, input: unknown, options?: import("../requests.mjs").OperationContext) => unknown} [call]
  * @returns {import("../tools.mjs").ToolOperations} */
 function operationsStub(call = (operation, input) => ({ operation, input })) {
 	/** @type {import("../tools.mjs").ToolOperations} */
 	const target = { ...createFoundryOperations({ getWorkspacePath: () => undefined, analysis: analysisFixture() }) };
 	return new Proxy(target, {
-		get: (_target, name) => async (/** @type {unknown} */ input, /** @type {{signal?: AbortSignal}} */ options) => call(String(name), input, options),
+		get: (_target, name) => async (/** @type {unknown} */ input, /** @type {import("../requests.mjs").OperationContext} */ options) => call(String(name), input, options),
 	});
 }
 
@@ -58,6 +58,7 @@ test("Foundry registers the complete globally unique tool surface", () => {
 		"foundry_import_plan",
 		"foundry_quarantine_plan",
 		"foundry_submit_plan",
+		"foundry_plan_approval_delegation",
 		"foundry_approve_plan",
 		"foundry_reserve_task",
 		"foundry_attach_task",
@@ -142,6 +143,21 @@ test("Foundry registers the complete globally unique tool surface", () => {
 	assert.deepEqual(imported.parameters.required, ["source", "expectedRevision"]);
 	assert.equal(imported.parameters.properties.expectedRevision.const, 0);
 	assert.equal(toolNamed(tools, "foundry_export_plan").skipPermission, true);
+});
+
+test("approval tools receive native invocation separately from caller-supplied JSON and retain native permission checks", async () => {
+	const supplied = { invocation: { sessionId: "forged", toolCallId: "forged" } };
+	const invocation = { sessionId: "owner", toolCallId: "native-call", toolName: "approval", arguments: supplied };
+	const tools = buildFoundryTools(operationsStub((_name, input, options) => {
+		assert.equal(input, supplied);
+		assert.equal(options?.invocation, invocation);
+	}));
+	for (const name of ["foundry_approve_plan", "foundry_plan_approval_delegation"]) {
+		const tool = toolNamed(tools, name);
+		assert.equal(tool.skipPermission, undefined);
+		assert.equal(tool.parameters.properties.invocation, undefined);
+		assert.equal((await tool.handler(supplied, invocation)).resultType, "success");
+	}
 });
 
 test("waiting tools forward host cancellation signals outside model arguments", async () => {

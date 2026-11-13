@@ -5,6 +5,33 @@ import { activeTaskAttempt, latestSuccessfulAttempt } from "./queries.mjs";
 import { validatePlan } from "./validation.mjs";
 
 /**
+ * Setup is deliberately separate from task authority and contains no task content.
+ * @param {import("../types/plan.js").FoundryPlan} plan
+ * @param {import("../types/plan.js").FoundryTask} task
+ * @param {import("../types/plan.js").FoundryAttempt} attempt
+ */
+export function buildTaskInitialization(plan, task, attempt) {
+	validatePlan(plan);
+	const resolved = plan.tasks.find((candidate) => candidate.id === task.id);
+	if (!resolved) throw new Error(`Task ${task.id} is not part of plan ${plan.id}`);
+	const current = activeTaskAttempt(resolved);
+	if (plan.status !== "running" || current?.id !== attempt.id
+		|| current.status !== "reserved" || current.sessionId !== null) return null;
+	const acknowledgement = `Foundry setup ready: ${plan.id}/${task.id}/${attempt.id}`;
+	return {
+		acknowledgement,
+		kickoff: {
+			mode: /** @type {const} */ ("interactive"),
+			prompt: `Initialize this existing App-created child session only, then wait for its creating coordinator.
+This is setup for Foundry plan ${plan.id}, task ${task.id}, attempt ${attempt.id}; it is NOT the task delegation and does not authorize implementation or verification.
+Do not inspect task source, run commands, edit files, change branches, create commits, launch agents or workflows, or begin task work. Normal App startup and native permission/trust checks still apply; this prompt is not a sandbox.
+Reply exactly "${acknowledgement}" and end this turn. Do not invent identity, branch, worktree or validation evidence.
+Wait for the creating coordinator's unchanged task delegation after successful Foundry attachment.`,
+		},
+	};
+}
+
+/**
  * Formats strings as a Markdown bullet list.
  *
  * @param {string[]} values

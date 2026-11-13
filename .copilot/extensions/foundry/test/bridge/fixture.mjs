@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { buildPlanningArgs } from "../../analysis/planning.mjs";
 import { validateVerificationResult } from "../../analysis/verdicts.mjs";
@@ -11,6 +12,8 @@ import { must } from "../assertions.mjs";
 import { factoryMutator } from "../factory/accessors.mjs";
 import { analysisFixture } from "../native/fixture.mjs";
 import { COMMIT, DIGEST, PROCEDURE, fixtureRoot, git, seedRepository } from "../git.mjs";
+import { resolveEvaluatorBundle } from "../../evidence/bundles.mjs";
+import { VISUAL_AXES } from "../../factory/visual.mjs";
 
 /** @typedef {import("../../operations.mjs").FoundryOperations} Operations */
 /** @typedef {import("../../types/plan.js").FoundryPlan} Plan */
@@ -23,13 +26,39 @@ export const source = () => ({ kind: "discovery", ref: "fixture:recovered-intent
 /** @param {string | null} checkId */
 const evidence = (checkId) => ({ ...(checkId ? { checkId } : {}), type: "test", summary: "Bounded protocol fixture", source: "fixture evaluator", outcome: "passed" });
 
-/** @param {import("node:test").TestContext} t @param {{human?: boolean}} [options] */
-export async function fixture(t, { human = false } = {}) {
+/** @param {import("node:test").TestContext} t @param {{human?: boolean, visual?: boolean}} [options] */
+export async function fixture(t, { human = false, visual = false } = {}) {
 	const root = await fixtureRoot(t, "review");
 	const repo = path.join(root, "repo");
 	const storageRoot = path.join(root, "authority");
 	await mkdir(repo); await mkdir(storageRoot);
 	seedRepository(repo);
+	let commit = COMMIT;
+	let procedure = structuredClone(PROCEDURE);
+	const reference = '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="white"/></svg>\n';
+	const referenceDigest = createHash("sha256").update(reference).digest("hex");
+	const capturePath = path.join(root, "output.png");
+	const capture = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a0GkAAAAASUVORK5CYII=", "base64");
+	const visualSpec = { capture: "Preflight the native screenshot tool and permissions; capture the exact built delivery at 100x100.",
+		states: [{ id: "ordinary", intent: "Single coherent content pane with the declared navigation and primary action.", reference: { path: "evaluators/reference.svg", digest: referenceDigest } }] };
+	if (visual) {
+		await writeFile(path.join(repo, "evaluators/reference.svg"), reference);
+		git(repo, "add", "--", "evaluators/reference.svg");
+		git(repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "Pinned visual reference fixture");
+		commit = git(repo, "rev-parse", "HEAD");
+		const resolved = resolveEvaluatorBundle(repo, { ...PROCEDURE.bundle, commit });
+		procedure = { ...PROCEDURE, bundle: resolved.bundle, digest: resolved.digest };
+		await writeFile(capturePath, capture);
+	}
+	const visualResult = () => ({
+		format: "foundry-visual-report-v1", deliveryCommit: commit, environment: "fixture-node",
+		states: visualSpec.states.map((state) => ({
+			id: state.id, referenceDigest: state.reference.digest,
+			capture: { path: capturePath, digest: createHash("sha256").update(capture).digest("hex"),
+				capturedAt: new Date().toISOString(), method: "native-screenshot", viewport: "100x100@1" },
+			assessment: Object.fromEntries(VISUAL_AXES.map((axis) => [axis, { outcome: "passed", finding: `Fixture ${axis} comparison against the selected reference intent, not a live visual assessment.` }])),
+		})),
+	});
 	const factory = createFactoryService({ repositoryPath: repo, storageRoot });
 	const mutate = factoryMutator(factory);
 	mutate("createUnit", {
@@ -41,11 +70,20 @@ export async function fixture(t, { human = false } = {}) {
 	mutate("appendKnowledge", {
 		id: "oracle", unitId: "unit", kind: "evaluation", statement: "Independently evaluate the conserved boundary", source: source(),
 		evaluation: {
-			modality: "boundary", procedure: structuredClone(PROCEDURE),
+			modality: "boundary", procedure,
 			obligations: [{ id: "obligation", revision: 1 }], environment: "fixture-node", workload: "fixture-workload",
-			maxAgeSeconds: 86400, independent: true, preservation: true
+			maxAgeSeconds: 86400, independent: true, preservation: true,
+			...(visual ? { visual: visualSpec } : {}),
 		}
 	});
+	if (visual) {
+		const unit = factory.snapshot().units[0];
+		mutate("createUnit", {
+			id: unit.id, name: unit.name, purpose: unit.purpose, boundary: unit.boundary, dependencies: unit.dependencies,
+			relationshipCoverage: unit.relationshipCoverage, actor: "owner", reason: "Declare UI applicability for a successor",
+			visualEvaluation: { id: "oracle", revision: 1 },
+		});
+	}
 	if (human) mutate("appendKnowledge", {
 		id: "human-rubric", unitId: "unit", kind: "evaluation", statement: "A human judges the externally visible explanation", source: source(),
 		evaluation: {
@@ -55,7 +93,7 @@ export async function fixture(t, { human = false } = {}) {
 		}
 	});
 	mutate("acceptContract", {
-		unitId: "unit", unitRevision: 1, obligations: [{ id: "obligation", revision: 1 }],
+		unitId: "unit", unitRevision: visual ? 2 : 1, obligations: [{ id: "obligation", revision: 1 }],
 		evaluations: [{ id: "oracle", revision: 1 }, ...(human ? [{ id: "human-rubric", revision: 1 }] : [])], actor: "owner", reason: "Accept conserved meaning and independent evaluation"
 	});
 	const { candidate } = mutate("prepareCandidate", {
@@ -99,7 +137,10 @@ export async function fixture(t, { human = false } = {}) {
 			},
 			listWorkflowRuns: async () => ({ runs: [], omittedOlder: 0 }),
 		});
-		const operations = createFoundryOperations({ getWorkspacePath: () => workspace, factoryStorageRoot: storageRoot, analysis });
+		const operations = createFoundryOperations({
+			getWorkspacePath: () => workspace, getSession: () => ({ sessionId: name, workspacePath: workspace }),
+			factoryStorageRoot: storageRoot, analysis,
+		});
 		backends.set(operations, { workspace, runs, preparedInputs });
 		return operations;
 	};
@@ -120,7 +161,7 @@ export async function fixture(t, { human = false } = {}) {
 		const branch = `fixture/${plan.id}-${taskId}-${counter}`;
 		const task = must(plan.tasks.find((task) => task.id === taskId));
 		const verifier = task.kind === "verify";
-		const targetCommit = plan.evaluationTarget?.commit ?? plan.tasks.find((entry) => entry.id === task.dependsOn[0])?.attempts.at(-1)?.commit ?? COMMIT;
+		const targetCommit = plan.evaluationTarget?.commit ?? plan.tasks.find((entry) => entry.id === task.dependsOn[0])?.attempts.at(-1)?.commit ?? commit;
 		const worktree = path.join(root, `${plan.id}-${taskId}-${counter}`);
 		if (verifier) git(repo, "worktree", "add", "--quiet", "-b", branch, worktree, targetCommit);
 		const attached = await operations.attachTask({
@@ -135,11 +176,11 @@ export async function fixture(t, { human = false } = {}) {
 		const task = must(plan.tasks.find((task) => task.id === taskId));
 		return {
 			planId: plan.id, expectedRevision: plan.revision, taskId, attemptId: must(task.attempts.at(-1)).id, status: "done",
-			commit: COMMIT, resultSummary: "Protocol fixture completed",
+			commit, resultSummary: "Protocol fixture completed",
 			evidence: task.kind === "verify" ? verificationCheckIds(plan.tasks, plan.evaluationTarget).map(evidence) : [evidence(null)],
 			factoryEvaluations: task.kind === "verify" ? [{
-				evaluation: { id: "oracle", revision: 1 }, procedureDigest: DIGEST, environment: "fixture-node", workload: "fixture-workload",
-				outcome: /** @type {const} */ ("passed"), report: "Independent fixture report", independenceReason: "Distinct attached read-only verifier",
+				evaluation: { id: "oracle", revision: 1 }, procedureDigest: procedure.digest, environment: "fixture-node", workload: "fixture-workload",
+				outcome: /** @type {const} */ ("passed"), report: visual ? JSON.stringify(visualResult()) : "Independent fixture report", independenceReason: "Distinct attached read-only verifier",
 			}] : [],
 			...extra,
 		};
@@ -178,5 +219,5 @@ export async function fixture(t, { human = false } = {}) {
 		const context = must(factoryInput.context);
 		return { plan, input: { ...input, factory: { ...factoryInput, context } } };
 	};
-	return { root, repo, storageRoot, factory, mutate, candidate, ops, createOps, approve, generationPlan, attach, payload, implement, verify, finish, procedure: PROCEDURE };
+	return { root, repo, storageRoot, factory, mutate, candidate, ops, createOps, approve, generationPlan, attach, payload, implement, verify, finish, procedure, commit, visualSpec, visualResult, capturePath };
 }

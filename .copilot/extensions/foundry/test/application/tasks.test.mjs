@@ -1,10 +1,76 @@
 import assert from "node:assert/strict";
 import path from "node:path";
+import { writeFile, unlink } from "node:fs/promises";
 import test from "node:test";
 import { arrayOf, errorCode, property, readString } from "../../data.mjs";
 import { TASK_STATUS } from "../../plan/values.mjs";
 import { analysisStub, createApproved, evidence, planBlueprint, withOperations } from "./fixture.mjs";
-import { git } from "../git.mjs";
+import { COMMIT, git } from "../git.mjs";
+import { must } from "../assertions.mjs";
+
+test("setup kickoff separates task authority and reservation replay preserves launch identity", () => (
+	withOperations(async ({ operations, workspacePath }) => {
+		const plan = await createApproved(operations, workspacePath);
+		const request = { planId: plan.id, taskId: "T-001", expectedRevision: plan.revision, reservationId: "setup-once" };
+		const reserved = await operations.reserveTask(request);
+		const initialization = must(reserved.initialization);
+		assert.equal(initialization.kickoff.mode, "interactive");
+		assert.match(initialization.kickoff.prompt, /NOT the task delegation/);
+		assert.match(initialization.kickoff.prompt, /Do not inspect task source, run commands, edit files, change branches/);
+		assert.match(initialization.kickoff.prompt, /after successful Foundry attachment/);
+		assert.ok(initialization.kickoff.prompt.includes(initialization.acknowledgement));
+		assert.ok(initialization.kickoff.prompt.length < 1500);
+		assert.equal(initialization.kickoff.prompt.includes(plan.tasks[0].description), false);
+		assert.equal(initialization.kickoff.prompt.includes(plan.objective), false);
+		assert.equal(reserved.plan.tasks[0].attempts[0].sessionId, null);
+		const replay = await operations.reserveTask(request);
+		assert.deepEqual(replay.initialization, initialization);
+		assert.equal(replay.delegationPrompt, reserved.delegationPrompt);
+		const worktree = path.join(workspacePath, "setup-child");
+		git(workspacePath, "worktree", "add", "--quiet", "-b", "work/setup", worktree, reserved.baseBranch);
+		git(worktree, "branch", "-m", "work/named-before-attach");
+		const identity = { planId: plan.id, taskId: "T-001", attemptId: reserved.attemptId, sessionId: "same-canonical-child", branch: "work/named-before-attach" };
+		const attach = { ...identity, expectedRevision: reserved.plan.revision, bootstrap: { worktreePath: worktree, baseCommit: COMMIT } };
+		await assert.rejects(operations.attachTask({ ...attach, expectedRevision: reserved.plan.revision - 1 }), { code: "revision_conflict" });
+		const attached = await operations.attachTask(attach);
+		assert.equal(attached.tasks[0].attempts[0].branch, identity.branch);
+		assert.equal((await operations.attachTask(attach)).revision, attached.revision);
+		const attachedReplay = await operations.reserveTask(request);
+		assert.equal(attachedReplay.initialization, null);
+		assert.equal(attachedReplay.delegationPrompt, reserved.delegationPrompt);
+		await assert.rejects(operations.attachTask({ ...attach, expectedRevision: attached.revision, sessionId: "replacement" }), { code: "task_bootstrap_mismatch" });
+		const cancelled = await operations.cancel({ planId: plan.id, expectedRevision: attached.revision, requestId: "stop-setup", requestedBy: "owner", reason: "Stop" });
+		assert.equal((await operations.reserveTask({ ...request, expectedRevision: cancelled.revision })).initialization, null);
+	})
+));
+
+test("setup attachment holds the reservation on wrong path, dirty state, wrong HEAD or base drift", () => (
+	withOperations(async ({ operations, workspacePath }) => {
+		const plan = await createApproved(operations, workspacePath);
+		const reserved = await operations.reserveTask({ planId: plan.id, taskId: "T-001", expectedRevision: plan.revision, reservationId: "setup-checks" });
+		const worktree = path.join(workspacePath, "setup-child");
+		git(workspacePath, "worktree", "add", "--quiet", "-b", "work/setup", worktree);
+		const request = {
+			planId: plan.id, taskId: "T-001", attemptId: reserved.attemptId, expectedRevision: reserved.plan.revision,
+			sessionId: "setup-child", branch: "work/setup", bootstrap: { worktreePath: worktree, baseCommit: COMMIT },
+		};
+		await assert.rejects(operations.attachTask({ ...request, branch: "missing" }), { code: "task_bootstrap_unsupported" });
+		await assert.rejects(operations.attachTask({ ...request, bootstrap: { ...request.bootstrap, worktreePath: workspacePath } }), { code: "task_bootstrap_mismatch" });
+		await assert.rejects(operations.attachTask({ ...request, bootstrap: { ...request.bootstrap, baseCommit: "f".repeat(40) } }), { code: "factory_commit_missing" });
+		await writeFile(path.join(worktree, "unexpected.txt"), "Startup changed a file\n");
+		await assert.rejects(operations.attachTask(request), { code: "factory_worktree_dirty" });
+		await unlink(path.join(worktree, "unexpected.txt"));
+		git(worktree, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "--quiet", "-m", "Unexpected setup commit");
+		await assert.rejects(operations.attachTask(request), { code: "factory_worktree_head_mismatch" });
+		git(workspacePath, "update-ref", "refs/heads/main", git(worktree, "rev-parse", "HEAD"));
+		await assert.rejects(operations.attachTask(request), { code: "task_bootstrap_base_changed" });
+		const held = await operations.getPlan({ planId: plan.id });
+		assert.equal(held.revision, reserved.plan.revision);
+		assert.equal(held.tasks[0].attempts[0].sessionId, null);
+		assert.equal(held.tasks[0].attempts[0].status, "reserved");
+		assert.equal(held.tasks[0].status, TASK_STATUS.RUNNING);
+	})
+));
 
 /** @param {unknown} error */
 const missingFields = (error) => arrayOf(readString)(property(property(error, "details"), "missing"));

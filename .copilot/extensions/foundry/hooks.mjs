@@ -26,7 +26,7 @@ function coordinatorContext(active) {
 	return `Foundry plan ${plan.id} is active at revision ${plan.revision} (${plan.status}).
 
 Coordinator contract:
-1. Reserve before create_session, use the exact baseBranch and delegationPrompt, then attach immediately.
+1. Reserve before create_session. Follow dispatch guidance: pin the base commit, create once with initialization.kickoff, await setup and corroborate the same child/owner/worktree, attach with bootstrap, then send the unchanged delegationPrompt coordinator_only. Never send task work in kickoff or recreate on uncertain admission.
 2. Record terminal attempt state before dispatching newly-unblocked work; never duplicate active work or expand the approved DAG.
 3. Overlapping declared scopes require an auditable scopeOverride.
 4. Re-read after revision conflicts; replay only when the exact postcondition already exists.
@@ -44,7 +44,10 @@ Coordinator contract:
 /**
  * Builds inert-until-activated SDK hooks for Foundry coordination.
  *
- * @param {{operations: {getActive: () => Promise<ActivePlan | null>, getActivation: () => Promise<object | null>}}} options
+ * @param {{
+ *   operations: {getActive: () => Promise<ActivePlan | null>, getActivation: () => Promise<object | null>},
+ *   getSession?: () => import("./hooks/paths.mjs").HelperSession | null | undefined,
+ * }} options
  */
 export function buildFoundryHooks(options) {
 	/**
@@ -66,8 +69,11 @@ export function buildFoundryHooks(options) {
 				};
 			}
 		},
-		/** @param {{toolName?: string, toolArgs?: unknown, workingDirectory?: string}} input */
-		onPreToolUse: async (input) => {
+		/**
+		 * @param {{toolName?: string, toolArgs?: unknown, workingDirectory?: string, sessionId?: string}} input
+		 * @param {{sessionId: string}} [invocation]
+		 */
+		onPreToolUse: async (input, invocation) => {
 			let current;
 			try {
 				current = await options.operations.getActivation();
@@ -97,10 +103,13 @@ export function buildFoundryHooks(options) {
 					};
 				}
 			}
-			const boundary = inspectWriteBoundary(
+			const session = options.getSession?.();
+			const boundary = await inspectWriteBoundary(
 				toolName,
 				input.toolArgs,
 				input.workingDirectory,
+				session && input.sessionId === session.sessionId && invocation?.sessionId === session.sessionId
+					? session : undefined,
 			);
 			if (boundary) {
 				return {

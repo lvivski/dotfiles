@@ -1,5 +1,12 @@
+import { lstatSync, realpathSync } from "node:fs";
 import path from "node:path";
-import { property } from "../data.mjs";
+import { errorCode, errorMessage, property } from "../data.mjs";
+
+/** @typedef {Pick<import("@github/copilot-sdk").CopilotSession, "sessionId" | "workspacePath"> & {
+ *   rpc: {extensions: Pick<import("@github/copilot-sdk").CopilotSession["rpc"]["extensions"], "list">},
+ * }} HelperSession */
+
+const SESSION_HELPER = "foundry-exact-relay";
 
 /** File-oriented tools whose arguments can be checked against the workspace. */
 const FILE_WRITE_TOOLS = new Set([
@@ -63,28 +70,85 @@ function absolutePathsFromArgs(toolName, toolArgs) {
 }
 
 /**
- * Denies obvious file-tool writes outside the active workspace.
+ * Requires real directories and unlinked regular files beneath the session helper.
+ * Missing descendants are permitted for creation, but the registered directory must exist.
+ *
+ * @param {string} workspacePath
+ * @param {string} candidate
+ */
+function requireHelperTarget(workspacePath, candidate) {
+	const root = lstatSync(workspacePath);
+	if (root.isSymbolicLink() || !root.isDirectory()) {
+		throw new Error("Session workspace must be a real directory");
+	}
+	const realRoot = realpathSync(workspacePath);
+	const parts = path.relative(workspacePath, candidate).split(path.sep);
+	let current = workspacePath;
+	for (const [index, part] of parts.entries()) {
+		current = path.join(current, part);
+		let metadata;
+		try {
+			metadata = lstatSync(current);
+		} catch (error) {
+			if (errorCode(error) === "ENOENT" && index >= 2) return;
+			throw error;
+		}
+		const final = index === parts.length - 1;
+		if (metadata.isSymbolicLink()
+			|| (final ? !metadata.isFile() || metadata.nlink !== 1 : !metadata.isDirectory())
+			|| realpathSync(current) !== path.join(realRoot, ...parts.slice(0, index + 1))) {
+			throw new Error(`Helper target must remain unlinked inside its registered directory: ${current}`);
+		}
+	}
+}
+
+/**
+ * Denies file writes outside the workspace except the registered owner-local relay.
+ * The session is supplied by the extension after matching native hook ownership, never tool args.
  *
  * @param {string} toolName
  * @param {unknown} toolArgs
  * @param {string | undefined} workingDirectory
- * @returns {{decision: "deny", reason: string} | null}
+ * @param {HelperSession | null | undefined} [session]
+ * @returns {Promise<{decision: "deny", reason: string} | null>}
  */
-export function inspectWriteBoundary(toolName, toolArgs, workingDirectory) {
-	if (!workingDirectory) {
-		return null;
-	}
+export async function inspectWriteBoundary(toolName, toolArgs, workingDirectory, session) {
 	const normalizedName = String(toolName ?? "").toLowerCase();
 	if (!FILE_WRITE_TOOLS.has(normalizedName)) {
 		return null;
 	}
+	if (!workingDirectory) {
+		return { decision: "deny", reason: "Foundry cannot verify file writes without the active workspace" };
+	}
 	const outside = absolutePathsFromArgs(normalizedName, toolArgs)
-		.find((candidate) => !inside(workingDirectory, candidate));
-	if (!outside) {
+		.filter((candidate) => !inside(workingDirectory, candidate));
+	if (outside.length === 0) {
 		return null;
 	}
-	return {
+	const denied = /** @type {const} */ ({
 		decision: "deny",
-		reason: `Foundry blocks writes outside the active workspace: ${outside}`,
-	};
+		reason: `Foundry blocks writes outside the active workspace: ${outside[0]}`,
+	});
+	const workspacePath = session?.workspacePath;
+	if (!session?.sessionId || !workspacePath || !path.isAbsolute(workspacePath)) return denied;
+	const helperRoot = path.join(workspacePath, "extensions", SESSION_HELPER);
+	const invalid = outside.find((candidate) => !path.isAbsolute(candidate)
+		|| candidate.split(/[\\/]/).includes("..")
+		|| !inside(helperRoot, candidate)
+		|| path.resolve(candidate) === helperRoot);
+	if (invalid) {
+		return { decision: "deny", reason: `Foundry blocks writes outside the active workspace: ${invalid}` };
+	}
+	try {
+		const registry = await session.rpc.extensions.list();
+		const matches = registry.extensions.filter((extension) => extension.source === "session"
+			&& extension.name === SESSION_HELPER);
+		if (matches.length !== 1 || !matches[0].id || matches[0].status !== "running") {
+			return { decision: "deny", reason: `Foundry requires a running owner-local registration for ${SESSION_HELPER}` };
+		}
+		for (const candidate of outside) requireHelperTarget(workspacePath, candidate);
+	} catch (error) {
+		return { decision: "deny", reason: `Foundry could not verify the registered helper write boundary: ${errorMessage(error)}` };
+	}
+	return null;
 }
