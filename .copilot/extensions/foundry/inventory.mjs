@@ -1,5 +1,7 @@
 /** @module inventory — validation and causal interpretation of App session inventories. */
 import { isList, isRecord } from "./data.mjs";
+import { object, strings, text, timestamp } from "./factory/fields.mjs";
+import { attemptIdentity } from "./plan/parallel-contracts.mjs";
 
 /** @typedef {{complete: boolean, capturedAt?: string | null, sessions: {id: string, status: string}[]}} SessionInventory */
 /** @typedef {{supplied: boolean, complete: boolean, capturedAt: string | null, sessions: Map<string, string>}} NormalizedInventory */
@@ -94,5 +96,47 @@ export function sessionState(attempt, inventory) {
 
 /** Whether an observed session state is terminal enough for cancellation finalization. @param {string} state */
 export function isTerminatedSessionState(state) {
-	return state === "absent" || TERMINAL_SESSION_STATUSES.has(state);
+	return TERMINAL_SESSION_STATUSES.has(state);
+}
+
+/** @typedef {{id: string, status: string, attempt: import("./types/parallel.js").AttemptIdentity}} OwnedNativeEntry */
+/** @typedef {{complete: boolean, capturedAt: string, source: string, sessions: OwnedNativeEntry[], runs: OwnedNativeEntry[]}} RecoveryInventory */
+/** @typedef {{attempt: import("./types/parallel.js").AttemptIdentity, sessionIds: string[], runIds: string[], source: string, capturedAt: string}} RecoveryObservation */
+
+/** @param {unknown} value @returns {RecoveryObservation} */
+export function normalizeRecoveryObservation(value) {
+	object(value, ["attempt", "sessionIds", "runIds", "source", "capturedAt"], "recovery observation");
+	return {
+		attempt: attemptIdentity(value.attempt),
+		sessionIds: strings(value.sessionIds, "observed sessions", Number.MAX_SAFE_INTEGER),
+		runIds: strings(value.runIds, "observed runs", Number.MAX_SAFE_INTEGER),
+		source: text(value.source, "observation source", 4096),
+		capturedAt: timestamp(value.capturedAt, "observation time"),
+	};
+}
+
+/** Correlation is supplied by the owning native adapter, never inferred from names,
+ * branch labels, imported history, or a missing row.
+ * @param {unknown} value @returns {RecoveryInventory} */
+export function normalizeRecoveryInventory(value) {
+	if (!isRecord(value) || typeof value.source !== "string" || !value.source.trim()
+		|| !isList(value.runs) || !isList(value.sessions)
+		|| Object.keys(value).some(key => !["complete", "capturedAt", "source", "sessions", "runs"].includes(key))) {
+		throw new FoundryInventoryError("Recovery requires a sourced native session and run inventory");
+	}
+	const normalized = normalizeInventory(value);
+	if (normalized.capturedAt === null) throw new FoundryInventoryError("Recovery requires an inventory capture time");
+	normalizeInventory({ complete: value.complete, capturedAt: value.capturedAt, sessions: value.runs });
+	/** @param {unknown[]} entries @returns {OwnedNativeEntry[]} */
+	const owned = entries => entries.map(entry => {
+		if (!isRecord(entry) || typeof entry.id !== "string" || typeof entry.status !== "string"
+			|| Object.keys(entry).some(key => !["id", "status", "attempt"].includes(key))) {
+			throw new FoundryInventoryError("Recovery entries require exact native identity and attempt correlation");
+		}
+		return { id: entry.id, status: entry.status, attempt: attemptIdentity(entry.attempt) };
+	});
+	return {
+		complete: normalized.complete, capturedAt: normalized.capturedAt, source: value.source,
+		sessions: owned(value.sessions), runs: owned(value.runs),
+	};
 }

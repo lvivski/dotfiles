@@ -217,6 +217,183 @@ test("discovery rejects duplicate reservations across terminal pages", async () 
 	assert.equal(api.listCalls.length, 2);
 });
 
+test("discovery requires one reservation across the complete progress history", async () => {
+	const plan = reservedPlan("progress-identity");
+	const marker = verificationMarker(plan.verification.reservationId);
+	for (const seqBase of [0, 1, 37]) {
+		for (const foreign of [false, true]) {
+			for (const paged of [false, true]) {
+				const api = fakeApi({
+					match: {
+						workflowName: "verify",
+						run: { runId: "match", status: "running" },
+						progress: [
+							foreign ? verificationMarker("foreign-reservation") : marker,
+							...Array.from({ length: paged ? 220 : 0 }, () => "later progress"),
+							marker,
+						],
+						seqBase,
+					},
+				});
+				const analysis = createWorkflowAnalysis(() => api);
+				const result = await analysis.discoverVerificationRun(
+					plan.verification.reservationId, plan.verification.reservedAt,
+				);
+				if (foreign) {
+					assert.equal(result.state, "inconclusive");
+					assert.match(result.candidates[0].reason ?? "", /ambiguous/);
+					await assert.rejects(analysis.importVerification("match", plan, { wait: false }), {
+						code: "workflow_progress_inconclusive",
+					});
+				} else {
+					assert.equal(result.state, "found");
+					assert.equal(result.run.runId, "match");
+				}
+			}
+		}
+	}
+});
+
+test("a visible marker cannot establish identity from incomplete progress", async () => {
+	const plan = reservedPlan("partial-progress");
+	const marker = verificationMarker(plan.verification.reservationId);
+	/** @type {Array<[Record<string, unknown>, RegExp]>} */
+	const metadata = [
+		[{ hasMoreNewer: true }, /progress-newer/],
+		[{ hasMoreNewer: undefined }, /progress-newer/],
+		[{ hasMoreOlder: undefined }, /progress-history/],
+		[{ hasMoreOlder: null }, /progress-history/],
+		[{ hasMoreOlder: "false" }, /progress-history/],
+		[{ oldestSeq: null }, /progress-cursor/],
+		[{ oldestSeq: 0.5 }, /progress-cursor/],
+	];
+	for (const [patch, reason] of metadata) {
+		const api = fakeApi({
+			match: {
+				workflowName: "verify",
+				run: { runId: "match", status: "running" },
+				progress: [marker, ...Array.from({ length: 220 }, () => "progress"), marker],
+			},
+		});
+		const getRunDetail = api.getRunDetail;
+		api.getRunDetail = async (runId) => {
+			const detail = readRecord(await getRunDetail(runId));
+			return { ...detail, progress: { ...readRecord(detail.progress), ...patch } };
+		};
+		const result = await createWorkflowAnalysis(() => api).discoverVerificationRun(
+			plan.verification.reservationId, plan.verification.reservedAt,
+		);
+		assert.equal(result.state, "inconclusive");
+		assert.match(result.candidates[0].reason ?? "", reason);
+	}
+	for (const failedPage of [null, { records: null }, { records: [] }, new Error("older progress unavailable")]) {
+		const api = fakeApi({
+			match: {
+				workflowName: "verify",
+				run: { runId: "match", status: "running" },
+				progress: [marker, ...Array.from({ length: 220 }, () => "progress"), marker],
+			},
+		});
+		api.getRunProgress = async () => {
+			if (failedPage instanceof Error) throw failedPage;
+			return failedPage;
+		};
+		const result = await createWorkflowAnalysis(() => api).discoverVerificationRun(
+			plan.verification.reservationId, plan.verification.reservedAt,
+		);
+		assert.equal(result.state, "inconclusive");
+		assert.match(result.candidates[0].reason ?? "", /progress-(unavailable|history)|older progress unavailable/);
+	}
+});
+
+test("progress cursors must advance even when a page claims to finish history", async () => {
+	const plan = reservedPlan("stalled-progress");
+	const marker = verificationMarker(plan.verification.reservationId);
+	for (const hasMoreOlder of [false, true]) {
+		for (const offset of [-1, 0, 1]) {
+			const api = fakeApi({
+				match: {
+					workflowName: "verify",
+					run: { runId: "match", status: "running" },
+					progress: [marker, ...Array.from({ length: 220 }, () => "progress"), marker],
+				},
+			});
+			let reads = 0;
+			api.getRunProgress = async (_runId, options) => {
+				reads++;
+				assert.equal(typeof options?.beforeSeq, "number");
+				const seq = Number(options?.beforeSeq) + offset;
+				const newestSeq = Math.max(seq, Number(options?.beforeSeq));
+				return {
+					records: [
+						{ seq, kind: "log", text: marker },
+						{ seq: newestSeq, kind: "log", text: "overlapping progress" },
+					],
+					oldestSeq: seq, newestSeq, hasMoreOlder, hasMoreNewer: true,
+				};
+			};
+			const result = await createWorkflowAnalysis(() => api).discoverVerificationRun(
+				plan.verification.reservationId, plan.verification.reservedAt,
+			);
+			assert.equal(result.state, "inconclusive");
+			assert.match(result.candidates[0].reason ?? "", /progress-cursor/);
+			assert.equal(reads, 1);
+		}
+	}
+});
+
+test("progress discovery exhausts its bounded budget without authorizing a visible marker", async () => {
+	const plan = reservedPlan("bounded-progress");
+	const marker = verificationMarker(plan.verification.reservationId);
+	const api = fakeApi({
+		match: {
+			workflowName: "verify",
+			run: { runId: "match", status: "running" },
+			progress: [marker, ...Array.from({ length: 5000 }, () => "progress"), marker],
+		},
+	});
+	let reads = 0;
+	const getRunProgress = api.getRunProgress;
+	api.getRunProgress = async (runId, options) => {
+		reads++;
+		return getRunProgress(runId, options);
+	};
+	const result = await createWorkflowAnalysis(() => api).discoverVerificationRun(
+		plan.verification.reservationId, plan.verification.reservedAt,
+	);
+	assert.equal(result.state, "inconclusive");
+	assert.match(result.candidates[0].reason ?? "", /progress-unbounded/);
+	assert.equal(reads, 9);
+});
+
+test("discovery rejects mismatched detail and result identities despite matching markers", async () => {
+	const plan = reservedPlan("mismatched-progress");
+	for (const mismatch of ["detail-run", "workflow", "result-run"]) {
+		const api = fakeApi({
+			match: {
+				workflowName: "verify",
+				run: { runId: "match", status: "completed" },
+				progress: [verificationMarker(plan.verification.reservationId)],
+			},
+		});
+		const getRunDetail = api.getRunDetail;
+		api.getRunDetail = async (runId) => ({
+			...readRecord(await getRunDetail(runId)),
+			...(mismatch === "detail-run" ? { runId: "foreign" } : {}),
+			...(mismatch === "workflow" ? { workflowName: "audit" } : {}),
+		});
+		if (mismatch === "result-run") {
+			api.getRun = async () => ({ runId: "foreign", status: "completed" });
+		}
+		const result = await createWorkflowAnalysis(() => api).discoverVerificationRun(
+			plan.verification.reservationId, plan.verification.reservedAt,
+		);
+		assert.equal(result.state, "inconclusive");
+		assert.match(result.candidates[0].reason ?? "", /identity does not match|belongs to another run/);
+		assert.deepEqual(api.cancelCalls, []);
+	}
+});
+
 test("repeated active runs are inspected once and unmarked runs still block uniqueness", async () => {
 	const plan = reservedPlan("repeated-active");
 	for (const unmarked of [false, true]) {

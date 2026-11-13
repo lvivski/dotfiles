@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
 import {
-	readdir
+	readdir, readFile, writeFile
 } from "node:fs/promises";
+import path from "node:path";
 import test from "node:test";
 import { createPlanStore } from "../../storage.mjs";
+import { finalizePlanCancellation, requestPlanCancellation } from "../../plan/cancellation.mjs";
+import { attachTaskAttempt, reserveTaskAttempt } from "../../plan/execution.mjs";
+import { approvePlan, transitionPlan } from "../../plan/lifecycle.mjs";
+import { PLAN_STATUS } from "../../plan/values.mjs";
 import { makePlan, rejectsCode, UPDATED_AT, withDatabase, withWorkspace } from "./fixture.mjs";
 
 test("session storage adds delegation rows to schema 1 without changing plans or activation", () => (
@@ -113,5 +118,42 @@ test("quarantine rolls back both records if removal fails after preservation", (
 		});
 		await store.quarantineInvalidPlan(plan.id, { reason: "Retry", requestedBy: "tester" });
 		assert.equal((await store.list()).invalid.length, 0);
+	})
+));
+
+test("cancellation restart retains a late child and rolls back interrupted finalization without touching foreign data", () => (
+	withWorkspace(async ({ workspace, store }) => {
+		const userFile = path.join(workspace, "user-data.txt");
+		await writeFile(userFile, "preserve exactly\n");
+		const foreign = await store.create(makePlan(workspace, "unrelated-plan"), 0);
+		let plan = await store.create(makePlan(workspace), 0);
+		const approved = approvePlan(transitionPlan(plan, PLAN_STATUS.AWAITING_APPROVAL, { at: UPDATED_AT }), "tester", { at: UPDATED_AT });
+		plan = await store.update(plan.id, plan.revision, reserveTaskAttempt(approved, "T-001", { reservationId: "durable-create", at: UPDATED_AT }));
+		plan = await store.update(plan.id, plan.revision, requestPlanCancellation(plan, {
+			requestId: "durable-cancel", reason: "Stop owned attempt", requestedBy: "tester", at: UPDATED_AT,
+		}));
+		const restarted = createPlanStore({ workspacePath: workspace });
+		assert.deepEqual(await restarted.read(plan.id), plan);
+		plan = await restarted.update(plan.id, plan.revision, attachTaskAttempt(plan, "T-001", "T-001-A001", {
+			sessionId: "late-child", branch: "work/late-child", at: UPDATED_AT,
+		}));
+		assert.throws(() => finalizePlanCancellation(plan, [
+			{ attemptId: "T-001-A001", disposition: "no-session-created" },
+		], { finalizedBy: "tester", at: UPDATED_AT }), { code: "invalid_cancellation_disposition" });
+		const candidate = finalizePlanCancellation(plan, [
+			{ attemptId: "T-001-A001", disposition: "session-terminated", sessionId: "late-child" },
+		], { finalizedBy: "tester", at: UPDATED_AT });
+		withDatabase(store, db => db.exec("CREATE TRIGGER reject_cancel BEFORE UPDATE ON plans WHEN json_extract(NEW.document, '$.status') = 'cancelled' BEGIN SELECT RAISE(ABORT, 'injected cancellation persistence interruption'); END"));
+		await rejectsCode(restarted.update(plan.id, plan.revision, candidate), "database_error");
+		assert.deepEqual(await restarted.read(plan.id), plan);
+		assert.deepEqual(await restarted.read(foreign.id), foreign);
+		assert.equal(await readFile(userFile, "utf8"), "preserve exactly\n");
+		withDatabase(store, db => db.exec("DROP TRIGGER reject_cancel"));
+		const finalized = await restarted.update(plan.id, plan.revision, candidate);
+		assert.equal(finalized.status, PLAN_STATUS.CANCELLED);
+		await rejectsCode(store.update(plan.id, plan.revision, candidate), "revision_conflict");
+		assert.equal((await store.read(plan.id)).cancellation?.acknowledgements[0].sessionId, "late-child");
+		assert.deepEqual(await store.read(foreign.id), foreign);
+		assert.equal(await readFile(userFile, "utf8"), "preserve exactly\n");
 	})
 ));

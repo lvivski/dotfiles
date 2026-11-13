@@ -1,4 +1,7 @@
 import { isList } from "../data.mjs";
+import { stableStringify } from "../digest.mjs";
+import { isTerminatedSessionState } from "../inventory.mjs";
+import { admissionRecord, cancellationObligation } from "./parallel-contracts.mjs";
 import { assertKnownKeys, assertPlainObject, assertRequestId, assertString, clone, fail, nowIso, requireActor } from "./fields.mjs";
 import { PLAN_TRANSITIONS } from "./lifecycle.mjs";
 import { activeTaskAttempt, findAttempt } from "./queries.mjs";
@@ -288,4 +291,70 @@ export function finalizePlanCancellation(plan, dispositions, options = {}) {
 	candidate.updatedAt = timestamp;
 	validatePlan(candidate);
 	return candidate;
+}
+
+/** Pure recovery decision; only the admission authority may persist or release it.
+ * @param {import("../types/parallel.js").AdmissionRecord} value
+ * @param {import("../inventory.mjs").RecoveryInventory} inventory
+ * @param {{sessionIds: string[], runIds: string[]}} [retained]
+ * @returns {{obligations: import("../types/parallel.js").CancellationObligation[], holds: string[]}} */
+export function reconcileCancellationObligations(value, inventory, retained = { sessionIds: [], runIds: [] }) {
+	const record = admissionRecord(value);
+	const attempt = record.attempt;
+	if (!attempt) return { obligations: [], holds: ["reservation-outcome-unresolved"] };
+	const key = stableStringify(attempt);
+	const matches = (/** @type {import("../types/parallel.js").AttemptIdentity} */ other) => stableStringify(other) === key;
+	const ownSessions = inventory.sessions.filter(entry => matches(entry.attempt));
+	const ownRuns = inventory.runs.filter(entry => matches(entry.attempt));
+	const sessions = new Set([
+		...retained.sessionIds,
+		...record.obligations.flatMap(item => item.sessionId ? [item.sessionId] : []),
+		...record.receipts.flatMap(item => item.sessionId ? [item.sessionId] : []),
+		...(record.delivery ? [record.delivery.sessionId] : []),
+		...ownSessions.map(item => item.id),
+	]);
+	const runs = new Set([
+		...retained.runIds,
+		...record.obligations.flatMap(item => item.runIds),
+		...record.receipts.flatMap(item => item.runId ? [item.runId] : []),
+		...(record.delivery?.terminalRunIds ?? []),
+		...ownRuns.map(item => item.id),
+	]);
+	const pending = new Set(record.receipts
+		.filter(item => ["intent", "in-flight", "uncertain"].includes(item.state)).map(item => item.id));
+	for (const obligation of record.obligations) {
+		for (const id of obligation.pendingEffectIds) {
+			if (!record.receipts.some(item => item.id === id
+				&& !["intent", "in-flight", "uncertain"].includes(item.state))) pending.add(id);
+		}
+	}
+	const holds = [];
+	if (!inventory.complete) holds.push("native-inventory-incomplete");
+	if (record.receipts.some(item => Date.parse(item.at) >= Date.parse(inventory.capturedAt))) holds.push("native-inventory-stale");
+	if (sessions.size > 1) holds.push(`ambiguous-native-sessions:${[...sessions].sort().join(",")}`);
+	if (pending.size) holds.push(`native-effects-unresolved:${[...pending].sort().join(",")}`);
+	if (runs.size > 128) {
+		return { obligations: record.obligations, holds: [...holds, `native-observation-quarantine:run-count:${runs.size}`] };
+	}
+	for (const id of sessions) {
+		const observed = ownSessions.find(item => item.id === id);
+		if (!observed || !isTerminatedSessionState(observed.status)) holds.push(`session-not-terminal:${id}:${observed?.status ?? "unobservable"}`);
+	}
+	const terminalRuns = new Set(["completed", "error", "halted", "cancelled"]);
+	const terminatedRunIds = [...runs].filter(id => {
+		const observed = ownRuns.find(item => item.id === id);
+		if (observed && terminalRuns.has(observed.status)) return true;
+		holds.push(`run-not-terminal:${id}:${observed?.status ?? "unobservable"}`);
+		return false;
+	}).sort();
+	const sessionId = [...sessions].sort()[0] ?? null;
+	return {
+		holds,
+		obligations: [cancellationObligation({
+			attempt, sessionId, runIds: [...runs].sort(), pendingEffectIds: [...pending].sort(),
+			disposition: holds.length ? "unresolved" : sessionId === null ? "no-session-created" : "session-terminated",
+			inventory: { complete: inventory.complete, capturedAt: inventory.capturedAt, source: inventory.source },
+			terminatedRunIds,
+		})],
+	};
 }
