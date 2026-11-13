@@ -33,6 +33,10 @@ const workflows = Object.values(FOUNDRY_WORKFLOWS).map(
 const operations = createFoundryOperations({
 	getWorkspacePath: () => session?.workspacePath,
 	getSession: () => session,
+	getParallelHost: () => ({
+		state: "unavailable",
+		reason: "The extension tools.execute route is unproven for App session management and lacks supported setup, canonical-child and recovery observations. Bind a supported owning-coordinator host port before parallel dispatch; no workflow fallback is authorized.",
+	}),
 	analysis: createWorkflowAnalysis(() => session?.workflow),
 	notify: publishPlanChange,
 });

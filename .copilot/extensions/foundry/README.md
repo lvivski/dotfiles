@@ -27,8 +27,63 @@ accept design, replace a capability, authorize correction waves or grant externa
 
 The [parallel implementation contracts](../../skills/foundry/references/parallel-contracts.md)
 define the shared package/input, admission-fence and native-receipt ports, exact leaf ownership,
-captured host schemas and confined test runner. These are implementation foundations, not an
-installed parallel dispatcher or an accepted capability contract; public composition remains separate.
+captured host schemas and confined test runner. Composed source and fixture evidence do not
+establish installation, supported live host invocation or an accepted capability contract.
+
+### Explicit work-package drafts
+
+The source `foundry_create_factory_plan` tool accepts optional `decomposition` in the closed
+`foundry-packages-v1` format. Its `bindings` must match the candidate's sealed contract,
+requirements, evaluator revisions and visual applicability. Each package declares disjoint
+`expectedFiles`, named `outputs` with repository-relative paths, and `inputs` naming a producer,
+output and consumer destination. `target` names the final package. The compiler derives the
+dependency graph from those real inputs, adds independent final verification and preserves the
+existing executable-plan limits; the 128-package wire limit is not a larger execution grant.
+
+Omitting `decomposition` retains the historical implementation-plus-verifier recipe. An explicit
+invalid decomposition never falls back to it. Draft compilation starts no child, grants no
+approval and materializes no input. Valid owner-local initial-plan delegation does not need
+reconfirmation, but technical completion, commits, contract/replacement acceptance, human judgment
+and external/resource permissions remain distinct.
+
+The source registers these bounded operations over the actual admission, journal, dispatch,
+input and recovery modules:
+
+| Tool | Input and effect |
+| --- | --- |
+| `foundry_dispatch_ready` | `planId`, `limit`: retain completed deliveries, then consider ready or retained reservations once. |
+| `foundry_reconcile_parallel` | `planId`, `taskId`, `reservationId`: reconcile that exact owned reservation once, including cancellation obligations. |
+| `foundry_materialize_inputs` | `planId`, `taskId`, `attemptId`: resolve and materialize the complete pinned input set after setup, attachment and unchanged successful handoff. |
+| `foundry_assess_package` | `planId`, `taskId`, optional `report`: prepare the exact assurance subject or assess its bound report, retaining separate human obligations. |
+
+Claim authority is one private database under the trusted Git common directory, shared across
+coordinator owners; ownership remains a separate binding. Native intents, results and full
+reservations use its fenced journal. Recovery retains whole observations in the same store.
+No timer, speculative replacement child or second reservation engine drives these operations.
+
+The extension currently reports unavailable host ports: a registered tool is not live invocation
+support. A trusted constructor must provide current coordinator/project identity, supported
+operation-and-route-specific invocation, actual result/setup/canonical observations, resource
+policies, and complete current contributor/reviewer authority. Caller JSON, imported history and
+old terminal receipts cannot provide those bindings. The captured disabled session-management
+extension-RPC route cannot inherit support from the primary App route or trigger automatic fallback.
+No non-destructive App child termination port is currently exposed; idle is not terminal and
+archiving removes worktrees, so uncertain cancellation remains held.
+
+There is also a source-level cancellation join hold: the current admission port can fence
+every observed owned row, but has no durable plan-wide claim fence for a stale reservation
+writer that crashes before settling. Parallel cancel and finalization therefore retain
+`parallel_cancellation_join_pending`, even after all currently known admissions reconcile.
+This is not a native-platform or unchanged SDK-conformance failure; host observations alone
+cannot repair it, and legacy finalization cannot bypass it.
+
+Registered tiny-Git fixtures execute two-producer consumption, immutable provenance, convergence,
+independent verification preparation and human gates through these production modules with
+synthetic native transport. Unchanged 32/128 logical workloads exercise production contention,
+dispatch and recovery; their cancellation-terminal availability barriers are not successful
+producer deliveries. Neither proof establishes real App permissions, setup/notifications/restart,
+platform behavior or native visual capture/perception. Those require separately authorized host
+validation against the exact delivered source and package identities.
 
 ## Repository capability lifecycle
 

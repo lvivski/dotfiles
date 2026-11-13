@@ -4,7 +4,9 @@ import { assertPlanId } from "./plan/fields.mjs";
 import { approvalScope, sameApprovalScope, validateApprovalDelegation } from "./plan/schemas/approval.mjs";
 import { summarizePlan } from "./plan/queries.mjs";
 import { PLAN_STATUS } from "./plan/values.mjs";
+import { createAdmissionStore } from "./storage/admission.mjs";
 import { createArtifactDatabase } from "./storage/database.mjs";
+import { createDispatchJournal, initializeDispatchJournal } from "./storage/dispatch.mjs";
 import { ownSnapshot, parsePlanDocument, readActivation, readPlan, readRecord, serializePlan } from "./storage/documents.mjs";
 import { storageError } from "./storage/errors.mjs";
 
@@ -25,6 +27,45 @@ const APPLICATION_ID = 0x464e4452;
 const DEFAULT_LIST_LIMIT = 50;
 
 const MAX_LIST_LIMIT = 100;
+
+/** The caller supplies one trusted shared location; owner binds authority, not a directory.
+ * Return the actual admission store, also used as recovery's observation port.
+ * @param {{
+ * workspacePath: string, repositoryId: string, owner: string, directoryParts?: string[],
+ * clock?: () => string, busyTimeoutMs?: number
+ * }} options */
+export function createParallelStorage(options) {
+	const directoryParts = options.directoryParts ?? ["files", "foundry-admission"];
+	const location = {
+		workspacePath: options.workspacePath,
+		directoryParts: Array.isArray(directoryParts) ? [...directoryParts] : directoryParts,
+		busyTimeoutMs: options.busyTimeoutMs,
+	};
+	const admission = createAdmissionStore({
+		...location, repositoryId: options.repositoryId, owner: options.owner, clock: options.clock,
+	});
+	// Only the admission owner may initialize or migrate the shared schema.
+	admission.list();
+	const storage = createArtifactDatabase({
+		...location, schemaVersion: 2,
+		initialize(db) {
+			const version = db.prepare("PRAGMA user_version").get()?.user_version;
+			const application = db.prepare("PRAGMA application_id").get()?.application_id;
+			if (version !== 2 || application !== 0x464e4144) {
+				throw storageError("parallel_database_version", "The journal requires the existing admission database", {
+					details: { version, application },
+				});
+			}
+		},
+	});
+	storage.transaction(db => {
+		// Recheck the admission anchor under the journal initializer's writer lock.
+		admission.list();
+		initializeDispatchJournal(db);
+	}, { write: true });
+	const journal = createDispatchJournal({ read: operation => storage.transaction(operation) });
+	return Object.freeze({ admission, journal });
+}
 
 /** @param {() => Date|string|number} clock */
 function resolveTimestamp(clock) {
@@ -148,10 +189,13 @@ export function createPlanStore(options = {}) {
 	};
 
 	/** @param {string} id */
-	const read = async (id) => {
+	const readCurrent = (id) => {
 		assertPlanId(id);
 		return transaction((db) => readPlan(db, id));
 	};
+
+	/** @param {string} id */
+	const read = async (id) => readCurrent(id);
 
 	/**
 	 * Receives an owned, validated snapshot and commits exactly one candidate.
@@ -370,6 +414,7 @@ export function createPlanStore(options = {}) {
 	return Object.freeze({
 		create,
 		read,
+		readCurrent,
 		update,
 		mutate: mutatePlan,
 		list,

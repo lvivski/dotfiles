@@ -44,6 +44,50 @@ or completion.
 8. If the current session is linked to a GitHub issue, preserve the approved plan and final
    verification report as issue artifacts. Do not create artifacts without a linked issue.
 
+## Package assessment source entry
+
+Call registered `foundry_assess_package` with `planId` and the delivered package's `taskId`, omitting
+`report`, to prepare its exact assurance subject. Supply `report` to assess evidence against that
+subject; a changed subject requires fresh preparation, not substituting its digest. Complete current
+contributor identity, including runtime helpers, and reviewer identity/applicability come only from
+trusted host readers, never caller-supplied author/reviewer lists or report claims. Every recursively
+contributing package producer is also included. Missing or incomplete host authorship/reviewer
+authority holds; the default production host is unavailable.
+
+An assessed result exposes `executablePassed` separately from `pendingHuman` and retains
+`independent-claim` provenance. Assessment does not persist terminal verification, authorize completion,
+clear required human judgment or replace the separate read-only verifier. Continue the existing
+verifier/evaluation, human-gate and final-verification sequence above.
+
+## Integration evidence and holds
+
+Prepared, reserved, initialized, attached, executing, delivered and independently verified are
+distinct [evidence stages](dispatch.md#truthful-stages), not interchangeable success labels.
+A terminal verifier report can contain failures. Leaf tests, compiled ports, delivery receipts or
+concurrent authorship do not establish independently verified final integration.
+
+For explicit package decomposition, review complete immutable declarations against every successful
+producer attempt/commit/path/mode/digest, actual post-attachment/handoff consumer materialization and
+execution, and integration ancestry at the exact final commit. A manifest, bootstrap base or mutable
+branch tip is not dependency-output consumption. Do not retrofit package requirements onto historical
+omitted-decomposition plans. Run relevant executable seam/whole-delivery checks; retain missing
+route/operation capabilities, invocation or materialization as holds, not passing evidence.
+No source/fixture result proves live permission, App restart, notifications or native visual fidelity.
+Final visual evidence must assess the combined exact delivery, not only earlier leaf captures.
+
+The `test/application/parallel.test.mjs` composed tiny-Git case uses production admission, shared journal and input services with
+synthetic App transport/observations: two producers feed actual consumer snapshots, the consumer
+uses both outputs and preserves both commit ancestries, then a separate read-only verifier path and
+synthetic human-gate record allow final-verification preparation. This is not completed final
+verification, a real human judgment, installed support, live visual/notification behavior or an
+App-restart test; reconstructing service instances in the fixture does not establish those facts.
+
+An original owner's DONE receipt, past attachment or coordinator artifact cannot authorize
+supplemental correction. The [supported current binding](dispatch.md#supplemental-original-owner-corrections)
+to the active integration attempt is absent here: retain the delivery hold for an explicit authorized
+correction decision, without reopening DONE, expanding the DAG or transferring scope. Neither initial
+plan approval nor technical-completion delegation waives missing binding, evidence or resource authority.
+
 ## Delegated technical milestone completion
 
 Only an explicit user instruction authorizing bounded **technical milestone closure** enables this

@@ -1,7 +1,8 @@
 import { LIMITS, PLAN_STATUS, TASK_STATUS } from "./plan/values.mjs";
 import { factoryTools } from "./tools/factory.mjs";
+import { parallelTools } from "./tools/parallel.mjs";
 import { handler } from "./tools/results.mjs";
-import { ATTEMPT_ID, DIGEST, EVIDENCE_INPUT, FACTORY_ID, FACTORY_LEARNING, FACTORY_REPORT, KNOWLEDGE_REF, NON_EMPTY, objectSchema, PLAN_ID, REFERENCES, REQUEST_ID, REVISION, SESSION_INVENTORY, STRING_LIST, TASK_ID } from "./tools/schema.mjs";
+import { ATTEMPT_ID, DIGEST, EVIDENCE_INPUT, FACTORY_ID, FACTORY_LEARNING, FACTORY_REPORT, KNOWLEDGE_REF, NON_EMPTY, objectSchema, PACKAGE_DECOMPOSITION, PLAN_ID, REFERENCES, REQUEST_ID, REVISION, SESSION_INVENTORY, STRING_LIST, TASK_ID } from "./tools/schema.mjs";
 
 /** Tool transport deliberately does not depend on operation result internals.
  * @typedef {Record<Exclude<keyof import("./operations.mjs").FoundryOperations,
@@ -17,6 +18,7 @@ export function buildFoundryTools(operations) {
 	/** @satisfies {import("@github/copilot-sdk").Tool[]} */
 	const tools = [
 		...factoryTools(operations),
+		...parallelTools(operations),
 		{
 			name: "foundry_capture_analysis",
 			description: "Ingest the exact completed current-session audit, research, review, security or triage report as scoped non-governing knowledge with run identity/digest and explicit uncertainty. Requires an existing capability; never launches research or promotes findings into requirements. Reports above 48,000 characters require deliberate scoped knowledge capture instead.",
@@ -50,11 +52,12 @@ export function buildFoundryTools(operations) {
 		},
 		{
 			name: "foundry_create_factory_plan",
-			description: "Assemble a bounded draft directly from a prepared candidate's accepted contract, with implementation and independent verifier tasks. Requires explicit normal plan approval; launches no workflow or child.",
+			description: "Assemble a bounded draft from a prepared candidate's accepted contract. Optional explicit decomposition declares disjoint executable packages and exact producer outputs/consumer inputs; omission retains the historical implementation-plus-verifier recipe. Governing evaluators and visual/human obligations remain unchanged. Requires normal plan approval; launches no workflow or child.",
 			parameters: objectSchema(["id", "repository", "candidateId", "expectedRevision", "expectedFactoryRevision"], {
 				id: PLAN_ID, candidateId: FACTORY_ID, expectedRevision: { const: 0 }, expectedFactoryRevision: REVISION,
 				repository: objectSchema(["workingDirectory", "baseBranch"], { workingDirectory: NON_EMPTY(4096), baseBranch: NON_EMPTY(512) }),
 				expectedFiles: STRING_LIST(128, 512),
+				decomposition: PACKAGE_DECOMPOSITION,
 			}),
 			handler: handler((args) => operations.createFactoryPlan(args)),
 		},
@@ -239,7 +242,7 @@ export function buildFoundryTools(operations) {
 					),
 				},
 			),
-			handler: handler((args) => operations.reserveTask(args)),
+			handler: handler((args, invocation) => operations.reserveTask(args, { signal: invocation.signal, invocation })),
 		},
 		{
 			name: "foundry_attach_task",
@@ -268,7 +271,7 @@ export function buildFoundryTools(operations) {
 					),
 				},
 			),
-			handler: handler((args) => operations.attachTask(args)),
+			handler: handler((args, invocation) => operations.attachTask(args, { signal: invocation.signal, invocation })),
 		},
 		{
 			name: "foundry_complete_task",
@@ -303,7 +306,7 @@ export function buildFoundryTools(operations) {
 					factoryEvaluations: { type: "array", maxItems: 32, items: FACTORY_REPORT },
 				},
 			),
-			handler: handler((args) => operations.completeTask(args)),
+			handler: handler((args, invocation) => operations.completeTask(args, { signal: invocation.signal, invocation })),
 		},
 		{
 			name: "foundry_retry_task",
@@ -348,7 +351,7 @@ export function buildFoundryTools(operations) {
 		},
 		{
 			name: "foundry_cancel",
-			description: "Request plan cancellation and snapshot active task attempts plus any Workflow run discovered for the verification reservation. This does not claim external work has stopped.",
+			description: "Request plan cancellation and snapshot active task attempts plus any Workflow run discovered for the verification reservation. Parallel plans also fence the complete observed owned admission inventory before returning parallel_cancellation_join_pending: the writes persisted, but concurrent reservation quiescence is unproven and requires explicit reconciliation. No effect or claim is released, and external work is not assumed stopped.",
 			parameters: objectSchema(
 				[
 					"planId",
@@ -365,7 +368,7 @@ export function buildFoundryTools(operations) {
 					requestedBy: NON_EMPTY(LIMITS.actor),
 				},
 			),
-			handler: handler((args) => operations.cancel(args)),
+			handler: handler((args, invocation) => operations.cancel(args, { signal: invocation.signal, invocation })),
 		},
 		{
 			name: "foundry_cancel_verification_run",
@@ -424,7 +427,7 @@ export function buildFoundryTools(operations) {
 					},
 				},
 			),
-			handler: handler((args) => operations.finalizeCancellation(args)),
+			handler: handler((args, invocation) => operations.finalizeCancellation(args, { signal: invocation.signal, invocation })),
 		},
 		{
 			name: "foundry_activate_plan",

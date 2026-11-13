@@ -2,6 +2,10 @@
 
 Use this lifecycle whenever Foundry coordinates engineering. It does not activate Foundry for an
 ordinary question, or authorize paid workflows, additional agents, commits, deployments or merges.
+Capability units describe conserved behavior; bounded runtime implementation units divide execution,
+not contract authority. Default to disjoint atomic work under the
+[planning protocol](planning.md#plan-executable-workstreams-not-just-concurrent-authorship),
+without fixed worker counts or new child/resource authority.
 
 ## Authority and discovery
 
@@ -95,14 +99,22 @@ Adoption does not create a fresh-generation plan or count as a reconstruction pr
    Sealed generation context is bounded to 128 KiB.
 2. Call `foundry_create_factory_plan` with the candidate, repository, explicit file scope,
    `expectedRevision: 0` and `expectedFactoryRevision`. It deterministically assembles bounded
-   implementation and read-only verifier tasks. It launches nothing. Follow ordinary
-   submit/approve/reserve/create/attach rules.
+   implementation and read-only verifier tasks. Local source accepts optional closed `decomposition`
+   for explicit packages; omission retains the one-producer/one-verifier recipe. Follow
+   [decomposition compatibility](planning.md#explicit-decomposition-and-legacy-behavior).
+   Registered [composed source tools](dispatch.md#bounded-registered-source-entry-points) use the
+   existing lifecycle, but the default production host remains unavailable. Source registration and
+   synthetic-host checks establish neither installation nor live support. Preparation launches nothing
+   and proves neither reservation nor execution. Follow ordinary
+   submit/approve/reserve/create/setup-corroboration/attach/unchanged-handoff rules.
    App generation supplies session/attempt identity, not process identity. A `fresh-process`
    candidate cannot be bound to this path; use a genuinely external process or prepare a new
    `fresh-session` candidate. Never invent process provenance after the fact.
 3. Complete implementation attempts with actual delivery, concrete evidence and `learning` entries
    (`observation`, `inference` or `proposal`, `statement`, optional `uncertainty`). Each completed
    attempt also creates a non-governing report observation with exact task/attempt/session identity.
+   Explicit-package consumers use `foundry_materialize_inputs` only after attachment and unchanged
+   handoff, then actually consume the pinned snapshots and preserve every delivered commit's ancestry.
 4. The verifier returns all ordinary `checkId` evidence plus selected executable `factoryEvaluations`: evaluation
    `{id,revision}`, pinned `procedureDigest`, `environment`, `workload`, actual `report`, `outcome`,
    and `independenceReason`. Failures are reported as failures, not repaired by changing the oracle.
@@ -116,10 +128,13 @@ Adoption does not create a fresh-generation plan or count as a reconstruction pr
    expose missing or stale human support.
    Bound candidate evidence comes only through completed attached attempts, never through an
    external delivery/evaluation tool (explicit human judgment is the separate exception).
+   `foundry_assess_package` prepares/checks a delivered package subject using trusted complete current
+   contributor and reviewer authority; it does not replace terminal verifier evidence, human judgment or completion approval.
    Publishable receipt invariants are checked before terminal task persistence. A wrong-commit
    report stays retryable, with a bounded non-governing rejection observation where possible.
-5. Complete native verification and obtain explicit plan completion approval. These facts are
-   necessary but are not replacement selection. Compare alternatives against the **same**
+5. Complete native verification and obtain manual plan completion approval or use a valid
+   separately completion-scoped delegation [without reconfirmation](verification.md#delegated-technical-milestone-completion).
+   These facts are necessary but are not replacement selection. Compare alternatives against the **same**
    contract/context definitions and pinned evaluator revisions; do not automatically spawn
    more paid agents. A delivered candidate is immutable: corrections produce another candidate
    and bounded plan, rather than relabeling a retry as regeneration.
@@ -128,6 +143,14 @@ Adoption does not create a fresh-generation plan or count as a reconstruction pr
    expired, context-mismatched or non-independent evidence blocks acceptance. The decision records
    the selected replacement and prior incumbent; it does not deploy, migrate data, merge Git, or
    delete branches. Carry out any operational cutover only under its own explicit approved work.
+
+Initial-plan and technical-completion grants remain distinct and owner-local. Neither accepts a
+product contract, supplies a human judgment, selects a replacement or grants external/resource
+permission. Immutable package inputs must be actually consumed after attachment and unchanged
+handoff; their manifest alone is not generation or integration evidence. Where package consumption
+or supplemental correction requires unavailable invocation, materialization or
+[correction binding](dispatch.md#supplemental-original-owner-corrections), retain the delivery hold.
+Do not retrofit package requirements onto historical omitted-decomposition plans.
 
 For an external bounded experiment, `foundry_record_delivery` and `foundry_record_evaluation`
 retain the actual commit/artifact and generation/evaluation session or process identities.

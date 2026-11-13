@@ -122,6 +122,38 @@ export const KNOWLEDGE_REF = objectSchema(["id", "revision"], { id: FACTORY_ID, 
 /** @type {JsonSchema} */
 export const REFERENCES = { type: "array", maxItems: 32, items: KNOWLEDGE_REF };
 
+/** Package wire limits do not increase the executable plan's task limit. @type {JsonSchema} */
+const PACKAGE_REFERENCES = { type: "array", maxItems: 128, items: KNOWLEDGE_REF };
+const PACKAGE_INPUT = objectSchema(["producer", "output", "destination"], {
+	producer: FACTORY_ID, output: FACTORY_ID, destination: NON_EMPTY(1024),
+});
+const PACKAGE_OUTPUT = objectSchema(["id", "path"], { id: FACTORY_ID, path: NON_EMPTY(1024) });
+const PACKAGE_EVALUATOR = objectSchema(["id", "revision", "procedureDigest", "requirements", "independent", "modality"], {
+	...KNOWLEDGE_REF.properties, procedureDigest: DIGEST,
+	requirements: { ...PACKAGE_REFERENCES, minItems: 1 }, independent: { type: "boolean" },
+	modality: { type: "string", enum: ["implementation-test", "boundary", "operational", "human"] },
+});
+const PACKAGE_BINDINGS = objectSchema(["authority", "repositoryId", "unit", "contract", "requirements", "evaluators", "visualEvaluation"], {
+	authority: { type: "string", enum: ["discovery-only", "accepted-contract"] },
+	repositoryId: DIGEST, unit: KNOWLEDGE_REF,
+	contract: { anyOf: [objectSchema(["revision", "digest"], { revision: KNOWLEDGE_REF.properties.revision, digest: DIGEST }), { type: "null" }] },
+	requirements: PACKAGE_REFERENCES,
+	evaluators: { type: "array", maxItems: 128, items: PACKAGE_EVALUATOR },
+	visualEvaluation: { anyOf: [KNOWLEDGE_REF, { type: "null" }] },
+});
+export const PACKAGE_DECOMPOSITION = objectSchema(["format", "bindings", "packages", "target"], {
+	format: { const: "foundry-packages-v1" }, bindings: PACKAGE_BINDINGS, target: FACTORY_ID,
+	packages: {
+		type: "array", minItems: 1, maxItems: 128,
+		items: objectSchema(["id", "title", "expectedFiles", "inputs", "outputs", "requirements", "evaluators"], {
+			id: FACTORY_ID, title: NON_EMPTY(256), expectedFiles: STRING_LIST(128, 4096, 1),
+			inputs: { type: "array", maxItems: 128, items: PACKAGE_INPUT },
+			outputs: { type: "array", minItems: 1, maxItems: 128, items: PACKAGE_OUTPUT },
+			requirements: PACKAGE_REFERENCES, evaluators: PACKAGE_REFERENCES,
+		}),
+	},
+});
+
 export const FACTORY_SOURCE = objectSchema(["kind", "ref", "actor", "at"], {
 	kind: { type: "string", enum: ["discovery", "implementation", "audit", "research", "review", "security", "triage", "command", "human", "operational", "app-task", "external-run", "native-workflow"] },
 	ref: NON_EMPTY(4096), actor: NON_EMPTY(256), at: NON_EMPTY(64),

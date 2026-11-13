@@ -167,6 +167,9 @@ test("registered owner helper writes retain native permission checks and reposit
 	registry.extensions = [];
 	assert.deepEqual(await call("edit", { path: path.join(repository, "file.mjs") }), {});
 	assert.deepEqual(await call("run_dynamic_workflow", { name: "plan", args: {} }), {});
+	for (const name of ["foundry_dispatch_ready", "foundry_reconcile_parallel", "foundry_materialize_inputs", "foundry_assess_package"]) {
+		assert.deepEqual(await call(name, { planId: "active-plan" }), {}, "Parallel tools retain native permission checks");
+	}
 	assert.equal(fixture.registryReads(), 4);
 });
 

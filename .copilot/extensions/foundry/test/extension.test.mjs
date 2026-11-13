@@ -53,6 +53,9 @@ test("share manifest and extension entry point satisfy discovery contracts", asy
 	assert.match(entry, /unsubscribeWorkflows = session\.on\("workflow\.run_updated"/);
 	assert.match(entry, /session\?\.capabilities\.ui\?\.elicitation \? session\.ui : undefined/);
 	assert.match(entry, /createResearchTimeReview\(\{\s+workflow: session\.workflow,\s+getUi,/);
+	assert.match(entry, /getParallelHost:\s*\(\) => \(\{\s*state: "unavailable"/);
+	assert.match(entry, /tools\.execute route is unproven/);
+	assert.doesNotMatch(entry, /executor:\s*\{|availability:.*supported|observeSetup:|observeChild:/);
 	assert.doesNotMatch(entry, /recoverStorage|stale-lock/);
 });
 

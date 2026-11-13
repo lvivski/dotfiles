@@ -8,12 +8,16 @@ unusable verification run.
 2. If `foundry_list_plans` reports an invalid stored plan, show its validation details. Call
    `foundry_quarantine_plan` only after explicit user approval, with the user's identity and reason.
    Quarantine preserves the original document and attribution in SQLite while releasing the plan ID.
-3. Enumerate App sessions and inspect every session attached to an active attempt.
+3. Enumerate App sessions and inspect every session attached to an active attempt, retained
+   created-but-unattached child, in-flight admission and known supplemental activity.
 4. Call `foundry_get_status` with the causally current inventory.
+   For composed parallel work, caller inventory is not authority: the registered reconciliation path
+   requires trusted current host observations.
 5. Follow the first safe projected action. Missing sessions remain `unknown` unless the supplied
    inventory is exhaustive and newer than the attempt.
-6. Resolve stale reservations explicitly as blocked attempts, then retry; never expire or replace
-   them silently.
+6. Resolve an unattached reservation as blocked only after definitive evidence that creation
+   produced no worker. Any possible/existing child or uncertain admission retains its reservation,
+   resource claims and receipts for reconciliation; never expire, replace or retry it blindly.
 7. Inspect paused or failed runs with `dynamic_workflows_manage` (`inspect-run`), or include native
    state in `foundry_get_status` with `includeWorkflows: true`. After the user asks to continue,
    use `foundry_control_workflow` with `action: "resume"` and the same `runId`. Verification controls
@@ -21,6 +25,22 @@ unusable verification run.
    Eligibility comes from native `canResume`, not status alone. A paused run retains its reservation
    until explicitly cancelled. Replace a terminal non-importable verification run only with an
    attributed reason and actor.
+
+For composed source, call `foundry_reconcile_parallel` with exactly `planId`, `taskId` and the retained
+`reservationId` once per actual App notification or explicit authorized request. It reconciles the
+existing admission, not a replacement; a DONE attempt can repair its durable delivery receipt, not
+be reopened for fresh work. Host readers supply observations, never caller JSON. Preserve the
+distinction between prepared, reserved, initialized,
+attached, executing, delivered and independently verified; metadata, missing notifications and an
+idle flag cannot advance stages. No polling timers or fabricated cross-child event subscription.
+The admission owner alone settles/releases shared claims; recovery uses its fenced transitions,
+not a second writer. Separate-store gaps and late native outcomes remain obligations.
+
+For [original-owner corrections](dispatch.md#supplemental-original-owner-corrections), retain the
+delivery hold until an explicit authorized correction decision and an existing supported current
+reservation/attachment binding cover the original session/worktree, active integration attempt,
+bounded paths/base/resources and authority. No such binding exists here. DONE history, previous
+attachments and coordinator notes cannot authorize fresh work; do not reopen tasks or transfer scope.
 
 Scope and dispatch holds apply to the target plan, not automatically to every plan in the repository.
 An independent, explicitly approved new plan with distinct workers/worktrees and pinned immutable
@@ -36,6 +56,12 @@ For uncertain planning admission, follow the
 replacement launch. A completed `needs-review` plan with a delivery-contract conflict requires
 revisiting [route selection](planning.md#choose-the-route-first); successful transport does not
 authorize commits or make the plan importable. Preserve the failed report's original provenance.
+The captured session-management failure applies to its extension RPC operation/route, not every
+conceivable workflow/transport route. Primary App-path support is neither adapter support nor a
+fallback grant. The default production parallel host remains unavailable; missing required host
+capabilities retain a hold. For package consumption after restart, re-resolve immutable producer receipts and
+corroborate the authorized consumer entry before materialization; persisted descriptors grant no authority.
+This is a recovery requirement, not evidence that App-restart recovery or live permissions were tested.
 
 The current store starts fresh in `files/foundry/foundry.sqlite` in the session workspace.
 Old JSON files and runs are not migrated or interpreted; leave them untouched. Use

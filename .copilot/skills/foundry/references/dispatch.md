@@ -2,6 +2,50 @@
 
 Read before dispatching ready work or recording an attempt's result.
 
+## Truthful stages
+
+These are evidence labels, not new public operations or replacements for stored task states.
+
+| Stage | Required evidence |
+| --- | --- |
+| Prepared | Bounded immutable declarations/payload retained; no reservation, child or execution implied. |
+| Reserved | Exact durable task/attempt reservation and applicable current resource claims; no worker implied. |
+| Initialized | Actual setup acknowledgement and fresh same-child/owner/worktree/base corroboration. |
+| Attached | Successful native attachment to that exact reserved attempt; task handoff still separate. |
+| Executing | Successful unchanged handoff plus observed authorized task work; an accepted send or stored `running` flag alone is insufficient. |
+| Delivered | Terminal attempt recorded with its required exact artifact and evidence; neither release of unresolved claims nor passing verification implied. |
+| Independently verified | Independent passing evidence bound to the exact final delivery and governing checks; not completion, human or replacement approval. |
+
+## Bounded registered source entry points
+
+These source tools are registered and composed, not proof of installation or live host support.
+Their top-level inputs are closed:
+
+| Tool | Inputs | Bounded purpose |
+| --- | --- | --- |
+| `foundry_dispatch_ready` | `planId`, `limit` (integer 1–128) | Visit one ready set, retaining terminal deliveries and considering existing reservations before fresh work. |
+| `foundry_reconcile_parallel` | `planId`, `taskId`, `reservationId` | Reconcile that exact owned admission once; never create a replacement. |
+| `foundry_materialize_inputs` | `planId`, `taskId`, `attemptId` | Materialize the complete journal-pinned input descriptor into its authorized consumer worktree. |
+| `foundry_assess_package` | `planId`, `taskId`, optional `report` | Prepare the delivered assurance subject or assess its report; see [verification](verification.md#package-assessment-source-entry). |
+
+After normal plan approval/activation, invoke dispatch once with an explicit visit bound, not a
+target agent count or new resource budget. It drives the native sequence below. A `bounded` response
+can contain held results; `handed-off` still reports `inputsMaterialized: false` and
+`executionObserved: false`. On an actual notification or explicit authorized request, reconcile the
+retained admission once, record any terminal result with `foundry_complete_task`, then reconsider
+ready work. Do not poll, reconstruct the sealed prompt/input payload, or manually continue a held
+create/attach/handoff through another route.
+
+The default production extension supplies `{ state: "unavailable" }` host ports. Only the trusted
+`createFoundryOperations` constructor's `getParallelHost` may provide actual offered-tool execution,
+per-operation availability, result decoders, setup/canonical-child observations, resource policies
+and recovery, complete contributor and reviewer readers. Tool JSON, imported receipts and schema metadata cannot supply them.
+Calls require the current owning coordinator's native invocation outside workflows/subagents.
+Absent host support returns `held` (`parallel_host_unavailable`); missing operation-specific
+decoders/observations also hold. There is no legacy or workflow fallback for admitted parallel work.
+
+## Native dispatch sequence
+
 1. Call `foundry_get_status` and read `projection.scheduling`.
 2. Dispatch only IDs in `projection.scheduling.dispatchableTaskIds`. Read its `launches` and
    `scopeConflicts` for delivery guidance and holds. Readiness is derived, not a stored task state.
@@ -40,12 +84,56 @@ Read before dispatching ready work or recording an attempt's result.
    the reservation/scope and failure receipts. Do not create a replacement, free scope through an
    unattached failure, or pretend setup/task delivery succeeded. Follow [recovery](recovery.md);
    retries require reconciliation, not merely a new tool call ID.
-8. Wait for idle notifications rather than polling. Intervene only for a child request, explicit
-   steering, a stuck session, or cancellation.
+8. Wait for actual App `notify_on_idle` notifications rather than polling. A notification or explicit
+   authorized intervention wakes one bounded reconciliation invocation; it is not completion evidence.
+   Intervene only for a child request, explicit steering, a stuck session, or cancellation. Do not
+   invent a cross-child SDK event API or turn missing notifications into a timer/retry loop.
 9. Record `done`, `failed`, or `blocked` with the child result, branch, commit/PR when present, and
    concrete evidence. Resolve and record the full commit and PR metadata required by the task before
    recording `done`. Before recording an attached failure, terminate/archive its session and supply
    a fresh complete terminal inventory. Then re-read ready work.
+
+## Dependency-output consumption
+
+`foundry_materialize_inputs` accepts identities only, not paths, descriptors, receipts or caller
+authority. It reads the full descriptor sealed in the creation journal, re-resolves current producer
+deliveries and checks the same authorized consumer entry. Missing host support is a hold, not
+permission to call internal ports or copy inputs manually.
+
+Freeze the complete package declarations before admission: every producer/output, consumer
+destination, governing revision, bounded path and resource claim. Keep the bootstrap branch/commit
+separate from all producer inputs. Resolve every input from its current owner-local successful
+attempt/delivery receipt, exact full commit, path, mode and content digest; check actual Git bytes
+and complete declaration coverage. DONE prose, imported history and mutable branch tips cannot
+replace those bindings.
+
+Only the authorized consumer entry, after successful attachment **and unchanged successful handoff**,
+may materialize the complete snapshots into that consumer's distinct worktree. Recheck current
+authority, receipts and the pinned clean bootstrap before writing; setup must not dirty it.
+Do not overwrite existing destinations or protected evaluator material, or import comparison-only
+sources into generation inputs.
+Record the actual consumer entry point, consumed identities and execution outcomes; resolution or a
+manifest alone is not consumption. Snapshots do not replace exact delivered-commit ancestry integration.
+Missing/stale bindings, incomplete inputs or unavailable supported materialization retain a hold.
+A successful `materialized` result records its input digest/artifacts, not execution or verification.
+Repeating materialization does not overwrite existing snapshots; retain the result rather than retrying.
+
+## Shared transition and invocation ownership
+
+Follow the [shared transition map](parallel-contracts.md#fenced-transaction-and-recovery-protocol):
+the admission writer alone owns claims, fences, settlement and release; dispatch journals native
+intents/outcomes through that fence; recovery/cancellation request transitions through those owners.
+Input resolution/materialization does not grant claims or approval. Keep native side effects outside
+the writer transaction, after a durable start receipt. Separate plan/resource stores are not a
+distributed atomic transaction: retain uncertain gaps and late outcomes; re-read on revision conflicts.
+
+Only the owning coordinator may invoke the supported offered-tool path under normal permissions.
+The captured session-management operation failed on its extension RPC route; primary App-path
+success does not transfer to that operation/adapter. Support must be established separately for each
+operation and route, not inferred as universally available or unavailable. No automatic alternate-path
+fallback, `session.workflow.run`, nested workflow or fabricated event subscription repairs a hold.
+Source/fixture evidence proves neither installed composition nor live
+permission, setup/notification, restart or native visual behavior; retain those evidence gaps.
 
 ## Setup corroboration and failure holds
 
@@ -105,27 +193,23 @@ stored attempts or weaken completion's branch checks to bypass a mismatch.
 
 ## Supplemental original-owner corrections
 
-Only when the approved integration task explicitly permits this route, an original owner may
-contribute a bounded correction under the **active integration attempt**, preserving its original
-task's terminal delivery. This is not `foundry_retry_task` (failed/blocked tasks only), reopening a
-DONE task, or a [failed-verification correction wave](verification.md).
+An approved integration clause is necessary but insufficient. **Before any correction handoff**, an
+existing supported reservation/attachment mechanism must demonstrably bind the retained original
+session/worktree, exact bounded paths, immutable base, resource claims and current authority to the
+**active integration attempt**. Preserve its actual binding receipt and failure/evidence context.
+DONE receipts, past attachments, task prose and append-only coordinator artifacts grant no fresh
+authority and cannot substitute for that mechanism.
 
-Before coordinator-only handoff, retain an append-only coordinator artifact binding the governing
-clause, active integration attempt, existing original attached owner session/worktree, immutable
-base commit, exact failure/evidence and bounded original-owned paths. The artifact records prior
-authority; it grants no permission or automatic native enforcement. An acceptance criterion is not
-a native lease operation. Do not create a child, task or repair worker, grant broad imported-file
-permission, change protected evaluators, or rewrite the original terminal attempt/receipt.
+**No such supported mechanism/binding exists here. Retain the integration delivery hold for an
+explicit authorized correction decision.** A decision alone cannot make an unavailable mechanism
+exist. Do not hand off correction work, reopen DONE, use `foundry_retry_task` on it, create an extra
+child/task, bypass guards or silently transfer leaf scope to the coordinator/integrator. Attachment
+replay and branch-rename reconciliation are not supplemental authority. Valid initial-plan or
+completion delegation does not waive this hold or approve a correction wave.
 
-Historical DONE is not current inactivity: track the supplemental worker through completion and
-retain all relevant [cancellation](cancellation.md) and [verification](verification.md) holds.
-The owner returns an exact clean descendant commit, changed scope and evidence, preserving ancestry
-from the pinned base and original delivery. The coordinator verifies these claims; integration
-ancestry-merges that exact SHA, reruns affected checks and retains failures and correction provenance
-under its existing attempt. Do not substitute a mutable branch tip or treat a failed contribution
-as successful delivery.
-
-Existing authority, synchronization, scope and native permission checks still apply. An actual guard
-rejection means stop, not bypass. If the approved task lacks this explicit route, or the correction
-needs new scope or protected changes, this section supplies no authority. Documenting this existing
-route neither reapproves nor suspends already-authorized in-attempt work.
+Preserve original terminal receipts. If supplemental activity already exists, historical DONE is
+not proof it stopped: reconcile it and retain [cancellation](cancellation.md) and
+[verification](verification.md) holds. Any subsequently authorized, genuinely bound contribution
+must deliver an exact clean descendant commit, bounded changed scope and evidence, preserving the
+pinned base/original-delivery ancestry. Integration must use that exact SHA and rerun affected checks,
+not substitute a branch tip or relabel failed work as successful delivery.

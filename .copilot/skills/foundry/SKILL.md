@@ -38,6 +38,13 @@ For the approved parallel-engineering increment, use the
 implementation. It distinguishes admitted work from observations, preserves exact native
 handoff and input bindings, and keeps claim authority with one writer. Shared fixtures
 and compiled ports alone do not establish an installed autonomous execution path.
+Local source exposes optional `decomposition` on `foundry_create_factory_plan` and registers
+`foundry_dispatch_ready`, `foundry_reconcile_parallel`, `foundry_materialize_inputs` and
+`foundry_assess_package`. Follow the [bounded source sequence](references/dispatch.md#bounded-registered-source-entry-points).
+The default production extension deliberately supplies unavailable host ports; only trusted
+constructor wiring can supply actual route/operation capabilities, never caller JSON. Synthetic-host
+composition evidence is not installation or live App support. Integration delivery remains held;
+do not bypass missing capabilities, switch routes automatically or infer fresh correction authority.
 
 ## Hard rules
 
@@ -89,6 +96,18 @@ and compiled ports alone do not establish an installed autonomous execution path
      comparison are required for initial implementation as well as reconstruction. Controls, geometry,
      source and colors are not fidelity evidence. Missing capture or failed comparison blocks closure;
      do not bypass OS permissions or synthesize human judgment. Follow the [visual protocol](references/factory.md#explicit-ui-and-visual-fidelity).
+17. Default to splitting independent atomic engineering work into disjoint, bounded runtime
+    implementation units with real executable outputs and focused checks, not a fixed agent count.
+    This grants no additional resource, child or DAG authority. Preserve the omitted-decomposition
+    legacy recipe; follow [planning](references/planning.md#explicit-decomposition-and-legacy-behavior).
+18. Distinguish prepared, reserved, initialized, attached, executing, delivered and independently
+    verified evidence; none implies the next. Consume every declared dependency's immutable output
+    through the authorized post-attachment/handoff consumer path, not a branch tip or manifest alone.
+    Follow [dispatch](references/dispatch.md); missing invocation/materialization support remains a hold.
+19. Original-owner corrections need a supported current reservation/attachment binding to the active
+    integration attempt before handoff. DONE receipts, past attachments and coordinator artifacts
+    cannot supply it. Without that binding, retain the delivery hold for an explicit authorized
+    correction decision; do not reopen DONE work or silently transfer its scope.
 
 ## Choose the current phase
 

@@ -70,6 +70,12 @@ and never launch a replacement merely because the first run is temporarily unobs
 
 ## Plan executable workstreams, not just concurrent authorship
 
+Default to splitting independent atomic engineering work into disjoint, bounded runtime
+implementation units with real executable outputs. Use the smallest coherent ownership boundaries,
+not fixed agent-count targets. This is a planning default, not delegation or resource permission:
+each unit needs current authority and supported admission. Do not create unreserved App children,
+expand an approved DAG, or silently transfer another owner's scope to achieve parallelism.
+
 Before generation and approval, use existing task descriptions/criteria and review notes to check:
 
 - **Critical path:** identify the longest prerequisite chain and unavoidable serial tail. Expose
@@ -79,6 +85,10 @@ Before generation and approval, use existing task descriptions/criteria and revi
   environment and observable expected result. If missing, assign minimal shared runner, fixtures
   and stable interfaces before dependent work fans out where feasible. Do not gate unrelated work
   on scaffolding it does not use or duplicate shared authority to avoid an edge.
+- **Actual inputs/outputs:** declare every producer output and consumer destination, immutable
+  requirement/evaluator revisions, bounded write paths and shared-resource claims. A dependency
+  edge, task summary or manifest is not consumption: require exact delivered bytes and actual
+  consumer execution through the [post-handoff input path](dispatch.md#dependency-output-consumption).
 - **Evidence and gaps:** compilation/typechecking is build evidence, not execution of fixtures.
   Run focused checks before leaf delivery rather than first discovering leaf failures in integration.
   If a check cannot run, name the concrete blocker, missing evidence and later owning task/environment.
@@ -101,11 +111,31 @@ runner already exists, omit the extra scaffolding task/edge. Explain unavoidable
 deferrals rather than concentrating every check in a long integration tail.
 
 The native planning recipe supplies this review to decomposition, critics, synthesis and verification.
-The deterministic accepted-contract `foundry_create_factory_plan` recipe still creates one producer
-and one verifier, not configurable fan-out; review its serial limits honestly rather than inventing
-extra workers or switching to discovery to evade accepted authority. This guidance changes future
-planning/review only: it does not rewrite a running approved DAG, authorize additional tasks,
-change contracts/protected evaluators, relax [dispatch](dispatch.md) holds or increase resource limits.
+This guidance does not rewrite a running approved DAG, authorize additional tasks, change contracts/
+protected evaluators, relax [dispatch](dispatch.md) holds or increase resource limits.
+
+## Explicit decomposition and legacy behavior
+
+Local source exposes optional closed `decomposition` on existing `foundry_create_factory_plan`:
+`format: "foundry-packages-v1"`, `bindings`, `packages` and final `target`. Each package declares
+`id`, `title`, bounded `expectedFiles`, `inputs` (`producer`, `output`, `destination`), `outputs`
+(`id`, `path`), and exact `requirements`/`evaluators` references. Bindings pin the repository,
+unit/contract and complete governing requirements/evaluators, including declared visual applicability.
+The registered handler decodes through the package parser/compiler; malformed, substituted or
+protected-input declarations fail before mutation. This is source support, not installation evidence.
+
+Explicit decomposition produces disjoint bounded packages with real prerequisite edges converging
+on one final implementation target and independent verifier. Preserve all requirements/evaluators,
+including visual and human gates; splitting implementation does not weaken acceptance. Frozen
+declarations and complete dependency outputs govern consumption, not a caller-selected subset.
+Omission retains the deterministic one-producer/one-verifier recipe and historical plans, seals and
+grants unchanged. Read-only evaluation plans remain verifier-only, without implementation decomposition.
+
+Source registers the [bounded dispatch, reconciliation, materialization and assessment tools](dispatch.md#bounded-registered-source-entry-points).
+Plan compilation still launches nothing. The default production extension supplies unavailable host
+ports, so registration alone does not permit execution; a trusted constructor must provide actual
+current owner/route/operation support. Tool arguments cannot manufacture those capabilities. Retain
+host holds without internal-port or alternate-route bypasses, extra workers or discovery-mode evasion.
 
 ## Delegated execution-plan approval
 
@@ -179,32 +209,32 @@ If the helper is not registered/running or the API is unavailable, stop rather t
 or disable Foundry. Registration and reload are separate authorized actions, not effects of this guard.
 
 If a prepared payload cannot be reliably relayed in a model tool call, retain its complete bytes
-and pin their full-payload digest. A narrow owner-local extension **tool handler** can invoke the
-actual offered native tool through its normal invocation pipeline. With `prepared` equal to the
-returned preparation value:
+and full-payload digest; do not truncate, reprepare to shrink it, or launch from another owner.
+The helper-directory exception is only a write boundary, not invocation or resource authority.
+`CopilotSession.rpc.tools.execute` declarations and captured offered schemas do not establish support.
+The captured session-management operation on that extension RPC route returned
+`This session management tool is disabled`; it does not establish support for that operation/route,
+nor rule out every workflow or transport route. Check capability support per operation and route.
+Normal primary App-path admission does not transfer to an extension adapter or authorize automatic
+retry through another route.
 
-```js
-await session.rpc.tools.execute({
-  name: "run_dynamic_workflow",
-  arguments: prepared.launchSpec,
-});
-```
+Use only a demonstrably supported owner-local offered-tool path, with the prepared ownership binding,
+complete digest and unchanged workflow name, args and limits, under its normal native permissions.
+If a required operation lacks supported transport on its intended route, retain the hold. Never override permissions,
+fall back to `session.workflow.run` (SDK-initiated runs do not request native resource permission),
+or wrap this in a nested workflow (unsupported). Valid initial-plan or completion delegation is
+not invocation, file-write, commit, shared-resource or external-action permission.
 
-Before admission, check the invoking session and prepared ownership binding against the owner,
-and verify the pinned full-payload digest. Forward the unchanged workflow name, args and any limits.
-Do not truncate, reprepare merely to shrink the payload, or launch from another session.
-The offered tool and runtime support must exist; denial or unavailability fails closed.
-Never override permissions, fall back to `session.workflow.run` (SDK-initiated runs do not request
-native resource permission), or wrap this in a nested workflow (unsupported).
-
-Persist a single-admission claim before invoking, then retain the native outcome receipt and exact
-`runId`. `toolCallId` is correlation, not an idempotency key. Uncertain admission requires reconciling
+Retain an owner-local admission-intent record before any supported invocation, then retain the native
+outcome receipt and exact `runId`. That record is not a native reservation or execution grant.
+`toolCallId` is correlation, not an idempotency key. Uncertain admission requires reconciling
 the owner's runs against the prepared binding and receipt, never a blind retry. Native admission
 does not prove a separate human click or grant plan approval; a later delivery-contract
 `needs-review` is a plan validation outcome, not a transport failure.
 
-Remove the temporary adapter only after a terminal safe point, retaining source/checks, prepared
-payload, admission receipt and result evidence. This is bounded transport, not a second launcher engine.
+If an authorized adapter already exists, remove it only at a terminal safe point, retaining
+source/checks, prepared payload, admission receipt and result evidence. This protocol authorizes
+neither installation/reload nor live permission, restart or native visual validation.
 SDK API references: `CopilotSession.rpc` (`session.d.ts`), `ToolsExecuteRequest` and
 `createSessionRpc().tools.execute` (`generated/rpc.d.ts`), and the permission contract of
 `SessionWorkflowApi.run` (`workflow.d.ts`; Dynamic Workflows guide, "Run and resume").

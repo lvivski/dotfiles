@@ -107,3 +107,49 @@ export type InputPort = {
 export type OfferedToolExecutor = {
 	execute(input: { name: string; arguments: JsonValue; toolCallId?: string }): Promise<unknown>;
 };
+
+export type ParallelReservation = {
+	attempt: AttemptIdentity; projectId: string; baseBranch: string; baseCommit: string;
+	initialization: { acknowledgement: string; kickoff: { mode: "interactive"; prompt: string } };
+	delegationPrompt: string; inputs: ReservedInputs | null; requiredInputs: PackageInput[];
+};
+export type ParallelChild = {
+	sessionId: string; projectId: string; creatorSessionId: string; worktreePath: string; branch: string;
+};
+export type ParallelNativeResult = { value: unknown; raw: JsonValue; source: string };
+export type ParallelSetup = { sessionId: string; message: string; at: string; source: string };
+export type ParallelChildObservation = {
+	child: ParallelChild; capturedAt: string; source: string; complete: boolean; aliases: string[];
+	baseBranch: string; baseCommit: string; head: string; clean: boolean;
+};
+/** Current, scoped contributor evidence; this cannot authorize independent reviewers. */
+export type ParallelContributors = {
+	complete: boolean; source: string; capturedAt: string; commit: string; authors: string[];
+};
+
+/** Trusted constructor port, never a tool argument or a grant inferred from tool metadata.
+ * Each callback must read the supported host route's actual current identity/evidence.
+ * Omitting a decoder or observer holds the operation that requires it.
+ */
+export type ParallelHost = { state: "unavailable"; reason: string } | {
+	state: "available";
+	session: {
+		workspacePath: string; sessionId: string; projectId: string;
+		inWorkflow: boolean; agentId?: string;
+	};
+	executor: OfferedToolExecutor;
+	offered: ReadonlySet<string>;
+	availability(name: string): "supported" | "unavailable" | "unproven";
+	taskPolicies(plan: import("./plan.js").FoundryPlan): Record<string, import("../plan/admission.mjs").TaskAdmission>;
+	decodeCreated?: (value: unknown) => ParallelChild;
+	decodeHandoff?: (value: unknown) => { sessionId: string; accepted: boolean };
+	observeSetup?: (child: ParallelChild, reservation: ParallelReservation) => Promise<ParallelSetup>;
+	observeChild?: (input: {
+		child: ParallelChild; detail: ParallelNativeResult; inventory: ParallelNativeResult; after: string;
+	}) => Promise<ParallelChildObservation>;
+	reconcile?: (receipt: EffectReceipt, payload: JsonValue) => Promise<ParallelNativeResult | null>;
+	observeRecovery?: (input: { identity: AdmissionIdentity; after: string }) => Promise<import("../inventory.mjs").RecoveryInventory>;
+	observeOutcomes?: (input: { identity: AdmissionIdentity; receipts: EffectReceipt[] }) => Promise<EffectReceipt[]>;
+	readReviews?: (input: { plan: import("./plan.js").FoundryPlan; taskId: string }) => Promise<import("../analysis/assurance.mjs").ReviewObligation[]>;
+	readContributors?: (input: { plan: import("./plan.js").FoundryPlan; taskId: string }) => Promise<ParallelContributors>;
+};

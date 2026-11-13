@@ -1,7 +1,9 @@
 /** Decoders shared by the tool/HTTP operation boundary; domain rules still own semantics. */
 import { arrayOf as array, decodeRecord as decodeObject, nullable, optional, readRecord as record } from "./data.mjs";
-import { assertPlanId, FoundryDomainError } from "./plan/fields.mjs";
+import { assertKnownKeys, assertPlanId, FoundryDomainError } from "./plan/fields.mjs";
+import { packageDecomposition } from "./plan/parallel-contracts.mjs";
 import { validateFactoryEvaluations, validateFactoryLearning } from "./plan/schemas/factory.mjs";
+import { ATTEMPT_ID_PATTERN, REQUEST_ID_PATTERN, TASK_ID_PATTERN } from "./plan/values.mjs";
 
 /** @template T @typedef {(value: unknown) => T} Decoder */
 /** @template {Record<string, Decoder<unknown>>} T @typedef {import("./data.mjs").Decoded<T>} Decoded */
@@ -51,12 +53,25 @@ const planId = { planId: assertPlanId };
 const factoryPlan = {
 	id: assertPlanId, repository, candidateId: string, expectedRevision: zero,
 	expectedFactoryRevision: optional(number), expectedFiles: optional(array(string)), evaluations: optional(array(reference)),
+	decomposition: optional(packageDecomposition),
 };
 /** @param {unknown} value */
 const learning = (value) => { validateFactoryLearning(value); return value; };
 /** @param {unknown} value */
 const evaluations = (value) => { validateFactoryEvaluations(value); return value; };
 const nullableText = optional(nullable(string));
+/** @param {RegExp} pattern @param {string} label */
+const identifier = (pattern, label) => (/** @type {unknown} */ value) => {
+	if (typeof value !== "string" || !pattern.test(value)) throw new FoundryDomainError("parallel_request_invalid", `Invalid ${label}`);
+	return value;
+};
+/** @param {unknown} value */
+const dispatchLimit = value => {
+	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > 128) {
+		throw new FoundryDomainError("parallel_request_invalid", "Dispatch limit must be an integer from 1 through 128");
+	}
+	return value;
+};
 
 export const requestShapes = {
 	preparePlan: {
@@ -76,6 +91,10 @@ export const requestShapes = {
 	approve: { ...revision, approvedBy: optional(string), approvalType: optional(string), retryStatus: optional(string), delegationId: optional(assertPlanId), review: optional(string) },
 	planApprovalDelegation: { action: string, id: assertPlanId, planId: optional(assertPlanId), expectedRevision: optional(number), reason: optional(string), authority: opaque, approvalType: optional(string) },
 	nextTasks: planId,
+	dispatchReady: { ...planId, limit: dispatchLimit },
+	reconcileParallel: { ...planId, taskId: identifier(TASK_ID_PATTERN, "taskId"), reservationId: identifier(REQUEST_ID_PATTERN, "reservationId") },
+	materializeInputs: { ...planId, taskId: identifier(TASK_ID_PATTERN, "taskId"), attemptId: identifier(ATTEMPT_ID_PATTERN, "attemptId") },
+	assessPackage: { ...planId, taskId: identifier(TASK_ID_PATTERN, "taskId"), report: opaque },
 	reserveTask: { ...task, reservationId: string, scopeOverride: optional(nullable(object({ approvedBy: string, reason: string }))) },
 	attachTask: {
 		...attempt, sessionId: string, branch: nullableText,
@@ -123,6 +142,9 @@ export const requestShapes = {
 /** @template {keyof typeof requestShapes} K @typedef {Decoded<(typeof requestShapes)[K]>} Request */
 /** @template {keyof typeof requestShapes} K @param {K} name @param {unknown} value @returns {Request<K>} */
 export function decodeRequest(name, value) {
+	if (["dispatchReady", "reconcileParallel", "materializeInputs", "assessPackage"].includes(name)) {
+		assertKnownKeys(record(value), new Set(Object.keys(requestShapes[name])), name);
+	}
 	return { ...record(value), ...decodeObject(requestShapes[name], value) };
 }
 
