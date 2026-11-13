@@ -4,6 +4,7 @@ import { parseJson } from "../data.mjs";
 import { digest, fail, integer, object, strings, text, timestamp } from "../factory/fields.mjs";
 import { claimHolds, validateClaims } from "../plan/admission.mjs";
 import { admissionIdentity, admissionRecord, attemptIdentity, cancellationObligation, deliveryReceipt } from "../plan/parallel-contracts.mjs";
+import { PLAN_ID_PATTERN } from "../plan/values.mjs";
 import { createArtifactDatabase } from "./database.mjs";
 import { assertAdmissionFence, assertEffectTransition, synchronousTransition } from "./parallel-protocol.mjs";
 
@@ -12,6 +13,7 @@ import { assertAdmissionFence, assertEffectTransition, synchronousTransition } f
 /** @typedef {import("../types/parallel.js").Fence} Fence */
 /** @typedef {import("../types/parallel.js").CancellationObligation} Obligation */
 /** @typedef {import("node:sqlite").DatabaseSync} Database */
+/** @typedef {Pick<Identity, "repositoryId" | "owner" | "planId">} PlanIdentity */
 /** @typedef {{
  * attempt: import("../types/parallel.js").AttemptIdentity, sessionIds: string[], runIds: string[],
  * source: string, capturedAt: string
@@ -22,7 +24,11 @@ const OBSERVATION_SCHEMA = `CREATE TABLE ${OBSERVATIONS} (
 	id INTEGER PRIMARY KEY, identity TEXT NOT NULL, document TEXT NOT NULL,
 	UNIQUE(identity, document)
 ) STRICT;`;
-const VERSION = 2;
+const CANCELLATIONS = "parallel_plan_cancellations";
+const CANCELLATION_SCHEMA = `CREATE TABLE ${CANCELLATIONS} (
+	identity TEXT PRIMARY KEY NOT NULL, cancelled_at TEXT NOT NULL
+) STRICT;`;
+const VERSION = 3;
 const APPLICATION = 0x464e4144;
 /** @param {unknown} a @param {unknown} b */
 const same = (a, b) => stableStringify(a) === stableStringify(b);
@@ -36,8 +42,8 @@ function initialize(db) {
 	const version = db.prepare("PRAGMA user_version").get()?.user_version;
 	const application = db.prepare("PRAGMA application_id").get()?.application_id;
 	if (version === VERSION && application === APPLICATION) return;
-	if (version === 1 && application === APPLICATION) {
-		db.exec(`${OBSERVATION_SCHEMA} PRAGMA user_version = ${VERSION};`);
+	if ((version === 1 || version === 2) && application === APPLICATION) {
+		db.exec(`${version === 1 ? OBSERVATION_SCHEMA : ""} ${CANCELLATION_SCHEMA} PRAGMA user_version = ${VERSION};`);
 		return;
 	}
 	if (version !== 0 || application !== 0 || db.prepare("SELECT name FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' LIMIT 1").get()) {
@@ -46,7 +52,13 @@ function initialize(db) {
 	db.exec(`CREATE TABLE ${TABLE} (
 		identity TEXT PRIMARY KEY NOT NULL, revision INTEGER NOT NULL,
 		document TEXT NOT NULL, updated_at TEXT NOT NULL
-	) STRICT; ${OBSERVATION_SCHEMA} PRAGMA application_id = ${APPLICATION}; PRAGMA user_version = ${VERSION};`);
+	) STRICT; ${OBSERVATION_SCHEMA} ${CANCELLATION_SCHEMA} PRAGMA application_id = ${APPLICATION}; PRAGMA user_version = ${VERSION};`);
+}
+
+/** @param {Database} db @param {PlanIdentity} identity */
+function cancellationFor(db, identity) {
+	const row = db.prepare(`SELECT cancelled_at FROM ${CANCELLATIONS} WHERE identity = ?`).get(stableStringify(identity));
+	return row ? { identity, cancelledAt: timestamp(row.cancelled_at, "plan cancellation time") } : null;
 }
 
 /** @param {Database} db @param {Identity} identity */
@@ -150,6 +162,27 @@ export function createAdmissionStore(options) {
 		if (identity.repositoryId !== repositoryId || identity.owner !== owner) fail("parallel_foreign_owner", "Admission is outside this writer's owner/repository scope");
 		return identity;
 	}
+	/** @param {PlanIdentity} value */
+	function ownedPlan(value) {
+		object(value, ["repositoryId", "owner", "planId"], "plan cancellation identity");
+		const identity = {
+			repositoryId: digest(value.repositoryId, "repositoryId"), owner: text(value.owner, "owner", 4096),
+			planId: text(value.planId, "planId", 64),
+		};
+		if (!new RegExp(PLAN_ID_PATTERN).test(identity.planId)) fail("parallel_identity_invalid", "Invalid planId");
+		if (identity.repositoryId !== repositoryId || identity.owner !== owner) fail("parallel_foreign_owner", "Plan is outside this writer's owner/repository scope");
+		return identity;
+	}
+	/** This is a consistent recovery snapshot, not a native termination verdict.
+	 * @param {Database} db @param {PlanIdentity} identity */
+	function cancellationState(db, identity) {
+		return {
+			identity, fence: cancellationFor(db, identity),
+			admissions: records(db).filter(record => record.identity.repositoryId === repositoryId
+				&& record.identity.owner === owner && record.identity.planId === identity.planId)
+				.map(admission => ({ admission, observations: observationsFor(db, admission) })),
+		};
+	}
 	/** @param {Database} db @param {Fence} fence */
 	function current(db, fence) {
 		const identity = owned(fence.admission);
@@ -183,10 +216,16 @@ export function createAdmissionStore(options) {
 		const record = load(db, owned(identity));
 		return record ? observationsFor(db, record) : [];
 	});
+	/** Includes released history and positive ownership evidence; a null fence means
+	 * plan-wide cancellation has not been installed, even for an empty census.
+	 * @param {PlanIdentity} identity */
+	const readCancellation = (identity) => storage.transaction(db => cancellationState(db, ownedPlan(identity)));
 
 	/** @type {import("../types/parallel.js").AdmissionPort["claim"]} */
 	const claim = ({ identity: value, expectedRevision, resources, team }) => storage.transaction(db => {
 		const identity = owned(value);
+		const { repositoryId, owner, planId } = identity;
+		if (cancellationFor(db, { repositoryId, owner, planId })) fail("parallel_fenced", "Plan cancellation forbids claims, including replays");
 		integer(expectedRevision, "expected revision", 0);
 		({ resources, team } = validateClaims(resources, team));
 		const all = records(db);
@@ -243,7 +282,7 @@ export function createAdmissionStore(options) {
 		const after = structuredClone(before);
 		if (typeof db.setAuthorizer !== "function") fail("parallel_authorizer_unavailable", "Fenced journal transactions require SQLite authorizer support");
 		db.setAuthorizer((action, table) =>
-			[TABLE, OBSERVATIONS].includes(table ?? "") && action !== constants.SQLITE_READ
+			[TABLE, OBSERVATIONS, CANCELLATIONS].includes(table ?? "") && action !== constants.SQLITE_READ
 				|| [constants.SQLITE_TRANSACTION, constants.SQLITE_SAVEPOINT, constants.SQLITE_ATTACH, constants.SQLITE_DETACH, constants.SQLITE_PRAGMA].includes(action)
 				? constants.SQLITE_DENY : constants.SQLITE_OK);
 		let result;
@@ -269,17 +308,41 @@ export function createAdmissionStore(options) {
 		return result;
 	}, { write: true });
 
+	/** @param {Database} db @param {Record} before */
+	function cancelRecord(db, before) {
+		const after = admissionRecord({ ...before, phase: "cancelling", epoch: before.epoch + 1 });
+		// The journal closes unstarted intents through withFence so its receipt rows
+		// and this authoritative snapshot advance in the same writer transaction.
+		after.obligations = obligationsFor(db, after);
+		return save(db, before, after);
+	}
+
 	/** @type {import("../types/parallel.js").AdmissionPort["cancel"]} */
 	const cancel = (fence) => storage.transaction(db => {
 		const before = current(db, fence);
 		if (before.phase === "cancelling") return before;
 		check(before, fence);
 		if (!["claim-held", "reserved"].includes(before.phase)) fail("parallel_fenced", "Only an active claim can be cancelled");
-		const after = admissionRecord({ ...before, phase: "cancelling", epoch: before.epoch + 1 });
-		// The journal closes unstarted intents through withFence so its receipt rows
-		// and this authoritative snapshot advance in the same writer transaction.
-		after.obligations = obligationsFor(db, after);
-		return save(db, before, after);
+		return cancelRecord(db, before);
+	}, { write: true });
+
+	/** Atomically fences future claims and the current owned census, never releasing
+	 * capacity or certifying termination. Retry returns retained state without
+	 * advancing epochs again. No caller-supplied census can miss a competing claim.
+	 * @param {PlanIdentity} value */
+	const cancelPlan = (value) => storage.transaction(db => {
+		const identity = ownedPlan(value);
+		if (!cancellationFor(db, identity)) {
+			db.prepare(`INSERT INTO ${CANCELLATIONS} (identity, cancelled_at) VALUES (?, ?)`)
+				.run(stableStringify(identity), clock());
+		}
+		for (const record of records(db)) {
+			if (record.identity.repositoryId === repositoryId && record.identity.owner === owner
+				&& record.identity.planId === identity.planId && ["claim-held", "reserved"].includes(record.phase)) {
+				cancelRecord(db, record);
+			}
+		}
+		return cancellationState(db, identity);
 	}, { write: true });
 
 	/** Retain inventory-only ownership before a recovery decision. Omission or restart
@@ -355,5 +418,5 @@ export function createAdmissionStore(options) {
 		return save(db, before, { ...before, phase: "released" });
 	}, { write: true });
 
-	return Object.freeze({ read, list, claim, bindReservation, withFence, cancel, settle, deliver, release, failReservation, retainObservation, readObservations, databasePath: storage.databasePath });
+	return Object.freeze({ read, list, claim, bindReservation, withFence, cancel, cancelPlan, readCancellation, settle, deliver, release, failReservation, retainObservation, readObservations, databasePath: storage.databasePath });
 }
