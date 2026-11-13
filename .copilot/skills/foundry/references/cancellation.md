@@ -22,6 +22,11 @@ It does not itself stop an App child, accept caller inventory or prove uncertain
 Missing required recovery/outcome observations retain the hold; default production host ports remain
 unavailable. Neither tool registration nor another route's support authorizes a fallback.
 
+Workflow cancellation uses the required `WorkflowAnalysisPort.isMissingWorkflowRun` and
+`isTerminalWorkflowStatus` classifiers injected by root composition from canonical native guards.
+Missing, active and paused observations remain conservative holds; unrelated errors propagate.
+Do not replace these functions with permissive defaults, copied status lists or message matching.
+
 The current composed source returns `parallel_cancellation_join_pending` after persisting the plan
 fence and fencing the complete observed owned admission inventory. The admission port lacks a
 durable plan-wide claim fence, so a crashed stale reservation writer can outlive that census.

@@ -160,6 +160,24 @@ Filenames use meaningful one-word stems, with conventional `.test` and `.d.ts` s
 `copilot-extension.json` retains its required standard name. Directory context carries the subject
 instead of compound filename prefixes. There are no legacy-path shim modules.
 
+The separately approved closed legacy exception set contains exactly these extension-relative
+paths; no directory, basename-only or pattern exception is implied:
+
+```text
+bridge/package-inputs.mjs
+plan/parallel-contracts.mjs
+storage/parallel-protocol.mjs
+types/parallel-conformance.ts
+test/parallel/native-contracts.mjs
+test/parallel/fixtures/native-capabilities.json
+test/parallel/fixtures/native-rpc-failure.json
+test/parallel/fixtures/native-tools.json
+test/parallel/fixtures/sdk-identities.json
+```
+
+This preserves the explicitly planned `package-inputs.mjs` name and historical identities without
+relaxing the general naming rule. Structural tests reject every unlisted compound filename.
+
 | Boundary | Responsibility |
 | --- | --- |
 | `extension.mjs`, `canvas.mjs` | Native registration and per-panel lifecycle |
@@ -186,6 +204,12 @@ Browser modules import only other registered browser assets. Structural tests en
 directions, acyclic runtime imports, recursive checking and exact asset coverage.
 
 `analysis/verdicts.mjs` owns verdict aggregation; `bridge/pinning.mjs` owns context/evaluator pinning.
+Both consume the common pure `factory/criterion.mjs` evaluation criterion helper, which reuses the
+unchanged canonical visual criterion. Native dispatch injects its canonical `dispatchReservation`,
+`createdChild` and class-identity-preserving `classifyError` functions; application orchestration
+does not import the native layer or duplicate its decoders. `WorkflowAnalysisPort` requires
+`isMissingWorkflowRun` and `isTerminalWorkflowStatus`; root composition delegates them to native
+guards without exposing mutable terminal-state data.
 Tests share one `test/workflows/` directory and use singular `fixture.mjs` for scenario data.
 `test/factory/accessors.mjs` holds the typed service/export accessors.
 

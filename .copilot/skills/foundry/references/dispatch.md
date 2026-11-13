@@ -44,6 +44,12 @@ Calls require the current owning coordinator's native invocation outside workflo
 Absent host support returns `held` (`parallel_host_unavailable`); missing operation-specific
 decoders/observations also hold. There is no legacy or workflow fallback for admitted parallel work.
 
+The internal dispatch port must retain the canonical `dispatchReservation`, `createdChild` and
+`classifyError` implementations supplied by `createNativeDispatch`. The classifier preserves the
+actual native error instance; matching a message/code-shaped object is not equivalent. Application
+orchestration consumes these injected functions rather than importing native helpers, copying
+decoders or selecting another execution route. These internal functions are not public authority.
+
 ## Native dispatch sequence
 
 1. Call `foundry_get_status` and read `projection.scheduling`.
