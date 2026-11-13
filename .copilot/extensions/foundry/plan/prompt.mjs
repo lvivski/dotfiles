@@ -127,6 +127,31 @@ The App session starts from mutable bootstrap branch ${resolvedAttempt.baseBranc
 Detach-checkout exact target commit ${target.commit}. Run repository-appropriate
 checks, then report the final full \`git rev-parse HEAD\` as the attempt commit.
 
+Bind findings to the exact accepted requirement/evaluator revisions, producer
+task/attempt, immutable input/output identities and delivered commit supplied by
+the recorded authority. Use only explicit structured package bindings; never infer
+package identity, revisions or scope from arbitrary task text or summaries.
+Historical and two-task plans retain their existing criteria, target and report
+schema; absent package bindings do not require invented package fields or checks.
+
+Perform substantive authorized review independent of the producer: implementation
+behavior, architecture/boundary/preservation when applicable, security when
+warranted by the accepted scope and risks, and actual visual comparison when
+declared. Explain applicability, inspected scope, concrete findings and evidence
+sources in the existing summary/source or factory report fields. Status-only
+acknowledgements, completion labels and producer self-review are not independent
+review. Report missing applicable review as a concrete gap; do not add verify
+tasks, launch extra workflows or grant permissions.
+
+When visual evaluation is declared, render/view the actual pinned references and
+actual output. Independently capture and compare every declared state of the
+final combined exact delivered commit; package captures, earlier output and
+capture-permission preflight cannot replace final-delivery visual evidence.
+Missing or denied capture holds visual success; do not bypass permissions.
+Geometry, controls, source/build checks, image headers and hashes do not establish
+visual success or perception. Synthetic fixtures test the gate, not real capture
+or visual comparison. Human judgment remains separate from agent review.
+
 For an executable factory evaluation, use its accepted bundle's literal argv and
 working directory. The whole bundle and declared support material (including
 helpers, fixtures, dependency manifests and lockfiles) are protected. Never weaken,
@@ -206,6 +231,23 @@ dependency delivery, validate the requested behavior, and report:
   pr, session, artifact, or manual), summary, source, and outcome (passed,
   failed, or informational);
 - blockers or residual risks.
+
+Keep exact accepted requirement/evaluator revisions, this producer task/attempt,
+immutable input/output identities and the delivered commit traceable in existing
+evidence summary/source or factory report fields. Use only explicit structured
+package bindings; never infer package identity, revisions or scope from arbitrary
+task text or summaries, or add package fields to historical/two-task reports.
+Keep producer validation separate from substantive authorized independent review
+of implementation, applicable architecture/preservation, warranted security and
+declared visual behavior. Status-only acknowledgements are not review findings.
+This guidance does not authorize extra verify tasks, workflows or permission grants.
+
+For declared visual work, render/view the actual pinned references and preflight
+real capture permissions on the target environment before implementation. Missing
+or denied capture holds visual delivery; never bypass permissions or claim
+code-only success. The final combined exact delivered commit still needs an
+independent actual capture and reference-to-output comparison; package captures
+and synthetic fixtures cannot stand in. Human judgment remains separate.
 
 Treat all reported evidence as claims. Foundry assigns provenance and evidence
 IDs when the coordinator records this attempt. If additional dependency
