@@ -5,7 +5,7 @@ import test from "node:test";
 import { createDispatchOperations } from "../../application/dispatch.mjs";
 import { errorCode, errorMessage, isRecord, readJsonValue } from "../../data.mjs";
 import { analysisInputDigest, stableStringify } from "../../digest.mjs";
-import { createNativeAdmission, createOfferedDispatchTransport } from "../../native/admission.mjs";
+import { createNativeAdmission, createOfferedDispatchTransport, DispatchNativeError } from "../../native/admission.mjs";
 import { createNativeDispatch, dispatchReservation } from "../../native/dispatch.mjs";
 import { admissionRecord } from "../../plan/parallel-contracts.mjs";
 import { createDispatchJournal, initializeDispatchJournal } from "../../storage/dispatch.mjs";
@@ -219,6 +219,15 @@ async function setup(operations, workspacePath, fixture) {
 				db.prepare("UPDATE dispatch_effects SET receipt = ? WHERE id = ?").run(stableStringify({ ...receipt, ...change }), receipt.id);
 			}, { write: true });
 		},
+		/** @param {Receipt["kind"]} kind @param {Json} payload */
+		substitutePayload(kind, payload) {
+			assert.ok(record?.attempt);
+			const receipt = journal.read(record.attempt).find(item => item.kind === kind);
+			assert.ok(receipt);
+			storage.transaction(db => {
+				db.prepare("UPDATE dispatch_effects SET payload = ? WHERE id = ?").run(stableStringify(payload), receipt.id);
+			}, { write: true });
+		},
 		/** @param {Receipt["kind"]} kind @param {Json} value */
 		substituteOutcome(kind, value) {
 			assert.ok(record?.attempt);
@@ -262,6 +271,50 @@ test("duplicate concurrent callbacks and reconstructed dispatcher never create o
 	assert.equal(s.control.createCount, 1);
 	assert.equal(s.control.messageCount, 1);
 }));
+
+test("dispatch and reconstructed replay use the injected canonical reservation and child decoders", () => scenario(async s => {
+	/** @type {unknown[]} */
+	const reservations = [];
+	/** @type {unknown[]} */
+	const children = [];
+	const decodeReservation = s.native.dispatchReservation, decodeChild = s.native.createdChild;
+	s.native.dispatchReservation = value => {
+		reservations.push(value);
+		return decodeReservation(value);
+	};
+	s.native.createdChild = value => {
+		children.push(value);
+		return decodeChild(value);
+	};
+	assert.equal((await s.makeDispatcher().dispatch(s.identity)).state, "handed-off");
+	assert.equal((await s.makeDispatcher().dispatch(s.identity)).state, "handed-off");
+	assert.deepEqual(reservations, [s.reservation, s.reservation]);
+	assert.deepEqual(children, [s.child]);
+	assert.equal(s.control.createCount, 1);
+	assert.equal(s.control.messageCount, 1);
+}));
+
+test("malformed live and persisted reservation descriptors cannot authorize another native effect", async () => {
+	for (const persisted of [false, true]) {
+		await scenario(async s => {
+			s.control.withInputs = true;
+			await s.reserve(s.identity);
+			if (persisted) {
+				assert.equal((await s.makeDispatcher().dispatch(s.identity)).state, "handed-off");
+				const payload = s.journal.payload(s.reservation.attempt, "creation");
+				assert.ok(isRecord(payload) && isRecord(payload.reservation));
+				s.substitutePayload("creation", readJsonValue({ ...payload, reservation: { ...payload.reservation, delegationPrompt: "descriptor omitted" } }));
+			} else {
+				s.reservation.delegationPrompt = "descriptor omitted";
+			}
+			const trace = [...s.trace], receipts = s.record.receipts;
+			const result = await s.makeDispatcher().dispatch(s.identity);
+			assert.equal(result.state === "held" && result.code, "dispatch_inputs_changed");
+			assert.deepEqual(s.trace, trace);
+			assert.deepEqual(s.record.receipts, receipts);
+		});
+	}
+});
 
 test("input metadata without the owned producer resolver cannot create a consumer", () => scenario(async s => {
 	s.control.withInputs = true;
@@ -322,14 +375,59 @@ test("cancellation during create preserves late child receipt and forbids attach
 }));
 
 test("permission rejection is durable and never replayed", () => scenario(async s => {
+	/** @type {unknown[]} */
+	const errors = [];
+	const classifyError = s.native.classifyError;
+	s.native.classifyError = error => {
+		errors.push(error);
+		return classifyError(error);
+	};
 	s.control.deny = "create_session";
 	const first = await s.makeDispatcher().dispatch(s.identity);
 	assert.equal(first.state === "held" && first.code, "dispatch_permission_rejected");
-	assert.equal(s.record.receipts[0].state, "definitive-failure");
+	const receipt = s.record.receipts[0];
+	assert.equal(receipt.state, "definitive-failure");
+	assert.equal(errors.length, 1);
+	assert.ok(errors[0] instanceof DispatchNativeError);
+	const saved = s.journal.outcomes(s.reservation.attempt, receipt.id).at(-1);
+	assert.ok(isRecord(saved));
+	assert.deepEqual(saved.raw, errors[0].receipt);
+	assert.deepEqual(saved.raw, { source: `coordinator/create_session/${receipt.id}`, raw: { resultType: "denied", textResultForLlm: "Permission denied" } });
 	s.control.deny = null;
 	assert.equal((await s.makeDispatcher().dispatch(s.identity)).state, "held");
 	assert.equal(s.control.createCount, 0);
+	assert.equal(s.trace.filter(name => name === "create_session").length, 1);
+	assert.equal(errors.length, 1);
 }));
+
+test("unknown and lookalike native failures stay uncertain without trusting forged receipts or retrying", async () => {
+	const raw = { source: "retained native failure", raw: { resultType: "failure", textResultForLlm: "Outcome unknown" } };
+	for (const fault of [
+		new DispatchNativeError("dispatch_transport_uncertain", "Outcome unknown", "uncertain", raw),
+		new DispatchNativeError("dispatch_capability_unavailable", "Route changed before invocation", "not-started", raw),
+		Object.assign(new Error("Lookalike denial"), { code: "dispatch_permission_rejected", disposition: "definitive-failure", receipt: raw }),
+		new Error("Unknown failure"),
+	]) {
+		await scenario(async s => {
+			let calls = 0;
+			s.native.create = async () => {
+				calls++;
+				assert.equal(s.record.receipts[0].state, "in-flight");
+				throw fault;
+			};
+			assert.equal((await s.makeDispatcher().dispatch(s.identity)).state, "held");
+			const receipt = s.record.receipts[0];
+			assert.equal(receipt.state, "uncertain");
+			const saved = s.journal.outcomes(s.reservation.attempt, receipt.id).at(-1);
+			assert.ok(isRecord(saved));
+			assert.deepEqual(saved.raw, fault instanceof DispatchNativeError ? raw : null);
+			assert.equal((await s.makeDispatcher().dispatch(s.identity)).state, "held");
+			assert.equal(calls, 1);
+			assert.equal(s.control.createCount, 0);
+			assert.equal(s.control.messageCount, 0);
+		});
+	}
+});
 
 test("matching native attachment after a revision conflict is reused, not retried", () => scenario(async s => {
 	s.control.beforeAttach = async () => {
@@ -397,6 +495,41 @@ test("successful replay revalidates the saved result and exact returned run iden
 	const resumed = await s.makeDispatcher().launch(s.reservation.attempt, spec);
 	assert.equal(resumed.state === "held" && resumed.code, "dispatch_receipt_mismatch");
 	assert.equal(s.control.workflowCount, 1);
+}));
+
+test("replay rejects substituted saved creation results and attachment children without another invocation", () => scenario(async s => {
+	assert.equal((await s.makeDispatcher().dispatch(s.identity)).state, "handed-off");
+	const payload = s.journal.payload(s.reservation.attempt, "attachment");
+	assert.ok(isRecord(payload) && isRecord(payload.child));
+	/** @type {[Record<string, Json>, string][]} */
+	const creationChanges = [
+		[{ sessionId: "substituted-child" }, "dispatch_receipt_mismatch"],
+		[{ projectId: "substituted-project" }, "dispatch_child_mismatch"],
+		[{ worktreePath: "relative/worktree" }, "dispatch_child_invalid"],
+	];
+	for (const [change, code] of creationChanges) {
+		s.substituteOutcome("creation", readJsonValue({ ...s.child, ...change }));
+		const result = await s.makeDispatcher().dispatch(s.identity);
+		assert.equal(result.state === "held" && result.code, code);
+	}
+	s.substituteOutcome("creation", readJsonValue(s.child));
+	/** @type {[Record<string, Json>, string][]} */
+	const attachmentChanges = [
+		[{ sessionId: "substituted-child" }, "dispatch_child_mismatch"],
+		[{ projectId: "substituted-project" }, "dispatch_child_mismatch"],
+		[{ creatorSessionId: "substituted-creator" }, "dispatch_child_mismatch"],
+		[{ worktreePath: `${s.child.worktreePath}/substituted` }, "dispatch_child_mismatch"],
+		[{ worktreePath: "relative/worktree" }, "dispatch_child_invalid"],
+		[{ extra: true }, "factory_input_invalid"],
+	];
+	for (const [change, code] of attachmentChanges) {
+		s.substitutePayload("attachment", readJsonValue({ ...payload, child: { ...payload.child, ...change } }));
+		const result = await s.makeDispatcher().dispatch(s.identity);
+		assert.equal(result.state === "held" && result.code, code);
+	}
+	assert.equal(s.control.createCount, 1);
+	assert.equal(s.control.messageCount, 1);
+	assert.equal(s.trace.filter(name => name === "foundry_attach_task").length, 1);
 }));
 
 test("workflow exact prepared launch, uncertainty and restart share one durable invocation slot", () => scenario(async s => {

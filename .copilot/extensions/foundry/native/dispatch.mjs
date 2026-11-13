@@ -3,6 +3,7 @@ import { readBoolean, readJsonValue } from "../data.mjs";
 import { stableStringify } from "../digest.mjs";
 import { fail, list, object, text, timestamp } from "../factory/fields.mjs";
 import { assertInputCoverage, attemptIdentity, commitId, packageInput, reservedInputs } from "../plan/parallel-contracts.mjs";
+import { DispatchNativeError } from "./admission.mjs";
 
 /** @typedef {import("../types/parallel.js").AttemptIdentity} Attempt */
 /** @typedef {import("../types/json.js").JsonValue} Json */
@@ -54,6 +55,7 @@ export function createdChild(value) {
  * App result/observation decoders are host composition ports, not invented SDK schemas.
  * Without those supported observations preflight holds BEFORE creation. Complete listing
  * and fresh detail are passed to the observer; an idle SDK event is never setup evidence.
+ * Canonical reservation/child decoding and error classification stay on this native port.
  * @param {{
  * transport: ReturnType<typeof import("./admission.mjs").createOfferedDispatchTransport>,
  * decodeCreated?: (value: unknown) => unknown,
@@ -79,7 +81,11 @@ export function createNativeDispatch(options) {
 		};
 	}
 	return {
-		transport, createArguments,
+		transport, createArguments, dispatchReservation, createdChild,
+		/** @param {unknown} error */
+		classifyError(error) {
+			return error instanceof DispatchNativeError ? error : null;
+		},
 		preflight() {
 			for (const name of ["create_session", "get_session", "list_sessions_and_chats", "foundry_get_status", "foundry_attach_task", "send_session_message"]) transport.ensure(name);
 			if (!options.decodeCreated || !options.decodeHandoff || !options.observeSetup || !options.observeChild) {

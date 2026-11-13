@@ -246,6 +246,35 @@ test("cancellation request is idempotent and finalization needs exact dispositio
 
 for (const status of ["running", "paused"]) test(`${status} Workflow runs require cancellation before finalization`, () => {
 	let terminal = false;
+	const analysis = analysisStub({
+		discoverVerificationRun: async () => ({
+			state: "found",
+			run: {
+				runId: "active-verification",
+				status,
+				createdAt: Date.now(),
+			},
+			duplicates: [],
+		}),
+		cancelVerificationRun: async (runId) => {
+			terminal = true;
+			return { runId, status: "cancelled", alreadyTerminal: false };
+		},
+		verificationRunIsTerminal: async () => assert.fail("Cancellation must inspect the run's identity and status"),
+	});
+	analysis.inspectWorkflow = createWorkflowAnalysis(() => fakeApi({
+		"active-verification": {
+			workflowName: "verify",
+			run: { runId: "active-verification", status: terminal ? "cancelled" : status },
+		},
+	})).inspectWorkflow;
+	/** @type {import("@github/copilot-sdk").WorkflowRunStatus[]} */
+	const classifiedStatuses = [];
+	const isTerminalWorkflowStatus = analysis.isTerminalWorkflowStatus;
+	analysis.isTerminalWorkflowStatus = observedStatus => {
+		classifiedStatuses.push(observedStatus);
+		return isTerminalWorkflowStatus(observedStatus);
+	};
 	return withOperations(async ({ operations, workspacePath }) => {
 		let plan = await createApproved(operations, workspacePath);
 		({ plan } = await runTask(operations, plan, "T-001"));
@@ -275,6 +304,7 @@ for (const status of ["running", "paused"]) test(`${status} Workflow runs requir
 			}),
 			(/** @type {unknown} */ error) => errorCode(error) === "verification_not_terminated",
 		);
+		assert.deepEqual(classifiedStatuses, [status]);
 		const cancelled = await operations.cancelVerificationRun({
 			planId: plan.id,
 			expectedRevision: plan.revision,
@@ -291,24 +321,85 @@ for (const status of ["running", "paused"]) test(`${status} Workflow runs requir
 			sessionInventory: completeInventory(),
 		});
 		assert.equal(plan.status, PLAN_STATUS.CANCELLED);
-	}, {
-		analysis: cancellationAnalysis({
-			discoverVerificationRun: async () => ({
-				state: "found",
-				run: {
-					runId: "active-verification",
-					status,
-					createdAt: Date.now(),
-				},
-				duplicates: [],
-			}),
-			cancelVerificationRun: async (runId) => {
-				terminal = true;
-				return { runId, status: "cancelled", alreadyTerminal: false };
-			},
-			verificationRunIsTerminal: async () => terminal,
-		}),
+		assert.deepEqual(classifiedStatuses, [status, "cancelled"]);
+	}, { analysis });
+});
+
+test("cancellation classifies missing inspections through the workflow port and propagates unrelated errors", () => {
+	/** @type {unknown} */
+	let inspectionError;
+	/** @type {unknown[]} */
+	const classifiedErrors = [];
+	const analysis = analysisStub({
+		discoverVerificationRun: async () => ({ state: "found", run: { runId: "missing-verification", status: "running" } }),
+		verificationRunIsTerminal: async () => assert.fail("A missing observation is not terminal evidence"),
 	});
+	analysis.inspectWorkflow = async () => { throw inspectionError; };
+	const isMissingWorkflowRun = analysis.isMissingWorkflowRun;
+	analysis.isMissingWorkflowRun = error => {
+		classifiedErrors.push(error);
+		return isMissingWorkflowRun(error);
+	};
+	analysis.isTerminalWorkflowStatus = () => assert.fail("A missing observation has no status to classify");
+	return withOperations(async ({ operations, workspacePath }) => {
+		let plan = await completeImplementation(operations, workspacePath);
+		plan = (await operations.prepareVerification({
+			planId: plan.id, expectedRevision: plan.revision, reservationId: "missing-observation-reservation",
+		})).plan;
+		plan = await operations.cancel({
+			planId: plan.id, expectedRevision: plan.revision, requestId: "missing-observation-cancel",
+			reason: "Stop owned workflow", requestedBy: "octocat",
+		});
+		const finalization = {
+			planId: plan.id, expectedRevision: plan.revision, dispositions: [], finalizedBy: "octocat",
+			verificationDisposition: "run-terminated", sessionInventory: completeInventory(),
+		};
+		const missingErrors = [
+			Object.assign(new Error("Inspection failed"), { code: "workflow_run_not_found" }),
+			{ data: { code: "not_found" } },
+			new Error("Inspection failed", { cause: { code: "not_found" } }),
+			new Error("Inspection failed", { cause: { data: { code: "workflow_run_not_found" } } }),
+			new Error("Workflow run missing-verification not found"),
+		];
+		for (inspectionError of missingErrors) {
+			await assert.rejects(operations.finalizeCancellation(finalization), { code: "verification_not_terminated" });
+		}
+		const unrelatedErrors = [
+			new Error("Workflow backend unavailable"),
+			Object.assign(new Error("Unrelated object not found"), { code: "permission_denied" }),
+		];
+		for (inspectionError of unrelatedErrors) {
+			await assert.rejects(operations.finalizeCancellation(finalization), error => error === inspectionError);
+		}
+		assert.deepEqual(classifiedErrors, [...missingErrors, ...unrelatedErrors]);
+		assert.deepEqual(await operations.getPlan({ planId: plan.id }), plan);
+	}, { analysis });
+});
+
+for (const status of ["completed", "error", "halted", "cancelled"]) test(`a matching ${status} observation finalizes cancellation`, () => {
+	const analysis = analysisStub({
+		discoverVerificationRun: async () => ({ state: "found", run: { runId: "terminal-verification", status } }),
+		verificationRunIsTerminal: async () => assert.fail("Cancellation must inspect the run's identity and status"),
+	});
+	analysis.inspectWorkflow = createWorkflowAnalysis(() => fakeApi({
+		"terminal-verification": { workflowName: "verify", run: { runId: "terminal-verification", status } },
+	})).inspectWorkflow;
+	return withOperations(async ({ operations, workspacePath }) => {
+		let plan = await completeImplementation(operations, workspacePath);
+		plan = (await operations.prepareVerification({
+			planId: plan.id, expectedRevision: plan.revision, reservationId: "terminal-observation-reservation",
+		})).plan;
+		plan = await operations.cancel({
+			planId: plan.id, expectedRevision: plan.revision, requestId: "terminal-observation-cancel",
+			reason: "Stop owned workflow", requestedBy: "octocat",
+		});
+		const finalized = await operations.finalizeCancellation({
+			planId: plan.id, expectedRevision: plan.revision, dispositions: [], finalizedBy: "octocat",
+			verificationDisposition: "run-terminated", sessionInventory: completeInventory(),
+		});
+		assert.equal(finalized.status, PLAN_STATUS.CANCELLED);
+		assert.equal(finalized.cancellation?.verificationRunId, "terminal-verification");
+	}, { analysis });
 });
 
 test("late verification discovery is persisted before Workflow cancellation", () => {

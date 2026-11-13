@@ -28,12 +28,37 @@ function imports(text) {
 	return [...text.matchAll(/^import\s+(?:[\s\S]*?\s+from\s+)?["']([^"']+)["'];/gm)].map((match) => match[1]);
 }
 
+const approvedCompoundFilenames = new Set([
+	"bridge/package-inputs.mjs",
+	"plan/parallel-contracts.mjs",
+	"storage/parallel-protocol.mjs",
+	"types/parallel-conformance.ts",
+	"test/parallel/native-contracts.mjs",
+	"test/parallel/fixtures/native-capabilities.json",
+	"test/parallel/fixtures/native-rpc-failure.json",
+	"test/parallel/fixtures/native-tools.json",
+	"test/parallel/fixtures/sdk-identities.json",
+]);
+
+/** @param {string} filename */
+function validateFilename(filename) {
+	for (const directory of filename.split(path.sep).slice(0, -1)) assert.match(directory, /^[a-z]+$/, filename);
+	if (filename === "copilot-extension.json" || approvedCompoundFilenames.has(filename)) return;
+	const stem = path.basename(filename).replace(/\.(?:mjs|js|ts|json|md|html|css)$/, "").replace(/\.(?:test|d)$/, "");
+	assert.match(stem, /^(?:[a-z]+|README)$/, filename);
+}
+
 test("owned filenames have one-word stems with only the approved standard exceptions", () => {
-	for (const filename of files()) {
-		for (const directory of filename.split(path.sep).slice(0, -1)) assert.match(directory, /^[a-z]+$/, filename);
-		if (filename === "copilot-extension.json") continue;
-		const stem = path.basename(filename).replace(/\.(?:mjs|js|ts|json|md|html|css)$/, "").replace(/\.(?:test|d)$/, "");
-		assert.match(stem, /^(?:[a-z]+|README)$/, filename);
+	for (const filename of files()) validateFilename(filename);
+});
+
+test("filename exceptions do not admit nonlisted names or the same basenames in other directories", () => {
+	for (const filename of approvedCompoundFilenames) {
+		assert.throws(() => validateFilename(path.join("other", path.basename(filename))), assert.AssertionError);
+		assert.throws(() => validateFilename(filename.replace(/(\.[^.]+)$/, "-new$1")), assert.AssertionError);
+	}
+	for (const filename of ["factory/new-helper.mjs", "test/parallel/fixtures/new-fixture.json", "other/copilot-extension.json", "two-words/helper.mjs"]) {
+		assert.throws(() => validateFilename(filename), assert.AssertionError);
 	}
 });
 

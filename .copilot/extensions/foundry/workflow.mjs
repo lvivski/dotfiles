@@ -1,5 +1,6 @@
 import { createWorkflowControls } from "./native/controls.mjs";
 import { createReservationDiscovery } from "./native/discovery.mjs";
+import { isMissingRun, TERMINAL } from "./native/guards.mjs";
 import { createPlanningWorkflow } from "./native/planning.mjs";
 import { createRunReader } from "./native/reader.mjs";
 import { createVerificationWorkflow } from "./native/verification.mjs";
@@ -28,6 +29,8 @@ export function createWorkflowAnalysis(getWorkflowApi) {
 		assessVerificationRun,
 		cancelVerificationRun,
 		discoverVerificationRun,
+		isMissingWorkflowRun: isMissingRun,
+		isTerminalWorkflowStatus: (/** @type {import("@github/copilot-sdk").WorkflowRunStatus} */ status) => TERMINAL.has(status),
 		preparePlanning,
 		prepareVerification,
 		verificationRunIsTerminal,

@@ -148,6 +148,48 @@ const freshReads = () => [
 	{ name: "list_sessions_and_chats", result: success({ hostInventory: "complete-listing" }) },
 ];
 
+test("injected canonical decoders preserve exports and reject malformed reservations and saved children", () => {
+	const fixture = dispatchFixture();
+	assert.equal(fixture.native.dispatchReservation, dispatchReservation);
+	assert.equal(fixture.native.createdChild, createdChild);
+	const descriptor = inputs(fixture.prepared);
+	const prepared = {
+		...fixture.prepared, inputs: descriptor,
+		requiredInputs: descriptor.inputs.map(({ producer, output, destination }) => ({ producer, output, destination })),
+		delegationPrompt: `  Exact handoff.\n${stableStringify(descriptor)}\n`,
+	};
+	assert.deepEqual(fixture.native.dispatchReservation(prepared), prepared);
+	assert.deepEqual(fixture.native.createdChild(fixture.created), fixture.created);
+	assert.throws(() => fixture.native.dispatchReservation({ ...prepared, delegationPrompt: "descriptor omitted" }), { code: "dispatch_inputs_changed" });
+	assert.throws(() => fixture.native.dispatchReservation({ ...prepared, inputs: null }), { code: "dispatch_inputs_missing" });
+	assert.throws(() => fixture.native.dispatchReservation({ ...prepared, requiredInputs: [] }), { code: "parallel_input_coverage" });
+	assert.throws(() => fixture.native.dispatchReservation({ ...prepared, extra: true }), { code: "factory_input_invalid" });
+	for (const worktreePath of ["relative/worktree", `${fixture.created.worktreePath}/../alias`]) {
+		assert.throws(() => fixture.native.createdChild({ ...fixture.created, worktreePath }), { code: "dispatch_child_invalid" });
+	}
+	assert.throws(() => fixture.native.createdChild({ ...fixture.created, extra: true }), { code: "factory_input_invalid" });
+	assert.deepEqual(fixture.calls, []);
+});
+
+test("native error classification retains genuine instances, dispositions and receipts but rejects lookalikes", () => {
+	const fixture = dispatchFixture();
+	const receipt = { source: "exact transport receipt", raw: { resultType: "denied", textResultForLlm: "Permission denied" } };
+	/** @type {DispatchNativeError["disposition"][]} */
+	const dispositions = ["not-started", "uncertain", "definitive-failure"];
+	for (const disposition of dispositions) {
+		const error = new DispatchNativeError("dispatch_permission_rejected", "Permission denied", disposition, receipt);
+		const classified = fixture.native.classifyError(error);
+		assert.equal(classified, error);
+		assert.equal(classified.disposition, disposition);
+		assert.equal(classified.receipt, receipt);
+	}
+	const lookalike = { name: "DispatchNativeError", code: "dispatch_permission_rejected", disposition: "definitive-failure", receipt };
+	for (const error of [null, undefined, "failure", new Error("unknown failure"), lookalike, Object.assign(new Error("lookalike"), lookalike)]) {
+		assert.equal(fixture.native.classifyError(error), null);
+	}
+	assert.deepEqual(fixture.calls, []);
+});
+
 test("offered SDK string and expanded envelopes retain raw receipts and unwrap successful values", async () => {
 	for (const [raw, expected] of [
 		[JSON.stringify({ plan: "string-result" }), { plan: "string-result" }],
@@ -183,6 +225,7 @@ test("permission rejection is definitive, while recorded disabled RPC and lost r
 		const fixture = dispatchFixture([step]);
 		await assert.rejects(fixture.native.create(fixture.prepared), error => {
 			assert.ok(error instanceof DispatchNativeError);
+			assert.equal(fixture.native.classifyError(error), error);
 			assert.equal(error.code, code);
 			assert.equal(error.disposition, disposition);
 			const receipt = readRecord(error.receipt);

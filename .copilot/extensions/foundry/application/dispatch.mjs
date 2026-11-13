@@ -1,8 +1,6 @@
 import { errorCode, errorMessage, isList, isRecord, readJsonValue, readRecord } from "../data.mjs";
 import { analysisInputDigest, stableStringify } from "../digest.mjs";
 import { fail, integer } from "../factory/fields.mjs";
-import { DispatchNativeError } from "../native/admission.mjs";
-import { createdChild, dispatchReservation } from "../native/dispatch.mjs";
 import { admissionIdentity, reservedInputs } from "../plan/parallel-contracts.mjs";
 import { validatePlan } from "../plan/validation.mjs";
 
@@ -12,7 +10,9 @@ import { validatePlan } from "../plan/validation.mjs";
 /** @typedef {import("../types/parallel.js").AdmissionRecord} Admission */
 /** @typedef {import("../types/json.js").JsonValue} Json */
 /** @typedef {import("../native/admission.mjs").NativeResult} NativeResult */
-/** @typedef {ReturnType<typeof dispatchReservation>} Reservation */
+/** @typedef {ReturnType<typeof import("../native/dispatch.mjs").createNativeDispatch>} NativeDispatch */
+/** @typedef {ReturnType<NativeDispatch["dispatchReservation"]>} Reservation */
+/** @typedef {ReturnType<NativeDispatch["createdChild"]>} Child */
 /** @typedef {{identity: Identity, request: import("../requests.mjs").Request<"completeTask">, terminalRunIds: string[]}} Completion */
 
 /** @param {Admission} record */
@@ -31,7 +31,7 @@ const held = (error) => ({ state: /** @type {const} */ ("held"), code: errorCode
  * @param {{
  * admission: import("../types/parallel.js").AdmissionPort,
  * journal: ReturnType<typeof import("../storage/dispatch.mjs").createDispatchJournal>,
- * native: ReturnType<typeof import("../native/dispatch.mjs").createNativeDispatch>,
+ * native: NativeDispatch,
  * plans: ReturnType<typeof import("../native/admission.mjs").createNativeAdmission>,
  * inputs?: Pick<import("../types/parallel.js").InputPort, "resolve">,
  * reserve: (identity: Identity) => Promise<Reservation>,
@@ -125,10 +125,11 @@ export function createDispatchOperations({ admission, journal, native, plans, in
 		} catch (error) {
 			const latest = find(attempt, kind);
 			if (latest?.state === "in-flight" && errorCode(error) !== "revision_conflict" && errorCode(error) !== "dispatch_already_started") {
-				const outcome = error instanceof DispatchNativeError && error.disposition === "definitive-failure"
+				const nativeError = native.classifyError(error);
+				const outcome = nativeError?.disposition === "definitive-failure"
 					? /** @type {const} */ ("definitive-failure") : /** @type {const} */ ("uncertain");
 				retain({ ...latest, state: outcome, source: result?.source ?? `${errorCode(error) ?? "native-error"}: ${errorMessage(error)}`.slice(0, 4096), at: clock() },
-					readJsonValue({ source: result?.source ?? "native failure", raw: result?.raw ?? (error instanceof DispatchNativeError ? error.receipt : null),
+					readJsonValue({ source: result?.source ?? "native failure", raw: result?.raw ?? nativeError?.receipt ?? null,
 						value: result?.value ?? null, startedAt: receipt.at, error: { code: errorCode(error) ?? "dispatch_failed", message: errorMessage(error) } }));
 			}
 			throw error;
@@ -142,7 +143,7 @@ export function createDispatchOperations({ admission, journal, native, plans, in
 			|| attempt.status !== "running" || status.plan.status !== "running") return null;
 		return status;
 	}
-	/** @param {unknown} value @param {Reservation} reservation @param {ReturnType<typeof createdChild>} child */
+	/** @param {unknown} value @param {Reservation} reservation @param {Child} child */
 	function attachmentResult(value, reservation, child) {
 		const plan = validatePlan(isRecord(value) && "plan" in value ? value.plan : value);
 		const attempt = plan.tasks.find(task => task.id === reservation.attempt.taskId)?.attempts.find(item => item.id === reservation.attempt.attemptId);
@@ -161,7 +162,7 @@ export function createDispatchOperations({ admission, journal, native, plans, in
 			if (identity.owner !== native.transport.owner) fail("dispatch_foreign_plan", "Foreign-owner dispatch is forbidden");
 			const previous = admission.read(identity);
 			const stored = previous?.attempt ? journal.payload(previous.attempt, "creation") : null;
-			const reservation = dispatchReservation(isRecord(stored) ? stored.reservation : await reserve(identity));
+			const reservation = native.dispatchReservation(isRecord(stored) ? stored.reservation : await reserve(identity));
 			const { attemptId, ...reservedIdentity } = reservation.attempt;
 			if (stableStringify(reservedIdentity) !== stableStringify(identity)) fail("dispatch_attempt_mismatch", "Reservation returned another admission");
 			if (current(reservation.attempt).phase !== "reserved") fail("parallel_fenced", "Cancellation or terminal admission forbids dispatch");
@@ -211,7 +212,7 @@ export function createDispatchOperations({ admission, journal, native, plans, in
 			} else {
 				const payload = journal.payload(reservation.attempt, "attachment");
 				if (!isRecord(payload) || !isRecord(payload.child)) fail("dispatch_receipt_missing", "Attachment lacks canonical child receipt");
-				child = createdChild(payload.child);
+				child = native.createdChild(payload.child);
 				if (child.sessionId !== created.sessionId || child.projectId !== created.projectId
 					|| child.creatorSessionId !== created.creatorSessionId || child.worktreePath !== created.worktreePath) fail("dispatch_child_mismatch", "Durable attachment changed the created child");
 				await effect(reservation.attempt, "attachment", readJsonValue(payload), async () => {
