@@ -519,7 +519,40 @@ test("registered finalization checks native ownership retained by already-delive
 	};
 	assert.equal((await f.invoke("foundry_finalize_cancellation", input)).value.code, "parallel_cancellation_join_pending");
 	f.control.terminal = true;
-	assert.equal((await f.invoke("foundry_finalize_cancellation", input)).value.status, "cancelled");
+	const observe = must(f.host.observeRecovery);
+	/** @type {string | null} */
+	let lateRun = "paused";
+	let revisionRace = true;
+	f.host.observeRecovery = async request => {
+		const inventory = await observe(request);
+		if (revisionRace) {
+			revisionRace = false;
+			const latest = await f.operations().getPlan({ planId: plan.id });
+			await f.operations().storeFor().update(latest.id, latest.revision, latest);
+		}
+		return { ...inventory, runs: lateRun === null ? [] : [{ id: "late-released-run", status: lateRun, attempt: must(delivered.attempt) }] };
+	};
+	const finalize = async () => f.invoke("foundry_finalize_cancellation", {
+		...input, expectedRevision: (await f.operations().getPlan({ planId: plan.id })).revision,
+	});
+	assert.equal((await finalize()).value.code, "parallel_cancellation_join_pending");
+	const observed = await f.operations().getPlan({ planId: plan.id });
+	const capture = must(must(observed.cancellation).parallelObservations?.[0]);
+	assert.deepEqual(capture.runIds, ["late-released-run"]);
+	assert.deepEqual(capture.sessionIds, ["child-1"]);
+	const foreign = structuredClone(observed);
+	must(must(foreign.cancellation).parallelObservations?.[0]).attempt.owner = "/foreign-owner";
+	await assert.rejects(f.operations().storeFor().update(foreign.id, foreign.revision, foreign), error => {
+		assert.equal(readRecord(error).code, "candidate_invalid");
+		assert.equal(readRecord(readRecord(error).details).validationCode, "invalid_cancellation_observations");
+		return true;
+	});
+	f.reopen();
+	lateRun = null;
+	assert.equal((await finalize()).value.code, "parallel_cancellation_join_pending",
+		"A positive native identity discovered after delivery must survive restart and later omission");
+	lateRun = "completed";
+	assert.equal((await finalize()).value.status, "cancelled");
 	assert.deepEqual(f.storage.admission.read(delivered.identity), delivered, "Finalization does not rewrite delivery or released history");
 });
 

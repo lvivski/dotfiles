@@ -112,6 +112,8 @@ export type Cancellation = {
 	verificationDisposition: "run-terminated" | "no-run-created" | null;
 	finalizationOverride: FinalizationOverride | null; verificationTerminatedAt: string | null;
 	finalizedBy: string | null; finalizedAt: string | null;
+	/** Positive native ownership discovered after admission release; never claim authority. */
+	parallelObservations?: import("../inventory.mjs").RecoveryObservation[];
 };
 
 export type FoundryActivity = {

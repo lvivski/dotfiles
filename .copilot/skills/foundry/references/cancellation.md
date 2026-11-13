@@ -46,6 +46,10 @@ is not a terminated child. Missing, stale or nonterminal observations retain
 `parallel_cancellation_join_pending` or the explicit unavailable-observation hold; caller inventory
 and `finalizationOverride` cannot bypass this proof. Existing native plan dispositions and the
 authoritative verification-run guard still apply. Do not retry in a polling loop.
+New ownership discovered during finalization of released history is retained as a whole positive
+capture in the same owner's plan before returning a hold. Read the updated revision and obtain a
+fresh observation; absence on a later capture, service restart or an old terminal delivery cannot
+erase it. This observation-only field does not reopen admissions or grant new claim authority.
 
 Prepared is not started; attached is not stopped; historical DONE is not proof that supplemental
 activity is terminal. Account for late native outcomes after cancellation and retain reservations/

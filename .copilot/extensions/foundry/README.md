@@ -81,6 +81,11 @@ for all retained bound attempts (including completed producers), and the existin
 verification guards. Unresolved joins retain `parallel_cancellation_join_pending`; caller inventory,
 idle state or `finalizationOverride` cannot substitute for the parallel native proof. Interrupted
 plan/store joins remain held until the same cancellation request or explicit reconciliation resumes.
+If finalization discovers new native identities after an admission was released, it preserves the
+whole positive capture in the owning plan's optional `cancellation.parallelObservations`, then
+holds for a fresh read/observation. Later omission or restart cannot forget those identities.
+These records only constrain cancellation: they neither reopen delivered admissions nor allocate
+claims, grant authority or replace the admission store's existing recovery observations.
 
 Registered tiny-Git fixtures execute two-producer consumption, immutable provenance, convergence,
 independent verification preparation and human gates through these production modules with

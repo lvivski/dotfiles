@@ -21,7 +21,7 @@ import { errorCode, errorMessage, isRecord, readJsonValue } from "./data.mjs";
 import { analysisInputDigest, stableStringify } from "./digest.mjs";
 import { branchCommit } from "./evidence/git.mjs";
 import { object, strings, text, timestamp } from "./factory/fields.mjs";
-import { normalizeRecoveryInventory } from "./inventory.mjs";
+import { normalizeRecoveryInventory, normalizeRecoveryObservation } from "./inventory.mjs";
 import { createNativeAdmission, createOfferedDispatchTransport } from "./native/admission.mjs";
 import { createNativeDispatch, dispatchReservation } from "./native/dispatch.mjs";
 import { reconcileCancellationObligations } from "./plan/cancellation.mjs";
@@ -460,17 +460,48 @@ function createParallelComposition({ options, workspace, storeFor, factory, pers
 			currentHost();
 			const latest = storeFor().readCurrent(current.id);
 			factory.requireOwner(latest);
-			if (latest.revision !== current.revision || !same(latest.cancellation, current.cancellation)
-				|| !same(state, admission.readCancellation(state.identity))) {
-				return fail("parallel_cancellation_context_changed", "Cancellation ownership changed during native observation; reread and reconcile explicitly");
+			if (latest.status !== "cancelling" || latest.cancellation?.requestId !== current.cancellation?.requestId
+				|| !same(latest.factory, current.factory) || !same(state, admission.readCancellation(state.identity))) {
+				throw new FoundryOperationError("parallel_cancellation_context_changed", "Cancellation ownership changed during native observation; preserve this capture and reconcile explicitly", { inventory });
+			}
+			const retained = [...observations, ...(latest.cancellation?.parallelObservations?.filter(entry => same(entry.attempt, record.attempt)) ?? [])];
+			const capture = normalizeRecoveryObservation({
+				attempt: record.attempt, source: inventory.source, capturedAt: inventory.capturedAt,
+				sessionIds: inventory.sessions.filter(entry => same(entry.attempt, record.attempt)).map(entry => entry.id),
+				runIds: inventory.runs.filter(entry => same(entry.attempt, record.attempt)).map(entry => entry.id),
+			});
+			const sessions = new Set([
+				...retained.flatMap(entry => entry.sessionIds),
+				...record.receipts.flatMap(entry => entry.sessionId ? [entry.sessionId] : []),
+				...record.obligations.flatMap(entry => entry.sessionId ? [entry.sessionId] : []),
+				...(record.delivery ? [record.delivery.sessionId] : []),
+			]);
+			const runs = new Set([
+				...retained.flatMap(entry => entry.runIds), ...record.obligations.flatMap(entry => entry.runIds),
+				...record.receipts.flatMap(entry => entry.runId ? [entry.runId] : []), ...(record.delivery?.terminalRunIds ?? []),
+			]);
+			if (capture.sessionIds.some(id => !sessions.has(id)) || capture.runIds.some(id => !runs.has(id))) {
+				// Released admission history is immutable. Retain the whole positive
+				// capture in the same owner's plan before another invocation can omit it.
+				const updated = await persist(latest.id, latest.revision, candidate => {
+					if (!candidate.cancellation) return fail("parallel_plan_fence_required", "Cancellation metadata is missing");
+					candidate.cancellation.parallelObservations = [...(candidate.cancellation.parallelObservations ?? []), capture];
+					return candidate;
+				}, "parallel-cancellation-ownership-retained");
+				throw new FoundryOperationError("parallel_cancellation_join_pending", "New native ownership was retained durably; reread the plan and obtain a fresh terminal observation", {
+					planId: updated.id, revision: updated.revision, identity: record.identity, inventory,
+				});
+			}
+			if (latest.revision !== current.revision) {
+				return fail("parallel_cancellation_context_changed", "The owned plan changed during observation; reread its retained state before finalizing");
 			}
 			const decision = reconcileCancellationObligations(record, inventory, {
-				sessionIds: observations.flatMap(entry => entry.sessionIds),
-				runIds: observations.flatMap(entry => entry.runIds),
+				sessionIds: retained.flatMap(entry => entry.sessionIds),
+				runIds: retained.flatMap(entry => entry.runIds),
 			});
 			const retainedAt = Math.max(
 				Date.parse(after), Date.parse(current.cancellation?.requestedAt ?? after),
-				...observations.map(entry => Date.parse(entry.capturedAt)),
+				...retained.map(entry => Date.parse(entry.capturedAt)),
 				...record.obligations.flatMap(entry => entry.inventory ? [Date.parse(entry.inventory.capturedAt)] : []),
 			);
 			if (Date.parse(inventory.capturedAt) < retainedAt) decision.holds.push("native-inventory-stale");

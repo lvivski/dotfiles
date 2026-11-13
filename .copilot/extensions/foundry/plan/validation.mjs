@@ -121,6 +121,7 @@ function assertValidPlan(plan) {
 	assertString(plan.repository.baseBranch, "repository.baseBranch", LIMITS.baseBranch);
 	validatePlanning(plan.planning);
 	validateFactoryBinding(plan.factory);
+	const factoryBinding = plan.factory;
 	validateEvaluationTarget(plan.evaluationTarget);
 	if (plan.evaluationTarget != null && (plan.factory?.purpose !== "evaluation"
 		|| plan.evaluationTarget.candidateId !== plan.factory.candidateId)) fail("invalid_evaluation_target", "Evaluation target requires its matching factory binding");
@@ -335,6 +336,12 @@ function assertValidPlan(plan) {
 		});
 	}
 	validateCancellation(plan.cancellation, plan.status, plan.tasks);
+	if (plan.cancellation?.parallelObservations?.some(observation =>
+		observation.attempt.planId !== plan.id
+		|| observation.attempt.repositoryId !== factoryBinding?.repositoryId
+		|| observation.attempt.owner !== factoryBinding?.owner)) {
+		fail("invalid_cancellation_observations", "Retained parallel observation belongs to another plan, repository or owner");
+	}
 	if (plan.cancellation?.verificationRunId != null
 		&& plan.verification.runId !== null
 		&& plan.cancellation.verificationRunId !== plan.verification.runId) {

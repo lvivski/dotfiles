@@ -1,4 +1,5 @@
 import { isList, isOneOf } from "../../data.mjs";
+import { normalizeRecoveryObservation } from "../../inventory.mjs";
 import { assertKnownKeys, assertNullableString, assertPlainObject, assertRequestId, assertString, assertStringArray, assertTimestamp, fail } from "../fields.mjs";
 import { ATTEMPT_STATUS, LIMITS, PLAN_STATUS } from "../values.mjs";
 
@@ -19,6 +20,7 @@ const CANCELLATION_KEYS = new Set([
 	"verificationTerminatedAt",
 	"finalizedBy",
 	"finalizedAt",
+	"parallelObservations",
 ]);
 
 const CANCELLATION_ACK_KEYS = new Set([
@@ -63,6 +65,19 @@ export function validateCancellation(cancellation, planStatus, tasks) {
 		(task) => task.attempts.map((attempt) => [attempt.id, attempt]),
 	));
 	const knownAttemptIds = new Set(attemptsById.keys());
+	if (cancellation.parallelObservations !== undefined) {
+		if (!isList(cancellation.parallelObservations) || !cancellation.parallelObservations.length) {
+			fail("invalid_cancellation_observations", "Retained parallel observations must contain complete positive captures");
+		}
+		for (const value of cancellation.parallelObservations) {
+			const observation = normalizeRecoveryObservation(value);
+			const task = tasks.find(entry => entry.id === observation.attempt.taskId);
+			const attempt = task?.attempts.find(entry => entry.id === observation.attempt.attemptId);
+			if (!attempt || attempt.reservationId !== observation.attempt.reservationId) {
+				fail("invalid_cancellation_observations", "Retained parallel observation belongs to an unknown native attempt");
+			}
+		}
+	}
 	if (new Set(cancellation.requiredAttemptIds).size !== cancellation.requiredAttemptIds.length
 		|| cancellation.requiredAttemptIds.some((id) => !knownAttemptIds.has(id))) {
 		fail("invalid_cancellation_attempts", "Cancellation attempt snapshot is invalid", {
