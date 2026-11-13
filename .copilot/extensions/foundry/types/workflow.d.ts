@@ -31,6 +31,8 @@ export type WorkflowAnalysisPort = {
 	cancelVerificationRun(runId: string): Promise<{ runId: string; status: import("@github/copilot-sdk").WorkflowRunStatus; alreadyTerminal: boolean }>;
 	verificationRunIsTerminal(runId: string): Promise<boolean>;
 	inspectWorkflow(runId: string): Promise<import("@github/copilot-sdk").WorkflowRunDetail>;
+	isMissingWorkflowRun(error: unknown): boolean;
+	isTerminalWorkflowStatus(status: import("@github/copilot-sdk").WorkflowRunStatus): boolean;
 	getWorkflowProgress(runId: string, beforeSeq: number): Promise<import("@github/copilot-sdk").WorkflowProgressPage>;
 	listWorkflowRuns(): Promise<import("@github/copilot-sdk").WorkflowRunsPage>;
 	controlWorkflow(runId: string, action: "pause" | "resume", options?: { signal?: AbortSignal }): Promise<import("@github/copilot-sdk").WorkflowRunResult>;

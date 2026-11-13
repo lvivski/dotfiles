@@ -6,7 +6,7 @@ import { plainObject, text } from "./fields.mjs";
 import { fail } from "../errors.mjs";
 import { criterionId, normalizeVerificationInput } from "./verification.mjs";
 import { visualCriterion, visualReport } from "../factory/visual.mjs";
-import { evaluationCriterion } from "../bridge/pinning.mjs";
+import { evaluationCriterion } from "../factory/criterion.mjs";
 
 /** @typedef {import("../types/analysis.js").VerificationInput} VerificationInput */
 /** @typedef {import("../types/analysis.js").VerificationOutcome} VerificationOutcome */

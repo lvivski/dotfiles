@@ -1,7 +1,6 @@
 import { errorCode, isList, isOneOf, isRecord } from "../data.mjs";
 import { stableStringify } from "../digest.mjs";
 import { isTerminatedSessionState, normalizeInventory, sessionState } from "../inventory.mjs";
-import { isMissingRun, TERMINAL } from "../native/guards.mjs";
 import { bindCancellationVerificationRun, finalizePlanCancellation, requestPlanCancellation } from "../plan/cancellation.mjs";
 import { PLAN_STATUS } from "../plan/values.mjs";
 import { FOUNDRY_WORKFLOWS } from "../workflows/registry.mjs";
@@ -25,7 +24,7 @@ function findAttemptById(plan, attemptId) {
  * persist: ReturnType<typeof import("./mutation.mjs").createPlanMutations>["persist"],
  * readForMutation: ReturnType<typeof import("./mutation.mjs").createPlanMutations>["readForMutation"],
  * factory: Pick<ReturnType<typeof import("../bridge.mjs").createFactoryBridge>, "requireOwner">,
- * analysis: Pick<WorkflowAnalysis, "cancelVerificationRun" | "inspectWorkflow">,
+ * analysis: Pick<WorkflowAnalysis, "cancelVerificationRun" | "inspectWorkflow" | "isMissingWorkflowRun" | "isTerminalWorkflowStatus">,
  * discoverReservedVerification: ReturnType<typeof import("./ownership.mjs").createVerificationOwnership>["discoverReservedVerification"],
  * syncFactoryPlan: ReturnType<typeof import("./repository.mjs").createRepositoryOperations>["syncFactoryPlan"],
  * }} dependencies */
@@ -267,12 +266,12 @@ export function createCancellationOperations({ storeFor, persist, readForMutatio
 			try {
 				observed = await analysis.inspectWorkflow(verificationRunId);
 			} catch (error) {
-				if (!isMissingRun(error)) throw error;
+				if (!analysis.isMissingWorkflowRun(error)) throw error;
 			}
 			if (observed && (observed.runId !== verificationRunId || observed.workflowName !== FOUNDRY_WORKFLOWS.verify.meta.name)) {
 				throw new FoundryOperationError("workflow_run_identity_mismatch", "Cancellation terminal observation belongs to another Workflow run");
 			}
-			verificationTerminated = observed !== null && TERMINAL.has(observed.status);
+			verificationTerminated = observed !== null && analysis.isTerminalWorkflowStatus(observed.status);
 			if (!verificationTerminated && !finalizationOverride) {
 				throw new FoundryOperationError(
 					"verification_not_terminated",
