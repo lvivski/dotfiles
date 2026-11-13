@@ -4,10 +4,13 @@ Read before cancelling a plan. Cancellation is a two-phase protocol; requesting 
 that external work has stopped.
 
 1. Call `foundry_cancel` once with a stable request ID, reason, and user identity.
-2. Archive or stop every attached App child session listed by the cancellation snapshot. Only
-   archive sessions this coordinator created. Also reconcile retained created-but-unattached children,
-   in-flight admissions and any supplemental activity. Record `no-session-created` only when creation
-   definitively produced no worker; lack of attachment is not that proof.
+2. Stop every attached App child through a supported termination control. Archiving removes its
+   worktree and requires separate explicit user authorization or the archive tool's verified
+   finished-work eligibility; it is not an automatic substitute for unavailable termination.
+   Only archive sessions this coordinator created. If no authorized control is available, retain
+   the cancellation hold. Also reconcile retained created-but-unattached children, in-flight
+   admissions and supplemental activity. Record `no-session-created` only when creation definitively
+   produced no worker; lack of attachment is not that proof.
 3. Call `foundry_cancel_verification_run` with the current revision and the same cancellation request
    ID. Use its `verificationDisposition`; never supply an arbitrary Workflow run ID.
 4. Capture a fresh exhaustive App session inventory after those termination attempts.

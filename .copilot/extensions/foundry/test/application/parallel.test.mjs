@@ -13,6 +13,7 @@ import { analysisFixture } from "../native/fixture.mjs";
 import { createdChild } from "../../native/dispatch.mjs";
 import { git } from "../git.mjs";
 import { readFile, unlink, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import { isRecord } from "../../data.mjs";
 
 const readList = arrayOf(value => value);
@@ -342,35 +343,6 @@ test("registered composition consumes both exact Git deliveries after handoff an
 		assert.equal(git(child.worktreePath, "status", "--porcelain"), "");
 	});
 
-	test("a successful terminal claim without declared output bytes holds its consumer, not unrelated completion", async t => {
-		const f = await composedFixture(t);
-		const created = await createThroughTool(f, { ...request(f, "composed-packages"), decomposition: packages(f) });
-		assert.equal(created.resultType, "success", created.textResultForLlm);
-		let plan = await f.approve(f.operations, await f.operations.getPlan({ planId: "composed-packages" }));
-		await invoke(f.operations, "foundry_dispatch_ready", { planId: plan.id, limit: 2 });
-		plan = await f.operations.getPlan({ planId: plan.id });
-		assert.equal(f.children.size, 2);
-		const missing = await invoke(f.operations, "foundry_complete_task", f.payload(plan, "T-001", { commit: f.commit }));
-		assert.equal(missing.resultType, "success", missing.textResultForLlm);
-		const beta = must(f.children.get("child-2"));
-		await writeFile(path.join(beta.worktreePath, "beta.json"), "{\"value\":11}");
-		git(beta.worktreePath, "add", "--", "beta.json");
-		git(beta.worktreePath, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "Unrelated valid output");
-		plan = await f.operations.getPlan({ planId: plan.id });
-		const independent = await invoke(f.operations, "foundry_complete_task", f.payload(plan, "T-002", {
-			commit: git(beta.worktreePath, "rev-parse", "HEAD"),
-		}));
-		assert.equal(independent.resultType, "success", independent.textResultForLlm);
-		f.restart();
-		for (let request = 0; request < 2; request++) {
-			await invoke(f.operations, "foundry_dispatch_ready", { planId: plan.id, limit: 2 });
-			plan = await f.operations.getPlan({ planId: plan.id });
-			assert.equal(plan.tasks[0].status, "done");
-			assert.equal(plan.tasks[1].status, "done");
-			assert.equal(plan.tasks[2].attempts.length, 0, "A DONE receipt alone is not a consumable producer output");
-			assert.equal(f.children.size, 2);
-		}
-	});
 	const firstDispatch = await success("foundry_dispatch_ready", { planId: plan.id, limit: 2 });
 	plan = await f.operations.getPlan({ planId: plan.id });
 	assert.deepEqual(plan.tasks.map(task => task.status), ["running", "running", "planned", "planned"], JSON.stringify(firstDispatch));
@@ -405,6 +377,7 @@ test("registered composition consumes both exact Git deliveries after handoff an
 	assert.equal(f.children.size, 3);
 	assert.ok(f.messages.has(child.sessionId));
 	assert.equal(git(child.worktreePath, "status", "--porcelain"), "", "Setup and dispatch never materialize inputs");
+	const bootstrapCommit = git(child.worktreePath, "rev-parse", "HEAD");
 	const producer = must(f.children.get("child-1"));
 	await writeFile(path.join(producer.worktreePath, "alpha.json"), JSON.stringify({ producer: "substituted-branch-tip", value: 999 }));
 	git(producer.worktreePath, "add", "--", "alpha.json");
@@ -413,7 +386,8 @@ test("registered composition consumes both exact Git deliveries after handoff an
 	assert.notEqual(substitutedCommit, commits.get("alpha"));
 	const changedDelivery = await invoke(f.operations, "foundry_complete_task", f.payload(plan, "T-001", { commit: substitutedCommit }));
 	assert.equal(changedDelivery.resultType, "failure", "A later branch tip cannot replace an immutable successful attempt");
-	await success("foundry_materialize_inputs", { planId: plan.id, taskId: "T-003", attemptId: consumer.id });
+	const materialized = readRecord(await success("foundry_materialize_inputs", { planId: plan.id, taskId: "T-003", attemptId: consumer.id }));
+	assert.equal(materialized.state, "materialized");
 	const alpha = JSON.parse(await readFile(path.join(child.worktreePath, "inputs/alpha.json"), "utf8"));
 	const beta = JSON.parse(await readFile(path.join(child.worktreePath, "inputs/beta.json"), "utf8"));
 	assert.deepEqual(alpha, { producer: "alpha", value: 7 });
@@ -426,7 +400,19 @@ test("registered composition consumes both exact Git deliveries after handoff an
 	assert.equal(await readFile(path.join(child.worktreePath, "inputs/alpha.json"), "utf8"), JSON.stringify(alpha));
 	assert.equal(await readFile(path.join(child.worktreePath, "inputs/beta.json"), "utf8"), JSON.stringify(beta));
 	for (const commit of commits.values()) git(child.worktreePath, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "merge", "--quiet", "--no-edit", commit);
-	await writeFile(path.join(child.worktreePath, "product.json"), JSON.stringify({ sum: alpha.value + beta.value, producers: [alpha.producer, beta.producer] }));
+	const consumerSource = `
+		import { readFileSync, writeFileSync } from "node:fs";
+		const alpha = JSON.parse(readFileSync("inputs/alpha.json", "utf8"));
+		const beta = JSON.parse(readFileSync("inputs/beta.json", "utf8"));
+		const product = { sum: alpha.value + beta.value, producers: [alpha.producer, beta.producer] };
+		writeFileSync("product.json", JSON.stringify(product));
+		process.stdout.write(JSON.stringify(product));
+	`;
+	const consumerArgv = ["--input-type=module", "-e", consumerSource];
+	const executed = readRecord(parseJson(execFileSync(process.execPath, consumerArgv, {
+		cwd: child.worktreePath, encoding: "utf8",
+	})));
+	assert.deepEqual(executed, { sum: 18, producers: ["alpha", "beta"] });
 	await unlink(path.join(child.worktreePath, "inputs/alpha.json"));
 	await unlink(path.join(child.worktreePath, "inputs/beta.json"));
 	git(child.worktreePath, "add", "--", "product.json");
@@ -495,4 +481,43 @@ test("registered composition consumes both exact Git deliveries after handoff an
 	assert.equal(prepared.plan.verification.reservationId, "composed-verification");
 	assert.equal(f.factory.generation(f.candidate.id).contract.digest, packages(f).bindings.contract?.digest);
 	assert.equal(git(child.worktreePath, "status", "--porcelain"), "");
+	t.diagnostic(JSON.stringify({
+		proofBoundary: "Real Git/input consumption with synthetic App transport; not live App or human acceptance",
+		consumer: { taskId: "T-003", attemptId: consumer.id, sessionId: child.sessionId, worktreePath: child.worktreePath, bootstrapCommit },
+		materialized, producerCommits: Object.fromEntries(commits), rejectedBranchTip: substitutedCommit,
+		execution: { argv: [process.execPath, ...consumerArgv], cwd: child.worktreePath, result: executed },
+		deliveryCommit: product, verifierSessionId: plan.tasks[3].attempts.at(-1)?.sessionId,
+		pendingHumanBeforeSyntheticJudgment: finalAssessment.pendingHuman,
+		verificationReservationId: prepared.plan.verification.reservationId,
+	}));
+});
+
+test("a successful terminal claim without declared output bytes holds its consumer, not unrelated completion", async t => {
+	const f = await composedFixture(t);
+	const created = await createThroughTool(f, { ...request(f, "composed-packages"), decomposition: packages(f) });
+	assert.equal(created.resultType, "success", created.textResultForLlm);
+	let plan = await f.approve(f.operations, await f.operations.getPlan({ planId: "composed-packages" }));
+	await invoke(f.operations, "foundry_dispatch_ready", { planId: plan.id, limit: 2 });
+	plan = await f.operations.getPlan({ planId: plan.id });
+	assert.equal(f.children.size, 2);
+	const missing = await invoke(f.operations, "foundry_complete_task", f.payload(plan, "T-001", { commit: f.commit }));
+	assert.equal(missing.resultType, "success", missing.textResultForLlm);
+	const beta = must(f.children.get("child-2"));
+	await writeFile(path.join(beta.worktreePath, "beta.json"), "{\"value\":11}");
+	git(beta.worktreePath, "add", "--", "beta.json");
+	git(beta.worktreePath, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "Unrelated valid output");
+	plan = await f.operations.getPlan({ planId: plan.id });
+	const independent = await invoke(f.operations, "foundry_complete_task", f.payload(plan, "T-002", {
+		commit: git(beta.worktreePath, "rev-parse", "HEAD"),
+	}));
+	assert.equal(independent.resultType, "success", independent.textResultForLlm);
+	f.restart();
+	for (let request = 0; request < 2; request++) {
+		await invoke(f.operations, "foundry_dispatch_ready", { planId: plan.id, limit: 2 });
+		plan = await f.operations.getPlan({ planId: plan.id });
+		assert.equal(plan.tasks[0].status, "done");
+		assert.equal(plan.tasks[1].status, "done");
+		assert.equal(plan.tasks[2].attempts.length, 0, "A DONE receipt alone is not a consumable producer output");
+		assert.equal(f.children.size, 2);
+	}
 });
