@@ -53,6 +53,8 @@ do not bypass missing capabilities, switch routes automatically or infer fresh c
 3. Use the returned `baseBranch` and `delegationPrompt` unchanged. New workers receive only the
    setup `initialization.kickoff` first; corroborate setup and attach before sending task authority.
 4. Record a terminal attempt before reporting it or dispatching newly unblocked work.
+   Preserve the verifier's complete per-check fields and compare admitted evidence with its original
+   report before authoritative verification; follow [lossless recording](references/verification.md#lossless-verifier-evidence-recording).
 5. Never infer approval. A recorded owner-local user delegation explicitly scoped to initial
    execution plans or verified technical milestone completion permits that kind of exact named-revision
    decision without another prompt; follow [planning and approval](references/planning.md#delegated-execution-plan-approval)

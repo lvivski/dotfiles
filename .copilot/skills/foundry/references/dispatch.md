@@ -178,6 +178,11 @@ to a reconstruction child's inputs. Keep the incumbent until explicit replacemen
 Record discovered facts, inferences and proposals in `learning`; they are not accepted obligations.
 The verifier must return selected pinned executable `factoryEvaluations` as well as canonical check
 evidence. Human modalities/judgment procedures use explicit human review, never an agent verdict.
+When recording its terminal attempt, preserve every original per-check `type`, `summary`, `source`,
+`outcome` and `checkId`; compare the admitted fields with the original report before preparing
+authoritative verification. Do not condense criterion-bearing facts. Follow the
+[lossless recording protocol](verification.md#lossless-verifier-evidence-recording), including its
+transport-limit and terminal-record mismatch holds.
 Verifier-only renewal plans retain an external immutable target; they do not contain or reopen an
 implementation task.
 If factory synchronization fails after task completion, recover with `foundry_sync_factory`;

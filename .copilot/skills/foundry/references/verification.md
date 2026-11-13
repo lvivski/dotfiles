@@ -20,7 +20,8 @@ or completion.
    context into an existing reservation.
    For an explicitly UI-producing unit, the declared visual report is required even on an initial
    discovery plan with no accepted candidate. Apply the visual evidence protocol below.
-3. Once every task is done, call `foundry_prepare_verification` with a stable reservation ID.
+3. Once every task is done and the [lossless recording check](#lossless-verifier-evidence-recording)
+   passes, call `foundry_prepare_verification` with a stable reservation ID.
 4. If it returns `launchSpec`, invoke it exactly once with `run_dynamic_workflow`. If it returns
    `launchSpec: null`, use the returned `runId` and do not relaunch.
 5. Call `foundry_complete_verification` for the authoritative run. It persists the run binding
@@ -43,6 +44,35 @@ or completion.
    `approvalType: "completion"` and `approvedBy`.
 8. If the current session is linked to a GitHub issue, preserve the approved plan and final
    verification report as issue artifacts. Do not create artifacts without a linked issue.
+
+## Lossless verifier evidence recording
+
+Retain the complete original verifier report, its exact target/attempt identity and a byte digest.
+When calling `foundry_complete_task`, copy each per-check `type`, `summary`, `source`, `outcome`
+and `checkId` without rewording, shortening, dropping records or changing outcomes. A verifier's
+`done` status does not turn its failed or inconclusive checks into passes.
+
+Before `foundry_prepare_verification`, compare the actual admitted terminal attempt with the
+original report: the same check IDs and record count, and the same five field values for every
+check. Native-assigned evidence IDs/provenance are separate from those original fields. Read the
+complete retained tool result if its display is truncated; a preview is not the admitted record.
+The authoritative run consumes canonical recorded evidence, not the coordinator's recollection
+or an unrecorded fact elsewhere in the source report.
+
+This distinction caused a real recording failure: a condensed naming-history summary lost the
+fact that eight exception paths existed at the original interface commit, while
+`bridge/package-inputs.mjs` was a later leaf addition. The source and full independent report were
+correct, but authoritative verification failed because that required distinction was absent from
+the recorded summary. Preserve such criterion-bearing facts rather than replacing them with
+"the exceptions and ancestry were checked."
+
+If a field exceeds an actual native limit, retain its full original source and report the field,
+limit and transport failure. Hold recording/verification for a supported resolution; do not silently
+truncate or condense facts to make the call fit. A source link does not itself repair omitted
+canonical evidence. If a mismatch is discovered after terminal recording, preserve the original
+report, admitted record and any failed verification receipt. Do not amend terminal receipts,
+weaken the criterion or create a source correction for a recording-only omission; use the owner's
+separately authorized recovery or assurance path.
 
 ## Package assessment source entry
 
