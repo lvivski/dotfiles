@@ -3,6 +3,7 @@ import { isRecord } from "../data.mjs";
 import { FoundryFactoryError, fail } from "../factory/fields.mjs";
 import { key as refKey } from "../factory/records.mjs";
 import { visualCriterion } from "../factory/visual.mjs";
+import { validateTaskTopology } from "../plan/graph.mjs";
 
 /** @typedef {import("../types/factory.js").KnowledgeRef} KnowledgeRef */
 /** @typedef {import("../types/factory.js").ProjectedEvaluation} ProjectedEvaluation */
@@ -11,6 +12,20 @@ import { visualCriterion } from "../factory/visual.mjs";
 /** @param {ProjectedEvaluation} entry */
 export const evaluationCriterion = (entry) => entry.evaluation.visual ? visualCriterion(entry)
 	: `Pass pinned ${entry.evaluation.modality} evaluation ${refKey(entry)} (${entry.evaluation.procedure.digest}).`;
+
+/** Locate a governing check by its exact revision/digest criterion, not T-001 or array position.
+ * @param {import("../types/plan.js").FoundryPlan} plan @param {ProjectedEvaluation} entry */
+export function evaluationCheckId(plan, entry) {
+	const { targetTask, verifyTask } = validateTaskTopology(plan.tasks, plan.evaluationTarget ?? null);
+	const taskId = plan.evaluationTarget ? verifyTask.id : targetTask?.id;
+	const criteria = plan.evaluationTarget?.criteria ?? targetTask?.acceptanceCriteria ?? [];
+	const criterion = evaluationCriterion(entry);
+	const index = criteria.indexOf(criterion);
+	if (!taskId || index < 0 || criteria.lastIndexOf(criterion) !== index) {
+		fail("factory_evaluation_coverage", "The final target must contain each exact pinned evaluation criterion once");
+	}
+	return `${taskId}-C${String(index + 1).padStart(3, "0")}`;
+}
 
 /** @param {ProjectedEvaluation[]} definitions @param {KnowledgeRef[] | undefined} refs */
 export function selectEvaluations(definitions, refs) {

@@ -110,10 +110,10 @@ export function buildVerificationInput(plan) {
 		},
 		...(factoryInput ? { factory: factoryInput } : {}),
 	};
-	return {
+	return normalizeVerificationInput({
 		...normalized,
 		inputDigest: analysisInputDigest(normalized),
-	};
+	});
 }
 
 /**
@@ -147,6 +147,22 @@ export function normalizeVerificationInput(value) {
 		if (factory?.binding.purpose !== "evaluation" || factory.binding.candidateId !== evaluationTarget?.candidateId) fail("invalid_analysis_input", "Evaluation-only verification requires its exact factory binding");
 	}
 	if (factory?.binding.purpose === "evaluation" && evaluationTarget === undefined) fail("invalid_analysis_input", "Read-only verification must retain its external target");
+	if (factory?.context) {
+		const { definitions } = factory.context;
+		const expectedEvaluations = evaluationTarget?.evaluations ?? definitions.contract?.evaluations;
+		if (expectedEvaluations && (definitions.evaluations.length !== expectedEvaluations.length
+			|| expectedEvaluations.some((ref) => !definitions.evaluations.some((entry) => entry.id === ref.id && entry.revision === ref.revision)))) {
+			fail("analysis_input_mismatch", "Frozen evaluators must retain the exact selected accepted revisions");
+		}
+		for (const report of factory.evaluations) {
+			const definition = [...definitions.evaluations, ...(definitions.visualEvaluation ? [definitions.visualEvaluation] : [])]
+				.find((entry) => entry.id === report.evaluation.id && entry.revision === report.evaluation.revision);
+			if (definition && (report.procedureDigest !== definition.evaluation.procedure.digest
+				|| report.environment !== definition.evaluation.environment || report.workload !== definition.evaluation.workload)) {
+				fail("analysis_input_mismatch", "Factory report must retain its pinned procedure, environment and workload");
+			}
+		}
+	}
 	const planId = text(input.planId, "input.planId", LIMITS.planId);
 	if (!PLAN_ID_REGEX.test(planId)) {
 		fail("invalid_analysis_input", "input.planId must be a lowercase Foundry plan slug");
@@ -160,6 +176,8 @@ export function normalizeVerificationInput(value) {
 			`input.tasks must contain 1-${LIMITS.tasks} tasks`,
 		);
 	}
+	const taskIds = new Set();
+	const producers = new Set();
 	/** @type {Omit<VerificationInput, "inputDigest" | "verificationReport"> & {verificationReport: VerificationInput["verificationReport"] | null}} */
 	const normalized = {
 		planId,
@@ -176,6 +194,8 @@ export function normalizeVerificationInput(value) {
 					`input.tasks[${taskIndex}].id must use T-001 format`,
 				);
 			}
+			if (taskIds.has(id)) fail("invalid_analysis_input", `Duplicate implementation task ${id}`);
+			taskIds.add(id);
 			if (!isList(task.criteria)
 				|| task.criteria.length < 1
 				|| task.criteria.length > LIMITS.acceptanceCriteria) {
@@ -271,6 +291,12 @@ export function normalizeVerificationInput(value) {
 					attemptId,
 				};
 			});
+			const producer = evidence[0].producer;
+			if (evidence.some((entry) => entry.producer !== producer)) {
+				fail("invalid_analysis_input", `Evidence for ${attemptId} has conflicting producers`);
+			}
+			if (producers.has(producer)) fail("invalid_analysis_input", "Implementation attempts must have distinct producers");
+			producers.add(producer);
 			const delivery = plainObject(
 				task.delivery,
 				`input.tasks[${taskIndex}].delivery`,
@@ -373,7 +399,7 @@ export function normalizeVerificationInput(value) {
 			}
 			const fullCommit = typeof commit === "string"
 				&& /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(commit);
-			if (branch === null
+			if (branch === null || (commit !== null && !fullCommit)
 				|| (requirement !== DELIVERY_REQUIREMENT.BRANCH && !fullCommit)
 				|| (requirement === DELIVERY_REQUIREMENT.PR && prUrl === null)) {
 				fail(
@@ -404,8 +430,21 @@ export function normalizeVerificationInput(value) {
 					integrationRequired,
 				},
 			};
-		}),
+		}).sort((left, right) => left.id.localeCompare(right.id)),
 	};
+	const tasksById = new Map(normalized.tasks.map((task) => [task.id, task]));
+	for (const task of normalized.tasks) {
+		const dependencies = new Set();
+		for (const entry of task.delivery.integrationRequired) {
+			const dependency = tasksById.get(entry.taskId);
+			if (!dependency || entry.taskId === task.id || dependencies.has(entry.taskId)
+				|| entry.attemptId !== dependency.attemptId || entry.branch !== dependency.delivery.branch
+				|| entry.commit !== dependency.delivery.commit || entry.prUrl !== dependency.delivery.prUrl) {
+				fail("invalid_analysis_input", `Integration delivery for ${task.id} does not match a unique producer delivery`);
+			}
+			dependencies.add(entry.taskId);
+		}
+	}
 	const report = plainObject(input.verificationReport, "input.verificationReport");
 	const reportTaskId = text(
 		report.taskId,
@@ -427,6 +466,7 @@ export function normalizeVerificationInput(value) {
 		"input.verificationReport.sessionId",
 		LIMITS.sessionId,
 	);
+	if (producers.has(sessionId)) fail("invalid_analysis_input", "Verifier must be independent of every implementation producer");
 	const target = plainObject(report.target, "input.verificationReport.target");
 	const targetTaskId = evaluationTarget ? null : text(target.taskId, "input.verificationReport.target.taskId", 5);
 	const targetAttemptId = evaluationTarget ? null : text(
@@ -443,6 +483,9 @@ export function normalizeVerificationInput(value) {
 		|| target.commit !== targetTask.delivery.commit
 		|| target.prUrl !== targetTask.delivery.prUrl) {
 		fail("invalid_analysis_input", "input.verificationReport target is invalid");
+	}
+	if (targetTask?.delivery.requirement === DELIVERY_REQUIREMENT.BRANCH) {
+		fail("invalid_analysis_input", "Final verification target must require a commit or pull request delivery");
 	}
 	const observedCommit = text(
 		report.observedCommit,

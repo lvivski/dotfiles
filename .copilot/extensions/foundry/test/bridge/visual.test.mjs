@@ -6,15 +6,93 @@ import test from "node:test";
 import { buildPlanningArgs, validatePlanBlueprint } from "../../analysis/planning.mjs";
 import { assessDeterministicVerification, evaluateVerification } from "../../analysis/verdicts.mjs";
 import { createFactoryBridge } from "../../bridge.mjs";
+import { evaluationCheckId, evaluationCriterion } from "../../bridge/pinning.mjs";
 import { visualCriterion } from "../../factory/visual.mjs";
 import { isList, isRecord } from "../../data.mjs";
 import { must } from "../assertions.mjs";
+import { git } from "../git.mjs";
 import { planningResult } from "../native/plans.mjs";
 import { fixture, source } from "./fixture.mjs";
 
 /** @param {Awaited<ReturnType<typeof fixture>>} f */
 const bridgeFor = (f) => createFactoryBridge({
 	workspace: () => path.join(f.root, "coordinator"), storeFor: () => f.ops.storeFor(), notify() {}, storageRoot: f.storageRoot,
+});
+
+test("multi-producer assurance uses the final governing criterion, never a passing producer check or package visual capture", async (t) => {
+	for (const visual of [false, true]) await t.test(visual ? "synthetic visual gate only, not live perception" : "boundary evaluator", async (t) => {
+		const f = await fixture(t, { visual });
+		const bridge = bridgeFor(f);
+		const entry = f.factory.generation(f.candidate.id).evaluations[0];
+		const criterion = evaluationCriterion(entry);
+		/** @param {string} id @param {string[]} dependsOn @param {string[]} acceptanceCriteria
+		 * @param {"implement" | "verify"} [kind] @returns {import("../../types/plan.js").BlueprintTask} */
+		const task = (id, dependsOn, acceptanceCriteria, kind = "implement") => ({
+			id, title: `Gate-only fixture ${id}`, kind, description: "Synthetic multi-producer assurance routing; no live perception or native session execution is claimed.",
+			dependsOn, acceptanceCriteria, expectedFiles: [], deliveryRequirement: "commit",
+		});
+		let plan = await f.approve(f.ops, await bridge.createBoundDraft({
+			id: "combined-gate", repository: { workingDirectory: f.repo, baseBranch: "main" },
+			blueprint: {
+				title: "Multi-producer final assurance", objective: "Conserve the evaluator on the combined target", constraints: [],
+				tasks: [
+					task("T-001", [], [criterion]),
+					task("T-002", [], ["Preserve the other producer input"]),
+					task("T-003", ["T-001", "T-002"], ["Combine both producer deliveries", criterion]),
+					task("T-004", ["T-003"], [], "verify"),
+				],
+			},
+			factoryContext: bridge.context(f.repo, "unit"), candidateId: f.candidate.id, expectedRevision: 0,
+		}));
+		assert.equal(evaluationCheckId(plan, entry), "T-003-C002");
+		for (const id of ["T-001", "T-002"]) {
+			plan = await f.attach(f.ops, plan, id);
+			plan = await f.ops.completeTask(f.payload(plan, id));
+		}
+		await writeFile(path.join(f.repo, "implementation.mjs"), "export const preserve = (input) => input.map(value => Object.assign({}, value));\n");
+		git(f.repo, "add", "--", "implementation.mjs");
+		git(f.repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "Isolated combined target");
+		const finalCommit = git(f.repo, "rev-parse", "HEAD");
+		assert.notEqual(finalCommit, f.commit);
+		plan = await f.attach(f.ops, plan, "T-003");
+		plan = await f.ops.completeTask(f.payload(plan, "T-003", { commit: finalCommit, evidence: [{
+			type: "integration", summary: "Gate-only fixture combines both pinned producer commits",
+			source: "isolated combined Git commit", outcome: "passed",
+		}] }));
+		plan = await f.attach(f.ops, plan, "T-004");
+		const request = f.payload(plan, "T-004", { commit: finalCommit });
+		if (visual) {
+			assert.equal(f.visualResult().deliveryCommit, f.commit, "The synthetic package capture belongs to the predecessor commit");
+			await assert.rejects(f.ops.completeTask(request), { code: "factory_visual_mismatch" });
+			request.factoryEvaluations[0].report = JSON.stringify({ ...f.visualResult(), deliveryCommit: finalCommit });
+		}
+		const checks = request.evidence;
+		assert.ok(isList(checks));
+		const finalCheck = must(checks.find((check) => isRecord(check) && check.checkId === "T-003-C002"));
+		const producerCheck = must(checks.find((check) => isRecord(check) && check.checkId === "T-001-C001"));
+		assert.ok(isRecord(finalCheck) && isRecord(producerCheck));
+		finalCheck.outcome = "failed";
+		assert.throws(() => bridge.validateReports(plan, "T-004", request.factoryEvaluations, checks, finalCommit), { code: "factory_evidence_contradiction" });
+		finalCheck.outcome = "passed";
+		producerCheck.outcome = "failed";
+		assert.doesNotThrow(() => bridge.validateReports(plan, "T-004", request.factoryEvaluations, checks, finalCommit),
+			"The governing evaluator outcome follows the final criterion, not the first producer's claim");
+		producerCheck.outcome = "passed";
+		for (const criteria of [["Combine both producer deliveries"], [criterion, criterion]]) {
+			const changed = structuredClone(plan);
+			must(changed.tasks.find((task) => task.id === "T-003")).acceptanceCriteria = criteria;
+			assert.throws(() => evaluationCheckId(changed, entry), { code: "factory_evaluation_coverage" });
+		}
+		const readOnly = {
+			...plan, tasks: [{ ...must(plan.tasks.find((task) => task.id === "T-004")), dependsOn: [] }],
+			evaluationTarget: { candidateId: f.candidate.id, commit: finalCommit,
+				criteria: ["Retain the read-only delivery", criterion], evaluations: [{ id: entry.id, revision: entry.revision }] },
+		};
+		assert.equal(evaluationCheckId(readOnly, entry), "T-004-C002");
+		plan = await f.ops.completeTask(request);
+		assert.equal(must(plan.tasks.find((task) => task.id === "T-004")).status, "done");
+		assert.equal(f.factory.snapshot().candidates[0].delivery?.commit, finalCommit);
+	});
 });
 
 test("UI discovery without an accepted contract conserves the declared gate through generation, delivery and completion", async (t) => {

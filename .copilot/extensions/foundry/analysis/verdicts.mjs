@@ -5,7 +5,8 @@ import { stableStringify } from "../digest.mjs";
 import { plainObject, text } from "./fields.mjs";
 import { fail } from "../errors.mjs";
 import { criterionId, normalizeVerificationInput } from "./verification.mjs";
-import { visualReport } from "../factory/visual.mjs";
+import { visualCriterion, visualReport } from "../factory/visual.mjs";
+import { evaluationCriterion } from "../bridge/pinning.mjs";
 
 /** @typedef {import("../types/analysis.js").VerificationInput} VerificationInput */
 /** @typedef {import("../types/analysis.js").VerificationOutcome} VerificationOutcome */
@@ -54,8 +55,35 @@ export function assessDeterministicVerification(input) {
 	const targetTaskId = input.verificationReport.target.taskId ?? input.verificationReport.taskId;
 	const definitions = input.factory?.context?.definitions?.evaluations ?? [];
 	const visual = input.factory?.context?.definitions?.visualEvaluation;
+	const finalCriteria = input.evaluationTarget
+		? input.evaluationTarget.criteria.map((text, index) => ({ id: criterionId(input.verificationReport.taskId, index), text }))
+		: input.tasks.find((task) => task.id === targetTaskId)?.criteria ?? [];
+	/** Leaf criteria remain required, but cannot stand in for the combined delivery's evaluator.
+	 * @param {string} requirement
+	 * @param {import("../types/plan.js").EvaluationReport | undefined} report */
+	const requireFinalCriterion = (requirement, report) => {
+		const matches = finalCriteria.filter((criterion) => criterion.text === requirement);
+		if (!report || matches.length !== 1
+			|| reportByCheck.get(matches[0].id)?.outcome !== (report.outcome === "passed" ? EVIDENCE_OUTCOME.PASSED : EVIDENCE_OUTCOME.FAILED)) {
+			correctionTaskIds.add(targetTaskId);
+			hardGaps.push({ summary: `Final delivery lacks an unambiguous evaluator check matching its report: ${requirement}`, taskIds: [targetTaskId] });
+		}
+	};
+	const automatic = input.factory?.binding.candidateId
+		? definitions.filter((entry) => !requiresHumanJudgment(entry.evaluation)) : [];
+	for (const entry of automatic) {
+		const report = input.factory?.evaluations.find((report) => report.evaluation.id === entry.id && report.evaluation.revision === entry.revision);
+		requireFinalCriterion(evaluationCriterion({ ...entry, uncertainty: null, links: [] }), report);
+		if (!report || report.procedureDigest !== entry.evaluation.procedure.digest
+			|| report.environment !== entry.evaluation.environment || report.workload !== entry.evaluation.workload
+			|| (entry.evaluation.procedure.kind === "reference" && report.outcome !== "inconclusive")) {
+			correctionTaskIds.add(targetTaskId);
+			hardGaps.push({ summary: `Pinned evaluator ${entry.id}@${entry.revision} has missing or mismatched executable evidence`, taskIds: [targetTaskId] });
+		}
+	}
 	if (visual) {
 		const report = input.factory?.evaluations.find((entry) => entry.evaluation.id === visual.id && entry.evaluation.revision === visual.revision);
+		if (!automatic.some((entry) => entry.id === visual.id && entry.revision === visual.revision)) requireFinalCriterion(visualCriterion(visual), report);
 		try {
 			if (!report || !input.verificationReport.target.commit) throw new Error("Missing visual report");
 			visualReport(visual.evaluation, report.report, input.verificationReport.target.commit, report.outcome);

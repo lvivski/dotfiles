@@ -6,12 +6,43 @@ import { evaluationObservation } from "../factory/observations.mjs";
 import { key as refKey } from "../factory/records.mjs";
 import { latestSuccessfulAttempt } from "../plan/queries.mjs";
 import { validateFactoryEvaluations } from "../plan/schemas/factory.mjs";
-import { selectEvaluations } from "./pinning.mjs";
+import { evaluationCheckId, selectEvaluations } from "./pinning.mjs";
 import { evaluationId, pendingReceipts } from "./receipts.mjs";
 import { checkEvaluator } from "../evidence/bundles.mjs";
 import { checkVisualReport } from "../evidence/visual.mjs";
 import { declaredVisual, visualCriterion } from "../factory/visual.mjs";
 import { validateTaskTopology } from "../plan/graph.mjs";
+import { assessPackageAssurance } from "../analysis/assurance.mjs";
+import { createHash } from "node:crypto";
+import { git, requireAncestor, requireCommit } from "../evidence/git.mjs";
+
+/** Owner-resolved subject in, checked independent claims out; no authority or ledger mutation.
+ * @param {string} repository @param {import("../analysis/assurance.mjs").AssuranceSubject} subject @param {unknown} report @param {string} [at] */
+export function validatePackageAssurance(repository, subject, report, at = new Date().toISOString()) {
+	const result = assessPackageAssurance(report, subject, at);
+	for (const entry of subject.protectedDefinitions) checkEvaluator(repository, entry.evaluation, subject.delivery.commit);
+	for (const commit of new Set([subject.inputs.bootstrap.commit, ...subject.inputs.deliveries.map((entry) => entry.commit)])) {
+		requireAncestor(repository, commit, subject.delivery.commit);
+	}
+	for (const item of [...subject.inputs.inputs.map((entry) => entry.artifact), ...subject.delivery.outputs.map((entry) => entry.artifact)]) {
+		requireCommit(repository, item.commit);
+		const tree = git(repository, ["ls-tree", "-z", item.commit, "--", item.path]);
+		if (tree.error || tree.status !== 0 || !tree.stdout.toString("utf8").startsWith(`${item.mode} blob `)
+			|| tree.stdout.toString("utf8").split("\0").filter(Boolean).length !== 1
+			|| tree.stdout.toString("utf8").split("\t")[1] !== `${item.path}\0`) {
+			fail("parallel_assurance_artifact", "Input/output path or executable mode differs from the immutable artifact");
+		}
+		const blob = git(repository, ["show", `${item.commit}:${item.path}`]);
+		if (blob.error || blob.status !== 0 || createHash("sha256").update(blob.stdout).digest("hex") !== item.digest) {
+			fail("parallel_assurance_artifact", "Input/output bytes differ from the immutable artifact");
+		}
+	}
+	for (const entry of subject.definitions) {
+		const observed = result.evaluations.find((item) => refKey(item.evaluation) === refKey(entry));
+		if (observed) checkVisualReport(repository, entry.evaluation, observed.report, subject.delivery.commit, observed.outcome);
+	}
+	return result;
+}
 
 /** @typedef {import("../types/plan.js").FoundryPlan} FoundryPlan */
 /** @typedef {FoundryPlan & {factory: NonNullable<FoundryPlan["factory"]>}} BoundPlan */
@@ -57,10 +88,12 @@ export function createEvidenceBridge(stateFor, workspace) {
 		const definitions = selectEvaluations(generation.evaluations, plan.evaluationTarget?.evaluations);
 		const automatic = definitions.filter((entry) => !requiresHumanJudgment(entry.evaluation));
 		if ((reports?.length ?? 0) !== automatic.length) fail("factory_evaluation_coverage", "Verifier must report every selected executable evaluation; human judgments are recorded separately");
-		for (const [index, entry] of automatic.entries()) {
+		for (const entry of automatic) {
 			const report = reports.find((report) => refKey(report.evaluation) === refKey(entry));
 			if (!report || report.procedureDigest !== entry.evaluation.procedure.digest) fail("factory_evaluator_changed", "Verifier report must use the exact accepted evaluation revision and procedure");
-			const check = isList(evidence) ? evidence.find((item) => property(item, "checkId") === `T-001-C${String(index + 1).padStart(3, "0")}`) : undefined;
+			if (report.environment !== entry.evaluation.environment || report.workload !== entry.evaluation.workload) fail("factory_evidence_subject_mismatch", "Verifier report must retain the exact evaluation environment and workload");
+			const checkId = evaluationCheckId(plan, entry);
+			const check = isList(evidence) ? evidence.find((item) => property(item, "checkId") === checkId) : undefined;
 			if (property(check, "outcome") !== (report.outcome === "passed" ? "passed" : "failed")) fail("factory_evidence_contradiction", "Canonical verifier checks and factory evaluation outcomes disagree");
 			if (entry.evaluation.procedure.kind === "reference" && report.outcome !== "inconclusive") fail("factory_evaluator_unsupported", "Non-executable references cannot be reported as executed checks", { disposition: "unsupported" });
 			checkEvaluator(plan.repository.workingDirectory, entry.evaluation, candidate.delivery.commit);

@@ -1,10 +1,46 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { errorCode, errorMessage } from "../../data.mjs";
+import { errorCode, errorMessage, isRecord } from "../../data.mjs";
+import { buildVerificationInput } from "../../analysis/verification.mjs";
 import { PLAN_STATUS, TASK_STATUS } from "../../plan/values.mjs";
 import { analysisStub, completeImplementation, createApproved, runTask, withOperations } from "./fixture.mjs";
 
 /** @typedef {import("../../types/workflow.js").WorkflowAnalysisPort} AnalysisPort */
+
+test("verification preparation isolates the frozen context and combined delivery from analysis mutation", async () => {
+	/** @type {AnalysisPort} */
+	const analysis = {
+		...analysisStub(),
+		async prepareVerification(plan, reservationId) {
+			const input = buildVerificationInput(plan);
+			assert.deepEqual(input.tasks.map((task) => task.id), ["T-001", "T-002"]);
+			assert.equal(input.verificationReport.target.taskId, "T-002");
+			assert.equal(new Set(input.tasks.map((task) => task.evidence[0].producer)).size, 2);
+			assert.ok(plan.factoryVerification);
+			assert.ok(isRecord(plan.factoryVerification.definitions));
+			assert.ok(isRecord(plan.factoryVerification.definitions.unit));
+			plan.factoryVerification.definitions.unit.purpose = "Analysis must not replace the reserved governing snapshot";
+			plan.tasks[1].attempts[0].commit = "0".repeat(40);
+			return { workflow: "verify", inputDigest: input.inputDigest, launchSpec: { name: "verify", args: { ...input, reservationId } } };
+		},
+	};
+	await withOperations(async ({ operations, workspacePath }) => {
+		const plan = await completeImplementation(operations, workspacePath);
+		const prepared = await operations.prepareVerification({
+			planId: plan.id, expectedRevision: plan.revision, reservationId: "isolated-canonical-input",
+		});
+		const canonical = buildVerificationInput(prepared.plan);
+		assert.equal(prepared.inputDigest, canonical.inputDigest);
+		assert.deepEqual(prepared.launchSpec?.args, { ...canonical, reservationId: "isolated-canonical-input" });
+		const replay = await operations.prepareVerification({
+			planId: plan.id, expectedRevision: plan.revision, reservationId: "isolated-canonical-input",
+		});
+		assert.equal(replay.inputDigest, prepared.inputDigest);
+		assert.deepEqual(replay.launchSpec, prepared.launchSpec);
+		assert.deepEqual(buildVerificationInput(replay.plan), canonical);
+		assert.deepEqual(buildVerificationInput(await operations.getPlan({ planId: plan.id })), canonical);
+	}, { analysis });
+});
 
 test("verification revalidates ownership, revision, and interruption after waiting", async (t) => {
 	for (const change of ["ownership", "revision", "interrupted"]) {

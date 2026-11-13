@@ -48,7 +48,7 @@ export function createVerificationOperations({ storeFor, persist, readForMutatio
 		}
 		if (plan.verification.reservationId === reservationId
 			&& plan.verification.status === VERIFICATION_STATUS.RESERVED) {
-			const prepared = await analysis.prepareVerification(plan, reservationId);
+			const prepared = await analysis.prepareVerification(structuredClone(plan), reservationId);
 			if (prepared.inputDigest !== plan.verification.inputDigest) {
 				throw new FoundryOperationError(
 					"verification_input_mismatch",
@@ -167,8 +167,8 @@ export function createVerificationOperations({ storeFor, persist, readForMutatio
 			};
 		}
 		factory.verificationGate(plan);
-		const frozenContext = factory.verificationContext(plan);
-		const prepared = await analysis.prepareVerification({ ...plan, factoryVerification: frozenContext }, reservationId);
+		const frozenContext = structuredClone(factory.verificationContext(plan));
+		const prepared = await analysis.prepareVerification(structuredClone({ ...plan, factoryVerification: frozenContext }), reservationId);
 		const updated = await persist(
 			planId,
 			expectedRevision,
