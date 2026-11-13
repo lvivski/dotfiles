@@ -12,6 +12,10 @@ import { createPlanStore } from "../../storage.mjs";
 import { must } from "../assertions.mjs";
 import { factoryDocument } from "../factory/accessors.mjs";
 import { COMMIT, DIGEST, fixture, source } from "./fixture.mjs";
+import { canonicalBindings } from "../../plan/packages.mjs";
+import { blueprintDigest, evaluationCriterion } from "../../bridge/pinning.mjs";
+import { validateTaskTopology } from "../../plan/graph.mjs";
+import { createFactoryBridge } from "../../bridge.mjs";
 
 const nativeOwner = { sessionId: "coordinator", toolCallId: "technical-closure" };
 const completionReview = "Reviewed the exact independently verified milestone delivery and remaining gates; technical closure only, not design acceptance or deployment.";
@@ -20,6 +24,179 @@ const completionAuthority = {
 	grantedBy: "requesting-user",
 	source: { kind: "relayed-user", sessionId: "oversight", messageRef: "explicit-completion-instruction@revision:21", relayedBySessionId: "oversight" },
 };
+
+/** @param {Awaited<ReturnType<typeof fixture>>} f
+ * @returns {import("../../types/parallel.js").PackageDecomposition} */
+function decomposition(f) {
+	const generation = f.factory.generation(f.candidate.id);
+	const bindings = canonicalBindings({
+		authority: "accepted-contract", repositoryId: f.factory.repository.id,
+		unit: { id: generation.unit.id, revision: generation.unit.revision },
+		contract: { revision: generation.contract.revision, digest: generation.contract.digest },
+		requirements: generation.obligations.map(({ id, revision }) => ({ id, revision })),
+		evaluators: generation.evaluations.map(({ id, revision, evaluation }) => ({
+			id, revision, procedureDigest: evaluation.procedure.digest, requirements: evaluation.obligations,
+			independent: evaluation.independent, modality: evaluation.modality,
+		})),
+		visualEvaluation: generation.unit.visualEvaluation ?? null,
+	});
+	return {
+		format: "foundry-packages-v1", bindings, target: "product",
+		packages: [
+			{ id: "alpha", title: "Produce alpha", expectedFiles: ["alpha.json"], inputs: [],
+				outputs: [{ id: "value", path: "alpha.json" }], requirements: [], evaluators: [] },
+			{ id: "beta", title: "Produce beta", expectedFiles: ["beta.json"], inputs: [],
+				outputs: [{ id: "value", path: "beta.json" }], requirements: [], evaluators: [] },
+			{ id: "product", title: "Combine actual inputs", expectedFiles: ["product.json"],
+				inputs: [
+					{ producer: "alpha", output: "value", destination: "inputs/alpha.json" },
+					{ producer: "beta", output: "value", destination: "inputs/beta.json" },
+				], outputs: [{ id: "product", path: "product.json" }], requirements: bindings.requirements,
+				evaluators: bindings.evaluators.map(({ id, revision }) => ({ id, revision })) },
+		],
+	};
+}
+
+/** @param {Awaited<ReturnType<typeof fixture>>} f @param {string} [id] */
+const packageRequest = (f, id = "packages") => ({
+	id, candidateId: f.candidate.id, expectedRevision: 0,
+	repository: { workingDirectory: f.repo, baseBranch: "main" },
+});
+
+test("PF-PKG-01/02: bound factory plans compile actual package edges and canonical immutable bindings", async (t) => {
+	const f = await fixture(t);
+	const input = decomposition(f);
+	const before = structuredClone(f.factory.generation(f.candidate.id));
+	const plan = await f.ops.createFactoryPlan({ ...packageRequest(f), decomposition: input });
+	assert.deepEqual(plan.tasks.map(({ id, kind, dependsOn }) => ({ id, kind, dependsOn })), [
+		{ id: "T-001", kind: "implement", dependsOn: [] },
+		{ id: "T-002", kind: "implement", dependsOn: [] },
+		{ id: "T-003", kind: "implement", dependsOn: ["T-001", "T-002"] },
+		{ id: "T-004", kind: "verify", dependsOn: ["T-003"] },
+	]);
+	const { targetTask, verifyTask } = validateTaskTopology(plan.tasks);
+	assert.equal(targetTask?.deliveryRequirement, "commit");
+	assert.deepEqual(verifyTask.expectedFiles, []);
+	assert.deepEqual(verifyTask.acceptanceCriteria, []);
+	assert.equal(plan.factory?.blueprintDigest, blueprintDigest(plan));
+	assert.equal(plan.factory?.contractDigest, before.contract.digest);
+	assert.deepEqual(f.factory.generation(f.candidate.id), before);
+	const reordered = structuredClone(input);
+	reordered.packages.reverse();
+	for (const item of reordered.packages) {
+		item.inputs.reverse(); item.outputs.reverse(); item.requirements.reverse(); item.evaluators.reverse();
+	}
+	reordered.bindings.requirements.reverse(); reordered.bindings.evaluators.reverse();
+	const again = await f.ops.createFactoryPlan({ ...packageRequest(f), decomposition: reordered });
+	assert.deepEqual(again, plan);
+	assert.equal(f.factory.snapshot().bindings.length, 1);
+	const changed = structuredClone(input);
+	changed.packages[2].inputs[0].destination = "inputs/substituted.json";
+	await assert.rejects(f.ops.createFactoryPlan({ ...packageRequest(f), decomposition: changed }), { code: "factory_plan_bound" });
+});
+
+test("PF-PKG-03: omitted decomposition preserves legacy tasks and binding; explicit invalid input never falls back", async (t) => {
+	const f = await fixture(t);
+	const generation = f.factory.generation(f.candidate.id);
+	const plan = await f.ops.createFactoryPlan(packageRequest(f, "legacy-recipe"));
+	assert.deepEqual(plan.tasks.map(({ id, title, dependsOn, acceptanceCriteria, expectedFiles }) =>
+		({ id, title, dependsOn, acceptanceCriteria, expectedFiles })), [
+		{ id: "T-001", title: "Produce a fresh candidate", dependsOn: [],
+			acceptanceCriteria: generation.evaluations.map(evaluationCriterion), expectedFiles: [] },
+		{ id: "T-002", title: "Independently evaluate the candidate", dependsOn: ["T-001"],
+			acceptanceCriteria: [], expectedFiles: [] },
+	]);
+	assert.equal(plan.factory?.blueprintDigest, blueprintDigest(plan));
+	assert.equal(plan.factory?.blueprintDigest, blueprintDigest({
+		repository: plan.repository, title: `Reconstruct ${generation.unit.name}`, objective: generation.unit.purpose,
+		constraints: [
+			"Preserve the current accepted implementation until explicit replacement approval.",
+			"Do not alter pinned obligations or evaluators to make the candidate pass.",
+			"Use shared foundations through their conserved interfaces, not duplicate identity or authority stacks.",
+		],
+		tasks: [
+			{
+				id: "T-001", title: "Produce a fresh candidate", kind: "implement",
+				description: `Produce candidate ${f.candidate.id} from sealed contract ${f.candidate.contractDigest}. The recovered specification is an input, implementation discoveries are outputs. Capture new observations or proposals without making them authority.`,
+				dependsOn: [], acceptanceCriteria: generation.evaluations.map(evaluationCriterion),
+				expectedFiles: [], deliveryRequirement: "commit",
+			},
+			{
+				id: "T-002", title: "Independently evaluate the candidate", kind: "verify",
+				description: "Evaluate every pinned procedure against the exact delivered commit. Report real output, environmental context, preservation and architectural failures. Do not repair the candidate or weaken the contract.",
+				dependsOn: ["T-001"], acceptanceCriteria: [], expectedFiles: [], deliveryRequirement: "commit",
+			},
+		],
+	}));
+	const before = f.factory.snapshot().revision;
+	for (const value of [null, [], {}, { ...decomposition(f), packages: [] }]) {
+		await assert.rejects(f.ops.createFactoryPlan({ ...packageRequest(f, "invalid-packages"), decomposition: value }));
+		assert.equal(f.factory.snapshot().revision, before, "Invalid decomposition must not reserve factory intent");
+	}
+	await assert.rejects(f.ops.createEvaluationPlan({
+		...packageRequest(f, "invalid-evaluation-packages"), decomposition: decomposition(f),
+	}), { code: "parallel_evaluation_decomposition" });
+});
+
+test("PF-PKG-04/05: every bound package plan retains governing evaluators, visual fidelity and separate human decisions", async (t) => {
+	const f = await fixture(t, { human: true, visual: true });
+	const input = decomposition(f);
+	const generation = f.factory.generation(f.candidate.id);
+	const plan = await f.ops.createFactoryPlan({ ...packageRequest(f), decomposition: input });
+	const target = must(validateTaskTopology(plan.tasks).targetTask);
+	const visual = evaluationCriterion(must(generation.evaluations.find((entry) => entry.id === "oracle")));
+	assert.ok(target.acceptanceCriteria.includes(visual));
+	assert.match(visual, /real output captures and independent reference-to-output assessment/);
+	assert.ok(!plan.tasks.flatMap((task) => task.acceptanceCriteria).some((criterion) => criterion.includes("Pass pinned human")));
+	assert.ok(plan.tasks.some((task) => task.description.includes("human-rubric")));
+	const bridge = createFactoryBridge({
+		workspace: () => path.join(f.root, "coordinator"), storeFor: f.ops.storeFor, notify: () => {},
+		storageRoot: f.storageRoot,
+	});
+	for (const replacement of [[], ["Pass control behavior and geometry checks without native output captures."]]) {
+		const tasks = plan.tasks.map(({ id, title, kind, description, dependsOn, acceptanceCriteria, expectedFiles, deliveryRequirement }) => ({
+			id, title, kind, description, dependsOn, expectedFiles, deliveryRequirement,
+			acceptanceCriteria: id === target.id ? acceptanceCriteria.filter((criterion) => criterion !== visual).concat(replacement) : acceptanceCriteria,
+		}));
+		await assert.rejects(bridge.createBoundDraft({
+			...packageRequest(f, "geometry-cannot-replace-visual"),
+			blueprint: { title: plan.title, objective: plan.objective, constraints: plan.constraints, tasks },
+			factoryContext: bridge.context(f.repo, "unit"),
+		}), { code: "factory_visual_required" });
+	}
+	for (const change of [
+		{ visualEvaluation: null },
+		{ contract: { revision: 1, digest: "f".repeat(64) } },
+		{ evaluators: input.bindings.evaluators.map((entry) => ({ ...entry, procedureDigest: "f".repeat(64) })) },
+		{ authority: "discovery-only", contract: null },
+	]) {
+		await assert.rejects(f.ops.createFactoryPlan({
+			...packageRequest(f, "substituted-package"), decomposition: { ...input, bindings: { ...input.bindings, ...change } },
+		}), { code: "parallel_binding_mismatch" });
+	}
+});
+
+test("PF-PKG-04: decomposition cannot write protected evaluator support or consume comparison-only material", async (t) => {
+	const f = await fixture(t);
+	for (const filename of ["evaluators/check.mjs", "package-lock.json"]) {
+		const input = decomposition(f);
+		input.packages[0].expectedFiles = [filename];
+		input.packages[0].outputs[0].path = filename;
+		await assert.rejects(f.ops.createFactoryPlan({ ...packageRequest(f), decomposition: input }), /protected/i);
+	}
+	const { candidate } = f.mutate("prepareCandidate", {
+		id: "comparison-candidate", unitId: "unit", contractRevision: 1, actor: "owner",
+		context: { generation: [], comparisonOnly: [{ kind: "implementation", ref: "legacy.mjs", digest: "b".repeat(64) }],
+			independence: { method: "fresh-session", reason: "Comparison remains outside generation" } },
+	});
+	const input = decomposition(f);
+	input.packages[0].expectedFiles = ["legacy.mjs"];
+	input.packages[0].outputs[0].path = "legacy.mjs";
+	await assert.rejects(f.ops.createFactoryPlan({
+		...packageRequest(f), candidateId: candidate.id, decomposition: input,
+	}), /comparison/i);
+	assert.equal(f.factory.snapshot().bindings.length, 0);
+});
 
 /** @param {Awaited<ReturnType<typeof fixture>>} f @param {import("../../types/plan.js").FoundryPlan} plan */
 const grantCompletion = (f, plan) => f.ops.planApprovalDelegation({

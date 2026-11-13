@@ -7,8 +7,10 @@ import { assertPlanningContext, blueprintDigest, evaluationCriterion, selectEval
 import { declaredVisual, visualCriterion } from "../factory/visual.mjs";
 import { validateTaskTopology } from "../plan/graph.mjs";
 import { checkVisualReferences } from "../evidence/visual.mjs";
+import { checkEvaluator } from "../evidence/bundles.mjs";
+import { canonicalBindings, compilePackages } from "../plan/packages.mjs";
 
-/** @typedef {{id: string, repository: import("../types/plan.js").Repository, expectedRevision: number, expectedFactoryRevision?: number, candidateId: string, expectedFiles?: string[], evaluations?: KnowledgeRef[]}} FactoryPlanInput */
+/** @typedef {{id: string, repository: import("../types/plan.js").Repository, expectedRevision: number, expectedFactoryRevision?: number, candidateId: string, expectedFiles?: string[], evaluations?: KnowledgeRef[], decomposition?: unknown}} FactoryPlanInput */
 /** @typedef {import("../types/factory.js").KnowledgeRef} KnowledgeRef */
 
 /** @param {{
@@ -121,6 +123,33 @@ export function createBoundPlans({ workspace, storeFor, notify, factoryFor, cont
 				},
 			],
 		};
+		if (input.decomposition !== undefined) {
+			const governing = canonicalBindings({
+				authority: "accepted-contract", repositoryId: factory.repository.id,
+				unit: { id: generation.unit.id, revision: generation.unit.revision },
+				contract: { revision: generation.contract.revision, digest: generation.contract.digest },
+				requirements: generation.obligations.map(({ id, revision }) => ({ id, revision })),
+				evaluators: generation.evaluations.map(({ id, revision, evaluation }) => ({
+					id, revision, procedureDigest: evaluation.procedure.digest, requirements: evaluation.obligations,
+					independent: evaluation.independent, modality: evaluation.modality,
+				})),
+				visualEvaluation: generation.unit.visualEvaluation ?? null,
+			});
+			const protectedPaths = generation.evaluations.flatMap(({ evaluation }) => {
+				checkEvaluator(input.repository.workingDirectory, evaluation);
+				const bundle = evaluation.procedure.bundle;
+				return bundle ? [bundle.root, ...bundle.support] : [];
+			});
+			blueprint.tasks = compilePackages(input.decomposition, {
+				governing,
+				evaluationCriteria: generation.evaluations.map((entry) => ({
+					id: entry.id, revision: entry.revision, criterion: evaluationCriterion(entry),
+					human: requiresHumanJudgment(entry.evaluation),
+				})),
+				protectedPaths,
+				comparisonOnlyPaths: candidate.context.comparisonOnly.map((entry) => entry.ref),
+			}).tasks;
+		}
 		return createBoundDraft({
 			...input, blueprint, factoryContext: context(input.repository.workingDirectory, candidate.unitId),
 			candidateId: candidate.id,
@@ -129,6 +158,7 @@ export function createBoundPlans({ workspace, storeFor, notify, factoryFor, cont
 
 	/** @param {FactoryPlanInput} input */
 	const createEvaluationPlan = async (input) => {
+		if (input.decomposition !== undefined) fail("parallel_evaluation_decomposition", "Read-only evaluation plans cannot contain implementation packages");
 		const factory = factoryFor(input.repository.workingDirectory);
 		const state = factory.snapshot();
 		const candidate = state.candidates.find((entry) => entry.id === input.candidateId);
