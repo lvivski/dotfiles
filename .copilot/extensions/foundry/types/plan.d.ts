@@ -120,16 +120,22 @@ export type FoundryActivity = {
 	event: string; at: string; revision: number; actor?: string; verificationRunId?: string;
 };
 
-export type DelegatedApprovalType = "plan" | "completion";
+export type DelegatedApprovalType = "plan" | "completion" | "technical";
+export type TechnicalPolicy = {
+	kinds: ("retry" | "consumer-expectation")[];
+	agreement: { evaluation: KnowledgeRef; path: string; digest: string } | null;
+};
+export type TechnicalScope = TechnicalPolicy & { files: string[] };
 export type ApprovalScope = {
 	owner: string; coordinatorSessionId: string; repositoryId: string; repositoryPath: string;
 	unitId: string; unitRevision: number; contractDigest: string | null;
 	/** Missing on historical grants means initial plan approval only. */
 	approvalType?: DelegatedApprovalType;
+	technical?: TechnicalScope;
 };
 export type ApprovalInstructionSource =
-	| { kind: "direct-user"; sessionId: string; messageRef: string }
-	| { kind: "relayed-user"; sessionId: string; messageRef: string; relayedBySessionId: string };
+	| { kind: "direct-user"; sessionId: string; messageRef: string; messageRevision?: number }
+	| { kind: "relayed-user"; sessionId: string; messageRef: string; messageRevision?: number; relayedBySessionId: string };
 export type ApprovalInstruction = {
 	instruction: string; grantedBy: string; source: ApprovalInstructionSource;
 };
@@ -151,6 +157,16 @@ export type DelegatedApproval = {
 export type DelegatedCompletion = DelegatedApproval & {
 	verification: { reservationId: string; runId: string; inputDigest: string; targetCommit: string };
 };
+export type TechnicalDecision = {
+	id: string; kind: "retry" | "consumer-expectation"; digest: string;
+	delegation: ApprovalDelegation; planId: string; planRevision: number; blueprintDigest: string;
+	sessionId: string; toolCallId: string; at: string; reason: string; failures: string[];
+	factoryRevision: number; contractDigest: string | null;
+	oldScope: string[]; newScope: string[];
+	/** Exact failed verification is retained when retry resets the current slot. */
+	verification: Verification | null;
+	renewal: import("./factory.js").TechnicalRenewal | null;
+};
 
 export type FoundryPlan = {
 	revision: number; id: string; title: string; objective: string; constraints: string[]; status: PlanStatus;
@@ -158,6 +174,7 @@ export type FoundryPlan = {
 	evaluationTarget?: EvaluationTarget | null;
 	/** Persisted JSON is validated as a frozen context by analysis before use. */
 	factoryVerification?: Record<string, unknown> | null;
+	technicalDecisions?: TechnicalDecision[];
 	tasks: FoundryTask[];
 	gates: { planApprovedAt: string | null; planApprovedBy: string | null; completionApprovedAt: string | null; completionApprovedBy: string | null; delegatedApproval?: DelegatedApproval; delegatedCompletion?: DelegatedCompletion };
 	verification: Verification; cancellation: Cancellation | null; activity: FoundryActivity[];

@@ -1,7 +1,40 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import path from "node:path";
+import { mkdir } from "node:fs/promises";
+import { analysisInputDigest } from "../../digest.mjs";
+import { createPlanStore } from "../../storage.mjs";
 import { fixture, freshCode, hash, initialCode } from "./fixture.mjs";
 import { factoryDocument } from "./accessors.mjs";
+import { technicalFixture, technicalOwner } from "../application/fixture.mjs";
+
+test("persisted technical receipts reject re-digested malformed publication fields", async t => {
+	const f = await technicalFixture(t);
+	await f.grant();
+	await f.operations.factoryAction(await f.request(), { invocation: technicalOwner });
+	const original = await f.operations.getPlan({ planId: f.plan.id });
+	for (const [index, edit] of [
+		{ obligations: [{ id: "cancellation", revision: "1" }] },
+		{ evaluations: [{ id: "cancellation-oracle", revision: 2, unsupported: true }] },
+		{ rationale: "not-an-array" },
+		{ resolutions: [{ knowledge: { id: "cancellation", revision: 1 }, reason: null }] },
+		{ renewalSignalIds: [17] },
+		{ actor: "caller-supplied-human" },
+	].entries()) {
+		const altered = structuredClone(original);
+		const receipt = altered.technicalDecisions?.[0];
+		assert.ok(receipt?.renewal);
+		Object.assign(receipt.renewal.publication, edit);
+		const { digest, ...payload } = receipt;
+		receipt.digest = analysisInputDigest(payload);
+		const workspacePath = path.join(f.root, `malformed-history-${index}`);
+		await mkdir(workspacePath);
+		const destination = createPlanStore({ workspacePath });
+		await assert.rejects(destination.importPlan(JSON.stringify(altered), { expectedRevision: 0 }), { code: "import_invalid" });
+		assert.deepEqual((await destination.list()).plans, []);
+	}
+	assert.deepEqual(await f.operations.getPlan({ planId: f.plan.id }), original);
+});
 
 test("accepted authority is immutable, observations cannot govern, and evaluator tampering fails", async (t) => {
 	const f = await fixture(t);

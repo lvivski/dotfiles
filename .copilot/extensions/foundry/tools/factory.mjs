@@ -1,11 +1,11 @@
 import { handler } from "./results.mjs";
-import { DIGEST, EVALUATOR_BUNDLE, FACTORY_ARTIFACT, FACTORY_ID, FACTORY_SOURCE, KNOWLEDGE_REF, NON_EMPTY, objectSchema, REFERENCES, REVISION, STRING_LIST } from "./schema.mjs";
+import { DIGEST, EVALUATOR_BUNDLE, FACTORY_ARTIFACT, FACTORY_ID, FACTORY_SOURCE, KNOWLEDGE_REF, NON_EMPTY, objectSchema, REFERENCES, REVISION, STRING_LIST, TECHNICAL_RENEWAL } from "./schema.mjs";
 
 /** @typedef {import("../types/json.js").JsonSchema} JsonSchema */
 /** Tool transport deliberately does not depend on operation result internals.
  * @typedef {Record<Exclude<keyof import("../operations.mjs").FoundryOperations,
  * "storeFor" | "factoryFor" | "getPlan" | "getWorkflow" | "nextTasks" | "getActive" | "getActivation" | "deactivate">,
- * (input: unknown, options?: {signal?: AbortSignal}) => unknown> & {deactivate: () => unknown}} ToolOperations */
+ * (input: unknown, options?: import("../requests.mjs").OperationContext) => unknown> & {deactivate: () => unknown}} ToolOperations */
 
 /** @param {ToolOperations} operations */
 export function factoryTools(operations) {
@@ -14,12 +14,12 @@ export function factoryTools(operations) {
 		name: `foundry_${name}`, description,
 		...(readOnly ? { skipPermission: true } : {}),
 		parameters: objectSchema(["repositoryPath", ...required], { repositoryPath: NON_EMPTY(4096), ...properties }),
-		handler: handler((args) => {
+		handler: handler((args, invocation) => {
 			if (!args || typeof args !== "object" || Array.isArray(args) || !("repositoryPath" in args)) {
 				throw new TypeError("Factory tools require repositoryPath");
 			}
 			const { repositoryPath, ...input } = args;
-			return operations.factoryAction({ repositoryPath, action, input });
+			return operations.factoryAction({ repositoryPath, action, input }, { signal: invocation.signal, invocation });
 		}),
 	});
 	/** @param {string} name @param {string} action @param {string} description @param {string[]} required @param {Record<string, JsonSchema>} properties */
@@ -73,9 +73,10 @@ export function factoryTools(operations) {
 				}),
 			}),
 		}),
-		mutation("accept_contract", "acceptContract", "Record explicit human acceptance of immutable obligation/evaluation revisions and boundary ownership. Requires complete evaluation coverage plus independent boundary/preservation checks. Never infer approval from a generated spec.", ["unitId", "unitRevision", "obligations", "evaluations", "actor", "reason"], {
+		mutation("accept_contract", "acceptContract", "Record explicit manual acceptance with actor, or narrowly renew a pinned consumer evaluator with technical {id,planId,expectedPlanRevision,delegationId,previous,next,failures} and OMIT actor. Technical renewal needs a separate owner-local grant, frozen accepted agreement, unchanged obligations/behavior and real trusted old-failing/new-passing execution; native permission remains separate. Only the canonical agreed assertion slot may change. Historical receipt replay needs fresh plan/factory revisions; no caller-supplied receipt or identity.", ["unitId", "unitRevision", "obligations", "evaluations", "reason"], {
 			unitId: FACTORY_ID, unitRevision: { type: "integer", minimum: 1 }, obligations: REFERENCES, evaluations: REFERENCES,
 			actor: NON_EMPTY(256), reason: NON_EMPTY(8000),
+			technical: TECHNICAL_RENEWAL,
 			rationale: REFERENCES,
 			renewalSignalIds: { type: "array", maxItems: 32, items: FACTORY_ID },
 			resolutions: { type: "array", maxItems: 64, items: objectSchema(["knowledge", "reason"], { knowledge: KNOWLEDGE_REF, reason: NON_EMPTY(8000) }) },

@@ -423,7 +423,11 @@ test("another coordinator re-evaluates an immutable delivery with a verifier-onl
 
 test("failed generation verification routes to fresh implementation or read-only repair, never generation retry", async (t) => {
 	const f = await fixture(t);
-	let plan = await f.verify(f.ops, await f.implement(await f.generationPlan()));
+	const draft = await f.ops.createFactoryPlan({
+		id: "generate", candidateId: f.candidate.id, expectedRevision: 0, expectedFactoryRevision: f.factory.snapshot().revision,
+		repository: { workingDirectory: f.repo, baseBranch: "main" }, expectedFiles: ["candidate/**"],
+	});
+	let plan = await f.verify(f.ops, await f.implement(await f.approve(f.ops, draft)));
 	({ plan } = await f.finish(f.ops, plan, { failed: true }));
 	const failed = structuredClone(f.factory.snapshot().candidates[0].completion);
 	assert.equal(failed?.passed, false);
@@ -432,6 +436,19 @@ test("failed generation verification routes to fresh implementation or read-only
 	assert.ok(status.projection.actions.some((entry) => entry.kind === "create-evaluation-plan"));
 	assert.equal(status.projection.actions.some((entry) => entry.kind === "approve-correction"), false);
 	await assert.rejects(f.ops.approve({ planId: plan.id, expectedRevision: plan.revision, approvalType: "retry", approvedBy: "owner" }), { code: "factory_fresh_candidate_required" });
+	const technical = must(await f.ops.planApprovalDelegation({
+		action: "grant", id: "discovery-only-retry", approvalType: "technical",
+		planId: plan.id, expectedRevision: plan.revision, technical: { kinds: ["retry"], agreement: null },
+		authority: { ...completionAuthority, instruction: "Delegate bounded failed discovery corrections only; never retry a delivered candidate or bypass fresh lineage." },
+	}, { invocation: nativeOwner }));
+	const beforeTechnical = structuredClone(f.factory.snapshot());
+	await assert.rejects(f.ops.approve({
+		planId: plan.id, expectedRevision: plan.revision, approvalType: "retry", delegationId: technical.id,
+		review: "A delivered candidate cannot become discovery merely by acquiring technical authority.",
+		technical: { id: "invalid-delivered-retry", failures: [must(plan.verification.runId)] },
+	}, { invocation: nativeOwner }), { code: "factory_fresh_candidate_required" });
+	assert.deepEqual(f.factory.snapshot(), beforeTechnical);
+	assert.deepEqual(await f.ops.getPlan({ planId: plan.id }), plan);
 	let repair = await f.ops.createEvaluationPlan({
 		id: "repair-assurance", candidateId: f.candidate.id, expectedRevision: 0, expectedFactoryRevision: f.factory.snapshot().revision,
 		repository: { workingDirectory: f.repo, baseBranch: "main" },

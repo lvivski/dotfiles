@@ -48,8 +48,9 @@ to satisfy the importer; retained proposals do not become governing requirements
    repository identity. It uses native event-driven waiting for an active run and imports only a
    completed result with its canonical factory context; no separate status-polling step is needed.
 5. Call `foundry_submit_plan` and review the exact named revision, including its critical path and
-   executable-workstream checklist. With a valid recorded delegation,
-   follow the delegated path below. Otherwise present the plan to the user and wait for explicit approval.
+   executable-workstream checklist. Record the concrete artifact/file/resource reason for each
+   serial dependency and how useful independent runtime work will proceed. With a valid recorded
+   delegation, follow the delegated path below. Otherwise present the plan and wait for explicit approval.
 6. Record manual approval with `foundry_approve_plan`, `approvalType: "plan"` and `approvedBy`
    containing the user's identity, or record the delegated decision below. Then activate the approved
    plan with `foundry_activate_plan`.
@@ -70,21 +71,33 @@ and never launch a replacement merely because the first run is temporarily unobs
 
 ## Plan executable workstreams, not just concurrent authorship
 
-Default to splitting independent atomic engineering work into disjoint, bounded runtime
-implementation units with real executable outputs. Use the smallest coherent ownership boundaries,
-not fixed agent-count targets. This is a planning default, not delegation or resource permission:
-each unit needs current authority and supported admission. Do not create unreserved App children,
-expand an approved DAG, or silently transfer another owner's scope to achieve parallelism.
+Default to useful independent runtime workers for separable implementation, focused tests and
+skill/documentation work, with disjoint bounded writes and appropriate outputs/checks. Use the smallest
+coherent boundaries, not fixed agent-count targets or cosmetic parallelism. One accountable App owner,
+claim writer or integration task does not imply one executor. This is a planning default, not
+delegation or resource permission: each worker needs current authority and supported execution.
+Do not create unreserved App children, expand an approved DAG, or silently transfer another owner's
+scope to achieve parallelism.
 
 Before generation and approval, use existing task descriptions/criteria and review notes to check:
 
 - **Critical path:** identify the longest prerequisite chain and unavoidable serial tail. Expose
-  genuinely independent, disjoint scopes; each dependency edge needs a real artifact/resource
-  prerequisite, not a convenient list order. Do not mandate agent counts or artificial parallelism.
-- **Runnable leaves:** identify each leaf's focused behavior check, command/entry point, required
+  genuinely independent, disjoint scopes. For every dependency edge or serial execution choice,
+  name the concrete artifact/file/resource, its producer/owner and the readiness condition that the
+  consumer actually needs. List order, one accountable owner or "shared interfaces" alone is not a
+  reason. If proposing one executor despite separable work, record the concrete constraint.
+- **Owner versus executors:** an already reserved/attached App attempt may use explicitly authorized
+  bounded runtime workers without creating App sessions or adding DAG tasks. Assign exclusive write
+  paths and focused outputs/checks; keep integration and terminal recording with the accountable
+  owner. Helpers are not separately reserved/attached Foundry tasks and cannot exercise the owner's
+  grants or expand scope. Keep the final verifier independent of every contributor, including helpers.
+- **Runnable leaves:** identify each executable leaf's focused behavior check, command/entry point, required
   environment and observable expected result. If missing, assign minimal shared runner, fixtures
-  and stable interfaces before dependent work fans out where feasible. Do not gate unrelated work
-  on scaffolding it does not use or duplicate shared authority to avoid an edge.
+  and a stable interface checkpoint before only the work that consumes them. Then fan out useful
+  implementation, focused-test and skill/documentation work; a frozen interface can support test
+  authorship before implementation finishes. Do not serialize all work behind the shared interface,
+  gate unrelated work on scaffolding it does not use or duplicate shared authority to avoid an edge.
+  Documentation-only workers use focused interface/link review, not invented executable checks.
 - **Actual inputs/outputs:** declare every producer output and consumer destination, immutable
   requirement/evaluator revisions, bounded write paths and shared-resource claims. A dependency
   edge, task summary or manifest is not consumption: require exact delivered bytes and actual
@@ -104,15 +117,27 @@ Before generation and approval, use existing task descriptions/criteria and revi
   tied to an exact delivered package/commit. Disjoint paths do not isolate shared writable resources.
   Keep only necessary serialized work; integration should focus on seams and whole-app evidence.
 
-For example, a small runner/interfaces prerequisite can unlock disjoint state/reconnect and
-view/selection work, each executing its own focused suite. Integration then checks their seams and
-produces the exact package; independent final verification follows the pinned delivery. If the
-runner already exists, omit the extra scaffolding task/edge. Explain unavoidable packaging/native
-deferrals rather than concentrating every check in a long integration tail.
+For example, freeze the minimal types/runner checkpoint, then run disjoint state/reconnect,
+view/selection, focused-test and skill/documentation work wherever their actual inputs permit.
+An existing attached owner can coordinate authorized runtime workers without inventing new App
+tasks. Integration checks the seams and produces the exact package; independent final verification
+follows the pinned delivery. If the interface/runner already exists, omit the extra prerequisite.
+Explain unavoidable packaging/native deferrals rather than concentrating every check in integration.
 
 The native planning recipe supplies this review to decomposition, critics, synthesis and verification.
 This guidance does not rewrite a running approved DAG, authorize additional tasks, change contracts/
 protected evaluators, relax [dispatch](dispatch.md) holds or increase resource limits.
+
+### Later execution-strategy corrections
+
+Retain a later user request to parallelize as a separate attributed instruction with its source;
+do not rewrite the original plan, approval, returned `delegationPrompt` or handoff to pretend it was
+always present. Review the current work against the checklist and issue bounded supplemental guidance
+only within the authority actually given. A runtime-worker strategy correction does not itself permit
+new App sessions, DAG tasks, workflows, broader write scope or budget increases. If it requires a
+changed DAG/scope, obtain the appropriate revised plan rather than silently editing accepted history.
+Supported reservation/attachment, unchanged handoff, resource permissions and final independent
+verification remain mandatory; runtime helpers cannot bypass an unavailable App dispatch capability.
 
 ## Explicit decomposition and legacy behavior
 
@@ -149,10 +174,11 @@ merely to update the provenance format.
 Record a new initial-plan grant with `foundry_plan_approval_delegation`, `action: "grant"`,
 `approvalType: "plan"` (the default), a stable `id`, exact
 reference `planId`/`expectedRevision`, and `authority`:
-`{ instruction, grantedBy, source: { kind, sessionId, messageRef, relayedBySessionId? } }`.
-Preserve the original user instruction verbatim and the original message reference/revision in
-`messageRef`. `grantedBy` is claimed user attribution. Use `kind: "direct-user"` only when
-`source.sessionId` is this native invoking coordinator. For an explicit user instruction relayed
+`{ instruction, grantedBy, source: { kind, sessionId, messageRef, messageRevision?, relayedBySessionId? } }`.
+Preserve the original user instruction verbatim and its original `messageRef`; retain a separately
+available revision in optional `messageRevision`, without inventing either. `grantedBy` is claimed
+user attribution. Use `kind: "direct-user"` only when `source.sessionId` is this native invoking
+coordinator. For an explicit user instruction relayed
 from oversight, use `kind: "relayed-user"`, the original user's App session ID and message reference,
 and the relaying coordinator's `relayedBySessionId`; retain the relay context, not an invented click.
 
@@ -173,8 +199,10 @@ use the same instruction-attestation, owner checks, revocation and transactional
 
 Before each decision, inspect the grant with `action: "inspect"` and review the submitted plan's
 objective, constraints, file scopes, dependency/delivery topology and independent verification against
-the authorized capability. If it qualifies, call `foundry_approve_plan` with the exact `planId`,
-`expectedRevision`, `approvalType: "plan"`, `delegationId` and a substantive `review`; omit `approvedBy`.
+the authorized capability, including the executable-workstream checklist and each serial dependency's
+concrete reason. Delegation is not a reason to default to one executor. If it qualifies, call
+`foundry_approve_plan` with the exact `planId`, `expectedRevision`, `approvalType: "plan"`,
+`delegationId` and a substantive `review`; omit `approvedBy`.
 Do not ask the user again solely for this plan approval. Out-of-scope work needs its own authority,
 not a self-expanding grant. No valid delegation means the existing manual path.
 
@@ -194,6 +222,53 @@ overrides, verification, native resource permission or external actions. Existin
 synchronization and dispatch checks still apply; it does not transfer another coordinator's plans.
 An initial-plan grant also does not authorize completion; even a separately completion-scoped grant
 authorizes only the technical closure described in the verification protocol.
+
+## Delegated bounded technical decisions
+
+Use `foundry_plan_approval_delegation`, `action: "grant"`, a **new** grant `id`,
+`approvalType: "technical"` and exact reference `planId`/`expectedRevision` only when the user
+explicitly delegates bounded technical corrections or compatibility alignment. Preserve `authority`:
+the verbatim instruction, claimed user attribution and direct/relayed `authority.source`;
+`messageRevision` can retain the original revision separately from `messageRef`. Record, inspect
+and reuse existing explicit authority without another consent form. Planning context, a proposal,
+a worker report or an old plan/completion grant is not this authority. Grant IDs cannot change scope
+or reactivate after revocation. This is agent-attested provenance, not authenticated user consent
+or a human click.
+
+The existing `foundry_plan_approval_delegation` accepts `technical: { kinds, agreement }`.
+Supported kinds are `retry` and `consumer-expectation`. Retry-only authority uses `agreement: null`.
+Consumer alignment also pins `{ evaluation: { id, revision }, path, digest }` for a pre-existing
+executable agreement inside the accepted evaluator bundle; `digest` is its canonical JSON SHA-256,
+independently pinned by an already accepted obligation, not a newly invented equivalence claim.
+Repository identity/path, native owner, capability revision, exact file scope and accepted contract
+(or explicit discovery-only null) are
+retained with the grant; the scope's files come from the named plan, not caller-added scope.
+An accepted-contract successor is eligible only through conserved technical decision lineage back
+to that anchor, not simply because its revision is newer.
+
+Each decision names its exact plan revision/blueprint and factory revision, substantive reason,
+triggering failure references, old/new scope and applicable immutable agreement/evaluator identities.
+Attribution is the actual native agent session/tool call, not `approvedBy` or a human click.
+The canonical owner-local SQLite writer rechecks current native owner, grant, revocation and exact
+plan/factory revisions before atomically persisting the decision and its replayable outbox. Revocation
+before this commit blocks authorization; afterward it allows only that exact publication reconciliation.
+The same plan SQLite transaction retains an owner-local publication marker bound to the exact
+plan/decision/digest. It survives restart and later revocation for reconciliation only, not new decisions.
+
+After a conflict, read the current plan and repository. A matching existing receipt is the historical
+result; a different postcondition is not success and cannot be fixed by blindly retrying at a newer
+revision. `foundry_sync_factory` publishes a committed renewal through the existing factory journal,
+portable knowledge publication and synchronization acknowledgment. A pending/conflicting publication
+does not authorize a usable broader successor. Pending publication requires the exact owner-commit
+marker. Export/import retains historical attribution and failures, not that marker or active
+owner-local grants. Already-published matching history remains inspectable; imported history cannot
+authorize a new factory append.
+
+Use the [correction protocol](verification.md#delegated-discovery-correction) for retry and the
+[bounded renewal protocol](factory.md#delegated-consumer-expectation-renewal) for protected evaluator
+alignment. This changes neither the approved DAG nor accepted product meaning. Human/design and
+replacement judgments, independent evaluation, commits, external actions and real resource
+permissions remain separate. A native denial is not a technical disagreement to override.
 
 ## Owner-local large-payload transport
 

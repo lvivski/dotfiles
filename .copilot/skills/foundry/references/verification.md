@@ -5,6 +5,8 @@ or completion.
 
 1. The approved DAG ends in one ordinary `verify` task. Dispatch it through the same
    reserve/create/attach flow as every other task, using its unchanged read-only prompt.
+   Keep it independent of all implementation contributors, including bounded runtime helpers;
+   one App owner or distinct session IDs alone do not establish non-contribution.
 2. The verifier detach-checks out the target commit and returns one evidence record per required
    `checkId`, including `final-integration` and `workspace-integrity`. It reports the final observed
    commit as the attempt commit. Failed checks still produce a `done` verifier report. For factory
@@ -28,9 +30,11 @@ or completion.
    before waiting natively, then rechecks the plan revision and reservation ownership before importing the
    completed result. Verification cannot pass from task-owner evidence alone: every criterion
    and final integration must use the independently reported evidence.
-6. On failure, show the attributed gaps and correction tasks. Start a correction wave only after
-   explicit user approval through `foundry_approve_plan` with `approvalType: "retry"` for discovery
-   plans. Delivered factory candidates are immutable: prepare a new candidate against the same
+6. On failure, retain the attributed gaps and correction tasks. For discovery plans, use the
+   [separately delegated correction path](#delegated-discovery-correction) when explicit technical
+   authority already covers the change, without another user form. Otherwise require explicit user
+   approval through `foundry_approve_plan` with `approvalType: "retry"`.
+   Delivered factory candidates are immutable: prepare a new candidate against the same
    accepted contract and a new approved bounded plan, not an overwrite/retry of the failed artifact.
    If delivery is unchanged and only assurance needs repair or refresh, create a separately owned
    `foundry_create_evaluation_plan`. Its sole task is read-only verification against the immutable
@@ -150,6 +154,36 @@ This closes only the verified technical milestone. It does not supply missing hu
 judgments, aesthetic/visual or final-design acceptance, authorize a correction wave, replace a
 capability/contract, deploy, push, create/merge a PR, use real accounts, override shared resources or
 skip native permissions. Keep those separately gated even after technical closure.
+
+## Delegated discovery correction
+
+Inspect the separately scoped `technical` grant and the exact failed discovery plan. Call existing
+`foundry_approve_plan` with `approvalType: "retry"`, `planId`, `expectedRevision`, `delegationId`,
+substantive `review` and `technical: { id, failures }`; omit `approvedBy`. `id` is the stable decision
+identity, and `failures` retains concrete original failure/run/signal references. No new consent form
+is required for already explicit in-scope authority. The grant must include `retry`; an initial-plan,
+completion or consumer-expectation-only grant cannot authorize it. The canonical owner-local SQLite
+commit rechecks current native owner, grant/revocation and exact revisions; after a conflict, read
+fresh state and accept only an exactly matching recorded postcondition, never blindly replay.
+
+The retry preserves the approved graph, criteria, source scope, attempts and original failed
+verification in immutable technical decision history, while the normal state machine opens a
+subsequent correction/verification wave. It does not reopen a delivered factory candidate or turn
+failed evidence into a pass. New scope needs a bounded successor, not mutation of accepted history.
+Use the [workstream checklist](planning.md#plan-executable-workstreams-not-just-concurrent-authorship)
+for useful independent runtime correction work inside current authority, without adding DAG tasks,
+changing handoffs or weakening the final independent verifier. The original failed verification
+remains retained even when the current verification slot resets.
+An obsolete protected evaluator requires [fresh contract/evaluator renewal](factory.md#delegated-consumer-expectation-renewal),
+not a retry that edits the oracle under its old contract.
+
+Retain the exact source-test selector list, executable results, command/environment fingerprints and
+delivery commit. Compilation is separate evidence. Source fixtures with synthetic native ports are
+not proof of real App no-elicitation, permission handling, host restart or Windows/macOS behavior.
+They are not installation or full-factory acceptance. Unavailable native SDK/host/platform evidence
+remains an explicit gap, not an implied pass. The known native `sdk-conformance.ts` `TS2344` diagnostic
+remains a failing SDK-conformance gap; passing source fixtures or offline typechecking does not clear
+it. Retain the exact diagnostic and any new failures separately.
 
 ## Visual evidence
 

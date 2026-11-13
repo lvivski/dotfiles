@@ -13,6 +13,7 @@ import { FACTORY_FORMAT, applyEvent, replay } from "../../factory/replay.mjs";
 import { resolveRepositoryIdentity } from "../../factory/repository.mjs";
 import { createFactoryLedger } from "../../factory/storage.mjs";
 import { factoryDocument } from "./accessors.mjs";
+import { technicalFixture, technicalOwner } from "../application/fixture.mjs";
 
 /** @param {string} repositoryPath @param {string} storageRoot */
 function stores(repositoryPath, storageRoot) {
@@ -159,6 +160,116 @@ test("publication recovers after the portable head commits but cache bookkeeping
 	assert.equal(recovered.snapshot().revision, 1);
 	assert.equal(recovered.snapshot().units.length, 1);
 	assert.throws(() => recovered.append("createUnit", { expectedRevision: 0 }), { code: "revision_conflict" });
+});
+
+/** Retain a real public authorization commit, interrupted before its downstream outbox runs.
+ * @param {import("node:test").TestContext} t */
+async function authorizedTechnical(t) {
+	const f = await technicalFixture(t);
+	await f.grant();
+	const interrupted = f.reopen({ notify: () => { throw new Error("after-owner-authorization-commit"); } });
+	const request = await f.request();
+	await assert.rejects(interrupted.factoryAction(request, { invocation: technicalOwner }), /after-owner-authorization-commit/);
+	const plan = await f.operations.getPlan({ planId: f.plan.id });
+	const decision = plan.technicalDecisions?.[0];
+	assert.ok(decision?.renewal);
+	f.operations.storeFor().requireTechnicalAuthorization(plan.id, decision.id, decision.digest);
+	const original = await f.operations.exportPlan({ planId: plan.id });
+	const { local, repository } = stores(f.repositoryPath, f.storageRoot);
+	assert.equal(local.snapshot().contracts.length, 1);
+	return { ...f, plan, decision, original, local, repository, publication: {
+		expectedRevision: decision.factoryRevision, ...decision.renewal.publication, technical: decision,
+	} };
+}
+
+test("committed technical outbox survives each real factory publication boundary and later revocation", async t => {
+	for (const boundary of ["before-ledger", "after-ledger", "before-publication", "before-acknowledgment", "after-acknowledgment"]) {
+		await t.test(boundary, async t => {
+			const f = await authorizedTechnical(t);
+			const headPath = path.join(f.repositoryPath, ".foundry/repository.json");
+			const originalHead = await readFile(headPath, "utf8");
+			let applied = false;
+			/** @type {typeof f.local} */
+			const interrupted = {
+				...f.local,
+				append(action, input, check) {
+					if (action === "acceptContract" && boundary === "before-ledger") throw new Error(boundary);
+					const result = f.local.append(action, input, check);
+					applied = true;
+					if (boundary === "after-ledger") throw new Error(boundary);
+					return result;
+				},
+				readDocument() {
+					if (applied && boundary === "before-publication") throw new Error(boundary);
+					return f.local.readDocument();
+				},
+				setKnowledgeMetadata(input) {
+					if (applied && boundary === "before-acknowledgment") throw new Error(boundary);
+					f.local.setKnowledgeMetadata(input);
+					if (applied && boundary === "after-acknowledgment") throw new Error(boundary);
+				},
+			};
+			const publication = createPortableLedger({ local: interrupted, repository: f.repository, repositoryPath: f.repositoryPath });
+			assert.throws(() => publication.append("acceptContract", f.publication),
+				boundary.endsWith("ledger") ? { message: boundary } : { code: "factory_publication_pending" });
+			assert.equal(f.local.snapshot().contracts.length, boundary === "before-ledger" ? 1 : 2);
+			if (["before-ledger", "after-ledger", "before-publication"].includes(boundary)) {
+				assert.equal(await readFile(headPath, "utf8"), originalHead, "Unpublished knowledge is not a portable successor");
+			} else assert.notEqual(await readFile(headPath, "utf8"), originalHead);
+			const restarted = f.reopen();
+			await restarted.planApprovalDelegation({
+				action: "revoke", id: "technical-grant", reason: "Revoked after durable owner authorization; reconcile only that receipt.",
+			}, { invocation: { ...technicalOwner, toolCallId: `revoke-${boundary}` } });
+			assert.equal(await restarted.exportPlan({ planId: f.plan.id }), f.original);
+			const recovered = await restarted.syncFactory({ planId: f.plan.id });
+			assert.equal(recovered.synchronized, true);
+			assert.equal((await restarted.syncFactory({ planId: f.plan.id })).published, 0);
+			const state = restarted.factoryFor(f.repositoryPath).snapshot();
+			assert.equal(state.contracts.length, 2);
+			assert.equal(state.decisions.filter(entry => entry.kind === "accept-contract" && entry.technical).length, 1);
+			const retained = state.decisions.at(-1);
+			assert.ok(retained?.kind === "accept-contract");
+			assert.deepEqual(retained.technical, f.decision);
+			assert.equal(await restarted.exportPlan({ planId: f.plan.id }), f.original);
+			assert.equal(f.ui.calls, 0);
+			t.diagnostic(JSON.stringify({ boundary, factoryRevision: state.revision, decisionDigest: f.decision.digest,
+				ownerReceiptUnchanged: true, revocation: "after-authorization-before-recovery", duplicateSuccessors: 0 }));
+		});
+	}
+});
+
+test("technical publication remains exact after the final synchronization notification is interrupted", async t => {
+	const f = await authorizedTechnical(t);
+	const interrupted = f.reopen({ notify: () => { throw new Error("after-synchronization-notification"); } });
+	await assert.rejects(interrupted.syncFactory({ planId: f.plan.id }), { code: "factory_sync_pending" });
+	const restarted = f.reopen();
+	await restarted.planApprovalDelegation({ action: "revoke", id: "technical-grant", reason: "Stop new decisions after completed publication." },
+		{ invocation: technicalOwner });
+	assert.equal((await restarted.syncFactory({ planId: f.plan.id })).published, 0);
+	assert.equal(restarted.factoryFor(f.repositoryPath).snapshot().contracts.length, 2);
+	assert.equal(await restarted.exportPlan({ planId: f.plan.id }), f.original);
+});
+
+test("conflicting portable technical postconditions hold without making the local successor usable", async t => {
+	const f = await authorizedTechnical(t);
+	const headPath = path.join(f.repositoryPath, ".foundry/repository.json");
+	const oldHead = await readFile(headPath, "utf8");
+	await f.operations.syncFactory({ planId: f.plan.id });
+	const publishedHead = await readFile(headPath, "utf8");
+	await writeFile(headPath, oldHead);
+	const restarted = f.reopen();
+	await restarted.planApprovalDelegation({ action: "revoke", id: "technical-grant", reason: "No new decisions during a conflicting recovery." },
+		{ invocation: technicalOwner });
+	await assert.rejects(restarted.syncFactory({ planId: f.plan.id }), { code: "factory_sync_pending" });
+	assert.throws(() => restarted.factoryFor(f.repositoryPath).prepareCandidate({
+		expectedRevision: f.local.snapshot().revision, id: "unauthorized-successor", unitId: "technical-unit", contractRevision: 2,
+		actor: "fixture", context: { generation: [], comparisonOnly: [], independence: { method: "fresh-process", reason: "Cannot pass a conflicting publication" } },
+	}), { code: "factory_knowledge_conflict" });
+	assert.equal(f.local.snapshot().candidates.length, 0);
+	assert.equal(await restarted.exportPlan({ planId: f.plan.id }), f.original);
+	await writeFile(headPath, publishedHead);
+	assert.equal((await f.reopen().syncFactory({ planId: f.plan.id })).published, 0);
+	assert.equal(f.local.snapshot().contracts.length, 2);
 });
 
 test("a divergent checked-out knowledge head holds writers instead of silently merging authority", async (t) => {

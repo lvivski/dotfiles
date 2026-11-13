@@ -1,7 +1,9 @@
 /** Decoders shared by the tool/HTTP operation boundary; domain rules still own semantics. */
 import { arrayOf as array, decodeRecord as decodeObject, nullable, optional, readRecord as record } from "./data.mjs";
 import { assertKnownKeys, assertPlanId, FoundryDomainError } from "./plan/fields.mjs";
+import { identifier as factoryIdentifier, integer, reference as factoryReference, strings, text } from "./factory/fields.mjs";
 import { packageDecomposition } from "./plan/parallel-contracts.mjs";
+import { validateTechnicalPolicy } from "./plan/schemas/approval.mjs";
 import { validateFactoryEvaluations, validateFactoryLearning } from "./plan/schemas/factory.mjs";
 import { ATTEMPT_ID_PATTERN, REQUEST_ID_PATTERN, TASK_ID_PATTERN } from "./plan/values.mjs";
 
@@ -44,6 +46,11 @@ const opaque = (value) => value;
 /** Preserve extra keys so closed domain validators, rather than a decoder, reject them.
  * @template {Record<string, Decoder<unknown>>} T @param {T} fields @returns {Decoder<Decoded<T>>} */
 const object = (fields) => (value) => ({ ...record(value), ...decodeObject(fields, value) });
+/** @template {Record<string, Decoder<unknown>>} T @param {T} fields @returns {Decoder<Decoded<T>>} */
+const closedObject = (fields) => (value) => {
+	assertKnownKeys(record(value), new Set(Object.keys(fields)), "technical");
+	return decodeObject(fields, value);
+};
 const repository = object({ workingDirectory: string, baseBranch: string });
 const reference = object({ id: string, revision: number });
 const revision = { planId: assertPlanId, expectedRevision: number };
@@ -72,6 +79,31 @@ const dispatchLimit = value => {
 	}
 	return value;
 };
+/** @param {unknown} value */
+const technicalPolicy = value => { validateTechnicalPolicy(value); return value; };
+/** @param {unknown} value */
+const failures = value => strings(value, "triggering failures", 32, 1);
+/** @param {unknown} value */
+const positiveRevision = value => integer(value, "revision");
+/** @param {unknown} value */
+const factoryRevision = value => integer(value, "expectedRevision", 0);
+/** @param {unknown} value */
+const contractReason = value => text(value, "reason");
+const technicalRetry = closedObject({ id: factoryIdentifier, failures });
+const technicalRenewal = closedObject({
+	id: factoryIdentifier, planId: assertPlanId, expectedPlanRevision: positiveRevision,
+	delegationId: assertPlanId, previous: factoryReference, next: factoryReference, failures,
+});
+/** @param {unknown} value */
+const approvalKind = value => {
+	if (value !== "plan" && value !== "completion" && value !== "retry") throw new FoundryDomainError("delegation_approval_type", "Approval kind must be plan, completion or retry");
+	return value;
+};
+/** @param {unknown} value */
+const delegationKind = value => {
+	if (value !== "plan" && value !== "completion" && value !== "technical") throw new FoundryDomainError("delegation_approval_type", "Delegation kind must be plan, completion or technical");
+	return value;
+};
 
 export const requestShapes = {
 	preparePlan: {
@@ -88,8 +120,8 @@ export const requestShapes = {
 	importPlan: { source: opaque, expectedRevision: zero },
 	exportPlan: planId,
 	submitPlan: revision,
-	approve: { ...revision, approvedBy: optional(string), approvalType: optional(string), retryStatus: optional(string), delegationId: optional(assertPlanId), review: optional(string) },
-	planApprovalDelegation: { action: string, id: assertPlanId, planId: optional(assertPlanId), expectedRevision: optional(number), reason: optional(string), authority: opaque, approvalType: optional(string) },
+	approve: { ...revision, approvedBy: optional(string), approvalType: optional(approvalKind), retryStatus: optional(string), delegationId: optional(assertPlanId), review: optional(string), technical: optional(technicalRetry) },
+	planApprovalDelegation: { action: string, id: assertPlanId, planId: optional(assertPlanId), expectedRevision: optional(number), reason: optional(string), authority: opaque, approvalType: optional(delegationKind), technical: optional(technicalPolicy) },
 	nextTasks: planId,
 	dispatchReady: { ...planId, limit: dispatchLimit },
 	reconcileParallel: { ...planId, taskId: identifier(TASK_ID_PATTERN, "taskId"), reservationId: identifier(REQUEST_ID_PATTERN, "reservationId") },
@@ -128,6 +160,13 @@ export const requestShapes = {
 	syncFactory: planId,
 	captureAnalysis: { repositoryPath: string, unitId: string, runId: string, expectedRevision: number, actor: string },
 	factoryAction: { repositoryPath: string, action: string, input: optional(record) },
+	acceptContract: {
+		expectedRevision: factoryRevision, unitId: factoryIdentifier, unitRevision: positiveRevision,
+		obligations: array(factoryReference), evaluations: array(factoryReference), actor: optional(string), reason: contractReason,
+		rationale: optional(array(factoryReference)),
+		resolutions: optional(array(closedObject({ knowledge: factoryReference, reason: string }))),
+		renewalSignalIds: optional(array(factoryIdentifier)), technical: optional(technicalRenewal),
+	},
 	factoryInspect: {
 		unitId: optional(string), candidateId: optional(string), limit: optional(number), includeRetired: optional(boolean),
 		environment: optional(string), workload: optional(string), kinds: optional(array(knowledgeKind)), query: optional(string),
@@ -142,7 +181,11 @@ export const requestShapes = {
 /** @template {keyof typeof requestShapes} K @typedef {Decoded<(typeof requestShapes)[K]>} Request */
 /** @template {keyof typeof requestShapes} K @param {K} name @param {unknown} value @returns {Request<K>} */
 export function decodeRequest(name, value) {
-	if (["dispatchReady", "reconcileParallel", "materializeInputs", "assessPackage"].includes(name)) {
+	if (["approve", "planApprovalDelegation"].includes(name)
+		&& ["invocation", "sessionId", "toolCallId", "agentId"].some(key => key in record(value))) {
+		throw new FoundryDomainError("delegation_identity_required", "Caller JSON cannot supply native invocation identity");
+	}
+	if (["approve", "planApprovalDelegation", "factoryAction", "acceptContract", "dispatchReady", "reconcileParallel", "materializeInputs", "assessPackage"].includes(name)) {
 		assertKnownKeys(record(value), new Set(Object.keys(requestShapes[name])), name);
 	}
 	return { ...record(value), ...decodeObject(requestShapes[name], value) };

@@ -33,6 +33,11 @@ export const receiptsFor = (plan, state) => {
 	const receipts = [];
 	/** @param {FactoryReceipt["action"]} action @param {Record<string, unknown>} input @param {string} label */
 	const add = (action, input, label) => receipts.push({ action, input, label });
+	for (const decision of plan.technicalDecisions ?? []) {
+		if (decision.renewal) add("acceptContract", {
+			...decision.renewal.publication, technical: decision,
+		}, `technical renewal ${decision.id}`);
+	}
 	const candidate = state.candidates.find((entry) => entry.id === plan.factory.candidateId);
 	const binding = state.bindings.find((entry) => entry.owner === plan.factory.owner && entry.planId === plan.id);
 	if (candidate && plan.status === "cancelled") {
@@ -122,6 +127,17 @@ export const receiptsFor = (plan, state) => {
 /** @param {FactorySnapshot} state @param {FactoryReceipt} receipt */
 export const receiptPresent = (state, receipt) => {
 	const { action, input } = receipt;
+	if (action === "acceptContract") {
+		const technical = property(input, "technical");
+		const existing = state.decisions.find(entry => entry.kind === "accept-contract" && entry.technical
+			&& entry.technical.id === property(technical, "id")
+			&& entry.technical.delegation.scope.owner === property(property(property(technical, "delegation"), "scope"), "owner"));
+		if (!existing) return false;
+		if (existing.kind !== "accept-contract" || !sameRefs(existing.technical, technical)) {
+			fail("factory_receipt_conflict", "Published technical decision differs from the immutable owner-local receipt");
+		}
+		return true;
+	}
 	const candidate = state.candidates.find((entry) => entry.id === input.candidateId);
 	const binding = state.bindings.find((entry) => entry.owner === property(input.source, "owner") && entry.planId === property(input.source, "planId"));
 	const existing = action === "appendKnowledge" ? state.knowledge.find((entry) => entry.id === input.id)

@@ -1,8 +1,9 @@
 import { assessDeterministicVerification } from "../analysis/verdicts.mjs";
 import { buildVerificationInput, normalizeVerificationInput } from "../analysis/verification.mjs";
+import { stableStringify } from "../digest.mjs";
 import { assertPlanId, assertString } from "../plan/fields.mjs";
 import { approvePlan, transitionPlan } from "../plan/lifecycle.mjs";
-import { approvalScope, sameApprovalScope, validateApprovalInstruction } from "../plan/schemas/approval.mjs";
+import { approvalScope, sameApprovalScope, validateApprovalInstruction, validateTechnicalPolicy } from "../plan/schemas/approval.mjs";
 import { LIMITS, PLAN_STATUS } from "../plan/values.mjs";
 import { FoundryOperationError } from "./errors.mjs";
 
@@ -52,6 +53,9 @@ export function createApprovalOperations({ workspace, storeFor, readForMutation,
 	const planApprovalDelegation = async (input, options = {}) => {
 		const invocation = coordinator(options);
 		assertPlanId(input.id);
+		if (input.technical !== undefined && (input.action !== "grant" || input.approvalType !== "technical")) {
+			throw new FoundryOperationError("delegation_approval_type", "Technical policy belongs only to a new explicit technical grant");
+		}
 		const existing = await storeFor().getApprovalDelegation(input.id);
 		if (existing) checkOwner(existing, invocation);
 		if (input.action === "inspect") return existing;
@@ -67,15 +71,19 @@ export function createApprovalOperations({ workspace, storeFor, readForMutation,
 		const plan = await readForMutation(input.planId, input.expectedRevision);
 		checkAuthority(plan);
 		const approvalType = input.approvalType ?? "plan";
-		if (approvalType !== "plan" && approvalType !== "completion") throw new FoundryOperationError("delegation_approval_type", "Delegation is limited to initial plan approval or verified technical completion");
-		const scope = approvalScope(plan, invocation.sessionId, approvalType);
+		if (approvalType !== "plan" && approvalType !== "completion" && approvalType !== "technical") throw new FoundryOperationError("delegation_approval_type", "Unsupported delegation kind");
+		if (approvalType === "technical") validateTechnicalPolicy(input.technical);
+		const scope = approvalScope(plan, invocation.sessionId, approvalType, input.technical);
+		validateApprovalInstruction(input.authority, invocation.sessionId);
 		if (existing) {
-			if (existing.revocation || !sameApprovalScope(existing.scope, scope)) {
-				throw new FoundryOperationError("delegation_conflict", "A delegation ID cannot change scope or be reactivated after revocation");
+			if (existing.revocation || !sameApprovalScope(existing.scope, scope)
+				|| (existing.grant.method === "user-instruction-attestation" && (
+					existing.grant.statement !== input.authority.instruction || existing.grant.grantedBy !== input.authority.grantedBy
+					|| stableStringify(existing.grant.source) !== stableStringify(input.authority.source)))) {
+				throw new FoundryOperationError("delegation_conflict", "A delegation ID cannot change scope or instruction provenance, or be reactivated after revocation");
 			}
 			return existing;
 		}
-		validateApprovalInstruction(input.authority, invocation.sessionId);
 		const authority = input.authority;
 		coordinator(options);
 		return storeFor().createApprovalDelegation({
@@ -133,5 +141,5 @@ export function createApprovalOperations({ workspace, storeFor, readForMutation,
 		approved.gates.delegatedApproval = receipt;
 		return approved;
 	};
-	return { planApprovalDelegation, approveDelegated };
+	return { planApprovalDelegation, approveDelegated, coordinator, checkOwner, checkAuthority };
 }

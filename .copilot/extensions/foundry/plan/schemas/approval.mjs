@@ -1,5 +1,5 @@
 import { stableStringify } from "../../digest.mjs";
-import { assertKnownKeys, assertPlainObject, assertPlanId, assertString, assertTimestamp, fail } from "../fields.mjs";
+import { assertKnownKeys, assertPlainObject, assertPlanId, assertString, assertStringArray, assertTimestamp, fail } from "../fields.mjs";
 import { LIMITS } from "../values.mjs";
 
 /** @typedef {import("../../types/plan.js").ApprovalDelegation} ApprovalDelegation */
@@ -19,9 +19,9 @@ function revision(value, label) {
 
 /** @param {unknown} value @returns {asserts value is ApprovalScope} */
 export function validateApprovalScope(value) {
-	const scope = record(value, ["owner", "coordinatorSessionId", "repositoryId", "repositoryPath", "unitId", "unitRevision", "contractDigest", "approvalType"], "approval.scope");
-	if (scope.approvalType !== undefined && scope.approvalType !== "plan" && scope.approvalType !== "completion") {
-		fail("invalid_approval_scope", "Delegation is scoped to initial plan approval or verified technical completion, never other approval kinds");
+	const scope = record(value, ["owner", "coordinatorSessionId", "repositoryId", "repositoryPath", "unitId", "unitRevision", "contractDigest", "approvalType", "technical"], "approval.scope");
+	if (scope.approvalType !== undefined && !["plan", "completion", "technical"].includes(String(scope.approvalType))) {
+		fail("invalid_approval_scope", "Unsupported delegation kind");
 	}
 	for (const key of ["owner", "repositoryPath"]) assertString(scope[key], `approval.scope.${key}`, LIMITS.repositoryPath);
 	for (const key of ["coordinatorSessionId", "repositoryId", "unitId"]) assertString(scope[key], `approval.scope.${key}`, LIMITS.actor);
@@ -29,18 +29,46 @@ export function validateApprovalScope(value) {
 	if (scope.contractDigest !== null && (typeof scope.contractDigest !== "string" || !/^[a-f0-9]{64}$/.test(scope.contractDigest))) {
 		fail("invalid_approval_scope", "Delegation must pin the accepted contract digest or explicit discovery-only null");
 	}
+	if (scope.approvalType === "technical") {
+		const technical = record(scope.technical, ["kinds", "files", "agreement"], "approval.scope.technical");
+		validateTechnicalPolicy({ kinds: technical.kinds, agreement: technical.agreement });
+		assertStringArray(technical.files, "approval.scope.technical.files", { maximum: 128, itemMaximum: 512 });
+		if (!technical.files.length || new Set(technical.files).size !== technical.files.length) fail("invalid_approval_scope", "Technical decisions require a nonempty exact file scope");
+		if (scope.contractDigest === null && technical.agreement !== null) fail("invalid_approval_scope", "Discovery-only authority cannot renew an accepted evaluator");
+	} else if (scope.technical !== undefined) fail("invalid_approval_scope", "Historical plan/completion authority cannot contain technical policy");
 }
 
-/** @typedef {{factory?: import("../../types/plan.js").FoundryPlan["factory"], repository: {workingDirectory: string}}} ScopedPlan */
+/** @param {unknown} value @returns {asserts value is import("../../types/plan.js").TechnicalPolicy} */
+export function validateTechnicalPolicy(value) {
+	const policy = record(value, ["kinds", "agreement"], "technical policy");
+	assertStringArray(policy.kinds, "technical kinds", { maximum: 2, itemMaximum: 32 });
+	if (!policy.kinds.length || new Set(policy.kinds).size !== policy.kinds.length
+		|| policy.kinds.some(kind => !["retry", "consumer-expectation"].includes(kind))) fail("technical_kind_unsupported", "Only bounded retry and consumer-expectation alignment are supported");
+	if (policy.agreement !== null) {
+		const agreement = record(policy.agreement, ["evaluation", "path", "digest"], "technical agreement");
+		const evaluation = record(agreement.evaluation, ["id", "revision"], "technical evaluation");
+		assertString(evaluation.id, "technical evaluation.id", 96);
+		revision(evaluation.revision, "technical evaluation.revision");
+		assertString(agreement.path, "technical agreement.path", 1024);
+		if (typeof agreement.digest !== "string" || !/^[a-f0-9]{64}$/.test(agreement.digest)) fail("technical_agreement_required", "Pin the immutable agreement digest");
+	}
+	if (policy.kinds.includes("consumer-expectation") !== (policy.agreement !== null)) fail("technical_agreement_required", "Consumer alignment requires a pinned pre-existing executable agreement");
+}
+
+/** @typedef {{factory?: import("../../types/plan.js").FoundryPlan["factory"], repository: {workingDirectory: string}, tasks?: import("../../types/plan.js").FoundryTask[]}} ScopedPlan */
 /** @param {ScopedPlan} plan @param {string} coordinatorSessionId
- * @param {import("../../types/plan.js").DelegatedApprovalType} [approvalType] @returns {ApprovalScope} */
-export function approvalScope(plan, coordinatorSessionId, approvalType = "plan") {
+ * @param {import("../../types/plan.js").DelegatedApprovalType} [approvalType]
+ * @param {import("../../types/plan.js").TechnicalPolicy} [technical] @returns {ApprovalScope} */
+export function approvalScope(plan, coordinatorSessionId, approvalType = "plan", technical) {
 	if (!plan.factory) fail("factory_context_required", "Plan approval delegation requires a bound capability");
 	const scope = {
 		owner: plan.factory.owner, coordinatorSessionId, approvalType,
 		repositoryId: plan.factory.repositoryId, repositoryPath: plan.repository.workingDirectory,
 		unitId: plan.factory.unitId, unitRevision: plan.factory.unitRevision,
 		contractDigest: plan.factory.contractDigest,
+		...(approvalType === "technical" && technical ? { technical: {
+			...technical, files: [...new Set(plan.tasks?.flatMap(task => task.expectedFiles) ?? [])].sort(),
+		} } : {}),
 	};
 	validateApprovalScope(scope);
 	return scope;
@@ -56,10 +84,11 @@ export const sameApprovalScope = (left, right) => (
 function validateInstructionSource(value, coordinatorSessionId) {
 	assertPlainObject(value, "approval.source");
 	const relayed = value.kind === "relayed-user";
-	assertKnownKeys(value, new Set(["kind", "sessionId", "messageRef", ...(relayed ? ["relayedBySessionId"] : [])]), "approval.source");
+	assertKnownKeys(value, new Set(["kind", "sessionId", "messageRef", "messageRevision", ...(relayed ? ["relayedBySessionId"] : [])]), "approval.source");
 	if (value.kind !== "direct-user" && !relayed) fail("invalid_approval_source", "Only an explicit direct or relayed user instruction can be attested, not generated plans, child reports or inferred consent");
 	assertString(value.sessionId, "approval.source.sessionId", LIMITS.sessionId);
 	assertString(value.messageRef, "approval.source.messageRef", LIMITS.evidenceSource);
+	if (value.messageRevision !== undefined) revision(value.messageRevision, "approval.source.messageRevision");
 	if (relayed) assertString(value.relayedBySessionId, "approval.source.relayedBySessionId", LIMITS.sessionId);
 	else if (value.sessionId !== coordinatorSessionId) fail("invalid_approval_source", "Direct user instruction must belong to this coordinator; record cross-session instructions as relayed");
 }
@@ -83,7 +112,7 @@ export function validateApprovalDelegation(value) {
 	const attested = delegation.grant.method === "user-instruction-attestation";
 	const grant = record(delegation.grant, ["method", "grantedBy", "at", "toolCallId", "statement", "planId", "planRevision", ...(attested ? ["attestedBy", "source"] : [])], "approval.grant");
 	if (!attested && grant.method !== "native-ui-elicitation") fail("invalid_approval_grant", "Delegation requires a retained native form or explicit user-instruction attestation");
-	if (!attested && delegation.scope.approvalType === "completion") fail("invalid_approval_grant", "Historical native-form grants cannot authorize technical completion");
+	if (!attested && ["completion", "technical"].includes(delegation.scope.approvalType ?? "plan")) fail("invalid_approval_grant", "Historical native-form grants cannot authorize completion or technical decisions");
 	assertString(grant.grantedBy, "approval.grant.grantedBy", LIMITS.actor);
 	assertTimestamp(grant.at, "approval.grant.at");
 	assertString(grant.toolCallId, "approval.grant.toolCallId", 512);

@@ -33,7 +33,8 @@ export function createFactoryBridge({ workspace, storeFor, notify, storageRoot, 
 	const { createBoundDraft, createPlan, createEvaluationPlan } = createBoundPlans({ workspace, storeFor, notify, factoryFor, context });
 	const { validateReports, verificationContext, verificationGate, inspectPlan } = createEvidenceBridge(stateFor, workspace);
 	const { prompt, requireRetry, activateEvaluation } = createDispatchBridge(stateFor, context);
-	const { preflight, sync, captureRejectedReport } = createSynchronization(stateFor, activateEvaluation);
+	const { preflight, sync, captureRejectedReport } = createSynchronization(stateFor, activateEvaluation,
+		(planId, decisionId, digest) => storeFor().requireTechnicalAuthorization(planId, decisionId, digest));
 
 	/** The owner-bound immutable blueprint, not caller prose, supplies the manifest digest.
 	 * @param {FoundryPlan} value */

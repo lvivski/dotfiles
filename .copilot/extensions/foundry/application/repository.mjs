@@ -48,8 +48,9 @@ export function checkTaskRepository(plan, taskId, attempt, commit) {
  * notify: (event: import("../types/plan.js").ChangeEvent) => void,
  * factory: Pick<ReturnType<typeof import("../bridge.mjs").createFactoryBridge>, "sync" | "factoryFor" | "createPlan" | "createEvaluationPlan">,
  * analysis: Pick<WorkflowAnalysis, "importAnalysis">,
+ * renewContract?: (value: {repositoryPath: string, input: Record<string, unknown>}, options?: import("../requests.mjs").OperationContext) => Promise<import("../types/factory.js").FactoryMutationResult<"acceptContract">>,
  * }} dependencies */
-export function createRepositoryOperations({ workspace, storeFor, notify, factory, analysis }) {
+export function createRepositoryOperations({ workspace, storeFor, notify, factory, analysis, renewContract }) {
 
 	/** @param {FoundryPlan} plan */
 	const syncFactoryPlan = (plan) => {
@@ -68,11 +69,12 @@ export function createRepositoryOperations({ workspace, storeFor, notify, factor
 	 * @template {PublicFactoryAction} A
 	 * @overload
 	 * @param {{repositoryPath: string, action: A, input?: Record<string, unknown>}} value
+	 * @param {import("../requests.mjs").OperationContext} [options]
 	 * @returns {Promise<ReturnType<FactoryService[A]>>}
 	 */
-	/** @overload @param {unknown} value @returns {Promise<ReturnType<FactoryService[PublicFactoryAction]>>} */
-	/** @param {unknown} value @returns {Promise<ReturnType<FactoryService[PublicFactoryAction]>>} */
-	async function factoryAction(value) {
+	/** @overload @param {unknown} value @param {import("../requests.mjs").OperationContext} [options] @returns {Promise<ReturnType<FactoryService[PublicFactoryAction]>>} */
+	/** @param {unknown} value @param {import("../requests.mjs").OperationContext} [options] @returns {Promise<ReturnType<FactoryService[PublicFactoryAction]>>} */
+	async function factoryAction(value, options) {
 		const { repositoryPath, action, input = {} } = decodeRequest("factoryAction", value);
 		const service = factory.factoryFor(repositoryPath);
 		const allowed = /** @type {const} */ (["inspect", "createUnit", "appendKnowledge", "acceptContract", "prepareCandidate", "recordDelivery", "recordEvaluation", "decideCandidate", "recordSignal", "retire", "compactFactory", "exportFactory", "importFactory", "exportFactoryPage", "importFactoryPage", "abandonFactoryImport", "migrateFactory"]);
@@ -82,6 +84,10 @@ export function createRepositoryOperations({ workspace, storeFor, notify, factor
 			if (candidate?.binding) throw new FoundryOperationError("factory_bound_evidence", "Bound candidate evidence must come from its attached task/verification flow");
 		}
 		switch (action) {
+			case "acceptContract":
+				if (input.technical === undefined) return service.acceptContract(input);
+				if (!renewContract) throw new FoundryOperationError("technical_execution_unavailable", "Technical renewal requires the owning application's authorization path");
+				return renewContract({ repositoryPath, input }, options);
 			case "exportFactory": return service.exportFactory();
 			case "inspect": return service.inspect(decodeRequest("factoryInspect", input));
 			case "exportFactoryPage": return service.exportFactoryPage(decodeRequest("factoryExportPage", input));

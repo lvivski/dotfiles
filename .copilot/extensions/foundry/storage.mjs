@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { stableStringify } from "./digest.mjs";
 import { errorCode, errorMessage, parseJson, property } from "./data.mjs";
 import { assertPlanId } from "./plan/fields.mjs";
 import { approvalScope, sameApprovalScope, validateApprovalDelegation } from "./plan/schemas/approval.mjs";
@@ -19,8 +20,9 @@ import { storageError } from "./storage/errors.mjs";
 /** @typedef {import("./types/plan.js").FoundryPlan} FoundryPlan */
 /** @typedef {import("./types/plan.js").ApprovalDelegation} ApprovalDelegation */
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const DELEGATION_TABLE = "CREATE TABLE approval_delegations (id TEXT PRIMARY KEY NOT NULL, document TEXT NOT NULL) STRICT;";
+const TECHNICAL_TABLE = "CREATE TABLE technical_authorizations (plan_id TEXT NOT NULL, decision_id TEXT NOT NULL, digest TEXT NOT NULL, PRIMARY KEY (plan_id, decision_id)) STRICT;";
 
 const APPLICATION_ID = 0x464e4452;
 
@@ -109,7 +111,11 @@ function initialize(db) {
 	const application = db.prepare("PRAGMA application_id").get()?.application_id;
 	if (version === SCHEMA_VERSION && application === APPLICATION_ID) return;
 	if (version === 1 && application === APPLICATION_ID) {
-		db.exec(`${DELEGATION_TABLE} PRAGMA user_version = ${SCHEMA_VERSION};`);
+		db.exec(`${DELEGATION_TABLE} ${TECHNICAL_TABLE} PRAGMA user_version = ${SCHEMA_VERSION};`);
+		return;
+	}
+	if (version === 2 && application === APPLICATION_ID) {
+		db.exec(`${TECHNICAL_TABLE} PRAGMA user_version = ${SCHEMA_VERSION};`);
 		return;
 	}
 	if (version !== 0 || application !== 0
@@ -139,6 +145,7 @@ function initialize(db) {
 			quarantined_at TEXT NOT NULL
 		) STRICT;
 		${DELEGATION_TABLE}
+		${TECHNICAL_TABLE}
 		PRAGMA application_id = ${APPLICATION_ID};
 		PRAGMA user_version = ${SCHEMA_VERSION};
 	`);
@@ -217,7 +224,11 @@ export function createPlanStore(options = {}) {
 			const current = readPlan(db, id);
 			if (current.revision !== expectedRevision) throw revisionConflict(id, expectedRevision, current.revision);
 			const createdAt = current.createdAt;
+			const technicalHistory = stableStringify(current.technicalDecisions ?? []);
+			const technicalCount = current.technicalDecisions?.length ?? 0;
 			const delegation = settings.delegationId ? readDelegation(db, settings.delegationId) : null;
+			const authority = delegation ? stableStringify(delegation) : null;
+			const active = delegation?.revocation === null;
 			const candidate = mutate(current, delegation);
 			if (candidate && (typeof candidate === "object" || typeof candidate === "function")
 				&& "then" in candidate && typeof candidate.then === "function") {
@@ -239,11 +250,22 @@ export function createPlanStore(options = {}) {
 					details: { id },
 				});
 			}
+			if (stableStringify((persisted.plan.technicalDecisions ?? []).slice(0, technicalCount)) !== technicalHistory) {
+				throw storageError("technical_history_immutable", "Technical decision receipts cannot be removed or rewritten");
+			}
+			const decisions = (persisted.plan.technicalDecisions ?? []).slice(technicalCount);
+			if (decisions.length && (decisions.length !== 1 || !active
+				|| decisions[0].planRevision !== expectedRevision || stableStringify(decisions[0].delegation) !== authority)) {
+				throw storageError("technical_authorization_required", "A new technical receipt requires the current owner-local grant in this exact writer transaction");
+			}
 			verifyFiles();
 			const result = db.prepare(
 				"UPDATE plans SET document = ?, revision = ? WHERE id = ? AND revision = ?",
 			).run(persisted.document, persisted.plan.revision, id, expectedRevision);
 			if (result.changes !== 1) throw revisionConflict(id, expectedRevision, readPlan(db, id).revision);
+			for (const decision of decisions) db.prepare(
+				"INSERT INTO technical_authorizations (plan_id, decision_id, digest) VALUES (?, ?, ?)",
+			).run(id, decision.id, decision.digest);
 			return persisted.plan;
 		}, { write: true });
 	};
@@ -382,6 +404,16 @@ export function createPlanStore(options = {}) {
 	/** @param {string} id */
 	const getApprovalDelegation = async (id) => transaction((db) => readDelegation(db, id));
 
+	/** Historical import is not a local authorization commit.
+	 * @param {string} planId @param {string} decisionId @param {string} digest */
+	const requireTechnicalAuthorization = (planId, decisionId, digest) => transaction((db) => {
+		const receipt = readPlan(db, planId).technicalDecisions?.find(entry => entry.id === decisionId);
+		const row = db.prepare("SELECT digest FROM technical_authorizations WHERE plan_id = ? AND decision_id = ?").get(planId, decisionId);
+		if (!row || row.digest !== digest || receipt?.digest !== digest) {
+			throw storageError("technical_authorization_missing", "Only the exact receipt committed by this owner-local SQLite writer can authorize publication; imported history is not authority");
+		}
+	});
+
 	/** @param {ApprovalDelegation} delegation */
 	const createApprovalDelegation = async (delegation) => {
 		validateApprovalDelegation(delegation);
@@ -389,7 +421,7 @@ export function createPlanStore(options = {}) {
 		return transaction((db) => {
 			const plan = readPlan(db, delegation.grant.planId);
 			if (plan.revision !== delegation.grant.planRevision) throw revisionConflict(plan.id, delegation.grant.planRevision, plan.revision);
-			if (!sameApprovalScope(delegation.scope, approvalScope(plan, delegation.scope.coordinatorSessionId, delegation.scope.approvalType))) {
+			if (!sameApprovalScope(delegation.scope, approvalScope(plan, delegation.scope.coordinatorSessionId, delegation.scope.approvalType, delegation.scope.technical))) {
 				throw storageError("delegation_scope_changed", "Plan authority changed during delegation confirmation");
 			}
 			if (readDelegation(db, delegation.id)) throw storageError("delegation_exists", "This delegation ID is already recorded; never replace or reactivate it");
@@ -427,6 +459,7 @@ export function createPlanStore(options = {}) {
 		importPlan,
 		exportPlan,
 		getApprovalDelegation,
+		requireTechnicalAuthorization,
 		createApprovalDelegation,
 		revokeApprovalDelegation,
 		directory,

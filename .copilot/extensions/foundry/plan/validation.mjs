@@ -1,5 +1,6 @@
 import path from "node:path";
 import { isList, isOneOf } from "../data.mjs";
+import { validateTechnicalDecision } from "../factory/technical.mjs";
 import { assertKnownKeys, assertPlainObject, assertPlanId, assertString, assertStringArray, assertTimestamp, assertTimestampPair, fail, validateConceptualReview } from "./fields.mjs";
 import { validateDependencyGraph, validateTaskTopology } from "./graph.mjs";
 import { activeTaskAttempt, latestSuccessfulAttempt, taskMap } from "./queries.mjs";
@@ -25,6 +26,7 @@ const PLAN_KEYS = new Set([
 	"factory",
 	"evaluationTarget",
 	"factoryVerification",
+	"technicalDecisions",
 	"tasks",
 	"gates",
 	"verification",
@@ -130,6 +132,27 @@ function assertValidPlan(plan) {
 		assertPlainObject(plan.factoryVerification, "factoryVerification");
 		if (JSON.stringify(plan.factoryVerification).length > 256 * 1024) fail("invalid_factory_verification", "Frozen factory verification context exceeds 256 KiB");
 	}
+	/** @type {import("../types/plan.js").TechnicalDecision[]} */
+	const technicalDecisions = [];
+	if (plan.technicalDecisions !== undefined) {
+		if (!Array.isArray(plan.technicalDecisions) || plan.technicalDecisions.length > 64) fail("technical_receipt_invalid", "Technical history must be a bounded immutable list");
+		const ids = new Set();
+		for (const decision of plan.technicalDecisions) {
+			validateTechnicalDecision(decision);
+			if (!plan.factory || ids.has(decision.id) || decision.planId !== planId || decision.planRevision > plan.revision
+				|| decision.blueprintDigest !== plan.factory?.blueprintDigest
+				|| decision.contractDigest !== plan.factory?.contractDigest
+				|| decision.delegation.scope.owner !== plan.factory.owner
+				|| decision.delegation.scope.repositoryId !== plan.factory.repositoryId
+				|| decision.delegation.scope.repositoryPath !== plan.repository.workingDirectory
+				|| decision.delegation.scope.unitId !== plan.factory.unitId
+				|| decision.delegation.scope.unitRevision !== plan.factory.unitRevision) {
+				fail("technical_receipt_invalid", "Technical history must retain the exact plan, capability, source scope and unique decision identity");
+			}
+			ids.add(decision.id);
+			technicalDecisions.push(decision);
+		}
+	}
 
 	if (!isList(plan.tasks) || plan.tasks.length === 0) {
 		fail("invalid_tasks", "tasks must contain at least one task", { path: "tasks" });
@@ -141,6 +164,14 @@ function assertValidPlan(plan) {
 		});
 	}
 	validateTasks(plan.tasks, plan.evaluationTarget ?? null);
+	const tasks = plan.tasks;
+	const files = [...new Set(tasks.flatMap(task => task.expectedFiles))].sort();
+	for (const decision of technicalDecisions) {
+		if (JSON.stringify(decision.oldScope) !== JSON.stringify(files)
+			|| (decision.kind === "retry" && decision.verification?.correctionTaskIds.some(id => !tasks.some(task => task.id === id)))) {
+			fail("technical_receipt_invalid", "Retained technical scope and correction targets must match the immutable plan");
+		}
+	}
 	validateDependencyGraph(plan.tasks);
 	const { targetTask } = validateTaskTopology(plan.tasks, plan.evaluationTarget ?? null);
 	const sessionIds = new Set();
@@ -164,8 +195,6 @@ function assertValidPlan(plan) {
 			sessionIds.add(attempt.sessionId);
 		}
 	}
-	/** @type {FoundryTask[]} */
-	const tasks = plan.tasks;
 	const byId = taskMap(tasks);
 	for (let index = 0; index < tasks.length; index += 1) {
 		const task = tasks[index];

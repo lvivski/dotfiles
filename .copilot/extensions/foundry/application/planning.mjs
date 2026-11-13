@@ -12,8 +12,9 @@ import { FoundryOperationError } from "./errors.mjs";
  * persist: ReturnType<typeof import("./mutation.mjs").createPlanMutations>["persist"],
  * syncFactoryPlan: ReturnType<typeof import("./repository.mjs").createRepositoryOperations>["syncFactoryPlan"],
  * approveDelegated: ReturnType<typeof import("./approval.mjs").createApprovalOperations>["approveDelegated"],
+ * approveTechnical: ReturnType<typeof import("./technical.mjs").createTechnicalOperations>["approveTechnical"],
  * }} dependencies */
-export function createPlanningOperations({ analysis, factory, persist, syncFactoryPlan, approveDelegated }) {
+export function createPlanningOperations({ analysis, factory, persist, syncFactoryPlan, approveDelegated, approveTechnical }) {
 
 	/**
 	 * Builds the native planning Workflow launch specification.
@@ -77,23 +78,30 @@ export function createPlanningOperations({ analysis, factory, persist, syncFacto
 	 * @param {Request<"approve">} input
 	 * @param {import("../requests.mjs").OperationContext} [options]
 	 */
-	const approve = async ({
-		planId,
-		expectedRevision,
-		approvedBy,
-		approvalType = "plan",
-		retryStatus = PLAN_STATUS.RUNNING,
-		delegationId,
-		review,
-	}, options = {}) => {
-		if (delegationId && (!["plan", "completion"].includes(approvalType) || approvedBy !== undefined)) {
-			throw new FoundryOperationError("delegation_approval_type", "Delegation supports only its explicitly granted initial-plan or technical-completion kind; its native agent attribution cannot be supplied by the caller");
+	const approve = async (input, options = {}) => {
+		const {
+			planId,
+			expectedRevision,
+			approvedBy,
+			approvalType = "plan",
+			retryStatus = PLAN_STATUS.RUNNING,
+			delegationId,
+			review,
+			technical,
+		} = input;
+		if (delegationId && (approvedBy !== undefined || (approvalType === "retry") !== (technical !== undefined))) {
+			throw new FoundryOperationError("delegation_approval_type", "Use the explicitly granted approval kind and required technical retry payload; native agent attribution cannot be supplied by the caller");
 		}
+		if (technical !== undefined && (!delegationId || approvalType !== "retry")) {
+			throw new FoundryOperationError("delegation_approval_type", "Technical retries require their explicit technical grant, never mixed manual approval");
+		}
+		if (!delegationId && review !== undefined) throw new FoundryOperationError("delegation_approval_type", "Delegated review cannot be mixed with manual attribution");
 		if (!delegationId) assertString(approvedBy, "approvedBy", LIMITS.actor);
 		const updated = await persist(
 			planId,
 			expectedRevision,
 			(plan, delegation) => {
+				if (delegationId && approvalType === "retry") return approveTechnical(plan, delegation, input, options);
 				if (delegationId) return approveDelegated(plan, delegation, review, options, approvalType === "completion" ? "completion" : "plan");
 				assertString(approvedBy, "approvedBy", LIMITS.actor);
 				if (approvalType === "plan") return approvePlan(plan, approvedBy);

@@ -14,6 +14,7 @@ import { createRecoveryOperations } from "./application/recovery.mjs";
 import { createStatusOperations } from "./application/status.mjs";
 import { createSessionStorage } from "./application/storage.mjs";
 import { createTaskOperations } from "./application/tasks.mjs";
+import { createTechnicalOperations } from "./application/technical.mjs";
 import { createVerificationOperations } from "./application/verification.mjs";
 import { createWorkflowOperations } from "./application/workflows.mjs";
 import { createFactoryBridge } from "./bridge.mjs";
@@ -41,6 +42,7 @@ import { admissionFence } from "./storage/admission.mjs";
  * @property {string} [factoryStorageRoot] Private root override for isolated fixtures.
  * @property {() => import("./application/approval.mjs").ApprovalSession | null | undefined} [getSession]
  * @property {() => import("./types/parallel.js").ParallelHost | null | undefined} [getParallelHost] Trusted current host ports, not caller JSON or tool metadata.
+ * @property {import("./types/factory.js").TechnicalExecutor} [executeTechnical] Trusted reference execution with native resource permission.
  */
 /** @typedef {import("./types/workflow.js").WorkflowAnalysisPort} WorkflowAnalysis */
 
@@ -63,14 +65,21 @@ export function createFoundryOperations(options) {
 	const { workspace, storeFor } = createSessionStorage(options.getWorkspacePath);
 	const factory = createFactoryBridge({ workspace, storeFor, notify, storageRoot: options.factoryStorageRoot });
 	const { readForMutation, persist } = createPlanMutations({ workspace, storeFor, notify, factory });
-	const { syncFactoryPlan, factoryAction, createFactoryPlan, createEvaluationPlan, recordHumanJudgment, syncFactory, captureAnalysis } = createRepositoryOperations({ workspace, storeFor, notify, factory, analysis });
+	const { syncFactoryPlan, factoryAction, createFactoryPlan, createEvaluationPlan, recordHumanJudgment, syncFactory, captureAnalysis } = createRepositoryOperations({
+		workspace, storeFor, notify, factory, analysis,
+		renewContract: (input, context) => technical.renewContract(input, context),
+	});
 	const { discoverReservedVerification, assertVerificationRun } = createVerificationOwnership(analysis);
 	const { workflowStatus, getWorkflow, controlWorkflow } = createWorkflowOperations({ analysis, factory, storeFor, readForMutation, discoverReservedVerification, assertVerificationRun });
 	const status = createStatusOperations({ storeFor, workspace, factory, workflowStatus });
-	const { planApprovalDelegation, approveDelegated } = createApprovalOperations({
+	const { planApprovalDelegation, approveDelegated, coordinator, checkOwner, checkAuthority } = createApprovalOperations({
 		workspace, storeFor, readForMutation, factory, getSession: options.getSession,
 	});
-	const { preparePlan, createPlan, submitPlan, approve } = createPlanningOperations({ analysis, factory, persist, syncFactoryPlan, approveDelegated });
+	const technical = createTechnicalOperations({
+		workspace, storeFor, readForMutation, persist, factory, syncFactoryPlan, coordinator, checkOwner, checkAuthority,
+		executeTechnical: options.executeTechnical,
+	});
+	const { preparePlan, createPlan, submitPlan, approve } = createPlanningOperations({ analysis, factory, persist, syncFactoryPlan, approveDelegated, approveTechnical: technical.approveTechnical });
 	const tasks = createTaskOperations({ storeFor, persist, factory, syncFactoryPlan });
 	const { cancel: cancelPlan, cancelVerificationRun, finalizeCancellation: finalizePlanCancellation } = createCancellationOperations({ storeFor, persist, readForMutation, factory, analysis, discoverReservedVerification, syncFactoryPlan });
 	const { getStatus, nextTasks, reserveTask, attachTask, completeTask, cancel, finalizeCancellation, dispatchReady, reconcileParallel, materializeInputs, assessPackage } = createParallelComposition({

@@ -2,10 +2,12 @@
 
 Use this lifecycle whenever Foundry coordinates engineering. It does not activate Foundry for an
 ordinary question, or authorize paid workflows, additional agents, commits, deployments or merges.
-Capability units describe conserved behavior; bounded runtime implementation units divide execution,
-not contract authority. Default to disjoint atomic work under the
+Capability units describe conserved behavior; bounded runtime workers divide execution,
+not contract authority. One accountable App owner does not imply one executor. Default to useful
+independent implementation, focused-test and skill/documentation work under the
 [planning protocol](planning.md#plan-executable-workstreams-not-just-concurrent-authorship),
-without fixed worker counts or new child/resource authority.
+with concrete artifact/file/resource reasons for serialization, without fixed worker counts or new
+child/resource authority.
 
 ## Authority and discovery
 
@@ -37,10 +39,12 @@ without fixed worker counts or new child/resource authority.
    workload and maximum evidence age. Distinguish implementation tests, durable boundary checks,
    operational evidence and human judgment. Boundary and preservation checks require independent
    evidence; human evaluations require an attributed human judgment, not an AI review verdict.
-5. Present the proposed contract, reasons, uncertainty and contradictions. Only after explicit
-   approval call `foundry_accept_contract` with the selected unit revision, obligation/evaluation
-   references, actor and reason. Every obligation needs an evaluator; accepted contracts require
-   boundary and preservation evaluation. Known contradictions/uncertainty need attributed
+5. Present the proposed contract, reasons, uncertainty and contradictions. Initial acceptance and
+   changed product meaning require explicit approval before calling `foundry_accept_contract` with
+   the selected unit revision, obligation/evaluation references, actor and reason. Only the conserved
+   [technical renewal](#delegated-consumer-expectation-renewal) below has a separately delegated path.
+   Every obligation needs an evaluator; accepted contracts require boundary and preservation
+   evaluation. Known contradictions/uncertainty need attributed
    `resolutions`. Acceptance adds an immutable revision; it never edits history.
    Accepted dependency contracts are pinned, as is bounded causal rationale (at most 128 connected
    revisions) and decision lineage (16 recent decisions with an explicit earlier-history count).
@@ -176,6 +180,71 @@ Never use an external record to fabricate ownership of a native workflow.
 
 ## Learning, renewal and retention
 
+### Delegated consumer-expectation renewal
+
+Initial contract acceptance and new product meaning still require their existing authority.
+A separate explicit owner-local `technical` grant may replace only an obsolete consumer expectation
+that contradicts a frozen pre-existing executable agreement. Follow
+[technical delegation](planning.md#delegated-bounded-technical-decisions); never widen old plan or
+completion grants, infer equivalence from prose, or label an agent decision a human click.
+
+The supported transformation is deliberately narrow: in canonical closed JSON scenario material,
+change only `expected.outcome` from `denied` to `cancelled` for the pinned cancelled late-denial
+request with previously granted access. The accepted obligation independently pins the agreement
+SHA-256 in its pre-change `source.digest`; do not manufacture that pin after the failure. The
+`foundry-cancellation-agreement-v1` document identifies `obligation`, `scenarioId`, `casesPath`,
+`referencePath`, `assertion: "expected.outcome"`, `from: "denied"` and `to: "cancelled"`.
+Agreement and case material use the closed field shapes and canonical JSON bytes
+(`JSON.stringify(value, null, 2) + "\n"`), not arbitrary source syntax or formatting edits.
+The complete Git evaluator bundle, executable reference, scenario inputs, granted-access/data/focus
+assertions, noncancelled-denial controls and every unrelated case must otherwise remain unchanged,
+including file inventory, modes and invocation. Extra edits, missing control execution and
+inconsistent mappings are explicit holds, not permission to broaden the transformation.
+
+Record the immediate next revision of the same evaluator ID using its exact changed Git bundle and
+`supersedes` link to the previous revision. Retain the evaluator's statement and uncertainty.
+All evaluation definitions remain conserved: obligation revisions, coverage,
+independence, preservation, human modality, UI applicability/native-reference comparisons,
+environment/workload and freshness. Keep unit/boundary/dependency revisions, accepted obligations,
+rationale, resolutions and renewal-signal links unchanged; only the selected evaluation reference
+advances. A renamed check or equal coverage count proves nothing.
+Call existing `foundry_accept_contract` with the normal conserved publication fields and
+`technical: { id, planId, expectedPlanRevision, delegationId, previous, next, failures }`;
+`previous` and `next` are exact evaluator references. The ordinary `expectedRevision` guards the
+factory ledger; `expectedPlanRevision` separately guards the named owner plan. Omit `actor`; native
+agent attribution is derived by the application. Keep a stable technical decision `id` and concrete
+original failure/run/signal references in `failures`.
+
+Execution uses a trusted constructor-supplied reference executor, not a caller report or claimed
+equivalence boolean. Structural conservation and actual immutable reference/control executions are
+both required: the old expectation exits `1`, the new exits `0`, and both traces include every case
+in the same order with identical actual results, retaining source/environment identity. A green result,
+prose or matching case counts alone cannot establish equivalence. The source default has no production
+executor: missing support or an actual permission denial holds the decision. Confined executable
+fixtures establish source behavior only, not installation, native resource permission or full
+factory acceptance.
+
+Authorization is the canonical owner-local SQLite commit of the validated decision/outbox, with
+current native owner, grant/revocation and exact revision checks, not the later factory mutation.
+That same plan SQLite transaction records the exact plan/decision/digest publication marker; no
+separate authority store is introduced. Pending publication requires this marker, which survives
+restart and later revocation but is never recreated by exported/imported receipt history.
+Existing synchronization applies that exact receipt at its pinned factory revision, publishes portable
+knowledge and acknowledges the published head. Before the commit,
+revocation prevents authorization; after it, revocation blocks new decisions but cannot rewrite
+the committed historical decision. Recover through `foundry_sync_factory`, not a new grant,
+new decision ID or automatic replay at another revision. Conflicting/tampered postconditions remain
+held; matching recovery creates no duplicate contract. Already-published matching history remains
+inspectable without granting imported history authority to publish.
+
+An eligible decision creates a new contract/context revision, never edits the accepted old one.
+Continue through a fresh candidate and bounded plan under the new contract, retaining the old
+candidate, failures and decision lineage. Independent evaluation, mandatory human judgments and
+explicit replacement acceptance remain necessary. This path supplies none of those results and
+authorizes no installation, deployment, push, PR, merge or native resource access.
+
+### Signals and assurance renewal
+
 Record incidents, failed evaluations, changed assumptions or stale/context-mismatched evidence with
 `foundry_record_signal`. It identifies affected obligations/units and known downstream dependents.
 Incomplete relationship information exposes uncertain impact; do not promise perfect localization.
@@ -194,8 +263,8 @@ For unchanged code, use `foundry_create_evaluation_plan` with the existing candi
 pinned evaluator references. This creates a separately owned verifier-only draft with an immutable
 external target commit: no dummy implementation step, generation rebinding or mutable delivery.
 Approve, reserve, create and attach its read-only App child normally, then complete native verification
-and explicit plan completion. New assurance is appended; original delivery, generation completion and
-selection remain historical facts. A failed generation plan offers two distinct paths: new code needs
+and manual or separately delegated plan completion. New assurance is appended; original delivery,
+generation completion and selection remain historical facts. A failed generation plan offers two distinct paths: new code needs
 a fresh candidate, while unchanged code can get this read-only assurance repair. Do not use ordinary
 generation retry to overwrite a delivered candidate.
 Later evidence changes current support, never historical acceptance or completed plan outcomes.

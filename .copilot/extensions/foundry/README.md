@@ -21,14 +21,55 @@ manual user approval, or an exact named-revision agent decision under an owner-l
 recorded from explicit user instruction without a redundant form (historical native-form grants
 remain valid). See the [approval protocol](../../skills/foundry/references/planning.md#delegated-execution-plan-approval).
 Verified technical milestone completion may use a separately recorded `approvalType: "completion"`
-delegation through the same mechanism. Historical grants remain initial-only; closure rechecks the
-authoritative verification/delivery binding and current independent/human evidence. It does not
+delegation through the same mechanism. Historical untyped grants remain initial-only; closure rechecks
+the authoritative verification/delivery binding and current independent/human evidence. It does not
 accept design, replace a capability, authorize correction waves or grant external/resource actions.
+
+Explicit `approvalType: "technical"` uses a separate owner-local grant for bounded discovery retry
+and frozen consumer-expectation alignment. Historical plan/completion grants do not expand.
+The existing delegation, approval and contract tools retain verbatim instruction attestation and
+exact named-revision agent decisions without a redundant form. See
+[technical decisions](../../skills/foundry/references/planning.md#delegated-bounded-technical-decisions)
+and [supported renewal](../../skills/foundry/references/factory.md#delegated-consumer-expectation-renewal).
+
+Renewal supports only the pinned canonical JSON cancelled late-denial scenario's `expected.outcome`
+change from `denied` to `cancelled`. A frozen accepted obligation independently pins the agreement
+SHA-256; granted access/data/focus, noncancelled-denial controls, unrelated cases, executable files,
+modes and invocation stay unchanged. Structural checks plus actual immutable reference/control
+executions (old fail/new pass with complete conserved traces) are required; boolean/prose equivalence,
+matching counts and a green result alone are insufficient. The same evaluator's next revision and
+new contract/context require fresh candidate/plan lineage, independent evidence and separate
+human/replacement gates.
+The reference executor is a trusted host port with no production default; unavailable support and
+native denials remain explicit holds. Fixture execution is not installation or live-host proof.
+
+Authorization linearizes at the owner-local SQLite decision/outbox commit, with current native
+owner, grant, revocation and exact revision checks. Repository factory append, portable publication
+and head acknowledgment are later reconciliation boundaries, not new grants. Revocation before the
+commit blocks it; later revocation permits only the exact committed publication. Conflicts require a
+fresh read and matching-receipt comparison, never blind replay or an unauthorized usable successor.
+The same plan SQLite transaction retains `technical_authorizations(plan_id, decision_id, digest)`,
+the exact owner-commit marker required for pending publication, not a new authority database.
+It survives restart/revocation for exact reconciliation but is not restored by export/import.
+Receipts preserve predecessor failures and export as history, not active grants or publication
+authority; already-published matching history remains inspectable.
 
 The [parallel implementation contracts](../../skills/foundry/references/parallel-contracts.md)
 define the shared package/input, admission-fence and native-receipt ports, exact leaf ownership,
 captured host schemas and confined test runner. Composed source and fixture evidence do not
 establish installation, supported live host invocation or an accepted capability contract.
+
+### Execution planning and ownership
+
+The [planning and approval checklist](../../skills/foundry/references/planning.md#plan-executable-workstreams-not-just-concurrent-authorship)
+defaults to useful independent runtime workers for separable implementation, focused tests and
+skill/documentation work. One accountable App owner does not imply one executor. Every serial
+dependency needs a concrete consumed artifact/file or exclusive-resource reason; shared interfaces
+justify a minimal interface checkpoint, not serializing all implementation, tests and skill work.
+Keep exclusive writes, scoped authority, App reservation/attachment, native limits and independent
+final verification. This neither mandates a worker count nor authorizes new App sessions/DAG tasks.
+Retain later execution-strategy corrections separately from the unchanged original plan and handoff;
+an authorized strategy adjustment is not retrospective approval or broader execution authority.
 
 ### Explicit work-package drafts
 
@@ -283,7 +324,8 @@ while launch recovery and completion/cancellation retain collision checks.
 Plan and verification imports use native `waitForRun` for active runs instead of requiring a
 separate wait/inspect/retry cycle. Interrupting the tool stops waiting, not the Workflow.
 Paused or failed runs still require explicit recovery; verification rechecks revision and
-reservation ownership after waiting, and completion still requires user approval.
+reservation ownership after waiting, and completion still requires manual approval or its separate
+recorded completion delegation.
 
 ### Pause, resume, and checkpoints
 
@@ -474,7 +516,9 @@ Foundry owns:
 - session-local guardrails and the interactive `foundry-board` canvas;
 - a bounded, revisioned activity timeline rendered from the authoritative plan document.
 
-Workflow agents perform analysis only. App-native project sessions own repository mutation.
+Foundry planning/verification Workflow agents perform analysis only. App-native project attempts
+own repository mutation and may use explicitly authorized bounded runtime workers without
+transferring ownership or creating new App tasks.
 Task readiness is derived from approved state and completed dependencies, not persisted as a
 separate mutable status. `foundry_get_status` exposes one scheduling view with ready and dispatchable
 IDs, scope holds, and launch guidance.
@@ -585,10 +629,14 @@ conservative friction, not a sandbox or a complete shell parser; indirect execut
 to the host permission boundary. Deactivation removes an unreadable activation record and reports
 that repair instead of leaving the session stuck behind corrupt metadata.
 
-Session-plan SQLite schema 2 adds durable approval grants and irreversible revocations; schema 1
-upgrades transactionally without changing plan documents or activation. This is separate from factory
-SQLite schema 4 and its logical-format/seal compatibility. Approval checks its grant in the same
-transaction as the plan revision update. Exported plan receipts are historical evidence, not live grants.
+Session-plan SQLite uses schema 3. Historical schema 2 introduced durable approval grants and
+irreversible revocations in `approval_delegations`; schema 3 adds `technical_authorizations`.
+Transactional migration from schema 1 adds both tables, while schema 2 adds only
+`technical_authorizations`, retaining existing grants, revocations, plan documents and activation.
+This is separate from factory SQLite schema 4 and its logical-format/seal compatibility. Approval
+checks its grant in the same transaction as the plan revision update; technical decisions also
+retain their exact owner-commit marker there. Exported plan receipts are historical evidence,
+not live grants or restorable publication markers.
 
 Coordinator context is supplied on activation and session start. Ordinary successful Foundry tool
 calls do not add repetitive reminders; activation, deactivation, unreadable-state, and failure
@@ -666,6 +714,11 @@ in a scratch directory; `vscode-jsonrpc@10.0.0` supports the current iterator de
 This does not install an SDK dependency in Foundry, change runtime resolution, reload the extension,
 or launch workflows. The command also checks the offline tool, canvas, hook, workflow, event,
 elicitation, and logging contracts against the actual API and removes its temporary project.
+
+The known native `sdk-conformance.ts` `TS2344` remains a failing SDK-conformance gap, not a pass.
+Retain it and any new diagnostics separately. Source fixtures and offline checks do not establish
+native App no-elicitation, permission/restart/platform behavior, installation or full-factory
+acceptance; those require separately authorized host evidence.
 
 DTOs are scoped in `types/json.d.ts`, `types/plan.d.ts`, `types/factory.d.ts`, `types/analysis.d.ts`
 and `types/workflow.d.ts`; there is no shared barrel. JSON, command, journal, structured-agent, HTTP,

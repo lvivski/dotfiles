@@ -59,9 +59,12 @@ do not bypass missing capabilities, switch routes automatically or infer fresh c
    execution plans or verified technical milestone completion permits that kind of exact named-revision
    decision without another prompt; follow [planning and approval](references/planning.md#delegated-execution-plan-approval)
    and [completion](references/verification.md#delegated-technical-milestone-completion).
-   Historical grants remain initial-only. Otherwise record explicit manual approval. Correction waves,
-   human/design acceptance, replacement and external actions remain separate; never label an agent
-   decision as a human click.
+   Historical untyped grants remain initial-only. A separately explicit `technical` delegation
+   supports bounded discovery correction retry and the narrow
+   [consumer-expectation renewal](references/factory.md#delegated-consumer-expectation-renewal).
+   Record and reuse it without reconfirmation; it does not broaden initial-plan or completion grants.
+   Otherwise record explicit manual approval. Human/design acceptance, replacement and external
+   actions remain separate; never label an agent decision as a human click.
    Record an already explicit user delegation without another consent form, retaining its original
    instruction and direct/relayed source as an agent attestation. If absent, ask once; generated
    plans, child reports and inference cannot grant authority.
@@ -93,15 +96,26 @@ do not bypass missing capabilities, switch routes automatically or infer fresh c
 15. Repository revisions and plan revisions are separate. A sibling can inspect knowledge and
     lineage, but cannot take ownership of another session's native runs. Recover pending factory
     receipts with `foundry_sync_factory`; do not rerun completed work to repair bookkeeping.
+    Technical authorization commits in the owner's plan SQLite transaction before repository
+    publication. Revocation before that commit blocks it; later revocation permits only reconciliation
+    of the exact committed receipt, never another decision. Conflicting publication is a hold.
+    Its exact owner-local publication marker survives restart/revocation, but export/import restores
+    receipt history only, never that marker or active grants.
 16. Explicitly declare UI applicability with the pinned `visualEvaluation` gate before a UI successor
      plan. Open actual renderable references and preflight capture; real output and independent visual
      comparison are required for initial implementation as well as reconstruction. Controls, geometry,
      source and colors are not fidelity evidence. Missing capture or failed comparison blocks closure;
      do not bypass OS permissions or synthesize human judgment. Follow the [visual protocol](references/factory.md#explicit-ui-and-visual-fidelity).
-17. Default to splitting independent atomic engineering work into disjoint, bounded runtime
-    implementation units with real executable outputs and focused checks, not a fixed agent count.
-    This grants no additional resource, child or DAG authority. Preserve the omitted-decomposition
-    legacy recipe; follow [planning](references/planning.md#explicit-decomposition-and-legacy-behavior).
+17. Default to useful independent runtime workers for separable implementation, focused tests and
+    skill/documentation work, with disjoint bounded writes and appropriate checks, not a fixed count.
+    One accountable App owner does not imply one executor. Require a concrete artifact/file/resource
+    reason for every serial dependency; shared interfaces justify a minimal interface checkpoint,
+    not serializing all implementation, tests and skill work. Apply the
+    [approval checklist](references/planning.md#plan-executable-workstreams-not-just-concurrent-authorship).
+    This grants no additional resource, child or DAG authority and preserves reservation/attachment,
+    native limits and independent final verification. Preserve the omitted-decomposition legacy recipe.
+    Retain later [execution-strategy corrections](references/planning.md#later-execution-strategy-corrections)
+    separately from the unchanged original plan and handoff.
 18. Distinguish prepared, reserved, initialized, attached, executing, delivered and independently
     verified evidence; none implies the next. Consume every declared dependency's immutable output
     through the authorized post-attachment/handoff consumer path, not a branch tip or manifest alone.

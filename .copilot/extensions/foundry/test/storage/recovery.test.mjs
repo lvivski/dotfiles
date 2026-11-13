@@ -15,14 +15,40 @@ test("session storage adds delegation rows to schema 1 without changing plans or
 	withWorkspace(async ({ workspace, store }) => {
 		const plan = await store.create(makePlan(workspace), 0);
 		const activation = await store.activate(plan.id, plan.revision);
-		withDatabase(store, (db) => db.exec("DROP TABLE approval_delegations; PRAGMA user_version = 1"));
+		withDatabase(store, (db) => db.exec("DROP TABLE approval_delegations; DROP TABLE technical_authorizations; PRAGMA user_version = 1"));
 		const restarted = createPlanStore({ workspacePath: workspace });
 		assert.equal(await restarted.getApprovalDelegation("not-granted"), null);
 		assert.deepEqual(await restarted.read(plan.id), plan);
 		assert.deepEqual(await restarted.getActivation(), activation);
-		assert.equal(withDatabase(store, (db) => db.prepare("PRAGMA user_version").get()?.user_version), 2);
+		assert.equal(withDatabase(store, (db) => db.prepare("PRAGMA user_version").get()?.user_version), 3);
 		withDatabase(store, (db) => db.exec("PRAGMA user_version = 99"));
 		await rejectsCode(restarted.getApprovalDelegation("not-granted"), "database_version_unsupported");
+	})
+));
+
+test("schema 2 upgrade preserves revoked historical grants without inventing technical authorization", () => (
+	withWorkspace(async ({ workspace, store }) => {
+		const plan = await store.create(makePlan(workspace), 0);
+		const activation = await store.activate(plan.id, plan.revision);
+		const historical = {
+			id: "historical-grant",
+			scope: { owner: workspace, coordinatorSessionId: "owner", repositoryId: "a".repeat(64),
+				repositoryPath: workspace, unitId: "unit", unitRevision: 1, contractDigest: null },
+			grant: { method: "native-ui-elicitation", grantedBy: "human", at: UPDATED_AT,
+				toolCallId: "original-form", statement: "Initial plan approval only", planId: plan.id, planRevision: 1 },
+			revocation: { at: UPDATED_AT, actor: "human", reason: "Retain the original revocation", toolCallId: "revoke" },
+		};
+		withDatabase(store, db => {
+			db.prepare("INSERT INTO approval_delegations VALUES (?, ?)").run(historical.id, JSON.stringify(historical));
+			db.exec("DROP TABLE technical_authorizations; PRAGMA user_version = 2");
+		});
+		const restarted = createPlanStore({ workspacePath: workspace });
+		assert.deepEqual(await restarted.getApprovalDelegation(historical.id), historical);
+		assert.deepEqual(await restarted.read(plan.id), plan);
+		assert.deepEqual(await restarted.getActivation(), activation);
+		assert.throws(() => restarted.requireTechnicalAuthorization(plan.id, "invented-decision", "b".repeat(64)),
+			{ code: "technical_authorization_missing" });
+		assert.equal(withDatabase(store, db => db.prepare("SELECT count(*) AS count FROM technical_authorizations").get()?.count), 0);
 	})
 ));
 

@@ -5,6 +5,7 @@ import { actorReason, digest, enumeration, fail, identifier, integer, list, obje
 import { contractFor, disputedKnowledge, evaluationFor, key, knowledgeFor, latest, retired, unitFor } from "./records.mjs";
 import { renewalSignals } from "./signals.mjs";
 import { declaredVisual } from "./visual.mjs";
+import { validateTechnicalDecision, validateRenewal } from "./technical.mjs";
 
 /** @typedef {import("../types/factory.js").FactoryEvent} FactoryEvent */
 /** @typedef {import("../types/factory.js").FactoryState} FactoryState */
@@ -104,8 +105,21 @@ export function appendKnowledge(state, event, options = {}) {
  * @param {{historical?: boolean, portable?: boolean}} [options] @returns {FactoryResults["acceptContract"]} */
 export function acceptContract(state, event, options = {}) {
 	const { action, input, at, revision } = event;
-	object(input, ["unitId", "unitRevision", "obligations", "evaluations", "actor", "reason", "resolutions", "rationale", "renewalSignalIds", "sealVersion",
+	object(input, ["unitId", "unitRevision", "obligations", "evaluations", "actor", "reason", "resolutions", "rationale", "renewalSignalIds", "sealVersion", "technical",
 		...(options.portable ? ["historicalSeal", "contextSeal", "historicalOnly"] : [])], action);
+	if (input.technical !== undefined) {
+		validateTechnicalDecision(input.technical);
+		validateRenewal(state, input.technical);
+		const { technical, sealVersion, historicalSeal, contextSeal, historicalOnly, ...publication } = input;
+		if (analysisInputDigest(publication) !== analysisInputDigest(technical.renewal?.publication)) {
+			fail("technical_receipt_tampered", "Contract publication differs from the committed technical decision");
+		}
+		if (revision !== technical.factoryRevision + 1 || state.decisions.some(entry =>
+			entry.kind === "accept-contract" && entry.technical?.id === technical.id
+			&& entry.technical.delegation.scope.owner === technical.delegation.scope.owner)) {
+			fail("technical_publication_conflict", "Technical publication requires its exact next factory revision and cannot duplicate an earlier decision");
+		}
+	}
 	const sealVersion = input.sealVersion === undefined ? 2 : integer(input.sealVersion, "sealVersion", 2, 3);
 	const unit = unitFor(state, input.unitId, integer(input.unitRevision, "unitRevision"));
 	/** @param {unknown} refs @param {"obligation" | "evaluation"} kind */
@@ -166,6 +180,7 @@ export function acceptContract(state, event, options = {}) {
 	const decision = {
 		id: `decision-${revision}`, kind: "accept-contract", unitId: unit.id, ...actorReason(input, at), resolutions,
 		...(renewalSignalIds.length ? { renewalSignalIds } : {}),
+		...(input.technical === undefined ? {} : { technical: input.technical }),
 	};
 	const previous = state.contracts.filter((entry) => entry.unitId === unit.id).at(-1);
 	const priorDecisionIds = state.contracts.filter((entry) => entry.unitId === unit.id).map((entry) => entry.decisionId);

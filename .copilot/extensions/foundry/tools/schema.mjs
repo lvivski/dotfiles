@@ -122,6 +122,23 @@ export const KNOWLEDGE_REF = objectSchema(["id", "revision"], { id: FACTORY_ID, 
 /** @type {JsonSchema} */
 export const REFERENCES = { type: "array", maxItems: 32, items: KNOWLEDGE_REF };
 
+export const TECHNICAL_POLICY = objectSchema(["kinds", "agreement"], {
+	kinds: { type: "array", minItems: 1, maxItems: 2, items: { type: "string", enum: ["retry", "consumer-expectation"] } },
+	agreement: { anyOf: [
+		objectSchema(["evaluation", "path", "digest"], { evaluation: KNOWLEDGE_REF, path: NON_EMPTY(1024), digest: DIGEST }),
+		{ type: "null" },
+	] },
+});
+
+export const TECHNICAL_RETRY = objectSchema(["id", "failures"], {
+	id: FACTORY_ID, failures: STRING_LIST(32, 2048, 1),
+});
+
+export const TECHNICAL_RENEWAL = objectSchema(["id", "planId", "expectedPlanRevision", "delegationId", "previous", "next", "failures"], {
+	...TECHNICAL_RETRY.properties, planId: PLAN_ID, expectedPlanRevision: { ...REVISION, minimum: 1 },
+	delegationId: PLAN_ID, previous: KNOWLEDGE_REF, next: KNOWLEDGE_REF,
+});
+
 /** Package wire limits do not increase the executable plan's task limit. @type {JsonSchema} */
 const PACKAGE_REFERENCES = { type: "array", maxItems: 128, items: KNOWLEDGE_REF };
 const PACKAGE_INPUT = objectSchema(["producer", "output", "destination"], {

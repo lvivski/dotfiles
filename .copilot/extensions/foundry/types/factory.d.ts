@@ -105,7 +105,41 @@ export type ContractDecision = {
 	actor: string; reason: string; at: string;
 	resolutions: { knowledge: KnowledgeRef; reason: string }[];
 	renewalSignalIds?: string[];
+	technical?: import("./plan.js").TechnicalDecision;
 };
+
+export type TechnicalMaterial = { path: string; mode: string; digest: string };
+export type TechnicalCase = {
+	id: string;
+	input: { cancelled: boolean; lateResult: "granted" | "denied"; access: "granted" | "denied"; data: string[]; focus: string };
+	expected: { outcome: "cancelled" | "granted" | "denied"; access: "granted" | "denied"; data: string[]; focus: string };
+};
+export type ConsumerAgreement = {
+	format: "foundry-cancellation-agreement-v1"; obligation: KnowledgeRef;
+	scenarioId: string; casesPath: string; referencePath: string;
+	assertion: "expected.outcome"; from: "denied"; to: "cancelled";
+};
+export type TechnicalExecution = {
+	source: string; environment: string;
+	beforeExitCode: number; afterExitCode: number;
+	before: { id: string; actual: TechnicalCase["expected"] }[];
+	after: { id: string; actual: TechnicalCase["expected"] }[];
+};
+export type TechnicalRenewal = {
+	previous: KnowledgeRef; next: KnowledgeRef; agreement: ConsumerAgreement;
+	before: { commit: string; procedureDigest: string; material: TechnicalMaterial[]; cases: TechnicalCase[] };
+	after: { commit: string; procedureDigest: string; material: TechnicalMaterial[]; cases: TechnicalCase[] };
+	execution: TechnicalExecution;
+	publication: {
+		unitId: string; unitRevision: number; obligations: KnowledgeRef[]; evaluations: KnowledgeRef[];
+		rationale: KnowledgeRef[]; resolutions: { knowledge: KnowledgeRef; reason: string }[];
+		renewalSignalIds: string[]; actor: string; reason: string;
+	};
+};
+/** A trusted host owns execution/resource permission; public JSON cannot supply this port. */
+export type TechnicalExecutor = (input: {
+	repositoryPath: string; before: EvaluatorBundle; after: EvaluatorBundle; agreement: ConsumerAgreement;
+}, signal?: AbortSignal) => Promise<TechnicalExecution>;
 
 export type CandidateDecision = {
 	id: string; kind: "accept-candidate" | "reject-candidate"; unitId: string;
