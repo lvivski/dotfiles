@@ -100,6 +100,10 @@ export function createWorkflowControls(api, loadRun) {
 			pending = backend.resume(runId, { notifyOnComplete: true, logPhaseNames: true });
 		}
 		const settled = await waitForControl(pending, signal);
+		signal?.throwIfAborted();
+		if (!settled) {
+			fail("workflow_control_incomplete", `Workflow ${action} returned no settlement`, { runId });
+		}
 		if (settled.runId !== runId) {
 			fail("workflow_run_identity_mismatch", `Workflow ${action} returned a different run`);
 		}

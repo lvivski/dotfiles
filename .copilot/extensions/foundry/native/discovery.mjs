@@ -8,6 +8,8 @@ const RUN_DISCOVERY_PAGE_SIZE = 200;
 
 const RUN_DISCOVERY_MAX_PAGES = 10;
 
+const PROGRESS_DISCOVERY_MAX_PAGES = 10;
+
 /**
  * @param {ReturnType<typeof import("./reader.mjs").createRunReader>["api"]} api
  */
@@ -15,7 +17,8 @@ export function createReservationDiscovery(api) {
 
 	/**
 	 * Completed canonical results own their reservation; unfinished or invalid
-	 * results still need bounded, base-agnostic marker discovery.
+	 * results still need complete, bounded, base-agnostic marker discovery.
+	 * A marker on one page cannot exclude conflicting reservations on older pages.
 	 *
 	 * @param {string} runId
 	 * @param {import("@github/copilot-sdk").WorkflowRunDetail | null} [existingDetail]
@@ -45,27 +48,51 @@ export function createReservationDiscovery(api) {
 				}
 			}
 			let page = detail?.progress;
+			let beforeSeq;
 			const markers = new Set();
-			for (let pageNumber = 0; pageNumber < 10; pageNumber++) {
+			for (let pageNumber = 0; pageNumber < PROGRESS_DISCOVERY_MAX_PAGES; pageNumber++) {
 				if (!page || !Array.isArray(page.records)) {
 					return { state: "inconclusive", reason: "progress-unavailable" };
+				}
+				if (pageNumber === 0 && page.hasMoreNewer !== false) {
+					return { state: "inconclusive", reason: "progress-newer-history-unresolved" };
+				}
+				if (typeof page.hasMoreOlder !== "boolean") {
+					return { state: "inconclusive", reason: "progress-history-incomplete" };
+				}
+				const oldestSeq = page.oldestSeq;
+				if (page.records.length === 0 && page.hasMoreOlder === false && oldestSeq === null) {
+					return { state: "readable", reservationIds: [...markers] };
+				}
+				if (typeof oldestSeq !== "number" || !Number.isSafeInteger(oldestSeq)) {
+					return { state: "inconclusive", reason: "progress-cursor-unavailable" };
+				}
+				if (beforeSeq !== undefined && oldestSeq >= beforeSeq) {
+					return { state: "inconclusive", reason: "progress-cursor-not-advancing" };
+				}
+				if (page.records.length > 0 && (
+					typeof page.newestSeq !== "number"
+					|| !Number.isSafeInteger(page.newestSeq)
+					|| page.newestSeq < oldestSeq
+					|| (beforeSeq !== undefined && page.newestSeq >= beforeSeq)
+				)) {
+					return { state: "inconclusive", reason: "progress-cursor-mismatch" };
 				}
 				for (const record of page.records) {
 					if (record?.kind !== "log") continue;
 					const marker = parseVerificationMarker(record.text);
 					if (marker) markers.add(marker);
 				}
-				if (markers.size > 0) {
+				if (markers.size > 1) {
+					return { state: "inconclusive", reason: "progress-reservation-ambiguous" };
+				}
+				if (page.hasMoreOlder === false) {
 					return { state: "readable", reservationIds: [...markers] };
 				}
-				if (page.hasMoreOlder !== true) {
-					return { state: "readable", reservationIds: [...markers] };
-				}
-				if (typeof page.oldestSeq !== "number" || !Number.isSafeInteger(page.oldestSeq)) {
-					return { state: "inconclusive", reason: "progress-cursor-unavailable" };
-				}
+				if (pageNumber + 1 === PROGRESS_DISCOVERY_MAX_PAGES) break;
+				beforeSeq = oldestSeq;
 				page = await api().getRunProgress(runId, {
-					beforeSeq: page.oldestSeq,
+					beforeSeq,
 					limit: 500,
 				});
 			}

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { errorCode, errorMessage, property } from "../../data.mjs";
+import { errorCode, errorMessage, property, readRecord } from "../../data.mjs";
 import { createWorkflowAnalysis } from "../../workflow.mjs";
 import { fakeApi } from "./api.mjs";
 
@@ -113,4 +113,92 @@ test("verification cancellation accepts only a terminal envelope for the request
 			(/** @type {unknown} */ error) => errorCode(error) === "workflow_run_identity_mismatch",
 		);
 	}
+});
+
+test("failed cancellation can be retried and duplicate callbacks do not cancel again", async () => {
+	const api = fakeApi({
+		active: { workflowName: "verify", run: { runId: "active", status: "running" } },
+	});
+	const cancel = api.cancel;
+	let calls = 0;
+	api.cancel = async (runId) => {
+		if (++calls === 1) throw new Error("native cancellation failed");
+		return cancel(runId);
+	};
+	const analysis = createWorkflowAnalysis(() => api);
+	await assert.rejects(analysis.cancelVerificationRun("active"), { code: "workflow_cancel_failed" });
+	assert.equal(property(await api.getRun("active"), "status"), "running");
+	assert.deepEqual(await analysis.cancelVerificationRun("active"), {
+		runId: "active", status: "cancelled", alreadyTerminal: false,
+	});
+	for (let callback = 0; callback < 2; callback++) {
+		assert.deepEqual(await analysis.cancelVerificationRun("active"), {
+			runId: "active", status: "cancelled", alreadyTerminal: true,
+		});
+	}
+	assert.equal(calls, 2);
+	assert.deepEqual(api.cancelCalls, ["active"]);
+});
+
+test("native control failures and invalid envelopes never fall back to waiting", async () => {
+	for (const action of /** @type {const} */ (["pause", "resume"])) {
+		const api = fakeApi({
+			active: {
+				workflowName: "verify",
+				run: { runId: "active", status: action === "pause" ? "running" : "paused" },
+			},
+		});
+		const getRunDetail = api.getRunDetail;
+		api.getRunDetail = async (runId) => ({
+			...readRecord(await getRunDetail(runId)), canResume: true,
+		});
+		const nativeError = new Error(`native ${action} failed`);
+		const failing = createWorkflowAnalysis(() => ({
+			...api,
+			[action]: async () => { throw nativeError; },
+			waitForRun: async () => assert.fail("Control failures must not fall back to waiting"),
+		}));
+		await assert.rejects(failing.controlWorkflow("active", action), (error) => error === nativeError);
+		for (const response of [null, undefined, { runId: "active", status: "running" }]) {
+			const incomplete = createWorkflowAnalysis(() => ({
+				...api,
+				[action]: async () => response,
+				waitForRun: async () => assert.fail("Incomplete controls must not fall back to waiting"),
+			}));
+			await assert.rejects(incomplete.controlWorkflow("active", action), {
+				code: "workflow_control_incomplete",
+			});
+		}
+		const mismatched = createWorkflowAnalysis(() => ({
+			...api, [action]: async () => ({ runId: "foreign", status: "cancelled" }),
+		}));
+		await assert.rejects(mismatched.controlWorkflow("active", action), {
+			code: "workflow_run_identity_mismatch",
+		});
+		assert.deepEqual(api.cancelCalls, []);
+	}
+});
+
+test("aborting a control after native settlement still interrupts the caller", async () => {
+	const api = fakeApi({
+		active: { workflowName: "verify", run: { runId: "active", status: "running" } },
+	});
+	const controller = new AbortController();
+	const reason = new Error("caller stopped waiting");
+	let markStarted = () => {};
+	const started = new Promise((resolve) => { markStarted = () => resolve(undefined); });
+	let complete = (/** @type {unknown} */ _result) => {};
+	const analysis = createWorkflowAnalysis(() => ({
+		...api,
+		pause: () => new Promise((resolve) => {
+			complete = resolve;
+			markStarted();
+		}),
+	}));
+	const pending = analysis.controlWorkflow("active", "pause", { signal: controller.signal });
+	await started;
+	complete({ runId: "active", status: "paused" });
+	queueMicrotask(() => controller.abort(reason));
+	await assert.rejects(pending, (error) => error === reason);
+	assert.deepEqual(api.cancelCalls, []);
 });

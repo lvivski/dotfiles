@@ -1,7 +1,10 @@
-import { isList, isOneOf, isRecord } from "../data.mjs";
+import { errorCode, isList, isOneOf, isRecord } from "../data.mjs";
+import { stableStringify } from "../digest.mjs";
 import { isTerminatedSessionState, normalizeInventory, sessionState } from "../inventory.mjs";
+import { isMissingRun, TERMINAL } from "../native/guards.mjs";
 import { bindCancellationVerificationRun, finalizePlanCancellation, requestPlanCancellation } from "../plan/cancellation.mjs";
 import { PLAN_STATUS } from "../plan/values.mjs";
+import { FOUNDRY_WORKFLOWS } from "../workflows/registry.mjs";
 import { FoundryOperationError, revisionConflict } from "./errors.mjs";
 
 /** @typedef {import("../types/plan.js").FoundryPlan} FoundryPlan */
@@ -22,11 +25,24 @@ function findAttemptById(plan, attemptId) {
  * persist: ReturnType<typeof import("./mutation.mjs").createPlanMutations>["persist"],
  * readForMutation: ReturnType<typeof import("./mutation.mjs").createPlanMutations>["readForMutation"],
  * factory: Pick<ReturnType<typeof import("../bridge.mjs").createFactoryBridge>, "requireOwner">,
- * analysis: Pick<WorkflowAnalysis, "cancelVerificationRun" | "verificationRunIsTerminal">,
+ * analysis: Pick<WorkflowAnalysis, "cancelVerificationRun" | "inspectWorkflow">,
  * discoverReservedVerification: ReturnType<typeof import("./ownership.mjs").createVerificationOwnership>["discoverReservedVerification"],
  * syncFactoryPlan: ReturnType<typeof import("./repository.mjs").createRepositoryOperations>["syncFactoryPlan"],
  * }} dependencies */
 export function createCancellationOperations({ storeFor, persist, readForMutation, factory, analysis, discoverReservedVerification, syncFactoryPlan }) {
+
+	/** @param {string} planId @param {() => Promise<FoundryPlan>} operation @param {(plan: FoundryPlan) => boolean} matches */
+	const persistMatching = async (planId, operation, matches) => {
+		try {
+			return await operation();
+		} catch (error) {
+			if (errorCode(error) !== "revision_conflict") throw error;
+			const latest = await storeFor().read(planId);
+			factory.requireOwner(latest);
+			if (matches(latest)) return latest;
+			throw error;
+		}
+	};
 
 	/**
 	 * Requests cancellation and snapshots active external work.
@@ -56,7 +72,7 @@ export function createCancellationOperations({ storeFor, persist, readForMutatio
 			throw revisionConflict(planId, expectedRevision, plan.revision);
 		}
 		const discovery = await discoverReservedVerification(plan, true);
-		return persist(
+		return persistMatching(planId, () => persist(
 			planId,
 			expectedRevision,
 			(current) => requestPlanCancellation(current, {
@@ -64,7 +80,8 @@ export function createCancellationOperations({ storeFor, persist, readForMutatio
 				verificationRunId: discovery.state === "found" ? discovery.run.runId : undefined,
 			}),
 			"plan-cancellation-requested",
-		);
+		), latest => latest.cancellation !== null && latest.cancellation.requestId === requestId
+			&& latest.cancellation.reason === reason && latest.cancellation.requestedBy === requestedBy);
 	};
 
 	/**
@@ -129,12 +146,14 @@ export function createCancellationOperations({ storeFor, persist, readForMutatio
 				};
 			}
 			runId = discovery.run.runId;
-			plan = await persist(
+			plan = await persistMatching(planId, () => persist(
 				planId,
 				expectedRevision,
 				(current) => bindCancellationVerificationRun(current, discovery.run.runId),
 				"verification-cancellation-bound",
-			);
+			), latest => latest.status === PLAN_STATUS.CANCELLING
+				&& latest.cancellation?.requestId === requestId
+				&& latest.cancellation.verificationRunId === discovery.run.runId);
 		}
 		const outcome = await analysis.cancelVerificationRun(runId);
 		return {
@@ -163,7 +182,24 @@ export function createCancellationOperations({ storeFor, persist, readForMutatio
 		sessionInventory,
 		finalizedBy,
 	}) => {
-		const plan = await readForMutation(planId, expectedRevision);
+		const plan = await storeFor().read(planId);
+		factory.requireOwner(plan);
+		/** @param {unknown[]} entries */
+		const normalizedDispositions = entries => entries.map(entry => isRecord(entry)
+			? { attemptId: entry.attemptId, disposition: entry.disposition, sessionId: entry.sessionId ?? null }
+			: entry).sort((a, b) => stableStringify(a).localeCompare(stableStringify(b)));
+		/** A duplicate may arrive after the finalization transaction committed. @param {FoundryPlan} latest */
+		const matches = latest => latest.status === PLAN_STATUS.CANCELLED
+			&& latest.cancellation?.finalizedBy === finalizedBy
+			&& latest.cancellation.verificationDisposition === (verificationDisposition ?? null)
+			&& stableStringify(latest.cancellation.finalizationOverride) === stableStringify(finalizationOverride ?? null)
+			&& isList(dispositions)
+			&& dispositions.every(entry => isRecord(entry)
+				&& Object.keys(entry).every(key => ["attemptId", "disposition", "sessionId"].includes(key)))
+			&& stableStringify(normalizedDispositions(dispositions))
+				=== stableStringify(normalizedDispositions(latest.cancellation.acknowledgements));
+		if (matches(plan)) return plan;
+		if (plan.revision !== expectedRevision) throw revisionConflict(planId, expectedRevision, plan.revision);
 		if (verificationDisposition !== undefined && !isOneOf(verificationDisposition, ["run-terminated", "no-run-created"])) {
 			throw new FoundryOperationError("invalid_cancellation_verification", "Verification disposition is invalid");
 		}
@@ -227,9 +263,16 @@ export function createCancellationOperations({ storeFor, persist, readForMutatio
 			?? (discovery.state === "found" ? discovery.run.runId : null);
 		let verificationTerminated = true;
 		if (verificationRunId) {
-			verificationTerminated = await analysis.verificationRunIsTerminal(
-				verificationRunId,
-			);
+			let observed = null;
+			try {
+				observed = await analysis.inspectWorkflow(verificationRunId);
+			} catch (error) {
+				if (!isMissingRun(error)) throw error;
+			}
+			if (observed && (observed.runId !== verificationRunId || observed.workflowName !== FOUNDRY_WORKFLOWS.verify.meta.name)) {
+				throw new FoundryOperationError("workflow_run_identity_mismatch", "Cancellation terminal observation belongs to another Workflow run");
+			}
+			verificationTerminated = observed !== null && TERMINAL.has(observed.status);
 			if (!verificationTerminated && !finalizationOverride) {
 				throw new FoundryOperationError(
 					"verification_not_terminated",
@@ -238,7 +281,7 @@ export function createCancellationOperations({ storeFor, persist, readForMutatio
 				);
 			}
 		}
-		const updated = await persist(
+		const updated = await persistMatching(planId, () => persist(
 			planId,
 			expectedRevision,
 			(current) => finalizePlanCancellation(current, dispositions, {
@@ -249,7 +292,7 @@ export function createCancellationOperations({ storeFor, persist, readForMutatio
 				finalizationOverride,
 			}),
 			"plan-cancellation-finalized",
-		);
+		), matches);
 		if (updated.factory?.candidateId) syncFactoryPlan(updated);
 		return updated;
 	};

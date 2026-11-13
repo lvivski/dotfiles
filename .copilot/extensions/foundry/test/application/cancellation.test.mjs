@@ -2,8 +2,22 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { errorCode } from "../../data.mjs";
 import { PLAN_STATUS } from "../../plan/values.mjs";
+import { createWorkflowAnalysis } from "../../workflow.mjs";
 import { must } from "../assertions.mjs";
+import { fakeApi } from "../native/api.mjs";
 import { analysisStub, completeImplementation, completeInventory, createApproved, runTask, withOperations } from "./fixture.mjs";
+
+/** @param {Parameters<typeof analysisStub>[0]} [options] */
+function cancellationAnalysis(options = {}) {
+	const analysis = analysisStub(options);
+	analysis.inspectWorkflow = async runId => {
+		const status = await analysis.verificationRunIsTerminal(runId) ? "cancelled" : "running";
+		return createWorkflowAnalysis(() => fakeApi({
+			[runId]: { workflowName: "verify", run: { runId, status } },
+		})).inspectWorkflow(runId);
+	};
+	return analysis;
+}
 
 test("cancellation reconciliation prevents a launched run from being declared absent", () => {
 	let launched = false;
@@ -55,7 +69,7 @@ test("cancellation reconciliation prevents a launched run from being declared ab
 		assert.equal(finalized.status, PLAN_STATUS.CANCELLED);
 		assert.equal(finalized.cancellation?.verificationRunId, found.runId);
 	}, {
-		analysis: analysisStub({
+		analysis: cancellationAnalysis({
 			discoverVerificationRun: async () => launched
 				? { state: "found", run: found, duplicates: [] }
 				: { state: "absent" },
@@ -110,7 +124,7 @@ test("cancellation remains requestable when Workflow discovery is inconclusive",
 			"octocat",
 		);
 	}, {
-		analysis: analysisStub({
+		analysis: cancellationAnalysis({
 			discoverVerificationRun: async () => ({
 				state: "inconclusive",
 				reason: "Workflow API unavailable",
@@ -278,7 +292,7 @@ for (const status of ["running", "paused"]) test(`${status} Workflow runs requir
 		});
 		assert.equal(plan.status, PLAN_STATUS.CANCELLED);
 	}, {
-		analysis: analysisStub({
+		analysis: cancellationAnalysis({
 			discoverVerificationRun: async () => ({
 				state: "found",
 				run: {
@@ -354,7 +368,7 @@ test("late verification discovery is persisted before Workflow cancellation", ()
 			"late-verification-run",
 		);
 	}, {
-		analysis: analysisStub({
+		analysis: cancellationAnalysis({
 			discoverVerificationRun: async () => {
 				if (discoveryState === "found") {
 					return {
@@ -434,3 +448,83 @@ test("cancellation resolves a verification launch reserved before the Workflow s
 		assert.equal(plan.cancellation?.verificationDisposition, "no-run-created");
 	})
 ));
+
+test("parallel cancellation requests and exact finalization callbacks retain one result", () => (
+	withOperations(async ({ operations, workspacePath }) => {
+		const approved = await createApproved(operations, workspacePath);
+		const reserved = await operations.reserveTask({
+			planId: approved.id, taskId: "T-001", expectedRevision: approved.revision, reservationId: "parallel-cancel-reservation",
+		});
+		const request = {
+			planId: reserved.plan.id, expectedRevision: reserved.plan.revision, requestId: "parallel-cancel",
+			reason: "Stop owned work", requestedBy: "octocat",
+		};
+		const [left, right] = await Promise.all([operations.cancel(request), operations.cancel(request)]);
+		assert.equal(left.revision, right.revision);
+		const finalization = {
+			planId: left.id, expectedRevision: left.revision,
+			dispositions: [{ attemptId: reserved.attemptId, disposition: "no-session-created", sessionId: null }],
+			finalizedBy: "octocat", sessionInventory: completeInventory(),
+		};
+		const [first, duplicate] = await Promise.all([
+			operations.finalizeCancellation(finalization), operations.finalizeCancellation(finalization),
+		]);
+		assert.deepEqual(duplicate, first);
+		assert.deepEqual(await operations.finalizeCancellation(finalization), first);
+		await assert.rejects(operations.finalizeCancellation({ ...finalization, finalizedBy: "different-actor" }), { code: "revision_conflict" });
+		await assert.rejects(operations.finalizeCancellation({
+			...finalization, dispositions: [{ ...finalization.dispositions[0], unexpected: "not-an-exact-replay" }],
+		}), { code: "revision_conflict" });
+	})
+));
+
+test("complete session-list absence cannot finalize a known attached child", () => (
+	withOperations(async ({ operations, workspacePath }) => {
+		const approved = await createApproved(operations, workspacePath);
+		const reserved = await operations.reserveTask({
+			planId: approved.id, taskId: "T-001", expectedRevision: approved.revision, reservationId: "missing-child-reservation",
+		});
+		const attached = await operations.attachTask({
+			planId: approved.id, taskId: "T-001", attemptId: reserved.attemptId,
+			expectedRevision: reserved.plan.revision, sessionId: "missing-child", branch: "work/missing",
+		});
+		const cancelling = await operations.cancel({
+			planId: approved.id, expectedRevision: attached.revision, requestId: "cancel-missing-child",
+			reason: "Preserve unknown external work", requestedBy: "octocat",
+		});
+		for (const sessions of [[], [{ id: "missing-child", status: "idle" }]]) {
+			await assert.rejects(operations.finalizeCancellation({
+				planId: approved.id, expectedRevision: cancelling.revision,
+				dispositions: [{ attemptId: reserved.attemptId, disposition: "session-terminated", sessionId: "missing-child" }],
+				finalizedBy: "octocat", sessionInventory: completeInventory(sessions),
+			}), { code: "cancellation_session_not_terminated" });
+		}
+		assert.equal((await operations.getPlan({ planId: approved.id })).status, PLAN_STATUS.CANCELLING);
+	})
+));
+
+for (const mismatch of ["run", "workflow"]) test(`terminal ${mismatch} mismatch cannot finalize even with an explicit override`, () => {
+	const analysis = cancellationAnalysis({
+		discoverVerificationRun: async () => ({ state: "found", run: { runId: "owned-verification", status: "running" } }),
+	});
+	const inspect = analysis.inspectWorkflow;
+	analysis.inspectWorkflow = async runId => ({
+		...await inspect(runId),
+		...(mismatch === "run" ? { runId: "foreign-run" } : { workflowName: "plan" }),
+	});
+	return withOperations(async ({ operations, workspacePath }) => {
+		let plan = await completeImplementation(operations, workspacePath);
+		plan = (await operations.prepareVerification({
+			planId: plan.id, expectedRevision: plan.revision, reservationId: "identity-reservation",
+		})).plan;
+		plan = await operations.cancel({
+			planId: plan.id, expectedRevision: plan.revision, requestId: "identity-cancel", reason: "Stop owned workflow", requestedBy: "octocat",
+		});
+		await assert.rejects(operations.finalizeCancellation({
+			planId: plan.id, expectedRevision: plan.revision, dispositions: [], finalizedBy: "octocat",
+			verificationDisposition: "run-terminated", sessionInventory: completeInventory(),
+			finalizationOverride: { attestedBy: "octocat", reason: "Cannot authorize another run" },
+		}), { code: "workflow_run_identity_mismatch" });
+		assert.equal((await operations.getPlan({ planId: plan.id })).status, PLAN_STATUS.CANCELLING);
+	}, { analysis });
+});
