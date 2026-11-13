@@ -1,11 +1,15 @@
 import { errorCode, errorMessage, isOneOf } from "../data.mjs";
+import { stableStringify } from "../digest.mjs";
 import { FoundryFactoryError } from "../factory/fields.mjs";
 import { isTerminatedSessionState, normalizeInventory, sessionState } from "../inventory.mjs";
 import { taskCompletionRequirements } from "../plan/delivery.mjs";
+import { normalizeEvidence } from "../plan/evidence.mjs";
 import { attachTaskAttempt, completeTaskAttempt, reserveTaskAttempt, retryTask } from "../plan/execution.mjs";
 import { buildDelegationPrompt, buildTaskInitialization } from "../plan/prompt.mjs";
 import { activeTaskAttempt } from "../plan/queries.mjs";
-import { findScopeConflicts, selectNonOverlappingTasks } from "../plan/scope.mjs";
+import { findScopeConflicts } from "../plan/scope.mjs";
+import { projectAdmission, validateClaims } from "../plan/admission.mjs";
+import { admissionFence } from "../storage/admission.mjs";
 import { ATTEMPT_STATUS, TASK_STATUS } from "../plan/values.mjs";
 import { FoundryOperationError, revisionConflict } from "./errors.mjs";
 import { attachVerifierWorktree, checkTaskBootstrap, checkTaskBranchRename } from "../evidence/worktrees.mjs";
@@ -13,6 +17,10 @@ import { checkTaskRepository } from "./repository.mjs";
 
 /** @typedef {import("../types/plan.js").FoundryPlan} FoundryPlan */
 /** @typedef {import("../types/plan.js").FoundryAttempt} FoundryAttempt */
+/** @typedef {{
+ * store: import("../types/parallel.js").AdmissionPort & {list(): import("../types/parallel.js").AdmissionRecord[]},
+ * context: import("../plan/admission.mjs").AdmissionContext
+ * }} AdmissionBinding */
 /** @template {keyof typeof import("../requests.mjs").requestShapes} K @typedef {import("../requests.mjs").Request<K>} Request */
 
 /**
@@ -76,8 +84,86 @@ function findReservation(plan, reservationId) {
  * persist: ReturnType<typeof import("./mutation.mjs").createPlanMutations>["persist"],
  * factory: Pick<ReturnType<typeof import("../bridge.mjs").createFactoryBridge>, "requireOwner" | "sync" | "prompt" | "activateEvaluation" | "validateLearning" | "validateReports" | "preflight" | "captureRejectedReport" | "requireRetry">,
  * syncFactoryPlan: ReturnType<typeof import("./repository.mjs").createRepositoryOperations>["syncFactoryPlan"],
+ * admissionFor?: (plan: FoundryPlan) => AdmissionBinding,
  * }} dependencies */
-export function createTaskOperations({ storeFor, persist, factory, syncFactoryPlan }) {
+export function createTaskOperations({ storeFor, persist, factory, syncFactoryPlan, admissionFor }) {
+
+	/** @param {FoundryPlan} plan @param {string} taskId @param {string} reservationId */
+	function binding(plan, taskId, reservationId) {
+		const admission = admissionFor?.(plan);
+		if (!admission) return null;
+		const { repositoryId, owner } = admission.context;
+		if (!admission.context.authorized || repositoryId !== plan.factory?.repositoryId || owner !== plan.factory?.owner) {
+			throw new FoundryOperationError("parallel_foreign_owner", "Admission context cannot import execution authority");
+		}
+		return { ...admission, identity: { repositoryId, owner, planId: plan.id, taskId, reservationId } };
+	}
+
+	/** A prior claim is already consuming capacity. Only its exact correlation may resume.
+	 * @param {FoundryPlan} plan @param {string} taskId @param {ReturnType<typeof binding>} admission
+	 * @param {boolean} override */
+	function assertReady(plan, taskId, admission, override) {
+		const held = admission?.store.read(admission.identity);
+		const claims = admission?.store.list() ?? [];
+		const resuming = held?.phase === "claim-held"
+			&& stableStringify(held.identity) === stableStringify(admission?.identity)
+			&& claims.some(record => record.phase === "claim-held" && record.revision === held.revision
+				&& stableStringify(record.identity) === stableStringify(held.identity));
+		const context = admission ? {
+			...admission.context,
+			claims: resuming ? claims.filter(record => stableStringify(record.identity) !== stableStringify(held.identity)) : claims,
+		} : undefined;
+		// An acquired claim cannot be preempted by a newly ready hypothetical
+		// competitor. Recheck only its task against real remaining occupancy.
+		const selection = projectAdmission(plan, context, {
+			scopeOverrideTaskId: override ? taskId : undefined,
+			...(resuming ? { candidateTaskIds: [taskId] } : {}),
+		});
+		const reasons = selection.holds.find(hold => hold.taskId === taskId)?.reasons ?? [];
+		const scope = reasons.find(reason => reason.kind === "scope");
+		if (scope) throw new FoundryOperationError("scope_overlap_requires_approval", `Task ${taskId} overlaps a selected or active task scope`, {
+			taskId, occupiedTaskIds: selection.occupiedTaskIds,
+			conflicts: findScopeConflicts(plan.tasks.map(task => ({ ...task, status: task.status === "planned" ? TASK_STATUS.READY : task.status }))),
+		});
+		if (admission && reasons.length) throw new FoundryOperationError("parallel_admission_held", `Task ${taskId} is not admissible`, { taskId, reasons });
+	}
+
+	/** @param {NonNullable<ReturnType<typeof binding>>} admission @param {FoundryAttempt} attempt */
+	function bindRecorded(admission, attempt) {
+		const held = admission.store.read(admission.identity);
+		if (!held) throw new FoundryOperationError("parallel_admission_missing", "A reservation without its authoritative claim requires reconciliation");
+		const record = admission.store.bindReservation(admissionFence(held), { ...admission.identity, attemptId: attempt.id });
+		if (record.phase === "cancelling") throw new FoundryOperationError("parallel_fenced", "Reservation recorded after cancellation; retain and settle the same attempt");
+		const policy = admission.context.tasks[admission.identity.taskId];
+		if (!policy) throw new FoundryOperationError("parallel_admission_held", "Task has no explicit admission policy");
+		if (stableStringify(validateClaims(policy.resources, policy.team))
+			!== stableStringify({ resources: record.resources, team: record.team })) {
+			throw new FoundryOperationError("parallel_claim_mismatch", "The recorded reservation's resource or team policy changed");
+		}
+		return record;
+	}
+
+	/** Reconcile only an already committed terminal result, never a worker's report.
+	 * @param {FoundryPlan} plan @param {string} taskId @param {string} attemptId */
+	function deliverRecorded(plan, taskId, attemptId) {
+		const attempt = findAttempt(plan, taskId, attemptId);
+		const admission = attempt ? binding(plan, taskId, attempt.reservationId) : null;
+		// Branch-only completion remains held for explicit safe settlement.
+		if (!admission || !attempt?.commit || !attempt.sessionId) return;
+		const record = admission.store.read(admission.identity);
+		if (!record) throw new FoundryOperationError("parallel_admission_missing", "Delivered attempt has no authoritative claim");
+		const revision = record.delivery?.planRevision
+			?? plan.activity.findLast(entry => entry.event === `task-done:${taskId}:${attemptId}`)?.revision;
+		if (revision === undefined) throw new FoundryOperationError("parallel_delivery_unrecorded", "The exact completion revision requires reconciliation");
+		// Workflow termination is separate evidence; pending runs/effects fail
+		// closed in deliver rather than being inferred from a task result.
+		const settled = admission.store.deliver(admissionFence(record), {
+			attempt: { ...admission.identity, attemptId }, sessionId: attempt.sessionId,
+			commit: attempt.commit, planRevision: revision,
+			source: `completeTask:${plan.id}@${revision}`, terminalRunIds: [],
+		});
+		admission.store.release(admissionFence(settled));
+	}
 
 	/**
 	 * Persists an idempotent attempt reservation before `create_session`.
@@ -95,6 +181,7 @@ export function createTaskOperations({ storeFor, persist, factory, syncFactoryPl
 		factory.requireOwner(plan);
 		factory.sync(plan);
 		factory.prompt(plan, plan.tasks.find((task) => task.id === taskId) ?? { kind: "implement" });
+		const admission = binding(plan, taskId, reservationId);
 		const existing = findReservation(plan, reservationId);
 		if (existing) {
 			if (existing.task.id !== taskId) {
@@ -112,6 +199,15 @@ export function createTaskOperations({ storeFor, persist, factory, syncFactoryPl
 					"duplicate_request_id",
 					`Reservation ${reservationId} is already terminal`,
 				);
+			}
+			if (admission) {
+				bindRecorded(admission, existing.attempt);
+				if (plan.status !== "running" || existing.attempt.status === ATTEMPT_STATUS.CANCEL_REQUESTED) {
+					throw new FoundryOperationError("parallel_fenced", "A cancelling plan cannot authorize execution of its recorded reservation");
+				}
+				if (stableStringify(existing.attempt.scopeOverride) !== stableStringify(scopeOverride ?? null)) {
+					throw new FoundryOperationError("parallel_claim_mismatch", "The recorded reservation's scope override changed");
+				}
 			}
 			factory.activateEvaluation(plan);
 			return {
@@ -134,23 +230,25 @@ export function createTaskOperations({ storeFor, persist, factory, syncFactoryPl
 				`Task ${taskId} does not exist`,
 			);
 		}
-		const running = plan.tasks.filter((item) => item.status === TASK_STATUS.RUNNING);
-		const selection = selectNonOverlappingTasks([task], running);
-		if (selection.heldTaskIds.includes(taskId) && !scopeOverride) {
-			throw new FoundryOperationError(
-				"scope_overlap_requires_approval",
-				`Task ${taskId} overlaps an active task scope`,
-				{
-					taskId,
-					occupiedTaskIds: selection.occupiedTaskIds,
-					conflicts: findScopeConflicts([task, ...running]),
-				},
-			);
+		assertReady(plan, taskId, admission, Boolean(scopeOverride));
+		if (admission) {
+			// Validate native reservation feasibility before consuming capacity;
+			// only the later committed reservation supplies the bound attempt ID.
+			reserveTaskAttempt(plan, taskId, { reservationId, scopeOverride: scopeOverride ?? null });
+			const policy = admission.context.tasks[taskId];
+			if (!policy) throw new FoundryOperationError("parallel_admission_held", "Task has no explicit admission policy");
+			admission.store.claim({ identity: admission.identity, expectedRevision: 0, resources: policy.resources, team: policy.team });
 		}
+		// Different databases: failures retain the claim until the exact durable
+		// reservation or a definitive failed request is reconciled. Never expire it.
 		const updated = await persist(
 			planId,
 			expectedRevision,
 			(current) => {
+				assertReady(current, taskId, admission, Boolean(scopeOverride));
+				if (admission && admission.store.read(admission.identity)?.phase !== "claim-held") {
+					throw new FoundryOperationError("parallel_fenced", "Claim changed before reservation");
+				}
 				const reserved = reserveTaskAttempt(current, taskId, {
 					reservationId,
 					scopeOverride: scopeOverride ?? null,
@@ -172,6 +270,7 @@ export function createTaskOperations({ storeFor, persist, factory, syncFactoryPl
 				`Task ${taskId} has no active persisted attempt`,
 			);
 		}
+		if (admission) bindRecorded(admission, attempt);
 		return {
 			plan: updated,
 			taskId,
@@ -281,8 +380,24 @@ export function createTaskOperations({ storeFor, persist, factory, syncFactoryPl
 			if (status === TASK_STATUS.DONE) {
 				const plan = await storeFor().read(planId);
 				factory.requireOwner(plan);
-				if (plan.revision !== expectedRevision) throw revisionConflict(planId, expectedRevision, plan.revision);
 				const current = findAttempt(plan, taskId, attemptId);
+				const admission = current ? binding(plan, taskId, current.reservationId) : null;
+				if (admission && current?.status === ATTEMPT_STATUS.DONE) {
+					const task = plan.tasks.find(candidate => candidate.id === taskId);
+					if (!task || stableStringify({
+						resultSummary: resultSummary ?? null, evidence: normalizeEvidence(evidence ?? [], plan, task, current, status),
+						branch: branch ?? current.branch, commit: commit ?? null, prUrl: prUrl ?? null, error: error ?? null,
+						learning: learning ?? [], factoryEvaluations: factoryEvaluations ?? [],
+					}) !== stableStringify({
+						resultSummary: current.resultSummary, evidence: current.evidence, branch: current.branch,
+						commit: current.commit, prUrl: current.prUrl, error: current.error,
+						learning: current.learning ?? [], factoryEvaluations: current.factoryEvaluations ?? [],
+					})) throw new FoundryOperationError("parallel_delivery_mismatch", "Completion replay must match the exact recorded result");
+					syncFactoryPlan(plan);
+					deliverRecorded(plan, taskId, attemptId);
+					return plan;
+				}
+				if (plan.revision !== expectedRevision) throw revisionConflict(planId, expectedRevision, plan.revision);
 				validateDonePayload(plan, taskId, current, { resultSummary, evidence, branch, commit, prUrl });
 				// Reject stale subjects and malformed reports before reading external Git state.
 				completeTaskAttempt(plan, taskId, attemptId, status, { resultSummary, evidence, error, branch, commit, prUrl, learning, factoryEvaluations });
@@ -350,6 +465,7 @@ export function createTaskOperations({ storeFor, persist, factory, syncFactoryPl
 			throw failure;
 		}
 		syncFactoryPlan(updated);
+		if (status === TASK_STATUS.DONE) deliverRecorded(updated, taskId, attemptId);
 		return updated;
 	};
 

@@ -1,4 +1,5 @@
 import { clone, fail } from "./fields.mjs";
+import { taskCompletionRequirements } from "./delivery.mjs";
 import { ACTIVE_ATTEMPT_STATUSES, ATTEMPT_STATUS, PLAN_STATUS, TASK_STATUS } from "./values.mjs";
 
 /** @typedef {import("../types/plan.js").FoundryPlan} FoundryPlan */
@@ -36,6 +37,16 @@ export function latestSuccessfulAttempt(task) {
 	return [...task.attempts].reverse().find(
 		(attempt) => attempt.status === ATTEMPT_STATUS.DONE,
 	) ?? null;
+}
+
+/** Completion labels and foreign observations cannot replace a recorded delivery.
+ * @param {FoundryTask | undefined} task */
+export function hasSuccessfulDelivery(task) {
+	if (!task || task.status !== TASK_STATUS.DONE) return false;
+	const attempt = latestSuccessfulAttempt(task);
+	if (!attempt?.completedAt) return false;
+	const requirements = taskCompletionRequirements(task, attempt);
+	return requirements.missing.length === 0 && requirements.missingDelivery.length === 0;
 }
 
 /**
@@ -84,7 +95,7 @@ export function findAttempt(task, attemptId) {
 export function assertTaskDependenciesDone(plan, task) {
 	const byId = taskMap(plan.tasks);
 	const unmet = task.dependsOn.filter(
-		(id) => byId.get(id)?.status !== TASK_STATUS.DONE,
+		(id) => !hasSuccessfulDelivery(byId.get(id)),
 	);
 	if (unmet.length > 0) {
 		fail("dependency_unmet", `Task ${task.id} has unfinished dependencies`, {
@@ -146,7 +157,7 @@ export function taskStatus(plan, task) {
 	if (task.status !== TASK_STATUS.PLANNED) return task.status;
 	return (plan.status === PLAN_STATUS.APPROVED || plan.status === PLAN_STATUS.RUNNING)
 		&& task.dependsOn.every((id) => plan.tasks.some((dependency) =>
-			dependency.id === id && dependency.status === TASK_STATUS.DONE))
+			dependency.id === id && hasSuccessfulDelivery(dependency)))
 		? TASK_STATUS.READY : TASK_STATUS.PLANNED;
 }
 

@@ -10,8 +10,9 @@ import { FoundryOperationError } from "./errors.mjs";
  * workspace: () => string,
  * factory: Pick<ReturnType<typeof import("../bridge.mjs").createFactoryBridge>, "inspectPlan">,
  * workflowStatus: ReturnType<typeof import("./workflows.mjs").createWorkflowOperations>["workflowStatus"],
+ * admissionFor?: (plan: import("../types/plan.js").FoundryPlan) => import("./tasks.mjs").AdmissionBinding,
  * }} dependencies */
-export function createStatusOperations({ storeFor, workspace, factory, workflowStatus }) {
+export function createStatusOperations({ storeFor, workspace, factory, workflowStatus, admissionFor }) {
 
 	/**
 	 * Reads the authoritative plan and derives recovery guidance.
@@ -26,7 +27,31 @@ export function createStatusOperations({ storeFor, workspace, factory, workflowS
 		} catch (error) {
 			factoryView = { state: /** @type {const} */ ("unavailable"), code: errorCode(error) ?? "factory_unavailable", error: errorMessage(error) };
 		}
-		const projection = projectPlan(plan, { sessionInventory });
+		const admission = admissionFor?.(plan);
+		const context = admission ? { ...admission.context, claims: admission.store.list() } : undefined;
+		const projection = projectPlan(plan, {
+			sessionInventory, ...(context ? { admission: context } : {}),
+		});
+		if (context) {
+			projection.scheduling.launches = projection.scheduling.launches.filter(
+				entry => projection.scheduling.dispatchableTaskIds.includes(entry.taskId),
+			);
+			projection.actions = projection.actions.map(entry => {
+				if (entry.kind !== "create-or-attach-session") return entry;
+				const attempt = plan.tasks.find(task => task.id === entry.taskId)?.attempts.find(attempt => attempt.id === entry.attemptId);
+				const reserved = context.authorized && context.owner === plan.factory?.owner
+					&& context.repositoryId === plan.factory?.repositoryId && context.claims.some(record =>
+						record.identity.repositoryId === context.repositoryId && record.identity.owner === context.owner
+						&& record.identity.planId === plan.id && record.identity.taskId === entry.taskId
+						&& record.identity.reservationId === attempt?.reservationId
+						&& record.attempt?.attemptId === entry.attemptId && record.phase === "reserved");
+				return reserved ? entry : {
+					kind: "resolve-session-creation", taskId: entry.taskId, attemptId: entry.attemptId,
+					reason: "Reconcile the same admission and reservation before any new native work; retain all claims.",
+				};
+			});
+			projection.nextAction = projection.actions[0] ?? projection.nextAction;
+		}
 		const foreign = !plan.factory || plan.factory.owner !== workspace();
 		const currentContract = factoryView.state === "available" ? factoryView.contracts.filter((entry) => entry.unitId === plan.factory?.unitId).at(-1) : undefined;
 		const contextChanged = factoryView.state === "available" && !plan.evaluationTarget && Boolean(plan.factory?.contractDigest)

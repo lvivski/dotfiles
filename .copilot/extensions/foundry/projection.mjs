@@ -4,8 +4,9 @@
  * @module foundry/projection
  */
 import { TERMINAL_SESSION_STATUSES, normalizeInventory, sessionState } from "./inventory.mjs";
-import { activeTaskAttempt, getReadyTasks, taskLaunchGuidance, taskStatus } from "./plan/queries.mjs";
-import { findScopeConflicts, selectNonOverlappingTasks } from "./plan/scope.mjs";
+import { activeTaskAttempt, getReadyTasks, hasSuccessfulDelivery, taskLaunchGuidance, taskStatus } from "./plan/queries.mjs";
+import { findScopeConflicts } from "./plan/scope.mjs";
+import { projectAdmission } from "./plan/admission.mjs";
 import { ATTEMPT_STATUS, PLAN_STATUS, TASK_STATUS, VERIFICATION_STATUS } from "./plan/values.mjs";
 
 /**
@@ -36,8 +37,8 @@ function action(kind, details = {}) {
  * absent only when a complete, causally newer host inventory is supplied.
  *
  * @param {import("./types/plan.js").FoundryPlan} plan Validated Foundry plan.
- * @param {{sessionInventory?: unknown}} [options]
- * @returns {import("./types/plan.js").PlanProjection} Deterministic operational projection.
+ * @param {{sessionInventory?: unknown, admission?: import("./plan/admission.mjs").AdmissionContext}} [options]
+ * @returns {import("./types/plan.js").PlanProjection & {scheduling: {holds: {taskId: string, reasons: import("./plan/admission.mjs").AdmissionHold[]}[]}}} Deterministic operational projection.
  */
 export function projectPlan(plan, options = {}) {
 	const inventory = normalizeInventory(options.sessionInventory);
@@ -51,9 +52,11 @@ export function projectPlan(plan, options = {}) {
 	for (const task of plan.tasks) byStatus[taskStatus(plan, task)] += 1;
 	const ready = getReadyTasks(plan);
 	const running = plan.tasks.filter((task) => task.status === TASK_STATUS.RUNNING);
+	const selection = projectAdmission(plan, options.admission);
 	const scheduling = {
 		readyTaskIds: ready.map((task) => task.id),
-		...selectNonOverlappingTasks(ready, running),
+		...selection,
+		heldTaskIds: selection.heldTaskIds.filter(id => ready.some(task => task.id === id)),
 		scopeConflicts: findScopeConflicts([...ready, ...running]),
 		launches: ready.map((task) => ({
 			taskId: task.id,
@@ -87,7 +90,7 @@ export function projectPlan(plan, options = {}) {
 		.map((task) => ({
 			taskId: task.id,
 			dependencies: task.dependsOn
-				.filter((dependencyId) => byId.get(dependencyId)?.status !== TASK_STATUS.DONE)
+				.filter((dependencyId) => !hasSuccessfulDelivery(byId.get(dependencyId)))
 				.map((dependencyId) => {
 					const dependency = byId.get(dependencyId);
 					if (!dependency) throw new TypeError(`Unknown dependency ${dependencyId}`);
@@ -182,7 +185,7 @@ export function projectPlan(plan, options = {}) {
 			.filter((candidate) =>
 				(plan.status === PLAN_STATUS.APPROVED || plan.status === PLAN_STATUS.RUNNING)
 				&& (candidate.status === TASK_STATUS.BLOCKED || candidate.status === TASK_STATUS.FAILED)
-				&& candidate.dependsOn.every((id) => byId.get(id)?.status === TASK_STATUS.DONE))
+				&& candidate.dependsOn.every((id) => hasSuccessfulDelivery(byId.get(id))))
 			.sort((left, right) => left.id.localeCompare(right.id))) {
 			actions.push(action("retry-task", { taskId: task.id }));
 		}

@@ -323,6 +323,13 @@ test("attached task failures require terminal session inventory", () => (
 test("scope overlap needs an auditable override and running scopes stay occupied", () => (
 	withOperations(async ({ operations, workspacePath }) => {
 		let plan = await createApproved(operations, workspacePath);
+		const initial = await operations.nextTasks({ planId: plan.id });
+		assert.deepEqual(initial.dispatchableTaskIds, ["T-001"]);
+		assert.deepEqual(initial.heldTaskIds, ["T-002"]);
+		await assert.rejects(operations.reserveTask({
+			planId: plan.id, taskId: "T-002", expectedRevision: plan.revision, reservationId: "greedy-overlap",
+		}), { code: "scope_overlap_requires_approval" });
+		assert.equal((await operations.getPlan({ planId: plan.id })).revision, plan.revision);
 		const first = await operations.reserveTask({
 			planId: plan.id,
 			taskId: "T-001",

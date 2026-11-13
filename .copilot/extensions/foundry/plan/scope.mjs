@@ -5,9 +5,10 @@ import { TASK_STATUS } from "./values.mjs";
  * Canonicalizes a declared file scope for conservative overlap checks.
  *
  * @param {string} scope
+ * @param {boolean} [allowAbsolute] Physical resources may name absolute POSIX paths.
  * @returns {{value: string, prefix: string, glob: boolean, root: boolean, unsafe: boolean}}
  */
-function scopeDescriptor(scope) {
+function scopeDescriptor(scope, allowAbsolute = false) {
 	const raw = String(scope);
 	const windowsAbsolute = path.win32.isAbsolute(raw)
 		|| /^[A-Za-z]:/.test(raw);
@@ -15,25 +16,43 @@ function scopeDescriptor(scope) {
 	const normalized = slashNormalized.startsWith("/")
 		? slashNormalized
 		: slashNormalized.replace(/^(?:\.\/)+/, "");
-	const rawTraversal = normalized === ".."
-		|| normalized.startsWith("../")
-		|| normalized.includes("/../");
+	const rawTraversal = normalized.split("/").includes("..");
 	const canonical = path.posix.normalize(normalized);
 	const comparison = canonical.toLowerCase();
-	const unsafe = windowsAbsolute
-		|| rawTraversal
+	const unsafe = rawTraversal
+		|| /[\u0000-\u001f\u007f]/.test(raw)
 		|| canonical.startsWith("../")
 		|| canonical === ".."
-		|| canonical.startsWith("/");
+		|| (allowAbsolute
+			? /^[A-Za-z]:/.test(raw) || slashNormalized.startsWith("//")
+				|| raw.startsWith("\\") || normalized.startsWith("~")
+			: windowsAbsolute || canonical.startsWith("/"));
 	const wildcard = canonical.search(/[*?[{]/);
 	return {
 		value: comparison.replace(/\/+$/, ""),
 		prefix: (wildcard === -1 ? comparison : comparison.slice(0, wildcard))
 			.replace(/\/+$/, ""),
 		glob: wildcard !== -1,
-		root: canonical === "." || canonical === "",
+		root: canonical === "." || canonical === "" || canonical === "/",
 		unsafe,
 	};
+}
+
+/**
+ * Physical path resources overlap at segment boundaries, not arbitrary prefixes.
+ * Unanchored, root, traversal and pattern scopes cannot prove independence.
+ *
+ * @param {string} left
+ * @param {string} right
+ * @returns {boolean}
+ */
+export function resourcePathsMayOverlap(left, right) {
+	const a = scopeDescriptor(left, true), b = scopeDescriptor(right, true);
+	if ([a, b].some(scope => scope.root || scope.unsafe || scope.glob || !scope.prefix)) return true;
+	return a.value.startsWith("/") !== b.value.startsWith("/")
+		|| a.value === b.value
+		|| a.value.startsWith(`${b.value}/`)
+		|| b.value.startsWith(`${a.value}/`);
 }
 
 /**
@@ -45,7 +64,7 @@ function scopeDescriptor(scope) {
  * @param {string[]} right
  * @returns {boolean}
  */
-function scopesMayOverlap(left, right) {
+export function scopesMayOverlap(left, right) {
 	if (left.length === 0 || right.length === 0) {
 		return true;
 	}
