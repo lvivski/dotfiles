@@ -26,7 +26,7 @@ export function validatePackageAssurance(repository, subject, report, at = new D
 	}
 	for (const item of [...subject.inputs.inputs.map((entry) => entry.artifact), ...subject.delivery.outputs.map((entry) => entry.artifact)]) {
 		requireCommit(repository, item.commit);
-		const tree = git(repository, ["ls-tree", "-z", item.commit, "--", item.path]);
+		const tree = git(repository, ["ls-tree", "-z", "--full-tree", item.commit, "--", item.path]);
 		if (tree.error || tree.status !== 0 || !tree.stdout.toString("utf8").startsWith(`${item.mode} blob `)
 			|| tree.stdout.toString("utf8").split("\0").filter(Boolean).length !== 1
 			|| tree.stdout.toString("utf8").split("\t")[1] !== `${item.path}\0`) {

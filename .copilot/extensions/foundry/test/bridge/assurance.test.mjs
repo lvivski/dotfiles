@@ -138,6 +138,22 @@ test("package assurance checks real multi-producer Git inputs and the combined d
 	assert.equal(f.subject.inputs.deliveries.length, 2);
 });
 
+test("package assurance resolves identical Git artifacts from the repository root and an existing subdirectory", async (t) => {
+	const f = await assuranceFixture(t);
+	const repositories = [f.repo, path.join(f.repo, "evaluators")];
+	const report = reportFor(f.subject);
+	const results = repositories.map((repository) => validatePackageAssurance(repository, f.subject, report));
+	assert.equal(results[0].passed, true);
+	assert.deepEqual(results[1], results[0]);
+	const delivery = structuredClone(f.subject.delivery);
+	delivery.outputs[0].artifact.mode = "100755";
+	const changed = buildAssuranceSubject({ ...f.subjectInput, delivery });
+	const changedReport = reportFor(changed);
+	for (const repository of repositories) {
+		assert.throws(() => validatePackageAssurance(repository, changed, changedReport), { code: "parallel_assurance_artifact" });
+	}
+});
+
 test("package assurance rejects changed frozen helper, fixture and lock bytes despite the unchanged evaluator entry point", async (t) => {
 	for (const [filename, content] of Object.entries({
 		"evaluators/helper.mjs": "export const check = () => true;\n",
