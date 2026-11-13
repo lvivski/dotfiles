@@ -35,3 +35,13 @@ test("summaries include attempt counts without duplicating attempt state", () =>
 	assert.equal(summary.attemptsTotal, 1);
 	assert.equal(latestSuccessfulAttempt(required(plan.tasks[0]))?.id, "T-001-A001");
 });
+
+test("PF-ADM-02 a done label without a recorded successful delivery cannot unblock dependents", () => {
+	const plan = approved();
+	plan.tasks[0].status = TASK_STATUS.DONE;
+	assert.deepEqual(getReadyTasks(plan), []);
+	let completed = completeTask(approved(), "T-001").plan;
+	assert.deepEqual(getReadyTasks(completed).map(task => task.id), ["T-002"]);
+	completed.tasks[0].attempts[0].commit = null;
+	assert.deepEqual(getReadyTasks(completed), []);
+});
