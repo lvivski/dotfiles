@@ -2,11 +2,10 @@
 import { validatePlanningArgs } from "../analysis/planning.mjs";
 import { inspectRepairCandidate as inspectBlueprint, repairMaterial } from "../analysis/repair.mjs";
 import { visualCriterion } from "../factory/visual.mjs";
-import { arrayOf, nullable, readBoolean, readJsonValue, readString, recordOf } from "../data.mjs";
-import { LIMITS } from "../plan/values.mjs";
+import { arrayOf, errorCode, errorMessage, nullable, readBoolean, readJsonValue, readString, recordOf } from "../data.mjs";
 import { UNTRUSTED_DATA_WARNING as UNTRUSTED, safeJson, untrustedBlock } from "../prompt.mjs";
 import { planningSchema, repairPlanning } from "./repair.mjs";
-/** @type {import("@github/copilot-sdk").WorkflowMeta & {limits: Required<import("@github/copilot-sdk").WorkflowLimits>}} */
+/** @type {import("@github/copilot-sdk").WorkflowMeta} */
 export const meta = {
 	name: "plan",
 	description: "Create, critique, synthesize, and verify one dependency-aware Foundry plan.",
@@ -35,17 +34,12 @@ export const meta = {
 			factoryContext: { type: "object" },
 		},
 	},
-	limits: {
-		maxConcurrentSubagents: 2,
-		maxTotalSubagents: 10,
-		timeoutSeconds: 7200,
-		maxAiCredits: 10000,
-	},
 };
 
 /** @param {Pick<import("@github/copilot-sdk").WorkflowContext, "args" | "phase" | "agent" | "parallel">
- * & {runId?: string, session?: unknown}} workflow */
-export async function run(workflow) {
+ * & {runId?: string, session?: unknown}} workflow
+ * @param {import("../types/repair.js").RepairHostPort} [repairHost] */
+export async function run(workflow, repairHost) {
 	const input = validatePlanningArgs(workflow.args);
 	const PLAN_SCHEMA = planningSchema(input.maxTasks);
 
@@ -72,7 +66,6 @@ export async function run(workflow) {
 
 	const factoryContext = input.factoryContext ? untrustedBlock("PINNED-FACTORY-CONTEXT", input.factoryContext) : "";
 	const topologyRules = `Foundry plan invariants: use at most ${input.maxTasks} implement tasks plus exactly one final verify task. The verify task must be the only sink, depend on exactly one commit- or pr-delivered final implementation task, use deliveryRequirement commit, and have empty acceptanceCriteria and expectedFiles. Every implementation task must be an ancestor of that final implementation task, or be that task. Put measurable criteria and authored checks on implementation tasks; the read-only verifier checks those criteria rather than authoring its own. Critiques cannot override these invariants. Commit or PR delivery still requires user authorization; if constraints prohibit the required delivery, report the conflict rather than weakening verification.`;
-	const fieldLimits = `Generation bounds: plan.title <= ${LIMITS.planTitle} characters; task.title <= ${LIMITS.taskTitle}; task.description <= ${LIMITS.taskDescription}; each acceptance criterion <= ${LIMITS.acceptanceCriterion}; each expected file <= ${LIMITS.expectedFile}. Per task: at most ${LIMITS.dependencies} dependencies, ${LIMITS.acceptanceCriteria} criteria, and ${LIMITS.expectedFiles} expected files. All text entries must be non-empty. Rephrase or split criteria within these bounds without losing any requirement; never truncate or silently drop content to fit.`;
 	const executionPlanning = `Execution planning review:
 ${input.factoryContext?.visualEvaluation ? `Required final-target criterion (verbatim): ${visualCriterion(input.factoryContext.visualEvaluation)}` : ""}
 When factoryContext.visualEvaluation is declared, retain its exact visual fidelity criterion on the final implementation target. Pin and open the actual renderable reference files at the evaluator bundle commit, including each declared ordinary/empty/error state. Preflight the declared capture procedure and OS permissions before implementation; denied/unavailable capture is a blocker, never permission to substitute geometry, controls, source or palette checks. Require real output captures tied to the exact delivery, environment and state plus an independent reference-to-output assessment of composition, navigation, pane boundaries, hierarchy/density, typography and action placement against the declared intent. Preserve failed visual findings and separate human judgments. Do not invent references, visual passes, paid agents, similarity thresholds or contract acceptance.
@@ -82,7 +75,7 @@ When factoryContext.visualEvaluation is declared, retain its exact visual fideli
 - Separate independently runnable worktree builds and focused fixture checks with isolated outputs from exclusive shared-file writes, foreground-native-input checks, and exact-package/final-verification steps. Serialize only real resource or artifact dependencies; disjoint paths alone do not prove resource independence.
 - Keep integration focused on seams, whole-app evidence and the necessary package/native checks, not the first execution of leaf behavior. Move independent checks out of the serial tail where feasible; explain any unavoidable deferral without weakening accepted criteria.
 Use existing descriptions/criteria and critique risks/requiredChanges or verifier issues, not new schema fields. Preserve accepted contracts, protected evaluators, scope/reservation/approval/identity/resource gates and task limits. During bounded synthesis repair, conserve task identities and dependency intent; report planning shortcomings rather than redesigning the DAG.`;
-	const simplificationReview = "Bounded simplification review: consider at most three opportunities to remove unnecessary internal concepts, duplicate authority, or accidental complexity while conserving external meaning, interfaces, data and user contracts. Name the conserved obligations/evaluations and tradeoffs. Put conditional suggestions in risks prefixed 'Simplification proposal:'; they remain non-governing, and judgment or contract changes require explicit acceptance. Do not use byte counts or fewer lines as a correctness metric.";
+	const simplificationReview = "Simplification review: consider substantive opportunities to remove unnecessary internal concepts, duplicate authority, or accidental complexity while conserving external meaning, interfaces, data and user contracts. Name the conserved obligations/evaluations and tradeoffs. Put conditional suggestions in risks prefixed 'Simplification proposal:'; they remain non-governing, and judgment or contract changes require explicit acceptance. Do not use byte counts or fewer lines as a correctness metric.";
 
 	workflow.phase("decompose");
 	const decomposed = await workflow.agent(
@@ -102,7 +95,6 @@ The durable capability is not the task DAG. Preserve its authority boundaries, s
 
 Return one plan blueprint. Use task IDs T-001, T-002, and so on. Every implement task needs measurable acceptance criteria, likely file scope, and deliveryRequirement branch, commit, or pr.
 ${topologyRules}
-${fieldLimits}
 ${executionPlanning}
 Return JSON only.`,
 		{ label: "plan:decomposer", schema: PLAN_SCHEMA },
@@ -165,7 +157,6 @@ ${safeJson(decompositionForReview)}
 		`Produce the final Foundry plan blueprint from the decomposition and critiques. Preserve one final verify sink task and a convergent implementation DAG. Preserve pinned governing contracts; do not silently promote rationale or simplification proposals into requirements. ${UNTRUSTED}
 
 ${topologyRules}
-${fieldLimits}
 ${executionPlanning}
 
 ${factoryContext}
@@ -192,15 +183,26 @@ Keep at most ${input.maxTasks} implementation tasks plus one verifier. Remove ov
 		? inspectBlueprint(synthesized, input, "Synthesis")
 		: { plan: null, blueprint: null, issue: "The synthesis agent returned no valid result" };
 	const completeCritics = critiques.length === 2 && critiques.every(critique => critique !== null);
-	const guidance = `${topologyRules}\n${fieldLimits}\n${executionPlanning}`;
+	const guidance = `${topologyRules}\n${executionPlanning}`;
+	/** @type {string[]} */
+	const repairHolds = [];
 	/** @type {import("../types/repair.js").RepairOutcome | null} */
 	let repaired = null;
 	workflow.phase("verify");
-	if (synthesized && synthesisReview.issue && completeCritics) {
-		repaired = await repairPlanning(workflow, repairMaterial({
+	const structuralRecovery = Boolean(synthesized && synthesisReview.issue && completeCritics);
+	/** @param {import("../types/repair.js").RepairMaterial} material */
+	async function recover(material) {
+		try { return await repairPlanning(workflow, material, guidance, repairHost); }
+		catch (error) {
+			if (!errorCode(error)?.startsWith("repair_")) throw error;
+			repairHolds.push(`Recovery held: ${errorMessage(error)}`); return null;
+		}
+	}
+	if (structuralRecovery) {
+		repaired = await recover(repairMaterial({
 			input, candidate: readJsonValue(synthesized), critiques, diagnostics: [synthesisReview.issue],
 			verification: null, decomposition: readJsonValue(decompositionForReview), stage: "structural",
-		}), guidance);
+		}));
 	}
 	const synthesisForReview = synthesisReview.plan ?? synthesisReview.blueprint ?? decompositionForReview;
 	let verification = repaired ? repaired.verification : nullable(recordOf({ passed: readBoolean, issues: arrayOf(readString) }))(await workflow.agent(
@@ -224,12 +226,12 @@ ${safeJson(synthesisForReview)}
 Return JSON only. passed must be false if any issue remains.`,
 		{ label: "plan:verifier", schema: VERDICT_SCHEMA },
 	));
-	if (!repaired && synthesisReview.plan && completeCritics && verification?.passed === false && verification.issues.length) {
-		repaired = await repairPlanning(workflow, repairMaterial({
+	if (!structuralRecovery && synthesisReview.plan && completeCritics && verification?.passed === false && verification.issues.length) {
+		repaired = await recover(repairMaterial({
 			input, candidate: readJsonValue(synthesisReview.plan), critiques, diagnostics: verification.issues,
 			verification, decomposition: readJsonValue(decompositionForReview), stage: "semantic",
-		}), guidance);
-		verification = repaired.verification;
+		}));
+		if (repaired) verification = repaired.verification;
 	}
 	const missingPerspectives = critiques
 		.map((critique, index) => critique === null ? (index === 0 ? "architecture-critic" : "delivery-risk-critic") : null)
@@ -238,6 +240,7 @@ Return JSON only. passed must be false if any issue remains.`,
 		...(verification?.issues || []),
 		...(synthesisReview.issue ? [synthesisReview.issue] : []),
 		...(verification ? [] : ["The verification agent returned no valid result"]),
+		...repairHolds,
 	];
 	const ready = Boolean(
 		(repaired ? !repaired.synthesisRepair.issue : synthesisReview.plan)
@@ -255,6 +258,7 @@ Return JSON only. passed must be false if any issue remains.`,
 		critiques,
 		verification,
 		synthesisRepair: repaired?.synthesisRepair ?? null,
+		...(repaired?.recovery ? { recovery: repaired.recovery } : {}),
 		...(repaired ? { repairBudget: repaired.repairBudget } : workflow.runId ? { repairBudget: { rootRunId: workflow.runId, used: false } } : {}),
 		missingPerspectives,
 		issues,

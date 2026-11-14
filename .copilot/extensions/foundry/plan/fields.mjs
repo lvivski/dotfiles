@@ -89,11 +89,11 @@ export function assertKnownKeys(value, keys, fieldPath) {
 }
 
 /**
- * Requires a bounded string without NUL bytes.
+ * Requires nonempty text without NUL bytes; an explicit maximum is a protocol constraint.
  *
  * @param {unknown} value
  * @param {string} fieldPath
- * @param {number} maximum
+ * @param {number} [maximum]
  * @param {{allowEmpty?: boolean}} [options]
  * @returns {asserts value is string}
  */
@@ -104,7 +104,7 @@ export function assertString(value, fieldPath, maximum, options = {}) {
 	if (!options.allowEmpty && value.trim().length === 0) {
 		fail("empty_string", `${fieldPath} must not be empty`, { path: fieldPath });
 	}
-	if (value.length > maximum) {
+	if (maximum !== undefined && value.length > maximum) {
 		fail("field_too_long", `${fieldPath} exceeds the ${maximum}-character limit`, {
 			path: fieldPath,
 			details: { maximum, actual: value.length },
@@ -120,7 +120,7 @@ export function assertString(value, fieldPath, maximum, options = {}) {
  *
  * @param {unknown} value
  * @param {string} fieldPath
- * @param {number} maximum
+ * @param {number} [maximum]
  * @returns {asserts value is string | null}
  */
 export function assertNullableString(value, fieldPath, maximum) {
@@ -131,14 +131,14 @@ export function assertNullableString(value, fieldPath, maximum) {
 }
 
 /**
- * Requires a bounded array of bounded non-empty strings.
+ * Requires an array of nonempty strings, with optional explicit protocol constraints.
  *
  * @param {unknown} value
  * @param {string} fieldPath
- * @param {{minimum?: number, maximum: number, itemMaximum: number}} options
+ * @param {{minimum?: number, maximum?: number, itemMaximum?: number}} [options]
  * @returns {asserts value is string[]}
  */
-export function assertStringArray(value, fieldPath, options) {
+export function assertStringArray(value, fieldPath, options = {}) {
 	if (!isList(value)) {
 		fail("invalid_array", `${fieldPath} must be an array`, { path: fieldPath });
 	}
@@ -148,7 +148,7 @@ export function assertStringArray(value, fieldPath, options) {
 			details: { minimum: options.minimum, actual: value.length },
 		});
 	}
-	if (value.length > options.maximum) {
+	if (options.maximum !== undefined && value.length > options.maximum) {
 		fail("array_too_long", `${fieldPath} exceeds the ${options.maximum}-item limit`, {
 			path: fieldPath,
 			details: { maximum: options.maximum, actual: value.length },
@@ -217,7 +217,7 @@ export function assertTimestampPair(at, by, prefix) {
 		});
 	}
 	assertTimestamp(at, `${prefix}At`, { nullable: true });
-	assertNullableString(by, `${prefix}By`, LIMITS.actor);
+	assertNullableString(by, `${prefix}By`);
 }
 
 /**
@@ -231,7 +231,7 @@ export function assertHttpUrl(value, fieldPath) {
 	if (value === null) {
 		return;
 	}
-	assertString(value, fieldPath, LIMITS.prUrl);
+	assertString(value, fieldPath);
 	let parsed;
 	try {
 		parsed = new URL(value);
@@ -277,7 +277,7 @@ export function nowIso(now) {
  * @returns {asserts actor is string}
  */
 export function requireActor(actor, fieldPath) {
-	assertString(actor, fieldPath, LIMITS.actor);
+	assertString(actor, fieldPath);
 }
 
 /**
@@ -335,6 +335,6 @@ export function validateConceptualReview(review) {
 	if (review === undefined) return;
 	assertPlainObject(review, "conceptualReview");
 	assertKnownKeys(review, new Set(["proposals", "gaps"]), "conceptualReview");
-	assertStringArray(review.proposals, "conceptualReview.proposals", { maximum: 3, itemMaximum: 2000 });
-	assertStringArray(review.gaps, "conceptualReview.gaps", { maximum: 4, itemMaximum: 2000 });
+	assertStringArray(review.proposals, "conceptualReview.proposals");
+	assertStringArray(review.gaps, "conceptualReview.gaps");
 }

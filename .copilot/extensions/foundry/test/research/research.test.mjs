@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { isList, isRecord, parseJson } from "../../data.mjs";
 import { FOUNDRY_WORKFLOWS } from "../../workflows/registry.mjs";
 import { must } from "../assertions.mjs";
 import { workflowDetail as nativeDetail } from "../native/fixture.mjs";
@@ -29,7 +30,7 @@ test("deep research calls the built-in research agent directly", async () => {
 	assert.equal(researchWorkflow.calls.length, 4);
 });
 
-test("deep research uses one native pipeline under its concurrency limit", async () => {
+test("deep research uses one native pipeline without inventing a concurrency grant", async () => {
 	const researchWorkflow = createWorkflowContext(
 		{ question: "Compare regions", angles: 5 },
 		(_prompt, options) => options.label === "plan"
@@ -37,7 +38,7 @@ test("deep research uses one native pipeline under its concurrency limit", async
 			: undefined,
 	);
 	await FOUNDRY_WORKFLOWS.deepResearch.run(researchWorkflow);
-	assert.equal(ADDITIONAL_WORKFLOWS.deepResearch.meta.limits.maxConcurrentSubagents, 2);
+	assert.equal(ADDITIONAL_WORKFLOWS.deepResearch.meta.limits, undefined);
 	assert.equal(researchWorkflow.calls.length, 12);
 	assert.deepEqual(researchWorkflow.pipelineBatches, [5]);
 	const researchLabels = researchWorkflow.calls
@@ -129,6 +130,7 @@ test("deep research preserves supported claims and corrects only unresolved find
 	assert.match(report.prompt, /CORRECTED_DETAIL/);
 	assert.doesNotMatch(report.prompt, /WRONG_DETAIL|Edition mismatch/);
 	assert.match(result, /2 source-verified findings/);
+	assert.match(result, /1 independently reviewed targeted correction passes/);
 	assert.match(result, /Initial review: incorrect: Edition mismatch/);
 	assert.equal(workflow.calls.length, 6);
 	assert.deepEqual(workflow.pipelineBatches, [1]);
@@ -151,6 +153,7 @@ test("deep research retains unresolved distinctions and reasons after one unsucc
 	const result = await FOUNDRY_WORKFLOWS.deepResearch.run(workflow);
 	assert.match(result, /Research unsupported/);
 	assert.match(result, /0 source-verified findings; 1 incorrect, 1 inaccessible, 1 insufficient/);
+	assert.match(result, /1 independently reviewed targeted correction passes/);
 	assert.match(result, /Publisher contradicts the edition/);
 	assert.match(result, /Source requires access/);
 	assert.match(result, /Synopsis does not establish coverage/);
@@ -173,6 +176,11 @@ test("deep research retains verified evidence when correction or reverification 
 			assert.match(result, /Edition mismatch/);
 			assert.match(result, /1 source-verified findings/);
 			assert.match(result, /1 failed stages/);
+			assert.match(result, /0 independently reviewed targeted correction passes/);
+			assert.match(result, /"review": null/);
+			assert.equal(workflow.calls.filter(call => call.options.label.startsWith("reverify-findings:")).length,
+				stage === "correct-findings" ? 0 : 1);
+			if (stage === "correct-findings") assert.match(result, /"proposal": null/);
 		});
 	}
 });
@@ -358,7 +366,7 @@ test("deep research recovers supplied drafts without planning or broad research"
 	assert.equal(workflow.calls.length, 4);
 });
 
-test("deep research caps fresh work and rejects oversized recovery before spending", async () => {
+test("deep research preserves every explicitly requested angle and saved draft beyond former default budgets", async () => {
 	const workflow = createWorkflowContext({ question: "Many angles", angles: 12 }, (prompt, options) => {
 		if (options.label === "plan") return Array.from({ length: 12 }, (_, index) => `Angle ${index + 1}`);
 		if (options.label.startsWith("reverify-findings:")) {
@@ -367,20 +375,17 @@ test("deep research caps fresh work and rejects oversized recovery before spendi
 		return mixedResearchResponse(prompt, options);
 	});
 	const result = await FOUNDRY_WORKFLOWS.deepResearch.run(workflow);
-	assert.match(result, /Requested 12 angles; capped at 9/);
-	assert.ok(workflow.logs.some((message) => message.includes("capped at 9")));
-	assert.deepEqual(workflow.pipelineBatches, [9]);
-	assert.equal(workflow.calls.length, 38);
-	assert.ok(workflow.calls.length <= ADDITIONAL_WORKFLOWS.deepResearch.meta.limits.maxTotalSubagents);
+	assert.doesNotMatch(result, /capped at/);
+	assert.deepEqual(workflow.pipelineBatches, [12]);
+	assert.equal(workflow.calls.length, 50);
 	assertOutputSchemas(workflow);
 
 	const recovery = createWorkflowContext({
 		question: "Recover",
 		drafts: Array.from({ length: 13 }, () => ({ angle: "Saved", text: "Draft" })),
 	});
-	await assert.rejects(FOUNDRY_WORKFLOWS.deepResearch.run(recovery), /at most 12 saved drafts/);
-	assert.equal(recovery.calls.length, 0);
-	assert.deepEqual(recovery.stepCalls, []);
+	await FOUNDRY_WORKFLOWS.deepResearch.run(recovery);
+	assert.deepEqual(recovery.pipelineBatches, [13]);
 });
 
 test("deep research preserves correction and reverification for all twelve saved drafts", async () => {
@@ -407,11 +412,141 @@ test("deep research uses stable distinct calls that native journals can replay",
 	assert.equal(second, first);
 	assert.equal(workflow.calls.length, 6);
 	assert.equal(workflow.journal.agents.size, 6);
-	assert.deepEqual(workflow.stepExecutions, ["deep-research:prepared-angles:v1"]);
+	assert.deepEqual(workflow.stepExecutions, ["deep-research:prepared-angles:v2"]);
 	assert.notEqual(
 		must(workflow.calls.find((call) => call.options.label.startsWith("verify-findings:"))).prompt,
 		must(workflow.calls.find((call) => call.options.label.startsWith("reverify-findings:"))).prompt,
 	);
+});
+
+test("independent substantive progress permits further corrections and exact native journal replay", async () => {
+	let reviews = 0;
+	const workflow = createWorkflowContext({ question: "Resolve two evidenced issues", angles: 1 }, (_prompt, options) => {
+		if (options.label.startsWith("verify-findings:")) return {
+			findings: [researchFinding("supported", { claim: "KEEP_VERIFIED" }),
+				researchFinding("incorrect", { claim: "FIRST_ISSUE" }), researchFinding("incorrect", { claim: "SECOND_ISSUE" })],
+			limitations: [],
+		};
+		if (options.label.startsWith("correct-findings:")) return "Specific correction with source locators";
+		if (options.label.startsWith("reverify-findings:")) {
+			reviews++;
+			return { findings: reviews === 1
+				? [researchFinding("supported", { id: "1.2", claim: "FIRST_RESOLVED" }),
+					researchFinding("incorrect", { id: "1.3", claim: "SECOND_ISSUE" })]
+				: [researchFinding("supported", { id: "1.3", claim: "SECOND_RESOLVED" })], limitations: [] };
+		}
+	});
+	const first = await FOUNDRY_WORKFLOWS.deepResearch.run(workflow);
+	assert.match(first, /3 source-verified findings/);
+	assert.match(first, /2 independently reviewed targeted correction passes/);
+	assert.match(first, /FIRST_ISSUE/);
+	assert.match(first, /SECOND_ISSUE/);
+	assert.match(first, /Specific correction with source locators/);
+	const corrections = workflow.calls.filter(call => call.options.label.startsWith("correct-findings:"));
+	assert.equal(corrections.length, 2);
+	assert.doesNotMatch(corrections[1].prompt, /KEEP_VERIFIED|FIRST_ISSUE|FIRST_RESOLVED/);
+	assert.notEqual(corrections[0].options.label, corrections[1].options.label);
+	assert.equal(await FOUNDRY_WORKFLOWS.deepResearch.run(workflow), first);
+	assert.equal(reviews, 2);
+});
+
+test("a failed later correction retains history without counting another independent review", async () => {
+	const review = { findings: [
+		researchFinding("supported", { id: "1.1", claim: "FIRST_RESOLVED" }),
+		researchFinding("incorrect", { id: "1.2", claim: "SECOND_ISSUE", reasons: "Still unresolved" }),
+	], limitations: [] };
+	let corrections = 0;
+	const workflow = createWorkflowContext({ question: "Preserve reviewed and failed corrections", angles: 1 }, (_prompt, options) => {
+		if (options.label.startsWith("verify-findings:")) return { findings: [
+			researchFinding("incorrect", { claim: "FIRST_ISSUE" }),
+			researchFinding("incorrect", { claim: "SECOND_ISSUE" }),
+		], limitations: [] };
+		if (options.label.startsWith("correct-findings:")) return ++corrections === 1 ? "First proposed correction" : null;
+		if (options.label.startsWith("reverify-findings:")) return review;
+	});
+	const result = await FOUNDRY_WORKFLOWS.deepResearch.run(workflow);
+	assert.match(result, /1 source-verified findings; 1 incorrect/);
+	assert.match(result, /1 independently reviewed targeted correction passes/);
+	assert.match(result, /Targeted correction failed/);
+	const history = [...result.matchAll(/```json\n(.*?)\n```/gs)].map(match => parseJson(match[1]));
+	assert.equal(history.length, 2);
+	assert.ok(isRecord(history[0]) && isRecord(history[1]));
+	assert.equal(history[0].proposal, "First proposed correction");
+	assert.deepEqual(history[0].review, review);
+	assert.equal(history[1].proposal, null);
+	assert.equal(history[1].review, null);
+	assert.ok(isList(history[0].before) && isList(history[1].before));
+	assert.deepEqual(history.map(entry => {
+		assert.ok(isRecord(entry) && isList(entry.before));
+		return entry.before.map(finding => {
+			assert.ok(isRecord(finding));
+			return finding.claim;
+		});
+	}), [["FIRST_ISSUE", "SECOND_ISSUE"], ["FIRST_RESOLVED", "SECOND_ISSUE"]]);
+	assert.equal(workflow.calls.filter(call => call.options.label.startsWith("reverify-findings:")).length, 1);
+	const calls = workflow.calls.length;
+	assert.equal(await FOUNDRY_WORKFLOWS.deepResearch.run(workflow), result);
+	assert.equal(workflow.calls.length, calls);
+});
+
+test("cosmetic or alternating unresolved diagnostics cannot authorize another correction", async () => {
+	const workflow = createWorkflowContext({ question: "Keep the original issue", angles: 1 }, (_prompt, options) => {
+		if (options.label.startsWith("verify-findings:")) return {
+			findings: [researchFinding("incorrect", { claim: "ORIGINAL_ISSUE", reasons: "Original causal diagnostic" })], limitations: [],
+		};
+		if (options.label.startsWith("correct-findings:")) return "Reworded proposed claim";
+		if (options.label.startsWith("reverify-findings:")) return {
+			findings: [researchFinding("insufficient", { id: "1.1", claim: "Reworded unresolved issue", reasons: "Different timestamp or presentation" })],
+			limitations: [],
+		};
+	});
+	const result = await FOUNDRY_WORKFLOWS.deepResearch.run(workflow);
+	assert.match(result, /Further correction held/);
+	assert.match(result, /ORIGINAL_ISSUE/);
+	assert.match(result, /Original causal diagnostic/);
+	assert.match(result, /Reworded proposed claim/);
+	assert.equal(workflow.calls.filter(call => call.options.label.startsWith("correct-findings:")).length, 1);
+});
+
+test("regressing or uncertain review cannot overwrite established findings or trigger more work", async () => {
+	const workflow = createWorkflowContext({ question: "Preserve supported evidence", angles: 1 }, (_prompt, options) => {
+		if (options.label.startsWith("verify-findings:")) return { findings: [
+			researchFinding("supported", { claim: "KEEP_VERIFIED" }),
+			researchFinding("incorrect", { claim: "FIRST_ISSUE" }), researchFinding("inaccessible", { claim: "SECOND_ISSUE" }),
+		], limitations: [] };
+		if (options.label.startsWith("correct-findings:")) return "Proposed corrections";
+		if (options.label.startsWith("reverify-findings:")) return { findings: [
+			researchFinding("incorrect", { id: "1.1", claim: "FORGED_REGRESSION" }),
+			researchFinding("supported", { id: "1.2", claim: "FIRST_RESOLVED" }),
+			researchFinding("inaccessible", { id: "1.3", claim: "SECOND_ISSUE" }),
+		], limitations: [] };
+	});
+	const result = await FOUNDRY_WORKFLOWS.deepResearch.run(workflow);
+	assert.match(result, /Further correction held/);
+	const narrativeInput = must(workflow.calls.find(call => call.options.label === "report-findings")).prompt;
+	assert.match(narrativeInput, /KEEP_VERIFIED|FIRST_RESOLVED/);
+	assert.doesNotMatch(narrativeInput, /FORGED_REGRESSION/);
+	assert.equal(workflow.calls.filter(call => call.options.label.startsWith("correct-findings:")).length, 1);
+});
+
+test("native denial after progress stops subsequent admission without replay or evidence loss", async () => {
+	const workflow = createWorkflowContext({ question: "Native resource denied", angles: 1 }, (_prompt, options) => {
+		if (options.label.startsWith("verify-findings:")) return { findings: [
+			researchFinding("incorrect", { claim: "FIRST_ISSUE" }), researchFinding("incorrect", { claim: "SECOND_ISSUE" }),
+		], limitations: [] };
+		if (options.label.startsWith("correct-findings:")) {
+			if (options.label.split(":").length > 3) throw new FatalWorkflowFailure("native permission revoked");
+			return "First proposed correction";
+		}
+		if (options.label.startsWith("reverify-findings:")) return { findings: [
+			researchFinding("supported", { id: "1.1" }), researchFinding("incorrect", { id: "1.2" }),
+		], limitations: [] };
+	});
+	await assert.rejects(FOUNDRY_WORKFLOWS.deepResearch.run(workflow), /native permission revoked/);
+	assert.equal(workflow.calls.filter(call => call.options.label.startsWith("correct-findings:")).length, 2);
+	assert.equal(workflow.calls.filter(call => call.options.label.startsWith("reverify-findings:")).length, 1);
+	assert.equal(workflow.calls.some(call => call.options.label === "report-findings"), false);
+	assert.equal(workflow.journal.agents.size, workflow.calls.length - 1);
 });
 
 test("deep research validates recovery arguments before spawning agents", async (t) => {

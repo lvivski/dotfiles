@@ -8,16 +8,16 @@ export const VISUAL_AXES = ["composition", "navigation", "paneBoundaries", "hier
 /** @param {unknown} value @returns {import("../types/factory.js").VisualSpecification} */
 export function visualSpecification(value) {
 	object(value, ["capture", "states"], "visual");
-	const states = list(value.states, "visual.states", 8, 1).map((entry) => {
+	const states = list(value.states, "visual.states", undefined, 1).map((entry) => {
 		object(entry, ["id", "intent", "reference"], "visual state");
 		object(entry.reference, ["path", "digest"], "visual reference");
 		return {
-			id: identifier(entry.id), intent: text(entry.intent, "visual state intent", 2048),
+			id: identifier(entry.id), intent: text(entry.intent, "visual state intent"),
 			reference: { path: repositoryPath(entry.reference.path, "visual reference path"), digest: digest(entry.reference.digest, "visual reference digest") },
 		};
 	});
 	if (new Set(states.map((entry) => entry.id)).size !== states.length) fail("factory_visual_invalid", "Visual state IDs must be unique");
-	return { capture: text(value.capture, "visual.capture", 2048), states };
+	return { capture: text(value.capture, "visual.capture"), states };
 }
 
 /** @param {import("../types/factory.js").FactoryState} state @param {import("../types/factory.js").CapabilityUnit} unit */
@@ -53,22 +53,22 @@ export function visualReport(definition, report, commit, outcome) {
 		|| value.deliveryCommit !== commit || value.environment !== definition.environment) {
 		fail("factory_visual_mismatch", "Visual captures must bind the exact delivered commit and declared environment");
 	}
-	const states = list(value.states, "visual report states", 8, 1).map((entry) => {
+	const states = list(value.states, "visual report states", undefined, 1).map((entry) => {
 		object(entry, ["id", "referenceDigest", "capture", "blocker", "assessment"], "visual report state");
 		const expected = definition.visual?.states.find((state) => state.id === entry.id);
 		if (!expected || entry.referenceDigest !== expected.reference.digest) fail("factory_visual_mismatch", "Visual report changed its declared state or reference identity");
 		let capture = null;
 		if (entry.capture === null) {
-			text(entry.blocker, "visual capture blocker", 2048);
+			text(entry.blocker, "visual capture blocker");
 			if (outcome === "passed") fail("factory_visual_required", "Missing or permission-blocked capture cannot pass");
 		} else {
 			if (entry.blocker !== undefined) fail("factory_visual_contradiction", "An unresolved capture blocker cannot accompany an available capture");
 			object(entry.capture, ["path", "digest", "capturedAt", "method", "viewport"], "visual capture");
 			capture = {
-				path: text(entry.capture.path, "capture.path", 4096), digest: digest(entry.capture.digest, "capture.digest"),
+				path: text(entry.capture.path, "capture.path"), digest: digest(entry.capture.digest, "capture.digest"),
 				capturedAt: timestamp(entry.capture.capturedAt, "capture.capturedAt"),
 				method: enumeration(entry.capture.method, ["native-screenshot", "browser-screenshot"], "capture.method"),
-				viewport: text(entry.capture.viewport, "capture.viewport", 512),
+				viewport: text(entry.capture.viewport, "capture.viewport"),
 			};
 		}
 		object(entry.assessment, VISUAL_AXES, "visual assessment");
@@ -76,7 +76,7 @@ export function visualReport(definition, report, commit, outcome) {
 		const assessment = VISUAL_AXES.map((axis) => {
 			const finding = rawAssessment[axis];
 			object(finding, ["outcome", "finding"], `visual assessment.${axis}`);
-			return { outcome: enumeration(finding.outcome, ["passed", "failed", "inconclusive"], `visual ${axis} outcome`), finding: text(finding.finding, `visual ${axis} finding`, 2048) };
+			return { outcome: enumeration(finding.outcome, ["passed", "failed", "inconclusive"], `visual ${axis} outcome`), finding: text(finding.finding, `visual ${axis} finding`) };
 		});
 		return { id: expected.id, capture, assessment };
 	});

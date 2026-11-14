@@ -1,11 +1,10 @@
-import { constants } from "node:sqlite";
 import { stableStringify } from "../digest.mjs";
 import { parseJson } from "../data.mjs";
 import { digest, fail, integer, object, strings, text, timestamp } from "../factory/fields.mjs";
 import { claimHolds, validateClaims } from "../plan/admission.mjs";
 import { admissionIdentity, admissionRecord, attemptIdentity, cancellationObligation, deliveryReceipt } from "../plan/parallel-contracts.mjs";
 import { PLAN_ID_PATTERN } from "../plan/values.mjs";
-import { createArtifactDatabase } from "./database.mjs";
+import { createArtifactDatabase, sqliteConstants as constants } from "./database.mjs";
 import { assertAdmissionFence, assertEffectTransition, synchronousTransition } from "./parallel-protocol.mjs";
 
 /** @typedef {import("../types/parallel.js").AdmissionIdentity} Identity */
@@ -87,8 +86,8 @@ function records(db) {
 function observation(value) {
 	object(value, ["attempt", "sessionIds", "runIds", "source", "capturedAt"], "admission observation");
 	return {
-		attempt: attemptIdentity(value.attempt), sessionIds: strings(value.sessionIds, "observed sessions", Number.MAX_SAFE_INTEGER).sort(),
-		runIds: strings(value.runIds, "observed runs", Number.MAX_SAFE_INTEGER).sort(), source: text(value.source, "observation source", 4096),
+		attempt: attemptIdentity(value.attempt), sessionIds: strings(value.sessionIds, "observed sessions").sort(),
+		runIds: strings(value.runIds, "observed runs").sort(), source: text(value.source, "observation source"),
 		capturedAt: timestamp(value.capturedAt, "observation time"),
 	};
 }
@@ -122,7 +121,7 @@ function nativeIdentities(db, record) {
 }
 
 /** @param {ReturnType<typeof nativeIdentities>} identities */
-const quarantined = (identities) => identities.sessionIds.length > 1 || identities.runIds.length > 128;
+const quarantined = (identities) => identities.sessionIds.length > 1;
 
 /** The frozen record can name only one child. Additional observed children remain in
  * durable evidence and quarantine release; this snapshot never claims to settle them.
@@ -132,9 +131,7 @@ function obligationsFor(db, record) {
 	const { sessionIds, runIds } = nativeIdentities(db, record);
 	return [{
 		attempt: record.attempt, sessionId: record.obligations[0]?.sessionId ?? sessionIds[0] ?? null,
-		// The frozen obligation bounds runs at 128. Keep overflow evidence in the
-		// sidecar and quarantine; never reject its retention or claim it settled.
-		runIds: runIds.length > 128 ? record.obligations[0]?.runIds ?? runIds.slice(0, 128) : runIds,
+		runIds,
 		pendingEffectIds: record.receipts.filter(receipt => ["intent", "in-flight", "uncertain"].includes(receipt.state)).map(receipt => receipt.id).sort(),
 		disposition: "unresolved", inventory: null, terminatedRunIds: [],
 	}];
@@ -149,7 +146,7 @@ function obligationsFor(db, record) {
  * }} options */
 export function createAdmissionStore(options) {
 	const repositoryId = digest(options.repositoryId, "repositoryId");
-	const owner = text(options.owner, "owner", 4096);
+	const owner = text(options.owner, "owner");
 	const clock = () => timestamp(options.clock?.() ?? new Date().toISOString(), "admission time");
 	const storage = createArtifactDatabase({
 		workspacePath: options.workspacePath, busyTimeoutMs: options.busyTimeoutMs,

@@ -6,7 +6,6 @@ import { EVIDENCE_OUTCOME, EVIDENCE_TYPE, LIMITS, PLAN_ID_PATTERN } from "../pla
 export const PLAN_ID = {
 	type: "string",
 	pattern: PLAN_ID_PATTERN,
-	maxLength: LIMITS.planId,
 };
 
 /** JSON Schema for task IDs. @type {JsonSchema} */
@@ -19,14 +18,12 @@ export const TASK_ID = {
 export const ATTEMPT_ID = {
 	type: "string",
 	pattern: "^T-\\d{3}-A\\d{3}$",
-	maxLength: LIMITS.attemptId,
 };
 
 /** JSON Schema for idempotency and cancellation request IDs. @type {JsonSchema} */
 export const REQUEST_ID = {
 	type: "string",
 	pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
-	maxLength: LIMITS.requestId,
 };
 
 /** JSON Schema for optimistic-concurrency revisions. @type {JsonSchema} */
@@ -37,29 +34,30 @@ export const REVISION = {
 };
 
 /**
- * Creates a bounded non-empty string schema.
+ * Creates a non-empty string schema, optionally constrained by an explicit format.
  *
- * @param {number} maximum
+ * @param {number} [maximum]
  * @returns {JsonSchema}
  */
 export const NON_EMPTY = (maximum) => ({
 	type: "string",
 	minLength: 1,
-	maxLength: maximum,
+	...(maximum === undefined ? {} : { maxLength: maximum }),
+	pattern: "^(?![\\s\\S]*\\u0000)(?=[\\s\\S]*\\S)[\\s\\S]+$",
 });
 
 /**
- * Creates a bounded array-of-strings schema.
+ * Creates an array-of-strings schema with optional explicit constraints.
  *
- * @param {number} maximum
- * @param {number} itemMaximum
+ * @param {number} [maximum]
+ * @param {number} [itemMaximum]
  * @param {number} [minimum]
  * @returns {JsonSchema}
  */
 export const STRING_LIST = (maximum, itemMaximum, minimum = 0) => ({
 	type: "array",
 	minItems: minimum,
-	maxItems: maximum,
+	...(maximum === undefined ? {} : { maxItems: maximum }),
 	items: NON_EMPTY(itemMaximum),
 });
 
@@ -84,10 +82,10 @@ export const EVIDENCE_INPUT = objectSchema(
 	["type", "summary", "outcome"],
 	{
 		type: { type: "string", enum: Object.values(EVIDENCE_TYPE) },
-		summary: NON_EMPTY(LIMITS.evidenceItem),
-		source: NON_EMPTY(LIMITS.evidenceSource),
+		summary: NON_EMPTY(),
+		source: NON_EMPTY(),
 		outcome: { type: "string", enum: Object.values(EVIDENCE_OUTCOME) },
-		checkId: NON_EMPTY(32),
+		checkId: NON_EMPTY(),
 	},
 );
 
@@ -96,15 +94,15 @@ export const SESSION_INVENTORY = objectSchema(
 	["complete", "capturedAt", "sessions"],
 	{
 		complete: { type: "boolean" },
-		capturedAt: NON_EMPTY(64),
+		capturedAt: NON_EMPTY(),
 		sessions: {
 			type: "array",
-			maxItems: 1_000,
+
 			items: objectSchema(
 				["id", "status"],
 				{
-					id: NON_EMPTY(LIMITS.sessionId),
-					status: NON_EMPTY(64),
+					id: NON_EMPTY(),
+					status: NON_EMPTY(),
 				},
 			),
 		},
@@ -112,7 +110,7 @@ export const SESSION_INVENTORY = objectSchema(
 );
 
 /** @type {JsonSchema} */
-export const FACTORY_ID = { type: "string", pattern: "^[a-z0-9][a-z0-9._-]{0,95}$", maxLength: 96 };
+export const FACTORY_ID = { type: "string", pattern: "^[a-z0-9][a-z0-9._-]{0,95}$", };
 
 /** @type {JsonSchema} */
 export const DIGEST = { type: "string", pattern: "^[a-f0-9]{64}$" };
@@ -120,18 +118,18 @@ export const DIGEST = { type: "string", pattern: "^[a-f0-9]{64}$" };
 export const KNOWLEDGE_REF = objectSchema(["id", "revision"], { id: FACTORY_ID, revision: { type: "integer", minimum: 1 } });
 
 /** @type {JsonSchema} */
-export const REFERENCES = { type: "array", maxItems: 32, items: KNOWLEDGE_REF };
+export const REFERENCES = { type: "array",  items: KNOWLEDGE_REF };
 
 export const TECHNICAL_POLICY = objectSchema(["kinds", "agreement"], {
-	kinds: { type: "array", minItems: 1, maxItems: 2, items: { type: "string", enum: ["retry", "consumer-expectation"] } },
+	kinds: { type: "array", minItems: 1,  items: { type: "string", enum: ["retry", "consumer-expectation"] } },
 	agreement: { anyOf: [
-		objectSchema(["evaluation", "path", "digest"], { evaluation: KNOWLEDGE_REF, path: NON_EMPTY(1024), digest: DIGEST }),
+		objectSchema(["evaluation", "path", "digest"], { evaluation: KNOWLEDGE_REF, path: NON_EMPTY(), digest: DIGEST }),
 		{ type: "null" },
 	] },
 });
 
 export const TECHNICAL_RETRY = objectSchema(["id", "failures"], {
-	id: FACTORY_ID, failures: STRING_LIST(32, 2048, 1),
+	id: FACTORY_ID, failures: STRING_LIST(undefined, undefined, 1),
 });
 
 export const TECHNICAL_RENEWAL = objectSchema(["id", "planId", "expectedPlanRevision", "delegationId", "previous", "next", "failures"], {
@@ -140,11 +138,11 @@ export const TECHNICAL_RENEWAL = objectSchema(["id", "planId", "expectedPlanRevi
 });
 
 /** Package wire limits do not increase the executable plan's task limit. @type {JsonSchema} */
-const PACKAGE_REFERENCES = { type: "array", maxItems: 128, items: KNOWLEDGE_REF };
+const PACKAGE_REFERENCES = { type: "array",  items: KNOWLEDGE_REF };
 const PACKAGE_INPUT = objectSchema(["producer", "output", "destination"], {
-	producer: FACTORY_ID, output: FACTORY_ID, destination: NON_EMPTY(1024),
+	producer: FACTORY_ID, output: FACTORY_ID, destination: NON_EMPTY(),
 });
-const PACKAGE_OUTPUT = objectSchema(["id", "path"], { id: FACTORY_ID, path: NON_EMPTY(1024) });
+const PACKAGE_OUTPUT = objectSchema(["id", "path"], { id: FACTORY_ID, path: NON_EMPTY() });
 const PACKAGE_EVALUATOR = objectSchema(["id", "revision", "procedureDigest", "requirements", "independent", "modality"], {
 	...KNOWLEDGE_REF.properties, procedureDigest: DIGEST,
 	requirements: { ...PACKAGE_REFERENCES, minItems: 1 }, independent: { type: "boolean" },
@@ -155,17 +153,17 @@ const PACKAGE_BINDINGS = objectSchema(["authority", "repositoryId", "unit", "con
 	repositoryId: DIGEST, unit: KNOWLEDGE_REF,
 	contract: { anyOf: [objectSchema(["revision", "digest"], { revision: KNOWLEDGE_REF.properties.revision, digest: DIGEST }), { type: "null" }] },
 	requirements: PACKAGE_REFERENCES,
-	evaluators: { type: "array", maxItems: 128, items: PACKAGE_EVALUATOR },
+	evaluators: { type: "array",  items: PACKAGE_EVALUATOR },
 	visualEvaluation: { anyOf: [KNOWLEDGE_REF, { type: "null" }] },
 });
 export const PACKAGE_DECOMPOSITION = objectSchema(["format", "bindings", "packages", "target"], {
 	format: { const: "foundry-packages-v1" }, bindings: PACKAGE_BINDINGS, target: FACTORY_ID,
 	packages: {
-		type: "array", minItems: 1, maxItems: 128,
+		type: "array", minItems: 1,
 		items: objectSchema(["id", "title", "expectedFiles", "inputs", "outputs", "requirements", "evaluators"], {
-			id: FACTORY_ID, title: NON_EMPTY(256), expectedFiles: STRING_LIST(128, 4096, 1),
-			inputs: { type: "array", maxItems: 128, items: PACKAGE_INPUT },
-			outputs: { type: "array", minItems: 1, maxItems: 128, items: PACKAGE_OUTPUT },
+			id: FACTORY_ID, title: NON_EMPTY(), expectedFiles: STRING_LIST(undefined, undefined, 1),
+			inputs: { type: "array",  items: PACKAGE_INPUT },
+			outputs: { type: "array", minItems: 1,  items: PACKAGE_OUTPUT },
 			requirements: PACKAGE_REFERENCES, evaluators: PACKAGE_REFERENCES,
 		}),
 	},
@@ -173,33 +171,33 @@ export const PACKAGE_DECOMPOSITION = objectSchema(["format", "bindings", "packag
 
 export const FACTORY_SOURCE = objectSchema(["kind", "ref", "actor", "at"], {
 	kind: { type: "string", enum: ["discovery", "implementation", "audit", "research", "review", "security", "triage", "command", "human", "operational", "app-task", "external-run", "native-workflow"] },
-	ref: NON_EMPTY(4096), actor: NON_EMPTY(256), at: NON_EMPTY(64),
-	sessionId: NON_EMPTY(512), planId: NON_EMPTY(64), taskId: TASK_ID, attemptId: ATTEMPT_ID,
-	runId: NON_EMPTY(512), owner: NON_EMPTY(4096),
+	ref: NON_EMPTY(), actor: NON_EMPTY(), at: NON_EMPTY(),
+	sessionId: NON_EMPTY(), planId: NON_EMPTY(), taskId: TASK_ID, attemptId: ATTEMPT_ID,
+	runId: NON_EMPTY(), owner: NON_EMPTY(),
 	digest: DIGEST,
-	judgmentId: NON_EMPTY(512),
+	judgmentId: NON_EMPTY(),
 });
 
 export const FACTORY_ARTIFACT = objectSchema(["kind", "ref", "digest"], {
 	kind: { type: "string", enum: ["knowledge", "schema", "test", "reference", "foundation", "implementation", "data"] },
-	ref: NON_EMPTY(4096), digest: DIGEST,
+	ref: NON_EMPTY(), digest: DIGEST,
 });
 
 export const FACTORY_LEARNING = objectSchema(["kind", "statement"], {
 	kind: { type: "string", enum: ["observation", "inference", "proposal"] },
-	statement: NON_EMPTY(8000), uncertainty: { type: ["string", "null"], maxLength: 8000 },
+	statement: NON_EMPTY(), uncertainty: { type: ["string", "null"], },
 });
 
 export const FACTORY_REPORT = objectSchema(["evaluation", "procedureDigest", "environment", "workload", "outcome", "report", "independenceReason"], {
 	evaluation: KNOWLEDGE_REF, procedureDigest: DIGEST,
-	environment: NON_EMPTY(2048), workload: NON_EMPTY(2048),
+	environment: NON_EMPTY(), workload: NON_EMPTY(),
 	outcome: { type: "string", enum: ["passed", "failed", "inconclusive"] },
-	report: NON_EMPTY(16000), independenceReason: NON_EMPTY(2048),
+	report: NON_EMPTY(), independenceReason: NON_EMPTY(),
 });
 
 export const EVALUATOR_BUNDLE = objectSchema(["version", "commit", "root", "entryPoint", "support", "invocation"], {
 	version: { const: 1 },
 	commit: { type: "string", pattern: "^(?:[a-f0-9]{40}|[a-f0-9]{64})$" },
-	root: NON_EMPTY(1024), entryPoint: NON_EMPTY(1024), support: STRING_LIST(32, 1024),
-	invocation: objectSchema(["argv", "cwd"], { argv: STRING_LIST(64, 4096, 2), cwd: NON_EMPTY(1024) }),
+	root: NON_EMPTY(), entryPoint: NON_EMPTY(), support: STRING_LIST(),
+	invocation: objectSchema(["argv", "cwd"], { argv: STRING_LIST(undefined, undefined, 2), cwd: NON_EMPTY() }),
 });

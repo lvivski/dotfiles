@@ -246,7 +246,7 @@ export function retryFailedPlan(plan, actor, options = {}) {
 		revision: plan.revision + 1,
 		actor,
 		...(plan.verification.runId ? { verificationRunId: plan.verification.runId } : {}),
-	}].slice(-LIMITS.activity);
+	}];
 	candidate.verification = emptyVerification();
 	candidate.updatedAt = timestamp;
 	return validatePlan(candidate);

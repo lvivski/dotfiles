@@ -70,12 +70,14 @@ This is a recovery requirement, not evidence that App-restart recovery or live p
 
 ## Completed planning repair
 
-Local source provides bounded recovery for a completed registered `plan` result that is structurally
+Local source provides governed recovery for a completed registered `plan` result that is structurally
 valid but `needs-review` solely on its original failed semantic verdict. The invoking owner must
 retain the original canonical input, both complete critics and native run/agent observations.
 An explicit `synthesisRepair: null` with no historical budget field is eligible; missing, malformed,
-foreign, renamed/custom or already-repaired lineage is not. Current results must carry the same
-original run ID and an unused budget. The native API observations corroborate identity; they do not
+foreign or renamed/custom lineage is not. Legacy eligibility retains the same original run ID and
+the original absent-or-unused budget semantics, without retroactively seeding comparison baselines.
+Modern continuation requires authentic retained comparison evidence, not an unused numerical counter.
+The native API observations corroborate identity; they do not
 cryptographically attest recipe code or independently authenticate an agent's claims.
 
 1. In the **original owning session**, call
@@ -83,14 +85,18 @@ cryptographically attest recipe code or independently authenticate an agent's cl
    canonical repository path. The operation reads the native result itself; never supply a saved
    result, critics, caller ownership or a fabricated budget. It rechecks current repository/capability/
    contract authority and returns `preparationId`, `preparationDigest`, state and unchanged `launchSpec`.
+   For a governed continuation, additionally supply `continuationOf` naming its retained prior repair
+   run; modern inline continuation names the original planning run and keeps its inline mode.
 2. With the existing task/resource authority, call
-   `foundry_launch_plan_repair({ preparationId, preparationDigest })` once. This durably records intent
+   `foundry_launch_plan_repair({ preparationId, preparationDigest })`. Supply the exact `effectId`
+   only when present in the returned continuation arguments. This durably records intent
    before invoking that exact stored `plan-repair` launch through the current session's offered
    `run_dynamic_workflow` tool and its ordinary native permission flow. Do **not** separately invoke
    the returned `launchSpec`, change its arguments/limits, or use another transport. If the route is
    unavailable, denied, malformed or uncertain, retain the claim and failure; never retry the launch.
 3. If admission was uncertain, use
-   `foundry_reconcile_plan_repair({ preparationId, preparationDigest })`. This reads a bounded native
+   `foundry_reconcile_plan_repair({ preparationId, preparationDigest })`, including the same `effectId`
+   when applicable. This reads complete native
    inventory and binds only a unique matching owner-native observation. Missing, conflicting,
    incomplete or ambiguous observations hold; tool-call correlation is not idempotency. Denial or an
    unavailable route cannot become a fresh permission through reconciliation.
@@ -99,7 +105,8 @@ cryptographically attest recipe code or independently authenticate an agent's cl
    where `repository` is `{ workingDirectory: <the prepared canonical path>, baseBranch: <the intended base> }`
    and `runId` is the distinct repair run. Import rechecks the original native source, completed
    result, journal, owner and current authority. Negative or missing conservation review, stale
-   authority or changed bytes cannot create a draft.
+   authority or changed bytes cannot create a draft. An explicitly supplied effect ID must select the
+   retained launch whose native run is being imported; crossed or unknown pairs are held.
 5. Submit the ordinary draft with `foundry_submit_plan` and obtain the exact named-revision approval
    through the normal [approval path](planning.md#app-planning-and-approval). Recovery neither approves
    nor activates a plan and grants no implementation, commit, merge or replacement permission.
@@ -107,11 +114,18 @@ cryptographically attest recipe code or independently authenticate an agent's cl
 The original result remains immutable. Preparation, original input/critics/verdict, admission
 intent/outcomes, author candidate and conservation result are retained in the original owner's
 `files/foundry/foundry.sqlite` plan database (schema 3, application ID `0x464e4452`), not the separate
-shared-admission database. A root-run and canonical-input claim prevents structural repair, semantic
-repair, replay, a fresh run ID or repair-only recovery from allocating another author allowance.
-An interrupted author with no retained output remains held; a retained candidate may be reviewed
-again on the same native run without regenerating it. A completed result replays without new agents.
-No automatic retry, expiry, budget reset, schema migration or permission fallback is provided.
+shared-admission database. Root-run/canonical-input claims and original outcomes are not reset.
+Modern `planning_repair_effects` retain exact effect identities, intent and authenticated receipts;
+later receipt observations append their originals without replacing consumed transaction/run bindings.
+`settled` means a receipt was retained, not that execution completed. An interrupted effect with no
+retained output stays held pending reconciliation; same-effect duplicate admission never invokes again.
+A new continuation requires authentic host proposal and all-history independent conservation, plus
+newly resolved obligations relative to the latest predecessor. Cosmetic ordering or extra evidence
+for an already-supported obligation cannot progress it. All contributors are excluded from independent
+review, and native action-time authority, revision, approval, revocation, cancellation, provider,
+resource and budget checks must pass. The default production host is unavailable and therefore held.
+Legacy current disposition may acquire a later denied/unavailable hold, but earlier outcomes, results
+and original run bindings remain intact. No consumed grant or historical allowance becomes fresh permission.
 
 These are source-supported operations, not evidence that the current installed extension offers
 them, that native permission has been granted, or that a live repair has run. Installation/reload,
@@ -143,7 +157,7 @@ Before retrying a failed evaluation plan, synchronize its prior terminal receipt
 and owned synchronization restore conservative evaluation retirement holds; a historical completion
 replay cannot clear a later active retry. Complete or explicitly abandon the current work to release it.
 
-Current v2 authority upgrades non-destructively to physical SQLite schema 4. Old cached writers
+Current v2 authority upgrades non-destructively to physical SQLite schema 5. Old cached writers
 must restart; there is no seal or logical JSON migration. Record/segment bounds replace the old
 lifetime event ceiling so in-flight receipts and retirement can progress. Use pinned export pages
 and staged import for histories above the single-JSON bound. Incomplete import data is not authority;

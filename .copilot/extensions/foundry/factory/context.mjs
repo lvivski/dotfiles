@@ -1,4 +1,3 @@
-import { stableStringify } from "../digest.mjs";
 import { enumeration, fail, list, reference, text } from "./fields.mjs";
 import { contractFor, evaluationFor, key, knowledgeFor, privateKnowledge, privateStatement, retired, unitFor } from "./records.mjs";
 import { affectedUnits } from "./signals.mjs";
@@ -11,13 +10,12 @@ import { affectedUnits } from "./signals.mjs";
 /** @typedef {import("../types/factory.js").Knowledge} Knowledge */
 /** @typedef {import("../types/factory.js").KnowledgeQuery} KnowledgeQuery */
 
-const MAX_CONTEXT_BYTES = 128 * 1024;
 const RATIONALE_RELATIONS = ["supports", "derived-from", "depends-on"];
 
 export const DISCOVERY_BOUNDS = Object.freeze({
-	knowledge: 32, connectedRevisions: 128, knowledgeBytes: 48 * 1024,
-	signals: 8, signalBytes: 16 * 1024, contextBytes: MAX_CONTEXT_BYTES,
-	queryCharacters: 8000, queryTerms: 32, selectionReasons: 16, superseders: 16,
+	knowledge: null, connectedRevisions: null, knowledgeBytes: null,
+	signals: null, signalBytes: null, contextBytes: null,
+	queryCharacters: null, queryTerms: null, selectionReasons: null, superseders: null,
 });
 
 /** @param {FactoryState} state @param {KnowledgeRef[]} selected @param {KnowledgeRef[]} [explicit] */
@@ -31,7 +29,6 @@ export function rationaleClosure(state, selected, explicit = []) {
 		if (!ref) break;
 		if (seen.has(key(ref))) continue;
 		seen.add(key(ref));
-		if (seen.size > 128) fail("factory_context_capacity", "Accepted knowledge context exceeds 128 connected revisions; choose a smaller coherent unit");
 		const entry = knowledgeFor(state, ref);
 		if (!selectedKeys.has(key(entry))) rationale.push({ id: entry.id, revision: entry.revision });
 		for (const link of entry.links) {
@@ -87,6 +84,7 @@ function projectedKnowledge(state, ref, authority, portable = false) {
 export function contractContext(state, contract) {
 	return {
 		sealVersion: contract.sealVersion,
+		...(contract.lineageVersion === undefined ? {} : { lineageVersion: contract.lineageVersion }),
 		unit: unitFor(state, contract.unitId, contract.unitRevision),
 		obligations: contract.obligations.map((ref) => projectedKnowledge(state, ref, "accepted")),
 		evaluations: contract.evaluations.map((ref) => ({ ...projectedKnowledge(state, ref, "accepted"), evaluation: evaluationFor(state, ref) })),
@@ -102,13 +100,6 @@ export function contractContext(state, contract) {
 			boundary: unitFor(state, dependency.unitId, dependency.unitRevision).boundary,
 		})),
 	};
-}
-
-/** @param {unknown} context */
-export function checkContextSize(context) {
-	if (Buffer.byteLength(stableStringify(context)) > MAX_CONTEXT_BYTES) {
-		fail("factory_context_capacity", "Sealed generation context exceeds 128 KiB; bound the unit's contracts and references before generation");
-	}
 }
 
 /** @param {FactoryState} state @param {Candidate} candidate @returns {import("../types/factory.js").GenerationPackage} */
@@ -130,19 +121,16 @@ export function generationPackage(state, candidate) {
 /** @param {string} left @param {string} right */
 const compareText = (left, right) => left < right ? -1 : left > right ? 1 : 0;
 
-/** @param {unknown} value */
-const bytes = (value) => Buffer.byteLength(stableStringify(value));
-
 /** @param {KnowledgeQuery} input */
 export function knowledgeQuery(input) {
-	const query = input.query === undefined ? null : text(input.query, "query", DISCOVERY_BOUNDS.queryCharacters).trim();
+	const query = input.query === undefined ? null : text(input.query, "query");
 	const allTerms = [...new Set(query?.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [])]
 		.sort((left, right) => right.length - left.length || compareText(left, right));
 	if (query && !allTerms.length) fail("factory_input_invalid", "query must contain at least one search term");
-	const terms = allTerms.slice(0, DISCOVERY_BOUNDS.queryTerms).sort(compareText);
+	const terms = allTerms.sort(compareText);
 	const kinds = list(input.kinds ?? [], "kinds", 5).map((kind) =>
 		enumeration(kind, /** @type {const} */ (["observation", "inference", "proposal", "obligation", "evaluation"]), "knowledge kind"));
-	const relatedTo = list(input.relatedTo ?? [], "relatedTo", 32).map(reference);
+	const relatedTo = list(input.relatedTo ?? [], "relatedTo").map(reference);
 	if (new Set(kinds).size !== kinds.length || new Set(relatedTo.map(key)).size !== relatedTo.length) {
 		fail("factory_input_invalid", "Knowledge filters must not contain duplicate kinds or references");
 	}
@@ -228,8 +216,8 @@ export function retrieveKnowledge(state, input = {}, discovery = false) {
 			: disputed.has(key(entry)) ? 200 : matches.length && !noise ? 300
 				: causal ? 400 : entry.kind !== "observation" ? 500 : !noise ? 600 : 700;
 		return { entry, selectionReasons: reasons, revisionStatus: revisionStatus(entry),
-			supersededBy: (superseders.get(key(entry)) ?? []).slice(0, DISCOVERY_BOUNDS.superseders),
-			omittedSuperseders: Math.max(0, (superseders.get(key(entry))?.length ?? 0) - DISCOVERY_BOUNDS.superseders), priority, matches: matches.length };
+			supersededBy: superseders.get(key(entry)) ?? [],
+			omittedSuperseders: 0, priority, matches: matches.length };
 	};
 	/** @param {ReturnType<typeof describe>} left @param {ReturnType<typeof describe>} right */
 	const compare = (left, right) => left.priority - right.priority || right.matches - left.matches
@@ -242,11 +230,11 @@ export function retrieveKnowledge(state, input = {}, discovery = false) {
 	const selected = new Map(candidates.map((entry) => [key(entry.entry), entry]));
 	const candidateKeys = new Set(selected.keys());
 	const seeds = filters.relatedTo.length ? filters.relatedTo
-		: discovery ? candidates.slice(0, DISCOVERY_BOUNDS.knowledge).map(({ entry }) => ({ id: entry.id, revision: entry.revision })) : [];
+		: discovery ? candidates.map(({ entry }) => ({ id: entry.id, revision: entry.revision })) : [];
 	const pending = seeds.map((ref) => ({ ref, priority: selected.get(key(ref))?.priority ?? 0, depth: 0 }));
 	const queued = new Set(seeds.map(key));
 	const visited = new Set();
-	while (pending.length && visited.size < DISCOVERY_BOUNDS.connectedRevisions) {
+	while (pending.length) {
 		const current = pending.shift();
 		if (!current) break;
 		visited.add(key(current.ref));
@@ -255,7 +243,7 @@ export function retrieveKnowledge(state, input = {}, discovery = false) {
 			if (!entry) continue;
 			const described = selected.get(key(entry)) ?? describe(entry);
 			const reason = `linked:${link.relation}:${key(current.ref)}`;
-			if (!described.selectionReasons.includes(reason) && described.selectionReasons.length < DISCOVERY_BOUNDS.selectionReasons) described.selectionReasons.push(reason);
+			if (!described.selectionReasons.includes(reason)) described.selectionReasons.push(reason);
 			described.priority = Math.min(described.priority, current.priority + Math.min(current.depth + 1, 99));
 			if (discovery || candidateKeys.has(key(entry))) selected.set(key(entry), described);
 			if (!queued.has(key(entry))) {
@@ -276,29 +264,25 @@ export function discoveryContext(state, unitId, input = {}) {
 	const selection = retrieveKnowledge(state, { unitId, ...input }, true);
 	/** @type {import("../types/factory.js").RetrievedKnowledge[]} */
 	const rationale = [];
-	let omittedByBytes = 0;
 	for (const { entry, selectionReasons, revisionStatus, supersededBy, omittedSuperseders } of selection.entries) {
-		if (rationale.length >= DISCOVERY_BOUNDS.knowledge) break;
-		const projected = { ...projectedKnowledge(state, { id: entry.id, revision: entry.revision }, "non-governing"), selectionReasons, revisionStatus, supersededBy, omittedSuperseders };
-		if (bytes([...rationale, projected]) > DISCOVERY_BOUNDS.knowledgeBytes) { omittedByBytes++; continue; }
+		const projected = { ...projectedKnowledge(state, { id: entry.id, revision: entry.revision }, "non-governing", true), selectionReasons, revisionStatus, supersededBy, omittedSuperseders };
 		rationale.push(projected);
 	}
 	/** @type {{id: string, kind: string, summary: string, knowledgeRefs: KnowledgeRef[], authority: "non-governing", acknowledged: boolean}[]} */
 	const signals = [];
 	for (const { signal, acknowledged } of selection.signals) {
-		if (signals.length >= DISCOVERY_BOUNDS.signals) break;
 		const projected = { id: signal.id, kind: signal.kind, summary: signal.summary, knowledgeRefs: signal.knowledgeRefs, authority: /** @type {const} */ ("non-governing"), acknowledged };
-		if (bytes([...signals, projected]) <= DISCOVERY_BOUNDS.signalBytes) signals.push(projected);
+		signals.push(projected);
 	}
 	return {
 		rationale, signals,
 		retrieval: {
 			query: selection.filters.query, terms: selection.filters.terms, omittedQueryTerms: selection.filters.omittedTerms,
-			matching: "any-selected-subject-term; longest terms first",
+			matching: "any-subject-term; all terms retained",
 			bounds: DISCOVERY_BOUNDS, traversal: selection.traversal,
-			eligible: selection.entries.length, selected: rationale.length, omitted: selection.entries.length - rationale.length, omittedByBytes,
+			eligible: selection.entries.length, selected: rationale.length, omitted: 0, omittedByBytes: 0,
 			signals: { eligible: selection.signals.length, selected: signals.length, omitted: selection.signals.length - signals.length },
-			limitations: "Retrieved lessons and signals are non-governing. A bounded link frontier may have further unvisited revisions; inspect pinned pages for retained history.",
+			limitations: "Retrieved lessons and signals are non-governing. Private statements retain commitments, not local source content; inspect pinned pages for authorized history.",
 		},
 	};
 }

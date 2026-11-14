@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { constants as bufferConstants } from "node:buffer";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readSync } from "node:fs";
 import { devNull } from "node:os";
@@ -66,7 +67,7 @@ function freeze(value) {
 function receipt(value) {
 	if (!isRecord(value) || Object.keys(value).sort().join(",") !== "receiptId,status"
 		|| !["completed", "denied", "interrupted"].includes(String(value.status))
-		|| typeof value.receiptId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value.receiptId)) {
+		|| typeof value.receiptId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value.receiptId)) {
 		hold("retention_provider_receipt_invalid");
 	}
 	return { status: /** @type {PreservationReceipt["status"]} */ (value.status), receiptId: value.receiptId };
@@ -116,8 +117,8 @@ export function createArtifactRetention(options) {
 	/** @param {ArtifactManifest} manifest */
 	function binding(manifest) {
 		const current = readBinding();
-		if (!current || typeof current.revision !== "string" || !current.revision || current.revision.length > 128
-			|| !Array.isArray(current.removalRoots) || !current.removalRoots.length || current.removalRoots.length > 128) {
+		if (!current || typeof current.revision !== "string" || !current.revision
+			|| !Array.isArray(current.removalRoots) || !current.removalRoots.length) {
 			hold("retention_binding_unobserved");
 		}
 		const inventory = planArtifactRetention(current.inventory);
@@ -141,7 +142,7 @@ export function createArtifactRetention(options) {
 		const result = spawnSync("git", [...(bare ? ["--git-dir", repository] : ["-C", repository]), "--no-replace-objects", ...args], {
 			env: { ...env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: devNull, GIT_CONFIG_SYSTEM: devNull,
 				GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", GIT_NO_LAZY_FETCH: "1" },
-			encoding: "utf8", timeout: 10_000, maxBuffer: 8 * 1024 * 1024,
+			encoding: "utf8", maxBuffer: bufferConstants.MAX_LENGTH,
 		});
 		inspect(repository, "", { kind: "directory" });
 		if (result.error || result.signal || result.status !== 0) hold("retention_git_unavailable");
@@ -150,21 +151,19 @@ export function createArtifactRetention(options) {
 	/** All files/objects must be self-contained. No alternate object databases, shallow
 	 * boundaries, lazy fetch, replacements, linked objects or linked Git configuration. */
 	function durableRepository() {
-		let count = 0;
-		/** @param {string} relative @param {number} depth */
-		function walk(relative, depth) {
-			if (depth > 32) hold("retention_git_inventory_overflow");
+		const pending = [""];
+		inspect(retainedRepository, "", { kind: "directory", private: true });
+		while (pending.length) {
+			const relative = pending.pop();
+			if (relative === undefined) hold("retention_git_inventory_invalid");
 			for (const entry of readdirSync(path.join(retainedRepository, relative), { withFileTypes: true })) {
-				if (++count > 4096) hold("retention_git_inventory_overflow");
 				const child = relative ? `${relative}/${entry.name}` : entry.name;
 				if (["objects/info/alternates", "objects/info/http-alternates", "shallow", "info/grafts", "commondir", "gitdir", "worktrees"].includes(child)
 					|| child.startsWith("refs/replace/") || child.endsWith(".promisor")) hold("retention_git_dependency");
 				inspect(retainedRepository, child, { kind: entry.isDirectory() ? "directory" : "file" }, false);
-				if (entry.isDirectory()) walk(child, depth + 1);
+				if (entry.isDirectory()) pending.push(child);
 			}
 		}
-		inspect(retainedRepository, "", { kind: "directory", private: true });
-		walk("", 0);
 		const config = git(retainedRepository, ["config", "--local", "--no-includes", "--list"], true);
 		if (/^(?:include(?:if\.[^=]+)?\.path|extensions\.partialclone|remote\.[^=]+\.promisor|fsck\.[^=]+)=/mi.test(config)) {
 			hold("retention_git_dependency");

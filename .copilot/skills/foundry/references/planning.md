@@ -19,8 +19,8 @@ explicit contract, plan and completion approval.
 
 Use `foundry_capture_analysis` only for supported registered workflows `audit`, `deep-research`,
 `review-queue`, `security-review`, and `triage`: the report must be completed, owned by the current
-session, at most 48,000 characters, and wholly match the capability scope. Custom-fleet reports,
-failed/non-importable plan reports, oversized reports and mixed-scope research instead need deliberate
+session and wholly match the capability scope. Preserve the complete original regardless of size.
+Custom-fleet reports, failed/non-importable plan reports and mixed-scope research instead need deliberate
 scoped `foundry_record_knowledge` entries. Preserve original source references, run identity,
 observation time, digest, uncertainty and coverage gaps. Never rename a run or rerun research merely
 to satisfy the importer; retained proposals do not become governing requirements.
@@ -28,7 +28,7 @@ to satisfy the importer; retained proposals do not become governing requirements
 ## App planning and approval
 
 1. Read the [factory lifecycle](factory.md), inspect repository authority and select/define the
-   coherent capability. Gather a bounded repository summary: working directory, base branch, relevant architecture,
+   coherent capability. Gather complete relevant repository context: working directory, base branch, relevant architecture,
    likely files, constraints, existing runnable checks/shared scaffolding and platform gaps.
    Apply the executable-workstream checklist below before preparing the plan.
    Explicitly review UI applicability. UI-producing successors must declare the
@@ -58,15 +58,19 @@ to satisfy the importer; retained proposals do not become governing requirements
 Interrupting the import wait does not cancel the Workflow. A paused or failed run is not imported
 or automatically resumed; follow the recovery protocol with the same `runId`.
 
-The workflow gives structural or semantic rejection one shared bounded repair attempt within the
-same native run. A structurally valid candidate rejected by the original verifier uses the same
-repair engine, followed by a fresh-context independent conservation reviewer. Structural repair
-already consumes that allowance; it cannot then obtain another semantic repair.
-Field limits are size bounds, not permission to drop requirements or weaken governing contracts.
+Prospective structural and semantic correction uses independently governed effects, not a shared
+numeric author allowance. A constructor-bound host must retain authentic baseline and comparison
+observations, independently review each proposed effect, and atomically recheck its current
+authority, cancellation, provider, resources and actual budgets before invocation.
+Every continuation must newly resolve an obligation unresolved in its latest predecessor, preserve
+all prior supported obligations and decisive evidence, and reject repetition, cycles or uncertainty.
+Missing host support or complete comparison evidence remains a hold, not another native agent call.
+Content and collection convenience ceilings do not authorize shortened requirements or lost evidence.
 Repair retains task identities, dependencies, file scope and delivery commitments and must pass
 domain validation plus independent substantive conservation review. Both agents receive the full
 canonical input, both original critics, rejected candidate and original diagnostics/verdict.
-Inspect `synthesisRepair` and `repairBudget` for this retained provenance even after successful repair.
+Inspect the complete retained effect history and native receipts. Historical `synthesisRepair` and
+`repairBudget` values remain unchanged claims; an old unused allowance does not grant a new effect.
 Producer-authored evidence may be separated from later independent final confirmation, but the
 independent obligation and every check remain. A support matrix can move to an artifact only when
 the original authority already permits that disposition, never by inventing a source-scope exception.
@@ -78,7 +82,8 @@ An eligible completed legacy semantic rejection can use the separate
 [owner-bound repair recovery](recovery.md#completed-planning-repair) source entry points. It does not
 resume the completed run or rerun decomposition/critics. Registration and fixture results are not
 installation, native permission or live-repair evidence; activation and any live use require separate
-authorization. The five standalone analysis recipes and existing workflow limits remain unchanged.
+authorization. All eight prospective recipe declarations omit invented resource ceilings;
+real native permission, explicit scope choices and accumulated approved budgets remain applicable.
 
 Planning currently has no pre-launch reservation. Keep the planning `runId` until it is imported,
 and never launch a replacement merely because the first run is temporarily unobservable.

@@ -18,10 +18,11 @@ import { operatingPublication } from "../plan/schemas/operating.mjs";
 export { FACTORY_ACTIONS };
 
 const APPLICATION_ID = 0x46414354;
-const STORAGE_VERSION = 4;
+const STORAGE_VERSION = 5;
+// Segment and transfer targets frame batches, never reject a whole record.
 export const FACTORY_STORAGE_LIMITS = Object.freeze({
-	eventBytes: 128 * 1024, segmentEvents: 8192, segmentBytes: 32 * 1024 * 1024,
-	transferEvents: 256, transferBytes: 4 * 1024 * 1024, jsonBytes: 32 * 1024 * 1024,
+	eventBytes: null, segmentEvents: 8192, segmentBytes: 32 * 1024 * 1024,
+	transferEvents: 256, transferBytes: 4 * 1024 * 1024, jsonBytes: null,
 });
 const bounds = FACTORY_STORAGE_LIMITS;
 
@@ -87,13 +88,11 @@ export function createFactoryLedger({ repository, format, storageRoot, busyTimeo
 			seen.delete(value);
 		};
 		jsonData(event);
-		if (Buffer.byteLength(JSON.stringify(event)) > bounds.eventBytes) fail("factory_input_invalid", "Factory event exceeds 128 KiB");
 		return event;
 	};
 	/** @param {FactoryDocument} document @param {boolean} [compress] */
 	const encode = (document, compress = false) => {
 		const raw = JSON.stringify(document);
-		if (Buffer.byteLength(raw) > bounds.segmentBytes) fail("factory_segment_capacity", "A physical archive segment exceeds 32 MiB");
 		if (!compress) return raw;
 		const packed = JSON.stringify({ codec: "deflate-raw", data: deflateRawSync(Buffer.from(raw)).toString("base64"), digest: analysisInputDigest(document) });
 		return Buffer.byteLength(packed) < Buffer.byteLength(raw) ? packed : raw;
@@ -101,14 +100,14 @@ export function createFactoryLedger({ repository, format, storageRoot, busyTimeo
 	/** @param {unknown} raw @returns {FactoryDocument} */
 	const decode = (raw) => {
 		try {
-			if (typeof raw !== "string" || Buffer.byteLength(raw) > bounds.segmentBytes) throw new Error("Stored page exceeds its byte bound");
+			if (typeof raw !== "string") throw new Error("Stored page must be JSON text");
 			const stored = parseJson(raw);
 			if (!isRecord(stored) || stored.codec === undefined) return documentEnvelope(stored);
 			if (stored.codec !== "deflate-raw" || typeof stored.data !== "string"
 				|| Object.keys(stored).some((key) => !["codec", "data", "digest"].includes(key))) throw new Error("Invalid compression envelope");
 			const bytes = Buffer.from(stored.data, "base64");
 			if (bytes.toString("base64") !== stored.data) throw new Error("Invalid base64 storage encoding");
-			const document = documentEnvelope(parseJson(inflateRawSync(bytes, { maxOutputLength: bounds.segmentBytes }).toString("utf8")));
+			const document = documentEnvelope(parseJson(inflateRawSync(bytes).toString("utf8")));
 			if (analysisInputDigest(document) !== stored.digest) fail("factory_document_integrity", "Compressed factory history does not match its stored content digest");
 			return document;
 		} catch (error) {
@@ -125,8 +124,23 @@ export function createFactoryLedger({ repository, format, storageRoot, busyTimeo
 			const version = db.prepare("PRAGMA user_version").get()?.user_version;
 			const application = db.prepare("PRAGMA application_id").get()?.application_id;
 			if (version === STORAGE_VERSION && application === APPLICATION_ID) return;
-			if (version === 3 && application === APPLICATION_ID) {
-				db.exec("CREATE TABLE factory_knowledge (singleton INTEGER PRIMARY KEY CHECK(singleton=1), mode TEXT NOT NULL, head TEXT) STRICT; INSERT INTO factory_knowledge VALUES(1,'local',NULL); ALTER TABLE factory_transfers ADD COLUMN portable INTEGER NOT NULL DEFAULT 0; PRAGMA user_version=4;");
+			if ((version === 3 || version === 4) && application === APPLICATION_ID) {
+				if (version === 3) {
+					db.exec("CREATE TABLE factory_knowledge (singleton INTEGER PRIMARY KEY CHECK(singleton=1), mode TEXT NOT NULL, head TEXT) STRICT; INSERT INTO factory_knowledge VALUES(1,'local',NULL); ALTER TABLE factory_transfers ADD COLUMN portable INTEGER NOT NULL DEFAULT 0; PRAGMA user_version=4;");
+				}
+				// Copy stored text, never reserialize immutable history. The schema
+				// bump makes cached older writers refuse their next transaction.
+				db.exec(`
+					CREATE TABLE factory_events_v5 (revision INTEGER PRIMARY KEY, document TEXT NOT NULL, digest TEXT NOT NULL) STRICT;
+					INSERT INTO factory_events_v5 SELECT revision,document,digest FROM factory_events;
+					DROP TABLE factory_events;
+					ALTER TABLE factory_events_v5 RENAME TO factory_events;
+					CREATE TABLE factory_transfer_events_v5 (transfer_id TEXT NOT NULL, revision INTEGER NOT NULL, document TEXT NOT NULL, PRIMARY KEY(transfer_id, revision)) STRICT;
+					INSERT INTO factory_transfer_events_v5 SELECT transfer_id,revision,document FROM factory_transfer_events;
+					DROP TABLE factory_transfer_events;
+					ALTER TABLE factory_transfer_events_v5 RENAME TO factory_transfer_events;
+					PRAGMA user_version=5;
+				`);
 				return;
 			}
 			if (version === 2 && application === APPLICATION_ID) {
@@ -145,10 +159,10 @@ export function createFactoryLedger({ repository, format, storageRoot, busyTimeo
 			db.exec(`
 				CREATE TABLE factory_head (singleton INTEGER PRIMARY KEY CHECK(singleton=1), revision INTEGER NOT NULL) STRICT;
 				INSERT INTO factory_head SELECT singleton, revision FROM factory;
-				CREATE TABLE factory_events (revision INTEGER PRIMARY KEY, document TEXT NOT NULL CHECK(length(CAST(document AS BLOB)) <= ${bounds.eventBytes}), digest TEXT NOT NULL) STRICT;
+				CREATE TABLE factory_events (revision INTEGER PRIMARY KEY, document TEXT NOT NULL, digest TEXT NOT NULL) STRICT;
 				CREATE TABLE factory_archives (first_revision INTEGER PRIMARY KEY, last_revision INTEGER NOT NULL, document TEXT NOT NULL, digest TEXT NOT NULL) STRICT;
 				CREATE TABLE factory_transfers (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, digest TEXT NOT NULL, cursor INTEGER NOT NULL, status TEXT NOT NULL, reason TEXT, actor TEXT, portable INTEGER NOT NULL DEFAULT 0) STRICT;
-				CREATE TABLE factory_transfer_events (transfer_id TEXT NOT NULL, revision INTEGER NOT NULL, document TEXT NOT NULL CHECK(length(CAST(document AS BLOB)) <= ${bounds.eventBytes}), PRIMARY KEY(transfer_id, revision)) STRICT;
+				CREATE TABLE factory_transfer_events (transfer_id TEXT NOT NULL, revision INTEGER NOT NULL, document TEXT NOT NULL, PRIMARY KEY(transfer_id, revision)) STRICT;
 				CREATE TABLE factory_knowledge (singleton INTEGER PRIMARY KEY CHECK(singleton=1), mode TEXT NOT NULL, head TEXT) STRICT;
 				INSERT INTO factory_knowledge VALUES(1,'local',NULL);
 				PRAGMA application_id = ${APPLICATION_ID};
@@ -184,7 +198,7 @@ export function createFactoryLedger({ repository, format, storageRoot, busyTimeo
 				const document = decode(page.document);
 				if (analysisInputDigest(document) !== page.digest || document.format !== format
 					|| stableStringify(document.repository) !== stableStringify(repository)
-					|| !Array.isArray(document.events) || document.events.length > bounds.segmentEvents
+					|| !Array.isArray(document.events)
 					|| document.events.length !== Number(page.last_revision) - Number(page.first_revision) + 1
 					|| document.revision !== page.last_revision) fail("factory_document_integrity", "Archive identity, range or digest is invalid");
 				for (const event of document.events) {
@@ -236,13 +250,12 @@ export function createFactoryLedger({ repository, format, storageRoot, busyTimeo
 			let bytes = Buffer.byteLength(JSON.stringify({ format, repository, revision: head(db), events: [] }));
 			for (const row of rows) {
 				const size = Buffer.byteLength(String(row.document)) + 1;
-				if (bytes + size > bounds.segmentBytes) break;
+				if (selected.length && bytes + size > bounds.segmentBytes) break;
 				const event = parseJson(String(row.document));
 				eventEnvelope(event);
 				selected.push(event);
 				bytes += size;
 			}
-			if (!selected.length) fail("factory_segment_capacity", "An event cannot fit a bounded archive page");
 			const first = selected[0].revision;
 			const last = selected[selected.length - 1].revision;
 			const document = { format, repository, revision: last, events: selected };
@@ -311,7 +324,6 @@ export function createFactoryLedger({ repository, format, storageRoot, busyTimeo
 	});
 	const exportFactory = () => database.transaction((db) => {
 		const serialized = JSON.stringify(read(db).document);
-		if (Buffer.byteLength(serialized) > bounds.jsonBytes) fail("factory_export_page_required", "Logical history exceeds the 32 MiB single-JSON bound; use pinned factory export pages");
 		return serialized;
 	});
 	/** Domain rules validate every historical effective graph before import changes
@@ -333,7 +345,7 @@ export function createFactoryLedger({ repository, format, storageRoot, busyTimeo
 		checkRevision(afterRevision, "afterRevision");
 		const revision = throughRevision ?? head(db);
 		checkRevision(revision, "throughRevision");
-		if (revision > head(db) || afterRevision > revision || !Number.isSafeInteger(limit) || limit < 1 || limit > bounds.transferEvents) fail("factory_export_cursor", "Invalid bounded export cursor");
+		if (revision > head(db) || afterRevision > revision || !Number.isSafeInteger(limit) || limit < 1) fail("factory_export_cursor", "Invalid export cursor");
 		const selected = [];
 		let digest = analysisInputDigest({ ...empty(), ...(base(db).portable ? { portable: true } : {}) });
 		let bytes = 0;
@@ -342,7 +354,7 @@ export function createFactoryLedger({ repository, format, storageRoot, busyTimeo
 			digest = analysisInputDigest([digest, analysisInputDigest(event)]);
 			const size = Buffer.byteLength(JSON.stringify(event));
 			if (event.revision > afterRevision && !full) {
-				if (selected.length >= limit || bytes + size >= bounds.transferBytes - 8192) full = true;
+				if (selected.length >= limit || (selected.length && bytes + size >= bounds.transferBytes - 8192)) full = true;
 				else { selected.push(event); bytes += size; }
 			}
 		}
@@ -357,7 +369,7 @@ export function createFactoryLedger({ repository, format, storageRoot, busyTimeo
 		if (db.prepare("SELECT id FROM factory_transfers WHERE status='pending' LIMIT 1").get()) fail("factory_import_pending", "A paged import is already pending");
 		let document;
 		try {
-			if (typeof source !== "string" || Buffer.byteLength(source) > bounds.jsonBytes) fail("factory_import_invalid", "Use current-format JSON up to 32 MiB or staged import pages");
+			if (typeof source !== "string") fail("factory_import_invalid", "Use current-format JSON or staged import pages");
 			document = documentEnvelope(parseJson(source));
 		} catch (error) {
 			if (errorCode(error)) throw error;
@@ -377,10 +389,9 @@ export function createFactoryLedger({ repository, format, storageRoot, busyTimeo
 		assertUnused(db, expectedRevision);
 		if (typeof importId !== "string" || !/^[a-z0-9][a-z0-9._-]{0,95}$/.test(importId)) fail("factory_import_invalid", "A stable importId is required");
 		if (!isRecord(page) || page.format !== format || stableStringify(page.repository) !== stableStringify(repository)
-			|| !isList(page.events) || page.events.length > bounds.transferEvents
+			|| !isList(page.events)
 			|| (page.portable !== undefined && page.portable !== true)
-			|| Buffer.byteLength(JSON.stringify(page)) > bounds.transferBytes
-			|| typeof page.throughDigest !== "string" || !/^[a-f0-9]{64}$/.test(page.throughDigest)) fail("factory_import_invalid", "Invalid bounded current-format export page");
+			|| typeof page.throughDigest !== "string" || !/^[a-f0-9]{64}$/.test(page.throughDigest)) fail("factory_import_invalid", "Invalid current-format export page");
 		const pageRevision = checkRevision(page.revision, "import head");
 		const afterRevision = checkRevision(page.afterRevision, "import cursor");
 		let transfer = db.prepare("SELECT revision,digest,cursor,status,portable FROM factory_transfers WHERE id=?").get(importId);
@@ -432,18 +443,19 @@ export function createFactoryLedger({ repository, format, storageRoot, busyTimeo
 	/** @param {{importId: string, expectedRevision: unknown, actor: string, reason: string}} input */
 	const abandonFactoryImport = ({ importId, expectedRevision, actor, reason }) => database.transaction((db) => {
 		assertUnused(db, expectedRevision);
-		if (typeof actor !== "string" || !actor.trim() || actor.length > 256 || typeof reason !== "string" || !reason.trim() || reason.length > 8000) fail("factory_import_invalid", "Abandonment needs actor and reason");
+		if (typeof actor !== "string" || !actor.trim() || typeof reason !== "string" || !reason.trim()) fail("factory_import_invalid", "Abandonment needs actor and reason");
 		const changed = db.prepare("UPDATE factory_transfers SET status='abandoned',actor=?,reason=? WHERE id=? AND status='pending'").run(actor, reason, importId);
 		if (changed.changes !== 1) fail("factory_import_missing", "No pending import has this identity");
 		return { importId, abandoned: true, stagedHistoryRetained: true };
 	}, { write: true });
 	const storageInfo = () => database.transaction((db) => ({
-		version: STORAGE_VERSION, model: "bounded-records-and-archives", revision: head(db),
+		version: STORAGE_VERSION, model: "lossless-records-and-archives", revision: head(db),
 		baseEvents: Number(db.prepare("SELECT revision FROM factory WHERE singleton=1").get()?.revision ?? 0),
 		hotEvents: Number(db.prepare("SELECT count(*) AS count FROM factory_events").get()?.count ?? 0),
 		archiveSegments: Number(db.prepare("SELECT count(*) AS count FROM factory_archives").get()?.count ?? 0),
 		limits: bounds, lifetimeEventCeiling: null,
-		transfers: db.prepare("SELECT id,revision,cursor,status,actor,reason FROM factory_transfers ORDER BY rowid DESC LIMIT 50").all(),
+		framing: "Segment and transfer targets frame batches; an oversized event is retained whole.",
+		transfers: db.prepare("SELECT id,revision,cursor,status,actor,reason FROM factory_transfers ORDER BY rowid DESC").all(),
 	}));
 	const knowledgeMetadata = () => database.transaction((db) => {
 		const row = db.prepare("SELECT mode,head FROM factory_knowledge WHERE singleton=1").get();

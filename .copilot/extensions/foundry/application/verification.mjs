@@ -98,10 +98,8 @@ export function createVerificationOperations({ storeFor, persist, readForMutatio
 			if (
 				typeof replacementReason !== "string"
 				|| !replacementReason.trim()
-				|| replacementReason.length > LIMITS.error
 				|| typeof requestedBy !== "string"
 				|| !requestedBy.trim()
-				|| requestedBy.length > LIMITS.actor
 			) {
 				throw new FoundryOperationError(
 					"verification_replacement_requires_approval",
@@ -162,8 +160,8 @@ export function createVerificationOperations({ storeFor, persist, readForMutatio
 			replacement = {
 				supersededReservationId: plan.verification.reservationId,
 				supersededRunId: discovery.run.runId,
-				reason: replacementReason.trim(),
-				requestedBy: requestedBy.trim(),
+				reason: replacementReason,
+				requestedBy,
 			};
 		}
 		factory.verificationGate(plan);

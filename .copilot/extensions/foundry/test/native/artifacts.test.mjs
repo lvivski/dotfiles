@@ -1,12 +1,86 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, copyFileSync, constants, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
+import { isList, parseJson, readRecord } from "../../data.mjs";
 import { createArtifactRetention } from "../../native/artifacts.mjs";
 import { planArtifactRetention } from "../../plan/artifacts.mjs";
+
+test("LP13 pinned parent spill decoder preserves complete unchanged originals and rejects unavailable readback", {
+	skip: !process.env.FOUNDRY_EXACT_REPORT_PREFLIGHT_MANIFEST,
+}, async t => {
+	const manifestPath = process.env.FOUNDRY_EXACT_REPORT_PREFLIGHT_MANIFEST;
+	assert.ok(manifestPath);
+	/** @param {Buffer} bytes */
+	const hash = bytes => createHash("sha256").update(bytes).digest("hex");
+	const manifestBytes = readFileSync(manifestPath);
+	assert.equal(hash(manifestBytes), "3dbf1049bb9d2f607ef867ac96eb0ccc72b87afa8078b1142c0a6dab28b1e31d");
+	const sources = readRecord(readRecord(parseJson(manifestBytes.toString("utf8"))).sources);
+	/** @param {string} name */
+	const original = name => {
+		const entry = readRecord(sources[name]);
+		assert.ok(typeof entry.path === "string");
+		const bytes = readFileSync(entry.path);
+		assert.equal(bytes.length, entry.bytes);
+		assert.equal(hash(bytes), entry.sha256);
+		return { bytes, path: entry.path };
+	};
+	const helper = original("exact-report-helper-original.mjs");
+	const { decodeNativeValue } = await import(pathToFileURL(helper.path).href);
+	const native = original("full-kickoff-readback-original.json");
+	const report = readRecord(parseJson(original("full-kickoff-verifier-original.json").bytes.toString("utf8")));
+	const comparison = readRecord(parseJson(original("full-kickoff-readback-comparison.json").bytes.toString("utf8")));
+	const spillId = randomUUID();
+	const filename = path.join(os.tmpdir(), `${Date.now()}-copilot-tool-output-${spillId}.txt`);
+	writeFileSync(filename, native.bytes, { flag: "wx", mode: 0o600 });
+	t.after(() => rmSync(filename));
+	/** @param {string} id @param {string} file */
+	const preview = (id, file) => ({
+		resultType: "success", textResultForLlm: `Output too large to read at once.\nSaved to: ${file}\nPreview omitted.`,
+		toolTelemetry: { properties: { largeOutputWrittenToFile: "true", largeOutputSpillId: id } },
+	});
+	const decoded = await decodeNativeValue(preview(spillId, filename));
+	assert.ok(native.bytes.length > 20 * 1024);
+	assert.deepEqual(decoded.bytes, native.bytes);
+	assert.deepEqual(decoded.value, readRecord(parseJson(native.bytes.toString("utf8"))).value);
+	const plan = readRecord(readRecord(decoded.value).plan);
+	assert.ok(isList(plan.tasks) && isList(report.evidence));
+	const task = readRecord(plan.tasks.find(raw => readRecord(raw).id === report.taskId));
+	assert.ok(isList(task.attempts));
+	const attempt = readRecord(task.attempts.find(raw => readRecord(raw).id === report.attemptId));
+	const evidence = attempt.evidence;
+	assert.ok(isList(evidence));
+	const expected = report.evidence.map(raw => readRecord(raw));
+	/** @param {unknown[]} records */
+	const compare = records => {
+		assert.equal(records.length, comparison.admittedCount);
+		assert.equal(expected.length, comparison.originalCount);
+		const actual = records.map(raw => readRecord(raw));
+		const mismatches = expected.flatMap(item => {
+			const admitted = readRecord(actual.find(raw => raw.checkId === item.checkId));
+			return ["checkId", "type", "summary", "source", "outcome"]
+				.filter(field => item[field] !== admitted[field])
+				.map(field => ({ checkId: item.checkId, field, original: item[field], admitted: admitted[field] }));
+		});
+		assert.deepEqual(mismatches, comparison.mismatches);
+		return mismatches;
+	};
+	const mismatches = compare(evidence);
+	assert.deepEqual(mismatches.map(({ checkId, field }) => ({ checkId, field })), [{ checkId: "T-001-C010", field: "summary" }]);
+	assert.throws(() => compare(evidence.slice(0, -1)));
+	const altered = structuredClone(evidence);
+	altered[0] = { ...readRecord(altered[0]), source: "not the retained original" };
+	assert.throws(() => compare(altered));
+	const missingId = randomUUID();
+	const missing = path.join(os.tmpdir(), `${Date.now()}-copilot-tool-output-${missingId}.txt`);
+	await assert.rejects(decodeNativeValue(preview(missingId, missing)), { code: "ENOENT" });
+	t.diagnostic(JSON.stringify({ originalBytes: native.bytes.length, originalCount: expected.length,
+		admittedCount: evidence.length, retainedHistoricalMismatches: mismatches.length, nativeInvocation: false }));
+});
 
 /** @param {string} repository @param {string[]} args */
 function git(repository, args) {
@@ -16,8 +90,8 @@ function git(repository, args) {
 }
 
 /** Synthetic only: roots, repositories, private text and refs are all unique runner outputs.
- * @param {import("node:test").TestContext} t */
-function fixture(t) {
+ * @param {import("node:test").TestContext} t @param {string} [report] */
+function fixture(t, report) {
 	const output = process.env.FOUNDRY_PARALLEL_OUTPUT;
 	assert.ok(output, "Use the isolated parallel runner");
 	const root = realpathSync(mkdtempSync(path.join(output, "retention-")));
@@ -28,7 +102,8 @@ function fixture(t) {
 	git(repository, ["init", "--bare", "-q"]);
 	const originals = new Map();
 	const artifacts = /** @type {const} */ (["report", "evaluator", "context", "decision", "failure"]).map(kind => {
-		const content = `${kind}: complete synthetic original\nattribution: fixture-producer\nprivate-fixture-marker\n`;
+		const content = kind === "report" && report !== undefined ? report
+			: `${kind}: complete synthetic original\nattribution: fixture-producer\nprivate-fixture-marker\n`;
 		const bytes = Buffer.from(content);
 		originals.set(kind, bytes);
 		writeFileSync(path.join(source, `${kind}.json`), bytes, { mode: 0o600 });
@@ -110,6 +185,21 @@ test("manifest, branch names and successful provider requests cannot prove prese
 	held(result, /ENOENT/);
 	assert.equal(result.receipts[0].receiptId, "no-write");
 	assert.ok(existsSync(f.source));
+});
+
+test("the streaming observer retains an original report beyond the old 16 MiB cutoff without replacing it with a preview", async t => {
+	const f = fixture(t, " 原文 🧪\t\n".repeat(1_500_000));
+	const item = f.manifest.artifacts.find(item => item.id === "report");
+	assert.ok(item);
+	assert.ok(item.bytes > 16 * 1024 * 1024);
+	const result = await createArtifactRetention(f.options).retain(f.manifest);
+	assert.equal(result.status, "observed", result.reasons.join(","));
+	rmSync(f.source, { recursive: true });
+	const retained = readFileSync(path.join(f.storage, item.destination));
+	assert.deepEqual(retained, f.originals.get("report"));
+	assert.equal(createHash("sha256").update(retained).digest("hex"), item.sha256);
+	assert.equal((await createArtifactRetention(f.options).observe(f.manifest)).status, "observed");
+	assert.equal(result.raceSafe, false);
 });
 
 test("complete trusted inventory and ownership are mandatory and cannot be supplied by manifest flags", async t => {

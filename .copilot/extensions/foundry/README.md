@@ -79,7 +79,7 @@ requirements, evaluator revisions and visual applicability. Each package declare
 `expectedFiles`, named `outputs` with repository-relative paths, and `inputs` naming a producer,
 output and consumer destination. `target` names the final package. The compiler derives the
 dependency graph from those real inputs, adds independent final verification and preserves the
-existing executable-plan limits; the 128-package wire limit is not a larger execution grant.
+the persisted executable-plan namespaces; package metadata is not an execution grant.
 
 Omitting `decomposition` retains the historical implementation-plus-verifier recipe. An explicit
 invalid decomposition never falls back to it. Draft compilation starts no child, grants no
@@ -220,7 +220,7 @@ unsupported selection; a completed task or successful Workflow replay is not a r
 
 The factory ledger format remains `foundry-factory-v2`; new accepted contexts use seal version 3,
 with source and statement commitments that survive portable projection. Existing v2 seals are retained.
-Physical SQLite storage is schema 4; current v2 documents upgrade without changing their events,
+Physical SQLite storage is schema 5; current v2 documents upgrade without changing their events,
 seals or ownership, and cached older writers fail closed until restarted. There is no provisional-v1
 migration. Accepted context pins dependency contracts, bounded non-governing causal rationale and
 decision lineage. Generation omits source artifact/run paths, and rejects comparison-only references
@@ -322,7 +322,7 @@ the new source paths.
 | Workflow | Purpose |
 | --- | --- |
 | `plan` | Create, critique, synthesize, and verify a dependency-aware plan |
-| `plan-repair` | Recover one eligible owner-bound semantic rejection without relaunching the original plan |
+| `plan-repair` | Recover eligible owner-bound rejections through governed effects without relaunching the original plan |
 | `verify` | Produce the final fail-closed evidence verdict |
 | `audit` | Audit files for a specified concern |
 | `deep-research` | Heavy, opt-in multi-angle research with independently verified findings and retained partial evidence |
@@ -330,33 +330,47 @@ the new source paths.
 | `security-review` | Run a multi-perspective static security review |
 | `triage` | Classify and prioritize tickets |
 
-The `plan` workflow defaults to two hours (7,200 seconds) of accumulated active
-execution across attempts. Its concurrency, agent-count, and credit limits are
-unchanged. Other workflows retain their own limits, and existing runs retain
-their approved limits until an explicit override is approved.
+All eight prospective recipes do not invent task, time,
+agent-count or credit budgets. Native resource admission and explicit user ceilings still govern
+execution. Existing runs retain their original approved limits and consumed budgets; a new
+recipe does not renew them. A recipe change cannot erase a native admission failure or create permission.
 
 All planning stages share the same task-graph rules. The read-only final verifier
 has no authored criteria or files: it evaluates the implementation tasks' criteria
 against the committed integration snapshot. Critics must not invent a conflicting
 verifier contract or bypass required commit authorization.
 
-Generation schemas and instructions use the central plan field bounds, including the
-2,000-character acceptance-criterion limit. An invalid synthesis gets one bounded repair agent
-in the same native run, with its exact diagnostic, original candidate, canonical input, pinned
-authority, decomposition and critiques. Repair must conserve requirements, task identities and
-dependency intent, not truncate or drop content. The repaired candidate passes the same domain
-validator and independent verifier; missing or invalid repair never promotes a fallback plan.
-The result's `synthesisRepair` retains the rejected original, diagnostic, repair candidate and
-repair validation issue (or `null`). Resolved diagnostics remain history rather than unresolved
-`issues`; uncertain conservation or missing review keeps `needs-review`. Valid synthesis adds
-no repair agent, and native replay reuses completed agents without restarting planning.
+Generation schemas, domain validators and canonical storage preserve complete nonempty prose and
+collections, including multiline Unicode and significant whitespace. No field/collection size rule
+authorizes truncation, shorter wording or omitted evidence. Stable identifier/digest syntax, exact
+numeric representation, ownership, protected scope and semantic validation remain enforced.
+The three-digit task/attempt/evidence namespaces remain finite protocol formats, not execution budgets.
+Plan-summary listing retains complete objectives and every plan by default. An explicitly supplied
+positive safe-integer view limit remains caller scope, with omitted records reported as truncated.
+Retention path observations traverse every ancestor without convenience path/depth cutoffs.
+Branch-rename corroboration reads the complete available reflog; expired or missing history still
+holds. JSON mutation transport retains complete bodies within the actual Node buffer representation,
+with content-type, JSON and action-authority checks unchanged.
+Omitted planning `maxTasks` uses representable task capacity with one identifier left for the final
+verifier; that normalization grants no tasks or resources.
+
+Recovery retains exact diagnostics, original candidates, canonical inputs, pinned authority,
+decomposition, critics and every contributor's provenance. Progress is a structured comparison
+against retained obligations and decisive evidence, not a retry counter or textual novelty.
+Only an explicitly identified effect with current action-time authority, resource admission and
+independent substantive review may proceed. Missing providers, no progress, stale authority or
+uncertain conservation remain holds; none promotes a fallback plan or restarts the old campaign.
+Historical one-author allowances and consumed budgets remain history, not fresh retry authority.
+Each continuation must newly resolve an obligation still unresolved in its latest predecessor;
+new evidence for an already-supported obligation alone is not progress.
+Import binds an explicitly supplied effect ID to the exact retained launch and native run.
 
 Invoke these workflows with `run_dynamic_workflow` and inspect the returned `runId` with
 `dynamic_workflows_manage` (`inspect-run`). The five general workflows use the native workflow
 lifecycle directly and never mutate Foundry plan state. When an explicit capability context exists,
 `foundry_capture_analysis` retains a matching current-session report as non-governing observations,
-including uncertainty and exact report/run provenance. Multi-repository or oversized reports need
-deliberately scoped knowledge entries, not indiscriminate attachment to one capability.
+including uncertainty and exact report/run provenance. Mixed-scope reports still need deliberately
+scoped knowledge entries; report size alone is not grounds to shorten or discard the original.
 
 Ordinary research uses direct search, page retrieval, or documentation inspection. Needing sources,
 current information, recommendations, or a simple comparison does not justify `deep-research`.
@@ -393,7 +407,9 @@ false, and existing string/array shorthand still works. Research pauses after an
 security review after orientation; audit, triage, and review queue pause after preparing their bounded
 work scope but before bulk agents start. Read the logged scope before resuming.
 
-Prepared scopes use versioned native `step` journals; agents retain the SDK's own memoization.
+Prospective lossless prepared scopes use native `step` versions audit/triage/security/research v2
+and review-queue v3; historical definitions and journals remain unchanged.
+Agents retain the SDK's own memoization.
 The one-shot `pause` checkpoint stops the first attempt and returns on resume. The workflow body
 restarts, replaying completed work; interrupted agents may need to run again. These checkpoints are
 not Foundry approval records. The `plan` and `verify` recipes keep their existing approval protocol.
@@ -401,7 +417,7 @@ not Foundry approval records. The `plan` and `verify` recipes keep their existin
 ### Research time review
 
 Unfinished deep research requests a native checkpoint one minute before its approved active-time
-ceiling: normally at 59 minutes of the default hour. This uses native accumulated usage, including
+ceiling, when the provider reports that ceiling. This uses native accumulated usage, including
 previous attempts, rather than a new hour for each resume. Paused time is excluded. Explicitly
 unbounded runs have no time-review timer, and completed research does not pause.
 
@@ -489,16 +505,23 @@ checks remain necessary on every route.
 
 Deep research batches atomic claim verdicts within each angle, preserving supported findings while
 distinguishing incorrect claims, inaccessible sources, and insufficient evidence. Only unresolved
-findings get one targeted correction and independent re-verification. Synthesis receives supported
+findings get targeted correction and independent re-verification. Further correction requires
+independently evidenced resolution of an unresolved finding without regression or review uncertainty;
+cosmetic/equivalent results hold rather than loop. Every next native admission retains actual
+permission, cancellation and resource-budget gates; no numerical correction allowance is invented.
+Synthesis receives supported
 claims and their source evidence, not unverified drafts; rejection reasons, correction history, and
 stage failures remain in the returned report. The supported findings ledger survives both successful
 and failed synthesis; narrative is presentation, not its authority. Audit likewise retains verified
 findings when its narrative stage fails.
+Coverage counts usable completed independent correction reviews, not attempts or retained failure-history
+entries. A reviewed correction may remain unresolved; its review count is not a success verdict.
 
 Explicitly supplied `drafts` can recover saved research without repeating planning or broad discovery.
-The existing limits are unchanged: capacity is reserved for independent correction and reverification,
-allowing up to nine fresh angles or twelve saved drafts. Oversized recovery input is rejected, not
-truncated. See the
+Every substantive distinct angle and complete saved draft is retained, without a convenience
+count ceiling. Explicit requested angle counts remain caller scope choices, not native resource
+permission; real admissions and accumulated native budgets still govern every agent.
+No correction stage is prepaid by a recipe or renewed by replay. See the
 [deep-research skill](../../skills/deep-research/SKILL.md) for approval and recovery rules.
 
 The review queue pipelines each PR through review and verification independently. A PR must still
@@ -607,23 +630,33 @@ Factory authority is an append-only, current-format event ledger replayed throug
 Accepted revisions/decisions are immutable; later incidents/expiry change support projections, not
 historical outcomes. Previously valid v2 receipts and their accepted selections remain readable under
 their original publication rules. Current assurance coalesces duplicate origins at their earliest
-claimed observation; prospective publication and selection enforce the current rules. Views are bounded.
-The former 8,192-event lifetime ceiling is explicitly replaced
-by bounded records and archive pages: 128 KiB per event, 8,192 events / 32 MiB per archive segment,
-and 256 events / 4 MiB per transfer page. Appends retain headroom through transactional automatic
-rollover. Retirement hides superseded default views; storage compaction relocates/compresses exact
+claimed observation; prospective publication and selection enforce the current rules. Visible pages
+are distinct from complete canonical retention and authorized retrieval. Canonical events have no
+prose-byte ceiling. Storage schema 5 transactionally removes the former 128 KiB event/staging CHECK
+without rewriting existing rows or logical identities. Archive segmentation and transfer paging are
+lossless framing, not publication or event-count ceilings; an oversized first event remains complete
+and advances its page. Appends retain headroom through transactional automatic rollover.
+Retirement hides superseded default views; storage compaction relocates/compresses exact
 event ranges without deleting logical knowledge, reasons, decisions or evidence. Content integrity is
 checked on decode. This is storage maintenance, not conceptual simplification or a quality metric.
 
-Whole current-format JSON transfers remain bounded to 32 MiB. Larger histories use pinned export
-pages and restartable staged import; no partial import becomes authority, and explicit abandonment
+Whole current-format JSON transfers do not impose the former 32 MiB policy cap. Pinned export
+pages and restartable staged import support larger histories; no partial import becomes authority, and explicit abandonment
 retains the received staged data. Archival and new appends preserve the pinned logical sequence.
-No user artifacts are deleted; SQLite file size may not shrink. Capacity is governed by explicit
-record/page bounds and available SQLite storage, not a lifetime event counter that blocks receipts.
+No user artifacts are deleted; SQLite file size may not shrink. Actual runtime/SQLite capacity failures
+remain explicit errors or holds, not successful-looking truncated results.
+
+Prospective acceptance events use `lineageVersion: 2` to retain every prior decision plus the current
+decision. Historical events without that field retain their original last-15 derivation, omission
+counts and seals. Prospective report capture uses `derivationVersion: 2`: one complete report and
+an ID derived from `["analysis-v2", owner, runId, unitId, reportDigest]`. Absent that field, replay keeps
+the original 7,500-UTF-16-code-unit segmentation and `[owner, runId, unitId, offset, reportDigest]`
+ID recipe. Both retain the `analysis-` prefix and first 40 digest characters. Never recompute old
+accepted seals or knowledge IDs using the prospective recipe.
 
 The session plan is a durable outbox for factory learning and execution receipts. Publishable receipt
 invariants are prevalidated before terminal persistence, so wrong-commit or impossible-provenance
-reports do not strand completed attempts. Bounded rejected reports can remain non-governing learning.
+reports do not strand completed attempts. Complete rejected reports can remain non-governing learning.
 A valid task may still commit
 before its repository receipt; `factory_sync_pending` explicitly reports that state and
 `foundry_sync_factory` recovers idempotently from exact task/attempt/commit/run identities. Draft
@@ -680,7 +713,7 @@ Session-plan SQLite uses schema 3. Historical schema 2 introduced durable approv
 irreversible revocations in `approval_delegations`; schema 3 adds `technical_authorizations`.
 Transactional migration from schema 1 adds both tables, while schema 2 adds only
 `technical_authorizations`, retaining existing grants, revocations, plan documents and activation.
-This is separate from factory SQLite schema 4 and its logical-format/seal compatibility. Approval
+This is separate from factory SQLite schema 5 and its logical-format/seal compatibility. Approval
 checks its grant in the same transaction as the plan revision update; technical decisions also
 retain their exact owner-commit marker there. Exported plan receipts are historical evidence,
 not live grants or restorable publication markers.

@@ -66,7 +66,7 @@ export function buildAssuranceSubject(input) {
 		|| attempt.repositoryId !== decomposition.bindings.repositoryId) {
 		fail("parallel_assurance_subject", "Delivery must belong to this package's exact reserved consumer attempt");
 	}
-	const outputs = list(input.delivery.outputs, "assurance outputs", 128, 1).map((output) => {
+	const outputs = list(input.delivery.outputs, "assurance outputs", undefined, 1).map((output) => {
 		object(output, ["id", "artifact"], "assurance output");
 		const artifact = artifactIdentity(output.artifact);
 		const id = identifier(output.id);
@@ -97,15 +97,15 @@ export function buildAssuranceSubject(input) {
 	}
 	const finalTarget = pkg.id === decomposition.target;
 	const selected = finalTarget ? definitions : definitions.filter((entry) => pkg.evaluators.some((ref) => refKey(ref) === refKey(entry)));
-	const producer = text(input.producer, "producer session", 512);
-	const authors = strings(input.authors, "contributing producer sessions", 128, 1);
+	const producer = text(input.producer, "producer session");
+	const authors = strings(input.authors, "contributing producer sessions", undefined, 1);
 	if (!authors.includes(producer)) fail("parallel_review_independence", "The owner-resolved contributing authors must include this producer");
-	const reviews = list(input.reviews, "review obligations", 4, 4).map((raw) => {
+	const reviews = list(input.reviews, "review obligations", undefined, 4).map((raw) => {
 		object(raw, ["kind", "required", "reason", "reviewers"], "review obligation");
 		const kind = enumeration(raw.kind, REVIEW_KINDS, "review kind");
 		if (typeof raw.required !== "boolean") fail("parallel_review_required", "Review applicability must be explicit");
-		const reason = text(raw.reason, "review applicability reason", 2048);
-		const reviewers = strings(raw.reviewers, "authorized independent reviewers", 32, raw.required ? 1 : 0);
+		const reason = text(raw.reason, "review applicability reason");
+		const reviewers = strings(raw.reviewers, "authorized independent reviewers", undefined, raw.required ? 1 : 0);
 		if (reviewers.some((reviewer) => authors.includes(reviewer)) || (!raw.required && reviewers.length)) {
 			fail("parallel_review_independence", "Reviewers must be independently identified, not any contributing producer");
 		}
@@ -145,7 +145,7 @@ export function assessPackageAssurance(value, subject, at = new Date().toISOStri
 		fail("parallel_assurance_stale", "Future-dated or expired package evaluations cannot support completion");
 	}
 	const automatic = subject.definitions.filter((entry) => !requiresHumanJudgment(entry.evaluation));
-	const evaluations = list(value.evaluations, "package evaluation reports", 128).map((raw) => {
+	const evaluations = list(value.evaluations, "package evaluation reports").map((raw) => {
 		object(raw, ["evaluation", "procedureDigest", "environment", "workload", "outcome", "report", "independenceReason", "reviewer"], "package evaluation");
 		const ref = reference(raw.evaluation);
 		const definition = automatic.find((entry) => refKey(entry) === refKey(ref))?.evaluation;
@@ -153,7 +153,7 @@ export function assessPackageAssurance(value, subject, at = new Date().toISOStri
 			|| raw.environment !== definition.environment || raw.workload !== definition.workload) {
 			fail("parallel_assurance_evaluator", "Report changed the pinned evaluator, environment or workload; human judgments are separate");
 		}
-		const reviewer = text(raw.reviewer, "evaluation reviewer", 512);
+		const reviewer = text(raw.reviewer, "evaluation reviewer");
 		const kind = definition.visual ? "visual" : definition.modality === "boundary" || definition.preservation ? "architecture" : "implementation";
 		if (definition.independent && (subject.authors.includes(reviewer)
 			|| !subject.reviews.some((entry) => entry.kind === kind && entry.required && entry.reviewers.includes(reviewer)))) {
@@ -161,25 +161,25 @@ export function assessPackageAssurance(value, subject, at = new Date().toISOStri
 		}
 		const outcome = enumeration(raw.outcome, ["passed", "failed", "inconclusive"], "evaluation outcome");
 		if (definition.procedure.kind === "reference" && outcome !== "inconclusive") fail("factory_evaluator_unsupported", "References cannot stand in for executed checks");
-		const report = text(raw.report, "evaluation findings", 16000);
+		const report = text(raw.report, "evaluation findings");
 		visualReport(definition, report, subject.delivery.commit, outcome);
 		return { evaluation: ref, procedureDigest: definition.procedure.digest, environment: definition.environment,
-			workload: definition.workload, outcome, report, reviewer, independenceReason: text(raw.independenceReason, "independence reason", 2048) };
+			workload: definition.workload, outcome, report, reviewer, independenceReason: text(raw.independenceReason, "independence reason") };
 	});
 	if (evaluations.length !== automatic.length || new Set(evaluations.map((entry) => refKey(entry.evaluation))).size !== automatic.length) {
 		fail("parallel_assurance_coverage", "Every executable evaluator needs exactly one report");
 	}
 	const required = subject.reviews.filter((entry) => entry.required);
-	const reviews = list(value.reviews, "independent reviews", 4).map((raw) => {
+	const reviews = list(value.reviews, "independent reviews").map((raw) => {
 		object(raw, ["kind", "author", "reviewer", "commit", "scope", "outcome", "findings"], "independent review");
 		const kind = enumeration(raw.kind, REVIEW_KINDS, "review kind");
 		const obligation = required.find((entry) => entry.kind === kind);
-		if (!obligation || raw.author !== subject.producer || subject.authors.includes(text(raw.reviewer, "reviewer", 512))
-			|| !obligation.reviewers.includes(text(raw.reviewer, "reviewer", 512))
-			|| raw.commit !== subject.delivery.commit || !sameRefs(list(raw.scope, "review scope", 128).map(reference), subject.requirements)) {
+		if (!obligation || raw.author !== subject.producer || subject.authors.includes(text(raw.reviewer, "reviewer"))
+			|| !obligation.reviewers.includes(text(raw.reviewer, "reviewer"))
+			|| raw.commit !== subject.delivery.commit || !sameRefs(list(raw.scope, "review scope").map(reference), subject.requirements)) {
 			fail("parallel_review_independence", "Review must identify an authorized independent reviewer, exact commit and complete requirement scope");
 		}
-		const findings = list(raw.findings, "substantive review findings", 128, 1).map((finding) => {
+		const findings = list(raw.findings, "substantive review findings", undefined, 1).map((finding) => {
 			object(finding, ["requirement", "output", "observation", "evidence"], "review finding");
 			const requirement = finding.requirement === undefined ? null : reference(finding.requirement);
 			const output = finding.output === undefined ? null : identifier(finding.output);
@@ -188,14 +188,14 @@ export function assessPackageAssurance(value, subject, at = new Date().toISOStri
 				|| (output && !subject.delivery.outputs.some((entry) => entry.id === output))) {
 				fail("parallel_review_scope", "Review findings must name an exact requirement or declared output");
 			}
-			return { requirement, output, observation: text(finding.observation, "review observation", 2048),
-				evidence: text(finding.evidence, "review evidence source", 4096) };
+			return { requirement, output, observation: text(finding.observation, "review observation"),
+				evidence: text(finding.evidence, "review evidence source") };
 		});
 		if (subject.requirements.some((ref) => !findings.some((finding) => finding.requirement && refKey(finding.requirement) === refKey(ref)))
 			|| (!subject.requirements.length && subject.delivery.outputs.some((output) => !findings.some((finding) => finding.output === output.id)))) {
 			fail("parallel_review_scope", "Status acknowledgements cannot replace substantive requirement findings");
 		}
-		return { kind, author: subject.producer, reviewer: text(raw.reviewer, "reviewer", 512), commit: subject.delivery.commit,
+		return { kind, author: subject.producer, reviewer: text(raw.reviewer, "reviewer"), commit: subject.delivery.commit,
 			scope: subject.requirements, findings, outcome: enumeration(raw.outcome, ["passed", "failed", "inconclusive"], "review outcome") };
 	});
 	if (reviews.length !== required.length || new Set(reviews.map((entry) => entry.kind)).size !== required.length) {

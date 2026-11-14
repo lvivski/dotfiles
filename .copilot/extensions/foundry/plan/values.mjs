@@ -67,43 +67,14 @@ export const DELIVERY_REQUIREMENT = Object.freeze({
 	PR: "pr",
 });
 
-/** Central field and collection bounds for plan artifacts and tool schemas. */
+/** Persisted identifier namespace sizes, not prose or execution budgets. */
 export const LIMITS = Object.freeze({
 	planId: 64,
-	planTitle: 160,
-	objective: 8_000,
-	constraints: 32,
-	constraint: 1_000,
-	tasks: 64,
-	taskTitle: 160,
-	taskDescription: 12_000,
-	dependencies: 64,
-	acceptanceCriteria: 32,
-	acceptanceCriterion: 2_000,
-	expectedFiles: 128,
-	expectedFile: 512,
-	attempts: 64,
+	tasks: 999,
+	attempts: 999,
 	attemptId: 10,
 	requestId: 128,
-	sessionId: 256,
-	branch: 512,
-	commit: 128,
-	prUrl: 2_048,
-	resultSummary: 8_000,
-	evidence: 64,
-	verificationEvidence: 64,
-	evidenceItem: 2_000,
-	evidenceSource: 2_048,
-	producer: 256,
-	error: 4_000,
-	repositoryPath: 4_096,
-	baseBranch: 512,
-	actor: 256,
-	verificationRunId: 256,
-	missingEvidence: 128,
-	missingEvidenceItem: 2_000,
-	activity: 128,
-	activityEvent: 96,
+	evidence: 999,
 });
 
 /** Strict persisted plan ID syntax shared by domain and provider schemas. */

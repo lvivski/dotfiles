@@ -342,7 +342,7 @@ test("progress cursors must advance even when a page claims to finish history", 
 	}
 });
 
-test("progress discovery exhausts its bounded budget without authorizing a visible marker", async () => {
+test("progress discovery exhausts complete history beyond the former page cutoff", async () => {
 	const plan = reservedPlan("bounded-progress");
 	const marker = verificationMarker(plan.verification.reservationId);
 	const api = fakeApi({
@@ -361,9 +361,9 @@ test("progress discovery exhausts its bounded budget without authorizing a visib
 	const result = await createWorkflowAnalysis(() => api).discoverVerificationRun(
 		plan.verification.reservationId, plan.verification.reservedAt,
 	);
-	assert.equal(result.state, "inconclusive");
-	assert.match(result.candidates[0].reason ?? "", /progress-unbounded/);
-	assert.equal(reads, 9);
+	assert.equal(result.state, "found");
+	assert.equal(result.run.runId, "match");
+	assert.equal(reads, 10);
 });
 
 test("discovery rejects mismatched detail and result identities despite matching markers", async () => {
@@ -471,7 +471,7 @@ test("discovery establishes absence only after complete native history", async (
 	);
 });
 
-test("discovery budget exhaustion cannot prove absence or uniqueness", async () => {
+test("complete discovery beyond the former page cutoff finds old matches without concealing duplicates", async () => {
 	const plan = reservedPlan("bounded-history");
 	const marker = verificationMarker(plan.verification.reservationId);
 	for (const visibleMatch of [false, true]) {
@@ -487,11 +487,15 @@ test("discovery budget exhaustion cannot prove absence or uniqueness", async () 
 			plan.verification.reservationId,
 			plan.verification.reservedAt,
 		);
-		assert.equal(result.state, "inconclusive");
-		assert.match(result.reason, /discovery page budget/);
-		assert.equal(api.listCalls.length, 10);
-		assert.deepEqual(result.candidates.map((run) => run.runId), visibleMatch ? ["run-10"] : []);
-		assert.equal(api.detailCalls.includes("run-0"), false);
+		assert.equal(api.listCalls.length, 11);
+		assert.equal(api.detailCalls.includes("run-0"), true);
+		if (visibleMatch) {
+			assert.equal(result.state, "inconclusive");
+			assert.deepEqual(new Set(result.candidates.map((run) => run.runId)), new Set(["run-10", "run-0"]));
+		} else {
+			assert.equal(result.state, "found");
+			assert.equal(result.run.runId, "run-0");
+		}
 	}
 });
 

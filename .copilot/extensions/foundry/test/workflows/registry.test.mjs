@@ -28,7 +28,7 @@ test("registered workflow modules match metadata and declared phases", () => {
 		assert.ok(meta.phases.length > 0);
 		assert.ok(meta.argsSchema && typeof meta.argsSchema === "object");
 		assert.equal(new Set(meta.phases.map(({ title }) => title)).size, meta.phases.length);
-		for (const value of Object.values(meta.limits)) {
+		for (const value of Object.values(meta.limits ?? {})) {
 			assert.equal(typeof value, "number");
 			assert.ok(value > 0);
 		}
@@ -38,7 +38,7 @@ test("registered workflow modules match metadata and declared phases", () => {
 		const usedPhases = [...source.matchAll(/\bphase\("([^"]+)"\)/g)]
 			.map((match) => match[1]);
 		assert.deepEqual(usedPhases, meta.phases.map(({ title }) => title), filename);
-		assert.match(source, /export async function run\(workflow\)/);
+		assert.match(source, /export async function run\(workflow(?:,\s*[A-Za-z_$][\w$]*)?\)/);
 		assert.doesNotMatch(
 			source,
 			/run_conveyor|runHarness|stripExports|scriptPath|node:vm|context\.args/,
@@ -68,27 +68,8 @@ test("additional workflows expose argument contracts", () => {
 	}
 });
 
-test("declared execution limits remain unchanged", () => {
-	assert.equal(
-		planMeta.limits.maxTotalSubagents,
-		10,
-	);
-	assert.equal(
-		verifyMeta.limits.maxTotalSubagents,
-		6,
-	);
-	for (const [key, concurrent, total, timeout] of [
-		["audit", 4, 40, 900],
-		["deepResearch", 2, 40, 3600],
-		["reviewQueue", 8, 700, 3600],
-		["securityReview", 6, 80, 3600],
-		["triage", 8, 100, 900],
-	]) {
-		assert.deepEqual(ADDITIONAL_WORKFLOWS[key].meta.limits, {
-			maxConcurrentSubagents: concurrent,
-			maxTotalSubagents: total,
-			timeoutSeconds: timeout,
-			maxAiCredits: 10000,
-		});
-	}
+test("prospective workflow declarations do not invent ceilings or resource permission", () => {
+	assert.equal(planMeta.limits, undefined);
+	assert.equal(verifyMeta.limits, undefined);
+	for (const { meta } of Object.values(ADDITIONAL_WORKFLOWS)) assert.equal(meta.limits, undefined);
 });

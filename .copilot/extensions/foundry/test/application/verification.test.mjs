@@ -207,6 +207,8 @@ test("terminal non-importable verification can move to a new reservation explici
 			reservationId: "failed-reservation",
 		});
 		plan = first.plan;
+		const replacementReason = ` \t${"Complete original diagnostic \u2014 \u65e5\u672c\u8a9e\n".repeat(1000)} `;
+		const requestedBy = ` ${"requesting-actor".repeat(100)} `;
 		await assert.rejects(
 			operations.prepareVerification({
 				planId: plan.id,
@@ -220,8 +222,8 @@ test("terminal non-importable verification can move to a new reservation explici
 			planId: plan.id,
 			expectedRevision: plan.revision,
 			reservationId: "replacement-reservation",
-			replacementReason: "The previous Workflow run was cancelled.",
-			requestedBy: "octocat",
+			replacementReason,
+			requestedBy,
 		});
 		assert.equal(
 			replacement.plan.verification.reservationId,
@@ -230,8 +232,8 @@ test("terminal non-importable verification can move to a new reservation explici
 		assert.deepEqual(replacement.plan.verification.replacement, {
 			supersededReservationId: "failed-reservation",
 			supersededRunId: "failed-run",
-			reason: "The previous Workflow run was cancelled.",
-			requestedBy: "octocat",
+			reason: replacementReason,
+			requestedBy,
 			at: replacement.plan.verification.reservedAt,
 		});
 		assert.equal(replacement.plan.activity.at(-1)?.event, "verification-replaced");

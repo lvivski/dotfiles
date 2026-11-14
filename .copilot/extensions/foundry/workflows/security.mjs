@@ -15,7 +15,7 @@ const SECURITY_OPTIONS_SCHEMA = {
 	},
 };
 
-/** @type {import("@github/copilot-sdk").WorkflowMeta & {limits: Required<import("@github/copilot-sdk").WorkflowLimits>}} */
+/** @type {import("@github/copilot-sdk").WorkflowMeta} */
 export const meta = {
 	name: "security-review",
 	description:
@@ -35,16 +35,24 @@ export const meta = {
 			SECURITY_OPTIONS_SCHEMA,
 		],
 	},
-	limits: {
-		maxConcurrentSubagents: 6,
-		maxTotalSubagents: 80,
-		timeoutSeconds: 3600,
-		maxAiCredits: 10000,
-	},
 };
 
 /** @param {Pick<import("@github/copilot-sdk").WorkflowContext, "args" | "phase" | "agent" | "pipeline" | "parallel" | "step" | "log" | "pause">} workflow */
 export async function run(workflow) {
+	const availableLenses = [
+		"authentication and session state",
+		"authorization, ownership, and cross-tenant access",
+		"injection and unsafe interpretation of attacker input",
+		"filesystem, process, network, and credential boundaries",
+		"business-logic state machines, races, and replay",
+		"secrets, signing, cryptography, and trust establishment",
+		"deserialization, parsing, and type confusion",
+		"frontend-to-backend trust and request integrity",
+		"dependency integration and dangerous defaults",
+		"data exposure through logging, caching, and error paths",
+		"privilege boundaries in automation and CI/CD",
+		"completeness critic: attack surfaces other reviewers may miss",
+	];
 	const input = workflow.args;
 	/** @type {Record<string, unknown>} */
 	const opts = isList(input)
@@ -57,37 +65,21 @@ export async function run(workflow) {
 	if (opts.pauseBeforeWork !== undefined && typeof opts.pauseBeforeWork !== "boolean") {
 		throw new Error("security-review: pauseBeforeWork must be a boolean");
 	}
-	const perspectives = Number(opts.perspectives ?? 6);
-	if (!Number.isInteger(perspectives) || perspectives < 1 || perspectives > 12) {
-		throw new Error("security-review: perspectives must be an integer from 1 to 12");
+	const perspectives = Number(opts.perspectives ?? availableLenses.length);
+	if (!Number.isSafeInteger(perspectives) || perspectives < 1 || perspectives > availableLenses.length) {
+		throw new Error(`security-review: perspectives must select 1-${availableLenses.length} available lenses`);
 	}
-	const verificationBudget =
-		meta.limits.maxTotalSubagents - 1 - perspectives;
-	const maxFindingsPerPerspective = Math.floor(verificationBudget / perspectives);
 	const { scope, projectContext, model, lenses } = recordOf({
 		scope: readString, projectContext: readString, model: nullable(readString), lenses: arrayOf(readString),
-	})(await workflow.step("security-review:prepared-scope:v1", () => ({
+	})(await workflow.step("security-review:prepared-scope:v2", () => ({
 		scope: isList(opts.files)
 			? `Explicit files:\n${opts.files.map(String).join("\n")}`
 			: opts.base
 				? `Review changes in ${String(opts.base)}...${String(opts.head || "HEAD")}.`
 				: `Review the repository subtree ${String(opts.root || ".")}.`,
-		projectContext: String(opts.context || "").trim(),
+		projectContext: String(opts.context || ""),
 		model: typeof opts.model === "string" && opts.model.trim() ? opts.model.trim() : null,
-		lenses: [
-			"authentication and session state",
-			"authorization, ownership, and cross-tenant access",
-			"injection and unsafe interpretation of attacker input",
-			"filesystem, process, network, and credential boundaries",
-			"business-logic state machines, races, and replay",
-			"secrets, signing, cryptography, and trust establishment",
-			"deserialization, parsing, and type confusion",
-			"frontend-to-backend trust and request integrity",
-			"dependency integration and dangerous defaults",
-			"data exposure through logging, caching, and error paths",
-			"privilege boundaries in automation and CI/CD",
-			"completeness critic: attack surfaces other reviewers may miss",
-		].slice(0, perspectives),
+		lenses: availableLenses.slice(0, perspectives),
 	})));
 
 	const UNTRUSTED =
@@ -135,7 +127,6 @@ Do not report hygiene, best-practice, or speculative chaining issues without a r
 	};
 	const FINDINGS = {
 		type: "array",
-		maxItems: maxFindingsPerPerspective,
 		items: FINDING,
 	};
 	const VERDICT = {
@@ -223,13 +214,8 @@ ${projectContext ? `\n${untrustedBlock("OPERATOR-CONTEXT", projectContext)}` : "
 			if (!unique.has(key)) unique.set(key, finding);
 		}
 	}
-	if (unique.size > verificationBudget) {
-		throw new Error(
-			`security-review: ${unique.size} unique findings exceed the ${verificationBudget}-candidate verification budget; narrow the scope or reduce perspectives`,
-		);
-	}
 	workflow.log(
-		`security-review: ${unique.size}/${verificationBudget} candidate finding(s)`,
+		`security-review: ${unique.size} candidate finding(s)`,
 	);
 
 	workflow.phase("Verify");

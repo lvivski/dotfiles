@@ -84,7 +84,7 @@ export const receiptsFor = (plan, state) => {
 		if (plan.status === "cancelled" && attempt.factoryEvaluations?.length) add("appendKnowledge", {
 			id: observationId(plan, task, attempt, "unpublished"),
 			unitId: plan.factory.unitId, kind: "observation",
-			statement: `Cancelled plan report was not published as assurance. Reported commit: ${attempt.commit}. ${stableStringify(attempt.factoryEvaluations).slice(0, 7000)}`,
+			statement: `Cancelled plan report was not published as assurance. Reported commit: ${attempt.commit}. ${stableStringify(attempt.factoryEvaluations)}`,
 			uncertainty: "Unpublished, potentially invalid report; bounded excerpt only. The original complete report remains in the plan.",
 			links: [], source: origin(plan, task, attempt),
 		}, `${task.id}/${attempt.id}: unpublished cancellation report`);

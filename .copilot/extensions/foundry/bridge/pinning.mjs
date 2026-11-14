@@ -28,7 +28,7 @@ export function evaluationCheckId(plan, entry) {
 /** @param {ProjectedEvaluation[]} definitions @param {KnowledgeRef[] | undefined} refs */
 export function selectEvaluations(definitions, refs) {
 	if (refs === undefined) return definitions;
-	if (!Array.isArray(refs) || !refs.length || refs.length > 32
+	if (!Array.isArray(refs) || !refs.length
 		|| refs.some((ref) => !ref || typeof ref.id !== "string" || !Number.isSafeInteger(ref.revision) || ref.revision < 1)
 		|| new Set(refs.map(refKey)).size !== refs.length
 		|| refs.some((ref) => !definitions.some((entry) => refKey(entry) === refKey(ref)))) {

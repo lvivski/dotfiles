@@ -4,6 +4,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { parseJson } from "../../data.mjs";
+import { analysisInputDigest } from "../../digest.mjs";
 import { createFactoryService } from "../../factory.mjs";
 import { createArtifactDatabase } from "../../storage/database.mjs";
 import { must } from "../assertions.mjs";
@@ -110,11 +111,126 @@ test("genuinely old-valid schema-2 duplicate receipts and their accepted selecti
 			db.prepare("INSERT INTO factory VALUES(1,?,?)").run(legacy.document.revision, JSON.stringify(legacy.document));
 		},
 	});
+
+	await t.test("schema-4 upgrade copies exact event and staged text and older writers fail closed", async (t) => {
+		const f = await fixture(t);
+		const original = factoryDocument(f.factory.exportFactory());
+		const base = { ...original, revision: original.revision - 1, events: original.events.slice(0, -1) };
+		const last = original.events.at(-1);
+		assert.ok(last);
+		const baseText = ` \n${JSON.stringify(base, null, "\t")} \n`;
+		const eventText = ` \n${JSON.stringify(last, null, "\t")} \n`;
+		const root = path.join(f.root, "schema-four");
+		await mkdir(root);
+		const old = createArtifactDatabase({
+			workspacePath: root, directoryParts: ["repositories", f.factory.repository.id], schemaVersion: 4,
+			initialize(db) {
+				const version = db.prepare("PRAGMA user_version").get()?.user_version;
+				if (version === 4) return;
+				if (version !== 0) throw Object.assign(new Error("Old schema owner refuses upgraded storage"), { code: "old_writer_closed" });
+				db.exec(`
+					CREATE TABLE factory(singleton INTEGER PRIMARY KEY, revision INTEGER, document TEXT) STRICT;
+					CREATE TABLE factory_head(singleton INTEGER PRIMARY KEY, revision INTEGER) STRICT;
+					CREATE TABLE factory_events(revision INTEGER PRIMARY KEY, document TEXT NOT NULL CHECK(length(CAST(document AS BLOB))<=131072), digest TEXT NOT NULL) STRICT;
+					CREATE TABLE factory_archives(first_revision INTEGER PRIMARY KEY, last_revision INTEGER, document TEXT, digest TEXT) STRICT;
+					CREATE TABLE factory_transfers(id TEXT PRIMARY KEY, revision INTEGER, digest TEXT, cursor INTEGER, status TEXT, reason TEXT, actor TEXT, portable INTEGER) STRICT;
+					CREATE TABLE factory_transfer_events(transfer_id TEXT, revision INTEGER, document TEXT NOT NULL CHECK(length(CAST(document AS BLOB))<=131072), PRIMARY KEY(transfer_id,revision)) STRICT;
+					CREATE TABLE factory_knowledge(singleton INTEGER PRIMARY KEY, mode TEXT, head TEXT) STRICT;
+					PRAGMA application_id=1178682196; PRAGMA user_version=4;
+				`);
+				db.prepare("INSERT INTO factory VALUES(1,?,?)").run(base.revision, baseText);
+				db.prepare("INSERT INTO factory_head VALUES(1,?)").run(original.revision);
+				db.prepare("INSERT INTO factory_events VALUES(?,?,?)").run(last.revision, eventText, analysisInputDigest(last));
+				db.prepare("INSERT INTO factory_transfers VALUES('old-transfer',?,?,?,'abandoned','retained reason','retained actor',0)").run(original.revision, DIGEST, last.revision);
+				db.prepare("INSERT INTO factory_transfer_events VALUES('old-transfer',?,?)").run(last.revision, eventText);
+				db.exec("INSERT INTO factory_knowledge VALUES(1,'local',NULL)");
+			},
+		});
+		old.transaction(() => {});
+		const upgraded = createFactoryService({ repositoryPath: f.repo, storageRoot: root, knowledge: "local" });
+		assert.deepEqual(parseJson(upgraded.exportFactory()), original);
+		assert.throws(() => old.transaction(db => db.exec("DELETE FROM factory_events"), { write: true }), { code: "old_writer_closed" });
+		const db = new DatabaseSync(upgraded.databasePath);
+		try {
+			assert.equal(db.prepare("SELECT document FROM factory").get()?.document, baseText);
+			assert.equal(db.prepare("SELECT document FROM factory_events").get()?.document, eventText);
+			assert.equal(db.prepare("SELECT digest FROM factory_events").get()?.digest, analysisInputDigest(last));
+			assert.equal(db.prepare("SELECT document FROM factory_transfer_events").get()?.document, eventText);
+			assert.equal(db.prepare("SELECT reason FROM factory_transfers").get()?.reason, "retained reason");
+			assert.equal(db.prepare("SELECT mode FROM factory_knowledge").get()?.mode, "local");
+			assert.equal(db.prepare("SELECT count(*) AS count FROM sqlite_schema WHERE sql LIKE '%131072%'").get()?.count, 0);
+		} finally { db.close(); }
+		const statement = ` \n\t${"🙂資料 ".repeat(20000)}  \n`;
+		upgraded.appendKnowledge({ expectedRevision: upgraded.snapshot().revision, id: "large-after-upgrade", unitId: "unit", kind: "inference", statement, source: source() });
+		assert.equal(upgraded.snapshot().knowledge.at(-1)?.statement, statement);
+	});
+
+	await t.test("oversized first records and whole histories roundtrip through JSON, archive, staged pages and restart", async (t) => {
+		const f = await fixture(t);
+		const root = path.join(f.root, "oversized");
+		await mkdir(root);
+		const factory = createFactoryService({ repositoryPath: f.repo, storageRoot: root, knowledge: "local" });
+		factory.importFactory({ expectedRevision: 0, source: f.factory.exportFactory() });
+		factory.decideCandidate({ expectedRevision: factory.snapshot().revision, candidateId: f.candidate.id, action: "reject", expectedIncumbentId: null, actor: "owner", reason: "Retain the incomplete historical candidate without selecting it" });
+		factory.retire({ expectedRevision: factory.snapshot().revision, type: "candidate", id: f.candidate.id, actor: "owner", reason: "Superseded", summary: "Historical candidate remains exportable" });
+		const statement = ` \n\t🙂資料 ${"x".repeat(32 * 1024 * 1024 + 1)}  \n`;
+		factory.appendKnowledge({ expectedRevision: factory.snapshot().revision, id: "whole-large-record", unitId: "unit", kind: "inference", statement, source: source() });
+		const beforeCompaction = factoryDocument(factory.exportFactory());
+		factory.compactFactory({ expectedRevision: factory.snapshot().revision, actor: "owner", reason: "Archive an oversized whole record without rejecting or splitting it" });
+		const exact = factoryDocument(factory.exportFactory());
+		assert.deepEqual(exact.events.slice(0, -1), beforeCompaction.events);
+		const restarted = createFactoryService({ repositoryPath: f.repo, storageRoot: root, knowledge: "local" });
+		assert.equal(restarted.snapshot().knowledge.at(-1)?.statement, statement);
+		assert.deepEqual(parseJson(restarted.exportFactory()), exact);
+		const largeRevision = exact.events.find(event => event.action === "appendKnowledge" && event.input.id === "whole-large-record")?.revision;
+		assert.ok(largeRevision);
+		const largePage = restarted.exportFactoryPage({ afterRevision: largeRevision - 1 });
+		assert.equal(largePage.events[0].input.statement, statement);
+		assert.equal(largePage.nextRevision, largeRevision);
+		assert.equal(largePage.events.length, 1);
+		assert.ok(Buffer.byteLength(JSON.stringify(largePage)) > 32 * 1024 * 1024);
+		const targetRoot = path.join(f.root, "oversized-pages");
+		await mkdir(targetRoot);
+		let target = createFactoryService({ repositoryPath: f.repo, storageRoot: targetRoot, knowledge: "local" });
+		let page = restarted.exportFactoryPage({ limit: 1000 });
+		const pin = { throughRevision: page.revision, throughDigest: page.throughDigest, limit: 1000 };
+		const revisions = [];
+		while (true) {
+			assert.ok(page.events.length);
+			revisions.push(...page.events.map(event => event.revision));
+			target.importFactoryPage({ expectedRevision: 0, importId: "large", page });
+			target = createFactoryService({ repositoryPath: f.repo, storageRoot: targetRoot, knowledge: "local" });
+			if (page.complete) break;
+			page = restarted.exportFactoryPage({ ...pin, afterRevision: page.nextRevision });
+		}
+		assert.deepEqual(revisions, exact.events.map(event => event.revision));
+		assert.deepEqual(parseJson(target.exportFactory()), exact);
+		assert.equal(target.snapshot().knowledge.at(-1)?.statement, statement);
+	});
+
+	await t.test("transfer inspection retains every abandoned import beyond the former last-50 window", async (t) => {
+		const f = await fixture(t);
+		const root = path.join(f.root, "transfer-history");
+		await mkdir(root);
+		const factory = createFactoryService({ repositoryPath: f.repo, storageRoot: root, knowledge: "local" });
+		const page = f.factory.exportFactoryPage({ limit: 1 });
+		const reason = ` \n\t${"reason 🙂資料 ".repeat(1000)}  \n`;
+		const actor = ` \t${"owner ".repeat(100)} `;
+		for (let index = 0; index < 52; index++) {
+			factory.importFactoryPage({ expectedRevision: 0, importId: `transfer-${index}`, page });
+			factory.abandonFactoryImport({ expectedRevision: 0, importId: `transfer-${index}`, actor, reason });
+		}
+		const transfers = factory.storageInfo().transfers;
+		assert.equal(transfers.length, 52);
+		assert.equal(new Set(transfers.map(entry => entry.id)).size, 52);
+		assert.ok(transfers.every(entry => entry.actor === actor && entry.reason === reason && entry.status === "abandoned"));
+		assert.equal(factory.snapshot().revision, 0);
+	});
 	oldStore.transaction((db) => db.prepare("SELECT revision FROM factory").get());
 	const upgraded = createFactoryService({ repositoryPath: f.repo, storageRoot: root, clock: () => "2026-01-01T00:13:00.000Z", knowledge: "local" });
 	assert.deepEqual(parseJson(upgraded.exportFactory()), legacy.document);
 	const view = upgraded.inspect({ candidateId: legacy.candidateId });
-	assert.equal(view.storage.version, 4);
+	assert.equal(view.storage.version, 5);
 	assert.equal(view.units[0].currentCandidateId, legacy.candidateId);
 	assert.equal(view.candidates[0].selection?.kind, "accept-candidate");
 	assert.equal(view.candidates[0].selection?.reason, legacy.selection.reason);

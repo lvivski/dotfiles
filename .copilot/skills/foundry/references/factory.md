@@ -46,8 +46,8 @@ child/resource authority.
    Every obligation needs an evaluator; accepted contracts require boundary and preservation
    evaluation. Known contradictions/uncertainty need attributed
    `resolutions`. Acceptance adds an immutable revision; it never edits history.
-   Accepted dependency contracts are pinned, as is bounded causal rationale (at most 128 connected
-   revisions) and decision lineage (16 recent decisions with an explicit earlier-history count).
+   Accepted dependency contracts, complete connected causal rationale and complete decision lineage
+   are pinned. Presentation pagination does not truncate accepted context or canonical history.
    Optional `rationale` references add explanatory context but never governing obligations.
 
 ## Explicit UI and visual fidelity
@@ -100,9 +100,10 @@ Adoption does not create a fresh-generation plan or count as a reconstruction pr
    Historical version-2 seals are retained, never silently rewritten. Source refs, run/session paths and
    source artifacts remain in the inspectable ledger rather than leaking through generation
    provenance. Comparison-only refs/digests in generation text are rejected explicitly.
-   Sealed generation context is bounded to 128 KiB.
+   Sealed generation context retains complete authorized knowledge, evidence and lineage;
+   it has no 128 KiB policy cap. Privacy and comparison-only exclusions still apply.
 2. Call `foundry_create_factory_plan` with the candidate, repository, explicit file scope,
-   `expectedRevision: 0` and `expectedFactoryRevision`. It deterministically assembles bounded
+   `expectedRevision: 0` and `expectedFactoryRevision`. It deterministically assembles scoped
    implementation and read-only verifier tasks. Local source accepts optional closed `decomposition`
    for explicit packages; omission retains the one-producer/one-verifier recipe. Follow
    [decomposition compatibility](planning.md#explicit-decomposition-and-legacy-behavior).
@@ -289,17 +290,19 @@ an older completion does not release a newer retry. It never deletes files, data
 actor/reason and measured storage bytes. Automatic rollover also keeps active-record headroom.
 Content integrity is checked on decode; this is not authenticated attestation. No knowledge is
 deleted. SQLite file size may not shrink (pages can be reused). The former 8,192-event lifetime
-ceiling is gone explicitly: bounds now apply per event (128 KiB), archive segment (8,192 events /
-32 MiB), and transfer page (256 events / 4 MiB), not to lifetime receipt publication.
+ceiling is gone. Schema-5 canonical/staged rows also remove the former 128 KiB per-event CHECK
+transactionally without rewriting old data. Archive segments and transfer pages are lossless
+framing, not content/publication ceilings; oversized first events remain complete and advance.
 Use `foundry_get_factory` filters (`kinds`, `query`, `relatedTo`) and its opaque `cursor`
 to retrieve older relevant knowledge. Keep filters and limit unchanged when following a cursor.
-Selection is bounded, deterministic and explains omissions; accepted sealed contexts do not
+Selection is deterministic and explains privacy/view exclusions; follow complete paging rather
+than treating a visible page as the ledger. Accepted sealed contexts do not
 grow merely because new observations arrive.
 
 Portable knowledge is published through `.foundry/repository.json` and immutable content-addressed
 objects. Raw reports remain local; portable observations retain explicit source/statement
 commitments and causal links. Capturing a report does not publish its contents or make it a
-requirement. Historical candidate decisions travel as bounded summaries, not live candidates
+requirement. Historical candidate decisions travel as complete privacy-scoped records, not live candidates
 or current assurance. Imported private-context v2 contracts marked `historyOnly` require a new
 explicit portable acceptance before reconstruction.
 
@@ -311,12 +314,12 @@ inspect/reopen to recover its publication instead of repeating it.
 
 Use explicit current-format `foundry_export_factory` / `foundry_import_factory` for an empty store
 of the same canonical repository. No legacy migration or automatic identity retargeting exists.
-Single JSON transfers are bounded to 32 MiB. For larger histories use `foundry_export_factory_page`,
+Single JSON transfers have no 32 MiB policy cap. For larger histories use `foundry_export_factory_page`,
 pin its `revision`/`throughDigest`, and advance with `nextRevision`. `foundry_import_factory_page`
 stages that exact sequence under an `importId`; it becomes authoritative only after complete validation.
 Partial transfers survive restart and take precedence over automatic cache reconstruction.
 Explicit `foundry_abandon_factory_import` retains their received
-data rather than deleting it. Current v2 SQLite documents upgrade non-destructively to physical schema 4;
+data rather than deleting it. Current v2 SQLite documents upgrade non-destructively to physical schema 5;
 cached older writers fail closed and must restart. Historical v2 JSON, seals and ownership remain
 historical; new acceptance uses version-3 portable commitments.
 Already-recorded v2 receipts and selection decisions remain readable under their original publication
@@ -325,7 +328,7 @@ historical duplicate publication cannot manufacture fresh support. New publicati
 selection enforce the current rules, not the historical acceptance exception.
 
 Conceptual compaction is different from storage maintenance. Existing planning critics and the
-independent reconstruction review consider at most three simplification proposals: remove unnecessary
+independent reconstruction review consider substantively useful simplification proposals: remove unnecessary
 internal concepts or duplicate authority while naming the external meaning, obligations and evaluators
 that must be conserved, tradeoffs, and any human judgment required. Proposals and bounded-review gaps
 are retained as linked non-governing knowledge. No byte-count metric, extra agent runtime or automatic

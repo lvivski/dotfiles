@@ -6,7 +6,7 @@ import { isList } from "../data.mjs";
  *   sources: Source[], history: string[]}} Finding
  * @typedef {{index: number, angle: string, draft: string | null, feedback: string,
  *   findings: Finding[], limitations: string[], failures: string[],
- *   correction: string | null, correctionAttempted: boolean}} ResearchRow
+ *   correction: string | null, correctionAttempted: boolean, corrections?: string[]}} ResearchRow
  */
 
 export const STATUSES = ["supported", "incorrect", "inaccessible", "insufficient"];
@@ -18,7 +18,7 @@ export function isRecord(value) {
 
 /** @param {unknown} value */
 export function text(value) {
-	return typeof value === "string" ? value.trim() : "";
+	return typeof value === "string" && value.trim() && !value.includes("\0") ? value : "";
 }
 
 /** @param {unknown} value @returns {Source[] | null} */

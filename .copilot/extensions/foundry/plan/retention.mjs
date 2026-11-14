@@ -17,12 +17,12 @@ const artifacts = ["source", "ref", "context", "decision", "report", "evaluator"
 export const sameRetention = (a, b) => stableStringify(a) === stableStringify(b);
 /** @param {unknown} value @param {string} [label] */
 export function retentionId(value, label = "identity") {
-	if (typeof value !== "string" || value.length > 256 || !/^[a-zA-Z0-9][a-zA-Z0-9._:-]*$/.test(value)) fail("retention_identity_invalid", `Malformed ${label}`);
+	if (typeof value !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._:-]*$/.test(value)) fail("retention_identity_invalid", `Malformed ${label}`);
 	return value;
 }
 /** @param {unknown} value @param {string} label */
 function absolute(value, label) {
-	const result = text(value, label, 4096);
+	const result = text(value, label);
 	if (!path.isAbsolute(result) || path.normalize(result) !== result || result.endsWith(path.sep) || result === path.parse(result).root
 		|| /[\x00-\x1f\x7f]/.test(result)) fail("retention_path_invalid", `${label} must be a bounded canonical absolute path`);
 	return result;
@@ -42,7 +42,7 @@ function versioned(value, keys, label) {
 /** @param {unknown} value @returns {import("../types/retention.js").RetentionScope} */
 export function retentionScope(value) {
 	object(value, ["repositoryId", "owner", "coordinatorSessionId", "currentSessionId"], "retention scope");
-	return { repositoryId: digest(value.repositoryId, "repositoryId"), owner: text(value.owner, "owner", 4096),
+	return { repositoryId: digest(value.repositoryId, "repositoryId"), owner: text(value.owner, "owner"),
 		coordinatorSessionId: retentionId(value.coordinatorSessionId), currentSessionId: retentionId(value.currentSessionId) };
 }
 /** @param {unknown} value @returns {Subject} */
@@ -60,35 +60,35 @@ export function retentionEvent(value) {
 	return { version: 1, id: retentionId(value.id, "eventId"), subject: retentionSubject(value.subject),
 		revision: integer(value.revision, "completion revision"), sequence: integer(value.sequence, "completion sequence"),
 		sourceCommit: commitId(value.sourceCommit), sourceDigest: digest(value.sourceDigest, "source digest"),
-		at: timestamp(value.at, "completion time"), source: text(value.source, "completion source", 4096) };
+		at: timestamp(value.at, "completion time"), source: text(value.source, "completion source") };
 }
 /** @param {unknown} value @returns {import("../types/retention.js").RetentionObservation} */
 export function retentionObservation(value) {
 	versioned(value, ["subject", "eventId", "eventRevision", "eventSequence", "revision", "sequence", "capturedAt", "validUntil", "source", "ownership", "inventories", "workspace"], "observation");
 	object(value.workspace, ["state", "tracked", "untracked", "ignored"], "workspace");
-	const paths = (/** @type {unknown} */ entries) => unique(list(entries, "workspace paths", 128).map(entry => repositoryPath(entry, "workspace path")), entry => entry, "workspace paths");
-	const observed = unique(list(value.inventories, "inventories", inventories.length).map(entry => {
+	const paths = (/** @type {unknown} */ entries) => unique(list(entries, "workspace paths").map(entry => repositoryPath(entry, "workspace path")), entry => entry, "workspace paths");
+	const observed = unique(list(value.inventories, "inventories").map(entry => {
 		object(entry, ["kind", "revision", "sequence", "source", "coverage", "nextCursor", "knownIds", "items"], "inventory");
 		const kind = enumeration(entry.kind, inventories, "inventory kind");
 		return { kind, revision: integer(entry.revision, "inventory revision"), sequence: integer(entry.sequence, "inventory sequence"),
-			source: text(entry.source, "inventory source", 4096), coverage: enumeration(entry.coverage, ["exhaustive", "partial", "unknown"], "inventory coverage"),
-			nextCursor: entry.nextCursor === null ? null : text(entry.nextCursor, "next cursor", 512),
-			knownIds: unique(list(entry.knownIds, "known identities", 128).map(id => retentionId(id)), id => id, "known identities"),
-			items: unique(list(entry.items, "inventory entries", 128).map(item => {
+			source: text(entry.source, "inventory source"), coverage: enumeration(entry.coverage, ["exhaustive", "partial", "unknown"], "inventory coverage"),
+			nextCursor: entry.nextCursor === null ? null : text(entry.nextCursor, "next cursor"),
+			knownIds: unique(list(entry.knownIds, "known identities").map(id => retentionId(id)), id => id, "known identities"),
+			items: unique(list(entry.items, "inventory entries").map(item => {
 				object(item, ["id", "subject", "state", "revision", "sequence", "source", "authority"], "inventory entry");
 				const subject = retentionSubject(item.subject), id = retentionId(item.id);
 				if ((kind === "tasks" && id !== subject.attempt.taskId) || (kind === "attempts" && id !== subject.attempt.attemptId)
 					|| (kind === "sessions" && id !== subject.sessionId)) fail("retention_identity_mismatch", `${kind} entry has another identity`);
 				return { id, subject, state: enumeration(item.state, ["terminal", "active", "unknown", "ambiguous"], "observed state"),
 					revision: integer(item.revision, "entry revision"), sequence: integer(item.sequence, "entry sequence"),
-					source: text(item.source, "entry source", 4096), authority: text(item.authority, "releasing authority", 4096) };
+					source: text(item.source, "entry source"), authority: text(item.authority, "releasing authority") };
 			}), item => item.id, "inventory entries") };
 	}), entry => entry.kind, "inventories");
 	return { version: 1, subject: retentionSubject(value.subject), eventId: retentionId(value.eventId),
 		eventRevision: integer(value.eventRevision, "event revision"), eventSequence: integer(value.eventSequence, "event sequence"),
 		revision: integer(value.revision, "observation revision"), sequence: integer(value.sequence, "observation sequence"),
 		capturedAt: timestamp(value.capturedAt, "capture time"), validUntil: timestamp(value.validUntil, "expiry"),
-		source: text(value.source, "observation source", 4096), ownership: enumeration(value.ownership, ["owned", "foreign", "unknown", "ambiguous"], "ownership observation"),
+		source: text(value.source, "observation source"), ownership: enumeration(value.ownership, ["owned", "foreign", "unknown", "ambiguous"], "ownership observation"),
 		inventories: observed, workspace: { state: enumeration(value.workspace.state, ["observed", "unknown"], "workspace observation"),
 			tracked: paths(value.workspace.tracked), untracked: paths(value.workspace.untracked), ignored: paths(value.workspace.ignored) } };
 }
@@ -98,16 +98,16 @@ export function retentionManifest(value) {
 	const key = (/** @type {{kind: string, id: string}} */ item) => `${item.kind}:${item.id}`;
 	return { version: 1, subject: retentionSubject(value.subject), sourceCommit: commitId(value.sourceCommit),
 		sourceDigest: digest(value.sourceDigest, "source digest"), sequence: integer(value.sequence, "manifest sequence"),
-		capturedAt: timestamp(value.capturedAt, "manifest capture"), source: text(value.source, "manifest source", 4096), retainedRoot: absolute(value.retainedRoot, "retained root"),
-		required: unique(list(value.required, "required artifacts", 128).map(item => {
+		capturedAt: timestamp(value.capturedAt, "manifest capture"), source: text(value.source, "manifest source"), retainedRoot: absolute(value.retainedRoot, "retained root"),
+		required: unique(list(value.required, "required artifacts").map(item => {
 			object(item, ["kind", "id"], "required artifact");
 			return { kind: enumeration(item.kind, artifacts, "artifact kind"), id: retentionId(item.id) };
 		}), key, "required artifacts"),
-		items: unique(list(value.items, "retained artifacts", 128).map(item => {
+		items: unique(list(value.items, "retained artifacts").map(item => {
 			object(item, ["kind", "id", "digest", "location", "state", "source"], "retained artifact");
 			return { kind: enumeration(item.kind, artifacts, "artifact kind"), id: retentionId(item.id), digest: digest(item.digest, "artifact digest"),
 				location: absolute(item.location, "artifact location"), state: enumeration(item.state, ["retained", "missing", "unknown"], "retention state"),
-				source: text(item.source, "artifact source", 4096) };
+				source: text(item.source, "artifact source") };
 		}), key, "retained artifacts") };
 }
 /** Pure candidate assessment; no decoded field grants ownership, permission or exclusion.
@@ -115,7 +115,7 @@ export function retentionManifest(value) {
  * @param {unknown} observationValue @param {unknown} manifestValue @param {string} at
  * @param {readonly Assessment[]} [history] @returns {Assessment} */
 export function assessRetention(scopeValue, eventValue, observationValue, manifestValue, at, history = []) {
-	list(history, "prior assessment history", 64);
+	list(history, "prior assessment history");
 	const scope = retentionScope(scopeValue), event = retentionEvent(eventValue), observation = retentionObservation(observationValue);
 	const manifest = manifestValue === null ? null : retentionManifest(manifestValue);
 	const assessedAt = timestamp(at, "assessment time");
@@ -190,14 +190,14 @@ export function retentionOutcome(value) {
 	let error = null;
 	if (value.error !== null) {
 		object(value.error, ["code", "message"], "archive error");
-		error = { code: text(value.error.code, "error code", 256), message: text(value.error.message, "error message", 8000) };
+		error = { code: text(value.error.code, "error code"), message: text(value.error.message, "error message") };
 	}
 	const receipt = readJsonValue(value.receipt);
 	if (Buffer.byteLength(stableStringify(receipt)) > 65536) fail("retention_outcome_overflow", "Original receipt exceeds the bounded outbox; retain it externally, never truncate it");
 	const disposition = enumeration(value.disposition, ["archived", "denied", "unavailable", "failed", "uncertain"], "archive disposition");
 	if (disposition === "archived" && (receipt === null || error !== null)) fail("retention_outcome_invalid", "Archived outcome needs the original successful receipt");
 	return { version: 1, operationId: retentionId(value.operationId), subject: retentionSubject(value.subject), disposition,
-		source: text(value.source, "outcome source", 4096), at: timestamp(value.at, "outcome time"), receipt, error };
+		source: text(value.source, "outcome source"), at: timestamp(value.at, "outcome time"), receipt, error };
 }
 /** Decode stored history without treating a retained assessment as current authority.
  * @param {unknown} value @returns {Intent} */
@@ -205,20 +205,20 @@ export function retentionIntent(value) {
 	versioned(value, ["id", "event", "revision", "assessments", "start", "outcomes"], "retention intent");
 	const event = retentionEvent(value.event), id = retentionId(value.id);
 	if (id !== retentionIntentId(event)) fail("retention_intent_mismatch", "Intent identity changed");
-	const assessments = unique(list(value.assessments, "assessment history", 64, 1).map(entry => {
+	const assessments = unique(list(value.assessments, "assessment history", undefined, 1).map(entry => {
 		versioned(entry, ["id", "event", "observation", "manifest", "assessedAt", "state", "holds"], "assessment");
 		const body = { version: /** @type {const} */ (1), event: retentionEvent(entry.event), observation: retentionObservation(entry.observation),
 			manifest: entry.manifest === null ? null : retentionManifest(entry.manifest), assessedAt: timestamp(entry.assessedAt, "assessment time"),
 			state: enumeration(entry.state, ["held", "candidate"], "assessment state"),
-			holds: list(entry.holds, "assessment holds", 2048).map(hold => {
+			holds: list(entry.holds, "assessment holds").map(hold => {
 				object(hold, ["code", "reason", "authority"], "hold");
-				return { code: text(hold.code, "hold code", 256), reason: text(hold.reason, "hold reason", 8000), authority: text(hold.authority, "hold authority", 4096) };
+				return { code: text(hold.code, "hold code"), reason: text(hold.reason, "hold reason"), authority: text(hold.authority, "hold authority") };
 			}) };
 		if (entry.id !== `assessment-${analysisInputDigest(body)}` || !sameRetention(body.event, event)
 			|| (body.state === "candidate") !== (body.holds.length === 0)) fail("retention_assessment_mismatch", "Stored assessment identity or disposition changed");
 		return { ...body, id: retentionId(entry.id) };
 	}), entry => entry.id, "assessments");
-	const outcomes = unique(list(value.outcomes, "original outcomes", 64).map(retentionOutcome), analysisInputDigest, "outcomes");
+	const outcomes = unique(list(value.outcomes, "original outcomes").map(retentionOutcome), analysisInputDigest, "outcomes");
 	const result = { version: /** @type {const} */ (1), id, event, revision: integer(value.revision, "intent revision"), assessments, start: null, outcomes };
 	let start = null;
 	if (value.start !== null) {

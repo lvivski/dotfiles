@@ -34,7 +34,7 @@ export function bindPlan(state, event, options = {}) {
 		unitId: unit.id, candidateId,
 		unitRevision: unit.revision, contractRevision: contract?.revision ?? null,
 		contractDigest: contract?.digest ?? null, contextDigest,
-		planId: text(input.planId, "planId", 64), owner: text(input.owner, "owner", 512),
+		planId: text(input.planId, "planId"), owner: text(input.owner, "owner"),
 		blueprintDigest: digest(input.blueprintDigest, "blueprintDigest"), at,
 		...(input.knowledgeHead !== undefined ? { knowledgeHead: digest(input.knowledgeHead, "knowledgeHead") } : {}),
 	};
@@ -49,7 +49,7 @@ export function bindPlan(state, event, options = {}) {
 		}
 		if (evaluating) {
 			if (!candidate.delivery || input.targetCommit !== candidate.delivery.commit) fail("factory_delivery_required", "Read-only evaluation needs the immutable delivered commit");
-			const selected = list(input.evaluations, "evaluations", 32, 1).map(reference);
+			const selected = list(input.evaluations, "evaluations", undefined, 1).map(reference);
 			const contract = contractFor(state, candidate.unitId, candidate.contractRevision);
 			if (new Set(selected.map(key)).size !== selected.length
 				|| selected.some((ref) => !contract.evaluations.some((accepted) => key(accepted) === key(ref)))) fail("factory_evaluator_changed", "Evaluation plans must select pinned accepted evaluator revisions");
@@ -97,7 +97,7 @@ export function recordCompletion(state, event, options = {}) {
 		fail("factory_execution_mismatch", "Completion must identify the exact bound plan, owner, verification run and delivered commit");
 	}
 	if (candidate.completion) fail("factory_completion_immutable", "Candidate completion is immutable");
-	candidate.completion = { source: origin, passed: input.passed, commit: input.commit, evidenceIds: strings(input.evidenceIds, "evidenceIds", 128), recordedAt: at };
+	candidate.completion = { source: origin, passed: input.passed, commit: input.commit, evidenceIds: strings(input.evidenceIds, "evidenceIds"), recordedAt: at };
 	return { candidate };
 
 }
@@ -115,7 +115,7 @@ export function recordEvaluationCompletion(state, event, options = {}) {
 		|| input.commit !== candidate.delivery.commit || typeof input.passed !== "boolean") {
 		fail("factory_execution_mismatch", "Evaluation completion requires its own bound plan, native run and immutable target commit");
 	}
-	const completion = { source: origin, passed: input.passed, commit: input.commit, evidenceIds: strings(input.evidenceIds, "evidenceIds", 128), recordedAt: at };
+	const completion = { source: origin, passed: input.passed, commit: input.commit, evidenceIds: strings(input.evidenceIds, "evidenceIds"), recordedAt: at };
 	const previous = options.historical
 		? (binding.completion?.source.runId === origin["runId"] ? binding.completion : null)
 		: (binding.completions ?? [binding.completion]).find((entry) => entry?.source.runId === origin["runId"]);

@@ -11,7 +11,7 @@ const TICKETS_SCHEMA = {
 	},
 };
 
-/** @type {import("@github/copilot-sdk").WorkflowMeta & {limits: Required<import("@github/copilot-sdk").WorkflowLimits>}} */
+/** @type {import("@github/copilot-sdk").WorkflowMeta} */
 export const meta = {
 	name: "triage",
 	description:
@@ -31,12 +31,6 @@ export const meta = {
 			},
 		],
 	},
-	limits: {
-		maxConcurrentSubagents: 8,
-		maxTotalSubagents: 100,
-		timeoutSeconds: 900,
-		maxAiCredits: 10000,
-	},
 };
 
 /** @param {Pick<import("@github/copilot-sdk").WorkflowContext, "args" | "phase" | "agent" | "pipeline" | "step" | "log" | "pause">} workflow */
@@ -53,37 +47,28 @@ export async function run(workflow) {
 	if (!isList(input) || !input.length) {
 		throw new Error("triage: provide a non-empty array of tickets or { tickets: [...] }");
 	}
-	const maxTickets = meta.limits.maxTotalSubagents;
-	if (input.length > maxTickets) {
-		throw new Error(
-			`triage: ${input.length} tickets exceed the ${maxTickets}-ticket limit`,
-		);
-	}
-	const MAX_TICKET_CHARS = 8000;
 	const normalized = input.map((ticket, index) => {
 		if (typeof ticket === "string" && ticket.trim()) {
 			return {
 				id: String(index + 1),
-				text: ticket.trim(),
+				text: ticket,
 			};
 		}
 		if (!isRecord(ticket)) {
 			throw new Error(`triage: ticket ${index + 1} must be a non-empty string or object`);
 		}
-		const title = String(ticket.title || ticket.summary || "").trim();
-		const body = String(ticket.body || ticket.description || "").trim();
+		const title = String(ticket.title || ticket.summary || "");
+		const body = String(ticket.body || ticket.description || "");
 		const text = [title, body].filter(Boolean).join("\n\n");
-		if (!text) throw new Error(`triage: ticket ${index + 1} has no usable text`);
-		const id = String(ticket.id ?? index + 1).trim() || String(index + 1);
-		if (id.length > 256) {
-			throw new Error(`triage: ticket ${index + 1} id exceeds 256 characters`);
-		}
+		if (!text.trim()) throw new Error(`triage: ticket ${index + 1} has no usable text`);
+		const originalId = String(ticket.id ?? index + 1);
+		const id = originalId.trim() ? originalId : String(index + 1);
 		return { id, text };
 	});
-	const tickets = arrayOf(recordOf({ id: readString, text: readString, truncated: readBoolean }))(await workflow.step("triage:prepared-tickets:v1", () => normalized.map(({ id, text }) => ({
+	const tickets = arrayOf(recordOf({ id: readString, text: readString, truncated: readBoolean }))(await workflow.step("triage:prepared-tickets:v2", () => normalized.map(({ id, text }) => ({
 		id,
-		text: text.slice(0, MAX_TICKET_CHARS),
-		truncated: text.length > MAX_TICKET_CHARS,
+		text,
+		truncated: false,
 	}))));
 	workflow.log(`triage: ${tickets.length} ticket(s)`);
 	if (opts.pauseBeforeWork) {

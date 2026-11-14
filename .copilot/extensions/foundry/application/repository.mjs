@@ -110,7 +110,7 @@ export function createRepositoryOperations({ workspace, storeFor, notify, factor
 
 	/** @param {Request<"recordHumanJudgment">} input */
 	const recordHumanJudgment = async ({ repositoryPath, expectedRevision, actor, reason, sourceRef, judgmentId, performedAt, ...input }) => {
-		if (typeof judgmentId !== "string" || !judgmentId.trim() || judgmentId.length > 512
+		if (typeof judgmentId !== "string" || !judgmentId.trim()
 			|| typeof sourceRef !== "string" || !sourceRef.trim()
 			|| typeof performedAt !== "string" || !performedAt.trim()) {
 			throw new FoundryOperationError("factory_human_source_required", "A stable claimed judgmentId, actual sourceRef and performedAt are required. Receipt IDs and publication time are not judgment identity or observation time.");

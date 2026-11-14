@@ -5,14 +5,8 @@ import { diffLineChanges, evidenceFacts } from "./evidence.mjs";
 /** @typedef {Exclude<Awaited<ReturnType<typeof import("./preparation.mjs").prepareQueue>>, string>["prs"][number]} QueuedPullRequest */
 /** @typedef {QueuedPullRequest["units"][number]} DiffUnit */
 
-const MAX_SUBAGENTS_PER_CHUNK = 2;
-
-const MAX_PRS = 200;
-
-const MAX_FILES_PER_PR = 3_000;
-
-/** @param {Pick<import("@github/copilot-sdk").WorkflowContext, "args" | "phase" | "agent" | "pipeline" | "parallel" | "step" | "log" | "pause">} workflow @param {number} maxTotalSubagents */
-export async function prepareQueue(workflow, maxTotalSubagents) {
+/** @param {Pick<import("@github/copilot-sdk").WorkflowContext, "args" | "phase" | "agent" | "pipeline" | "parallel" | "step" | "log" | "pause">} workflow */
+export async function prepareQueue(workflow) {
 	const workflowArgs = workflow.args;
 	const opts =
 		isRecord(workflowArgs)
@@ -34,29 +28,18 @@ export async function prepareQueue(workflow, maxTotalSubagents) {
 		if (!fetchComplete) return `# Review queue incomplete\n\nNo PRs were returned, but the queue could not be fully fetched.\n\n${fetchFailures.map((failure) => `- ${failure}`).join("\n")}`;
 		return "review-queue: no PRs supplied. Fetch the queue first and pass { prs: [...] }.";
 	}
-	if (input.length > MAX_PRS) {
-		throw new Error(`review-queue: ${input.length} PRs exceed the ${MAX_PRS}-PR limit`);
-	}
 
-	/** @param {string} name @param {number} fallback @param {number} minimum @param {number} maximum */
-	function integer(name, fallback, minimum, maximum) {
+	/** @param {string} name @param {number} fallback @param {number} minimum */
+	function integer(name, fallback, minimum) {
 		const value = Number(opts[name] ?? fallback);
-		if (!Number.isInteger(value) || value < minimum || value > maximum) {
-			throw new Error(`review-queue: ${name} must be an integer from ${minimum} to ${maximum}`);
+		if (!Number.isSafeInteger(value) || value < minimum) {
+			throw new Error(`review-queue: ${name} must be a safe integer of at least ${minimum}`);
 		}
 		return value;
 	}
 
-	const chunkChars = integer("diff_chunk_chars", 24000, 4000, 60000);
-	const supportedChunks = Math.floor(
-		maxTotalSubagents / MAX_SUBAGENTS_PER_CHUNK,
-	);
-	const maxChunks = integer(
-		"max_total_chunks",
-		Math.min(300, supportedChunks),
-		1,
-		supportedChunks,
-	);
+	const chunkChars = integer("diff_chunk_chars", 24000, 1);
+	const maxChunks = opts.max_total_chunks === undefined ? undefined : integer("max_total_chunks", 0, 1);
 	const identities = new Set();
 	/** @param {unknown} raw @param {number} index */
 	function normalizePullRequest(raw, index) {
@@ -75,14 +58,9 @@ export async function prepareQueue(workflow, maxTotalSubagents) {
 		}
 		identities.add(identityKey);
 		const rawFiles = isList(raw.files) ? raw.files : [];
-		if (rawFiles.length > MAX_FILES_PER_PR) {
-			throw new Error(
-				`review-queue: PR ${index + 1} files exceeds ${MAX_FILES_PER_PR} entries`,
-			);
-		}
 		const files = [...new Set(rawFiles.map(String).filter(Boolean))];
 		const diff = String(raw.diff || "");
-		if (diff.length > chunkChars * maxChunks) {
+		if (maxChunks !== undefined && diff.length > chunkChars * maxChunks) {
 			throw new Error(
 				`review-queue: PR ${index + 1} diff exceeds the configured chunk budget`,
 			);
@@ -196,7 +174,7 @@ export async function prepareQueue(workflow, maxTotalSubagents) {
 	const selectedChunks = normalized.reduce(
 		(total, pr) => total + (pr.diff.trim() ? Math.ceil(pr.diff.length / chunkChars) : 0), 0,
 	);
-	if (selectedChunks > maxChunks) {
+	if (maxChunks !== undefined && selectedChunks > maxChunks) {
 		throw new Error(`review-queue: ${selectedChunks} diff chunks exceed max_total_chunks=${maxChunks}`);
 	}
 	const readPreparedPr = recordOf({
@@ -212,7 +190,7 @@ export async function prepareQueue(workflow, maxTotalSubagents) {
 		prs: arrayOf(readPreparedPr), evidenceCount: readNumber, approveOnlyLowRiskManual: readBoolean,
 		freshness: readString, fetchComplete: readBoolean, fetchFailures: arrayOf(readString),
 	})(await workflow.step(
-		"review-queue:prepared-queue:v2",
+		"review-queue:prepared-queue:v3",
 		() => ({
 			prs: normalized.map(preparePullRequest),
 			evidenceCount: selectedChunks,

@@ -94,7 +94,7 @@ function validateIntegrationEntry(entry, fieldPath) {
 			path: `${fieldPath}.attemptId`,
 		});
 	}
-	assertNullableString(entry.branch, `${fieldPath}.branch`, LIMITS.branch);
+	assertNullableString(entry.branch, `${fieldPath}.branch`);
 	assertCommit(entry.commit, `${fieldPath}.commit`);
 	assertHttpUrl(entry.prUrl, `${fieldPath}.prUrl`);
 	if (entry.branch === null && entry.commit === null && entry.prUrl === null) {
@@ -115,8 +115,8 @@ export function validateScopeOverride(value, fieldPath) {
 	if (value === null) return;
 	assertPlainObject(value, fieldPath);
 	assertKnownKeys(value, SCOPE_OVERRIDE_KEYS, fieldPath);
-	assertString(value.approvedBy, `${fieldPath}.approvedBy`, LIMITS.actor);
-	assertString(value.reason, `${fieldPath}.reason`, LIMITS.error);
+	assertString(value.approvedBy, `${fieldPath}.approvedBy`);
+	assertString(value.reason, `${fieldPath}.reason`);
 }
 
 /**
@@ -144,9 +144,8 @@ function validateAttempt(attempt, task, index, fieldPath) {
 			path: `${fieldPath}.status`,
 		});
 	}
-	assertString(attempt.baseBranch, `${fieldPath}.baseBranch`, LIMITS.baseBranch);
-	if (!isList(attempt.integrationRequired)
-		|| attempt.integrationRequired.length > LIMITS.dependencies) {
+	assertString(attempt.baseBranch, `${fieldPath}.baseBranch`);
+	if (!isList(attempt.integrationRequired)) {
 		fail("invalid_integration_entries", `${fieldPath}.integrationRequired is invalid`, {
 			path: `${fieldPath}.integrationRequired`,
 		});
@@ -158,22 +157,22 @@ function validateAttempt(attempt, task, index, fieldPath) {
 		);
 	});
 	validateScopeOverride(attempt.scopeOverride, `${fieldPath}.scopeOverride`);
-	assertNullableString(attempt.sessionId, `${fieldPath}.sessionId`, LIMITS.sessionId);
-	assertNullableString(attempt.branch, `${fieldPath}.branch`, LIMITS.branch);
+	assertNullableString(attempt.sessionId, `${fieldPath}.sessionId`);
+	assertNullableString(attempt.branch, `${fieldPath}.branch`);
 	assertTimestamp(attempt.startedAt, `${fieldPath}.startedAt`, { nullable: true });
 	if (attempt.branchRenames !== undefined) {
-		if (!isList(attempt.branchRenames) || attempt.branchRenames.length < 1 || attempt.branchRenames.length > 8) {
-			fail("invalid_branch_renames", "Branch rename history must contain one through eight observations");
+		if (!isList(attempt.branchRenames) || attempt.branchRenames.length < 1) {
+			fail("invalid_branch_renames", "Branch rename history must contain observations");
 		}
 		/** @type {{to: string, at: string, worktree: Extract<import("../../types/plan.js").VerifierWorktree, {status: "available"}>} | undefined} */
 		let previous;
 		for (const entry of attempt.branchRenames) {
 			assertPlainObject(entry, "branchRename");
 			assertKnownKeys(entry, new Set(["from", "to", "actor", "reason", "at", "renamedAt", "worktree"]), "branchRename");
-			assertString(entry.from, "branchRename.from", LIMITS.branch);
-			assertString(entry.to, "branchRename.to", LIMITS.branch);
-			assertString(entry.actor, "branchRename.actor", LIMITS.actor);
-			assertString(entry.reason, "branchRename.reason", LIMITS.error);
+			assertString(entry.from, "branchRename.from");
+			assertString(entry.to, "branchRename.to");
+			assertString(entry.actor, "branchRename.actor");
+			assertString(entry.reason, "branchRename.reason");
 			assertTimestamp(entry.at, "branchRename.at");
 			assertTimestamp(entry.renamedAt, "branchRename.renamedAt");
 			validateVerifierWorktree(entry.worktree);
@@ -192,7 +191,7 @@ function validateAttempt(attempt, task, index, fieldPath) {
 	}
 	assertCommit(attempt.commit, `${fieldPath}.commit`);
 	assertHttpUrl(attempt.prUrl, `${fieldPath}.prUrl`);
-	assertNullableString(attempt.resultSummary, `${fieldPath}.resultSummary`, LIMITS.resultSummary);
+	assertNullableString(attempt.resultSummary, `${fieldPath}.resultSummary`);
 	if (!isList(attempt.evidence) || attempt.evidence.length > LIMITS.evidence) {
 		fail("invalid_evidence", `${fieldPath}.evidence is invalid`, {
 			path: `${fieldPath}.evidence`,
@@ -216,7 +215,7 @@ function validateAttempt(attempt, task, index, fieldPath) {
 	if (task.kind !== "verify" && attempt.factoryEvaluations?.length) {
 		fail("invalid_factory_evidence", "Only the independent verifier can report factory evaluations");
 	}
-	assertNullableString(attempt.error, `${fieldPath}.error`, LIMITS.error);
+	assertNullableString(attempt.error, `${fieldPath}.error`);
 	assertTimestamp(attempt.reservedAt, `${fieldPath}.reservedAt`);
 	assertTimestamp(
 		attempt.sessionTerminatedAt,
@@ -347,17 +346,14 @@ function validateTask(task, index) {
 			path: `${fieldPath}.id`,
 		});
 	}
-	assertString(task.title, `${fieldPath}.title`, LIMITS.taskTitle);
+	assertString(task.title, `${fieldPath}.title`);
 	if (!isOneOf(task.kind, TASK_KINDS)) {
 		fail("invalid_task_kind", `${fieldPath}.kind must be implement or verify`, {
 			path: `${fieldPath}.kind`,
 		});
 	}
-	assertString(task.description, `${fieldPath}.description`, LIMITS.taskDescription);
-	assertStringArray(task.dependsOn, `${fieldPath}.dependsOn`, {
-		maximum: LIMITS.dependencies,
-		itemMaximum: 5,
-	});
+	assertString(task.description, `${fieldPath}.description`);
+	assertStringArray(task.dependsOn, `${fieldPath}.dependsOn`);
 	if (typeof task.status !== "string" || !TASK_STATUS_VALUES.has(task.status)) {
 		fail("invalid_task_status", `${fieldPath}.status is not supported`, {
 			path: `${fieldPath}.status`,
@@ -366,13 +362,10 @@ function validateTask(task, index) {
 	}
 	assertStringArray(task.acceptanceCriteria, `${fieldPath}.acceptanceCriteria`, {
 		minimum: task.kind === "verify" ? 0 : 1,
-		maximum: LIMITS.acceptanceCriteria,
-		itemMaximum: LIMITS.acceptanceCriterion,
+
+
 	});
-	assertStringArray(task.expectedFiles, `${fieldPath}.expectedFiles`, {
-		maximum: LIMITS.expectedFiles,
-		itemMaximum: LIMITS.expectedFile,
-	});
+	assertStringArray(task.expectedFiles, `${fieldPath}.expectedFiles`);
 	const deliveryRequirement = effectiveDeliveryRequirement(task, `${fieldPath}.deliveryRequirement`);
 	if (task.kind === "verify"
 		&& (task.acceptanceCriteria.length !== 0

@@ -1,7 +1,7 @@
 import { analysisInputDigest, stableStringify } from "../digest.mjs";
 import { errorCode, isOneOf, isRecord } from "../data.mjs";
 import { contractContext } from "./context.mjs";
-import { digest, enumeration, fail, integer, list, object, text, timestamp } from "./fields.mjs";
+import { COMMIT, digest, enumeration, fail, identifier, integer, list, object, text, timestamp } from "./fields.mjs";
 import { FACTORY_ACTIONS, FACTORY_FORMAT, applyEvent, replay } from "./replay.mjs";
 import { privateKnowledge, privateStatement } from "./records.mjs";
 import { createKnowledgeRepository } from "./repository.mjs";
@@ -22,8 +22,8 @@ export function readKnowledgeDocument(value) {
 	object(value, ["format", "repository", "revision", "events", "portable"], "knowledge document");
 	object(value.repository, ["id", "commonDirectory"], "repository");
 	if (value.format !== FACTORY_FORMAT || value.portable !== true) fail("factory_format_unsupported", "Expected a portable factory knowledge projection");
-	const repository = { id: digest(value.repository.id, "repository.id"), commonDirectory: text(value.repository.commonDirectory, "repository.commonDirectory", 4096) };
-	const events = list(value.events, "events", 1_000_000).map((entry) => {
+	const repository = { id: digest(value.repository.id, "repository.id"), commonDirectory: text(value.repository.commonDirectory, "repository.commonDirectory") };
+	const events = list(value.events, "events").map((entry) => {
 		object(entry, ["revision", "at", "action", "input"], "event");
 		if (!isRecord(entry.input)) fail("factory_input_invalid", "Knowledge event input must be an object");
 		const action = enumeration(entry.action, FACTORY_ACTIONS, "event.action");
@@ -42,22 +42,23 @@ export function readKnowledgeDocument(value) {
 export function readPublication(value) {
 	object(value, ["format", "parent", "document", "selections", "migration"], "knowledge publication");
 	if (value.format !== "foundry-knowledge-v1") fail("factory_format_unsupported", "Unknown knowledge publication format");
-	const selections = list(value.selections, "selections", 100_000).map((entry) => {
+	const selections = list(value.selections, "selections").map((entry) => {
 		object(entry, ["id", "digest", "candidateId", "unitId", "action", "actor", "reason", "at", "commit", "evidence"], "historical selection");
+		if (entry.commit !== null && (typeof entry.commit !== "string" || !COMMIT.test(entry.commit))) fail("factory_commit_invalid", "Selection commits must be full immutable Git commits");
 		return {
-			id: text(entry.id, "selection.id", 256), digest: digest(entry.digest, "selection.digest"),
-			candidateId: text(entry.candidateId, "candidateId", 96), unitId: text(entry.unitId, "unitId", 96),
+			id: identifier(entry.id, "selection.id"), digest: digest(entry.digest, "selection.digest"),
+			candidateId: identifier(entry.candidateId, "candidateId"), unitId: identifier(entry.unitId, "unitId"),
 			action: enumeration(entry.action, ["accept-candidate", "reject-candidate"], "selection.action"),
-			actor: text(entry.actor, "actor", 256), reason: text(entry.reason, "reason", 8000), at: timestamp(entry.at, "selection.at"),
-			commit: entry.commit === null ? null : text(entry.commit, "commit", 64),
-			evidence: list(entry.evidence, "evidence", 128).map((item) => digest(item, "evidence digest")),
+			actor: text(entry.actor, "actor"), reason: text(entry.reason, "reason"), at: timestamp(entry.at, "selection.at"),
+			commit: entry.commit,
+			evidence: list(entry.evidence, "evidence").map((item) => digest(item, "evidence digest")),
 		};
 	});
 	let migration = null;
 	if (value.migration !== null) {
 		object(value.migration, ["sourceDigest", "actor", "reason"], "migration");
 		migration = { sourceDigest: digest(value.migration.sourceDigest, "migration.sourceDigest"),
-			actor: text(value.migration.actor, "actor", 256), reason: text(value.migration.reason, "reason", 8000) };
+			actor: text(value.migration.actor, "actor"), reason: text(value.migration.reason, "reason") };
 	}
 	return {
 		format: "foundry-knowledge-v1", parent: value.parent === null ? null : digest(value.parent, "parent"),
@@ -160,7 +161,10 @@ export function projectKnowledge(original, retained = []) {
 		events.push(portable);
 	}
 	// Imported selection summaries may terminate in a checkpoint, not a contract.
-	through = Math.max(through, ...retained.map((entry) => Number(entry.id.replace(/^decision-/, ""))).filter(Number.isSafeInteger));
+	for (const entry of retained) {
+		const revision = Number(entry.id.replace(/^decision-/, ""));
+		if (Number.isSafeInteger(revision)) through = Math.max(through, revision);
+	}
 	/** @type {FactoryDocument} */
 	const document = {
 		format: original.format, repository: { id: original.repository.id, commonDirectory: `repository:${original.repository.id}` },
@@ -282,7 +286,7 @@ export function createPortableLedger({ local, repository, repositoryPath }) {
 	const migrateFactory = (input) => files.exclusive(() => {
 		const document = localDocument();
 		if (input.expectedRevision !== document.revision) fail("revision_conflict", "Factory changed before migration");
-		const migration = { sourceDigest: analysisInputDigest(document), actor: text(input.actor, "actor", 256), reason: text(input.reason, "reason", 8000) };
+		const migration = { sourceDigest: analysisInputDigest(document), actor: text(input.actor, "actor"), reason: text(input.reason, "reason") };
 		projectKnowledge(document, current()?.publication.selections);
 		const head = synchronize(true, migration);
 		return { repository, revision: document.revision, head: head?.digest ?? null, migrated: true, originalJournalRetained: true, executionOwnership: "not-transferred" };
@@ -302,7 +306,7 @@ export function createPortableLedger({ local, repository, repositoryPath }) {
 		exportFactoryPage: (/** @type {Parameters<typeof local.exportFactoryPage>[0]} */ input = {}) => reading(() => local.exportFactoryPage(input)),
 		storageInfo: () => reading(() => ({
 			...local.storageInfo(), knowledge: { ...local.knowledgeMetadata(), authority: ".foundry/repository.json",
-				historicalSelections: (current()?.publication.selections ?? []).slice(-50),
+				historicalSelections: current()?.publication.selections ?? [],
 				historicalSelectionCount: current()?.publication.selections.length ?? 0, importedExecutionOwnership: false },
 		})),
 	};

@@ -24,9 +24,9 @@ export function fail(code, message, details = null) {
 }
 
 /** @param {unknown} value @param {string} field @param {number} [max] */
-export function text(value, field, max = 8000) {
-	if (typeof value !== "string" || !value.trim() || value.length > max) {
-		fail("factory_input_invalid", `${field} must be nonempty text of at most ${max} characters`);
+export function text(value, field, max) {
+	if (typeof value !== "string" || !value.trim() || (max !== undefined && value.length > max)) {
+		fail("factory_input_invalid", `${field} must be nonempty text${max === undefined ? "" : ` of at most ${max} characters`}`);
 	}
 	return value;
 }
@@ -59,14 +59,14 @@ export function integer(value, field, min = 1, max = Number.MAX_SAFE_INTEGER) {
 }
 
 /** @param {unknown} value @param {string} field @param {number} [max] @param {number} [min] @returns {unknown[]} */
-export function list(value, field, max = 32, min = 0) {
-	if (!isList(value) || value.length > max || value.length < min) fail("factory_input_invalid", `${field} must contain ${min}-${max} items`);
+export function list(value, field, max, min = 0) {
+	if (!isList(value) || (max !== undefined && value.length > max) || value.length < min) fail("factory_input_invalid", `${field} must contain at least ${min} items${max === undefined ? "" : ` and at most ${max}`}`);
 	return value;
 }
 
 /** @param {unknown} value @param {string} field @param {number} [max] @param {number} [min] */
-export function strings(value, field, max = 32, min = 0) {
-	const items = list(value, field, max, min).map((item) => text(item, field, 2048));
+export function strings(value, field, max, min = 0) {
+	const items = list(value, field, max, min).map((item) => text(item, field));
 	if (new Set(items).size !== items.length) fail("factory_input_invalid", `${field} contains duplicates`);
 	return items;
 }
@@ -92,5 +92,5 @@ export function reference(value) {
 
 /** @param {Record<string, unknown>} input @param {string} at */
 export function actorReason(input, at) {
-	return { actor: text(input.actor, "actor", 256), reason: text(input.reason, "reason"), at };
+	return { actor: text(input.actor, "actor"), reason: text(input.reason, "reason"), at };
 }

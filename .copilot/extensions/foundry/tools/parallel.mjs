@@ -9,7 +9,7 @@ export function parallelTools(operations) {
 			skipPermission: undefined,
 			description: "Visit one bounded ready set through the owning coordinator's supported native host route. Reconcile retained reservations before admitting fresh work; persist delivery before readiness. Missing host observations hold without launching children or falling back to workflows.",
 			parameters: objectSchema(["planId", "limit"], {
-				planId: PLAN_ID, limit: { type: "integer", minimum: 1, maximum: 128 },
+				planId: PLAN_ID, limit: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
 			}),
 			handler: handler((args, invocation) => operations.dispatchReady(args, { signal: invocation.signal, invocation })),
 		},

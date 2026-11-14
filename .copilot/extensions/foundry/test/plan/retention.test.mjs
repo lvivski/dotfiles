@@ -50,19 +50,21 @@ test("RET-C01/C02 pure assessment produces a candidate, not an archive grant", (
 	assert.equal(Object.hasOwn(result, "permission"), false);
 });
 
-test("RET-C01 closed decoders reject unknown fields, malformed identities, versions and overflow", () => {
+test("RET-C01 closed decoders reject unknown fields, malformed identities and versions while retaining complete inventories", () => {
 	for (const bad of [{ ...event(), complete: true }, { ...event(), version: 2 }, { ...event(), id: " " },
 		{ ...event(), subject: { ...subject, owner: true } }, { ...event(), sourceCommit: "ABC" },
 		{ ...event(), subject: { ...subject, attempt: { ...subject.attempt, attemptId: "T-002-A001" } } }]) assert.throws(() => retentionEvent(bad));
 	for (const bad of [{ ...observation(), complete: true }, { ...observation(), owner: true }, { ...observation(), idle: true },
-		{ ...observation(), released: true }, { ...observation(), version: 0 }, { ...observation(), inventories: [...observation().inventories, observation().inventories[0]] },
-		{ ...observation(), workspace: { ...observation().workspace, ignored: Array.from({ length: 129 }, (_, index) => `file-${index}`) } }]) assert.throws(() => retentionObservation(bad));
+		{ ...observation(), released: true }, { ...observation(), version: 0 }, { ...observation(), inventories: [...observation().inventories, observation().inventories[0]] }]) assert.throws(() => retentionObservation(bad));
+	const complete = observation();
+	complete.workspace.ignored = Array.from({ length: 129 }, (_, index) => `file-${index}`);
+	assert.deepEqual(retentionObservation(complete).workspace.ignored, complete.workspace.ignored);
 	const duplicate = observation();
 	duplicate.inventories[0].items.push({ ...duplicate.inventories[0].items[0], state: "active" });
 	assert.throws(() => retentionObservation(duplicate), { code: "retention_duplicate" });
 	const overflow = observation();
 	overflow.inventories[2].knownIds = Array.from({ length: 129 }, (_, index) => `run-${index}`);
-	assert.throws(() => retentionObservation(overflow));
+	assert.deepEqual(retentionObservation(overflow).inventories[2].knownIds, overflow.inventories[2].knownIds);
 	assert.throws(() => retentionManifest({ ...manifest(), items: [...manifest().items, manifest().items[0]] }), { code: "retention_duplicate" });
 	assert.throws(() => retentionManifest({ ...manifest(), retained: true }));
 	for (const worktreePath of ["/", "/fixture/../child", "/fixture/child/", "relative", "/fixture/\0child"]) {

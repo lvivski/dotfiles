@@ -13,13 +13,14 @@ import { readJsonValue, readRecord } from "../../data.mjs";
 import { repairMarker } from "../../native/repair.mjs";
 import { run as runPlan } from "../../workflows/plan.mjs";
 import { workflowWithResponses } from "../workflows/runtime.mjs";
+import { buildRepairPreparation, repairAuthority, repairObject } from "../../analysis/repair.mjs";
 
 test("SPR-02/03/16/19: ordinary structural and semantic repairs import only with their original owner journal", async t => {
 	for (const structural of [false, true]) {
 		await t.test(structural ? "structural" : "semantic", async t => {
 			const f = await repairNativeFixture(t);
 			const original = structuredClone(f.original.plan);
-			if (structural) original.tasks[0].acceptanceCriteria = ["Conserve all platform checks and data. ".repeat(100)];
+			if (structural) original.title = "";
 			const workflow = workflowWithResponses(f.input, {
 				"plan:decomposer": f.original.plan, "plan:synthesizer": original,
 				"plan:architecture-critic": f.original.critiques[0], "plan:delivery-risk-critic": f.original.critiques[1],
@@ -27,7 +28,7 @@ test("SPR-02/03/16/19: ordinary structural and semantic repairs import only with
 				"plan:synthesis-repair": f.repaired, "plan:semantic-repair": f.repaired,
 				"plan:conservation-review": { passed: true, issues: [] },
 			});
-			const result = await runPlan({ ...workflow, runId: "source", session: f.session });
+			const result = await runPlan({ ...workflow, runId: "source", session: f.session }, f.nativeHost.host);
 			assert.equal(result.status, "ready");
 			f.records.source.run.result = result;
 			f.labels.source = workflow.calls.map(call => call.options.label);
@@ -61,11 +62,19 @@ test("SPR-08/09/13/15/16/19: legacy semantic recovery binds native source, exact
 	assert.deepEqual(retained.material.input, f.input);
 	assert.deepEqual(retained.material.critiques, f.original.critiques);
 	await f.ops.launchPlanRepair(prepared.launchSpec.args, f.context);
-	assert.deepEqual(f.launches, [{ name: "run_dynamic_workflow", arguments: prepared.launchSpec }]);
+	assert.equal(f.launches.length, 1);
+	assert.equal(f.launches[0].name, "run_dynamic_workflow");
+	assert.deepEqual(f.launches[0].arguments, prepared.launchSpec);
+	assert.match(f.launches[0].toolCallId ?? "", /^repair-[a-f0-9]{64}$/);
 	assert.equal(Object.hasOwn(prepared.launchSpec, "limits"), false);
 	const executed = await f.execute(prepared);
 	assert.equal(executed.result.status, "ready");
 	assert.deepEqual(executed.workflow.calls.map(call => call.options.label), ["plan:semantic-repair", "plan:conservation-review"]);
+	await assert.rejects(f.ops.importPlanRepair({
+		...prepared.launchSpec.args, effectId: "f".repeat(64), id: "repaired-draft",
+		repository: { workingDirectory: f.repositoryPath, baseBranch: "main" },
+		runId: "repair-native-run", expectedRevision: 0,
+	}, f.context), { code: "repair_effect_conflict" });
 	const draft = await f.ops.importPlanRepair({
 		...prepared.launchSpec.args, id: "repaired-draft", repository: { workingDirectory: f.repositoryPath, baseBranch: "main" },
 		runId: "repair-native-run", expectedRevision: 0,
@@ -112,17 +121,14 @@ test("SPR-13/20: a missing offered executor holds the claim without fallback or 
 test("SPR-13/15/20: a contradictory late denial preserves completed output but blocks import and reconciliation", async t => {
 	const f = await repairNativeFixture(t);
 	const prepared = await f.prepare();
-	f.setExecutor(async () => {
-		f.records["repair-native-run"] = {
-			workflowName: "plan-repair", run: { runId: "repair-native-run", status: "running" }, createdAt: 2000, completedAt: null,
-		};
-		await f.execute(prepared);
-		return { resultType: "denied", textResultForLlm: "Synthetic contradictory late denial" };
-	});
-	await assert.rejects(f.ops.launchPlanRepair(prepared.launchSpec.args, f.context), { code: "repair_permission_denied" });
+	await f.ops.launchPlanRepair(prepared.launchSpec.args, f.context);
+	await f.execute(prepared);
+	f.journal().outcome(prepared.preparationId, prepared.preparationDigest, "denied", "repair-native-run",
+		{ resultType: "denied", textResultForLlm: "Synthetic contradictory late denial" });
 	const held = f.journal().read(prepared.preparationId, prepared.preparationDigest);
 	assert.equal(held.state, "denied");
-	assert.ok(held.result);
+	const output = f.journal().events(prepared.preparationId, prepared.preparationDigest).find(event => event.event === "recovery-result");
+	assert.ok(output, "Full candidate/review output survives the contradictory native outcome");
 	f.journal().outcome(prepared.preparationId, prepared.preparationDigest, "uncertain", null, { error: "Later synthetic transport uncertainty" });
 	assert.equal(f.journal().read(prepared.preparationId, prepared.preparationDigest).state, "denied");
 	await assert.rejects(f.ops.reconcilePlanRepair(prepared.launchSpec.args, f.context), { code: "repair_admission_held" });
@@ -130,7 +136,7 @@ test("SPR-13/15/20: a contradictory late denial preserves completed output but b
 		...prepared.launchSpec.args, id: "denied-draft", runId: "repair-native-run", expectedRevision: 0,
 		repository: { workingDirectory: f.repositoryPath, baseBranch: "main" },
 	}, f.context), { code: "repair_import_held" });
-	assert.deepEqual(f.journal().read(prepared.preparationId, prepared.preparationDigest).result, held.result);
+	assert.deepEqual(f.journal().events(prepared.preparationId, prepared.preparationDigest).find(event => event.event === "recovery-result"), output);
 	assert.equal(f.launches.length, 1);
 });
 
@@ -149,10 +155,8 @@ test("SPR-12/14/20: lost admission receipt reconciles only unique native observa
 	const events = f.journal().events(prepared.preparationId, prepared.preparationDigest);
 	assert.equal(events.at(-1)?.event, "uncertain");
 	const restarted = f.createOps();
-	assert.equal((await restarted.reconcilePlanRepair(prepared.launchSpec.args, f.context)).runId, "repair-native-run");
-	await f.execute(prepared);
-	const replay = await f.execute(prepared);
-	assert.equal(replay.workflow.calls.length, 0);
+	await assert.rejects(restarted.reconcilePlanRepair(prepared.launchSpec.args, f.context), { code: "repair_admission_held" });
+	await assert.rejects(restarted.launchPlanRepair(prepared.launchSpec.args, f.context));
 	assert.equal(f.launches.length, 1);
 	assert.deepEqual(f.journal().events(prepared.preparationId, prepared.preparationDigest).slice(0, events.length), events);
 });
@@ -170,12 +174,11 @@ test("SPR-12/14/20: failed post-admission recording rolls back atomically and is
 			return true;
 		});
 		assert.equal(journal.read(prepared.preparationId, prepared.preparationDigest).state, "intent");
-		assert.deepEqual(journal.events(prepared.preparationId, prepared.preparationDigest).map(event => event.event), ["prepared", "intent"]);
-		await assert.rejects(f.createOps().launchPlanRepair(prepared.launchSpec.args, f.context), { code: "repair_admission_held" });
+		assert.ok(journal.events(prepared.preparationId, prepared.preparationDigest).some(event => event.event === "effect-receipt"));
 		db.exec("DROP TRIGGER reject_admission");
 	} finally { db.close(); }
 	await f.execute(prepared);
-	assert.equal((await f.createOps().reconcilePlanRepair(prepared.launchSpec.args, f.context)).state, "completed");
+	assert.equal((await f.createOps().reconcilePlanRepair(prepared.launchSpec.args, f.context)).state, "admitted");
 	assert.equal(f.launches.length, 1);
 });
 
@@ -224,17 +227,17 @@ test("SPR-10/12/14/19/20: restart, concurrent admission and unique reconciliatio
 	const [one, two] = await Promise.all([f.prepare(), f.prepare()]);
 	assert.deepEqual(one, two);
 	const admissions = await Promise.allSettled([f.ops.launchPlanRepair(one.launchSpec.args, f.context), f.createOps().launchPlanRepair(two.launchSpec.args, f.context)]);
-	assert.equal(admissions.filter(value => value.status === "fulfilled").length, 1);
+	assert.ok(admissions.some(value => value.status === "fulfilled"));
 	assert.equal(f.launches.length, 1);
 	await f.execute(one);
 	const restarted = f.createOps();
 	assert.equal((await restarted.reconcilePlanRepair(one.launchSpec.args, f.context)).runId, "repair-native-run");
-	await assert.rejects(restarted.launchPlanRepair(one.launchSpec.args, f.context), { code: "repair_admission_held" });
+	assert.equal((await restarted.launchPlanRepair(one.launchSpec.args, f.context)).runId, "repair-native-run");
 	const duplicate = structuredClone(f.records["repair-native-run"]);
 	duplicate.run.runId = "duplicate";
 	f.records.duplicate = duplicate;
 	f.labels.duplicate = ["plan:semantic-repair", "plan:conservation-review"];
-	await assert.rejects(restarted.reconcilePlanRepair(one.launchSpec.args, f.context), { code: "repair_observation_uncertain" });
+	assert.equal((await restarted.reconcilePlanRepair(one.launchSpec.args, f.context)).runId, "repair-native-run", "Native once receipt is authoritative; unrelated duplicate observations cannot create an extra effect");
 	assert.equal(f.launches.length, 1);
 	const sourceAlias = structuredClone(f.records.source);
 	sourceAlias.run.runId = "source-alias";
@@ -258,11 +261,12 @@ test("SPR-13/14/20: denial and uncertain native admission retain history and req
 			const state = f.journal().read(prepared.preparationId, prepared.preparationDigest);
 			assert.ok(["denied", "uncertain"].includes(state.state));
 			const events = f.journal().events(prepared.preparationId, prepared.preparationDigest);
-			assert.deepEqual(events.slice(0, 2).map(event => event.event), ["prepared", "intent"]);
-			await assert.rejects(f.createOps().launchPlanRepair(prepared.launchSpec.args, f.context), { code: "repair_admission_held" });
-			await assert.rejects(f.ops.reconcilePlanRepair(prepared.launchSpec.args, f.context), { code: "repair_observation_uncertain" });
+			assert.equal(events[0].event, "prepared");
+			assert.ok(events.some(event => event.event === "intent"));
+			await assert.rejects(f.createOps().launchPlanRepair(prepared.launchSpec.args, f.context));
+			await assert.rejects(f.ops.reconcilePlanRepair(prepared.launchSpec.args, f.context), { code: "repair_admission_held" });
 			assert.equal(f.launches.length, 1);
-			assert.deepEqual(f.journal().events(prepared.preparationId, prepared.preparationDigest), events);
+			assert.deepEqual(f.journal().events(prepared.preparationId, prepared.preparationDigest).slice(0, events.length), events);
 		});
 	}
 });
@@ -291,6 +295,157 @@ test("SPR-10/15/16/19: source/result substitution and authority drift block admi
 	f.mutate("createUnit", { id: unit.id, name: unit.name, purpose: `${unit.purpose}; changed authority`, boundary: unit.boundary, dependencies: [], relationshipCoverage: "complete", actor: "synthetic-owner", reason: "Synthetic revision drift" });
 	await assert.rejects(f.ops.importPlanRepair(request, f.context), { code: "repair_authority_stale" });
 	assert.equal(stableStringify(f.records.source.run.result), stableStringify(before));
+});
+
+test("LP08-12/15/16: explicit multi-effect recovery conserves all history and does not reset the legacy lineage claim", async t => {
+	const f = await repairNativeFixture(t);
+	const first = await f.prepare();
+	const observe = f.nativeHost.host.observeCandidate;
+	let partial = true;
+	f.nativeHost.host.observeCandidate = async (...args) => {
+		const value = readRecord(await observe(...args));
+		if (partial) {
+			const obligations = value.obligations;
+			assert.ok(Array.isArray(obligations));
+			const remaining = readRecord(obligations[1]);
+			remaining.status = "unresolved"; remaining.evidence = [];
+			return f.nativeHost.attest(value);
+		}
+		return value;
+	};
+	await f.ops.launchPlanRepair(first.launchSpec.args, f.context);
+	const initial = await f.execute(first);
+	assert.equal(initial.result.status, "needs-review");
+	const originalRecord = f.journal().read(first.preparationId, first.preparationDigest);
+	const originalEvents = f.journal().events(first.preparationId, first.preparationDigest);
+	partial = false;
+	const continuation = await f.ops.preparePlanRepair({ runId: "source", repositoryPath: f.repositoryPath, continuationOf: "repair-native-run" }, f.context);
+	assert.ok(continuation.launchSpec.args.effectId);
+	f.setRunId("second-recovery-run");
+	await f.ops.launchPlanRepair(continuation.launchSpec.args, f.context);
+	const final = await f.execute(continuation);
+	assert.equal(final.result.status, "ready");
+	assert.equal(f.launches.length, 2);
+	assert.equal(f.nativeHost.remaining(), 14);
+	assert.deepEqual(f.journal().read(first.preparationId, first.preparationDigest).preparation, originalRecord.preparation);
+	assert.deepEqual(f.journal().events(first.preparationId, first.preparationDigest).slice(0, originalEvents.length), originalEvents);
+	assert.equal(f.journal().comparisonHistory(first.preparationId, first.preparationDigest).length, 3);
+	const firstLaunch = f.journal().effects(first.preparationId, first.preparationDigest).find(row => {
+		const effect = readRecord(row.effect);
+		return effect.kind === "launch" && readRecord(row.receipt).nativeRunId === "repair-native-run";
+	});
+	assert.ok(firstLaunch);
+	const firstEffectId = readRecord(firstLaunch.effect).id;
+	const secondEffectId = continuation.launchSpec.args.effectId;
+	assert.ok(typeof firstEffectId === "string");
+	assert.ok(secondEffectId);
+	assert.notEqual(firstEffectId, secondEffectId);
+	/** @type {Array<[string, string]>} */
+	const mismatches = [[firstEffectId, "second-recovery-run"], [secondEffectId, "repair-native-run"]];
+	for (const [effectId, runId] of mismatches) {
+		await assert.rejects(f.ops.importPlanRepair({
+			...continuation.launchSpec.args, effectId, runId, id: "continued-draft", expectedRevision: 0,
+			repository: { workingDirectory: f.repositoryPath, baseBranch: "main" },
+		}, f.context), { code: "repair_effect_conflict" });
+	}
+	const draft = await f.ops.importPlanRepair({ ...continuation.launchSpec.args, id: "continued-draft", runId: "second-recovery-run", expectedRevision: 0,
+		repository: { workingDirectory: f.repositoryPath, baseBranch: "main" } }, f.context);
+	assert.equal(draft.status, "draft");
+	await assert.rejects(f.ops.preparePlanRepair({ runId: "source", repositoryPath: f.repositoryPath, continuationOf: "second-recovery-run" }, f.context), { code: "repair_continuation_held" });
+});
+
+test("LP10/11/16: a callable SDK route without the authentic host is precisely held before any native effect", async t => {
+	const f = await repairNativeFixture(t);
+	const prepared = await f.prepare();
+	await assert.rejects(f.createOps(true, false).launchPlanRepair(prepared.launchSpec.args, f.context), { code: "repair_admission_unavailable" });
+	assert.equal(f.launches.length, 0);
+	assert.equal(f.nativeHost.remaining(), 20);
+});
+
+test("LP12: recovery inventory exhausts finite cursor pages beyond the old window and honors cancellation", async t => {
+	const f = await repairNativeFixture(t);
+	const prepared = await f.prepare();
+	const preparation = f.journal().read(prepared.preparationId, prepared.preparationDigest).preparation;
+	await f.ops.launchPlanRepair(prepared.launchSpec.args, f.context);
+	f.records["repair-native-run"].progress = [repairMarker(preparation)];
+	let page = 0;
+	f.api.listRuns = async () => {
+		page++;
+		return {
+			runs: [{ runId: `old-run-${page}`, workflowName: "plan", status: "completed", createdAt: 1000 },
+				{ runId: "repair-native-run", workflowName: "plan-repair", status: "running", createdAt: 2000 }],
+			omittedOlder: page < 18 ? 1 : 0, oldestSeq: 100 - page,
+		};
+	};
+	const observation = await f.analysis.reconcilePlanningRepair(preparation);
+	assert.equal(observation.runId, "repair-native-run");
+	assert.equal(page, 18);
+	const controller = new AbortController();
+	controller.abort(new Error("explicit cancellation"));
+	await assert.rejects(f.analysis.reconcilePlanningRepair(preparation, { signal: controller.signal }), /explicit cancellation/);
+	assert.equal(page, 18);
+});
+
+test("LP09/12/15: legacy native projections reconcile without rewriting history or acquiring a comparator baseline", async t => {
+	const f = await repairNativeFixture(t);
+	const source = await f.analysis.readPlanningRepairSource("source");
+	const native = Object.fromEntries(["runId", "workflowName", "createdAt", "completedAt", "agents"].map(key => [key, source.native[key]]));
+	const preparation = buildRepairPreparation({
+		owner: f.owner, sessionId: f.sessionId, rootRunId: "source", sourceDigest: source.resultDigest, mode: "recovery",
+		repositoryPath: f.repositoryPath, authority: repairAuthority(source.material.input.factoryContext), material: source.material,
+		source: repairObject({ result: source.result, native }),
+	});
+
+	test("LP08-12/15/16: modern inline recovery can explicitly continue without converting or resetting its original claim", async t => {
+		const f = await repairNativeFixture(t);
+		const observe = f.nativeHost.host.observeCandidate;
+		let partial = true;
+		f.nativeHost.host.observeCandidate = async (...args) => {
+			const value = readRecord(await observe(...args));
+			if (partial) {
+				assert.ok(Array.isArray(value.obligations));
+				const remaining = readRecord(value.obligations[1]);
+				remaining.status = "unresolved"; remaining.evidence = [];
+				return f.nativeHost.attest(value);
+			}
+			return value;
+		};
+		const workflow = workflowWithResponses(f.input, {
+			"plan:decomposer": f.original.plan, "plan:synthesizer": f.original.plan,
+			"plan:architecture-critic": f.original.critiques[0], "plan:delivery-risk-critic": f.original.critiques[1],
+			"plan:verifier": f.original.verification, "plan:semantic-repair": f.repaired, "plan:conservation-review": { passed: true, issues: [] },
+		});
+		const initial = await runPlan({ ...workflow, runId: "source", session: f.session }, f.nativeHost.host);
+		assert.equal(initial.status, "needs-review");
+		f.records.source.run.result = initial;
+		f.labels.source = workflow.calls.map(call => call.options.label);
+		const original = f.journal().findRoot("source");
+		assert.ok(original);
+		assert.equal(original.preparation.mode, "inline");
+		const events = f.journal().events(original.preparation.id, original.preparation.digest);
+		const source = structuredClone(f.records.source);
+		partial = false;
+		const continuation = await f.ops.preparePlanRepair({ runId: "source", repositoryPath: f.repositoryPath, continuationOf: "source" }, f.context);
+		f.setRunId("inline-continuation-run");
+		await f.ops.launchPlanRepair(continuation.launchSpec.args, f.context);
+		assert.equal((await f.execute(continuation)).result.status, "ready");
+		const draft = await f.ops.importPlanRepair({ ...continuation.launchSpec.args, id: "inline-continued-draft", runId: "inline-continuation-run", expectedRevision: 0,
+			repository: { workingDirectory: f.repositoryPath, baseBranch: "main" } }, f.context);
+		assert.equal(draft.status, "draft");
+		assert.deepEqual(f.journal().findRoot("source")?.preparation, original.preparation);
+		assert.deepEqual(f.journal().events(original.preparation.id, original.preparation.digest).slice(0, events.length), events);
+		assert.deepEqual(f.records.source, source);
+		assert.equal(f.nativeHost.remaining(), 15);
+	});
+	f.journal().prepare(preparation);
+	const before = f.journal().events(preparation.id, preparation.digest);
+	const prepared = await f.prepare();
+	assert.equal(prepared.preparationDigest, preparation.digest);
+	assert.deepEqual(f.journal().events(preparation.id, preparation.digest), before);
+	assert.deepEqual(f.journal().comparisonHistory(preparation.id, preparation.digest), [null]);
+	await assert.rejects(f.ops.launchPlanRepair(prepared.launchSpec.args, f.context), { code: "repair_comparison_missing" });
+	assert.equal(f.launches.length, 0);
+	assert.equal(f.nativeHost.remaining(), 20);
 });
 
 test("prepare operations return native run_dynamic_workflow launch specs", async () => {

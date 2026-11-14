@@ -22,15 +22,15 @@ export function consumerAgreement(value) {
 	}
 	return {
 		format: value.format, obligation: reference(value.obligation),
-		scenarioId: identifier(value.scenarioId), casesPath: text(value.casesPath, "casesPath", 1024),
-		referencePath: text(value.referencePath, "referencePath", 1024),
+		scenarioId: identifier(value.scenarioId), casesPath: text(value.casesPath, "casesPath"),
+		referencePath: text(value.referencePath, "referencePath"),
 		assertion: value.assertion, from: value.from, to: value.to,
 	};
 }
 
 /** @param {unknown} value @returns {TechnicalCase[]} */
 function cases(value) {
-	const result = list(value, "consumer cases", 64, 3).map(entry => {
+	const result = list(value, "consumer cases", undefined, 3).map(entry => {
 		object(entry, ["id", "input", "expected"], "consumer case");
 		object(entry.input, ["cancelled", "lateResult", "access", "data", "focus"], "scenario input");
 		object(entry.expected, ["outcome", "access", "data", "focus"], "scenario assertions");
@@ -63,10 +63,10 @@ function cases(value) {
 
 /** @param {unknown} value @returns {import("../types/factory.js").TechnicalMaterial[]} */
 function manifest(value) {
-	const result = list(value, "protected material", 256, 1).map(entry => {
+	const result = list(value, "protected material", undefined, 1).map(entry => {
 		object(entry, ["path", "mode", "digest"], "protected file");
 		if (entry.mode !== "100644" && entry.mode !== "100755") fail("technical_material_invalid", "Protected material must be regular files");
-		return { path: text(entry.path, "protected path", 1024), mode: entry.mode, digest: digest(entry.digest, "protected digest") };
+		return { path: text(entry.path, "protected path"), mode: entry.mode, digest: digest(entry.digest, "protected digest") };
 	});
 	if (new Set(result.map(entry => entry.path)).size !== result.length) fail("technical_material_invalid", "Protected paths must be unique");
 	return result;
@@ -125,8 +125,8 @@ export function validateTechnicalDecision(value) {
 		"at", "reason", "failures", "factoryRevision", "contractDigest", "oldScope", "newScope", "verification", "renewal"], "technical decision");
 	identifier(value.id); identifier(value.planId); integer(value.planRevision, "planRevision", 1);
 	integer(value.factoryRevision, "factoryRevision", 1); digest(value.blueprintDigest, "blueprintDigest");
-	text(value.sessionId, "sessionId", 256); text(value.toolCallId, "toolCallId", 512); timestamp(value.at, "at");
-	text(value.reason, "technical reason"); strings(value.failures, "triggering failures", 32, 1);
+	text(value.sessionId, "sessionId"); text(value.toolCallId, "toolCallId"); timestamp(value.at, "at");
+	text(value.reason, "technical reason"); strings(value.failures, "triggering failures", undefined, 1);
 	validateApprovalDelegation(value.delegation);
 	const scope = value.delegation.scope;
 	if (value.kind !== "retry" && value.kind !== "consumer-expectation") fail("technical_kind_unsupported", "Unsupported technical decision");
@@ -155,13 +155,13 @@ export function validateTechnicalDecision(value) {
 		const publication = value.renewal.publication;
 		identifier(publication.unitId); integer(publication.unitRevision, "publication unitRevision", 1);
 		for (const field of ["obligations", "evaluations", "rationale"]) {
-			list(publication[field], field, 128, field === "rationale" ? 0 : 1).forEach(reference);
+			list(publication[field], field, undefined, field === "rationale" ? 0 : 1).forEach(reference);
 		}
-		for (const resolution of list(publication.resolutions, "resolutions", 64)) {
+		for (const resolution of list(publication.resolutions, "resolutions")) {
 			object(resolution, ["knowledge", "reason"], "resolution");
 			reference(resolution.knowledge); text(resolution.reason, "resolution reason");
 		}
-		strings(publication.renewalSignalIds, "renewalSignalIds", 32);
+		strings(publication.renewalSignalIds, "renewalSignalIds");
 		if (publication.unitId !== scope.unitId || publication.unitRevision !== scope.unitRevision
 			|| publication.actor !== `agent-session:${value.sessionId}` || publication.reason !== value.reason) {
 			fail("technical_receipt_tampered", "The publication must retain the decision's native attribution, capability and reason");

@@ -8,7 +8,6 @@ import { COMMIT_PATTERN } from "./values.mjs";
 /** @typedef {{subject: ArtifactSubject, storeId: string, artifacts: RequiredArtifact[], commits: RequiredCommit[]}} ArtifactInventory */
 /** @typedef {Omit<ArtifactInventory, "artifacts"> & {artifacts: (RequiredArtifact & {destination: string})[]}} ArtifactManifest */
 
-export const ARTIFACT_LIMITS = Object.freeze({ artifacts: 128, commits: 128, bytes: 16 * 1024 * 1024, totalBytes: 64 * 1024 * 1024 });
 const kinds = /** @type {const} */ (["report", "evaluator", "context", "decision", "failure", "artifact"]);
 const subjectKeys = ["repositoryId", "ownerId", "sessionId", "planId", "taskId", "attemptId"];
 
@@ -22,27 +21,27 @@ function object(value, keys, name) {
 /** Opaque identifiers, never titles, credentials, content or filesystem roots.
  * @param {unknown} value @returns {string} */
 function identifier(value) {
-	if (typeof value !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(value)) {
-		fail("artifact_identity", "Artifact identities must be bounded opaque identifiers");
+	if (typeof value !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._:-]*$/.test(value)) {
+		fail("artifact_identity", "Artifact identities must be opaque identifiers");
 	}
 	return value;
 }
 
 /** @param {unknown} value @returns {string} */
 function relativePath(value) {
-	if (typeof value !== "string" || value.length > 512 || !/^[A-Za-z0-9._/-]+$/.test(value)
+	if (typeof value !== "string" || !/^[A-Za-z0-9._/-]+$/.test(value)
 		|| value.split("/").some(part => !part || part === "." || part === ".." || part.endsWith(".")
 			|| /^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(part))) {
-		fail("artifact_path", "Artifacts require unambiguous bounded relative paths");
+		fail("artifact_path", "Artifacts require unambiguous relative paths");
 	}
 	return value;
 }
 
-/** @param {unknown} value @param {number} maximum @returns {unknown[]} */
-function entries(value, maximum) {
-	if (!Array.isArray(value) || !value.length || value.length > maximum
+/** @param {unknown} value @returns {unknown[]} */
+function entries(value) {
+	if (!Array.isArray(value) || !value.length
 		|| Object.keys(value).length !== value.length) {
-		fail("artifact_inventory", "Artifact inventory must be nonempty, explicit and within its bound");
+		fail("artifact_inventory", "Artifact inventory must be nonempty and explicit");
 	}
 	return value;
 }
@@ -75,8 +74,8 @@ function artifact(value) {
 	if (typeof input.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(input.sha256)) {
 		fail("artifact_digest", "An exact SHA256 of the complete original bytes is required");
 	}
-	if (typeof input.bytes !== "number" || !Number.isSafeInteger(input.bytes) || input.bytes < 0 || input.bytes > ARTIFACT_LIMITS.bytes) {
-		fail("artifact_size", "Artifact byte length is missing or exceeds the bounded reader");
+	if (typeof input.bytes !== "number" || !Number.isSafeInteger(input.bytes) || input.bytes < 0) {
+		fail("artifact_size", "Artifact byte length must be an exact nonnegative safe integer");
 	}
 	return { id: identifier(input.id), kind, originalId: identifier(input.originalId), producerId: identifier(input.producerId),
 		root: identifier(input.root), path: relativePath(input.path), sha256: input.sha256, bytes: input.bytes };
@@ -96,8 +95,8 @@ const compare = (left, right) => left < right ? -1 : left > right ? 1 : 0;
 export function planArtifactRetention(value) {
 	const input = object(value, ["subject", "storeId", "artifacts", "commits"], "artifact inventory");
 	const subject = artifactSubject(input.subject), storeId = identifier(input.storeId);
-	const artifacts = entries(input.artifacts, ARTIFACT_LIMITS.artifacts).map(artifact).sort((a, b) => compare(a.id, b.id));
-	const commits = entries(input.commits, ARTIFACT_LIMITS.commits).map(value => {
+	const artifacts = entries(input.artifacts).map(artifact).sort((a, b) => compare(a.id, b.id));
+	const commits = entries(input.commits).map(value => {
 		const item = object(value, ["commit", "sourceRef", "durableRef"], "source commit");
 		if (typeof item.commit !== "string" || !COMMIT_PATTERN.test(item.commit)) fail("artifact_commit", "A full immutable commit ID is required");
 		const sourceRef = ref(item.sourceRef), durableRef = ref(item.durableRef);
@@ -108,9 +107,6 @@ export function planArtifactRetention(value) {
 	}).sort((a, b) => compare(a.durableRef, b.durableRef));
 	for (const kind of kinds.filter(kind => kind !== "artifact")) {
 		if (!artifacts.some(artifact => artifact.kind === kind)) fail("artifact_incomplete", `Preservation requires original ${kind} artifacts`);
-	}
-	if (artifacts.reduce((sum, item) => sum + item.bytes, 0) > ARTIFACT_LIMITS.totalBytes) {
-		fail("artifact_overflow", "The complete artifact set exceeds the bounded retention budget");
 	}
 	/** @type {Map<string, string>} */
 	const paths = new Map();
@@ -145,16 +141,16 @@ export function readArtifactManifest(value) {
 	const input = object(value, ["subject", "storeId", "artifacts", "commits"], "artifact manifest");
 	const planned = planArtifactRetention({
 		...input,
-		artifacts: entries(input.artifacts, ARTIFACT_LIMITS.artifacts).map(value => {
+		artifacts: entries(input.artifacts).map(value => {
 			const item = object(value, ["id", "kind", "originalId", "producerId", "root", "path", "sha256", "bytes", "destination"], "manifest artifact");
 			const { destination, ...original } = item;
 			return original;
 		}),
 	});
-	for (const value of entries(input.artifacts, ARTIFACT_LIMITS.artifacts)) {
+	for (const value of entries(input.artifacts)) {
 		assertPlainObject(value, "manifest artifact");
 		if (planned.artifacts.find(item => item.id === value.id)?.destination !== value.destination) {
-			fail("artifact_destination", "A manifest cannot override its bounded intended retention location");
+			fail("artifact_destination", "A manifest cannot override its intended retention location");
 		}
 	}
 	return planned;

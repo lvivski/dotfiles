@@ -19,6 +19,26 @@ const bridgeFor = (f) => createFactoryBridge({
 	workspace: () => path.join(f.root, "coordinator"), storeFor: () => f.ops.storeFor(), notify() {}, storageRoot: f.storageRoot,
 });
 
+test("capture framing retains every byte beyond the former image cap without claiming decoding or live perception", async (t) => {
+	const f = await fixture(t, { visual: true });
+	const original = await readFile(f.capturePath);
+	const large = Buffer.concat([original, Buffer.alloc(8 * 1024 * 1024 + 1, 23)]);
+	await writeFile(f.capturePath, large);
+	let plan = await f.implement(await f.generationPlan());
+	plan = await f.attach(f.ops, plan, "T-002");
+	const payload = f.payload(plan, "T-002");
+	const report = f.visualResult();
+	report.states[0].capture.digest = createHash("sha256").update(large).digest("hex");
+	payload.factoryEvaluations[0].report = JSON.stringify(report);
+	plan = await f.ops.completeTask(payload);
+	assert.equal(must(plan.tasks.find((task) => task.id === "T-002")).status, "done");
+	assert.deepEqual(await readFile(f.capturePath), large);
+	await writeFile(f.capturePath, Buffer.concat([large, Buffer.from([0])]));
+	await assert.rejects(f.ops.approve({
+		planId: plan.id, expectedRevision: plan.revision, approvalType: "completion", approvedBy: "owner",
+	}), { code: "factory_visual_mismatch" });
+});
+
 test("multi-producer assurance uses the final governing criterion, never a passing producer check or package visual capture", async (t) => {
 	for (const visual of [false, true]) await t.test(visual ? "synthetic visual gate only, not live perception" : "boundary evaluator", async (t) => {
 		const f = await fixture(t, { visual });

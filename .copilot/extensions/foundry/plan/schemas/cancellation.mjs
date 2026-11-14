@@ -53,13 +53,10 @@ export function validateCancellation(cancellation, planStatus, tasks) {
 	assertPlainObject(cancellation, "cancellation");
 	assertKnownKeys(cancellation, CANCELLATION_KEYS, "cancellation");
 	assertRequestId(cancellation.requestId, "cancellation.requestId");
-	assertString(cancellation.reason, "cancellation.reason", LIMITS.error);
-	assertString(cancellation.requestedBy, "cancellation.requestedBy", LIMITS.actor);
+	assertString(cancellation.reason, "cancellation.reason");
+	assertString(cancellation.requestedBy, "cancellation.requestedBy");
 	assertTimestamp(cancellation.requestedAt, "cancellation.requestedAt");
-	assertStringArray(cancellation.requiredAttemptIds, "cancellation.requiredAttemptIds", {
-		maximum: LIMITS.tasks,
-		itemMaximum: LIMITS.attemptId,
-	});
+	assertStringArray(cancellation.requiredAttemptIds, "cancellation.requiredAttemptIds");
 	/** @type {Map<string, FoundryAttempt>} */
 	const attemptsById = new Map(tasks.flatMap(
 		(task) => task.attempts.map((attempt) => [attempt.id, attempt]),
@@ -84,22 +81,14 @@ export function validateCancellation(cancellation, planStatus, tasks) {
 			path: "cancellation.requiredAttemptIds",
 		});
 	}
-	assertNullableString(
-		cancellation.verificationReservationId,
-		"cancellation.verificationReservationId",
-		LIMITS.requestId,
-	);
+	assertNullableString(cancellation.verificationReservationId, "cancellation.verificationReservationId");
 	if (cancellation.verificationReservationId !== null) {
 		assertRequestId(
 			cancellation.verificationReservationId,
 			"cancellation.verificationReservationId",
 		);
 	}
-	assertNullableString(
-		cancellation.verificationRunId,
-		"cancellation.verificationRunId",
-		LIMITS.verificationRunId,
-	);
+	assertNullableString(cancellation.verificationRunId, "cancellation.verificationRunId");
 	if (cancellation.finalizationOverride !== null) {
 		assertPlainObject(cancellation.finalizationOverride, "cancellation.finalizationOverride");
 		assertKnownKeys(
@@ -107,16 +96,8 @@ export function validateCancellation(cancellation, planStatus, tasks) {
 			CANCELLATION_OVERRIDE_KEYS,
 			"cancellation.finalizationOverride",
 		);
-		assertString(
-			cancellation.finalizationOverride.reason,
-			"cancellation.finalizationOverride.reason",
-			LIMITS.error,
-		);
-		assertString(
-			cancellation.finalizationOverride.attestedBy,
-			"cancellation.finalizationOverride.attestedBy",
-			LIMITS.actor,
-		);
+		assertString(cancellation.finalizationOverride.reason, "cancellation.finalizationOverride.reason");
+		assertString(cancellation.finalizationOverride.attestedBy, "cancellation.finalizationOverride.attestedBy");
 	}
 	if (!isList(cancellation.acknowledgements)
 		|| cancellation.acknowledgements.length > LIMITS.tasks + 1) {
@@ -140,13 +121,13 @@ export function validateCancellation(cancellation, planStatus, tasks) {
 			});
 		}
 		if (entry.disposition === "session-terminated") {
-			assertString(entry.sessionId, `${fieldPath}.sessionId`, LIMITS.sessionId);
+			assertString(entry.sessionId, `${fieldPath}.sessionId`);
 		} else if (entry.sessionId !== null) {
 			fail("invalid_cancellation_acknowledgement", `${fieldPath}.sessionId must be null`, {
 				path: `${fieldPath}.sessionId`,
 			});
 		}
-		assertString(entry.acknowledgedBy, `${fieldPath}.acknowledgedBy`, LIMITS.actor);
+		assertString(entry.acknowledgedBy, `${fieldPath}.acknowledgedBy`);
 		assertTimestamp(entry.acknowledgedAt, `${fieldPath}.acknowledgedAt`);
 		return {
 			attemptId: entry.attemptId, disposition: entry.disposition, sessionId: entry.sessionId,
@@ -194,7 +175,7 @@ export function validateCancellation(cancellation, planStatus, tasks) {
 			path: "cancellation.verificationDisposition",
 		});
 	}
-	assertNullableString(cancellation.finalizedBy, "cancellation.finalizedBy", LIMITS.actor);
+	assertNullableString(cancellation.finalizedBy, "cancellation.finalizedBy");
 	assertTimestamp(cancellation.finalizedAt, "cancellation.finalizedAt", { nullable: true });
 	if (cancellation.verificationRunId === null
 		&& cancellation.verificationTerminatedAt !== null) {

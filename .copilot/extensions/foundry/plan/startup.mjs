@@ -24,8 +24,8 @@ Reply exactly "${payloadAcknowledgement(identity)}" and end this turn; wait for 
  * @param {{planId: string, taskId: string, attemptId: string}} identity @param {string} body
  * @returns {import("../types/plan.js").TaskStartup} */
 export function sealTaskStartup(identity, body) {
-	const delegationPrompt = gate(identity) + text(body, "complete assignment", 2_000_000);
-	text(delegationPrompt, "complete kickoff", 2_000_000);
+	const delegationPrompt = gate(identity) + text(body, "complete assignment");
+	text(delegationPrompt, "complete kickoff");
 	return { recipe: "complete-kickoff-v1", assignmentDigest: assignmentDigest(delegationPrompt), delegationPrompt };
 }
 
@@ -33,7 +33,7 @@ export function sealTaskStartup(identity, body) {
  * @param {unknown} value @returns {import("../types/plan.js").TaskStartup} */
 export function taskStartup(value) {
 	object(value, ["recipe", "assignmentDigest", "delegationPrompt"], "sealed startup");
-	const delegationPrompt = text(value.delegationPrompt, "complete kickoff", 2_000_000);
+	const delegationPrompt = text(value.delegationPrompt, "complete kickoff");
 	const sealedDigest = digest(value.assignmentDigest, "assignment digest");
 	if (value.recipe !== "complete-kickoff-v1" || sealedDigest !== assignmentDigest(delegationPrompt)) {
 		fail("dispatch_startup_invalid", "Unknown recipe or changed sealed assignment");

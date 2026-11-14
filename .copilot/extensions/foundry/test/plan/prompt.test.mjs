@@ -81,15 +81,17 @@ test("sealed startup rejects malformed data, unknown recipes and resealed foreig
 	}), { code: "dispatch_startup_invalid" });
 });
 
-test("complete startup enforces the final two-million-character bound including its gate", () => {
+test("complete startup retains full body and exact receipt gate beyond the former two-million-character cap", () => {
 	const identity = { planId: "sealed-limit", taskId: "T-001", attemptId: "T-001-A001" };
 	const gateLength = sealTaskStartup(identity, "x").delegationPrompt.length - 1;
 	const body = "x".repeat(2_000_000 - gateLength);
 	const startup = sealTaskStartup(identity, body);
 	assert.equal(startup.delegationPrompt.length, 2_000_000);
 	assert.deepEqual(taskStartup(startup), startup);
-	assert.throws(() => sealTaskStartup(identity, `${body}x`), { code: "factory_input_invalid" });
-	assert.throws(() => taskStartup({ ...startup, delegationPrompt: `${startup.delegationPrompt}x` }), { code: "factory_input_invalid" });
+	const larger = sealTaskStartup(identity, `${body}x`);
+	assert.equal(larger.delegationPrompt.length, 2_000_001);
+	assert.deepEqual(taskStartup(larger), larger);
+	assert.throws(() => taskStartup({ ...startup, delegationPrompt: `${startup.delegationPrompt}x` }), { code: "dispatch_startup_invalid" });
 	for (const invalid of ["", " \t\r\n"]) assert.throws(() => sealTaskStartup(identity, invalid), { code: "factory_input_invalid" });
 });
 

@@ -13,8 +13,8 @@ export function validateFactoryBinding(factory) {
 	for (const field of ["repositoryId", "blueprintDigest"]) {
 		if (typeof factory[field] !== "string" || !/^[a-f0-9]{64}$/.test(factory[field])) fail("invalid_factory_binding", `factory.${field} must be a SHA-256 digest`);
 	}
-	for (const field of ["unitId", "owner"]) assertString(factory[field], `factory.${field}`, field === "owner" ? 4096 : 96);
-	assertNullableString(factory.candidateId, "factory.candidateId", 96);
+	for (const field of ["unitId", "owner"]) assertString(factory[field], `factory.${field}`);
+	assertNullableString(factory.candidateId, "factory.candidateId");
 	if (typeof factory.unitRevision !== "number" || !Number.isSafeInteger(factory.unitRevision) || factory.unitRevision < 1) fail("invalid_factory_binding", "Factory unitRevision is required");
 	for (const field of ["contractDigest", "contextDigest"]) {
 		if (factory[field] !== null && (typeof factory[field] !== "string" || !/^[a-f0-9]{64}$/.test(factory[field]))) fail("invalid_factory_binding", `factory.${field} is invalid`);
@@ -28,16 +28,16 @@ export function validateEvaluationTarget(target) {
 	if (target == null) return;
 	assertPlainObject(target, "evaluationTarget");
 	assertKnownKeys(target, new Set(["candidateId", "commit", "criteria", "evaluations"]), "evaluationTarget");
-	assertString(target.candidateId, "evaluationTarget.candidateId", 96);
+	assertString(target.candidateId, "evaluationTarget.candidateId");
 	assertCommit(target.commit, "evaluationTarget.commit");
 	if (target.commit === null) fail("invalid_evaluation_target", "Read-only evaluation requires the exact delivered commit");
-	assertStringArray(target.criteria, "evaluationTarget.criteria", { minimum: 1, maximum: 32, itemMaximum: LIMITS.acceptanceCriterion });
-	if (!isList(target.evaluations) || target.evaluations.length < 1 || target.evaluations.length > 32) fail("invalid_evaluation_target", "Evaluation references must be bounded and nonempty");
+	assertStringArray(target.criteria, "evaluationTarget.criteria", { minimum: 1,  });
+	if (!isList(target.evaluations) || target.evaluations.length < 1) fail("invalid_evaluation_target", "Evaluation references must be nonempty");
 	const refs = new Set();
 	for (const ref of target.evaluations) {
 		assertPlainObject(ref, "evaluation reference");
 		assertKnownKeys(ref, new Set(["id", "revision"]), "evaluation reference");
-		assertString(ref.id, "evaluation id", 96);
+		assertString(ref.id, "evaluation id");
 		if (typeof ref.revision !== "number" || !Number.isSafeInteger(ref.revision) || ref.revision < 1) fail("invalid_evaluation_target", "Evaluation revision must be positive");
 		const key = `${ref.id}@${ref.revision}`;
 		if (refs.has(key)) fail("invalid_evaluation_target", "Evaluation references must be unique");
@@ -47,26 +47,26 @@ export function validateEvaluationTarget(target) {
 
 /** @param {unknown} learning @returns {asserts learning is import("../../types/plan.js").Learning[]} */
 export function validateFactoryLearning(learning) {
-	if (!isList(learning) || learning.length > 32) fail("invalid_factory_learning", "Learning must be a bounded list");
+	if (!isList(learning)) fail("invalid_factory_learning", "Learning must be a list");
 	for (const entry of learning) {
 		assertPlainObject(entry, "learning");
 		assertKnownKeys(entry, new Set(["kind", "statement", "uncertainty"]), "learning");
 		if (!isOneOf(entry.kind, ["observation", "inference", "proposal"])) fail("invalid_factory_learning", "Implementation learning cannot establish governing obligations");
-		assertString(entry.statement, "learning.statement", 8000);
-		assertNullableString(entry.uncertainty ?? null, "learning.uncertainty", 8000);
+		assertString(entry.statement, "learning.statement");
+		assertNullableString(entry.uncertainty ?? null, "learning.uncertainty");
 	}
 }
 
 /** @param {unknown} evaluations @returns {asserts evaluations is import("../../types/plan.js").EvaluationReport[]} */
 export function validateFactoryEvaluations(evaluations) {
-	if (!isList(evaluations) || evaluations.length > 32) fail("invalid_factory_evidence", "Factory evaluations must be a bounded list");
+	if (!isList(evaluations)) fail("invalid_factory_evidence", "Factory evaluations must be a list");
 	const refs = new Set();
 	for (const entry of evaluations) {
 		assertPlainObject(entry, "factoryEvaluation");
 		assertKnownKeys(entry, new Set(["evaluation", "procedureDigest", "environment", "workload", "outcome", "report", "independenceReason"]), "factoryEvaluation");
 		assertPlainObject(entry.evaluation, "factoryEvaluation.evaluation");
 		assertKnownKeys(entry.evaluation, new Set(["id", "revision"]), "factoryEvaluation.evaluation");
-		assertString(entry.evaluation.id, "evaluation.id", 96);
+		assertString(entry.evaluation.id, "evaluation.id");
 		if (typeof entry.evaluation.revision !== "number" || !Number.isSafeInteger(entry.evaluation.revision) || entry.evaluation.revision < 1) fail("invalid_factory_evidence", "Evaluation revision is invalid");
 		const ref = `${entry.evaluation.id}@${entry.evaluation.revision}`;
 		if (refs.has(ref)) fail("invalid_factory_evidence", "Evaluation reports must be unique");
@@ -74,7 +74,7 @@ export function validateFactoryEvaluations(evaluations) {
 		if (typeof entry.procedureDigest !== "string" || !/^[a-f0-9]{64}$/.test(entry.procedureDigest)) fail("invalid_factory_evidence", "Evaluation procedureDigest is required");
 		if (!isOneOf(entry.outcome, ["passed", "failed", "inconclusive"])) fail("invalid_factory_evidence", "Evaluation outcome is invalid");
 		for (const field of ["environment", "workload", "report", "independenceReason"]) {
-			assertString(entry[field], `factoryEvaluation.${field}`, field === "report" ? 16000 : 2048);
+			assertString(entry[field], `factoryEvaluation.${field}`);
 		}
 	}
 
@@ -85,12 +85,12 @@ export function validateVerifierWorktree(value) {
 	assertPlainObject(value, "verifierWorktree");
 	if (value.status === "available") {
 		assertKnownKeys(value, new Set(["status", "path", "gitDirectory"]), "verifierWorktree");
-		assertString(value.path, "verifierWorktree.path", 4096);
-		assertString(value.gitDirectory, "verifierWorktree.gitDirectory", 4096);
+		assertString(value.path, "verifierWorktree.path");
+		assertString(value.gitDirectory, "verifierWorktree.gitDirectory");
 	} else {
 		assertKnownKeys(value, new Set(["status", "reason"]), "verifierWorktree");
 		if (value.status !== "unsupported") fail("invalid_verifier_worktree", "Verifier worktree status must be available or unsupported");
-		assertString(value.reason, "verifierWorktree.reason", 2048);
+		assertString(value.reason, "verifierWorktree.reason");
 	}
 }
 
@@ -101,7 +101,7 @@ export function validateRepositoryCheck(value) {
 	if (value.version !== 1) fail("invalid_repository_check", "Unknown repository identity check version");
 	assertCommit(value.commit, "repositoryCheck.commit");
 	if (value.commit === null) fail("invalid_repository_check", "Repository checks require a commit");
-	assertStringArray(value.integrationCommits, "repositoryCheck.integrationCommits", { maximum: 32, itemMaximum: 64 });
+	assertStringArray(value.integrationCommits, "repositoryCheck.integrationCommits");
 	for (const commit of value.integrationCommits) assertCommit(commit, "repositoryCheck.integrationCommit");
 	if (value.worktree !== undefined) {
 		assertPlainObject(value.worktree, "repositoryCheck.worktree");

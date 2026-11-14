@@ -189,10 +189,10 @@ export function compilePackageGraph(value, governing) {
 
 /** @param {unknown} value @param {GoverningBindings} bindings @returns {EvaluationCriterion[]} */
 function criteriaFor(value, bindings) {
-	const criteria = list(value, "evaluation criteria", 128).map((entry) => {
+	const criteria = list(value, "evaluation criteria").map((entry) => {
 		object(entry, ["id", "revision", "criterion", "human"], "evaluation criterion");
 		return { ...reference({ id: entry.id, revision: entry.revision }),
-			criterion: text(entry.criterion, "evaluation criterion", LIMITS.acceptanceCriterion), human: readBoolean(entry.human) };
+			criterion: text(entry.criterion, "evaluation criterion"), human: readBoolean(entry.human) };
 	}).sort(compareRefs);
 	if (new Set(criteria.map(refKey)).size !== criteria.length) fail("parallel_evaluation_mismatch", "Evaluation criteria repeat a pinned evaluator");
 	for (const criterion of criteria) {
@@ -223,8 +223,8 @@ function criteriaFor(value, bindings) {
  * comparison refs are not repository paths; they never suppress other path rules.
  * @param {string[] | undefined} values @param {boolean} external */
 function policyScopes(values, external) {
-	return list(values ?? [], "path policy", 128).flatMap((raw) => {
-		const value = text(raw, "path policy", 4096);
+	return list(values ?? [], "path policy").flatMap((raw) => {
+		const value = text(raw, "path policy");
 		if (external && (/^[a-z][a-z0-9+.-]*:/i.test(value) || value.startsWith("/") || /\s/.test(value))) return [];
 		const wildcard = value.search(/[*?[\]{}]/);
 		const prefix = (wildcard < 0 ? value : value.slice(0, wildcard)).replace(/\/+$/, "");
@@ -315,7 +315,7 @@ export function readPackageDecomposition(value, options) {
 	const expectedDigest = readDigest(options.digest, "trusted package decomposition digest");
 	const bindings = canonicalBindings(options.governing);
 	const governingDigest = analysisInputDigest(bindings);
-	const tasks = list(value, "compiled package tasks", LIMITS.tasks, 2);
+	const tasks = list(value, "compiled package tasks", undefined, 2);
 	/** @type {unknown[]} */
 	const packages = [];
 	let target;
@@ -324,7 +324,7 @@ export function readPackageDecomposition(value, options) {
 			fail("parallel_package_task_mismatch", "Recovery requires complete implementation and verifier tasks");
 		}
 		if (task.kind === "verify") continue;
-		const description = text(task.description, "package description", LIMITS.taskDescription);
+		const description = text(task.description, "package description");
 		const start = description.lastIndexOf(FRAME_START);
 		if (start === -1 || !description.endsWith(FRAME_END)) {
 			fail("parallel_package_manifest_missing", "Implementation task has no complete canonical package manifest");

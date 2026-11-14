@@ -404,21 +404,21 @@ test("PF-PKG-01 deterministic 32/128 package pure workloads retain every edge an
 	assert.equal(compilePackages(value, options(value)).tasks.length, 33);
 });
 
-test("PF-PKG-06 executable limits reject instead of collapsing or truncating packages, criteria and manifests", () => {
-	const tooManyTasks = workload(128);
-	assert.throws(() => compilePackages(tooManyTasks, options(tooManyTasks)), { code: "array_too_long" });
-	const evidence = workload(63);
+test("PF-PKG-06 executable packages preserve beyond-cap collections and full manifests while representable check identities remain required", () => {
+	const wide = workload(128);
+	const complete = compilePackages(wide, options(wide));
+	assert.equal(complete.tasks.length, 129);
+	assert.equal(verificationCheckIds(complete.tasks).length, 130);
+	const evidence = workload(998);
 	assert.throws(() => compilePackages(evidence, options(evidence)), { code: "too_many_verification_checks" });
-	const maximum = workload(62);
-	assert.equal(verificationCheckIds(compilePackages(maximum, options(maximum)).tasks).length, LIMITS.evidence);
 	const tooManyCriteria = decomposition();
-	tooManyCriteria.bindings.evaluators = Array.from({ length: LIMITS.acceptanceCriteria + 1 }, (_unused, index) => ({
+	tooManyCriteria.bindings.evaluators = Array.from({ length: 40 }, (_unused, index) => ({
 		...tooManyCriteria.bindings.evaluators[0], id: `oracle-${String(index).padStart(3, "0")}`,
 		requirements: tooManyCriteria.bindings.requirements,
 	}));
 	tooManyCriteria.bindings.visualEvaluation = null;
 	tooManyCriteria.packages[2].evaluators = tooManyCriteria.bindings.evaluators.map(({ id, revision }) => ({ id, revision }));
-	assert.throws(() => compilePackages(tooManyCriteria, options(tooManyCriteria)), { code: "array_too_long" });
+	assert.equal(compilePackages(tooManyCriteria, options(tooManyCriteria)).tasks[2].acceptanceCriteria.length > 32, true);
 	const oversized = decomposition();
 	oversized.packages[0].expectedFiles = ["module/**"];
 	oversized.packages[0].outputs = Array.from({ length: 60 }, (_unused, index) => ({ id: `output-${index}`, path: `module/${"x".repeat(200)}-${index}.mjs` }));
@@ -426,6 +426,10 @@ test("PF-PKG-06 executable limits reject instead of collapsing or truncating pac
 		...oversized.packages[0].outputs.map((output, index) => ({ producer: "alpha", output: output.id, destination: `inputs/a-${index}.mjs` })),
 		oversized.packages[2].inputs[1],
 	];
-	assert.throws(() => compilePackages(oversized, options(oversized)), /description/);
+	const manifested = compilePackages(oversized, options(oversized));
+	assert.equal(manifested.tasks[0].description.length > 8000, true);
+	assert.deepEqual(readPackageDecomposition(manifested.tasks, {
+		governing: oversized.bindings, digest: manifested.digest,
+	}), compilePackageGraph(oversized, oversized.bindings).decomposition);
 	assert.equal(stableStringify(oversized).includes("output-59"), true);
 });

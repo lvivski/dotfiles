@@ -166,10 +166,10 @@ export function createPackageInputs(options) {
 	const taskIds = freeze(graph.taskIds);
 	object(options.policy, ["protectedPaths", "comparisonOnlyPaths", "comparisonOnlyDigests", "forbiddenWorktreePaths"], "input policy");
 	const policy = freeze({
-		protectedPaths: list(options.policy.protectedPaths, "protected paths", 512).map((value) => relativePath(value, "protected path")),
-		comparisonOnlyPaths: list(options.policy.comparisonOnlyPaths, "comparison-only paths", 512).map((value) => relativePath(value, "comparison-only path")),
-		comparisonOnlyDigests: list(options.policy.comparisonOnlyDigests, "comparison-only digests", 512).map((value) => digest(value, "comparison-only digest")),
-		forbiddenWorktreePaths: list(options.policy.forbiddenWorktreePaths, "forbidden worktrees", 512).map(absolutePath),
+		protectedPaths: list(options.policy.protectedPaths, "protected paths").map((value) => relativePath(value, "protected path")),
+		comparisonOnlyPaths: list(options.policy.comparisonOnlyPaths, "comparison-only paths").map((value) => relativePath(value, "comparison-only path")),
+		comparisonOnlyDigests: list(options.policy.comparisonOnlyDigests, "comparison-only digests").map((value) => digest(value, "comparison-only digest")),
+		forbiddenWorktreePaths: list(options.policy.forbiddenWorktreePaths, "forbidden worktrees").map(absolutePath),
 	});
 	const readOwnedDelivery = options.readOwnedDelivery, readAuthorizedConsumerEntry = options.readAuthorizedConsumerEntry;
 	if (typeof readOwnedDelivery !== "function" || typeof readAuthorizedConsumerEntry !== "function") {
@@ -233,7 +233,7 @@ export function createPackageInputs(options) {
 			|| !same(receipt.attempt, attempt) || receipt.commit !== current.delivery.commit) {
 			fail("parallel_delivery_mismatch", "Successful receipt must bind the exact declared producer attempt, reservation and commit");
 		}
-		const outputs = list(current.delivery.outputs, "producer outputs", 128, 1).map((output) => {
+		const outputs = list(current.delivery.outputs, "producer outputs", undefined, 1).map((output) => {
 			object(output, ["id", "artifact"], "producer output");
 			const artifact = artifactIdentity(output.artifact);
 			const expected = declared.outputs.find((item) => item.id === output.id);
@@ -253,7 +253,7 @@ export function createPackageInputs(options) {
 	 * @param {import("../types/parallel.js").PackageInput[]} supplied */
 	function resolveCurrent(attempt, bootstrap, supplied) {
 		const consumer = ownedAttempt(attempt), required = consumerPackage(consumer).inputs;
-		const inputs = list(supplied, "inputs", 128).map(packageInput);
+		const inputs = list(supplied, "inputs").map(packageInput);
 		const key = (/** @type {import("../types/parallel.js").PackageInput} */ input) => stableStringify(input);
 		if (!same(inputs.map(key).sort(), required.map(key).sort())) fail("parallel_input_coverage", "The complete immutable predecessor set is required");
 		for (const input of required) {

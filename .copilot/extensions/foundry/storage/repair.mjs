@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { parseJson, readJsonValue } from "../data.mjs";
 import { stableStringify } from "../digest.mjs";
-import { closedRepairObject, repairDigest, repairObject, validateRepairPreparation } from "../analysis/repair.mjs";
+import { closedRepairObject, repairDigest, repairObject, repairSourceSnapshotsEqual, validateRepairPreparation } from "../analysis/repair.mjs";
 import { createArtifactDatabase } from "./database.mjs";
 import { storageError } from "./errors.mjs";
 
@@ -34,6 +34,9 @@ export function createRepairJournal(options) {
 		) STRICT;
 		CREATE TABLE IF NOT EXISTS planning_repair_events (
 			seq INTEGER PRIMARY KEY, id TEXT NOT NULL, event TEXT NOT NULL, payload TEXT NOT NULL
+		) STRICT;
+		CREATE TABLE IF NOT EXISTS planning_repair_effects (
+			id TEXT PRIMARY KEY NOT NULL, repair_id TEXT NOT NULL, document TEXT NOT NULL
 		) STRICT;`);
 	}, { write: true });
 
@@ -95,8 +98,10 @@ export function createRepairJournal(options) {
 	}
 	return {
 		databasePath: storage.databasePath,
-		/** @param {Preparation} value */
-		prepare(value) {
+		/** A baseline is supplied only for a newly prepared record by the authentic host.
+		 * Existing history is never retroactively seeded or reset.
+		 * @param {Preparation} value @param {Json} [baseline] */
+		prepare(value, baseline) {
 			const preparation = validateRepairPreparation(value);
 			owner(preparation);
 			return storage.transaction(db => {
@@ -104,7 +109,10 @@ export function createRepairJournal(options) {
 					.all(preparation.rootRunId, preparation.inputDigest, preparation.id);
 				if (rows.length) {
 					const previous = decode(parseJson(String(rows[0].document)));
-					if (rows.length !== 1 || stableStringify(previous.preparation) !== stableStringify(preparation)) {
+					const { digest: previousDigest, source: previousSource, ...previousIdentity } = previous.preparation;
+					const { digest: proposedDigest, source: proposedSource, ...proposedIdentity } = preparation;
+					if (rows.length !== 1 || (stableStringify(previous.preparation) !== stableStringify(preparation)
+						&& (stableStringify(previousIdentity) !== stableStringify(proposedIdentity) || !repairSourceSnapshotsEqual(previousSource, proposedSource)))) {
 						throw storageError("repair_budget_claimed", "This original lineage or canonical input already has a retained repair claim");
 					}
 					return previous;
@@ -113,11 +121,113 @@ export function createRepairJournal(options) {
 				const record = { preparation, state: "prepared", runId: null, candidate: null, result: null };
 				db.prepare("INSERT INTO planning_repairs VALUES (?, ?, ?, ?)")
 					.run(preparation.id, preparation.rootRunId, preparation.inputDigest, stableStringify(record));
-				return save(db, record, "prepared", readJsonValue(preparation));
+				save(db, record, "prepared", readJsonValue(preparation));
+				if (baseline !== undefined) db.prepare("INSERT INTO planning_repair_events (id, event, payload) VALUES (?, ?, ?)")
+					.run(preparation.id, "comparison-baseline", stableStringify(baseline));
+				return structuredClone(record);
 			}, { write: true });
 		},
 		/** @param {string} id @param {string} digest */
 		read: (id, digest) => storage.transaction(db => read(db, id, digest)),
+		/** Read historical identity only; this lookup grants no continuation permission.
+		 * @param {string} rootRunId */
+		findRoot(rootRunId) {
+			return storage.transaction(db => {
+				const row = db.prepare("SELECT document FROM planning_repairs WHERE root_id=?").get(rootRunId);
+				return row ? decode(parseJson(String(row.document))) : null;
+			});
+		},
+		/** Append original evidence before interpreting it. Never mutate an old outcome.
+		 * @param {string} id @param {string} digest @param {string} event @param {Json} payload */
+		retain(id, digest, event, payload) {
+			return storage.transaction(db => {
+				read(db, id, digest);
+				db.prepare("INSERT INTO planning_repair_events (id, event, payload) VALUES (?, ?, ?)")
+					.run(id, event, stableStringify(payload));
+			}, { write: true });
+		},
+		/** @param {string} id @param {string} digest */
+		comparisonHistory(id, digest) {
+			return storage.transaction(db => {
+				read(db, id, digest);
+				const rows = db.prepare("SELECT payload FROM planning_repair_events WHERE id = ? AND event IN ('comparison-baseline','comparison-state') ORDER BY seq").all(id);
+				return rows.length ? rows.map(row => readJsonValue(parseJson(String(row.payload)))) : [null];
+			});
+		},
+		/** A proposal is not permission; only native admission can consume it.
+		 * @param {import("../types/repair.js").RepairEffect} effect */
+		proposeEffect(effect) {
+			return storage.transaction(db => {
+				read(db, effect.preparationId, effect.preparationDigest);
+				const previous = db.prepare("SELECT document FROM planning_repair_effects WHERE id=?").get(effect.id);
+				if (previous) {
+					const retained = repairObject(parseJson(String(previous.document)));
+					if (stableStringify(retained.effect) !== stableStringify(effect)) throw storageError("repair_effect_conflict", "Conflicting proposed effect");
+					return retained;
+				}
+				const document = repairObject({ effect, state: "prepared", receipt: null });
+				db.prepare("INSERT INTO planning_repair_effects VALUES (?,?,?)").run(effect.id, effect.preparationId, stableStringify(document));
+				db.prepare("INSERT INTO planning_repair_events (id,event,payload) VALUES (?,?,?)").run(effect.preparationId, "effect-proposed", stableStringify(effect));
+				return document;
+			}, { write: true });
+		},
+		/** Intent is an outbox, never a native consumed resource receipt.
+		 * @param {import("../types/repair.js").RepairEffect} effect */
+		effectIntent(effect) {
+			return storage.transaction(db => {
+				read(db, effect.preparationId, effect.preparationDigest);
+				const row = db.prepare("SELECT document FROM planning_repair_effects WHERE id = ?").get(effect.id);
+				if (row) {
+					const retained = repairObject(parseJson(String(row.document)));
+					if (stableStringify(retained.effect) !== stableStringify(effect)) throw storageError("repair_effect_conflict", "Effect identity has conflicting content");
+					if (retained.state === "prepared") {
+						const intent = repairObject({ ...retained, state: "intent" });
+						db.prepare("UPDATE planning_repair_effects SET document=? WHERE id=?").run(stableStringify(intent), effect.id);
+						db.prepare("INSERT INTO planning_repair_events (id,event,payload) VALUES (?,?,?)").run(effect.preparationId, "effect-intent", stableStringify(effect));
+						return intent;
+					}
+					return retained;
+				}
+				const document = repairObject({ effect, state: "intent", receipt: null });
+				db.prepare("INSERT INTO planning_repair_effects VALUES (?, ?, ?)").run(effect.id, effect.preparationId, stableStringify(document));
+				db.prepare("INSERT INTO planning_repair_events (id,event,payload) VALUES (?,?,?)").run(effect.preparationId, "effect-intent", stableStringify(effect));
+				return document;
+			}, { write: true });
+		},
+		/** @param {import("../types/repair.js").RepairEffect} effect @param {Json} receipt */
+		effectReceipt(effect, receipt) {
+			return storage.transaction(db => {
+				read(db, effect.preparationId, effect.preparationDigest);
+				const row = db.prepare("SELECT document FROM planning_repair_effects WHERE id = ?").get(effect.id);
+				if (!row) throw storageError("repair_intent_missing", "Effect receipt requires retained intent");
+				const retained = repairObject(parseJson(String(row.document)));
+				if (stableStringify(retained.effect) !== stableStringify(effect)) throw storageError("repair_effect_conflict", "Receipt effect changed");
+				if (retained.receipt !== null && stableStringify(retained.receipt) !== stableStringify(receipt)) {
+					const before = repairObject(retained.receipt);
+					const after = repairObject(receipt);
+					const fields = ["effectDigest", "transactionId", "nativeRunId", "consumed", "resourceClaims", "budgetClaims", "checks"];
+					if (["denied", "unavailable"].includes(String(before.disposition)) || Object.hasOwn(before, "output")
+						|| fields.some(field => stableStringify(before[field]) !== stableStringify(after[field]))) {
+						throw storageError("repair_receipt_conflict", "Conflicting or denied native consumption cannot be changed by reconciliation");
+					}
+				}
+				const receipts = Array.isArray(retained.receipts) ? retained.receipts : retained.receipt === null ? [] : [retained.receipt];
+				const history = receipts.some(value => stableStringify(value) === stableStringify(receipt)) ? receipts : [...receipts, receipt];
+				const document = repairObject({ ...retained, state: "settled", receipt, receipts: history });
+				db.prepare("UPDATE planning_repair_effects SET document=? WHERE id=?").run(stableStringify(document), effect.id);
+				db.prepare("INSERT INTO planning_repair_events (id,event,payload) VALUES (?,?,?)")
+					.run(effect.preparationId, "effect-receipt", stableStringify(receipt));
+				return document;
+			}, { write: true });
+		},
+		/** @param {string} id @param {string} digest */
+		effects(id, digest) {
+			return storage.transaction(db => {
+				read(db, id, digest);
+				return db.prepare("SELECT document FROM planning_repair_effects WHERE repair_id=? ORDER BY rowid").all(id)
+					.map(row => repairObject(parseJson(String(row.document))));
+			});
+		},
 		/** @param {string} id @param {string} digest */
 		intent(id, digest) {
 			return update(id, digest, record => {
@@ -145,7 +255,7 @@ export function createRepairJournal(options) {
 				return { event: state, payload: readJsonValue({ runId, evidence }) };
 			});
 		},
-		/** Only the first caller can authorize an author invocation. Replays use retained output.
+		/** Historical replay does not grant another effect.
 		 * @param {string} id @param {string} digest @param {string} runId */
 		begin(id, digest, runId) {
 			return update(id, digest, record => {
@@ -156,11 +266,7 @@ export function createRepairJournal(options) {
 				if (record.state === "completed" || (record.state === "executing" && record.candidate !== null)) {
 					return { event: "replay", payload: { runId } };
 				}
-				const permitted = record.preparation.mode === "inline" ? record.state === "prepared" : ["intent", "admitted", "uncertain"].includes(record.state);
-				if (!permitted) throw storageError("repair_execution_held", "The author allowance is spent or admission is held; do not retry generation");
-				record.runId = runId;
-				record.state = "executing";
-				return { event: "author-started", payload: { runId } };
+				throw storageError("repair_admission_unavailable", "Legacy journal state is history, not native permission for a fresh generation effect");
 			});
 		},
 		/** @param {string} id @param {string} digest @param {string} runId @param {import("../types/repair.js").RepairCandidate} candidate */

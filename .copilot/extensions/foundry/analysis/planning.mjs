@@ -12,7 +12,7 @@ import { visualCriterion } from "../factory/visual.mjs";
  * @property {string[]} constraints
  * @property {string} repositoryContext
  * @property {number} maxTasks
- * @property {import("../types/json.js").JsonObject} [factoryContext] Opaque, bounded JSON context; the factory bridge validates authority.
+ * @property {import("../types/json.js").JsonObject} [factoryContext] Complete opaque JSON context; the factory bridge validates authority.
  */
 /** @typedef {PlanningInput & {inputDigest: string}} PlanningArgs */
 /** @typedef {import("../types/plan.js").PlanBlueprint} PlanBlueprint */
@@ -25,11 +25,11 @@ import { visualCriterion } from "../factory/visual.mjs";
  */
 export function normalizePlanningInput(value) {
 	const input = plainObject(value, "input");
-	const maxTasks = input.maxTasks ?? 6;
-	if (typeof maxTasks !== "number" || !Number.isSafeInteger(maxTasks) || maxTasks < 1 || maxTasks > 12) {
+	const maxTasks = input.maxTasks ?? LIMITS.tasks - 1;
+	if (typeof maxTasks !== "number" || !Number.isSafeInteger(maxTasks) || maxTasks < 1 || maxTasks >= LIMITS.tasks) {
 		fail(
 			"invalid_analysis_input",
-			"input.maxTasks must be an integer from 1 through 12",
+			"input.maxTasks must be positive and leave a representable T-xxx identifier for the final verifier",
 		);
 	}
 	const rawContext = input.factoryContext === undefined ? undefined : plainObject(input.factoryContext, "factoryContext");
@@ -43,22 +43,10 @@ export function normalizePlanningInput(value) {
 			fail("invalid_analysis_input", "Factory context must be finite, acyclic JSON data", { message: errorMessage(error) });
 		}
 	}
-	if (factoryContext && stableStringify(factoryContext).length > 128 * 1024) {
-		fail("invalid_analysis_input", "Factory planning context exceeds 128 KiB; choose a smaller coherent unit");
-	}
 	return {
-		objective: text(input.objective, "input.objective", LIMITS.objective),
-		constraints: stringList(
-			input.constraints ?? [],
-			"input.constraints",
-			LIMITS.constraints,
-			LIMITS.constraint,
-		),
-		repositoryContext: text(
-			input.repositoryContext,
-			"input.repositoryContext",
-			16_000,
-		),
+		objective: text(input.objective, "input.objective"),
+		constraints: stringList(input.constraints ?? [], "input.constraints"),
+		repositoryContext: text(input.repositoryContext, "input.repositoryContext"),
 		maxTasks,
 		...(factoryContext ? { factoryContext: structuredClone(factoryContext) } : {}),
 	};
@@ -117,7 +105,7 @@ export function validatePlanBlueprint(value, maxTasks, visual) {
 	const ids = new Set();
 	const tasks = blueprint.tasks.map((rawTask, index) => {
 		const task = plainObject(rawTask, `plan.tasks[${index}]`);
-		const id = text(task.id, `plan.tasks[${index}].id`, 5);
+		const id = text(task.id, `plan.tasks[${index}].id`);
 		if (!/^T-\d{3}$/.test(id) || ids.has(id)) {
 			fail(
 				"invalid_analysis_result",
@@ -143,32 +131,12 @@ export function validatePlanBlueprint(value, maxTasks, visual) {
 		const deliveryRequirement = task.deliveryRequirement;
 		return {
 			id,
-			title: text(task.title, `plan.tasks[${index}].title`, LIMITS.taskTitle),
+			title: text(task.title, `plan.tasks[${index}].title`),
 			kind,
-			description: text(
-				task.description,
-				`plan.tasks[${index}].description`,
-				LIMITS.taskDescription,
-			),
-			dependsOn: stringList(
-				task.dependsOn,
-				`plan.tasks[${index}].dependsOn`,
-				LIMITS.dependencies,
-				5,
-			),
-			acceptanceCriteria: stringList(
-				task.acceptanceCriteria,
-				`plan.tasks[${index}].acceptanceCriteria`,
-				LIMITS.acceptanceCriteria,
-				LIMITS.acceptanceCriterion,
-				kind === "verify" ? 0 : 1,
-			),
-			expectedFiles: stringList(
-				task.expectedFiles,
-				`plan.tasks[${index}].expectedFiles`,
-				LIMITS.expectedFiles,
-				LIMITS.expectedFile,
-			),
+			description: text(task.description, `plan.tasks[${index}].description`),
+			dependsOn: stringList(task.dependsOn, `plan.tasks[${index}].dependsOn`),
+			acceptanceCriteria: stringList(task.acceptanceCriteria, `plan.tasks[${index}].acceptanceCriteria`, undefined, undefined, kind === "verify" ? 0 : 1),
+			expectedFiles: stringList(task.expectedFiles, `plan.tasks[${index}].expectedFiles`),
 			deliveryRequirement,
 		};
 	});
@@ -195,14 +163,9 @@ export function validatePlanBlueprint(value, maxTasks, visual) {
 		);
 	}
 	return {
-		title: text(blueprint.title, "plan.title", LIMITS.planTitle),
-		objective: text(blueprint.objective, "plan.objective", LIMITS.objective),
-		constraints: stringList(
-			blueprint.constraints,
-			"plan.constraints",
-			LIMITS.constraints,
-			LIMITS.constraint,
-		),
+		title: text(blueprint.title, "plan.title"),
+		objective: text(blueprint.objective, "plan.objective"),
+		constraints: stringList(blueprint.constraints, "plan.constraints"),
 		tasks,
 	};
 }

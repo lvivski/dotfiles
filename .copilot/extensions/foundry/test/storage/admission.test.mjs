@@ -322,7 +322,7 @@ test("PF-ADM-03 clock rollback does not make an older inventory authoritative fo
 			} finally { fixture.dispose(); }
 		});
 
-		test("PF-ADM-03 captures exceeding the frozen run bound are retained atomically, not truncated or paginated", () => {
+		test("PF-ADM-03 complete captures beyond the former run bound require every retained run to settle", () => {
 			const fixture = createParallelFixture({ name: "observed-run-overflow" });
 			try {
 				const store = storeFor(fixture), cancelled = store.cancel(admissionFence(reserved(store)));
@@ -336,11 +336,20 @@ test("PF-ADM-03 clock rollback does not make an older inventory authoritative fo
 				assert.equal(overflow.revision, cancelled.revision + 1);
 				assert.equal(reopened.readObservations(identity()).length, 1);
 				assert.equal(new Set(reopened.readObservations(identity()).flatMap(item => item.runIds)).size, 129);
+				const expectedRuns = [...observed.runIds].sort();
+				assert.deepEqual(overflow.obligations[0].runIds, expectedRuns);
+				const settlement = {
+					...overflow.obligations[0], disposition: /** @type {const} */ ("no-session-created"),
+					terminatedRunIds: observed.runIds,
+					inventory: { complete: true, source: "complete terminal capture of all owned runs", capturedAt: "2026-11-13T00:00:02.000Z" },
+				};
 				assert.throws(() => reopened.settle(admissionFence(overflow), [{
-					...overflow.obligations[0], disposition: "no-session-created", terminatedRunIds: overflow.obligations[0].runIds,
-					inventory: { complete: true, source: "bounded snapshot is not all owned runs", capturedAt: "2026-11-13T00:00:02.000Z" },
-				}]), { code: "parallel_observation_quarantine" });
+					...settlement, terminatedRunIds: observed.runIds.slice(0, -1),
+				}]), { code: "parallel_unsafe_release" });
 				assert.equal(read(reopened).phase, "cancelling");
+				const settled = reopened.settle(admissionFence(overflow), [settlement]);
+				assert.equal(reopened.release(admissionFence(settled)).phase, "released");
+				assert.deepEqual(reopened.readObservations(identity())[0].runIds, expectedRuns);
 			} finally { fixture.dispose(); }
 		});
 		const active = reserved(store);

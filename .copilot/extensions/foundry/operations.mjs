@@ -46,6 +46,7 @@ import { admissionFence } from "./storage/admission.mjs";
  * @property {(repositoryPath: string) => Omit<import("./types/operating.js").OperatingPorts, "persistence"> | undefined} [getOperating] Trusted fenced operating authority; persistence always comes from the current owner plan store.
  * @property {import("./application/storage.mjs").RetentionBindings} [getRetention] Optional canonical archive outbox and guarded host bindings.
  * @property {import("./types/factory.js").TechnicalExecutor} [executeTechnical] Trusted reference execution with native resource permission.
+ * @property {import("./types/repair.js").RepairHostPort} [repairHost] Authentic atomic native repair admission/review port; never caller JSON.
  */
 /** @typedef {import("./types/workflow.js").WorkflowAnalysisPort} WorkflowAnalysis */
 
@@ -90,6 +91,7 @@ export function createFoundryOperations(options) {
 		analysis, factory, persist, syncFactoryPlan, approveDelegated, approveTechnical: technical.approveTechnical,
 		workspace, storeFor, coordinator, getSession: options.getSession,
 		getWorkflowRoute: () => options.getNativeRuntime?.().workflow,
+		repairHost: options.repairHost,
 	});
 	const tasks = createTaskOperations({ storeFor, persist, factory, syncFactoryPlan });
 	const { cancel: cancelPlan, cancelVerificationRun, finalizeCancellation: finalizePlanCancellation } = createCancellationOperations({ storeFor, persist, readForMutation, factory, analysis, discoverReservedVerification, syncFactoryPlan });

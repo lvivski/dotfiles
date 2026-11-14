@@ -18,14 +18,14 @@ import { affectedUnits } from "./signals.mjs";
 function readCursor(value) {
 	if (value === undefined) return null;
 	try {
-		const encoded = text(value, "cursor", 4096);
+		const encoded = text(value, "cursor");
 		const decoded = Buffer.from(encoded, "base64url");
 		if (decoded.toString("base64url") !== encoded) fail("factory_inspection_cursor", "Inspection cursor is not canonical base64url");
 		const cursor = parseJson(decoded.toString("utf8"));
 		object(cursor, ["version", "repositoryId", "revision", "throughDigest", "offset", "observedAt", "filtersDigest"], "inspection cursor");
 		if (cursor.version !== 1) fail("factory_inspection_cursor", "Unsupported inspection cursor version");
 		return {
-			version: 1, repositoryId: text(cursor.repositoryId, "cursor.repositoryId", 256),
+			version: 1, repositoryId: digest(cursor.repositoryId, "cursor.repositoryId"),
 			revision: integer(cursor.revision, "cursor.revision", 0), throughDigest: digest(cursor.throughDigest, "cursor.throughDigest"),
 			offset: integer(cursor.offset, "cursor.offset", 0), observedAt: timestamp(cursor.observedAt, "cursor.observedAt"),
 			filtersDigest: digest(cursor.filtersDigest, "cursor.filtersDigest"),
@@ -69,8 +69,8 @@ export function createFactoryInspection(ledger, repository, now) {
 		if (input.unitId !== undefined) identifier(input.unitId, "unitId");
 		if (input.candidateId !== undefined) identifier(input.candidateId, "candidateId");
 		if (input.includeRetired !== undefined && typeof input.includeRetired !== "boolean") fail("factory_input_invalid", "includeRetired must be boolean");
-		if (input.environment !== undefined) text(input.environment, "environment", 2048);
-		if (input.workload !== undefined) text(input.workload, "workload", 2048);
+		if (input.environment !== undefined) text(input.environment, "environment");
+		if (input.workload !== undefined) text(input.workload, "workload");
 		const filters = knowledgeQuery(input);
 		const filtersDigest = analysisInputDigest({
 			unitId: input.unitId ?? null, candidateId: input.candidateId ?? null, includeRetired: input.includeRetired ?? false,
@@ -122,12 +122,12 @@ export function createFactoryInspection(ledger, repository, now) {
 				const evaluationWork = state.bindings.filter((binding) => binding.purpose === "evaluation" && binding.candidateId === entry.id);
 				return {
 					...entry,
-					evidence: entry.evidence.slice(-32).map((evidence) => ({ ...evidence, publicationDisposition: dispositions.get(evidence.id) })),
+					evidence: entry.evidence.map((evidence) => ({ ...evidence, publicationDisposition: dispositions.get(evidence.id) })),
 					evidenceCount: entry.evidence.length,
-					evidenceTruncated: entry.evidence.length > 32,
-					retirementHolds: holds.slice(0, 32).map((binding) => ({ owner: binding.owner, planId: binding.planId })),
+					evidenceTruncated: false,
+					retirementHolds: holds.map((binding) => ({ owner: binding.owner, planId: binding.planId })),
 					retirementHoldCount: holds.length,
-					evaluationWork: evaluationWork.slice(-32).map((binding) => ({
+					evaluationWork: evaluationWork.map((binding) => ({
 						owner: binding.owner, planId: binding.planId, active: binding.active ?? !binding.completion,
 						completion: binding.completion ?? null,
 					})),
@@ -216,7 +216,7 @@ export function createFactoryInspection(ledger, repository, now) {
 				omittedAfter: Object.fromEntries(Object.entries(collections).map(([name, entries]) => [name, Math.max(0, entries.length - offset - limit)])),
 				bounds: { perCollection: 100, connectedRevisions: DISCOVERY_BOUNDS.connectedRevisions, queryTerms: DISCOVERY_BOUNDS.queryTerms },
 			},
-			retrieval: { ...filters, matching: "any-selected-subject-term; longest terms first", traversal: retrieval.traversal },
+			retrieval: { ...filters, matching: "any-subject-term; all terms retained", traversal: retrieval.traversal },
 			limitations: "Pages pin knowledge, authority and assurance time; physical storage diagnostics remain live. Evidence is claimed or independent-claim; imports never adopt another session's native execution ownership. Compaction retains full history.",
 		};
 	};

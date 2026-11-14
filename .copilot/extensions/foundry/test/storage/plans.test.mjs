@@ -23,12 +23,13 @@ test("native SQLite is required explicitly, with no package fallback", async () 
 		"--input-type=module",
 		"-e",
 		`try { await import(${JSON.stringify(moduleUrl)}); process.exitCode = 1; }
-		catch (error) { console.log(JSON.stringify({code: error.code, message: error.message})); }`,
+		catch (error) { console.log(JSON.stringify({code: error.code, message: error.message, cause: error.cause?.code})); }`,
 	]);
 	const error = readRecord(parseJson(stdout));
 	assert.equal(error.code, "sqlite_unavailable");
 	assert.match(readString(error.message), /Node\.js 22\.13\+/);
 	assert.match(readString(error.message), /node:sqlite/);
+	assert.equal(error.cause, "ERR_UNKNOWN_BUILTIN_MODULE");
 });
 
 test("create, restart, read, and list use a real SQLite database", () => withWorkspace(async ({ workspace, store }) => {
@@ -269,12 +270,13 @@ test("stored identity and revision inconsistencies are rejected", () => (
 	})
 ));
 
-test("bounded listing includes invalid records without hiding them or exposing full documents", () => (
+test("explicitly scoped listing retains complete objectives and reports invalid records without exposing full documents", () => (
 	withWorkspace(async ({ workspace, store }) => {
 		const alpha = { ...makePlan(workspace, "alpha-plan"), objective: "a".repeat(240) };
 		alpha.planning = { runId: "planning-run", inputDigest: "a".repeat(64) };
 		await store.create(alpha, 0);
-		await store.create({ ...makePlan(workspace, "beta-plan"), objective: "b".repeat(241) }, 0);
+		const betaObjective = `  ${"\u03bb instruction\n".repeat(4000)}  `;
+		await store.create({ ...makePlan(workspace, "beta-plan"), objective: betaObjective }, 0);
 		withDatabase(store, (db) => db.prepare("INSERT INTO plans (id, revision, document) VALUES (?, 1, ?)")
 			.run("broken-plan", "{"));
 		const page = await store.list({ limit: 2 });
@@ -282,27 +284,29 @@ test("bounded listing includes invalid records without hiding them or exposing f
 		assert.deepEqual(page.plans.map(({ id }) => id), ["alpha-plan", "beta-plan"]);
 		assert.equal(page.plans[0].objective.length, 240);
 		assert.equal(page.plans[0].planningRunId, "planning-run");
-		assert.equal(page.plans[1].objective, `${"b".repeat(237)}...`);
+		assert.equal(page.plans[1].objective, betaObjective);
 		assert.equal(Object.hasOwn(page.plans[0], "tasks"), false);
 		const full = await store.list({ limit: 3 });
 		assert.equal(full.truncated, false);
 		assert.equal(full.invalid[0].id, "broken-plan");
 		assert.equal(full.invalid[0].code, "artifact_invalid");
 		assert.equal(readRecord(full.invalid[0].details).id, "broken-plan");
-		for (const limit of [0, -1, 101, 1.5, NaN]) await rejectsCode(store.list({ limit }), "invalid_list_limit");
+		for (const limit of [0, -1, Number.MAX_SAFE_INTEGER + 1, 1.5, NaN]) await rejectsCode(store.list({ limit }), "invalid_list_limit");
 	})
 ));
 
-test("default and maximum list limits bound the combined result", () => (
+test("listing retains every useful plan beyond former defaults unless the caller explicitly scopes the view", () => (
 	withWorkspace(async ({ workspace, store }) => {
 		for (let index = 0; index < 101; index += 1) {
 			await store.create(makePlan(workspace, `plan-${String(index).padStart(3, "0")}`), 0);
 		}
 		const defaultPage = await store.list();
-		assert.equal(defaultPage.plans.length + defaultPage.invalid.length, 50);
-		assert.equal(defaultPage.truncated, true);
+		assert.deepEqual(defaultPage.plans.map(plan => plan.id), Array.from({ length: 101 }, (_, index) => `plan-${String(index).padStart(3, "0")}`));
+		assert.equal(defaultPage.truncated, false);
 		const maximumPage = await store.list({ limit: 100 });
 		assert.equal(maximumPage.plans.length + maximumPage.invalid.length, 100);
 		assert.equal(maximumPage.truncated, true);
+		assert.deepEqual((await store.list({ limit: 101 })).plans, defaultPage.plans);
+		assert.deepEqual((await store.list({ limit: Number.MAX_SAFE_INTEGER })).plans, defaultPage.plans);
 	})
 ));

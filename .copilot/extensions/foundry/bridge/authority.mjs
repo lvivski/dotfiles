@@ -1,6 +1,6 @@
 import { property } from "../data.mjs";
 import { createFactoryService } from "../factory.mjs";
-import { checkContextSize, discoveryContext } from "../factory/context.mjs";
+import { discoveryContext } from "../factory/context.mjs";
 import { fail } from "../factory/fields.mjs";
 import { same as sameRefs } from "../factory/records.mjs";
 import { blueprintDigest } from "./pinning.mjs";
@@ -86,7 +86,6 @@ export function createAuthority({ workspace, storageRoot, clock, operating }) {
 			...(visual ? { visualEvaluation: visual } : {}),
 			...(retrieved ? { signals: retrieved.signals, retrieval: retrieved.retrieval } : {}),
 		};
-		checkContextSize(result);
 		return result;
 	};
 	return { factoryFor, requireOwner, stateFor, context };

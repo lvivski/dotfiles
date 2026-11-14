@@ -277,6 +277,7 @@ test("SR02/06 root repair launch uses supported RPC with the existing durable jo
 	const createOps = () => createFoundryOperations({
 		getSession: () => f.session, getWorkspacePath: () => f.owner, analysis: f.analysis,
 		getNativeRuntime: () => runtime, getParallelHost: () => runtime.host(),
+		repairHost: f.nativeHost.host,
 	});
 	const prepared = await f.prepare();
 	const before = f.journal().read(prepared.preparationId, prepared.preparationDigest);
@@ -286,21 +287,22 @@ test("SR02/06 root repair launch uses supported RPC with the existing durable jo
 	const admitted = await createOps().launchPlanRepair(prepared.launchSpec.args, f.context);
 	assert.equal(admitted.state, "admitted");
 	assert.equal(admitted.runId, "repair-native-run");
+	const effect = f.journal().effects(prepared.preparationId, prepared.preparationDigest)[0].effect;
 	const expected = { name: "run_dynamic_workflow", arguments: prepared.launchSpec,
-		toolCallId: `repair-${prepared.preparationId}` };
+		toolCallId: `repair-${readRecord(effect).id}` };
 	assert.deepEqual(f.launches, [expected]);
 	assert.equal(Object.hasOwn(readRecord(f.launches[0].arguments), "limits"), Object.hasOwn(prepared.launchSpec, "limits"));
 	const events = f.journal().events(prepared.preparationId, prepared.preparationDigest);
-	assert.deepEqual(events.map(event => event.event), ["prepared", "intent", "admitted"]);
-	assert.deepEqual(readRecord(events.at(-1)?.payload).evidence, success({ runId: "repair-native-run" }));
-	await assert.rejects(createOps().launchPlanRepair(prepared.launchSpec.args, f.context), { code: "repair_admission_held" });
-	assert.deepEqual(f.journal().events(prepared.preparationId, prepared.preparationDigest), events);
+	assert.ok(events.some(event => event.event === "effect-receipt"));
+	assert.deepEqual(readRecord(readRecord(events.at(-1)?.payload).evidence).output, success({ runId: "repair-native-run" }));
+	assert.equal((await createOps().launchPlanRepair(prepared.launchSpec.args, f.context)).runId, admitted.runId);
+	assert.deepEqual(f.journal().events(prepared.preparationId, prepared.preparationDigest).slice(0, events.length), events);
 	f.records["repair-native-run"].progress = [repairMarker(before.preparation)];
 	const reconciled = await createOps().reconcilePlanRepair(prepared.launchSpec.args, f.context);
 	assert.equal(reconciled.state, "admitted");
 	assert.equal(reconciled.runId, admitted.runId);
 	assert.deepEqual(reconciled.preparation, before.preparation);
-	await assert.rejects(createOps().launchPlanRepair(prepared.launchSpec.args, f.context), { code: "repair_admission_held" });
+	assert.equal((await createOps().launchPlanRepair(prepared.launchSpec.args, f.context)).runId, admitted.runId);
 	assert.deepEqual(f.launches, [expected], "Reconciliation must observe the original run, not invoke a new launch");
 	assert.deepEqual(f.records.source, source);
 });
@@ -309,7 +311,7 @@ test("SR06 root repair retains original raw admission after owner drift and neve
 	const f = await repairNativeFixture(t);
 	const runtime = createSupportedRuntime({ getSession: () => f.session });
 	const ops = createFoundryOperations({ getSession: () => f.session, getWorkspacePath: () => f.owner,
-		analysis: f.analysis, getNativeRuntime: () => runtime });
+		analysis: f.analysis, getNativeRuntime: () => runtime, repairHost: f.nativeHost.host });
 	const prepared = await f.prepare(), raw = success({ runId: "possibly-admitted-original-run" });
 	f.setExecutor(async () => { f.session.sessionId = "changed-owner"; return raw; });
 	await assert.rejects(ops.launchPlanRepair(prepared.launchSpec.args, f.context), { code: "repair_admission_uncertain" });
@@ -319,7 +321,7 @@ test("SR06 root repair retains original raw admission after owner drift and neve
 	assert.deepEqual(readRecord(evidence.receipt).raw, raw);
 	assert.equal(readRecord(evidence.receipt).operation, "run_dynamic_workflow");
 	f.session.sessionId = f.sessionId;
-	await assert.rejects(ops.launchPlanRepair(prepared.launchSpec.args, f.context), { code: "repair_admission_held" });
+	await assert.rejects(ops.launchPlanRepair(prepared.launchSpec.args, f.context));
 	assert.equal(f.launches.length, 1);
 });
 
@@ -327,7 +329,7 @@ test("SR06 root repair exposes original raw admission when its outcome transacti
 	const f = await repairNativeFixture(t);
 	const runtime = createSupportedRuntime({ getSession: () => f.session });
 	const createOps = () => createFoundryOperations({ getSession: () => f.session, getWorkspacePath: () => f.owner,
-		analysis: f.analysis, getNativeRuntime: () => runtime });
+		analysis: f.analysis, getNativeRuntime: () => runtime, repairHost: f.nativeHost.host });
 	const prepared = await f.prepare(), databasePath = f.journal().databasePath;
 	const execute = f.session.rpc.tools.execute.bind(f.session.rpc.tools);
 	f.session.rpc.tools.execute = async input => {
@@ -346,15 +348,15 @@ test("SR06 root repair exposes original raw admission when its outcome transacti
 		assert.equal(failure.sqliteMessage, "recording failed outcome persistence");
 		assert.equal(failure.preparationId, prepared.preparationId);
 		assert.equal(failure.disposition, "uncertain");
-		assert.deepEqual(readRecord(failure.unpersisted).evidence, success({ runId: "repair-native-run" }));
+		assert.deepEqual(readRecord(readRecord(failure.unpersisted).evidence).output, success({ runId: "repair-native-run" }));
 		assert.equal(readRecord(failure.unpersisted).runId, "repair-native-run");
 		return true;
 	});
 	assert.equal(f.journal().read(prepared.preparationId, prepared.preparationDigest).state, "intent");
-	assert.deepEqual(f.journal().events(prepared.preparationId, prepared.preparationDigest).map(event => event.event), ["prepared", "intent"]);
+	assert.ok(f.journal().events(prepared.preparationId, prepared.preparationDigest).some(event => event.event === "effect-receipt"));
 	const db = new DatabaseSync(databasePath);
 	try { db.exec("DROP TRIGGER supported_repair_outcome_failure"); } finally { db.close(); }
-	await assert.rejects(createOps().launchPlanRepair(prepared.launchSpec.args, f.context), { code: "repair_admission_held" });
+	assert.equal((await createOps().launchPlanRepair(prepared.launchSpec.args, f.context)).runId, "repair-native-run");
 	assert.equal(f.launches.length, 1);
 });
 

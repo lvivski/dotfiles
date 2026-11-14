@@ -51,9 +51,25 @@ test("REL-09/10 registered repair handlers preserve launch, owner/run identity a
 	assert.equal(f.launches.length, 0);
 	const launched = await invoke("foundry_launch_plan_repair", identity);
 	assert.equal(launched.ok, true);
-	assert.deepEqual(f.launches, [{ name: "run_dynamic_workflow", arguments: spec }]);
-	assert.equal(readRecord((await invoke("foundry_launch_plan_repair", identity)).error).code, "repair_admission_held");
+	assert.equal(f.launches.length, 1);
+	assert.equal(f.launches[0].name, "run_dynamic_workflow");
+	assert.deepEqual(f.launches[0].arguments, spec);
+	const toolCallId = f.launches[0].toolCallId;
+	assert.ok(typeof toolCallId === "string");
+	assert.match(toolCallId, /^repair-[a-f0-9]{64}$/);
+	const duplicate = await invoke("foundry_launch_plan_repair", identity);
+	assert.equal(duplicate.ok, true);
+	assert.equal(readRecord(duplicate.value).runId, readRecord(launched.value).runId);
+	assert.equal(f.launches.length, 1);
 	const typed = await f.prepare();
+	const launchEffect = must(f.journal().effects(typed.preparationId, typed.preparationDigest)
+		.find(row => readRecord(row.effect).kind === "launch"));
+	const effect = readRecord(launchEffect.effect), receipt = readRecord(launchEffect.receipt);
+	assert.ok(typeof effect.id === "string");
+	assert.ok(typeof receipt.nativeRunId === "string");
+	assert.equal(toolCallId, `repair-${effect.id}`);
+	assert.equal(receipt.effectDigest, effect.id);
+	assert.equal(receipt.nativeRunId, readRecord(launched.value).runId);
 	await f.execute(typed);
 	assert.equal((await invoke("foundry_reconcile_plan_repair", identity)).ok, true);
 	const request = { ...identity, id: "registered-repair-draft", repository: { workingDirectory: f.repositoryPath, baseBranch: "main" },
@@ -295,12 +311,27 @@ test("parallel public requests reject caller authority and malformed bounds befo
 			assert.equal(readRecord(readRecord(parseJson(result.textResultForLlm)).error).code, "unknown_field");
 		}
 	}
-	for (const limit of [0, 129, 1.5, NaN, "1"]) {
+	for (const limit of [0, Number.MAX_SAFE_INTEGER + 1, 1.5, NaN, "1"]) {
 		const args = { planId: "plan", limit };
 		const result = await toolNamed(tools, "foundry_dispatch_ready").handler(args, {
 			sessionId: "coordinator", toolCallId: "bounded-request", toolName: "foundry_dispatch_ready", arguments: args,
 		});
 		assert.equal(readRecord(readRecord(parseJson(result.textResultForLlm)).error).code, "parallel_request_invalid");
+	}
+});
+
+test("explicit positive dispatch scope beyond the former cap reaches the ordinary workspace hold", async () => {
+	const tools = buildFoundryTools(createFoundryOperations({ getWorkspacePath: () => undefined, analysis: analysisFixture() }));
+	const dispatch = toolNamed(tools, "foundry_dispatch_ready");
+	for (const limit of [129, Number.MAX_SAFE_INTEGER]) {
+		const args = { planId: "explicit-scope", limit };
+		const result = readRecord(parseJson((await dispatch.handler(args, {
+			sessionId: "coordinator", toolCallId: "explicit-dispatch-scope", toolName: dispatch.name, arguments: args,
+		})).textResultForLlm));
+		assert.equal(result.ok, true);
+		const value = readRecord(result.value);
+		assert.equal(value.state, "held");
+		assert.equal(value.code, "workspace_unavailable");
 	}
 });
 

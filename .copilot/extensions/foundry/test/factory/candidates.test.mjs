@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { createFactoryService } from "../../factory.mjs";
+import { analysisInputDigest } from "../../digest.mjs";
 import { must } from "../assertions.mjs";
 import { evaluator, fixture, freshCode, hash, initialCode } from "./fixture.mjs";
 
@@ -164,4 +165,40 @@ test("known generation origins cannot masquerade as fresh sessions or processes,
 			...payload, candidateId: second.id, source: { ...origin, at: f.source().at },
 		}), { code: "factory_generation_origin_reused" });
 	}
+});
+
+test("candidate inspection retains all nested evidence, holds and evaluation work with whole long reports", async t => {
+	const f = await fixture(t);
+	f.createUnit();
+	f.contract();
+	const candidate = f.prepare("long-evidence", 1, "implementation");
+	const delivery = await f.deliver(candidate, freshCode);
+	const { evidence: first } = f.evaluate(candidate, delivery, 1);
+	const report = ` \n\t${"Observation 🙂資料 ".repeat(2000)}  \n`;
+	const reason = ` \t${"independent reason ".repeat(1000)}  \n`;
+	for (let index = 0; index < 35; index++) {
+		f.call("recordEvaluation", {
+			id: `complete-evidence-${index}`, candidateId: candidate.id, evaluation: first.evaluation,
+			contractDigest: candidate.contractDigest, contextDigest: candidate.contextDigest, commit: delivery.commit,
+			procedureDigest: first.procedureDigest, outcome: "passed", source: f.source("external-run", `complete-run-${index}`),
+			environment: first.environment, workload: first.workload, independence: { ...first.independence, reason }, report,
+		});
+		f.call("bindEvaluationPlan", {
+			unitId: "ledger", unitRevision: 1, contractRevision: 1, contractDigest: candidate.contractDigest,
+			contextDigest: candidate.contextDigest, candidateId: candidate.id, targetCommit: delivery.commit,
+			evaluations: [first.evaluation], planId: `plan-${index}-${"long".repeat(30)}`,
+			owner: `owner-${index}-${"long".repeat(150)}`, blueprintDigest: "a".repeat(64),
+		});
+	}
+	const inspected = f.factory.inspect({ candidateId: candidate.id }).candidates[0];
+	assert.equal(inspected.evidence.length, 36);
+	assert.equal(inspected.evidenceCount, 36);
+	assert.equal(inspected.evidenceTruncated, false);
+	assert.equal(new Set(inspected.evidence.map(entry => entry.id)).size, 36);
+	assert.equal(inspected.retirementHolds.length, 35);
+	assert.equal(inspected.evaluationWork.length, 35);
+	assert.ok(inspected.evidence.slice(1).every(entry => entry.report === report && entry.independence.reason === reason && entry.reportDigest === analysisInputDigest(report)));
+	f.decide(candidate, "reject", null);
+	assert.throws(() => f.call("retire", { type: "candidate", id: candidate.id, actor: "owner", reason, summary: report }), { code: "factory_retirement_unsafe" });
+	assert.deepEqual(createFactoryService({ repositoryPath: f.repositoryPath, storageRoot: f.root, clock: f.clock }).inspect({ candidateId: candidate.id }).candidates[0].evidence, inspected.evidence);
 });

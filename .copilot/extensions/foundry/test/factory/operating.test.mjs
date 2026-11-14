@@ -70,6 +70,35 @@ test("real canonical history reopens and transfers safely into an independently 
 	assert.equal(restored.exportFactory(), reopened.exportFactory());
 });
 
+test("complete large operating batches publish, persist and transfer without losing records or prose", async t => {
+	const f = await operatingFixture(t);
+	const squad = charter();
+	squad.purpose = "Full preserved instruction\n" + "Unicode\u5185\u5bb9 \t\n".repeat(18_000);
+	const records = [squad, ...Array.from({ length: 80 }, (_, index) => {
+		const record = goal(`goal-${index}`);
+		record.intent = `Goal ${index}\n  Preserve meaningful whitespace \u00e9 \u6f22\u5b57\n`;
+		return record;
+	})];
+	const batch = f.batch("lossless-publication", records);
+	assert.ok(Buffer.byteLength(JSON.stringify(batch)) > 96 * 1024);
+	assert.deepEqual(operatingBatch(batch), batch);
+	assert.throws(() => operatingBatch({ ...batch, records: [...records, records[0]] }), { code: "operating_batch_invalid" });
+	const publication = f.factory.operating.commit(batch, f.authority());
+	assert.deepEqual(publication.batch.records, records);
+	assert.deepEqual(f.store.readCurrent(f.planId).operating?.publications, [publication]);
+	const reopened = f.open();
+	assert.deepEqual(operatingRecords(reopened.snapshot()), records);
+	const plan = readRecord(parseJson(await f.store.exportPlan(f.planId)));
+	assert.deepEqual(readRecord(plan.operating).publications, [publication]);
+	const exported = reopened.exportFactory();
+	const target = path.join(f.root, "large-transfer");
+	await mkdir(target);
+	const restored = createFactoryService({ repositoryPath: f.repo, storageRoot: target, knowledge: "local", operating: f.ports });
+	restored.importFactory({ source: exported, expectedRevision: 0 });
+	assert.equal(restored.exportFactory(), exported);
+	assert.deepEqual(operatingRecords(restored.snapshot()), records);
+});
+
 test("real stores reject multi-record write skew at the whole-snapshot barrier without partial intent", async t => {
 	const f = await operatingFixture(t);
 	f.factory.operating.commit(f.batch("initial", [charter(), goal("left"), goal("right")]), f.authority());
@@ -187,7 +216,7 @@ test("schema-3 factory lineage upgrades intact; unsupported writers and failed u
 	db.exec("DROP TABLE factory_knowledge; ALTER TABLE factory_transfers DROP COLUMN portable; PRAGMA user_version=3");
 	db.close();
 	assert.equal(f.open().exportFactory(), original);
-	assert.equal(f.open().storageInfo().version, 4);
+	assert.equal(f.open().storageInfo().version, 5);
 	db = new DatabaseSync(f.factory.databasePath);
 	db.exec("PRAGMA user_version=99");
 	db.close();

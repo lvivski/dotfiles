@@ -1,5 +1,5 @@
 import { analysisInputDigest } from "../digest.mjs";
-import { assertAcceptedDependencies, checkContextSize, contractContext, rationaleClosure } from "./context.mjs";
+import { assertAcceptedDependencies, contractContext, rationaleClosure } from "./context.mjs";
 import { evaluation, source } from "./definitions.mjs";
 import { actorReason, digest, enumeration, fail, identifier, integer, list, object, reference, strings, text } from "./fields.mjs";
 import { contractFor, disputedKnowledge, evaluationFor, key, knowledgeFor, latest, retired, unitFor } from "./records.mjs";
@@ -28,15 +28,15 @@ export function createUnit(state, event, options = {}) {
 	/** @type {CapabilityUnit} */
 	const unit = {
 		id, revision: (previous?.revision ?? 0) + 1,
-		name: text(input.name, "name", 160), purpose: text(input.purpose, "purpose"),
+		name: text(input.name, "name"), purpose: text(input.purpose, "purpose"),
 		boundary: {
-			owns: strings(input.boundary.owns, "boundary.owns", 32, 1),
-			exposes: strings(input.boundary.exposes, "boundary.exposes", 32, 1),
+			owns: strings(input.boundary.owns, "boundary.owns", undefined, 1),
+			exposes: strings(input.boundary.exposes, "boundary.exposes", undefined, 1),
 			consumes: strings(input.boundary.consumes, "boundary.consumes"),
-			preserves: strings(input.boundary.preserves, "boundary.preserves", 32, 1),
+			preserves: strings(input.boundary.preserves, "boundary.preserves", undefined, 1),
 		},
 		dependencies, relationshipCoverage: enumeration(input.relationshipCoverage, ["complete", "partial"], "relationshipCoverage"),
-		actor: text(input.actor, "actor", 256), at,
+		actor: text(input.actor, "actor"), at,
 		reason: previous ? text(input.reason, "revision reason") : input.reason ? text(input.reason, "reason") : "Initial capability definition",
 		...(input.visualEvaluation === undefined ? {} : { visualEvaluation: reference(input.visualEvaluation) }),
 	};
@@ -63,7 +63,7 @@ export function appendKnowledge(state, event, options = {}) {
 	const unit = unitFor(state, input.unitId);
 	const previous = latest(state.knowledge, id);
 	if (previous && previous.unitId !== input.unitId) fail("factory_identity_conflict", "Knowledge identity cannot move between capabilities");
-	const links = list(input.links ?? [], "links", 64).map((link) => {
+	const links = list(input.links ?? [], "links").map((link) => {
 		object(link, ["relation", "target"], "link");
 		const target = reference(link.target);
 		knowledgeFor(state, target);
@@ -105,12 +105,12 @@ export function appendKnowledge(state, event, options = {}) {
  * @param {{historical?: boolean, portable?: boolean}} [options] @returns {FactoryResults["acceptContract"]} */
 export function acceptContract(state, event, options = {}) {
 	const { action, input, at, revision } = event;
-	object(input, ["unitId", "unitRevision", "obligations", "evaluations", "actor", "reason", "resolutions", "rationale", "renewalSignalIds", "sealVersion", "technical",
+	object(input, ["unitId", "unitRevision", "obligations", "evaluations", "actor", "reason", "resolutions", "rationale", "renewalSignalIds", "sealVersion", "lineageVersion", "technical",
 		...(options.portable ? ["historicalSeal", "contextSeal", "historicalOnly"] : [])], action);
 	if (input.technical !== undefined) {
 		validateTechnicalDecision(input.technical);
 		validateRenewal(state, input.technical);
-		const { technical, sealVersion, historicalSeal, contextSeal, historicalOnly, ...publication } = input;
+		const { technical, sealVersion, lineageVersion, historicalSeal, contextSeal, historicalOnly, ...publication } = input;
 		if (analysisInputDigest(publication) !== analysisInputDigest(technical.renewal?.publication)) {
 			fail("technical_receipt_tampered", "Contract publication differs from the committed technical decision");
 		}
@@ -121,10 +121,11 @@ export function acceptContract(state, event, options = {}) {
 		}
 	}
 	const sealVersion = input.sealVersion === undefined ? 2 : integer(input.sealVersion, "sealVersion", 2, 3);
+	const lineageVersion = input.lineageVersion === undefined ? undefined : integer(input.lineageVersion, "lineageVersion", 2, 2);
 	const unit = unitFor(state, input.unitId, integer(input.unitRevision, "unitRevision"));
 	/** @param {unknown} refs @param {"obligation" | "evaluation"} kind */
 	const selected = (refs, kind) => {
-		const selectedRefs = list(refs, kind, 32, 1).map(reference);
+		const selectedRefs = list(refs, kind, undefined, 1).map(reference);
 		if (new Set(selectedRefs.map(key)).size !== selectedRefs.length) fail("factory_contract_invalid", "Contract references must be unique");
 		for (const ref of selectedRefs) {
 			const entry = knowledgeFor(state, ref);
@@ -160,13 +161,13 @@ export function acceptContract(state, event, options = {}) {
 			fail("factory_authority_overlap", `Capability ${otherId} already owns a declared authority`);
 		}
 	}
-	const resolutions = list(input.resolutions ?? [], "resolutions", 64).map((resolution) => {
+	const resolutions = list(input.resolutions ?? [], "resolutions").map((resolution) => {
 		object(resolution, ["knowledge", "reason"], "resolution");
 		knowledgeFor(state, resolution.knowledge);
 		return { knowledge: reference(resolution.knowledge), reason: text(resolution.reason, "resolution reason") };
 	});
 	const selectedRefs = [...obligations, ...evaluations];
-	const rationale = rationaleClosure(state, selectedRefs, list(input.rationale ?? [], "rationale", 32).map(reference));
+	const rationale = rationaleClosure(state, selectedRefs, list(input.rationale ?? [], "rationale").map(reference));
 	if (rationale.some((ref) => retired(state, "knowledge", ref.id, ref.revision))) {
 		fail("factory_context_invalid", "Retired explanatory knowledge cannot enter a new accepted context");
 	}
@@ -187,16 +188,16 @@ export function acceptContract(state, event, options = {}) {
 	/** @type {FactoryContract} */
 	const contract = {
 		sealVersion,
+		...(lineageVersion === undefined ? {} : { lineageVersion }),
 		unitId: unit.id, unitRevision: unit.revision, revision: (previous?.revision ?? 0) + 1,
 		obligations, evaluations, decisionId: decision.id, acceptedAt: at,
 		previousDigest: previous?.digest ?? null,
-		rationale, dependencies, decisionIds: [...priorDecisionIds.slice(-15), decision.id],
-		omittedEarlierDecisions: Math.max(0, priorDecisionIds.length - 15),
+		rationale, dependencies, decisionIds: [...(lineageVersion === undefined ? priorDecisionIds.slice(-15) : priorDecisionIds), decision.id],
+		omittedEarlierDecisions: lineageVersion === undefined ? Math.max(0, priorDecisionIds.length - 15) : 0,
 		digest: "",
 	};
 	state.decisions.push(decision);
 	const sealedContext = contractContext(state, contract);
-	checkContextSize(sealedContext);
 	contract.digest = analysisInputDigest({
 		...contract, sealedContext,
 		provenance: [...selectedRefs, ...rationale].map((ref) => {
@@ -226,9 +227,10 @@ export function acceptContract(state, event, options = {}) {
  * @param {{historical?: boolean}} [options] @returns {FactoryResults["ingestAnalysis"]} */
 export function ingestAnalysis(state, event, options = {}) {
 	const { action, input, at, revision } = event;
-	object(input, ["unitId", "source", "report"], action);
+	object(input, ["unitId", "source", "report", "derivationVersion"], action);
 	const unit = unitFor(state, input.unitId);
-	const report = text(input.report, "analysis report", 48000);
+	const report = text(input.report, "analysis report");
+	const derivationVersion = input.derivationVersion === undefined ? 1 : integer(input.derivationVersion, "derivationVersion", 2, 2);
 	const provenance = source(input.source, at);
 	if (!["audit", "research", "review", "security", "triage"].includes(provenance.kind)
 		|| !provenance["runId"] || !provenance["owner"] || provenance["digest"] !== analysisInputDigest(report)) {
@@ -236,12 +238,16 @@ export function ingestAnalysis(state, event, options = {}) {
 	}
 	/** @type {Knowledge[]} */
 	const knowledge = [];
-	for (let offset = 0; offset < report.length; offset += 7500) {
-		const id = `analysis-${analysisInputDigest([provenance["owner"], provenance["runId"], input.unitId, offset, provenance["digest"]]).slice(0, 40)}`;
+	const segmentLength = derivationVersion === 1 ? 7500 : report.length;
+	for (let offset = 0; offset < report.length; offset += segmentLength) {
+		const identity = derivationVersion === 1
+			? [provenance["owner"], provenance["runId"], input.unitId, offset, provenance["digest"]]
+			: ["analysis-v2", provenance["owner"], provenance["runId"], input.unitId, provenance["digest"]];
+		const id = `analysis-${analysisInputDigest(identity).slice(0, 40)}`;
 		if (state.knowledge.some((entry) => entry.id === id)) fail("factory_analysis_duplicate", "This native analysis was already ingested into this capability");
 		const result = appendKnowledge(state, {
 			revision, at, action: "appendKnowledge", input: {
-				id, unitId: unit.id, kind: "observation", statement: report.slice(offset, offset + 7500),
+				id, unitId: unit.id, kind: "observation", statement: derivationVersion === 1 ? report.slice(offset, offset + segmentLength) : report,
 				source: provenance,
 				uncertainty: "Retained analysis output, not established product truth or governing requirements. Preserve its stated coverage gaps and verify proposals before acceptance.",
 				links: knowledge.length ? [{ relation: "derived-from", target: { id: knowledge[knowledge.length - 1].id, revision: 1 } }] : [],

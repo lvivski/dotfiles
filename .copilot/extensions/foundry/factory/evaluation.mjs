@@ -26,7 +26,7 @@ export function recordEvaluation(state, event, options = {}) {
 		|| input.contractDigest !== candidate.contractDigest || input.contextDigest !== candidate.contextDigest
 		|| input.commit !== candidate.delivery.commit) fail("factory_evidence_subject_mismatch", "Evidence must name the exact candidate commit and pinned contract/context/evaluation revisions");
 	const definition = evaluationFor(state, ref);
-	visualReport(definition, text(input.report, "evidence.report", 16000), candidate.delivery.commit, String(input.outcome));
+	visualReport(definition, text(input.report, "evidence.report"), candidate.delivery.commit, String(input.outcome));
 	if (input.procedureDigest !== definition.procedure.digest) fail("factory_evaluator_changed", "Evidence does not use the pinned evaluator");
 	const origin = source(input.source, at);
 	if (Date.parse(origin.at) < Date.parse(candidate.delivery.source.at)) fail("factory_evidence_predates_delivery", "Evaluation must follow the actual delivery");
@@ -84,9 +84,9 @@ export function recordEvaluation(state, event, options = {}) {
 		contextDigest: candidate.contextDigest, commit: candidate.delivery.commit,
 		procedureDigest: definition.procedure.digest,
 		outcome: enumeration(input.outcome, ["passed", "failed", "inconclusive"], "evidence.outcome"),
-		source: origin, environment: text(input.environment, "evidence.environment", 2048),
-		workload: text(input.workload, "evidence.workload", 2048), independence,
-		report: text(input.report, "evidence.report", 16000),
+		source: origin, environment: text(input.environment, "evidence.environment"),
+		workload: text(input.workload, "evidence.workload"), independence,
+		report: text(input.report, "evidence.report"),
 		reportDigest: analysisInputDigest(input.report),
 		trust: independent ? "independent-claim" : "claimed", recordedAt: at,
 		...(identity ? { identity } : {}),

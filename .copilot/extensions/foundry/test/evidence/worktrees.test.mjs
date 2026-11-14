@@ -33,6 +33,13 @@ test("rename reconciliation rejects extant old refs, unrelated branches, old or 
 	git(worktree, "branch", "-m", "after");
 	const check = (at = startedAt, binding = pinned) => checkTaskBranchRename(f.repo, "before", "after", worktree, at, binding);
 	assert.equal(check().worktree.path, worktree);
+	const originalHead = git(worktree, "rev-parse", "HEAD");
+	const newer = await candidateCommit(worktree, "later branch activity\n");
+	for (let index = 0; index < 260; index++) {
+		git(worktree, "update-ref", "-m", `later fixture activity ${index}`, "refs/heads/after", index % 2 ? newer : originalHead);
+	}
+	git(worktree, "update-ref", "-m", "restore fixture original head", "refs/heads/after", originalHead);
+	assert.equal(check().worktree.path, worktree, "A genuine rename beyond the former 256-entry window remains corroborated");
 	git(f.repo, "branch", "before", "after");
 	assert.throws(() => check(), { code: "task_branch_rename_unproven" });
 	git(f.repo, "branch", "-d", "before");

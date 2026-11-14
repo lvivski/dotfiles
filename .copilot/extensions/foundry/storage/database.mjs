@@ -47,6 +47,8 @@ try {
 	);
 }
 
+export const sqliteConstants = sqlite.constants;
+
 /** @param {unknown} workspacePath */
 function validateWorkspacePath(workspacePath) {
 	if (typeof workspacePath !== "string" || workspacePath.trim().length === 0) {
@@ -158,7 +160,7 @@ export function createArtifactDatabase(options) {
 		throw storageError("invalid_storage_options", "busyTimeoutMs must be a positive bounded integer");
 	}
 	const parts = options.directoryParts ?? ["files", "foundry"];
-	if (!Array.isArray(parts) || parts.length < 1 || parts.length > 8
+	if (!Array.isArray(parts) || parts.length < 1
 		|| parts.some((part) => typeof part !== "string" || !/^[a-zA-Z0-9._-]+$/.test(part)
 			|| part === "." || part === "..")) {
 		throw storageError("invalid_storage_options", "Storage directory parts must be contained simple names");

@@ -65,14 +65,14 @@ export function checkTaskBranchRename(repository, from, to, worktreePath, starte
 	if (oldRef.error || oldRef.status !== 1) {
 		fail("task_branch_rename_unproven", "The original branch must be absent; copying or replacing an existing branch is not reconciliation");
 	}
-	const log = git(repository, ["reflog", "show", "-256", "--date=unix", "--format=%gD%x00%gs", `refs/heads/${to}`, "--"]);
+	const log = git(repository, ["reflog", "show", "--date=unix", "--format=%gD%x00%gs", `refs/heads/${to}`, "--"]);
 	if (log.error || log.status !== 0) fail("task_branch_rename_unsupported", "The branch rename reflog is unavailable");
 	const message = `Branch: renamed refs/heads/${from} to refs/heads/${to}`;
 	const entry = log.stdout.toString("utf8").split("\n").find((line) => line.split("\0")[1] === message);
 	const seconds = entry?.split("\0")[0].match(/@\{(\d+)\}$/)?.[1];
 	const time = seconds === undefined ? NaN : Number(seconds) * 1000;
 	if (!Number.isFinite(time) || time < Math.floor(Date.parse(startedAt) / 1000) * 1000 || time > Date.now()) {
-		fail("task_branch_rename_unproven", "No direct post-attachment rename appears in the bounded Git reflog");
+		fail("task_branch_rename_unproven", "No direct post-attachment rename appears in the complete available Git reflog");
 	}
 	return { worktree, renamedAt: new Date(time).toISOString() };
 }

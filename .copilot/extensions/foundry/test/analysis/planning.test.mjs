@@ -7,12 +7,12 @@ import { run as runPlanning } from "../../workflows/plan.mjs";
 import { LIMITS } from "../../plan/values.mjs";
 import { planningResult } from "../native/plans.mjs";
 
-test("planning arguments are bounded and digested canonically", () => {
+test("planning arguments retain complete content and use identifier capacity rather than an invented task budget", () => {
 	const normalized = normalizePlanningInput({
 		objective: "Build a reviewed feature",
 		repositoryContext: "Node extension with no dependencies",
 	});
-	assert.equal(normalized.maxTasks, 6);
+	assert.equal(normalized.maxTasks, LIMITS.tasks - 1);
 	assert.deepEqual(normalized.constraints, []);
 	const args = buildPlanningArgs(normalized);
 	assert.match(args.inputDigest, /^[a-f0-9]{64}$/);
@@ -20,14 +20,21 @@ test("planning arguments are bounded and digested canonically", () => {
 		analysisInputDigest({ z: 1, a: 2 }),
 		analysisInputDigest({ a: 2, z: 1 }),
 	);
-	assert.throws(
-		() => normalizePlanningInput({
-			objective: "Build",
-			repositoryContext: "Repo",
-			maxTasks: 13,
-		}),
-		FoundryAnalysisError,
-	);
+	assert.equal(normalizePlanningInput({ objective: "Build", repositoryContext: "Repo", maxTasks: 13 }).maxTasks, 13);
+	for (const maxTasks of [0, 0.5, LIMITS.tasks, Number.POSITIVE_INFINITY]) {
+		assert.throws(() => normalizePlanningInput({ objective: "Build", repositoryContext: "Repo", maxTasks }), FoundryAnalysisError);
+	}
+	const long = {
+		objective: ` \n${"決定 🧪\t".repeat(5000)}\n `,
+		repositoryContext: ` \n${"原文\t".repeat(40_000)}\n `,
+		constraints: Array.from({ length: 70 }, (_, index) => ` ${index}\n${"Δ".repeat(2000)}\t `),
+		factoryContext: { original: "文".repeat(150_000) },
+	};
+	const complete = buildPlanningArgs(long);
+	for (const field of /** @type {const} */ (["objective", "repositoryContext", "constraints", "factoryContext"])) {
+		assert.deepEqual(complete[field], long[field]);
+	}
+	assert.deepEqual(validatePlanningArgs(JSON.parse(JSON.stringify(complete))), complete);
 });
 
 test("the planning Workflow uses canonical defaults and rejects invalid args before agent work", async () => {
@@ -51,12 +58,10 @@ test("the planning Workflow uses canonical defaults and rejects invalid args bef
 	for (const invalid of [
 		{ ...minimalArgs, inputDigest: "0".repeat(64) },
 		{ ...minimalArgs, inputDigest: undefined },
-		{ ...canonical, objective: "x".repeat(8001) },
-		{ ...canonical, constraints: Array(33).fill("constraint") },
-		{ ...canonical, constraints: ["x".repeat(1001)] },
-		{ ...canonical, repositoryContext: "x".repeat(16001) },
+		{ ...canonical, objective: " \t\n" },
+		{ ...canonical, constraints: ["bad\0content"] },
 		{ ...canonical, maxTasks: 0 },
-		{ ...canonical, maxTasks: 13 },
+		{ ...canonical, maxTasks: LIMITS.tasks },
 	]) {
 		await assert.rejects(execute(invalid), FoundryAnalysisError);
 	}
@@ -64,39 +69,28 @@ test("the planning Workflow uses canonical defaults and rejects invalid args bef
 	const result = await execute(minimalArgs);
 	assert.deepEqual(result.input, canonical);
 	assert.equal(agentCalls, 1);
-	for (const maxTasks of [1, 12]) {
+	for (const maxTasks of [1, 13, LIMITS.tasks - 1]) {
 		const args = buildPlanningArgs({ ...minimal, maxTasks });
 		assert.deepEqual((await execute(args)).input, args);
 	}
 });
 
-test("generated plan field bounds accept exact limits and reject overflow or blank criteria", () => {
+test("generated plan fields retain long Unicode, whitespace and beyond-cap collections while semantic gates remain closed", () => {
 	const input = buildPlanningArgs({ objective: "Build", repositoryContext: "Node repo", maxTasks: 2 });
 	const plan = planningResult(input).plan;
-	assert.equal(validatePlanBlueprint({ ...plan, title: "x".repeat(LIMITS.planTitle) }, 2).title.length, LIMITS.planTitle);
-	assert.throws(() => validatePlanBlueprint({ ...plan, title: "x".repeat(LIMITS.planTitle + 1) }, 2), /plan.title/);
-	for (const [field, maximum] of Object.entries({
-		title: LIMITS.taskTitle, description: LIMITS.taskDescription,
-	})) {
+	const fullText = ` \t\n${"exact-原文🧪".repeat(2500)}\n `;
+	assert.equal(validatePlanBlueprint({ ...plan, title: fullText }, 2).title, fullText);
+	for (const field of ["title", "description"]) {
 		const candidate = structuredClone(plan);
-		candidate.tasks[0] = { ...candidate.tasks[0], [field]: "x".repeat(maximum) };
+		candidate.tasks[0] = { ...candidate.tasks[0], [field]: fullText };
 		assert.deepEqual(validatePlanBlueprint(candidate, 2), candidate);
-		candidate.tasks[0] = { ...candidate.tasks[0], [field]: "x".repeat(maximum + 1) };
-		assert.throws(() => validatePlanBlueprint(candidate, 2), /plan.tasks\[0\]/);
 	}
-	for (const { field, count, length } of [
-		{ field: "acceptanceCriteria", count: LIMITS.acceptanceCriteria, length: LIMITS.acceptanceCriterion },
-		{ field: "expectedFiles", count: LIMITS.expectedFiles, length: LIMITS.expectedFile },
-	]) {
+	for (const field of ["acceptanceCriteria", "expectedFiles"]) {
 		const candidate = structuredClone(plan);
-		candidate.tasks[0] = { ...candidate.tasks[0], [field]: ["x".repeat(length)] };
+		const entries = Array.from({ length: 70 }, (_, index) => field === "acceptanceCriteria"
+			? `${fullText}${index}` : `declared/${"segment/".repeat(100)}${index}.mjs`);
+		candidate.tasks[0] = { ...candidate.tasks[0], [field]: entries };
 		assert.deepEqual(validatePlanBlueprint(candidate, 2), candidate);
-		candidate.tasks[0] = { ...candidate.tasks[0], [field]: ["x".repeat(length + 1)] };
-		assert.throws(() => validatePlanBlueprint(candidate, 2), /plan.tasks\[0\]/);
-		candidate.tasks[0] = { ...candidate.tasks[0], [field]: Array.from({ length: count }, (_, index) => `check-${index}`) };
-		assert.deepEqual(validatePlanBlueprint(candidate, 2), candidate);
-		candidate.tasks[0] = { ...candidate.tasks[0], [field]: Array.from({ length: count + 1 }, (_, index) => `check-${index}`) };
-		assert.throws(() => validatePlanBlueprint(candidate, 2), /plan.tasks\[0\]/);
 	}
 	for (const acceptanceCriteria of [[], [" \t\n"]]) {
 		const candidate = structuredClone(plan);

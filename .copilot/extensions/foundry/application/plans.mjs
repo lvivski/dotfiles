@@ -19,18 +19,16 @@ export function createPlanAccess({ storeFor, workspace, notify, factory }) {
 	const quarantinePlan = ({ planId, reason, requestedBy }) => {
 		if (typeof reason !== "string"
 			|| !reason.trim()
-			|| reason.length > LIMITS.error
 			|| typeof requestedBy !== "string"
-			|| !requestedBy.trim()
-			|| requestedBy.length > LIMITS.actor) {
+			|| !requestedBy.trim()) {
 			throw new FoundryOperationError(
 				"invalid_quarantine_request",
-				"Quarantining a plan requires a bounded reason and requestedBy",
+				"Quarantining a plan requires a reason and requestedBy",
 			);
 		}
 		return storeFor().quarantineInvalidPlan(planId, {
-			reason: reason.trim(),
-			requestedBy: requestedBy.trim(),
+			reason,
+			requestedBy,
 		});
 	};
 

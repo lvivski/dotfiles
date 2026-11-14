@@ -3,9 +3,9 @@ import test from "node:test";
 import { buildPlanningArgs } from "../../analysis/planning.mjs";
 import { createAuthority } from "../../bridge/authority.mjs";
 import { parseJson, readRecord } from "../../data.mjs";
-import { stableStringify } from "../../digest.mjs";
+import { analysisInputDigest, stableStringify } from "../../digest.mjs";
 import { createFactoryService } from "../../factory.mjs";
-import { DISCOVERY_BOUNDS, discoveryContext, retrieveKnowledge } from "../../factory/context.mjs";
+import { DISCOVERY_BOUNDS, discoveryContext, rationaleClosure, retrieveKnowledge } from "../../factory/context.mjs";
 import { createFoundryOperations } from "../../operations.mjs";
 import { decodeRequest } from "../../requests.mjs";
 import { buildFoundryTools } from "../../tools.mjs";
@@ -32,8 +32,8 @@ test("old causal knowledge survives more than 100 operational observations with 
 	const context = discoveryContext(state, "ledger", { query: "allocation" });
 	assert.equal(context.rationale[0].id, "allocation-proposal");
 	assert.ok(context.rationale.some((entry) => entry.id === "allocation-lesson" && entry.selectionReasons.some((reason) => reason.startsWith("linked:"))));
-	assert.equal(context.rationale.length, DISCOVERY_BOUNDS.knowledge);
-	assert.equal(context.retrieval.omitted, 117 - DISCOVERY_BOUNDS.knowledge);
+	assert.equal(context.rationale.length, 117);
+	assert.equal(context.retrieval.omitted, 0);
 	assert.ok(context.rationale.every((entry) => entry.authority === "non-governing"));
 	assert.doesNotMatch(JSON.stringify(context), /comparison-only\/incumbent|private\/transcript|"source"|"evaluation"/);
 	assert.deepEqual(discoveryContext(state, "ledger", { query: "allocation" }), context);
@@ -83,7 +83,7 @@ test("contradictions, signals and superseded revisions are explained without exp
 	assert.equal(inspected.find((entry) => entry.revision === 2)?.authority, "accepted");
 });
 
-test("connected retrieval terminates on cycles and reports its explicit traversal and byte bounds", async (t) => {
+test("connected retrieval terminates on cycles without losing large whole records or their closure", async (t) => {
 	const f = await fixture(t);
 	f.createUnit();
 	const state = f.factory.snapshot();
@@ -94,21 +94,23 @@ test("connected retrieval terminates on cycles and reports its explicit traversa
 		links: [{ relation: "derived-from", target: { id: `cycle-${String((index + 1) % 150).padStart(3, "0")}`, revision: 1 } }],
 	}));
 	const selection = retrieveKnowledge(state, { unitId: "ledger", relatedTo: [{ id: "cycle-000", revision: 1 }] });
-	assert.equal(selection.traversal.visited, DISCOVERY_BOUNDS.connectedRevisions);
-	assert.equal(selection.traversal.complete, false);
-	assert.ok(selection.traversal.omittedFrontier > 0);
+	assert.equal(selection.traversal.visited, 150);
+	assert.equal(selection.traversal.complete, true);
+	assert.equal(selection.traversal.omittedFrontier, 0);
 	assert.equal(new Set(selection.entries.map(({ entry }) => entry.id)).size, selection.entries.length);
 	assert.deepEqual(retrieveKnowledge(state, { unitId: "ledger", relatedTo: [{ id: "cycle-000", revision: 1 }] }), selection);
-	state.knowledge.forEach((entry) => { entry.statement += "🙂".repeat(1900); });
+	state.knowledge.forEach((entry) => { entry.statement += `\n\t${"🙂文 ".repeat(3000)}  \n`; });
 	const context = discoveryContext(state, "ledger", { query: "Requested cycle root" });
-	assert.ok(Buffer.byteLength(stableStringify(context.rationale)) <= DISCOVERY_BOUNDS.knowledgeBytes);
-	assert.ok(context.retrieval.omittedByBytes > 0);
-	assert.ok(context.retrieval.omitted > 0);
+	assert.ok(Buffer.byteLength(stableStringify(context.rationale)) > 128 * 1024);
+	assert.equal(context.rationale.length, 150);
+	assert.equal(context.retrieval.omittedByBytes, 0);
+	assert.equal(context.retrieval.omitted, 0);
 	assert.equal(context.rationale[0].id, "cycle-000");
 	assert.equal(context.rationale[0].statement, state.knowledge[0].statement, "Whole records are selected; statements are not clipped");
+	assert.equal(rationaleClosure(state, [{ id: "cycle-000", revision: 1 }]).length, 149);
 });
 
-test("discovery fails explicitly when its whole pinned boundary and bounded knowledge cannot fit", async (t) => {
+test("discovery retains its entire large boundary and knowledge", async (t) => {
 	const f = await fixture(t);
 	const declarations = Array.from({ length: 16 }, (_, index) => `${index}:`.padEnd(2048, "x"));
 	f.call("createUnit", {
@@ -120,7 +122,10 @@ test("discovery fails explicitly when its whole pinned boundary and bounded know
 		id: `large-lesson-${index}`, unitId: "large", kind: "inference", statement: "Retained lesson ".padEnd(7800, "x"), source: f.source(),
 	});
 	const authority = createAuthority({ workspace: () => f.root, storageRoot: f.root, clock: f.clock });
-	assert.throws(() => authority.context(f.repositoryPath, "large"), { code: "factory_context_capacity" });
+	const context = authority.context(f.repositoryPath, "large");
+	assert.ok(Buffer.byteLength(stableStringify(context)) > 128 * 1024);
+	assert.equal(context.rationale.length, 8);
+	assert.deepEqual(context.unit.boundary.owns, declarations);
 	assert.deepEqual(f.factory.snapshot().units[0].boundary.owns, declarations);
 });
 
@@ -208,7 +213,7 @@ test("public inspection tool and decoder wire every retrieval filter and continu
 	assert.equal(readRecord(first.page).revision, readRecord(second.page).revision);
 	assert.deepEqual([first.knowledge, second.knowledge].flat().map((entry) => readRecord(entry).id), ["allocation-cause", "allocation-root"]);
 	const longQuery = await invoke({ ...input, query: `allocation ${Array.from({ length: 40 }, (_, index) => `term${index}`).join(" ")}` });
-	assert.equal(readRecord(longQuery.retrieval).omittedTerms, 9);
+	assert.equal(readRecord(longQuery.retrieval).omittedTerms, 0);
 	assert.equal(readRecord(longQuery.page).limit, 1);
 	assert.equal(readRecord(readRecord(longQuery.page).bounds).queryTerms, DISCOVERY_BOUNDS.queryTerms);
 	for (const invalid of [{ kinds: ["unknown"] }, { query: 1 }, { relatedTo: [{ id: "allocation-root", revision: "1" }] }, { cursor: 1 }]) {
@@ -216,4 +221,23 @@ test("public inspection tool and decoder wire every retrieval filter and continu
 	}
 	const authority = createAuthority({ workspace: () => f.root, storageRoot: f.root, clock: f.clock });
 	assert.ok(authority.context(f.repositoryPath, "ledger", { query: "allocation" }).rationale.some((entry) => entry.id === "allocation-root"));
+});
+
+test("long search input retains every term and private discovery reports stay committed, not exposed", async (t) => {
+	const f = await fixture(t);
+	f.createUnit();
+	const query = ` \n\t${Array.from({ length: 40 }, (_, index) => `subject${index}`).join(" ")} ${"長".repeat(9000)}  \n`;
+	const report = ` \n\tprivate-marker ${"🙂資料 ".repeat(10000)}  \n`;
+	const { knowledge } = f.call("ingestAnalysis", {
+		unitId: "ledger", report, source: { ...f.source("audit"), runId: "private-discovery",
+			owner: f.root, digest: analysisInputDigest(report) },
+	});
+	const context = discoveryContext(f.factory.snapshot(), "ledger", { query });
+	assert.equal(context.retrieval.query, query);
+	assert.equal(context.retrieval.terms.length, 41);
+	assert.equal(context.retrieval.omittedQueryTerms, 0);
+	assert.equal(knowledge.length, 1);
+	assert.equal(f.factory.snapshot().knowledge[0].statement, report);
+	assert.match(context.rationale[0].statement, /^Local report omitted; statement commitment /);
+	assert.doesNotMatch(stableStringify(context), /private-marker|"source"|private-discovery/);
 });

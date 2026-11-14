@@ -27,10 +27,6 @@ const TECHNICAL_TABLE = "CREATE TABLE technical_authorizations (plan_id TEXT NOT
 
 const APPLICATION_ID = 0x464e4452;
 
-const DEFAULT_LIST_LIMIT = 50;
-
-const MAX_LIST_LIMIT = 100;
-
 /** The caller supplies one trusted shared location; owner binds authority, not a directory.
  * Return the actual admission store, also used as recovery's observation port.
  * @param {{
@@ -281,29 +277,25 @@ export function createPlanStore(options = {}) {
 
 	/** @param {{limit?: number}} [listOptions] */
 	const list = async (listOptions = {}) => {
-		const limit = listOptions.limit ?? DEFAULT_LIST_LIMIT;
-		if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_LIST_LIMIT) {
-			throw storageError("invalid_list_limit", `limit must be an integer from 1 through ${MAX_LIST_LIMIT}`, {
+		const limit = listOptions.limit;
+		if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1)) {
+			throw storageError("invalid_list_limit", "limit must be a positive safe integer when supplied", {
 				details: { limit },
 			});
 		}
 		return transaction((db) => {
-			const rows = db.prepare(
-				"SELECT id FROM plans ORDER BY id LIMIT ?",
-			).all(limit + 1);
+			const rows = limit === undefined
+				? db.prepare("SELECT id FROM plans ORDER BY id").all()
+				: db.prepare("SELECT id FROM plans ORDER BY id LIMIT ?").all(BigInt(limit) + 1n);
 			const plans = [];
 			const invalid = [];
-			for (const row of rows.slice(0, limit)) {
+			for (const row of limit === undefined ? rows : rows.slice(0, limit)) {
 				const id = row.id;
 				if (typeof id !== "string") throw storageError("database_invalid", "A stored plan ID is not a string");
 				try {
 					assertPlanId(id);
 					const summary = summarizePlan(readPlan(db, id));
-					plans.push({
-						...summary,
-						objective: summary.objective.length > 240
-							? `${summary.objective.slice(0, 237)}...` : summary.objective,
-					});
+					plans.push(summary);
 				} catch (error) {
 					const code = errorCode(error);
 					if (!code || !["invalid_plan_id", "artifact_invalid", "artifact_identity_mismatch"].includes(code)) {
@@ -317,7 +309,7 @@ export function createPlanStore(options = {}) {
 					});
 				}
 			}
-			return { plans, invalid, truncated: rows.length > limit };
+			return { plans, invalid, truncated: limit !== undefined && rows.length > limit };
 		});
 	};
 

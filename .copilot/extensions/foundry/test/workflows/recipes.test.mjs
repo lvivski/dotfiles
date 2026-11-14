@@ -127,7 +127,7 @@ test("invalid work selection is rejected before scope journaling", async () => {
 		["audit", { paths: [" "] }],
 		["audit", { paths: ["src/a.js"], concern: "" }],
 		["triage", { tickets: [""] }],
-		["triage", { tickets: [{ id: "x".repeat(257), title: "Ticket" }] }],
+		["triage", { tickets: [{ title: " \t " }] }],
 		["reviewQueue", { prs: [reviewPullRequest(1), reviewPullRequest(1)] }],
 		["reviewQueue", { prs: [reviewPullRequest(1), reviewPullRequest(2)], max_total_chunks: 1 }],
 		["securityReview", { perspectives: 13 }],
@@ -179,79 +179,57 @@ test("failed preparation never reaches an opt-in checkpoint", async () => {
 	}
 });
 
-test("item workflows reject impossible workloads before dispatch", async () => {
+test("item workflows conserve distinct records beyond former helper and metadata caps without inventing native budgets", async () => {
 	const auditWorkflow = createWorkflowContext({
 		paths: Array.from(
-			{
-				length: Math.floor(
-					(ADDITIONAL_WORKFLOWS.audit.meta.limits.maxTotalSubagents - 1) / 2,
-				) + 1
-			},
+			{ length: 20 },
 			(_, index) => `src/${index}.js`,
 		),
 	});
-	await assert.rejects(
-		ADDITIONAL_WORKFLOWS.audit.run(auditWorkflow),
-		/maximum is/,
-	);
-	assert.equal(auditWorkflow.calls.length, 0);
-	assert.deepEqual(auditWorkflow.stepCalls, []);
+	const auditResult = await ADDITIONAL_WORKFLOWS.audit.run(auditWorkflow);
+	assert.ok(typeof auditResult === "string");
+	assert.match(auditResult, /20\/20 files processed/);
+	assert.equal(auditWorkflow.calls.length, 40);
 
 	const triageWorkflow = createWorkflowContext({
 		tickets: Array.from(
-			{ length: ADDITIONAL_WORKFLOWS.triage.meta.limits.maxTotalSubagents + 1 },
+			{ length: 101 },
 			(_, index) => `Ticket ${index}`,
 		),
 	});
-	await assert.rejects(
-		ADDITIONAL_WORKFLOWS.triage.run(triageWorkflow),
-		/ticket limit/,
-	);
-	assert.equal(triageWorkflow.calls.length, 0);
-	assert.deepEqual(triageWorkflow.stepCalls, []);
+	const triageResult = await ADDITIONAL_WORKFLOWS.triage.run(triageWorkflow);
+	assert.ok(typeof triageResult === "string");
+	assert.match(triageResult, /101\/101 processed/);
+	assert.equal(triageWorkflow.calls.length, 101);
 
 	const reviewWorkflow = createWorkflowContext({
-		prs: [{ repo: "owner/repo", number: 1, diff: "+change" }],
-		max_total_chunks: Math.floor(
-			ADDITIONAL_WORKFLOWS.reviewQueue.meta.limits.maxTotalSubagents / 2,
-		) + 1,
+		prs: [reviewPullRequest(1)], fetch: completeFetch(),
+		max_total_chunks: 351,
 	});
-	await assert.rejects(
-		ADDITIONAL_WORKFLOWS.reviewQueue.run(reviewWorkflow),
-		/max_total_chunks must be an integer/,
-	);
-	assert.equal(reviewWorkflow.calls.length, 0);
-	assert.deepEqual(reviewWorkflow.stepCalls, []);
+	await ADDITIONAL_WORKFLOWS.reviewQueue.run(reviewWorkflow);
+	assert.equal(reviewWorkflow.calls.length, 2);
 
 	const metadataWorkflow = createWorkflowContext({
-		prs: [{
-			repo: "owner/repo",
-			number: 1,
+		fetch: completeFetch(), prs: [reviewPullRequest(1, {
 			files: Array.from({ length: 3_001 }, (_, index) => `src/${index}.js`),
-		}],
+		})],
 	});
-	await assert.rejects(
-		ADDITIONAL_WORKFLOWS.reviewQueue.run(metadataWorkflow),
-		/files exceeds 3000 entries/,
-	);
-	assert.equal(metadataWorkflow.calls.length, 0);
-	assert.deepEqual(metadataWorkflow.stepCalls, []);
+	await ADDITIONAL_WORKFLOWS.reviewQueue.run(metadataWorkflow);
+	const prepared = must(metadataWorkflow.journal.steps.get("review-queue:prepared-queue:v3"));
+	assert.ok(typeof prepared === "object" && !Array.isArray(prepared));
+	assert.ok(Array.isArray(prepared.prs));
+	assert.ok(prepared.prs[0] && typeof prepared.prs[0] === "object" && !Array.isArray(prepared.prs[0]));
+	assert.equal(Array.isArray(prepared.prs[0].files) && prepared.prs[0].files.length, 3001);
 
-	const securityBudget = ADDITIONAL_WORKFLOWS.securityReview.meta.limits.maxTotalSubagents - 2;
+	const securityBudget = 80;
 	const securityWorkflow = createWorkflowContext(
 		{ root: "src", perspectives: 1 },
 		(_prompt, options) => options.label.startsWith("investigate:")
-			? Array.from({ length: securityBudget + 1 }, (_, index) => securityFinding(index))
+			? Array.from({ length: securityBudget }, (_, index) => securityFinding(index))
 			: undefined,
 	);
-	await assert.rejects(
-		ADDITIONAL_WORKFLOWS.securityReview.run(securityWorkflow),
-		/candidate verification budget/,
-	);
-	assert.equal(
-		securityWorkflow.calls.some((call) => call.options.label.startsWith("verify:")),
-		false,
-	);
+	await ADDITIONAL_WORKFLOWS.securityReview.run(securityWorkflow);
+	assert.equal(securityWorkflow.calls.filter(call => call.options.label.startsWith("verify:")).length, 80);
 });
 
 test("flat verdict and ticket schemas fit provider-native structured output", async () => {
@@ -319,7 +297,7 @@ test("item budgets count actual agents without reserving schema-correction agent
 		assert.equal(workflow.calls.filter((call) => call.options.label.includes(":verify:")).length, 350);
 	});
 
-	await t.test("review queue defaults to 300 chunks without raising runtime limits", async () => {
+	await t.test("review queue retains all chunks beyond former default capacity without claiming runtime permission", async () => {
 		for (const count of [300, 301]) {
 			const workflow = createWorkflowContext({
 				fetch: completeFetch(),
@@ -328,15 +306,10 @@ test("item budgets count actual agents without reserving schema-correction agent
 					diff: addedReviewDiff(["x".repeat(4000 * count - 100)]),
 				})],
 			});
-			if (count === 300) {
-				const result = await ADDITIONAL_WORKFLOWS.reviewQueue.run(workflow);
-				assert.ok(typeof result === "string");
-				assert.match(result, /All 300 complete low-risk chunks passed independent verification/);
-				assert.equal(workflow.calls.length, 600);
-			} else {
-				await assert.rejects(ADDITIONAL_WORKFLOWS.reviewQueue.run(workflow), /configured chunk budget/);
-				assert.equal(workflow.calls.length, 0);
-			}
+			const result = await ADDITIONAL_WORKFLOWS.reviewQueue.run(workflow);
+			assert.ok(typeof result === "string");
+			assert.ok(result.includes(`All ${count} complete low-risk chunks passed independent verification`));
+			assert.equal(workflow.calls.length, count * 2);
 		}
 	});
 

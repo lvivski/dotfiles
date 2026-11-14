@@ -1,5 +1,4 @@
 import { isOneOf } from "../data.mjs";
-import { LIMITS } from "../plan/values.mjs";
 import { FoundryHttpError, json } from "./http.mjs";
 
 /** @typedef {Pick<import("@github/copilot-sdk").SessionUiApi, "confirm" | "elicitation">} FoundryUi */
@@ -13,14 +12,13 @@ import { FoundryHttpError, json } from "./http.mjs";
  */
 function requireActor(value, field) {
 	if (typeof value !== "string"
-		|| value.trim().length === 0
-		|| value.length > LIMITS.actor) {
+		|| value.trim().length === 0 || value.includes("\0")) {
 		throw new FoundryHttpError(
 			400,
-			`${field} must be a non-empty string of at most ${LIMITS.actor} characters`,
+			`${field} must be a non-empty string without NUL`,
 		);
 	}
-	return value.trim();
+	return value;
 }
 
 /** @param {Record<string, unknown>} body @param {string} planId */
@@ -51,9 +49,8 @@ function actionMessage(body, planId) {
 			return `Retry ${body.taskId} in plan ${planId} with a fresh attempt?`;
 		case "pause-workflow":
 		case "resume-workflow":
-			if (typeof body.runId !== "string" || !body.runId.trim()
-				|| body.runId.length > LIMITS.verificationRunId) {
-				throw new FoundryHttpError(400, "A bounded workflow run ID is required");
+			if (typeof body.runId !== "string" || !body.runId.trim()) {
+				throw new FoundryHttpError(400, "A workflow run ID is required");
 			}
 			return body.action === "pause-workflow"
 				? `Pause workflow ${body.runId}? In-flight work may need to repeat on resume. App task sessions keep running.`
@@ -76,8 +73,8 @@ async function nativeActionInput(ui, body, message) {
 			requestedSchema: {
 				type: "object",
 				properties: {
-					actor: { type: "string", title: "Decision by", minLength: 1, maxLength: 256 },
-					reason: { type: "string", title: "Decision reason", minLength: 1, maxLength: 8000 },
+					actor: { type: "string", title: "Decision by", minLength: 1 },
+					reason: { type: "string", title: "Decision reason", minLength: 1 },
 				},
 				required: ["actor", "reason"],
 			},
@@ -95,10 +92,10 @@ async function nativeActionInput(ui, body, message) {
 		requestedSchema: {
 			type: "object",
 			properties: approval ? {
-				approvedBy: { type: "string", title: "Approved by", minLength: 1, maxLength: LIMITS.actor },
+				approvedBy: { type: "string", title: "Approved by", minLength: 1 },
 			} : {
-				requestedBy: { type: "string", title: "Requested by", minLength: 1, maxLength: LIMITS.actor },
-				reason: { type: "string", title: "Cancellation reason", minLength: 1, maxLength: LIMITS.error },
+				requestedBy: { type: "string", title: "Requested by", minLength: 1 },
+				reason: { type: "string", title: "Cancellation reason", minLength: 1 },
 			},
 			required: approval ? ["approvedBy"] : ["requestedBy", "reason"],
 		},

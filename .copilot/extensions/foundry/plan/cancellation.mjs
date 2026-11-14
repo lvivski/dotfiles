@@ -27,7 +27,7 @@ export function requestPlanCancellation(plan, options = {}) {
 		});
 	}
 	assertRequestId(options.requestId, "requestId");
-	assertString(options.reason, "reason", LIMITS.error);
+	assertString(options.reason, "reason");
 	requireActor(options.requestedBy, "requestedBy");
 	const timestamp = nowIso(options.at);
 	const candidate = clone(plan);
@@ -43,11 +43,7 @@ export function requestPlanCancellation(plan, options = {}) {
 	const verificationReserved =
 		candidate.verification.status === VERIFICATION_STATUS.RESERVED;
 	if (options.verificationRunId != null) {
-		assertString(
-			options.verificationRunId,
-			"verificationRunId",
-			LIMITS.verificationRunId,
-		);
+		assertString(options.verificationRunId, "verificationRunId");
 		if (!verificationReserved) {
 			fail(
 				"invalid_cancellation_verification",
@@ -109,7 +105,7 @@ export function bindCancellationVerificationRun(plan, runId, options = {}) {
 			{ path: "cancellation.verificationReservationId" },
 		);
 	}
-	assertString(runId, "runId", LIMITS.verificationRunId);
+	assertString(runId, "runId");
 	if (plan.verification.runId !== null && plan.verification.runId !== runId) {
 		fail("invalid_cancellation_verification", "Cancellation cannot replace a bound verification run");
 	}

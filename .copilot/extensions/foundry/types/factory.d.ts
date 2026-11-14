@@ -93,6 +93,7 @@ export type ContractDependency = {
 
 export type FactoryContract = {
 	sealVersion: number; unitId: string; unitRevision: number; revision: number;
+	lineageVersion?: number;
 	historyOnly?: true;
 	obligations: KnowledgeRef[]; evaluations: KnowledgeRef[]; rationale: KnowledgeRef[];
 	decisionId: string; acceptedAt: string; previousDigest: string | null;
@@ -233,6 +234,7 @@ export type Observation = {
 
 export type FactoryDefinitions = {
 	sealVersion?: number; unit: CapabilityUnit; obligations: ProjectedKnowledge[];
+	lineageVersion?: number;
 	evaluations: ProjectedEvaluation[]; rationale: ProjectedKnowledge[];
 	decisionLineage: FactoryDecision[]; omittedEarlierDecisions?: number;
 	foundations: (ContractDependency & { usage: string; boundary: CapabilityUnit["boundary"] })[];

@@ -95,9 +95,9 @@ export function attachTaskAttempt(plan, taskId, attemptId, options = {}) {
 			path: "status",
 		});
 	}
-	assertString(options.sessionId, "sessionId", LIMITS.sessionId);
+	assertString(options.sessionId, "sessionId");
 	if (options.branch !== undefined && options.branch !== null) {
-		assertString(options.branch, "branch", LIMITS.branch);
+		assertString(options.branch, "branch");
 	}
 	const candidate = clone(plan);
 	const task = findTask(candidate, taskId);
@@ -200,7 +200,7 @@ export function completeTaskAttempt(plan, taskId, attemptId, status, options = {
 		});
 	}
 	if (options.branch !== undefined && options.branch !== null) {
-		assertString(options.branch, "branch", LIMITS.branch);
+		assertString(options.branch, "branch");
 		if (attempt.branch !== null && attempt.branch !== options.branch) {
 			fail("branch_mismatch", `Attempt ${attemptId} is attached to ${attempt.branch}`, {
 				path: "branch",

@@ -21,7 +21,7 @@ test("bundled verification workflow echoes its complete native input", async () 
 		"verify:coverage-reviewer": {
 			missingEvidence: [],
 			integrationFindings: [],
-			risks: [],
+			risks: Array.from({ length: 5 }, (_, index) => `Simplification proposal: conserve obligation ${index} and its evaluator; no contract change`),
 		},
 		"verify:integration-skeptic": {
 			missingEvidence: [],
@@ -66,6 +66,9 @@ test("bundled verification workflow echoes its complete native input", async () 
 		assert.deepEqual(embedded, { reservationId, ...args });
 	}
 	assert.match(workflow.calls[1].prompt, /evaluation-only plans have no implementation task/);
+	assert.match(workflow.calls[1].prompt, /substantively useful simplification proposals/);
+	assert.doesNotMatch(workflow.calls[1].prompt, /at most three/);
+	assert.equal(result.reviews[0]?.risks.length, 5);
 	assert.match(workflow.calls[0].prompt, /Task-owner claimed evidence is context only/);
 	assert.match(workflow.calls[2].prompt, /no reviewer gap can be erased by this summary/);
 	assert.deepEqual(must(workflow.calls[0].options.schema).required, ["missingEvidence", "integrationFindings", "risks"]);
@@ -76,6 +79,6 @@ test("bundled verification workflow echoes its complete native input", async () 
 test("verification workflow emits its marker before full input validation", async () => {
 	const reservationId = "invalid-input-reservation";
 	const workflow = workflowWithResponses({ reservationId }, {});
-	await assert.rejects(runVerify(workflow), /planId must be a non-empty string/);
+	await assert.rejects(runVerify(workflow), /input\.planId must be nonempty text without NUL/);
 	assert.equal(workflow.logs[0], verificationMarker(reservationId));
 });

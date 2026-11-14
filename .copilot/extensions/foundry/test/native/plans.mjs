@@ -17,6 +17,189 @@ import { factoryMutator } from "../factory/accessors.mjs";
 import { fixtureRoot, seedRepository } from "../git.mjs";
 import { createWorkflowContext } from "../workflows/runtime.mjs";
 import { fakeApi } from "./api.mjs";
+import { DatabaseSync } from "node:sqlite";
+import { analysisInputDigest, stableStringify } from "../../digest.mjs";
+import { buildRepairEffect, repairComparisonState, repairLaunch, repairObject } from "../../analysis/repair.mjs";
+import { createPlanStore } from "../../storage.mjs";
+import { createSupportedRuntime } from "../../native/supported-runtime.mjs";
+
+/** Explicit synthetic resource grant, not a live provider or production default.
+ * The same production admitRepairEffect seam consumes this transaction-backed port.
+ * @param {string} databasePath @param {{remaining: number, resourceId: string, nativeRunId?: () => string, agentIndex?: () => number, initialContributors?: () => import("../../types/repair.js").RepairIdentity[]}} grant */
+export function createFixtureRepairHost(databasePath, grant) {
+	const db = new DatabaseSync(databasePath);
+	db.exec(`CREATE TABLE IF NOT EXISTS fixture_native_resource (id TEXT PRIMARY KEY, remaining INTEGER NOT NULL) STRICT;
+		CREATE TABLE IF NOT EXISTS fixture_native_effect (id TEXT PRIMARY KEY, receipt TEXT NOT NULL) STRICT;
+		CREATE TABLE IF NOT EXISTS fixture_native_attestation (digest TEXT PRIMARY KEY) STRICT;`);
+	db.prepare("INSERT OR IGNORE INTO fixture_native_resource VALUES (?,?)").run(grant.resourceId, grant.remaining);
+	const checks = { authority: true, revision: true, approval: true, revocation: true, cancellation: true, provider: true, resources: true, budgets: true };
+	/** @type {Map<string, Promise<unknown>>} */
+	const inFlight = new Map();
+	/** @type {import("../../types/repair.js").RepairIdentity[]} */
+	const contributors = [];
+	/** @param {unknown} value */
+	function attest(value) {
+		db.prepare("INSERT OR IGNORE INTO fixture_native_attestation VALUES (?)").run(analysisInputDigest(value));
+		return structuredClone(value);
+	}
+	/** @param {unknown} value @returns {boolean} */
+	function authentic(value) {
+		if (db.prepare("SELECT digest FROM fixture_native_attestation WHERE digest=?").get(analysisInputDigest(value))) return true;
+		if (value && typeof value === "object" && !Array.isArray(value)) {
+			const raw = readRecord(value);
+			return Array.isArray(raw.receipts) && raw.receipts.length > 0 && raw.receipts.every(authentic)
+				&& authentic(raw.comparison) && Array.isArray(raw.history) && raw.history.every(authentic);
+		}
+		return false;
+	}
+	/** @param {string} id */
+	function identity(id) { return { agentId: `${id}-agent`, toolCallId: `${id}-call`, runId: `${id}-run` }; }
+	/** @type {import("../../types/repair.js").RepairHostPort} */
+	const host = {
+		async authenticate(value) { return authentic(value); },
+		async prepare(preparation) {
+			const source = preparation.source?.native;
+			const rawAgents = source && typeof source === "object" && !Array.isArray(source) ? readRecord(source).agents : [];
+			const native = Array.isArray(rawAgents) && rawAgents.length ? rawAgents.map(value => {
+				const raw = readRecord(value);
+				return { agentId: String(raw.agentId), toolCallId: String(raw.toolCallId), runId: String(raw.runId) };
+			}) : grant.initialContributors ? grant.initialContributors() : preparation.mode === "inline" && preparation.rootRunId === "source"
+				? Array.from({ length: preparation.material.stage === "structural" ? 4 : 5 }, (_, index) => ({
+					agentId: `source-agent-${index}`, toolCallId: `source-call-${index}`, runId: "source",
+				})) : [];
+			return attest({
+				format: "foundry-repair-comparison-v1",
+				protected: { preparationId: preparation.id, preparationDigest: preparation.digest,
+					rootRunId: preparation.rootRunId, inputDigest: preparation.inputDigest, sourceDigest: preparation.sourceDigest,
+					authority: preparation.authority, evaluatorDefinition: "synthetic-pinned-planning-evaluator" },
+				candidateDigest: analysisInputDigest(preparation.material.candidate), diagnosticsDigest: analysisInputDigest(preparation.material.diagnostics),
+				obligations: [
+					{ id: "planning-deadlock", evaluatorId: "synthetic-planning", evaluatorDigest: "e".repeat(64), inputDigest: preparation.inputDigest, status: "unresolved", evidence: [] },
+					{ id: "conserved-checks", evaluatorId: "synthetic-conservation", evaluatorDigest: "f".repeat(64), inputDigest: preparation.inputDigest, status: "unresolved", evidence: [] },
+				],
+				contributors: native, reviewer: identity(`baseline-${preparation.id}`),
+			});
+		},
+		async propose(preparation, history, continuationOf, context) {
+			const rows = db.prepare("SELECT payload FROM planning_repair_events WHERE id=? AND event='recovery-result' ORDER BY seq").all(preparation.id);
+			const row = rows.map(row => JSON.parse(String(row.payload))).find(value => value.runId === continuationOf);
+			if (!row) throw new Error("No exact retained continuation source");
+			return attest(buildRepairEffect(preparation, "launch", history, row.result.synthesisRepair.candidate, row.result.issues,
+				null, repairObject({ launch: repairLaunch(preparation), continuationOf, ...(context ? { context } : {}) })));
+		},
+		async review(effect, history) {
+			const baseline = repairComparisonState(history.at(-1));
+			const reviewer = identity(`admission-review-${effect.id}`);
+			const result = {
+				effectDigest: effect.id, passed: true, issues: [], reviewer,
+				targets: baseline.obligations.filter(item => item.status === "unresolved").map(item => item.id),
+				evidence: baseline.obligations.filter(item => item.status === "unresolved").map(item => ({
+					id: `preparation-${effect.id}-${item.id}`, digest: analysisInputDigest({ proposedEffect: effect.id, obligation: item.id }),
+					evaluatorId: item.evaluatorId, inputDigest: item.inputDigest,
+					producer: identity(`preparation-evidence-${effect.id}-${item.id}`), causalFor: [item.id],
+				})),
+			};
+			contributors.push(reviewer);
+			return attest(result);
+		},
+		async admit(effect, _review, invoke, signal) {
+			const existing = db.prepare("SELECT receipt FROM fixture_native_effect WHERE id=?").get(effect.id);
+			if (existing) return inFlight.get(effect.id) ?? JSON.parse(String(existing.receipt));
+			db.exec("BEGIN IMMEDIATE");
+			try {
+				const duplicate = db.prepare("SELECT receipt FROM fixture_native_effect WHERE id=?").get(effect.id);
+				if (duplicate) { db.exec("COMMIT"); return JSON.parse(String(duplicate.receipt)); }
+				const row = db.prepare("SELECT remaining FROM fixture_native_resource WHERE id=?").get(grant.resourceId);
+				const permitted = Object.values(checks).every(Boolean) && !signal?.aborted && row && Number(row.remaining) > 0;
+				const receipt = {
+					effectDigest: effect.id, disposition: permitted ? "admitted" : "denied", consumed: Boolean(permitted),
+					transactionId: `synthetic-native-transaction-${effect.id}`, nativeRunId: effect.runId ?? grant.nativeRunId?.() ?? "repair-native-run",
+					checks: { ...checks }, resourceClaims: { id: grant.resourceId, consumed: permitted ? 1 : 0 },
+					budgetClaims: { explicitFixtureGrant: grant.resourceId, consumed: permitted ? 1 : 0 },
+					contributors: [],
+				};
+				if (permitted) db.prepare("UPDATE fixture_native_resource SET remaining=remaining-1 WHERE id=? AND remaining>0").run(grant.resourceId);
+				db.prepare("INSERT INTO fixture_native_effect VALUES (?,?)").run(effect.id, stableStringify(receipt));
+				attest(receipt);
+				db.exec("COMMIT");
+				if (!permitted) return receipt;
+				const executing = (async () => {
+					try {
+						const output = readJsonValue(await invoke());
+						const role = grant.agentIndex ? grant.agentIndex() : effect.runId === "source"
+							? (effect.kind === "author" ? (effect.operation.label === "plan:synthesis-repair" ? 4 : 5) : (effect.operation.label === "plan:verifier" ? 5 : 6))
+							: effect.kind === "author" ? 0 : 1;
+						const native = effect.kind === "launch" ? [] : [{ agentId: `${receipt.nativeRunId}-agent-${role}`, toolCallId: `${receipt.nativeRunId}-call-${role}`, runId: receipt.nativeRunId }];
+						contributors.push(...native);
+						let disposition = receipt.disposition;
+						let nativeRunId = receipt.nativeRunId;
+						if (effect.kind === "launch") {
+							const raw = readRecord(output);
+							if (raw.resultType === "success") {
+								const decoded = JSON.parse(String(raw.textResultForLlm));
+								const value = decoded.ok === true ? decoded.value : decoded;
+								if (typeof value.runId !== "string" || !value.runId) disposition = "uncertain";
+								else nativeRunId = value.runId;
+							} else disposition = ["denied", "rejected"].includes(String(raw.resultType)) ? "denied" : "uncertain";
+						}
+						const settled = { ...receipt, disposition, nativeRunId, output, contributors: native };
+						db.prepare("UPDATE fixture_native_effect SET receipt=? WHERE id=?").run(stableStringify(settled), effect.id);
+						return attest(settled);
+					} catch (error) {
+						const uncertain = { ...receipt, disposition: "uncertain", failure: String(error) };
+						db.prepare("UPDATE fixture_native_effect SET receipt=? WHERE id=?").run(stableStringify(uncertain), effect.id);
+						attest(uncertain);
+						inFlight.delete(effect.id);
+						throw error;
+					}
+				})();
+				inFlight.set(effect.id, executing);
+				return executing;
+			} catch (error) {
+				if (db.isTransaction) db.exec("ROLLBACK");
+				throw error;
+			}
+		},
+		async reconcile(effect) {
+			const active = inFlight.get(effect.id);
+			if (active) return active;
+			const row = db.prepare("SELECT receipt FROM fixture_native_effect WHERE id=?").get(effect.id);
+			return row ? JSON.parse(String(row.receipt)) : null;
+		},
+		async observeCandidate(preparation, candidate, verdict, history, receipts, diagnostics) {
+			const state = structuredClone(repairComparisonState(history.at(-1)));
+			state.candidateDigest = analysisInputDigest(candidate);
+			state.diagnosticsDigest = analysisInputDigest(diagnostics);
+			const passed = verdict && typeof verdict === "object" && !Array.isArray(verdict) && readRecord(verdict).passed === true;
+			const changed = analysisInputDigest(candidate) !== analysisInputDigest(preparation.material.candidate);
+			const nativeReview = receipts[1] && typeof receipts[1] === "object" && !Array.isArray(receipts[1]) ? readRecord(receipts[1]) : {};
+			const native = Array.isArray(nativeReview.contributors) ? readRecord(nativeReview.contributors[0]) : null;
+			state.reviewer = native ? { agentId: String(native.agentId), toolCallId: String(native.toolCallId), runId: String(native.runId) } : identity("missing-review");
+			state.contributors.push(...contributors.filter(item => item.agentId !== state.reviewer.agentId));
+			if (passed && changed) for (const obligation of state.obligations.filter(item => item.status === "unresolved")) {
+				obligation.status = "supported";
+				obligation.evidence.push({
+					id: `causal-${obligation.id}`, digest: analysisInputDigest({ candidate, obligation: obligation.id }),
+					evaluatorId: obligation.evaluatorId, inputDigest: obligation.inputDigest,
+					producer: identity(`independent-causal-${obligation.id}`), causalFor: [obligation.id],
+				});
+			}
+			return attest(state);
+		},
+	};
+	return { host, checks, attest, close: () => db.close(),
+		remaining: () => Number(db.prepare("SELECT remaining FROM fixture_native_resource WHERE id=?").get(grant.resourceId)?.remaining) };
+}
+
+/** @param {{session: {workspacePath: string}, calls?: unknown[], runId?: string}} workflow */
+export async function repairWorkflowHost(workflow) {
+	await createPlanStore({ workspacePath: workflow.session.workspacePath }).list();
+	return createFixtureRepairHost(path.join(workflow.session.workspacePath, "files/foundry/foundry.sqlite"),
+		{ remaining: 20, resourceId: "explicit-synthetic-workflow-grant", agentIndex: () => (workflow.calls?.length ?? 1) - 1,
+			initialContributors: () => (workflow.calls ?? []).map((_call, index) => ({
+				agentId: `${workflow.runId}-agent-${index}`, toolCallId: `${workflow.runId}-call-${index}`, runId: workflow.runId ?? "workflow-run",
+			})) });
+}
 
 /** Synthetic native owner, confined by the existing isolated runner.
  * @template {object} T @param {T} workflow @param {string} [owner] */
@@ -56,25 +239,31 @@ export async function repairNativeFixture(t) {
 			agentId: `${runId}-agent-${index}`, toolCallId: `${runId}-call-${index}`, runId, label, status: "completed",
 		})),
 	});
-	const analysis = createWorkflowAnalysis(() => api);
 	const sessionId = "synthetic-owner";
+	let nextRunId = "repair-native-run";
+	await createPlanStore({ workspacePath: owner }).list();
+	const nativeHost = createFixtureRepairHost(path.join(owner, "files/foundry/foundry.sqlite"), { remaining: 20, resourceId: "explicit-synthetic-native-grant", nativeRunId: () => nextRunId });
+	t.after(nativeHost.close);
+	const analysis = createWorkflowAnalysis(() => api, nativeHost.host);
 	const context = { invocation: { sessionId, toolCallId: "native-invocation" } };
 	/** @type {Array<{name: string, arguments: import("../../types/json.js").JsonValue, toolCallId?: string}>} */
 	const launches = [];
-	let nextRunId = "repair-native-run";
 	/** @type {(input: {name: string, arguments: import("../../types/json.js").JsonValue}) => Promise<unknown>} */
 	let executor = async input => {
 		const args = readRecord(readRecord(input.arguments).args);
-		assertRepairIntent(String(args.preparationId), String(args.preparationDigest));
+		assertRepairIntent(String(args.preparationId), String(args.preparationDigest), typeof args.effectId === "string" ? args.effectId : undefined);
 		records[nextRunId] = {
 			workflowName: "plan-repair", run: { runId: nextRunId, status: "running" }, createdAt: 2000, completedAt: null, progress: [],
 		};
 		return { resultType: "success", textResultForLlm: JSON.stringify({ runId: nextRunId }) };
 	};
-	/** @param {string} id @param {string} digest */
-	function assertRepairIntent(id, digest) {
-		const record = createRepairJournal({ workspacePath: owner, sessionId }).read(id, digest);
-		if (record.state !== "intent") throw new Error("Native invocation preceded durable intent");
+	/** @param {string} id @param {string} digest @param {string} [effectId] */
+	function assertRepairIntent(id, digest, effectId) {
+		const journal = createRepairJournal({ workspacePath: owner, sessionId });
+		const record = journal.read(id, digest);
+		const inlineIntent = record.preparation.mode === "inline" && journal.effects(id, digest).some(row => row.state === "intent"
+			&& typeof row.effect === "object" && row.effect !== null && !Array.isArray(row.effect) && row.effect.id === effectId);
+		if (!inlineIntent && !["intent", "uncertain", "admitted"].includes(record.state)) throw new Error("Native invocation preceded durable intent");
 	}
 	const session = {
 		sessionId, workspacePath: owner,
@@ -83,9 +272,12 @@ export async function repairNativeFixture(t) {
 			} },
 		},
 	};
-	const createOps = (withExecutor = true) => createFoundryOperations({
+	const runtime = createSupportedRuntime({ getSession: () => session });
+	const createOps = (withExecutor = true, withHost = true) => createFoundryOperations({
 		getWorkspacePath: () => owner,
 		getSession: () => withExecutor ? session : { sessionId, workspacePath: owner }, analysis,
+		repairHost: withHost ? nativeHost.host : undefined,
+		getNativeRuntime: withExecutor ? () => runtime : undefined,
 	});
 	const ops = createOps();
 	const preparedPlan = await ops.preparePlan({
@@ -116,7 +308,7 @@ export async function repairNativeFixture(t) {
 		const record = records[nextRunId];
 		if (!record) throw new Error("No synthetic native admission");
 		const executing = { ...workflow, runId: nextRunId, session: { ...session, workflow: api } };
-		const result = await runRepair(executing);
+		const result = await runRepair(executing, nativeHost.host);
 		record.run.status = "completed";
 		record.run.result = result;
 		record.completedAt = 3000;
@@ -125,7 +317,7 @@ export async function repairNativeFixture(t) {
 		return { result, workflow };
 	}
 	return {
-		root, repositoryPath, owner, sessionId, context, session, factory, mutate, records, labels, api, analysis, ops, createOps, input, original, repaired, prepare, execute, launches,
+		root, repositoryPath, owner, sessionId, context, session, factory, mutate, records, labels, api, analysis, ops, createOps, input, original, repaired, prepare, execute, launches, nativeHost,
 		journal: () => createRepairJournal({ workspacePath: owner, sessionId }),
 		setExecutor: (/** @type {typeof executor} */ value) => { executor = value; },
 		setRunId: (/** @type {string} */ value) => { nextRunId = value; },

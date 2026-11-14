@@ -72,7 +72,7 @@ export function bindVerificationRun(plan, runId) {
 		|| plan.verification.status !== VERIFICATION_STATUS.RESERVED) {
 		fail("verification_not_reserved", "Only an active verification reservation can bind a run");
 	}
-	assertString(runId, "runId", LIMITS.verificationRunId);
+	assertString(runId, "runId");
 	if (plan.verification.runId !== null && plan.verification.runId !== runId) {
 		fail("verification_run_mismatch", "Verification is already bound to another run");
 	}
@@ -97,25 +97,16 @@ export function completeVerification(plan, result, options = {}) {
 			path: "verification.status",
 		});
 	}
-	assertString(options.runId, "runId", LIMITS.verificationRunId);
+	assertString(options.runId, "runId");
 	if (plan.verification.runId !== null && plan.verification.runId !== options.runId) {
 		fail("verification_run_mismatch", "The completed run does not match bound verification");
 	}
 	assertPlainObject(result, "result");
 	validateConceptualReview(result.conceptualReview);
-	assertString(result.summary, "result.summary", LIMITS.resultSummary);
-	assertStringArray(result.evidence, "result.evidence", {
-		maximum: LIMITS.verificationEvidence,
-		itemMaximum: LIMITS.evidenceItem,
-	});
-	assertStringArray(result.missingEvidence, "result.missingEvidence", {
-		maximum: LIMITS.missingEvidence,
-		itemMaximum: LIMITS.missingEvidenceItem,
-	});
-	assertStringArray(result.correctionTaskIds, "result.correctionTaskIds", {
-		maximum: LIMITS.tasks,
-		itemMaximum: 5,
-	});
+	assertString(result.summary, "result.summary");
+	assertStringArray(result.evidence, "result.evidence");
+	assertStringArray(result.missingEvidence, "result.missingEvidence");
+	assertStringArray(result.correctionTaskIds, "result.correctionTaskIds");
 	if (typeof result.passed !== "boolean") {
 		fail("invalid_verification_result", "result.passed must be a boolean", {
 			path: "result.passed",

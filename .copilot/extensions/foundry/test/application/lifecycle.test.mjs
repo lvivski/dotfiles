@@ -10,7 +10,7 @@ import { validatePlan } from "../../plan/validation.mjs";
 import { approvalScope } from "../../plan/schemas/approval.mjs";
 import { createPlanStore } from "../../storage.mjs";
 import { must } from "../assertions.mjs";
-import { analysisStub, completeImplementation, createApproved, createInput, evidence, runTask, technicalAuthority, technicalFixture, technicalOwner, withOperations } from "./fixture.mjs";
+import { analysisStub, completeImplementation, createApproved, createInput, evidence, planBlueprint, runTask, technicalAuthority, technicalFixture, technicalOwner, withOperations } from "./fixture.mjs";
 import { COMMIT } from "../git.mjs";
 
 const nativeOwner = { sessionId: "coordinator-session", toolCallId: "approve-call" };
@@ -459,7 +459,7 @@ test("missing, invalid or stale instruction authority cannot grant delegation or
 		await assert.rejects(operations.planApprovalDelegation(request, { invocation: nativeOwner }), { code: "delegation_instruction_required" });
 		for (const authority of [
 			{ ...userAuthority, instruction: "" },
-			{ ...userAuthority, instruction: "x".repeat(16001) },
+			{ ...userAuthority, instruction: "instruction\0suffix" },
 			{ ...userAuthority, source: { ...userAuthority.source, kind: "generated-plan" } },
 			{ ...userAuthority, source: { ...userAuthority.source, kind: "child-report" } },
 			{ ...userAuthority, source: { ...userAuthority.source, sessionId: "foreign-direct" } },
@@ -540,10 +540,10 @@ test("historical native UI grants remain readable, reusable and immutable withou
 	})
 ));
 
-test("activity stays bounded and records resulting revisions", () => (
+test("activity retains the entire history beyond the old presentation bound and records resulting revisions", () => (
 	withOperations(async ({ operations, workspacePath }) => {
 		let plan = await operations.createPlan(createInput(workspacePath));
-		plan.activity = Array.from({ length: LIMITS.activity }, (_, index) => ({
+		plan.activity = Array.from({ length: 257 }, (_, index) => ({
 			event: `event-${index}`,
 			at: plan.updatedAt,
 			revision: 1,
@@ -555,10 +555,10 @@ test("activity stays bounded and records resulting revisions", () => (
 			planId: plan.id,
 			expectedRevision: plan.revision,
 		});
-		assert.equal(submitted.activity.length, LIMITS.activity);
+		assert.equal(submitted.activity.length, 258);
 		assert.equal(submitted.activity.at(-1)?.event, "plan-submitted");
 		assert.equal(submitted.activity.at(-1)?.revision, submitted.revision);
-		assert.equal(submitted.activity[0].event, "event-1");
+		assert.equal(submitted.activity[0].event, "event-0");
 	})
 ));
 
@@ -579,6 +579,43 @@ test("explicit JSON interchange restores a plan without activating or launching 
 		}), { code: "plan_exists" });
 	})
 ));
+
+test("complete generated prose, lists, delegation and per-record evidence roundtrip through real plan persistence and interchange", async () => {
+	const blueprint = planBlueprint();
+	const original = ` \t\n${"Original-原文🧪".repeat(3000)}\n `;
+	blueprint.title = original;
+	blueprint.objective = original;
+	blueprint.constraints = Array.from({ length: 70 }, (_, index) => `${original}${index}`);
+	blueprint.tasks[0].description = original;
+	blueprint.tasks[0].acceptanceCriteria = Array.from({ length: 70 }, (_, index) => `${original}${index}`);
+	blueprint.tasks[0].expectedFiles = Array.from({ length: 70 }, (_, index) => `src/${"segment/".repeat(100)}${index}.mjs`);
+	const reports = Array.from({ length: 70 }, (_, index) => ({
+		...evidence(`${original}${index}`)[0], source: `${original}source-${index}`,
+	}));
+	await withOperations(async ({ operations, workspacePath }) => {
+		let plan = await createApproved(operations, workspacePath);
+		assert.equal(plan.title, original);
+		assert.equal(plan.objective, original);
+		assert.deepEqual(plan.constraints, blueprint.constraints);
+		assert.deepEqual(plan.tasks[0].acceptanceCriteria, blueprint.tasks[0].acceptanceCriteria);
+		const completed = await runTask(operations, plan, "T-001", { evidence: reports });
+		plan = completed.plan;
+		assert.ok(completed.reserved.delegationPrompt.includes(original));
+		for (const value of blueprint.constraints) assert.ok(completed.reserved.delegationPrompt.includes(value));
+		for (const value of blueprint.tasks[0].expectedFiles) assert.ok(completed.reserved.delegationPrompt.includes(value));
+		const entries = plan.tasks[0].attempts[0].evidence;
+		assert.deepEqual(entries.map(({ type, summary, source, outcome }) => ({ type, summary, source, outcome })), reports);
+		assert.deepEqual(await createPlanStore({ workspacePath }).read(plan.id), plan);
+		const exported = await operations.exportPlan({ planId: plan.id });
+		assert.deepEqual(parseJson(exported), plan);
+		await withOperations(async ({ operations: recipient }) => {
+			const imported = await recipient.importPlan({ source: exported, expectedRevision: 0 });
+			assert.deepEqual(imported, plan);
+			assert.deepEqual(await recipient.getPlan({ planId: plan.id }), plan);
+			assert.equal(await recipient.getActivation(), null);
+		});
+	}, { analysis: analysisStub({ plan: blueprint }) });
+});
 
 test("operations drive reservation, App attachment, verification, and approval", () => (
 	withOperations(async ({ operations, notifications, workspacePath }) => {

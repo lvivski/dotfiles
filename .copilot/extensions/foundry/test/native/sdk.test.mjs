@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readString } from "../../data.mjs";
-import { LIMITS } from "../../plan/values.mjs";
 import { jsonField, jsonResponse } from "../assertions.mjs";
 import { fixture, nativeUi, poster, prepareBoardCandidate } from "../server/fixture.mjs";
 
@@ -13,7 +12,7 @@ function invalidContents(field) {
 		{ [field]: undefined },
 		{ [field]: "" },
 		{ [field]: " \t " },
-		{ [field]: "x".repeat(LIMITS.actor + 1) },
+		{ [field]: "actor\0suffix" },
 		{ [field]: 1 },
 		{ [field]: true },
 		{ [field]: ["owner"] },
@@ -46,7 +45,7 @@ test("SDK fixture approval rejects absent, undefined and malformed identities, t
 		assert.equal(response.status, 200);
 		assert.deepEqual(await jsonResponse(response), { ok: true, value: { action: "approve" } });
 		const saved = await current.operations.getPlan({ planId: current.plan.id });
-		assert.equal(saved.gates.planApprovedBy, "native-user");
+		assert.equal(saved.gates.planApprovedBy, "  native-user  ");
 		assert.equal(saved.revision, current.plan.revision + 1);
 		for (const prompt of prompts) assert.deepEqual(prompt.requestedSchema.required, ["approvedBy"]);
 	} finally {
@@ -98,7 +97,7 @@ test("SDK fixture cancellation validates the native requester without a renderer
 		assert.equal(response.status, 200);
 		assert.deepEqual(await jsonResponse(response), { ok: true, value: { action: "cancel" } });
 		const saved = await current.operations.getPlan({ planId: current.plan.id });
-		assert.equal(saved.cancellation?.requestedBy, "native-requester");
+		assert.equal(saved.cancellation?.requestedBy, " native-requester ");
 		assert.equal(saved.cancellation?.reason, "Native reason");
 	} finally {
 		await current.close();
@@ -136,7 +135,7 @@ test("SDK fixture candidate decisions require a valid native actor before reposi
 		const decision = saved.decisions.at(-1);
 		assert.ok(decision);
 		assert.equal(decision.kind, "reject-candidate");
-		assert.equal(decision.actor, "native-reviewer");
+		assert.equal(decision.actor, " native-reviewer ");
 		assert.equal(decision.reason, "Native rejection");
 	} finally {
 		await current.close();

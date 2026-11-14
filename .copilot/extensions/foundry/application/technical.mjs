@@ -93,7 +93,7 @@ export function createTechnicalOperations({
 			|| plan.status !== PLAN_STATUS.FAILED || plan.verification.status !== "failed") {
 			fail("technical_retry_unsupported", "Technical retry is limited to failed discovery verification, never delivered or sealed candidates");
 		}
-		assertString(input.review, "review", LIMITS.error);
+		assertString(input.review, "review");
 		const state = factory.factoryFor(plan.repository.workingDirectory).snapshot();
 		const grant = authorize(plan, delegation, invocation, "retry", state);
 		if (grant.id !== input.delegationId) fail("delegation_out_of_scope", "Retry must use the exact recorded grant");

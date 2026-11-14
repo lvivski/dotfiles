@@ -72,7 +72,7 @@ function validatePlanning(planning) {
 	assertPlainObject(planning, "planning");
 	assertKnownKeys(planning, PLANNING_KEYS, "planning");
 	validateConceptualReview(planning.conceptualReview);
-	assertString(planning.runId, "planning.runId", LIMITS.verificationRunId);
+	assertString(planning.runId, "planning.runId");
 	if (typeof planning.inputDigest !== "string"
 		|| !/^[a-f0-9]{64}$/.test(planning.inputDigest)) {
 		fail("invalid_planning_digest", "planning.inputDigest must be a SHA-256 digest", {
@@ -101,12 +101,9 @@ function assertValidPlan(plan) {
 		fail("invalid_revision", "revision must be a positive safe integer", { path: "revision" });
 	}
 	const planId = assertPlanId(plan.id);
-	assertString(plan.title, "title", LIMITS.planTitle);
-	assertString(plan.objective, "objective", LIMITS.objective);
-	assertStringArray(plan.constraints, "constraints", {
-		maximum: LIMITS.constraints,
-		itemMaximum: LIMITS.constraint,
-	});
+	assertString(plan.title, "title");
+	assertString(plan.objective, "objective");
+	assertStringArray(plan.constraints, "constraints");
 	if (!isOneOf(plan.status, PLAN_STATUS_VALUES)) {
 		fail("invalid_plan_status", "status is not supported", {
 			path: "status",
@@ -116,13 +113,13 @@ function assertValidPlan(plan) {
 
 	assertPlainObject(plan.repository, "repository");
 	assertKnownKeys(plan.repository, REPOSITORY_KEYS, "repository");
-	assertString(plan.repository.workingDirectory, "repository.workingDirectory", LIMITS.repositoryPath);
+	assertString(plan.repository.workingDirectory, "repository.workingDirectory");
 	if (!path.isAbsolute(plan.repository.workingDirectory)) {
 		fail("invalid_repository_path", "repository.workingDirectory must be absolute", {
 			path: "repository.workingDirectory",
 		});
 	}
-	assertString(plan.repository.baseBranch, "repository.baseBranch", LIMITS.baseBranch);
+	assertString(plan.repository.baseBranch, "repository.baseBranch");
 	validatePlanning(plan.planning);
 	validateFactoryBinding(plan.factory);
 	const factoryBinding = plan.factory;
@@ -141,12 +138,11 @@ function assertValidPlan(plan) {
 	if (plan.factory?.purpose === "evaluation" && plan.evaluationTarget == null) fail("invalid_evaluation_target", "Evaluation binding requires a pinned external target");
 	if (plan.factoryVerification != null) {
 		assertPlainObject(plan.factoryVerification, "factoryVerification");
-		if (JSON.stringify(plan.factoryVerification).length > 256 * 1024) fail("invalid_factory_verification", "Frozen factory verification context exceeds 256 KiB");
 	}
 	/** @type {import("../types/plan.js").TechnicalDecision[]} */
 	const technicalDecisions = [];
 	if (plan.technicalDecisions !== undefined) {
-		if (!Array.isArray(plan.technicalDecisions) || plan.technicalDecisions.length > 64) fail("technical_receipt_invalid", "Technical history must be a bounded immutable list");
+		if (!Array.isArray(plan.technicalDecisions)) fail("technical_receipt_invalid", "Technical history must be an immutable list");
 		const ids = new Set();
 		for (const decision of plan.technicalDecisions) {
 			validateTechnicalDecision(decision);
@@ -413,12 +409,10 @@ function assertValidPlan(plan) {
 		});
 	}
 
-	if (!isList(plan.activity)
-		|| plan.activity.length < 1
-		|| plan.activity.length > LIMITS.activity) {
+	if (!isList(plan.activity) || plan.activity.length < 1) {
 		fail(
 			"invalid_activity",
-			`activity must contain 1-${LIMITS.activity} events`,
+			"activity must contain at least one event",
 			{ path: "activity" },
 		);
 	}
@@ -427,11 +421,11 @@ function assertValidPlan(plan) {
 		const fieldPath = `activity[${index}]`;
 		assertPlainObject(event, fieldPath);
 		assertKnownKeys(event, ACTIVITY_KEYS, fieldPath);
-		assertString(event.event, `${fieldPath}.event`, LIMITS.activityEvent);
+		assertString(event.event, `${fieldPath}.event`);
 		assertTimestamp(event.at, `${fieldPath}.at`);
-		if (event.actor !== undefined) assertString(event.actor, `${fieldPath}.actor`, LIMITS.actor);
+		if (event.actor !== undefined) assertString(event.actor, `${fieldPath}.actor`);
 		if (event.verificationRunId !== undefined) {
-			assertString(event.verificationRunId, `${fieldPath}.verificationRunId`, LIMITS.verificationRunId);
+			assertString(event.verificationRunId, `${fieldPath}.verificationRunId`);
 		}
 		if (typeof event.revision !== "number" || !Number.isSafeInteger(event.revision)
 			|| event.revision < 1

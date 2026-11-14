@@ -32,7 +32,7 @@ readiness projections convey **no native authority**.
 
 Portable knowledge belongs to repository `.foundry` publication. Existing
 factory SQLite retains the immutable `recordOperating` journal (factory format
-v2, storage schema 4). Existing owner-plan SQLite retains the authorization
+v2, storage schema 5). Existing owner-plan SQLite retains the authorization
 outbox and private bindings/references in `plan.operating` (plan schema 3).
 There is no additional authority database, lease, or scheduler.
 

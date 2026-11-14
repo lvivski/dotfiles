@@ -23,13 +23,13 @@ export function source(value, at) {
 	/** @type {Provenance} */
 	const result = {
 		kind: enumeration(value.kind, SOURCE_KINDS, "source.kind"),
-		ref: text(value.ref, "source.ref", 4096),
-		actor: text(value.actor, "source.actor", 256),
+		ref: text(value.ref, "source.ref"),
+		actor: text(value.actor, "source.actor"),
 		at: timestamp(value.at, "source.at"),
 	};
 	if (Date.parse(result.at) > Date.parse(at)) fail("factory_provenance_future", "Source evidence cannot be dated after its capture");
 	for (const field of /** @type {const} */ (["sessionId", "planId", "taskId", "attemptId", "runId", "owner", "judgmentId"])) {
-		if (value[field] !== undefined) result[field] = text(value[field], `source.${field}`, field === "owner" ? 4096 : 512);
+		if (value[field] !== undefined) result[field] = text(value[field], `source.${field}`);
 	}
 	if (value.digest !== undefined) result["digest"] = digest(value.digest, "source.digest");
 	if (result.kind === "app-task"
@@ -47,7 +47,7 @@ export function artifact(value) {
 	object(value, ["kind", "ref", "digest"], "context artifact");
 	return {
 		kind: enumeration(value.kind, ["knowledge", "schema", "test", "reference", "foundation", "implementation", "data"], "artifact.kind"),
-		ref: text(value.ref, "artifact.ref", 4096),
+		ref: text(value.ref, "artifact.ref"),
 		digest: digest(value.digest, "artifact.digest"),
 	};
 }
@@ -61,7 +61,7 @@ export function evaluation(value, state, unitId) {
 	if (value.procedure.bundle !== undefined && (kind !== "command" || value.modality === "human")) {
 		fail("factory_evaluation_modality", "Executable bundles cannot relabel a human rubric or non-executable reference");
 	}
-	const refs = list(value.obligations, "evaluation.obligations", 32, 1).map(reference);
+	const refs = list(value.obligations, "evaluation.obligations", undefined, 1).map(reference);
 	if (new Set(refs.map(key)).size !== refs.length) fail("factory_input_invalid", "Evaluation obligations contain duplicates");
 	for (const ref of refs) {
 		if (!state) continue;
@@ -82,14 +82,14 @@ export function evaluation(value, state, unitId) {
 		modality,
 		procedure: {
 			kind,
-			ref: text(value.procedure.ref, "procedure.ref", 4096),
+			ref: text(value.procedure.ref, "procedure.ref"),
 			digest: digest(value.procedure.digest, "procedure.digest"),
 			...(value.procedure.bundle === undefined ? {} : { bundle: evaluatorBundle(value.procedure.bundle) }),
 		},
 		obligations: refs,
-		environment: text(value.environment, "evaluation.environment", 2048),
-		workload: text(value.workload, "evaluation.workload", 2048),
-		maxAgeSeconds: integer(value.maxAgeSeconds, "evaluation.maxAgeSeconds", 1, 31536000),
+		environment: text(value.environment, "evaluation.environment"),
+		workload: text(value.workload, "evaluation.workload"),
+		maxAgeSeconds: integer(value.maxAgeSeconds, "evaluation.maxAgeSeconds"),
 		independent: value.independent,
 		preservation: value.preservation,
 		...(value.visual === undefined ? {} : { visual: visualSpecification(value.visual) }),

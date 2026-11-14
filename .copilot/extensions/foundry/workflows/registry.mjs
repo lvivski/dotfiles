@@ -20,13 +20,18 @@ export const WORKFLOW_FILES = Object.freeze({
 });
 
 /** Native Workflow definitions registered by the Foundry control plane. */
-export const FOUNDRY_WORKFLOWS = Object.freeze({
+/** Trusted constructor composition; host capabilities are never serialized workflow args.
+ * @param {import("../types/repair.js").RepairHostPort} [repairHost] */
+export function createFoundryWorkflows(repairHost) {
+return Object.freeze({
 	audit: Object.freeze({ meta: auditMeta, run: runAudit }),
 	deepResearch: Object.freeze({ meta: deepResearchMeta, run: runDeepResearch }),
-	plan: Object.freeze({ meta: planMeta, run: runPlan }),
-	repair: Object.freeze({ meta: repairMeta, run: runRepair }),
+	plan: Object.freeze({ meta: planMeta, run: (/** @type {Parameters<typeof runPlan>[0]} */ workflow) => runPlan(workflow, repairHost) }),
+	repair: Object.freeze({ meta: repairMeta, run: (/** @type {Parameters<typeof runRepair>[0]} */ workflow) => runRepair(workflow, repairHost) }),
 	reviewQueue: Object.freeze({ meta: reviewQueueMeta, run: runReviewQueue }),
 	securityReview: Object.freeze({ meta: securityReviewMeta, run: runSecurityReview }),
 	triage: Object.freeze({ meta: triageMeta, run: runTriage }),
 	verify: Object.freeze({ meta: verifyMeta, run: runVerify }),
 });
+}
+export const FOUNDRY_WORKFLOWS = createFoundryWorkflows();

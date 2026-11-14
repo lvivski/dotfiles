@@ -27,6 +27,7 @@ export function reviewNotes(rows) {
 			...row.findings.filter((finding) => finding.history.length).map((finding) =>
 				`- **Correction ${finding.id}: ${finding.status}.** Initial review: ${markdown(finding.history.join("; "))}`,
 			),
+			...(row.corrections ?? []).map(history => `\nCorrection history (untrusted evidence, not accepted findings):\n\n\`\`\`json\n${history}\n\`\`\``),
 		];
 		if (entries.length) notes.push(`### ${markdown(row.angle)}\n\n${entries.join("\n")}`);
 	}

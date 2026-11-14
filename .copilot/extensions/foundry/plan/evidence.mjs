@@ -58,7 +58,7 @@ export function validateEvidence(entry, task, attempt, index, fieldPath) {
 		});
 	}
 	validateEvidenceFields(entry, fieldPath);
-	assertString(entry.producer, `${fieldPath}.producer`, LIMITS.producer);
+	assertString(entry.producer, `${fieldPath}.producer`);
 	if (entry.producer !== (attempt.sessionId ?? "coordinator")) {
 		fail("invalid_evidence_producer", `${fieldPath}.producer does not match its attempt`, {
 			path: `${fieldPath}.producer`,
@@ -71,7 +71,7 @@ export function validateEvidence(entry, task, attempt, index, fieldPath) {
 		});
 	}
 	if (task.kind === "verify") {
-		assertString(entry.checkId, `${fieldPath}.checkId`, 32);
+		assertString(entry.checkId, `${fieldPath}.checkId`);
 	} else if (entry.checkId !== null) {
 		fail("invalid_evidence_check", `${fieldPath}.checkId must be null`, {
 			path: `${fieldPath}.checkId`,
@@ -86,8 +86,8 @@ function validateEvidenceFields(entry, fieldPath) {
 			path: `${fieldPath}.type`,
 		});
 	}
-	assertString(entry.summary, `${fieldPath}.summary`, LIMITS.evidenceItem);
-	assertNullableString(entry.source, `${fieldPath}.source`, LIMITS.evidenceSource);
+	assertString(entry.summary, `${fieldPath}.summary`);
+	assertNullableString(entry.source, `${fieldPath}.source`);
 	if (!isOneOf(entry.outcome, EVIDENCE_OUTCOME_VALUES)) {
 		fail("invalid_evidence_outcome", `${fieldPath}.outcome is not supported`, {
 			path: `${fieldPath}.outcome`,

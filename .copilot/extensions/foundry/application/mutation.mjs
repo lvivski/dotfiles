@@ -55,7 +55,6 @@ export function createPlanMutations({ workspace, storeFor, notify, factory }) {
 					at: new Date().toISOString(),
 					revision: expectedRevision + 1,
 				});
-				candidate.activity = candidate.activity.slice(-LIMITS.activity);
 				return candidate;
 			},
 			settings,

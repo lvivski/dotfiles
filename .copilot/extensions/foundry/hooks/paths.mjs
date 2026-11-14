@@ -20,14 +20,13 @@ const SESSION_HELPER = "foundry-exact-relay";
 export function observeRetentionPath(root, relative, options) {
 	if (!path.isAbsolute(root) || path.normalize(root) !== root || root === path.parse(root).root
 		|| /[\\\0]/.test(root) || root.split(path.sep).some(part => part === "." || part === "..")
-		|| (relative !== "" && (relative.length > 512 || !/^[A-Za-z0-9._/-]+$/.test(relative)
+		|| (relative !== "" && (!/^[A-Za-z0-9._/-]+$/.test(relative)
 			|| relative.split("/").some(part => !part || part === "." || part === ".." || part.endsWith(".")
 				|| /^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(part))))) {
 		throw new Error("retention_path_invalid");
 	}
 	const filename = relative ? path.join(root, relative) : root;
 	const parts = filename.slice(path.parse(filename).root.length).split(path.sep);
-	if (parts.length > 64) throw new Error("retention_path_overflow");
 	/** @type {{path: string, device: string, inode: string}[]} */
 	const components = [];
 	let current = path.parse(filename).root;

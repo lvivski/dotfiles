@@ -11,16 +11,12 @@ import { evaluationCriterion } from "../factory/criterion.mjs";
 /** @typedef {import("../types/analysis.js").VerificationInput} VerificationInput */
 /** @typedef {import("../types/analysis.js").VerificationOutcome} VerificationOutcome */
 
-/** Bounded non-governing proposals, separate from acceptance and pass/fail. @param {unknown} reviews */
+/** Complete non-governing proposals, separate from acceptance and pass/fail. @param {unknown} reviews */
 export function extractSimplificationProposals(reviews) {
 	const risks = isList(reviews) ? reviews.flatMap((review) => isRecord(review) && isList(review.risks) ? review.risks : []) : [];
 	const proposed = [...new Set(risks.filter(/** @returns {risk is string} */(risk) => typeof risk === "string" && risk.startsWith("Simplification proposal:")))];
 	if (!proposed.length) return null;
-	const bounded = proposed.filter((proposal) => proposal.length <= 2000);
-	const gaps = [];
-	if (bounded.length !== proposed.length) gaps.push("An oversized conceptual proposal was not imported; capture its bounded conserved meaning, evaluations and tradeoffs explicitly.");
-	if (bounded.length > 3) gaps.push("More than three conceptual proposals were suggested; additional scope needs its own review.");
-	return { proposals: bounded.slice(0, 3), gaps };
+	return { proposals: proposed, gaps: [] };
 }
 
 /**
@@ -258,8 +254,7 @@ export function evaluateVerification(input, value) {
 			);
 		});
 	});
-	if (!isList(result.missingEvidence)
-		|| result.missingEvidence.length > LIMITS.missingEvidence) {
+	if (!isList(result.missingEvidence)) {
 		fail("invalid_analysis_result", "Verification result missingEvidence is invalid");
 	}
 	result.missingEvidence.forEach((entry, index) => (
@@ -280,9 +275,8 @@ export function evaluateVerification(input, value) {
 		/** @returns {id is string} */
 		(id) => typeof id === "string" && allEvidence.get(id)?.outcome === EVIDENCE_OUTCOME.PASSED,
 	);
-	const invalidEvidence = result.evidenceIds.length > LIMITS.verificationEvidence
-		|| passingIds.length !== result.evidenceIds.length;
-	const evidence = [...new Set(passingIds.slice(0, LIMITS.verificationEvidence))];
+	const invalidEvidence = passingIds.length !== result.evidenceIds.length;
+	const evidence = [...new Set(passingIds)];
 	const missingRequiredEvidence =
 		deterministic.requiredEvidenceIds.some((id) => !evidence.includes(id));
 	const passed = result.passed === true
@@ -299,14 +293,12 @@ export function evaluateVerification(input, value) {
 			new Set(correctionTaskIds),
 		);
 	}
-	const gaps = [...gapsBySummary]
-		.slice(0, LIMITS.missingEvidence)
-		.map(([summary, owners]) => ({ summary, taskIds: [...owners].sort() }));
+	const gaps = [...gapsBySummary].map(([summary, owners]) => ({ summary, taskIds: [...owners].sort() }));
 	const conceptualReview = extractSimplificationProposals(result.reviews);
 	return {
 		outcome: {
 			passed,
-			summary: text(result.summary, "result.summary", LIMITS.resultSummary),
+			summary: text(result.summary, "result.summary"),
 			evidence,
 			missingEvidence: gaps.map((entry) => entry.summary),
 			correctionTaskIds: passed ? [] : [...correctionTaskIds].sort(),

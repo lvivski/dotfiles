@@ -526,7 +526,9 @@ test("Workflow evidence normalization does not weaken strict verification import
 				/Verification reviewer 1 is invalid/,
 			);
 		} else if (malformed === "gap-limit") {
-			await assert.rejects(produceVerification(input, rawReviews, verdict), FoundryAnalysisError);
+			const produced = await produceVerification(input, rawReviews, verdict);
+			assert.equal(produced.missingEvidence.length, 129);
+			assert.equal(validateVerificationResult(produced, input, "shared-evaluator").missingEvidence.length, 129);
 		} else {
 			const produced = await produceVerification(input, rawReviews, verdict);
 			assert.equal(produced.passed, malformed === "evidence");
@@ -547,17 +549,21 @@ test("Workflow evidence normalization does not weaken strict verification import
 	}
 });
 
-test("verification aggregation stays bounded and retains missing-verdict failure", async () => {
+test("verification aggregation conserves all complete findings and attribution beyond old cutoffs and retains missing-verdict failure", async () => {
 	const { input, reviews, verdict } = verificationFixture();
 	verdict.passed = false;
-	verdict.missingEvidence = Array.from({ length: 128 }, (_, index) => ({
-		summary: `Gap ${index}`, taskIds: ["T-001"],
+	verdict.missingEvidence = Array.from({ length: 150 }, (_, index) => ({
+		summary: ` \nGap ${index} ${"原文".repeat(5000)}\t `, taskIds: ["T-001"],
 	}));
 	reviews[0].missingEvidence.push({ summary: "Reviewer gap", taskIds: ["T-003"] });
 	const produced = await produceVerification(input, reviews, verdict);
 	const imported = validateVerificationResult(produced, input, "shared-evaluator");
-	assert.equal(produced.missingEvidence.length, 128);
-	assert.equal(imported.missingEvidence.length, 128);
+	assert.equal(produced.missingEvidence.length, 151);
+	assert.equal(imported.missingEvidence.length, 151);
+	for (const finding of verdict.missingEvidence) {
+		assert.deepEqual(produced.missingEvidence.find(entry => entry.summary === finding.summary), finding);
+		assert.ok(imported.missingEvidence.includes(finding.summary));
+	}
 	assert.deepEqual(imported.correctionTaskIds, ["T-001", "T-003"]);
 
 	const missingVerdict = await produceVerification(input, reviews, null);

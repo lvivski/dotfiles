@@ -5,7 +5,7 @@ import { arrayOf, isRecord, nullable, readString, recordOf } from "../data.mjs";
 import { verificationMarker } from "../marker.mjs";
 import { safeJson } from "../prompt.mjs";
 
-/** @type {import("@github/copilot-sdk").WorkflowMeta & {limits: Required<import("@github/copilot-sdk").WorkflowLimits>}} */
+/** @type {import("@github/copilot-sdk").WorkflowMeta} */
 export const meta = {
 	name: "verify",
 	description: "Map Foundry acceptance criteria to evidence and produce a fail-closed integration verdict.",
@@ -30,12 +30,6 @@ export const meta = {
 			factory: { type: "object" },
 			evaluationTarget: { type: "object" },
 		},
-	},
-	limits: {
-		maxConcurrentSubagents: 2,
-		maxTotalSubagents: 6,
-		timeoutSeconds: 900,
-		maxAiCredits: 10000,
 	},
 };
 
@@ -144,7 +138,7 @@ ${safeJson(input)}
 			{ label: "verify:coverage-reviewer", schema: REVIEW_SCHEMA },
 		)),
 		async () => review(await workflow.agent(
-			`Review the same verifier report for concrete integration gaps, incompatible assumptions, and contradictions. final-integration and workspace-integrity are mandatory. Attribute blockers to actual task IDs and exact evidence IDs; evaluation-only plans have no implementation task. Also consider at most three simplification proposals that remove internal concepts or duplicate authority while conserving the pinned external meaning, contracts and evaluations. Put these in risks prefixed 'Simplification proposal:' with conserved obligations/evaluations, tradeoffs and any required human judgment. They are non-governing proposals, not blockers or approved contract changes; byte count is not conceptual simplification. ${EVIDENCE_POLICY} Return no findings when no concrete blocker is present. ${UNTRUSTED} Return JSON only.
+			`Review the same verifier report for concrete integration gaps, incompatible assumptions, and contradictions. final-integration and workspace-integrity are mandatory. Attribute blockers to actual task IDs and exact evidence IDs; evaluation-only plans have no implementation task. Also consider substantively useful simplification proposals that remove internal concepts or duplicate authority while conserving the pinned external meaning, contracts and evaluations. Put these in risks prefixed 'Simplification proposal:' with conserved obligations/evaluations, tradeoffs and any required human judgment. They are non-governing proposals, not blockers or approved contract changes; byte count is not conceptual simplification. ${EVIDENCE_POLICY} Return no findings when no concrete blocker is present. ${UNTRUSTED} Return JSON only.
 
 <UNTRUSTED-PLAN-EVIDENCE>
 ${safeJson(input)}

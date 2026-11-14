@@ -44,7 +44,7 @@ export type RepairSource = {
 	material: RepairMaterial;
 	native: JsonObject;
 };
-export type RepairLaunch = { name: "plan-repair"; args: { preparationId: string; preparationDigest: string } };
+export type RepairLaunch = { name: "plan-repair"; args: { preparationId: string; preparationDigest: string; effectId?: string } };
 export type RepairSession = Pick<import("@github/copilot-sdk").CopilotSession, "sessionId" | "workspacePath"> & {
 	rpc?: { tools?: { execute: (input: { name: string; arguments: JsonValue }) => Promise<unknown> } };
 };
@@ -57,4 +57,59 @@ export type RepairOutcome = {
 	};
 	issues: string[];
 	repairBudget: { rootRunId: string; used: true; preparationId: string; preparationDigest: string };
+	recovery?: JsonObject;
+};
+
+export type RepairIdentity = { agentId: string; toolCallId: string; runId: string };
+export type RepairEvidence = {
+	id: string; digest: string; evaluatorId: string; inputDigest: string;
+	producer: RepairIdentity; causalFor: string[];
+};
+export type RepairComparisonState = {
+	format: "foundry-repair-comparison-v1"; protected: JsonObject;
+	candidateDigest: string; diagnosticsDigest: string;
+	obligations: {
+		id: string; evaluatorId: string; evaluatorDigest: string; inputDigest: string;
+		status: "unresolved" | "supported" | "uncertain"; evidence: RepairEvidence[];
+	}[];
+	contributors: RepairIdentity[];
+	reviewer: RepairIdentity;
+};
+export type RepairEffect = {
+	format: "foundry-repair-effect-v1"; id: string; kind: "launch" | "author" | "review";
+	preparationId: string; preparationDigest: string; rootRunId: string; inputDigest: string;
+	sourceDigest: string; authority: JsonObject | null; historyDigest: string;
+	candidate: JsonValue; diagnostics: JsonValue; contributors: RepairIdentity[];
+	runId: string | null; operation: JsonObject;
+};
+export type RepairEffectReview = {
+	effectDigest: string; passed: boolean; issues: string[]; targets: string[];
+	reviewer: RepairIdentity; evidence: RepairEvidence[];
+};
+export type RepairAdmissionReceipt = {
+	effectDigest: string; disposition: "admitted" | "denied" | "unavailable" | "uncertain";
+	transactionId: string; nativeRunId: string; consumed: boolean;
+	checks: {
+		authority: boolean; revision: boolean; approval: boolean; revocation: boolean;
+		cancellation: boolean; provider: boolean; resources: boolean; budgets: boolean;
+	};
+	resourceClaims: JsonObject; budgetClaims: JsonObject;
+	contributors: RepairIdentity[];
+	output?: JsonValue;
+};
+/**
+ * Trusted constructor wiring only. admit must atomically revalidate current authority,
+ * revision, approval/revocation, cancellation, provider and applicable explicit budgets/
+ * resources, durably claim/consume and enqueue once at the native transaction boundary.
+ * A local outbox, tools.execute or an agent claim cannot implement this capability.
+ * Matching reconciliation never enqueues again; uncertain consumption remains fenced.
+ */
+export type RepairHostPort = {
+	prepare(preparation: RepairPreparation): Promise<unknown>;
+	propose?(preparation: RepairPreparation, history: unknown[], continuationOf: string, context?: JsonObject): Promise<unknown>;
+	review(effect: RepairEffect, history: unknown[]): Promise<unknown>;
+	admit(effect: RepairEffect, review: RepairEffectReview, invoke: () => Promise<unknown>, signal?: AbortSignal): Promise<unknown>;
+	reconcile(effect: RepairEffect): Promise<unknown>;
+	authenticate(evidence: unknown): Promise<boolean>;
+	observeCandidate(preparation: RepairPreparation, candidate: JsonValue, verdict: JsonValue, history: unknown[], receipts: JsonValue[], diagnostics: JsonValue): Promise<unknown>;
 };

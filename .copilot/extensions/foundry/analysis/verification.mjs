@@ -163,7 +163,7 @@ export function normalizeVerificationInput(value) {
 			}
 		}
 	}
-	const planId = text(input.planId, "input.planId", LIMITS.planId);
+	const planId = text(input.planId, "input.planId");
 	if (!PLAN_ID_REGEX.test(planId)) {
 		fail("invalid_analysis_input", "input.planId must be a lowercase Foundry plan slug");
 	}
@@ -183,11 +183,11 @@ export function normalizeVerificationInput(value) {
 		planId,
 		...(factory ? { factory: structuredClone(factory) } : {}),
 		...(evaluationTarget ? { evaluationTarget: structuredClone(evaluationTarget) } : {}),
-		objective: text(input.objective, "input.objective", LIMITS.objective),
+		objective: text(input.objective, "input.objective"),
 		verificationReport: null,
 		tasks: input.tasks.map((rawTask, taskIndex) => {
 			const task = plainObject(rawTask, `input.tasks[${taskIndex}]`);
-			const id = text(task.id, `input.tasks[${taskIndex}].id`, 5);
+			const id = text(task.id, `input.tasks[${taskIndex}].id`);
 			if (!/^T-\d{3}$/.test(id)) {
 				fail(
 					"invalid_analysis_input",
@@ -197,11 +197,10 @@ export function normalizeVerificationInput(value) {
 			if (taskIds.has(id)) fail("invalid_analysis_input", `Duplicate implementation task ${id}`);
 			taskIds.add(id);
 			if (!isList(task.criteria)
-				|| task.criteria.length < 1
-				|| task.criteria.length > LIMITS.acceptanceCriteria) {
+				|| task.criteria.length < 1) {
 				fail(
 					"invalid_analysis_input",
-					`input.tasks[${taskIndex}].criteria must contain 1-${LIMITS.acceptanceCriteria} entries`,
+					`input.tasks[${taskIndex}].criteria must contain at least one entry`,
 				);
 			}
 			const criteria = task.criteria.map((rawCriterion, criterionIndex) => {
@@ -218,18 +217,10 @@ export function normalizeVerificationInput(value) {
 				}
 				return {
 					id: expectedId,
-					text: text(
-						criterion.text,
-						`input.tasks[${taskIndex}].criteria[${criterionIndex}].text`,
-						LIMITS.acceptanceCriterion,
-					),
+					text: text(criterion.text, `input.tasks[${taskIndex}].criteria[${criterionIndex}].text`),
 				};
 			});
-			const attemptId = text(
-				task.attemptId,
-				`input.tasks[${taskIndex}].attemptId`,
-				LIMITS.attemptId,
-			);
+			const attemptId = text(task.attemptId, `input.tasks[${taskIndex}].attemptId`);
 			if (!new RegExp(`^${id}-A\\d{3}$`).test(attemptId)) {
 				fail(
 					"invalid_analysis_input",
@@ -268,24 +259,12 @@ export function normalizeVerificationInput(value) {
 				return {
 					id: expectedId,
 					type: evidenceEntry.type,
-					summary: text(
-						evidenceEntry.summary,
-						`input.tasks[${taskIndex}].evidence[${evidenceIndex}].summary`,
-						LIMITS.evidenceItem,
-					),
+					summary: text(evidenceEntry.summary, `input.tasks[${taskIndex}].evidence[${evidenceIndex}].summary`),
 					source: evidenceEntry.source === null
 						? null
-						: text(
-							evidenceEntry.source,
-							`input.tasks[${taskIndex}].evidence[${evidenceIndex}].source`,
-							LIMITS.evidenceSource,
-						),
+						: text(evidenceEntry.source, `input.tasks[${taskIndex}].evidence[${evidenceIndex}].source`),
 					outcome: evidenceEntry.outcome,
-					producer: text(
-						evidenceEntry.producer,
-						`input.tasks[${taskIndex}].evidence[${evidenceIndex}].producer`,
-						LIMITS.producer,
-					),
+					producer: text(evidenceEntry.producer, `input.tasks[${taskIndex}].evidence[${evidenceIndex}].producer`),
 					checkId: null,
 					trust: "claimed",
 					attemptId,
@@ -306,12 +285,11 @@ export function normalizeVerificationInput(value) {
 			 *
 			 * @param {unknown} value
 			 * @param {string} field
-			 * @param {number} maximum
 			 * @returns {string | null}
 			 */
-			const normalizeNullable = (value, field, maximum) => value === null
+			const normalizeNullable = (value, field) => value === null
 				? null
-				: text(value, field, maximum);
+				: text(value, field);
 			const requirement = delivery.requirement;
 			if (!isOneOf(requirement, Object.values(DELIVERY_REQUIREMENT))) {
 				fail(
@@ -319,8 +297,7 @@ export function normalizeVerificationInput(value) {
 					`input.tasks[${taskIndex}].delivery.requirement is invalid`,
 				);
 			}
-			if (!isList(delivery.integrationRequired)
-				|| delivery.integrationRequired.length > LIMITS.dependencies) {
+			if (!isList(delivery.integrationRequired)) {
 				fail(
 					"invalid_analysis_input",
 					`input.tasks[${taskIndex}].delivery.integrationRequired is invalid`,
@@ -331,16 +308,8 @@ export function normalizeVerificationInput(value) {
 					rawEntry,
 					`input.tasks[${taskIndex}].delivery.integrationRequired[${entryIndex}]`,
 				);
-				const dependencyId = text(
-					entry.taskId,
-					`input.tasks[${taskIndex}].delivery.integrationRequired[${entryIndex}].taskId`,
-					5,
-				);
-				const dependencyAttemptId = text(
-					entry.attemptId,
-					`input.tasks[${taskIndex}].delivery.integrationRequired[${entryIndex}].attemptId`,
-					LIMITS.attemptId,
-				);
+				const dependencyId = text(entry.taskId, `input.tasks[${taskIndex}].delivery.integrationRequired[${entryIndex}].taskId`);
+				const dependencyAttemptId = text(entry.attemptId, `input.tasks[${taskIndex}].delivery.integrationRequired[${entryIndex}].attemptId`);
 				if (!/^T-\d{3}$/.test(dependencyId)
 					|| !new RegExp(`^${dependencyId}-A\\d{3}$`).test(dependencyAttemptId)) {
 					fail("invalid_analysis_input", "Integration delivery identity is invalid");
@@ -351,34 +320,28 @@ export function normalizeVerificationInput(value) {
 					branch: normalizeNullable(
 						entry.branch,
 						`input.tasks[${taskIndex}].delivery.integrationRequired[${entryIndex}].branch`,
-						LIMITS.branch,
 					),
 					commit: normalizeNullable(
 						entry.commit,
 						`input.tasks[${taskIndex}].delivery.integrationRequired[${entryIndex}].commit`,
-						LIMITS.commit,
 					),
 					prUrl: normalizeNullable(
 						entry.prUrl,
 						`input.tasks[${taskIndex}].delivery.integrationRequired[${entryIndex}].prUrl`,
-						LIMITS.prUrl,
 					),
 				};
 			});
 			const branch = normalizeNullable(
 				delivery.branch,
 				`input.tasks[${taskIndex}].delivery.branch`,
-				LIMITS.branch,
 			);
 			const commit = normalizeNullable(
 				delivery.commit,
 				`input.tasks[${taskIndex}].delivery.commit`,
-				LIMITS.commit,
 			);
 			const prUrl = normalizeNullable(
 				delivery.prUrl,
 				`input.tasks[${taskIndex}].delivery.prUrl`,
-				LIMITS.prUrl,
 			);
 			if (prUrl !== null) {
 				let parsed;
@@ -411,19 +374,11 @@ export function normalizeVerificationInput(value) {
 				id,
 				attemptId,
 				criteria,
-				resultSummary: text(
-					task.resultSummary,
-					`input.tasks[${taskIndex}].resultSummary`,
-					LIMITS.resultSummary,
-				),
+				resultSummary: text(task.resultSummary, `input.tasks[${taskIndex}].resultSummary`),
 				evidence,
 				delivery: {
 					requirement,
-					baseBranch: text(
-						delivery.baseBranch,
-						`input.tasks[${taskIndex}].delivery.baseBranch`,
-						LIMITS.baseBranch,
-					),
+					baseBranch: text(delivery.baseBranch, `input.tasks[${taskIndex}].delivery.baseBranch`),
 					branch,
 					commit,
 					prUrl,
@@ -446,34 +401,18 @@ export function normalizeVerificationInput(value) {
 		}
 	}
 	const report = plainObject(input.verificationReport, "input.verificationReport");
-	const reportTaskId = text(
-		report.taskId,
-		"input.verificationReport.taskId",
-		5,
-	);
-	const reportAttemptId = text(
-		report.attemptId,
-		"input.verificationReport.attemptId",
-		LIMITS.attemptId,
-	);
+	const reportTaskId = text(report.taskId, "input.verificationReport.taskId");
+	const reportAttemptId = text(report.attemptId, "input.verificationReport.attemptId");
 	if (!/^T-\d{3}$/.test(reportTaskId)
 		|| !new RegExp(`^${reportTaskId}-A\\d{3}$`).test(reportAttemptId)
 		|| normalized.tasks.some((task) => task.id === reportTaskId)) {
 		fail("invalid_analysis_input", "input.verificationReport identity is invalid");
 	}
-	const sessionId = text(
-		report.sessionId,
-		"input.verificationReport.sessionId",
-		LIMITS.sessionId,
-	);
+	const sessionId = text(report.sessionId, "input.verificationReport.sessionId");
 	if (producers.has(sessionId)) fail("invalid_analysis_input", "Verifier must be independent of every implementation producer");
 	const target = plainObject(report.target, "input.verificationReport.target");
-	const targetTaskId = evaluationTarget ? null : text(target.taskId, "input.verificationReport.target.taskId", 5);
-	const targetAttemptId = evaluationTarget ? null : text(
-		target.attemptId,
-		"input.verificationReport.target.attemptId",
-		LIMITS.attemptId,
-	);
+	const targetTaskId = evaluationTarget ? null : text(target.taskId, "input.verificationReport.target.taskId");
+	const targetAttemptId = evaluationTarget ? null : text(target.attemptId, "input.verificationReport.target.attemptId");
 	const targetTask = normalized.tasks.find((task) => task.id === targetTaskId);
 	if (evaluationTarget ? target.taskId !== null || target.attemptId !== null || target.branch !== null || target.prUrl !== null
 		|| target.commit !== evaluationTarget.commit || target.candidateId !== evaluationTarget.candidateId
@@ -487,11 +426,7 @@ export function normalizeVerificationInput(value) {
 	if (targetTask?.delivery.requirement === DELIVERY_REQUIREMENT.BRANCH) {
 		fail("invalid_analysis_input", "Final verification target must require a commit or pull request delivery");
 	}
-	const observedCommit = text(
-		report.observedCommit,
-		"input.verificationReport.observedCommit",
-		LIMITS.commit,
-	);
+	const observedCommit = text(report.observedCommit, "input.verificationReport.observedCommit");
 	if (factory?.context?.humanEvidence.some((entry) => entry.commit !== target.commit)) fail("analysis_input_mismatch", "Human evidence belongs to another delivery");
 	if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(observedCommit)) {
 		fail("invalid_analysis_input", "input.verificationReport.observedCommit is invalid");
@@ -526,18 +461,10 @@ export function normalizeVerificationInput(value) {
 			id: expectedId,
 			attemptId: reportAttemptId,
 			type: entry.type,
-			summary: text(
-				entry.summary,
-				`input.verificationReport.evidence[${evidenceIndex}].summary`,
-				LIMITS.evidenceItem,
-			),
+			summary: text(entry.summary, `input.verificationReport.evidence[${evidenceIndex}].summary`),
 			source: entry.source === null
 				? null
-				: text(
-					entry.source,
-					`input.verificationReport.evidence[${evidenceIndex}].source`,
-					LIMITS.evidenceSource,
-				),
+				: text(entry.source, `input.verificationReport.evidence[${evidenceIndex}].source`),
 			outcome: entry.outcome,
 			producer: sessionId,
 			checkId: expectedCheckId,
@@ -557,11 +484,7 @@ export function normalizeVerificationInput(value) {
 			prUrl: targetTask?.delivery.prUrl ?? null,
 		},
 		observedCommit,
-		resultSummary: text(
-			report.resultSummary,
-			"input.verificationReport.resultSummary",
-			LIMITS.resultSummary,
-		),
+		resultSummary: text(report.resultSummary, "input.verificationReport.resultSummary"),
 		evidence,
 	};
 	const expectedDigest = analysisInputDigest(normalized);

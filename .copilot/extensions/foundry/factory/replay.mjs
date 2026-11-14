@@ -38,7 +38,11 @@ export function validateCanonicalOperating(state, batch, additional) {
  * @param {FactoryAction} action @param {Record<string, unknown>} input */
 export function prepareCommand(action, input) {
 	const prepared = { ...input };
-	if (action === "acceptContract") prepared.sealVersion = 3;
+	if (action === "acceptContract") {
+		prepared.sealVersion = 3;
+		prepared.lineageVersion = 2;
+	}
+	if (action === "ingestAnalysis") prepared.derivationVersion = 2;
 	if (action === "appendKnowledge" && isRecord(prepared.source)) prepared.sourceCommitment = analysisInputDigest(prepared.source);
 	if (action === "appendKnowledge" && typeof prepared.statement === "string") prepared.statementCommitment = analysisInputDigest(prepared.statement);
 	return prepared;
@@ -69,7 +73,7 @@ export function applyEvent(state, event, options = {}) {
 		case "checkpoint":
 			if (!options.historical || !options.portable) fail("factory_action_invalid", "Private checkpoints are historical portable knowledge, not executable authority");
 			object(event.input, ["digest", "knowledge"], "checkpoint");
-			for (const input of list(event.input.knowledge ?? [], "checkpoint knowledge", 16)) {
+			for (const input of list(event.input.knowledge ?? [], "checkpoint knowledge")) {
 				object(input, ["id", "unitId", "kind", "statement", "source", "links", "uncertainty", "evaluation", "sourceCommitment", "statementCommitment"], "private knowledge");
 				if (input.kind !== "observation") fail("factory_context_invalid", "Private checkpoints retain observations, never governing acceptance");
 				appendKnowledge(state, { ...event, action: "appendKnowledge", input }, options);
@@ -124,7 +128,6 @@ export function replay(document, identity) {
 	const state = emptyState();
 	let previous = "";
 	for (const [index, event] of events.entries()) {
-		if (Buffer.byteLength(JSON.stringify(event)) > 128 * 1024) fail("factory_input_invalid", "Factory event exceeds 128 KiB");
 		object(event, ["revision", "at", "action", "input"], "factory event");
 		if (event.revision !== index + 1) fail("factory_revision_invalid", "Factory event revisions must be contiguous");
 		timestamp(event.at, "event.at");

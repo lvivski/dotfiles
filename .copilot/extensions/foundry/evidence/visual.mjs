@@ -5,7 +5,6 @@ import { fail } from "../factory/fields.mjs";
 import { visualReport } from "../factory/visual.mjs";
 import { resolveEvaluatorBundle } from "./bundles.mjs";
 
-const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 /** Container/header and byte-identity checks are not a decoder or proof of a screenshot claim.
  * @param {Buffer} bytes @param {boolean} reference */
 function image(bytes, reference) {
@@ -43,11 +42,10 @@ export function checkVisualReport(repository, definition, report, commit, outcom
 		try {
 			if (!path.isAbsolute(capture.path) || realpathSync(capture.path) !== path.normalize(capture.path)) throw new Error("Capture must be an absolute regular non-linked artifact");
 			const stat = lstatSync(capture.path);
-			if (!stat.isFile() || stat.size > MAX_IMAGE_BYTES) throw new Error("Capture is not a bounded regular image");
+			if (!stat.isFile()) throw new Error("Capture is not a regular image");
 			bytes = readFileSync(capture.path);
-			if (bytes.length > MAX_IMAGE_BYTES) throw new Error("Capture grew beyond the supported bound");
 		} catch (error) {
-			fail("factory_visual_artifact", "Visual capture is missing, linked, oversized or inaccessible; retain the blocker, never substitute code-only evidence", { cause: error instanceof Error ? error.message : String(error) });
+			fail("factory_visual_artifact", "Visual capture is missing, linked or inaccessible; retain the blocker, never substitute code-only evidence", { cause: error instanceof Error ? error.message : String(error) });
 		}
 		image(bytes, false);
 		if (createHash("sha256").update(bytes).digest("hex") !== capture.digest) fail("factory_visual_mismatch", "Output capture bytes differ from their report binding");

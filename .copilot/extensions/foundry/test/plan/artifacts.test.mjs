@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ARTIFACT_LIMITS, planArtifactRetention, readArtifactManifest } from "../../plan/artifacts.mjs";
+import { planArtifactRetention, readArtifactManifest } from "../../plan/artifacts.mjs";
 
 function inventory() {
 	return {
@@ -55,15 +55,25 @@ test("conflicting duplicate content, case aliases and duplicate refs never silen
 	]) assert.throws(() => planArtifactRetention(mutation()), /Duplicate|duplicate|Conflicting/);
 });
 
-test("bounds reject excess entries, bytes and total inventory instead of truncating", () => {
-	for (const count of [ARTIFACT_LIMITS.artifacts + 1, ARTIFACT_LIMITS.commits + 1]) {
-		assert.throws(() => planArtifactRetention({ ...inventory(), artifacts: Array(count).fill(inventory().artifacts[0]) }));
-		assert.throws(() => planArtifactRetention({ ...inventory(), commits: Array(count).fill(inventory().commits[0]) }));
-	}
-	for (const bytes of [-1, 0.1, NaN, ARTIFACT_LIMITS.bytes + 1]) {
+test("complete inventories exceed old entry and byte cutoffs without losing identities; malformed byte counts still fail", () => {
+	const input = inventory();
+	input.artifacts.push(...Array.from({ length: 140 }, (_, index) => ({
+		...input.artifacts[0], id: `full-${index}`, originalId: `full-original-${index}`,
+		path: `report-${index}.json`, bytes: 17 * 1024 * 1024,
+	})));
+	input.commits = Array.from({ length: 140 }, (_, index) => ({
+		...input.commits[0], durableRef: `refs/foundry/retained/child/source-${index}`,
+	}));
+	const complete = planArtifactRetention(input);
+	assert.equal(complete.artifacts.length, 145);
+	assert.deepEqual(complete.artifacts.find(item => item.id === "full-139"), {
+		...input.artifacts.at(-1), destination: `child/full-139-${"b".repeat(64)}.bin`,
+	});
+	assert.equal(complete.commits.length, 140);
+	assert.deepEqual(readArtifactManifest(complete), complete);
+	for (const bytes of [-1, 0.1, NaN, Number.MAX_SAFE_INTEGER + 1]) {
 		assert.throws(() => planArtifactRetention({ ...inventory(), artifacts: inventory().artifacts.map(item => ({ ...item, bytes })) }));
 	}
-	assert.throws(() => planArtifactRetention({ ...inventory(), artifacts: inventory().artifacts.map(item => ({ ...item, bytes: ARTIFACT_LIMITS.bytes })) }), /budget/);
 });
 
 test("unqualified refs, foreign destinations and path aliases are rejected", () => {

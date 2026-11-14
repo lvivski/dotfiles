@@ -1,6 +1,6 @@
 import { analysisInputDigest, stableStringify } from "../digest.mjs";
 import { candidateAssurance } from "./assurance.mjs";
-import { assertGenerationAuthority, checkContextSize, generationPackage } from "./context.mjs";
+import { assertGenerationAuthority, generationPackage } from "./context.mjs";
 import { artifact, source } from "./definitions.mjs";
 import { COMMIT, actorReason, enumeration, fail, integer, list, object, text } from "./fields.mjs";
 import { candidateFor, contractFor, currentCandidate, retired, same, uniqueId } from "./records.mjs";
@@ -24,8 +24,8 @@ export function prepareCandidate(state, event, options = {}) {
 	object(input.context.independence, ["method", "reason"], "context.independence");
 	/** @type {import("../types/factory.js").CandidateContext} */
 	const context = {
-		generation: list(input.context.generation, "generation", 64).map(artifact),
-		comparisonOnly: list(input.context.comparisonOnly, "comparisonOnly", 64).map(artifact),
+		generation: list(input.context.generation, "generation").map(artifact),
+		comparisonOnly: list(input.context.comparisonOnly, "comparisonOnly").map(artifact),
 		independence: {
 			method: enumeration(input.context.independence.method, ["fresh-session", "fresh-process", "declared", "existing-artifact"], "context.independence.method"),
 			reason: text(input.context.independence.reason, "context.independence.reason"),
@@ -53,14 +53,13 @@ export function prepareCandidate(state, event, options = {}) {
 	const candidate = {
 		id, unitId: contract.unitId, contractRevision: contract.revision, contractDigest: contract.digest,
 		mode, context, contextDigest: "",
-		actor: text(input.actor, "actor", 256), createdAt: at,
+		actor: text(input.actor, "actor"), createdAt: at,
 		incumbentId: currentCandidate(state, contract.unitId),
 		binding: null, delivery: null, completion: null, evidence: [],
 		...(renewalSignalIds.length ? { renewalSignalIds } : {}),
 	};
 	const generation = generationPackage(state, candidate);
 	const { contextDigest: _unsealed, ...generationInput } = generation;
-	checkContextSize({ ...generationInput, contextDigest: "0".repeat(64) });
 	if (mode !== "adoption") {
 		const serialized = stableStringify(generationInput);
 		if (context.comparisonOnly.some((prior) => [prior.ref, prior.digest]

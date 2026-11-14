@@ -13,7 +13,7 @@ export function factoryTools(operations) {
 	const tool = (name, action, description, required, properties, readOnly = false) => ({
 		name: `foundry_${name}`, description,
 		...(readOnly ? { skipPermission: true } : {}),
-		parameters: objectSchema(["repositoryPath", ...required], { repositoryPath: NON_EMPTY(4096), ...properties }),
+		parameters: objectSchema(["repositoryPath", ...required], { repositoryPath: NON_EMPTY(), ...properties }),
 		handler: handler((args, invocation) => {
 			if (!args || typeof args !== "object" || Array.isArray(args) || !("repositoryPath" in args)) {
 				throw new TypeError("Factory tools require repositoryPath");
@@ -28,28 +28,28 @@ export function factoryTools(operations) {
 	return [
 		tool("get_factory", "inspect", "Inspect repository capability knowledge, authority and assurance. Filter knowledge by kinds, subject query or linked references; continue with page.nextCursor and the same filters/limit for stable historical pages during appends. Bounds and omissions are explicit; no native execution ownership is imported.", [], {
 			unitId: FACTORY_ID, candidateId: FACTORY_ID, limit: { type: "integer", minimum: 1, maximum: 100 },
-			includeRetired: { type: "boolean" }, environment: NON_EMPTY(2048), workload: NON_EMPTY(2048),
-			kinds: { type: "array", maxItems: 5, items: { type: "string", enum: ["observation", "inference", "proposal", "obligation", "evaluation"] } },
-			query: NON_EMPTY(8000), relatedTo: REFERENCES, cursor: NON_EMPTY(4096),
+			includeRetired: { type: "boolean" }, environment: NON_EMPTY(), workload: NON_EMPTY(),
+			kinds: { type: "array",  items: { type: "string", enum: ["observation", "inference", "proposal", "obligation", "evaluation"] } },
+			query: NON_EMPTY(), relatedTo: REFERENCES, cursor: NON_EMPTY(),
 		}, true),
 		mutation("define_unit", "createUnit", "Define or revise a coherent capability and its exclusive authority boundaries, conserved contracts and shared dependencies. UI-producing work must explicitly declare visualEvaluation, an exact previously recorded visual evaluator revision; no keyword inference. This gate applies to initial discovery and accepted reconstruction. Preserve historical units/plans with a declared successor. Revisions are proposals until explicitly pinned in an accepted contract.", ["id", "name", "purpose", "boundary", "dependencies", "relationshipCoverage", "actor"], {
-			id: FACTORY_ID, name: NON_EMPTY(160), purpose: NON_EMPTY(8000),
+			id: FACTORY_ID, name: NON_EMPTY(), purpose: NON_EMPTY(),
 			boundary: objectSchema(["owns", "exposes", "consumes", "preserves"], {
-				owns: STRING_LIST(32, 2048, 1), exposes: STRING_LIST(32, 2048, 1),
-				consumes: STRING_LIST(32, 2048), preserves: STRING_LIST(32, 2048, 1),
+				owns: STRING_LIST(undefined, undefined, 1), exposes: STRING_LIST(undefined, undefined, 1),
+				consumes: STRING_LIST(), preserves: STRING_LIST(undefined, undefined, 1),
 			}),
-			dependencies: { type: "array", maxItems: 32, items: FACTORY_ID },
+			dependencies: { type: "array",  items: FACTORY_ID },
 			relationshipCoverage: { type: "string", enum: ["complete", "partial"] },
-			actor: NON_EMPTY(256), reason: NON_EMPTY(8000),
+			actor: NON_EMPTY(), reason: NON_EMPTY(),
 			visualEvaluation: KNOWLEDGE_REF,
 		}),
 		mutation("record_knowledge", "appendKnowledge", "Append attributed observation, inference, proposal, draft obligation or evaluator. This never approves requirements. Revisions explicitly supersede the prior revision; retain reasons and linked discoveries.", ["id", "unitId", "kind", "statement", "source"], {
 			id: FACTORY_ID, unitId: FACTORY_ID,
 			kind: { type: "string", enum: ["observation", "inference", "proposal", "obligation", "evaluation"] },
-			statement: NON_EMPTY(8000), source: FACTORY_SOURCE,
-			uncertainty: { type: ["string", "null"], maxLength: 8000 },
+			statement: NON_EMPTY(), source: FACTORY_SOURCE,
+			uncertainty: { type: ["string", "null"], },
 			links: {
-				type: "array", maxItems: 64, items: objectSchema(["relation", "target"], {
+				type: "array",  items: objectSchema(["relation", "target"], {
 					relation: { type: "string", enum: ["supports", "contradicts", "derived-from", "supersedes", "depends-on"] }, target: KNOWLEDGE_REF,
 				})
 			},
@@ -57,39 +57,39 @@ export function factoryTools(operations) {
 				modality: { type: "string", enum: ["implementation-test", "boundary", "operational", "human"] },
 				procedure: {
 					oneOf: [
-						objectSchema(["kind", "ref", "bundle"], { kind: { const: "command" }, ref: NON_EMPTY(4096), digest: DIGEST, bundle: EVALUATOR_BUNDLE }),
-						objectSchema(["kind", "ref", "digest"], { kind: { type: "string", enum: ["reference", "judgment"] }, ref: NON_EMPTY(4096), digest: DIGEST }),
+						objectSchema(["kind", "ref", "bundle"], { kind: { const: "command" }, ref: NON_EMPTY(), digest: DIGEST, bundle: EVALUATOR_BUNDLE }),
+						objectSchema(["kind", "ref", "digest"], { kind: { type: "string", enum: ["reference", "judgment"] }, ref: NON_EMPTY(), digest: DIGEST }),
 					],
 					description: "Executable commands require a full-commit, complete-directory bundle including declared helpers, fixtures and dependency manifests/locks. The service computes the canonical digest from Git bytes and invocation; a supplied digest must match. References and human rubrics are not executable checks.",
 				},
-				obligations: REFERENCES, environment: NON_EMPTY(2048), workload: NON_EMPTY(2048),
-				maxAgeSeconds: { type: "integer", minimum: 1, maximum: 31536000 }, independent: { type: "boolean" }, preservation: { type: "boolean" },
+				obligations: REFERENCES, environment: NON_EMPTY(), workload: NON_EMPTY(),
+				maxAgeSeconds: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER }, independent: { type: "boolean" }, preservation: { type: "boolean" },
 				visual: objectSchema(["capture", "states"], {
-					capture: { ...NON_EMPTY(2048), description: "Capture procedure/environment feasibility to preflight before implementation. Permission denial is a blocker, not a bypass." },
-					states: { type: "array", minItems: 1, maxItems: 8, items: objectSchema(["id", "intent", "reference"], {
-						id: FACTORY_ID, intent: NON_EMPTY(2048),
-						reference: objectSchema(["path", "digest"], { path: NON_EMPTY(1024), digest: DIGEST }),
+					capture: { ...NON_EMPTY(), description: "Capture procedure/environment feasibility to preflight before implementation. Permission denial is a blocker, not a bypass." },
+					states: { type: "array", minItems: 1,  items: objectSchema(["id", "intent", "reference"], {
+						id: FACTORY_ID, intent: NON_EMPTY(),
+						reference: objectSchema(["path", "digest"], { path: NON_EMPTY(), digest: DIGEST }),
 					}) },
 				}),
 			}),
 		}),
 		mutation("accept_contract", "acceptContract", "Record explicit manual acceptance with actor, or narrowly renew a pinned consumer evaluator with technical {id,planId,expectedPlanRevision,delegationId,previous,next,failures} and OMIT actor. Technical renewal needs a separate owner-local grant, frozen accepted agreement, unchanged obligations/behavior and real trusted old-failing/new-passing execution; native permission remains separate. Only the canonical agreed assertion slot may change. Historical receipt replay needs fresh plan/factory revisions; no caller-supplied receipt or identity.", ["unitId", "unitRevision", "obligations", "evaluations", "reason"], {
 			unitId: FACTORY_ID, unitRevision: { type: "integer", minimum: 1 }, obligations: REFERENCES, evaluations: REFERENCES,
-			actor: NON_EMPTY(256), reason: NON_EMPTY(8000),
+			actor: NON_EMPTY(), reason: NON_EMPTY(),
 			technical: TECHNICAL_RENEWAL,
 			rationale: REFERENCES,
-			renewalSignalIds: { type: "array", maxItems: 32, items: FACTORY_ID },
-			resolutions: { type: "array", maxItems: 64, items: objectSchema(["knowledge", "reason"], { knowledge: KNOWLEDGE_REF, reason: NON_EMPTY(8000) }) },
+			renewalSignalIds: { type: "array",  items: FACTORY_ID },
+			resolutions: { type: "array",  items: objectSchema(["knowledge", "reason"], { knowledge: KNOWLEDGE_REF, reason: NON_EMPTY() }) },
 		}),
 		mutation("prepare_candidate", "prepareCandidate", "Seal an attributable candidate against accepted knowledge. Reconstruction separates generation inputs from comparison-only prior implementation and preserves the incumbent. Adoption evaluates pre-existing artifacts without inventing generation provenance. No agents launch.", ["id", "unitId", "contractRevision", "actor", "context"], {
 			id: FACTORY_ID, unitId: FACTORY_ID, contractRevision: { type: "integer", minimum: 1 },
-			mode: { type: "string", enum: ["adoption", "implementation", "reconstruction"], default: "reconstruction" }, actor: NON_EMPTY(256),
-			renewalSignalIds: { type: "array", maxItems: 32, items: FACTORY_ID },
+			mode: { type: "string", enum: ["adoption", "implementation", "reconstruction"], default: "reconstruction" }, actor: NON_EMPTY(),
+			renewalSignalIds: { type: "array",  items: FACTORY_ID },
 			context: objectSchema(["generation", "comparisonOnly", "independence"], {
-				generation: { type: "array", maxItems: 64, items: FACTORY_ARTIFACT },
-				comparisonOnly: { type: "array", maxItems: 64, items: FACTORY_ARTIFACT },
+				generation: { type: "array",  items: FACTORY_ARTIFACT },
+				comparisonOnly: { type: "array",  items: FACTORY_ARTIFACT },
 				independence: objectSchema(["method", "reason"], {
-					method: { type: "string", enum: ["fresh-session", "fresh-process", "declared", "existing-artifact"] }, reason: NON_EMPTY(8000),
+					method: { type: "string", enum: ["fresh-session", "fresh-process", "declared", "existing-artifact"] }, reason: NON_EMPTY(),
 				}),
 			}),
 		}),
@@ -101,53 +101,53 @@ export function factoryTools(operations) {
 			id: FACTORY_ID, candidateId: FACTORY_ID, evaluation: KNOWLEDGE_REF, contractDigest: DIGEST, contextDigest: DIGEST,
 			commit: { type: "string", pattern: "^(?:[a-f0-9]{40}|[a-f0-9]{64})$" }, procedureDigest: DIGEST,
 			outcome: { type: "string", enum: ["passed", "failed", "inconclusive"] }, source: FACTORY_SOURCE,
-			environment: NON_EMPTY(2048), workload: NON_EMPTY(2048), report: NON_EMPTY(16000),
+			environment: NON_EMPTY(), workload: NON_EMPTY(), report: NON_EMPTY(),
 			independence: objectSchema(["method", "reason"], {
-				method: { type: "string", enum: ["separate-session", "separate-process", "human-review", "same-context"] }, reason: NON_EMPTY(8000),
+				method: { type: "string", enum: ["separate-session", "separate-process", "human-review", "same-context"] }, reason: NON_EMPTY(),
 			}),
 		}),
 		mutation("decide_candidate", "decideCandidate", "Record explicit acceptance/rejection with reasons. Acceptance requires complete current independent assurance and unchanged incumbent identity. This selects the durable replacement; it does not merge, delete branches, migrate data, or deploy.", ["candidateId", "action", "expectedIncumbentId", "actor", "reason"], {
 			candidateId: FACTORY_ID, action: { type: "string", enum: ["accept", "reject"] },
-			expectedIncumbentId: { type: ["string", "null"], maxLength: 96 }, actor: NON_EMPTY(256), reason: NON_EMPTY(8000),
+			expectedIncumbentId: { type: ["string", "null"], }, actor: NON_EMPTY(), reason: NON_EMPTY(),
 		}),
 		mutation("record_signal", "recordSignal", "Capture an incident, failed evaluation, changed assumption or stale/context-mismatched evidence. Propose bounded re-evaluation for known dependents and expose localization uncertainty; never rewrite past acceptance or promote observations.", ["id", "kind", "summary", "source"], {
 			id: FACTORY_ID, kind: { type: "string", enum: ["incident", "failed-evaluation", "assumption-change", "evidence-expired", "context-mismatch"] },
-			summary: NON_EMPTY(8000), source: FACTORY_SOURCE, unitIds: { type: "array", maxItems: 32, items: FACTORY_ID }, knowledgeRefs: REFERENCES,
+			summary: NON_EMPTY(), source: FACTORY_SOURCE, unitIds: { type: "array",  items: FACTORY_ID }, knowledgeRefs: REFERENCES,
 		}),
 		mutation("retire_artifact", "retire", "Explicitly retire/compact a superseded candidate or knowledge revision from default views. Preserve full history, provenance and summary; refuse current/required artifacts. Never delete user data, files or branches.", ["type", "id", "actor", "reason", "summary"], {
 			type: { type: "string", enum: ["candidate", "knowledge"] }, id: FACTORY_ID, revision: { type: "integer", minimum: 1 },
-			actor: NON_EMPTY(256), reason: NON_EMPTY(8000), summary: NON_EMPTY(8000),
+			actor: NON_EMPTY(), reason: NON_EMPTY(), summary: NON_EMPTY(),
 		}),
 		mutation("compact_factory", "compactFactory", "After explicit retirement, losslessly compress the retained factory ledger with an attributed reason. Reports actual stored document bytes before/after. Preserves all history and current required artifacts; does not delete user files or guarantee a smaller SQLite file, and does not lift logical history bounds.", ["actor", "reason"], {
-			actor: NON_EMPTY(256), reason: NON_EMPTY(8000),
+			actor: NON_EMPTY(), reason: NON_EMPTY(),
 		}),
 		tool("export_factory", "exportFactory", "Export exact current-format repository factory JSON including retained historical lineage. Native session execution ownership is not exported as authority to run anything.", [], {}, true),
 		tool("export_factory_page", "exportFactoryPage", "Read a bounded page of the exact v2 logical event sequence. Keep revision/throughDigest fixed and pass nextRevision as afterRevision; archival and new appends cannot change that pinned prefix. Use staged import pages for histories above the single-JSON limit.", [], {
 			afterRevision: REVISION, throughRevision: REVISION, throughDigest: DIGEST,
-			limit: { type: "integer", minimum: 1, maximum: 256 },
+			limit: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
 		}, true),
 		mutation("import_factory_page", "importFactoryPage", "Stage one exact current-format export page into an empty repository authority. No staged history becomes active until the complete pinned sequence validates. Does not import native execution ownership; partial transfers survive restart.", ["importId", "page"], {
 			expectedRevision: { const: 0 }, importId: FACTORY_ID,
 			page: objectSchema(["format", "repository", "revision", "throughDigest", "afterRevision", "events", "nextRevision", "complete"], {
 				format: { const: "foundry-factory-v2" },
 				portable: { const: true },
-				repository: objectSchema(["id", "commonDirectory"], { id: DIGEST, commonDirectory: NON_EMPTY(4096) }),
+				repository: objectSchema(["id", "commonDirectory"], { id: DIGEST, commonDirectory: NON_EMPTY() }),
 				revision: REVISION, throughDigest: DIGEST, afterRevision: REVISION, nextRevision: REVISION, complete: { type: "boolean" },
 				events: {
-					type: "array", maxItems: 256, items: objectSchema(["revision", "at", "action", "input"], {
-						revision: { type: "integer", minimum: 1 }, at: NON_EMPTY(64), action: NON_EMPTY(96), input: { type: "object" },
+					type: "array",  items: objectSchema(["revision", "at", "action", "input"], {
+						revision: { type: "integer", minimum: 1 }, at: NON_EMPTY(), action: NON_EMPTY(), input: { type: "object" },
 					})
 				},
 			}),
 		}),
 		mutation("abandon_factory_import", "abandonFactoryImport", "Explicitly abandon a pending staged import with actor/reason. Staged history is retained, not deleted, and the empty authority can accept new work.", ["importId", "actor", "reason"], {
-			expectedRevision: { const: 0 }, importId: FACTORY_ID, actor: NON_EMPTY(256), reason: NON_EMPTY(8000),
+			expectedRevision: { const: 0 }, importId: FACTORY_ID, actor: NON_EMPTY(), reason: NON_EMPTY(),
 		}),
 		mutation("import_factory", "importFactory", "Explicitly restore current-format factory JSON only into an empty authority for the same canonical repository. Replays all validation and decisions; never activates plans or adopts another session's native runs.", ["source"], {
-			expectedRevision: { const: 0 }, source: { type: "string", minLength: 1, maxLength: 33554432 },
+			expectedRevision: { const: 0 }, source: { type: "string", minLength: 1, },
 		}),
 		mutation("migrate_factory", "migrateFactory", "Explicitly publish legacy local capability knowledge into repository-owned .foundry artifacts with an attributed reason. Retains the original journal and historical seals, omits private reports and native execution ownership, and never commits files.", ["actor", "reason"], {
-			actor: NON_EMPTY(256), reason: NON_EMPTY(8000),
+			actor: NON_EMPTY(), reason: NON_EMPTY(),
 		}),
 	];
 }

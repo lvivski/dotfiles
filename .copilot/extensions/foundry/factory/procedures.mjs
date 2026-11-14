@@ -2,7 +2,7 @@ import { COMMIT, digest, fail, list, object, text } from "./fields.mjs";
 
 /** @param {unknown} value @param {string} field @param {boolean} [allowRoot] */
 export function repositoryPath(value, field, allowRoot = false) {
-	const result = text(value, field, 1024);
+	const result = text(value, field);
 	if (allowRoot && result === ".") return result;
 	if (result !== result.normalize("NFC") || /[\u0000-\u0020\u007f\\:*?[\]]/.test(result)
 		|| result.split("/").some((part) => !part || part === "." || part === ".." || part.toLowerCase() === ".git")
@@ -20,7 +20,7 @@ export function evaluatorBundle(value) {
 	const root = repositoryPath(value.root, "bundle.root");
 	const entryPoint = repositoryPath(value.entryPoint, "bundle.entryPoint");
 	if (!entryPoint.startsWith(`${root}/`)) fail("factory_evaluator_path_invalid", "The evaluator entry point must be inside its protected bundle directory");
-	const support = list(value.support, "bundle.support", 32).map((entry) => repositoryPath(entry, "bundle.support"));
+	const support = list(value.support, "bundle.support").map((entry) => repositoryPath(entry, "bundle.support"));
 	const paths = [root, ...support];
 	if (paths.some((entry, index) => paths.some((other, otherIndex) => index !== otherIndex
 		&& (entry.toLowerCase() === other.toLowerCase() || entry.toLowerCase().startsWith(`${other.toLowerCase()}/`))))) {
@@ -28,8 +28,8 @@ export function evaluatorBundle(value) {
 	}
 	object(value.invocation, ["argv", "cwd"], "bundle.invocation");
 	const cwd = repositoryPath(value.invocation.cwd, "bundle.invocation.cwd", true);
-	const argv = list(value.invocation.argv, "bundle.invocation.argv", 64, 2).map((entry) => {
-		const argument = text(entry, "bundle.invocation.argv", 4096);
+	const argv = list(value.invocation.argv, "bundle.invocation.argv", undefined, 2).map((entry) => {
+		const argument = text(entry, "bundle.invocation.argv");
 		if (argument.includes("\0")) fail("factory_evaluator_unsupported", "Evaluator invocation arguments cannot contain NUL");
 		return argument;
 	});

@@ -17,13 +17,15 @@ export type WorkflowDiscovery =
 export type WorkflowPreparation = { workflow: string; inputDigest: string; launchSpec: { name: string; args: JsonValue } };
 
 /** The application consumes this port, not unneeded native observations or SDK class internals. */
+/** New recovery imports authenticate structured progress/consumed receipts through RepairHostPort constructor wiring. */
 export type WorkflowAnalysisPort = {
 	readPlanningRepairSource?(runId: string): Promise<import("./repair.js").RepairSource>;
-	importPlanningRepair?(runId: string, preparation: import("./repair.js").RepairPreparation): Promise<{
+	readPlanningContinuation?(runId: string, preparation: import("./repair.js").RepairPreparation): Promise<import("./repair.js").RepairSource>;
+	importPlanningRepair?(runId: string, preparation: import("./repair.js").RepairPreparation, effect?: import("./repair.js").RepairEffect): Promise<{
 		runId: string; inputDigest: string; plan: PlanBlueprint; factoryContext?: JsonObject; conceptualReview?: ConceptualReview;
 		outcome: import("./repair.js").RepairOutcome; resultDigest: string;
 	}>;
-	reconcilePlanningRepair?(preparation: import("./repair.js").RepairPreparation): Promise<{runId: string; evidence: JsonValue}>;
+	reconcilePlanningRepair?(preparation: import("./repair.js").RepairPreparation, options?: {signal?: AbortSignal}): Promise<{runId: string; evidence: JsonValue}>;
 	preparePlanning(input: unknown): Promise<WorkflowPreparation>;
 	importPlanning(runId: string, options?: { signal?: AbortSignal }): Promise<{
 		runId: string; inputDigest: string; plan: PlanBlueprint; factoryContext?: JsonObject; conceptualReview?: ConceptualReview;

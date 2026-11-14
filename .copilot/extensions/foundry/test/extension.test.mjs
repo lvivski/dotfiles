@@ -67,28 +67,13 @@ test("production source has no stdout logging", async () => {
 });
 
 test("bundled workflows use only native Workflow primitives", async () => {
-	/** @type {Record<string, number>} */
-	const expectedTimeouts = {
-		audit: 900,
-		"deep-research": 3600,
-		plan: 7200,
-		"plan-repair": 7200,
-		"review-queue": 3600,
-		"security-review": 3600,
-		triage: 900,
-		verify: 900,
-	};
 	for (const specification of Object.values(FOUNDRY_WORKFLOWS)) {
 		assert.ok(
 			specification.meta.phases.every(
 				(phase) => typeof phase?.title === "string" && phase.title.trim(),
 			),
 		);
-		assert.equal(specification.meta.limits.maxAiCredits, 10000);
-		assert.equal(
-			specification.meta.limits.timeoutSeconds,
-			expectedTimeouts[specification.meta.name],
-		);
+		assert.equal(specification.meta.limits, undefined);
 		const filename = path.join(WORKFLOW_ROOT, WORKFLOW_FILES[specification.meta.name]);
 		const source = await readFile(filename, "utf8");
 		assert.match(source, new RegExp(`name:\\s*"${specification.meta.name}"`));

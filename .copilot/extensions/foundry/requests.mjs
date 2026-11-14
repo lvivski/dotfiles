@@ -76,15 +76,15 @@ const identifier = (pattern, label) => (/** @type {unknown} */ value) => {
 };
 /** @param {unknown} value */
 const dispatchLimit = value => {
-	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > 128) {
-		throw new FoundryDomainError("parallel_request_invalid", "Dispatch limit must be an integer from 1 through 128");
+	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
+		throw new FoundryDomainError("parallel_request_invalid", "Dispatch limit must be a positive safe integer");
 	}
 	return value;
 };
 /** @param {unknown} value */
 const technicalPolicy = value => { validateTechnicalPolicy(value); return value; };
 /** @param {unknown} value */
-const failures = value => strings(value, "triggering failures", 32, 1);
+const failures = value => strings(value, "triggering failures", undefined, 1);
 /** @param {unknown} value */
 const positiveRevision = value => integer(value, "revision");
 /** @param {unknown} value */
@@ -113,10 +113,10 @@ export const requestShapes = {
 		constraints: optional(array(string)), repositoryContext: string, maxTasks: optional(number),
 	},
 	createPlan: { expectedRevision: zero, id: assertPlanId, repository, runId: string },
-	preparePlanRepair: { runId, repositoryPath: string },
-	launchPlanRepair: repairIdentity,
-	reconcilePlanRepair: repairIdentity,
-	importPlanRepair: { ...repairIdentity, expectedRevision: zero, id: assertPlanId, repository: closedObject({ workingDirectory: string, baseBranch: string }), runId },
+	preparePlanRepair: { runId, repositoryPath: string, continuationOf: optional(runId) },
+	launchPlanRepair: { ...repairIdentity, effectId: optional(repairDigest) },
+	reconcilePlanRepair: { ...repairIdentity, effectId: optional(repairDigest) },
+	importPlanRepair: { ...repairIdentity, effectId: optional(repairDigest), expectedRevision: zero, id: assertPlanId, repository: closedObject({ workingDirectory: string, baseBranch: string }), runId },
 	getPlan: planId,
 	getStatus: { ...planId, sessionInventory: opaque, includeWorkflows: optional(boolean) },
 	getWorkflow: { ...planId, runId, beforeSeq: opaque },

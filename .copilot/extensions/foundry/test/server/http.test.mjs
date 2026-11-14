@@ -1,8 +1,24 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { IncomingMessage } from "node:http";
+import { Socket } from "node:net";
 import test from "node:test";
 import { RENDERER_SCRIPTS } from "../../server/assets.mjs";
+import { readJson } from "../../server/http.mjs";
 import { fixture } from "./fixture.mjs";
+
+test("complete long Unicode JSON mutation input survives transport beyond the former 32-KiB cutoff", async t => {
+	const request = new IncomingMessage(new Socket());
+	t.after(() => request.destroy());
+	request.headers = { "content-type": "application/json" };
+	const original = { reason: `  ${"long \u03bb instruction\n".repeat(4000)}  `, actor: "  source owner  " };
+	const bytes = Buffer.from(JSON.stringify(original));
+	assert.ok(bytes.length > 32 * 1024);
+	request.push(bytes.subarray(0, 17000));
+	request.push(bytes.subarray(17000));
+	request.push(null);
+	assert.deepEqual(await readJson(request), original);
+});
 
 test("private bootstrap, state, assets and SSE require the per-instance URL capability and omit referrers", async () => {
 	const current = await fixture();

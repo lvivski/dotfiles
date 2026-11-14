@@ -26,7 +26,6 @@ function locations(repositoryPath) {
 }
 
 const FORMAT = "foundry-repository-v1";
-const MAX_BYTES = 32 * 1024 * 1024;
 
 /** @param {string} filename */
 function metadata(filename) {
@@ -55,13 +54,13 @@ function directory(directory, create = false) {
 function read(filename) {
 	const info = metadata(filename);
 	if (!info) return null;
-	if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size > MAX_BYTES) {
-		fail("factory_knowledge_unsafe", "Repository knowledge must be bounded regular files without links", { filename });
+	if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1) {
+		fail("factory_knowledge_unsafe", "Repository knowledge must be regular files without links", { filename });
 	}
 	const fd = openSync(filename, constants.O_RDONLY | constants.O_NOFOLLOW);
 	try {
 		const actual = fstatSync(fd);
-		if (actual.dev !== info.dev || actual.ino !== info.ino || actual.nlink !== 1 || actual.size > MAX_BYTES) {
+		if (actual.dev !== info.dev || actual.ino !== info.ino || actual.nlink !== 1) {
 			fail("factory_knowledge_changed", "Repository knowledge changed while opening it", { filename });
 		}
 		return parseJson(readFileSync(fd, "utf8"));
@@ -92,7 +91,6 @@ export function resolveRepositoryIdentity(repositoryPath) {
 /** @param {string} filename @param {unknown} value @param {boolean} [immutable] */
 function write(filename, value, immutable = false) {
 	const bytes = `${stableStringify(value)}\n`;
-	if (Buffer.byteLength(bytes) > MAX_BYTES) fail("factory_knowledge_capacity", "A knowledge publication exceeds 32 MiB; bound the published capability knowledge");
 	const previous = read(filename);
 	if (immutable && previous !== null) {
 		if (stableStringify(previous) !== stableStringify(value)) fail("factory_knowledge_integrity", "Immutable knowledge object has different content");

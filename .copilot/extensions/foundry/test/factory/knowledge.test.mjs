@@ -4,6 +4,10 @@ import path from "node:path";
 import { mkdir } from "node:fs/promises";
 import { analysisInputDigest } from "../../digest.mjs";
 import { createPlanStore } from "../../storage.mjs";
+import { createFactoryService } from "../../factory.mjs";
+import { replay } from "../../factory/replay.mjs";
+import { projectKnowledge } from "../../factory/portable.mjs";
+import { legacyV2ReceiptHistory } from "./legacy.mjs";
 import { fixture, freshCode, hash, initialCode } from "./fixture.mjs";
 import { factoryDocument } from "./accessors.mjs";
 import { technicalFixture, technicalOwner } from "../application/fixture.mjs";
@@ -34,6 +38,46 @@ test("persisted technical receipts reject re-digested malformed publication fiel
 		assert.deepEqual((await destination.list()).plans, []);
 	}
 	assert.deepEqual(await f.operations.getPlan({ planId: f.plan.id }), original);
+});
+
+test("legacy decision seals retain their original window while new lineage keeps every acceptance", async t => {
+	const f = await fixture(t);
+	const legacy = legacyV2ReceiptHistory(f.factory.repository);
+	const document = structuredClone(legacy.document);
+	for (let index = 0; index < 17; index++) document.events.push({
+		revision: document.events.length + 1, at: "2026-01-01T00:14:00.000Z",
+		action: "acceptContract", input: structuredClone(document.events[3].input),
+	});
+	document.revision = document.events.length;
+	const historical = replay(document, document.repository);
+	assert.equal(historical.contracts[0].digest, legacy.contractDigest);
+	assert.equal(historical.candidates[0].contextDigest, legacy.contextDigest);
+	assert.equal(historical.contracts.at(-1)?.decisionIds.length, 16);
+	assert.equal(historical.contracts.at(-1)?.omittedEarlierDecisions, 2);
+	const root = path.join(f.root, "historical-lineage");
+	await mkdir(root);
+	const factory = createFactoryService({ repositoryPath: f.repositoryPath, storageRoot: root, knowledge: "local" });
+	factory.importFactory({ expectedRevision: 0, source: JSON.stringify(document) });
+	factory.appendKnowledge({
+		expectedRevision: factory.snapshot().revision, id: "new-reference", unitId: "legacy-unit", kind: "evaluation",
+		statement: "A prospective evaluator", source: { kind: "discovery", ref: "fixture:new-reference", actor: "owner", at: new Date().toISOString() },
+		evaluation: { ...historical.knowledge[1].evaluation, procedure: { kind: "reference", ref: "fixture:immutable-reference", digest: "a".repeat(64) } },
+	});
+	const { contract } = factory.acceptContract({
+		expectedRevision: factory.snapshot().revision, unitId: "legacy-unit", unitRevision: 1,
+		obligations: [{ id: "legacy-obligation", revision: 1 }], evaluations: [{ id: "new-reference", revision: 1 }],
+		actor: "owner", reason: "Prospective complete lineage with historical seals unchanged",
+	});
+	assert.equal(contract.lineageVersion, 2);
+	assert.equal(contract.decisionIds.length, 19);
+	assert.equal(contract.omittedEarlierDecisions, 0);
+	assert.deepEqual(factory.snapshot().contracts.slice(0, -1), historical.contracts);
+	assert.deepEqual(factory.snapshot().decisions.slice(0, -1), historical.decisions);
+	const projected = projectKnowledge(factoryDocument(factory.exportFactory()));
+	const restored = replay(projected.document, projected.document.repository);
+	assert.deepEqual(restored.contracts, factory.snapshot().contracts);
+	assert.equal(projected.selections[0].reason, legacy.selection.reason);
+	assert.equal(projected.selections[0].evidence.length, 2);
 });
 
 test("accepted authority is immutable, observations cannot govern, and evaluator tampering fails", async (t) => {

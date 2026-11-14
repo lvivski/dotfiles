@@ -6,10 +6,6 @@ import { fail, TERMINAL } from "./guards.mjs";
 
 const RUN_DISCOVERY_PAGE_SIZE = 200;
 
-const RUN_DISCOVERY_MAX_PAGES = 10;
-
-const PROGRESS_DISCOVERY_MAX_PAGES = 10;
-
 /**
  * @param {ReturnType<typeof import("./reader.mjs").createRunReader>["api"]} api
  */
@@ -17,7 +13,7 @@ export function createReservationDiscovery(api) {
 
 	/**
 	 * Completed canonical results own their reservation; unfinished or invalid
-	 * results still need complete, bounded, base-agnostic marker discovery.
+	 * results still need complete, base-agnostic marker discovery.
 	 * A marker on one page cannot exclude conflicting reservations on older pages.
 	 *
 	 * @param {string} runId
@@ -49,12 +45,13 @@ export function createReservationDiscovery(api) {
 			}
 			let page = detail?.progress;
 			let beforeSeq;
+			let firstPage = true;
 			const markers = new Set();
-			for (let pageNumber = 0; pageNumber < PROGRESS_DISCOVERY_MAX_PAGES; pageNumber++) {
+			while (true) {
 				if (!page || !Array.isArray(page.records)) {
 					return { state: "inconclusive", reason: "progress-unavailable" };
 				}
-				if (pageNumber === 0 && page.hasMoreNewer !== false) {
+				if (firstPage && page.hasMoreNewer !== false) {
 					return { state: "inconclusive", reason: "progress-newer-history-unresolved" };
 				}
 				if (typeof page.hasMoreOlder !== "boolean") {
@@ -89,14 +86,13 @@ export function createReservationDiscovery(api) {
 				if (page.hasMoreOlder === false) {
 					return { state: "readable", reservationIds: [...markers] };
 				}
-				if (pageNumber + 1 === PROGRESS_DISCOVERY_MAX_PAGES) break;
 				beforeSeq = oldestSeq;
+				firstPage = false;
 				page = await api().getRunProgress(runId, {
 					beforeSeq,
 					limit: 500,
 				});
 			}
-			return { state: "inconclusive", reason: "progress-unbounded" };
 		} catch (error) {
 			return {
 				state: "inconclusive",
@@ -125,9 +121,10 @@ export function createReservationDiscovery(api) {
 		/** @type {Map<string, import("@github/copilot-sdk").WorkflowRunSummary>} */
 		const summaries = new Map();
 		let beforeSeq;
+		let firstPage = true;
 		/** @type {string | null} */
-		let historyReason = "workflow run history exceeds the discovery page budget";
-		for (let pageNumber = 0; pageNumber < RUN_DISCOVERY_MAX_PAGES; pageNumber++) {
+		let historyReason = null;
+		while (true) {
 			/** @type {import("@github/copilot-sdk").WorkflowRunsPage} */
 			let page;
 			try {
@@ -149,7 +146,7 @@ export function createReservationDiscovery(api) {
 					summaries.set(summary.runId, summary);
 				}
 			}
-			if (pageNumber === 0 && page.hasMoreNewer !== false) {
+			if (firstPage && page.hasMoreNewer !== false) {
 				historyReason = "workflow run listing has unresolved newer history";
 				break;
 			}
@@ -175,6 +172,7 @@ export function createReservationDiscovery(api) {
 				break;
 			}
 			beforeSeq = page.oldestSeq;
+			firstPage = false;
 		}
 		const matches = [];
 		const inconclusive = [];

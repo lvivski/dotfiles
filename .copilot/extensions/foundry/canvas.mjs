@@ -73,7 +73,7 @@ export function createFoundryCanvas(options) {
 					pattern: PLAN_ID_PATTERN,
 					maxLength: 64,
 				},
-				repositoryPath: { type: "string", minLength: 1, maxLength: 4096 },
+				repositoryPath: { type: "string", minLength: 1 },
 				unitId: { type: "string", pattern: "^[a-z0-9][a-z0-9._-]{0,95}$" },
 				readOnly: { type: "boolean" },
 			},

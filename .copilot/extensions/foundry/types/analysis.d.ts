@@ -15,6 +15,7 @@ export type PlanningCandidateResult = {
 	synthesisRepair: null;
 	missingPerspectives: string[];
 	issues: string[];
+	recovery?: import("./json.js").JsonObject;
 };
 
 export type FrozenFactoryContext = {

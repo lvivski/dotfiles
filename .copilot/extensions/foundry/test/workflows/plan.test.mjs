@@ -2,16 +2,21 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { buildPlanningArgs, validatePlanBlueprint, validatePlanningResult } from "../../analysis/planning.mjs";
 import { readRecord } from "../../data.mjs";
-import { LIMITS, TASK_ID_PATTERN } from "../../plan/values.mjs";
+import { TASK_ID_PATTERN } from "../../plan/values.mjs";
 import { visualCriterion } from "../../factory/visual.mjs";
 import { meta as planMeta, run as runPlan } from "../../workflows/plan.mjs";
 import { must } from "../assertions.mjs";
-import { planningResult, withPlanningOwner } from "../native/plans.mjs";
+import { planningResult, repairWorkflowHost, withPlanningOwner } from "../native/plans.mjs";
 import { assertOutputSchemas } from "./assertions.mjs";
 import { createWorkflowContext, FatalWorkflowFailure, workflowWithResponses as responsesFor } from "./runtime.mjs";
 
 /** @param {import("@github/copilot-sdk").JsonValue} args @param {Record<string, unknown>} responses */
 const workflowWithResponses = (args, responses) => withPlanningOwner(responsesFor(args, responses));
+/** @param {ReturnType<typeof workflowWithResponses>} workflow */
+async function runWithHost(workflow) {
+	const native = await repairWorkflowHost(workflow);
+	try { return await runPlan(workflow, native.host); } finally { native.close(); }
+}
 
 /** @param {ReturnType<typeof createWorkflowContext>} workflow @param {number} maxTasks */
 function assertGenerationBounds(workflow, maxTasks) {
@@ -21,35 +26,26 @@ function assertGenerationBounds(workflow, maxTasks) {
 		const schema = must(options.schema);
 		assert.deepEqual(schema.required, ["title", "tasks"]);
 		const properties = readRecord(schema.properties);
-		assert.equal(readRecord(properties.title).maxLength, LIMITS.planTitle);
+		assert.equal(Object.hasOwn(readRecord(properties.title), "maxLength"), false);
 		const tasks = readRecord(properties.tasks);
 		assert.equal(tasks.minItems, 2);
 		assert.equal(tasks.maxItems, maxTasks + 1);
 		const fields = readRecord(readRecord(tasks.items).properties);
 		assert.equal(readRecord(fields.id).pattern, TASK_ID_PATTERN.source);
-		for (const [field, maximum] of Object.entries({
-			title: LIMITS.taskTitle,
-			description: LIMITS.taskDescription,
-		})) {
-			assert.equal(readRecord(fields[field]).maxLength, maximum);
+		for (const field of ["title", "description"]) {
+			assert.equal(Object.hasOwn(readRecord(fields[field]), "maxLength"), false);
 			assert.equal(readRecord(fields[field]).minLength, 1);
 		}
-		assert.equal(readRecord(fields.dependsOn).maxItems, LIMITS.dependencies);
+		assert.equal(Object.hasOwn(readRecord(fields.dependsOn), "maxItems"), false);
 		assert.equal(readRecord(readRecord(fields.dependsOn).items).pattern, TASK_ID_PATTERN.source);
-		for (const [field, maximum, itemMaximum] of [
-			["acceptanceCriteria", LIMITS.acceptanceCriteria, LIMITS.acceptanceCriterion],
-			["expectedFiles", LIMITS.expectedFiles, LIMITS.expectedFile],
-		]) {
+		for (const field of ["acceptanceCriteria", "expectedFiles"]) {
 			const list = readRecord(fields[field]);
 			assert.equal(list.minItems, 0, "Allow empty verifier arrays");
-			assert.equal(list.maxItems, maximum);
-			assert.equal(readRecord(list.items).maxLength, itemMaximum);
+			assert.equal(Object.hasOwn(list, "maxItems"), false);
+			assert.equal(Object.hasOwn(readRecord(list.items), "maxLength"), false);
 			assert.equal(readRecord(list.items).minLength, 1);
 		}
-		for (const limit of [
-			LIMITS.planTitle, LIMITS.taskTitle, LIMITS.taskDescription, LIMITS.acceptanceCriterion,
-			LIMITS.expectedFile, LIMITS.dependencies, LIMITS.acceptanceCriteria, LIMITS.expectedFiles,
-		]) assert.ok(prompt.includes(String(limit)), `Generation prompt must state bound ${limit}`);
+		assert.doesNotMatch(prompt, /Generation bounds:|at most three opportunities/);
 	}
 }
 
@@ -85,8 +81,9 @@ function repairFixture() {
 	const decomposition = planningResult(args).plan;
 	const sentinel = "SENTINEL: existing records retain their immutable identifiers.";
 	const oversized = structuredClone(decomposition);
+	oversized.title = "";
 	oversized.tasks[0].acceptanceCriteria = [
-		`${"Tests pass. ".repeat(Math.ceil(LIMITS.acceptanceCriterion / "Tests pass. ".length))}${sentinel}`,
+		`${"Tests pass. ".repeat(200)}${sentinel}`,
 	];
 	const repaired = structuredClone(decomposition);
 	repaired.tasks[0].acceptanceCriteria = [...repaired.tasks[0].acceptanceCriteria, sentinel];
@@ -121,7 +118,7 @@ test("declared visual coverage reaches every planning perspective and omitted sy
 	const workflow = workflowWithResponses(args, {
 		...f.responses, "plan:decomposer": valid, "plan:synthesizer": f.decomposition, "plan:synthesis-repair": valid,
 	});
-	const result = await runPlan(workflow);
+	const result = await runWithHost(workflow);
 	assert.equal(result.status, "ready");
 	assert.equal(workflow.calls.filter((call) => call.options.label === "plan:synthesis-repair").length, 1);
 	for (const { prompt } of workflow.calls) {
@@ -180,7 +177,7 @@ test("bundled planning workflow executes with native result semantics", async ()
 		"plan:synthesizer": blueprint,
 		"plan:verifier": { passed: true, issues: [] },
 	});
-	const result = await runPlan(workflow);
+	const result = await runWithHost(workflow);
 	assert.equal(result.kind, "foundry-plan-result");
 	assert.equal(result.status, "ready");
 	assert.equal(must(result.plan).objective, args.objective);
@@ -198,18 +195,17 @@ test("bundled planning workflow executes with native result semantics", async ()
 	assertOutputSchemas(workflow);
 });
 
-test("oversized synthesis is repaired once, independently verified, and retains its diagnostic", async () => {
+test("structurally invalid synthesis uses admitted repair and retains complete original diagnostic", async () => {
 	const { args, oversized, repaired, sentinel, responses } = repairFixture();
 	const workflow = workflowWithResponses(args, responses);
-	const result = await runPlan(workflow);
+	const result = await runWithHost(workflow);
 	assert.equal(result.status, "ready");
 	assert.deepEqual(validatePlanningResult(result, args, args.maxTasks), repaired);
 	assert.deepEqual(result.issues, []);
 	assert.deepEqual(must(result.synthesisRepair).original, oversized);
 	assert.deepEqual(must(result.synthesisRepair).candidate, repaired);
 	assert.equal(must(result.synthesisRepair).issue, null);
-	assert.equal(must(result.synthesisRepair).diagnostic,
-		`Synthesis rejected: plan.tasks[0].acceptanceCriteria[0] must be a non-empty string of at most ${LIMITS.acceptanceCriterion} characters`);
+	assert.match(must(result.synthesisRepair).diagnostic, /Synthesis rejected:.*title/);
 	assert.deepEqual(workflow.calls.map(({ options }) => options.label), [
 		"plan:decomposer", "plan:architecture-critic", "plan:delivery-risk-critic",
 		"plan:synthesizer", "plan:synthesis-repair", "plan:verifier",
@@ -237,17 +233,16 @@ test("missing, empty, and invalid repairs cannot promote a valid decomposition",
 	const { args, oversized, responses } = repairFixture();
 	for (const candidate of [null, {}, oversized]) {
 		const workflow = workflowWithResponses(args, { ...responses, "plan:synthesis-repair": candidate });
-		const result = await runPlan(workflow);
+		const result = await runWithHost(workflow);
 		assert.equal(result.status, "needs-review");
-		assert.equal(must(result.verification).passed, true, "Even a passing agent cannot bypass structural validation");
+		assert.equal(result.verification, null, "An invalid candidate cannot admit a new reviewer effect");
 		assert.match(result.issues.join("\n"), /Synthesis rejected/);
 		assert.match(result.issues.join("\n"), /Synthesis repair rejected|synthesis repair agent returned no valid result/);
 		assert.ok(must(result.synthesisRepair).issue);
 		assert.deepEqual(must(result.synthesisRepair).candidate, candidate);
 		assert.deepEqual(result.plan, { ...(candidate ?? oversized), objective: args.objective, constraints: args.constraints });
 		assert.equal(workflow.calls.filter(({ options }) => options.label === "plan:synthesis-repair").length, 1);
-		assert.equal(workflow.calls.at(-1)?.options.label, "plan:verifier");
-		assert.ok(must(workflow.calls.at(-1)).prompt.includes(must(must(result.synthesisRepair).issue)));
+		assert.equal(workflow.calls.at(-1)?.options.label, "plan:synthesis-repair");
 		assert.throws(() => validatePlanningResult(result, args, args.maxTasks), /did not produce a ready plan/);
 	}
 });
@@ -255,7 +250,7 @@ test("missing, empty, and invalid repairs cannot promote a valid decomposition",
 test("missing synthesis stays needs-review without inventing a repair candidate", async () => {
 	const { args, responses } = repairFixture();
 	const workflow = workflowWithResponses(args, { ...responses, "plan:synthesizer": null });
-	const result = await runPlan(workflow);
+	const result = await runWithHost(workflow);
 	assert.equal(result.status, "needs-review");
 	assert.equal(result.synthesisRepair, null);
 	assert.equal(workflow.calls.length, 5);
@@ -275,7 +270,7 @@ test("a structurally valid repair still requires conserved intent, both critics,
 		{ "plan:delivery-risk-critic": null },
 	]) {
 		const workflow = workflowWithResponses(args, { ...responses, ...override });
-		const result = await runPlan(workflow);
+		const result = await runWithHost(workflow);
 		assert.equal(result.status, "needs-review");
 		assert.ok(result.issues.length || result.missingPerspectives.length);
 		if (result.missingPerspectives.length) {
@@ -297,16 +292,17 @@ test("native replay retains the completed repair when independent verification i
 		if (options.label === "plan:verifier") throw new FatalWorkflowFailure("Interrupted verification");
 		return configured[options.label];
 	}));
-	await assert.rejects(runPlan(interrupted), /Interrupted verification/);
+	await assert.rejects(runWithHost(interrupted), /Interrupted verification/);
 	const resumed = withPlanningOwner(createWorkflowContext(args, (_prompt, options) => {
 		assert.equal(options.label, "plan:verifier", "Completed agents must replay from the native journal");
 		return configured[options.label];
 	}, interrupted.journal), interrupted.session.workspacePath);
-	const result = await runPlan(resumed);
-	assert.equal(result.status, "ready");
-	assert.equal(resumed.calls.length, 1);
+	const result = await runWithHost(resumed);
+	assert.equal(result.status, "needs-review");
+	assert.equal(resumed.calls.length, 1, "Ordinary original verifier may run; uncertain repair reviewer is not re-entered");
 	assert.equal(interrupted.calls.filter(({ options }) => options.label === "plan:synthesis-repair").length, 1);
-	assert.ok(result.synthesisRepair);
+	assert.equal(result.synthesisRepair, null);
+	assert.match(result.issues.join("\n"), /Recovery held/);
 });
 
 test("planning workflow repairs invalid decomposition and reports invalid synthesis", async () => {

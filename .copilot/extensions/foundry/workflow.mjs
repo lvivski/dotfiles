@@ -9,14 +9,15 @@ import { createVerificationWorkflow } from "./native/verification.mjs";
 /**
  * Build the Foundry analysis boundary over the current session's native Workflow API.
  * @param {() => unknown} getWorkflowApi
+ * @param {import("./types/repair.js").RepairHostPort} [repairHost]
  */
-export function createWorkflowAnalysis(getWorkflowApi) {
+export function createWorkflowAnalysis(getWorkflowApi, repairHost) {
 
 	if (typeof getWorkflowApi !== "function") throw new TypeError("createWorkflowAnalysis requires getWorkflowApi");
 	const { api, loadRun, settleRun } = createRunReader(getWorkflowApi);
 	const { inspectWorkflow, importAnalysis, getWorkflowProgress, listWorkflowRuns, controlWorkflow } = createWorkflowControls(api, loadRun);
 	const { readReservationIdentity, discoverVerificationRun } = createReservationDiscovery(api);
-	const { preparePlanning, importPlanning } = createPlanningWorkflow(loadRun, settleRun);
+	const { preparePlanning, importPlanning } = createPlanningWorkflow(loadRun, settleRun, repairHost);
 	const { prepareVerification, importVerification, assessVerificationRun, verificationRunIsTerminal, cancelVerificationRun } = createVerificationWorkflow({ api, loadRun, settleRun, readReservationIdentity });
 
 	return Object.freeze({
@@ -33,7 +34,7 @@ export function createWorkflowAnalysis(getWorkflowApi) {
 		isMissingWorkflowRun: isMissingRun,
 		isTerminalWorkflowStatus: (/** @type {import("@github/copilot-sdk").WorkflowRunStatus} */ status) => TERMINAL.has(status),
 		preparePlanning,
-		...createRepairWorkflow(api),
+		...createRepairWorkflow(api, repairHost),
 		prepareVerification,
 		verificationRunIsTerminal,
 	});

@@ -30,7 +30,7 @@ const PRS_SCHEMA = {
 	items: PR_SCHEMA,
 };
 
-/** @type {import("@github/copilot-sdk").WorkflowMeta & {limits: Required<import("@github/copilot-sdk").WorkflowLimits>}} */
+/** @type {import("@github/copilot-sdk").WorkflowMeta} */
 export const meta = {
 	name: "review-queue",
 	description:
@@ -58,17 +58,11 @@ export const meta = {
 			},
 		],
 	},
-	limits: {
-		maxConcurrentSubagents: 8,
-		maxTotalSubagents: 700,
-		timeoutSeconds: 3600,
-		maxAiCredits: 10000,
-	},
 };
 
 /** @param {Pick<import("@github/copilot-sdk").WorkflowContext, "args" | "phase" | "agent" | "pipeline" | "parallel" | "step" | "log" | "pause">} workflow */
 export async function run(workflow) {
-	const prepared = await prepareQueue(workflow, meta.limits.maxTotalSubagents);
+	const prepared = await prepareQueue(workflow);
 	if (typeof prepared === "string") return prepared;
 	const { prs, evidenceCount, freshness } = prepared;
 	const { reviewPullRequest, verifyPullRequest } = createReviewStages(workflow, prepared);

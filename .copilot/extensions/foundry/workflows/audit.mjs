@@ -5,9 +5,7 @@ const PATHS_SCHEMA = {
 	type: "array",
 	items: { type: "string" },
 };
-const MAX_SUBAGENTS_PER_PATH = 2;
-
-/** @type {import("@github/copilot-sdk").WorkflowMeta & {limits: Required<import("@github/copilot-sdk").WorkflowLimits>}} */
+/** @type {import("@github/copilot-sdk").WorkflowMeta} */
 export const meta = {
 	name: "audit",
 	description:
@@ -28,12 +26,6 @@ export const meta = {
 			},
 		],
 	},
-	limits: {
-		maxConcurrentSubagents: 4,
-		maxTotalSubagents: 40,
-		timeoutSeconds: 900,
-		maxAiCredits: 10000,
-	},
 };
 
 /** @param {Pick<import("@github/copilot-sdk").WorkflowContext, "args" | "phase" | "agent" | "pipeline" | "step" | "log" | "pause">} workflow */
@@ -48,33 +40,21 @@ export async function run(workflow) {
 		throw new Error("audit: pauseBeforeWork must be a boolean");
 	}
 	const rawPaths = isList(input) ? input : opts.paths;
-	const requestedConcern = String(opts.concern ?? DEFAULT_CONCERN).trim();
+	const requestedConcern = String(opts.concern ?? DEFAULT_CONCERN);
 
 	if (!isList(rawPaths) || !rawPaths.length) {
 		throw new Error('audit: provide {"paths":["src/a.js"],"concern":"..."} or an array of paths');
 	}
-	if (requestedConcern.length > 4_000) {
-		throw new Error("audit: concern must contain at most 4000 characters");
-	}
 	const normalizedPaths = rawPaths.map((path, index) => {
-		const value = String(path).trim();
-		if (value.length > 4_096) {
-			throw new Error(`audit: path ${index + 1} exceeds 4096 characters`);
+		if (typeof path !== "string" || path.includes("\0")) {
+			throw new Error(`audit: path ${index + 1} must be a string without NUL`);
 		}
-		return value;
+		return path;
 	});
-	const selectedPaths = [...new Set(normalizedPaths.filter(Boolean))];
+	const selectedPaths = [...new Set(normalizedPaths.filter(value => value.trim()))];
 	if (!selectedPaths.length) throw new Error("audit: paths must contain at least one non-empty path");
-	if (!requestedConcern) throw new Error("audit: concern must be non-empty");
-	const maxPaths = Math.floor(
-		(meta.limits.maxTotalSubagents - 1) / MAX_SUBAGENTS_PER_PATH,
-	);
-	if (selectedPaths.length > maxPaths) {
-		throw new Error(
-			`audit: ${selectedPaths.length} paths require more than ${meta.limits.maxTotalSubagents} subagents; maximum is ${maxPaths}`,
-		);
-	}
-	const { paths, concern } = recordOf({ paths: arrayOf(readString), concern: readString })(await workflow.step("audit:prepared-scope:v1", () => ({
+	if (!requestedConcern.trim() || requestedConcern.includes("\0")) throw new Error("audit: concern must be non-empty without NUL");
+	const { paths, concern } = recordOf({ paths: arrayOf(readString), concern: readString })(await workflow.step("audit:prepared-scope:v2", () => ({
 		paths: selectedPaths,
 		concern: requestedConcern,
 	})));

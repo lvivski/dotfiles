@@ -29,8 +29,8 @@ export function createApprovalOperations({ workspace, storeFor, readForMutation,
 			|| invocation.sessionId !== session.sessionId || invocation.agentId !== undefined) {
 			throw new FoundryOperationError("delegation_identity_required", "Delegation requires the invoking owner session's native tool context, not a child, renderer or supplied actor");
 		}
-		assertString(invocation.sessionId, "invocation.sessionId", LIMITS.actor - "agent-session:".length);
-		assertString(invocation.toolCallId, "invocation.toolCallId", 512);
+		assertString(invocation.sessionId, "invocation.sessionId");
+		assertString(invocation.toolCallId, "invocation.toolCallId");
 		return invocation;
 	};
 
@@ -60,7 +60,7 @@ export function createApprovalOperations({ workspace, storeFor, readForMutation,
 		if (existing) checkOwner(existing, invocation);
 		if (input.action === "inspect") return existing;
 		if (input.action === "revoke") {
-			assertString(input.reason, "reason", LIMITS.error);
+			assertString(input.reason, "reason");
 			return storeFor().revokeApprovalDelegation(input.id, workspace(), invocation.sessionId, {
 				at: new Date().toISOString(), actor: `agent-session:${invocation.sessionId}`,
 				toolCallId: invocation.toolCallId, reason: input.reason,
@@ -107,7 +107,7 @@ export function createApprovalOperations({ workspace, storeFor, readForMutation,
 		}
 		if (approvalType === "plan" && plan.status !== PLAN_STATUS.AWAITING_APPROVAL) throw new FoundryOperationError("delegation_submitted_plan_required", "Initial approval requires a submitted execution plan");
 		if (approvalType === "completion" && plan.status !== PLAN_STATUS.AWAITING_COMPLETION_APPROVAL) throw new FoundryOperationError("delegation_verified_completion_required", "Technical completion requires the post-verification awaiting-completion-approval state");
-		assertString(review, "review", LIMITS.error);
+		assertString(review, "review");
 		checkAuthority(plan);
 		if (!plan.factory) throw new FoundryOperationError("factory_context_required", "Delegation requires a bound capability");
 		const actor = `agent-session:${invocation.sessionId}`;
@@ -124,9 +124,9 @@ export function createApprovalOperations({ workspace, storeFor, readForMutation,
 				throw new FoundryOperationError("delegation_verification_mismatch", "Technical closure requires unchanged canonical delivery and complete independent passing evidence from the authoritative verification");
 			}
 			factory.verificationGate(plan, true);
-			assertString(plan.verification.reservationId, "verification.reservationId", LIMITS.requestId);
-			assertString(plan.verification.runId, "verification.runId", LIMITS.verificationRunId);
-			assertString(input.verificationReport.target.commit, "verification.targetCommit", 64);
+			assertString(plan.verification.reservationId, "verification.reservationId");
+			assertString(plan.verification.runId, "verification.runId");
+			assertString(input.verificationReport.target.commit, "verification.targetCommit");
 			const approved = transitionPlan(plan, PLAN_STATUS.COMPLETED, { actor });
 			approved.gates.delegatedCompletion = {
 				...receipt,

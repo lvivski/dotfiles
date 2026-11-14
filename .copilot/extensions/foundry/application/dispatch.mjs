@@ -140,7 +140,7 @@ export function createDispatchOperations({ admission, journal, native, plans, in
 				const unpersisted = readJsonValue({ source: result?.source ?? "native failure", raw: result?.raw ?? nativeError?.receipt ?? null,
 					value: result?.value ?? null, startedAt: receipt.at, error: { code: errorCode(error) ?? "dispatch_failed", message: errorMessage(error) } });
 				try {
-					retain({ ...latest, state: outcome, source: result?.source ?? `${errorCode(error) ?? "native-error"}: ${errorMessage(error)}`.slice(0, 4096), at: clock() }, unpersisted);
+					retain({ ...latest, state: outcome, source: result?.source ?? `${errorCode(error) ?? "native-error"}: ${errorMessage(error)}`, at: clock() }, unpersisted);
 				} catch (recordError) {
 					throw new FoundryOperationError("dispatch_outcome_persistence_failed",
 						"Retain the original native result outside the failed outcome write; reconcile this started operation, never replay it", {
@@ -318,8 +318,7 @@ export function createDispatchOperations({ admission, journal, native, plans, in
 		 * Each identity is visited once, with an explicit caller-supplied bound; never poll.
 		 * @param {{limit: number, completions?: Completion[]}} input */
 		async runReady({ limit, completions = [] }) {
-			integer(limit, "dispatch batch bound", 1, 128);
-			if (completions.length > 128) fail("dispatch_batch_invalid", "Completion batch exceeds 128");
+			integer(limit, "dispatch batch bound", 1);
 			for (const completion of completions) {
 				const result = await complete(completion);
 				if (result.state === "held") return { state: /** @type {const} */ ("held"), results: [result] };

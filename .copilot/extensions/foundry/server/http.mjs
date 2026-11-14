@@ -1,8 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
+import { constants as bufferConstants } from "node:buffer";
 import { errorCode, errorMessage, parseJson, property } from "../data.mjs";
-
-/** Maximum accepted JSON mutation body size. */
-const BODY_LIMIT = 32 * 1024;
 
 /** HTTP-aware error for request validation failures. */
 export class FoundryHttpError extends Error {
@@ -57,7 +55,7 @@ export function text(response, status, contentType, value) {
 }
 
 /**
- * Reads and parses a bounded JSON request body.
+ * Reads and parses a complete JSON request body.
  *
  * @param {import("node:http").IncomingMessage} request
  * @returns {Promise<unknown>}
@@ -74,13 +72,14 @@ export async function readJson(request) {
 	for await (const chunk of request) {
 		if (!Buffer.isBuffer(chunk)) throw new FoundryHttpError(400, "Request body must contain bytes");
 		size += chunk.length;
-		if (size > BODY_LIMIT) {
-			throw new FoundryHttpError(413, "Request body exceeds the 32 KiB limit");
+		if (size > bufferConstants.MAX_LENGTH) {
+			throw new FoundryHttpError(413, "Request body exceeds the native buffer capacity");
 		}
 		chunks.push(chunk);
 	}
+	const content = Buffer.concat(chunks).toString("utf8");
 	try {
-		return parseJson(Buffer.concat(chunks).toString("utf8"));
+		return parseJson(content);
 	} catch {
 		throw new FoundryHttpError(400, "Request body must contain valid JSON");
 	}

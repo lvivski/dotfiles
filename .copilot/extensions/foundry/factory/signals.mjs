@@ -67,7 +67,7 @@ export function recordSignal(state, event, options = {}) {
 	object(input, ["id", "kind", "summary", "unitIds", "knowledgeRefs", "source"], action);
 	const id = uniqueId(state.signals, input.id);
 	const unitIds = strings(input.unitIds ?? [], "signal.unitIds").map((id) => identifier(id));
-	const knowledgeRefs = list(input.knowledgeRefs ?? [], "signal.knowledgeRefs", 64).map(reference);
+	const knowledgeRefs = list(input.knowledgeRefs ?? [], "signal.knowledgeRefs").map(reference);
 	const affected = affectedUnits(state, unitIds, knowledgeRefs);
 	const signal = {
 		id, kind: enumeration(input.kind, ["incident", "failed-evaluation", "assumption-change", "evidence-expired", "context-mismatch"], "signal.kind"),

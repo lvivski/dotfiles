@@ -220,6 +220,19 @@ test("retention path observation supplies no outside-workspace write exception",
 	assert.deepEqual(await call("edit", { path: entry }), {}, "The sole existing exact-relay exception is unchanged");
 });
 
+test("complete retention ancestor observation has no 512-character or 64-component convenience cutoff", async t => {
+	const { session, call } = await helperFixture(t);
+	const root = path.join(session.workspacePath, "files", "long-retention");
+	const relative = [...Array.from({ length: 70 }, (_, index) => `part-${String(index).padStart(3, "0")}`), "report.json"].join("/");
+	await mkdir(path.dirname(path.join(root, relative)), { recursive: true, mode: 0o700 });
+	await writeFile(path.join(root, relative), "complete original\n", { mode: 0o600 });
+	const observed = observeRetentionPath(root, relative, { kind: "file", private: true });
+	assert.ok(relative.length > 512 && observed.components.length > 64);
+	assert.equal(observed.path, path.join(root, relative));
+	assert.equal(observed.size, Buffer.byteLength("complete original\n"));
+	assert.equal((await call("write", { path: observed.path, retained: true })).permissionDecision, "deny");
+});
+
 test("helper exception requires matching native identities and trusted workspace context", async (t) => {
 	const { entry, session, operations, hooks, identity, input } = await helperFixture(t);
 	const write = input("edit", { path: entry });

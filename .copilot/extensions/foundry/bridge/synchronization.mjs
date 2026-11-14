@@ -56,7 +56,7 @@ export function createSynchronization(stateFor, activateEvaluation, requireTechn
 		if (state.knowledge.some((entry) => entry.id === id)) return { id };
 		factory.appendKnowledge({
 			expectedRevision: state.revision, id, unitId: plan.factory.unitId, kind: "observation",
-			statement: `Rejected task report (${errorCode(error)}): ${errorMessage(error)}. ${stableStringify(report).slice(0, 6500)}`,
+			statement: `Rejected task report (${errorCode(error)}): ${errorMessage(error)}. ${stableStringify(report)}`,
 			uncertainty: "Rejected, non-governing report excerpt. The task was not completed and no assurance was accepted.",
 			links: [], source: { ...origin(plan, task, attempt), at: new Date().toISOString() },
 		});

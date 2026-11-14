@@ -7,7 +7,7 @@ import test from "node:test";
 import { parseJson, readRecord, readString } from "../../data.mjs";
 import { analysisInputDigest } from "../../digest.mjs";
 import { fail } from "../../factory/fields.mjs";
-import { createPortableLedger, readPublication } from "../../factory/portable.mjs";
+import { createPortableLedger, projectKnowledge, readPublication } from "../../factory/portable.mjs";
 import { createFactoryInspection } from "../../factory/projection.mjs";
 import { FACTORY_FORMAT, applyEvent, replay } from "../../factory/replay.mjs";
 import { resolveRepositoryIdentity } from "../../factory/repository.mjs";
@@ -494,4 +494,76 @@ test("repository knowledge rejects symlinked storage", async (t) => {
 	await mkdir(target);
 	await symlink(target, path.join(f.repo, ".foundry"));
 	assert.throws(() => stores(f.repo, f.root), { code: "factory_knowledge_unsafe" });
+});
+
+test("large public repository publications retain exact content without a file-size ceiling", async t => {
+	const f = await fixture(t);
+	f.define();
+	const statement = ` \n\t🙂資料 ${"x".repeat(32 * 1024 * 1024 + 1)}  \n`;
+	f.call("appendKnowledge", {
+		id: "large-public-lesson", unitId: "unit", kind: "inference", statement,
+		source: { ...f.source(), ref: "fixture:public-lesson" },
+	});
+	const manifest = readRecord(parseJson(await readFile(path.join(f.repo, ".foundry/repository.json"), "utf8")));
+	const raw = await readFile(path.join(f.repo, ".foundry/objects", `${readString(manifest.head)}.json`), "utf8");
+	assert.ok(Buffer.byteLength(raw) > 32 * 1024 * 1024);
+	const publication = readPublication(parseJson(raw));
+	assert.equal(publication.document.events.at(-1)?.input.statement, statement);
+	const root = path.join(f.root, "large-repository-cache");
+	await mkdir(root);
+	const restored = stores(f.repo, root);
+	assert.equal(restored.factory.snapshot().knowledge[0].statement, statement);
+	assert.equal(f.local.snapshot().knowledge[0].statement, statement);
+	assert.equal(analysisInputDigest(parseJson(raw)), manifest.head);
+});
+
+test("legacy analysis segmentation preserves derived identities and prospective reports stay whole", async t => {
+	const f = await fixture(t);
+	f.define();
+	const report = ` \n\t${"Legacy 🙂資料 ".repeat(2000)}  \n`;
+	const source = { kind: "audit", ref: "fixture:legacy-report", actor: "owner", at: new Date().toISOString(),
+		runId: "legacy-report", owner: f.root, digest: analysisInputDigest(report) };
+	const original = factoryDocument(f.local.exportFactory());
+	original.events.push({ revision: 2, at: source.at, action: "ingestAnalysis", input: { unitId: "unit", report, source } });
+	original.revision = 2;
+	const legacy = replay(original, original.repository);
+	assert.equal(legacy.knowledge.length, Math.ceil(report.length / 7500));
+	for (const [index, entry] of legacy.knowledge.entries()) {
+		assert.equal(entry.id, `analysis-${analysisInputDigest([source.owner, source.runId, "unit", index * 7500, source.digest]).slice(0, 40)}`);
+		assert.equal(entry.statement, report.slice(index * 7500, (index + 1) * 7500));
+	}
+	const projected = projectKnowledge(original);
+	const restored = replay(projected.document, projected.document.repository);
+	assert.deepEqual(restored.knowledge.map(entry => entry.id), legacy.knowledge.map(entry => entry.id));
+	assert.ok(restored.knowledge.every(entry => entry.statement.startsWith("Local report omitted; statement commitment")));
+	const prospective = f.call("ingestAnalysis", { unitId: "unit", report, source: { ...source, runId: "whole-report" } });
+	assert.equal(prospective.knowledge.length, 1);
+	assert.equal(prospective.knowledge[0].statement, report);
+	assert.deepEqual(original.events[1].input, { unitId: "unit", report, source });
+});
+
+test("publication inspection retains every historical selection and its complete evidence", async t => {
+	const f = await fixture(t);
+	f.define();
+	const document = projectKnowledge(factoryDocument(f.local.exportFactory())).document;
+	const selections = Array.from({ length: 100001 }, (_, index) => ({
+		id: `selection-${index}`, digest: "a".repeat(64), candidateId: "candidate", unitId: "unit", action: "reject-candidate",
+		actor: "owner", reason: `Retained selection ${index}`, at: "2026-01-01T00:00:00.000Z", commit: null,
+		evidence: index === 0 ? Array.from({ length: 129 }, (_, evidence) => analysisInputDigest(evidence)) : [],
+	}));
+	const publication = readPublication({ format: "foundry-knowledge-v1", parent: null, document, selections, migration: null });
+	assert.equal(publication.selections.length, 100001);
+	assert.deepEqual(publication.selections[0].evidence, selections[0].evidence);
+	const repository = await import("../../factory/repository.mjs");
+	const files = repository.createKnowledgeRepository({ repositoryPath: f.repo, repository: f.repository });
+	const before = files.head();
+	files.exclusive(() => files.publish(before?.digest ?? null, publication));
+	const cacheRoot = path.join(f.root, "selection-cache");
+	await mkdir(cacheRoot);
+	const recovered = stores(f.repo, cacheRoot);
+	const inspection = recovered.factory.storageInfo().knowledge;
+	assert.equal(inspection.historicalSelectionCount, 100001);
+	assert.deepEqual(inspection.historicalSelections, selections);
+	assert.deepEqual(recovered.factory.snapshot().candidates, []);
+	assert.deepEqual(recovered.factory.snapshot().bindings, []);
 });

@@ -7,8 +7,6 @@ import { git, requireCommit } from "./git.mjs";
 /** @typedef {import("../types/factory.js").EvaluatorBundle} EvaluatorBundle */
 /** @typedef {{path: string, mode: string, content: string}} Material */
 
-const MAX_BYTES = 4 * 1024 * 1024;
-const MAX_FILES = 256;
 const DEPENDENCY_FILES = [
 	"package.json", "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "bun.lock", "bun.lockb",
 	".npmrc", ".yarnrc", ".yarnrc.yml", "pyproject.toml", "poetry.lock", "uv.lock", "requirements.txt", "Pipfile", "Pipfile.lock",
@@ -57,9 +55,8 @@ function material(repository, bundle, commit) {
 	const listingText = listing.stdout.toString("utf8");
 	if (!Buffer.from(listingText, "utf8").equals(listing.stdout)) fail("factory_evaluator_path_invalid", "Evaluator Git paths must be unambiguous UTF-8");
 	const entries = listingText.split("\0").filter(Boolean);
-	if (!entries.length || entries.length > MAX_FILES) fail("factory_evaluator_capacity", `Evaluator bundles must contain 1-${MAX_FILES} regular files`);
+	if (!entries.length) fail("factory_evaluator_capacity", "Evaluator bundles must contain regular files");
 	const names = new Set();
-	let size = 0;
 	const files = entries.map((entry) => {
 		const match = /^([0-9]{6}) (blob|commit) ([a-f0-9]+)\t(.+)$/s.exec(entry);
 		if (!match || !["100644", "100755"].includes(match[1]) || match[2] !== "blob") {
@@ -69,10 +66,8 @@ function material(repository, bundle, commit) {
 		repositoryPath(name, "evaluator material");
 		if (names.has(name.toLowerCase())) fail("factory_evaluator_path_invalid", "Evaluator paths cannot alias on case-insensitive worktrees");
 		names.add(name.toLowerCase());
-		const content = git(repository, ["cat-file", "blob", oid], MAX_BYTES + 1);
-		if (content.error || content.status !== 0) fail("factory_evaluator_artifact_missing", "The evaluator blob is missing or exceeds the supported bound", { path: name, disposition: "inconclusive" });
-		size += content.stdout.length;
-		if (size > MAX_BYTES) fail("factory_evaluator_capacity", "The complete evaluator bundle exceeds 4 MiB");
+		const content = git(repository, ["cat-file", "blob", oid]);
+		if (content.error || content.status !== 0) fail("factory_evaluator_artifact_missing", "The complete evaluator blob is unavailable", { path: name, disposition: "inconclusive" });
 		if (content.stdout.subarray(0, 100).toString("utf8").startsWith("version https://git-lfs.github.com/spec/v1")) {
 			fail("factory_evaluator_unsupported", "Git LFS pointers are not preserved executable evaluator content", { path: name, disposition: "unsupported" });
 		}

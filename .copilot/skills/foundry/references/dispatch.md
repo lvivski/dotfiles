@@ -57,7 +57,7 @@ Their top-level inputs are closed:
 
 | Tool | Inputs | Bounded purpose |
 | --- | --- | --- |
-| `foundry_dispatch_ready` | `planId`, `limit` (integer 1–128) | Visit one ready set, retaining terminal deliveries and considering existing reservations before fresh work. |
+| `foundry_dispatch_ready` | `planId`, `limit` (positive safe integer) | Visit the explicitly scoped ready set, retaining all terminal deliveries and considering existing reservations before fresh work. The visit bound is not native resource permission. |
 | `foundry_reconcile_parallel` | `planId`, `taskId`, `reservationId` | Reconcile that exact owned admission once; never create a replacement. |
 | `foundry_materialize_inputs` | `planId`, `taskId`, `attemptId` | Materialize the complete journal-pinned input descriptor into its authorized consumer worktree. |
 | `foundry_assess_package` | `planId`, `taskId`, optional `report` | Prepare the delivered assurance subject or assess its report; see [verification](verification.md#package-assessment-source-entry). |

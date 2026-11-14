@@ -3,13 +3,16 @@ import { buildPlanningArgs, validatePlanningArgs, validatePlanningResult } from 
 import { extractSimplificationProposals } from "../analysis/verdicts.mjs";
 import { FOUNDRY_WORKFLOWS } from "../workflows/registry.mjs";
 import { fail } from "./guards.mjs";
-import { inlineRepairEvidence } from "./repair.mjs";
+import { authenticateRepairEvidence, inlineRepairEvidence } from "./repair.mjs";
+import { compareRepairProgress } from "../analysis/repair.mjs";
+import { isRecord } from "../data.mjs";
 
 /**
  * @param {ReturnType<typeof import("./reader.mjs").createRunReader>["loadRun"]} loadRun
  * @param {ReturnType<typeof import("./reader.mjs").createRunReader>["settleRun"]} settleRun
+ * @param {import("../types/repair.js").RepairHostPort} [repairHost]
  */
-export function createPlanningWorkflow(loadRun, settleRun) {
+export function createPlanningWorkflow(loadRun, settleRun, repairHost) {
 
 	/** Build the exact native planning Workflow invocation. @param {unknown} input */
 	const preparePlanning = async (input) => {
@@ -56,6 +59,11 @@ export function createPlanningWorkflow(loadRun, settleRun) {
 		}
 		const conceptualReview = extractSimplificationProposals(result.critiques);
 		const repair = inlineRepairEvidence(result, detail);
+		if (repair?.recovery) {
+			await authenticateRepairEvidence(repairHost, repair.recovery);
+			const recovery = repair.recovery;
+			if (!Array.isArray(recovery.history) || !compareRepairProgress(recovery.comparison, recovery.history).passed) fail("repair_result_invalid", "Inline repair lacks conserved substantive progress");
+		}
 		return {
 			runId,
 			inputDigest,

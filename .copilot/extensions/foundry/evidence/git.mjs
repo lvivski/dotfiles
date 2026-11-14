@@ -1,15 +1,16 @@
 import { spawnSync } from "node:child_process";
+import { constants } from "node:buffer";
 import { realpathSync } from "node:fs";
 import { devNull } from "node:os";
 import { COMMIT, fail } from "../factory/fields.mjs";
 
 /** Read-only Git calls never honor ambient repository/index overrides or replacement objects.
  * @param {string} directory @param {string[]} args @param {number} [maxBuffer] */
-export function git(directory, args, maxBuffer = 4 * 1024 * 1024) {
+export function git(directory, args, maxBuffer = constants.MAX_LENGTH) {
 	const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
 	return spawnSync("git", ["--no-pager", "--no-replace-objects", "-c", "core.fsmonitor=false", "-C", directory, ...args], {
 		env: { ...env, GIT_LITERAL_PATHSPECS: "1", GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", GIT_GRAFT_FILE: devNull },
-		encoding: "buffer", maxBuffer, timeout: 10000, stdio: ["ignore", "pipe", "pipe"],
+		encoding: "buffer", maxBuffer, stdio: ["ignore", "pipe", "pipe"],
 	});
 }
 

@@ -41,41 +41,16 @@ export function validateVerification(verification) {
 			details: { value: verification.status },
 		});
 	}
-	assertNullableString(
-		verification.reservationId,
-		"verification.reservationId",
-		LIMITS.requestId,
-	);
+	assertNullableString(verification.reservationId, "verification.reservationId");
 	if (verification.reservationId !== null) {
 		assertRequestId(verification.reservationId, "verification.reservationId");
 	}
-	assertNullableString(
-		verification.runId,
-		"verification.runId",
-		LIMITS.verificationRunId,
-	);
-	assertNullableString(
-		verification.inputDigest,
-		"verification.inputDigest",
-		64,
-	);
-	assertNullableString(
-		verification.summary,
-		"verification.summary",
-		LIMITS.resultSummary,
-	);
-	assertStringArray(verification.evidence, "verification.evidence", {
-		maximum: LIMITS.verificationEvidence,
-		itemMaximum: LIMITS.evidenceItem,
-	});
-	assertStringArray(verification.missingEvidence, "verification.missingEvidence", {
-		maximum: LIMITS.missingEvidence,
-		itemMaximum: LIMITS.missingEvidenceItem,
-	});
-	assertStringArray(verification.correctionTaskIds, "verification.correctionTaskIds", {
-		maximum: LIMITS.tasks,
-		itemMaximum: 5,
-	});
+	assertNullableString(verification.runId, "verification.runId");
+	assertNullableString(verification.inputDigest, "verification.inputDigest");
+	assertNullableString(verification.summary, "verification.summary");
+	assertStringArray(verification.evidence, "verification.evidence");
+	assertStringArray(verification.missingEvidence, "verification.missingEvidence");
+	assertStringArray(verification.correctionTaskIds, "verification.correctionTaskIds");
 	if (verification.replacement !== null) {
 		assertPlainObject(verification.replacement, "verification.replacement");
 		assertKnownKeys(
@@ -87,21 +62,9 @@ export function validateVerification(verification) {
 			verification.replacement.supersededReservationId,
 			"verification.replacement.supersededReservationId",
 		);
-		assertNullableString(
-			verification.replacement.supersededRunId,
-			"verification.replacement.supersededRunId",
-			LIMITS.verificationRunId,
-		);
-		assertString(
-			verification.replacement.reason,
-			"verification.replacement.reason",
-			LIMITS.error,
-		);
-		assertString(
-			verification.replacement.requestedBy,
-			"verification.replacement.requestedBy",
-			LIMITS.actor,
-		);
+		assertNullableString(verification.replacement.supersededRunId, "verification.replacement.supersededRunId");
+		assertString(verification.replacement.reason, "verification.replacement.reason");
+		assertString(verification.replacement.requestedBy, "verification.replacement.requestedBy");
 		assertTimestamp(verification.replacement.at, "verification.replacement.at");
 	}
 	assertTimestamp(verification.reservedAt, "verification.reservedAt", { nullable: true });
