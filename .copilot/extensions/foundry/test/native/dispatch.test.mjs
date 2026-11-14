@@ -190,6 +190,15 @@ test("native error classification retains genuine instances, dispositions and re
 	assert.deepEqual(fixture.calls, []);
 });
 
+test("transport preserves a canonical provider rejection instance instead of turning it into uncertainty", async () => {
+	const error = new DispatchNativeError("dispatch_invocation_owner", "Current host ownership changed", "not-started", { source: "current host" });
+	const fixture = recording([{ name: "create_session", fault: error }]);
+	await assert.rejects(fixture.transport.call("create_session", {
+		base_branch: "main", workspace_type: "worktree",
+	}), actual => actual === error);
+	fixture.assertComplete();
+});
+
 test("offered SDK string and expanded envelopes retain raw receipts and unwrap successful values", async () => {
 	for (const [raw, expected] of [
 		[JSON.stringify({ plan: "string-result" }), { plan: "string-result" }],
