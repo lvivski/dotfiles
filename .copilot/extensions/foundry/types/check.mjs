@@ -63,6 +63,9 @@ const subscribe: Offline.CopilotSession["on"] = (type, handler) => nativeSession
 type WorkflowMetadata = Assert<Fits<Offline.WorkflowHandle["meta"], Native.WorkflowHandle["meta"]>>;
 type ElicitationInput = Assert<Fits<Offline.ElicitationParams, Native.ElicitationParams>>;
 type ElicitationOutput = Assert<Fits<Awaited<ReturnType<Native.SessionUiApi["elicitation"]>>, Awaited<ReturnType<Offline.SessionUiApi["elicitation"]>>>>;
+type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
+type ElicitationOutputShape = Assert<Equal<Awaited<ReturnType<Native.SessionUiApi["elicitation"]>>, Awaited<ReturnType<Offline.SessionUiApi["elicitation"]>>>>;
+type ElicitationValueShape = Assert<Equal<Native.ElicitationFieldValue, Offline.ElicitationFieldValue>>;
 type LogInput = Assert<Fits<Parameters<Offline.CopilotSession["log"]>, Parameters<Native.CopilotSession["log"]>>>;
 `);
 	const configPath = path.join(directory, "tsconfig.json");

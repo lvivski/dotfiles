@@ -1,6 +1,9 @@
 // Compile-only contract regressions, checked by the extension's jsconfig.
 import type {
 	CopilotSession,
+	ElicitationFieldValue,
+	ElicitationResult,
+	SessionUiApi,
 	SessionWorkflowApi,
 	Tool,
 	ToolResultObject,
@@ -55,6 +58,31 @@ if (session.capabilities.ui?.elicitation) {
 		},
 	});
 }
+const absentContent: ElicitationResult = { action: "accept" };
+const undefinedContent: ElicitationResult = { action: "accept", content: undefined };
+const optionalFields: ElicitationResult = {
+	action: "accept",
+	content: { approvedBy: undefined, label: "owner", count: 1, confirmed: false, choices: ["one"] },
+};
+declare const elicitation: Awaited<ReturnType<SessionUiApi["elicitation"]>>;
+// @ts-expect-error Accepting a form does not guarantee content is present.
+elicitation.content.approvedBy;
+// @ts-expect-error A supplied field must be narrowed before use as an identity.
+const uncheckedActor: string = elicitation.content?.approvedBy;
+const suppliedActor = elicitation.content?.approvedBy;
+if (typeof suppliedActor === "string") {
+	const actor: string = suppliedActor.trim();
+}
+// @ts-expect-error Undefined is allowed in the content map, not the primitive value alias.
+const undefinedPrimitive: ElicitationFieldValue = undefined;
+// @ts-expect-error Native elicitation actions are a closed union.
+const invalidAction: ElicitationResult = { action: "approved" };
+// @ts-expect-error Null is not a native elicitation field value.
+const nullField: ElicitationResult = { action: "accept", content: { approvedBy: null } };
+// @ts-expect-error Nested objects are not native elicitation field values.
+const objectField: ElicitationResult = { action: "accept", content: { approvedBy: { name: "owner" } } };
+// @ts-expect-error Native elicitation arrays contain only strings.
+const numericArray: ElicitationResult = { action: "accept", content: { choices: [1] } };
 // @ts-expect-error Native usage is in nano-AIU, not a dollar estimate.
 detail.consumed.dollars;
 // @ts-expect-error Native UI confirmations have no AbortSignal overload.
