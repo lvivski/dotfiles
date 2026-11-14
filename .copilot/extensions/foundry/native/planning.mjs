@@ -3,6 +3,7 @@ import { buildPlanningArgs, validatePlanningArgs, validatePlanningResult } from 
 import { extractSimplificationProposals } from "../analysis/verdicts.mjs";
 import { FOUNDRY_WORKFLOWS } from "../workflows/registry.mjs";
 import { fail } from "./guards.mjs";
+import { inlineRepairEvidence } from "./repair.mjs";
 
 /**
  * @param {ReturnType<typeof import("./reader.mjs").createRunReader>["loadRun"]} loadRun
@@ -31,7 +32,7 @@ export function createPlanningWorkflow(loadRun, settleRun) {
 	 */
 	const importPlanning = async (runId, options = {}) => {
 		const inspected = await loadRun(runId, FOUNDRY_WORKFLOWS.plan);
-		const { run } = await settleRun(runId, FOUNDRY_WORKFLOWS.plan, inspected, options);
+		const { run, detail } = await settleRun(runId, FOUNDRY_WORKFLOWS.plan, inspected, options);
 		const result = run.result;
 		if (!result || typeof result !== "object" || Array.isArray(result)) {
 			fail("workflow_result_invalid", `Workflow run ${runId} returned no planning object`);
@@ -54,11 +55,13 @@ export function createPlanningWorkflow(loadRun, settleRun) {
 			fail("workflow_input_mismatch", `Planning run ${runId} carries an invalid input digest`);
 		}
 		const conceptualReview = extractSimplificationProposals(result.critiques);
+		const repair = inlineRepairEvidence(result, detail);
 		return {
 			runId,
 			inputDigest,
 			...(conceptualReview ? { conceptualReview } : {}),
 			...(normalized.factoryContext ? { factoryContext: normalized.factoryContext } : {}),
+			...(repair ? { repair } : {}),
 			plan: validatePlanningResult(result, normalized, normalized.maxTasks),
 		};
 	};

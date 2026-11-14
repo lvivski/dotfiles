@@ -6,6 +6,7 @@ import { packageDecomposition } from "./plan/parallel-contracts.mjs";
 import { validateTechnicalPolicy } from "./plan/schemas/approval.mjs";
 import { validateFactoryEvaluations, validateFactoryLearning } from "./plan/schemas/factory.mjs";
 import { ATTEMPT_ID_PATTERN, REQUEST_ID_PATTERN, TASK_ID_PATTERN } from "./plan/values.mjs";
+import { repairDigest } from "./analysis/repair.mjs";
 
 /** @template T @typedef {(value: unknown) => T} Decoder */
 /** @template {Record<string, Decoder<unknown>>} T @typedef {import("./data.mjs").Decoded<T>} Decoded */
@@ -52,6 +53,7 @@ const closedObject = (fields) => (value) => {
 	return decodeObject(fields, value);
 };
 const repository = object({ workingDirectory: string, baseBranch: string });
+const repairIdentity = { preparationId: repairDigest, preparationDigest: repairDigest };
 const reference = object({ id: string, revision: number });
 const revision = { planId: assertPlanId, expectedRevision: number };
 const task = { ...revision, taskId: string };
@@ -111,6 +113,10 @@ export const requestShapes = {
 		constraints: optional(array(string)), repositoryContext: string, maxTasks: optional(number),
 	},
 	createPlan: { expectedRevision: zero, id: assertPlanId, repository, runId: string },
+	preparePlanRepair: { runId, repositoryPath: string },
+	launchPlanRepair: repairIdentity,
+	reconcilePlanRepair: repairIdentity,
+	importPlanRepair: { ...repairIdentity, expectedRevision: zero, id: assertPlanId, repository: closedObject({ workingDirectory: string, baseBranch: string }), runId },
 	getPlan: planId,
 	getStatus: { ...planId, sessionInventory: opaque, includeWorkflows: optional(boolean) },
 	getWorkflow: { ...planId, runId, beforeSeq: opaque },
@@ -185,7 +191,7 @@ export function decodeRequest(name, value) {
 		&& ["invocation", "sessionId", "toolCallId", "agentId"].some(key => key in record(value))) {
 		throw new FoundryDomainError("delegation_identity_required", "Caller JSON cannot supply native invocation identity");
 	}
-	if (["approve", "planApprovalDelegation", "factoryAction", "acceptContract", "dispatchReady", "reconcileParallel", "materializeInputs", "assessPackage"].includes(name)) {
+	if (["approve", "planApprovalDelegation", "factoryAction", "acceptContract", "dispatchReady", "reconcileParallel", "materializeInputs", "assessPackage", "preparePlanRepair", "launchPlanRepair", "reconcilePlanRepair", "importPlanRepair"].includes(name)) {
 		assertKnownKeys(record(value), new Set(Object.keys(requestShapes[name])), name);
 	}
 	return { ...record(value), ...decodeObject(requestShapes[name], value) };

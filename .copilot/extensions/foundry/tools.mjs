@@ -1,6 +1,7 @@
 import { LIMITS, PLAN_STATUS, TASK_STATUS } from "./plan/values.mjs";
 import { factoryTools } from "./tools/factory.mjs";
 import { parallelTools } from "./tools/parallel.mjs";
+import { repairTools } from "./tools/repair.mjs";
 import { handler } from "./tools/results.mjs";
 import { ATTEMPT_ID, DIGEST, EVIDENCE_INPUT, FACTORY_ID, FACTORY_LEARNING, FACTORY_REPORT, KNOWLEDGE_REF, NON_EMPTY, objectSchema, PACKAGE_DECOMPOSITION, PLAN_ID, REFERENCES, REQUEST_ID, REVISION, SESSION_INVENTORY, STRING_LIST, TASK_ID, TECHNICAL_POLICY, TECHNICAL_RETRY } from "./tools/schema.mjs";
 
@@ -19,6 +20,7 @@ export function buildFoundryTools(operations) {
 	const tools = [
 		...factoryTools(operations),
 		...parallelTools(operations),
+		...repairTools(operations),
 		{
 			name: "foundry_capture_analysis",
 			description: "Ingest the exact completed current-session audit, research, review, security or triage report as scoped non-governing knowledge with run identity/digest and explicit uncertainty. Requires an existing capability; never launches research or promotes findings into requirements. Reports above 48,000 characters require deliberate scoped knowledge capture instead.",
@@ -108,7 +110,7 @@ export function buildFoundryTools(operations) {
 					),
 				},
 			),
-			handler: handler((args, invocation) => operations.createPlan(args, { signal: invocation.signal })),
+			handler: handler((args, invocation) => operations.createPlan(args, { signal: invocation.signal, invocation })),
 		},
 		{
 			name: "foundry_control_workflow",
