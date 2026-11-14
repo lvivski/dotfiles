@@ -56,6 +56,7 @@ export function createOfferedDispatchTransport(options) {
 			try {
 				raw = readJsonValue(await options.executor.execute({ name, arguments: readJsonValue(args), toolCallId }));
 			} catch (error) {
+				if (error instanceof DispatchNativeError) throw error;
 				throw new DispatchNativeError("dispatch_transport_uncertain", String(error), "uncertain", { source, error: String(error) });
 			}
 			const kind = isRecord(raw) ? raw.resultType : undefined;
