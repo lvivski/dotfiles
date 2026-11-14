@@ -94,7 +94,7 @@ export function buildFoundryTools(operations) {
 		},
 		{
 			name: "foundry_create_plan",
-			description: "Wait for a native plan Workflow and import its completed result as a new draft. Interrupting the wait does not cancel the run. Creating requires expectedRevision: 0.",
+			description: "Inspect a native plan Workflow once. Active runs return pending: retain the runId and resume this import on its completion notification, never poll or relaunch. Only completed canonical results create a draft. Creating requires expectedRevision: 0.",
 			parameters: objectSchema(
 				["expectedRevision", "id", "runId", "repository"],
 				{
@@ -342,7 +342,7 @@ export function buildFoundryTools(operations) {
 		},
 		{
 			name: "foundry_complete_verification",
-			description: "Durably bind the authoritative verify Workflow before waiting, then import its completed result. Interrupting leaves the binding intact and does not cancel the run; re-read the plan revision before retrying. No caller-supplied verdict is accepted.",
+			description: "Durably bind the authoritative verify Workflow and inspect once. Active runs return pending with the current plan revision: resume importing the same run on its completion notification, never poll or relaunch. Recheck ownership and revision before completed import. No caller-supplied verdict is accepted.",
 			parameters: objectSchema(
 				["planId", "expectedRevision", "runId"],
 				{

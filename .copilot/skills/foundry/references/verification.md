@@ -27,7 +27,9 @@ or completion.
 4. If it returns `launchSpec`, invoke it exactly once with `run_dynamic_workflow`. If it returns
    `launchSpec: null`, use the returned `runId` and do not relaunch.
 5. Call `foundry_complete_verification` for the authoritative run. It persists the run binding
-   before waiting natively, then rechecks the plan revision and reservation ownership before importing the
+   before returning explicit `state: "pending"` for an active run. Retain the same run and resume
+   this import on its completion notification, not by polling or relaunching. The importer rechecks
+   the plan revision and reservation ownership before importing the
    completed result. Verification cannot pass from task-owner evidence alone: every criterion
    and final integration must use the independently reported evidence.
 6. On failure, retain the attributed gaps and correction tasks. For discovery plans, use the
@@ -48,6 +50,12 @@ or completion.
    `approvalType: "completion"` and `approvedBy`.
 8. If the current session is linked to a GitHub issue, preserve the approved plan and final
    verification report as issue artifacts. Do not create artifacts without a linked issue.
+
+The workflow preserves the two required evidence reviews, their substantive findings and the
+canonical independent verifier report. Code aggregates their verdict; no additional model summary
+re-reads the complete evidence. Removing a required review is a contract decision, not a performance
+optimization. Summarize material outcomes with canonical report/run references rather than copying
+full reports through coordinator messages; canonical recording remains lossless.
 
 ## Lossless verifier evidence recording
 

@@ -41,7 +41,7 @@ test("bundled verification workflow echoes its complete native input", async () 
 	assert.ok(result.reviews.every((review) => review !== null && !Object.hasOwn(review, "coverage")));
 	assert.equal(validateVerificationResult(result, args, reservationId).passed, true);
 	assert.deepEqual(workflow.calls.map((call) => call.options.label), [
-		"verify:coverage-reviewer", "verify:integration-skeptic", "verify:verifier",
+		"verify:coverage-reviewer", "verify:integration-skeptic",
 	]);
 	for (const { prompt } of workflow.calls) {
 		assert.match(prompt, /exact accepted requirement\/obligation and evaluator revisions/);
@@ -70,10 +70,25 @@ test("bundled verification workflow echoes its complete native input", async () 
 	assert.doesNotMatch(workflow.calls[1].prompt, /at most three/);
 	assert.equal(result.reviews[0]?.risks.length, 5);
 	assert.match(workflow.calls[0].prompt, /Task-owner claimed evidence is context only/);
-	assert.match(workflow.calls[2].prompt, /no reviewer gap can be erased by this summary/);
 	assert.deepEqual(must(workflow.calls[0].options.schema).required, ["missingEvidence", "integrationFindings", "risks"]);
-	assert.deepEqual(must(workflow.calls[2].options.schema).required, ["summary", "missingEvidence"]);
 	assertOutputSchemas(workflow);
+});
+
+test("deterministic verdict retains independent findings and fails closed on a missing reviewer", async () => {
+	const args = { ...buildVerificationInput(completedPlan()), reservationId: "required-reviews" };
+	const finding = { summary: "Observed integration mismatch", taskIds: ["T-001"] };
+	for (const missing of [false, true]) {
+		const workflow = workflowWithResponses(args, {
+			"verify:coverage-reviewer": missing ? null : { missingEvidence: [], integrationFindings: [], risks: [] },
+			"verify:integration-skeptic": { missingEvidence: [finding], integrationFindings: [], risks: [] },
+		});
+		const result = await runVerify(workflow);
+		assert.equal(result.passed, false);
+		assert.ok(result.missingEvidence.some(gap => gap.summary === finding.summary));
+		assert.equal(workflow.calls.length, 2);
+		if (missing) assert.ok(result.missingEvidence.some(gap => gap.summary === "Coverage reviewer returned no result"));
+		else assert.equal(validateVerificationResult(result, args, args.reservationId).passed, false);
+	}
 });
 
 test("verification workflow emits its marker before full input validation", async () => {

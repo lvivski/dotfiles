@@ -6,6 +6,7 @@ test("completed verification import and discovery use canonical results without 
 	const current = verificationFixture();
 	Object.defineProperty(current.detail, "progress", { get() { throw new Error("Progress unavailable"); } });
 	const imported = await current.analysis.importVerification(current.run.runId, current.plan);
+	assert.ok(!("state" in imported));
 	assert.equal(imported.result.passed, true);
 	const discovery = await current.analysis.discoverVerificationRun(
 		current.plan.verification.reservationId, current.plan.verification.reservedAt,

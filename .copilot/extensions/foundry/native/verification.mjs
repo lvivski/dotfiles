@@ -3,6 +3,7 @@ import { validateVerificationResult } from "../analysis/verdicts.mjs";
 import { buildVerificationInput } from "../analysis/verification.mjs";
 import { FOUNDRY_WORKFLOWS } from "../workflows/registry.mjs";
 import { fail, FoundryWorkflowError, isMissingRun, TERMINAL } from "./guards.mjs";
+import { pendingWorkflow } from "./reader.mjs";
 
 /** @param {{
  * api: ReturnType<typeof import("./reader.mjs").createRunReader>["api"],
@@ -34,6 +35,7 @@ export function createVerificationWorkflow({ api, loadRun, settleRun, readReserv
 	 * @param {{signal?: AbortSignal, wait?: boolean}} [options]
 	 */
 	const importVerification = async (runId, plan, options = {}) => {
+		options.signal?.throwIfAborted();
 		const { run, detail } = await loadRun(runId, FOUNDRY_WORKFLOWS.verify);
 		const expectedArgs = buildVerificationInput(plan);
 		const reservationId = String(plan.verification.reservationId || "");
@@ -75,6 +77,9 @@ export function createVerificationWorkflow({ api, loadRun, settleRun, readReserv
 				);
 			}
 		}
+		options.signal?.throwIfAborted();
+		const pending = pendingWorkflow(run, detail);
+		if (pending) return pending;
 		const settled = await settleRun(runId, FOUNDRY_WORKFLOWS.verify, { run, detail }, options);
 		const result = validateVerificationResult(
 			settled.run.result,

@@ -7,6 +7,12 @@ export function must(value, message = "Required fixture value is missing") {
 	return value;
 }
 
+/** @template {object} T @param {T} value @returns {Exclude<T, import("../types/workflow.js").PendingWorkflow>} */
+export function completed(value) {
+	assert.ok(!("state" in value), "Expected a completed fixture import, not a pending workflow");
+	return /** @type {Exclude<T, import("../types/workflow.js").PendingWorkflow>} */ (value);
+}
+
 /** @template {{state: string}} T @param {T | null | undefined} value @returns {Extract<T, {state: "available"}>} */
 export function available(value) {
 	assert.ok(isAvailable(value), "Expected available fixture state");

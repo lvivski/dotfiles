@@ -379,14 +379,29 @@ has approved escalating; do not turn every question into a multi-agent run.
 
 Definitions live in `workflows/` and register through `defineWorkflow` and `joinSession({ workflows })`.
 The control-plane adapter uses `session.workflow` for inspection, pause, resume, and cancellation.
-Foundry binds observed verification run IDs before waiting; ordinary diagnostics use those bindings,
+Foundry binds observed verification run IDs before returning pending; ordinary diagnostics use those bindings,
 while launch recovery and completion/cancellation retain collision checks.
 
-Plan and verification imports use native `waitForRun` for active runs instead of requiring a
-separate wait/inspect/retry cycle. Interrupting the tool stops waiting, not the Workflow.
+Plan, verification and standalone analysis imports inspect once and return
+`{ state: "pending", runId, status, workflowName, resumeOn: "completion-notification" }`
+for an active run without waiting, launching or cancelling it. Retain the same run ID and retry
+the import on its native completion notification, not by polling or launching a replacement.
 Paused or failed runs still require explicit recovery; verification rechecks revision and
-reservation ownership after waiting, and completion still requires manual approval or its separate
+reservation ownership after inspection, and completion still requires manual approval or its separate
 recorded completion delegation.
+
+Ready dispatch reserves each selected identity under the existing revision/resource fences, while
+independent native creation/setup/attachment/activation progresses concurrently within the caller's
+batch bound. One slow setup no longer serializes unrelated startup. Terminal completions still precede
+selection, and durable effect identities, cancellation fences and uncertain-outcome holds are unchanged.
+This is a structural improvement exercised with synthetic transport, not a measured live-host speedup.
+
+For already-defined authorized work, prefer the existing deterministic `foundry_create_factory_plan`
+route when its contract/candidate applies; retain discovery for genuinely unresolved planning.
+Verification retains both required evidence reviews and all substantive findings, but aggregates their
+verdict deterministically instead of sending the full evidence through a third summary agent.
+Removing either of the two review records would change the current verification contract and is not
+part of this repair. Canonical evidence remains complete; handoffs should link it instead of copying it.
 
 ### Pause, resume, and checkpoints
 

@@ -213,6 +213,7 @@ export function createVerificationOperations({ storeFor, persist, readForMutatio
 		plan = await readForMutation(planId, expectedRevision);
 		await assertVerificationRun(plan, runId, true);
 		signal?.throwIfAborted();
+		if ("state" in inspected) return { ...inspected, planId, revision: plan.revision };
 		const result = inspected.result;
 		if (result.passed) factory.verificationGate(plan, true);
 		const updated = await persist(

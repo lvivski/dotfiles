@@ -176,14 +176,14 @@ export function createDispatchOperations({ admission, journal, native, plans, in
 		}
 		return child.sessionId;
 	}
-	/** @param {Identity} identity */
-	async function dispatch(identity) {
+	/** @param {Identity} identity @param {Reservation} [prepared] */
+	async function dispatch(identity, prepared) {
 		try {
 			identity = admissionIdentity(identity);
 			if (identity.owner !== native.transport.owner) fail("dispatch_foreign_plan", "Foreign-owner dispatch is forbidden");
 			const previous = admission.read(identity);
 			const stored = previous?.attempt ? journal.payload(previous.attempt, "creation") : null;
-			const reservation = native.dispatchReservation(isRecord(stored) ? stored.reservation : await reserve(identity));
+			const reservation = native.dispatchReservation(isRecord(stored) ? stored.reservation : prepared ?? await reserve(identity));
 			const { attemptId, ...reservedIdentity } = reservation.attempt;
 			if (stableStringify(reservedIdentity) !== stableStringify(identity)) fail("dispatch_attempt_mismatch", "Reservation returned another admission");
 			if (current(reservation.attempt).phase !== "reserved") fail("parallel_fenced", "Cancellation or terminal admission forbids dispatch");
@@ -325,9 +325,19 @@ export function createDispatchOperations({ admission, journal, native, plans, in
 			}
 			const candidates = await ready();
 			const unique = [...new Map(candidates.map(identity => [stableStringify(admissionIdentity(identity)), identity])).values()];
-			const results = [];
-			for (const identity of unique.slice(0, limit)) results.push(await dispatch(identity));
-			return { state: /** @type {const} */ ("bounded"), results };
+			/** @type {Array<ReturnType<typeof dispatch>>} */
+			const pending = [];
+			// Serialize revision-checked reservations, not independent native startup.
+			for (const identity of unique.slice(0, limit)) {
+				try {
+					if (identity.owner !== native.transport.owner) fail("dispatch_foreign_plan", "Foreign-owner dispatch is forbidden");
+					const record = admission.read(identity);
+					const stored = record?.attempt ? journal.payload(record.attempt, "creation") : null;
+					const reservation = native.dispatchReservation(isRecord(stored) ? stored.reservation : await reserve(identity));
+					pending.push(dispatch(identity, reservation));
+				} catch (error) { pending.push(Promise.resolve(held(error))); }
+			}
+			return { state: /** @type {const} */ ("bounded"), results: await Promise.all(pending) };
 		},
 	};
 }

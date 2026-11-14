@@ -16,6 +16,11 @@ export type WorkflowDiscovery =
 
 export type WorkflowPreparation = { workflow: string; inputDigest: string; launchSpec: { name: string; args: JsonValue } };
 
+export type PendingWorkflow = {
+	state: "pending"; runId: string; status: "pending" | "running";
+	workflowName: string; resumeOn: "completion-notification";
+};
+
 /** The application consumes this port, not unneeded native observations or SDK class internals. */
 /** New recovery imports authenticate structured progress/consumed receipts through RepairHostPort constructor wiring. */
 export type WorkflowAnalysisPort = {
@@ -27,12 +32,12 @@ export type WorkflowAnalysisPort = {
 	}>;
 	reconcilePlanningRepair?(preparation: import("./repair.js").RepairPreparation, options?: {signal?: AbortSignal}): Promise<{runId: string; evidence: JsonValue}>;
 	preparePlanning(input: unknown): Promise<WorkflowPreparation>;
-	importPlanning(runId: string, options?: { signal?: AbortSignal }): Promise<{
+	importPlanning(runId: string, options?: { signal?: AbortSignal }): Promise<PendingWorkflow | {
 		runId: string; inputDigest: string; plan: PlanBlueprint; factoryContext?: JsonObject; conceptualReview?: ConceptualReview;
 		repair?: import("./repair.js").RepairOutcome;
 	}>;
 	prepareVerification(plan: FoundryPlan, reservationId: string): Promise<WorkflowPreparation>;
-	importVerification(runId: string, plan: FoundryPlan, options?: { signal?: AbortSignal; wait?: boolean }): Promise<{
+	importVerification(runId: string, plan: FoundryPlan, options?: { signal?: AbortSignal; wait?: boolean }): Promise<PendingWorkflow | {
 		detail: { completedAt: number | null }; result: VerificationOutcome;
 	}>;
 	discoverVerificationRun(reservationId: string, reservedAt: string): Promise<WorkflowDiscovery>;
@@ -45,5 +50,5 @@ export type WorkflowAnalysisPort = {
 	getWorkflowProgress(runId: string, beforeSeq: number): Promise<import("@github/copilot-sdk").WorkflowProgressPage>;
 	listWorkflowRuns(): Promise<import("@github/copilot-sdk").WorkflowRunsPage>;
 	controlWorkflow(runId: string, action: "pause" | "resume", options?: { signal?: AbortSignal }): Promise<import("@github/copilot-sdk").WorkflowRunResult>;
-	importAnalysis(runId: string): Promise<{ report: string; workflowName: string; completedAt: number; runId: string }>;
+	importAnalysis(runId: string): Promise<PendingWorkflow | { report: string; workflowName: string; completedAt: number; runId: string }>;
 };

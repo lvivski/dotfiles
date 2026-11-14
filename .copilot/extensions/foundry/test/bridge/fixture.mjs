@@ -8,7 +8,7 @@ import { buildVerificationInput, normalizeVerificationInput } from "../../analys
 import { createFactoryService } from "../../factory.mjs";
 import { createFoundryOperations } from "../../operations.mjs";
 import { verificationCheckIds } from "../../plan/graph.mjs";
-import { must } from "../assertions.mjs";
+import { completed, must } from "../assertions.mjs";
 import { factoryMutator } from "../factory/accessors.mjs";
 import { analysisFixture } from "../native/fixture.mjs";
 import { COMMIT, DIGEST, PROCEDURE, fixtureRoot, git, seedRepository } from "../git.mjs";
@@ -213,7 +213,7 @@ export async function fixture(t, { human = false, visual = false } = {}) {
 				evidenceIds: input.verificationReport.evidence.filter((entry) => entry.outcome === "passed").map((entry) => entry.id),
 			}
 		});
-		plan = await operations.finishVerification({ planId: plan.id, expectedRevision: plan.revision, runId });
+		plan = completed(await operations.finishVerification({ planId: plan.id, expectedRevision: plan.revision, runId }));
 		if (complete && !failed) plan = await operations.approve({ planId: plan.id, expectedRevision: plan.revision, approvedBy: "owner", approvalType: "completion" });
 		const factoryInput = must(input.factory);
 		const context = must(factoryInput.context);

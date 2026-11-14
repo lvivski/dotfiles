@@ -339,7 +339,9 @@ test("sealed candidates use normal App dispatch, capture learning, bind independ
 			input: { candidateId: "fresh" },
 		}), { code: "factory_bound_evidence" });
 		const prepared = await operations.prepareVerification({ planId: plan.id, expectedRevision: plan.revision, reservationId: "factory-verification-reservation" });
-		plan = await operations.finishVerification({ planId: plan.id, expectedRevision: prepared.plan.revision, runId: "factory-verification" });
+		const finished = await operations.finishVerification({ planId: plan.id, expectedRevision: prepared.plan.revision, runId: "factory-verification" });
+		assert.ok(!("state" in finished));
+		plan = finished;
 		assert.throws(() => mutation("decideCandidate", {
 			candidateId: "fresh", action: "accept", expectedIncumbentId: null, actor: "owner", reason: "Not yet completed",
 		}), { code: "factory_assurance_incomplete" });
@@ -403,6 +405,7 @@ test("native analysis capture retains exact scoped findings without promoting th
 		repositoryPath: workspacePath, unitId: "operation-capability", runId: "audit-run",
 		expectedRevision: factory.snapshot().revision, actor: "coordinator",
 	});
+	assert.ok(!("state" in captured));
 	assert.equal(captured.knowledge[0].statement, "Observed a boundary gap; source coverage is incomplete.");
 	assert.equal(captured.knowledge[0].source.runId, "audit-run");
 	assert.equal(factory.inspect().knowledge[0].authority, "non-governing");

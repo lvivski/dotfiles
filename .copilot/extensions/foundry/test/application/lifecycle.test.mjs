@@ -9,7 +9,7 @@ import { LIMITS, PLAN_STATUS, TASK_STATUS } from "../../plan/values.mjs";
 import { validatePlan } from "../../plan/validation.mjs";
 import { approvalScope } from "../../plan/schemas/approval.mjs";
 import { createPlanStore } from "../../storage.mjs";
-import { must } from "../assertions.mjs";
+import { completed, must } from "../assertions.mjs";
 import { analysisStub, completeImplementation, createApproved, createInput, evidence, planBlueprint, runTask, technicalAuthority, technicalFixture, technicalOwner, withOperations } from "./fixture.mjs";
 import { COMMIT } from "../git.mjs";
 
@@ -20,6 +20,25 @@ const userAuthority = {
 	grantedBy: "requesting-user",
 	source: { kind: "direct-user", sessionId: nativeOwner.sessionId, messageRef: "user-message:explicit-delegation@revision:1" },
 };
+
+test("pending planning imports create no draft and reuse the completed run", async () => {
+	let active = true;
+	const base = analysisStub();
+	await withOperations(async ({ operations, workspacePath, notifications }) => {
+		const request = createInput(workspacePath);
+		const pending = await operations.createPlan(request);
+		assert.ok("state" in pending);
+		assert.equal(pending.state, "pending");
+		assert.deepEqual((await operations.listPlans({})).plans, []);
+		assert.equal(notifications.length, 0);
+		active = false;
+		const draft = completed(await operations.createPlan(request));
+		assert.equal(draft.status, "draft");
+		assert.equal(draft.planning?.runId, request.runId);
+	}, { analysis: { ...base, importPlanning: (runId, options) => active
+		? Promise.resolve({ state: "pending", runId, status: "running", workflowName: "plan", resumeOn: "completion-notification" })
+		: base.importPlanning(runId, options) } });
+});
 
 /** @param {(fixture: import("./fixture.mjs").OperationsFixture & {
  * failed: import("../../types/plan.js").FoundryPlan, calls: string[],
@@ -243,7 +262,7 @@ test("technical retry supports failed discovery pinned to an accepted contract w
 		({ plan } = await runTask(operations, plan, taskId, { commit: f.before.bundle.commit }));
 	}
 	({ plan } = await operations.prepareVerification({ planId: plan.id, expectedRevision: plan.revision, reservationId: "accepted-discovery-verification" }));
-	plan = await operations.finishVerification({ planId: plan.id, expectedRevision: plan.revision, runId: "accepted-discovery-failure" });
+	plan = completed(await operations.finishVerification({ planId: plan.id, expectedRevision: plan.revision, runId: "accepted-discovery-failure" }));
 	assert.equal(plan.factory?.candidateId, null);
 	assert.equal(plan.factory?.contractDigest, f.contract.digest);
 	const before = f.factory.snapshot();
@@ -265,7 +284,7 @@ test("TA-04: one recorded grant is reusable only across its conserved evaluator-
 	const grant = must(await f.grant());
 	await f.operations.factoryAction(await f.request(), { invocation: technicalOwner });
 	const contract = must(f.factory.snapshot().contracts.at(-1));
-	let plan = await f.operations.createPlan({ ...createInput(f.repositoryPath), id: "successor-discovery" });
+	let plan = completed(await f.operations.createPlan({ ...createInput(f.repositoryPath), id: "successor-discovery" }));
 	const operations = f.reopen({ analysis: analysisStub({
 		discoverVerificationRun: async () => ({ state: "found", run: { runId: "successor-failure", status: "completed" } }),
 		verificationResult: {
@@ -278,7 +297,7 @@ test("TA-04: one recorded grant is reusable only across its conserved evaluator-
 	plan = await operations.approve({ planId: plan.id, expectedRevision: plan.revision, approvedBy: "fixture-user" });
 	for (const taskId of ["T-001", "T-002", "T-003"]) ({ plan } = await runTask(operations, plan, taskId, { commit: f.after.bundle.commit }));
 	({ plan } = await operations.prepareVerification({ planId: plan.id, expectedRevision: plan.revision, reservationId: "successor-verification" }));
-	plan = await operations.finishVerification({ planId: plan.id, expectedRevision: plan.revision, runId: "successor-failure" });
+	plan = completed(await operations.finishVerification({ planId: plan.id, expectedRevision: plan.revision, runId: "successor-failure" }));
 	const retried = await operations.approve({
 		...technicalRetryRequest(plan), delegationId: grant.id,
 		technical: { id: "successor-retry", failures: ["successor-failure"] },
@@ -325,7 +344,7 @@ const grantApproval = (operations, plan) => operations.planApprovalDelegation({
 
 test("explicit direct user instruction grants and approves with truthful agent attribution and no extra form", () => (
 	withDelegation(async ({ operations, workspacePath, calls }) => {
-		let plan = await operations.createPlan(createInput(workspacePath));
+		let plan = completed(await operations.createPlan(createInput(workspacePath)));
 		const grant = must(await grantApproval(operations, plan));
 		assert.equal(grant.grant.method, "user-instruction-attestation");
 		assert.equal(grant.grant.grantedBy, userAuthority.grantedBy);
@@ -371,7 +390,7 @@ test("explicit direct user instruction grants and approves with truthful agent a
 		assert.deepEqual((await reopened.read(plan.id)).gates, plan.gates);
 		assert.deepEqual(await reopened.getApprovalDelegation(grant.id), grant);
 		assert.deepEqual(readRecord(parseJson(await operations.exportPlan({ planId: plan.id }))).gates, plan.gates);
-		const nextDraft = await operations.createPlan({ ...createInput(workspacePath), id: "another-named-plan" });
+		const nextDraft = completed(await operations.createPlan({ ...createInput(workspacePath), id: "another-named-plan" }));
 		const next = await operations.submitPlan({ planId: nextDraft.id, expectedRevision: nextDraft.revision });
 		assert.equal((await operations.approve({ ...request, planId: next.id, expectedRevision: next.revision }, { invocation: nativeOwner })).status, PLAN_STATUS.APPROVED);
 		assert.equal(calls.length, 0);
@@ -386,7 +405,7 @@ test("explicit direct user instruction grants and approves with truthful agent a
 
 test("delegated approval rejects missing native provenance, subagents, missing grants and other approval kinds", () => (
 	withDelegation(async ({ operations, workspacePath, calls, session }) => {
-		let plan = await operations.createPlan(createInput(workspacePath));
+		let plan = completed(await operations.createPlan(createInput(workspacePath)));
 		const grantRequest = { action: "grant", id: "routine-execution", planId: plan.id, expectedRevision: plan.revision };
 		await assert.rejects(operations.planApprovalDelegation({ ...grantRequest, invocation: nativeOwner, userSaid: "approved" }), { code: "delegation_identity_required" });
 		for (const invocation of [{ ...nativeOwner, sessionId: "foreign" }, { ...nativeOwner, agentId: "child-agent" }]) {
@@ -414,7 +433,7 @@ test("delegated approval rejects missing native provenance, subagents, missing g
 
 test("foreign or out-of-scope stored grants cannot authorize a plan and revocation survives replay", () => (
 	withDelegation(async ({ operations, workspacePath, calls }) => {
-		let plan = await operations.createPlan(createInput(workspacePath));
+		let plan = completed(await operations.createPlan(createInput(workspacePath)));
 		const grant = must(await grantApproval(operations, plan));
 		plan = await operations.submitPlan({ planId: plan.id, expectedRevision: plan.revision });
 		const request = { planId: plan.id, expectedRevision: plan.revision, delegationId: grant.id, review };
@@ -454,7 +473,7 @@ test("foreign or out-of-scope stored grants cannot authorize a plan and revocati
 
 test("missing, invalid or stale instruction authority cannot grant delegation or trigger a form", () => (
 	withDelegation(async ({ operations, workspacePath, calls }) => {
-		const plan = await operations.createPlan(createInput(workspacePath));
+		const plan = completed(await operations.createPlan(createInput(workspacePath)));
 		const request = { action: "grant", id: "routine-execution", planId: plan.id, expectedRevision: plan.revision };
 		await assert.rejects(operations.planApprovalDelegation(request, { invocation: nativeOwner }), { code: "delegation_instruction_required" });
 		for (const authority of [
@@ -479,7 +498,7 @@ test("missing, invalid or stale instruction authority cannot grant delegation or
 
 test("relayed explicit instruction retains original source separately from the native recording owner", () => (
 	withDelegation(async ({ operations, workspacePath, calls }) => {
-		let plan = await operations.createPlan(createInput(workspacePath));
+		let plan = completed(await operations.createPlan(createInput(workspacePath)));
 		const authority = {
 			...userAuthority,
 			source: { kind: "relayed-user", sessionId: "oversight-session", messageRef: "original-user-message@revision:6", relayedBySessionId: "oversight-session" },
@@ -502,7 +521,7 @@ test("relayed explicit instruction retains original source separately from the n
 
 test("historical native UI grants remain readable, reusable and immutable without regranting", () => (
 	withDelegation(async ({ operations, workspacePath, calls }) => {
-		let plan = await operations.createPlan(createInput(workspacePath));
+		let plan = completed(await operations.createPlan(createInput(workspacePath)));
 		const historicalScope = approvalScope(plan, nativeOwner.sessionId);
 		delete historicalScope.approvalType;
 		const historical = await operations.storeFor().createApprovalDelegation({
@@ -542,7 +561,7 @@ test("historical native UI grants remain readable, reusable and immutable withou
 
 test("activity retains the entire history beyond the old presentation bound and records resulting revisions", () => (
 	withOperations(async ({ operations, workspacePath }) => {
-		let plan = await operations.createPlan(createInput(workspacePath));
+		let plan = completed(await operations.createPlan(createInput(workspacePath)));
 		plan.activity = Array.from({ length: 257 }, (_, index) => ({
 			event: `event-${index}`,
 			at: plan.updatedAt,
@@ -564,7 +583,7 @@ test("activity retains the entire history beyond the old presentation bound and 
 
 test("explicit JSON interchange restores a plan without activating or launching work", () => (
 	withOperations(async ({ operations, workspacePath, notifications }) => {
-		const original = await operations.createPlan(createInput(workspacePath));
+		const original = completed(await operations.createPlan(createInput(workspacePath)));
 		const exported = parseJson(await operations.exportPlan({ planId: original.id }));
 		assert.deepEqual(exported, original);
 		const restored = await operations.importPlan({
@@ -705,11 +724,11 @@ test("operations drive reservation, App attachment, verification, and approval",
 		});
 		assert.equal(verificationLaunch.workflow, "verify");
 		plan = verificationLaunch.plan;
-		plan = await operations.finishVerification({
+		plan = completed(await operations.finishVerification({
 			planId: plan.id,
 			expectedRevision: plan.revision,
 			runId: "workflow-run-1",
-		});
+		}));
 		assert.equal(plan.status, PLAN_STATUS.AWAITING_COMPLETION_APPROVAL);
 		plan = await operations.approve({
 			planId: plan.id,
@@ -764,7 +783,7 @@ test("status projection distinguishes unknown from complete-inventory absence", 
 
 test("plan guardrails require explicit session-local activation", () => (
 	withOperations(async ({ operations, workspacePath }) => {
-		const plan = await operations.createPlan(createInput(workspacePath));
+		const plan = completed(await operations.createPlan(createInput(workspacePath)));
 		assert.equal(await operations.getActive(), null);
 		const marker = await operations.activate({
 			planId: plan.id,

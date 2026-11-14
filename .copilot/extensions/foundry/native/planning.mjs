@@ -6,6 +6,7 @@ import { fail } from "./guards.mjs";
 import { authenticateRepairEvidence, inlineRepairEvidence } from "./repair.mjs";
 import { compareRepairProgress } from "../analysis/repair.mjs";
 import { isRecord } from "../data.mjs";
+import { pendingWorkflow } from "./reader.mjs";
 
 /**
  * @param {ReturnType<typeof import("./reader.mjs").createRunReader>["loadRun"]} loadRun
@@ -29,12 +30,16 @@ export function createPlanningWorkflow(loadRun, settleRun, repairHost) {
 	};
 
 	/**
-	 * Wait for and validate a planning result without starting or resuming its run.
+	 * Inspect once; import only an exact completed result without starting or resuming its run.
 	 * @param {string} runId
 	 * @param {{signal?: AbortSignal}} [options]
 	 */
 	const importPlanning = async (runId, options = {}) => {
+		options.signal?.throwIfAborted();
 		const inspected = await loadRun(runId, FOUNDRY_WORKFLOWS.plan);
+		options.signal?.throwIfAborted();
+		const pending = pendingWorkflow(inspected.run, inspected.detail);
+		if (pending) return pending;
 		const { run, detail } = await settleRun(runId, FOUNDRY_WORKFLOWS.plan, inspected, options);
 		const result = run.result;
 		if (!result || typeof result !== "object" || Array.isArray(result)) {

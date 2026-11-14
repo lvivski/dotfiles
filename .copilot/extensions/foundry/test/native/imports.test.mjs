@@ -475,40 +475,31 @@ test("prepare operations return native run_dynamic_workflow launch specs", async
 	assert.equal(Object.hasOwn(verification.launchSpec, "limits"), false);
 });
 
-test("planning imports use native settlement without resuming or cancelling runs", async () => {
+test("planning imports return pending without waiting and import the same run on completion", async () => {
 	const input = buildPlanningArgs({
 		objective: "Build",
 		constraints: [],
 		repositoryContext: "Node repository",
 		maxTasks: 2,
 	});
-	for (const outcome of ["completed", "pending", "running", "paused", "error", "interrupted"]) {
+	for (const outcome of /** @type {const} */ (["completed", "pending", "running", "paused", "error", "interrupted"])) {
 		const controller = new AbortController();
 		const interrupted = new Error("Import interrupted");
 		/** @type {import("@github/copilot-sdk").WorkflowRunResult} */
 		const run = {
 			runId: "planning",
-			status: outcome === "completed" ? "completed" : outcome === "pending" ? "pending" : "running",
+			status: outcome === "interrupted" ? "running" : outcome,
 		};
 		if (outcome === "completed") run.result = planningResult(input);
 		let waits = 0;
 		const api = Object.assign(fakeApi({ planning: { workflowName: "plan", run } }), {
-			/** @param {string} runId @param {{signal: AbortSignal}} options */
-			async waitForRun(runId, { signal }) {
-				assert.equal(runId, run.runId);
-				assert.equal(signal, controller.signal);
+			async waitForRun() {
 				waits++;
-				await new Promise((resolve) => setImmediate(resolve));
-				if (outcome === "interrupted") {
-					controller.abort(interrupted);
-					signal.throwIfAborted();
-				}
-				run.status = outcome === "paused" ? "paused" : outcome === "error" ? "error" : "completed";
-				if (run.status === "completed") run.result = planningResult(input);
-				return run;
+				throw new Error("Imports must not wait for active runs");
 			},
 		});
 		const analysis = createWorkflowAnalysis(() => api);
+		if (outcome === "interrupted") controller.abort(interrupted);
 		const importing = analysis.importPlanning("planning", { signal: controller.signal });
 		if (outcome === "interrupted") {
 			await assert.rejects(importing, (error) => error === interrupted);
@@ -518,12 +509,21 @@ test("planning imports use native settlement without resuming or cancelling runs
 				code: "workflow_result_unavailable",
 				details: { status: outcome, failure: null },
 			});
+		} else if (outcome === "pending" || outcome === "running") {
+			assert.deepEqual(await importing, { state: "pending", runId: run.runId, status: outcome,
+				workflowName: "plan", resumeOn: "completion-notification" });
+			run.status = "completed";
+			run.result = planningResult(input);
+			const completed = await analysis.importPlanning(run.runId);
+			assert.ok(!("state" in completed));
+			assert.equal(completed.plan.objective, "Build");
 		} else {
 			const imported = await importing;
+			assert.ok(!("state" in imported));
 			assert.equal(imported.plan.objective, "Build");
 			assert.equal(imported.inputDigest, input.inputDigest);
 		}
-		assert.equal(waits, outcome === "completed" ? 0 : 1);
+		assert.equal(waits, 0);
 		assert.deepEqual(api.cancelCalls, []);
 	}
 });
@@ -539,6 +539,15 @@ test("rejects a run owned by the wrong Workflow", async () => {
 		analysis.importPlanning("wrong"),
 		(error) => error instanceof FoundryWorkflowError && error.code === "workflow_run_identity_mismatch",
 	);
+});
+
+test("standalone analysis returns pending without capturing an unfinished report", async () => {
+	const analysis = createWorkflowAnalysis(() => fakeApi({
+		audit: { workflowName: "audit", run: { runId: "audit", status: "running", result: "Unfinished report" } },
+	}));
+	assert.deepEqual(await analysis.importAnalysis("audit"), {
+		state: "pending", runId: "audit", status: "running", workflowName: "audit", resumeOn: "completion-notification",
+	});
 });
 
 test("fails clearly when native Workflow inspection is unavailable", async () => {
@@ -668,16 +677,22 @@ test("verification import validates the terminal result and reservation", async 
 	};
 	const analysis = createWorkflowAnalysis(() => api);
 	const complete = await analysis.importVerification("complete", plan);
+	assert.ok(!("state" in complete));
 	assert.equal(complete.result.passed, true);
 	assert.equal(detailReads, 1);
-	assert.equal(
-		(await analysis.importVerification("unknownTimestamp", plan)).result.passed,
-		true,
-	);
+	const unknownTimestamp = await analysis.importVerification("unknownTimestamp", plan);
+	assert.ok(!("state" in unknownTimestamp));
+	assert.equal(unknownTimestamp.result.passed, true);
 	assert.equal(await analysis.verificationRunIsTerminal("complete"), true);
 	const active = await analysis.importVerification("active", plan);
-	assert.equal(active.result.passed, true);
-	assert.equal(active.detail.completedAt, completedAt);
+	assert.deepEqual(active, { state: "pending", runId: "active", status: "running",
+		workflowName: "verify", resumeOn: "completion-notification" });
+	records.active.run.status = "completed";
+	records.active.completedAt = completedAt;
+	const finished = await analysis.importVerification("active", plan);
+	assert.ok(!("state" in finished));
+	assert.equal(finished.result.passed, true);
+	assert.equal(finished.detail.completedAt, completedAt);
 	assert.equal(detailReads, 4);
 	records.complete.run.result = { ...result, reservationId: "foreign-reservation" };
 	await assert.rejects(analysis.importVerification("complete", plan), /does not match its run/);

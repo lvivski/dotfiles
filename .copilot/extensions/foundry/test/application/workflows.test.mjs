@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createWorkflowAnalysis } from "../../workflow.mjs";
-import { available } from "../assertions.mjs";
+import { available, completed as completedImport } from "../assertions.mjs";
 import { workflowDetail as nativeDetail } from "../native/fixture.mjs";
 import { analysisStub, completeImplementation, createInput, withOperations } from "./fixture.mjs";
 
@@ -157,7 +157,7 @@ test("workflow diagnostics return native detail and bounded older pages without 
 		getWorkflowProgress: native.getWorkflowProgress,
 	};
 	await withOperations(async ({ operations, notifications, workspacePath }) => {
-		const plan = await operations.createPlan(createInput(workspacePath));
+		const plan = completedImport(await operations.createPlan(createInput(workspacePath)));
 		const source = await operations.exportPlan({ planId: plan.id });
 		const notificationCount = notifications.length;
 		const input = { planId: plan.id, runId: detail.runId };
@@ -242,7 +242,7 @@ test("workflow diagnostics share the board's verification selection and persiste
 		assert.deepEqual(await operations.getPlan({ planId: plan.id }), plan);
 		assert.equal(notifications.length, notificationCount);
 		discovery = { state: "found", run: verify, duplicates: [] };
-		plan = await operations.finishVerification({ ...input, expectedRevision: plan.revision });
+		plan = completedImport(await operations.finishVerification({ ...input, expectedRevision: plan.revision }));
 		analysis.discoverVerificationRun = async () => assert.fail("Completed verification uses its persisted binding");
 		assert.deepEqual(await operations.getWorkflow(input), verify);
 		await assert.rejects(operations.getWorkflow({ ...input, runId: "other-plan-verify" }),

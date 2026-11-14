@@ -3,9 +3,43 @@ import test from "node:test";
 import { errorCode, errorMessage, isRecord } from "../../data.mjs";
 import { buildVerificationInput } from "../../analysis/verification.mjs";
 import { PLAN_STATUS, TASK_STATUS } from "../../plan/values.mjs";
+import { completed } from "../assertions.mjs";
 import { analysisStub, completeImplementation, createApproved, runTask, withOperations } from "./fixture.mjs";
 
 /** @typedef {import("../../types/workflow.js").WorkflowAnalysisPort} AnalysisPort */
+
+test("pending verification retains its unique binding and resumes without another launch", async () => {
+	let active = true;
+	const base = analysisStub({
+		discoverVerificationRun: async () => ({ state: "found", run: { runId: "pending-verification", status: active ? "running" : "completed" } }),
+	});
+	await withOperations(async ({ operations, workspacePath }) => {
+		const original = await completeImplementation(operations, workspacePath);
+		const prepared = await operations.prepareVerification({
+			planId: original.id, expectedRevision: original.revision, reservationId: "pending-import-reservation",
+		});
+		const pending = await operations.finishVerification({
+			planId: original.id, expectedRevision: prepared.plan.revision, runId: "pending-verification",
+		});
+		assert.ok("state" in pending);
+		assert.equal(pending.state, "pending");
+		const retained = await operations.getPlan({ planId: original.id });
+		assert.equal(retained.verification.status, "reserved");
+		assert.equal(retained.verification.runId, "pending-verification");
+		assert.equal(pending.revision, retained.revision);
+		const replay = await operations.prepareVerification({
+			planId: original.id, expectedRevision: retained.revision, reservationId: "pending-import-reservation",
+		});
+		assert.equal(replay.launchSpec, null);
+		active = false;
+		const finished = completed(await operations.finishVerification({
+			planId: original.id, expectedRevision: retained.revision, runId: "pending-verification",
+		}));
+		assert.equal(finished.status, PLAN_STATUS.AWAITING_COMPLETION_APPROVAL);
+	}, { analysis: { ...base, importVerification: (runId, plan) => active
+		? Promise.resolve({ state: "pending", runId, status: "running", workflowName: "verify", resumeOn: "completion-notification" })
+		: base.importVerification(runId, plan) } });
+});
 
 test("verification preparation isolates the frozen context and combined delivery from analysis mutation", async () => {
 	/** @type {AnalysisPort} */
@@ -332,11 +366,11 @@ test("failed verification retry opens a fresh correction wave", () => (
 			reservationId: "reserve-failed-verification",
 		});
 		plan = verification.plan;
-		plan = await operations.finishVerification({
+		plan = completed(await operations.finishVerification({
 			planId: plan.id,
 			expectedRevision: plan.revision,
 			runId: "failed-verification",
-		});
+		}));
 		assert.equal(plan.status, PLAN_STATUS.FAILED);
 		plan = await operations.approve({
 			planId: plan.id,

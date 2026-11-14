@@ -189,9 +189,10 @@ export function completeInventory(sessions = []) {
 	};
 }
 
-/** @param {Operations} operations @param {string} workspacePath */
-export async function createApproved(operations, workspacePath) {
-	let plan = await operations.createPlan(createInput(workspacePath));
+/** @param {Operations} operations @param {string} workspacePath @param {string} [id] */
+export async function createApproved(operations, workspacePath, id) {
+	let plan = await operations.createPlan({ ...createInput(workspacePath), ...(id ? { id } : {}) });
+	assert.ok(!("state" in plan));
 	plan = await operations.submitPlan({
 		planId: plan.id,
 		expectedRevision: plan.revision,
@@ -504,6 +505,7 @@ console.log(JSON.stringify(traces));
 		factoryContext: bridge.context(repositoryPath, "technical-unit"),
 	});
 	const plan = await operations.createPlan({ ...createInput(repositoryPath), id: "technical-discovery" });
+	assert.ok(!("state" in plan));
 	const grantInput = {
 		action: "grant", id: "technical-grant", planId: plan.id, expectedRevision: plan.revision, approvalType: "technical",
 		technical: { kinds: ["retry", "consumer-expectation"], agreement: { evaluation: { id: "cancellation-oracle", revision: 1 }, path: "technical/agreement.json", digest: agreementDigest } },

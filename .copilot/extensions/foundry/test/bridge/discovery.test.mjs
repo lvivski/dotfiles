@@ -9,7 +9,7 @@ import { createDispatchBridge } from "../../bridge/dispatch.mjs";
 import { errorCode, parseJson, readRecord } from "../../data.mjs";
 import { createFoundryOperations } from "../../operations.mjs";
 import { verificationCheckIds } from "../../plan/graph.mjs";
-import { must } from "../assertions.mjs";
+import { completed, must } from "../assertions.mjs";
 import { analysisStub, completeInventory, createApproved, evidence, runTask, withOperations } from "../application/fixture.mjs";
 import { factoryMutator } from "../factory/accessors.mjs";
 import { COMMIT, git } from "../git.mjs";
@@ -111,7 +111,7 @@ for (const acceptance of ["before-verifier", "attached-implementation", "attache
 			assert.deepEqual(definitions.unit, boundary);
 			assert.deepEqual(definitions.obligations, []);
 			assert.deepEqual(definitions.evaluations, []);
-			plan = await ops.finishVerification({ planId: plan.id, expectedRevision: prepared.plan.revision, runId: "discovery-verification" });
+			plan = completed(await ops.finishVerification({ planId: plan.id, expectedRevision: prepared.plan.revision, runId: "discovery-verification" }));
 			plan = await ops.approve({ planId: plan.id, expectedRevision: plan.revision, approvalType: "completion", approvedBy: "owner" });
 			assert.equal(plan.status, "completed");
 			assert.deepEqual(plan.factory, originalBinding);

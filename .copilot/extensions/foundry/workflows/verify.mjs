@@ -108,16 +108,6 @@ For read-only re-evaluation, assess this plan's observations at their original o
 		},
 	};
 
-	const VERDICT_SCHEMA = {
-		type: "object",
-		additionalProperties: false,
-		required: ["summary", "missingEvidence"],
-		properties: {
-			summary: { type: "string" },
-			missingEvidence: GAPS_SCHEMA,
-		},
-	};
-
 	const input = normalizeInput(workflow.args);
 	const { reservationId: normalizedReservationId, ...canonicalInput } = input;
 	const deterministic = assessDeterministicVerification(canonicalInput);
@@ -148,28 +138,11 @@ ${safeJson(input)}
 	]);
 
 	workflow.phase("verdict");
-	const verdict = nullable(recordOf({ summary: readString, missingEvidence: arrayOf(gap) }))(await workflow.agent(
-		`Summarize the Foundry verification and identify any additional concrete gaps. Review risks are advisory: resolve them against the recorded evidence and put only real blockers into missingEvidence. ${EVIDENCE_POLICY} ${UNTRUSTED}
-
-<UNTRUSTED-PLAN-EVIDENCE>
-${safeJson(input)}
-</UNTRUSTED-PLAN-EVIDENCE>
-
-<UNTRUSTED-REVIEWS>
-${safeJson(reviews)}
-</UNTRUSTED-REVIEWS>
-
-Attribute every gap to taskIds. Code derives pass/fail, evidence IDs, and correction tasks from the canonical checks and all attributed gaps; no reviewer gap can be erased by this summary. Return JSON only.`,
-		{ label: "verify:verifier", schema: VERDICT_SCHEMA },
-	));
 	const { outcome, gaps } = evaluateVerification(canonicalInput, {
-		passed: Boolean(verdict),
-		summary: verdict?.summary ?? "Verification did not produce a valid verdict",
+		passed: reviews.every(item => item !== null),
+		summary: "Canonical checks and the two required evidence reviews were aggregated deterministically",
 		evidenceIds: deterministic.requiredEvidenceIds,
-		missingEvidence: verdict?.missingEvidence ?? [{
-			summary: "The verdict agent returned no valid result",
-			taskIds: [],
-		}],
+		missingEvidence: [],
 		correctionTaskIds: [],
 		reviews,
 	});

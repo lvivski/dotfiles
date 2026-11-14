@@ -9,6 +9,21 @@ import { inspectWriteBoundary, observeRetentionPath } from "../hooks/paths.mjs";
 import { classifyShellCommand } from "../hooks/shell.mjs";
 import { must } from "./assertions.mjs";
 
+test("active startup context preserves sealed and legacy protocols and notification-driven imports", async () => {
+	const hooks = buildFoundryHooks({ operations: {
+		getActive: async () => ({ plan: { id: "focused-repair", revision: 3, status: "running" } }),
+		getActivation: async () => ({}),
+	} });
+	const { additionalContext } = await hooks.onSessionStart();
+	assert.ok(additionalContext);
+	assert.match(additionalContext, /Fresh sealed reservations deliver the full unchanged assignment once in initialization.kickoff/);
+	assert.match(additionalContext, /Stored legacy reservations retain setup-only kickoff/);
+	assert.match(additionalContext, /short digest-bound activation coordinator_only/);
+	assert.doesNotMatch(additionalContext, /Never send task work in kickoff/);
+	assert.match(additionalContext, /deterministic foundry_create_factory_plan route/);
+	assert.match(additionalContext, /completion notification, never poll or launch again/);
+});
+
 test("guardrail classifiers target only broad destructive behavior", async () => {
 	assert.equal(
 		classifyShellCommand("git reset --hard HEAD", "/repo")?.decision,

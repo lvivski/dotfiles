@@ -327,6 +327,7 @@ export function createPlanningOperations({ analysis, factory, persist, syncFacto
 		const { signal } = options;
 		const imported = await analysis.importPlanning(runId, { signal });
 		signal?.throwIfAborted();
+		if ("state" in imported) return imported;
 		if (!imported.factoryContext) {
 			throw new FoundryOperationError("factory_context_required", "Planning results must carry canonical factory context; prepare a capability-backed plan");
 		}

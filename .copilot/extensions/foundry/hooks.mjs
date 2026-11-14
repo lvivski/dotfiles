@@ -26,12 +26,12 @@ function coordinatorContext(active) {
 	return `Foundry plan ${plan.id} is active at revision ${plan.revision} (${plan.status}).
 
 Coordinator contract:
-1. Reserve before create_session. Follow dispatch guidance: pin the base commit, create once with initialization.kickoff, await setup and corroborate the same child/owner/worktree, attach with bootstrap, then send the unchanged delegationPrompt coordinator_only. Never send task work in kickoff or recreate on uncertain admission.
+1. Reserve before create_session and preserve the returned startup recipe. Fresh sealed reservations deliver the full unchanged assignment once in initialization.kickoff; corroborate its exact receipt and the same child/owner/worktree, attach with bootstrap, then send only the short digest-bound activation coordinator_only. Stored legacy reservations retain setup-only kickoff, setup acknowledgement, attachment and the unchanged full delegationPrompt coordinator_only. Never downgrade a sealed recipe, send its assignment twice, or recreate on uncertain admission.
 2. Record terminal attempt state before dispatching newly-unblocked work; never duplicate active work or expand the approved DAG.
 3. Overlapping declared scopes require an auditable scopeOverride.
 4. Re-read after revision conflicts; replay only when the exact postcondition already exists.
 5. Workflow agents perform analysis only; App-native child sessions own repository mutation.
-6. Use each prepare result once: launch its exact launchSpec, or reuse its runId when launchSpec is null.
+6. Use the existing deterministic foundry_create_factory_plan route for already-defined authorized work when its governing contract/candidate applies; do not start discovery merely to satisfy a pipeline. Otherwise use each prepare result once: launch its exact launchSpec, or reuse its runId when launchSpec is null. Active imports return pending: retain the same runId and resume importing on its completion notification, never poll or launch again.
 7. The final verify task follows the ordinary task flow and must report canonical checkId evidence plus its observed commit.
 8. Failed or blocked attached tasks require a complete, causally newer terminal session inventory.
 9. Cancellation is two-phase: stop owned sessions, terminate the bound verification run, then finalize with fresh complete inventory; overrides must be explicit and attributed.

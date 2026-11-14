@@ -1,5 +1,6 @@
 import { FOUNDRY_WORKFLOWS } from "../workflows/registry.mjs";
 import { assertCompleted, assertRunId, fail, TERMINAL } from "./guards.mjs";
+import { pendingWorkflow } from "./reader.mjs";
 
 /**
  * Native pause/resume have no AbortSignal option; interrupt only the caller's wait.
@@ -43,6 +44,8 @@ export function createWorkflowControls(api, loadRun) {
 		const specification = Object.values(FOUNDRY_WORKFLOWS).find((entry) => entry.meta.name === detail.workflowName);
 		if (!specification) fail("workflow_analysis_required", "Unsupported analysis workflow");
 		const inspected = await loadRun(runId, specification);
+		const pending = pendingWorkflow(inspected.run, inspected.detail);
+		if (pending) return pending;
 		assertCompleted(inspected.run);
 		if (typeof inspected.detail.completedAt !== "number" || !Number.isFinite(inspected.detail.completedAt)) fail("workflow_provenance_missing", "Analysis completion timestamp is unavailable");
 		const report = typeof inspected.run.result === "string" ? inspected.run.result : JSON.stringify(inspected.run.result);

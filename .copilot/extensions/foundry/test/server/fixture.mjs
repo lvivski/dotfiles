@@ -103,6 +103,7 @@ export async function fixture({ getUi, control } = {}) {
 			baseBranch: "main",
 		},
 	});
+	assert.ok(!("state" in plan));
 	plan = await operations.submitPlan({
 		planId: plan.id,
 		expectedRevision: plan.revision,

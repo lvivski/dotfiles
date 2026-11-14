@@ -1,6 +1,16 @@
 import { errorMessage } from "../data.mjs";
 import { assertCompleted, assertRunId, fail, FoundryWorkflowError, isMissingRun } from "./guards.mjs";
 
+/** @param {import("@github/copilot-sdk").WorkflowRunResult} run
+ * @param {import("@github/copilot-sdk").WorkflowRunDetail} detail
+ * @returns {import("../types/workflow.js").PendingWorkflow | null} */
+export function pendingWorkflow(run, detail) {
+	return run.status === "pending" || run.status === "running"
+		? { state: "pending", runId: run.runId, status: run.status, workflowName: detail.workflowName,
+			resumeOn: "completion-notification" }
+		: null;
+}
+
 /**
  * @typedef {Pick<import("@github/copilot-sdk").SessionWorkflowApi,
  *   "getRun" | "getRunDetail" | "getRunProgress" | "listRuns">
@@ -83,7 +93,7 @@ export function createRunReader(getWorkflowApi) {
 	 * @param {Awaited<ReturnType<typeof loadRun>>} inspected
 	 * @param {{signal?: AbortSignal, wait?: boolean}} [options]
 	 */
-	const settleRun = async (runId, specification, inspected, { signal, wait = true } = {}) => {
+	const settleRun = async (runId, specification, inspected, { signal, wait = false } = {}) => {
 		signal?.throwIfAborted();
 		if (wait && (inspected.run.status === "pending" || inspected.run.status === "running")) {
 			const backend = api();

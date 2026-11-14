@@ -35,7 +35,10 @@ to satisfy the importer; retained proposals do not become governing requirements
    [visual evaluator](factory.md#explicit-ui-and-visual-fidelity), pinned renderable references,
    intended ordinary/empty/error states and early capture feasibility. Initial discovery is not an
    escape from visual evidence merely because there is no accepted contract/candidate.
-2. For fresh reconstruction from an accepted contract, prepare a sealed candidate and use
+2. For already-defined authorized repairs where the accepted contract/candidate fits, reuse the
+   deterministic factory-plan path rather than launching the five-agent discovery recipe. Preserve
+   existing active tasks and approvals; do not create new planning work or expand their graph.
+   For fresh reconstruction from an accepted contract, prepare a sealed candidate and use
    `foundry_create_factory_plan`; this creates a draft without a planning Workflow. Continue at
    step 5. For exploration/general planning choose a stable lowercase plan ID and call
    `foundry_prepare_plan` with `repositoryPath` and `unitId`.
@@ -45,8 +48,9 @@ to satisfy the importer; retained proposals do not become governing requirements
    `run_dynamic_workflow`. Planning receives accepted authority or explicitly non-governing
    discovery context; it cannot silently turn observations into requirements.
 4. Call `foundry_create_plan` with the returned `runId`, `expectedRevision: 0`, and the exact
-   repository identity. It uses native event-driven waiting for an active run and imports only a
-   completed result with its canonical factory context; no separate status-polling step is needed.
+   repository identity. An active run returns explicit `state: "pending"` with its same `runId`;
+   keep that identity and resume importing on its native completion notification, never poll or
+   relaunch. Only a completed result with its canonical factory context can create the draft.
 5. Call `foundry_submit_plan` and review the exact named revision, including its critical path and
    executable-workstream checklist. Record the concrete artifact/file/resource reason for each
    serial dependency and how useful independent runtime work will proceed. With a valid recorded
@@ -55,7 +59,7 @@ to satisfy the importer; retained proposals do not become governing requirements
    containing the user's identity, or record the delegated decision below. Then activate the approved
    plan with `foundry_activate_plan`.
 
-Interrupting the import wait does not cancel the Workflow. A paused or failed run is not imported
+Interrupting the import does not cancel the Workflow. A paused or failed run is not imported
 or automatically resumed; follow the recovery protocol with the same `runId`.
 
 Prospective structural and semantic correction uses independently governed effects, not a shared

@@ -34,9 +34,9 @@ async function scenario(action) {
 }
 
 /** @param {import("./fixture.mjs").Operations} operations @param {string} workspacePath
- * @param {ReturnType<typeof createParallelFixture>} fixture */
-async function setup(operations, workspacePath, fixture) {
-	const approved = await createApproved(operations, workspacePath);
+ * @param {ReturnType<typeof createParallelFixture>} fixture @param {string} [suffix] */
+async function setup(operations, workspacePath, fixture, suffix = "") {
+	const approved = await createApproved(operations, workspacePath, suffix ? `dispatch-${suffix}` : undefined);
 	assert.ok(approved.factory);
 	const identity = { repositoryId: approved.factory.repositoryId, owner: workspacePath, planId: approved.id, taskId: "T-001", reservationId: "dispatch-001" };
 	/** @type {Admission | null} */
@@ -45,8 +45,8 @@ async function setup(operations, workspacePath, fixture) {
 	const clock = () => new Date(Date.UTC(2030, 0, 1) + ++sequence * 1000).toISOString();
 	const storage = fixture.left.storage;
 	const journal = createDispatchJournal({ read: operation => storage.transaction(operation) });
-	const child = { sessionId: "canonical-child", projectId: "fixture-project", creatorSessionId: "coordinator",
-		worktreePath: path.join(workspacePath, "children", "native"), branch: "worker" };
+	const child = { sessionId: `canonical-child${suffix}`, projectId: "fixture-project", creatorSessionId: "coordinator",
+		worktreePath: path.join(workspacePath, "children", `native${suffix}`), branch: `worker${suffix}` };
 	/** @type {string[]} */
 	const trace = [];
 	const control = {
@@ -265,6 +265,64 @@ async function setup(operations, workspacePath, fixture) {
 		get record() { assert.ok(record); return structuredClone(record); },
 	};
 }
+
+test("bounded ready dispatch progresses an independent child while another awaits setup", { timeout: 10000 }, async () => {
+	await withOperations(async ({ operations, workspacePath }) => {
+		const fixture = createParallelFixture({ name: "concurrent-dispatch", initialize: initializeDispatchJournal });
+		/** @type {() => void} */
+		let release = () => {};
+		/** @type {() => void} */
+		let secondHandedOff = () => {};
+		const setupGate = new Promise(resolve => { release = () => resolve(undefined); });
+		const handoffGate = new Promise(resolve => { secondHandedOff = () => resolve(undefined); });
+		try {
+			const first = await setup(operations, workspacePath, fixture);
+			const second = await setup(operations, workspacePath, fixture, "second");
+			/** @param {{planId: string}} identity */
+			const select = identity => identity.planId === first.identity.planId ? first : second;
+			const dispatcher = createDispatchOperations({
+				admission: { ...first.admission,
+					read: identity => select(identity).admission.read(identity),
+					withFence: (fence, callback) => select(fence.admission).admission.withFence(fence, callback),
+				},
+				journal: first.journal,
+				native: { ...first.native,
+					create: (reservation, correlation) => select(reservation.attempt).native.create(reservation, correlation),
+					corroborate: async (child, reservation, startedAt) => {
+						if (reservation.attempt.planId === first.identity.planId) await setupGate;
+						return select(reservation.attempt).native.corroborate(child, reservation, startedAt);
+					},
+					handoff: async (reservation, child, correlation, revision) => {
+						const result = await select(reservation.attempt).native.handoff(reservation, child, correlation, revision);
+						if (reservation.attempt.planId === second.identity.planId) secondHandedOff();
+						return result;
+					},
+				},
+				plans: { ...first.plans,
+					status: planId => select({ planId }).plans.status(planId),
+					attach: (attempt, revision, child, correlation) => select(attempt).plans.attach(attempt, revision, child, correlation),
+				},
+				reserve: identity => select(identity).reserve(identity),
+				ready: async () => [first.identity, first.identity, second.identity],
+			});
+			const batch = dispatcher.runReady({ limit: 2 });
+			await handoffGate;
+			assert.equal(first.control.messageCount, 0);
+			assert.equal(second.control.messageCount, 1);
+			release();
+			const result = await batch;
+			assert.deepEqual(result.results.map(item => item.state), ["handed-off", "handed-off"]);
+			assert.equal(first.control.createCount, 1);
+			assert.equal(second.control.createCount, 1);
+			const replay = await dispatcher.runReady({ limit: 1 });
+			assert.equal(replay.results.length, 1);
+			assert.equal(first.control.createCount, 1);
+		} finally {
+			release();
+			fixture.dispose();
+		}
+	});
+});
 
 test("production sequence reserves and journals before create, corroborates before attach, and never materializes inputs", () => scenario(async s => {
 	s.control.withInputs = true;

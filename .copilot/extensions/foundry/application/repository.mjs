@@ -137,6 +137,7 @@ export function createRepositoryOperations({ workspace, storeFor, notify, factor
 		if (before.revision !== expectedRevision) throw new FoundryOperationError("revision_conflict", "Repository authority changed before analysis capture");
 		if (!before.units.some((unit) => unit.id === unitId)) throw new FoundryOperationError("factory_unit_missing", "Analysis capture requires an explicit existing capability scope");
 		const imported = await analysis.importAnalysis(runId);
+		if ("state" in imported) return imported;
 		/** @type {Record<string, import("../types/factory.js").SourceKind>} */
 		const kinds = { audit: "audit", "deep-research": "research", "review-queue": "review", "security-review": "security", triage: "triage" };
 		return service.ingestAnalysis({
