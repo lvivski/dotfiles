@@ -110,15 +110,20 @@ Adoption does not create a fresh-generation plan or count as a reconstruction pr
    existing lifecycle, but the default production host remains unavailable. Source registration and
    synthetic-host checks establish neither installation nor live support. Preparation launches nothing
    and proves neither reservation nor execution. Follow ordinary
-   submit/approve/reserve/create/setup-corroboration/attach/unchanged-handoff rules.
+   submit/approve/reserve rules and [recipe-specific startup](dispatch.md#fresh-complete-kickoff-and-legacy-replay):
+   fresh complete immutable kickoff/receipt/corroboration/attachment/short activation; stored legacy
+   reservations alone replay original setup/corroborate/attach/full-handoff unchanged.
    App generation supplies session/attempt identity, not process identity. A `fresh-process`
    candidate cannot be bound to this path; use a genuinely external process or prepare a new
    `fresh-session` candidate. Never invent process provenance after the fact.
 3. Complete implementation attempts with actual delivery, concrete evidence and `learning` entries
    (`observation`, `inference` or `proposal`, `statement`, optional `uncertainty`). Each completed
    attempt also creates a non-governing report observation with exact task/attempt/session identity.
-   Explicit-package consumers use `foundry_materialize_inputs` only after attachment and unchanged
-   handoff, then actually consume the pinned snapshots and preserve every delivered commit's ancestry.
+   Explicit-package consumers use `foundry_materialize_inputs` only after exact current attachment
+   and successful short activation (legacy: unchanged full handoff), then actually consume the pinned
+   snapshots and preserve every delivered commit's ancestry. Fresh final-prompt sealing follows both
+   factory context and any explicit input-descriptor enrichment in `operations.mjs`; receipt-only
+   startup never authorizes early materialization.
 4. The verifier returns all ordinary `checkId` evidence plus selected executable `factoryEvaluations`: evaluation
    `{id,revision}`, pinned `procedureDigest`, `environment`, `workload`, actual `report`, `outcome`,
    and `independenceReason`. Failures are reported as failures, not repaired by changing the oracle.
@@ -150,9 +155,9 @@ Adoption does not create a fresh-generation plan or count as a reconstruction pr
 
 Initial-plan and technical-completion grants remain distinct and owner-local. Neither accepts a
 product contract, supplies a human judgment, selects a replacement or grants external/resource
-permission. Immutable package inputs must be actually consumed after attachment and unchanged
-handoff; their manifest alone is not generation or integration evidence. Where package consumption
-or supplemental correction requires unavailable invocation, materialization or
+permission. Immutable package inputs must be actually consumed after exact current attachment and
+recipe-specific activation/handoff; their manifest alone is not generation or integration evidence.
+Where package consumption or supplemental correction requires unavailable invocation, materialization or
 [correction binding](dispatch.md#supplemental-original-owner-corrections), retain the delivery hold.
 Do not retrofit package requirements onto historical omitted-decomposition plans.
 

@@ -8,6 +8,9 @@ import { analysisInputDigest, stableStringify } from "../../digest.mjs";
 import { createNativeAdmission, createOfferedDispatchTransport, DispatchNativeError } from "../../native/admission.mjs";
 import { createNativeDispatch, dispatchReservation } from "../../native/dispatch.mjs";
 import { admissionRecord } from "../../plan/parallel-contracts.mjs";
+import { reserveTaskAttempt } from "../../plan/execution.mjs";
+import { assignmentDigest } from "../../plan/startup.mjs";
+import { createPlanStore } from "../../storage.mjs";
 import { createDispatchJournal, initializeDispatchJournal } from "../../storage/dispatch.mjs";
 import { assertAdmissionFence, synchronousTransition } from "../../storage/parallel-protocol.mjs";
 import { COMMIT, EVALUATOR_FILES, git } from "../git.mjs";
@@ -63,6 +66,7 @@ async function setup(operations, workspacePath, fixture) {
 		reconciled: null,
 		withInputs: false,
 		resolverAvailable: true,
+		legacy: false,
 	};
 	/** @type {AdmissionPort} */
 	const admission = {
@@ -125,6 +129,10 @@ async function setup(operations, workspacePath, fixture) {
 				assert.ok(record?.attempt);
 				assert.equal(journal.read(record.attempt)[0].state, "in-flight");
 				control.createCount++;
+				if (reservation?.initialization.recipe) {
+					assert.deepEqual(args.kickoff, reservation.initialization.kickoff);
+					assert.equal(reservation.initialization.assignmentDigest, assignmentDigest(reservation.delegationPrompt));
+				}
 				git(workspacePath, "worktree", "add", "--quiet", "-b", child.branch, child.worktreePath, String(args.base_branch));
 				control.beforeCreateResult?.();
 				if (control.lose === "creation") throw new Error("lost create response after host creation");
@@ -133,7 +141,15 @@ async function setup(operations, workspacePath, fixture) {
 			if (name === "send_session_message") {
 				control.messageCount++;
 				assert.equal(args.coordinator_only, true);
-				assert.equal(args.message, reservation?.delegationPrompt);
+				if (reservation?.initialization.recipe) {
+					assert.ok(typeof args.message === "string");
+					assert.ok(args.message.length < 16000);
+					assert.ok(!args.message.includes(reservation.delegationPrompt));
+					const activation = JSON.parse(args.message.slice("Foundry activate received assignment:\n".length));
+					assert.equal(activation.assignmentDigest, reservation.initialization.assignmentDigest);
+					assert.deepEqual(activation.attempt, reservation.attempt);
+					assert.deepEqual(activation.child, child);
+				} else assert.equal(args.message, reservation?.delegationPrompt);
 				if (control.lose === "handoff") throw new Error("lost handoff acknowledgement");
 				return success({ sessionId: child.sessionId, accepted: true });
 			}
@@ -174,6 +190,12 @@ async function setup(operations, workspacePath, fixture) {
 		assert.deepEqual(requested, identity);
 		if (reservation) return reservation;
 		const { plan } = await plans.status(identity.planId);
+		// Construct an original old-record fixture, not an upgrade/downgrade path.
+		// Input-bearing fresh sealing is exercised through real root composition.
+		if (control.legacy || control.withInputs) {
+			await createPlanStore({ workspacePath }).mutate(plan.id, plan.revision, current =>
+				reserveTaskAttempt(current, identity.taskId, { reservationId: identity.reservationId }));
+		}
 		const result = await plans.reserve(identity, plan.revision);
 		assert.ok(result.value.initialization);
 		const attempt = { ...identity, attemptId: result.attempt.id };
@@ -270,6 +292,54 @@ test("duplicate concurrent callbacks and reconstructed dispatcher never create o
 	assert.equal((await s.makeDispatcher().dispatch(s.identity)).state, "handed-off");
 	assert.equal(s.control.createCount, 1);
 	assert.equal(s.control.messageCount, 1);
+}));
+
+test("legacy stored reservations replay only the unchanged setup/full-handoff effects", () => scenario(async s => {
+	s.control.legacy = true;
+	assert.equal((await s.makeDispatcher().dispatch(s.identity)).state, "handed-off");
+	const before = structuredClone(s.reservation), receipts = s.journal.read(s.reservation.attempt);
+	const payloads = receipts.map(receipt => s.journal.payload(s.reservation.attempt, receipt.kind));
+	assert.equal(Object.hasOwn(s.reservation.initialization, "recipe"), false);
+	assert.notEqual(s.reservation.initialization.kickoff.prompt, s.reservation.delegationPrompt);
+	assert.equal((await s.makeDispatcher().dispatch(s.identity)).state, "handed-off");
+	assert.deepEqual(s.reservation, before);
+	assert.deepEqual(s.journal.read(s.reservation.attempt), receipts);
+	assert.deepEqual(receipts.map(receipt => s.journal.payload(s.reservation.attempt, receipt.kind)), payloads);
+	assert.equal(s.control.createCount, 1);
+	assert.equal(s.control.messageCount, 1);
+}));
+
+test("fresh activation carries no assignment and changed digest/owner/child/attempt cannot replay its claim", () => scenario(async s => {
+	assert.equal((await s.makeDispatcher().dispatch(s.identity)).state, "handed-off");
+	const payload = s.journal.payload(s.reservation.attempt, "handoff");
+	assert.ok(isRecord(payload) && isRecord(payload.activation));
+	assert.deepEqual(Object.keys(payload).sort(), ["activation", "child"]);
+	assert.equal(Object.hasOwn(payload, "delegationPrompt"), false);
+	for (const change of [
+		{ assignmentDigest: "f".repeat(64) },
+		{ attempt: { ...s.reservation.attempt, owner: "/foreign" } },
+		{ attempt: { ...s.reservation.attempt, attemptId: "T-001-A002" } },
+		{ child: { ...s.child, sessionId: "foreign-child" } },
+	]) {
+		s.substitutePayload("handoff", readJsonValue({ ...payload, activation: { ...payload.activation, ...change } }));
+		// The receipt's original digest cannot be rebound to a different activation.
+		const result = await s.makeDispatcher().dispatch(s.identity);
+		assert.equal(result.state === "held" && result.code, "parallel_receipt_identity");
+		assert.equal(s.control.messageCount, 1);
+	}
+}));
+
+test("cancellation before activation retains the original child and forbids its message", () => scenario(async s => {
+	let transitions = 0;
+	s.control.beforeFence = () => {
+		if (++transitions === 8) { s.control.beforeFence = null; s.cancel(); }
+	};
+	assert.equal((await s.makeDispatcher().dispatch(s.identity)).state, "held");
+	assert.equal(s.control.createCount, 1);
+	assert.equal(s.control.messageCount, 0);
+	assert.equal(s.record.receipts.find(receipt => receipt.kind === "handoff")?.state, "intent");
+	assert.equal((await s.makeDispatcher().dispatch(s.identity)).state, "held");
+	assert.equal(s.control.messageCount, 0);
 }));
 
 test("dispatch and reconstructed replay use the injected canonical reservation and child decoders", () => scenario(async s => {
@@ -398,6 +468,25 @@ test("permission rejection is durable and never replayed", () => scenario(async 
 	assert.equal(s.control.createCount, 0);
 	assert.equal(s.trace.filter(name => name === "create_session").length, 1);
 	assert.equal(errors.length, 1);
+}));
+
+test("activation denial retains its original claim and never replays or becomes task delivery", () => scenario(async s => {
+	s.control.deny = "send_session_message";
+	assert.equal((await s.makeDispatcher().dispatch(s.identity)).state, "held");
+	const receipt = s.record.receipts.find(item => item.kind === "handoff");
+	assert.equal(receipt?.state, "definitive-failure");
+	const { plan } = await s.plans.status(s.identity.planId);
+	const result = await s.makeDispatcher().complete({ identity: s.identity, terminalRunIds: [], request: {
+		planId: s.identity.planId, taskId: s.identity.taskId, attemptId: s.reservation.attempt.attemptId,
+		expectedRevision: plan.revision, status: "done", resultSummary: "Cannot deliver",
+		branch: s.child.branch, commit: COMMIT, evidence: evidence("Not execution proof"),
+	} });
+	assert.equal(result.state === "held" && result.code, "dispatch_delivery_unconfirmed");
+	s.control.deny = null;
+	assert.equal((await s.makeDispatcher().dispatch(s.identity)).state, "held");
+	assert.equal(s.trace.filter(name => name === "send_session_message").length, 1);
+	assert.equal(s.trace.includes("foundry_complete_task"), false);
+	assert.equal(s.control.createCount, 1);
 }));
 
 test("unknown and lookalike native failures stay uncertain without trusting forged receipts or retrying", async () => {
@@ -546,7 +635,8 @@ test("workflow exact prepared launch, uncertainty and restart share one durable 
 	assert.deepEqual(s.journal.payload(s.reservation.attempt, "workflow"), spec);
 }));
 
-test("terminal native delivery and admission receipt precede any newly ready work", () => scenario(async s => {
+for (const legacy of [false, true]) test(`${legacy ? "legacy full handoff" : "fresh short activation"} delivery and admission receipt precede any newly ready work`, () => scenario(async s => {
+	s.control.legacy = legacy;
 	assert.equal((await s.makeDispatcher().dispatch(s.identity)).state, "handed-off");
 	const { plan } = await s.plans.status(s.identity.planId);
 	const completion = { identity: s.identity, terminalRunIds: [], request: {

@@ -154,13 +154,13 @@ export function createNativeHost(access) {
 					return invoke(name, primary[name], request("completeTask", args), correlation);
 				}
 				case "create_session": {
-					object(args, ["project_id", "base_branch", "workspace_type", "coordinate_with_creator", "notify_on_idle", "kickoff"], "setup-only creation");
-					object(args.kickoff, ["mode", "prompt"], "setup kickoff");
+					object(args, ["project_id", "base_branch", "workspace_type", "coordinate_with_creator", "notify_on_idle", "kickoff"], "coordinated kickoff creation");
+					object(args.kickoff, ["mode", "prompt"], "startup kickoff");
 					if (args.project_id !== context.projectId || args.workspace_type !== "worktree" || args.coordinate_with_creator !== true
-						|| args.notify_on_idle !== "always" || args.kickoff.mode !== "interactive") hold("dispatch_setup_invalid", "Creation must retain the owning project and setup-only worktree options");
+						|| args.notify_on_idle !== "always" || args.kickoff.mode !== "interactive") hold("dispatch_setup_invalid", "Creation must retain the owning project and receipt-gated worktree options");
 					return invoke(name, primary[name], { project_id: context.projectId, base_branch: text(args.base_branch, "reserved base", 512),
 						workspace_type: "worktree", coordinate_with_creator: true, notify_on_idle: "always",
-						kickoff: { mode: "interactive", prompt: text(args.kickoff.prompt, "setup prompt", 16000) } }, correlation);
+						kickoff: { mode: "interactive", prompt: text(args.kickoff.prompt, "complete startup prompt", 2_000_000) } }, correlation);
 				}
 				case "get_session":
 					object(args, ["project_session_id"], "child detail request");

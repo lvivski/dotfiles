@@ -169,14 +169,28 @@ export function createFactoryBridge({ workspace, storeFor, notify, storageRoot, 
 			const creation = journal.payload(consumer, "creation"), attachment = journal.payload(consumer, "attachment"), handoff = journal.payload(consumer, "handoff");
 			if (!isRecord(creation) || !isRecord(creation.reservation) || !isRecord(attachment) || !isRecord(attachment.child)
 				|| !isRecord(handoff) || !isRecord(handoff.child)) return null;
+			const attachedRevision = current.activity.findLast(item => item.event === `task-attached:${consumer.taskId}:${consumer.attemptId}`)?.revision;
+			if (!attachedRevision) return null;
+			const initialization = creation.reservation.initialization;
+			if (isRecord(initialization) && Object.hasOwn(initialization, "recipe")) {
+				if (initialization.recipe !== "complete-kickoff-v1" || !attempt.startup
+					|| attempt.startup.assignmentDigest !== initialization.assignmentDigest
+					|| attempt.startup.delegationPrompt !== creation.reservation.delegationPrompt
+					|| !isRecord(initialization.kickoff) || initialization.kickoff.prompt !== attempt.startup.delegationPrompt
+					|| stableStringify(handoff) !== stableStringify({
+						child: attachment.child, activation: {
+							recipe: "complete-kickoff-v1", attempt: consumer,
+							projectId: creation.reservation.projectId, child: attachment.child,
+							baseBranch: creation.reservation.baseBranch, baseCommit: creation.reservation.baseCommit,
+							assignmentDigest: attempt.startup.assignmentDigest, attachedRevision,
+						},
+					})) return null;
+			} else if (attempt.startup || stableStringify(handoff.inputs) !== stableStringify(descriptor)
+				|| handoff.delegationPrompt !== creation.reservation.delegationPrompt) return null;
 			if (stableStringify(creation.reservation.inputs) !== stableStringify(descriptor)
-				|| stableStringify(handoff.inputs) !== stableStringify(descriptor)
-				|| handoff.delegationPrompt !== creation.reservation.delegationPrompt
 				|| stableStringify(attachment.child) !== stableStringify(handoff.child)
 				|| attachment.child.sessionId !== attempt.sessionId || attachment.child.branch !== attempt.branch
 				|| attachment.baseCommit !== descriptor.bootstrap.commit) return null;
-			const attachedRevision = current.activity.findLast(item => item.event === `task-attached:${consumer.taskId}:${consumer.attemptId}`)?.revision;
-			if (!attachedRevision) return null;
 			return consumerEntry({
 				attempt: consumer, sessionId: attempt.sessionId, worktreePath: attachment.child.worktreePath,
 				attachedRevision, handoffReceiptId: handedOff.id, inputDigest: descriptor.digest,

@@ -2,6 +2,7 @@ import { errorCode, errorMessage, isList, isRecord, property, readJsonValue, rea
 import { analysisInputDigest, stableStringify } from "../digest.mjs";
 import { fail, integer } from "../factory/fields.mjs";
 import { admissionIdentity, reservedInputs } from "../plan/parallel-contracts.mjs";
+import { taskHandoffPayload } from "../plan/startup.mjs";
 import { validatePlan } from "../plan/validation.mjs";
 import { FoundryOperationError } from "./errors.mjs";
 
@@ -95,6 +96,9 @@ export function createDispatchOperations({ admission, journal, native, plans, in
 		const payloadDigest = analysisInputDigest(payload);
 		let receipt = find(attempt, kind);
 		if (receipt && receipt.payloadDigest !== payloadDigest) fail("parallel_receipt_identity", "Prepared native effect changed across callbacks");
+		if (receipt && stableStringify(journal.payload(attempt, kind)) !== stableStringify(payload)) {
+			fail("parallel_receipt_identity", "The original durable effect payload differs; retain its claim without invoking or accepting it");
+		}
 		if (!receipt) {
 			const record = current(attempt);
 			receipt = admission.withFence(fence(record), tx => journal.prepare(tx, {
@@ -152,8 +156,12 @@ export function createDispatchOperations({ admission, journal, native, plans, in
 	async function attached(reservation, sessionId, branch) {
 		const status = await plans.status(reservation.attempt.planId);
 		const attempt = status.plan.tasks.find(task => task.id === reservation.attempt.taskId)?.attempts.find(item => item.id === reservation.attempt.attemptId);
-		if (attempt?.sessionId !== sessionId || attempt.branch !== branch || attempt.reservationId !== reservation.attempt.reservationId
-			|| attempt.status !== "running" || status.plan.status !== "running") return null;
+		if (status.plan.id !== reservation.attempt.planId || status.plan.factory?.owner !== reservation.attempt.owner
+			|| status.plan.factory.repositoryId !== reservation.attempt.repositoryId || status.plan.cancellation
+			|| attempt?.sessionId !== sessionId || attempt.branch !== branch || attempt.reservationId !== reservation.attempt.reservationId
+			|| attempt.status !== "running" || status.plan.status !== "running"
+			|| reservation.initialization.recipe && (attempt.startup?.assignmentDigest !== reservation.initialization.assignmentDigest
+				|| attempt.startup?.delegationPrompt !== reservation.delegationPrompt)) return null;
 		return status;
 	}
 	/** @param {unknown} value @param {Reservation} reservation @param {Child} child */
@@ -188,8 +196,12 @@ export function createDispatchOperations({ admission, journal, native, plans, in
 			const beforeCreation = await plans.status(identity.planId);
 			const reserved = beforeCreation.plan.tasks.find(task => task.id === identity.taskId)?.attempts.find(item => item.id === reservation.attempt.attemptId);
 			if (beforeCreation.plan.status !== "running" || beforeCreation.plan.factory?.repositoryId !== identity.repositoryId
+				|| beforeCreation.plan.factory.owner !== identity.owner || beforeCreation.plan.cancellation
 				|| reserved?.reservationId !== identity.reservationId || reserved.baseBranch !== reservation.baseBranch
 				|| !["reserved", "running"].includes(reserved.status)) fail("dispatch_reservation_unconfirmed", "Fresh owned native reservation is missing or no longer active");
+			if (Boolean(reserved.startup) !== Boolean(reservation.initialization.recipe)
+				|| reservation.initialization.recipe && (reserved.startup?.assignmentDigest !== reservation.initialization.assignmentDigest
+				|| reserved.startup?.delegationPrompt !== reservation.delegationPrompt)) fail("dispatch_startup_invalid", "Native reservation and sealed kickoff differ");
 			if (!find(reservation.attempt, "creation") && (reserved.status !== "reserved" || reserved.sessionId !== null)) {
 				fail("dispatch_reservation_unconfirmed", "An attached attempt without this journal's creation receipt cannot create another child");
 			}
@@ -232,10 +244,14 @@ export function createDispatchOperations({ admission, journal, native, plans, in
 					throw new Error("Existing attachment cannot be relaunched");
 				}, value => attachmentResult(value, reservation, child));
 			}
-			if (!await attached(reservation, child.sessionId, child.branch)) fail("dispatch_attachment_unconfirmed", "Fresh owned native attachment postcondition is missing");
-			const handoff = await effect(reservation.attempt, "handoff", readJsonValue({ child, delegationPrompt: reservation.delegationPrompt, inputs: reservation.inputs }),
-				correlation => native.handoff(reservation, child, correlation), value => native.decodeHandoff(value, child.sessionId));
+			const active = await attached(reservation, child.sessionId, child.branch);
+			if (!active) fail("dispatch_attachment_unconfirmed", "Fresh owned native attachment postcondition is missing");
+			const attachedRevision = active.plan.activity.findLast(item => item.event === `task-attached:${identity.taskId}:${reservation.attempt.attemptId}`)?.revision;
+			if (reservation.initialization.recipe && !attachedRevision) fail("dispatch_attachment_unconfirmed", "Activation requires the exact durable attachment revision");
+			const handoff = await effect(reservation.attempt, "handoff", readJsonValue(taskHandoffPayload(reservation, child, attachedRevision ?? 0)),
+				correlation => native.handoff(reservation, child, correlation, attachedRevision), value => native.decodeHandoff(value, child.sessionId));
 			return { state: /** @type {const} */ ("handed-off"), sessionId: child.sessionId, receipt: handoff.receipt,
+				...(reservation.initialization.recipe ? { assignmentDelivery: "creation-kickoff", activation: "queue-admitted" } : {}),
 				inputsMaterialized: false, executionObserved: false };
 		} catch (error) { return held(error); }
 	}

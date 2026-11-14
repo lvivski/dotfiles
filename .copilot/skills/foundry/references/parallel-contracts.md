@@ -45,9 +45,12 @@ producer's exact successful attempt, delivered commit and path/mode/content iden
 Its digest binds the complete descriptor. `assertInputCoverage` compares against the
 immutable complete package declaration; checking a supplied subset against itself is
 insufficient. T-002 resolves actual Git bytes and delivery freshness. T-004 carries that
-descriptor unchanged. Only T-002's attached and handed-off consumer entry materializes
-inputs. Setup never dirties bootstrap HEAD; materialized snapshots do not replace exact
-delivery ancestry integration.
+descriptor unchanged. Fresh `complete-kickoff-v1` seals only after factory context and explicit
+input enrichment in `operations.mjs`; `assignmentDigest` hashes exact final UTF-8
+`delegationPrompt`, equal to the interactive kickoff prompt. Only T-002's exact attached and
+activated consumer entry (legacy: attached and fully handed off) materializes inputs.
+Pre-attachment receipt/identity work never dirties bootstrap HEAD; materialized snapshots do not
+replace exact delivery ancestry integration.
 
 Parsers validate closed wire/persisted documents and cross-object consistency. They do
 not authenticate callers or grant execution. Observations are `observation-only`;
@@ -77,11 +80,11 @@ attempt does not settle a previously started request that may still return.
 | --- | --- | --- | --- | --- |
 | Claim | T-003 admission store | Owner/repository scope; dependencies, capacity and resources supported; expected store revision (0 only for new identity) | `claim-held`, stable reservation ID, capacity deducted | Replay same identity/payload; conflicting identity fails |
 | Reservation | T-003 through existing `foundry_reserve_task` | Claim held; current plan revision, approved/active plan and scope | Native reservation then `reserved` binding to exact returned attempt; shared store CAS | Crash between databases retains claim; reread plan/reservation; uncertain outcome holds, never reserve another attempt |
-| Creation intent | T-004 through T-003 `withFence` | Reserved claim, exact revision/epoch; unchanged setup/base/payload digest | Journal `intent` before any native call | Pending intent can be cancelled-before-start atomically |
+| Creation intent | T-004 through T-003 `withFence` | Reserved claim, exact revision/epoch; unchanged recipe-specific kickoff/base/final payload digest | Journal `intent` before any native call | Pending intent can be cancelled-before-start atomically |
 | Creation start | T-004 through T-003 `withFence` | Same active fence; intent not previously consumed | `in-flight`; one authorized native call slot | Crash or lost response is uncertain; retain claim and reconcile same correlation |
 | Creation outcome | T-004 journal through settlement-capable fence | Match immutable intent/attempt/payload; current revision; outcome can arrive after cancellation | Succeeded/definitive-failure/uncertain receipt, actual returned child identity only | A late child becomes a cancellation obligation; no second create on uncertainty |
-| Attachment | T-003/native attach authority; T-004 journals intent/outcome | Exact setup acknowledgement; fresh same-child/project/creator/worktree/base/clean-state corroboration; current plan and admission revision/epoch | Exact child attached, native attachment receipt retained | Alias/rename requires supported reconciliation; dirty/base drift or incomplete observation holds |
-| Handoff | T-004 journal; owning coordinator invokes offered tool | Successful attachment; unchanged reserved delegation/input descriptor; active fence, start receipt | Coordinator-only normal-tool outcome retained | Rejected/uncertain handoff is not execution; reconcile same child's transcript, no blind resend |
+| Attachment | T-003/native attach authority; T-004 journals intent/outcome | Exact recipe-specific receipt acknowledgement; fresh same-child/project/creator/worktree/base/task/attempt/clean-state corroboration; current plan and admission revision/epoch | Exact child attached, native attachment receipt retained | Alias/rename requires supported reconciliation; dirty/base drift or incomplete observation holds |
+| Handoff (existing effect) | T-004 journal; owning coordinator invokes offered tool | Successful exact current attachment; fresh: short identity/digest-bound activation only, legacy: original full delegation; unchanged sealed inputs, active fence, start receipt | Coordinator-only/immediate/autopilot queue-admission outcome retained, not execution | Rejected/uncertain activation/handoff reconciles original claim/correlation and same child, never resend/reset/replace/fallback |
 | Delivery | Existing `foundry_complete_task`, then T-003 `deliver` | Exact owner/attempt and commit; current plan revision, existing delivery/evidence gates | Terminal task persisted **before** newly ready work; exact `DeliveryReceipt` then settled claim | Plan/store crash gap is held and reconciled; completed task can release only with no pending effects/runs |
 | Cancellation | T-003 `cancel`, decision supplied by T-006 | Current revision, exact owner; no foreign-plan takeover | Epoch advances and `cancelling`; all known children, started effects and authoritative runs retained | No new effect start. A pre-fence in-flight call may return late and must be reconciled, not erased |
 | Settlement | T-003 `settle`, decision supplied by T-006 | Fresh complete terminal inventory; exact native identities; every owned run/effect accounted for | `settled` with no unresolved obligations | Missing/uncertain effect, partial inventory or live run holds |
@@ -118,10 +121,17 @@ This is an SDK input identity, not a claim about a newly installed extension.
 `types/parallel-conformance.ts` checks the execute port against both offline and native
 declarations without changing the existing Elicitation assertion.
 
-The sequence is `foundry_get_status` → `foundry_reserve_task` → `create_session`
-with the returned base, setup-only kickoff and `notify_on_idle: "always"` → actual
-setup acknowledgement → fresh `get_session`/complete inventory corroboration →
-`foundry_attach_task` → unchanged `send_session_message` with `coordinator_only: true`.
+Fresh sequence: `foundry_get_status` → `foundry_reserve_task` → `create_session` with the returned
+base/optional data, complete immutable interactive kickoff, `coordinate_with_creator: true` and
+`notify_on_idle: "always"` → exact receipt → canonical same-child/project/creator/worktree/base/
+task/attempt corroboration → `foundry_attach_task` → short identity/digest-bound activation via
+normal coordinator-only/immediate/autopilot messaging. Never resend assignment/context/inputs.
+Before exact current attachment only receipt/identity work is authorized, never substantive work
+or materialization. Prompt text is not authentication, permission, a sandbox or OS enforcement.
+Stored reservations lacking the new recipe retain original setup/corroborate/attach/full-handoff,
+prompts, acknowledgements, optional omissions, receipts and journal identities without upgrade.
+See [dispatch](dispatch.md#fresh-complete-kickoff-and-legacy-replay) for the approved two-worker
+legacy self-bootstrap exception and unchanged installed/live holds; no new scheduler/outbox is added.
 Record terminal completion with `foundry_complete_task` before admitting newly ready work.
 
 Only the owning coordinator invokes these tools. Its local extension handler may use

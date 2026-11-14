@@ -54,6 +54,13 @@ export type RepositoryCheck = {
 	worktree?: { head: string; clean: true };
 };
 
+export type TaskStartup = {
+	recipe: "complete-kickoff-v1"; assignmentDigest: string; delegationPrompt: string;
+};
+export type TaskInitialization = {
+	acknowledgement: string; kickoff: { mode: "interactive"; prompt: string };
+} & ({ recipe: "complete-kickoff-v1"; assignmentDigest: string } | { recipe?: never; assignmentDigest?: never });
+
 export type FoundryAttempt = {
 	id: string; reservationId: string; status: AttemptStatus; baseBranch: string;
 	integrationRequired: IntegrationEntry[]; scopeOverride: ScopeOverride | null;
@@ -64,6 +71,7 @@ export type FoundryAttempt = {
 	cancelRequestedAt: string | null; completedAt: string | null;
 	verifierWorktree?: VerifierWorktree; repositoryCheck?: RepositoryCheck;
 	branchRenames?: BranchRename[];
+	startup?: TaskStartup;
 };
 
 export type BlueprintTask = {

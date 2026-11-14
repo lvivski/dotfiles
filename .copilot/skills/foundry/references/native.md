@@ -44,9 +44,16 @@ Advertised names and metadata are not callable bindings. A callable binding is n
 observed admission; admission is not a successful effect or observed execution.
 Normal account/resource permission and exact result correlation remain required.
 Cold coordinator-only first delivery fails before bootstrap and remains unavailable;
-warm messaging does not establish a cold bootstrap path. Omitted strategy retains
-the existing reserve/setup/corroborate/attach/unchanged-handoff protocol, not an
-idle-first worker promise.
+warm messaging does not establish a cold bootstrap path. Fresh `complete-kickoff-v1` reservations
+use the entire final immutable assignment in interactive `create_session.kickoff`, followed by
+receipt/corroboration/exact current attachment and only short identity/digest-bound activation
+through normal coordinator-only/immediate/autopilot messaging. Activation retains the existing
+journal `handoff` effect; queue admission is not execution. No new scheduler/outbox or App change.
+Stored reservations lacking that recipe retain original setup/corroborate/attach/full-handoff
+replay, optional omissions, prompts, acknowledgements, receipts and effect identities unchanged.
+Omitted decomposition preserves the task graph, not a startup recipe choice or idle-first promise.
+Follow [dispatch](dispatch.md#fresh-complete-kickoff-and-legacy-replay) for final sealing,
+pre-attachment receipt-only limits, uncertainty holds and the bounded legacy self-bootstrap exception.
 
 Missing current project/identity and authenticated setup, child, effect, recovery,
 review and contributor observation providers prevent the automatic parallel
@@ -63,9 +70,10 @@ then passes `{repositoryPath,eventId}` to the existing canonical
 `completeTask`-to-archive path is installed by this binding; see [retention](retention.md).
 
 The inventories and check tables below retain the original native-bridge baseline,
-including its workflow-only RPC and missing-decoder/common-wiring status. Those are
-historical scope statements, not the current partial-runtime route definition above;
-do not rewrite their original evidence as a pass. Source recording-boundary checks
+including its setup-only creation/full-handoff, workflow-only RPC and missing-decoder/common-wiring
+status. Those are historical scope statements, not fresh-start instructions or the current
+partial-runtime route definition above; do not rewrite their original evidence as a pass.
+Source recording-boundary checks
 are not live-host authenticated evidence, installation or full-factory acceptance.
 This boundary description records no new test execution and makes no UI/visual claim.
 

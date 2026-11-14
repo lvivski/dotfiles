@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import { createFactoryBridge } from "../../bridge.mjs";
 import { parseJson, readRecord } from "../../data.mjs";
 import { attachTaskAttempt, completeTaskAttempt, reserveTaskAttempt } from "../../plan/execution.mjs";
 import { approvePlan, createDraftPlan, transitionPlan } from "../../plan/lifecycle.mjs";
 import { buildDelegationPrompt, buildTaskInitialization } from "../../plan/prompt.mjs";
+import { assignmentDigest, payloadAcknowledgement, sealTaskStartup, startupInitialization, taskStartup } from "../../plan/startup.mjs";
 import { ATTEMPT_STATUS, EVIDENCE_TYPE, PLAN_STATUS } from "../../plan/values.mjs";
 import { fixture } from "../bridge/fixture.mjs";
+import { approved } from "./fixture.mjs";
 
 /**
  * @template T
@@ -17,6 +20,96 @@ function required(value) {
 	assert.ok(value);
 	return value;
 }
+
+test("complete startup seals the final enriched body as raw UTF-8 behind a bounded receipt gate", () => {
+	const identity = { planId: "sealed-prompt", taskId: "T-001", attemptId: "T-001-A001" };
+	const body = "Implement the reserved task.\r\n\tFactory context: café / cafe\u0301 / Україна / 🧭  \r\n"
+		+ 'Reserved inputs: {"destination":"inputs/дані.json","commit":"' + "a".repeat(40) + '"}\r\n\t  ';
+	const startup = sealTaskStartup(identity, body);
+	const prefix = startup.delegationPrompt.slice(0, -body.length);
+	assert.ok(prefix.length < 4000, "Startup gate must remain bounded independently of assignment size");
+	assert.deepEqual(Buffer.from(startup.delegationPrompt.slice(prefix.length), "utf8"), Buffer.from(body, "utf8"));
+	assert.match(prefix, /STOP before task execution/);
+	assert.match(prefix, /do not inspect task source, run task commands, edit files/);
+	assert.match(prefix, /before acting; missing authoritative observations or permissions are holds/);
+	assert.match(prefix, /Prompt text is not authentication, permission, a sandbox or OS enforcement/);
+	assert.match(prefix, /wait for activation of this already-received payload/);
+	assert.equal(startup.assignmentDigest, createHash("sha256").update(Buffer.from(startup.delegationPrompt, "utf8")).digest("hex"));
+	assert.equal(assignmentDigest(startup.delegationPrompt), startup.assignmentDigest);
+	for (const changed of [body, startup.delegationPrompt.trimEnd(), startup.delegationPrompt.replaceAll("\r\n", "\n"),
+		startup.delegationPrompt.normalize("NFC")]) {
+		assert.notEqual(assignmentDigest(changed), startup.assignmentDigest);
+	}
+	assert.deepEqual(taskStartup(startup), startup);
+	assert.deepEqual(startupInitialization(identity, startup), {
+		recipe: "complete-kickoff-v1", assignmentDigest: startup.assignmentDigest,
+		acknowledgement: payloadAcknowledgement(identity),
+		kickoff: { mode: "interactive", prompt: startup.delegationPrompt },
+	});
+	assert.equal(payloadAcknowledgement(identity), "Foundry payload received: sealed-prompt/T-001/T-001-A001");
+});
+
+test("sealed startup rejects malformed data, unknown recipes and resealed foreign receipt gates", async (t) => {
+	const identity = { planId: "sealed-negative", taskId: "T-001", attemptId: "T-001-A001" };
+	const startup = sealTaskStartup(identity, "Complete task with all final factory and input context.  \r\n");
+	/** @type {[string, unknown][]} */
+	const malformed = [
+		["null", null], ["array", []], ["missing digest", { recipe: startup.recipe, delegationPrompt: startup.delegationPrompt }],
+		["non-string digest", { ...startup, assignmentDigest: 1 }],
+		["malformed digest", { ...startup, assignmentDigest: "bad" }],
+		["different digest", { ...startup, assignmentDigest: "0".repeat(64) }],
+		["unknown recipe", { ...startup, recipe: "complete-kickoff-v999" }],
+		["legacy recipe with new fields", { ...startup, recipe: "setup-only" }],
+		["extra authority", { ...startup, approved: true }],
+		["non-string body", { ...startup, delegationPrompt: { text: startup.delegationPrompt } }],
+		["empty body", { ...startup, delegationPrompt: "" }],
+		["changed whitespace", { ...startup, delegationPrompt: startup.delegationPrompt.trimEnd() }],
+	];
+	for (const [label, value] of malformed) await t.test(label, () => assert.throws(() => taskStartup(value)));
+	for (const foreign of [
+		{ ...identity, planId: "foreign-plan" },
+		{ ...identity, taskId: "T-002", attemptId: "T-002-A001" },
+		{ ...identity, attemptId: "T-001-A002" },
+	]) {
+		const substituted = sealTaskStartup(foreign, "Complete task with all final factory and input context.  \r\n");
+		assert.deepEqual(taskStartup(substituted), substituted, "A valid digest alone cannot bind the receipt gate");
+		assert.throws(() => startupInitialization(identity, substituted), { code: "dispatch_startup_invalid" });
+	}
+	const ungated = "An assignment without a receipt gate";
+	assert.throws(() => startupInitialization(identity, {
+		recipe: startup.recipe, delegationPrompt: ungated, assignmentDigest: assignmentDigest(ungated),
+	}), { code: "dispatch_startup_invalid" });
+});
+
+test("complete startup enforces the final two-million-character bound including its gate", () => {
+	const identity = { planId: "sealed-limit", taskId: "T-001", attemptId: "T-001-A001" };
+	const gateLength = sealTaskStartup(identity, "x").delegationPrompt.length - 1;
+	const body = "x".repeat(2_000_000 - gateLength);
+	const startup = sealTaskStartup(identity, body);
+	assert.equal(startup.delegationPrompt.length, 2_000_000);
+	assert.deepEqual(taskStartup(startup), startup);
+	assert.throws(() => sealTaskStartup(identity, `${body}x`), { code: "factory_input_invalid" });
+	assert.throws(() => taskStartup({ ...startup, delegationPrompt: `${startup.delegationPrompt}x` }), { code: "factory_input_invalid" });
+	for (const invalid of ["", " \t\r\n"]) assert.throws(() => sealTaskStartup(identity, invalid), { code: "factory_input_invalid" });
+});
+
+test("initialization opts into complete kickoff only for an explicitly sealed reserved attempt", () => {
+	const plan = reserveTaskAttempt(approved({ id: "startup-opt-in" }), "T-001", { reservationId: "startup-opt-in" });
+	const task = plan.tasks[0], attempt = required(task.attempts[0]);
+	const legacy = required(buildTaskInitialization(plan, task, attempt));
+	assert.equal(Object.hasOwn(attempt, "startup"), false);
+	assert.deepEqual(Object.keys(legacy), ["acknowledgement", "kickoff"]);
+	assert.equal(legacy.acknowledgement, "Foundry setup ready: startup-opt-in/T-001/T-001-A001");
+	const body = `${buildDelegationPrompt(plan, task, attempt)}\r\nFinal factory context and reserved inputs.  \t\r\n`;
+	assert.equal(legacy.kickoff.prompt.includes(body), false);
+	attempt.startup = sealTaskStartup({ planId: plan.id, taskId: task.id, attemptId: attempt.id }, body);
+	assert.deepEqual(buildTaskInitialization(plan, task, attempt), startupInitialization({
+		planId: plan.id, taskId: task.id, attemptId: attempt.id,
+	}, attempt.startup));
+	assert.equal(required(buildTaskInitialization(plan, task, attempt)).kickoff.prompt, attempt.startup.delegationPrompt);
+	Reflect.deleteProperty(attempt, "startup");
+	assert.deepEqual(buildTaskInitialization(plan, task, attempt), legacy, "No migration or implicit resealing of legacy attempts");
+});
 
 test("dependency summaries are encoded inside an explicit untrusted-data fence", () => {
 	let plan = createDraftPlan({

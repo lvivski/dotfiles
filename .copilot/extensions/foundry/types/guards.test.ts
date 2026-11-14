@@ -2,7 +2,7 @@
 import { parseJson } from "../data.mjs";
 import { decodeRequest } from "../requests.mjs";
 import type { FactoryEvent } from "./factory.js";
-import type { FoundryPlan } from "./plan.js";
+import type { FoundryPlan, TaskInitialization } from "./plan.js";
 
 // @ts-expect-error Guard noImplicitAny: declaration parameters require a type.
 declare function implicitParameter(value): void;
@@ -29,6 +29,10 @@ declare const event: FactoryEvent;
 event.input.candidateId.length;
 
 declare const plan: FoundryPlan;
+// @ts-expect-error A fresh recipe requires its sealed assignment digest.
+const unsealedStartup: TaskInitialization = { recipe: "complete-kickoff-v1", acknowledgement: "receipt", kickoff: { mode: "interactive", prompt: "task" } };
+// @ts-expect-error A legacy initialization cannot carry an unversioned fresh digest.
+const ambiguousStartup: TaskInitialization = { assignmentDigest: "a".repeat(64), acknowledgement: "receipt", kickoff: { mode: "interactive", prompt: "task" } };
 // @ts-expect-error Stored task states do not include arbitrary native states.
 plan.tasks[0].status = "paused";
 // @ts-expect-error Evidence provenance is a bounded claim classification.

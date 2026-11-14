@@ -35,6 +35,8 @@ async function composedFixture(t) {
 	const children = new Map();
 	/** @type {Map<string, string>} */
 	const messages = new Map();
+	/** @type {Map<string, string>} */
+	const kickoffs = new Map();
 	/** @type {((child: import("../../types/parallel.js").ParallelChild) => Promise<void>) | null} */
 	let beforeHandoff = null;
 	/** @type {string | null} */
@@ -67,12 +69,13 @@ async function composedFixture(t) {
 					assert.equal(input.project_id, "fixture-project");
 					assert.equal(input.notify_on_idle, "always");
 					assert.ok(isRecord(input.kickoff) && input.kickoff.mode === "interactive");
-					assert.match(String(input.kickoff.prompt), /NOT the task delegation/);
+					assert.match(String(input.kickoff.prompt), /STOP before task execution/);
 					const sessionId = `child-${++sequence}`, branch = `parallel-${sequence}`;
 					const worktreePath = path.join(f.root, sessionId);
 					git(f.repo, "worktree", "add", "--quiet", "-b", branch, worktreePath, String(input.base_branch));
 					value = { sessionId, branch, worktreePath, projectId: "fixture-project", creatorSessionId: "coordinator" };
 					children.set(sessionId, value);
+					kickoffs.set(sessionId, String(input.kickoff.prompt));
 				} else if (name === "get_session") {
 					value = must(children.get(String(input.project_session_id)));
 				} else if (name === "list_sessions_and_chats") {
@@ -83,6 +86,8 @@ async function composedFixture(t) {
 					assert.equal(input.delivery_mode, "immediate");
 					assert.equal(input.mode, "autopilot");
 					assert.ok(!messages.has(child.sessionId), "A successful handoff is not sent twice");
+					assert.match(String(input.message), /^Foundry activate received assignment:/);
+					assert.ok(String(input.message).length < 16000);
 					await beforeHandoff?.(child);
 					messages.set(child.sessionId, String(input.message));
 					value = { sessionId: child.sessionId, accepted: true };
@@ -153,7 +158,7 @@ async function composedFixture(t) {
 	};
 	restart();
 	return {
-		...f, get operations() { return operations; }, host, owner, children, messages, restart,
+		...f, get operations() { return operations; }, host, owner, children, messages, kickoffs, restart,
 		/** @param {(child: import("../../types/parallel.js").ParallelChild) => Promise<void>} callback */
 		beforeHandoff(callback) { beforeHandoff = callback; },
 		/** @param {string | null} reviewer */
@@ -370,9 +375,11 @@ test("registered composition consumes both exact Git deliveries after handoff an
 			assert.equal(f.children.size, 2, "One completed predecessor does not authorize the consumer");
 		}
 	}
-	await success("foundry_dispatch_ready", { planId: plan.id, limit: 2 });
+	const consumerDispatch = await success("foundry_dispatch_ready", { planId: plan.id, limit: 2 });
 	plan = await f.operations.getPlan({ planId: plan.id });
+	assert.ok(plan.tasks[2].attempts.length, JSON.stringify(consumerDispatch));
 	const consumer = must(plan.tasks[2].attempts.at(-1));
+	assert.ok(consumer.sessionId, JSON.stringify(consumerDispatch));
 	const child = must(f.children.get(must(consumer.sessionId)));
 	assert.equal(f.children.size, 3);
 	assert.ok(f.messages.has(child.sessionId));
@@ -392,8 +399,12 @@ test("registered composition consumes both exact Git deliveries after handoff an
 	const beta = JSON.parse(await readFile(path.join(child.worktreePath, "inputs/beta.json"), "utf8"));
 	assert.deepEqual(alpha, { producer: "alpha", value: 7 });
 	assert.deepEqual(beta, { producer: "beta", value: 11 });
-	assert.ok(must(f.messages.get(child.sessionId)).includes(must(commits.get("alpha"))));
-	assert.ok(must(f.messages.get(child.sessionId)).includes(must(commits.get("beta"))));
+	assert.ok(must(f.kickoffs.get(child.sessionId)).includes(must(commits.get("alpha"))));
+	assert.ok(must(f.kickoffs.get(child.sessionId)).includes(must(commits.get("beta"))));
+	assert.equal(must(f.kickoffs.get(child.sessionId)), must(consumer.startup).delegationPrompt);
+	assert.match(must(f.kickoffs.get(child.sessionId)), /Pinned package inputs/);
+	assert.equal(must(f.messages.get(child.sessionId)).includes("Pinned package inputs"), false);
+	assert.equal(must(f.messages.get(child.sessionId)).includes('"deliveries"'), false);
 	const repeated = await invoke(f.operations, "foundry_materialize_inputs", { planId: plan.id, taskId: "T-003", attemptId: consumer.id });
 	const repeatHold = readRecord(readRecord(parseJson(repeated.textResultForLlm)).value);
 	assert.equal(repeatHold.state, "held", "Already materialized snapshots cannot be overwritten");

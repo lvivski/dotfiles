@@ -8,20 +8,22 @@ import { analysisStub, createApproved, evidence, planBlueprint, withOperations }
 import { COMMIT, git } from "../git.mjs";
 import { must } from "../assertions.mjs";
 
-test("setup kickoff separates task authority and reservation replay preserves launch identity", () => (
+test("fresh complete kickoff defers execution and reservation replay preserves sealed launch identity", () => (
 	withOperations(async ({ operations, workspacePath }) => {
 		const plan = await createApproved(operations, workspacePath);
 		const request = { planId: plan.id, taskId: "T-001", expectedRevision: plan.revision, reservationId: "setup-once" };
 		const reserved = await operations.reserveTask(request);
 		const initialization = must(reserved.initialization);
 		assert.equal(initialization.kickoff.mode, "interactive");
-		assert.match(initialization.kickoff.prompt, /NOT the task delegation/);
-		assert.match(initialization.kickoff.prompt, /Do not inspect task source, run commands, edit files, change branches/);
-		assert.match(initialization.kickoff.prompt, /after successful Foundry attachment/);
+		assert.equal(initialization.recipe, "complete-kickoff-v1");
+		assert.match(initialization.kickoff.prompt, /STOP before task execution/);
+		assert.match(initialization.kickoff.prompt, /do not inspect task source, run task commands, edit files/);
+		assert.match(initialization.kickoff.prompt, /successful exact current attachment/);
 		assert.ok(initialization.kickoff.prompt.includes(initialization.acknowledgement));
-		assert.ok(initialization.kickoff.prompt.length < 1500);
-		assert.equal(initialization.kickoff.prompt.includes(plan.tasks[0].description), false);
-		assert.equal(initialization.kickoff.prompt.includes(plan.objective), false);
+		assert.equal(initialization.kickoff.prompt, reserved.delegationPrompt);
+		assert.equal(initialization.kickoff.prompt.includes(plan.tasks[0].description), true);
+		assert.equal(initialization.kickoff.prompt.includes(plan.objective), true);
+		assert.match(initialization.kickoff.prompt, /UNTRUSTED-FACTORY/);
 		assert.equal(reserved.plan.tasks[0].attempts[0].sessionId, null);
 		const replay = await operations.reserveTask(request);
 		assert.deepEqual(replay.initialization, initialization);

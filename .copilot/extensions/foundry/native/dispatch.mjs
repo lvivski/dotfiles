@@ -3,6 +3,7 @@ import { readBoolean, readJsonValue } from "../data.mjs";
 import { stableStringify } from "../digest.mjs";
 import { fail, list, object, text, timestamp } from "../factory/fields.mjs";
 import { assertInputCoverage, attemptIdentity, commitId, packageInput, reservedInputs } from "../plan/parallel-contracts.mjs";
+import { activationMessage, startupInitialization, taskActivation } from "../plan/startup.mjs";
 import { DispatchNativeError } from "./admission.mjs";
 
 /** @typedef {import("../types/parallel.js").AttemptIdentity} Attempt */
@@ -14,22 +15,30 @@ import { DispatchNativeError } from "./admission.mjs";
 /** Closed prepared handoff supplied by T-003/T-007, never accepted from imported history.
  * The resolver seals the descriptor into the prompt before reservation delivery; dispatch
  * forwards that prompt, rather than appending content after the reserved digest is pinned.
- * @param {unknown} value */
+ * @param {unknown} value @returns {import("../types/parallel.js").ParallelReservation} */
 export function dispatchReservation(value) {
 	object(value, ["attempt", "projectId", "baseBranch", "baseCommit", "initialization", "delegationPrompt", "inputs", "requiredInputs"], "dispatch reservation");
 	const attempt = attemptIdentity(value.attempt);
 	const baseBranch = text(value.baseBranch, "reserved base", 512), baseCommit = commitId(value.baseCommit);
-	object(value.initialization, ["acknowledgement", "kickoff"], "setup initialization");
+	object(value.initialization, ["acknowledgement", "kickoff", "recipe", "assignmentDigest"], "startup initialization");
 	object(value.initialization.kickoff, ["prompt", "mode"], "setup kickoff");
 	if (value.initialization.kickoff.mode !== "interactive") fail("dispatch_setup_invalid", "Setup must use the returned interactive kickoff");
-	const initialization = {
+	const delegationPrompt = text(value.delegationPrompt, "unchanged delegation", 2_000_000);
+	const legacy = {
 		acknowledgement: text(value.initialization.acknowledgement, "setup acknowledgement", 1024),
-		kickoff: { mode: /** @type {const} */ ("interactive"), prompt: text(value.initialization.kickoff.prompt, "setup prompt", 16000) },
+		kickoff: { mode: /** @type {const} */ ("interactive"), prompt: value.initialization.kickoff.prompt },
 	};
-	if (initialization.acknowledgement !== `Foundry setup ready: ${attempt.planId}/${attempt.taskId}/${attempt.attemptId}`) {
+	const fresh = Object.hasOwn(value.initialization, "recipe");
+	const initialization = fresh ? startupInitialization(attempt, {
+		recipe: value.initialization.recipe, assignmentDigest: value.initialization.assignmentDigest, delegationPrompt,
+	}) : { ...legacy, kickoff: { ...legacy.kickoff, prompt: text(legacy.kickoff.prompt, "setup prompt", 16000) } };
+	if (fresh && stableStringify(initialization) !== stableStringify(value.initialization)) {
+		fail("dispatch_startup_invalid", "The first kickoff must equal the final sealed delegation without additions or omissions");
+	}
+	if (!fresh && (Object.hasOwn(value.initialization, "assignmentDigest")
+		|| initialization.acknowledgement !== `Foundry setup ready: ${attempt.planId}/${attempt.taskId}/${attempt.attemptId}`)) {
 		fail("dispatch_setup_invalid", "Setup acknowledgement belongs to another attempt");
 	}
-	const delegationPrompt = text(value.delegationPrompt, "unchanged delegation", 2_000_000);
 	const requiredInputs = list(value.requiredInputs, "complete required inputs", 128).map(packageInput);
 	const inputs = value.inputs === null ? null : reservedInputs(value.inputs);
 	if (inputs) {
@@ -73,6 +82,7 @@ export function createNativeDispatch(options) {
 	}
 	/** @param {Reservation} reservation */
 	function createArguments(reservation) {
+		reservation = dispatchReservation(reservation);
 		checkOwner(reservation);
 		return {
 			project_id: reservation.projectId, base_branch: reservation.baseBranch,
@@ -135,13 +145,18 @@ export function createNativeDispatch(options) {
 			text(observed.source, "canonical observation source", 4096);
 			return { child: canonical, acknowledgement: readJsonValue(ack), observation: readJsonValue(observed), detail: detail.raw, inventory: inventory.raw };
 		},
-		/** @param {Reservation} reservation @param {Child} child @param {string} [correlation] */
-		async handoff(reservation, child, correlation) {
+		/** @param {Reservation} reservation @param {Child} child @param {string} [correlation] @param {number} [attachedRevision] */
+		async handoff(reservation, child, correlation, attachedRevision) {
 			checkOwner(reservation);
 			if (child.projectId !== reservation.projectId || child.creatorSessionId !== transport.sessionId
 				|| child.sessionId === transport.sessionId) fail("dispatch_child_mismatch", "Warm handoff requires this coordinator's exact attached project/child");
+			// Revalidate even constructor callers; no mutation after immutable sealing.
+			dispatchReservation(reservation);
+			const message = reservation.initialization.recipe
+				? activationMessage(taskActivation(reservation, child, attachedRevision ?? 0)) : reservation.delegationPrompt;
+			text(message, "warm handoff/activation", reservation.initialization.recipe ? 16000 : 2_000_000);
 			return transport.call("send_session_message", {
-				session_id: child.sessionId, message: reservation.delegationPrompt,
+				session_id: child.sessionId, message,
 				coordinator_only: true, delivery_mode: "immediate", mode: "autopilot",
 			}, correlation);
 		},

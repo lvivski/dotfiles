@@ -2,13 +2,16 @@ import { safeJson, untrustedBlock } from "../prompt.mjs";
 import { effectiveDeliveryRequirement } from "./delivery.mjs";
 import { verificationCheckIds } from "./graph.mjs";
 import { activeTaskAttempt, latestSuccessfulAttempt } from "./queries.mjs";
+import { startupInitialization } from "./startup.mjs";
 import { validatePlan } from "./validation.mjs";
 
 /**
- * Setup is deliberately separate from task authority and contains no task content.
+ * Fresh startup receives the sealed assignment but waits for attachment/activation.
+ * Records without startup retain the original setup-only initialization unchanged.
  * @param {import("../types/plan.js").FoundryPlan} plan
  * @param {import("../types/plan.js").FoundryTask} task
  * @param {import("../types/plan.js").FoundryAttempt} attempt
+ * @returns {import("../types/plan.js").TaskInitialization | null}
  */
 export function buildTaskInitialization(plan, task, attempt) {
 	validatePlan(plan);
@@ -17,6 +20,7 @@ export function buildTaskInitialization(plan, task, attempt) {
 	const current = activeTaskAttempt(resolved);
 	if (plan.status !== "running" || current?.id !== attempt.id
 		|| current.status !== "reserved" || current.sessionId !== null) return null;
+	if (attempt.startup) return startupInitialization({ planId: plan.id, taskId: task.id, attemptId: attempt.id }, attempt.startup);
 	const acknowledgement = `Foundry setup ready: ${plan.id}/${task.id}/${attempt.id}`;
 	return {
 		acknowledgement,

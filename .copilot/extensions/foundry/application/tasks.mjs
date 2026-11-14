@@ -7,6 +7,7 @@ import { normalizeEvidence } from "../plan/evidence.mjs";
 import { attachTaskAttempt, completeTaskAttempt, reserveTaskAttempt, retryTask } from "../plan/execution.mjs";
 import { buildDelegationPrompt, buildTaskInitialization } from "../plan/prompt.mjs";
 import { activeTaskAttempt } from "../plan/queries.mjs";
+import { sealTaskStartup } from "../plan/startup.mjs";
 import { findScopeConflicts } from "../plan/scope.mjs";
 import { projectAdmission, validateClaims } from "../plan/admission.mjs";
 import { admissionFence } from "../storage/admission.mjs";
@@ -85,8 +86,9 @@ function findReservation(plan, reservationId) {
  * factory: Pick<ReturnType<typeof import("../bridge.mjs").createFactoryBridge>, "requireOwner" | "sync" | "prompt" | "activateEvaluation" | "validateLearning" | "validateReports" | "preflight" | "captureRejectedReport" | "requireRetry">,
  * syncFactoryPlan: ReturnType<typeof import("./repository.mjs").createRepositoryOperations>["syncFactoryPlan"],
  * admissionFor?: (plan: FoundryPlan) => AdmissionBinding,
+ * enrichDelegation?: (plan: FoundryPlan, task: import("../types/plan.js").FoundryTask, attempt: FoundryAttempt, prompt: string) => string,
  * }} dependencies */
-export function createTaskOperations({ storeFor, persist, factory, syncFactoryPlan, admissionFor }) {
+export function createTaskOperations({ storeFor, persist, factory, syncFactoryPlan, admissionFor, enrichDelegation }) {
 
 	/** @param {FoundryPlan} plan @param {string} taskId @param {string} reservationId */
 	function binding(plan, taskId, reservationId) {
@@ -217,7 +219,8 @@ export function createTaskOperations({ storeFor, persist, factory, syncFactoryPl
 				baseBranch: existing.attempt.baseBranch,
 				integrationRequired: existing.attempt.integrationRequired,
 				initialization: buildTaskInitialization(plan, existing.task, existing.attempt),
-				delegationPrompt: `${factory.prompt(plan, existing.task)}\n${buildDelegationPrompt(plan, existing.task, existing.attempt)}`,
+				delegationPrompt: existing.attempt.startup?.delegationPrompt
+					?? `${factory.prompt(plan, existing.task)}\n${buildDelegationPrompt(plan, existing.task, existing.attempt)}`,
 			};
 		}
 		if (plan.revision !== expectedRevision) {
@@ -239,6 +242,15 @@ export function createTaskOperations({ storeFor, persist, factory, syncFactoryPl
 			if (!policy) throw new FoundryOperationError("parallel_admission_held", "Task has no explicit admission policy");
 			admission.store.claim({ identity: admission.identity, expectedRevision: 0, resources: policy.resources, team: policy.team });
 		}
+		// Input resolution reads canonical predecessor receipts. Do it outside the
+		// plan writer; revision checking and later re-resolution retain the fence.
+		const preview = reserveTaskAttempt(plan, taskId, { reservationId, scopeOverride: scopeOverride ?? null });
+		const previewTask = preview.tasks.find(item => item.id === taskId);
+		const previewAttempt = previewTask && activeTaskAttempt(previewTask);
+		if (!previewTask || !previewAttempt) throw new FoundryOperationError("reservation_invariant_failed", "The reserved attempt is missing");
+		const prompt = `${factory.prompt(preview, previewTask)}\n${buildDelegationPrompt(preview, previewTask, previewAttempt)}`;
+		const startup = sealTaskStartup({ planId, taskId, attemptId: previewAttempt.id },
+			enrichDelegation ? enrichDelegation(preview, previewTask, previewAttempt, prompt) : prompt);
 		// Different databases: failures retain the claim until the exact durable
 		// reservation or a definitive failed request is reconciled. Never expire it.
 		const updated = await persist(
@@ -253,6 +265,14 @@ export function createTaskOperations({ storeFor, persist, factory, syncFactoryPl
 					reservationId,
 					scopeOverride: scopeOverride ?? null,
 				});
+				const task = reserved.tasks.find(item => item.id === taskId);
+				const attempt = task && activeTaskAttempt(task);
+				if (!task || !attempt) throw new FoundryOperationError("reservation_invariant_failed", "The reserved attempt is missing");
+				if (attempt.id !== previewAttempt.id
+					|| `${factory.prompt(reserved, task)}\n${buildDelegationPrompt(reserved, task, attempt)}` !== prompt) {
+					throw new FoundryOperationError("dispatch_startup_invalid", "The final assignment changed before its reservation committed");
+				}
+				attempt.startup = startup;
 				factory.activateEvaluation(reserved);
 				return reserved;
 			},
@@ -278,7 +298,8 @@ export function createTaskOperations({ storeFor, persist, factory, syncFactoryPl
 			baseBranch: attempt.baseBranch,
 			integrationRequired: attempt.integrationRequired,
 			initialization: buildTaskInitialization(updated, updatedTask, attempt),
-			delegationPrompt: `${factory.prompt(updated, updatedTask)}\n${buildDelegationPrompt(updated, updatedTask, attempt)}`,
+			delegationPrompt: attempt.startup?.delegationPrompt
+				?? `${factory.prompt(updated, updatedTask)}\n${buildDelegationPrompt(updated, updatedTask, attempt)}`,
 		};
 	};
 

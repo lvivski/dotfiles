@@ -47,8 +47,10 @@ support. Its pinned production binding is narrowly closed `run_dynamic_workflow`
 `extension-rpc` route. Advertised names/metadata, a callable binding, observed admission and successful
 effect are distinct. Only trusted constructor wiring can supply capabilities, never caller JSON;
 there is no automatic alternate-route replay, private workflow launcher or generic executor.
-Cold coordinator-only first delivery fails before bootstrap and remains unavailable. An omitted
-strategy retains reserve/setup/corroborate/attach/unchanged-handoff, not idle-first promises.
+Cold coordinator-only first delivery fails before bootstrap and remains unavailable. Fresh
+reservations use complete immutable kickoff then receipt/corroboration/attachment/short activation;
+stored reservations without `complete-kickoff-v1` retain original setup/attach/full-handoff replay.
+Omitted decomposition preserves the task graph, not a startup recipe choice or idle-first promise.
 Missing current project/identity, authenticated setup/child/effect/recovery/review/contributor
 providers hold the dependent automatic parallel operations, not supported workflow invocation
 universally. Bounded TechnicalExecutor and authenticated observations remain absent.
@@ -94,8 +96,20 @@ verified source, applicable retained user authority and normal account/resource 
 
 1. Never create a child session before `foundry_reserve_task`.
 2. Attach only the exact child session created by this coordinator for that reserved attempt.
-3. Use the returned `baseBranch` and `delegationPrompt` unchanged. New workers receive only the
-   setup `initialization.kickoff` first; corroborate setup and attach before sending task authority.
+3. Use the returned `baseBranch`, optional data and `initialization.kickoff` unchanged, with
+   `coordinate_with_creator: true`. Fresh `complete-kickoff-v1` stores `assignmentDigest` (SHA256 of
+   exact final UTF-8 `delegationPrompt`); seal after factory context and explicit input enrichment.
+   Interactive kickoff contains that entire final prompt, receipt/wait instructions before task
+   authority. Before exact current attachment, allow only receipt/identity work, never substantive
+   work or input materialization. Corroborate receipt and canonical child/project/creator/worktree/
+   base/task/attempt, attach, then send only short identity/digest-bound activation through normal
+   coordinator-only/immediate/autopilot messaging and the existing journal `handoff` effect.
+   Never resend assignment/context/inputs. Legacy stored reservations retain original setup/
+   corroborate/attach/full-handoff, optional omissions and effect identities; never silently upgrade.
+   Uncertain creation/activation reconciles the original claim/correlation, never resend, replacement,
+   reset or fallback. Prompt text grants no authentication, permission, sandbox or OS enforcement.
+   Follow [dispatch](references/dispatch.md), including its bounded legacy self-bootstrap exception;
+   this source contract is not installed/live proof or extra child authority.
 4. Record a terminal attempt before reporting it or dispatching newly unblocked work.
    Preserve the verifier's complete per-check fields and compare admitted evidence with its original
    report before authoritative verification; follow [lossless recording](references/verification.md#lossless-verifier-evidence-recording).
@@ -160,9 +174,10 @@ verified source, applicable retained user authority and normal account/resource 
     native limits and independent final verification. Preserve the omitted-decomposition legacy recipe.
     Retain later [execution-strategy corrections](references/planning.md#later-execution-strategy-corrections)
     separately from the unchanged original plan and handoff.
-18. Distinguish prepared, reserved, initialized, attached, executing, delivered and independently
-    verified evidence; none implies the next. Consume every declared dependency's immutable output
-    through the authorized post-attachment/handoff consumer path, not a branch tip or manifest alone.
+18. Distinguish prepared, reserved, payload receipt (legacy setup alone is not full receipt), attached,
+    activation queue admission, observed execution, delivered and independently verified evidence;
+    none implies the next. Consume every declared dependency's immutable output through the
+    authorized post-attachment activation/handoff consumer path, not a branch tip or manifest alone.
     Follow [dispatch](references/dispatch.md); missing invocation/materialization support remains a hold.
 19. Original-owner corrections need a supported current reservation/attachment binding to the active
     integration attempt before handoff. DONE receipts, past attachments and coordinator artifacts

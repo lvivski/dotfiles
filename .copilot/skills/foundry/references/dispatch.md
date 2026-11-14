@@ -10,9 +10,10 @@ These are evidence labels, not new public operations or replacements for stored 
 | --- | --- |
 | Prepared | Bounded immutable declarations/payload retained; no reservation, child or execution implied. |
 | Reserved | Exact durable task/attempt reservation and applicable current resource claims; no worker implied. |
-| Initialized | Actual setup acknowledgement and fresh same-child/owner/worktree/base corroboration. |
-| Attached | Successful native attachment to that exact reserved attempt; task handoff still separate. |
-| Executing | Successful unchanged handoff plus observed authorized task work; an accepted send or stored `running` flag alone is insufficient. |
+| Payload received | Fresh recipe's exact full-assignment acknowledgement; not attachment or execution. Legacy setup acknowledgement proves setup only. |
+| Attached | Successful current native attachment after receipt and canonical same-child/project/creator/worktree/base/task/attempt corroboration; activation/handoff still separate. |
+| Activation admitted | Short identity/digest-bound activation accepted into the same child's queue (legacy: original full handoff); not observed execution. |
+| Executing | Successful recipe-specific activation/handoff plus observed authorized task work; an accepted send or stored `running` flag alone is insufficient. |
 | Delivered | Terminal attempt recorded with its required exact artifact and evidence; neither release of unresolved claims nor passing verification implied. |
 | Independently verified | Independent passing evidence bound to the exact final delivery and governing checks; not completion, human or replacement approval. |
 
@@ -35,10 +36,12 @@ provider is fabricated. Existing repair launch consumes bound `runtime.workflow`
 `getWorkflowRoute`, preserving the existing journal, raw result decoding and reconciliation.
 
 Cold coordinator-only first delivery fails before bootstrap and remains unavailable.
-An omitted strategy preserves the existing reserve/setup/corroborate/attach/unchanged-handoff
-sequence below. It does not select idle-first creation, authorize a cold-send workaround or
-promise enforced worker inactivity. Warm messaging is only the post-setup handoff capability,
-not proof that setup, attachment or execution occurred.
+Fresh reservations use complete kickoff/receipt/corroboration/attachment/short activation below;
+stored reservations lacking the new recipe retain original setup/corroborate/attach/full-handoff.
+Omitted decomposition preserves the task graph, not a startup recipe choice. Neither path selects
+idle-first creation, authorizes a cold-send workaround or promises enforced worker inactivity.
+Warm messaging is only the post-attachment activation/handoff capability, not proof of receipt,
+attachment or execution.
 
 Missing current project/identity, authenticated setup/child/effect/recovery/review/contributor
 providers hold the dependent automatic parallel operations. Do not turn those holds into a
@@ -85,6 +88,38 @@ decoders or selecting another execution route. These internal functions are not 
 
 ## Native dispatch sequence
 
+### Fresh complete kickoff and legacy replay
+
+Fresh reservations explicitly store recipe `complete-kickoff-v1`, `assignmentDigest` and
+`initialization.acknowledgement`. The digest is SHA256 of the **exact final UTF-8**
+`delegationPrompt`, not an earlier draft. Final sealing in `operations.mjs` occurs after factory
+context **and any explicit input-descriptor enrichment**. Interactive
+`initialization.kickoff.prompt` equals that entire final prompt. Its bounded startup receipt/wait
+instructions precede task authority; until successful exact current attachment, only receipt and
+identity work is authorized, never substantive task work or input materialization. No App change
+is required. The acknowledgement names the reserved task/attempt; its trusted transcript capture
+must bind the complete reservation including its digest. Neither is activation or authentication.
+Normal startup, repository trust and resource permissions remain in force; prompt
+text is not authentication, permission, a sandbox or OS enforcement.
+
+Stored reservations without the new recipe replay **only** their original setup/corroborate/
+attach/full-handoff. Preserve original prompts, acknowledgement, optional omissions, receipts and
+journal effect identities; never silently upgrade, reseal or enrich them. Fresh activation uses
+the existing journal `handoff` effect, not another scheduler/outbox. Lost or uncertain creation or
+activation is reconciled against the original claim/correlation and same child, never resent,
+replaced, reset or routed through a fallback. Cancellation, stale or foreign state holds.
+
+For `foundry-full-kickoff-v1` only, the implementation worker and sole independent T002 verifier
+use installed **legacy setup/attach/full-handoff** as the approved two-worker self-bootstrap
+exception. They must not depend on the code they build to start; this grants no extra child
+authority. Source/fixtures do not prove installation or live support. A later normally authorized
+worker must supply that evidence; do not create a speculative live child. Factory context here is
+discovery-only, without an accepted evaluator bundle; no full-factory, regeneration, visual,
+performance or cleanup claim follows. Missing authoritative observers, TechnicalExecutor and
+retention providers remain explicit holds.
+
+### Ordered protocol
+
 1. Call `foundry_get_status` and read `projection.scheduling`.
 2. Dispatch only IDs in `projection.scheduling.dispatchableTaskIds`. Read its `launches` and
    `scopeConflicts` for delivery guidance and holds. Readiness is derived, not a stored task state.
@@ -93,28 +128,34 @@ decoders or selecting another execution route. These internal functions are not 
 3. Reserve each task with a unique stable `reservationId` and the current revision.
 4. Retain the reservation and complete create/admission receipts in the coordinator's session
    artifacts. Before creation, resolve the exact `baseBranch` to a full commit ID on the execution
-   host and retain it as `baseCommit`; do not recalculate it after setup to excuse drift. Resolve
+   host and retain it as `baseCommit`; do not recalculate it after receipt to excuse drift. Resolve
    the plan repository's App project, then call native `create_session` **once** with:
    - `base_branch` equal to the reservation's `baseBranch`;
    - a distinct `workspace_type: "worktree"` and an explicit short `name`;
-   - `kickoff` equal to the returned `initialization.kickoff` (setup only, interactive);
-   - `coordinate_with_creator: true` and `notify_on_idle: "always"` so setup does not consume
-     the task-completion notification. Do not pass the task prompt, task attachments or a schedule.
+   - `kickoff` equal to the returned `initialization.kickoff` (interactive, entire final
+     `delegationPrompt` for fresh recipe; original setup-only prompt for legacy);
+   - `coordinate_with_creator: true` and `notify_on_idle: "always"` so receipt does not consume
+     the task-completion notification. Preserve returned optional data and omission; do not add
+     attachments, context, inputs or a schedule.
    A null `initialization` on replay means no new kickoff. Even a non-null one is not permission
    to create twice: reconcile the first admission and retained child identity before doing anything.
-5. Wait for actual setup-turn completion and its exact `initialization.acknowledgement`, then
-   corroborate the same created child as described below. An accepted kickoff, navigation, an idle
-   flag alone or `active_session_id` presence/absence is not setup-completion proof.
+5. Wait for actual receipt-turn completion and its exact `initialization.acknowledgement` (legacy:
+   setup acknowledgement), then corroborate the same created child and current task/attempt as
+   described below. An accepted kickoff, navigation, an idle flag alone or `active_session_id`
+   presence/absence is not payload-receipt or setup-completion proof.
    Re-read the plan and attach with `foundry_attach_task`, the current revision, canonical native
    child ID, freshly observed branch and
    `bootstrap: { worktreePath: "<retained canonical child path>", baseCommit: "<pre-create SHA>" }`.
    This checks the distinct registered repository worktree, exact unchanged HEAD, clean tracked
    and untracked state/index, and unchanged reserved base. Missing local access fails closed;
    never substitute the coordinator checkout. Preserve the input observations with the receipt.
-6. Send the reservation's exact `delegationPrompt` to the attached child with
-   native `send_session_message`, `coordinator_only: true`, `delivery_mode: "immediate"` and
-   `mode: "autopilot"`, **only after successful attachment**. Do not add implementation or
-   comparison-only material, drop attribution flags, or manufacture a user-source quote.
+6. **Only after successful exact current attachment**, send the short activation bound to the
+   same identities and `assignmentDigest`, using native `send_session_message`,
+   `coordinator_only: true`, `delivery_mode: "immediate"` and `mode: "autopilot"`.
+   Fresh activation never repeats the assignment, factory context or inputs. Legacy alone sends
+   its original exact `delegationPrompt` unchanged. Retain the existing `handoff` journal effect
+   and original receipt/correlation. Queue admission is not observed execution.
+   Do not add material, drop attribution flags or manufacture a user-source quote.
    The verifier's registered worktree is captured at attachment; only then may it
    detach to the exact target commit. Never substitute the coordinator's checkout
    for that verifier worktree.
@@ -146,9 +187,10 @@ attempt/delivery receipt, exact full commit, path, mode and content digest; chec
 and complete declaration coverage. DONE prose, imported history and mutable branch tips cannot
 replace those bindings.
 
-Only the authorized consumer entry, after successful attachment **and unchanged successful handoff**,
-may materialize the complete snapshots into that consumer's distinct worktree. Recheck current
-authority, receipts and the pinned clean bootstrap before writing; setup must not dirty it.
+Only the authorized consumer entry, after successful exact current attachment **and successful
+short activation** (legacy: unchanged full handoff), may materialize the complete snapshots into
+that consumer's distinct worktree. Recheck current authority, receipts and the pinned clean bootstrap
+before writing; pre-attachment receipt/identity work must not dirty it.
 Do not overwrite existing destinations or protected evaluator material, or import comparison-only
 sources into generation inputs.
 Record the actual consumer entry point, consumed identities and execution outcomes; resolution or a
@@ -181,17 +223,18 @@ permission, setup/notification, restart or native visual behavior; retain those 
 
 Native kickoff initializes a new local child's backing session before submitting its first turn;
 it avoids the cold-target `send_session_message` classification path. It does not await a completed
-setup response. Normal App startup, repository trust and resource permission still apply.
-The setup prompt is a behavioral instruction, **not** enforced inactivity or worker revocation.
+receipt response. Normal App startup, repository trust and resource permission still apply.
+The receipt/wait prompt is a behavioral instruction, **not** enforced inactivity or worker revocation.
 Inspect its response/activity and retain any unexpected command, edit, branch change or failure.
-No implementation or verification is authorized until attachment and the separate task handoff.
+No substantive task work, verification or input materialization is authorized until successful
+exact current attachment and the separate short activation (legacy: original full task handoff).
 
 Use fresh public `get_session`/inventory evidence: the returned created ID and any App-resolved
 canonical alias must identify the SAME retained project, creator AND coordinating creator,
 worktree path and reserved base. Preserve both IDs; never infer alias equivalence from similar names
 or paths, change providers to reinterpret an ID, or bind an unrelated worker. Inspect the existing
 child's canonical path and actual checked-out branch on its host. The bootstrap check corroborates
-Git state; session association and setup acknowledgement remain claims, not host attestation.
+Git state; session association and receipt/setup acknowledgement remain claims, not host attestation.
 
 Creation's response may precede naming or metadata refresh. An explicit name suppresses automatic
 kickoff title generation, not every possible branch rename. If only the branch name changed before
@@ -202,9 +245,10 @@ history, detached HEAD, moved paths, changed owner/base or dirty state holds dis
 revision conflicts; do not resend setup or task work merely because attachment was replayed.
 After attachment, use the existing rename reconciliation below if necessary.
 
-An explicit handoff rejection is retained as a failure, not success; ambiguous delivery must be
-reconciled against the same child's history before any retry. Never initialize an existing cold
-worker by stripping `coordinator_only`, sending a peer/oversight message, or requesting another
+An explicit activation/handoff rejection is retained as a failure, not success; ambiguous admission
+must be reconciled against the original claim/correlation and same child's history, never resent.
+Never initialize an existing cold worker by stripping `coordinator_only`, sending a peer/oversight
+message, or requesting another
 manual bootstrap as the normal dispatch path. If native kickoff cannot initialize the same owned
 worker, hold and report the host limitation; do not bypass native admission. This sequence needs
 owner-run live validation on the next normally reserved worker, not speculative test children.

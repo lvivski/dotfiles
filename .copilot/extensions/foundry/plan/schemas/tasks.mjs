@@ -3,6 +3,7 @@ import { effectiveDeliveryRequirement, taskCompletionRequirements } from "../del
 import { validateEvidence } from "../evidence.mjs";
 import { assertCommit, assertHttpUrl, assertKnownKeys, assertNullableString, assertPlainObject, assertRequestId, assertString, assertStringArray, assertTimestamp, fail } from "../fields.mjs";
 import { verificationCheckIds } from "../graph.mjs";
+import { taskStartup } from "../startup.mjs";
 import { ATTEMPT_ID_PATTERN, ATTEMPT_STATUS, ATTEMPT_STATUS_VALUES, DELIVERY_REQUIREMENT, LIMITS, TASK_ID_PATTERN, TASK_KINDS, TASK_STATUS, TASK_STATUS_VALUES } from "../values.mjs";
 import { validateFactoryEvaluations, validateFactoryLearning, validateRepositoryCheck, validateVerifierWorktree } from "./factory.mjs";
 
@@ -47,6 +48,7 @@ const ATTEMPT_KEYS = new Set([
 	"verifierWorktree",
 	"repositoryCheck",
 	"branchRenames",
+	"startup",
 ]);
 
 const INTEGRATION_KEYS = new Set([
@@ -136,6 +138,7 @@ function validateAttempt(attempt, task, index, fieldPath) {
 		});
 	}
 	assertRequestId(attempt.reservationId, `${fieldPath}.reservationId`);
+	if (attempt.startup !== undefined) taskStartup(attempt.startup);
 	if (!isOneOf(attempt.status, ATTEMPT_STATUS_VALUES)) {
 		fail("invalid_attempt_status", `${fieldPath}.status is not supported`, {
 			path: `${fieldPath}.status`,

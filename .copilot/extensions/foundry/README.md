@@ -94,7 +94,7 @@ input and recovery modules:
 | --- | --- |
 | `foundry_dispatch_ready` | `planId`, `limit`: retain completed deliveries, then consider ready or retained reservations once. |
 | `foundry_reconcile_parallel` | `planId`, `taskId`, `reservationId`: reconcile that exact owned reservation once, including cancellation obligations. |
-| `foundry_materialize_inputs` | `planId`, `taskId`, `attemptId`: resolve and materialize the complete pinned input set after setup, attachment and unchanged successful handoff. |
+| `foundry_materialize_inputs` | `planId`, `taskId`, `attemptId`: resolve and materialize the complete pinned input set only after receipt, exact attachment and successful recipe-specific activation/handoff. |
 | `foundry_assess_package` | `planId`, `taskId`, optional `report`: prepare the exact assurance subject or assess its bound report, retaining separate human obligations. |
 
 Claim authority is one private database under the trusted Git common directory, shared across
@@ -114,9 +114,10 @@ The default parallel host is **partial**: the public SDK does not supply authent
 project/setup/child/recovery/review/contributor authority here. A trusted constructor must supply
 those actual observations and canonical policies before dependent automatic parallel admission.
 Caller JSON, metadata, imported history and old terminal receipts cannot provide them.
-Untouched omitted-decomposition plans still use the setup-first reserve/corroborate/attach/unchanged
-handoff recipe. Cold coordinator-only first delivery remains held; warm admission is not a cold
-bootstrap strategy, observed execution or completion.
+Omitted decomposition preserves the task graph, not a setup-only startup choice. Fresh reservations
+use `complete-kickoff-v1`; stored reservations without that recipe replay their original
+setup/corroborate/attach/full-handoff unchanged. Cold coordinator-only first delivery remains held;
+warm admission is not a cold bootstrap strategy, observed execution or completion.
 No non-destructive App child termination port is currently exposed; idle is not terminal and
 archiving removes worktrees, so uncertain cancellation remains held.
 
@@ -688,12 +689,33 @@ Coordinator context is supplied on activation and session start. Ordinary succes
 calls do not add repetitive reminders; activation, deactivation, unreadable-state, and failure
 guidance remain available. This does not change permission checks or revision enforcement.
 
-New task reservations return a separate setup-only `initialization.kickoff`. Native creation starts
-the backing child; the coordinator waits for its acknowledgement, verifies the same owner/identity
-and worktree, then attaches with the pre-create immutable `bootstrap.baseCommit` and observed path.
-Git corroboration rejects wrong/dirty/substitute worktrees or base drift. Only then is the unchanged
-task prompt sent with `coordinator_only`. Setup is not OS-enforced inactivity; failed or uncertain
-creation/delivery keeps the reservation occupied. See the [dispatch protocol](../../skills/foundry/references/dispatch.md).
+Fresh reservations store explicit recipe `complete-kickoff-v1`, `assignmentDigest` (SHA256 of the
+exact final UTF-8 `delegationPrompt`) and acknowledgement. Final sealing in `operations.mjs` follows
+factory context and any explicit input-descriptor enrichment. The interactive
+`initialization.kickoff.prompt` equals that entire final prompt, with bounded receipt/wait
+instructions before task authority. Reserve before `create_session`; preserve the returned base,
+optional data and `coordinate_with_creator: true`. No App change is required.
+
+Before successful exact current attachment, only receipt/identity work is authorized: no substantive
+task work or input materialization. Corroborate the exact acknowledgement and canonical same
+child/project/creator/worktree/base/task/attempt, then attach with the pre-create
+`bootstrap.baseCommit` and observed path. Normal startup, trust and permissions still apply;
+prompt text is not authentication, permission, a sandbox or OS enforcement.
+
+After attachment, send only the short identity/digest-bound activation using normal
+`coordinator_only: true`, `delivery_mode: "immediate"`, `mode: "autopilot"` messaging. Never resend
+the assignment, context or inputs. Activation retains the existing journal `handoff` effect, not a
+new scheduler/outbox. Payload receipt, attachment, activation queue admission, observed execution,
+delivery and independent verification are separate evidence.
+
+Stored reservations lacking the new recipe retain original prompts, acknowledgements, optional
+omissions, receipts and effect identities: only original setup/corroborate/attach/full-handoff replay,
+never silent upgrade. Lost/uncertain creation or activation reconciles the original claim/correlation;
+never resend, replace, reset or fall back. Cancellation, stale or foreign state holds. See the
+[dispatch protocol](../../skills/foundry/references/dispatch.md), including the approved two-worker
+legacy self-bootstrap exception. Source/fixtures are not installed/live proof; a later normally
+authorized worker is required. Discovery-only context is not an accepted evaluator bundle or
+full-factory, regeneration, visual, performance or cleanup evidence; existing provider holds remain.
 
 The board can request cancellation, but the coordinator must still stop owned App sessions, cancel
 the authoritative verification workflow run, and finalize with a fresh causal inventory.

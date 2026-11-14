@@ -1,12 +1,18 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
 import test from "node:test";
-import { readRecord, readString } from "../../data.mjs";
-import { analysisInputDigest } from "../../digest.mjs";
+import { parseJson, readJsonValue, readRecord, readString } from "../../data.mjs";
+import { analysisInputDigest, stableStringify } from "../../digest.mjs";
 import { createNativeAdmission, createOfferedDispatchTransport, DispatchNativeError } from "../../native/admission.mjs";
 import { createNativeDispatch, createdChild, dispatchReservation } from "../../native/dispatch.mjs";
 import { createNativeHost, createRpcWorkflowRoute, decodeSessionDetail } from "../../native/host.mjs";
 import { approved, claimedEvidence } from "../plan/fixture.mjs";
 import { attachTaskAttempt, completeTaskAttempt, reserveTaskAttempt } from "../../plan/execution.mjs";
+import { buildDelegationPrompt, buildTaskInitialization } from "../../plan/prompt.mjs";
+import { assignmentDigest, sealTaskStartup, startupInitialization } from "../../plan/startup.mjs";
+import { fixtureRoot } from "../git.mjs";
 import { assertOfferedToolArguments } from "../parallel/native-contracts.mjs";
 
 /** @typedef {import("../../native/host.mjs").NativeHostAccess} Access */
@@ -72,6 +78,64 @@ function fixture(overrides = {}) {
 /** @param {unknown} value
  * @returns {{resultType: "success", textResultForLlm: string}} */
 const success = value => ({ resultType: "success", textResultForLlm: JSON.stringify(value) });
+
+/** @param {boolean} [large] */
+function completeKickoffFixture(large = false) {
+	const f = fixture(), producer = f.reservation.attempt, commit = "d".repeat(40);
+	let plan = reserveTaskAttempt(f.plan, producer.taskId, { reservationId: producer.reservationId });
+	plan = attachTaskAttempt(plan, producer.taskId, producer.attemptId, { sessionId: "predecessor", branch: "work/predecessor" });
+	plan = completeTaskAttempt(plan, producer.taskId, producer.attemptId, "done", {
+		commit, branch: "work/predecessor", resultSummary: "Delivered immutable contract and support helper", evidence: claimedEvidence(),
+	});
+	plan = reserveTaskAttempt(plan, "T-002", { reservationId: "complete-kickoff" });
+	Object.assign(f.plan, plan);
+	const task = f.plan.tasks[1], reserved = task.attempts[0];
+	assert.ok(reserved);
+	const attempt = { ...producer, taskId: task.id, attemptId: reserved.id, reservationId: reserved.reservationId };
+	const requiredInputs = [
+		{ producer: "contract", output: "schema", destination: "inputs/request.json" },
+		{ producer: "contract", output: "helper", destination: "inputs/support.mjs" },
+	];
+	const outputs = requiredInputs.map((input, index) => ({
+		id: input.output, artifact: { repositoryId: attempt.repositoryId, commit, path: `contract/${input.output}.${index ? "mjs" : "json"}`,
+			mode: "100644", digest: (index ? "e" : "f").repeat(64) },
+	}));
+	const inputBody = {
+		format: "foundry-reserved-inputs-v1", consumer: attempt,
+		bootstrap: { repositoryId: attempt.repositoryId, branch: reserved.baseBranch, commit },
+		deliveries: [{ packageId: "contract", attempt: producer, commit, outputs }],
+		inputs: requiredInputs.map((input, index) => ({ ...input, artifact: outputs[index].artifact })),
+	};
+	const inputs = { ...inputBody, digest: analysisInputDigest(inputBody) };
+	const details = Array.from({ length: large ? 160 : 1 }, (_, index) =>
+		`Scenario ${index + 1}: preserve request identity while implementing the selected package boundary in src/t-002.mjs.\r\n`
+		+ "\tExercise reservation, receipt, attachment, cancellation and retry separately; a producer status label never proves consumer authority.  \r\n"
+		+ "\tKeep caller-owned input immutable, preserve literal argv and pinned helper paths, and report missing permissions without bypassing them.  \r\n"
+		+ "\tUse inputs/request.json with inputs/support.mjs at their recorded producer commit; independently test both valid and malformed records.  \r\n"
+		+ "\tReport exact evidence and delivered commit; source forwarding alone is not App installation or native execution. café / cafe\u0301 / Україна / 🧭  \r\n",
+	).join("\r\n");
+	const context = {
+		bindings: f.plan.factory, authority: "accepted-contract", contract: { revision: 1, digest: "b".repeat(64) },
+		unit: { id: "unit", revision: 1, owns: ["selection"], exposes: ["select(input)"], preserves: ["input identity"] },
+		requirements: Array.from({ length: large ? 64 : 1 }, (_, index) => ({
+			id: `preservation-${index + 1}`, revision: 1,
+			statement: "Preserve complete caller-owned input and immutable predecessor bindings, including Unicode, CRLF, tabs and trailing whitespace.  \r\n",
+			evaluation: { id: `boundary-${index + 1}`, revision: 1, independent: true,
+				procedureDigest: "a".repeat(64), report: "Exercise the literal accepted request and compare the final delivered output, not a status-only acknowledgement." },
+		})),
+	};
+	const body = `${buildDelegationPrompt(f.plan, task, reserved)}\r\nDetailed task delegation:\r\n${details}`
+		+ `\r\n<UNTRUSTED-FACTORY-CONTEXT>\r\n${stableStringify(context)}\r\n</UNTRUSTED-FACTORY-CONTEXT>\r\n`
+		+ `<UNTRUSTED-RESERVED-INPUTS>\r\n${stableStringify(inputs)}\r\n</UNTRUSTED-RESERVED-INPUTS>\r\n`
+		+ "End of complete assignment — завершення / 終了 / 🧭\t  \r\n";
+	const startup = sealTaskStartup(attempt, body);
+	reserved.startup = startup;
+	const initialization = buildTaskInitialization(f.plan, task, reserved);
+	assert.ok(initialization);
+	const reservation = dispatchReservation({ ...f.reservation, attempt, baseBranch: reserved.baseBranch, baseCommit: commit,
+		initialization, delegationPrompt: startup.delegationPrompt, inputs, requiredInputs });
+	return { ...f, reservation, startup, body };
+}
 
 test("host binds every supported primary operation without manufacturing a metadata-based RPC route", async () => {
 	const f = fixture();
@@ -154,6 +218,158 @@ test("setup-only creation and complete delegation retain exact payloads without 
 		arguments: { ...readRecord(f.calls[1].args), message: "x", coordinator_only: false }, toolCallId: "forbidden" }));
 	assert.equal(f.calls.length, 2);
 	console.log("host request trace:", JSON.stringify(f.calls));
+});
+
+test("FK-04 complete >=80000-byte assignment survives sealing, JSON persistence and native host kickoff unchanged", async (t) => {
+	const f = completeKickoffFixture(true), prompt = f.startup.delegationPrompt;
+	const expectedBytes = Buffer.from(prompt, "utf8");
+	const digest = createHash("sha256").update(expectedBytes).digest("hex");
+	assert.ok(Buffer.byteLength(f.body, "utf8") >= 80_000);
+	assert.ok(prompt.length > 16_000, "The new recipe must not retain the legacy setup-prompt cap");
+	assert.deepEqual(Buffer.from(prompt.slice(-f.body.length), "utf8"), Buffer.from(f.body, "utf8"));
+	assert.equal(f.startup.assignmentDigest, digest);
+	assert.equal(assignmentDigest(prompt), digest);
+	assert.ok(prompt.includes(stableStringify(f.reservation.inputs)), "The complete explicit reserved-input descriptor must be sealed before hashing");
+	assert.ok(prompt.indexOf("<UNTRUSTED-FACTORY-CONTEXT>") < prompt.indexOf("<UNTRUSTED-RESERVED-INPUTS>"));
+	assert.ok(prompt.endsWith("End of complete assignment — завершення / 終了 / 🧭\t  \r\n"));
+
+	const root = await fixtureRoot(t, "complete-kickoff"), filename = path.join(root, "reservation.json");
+	await writeFile(filename, JSON.stringify(f.reservation), "utf8");
+	const persisted = dispatchReservation(parseJson(await readFile(filename, "utf8")));
+	assert.deepEqual(persisted, f.reservation);
+	for (const text of [persisted.delegationPrompt, persisted.initialization.kickoff.prompt]) {
+		assert.deepEqual(Buffer.from(text, "utf8"), expectedBytes);
+		assert.equal(createHash("sha256").update(Buffer.from(text, "utf8")).digest("hex"), digest);
+	}
+	assert.equal(persisted.initialization.assignmentDigest, digest);
+	f.respond(success(f.child));
+	const creation = await f.native.create(persisted, "fk-04-complete-kickoff");
+	assert.deepEqual(f.native.decodeCreated(creation.value, persisted), f.child);
+	assert.equal(f.calls.length, 1);
+	assert.equal(f.calls[0].name, "create_session");
+	assert.equal(f.calls[0].correlation, "fk-04-complete-kickoff");
+	const captured = readRecord(f.calls[0].args), kickoff = readRecord(captured.kickoff);
+	assert.deepEqual(captured, {
+		project_id: persisted.projectId, base_branch: persisted.baseBranch,
+		workspace_type: "worktree", coordinate_with_creator: true, notify_on_idle: "always",
+		kickoff: { mode: "interactive", prompt },
+	});
+	assert.deepEqual(Object.keys(kickoff), ["mode", "prompt"]);
+	assert.deepEqual(Buffer.from(readString(kickoff.prompt), "utf8"), expectedBytes);
+	assert.equal(createHash("sha256").update(Buffer.from(readString(kickoff.prompt), "utf8")).digest("hex"), digest);
+	for (const field of ["model", "limits", "agent", "schedule", "source_user_message", "coordinator_instructions", "attachments",
+		"reasoning_effort", "context_tier", "auto_tier", "execution_location", "base_branch"]) {
+		assert.equal(Object.hasOwn(kickoff, field), false, `No optional kickoff field ${field}`);
+		if (field !== "base_branch") assert.equal(Object.hasOwn(captured, field), false, `No optional creation field ${field}`);
+	}
+	console.log("FK-04 source-forwarding fixture only:", JSON.stringify({
+		bodyBytes: Buffer.byteLength(f.body, "utf8"), kickoffBytes: expectedBytes.length, assignmentDigest: digest,
+		seal: "exact UTF-8", persistedReservation: "JSON file decoded", nativeCreateSession: "recording primary route; not live App execution or installation",
+	}));
+});
+
+test("fresh dispatch rejects altered or contradictory initialization and foreign receipt gates", async (t) => {
+	const f = completeKickoffFixture(), value = f.reservation, initialization = value.initialization;
+	/** @type {[string, unknown][]} */
+	const changes = [
+		["appended kickoff body", { ...initialization, kickoff: { ...initialization.kickoff, prompt: `${value.delegationPrompt}Appended context` } }],
+		["omitted kickoff body", { ...initialization, kickoff: { ...initialization.kickoff, prompt: value.delegationPrompt.slice(0, -1) } }],
+		["altered acknowledgement", { ...initialization, acknowledgement: "Foundry setup ready: host-fixture/T-002/T-002-A001" }],
+		["unknown recipe", { ...initialization, recipe: "complete-kickoff-v999" }],
+		["contradictory legacy recipe", { ...initialization, recipe: "setup-only" }],
+		["null recipe", { ...initialization, recipe: null }],
+		["changed digest", { ...initialization, assignmentDigest: "0".repeat(64) }],
+		["malformed digest", { ...initialization, assignmentDigest: 1 }],
+		["noninteractive mode", { ...initialization, kickoff: { ...initialization.kickoff, mode: "autopilot" } }],
+		["added authority", { ...initialization, coordinator_only: true }],
+	];
+	for (const key of ["recipe", "assignmentDigest", "acknowledgement", "kickoff"]) {
+		const omitted = structuredClone(initialization);
+		Reflect.deleteProperty(omitted, key);
+		changes.push([`omitted ${key}`, omitted]);
+	}
+	for (const [label, changed] of changes) await t.test(label, () =>
+		assert.throws(() => dispatchReservation({ ...value, initialization: changed })));
+	for (const delegationPrompt of [`${value.delegationPrompt}Appended input`, value.delegationPrompt.trimEnd()]) {
+		assert.throws(() => dispatchReservation({ ...value, delegationPrompt }), { code: "dispatch_startup_invalid" });
+	}
+	for (const foreign of [
+		{ ...value.attempt, planId: "foreign-plan" },
+		{ ...value.attempt, taskId: "T-003", attemptId: "T-003-A001" },
+		{ ...value.attempt, attemptId: "T-002-A002" },
+	]) {
+		const substituted = sealTaskStartup(foreign, f.body);
+		assert.throws(() => dispatchReservation({ ...value, delegationPrompt: substituted.delegationPrompt,
+			initialization: startupInitialization(foreign, substituted) }), { code: "dispatch_startup_invalid" });
+	}
+	const changedInputs = structuredClone(value.inputs);
+	assert.ok(changedInputs);
+	changedInputs.inputs[0].destination = "inputs/substituted.json";
+	assert.throws(() => dispatchReservation({ ...value, inputs: changedInputs }), { code: "parallel_input_digest" });
+	const missingDescriptor = sealTaskStartup(value.attempt, f.body.replace(stableStringify(value.inputs), ""));
+	assert.throws(() => dispatchReservation({ ...value, delegationPrompt: missingDescriptor.delegationPrompt,
+		initialization: startupInitialization(value.attempt, missingDescriptor) }), { code: "dispatch_inputs_changed" });
+	assert.equal(f.calls.length, 0);
+});
+
+test("native host rejects malformed/over-limit complete kickoff and extra authority before invocation", async (t) => {
+	const f = completeKickoffFixture(), args = f.native.createArguments(f.reservation);
+	/** @type {[string, unknown][]} */
+	const invalid = [
+		["missing kickoff", { ...args, kickoff: null }],
+		["foreign project", { ...args, project_id: "foreign" }],
+		["uncoordinated child", { ...args, coordinate_with_creator: false }],
+		["shared checkout", { ...args, workspace_type: "branch" }],
+		["permission override", { ...args, permission: true }],
+		["model override", { ...args, model: "unrequested" }],
+		["schedule override", { ...args, schedule: { interval: "daily" } }],
+		["user authority substitution", { ...args, source_user_message: { id: "not-user-authority", revision: 1 } }],
+		["noninteractive kickoff", { ...args, kickoff: { ...args.kickoff, mode: "autopilot" } }],
+		["nested agent override", { ...args, kickoff: { ...args.kickoff, agent: "worker" } }],
+		["nested limits override", { ...args, kickoff: { ...args.kickoff, limits: {} } }],
+	];
+	for (const prompt of [null, 1, {}, [], "", " \r\n\t ", "x".repeat(2_000_001)]) {
+		invalid.push([`invalid prompt ${typeof prompt === "string" ? `length ${prompt.length}` : typeof prompt}`, {
+			...args, kickoff: { mode: "interactive", prompt },
+		}]);
+	}
+	for (const [label, value] of invalid) await t.test(label, async () => {
+		await assert.rejects(f.host.executor.execute({ name: "create_session", arguments: readJsonValue(value), toolCallId: "invalid-kickoff" }));
+		assert.equal(f.calls.length, 0);
+	});
+	const legacy = fixture().reservation;
+	assert.throws(() => dispatchReservation({ ...legacy, initialization: { ...legacy.initialization,
+		kickoff: { mode: "interactive", prompt: "x".repeat(16_001) } } }), { code: "factory_input_invalid" });
+});
+
+test("fresh handoff sends only a short identity/digest-bound activation after an explicit attached revision", async () => {
+	const f = completeKickoffFixture(), reservation = f.reservation, attachedRevision = f.plan.revision + 1;
+	for (const revision of [undefined, 0, -1, 1.5, Number.NaN]) {
+		await assert.rejects(f.native.handoff(reservation, f.child, "missing-attachment", revision), { code: "factory_input_invalid" });
+	}
+	for (const changed of [{ ...f.child, projectId: "foreign" }, { ...f.child, creatorSessionId: "foreign" },
+		{ ...f.child, sessionId: f.current.sessionId }]) {
+		await assert.rejects(f.native.handoff(reservation, changed, "foreign-activation", attachedRevision), { code: "dispatch_child_mismatch" });
+	}
+	assert.equal(f.calls.length, 0);
+	f.respond(success({ sessionId: f.child.sessionId, accepted: true }));
+	const handoff = await f.native.handoff(reservation, f.child, "fresh-activation", attachedRevision);
+	assert.equal(f.native.decodeHandoff(handoff.value, f.child.sessionId), f.child.sessionId);
+	assert.equal(f.calls.length, 1);
+	assert.equal(f.calls[0].name, "send_session_message");
+	assert.equal(f.calls[0].correlation, "fresh-activation");
+	const args = readRecord(f.calls[0].args), message = readString(args.message);
+	const prefix = "Foundry activate received assignment:\n";
+	assert.ok(message.startsWith(prefix));
+	assert.ok(message.length < 16_000);
+	assert.equal(message.includes(f.body), false);
+	assert.equal(message.includes(stableStringify(reservation.inputs)), false);
+	assert.deepEqual(parseJson(message.slice(prefix.length)), {
+		recipe: "complete-kickoff-v1", attempt: reservation.attempt, projectId: reservation.projectId, child: f.child,
+		baseBranch: reservation.baseBranch, baseCommit: reservation.baseCommit,
+		assignmentDigest: f.startup.assignmentDigest, attachedRevision,
+	});
+	assert.deepEqual(args, { session_id: f.child.sessionId, message, coordinator_only: true, delivery_mode: "immediate", mode: "autopilot" });
 });
 
 test("public get_session decoder requires both creator identities and does not invent create-result metadata", () => {

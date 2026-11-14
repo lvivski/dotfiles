@@ -150,8 +150,11 @@ always present. Review the current work against the checklist and issue bounded 
 only within the authority actually given. A runtime-worker strategy correction does not itself permit
 new App sessions, DAG tasks, workflows, broader write scope or budget increases. If it requires a
 changed DAG/scope, obtain the appropriate revised plan rather than silently editing accepted history.
-Supported reservation/attachment, unchanged handoff, resource permissions and final independent
-verification remain mandatory; runtime helpers cannot bypass an unavailable App dispatch capability.
+Supported reservation/attachment, immutable recipe-specific startup, resource permissions and final
+independent verification remain mandatory. Fresh reservations carry the entire final assignment in
+interactive kickoff, then receipt/corroboration/attachment/short activation; only stored legacy
+reservations retain original setup/attach/full-handoff. Follow [dispatch](dispatch.md); runtime
+helpers cannot bypass an unavailable App dispatch capability or upgrade a stored reservation.
 
 ## Explicit decomposition and legacy behavior
 

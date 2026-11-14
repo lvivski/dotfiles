@@ -120,7 +120,7 @@ export type OfferedToolExecutor = {
 
 export type ParallelReservation = {
 	attempt: AttemptIdentity; projectId: string; baseBranch: string; baseCommit: string;
-	initialization: { acknowledgement: string; kickoff: { mode: "interactive"; prompt: string } };
+	initialization: import("./plan.js").TaskInitialization;
 	delegationPrompt: string; inputs: ReservedInputs | null; requiredInputs: PackageInput[];
 };
 export type ParallelChild = {
