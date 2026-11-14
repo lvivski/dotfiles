@@ -152,6 +152,7 @@ export type ParallelHost = { state: "unavailable"; reason: string } | {
 	availability(name: string): "supported" | "unavailable" | "unproven";
 	taskPolicies(plan: import("./plan.js").FoundryPlan): Record<string, import("../plan/admission.mjs").TaskAdmission>;
 	decodeCreated?: (value: unknown) => ParallelChild;
+	decodeRun?: (value: unknown) => string;
 	decodeHandoff?: (value: unknown) => { sessionId: string; accepted: boolean };
 	observeSetup?: (child: ParallelChild, reservation: ParallelReservation) => Promise<ParallelSetup>;
 	observeChild?: (input: {

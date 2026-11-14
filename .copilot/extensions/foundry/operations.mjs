@@ -42,6 +42,8 @@ import { admissionFence } from "./storage/admission.mjs";
  * @property {string} [factoryStorageRoot] Private root override for isolated fixtures.
  * @property {() => import("./types/repair.js").RepairSession | null | undefined} [getSession]
  * @property {() => import("./types/parallel.js").ParallelHost | null | undefined} [getParallelHost] Trusted current host ports, not caller JSON or tool metadata.
+ * @property {(repositoryPath: string) => Omit<import("./types/operating.js").OperatingPorts, "persistence"> | undefined} [getOperating] Trusted fenced operating authority; persistence always comes from the current owner plan store.
+ * @property {import("./application/storage.mjs").RetentionBindings} [getRetention] Optional canonical archive outbox and guarded host bindings.
  * @property {import("./types/factory.js").TechnicalExecutor} [executeTechnical] Trusted reference execution with native resource permission.
  */
 /** @typedef {import("./types/workflow.js").WorkflowAnalysisPort} WorkflowAnalysis */
@@ -62,8 +64,12 @@ export function createFoundryOperations(options) {
 	if (!options.analysis) throw new TypeError("createFoundryOperations requires analysis");
 	const notify = typeof options.notify === "function" ? options.notify : () => { };
 	const analysis = options.analysis;
-	const { workspace, storeFor } = createSessionStorage(options.getWorkspacePath);
-	const factory = createFactoryBridge({ workspace, storeFor, notify, storageRoot: options.factoryStorageRoot });
+	const { workspace, storeFor, retentionFor } = createSessionStorage(options.getWorkspacePath, options.getRetention);
+	const factory = createFactoryBridge({ workspace, storeFor, notify, storageRoot: options.factoryStorageRoot,
+		operating: repositoryPath => {
+			const ports = options.getOperating?.(repositoryPath);
+			return ports ? { ...ports, persistence: storeFor().operating } : undefined;
+		} });
 	const { readForMutation, persist } = createPlanMutations({ workspace, storeFor, notify, factory });
 	const { syncFactoryPlan, factoryAction, createFactoryPlan, createEvaluationPlan, recordHumanJudgment, syncFactory, captureAnalysis } = createRepositoryOperations({
 		workspace, storeFor, notify, factory, analysis,
@@ -133,6 +139,11 @@ export function createFoundryOperations(options) {
 		getActivation: () => storeFor().getActivation(),
 		storeFor,
 		factoryFor: factory.factoryFor,
+		/** Constructor-bound service only; public tool JSON cannot supply providers. @param {unknown} input */
+		retentionFor: input => {
+			const repositoryPath = text(input, "repository path", 4096);
+			return retentionFor(repositoryPath, factory.factoryFor(repositoryPath).repository.id);
+		},
 		createFactoryPlan: requestHandler("createFactoryPlan", createFactoryPlan),
 		createEvaluationPlan: requestHandler("createEvaluationPlan", createEvaluationPlan),
 		recordHumanJudgment: requestHandler("recordHumanJudgment", recordHumanJudgment),
@@ -349,10 +360,7 @@ function createParallelComposition({ options, workspace, storeFor, factory, pers
 			},
 		});
 		const plans = createNativeAdmission({ transport });
-		const native = createNativeDispatch({
-			transport, decodeCreated: host.decodeCreated, decodeHandoff: host.decodeHandoff,
-			observeSetup: host.observeSetup, observeChild: host.observeChild, reconcile: host.reconcile,
-		});
+		const native = createFoundryDispatch(host, transport);
 		const packages = factory.packageInputs(plan, { admission, journal });
 		const packageTasks = new Set(Object.values(factory.packageContext(plan)?.taskIds ?? {}));
 		/** @param {ParallelIdentity} identity */
@@ -703,4 +711,14 @@ function createParallelComposition({ options, workspace, storeFor, factory, pers
 			: { state: "assessed", ...factory.assessPackage(plan, input.taskId, { admission, journal }, reviews, input.report, contributors) };
 	});
 	return { getStatus, nextTasks, reserveTask, attachTask, completeTask, cancel, finalizeCancellation, dispatchReady, reconcileParallel, materializeInputs, assessPackage };
+}
+
+/** Root host-to-native composition; it allocates no authority, journal or transport.
+ * @param {Extract<import("./types/parallel.js").ParallelHost, {state: "available"}>} host
+ * @param {ReturnType<typeof createOfferedDispatchTransport>} transport */
+export function createFoundryDispatch(host, transport) {
+	return createNativeDispatch({
+		transport, decodeCreated: host.decodeCreated, decodeRun: host.decodeRun, decodeHandoff: host.decodeHandoff,
+		observeSetup: host.observeSetup, observeChild: host.observeChild, reconcile: host.reconcile,
+	});
 }

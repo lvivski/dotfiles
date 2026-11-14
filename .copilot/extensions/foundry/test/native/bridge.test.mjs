@@ -8,12 +8,12 @@ import { createFactoryBridge } from "../../bridge.mjs";
 import { parseJson, readRecord, readString } from "../../data.mjs";
 import { analysisInputDigest, stableStringify } from "../../digest.mjs";
 import { consumerAgreement } from "../../factory/technical.mjs";
-import { DispatchNativeError } from "../../native/admission.mjs";
+import { createOfferedDispatchTransport, DispatchNativeError } from "../../native/admission.mjs";
 import { createdChild, dispatchReservation } from "../../native/dispatch.mjs";
 import { createNativeHost } from "../../native/host.mjs";
 import { bindNativeContext, createNativeAssurance, createNativeInputs } from "../../native/observations.mjs";
 import { createNativeTechnicalExecutor } from "../../native/technical.mjs";
-import { createFoundryOperations } from "../../operations.mjs";
+import { createFoundryDispatch, createFoundryOperations } from "../../operations.mjs";
 import { canonicalBindings } from "../../plan/packages.mjs";
 import { createParallelStorage, createPlanStore } from "../../storage.mjs";
 import { buildFoundryTools } from "../../tools.mjs";
@@ -23,12 +23,136 @@ import { fixture } from "../bridge/fixture.mjs";
 import { git } from "../git.mjs";
 import { assertOfferedToolArguments } from "../parallel/native-contracts.mjs";
 import { analysisFixture } from "./fixture.mjs";
+import { charter, goal, historicalIdentity, operatingFixture } from "../factory/operating.mjs";
 
 /** @typedef {import("../../native/host.mjs").NativeHostAccess} Access */
 /** @typedef {import("../../native/observations.mjs").Capture} Capture */
 /** @typedef {import("../../types/parallel.js").ParallelReservation} Reservation */
 /** @param {unknown} value */
 const success = value => ({ resultType: "success", textResultForLlm: JSON.stringify(value) });
+
+test("REL-05 root-created dispatch forwards the exact workflow and supplied decoder without fallback", async t => {
+	const f = await setup(t);
+	/** @type {{name: string, arguments: import("../../types/json.js").JsonValue, toolCallId?: string}[]} */
+	const calls = [];
+	/** @type {unknown[]} */
+	const decoded = [];
+	const transport = createOfferedDispatchTransport({
+		owner: f.owner, sessionId: f.context.sessionId, offered: new Set(["run_dynamic_workflow"]),
+		availability: () => "supported",
+		context: () => ({ owner: f.owner, sessionId: f.context.sessionId, inWorkflow: false }),
+		executor: { async execute(input) {
+			calls.push(input);
+			return success({ nativeRun: "exact-fixture-run" });
+		} },
+	});
+	const host = { ...f.host, decodeRun(/** @type {unknown} */ value) {
+		decoded.push(value);
+		return readString(readRecord(value).nativeRun);
+	} };
+	const dispatch = createFoundryDispatch(host, transport);
+	const launchSpec = { name: "fixture-workflow", args: { immutable: "input" }, limits: { maxTotalSubagents: 2 } };
+	const result = await dispatch.launch(launchSpec, "exact-call");
+	assert.equal(dispatch.decodeRun(result.value), "exact-fixture-run");
+	assert.deepEqual(decoded, [{ nativeRun: "exact-fixture-run" }]);
+	assert.deepEqual(calls, [{ name: "run_dynamic_workflow", arguments: launchSpec, toolCallId: "exact-call" }]);
+	const missing = createFoundryDispatch({ ...host, decodeRun: undefined }, transport);
+	await assert.rejects(missing.launch(launchSpec), { code: "dispatch_result_unsupported" });
+	assert.throws(() => missing.decodeRun(result.value), { code: "dispatch_result_unsupported" });
+	assert.throws(() => createFoundryDispatch({ ...host, decodeRun: () => "" }, transport).decodeRun(result.value));
+	assert.equal(calls.length, 1, "Missing/invalid decoding cannot trigger another native invocation");
+});
+
+test("REL-06 common bridge delegates squads and goals to the existing fenced canonical writer", async t => {
+	const f = await operatingFixture(t);
+	const options = {
+		getWorkspacePath: () => f.owner, factoryStorageRoot: f.storageRoot, analysis: analysisFixture(),
+		getOperating: () => ({ rules: f.ports.rules, admission: f.admission, native: f.native }),
+	};
+	const root = createFoundryOperations(options), canonical = root.factoryFor(f.repo);
+	const bridge = createFactoryBridge({ workspace: () => f.owner, storeFor: root.storeFor, notify: () => {},
+		storageRoot: f.storageRoot, operating: () => ({ ...options.getOperating(), persistence: root.storeFor().operating }) });
+	assert.equal(bridge.operatingFor(f.repo), bridge.factoryFor(f.repo).operating);
+	assert.equal(bridge.squadsFor(f.repo), bridge.factoryFor(f.repo).squads);
+	assert.equal(bridge.goalsFor(f.repo), bridge.factoryFor(f.repo).goals);
+	/** @param {string} id @param {import("../../types/operating.js").OperatingRecord[]} records */
+	const batch = (id, records) => canonical.operating.prepare({
+		version: 1, id, snapshot: canonical.operating.snapshot().token, source: historicalIdentity, records,
+	});
+	bridge.squadsFor(f.repo).commit(batch("joined-charter", [charter()]), f.authority());
+	const stale = batch("stale-charter", [charter("squad", 2)]);
+	bridge.goalsFor(f.repo).commit(batch("joined-goal", [goal("joined-goal")]), f.authority());
+	assert.equal(bridge.squadsFor(f.repo).history({ id: "squad", revision: 1 }).binding.state, "unresolved");
+	assert.ok(bridge.goalsFor(f.repo).inspect({ id: "joined-goal", revision: 1 }));
+	assert.throws(() => canonical.operating.commit(stale, f.authority()), { code: "operating_snapshot_changed" });
+	const before = root.storeFor().readCurrent(f.planId);
+	f.observation.allowed = false;
+	assert.throws(() => canonical.goals.commit(batch("denied-goal", [goal("denied-goal")]), f.authority()), /fixture native denial/);
+	assert.deepEqual(root.storeFor().readCurrent(f.planId), before);
+	const missing = createFoundryOperations({ ...options, getOperating: undefined });
+	assert.throws(() => missing.factoryFor(f.repo).goals.commit(batch("missing-goal", [goal("missing-goal")]), f.authority()),
+		{ code: "operating_authority_unavailable" });
+	assert.deepEqual(root.storeFor().readCurrent(f.planId), before);
+	assert.deepEqual(before.operating?.publications.map(entry => entry.batch.id), ["joined-charter", "joined-goal"]);
+});
+
+test("REL-07 root retention requires the real outbox binding and leaves absent observations/guards held", async t => {
+	const f = await operatingFixture(t);
+	const scope = { repositoryId: f.factory.repository.id, owner: f.owner, coordinatorSessionId: "coordinator", currentSessionId: "retention" };
+	const subject = { attempt: { repositoryId: scope.repositoryId, owner: scope.owner, planId: f.planId,
+		taskId: "T-001", attemptId: "T-001-A001", reservationId: "fixture-reservation" },
+		sessionId: "fixture-worker", coordinatorSessionId: scope.coordinatorSessionId, worktreePath: path.join(f.root, "child") };
+	const at = "2026-11-13T00:00:00.000Z";
+	const event = { version: 1, id: "joined-completion", subject, revision: 1, sequence: 1,
+		sourceCommit: "b".repeat(40), sourceDigest: "c".repeat(64), at, source: "injected source-only completion" };
+	/** Injected outbox, not a production binding or archive provider.
+	 * @type {Map<string, import("../../types/retention.js").RetentionIntent>} */
+	const records = new Map();
+	let transactions = 0, reads = 0;
+	/** @type {import("../../types/retention.js").RetentionCanonicalPort} */
+	const canonical = {
+		read(id) { reads++; return structuredClone(records.get(id) ?? null); },
+		transaction(actual, action) {
+			transactions++;
+			assert.deepEqual(actual, event);
+			return action({
+				assertCurrent(value, _assessment, mode) { assert.deepEqual(value, event); assert.equal(mode, "assess"); },
+				read: id => structuredClone(records.get(id) ?? null),
+				insert: value => { assert.equal(records.size, 0); records.set(value.id, structuredClone(value)); },
+				replace() { throw new Error("No replacement is expected in this binding test"); },
+			});
+		},
+	};
+	const bindings = {
+		scope, canonical, clock: () => at,
+		observations: {
+			async completion() { return event; },
+			async capture() { return { version: 1, subject, eventId: event.id, eventRevision: 1, eventSequence: 1,
+				revision: 1, sequence: 2, capturedAt: at, validUntil: "2026-11-13T00:01:00.000Z",
+				source: "injected incomplete capture", ownership: "unknown", inventories: [],
+				workspace: { state: "unknown", tracked: [], untracked: [], ignored: [] } }; },
+		},
+		artifacts: { async inspect() { return null; } },
+	};
+	const options = { getWorkspacePath: () => f.owner, factoryStorageRoot: f.storageRoot, analysis: analysisFixture() };
+	assert.throws(() => createFoundryOperations(options).retentionFor(f.repo), { code: "retention_persistence_unsupported" });
+	assert.throws(() => createFoundryOperations({ ...options, getRetention: () => ({ ...bindings, canonical: undefined }) }).retentionFor(f.repo),
+		{ code: "retention_persistence_unsupported" });
+	assert.throws(() => createFoundryOperations({ ...options, getRetention: () => ({ ...bindings, scope: { ...scope, owner: "/foreign" } }) }).retentionFor(f.repo),
+		{ code: "retention_foreign" });
+	const service = createFoundryOperations({ ...options, getRetention: () => bindings }).retentionFor(f.repo);
+	const assessment = await service.completionEvent({ eventId: event.id });
+	assert.equal(assessment.state, "held");
+	assert.ok(assessment.holds.some(entry => entry.code === "retention_ownership_unknown"));
+	assert.equal(transactions, 1);
+	assert.equal(reads, 1);
+	assert.equal(records.size, 1);
+	assert.ok(assessment.intent);
+	const execution = await service.execute({ intentId: assessment.intent.id });
+	assert.ok(execution.holds.some(entry => entry.code === "retention_action_time_unsupported"));
+	assert.equal(transactions, 1, "Missing guarded host cannot admit an archive effect");
+	assert.equal(records.get(assessment.intent.id)?.start, null);
+});
 
 /** Production composition and stores; only the App/provider boundary is simulated.
  * @param {import("node:test").TestContext} t

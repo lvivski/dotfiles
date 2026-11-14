@@ -25,11 +25,12 @@ import { buildAssuranceSubject } from "./analysis/assurance.mjs";
 
 /**
  * @param {{workspace: () => string, storeFor: () => ReturnType<typeof import("./storage.mjs").createPlanStore>,
- * notify: (event: import("./types/plan.js").ChangeEvent) => void, storageRoot?: string, clock?: () => Date|string|number}} options
+ * notify: (event: import("./types/plan.js").ChangeEvent) => void, storageRoot?: string, clock?: () => Date|string|number,
+ * operating?: (repositoryPath: string) => import("./types/operating.js").OperatingPorts | undefined}} options
  */
-export function createFactoryBridge({ workspace, storeFor, notify, storageRoot, clock }) {
+export function createFactoryBridge({ workspace, storeFor, notify, storageRoot, clock, operating }) {
 
-	const { factoryFor, requireOwner, stateFor, context } = createAuthority({ workspace, storageRoot, clock });
+	const { factoryFor, requireOwner, stateFor, context } = createAuthority({ workspace, storageRoot, clock, operating });
 	const { createBoundDraft, createPlan, createEvaluationPlan } = createBoundPlans({ workspace, storeFor, notify, factoryFor, context });
 	const { validateReports, verificationContext, verificationGate, inspectPlan } = createEvidenceBridge(stateFor, workspace);
 	const { prompt, requireRetry, activateEvaluation } = createDispatchBridge(stateFor, context);
@@ -250,6 +251,12 @@ export function createFactoryBridge({ workspace, storeFor, notify, storageRoot, 
 		prompt, inspectPlan, validateReports, verificationGate, verificationContext, activateEvaluation,
 		captureRejectedReport,
 		packageContext, packageInputs, packageSubject, assessPackage,
+		/** @param {string} repositoryPath */
+		operatingFor: repositoryPath => factoryFor(repositoryPath).operating,
+		/** @param {string} repositoryPath */
+		squadsFor: repositoryPath => factoryFor(repositoryPath).squads,
+		/** @param {string} repositoryPath */
+		goalsFor: repositoryPath => factoryFor(repositoryPath).goals,
 		/** @param {unknown} value */
 		validateLearning: (value) => { validateFactoryLearning(value); },
 	};

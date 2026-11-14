@@ -13,8 +13,9 @@ import { declaredVisual } from "../factory/visual.mjs";
  * workspace: () => string,
  * storageRoot: string | undefined,
  * clock: (() => Date|string|number) | undefined,
+ * operating?: (repositoryPath: string) => import("../types/operating.js").OperatingPorts | undefined,
  * }} dependencies */
-export function createAuthority({ workspace, storageRoot, clock }) {
+export function createAuthority({ workspace, storageRoot, clock, operating }) {
 
 	/** @type {Map<string, FactoryService>} */
 	const stores = new Map();
@@ -23,7 +24,7 @@ export function createAuthority({ workspace, storageRoot, clock }) {
 	const factoryFor = (repositoryPath) => {
 		let factory = stores.get(repositoryPath);
 		if (!factory) {
-			factory = createFactoryService({ repositoryPath, storageRoot, clock });
+			factory = createFactoryService({ repositoryPath, storageRoot, clock, operating: operating?.(repositoryPath) });
 			stores.set(repositoryPath, factory);
 		}
 		return factory;

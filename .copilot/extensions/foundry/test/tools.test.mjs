@@ -33,6 +33,60 @@ function toolNamed(tools, name) {
 	return tool;
 }
 
+test("REL-09/10 registered repair handlers preserve launch, owner/run identity and single admission", async t => {
+	const f = await repairNativeFixture(t), tools = buildFoundryTools(f.ops);
+	/** @param {string} name @param {unknown} args @param {string} [sessionId] */
+	const invoke = async (name, args, sessionId = f.sessionId) => {
+		const tool = toolNamed(tools, name);
+		assert.equal(tool.skipPermission, undefined, "Normal native handler permission remains required");
+		const result = await tool.handler(args, { sessionId, toolCallId: "registered-repair", toolName: name, arguments: args });
+		return readRecord(parseJson(result.textResultForLlm));
+	};
+	const original = structuredClone(f.records.source);
+	const prepared = await invoke("foundry_prepare_plan_repair", { runId: "source", repositoryPath: f.repositoryPath });
+	assert.equal(prepared.ok, true);
+	const value = readRecord(prepared.value), spec = readRecord(value.launchSpec), identity = readRecord(spec.args);
+	const foreign = await invoke("foundry_launch_plan_repair", identity, "foreign-owner");
+	assert.equal(readRecord(foreign.error).code, "delegation_identity_required");
+	assert.equal(f.launches.length, 0);
+	const launched = await invoke("foundry_launch_plan_repair", identity);
+	assert.equal(launched.ok, true);
+	assert.deepEqual(f.launches, [{ name: "run_dynamic_workflow", arguments: spec }]);
+	assert.equal(readRecord((await invoke("foundry_launch_plan_repair", identity)).error).code, "repair_admission_held");
+	const typed = await f.prepare();
+	await f.execute(typed);
+	assert.equal((await invoke("foundry_reconcile_plan_repair", identity)).ok, true);
+	const request = { ...identity, id: "registered-repair-draft", repository: { workingDirectory: f.repositoryPath, baseBranch: "main" },
+		runId: "foreign-run", expectedRevision: 0 };
+	assert.equal(readRecord((await invoke("foundry_import_plan_repair", request)).error).code, "repair_import_held");
+	const imported = await invoke("foundry_import_plan_repair", { ...request, runId: "repair-native-run" });
+	assert.equal(imported.ok, true);
+	assert.equal(readRecord(imported.value).status, "draft");
+	assert.deepEqual(f.records.source, original);
+	assert.equal(f.launches.length, 1);
+});
+
+test("REL-10 registered repair denial or missing native binding retains the claim without another effect", async t => {
+	for (const missing of [false, true]) await t.test(missing ? "missing binding" : "native denial", async t => {
+		const f = await repairNativeFixture(t);
+		if (!missing) f.setExecutor(async () => ({ resultType: "denied", textResultForLlm: "injected native permission denial" }));
+		const prepared = await f.prepare(), identity = prepared.launchSpec.args;
+		const tools = buildFoundryTools(f.createOps(!missing));
+		const invoke = async () => {
+			const name = "foundry_launch_plan_repair";
+			return readRecord(parseJson((await toolNamed(tools, name).handler(identity, {
+				sessionId: f.sessionId, toolCallId: "registered-denial", toolName: name, arguments: identity,
+			})).textResultForLlm));
+		};
+		assert.equal(readRecord((await invoke()).error).code, missing ? "repair_invocation_unavailable" : "repair_permission_denied");
+		assert.equal(readRecord((await invoke()).error).code, "repair_admission_held");
+		assert.equal(f.launches.length, missing ? 0 : 1);
+		const retained = f.journal().read(prepared.preparationId, prepared.preparationDigest);
+		assert.equal(retained.state, missing ? "unavailable" : "denied");
+		assert.equal(retained.runId, null);
+	});
+});
+
 test("Foundry registers the complete globally unique tool surface", () => {
 	const tools = buildFoundryTools(operationsStub());
 	assert.deepEqual(tools.map((tool) => tool.name), [

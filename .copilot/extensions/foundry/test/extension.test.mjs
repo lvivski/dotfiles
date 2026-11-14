@@ -72,6 +72,7 @@ test("bundled workflows use only native Workflow primitives", async () => {
 		audit: 900,
 		"deep-research": 3600,
 		plan: 7200,
+		"plan-repair": 7200,
 		"review-queue": 3600,
 		"security-review": 3600,
 		triage: 900,

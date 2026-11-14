@@ -136,6 +136,38 @@ producer deliveries. Neither proof establishes real App permissions, setup/notif
 platform behavior or native visual capture/perception. Those require separately authorized host
 validation against the exact delivered source and package identities.
 
+### Release composition and operational boundaries
+
+The root `createFoundryDispatch` composition forwards the trusted `ParallelHost.decodeRun`
+unchanged to native dispatch, alongside creation, handoff and observation ports. Missing decoders
+remain explicit errors, not SDK-result guesses. The common factory bridge exposes `operatingFor`,
+`squadsFor` and `goalsFor` over its cached canonical factory services. Root `getOperating` supplies
+trusted admission/native ports; persistence is always the current owner's existing plan outbox.
+Whole-snapshot contention, native denial and absent authority retain the canonical failure paths.
+
+Root `retentionFor(repositoryPath)` is constructor-bound through optional `getRetention`.
+It composes the delivered retention operations and persistence only with an explicitly supplied,
+matching owner/repository canonical archive transaction/outbox. No such production outbox is
+provided by default. A dispatch journal is not a retention store. Missing persistence throws
+`retention_persistence_unsupported`; missing action-time guards/reconciliation retain
+`retention_action_time_unsupported`. Conditional archival, subject-wide exclusion and authoritative
+original archive outcomes remain separate host obligations, not wrappers around `archive_session`.
+
+The normal registry includes the existing repair tools and original `plan-repair` workflow.
+Repair launch uses the existing native offered-tool handler and resource-permission boundary,
+with unchanged launch specifications, owner-local journals and one durable admission. Injected
+source tests are not actual offered-tool availability, a native permission decision or activation.
+Production bounded technical execution, authenticated observations and permission providers remain
+unavailable until separately bound and observed; no fixture provider is installed.
+
+Source composition is non-UI: it does not change rendering or claim visual fidelity. Existing
+visual evaluator definitions, review/adoption evidence and failed native captures remain intact.
+A source commit, even with passing checks, does not establish a push, installation, reload,
+archival, full-factory acceptance, replacement or regeneration. Operational deployment must compare
+the complete immutable source against installed files, preserve dirty/custom increments, retain
+individual divergence holds and use the exact independently verified delivery under current
+owner authority and normal account/resource checks. A held deployment is not install-ready.
+
 ## Repository capability lifecycle
 
 A capability is coherent behavior with named exclusive authority, stable interfaces, conserved data
@@ -276,6 +308,7 @@ the new source paths.
 | Workflow | Purpose |
 | --- | --- |
 | `plan` | Create, critique, synthesize, and verify a dependency-aware plan |
+| `plan-repair` | Recover one eligible owner-bound semantic rejection without relaunching the original plan |
 | `verify` | Produce the final fail-closed evidence verdict |
 | `audit` | Audit files for a specified concern |
 | `deep-research` | Heavy, opt-in multi-angle research with independently verified findings and retained partial evidence |

@@ -43,8 +43,24 @@ Local source exposes optional `decomposition` on `foundry_create_factory_plan` a
 `foundry_assess_package`. Follow the [bounded source sequence](references/dispatch.md#bounded-registered-source-entry-points).
 The default production extension deliberately supplies unavailable host ports; only trusted
 constructor wiring can supply actual route/operation capabilities, never caller JSON. Synthetic-host
-composition evidence is not installation or live App support. Integration delivery remains held;
+composition evidence is not installation or live App support. Unsupported production operations remain held;
 do not bypass missing capabilities, switch routes automatically or infer fresh correction authority.
+
+The joined source forwards the trusted workflow-result decoder through root native dispatch and
+exposes canonical operating/squad/goal services through the common bridge. Root operating bindings
+reuse the current owner's plan outbox. Constructor-bound retention requires a real canonical archive
+transaction/outbox; the dispatch journal cannot substitute. Missing archive guards, conditional
+archival/outcome reconciliation, authenticated observations, permission or bounded technical
+execution providers remain explicit holds. Repair tools and the original `plan-repair` workflow
+retain normal native resource permissions and single-admission owner-local reconciliation.
+Read [native bindings](references/native.md), [goals](references/goals.md) and
+[retention](references/retention.md) for their distinct obligations.
+
+Source-only composition is non-UI and does not renew visual evaluators or erase failed captures.
+Keep source completion separate from installed-input/provider holds and later owner-run publication,
+global installation and reload. Compare a complete immutable release manifest, not a delta overlay;
+preserve installed custom increments and prior refusals. Deployment requires the exact independently
+verified source, applicable retained user authority and normal account/resource permissions.
 
 ## Hard rules
 
