@@ -31,6 +31,14 @@ or delivery. Explicit no-commit/read-only instructions and task/file/branch limi
 proposal-only work stays non-implementation. Push, PR, merge and native resource permissions remain
 distinct. Commit-pinned delivery and independent read-only verification are unchanged.
 
+Active file-write guardrails admit authoring only inside the current owner's registered, running
+session contribution directories, derived from trusted SDK workspace/extension metadata and both
+native hook identities. Unique scaffolded names do not need a hardcoded relay exception. Canonical
+unlinked paths, existing registration directories, and normal native file permissions are required;
+other owners, unregistered paths and session artifacts remain outside the exception. This grants
+neither extension reload nor workflow invocation/resource authority. See the
+[owner-local transport boundary](../../skills/foundry/references/planning.md#owner-local-large-payload-transport).
+
 Explicit `approvalType: "technical"` uses a separate owner-local grant for bounded discovery retry
 and frozen consumer-expectation alignment. Historical plan/completion grants do not expand.
 The existing delegation, approval and contract tools retain verbatim instruction attestation and

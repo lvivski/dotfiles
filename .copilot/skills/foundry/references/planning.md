@@ -307,14 +307,17 @@ permissions remain separate. A native denial is not a technical disagreement to 
 ## Owner-local large-payload transport
 
 Authoring needs separate write authorization; native workflow approval is not file-write permission.
-With Foundry active, only the invoking owner's already registered, running session extension named
-`foundry-exact-relay` has a helper-directory exception. Foundry derives its directory from
-`CopilotSession.workspacePath` and `session.rpc.extensions.list()` (`source: "session"`), after
-matching the native hook session identities. Allowed edits still use normal native permission checks;
-Foundry does not auto-approve them. Missing ownership, workspace or registration metadata fails closed.
+With Foundry active, the invoking owner's already registered, running session contributions have
+a directory-scoped authoring exception, including a newly scaffolded relay with a unique name.
+Foundry derives each directory from `CopilotSession.workspacePath` and the runtime-discovered name
+in `session.rpc.extensions.list()` (`source: "session"`), after matching both native hook session
+identities. Tool arguments cannot supply ownership or registration. The directory must already
+exist, with canonical, unlinked ancestors; existing targets must be unlinked regular files.
+Allowed edits still use normal native permission checks; Foundry does not auto-approve them.
+Missing ownership, workspace or registration metadata fails closed.
 Foreign/unregistered helpers, other session artifacts, traversal and linked paths are not covered;
 every target in a mixed patch must remain in the repository or the verified helper directory.
-If the helper is not registered/running or the API is unavailable, stop rather than widen the boundary
+If the contribution is not registered/running or the API is unavailable, stop rather than widen the boundary
 or disable Foundry. Registration and reload are separate authorized actions, not effects of this guard.
 
 If a prepared payload cannot be reliably relayed in a model tool call, retain its complete bytes
