@@ -15,7 +15,7 @@ import { createKnowledgeRepository } from "./repository.mjs";
 /** @typedef {{format: "foundry-knowledge-v1", parent: string|null, document: FactoryDocument,
  * selections: HistoricalSelection[], migration: {sourceDigest: string, actor: string, reason: string}|null}} Publication */
 
-const KNOWLEDGE_ACTIONS = /** @type {const} */ (["createUnit", "appendKnowledge", "acceptContract", "recordSignal", "retire", "checkpoint"]);
+const KNOWLEDGE_ACTIONS = /** @type {const} */ (["createUnit", "appendKnowledge", "acceptContract", "recordSignal", "retire", "checkpoint", "recordOperating"]);
 
 /** @param {unknown} value @returns {FactoryDocument} */
 export function readKnowledgeDocument(value) {
@@ -100,6 +100,9 @@ export function projectKnowledge(original, retained = []) {
 		applyEvent(state, entry, { historical: true, portable: original.portable === true });
 		let portable = entry;
 		switch (entry.action) {
+			case "recordOperating":
+				through = entry.revision;
+				break;
 			case "createUnit":
 			case "recordSignal":
 				portable = { ...entry, input: portableSource(entry.input) };
@@ -253,15 +256,20 @@ export function createPortableLedger({ local, repository, repositoryPath }) {
 		catch (error) { if (errorCode(error) !== "factory_knowledge_conflict") throw error; }
 		return local.snapshot();
 	});
-	/** @template {FactoryAction} A @param {A} action @param {Record<string, unknown>} input */
-	const append = (action, input) => files.exclusive(() => {
+	/** @template {FactoryAction} A @param {A} action @param {Record<string, unknown>} input
+	 * @param {Parameters<typeof local.append>[2]} [validate] */
+	const append = (action, input, validate) => files.exclusive(() => {
 		let head;
 		try { head = synchronize(true); }
 		catch (error) {
 			if (!["factory_knowledge_conflict", "factory_migration_required"].includes(errorCode(error) ?? "") || !executionReceipt(action, input)) throw error;
 			return { ...local.append(action, input), knowledgePublication: errorCode(error) };
 		}
-		const result = local.append(action, input, (document) => { projectKnowledge(document, head?.publication.selections); });
+		if (action === "recordOperating" && !validate) fail("operating_authority_unavailable", "Operating publication requires its owner-local commit");
+		const result = local.append(action, input, (document, state) => {
+			projectKnowledge(document, head?.publication.selections);
+			validate?.(document, state);
+		});
 		try { synchronize(true); }
 		catch (cause) {
 			throw Object.assign(new Error("The factory mutation is durable locally, but knowledge publication is pending; inspect or reopen the factory to recover without repeating the mutation", { cause }), {

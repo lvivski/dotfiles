@@ -8,8 +8,9 @@ import { PLAN_STATUS } from "./plan/values.mjs";
 import { createAdmissionStore } from "./storage/admission.mjs";
 import { createArtifactDatabase } from "./storage/database.mjs";
 import { createDispatchJournal, initializeDispatchJournal } from "./storage/dispatch.mjs";
-import { ownSnapshot, parsePlanDocument, readActivation, readPlan, readRecord, serializePlan } from "./storage/documents.mjs";
+import { ownSnapshot, parsePlanDocument, readActivation, readPlan, readRecord, serializePlan, transferablePlan } from "./storage/documents.mjs";
 import { storageError } from "./storage/errors.mjs";
+import { createOperatingPersistence } from "./storage/operating.mjs";
 
 /**
  * @typedef {object} PlanStoreOptions
@@ -187,7 +188,8 @@ export function createPlanStore(options = {}) {
 	/** @param {unknown} plan @param {0} [expectedRevision] */
 	const create = async (plan, expectedRevision) => {
 		validateCreateRevision(expectedRevision);
-		const persisted = serializePlan(ownSnapshot(plan, "invalid_new_plan"), "invalid_new_plan");
+		const parsed = serializePlan(ownSnapshot(plan, "invalid_new_plan"), "invalid_new_plan");
+		const persisted = serializePlan(transferablePlan(parsed.plan), "invalid_new_plan");
 		if (persisted.plan.revision !== 1 || persisted.plan.status !== PLAN_STATUS.DRAFT) {
 			throw storageError("invalid_new_plan", "A new plan must be a draft at revision 1", {
 				details: { revision: persisted.plan.revision, status: persisted.plan.status },
@@ -226,6 +228,7 @@ export function createPlanStore(options = {}) {
 			const createdAt = current.createdAt;
 			const technicalHistory = stableStringify(current.technicalDecisions ?? []);
 			const technicalCount = current.technicalDecisions?.length ?? 0;
+			const operatingHistory = stableStringify(current.operating ?? null);
 			const delegation = settings.delegationId ? readDelegation(db, settings.delegationId) : null;
 			const authority = delegation ? stableStringify(delegation) : null;
 			const active = delegation?.revocation === null;
@@ -249,6 +252,9 @@ export function createPlanStore(options = {}) {
 				throw storageError("immutable_plan_identity", "An update cannot change id or createdAt", {
 					details: { id },
 				});
+			}
+			if (stableStringify(persisted.plan.operating ?? null) !== operatingHistory) {
+				throw storageError("operating_history_immutable", "Operating outbox changes require the dedicated fenced owner writer");
 			}
 			if (stableStringify((persisted.plan.technicalDecisions ?? []).slice(0, technicalCount)) !== technicalHistory) {
 				throw storageError("technical_history_immutable", "Technical decision receipts cannot be removed or rewritten");
@@ -395,11 +401,12 @@ export function createPlanStore(options = {}) {
 				throw storageError("import_invalid", "The imported plan contains invalid JSON", { cause });
 			}
 		}
-		return insertPlan(serializePlan(ownSnapshot(plan, "import_invalid"), "import_invalid"));
+		const parsed = serializePlan(ownSnapshot(plan, "import_invalid"), "import_invalid");
+		return insertPlan(serializePlan(transferablePlan(parsed.plan), "import_invalid"));
 	};
 
 	/** @param {string} id */
-	const exportPlan = async (id) => `${JSON.stringify(await read(id), null, 2)}\n`;
+	const exportPlan = async (id) => `${JSON.stringify(transferablePlan(await read(id)), null, 2)}\n`;
 
 	/** @param {string} id */
 	const getApprovalDelegation = async (id) => transaction((db) => readDelegation(db, id));
@@ -445,6 +452,7 @@ export function createPlanStore(options = {}) {
 	}, { write: true });
 
 	return Object.freeze({
+		operating: createOperatingPersistence({ transaction, owner: options.workspacePath ?? "", now: () => resolveTimestamp(clock), readDelegation }),
 		create,
 		read,
 		readCurrent,

@@ -6,6 +6,7 @@ import { acceptContract, appendKnowledge, createUnit, ingestAnalysis } from "./k
 import { same } from "./records.mjs";
 import { compactFactory, retire } from "./retention.mjs";
 import { recordSignal } from "./signals.mjs";
+import { applyOperatingPublication } from "./operating.mjs";
 
 /** @typedef {import("../types/factory.js").RepositoryIdentity} RepositoryIdentity */
 /** @typedef {import("../types/factory.js").FactoryEvent} FactoryEvent */
@@ -19,7 +20,7 @@ export const FACTORY_FORMAT = "foundry-factory-v2";
 export const FACTORY_ACTIONS = Object.freeze(["createUnit", "appendKnowledge", "acceptContract", "prepareCandidate",
 	"bindPlan", "bindEvaluationPlan", "activateEvaluationPlan", "recordDelivery", "recordEvaluation",
 	"recordCompletion", "recordEvaluationCompletion", "abandonPlan", "decideCandidate",
-	"recordSignal", "ingestAnalysis", "retire", "compactFactory", "checkpoint"]);
+	"recordSignal", "ingestAnalysis", "retire", "compactFactory", "checkpoint", "recordOperating"]);
 
 /** Service-owned metadata must be identical in prospective validation and persistence.
  * @param {FactoryAction} action @param {Record<string, unknown>} input */
@@ -51,6 +52,8 @@ function emptyState() {
 
 export function applyEvent(state, event, options = {}) {
 	switch (event.action) {
+		case "recordOperating":
+			return applyOperatingPublication(state, event.input);
 		case "checkpoint":
 			if (!options.historical || !options.portable) fail("factory_action_invalid", "Private checkpoints are historical portable knowledge, not executable authority");
 			object(event.input, ["digest", "knowledge"], "checkpoint");

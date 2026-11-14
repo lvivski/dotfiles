@@ -175,6 +175,7 @@ export type FoundryPlan = {
 	/** Persisted JSON is validated as a frozen context by analysis before use. */
 	factoryVerification?: Record<string, unknown> | null;
 	technicalDecisions?: TechnicalDecision[];
+	operating?: import("./operating.js").OperatingHistory;
 	tasks: FoundryTask[];
 	gates: { planApprovedAt: string | null; planApprovedBy: string | null; completionApprovedAt: string | null; completionApprovedBy: string | null; delegatedApproval?: DelegatedApproval; delegatedCompletion?: DelegatedCompletion };
 	verification: Verification; cancellation: Cancellation | null; activity: FoundryActivity[];

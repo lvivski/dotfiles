@@ -212,6 +212,7 @@ export type FactoryState = {
 	units: CapabilityUnit[]; knowledge: Knowledge[]; contracts: FactoryContract[];
 	candidates: Candidate[]; decisions: FactoryDecision[]; signals: Signal[];
 	renewals: Renewal[]; retirements: Retirement[]; compactions: Compaction[]; bindings: FactoryBinding[];
+	operating?: import("./operating.js").OperatingPublication[];
 };
 
 export type FactorySnapshot = FactoryState & { repository: RepositoryIdentity; revision: number };
@@ -246,6 +247,7 @@ export type GenerationPackage = Omit<FactoryDefinitions, "contract"> & {
 };
 
 export type FactoryResults = {
+	recordOperating: { operating: import("./operating.js").OperatingPublication };
 	checkpoint: { retainedDigest: string };
 	createUnit: { unit: CapabilityUnit };
 	appendKnowledge: { knowledge: Knowledge };
@@ -270,7 +272,7 @@ export type FactoryResults = {
 };
 
 export type FactoryAction = keyof FactoryResults;
-export type FactoryCommand = Exclude<FactoryAction, "checkpoint">;
+export type FactoryCommand = Exclude<FactoryAction, "checkpoint" | "recordOperating">;
 
 /** Event inputs stay untrusted until the action-specific replay validator runs. */
 export type FactoryEvent<A extends FactoryAction = FactoryAction> = {

@@ -8,10 +8,11 @@ import { createFactoryLedger } from "./factory/storage.mjs";
 import { createPortableLedger } from "./factory/portable.mjs";
 import { guardFactoryEvidence } from "./evidence/guards.mjs";
 import { isRecord } from "./data.mjs";
+import { createOperatingService } from "./factory/operating.mjs";
 
 /**
  * @param {{repositoryPath: string, storageRoot?: string, clock?: () => Date|string|number, busyTimeoutMs?: number,
- * knowledge?: "repository" | "local"}} options
+ * knowledge?: "repository" | "local", operating?: import("./types/operating.js").OperatingPorts}} options
  */
 export function createFactoryService(options) {
 	const repository = resolveRepositoryIdentity(options.repositoryPath);
@@ -23,7 +24,8 @@ export function createFactoryService(options) {
 		return date.toISOString();
 	};
 	if (options.knowledge !== undefined && !["repository", "local"].includes(options.knowledge)) fail("factory_input_invalid", "Unknown knowledge persistence mode");
-	const local = createFactoryLedger({ repository, format: FACTORY_FORMAT, storageRoot: options.storageRoot, busyTimeoutMs: options.busyTimeoutMs, now, replay, applyEvent, fail });
+	const local = createFactoryLedger({ repository, format: FACTORY_FORMAT, storageRoot: options.storageRoot, busyTimeoutMs: options.busyTimeoutMs,
+		now, replay, applyEvent, fail, operatingRules: options.operating?.rules });
 	const portable = createPortableLedger({ local, repository, repositoryPath: options.repositoryPath });
 	const ledger = options.knowledge === "local" ? {
 		...local, executionSnapshot: local.snapshot, assertCurrentKnowledge: () => null, migrateFactory: portable.migrateFactory,
@@ -51,7 +53,14 @@ export function createFactoryService(options) {
 		return ledger.append(action, guardFactoryEvidence(options.repositoryPath, action, owned, state));
 	};
 	const inspect = createFactoryInspection(ledger, repository, now);
+	const operating = createOperatingService({
+		snapshot, now, ports: options.operating,
+		append(publication, authorize) {
+			ledger.append("recordOperating", { expectedRevision: publication.batch.snapshot.factoryRevision, publication }, () => { authorize(); });
+		},
+	});
 	return Object.freeze({
+		operating,
 		repository, databasePath: ledger.databasePath, snapshot, inspect, exportFactory, importFactory,
 		executionSnapshot: ledger.executionSnapshot, assertCurrentKnowledge: ledger.assertCurrentKnowledge,
 		migrateFactory: ledger.migrateFactory,

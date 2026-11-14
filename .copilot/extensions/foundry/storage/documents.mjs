@@ -63,6 +63,14 @@ export function serializePlan(snapshot, code) {
 			cause,
 		});
 	}
+
+}
+
+/** Exports retain historical receipts, never active native bindings, private
+ * references or owner-local publication authority. Apply on import as well.
+ * @param {FoundryPlan} plan */
+export function transferablePlan(plan) {
+	return plan.operating ? { ...plan, operating: { ...plan.operating, local: [] } } : plan;
 }
 
 /** @param {import("node:sqlite").DatabaseSync} db @param {string} id @returns {PlanRecord|null} */

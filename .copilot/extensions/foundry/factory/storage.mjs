@@ -8,6 +8,8 @@ import { analysisInputDigest, stableStringify } from "../digest.mjs";
 import { errorCode, errorMessage, isList, isOneOf, isRecord, parseJson } from "../data.mjs";
 import { createArtifactDatabase } from "../storage/database.mjs";
 import { FACTORY_ACTIONS, prepareCommand } from "./replay.mjs";
+import { assertOperatingSnapshot, validateOperatingRules } from "./operating.mjs";
+import { operatingPublication } from "../plan/schemas/operating.mjs";
 
 /** @typedef {import("../types/factory.js").FactoryAction} FactoryAction */
 /** @typedef {import("../types/factory.js").FactoryEvent} FactoryEvent */
@@ -25,12 +27,12 @@ const bounds = FACTORY_STORAGE_LIMITS;
 
 /**
  * @param {{repository: {id: string, commonDirectory: string}, format: string, storageRoot?: string,
- * busyTimeoutMs?: number, now: () => string,
+ * busyTimeoutMs?: number, now: () => string, operatingRules?: import("../types/operating.js").OperatingRules,
  * replay: (document: FactoryDocument, identity: import("../types/factory.js").RepositoryIdentity) => import("../types/factory.js").FactoryState,
  * applyEvent: import("../types/factory.js").ApplyFactoryEvent,
  * fail: (code: string, message: string, details?: unknown) => never}} options
  */
-export function createFactoryLedger({ repository, format, storageRoot, busyTimeoutMs, now, replay, applyEvent, fail: reportFailure }) {
+export function createFactoryLedger({ repository, format, storageRoot, busyTimeoutMs, now, replay, applyEvent, operatingRules, fail: reportFailure }) {
 	/** @param {string} code @param {string} message @param {unknown} [details] @returns {never} */
 	function fail(code, message, details) { return reportFailure(code, message, details); }
 	/** @returns {FactoryDocument} */
@@ -270,6 +272,13 @@ export function createFactoryLedger({ repository, format, storageRoot, busyTimeo
 		try { owned = structuredClone(request); } catch (error) { fail("factory_input_invalid", "Factory mutations require owned JSON data", { message: errorMessage(error) }); }
 		const { expectedRevision, ...payload } = owned;
 		const input = prepareCommand(action, payload);
+		if (action === "recordOperating") {
+			if (!validate) fail("operating_authority_unavailable", "Operating publication requires its exact owner-local authorization commit");
+			const publication = operatingPublication(input.publication);
+			const snapshot = { repository, revision: document.revision, ...state };
+			assertOperatingSnapshot(snapshot, publication.batch);
+			validateOperatingRules(snapshot, publication.batch, operatingRules);
+		}
 		const at = now();
 		const last = document.events.at(-1);
 		if (last && last.at > at) fail("factory_clock_invalid", "Factory clock moved behind its last event");
@@ -305,6 +314,20 @@ export function createFactoryLedger({ repository, format, storageRoot, busyTimeo
 		if (Buffer.byteLength(serialized) > bounds.jsonBytes) fail("factory_export_page_required", "Logical history exceeds the 32 MiB single-JSON bound; use pinned factory export pages");
 		return serialized;
 	});
+	/** Domain rules validate every historical effective graph before import changes
+	 * any effective record. A valid envelope or a digest is not domain approval.
+	 * @param {FactoryDocument} document */
+	const validateOperatingImport = document => {
+		if (!document.events.some(event => event.action === "recordOperating")) return;
+		const state = replay({ ...document, revision: 0, events: [] }, repository);
+		for (const event of document.events) {
+			if (event.action === "recordOperating") {
+				const publication = operatingPublication(event.input.publication);
+				validateOperatingRules({ ...state, repository, revision: event.revision - 1 }, publication.batch, operatingRules);
+			}
+			applyEvent(state, event, { historical: true, portable: document.portable === true });
+		}
+	};
 	/** @param {{afterRevision?: number, throughRevision?: number, throughDigest?: string, limit?: number}} [input] */
 	const exportFactoryPage = ({ afterRevision = 0, throughRevision, throughDigest, limit = bounds.transferEvents } = {}) => database.transaction((db) => {
 		checkRevision(afterRevision, "afterRevision");
@@ -341,6 +364,7 @@ export function createFactoryLedger({ repository, format, storageRoot, busyTimeo
 			fail("factory_import_invalid", "Factory import contains invalid JSON");
 		}
 		replay(document, repository);
+		validateOperatingImport(document);
 		const last = document.events.at(-1);
 		if (last && last.at > now()) fail("factory_import_invalid", "Factory import contains future events");
 		document.events.forEach(checkEvent);
@@ -387,6 +411,7 @@ export function createFactoryLedger({ repository, format, storageRoot, busyTimeo
 			|| (!page.events.length && cursor !== page.revision)) fail("factory_import_cursor", "Import page has a gap, duplicate or invalid completion marker");
 		const document = { format, repository, revision: cursor, events: combined, ...(page.portable ? { portable: /** @type {const} */ (true) } : {}) };
 		replay(document, repository);
+		validateOperatingImport(document);
 		const last = combined.at(-1);
 		if (last && last.at > now()) fail("factory_import_invalid", "Imported evidence is from the future");
 		for (const event of incoming) {

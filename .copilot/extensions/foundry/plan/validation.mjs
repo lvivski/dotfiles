@@ -9,6 +9,7 @@ import { validateCancellation } from "./schemas/cancellation.mjs";
 import { validateEvaluationTarget, validateFactoryBinding } from "./schemas/factory.mjs";
 import { validateTasks } from "./schemas/tasks.mjs";
 import { validateVerification } from "./schemas/verification.mjs";
+import { operatingHistory } from "./schemas/operating.mjs";
 import { ATTEMPT_STATUS, EVIDENCE_OUTCOME, LIMITS, PLAN_STATUS, PLAN_STATUS_VALUES, TASK_STATUS, VERIFICATION_STATUS } from "./values.mjs";
 
 /** @typedef {import("../types/plan.js").FoundryPlan} FoundryPlan */
@@ -27,6 +28,7 @@ const PLAN_KEYS = new Set([
 	"evaluationTarget",
 	"factoryVerification",
 	"technicalDecisions",
+	"operating",
 	"tasks",
 	"gates",
 	"verification",
@@ -124,6 +126,15 @@ function assertValidPlan(plan) {
 	validatePlanning(plan.planning);
 	validateFactoryBinding(plan.factory);
 	const factoryBinding = plan.factory;
+	if (plan.operating !== undefined) {
+		const history = operatingHistory(plan.operating);
+		for (const publication of history.publications) {
+			if (publication.planId !== planId || publication.planRevision >= plan.revision
+				|| publication.batch.snapshot.repositoryId !== factoryBinding?.repositoryId) {
+				fail("operating_history_invalid", "Operating receipts must retain their exact prior owner-plan revision and repository");
+			}
+		}
+	}
 	validateEvaluationTarget(plan.evaluationTarget);
 	if (plan.evaluationTarget != null && (plan.factory?.purpose !== "evaluation"
 		|| plan.evaluationTarget.candidateId !== plan.factory.candidateId)) fail("invalid_evaluation_target", "Evaluation target requires its matching factory binding");
