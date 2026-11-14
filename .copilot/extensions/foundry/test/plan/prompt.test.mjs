@@ -201,6 +201,11 @@ test("dependency summaries are encoded inside an explicit untrusted-data fence",
 	);
 	assert.match(prompt, /attempt T-002-A001/);
 	assert.match(prompt, /Base branch: work\/dependency/);
+	assert.match(prompt, /Approval of this implementation task includes ordinary local commits needed for\s+delivery on the assigned work branch; do not ask for separate commit consent/);
+	assert.match(prompt, /Preserve explicit no-commit\/read-only instructions and task\/file\/branch limits/);
+	assert.match(prompt, /If those instructions prohibit required delivery, report the conflict rather\s+than weakening verification/);
+	assert.match(prompt, /Push, PR and merge permissions remain distinct/);
+	assert.match(prompt, /native resource permissions remain unchanged/);
 	assert.match(prompt, /exact accepted requirement\/evaluator revisions, this producer task\/attempt/);
 	assert.match(prompt, /immutable input\/output identities and the delivered commit/);
 	assert.match(prompt, /never infer package identity, revisions or scope from arbitrary\s+task text or summaries/);
@@ -257,6 +262,9 @@ test("dependency summaries are encoded inside an explicit untrusted-data fence",
 	assert.match(initialization.acknowledgement, /T-003\/T-003-A001/);
 	assert.match(verifierPrompt, /independent, read-only verification/);
 	assert.match(verifierPrompt, /Do not edit files, create commits,\s+push branches, or open pull requests/);
+	assert.doesNotMatch(verifierPrompt, /Approval of this implementation task includes ordinary local commits/);
+	assert.match(initialization.kickoff.prompt, /Do not inspect task source, run commands, edit files, change branches, create commits/);
+	assert.doesNotMatch(initialization.kickoff.prompt, /Approval of this implementation task includes ordinary local commits/);
 	assert.match(verifierPrompt, /exact accepted requirement\/evaluator revisions, producer\s+task\/attempt, immutable input\/output identities and delivered commit/);
 	assert.match(verifierPrompt, /absent package bindings do not require invented package fields or checks/);
 	assert.match(verifierPrompt, /substantive authorized review independent of the producer/);

@@ -222,6 +222,13 @@ ${deliveryRequirement === "branch"
 				? "\n- Report the pull request URL."
 				: ""}`}
 
+Approval of this implementation task includes ordinary local commits needed for
+delivery on the assigned work branch; do not ask for separate commit consent.
+Preserve explicit no-commit/read-only instructions and task/file/branch limits.
+If those instructions prohibit required delivery, report the conflict rather
+than weakening verification. Push, PR and merge permissions remain distinct;
+native resource permissions remain unchanged.
+
 Work autonomously in this App-created project session. Make only the changes
 needed for this approved task. Do not perform undeclared follow-up work or
 expand the approved DAG. Preserve unrelated user work, integrate every listed

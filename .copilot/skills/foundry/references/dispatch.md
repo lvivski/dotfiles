@@ -120,6 +120,13 @@ retention providers remain explicit holds.
 
 ### Ordered protocol
 
+Approved implementation tasks include ordinary local commits needed for their scoped delivery on
+the assigned work branch; do not ask for separate commit consent at startup or completion.
+Preserve explicit no-commit/read-only instructions, task/file/branch limits and distinct push/PR/merge
+permissions. Native permissions and the verifier's read-only contract remain unchanged. If explicit
+constraints prohibit required delivery, report the conflict under
+[route selection](planning.md#choose-the-route-first), not a weakened delivery or redundant consent gate.
+
 1. Call `foundry_get_status` and read `projection.scheduling`.
 2. Dispatch only IDs in `projection.scheduling.dispatchableTaskIds`. Read its `launches` and
    `scopeConflicts` for delivery guidance and holds. Readiness is derived, not a stored task state.

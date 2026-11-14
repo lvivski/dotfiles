@@ -25,6 +25,12 @@ delegation through the same mechanism. Historical untyped grants remain initial-
 the authoritative verification/delivery binding and current independent/human evidence. It does not
 accept design, replace a capability, authorize correction waves or grant external/resource actions.
 
+Authorizing implementation includes ordinary local commits needed to deliver it on the assigned
+work branch. Foundry requires no separate commit consent before implementation planning, task startup
+or delivery. Explicit no-commit/read-only instructions and task/file/branch limits remain binding;
+proposal-only work stays non-implementation. Push, PR, merge and native resource permissions remain
+distinct. Commit-pinned delivery and independent read-only verification are unchanged.
+
 Explicit `approvalType: "technical"` uses a separate owner-local grant for bounded discovery retry
 and frozen consumer-expectation alignment. Historical plan/completion grants do not expand.
 The existing delegation, approval and contract tools retain verbatim instruction attestation and
@@ -84,7 +90,7 @@ the persisted executable-plan namespaces; package metadata is not an execution g
 Omitting `decomposition` retains the historical implementation-plus-verifier recipe. An explicit
 invalid decomposition never falls back to it. Draft compilation starts no child, grants no
 approval and materializes no input. Valid owner-local initial-plan delegation does not need
-reconfirmation, but technical completion, commits, contract/replacement acceptance, human judgment
+reconfirmation, but technical completion, contract/replacement acceptance, human judgment
 and external/resource permissions remain distinct.
 
 The source registers these bounded operations over the actual admission, journal, dispatch,
@@ -338,7 +344,8 @@ recipe does not renew them. A recipe change cannot erase a native admission fail
 All planning stages share the same task-graph rules. The read-only final verifier
 has no authored criteria or files: it evaluates the implementation tasks' criteria
 against the committed integration snapshot. Critics must not invent a conflicting
-verifier contract or bypass required commit authorization.
+verifier contract. Approved implementation includes the ordinary local commits needed for delivery,
+without another consent gate; explicit delivery restrictions and distinct PR permissions remain binding.
 
 Generation schemas, domain validators and canonical storage preserve complete nonempty prose and
 collections, including multiline Unicode and significant whitespace. No field/collection size rule

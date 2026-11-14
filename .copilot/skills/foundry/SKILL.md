@@ -138,6 +138,11 @@ verified source, applicable retained user authority and normal account/resource 
     verification Workflow run have terminal dispositions.
 11. A successful task must satisfy its delivery requirement: `branch` needs the attached branch;
     `commit` also needs a full 40- or 64-character commit ID; `pr` additionally needs a PR URL.
+    Implementation authorization includes ordinary local commits needed on the assigned work branch,
+    without separate commit consent before planning, task startup or delivery. Preserve explicit
+    no-commit/read-only instructions and task/file/branch limits; proposal-only work stays non-implementation.
+    Push/PR/merge and native resource permissions remain distinct; follow
+    [route selection](references/planning.md#choose-the-route-first).
     Commit existence, required ancestry and protected evaluator identity are mechanically checked.
     The verifier's registered worktree is captured before it runs; its session association and
     execution narrative remain claims, not authenticated attestation.

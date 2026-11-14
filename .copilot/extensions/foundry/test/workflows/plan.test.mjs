@@ -188,7 +188,13 @@ test("bundled planning workflow executes with native result semantics", async ()
 	for (const { prompt } of workflow.calls) {
 		assert.match(prompt, /have empty acceptanceCriteria and expectedFiles/);
 		assert.match(prompt, /read-only verifier checks those criteria rather than authoring its own/);
-		assert.match(prompt, /Commit or PR delivery still requires user authorization/);
+		assert.match(prompt, /Implementation authorization includes ordinary local commits needed for delivery on the assigned work branch/);
+		assert.match(prompt, /do not require separate commit consent before planning, task startup or delivery/);
+		assert.match(prompt, /Preserve explicit no-commit\/read-only instructions and task\/file\/branch limits/);
+		assert.match(prompt, /does not turn proposal-only work into implementation or grant push, PR or merge permission/);
+		assert.match(prompt, /PR delivery requires its distinct permission/);
+		assert.match(prompt, /Native resource permissions remain unchanged/);
+		assert.match(prompt, /If constraints prohibit the required delivery, report the conflict rather than weakening verification/);
 	}
 	assertGenerationBounds(workflow, args.maxTasks);
 	assertExecutionPlanningGuidance(workflow);

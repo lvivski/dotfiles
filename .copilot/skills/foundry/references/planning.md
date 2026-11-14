@@ -10,12 +10,19 @@ commit- or PR-delivered implementation target, followed by a commit-delivered re
 Earlier leaves may be branch-delivered. `intent: "discovery"` changes the authority context,
 not this execution topology or commit-pinned implementation verification.
 
-Artifact-only/read-only research or design proposals without commit authorization should use
-already-user-authorized standalone analysis, not an impossible App task DAG. Retain scoped
-non-governing observations/proposals under the [factory lifecycle](factory.md#authority-and-discovery).
-Do not infer commit permission from planning, resource admission, or an unavailable user.
-If the needed analysis or delivery is not authorized, wait for that authorization; preserve
-explicit contract, plan and completion approval.
+Authorizing implementation work includes ordinary local commits needed to deliver that work on
+the assigned work branch. Do not require separate commit consent before preparing or launching
+an implementation plan, starting an approved task, or delivering it. Preserve explicit user
+no-commit/read-only instructions and task/file/branch limits. Push, PR and merge permissions
+remain distinct, as do native resource permissions and contract, plan and completion approval.
+
+Artifact-only/read-only research and design proposals should use already-user-authorized standalone
+analysis, not an implementation App task DAG. The local-commit default does not turn proposal-only
+work into implementation. Retain scoped non-governing observations/proposals under the
+[factory lifecycle](factory.md#authority-and-discovery). Planning-only or resource approval does
+not authorize implementation. If explicit constraints prohibit the required commit-pinned delivery,
+report that conflict before launch rather than weakening verification or asking for redundant
+commit consent. If the needed analysis or implementation is not authorized, wait for that authority.
 
 Use `foundry_capture_analysis` only for supported registered workflows `audit`, `deep-research`,
 `review-queue`, `security-review`, and `triage`: the report must be completed, owned by the current
@@ -243,9 +250,10 @@ Use `action: "revoke"`, the grant `id` and `reason` to stop future delegated dec
 is irreversible for that ID and checked in the same SQLite transaction as approval. It preserves
 historical receipts and does not cancel already approved/running work. Plan JSON exports contain
 historical approval evidence, not a transferable active delegation. This does not delegate contract
-acceptance, correction/replacement approval, human or aesthetic acceptance, commit permission, shared-resource scope
+acceptance, correction/replacement approval, human or aesthetic acceptance, shared-resource scope
 overrides, verification, native resource permission or external actions. Existing owner, authority,
 synchronization and dispatch checks still apply; it does not transfer another coordinator's plans.
+Approved implementation includes ordinary local commits under the default above, not another grant.
 An initial-plan grant also does not authorize completion; even a separately completion-scoped grant
 authorizes only the technical closure described in the verification protocol.
 
@@ -293,7 +301,7 @@ authorize a new factory append.
 Use the [correction protocol](verification.md#delegated-discovery-correction) for retry and the
 [bounded renewal protocol](factory.md#delegated-consumer-expectation-renewal) for protected evaluator
 alignment. This changes neither the approved DAG nor accepted product meaning. Human/design and
-replacement judgments, independent evaluation, commits, external actions and real resource
+replacement judgments, independent evaluation, external actions and real resource
 permissions remain separate. A native denial is not a technical disagreement to override.
 
 ## Owner-local large-payload transport
@@ -324,7 +332,8 @@ complete digest and unchanged workflow name, args and limits, under its normal n
 If a required operation lacks supported transport on its intended route, retain the hold. Never override permissions,
 fall back to `session.workflow.run` (SDK-initiated runs do not request native resource permission),
 or wrap this in a nested workflow (unsupported). Valid initial-plan or completion delegation is
-not invocation, file-write, commit, shared-resource or external-action permission.
+not invocation, file-write, shared-resource or external-action permission. Ordinary local commits
+for approved implementation follow the default above; they need no separate Foundry grant.
 
 Retain an owner-local admission-intent record before any supported invocation, then retain the native
 outcome receipt and exact `runId`. That record is not a native reservation or execution grant.
