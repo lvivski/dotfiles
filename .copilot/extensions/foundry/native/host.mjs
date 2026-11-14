@@ -37,7 +37,7 @@ const names = /** @type {const} */ (["foundry_get_status", "foundry_reserve_task
 
 /** Only this operation has an observed working extension-RPC invocation route.
  * The owning composition still checks current invocation and durable single admission.
- * @param {{rpc: Pick<import("@github/copilot-sdk").CopilotSession["rpc"], "tools">}} session */
+ * @param {{rpc: {tools: Pick<NonNullable<import("@github/copilot-sdk").CopilotSession["rpc"]["tools"]>, "execute">}}} session */
 export function createRpcWorkflowRoute(session) {
 	const tools = session.rpc.tools;
 	if (!tools) hold("dispatch_capability_unavailable", "This SDK has no offered-tool execution API");

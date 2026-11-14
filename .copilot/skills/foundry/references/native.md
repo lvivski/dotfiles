@@ -189,6 +189,13 @@ do not mutate; valid attributed fixtures do. Native compilation is neither a liv
 dialog nor resource-permission test. SDK/toolchain fingerprints must match the final
 target's retained run; future SDK differences require explicit reconciliation.
 
+The joined native check also covers the newly delivered host fixtures. The
+workflow adapter depends on the SDK's exact `tools.execute` signature, not its
+unrelated tools-management methods. Recording results retain the literal
+`success` type; missing SDK tooling is exercised by removing the fixture port at
+runtime. Neither negative tests nor SDK declarations are excluded or weakened to
+make the composition compile.
+
 ## Criterion and original-requirement conservation
 
 All 31 implementation IDs remain: NB-HOST-01..10, NB-TECH-01..06,

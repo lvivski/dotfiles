@@ -69,7 +69,8 @@ function fixture(overrides = {}) {
 		/** @param {unknown} value */ respond(value) { response = value; },
 		/** @param {() => void} callback */ during(callback) { during = callback; } };
 }
-/** @param {unknown} value */
+/** @param {unknown} value
+ * @returns {{resultType: "success", textResultForLlm: string}} */
 const success = value => ({ resultType: "success", textResultForLlm: JSON.stringify(value) });
 
 test("host binds every supported primary operation without manufacturing a metadata-based RPC route", async () => {
@@ -226,11 +227,14 @@ test("all four admission routes retain exact request fields and canonical curren
 test("the public SDK workflow adapter invokes only tools.execute with the unchanged complete launch", async () => {
 	/** @type {unknown[]} */
 	const calls = [];
-	const route = createRpcWorkflowRoute({ rpc: { tools: { async execute(input) {
+	/** @type {Parameters<typeof createRpcWorkflowRoute>[0]} */
+	const session = { rpc: { tools: { async execute(input) {
 		calls.push(structuredClone(input)); return success({ runId: "native-run" });
-	} } } });
+	} } } };
+	const route = createRpcWorkflowRoute(session);
 	const launch = { name: "prepared", args: { full: ["payload"], nested: { true: true } } };
 	await route(launch, "durable-effect-id");
 	assert.deepEqual(calls, [{ name: "run_dynamic_workflow", arguments: launch, toolCallId: "durable-effect-id" }]);
-	assert.throws(() => createRpcWorkflowRoute({ rpc: {} }), { code: "dispatch_capability_unavailable" });
+	Reflect.deleteProperty(session.rpc, "tools");
+	assert.throws(() => createRpcWorkflowRoute(session), { code: "dispatch_capability_unavailable" });
 });
