@@ -1,4 +1,4 @@
-import { lstatSync, realpathSync } from "node:fs";
+import { lstatSync, readdirSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { errorCode, errorMessage, property } from "../data.mjs";
 
@@ -7,6 +7,58 @@ import { errorCode, errorMessage, property } from "../data.mjs";
  * }} HelperSession */
 
 const SESSION_HELPER = "foundry-exact-relay";
+
+/**
+ * Read-only retention path observation, NOT a write exception or race-safe lease.
+ * Checks every existing ancestor at use time; callers must pin/recheck identities.
+ * Missing leaves are allowed only beneath an existing, canonical trusted root.
+ *
+ * @param {string} root
+ * @param {string} relative
+ * @param {{kind: "file" | "directory", missing?: boolean, private?: boolean}} options
+ */
+export function observeRetentionPath(root, relative, options) {
+	if (!path.isAbsolute(root) || path.normalize(root) !== root || root === path.parse(root).root
+		|| /[\\\0]/.test(root) || root.split(path.sep).some(part => part === "." || part === "..")
+		|| (relative !== "" && (relative.length > 512 || !/^[A-Za-z0-9._/-]+$/.test(relative)
+			|| relative.split("/").some(part => !part || part === "." || part === ".." || part.endsWith(".")
+				|| /^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(part))))) {
+		throw new Error("retention_path_invalid");
+	}
+	const filename = relative ? path.join(root, relative) : root;
+	const parts = filename.slice(path.parse(filename).root.length).split(path.sep);
+	if (parts.length > 64) throw new Error("retention_path_overflow");
+	/** @type {{path: string, device: string, inode: string}[]} */
+	const components = [];
+	let current = path.parse(filename).root;
+	for (const [index, part] of parts.entries()) {
+		if (readdirSync(current).some(entry => entry.normalize("NFC").toLowerCase() === part.normalize("NFC").toLowerCase() && entry !== part)) {
+			throw new Error("retention_path_alias");
+		}
+		current = path.join(current, part);
+		let metadata;
+		try { metadata = lstatSync(current, { bigint: true }); }
+		catch (error) {
+			if (errorCode(error) === "ENOENT" && options.missing && current.startsWith(`${root}${path.sep}`)) {
+				return { path: filename, components, exists: false, size: null, stamp: null };
+			}
+			throw error;
+		}
+		const final = index === parts.length - 1;
+		if (metadata.isSymbolicLink() || realpathSync(current) !== current
+			|| (final && options.kind === "file" ? !metadata.isFile() || metadata.nlink !== 1n : !metadata.isDirectory())) {
+			throw new Error("retention_path_linked");
+		}
+		if (options.private && (current === root || (final && options.kind === "file"))
+			&& (typeof process.getuid !== "function" || metadata.uid !== BigInt(process.getuid()) || (metadata.mode & 0o077n) !== 0n)) {
+			throw new Error("retention_private_storage_required");
+		}
+		components.push({ path: current, device: String(metadata.dev), inode: String(metadata.ino) });
+		if (final) return { path: filename, components, exists: true, size: Number(metadata.size),
+			stamp: `${metadata.dev}:${metadata.ino}:${metadata.size}:${metadata.mtimeNs}:${metadata.ctimeNs}` };
+	}
+	throw new Error("retention_path_invalid");
+}
 
 /** File-oriented tools whose arguments can be checked against the workspace. */
 const FILE_WRITE_TOOLS = new Set([

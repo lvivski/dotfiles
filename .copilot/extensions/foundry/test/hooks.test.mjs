@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { buildFoundryHooks } from "../hooks.mjs";
-import { inspectWriteBoundary } from "../hooks/paths.mjs";
+import { inspectWriteBoundary, observeRetentionPath } from "../hooks/paths.mjs";
 import { classifyShellCommand } from "../hooks/shell.mjs";
 import { must } from "./assertions.mjs";
 
@@ -179,6 +179,7 @@ test("helper exception rejects foreign, unregistered, traversing and mixed write
 		path.join(foreign, "extension.mjs"),
 		path.join(session.workspacePath, "extensions", "unregistered", "extension.mjs"),
 		path.join(session.workspacePath, "files", "payload.json"),
+		path.join(session.workspacePath, "files", "foundry-retention", "extension.mjs"),
 		path.join(`${helper}-other`, "extension.mjs"),
 		`${helper}/../foundry-exact-relay/extension.mjs`,
 		path.relative(repository, entry),
@@ -200,6 +201,23 @@ test("helper exception rejects foreign, unregistered, traversing and mixed write
 		assert.equal((await call("apply_patch", patch)).permissionDecision, "deny");
 	}
 	assert.equal((await call("edit", { path: entry, destination: path.join(foreign, "file.mjs") })).permissionDecision, "deny");
+});
+
+test("retention path observation supplies no outside-workspace write exception", async (t) => {
+	const { helper, entry, session, call } = await helperFixture(t);
+	const observed = observeRetentionPath(helper, "extension.mjs", { kind: "file" });
+	assert.equal(observed.path, entry);
+	assert.equal(observed.exists, true);
+	const retention = path.join(session.workspacePath, "files", "retention");
+	await mkdir(retention, { recursive: true, mode: 0o700 });
+	const candidate = path.join(retention, "report.json");
+	assert.equal(observeRetentionPath(retention, "report.json", { kind: "file", missing: true }).exists, false);
+	assert.equal((await call("write", { path: candidate, retained: true, permission: true })).permissionDecision, "deny");
+	assert.equal((await call("apply_patch", `*** Update File: ${entry}\n*** Add File: ${candidate}\n`)).permissionDecision, "deny");
+	for (const relative of ["../escape", "/escape", "a/../escape", "a//escape", "C:escape", "NUL.json"]) {
+		assert.throws(() => observeRetentionPath(retention, relative, { kind: "file", missing: true }), /retention_path_invalid/);
+	}
+	assert.deepEqual(await call("edit", { path: entry }), {}, "The sole existing exact-relay exception is unchanged");
 });
 
 test("helper exception requires matching native identities and trusted workspace context", async (t) => {
