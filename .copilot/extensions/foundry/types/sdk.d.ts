@@ -371,13 +371,17 @@ declare module "@github/copilot-sdk" {
 		};
 	}
 
+	export type ElicitationFieldValue = string | number | boolean | string[];
+
+	export interface ElicitationResult {
+		action: "accept" | "decline" | "cancel";
+		content?: Record<string, ElicitationFieldValue | undefined>;
+	}
+
 	export interface SessionUiApi {
 		confirm(message: string): Promise<boolean>;
 		select(message: string, options: string[]): Promise<string | null>;
-		elicitation(params: ElicitationParams): Promise<{
-			action: "accept" | "decline" | "cancel";
-			content?: Record<string, string | number | boolean | string[]>;
-		}>;
+		elicitation(params: ElicitationParams): Promise<ElicitationResult>;
 	}
 
 	interface BaseHookInput {
