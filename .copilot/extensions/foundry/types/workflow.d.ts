@@ -18,9 +18,16 @@ export type WorkflowPreparation = { workflow: string; inputDigest: string; launc
 
 /** The application consumes this port, not unneeded native observations or SDK class internals. */
 export type WorkflowAnalysisPort = {
+	readPlanningRepairSource?(runId: string): Promise<import("./repair.js").RepairSource>;
+	importPlanningRepair?(runId: string, preparation: import("./repair.js").RepairPreparation): Promise<{
+		runId: string; inputDigest: string; plan: PlanBlueprint; factoryContext?: JsonObject; conceptualReview?: ConceptualReview;
+		outcome: import("./repair.js").RepairOutcome; resultDigest: string;
+	}>;
+	reconcilePlanningRepair?(preparation: import("./repair.js").RepairPreparation): Promise<{runId: string; evidence: JsonValue}>;
 	preparePlanning(input: unknown): Promise<WorkflowPreparation>;
 	importPlanning(runId: string, options?: { signal?: AbortSignal }): Promise<{
 		runId: string; inputDigest: string; plan: PlanBlueprint; factoryContext?: JsonObject; conceptualReview?: ConceptualReview;
+		repair?: import("./repair.js").RepairOutcome;
 	}>;
 	prepareVerification(plan: FoundryPlan, reservationId: string): Promise<WorkflowPreparation>;
 	importVerification(runId: string, plan: FoundryPlan, options?: { signal?: AbortSignal; wait?: boolean }): Promise<{

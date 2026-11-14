@@ -6,9 +6,12 @@ import { LIMITS, TASK_ID_PATTERN } from "../../plan/values.mjs";
 import { visualCriterion } from "../../factory/visual.mjs";
 import { meta as planMeta, run as runPlan } from "../../workflows/plan.mjs";
 import { must } from "../assertions.mjs";
-import { planningResult } from "../native/plans.mjs";
+import { planningResult, withPlanningOwner } from "../native/plans.mjs";
 import { assertOutputSchemas } from "./assertions.mjs";
-import { createWorkflowContext, FatalWorkflowFailure, workflowWithResponses } from "./runtime.mjs";
+import { createWorkflowContext, FatalWorkflowFailure, workflowWithResponses as responsesFor } from "./runtime.mjs";
+
+/** @param {import("@github/copilot-sdk").JsonValue} args @param {Record<string, unknown>} responses */
+const workflowWithResponses = (args, responses) => withPlanningOwner(responsesFor(args, responses));
 
 /** @param {ReturnType<typeof createWorkflowContext>} workflow @param {number} maxTasks */
 function assertGenerationBounds(workflow, maxTasks) {
@@ -275,8 +278,13 @@ test("a structurally valid repair still requires conserved intent, both critics,
 		const result = await runPlan(workflow);
 		assert.equal(result.status, "needs-review");
 		assert.ok(result.issues.length || result.missingPerspectives.length);
-		assert.equal(must(result.synthesisRepair).issue, null, "The repaired blueprint itself is valid");
-		assert.deepEqual(must(result.synthesisRepair).original, oversized);
+		if (result.missingPerspectives.length) {
+			assert.equal(result.synthesisRepair, null, "Missing critics cannot authorize repair");
+			assert.equal(workflow.calls.filter(call => call.options.label === "plan:synthesis-repair").length, 0);
+		} else {
+			assert.equal(must(result.synthesisRepair).issue, null, "The repaired blueprint itself is valid");
+			assert.deepEqual(must(result.synthesisRepair).original, oversized);
+		}
 		assert.throws(() => validatePlanningResult(result, args, args.maxTasks), /did not produce a ready plan/);
 	}
 });
@@ -285,15 +293,15 @@ test("native replay retains the completed repair when independent verification i
 	const { args, responses } = repairFixture();
 	/** @type {Record<string, unknown>} */
 	const configured = responses;
-	const interrupted = createWorkflowContext(args, (_prompt, options) => {
+	const interrupted = withPlanningOwner(createWorkflowContext(args, (_prompt, options) => {
 		if (options.label === "plan:verifier") throw new FatalWorkflowFailure("Interrupted verification");
 		return configured[options.label];
-	});
+	}));
 	await assert.rejects(runPlan(interrupted), /Interrupted verification/);
-	const resumed = createWorkflowContext(args, (_prompt, options) => {
+	const resumed = withPlanningOwner(createWorkflowContext(args, (_prompt, options) => {
 		assert.equal(options.label, "plan:verifier", "Completed agents must replay from the native journal");
 		return configured[options.label];
-	}, interrupted.journal);
+	}, interrupted.journal), interrupted.session.workspacePath);
 	const result = await runPlan(resumed);
 	assert.equal(result.status, "ready");
 	assert.equal(resumed.calls.length, 1);

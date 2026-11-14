@@ -40,7 +40,7 @@ import { admissionFence } from "./storage/admission.mjs";
  * @property {(event: {workspacePath: string, planId: string, revision: number}) => void} [notify]
  * @property {WorkflowAnalysis} analysis Native Workflow adapter.
  * @property {string} [factoryStorageRoot] Private root override for isolated fixtures.
- * @property {() => import("./application/approval.mjs").ApprovalSession | null | undefined} [getSession]
+ * @property {() => import("./types/repair.js").RepairSession | null | undefined} [getSession]
  * @property {() => import("./types/parallel.js").ParallelHost | null | undefined} [getParallelHost] Trusted current host ports, not caller JSON or tool metadata.
  * @property {import("./types/factory.js").TechnicalExecutor} [executeTechnical] Trusted reference execution with native resource permission.
  */
@@ -79,7 +79,10 @@ export function createFoundryOperations(options) {
 		workspace, storeFor, readForMutation, persist, factory, syncFactoryPlan, coordinator, checkOwner, checkAuthority,
 		executeTechnical: options.executeTechnical,
 	});
-	const { preparePlan, createPlan, submitPlan, approve } = createPlanningOperations({ analysis, factory, persist, syncFactoryPlan, approveDelegated, approveTechnical: technical.approveTechnical });
+	const { preparePlan, createPlan, submitPlan, approve, preparePlanRepair, launchPlanRepair, reconcilePlanRepair, importPlanRepair } = createPlanningOperations({
+		analysis, factory, persist, syncFactoryPlan, approveDelegated, approveTechnical: technical.approveTechnical,
+		workspace, storeFor, coordinator, getSession: options.getSession,
+	});
 	const tasks = createTaskOperations({ storeFor, persist, factory, syncFactoryPlan });
 	const { cancel: cancelPlan, cancelVerificationRun, finalizeCancellation: finalizePlanCancellation } = createCancellationOperations({ storeFor, persist, readForMutation, factory, analysis, discoverReservedVerification, syncFactoryPlan });
 	const { getStatus, nextTasks, reserveTask, attachTask, completeTask, cancel, finalizeCancellation, dispatchReady, reconcileParallel, materializeInputs, assessPackage } = createParallelComposition({
@@ -91,6 +94,10 @@ export function createFoundryOperations(options) {
 	return Object.freeze({
 		preparePlan: requestHandler("preparePlan", preparePlan),
 		createPlan: requestHandler("createPlan", createPlan),
+		preparePlanRepair: requestHandler("preparePlanRepair", preparePlanRepair),
+		launchPlanRepair: requestHandler("launchPlanRepair", launchPlanRepair),
+		reconcilePlanRepair: requestHandler("reconcilePlanRepair", reconcilePlanRepair),
+		importPlanRepair: requestHandler("importPlanRepair", importPlanRepair),
 		/** Reads one validated plan. */
 		getPlan: requestHandler("getPlan", getPlan),
 		getStatus: requestHandler("getStatus", getStatus),

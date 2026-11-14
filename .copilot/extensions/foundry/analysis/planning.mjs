@@ -86,6 +86,9 @@ export function buildPlanningArgs(value) {
  */
 export function validatePlanningArgs(value) {
 	const input = plainObject(value, "args");
+	if (Object.keys(input).some(key => !["objective", "constraints", "repositoryContext", "maxTasks", "factoryContext", "inputDigest"].includes(key))) {
+		fail("invalid_analysis_input", "Planning arguments cannot supply repair budgets, native lineage or unexpected fields");
+	}
 	const canonical = buildPlanningArgs(input);
 	if (input.inputDigest !== canonical.inputDigest) {
 		fail("analysis_input_mismatch", "Planning arguments do not match their canonical digest");
@@ -230,10 +233,13 @@ export function validatePlanningResult(value, expectedInput, maxTasks) {
 				: [],
 		});
 	}
+	const verificationIssues = property(result.verification, "issues");
 	if ((isList(result.issues) && result.issues.length > 0)
 		|| (isList(result.missingPerspectives)
 			&& result.missingPerspectives.length > 0)
-		|| property(result.verification, "passed") !== true) {
+		|| property(result.verification, "passed") !== true
+		|| !isList(verificationIssues)
+		|| verificationIssues.length !== 0) {
 		fail("invalid_analysis_result", "Ready planning result contains unresolved review findings");
 	}
 	if (!isList(result.critiques)

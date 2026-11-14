@@ -68,6 +68,58 @@ capabilities retain a hold. For package consumption after restart, re-resolve im
 corroborate the authorized consumer entry before materialization; persisted descriptors grant no authority.
 This is a recovery requirement, not evidence that App-restart recovery or live permissions were tested.
 
+## Completed planning repair
+
+Local source provides bounded recovery for a completed registered `plan` result that is structurally
+valid but `needs-review` solely on its original failed semantic verdict. The invoking owner must
+retain the original canonical input, both complete critics and native run/agent observations.
+An explicit `synthesisRepair: null` with no historical budget field is eligible; missing, malformed,
+foreign, renamed/custom or already-repaired lineage is not. Current results must carry the same
+original run ID and an unused budget. The native API observations corroborate identity; they do not
+cryptographically attest recipe code or independently authenticate an agent's claims.
+
+1. In the **original owning session**, call
+   `foundry_prepare_plan_repair({ runId, repositoryPath })` with the original native run ID and exact
+   canonical repository path. The operation reads the native result itself; never supply a saved
+   result, critics, caller ownership or a fabricated budget. It rechecks current repository/capability/
+   contract authority and returns `preparationId`, `preparationDigest`, state and unchanged `launchSpec`.
+2. With the existing task/resource authority, call
+   `foundry_launch_plan_repair({ preparationId, preparationDigest })` once. This durably records intent
+   before invoking that exact stored `plan-repair` launch through the current session's offered
+   `run_dynamic_workflow` tool and its ordinary native permission flow. Do **not** separately invoke
+   the returned `launchSpec`, change its arguments/limits, or use another transport. If the route is
+   unavailable, denied, malformed or uncertain, retain the claim and failure; never retry the launch.
+3. If admission was uncertain, use
+   `foundry_reconcile_plan_repair({ preparationId, preparationDigest })`. This reads a bounded native
+   inventory and binds only a unique matching owner-native observation. Missing, conflicting,
+   incomplete or ambiguous observations hold; tool-call correlation is not idempotency. Denial or an
+   unavailable route cannot become a fresh permission through reconciliation.
+4. After the distinct repair run completes `ready`, call
+   `foundry_import_plan_repair({ preparationId, preparationDigest, id, repository, runId, expectedRevision: 0 })`,
+   where `repository` is `{ workingDirectory: <the prepared canonical path>, baseBranch: <the intended base> }`
+   and `runId` is the distinct repair run. Import rechecks the original native source, completed
+   result, journal, owner and current authority. Negative or missing conservation review, stale
+   authority or changed bytes cannot create a draft.
+5. Submit the ordinary draft with `foundry_submit_plan` and obtain the exact named-revision approval
+   through the normal [approval path](planning.md#app-planning-and-approval). Recovery neither approves
+   nor activates a plan and grants no implementation, commit, merge or replacement permission.
+
+The original result remains immutable. Preparation, original input/critics/verdict, admission
+intent/outcomes, author candidate and conservation result are retained in the original owner's
+`files/foundry/foundry.sqlite` plan database (schema 3, application ID `0x464e4452`), not the separate
+shared-admission database. A root-run and canonical-input claim prevents structural repair, semantic
+repair, replay, a fresh run ID or repair-only recovery from allocating another author allowance.
+An interrupted author with no retained output remains held; a retained candidate may be reviewed
+again on the same native run without regenerating it. A completed result replays without new agents.
+No automatic retry, expiry, budget reset, schema migration or permission fallback is provided.
+
+These are source-supported operations, not evidence that the current installed extension offers
+them, that native permission has been granted, or that a live repair has run. Installation/reload,
+live admission and plan approval remain separate actions. Do not modify the failed source or
+rename a workflow to manufacture eligibility.
+
+## Plan and capability storage
+
 The current store starts fresh in `files/foundry/foundry.sqlite` in the session workspace.
 Old JSON files and runs are not migrated or interpreted; leave them untouched. Use
 `foundry_export_plan` and explicit `foundry_import_plan` for current-format interchange only.

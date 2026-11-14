@@ -13,6 +13,7 @@ import { must } from "./assertions.mjs";
 import { fixture } from "./bridge/fixture.mjs";
 import { git } from "./git.mjs";
 import { analysisFixture } from "./native/fixture.mjs";
+import { repairNativeFixture } from "./native/plans.mjs";
 import { deferred } from "./promises.mjs";
 
 /** @param {(name: string, input: unknown, options?: import("../requests.mjs").OperationContext) => unknown} [call]
@@ -56,6 +57,10 @@ test("Foundry registers the complete globally unique tool surface", () => {
 		"foundry_reconcile_parallel",
 		"foundry_materialize_inputs",
 		"foundry_assess_package",
+		"foundry_prepare_plan_repair",
+		"foundry_launch_plan_repair",
+		"foundry_reconcile_plan_repair",
+		"foundry_import_plan_repair",
 		"foundry_capture_analysis",
 		"foundry_create_evaluation_plan",
 		"foundry_record_human_judgment",
@@ -165,6 +170,7 @@ test("approval tools receive native invocation separately from caller-supplied J
 		assert.equal(options?.invocation, invocation);
 	}));
 	for (const name of ["foundry_approve_plan", "foundry_plan_approval_delegation",
+		"foundry_prepare_plan_repair", "foundry_launch_plan_repair", "foundry_reconcile_plan_repair", "foundry_import_plan_repair", "foundry_create_plan",
 		"foundry_dispatch_ready", "foundry_reconcile_parallel", "foundry_materialize_inputs", "foundry_assess_package",
 		"foundry_reserve_task", "foundry_attach_task", "foundry_complete_task", "foundry_cancel"]) {
 		const tool = toolNamed(tools, name);
@@ -172,6 +178,48 @@ test("approval tools receive native invocation separately from caller-supplied J
 		assert.equal(tool.parameters.properties.invocation, undefined);
 		assert.equal((await tool.handler(supplied, invocation)).resultType, "success");
 	}
+});
+
+test("SPR-09/13/16/19: registered repair tools use closed DTOs, native permission and ordinary draft gates", async t => {
+	const f = await repairNativeFixture(t);
+	const tools = buildFoundryTools(f.ops);
+	/** @param {string} name @param {unknown} args */
+	const invoke = (name, args) => toolNamed(tools, name).handler(args, { ...f.context.invocation, toolName: name, arguments: args });
+	const preparation = await invoke("foundry_prepare_plan_repair", { runId: "source", repositoryPath: f.repositoryPath });
+	assert.equal(preparation.resultType, "success");
+	const prepared = readRecord(readRecord(parseJson(preparation.textResultForLlm)).value);
+	const args = readRecord(readRecord(prepared.launchSpec).args);
+	/** @type {Array<[string, unknown]>} */
+	const requests = [
+		["foundry_prepare_plan_repair", { runId: "source", repositoryPath: f.repositoryPath }],
+		["foundry_launch_plan_repair", args],
+		["foundry_reconcile_plan_repair", args],
+		["foundry_import_plan_repair", { ...args, id: "tool-draft", runId: "repair-native-run", expectedRevision: 0, repository: { workingDirectory: f.repositoryPath, baseBranch: "main" } }],
+	];
+	for (const [name, request] of requests) {
+		const tool = toolNamed(tools, name);
+		assert.equal(tool.skipPermission, undefined);
+		assert.equal(tool.parameters.additionalProperties, false);
+		for (const field of ["source", "result", "owner", "sessionId", "critics", "repairBudget", "launchSpec", "invocation"]) {
+			const rejected = await invoke(name, { ...readRecord(request), [field]: "forged" });
+			assert.equal(rejected.resultType, "failure");
+			assert.equal(readRecord(readRecord(parseJson(rejected.textResultForLlm)).error).code, "unknown_field");
+		}
+	}
+	assert.equal(f.launches.length, 0);
+	assert.equal((await invoke("foundry_launch_plan_repair", args)).resultType, "success");
+	const retained = await f.prepare();
+	await f.execute(retained);
+	assert.equal((await invoke("foundry_reconcile_plan_repair", args)).resultType, "success");
+	const imported = await invoke("foundry_import_plan_repair", {
+		...args, id: "tool-draft", runId: "repair-native-run", expectedRevision: 0,
+		repository: { workingDirectory: f.repositoryPath, baseBranch: "main" },
+	});
+	assert.equal(imported.resultType, "success");
+	const draft = readRecord(readRecord(parseJson(imported.textResultForLlm)).value);
+	assert.equal(draft.status, "draft");
+	assert.equal(readRecord(draft.gates).planApprovedAt, null);
+	assert.equal(f.launches.length, 1);
 });
 
 test("parallel public requests reject caller authority and malformed bounds before accessing stores", async () => {

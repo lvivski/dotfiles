@@ -58,13 +58,27 @@ to satisfy the importer; retained proposals do not become governing requirements
 Interrupting the import wait does not cancel the Workflow. A paused or failed run is not imported
 or automatically resumed; follow the recovery protocol with the same `runId`.
 
-The workflow gives invalid synthesis one bounded repair attempt within the same native run.
+The workflow gives structural or semantic rejection one shared bounded repair attempt within the
+same native run. A structurally valid candidate rejected by the original verifier uses the same
+repair engine, followed by a fresh-context independent conservation reviewer. Structural repair
+already consumes that allowance; it cannot then obtain another semantic repair.
 Field limits are size bounds, not permission to drop requirements or weaken governing contracts.
-Repair retains task identities and dependency intent and must pass domain validation plus independent
-verification. Inspect `synthesisRepair` for the rejected candidate and exact diagnostic, even after
-successful repair; unresolved validation or conservation failures remain `needs-review` and cannot
-be imported. Do not truncate criteria, approve a fallback, raise caps, or restart the whole pipeline
-to conceal an invalid result. Approval and provenance requirements are unchanged.
+Repair retains task identities, dependencies, file scope and delivery commitments and must pass
+domain validation plus independent substantive conservation review. Both agents receive the full
+canonical input, both original critics, rejected candidate and original diagnostics/verdict.
+Inspect `synthesisRepair` and `repairBudget` for this retained provenance even after successful repair.
+Producer-authored evidence may be separated from later independent final confirmation, but the
+independent obligation and every check remain. A support matrix can move to an artifact only when
+the original authority already permits that disposition, never by inventing a source-scope exception.
+Unresolved, missing or uncertain conservation remains `needs-review` and cannot be imported.
+Do not truncate criteria, approve a fallback, raise caps, or restart the whole pipeline to conceal
+an invalid result. Approval and provenance requirements are unchanged.
+
+An eligible completed legacy semantic rejection can use the separate
+[owner-bound repair recovery](recovery.md#completed-planning-repair) source entry points. It does not
+resume the completed run or rerun decomposition/critics. Registration and fixture results are not
+installation, native permission or live-repair evidence; activation and any live use require separate
+authorization. The five standalone analysis recipes and existing workflow limits remain unchanged.
 
 Planning currently has no pre-launch reservation. Keep the planning `runId` until it is imported,
 and never launch a replacement merely because the first run is temporarily unobservable.

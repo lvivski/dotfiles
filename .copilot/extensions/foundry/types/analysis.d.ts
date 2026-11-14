@@ -1,5 +1,21 @@
 import type { CapabilityUnit, EvaluationDefinition, EvaluationEvidence, FactoryContract, KnowledgeRef, Observation, Provenance } from "./factory.js";
 import type { ConceptualReview, DeliveryRequirement, EvaluationReport, EvaluationTarget, FoundryEvidence, IntegrationEntry, PlanFactoryBinding } from "./plan.js";
+import type { PlanningArgs } from "../analysis/planning.mjs";
+import type { PlanningCritique, PlanningVerdict } from "./repair.js";
+
+/** Structurally valid candidate, which can still fail semantic verification. */
+export type PlanningCandidateResult = {
+	kind: "foundry-plan-result";
+	inputDigest: string;
+	input: PlanningArgs;
+	status: "ready" | "needs-review";
+	plan: import("./plan.js").PlanBlueprint;
+	critiques: [PlanningCritique, PlanningCritique];
+	verification: PlanningVerdict;
+	synthesisRepair: null;
+	missingPerspectives: string[];
+	issues: string[];
+};
 
 export type FrozenFactoryContext = {
 	version: 1;

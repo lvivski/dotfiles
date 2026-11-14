@@ -1,12 +1,297 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { DatabaseSync } from "node:sqlite";
 import { buildPlanningArgs } from "../../analysis/planning.mjs";
 import { buildVerificationInput } from "../../analysis/verification.mjs";
 import { verificationMarker } from "../../marker.mjs";
 import { FoundryWorkflowError } from "../../native/guards.mjs";
 import { createWorkflowAnalysis } from "../../workflow.mjs";
 import { fakeApi } from "./api.mjs";
-import { completedPlan, planningResult, reservedPlan } from "./plans.mjs";
+import { completedPlan, planningResult, repairNativeFixture, reservedPlan } from "./plans.mjs";
+import { analysisInputDigest, stableStringify } from "../../digest.mjs";
+import { readJsonValue, readRecord } from "../../data.mjs";
+import { repairMarker } from "../../native/repair.mjs";
+import { run as runPlan } from "../../workflows/plan.mjs";
+import { workflowWithResponses } from "../workflows/runtime.mjs";
+
+test("SPR-02/03/16/19: ordinary structural and semantic repairs import only with their original owner journal", async t => {
+	for (const structural of [false, true]) {
+		await t.test(structural ? "structural" : "semantic", async t => {
+			const f = await repairNativeFixture(t);
+			const original = structuredClone(f.original.plan);
+			if (structural) original.tasks[0].acceptanceCriteria = ["Conserve all platform checks and data. ".repeat(100)];
+			const workflow = workflowWithResponses(f.input, {
+				"plan:decomposer": f.original.plan, "plan:synthesizer": original,
+				"plan:architecture-critic": f.original.critiques[0], "plan:delivery-risk-critic": f.original.critiques[1],
+				"plan:verifier": structural ? { passed: true, issues: [] } : f.original.verification,
+				"plan:synthesis-repair": f.repaired, "plan:semantic-repair": f.repaired,
+				"plan:conservation-review": { passed: true, issues: [] },
+			});
+			const result = await runPlan({ ...workflow, runId: "source", session: f.session });
+			assert.equal(result.status, "ready");
+			f.records.source.run.result = result;
+			f.labels.source = workflow.calls.map(call => call.options.label);
+			const request = { id: "ordinary-repaired", expectedRevision: 0, repository: { workingDirectory: f.repositoryPath, baseBranch: "main" }, runId: "source" };
+			const draft = await f.createOps(false).createPlan(request, f.context);
+			assert.equal(draft.status, "draft");
+			assert.equal(draft.gates.planApprovedBy, null);
+			assert.equal(draft.factory?.owner, f.owner);
+			assert.equal(f.launches.length, 0);
+			await assert.rejects(f.prepare(), { code: "repair_source_ineligible" });
+			const budget = readRecord(readRecord(result).repairBudget);
+			f.records.source.run.result = { ...result, repairBudget: { ...budget, rootRunId: "forged" } };
+			await assert.rejects(f.ops.createPlan({ ...request, id: "forged-repair" }, f.context), { code: "repair_native_identity" });
+			f.records.source.run.result = { ...result, synthesisRepair: { ...readRecord(result.synthesisRepair), diagnostic: "Substituted history" } };
+			await assert.rejects(f.ops.createPlan({ ...request, id: "substituted-repair" }, f.context), { code: "repair_import_held" });
+		});
+	}
+});
+
+test("SPR-08/09/13/15/16/19: legacy semantic recovery binds native source, exact launch and ordinary draft gates", async t => {
+	const f = await repairNativeFixture(t);
+	const before = structuredClone(f.records.source);
+	await assert.rejects(f.ops.createPlan({ id: "original-rejected", expectedRevision: 0, repository: { workingDirectory: f.repositoryPath, baseBranch: "main" }, runId: "source" }), { code: "analysis_needs_review" });
+	const prepared = await f.prepare();
+	assert.equal(prepared.state, "prepared");
+	assert.equal(f.launches.length, 0);
+	assert.deepEqual(await f.prepare(), prepared);
+	const retained = f.journal().read(prepared.preparationId, prepared.preparationDigest).preparation;
+	assert.equal(retained.sourceDigest, analysisInputDigest(f.original));
+	assert.equal(retained.inputDigest, f.input.inputDigest);
+	assert.deepEqual(retained.material.input, f.input);
+	assert.deepEqual(retained.material.critiques, f.original.critiques);
+	await f.ops.launchPlanRepair(prepared.launchSpec.args, f.context);
+	assert.deepEqual(f.launches, [{ name: "run_dynamic_workflow", arguments: prepared.launchSpec }]);
+	assert.equal(Object.hasOwn(prepared.launchSpec, "limits"), false);
+	const executed = await f.execute(prepared);
+	assert.equal(executed.result.status, "ready");
+	assert.deepEqual(executed.workflow.calls.map(call => call.options.label), ["plan:semantic-repair", "plan:conservation-review"]);
+	const draft = await f.ops.importPlanRepair({
+		...prepared.launchSpec.args, id: "repaired-draft", repository: { workingDirectory: f.repositoryPath, baseBranch: "main" },
+		runId: "repair-native-run", expectedRevision: 0,
+	}, f.context);
+	assert.equal(draft.status, "draft");
+	assert.equal(draft.revision, 1);
+	assert.equal(draft.gates.planApprovedBy, null);
+	assert.equal((await f.ops.submitPlan({ planId: draft.id, expectedRevision: draft.revision })).status, "awaiting-approval");
+	assert.deepEqual(f.records.source, before, "All original status, input, critics and failed-verifier output remain immutable");
+	assert.equal(f.launches.length, 1);
+	await assert.rejects(f.analysis.controlWorkflow("repair-native-run", "resume"), { code: "workflow_not_resumable" });
+	await assert.rejects(f.analysis.importAnalysis("repair-native-run"), { code: "workflow_analysis_required" });
+});
+
+test("SPR-10/13/20: current owner, canonical path, digest and authority guard admission", async t => {
+	const f = await repairNativeFixture(t);
+	const foreignInput = buildPlanningArgs({ ...f.input, factoryContext: { ...f.input.factoryContext, owner: "foreign-owner" } });
+	f.records.source.run.result = { ...f.original, input: foreignInput, inputDigest: foreignInput.inputDigest };
+	await assert.rejects(f.prepare(), { code: "repair_foreign_owner" });
+	f.records.source.run.result = f.original;
+	await assert.rejects(f.ops.preparePlanRepair({ runId: "source", repositoryPath: `${f.repositoryPath}/.` }, f.context), { code: "repair_repository_changed" });
+	const prepared = await f.prepare();
+	await assert.rejects(f.ops.launchPlanRepair({ ...prepared.launchSpec.args, preparationDigest: "f".repeat(64) }, f.context), { code: "repair_identity_mismatch" });
+	const controller = new AbortController();
+	controller.abort(new Error("Synthetic pre-admission interruption"));
+	await assert.rejects(f.ops.launchPlanRepair(prepared.launchSpec.args, { ...f.context, signal: controller.signal }), /Synthetic pre-admission interruption/);
+	assert.equal(f.journal().read(prepared.preparationId, prepared.preparationDigest).state, "prepared");
+	const unit = f.factory.snapshot().units[0];
+	f.mutate("createUnit", { id: unit.id, name: unit.name, purpose: `${unit.purpose}; revised`, boundary: unit.boundary, dependencies: [], relationshipCoverage: "complete", actor: "synthetic-owner", reason: "Synthetic pre-admission drift" });
+	await assert.rejects(f.ops.launchPlanRepair(prepared.launchSpec.args, f.context), { code: "repair_authority_stale" });
+	assert.equal(f.launches.length, 0);
+});
+
+test("SPR-13/20: a missing offered executor holds the claim without fallback or invented permission", async t => {
+	const f = await repairNativeFixture(t);
+	const prepared = await f.prepare();
+	await assert.rejects(f.createOps(false).launchPlanRepair(prepared.launchSpec.args, f.context), { code: "repair_invocation_unavailable" });
+	assert.equal(f.journal().read(prepared.preparationId, prepared.preparationDigest).state, "unavailable");
+	assert.equal(f.launches.length, 0);
+	await assert.rejects(f.ops.launchPlanRepair(prepared.launchSpec.args, f.context), { code: "repair_admission_held" });
+	assert.throws(() => f.journal().outcome(prepared.preparationId, prepared.preparationDigest, "admitted", "unapproved", { claim: "manual replacement" }), { code: "repair_admission_held" });
+});
+
+test("SPR-13/15/20: a contradictory late denial preserves completed output but blocks import and reconciliation", async t => {
+	const f = await repairNativeFixture(t);
+	const prepared = await f.prepare();
+	f.setExecutor(async () => {
+		f.records["repair-native-run"] = {
+			workflowName: "plan-repair", run: { runId: "repair-native-run", status: "running" }, createdAt: 2000, completedAt: null,
+		};
+		await f.execute(prepared);
+		return { resultType: "denied", textResultForLlm: "Synthetic contradictory late denial" };
+	});
+	await assert.rejects(f.ops.launchPlanRepair(prepared.launchSpec.args, f.context), { code: "repair_permission_denied" });
+	const held = f.journal().read(prepared.preparationId, prepared.preparationDigest);
+	assert.equal(held.state, "denied");
+	assert.ok(held.result);
+	f.journal().outcome(prepared.preparationId, prepared.preparationDigest, "uncertain", null, { error: "Later synthetic transport uncertainty" });
+	assert.equal(f.journal().read(prepared.preparationId, prepared.preparationDigest).state, "denied");
+	await assert.rejects(f.ops.reconcilePlanRepair(prepared.launchSpec.args, f.context), { code: "repair_admission_held" });
+	await assert.rejects(f.ops.importPlanRepair({
+		...prepared.launchSpec.args, id: "denied-draft", runId: "repair-native-run", expectedRevision: 0,
+		repository: { workingDirectory: f.repositoryPath, baseBranch: "main" },
+	}, f.context), { code: "repair_import_held" });
+	assert.deepEqual(f.journal().read(prepared.preparationId, prepared.preparationDigest).result, held.result);
+	assert.equal(f.launches.length, 1);
+});
+
+test("SPR-12/14/20: lost admission receipt reconciles only unique native observation and never relaunches", async t => {
+	const f = await repairNativeFixture(t);
+	const prepared = await f.prepare();
+	const preparation = f.journal().read(prepared.preparationId, prepared.preparationDigest).preparation;
+	f.setExecutor(async () => {
+		f.records["repair-native-run"] = {
+			workflowName: "plan-repair", run: { runId: "repair-native-run", status: "running" }, createdAt: 2000, completedAt: null,
+			progress: [repairMarker(preparation)],
+		};
+		throw new Error("Synthetic transport loss after native admission");
+	});
+	await assert.rejects(f.ops.launchPlanRepair(prepared.launchSpec.args, f.context), { code: "repair_admission_uncertain" });
+	const events = f.journal().events(prepared.preparationId, prepared.preparationDigest);
+	assert.equal(events.at(-1)?.event, "uncertain");
+	const restarted = f.createOps();
+	assert.equal((await restarted.reconcilePlanRepair(prepared.launchSpec.args, f.context)).runId, "repair-native-run");
+	await f.execute(prepared);
+	const replay = await f.execute(prepared);
+	assert.equal(replay.workflow.calls.length, 0);
+	assert.equal(f.launches.length, 1);
+	assert.deepEqual(f.journal().events(prepared.preparationId, prepared.preparationDigest).slice(0, events.length), events);
+});
+
+test("SPR-12/14/20: failed post-admission recording rolls back atomically and is recoverable without another launch", async t => {
+	const f = await repairNativeFixture(t);
+	const prepared = await f.prepare();
+	const journal = f.journal();
+	const db = new DatabaseSync(journal.databasePath);
+	try {
+		db.exec("CREATE TRIGGER reject_admission BEFORE INSERT ON planning_repair_events WHEN NEW.event = 'admitted' BEGIN SELECT RAISE(ABORT, 'Synthetic receipt failure'); END");
+		await assert.rejects(f.ops.launchPlanRepair(prepared.launchSpec.args, f.context), error => {
+			assert.equal(readRecord(error).code, "database_error");
+			assert.equal(readRecord(readRecord(error).details).sqliteMessage, "Synthetic receipt failure");
+			return true;
+		});
+		assert.equal(journal.read(prepared.preparationId, prepared.preparationDigest).state, "intent");
+		assert.deepEqual(journal.events(prepared.preparationId, prepared.preparationDigest).map(event => event.event), ["prepared", "intent"]);
+		await assert.rejects(f.createOps().launchPlanRepair(prepared.launchSpec.args, f.context), { code: "repair_admission_held" });
+		db.exec("DROP TRIGGER reject_admission");
+	} finally { db.close(); }
+	await f.execute(prepared);
+	assert.equal((await f.createOps().reconcilePlanRepair(prepared.launchSpec.args, f.context)).state, "completed");
+	assert.equal(f.launches.length, 1);
+});
+
+test("SPR-08/09/19: malformed, foreign, renamed, forged and spent sources fail closed", async t => {
+	const f = await repairNativeFixture(t);
+	const saved = structuredClone(f.records.source);
+	const savedLabels = [...f.labels.source];
+	/** @type {Array<(f: Awaited<ReturnType<typeof repairNativeFixture>>) => void>} */
+	const changes = [
+		f => { f.records.source.workflowName = "renamed-custom-plan"; },
+		f => { f.records.source.run.runId = "foreign-id"; },
+		f => { f.records.source.run.status = "running"; },
+		f => { f.records.source.completedAt = null; },
+		f => { readRecord(f.records.source.run.result).synthesisRepair = {}; },
+		f => { delete readRecord(f.records.source.run.result).synthesisRepair; },
+		f => { readRecord(f.records.source.run.result).repairBudget = { rootRunId: "ancestor", used: false }; },
+		f => { readRecord(f.records.source.run.result).repairBudget = { rootRunId: "source", used: true }; },
+		f => { readRecord(f.records.source.run.result).critiques = [null, f.original.critiques[1]]; },
+		f => { readRecord(f.records.source.run.result).critiques = [{ ...f.original.critiques[0], fabricated: true }, f.original.critiques[1]]; },
+		f => { readRecord(f.records.source.run.result).missingPerspectives = ["architecture-critic"]; },
+		f => { readRecord(f.records.source.run.result).issues = ["unrelated structural failure"]; },
+		f => { readRecord(readRecord(f.records.source.run.result).verification).passed = true; },
+		f => { readRecord(f.records.source.run.result).inputDigest = "0".repeat(64); },
+		f => { f.labels.source = f.labels.source.slice(1); },
+	];
+	for (const change of changes) {
+		f.records.source = structuredClone(saved);
+		f.labels.source = [...savedLabels];
+		change(f);
+		await assert.rejects(f.prepare());
+		assert.equal(f.launches.length, 0);
+	}
+	f.records.source = structuredClone(saved); f.labels.source = savedLabels;
+	for (const unexpected of ["result", "critiques", "owner", "sessionId", "repairBudget", "invocation", "source"]) {
+		await assert.rejects(f.ops.preparePlanRepair({ runId: "source", repositoryPath: f.repositoryPath, [unexpected]: f.original }, f.context));
+	}
+	await assert.rejects(f.ops.preparePlanRepair({ runId: "source", repositoryPath: f.repositoryPath }, { invocation: { sessionId: "foreign", toolCallId: "native" } }), { code: "delegation_identity_required" });
+	await assert.rejects(f.ops.preparePlanRepair({ runId: "source", repositoryPath: f.repositoryPath }, { invocation: { ...f.context.invocation, agentId: "child" } }), { code: "delegation_identity_required" });
+	const getDetail = f.api.getRunDetail.bind(f.api);
+	f.api.getRunDetail = async id => ({ ...readRecord(await getDetail(id)), runId: "foreign-detail" });
+	await assert.rejects(f.prepare(), { code: "repair_native_identity" });
+});
+
+test("SPR-10/12/14/19/20: restart, concurrent admission and unique reconciliation never allocate another launch", async t => {
+	const f = await repairNativeFixture(t);
+	const [one, two] = await Promise.all([f.prepare(), f.prepare()]);
+	assert.deepEqual(one, two);
+	const admissions = await Promise.allSettled([f.ops.launchPlanRepair(one.launchSpec.args, f.context), f.createOps().launchPlanRepair(two.launchSpec.args, f.context)]);
+	assert.equal(admissions.filter(value => value.status === "fulfilled").length, 1);
+	assert.equal(f.launches.length, 1);
+	await f.execute(one);
+	const restarted = f.createOps();
+	assert.equal((await restarted.reconcilePlanRepair(one.launchSpec.args, f.context)).runId, "repair-native-run");
+	await assert.rejects(restarted.launchPlanRepair(one.launchSpec.args, f.context), { code: "repair_admission_held" });
+	const duplicate = structuredClone(f.records["repair-native-run"]);
+	duplicate.run.runId = "duplicate";
+	f.records.duplicate = duplicate;
+	f.labels.duplicate = ["plan:semantic-repair", "plan:conservation-review"];
+	await assert.rejects(restarted.reconcilePlanRepair(one.launchSpec.args, f.context), { code: "repair_observation_uncertain" });
+	assert.equal(f.launches.length, 1);
+	const sourceAlias = structuredClone(f.records.source);
+	sourceAlias.run.runId = "source-alias";
+	f.records["source-alias"] = sourceAlias;
+	f.labels["source-alias"] = [...f.labels.source];
+	await assert.rejects(f.ops.preparePlanRepair({ runId: "source-alias", repositoryPath: f.repositoryPath }, f.context), { code: "repair_budget_claimed" });
+	await assert.rejects(f.ops.preparePlanRepair({ runId: "repair-native-run", repositoryPath: f.repositoryPath }, f.context), { code: "repair_native_identity" });
+});
+
+test("SPR-13/14/20: denial and uncertain native admission retain history and require observation rather than retry", async t => {
+	for (const kind of ["denied", "unavailable", "uncertain", "malformed"]) {
+		await t.test(kind, async t => {
+			const f = await repairNativeFixture(t);
+			const prepared = await f.prepare();
+			f.setExecutor(async () => {
+				if (kind === "uncertain") throw new Error("Synthetic transport disconnected after possible admission");
+				if (kind === "malformed") return { resultType: "success", textResultForLlm: "{}" };
+				return { resultType: kind === "denied" ? "denied" : "failure", error: "Synthetic native route unavailable", textResultForLlm: "not admitted" };
+			});
+			await assert.rejects(f.ops.launchPlanRepair(prepared.launchSpec.args, f.context));
+			const state = f.journal().read(prepared.preparationId, prepared.preparationDigest);
+			assert.ok(["denied", "uncertain"].includes(state.state));
+			const events = f.journal().events(prepared.preparationId, prepared.preparationDigest);
+			assert.deepEqual(events.slice(0, 2).map(event => event.event), ["prepared", "intent"]);
+			await assert.rejects(f.createOps().launchPlanRepair(prepared.launchSpec.args, f.context), { code: "repair_admission_held" });
+			await assert.rejects(f.ops.reconcilePlanRepair(prepared.launchSpec.args, f.context), { code: "repair_observation_uncertain" });
+			assert.equal(f.launches.length, 1);
+			assert.deepEqual(f.journal().events(prepared.preparationId, prepared.preparationDigest), events);
+		});
+	}
+});
+
+test("SPR-10/15/16/19: source/result substitution and authority drift block admission or import", async t => {
+	const f = await repairNativeFixture(t);
+	const prepared = await f.prepare();
+	const before = structuredClone(f.original);
+	readRecord(f.records.source.run.result).critiques = [{ verdict: "accept", risks: ["substituted"], requiredChanges: [] }, before.critiques[1]];
+	await assert.rejects(f.ops.launchPlanRepair(prepared.launchSpec.args, f.context), { code: "repair_source_changed" });
+	assert.equal(f.launches.length, 0);
+	f.records.source.run.result = before;
+	await f.ops.launchPlanRepair(prepared.launchSpec.args, f.context);
+	const { result } = await f.execute(prepared);
+	const request = { ...prepared.launchSpec.args, id: "substitution", repository: { workingDirectory: f.repositoryPath, baseBranch: "main" }, runId: "repair-native-run", expectedRevision: 0 };
+	for (const change of [
+		{ status: "needs-review" }, { preparationDigest: "f".repeat(64) }, { sourceDigest: "f".repeat(64) },
+		{ sourceRunId: "foreign" }, { critiques: [] }, { verification: { passed: false, issues: ["not conserved"] } },
+		{ plan: { ...readRecord(result.plan), title: "Native result substitution" } },
+	]) {
+		f.records["repair-native-run"].run.result = { ...result, ...change };
+		await assert.rejects(f.ops.importPlanRepair(request, f.context));
+	}
+	f.records["repair-native-run"].run.result = result;
+	const unit = f.factory.snapshot().units[0];
+	f.mutate("createUnit", { id: unit.id, name: unit.name, purpose: `${unit.purpose}; changed authority`, boundary: unit.boundary, dependencies: [], relationshipCoverage: "complete", actor: "synthetic-owner", reason: "Synthetic revision drift" });
+	await assert.rejects(f.ops.importPlanRepair(request, f.context), { code: "repair_authority_stale" });
+	assert.equal(stableStringify(f.records.source.run.result), stableStringify(before));
+});
 
 test("prepare operations return native run_dynamic_workflow launch specs", async () => {
 	const analysis = createWorkflowAnalysis(() => fakeApi());
