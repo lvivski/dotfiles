@@ -1,9 +1,17 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { chmodSync, constants, copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import test from "node:test";
-import { createRetentionOperations } from "../../application/retention.mjs";
+import { createRetentionArchivePort, createRetentionArtifactPort, createRetentionOperations } from "../../application/retention.mjs";
 import { parseJson } from "../../data.mjs";
 import { stableStringify } from "../../digest.mjs";
 import { fail } from "../../factory/fields.mjs";
+import { createArtifactRetention } from "../../native/artifacts.mjs";
+import { createNativeRetention } from "../../native/retention.mjs";
+import { planArtifactRetention } from "../../plan/artifacts.mjs";
+import { assessRetention, retentionObservation } from "../../plan/retention.mjs";
 import { createRetentionPersistence } from "../../storage/retention.mjs";
 import { createParallelFixture } from "../parallel/fixture.mjs";
 
@@ -16,7 +24,8 @@ const originalEvent = { version: 1, id: "completion-1", subject, revision: 3, se
 	sourceDigest: "c".repeat(64), at: "2026-11-13T00:00:00.000Z", source: "synthetic canonical completion" };
 
 /** Durable SQLite outbox but synthetic event/hold/host authorities: never a live archive. */
-function harness() {
+function harness(inputEvent = originalEvent) {
+	const originalEvent = inputEvent, subject = originalEvent.subject;
 	const fixture = createParallelFixture({ name: "retention-lifecycle", initialize(db) {
 		db.exec("CREATE TABLE IF NOT EXISTS retention_fixture (id TEXT PRIMARY KEY, revision INTEGER, document TEXT)");
 	} });
@@ -327,4 +336,341 @@ test("RET-C06 unsupported canonical persistence holds before any host action", a
 		held(await app.completionEvent({ eventId: originalEvent.id }), "retention_persistence_unsupported");
 		assert.equal(h.counts.captures + h.counts.guards + h.counts.invocations, 0);
 	} finally { h.fixture.dispose(); }
+});
+
+/** @param {string} repository @param {string[]} args */
+function git(repository, args) {
+	const result = spawnSync("git", ["-C", repository, ...args], { encoding: "utf8" });
+	assert.equal(result.status, 0, result.stderr);
+	return result.stdout.trim();
+}
+/** @param {string | Buffer} value */
+const sha = value => createHash("sha256").update(value).digest("hex");
+
+/** Real private bytes, Git objects and SQLite; synthetic canonical events, schema,
+ * inventory sequencing and guarded host. The host effect is only a counter.
+ * Fixture bytes and ordering traces stay in the runner output for delivery evidence. */
+function composed() {
+	const output = process.env.FOUNDRY_PARALLEL_OUTPUT;
+	assert.ok(output, "Use the isolated parallel runner");
+	const root = realpathSync(mkdtempSync(path.join(output, "composed-retention-")));
+	const source = path.join(root, "source"), retained = path.join(root, "retained"), repository = path.join(retained, "repository");
+	for (const directory of [source, retained, repository]) mkdirSync(directory, { mode: 0o700 });
+	git(source, ["init", "-q", "--initial-branch=work"]);
+	git(repository, ["init", "--bare", "-q"]);
+	const originals = new Map();
+	const artifacts = /** @type {const} */ (["context", "decision", "report", "evaluator", "failure"]).map(kind => {
+		const bytes = Buffer.from(`Complete synthetic ${kind}; original producer and private context.\n`);
+		originals.set(kind, bytes);
+		writeFileSync(path.join(source, `${kind}.json`), bytes, { mode: 0o600 });
+		return { id: kind, kind, originalId: `original-${kind}`, producerId: "composed-fixture", root: "work", path: `${kind}.json`,
+			sha256: sha(bytes), bytes: bytes.length };
+	});
+	writeFileSync(path.join(source, ".gitignore"), "ignored.txt\n");
+	git(source, ["add", "."]);
+	git(source, ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "Synthetic retained source"]);
+	const commit = git(source, ["rev-parse", "HEAD"]);
+	const event = { ...structuredClone(originalEvent), subject: { ...structuredClone(subject), worktreePath: source },
+		sourceCommit: commit, sourceDigest: sha(git(source, ["ls-tree", "-r", "HEAD"])) };
+	const h = harness(event), events = /** @type {string[]} */ ([]);
+	const counters = { effects: 0, conditional: 0, outer: 0, providers: 0, reconciliations: 0 };
+	const inventory = {
+		subject: { repositoryId: scope.repositoryId, ownerId: "canonical-owner-alias", sessionId: event.subject.sessionId,
+			planId: event.subject.attempt.planId, taskId: event.subject.attempt.taskId, attemptId: event.subject.attempt.attemptId },
+		storeId: "private-fixture-store", artifacts,
+		commits: [{ commit, sourceRef: "refs/heads/work", durableRef: `refs/foundry/retained/${event.subject.sessionId}/source` }],
+	};
+	const manifest = planArtifactRetention(inventory);
+	const artifactOptions = {
+		subject: inventory.subject, storeId: inventory.storeId, sourceRoots: { work: source },
+		sourceRepository: source, retentionRoot: retained, retainedRepository: repository,
+		readBinding: () => ({ revision: "canonical-artifact-revision-1", inventory, removalRoots: [source] }),
+		provider: {
+			/** @param {import("../../native/artifacts.mjs").ArtifactRequest} request */
+			async retainArtifact(request) {
+				counters.providers++; request.revalidate();
+				mkdirSync(path.dirname(request.destination), { recursive: true, mode: 0o700 });
+				copyFileSync(request.source, request.destination, constants.COPYFILE_EXCL);
+				chmodSync(request.destination, 0o600);
+				return { status: /** @type {const} */ ("completed"), receiptId: `preserved-${request.artifact.id}` };
+			},
+			/** @param {import("../../native/artifacts.mjs").CommitRequest} request */
+			async retainCommit(request) {
+				counters.providers++; request.revalidate();
+				git(request.retainedRepository, ["fetch", "--no-tags", request.sourceRepository, request.commit.commit]);
+				git(request.retainedRepository, ["update-ref", request.commit.durableRef, request.commit.commit, "0".repeat(40)]);
+				return { status: /** @type {const} */ ("completed"), receiptId: "preserved-source" };
+			},
+		},
+	};
+	const artifactPort = createArtifactRetention(artifactOptions);
+	const projectionOptions = { event, ownerId: inventory.subject.ownerId, manifest, retentionRoot: retained, retainedRepository: repository, port: artifactPort, clock: () => AT };
+	const projected = createRetentionArtifactPort(projectionOptions);
+	const workspace = () => ({
+		tracked: git(source, ["diff", "--name-only", "HEAD"]).split("\n").filter(Boolean),
+		untracked: git(source, ["ls-files", "--others", "--exclude-standard"]).split("\n").filter(Boolean),
+		ignored: git(source, ["ls-files", "--others", "--ignored", "--exclude-standard"]).split("\n").filter(Boolean),
+	});
+	/** @type {import("../../types/retention.js").RetentionObservationPort} */
+	const observations = {
+		completion: h.observations.completion,
+		async capture(value) {
+			const observed = retentionObservation(await h.observations.capture(value));
+			observed.workspace = { state: "observed", ...workspace() };
+			return observed;
+		},
+	};
+	/** @type {import("../../native/retention.mjs").Subject} */
+	const bound = { attempt: event.subject.attempt, child: { sessionId: event.subject.sessionId, projectId: "synthetic-project",
+		creatorSessionId: scope.coordinatorSessionId, branch: "work", worktreePath: source }, coordinatorSessionId: scope.coordinatorSessionId, runIds: ["runs-1"] };
+	const state = {
+		outerGuard: true, canonical: true, missingOriginal: false, throwTransport: false,
+		/** @type {"archived" | "denied" | "uncertain"} */
+		disposition: "archived",
+		/** @type {(() => void) | null} */
+		afterFinal: null,
+		/** @type {import("../../native/retention.mjs").RetentionResult | null} */
+		original: null,
+		/** @type {import("../../native/retention.mjs").Receipt | null} */
+		nativeReceipt: null,
+	};
+	let sequence = 0;
+	/** @type {import("../../native/retention.mjs").RetentionHost} */
+	const host = {
+		source: "synthetic guarded host; no App archival",
+		context: () => ({ owner: scope.owner, sessionId: scope.coordinatorSessionId, projectId: bound.child.projectId,
+			repositoryId: scope.repositoryId, worktreePath: path.join(root, "coordinator") }),
+		async checkpoint() { return { epoch: "synthetic-causal-domain", sequence: ++sequence }; },
+		async observe({ after }) {
+			return { source: "synthetic exhaustive host observation", raw: { subject: bound, after, detailSequence: ++sequence,
+				inventorySequence: ++sequence, activity: "idle", workspace: workspace(), pages: [{
+					cursor: null, next: null, sessions: [bound], attempts: [{ identity: bound.attempt, taskStatus: "done", attemptStatus: "done" }],
+					runs: [{ runId: "runs-1", attempt: bound.attempt, status: "completed" }],
+				}] } };
+		},
+		decodeObservation: raw => raw,
+		async assess() {
+			const observed = retentionObservation(await observations.capture(event));
+			const saved = await projected.inspect(event, observed);
+			const assessment = assessRetention(scope, event, observed, saved, AT);
+			events.push("policy-and-artifact-reassessment");
+			return { source: "delivered policy plus independently observed fixture artifacts", raw: assessment,
+				reasons: assessment.holds.map(hold => ({ code: hold.code, message: hold.reason })) };
+		},
+		route: () => "supported",
+		async conditionalArchive({ intentId, reassess }) {
+			counters.conditional++;
+			const assessed = await reassess();
+			events.push("final-reassessment");
+			state.afterFinal?.();
+			events.push("attempted-archive-effect");
+			const reasons = [...assessed.reasons];
+			for (const [kind, files] of Object.entries(workspace())) if (files.length) {
+				reasons.push({ code: `workspace-${kind}`, message: `Preserve new ${kind} bytes: ${files.join(", ")}` });
+			}
+			if (h.state.active) reasons.push({ code: `retention_${h.state.active}_active`, message: "Current synthetic canonical hold still applies" });
+			if (state.disposition === "denied") reasons.push({ code: "native-permission-denied", message: "Synthetic permission denied; preserve the subject" });
+			const status = reasons.length ? state.disposition === "denied" ? "denied" : "held" : state.disposition;
+			if (status === "held") events.push("guard-held");
+			if (status === "archived" || status === "uncertain") {
+				counters.effects++; events.push("synthetic-effect");
+				if (status === "uncertain") reasons.push({ code: "transport-uncertain", message: "Retain the original receipt and reconcile read-only" });
+			}
+			state.nativeReceipt = { source: "original synthetic conditional receipt", raw: { subject: bound, intentId,
+				operation: "archive_session", status, reasons } };
+			if (state.throwTransport) throw new Error("Original transport error after possible effect");
+			return state.nativeReceipt;
+		},
+		decodeArchive: raw => raw,
+		async observeOutcome({ intentId }) {
+			counters.reconciliations++;
+			return { source: "original synthetic operation observation", raw: { subject: bound, intentId,
+				operation: "archive_session", status: "archived", reasons: [], basis: "native-operation" } };
+		},
+		decodeReconciliation: raw => raw,
+	};
+	const make = () => {
+		const native = createNativeRetention({ subject: bound, host });
+		const archive = createRetentionArchivePort({ subject: bound,
+			protocol: { ...native, async archive(request) {
+				const result = await native.archive(request);
+				state.original = result;
+				return result;
+			} },
+			...(state.outerGuard ? {
+				/** @template T @param {import("../../types/retention.js").RetentionSubject} actual @param {() => Promise<T>} action */
+				async withSubjectGuard(actual, action) {
+					assert.deepEqual(actual, event.subject);
+					counters.outer++; events.push("synthetic-outer-guard");
+					return action();
+				},
+			} : {}),
+			async readOriginal(request) {
+				if (state.missingOriginal) return null;
+				const stored = h.persistence.read(request.intentId)?.outcomes[0]?.receipt;
+				if (!stored) return null;
+				// The simulated decoder uses the exact emitted type, but authority is the
+				// persisted outbox equality, not this test's cached reference.
+				assert.deepEqual(stored, state.original);
+				return structuredClone(state.original);
+			},
+			clock: () => AT,
+		});
+		return createRetentionOperations({ scope, persistence: state.canonical ? h.persistence : createRetentionPersistence({ scope }),
+			observations, artifacts: projected, archive, clock: () => AT });
+	};
+	const retain = async () => {
+		const saved = await artifactPort.retain(manifest);
+		assert.equal(saved.status, "observed", saved.reasons.join("; "));
+		assert.equal(saved.raceSafe, false);
+		writeFileSync(path.join(root, "preservation.json"), JSON.stringify(saved, null, 2), { mode: 0o600 });
+		return saved;
+	};
+	return { h, root, source, retained, repository, originals, manifest, event, bound, projectionOptions,
+		state, host, counters, events, workspace, make, retain };
+}
+
+test("RET-I02 composed completion holds, actual byte retention and genuine later release admit one native intent", async () => {
+	const f = composed();
+	try {
+		held(await f.make().completionEvent({ eventId: f.event.id }), "retention_artifacts_unconfirmed");
+		assert.equal(f.counters.providers + f.counters.effects, 0);
+		await f.retain();
+		f.h.state.active = "consumers";
+		const first = await f.make().completionEvent({ eventId: f.event.id }), id = intentId(first);
+		held(first, "retention_consumers_active");
+		assert.deepEqual(await f.make().completionEvent({ eventId: f.event.id }), first);
+		held(await f.make().execute({ intentId: id }), "retention_consumers_active");
+		f.h.state.active = "evaluators";
+		held(await f.make().reassess({ eventId: f.event.id, subject: f.event.subject }), "retention_evaluators_active");
+		f.h.state.active = null;
+		assert.equal((await f.make().reassess({ eventId: f.event.id, subject: f.event.subject })).state, "candidate");
+		assert.equal(f.counters.effects, 0);
+		const result = await f.make().execute({ intentId: id });
+		assert.equal(result.state, "archived", JSON.stringify(result.holds));
+		assert.deepEqual(result.intent?.outcomes[0].receipt, f.state.original);
+		assert.equal((await f.make().execute({ intentId: id })).state, "archived");
+		assert.equal(f.counters.effects, 1);
+		assert.equal(f.counters.conditional, 1);
+		for (const item of f.manifest.artifacts) assert.deepEqual(readFileSync(path.join(f.retained, item.destination)), f.originals.get(item.id));
+		assert.equal(git(f.repository, ["rev-parse", f.manifest.commits[0].durableRef]), f.event.sourceCommit);
+		assert.ok(result.intent?.assessments.some(entry => entry.holds.some(hold => hold.code === "retention_consumers_active")));
+	} finally { f.h.fixture.dispose(); }
+});
+
+test("RET-I03 composed candidates cannot bypass current holds, incomplete inventory, missing preservation or bindings", async () => {
+	for (const negative of ["consumers", "evaluators", "inventory", "preservation", "ownership", "canonical", "outer", "conditional"]) {
+		const f = composed();
+		try {
+			await f.retain();
+			const first = await f.make().completionEvent({ eventId: f.event.id }), id = intentId(first);
+			assert.equal(first.state, "candidate");
+			if (negative === "consumers" || negative === "evaluators") f.h.state.active = negative;
+			if (negative === "inventory") f.h.state.mutateCapture = value => { value.inventories[0].coverage = "partial"; };
+			if (negative === "preservation") writeFileSync(path.join(f.retained, f.manifest.artifacts[0].destination), "corrupted retained original");
+			if (negative === "ownership") f.h.state.mutateCapture = value => { value.ownership = "foreign"; };
+			if (negative === "canonical") f.state.canonical = false;
+			if (negative === "outer") f.state.outerGuard = false;
+			if (negative === "conditional") delete f.host.conditionalArchive;
+			held(await f.make().execute({ intentId: id, cleanup: true }), "factory_input_invalid");
+			const expected = negative === "consumers" || negative === "evaluators" ? `retention_${negative}_active`
+				: negative === "inventory" ? "retention_inventory_incomplete" : negative === "preservation" ? "retention_artifacts_unconfirmed"
+					: negative === "ownership" ? "retention_ownership_foreign" : negative === "canonical" ? "retention_persistence_unsupported"
+						: negative === "outer" ? "retention_action_time_unsupported" : "retention_unavailable";
+			const result = await f.make().execute({ intentId: id });
+			held(result, expected);
+			assert.ok(result.holds.every(hold => hold.reason && hold.authority));
+			assert.equal(f.counters.effects + f.counters.conditional, 0, negative);
+		} finally { f.h.fixture.dispose(); }
+	}
+});
+
+test("RET-I02 composed denied/uncertain results preserve originals and restart reconciles without another archive", async () => {
+	for (const disposition of /** @type {const} */ (["denied", "uncertain"])) {
+		const f = composed();
+		try {
+			await f.retain();
+			f.state.disposition = disposition;
+			const id = intentId(await f.make().completionEvent({ eventId: f.event.id }));
+			const result = await f.make().execute({ intentId: id });
+			held(result, `retention_${disposition}`);
+			assert.deepEqual(result.intent?.outcomes[0].receipt, f.state.original);
+			await f.make().execute({ intentId: id });
+			if (disposition === "uncertain") {
+				f.state.missingOriginal = true;
+				held(await f.make().reconcile({ intentId: id }), "retention_uncertain");
+				assert.equal(f.counters.reconciliations, 0);
+				f.state.missingOriginal = false;
+				const reconciled = await f.make().reconcile({ intentId: id });
+				assert.equal(reconciled.state, "archived");
+				assert.deepEqual(reconciled.intent?.outcomes[0], result.intent?.outcomes[0]);
+				assert.equal(reconciled.intent?.outcomes.length, 2);
+			} else held(await f.make().reconcile({ intentId: id }), "retention_denied");
+			assert.equal(f.counters.conditional, 1);
+			assert.equal(f.counters.effects, disposition === "denied" ? 0 : 1);
+		} finally { f.h.fixture.dispose(); }
+	}
+});
+
+test("RET-I02 original non-JSON native errors and failed outcome writes remain unpersisted evidence, not empty JSON", async () => {
+	for (const failure of ["error", "write"]) {
+		const f = composed();
+		try {
+			await f.retain();
+			f.state.throwTransport = failure === "error";
+			f.h.state.failOutcome = failure === "write";
+			const id = intentId(await f.make().completionEvent({ eventId: f.event.id }));
+			const result = await f.make().execute({ intentId: id });
+			assert.equal(result.state, "held");
+			assert.ok(result.unpersisted);
+			assert.equal(f.h.persistence.read(id)?.outcomes.length, 0);
+			if (failure === "error") assert.ok(f.state.original?.evidence.some(entry => entry.error instanceof Error
+				&& entry.error.message === "Original transport error after possible effect"));
+			await f.make().execute({ intentId: id });
+			held(await f.make().reconcile({ intentId: id }), "retention_in_flight");
+			assert.equal(f.counters.effects, 1);
+			assert.equal(f.counters.conditional, 1);
+		} finally { f.h.fixture.dispose(); }
+	}
+});
+
+for (const kind of /** @type {const} */ (["tracked", "untracked", "ignored"])) {
+	test(`RET-I03 composed post-reassessment ${kind} write is retained with zero archive effects`, async () => {
+		const f = composed();
+		try {
+			await f.retain();
+			const id = intentId(await f.make().completionEvent({ eventId: f.event.id }));
+			const filename = kind === "tracked" ? "report.json" : `${kind}.txt`, payload = Buffer.from(`New ${kind} bytes after final reassessment.\n`);
+			f.state.afterFinal = () => {
+				writeFileSync(path.join(f.source, filename), payload, { mode: 0o600 });
+				f.events.push(`write:${kind}`);
+			};
+			const result = await f.make().execute({ intentId: id });
+			held(result, "retention_failed");
+			assert.match(result.holds[0].reason, new RegExp(`workspace-${kind}`));
+			assert.equal(result.intent?.outcomes[0].error?.code, `workspace-${kind}`);
+			assert.equal(f.counters.effects, 0);
+			assert.equal(f.counters.conditional, 1);
+			assert.deepEqual(readFileSync(path.join(f.source, filename)), payload);
+			assert.deepEqual(f.workspace()[kind], [filename]);
+			const order = f.events.slice(f.events.indexOf("final-reassessment"));
+			assert.deepEqual(order, ["final-reassessment", `write:${kind}`, "attempted-archive-effect", "guard-held"]);
+			await f.make().execute({ intentId: id });
+			assert.equal(f.counters.conditional, 1);
+			const trace = { kind, limitation: "Synthetic guarded host; not production race safety", order, effects: f.counters.effects,
+				filename: path.join(f.source, filename), bytes: payload.length, sha256: sha(payload), outcome: result.intent?.outcomes[0], holds: result.holds };
+			writeFileSync(path.join(f.root, `mutation-${kind}.json`), JSON.stringify(trace, null, 2), { mode: 0o600 });
+			assert.deepEqual(readFileSync(path.join(f.source, filename)), payload);
+		} finally { f.h.fixture.dispose(); }
+	});
+}
+
+test("RET-I02 artifact projection rejects mismatched subject/source/root bindings without claiming preservation", () => {
+	const f = composed();
+	try {
+		assert.throws(() => createRetentionArtifactPort({ ...f.projectionOptions, ownerId: "foreign-alias" }), { code: "retention_manifest_mismatch" });
+		assert.throws(() => createRetentionArtifactPort({ ...f.projectionOptions, event: { ...f.event, sourceCommit: "f".repeat(40) } }), { code: "retention_manifest_mismatch" });
+		assert.throws(() => createRetentionArtifactPort({ ...f.projectionOptions, retainedRepository: f.source }), { code: "retention_root_unsafe" });
+		assert.equal(f.counters.effects + f.counters.providers, 0);
+	} finally { f.h.fixture.dispose(); }
 });

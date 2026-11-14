@@ -134,3 +134,21 @@ export type RetentionDependencies = {
 	scope: RetentionScope; persistence: RetentionPersistencePort; observations: RetentionObservationPort;
 	artifacts: RetentionArtifactPort; archive?: RetentionArchivePort; clock?: () => string;
 };
+
+/** Trusted composition inputs; neither adapter registers a tool or supplies host authority. */
+export type RetentionArtifactAdapterOptions = {
+	event: RetentionEvent; ownerId: string; manifest: import("../plan/artifacts.mjs").ArtifactManifest;
+	retentionRoot: string; retainedRepository: string;
+	port: Pick<ReturnType<typeof import("../native/artifacts.mjs").createArtifactRetention>, "observe">;
+	clock?: () => string;
+};
+export type RetentionNativeAdapterOptions = {
+	subject: import("../native/retention.mjs").Subject;
+	protocol: Pick<ReturnType<typeof import("../native/retention.mjs").createNativeRetention>, "archive" | "reconcile">;
+	/** A separate actual host obligation, not a wrapper around a snapshot or local mutex. */
+	withSubjectGuard?: <T>(subject: RetentionSubject, action: () => Promise<T>) => Promise<T>;
+	/** Read exact original native results from the canonical outbox/private evidence binding.
+	 * Missing original evidence holds; it cannot be manufactured from directory absence. */
+	readOriginal: (request: RetentionArchiveRequest) => Promise<import("../native/retention.mjs").RetentionResult | null>;
+	clock?: () => string;
+};
