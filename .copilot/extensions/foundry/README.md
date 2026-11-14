@@ -102,12 +102,21 @@ coordinator owners; ownership remains a separate binding. Native intents, result
 reservations use its fenced journal. Recovery retains whole observations in the same store.
 No timer, speculative replacement child or second reservation engine drives these operations.
 
-The extension currently reports unavailable host ports: a registered tool is not live invocation
-support. A trusted constructor must provide current coordinator/project identity, supported
-operation-and-route-specific invocation, actual result/setup/canonical observations, resource
-policies, and complete current contributor/reviewer authority. Caller JSON, imported history and
-old terminal receipts cannot provide those bindings. The captured disabled session-management
-extension-RPC route cannot inherit support from the primary App route or trigger automatic fallback.
+The extension binds closed prepared-workflow and warm coordinator-only handoff callbacks through
+public `session.rpc.tools.execute`, identified as `extension-rpc`, not the primary App route.
+The existing repair launcher consumes the bound workflow callback through its durable journal.
+`native/supported-runtime.mjs` reports callable bindings separately from advertised names (not
+queried), observed admission and successful effects; source recording tests establish neither of
+the latter. Other operations retain individual actionable holds. No route automatically replays
+a denial, disabled call or uncertain outcome.
+
+The default parallel host is **partial**: the public SDK does not supply authenticated current
+project/setup/child/recovery/review/contributor authority here. A trusted constructor must supply
+those actual observations and canonical policies before dependent automatic parallel admission.
+Caller JSON, metadata, imported history and old terminal receipts cannot provide them.
+Untouched omitted-decomposition plans still use the setup-first reserve/corroborate/attach/unchanged
+handoff recipe. Cold coordinator-only first delivery remains held; warm admission is not a cold
+bootstrap strategy, observed execution or completion.
 No non-destructive App child termination port is currently exposed; idle is not terminal and
 archiving removes worktrees, so uncertain cancellation remains held.
 
@@ -152,6 +161,10 @@ provided by default. A dispatch journal is not a retention store. Missing persis
 `retention_persistence_unsupported`; missing action-time guards/reconciliation retain
 `retention_action_time_unsupported`. Conditional archival, subject-wide exclusion and authoritative
 original archive outcomes remain separate host obligations, not wrappers around `archive_session`.
+The constructor-only `completionEvent` entry validates the current native owner and forwards a
+canonical event ID to that existing retention assessment. No public notification subscription or
+automatic archive is installed; absent canonical persistence remains a precise hold. Completion
+does not authorize cleanup, even when assessment produces a candidate.
 
 The normal registry includes the existing repair tools and original `plan-repair` workflow.
 Repair launch uses the existing native offered-tool handler and resource-permission boundary,

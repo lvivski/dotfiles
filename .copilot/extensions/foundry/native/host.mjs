@@ -25,6 +25,7 @@ import { bindNativeContext, createNativeObservations, hold, requireOwnedPlan } f
  * route: "primary-app" | "extension-rpc",
  * primary?: PrimaryRoutes,
  * workflow?: (args: NativeArguments["run_dynamic_workflow"], correlation: string) => Promise<unknown>,
+ * warmHandoff?: (args: NativeArguments["send_session_message"], correlation: string) => Promise<unknown>,
  * readPlan: (planId: string) => import("../types/plan.js").FoundryPlan,
  * taskPolicies: Host["taskPolicies"],
  * decodeCreated?: Host["decodeCreated"], decodeHandoff?: Host["decodeHandoff"],
@@ -35,14 +36,38 @@ import { bindNativeContext, createNativeObservations, hold, requireOwnedPlan } f
 const names = /** @type {const} */ (["foundry_get_status", "foundry_reserve_task", "foundry_attach_task", "foundry_complete_task",
 	"create_session", "get_session", "list_sessions_and_chats", "send_session_message", "run_dynamic_workflow"]);
 
-/** Only this operation has an observed working extension-RPC invocation route.
+/** This operation has an observed working extension-RPC invocation route.
  * The owning composition still checks current invocation and durable single admission.
- * @param {{rpc: {tools: Pick<NonNullable<import("@github/copilot-sdk").CopilotSession["rpc"]["tools"]>, "execute">}}} session */
+ * @param {{rpc: {tools?: {execute(input: {name: string, arguments: Json, toolCallId?: string}): Promise<unknown>}}}} session */
 export function createRpcWorkflowRoute(session) {
 	const tools = session.rpc.tools;
 	if (!tools) hold("dispatch_capability_unavailable", "This SDK has no offered-tool execution API");
 	/** @param {NativeArguments["run_dynamic_workflow"]} args @param {string} toolCallId */
-	return (args, toolCallId) => tools.execute({ name: "run_dynamic_workflow", arguments: readJsonValue(args), toolCallId });
+	return (args, toolCallId) => {
+		object(args, ["name", "args", "limits"], "exact prepared workflow");
+		text(args.name, "workflow name", 512);
+		text(toolCallId, "native correlation ID", 512);
+		return tools.execute({ name: "run_dynamic_workflow", arguments: readJsonValue(args), toolCallId });
+	};
+}
+
+/** Warm queue admission only. The canonical dispatcher owns setup, attachment,
+ * unchanged reservation bytes and durable single-start admission before this callback.
+ * @param {Parameters<typeof createRpcWorkflowRoute>[0]} session */
+export function createRpcWarmHandoffRoute(session) {
+	const tools = session.rpc.tools;
+	if (!tools) hold("dispatch_capability_unavailable", "This SDK has no offered-tool execution API");
+	/** @param {NativeArguments["send_session_message"]} args @param {string} toolCallId */
+	return (args, toolCallId) => {
+		object(args, ["session_id", "message", "coordinator_only", "delivery_mode", "mode"], "unchanged warm handoff");
+		text(args.session_id, "attached child", 512);
+		text(args.message, "exact delegation", 2_000_000);
+		text(toolCallId, "native correlation ID", 512);
+		if (args.coordinator_only !== true || args.delivery_mode !== "immediate" || args.mode !== "autopilot") {
+			hold("dispatch_handoff_unconfirmed", "Warm handoff must retain coordinator_only, immediate delivery and autopilot");
+		}
+		return tools.execute({ name: "send_session_message", arguments: readJsonValue(args), toolCallId });
+	};
 }
 
 /** Decode the observed public get_session detail, not create_session's prose receipt.
@@ -61,8 +86,8 @@ export function decodeSessionDetail(value, context) {
 
 /** Trusted composition boundary, not a public tool, provider discovery or general proxy.
  * Callable primary routes must come from the App's normal permission pipeline. No
- * public SDK binding for them is assumed. The known disabled RPC session-management
- * route stays unavailable, even if primary callbacks or matching metadata are present.
+ * public SDK binding for them is assumed. RPC binds only the explicitly supplied
+ * workflow and warm handoff callbacks, never cold delivery or other session operations.
  * Canonical admission/journal services remain responsible for reservation and effects.
  * @param {NativeHostAccess} access
  * @returns {Host & {decodeRun?: (value: unknown) => string}} */
@@ -74,8 +99,10 @@ export function createNativeHost(access) {
 	/** @type {PrimaryRoutes} */
 	const primary = access.route === "primary-app" ? { ...access.primary } : {};
 	const workflow = access.route === "extension-rpc" ? access.workflow : primary.run_dynamic_workflow;
+	const handoff = access.route === "extension-rpc" ? access.warmHandoff : primary.send_session_message;
 	/** @type {Set<string>} */
-	const offered = new Set(names.filter(name => typeof (name === "run_dynamic_workflow" ? workflow : primary[name]) === "function"));
+	const offered = new Set(names.filter(name => typeof (name === "run_dynamic_workflow" ? workflow
+		: name === "send_session_message" ? handoff : primary[name]) === "function"));
 	/** @template T @param {string} name @param {((args: T, correlation: string) => Promise<unknown>) | undefined} operation
 	 * @param {T} args @param {string} correlation */
 	async function invoke(name, operation, args, correlation) {
@@ -146,7 +173,7 @@ export function createNativeHost(access) {
 					if (args.coordinator_only !== true || args.delivery_mode !== "immediate" || args.mode !== "autopilot") {
 						hold("dispatch_handoff_unconfirmed", "Handoff must retain its coordinator-only immediate task admission");
 					}
-					return invoke(name, primary[name], { session_id: text(args.session_id, "attached child", 512),
+					return invoke(name, handoff, { session_id: text(args.session_id, "attached child", 512),
 						message: text(args.message, "exact delegation", 2_000_000), coordinator_only: true, delivery_mode: "immediate", mode: "autopilot" }, correlation);
 				case "run_dynamic_workflow": {
 					object(args, ["name", "args", "limits"], "exact prepared workflow");

@@ -16,6 +16,37 @@ These are evidence labels, not new public operations or replacements for stored 
 | Delivered | Terminal attempt recorded with its required exact artifact and evidence; neither release of unresolved claims nor passing verification implied. |
 | Independently verified | Independent passing evidence bound to the exact final delivery and governing checks; not completion, human or replacement approval. |
 
+## Supported partial runtime boundary
+
+The current `foundry-supported-runtime-v1` increment binds only narrowly closed
+`run_dynamic_workflow` and warm `coordinator_only` `send_session_message` through public
+`session.rpc.tools.execute`, with actual route identity `extension-rpc`. Advertised names/metadata
+do not establish a callable binding; a binding does not establish admission or successful effect.
+Preserve the existing forwarded workflow-result decoder. No automatic alternate-route replay,
+private workflow launcher or generic executor is supported.
+
+`native/supported-runtime.mjs:createSupportedRuntime({getSession})` supplies `workflow`
+and `warmHandoff`; `extension.mjs` binds `runtime.host` and `getNativeRuntime`. Its default
+host state is `partial`, not `available`. `getStatus` projects `nativeCapabilities`;
+partial parallel dispatch returns `parallel_identity_unsupported` with operation, route,
+prerequisite, disposition and capability records. `host(access)` requires separately
+trusted complete current `NativeHostAccess`; no authenticated project/setup/child
+provider is fabricated. Existing repair launch consumes bound `runtime.workflow` via
+`getWorkflowRoute`, preserving the existing journal, raw result decoding and reconciliation.
+
+Cold coordinator-only first delivery fails before bootstrap and remains unavailable.
+An omitted strategy preserves the existing reserve/setup/corroborate/attach/unchanged-handoff
+sequence below. It does not select idle-first creation, authorize a cold-send workaround or
+promise enforced worker inactivity. Warm messaging is only the post-setup handoff capability,
+not proof that setup, attachment or execution occurred.
+
+Missing current project/identity, authenticated setup/child/effect/recovery/review/contributor
+providers hold the dependent automatic parallel operations. Do not turn those holds into a
+universal workflow prohibition: a supported workflow invocation is a distinct capability.
+Authenticated observations and a bounded TechnicalExecutor remain absent. Preserve the original
+decisions, rejected proposals, failures and receipts; source recording-boundary checks do not
+establish live-host authenticated operation, installation, full-factory acceptance or UI/visual evidence.
+
 ## Bounded registered source entry points
 
 These source tools are registered and composed, not proof of installation or live host support.
@@ -36,13 +67,15 @@ retained admission once, record any terminal result with `foundry_complete_task`
 ready work. Do not poll, reconstruct the sealed prompt/input payload, or manually continue a held
 create/attach/handoff through another route.
 
-The default production extension supplies `{ state: "unavailable" }` host ports. Only the trusted
-`createFoundryOperations` constructor's `getParallelHost` may provide actual offered-tool execution,
-per-operation availability, result decoders, setup/canonical-child observations, resource policies
-and recovery, complete contributor and reviewer readers. Tool JSON, imported receipts and schema metadata cannot supply them.
+Only the trusted `createFoundryOperations` constructor's `getParallelHost` may provide actual
+offered-tool execution, per-operation availability, result decoders, setup/canonical-child
+observations, resource policies and recovery, complete contributor and reviewer readers.
+Tool JSON, imported receipts and schema metadata cannot supply them.
 Calls require the current owning coordinator's native invocation outside workflows/subagents.
-Absent host support returns `held` (`parallel_host_unavailable`); missing operation-specific
-decoders/observations also hold. There is no legacy or workflow fallback for admitted parallel work.
+Wholly absent host support returns `held` (`parallel_host_unavailable`); the default partial
+host instead reports `parallel_identity_unsupported` as described above. Missing operation-specific
+decoders/observations also hold the dependent operation. The narrow route binding above does not
+supply those providers. There is no legacy or workflow fallback for admitted parallel work.
 
 The internal dispatch port must retain the canonical `dispatchReservation`, `createdChild` and
 `classifyError` implementations supplied by `createNativeDispatch`. The classifier preserves the
@@ -132,6 +165,9 @@ intents/outcomes through that fence; recovery/cancellation request transitions t
 Input resolution/materialization does not grant claims or approval. Keep native side effects outside
 the writer transaction, after a durable start receipt. Separate plan/resource stores are not a
 distributed atomic transaction: retain uncertain gaps and late outcomes; re-read on revision conflicts.
+Preserve the canonical once-only intent/start/outcome and complete original receipts after denial,
+interruption, malformed results or persistence failure. Reconciliation appends the original
+operation's observation; it does not replace its receipt, reset admission or resend an uncertain effect.
 
 Only the owning coordinator may invoke the supported offered-tool path under normal permissions.
 The captured session-management operation failed on its extension RPC route; primary App-path

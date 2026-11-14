@@ -1,8 +1,9 @@
-import { errorCode, errorMessage, isList, isRecord, readJsonValue, readRecord } from "../data.mjs";
+import { errorCode, errorMessage, isList, isRecord, property, readJsonValue, readRecord } from "../data.mjs";
 import { analysisInputDigest, stableStringify } from "../digest.mjs";
 import { fail, integer } from "../factory/fields.mjs";
 import { admissionIdentity, reservedInputs } from "../plan/parallel-contracts.mjs";
 import { validatePlan } from "../plan/validation.mjs";
+import { FoundryOperationError } from "./errors.mjs";
 
 /** @typedef {import("../types/parallel.js").AdmissionIdentity} Identity */
 /** @typedef {import("../types/parallel.js").AttemptIdentity} Attempt */
@@ -20,7 +21,11 @@ const fence = (record) => ({ admission: record.identity, revision: record.revisi
 /** @param {Attempt} attempt @param {Receipt["kind"]} kind */
 const effectId = (attempt, kind) => `${kind}-${analysisInputDigest(attempt)}`;
 /** @param {unknown} error */
-const held = (error) => ({ state: /** @type {const} */ ("held"), code: errorCode(error) ?? "dispatch_failed", reason: errorMessage(error) });
+const held = (error) => {
+	const details = error instanceof FoundryOperationError ? error.details : property(error, "receipt");
+	return { state: /** @type {const} */ ("held"), code: errorCode(error) ?? "dispatch_failed", reason: errorMessage(error),
+		...(details ? { details } : {}) };
+};
 
 /**
  * Bounded coordinator entry: call runReady once on an App notification or explicit request,
@@ -128,9 +133,17 @@ export function createDispatchOperations({ admission, journal, native, plans, in
 				const nativeError = native.classifyError(error);
 				const outcome = nativeError?.disposition === "definitive-failure"
 					? /** @type {const} */ ("definitive-failure") : /** @type {const} */ ("uncertain");
-				retain({ ...latest, state: outcome, source: result?.source ?? `${errorCode(error) ?? "native-error"}: ${errorMessage(error)}`.slice(0, 4096), at: clock() },
-					readJsonValue({ source: result?.source ?? "native failure", raw: result?.raw ?? nativeError?.receipt ?? null,
-						value: result?.value ?? null, startedAt: receipt.at, error: { code: errorCode(error) ?? "dispatch_failed", message: errorMessage(error) } }));
+				const unpersisted = readJsonValue({ source: result?.source ?? "native failure", raw: result?.raw ?? nativeError?.receipt ?? null,
+					value: result?.value ?? null, startedAt: receipt.at, error: { code: errorCode(error) ?? "dispatch_failed", message: errorMessage(error) } });
+				try {
+					retain({ ...latest, state: outcome, source: result?.source ?? `${errorCode(error) ?? "native-error"}: ${errorMessage(error)}`.slice(0, 4096), at: clock() }, unpersisted);
+				} catch (recordError) {
+					throw new FoundryOperationError("dispatch_outcome_persistence_failed",
+						"Retain the original native result outside the failed outcome write; reconcile this started operation, never replay it", {
+							operation: kind, disposition: "uncertain", receipt: latest, unpersisted,
+							persistenceError: { code: errorCode(recordError) ?? "dispatch_persistence_failed", message: errorMessage(recordError) },
+						});
+				}
 			}
 			throw error;
 		}

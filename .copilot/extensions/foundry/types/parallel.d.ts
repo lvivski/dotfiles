@@ -137,17 +137,25 @@ export type ParallelContributors = {
 	complete: boolean; source: string; capturedAt: string; commit: string; authors: string[];
 };
 
+export type NativeCapability = {
+	operation: string; route: string; advertised: boolean | null; callable: boolean;
+	admission: "unobserved"; effect: "unobserved"; disposition: "callable" | "held"; prerequisite: string | null;
+};
 /** Trusted constructor port, never a tool argument or a grant inferred from tool metadata.
  * Each callback must read the supported host route's actual current identity/evidence.
  * Omitting a decoder or observer holds the operation that requires it.
  */
 export type ParallelHost = { state: "unavailable"; reason: string } | {
+	state: "partial"; route: string; reason: string; capabilities: NativeCapability[];
+} | {
 	state: "available";
 	session: {
 		workspacePath: string; sessionId: string; projectId: string;
 		inWorkflow: boolean; agentId?: string;
 	};
 	executor: OfferedToolExecutor;
+	route?: string;
+	capability?: (operation: string) => NativeCapability | undefined;
 	offered: ReadonlySet<string>;
 	availability(name: string): "supported" | "unavailable" | "unproven";
 	taskPolicies(plan: import("./plan.js").FoundryPlan): Record<string, import("../plan/admission.mjs").TaskAdmission>;

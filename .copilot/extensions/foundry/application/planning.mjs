@@ -4,7 +4,7 @@ import { LIMITS, PLAN_STATUS } from "../plan/values.mjs";
 import { FoundryOperationError } from "./errors.mjs";
 import { realpathSync } from "node:fs";
 import { buildRepairPreparation, repairAuthority, repairLaunch, repairObject } from "../analysis/repair.mjs";
-import { errorMessage, isRecord, parseJson, readJsonValue } from "../data.mjs";
+import { errorCode, errorMessage, isRecord, parseJson, property, readJsonValue } from "../data.mjs";
 import { stableStringify } from "../digest.mjs";
 import { createRepairJournal } from "../storage/repair.mjs";
 
@@ -22,8 +22,9 @@ import { createRepairJournal } from "../storage/repair.mjs";
  * storeFor: ReturnType<typeof import("./storage.mjs").createSessionStorage>["storeFor"],
  * coordinator: ReturnType<typeof import("./approval.mjs").createApprovalOperations>["coordinator"],
  * getSession?: () => import("../types/repair.js").RepairSession | null | undefined,
+ * getWorkflowRoute?: () => ((args: import("../types/repair.js").RepairLaunch, correlation: string) => Promise<unknown>) | undefined,
  * }} dependencies */
-export function createPlanningOperations({ analysis, factory, persist, syncFactoryPlan, approveDelegated, approveTechnical, workspace, storeFor, coordinator, getSession }) {
+export function createPlanningOperations({ analysis, factory, persist, syncFactoryPlan, approveDelegated, approveTechnical, workspace, storeFor, coordinator, getSession, getWorkflowRoute }) {
 	/** @param {string} code @param {string} message @returns {never} */
 	function fail(code, message) { throw new FoundryOperationError(code, message); }
 	/** @param {import("../requests.mjs").OperationContext} options */
@@ -88,21 +89,41 @@ export function createPlanningOperations({ analysis, factory, persist, syncFacto
 		coordinator(options);
 		options.signal?.throwIfAborted();
 		journal.intent(preparation.id, preparation.digest);
+		/** @param {Parameters<typeof journal.outcome>[2]} state @param {string | null} runId
+		 * @param {import("../types/json.js").JsonValue} evidence */
+		function retain(state, runId, evidence) {
+			try { return journal.outcome(preparation.id, preparation.digest, state, runId, evidence); }
+			catch (error) {
+				const details = property(error, "details");
+				throw new FoundryOperationError(errorCode(error) ?? "repair_outcome_persistence_failed",
+					`${errorMessage(error)}. Retain the original native evidence; reconcile this repair intent without launching again`, {
+						...(isRecord(details) ? details : {}),
+						preparationId: preparation.id, preparationDigest: preparation.digest,
+						operation: "run_dynamic_workflow", disposition: "uncertain", unpersisted: { state, runId, evidence },
+						persistenceError: { code: errorCode(error) ?? "repair_persistence_failed", message: errorMessage(error) },
+					});
+			}
+		}
 		const executor = getSession?.()?.rpc?.tools;
-		if (!executor) {
-			journal.outcome(preparation.id, preparation.digest, "unavailable", null, { error: "Native offered-tool invocation is unavailable" });
+		const route = getWorkflowRoute?.() ?? (executor
+			? (/** @type {import("../types/repair.js").RepairLaunch} */ args) => executor.execute({ name: "run_dynamic_workflow", arguments: args })
+			: undefined);
+		if (!route) {
+			retain("unavailable", null, { error: "Native offered-tool invocation is unavailable" });
 			fail("repair_invocation_unavailable", "No supported offered run_dynamic_workflow route; the retained claim is held, not retried");
 		}
 		let raw;
 		try {
-			raw = readJsonValue(await executor.execute({ name: "run_dynamic_workflow", arguments: repairLaunch(preparation) }));
+			const launch = repairLaunch(preparation);
+			raw = readJsonValue(await route(launch, `repair-${preparation.id}`));
 		} catch (error) {
-			journal.outcome(preparation.id, preparation.digest, "uncertain", null, { error: errorMessage(error) });
+			const receipt = property(error, "receipt");
+			retain("uncertain", null, readJsonValue({ error: errorMessage(error), ...(receipt === undefined ? {} : { receipt }) }));
 			fail("repair_admission_uncertain", `Native admission is uncertain: ${errorMessage(error)}. Reconcile; do not launch again.`);
 		}
 		if (!isRecord(raw) || raw.resultType !== "success") {
 			const state = isRecord(raw) && ["denied", "rejected"].includes(String(raw.resultType)) ? "denied" : "uncertain";
-			journal.outcome(preparation.id, preparation.digest, state, null, raw);
+			retain(state, null, raw);
 			fail(state === "denied" ? "repair_permission_denied" : "repair_admission_uncertain", `Native admission did not succeed: ${stableStringify(raw)}`);
 		}
 		let runId;
@@ -116,10 +137,10 @@ export function createPlanningOperations({ analysis, factory, persist, syncFacto
 			if (detail.runId !== runId || detail.workflowName !== "plan-repair") throw new Error("Native admission identity differs");
 			coordinator(options);
 		} catch (error) {
-			journal.outcome(preparation.id, preparation.digest, "uncertain", runId ?? null, { raw, error: errorMessage(error) });
+			retain("uncertain", runId ?? null, { raw, error: errorMessage(error) });
 			fail("repair_admission_uncertain", errorMessage(error));
 		}
-		return journal.outcome(preparation.id, preparation.digest, "admitted", runId, raw);
+		return retain("admitted", runId, raw);
 	};
 
 	/** @param {Request<"reconcilePlanRepair">} input @param {import("../requests.mjs").OperationContext} [options] */

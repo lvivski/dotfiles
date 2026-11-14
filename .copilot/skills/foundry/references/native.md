@@ -16,6 +16,59 @@ preserve original leaf reports and raw failures. Source tests use real confined
 Git/SQLite/Node processes and **simulated** App identity, permission, transcript,
 review and visual observations. They do not prove an available production provider.
 
+## Supported partial runtime: current boundary
+
+`foundry-supported-runtime-v1` narrows the current increment to supported partial
+runtime, not the full lifecycle. Its pinned production route is the public
+`session.rpc.tools.execute` entry point, identified as `extension-rpc`, for narrowly
+closed `run_dynamic_workflow` and warm `coordinator_only` `send_session_message`
+bindings only. The existing trusted workflow-result decoder must remain forwarded
+through root native dispatch. Do not invent another launcher, generic executor or
+automatic alternate-route replay.
+
+`native/supported-runtime.mjs:createSupportedRuntime({getSession})` supplies the closed
+public-RPC callbacks `workflow` and `warmHandoff`, plus `capabilities()`, `host(access?)`
+and `completionEvent(input,retentionFor)`. `extension.mjs` binds `runtime.host` and
+`getNativeRuntime`. The default host state is `partial`, not `available`, preserving
+omitted-decomposition legacy behavior. `host(access)` binds only with separately
+trusted complete current `NativeHostAccess`; callbacks do not prove observers or
+fabricate authenticated project, setup or child access.
+
+`getStatus` adds a `nativeCapabilities` projection. Partial parallel dispatch returns
+`parallel_identity_unsupported`, retaining operation, route, prerequisite, disposition
+and capability records. The existing repair launch is the production consumer of
+bound `runtime.workflow` through `getWorkflowRoute`; its existing journal, raw result
+decoding and reconciliation remain in place. This is not support for every adapter route.
+
+Advertised names and metadata are not callable bindings. A callable binding is not
+observed admission; admission is not a successful effect or observed execution.
+Normal account/resource permission and exact result correlation remain required.
+Cold coordinator-only first delivery fails before bootstrap and remains unavailable;
+warm messaging does not establish a cold bootstrap path. Omitted strategy retains
+the existing reserve/setup/corroborate/attach/unchanged-handoff protocol, not an
+idle-first worker promise.
+
+Missing current project/identity and authenticated setup, child, effect, recovery,
+review and contributor observation providers prevent the automatic parallel
+operations that depend on them. They do not universally prevent invocation of a
+supported workflow. Bounded TechnicalExecutor and authenticated observations remain
+absent. Preserve the canonical once-only intent/start/outcome and complete original
+receipts after denial, interruption, malformed results or persistence failure.
+Reconcile only the original operation; never resend an uncertain effect.
+
+Root `completionEvent` is constructor-only. It validates native owner invocation,
+then passes `{repositoryPath,eventId}` to the existing canonical
+`retentionFor().completionEvent`. Missing persistence throws
+`retention_persistence_unsupported`. No notification subscription or automatic
+`completeTask`-to-archive path is installed by this binding; see [retention](retention.md).
+
+The inventories and check tables below retain the original native-bridge baseline,
+including its workflow-only RPC and missing-decoder/common-wiring status. Those are
+historical scope statements, not the current partial-runtime route definition above;
+do not rewrite their original evidence as a pass. Source recording-boundary checks
+are not live-host authenticated evidence, installation or full-factory acceptance.
+This boundary description records no new test execution and makes no UI/visual claim.
+
 ## Route, identity and permission profiles
 
 | Profile | Contract and authority | Support and later proof |

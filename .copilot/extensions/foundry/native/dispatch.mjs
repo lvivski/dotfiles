@@ -138,6 +138,8 @@ export function createNativeDispatch(options) {
 		/** @param {Reservation} reservation @param {Child} child @param {string} [correlation] */
 		async handoff(reservation, child, correlation) {
 			checkOwner(reservation);
+			if (child.projectId !== reservation.projectId || child.creatorSessionId !== transport.sessionId
+				|| child.sessionId === transport.sessionId) fail("dispatch_child_mismatch", "Warm handoff requires this coordinator's exact attached project/child");
 			return transport.call("send_session_message", {
 				session_id: child.sessionId, message: reservation.delegationPrompt,
 				coordinator_only: true, delivery_mode: "immediate", mode: "autopilot",

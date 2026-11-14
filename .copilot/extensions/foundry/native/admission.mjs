@@ -31,6 +31,8 @@ const offeredNames = new Set(["foundry_get_status", "foundry_reserve_task", "fou
  * context: () => {owner: string, sessionId: string, inWorkflow: boolean},
  * executor: import("../types/parallel.js").OfferedToolExecutor,
  * offered: ReadonlySet<string>,
+ * route?: string,
+ * capability?: (operation: string) => import("../types/parallel.js").NativeCapability | undefined,
  * availability: (name: string) => "supported" | "unavailable" | "unproven"
  * }} options
  */
@@ -42,7 +44,10 @@ export function createOfferedDispatchTransport(options) {
 			throw new DispatchNativeError("dispatch_invocation_owner", "Only the owning coordinator outside a workflow may dispatch", "not-started");
 		}
 		if (!offeredNames.has(name) || !options.offered.has(name) || options.availability(name) !== "supported") {
-			throw new DispatchNativeError("dispatch_capability_unavailable", `${name} is not supported on this invocation route; use bounded coordinator reconciliation`, "not-started");
+			const capability = options.capability?.(name);
+			throw new DispatchNativeError("dispatch_capability_unavailable", `${name} is not supported on this invocation route; use bounded coordinator reconciliation`, "not-started",
+				{ operation: name, route: options.route ?? "unbound", prerequisite: capability?.prerequisite ?? "operation-specific supported native binding",
+					disposition: "held" });
 		}
 	}
 	return {

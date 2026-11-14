@@ -42,6 +42,7 @@ import { admissionFence } from "./storage/admission.mjs";
  * @property {string} [factoryStorageRoot] Private root override for isolated fixtures.
  * @property {() => import("./types/repair.js").RepairSession | null | undefined} [getSession]
  * @property {() => import("./types/parallel.js").ParallelHost | null | undefined} [getParallelHost] Trusted current host ports, not caller JSON or tool metadata.
+ * @property {() => ReturnType<typeof import("./native/supported-runtime.mjs").createSupportedRuntime>} [getNativeRuntime] Closed public extension-RPC callbacks.
  * @property {(repositoryPath: string) => Omit<import("./types/operating.js").OperatingPorts, "persistence"> | undefined} [getOperating] Trusted fenced operating authority; persistence always comes from the current owner plan store.
  * @property {import("./application/storage.mjs").RetentionBindings} [getRetention] Optional canonical archive outbox and guarded host bindings.
  * @property {import("./types/factory.js").TechnicalExecutor} [executeTechnical] Trusted reference execution with native resource permission.
@@ -88,6 +89,7 @@ export function createFoundryOperations(options) {
 	const { preparePlan, createPlan, submitPlan, approve, preparePlanRepair, launchPlanRepair, reconcilePlanRepair, importPlanRepair } = createPlanningOperations({
 		analysis, factory, persist, syncFactoryPlan, approveDelegated, approveTechnical: technical.approveTechnical,
 		workspace, storeFor, coordinator, getSession: options.getSession,
+		getWorkflowRoute: () => options.getNativeRuntime?.().workflow,
 	});
 	const tasks = createTaskOperations({ storeFor, persist, factory, syncFactoryPlan });
 	const { cancel: cancelPlan, cancelVerificationRun, finalizeCancellation: finalizePlanCancellation } = createCancellationOperations({ storeFor, persist, readForMutation, factory, analysis, discoverReservedVerification, syncFactoryPlan });
@@ -143,6 +145,15 @@ export function createFoundryOperations(options) {
 		retentionFor: input => {
 			const repositoryPath = text(input, "repository path", 4096);
 			return retentionFor(repositoryPath, factory.factoryFor(repositoryPath).repository.id);
+		},
+		/** Native canonical notification entry, not a public tool or archive permission.
+		 * @param {unknown} input @param {OperationContext} [context] */
+		completionEvent: async (input, context = {}) => {
+			coordinator(context);
+			const runtime = options.getNativeRuntime?.();
+			if (!runtime) throw new FoundryOperationError("retention_notification_unsupported", "No supported canonical completion notification binding");
+			return runtime.completionEvent(input, repositoryPath =>
+				retentionFor(repositoryPath, factory.factoryFor(repositoryPath).repository.id));
 		},
 		createFactoryPlan: requestHandler("createFactoryPlan", createFactoryPlan),
 		createEvaluationPlan: requestHandler("createEvaluationPlan", createEvaluationPlan),
@@ -225,8 +236,14 @@ function createParallelComposition({ options, workspace, storeFor, factory, pers
 	function requireHost(context) {
 		context?.signal?.throwIfAborted();
 		const host = options.getParallelHost?.();
-		if (!host || host.state !== "available") fail("parallel_host_unavailable", host?.reason
-			?? "Bind supported owning-coordinator host observations and offered-tool execution before parallel operations; no legacy or workflow fallback is authorized");
+		if (!host || host.state !== "available") {
+			if (host?.state === "partial") throw new FoundryOperationError("parallel_identity_unsupported", host.reason, {
+				operation: "parallel-admission", route: host.route, prerequisite: "authenticated current project/setup/child observations",
+				disposition: "held", capabilities: host.capabilities,
+			});
+			fail("parallel_host_unavailable", host?.reason
+				?? "Bind supported owning-coordinator host observations and offered-tool execution before parallel operations; no legacy or workflow fallback is authorized");
+		}
 		if (host.session.workspacePath !== workspace() || !host.session.sessionId || !host.session.projectId
 			|| host.session.inWorkflow !== false || host.session.agentId !== undefined
 			|| !context?.invocation || context.invocation.sessionId !== host.session.sessionId
@@ -329,7 +346,7 @@ function createParallelComposition({ options, workspace, storeFor, factory, pers
 		factory.packageContext(plan);
 		const { admission, journal } = storageFor(plan);
 		const transport = createOfferedDispatchTransport({
-			owner, sessionId, offered: host.offered,
+			owner, sessionId, offered: host.offered, route: host.route, capability: host.capability,
 			executor: { execute: input => {
 				const current = currentHost();
 				if (["create_session", "send_session_message", "run_dynamic_workflow"].includes(input.name)) {
@@ -415,12 +432,15 @@ function createParallelComposition({ options, workspace, storeFor, factory, pers
 	/** @template T @param {() => Promise<T>} operation */
 	async function bounded(operation) {
 		try { return await operation(); }
-		catch (error) { return { state: /** @type {const} */ ("held"), code: errorCode(error) ?? "parallel_operation_held", reason: errorMessage(error) }; }
+		catch (error) { return { state: /** @type {const} */ ("held"), code: errorCode(error) ?? "parallel_operation_held", reason: errorMessage(error),
+			...(error instanceof FoundryOperationError && error.details ? { details: error.details } : {}) }; }
 	}
 	/** @param {Request<"getStatus">} input */
 	async function getStatus(input) {
 		const plan = await storeFor().read(input.planId);
-		return enabled(plan) ? parallelStatus.getStatus({ ...input, sessionInventory: undefined }) : status.getStatus(input);
+		const result = await (enabled(plan) ? parallelStatus.getStatus({ ...input, sessionInventory: undefined }) : status.getStatus(input));
+		const runtime = options.getNativeRuntime?.();
+		return runtime ? { ...result, nativeCapabilities: runtime.capabilities() } : result;
 	}
 	/** @param {Request<"nextTasks">} input */
 	async function nextTasks(input) {

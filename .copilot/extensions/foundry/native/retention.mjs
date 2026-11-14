@@ -254,6 +254,8 @@ export function createNativeRetention(options) {
 		if (!host?.route) return unsupported("unsupported-route", "No current supported permission-preserving native archive route", intentId);
 		if (!host.conditionalArchive) return unsupported("unsupported-race-safety", "Host cannot exclude eligibility changes through the native archive effect", intentId);
 		if (!host.decodeArchive) return unsupported("unsupported-decoder", "No supported native archive-result decoder", intentId);
+		if (!host.observeOutcome || !host.decodeReconciliation) return unsupported("unsupported-reconciliation",
+			"Authoritative correlated original-operation outcome observation and decoding are required before archival", intentId);
 		/** @type {Evidence[]} */
 		const evidence = [];
 		/** @type {Receipt | null} */

@@ -12,6 +12,7 @@ import { createFoundryCanvas } from "./canvas.mjs";
 import { publishPlanChange, publishWorkflowChange, subscribeToPlan } from "./events.mjs";
 import { buildFoundryHooks } from "./hooks.mjs";
 import { createFoundryOperations } from "./operations.mjs";
+import { createSupportedRuntime } from "./native/supported-runtime.mjs";
 import { createResearchTimeReview } from "./research/review.mjs";
 import { buildFoundryTools } from "./tools.mjs";
 import { createWorkflowAnalysis } from "./workflow.mjs";
@@ -29,14 +30,14 @@ const workflows = Object.values(FOUNDRY_WORKFLOWS).map(
 	(definition) => defineWorkflow(definition),
 );
 
+const runtime = createSupportedRuntime({ getSession: () => session });
+
 /** Shared service boundary used by tools, hooks, and canvases. */
 const operations = createFoundryOperations({
 	getWorkspacePath: () => session?.workspacePath,
 	getSession: () => session,
-	getParallelHost: () => ({
-		state: "unavailable",
-		reason: "The extension tools.execute route is unproven for App session management and lacks supported setup, canonical-child and recovery observations. Bind a supported owning-coordinator host port before parallel dispatch; no workflow fallback is authorized.",
-	}),
+	getParallelHost: () => runtime.host(),
+	getNativeRuntime: () => runtime,
 	analysis: createWorkflowAnalysis(() => session?.workflow),
 	notify: publishPlanChange,
 });

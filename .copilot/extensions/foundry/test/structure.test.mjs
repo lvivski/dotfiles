@@ -32,6 +32,8 @@ const approvedCompoundFilenames = new Set([
 	"bridge/package-inputs.mjs",
 	"plan/parallel-contracts.mjs",
 	"storage/parallel-protocol.mjs",
+	"native/supported-runtime.mjs",
+	"test/native/supported-runtime.test.mjs",
 	"types/parallel-conformance.ts",
 	"test/parallel/native-contracts.mjs",
 	"test/parallel/fixtures/native-capabilities.json",

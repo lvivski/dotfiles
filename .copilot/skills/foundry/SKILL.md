@@ -41,22 +41,50 @@ and compiled ports alone do not establish an installed autonomous execution path
 Local source exposes optional `decomposition` on `foundry_create_factory_plan` and registers
 `foundry_dispatch_ready`, `foundry_reconcile_parallel`, `foundry_materialize_inputs` and
 `foundry_assess_package`. Follow the [bounded source sequence](references/dispatch.md#bounded-registered-source-entry-points).
-The default production extension deliberately supplies unavailable host ports; only trusted
-constructor wiring can supply actual route/operation capabilities, never caller JSON. Synthetic-host
-composition evidence is not installation or live App support. Unsupported production operations remain held;
-do not bypass missing capabilities, switch routes automatically or infer fresh correction authority.
+The `foundry-supported-runtime-v1` increment is a **supported partial runtime**, not full lifecycle
+support. Its pinned production binding is narrowly closed `run_dynamic_workflow` and warm
+`coordinator_only` `send_session_message` through public `session.rpc.tools.execute`, on the
+`extension-rpc` route. Advertised names/metadata, a callable binding, observed admission and successful
+effect are distinct. Only trusted constructor wiring can supply capabilities, never caller JSON;
+there is no automatic alternate-route replay, private workflow launcher or generic executor.
+Cold coordinator-only first delivery fails before bootstrap and remains unavailable. An omitted
+strategy retains reserve/setup/corroborate/attach/unchanged-handoff, not idle-first promises.
+Missing current project/identity, authenticated setup/child/effect/recovery/review/contributor
+providers hold the dependent automatic parallel operations, not supported workflow invocation
+universally. Bounded TechnicalExecutor and authenticated observations remain absent.
+
+`native/supported-runtime.mjs:createSupportedRuntime({getSession})` supplies `workflow`,
+`warmHandoff`, `capabilities()`, `host(access?)` and `completionEvent(input,retentionFor)`.
+`extension.mjs` binds `runtime.host` and `getNativeRuntime`; the default host state is `partial`,
+not `available`. `getStatus` adds the `nativeCapabilities` projection. Partial parallel dispatch
+returns `parallel_identity_unsupported` with operation/route/prerequisite/disposition and capability
+records; only separately trusted complete current `NativeHostAccess` can bind `host(access)`.
+The existing repair launch consumes `runtime.workflow` through `getWorkflowRoute`, retaining its
+original journal, raw result decoding and reconciliation; callback availability proves no observer.
 
 The joined source forwards the trusted workflow-result decoder through root native dispatch and
 exposes canonical operating/squad/goal services through the common bridge. Root operating bindings
 reuse the current owner's plan outbox. Constructor-bound retention requires a real canonical archive
-transaction/outbox; the dispatch journal cannot substitute. Missing archive guards, conditional
-archival/outcome reconciliation, authenticated observations, permission or bounded technical
-execution providers remain explicit holds. Repair tools and the original `plan-repair` workflow
-retain normal native resource permissions and single-admission owner-local reconciliation.
+transaction/outbox; the dispatch journal cannot substitute. Root `completionEvent` is constructor-only:
+it validates native owner invocation, then forwards `{repositoryPath,eventId}` to the existing canonical
+`retentionFor().completionEvent`. There is no notification subscription or automatic
+`completeTask`-to-archive path. Assessment requires canonical notification authority and that persistence
+binding; missing persistence throws `retention_persistence_unsupported`, never a second store.
+Completion never authorizes archive.
+Preserve canonical once-only intent/start/outcome and original receipts through denial, interruption,
+malformed results or persistence failure; reconcile the original operation, never resend an uncertain effect.
+Missing archive guards, conditional archival/outcome reconciliation, authenticated observations,
+permission or bounded technical execution providers remain explicit holds. Repair tools and the
+original `plan-repair` workflow retain normal native resource permissions and single-admission
+owner-local reconciliation.
 Read [native bindings](references/native.md), [goals](references/goals.md) and
 [retention](references/retention.md) for their distinct obligations.
 
-Source-only composition is non-UI and does not renew visual evaluators or erase failed captures.
+Source recording-boundary checks are not live-host authenticated evidence, installation or full-factory
+acceptance. App lifecycle serialization, typed retirement and dirty-preservation alone do not prove
+artifact preservation, current eligibility, a host-wide action-time all-writer guard, normal permission
+or correlated original outcomes: missing prerequisites retain specific holds and zero archive effects.
+This increment makes no UI/visual claim and does not renew visual evaluators or erase failed captures.
 Keep source completion separate from installed-input/provider holds and later owner-run publication,
 global installation and reload. Compare a complete immutable release manifest, not a delta overlay;
 preserve installed custom increments and prior refusals. Deployment requires the exact independently

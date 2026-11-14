@@ -5,6 +5,44 @@ automatic-cleanup path. Completion triggers assessment, never permission or arch
 T-005 independently verifies the exact integrated source without waiting for any live
 archive. Source verification and later actual cleanup are both required program outcomes.
 
+## Supported partial runtime: completion is assessment only
+
+The current `foundry-supported-runtime-v1` increment is partial runtime support, not
+automatic cleanup or full lifecycle acceptance. `native/supported-runtime.mjs` exports
+`createSupportedRuntime({getSession})`, which supplies
+`completionEvent(input,retentionFor)`. Root `completionEvent` is **constructor-only**:
+it validates native owner invocation, then passes `{repositoryPath,eventId}` to the
+existing canonical `retentionFor().completionEvent`. It does not subscribe to
+notifications or connect `completeTask` automatically to archive.
+
+Completion can trigger the **existing** retention assessment only when canonical
+notification authority and the existing canonical archive transaction/outbox are
+supplied. Without that persistence binding, it throws
+`retention_persistence_unsupported`; do not create a second store or substitute the
+dispatch journal. Neither the constructor binding nor a completion notification
+authorizes an archive.
+
+The narrow public `session.rpc.tools.execute` bindings for workflow invocation and
+warm coordinator-only messaging use `extension-rpc`; neither binds an archive route
+nor supplies retention authority. Advertised metadata, callable binding, admission
+and successful effect remain distinct. No automatic alternate-route replay, private
+workflow launcher or generic executor may repair an unavailable retention operation.
+
+Every missing prerequisite retains its specific hold and permits **zero archive
+effects**: artifact preservation, current eligibility, host-wide action-time
+all-writer exclusion, normal native permission and correlated original-outcome
+observation/reconciliation. App lifecycle serialization, typed retirement and
+dirty-preservation do not by themselves prove these prerequisites. Neither do source
+recording-boundary checks: those are not live-host authenticated evidence, installation
+or full-factory acceptance. Authenticated observations and bounded TechnicalExecutor
+remain absent; no UI/visual claim applies.
+
+Keep the canonical once-only intent/start/outcome and complete original receipts
+after denial, interruption, malformed results or persistence failure. Reconciliation
+retains the original operation and receipt; never resend an uncertain archive.
+The historical source tables, decisions, rejected proposals, failures and evidence
+below remain intact. This current contract records no new test run or live cleanup.
+
 ## Authoritative interfaces
 
 The single orchestration declaration is
