@@ -7,8 +7,8 @@ import { deflateRawSync, inflateRawSync } from "node:zlib";
 import { analysisInputDigest, stableStringify } from "../digest.mjs";
 import { errorCode, errorMessage, isList, isOneOf, isRecord, parseJson } from "../data.mjs";
 import { createArtifactDatabase } from "../storage/database.mjs";
-import { FACTORY_ACTIONS, prepareCommand } from "./replay.mjs";
-import { assertOperatingSnapshot, validateOperatingRules } from "./operating.mjs";
+import { FACTORY_ACTIONS, prepareCommand, validateCanonicalOperating } from "./replay.mjs";
+import { assertOperatingSnapshot } from "./operating.mjs";
 import { operatingPublication } from "../plan/schemas/operating.mjs";
 
 /** @typedef {import("../types/factory.js").FactoryAction} FactoryAction */
@@ -277,7 +277,7 @@ export function createFactoryLedger({ repository, format, storageRoot, busyTimeo
 			const publication = operatingPublication(input.publication);
 			const snapshot = { repository, revision: document.revision, ...state };
 			assertOperatingSnapshot(snapshot, publication.batch);
-			validateOperatingRules(snapshot, publication.batch, operatingRules);
+			validateCanonicalOperating(snapshot, publication.batch, operatingRules);
 		}
 		const at = now();
 		const last = document.events.at(-1);
@@ -323,7 +323,7 @@ export function createFactoryLedger({ repository, format, storageRoot, busyTimeo
 		for (const event of document.events) {
 			if (event.action === "recordOperating") {
 				const publication = operatingPublication(event.input.publication);
-				validateOperatingRules({ ...state, repository, revision: event.revision - 1 }, publication.batch, operatingRules);
+				validateCanonicalOperating({ ...state, repository, revision: event.revision - 1 }, publication.batch, operatingRules);
 			}
 			applyEvent(state, event, { historical: true, portable: document.portable === true });
 		}

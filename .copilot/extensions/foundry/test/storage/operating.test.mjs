@@ -5,10 +5,12 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { createPlanStore } from "../../storage.mjs";
 import { approvalScope } from "../../plan/schemas/approval.mjs";
-import { charter, goal, operatingFixture } from "../factory/operating.mjs";
+import { analysisInputDigest } from "../../digest.mjs";
+import { charter, goal, historicalIdentity, operatingFixture } from "../factory/operating.mjs";
 
 /** @param {Awaited<ReturnType<typeof operatingFixture>>} f */
 async function grant(f) {
+	f.native.coordinatorSessionId = "fixture-coordinator";
 	const plan = f.store.readCurrent(f.planId);
 	return f.store.createApprovalDelegation({
 		id: "fixture-grant", scope: approvalScope(plan, "fixture-coordinator", "plan"),
@@ -138,4 +140,40 @@ test("plan import retains immutable attribution but strips even forged local aut
 	assert.throws(() => imported.requireTechnicalAuthorization(f.planId, "invented", publication.digest), { code: "technical_authorization_missing" });
 	await assert.rejects(imported.update(f.planId, source.revision, source), { code: "operating_history_immutable" });
 	assert.deepEqual(f.store.readCurrent(f.planId), source);
+});
+
+test("direct canonical writes cannot bypass charter ownership, actor identity or category-specific receipts", async t => {
+	const f = await operatingFixture(t, { rules: {} });
+	const delegation = await grant(f);
+	const initial = { ...charter(), decisions: /** @type {import("../../types/operating.js").OperatingCategory[]} */ (["observation", "proposal", "plan", "completion", "human", "external"]) };
+	f.factory.operating.commit(f.batch("initial", [initial, goal("owned")]), f.authority());
+	const other = f.authority();
+	assert.ok(other.binding);
+	other.binding.charter = { id: "other", revision: 1 };
+	f.factory.operating.commit(f.batch("other", [charter("other")]), other);
+	const before = f.store.readCurrent(f.planId);
+	const canonical = f.factory.exportFactory();
+	const transferred = { ...goal("owned", 2), charter: { id: "other", revision: 1 } };
+	other.expectedPlanRevision = before.revision;
+	assert.throws(() => f.factory.operating.commit(f.batch("takeover", [transferred]), other), { code: "operating_owner_mismatch" });
+	assert.throws(() => f.factory.operating.commit(f.batch("foreign-charter", [charter("third")]), f.authority()), { code: "operating_owner_mismatch" });
+	const source = { ...historicalIdentity, identity: analysisInputDigest("forged-worker") };
+	const forgedActor = { ...goal("owned", 2), source };
+	const actorBatch = { ...f.batch("forged-actor", [forgedActor]), source };
+	assert.throws(() => f.factory.operating.commit(actorBatch, f.authority()), { code: "squad_actor_mismatch" });
+	for (const category of /** @type {const} */ (["plan", "completion", "external"])) {
+		const decision = {
+			version: /** @type {const} */ (1), kind: /** @type {const} */ ("decision"), id: `forged-${category}`, revision: 1,
+			previous: null, source: historicalIdentity, context: [], charter: { id: "squad", revision: 1 }, goal: null,
+			category, status: /** @type {const} */ ("historical"), rationale: "A charter or a category label is not an approval", governing: [],
+		};
+		assert.throws(() => f.factory.operating.commit(f.batch(`forged-${category}`, [decision]),
+			{ ...f.authority(), delegationId: delegation.id }));
+	}
+	assert.deepEqual(f.store.readCurrent(f.planId), before);
+	assert.equal(f.factory.exportFactory(), canonical);
+	assert.deepEqual(f.admission.read(f.fence.admission)?.receipts, []);
+	assert.deepEqual(await f.store.getApprovalDelegation(delegation.id), delegation);
+	f.factory.goals.commit(f.batch("valid-owner", [goal("owned", 2)]), f.authority());
+	assert.equal(f.store.readCurrent(f.planId).operating?.publications.length, 3);
 });

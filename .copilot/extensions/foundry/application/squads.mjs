@@ -1,8 +1,7 @@
-import { analysisInputDigest, stableStringify } from "../digest.mjs";
+import { stableStringify } from "../digest.mjs";
 import { fail } from "../factory/fields.mjs";
-import { operatingRecords } from "../factory/operating.mjs";
+import { assertOperatingDecisionAuthority, operatingRecords } from "../factory/operating.mjs";
 import { squadCharter, squadGeneration, squadHistory, validateSquads } from "../factory/squads.mjs";
-import { approvalScope, sameApprovalScope } from "../plan/schemas/approval.mjs";
 import { operatingAuthority, operatingBatch } from "../plan/schemas/operating.mjs";
 
 /** @typedef {import("../types/operating.js").OperatingBatch} Batch */
@@ -16,6 +15,7 @@ import { operatingAuthority, operatingBatch } from "../plan/schemas/operating.mj
  * @returns {Native} */
 export function createSquadAuthority({ ownership, coordinatorSessionId }) {
 	return Object.freeze({
+		coordinatorSessionId,
 		assertAuthority(plan, authority, delegation, publication) {
 			if (!ownership || typeof ownership.assertAuthority !== "function"
 				|| ownership.assertAuthority.constructor?.name === "AsyncFunction" || !coordinatorSessionId) {
@@ -27,18 +27,9 @@ export function createSquadAuthority({ ownership, coordinatorSessionId }) {
 			if (result !== undefined || stableStringify(observed) !== before) {
 				fail("squad_ownership_invalid", "Ownership must synchronously assert the exact current binding, not mutate or return cached permission");
 			}
-			if (delegation && (delegation.revocation || authority.delegationId !== delegation.id
-				|| !sameApprovalScope(delegation.scope, approvalScope(plan, coordinatorSessionId,
-					delegation.scope.approvalType ?? "plan", delegation.scope.technical)))) {
-				fail("squad_delegation_out_of_scope", "A supplied delegation must match the current owner, coordinator, repository, capability and file scope");
-			}
+			assertOperatingDecisionAuthority(plan, authority, delegation, publication, coordinatorSessionId);
 			const binding = authority.binding;
-			if (!binding || publication.batch.source.kind !== "app"
-				|| publication.batch.source.identity !== analysisInputDigest(binding.sessionId)
-				|| publication.batch.records.some(record => record.source.kind !== "app"
-					|| stableStringify(record.source) !== stableStringify(publication.batch.source))) {
-				fail("squad_actor_mismatch", "New records retain the actual bound App worker, never a supplied foreign or human actor");
-			}
+			if (!binding) fail("squad_binding_unresolved", "A current native binding is required");
 			for (const record of publication.batch.records) {
 				if (record.kind !== "charter" && record.kind !== "decision") {
 					fail("squad_record_unsupported", "The squad service cannot mutate goals or relationships");
@@ -46,27 +37,6 @@ export function createSquadAuthority({ ownership, coordinatorSessionId }) {
 				const ref = record.kind === "charter" ? record : record.charter;
 				if (ref.id !== binding.charter.id || ref.revision !== binding.charter.revision) {
 					fail("squad_binding_mismatch", "Every mutation must belong to the exact locally bound charter revision");
-				}
-				if (record.kind !== "decision" || record.status !== "historical") continue;
-				if (!["plan", "completion", "technical-retry", "evaluator-renewal"].includes(record.category)) {
-					fail("squad_separate_authority", "Contract, replacement, human and external/resource decisions require their separate authority paths");
-				}
-				const kind = record.category === "technical-retry" ? "retry" : "consumer-expectation";
-				const type = record.category === "plan" || record.category === "completion" ? record.category : "technical";
-				if (!delegation || delegation.revocation || authority.delegationId !== delegation.id
-					|| !sameApprovalScope(delegation.scope, approvalScope(plan, coordinatorSessionId, type, delegation.scope.technical))) {
-					fail("squad_delegation_out_of_scope", "Historical decision recording requires the existing exact, unrevoked category delegation");
-				}
-				// A historical entry describes an actual baseline authorization receipt;
-				// the charter and this service must not manufacture one.
-				const receipt = type === "technical"
-					? plan.technicalDecisions?.find(entry => entry.kind === kind && entry.delegation.id === delegation.id
-						&& entry.sessionId === coordinatorSessionId && entry.digest === record.source.source)
-					: plan.gates[type === "plan" ? "delegatedApproval" : "delegatedCompletion"];
-				if (!receipt || receipt.delegation.id !== delegation.id || receipt.sessionId !== coordinatorSessionId
-					|| receipt.planId !== plan.id || receipt.blueprintDigest !== plan.factory?.blueprintDigest
-					|| (type !== "technical" && analysisInputDigest(receipt) !== record.source.source)) {
-					fail("squad_decision_receipt_missing", "Record only an existing exact baseline decision receipt; a squad entry is not approval");
 				}
 			}
 		},

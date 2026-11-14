@@ -2,13 +2,15 @@ import { contractContext, generationPackage } from "./factory/context.mjs";
 import { fail } from "./factory/fields.mjs";
 import { createFactoryInspection } from "./factory/projection.mjs";
 import { candidateFor, contractFor } from "./factory/records.mjs";
-import { FACTORY_FORMAT, applyEvent, replay } from "./factory/replay.mjs";
+import { FACTORY_FORMAT, applyEvent, replay, validateCanonicalOperating } from "./factory/replay.mjs";
 import { resolveRepositoryIdentity } from "./factory/repository.mjs";
 import { createFactoryLedger } from "./factory/storage.mjs";
-import { createPortableLedger } from "./factory/portable.mjs";
+import { createPortableLedger, projectKnowledge, readKnowledgeDocument } from "./factory/portable.mjs";
 import { guardFactoryEvidence } from "./evidence/guards.mjs";
-import { isRecord } from "./data.mjs";
+import { isRecord, parseJson } from "./data.mjs";
 import { createOperatingService } from "./factory/operating.mjs";
+import { createSquadService } from "./application/squads.mjs";
+import { createGoalService } from "./application/goals.mjs";
 
 /**
  * @param {{repositoryPath: string, storageRoot?: string, clock?: () => Date|string|number, busyTimeoutMs?: number,
@@ -55,12 +57,28 @@ export function createFactoryService(options) {
 	const inspect = createFactoryInspection(ledger, repository, now);
 	const operating = createOperatingService({
 		snapshot, now, ports: options.operating,
+		validate: (state, batch) => validateCanonicalOperating(state, batch, options.operating?.rules),
 		append(publication, authorize) {
 			ledger.append("recordOperating", { expectedRevision: publication.batch.snapshot.factoryRevision, publication }, () => { authorize(); });
 		},
 	});
+	const squads = createSquadService({ operating });
+	const goals = createGoalService({
+		operating, now,
+		transfer: {
+			export() {
+				snapshot();
+				return JSON.stringify(projectKnowledge(ledger.readDocument()).document);
+			},
+			import(source, expectedRevision) {
+				const document = readKnowledgeDocument(parseJson(source));
+				if (document.repository.id !== repository.id) fail("factory_repository_mismatch", "Goal history belongs to another canonical repository");
+				return importFactory({ source: JSON.stringify({ ...document, repository }), expectedRevision });
+			},
+		},
+	});
 	return Object.freeze({
-		operating,
+		operating, squads, goals,
 		repository, databasePath: ledger.databasePath, snapshot, inspect, exportFactory, importFactory,
 		executionSnapshot: ledger.executionSnapshot, assertCurrentKnowledge: ledger.assertCurrentKnowledge,
 		migrateFactory: ledger.migrateFactory,

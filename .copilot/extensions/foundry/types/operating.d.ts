@@ -88,6 +88,9 @@ export type OperatingRules = {
 	goals?: (state: FactorySnapshot, records: readonly OperatingRecord[]) => void;
 };
 export type OperatingNativePort = {
+	/** Trusted composition identity, never accepted from a mutation DTO. Required
+	 * for recording a decision under an existing coordinator-local delegation. */
+	coordinatorSessionId?: string;
 	/** Must recheck the native owner, attachment and any operation-specific delegation.
 	 * Called inside the existing admission fence and owner-plan writer. Missing support holds. */
 	assertAuthority(plan: FoundryPlan, authority: OperatingAuthority, delegation: ApprovalDelegation | null, publication: OperatingPublication): void;
@@ -100,6 +103,7 @@ export type OperatingPersistencePort = {
 	require(planId: string, digest: string): OperatingPublication;
 };
 export type OperatingPorts = {
+	/** Optional additional checks; canonical charter/goal rules always run. */
 	rules: OperatingRules; persistence: OperatingPersistencePort;
 	admission: Pick<AdmissionPort, "withFence">; native: OperatingNativePort;
 };

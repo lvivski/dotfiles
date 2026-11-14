@@ -6,7 +6,10 @@ import { acceptContract, appendKnowledge, createUnit, ingestAnalysis } from "./k
 import { same } from "./records.mjs";
 import { compactFactory, retire } from "./retention.mjs";
 import { recordSignal } from "./signals.mjs";
-import { applyOperatingPublication } from "./operating.mjs";
+import { applyOperatingPublication, validateOperatingRules } from "./operating.mjs";
+import { validateSquads } from "./squads.mjs";
+import { validateGoals } from "./goals.mjs";
+import { operatingPublication } from "../plan/schemas/operating.mjs";
 
 /** @typedef {import("../types/factory.js").RepositoryIdentity} RepositoryIdentity */
 /** @typedef {import("../types/factory.js").FactoryEvent} FactoryEvent */
@@ -21,6 +24,15 @@ export const FACTORY_ACTIONS = Object.freeze(["createUnit", "appendKnowledge", "
 	"bindPlan", "bindEvaluationPlan", "activateEvaluationPlan", "recordDelivery", "recordEvaluation",
 	"recordCompletion", "recordEvaluationCompletion", "abandonPlan", "decideCandidate",
 	"recordSignal", "ingestAnalysis", "retire", "compactFactory", "checkpoint", "recordOperating"]);
+
+/** Canonical policy cannot be replaced by an adapter's optional extra checks.
+ * @param {import("../types/factory.js").FactorySnapshot} state
+ * @param {import("../types/operating.js").OperatingBatch} batch
+ * @param {import("../types/operating.js").OperatingRules} [additional] */
+export function validateCanonicalOperating(state, batch, additional) {
+	validateOperatingRules(state, batch, { charters: validateSquads, goals: validateGoals });
+	if (additional) validateOperatingRules(state, batch, { charters() {}, goals() {}, ...additional });
+}
 
 /** Service-owned metadata must be identical in prospective validation and persistence.
  * @param {FactoryAction} action @param {Record<string, unknown>} input */
@@ -118,6 +130,10 @@ export function replay(document, identity) {
 		timestamp(event.at, "event.at");
 		if (previous && event.at < previous) fail("factory_time_invalid", "Factory events must be causally ordered");
 		previous = event.at;
+		if (event.action === "recordOperating") {
+			validateCanonicalOperating({ ...state, repository: identity, revision: event.revision - 1 },
+				operatingPublication(event.input.publication).batch);
+		}
 		applyEvent(state, event, { historical: true, portable: document.portable === true });
 	}
 	return state;

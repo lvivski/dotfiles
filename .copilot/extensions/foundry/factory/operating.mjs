@@ -1,5 +1,6 @@
 import { analysisInputDigest, stableStringify } from "../digest.mjs";
 import { operatingAuthority, operatingBatch, operatingPublication } from "../plan/schemas/operating.mjs";
+import { approvalScope, sameApprovalScope } from "../plan/schemas/approval.mjs";
 import { fail, object } from "./fields.mjs";
 
 /** @typedef {import("../types/factory.js").FactorySnapshot} Snapshot */
@@ -93,6 +94,78 @@ export function operatingGeneration(record) {
 	return { ...structuredClone(record), context: record.context.filter(entry => entry.usage === "generation").map(entry => structuredClone(entry)) };
 }
 
+/** Shared by the domain facade and the canonical writer. Neither a record
+ * category nor an imported historical receipt can create decision authority.
+ * @param {import("../types/plan.js").FoundryPlan} plan
+ * @param {import("../types/operating.js").OperatingAuthority} authority
+ * @param {import("../types/plan.js").ApprovalDelegation | null} delegation
+ * @param {Publication} publication @param {string | undefined} coordinatorSessionId */
+export function assertOperatingDecisionAuthority(plan, authority, delegation, publication, coordinatorSessionId) {
+	if (delegation && (!coordinatorSessionId || delegation.revocation || authority.delegationId !== delegation.id
+		|| !sameApprovalScope(delegation.scope, approvalScope(plan, coordinatorSessionId,
+			delegation.scope.approvalType ?? "plan", delegation.scope.technical)))) {
+		fail("squad_delegation_out_of_scope", "A supplied delegation must match the current owner, coordinator, repository, capability and file scope");
+	}
+	const binding = authority.binding;
+	if (!binding || publication.batch.source.kind !== "app"
+		|| publication.batch.source.identity !== analysisInputDigest(binding.sessionId)
+		|| publication.batch.records.some(record => record.source.kind !== "app"
+			|| stableStringify(record.source) !== stableStringify(publication.batch.source))) {
+		fail("squad_actor_mismatch", "New records retain the actual bound App worker, never a supplied foreign or human actor");
+	}
+	for (const record of publication.batch.records) {
+		if (record.kind !== "decision" || record.status !== "historical") continue;
+		if (!["plan", "completion", "technical-retry", "evaluator-renewal"].includes(record.category)) {
+			fail("squad_separate_authority", "Contract, replacement, human and external/resource decisions require their separate authority paths");
+		}
+		const kind = record.category === "technical-retry" ? "retry" : "consumer-expectation";
+		const type = record.category === "plan" || record.category === "completion" ? record.category : "technical";
+		if (!coordinatorSessionId || !delegation || delegation.revocation || authority.delegationId !== delegation.id
+			|| !sameApprovalScope(delegation.scope, approvalScope(plan, coordinatorSessionId, type, delegation.scope.technical))) {
+			fail("squad_delegation_out_of_scope", "Historical decision recording requires the existing exact, unrevoked category delegation");
+		}
+		const receipt = type === "technical"
+			? plan.technicalDecisions?.find(entry => entry.kind === kind && entry.delegation.id === delegation.id
+				&& entry.sessionId === coordinatorSessionId && entry.digest === record.source.source)
+			: plan.gates[type === "plan" ? "delegatedApproval" : "delegatedCompletion"];
+		if (!receipt || receipt.delegation.id !== delegation.id || receipt.sessionId !== coordinatorSessionId
+			|| receipt.planId !== plan.id || receipt.blueprintDigest !== plan.factory?.blueprintDigest
+			|| (type !== "technical" && analysisInputDigest(receipt) !== record.source.source)) {
+			fail("squad_decision_receipt_missing", "Record only an existing exact baseline decision receipt; a squad entry is not approval");
+		}
+	}
+}
+
+/** Rechecked under the canonical writer before the owner outbox transaction.
+ * @param {Snapshot} state @param {Batch} batch
+ * @param {import("../types/operating.js").OperatingAuthority} authority */
+function assertOperatingBinding(state, batch, authority) {
+	const history = operatingRecords(state);
+	const records = [...history, ...batch.records];
+	const binding = authority.binding;
+	if (!binding || !records.some(record => record.kind === "charter"
+		&& record.id === binding.charter.id && record.revision === binding.charter.revision)) {
+		fail("squad_binding_mismatch", "The local binding must resolve to an exact canonical charter");
+	}
+	/** @param {OperatingRecord} record @param {OperatingRecord[]} available */
+	const charter = (record, available) => {
+		if (record.kind === "charter") return { id: record.id, revision: record.revision };
+		if (record.kind !== "relationship") return record.charter;
+		const goal = available.find(item => item.kind === "goal" && item.id === record.from.id && item.revision === record.from.revision);
+		return goal?.kind === "goal" ? goal.charter : null;
+	};
+	for (const record of batch.records) {
+		if (stableStringify(charter(record, records)) !== stableStringify(binding.charter)) {
+			fail("operating_owner_mismatch", "Every mutation must belong to the exact locally bound charter revision");
+		}
+		const previous = history.filter(item => item.id === record.id).at(-1);
+		if (previous && (previous.kind === "goal" || previous.kind === "relationship")
+			&& stableStringify(charter(previous, history)) !== stableStringify(binding.charter)) {
+			fail("operating_owner_mismatch", "A new revision cannot transfer another charter's goal or relationship");
+		}
+	}
+}
+
 /**
  * Lock order: existing admission writer -> factory writer -> owner-plan writer.
  * The owner COMMIT linearizes authorization and the immutable outbox. The factory
@@ -101,11 +174,12 @@ export function operatingGeneration(record) {
  * Never rebase a committed intent onto a newer snapshot.
  * @param {{snapshot: () => Snapshot,
  * append: (publication: Publication, authorize: () => void) => void,
+ * validate: (state: Snapshot, batch: Batch) => void,
  * now: () => string,
  * ports?: import("../types/operating.js").OperatingPorts}} options
  * @returns {import("../types/operating.js").OperatingService}
  */
-export function createOperatingService({ snapshot, append, now, ports }) {
+export function createOperatingService({ snapshot, append, validate, now, ports }) {
 	const requirePorts = () => {
 		if (!ports?.native || !ports.admission || !ports.persistence) {
 			fail("operating_authority_unavailable", "Operating mutations require the existing native owner, admission fence and owner-plan writer");
@@ -117,7 +191,7 @@ export function createOperatingService({ snapshot, append, now, ports }) {
 		const batch = operatingBatch(input);
 		const state = snapshot();
 		assertOperatingSnapshot(state, batch);
-		validateOperatingRules(state, batch, ports?.rules);
+		validate(state, batch);
 		return batch;
 	};
 	return Object.freeze({
@@ -125,6 +199,8 @@ export function createOperatingService({ snapshot, append, now, ports }) {
 		prepare,
 		commit(input, rawAuthority) {
 			const batch = prepare(input);
+			const state = snapshot();
+			assertOperatingSnapshot(state, batch);
 			const authority = operatingAuthority(rawAuthority);
 			if (!authority.binding) fail("operating_binding_required", "An exact corroborated native binding is required; names cannot establish ownership");
 			const sessionId = authority.binding.sessionId;
@@ -143,10 +219,16 @@ export function createOperatingService({ snapshot, append, now, ports }) {
 				let authorized = false;
 				try {
 					append(publication, () => {
+						assertOperatingBinding(state, batch, authority);
 						const permit = Object.freeze({ kind: /** @type {const} */ ("operating-validated-commit") });
 						commitPermits.set(permit, analysisInputDigest({ publication, authority }));
 						try {
-							const committed = persistence.commit(publication, authority, native, permit);
+							const committed = persistence.commit(publication, authority, {
+								assertAuthority(plan, current, delegation, intent) {
+									assertOperatingDecisionAuthority(plan, current, delegation, intent, native.coordinatorSessionId);
+									return native.assertAuthority(plan, current, delegation, intent);
+								},
+							}, permit);
 							if (stableStringify(committed) !== stableStringify(publication)) fail("operating_publication_conflict", "Owner writer returned a different committed batch");
 							authorized = true;
 						} finally { commitPermits.delete(permit); }
