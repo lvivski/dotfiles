@@ -77,6 +77,45 @@ Source recording-boundary checks
 are not live-host authenticated evidence, installation or full-factory acceptance.
 This boundary description records no new test execution and makes no UI/visual claim.
 
+### Bundled public SDK dispatch composition boundary
+
+A bounded declaration check on 2026-11-15 used
+`/Applications/GitHub Copilot.app/Contents/Resources/copilot-sdk`, CLI
+`1.0.106-8.unstable.r43566476370.g869eef3`, protocol 3. This is the SDK used by
+the running user extension, not an App build identifier or proof of dispatch admission.
+The checked `session.d.ts` SHA256 is
+`e7697b40bcef0289bb2e05cdde0dc3dd379f8928f9ac569ce3ee94985c8e7aa2`;
+`generated/rpc.d.ts` is
+`14febd2c4b55a6c77b73cd17f31b73464a6b9237bc0163e8b783f7877b8b085e`.
+Do not replace older pinned fixture identities with this observation.
+
+The public APIs exist, but do not supply the required joined-extension host contract:
+
+| Public surface in this SDK | Exact dispatch limitation |
+| --- | --- |
+| `extension.d.ts:59` `joinSession(): Promise<CopilotSession>`; `session.d.ts:101-114` current RPC, session-state workspace and UI capabilities | No joined App project/creator/provider identity. `rpc.metadata.snapshot()` (`generated/rpc.d.ts:41192-41199`) returns `SessionMetadataSnapshot`; its `WorkspaceSummary.id` is 1:1 with the runtime session ID, not the App project ID (`5727-5769`, `29535-29600`). Client metadata is stored but never interpreted by the runtime, not an authenticated identity mapping. |
+| `rpc.management.create/list/message/close` (`generated/rpc.d.ts:39267-39308`) | Opted-in local peers, not interchangeable App worktree tools. `create` requires the owning host's creation handler and delivers the initial task as peer text **after** creation; its request/result have no project, reserved base, coordinated worktree, interactive kickoff or receipt observation (`29327-29452`). `ManagedSessionInfo` has optional runtime-parent lineage and idle/busy state, not both App creator identities, canonical Git/base/clean observations or exhaustive attempt-bound session/run recovery (`17842-17870`). `message` has no coordinator-only/mode controls and is limited to 16 KiB (`29456-29486`). `close` really is non-deleting, but only for eligible live runtime descendants; it is not an App-child termination or exhaustive recovery provider. |
+| `CopilotSession.getEvents()` / `rpc.eventLog.read()`; `CopilotClient.rpc.sessions.readPersistedEvents()` (`session.d.ts:262-280`, `generated/rpc.d.ts:41475-41493`, `39056-39071`) | The joined session reads its own events. Cross-session persisted reads are a separate server/client API, with generation-pinned paging and explicit expiration; `joinSession` does not return that client. Neither declaration supplies a current App child/provider mapping, reservation-bound setup capture, canonical child Git observation or correlated original operation outcome. A new client, raw event file, resumed child or another connection is not the missing constructor binding. |
+| `rpc.tools.execute()` (`generated/rpc.d.ts:40771-40779`) | A real permission-preserving offered-tool pipeline, not an authenticated observation provider or a documented App result contract. A callable tool name or successful own-session metadata read cannot bind all missing operations/observers. The existing `extension-rpc` host intentionally offers only workflow and warm handoff; primary App callbacks do not transfer to that route. |
+
+The smallest required external boundary is trusted App/SDK host composition supplying
+the current runtime-to-App owner/project/repository mapping, the exact permission-preserving
+App worktree creation/detail/listing and canonical Foundry admission callbacks, actual
+creation/handoff result decoders, and fresh request-bound setup/child/original-effect/recovery
+observations. These feed the existing `native/host.mjs:NativeHostAccess` and
+`native/observations.mjs:ObservationReaders`; their `Capture` envelope validates observations,
+but cannot authenticate a source manufactured in dotfiles. Complete delivery-bound review and
+contributor authority remains separately required for assurance.
+
+This is not a proposed new public method or authority to edit App/SDK source.
+`runtime.host(access)` fixes the route to `extension-rpc` and cannot enable the unbound
+primary App operations merely by receiving observers. Only after the actual operation route
+and trusted providers are publicly supplied can `extension.mjs:getParallelHost` be composed
+through the existing decoders, classifier and fenced writer. Until then retain `partial` /
+`parallel_identity_unsupported`, the original reservation and all journal effects. No policy
+enablement, creation-handler replacement, alternate-route continuation or live replay follows
+from this declaration check.
+
 ## Route, identity and permission profiles
 
 | Profile | Contract and authority | Support and later proof |
