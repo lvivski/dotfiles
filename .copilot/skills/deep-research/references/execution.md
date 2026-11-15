@@ -6,11 +6,12 @@ These controls apply to authorized heavy research; satisfy the
 
 ## Inputs and execution
 
-`question` is required and must be non-empty. Optional `angles` must be a positive integer; the
-default is five. With the current 40-subagent limit, fresh research is capped at nine angles to reserve
-the planner, synthesis, and one independent correction/reverification pass per angle. The SDK's
-structured-output correction turns reuse the same agent; they still consume time and credits.
-A reduced angle count is reported explicitly rather than silently claiming full coverage.
+`question` is required and must be non-empty. Optional `angles` must be a positive integer; when
+omitted, the planner chooses the substantively useful angles. There is no built-in angle ceiling or
+declared runtime budget. Omitted worker, concurrency, time and credit limits are unbounded.
+Pass runtime limits only when the user specifies them. If a planner exceeds an explicit angle count,
+the workflow retains the requested number and logs the omitted angles rather than claiming full coverage.
+The SDK's structured-output correction turns reuse the same agent and still consume time and credits.
 
 When the user wants to review the scope before broad research, add `pauseBeforeWork: true` to the
 object arguments. It defaults to false. The workflow journals its prepared angles and any recovery
@@ -24,9 +25,10 @@ run_dynamic_workflow({
 })
 ```
 
-Each angle uses one native pipeline: research, finding-level verification, an optional targeted
-correction, and independent re-verification. Research and correction call the built-in `research`
-agent directly. The runtime's two-agent concurrency limit replaces manual batching.
+Each angle uses one native pipeline: research, finding-level verification, targeted corrections
+when needed, and independent re-verification. Research and correction call the built-in `research`
+agent directly. The native runtime applies concurrency limits only when the user approved one;
+the workflow does not impose a two-agent cap or manual batching.
 
 Verification splits a draft into independently checkable claims, not a single verdict for a long
 report. Each finding records its claim, source URLs, evidence, reasons, and one of four statuses:
@@ -34,13 +36,13 @@ report. Each finding records its claim, source URLs, evidence, reasons, and one 
 sources; source identity and actual claim support are separate questions. Access failures do not
 establish that a claim is false.
 
-Only unresolved findings enter the correction pass. Previously supported findings cannot be
+Only unresolved findings enter correction passes. Previously supported findings cannot be
 overwritten by corrections. Corrections retain finding identity and require independent verification
 before entering synthesis. Missing, duplicate, or unknown correction IDs cannot grant support.
-There is no second correction loop; failed or still-uncertain findings remain visible in the report.
+Corrections continue while they make progress; failed or still-uncertain findings remain visible in the report.
 
 These mechanics belong to the workflow; do not duplicate them with another pool of agents or
-increase invocation limits without explicit user authorization.
+change invocation limits without explicit user authorization.
 
 ## Result handling
 
@@ -58,19 +60,19 @@ running run instead of polling or relaunching it. After the user asks to continu
 or failed run with native `canResume: true` using
 `run_dynamic_workflow({ resumeFromRunId: "<run-id>" })` so completed work is reused.
 For a time-review checkpoint or exhausted time limit, follow the explicit time-extension procedure below.
-The Foundry board and `foundry_control_workflow` also provide user-directed pause/resume with unchanged
-limits. Read the logged prepared scope before continuing from an opt-in checkpoint. In-flight work
+Use the native workflow controls for user-directed pause/resume with unchanged limits.
+Read the logged prepared scope before continuing from an opt-in checkpoint. In-flight work
 interrupted by a manual pause may need to repeat.
 
 A limit failure requires explicit user authorization before increasing the reached limit.
-Do not invent ceilings, lower declared limits, or start a replacement to evade the limit.
+Do not invent ceilings, change approved limits, or start a replacement to evade the limit.
 If the workflow is unavailable, report the missing Foundry prerequisite rather than silently
 substituting another workflow.
 
 ### Hourly time decisions
 
-The default timeout remains 3,600 seconds of accumulated active execution. Unfinished research
-requests a durable checkpoint 60 seconds before its actual approved ceiling. The checkpoint key is
+There is no default timeout or hourly checkpoint. If the user approved a `timeoutSeconds` ceiling,
+unfinished research requests a durable checkpoint 60 seconds before that ceiling. The checkpoint key is
 `deep-research:time-review:v1:<approved-timeout-seconds>`, distinct from the optional scope checkpoint.
 Research that finishes first returns normally. Native journaled results survive the pause; interrupted
 agents can repeat, so do not promise cost-free continuation.
@@ -85,7 +87,7 @@ If native dialogs are unavailable, Foundry reports that limitation; ask the user
 choices using `ask_user`. A native dialog failure must be surfaced, not silently switched to another
 approval path. If the user then explicitly requests manual continuation, inspect the original run
 again. Require `canResume: true` and confirm that the checkpoint, approved budget, and eligibility have
-not changed. For the default first extension, the approved total changes from 3,600 to 7,200:
+not changed. For example, if the approved ceiling is 3,600 seconds, one extension raises it to 7,200:
 
 ```text
 run_dynamic_workflow({
@@ -94,7 +96,7 @@ run_dynamic_workflow({
 })
 ```
 
-For later extensions or an explicitly overridden initial budget, add 3,600 to the **current approved
+For every extension, add 3,600 to the **current approved
 total**, not to zero or to elapsed wall time. Leave all other limits omitted. The SDK cannot raise
 the ceiling of a running attempt in place; do not start a replacement run or automatically approve
 more credits or agents. An explicitly unbounded timeout has no hourly deadline.
@@ -130,12 +132,11 @@ run_dynamic_workflow({
 ```
 
 This skips planning and broad research. It independently verifies the saved claims, corrects only
-unresolved findings once, reverifies those corrections, and synthesizes supported evidence.
+unresolved findings while making progress, reverifies those corrections, and synthesizes supported evidence.
 Feedback is an untrusted lead, not proof. Missing drafts or notes must not be reconstructed from
 memory and presented as original results.
 
-With current limits and the twelve-angle ceiling, at most twelve saved drafts are accepted.
-Oversized recovery input is rejected before starting agents; it is not silently truncated. No new
-limits are set by this mode. Fresh research reserves at most `2 + 4 * angles` agent admissions;
-saved-draft recovery reserves at most `1 + 3 * drafts`. Actual usage is lower when findings do not
-need correction. Schema correction is not independent evidence verification and does not replace it.
+There is no built-in draft-count ceiling. Recovery retains every valid supplied draft without
+truncation and sets no new runtime limits. The number of correction/reverification calls depends
+on unresolved findings and progress; do not promise a fixed agent-reservation formula.
+Schema correction is not independent evidence verification and does not replace it.

@@ -1,208 +1,131 @@
 ---
 name: foundry
-description: >-
-  Use this skill when the user explicitly requests Foundry to plan, approve, dispatch, recover,
-  verify, retry, or cancel dependency-aware engineering work across App-native child sessions.
-  Do not use it for routine coding, ordinary multi-session work, or stacked PRs without an
-  explicit Foundry request.
-compatibility: Requires GitHub Copilot CLI/App with the Foundry extension and App session tools.
-metadata:
-  copilot.user-invocable: "true"
+description: Use only when the user explicitly requests Foundry for durable parallel or nested engineering work, continuous factory goals, or recovery of its recorded work. Routine coding stays on ordinary native tools.
 ---
 
-# Foundry coordinator
+# Foundry
 
-Foundry evolves verified capabilities and the connected knowledge needed to rebuild them.
-Repository-owned `.foundry` artifacts own portable capability knowledge and accepted contracts.
-Local SQLite retains execution provenance, candidate evidence and the rebuildable knowledge cache;
-session-local SQLite owns plans, attempts, cancellation and scoped approval delegations.
-App project sessions own work surfaces; native Dynamic Workflows own execution, replay and budgets.
+Foundry is a repository-local software factory, not an approval workflow. Native sessions,
+local coordinators, in-session work and deterministic jobs execute; one SQLite store at
+`<git-common-dir>/foundry/work.sqlite` records goals, ownership, versions, effects and outcomes.
+No old operational database is opened or migrated.
 
-## Scope
+## Execute
 
-Use this protocol when the user explicitly requests Foundry coordination. For routine changes,
-prefer native plan mode and direct tools; for ordinary multi-session or stacked-PR work, use the
-native `orchestrate` or `pr-stack` flows without creating a Foundry plan.
+1. Establish the user's actual goal, allowed work types, repository paths, restrictions,
+   delegation and execution mode with `foundry_start_goal`. Supply only limits the user or
+   native runtime actually specified. An accepted `.foundry` source contract compiles without
+   model planning. Do not introduce a mandatory discovery or review pipeline.
+2. Create useful units with `foundry_create_task`; record a persistent native child or job when
+   it needs independent admission, shared-write ownership or recovery. Give children their
+   parent task and only narrowing scope overrides; restrictions inherit automatically.
+   Teams are open-ended, not a fixed list of departments.
+3. Use `foundry_prepare_dispatch` for native children. Execute independent returned
+   `create_session` calls concurrently, preserving their complete kickoff and explicit mode.
+   `autopilot` executes authorized autonomous work; `interactive` preserves narrower supervision.
+   Never default executing children to `plan`, demand a readiness acknowledgment, or send an
+   activation. Native pre/post hooks record issuance and returned identity without another
+   model turn. A token/name correlates an attempt; it is not authority.
+4. Use `foundry_start_task` for work in the current native session or a deterministic job rather
+   than creating an unnecessary model session. Lightweight subagents remain part of that
+   attempt unless they cross the independent-record boundary. Never multiply a goal budget
+   at each delegation level.
+5. Retrieve only relevant `foundry_get_context`. If `refreshRequired` is true, read the changed
+   context again: a concurrent update was not covered, not a request to poll. Ownership is
+   parent-local. A parent may delegate
+   further while its parent finishes bookkeeping. An early ownership-specific mutation can
+   reconcile actual `get_session` metadata inline; ordinary assignment work does not stop.
+   Use separate native worktrees for concurrent writers and claim actual shared integration
+   surfaces/resources with `foundry_claim`. Goal/coordinator context summarizes procedures;
+   request the assigned `taskId` for its complete executable definition.
+6. Every governing check, including artifact/judgment checks, needs an executable procedure;
+   presence or unsupported opinion does not pass implicitly. Execute assigned procedures
+   with `foundry_run_check`, normally using `repair: true`. Its assigned command goes through the
+   ordinary native permission pipeline; a checked failure records evidence and reserves
+   a fresh same-worker attempt atomically under that goal's limits. Implement the repair next using the returned attempt,
+   without a report/retry/start chain or an activation. Honest capacity/limit waits remain explicit.
+   A capacity-parked repair stays reserved for you: use `foundry_start_task` or replay the exact
+   report after its capacity wake, not a new session. Immediate warm repairs need no parent notification.
+   Use `foundry_prepare_check` only for separate advanced command handling.
+   Evaluators and inputs stay pinned to the attempt. Report outcomes and named,
+   versioned outputs with `foundry_report_result`. Concrete checked failures can justify repair;
+   unsupported review opinions remain advisory. Completion does not need another plan approval.
 
-Foundry is a dedicated capability factory, not another mode for ordinary tasks.
-Its happy path is: inspect a capability, accept its recovered contract and protected
-evaluators, prepare a sealed candidate, approve a bounded plan, dispatch and verify it,
-then explicitly select or reject the replacement. Begin with the
-[factory lifecycle](references/factory.md); open only the reference for the current phase.
-Discovery can precede specification. Accepted contracts use deterministic
-`foundry_create_factory_plan`; only discovery needs a planning Workflow.
-Migration, transfer and retention are recovery operations, not prerequisites for every task.
+For a bounded reproducible file unit, give every relevant check the same `artifactFiles` list of
+existing implementation files inside its task paths, with required module/package files included.
+Pin evaluator files separately with repository-relative `oracleFiles`. Those checks run in a captured
+bundle; the mutable checkout is not their execution directory. Report code/artifact outputs using
+the actual returned `evidence.candidate.version`, with its reference for the unit or a declared
+filename for an entry. Do not substitute a newer checkout or combine passing checks from different
+candidate versions. Integration declares and evaluates its final unit too. This opt-in format
+does not pin undeclared runtime/data dependencies or require commits. Legacy checks remain unchanged.
+An unavailable/corrupt managed input is a recorded blocker, not a reason to keep recoding its
+consumer; route the actual failed input identity to its accountable owner.
 
-For the approved parallel-engineering increment, use the
-[shared contracts and ownership map](references/parallel-contracts.md) before dividing
-implementation. It distinguishes admitted work from observations, preserves exact native
-handoff and input bindings, and keeps claim authority with one writer. Shared fixtures
-and compiled ports alone do not establish an installed autonomous execution path.
-Local source exposes optional `decomposition` on `foundry_create_factory_plan` and registers
-`foundry_dispatch_ready`, `foundry_reconcile_parallel`, `foundry_materialize_inputs` and
-`foundry_assess_package`. Follow the [bounded source sequence](references/dispatch.md#bounded-registered-source-entry-points).
-The `foundry-supported-runtime-v1` increment is a **supported partial runtime**, not full lifecycle
-support. Its pinned production binding is narrowly closed `run_dynamic_workflow` and warm
-`coordinator_only` `send_session_message` through public `session.rpc.tools.execute`, on the
-`extension-rpc` route. Advertised names/metadata, a callable binding, observed admission and successful
-effect are distinct. Only trusted constructor wiring can supply capabilities, never caller JSON;
-there is no automatic alternate-route replay, private workflow launcher or generic executor.
-Cold coordinator-only first delivery fails before bootstrap and remains unavailable. Fresh
-reservations use complete immutable kickoff then receipt/corroboration/attachment/short activation;
-stored reservations without `complete-kickoff-v1` retain original setup/attach/full-handoff replay.
-Omitted decomposition preserves the task graph, not a startup recipe choice or idle-first promise.
-Missing current project/identity, authenticated setup/child/effect/recovery/review/contributor
-providers hold the dependent automatic parallel operations, not supported workflow invocation
-universally. Bounded TechnicalExecutor and authenticated observations remain absent.
+## Continue locally
 
-`native/supported-runtime.mjs:createSupportedRuntime({getSession})` supplies `workflow`,
-`warmHandoff`, `capabilities()`, `host(access?)` and `completionEvent(input,retentionFor)`.
-`extension.mjs` binds `runtime.host` and `getNativeRuntime`; the default host state is `partial`,
-not `available`. `getStatus` adds the `nativeCapabilities` projection. Partial parallel dispatch
-returns `parallel_identity_unsupported` with operation/route/prerequisite/disposition and capability
-records; only separately trusted complete current `NativeHostAccess` can bind `host(access)`.
-The existing repair launch consumes `runtime.workflow` through `getWorkflowRoute`, retaining its
-original journal, raw result decoding and reconciliation; callback availability proves no observer.
+Parents integrate declared child outputs. Only real named-output prerequisites serialize work;
+delegation edges do not. Record genuine native input pauses with their actual request IDs using
+`foundry_wait_task`, without duplicating the question. A solely waiting parent releases capacity
+only after substantive commands settle; `foundry_resume_task` reacquires through the same per-goal allocator.
+Unrelated ready goals never block an admission with available capacity.
+Evolution preserves a retired attempt's genuine pending request without holding the graph hostage.
+Do not answer or withdraw it by changing a task; explicit native clearance resolves its record.
+When multiple local attempts execute, use `foundry_prepare_command` for an ordinary command's exact
+unit affinity. Otherwise a shared command retains all possible units until its actual settlement.
 
-The joined source forwards the trusted workflow-result decoder through root native dispatch and
-exposes canonical operating/squad/goal services through the common bridge. Root operating bindings
-reuse the current owner's plan outbox. Constructor-bound retention requires a real canonical archive
-transaction/outbox; the dispatch journal cannot substitute. Root `completionEvent` is constructor-only:
-it validates native owner invocation, then forwards `{repositoryPath,eventId}` to the existing canonical
-`retentionFor().completionEvent`. There is no notification subscription or automatic
-`completeTask`-to-archive path. Assessment requires canonical notification authority and that persistence
-binding; missing persistence throws `retention_persistence_unsupported`, never a second store.
-Completion never authorizes archive.
-Preserve canonical once-only intent/start/outcome and original receipts through denial, interruption,
-malformed results or persistence failure; reconcile the original operation, never resend an uncertain effect.
-Missing archive guards, conditional archival/outcome reconciliation, authenticated observations,
-permission or bounded technical execution providers remain explicit holds. Repair tools and the
-original `plan-repair` workflow retain normal native resource permissions and single-admission
-owner-local reconciliation.
-Read [native bindings](references/native.md), [goals](references/goals.md) and
-[retention](references/retention.md) for their distinct obligations.
+Deliver coalesced wakes to **current** owners and process self-directed work locally. Native queue
+acceptance is not execution. Use bounded initial idle notifications (`once`), then explicit
+milestone/blocker/output reporting to local parents; never relay every leaf turn to the director.
+Actual command completion and stopped-shell receipts also drain affected-goal notifications
+automatically. This covers live settlement, not recovery of a dead session or independent watchdog.
+Use `foundry_record_signal` for scoped production, security, design, review or performance feedback.
+Use `foundry_evolve_task` with the affected task's current version for concrete in-scope input or
+derived-check changes. It preserves user/contract/standing obligations, retires superseded attempts
+and reevaluates only unpinned dependents. Explicitly pinned published inputs retain their meanings.
+Signals alone do not change requirements or dispatch a speculative repair.
+Signals target accountable coordinators. Use `foundry_reassign_team` to retain a charter and its
+delegated leaves through coordinator replacement; unknown recipients are verified once natively.
+Charters organize existing scoped tasks, not new root-level authority for a leaf. Add work through
+the goal owner or an existing delegating task in the canonical tree.
+Pure notification bookkeeping needs no executing attempt. Known unavailable recipients wake an
+existing accountable ancestor, not an automatically appointed replacement.
+Preserve reproducible procedures, versioned authorized inputs, parameters and raw results for
+analyses; a disproved hypothesis can be a completed result. Curate concise evidenced lessons by
+goal/work type with `foundry_record_lesson`, not global prohibitions or full-history prompts.
 
-Source recording-boundary checks are not live-host authenticated evidence, installation or full-factory
-acceptance. App lifecycle serialization, typed retirement and dirty-preservation alone do not prove
-artifact preservation, current eligibility, a host-wide action-time all-writer guard, normal permission
-or correlated original outcomes: missing prerequisites retain specific holds and zero archive effects.
-This increment makes no UI/visual claim and does not renew visual evaluators or erase failed captures.
-Keep source completion separate from installed-input/provider holds and later owner-run publication,
-global installation and reload. Compare a complete immutable release manifest, not a delta overlay;
-preserve installed custom increments and prior refusals. Deployment requires the exact independently
-verified source, applicable retained user authority and normal account/resource permissions.
+## Recover without replay
 
-## Hard rules
+Keep the actual native result if its shape needs reconciliation. `foundry_reconcile_native`
+inspects the actual session ID and recovers its known assignment; an issued-but-unbound call is
+uncertain, not permission to create another child. A prepared, definitely unissued intent can
+resume only after retiring its previous dispatch owner.
+Original session inspection preserves already-bound history without replacing a newer warm attempt.
+An existing worker can recover its actual outstanding shells and yield or resume its current
+execution after coordinator handoff; it does not acquire new delegation authority.
 
-1. Never create a child session before `foundry_reserve_task`.
-2. Attach only the exact child session created by this coordinator for that reserved attempt.
-3. Use the returned `baseBranch`, optional data and `initialization.kickoff` unchanged, with
-   `coordinate_with_creator: true`. Fresh `complete-kickoff-v1` stores `assignmentDigest` (SHA256 of
-   exact final UTF-8 `delegationPrompt`); seal after factory context and explicit input enrichment.
-   Interactive kickoff contains that entire final prompt, receipt/wait instructions before task
-   authority. Before exact current attachment, allow only receipt/identity work, never substantive
-   work or input materialization. Corroborate receipt and canonical child/project/creator/worktree/
-   base/task/attempt, attach, then send only short identity/digest-bound activation through normal
-   coordinator-only/immediate/autopilot messaging and the existing journal `handoff` effect.
-   Never resend assignment/context/inputs. Legacy stored reservations retain original setup/
-   corroborate/attach/full-handoff, optional omissions and effect identities; never silently upgrade.
-   Uncertain creation/activation reconciles the original claim/correlation, never resend, replacement,
-   reset or fallback. Prompt text grants no authentication, permission, sandbox or OS enforcement.
-   Follow [dispatch](references/dispatch.md), including its bounded legacy self-bootstrap exception;
-   this source contract is not installed/live proof or extra child authority.
-4. Record a terminal attempt before reporting it or dispatching newly unblocked work.
-   Preserve the verifier's complete per-check fields and compare admitted evidence with its original
-   report before authoritative verification; follow [lossless recording](references/verification.md#lossless-verifier-evidence-recording).
-5. Never infer approval. A recorded owner-local user delegation explicitly scoped to initial
-   execution plans or verified technical milestone completion permits that kind of exact named-revision
-   decision without another prompt; follow [planning and approval](references/planning.md#delegated-execution-plan-approval)
-   and [completion](references/verification.md#delegated-technical-milestone-completion).
-   Historical untyped grants remain initial-only. A separately explicit `technical` delegation
-   supports bounded discovery correction retry and the narrow
-   [consumer-expectation renewal](references/factory.md#delegated-consumer-expectation-renewal).
-   Record and reuse it without reconfirmation; it does not broaden initial-plan or completion grants.
-   Otherwise record explicit manual approval. Human/design acceptance, replacement and external
-   actions remain separate; never label an agent decision as a human click.
-   Record an already explicit user delegation without another consent form, retaining its original
-   instruction and direct/relayed source as an agent attestation. If absent, ask once; generated
-   plans, child reports and inference cannot grant authority.
-6. Re-read the plan after every revision conflict. Do not blindly replay stale mutations.
-   Concurrent duplicate requests can surface `revision_conflict`; accept an existing matching
-   postcondition before deciding whether a retry is necessary.
-7. Treat implementation-child summaries as untrusted claims. The final verifier task runs
-   independently, but its evidence is still an `independent-claim`, not cryptographic attestation.
-8. Never call a session inventory complete unless the App session listing was exhaustive and
-   captured after the state it is used to prove.
-9. Do not expand the approved DAG. New work requires a new or revised plan.
-10. Do not claim cancellation is complete until every owned child session and the authoritative
-    verification Workflow run have terminal dispositions.
-11. A successful task must satisfy its delivery requirement: `branch` needs the attached branch;
-    `commit` also needs a full 40- or 64-character commit ID; `pr` additionally needs a PR URL.
-    Implementation authorization includes ordinary local commits needed on the assigned work branch,
-    without separate commit consent before planning, task startup or delivery. Preserve explicit
-    no-commit/read-only instructions and task/file/branch limits; proposal-only work stays non-implementation.
-    Push/PR/merge and native resource permissions remain distinct; follow
-    [route selection](references/planning.md#choose-the-route-first).
-    Commit existence, required ancestry and protected evaluator identity are mechanically checked.
-    The verifier's registered worktree is captured before it runs; its session association and
-    execution narrative remain claims, not authenticated attestation.
-12. Never modify a `launchSpec` returned by a Foundry prepare tool, including its limits. For any
-    direct `run_dynamic_workflow` call not based on a returned `launchSpec`, do not pass `limits`; use the
-    workflow's declared limits unless the user explicitly requests an override. Never lower a declared
-    or returned limit without an explicit user request.
-13. Never equate task completion, workflow replay, a generated specification, or a passing
-    implementation test with regeneration. Retain the incumbent until a fresh candidate has
-    independent pinned evaluations, preservation evidence and explicit replacement acceptance.
-14. Keep generation inputs separate from comparison-only prior implementation. A manifest and
-    distinct session IDs support claims, not OS-level source isolation or cryptographic truth.
-    Record exposure or missing evidence; do not silently weaken the acceptance contract.
-15. Repository revisions and plan revisions are separate. A sibling can inspect knowledge and
-    lineage, but cannot take ownership of another session's native runs. Recover pending factory
-    receipts with `foundry_sync_factory`; do not rerun completed work to repair bookkeeping.
-    Technical authorization commits in the owner's plan SQLite transaction before repository
-    publication. Revocation before that commit blocks it; later revocation permits only reconciliation
-    of the exact committed receipt, never another decision. Conflicting publication is a hold.
-    Its exact owner-local publication marker survives restart/revocation, but export/import restores
-    receipt history only, never that marker or active grants.
-16. Explicitly declare UI applicability with the pinned `visualEvaluation` gate before a UI successor
-     plan. Open actual renderable references and preflight capture; real output and independent visual
-     comparison are required for initial implementation as well as reconstruction. Controls, geometry,
-     source and colors are not fidelity evidence. Missing capture or failed comparison blocks closure;
-     do not bypass OS permissions or synthesize human judgment. Follow the [visual protocol](references/factory.md#explicit-ui-and-visual-fidelity).
-17. Default to useful independent runtime workers for separable implementation, focused tests and
-    skill/documentation work, with disjoint bounded writes and appropriate checks, not a fixed count.
-    One accountable App owner does not imply one executor. Require a concrete artifact/file/resource
-    reason for every serial dependency; shared interfaces justify a minimal interface checkpoint,
-    not serializing all implementation, tests and skill work. Apply the
-    [approval checklist](references/planning.md#plan-executable-workstreams-not-just-concurrent-authorship).
-    This grants no additional resource, child or DAG authority and preserves reservation/attachment,
-    native limits and independent final verification. Preserve the omitted-decomposition legacy recipe.
-    Retain later [execution-strategy corrections](references/planning.md#later-execution-strategy-corrections)
-    separately from the unchanged original plan and handoff.
-18. Distinguish prepared, reserved, payload receipt (legacy setup alone is not full receipt), attached,
-    activation queue admission, observed execution, delivered and independently verified evidence;
-    none implies the next. Consume every declared dependency's immutable output through the
-    authorized post-attachment activation/handoff consumer path, not a branch tip or manifest alone.
-    Follow [dispatch](references/dispatch.md); missing invocation/materialization support remains a hold.
-19. Original-owner corrections need a supported current reservation/attachment binding to the active
-    integration attempt before handoff. DONE receipts, past attachments and coordinator artifacts
-    cannot supply it. Without that binding, retain the delivery hold for an explicit authorized
-    correction decision; do not reopen DONE work or silently transfer its scope.
+Checked repair normally uses `repair: true` on `foundry_run_check` or `foundry_report_result`.
+Separate advanced retries use `foundry_retry_task` against the exact current failed attempt.
+Both retain history, produce a fresh token and preserve replacement coordinator ownership.
+Evolution and dispatch handoff do not consume the repair allowance.
+Cancelled or superseded outcomes remain history: they cannot publish current outputs, unblock
+consumers, release newer claims or create a duplicate repair.
 
-## Choose the current phase
+`foundry_cancel_task` cancels the recorded subtree and schedules cooperative stops directly to
+known descendants. A stop message does not prove a command stopped.
+Stop shells only in their actual executing native session; coordinators send affected workers
+attempt-specific cooperative notices. Settled finished attempts need no stop; a definitely
+unavailable recipient is recorded rather than repeatedly messaged.
+Preserve unresolved effects, claims, worktrees and artifacts; never archive as routine cancellation or demand a whole-factory
+terminal inventory. Reassign only under existing subtree authority or a genuine native user
+decision. Native permissions and actual user-message provenance cannot be manufactured by records.
 
-Read the matching reference **before issuing tools for that phase**. Each contains a required,
-ordered protocol, not optional background reading. Load the next phase only when its prerequisites
-are satisfied. If the current state is uncertain, recover before dispatching or relaunching work.
-
-| Current need | Required reference |
-| --- | --- |
-| Discover intent, accept contracts, reconstruct, compare or renew a capability | [Factory lifecycle](references/factory.md) |
-| Create a plan and obtain approval | [Planning and approval](references/planning.md) |
-| Reserve, create, attach, and record task attempts | [Task dispatch](references/dispatch.md) |
-| Verify delivery, approve correction waves, and finish | [Verification and completion](references/verification.md); also [task dispatch](references/dispatch.md) before creating the verifier session |
-| Resume work, reconcile missing state, or repair artifacts | [Recovery](references/recovery.md) |
-| Stop owned work and finalize cancellation | [Cancellation](references/cancellation.md) |
-
-When handing back control, report the stable plan ID, recorded state, and any blocker or explicit
-approval still needed. Do not describe a requested action as completed before its state is recorded.
+Native AI credits are ingested automatically with stable receipt identities and request-start
+affinity. Do not manually repeat observed receipts. If a separate manual observation is necessary,
+use its actual native event ID or returned receipt ID rather than inventing an alias.
+Missing billing and unobserved restart/history gaps remain explicit; a null reported subtotal
+does not mean zero. Cross-goal ambiguity stays unallocated rather than inventing a split.
+Goal context reports scoped receipts and correlated ambiguity, not unrelated lifetime session spend.
+Idle turns have one persisted boundary; they do not keep charging the previous completed assignment.
+Recorded-worker limits do not control every hidden model call/process. Do not substitute token estimates, refund spending or describe post-hoc
+accounting as a hard ceiling. Report missing hard-limit support specifically.

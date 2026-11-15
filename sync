@@ -14,8 +14,8 @@ git pull
 push() {
 	rsync --exclude ".git/" --exclude ".DS_Store" --exclude "sync" --exclude "/README.md" -av . ~ || return
 	# Extension and skill directories are mirrors, not additive overlays.
-	rsync --delete -av .copilot/extensions/foundry/ ~/.copilot/extensions/foundry/ || return
-	rsync --delete -av .copilot/skills/foundry/ ~/.copilot/skills/foundry/ || return
+	rsync --delete --checksum -av .copilot/extensions/foundry/ ~/.copilot/extensions/foundry/ || return
+	rsync --delete --checksum -av .copilot/skills/foundry/ ~/.copilot/skills/foundry/ || return
 	rsync --delete -av .copilot/skills/deep-research/ ~/.copilot/skills/deep-research/ || return
 	rsync --delete -av .copilot/skills/review-queue/ ~/.copilot/skills/review-queue/ || return
 	rsync --delete -av .copilot/skills/security-review/ ~/.copilot/skills/security-review/ || return

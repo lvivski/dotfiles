@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createResearchTimeReview } from "../../research/review.mjs";
-import { workflowDetail } from "../native/fixture.mjs";
+import { workflowDetail } from "../workflows/detail.mjs";
 
 export const flush = () => new Promise((resolve) => setImmediate(resolve));
 

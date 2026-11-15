@@ -177,8 +177,10 @@ Question: ${question}`,
 			seen.add(key);
 			return true;
 		});
-		if (maxAngles !== undefined && angles.length > maxAngles) throw new Error("deep-research: the planner exceeded the explicit requested angle count");
-		return angles.map((angle, index) => ({
+		if (maxAngles !== undefined && angles.length > maxAngles) {
+			workflow.log(`deep-research: omitted planner angles beyond the requested count ${maxAngles}: ${safeJson(angles.slice(maxAngles), 0)}`);
+		}
+		return (maxAngles === undefined ? angles : angles.slice(0, maxAngles)).map((angle, index) => ({
 			angle,
 			draft: recovering ? text(drafts[index].text) : null,
 			feedback: recovering ? text(drafts[index].feedback) : "",

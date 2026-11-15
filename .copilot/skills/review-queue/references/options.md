@@ -103,12 +103,13 @@ Pass these optional fields alongside `prs` in `run_dynamic_workflow`'s `args`.
 | `freshness` | Label the input queue's freshness in the report |
 | `pauseBeforeWork: true` | Journal and show the prepared PR/chunk scope, then pause once before reviewers start |
 
-The default chunk limit is 300, and the current 700-agent ceiling supports up to 350 chunks.
-Each chunk reserves one reviewer and one independent verifier. Structured-output correction turns
-reuse those agents, though their time and credits still count toward the runtime limits.
+There is no default chunk cap or declared runtime ceiling. `max_total_chunks` applies only when
+explicitly supplied. Each chunk uses one reviewer and one independent verifier. Structured-output
+correction turns reuse those agents, though their time and credits still count toward any approved
+runtime limits. Omitted worker, concurrency, time and credit limits are unbounded.
 Checkpoints default to off. Resuming a current-contract run reuses its prepared scope and completed
 agents; it does not refetch the queue or grant approval to any PR. The versioned-evidence contract
-uses `review-queue:prepared-queue:v2` and `review-queue:before-review:v2`; old runs are not migrated.
+uses `review-queue:prepared-queue:v3` and `review-queue:before-review:v2`; old runs are not migrated.
 
 GitHub CODEOWNERS is evaluated per changed file. Azure DevOps uses required-policy/manual attribution.
 Leading `/` anchors a CODEOWNERS rule at the repository root; a trailing `/` selects a directory
@@ -120,8 +121,8 @@ not coincidentally equal display names. Missing/incomplete assignment attributio
 Assignment reasons are rederived from the prepared data,
 so replay does not preserve an obsolete matching decision.
 Assignment policy never bypasses evidence or verification requirements. Chunk controls do not override
-the workflow's declared runtime limits; pass `limits` only for an explicitly requested user override,
-and never lower a declared limit without an explicit user request.
+user-approved runtime limits; pass `limits` only when the user specifies them, and never change
+an approved limit without their authorization.
 
 ## Recovery
 

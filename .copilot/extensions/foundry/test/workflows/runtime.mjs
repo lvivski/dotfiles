@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { isRecord, parseJson, property, readJsonValue } from "../../data.mjs";
 import { must } from "../assertions.mjs";
-import { workflowDetail as nativeDetail } from "../native/fixture.mjs";
+import { workflowDetail as nativeDetail } from "./detail.mjs";
 import { researchFinding } from "../research/fixture.mjs";
 import { assertLabeled } from "./assertions.mjs";
 

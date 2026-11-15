@@ -1,0 +1,331 @@
+import { createHash, randomUUID } from "node:crypto";
+import { lstatSync, readFileSync, realpathSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { assignmentPrompt, attemptToken } from "./prompt.mjs";
+import { FoundryError, choice, decodeCandidate, digest, json, nativeSessionName, record, text } from "./values.mjs";
+import { readCandidate, verifyCandidate } from "./artifacts.mjs";
+
+/** @typedef {ReturnType<typeof import("./store.mjs").openWorkStore>} Store */
+/** @typedef {import("./model.js").Attempt} Attempt */
+/** @typedef {import("./model.js").Effect} Effect */
+/** @typedef {import("./model.js").Evidence} Evidence */
+
+/** @param {string} value */
+export const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
+/** @param {string} value */
+export const toolName = value => value.split(".").at(-1) ?? value;
+
+/** @param {Store} store @param {string} taskId @param {string} actor */
+export function prepareDispatch(store, taskId, actor) {
+	const attempt = store.prepareAttempt(taskId, actor);
+	const task = store.getTask(taskId);
+	const goal = store.getGoal(task.goalId);
+	const snapshot = store.contextSnapshot(actor, goal.id, task.id);
+	const context = [
+		...snapshot.teams.filter(team => team.id === task.teamId).flatMap(team => team.context),
+		...snapshot.lessons.filter(lesson => lesson.workType === task.workType).map(lesson => lesson.summary),
+	];
+	const arguments_ = json({
+		name: nativeSessionName(`${task.title.slice(0, 30)} ${attempt.token.slice(0, 8)}`),
+		...(goal.projectId === undefined ? {} : { project_id: goal.projectId }),
+		workspace_type: "worktree",
+		coordinate_with_creator: true,
+		notify_on_idle: "once",
+		kickoff: { mode: task.scope.mode, prompt: assignmentPrompt(goal, task, attempt, context) },
+	});
+	const effect = store.recordEffect({
+		id: `create:${attempt.id}`, attemptId: attempt.id, kind: "create", state: "prepared", request: arguments_,
+	}, actor);
+	return { taskId, attemptId: attempt.id, token: attempt.token, effectId: effect.id, tool: "create_session", arguments: arguments_ };
+}
+
+/** @param {Store} store @param {string} attemptId @param {string} checkId @param {string} directory @param {string} actor */
+export function prepareCheck(store, attemptId, checkId, directory, actor) {
+	const attempt = store.getAttempt(attemptId);
+	const check = attempt.checks.find(item => item.id === checkId);
+	if (!check || !check.command) throw new FoundryError("invalid_check", "This check has no assigned executable procedure");
+	const runner = fileURLToPath(new URL("./check-runner.mjs", import.meta.url));
+	const effectId = `check:${randomUUID()}`;
+	const command = ["node", runner, directory, attemptId, checkId, effectId].map(quote).join(" ");
+	const effect = store.recordEffect({
+		id: effectId, attemptId, kind: "command", state: "prepared",
+		request: json({ command, shellId: effectId, checkId, checkVersion: check.version }),
+	}, actor);
+	return { effectId: effect.id, tool: "bash", arguments: { command, shellId: effectId, description: `Evaluate ${check.id}`.slice(0, 100) } };
+}
+/** @param {Store} store @param {string} attemptId @param {string} command @param {string} actor */
+export function prepareCommand(store, attemptId, command, actor) {
+	const attempt = store.getAttempt(attemptId);
+	if (attempt.nativeId !== actor || !attempt.slot || attempt.state !== "running") {
+		throw new FoundryError("foreign_execution", "A command needs this caller's actually executing attempt");
+	}
+	const effectId = `command:${randomUUID()}`;
+	store.recordEffect({ id: effectId, attemptId, kind: "command", state: "prepared", request: { command, shellId: effectId } }, actor);
+	return { effectId, tool: "bash", arguments: { command, shellId: effectId, description: "Execute recorded work" } };
+}
+/** @param {Effect} effect */
+export function effectShell(effect) {
+	const result = effect.result === undefined ? undefined : record(effect.result);
+	return record(effect.request).shellId ?? result?.shellId;
+}
+
+/** @param {unknown} value @returns {Record<string, unknown> | undefined} */
+export function nativeObject(value) {
+	const envelope = record(value);
+	if (envelope.structuredContent !== undefined) return record(envelope.structuredContent);
+	if (typeof envelope.textResultForLlm === "string") {
+		const content = envelope.textResultForLlm.trim();
+		if (!content.startsWith("{")) return undefined;
+		return record(/** @type {unknown} */ (JSON.parse(content)));
+	}
+	return envelope;
+}
+
+/** @param {Store} store @param {unknown} args @returns {Attempt|undefined} */
+function creationAttempt(store, args) {
+	const value = record(args);
+	const kickoff = value.kickoff === undefined ? undefined : record(value.kickoff);
+	if (!kickoff || typeof kickoff.prompt !== "string") return undefined;
+	const token = attemptToken(kickoff.prompt);
+	return token ? store.attemptByToken(token) : undefined;
+}
+
+/** @param {Store} store @param {string} name @param {unknown} args @param {string} actor @param {string|undefined} callId */
+export function observePre(store, name, args, actor, callId) {
+	if (!["create_session", "bash", "shell", "read_bash", "stop_bash"].includes(toolName(name))) return;
+	const value = record(args);
+	if (toolName(name) === "read_bash" || toolName(name) === "stop_bash") {
+		if (typeof value.shellId !== "string" || !callId) return;
+		const effects = store.pendingEffects().filter(effect => effect.kind === "command"
+			&& effectShell(effect) === value.shellId && store.getAttempt(effect.attemptId).nativeId === actor);
+		if (effects.length !== 1) return;
+		const effect = effects[0];
+		const previous = effect.result === undefined ? {} : record(effect.result);
+		const calls = Array.isArray(previous.followUpCallIds) ? previous.followUpCallIds : [];
+		store.recordEffect({ ...effect, result: json({ ...previous, followUpCallIds: [...new Set([...calls, callId])] }) }, actor);
+		return;
+	}
+	if (toolName(name) === "create_session") {
+		const attempt = creationAttempt(store, args);
+		if (!attempt) return;
+		const effect = store.getEffect(`create:${attempt.id}`);
+		const { nativeToolCallId: previousCall, ...expected } = effect ? record(effect.request) : {};
+		if (!effect || digest(json(args)) !== digest(json(expected))) {
+			throw new FoundryError("assignment_changed", "Create the prepared complete assignment with its explicit mode and scope");
+		}
+		if (attempt.state !== "prepared" && (!callId || previousCall !== callId)) {
+			throw new FoundryError("creation_already_issued", "This attempt's creation was already issued; reconcile it without another create");
+		}
+		store.issueAttempt(attempt.id, actor, effect.id, json({ ...value, nativeToolCallId: callId ?? null }));
+		return;
+	}
+	if (typeof value.command !== "string") return;
+	const matches = store.pendingEffects().filter(item => item.kind === "command" && item.state === "prepared"
+		&& record(item.request).command === value.command);
+	const effect = matches.find(item => record(item.request).shellId === value.shellId);
+	if (matches.length && !effect) throw new FoundryError("assignment_changed", "Use the prepared command's exact returned shell identity");
+	if (effect) {
+		if (effect.owner !== actor) throw new FoundryError("foreign_execution", "This prepared command belongs to another actual native worker");
+		if (record(effect.request).shellId !== value.shellId) throw new FoundryError("assignment_changed", "Use the assigned command's returned shell identity");
+		store.recordEffect({ ...effect, state: "issued", request: json({ ...record(effect.request), nativeToolCallId: callId ?? null }) }, actor);
+		return;
+	}
+	const executing = store.executingAttempts(actor);
+	if (executing.length) store.recordEffect({
+		id: `command:${callId ?? randomUUID()}`, attemptId: executing[0].id, kind: "command", state: "issued",
+		request: json({ ...value, nativeToolCallId: callId ?? null }),
+		...(executing.length > 1 ? { relatedAttemptIds: executing.slice(1).map(attempt => attempt.id) } : {}),
+	}, actor);
+}
+
+/** @param {Store} store @param {Attempt} attempt @param {unknown} result @param {string} actor */
+export function captureCreation(store, attempt, result, actor) {
+	const value = nativeObject(result);
+	const receipt = record(result);
+	const effect = store.getEffect(`create:${attempt.id}`);
+	const name = effect ? record(effect.request).name : undefined;
+	const content = typeof receipt.textResultForLlm === "string" ? receipt.textResultForLlm : "";
+	const prefix = `Created session '${typeof name === "string" ? nativeSessionName(name) : name}' (id: `;
+	const printedId = content.startsWith(prefix)
+		? content.slice(prefix.length).match(/^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\)/u)?.[1] : undefined;
+	const id = value?.project_session_id ?? value?.session_id ?? value?.id ?? printedId;
+	if (typeof id !== "string" || !id) {
+		store.recordEffect({
+			id: `create:${attempt.id}`, attemptId: attempt.id, kind: "create", state: "uncertain",
+			request: effect?.request ?? null,
+			result: json(result),
+		}, actor);
+		throw new FoundryError("creation_identity_pending", "The native creation was issued; retain this attempt and reconcile its actual returned session identity without creating another child");
+	}
+	const current = store.getAttempt(attempt.id);
+	if (current.nativeId === id) return current;
+	const bound = store.bindAttempt(attempt.id, id, actor, json(result));
+	return bound;
+}
+
+/** @param {Store} store @param {unknown} value @param {string} actor */
+export function reconcileDetail(store, value, actor) {
+	const detail = nativeObject(value);
+	if (!detail || typeof detail.id !== "string" || typeof detail.name !== "string") return;
+	const attempt = store.attemptByCreationName(detail.name);
+	if (!attempt) return;
+	const goal = store.getGoal(store.getTask(attempt.taskId).goalId);
+	if (detail.creator_session_id !== attempt.creator
+		|| detail.coordinating_creator_session_id !== attempt.creator
+		|| (goal.projectId !== undefined && detail.project_id !== goal.projectId)) {
+		throw new FoundryError("native_identity_mismatch", "Actual native detail is not this attempt creator's coordinated child");
+	}
+	if (actor !== attempt.creator && actor !== detail.id && !store.ownsTask(attempt.taskId, actor)) {
+		throw new FoundryError("foreign_native_observation", "Only the actual child or its accountable coordinator can reconcile this identity");
+	}
+	return store.bindAttempt(attempt.id, detail.id, actor === detail.id ? attempt.creator : actor, json(value));
+}
+
+/** @param {Store} store @param {unknown} value @param {boolean} [verifyArtifacts] @returns {(Evidence & {effectId:string,completedAt:string})|undefined} */
+export function checkObservation(store, value, verifyArtifacts = true) {
+	const output = typeof value === "string" ? value : record(value).textResultForLlm;
+	if (typeof output !== "string") return;
+	const matches = [...output.matchAll(/FOUNDRY_CHECK_RESULT:([a-zA-Z0-9+/=]+)/gu)];
+	const encoded = matches.at(-1)?.[1];
+	if (!encoded) return;
+	const observation = record(/** @type {unknown} */ (JSON.parse(Buffer.from(encoded, "base64").toString("utf8"))));
+	const reference = text(observation.reference, "native evidence reference");
+	const directory = path.join(path.dirname(store.databasePath), "evidence");
+	const metadata = lstatSync(reference);
+	if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1
+		|| path.dirname(realpathSync(reference)) !== realpathSync(directory)) {
+		throw new FoundryError("invalid_evidence_reference", "Native evidence must be a contained regular artifact");
+	}
+	const content = readFileSync(reference, "utf8");
+	if (createHash("sha256").update(content).digest("hex") !== observation.sha256) throw new FoundryError("evidence_changed", "Native evidence content no longer matches the captured observation");
+	const raw = record(/** @type {unknown} */ (JSON.parse(content)));
+	const effectId = text(raw.effectId, "native check effect");
+	if (observation.effectId !== effectId) throw new FoundryError("effect_mismatch", "Native check correlation changed");
+	const attemptId = text(observation.attemptId, "evidence attempt");
+	const attempt = store.getAttempt(attemptId);
+	const check = attempt.checks.find(item => item.id === observation.checkId);
+	if (!check || check.version !== observation.checkVersion || raw.command !== check.command
+		|| raw.attemptId !== attemptId || raw.checkId !== check.id || raw.checkVersion !== check.version) {
+		throw new FoundryError("evaluator_mismatch", "Captured evidence is not for the assigned evaluator snapshot");
+	}
+	const passed = raw.exitCode === 0 && raw.error === null;
+	if ((raw.inputs !== undefined || check.artifactFiles) && digest(json(raw.inputs)) !== digest(json(attempt.inputs))) {
+		throw new FoundryError("input_identity_mismatch", "Captured evidence changed its assigned versioned inputs");
+	}
+	if (passed && (raw.inputOutputs !== undefined || check.artifactFiles)) {
+		const inputs = attempt.inputs.map(input => ({ taskId: input.taskId, output: store.outputForInput(input) }));
+		if (digest(json(raw.inputOutputs)) !== digest(json(inputs))) throw new FoundryError("input_identity_mismatch", "Captured evidence does not identify the actual pinned deliveries");
+		if (verifyArtifacts) for (const input of inputs) if (input.output) readCandidate(input.output.reference, input.output.version, store.databasePath);
+	}
+	const candidate = raw.candidate === undefined ? undefined : decodeCandidate(raw.candidate);
+	if (passed && check.artifactFiles) {
+		if (!candidate || digest(json(candidate.files.map(file => file.path).sort())) !== digest(json(check.artifactFiles))) {
+			throw new FoundryError("candidate_not_evaluated", "Passed evidence must identify its exact declared candidate files");
+		}
+		if (verifyArtifacts) verifyCandidate(candidate, store.databasePath);
+	}
+	if (observation.outcome !== (passed ? "passed" : "failed")) throw new FoundryError("invalid_evidence_outcome", "Evidence outcome contradicts its raw native result");
+	return {
+		id: `evidence:${observation.sha256}`, attemptId, checkId: check.id, checkVersion: check.version, effectId,
+		completedAt: text(raw.completedAt, "native completion time"),
+		outcome: passed ? "passed" : "failed", reference, summary: text(observation.summary, "evidence summary"), source: "native-command",
+		...(candidate === undefined ? {} : { candidate }),
+		...(raw.blocker === undefined || raw.blocker === null ? {} : {
+			blocker: choice(raw.blocker, /** @type {const} */ (["input-artifact"]), "native input blocker"),
+		}),
+	};
+}
+
+/** @param {Store} store @param {string} name @param {unknown} args @param {unknown} result @param {string} actor @param {(effect:Effect)=>void} [settled] */
+export function observePost(store, name, args, result, actor, settled) {
+	if (!["create_session", "get_session", "bash", "shell", "read_bash", "stop_bash"].includes(toolName(name))) return;
+	if (toolName(name) === "create_session") {
+		const attempt = creationAttempt(store, args);
+		return attempt ? captureCreation(store, attempt, result, actor) : undefined;
+	}
+	if (toolName(name) === "get_session") return reconcileDetail(store, result, actor);
+	if (toolName(name) === "stop_bash") {
+		const shellId = record(args).shellId;
+		const receipt = record(result);
+		const telemetry = receipt.toolTelemetry === undefined ? undefined : record(receipt.toolTelemetry);
+		const properties = telemetry?.properties === undefined ? undefined : record(telemetry.properties);
+		if (typeof shellId !== "string" || receipt.resultType !== "success" || properties?.shell_status !== "stopped"
+			|| receipt.textResultForLlm !== `<command with id: ${shellId} stopped>`) return;
+		const effects = store.pendingEffects().filter(effect => effect.kind === "command"
+			&& effectShell(effect) === shellId && store.getAttempt(effect.attemptId).nativeId === actor);
+		if (effects.length !== 1) return;
+		const effect = effects[0];
+		const observation = store.recordEffect({ ...effect, state: "settled",
+			result: json({ ...(effect.result === undefined ? {} : record(effect.result)), nativeTermination: receipt, stopped: true }) }, actor);
+		settled?.(observation);
+		return observation;
+	}
+	const observation = checkObservation(store, result);
+	if (!observation) return;
+	const effect = store.effectsForAttempt(observation.attemptId).find(item => item.kind === "command"
+		&& item.attemptId === observation.attemptId && item.id === observation.effectId);
+	if (!effect) throw new FoundryError("unissued_check", "The observation has no corresponding issued native check");
+	if (effect.state === "settled") {
+		const previous = checkObservation(store, record(effect.result).nativeResult, false);
+		if (!previous || digest(json(previous)) !== digest(json(observation))) {
+			throw new FoundryError("evidence_conflict", "The settled command has a different native observation");
+		}
+		return previous;
+	}
+	if (!["issued", "uncertain"].includes(effect.state)) throw new FoundryError("unissued_check", "This native command was not issued");
+	const completed = store.recordEffect({ ...effect, state: "settled", result: json({ nativeResult: result, evidence: observation }) }, actor);
+	settled?.(completed);
+	return observation;
+}
+
+/** @param {Store} store @param {string} attemptId @returns {Evidence[]} */
+export function admittedEvidence(store, attemptId) {
+	return store.effectsForAttempt(attemptId).filter(effect => effect.kind === "command" && effect.state === "settled")
+		.flatMap(effect => {
+			const value = record(effect.result);
+			if (value.nativeResult === undefined) return [];
+			const observation = checkObservation(store, value.nativeResult, false);
+			return observation ? [observation] : [];
+		}).sort((a, b) => a.completedAt.localeCompare(b.completedAt))
+		.map(({ effectId: _effect, completedAt: _time, ...evidence }) => evidence);
+}
+
+/** @param {Store} store @param {unknown} value @param {string} actor @param {(effect:Effect)=>void} [settled] */
+export function observeCompletion(store, value, actor, settled) {
+	const event = record(value);
+	if (typeof event.toolCallId !== "string") return;
+	const error = event.error === undefined ? undefined : record(event.error);
+	const nativeTelemetry = event.toolTelemetry ?? error?.toolTelemetry;
+	const telemetry = nativeTelemetry === undefined ? undefined : record(nativeTelemetry);
+	const properties = telemetry?.properties === undefined ? undefined : record(telemetry.properties);
+	const identifiers = telemetry?.restrictedProperties === undefined ? undefined : record(telemetry.restrictedProperties);
+	const returnedShell = typeof identifiers?.shell_id === "string" ? identifiers.shell_id : undefined;
+	let effect = store.effectByNativeCall(event.toolCallId);
+	if (returnedShell !== undefined) {
+		const matching = store.pendingEffects().filter(candidate => candidate.kind === "command" && effectShell(candidate) === returnedShell
+			&& store.getAttempt(candidate.attemptId).nativeId === actor);
+		if (matching.length === 1) effect = matching[0];
+		else if (effect && effectShell(effect) !== undefined && effectShell(effect) !== returnedShell) return;
+	}
+	if (effect && effect.kind !== "command") return;
+	if (!effect || effect.state === "settled") return;
+	if (store.getAttempt(effect.attemptId).nativeId !== actor) throw new FoundryError("foreign_execution", "Only this native command's actual worker can settle it");
+	const result = event.result === undefined ? undefined : record(event.result);
+	const nativeResult = { resultType: event.success ? "success" : "failure", textResultForLlm: typeof result?.content === "string" ? result.content : "" };
+	const evidence = checkObservation(store, nativeResult);
+	const shell = event.shellExecution === undefined ? undefined : record(event.shellExecution);
+	const assigned = typeof record(effect.request).checkId === "string";
+	const stopped = properties?.shell_error_category === "shell_stopped" && properties.shell_operation === "read"
+		&& properties.read_target_state === "stopped" && identifiers?.shell_id === effectShell(effect)
+		&& store.getAttempt(effect.attemptId).nativeId === actor;
+	const state = stopped || evidence || (typeof shell?.exitCode === "number" && (!assigned || shell.exitCode !== 0)) ? "settled" : "uncertain";
+	const observation = store.recordEffect({
+		...effect, state,
+		result: json({ ...(effect.result === undefined ? {} : record(effect.result)), nativeCompletion: event, nativeResult,
+			...(returnedShell === undefined ? {} : { shellId: returnedShell }),
+			...(stopped ? { stopped: true } : {}), ...(evidence ? { evidence } : {}) }),
+	}, actor);
+	if (state === "settled") settled?.(observation);
+	return observation;
+}

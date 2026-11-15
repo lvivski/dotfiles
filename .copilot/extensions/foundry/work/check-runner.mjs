@@ -1,0 +1,101 @@
+import { spawnSync } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
+import { lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import { openWorkStore } from "./store.mjs";
+import { FoundryError } from "./values.mjs";
+import { captureCandidate, readCandidate, verifyCandidate } from "./artifacts.mjs";
+
+/** @param {string | Uint8Array} value */
+const sha256 = value => createHash("sha256").update(value).digest("hex");
+
+const [directory, attemptId, checkId, effectId] = process.argv.slice(2);
+if (!directory || !attemptId || !checkId || !effectId) throw new Error("Usage: check-runner.mjs WORKING_DIRECTORY ATTEMPT_ID CHECK_ID EFFECT_ID");
+const store = openWorkStore(directory);
+try {
+	const attempt = store.getAttempt(attemptId);
+	const task = store.getTask(attempt.taskId);
+	const goal = store.getGoal(task.goalId);
+	const check = attempt.checks.find(item => item.id === checkId);
+	if (!check || !check.command) throw new FoundryError("invalid_check", "Expected the assigned executable check procedure");
+	const inputOutputs = attempt.inputs.map(input => ({ taskId: input.taskId, output: store.outputForInput(input) }));
+	const raw = {
+		effectId, attemptId, checkId, checkVersion: check.version, command: check.command,
+		inputs: attempt.inputs,
+		inputOutputs,
+		startedAt: new Date().toISOString(), completedAt: "",
+		/** @type {number | null} */ exitCode: null,
+		/** @type {string | null} */ signal: null,
+		/** @type {string | null} */ error: null,
+		stdout: "", stderr: "",
+		/** @type {import("./model.d.ts").Candidate|undefined} */ candidate: undefined,
+		/** @type {"input-artifact"|null} */ blocker: null,
+	};
+	const verifyOracles = (root = directory) => {
+		for (const file of check.oracleFiles ?? []) {
+			const filename = realpathSync(path.resolve(root, file.path));
+			const relative = path.relative(realpathSync(root), filename);
+			if (relative.startsWith("..") || path.isAbsolute(relative) || sha256(readFileSync(filename)) !== file.sha256) {
+				throw new FoundryError("oracle_changed", `Assigned evaluator changed or escaped the candidate: ${file.path}`);
+			}
+		}
+	};
+	try {
+		if (task.currentAttemptId !== attempt.id || task.version !== attempt.taskVersion
+			|| task.state !== "running" || attempt.state !== "running") {
+			throw new FoundryError("attempt_not_current", "This check belongs to a superseded or cancelled attempt");
+		}
+		verifyOracles();
+		if (inputOutputs.some(input => input.output === undefined)) throw new FoundryError("inputs_unavailable", "An assigned versioned input is no longer available");
+		const verifyInputs = () => {
+			for (const input of inputOutputs) if (input.output) {
+				try { readCandidate(input.output.reference, input.output.version, store.databasePath); }
+				catch (error) { raw.blocker = "input-artifact"; throw error; }
+			}
+		};
+		verifyInputs();
+		if (check.artifactFiles) raw.candidate = captureCandidate(directory, check.artifactFiles, check.oracleFiles ?? [], task.scope.paths, store.databasePath);
+		const candidateDirectory = raw.candidate?.reference ?? directory;
+		verifyOracles(candidateDirectory);
+		const remaining = goal.limits.deadline === undefined ? undefined : Date.parse(goal.limits.deadline) - Date.now();
+		if (remaining !== undefined && remaining <= 0) throw new FoundryError("deadline_exhausted", "The assigned goal deadline has elapsed");
+		const result = spawnSync("/bin/sh", ["-c", check.command], {
+			cwd: candidateDirectory, encoding: "utf8", maxBuffer: 8 * 1024 * 1024,
+			env: { ...process.env, FOUNDRY_ATTEMPT_ID: attempt.id, FOUNDRY_TASK_ID: task.id,
+				FOUNDRY_INPUTS_JSON: JSON.stringify(inputOutputs),
+				...(raw.candidate ? { FOUNDRY_CANDIDATE_DIR: candidateDirectory } : {}) },
+			...(remaining === undefined ? {} : { timeout: remaining }),
+		});
+		raw.exitCode = result.status;
+		raw.signal = result.signal;
+		raw.error = result.error?.message ?? null;
+		raw.stdout = result.stdout ?? "";
+		raw.stderr = result.stderr ?? "";
+		verifyOracles();
+		verifyOracles(candidateDirectory);
+		verifyInputs();
+		if (raw.candidate) verifyCandidate(raw.candidate, store.databasePath);
+	} catch (error) {
+		raw.error = error instanceof Error ? error.message : String(error);
+	}
+	raw.completedAt = new Date().toISOString();
+	const content = JSON.stringify(raw);
+	const evidenceDirectory = path.join(path.dirname(store.databasePath), "evidence");
+	mkdirSync(evidenceDirectory, { recursive: true, mode: 0o700 });
+	const metadata = lstatSync(evidenceDirectory);
+	if (!metadata.isDirectory() || metadata.isSymbolicLink()
+		|| path.dirname(realpathSync(evidenceDirectory)) !== realpathSync(path.dirname(store.databasePath))) {
+		throw new FoundryError("unsafe_evidence_path", "Evidence must remain in the repository's Foundry directory");
+	}
+	const reference = path.join(evidenceDirectory, `${randomUUID()}.json`);
+	writeFileSync(reference, content, { flag: "wx", mode: 0o600 });
+	const observation = {
+		effectId, attemptId, checkId, checkVersion: check.version,
+		outcome: raw.exitCode === 0 && raw.error === null ? "passed" : "failed",
+		reference, sha256: sha256(content), completedAt: raw.completedAt,
+		summary: raw.error ?? `Assigned command exited ${raw.exitCode ?? raw.signal}`,
+	};
+	process.stdout.write(`FOUNDRY_CHECK_RESULT:${Buffer.from(JSON.stringify(observation)).toString("base64")}\n`);
+} finally {
+	store.close();
+}

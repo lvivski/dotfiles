@@ -3,7 +3,7 @@ import test from "node:test";
 import { isList, isRecord, parseJson } from "../../data.mjs";
 import { FOUNDRY_WORKFLOWS } from "../../workflows/registry.mjs";
 import { must } from "../assertions.mjs";
-import { workflowDetail as nativeDetail } from "../native/fixture.mjs";
+import { workflowDetail as nativeDetail } from "../workflows/detail.mjs";
 import { assertOutputSchemas } from "../workflows/assertions.mjs";
 import { createWorkflowContext, FatalWorkflowFailure } from "../workflows/runtime.mjs";
 import { ADDITIONAL_WORKFLOWS } from "../workflows/registry.mjs";
@@ -28,6 +28,20 @@ test("deep research calls the built-in research agent directly", async () => {
 	assert.match(researchCalls[0].prompt, /Cite every material claim with a source URL/);
 	assert.doesNotMatch(researchCalls[0].prompt, /routing agent|task tool|agent_type/);
 	assert.equal(researchWorkflow.calls.length, 4);
+});
+
+test("an oversized explicit research plan is trimmed transparently and replays its prepared scope on resume", async () => {
+	const first = createWorkflowContext({ question: "Compare regions", angles: 2, pauseBeforeWork: true },
+		(_prompt, options) => options.label === "plan" ? ["one", "two", "three", "one", ""] : undefined);
+	await assert.rejects(FOUNDRY_WORKFLOWS.deepResearch.run(first), { name: "AbortError", key: "deep-research:before-research:v1" });
+	assert.deepEqual(first.calls.map(call => call.options.label), ["plan"]);
+	assert.match(first.logs.join("\n"), /omitted planner angles.*2.*three/);
+	const resumed = createWorkflowContext(first.args, null, first.journal);
+	const result = await FOUNDRY_WORKFLOWS.deepResearch.run(resumed);
+	assert.ok(!resumed.calls.some(call => call.options.label === "plan"));
+	assert.deepEqual(resumed.pipelineBatches, [2]);
+	assert.equal(resumed.calls.filter(call => call.options.label.startsWith("research:")).length, 2);
+	assert.match(result, /2 source-verified findings/);
 });
 
 test("deep research uses one native pipeline without inventing a concurrency grant", async () => {

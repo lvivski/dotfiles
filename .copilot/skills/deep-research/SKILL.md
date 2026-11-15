@@ -35,7 +35,8 @@ Follow these steps only after the activation gate is satisfied.
 1. Form a bounded question from the user's request, retaining its scope, time frame, and constraints.
    For comparisons and gap analysis, supply the actual baseline or clearly identify what has not been
    inspected; a selective summary is not evidence that a topic is absent.
-2. Launch the registered workflow once; its default is five research angles:
+2. Launch the registered workflow once; the planner chooses useful angles unless the user supplies
+   an explicit count:
    ```text
    run_dynamic_workflow({
      name: "deep-research",
@@ -45,27 +46,29 @@ Follow these steps only after the activation gate is satisfied.
 3. Keep the returned `runId`, wait for completion, and inspect that run with
    `dynamic_workflows_manage` using `operation: "inspect-run"`. A pending or temporarily unobservable run
    is not permission to launch another.
-   An hourly time-review pause is a user decision, not lost research. Foundry offers another hour,
+   When the user approved a `timeoutSeconds` limit, a time-review pause is a user decision, not lost research.
+   Foundry offers another hour,
    keeping the run paused, or stopping it through the native host dialog. Do not duplicate that
    question or resume while the decision is pending. Re-read the run before acting on a paused
    notification: the user may already have resumed it.
 4. Return the cited report with its finding-level coverage, corrections, limitations, and open
    questions. Supported findings survive even when other claims fail. Keep the deterministic
    verification notes; never present unresolved claims as established facts.
-5. If an explicit Foundry capability context already exists and the report matches its scope,
-   retain the exact completed report with `foundry_capture_analysis`, or record scoped observations,
-   proposals and knowledge gaps with `foundry_record_knowledge`. Preserve source references,
-   uncertainty and contrary evidence. This does not accept product obligations, authorize
-   reconstruction, or change the heavy-research activation gate. Unrelated research stays standalone.
+5. If an explicit Foundry goal already exists and the report matches its scope, retain its native
+   run reference with `foundry_record_signal`, or preserve a concise evidenced lesson with
+   `foundry_record_lesson`. The native run retains the exact report. Preserve uncertainty and
+   contrary evidence; observations do not become acceptance obligations. Unrelated research
+   stays standalone and the heavy-research activation gate is unchanged.
 
 ## Essential safeguards
 
-Do not pass `limits` to `run_dynamic_workflow`; use the workflow's declared limits unless the user explicitly
-requests an override. Never lower a declared limit without an explicit user request.
+The workflow declares no runtime ceilings. Omitted limits are unbounded, including concurrency;
+do not describe the run as capped or promise an hourly checkpoint. Pass `limits` only when the user
+explicitly specifies them, and never change an approved limit without their authorization.
 
-Only individually source-verified findings may support the synthesis. Each angle gets at most one
-targeted correction pass and independent re-verification of unresolved findings, within the existing
-budget. A correction proposal is not evidence until reverified, and a failed claim does not invalidate
+Only individually source-verified findings may support the synthesis. Unresolved findings receive
+targeted corrections and independent re-verification while corrections make progress, under any
+user-approved limits. A correction proposal is not evidence until reverified, and a failed claim does not invalidate
 other supported findings from the same draft.
 
 Distinguish incorrect claims, inaccessible sources, and insufficient evidence. Do not weaken

@@ -43,17 +43,24 @@ runtime or test framework:
 bash .copilot/skills/review-queue/scripts/review-queue-fetch.test.sh
 ```
 
-## Copilot Foundry — control plane and Dynamic Workflows
+## Copilot Foundry — local software factory
 
-`source ./sync` also installs the **Foundry** Copilot extension. Foundry coordinates dependency-aware
-engineering plans and registers the `plan`, `verify`, `audit`, `deep-research`,
+`source ./sync` also installs the **Foundry** Copilot extension. Foundry tracks scoped goals,
+teams, versioned outputs and parent-local workers in a repository-shared SQLite store.
+Sync checksum-mirrors Foundry and its skill: obsolete implementation files are removed and
+older contents are replaced even when their sizes and timestamps match. Unrelated extensions
+and repository-owned factory data are preserved.
+Complete native kickoffs execute immediately, with no startup acknowledgment, activation message
+or duplicate completion approval. It also registers the standalone `audit`, `deep-research`,
 `review-queue`, `security-review`, and `triage` native Dynamic Workflows. Invoke workflows with
 `run_dynamic_workflow` and inspect runs with `dynamic_workflows_manage`; the native runtime owns
 limits, durable steps, resume, cancellation, progress, and results.
 
 Foundry coordination is opt-in. Use native plan mode and direct tools for routine changes, and
 the native `orchestrate` or `pr-stack` flows for ordinary multi-session or stacked-PR work. Choose
-Foundry when you explicitly want its durable dependency plan, approval gates, task reservations,
-and recovery protocol; installing it does not put every task through that protocol.
+Foundry when you explicitly want durable parallel/nested work and continuous scoped feedback;
+installing it does not put ordinary coding through a factory protocol. Native permissions remain
+authoritative. Superseded protocols have no compatibility mode; existing user data is not migrated
+or removed.
 
 See [`.copilot/skills/foundry/SKILL.md`](.copilot/skills/foundry/SKILL.md).
