@@ -13,6 +13,7 @@ import { readCandidate } from "./artifacts.mjs";
 import { createIssueSource } from "./issue-source.mjs";
 import { buildHooks } from "../hooks.mjs";
 import { admittedEvidence } from "./native.mjs";
+import { readCommandEvents } from "./native-recovery.mjs";
 
 /** @param {import("node:test").TestContext} t @param {Partial<Omit<Parameters<typeof createRuntime>[0],"directory">>} [hooks] */
 function fixture(t, hooks = {}) {
@@ -1837,6 +1838,129 @@ test("native asynchronous follow-up settles its original command, not another at
 	assert.equal(record(record(effects[0].result).nativeCompletion).toolCallId, "native-follow-up");
 });
 
+/** @param {string} toolCallId @param {Record<string,unknown>} args */
+function retainedCommandEvents(toolCallId, args) {
+	return {
+		start: { id: "original-start", type: "tool.execution_start", timestamp: "2030-01-01T00:00:00Z",
+			data: { toolCallId, toolName: "bash", arguments: args, turnId: "original-turn" } },
+		completion: { id: "original-completion", type: "tool.execution_complete", timestamp: "2030-01-01T00:00:01Z",
+			data: { toolCallId, turnId: "original-turn", success: true, shellExecution: { exitCode: 0 },
+				result: { content: '{"old":"FOUNDRY_CHECK_RESULT:bm90LWpzb24="}',
+					detailedContent: '{"old":"FOUNDRY_CHECK_RESULT:bm90LWpzb24="}\n<shellId: 447 completed with exit code 0>' } } },
+	};
+}
+
+test("ordinary native commands ignore quoted check markers and retain their actual completion", async t => {
+	const { runtime } = fixture(t);
+	await runtime.operation("start_goal", definition, "director");
+	const task = runtime.store().snapshot().tasks[0];
+	await runtime.operation("start_task", { taskId: task.id }, "director");
+	const args = { command: "Read ordinary metadata" };
+	const events = retainedCommandEvents("ordinary-metadata", args);
+	runtime.pre("bash", args, "director", "ordinary-metadata");
+	assert.doesNotThrow(() => runtime.post("bash", args, { resultType: "success",
+		textResultForLlm: events.completion.data.result.content }, "director"));
+	runtime.toolComplete(events.completion.data, "director");
+	const effect = runtime.store().getEffect("command:ordinary-metadata");
+	assert.equal(effect?.state, "settled");
+	assert.deepEqual(record(effect?.result).nativeCompletion, events.completion.data);
+	assert.equal(record(effect?.result).evidence, undefined);
+	assert.equal(runtime.store().evidenceForAttempt(text(task.currentAttemptId ?? runtime.store().getTask(task.id).currentAttemptId, "attempt")).length, 0);
+});
+
+test("own-session native recovery settles a retired ordinary command without replay or releasing a successor's claim", async t => {
+	const args = { command: "Read ordinary metadata", description: "Inspect previous check receipts" };
+	const events = retainedCommandEvents("retired-metadata", args);
+	let reads = 0;
+	const { runtime } = fixture(t, { readSession: async id => ({ id, project_id: "actual-project" }),
+		readCommand: async () => { reads++; return events; } });
+	await runtime.operation("start_goal", { ...definition, projectId: "actual-project" }, "director");
+	const task = runtime.store().snapshot().tasks[0];
+	await runtime.operation("start_task", { taskId: task.id }, "director");
+	const oldId = text(runtime.store().getTask(task.id).currentAttemptId, "old attempt");
+	runtime.store().claim({ attemptId: oldId, surface: "worktree:integration", resource: "apps" }, "director");
+	runtime.pre("bash", args, "director", "retired-metadata");
+	await runtime.operation("evolve_task", { taskId: task.id, expectedVersion: 1, checks: [...task.checks,
+		{ id: "joined-behavior", origin: "derived", kind: "command", requirement: "Check joined behavior", command: "node -e 'process.exit(0)'" }],
+	}, "director");
+	await runtime.operation("start_task", { taskId: task.id }, "director");
+	const currentId = text(runtime.store().getTask(task.id).currentAttemptId, "successor");
+	assert.throws(() => runtime.store().claim({ attemptId: currentId, surface: "worktree:integration", resource: "apps" }, "director"), { code: "claim_conflict" });
+	const request = { sessionId: "director", toolCallId: "retired-metadata" };
+	const recovered = record(await runtime.operation("reconcile_native", request, "director"));
+	assert.equal(recovered.state, "settled");
+	assert.equal(recovered.attemptId, oldId);
+	assert.equal(record(recovered.nativeRecovery).completionEventId, events.completion.id);
+	assert.equal(runtime.store().getTask(task.id).currentAttemptId, currentId);
+	assert.equal(runtime.store().getAttempt(oldId).slot, false);
+	const claim = runtime.store().claim({ attemptId: currentId, surface: "worktree:integration", resource: "apps" }, "director");
+	await runtime.operation("reconcile_native", request, "director");
+	assert.equal(reads, 2);
+	assert.ok(runtime.store().snapshot().claims.some(item => item.id === claim.id));
+	assert.equal(runtime.store().snapshot().effects.filter(effect => effect.kind === "command").length, 1);
+	assert.equal(runtime.store().evidenceForAttempt(oldId).length, 0);
+});
+
+for (const mismatch of ["project", "arguments", "call", "pending"]) test(`native command recovery rejects ${mismatch} mismatch without settling`, async t => {
+	const args = { command: "Read metadata" };
+	const original = retainedCommandEvents("native-command", args);
+	const events = mismatch === "arguments" ? { ...original, start: { ...original.start,
+		data: { ...original.start.data, arguments: { command: "Different command" } } } }
+		: mismatch === "call" ? { ...original, completion: { ...original.completion, data: { ...original.completion.data, toolCallId: "different-call" } } }
+			: mismatch === "pending" ? { ...original, completion: { ...original.completion, data: { ...original.completion.data, shellExecution: undefined } } }
+				: original;
+	const { runtime } = fixture(t, { readSession: async id => ({ id, project_id: mismatch === "project" ? "other-project" : "actual-project" }),
+		readCommand: async () => events });
+	await runtime.operation("start_goal", { ...definition, projectId: "actual-project" }, "director");
+	const task = runtime.store().snapshot().tasks[0];
+	await runtime.operation("start_task", { taskId: task.id }, "director");
+	runtime.pre("bash", args, "director", "native-command");
+	await assert.rejects(runtime.operation("reconcile_native", { sessionId: "director", toolCallId: "native-command" }, "director"),
+		{ code: mismatch === "project" ? "native_identity_mismatch" : mismatch === "pending" ? "native_completion_pending" : "native_receipt_mismatch" });
+	assert.equal(runtime.store().getEffect("command:native-command")?.state, "issued");
+});
+
+test("native recovery rejects foreign callers and never accepts caller-supplied completion JSON", async t => {
+	let reads = 0;
+	const { runtime } = fixture(t, { readSession: async id => ({ id }),
+		readCommand: async () => { reads++; throw new Error("No native receipt retained"); } });
+	await runtime.operation("start_goal", definition, "director");
+	const task = runtime.store().snapshot().tasks[0];
+	await runtime.operation("start_task", { taskId: task.id }, "director");
+	const args = { command: "Read metadata" };
+	runtime.pre("bash", args, "director", "native-command");
+	const supplied = { sessionId: "director", toolCallId: "native-command", ...retainedCommandEvents("native-command", args) };
+	await assert.rejects(runtime.operation("reconcile_native", supplied, "stranger"), { code: "foreign_execution" });
+	assert.equal(reads, 0);
+	await assert.rejects(runtime.operation("reconcile_native", supplied, "director"), /No native receipt retained/);
+	assert.equal(reads, 1);
+	assert.equal(runtime.store().getEffect("command:native-command")?.state, "issued");
+});
+
+test("native history pages backwards for an exact pair and rejects expired or stalled cursors", async () => {
+	const events = retainedCommandEvents("wanted-call", { command: "Read metadata" });
+	/** @type {Array<Parameters<import("@github/copilot-sdk").CopilotSession["rpc"]["eventLog"]["read"]>[0]>} */
+	const calls = [];
+	const pages = [
+		{ events: [events.completion], cursor: "older", hasMore: true, cursorStatus: "ok" },
+		{ events: [events.start], cursor: "beginning", hasMore: false, cursorStatus: "ok" },
+	];
+	const recovered = await readCommandEvents(async args => {
+		calls.push(args);
+		const page = pages.shift();
+		assert.ok(page);
+		return page;
+	}, "wanted-call");
+	assert.deepEqual(recovered, events);
+	assert.equal(calls[1].cursor, "older");
+	assert.ok(calls.every(call => call.direction === "backward" && call.view === "history" && call.includeEphemeral === false));
+	for (const [status, code] of [["expired", "native_history_expired"], ["ok", "native_history_stalled"]]) {
+		await assert.rejects(readCommandEvents(async () => ({ events: [], cursor: "same", hasMore: true, cursorStatus: status }), "wanted-call"), { code });
+	}
+	await assert.rejects(readCommandEvents(async () => ({ events: [events.start], cursor: "end", hasMore: false, cursorStatus: "ok" }), "wanted-call"),
+		{ code: "native_receipt_unavailable" });
+});
+
 test("cancelling an issued child queues a direct stop without pretending its command settled", async t => {
 	let stopMessages = 0;
 	const { runtime } = fixture(t, { execute: async () => { stopMessages++; return { resultType: "success" }; } });
@@ -2278,6 +2402,22 @@ test("legacy flat check receipts are rejected rather than admitted as current ru
 	assert.throws(() => runtime.post("bash", args, { resultType: "success", textResultForLlm: output }, "director"),
 		{ code: "unsupported_receipt" });
 	assert.equal(runtime.store().evidenceForAttempt(text(runtime.store().getTask(task.id).currentAttemptId, "attempt")).length, 0);
+});
+
+test("quoted historical check results cannot block or become evidence for an ordinary metadata command", async t => {
+	const { runtime, args, effectId } = await issuedFileCheck(t);
+	const command = spawnSync("/bin/sh", ["-c", text(args.command, "assigned command")], { encoding: "utf8" });
+	assert.equal(command.status, 0, command.stderr);
+	runtime.post("bash", args, { resultType: "success", textResultForLlm: command.stdout }, "director");
+	const metadata = { command: "Inspect previous check receipt metadata" };
+	const content = JSON.stringify({ nativeResult: command.stdout, copy: command.stdout });
+	runtime.pre("bash", metadata, "director", "metadata-after-check");
+	assert.doesNotThrow(() => runtime.post("bash", metadata, { resultType: "success", textResultForLlm: content }, "director"));
+	runtime.toolComplete({ toolCallId: "metadata-after-check", success: true, shellExecution: { exitCode: 0 }, result: { content } }, "director");
+	const ordinary = runtime.store().getEffect("command:metadata-after-check");
+	assert.equal(ordinary?.state, "settled");
+	assert.equal(record(ordinary?.result).evidence, undefined);
+	assert.equal(runtime.store().getEffect(effectId).state, "settled");
 });
 
 test("lost tool output recovers the original finished receipt once and can publish without rerunning", async t => {

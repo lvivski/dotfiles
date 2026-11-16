@@ -327,19 +327,25 @@ export function observePost(store, name, args, result, actor, settled) {
 		settled?.(observation);
 		return observation;
 	}
-	const observation = checkObservation(store, result);
-	if (!observation) return;
-	const effect = store.effectsForAttempt(observation.attemptId).find(item => item.kind === "command"
-		&& item.attemptId === observation.attemptId && item.id === observation.effectId);
-	if (!effect) throw new FoundryError("unissued_check", "The observation has no corresponding issued native check");
+	const value = record(args);
+	const effect = (typeof value.shellId === "string" ? store.commandForShell(value.shellId, actor) : undefined)
+		?? store.pendingEffects().find(item => item.kind === "command" && typeof record(item.request).checkId === "string"
+			&& record(item.request).command === value.command);
+	if (!effect || effect.kind !== "command" || typeof record(effect.request).checkId !== "string") return;
+	if (toolName(name) !== "read_bash" && value.command !== record(effect.request).command) return;
 	if (store.getAttempt(effect.attemptId).nativeId !== actor
-		|| record(args).shellId !== effectShell(effect)) {
+		|| value.shellId !== effectShell(effect)) {
 		throw new FoundryError("foreign_execution", "Check output must come from its actual worker and assigned shell");
 	}
+	const observation = checkObservation(store, result);
+	if (!observation) return;
+	if (observation.effectId !== effect.id || observation.attemptId !== effect.attemptId) {
+		throw new FoundryError("effect_mismatch", "Native check output belongs to another assigned command");
+	}
 	if (effect.state === "settled") {
-		const value = record(effect.result);
-		const previous = value.runnerReceipt !== undefined || value.nativeResult === undefined ? record(value.evidence)
-			: checkObservation(store, value.nativeResult, false);
+		const previousResult = record(effect.result);
+		const previous = previousResult.runnerReceipt !== undefined || previousResult.nativeResult === undefined ? record(previousResult.evidence)
+			: checkObservation(store, previousResult.nativeResult, false);
 		if (!previous || digest(json(previous)) !== digest(json(observation))) {
 			throw new FoundryError("evidence_conflict", "The settled command has a different native observation");
 		}
@@ -380,8 +386,8 @@ export function admittedEvidence(store, attemptId) {
 	});
 }
 
-/** @param {Store} store @param {unknown} value @param {string} actor @param {(effect:Effect)=>void} [settled] */
-export function observeCompletion(store, value, actor, settled) {
+/** @param {Store} store @param {unknown} value @param {string} actor @param {(effect:Effect)=>void} [settled] @param {import("./model.js").Json} [nativeRecovery] */
+export function observeCompletion(store, value, actor, settled, nativeRecovery) {
 	const event = record(value);
 	if (typeof event.toolCallId !== "string") return;
 	const error = event.error === undefined ? undefined : record(event.error);
@@ -403,12 +409,12 @@ export function observeCompletion(store, value, actor, settled) {
 	if (store.getAttempt(effect.attemptId).nativeId !== actor) throw new FoundryError("foreign_execution", "Only this native command's actual worker can settle it");
 	const result = event.result === undefined ? undefined : record(event.result);
 	const nativeResult = { resultType: event.success ? "success" : "failure", textResultForLlm: typeof result?.content === "string" ? result.content : "" };
-	const evidence = checkObservation(store, nativeResult);
+	const assigned = typeof record(effect.request).checkId === "string";
+	const evidence = assigned ? checkObservation(store, nativeResult) : undefined;
 	if (evidence && evidence.effectId !== effect.id) {
 		throw new FoundryError("effect_mismatch", "Native completion belongs to another check operation");
 	}
 	const shell = event.shellExecution === undefined ? undefined : record(event.shellExecution);
-	const assigned = typeof record(effect.request).checkId === "string";
 	const stopped = properties?.shell_error_category === "shell_stopped" && properties.shell_operation === "read"
 		&& properties.read_target_state === "stopped" && identifiers?.shell_id === effectShell(effect)
 		&& store.getAttempt(effect.attemptId).nativeId === actor;
@@ -416,6 +422,7 @@ export function observeCompletion(store, value, actor, settled) {
 	const observation = store.recordEffect({
 		...effect, state,
 		result: json({ ...(effect.result === undefined ? {} : record(effect.result)), nativeCompletion: event, nativeResult,
+			...(nativeRecovery === undefined ? {} : { nativeRecovery }),
 			...(returnedShell === undefined ? {} : { shellId: returnedShell }),
 			...(stopped ? { stopped: true } : {}), ...(evidence ? { evidence } : {}) }),
 	}, actor);

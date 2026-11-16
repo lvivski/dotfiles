@@ -5,6 +5,7 @@ import { createRuntime } from "./work/runtime.mjs";
 import { buildTools } from "./work/tools.mjs";
 import { FoundryError } from "./work/values.mjs";
 import { createIssueSource } from "./work/issue-source.mjs";
+import { readCommandEvents } from "./work/native-recovery.mjs";
 
 /** @type {import("@github/copilot-sdk").CopilotSession|undefined} */
 let session;
@@ -14,6 +15,13 @@ const runtime = createRuntime({
 	readSession: async id => {
 		if (!session) throw new Error("Native session is not attached yet");
 		return session.rpc.tools.execute({ name: "get_session", arguments: { project_session_id: id } });
+	},
+	readCommand: async (actor, toolCallId) => {
+		if (!session || session.sessionId !== actor) throw new FoundryError("native_identity_mismatch", "Read command history only for this extension's actual native owner");
+		return readCommandEvents(args => {
+			if (!session || session.sessionId !== actor) throw new FoundryError("native_identity_mismatch", "The native history owner changed");
+			return session.rpc.eventLog.read(args);
+		}, toolCallId);
 	},
 	execute: async (name, args, toolCallId) => {
 		if (!session) throw new Error("Native session is not attached yet");

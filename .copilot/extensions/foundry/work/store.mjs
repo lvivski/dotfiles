@@ -1597,10 +1597,10 @@ export function openWorkStore(workingDirectory, options = {}) {
 		effectsForAttempt(attemptId) {
 			return transaction(() => attemptEffects(attemptId), false);
 		},
-		/** @param {string} callId */
-		effectByNativeCall(callId) {
+		/** @param {string} callId @param {boolean} [includeSettled] */
+		effectByNativeCall(callId, includeSettled = false) {
 			return transaction(() => {
-				const effects = list("effects", `WHERE state IN ('issued','uncertain') AND (json_extract(document,'$.request.nativeToolCallId')=?
+				const effects = list("effects", `WHERE ${includeSettled ? "" : "state IN ('issued','uncertain') AND "}(json_extract(document,'$.request.nativeToolCallId')=?
 				OR (state IN ('issued','uncertain') AND EXISTS (
 					SELECT 1 FROM json_each(document,'$.result.followUpCallIds') WHERE value=?
 				)))`, [callId, callId]);

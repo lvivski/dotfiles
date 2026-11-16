@@ -10,6 +10,7 @@ import { admittedEvidence, effectShell, nativeObject, observeCompletion, observe
 import { FoundryError, boolean, decodeFinding as finding, decodeInput, decodeOutput, digest, json, latestEvidence, record, text } from "./values.mjs";
 import { affinityId, nativeUsage } from "./usage.mjs";
 import { createHeartbeat } from "./heartbeat.mjs";
+import { commandForRecovery, reconcileCommand } from "./native-recovery.mjs";
 
 /** @param {string} directory */
 function repositoryRoot(directory) {
@@ -20,7 +21,7 @@ function repositoryRoot(directory) {
 /** @typedef {import("./model.js").Finding} Finding */
 /** @typedef {ReturnType<typeof openWorkStore>} Store */
 
-/** @param {{directory:string,log:(message:string)=>void,readSession?:(id:string)=>Promise<unknown>,execute?:(name:string,args:import("./model.js").Json,callId?:string)=>Promise<unknown>,confirm?:(message:string)=>Promise<boolean>,stopHookQualified?:boolean,readMode?:(actor:string)=>Promise<string>,readEvent?:(repository:string,id:number)=>Promise<unknown>,readEvents?:(repository:string,maximum:number,cursor?:string)=>Promise<unknown>}} options */
+/** @param {{directory:string,log:(message:string)=>void,readSession?:(id:string)=>Promise<unknown>,readCommand?:(actor:string,toolCallId:string)=>Promise<import("./native-recovery.mjs").CommandEvents>,execute?:(name:string,args:import("./model.js").Json,callId?:string)=>Promise<unknown>,confirm?:(message:string)=>Promise<boolean>,stopHookQualified?:boolean,readMode?:(actor:string)=>Promise<string>,readEvent?:(repository:string,id:number)=>Promise<unknown>,readEvents?:(repository:string,maximum:number,cursor?:string)=>Promise<unknown>}} options */
 export function createRuntime(options) {
 	let directory = repositoryRoot(options.directory);
 	/** @type {Store|undefined} */
@@ -664,6 +665,20 @@ export function createRuntime(options) {
 			}
 			case "reconcile_native": {
 				if (!options.readSession) throw new FoundryError("native_inspection_unavailable", "Actual native detail is required for recovery; caller-provided receipts do not grant ownership");
+				if (args.toolCallId !== undefined) {
+					if (text(args.sessionId, "actual native session id") !== actor) throw new FoundryError("foreign_execution", "Recover retained commands only from their own actual native session");
+					if (!options.readCommand) throw new FoundryError("native_history_unavailable", "The actual native event-log recovery capability is unavailable");
+					const db = store(), origin = directory;
+					const callId = text(args.toolCallId, "original native call id");
+					commandForRecovery(db, callId, actor);
+					retain(db);
+					try {
+						const detail = await options.readSession(actor);
+						const events = await options.readCommand(actor, callId);
+						if (closed || directory !== origin) throw new FoundryError("context_changed", "Command recovery cannot settle after its repository context changed or closed");
+						return reconcileCommand(db, callId, actor, detail, events, effect => settlementWake(db, actor, effect));
+					} finally { release(db); }
+				}
 				const detail = await options.readSession(text(args.sessionId, "actual native session id"));
 				clearObservedInputs(detail, actor);
 				return reconcileDetail(store(), detail, actor);

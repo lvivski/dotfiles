@@ -179,6 +179,13 @@ goal/work type with `foundry_record_lesson`, not global prohibitions or full-his
 
 ## Recover without replay
 
+For an ordinary command whose genuine completion was missed, its actual native worker can use
+`foundry_reconcile_native(sessionId: "<this session>", toolCallId: "<original issued call>")`.
+This reads the actual session's retained start/completion events, verifies issued arguments and
+session/project identity, and settles only a real final shell exit, including retired attempts.
+Do not pass reconstructed receipts, rerun the command or force-release its claims. Missing native
+history remains a blocker. Quoted historical check markers in ordinary stdout are data, not evidence.
+
 Keep the actual native result if its shape needs reconciliation. `foundry_reconcile_native`
 inspects the actual session ID and recovers its known assignment; an issued-but-unbound call is
 uncertain, not permission to create another child. A prepared, definitely unissued intent can

@@ -224,6 +224,15 @@ directory and behavior. Workers executing this new option need the updated exten
 
 ## Persistence and recovery
 
+Ordinary command stdout is data: quoted `FOUNDRY_CHECK_RESULT` markers cannot become check evidence
+or prevent its native completion from settling. Only the actual assigned check command parses
+runner observations. For a missed ordinary completion, its actual worker can call
+`foundry_reconcile_native(sessionId: "<this session>", toolCallId: "<original issued call>")`.
+The extension reads its own native history, validates the original start/arguments, final shell exit
+and session/project identity, and records the retained receipt against that exact attempt, even if
+retired. It neither reruns commands nor promotes check outputs; missing/expired history or a
+started-only result remains blocked. Caller-supplied receipt JSON is not accepted.
+
 Operational authority is `<git-common-dir>/foundry/work.sqlite`, shared by repository worktrees,
 using WAL and short synchronous transactions. Ownership follows native identity and task ancestry,
 not session-folder equality. Inputs, evaluators and attempt tokens are immutable snapshots.
