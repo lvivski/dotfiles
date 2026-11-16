@@ -526,7 +526,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 		const nativeId = task.currentAttemptId ? get("attempts", task.currentAttemptId).nativeId : undefined;
 		if (factory.state !== "active" || factory.pausedWorkers.includes(task.owner)
 			|| nativeId !== undefined && factory.pausedWorkers.includes(nativeId)) {
-			throw new FoundryError("factory_paused", "Factory execution is paused; only an explicit native-confirmed restart can admit work");
+			throw new FoundryError("factory_paused", "Factory execution is paused; only an explicit user-requested restart can admit work");
 		}
 		if (generation !== undefined && generation !== factory.generation) {
 			throw new FoundryError("stale_activation", "This prepared operation belongs to a revoked activation");

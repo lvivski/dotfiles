@@ -18,15 +18,18 @@ exclusive finished runner receipts; current prepared native requests retain thei
 
 Keep ordinary goal execution below activation-free. Only an explicitly requested unattended
 factory uses `foundry_start_factory` with an accepted `.foundry` `foundry-factory` version 1
-policy. Its actual native owner confirms the exact snapshot and continuation mode. Installation,
-tokens, timer wakes, and hook-generated user messages do not authorize activation or restart.
+policy. The user's direct request to start or restart within the agreed policy scope is authorization;
+do not request a separate activation dialog or duplicate chat approval. Inspect the exact snapshot
+and actual native-owner continuation mode. Native permissions remain authoritative; scope expansion
+still requires the user's authorization. Installation, tokens, timer wakes, and hook-generated user
+messages do not authorize activation or restart.
 Quiesce old participants before enabling this protocol.
 
 Use `foundry_advance` for current locally owned actions. Execute every returned prepared call,
 even alongside per-task capacity blockers; do not send resume or reserved repair to creation.
 Request the actual task's context before implementation. Hooks only classify; native side effects
 run in ordinary turns. Input, abort, permission refusal and stalled continuation pause truthfully.
-Confirmed restart resumes safely parked coordination without inventing checked failures or
+User-requested restart resumes safely parked coordination without inventing checked failures or
 spending a code-repair allowance. Unknown effects and native requests remain blockers.
 
 Only final executable acceptance seals a bounded job's current required producer/input closure.

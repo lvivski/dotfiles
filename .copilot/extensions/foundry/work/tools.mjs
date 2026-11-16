@@ -8,7 +8,7 @@ const list = { type: "array", items: object };
 
 /** @type {Array<[string,string,Record<string,Json>,string[]]>} */
 const definitions = [
-	["start_factory", "Activate or explicitly restart a versioned .foundry factory after actual native mode inspection and user confirmation. Installation, tokens, schedules and synthetic messages do not activate it.", { source: string }, ["source"]],
+	["start_factory", "Activate or explicitly restart a versioned .foundry factory on the user's direct request within the agreed policy scope, after actual native mode inspection. No separate confirmation dialog. Installation, tokens, schedules and synthetic messages do not authorize a start or restart.", { source: string }, ["source"]],
 	["pause_factory", "Pause a factory's automatic admission and remove only its owned native heartbeat. Preserve issued effects, receipts, claims and queued wake history.", { factoryId: string }, ["factoryId"]],
 	["set_heartbeat", "Request an explicitly chosen minute cadence through native confirmation and the actual owner's same-session app scheduler. Preserve unrelated automation; inspect and reconcile uncertain issuance instead of blindly resaving. A heartbeat never activates or restarts work.", { factoryId: string, everyMinutes: { type: "integer", minimum: 1 } }, ["factoryId", "everyMinutes"]],
 	["advance", "Recover current receipts, consume owner wakes and classify locally owned dispatch/resume/repair actions. Execute returned prepared calls in this ordinary native turn; never adopt another coordinator's work.", { goalId: string }, []],

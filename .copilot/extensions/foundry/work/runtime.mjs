@@ -441,23 +441,15 @@ export function createRuntime(options) {
 				if (source.control.mechanism === "stop-hook" && !stopHookObserved) {
 					throw new FoundryError("native_qualification_required", "The actual stop hook must be observed before enabling its continuation");
 				}
-				if (!options.confirm || !options.readMode) throw new FoundryError("native_authorization_unavailable", "Factory activation requires native confirmation and actual owner mode inspection");
+				if (!options.readMode) throw new FoundryError("native_inspection_unavailable", "Factory activation requires actual owner mode inspection");
 				const mode = record(source.goal.scope).mode;
 				if (await options.readMode(actor) !== mode) throw new FoundryError("native_mode_mismatch", `The actual coordinator must be in ${String(mode)} mode`);
+				if (closed || directory !== origin) throw new FoundryError("factory_context_changed", "Native inspection cannot activate work after its repository context changed or closed");
 				const compiled = factoryJob(source.definition, source.source, "initial");
 				const db = store();
-				retain(db);
-				try {
-				if (!await options.confirm(`Activate factory ${source.control.id} for this native owner?\nPolicy ${source.source.reference} (${source.source.sha256})\n${JSON.stringify(source.definition)}\nRecorded limits are per job; observed credits are not a hard ceiling.`)) {
-					throw new FoundryError("factory_not_authorized", "The user did not authorize factory activation");
-				}
-				if (closed || directory !== origin) throw new FoundryError("factory_context_changed", "Native confirmation cannot activate work after its repository context changed or closed");
-				if (await options.readMode(actor) !== mode) throw new FoundryError("native_mode_mismatch", "The actual native mode changed while confirmation was pending");
-				if (closed || directory !== origin) throw new FoundryError("factory_context_changed", "Native inspection cannot activate work after its repository context changed or closed");
 				const started = db.activateFactory({ ...source.control, source: source.source, definition: source.definition }, actor, compiled);
 				for (const job of db.advance(actor)) if (job.factoryId === started.factory.id) queueWakes(db, actor, job.goalId);
 				return { ...started, advancement: db.advance(actor, "goal" in started ? started.goal.id : undefined) };
-				} finally { release(db); }
 			}
 			case "pause_factory": {
 				const db = store();

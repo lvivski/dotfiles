@@ -7,8 +7,10 @@ and local coordinators execute; a shared record model is not a central executing
 
 Ordinary `foundry_start_goal` work stays activation-free. Unattended factories opt in with
 `foundry_start_factory`, a repository-owned `.foundry` JSON document with `format:
-"foundry-factory"` and `version: 1`, actual native-owner mode inspection, and native user
-confirmation. Installation, scheduling, hook messages, and completion events never activate it.
+"foundry-factory"` and `version: 1`, and actual native-owner mode inspection. The user's direct
+request to start or restart within the agreed policy scope is authorization; no separate activation
+dialog is required. Native permissions remain authoritative. Installation, scheduling, hook messages,
+and completion events never authorize a start or restart, and do not activate it automatically.
 Only the current Foundry protocol and canonical schema are supported.
 
 Required policy fields are `id`, `mechanism`, `maximumJobs`, `blocks`, `completionTaskId`, and
@@ -26,7 +28,7 @@ Execute complete prepared calls in the ordinary native turn, including calls ret
 Resume an existing worker rather than recreating it. A stop hook performs classification only,
 not native side effects. Unchanged re-entry and explicit continuation bounds pause work rather
 than manufacture failed evaluator evidence. Safely settled local execution yields capacity while
-retaining its attempt and claims; native-confirmed restart resumes it without a code-repair debit.
+retaining its attempt and claims; user-requested restart resumes it without a code-repair debit.
 Revoked, definitely unissued creates are retired before fresh preparation. Issued creates retain
 their original identity for reconciliation, never replacement.
 Unknown commands, child identity and genuine input requests remain settlement blockers.

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -46,20 +46,49 @@ function factorySource(directory, overrides = {}) {
 	return ".foundry/factory.json";
 }
 
-test("factory activation requires actual native confirmation, mode, and observed stop-hook capability", async t => {
+test("factory activation still requires actual native mode and observed stop-hook capability", async t => {
 	const { runtime, directory } = fixture(t);
 	const source = factorySource(directory);
 	await assert.rejects(runtime.operation("start_factory", { source }, "director"), /actual stop hook/);
 	runtime.agentStop("director");
-	await assert.rejects(runtime.operation("start_factory", { source }, "director"), /native confirmation/);
+	await assert.rejects(runtime.operation("start_factory", { source }, "director"), { code: "native_inspection_unavailable" });
 	assert.equal(runtime.store().snapshot().goals.length, 0);
-	const declined = fixture(t, { stopHookQualified: true, readMode: async () => "interactive", confirm: async () => false });
-	await assert.rejects(declined.runtime.operation("start_factory", { source: factorySource(declined.directory) }, "director"), /did not authorize/);
-	assert.equal(declined.runtime.store().snapshot().factories?.length, 0);
+	const mismatched = fixture(t, { stopHookQualified: true, readMode: async () => "autopilot" });
+	await assert.rejects(mismatched.runtime.operation("start_factory", { source: factorySource(mismatched.directory) }, "director"),
+		{ code: "native_mode_mismatch" });
+	assert.equal(mismatched.runtime.store().snapshot().factories?.length, 0);
 });
 
-test("coordinator abort fences prepared creation across reload and only native-confirmed restart admits fresh work", async t => {
-	const options = { stopHookQualified: true, readMode: async () => "interactive", confirm: async () => true };
+for (const mode of ["autopilot", "interactive"]) for (const unavailable of [true, false]) {
+	test(`${mode} factory starts and restarts with ${unavailable ? "unavailable" : "unusable"} native confirmation`, async t => {
+		const { runtime, directory } = fixture(t, { stopHookQualified: true, readMode: async () => mode,
+			...(unavailable ? {} : { confirm: async () => { assert.fail("Activation must not request a confirmation dialog"); } }) });
+		const source = factorySource(directory, { mechanism: mode === "autopilot" ? "native" : "stop-hook",
+			goal: { ...definition, scope: { ...definition.scope, mode }, tasks: [{ ...definition.tasks[0], id: "complete" }] } });
+		const started = record(await runtime.operation("start_factory", { source }, "director"));
+		assert.equal(record(started.factory).state, "active");
+		runtime.nativeAbort({ reason: "user_initiated" }, "director");
+		assert.equal(runtime.store().factory("fixture-factory", "director").state, "paused");
+		await runtime.operation("start_factory", { source }, "director");
+		assert.equal(runtime.store().factory("fixture-factory", "director").state, "active");
+	});
+}
+
+for (const change of ["directory", "close"]) test(`factory activation rejects a runtime ${change} during native mode inspection`, async t => {
+	const alternate = fixture(t).directory;
+	const { runtime, directory } = fixture(t, { stopHookQualified: true, readMode: async () => {
+		if (change === "directory") runtime.setDirectory(alternate);
+		else runtime.close();
+		return "interactive";
+	} });
+	await assert.rejects(runtime.operation("start_factory", { source: factorySource(directory) }, "director"),
+		{ code: "factory_context_changed" });
+	assert.equal(existsSync(path.join(directory, ".git/foundry/work.sqlite")), false);
+	assert.equal(existsSync(path.join(alternate, ".git/foundry/work.sqlite")), false);
+});
+
+test("coordinator abort fences prepared creation across reload and only an explicit restart admits fresh work", async t => {
+	const options = { stopHookQualified: true, readMode: async () => "interactive" };
 	const { runtime, directory } = fixture(t, options);
 	const source = factorySource(directory);
 	await runtime.operation("start_factory", { source }, "director");
@@ -99,7 +128,7 @@ test("exclusive stop-hook continuation pauses unchanged execution without invent
 	assert.equal(warnings.length, 1);
 });
 
-for (const stalled of [true, false]) test(`confirmed ${stalled ? "stalled" : "active"} factory restart retires only its unissued stale create`, async t => {
+for (const stalled of [true, false]) test(`explicit ${stalled ? "stalled" : "active"} factory restart retires only its unissued stale create`, async t => {
 	const { runtime, directory } = fixture(t, { ...authorizedFactory, log: () => {} });
 	const source = factorySource(directory);
 	await runtime.operation("start_factory", { source }, "director");
@@ -127,7 +156,7 @@ for (const stalled of [true, false]) test(`confirmed ${stalled ? "stalled" : "ac
 	assert.throws(() => runtime.pre("create_session", old.arguments, "director", "revoked-create"), /current|cancelled|stale/);
 });
 
-test("confirmed restart retains an already-issued creation and its late native identity", async t => {
+test("explicit restart retains an already-issued creation and its late native identity", async t => {
 	const { runtime, directory } = fixture(t, authorizedFactory);
 	const source = factorySource(directory);
 	await runtime.operation("start_factory", { source }, "director");
@@ -396,7 +425,7 @@ test("paged intake retains deferred events, then moves only its actual provider 
 	assert.equal(runtime.store().snapshot().goals.length, 2);
 });
 
-test("an in-flight native source observation cannot admit work after pause and a newer confirmed restart", async t => {
+test("an in-flight native source observation cannot admit work after pause and a newer explicit restart", async t => {
 	/** @type {((value:unknown)=>void)|undefined} */
 	let finish;
 	const { runtime, directory } = fixture(t, { ...authorizedFactory, readEvent: () => new Promise(resolve => { finish = resolve; }) });
@@ -733,7 +762,7 @@ test("pause during native heartbeat save fences admission and retains the return
 	assert.equal(factory.heartbeat?.id, "observed-native-automation");
 });
 
-test("a confirmed restart during heartbeat inspection prevents a stale pause from clearing its native binding", async t => {
+test("an explicit restart during heartbeat inspection prevents a stale pause from clearing its native binding", async t => {
 	const scheduler = nativeSchedule();
 	let restartNextRead = false;
 	/** @type {()=>Promise<void>} */
