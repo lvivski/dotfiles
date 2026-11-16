@@ -2,12 +2,46 @@ import { readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { FoundryError, array, choice, closedFields, decodeInput, decodeSource, digest, json, natural, positive, record, resourcePath, strings, text } from "./values.mjs";
+import { FoundryError, array, choice, closedFields, decodeInput, decodeLimits, decodeSource, digest, json, natural, positive, record, resourcePath, strings, text } from "./values.mjs";
+
+/** @param {Record<string,unknown>} definition @param {"native"|"stop-hook"} mechanism
+ * @returns {{maximumJobs:number,blocks?:number,settingOrigins:NonNullable<import("./model.d.ts").FactoryControl["settingOrigins"]>}} */
+function resolveFactorySettings(definition, mechanism) {
+	const maximumJobs = definition.maximumJobs === undefined ? 1 : positive(definition.maximumJobs, "maximum concurrent jobs");
+	if (maximumJobs > 1 && definition.source === undefined) {
+		throw new FoundryError("factory_capacity_scope", "maximumJobs above 1 requires multi-job source intake; leads and subtasks execute in parallel within one job");
+	}
+	if (mechanism === "native" && definition.blocks !== undefined) {
+		throw new FoundryError("continuation_setting_conflict", "blocks applies only to stop-hook continuation; omit it for native factories");
+	}
+	return {
+		maximumJobs,
+		...(mechanism === "native" ? {} : { blocks: definition.blocks === undefined ? 3 : positive(definition.blocks, "stop-hook continuation blocks") }),
+		settingOrigins: {
+			maximumJobs: definition.maximumJobs === undefined ? "default" : "policy",
+			...(mechanism === "native" ? {} : { blocks: definition.blocks === undefined ? "default" : "policy" }),
+		},
+	};
+}
+
+/** @param {import("./model.d.ts").FactoryControl} factory */
+export function factorySettings(factory) {
+	const limits = decodeLimits(record(record(factory.definition).goal).limits ?? {});
+	return {
+		maximumJobs: { value: factory.maximumJobs, origin: factory.settingOrigins?.maximumJobs ?? "unrecorded" },
+		...(factory.mechanism === "native" ? {} : { blocks: {
+			value: positive(factory.blocks, "stop-hook continuation blocks"), origin: factory.settingOrigins?.blocks ?? "unrecorded",
+		} }),
+		perJobLimits: Object.fromEntries(Object.entries(limits).map(([name, value]) => [name, { value, origin: "policy" }])),
+	};
+}
 
 /** @param {unknown} value @returns {import("./model.d.ts").FactoryControl} */
 export function decodeFactory(value) {
 	const row = record(value);
 	const mechanism = choice(row.mechanism, ["native", "stop-hook"], "continuation mechanism");
+	const origins = row.settingOrigins === undefined ? undefined : record(row.settingOrigins);
+	if (origins) closedFields(origins, ["maximumJobs", ...(mechanism === "native" ? [] : ["blocks"])], "factory setting origins");
 	const heartbeat = row.heartbeat === undefined ? undefined : record(row.heartbeat);
 	const request = heartbeat === undefined ? undefined : record(heartbeat.request);
 	const reminders = Object.fromEntries(Object.entries(record(row.reminders)).map(([id, value]) => {
@@ -23,6 +57,10 @@ export function decodeFactory(value) {
 		source: decodeSource(row.source), definition: json(row.definition),
 		maximumJobs: positive(row.maximumJobs, "maximum concurrent jobs"),
 		...(row.blocks === undefined && mechanism === "native" ? {} : { blocks: positive(row.blocks, "stop-hook continuation blocks") }),
+		...(origins === undefined ? {} : { settingOrigins: {
+			maximumJobs: choice(origins.maximumJobs, ["policy", "default"], "maximumJobs origin"),
+			...(mechanism === "native" ? {} : { blocks: choice(origins.blocks, /** @type {const} */ (["policy", "default"]), "blocks origin") }),
+		} }),
 		pausedWorkers: strings(row.pausedWorkers), reminders,
 		...(row.unchangedFailures === undefined ? {} : { unchangedFailures: positive(row.unchangedFailures, "unchanged failures") }),
 		...(row.aggregateRepairs === undefined ? {} : { aggregateRepairs: natural(row.aggregateRepairs, "aggregate repairs") }),
@@ -96,6 +134,7 @@ export function readFactory(directory, filename) {
 			throw new FoundryError("source_page_limit", "GitHub issue pages support at most 100 events per observation");
 		}
 	}
+	const settings = resolveFactorySettings(definition, mechanism);
 	const tasks = array(goal.tasks, record);
 	const ids = new Set(tasks.map(task => text(task.id, "template task id")));
 	if (ids.size !== tasks.length) throw new FoundryError("duplicate_template", "Factory task template identities must be unique");
@@ -157,12 +196,11 @@ export function readFactory(directory, filename) {
 			throw new FoundryError("ambiguous_template_context", "Each task must have one grain and at most one distinct declared native agent");
 		}
 	}
-	const snapshot = json({ ...definition, charters, grains, captured });
+	const snapshot = json({ ...definition, ...settings, charters, grains, captured });
 	return { definition: snapshot, goal, completionTaskId: text(definition.completionTaskId, "completion task"),
 		source: { reference: relative, sha256: createHash("sha256").update(content).digest("hex") },
 		control: {
-			id: text(definition.id, "factory id"), mechanism, maximumJobs: positive(definition.maximumJobs, "maximum concurrent jobs"),
-			...(definition.blocks === undefined && mechanism === "native" ? {} : { blocks: positive(definition.blocks, "stop-hook continuation blocks") }),
+			id: text(definition.id, "factory id"), mechanism, ...settings,
 			...(definition.unchangedFailures === undefined ? {} : { unchangedFailures: positive(definition.unchangedFailures, "unchanged failures") }),
 			...(definition.aggregateRepairs === undefined ? {} : { aggregateRepairs: natural(definition.aggregateRepairs, "aggregate repairs") }),
 		},

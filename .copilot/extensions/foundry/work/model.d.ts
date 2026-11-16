@@ -61,6 +61,10 @@ export interface FactoryControl {
 	definition: Json;
 	maximumJobs: number;
 	blocks?: number;
+	settingOrigins?: {
+		maximumJobs: "policy" | "default";
+		blocks?: "policy" | "default";
+	};
 	unchangedFailures?: number;
 	aggregateRepairs?: number;
 	pausedWorkers: string[];

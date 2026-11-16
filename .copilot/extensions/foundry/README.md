@@ -13,18 +13,36 @@ dialog is required. Native permissions remain authoritative. Installation, sched
 and completion events never authorize a start or restart, and do not activate it automatically.
 Only the current Foundry protocol and canonical schema are supported.
 
-Required policy fields are `id`, `mechanism`, `maximumJobs`, `completionTaskId`, and
+Required policy fields are `id`, `mechanism`, `completionTaskId`, and
 `goal`. The goal uses the ordinary title/scope/limits/task format, with stable task template IDs.
 `goal.scope.mode` governs worker execution, not the main coordinator's conversation mode.
 `native` continuation requires Autopilot workers, but its coordinator may be interactive or Autopilot.
 An interactive coordinator can ask the user questions; after a natural stop, it resumes on native
 messages, user input, or an explicitly scheduled heartbeat, not an automatic stop-hook loop.
 Exclusive `stop-hook` continuation requires interactive workers and coordinator, an observed
-natural-stop hook, and an explicit positive `blocks` continuation bound. Native factories do not
-require `blocks`. All factory tasks retain the policy's worker mode. The job limit is
+natural-stop hook, and a positive `blocks` continuation bound. Omitted `blocks` resolves to the
+version-1 internal safeguard of 3 forced continuations per session per activation; this is not a
+performance recommendation or an override of host limits. Native factories reject `blocks`
+because they do not use stop-hook continuation. All factory tasks retain the policy's worker mode. The job limit is
 factory-wide; worker, observed-credit, deadline and ordinary repair limits remain per job.
 Optional `aggregateRepairs` is a separate per-job debit; `unchangedFailures` bounds repeated
 evaluated failures in an activation. No limits are inferred from token estimates.
+
+`maximumJobs` defaults to 1 concurrent whole job, not 1 worker or subtask. Independent leads and
+subtasks within that job can execute in parallel. Higher values require actual multi-job `source`
+intake; do not select them from a count of teams, leads, or subtasks. Worker slots remain governed
+only by existing dependency readiness and any explicit per-job `goal.limits.workers` ceiling.
+No worker, spending, deadline, or repair limit is manufactured from these defaults.
+
+Activation returns `settings`; context exposes the same projection in `factories[].settings`.
+Each effective value has a `policy` or `default` origin, with explicit per-job limits reported
+under `perJobLimits`. `policy` means present in the policy document, not proof that the user chose
+the number. No runtime-limit provenance or resource-aware tuning is claimed without an actual
+runtime observation. Older records without origin metadata report `unrecorded`, not guessed origins.
+Resolution captures values and origins in the canonical policy snapshot without rewriting its
+source file. Reload and context reads use those stored values, not current defaults or source edits.
+Changing an accepted snapshot still requires a distinct policy identity; it is not an implicit
+limit increase. Present effective settings without an extra confirmation or tuning questionnaire.
 
 `foundry_advance` recovers receipts, reconciles observed owner-input answers, delivers/retries owner
 notifications through the same recovery path as `foundry_get_context`, consumes the actual owner's

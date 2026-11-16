@@ -5,7 +5,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { decodeNativeUsage, decodeUsageAffinity } from "./usage.mjs";
 import { bindCandidateOutputs, normalizeCandidateOutputs, readCandidate } from "./artifacts.mjs";
-import { compileFactoryContext, decodeCompletion, decodeFactory } from "./factory.mjs";
+import { compileFactoryContext, decodeCompletion, decodeFactory, factorySettings } from "./factory.mjs";
 import {
 	FoundryError, array, boolean, choice, containsPath, decodeCheck, decodeEvidence,
 	decodeDispatch, decodeFinding, decodeInput, decodeLimits, decodeOutput, decodeScope, decodeSource, decodeWaiting,
@@ -1275,7 +1275,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 		}
 		const unsettled = list("goal_completions", "WHERE json_extract(document,'$.factoryId')=?", [factoryId])
 			.filter(completion => { const status = completionStatus(completion); return !(status.delivered || status.cancelled) || !status.settled; });
-		if (!validation && unsettled.length >= factory.maximumJobs) throw new FoundryError("factory_capacity", "The factory's explicitly authorized active-job bound is exhausted");
+		if (!validation && unsettled.length >= factory.maximumJobs) throw new FoundryError("factory_capacity", "The factory's effective active-job bound is exhausted");
 		const goal = insertGoal({ ...input, scope }, actor);
 		const admitted = tasks.map(task => insertTask({ ...task, goalId: goal.id }, actor));
 		const final = get("tasks", completionTaskId);
@@ -1304,6 +1304,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 		factoryViews(actor) {
 			return transaction(() => list("factory_controls", "WHERE owner=?", [actor]).map(factory => ({
 				id: factory.id, state: factory.state, generation: factory.generation, source: factory.source,
+				settings: factorySettings(factory),
 				reason: factory.reason, heartbeat: factory.heartbeat === undefined ? undefined : {
 					state: factory.heartbeat.state, id: factory.heartbeat.id, minutes: factory.heartbeat.request.every_minutes,
 				},

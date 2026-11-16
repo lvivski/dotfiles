@@ -30,8 +30,20 @@ The main coordinator may stay interactive while a `native` factory's `goal.scope
 `blocks` for native continuation. Interactive coordinators resume on native messages, user input,
 or an explicitly scheduled heartbeat; they do not get an automatic stop-hook loop. Exclusive
 `stop-hook` continuation still needs interactive workers and coordinator, an observed stop hook,
-and an explicit positive `blocks` bound. Preserve real native user-input requests and resume the
-same work after the answer.
+and a positive `blocks` bound, defaulting internally to 3 when omitted. Preserve real native
+user-input requests and resume the same work after the answer.
+
+Omit tuning unless a meaningful override is needed; do not ask users to estimate internal counters.
+`maximumJobs` defaults to 1 whole delivery job, which can run many independent leads and subtasks
+in parallel. Higher values require actual multi-job source intake, not more subtasks. Do not copy
+that bound into worker limits or invent worker, credit, deadline, or repair caps. Preserve actual
+user/runtime constraints and schedule ready independent work within them; investigate concrete
+dependencies and contention as work proceeds, not through a mandatory tuning preflight.
+Native factories reject `blocks`; stop-hook overrides must be positive, not estimated from task
+complexity. Activation `settings` and context `factories[].settings` report effective values and
+their origins. Present these without stopping for another approval. `policy` records a document
+value, not user provenance; do not call it user-chosen or runtime-observed without actual evidence.
+Reload uses the persisted resolution; source edits do not silently change active settings.
 
 Use `foundry_advance` for current locally owned actions. Execute every returned prepared call,
 even alongside per-task capacity blockers; do not send resume or reserved repair to creation.

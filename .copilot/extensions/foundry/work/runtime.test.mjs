@@ -92,10 +92,63 @@ test("native factory activation rejects plan mode without requiring an unused st
 	assert.equal(runtime.store().snapshot().factories?.length, 0);
 });
 
-for (const blocks of [undefined, 0]) test(`stop-hook factory still rejects ${blocks === undefined ? "missing" : "zero"} continuation bound`, async t => {
+for (const blocks of [0, -1]) test(`stop-hook factory rejects a ${blocks === 0 ? "zero" : "negative"} continuation bound`, async t => {
 	const { runtime, directory } = fixture(t, { stopHookQualified: true, readMode: async () => "interactive" });
 	await assert.rejects(runtime.operation("start_factory", { source: factorySource(directory, { blocks }) }, "director"),
 		{ code: "invalid_field", message: /stop-hook continuation blocks/ });
+	assert.equal(runtime.store().snapshot().factories?.length, 0);
+});
+
+test("omitted tuning is resolved, reported, and enforced without changing recorded settings on reload", async t => {
+	/** @type {string[]} */
+	const warnings = [];
+	const options = { stopHookQualified: true, readMode: async () => "interactive", log: (/** @type {string} */ message) => { warnings.push(message); } };
+	const { runtime, directory } = fixture(t, options);
+	const source = factorySource(directory, { maximumJobs: undefined, blocks: undefined });
+	const original = readFileSync(path.join(directory, source), "utf8");
+	const started = record(await runtime.operation("start_factory", { source }, "director"));
+	const expected = { maximumJobs: { value: 1, origin: "default" }, blocks: { value: 3, origin: "default" }, perJobLimits: {} };
+	assert.deepEqual(started.settings, expected);
+	assert.equal(readFileSync(path.join(directory, source), "utf8"), original);
+	const saved = runtime.store().factory("fixture-factory", "director");
+	assert.equal(record(saved.definition).maximumJobs, 1);
+	assert.equal(record(saved.definition).blocks, 3);
+	assert.deepEqual(saved.settingOrigins, { maximumJobs: "default", blocks: "default" });
+	await runtime.operation("start_factory", { source }, "director");
+	factorySource(directory, { blocks: 9 });
+	runtime.close();
+	const resumed = createRuntime({ directory, ...options });
+	t.after(() => resumed.close());
+	const context = record(await resumed.operation("get_context", {}, "director"));
+	assert.ok(Array.isArray(context.factories));
+	assert.deepEqual(record(context.factories[0]).settings, expected);
+	for (let index = 0; index < 3; index++) assert.equal(resumed.agentStop("director")?.decision, "block");
+	assert.equal(resumed.agentStop("director"), undefined);
+	assert.equal(resumed.store().factory("fixture-factory", "director").state, "paused");
+	assert.equal(warnings.length, 1);
+	await assert.rejects(resumed.operation("start_factory", { source }, "director"), { code: "factory_conflict" });
+});
+
+/** @type {Array<[Record<string,unknown>,string]>} */
+const invalidFactorySettings = [
+	[{ maximumJobs: 0 }, "invalid_field"],
+	[{ maximumJobs: 1.5 }, "invalid_field"],
+	[{ maximumJobs: null }, "invalid_field"],
+	[{ maximumJobs: 2 }, "factory_capacity_scope"],
+	[{ settingOrigins: { maximumJobs: "user" } }, "unsupported_fields"],
+];
+for (const [overrides, code] of invalidFactorySettings) test(`invalid or unsupported factory settings are not silently defaulted: ${JSON.stringify(overrides)}`, async t => {
+	const { runtime, directory } = fixture(t, { stopHookQualified: true, readMode: async () => "interactive" });
+	await assert.rejects(runtime.operation("start_factory", { source: factorySource(directory, overrides) }, "director"), { code });
+	assert.equal(runtime.store().snapshot().factories?.length, 0);
+	assert.equal(runtime.store().snapshot().goals.length, 0);
+});
+
+test("native factories reject irrelevant stop-hook settings instead of requesting a bound", async t => {
+	const { runtime, directory } = fixture(t, { readMode: async () => "interactive" });
+	await assert.rejects(runtime.operation("start_factory", { source: factorySource(directory, {
+		mechanism: "native", goal: { ...definition, tasks: [{ ...definition.tasks[0], id: "complete" }] },
+	}) }, "director"), { code: "continuation_setting_conflict" });
 	assert.equal(runtime.store().snapshot().factories?.length, 0);
 });
 
@@ -329,18 +382,31 @@ async function acceptInline(runtime, taskId) {
 	return runtime.operation("report_result", { taskId, summary: "Accepted inline behavior" }, "director");
 }
 
-test("factory advancement returns already prepared calls when the next ready task hits its actual goal capacity", async t => {
+for (const workers of [undefined, 1]) test(`one default job ${workers === undefined ? "dispatches independent workers in parallel" : "retains its explicit worker ceiling"}`, async t => {
 	const { runtime, directory } = fixture(t, authorizedFactory);
-	await runtime.operation("start_factory", { source: factorySource(directory, { goal: {
-		...definition, scope: { ...definition.scope, mode: "interactive" }, limits: { workers: 1 },
-		tasks: ["one", "complete"].map(id => ({ ...definition.tasks[0], id })),
-	} }) }, "director");
+	const started = record(await runtime.operation("start_factory", { source: factorySource(directory, {
+		mechanism: "native", maximumJobs: undefined, blocks: undefined, goal: {
+			...definition, ...(workers === undefined ? {} : { limits: { workers } }),
+			tasks: [
+				...["one", "two"].map(id => ({ ...definition.tasks[0], id })),
+				{ ...definition.tasks[0], id: "complete", inputs: [
+					{ taskId: "one", output: "result" }, { taskId: "two", output: "result" },
+				] },
+			],
+		},
+	}) }, "director"));
+	assert.deepEqual(started.settings, { maximumJobs: { value: 1, origin: "default" },
+		perJobLimits: workers === undefined ? {} : { workers: { value: 1, origin: "policy" } } });
 	const result = record(await runtime.operation("advance", {}, "director"));
 	assert.ok(Array.isArray(result.prepared) && Array.isArray(result.blocked));
-	assert.equal(result.prepared.length, 1);
-	assert.equal(result.blocked.length, 1);
-	assert.match(text(record(result.blocked[0]).code, "capacity code"), /capacity/);
-	assert.equal(runtime.store().snapshot().attempts.filter(attempt => attempt.slot).length, 1);
+	assert.equal(result.prepared.length, workers === undefined ? 2 : 1);
+	assert.equal(result.blocked.length, workers === undefined ? 0 : 1);
+	if (workers !== undefined) assert.match(text(record(result.blocked[0]).code, "capacity code"), /capacity/);
+	for (const request of result.prepared) assert.equal(record(record(record(request).arguments).kickoff).mode, "autopilot");
+	assert.equal(runtime.store().snapshot().goals.length, 1);
+	assert.equal(runtime.store().snapshot().goals[0].limits.workers, workers);
+	assert.equal(runtime.store().snapshot().attempts.filter(attempt => attempt.slot).length, workers === undefined ? 2 : 1);
+	assert.equal(runtime.store().snapshot().tasks.find(task => task.id.endsWith(":complete"))?.currentAttemptId, undefined);
 });
 
 test("invalid final acceptance and incompatible task modes roll back initial activation and job admission together", async t => {
@@ -395,10 +461,32 @@ test("recurring source activation validates its template but admits no synthetic
 	assert.equal(runtime.store().snapshot().tasks.length, 0);
 });
 
+test("multi-job intake retains policy overrides and reports them without claiming user or runtime provenance", async t => {
+	const { runtime, directory } = fixture(t, { ...authorizedFactory,
+		readEvent: async (_repository, number) => ({ ...sourceEvent, number }) });
+	const started = record(await runtime.operation("start_factory", { source: factorySource(directory, {
+		source: issuePolicy, maximumJobs: 2, blocks: 7,
+		goal: { ...definition, scope: { ...definition.scope, mode: "interactive" },
+			limits: { workers: 1, repairs: 0 }, tasks: [{ ...definition.tasks[0], id: "complete" }] },
+	}) }, "director"));
+	const expected = {
+		maximumJobs: { value: 2, origin: "policy" }, blocks: { value: 7, origin: "policy" },
+		perJobLimits: { workers: { value: 1, origin: "policy" }, repairs: { value: 0, origin: "policy" } },
+	};
+	assert.deepEqual(started.settings, expected);
+	for (const eventId of [1, 2]) await runtime.operation("ingest", { factoryId: "fixture-factory", eventId }, "director");
+	await assert.rejects(runtime.operation("ingest", { factoryId: "fixture-factory", eventId: 3 }, "director"), { code: "factory_capacity" });
+	const context = record(await runtime.operation("get_context", {}, "director"));
+	assert.ok(Array.isArray(context.factories));
+	assert.deepEqual(record(context.factories[0]).settings, expected);
+	assert.equal(runtime.store().snapshot().goals.length, 2);
+	for (const goal of runtime.store().snapshot().goals) assert.deepEqual(goal.limits, { workers: 1, repairs: 0 });
+});
+
 test("trusted source content is deduplicated across concurrent ingress and comment-only updates", async t => {
 	let event = { ...sourceEvent };
 	const { runtime, directory } = fixture(t, { ...authorizedFactory, readEvent: async () => event });
-	await runtime.operation("start_factory", { source: factorySource(directory, { source: issuePolicy }) }, "director");
+	await runtime.operation("start_factory", { source: factorySource(directory, { source: issuePolicy, maximumJobs: undefined }) }, "director");
 	const args = { factoryId: "fixture-factory", eventId: 1 };
 	const responses = await Promise.all([runtime.operation("ingest", args, "director"), runtime.operation("ingest", args, "director")]);
 	assert.equal(responses.filter(value => record(value).replay === false).length, 1);
@@ -419,7 +507,7 @@ test("untrusted authors and last editors cannot consume source admission or an a
 
 test("distinct source events respect the factory-wide active-job bound; settled cancellation is not delivery", async t => {
 	const { runtime, directory } = fixture(t, { ...authorizedFactory, readEvent: async (_repository, number) => ({ ...sourceEvent, number }) });
-	await runtime.operation("start_factory", { source: factorySource(directory, { source: issuePolicy }) }, "director");
+	await runtime.operation("start_factory", { source: factorySource(directory, { source: issuePolicy, maximumJobs: undefined }) }, "director");
 	const first = record(await runtime.operation("ingest", { factoryId: "fixture-factory", eventId: 1 }, "director"));
 	await assert.rejects(runtime.operation("ingest", { factoryId: "fixture-factory", eventId: 2 }, "director"), /active-job bound/);
 	const goalId = text(record(first.goal).id, "first job");

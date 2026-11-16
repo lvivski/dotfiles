@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { openWorkStore } from "./store.mjs";
 import { array, compileCheck, compileDefinition, compileGoal, number, readContract } from "./compiler.mjs";
-import { compileFactoryContext, readFactory } from "./factory.mjs";
+import { compileFactoryContext, factorySettings, readFactory } from "./factory.mjs";
 import { evaluate } from "./evaluation.mjs";
 import { admittedEvidence, effectShell, nativeObject, observeCompletion, observePost, observePre, observeRefusal, prepareCheck, prepareCommand, prepareDispatch, reconcileDetail, recoverChecks } from "./native.mjs";
 import { FoundryError, boolean, decodeFinding as finding, decodeInput, decodeOutput, digest, json, latestEvidence, record, text } from "./values.mjs";
@@ -454,7 +454,8 @@ export function createRuntime(options) {
 				const db = store();
 				const started = db.activateFactory({ ...source.control, source: source.source, definition: source.definition }, actor, compiled);
 				for (const job of db.advance(actor)) if (job.factoryId === started.factory.id) queueWakes(db, actor, job.goalId);
-				return { ...started, advancement: db.advance(actor, "goal" in started ? started.goal.id : undefined) };
+				return { ...started, settings: factorySettings(started.factory),
+					advancement: db.advance(actor, "goal" in started ? started.goal.id : undefined) };
 			}
 			case "pause_factory": {
 				const db = store();
