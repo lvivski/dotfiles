@@ -324,7 +324,7 @@ export function observePost(store, name, args, result, actor, settled) {
 	}
 	if (effect.state === "settled") {
 		const value = record(effect.result);
-		const previous = value.nativeResult === undefined ? record(value.evidence)
+		const previous = value.runnerReceipt !== undefined || value.nativeResult === undefined ? record(value.evidence)
 			: checkObservation(store, value.nativeResult, false);
 		if (!previous || digest(json(previous)) !== digest(json(observation))) {
 			throw new FoundryError("evidence_conflict", "The settled command has a different native observation");
@@ -342,9 +342,9 @@ export function admittedEvidence(store, attemptId) {
 	return store.effectsForAttempt(attemptId).filter(effect => effect.kind === "command" && effect.state === "settled")
 		.flatMap(effect => {
 			const value = record(effect.result);
-			const result = value.nativeResult ?? (value.runnerReceipt === undefined ? undefined : {
+			const result = value.runnerReceipt === undefined ? value.nativeResult : {
 				textResultForLlm: `FOUNDRY_CHECK_RESULT:${Buffer.from(JSON.stringify(value.runnerReceipt)).toString("base64")}`,
-			});
+			};
 			if (result === undefined) return [];
 			const observation = checkObservation(store, result, false);
 			return observation ? [observation] : [];

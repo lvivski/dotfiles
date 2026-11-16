@@ -1377,12 +1377,15 @@ test("lost tool output recovers the original finished receipt once and can publi
 	const { runtime, task, args, effectId } = await issuedFileCheck(t);
 	const command = spawnSync("/bin/sh", ["-c", text(args.command, "command")], { encoding: "utf8" });
 	assert.equal(command.status, 0, command.stderr);
+	runtime.toolComplete({ toolCallId: "issued-file-check", success: true, result: { content: "" }, shellExecution: { exitCode: 0 } }, "director");
+	assert.equal(runtime.store().getEffect(effectId).state, "uncertain");
 	const recovered = record(await runtime.operation("run_check", { taskId: task.id, checkId: "behavior", publish: "unit" }, "director"));
 	assert.equal(recovered.effectId, effectId);
 	assert.equal(recovered.promoted, true);
 	assert.equal(record(recovered.evidence).source, "runner-receipt");
 	assert.equal(runtime.store().snapshot().effects.filter(effect => effect.kind === "command").length, 1);
 	assert.equal(runtime.store().evidenceForAttempt(text(recovered.attemptId, "attempt")).length, 1);
+	assert.ok(record(runtime.store().getEffect(effectId).result).nativeCompletion);
 	runtime.post("bash", args, { resultType: "success", textResultForLlm: command.stdout }, "director");
 	const repeated = record(await runtime.operation("run_check", { taskId: task.id, checkId: "behavior", publish: "unit" }, "director"));
 	assert.equal(record(repeated.publication).state, "already-published");
