@@ -5,7 +5,7 @@ import { evaluate } from "./evaluation.mjs";
 /** @type {import("./model.js").Check} */
 const check = { id: "behavior", origin: "contract", requirement: "Required behavior works", kind: "command", version: "v1", command: "node --test" };
 /** @type {import("./model.js").Evidence} */
-const passed = { id: "observed-1", attemptId: "attempt", checkId: check.id, checkVersion: "v1", outcome: "passed", reference: "native:call-1", summary: "Exit 0", source: "native-command" };
+const passed = { id: "observed-1", attemptId: "attempt", checkId: check.id, checkVersion: "v1", outcome: "passed", reference: "native:call-1", summary: "Exit 0", source: "runner-receipt" };
 
 test("unsupported architectural opinion cannot veto passing canonical checks", () => {
 	const verdict = evaluate([check], [passed], [{ summary: "Architecture might need more review", evidenceIds: [] }]);
@@ -18,13 +18,12 @@ test("missing or differently versioned evidence does not satisfy the assigned ch
 	assert.equal(evaluate([check], []).passed, false);
 });
 
-test("a concrete reproduced standing violation blocks; a mere artifact reference does not", () => {
+test("findings remain diagnostic; standing violations govern only as assigned checks", () => {
 	/** @type {import("./model.js").Finding} */
 	const finding = { summary: "Loses supported data", obligation: "data-loss", expected: "Preserve existing data", observed: "Existing data was deleted", evidenceIds: ["reproduction"] };
 	const reproduction = { ...passed, id: "reproduction", checkId: "preservation", outcome: /** @type {const} */ ("failed") };
-	assert.equal(evaluate([check], [passed, reproduction], [finding]).passed, false);
-	assert.equal(evaluate([check], [passed], [{ ...finding, evidenceIds: ["artifact:deleted-data.json"] }]).passed, true);
-	assert.equal(evaluate([check], [passed], [{ ...finding, evidenceIds: [passed.id] }]).passed, true);
+	assert.equal(evaluate([check], [passed, reproduction], [finding]).passed, true);
+	assert.equal(evaluate([check, { ...check, id: "preservation" }], [passed, reproduction], [finding]).passed, false);
 });
 
 test("a later observation of the same assigned check supersedes a development failure", () => {

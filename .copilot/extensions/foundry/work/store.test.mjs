@@ -7,7 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { openWorkStore } from "./store.mjs";
-import { FoundryError, digest, json } from "./values.mjs";
+import { FoundryError, decodeEvidence, digest, json } from "./values.mjs";
 import { affinityId, nativeUsage } from "./usage.mjs";
 
 /** @typedef {ReturnType<typeof openWorkStore>} Store */
@@ -60,7 +60,7 @@ function outcome(attempt, extra = {}) {
 		evidence: attempt.checks.map((assigned) => ({
 			id: `evidence:${attempt.id}:${assigned.id}`, attemptId: attempt.id, checkId: assigned.id, checkVersion: assigned.version,
 			outcome: /** @type {const} */ ("passed"), reference: "command:run-1", summary: "Passed",
-			source: /** @type {const} */ ("native-command"),
+			source: /** @type {const} */ ("runner-receipt"),
 		})), findings: [], ...extra,
 	};
 }
@@ -81,6 +81,11 @@ function admit(store, attempt, evidence = outcome(attempt).evidence) {
 function fails(operation, code) {
 	assert.throws(operation, (error) => error instanceof FoundryError && error.code === code);
 }
+
+test("retired native-command evidence is rejected rather than coerced into a current runner receipt", () => {
+	fails(() => decodeEvidence({ id: "old-evidence", attemptId: "attempt", checkId: "behavior", checkVersion: "oracle",
+		outcome: "passed", reference: "old-command", summary: "Old check", source: "native-command" }), "invalid_field");
+});
 
 test("self-ended claims release after settlement but ancestor completion preserves the actual worker's ownership", t => {
 	const { store } = fixture(t);
@@ -477,6 +482,7 @@ test("native pre/post hooks use the prepared effect identity and add only actual
 	const report = outcome(prepared);
 	assert.equal(store.recordResult(report, "hooked-worker").promoted, false);
 	store.recordEffect({ ...command, state: "settled", result: json({ nativeResult: { actual: "native receipt" }, evidence: report.evidence[0] }) }, "root");
+	assert.equal(store.getTask(prepared.taskId).state, "running");
 	assert.equal(store.recordResult(report, "hooked-worker").promoted, true);
 	assert.equal(store.evidenceForAttempt(prepared.id).length, 1);
 	const ambiguous = store.prepareAttempt(task(store, "ambiguous").id, "root");
@@ -651,7 +657,7 @@ test("cancelling a local job targets its known commands, not unrelated jobs in t
 	assert.equal(store.getAttempt(two.id).slot, true);
 });
 
-test("unbound native outcomes enter the inbox and only the trusted binding drains them", (t) => {
+test("early outcomes remain history until explicitly retried after trusted binding and evidence", (t) => {
 	const { store } = fixture(t);
 	goal(store);
 	const prepared = store.prepareAttempt(task(store, "early", { checks: [check] }).id, "root");
@@ -663,7 +669,7 @@ test("unbound native outcomes enter the inbox and only the trusted binding drain
 	store.issueAttempt(prepared.id, "root", "create-early", {});
 	admit(store, prepared);
 	store.bindAttempt(prepared.id, "actual-worker", "root");
-	assert.equal(store.getTask(prepared.taskId).state, "done");
+	assert.equal(store.getTask(prepared.taskId).state, "running");
 	assert.equal(store.recordResult(good, "actual-worker").promoted, true);
 	assert.equal(store.resultsForAttempt(prepared.id).length, 2);
 	fails(() => store.bindAttempt(prepared.id, "actual-worker", "foreign-worker"), "forbidden");
@@ -942,7 +948,6 @@ test("native wake delivery acknowledgments persist without consuming concurrent 
 	assert.equal(store.markWakeSent(initial.id, initial.generation, "native:parent").sent, initial.generation);
 	assert.equal(store.getDelivery(sending.id).state, "settled");
 	assert.equal(store.getDelivery(sending.id).attemptId, parent.id);
-	assert.ok(!store.snapshot().effects.some(effect => effect.kind === "message"));
 	assert.equal(store.pendingWakes("recipient")[0].inFlight, undefined);
 	assert.equal(store.pendingWakes("recipient").filter((wake) => wake.generation > (wake.sent ?? 0)).length, 0);
 	store.reassignTask(child.id, "recipient", "root");
@@ -963,35 +968,18 @@ test("native wake delivery acknowledgments persist without consuming concurrent 
 	assert.equal(restarted.pendingWakes("recipient").length, 0);
 });
 
-test("original in-flight message effects remain settleable after reload without becoming a new send", t => {
-	for (const acknowledge of [false, true]) {
-		const { store, repo } = fixture(t);
-		goal(store);
-		const worker = start(store, task(store, "worker"));
-		const noticeTask = task(store, "notice");
-		store.reassignTask(noticeTask.id, "recipient", "root");
-		const wake = store.pendingWakes("recipient")[0];
-		const message = store.recordEffect({ id: "original-message", attemptId: worker.id, kind: "message",
-			state: acknowledge ? "uncertain" : "issued",
-			request: { wakeId: wake.id, generation: wake.generation, arguments: { session_id: "recipient" } },
-		}, "native:worker");
-		const db = new DatabaseSync(store.databasePath);
-		db.prepare("UPDATE wakes SET document=? WHERE id=?").run(JSON.stringify({ ...wake, inFlight: message.id }), wake.id);
-		db.close();
-		store.close();
-		const resumed = openWorkStore(repo);
-		t.after(() => resumed.close());
-		assert.equal(resumed.pendingEffects().find(effect => effect.id === message.id)?.state, message.state);
-		assert.equal(resumed.pendingDeliveries("native:worker", "goal")[0].id, message.id);
-		assert.equal(resumed.claimWakeDelivery(wake.id, wake.generation, undefined, {}, "root"), undefined);
-		if (acknowledge) resumed.markWakeSent(wake.id, wake.generation, "root");
-		else resumed.settleWakeDelivery(wake.id, message.id, wake.generation, { resultType: "success" }, true, "native:worker");
-		assert.equal(resumed.getEffect(message.id).state, "settled");
-		assert.equal(resumed.getDelivery(message.id).attemptId, worker.id);
-		assert.equal(resumed.getDelivery(message.id).state, "settled");
-		assert.deepEqual(resumed.pendingDeliveries("native:worker", "goal"), []);
-		assert.equal(resumed.claimWakeDelivery(wake.id, wake.generation, worker.id, {}, "native:worker"), undefined);
-	}
+test("legacy message effects are not accepted or projected as current deliveries", t => {
+	const { store } = fixture(t);
+	goal(store);
+	const worker = start(store, task(store, "worker"));
+	const effect = { id: "obsolete-message", attemptId: worker.id, owner: "native:worker",
+		kind: "message", state: "issued", request: {} };
+	const db = new DatabaseSync(store.databasePath);
+	db.prepare("INSERT INTO effects(id,document,attempt_id,owner,state,kind) VALUES(?,?,?,?,?,?)")
+		.run(effect.id, JSON.stringify(effect), effect.attemptId, effect.owner, effect.state, effect.kind);
+	db.close();
+	fails(() => store.getEffect(effect.id), "invalid_field");
+	fails(() => store.getDelivery(effect.id), "not_found");
 });
 
 test("receipt aliases are indexed for original native writes and conflicts do not prevent reopening", t => {
@@ -1005,7 +993,7 @@ test("receipt aliases are indexed for original native writes and conflicts do no
 	db.prepare("INSERT INTO native_usage(id,document,native_id,goal_id) VALUES(?,?,?,?)")
 		.run(receipt.id, JSON.stringify(receipt), receipt.nativeId, receipt.goalId);
 	const originalGoal = store.getGoal("goal");
-	db.prepare("UPDATE goals SET document=? WHERE id=?").run(JSON.stringify({ ...originalGoal, priority: 0, credits: 2 }), "goal");
+	db.prepare("UPDATE goals SET document=? WHERE id=?").run(JSON.stringify({ ...originalGoal, credits: 2 }), "goal");
 	assert.equal(store.recordUsage(worker.id, 2, receipt.id, "root").credits, 2);
 	db.prepare("UPDATE native_usage SET document=? WHERE id=?")
 		.run(JSON.stringify({ ...receipt, aliases: ["updated-alias"] }), receipt.id);
@@ -1023,20 +1011,26 @@ test("receipt aliases are indexed for original native writes and conflicts do no
 	assert.equal(reopened.getGoal("goal").credits, 2);
 });
 
-test("the alias lookup indexes existing canonical receipt IDs once without changing their amounts", t => {
+test("previous and incomplete store schemas are rejected without migrating or discarding their records", t => {
 	const { store, repo } = fixture(t);
 	goal(store);
 	const worker = start(store, task(store, "worker"));
 	store.recordNativeUsage({ id: "receipt-id", nativeId: "native:worker", sourceSessionId: "native:worker",
 		aliases: ["alias"], attemptIds: [worker.id], credits: 3, billing: "complete" }, "native:worker");
 	const db = new DatabaseSync(store.databasePath);
-	db.exec("DROP TRIGGER native_usage_alias_insert; DROP TRIGGER native_usage_alias_update; DROP TABLE usage_aliases");
-	db.close();
+	const original = db.prepare("SELECT document FROM native_usage WHERE id='receipt-id'").get()?.document;
 	store.close();
-	const resumed = openWorkStore(repo);
-	t.after(() => resumed.close());
-	assert.equal(resumed.recordUsage(worker.id, 3, "receipt-id", "root").credits, 3);
-	assert.equal(resumed.recordUsage(worker.id, 3, "alias", "root").credits, 3);
+	db.exec("PRAGMA user_version=0");
+	fails(() => openWorkStore(repo), "unsupported_store");
+	db.exec("PRAGMA user_version=1");
+	fails(() => openWorkStore(repo), "unsupported_store");
+	assert.equal(db.prepare("SELECT document FROM native_usage WHERE id='receipt-id'").get()?.document, original);
+	assert.equal(db.prepare("PRAGMA user_version").get()?.user_version, 1);
+	db.exec("PRAGMA user_version=2; DROP TRIGGER native_usage_alias_insert; DROP TRIGGER native_usage_alias_update; DROP TABLE usage_aliases");
+	fails(() => openWorkStore(repo), "unsupported_store");
+	assert.equal(db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name='usage_aliases'").get(), undefined);
+	assert.equal(db.prepare("SELECT count(*) AS n FROM native_usage WHERE id='receipt-id'").get()?.n, 1);
+	db.close();
 });
 
 test("canonical context retains deep unsettled work but not unrelated finished descendants or sibling authority", t => {

@@ -37,10 +37,10 @@ export function optionalText(value, label) {
 	return value === undefined ? undefined : text(value, label);
 }
 
-/** @param {unknown} value @param {string} label */
-export function number(value, label) {
+/** @param {unknown} value @param {string} label @param {string} [code] */
+export function number(value, label, code = "invalid_field") {
 	if (typeof value !== "number" || !Number.isFinite(value)) {
-		throw new FoundryError("invalid_field", `${label} must be a finite number`);
+		throw new FoundryError(code, `${label} must be a finite number`);
 	}
 	return value;
 }
@@ -52,6 +52,19 @@ export function natural(value, label) {
 		throw new FoundryError("invalid_field", `${label} must be a nonnegative integer`);
 	}
 	return result;
+}
+
+/** @param {unknown} value @param {string} label */
+export function positive(value, label) {
+	const result = natural(value, label);
+	if (!result) throw new FoundryError("invalid_field", `${label} must be positive`);
+	return result;
+}
+
+/** @param {Record<string, unknown>} input @param {string[]} fields @param {string} [label] */
+export function closedFields(input, fields, label = "source") {
+	const extra = Object.keys(input).filter(key => !fields.includes(key));
+	if (extra.length) throw new FoundryError("unsupported_fields", `Unsupported ${label} fields: ${extra.join(", ")}`);
 }
 
 /** @param {unknown} value @param {string} label */
@@ -239,10 +252,15 @@ export function decodeInput(value) {
 	const item = record(value);
 	const version = optionalText(item.version, "input.version");
 	return {
-		taskId: text(item.taskId, "input.taskId"),
+		taskId: text(item.taskId, "input task"),
 		output: text(item.output, "input.output"),
 		...(version === undefined ? {} : { version }),
 	};
+}
+
+/** @param {import("./model.d.ts").Evidence[]} evidence in canonical admission order */
+export function latestEvidence(evidence) {
+	return new Map(evidence.map(item => [JSON.stringify([item.checkId, item.checkVersion]), item]));
 }
 
 /** @param {unknown} value @returns {import("./model.d.ts").Output} */
@@ -264,7 +282,7 @@ export function decodeEvidence(value) {
 		checkId: text(item.checkId, "evidence.checkId"), checkVersion: text(item.checkVersion, "evidence.checkVersion"),
 		outcome: choice(item.outcome, /** @type {const} */ (["passed", "failed", "pending"]), "evidence.outcome"),
 		reference: text(item.reference, "evidence.reference"), summary: text(item.summary, "evidence.summary"),
-		source: choice(item.source, /** @type {const} */ (["native-command", "runner-receipt"]), "evidence.source"),
+		source: choice(item.source, /** @type {const} */ (["runner-receipt"]), "evidence.source"),
 		...(item.candidate === undefined ? {} : { candidate: decodeCandidate(item.candidate) }),
 		...(item.blocker === undefined ? {} : { blocker: choice(item.blocker, /** @type {const} */ (["input-artifact"]), "evidence.blocker") }),
 	};
@@ -292,9 +310,19 @@ export function decodeWaiting(value) {
 	if (value === undefined) return undefined;
 	const item = record(value);
 	const requestId = optionalText(item.requestId, "waiting.requestId");
+	const kind = choice(item.kind, /** @type {const} */ (["children", "input", "capacity", "factory"]), "waiting.kind");
 	return {
-		kind: choice(item.kind, /** @type {const} */ (["children", "input", "capacity"]), "waiting.kind"),
+		kind,
 		reason: text(item.reason, "waiting.reason"),
+		...(kind === "factory" ? { cause: choice(item.cause, /** @type {const} */ (["paused", "stalled"]), "waiting.cause") } : {}),
 		...(requestId === undefined ? {} : { requestId }),
 	};
+}
+
+/** @param {unknown} value @returns {NonNullable<import("./model.d.ts").Task["dispatch"]>} */
+export function decodeDispatch(value) {
+	const item = record(value);
+	return { context: strings(item.context), generator: boolean(item.generator, "dispatch.generator"),
+		...(item.agent === undefined ? {} : { agent: text(item.agent, "dispatch.agent") }),
+		...(item.baseBranch === undefined ? {} : { baseBranch: text(item.baseBranch, "dispatch.baseBranch") }) };
 }

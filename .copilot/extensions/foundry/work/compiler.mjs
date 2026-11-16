@@ -1,7 +1,7 @@
 import { readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { FoundryError, decodeCheck, decodeInput, decodeLimits as limits, decodeScope, digest, json, record, resourcePath, text } from "./values.mjs";
+import { FoundryError, closedFields as closed, decodeCheck, decodeInput, decodeLimits as limits, decodeScope, digest, json, number as finiteNumber, record, resourcePath, text } from "./values.mjs";
 
 /** @typedef {import("./model.js").Check} Check */
 /** @typedef {import("./model.js").Task} Task */
@@ -83,12 +83,6 @@ export function compileDefinition(value, source) {
 	}, tasks: ordered };
 }
 
-/** @param {Record<string, unknown>} input @param {string[]} fields */
-function closed(input, fields) {
-	const extra = Object.keys(input).filter(key => !fields.includes(key));
-	if (extra.length) throw new FoundryError("unsupported_fields", `Unsupported source fields: ${extra.join(", ")}`);
-}
-
 /** @param {unknown} value @param {string} label @returns {unknown[]} */
 export function array(value, label) {
 	if (!Array.isArray(value)) throw new FoundryError("invalid_input", `${label} must be an array`);
@@ -97,8 +91,7 @@ export function array(value, label) {
 
 /** @param {unknown} value @param {string} label */
 export function number(value, label) {
-	if (typeof value !== "number" || !Number.isFinite(value)) throw new FoundryError("invalid_input", `${label} must be a finite number`);
-	return value;
+	return finiteNumber(value, label, "invalid_input");
 }
 
 /** @param {unknown} value @returns {import("./model.js").Limits} */

@@ -23,10 +23,13 @@ export const checkReceiptPath = (store, effectId) => path.join(path.dirname(stor
 /** @param {Store} store @param {string} taskId @param {string} actor */
 export function prepareDispatch(store, taskId, actor) {
 	const attempt = store.prepareAttempt(taskId, actor);
+	const prepared = store.effectsForAttempt(attempt.id).find(effect => effect.kind === "create" && effect.state === "prepared");
+	if (prepared) return { taskId, attemptId: attempt.id, token: attempt.token, effectId: prepared.id,
+		tool: "create_session", arguments: prepared.request };
 	const task = store.getTask(taskId);
 	const goal = store.getGoal(task.goalId);
 	const snapshot = store.contextSnapshot(actor, goal.id, task.id);
-	const source = store.assignmentContext(task.id, actor);
+	const source = task.dispatch;
 	const context = source?.generator ? source.context : [
 		...snapshot.teams.filter(team => team.id === task.teamId).flatMap(team => team.context),
 		...snapshot.lessons.filter(lesson => lesson.workType === task.workType).map(lesson => lesson.summary),
@@ -223,14 +226,14 @@ export function checkObservation(store, value, verifyArtifacts = true) {
 	const content = evidenceContent(store, reference);
 	if (createHash("sha256").update(content).digest("hex") !== observation.sha256) throw new FoundryError("evidence_changed", "Native evidence content no longer matches the captured observation");
 	const receipt = record(/** @type {unknown} */ (JSON.parse(content)));
-	const { state: _state, sha256: _sha, ...captured } = receipt;
-	const raw = receipt.state === "finished" ? captured : receipt;
-	if (receipt.state === "finished" && digest(json(raw)) !== receipt.sha256) {
+	if (receipt.state !== "finished") throw new FoundryError("unsupported_receipt", "Check evidence requires a finished receipt-bound runner result");
+	const { state: _state, sha256: _sha, ...raw } = receipt;
+	if (digest(json(raw)) !== receipt.sha256) {
 		throw new FoundryError("evidence_changed", "Finished runner receipt content changed");
 	}
 	const effectId = text(raw.effectId, "native check effect");
 	if (observation.effectId !== effectId) throw new FoundryError("effect_mismatch", "Native check correlation changed");
-	if (receipt.state === "finished" && record(store.getEffect(effectId).request).receipt !== reference) {
+	if (record(store.getEffect(effectId).request).receipt !== reference) {
 		throw new FoundryError("effect_mismatch", "Runner receipt is not the issued command's recorded file");
 	}
 	const attemptId = text(observation.attemptId, "evidence attempt");
@@ -263,7 +266,7 @@ export function checkObservation(store, value, verifyArtifacts = true) {
 		id: `evidence:${observation.sha256}`, attemptId, checkId: check.id, checkVersion: check.version, effectId,
 		completedAt: text(raw.completedAt, "native completion time"),
 		outcome: passed ? "passed" : "failed", reference, summary: text(observation.summary, "evidence summary"),
-		source: receipt.state === "finished" ? "runner-receipt" : "native-command",
+		source: "runner-receipt",
 		...(candidate === undefined ? {} : { candidate }),
 		...(raw.blocker === undefined || raw.blocker === null ? {} : {
 			blocker: choice(raw.blocker, /** @type {const} */ (["input-artifact"]), "native input blocker"),
@@ -350,17 +353,31 @@ export function observePost(store, name, args, result, actor, settled) {
 
 /** @param {Store} store @param {string} attemptId @returns {Evidence[]} */
 export function admittedEvidence(store, attemptId) {
-	return store.effectsForAttempt(attemptId).filter(effect => effect.kind === "command" && effect.state === "settled")
-		.flatMap(effect => {
-			const value = record(effect.result);
-			const result = value.runnerReceipt === undefined ? value.nativeResult : {
-				textResultForLlm: `FOUNDRY_CHECK_RESULT:${Buffer.from(JSON.stringify(value.runnerReceipt)).toString("base64")}`,
-			};
-			if (result === undefined) return [];
-			const observation = checkObservation(store, result, false);
-			return observation ? [observation] : [];
-		}).sort((a, b) => a.completedAt.localeCompare(b.completedAt))
-		.map(({ effectId: _effect, completedAt: _time, ...evidence }) => evidence);
+	/** @type {Map<string, Effect>} */
+	const sources = new Map();
+	for (const effect of store.effectsForAttempt(attemptId).filter(effect => effect.kind === "command" && effect.state === "settled")) {
+		const value = record(effect.result);
+		for (const item of Array.isArray(value.evidence) ? value.evidence : value.evidence === undefined ? [] : [value.evidence]) {
+			sources.set(text(record(item).id, "admitted observation"), effect);
+		}
+	}
+	return store.evidenceForAttempt(attemptId).map(admitted => {
+		const effect = sources.get(admitted.id);
+		if (!effect) throw new FoundryError("evidence_source_missing", "Admitted evidence has no original settled native effect");
+		const value = record(effect.result);
+		const result = value.runnerReceipt === undefined ? value.nativeResult : {
+			textResultForLlm: `FOUNDRY_CHECK_RESULT:${Buffer.from(JSON.stringify(value.runnerReceipt)).toString("base64")}`,
+		};
+		const observation = result === undefined ? undefined : checkObservation(store, result, false);
+		if (!observation || observation.effectId !== effect.id) {
+			throw new FoundryError("evidence_source_missing", "Admitted evidence must retain its original native receipt");
+		}
+		const { effectId: _effect, completedAt: _time, ...original } = observation;
+		if (digest(json(original)) !== digest(json(admitted))) {
+			throw new FoundryError("evidence_conflict", "Admitted evidence changed from its original native observation");
+		}
+		return admitted;
+	});
 }
 
 /** @param {Store} store @param {unknown} value @param {string} actor @param {(effect:Effect)=>void} [settled] */

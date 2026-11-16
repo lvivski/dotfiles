@@ -2,7 +2,7 @@ import { readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { FoundryError, array, choice, decodeInput, decodeSource, digest, json, natural, record, resourcePath, strings, text } from "./values.mjs";
+import { FoundryError, array, choice, closedFields, decodeInput, decodeSource, digest, json, natural, positive, record, resourcePath, strings, text } from "./values.mjs";
 
 /** @param {unknown} value @returns {import("./model.d.ts").FactoryControl} */
 export function decodeFactory(value) {
@@ -58,17 +58,9 @@ export function decodeCompletion(value) {
 	};
 }
 
-/** @param {unknown} value @param {string} label */
-export function positive(value, label) {
-	const result = natural(value, label);
-	if (!result) throw new FoundryError("invalid_field", `${label} must be positive`);
-	return result;
-}
-
 /** @param {Record<string, unknown>} input @param {string[]} fields */
-export function closed(input, fields) {
-	const extra = Object.keys(input).filter(key => !fields.includes(key));
-	if (extra.length) throw new FoundryError("unsupported_fields", `Unsupported factory fields: ${extra.join(", ")}`);
+function closed(input, fields) {
+	closedFields(input, fields, "factory");
 }
 
 /** @param {string} directory @param {string} filename */
@@ -172,5 +164,32 @@ export function readFactory(directory, filename) {
 			...(definition.unchangedFailures === undefined ? {} : { unchangedFailures: positive(definition.unchangedFailures, "unchanged failures") }),
 			...(definition.aggregateRepairs === undefined ? {} : { aggregateRepairs: natural(definition.aggregateRepairs, "aggregate repairs") }),
 		},
-		fingerprint: digest(snapshot) };
+	};
+}
+
+/** @param {import("./model.d.ts").Json} definition @param {{reference:string,sha256:string}} source @param {string} [templateId] @returns {NonNullable<import("./model.d.ts").Task["dispatch"]>} */
+export function compileFactoryContext(definition, source, templateId) {
+	const policy = record(definition);
+	const matches = (/** @type {unknown} */ ids) => templateId !== undefined && strings(ids).includes(templateId);
+	const charters = array(policy.charters ?? [], record).filter(charter => matches(charter.taskIds));
+	const grain = array(policy.grains ?? [], record).find(grain => matches(grain.taskIds));
+	const generator = grain !== undefined && matches(grain.generators);
+	const captured = record(policy.captured ?? {});
+	const files = generator && grain ? [record(grain.specification)] : charters.flatMap(charter => array(charter.knowledgeFiles ?? [], record));
+	const agent = charters.find(charter => charter.agent !== undefined)?.agent;
+	return {
+		context: [
+			`Factory ${text(policy.id, "factory id")}; source ${source.reference}; snapshot ${digest(definition)}.`,
+			...(generator && grain ? strings(grain.context) : charters.flatMap(charter => strings(charter.context))),
+			...files.map(file => {
+				const name = text(file.path, "context file");
+				const content = record(captured[name]);
+				if (typeof content.content !== "string") throw new FoundryError("invalid_field", "Captured context must be text");
+				return `Declared context ${name} (${text(content.sha256, "context version")}):\n${content.content}`;
+			}),
+		],
+		generator,
+		...(generator && grain ? { baseBranch: text(grain.baseBranch, "generation base ref") } : {}),
+		...(!generator && agent !== undefined ? { agent: text(agent, "native agent") } : {}),
+	};
 }

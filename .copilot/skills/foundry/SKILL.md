@@ -9,7 +9,10 @@ Foundry is a repository-local software factory, not an approval workflow. Native
 local coordinators, in-session work and deterministic jobs execute; one SQLite store at
 `<git-common-dir>/foundry/work.sqlite` records goals, ownership, versions, effects and outcomes.
 Current controller/completion metadata lives in that same canonical store; retired operational
-formats are not imported. Mixed-version factory writers are unsupported.
+formats are not imported. Mixed-version Foundry writers are unsupported; quiesce old participants
+and reset obsolete canonical state before upgrading. Missing factory assignment snapshots, legacy
+message effects and flat check receipts are not migrated or replayed. Current checks require their
+exclusive finished runner receipts; current prepared native requests retain their identities.
 
 ## Unattended factories
 
@@ -45,7 +48,9 @@ schedules or claim the host supports atomic conditional mutations against concur
 Reusable charters capture declared native roles and evidenced, hash-pinned repository knowledge;
 curation is explicit, not automatic policy promotion. Grain generators use their declared
 specification/context and a conserved implementation-free base commit, without implicit
-team/lesson history. Pin independent evaluators and boundaries. Worktrees and prompts do not enforce
+team/lesson history. Admission stores the resolved context, native agent and base commit on the task;
+dispatch does not reinterpret policy or infer template membership from its ID.
+Pin independent evaluators and boundaries. Worktrees and prompts do not enforce
 an old-source read sandbox; retain honest audit/provenance and never claim stronger exclusion.
 
 ## Execute
@@ -89,6 +94,12 @@ an old-source read sandbox; retain honest audit/provenance and never claim stron
    versioned outputs with `foundry_report_result`. Concrete checked failures can justify repair;
    unsupported review opinions remain advisory. Completion does not need another plan approval.
 
+Latest check evidence follows canonical admission sequence, not completion timestamps. Findings
+are diagnostic; governing new obligations must become explicitly assigned/protected checks.
+An early report is history, not a pending automatic promotion: report again explicitly after
+binding/evidence arrives, using current admitted evidence and a new result ID if the observation
+changed. Already-promoted replay normalizes references without republishing captured bytes.
+
 For a bounded reproducible file unit, give every relevant check the same `artifactFiles` list of
 existing implementation files inside its task paths, with required module/package files included.
 Pin evaluator files separately with repository-relative `oracleFiles`. Those checks run in a captured
@@ -96,11 +107,13 @@ bundle; the mutable checkout is not their execution directory. Report code/artif
 the actual returned `evidence.candidate.version`, with its reference for the unit or a declared
 filename for an entry. Do not substitute a newer checkout or combine passing checks from different
 candidate versions. Integration declares and evaluates its final unit too. This opt-in format
-does not pin undeclared runtime/data dependencies or require commits. Legacy checks remain unchanged.
+does not pin undeclared runtime/data dependencies or require commits. Non-artifact checks still run
+their assigned commands without capturing a file bundle.
 When publication of the evaluated unit is intended, use `publish: "<output name>"` on
 `foundry_run_check`. It uses the normal promotion path once all governing checks pass on the same
 candidate, without another model turn. Partial acceptance keeps work running; mixed candidates
-block publication without inventing a failed check. Already-published replay does not rerun.
+block publication without inventing a failed check. Unchanged publication retries retain their
+identity; changed governing receipts produce a fresh result. Already-published replay does not rerun.
 An unavailable/corrupt managed input is a recorded blocker, not a reason to keep recoding its
 consumer; route the actual failed input identity to its accountable owner.
 
@@ -152,11 +165,11 @@ An existing worker can recover its actual outstanding shells and yield or resume
 execution after coordinator handoff; it does not acquire new delegation authority.
 
 Checked repair normally uses `repair: true` on `foundry_run_check` or `foundry_report_result`.
-New assigned commands have one exclusively claimed, atomically finished runner receipt. Your
+Assigned commands have one exclusively claimed, atomically finished runner receipt. Your
 normal context/check calls recover finished receipts without rerunning, retaining their
 `runner-receipt` source and assigned evidence checks. A recovered check replays its result; use
-`foundry_prepare_check` for an explicit new evaluation. Started-only receipts, legacy random-name
-receipts and ordinary commands without actual completion remain unknown; never manufacture settlement.
+`foundry_prepare_check` for an explicit new evaluation. Started-only receipts and ordinary commands
+without actual completion remain unknown; never manufacture settlement.
 Self-ended settled terminal claims release automatically. Waiting/unknown work and ancestor-ended
 attempts keep ownership; warm same-worker repair transfers claims atomically with fresh IDs.
 Separate advanced retries use `foundry_retry_task` against the exact current failed attempt.

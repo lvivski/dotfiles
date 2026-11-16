@@ -4,12 +4,12 @@ import { closeSync, constants, lstatSync, mkdirSync, openSync, realpathSync } fr
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { decodeNativeUsage, decodeUsageAffinity } from "./usage.mjs";
-import { bindCandidateOutputs, readCandidate } from "./artifacts.mjs";
-import { decodeCompletion, decodeFactory } from "./factory.mjs";
+import { bindCandidateOutputs, normalizeCandidateOutputs, readCandidate } from "./artifacts.mjs";
+import { compileFactoryContext, decodeCompletion, decodeFactory } from "./factory.mjs";
 import {
 	FoundryError, array, boolean, choice, containsPath, decodeCheck, decodeEvidence,
-	decodeFinding, decodeInput, decodeLimits, decodeOutput, decodeScope, decodeSource, decodeWaiting,
-	digest, json, narrowScope, nativeSessionName, natural, number, optionalText, record, resourcePath, strings, text,
+	decodeDispatch, decodeFinding, decodeInput, decodeLimits, decodeOutput, decodeScope, decodeSource, decodeWaiting,
+	digest, json, latestEvidence, narrowScope, nativeSessionName, natural, number, optionalText, record, resourcePath, strings, text,
 } from "./values.mjs";
 
 /** @typedef {import("./model.d.ts").Json} Json */
@@ -25,7 +25,7 @@ import {
 /** @typedef {import("./model.d.ts").Lesson} Lesson */
 /** @typedef {import("./model.d.ts").Delivery} Delivery */
 /** @typedef {{id?: string, title: string, projectId?: string, scope: import("./model.d.ts").Scope, limits?: import("./model.d.ts").Limits, source?: Goal["source"]}} GoalInput */
-/** @typedef {{id?: string, goalId: string, parentId?: string, teamId?: string, title: string, assignment: string, workType: string, scope?: unknown, checks?: import("./model.d.ts").Check[], inputs?: import("./model.d.ts").Input[]}} TaskInput */
+/** @typedef {{id?: string, goalId: string, parentId?: string, teamId?: string, title: string, assignment: string, dispatch?: Task["dispatch"], workType: string, scope?: unknown, checks?: import("./model.d.ts").Check[], inputs?: import("./model.d.ts").Input[]}} TaskInput */
 /** @typedef {import("./model.d.ts").FactoryControl} Factory */
 /** @typedef {import("./model.d.ts").GoalCompletion} Completion */
 /** @typedef {{goals: Goal, teams: Team, tasks: Task, attempts: Attempt, effects: Effect, claims: Claim, wakes: Wake, signals: Signal, lessons: Lesson, results: Result, deliveries: Delivery, native_usage: import("./model.d.ts").NativeUsage, usage_affinity: import("./model.d.ts").UsageAffinity, factory_controls: Factory, goal_completions: Completion}} Records */
@@ -68,6 +68,7 @@ function decodeTask(value) {
 	return {
 		id: text(row.id, "task.id"), goalId: text(row.goalId, "task.goalId"), owner: text(row.owner, "task.owner"),
 		title: text(row.title, "task.title"), assignment: text(row.assignment, "task.assignment"),
+		...(row.dispatch === undefined ? {} : { dispatch: decodeDispatch(row.dispatch) }),
 		workType: text(row.workType, "task.workType"), scope: decodeScope(row.scope),
 		checks: array(row.checks, decodeCheck), inputs: array(row.inputs, decodeInput), outputs: array(row.outputs, decodeOutput),
 		state: choice(row.state, /** @type {const} */ (["ready", "running", "waiting", "blocked", "failed", "done", "cancelled"]), "task.state"),
@@ -106,7 +107,7 @@ function decodeEffect(value) {
 	const row = record(value);
 	return {
 		id: text(row.id, "effect.id"), attemptId: text(row.attemptId, "effect.attemptId"),
-		kind: choice(row.kind, /** @type {const} */ (["create", "command", "message", "stop"]), "effect.kind"),
+		kind: choice(row.kind, /** @type {const} */ (["create", "command", "stop"]), "effect.kind"),
 		state: choice(row.state, /** @type {const} */ (["prepared", "issued", "settled", "uncertain"]), "effect.state"),
 		owner: text(row.owner, "effect.owner"), request: json(row.request),
 		...(row.result === undefined ? {} : { result: json(row.result) }),
@@ -298,17 +299,29 @@ export function openWorkStore(workingDirectory, options = {}) {
 		db.exec("PRAGMA busy_timeout=5000; PRAGMA trusted_schema=OFF; PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;");
 		db.exec("BEGIN IMMEDIATE");
 		const version = db.prepare("PRAGMA user_version").get()?.user_version;
-		if (version !== 0 && version !== 1) throw new FoundryError("unsupported_store", "Unsupported canonical work store schema");
+		const tables = new Set(db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT GLOB 'sqlite_*'")
+			.all().map(row => row.name));
+		if (version !== 0 && version !== 2 || version === 0 && tables.size
+			|| version === 2 && [...Object.keys(decoders), "dependencies", "outcomes", "evidence_admissions",
+				"usage", "local_attempts", "usage_aliases"].some(table => !tables.has(table))) {
+			throw new FoundryError("unsupported_store", "Reset obsolete or incomplete canonical state; only the current Foundry schema is supported");
+		}
 		for (const table of Object.keys(decoders)) {
 			db.exec(`CREATE TABLE IF NOT EXISTS ${table} (
 				id TEXT PRIMARY KEY, document TEXT NOT NULL,
 				goal_id TEXT, task_id TEXT, attempt_id TEXT, owner TEXT, state TEXT, kind TEXT,
-				parent_id TEXT, native_id TEXT, slot INTEGER NOT NULL DEFAULT 0, priority REAL NOT NULL DEFAULT 0
-			);
-			CREATE INDEX IF NOT EXISTS ${table}_goal ON ${table}(goal_id);
-			CREATE INDEX IF NOT EXISTS ${table}_owner ON ${table}(owner);
-			CREATE INDEX IF NOT EXISTS ${table}_task ON ${table}(task_id);
-			CREATE INDEX IF NOT EXISTS ${table}_attempt ON ${table}(attempt_id);`);
+				parent_id TEXT, native_id TEXT, slot INTEGER NOT NULL DEFAULT 0
+			);`);
+		}
+		const indexed = {
+			goals: ["owner"], teams: ["goal", "owner"], tasks: ["goal", "owner"], attempts: ["task"],
+			effects: ["attempt", "owner"], claims: ["attempt", "owner"], wakes: ["goal", "owner"],
+			signals: ["goal", "task"], lessons: ["goal"], results: ["attempt"],
+			deliveries: ["goal", "attempt", "owner"], native_usage: ["goal", "attempt"],
+			factory_controls: ["owner"], goal_completions: ["goal", "task", "owner"],
+		};
+		for (const [table, columns] of Object.entries(indexed)) for (const column of columns) {
+			db.exec(`CREATE INDEX IF NOT EXISTS ${table}_${column} ON ${table}(${column === "owner" ? column : `${column}_id`})`);
 		}
 		db.exec(`CREATE INDEX IF NOT EXISTS tasks_parent ON tasks(parent_id);
 			CREATE INDEX IF NOT EXISTS tasks_ready ON tasks(state,goal_id);
@@ -327,7 +340,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 				output TEXT NOT NULL, version TEXT, PRIMARY KEY(task_id,producer_id,output)
 			);
 			CREATE INDEX IF NOT EXISTS dependencies_producer ON dependencies(producer_id);
-			CREATE TABLE IF NOT EXISTS outcomes (result_id TEXT PRIMARY KEY REFERENCES results(id), promoted INTEGER NOT NULL, pending INTEGER NOT NULL);
+			CREATE TABLE IF NOT EXISTS outcomes (result_id TEXT PRIMARY KEY REFERENCES results(id), promoted INTEGER NOT NULL);
 			CREATE TABLE IF NOT EXISTS evidence_admissions (
 				sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
 				attempt_id TEXT NOT NULL REFERENCES attempts(id), effect_id TEXT NOT NULL REFERENCES effects(id),
@@ -336,8 +349,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 			CREATE INDEX IF NOT EXISTS evidence_attempt ON evidence_admissions(attempt_id,sequence);
 			CREATE TABLE IF NOT EXISTS usage (event_id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL REFERENCES attempts(id), credits REAL NOT NULL);
 			CREATE TABLE IF NOT EXISTS local_attempts (attempt_id TEXT PRIMARY KEY REFERENCES attempts(id));
-			PRAGMA user_version=1;`);
-		const aliasesExist = db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name='usage_aliases'").get();
+			PRAGMA user_version=2;`);
 		db.exec(`CREATE TABLE IF NOT EXISTS usage_aliases (
 			alias TEXT NOT NULL, receipt_id TEXT NOT NULL REFERENCES native_usage(id) ON DELETE CASCADE,
 			PRIMARY KEY(alias,receipt_id)
@@ -352,8 +364,6 @@ export function openWorkStore(workingDirectory, options = {}) {
 			INSERT INTO usage_aliases SELECT NEW.id,NEW.id
 				UNION SELECT value,NEW.id FROM json_each(NEW.document,'$.aliases');
 		END;`);
-		if (!aliasesExist) db.exec(`INSERT INTO usage_aliases
-			SELECT id,id FROM native_usage UNION SELECT value,n.id FROM native_usage n,json_each(n.document,'$.aliases');`);
 		verify();
 		db.exec("COMMIT");
 	} catch (error) {
@@ -420,15 +430,13 @@ export function openWorkStore(workingDirectory, options = {}) {
 	function put(table, value) {
 		const row = record(value);
 		const str = (/** @type {string} */ key) => row[key] === undefined ? null : text(row[key], key);
-		db.prepare(`INSERT INTO ${table}(id,document,goal_id,task_id,attempt_id,owner,state,kind,parent_id,native_id,slot,priority)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+		db.prepare(`INSERT INTO ${table}(id,document,goal_id,task_id,attempt_id,owner,state,kind,parent_id,native_id,slot)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?)
 			ON CONFLICT(id) DO UPDATE SET document=excluded.document,goal_id=excluded.goal_id,task_id=excluded.task_id,
 			attempt_id=excluded.attempt_id,owner=excluded.owner,state=excluded.state,kind=excluded.kind,parent_id=excluded.parent_id,
-			native_id=excluded.native_id,slot=excluded.slot,priority=excluded.priority`).run(
-			// Keep the inert stored field readable by already-running native workers.
-			value.id, JSON.stringify(table === "goals" ? { ...value, priority: 0 } : value), str("goalId"), str("taskId"), str("attemptId"), str("owner"),
+			native_id=excluded.native_id,slot=excluded.slot`).run(
+			value.id, JSON.stringify(value), str("goalId"), str("taskId"), str("attemptId"), str("owner"),
 			str("state"), str("kind"), str("parentId"), str("nativeId"), row.slot === true ? 1 : 0,
-			0,
 		);
 	}
 	/** @param {Table} table @param {unknown} supplied */
@@ -523,6 +531,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 		if (generation !== undefined && generation !== factory.generation) {
 			throw new FoundryError("stale_activation", "This prepared operation belongs to a revoked activation");
 		}
+		if (!task.dispatch) throw new FoundryError("assignment_snapshot_required", "Factory execution requires its admitted assignment snapshot; reset obsolete state rather than reconstructing policy at dispatch");
 		return factory;
 	}
 	/** @param {Completion} completion */
@@ -593,8 +602,8 @@ export function openWorkStore(workingDirectory, options = {}) {
 		return attemptEffects(attempt.id, "AND state IN ('issued','uncertain')")
 			.some((effect) => !substantive || effect.kind === "command" || effect.kind === "create");
 	}
-	/** @param {Attempt} attempt */
-	function parkPausedExecution(attempt) {
+	/** @param {Attempt} attempt @param {"paused"|"stalled"} [cause] */
+	function parkPausedExecution(attempt, cause = "paused") {
 		const task = get("tasks", attempt.taskId);
 		const completion = optional("goal_completions", task.goalId);
 		if (!completion || !attempt.nativeId || task.currentAttemptId !== attempt.id || task.version !== attempt.taskVersion
@@ -602,7 +611,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 		const factory = get("factory_controls", completion.factoryId);
 		if (factory.state !== "paused" && !factory.pausedWorkers.includes(attempt.nativeId)) return;
 		task.state = "blocked";
-		task.waiting = { kind: "capacity", reason: "factory_paused" };
+		task.waiting = { kind: "factory", cause, reason: cause === "paused" ? "factory_paused" : "continuation_stalled" };
 		attempt.state = "waiting";
 		attempt.waiting = task.waiting;
 		put("tasks", task);
@@ -750,7 +759,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 	/** @param {Task} task */
 	function resumable(task) {
 		if (task.state !== "waiting" || !task.currentAttemptId || get("attempts", task.currentAttemptId).slot) return false;
-		if (task.waiting?.kind === "capacity") return true;
+		if (task.waiting?.kind === "capacity" || task.waiting?.kind === "factory") return true;
 		if (task.waiting?.kind !== "children") return false;
 		if (task.inputs.length) return resolvedInputs(task) !== undefined;
 		const children = list("tasks", "WHERE parent_id=?", [task.id]);
@@ -795,7 +804,16 @@ export function openWorkStore(workingDirectory, options = {}) {
 		uncancelled(task);
 		if (task.currentAttemptId && task.state === "running") {
 			const existing = get("attempts", task.currentAttemptId);
-			if (existing.state === "prepared" && existing.slot) return existing;
+			if (existing.state === "prepared" && existing.slot) {
+				const factory = requireAdmission(task);
+				const creation = attemptEffects(existing.id).find(effect => effect.kind === "create");
+				if (factory && creation && creation.factoryGeneration !== factory.generation && preparedDispatch(task)) {
+					revise(task, actor);
+				} else {
+					requireAdmission(task, creation?.factoryGeneration);
+					return existing;
+				}
+			}
 		}
 		if (task.state !== "ready") throw new FoundryError("invalid_transition", "Only a ready task can start a new attempt");
 		const inputs = resolvedInputs(task);
@@ -857,7 +875,6 @@ export function openWorkStore(workingDirectory, options = {}) {
 		for (const observation of list("native_usage", "WHERE native_id=? AND goal_id IS NULL", [nativeId])) settleUsage(observation);
 		if (firstBinding && !stale) rerouteWakes(task.goalId);
 		if (attempt.state === "cancelled") scheduleStop(attempt, actor);
-		drain(attempt);
 		releaseSlot(get("attempts", attemptId));
 		return get("attempts", attemptId);
 	}
@@ -894,14 +911,9 @@ export function openWorkStore(workingDirectory, options = {}) {
 		}
 		const inputs = resolvedInputs(task);
 		if (!inputs || digest(json(inputs)) !== digest(json(attempt.inputs))) return false;
-		/** @type {Map<string, import("./model.d.ts").Evidence>} */
-		const admitted = new Map();
-		/** @type {Map<string, import("./model.d.ts").Evidence>} */
-		const latest = new Map();
-		for (const evidence of admittedEvidence(attempt.id)) {
-			admitted.set(evidence.id, evidence);
-			latest.set(JSON.stringify([evidence.checkId, evidence.checkVersion]), evidence);
-		}
+		const observations = admittedEvidence(attempt.id);
+		const admitted = new Map(observations.map(evidence => [evidence.id, evidence]));
+		const latest = latestEvidence(observations);
 		if (result.evidence.some((evidence) => {
 			const check = attempt.checks.find((item) => item.id === evidence.checkId && item.version === evidence.checkVersion);
 			const actual = admitted.get(evidence.id);
@@ -912,9 +924,6 @@ export function openWorkStore(workingDirectory, options = {}) {
 			const evidence = latest.get(JSON.stringify([check.id, check.version]));
 			return !evidence || evidence.outcome !== "passed" || !result.evidence.some((item) => item.id === evidence.id);
 		})) return false;
-		if (result.state === "done" && digest(json(bindCandidateOutputs(attempt.checks, [...latest.values()], result.outputs, databasePath))) !== digest(json(result.outputs))) {
-			throw new FoundryError("unbound_artifact", "Delivered references must identify the evaluated immutable artifact");
-		}
 		if (result.state === "done") for (const input of attempt.inputs) {
 			const output = inputOutput(input);
 			if (output) readCandidate(output.reference, output.version, databasePath);
@@ -942,6 +951,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 		const task = get("tasks", attempt.taskId);
 		if (!canPromote(task, attempt, result)) return false;
 		if (result.state === "done") {
+			result.outputs = bindCandidateOutputs(attempt.checks, admittedEvidence(attempt.id), result.outputs, databasePath);
 			for (const output of result.outputs) {
 				const published = inputOutput({ taskId: task.id, output: output.name, version: output.version });
 				if (published && digest(json(published)) !== digest(json(output))) {
@@ -956,7 +966,6 @@ export function openWorkStore(workingDirectory, options = {}) {
 		attempt.endedBy = result.reportedBy ?? result.sender;
 		put("tasks", task);
 		put("attempts", attempt);
-		db.prepare("UPDATE outcomes SET pending=0 WHERE result_id IN (SELECT id FROM results WHERE attempt_id=?)").run(attempt.id);
 		releaseSlot(attempt, !quiet, quiet && result.state === "failed");
 		if (!quiet) notifyOutcome(task);
 		if (result.state === "done") {
@@ -967,26 +976,6 @@ export function openWorkStore(workingDirectory, options = {}) {
 			}
 		}
 		return true;
-	}
-	/** @param {Attempt} attempt */
-	function drain(attempt) {
-		const rows = db.prepare("SELECT r.id FROM results r JOIN outcomes o ON o.result_id=r.id WHERE r.attempt_id=? AND o.pending=1 ORDER BY r.rowid").all(attempt.id);
-		for (const row of rows) {
-			const id = text(row.id, "result.id");
-			const result = get("results", id);
-			const promoted = promote(result);
-			db.prepare("UPDATE outcomes SET promoted=?,pending=? WHERE result_id=?")
-				.run(promoted ? 1 : 0, !promoted && pendingOutcome(result) ? 1 : 0, id);
-		}
-	}
-	/** @param {Result} result */
-	function pendingOutcome(result) {
-		const attempt = get("attempts", result.attemptId);
-		const task = get("tasks", attempt.taskId);
-		return task.currentAttemptId === attempt.id && task.version === attempt.taskVersion
-			&& ["running", "waiting"].includes(task.state) && !["done", "failed", "cancelled"].includes(attempt.state)
-			&& (attempt.nativeId === undefined || attempt.nativeId === result.sender)
-			&& !ancestors(task).some((parent) => parent.state === "cancelled");
 	}
 	/** @param {string} attemptId @param {string} [effectId] @returns {import("./model.d.ts").Evidence[]} */
 	function admittedEvidence(attemptId, effectId) {
@@ -1064,6 +1053,10 @@ export function openWorkStore(workingDirectory, options = {}) {
 		const task = decodeTask({ ...record(input), id: newId("tasks", input.id), owner: actor,
 			scope: narrowScope(parent?.scope ?? goal.scope, input.scope), checks: input.checks ?? [],
 			inputs: input.inputs ?? [], outputs: [], state: "ready", version: 1, currentAttemptId: undefined, waiting: undefined });
+		if (completion && !task.dispatch) {
+			const factory = get("factory_controls", completion.factoryId);
+			task.dispatch = compileFactoryContext(factory.definition, factory.source);
+		}
 		if (completion && task.scope.mode !== goal.scope.mode) {
 			throw new FoundryError("continuation_conflict", "Factory tasks must retain their one accepted continuation mode; ordinary goals still support mode narrowing");
 		}
@@ -1185,17 +1178,21 @@ export function openWorkStore(workingDirectory, options = {}) {
 			throw new FoundryError("duplicate_evidence", "Output names and evidence identities must be unique within a result");
 		}
 		if (existing) {
-			if (digest(json(existing)) !== digest(json(result))) throw new FoundryError("result_identity_conflict", "A result identity cannot be reused for a different observation");
 			const alreadyPromoted = db.prepare("SELECT promoted FROM outcomes WHERE result_id=?").get(existing.id)?.promoted === 1;
+			if (alreadyPromoted && result.state === "done") {
+				const reported = new Set(existing.evidence.map(evidence => evidence.id));
+				result.outputs = normalizeCandidateOutputs(attempt.checks,
+					admittedEvidence(attempt.id).filter(evidence => reported.has(evidence.id)), result.outputs, databasePath);
+			}
+			if (digest(json(existing)) !== digest(json(result))) throw new FoundryError("result_identity_conflict", "A result identity cannot be reused for a different observation");
 			const promoted = alreadyPromoted || promote(existing, quiet);
-			db.prepare("UPDATE outcomes SET promoted=?,pending=? WHERE result_id=?")
-				.run(promoted ? 1 : 0, !promoted && pendingOutcome(existing) ? 1 : 0, existing.id);
+			put("results", existing);
+			db.prepare("UPDATE outcomes SET promoted=? WHERE result_id=?").run(promoted ? 1 : 0, existing.id);
 			return { result: existing, promoted };
 		}
-		put("results", result);
 		const promoted = promote(result, quiet);
-		db.prepare("INSERT INTO outcomes(result_id,promoted,pending) VALUES(?,?,?)").run(result.id,
-			promoted ? 1 : 0, !promoted && pendingOutcome(result) ? 1 : 0);
+		put("results", result);
+		db.prepare("INSERT INTO outcomes(result_id,promoted) VALUES(?,?)").run(result.id, promoted ? 1 : 0);
 		return { result, promoted };
 	}
 
@@ -1216,7 +1213,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 				const evidence = db.prepare(`SELECT e.document FROM evidence_admissions e JOIN effects f ON e.effect_id=f.id
 					WHERE e.attempt_id=? AND json_extract(f.document,'$.factoryGeneration')=? ORDER BY e.sequence`)
 					.all(attempt.id, factory.generation).map(row => decodeEvidence(/** @type {unknown} */ (JSON.parse(text(row.document, "failure evidence")))));
-				const latest = [...new Map(evidence.map(item => [JSON.stringify([item.checkId, item.checkVersion]), item])).values()];
+				const latest = [...latestEvidence(evidence).values()];
 				const failures = latest.filter(item => item.outcome === "failed");
 				return failures.length ? digest(json({ inputs: attempt.inputs, failures: failures.map(item => ({ check: item.checkId, version: item.checkVersion,
 					candidate: item.candidate?.version ?? null, blocker: item.blocker ?? null }))
@@ -1252,25 +1249,9 @@ export function openWorkStore(workingDirectory, options = {}) {
 		return task;
 	}
 
-	/** Resolve an original in-flight message without replaying or rewriting its history. @param {string} id */
-	function wakeDelivery(id) {
-		const delivery = optional("deliveries", id);
-		if (delivery) return { delivery, effect: undefined };
-		const effect = get("effects", id);
-		if (effect.kind !== "message") throw new FoundryError("wake_delivery_conflict", "Expected the original native notification");
-		const request = record(effect.request);
-		const wakeId = text(request.wakeId, "wake");
-		return { effect, delivery: decodeDelivery({
-			id, goalId: get("wakes", wakeId).goalId,
-			wakeId, generation: request.generation, owner: effect.owner,
-			attemptId: effect.attemptId, state: effect.state === "settled" ? "settled" : "issued",
-			request: request.arguments, result: effect.result,
-		}) };
-	}
-	/** @param {ReturnType<typeof wakeDelivery>} original @param {Json} result */
-	function finishDelivery(original, result) {
-		if (original.effect) put("effects", { ...original.effect, state: "settled", result });
-		else put("deliveries", { ...original.delivery, state: "settled", result });
+	/** @param {Delivery} delivery @param {Json} result */
+	function finishDelivery(delivery, result) {
+		put("deliveries", { ...delivery, state: "settled", result });
 	}
 
 	/** @param {GoalInput} input @param {Array<Omit<TaskInput,"goalId">>} tasks @param {string} factoryId @param {string} completionTaskId @param {string} actor @param {number} [generation] @param {boolean} [validation] */
@@ -1343,7 +1324,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 				put("factory_controls", factory);
 				for (const completion of list("goal_completions", "WHERE json_extract(document,'$.factoryId')=?", [factory.id])) {
 					for (const task of list("tasks", "WHERE goal_id=? AND state='blocked'", [completion.goalId])) {
-						if (!task.currentAttemptId || !["continuation_stalled", "factory_paused"].includes(task.waiting?.reason ?? "")) continue;
+						if (!task.currentAttemptId || task.waiting?.kind !== "factory") continue;
 						const attempt = get("attempts", task.currentAttemptId);
 						if (attempt.state !== "waiting" || outstanding(attempt, true)) continue;
 						task.state = "waiting";
@@ -1427,34 +1408,6 @@ export function openWorkStore(workingDirectory, options = {}) {
 				return factory;
 			});
 		},
-		/** @param {string} taskId @param {string} actor */
-		assignmentContext(taskId, actor) {
-			return transaction(() => {
-				const task = accessibleTask(taskId, actor, false);
-				const completion = optional("goal_completions", task.goalId);
-				if (!completion) return undefined;
-				const factory = get("factory_controls", completion.factoryId);
-				const policy = record(factory.definition);
-				const captured = record(policy.captured ?? {});
-				const matches = (/** @type {unknown} */ ids) => strings(ids).some(id => task.id === `${task.goalId}:${id}`);
-				const charters = array(policy.charters ?? [], record).filter(charter => matches(charter.taskIds));
-				const grain = array(policy.grains ?? [], record).find(grain => matches(grain.taskIds));
-				const generator = grain !== undefined && matches(grain.generators);
-				const files = generator && grain ? [record(grain.specification)] : charters.flatMap(charter => array(charter.knowledgeFiles ?? [], record));
-				const context = [
-					`Factory ${factory.id}; source ${factory.source.reference}; snapshot ${digest(factory.definition)}.`,
-					...(generator && grain ? strings(grain.context) : charters.flatMap(charter => strings(charter.context))),
-					...files.map(file => {
-						const name = text(file.path, "context file");
-						const content = record(captured[name]);
-						return `Declared context ${name} (${text(content.sha256, "context version")}):\n${text(content.content, "captured context")}`;
-					}),
-				];
-				return { context, generator,
-					...(generator && grain ? { baseBranch: text(grain.baseBranch, "generation base ref") } : {}),
-					...(!generator && charters[0]?.agent !== undefined ? { agent: text(charters[0].agent, "native agent") } : {}) };
-			}, false);
-		},
 		/** @param {string} actor @param {string} [goalId] */
 		advance(actor, goalId) {
 			return transaction(() => list("goal_completions", goalId === undefined ? "" : "WHERE goal_id=?", goalId === undefined ? [] : [goalId])
@@ -1505,21 +1458,14 @@ export function openWorkStore(workingDirectory, options = {}) {
 				if (count > factory.blocks || reentry && previous?.generation === generation && previous.marker === marker) {
 					factory.pausedWorkers = [...new Set([...factory.pausedWorkers, actor])];
 					factory.reason = "continuation_stalled";
-					for (const task of own) {
-						if (!task.currentAttemptId || task.state !== "running") continue;
-						const attempt = get("attempts", task.currentAttemptId);
-						if (attempt.nativeId !== actor || outstanding(attempt, true)) continue;
-						task.state = "blocked";
-						task.waiting = { kind: "capacity", reason: "continuation_stalled" };
-						attempt.state = "waiting";
-						attempt.waiting = task.waiting;
-						put("tasks", task);
-						put("attempts", attempt);
-						releaseSlot(attempt);
-						notifyOutcome(task);
-					}
 					if (factory.owner === actor) { factory.state = "paused"; factory.generation++; }
 					put("factory_controls", factory);
+					for (const task of own) {
+						if (task.currentAttemptId) {
+							const attempt = get("attempts", task.currentAttemptId);
+							if (attempt.nativeId === actor) parkPausedExecution(attempt, "stalled");
+						}
+					}
 					return { paused: true, reason: "continuation_stalled" };
 				}
 				put("factory_controls", factory);
@@ -1596,12 +1542,12 @@ export function openWorkStore(workingDirectory, options = {}) {
 		/** @param {string} id */
 		getTeam(id) { return transaction(() => get("teams", id), false); },
 		/** @param {string} id */
-		getDelivery(id) { return transaction(() => wakeDelivery(id).delivery, false); },
+		getDelivery(id) { return transaction(() => get("deliveries", id), false); },
 		/** @param {string} actor @param {string} [goalId] */
 		pendingDeliveries(actor, goalId) {
 			return transaction(() => list("wakes", `WHERE json_extract(document,'$.inFlight') IS NOT NULL
 				${goalId === undefined ? "" : "AND goal_id=?"}`, goalId === undefined ? [] : [goalId])
-				.map(wake => wakeDelivery(text(wake.inFlight, "in-flight delivery")).delivery)
+				.map(wake => get("deliveries", text(wake.inFlight, "in-flight delivery")))
 				.filter(delivery => delivery.owner === actor && delivery.state === "issued"), false);
 		},
 		/** @param {string} actor @param {string} [goalId] */
@@ -1619,6 +1565,13 @@ export function openWorkStore(workingDirectory, options = {}) {
 					requireReporter(attempt, actor);
 					delete attempt.waiting;
 					put("attempts", attempt);
+					const task = get("tasks", attempt.taskId);
+					if (task.currentAttemptId === attempt.id && task.version === attempt.taskVersion
+						&& task.state === "waiting" && task.waiting?.kind === "input") {
+						task.waiting = { kind: "capacity", reason: "The actual native input request was answered" };
+						put("tasks", task);
+						wakeCapacity(task.goalId);
+					}
 				}
 			});
 		},
@@ -1761,13 +1714,15 @@ export function openWorkStore(workingDirectory, options = {}) {
 				return { goals, tasks, attempts, teams, signals, lessons, wakes, effects, ready, claims: [] };
 			}, false);
 		},
-		/** @param {string} actor @param {string} [goalId] @returns {Task[]} */
-		readyTasks(actor, goalId) {
+		/** @param {string} actor @param {string} [goalId] @param {boolean} [dispatchOnly] @returns {Task[]} */
+		readyTasks(actor, goalId, dispatchOnly = false) {
 			return transaction(() => {
 				text(actor, "actor");
 				if (goalId !== undefined) get("goals", goalId);
 				return list("tasks", `WHERE state IN ('ready','waiting','running') ${goalId === undefined ? "" : "AND goal_id=?"}`, goalId === undefined ? [] : [goalId]).filter((task) => (goalId === undefined || task.goalId === goalId)
 					&& (task.repairReservation ? task.repairReservation.worker === actor : authorized(task, actor))
+					&& (!dispatchOnly || !task.repairReservation && task.state !== "waiting"
+						&& (!optional("goal_completions", task.goalId) || task.owner === actor))
 					&& (runnable(task) || preparedDispatch(task)));
 			}, false);
 		},
@@ -1920,7 +1875,6 @@ export function openWorkStore(workingDirectory, options = {}) {
 				}
 				releaseSlot(attempt);
 				for (const id of effect.relatedAttemptIds ?? []) releaseSlot(get("attempts", id));
-				if (effect.kind === "command" && effect.state === "settled") drain(get("attempts", attempt.id));
 				return effect;
 			});
 		},
@@ -1952,7 +1906,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 					announce();
 					return { ...recorded, continuation: { state: "not-repaired", code: "unpromoted_failure" } };
 				}
-				const latest = new Map(recorded.result.evidence.map(evidence => [JSON.stringify([evidence.checkId, evidence.checkVersion]), evidence]));
+				const latest = latestEvidence(recorded.result.evidence);
 				if (!old.checks.some(check => latest.get(JSON.stringify([check.id, check.version]))?.outcome === "failed")) {
 					announce();
 					return { ...recorded, continuation: { state: "not-repaired", code: "checked_failure_required" } };
@@ -2208,9 +2162,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 		settleWakeDelivery(wakeId, effectId, generation, result, accepted, actor, unavailable = false) {
 			return transaction(() => {
 				const wake = get("wakes", wakeId);
-				const original = wakeDelivery(effectId);
-				const { delivery, effect } = original;
-				if (effect) requireReporter(get("attempts", effect.attemptId), actor);
+				const delivery = get("deliveries", effectId);
 				const consumed = delivery.result === undefined ? undefined : record(delivery.result);
 				if (delivery.state === "settled" && consumed?.consumedBy === wake.owner
 					&& delivery.wakeId === wakeId && delivery.generation === generation && delivery.owner === actor) {
@@ -2219,12 +2171,12 @@ export function openWorkStore(workingDirectory, options = {}) {
 					return wake;
 				}
 				if (wake.inFlight !== effectId || delivery.wakeId !== wakeId || delivery.generation !== generation
-					|| delivery.state !== "issued" || (!effect && delivery.owner !== actor)) {
+					|| delivery.state !== "issued" || delivery.owner !== actor) {
 					throw new FoundryError("wake_delivery_conflict", "This is not the outstanding native wake delivery");
 				}
 				natural(generation, "generation");
 				if (generation > wake.generation) throw new FoundryError("wake_generation", "Cannot settle an unseen generation");
-				finishDelivery(original, result);
+				finishDelivery(delivery, result);
 				delete wake.inFlight;
 				if (accepted) { wake.sent = Math.max(wake.sent ?? 0, generation); delete wake.unavailable; }
 				else if (unavailable) {
@@ -2248,9 +2200,9 @@ export function openWorkStore(workingDirectory, options = {}) {
 				if (generation > wake.generation) throw new FoundryError("wake_generation", "Cannot consume an unseen wake generation");
 				wake.consumed = Math.max(wake.consumed, generation);
 				if (wake.inFlight) {
-					const original = wakeDelivery(wake.inFlight);
-					if (original.delivery.generation <= wake.consumed && original.delivery.state === "issued") {
-						finishDelivery(original, json({ consumedBy: actor, generation: wake.consumed }));
+					const delivery = get("deliveries", wake.inFlight);
+					if (delivery.generation <= wake.consumed && delivery.state === "issued") {
+						finishDelivery(delivery, json({ consumedBy: actor, generation: wake.consumed }));
 						delete wake.inFlight;
 					}
 				}
@@ -2273,9 +2225,9 @@ export function openWorkStore(workingDirectory, options = {}) {
 				if (generation > wake.generation) throw new FoundryError("wake_generation", "Cannot acknowledge an unseen generation");
 				wake.sent = Math.max(wake.sent ?? 0, generation);
 				if (wake.inFlight) {
-					const original = wakeDelivery(wake.inFlight);
-					if (original.delivery.generation === generation && original.delivery.state === "issued") {
-						finishDelivery(original, json({ nativeQueueAcknowledgedBy: actor, generation }));
+					const delivery = get("deliveries", wake.inFlight);
+					if (delivery.generation === generation && delivery.state === "issued") {
+						finishDelivery(delivery, json({ nativeQueueAcknowledgedBy: actor, generation }));
 						delete wake.inFlight;
 					}
 				}

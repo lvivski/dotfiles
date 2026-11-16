@@ -125,6 +125,7 @@ export interface Task {
 	owner: string;
 	title: string;
 	assignment: string;
+	dispatch?: { context: string[]; generator: boolean; agent?: string; baseBranch?: string };
 	workType: string;
 	scope: Scope;
 	checks: Check[];
@@ -135,7 +136,7 @@ export interface Task {
 	version: number;
 	repairs?: number;
 	repairReservation?: { attemptId: string; worker: string };
-	waiting?: { kind: "children" | "input" | "capacity"; requestId?: string; reason: string };
+	waiting?: { kind: "children" | "input" | "capacity" | "factory"; requestId?: string; reason: string; cause?: "paused" | "stalled" };
 }
 export interface Attempt {
 	id: string;
@@ -162,7 +163,7 @@ export interface Evidence {
 	outcome: "passed" | "failed" | "pending";
 	reference: string;
 	summary: string;
-	source: "native-command" | "runner-receipt";
+	source: "runner-receipt";
 	candidate?: Candidate;
 	blocker?: "input-artifact";
 }
@@ -212,7 +213,7 @@ export interface Delivery {
 export interface Effect {
 	id: string;
 	attemptId: string;
-	kind: "create" | "command" | "message" | "stop";
+	kind: "create" | "command" | "stop";
 	state: "prepared" | "issued" | "settled" | "uncertain";
 	owner: string;
 	request: Json;

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { FoundryError, containsPath, decodeCandidate, digest, json, resourcePath } from "./values.mjs";
+import { FoundryError, containsPath, decodeCandidate, digest, json, latestEvidence, resourcePath } from "./values.mjs";
 
 /** @typedef {import("./model.d.ts").Candidate} Candidate */
 /** @param {Uint8Array} content */
@@ -109,20 +109,26 @@ function publishCandidate(candidate, databasePath) {
 	return published;
 }
 
-/** @param {import("./model.d.ts").Check[]} checks @param {import("./model.d.ts").Evidence[]} evidence @param {import("./model.d.ts").Output[]} outputs @param {string} databasePath */
-export function bindCandidateOutputs(checks, evidence, outputs, databasePath) {
+/** @param {import("./model.d.ts").Check[]} checks @param {import("./model.d.ts").Evidence[]} evidence */
+function evaluatedCandidates(checks, evidence) {
+	const latest = latestEvidence(evidence);
 	const candidates = checks.filter(check => check.artifactFiles).map(check => {
-		const candidate = evidence.find(item => item.checkId === check.id && item.checkVersion === check.version && item.outcome === "passed")?.candidate;
+		const observation = latest.get(JSON.stringify([check.id, check.version]));
+		const candidate = observation?.outcome === "passed" ? observation.candidate : undefined;
 		if (!candidate || digest(json(candidate.files.map(file => file.path).sort())) !== digest(json(check.artifactFiles))) {
 			throw new FoundryError("candidate_not_evaluated", "Every artifact-bound governing check must identify its tested files");
 		}
-		verifyCandidate(candidate, databasePath);
 		return candidate;
 	});
-	if (!candidates.length) return outputs;
-	if (candidates.some(candidate => candidate.version !== candidates[0].version)) {
+	if (candidates.length && candidates.some(candidate => candidate.version !== candidates[0].version)) {
 		throw new FoundryError("mixed_candidate_checks", "Governing checks passed against different candidates; reevaluate one final materialization");
 	}
+	return candidates;
+}
+
+/** @param {Candidate[]} candidates @param {import("./model.d.ts").Output[]} outputs @param {string} databasePath */
+function normalizedOutputs(candidates, outputs, databasePath) {
+	if (!candidates.length) return outputs;
 	return outputs.map(output => {
 		const candidate = candidates.find(candidate => output.reference === candidate.reference || candidate.files.some(file =>
 			output.reference === file.path || output.reference === path.join(candidate.reference, file.path)
@@ -133,9 +139,29 @@ export function bindCandidateOutputs(checks, evidence, outputs, databasePath) {
 			return output;
 		}
 		if (output.version !== candidate.version) throw new FoundryError("candidate_version_mismatch", "Use the candidate version returned by the actual assigned evaluator");
-		const published = publishCandidate(candidate, databasePath);
+		const published = { ...candidate, reference: path.join(artifactRoot(databasePath), candidate.version) };
 		const file = candidate.files.find(file => output.reference === file.path
 			|| output.reference === path.join(candidate.reference, file.path) || output.reference === path.join(published.reference, file.path));
 		return { ...output, reference: file ? path.join(published.reference, file.path) : published.reference };
 	});
+}
+
+/** @param {import("./model.d.ts").Check[]} checks @param {import("./model.d.ts").Evidence[]} evidence @param {import("./model.d.ts").Output[]} outputs @param {string} databasePath */
+export function normalizeCandidateOutputs(checks, evidence, outputs, databasePath) {
+	return normalizedOutputs(evaluatedCandidates(checks, evidence), outputs, databasePath);
+}
+
+/** @param {import("./model.d.ts").Check[]} checks @param {import("./model.d.ts").Evidence[]} evidence @param {import("./model.d.ts").Output[]} outputs @param {string} databasePath */
+export function bindCandidateOutputs(checks, evidence, outputs, databasePath) {
+	const candidates = evaluatedCandidates(checks, evidence);
+	for (const candidate of candidates) verifyCandidate(candidate, databasePath);
+	const normalized = normalizedOutputs(candidates, outputs, databasePath);
+	for (const candidate of new Map(candidates.map(candidate => [candidate.version, candidate])).values()) {
+		const reference = path.join(artifactRoot(databasePath), candidate.version);
+		if (normalized.some(output => output.reference === reference
+			|| candidate.files.some(file => output.reference === path.join(reference, file.path)))) {
+			publishCandidate(candidate, databasePath);
+		}
+	}
+	return normalized;
 }

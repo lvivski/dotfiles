@@ -4,12 +4,11 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { openWorkStore } from "./store.mjs";
 import { array, compileCheck, compileDefinition, compileGoal, number, readContract } from "./compiler.mjs";
-import { readFactory } from "./factory.mjs";
+import { compileFactoryContext, readFactory } from "./factory.mjs";
 import { evaluate } from "./evaluation.mjs";
 import { admittedEvidence, effectShell, nativeObject, observeCompletion, observePost, observePre, observeRefusal, prepareCheck, prepareCommand, prepareDispatch, reconcileDetail, recoverChecks } from "./native.mjs";
-import { FoundryError, boolean, decodeFinding as finding, decodeOutput, digest, json, record, text } from "./values.mjs";
+import { FoundryError, boolean, decodeFinding as finding, decodeInput, decodeOutput, digest, json, latestEvidence, record, text } from "./values.mjs";
 import { affinityId, nativeUsage } from "./usage.mjs";
-import { bindCandidateOutputs } from "./artifacts.mjs";
 import { createHeartbeat } from "./heartbeat.mjs";
 
 /** @param {string} directory */
@@ -116,6 +115,22 @@ export function createRuntime(options) {
 	function ownedTask(input, actor, execution = false) {
 		return store().taskForCaller(text(input, "task id"), actor, execution);
 	}
+	/** @param {string[]} ids @param {string} actor */
+	function dispatchBatch(ids, actor) {
+		const tasks = ids.map(id => ownedTask(id, actor));
+		/** @type {ReturnType<typeof prepareDispatch>[]} */
+		const prepared = [];
+		/** @type {Array<{taskId:string,code:string,message:string}>} */
+		const blocked = [];
+		for (const task of tasks) {
+			try { prepared.push(prepareDispatch(store(), task.id, actor)); }
+			catch (error) {
+				if (!(error instanceof FoundryError)) throw error;
+				blocked.push({ taskId: task.id, code: error.code, message: error.message });
+			}
+		}
+		return { prepared, blocked };
+	}
 	/** @param {unknown} input @param {string} actor */
 	function context(input, actor) {
 		const args = record(input);
@@ -173,6 +188,32 @@ export function createRuntime(options) {
 			accounting: store().accounting(actor, goals.map(goal => goal.id)),
 		};
 	}
+	/** @param {unknown} input @param {string} actor */
+	async function refreshContext(input, actor) {
+		const args = record(input);
+		const goalId = typeof args.goalId === "string" ? args.goalId
+			: args.taskId === undefined ? undefined : ownedTask(args.taskId, actor, true).goalId;
+		const db = store();
+		const origin = directory;
+		const requireContext = () => {
+			if (closed || directory !== origin) throw new FoundryError("context_changed", "Native recovery cannot continue after its repository context changed or closed");
+		};
+		retain(db);
+		try {
+			recoverChecks(db, actor, effect => settlementWake(db, actor, effect), goalId);
+			const stops = await deliverStops(actor, goalId);
+			requireContext();
+			if (options.readSession && db.openInputRequests(actor, goalId).some(attempt => attempt.nativeId === actor)) {
+				const inspected = await options.readSession(actor);
+				requireContext();
+				if (nativeObject(inspected)?.id !== actor) throw new FoundryError("native_identity_mismatch", "Input clearance requires the actual requested native owner");
+				clearObservedInputs(inspected, actor, db);
+			}
+			const delivery = await deliverWakes(actor, undefined, goalId, false, db);
+			requireContext();
+			return { ...context(args, actor), stops, delivery };
+		} finally { release(db); }
+	}
 	/** @param {Store} db @param {import("./model.d.ts").FactoryControl} factory @param {number} eventId @param {unknown} value @param {string} actor */
 	function ingestEvent(db, factory, eventId, value, actor) {
 		const source = record(record(factory.definition).source);
@@ -194,8 +235,8 @@ export function createRuntime(options) {
 			sha256: digest(json({ policy: factory.source.sha256, event: normalized })) }, key, normalized);
 		return db.admitFactoryJob(compiled.goal, compiled.tasks, factory.id, compiled.completionTaskId, actor, factory.generation);
 	}
-	/** @param {unknown} input @param {string} actor @param {Store} [db] */
-	function report(input, actor, db = store()) {
+	/** @param {unknown} input @param {string} actor @param {Store} [db] @param {string} [publicationKey] */
+	function report(input, actor, db = store(), publicationKey) {
 		const args = record(input);
 		const task = db.getTask(text(args.taskId, "task id"));
 		const attempt = db.getAttempt(text(args.attemptId ?? task.currentAttemptId, "attempt id"));
@@ -208,18 +249,17 @@ export function createRuntime(options) {
 		const state = args.state ?? (verdict.passed ? "done" : "failed");
 		if (state !== "done" && state !== "failed" && state !== "blocked") throw new FoundryError("invalid_result", "Expected done, failed or blocked");
 		if (state === "done" && !verdict.passed) throw new FoundryError("acceptance_not_satisfied", `Assigned checks are incomplete or failed: ${[...verdict.missing, ...verdict.failed].join(", ")}`);
-		const latest = new Map(evidence.map(item => [JSON.stringify([item.checkId, item.checkVersion]), item]));
+		const latest = latestEvidence(evidence);
 		const repair = args.repair === undefined ? false : boolean(args.repair, "repair");
 		if (repair && (state !== "failed" || !verdict.failed.length || attempt.nativeId !== actor)) {
 			throw new FoundryError("checked_failure_required", "Repair requires this worker's actual failed assigned check");
 		}
 		/** @type {Omit<import("./model.d.ts").Result, "createdAt" | "sender">} */
 		const observation = {
-			id: typeof args.resultId === "string" ? args.resultId : `result:${randomUUID()}`,
+			id: typeof args.resultId === "string" ? args.resultId : publicationKey === undefined ? `result:${randomUUID()}`
+				: `${publicationKey}:${digest(json([...latest.values()].map(item => item.id)))}`,
 			attemptId: attempt.id, state, summary: text(args.summary, "outcome summary"),
-			outputs: state === "done" ? bindCandidateOutputs(attempt.checks, [...latest.values()],
-				args.outputs === undefined ? [] : array(args.outputs, "outputs").map(decodeOutput), db.databasePath)
-				: args.outputs === undefined ? [] : array(args.outputs, "outputs").map(decodeOutput),
+			outputs: args.outputs === undefined ? [] : array(args.outputs, "outputs").map(decodeOutput),
 			evidence: [...latest.values()], findings,
 		};
 		return {
@@ -361,11 +401,14 @@ export function createRuntime(options) {
 			return delivery;
 		} finally { release(db); }
 	}
-	/** @param {unknown} value @param {string} actor */
-	function clearObservedInputs(value, actor) {
+	/** @param {unknown} value @param {string} actor @param {Store} [db] */
+	function clearObservedInputs(value, actor, db = store()) {
 		const detail = nativeObject(value);
-		if (detail && typeof detail.id === "string" && Object.hasOwn(detail, "awaiting_input") && detail.awaiting_input === null) {
-			store().clearNativeInputs(detail.id, actor);
+		if (detail && typeof detail.id === "string"
+			&& (detail.awaiting_user_input === undefined || detail.awaiting_user_input === false)
+			&& detail.awaiting_input == null
+			&& (detail.awaiting_user_input === false || detail.awaiting_input === null)) {
+			db.clearNativeInputs(detail.id, actor);
 		}
 	}
 	/** @param {string} goalId @param {string} id */
@@ -405,7 +448,7 @@ export function createRuntime(options) {
 				const db = store();
 				retain(db);
 				try {
-				if (!await options.confirm(`Activate factory ${source.control.id} for this native owner?\nPolicy ${source.source.reference} (${source.source.sha256})\n${JSON.stringify(source.definition)}\nRecorded limits are per job; observed credits are not a hard ceiling. Existing old extension writers must be quiescent.`)) {
+				if (!await options.confirm(`Activate factory ${source.control.id} for this native owner?\nPolicy ${source.source.reference} (${source.source.sha256})\n${JSON.stringify(source.definition)}\nRecorded limits are per job; observed credits are not a hard ceiling.`)) {
 					throw new FoundryError("factory_not_authorized", "The user did not authorize factory activation");
 				}
 				if (closed || directory !== origin) throw new FoundryError("factory_context_changed", "Native confirmation cannot activate work after its repository context changed or closed");
@@ -449,23 +492,11 @@ export function createRuntime(options) {
 			}
 			case "advance": {
 				const goalId = args.goalId === undefined ? undefined : text(args.goalId, "goal id");
-				recoverChecks(store(), actor, effect => settlementWake(store(), actor, effect), goalId);
-				const stops = await deliverStops(actor, goalId);
-				const observed = context(args, actor);
+				const observed = await refreshContext(args, actor);
 				const advancement = store().advance(actor, goalId);
-				/** @type {ReturnType<typeof prepareDispatch>[]} */
-				const prepared = [];
-				/** @type {Array<{taskId:string,code:string,message:string}>} */
-				const blocked = [];
-				for (const action of advancement.filter(job => job.disposition === "actionable").flatMap(job => job.actions)
-					.filter(action => action.kind === "dispatch")) {
-					try { prepared.push(prepareDispatch(store(), action.taskId, actor)); }
-					catch (error) {
-						if (!(error instanceof FoundryError)) throw error;
-						blocked.push({ taskId: action.taskId, code: error.code, message: error.message });
-					}
-				}
-				return { ...observed, advancement, prepared, blocked, stops };
+				const batch = dispatchBatch(advancement.filter(job => job.disposition === "actionable").flatMap(job => job.actions)
+					.filter(action => action.kind === "dispatch").map(action => action.taskId), actor);
+				return { ...observed, advancement, ...batch };
 			}
 			case "ingest": {
 				const factory = store().factory(text(args.factoryId, "factory id"), actor);
@@ -523,17 +554,7 @@ export function createRuntime(options) {
 				const source = readContract(directory, text(args.source, "source contract"));
 				return compileGoal(source.definition, store(), actor, { reference: source.reference, sha256: source.sha256 });
 			}
-			case "get_context": {
-				const goalId = typeof args.goalId === "string" ? args.goalId
-					: args.taskId === undefined ? undefined : ownedTask(args.taskId, actor, true).goalId;
-				recoverChecks(store(), actor, effect => settlementWake(store(), actor, effect), goalId);
-				const stops = await deliverStops(actor, goalId);
-				if (options.readSession && store().openInputRequests(actor, goalId).some(attempt => attempt.nativeId === actor)) {
-					clearObservedInputs(await options.readSession(actor), actor);
-				}
-				const delivery = await deliverWakes(actor, undefined, goalId);
-				return { ...context(args, actor), stops, delivery };
-			}
+			case "get_context": return refreshContext(args, actor);
 			case "create_team": return store().createTeam({
 				goalId: text(args.goalId, "goal id"), name: text(args.name, "team name"),
 				context: strings(args.context ?? [], "team context"),
@@ -545,30 +566,12 @@ export function createRuntime(options) {
 				...(args.teamId === undefined ? {} : { teamId: text(args.teamId, "team id") }),
 				...(args.scope === undefined ? {} : { scope: args.scope }),
 				checks: array(args.checks ?? [], "checks").map(compileCheck),
-				inputs: array(args.inputs ?? [], "inputs").map(value => {
-					const input = record(value);
-					return { taskId: text(input.taskId, "input task"), output: text(input.output, "named output"),
-						...(input.version === undefined ? {} : { version: text(input.version, "input version") }) };
-				}),
+				inputs: array(args.inputs ?? [], "inputs").map(decodeInput),
 			}, actor);
 			case "prepare_dispatch": {
-				const ids = args.taskIds === undefined ? store().readyTasks(actor, typeof args.goalId === "string" ? args.goalId : undefined)
-					.filter(task => !task.repairReservation && task.state !== "waiting"
-						&& (!store().advance(actor, task.goalId).length || task.owner === actor)).map(task => task.id)
+				const ids = args.taskIds === undefined ? store().readyTasks(actor, typeof args.goalId === "string" ? args.goalId : undefined, true).map(task => task.id)
 					: strings(args.taskIds, "task ids");
-				const tasks = ids.map(id => ownedTask(id, actor));
-				/** @type {ReturnType<typeof prepareDispatch>[]} */
-				const prepared = [];
-				/** @type {Array<{taskId:string,code:string,message:string}>} */
-				const blocked = [];
-				for (const task of tasks) {
-					try { prepared.push(prepareDispatch(store(), task.id, actor)); }
-					catch (error) {
-						if (!(error instanceof FoundryError)) throw error;
-						blocked.push({ taskId: task.id, code: error.code, message: error.message });
-					}
-				}
-				return { prepared, blocked };
+				return dispatchBatch(ids, actor);
 			}
 			case "start_task": return store().startLocalTask(text(args.taskId, "task id"), actor);
 			case "prepare_check": {
@@ -637,10 +640,9 @@ export function createRuntime(options) {
 						if (!evidence.candidate) throw new FoundryError("unbound_artifact", "Passing check has no evaluated candidate");
 						try {
 							const result = report({ taskId: task.id, attemptId: attempt.id, state: "done",
-								resultId: `result:publish:${attempt.id}:${publish}`,
 								summary: `Publish ${publish} after all assigned checks passed`,
 								outputs: [{ name: publish, kind: "code", reference: evidence.candidate.reference, version: evidence.candidate.version }],
-							}, actor, db);
+							}, actor, db, `result:publish:${effectId}:${publish}`);
 							return { ...outcome, ...result, delivery: result.promoted ? deferWakes(db, actor, task.goalId) : [] };
 						} catch (error) {
 							if (!(error instanceof FoundryError) || !["mixed_candidate_checks", "unbound_artifact", "candidate_not_evaluated"].includes(error.code)) throw error;
@@ -705,11 +707,7 @@ export function createRuntime(options) {
 				const evolved = store().evolveTask({
 					taskId: text(args.taskId, "task id"), expectedVersion: number(args.expectedVersion, "expected task version"),
 					...(args.checks === undefined ? {} : { checks: array(args.checks, "checks").map(compileCheck) }),
-					...(args.inputs === undefined ? {} : { inputs: array(args.inputs, "inputs").map(value => {
-						const item = record(value);
-						return { taskId: text(item.taskId, "input task"), output: text(item.output, "named output"),
-							...(item.version === undefined ? {} : { version: text(item.version, "input version") }) };
-					}) }),
+					...(args.inputs === undefined ? {} : { inputs: array(args.inputs, "inputs").map(decodeInput) }),
 				}, actor);
 				return { ...evolved, stops: await deliverStops(actor), delivery: await deliverWakes(actor, undefined) };
 			}
@@ -845,7 +843,11 @@ function factoryJob(definition, source, eventKey, event) {
 	}
 	const completionTaskId = identities.get(text(policy.completionTaskId, "completion template"));
 	if (!completionTaskId) throw new FoundryError("completion_missing", "Completion must name one of this factory's task templates");
-	return { ...compileDefinition({ ...template, id, tasks: mapped }, source), completionTaskId };
+	const compiled = compileDefinition({ ...template, id, tasks: mapped }, source);
+	const templates = new Map([...identities].map(([templateId, id]) => [id, templateId]));
+	return { ...compiled, tasks: compiled.tasks.map(task => ({
+		...task, dispatch: compileFactoryContext(definition, source, templates.get(text(task.id, "compiled task"))),
+	})), completionTaskId };
 }
 
 /** @param {unknown} result */

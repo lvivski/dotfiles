@@ -9,8 +9,7 @@ Ordinary `foundry_start_goal` work stays activation-free. Unattended factories o
 `foundry_start_factory`, a repository-owned `.foundry` JSON document with `format:
 "foundry-factory"` and `version: 1`, actual native-owner mode inspection, and native user
 confirmation. Installation, scheduling, hook messages, and completion events never activate it.
-Quiesce old extension writers before enabling the new factory protocol; additive metadata does
-not make mixed-version writers safe.
+Only the current Foundry protocol and canonical schema are supported.
 
 Required policy fields are `id`, `mechanism`, `maximumJobs`, `blocks`, `completionTaskId`, and
 `goal`. The goal uses the ordinary title/scope/limits/task format, with stable task template IDs.
@@ -20,13 +19,16 @@ factory-wide; worker, observed-credit, deadline and ordinary repair limits remai
 Optional `aggregateRepairs` is a separate per-job debit; `unchangedFailures` bounds repeated
 evaluated failures in an activation. No limits are inferred from token estimates.
 
-`foundry_advance` recovers receipts, consumes the actual owner's wakes, and classifies its local
-execution, dispatch, repair, resume, input, and settlement needs. Execute complete prepared
-calls in the ordinary native turn, including calls returned alongside capacity blockers.
+`foundry_advance` recovers receipts, reconciles observed owner-input answers, delivers/retries owner
+notifications through the same recovery path as `foundry_get_context`, consumes the actual owner's
+wakes, and classifies its local execution, dispatch, repair, resume, input, and settlement needs.
+Execute complete prepared calls in the ordinary native turn, including calls returned alongside capacity blockers.
 Resume an existing worker rather than recreating it. A stop hook performs classification only,
 not native side effects. Unchanged re-entry and explicit continuation bounds pause work rather
 than manufacture failed evaluator evidence. Safely settled local execution yields capacity while
 retaining its attempt and claims; native-confirmed restart resumes it without a code-repair debit.
+Revoked, definitely unissued creates are retired before fresh preparation. Issued creates retain
+their original identity for reconciliation, never replacement.
 Unknown commands, child identity and genuine input requests remain settlement blockers.
 
 The ordinary completion task has its own executable checks and protected required inputs.
@@ -72,6 +74,10 @@ Optional `charters` bind `name`, `taskIds`, declared native `agent`, `context`, 
 `knowledgeFiles`. Curate concise evidenced knowledge explicitly in repository-owned files,
 then reference their exact hashes in a new accepted policy identity. Existing assignments retain
 their captured content; curation never expands another goal's mutation rights.
+Factory admission lowers charter/grain membership into typed task assignment snapshots, including
+captured context, the declared agent, conserved base and generator history exclusion. Dispatch
+reads those snapshots, not policy JSON or task-ID suffixes. Multiple matching charters combine
+context and select their one declared agent, even when the first charter declares none.
 
 Optional `grains` declare `id`, `taskIds`, `generators`, an implementation-free `baseBranch`,
 hash-pinned `specification`, nonempty `evaluators` and `boundary`, and explicit `context`.
@@ -122,8 +128,14 @@ Real pending input requests remain attached to retired attempts; evolving a prod
 for every consumer's question. Native clearance, not a graph edit, resolves those requests.
 
 Technical outcomes use pinned command evidence. Raw command results are kept as contained private
-artifacts; unsupported review opinions do not veto passing checks. A genuine failed obligation
-can justify an in-scope repair. Observations and lessons remain scoped and non-governing.
+artifacts. Latest evidence means **canonical admission sequence**, not command completion time;
+receipt verification preserves that sequence. Reporting, promotion and publication use the same
+latest-check projection. Findings remain diagnostic: a new governing obligation must become an
+explicit assigned/protected check, not a second finding-based veto.
+A genuine failed obligation can justify an in-scope repair. Observations and lessons remain scoped
+and non-governing. Early reports retain history but never promote automatically when binding or
+evidence arrives. Report explicitly again with current admitted evidence; an immutable result ID
+cannot be reused for a changed observation.
 Use `foundry_run_check` to prepare and execute an assigned check through the ordinary native
 permission pipeline in one call. With `repair: true`, a genuine checked failure is retained and its
 fresh same-worker attempt is reserved atomically under the goal's own limits. Implement the repair next; no activation,
@@ -169,11 +181,14 @@ Use the returned `evidence.candidate.version` when reporting a code/artifact out
 copies only those evaluated bytes into a stable content-addressed bundle. Rechecking unchanged code
 does not invent a different delivery reference. Every artifact-bound governing check for one task
 must identify the same final file set/version; old passes from another candidate cannot be combined.
-The canonical store enforces this as well as the runtime report path.
+The canonical promotion path verifies and materializes these references once; runtime reports
+delegate to it. Replay of an already-promoted result normalizes references without rematerializing bytes.
 For a complete evaluated unit, pass `publish: "<output name>"` to `foundry_run_check`. This explicitly
 uses the existing result/promotion path without a second model turn. Partial acceptance returns the
 missing/failed checks and leaves the task running; mixed candidates remain a publication blocker,
-not a fabricated failed check. Already-published replay does not execute another command.
+not a fabricated failed check. Publication identity follows its evaluated run and latest governing
+receipts, so unchanged retries are idempotent and reevaluation cannot conflict with a paused report.
+Already-published replay does not execute another command.
 
 Consumers receive the captured delivery's actual reference through `FOUNDRY_INPUTS_JSON`.
 Managed file bundles are hash-checked at evaluation and publication boundaries. Integration must
@@ -189,8 +204,16 @@ using WAL and short synchronous transactions. Ownership follows native identity 
 not session-folder equality. Inputs, evaluators and attempt tokens are immutable snapshots.
 Current-attempt guards protect publication, readiness, repair and resource settlement.
 
-The current canonical database gains controller/completion metadata in the same store; retired
-operational formats are not imported. There are no compatibility modes or parallel authorization ledgers.
+Retired operational formats are not imported. This revision has an explicit reset boundary:
+quiesce old participants and reset obsolete canonical state before upgrading; mixed-version
+Foundry writers remain unsupported. Factory work missing its admitted assignment snapshot is
+rejected, not reconstructed from old policy. Prepared current native calls retain their original
+complete requests. Schema version 2 accepts only fresh or complete current stores; previous
+schemas and missing tables are rejected without migration or receipt-index backfilling.
+There are no compatibility modes or parallel authorization ledgers. Wake delivery uses only
+delivery records; legacy message effects and flat check receipts are unsupported. Check evidence
+requires an exclusive finished receipt bound to the issued runner command. New stores omit inert
+priority and pending-result columns and impossible all-null indices.
 Repository-owned `.foundry` contracts
 describe meaning, not competing operational authority. A source contract has `format:
 "foundry-contract"`, `version: 1`, a title, scope and task definitions.
@@ -215,7 +238,7 @@ before executing, atomically finalizes it, and rejects duplicate or legacy invoc
 replacement result. Normal context/check calls recover finished receipts only for their actual owner,
 retaining `runner-receipt` provenance and evaluator/input/candidate verification. Native initial wait
 is 120 seconds. A recovered check replays its existing result; use `foundry_prepare_check` for an
-explicit new evaluation. Started-only receipts, old random-name receipts and ordinary commands without
+explicit new evaluation. Started-only receipts and ordinary commands without
 actual completion remain unknown. Recovery of retired attempts admits history, not publication or repair.
 Self-ended terminal attempts automatically release only their settled claims. Waiting, unknown effects
 and externally ended attempts retain ownership. Warm same-worker repair atomically transfers claims
