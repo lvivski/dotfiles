@@ -59,20 +59,45 @@ test("factory activation still requires actual native mode and observed stop-hoo
 	assert.equal(mismatched.runtime.store().snapshot().factories?.length, 0);
 });
 
-for (const mode of ["autopilot", "interactive"]) for (const unavailable of [true, false]) {
-	test(`${mode} factory starts and restarts with ${unavailable ? "unavailable" : "unusable"} native confirmation`, async t => {
-		const { runtime, directory } = fixture(t, { stopHookQualified: true, readMode: async () => mode,
+for (const [mechanism, mode] of [["native", "autopilot"], ["native", "interactive"], ["stop-hook", "interactive"]]) for (const unavailable of [true, false]) {
+	test(`${mechanism} factory starts and restarts with ${mode} coordinator and ${unavailable ? "unavailable" : "unusable"} native confirmation`, async t => {
+		const workerMode = mechanism === "native" ? "autopilot" : "interactive";
+		const { runtime, directory } = fixture(t, { stopHookQualified: mechanism === "stop-hook", readMode: async () => mode,
 			...(unavailable ? {} : { confirm: async () => { assert.fail("Activation must not request a confirmation dialog"); } }) });
-		const source = factorySource(directory, { mechanism: mode === "autopilot" ? "native" : "stop-hook",
-			goal: { ...definition, scope: { ...definition.scope, mode }, tasks: [{ ...definition.tasks[0], id: "complete" }] } });
+		const source = factorySource(directory, { mechanism, blocks: mechanism === "native" ? undefined : 3,
+			goal: { ...definition, scope: { ...definition.scope, mode: workerMode }, tasks: [{ ...definition.tasks[0], id: "complete" }] } });
 		const started = record(await runtime.operation("start_factory", { source }, "director"));
 		assert.equal(record(started.factory).state, "active");
+		const dispatch = record(await runtime.operation("advance", {}, "director"));
+		assert.ok(Array.isArray(dispatch.prepared));
+		assert.equal(record(record(record(dispatch.prepared[0]).arguments).kickoff).mode, workerMode);
+		if (mechanism === "native") {
+			assert.equal(runtime.store().factory("fixture-factory", "director").blocks, undefined);
+			assert.equal(runtime.agentStop("director"), undefined);
+			assert.equal(runtime.store().factory("fixture-factory", "director").state, "active");
+		}
 		runtime.nativeAbort({ reason: "user_initiated" }, "director");
 		assert.equal(runtime.store().factory("fixture-factory", "director").state, "paused");
 		await runtime.operation("start_factory", { source }, "director");
 		assert.equal(runtime.store().factory("fixture-factory", "director").state, "active");
 	});
 }
+
+test("native factory activation rejects plan mode without requiring an unused stop-hook bound", async t => {
+	const { runtime, directory } = fixture(t, { readMode: async () => "plan" });
+	await assert.rejects(runtime.operation("start_factory", { source: factorySource(directory, {
+		mechanism: "native", blocks: undefined,
+		goal: { ...definition, tasks: [{ ...definition.tasks[0], id: "complete" }] },
+	}) }, "director"), { code: "native_mode_mismatch" });
+	assert.equal(runtime.store().snapshot().factories?.length, 0);
+});
+
+for (const blocks of [undefined, 0]) test(`stop-hook factory still rejects ${blocks === undefined ? "missing" : "zero"} continuation bound`, async t => {
+	const { runtime, directory } = fixture(t, { stopHookQualified: true, readMode: async () => "interactive" });
+	await assert.rejects(runtime.operation("start_factory", { source: factorySource(directory, { blocks }) }, "director"),
+		{ code: "invalid_field", message: /stop-hook continuation blocks/ });
+	assert.equal(runtime.store().snapshot().factories?.length, 0);
+});
 
 for (const change of ["directory", "close"]) test(`factory activation rejects a runtime ${change} during native mode inspection`, async t => {
 	const alternate = fixture(t).directory;
@@ -199,12 +224,14 @@ test("factory advancement alone retries known failed owner wakes without replayi
 	assert.equal(runtime.store().getTask(task.id).owner, "worker-b");
 });
 
-for (const nativeFlag of [false, true]) test(`factory advancement observes ${nativeFlag ? "the native input flag" : "nullable input clearance"} before resuming the same attempt`, async t => {
+for (const mechanism of ["native", "stop-hook"]) for (const nativeFlag of [false, true]) test(`${mechanism} factory advancement observes ${nativeFlag ? "the native input flag" : "nullable input clearance"} before resuming the same attempt`, async t => {
 	let answered = false;
 	const { runtime, directory } = fixture(t, { ...authorizedFactory,
 		readSession: async id => ({ id, ...(nativeFlag ? { awaiting_user_input: !answered, ...(answered ? {} : { awaiting_input: null }) }
 			: answered ? { awaiting_input: null } : {}) }) });
-	await runtime.operation("start_factory", { source: factorySource(directory) }, "director");
+	await runtime.operation("start_factory", { source: factorySource(directory, mechanism === "native" ? {
+		mechanism, blocks: undefined, goal: { ...definition, tasks: [{ ...definition.tasks[0], id: "complete" }] },
+	} : {}) }, "director");
 	const task = runtime.store().snapshot().tasks[0];
 	const attempt = record(await runtime.operation("start_task", { taskId: task.id }, "director"));
 	await runtime.operation("wait_task", { taskId: task.id, kind: "input", reason: "Actual decision",

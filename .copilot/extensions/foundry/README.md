@@ -13,10 +13,15 @@ dialog is required. Native permissions remain authoritative. Installation, sched
 and completion events never authorize a start or restart, and do not activate it automatically.
 Only the current Foundry protocol and canonical schema are supported.
 
-Required policy fields are `id`, `mechanism`, `maximumJobs`, `blocks`, `completionTaskId`, and
+Required policy fields are `id`, `mechanism`, `maximumJobs`, `completionTaskId`, and
 `goal`. The goal uses the ordinary title/scope/limits/task format, with stable task template IDs.
-`native` continuation requires Autopilot; exclusive `stop-hook` continuation requires interactive
-mode and an observed natural-stop hook. All factory tasks retain that one mode. The job limit is
+`goal.scope.mode` governs worker execution, not the main coordinator's conversation mode.
+`native` continuation requires Autopilot workers, but its coordinator may be interactive or Autopilot.
+An interactive coordinator can ask the user questions; after a natural stop, it resumes on native
+messages, user input, or an explicitly scheduled heartbeat, not an automatic stop-hook loop.
+Exclusive `stop-hook` continuation requires interactive workers and coordinator, an observed
+natural-stop hook, and an explicit positive `blocks` continuation bound. Native factories do not
+require `blocks`. All factory tasks retain the policy's worker mode. The job limit is
 factory-wide; worker, observed-credit, deadline and ordinary repair limits remain per job.
 Optional `aggregateRepairs` is a separate per-job debit; `unchangedFailures` bounds repeated
 evaluated failures in an activation. No limits are inferred from token estimates.

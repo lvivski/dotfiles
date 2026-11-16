@@ -442,8 +442,13 @@ export function createRuntime(options) {
 					throw new FoundryError("native_qualification_required", "The actual stop hook must be observed before enabling its continuation");
 				}
 				if (!options.readMode) throw new FoundryError("native_inspection_unavailable", "Factory activation requires actual owner mode inspection");
-				const mode = record(source.goal.scope).mode;
-				if (await options.readMode(actor) !== mode) throw new FoundryError("native_mode_mismatch", `The actual coordinator must be in ${String(mode)} mode`);
+				const coordinatorMode = await options.readMode(actor);
+				if (coordinatorMode !== "interactive" && coordinatorMode !== "autopilot") {
+					throw new FoundryError("native_mode_mismatch", "Factory activation requires an interactive or autopilot coordinator");
+				}
+				if (source.control.mechanism === "stop-hook" && coordinatorMode !== "interactive") {
+					throw new FoundryError("native_mode_mismatch", "Stop-hook continuation requires an interactive coordinator");
+				}
 				if (closed || directory !== origin) throw new FoundryError("factory_context_changed", "Native inspection cannot activate work after its repository context changed or closed");
 				const compiled = factoryJob(source.definition, source.source, "initial");
 				const db = store();

@@ -7,6 +7,7 @@ import { FoundryError, array, choice, closedFields, decodeInput, decodeSource, d
 /** @param {unknown} value @returns {import("./model.d.ts").FactoryControl} */
 export function decodeFactory(value) {
 	const row = record(value);
+	const mechanism = choice(row.mechanism, ["native", "stop-hook"], "continuation mechanism");
 	const heartbeat = row.heartbeat === undefined ? undefined : record(row.heartbeat);
 	const request = heartbeat === undefined ? undefined : record(heartbeat.request);
 	const reminders = Object.fromEntries(Object.entries(record(row.reminders)).map(([id, value]) => {
@@ -18,9 +19,10 @@ export function decodeFactory(value) {
 		id: text(row.id, "factory id"), owner: text(row.owner, "factory owner"),
 		state: choice(row.state, ["active", "paused"], "factory state"),
 		generation: positive(row.generation, "activation generation"),
-		mechanism: choice(row.mechanism, ["native", "stop-hook"], "continuation mechanism"),
+		mechanism,
 		source: decodeSource(row.source), definition: json(row.definition),
-		maximumJobs: positive(row.maximumJobs, "maximum concurrent jobs"), blocks: positive(row.blocks, "continuation blocks"),
+		maximumJobs: positive(row.maximumJobs, "maximum concurrent jobs"),
+		...(row.blocks === undefined && mechanism === "native" ? {} : { blocks: positive(row.blocks, "stop-hook continuation blocks") }),
 		pausedWorkers: strings(row.pausedWorkers), reminders,
 		...(row.unchangedFailures === undefined ? {} : { unchangedFailures: positive(row.unchangedFailures, "unchanged failures") }),
 		...(row.aggregateRepairs === undefined ? {} : { aggregateRepairs: natural(row.aggregateRepairs, "aggregate repairs") }),
@@ -81,7 +83,7 @@ export function readFactory(directory, filename) {
 	const goal = record(definition.goal);
 	const mechanism = choice(definition.mechanism, ["native", "stop-hook"], "continuation mechanism");
 	if (record(goal.scope).mode !== (mechanism === "native" ? "autopilot" : "interactive")) {
-		throw new FoundryError("continuation_conflict", "Native continuation requires autopilot; exclusive stop-hook continuation requires interactive mode");
+		throw new FoundryError("continuation_conflict", "Native continuation requires autopilot workers; exclusive stop-hook continuation requires interactive workers");
 	}
 	const source = definition.source === undefined ? undefined : record(definition.source);
 	if (source) {
@@ -160,7 +162,7 @@ export function readFactory(directory, filename) {
 		source: { reference: relative, sha256: createHash("sha256").update(content).digest("hex") },
 		control: {
 			id: text(definition.id, "factory id"), mechanism, maximumJobs: positive(definition.maximumJobs, "maximum concurrent jobs"),
-			blocks: positive(definition.blocks, "continuation blocks"),
+			...(definition.blocks === undefined && mechanism === "native" ? {} : { blocks: positive(definition.blocks, "stop-hook continuation blocks") }),
 			...(definition.unchangedFailures === undefined ? {} : { unchangedFailures: positive(definition.unchangedFailures, "unchanged failures") }),
 			...(definition.aggregateRepairs === undefined ? {} : { aggregateRepairs: natural(definition.aggregateRepairs, "aggregate repairs") }),
 		},

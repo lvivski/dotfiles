@@ -60,7 +60,7 @@ export interface FactoryControl {
 	source: { reference: string; sha256: string };
 	definition: Json;
 	maximumJobs: number;
-	blocks: number;
+	blocks?: number;
 	unchangedFailures?: number;
 	aggregateRepairs?: number;
 	pausedWorkers: string[];

@@ -25,6 +25,14 @@ still requires the user's authorization. Installation, tokens, timer wakes, and 
 messages do not authorize activation or restart.
 Quiesce old participants before enabling this protocol.
 
+The main coordinator may stay interactive while a `native` factory's `goal.scope.mode` remains
+`autopilot` for its workers. Do not require switching the main session to Autopilot or supplying
+`blocks` for native continuation. Interactive coordinators resume on native messages, user input,
+or an explicitly scheduled heartbeat; they do not get an automatic stop-hook loop. Exclusive
+`stop-hook` continuation still needs interactive workers and coordinator, an observed stop hook,
+and an explicit positive `blocks` bound. Preserve real native user-input requests and resume the
+same work after the answer.
+
 Use `foundry_advance` for current locally owned actions. Execute every returned prepared call,
 even alongside per-task capacity blockers; do not send resume or reserved repair to creation.
 Request the actual task's context before implementation. Hooks only classify; native side effects

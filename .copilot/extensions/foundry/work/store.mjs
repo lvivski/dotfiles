@@ -9,7 +9,7 @@ import { compileFactoryContext, decodeCompletion, decodeFactory } from "./factor
 import {
 	FoundryError, array, boolean, choice, containsPath, decodeCheck, decodeEvidence,
 	decodeDispatch, decodeFinding, decodeInput, decodeLimits, decodeOutput, decodeScope, decodeSource, decodeWaiting,
-	digest, json, latestEvidence, narrowScope, nativeSessionName, natural, number, optionalText, record, resourcePath, strings, text,
+	digest, json, latestEvidence, narrowScope, nativeSessionName, natural, number, optionalText, positive, record, resourcePath, strings, text,
 } from "./values.mjs";
 
 /** @typedef {import("./model.d.ts").Json} Json */
@@ -1455,7 +1455,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 				const previous = factory.reminders[actor];
 				const count = previous?.generation === generation ? previous.count + 1 : 1;
 				factory.reminders[actor] = { marker, count, generation };
-				if (count > factory.blocks || reentry && previous?.generation === generation && previous.marker === marker) {
+				if (count > positive(factory.blocks, "stop-hook continuation blocks") || reentry && previous?.generation === generation && previous.marker === marker) {
 					factory.pausedWorkers = [...new Set([...factory.pausedWorkers, actor])];
 					factory.reason = "continuation_stalled";
 					if (factory.owner === actor) { factory.state = "paused"; factory.generation++; }
