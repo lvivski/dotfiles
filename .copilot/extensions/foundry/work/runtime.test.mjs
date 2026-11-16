@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
@@ -10,8 +10,10 @@ import { createRuntime } from "./runtime.mjs";
 import { renderBoard, startBoard } from "./board.mjs";
 import { record, text } from "./values.mjs";
 import { readCandidate } from "./artifacts.mjs";
+import { createIssueSource } from "./issue-source.mjs";
+import { buildHooks } from "../hooks.mjs";
 
-/** @param {import("node:test").TestContext} t @param {Partial<Pick<Parameters<typeof createRuntime>[0], "execute"|"log"|"readSession">>} [hooks] */
+/** @param {import("node:test").TestContext} t @param {Partial<Omit<Parameters<typeof createRuntime>[0],"directory">>} [hooks] */
 function fixture(t, hooks = {}) {
 	const directory = mkdtempSync(path.join(os.tmpdir(), "foundry-runtime-"));
 	execFileSync("git", ["init", "--quiet", directory]);
@@ -28,6 +30,553 @@ const definition = {
 		checks: [{ id: "behavior", origin: "contract", requirement: "The assigned calculation holds", kind: "command", command: "node -e 'if (1 + 1 !== 2) process.exit(1)'" }],
 	}],
 };
+
+/** @param {string} directory @param {Record<string,unknown>} [overrides] */
+function factorySource(directory, overrides = {}) {
+	mkdirSync(path.join(directory, ".foundry"), { recursive: true });
+	const policy = {
+		format: "foundry-factory", version: 1, id: "fixture-factory", mechanism: "stop-hook",
+		maximumJobs: 1, blocks: 3, completionTaskId: "complete",
+		goal: { ...definition, scope: { ...definition.scope, mode: "interactive" },
+			tasks: [{ ...definition.tasks[0], id: "complete" }] },
+		...overrides,
+	};
+	writeFileSync(path.join(directory, ".foundry/factory.json"), JSON.stringify(policy));
+	return ".foundry/factory.json";
+}
+
+test("factory activation requires actual native confirmation, mode, and observed stop-hook capability", async t => {
+	const { runtime, directory } = fixture(t);
+	const source = factorySource(directory);
+	await assert.rejects(runtime.operation("start_factory", { source }, "director"), /actual stop hook/);
+	runtime.agentStop("director");
+	await assert.rejects(runtime.operation("start_factory", { source }, "director"), /native confirmation/);
+	assert.equal(runtime.store().snapshot().goals.length, 0);
+	const declined = fixture(t, { stopHookQualified: true, readMode: async () => "interactive", confirm: async () => false });
+	await assert.rejects(declined.runtime.operation("start_factory", { source: factorySource(declined.directory) }, "director"), /did not authorize/);
+	assert.equal(declined.runtime.store().snapshot().factories?.length, 0);
+});
+
+test("coordinator abort fences prepared creation across reload and only native-confirmed restart admits fresh work", async t => {
+	const options = { stopHookQualified: true, readMode: async () => "interactive", confirm: async () => true };
+	const { runtime, directory } = fixture(t, options);
+	const source = factorySource(directory);
+	await runtime.operation("start_factory", { source }, "director");
+	const dispatch = record(await runtime.operation("advance", {}, "director"));
+	assert.ok(Array.isArray(dispatch.prepared));
+	const call = record(dispatch.prepared[0]);
+	runtime.nativeAbort({ reason: "user_initiated" }, "director");
+	assert.throws(() => runtime.pre("create_session", call.arguments, "director", "revoked-creation"), /current|cancelled|paused/);
+	runtime.close();
+	const resumed = createRuntime({ directory, log: message => { throw new Error(message); }, ...options });
+	t.after(() => resumed.close());
+	resumed.attachUsage("director");
+	assert.equal(resumed.agentStop("director"), undefined);
+	const paused = record(await resumed.operation("advance", {}, "director"));
+	assert.ok(Array.isArray(paused.prepared));
+	assert.equal(paused.prepared.length, 0);
+	await resumed.operation("start_factory", { source }, "director");
+	const fresh = record(await resumed.operation("advance", {}, "director"));
+	assert.ok(Array.isArray(fresh.prepared));
+	assert.notEqual(record(fresh.prepared[0]).attemptId, call.attemptId);
+});
+
+test("exclusive stop-hook continuation pauses unchanged execution without inventing a failed check", async t => {
+	const warnings = [];
+	const { runtime, directory } = fixture(t, { stopHookQualified: true, readMode: async () => "interactive",
+		confirm: async () => true, log: message => { warnings.push(message); } });
+	await runtime.operation("start_factory", { source: factorySource(directory) }, "director");
+	const task = runtime.store().snapshot().tasks[0];
+	await runtime.operation("start_task", { taskId: task.id }, "director");
+	assert.equal(runtime.agentStop("director")?.decision, "block");
+	assert.equal(runtime.agentStop("director", true), undefined);
+	assert.equal(runtime.store().getTask(task.id).state, "blocked");
+	assert.equal(runtime.store().snapshot().attempts[0].slot, false);
+	assert.equal(runtime.store().evidenceForAttempt(text(runtime.store().getTask(task.id).currentAttemptId, "attempt")).length, 0);
+	assert.equal(runtime.store().snapshot().factories?.[0].state, "paused");
+	assert.equal(warnings.length, 1);
+});
+
+test("factory completion seals actual acceptance, protects inputs, and preserves historical delivery on reopen", async t => {
+	const { runtime, directory } = fixture(t, { stopHookQualified: true, readMode: async () => "interactive", confirm: async () => true });
+	const source = factorySource(directory, { goal: { ...definition, scope: { ...definition.scope, mode: "interactive" }, tasks: [
+		{ ...definition.tasks[0], id: "producer", checks: [] },
+		{ ...definition.tasks[0], id: "complete", inputs: [{ taskId: "producer", output: "result" }] },
+	] } });
+	await runtime.operation("start_factory", { source }, "director");
+	const [producer, complete] = runtime.store().snapshot().tasks;
+	await runtime.operation("start_task", { taskId: producer.id }, "director");
+	await runtime.operation("report_result", { taskId: producer.id, summary: "Input ready",
+		outputs: [{ name: "result", kind: "analysis", reference: "immutable:fixture", version: "v1" }] }, "director");
+	await assert.rejects(runtime.operation("evolve_task", { taskId: complete.id, expectedVersion: 1, inputs: [] }, "director"), /requirements cannot be removed/);
+	await runtime.operation("start_task", { taskId: complete.id }, "director");
+	assert.equal(runtime.store().snapshot().completions?.[0].delivered, false);
+	const prepared = record(await runtime.operation("prepare_check", { taskId: complete.id, checkId: "behavior" }, "director"));
+	runtime.pre("bash", prepared.arguments, "director", "completion-check");
+	const stdout = execFileSync("/bin/sh", ["-c", text(record(prepared.arguments).command, "command")], { encoding: "utf8" });
+	runtime.post("bash", prepared.arguments, { resultType: "success", textResultForLlm: stdout }, "director");
+	await runtime.operation("report_result", { taskId: complete.id, summary: "Final behavior accepted",
+		outputs: [{ name: "accepted", kind: "analysis", reference: "immutable:completion", version: "v1" }] }, "director");
+	assert.equal(runtime.store().snapshot().completions?.[0].delivered, true);
+	await assert.rejects(runtime.operation("create_task", { goalId: producer.goalId, title: "Late work", assignment: "Unaccounted work", workType: "analysis" }, "director"), { code: "job_closed" });
+	await runtime.operation("reopen_job", { goalId: producer.goalId }, "director");
+	assert.equal(runtime.store().snapshot().completions?.[0].delivered, false);
+	assert.equal(runtime.store().outputForInput({ taskId: complete.id, output: "accepted", version: "v1" })?.version, "v1");
+});
+
+test("qualified native refusal settles only its actual pre-start command, not a rejected follow-up read", async t => {
+	const { runtime } = fixture(t);
+	await runtime.operation("start_goal", definition, "director");
+	const task = runtime.store().snapshot().tasks[0];
+	await runtime.operation("start_task", { taskId: task.id }, "director");
+	runtime.pre("bash", { command: "echo inspected", shellId: "refused-shell" }, "director", "refused-call");
+	runtime.nativeAbort({ finalTool: { status: "denied", toolCallId: "refused-call" } }, "director");
+	assert.equal(runtime.store().getEffect("command:refused-call").state, "settled");
+	assert.equal(record(runtime.store().getEffect("command:refused-call").result).neverIssued, true);
+	runtime.pre("bash", { command: "sleep 1", shellId: "live-shell" }, "director", "live-call");
+	runtime.pre("read_bash", { shellId: "live-shell" }, "director", "rejected-read");
+	runtime.nativeAbort({ finalTool: { status: "rejected", toolCallId: "rejected-read" } }, "director");
+	assert.equal(runtime.store().getEffect("command:live-call").state, "issued");
+});
+
+const authorizedFactory = { stopHookQualified: true, readMode: async () => "interactive", confirm: async () => true };
+const issuePolicy = { kind: "github-issue", repository: "example/project", actors: ["trusted"], maximumEvents: 2 };
+const sourceEvent = { number: 1, state: "open", user: { login: "trusted" }, title: "Requested outcome", body: "Source data", last_edited_at: null, updated_at: "2026-01-01T00:00:00Z" };
+
+/** @param {ReturnType<typeof createRuntime>} runtime @param {string} taskId */
+async function acceptInline(runtime, taskId) {
+	await runtime.operation("start_task", { taskId }, "director");
+	const prepared = record(await runtime.operation("prepare_check", { taskId, checkId: "behavior" }, "director"));
+	runtime.pre("bash", prepared.arguments, "director", `native:${String(prepared.effectId)}`);
+	const stdout = execFileSync("/bin/sh", ["-c", text(record(prepared.arguments).command, "command")], { encoding: "utf8" });
+	runtime.post("bash", prepared.arguments, { resultType: "success", textResultForLlm: stdout }, "director");
+	return runtime.operation("report_result", { taskId, summary: "Accepted inline behavior" }, "director");
+}
+
+test("factory advancement returns already prepared calls when the next ready task hits its actual goal capacity", async t => {
+	const { runtime, directory } = fixture(t, authorizedFactory);
+	await runtime.operation("start_factory", { source: factorySource(directory, { goal: {
+		...definition, scope: { ...definition.scope, mode: "interactive" }, limits: { workers: 1 },
+		tasks: ["one", "complete"].map(id => ({ ...definition.tasks[0], id })),
+	} }) }, "director");
+	const result = record(await runtime.operation("advance", {}, "director"));
+	assert.ok(Array.isArray(result.prepared) && Array.isArray(result.blocked));
+	assert.equal(result.prepared.length, 1);
+	assert.equal(result.blocked.length, 1);
+	assert.match(text(record(result.blocked[0]).code, "capacity code"), /capacity/);
+	assert.equal(runtime.store().snapshot().attempts.filter(attempt => attempt.slot).length, 1);
+});
+
+test("invalid final acceptance and incompatible task modes roll back initial activation and job admission together", async t => {
+	for (const final of [
+		{ ...definition.tasks[0], id: "complete", checks: [] },
+		{ ...definition.tasks[0], id: "complete", scope: { mode: "plan" } },
+	]) {
+		const { runtime, directory } = fixture(t, authorizedFactory);
+		await assert.rejects(runtime.operation("start_factory", { source: factorySource(directory, { goal: {
+			...definition, scope: { ...definition.scope, mode: "interactive" }, tasks: [final],
+		} }) }, "director"), /acceptance checks|scope.mode/);
+		assert.equal(runtime.store().snapshot().factories?.length, 0);
+		assert.equal(runtime.store().snapshot().goals.length, 0);
+	}
+});
+
+test("source contracts preserve genuinely partial task scope instead of widening omitted fields", async t => {
+	const { runtime, directory } = fixture(t, authorizedFactory);
+	await runtime.operation("start_factory", { source: factorySource(directory, { goal: {
+		...definition, scope: { ...definition.scope, mode: "interactive" },
+		tasks: [{ ...definition.tasks[0], id: "complete", scope: { paths: ["unit"] } }],
+	} }) }, "director");
+	assert.deepEqual(runtime.store().snapshot().tasks[0].scope.paths, ["unit"]);
+	assert.deepEqual(runtime.store().snapshot().tasks[0].scope.restrictions, definition.scope.restrictions);
+});
+
+test("a real bound worker is continued locally and a cap/restart resumes its same attempt without a repair debit", async t => {
+	const { runtime, directory } = fixture(t, authorizedFactory);
+	const source = factorySource(directory, { goal: { ...definition, scope: { ...definition.scope, mode: "interactive" },
+		limits: { workers: 1, repairs: 0 }, tasks: [{ ...definition.tasks[0], id: "complete" }] } });
+	await runtime.operation("start_factory", { source }, "director");
+	const task = runtime.store().snapshot().tasks[0];
+	const attempt = runtime.store().prepareAttempt(task.id, "director");
+	runtime.store().issueAttempt(attempt.id, "director", `create:${attempt.id}`, {});
+	runtime.store().bindAttempt(attempt.id, "worker", "director", { session_id: "worker" });
+	assert.equal(runtime.agentStop("worker")?.decision, "block");
+	runtime.nativeAbort({ stopReason: "agent_stop_block_limit" }, "worker");
+	assert.equal(runtime.store().getTask(task.id).state, "blocked");
+	assert.equal(runtime.store().getAttempt(attempt.id).slot, false);
+	await runtime.operation("start_factory", { source }, "director");
+	const resumed = record(await runtime.operation("resume_task", { taskId: task.id }, "worker"));
+	assert.equal(resumed.id, attempt.id);
+	assert.equal(runtime.store().getTask(task.id).repairs, undefined);
+	assert.equal(runtime.store().getAttempt(attempt.id).slot, true);
+});
+
+test("recurring source activation validates its template but admits no synthetic seed job", async t => {
+	const { runtime, directory } = fixture(t, authorizedFactory);
+	await runtime.operation("start_factory", { source: factorySource(directory, { source: issuePolicy }) }, "director");
+	assert.equal(runtime.store().snapshot().factories?.[0].state, "active");
+	assert.equal(runtime.store().snapshot().goals.length, 0);
+	assert.equal(runtime.store().snapshot().tasks.length, 0);
+});
+
+test("trusted source content is deduplicated across concurrent ingress and comment-only updates", async t => {
+	let event = { ...sourceEvent };
+	const { runtime, directory } = fixture(t, { ...authorizedFactory, readEvent: async () => event });
+	await runtime.operation("start_factory", { source: factorySource(directory, { source: issuePolicy }) }, "director");
+	const args = { factoryId: "fixture-factory", eventId: 1 };
+	const responses = await Promise.all([runtime.operation("ingest", args, "director"), runtime.operation("ingest", args, "director")]);
+	assert.equal(responses.filter(value => record(value).replay === false).length, 1);
+	event = { ...event, updated_at: "2026-02-01T00:00:00Z" };
+	assert.equal(record(await runtime.operation("ingest", args, "director")).replay, true);
+	assert.equal(runtime.store().snapshot().goals.length, 1);
+});
+
+test("untrusted authors and last editors cannot consume source admission or an active-job allowance", async t => {
+	let event = { ...sourceEvent, user: { login: "untrusted" }, editor: { login: "trusted" }, last_edited_at: "2026-02-01" };
+	const { runtime, directory } = fixture(t, { ...authorizedFactory, readEvent: async () => event });
+	await runtime.operation("start_factory", { source: factorySource(directory, { source: issuePolicy }) }, "director");
+	await assert.rejects(runtime.operation("ingest", { factoryId: "fixture-factory", eventId: 1 }, "director"), /author\/editor policy/);
+	event = { ...event, user: { login: "trusted" }, editor: { login: "untrusted" } };
+	await assert.rejects(runtime.operation("ingest", { factoryId: "fixture-factory", eventId: 1 }, "director"), /author\/editor policy/);
+	assert.equal(runtime.store().snapshot().goals.length, 0);
+});
+
+test("distinct source events respect the factory-wide active-job bound; settled cancellation is not delivery", async t => {
+	const { runtime, directory } = fixture(t, { ...authorizedFactory, readEvent: async (_repository, number) => ({ ...sourceEvent, number }) });
+	await runtime.operation("start_factory", { source: factorySource(directory, { source: issuePolicy }) }, "director");
+	const first = record(await runtime.operation("ingest", { factoryId: "fixture-factory", eventId: 1 }, "director"));
+	await assert.rejects(runtime.operation("ingest", { factoryId: "fixture-factory", eventId: 2 }, "director"), /active-job bound/);
+	const goalId = text(record(first.goal).id, "first job");
+	await runtime.operation("cancel_job", { goalId }, "director");
+	assert.equal(runtime.store().advance("director", goalId)[0].cancelled, true);
+	assert.equal(runtime.store().advance("director", goalId)[0].delivered, false);
+	await runtime.operation("ingest", { factoryId: "fixture-factory", eventId: 2 }, "director");
+	assert.equal(runtime.store().snapshot().goals.length, 2);
+});
+
+test("paged intake retains deferred events, then moves only its actual provider cursor after capacity clears", async t => {
+	/** @type {Array<{maximum:number,cursor:string|undefined}>} */
+	const seen = [];
+	const { runtime, directory } = fixture(t, { ...authorizedFactory, readEvents: async (_repository, maximum, cursor) => {
+		seen.push({ maximum, cursor });
+		return { events: [sourceEvent, { ...sourceEvent, number: 2 }], hasNextPage: true, cursor: "native-next-page" };
+	} });
+	await runtime.operation("start_factory", { source: factorySource(directory, { source: issuePolicy }) }, "director");
+	const args = { factoryId: "fixture-factory" };
+	const first = record(await runtime.operation("poll", args, "director"));
+	assert.ok(Array.isArray(first.jobs) && Array.isArray(first.blocked));
+	assert.equal(first.jobs.length, 1);
+	assert.equal(record(first.blocked[0]).code, "factory_capacity");
+	assert.equal(runtime.store().factory("fixture-factory", "director").sourceCursor, undefined);
+	await runtime.operation("cancel_job", { goalId: runtime.store().snapshot().goals[0].id }, "director");
+	await runtime.operation("poll", args, "director");
+	assert.equal(runtime.store().factory("fixture-factory", "director").sourceCursor, "native-next-page");
+	await runtime.operation("poll", args, "director");
+	assert.equal(seen[2].cursor, "native-next-page");
+	assert.equal(runtime.store().snapshot().goals.length, 2);
+});
+
+test("an in-flight native source observation cannot admit work after pause and a newer confirmed restart", async t => {
+	/** @type {((value:unknown)=>void)|undefined} */
+	let finish;
+	const { runtime, directory } = fixture(t, { ...authorizedFactory, readEvent: () => new Promise(resolve => { finish = resolve; }) });
+	const source = factorySource(directory, { source: issuePolicy });
+	await runtime.operation("start_factory", { source }, "director");
+	const pending = runtime.operation("ingest", { factoryId: "fixture-factory", eventId: 1 }, "director");
+	runtime.nativeAbort({ reason: "user_initiated" }, "director");
+	await runtime.operation("start_factory", { source }, "director");
+	assert.ok(finish);
+	finish(sourceEvent);
+	await assert.rejects(pending, /revoked activation/);
+	assert.equal(runtime.store().snapshot().goals.length, 0);
+});
+
+test("accepted completion remains delivered-but-unsettled while an unused native execution still holds its slot", async t => {
+	const { runtime, directory } = fixture(t, authorizedFactory);
+	await runtime.operation("start_factory", { source: factorySource(directory, { goal: {
+		...definition, scope: { ...definition.scope, mode: "interactive" },
+		tasks: ["alternative", "complete"].map(id => ({ ...definition.tasks[0], id })),
+	} }) }, "director");
+	const [alternative, complete] = runtime.store().snapshot().tasks;
+	await runtime.operation("start_task", { taskId: alternative.id }, "director");
+	await acceptInline(runtime, complete.id);
+	const status = runtime.store().advance("director", complete.goalId)[0];
+	assert.equal(status.delivered, true);
+	assert.equal(status.settled, false);
+});
+
+test("native source receipt parsing rejects foreign identity and provider failure rather than inventing empty intake", async () => {
+	const provider = createIssueSource(async () => ({
+		resultType: "success", textResultForLlm: `FOUNDRY_SOURCE_EVENT:${Buffer.from(JSON.stringify({ issue: {
+			number: 1, url: "https://github.com/wrong/project/issues/1", state: "OPEN", lastEditedAt: null,
+		} })).toString("base64")}`,
+	}));
+	await assert.rejects(provider.readEvent("example/project", 1), /different repository issue/);
+	const failed = createIssueSource(async () => ({ resultType: "failure", textResultForLlm: "Provider unavailable" }));
+	await assert.rejects(failed.readEvents("example/project", 2), /inspection failed/);
+});
+
+test("declared charter knowledge remains an immutable assignment snapshot after its repository file changes", async t => {
+	const { runtime, directory } = fixture(t, authorizedFactory);
+	mkdirSync(path.join(directory, ".foundry"), { recursive: true });
+	const content = "Originally curated and evidenced decision";
+	writeFileSync(path.join(directory, ".foundry/knowledge.txt"), content);
+	const source = factorySource(directory, { charters: [{
+		name: "Reviewer", taskIds: ["complete"], agent: "declared-specialist", context: [],
+		knowledgeFiles: [{ path: ".foundry/knowledge.txt", sha256: createHash("sha256").update(content).digest("hex") }],
+	}] });
+	await runtime.operation("start_factory", { source }, "director");
+	writeFileSync(path.join(directory, ".foundry/knowledge.txt"), "A later unrelated decision");
+	const dispatch = record(await runtime.operation("prepare_dispatch", {}, "director"));
+	assert.ok(Array.isArray(dispatch.prepared));
+	const kickoff = record(record(record(dispatch.prepared[0]).arguments).kickoff);
+	assert.equal(kickoff.agent, "declared-specialist");
+	assert.match(text(kickoff.prompt, "assignment"), /Originally curated and evidenced/);
+	assert.doesNotMatch(text(kickoff.prompt, "assignment"), /later unrelated/);
+});
+
+test("grain generation pins an implementation-free commit and excludes implicit history while deduplicating conserved oracles", async t => {
+	const { runtime, directory } = fixture(t, authorizedFactory);
+	mkdirSync(path.join(directory, ".foundry"), { recursive: true });
+	const files = [
+		{ path: ".foundry/spec.txt", content: "Declared behavioral specification" },
+		{ path: ".foundry/evaluator.mjs", content: "process.exit(0);\n" },
+		{ path: ".foundry/boundary.txt", content: "Conserved public boundary" },
+	];
+	const references = files.map(file => {
+		writeFileSync(path.join(directory, file.path), file.content);
+		return { path: file.path, sha256: createHash("sha256").update(file.content).digest("hex") };
+	});
+	execFileSync("git", ["-C", directory, "add", ...files.map(file => file.path)]);
+	execFileSync("git", ["-C", directory, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "Conserved grain contract"]);
+	const base = execFileSync("git", ["-C", directory, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+	const source = factorySource(directory, {
+		goal: { ...definition, scope: { ...definition.scope, mode: "interactive" },
+			tasks: [{ ...definition.tasks[0], id: "complete", checks: [{ ...definition.tasks[0].checks[0], oracleFiles: [references[0]] }] }] },
+		grains: [{ id: "unit", taskIds: ["complete"], generators: ["complete"], baseBranch: "HEAD",
+			specification: references[0], evaluators: [references[1]], boundary: [references[2]], context: [] }],
+	});
+	await runtime.operation("start_factory", { source }, "director");
+	const task = runtime.store().snapshot().tasks[0];
+	runtime.store().recordLesson({ goalId: task.goalId, workType: task.workType, summary: "PRIOR_IMPLEMENTATION_DETAILS", references: ["fixture:history"] }, "director");
+	const prepared = record(await runtime.operation("prepare_dispatch", { taskIds: [task.id] }, "director"));
+	assert.ok(Array.isArray(prepared.prepared));
+	const args = record(record(prepared.prepared[0]).arguments);
+	assert.equal(args.base_branch, base);
+	assert.equal(task.checks[0].oracleFiles?.length, 3);
+	assert.match(text(record(args.kickoff).prompt, "generator assignment"), /Declared behavioral specification/);
+	assert.doesNotMatch(text(record(args.kickoff).prompt, "generator assignment"), /PRIOR_IMPLEMENTATION_DETAILS/);
+});
+
+test("completion sealing prevents new execution of an unused alternative until explicit reopening", async t => {
+	const { runtime, directory } = fixture(t, authorizedFactory);
+	await runtime.operation("start_factory", { source: factorySource(directory, { goal: {
+		...definition, scope: { ...definition.scope, mode: "interactive" },
+		tasks: ["alternative", "complete"].map(id => ({ ...definition.tasks[0], id })),
+	} }) }, "director");
+	const [alternative, complete] = runtime.store().snapshot().tasks;
+	await acceptInline(runtime, complete.id);
+	await assert.rejects(runtime.operation("start_task", { taskId: alternative.id }, "director"), { code: "job_closed" });
+	assert.equal(runtime.store().advance("director", complete.goalId)[0].settled, true);
+});
+
+test("paused recorded ordinary commands are denied by native hooks without denying unrelated shell work", async t => {
+	const { runtime, directory } = fixture(t, { ...authorizedFactory, log: () => {} });
+	const hooks = buildHooks(runtime);
+	const actor = { sessionId: "director" };
+	const native = { sessionId: "director", timestamp: new Date() };
+	await hooks.onPreToolUse({ ...native, toolName: "foundry_start_factory", toolArgs: {}, toolCallId: "activate",
+		workingDirectory: directory }, actor);
+	await runtime.operation("start_factory", { source: factorySource(directory) }, "director");
+	const task = runtime.store().snapshot().tasks[0];
+	await runtime.operation("start_task", { taskId: task.id }, "director");
+	const prepared = record(await runtime.operation("prepare_command", { taskId: task.id, command: "echo recorded" }, "director"));
+	runtime.nativeAbort({ reason: "user_initiated" }, "director");
+	const rejected = await hooks.onPreToolUse({ ...native, toolName: "bash", toolArgs: record(prepared.arguments),
+		toolCallId: "retired-command", workingDirectory: directory }, actor);
+	assert.equal(rejected?.permissionDecision, "deny");
+	const unrelated = await hooks.onPreToolUse({ ...native, toolName: "bash", toolArgs: { command: "echo unrelated" },
+		toolCallId: "unrelated-command", workingDirectory: directory }, actor);
+	assert.equal(unrelated?.permissionDecision, undefined);
+});
+
+test("explicit aggregate repair allowance is shared by independent descendants without erasing checked failures", async t => {
+	const { runtime, directory } = fixture(t, authorizedFactory);
+	await runtime.operation("start_factory", { source: factorySource(directory, { aggregateRepairs: 1, goal: {
+		...definition, scope: { ...definition.scope, mode: "interactive" }, limits: { repairs: 3 },
+		tasks: ["one", "complete"].map(id => ({ ...definition.tasks[0], id,
+			checks: [{ ...definition.tasks[0].checks[0], command: "node -e 'process.exit(1)'" }] })),
+	} }) }, "director");
+	const [one, complete] = runtime.store().snapshot().tasks;
+	for (const task of [one, complete]) await runtime.operation("start_task", { taskId: task.id }, "director");
+	for (const [index, task] of [one, complete].entries()) {
+		const prepared = record(await runtime.operation("prepare_check", { taskId: task.id, checkId: "behavior" }, "director"));
+		runtime.pre("bash", prepared.arguments, "director", `failure:${index}`);
+		const execution = spawnSync("/bin/sh", ["-c", text(record(prepared.arguments).command, "command")], { encoding: "utf8" });
+		runtime.post("bash", prepared.arguments, { resultType: "success", textResultForLlm: execution.stdout }, "director");
+		const result = record(await runtime.operation("report_result", { taskId: task.id, summary: "Recorded genuine failure", repair: true }, "director"));
+		assert.equal(record(result.continuation).state, index === 0 ? "running" : "blocked");
+		if (index === 1) assert.equal(record(result.continuation).code, "repair_limit");
+	}
+	assert.equal(runtime.store().snapshot().completions?.[0].delivered, false);
+	assert.equal(runtime.store().getTask(complete.id).state, "failed");
+	assert.equal(runtime.store().getTask(complete.id).repairs, undefined);
+});
+
+/** @param {import("./model.d.ts").Json} [initial] */
+function nativeSchedule(initial) {
+	/** @type {import("./model.d.ts").Json|undefined} */
+	let automation = initial;
+	/** @type {Array<{name:string,args:import("./model.d.ts").Json}>} */
+	const calls = [];
+	return {
+		calls,
+		/** @param {string} name @param {import("./model.d.ts").Json} args */
+		async execute(name, args) {
+			calls.push({ name, args });
+			if (name === "save_session_automation") {
+				const request = record(args);
+				if (request.clear === true) automation = undefined;
+				else automation = { id: "observed-native-automation", execution: "session", sessionId: "director",
+					prompt: text(request.prompt, "native prompt"), interval: "minutes", everyMinutes: Number(request.every_minutes) };
+			}
+			if (!["get_session_automation", "save_session_automation"].includes(name)) throw new Error(`Unexpected native tool ${name}`);
+			return { resultType: "success", textResultForLlm: JSON.stringify({
+				sessionId: "director", ...(automation === undefined ? {} : { automation }),
+			}) };
+		},
+		/** @param {import("./model.d.ts").Json|undefined} value */
+		replace(value) { automation = value; },
+	};
+}
+
+test("heartbeat uses observed same-session casing, binds native identity, and clears only its owned automation", async t => {
+	const scheduler = nativeSchedule();
+	const { runtime, directory } = fixture(t, { ...authorizedFactory, ...scheduler });
+	await runtime.operation("start_factory", { source: factorySource(directory) }, "director");
+	const args = { factoryId: "fixture-factory", everyMinutes: 1 };
+	await runtime.operation("set_heartbeat", args, "director");
+	const factory = runtime.store().factory("fixture-factory", "director");
+	assert.equal(factory.heartbeat?.state, "bound");
+	assert.equal(factory.heartbeat?.id, "observed-native-automation");
+	assert.match(factory.heartbeat?.request.prompt ?? "", /never activate or restart/);
+	await runtime.operation("set_heartbeat", args, "director");
+	assert.equal(scheduler.calls.filter(call => call.name === "save_session_automation").length, 1);
+	await runtime.operation("pause_factory", { factoryId: "fixture-factory" }, "director");
+	assert.equal(runtime.store().factory("fixture-factory", "director").state, "paused");
+	assert.equal(runtime.store().factory("fixture-factory", "director").heartbeat, undefined);
+	assert.deepEqual(record(scheduler.calls.filter(call => call.name === "save_session_automation")[1].args), { clear: true });
+});
+
+test("unrelated or externally changed native automations are never deliberately replaced or removed", async t => {
+	const scheduler = nativeSchedule({ id: "unrelated", prompt: "User-owned work" });
+	const { runtime, directory } = fixture(t, { ...authorizedFactory, ...scheduler });
+	await runtime.operation("start_factory", { source: factorySource(directory) }, "director");
+	const args = { factoryId: "fixture-factory", everyMinutes: 1 };
+	await assert.rejects(runtime.operation("set_heartbeat", args, "director"), { code: "heartbeat_conflict" });
+	assert.equal(scheduler.calls.filter(call => call.name === "save_session_automation").length, 0);
+	scheduler.replace(undefined);
+	await runtime.operation("set_heartbeat", args, "director");
+	scheduler.replace({ id: "observed-native-automation", prompt: "Changed by the user" });
+	await assert.rejects(runtime.operation("pause_factory", { factoryId: "fixture-factory" }, "director"), { code: "heartbeat_conflict" });
+	assert.equal(runtime.store().factory("fixture-factory", "director").state, "paused");
+	assert.equal(scheduler.calls.filter(call => call.name === "save_session_automation").length, 1);
+});
+
+test("lost native schedule acknowledgment is reconciled from actual ownership instead of issuing another save", async t => {
+	const scheduler = nativeSchedule();
+	const { runtime, directory } = fixture(t, { ...authorizedFactory, execute: async (name, args) => {
+		const result = await scheduler.execute(name, args);
+		if (name === "save_session_automation") throw new Error("Lost native return");
+		return result;
+	} });
+	await runtime.operation("start_factory", { source: factorySource(directory) }, "director");
+	const args = { factoryId: "fixture-factory", everyMinutes: 1 };
+	await assert.rejects(runtime.operation("set_heartbeat", args, "director"), /Lost native return/);
+	assert.equal(runtime.store().factory("fixture-factory", "director").heartbeat?.state, "uncertain");
+	await runtime.operation("set_heartbeat", args, "director");
+	assert.equal(runtime.store().factory("fixture-factory", "director").heartbeat?.state, "bound");
+	assert.equal(scheduler.calls.filter(call => call.name === "save_session_automation").length, 1);
+});
+
+test("directory changes during native schedule save preserve uncertainty and expose its actual receipt", async t => {
+	const alternate = fixture(t).directory;
+	const scheduler = nativeSchedule();
+	const { runtime, directory } = fixture(t, { ...authorizedFactory, execute: async (name, args) => {
+		const result = await scheduler.execute(name, args);
+		if (name === "save_session_automation") runtime.setDirectory(alternate);
+		return result;
+	} });
+	await runtime.operation("start_factory", { source: factorySource(directory) }, "director");
+	await assert.rejects(runtime.operation("set_heartbeat", { factoryId: "fixture-factory", everyMinutes: 1 }, "director"),
+		{ code: "factory_context_changed", message: /observed-native-automation/ });
+	runtime.setDirectory(directory);
+	assert.equal(runtime.store().factory("fixture-factory", "director").heartbeat?.state, "uncertain");
+	await runtime.operation("set_heartbeat", { factoryId: "fixture-factory", everyMinutes: 1 }, "director");
+	assert.equal(runtime.store().factory("fixture-factory", "director").heartbeat?.state, "bound");
+	assert.equal(scheduler.calls.filter(call => call.name === "save_session_automation").length, 1);
+});
+
+test("pause during native heartbeat save fences admission and retains the returned identity for cleanup", async t => {
+	const scheduler = nativeSchedule();
+	/** @type {((value:unknown)=>void)|undefined} */
+	let finish;
+	const { runtime, directory } = fixture(t, { ...authorizedFactory, execute: async (name, args) => {
+		const result = await scheduler.execute(name, args);
+		return name === "save_session_automation" ? new Promise(resolve => { finish = () => resolve(result); }) : result;
+	} });
+	await runtime.operation("start_factory", { source: factorySource(directory) }, "director");
+	const pending = runtime.operation("set_heartbeat", { factoryId: "fixture-factory", everyMinutes: 1 }, "director");
+	// Let the ordinary native save enter its pending return without polling.
+	await new Promise(resolve => setImmediate(resolve));
+	assert.ok(finish);
+	runtime.nativeAbort({ reason: "user_initiated" }, "director");
+	finish(undefined);
+	await assert.rejects(pending, { code: "stale_activation" });
+	const factory = runtime.store().factory("fixture-factory", "director");
+	assert.equal(factory.state, "paused");
+	assert.equal(factory.heartbeat?.state, "uncertain");
+	assert.equal(factory.heartbeat?.id, "observed-native-automation");
+});
+
+test("a confirmed restart during heartbeat inspection prevents a stale pause from clearing its native binding", async t => {
+	const scheduler = nativeSchedule();
+	let restartNextRead = false;
+	/** @type {()=>Promise<void>} */
+	let restart = async () => {};
+	const { runtime, directory } = fixture(t, { ...authorizedFactory, execute: async (name, args) => {
+		if (name === "get_session_automation" && restartNextRead) {
+			restartNextRead = false;
+			await restart();
+		}
+		return scheduler.execute(name, args);
+	} });
+	const source = factorySource(directory);
+	restart = async () => { await runtime.operation("start_factory", { source }, "director"); };
+	await restart();
+	await runtime.operation("set_heartbeat", { factoryId: "fixture-factory", everyMinutes: 1 }, "director");
+	restartNextRead = true;
+	await assert.rejects(runtime.operation("pause_factory", { factoryId: "fixture-factory" }, "director"), { code: "stale_activation" });
+	assert.equal(runtime.store().factory("fixture-factory", "director").state, "active");
+	assert.equal(scheduler.calls.filter(call => call.name === "save_session_automation").length, 1);
+});
+
+test("continuation cap retains an unsettled command, then releases only its actual settled execution capacity", async t => {
+	const { runtime, directory } = fixture(t, authorizedFactory);
+	await runtime.operation("start_factory", { source: factorySource(directory) }, "director");
+	const task = runtime.store().snapshot().tasks[0];
+	await runtime.operation("start_task", { taskId: task.id }, "director");
+	runtime.pre("bash", { command: "sleep 1", shellId: "cap-process" }, "director", "cap-native-call");
+	runtime.nativeAbort({ stopReason: "agent_stop_block_limit" }, "director");
+	const id = text(runtime.store().getTask(task.id).currentAttemptId, "attempt");
+	assert.equal(runtime.store().getAttempt(id).slot, true);
+	assert.equal(runtime.store().getTask(task.id).state, "running");
+	runtime.toolComplete({ toolCallId: "cap-native-call", success: true, shellExecution: { exitCode: 0 } }, "director");
+	assert.equal(runtime.store().getAttempt(id).slot, false);
+	assert.equal(runtime.store().getTask(task.id).state, "blocked");
+	assert.equal(runtime.store().getTask(task.id).waiting?.reason, "factory_paused");
+	assert.equal(runtime.store().evidenceForAttempt(id).length, 0);
+});
 
 /** @param {number} sequence @param {number|undefined} credits @param {string} [id] */
 function usageEvent(sequence, credits, id = `native-event-${sequence}`) {
@@ -1162,7 +1711,8 @@ test("successful reporting returns while native delivery is still waiting for qu
 	t.after(() => accept({ resultType: "success" }));
 	const { runtime, task } = await settlementFixture(t, { execute: async () => held });
 	assert.equal(runtime.store().getTask(task.id).state, "done");
-	assert.ok(runtime.store().snapshot().wakes[0].inFlight);
+	assert.equal(runtime.store().snapshot().wakes[0].inFlight, undefined);
+	assert.equal(runtime.store().snapshot().wakes[0].consumed, 1);
 	accept({ resultType: "success" });
 	await runtime.flushNotifications();
 	assert.equal(runtime.store().snapshot().wakes[0].inFlight, undefined);

@@ -4,7 +4,7 @@ description: >-
   Use this skill when the user requests a security review, deep security audit, or investigation
   of exploitable vulnerabilities in a repository, specific files, or branch changes. Do not use
   it for a general code-quality review or PR queue triage.
-compatibility: Requires GitHub Copilot CLI with the Foundry extension loaded and repository access.
+compatibility: Requires GitHub Copilot CLI with the Recon extension loaded and repository access.
 metadata:
   copilot.user-invocable: "true"
 ---

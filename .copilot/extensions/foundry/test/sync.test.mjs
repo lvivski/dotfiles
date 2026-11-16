@@ -22,13 +22,14 @@ for (const shell of ["bash", "zsh"]) {
 		writeFileSync(path.join(repository, "sync"), sync);
 		writeFileSync(path.join(bin, "git"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
 		for (const profile of [".bash_profile", ".zprofile"]) writeFileSync(path.join(home, profile), "");
-		for (const relative of ["extensions/foundry", "skills/foundry", "skills/deep-research",
+		for (const relative of ["extensions/foundry", "extensions/recon", "skills/foundry", "skills/deep-research",
 			"skills/review-queue", "skills/security-review"]) {
 			mkdirSync(path.join(repository, ".copilot", relative), { recursive: true });
 		}
 		const extension = ".copilot/extensions/foundry/extension.mjs";
 		const skill = ".copilot/skills/foundry/SKILL.md";
-		for (const relative of [extension, skill]) {
+		const recon = ".copilot/extensions/recon/extension.mjs";
+		for (const relative of [extension, recon, skill]) {
 			const source = path.join(repository, relative);
 			const target = path.join(home, relative);
 			mkdirSync(path.dirname(target), { recursive: true });
@@ -39,6 +40,7 @@ for (const shell of ["bash", "zsh"]) {
 		}
 		const stale = [
 			".copilot/extensions/foundry/verification/approval.mjs",
+			".copilot/extensions/recon/obsolete-analysis.mjs",
 			".copilot/skills/foundry/references/activation.md",
 		];
 		const preserved = ".copilot/extensions/unrelated/extension.mjs";
@@ -50,8 +52,9 @@ for (const shell of ["bash", "zsh"]) {
 		/** @type {NodeJS.ProcessEnv} */
 		const env = { ...process.env, HOME: home, ZDOTDIR: home, PATH: `${bin}${path.delimiter}${process.env.PATH}` };
 		delete env.ZSH_VERSION;
-		execFileSync(shell, ["-c", "source ./sync --force"], { cwd: repository, env, stdio: "pipe" });
-		for (const relative of [extension, skill]) {
+		execFileSync(shell, ["-c", 'item=caller-value; source ./sync --force; test "$item" = caller-value'],
+			{ cwd: repository, env, stdio: "pipe" });
+		for (const relative of [extension, recon, skill]) {
 			assert.equal(readFileSync(path.join(home, relative), "utf8"), "new-version\n");
 		}
 		for (const relative of stale) assert.equal(existsSync(path.join(home, relative)), false);

@@ -6,7 +6,7 @@ description: >-
   search/fetch for answers, fact checks, documentation lookups, recommendations, simple comparisons,
   or current information. Requests for research, sources, or accuracy alone are not triggers.
   Not for local codebase audits or PR review queues.
-compatibility: Requires GitHub Copilot CLI with the Foundry extension loaded and web access.
+compatibility: Requires GitHub Copilot CLI with the Recon extension loaded and web access.
 metadata:
   copilot.user-invocable: "true"
 ---
@@ -47,7 +47,7 @@ Follow these steps only after the activation gate is satisfied.
    `dynamic_workflows_manage` using `operation: "inspect-run"`. A pending or temporarily unobservable run
    is not permission to launch another.
    When the user approved a `timeoutSeconds` limit, a time-review pause is a user decision, not lost research.
-   Foundry offers another hour,
+   Recon offers another hour,
    keeping the run paused, or stopping it through the native host dialog. Do not duplicate that
    question or resume while the decision is pending. Re-read the run before acting on a paused
    notification: the user may already have resumed it.

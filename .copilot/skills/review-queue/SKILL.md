@@ -4,7 +4,7 @@ description: >-
   Use this skill to triage pull requests assigned to the user or their teams across GitHub and
   Azure DevOps, identify which need human review, and explain risks and assignment reasons.
   Do not use it for reviewing a single named PR or for approving PRs.
-compatibility: Requires GitHub Copilot CLI with Foundry, Bash, and jq; gh for GitHub, or az with the Azure DevOps extension for Azure.
+compatibility: Requires GitHub Copilot CLI with Recon, Bash, and jq; gh for GitHub, or az with the Azure DevOps extension for Azure.
 metadata:
   copilot.user-invocable: "true"
 ---

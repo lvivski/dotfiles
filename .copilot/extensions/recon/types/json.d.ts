@@ -1,4 +1,4 @@
-/** Data contracts shared by the ledger, session plans, and read-only projections. */
+/** JSON contracts for standalone analysis workflows and their projections. */
 export type JsonValue = null | boolean | number | string | JsonValue[] | JsonObject;
 
 export type JsonObject = { [key: string]: JsonValue };

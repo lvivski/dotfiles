@@ -10,10 +10,13 @@ export function renderBoard(snapshot) {
 	const sections = snapshot.goals.map(goal => {
 		const tasks = snapshot.tasks.filter(task => task.goalId === goal.id);
 		const teams = snapshot.teams.filter(team => team.goalId === goal.id);
+		const completion = snapshot.completions?.find(completion => completion.goalId === goal.id);
+		const factory = snapshot.factories?.find(factory => factory.id === completion?.factoryId);
 		return `<section aria-labelledby="goal-${escape(goal.id)}">
 <h2 id="goal-${escape(goal.id)}">${escape(goal.title)}</h2>
 <p class="secondary">${tasks.filter(task => task.state === "done").length} of ${tasks.length} tasks completed &middot; ${teams.length} teams &middot; ${escape(goal.scope.mode)}</p>
 ${goal.source ? `<p class="secondary">Contract: <code>${escape(goal.source.reference)}</code></p>` : ""}
+${completion ? `<p>Factory: ${escape(factory?.state ?? "unknown")} &middot; delivery: ${completion.delivered ? "accepted" : "incomplete"} &middot; settlement: ${completion.settled ? "settled" : "outstanding"} &middot; closure ${escape(completion.revision)}${factory?.reason ? ` &middot; ${escape(factory.reason)}` : ""}</p>` : ""}
 ${tasks.length ? `<div class="table-scroll"><table><caption class="visually-hidden">Work in ${escape(goal.title)}</caption><thead><tr><th scope="col">Task</th><th scope="col">State</th><th scope="col">Owner</th></tr></thead><tbody>
 ${tasks.map(task => `<tr><td><details><summary>${escape(task.title)}</summary>
 <p>${escape(task.assignment)}</p>

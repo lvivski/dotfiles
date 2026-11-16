@@ -1,5 +1,6 @@
 import { attemptToken } from "./work/prompt.mjs";
 import { toolName } from "./work/native.mjs";
+import { FoundryError } from "./work/values.mjs";
 
 /** @param {ReturnType<typeof import("./work/runtime.mjs").createRuntime>} runtime */
 export function buildHooks(runtime) {
@@ -29,7 +30,11 @@ export function buildHooks(runtime) {
 						&& args.kickoff !== null && "prompt" in args.kickoff && typeof args.kickoff.prompt === "string"
 						&& attemptToken(args.kickoff.prompt) !== undefined)
 					|| ("command" in args && typeof args.command === "string" && args.command.includes("check-runner.mjs")));
-				return related ? { permissionDecision: "deny", permissionDecisionReason: message }
+				const admissionFailure = error instanceof FoundryError && [
+					"factory_paused", "job_closed", "job_cancelled", "stale_activation", "stale_attempt",
+					"cancelled", "capacity_required", "assignment_changed", "foreign_execution", "command_retired",
+				].includes(error.code);
+				return related || admissionFailure ? { permissionDecision: "deny", permissionDecisionReason: message }
 					: { additionalContext: `Foundry observation failed: ${message}. This unrelated native call is not paused.` };
 			}
 		},
@@ -42,6 +47,13 @@ export function buildHooks(runtime) {
 				const message = error instanceof Error ? error.message : String(error);
 				runtime.log(`Foundry native observation: ${message}`);
 				return { additionalContext: `Foundry bookkeeping needs reconciliation: ${message}. Keep the actual native result. Do not duplicate an issued creation; unrelated assignment work is not paused.` };
+			}
+		},
+		onAgentStop: (input, invocation) => {
+			runtime.setDirectory(input.workingDirectory);
+			try { return runtime.agentStop(invocation.sessionId, input.stopHookActive === true); }
+			catch (error) {
+				runtime.log(`Foundry continuation paused: ${error instanceof Error ? error.message : String(error)}`);
 			}
 		},
 	});

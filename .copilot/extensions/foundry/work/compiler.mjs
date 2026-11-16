@@ -37,6 +37,12 @@ export function compileCheck(value) {
  * @param {{reference:string,sha256:string}} [source]
  */
 export function compileGoal(value, store, actor, source) {
+	const compiled = compileDefinition(value, source);
+	return store.createGoalWithTasks(compiled.goal, compiled.tasks, actor);
+}
+
+/** @param {unknown} value @param {{reference:string,sha256:string}} [source] */
+export function compileDefinition(value, source) {
 	const input = record(value);
 	closed(input, ["id", "title", "scope", "projectId", "limits", "tasks", "format", "version"]);
 	const scope = decodeScope(input.scope);
@@ -53,7 +59,7 @@ export function compileGoal(value, store, actor, source) {
 			...(task.id === undefined ? {} : { id: text(task.id, "task id") }),
 			...(task.parentId === undefined ? {} : { parentId: text(task.parentId, "parent task") }),
 			...(task.teamId === undefined ? {} : { teamId: text(task.teamId, "task team") }),
-			...(task.scope === undefined ? {} : { scope: decodeScope(task.scope) }),
+			...(task.scope === undefined ? {} : { scope: record(task.scope) }),
 			inputs: array(task.inputs ?? [], "versioned inputs").map(decodeInput),
 		};
 	});
@@ -67,14 +73,14 @@ export function compileGoal(value, store, actor, source) {
 		if (index < 0) throw new FoundryError("dependency_cycle", "Initial task relationships contain a cycle");
 		ordered.push(...pending.splice(index, 1));
 	}
-	return store.createGoalWithTasks({
+	return { goal: {
 		title: text(input.title, "goal title"),
 		scope,
 		...(input.id === undefined ? {} : { id: text(input.id, "goal id") }),
 		...(input.projectId === undefined ? {} : { projectId: text(input.projectId, "project id") }),
 		...(input.limits === undefined ? {} : { limits: decodeLimits(input.limits) }),
 		...(source === undefined ? {} : { source }),
-	}, ordered, actor);
+	}, tasks: ordered };
 }
 
 /** @param {Record<string, unknown>} input @param {string[]} fields */

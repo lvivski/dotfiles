@@ -14,13 +14,13 @@ export const WORKFLOW_FILES = Object.freeze({
 });
 
 /** Standalone analysis workflows; task execution needs none of them. */
-export function createFoundryWorkflows() {
-return Object.freeze({
-	audit: Object.freeze({ meta: auditMeta, run: runAudit }),
-	deepResearch: Object.freeze({ meta: deepResearchMeta, run: runDeepResearch }),
-	reviewQueue: Object.freeze({ meta: reviewQueueMeta, run: runReviewQueue }),
-	securityReview: Object.freeze({ meta: securityReviewMeta, run: runSecurityReview }),
-	triage: Object.freeze({ meta: triageMeta, run: runTriage }),
-});
+export function createReconWorkflows() {
+	return Object.freeze({
+		audit: Object.freeze({ meta: auditMeta, run: runAudit }),
+		deepResearch: Object.freeze({ meta: deepResearchMeta, run: runDeepResearch }),
+		reviewQueue: Object.freeze({ meta: reviewQueueMeta, run: runReviewQueue }),
+		securityReview: Object.freeze({ meta: securityReviewMeta, run: runSecurityReview }),
+		triage: Object.freeze({ meta: triageMeta, run: runTriage }),
+	});
 }
-export const FOUNDRY_WORKFLOWS = createFoundryWorkflows();
+export const RECON_WORKFLOWS = createReconWorkflows();

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { isList, isRecord, parseJson } from "../../data.mjs";
-import { FOUNDRY_WORKFLOWS } from "../../workflows/registry.mjs";
+import { RECON_WORKFLOWS as FOUNDRY_WORKFLOWS } from "../../workflows/registry.mjs";
 import { must } from "../assertions.mjs";
 import { workflowDetail as nativeDetail } from "../workflows/detail.mjs";
 import { assertOutputSchemas } from "../workflows/assertions.mjs";

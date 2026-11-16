@@ -129,7 +129,7 @@ an approved limit without their authorization.
 Inspect the original `runId` before deciding whether work failed. Resume a resumable paused or failed run with
 `run_dynamic_workflow({ resumeFromRunId: "<run-id>" })` to reuse completed work. A reached limit needs explicit
 user authorization before it is raised; do not refetch or start another run to evade it.
-If the workflow is unavailable, report the missing Foundry prerequisite instead of running a
+If the workflow is unavailable, report the missing Recon prerequisite instead of running a
 replacement review pool.
 
 ## Provider contracts

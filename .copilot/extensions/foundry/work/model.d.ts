@@ -51,6 +51,42 @@ export interface Goal {
 	createdAt: string;
 	source?: { reference: string; sha256: string };
 }
+export interface FactoryControl {
+	id: string;
+	owner: string;
+	state: "active" | "paused";
+	generation: number;
+	mechanism: "native" | "stop-hook";
+	source: { reference: string; sha256: string };
+	definition: Json;
+	maximumJobs: number;
+	blocks: number;
+	unchangedFailures?: number;
+	aggregateRepairs?: number;
+	pausedWorkers: string[];
+	reminders: Record<string, { marker: string; count: number; generation: number }>;
+	heartbeat?: {
+		state: "issued" | "bound" | "uncertain";
+		generation: number;
+		request: { interval: "minutes"; every_minutes: number; prompt: string };
+		id?: string;
+		receipt?: Json;
+	};
+	sourceCursor?: string;
+	reason?: string;
+}
+export interface GoalCompletion {
+	id: string;
+	goalId: string;
+	owner: string;
+	taskId: string;
+	factoryId: string;
+	revision: number;
+	closed: boolean;
+	requiredInputs: Input[];
+	repairs: number;
+	accepted?: { revision: number; tasks: { id: string; version: number; inputs: Input[] }[] };
+}
 export interface UsageAffinity {
 	id: string;
 	groupId: string;
@@ -182,6 +218,7 @@ export interface Effect {
 	request: Json;
 	result?: Json;
 	relatedAttemptIds?: string[];
+	factoryGeneration?: number;
 }
 export interface Claim {
 	id: string;
@@ -215,4 +252,6 @@ export interface Snapshot {
 	claims: Claim[];
 	signals: Signal[];
 	lessons: Lesson[];
+	factories?: FactoryControl[];
+	completions?: { goalId: string; factoryId: string; delivered: boolean; settled: boolean; closed: boolean; revision: number }[];
 }

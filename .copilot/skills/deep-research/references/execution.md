@@ -66,7 +66,7 @@ interrupted by a manual pause may need to repeat.
 
 A limit failure requires explicit user authorization before increasing the reached limit.
 Do not invent ceilings, change approved limits, or start a replacement to evade the limit.
-If the workflow is unavailable, report the missing Foundry prerequisite rather than silently
+If the workflow is unavailable, report the missing Recon prerequisite rather than silently
 substituting another workflow.
 
 ### Hourly time decisions
@@ -77,13 +77,13 @@ unfinished research requests a durable checkpoint 60 seconds before that ceiling
 Research that finishes first returns normally. Native journaled results survive the pause; interrupted
 agents can repeat, so do not promise cost-free continuation.
 
-Foundry's native dialog owns the decision on supported hosts: **Extend by one hour**, **Keep paused**,
+Recon's native dialog owns the decision on supported hosts: **Extend by one hour**, **Keep paused**,
 or **Stop**. Do not ask a competing question, infer approval from a paused notification, or resume
 with unchanged limits to bypass this review. An accepted extension resumes the original run with
 only `timeoutSeconds` raised by 3,600. Keeping it paused or dismissing the dialog starts no work;
 Stop cancels only that workflow. Another unfinished hour produces another decision.
 
-If native dialogs are unavailable, Foundry reports that limitation; ask the user with those same
+If native dialogs are unavailable, Recon reports that limitation; ask the user with those same
 choices using `ask_user`. A native dialog failure must be surfaced, not silently switched to another
 approval path. If the user then explicitly requests manual continuation, inspect the original run
 again. Require `canResume: true` and confirm that the checkpoint, approved budget, and eligibility have
@@ -101,7 +101,7 @@ total**, not to zero or to elapsed wall time. Leave all other limits omitted. Th
 the ceiling of a running attempt in place; do not start a replacement run or automatically approve
 more credits or agents. An explicitly unbounded timeout has no hourly deadline.
 
-The hard timeout can still win during sleep, disconnection, or slow cooperative shutdown. Foundry
+The hard timeout can still win during sleep, disconnection, or slow cooperative shutdown. Recon
 offers the same recovery choice for a new timeout on a run it observed active, not old timed-out
 history. Otherwise surface the interruption and ask before extending. Inspect retained journal
 evidence rather than claiming the research was lost. After a provider restart, a recent unresolved

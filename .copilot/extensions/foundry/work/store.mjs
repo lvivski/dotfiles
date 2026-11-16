@@ -5,6 +5,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { decodeNativeUsage, decodeUsageAffinity } from "./usage.mjs";
 import { bindCandidateOutputs, readCandidate } from "./artifacts.mjs";
+import { decodeCompletion, decodeFactory } from "./factory.mjs";
 import {
 	FoundryError, array, boolean, choice, containsPath, decodeCheck, decodeEvidence,
 	decodeFinding, decodeInput, decodeLimits, decodeOutput, decodeScope, decodeSource, decodeWaiting,
@@ -25,7 +26,9 @@ import {
 /** @typedef {import("./model.d.ts").Delivery} Delivery */
 /** @typedef {{id?: string, title: string, projectId?: string, scope: import("./model.d.ts").Scope, limits?: import("./model.d.ts").Limits, source?: Goal["source"]}} GoalInput */
 /** @typedef {{id?: string, goalId: string, parentId?: string, teamId?: string, title: string, assignment: string, workType: string, scope?: unknown, checks?: import("./model.d.ts").Check[], inputs?: import("./model.d.ts").Input[]}} TaskInput */
-/** @typedef {{goals: Goal, teams: Team, tasks: Task, attempts: Attempt, effects: Effect, claims: Claim, wakes: Wake, signals: Signal, lessons: Lesson, results: Result, deliveries: Delivery, native_usage: import("./model.d.ts").NativeUsage, usage_affinity: import("./model.d.ts").UsageAffinity}} Records */
+/** @typedef {import("./model.d.ts").FactoryControl} Factory */
+/** @typedef {import("./model.d.ts").GoalCompletion} Completion */
+/** @typedef {{goals: Goal, teams: Team, tasks: Task, attempts: Attempt, effects: Effect, claims: Claim, wakes: Wake, signals: Signal, lessons: Lesson, results: Result, deliveries: Delivery, native_usage: import("./model.d.ts").NativeUsage, usage_affinity: import("./model.d.ts").UsageAffinity, factory_controls: Factory, goal_completions: Completion}} Records */
 /** @typedef {keyof Records} Table */
 const MANAGED_TASKS = `WITH RECURSIVE managed(id,goal_id) AS (
 	SELECT id,goal_id FROM tasks WHERE owner=? OR goal_id IN (SELECT id FROM goals WHERE owner=?)
@@ -108,6 +111,7 @@ function decodeEffect(value) {
 		owner: text(row.owner, "effect.owner"), request: json(row.request),
 		...(row.result === undefined ? {} : { result: json(row.result) }),
 		...(row.relatedAttemptIds === undefined ? {} : { relatedAttemptIds: strings(row.relatedAttemptIds) }),
+		...(row.factoryGeneration === undefined ? {} : { factoryGeneration: natural(row.factoryGeneration, "effect activation") }),
 	};
 }
 
@@ -184,6 +188,7 @@ const decoders = {
 	goals: decodeGoal, teams: decodeTeam, tasks: decodeTask, attempts: decodeAttempt, effects: decodeEffect,
 	claims: decodeClaim, wakes: decodeWake, signals: decodeSignal, lessons: decodeLesson, results: decodeResult, deliveries: decodeDelivery,
 	native_usage: decodeNativeUsage, usage_affinity: decodeUsageAffinity,
+	factory_controls: decodeFactory, goal_completions: decodeCompletion,
 };
 
 /** @param {string} pathname */
@@ -501,6 +506,54 @@ export function openWorkStore(workingDirectory, options = {}) {
 		}
 		return task;
 	}
+	/** @param {Task} task @param {number} [generation] @param {boolean} [allowClosed] */
+	function requireAdmission(task, generation, allowClosed = false) {
+		const completion = optional("goal_completions", task.goalId);
+		if (!completion) return undefined;
+		const factory = get("factory_controls", completion.factoryId);
+		if (get("tasks", completion.taskId).state === "cancelled") {
+			throw new FoundryError("job_cancelled", "This bounded job is cancelled; settle its existing work without admitting new execution");
+		}
+		if (completion.closed && !allowClosed) throw new FoundryError("job_closed", "Accepted bounded jobs admit no new execution; reopen explicitly before starting or resuming work");
+		const nativeId = task.currentAttemptId ? get("attempts", task.currentAttemptId).nativeId : undefined;
+		if (factory.state !== "active" || factory.pausedWorkers.includes(task.owner)
+			|| nativeId !== undefined && factory.pausedWorkers.includes(nativeId)) {
+			throw new FoundryError("factory_paused", "Factory execution is paused; only an explicit native-confirmed restart can admit work");
+		}
+		if (generation !== undefined && generation !== factory.generation) {
+			throw new FoundryError("stale_activation", "This prepared operation belongs to a revoked activation");
+		}
+		return factory;
+	}
+	/** @param {Completion} completion */
+	function productionClosure(completion) {
+		const tasks = [get("tasks", completion.taskId)];
+		const seen = new Set(tasks.map(task => task.id));
+		for (const task of tasks) for (const input of task.inputs) {
+			const producer = get("tasks", input.taskId);
+			if (producer.goalId !== completion.goalId) continue;
+			if (input.version !== undefined) throw new FoundryError("pinned_required_producer", "Mutable in-job required production must float; historical pins are not current-job acceptance");
+			if (!seen.has(producer.id)) { seen.add(producer.id); tasks.push(producer); }
+		}
+		return tasks;
+	}
+	/** @param {Completion} completion */
+	function completionStatus(completion) {
+		const accepted = completion.accepted;
+		const delivered = completion.closed && accepted?.revision === completion.revision
+			&& accepted.tasks.every(item => {
+				const task = get("tasks", item.id);
+				return task.state === "done" && task.version === item.version
+					&& digest(json(resolvedInputs(task) ?? null)) === digest(json(item.inputs));
+			});
+		const attempts = list("attempts", "WHERE task_id IN (SELECT id FROM tasks WHERE goal_id=?)", [completion.goalId]);
+		const settled = attempts.every(attempt => !attempt.slot && attempt.waiting?.kind !== "input" && !outstanding(attempt, true))
+			&& !list("claims", "WHERE attempt_id IN (SELECT a.id FROM attempts a JOIN tasks t ON a.task_id=t.id WHERE t.goal_id=?)", [completion.goalId]).length;
+		const cancelled = get("tasks", completion.taskId).state === "cancelled"
+			&& list("tasks", "WHERE goal_id=?", [completion.goalId]).every(task => ["done", "failed", "cancelled"].includes(task.state));
+		return { goalId: completion.goalId, factoryId: completion.factoryId, taskId: completion.taskId, delivered: Boolean(delivered), settled, cancelled,
+			closed: completion.closed, revision: completion.revision };
+	}
 	/** @param {import("./model.d.ts").Input} input @returns {import("./model.d.ts").Output|undefined} */
 	function inputOutput(input) {
 		const producer = get("tasks", input.taskId);
@@ -539,6 +592,23 @@ export function openWorkStore(workingDirectory, options = {}) {
 	function outstanding(attempt, substantive = false) {
 		return attemptEffects(attempt.id, "AND state IN ('issued','uncertain')")
 			.some((effect) => !substantive || effect.kind === "command" || effect.kind === "create");
+	}
+	/** @param {Attempt} attempt */
+	function parkPausedExecution(attempt) {
+		const task = get("tasks", attempt.taskId);
+		const completion = optional("goal_completions", task.goalId);
+		if (!completion || !attempt.nativeId || task.currentAttemptId !== attempt.id || task.version !== attempt.taskVersion
+			|| task.state !== "running" || outstanding(attempt, true)) return;
+		const factory = get("factory_controls", completion.factoryId);
+		if (factory.state !== "paused" && !factory.pausedWorkers.includes(attempt.nativeId)) return;
+		task.state = "blocked";
+		task.waiting = { kind: "capacity", reason: "factory_paused" };
+		attempt.state = "waiting";
+		attempt.waiting = task.waiting;
+		put("tasks", task);
+		put("attempts", attempt);
+		releaseSlot(attempt);
+		notifyOutcome(task);
 	}
 	/** @param {string} attemptId @param {string} [where] */
 	function attemptEffects(attemptId, where = "") {
@@ -701,6 +771,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 	}
 	/** @param {Task} task @returns {FoundryError | undefined} */
 	function allocate(task) {
+		requireAdmission(task);
 		const goal = get("goals", task.goalId);
 		if (!budgetAvailable(goal)) throw new FoundryError("limit_exhausted", "The goal's observed credits or absolute deadline are exhausted");
 		if (!hasSlot(goal)) {
@@ -811,6 +882,16 @@ export function openWorkStore(workingDirectory, options = {}) {
 			|| attempt.nativeId !== result.sender || !["running", "waiting"].includes(task.state)
 			|| ["done", "failed", "cancelled"].includes(attempt.state)
 			|| checksDigest(task.checks) !== checksDigest(attempt.checks)) return false;
+		if (optional("goal_completions", task.goalId)) {
+			const completion = get("goal_completions", task.goalId);
+			const factory = get("factory_controls", completion.factoryId);
+			if (factory.state !== "active" || factory.pausedWorkers.includes(task.owner)
+				|| attempt.nativeId !== undefined && factory.pausedWorkers.includes(attempt.nativeId)) return false;
+			if (result.state === "done" && result.outputs.some(output => output.kind === "code")
+				&& (!attempt.checks.length || attempt.checks.some(check => !check.artifactFiles?.length))) {
+				throw new FoundryError("unattended_acceptance", "Factory code delivery requires executable checks bound to its evaluated files");
+			}
+		}
 		const inputs = resolvedInputs(task);
 		if (!inputs || digest(json(inputs)) !== digest(json(attempt.inputs))) return false;
 		/** @type {Map<string, import("./model.d.ts").Evidence>} */
@@ -837,6 +918,16 @@ export function openWorkStore(workingDirectory, options = {}) {
 		if (result.state === "done") for (const input of attempt.inputs) {
 			const output = inputOutput(input);
 			if (output) readCandidate(output.reference, output.version, databasePath);
+		}
+		const completion = optional("goal_completions", task.goalId);
+		if (result.state === "done" && completion?.taskId === task.id) {
+			const closure = productionClosure(completion);
+			if (closure.some(producer => producer.id !== task.id && producer.state !== "done")) return false;
+			completion.accepted = { revision: completion.revision, tasks: closure.map(producer => ({
+				id: producer.id, version: producer.version, inputs: resolvedInputs(producer) ?? [],
+			})) };
+			completion.closed = true;
+			put("goal_completions", completion);
 		}
 		return true;
 	}
@@ -955,6 +1046,11 @@ export function openWorkStore(workingDirectory, options = {}) {
 	/** @param {TaskInput} input @param {string} actor @returns {Task} */
 	function insertTask(input, actor) {
 		const goal = get("goals", input.goalId);
+		const completion = optional("goal_completions", goal.id);
+		if (completion) {
+			requireAdmission(get("tasks", completion.taskId));
+			if (completion.closed) throw new FoundryError("job_closed", "Reopen this bounded job explicitly before admitting new required work");
+		}
 		const parent = input.parentId === undefined ? undefined : get("tasks", input.parentId);
 		if (parent) {
 			requireOwner(parent, actor);
@@ -968,6 +1064,9 @@ export function openWorkStore(workingDirectory, options = {}) {
 		const task = decodeTask({ ...record(input), id: newId("tasks", input.id), owner: actor,
 			scope: narrowScope(parent?.scope ?? goal.scope, input.scope), checks: input.checks ?? [],
 			inputs: input.inputs ?? [], outputs: [], state: "ready", version: 1, currentAttemptId: undefined, waiting: undefined });
+		if (completion && task.scope.mode !== goal.scope.mode) {
+			throw new FoundryError("continuation_conflict", "Factory tasks must retain their one accepted continuation mode; ordinary goals still support mode narrowing");
+		}
 		if (!task.scope.workTypes.includes("*") && !task.scope.workTypes.includes(task.workType)) {
 			throw new FoundryError("work_type_forbidden", "Task work type is outside its scope");
 		}
@@ -1105,13 +1204,42 @@ export function openWorkStore(workingDirectory, options = {}) {
 		const task = get("tasks", taskId);
 		if (!execution || get("attempts", expectedAttemptId).nativeId !== actor) requireOwner(task, actor);
 		uncancelled(task);
+		const factory = requireAdmission(task);
 		if (task.currentAttemptId !== text(expectedAttemptId, "expectedAttemptId") || !["failed", "blocked"].includes(task.state)) {
 			throw new FoundryError("stale_attempt", "Repair requires the current failed or blocked attempt");
 		}
 		const goal = get("goals", task.goalId);
 		const repairs = task.repairs ?? 0;
+		if (factory?.unchangedFailures !== undefined) {
+			/** @param {Attempt} attempt */
+			const fingerprint = attempt => {
+				const evidence = db.prepare(`SELECT e.document FROM evidence_admissions e JOIN effects f ON e.effect_id=f.id
+					WHERE e.attempt_id=? AND json_extract(f.document,'$.factoryGeneration')=? ORDER BY e.sequence`)
+					.all(attempt.id, factory.generation).map(row => decodeEvidence(/** @type {unknown} */ (JSON.parse(text(row.document, "failure evidence")))));
+				const latest = [...new Map(evidence.map(item => [JSON.stringify([item.checkId, item.checkVersion]), item])).values()];
+				const failures = latest.filter(item => item.outcome === "failed");
+				return failures.length ? digest(json({ inputs: attempt.inputs, failures: failures.map(item => ({ check: item.checkId, version: item.checkVersion,
+					candidate: item.candidate?.version ?? null, blocker: item.blocker ?? null }))
+					.sort((a, b) => a.check.localeCompare(b.check)) })) : undefined;
+			};
+			let attempt = get("attempts", expectedAttemptId);
+			const currentFailure = fingerprint(attempt);
+			let unchanged = currentFailure === undefined ? 0 : 1;
+			while (currentFailure && attempt.repairOf) {
+				attempt = get("attempts", attempt.repairOf);
+				if (fingerprint(attempt) !== currentFailure) break;
+				unchanged++;
+			}
+			if (unchanged >= factory.unchangedFailures) throw new FoundryError("stagnation", "Unchanged evaluated failures reached the authorized stop rule; explicit restart or revised work is required");
+		}
 		if (goal.limits.repairs !== undefined && repairs >= goal.limits.repairs) {
 			throw new FoundryError("repair_limit", "The explicitly allowed additional attempts are exhausted");
+		}
+		const completion = optional("goal_completions", task.goalId);
+		if (completion && factory?.aggregateRepairs !== undefined) {
+			if (completion.repairs >= factory.aggregateRepairs) throw new FoundryError("repair_limit", "The goal's explicit aggregate repair allowance is exhausted");
+			completion.repairs++;
+			put("goal_completions", completion);
 		}
 		task.state = "ready";
 		task.version++;
@@ -1145,8 +1273,279 @@ export function openWorkStore(workingDirectory, options = {}) {
 		else put("deliveries", { ...original.delivery, state: "settled", result });
 	}
 
+	/** @param {GoalInput} input @param {Array<Omit<TaskInput,"goalId">>} tasks @param {string} factoryId @param {string} completionTaskId @param {string} actor @param {number} [generation] @param {boolean} [validation] */
+	function admitFactoryJob(input, tasks, factoryId, completionTaskId, actor, generation, validation = false) {
+		const factory = get("factory_controls", factoryId);
+		if (factory.owner !== actor || factory.state !== "active") throw new FoundryError("factory_paused", "Only the active factory's actual coordinator can admit source work");
+		if (generation !== undefined && factory.generation !== generation) throw new FoundryError("stale_activation", "Source observation belongs to a revoked activation");
+		const accepted = record(record(factory.definition).goal);
+		const scope = narrowScope(decodeScope(accepted.scope), input.scope);
+		if (scope.mode !== record(accepted.scope).mode || input.projectId !== accepted.projectId
+			|| digest(json(input.limits ?? {})) !== digest(json(decodeLimits(accepted.limits ?? {})))) {
+			throw new FoundryError("factory_policy_mismatch", "Job mode, project and per-job limits must retain their accepted factory policy");
+		}
+		const existing = input.id === undefined ? undefined : optional("goals", input.id);
+		if (existing) {
+			const completion = get("goal_completions", existing.id);
+			if (completion.factoryId !== factoryId || digest(json(existing.source ?? null)) !== digest(json(input.source ?? null))) {
+				throw new FoundryError("source_conflict", "A source event identity cannot change its accepted definition");
+			}
+			return { goal: existing, tasks: list("tasks", "WHERE goal_id=?", [existing.id]), replay: true };
+		}
+		const unsettled = list("goal_completions", "WHERE json_extract(document,'$.factoryId')=?", [factoryId])
+			.filter(completion => { const status = completionStatus(completion); return !(status.delivered || status.cancelled) || !status.settled; });
+		if (!validation && unsettled.length >= factory.maximumJobs) throw new FoundryError("factory_capacity", "The factory's explicitly authorized active-job bound is exhausted");
+		const goal = insertGoal({ ...input, scope }, actor);
+		const admitted = tasks.map(task => insertTask({ ...task, goalId: goal.id }, actor));
+		const final = get("tasks", completionTaskId);
+		if (final.goalId !== goal.id || !final.checks.length) throw new FoundryError("unattended_acceptance", "Factory completion requires its own executable acceptance checks");
+		if (admitted.some(task => task.scope.mode !== goal.scope.mode)) {
+			throw new FoundryError("continuation_conflict", "Factory tasks must retain one accepted continuation mode");
+		}
+		const completion = decodeCompletion({ id: goal.id, goalId: goal.id, owner: actor, taskId: final.id,
+			factoryId, revision: 1, closed: false, requiredInputs: final.inputs, repairs: 0 });
+		productionClosure(completion);
+		put("goal_completions", completion);
+		return { goal, tasks: admitted, replay: false };
+	}
+
 	return {
 		databasePath,
+		/** @param {string} id @param {string} actor */
+		factory(id, actor) {
+			return transaction(() => {
+				const factory = get("factory_controls", id);
+				if (factory.owner !== actor) throw new FoundryError("forbidden", "Only the actual factory owner can manage its policy");
+				return factory;
+			}, false);
+		},
+		/** @param {string} actor */
+		factoryViews(actor) {
+			return transaction(() => list("factory_controls", "WHERE owner=?", [actor]).map(factory => ({
+				id: factory.id, state: factory.state, generation: factory.generation, source: factory.source,
+				reason: factory.reason, heartbeat: factory.heartbeat === undefined ? undefined : {
+					state: factory.heartbeat.state, id: factory.heartbeat.id, minutes: factory.heartbeat.request.every_minutes,
+				},
+			})), false);
+		},
+		/** @param {Omit<Factory,"owner"|"state"|"generation"|"pausedWorkers"|"reminders">} input @param {string} actor @param {{goal:GoalInput,tasks:Array<Omit<TaskInput,"goalId">>,completionTaskId:string}} initial */
+		activateFactory(input, actor, initial) {
+			return transaction(() => {
+				const existing = optional("factory_controls", input.id);
+				if (existing && (existing.owner !== actor || digest(existing.definition) !== digest(input.definition)
+					|| digest(json(existing.source)) !== digest(json(input.source)))) {
+					throw new FoundryError("factory_conflict", "Factory identity cannot change its native owner or accepted policy snapshot");
+				}
+				const factory = decodeFactory({ ...input, owner: actor, state: "active",
+					generation: (existing?.generation ?? 0) + 1, pausedWorkers: [], reminders: {},
+					...(existing?.heartbeat === undefined ? {} : { heartbeat: existing.heartbeat }),
+					...(existing?.sourceCursor === undefined ? {} : { sourceCursor: existing.sourceCursor }) });
+				put("factory_controls", factory);
+				for (const completion of list("goal_completions", "WHERE json_extract(document,'$.factoryId')=?", [factory.id])) {
+					for (const task of list("tasks", "WHERE goal_id=? AND state='blocked'", [completion.goalId])) {
+						if (!task.currentAttemptId || !["continuation_stalled", "factory_paused"].includes(task.waiting?.reason ?? "")) continue;
+						const attempt = get("attempts", task.currentAttemptId);
+						if (attempt.state !== "waiting" || outstanding(attempt, true)) continue;
+						task.state = "waiting";
+						put("tasks", task);
+						wake(attempt.nativeId ?? task.owner, task.goalId, "capacity");
+					}
+				}
+				if (record(factory.definition).source !== undefined) {
+					db.exec("SAVEPOINT factory_template");
+					try { admitFactoryJob(initial.goal, initial.tasks, factory.id, initial.completionTaskId, actor, factory.generation, true); }
+					finally { db.exec("ROLLBACK TO factory_template; RELEASE factory_template"); }
+					return { factory, tasks: [], replay: false };
+				}
+				return { factory, ...admitFactoryJob(initial.goal, initial.tasks, factory.id, initial.completionTaskId, actor, factory.generation) };
+			});
+		},
+		/** @param {string} actor @param {string} reason @param {string} [factoryId] */
+		pauseFactories(actor, reason, factoryId) {
+			return transaction(() => {
+				const completions = list("goal_completions", factoryId === undefined ? "" : "WHERE json_extract(document,'$.factoryId')=?", factoryId === undefined ? [] : [factoryId]);
+				const changed = new Map();
+				for (const factory of list("factory_controls", "WHERE owner=?", [actor])) {
+					if (factoryId !== undefined && factory.id !== factoryId) continue;
+					factory.state = "paused";
+					factory.generation++;
+					factory.reason = text(reason, "pause reason");
+					put("factory_controls", factory);
+					changed.set(factory.id, factory);
+				}
+				for (const completion of completions) {
+					const factory = get("factory_controls", completion.factoryId);
+					if (factory.owner !== actor && !list("attempts", "WHERE native_id=? AND task_id IN (SELECT id FROM tasks WHERE goal_id=?)", [actor, completion.goalId]).length) continue;
+					if (factory.owner !== actor) factory.pausedWorkers = [...new Set([...factory.pausedWorkers, actor])];
+					factory.reason = text(reason, "pause reason");
+					put("factory_controls", factory);
+					changed.set(factory.id, factory);
+					for (const task of list("tasks", "WHERE goal_id=?", [completion.goalId])) {
+						if (!task.currentAttemptId) continue;
+						const attempt = get("attempts", task.currentAttemptId);
+						if (factory.owner !== actor && attempt.nativeId !== actor) continue;
+						if (attempt.state === "prepared") revise(task, actor);
+						else retirePrepared(attempt, "factory paused");
+						if (attempt.nativeId === actor) parkPausedExecution(attempt);
+					}
+				}
+				if (factoryId !== undefined && !changed.size) throw new FoundryError("forbidden", "This caller cannot pause that factory");
+				return [...changed.values()];
+			});
+		},
+		/** @param {string} goalId @param {string} actor */
+		reopenCompletion(goalId, actor) {
+			return transaction(() => {
+				const completion = get("goal_completions", goalId);
+				const factory = get("factory_controls", completion.factoryId);
+				if (factory.owner !== actor) throw new FoundryError("forbidden", "Only the factory owner can reopen its bounded job");
+				const task = get("tasks", completion.taskId);
+				requireAdmission(task, undefined, true);
+				if (!completion.closed) return completion;
+				completion.closed = false;
+				completion.revision++;
+				delete completion.accepted;
+				put("goal_completions", completion);
+				revise(task, actor);
+				return completion;
+			});
+		},
+		/** @param {GoalInput} input @param {Array<Omit<TaskInput,"goalId">>} tasks @param {string} factoryId @param {string} completionTaskId @param {string} actor @param {number} [generation] */
+		admitFactoryJob(input, tasks, factoryId, completionTaskId, actor, generation) {
+			return transaction(() => admitFactoryJob(input, tasks, factoryId, completionTaskId, actor, generation));
+		},
+		/** @param {string} factoryId @param {string} actor @param {number} generation @param {string|undefined} cursor */
+		updateSourceCursor(factoryId, actor, generation, cursor) {
+			return transaction(() => {
+				const factory = get("factory_controls", factoryId);
+				if (factory.owner !== actor || factory.state !== "active" || factory.generation !== generation) {
+					throw new FoundryError("stale_activation", "Do not move an intake cursor after its actual owner or activation changed");
+				}
+				if (cursor === undefined) delete factory.sourceCursor;
+				else factory.sourceCursor = text(cursor, "native intake cursor");
+				put("factory_controls", factory);
+				return factory;
+			});
+		},
+		/** @param {string} taskId @param {string} actor */
+		assignmentContext(taskId, actor) {
+			return transaction(() => {
+				const task = accessibleTask(taskId, actor, false);
+				const completion = optional("goal_completions", task.goalId);
+				if (!completion) return undefined;
+				const factory = get("factory_controls", completion.factoryId);
+				const policy = record(factory.definition);
+				const captured = record(policy.captured ?? {});
+				const matches = (/** @type {unknown} */ ids) => strings(ids).some(id => task.id === `${task.goalId}:${id}`);
+				const charters = array(policy.charters ?? [], record).filter(charter => matches(charter.taskIds));
+				const grain = array(policy.grains ?? [], record).find(grain => matches(grain.taskIds));
+				const generator = grain !== undefined && matches(grain.generators);
+				const files = generator && grain ? [record(grain.specification)] : charters.flatMap(charter => array(charter.knowledgeFiles ?? [], record));
+				const context = [
+					`Factory ${factory.id}; source ${factory.source.reference}; snapshot ${digest(factory.definition)}.`,
+					...(generator && grain ? strings(grain.context) : charters.flatMap(charter => strings(charter.context))),
+					...files.map(file => {
+						const name = text(file.path, "context file");
+						const content = record(captured[name]);
+						return `Declared context ${name} (${text(content.sha256, "context version")}):\n${text(content.content, "captured context")}`;
+					}),
+				];
+				return { context, generator,
+					...(generator && grain ? { baseBranch: text(grain.baseBranch, "generation base ref") } : {}),
+					...(!generator && charters[0]?.agent !== undefined ? { agent: text(charters[0].agent, "native agent") } : {}) };
+			}, false);
+		},
+		/** @param {string} actor @param {string} [goalId] */
+		advance(actor, goalId) {
+			return transaction(() => list("goal_completions", goalId === undefined ? "" : "WHERE goal_id=?", goalId === undefined ? [] : [goalId])
+				.filter(completion => goalMember(get("goals", completion.goalId), actor)).map(completion => {
+					const factory = get("factory_controls", completion.factoryId);
+					const status = completionStatus(completion);
+					const own = list("tasks", "WHERE goal_id=?", [completion.goalId]).filter(task => task.owner === actor
+						|| task.repairReservation?.worker === actor || task.currentAttemptId !== undefined && get("attempts", task.currentAttemptId).nativeId === actor);
+					const input = own.some(task => task.waiting?.kind === "input");
+					const actions = own.filter(task => !factory.pausedWorkers.includes(task.owner)
+						&& !factory.pausedWorkers.includes(actor)).flatMap(task => {
+						if (task.state === "running" && task.currentAttemptId) {
+							const attempt = get("attempts", task.currentAttemptId);
+							if (attempt.nativeId === actor && !outstanding(attempt, true)) return [{ taskId: task.id, kind: "execute" }];
+							if (preparedDispatch(task)) return [{ taskId: task.id, kind: "dispatch" }];
+						}
+						if (!runnable(task) || !hasSlot(get("goals", task.goalId)) || !budgetAvailable(get("goals", task.goalId))) return [];
+						if (task.repairReservation) return task.repairReservation.worker === actor ? [{ taskId: task.id, kind: "repair" }] : [];
+						if (task.state === "waiting") return task.currentAttemptId && get("attempts", task.currentAttemptId).nativeId === actor
+							? [{ taskId: task.id, kind: "resume" }] : [];
+						return task.owner === actor ? [{ taskId: task.id, kind: "dispatch" }] : [];
+					});
+					return { ...status, generation: factory.generation, mechanism: factory.mechanism,
+						disposition: factory.state === "paused" || factory.pausedWorkers.includes(actor) ? "paused"
+							: status.cancelled ? "cancelled" : status.delivered ? "delivered" : input ? "needs-input" : actions.length ? "actionable" : "waiting",
+						actions: factory.state === "active" && !input ? actions : [] };
+				}), false);
+		},
+		/** @param {string} factoryId @param {string} actor @param {number} generation @param {boolean} [reentry] */
+		remindFactory(factoryId, actor, generation, reentry = false) {
+			return transaction(() => {
+				const factory = get("factory_controls", factoryId);
+				if (factory.state !== "active" || factory.generation !== generation || factory.pausedWorkers.includes(actor)
+					|| factory.mechanism !== "stop-hook") return;
+				const own = list("tasks", `WHERE (owner=? OR json_extract(document,'$.currentAttemptId') IN (SELECT id FROM attempts WHERE native_id=?))
+					AND goal_id IN (SELECT goal_id FROM goal_completions WHERE json_extract(document,'$.factoryId')=?)`, [actor, actor, factoryId])
+					.filter(task => ["running", "ready", "waiting"].includes(task.state));
+				if (!own.length || own.some(task => task.waiting?.kind === "input")) return;
+				if (list("wakes", "WHERE owner=? AND json_extract(document,'$.sent')>json_extract(document,'$.consumed')", [actor]).length) return;
+				const marker = digest(json(own.map(task => ({ id: task.id, version: task.version, state: task.state,
+					evidence: [...new Map((task.currentAttemptId ? admittedEvidence(task.currentAttemptId) : []).map(item => [
+						JSON.stringify([item.checkId, item.checkVersion]),
+						{ checkId: item.checkId, checkVersion: item.checkVersion, outcome: item.outcome, candidate: item.candidate?.version ?? null },
+					])).values()] }))));
+				const previous = factory.reminders[actor];
+				const count = previous?.generation === generation ? previous.count + 1 : 1;
+				factory.reminders[actor] = { marker, count, generation };
+				if (count > factory.blocks || reentry && previous?.generation === generation && previous.marker === marker) {
+					factory.pausedWorkers = [...new Set([...factory.pausedWorkers, actor])];
+					factory.reason = "continuation_stalled";
+					for (const task of own) {
+						if (!task.currentAttemptId || task.state !== "running") continue;
+						const attempt = get("attempts", task.currentAttemptId);
+						if (attempt.nativeId !== actor || outstanding(attempt, true)) continue;
+						task.state = "blocked";
+						task.waiting = { kind: "capacity", reason: "continuation_stalled" };
+						attempt.state = "waiting";
+						attempt.waiting = task.waiting;
+						put("tasks", task);
+						put("attempts", attempt);
+						releaseSlot(attempt);
+						notifyOutcome(task);
+					}
+					if (factory.owner === actor) { factory.state = "paused"; factory.generation++; }
+					put("factory_controls", factory);
+					return { paused: true, reason: "continuation_stalled" };
+				}
+				put("factory_controls", factory);
+				return { decision: /** @type {const} */ ("block"), reason: `Foundry continuation ${factory.id}:${generation}. Read foundry_advance and execute only its current locally owned actions. This reminder grants no authority.` };
+			});
+		},
+		/** @param {string} factoryId @param {Factory["heartbeat"]} heartbeat @param {string} actor @param {number} generation */
+		recordHeartbeat(factoryId, heartbeat, actor, generation) {
+			return transaction(() => {
+				const factory = get("factory_controls", factoryId);
+				if (factory.owner !== actor || factory.generation !== generation) {
+					throw new FoundryError("stale_activation", "Native heartbeat binding must retain its actual owner and current activation");
+				}
+				if (heartbeat?.state === "issued") {
+					if (factory.state !== "active") throw new FoundryError("factory_paused", "Paused factories cannot issue a heartbeat");
+					if (factory.heartbeat) throw new FoundryError("heartbeat_pending", "Reconcile the original native heartbeat instead of issuing another");
+					if (list("factory_controls", "WHERE owner=?", [actor]).some(other => other.id !== factoryId && other.heartbeat)) {
+						throw new FoundryError("heartbeat_conflict", "One actual session can have only one owned factory heartbeat");
+					}
+				}
+				if (heartbeat === undefined) delete factory.heartbeat;
+				else factory.heartbeat = heartbeat;
+				put("factory_controls", factory);
+				return factory;
+			});
+		},
 		/** @param {string} taskId @param {string} actor @param {boolean} [execution] */
 		taskForCaller(taskId, actor, execution = false) {
 			return transaction(() => accessibleTask(taskId, actor, execution), false);
@@ -1229,6 +1628,14 @@ export function openWorkStore(workingDirectory, options = {}) {
 		getAttempt(id) { return transaction(() => get("attempts", id), false); },
 		/** @param {string} id */
 		getEffect(id) { return transaction(() => get("effects", id), false); },
+		/** @param {string} shellId @param {string} actor */
+		commandForShell(shellId, actor) {
+			return transaction(() => {
+				const effects = list("effects", "WHERE kind='command' AND owner=? AND json_extract(document,'$.request.shellId')=?", [actor, shellId]);
+				if (effects.length > 1) throw new FoundryError("effect_identity_conflict", "A command shell cannot identify multiple native operations");
+				return effects[0];
+			}, false);
+		},
 		pendingEffects() {
 			return transaction(() => list("effects", "WHERE state IN ('prepared','issued','uncertain')"), false);
 		},
@@ -1280,6 +1687,9 @@ export function openWorkStore(workingDirectory, options = {}) {
 				const attempts = list("attempts", history ? attemptWhere
 					: `WHERE id IN (SELECT json_extract(document,'$.currentAttemptId') FROM tasks ${goalWhere})`, parameters);
 				return { goals, tasks, attempts,
+					factories: list("factory_controls").filter(factory => goalId === undefined
+						|| optional("goal_completions", goalId)?.factoryId === factory.id),
+					completions: list("goal_completions", goalWhere, parameters).map(completionStatus),
 					teams: list("teams", goalWhere, parameters),
 					wakes: list("wakes", goalWhere, parameters),
 					effects: history ? list("effects", effectWhere, parameters) : [],
@@ -1377,6 +1787,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 				requireOwner(task, actor);
 				text(effectId, "effectId");
 				const existing = optional("effects", effectId);
+				const factory = requireAdmission(task, existing?.factoryGeneration);
 				const safeRequest = json(request);
 				if (existing) {
 					if (existing.attemptId !== attemptId || existing.kind !== "create"
@@ -1391,10 +1802,34 @@ export function openWorkStore(workingDirectory, options = {}) {
 				}
 				const other = list("effects", "WHERE attempt_id=? AND kind='create'", [attemptId]).find((effect) => effect.id !== effectId);
 				if (other) throw new FoundryError("already_issued", "This attempt already has a creation identity");
-				const effect = decodeEffect({ id: effectId, attemptId, kind: "create", state: "issued", owner: actor, request: safeRequest });
+				const effect = decodeEffect({ id: effectId, attemptId, kind: "create", state: "issued", owner: actor, request: safeRequest,
+					...(factory === undefined ? {} : { factoryGeneration: factory.generation }) });
 				attempt.state = "issued";
 				put("effects", effect);
 				put("attempts", attempt);
+				return effect;
+			});
+		},
+		/** @param {string} effectId @param {string} actor @param {Json} receipt */
+		rejectCreation(effectId, actor, receipt) {
+			return transaction(() => {
+				const effect = get("effects", effectId);
+				const attempt = get("attempts", effect.attemptId);
+				const task = get("tasks", attempt.taskId);
+				if (effect.kind !== "create" || effect.owner !== actor || attempt.nativeId !== undefined
+					|| !["issued", "uncertain"].includes(effect.state)) throw new FoundryError("refusal_mismatch", "A pre-start refusal must match the actual issued creation and its creator");
+				effect.state = "settled";
+				effect.result = json({ neverIssued: true, nativeRefusal: receipt });
+				put("effects", effect);
+				if (attempt.state !== "cancelled") attempt.state = "failed";
+				attempt.endedBy = actor;
+				if (task.currentAttemptId === attempt.id && task.version === attempt.taskVersion && task.state !== "cancelled") {
+					task.state = "blocked";
+					put("tasks", task);
+					notifyOutcome(task);
+				}
+				put("attempts", attempt);
+				releaseSlot(attempt);
 				return effect;
 			});
 		},
@@ -1402,13 +1837,18 @@ export function openWorkStore(workingDirectory, options = {}) {
 		bindAttempt(attemptId, nativeId, actor, receipt) {
 			return transaction(() => bind(attemptId, nativeId, actor, receipt));
 		},
-		/** @param {{id: string, attemptId: string, kind: Effect["kind"], state: Effect["state"], request: Json, result?: Json}} input @param {string} actor @returns {Effect} */
+		/** @param {{id: string, attemptId: string, kind: Effect["kind"], state: Effect["state"], request: Json, result?: Json, factoryGeneration?:number, relatedAttemptIds?:string[]}} input @param {string} actor @returns {Effect} */
 		recordEffect(input, actor) {
 			return transaction(() => {
 				const attempt = get("attempts", input.attemptId);
 				requireReporter(attempt, text(actor, "actor"));
 				const existing = optional("effects", input.id);
 				const effect = decodeEffect({ ...record(input), owner: existing?.owner ?? actor });
+				if (["command", "create"].includes(effect.kind) && (!existing || existing.state === "prepared")
+					&& effect.state !== "settled") {
+					const factory = requireAdmission(get("tasks", attempt.taskId), existing?.factoryGeneration);
+					if (factory) effect.factoryGeneration = factory.generation;
+				} else if (existing?.factoryGeneration !== undefined) effect.factoryGeneration = existing.factoryGeneration;
 				if (existing && digest(json(existing.relatedAttemptIds ?? [])) !== digest(json(effect.relatedAttemptIds ?? []))) {
 					throw new FoundryError("effect_identity_conflict", "Shared command attribution is immutable");
 				}
@@ -1421,7 +1861,10 @@ export function openWorkStore(workingDirectory, options = {}) {
 						if (related.nativeId !== attempt.nativeId || related.nativeId !== actor) {
 							throw new FoundryError("foreign_execution", "A shared native command can only belong to this caller's actual attempts");
 						}
-						if (!existing) { current(related); if (!related.slot) throw new FoundryError("capacity_required", "Every possible executing unit requires a slot"); }
+						if (!existing || existing.state === "prepared" && effect.state === "issued") {
+							requireAdmission(current(related));
+							if (!related.slot) throw new FoundryError("capacity_required", "Every possible executing unit requires a slot");
+						}
 					}
 				}
 				if (existing && (existing.attemptId !== effect.attemptId || existing.kind !== effect.kind
@@ -1467,6 +1910,9 @@ export function openWorkStore(workingDirectory, options = {}) {
 				}
 				put("effects", effect);
 				admitEffectEvidence(effect);
+				if (effect.kind === "command" && effect.state === "settled") {
+					for (const id of [attempt.id, ...effect.relatedAttemptIds ?? []]) parkPausedExecution(get("attempts", id));
+				}
 				if (effect.kind === "create" && effect.state === "uncertain" && !attempt.nativeId
 					&& attempt.state !== "cancelled") {
 					attempt.state = "uncertain";
@@ -1530,7 +1976,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 				}
 				try { if (!resumeRepair) retry(task.id, old.id, actor, false, true); }
 				catch (error) {
-					if (!(error instanceof FoundryError) || error.code !== "repair_limit") throw error;
+					if (!(error instanceof FoundryError) || !["repair_limit", "stagnation"].includes(error.code)) throw error;
 					announce();
 					return { ...recorded, continuation: { state: "blocked", code: error.code, message: error.message } };
 				}
@@ -1580,6 +2026,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 				const attempt = task.currentAttemptId ? get("attempts", task.currentAttemptId) : undefined;
 				if (attempt?.nativeId !== actor) requireOwner(task, actor);
 				uncancelled(task);
+				requireAdmission(task);
 				if (!attempt || !["running", "waiting"].includes(task.state)) {
 					throw new FoundryError("invalid_transition", "Only a current running or waiting attempt can resume");
 				}
@@ -1643,6 +2090,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 			return transaction(() => {
 				const attempt = get("attempts", input.attemptId);
 				const task = current(attempt);
+				requireAdmission(task);
 				requireOwner(task, actor);
 				const surface = text(input.surface, "surface");
 				const resource = resourcePath(input.resource);
@@ -1724,6 +2172,11 @@ export function openWorkStore(workingDirectory, options = {}) {
 		claimWakeDelivery(wakeId, generation, attemptId, request, actor) {
 			return transaction(() => {
 				const wake = get("wakes", wakeId);
+				const completion = optional("goal_completions", wake.goalId);
+				if (completion) {
+					const factory = get("factory_controls", completion.factoryId);
+					if (factory.state !== "active" || factory.pausedWorkers.includes(wake.owner)) return;
+				}
 				if (attemptId === undefined) {
 					if (!goalMember(get("goals", wake.goalId), actor)) throw new FoundryError("foreign_wake", "Bookkeeping cannot deliver another goal's messages");
 				} else {
@@ -1758,6 +2211,13 @@ export function openWorkStore(workingDirectory, options = {}) {
 				const original = wakeDelivery(effectId);
 				const { delivery, effect } = original;
 				if (effect) requireReporter(get("attempts", effect.attemptId), actor);
+				const consumed = delivery.result === undefined ? undefined : record(delivery.result);
+				if (delivery.state === "settled" && consumed?.consumedBy === wake.owner
+					&& delivery.wakeId === wakeId && delivery.generation === generation && delivery.owner === actor) {
+					if (accepted) wake.sent = Math.max(wake.sent ?? 0, generation);
+					put("wakes", wake);
+					return wake;
+				}
 				if (wake.inFlight !== effectId || delivery.wakeId !== wakeId || delivery.generation !== generation
 					|| delivery.state !== "issued" || (!effect && delivery.owner !== actor)) {
 					throw new FoundryError("wake_delivery_conflict", "This is not the outstanding native wake delivery");
@@ -1787,6 +2247,13 @@ export function openWorkStore(workingDirectory, options = {}) {
 				natural(generation, "generation");
 				if (generation > wake.generation) throw new FoundryError("wake_generation", "Cannot consume an unseen wake generation");
 				wake.consumed = Math.max(wake.consumed, generation);
+				if (wake.inFlight) {
+					const original = wakeDelivery(wake.inFlight);
+					if (original.delivery.generation <= wake.consumed && original.delivery.state === "issued") {
+						finishDelivery(original, json({ consumedBy: actor, generation: wake.consumed }));
+						delete wake.inFlight;
+					}
+				}
 				put("wakes", wake);
 				return wake;
 			});
@@ -1860,6 +2327,18 @@ export function openWorkStore(workingDirectory, options = {}) {
 					throw new FoundryError("protected_check", "Internal evolution cannot invent a new user or accepted-contract obligation");
 				}
 				const inputs = input.inputs === undefined ? task.inputs : input.inputs.map(decodeInput);
+				const completion = optional("goal_completions", task.goalId);
+				if (completion) {
+					requireAdmission(task);
+					if (completion.closed) throw new FoundryError("job_closed", "Explicitly reopen the job before changing a required definition");
+					if (task.id === completion.taskId && completion.requiredInputs.some(required =>
+						!inputs.some(input => digest(json(input)) === digest(json(required))))) {
+						throw new FoundryError("protected_input", "Accepted completion requirements cannot be removed through derived evolution");
+					}
+					for (const input of inputs) if (get("tasks", input.taskId).goalId === task.goalId && input.version !== undefined) {
+						throw new FoundryError("pinned_required_producer", "Factory required production must float");
+					}
+				}
 				if (digest(json({ checks, inputs })) === digest(json({ checks: task.checks, inputs: task.inputs }))) return { task, affected: [] };
 				for (const input of inputs) {
 					get("tasks", input.taskId);

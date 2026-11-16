@@ -3,6 +3,97 @@
 A lean repository-local factory for explicitly authorized engineering work. Many native workers
 and local coordinators execute; a shared record model is not a central executing agent.
 
+## Bounded factories
+
+Ordinary `foundry_start_goal` work stays activation-free. Unattended factories opt in with
+`foundry_start_factory`, a repository-owned `.foundry` JSON document with `format:
+"foundry-factory"` and `version: 1`, actual native-owner mode inspection, and native user
+confirmation. Installation, scheduling, hook messages, and completion events never activate it.
+Quiesce old extension writers before enabling the new factory protocol; additive metadata does
+not make mixed-version writers safe.
+
+Required policy fields are `id`, `mechanism`, `maximumJobs`, `blocks`, `completionTaskId`, and
+`goal`. The goal uses the ordinary title/scope/limits/task format, with stable task template IDs.
+`native` continuation requires Autopilot; exclusive `stop-hook` continuation requires interactive
+mode and an observed natural-stop hook. All factory tasks retain that one mode. The job limit is
+factory-wide; worker, observed-credit, deadline and ordinary repair limits remain per job.
+Optional `aggregateRepairs` is a separate per-job debit; `unchangedFailures` bounds repeated
+evaluated failures in an activation. No limits are inferred from token estimates.
+
+`foundry_advance` recovers receipts, consumes the actual owner's wakes, and classifies its local
+execution, dispatch, repair, resume, input, and settlement needs. Execute complete prepared
+calls in the ordinary native turn, including calls returned alongside capacity blockers.
+Resume an existing worker rather than recreating it. A stop hook performs classification only,
+not native side effects. Unchanged re-entry and explicit continuation bounds pause work rather
+than manufacture failed evaluator evidence. Safely settled local execution yields capacity while
+retaining its attempt and claims; native-confirmed restart resumes it without a code-repair debit.
+Unknown commands, child identity and genuine input requests remain settlement blockers.
+
+The ordinary completion task has its own executable checks and protected required inputs.
+Acceptance atomically seals the transitive in-job production closure, including exact versions
+and resolved inputs. Required mutable production edges must float; ordinary historical pins
+outside that closure remain usable. Producer cancellation or changed accepted inputs invalidate
+current delivery. Code outputs require evaluated file-bound evidence. Accepted jobs admit no new
+execution, including unused alternatives, until `foundry_reopen_job`; historical publications
+remain recorded. `foundry_cancel_job` cancels without claiming delivery. Neither delivery nor a
+queued stop proves native execution and write claims have settled.
+
+### Intake and reusable context
+
+An optional `source` has `kind: "github-issue"`, `repository`, and explicitly trusted `actors`.
+`foundry_ingest` inspects the actual issue through the native permission path. Both its author and
+last editor must satisfy that policy. Each accepted title/body/author/editor snapshot is admitted
+once; comment-only timestamp changes do not spawn another job. Source content is data, not a
+permission grant. Closed or inaccessible issues and unknown provenance do not become empty jobs.
+Activating an intake policy validates its template without creating a synthetic seed job.
+
+For `foundry_poll`, also set `source.maximumEvents` explicitly (1 through GitHub's 100-item page
+ceiling). It reads one native page, retains capacity-deferred events, and records the provider's
+opaque cursor only under the same active owner/generation. Pages wrap for later source changes;
+edits during pagination are not a stable multi-page snapshot. There is no extension-owned timer,
+daemon, distributed queue, or automatic owner replacement. `foundry_set_heartbeat` takes an
+explicit `everyMinutes`, requests native confirmation, inspects the actual same-session scheduler,
+and binds its returned identity. One coordinator's singleton schedule covers the selected factory's
+jobs; separately scheduled policies need separate native owners. Another factory or an unrelated automation is a conflict, not
+permission to overwrite it. Lost acknowledgments are reconciled from matching native ownership,
+prompt and cadence, never blindly resaved. A save returning after pause stays recorded for cleanup.
+`foundry_pause_factory` fences admission first, then removes only the matching native heartbeat
+using the ordinary-session `clear: true` route and verifies absence. The scheduled prompt only
+continues an already-active policy; it never restarts one. Native abort/host-off may postpone that
+ordinary-turn cleanup, but persisted fencing prevents new work in the meantime.
+
+The host's same-session setter has no compare-and-swap argument: preflight identity checks and
+local canonical issuance serialize Foundry changes, not simultaneous external edits in the app.
+Conflicting observed edits stop management. Atomic exclusion of a user edit between inspection
+and native mutation is not a supported guarantee. Unsupported extension-originated scheduler
+routes remain explicit blockers, even when the ordinary app tools work.
+
+Optional `charters` bind `name`, `taskIds`, declared native `agent`, `context`, and hash-pinned
+`knowledgeFiles`. Curate concise evidenced knowledge explicitly in repository-owned files,
+then reference their exact hashes in a new accepted policy identity. Existing assignments retain
+their captured content; curation never expands another goal's mutation rights.
+
+Optional `grains` declare `id`, `taskIds`, `generators`, an implementation-free `baseBranch`,
+hash-pinned `specification`, nonempty `evaluators` and `boundary`, and explicit `context`.
+The base resolves to a conserved commit and must contain those exact contract files.
+Generator prompts exclude implicit team/lesson history and use declared specification/context.
+Checks bind and deduplicate the conserved oracles; publications retain actual candidate versions.
+A clean base and scoped prompt are **not an enforced old-source read sandbox**: Git history,
+other worktrees and host-global files may still be readable. Audited non-consultation and enforced
+unavailability are different claims. Installation, merge, deployment, automatic rollback, generic
+metric languages, and native task projection are not acceptance authority provided by this core.
+
+### Qualification boundary
+
+A bounded local probe exercised native activation gating, an ordinary one-minute scheduler wake,
+natural-stop continuation with acceptance deliberately unfinished, artifact-bound publication,
+settlement and verified ordinary scheduler removal. Its factory was then paused; no production
+factory or applied replacement was launched. A separate read-only extension probe confirmed actual
+mode inspection and extension-originated scheduler reads. Extension-originated schedule mutations,
+native task projection and applied regeneration remain unqualified; ordinary app-tool receipts
+are not proof of those routes. Fresh-source provenance does not establish old-source read isolation,
+and incomplete native accounting does not establish a hard hidden-model-call ceiling.
+
 ## Execution
 
 `foundry_start_goal` records scope, explicit execution mode and optional actual limits, and
@@ -98,8 +189,9 @@ using WAL and short synchronous transactions. Ownership follows native identity 
 not session-folder equality. Inputs, evaluators and attempt tokens are immutable snapshots.
 Current-attempt guards protect publication, readiness, repair and resource settlement.
 
-Old databases and source artifacts remain untouched. There are no migrations, old-format readers,
-compatibility modes or parallel authorization ledgers. Repository-owned `.foundry` contracts
+The current canonical database gains controller/completion metadata in the same store; retired
+operational formats are not imported. There are no compatibility modes or parallel authorization ledgers.
+Repository-owned `.foundry` contracts
 describe meaning, not competing operational authority. A source contract has `format:
 "foundry-contract"`, `version: 1`, a title, scope and task definitions.
 
@@ -203,18 +295,20 @@ The `foundry-board` canvas accepts an optional `goalId` and shows goals, ownersh
 outputs and outstanding effects. Refresh reads current canonical records. It introduces no UI
 approval workflow.
 
-Standalone `audit`, `deep-research`, `review-queue`, `security-review` and `triage` workflows remain
-available under their existing explicit activation rules. Factory execution does not require them.
+Standalone `audit`, `deep-research`, `review-queue`, `security-review` and `triage` workflows live
+in the separate `recon` extension under their existing explicit activation rules.
+Both extensions load independently; factory execution does not require analysis workflows.
 
 ## Development
 
-Source is dotfiles-managed in `.copilot/extensions/foundry/`; `sync` mirrors it to the user extension
-directory. For scoped development, mirror only this extension and its directly updated skills, then
+Source is dotfiles-managed in `.copilot/extensions/foundry/`; `sync` mirrors it and the independent
+`recon` extension to their user directories. For scoped development, mirror only the
+updated extension directories and their directly updated skills, then
 reload extensions. Do not run the entire dotfiles sync to test this component.
 
 ```sh
-node --experimental-vm-modules --test '.copilot/extensions/foundry/**/*.test.mjs'
-node .copilot/extensions/foundry/types/check.mjs SDK_DIRECTORY TSC_EXECUTABLE TYPE_ROOTS DEPENDENCY_ROOT
+node --experimental-vm-modules --test '.copilot/extensions/foundry/**/*.test.mjs' '.copilot/extensions/recon/**/*.test.mjs'
+node .copilot/extensions/foundry/types/check.mjs SDK_DIRECTORY TSC_EXECUTABLE TYPE_ROOTS DEPENDENCY_ROOT .copilot/extensions/recon
 ```
 
 The SDK is supplied by the extension host, not a new package dependency. The second command checks

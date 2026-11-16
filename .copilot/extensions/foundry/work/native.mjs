@@ -26,17 +26,21 @@ export function prepareDispatch(store, taskId, actor) {
 	const task = store.getTask(taskId);
 	const goal = store.getGoal(task.goalId);
 	const snapshot = store.contextSnapshot(actor, goal.id, task.id);
-	const context = [
+	const source = store.assignmentContext(task.id, actor);
+	const context = source?.generator ? source.context : [
 		...snapshot.teams.filter(team => team.id === task.teamId).flatMap(team => team.context),
 		...snapshot.lessons.filter(lesson => lesson.workType === task.workType).map(lesson => lesson.summary),
+		...(source?.context ?? []),
 	];
 	const arguments_ = json({
 		name: nativeSessionName(`${task.title.slice(0, 30)} ${attempt.token.slice(0, 8)}`),
 		...(goal.projectId === undefined ? {} : { project_id: goal.projectId }),
 		workspace_type: "worktree",
+		...(source?.baseBranch === undefined ? {} : { base_branch: source.baseBranch }),
 		coordinate_with_creator: true,
 		notify_on_idle: "once",
-		kickoff: { mode: task.scope.mode, prompt: assignmentPrompt(goal, task, attempt, context) },
+		kickoff: { mode: task.scope.mode, prompt: assignmentPrompt(goal, task, attempt, context),
+			...(source?.agent === undefined ? {} : { agent: source.agent }) },
 	});
 	const effect = store.recordEffect({
 		id: `create:${attempt.id}`, attemptId: attempt.id, kind: "create", state: "prepared", request: arguments_,
@@ -121,6 +125,9 @@ export function observePre(store, name, args, actor, callId) {
 		if (!effect || digest(json(args)) !== digest(json(expected))) {
 			throw new FoundryError("assignment_changed", "Create the prepared complete assignment with its explicit mode and scope");
 		}
+		if (effect.result !== undefined && record(effect.result).neverIssued === true) {
+			throw new FoundryError("creation_retired", "This definitely unissued creation is retired; read current context before reserving fresh work");
+		}
 		if (attempt.state !== "prepared" && (!callId || previousCall !== callId)) {
 			throw new FoundryError("creation_already_issued", "This attempt's creation was already issued; reconcile it without another create");
 		}
@@ -128,6 +135,10 @@ export function observePre(store, name, args, actor, callId) {
 		return;
 	}
 	if (typeof value.command !== "string") return;
+	const original = typeof value.shellId === "string" ? store.commandForShell(value.shellId, actor) : undefined;
+	if (original?.state === "settled" && original.result !== undefined && record(original.result).neverIssued === true) {
+		throw new FoundryError("command_retired", "This definitely unissued command is retired; reserve current work rather than replaying its old arguments");
+	}
 	const matches = store.pendingEffects().filter(item => item.kind === "command" && item.state === "prepared"
 		&& record(item.request).command === value.command);
 	const effect = matches.find(item => record(item.request).shellId === value.shellId);
@@ -369,6 +380,7 @@ export function observeCompletion(store, value, actor, settled) {
 		if (matching.length === 1) effect = matching[0];
 		else if (effect && effectShell(effect) !== undefined && effectShell(effect) !== returnedShell) return;
 	}
+
 	if (effect && effect.kind !== "command") return;
 	if (!effect || effect.state === "settled") return;
 	if (store.getAttempt(effect.attemptId).nativeId !== actor) throw new FoundryError("foreign_execution", "Only this native command's actual worker can settle it");
@@ -391,5 +403,28 @@ export function observeCompletion(store, value, actor, settled) {
 			...(stopped ? { stopped: true } : {}), ...(evidence ? { evidence } : {}) }),
 	}, actor);
 	if (state === "settled") settled?.(observation);
+	return observation;
+}
+
+/** @param {Store} store @param {unknown} value @param {string} actor @param {(effect:Effect)=>void} [settled] */
+export function observeRefusal(store, value, actor, settled) {
+	const receipt = record(value);
+	if (!["denied", "rejected"].includes(String(receipt.status)) || receipt.exitCode !== undefined
+		|| typeof receipt.toolCallId !== "string") return;
+	const effect = store.effectByNativeCall(receipt.toolCallId);
+	if (!effect || effect.state === "settled" || record(effect.request).nativeToolCallId !== receipt.toolCallId) return;
+	const previous = effect.result === undefined ? {} : record(effect.result);
+	const completion = previous.nativeCompletion === undefined ? {} : record(previous.nativeCompletion);
+	if (previous.shellId !== undefined || previous.runnerReceipt !== undefined || previous.evidence !== undefined
+		|| completion.shellExecution !== undefined) return;
+	if (effect.kind === "create") {
+		const observation = store.rejectCreation(effect.id, actor, json(receipt));
+		settled?.(observation);
+		return observation;
+	}
+	if (effect.kind !== "command" || store.getAttempt(effect.attemptId).nativeId !== actor) return;
+	const observation = store.recordEffect({ ...effect, state: "settled",
+		result: json({ ...previous, neverIssued: true, nativeRefusal: receipt }) }, actor);
+	settled?.(observation);
 	return observation;
 }

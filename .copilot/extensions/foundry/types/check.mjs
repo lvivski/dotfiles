@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const [sdk, compiler, typeRoots, dependencies] = process.argv.slice(2);
+const [sdk, compiler, typeRoots, dependencies, additional] = process.argv.slice(2);
 if (!sdk || !compiler || !typeRoots) throw new Error("Usage: node types/check.mjs SDK_DIRECTORY TSC_EXECUTABLE TYPE_ROOTS [DEPENDENCY_ROOT]");
 
 /** @param {string} directory @returns {Promise<string[]>} */
@@ -32,7 +32,7 @@ try {
 				...(dependencies ? { "vscode-jsonrpc/node.js": [path.join(path.resolve(dependencies), "vscode-jsonrpc/lib/node/main.d.ts")] } : {}),
 			},
 		},
-		files: await sources(root),
+		files: [...await sources(root), ...(additional ? await sources(path.resolve(additional)) : [])],
 	}));
 	const result = spawnSync(process.execPath, [path.resolve(compiler), "--project", filename, "--pretty", "false"], { stdio: "inherit" });
 	if (result.error) throw result.error;

@@ -8,7 +8,45 @@ description: Use only when the user explicitly requests Foundry for durable para
 Foundry is a repository-local software factory, not an approval workflow. Native sessions,
 local coordinators, in-session work and deterministic jobs execute; one SQLite store at
 `<git-common-dir>/foundry/work.sqlite` records goals, ownership, versions, effects and outcomes.
-No old operational database is opened or migrated.
+Current controller/completion metadata lives in that same canonical store; retired operational
+formats are not imported. Mixed-version factory writers are unsupported.
+
+## Unattended factories
+
+Keep ordinary goal execution below activation-free. Only an explicitly requested unattended
+factory uses `foundry_start_factory` with an accepted `.foundry` `foundry-factory` version 1
+policy. Its actual native owner confirms the exact snapshot and continuation mode. Installation,
+tokens, timer wakes, and hook-generated user messages do not authorize activation or restart.
+Quiesce old participants before enabling this protocol.
+
+Use `foundry_advance` for current locally owned actions. Execute every returned prepared call,
+even alongside per-task capacity blockers; do not send resume or reserved repair to creation.
+Request the actual task's context before implementation. Hooks only classify; native side effects
+run in ordinary turns. Input, abort, permission refusal and stalled continuation pause truthfully.
+Confirmed restart resumes safely parked coordination without inventing checked failures or
+spending a code-repair allowance. Unknown effects and native requests remain blockers.
+
+Only final executable acceptance seals a bounded job's current required producer/input closure.
+Required mutable in-job production must float. Do not remove protected inputs, combine candidate
+versions, or publish unattended code without evaluated file-bound evidence. Delivered-but-unsettled
+is not finished native ownership. Explicit `foundry_reopen_job` supersedes completion while keeping
+history; `foundry_cancel_job` cancels without claiming acceptance.
+
+Optional trusted GitHub intake uses `foundry_ingest` or one explicitly bounded `foundry_poll`
+page. Inspect actual author/editor provenance, not caller event JSON. Polling never activates work
+or creates a synthetic seed job. Preserve capacity-deferred events and opaque provider cursors;
+do not claim stable complete coverage across changing pages. Any recurring heartbeat belongs to
+the actual native owner and the qualified host route, never an extension timer or replacement
+automation. Use `foundry_set_heartbeat` only with a user-chosen `everyMinutes`; its native dialog
+confirms the cadence. Reconcile uncertain saves rather than resaving. `foundry_pause_factory`
+fences work before inspecting/removing the recorded owned heartbeat. Do not overwrite unrelated
+schedules or claim the host supports atomic conditional mutations against concurrent app edits.
+
+Reusable charters capture declared native roles and evidenced, hash-pinned repository knowledge;
+curation is explicit, not automatic policy promotion. Grain generators use their declared
+specification/context and a conserved implementation-free base commit, without implicit
+team/lesson history. Pin independent evaluators and boundaries. Worktrees and prompts do not enforce
+an old-source read sandbox; retain honest audit/provenance and never claim stronger exclusion.
 
 ## Execute
 

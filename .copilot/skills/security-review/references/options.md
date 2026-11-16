@@ -43,4 +43,4 @@ explicitly specifies them; do not silently omit candidates to fit an invented bu
 Inspect the original `runId` before recovery. Resume a resumable paused or failed run with
 `run_dynamic_workflow({ resumeFromRunId: "<run-id>" })` rather than launching another. Get explicit user
 authorization before changing an approved limit; never bypass it by
-relaunching. If the workflow is unavailable, report the missing Foundry prerequisite.
+relaunching. If the workflow is unavailable, report the missing Recon prerequisite.

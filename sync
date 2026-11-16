@@ -13,40 +13,22 @@ git pull
 
 push() {
 	rsync --exclude ".git/" --exclude ".DS_Store" --exclude "sync" --exclude "/README.md" -av . ~ || return
-	# Extension and skill directories are mirrors, not additive overlays.
-	rsync --delete --checksum -av .copilot/extensions/foundry/ ~/.copilot/extensions/foundry/ || return
-	rsync --delete --checksum -av .copilot/skills/foundry/ ~/.copilot/skills/foundry/ || return
-	rsync --delete -av .copilot/skills/deep-research/ ~/.copilot/skills/deep-research/ || return
-	rsync --delete -av .copilot/skills/review-queue/ ~/.copilot/skills/review-queue/ || return
-	rsync --delete -av .copilot/skills/security-review/ ~/.copilot/skills/security-review/ || return
+	# Extension and skill directories are mirrors
+	local item
+	for item in extensions/{foundry,recon} skills/{foundry,deep-research,review-queue,security-review}; do
+		rsync --delete --checksum -av ".copilot/$item/" "$HOME/.copilot/$item/" || return
+	done
 
 	# Stale copies of files renamed/removed in the repo. The rsync above is
 	# additive, so delete their leftovers from $HOME (after the new versions
 	# have been copied in).
 	local obsolete=(
-		.MacOSX
-		.launchd.conf
-		.gitattributes
-		Library/KeyBindings/DefaultKeyBinding.dict
 		.bash_completion
 		.bash_completion.d
 		.bash_exports
 		.bash_functions
 		.bash_aliases
 		.bash_prompt
-		.copilot/agents
-		.copilot/extensions/cwf
-		.copilot/extensions/conveyor
-		.copilot/extensions/jsconfig.json
-		.copilot/extensions/mobius
-		.copilot/extensions/types
-		.copilot/conveyors
-		.copilot/extensions/workflow
-		.copilot/skills/conveyor
-		.copilot/skills/mobius
-		.copilot/skills/workflow
-		.local/bin/cwf
-		.local/lib/copilot_workflows
 	)
 	local f
 	for f in "${obsolete[@]}"; do [ -n "$f" ] && rm -rf ~/"$f"; done
