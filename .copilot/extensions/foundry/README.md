@@ -22,6 +22,8 @@ Independent writers use native worktrees; claims are specific to actual shared m
 `foundry_evolve_task` replaces derived checks or declared inputs using the affected task's version,
 not a whole-factory revision. User, contract and standing checks remain unchanged. It retires active
 superseded attempts without losing their command effects and reevaluates only unpinned dependents.
+Propagation stops at a producer that had no published outputs; definition setup does not repeatedly
+revise unrelated downstream work that has not consumed a delivery.
 Explicit input versions resolve already-published deliveries, even while their producer evolves;
 a published version cannot be reused for different output content. Signals remain advisory until
 an accountable coordinator applies a concrete in-scope revision or creates appropriate follow-up work.
@@ -77,6 +79,10 @@ copies only those evaluated bytes into a stable content-addressed bundle. Rechec
 does not invent a different delivery reference. Every artifact-bound governing check for one task
 must identify the same final file set/version; old passes from another candidate cannot be combined.
 The canonical store enforces this as well as the runtime report path.
+For a complete evaluated unit, pass `publish: "<output name>"` to `foundry_run_check`. This explicitly
+uses the existing result/promotion path without a second model turn. Partial acceptance returns the
+missing/failed checks and leaves the task running; mixed candidates remain a publication blocker,
+not a fabricated failed check. Already-published replay does not execute another command.
 
 Consumers receive the captured delivery's actual reference through `FOUNDRY_INPUTS_JSON`.
 Managed file bundles are hash-checked at evaluation and publication boundaries. Integration must
@@ -112,6 +118,16 @@ alone does not. A definitely rejected stop retries on a later
 owner turn with its original failure retained; definitely unavailable recipients are recorded
 without repeated delivery. An ambiguous delivery is not blindly replayed.
 Context retains relevant outstanding command identities and superseded attempts until settlement.
+Each new assigned command records one fixed private runner receipt. The runner claims it exclusively
+before executing, atomically finalizes it, and rejects duplicate or legacy invocations without a
+replacement result. Normal context/check calls recover finished receipts only for their actual owner,
+retaining `runner-receipt` provenance and evaluator/input/candidate verification. Native initial wait
+is 120 seconds. A recovered check replays its existing result; use `foundry_prepare_check` for an
+explicit new evaluation. Started-only receipts, old random-name receipts and ordinary commands without
+actual completion remain unknown. Recovery of retired attempts admits history, not publication or repair.
+Self-ended terminal attempts automatically release only their settled claims. Waiting, unknown effects
+and externally ended attempts retain ownership. Warm same-worker repair atomically transfers claims
+with fresh IDs, so an old release cannot release a successor's resources.
 An existing worker retains visibility of its actual outstanding shells after coordinator handoff,
 and can yield or resume its current execution under the same goal limits without acquiring the replacement coordinator's
 delegation authority. Inspecting its original native session
@@ -158,6 +174,12 @@ history/restart-gap recovery: `captureComplete` remains false and missing spend 
 Pure coordinator notifications use native-delivery records in the same work store and need no
 executing worker slot. Definitely unavailable recipients are recorded and wake their nearest
 accountable ancestor without appointing a new owner or replaying the failed delivery.
+Successful reporting/publication queues notification draining without awaiting native message delivery.
+A host-disabled session-management route is distinct from an unavailable recipient: the provider stops
+retrying that route for its lifetime, retains pending messages, and returns ordinary app-tool wake/stop
+arguments in context. Deliver those through the normal tool and acknowledge only the accepted wake
+generation with `foundry_mark_wake_sent`. This mitigates the blocked route; it does not change host policy
+or grant a privileged transport. Unknown queue acceptance still must not be blindly replayed.
 Operational context uses scoped current-record queries; full historical snapshots are for inspection.
 Coordinator contexts summarize procedures without repeating entire kickoffs and executable bodies.
 Request the assigned `taskId` for its complete execution definition.

@@ -82,6 +82,73 @@ function fails(operation, code) {
 	assert.throws(operation, (error) => error instanceof FoundryError && error.code === code);
 }
 
+test("self-ended claims release after settlement but ancestor completion preserves the actual worker's ownership", t => {
+	const { store } = fixture(t);
+	goal(store);
+	const own = start(store, task(store, "own"));
+	assert.ok(own.nativeId);
+	const owned = store.claim({ attemptId: own.id, surface: "integration", resource: "own.mjs" }, own.nativeId);
+	store.recordResult(outcome(own), own.nativeId);
+	assert.equal(store.snapshot().claims.length, 0);
+	fails(() => store.releaseClaim(owned.id, "root"), "not_found");
+	const child = start(store, task(store, "child"));
+	assert.ok(child.nativeId);
+	const retained = store.claim({ attemptId: child.id, surface: "integration", resource: "child.mjs" }, child.nativeId);
+	store.recordResult(outcome(child), "root", child.nativeId);
+	assert.deepEqual(store.snapshot().claims.map(claim => claim.id), [retained.id]);
+	const peer = start(store, task(store, "peer"));
+	assert.ok(peer.nativeId);
+	const peerId = peer.nativeId;
+	fails(() => store.claim({ attemptId: peer.id, surface: "integration", resource: "child.mjs" }, peerId), "claim_conflict");
+	store.releaseClaim(retained.id, child.nativeId);
+});
+
+test("warm same-worker repair transfers claims atomically with fresh IDs and later self-completion releases them", t => {
+	const { store } = fixture(t);
+	goal(store);
+	const original = start(store, task(store, "repair", { checks: [check] }));
+	assert.ok(original.nativeId);
+	const claim = store.claim({ attemptId: original.id, surface: "integration", resource: "unit.mjs" }, original.nativeId);
+	const failed = outcome(original, { state: "failed", outputs: [], evidence: outcome(original).evidence.map(item => ({ ...item, outcome: "failed" })) });
+	admit(store, original, failed.evidence);
+	const repair = store.recordResultAndRepair(failed, original.nativeId);
+	assert.ok("attempt" in repair.continuation && repair.continuation.attempt);
+	const next = repair.continuation.attempt;
+	assert.ok(next.nativeId);
+	assert.equal(next.nativeId, original.nativeId);
+	const retained = store.snapshot().claims[0];
+	assert.equal(retained.attemptId, next.id);
+	assert.notEqual(retained.id, claim.id);
+	fails(() => store.releaseClaim(claim.id, "root"), "not_found");
+	assert.equal(store.snapshot().claims[0].id, retained.id);
+	admit(store, next);
+	store.recordResult(outcome(next), next.nativeId);
+	assert.equal(store.snapshot().claims.length, 0);
+});
+
+test("dependency revisions stop at producers without output and preserve explicit pinned consumers", t => {
+	const { store } = fixture(t);
+	goal(store);
+	const producer = task(store, "producer");
+	const consumer = task(store, "consumer", { inputs: [{ taskId: producer.id, output: "delivery" }] });
+	const downstream = task(store, "downstream", { inputs: [{ taskId: consumer.id, output: "delivery" }] });
+	store.evolveTask({ taskId: producer.id, expectedVersion: 1, checks: [{ ...check, origin: "derived" }] }, "root");
+	assert.equal(store.getTask(producer.id).version, 2);
+	assert.equal(store.getTask(consumer.id).version, 1);
+	assert.equal(store.getTask(downstream.id).version, 1);
+	const attempt = start(store, store.getTask(producer.id));
+	assert.ok(attempt.nativeId);
+	admit(store, attempt);
+	store.recordResult(outcome(attempt), attempt.nativeId);
+	const pinned = task(store, "pinned", { inputs: [{ taskId: producer.id, output: "delivery", version: "v1" }] });
+	store.evolveTask({ taskId: producer.id, expectedVersion: 2,
+		checks: [{ ...check, origin: "derived" }, { ...check, id: "additional", origin: "derived" }] }, "root");
+	assert.equal(store.getTask(consumer.id).version, 2);
+	assert.equal(store.getTask(downstream.id).version, 1);
+	assert.equal(store.getTask(pinned.id).version, 1);
+	assert.equal(store.outputForInput(pinned.inputs[0])?.version, "v1");
+});
+
 test("early native charges wait for actual binding and deduplicate manual and native receipt aliases", t => {
 	const { store } = fixture(t);
 	goal(store);
@@ -254,8 +321,8 @@ test("a larger delegated queue preserves resource ownership, coalesced wakes and
 	t.after(() => resumed.close());
 	assert.equal(resumed.getTask(previous).owner, "native:queue-parent");
 	assert.equal(resumed.ownsTask(previous, "replacement"), true);
-	assert.equal(resumed.snapshot().claims[0].id, claim.id);
-	resumed.releaseClaim(claim.id, "native:queue-parent");
+	assert.equal(resumed.snapshot().claims.length, 0);
+	fails(() => resumed.releaseClaim(claim.id, "native:queue-parent"), "not_found");
 	const wake = resumed.pendingWakes("replacement")[0];
 	resumed.consumeWake(wake.id, wake.generation, "replacement");
 	assert.equal(resumed.pendingWakes("replacement").length, 0);
@@ -794,7 +861,7 @@ test("logical outcomes and waiting do not settle commands or release exclusive c
 	fails(() => store.prepareAttempt(ready.id, "root"), "capacity_wait");
 	store.recordEffect({ id: "shell-1", attemptId: active.id, kind: "command", state: "settled", request: { command: "build" }, result: { exitCode: 0 } }, "root");
 	assert.equal(store.getAttempt(active.id).slot, false);
-	store.releaseClaim(claim.id, "native:command");
+	assert.equal(store.snapshot().claims.length, 0);
 	const next = store.prepareAttempt(ready.id, "root");
 	assert.equal(next.slot, true);
 	store.recordEffect({ id: "shell-1", attemptId: active.id, kind: "command", state: "settled", request: { command: "build" }, result: { exitCode: 0 } }, "root");

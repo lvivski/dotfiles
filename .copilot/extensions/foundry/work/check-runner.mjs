@@ -1,10 +1,11 @@
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { openWorkStore } from "./store.mjs";
-import { FoundryError } from "./values.mjs";
+import { FoundryError, digest, json, record } from "./values.mjs";
 import { captureCandidate, readCandidate, verifyCandidate } from "./artifacts.mjs";
+import { checkReceiptPath } from "./native.mjs";
 
 /** @param {string | Uint8Array} value */
 const sha256 = value => createHash("sha256").update(value).digest("hex");
@@ -18,6 +19,21 @@ try {
 	const goal = store.getGoal(task.goalId);
 	const check = attempt.checks.find(item => item.id === checkId);
 	if (!check || !check.command) throw new FoundryError("invalid_check", "Expected the assigned executable check procedure");
+	const effect = store.getEffect(effectId);
+	const reference = checkReceiptPath(store, effectId);
+	if (effect.attemptId !== attemptId || effect.kind !== "command" || !["issued", "uncertain"].includes(effect.state)
+		|| typeof effect.request !== "object" || effect.request === null || Array.isArray(effect.request)
+		|| effect.request.receipt !== reference || effect.request.checkId !== checkId || effect.request.checkVersion !== check.version) {
+		throw new FoundryError("unissued_check", "Runner requires its own issued, receipt-bound command");
+	}
+	const evidenceDirectory = path.dirname(reference);
+	mkdirSync(evidenceDirectory, { recursive: true, mode: 0o700 });
+	const metadata = lstatSync(evidenceDirectory);
+	if (!metadata.isDirectory() || metadata.isSymbolicLink()
+		|| path.dirname(realpathSync(evidenceDirectory)) !== realpathSync(path.dirname(store.databasePath))) {
+		throw new FoundryError("unsafe_evidence_path", "Evidence must remain in the repository's Foundry directory");
+	}
+	writeFileSync(reference, JSON.stringify({ state: "started", effectId, attemptId, checkId }), { flag: "wx", mode: 0o600 });
 	const inputOutputs = attempt.inputs.map(input => ({ taskId: input.taskId, output: store.outputForInput(input) }));
 	const raw = {
 		effectId, attemptId, checkId, checkVersion: check.version, command: check.command,
@@ -79,16 +95,17 @@ try {
 		raw.error = error instanceof Error ? error.message : String(error);
 	}
 	raw.completedAt = new Date().toISOString();
-	const content = JSON.stringify(raw);
-	const evidenceDirectory = path.join(path.dirname(store.databasePath), "evidence");
-	mkdirSync(evidenceDirectory, { recursive: true, mode: 0o700 });
-	const metadata = lstatSync(evidenceDirectory);
-	if (!metadata.isDirectory() || metadata.isSymbolicLink()
-		|| path.dirname(realpathSync(evidenceDirectory)) !== realpathSync(path.dirname(store.databasePath))) {
-		throw new FoundryError("unsafe_evidence_path", "Evidence must remain in the repository's Foundry directory");
+	const captured = record(/** @type {unknown} */ (JSON.parse(JSON.stringify(raw))));
+	const content = JSON.stringify({ ...captured, state: "finished", sha256: digest(json(captured)) });
+	const temporary = `${reference}.${randomUUID()}.tmp`;
+	const descriptor = openSync(temporary, "wx", 0o600);
+	try {
+		writeFileSync(descriptor, content);
+		renameSync(temporary, reference);
+	} finally {
+		closeSync(descriptor);
+		if (existsSync(temporary)) unlinkSync(temporary);
 	}
-	const reference = path.join(evidenceDirectory, `${randomUUID()}.json`);
-	writeFileSync(reference, content, { flag: "wx", mode: 0o600 });
 	const observation = {
 		effectId, attemptId, checkId, checkVersion: check.version,
 		outcome: raw.exitCode === 0 && raw.error === null ? "passed" : "failed",

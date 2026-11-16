@@ -17,9 +17,9 @@ const runtime = createRuntime({
 		if (!session) throw new Error("Native session is not attached yet");
 		return session.rpc.tools.execute({ name: "get_session", arguments: { project_session_id: id } });
 	},
-	execute: async (name, args) => {
+	execute: async (name, args, toolCallId) => {
 		if (!session) throw new Error("Native session is not attached yet");
-		return session.rpc.tools.execute({ name, arguments: args });
+		return session.rpc.tools.execute({ name, arguments: args, ...(toolCallId === undefined ? {} : { toolCallId }) });
 	},
 });
 session = await joinSession({

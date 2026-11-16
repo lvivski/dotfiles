@@ -264,7 +264,7 @@ export function decodeEvidence(value) {
 		checkId: text(item.checkId, "evidence.checkId"), checkVersion: text(item.checkVersion, "evidence.checkVersion"),
 		outcome: choice(item.outcome, /** @type {const} */ (["passed", "failed", "pending"]), "evidence.outcome"),
 		reference: text(item.reference, "evidence.reference"), summary: text(item.summary, "evidence.summary"),
-		source: choice(item.source, /** @type {const} */ (["native-command"]), "evidence.source"),
+		source: choice(item.source, /** @type {const} */ (["native-command", "runner-receipt"]), "evidence.source"),
 		...(item.candidate === undefined ? {} : { candidate: decodeCandidate(item.candidate) }),
 		...(item.blocker === undefined ? {} : { blocker: choice(item.blocker, /** @type {const} */ (["input-artifact"]), "evidence.blocker") }),
 	};

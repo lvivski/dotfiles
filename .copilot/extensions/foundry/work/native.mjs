@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstatSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assignmentPrompt, attemptToken } from "./prompt.mjs";
@@ -15,6 +15,10 @@ import { readCandidate, verifyCandidate } from "./artifacts.mjs";
 export const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
 /** @param {string} value */
 export const toolName = value => value.split(".").at(-1) ?? value;
+
+/** @param {Store} store @param {string} effectId */
+export const checkReceiptPath = (store, effectId) => path.join(path.dirname(store.databasePath), "evidence",
+	`check-${createHash("sha256").update(effectId).digest("hex")}.json`);
 
 /** @param {Store} store @param {string} taskId @param {string} actor */
 export function prepareDispatch(store, taskId, actor) {
@@ -50,9 +54,12 @@ export function prepareCheck(store, attemptId, checkId, directory, actor) {
 	const command = ["node", runner, directory, attemptId, checkId, effectId].map(quote).join(" ");
 	const effect = store.recordEffect({
 		id: effectId, attemptId, kind: "command", state: "prepared",
-		request: json({ command, shellId: effectId, checkId, checkVersion: check.version }),
+		request: json({ command, shellId: effectId, checkId, checkVersion: check.version,
+			receipt: checkReceiptPath(store, effectId) }),
 	}, actor);
-	return { effectId: effect.id, tool: "bash", arguments: { command, shellId: effectId, description: `Evaluate ${check.id}`.slice(0, 100) } };
+	return { effectId: effect.id, tool: "bash", arguments: {
+		command, shellId: effectId, initial_wait: 120, description: `Evaluate ${check.id}`.slice(0, 100),
+	} };
 }
 /** @param {Store} store @param {string} attemptId @param {string} command @param {string} actor */
 export function prepareCommand(store, attemptId, command, actor) {
@@ -182,6 +189,17 @@ export function reconcileDetail(store, value, actor) {
 	return store.bindAttempt(attempt.id, detail.id, actor === detail.id ? attempt.creator : actor, json(value));
 }
 
+/** @param {Store} store @param {string} reference */
+function evidenceContent(store, reference) {
+	const directory = path.join(path.dirname(store.databasePath), "evidence");
+	const metadata = lstatSync(reference);
+	if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1
+		|| path.dirname(realpathSync(reference)) !== realpathSync(directory)) {
+		throw new FoundryError("invalid_evidence_reference", "Native evidence must be a contained regular artifact");
+	}
+	return readFileSync(reference, "utf8");
+}
+
 /** @param {Store} store @param {unknown} value @param {boolean} [verifyArtifacts] @returns {(Evidence & {effectId:string,completedAt:string})|undefined} */
 export function checkObservation(store, value, verifyArtifacts = true) {
 	const output = typeof value === "string" ? value : record(value).textResultForLlm;
@@ -191,22 +209,26 @@ export function checkObservation(store, value, verifyArtifacts = true) {
 	if (!encoded) return;
 	const observation = record(/** @type {unknown} */ (JSON.parse(Buffer.from(encoded, "base64").toString("utf8"))));
 	const reference = text(observation.reference, "native evidence reference");
-	const directory = path.join(path.dirname(store.databasePath), "evidence");
-	const metadata = lstatSync(reference);
-	if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1
-		|| path.dirname(realpathSync(reference)) !== realpathSync(directory)) {
-		throw new FoundryError("invalid_evidence_reference", "Native evidence must be a contained regular artifact");
-	}
-	const content = readFileSync(reference, "utf8");
+	const content = evidenceContent(store, reference);
 	if (createHash("sha256").update(content).digest("hex") !== observation.sha256) throw new FoundryError("evidence_changed", "Native evidence content no longer matches the captured observation");
-	const raw = record(/** @type {unknown} */ (JSON.parse(content)));
+	const receipt = record(/** @type {unknown} */ (JSON.parse(content)));
+	const { state: _state, sha256: _sha, ...captured } = receipt;
+	const raw = receipt.state === "finished" ? captured : receipt;
+	if (receipt.state === "finished" && digest(json(raw)) !== receipt.sha256) {
+		throw new FoundryError("evidence_changed", "Finished runner receipt content changed");
+	}
 	const effectId = text(raw.effectId, "native check effect");
 	if (observation.effectId !== effectId) throw new FoundryError("effect_mismatch", "Native check correlation changed");
+	if (receipt.state === "finished" && record(store.getEffect(effectId).request).receipt !== reference) {
+		throw new FoundryError("effect_mismatch", "Runner receipt is not the issued command's recorded file");
+	}
 	const attemptId = text(observation.attemptId, "evidence attempt");
 	const attempt = store.getAttempt(attemptId);
 	const check = attempt.checks.find(item => item.id === observation.checkId);
+	const request = record(store.getEffect(effectId).request);
 	if (!check || check.version !== observation.checkVersion || raw.command !== check.command
-		|| raw.attemptId !== attemptId || raw.checkId !== check.id || raw.checkVersion !== check.version) {
+		|| raw.attemptId !== attemptId || raw.checkId !== check.id || raw.checkVersion !== check.version
+		|| request.checkId !== check.id || request.checkVersion !== check.version) {
 		throw new FoundryError("evaluator_mismatch", "Captured evidence is not for the assigned evaluator snapshot");
 	}
 	const passed = raw.exitCode === 0 && raw.error === null;
@@ -229,12 +251,42 @@ export function checkObservation(store, value, verifyArtifacts = true) {
 	return {
 		id: `evidence:${observation.sha256}`, attemptId, checkId: check.id, checkVersion: check.version, effectId,
 		completedAt: text(raw.completedAt, "native completion time"),
-		outcome: passed ? "passed" : "failed", reference, summary: text(observation.summary, "evidence summary"), source: "native-command",
+		outcome: passed ? "passed" : "failed", reference, summary: text(observation.summary, "evidence summary"),
+		source: receipt.state === "finished" ? "runner-receipt" : "native-command",
 		...(candidate === undefined ? {} : { candidate }),
 		...(raw.blocker === undefined || raw.blocker === null ? {} : {
 			blocker: choice(raw.blocker, /** @type {const} */ (["input-artifact"]), "native input blocker"),
 		}),
 	};
+}
+
+/** @param {Store} store @param {string} actor @param {(effect:Effect)=>void} [settled] @param {string} [goalId] */
+export function recoverChecks(store, actor, settled, goalId) {
+	for (const effect of store.pendingEffects()) {
+		if (effect.kind !== "command" || !["issued", "uncertain"].includes(effect.state)
+			|| store.getAttempt(effect.attemptId).nativeId !== actor
+			|| (goalId !== undefined && store.getTask(store.getAttempt(effect.attemptId).taskId).goalId !== goalId)) continue;
+		const reference = record(effect.request).receipt;
+		if (typeof reference !== "string" || reference !== checkReceiptPath(store, effect.id) || !existsSync(reference)) continue;
+		const content = evidenceContent(store, reference);
+		const receipt = record(/** @type {unknown} */ (JSON.parse(content)));
+		if (receipt.state === "started") continue;
+		if (receipt.state !== "finished") throw new FoundryError("invalid_receipt", "Expected a started or finished runner receipt");
+		const { state: _state, sha256: _sha, ...raw } = receipt;
+		const observation = {
+			effectId: effect.id, attemptId: effect.attemptId, checkId: raw.checkId, checkVersion: raw.checkVersion,
+			outcome: raw.exitCode === 0 && raw.error === null ? "passed" : "failed",
+			reference, sha256: createHash("sha256").update(content).digest("hex"),
+			summary: typeof raw.error === "string" ? raw.error : `Assigned command exited ${raw.exitCode ?? raw.signal}`,
+		};
+		const evidence = checkObservation(store, {
+			textResultForLlm: `FOUNDRY_CHECK_RESULT:${Buffer.from(JSON.stringify(observation)).toString("base64")}`,
+		});
+		if (!evidence) throw new FoundryError("invalid_receipt", "Finished runner receipt did not yield assigned evidence");
+		const completed = store.recordEffect({ ...effect, state: "settled",
+			result: json({ ...(effect.result === undefined ? {} : record(effect.result)), runnerReceipt: observation, evidence }) }, actor);
+		settled?.(completed);
+	}
 }
 
 /** @param {Store} store @param {string} name @param {unknown} args @param {unknown} result @param {string} actor @param {(effect:Effect)=>void} [settled] */
@@ -266,8 +318,14 @@ export function observePost(store, name, args, result, actor, settled) {
 	const effect = store.effectsForAttempt(observation.attemptId).find(item => item.kind === "command"
 		&& item.attemptId === observation.attemptId && item.id === observation.effectId);
 	if (!effect) throw new FoundryError("unissued_check", "The observation has no corresponding issued native check");
+	if (store.getAttempt(effect.attemptId).nativeId !== actor
+		|| record(args).shellId !== effectShell(effect)) {
+		throw new FoundryError("foreign_execution", "Check output must come from its actual worker and assigned shell");
+	}
 	if (effect.state === "settled") {
-		const previous = checkObservation(store, record(effect.result).nativeResult, false);
+		const value = record(effect.result);
+		const previous = value.nativeResult === undefined ? record(value.evidence)
+			: checkObservation(store, value.nativeResult, false);
 		if (!previous || digest(json(previous)) !== digest(json(observation))) {
 			throw new FoundryError("evidence_conflict", "The settled command has a different native observation");
 		}
@@ -284,8 +342,11 @@ export function admittedEvidence(store, attemptId) {
 	return store.effectsForAttempt(attemptId).filter(effect => effect.kind === "command" && effect.state === "settled")
 		.flatMap(effect => {
 			const value = record(effect.result);
-			if (value.nativeResult === undefined) return [];
-			const observation = checkObservation(store, value.nativeResult, false);
+			const result = value.nativeResult ?? (value.runnerReceipt === undefined ? undefined : {
+				textResultForLlm: `FOUNDRY_CHECK_RESULT:${Buffer.from(JSON.stringify(value.runnerReceipt)).toString("base64")}`,
+			});
+			if (result === undefined) return [];
+			const observation = checkObservation(store, result, false);
 			return observation ? [observation] : [];
 		}).sort((a, b) => a.completedAt.localeCompare(b.completedAt))
 		.map(({ effectId: _effect, completedAt: _time, ...evidence }) => evidence);
@@ -314,6 +375,9 @@ export function observeCompletion(store, value, actor, settled) {
 	const result = event.result === undefined ? undefined : record(event.result);
 	const nativeResult = { resultType: event.success ? "success" : "failure", textResultForLlm: typeof result?.content === "string" ? result.content : "" };
 	const evidence = checkObservation(store, nativeResult);
+	if (evidence && evidence.effectId !== effect.id) {
+		throw new FoundryError("effect_mismatch", "Native completion belongs to another check operation");
+	}
 	const shell = event.shellExecution === undefined ? undefined : record(event.shellExecution);
 	const assigned = typeof record(effect.request).checkId === "string";
 	const stopped = properties?.shell_error_category === "shell_stopped" && properties.shell_operation === "read"

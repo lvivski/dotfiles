@@ -59,6 +59,10 @@ the actual returned `evidence.candidate.version`, with its reference for the uni
 filename for an entry. Do not substitute a newer checkout or combine passing checks from different
 candidate versions. Integration declares and evaluates its final unit too. This opt-in format
 does not pin undeclared runtime/data dependencies or require commits. Legacy checks remain unchanged.
+When publication of the evaluated unit is intended, use `publish: "<output name>"` on
+`foundry_run_check`. It uses the normal promotion path once all governing checks pass on the same
+candidate, without another model turn. Partial acceptance keeps work running; mixed candidates
+block publication without inventing a failed check. Already-published replay does not rerun.
 An unavailable/corrupt managed input is a recorded blocker, not a reason to keep recoding its
 consumer; route the actual failed input identity to its accountable owner.
 
@@ -77,12 +81,17 @@ unit affinity. Otherwise a shared command retains all possible units until its a
 Deliver coalesced wakes to **current** owners and process self-directed work locally. Native queue
 acceptance is not execution. Use bounded initial idle notifications (`once`), then explicit
 milestone/blocker/output reporting to local parents; never relay every leaf turn to the director.
+Reporting/publication does not wait for message delivery. If context reports a disabled native
+session-management route, use its returned ordinary `send_session_message` wake/stop arguments;
+mark only a genuinely accepted wake generation with `foundry_mark_wake_sent`. Do not retry the
+blocked extension route, change host policy or replay an uncertain delivery.
 Actual command completion and stopped-shell receipts also drain affected-goal notifications
 automatically. This covers live settlement, not recovery of a dead session or independent watchdog.
 Use `foundry_record_signal` for scoped production, security, design, review or performance feedback.
 Use `foundry_evolve_task` with the affected task's current version for concrete in-scope input or
 derived-check changes. It preserves user/contract/standing obligations, retires superseded attempts
 and reevaluates only unpinned dependents. Explicitly pinned published inputs retain their meanings.
+Propagation stops at producers without published outputs, avoiding revision churn during setup.
 Signals alone do not change requirements or dispatch a speculative repair.
 Signals target accountable coordinators. Use `foundry_reassign_team` to retain a charter and its
 delegated leaves through coordinator replacement; unknown recipients are verified once natively.
@@ -105,6 +114,13 @@ An existing worker can recover its actual outstanding shells and yield or resume
 execution after coordinator handoff; it does not acquire new delegation authority.
 
 Checked repair normally uses `repair: true` on `foundry_run_check` or `foundry_report_result`.
+New assigned commands have one exclusively claimed, atomically finished runner receipt. Your
+normal context/check calls recover finished receipts without rerunning, retaining their
+`runner-receipt` source and assigned evidence checks. A recovered check replays its result; use
+`foundry_prepare_check` for an explicit new evaluation. Started-only receipts, legacy random-name
+receipts and ordinary commands without actual completion remain unknown; never manufacture settlement.
+Self-ended settled terminal claims release automatically. Waiting/unknown work and ancestor-ended
+attempts keep ownership; warm same-worker repair transfers claims atomically with fresh IDs.
 Separate advanced retries use `foundry_retry_task` against the exact current failed attempt.
 Both retain history, produce a fresh token and preserve replacement coordinator ownership.
 Evolution and dispatch handoff do not consume the repair allowance.

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -338,6 +338,7 @@ test("each warm repair stays quiet while exhausted repairs produce one coalesced
 		assert.deepEqual(director.store().pendingWakes("director"), []);
 	}
 	const exhausted = record(await worker.operation("run_check", { taskId: task.id, checkId: "behavior", repair: true }, "worker"));
+	await worker.flushNotifications();
 	assert.equal(record(exhausted.continuation).code, "repair_limit");
 	const wakes = director.store().pendingWakes("director");
 	assert.equal(wakes.length, 1);
@@ -1053,10 +1054,12 @@ test("concurrent leaf outputs share one queued wake without swallowing the later
 		}, "director");
 	}
 	const first = runtime.operation("report_result", { taskId: tasks[0].id, summary: "First output" }, workers[0]);
+	await new Promise(resolve => setImmediate(resolve));
 	await runtime.operation("report_result", { taskId: tasks[1].id, summary: "Second output" }, workers[1]);
 	assert.equal(messages, 1);
 	accept({ resultType: "success" });
 	await first;
+	await runtime.flushNotifications();
 	const pending = runtime.store().pendingWakes("director");
 	assert.equal(pending.length, 1);
 	assert.equal(pending[0].generation, 2);
@@ -1064,6 +1067,7 @@ test("concurrent leaf outputs share one queued wake without swallowing the later
 	assert.equal(pending[0].consumed, 0);
 	await runtime.operation("get_context", { goalId: tasks[0].goalId }, "director");
 	await runtime.operation("report_result", { taskId: tasks[2].id, summary: "Third output" }, workers[2]);
+	await runtime.flushNotifications();
 	assert.equal(messages, 2);
 });
 
@@ -1112,6 +1116,82 @@ async function settlementFixture(t, hooks) {
 	runtime.context({ goalId: task.goalId }, "director");
 	return { ...fixtureResult, task };
 }
+
+test("a disabled management route is tried once, retains manual wakes and returns stable cooperative-stop arguments", async t => {
+	let calls = 0;
+	const errors = [];
+	const { runtime, task } = await settlementFixture(t, {
+		log: message => { errors.push(message); },
+		execute: async () => {
+			calls++;
+			return { resultType: "failure", error: "This session management tool is disabled" };
+		},
+	});
+	await runtime.flushNotifications();
+	runtime.toolComplete({ toolCallId: "settlement-command", success: true, shellExecution: { exitCode: 0 } }, "worker");
+	await runtime.flushNotifications();
+	const context = record(await runtime.operation("get_context", { taskId: task.id }, "worker"));
+	assert.equal(context.messageRouteDisabled, "This session management tool is disabled");
+	assert.ok(Array.isArray(context.wakes) && context.wakes.length === 1);
+	assert.equal(record(context.wakes[0]).tool, "send_session_message");
+	assert.equal(runtime.store().pendingWakes("director")[0].unavailable, undefined);
+	const extra = runtime.store().createTask({ goalId: task.goalId, title: "Active worker", assignment: "Keep actual work tracked", workType: "analysis" }, "director");
+	const dispatch = record(await runtime.operation("prepare_dispatch", { taskIds: [extra.id] }, "director"));
+	assert.ok(Array.isArray(dispatch.prepared));
+	const args = record(dispatch.prepared[0]).arguments;
+	runtime.pre("create_session", args, "director", "disabled-stop-create");
+	runtime.post("create_session", args, { id: "other-worker" }, "director");
+	runtime.pre("bash", { command: "sleep 1", shellId: "disabled-stop-shell" }, "other-worker", "disabled-stop-command");
+	const cancelled = record(await runtime.operation("cancel_task", { taskId: extra.id }, "director"));
+	assert.ok(Array.isArray(cancelled.delivery));
+	const first = record(cancelled.delivery[0]);
+	assert.equal(first.state, "native-route-disabled");
+	assert.equal(first.tool, "send_session_message");
+	const again = record(await runtime.operation("get_context", { goalId: task.goalId }, "director"));
+	assert.ok(Array.isArray(again.stops));
+	assert.deepEqual(record(again.stops[0]).arguments, first.arguments);
+	assert.equal(calls, 1);
+	assert.equal(errors.length, 1);
+	assert.equal(runtime.store().getEffect("command:disabled-stop-command").state, "issued");
+});
+
+test("successful reporting returns while native delivery is still waiting for queue acceptance", async t => {
+	/** @type {(value:unknown)=>void} */
+	let accept = () => {};
+	const held = new Promise(resolve => { accept = resolve; });
+	t.after(() => accept({ resultType: "success" }));
+	const { runtime, task } = await settlementFixture(t, { execute: async () => held });
+	assert.equal(runtime.store().getTask(task.id).state, "done");
+	assert.ok(runtime.store().snapshot().wakes[0].inFlight);
+	accept({ resultType: "success" });
+	await runtime.flushNotifications();
+	assert.equal(runtime.store().snapshot().wakes[0].inFlight, undefined);
+});
+
+test("an initially disabled cooperative stop creates one retained fallback instead of repeated retries", async t => {
+	let calls = 0;
+	const errors = [];
+	const { runtime } = fixture(t, {
+		log: message => { errors.push(message); },
+		execute: async () => { calls++; return { resultType: "failure", error: "This session management tool is disabled" }; },
+	});
+	await runtime.operation("start_goal", { ...definition, tasks: [{ ...definition.tasks[0], checks: [] }] }, "director");
+	const task = runtime.store().snapshot().tasks[0];
+	const prepared = record(await runtime.operation("prepare_dispatch", {}, "director"));
+	assert.ok(Array.isArray(prepared.prepared));
+	const args = record(prepared.prepared[0]).arguments;
+	runtime.pre("create_session", args, "director", "first-disabled-stop");
+	runtime.post("create_session", args, { id: "worker" }, "director");
+	runtime.pre("bash", { command: "sleep 1", shellId: "first-disabled-shell" }, "worker", "first-disabled-command");
+	await runtime.operation("cancel_task", { taskId: task.id }, "director");
+	const first = record(await runtime.operation("get_context", { goalId: task.goalId }, "director"));
+	const again = record(await runtime.operation("get_context", { goalId: task.goalId }, "director"));
+	assert.deepEqual(again.stops, first.stops);
+	assert.equal(runtime.store().snapshot().effects.filter(effect => effect.kind === "stop").length, 2);
+	assert.equal(runtime.store().getEffect("command:first-disabled-command").state, "issued");
+	assert.equal(calls, 1);
+	assert.equal(errors.length, 1);
+});
 
 for (const route of ["completion", "post-stop"]) {
 	test(`${route} sends one capacity wake after late settlement without needing a current executing attempt`, async t => {
@@ -1178,6 +1258,7 @@ test("a second actual settlement queues a fresh generation when its owner consum
 		runtime.post("create_session", args, { id: workers[index] }, "director");
 		runtime.pre("bash", { command: "sleep 1", shellId: `generation-shell-${index}` }, workers[index], `generation-command-${index}`);
 		await runtime.operation("report_result", { taskId: tasks[index].id, summary: "Reported before actual process exit" }, workers[index]);
+		await runtime.flushNotifications();
 		runtime.context({ goalId: tasks[index].goalId }, "director");
 	}
 	runtime.toolComplete({ toolCallId: "generation-command-0", success: true, shellExecution: { exitCode: 0 } }, workers[0]);
@@ -1231,10 +1312,10 @@ for (const transition of ["directory", "close"]) {
 	});
 }
 
-/** @param {import("node:test").TestContext} t */
-function evaluatedFixture(t) {
+/** @param {import("node:test").TestContext} t @param {(message:string)=>void} [log] */
+function evaluatedFixture(t, log) {
 	let calls = 0;
-	const { runtime, directory } = fixture(t, { execute: async (name, args) => {
+	const { runtime, directory } = fixture(t, { ...(log ? { log } : {}), execute: async (name, args) => {
 		assert.equal(name, "bash");
 		runtime.pre(name, args, "director", `artifact-check-${++calls}`);
 		const command = spawnSync("/bin/sh", ["-c", text(record(args).command, "command")], { encoding: "utf8" });
@@ -1248,6 +1329,168 @@ function evaluatedFixture(t) {
 
 const artifactCheck = { ...definition.tasks[0].checks[0], artifactFiles: ["unit.mjs"],
 	command: `node --input-type=module -e 'import { value } from "./unit.mjs"; if (value < 2) process.exit(1)'` };
+
+/** @param {import("node:test").TestContext} t */
+async function issuedFileCheck(t) {
+	const { runtime, directory } = fixture(t);
+	writeFileSync(path.join(directory, "unit.mjs"), "export const value = 2;\n");
+	await runtime.operation("start_goal", { ...definition, tasks: [{ ...definition.tasks[0], checks: [artifactCheck] }] }, "director");
+	const task = runtime.store().snapshot().tasks[0];
+	await runtime.operation("start_task", { taskId: task.id }, "director");
+	const prepared = record(await runtime.operation("prepare_check", { taskId: task.id, checkId: "behavior" }, "director"));
+	const args = record(prepared.arguments);
+	runtime.pre("bash", args, "director", "issued-file-check");
+	const effectId = text(prepared.effectId, "effect");
+	const receipt = text(record(runtime.store().getEffect(effectId).request).receipt, "receipt");
+	return { runtime, directory, task: runtime.store().getTask(task.id), args, effectId, receipt };
+}
+
+test("runner executes an issued command once and duplicate or legacy invocations cannot overwrite its result", async t => {
+	const { runtime, task, args, effectId, receipt } = await issuedFileCheck(t);
+	assert.ok(Number(args.initial_wait) >= 90);
+	const first = spawnSync("/bin/sh", ["-c", text(args.command, "command")], { encoding: "utf8" });
+	assert.equal(first.status, 0, first.stderr);
+	assert.match(first.stdout, /FOUNDRY_CHECK_RESULT:/);
+	const captured = readFileSync(receipt, "utf8");
+	const duplicate = spawnSync("/bin/sh", ["-c", text(args.command, "command")], { encoding: "utf8" });
+	assert.equal(duplicate.status, 1);
+	assert.equal(duplicate.stdout, "");
+	assert.match(duplicate.stderr, /EEXIST/);
+	assert.equal(readFileSync(receipt, "utf8"), captured);
+	assert.deepEqual(readdirSync(path.dirname(receipt)), [path.basename(receipt)]);
+	runtime.post("bash", args, { resultType: "success", textResultForLlm: first.stdout }, "director");
+	assert.equal(runtime.store().getEffect(effectId).state, "settled");
+	const attempt = runtime.store().getAttempt(text(task.currentAttemptId, "attempt"));
+	const legacyId = "check:legacy";
+	const command = text(args.command, "command").replaceAll(effectId, legacyId);
+	runtime.store().recordEffect({ id: legacyId, attemptId: attempt.id, kind: "command", state: "issued",
+		request: { command, shellId: legacyId, checkId: "behavior", checkVersion: attempt.checks[0].version } }, "director");
+	const legacy = spawnSync("/bin/sh", ["-c", command], { encoding: "utf8" });
+	assert.equal(legacy.status, 1);
+	assert.equal(legacy.stdout, "");
+	assert.match(legacy.stderr, /receipt-bound/);
+	assert.equal(runtime.store().getEffect(legacyId).state, "issued");
+	assert.deepEqual(readdirSync(path.dirname(receipt)), [path.basename(receipt)]);
+});
+
+test("lost tool output recovers the original finished receipt once and can publish without rerunning", async t => {
+	const { runtime, task, args, effectId } = await issuedFileCheck(t);
+	const command = spawnSync("/bin/sh", ["-c", text(args.command, "command")], { encoding: "utf8" });
+	assert.equal(command.status, 0, command.stderr);
+	const recovered = record(await runtime.operation("run_check", { taskId: task.id, checkId: "behavior", publish: "unit" }, "director"));
+	assert.equal(recovered.effectId, effectId);
+	assert.equal(recovered.promoted, true);
+	assert.equal(record(recovered.evidence).source, "runner-receipt");
+	assert.equal(runtime.store().snapshot().effects.filter(effect => effect.kind === "command").length, 1);
+	assert.equal(runtime.store().evidenceForAttempt(text(recovered.attemptId, "attempt")).length, 1);
+	runtime.post("bash", args, { resultType: "success", textResultForLlm: command.stdout }, "director");
+	const repeated = record(await runtime.operation("run_check", { taskId: task.id, checkId: "behavior", publish: "unit" }, "director"));
+	assert.equal(record(repeated.publication).state, "already-published");
+	assert.equal(runtime.store().snapshot().effects.filter(effect => effect.kind === "command").length, 1);
+});
+
+test("a finished receipt cannot be admitted by another worker or an unrelated shell", async t => {
+	const { runtime, task, args, effectId } = await issuedFileCheck(t);
+	const command = spawnSync("/bin/sh", ["-c", text(args.command, "command")], { encoding: "utf8" });
+	assert.equal(command.status, 0, command.stderr);
+	const result = { resultType: "success", textResultForLlm: command.stdout };
+	assert.throws(() => runtime.post("bash", args, result, "foreign"), /actual worker and assigned shell/);
+	assert.throws(() => runtime.post("bash", { ...args, shellId: "foreign-shell" }, result, "director"), /actual worker and assigned shell/);
+	await assert.rejects(runtime.operation("get_context", { goalId: task.goalId }, "foreign"), /no assignment/);
+	assert.equal(runtime.store().getEffect(effectId).state, "issued");
+});
+
+test("context admits finished receipts, keeps started commands unknown and rejects changed receipt contents", async t => {
+	const { runtime, task, args, effectId, receipt } = await issuedFileCheck(t);
+	mkdirSync(path.dirname(receipt), { recursive: true });
+	writeFileSync(receipt, JSON.stringify({ state: "started", effectId }), { flag: "wx" });
+	await runtime.operation("get_context", { taskId: task.id }, "director");
+	assert.equal(record(await runtime.operation("run_check", { taskId: task.id, checkId: "behavior" }, "director")).state, "pending-native-evidence");
+	assert.equal(runtime.store().getEffect(effectId).state, "issued");
+	rmSync(receipt);
+	const command = spawnSync("/bin/sh", ["-c", text(args.command, "command")], { encoding: "utf8" });
+	assert.equal(command.status, 0, command.stderr);
+	const content = readFileSync(receipt, "utf8");
+	const changed = record(/** @type {unknown} */ (JSON.parse(content)));
+	changed.exitCode = 99;
+	writeFileSync(receipt, JSON.stringify(changed));
+	await assert.rejects(runtime.operation("get_context", { taskId: task.id }, "director"), /receipt content changed/);
+	assert.equal(runtime.store().getEffect(effectId).state, "issued");
+	writeFileSync(receipt, content);
+	await runtime.operation("get_context", { taskId: task.id }, "director");
+	assert.equal(runtime.store().getEffect(effectId).state, "settled");
+	assert.equal(record(await runtime.operation("run_check", { taskId: task.id, checkId: "behavior" }, "director")).state, "passed");
+	assert.equal(runtime.store().snapshot().effects.filter(effect => effect.kind === "command").length, 1);
+});
+
+test("a replaced attempt retains its finished receipt as history and a first-run refusal records no executed work", async t => {
+	for (const finishBeforeRevision of [false, true]) {
+		const { runtime, task, args, effectId, receipt } = await issuedFileCheck(t);
+		if (finishBeforeRevision) assert.equal(spawnSync("/bin/sh", ["-c", text(args.command, "command")]).status, 0);
+		await runtime.operation("evolve_task", { taskId: task.id, expectedVersion: 1,
+			checks: [artifactCheck, { ...artifactCheck, id: "additional", origin: "derived" }] }, "director");
+		if (!finishBeforeRevision) assert.equal(spawnSync("/bin/sh", ["-c", text(args.command, "command")]).status, 0);
+		await runtime.operation("get_context", { goalId: task.goalId }, "director");
+		const evidence = runtime.store().evidenceForAttempt(text(task.currentAttemptId, "attempt"));
+		assert.equal(evidence.length, 1);
+		assert.equal(evidence[0].outcome, finishBeforeRevision ? "passed" : "failed");
+		assert.equal(runtime.store().getEffect(effectId).state, "settled");
+		assert.equal(runtime.store().getTask(task.id).state, "ready");
+		assert.deepEqual(runtime.store().getTask(task.id).outputs, []);
+		const historical = record(await runtime.operation("run_check", { taskId: task.id, attemptId: task.currentAttemptId,
+			checkId: "behavior", publish: "unit", repair: true }, "director"));
+		assert.equal(finishBeforeRevision ? record(historical.publication).state : record(historical.continuation).state,
+			finishBeforeRevision ? "historical" : "not-repaired");
+		assert.equal(runtime.store().getTask(task.id).state, "ready");
+		if (!finishBeforeRevision) assert.equal(JSON.parse(readFileSync(receipt, "utf8")).stdout, "");
+	}
+});
+
+test("opt-in publication waits for complete checks, preserves pinned deliveries and leaves partial work running", async t => {
+	const { runtime, directory } = evaluatedFixture(t);
+	writeFileSync(path.join(directory, "unit.mjs"), "export const value = 2;\n");
+	await runtime.operation("start_goal", { ...definition, tasks: [{ ...definition.tasks[0], checks: [artifactCheck, { ...artifactCheck, id: "second" }] }] }, "director");
+	const task = runtime.store().snapshot().tasks[0];
+	await runtime.operation("start_task", { taskId: task.id }, "director");
+	const partial = record(await runtime.operation("run_check", { taskId: task.id, checkId: "behavior", publish: "unit" }, "director"));
+	assert.deepEqual(record(partial.publication).missing, ["second"]);
+	assert.equal(runtime.store().getTask(task.id).state, "running");
+	assert.equal(runtime.store().resultsForAttempt(text(task.currentAttemptId ?? runtime.store().getTask(task.id).currentAttemptId, "attempt")).length, 0);
+	const final = record(await runtime.operation("run_check", { taskId: task.id, checkId: "second", publish: "unit" }, "director"));
+	assert.equal(final.promoted, true);
+	const output = runtime.store().getTask(task.id).outputs[0];
+	assert.equal(output.version, record(record(final.evidence).candidate).version);
+	await runtime.operation("evolve_task", { taskId: task.id, expectedVersion: 1,
+		checks: [artifactCheck, { ...artifactCheck, id: "second" }, { ...artifactCheck, id: "third", origin: "derived" }] }, "director");
+	assert.deepEqual(runtime.store().outputForInput({ taskId: task.id, output: "unit", version: output.version }), output);
+});
+
+test("mixed-candidate publication preserves the check result without failing or publishing its task", async t => {
+	const errors = [];
+	const { runtime, directory } = evaluatedFixture(t, message => { errors.push(message); });
+	writeFileSync(path.join(directory, "unit.mjs"), "export const value = 2;\n");
+	await runtime.operation("start_goal", { ...definition, tasks: [{ ...definition.tasks[0], checks: [artifactCheck, { ...artifactCheck, id: "second" }] }] }, "director");
+	const task = runtime.store().snapshot().tasks[0];
+	await runtime.operation("start_task", { taskId: task.id }, "director");
+	await runtime.operation("run_check", { taskId: task.id, checkId: "behavior", publish: "unit" }, "director");
+	writeFileSync(path.join(directory, "unit.mjs"), "export const value = 3;\n");
+	const mixed = record(await runtime.operation("run_check", { taskId: task.id, checkId: "second", publish: "unit" }, "director"));
+	assert.equal(mixed.state, "passed");
+	assert.equal(record(mixed.publication).code, "mixed_candidate_checks");
+	assert.equal(runtime.store().getTask(task.id).state, "running");
+	assert.equal(runtime.store().resultsForAttempt(text(runtime.store().getTask(task.id).currentAttemptId, "attempt")).length, 0);
+	assert.equal(errors.length, 1);
+});
+
+test("publication without declared artifacts is rejected before executing a native command", async t => {
+	let calls = 0;
+	const { runtime } = fixture(t, { execute: async () => { calls++; return { resultType: "success" }; } });
+	await runtime.operation("start_goal", definition, "director");
+	const task = runtime.store().snapshot().tasks[0];
+	await runtime.operation("start_task", { taskId: task.id }, "director");
+	await assert.rejects(runtime.operation("run_check", { taskId: task.id, checkId: "behavior", publish: "unit" }, "director"), /artifact-bound/);
+	assert.equal(calls, 0);
+});
 
 for (const transition of ["directory", "close"]) {
 	test(`an admitted native evaluator retains its original evidence store across ${transition}`, async t => {

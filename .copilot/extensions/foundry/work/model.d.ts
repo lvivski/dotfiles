@@ -115,6 +115,7 @@ export interface Attempt {
 	createdAt: string;
 	repairOf?: string;
 	assignedOwner?: string;
+	endedBy?: string;
 	waiting?: Task["waiting"];
 }
 export interface Evidence {
@@ -125,7 +126,7 @@ export interface Evidence {
 	outcome: "passed" | "failed" | "pending";
 	reference: string;
 	summary: string;
-	source: "native-command";
+	source: "native-command" | "runner-receipt";
 	candidate?: Candidate;
 	blocker?: "input-artifact";
 }

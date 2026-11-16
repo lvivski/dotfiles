@@ -5,7 +5,7 @@ import path from "node:path";
 import { openWorkStore } from "./store.mjs";
 import { array, compileCheck, compileGoal, number, readContract } from "./compiler.mjs";
 import { evaluate } from "./evaluation.mjs";
-import { admittedEvidence, effectShell, nativeObject, observeCompletion, observePost, observePre, prepareCheck, prepareCommand, prepareDispatch, reconcileDetail } from "./native.mjs";
+import { admittedEvidence, effectShell, nativeObject, observeCompletion, observePost, observePre, prepareCheck, prepareCommand, prepareDispatch, reconcileDetail, recoverChecks } from "./native.mjs";
 import { FoundryError, boolean, decodeFinding as finding, decodeOutput, json, record, text } from "./values.mjs";
 import { affinityId, nativeUsage } from "./usage.mjs";
 import { bindCandidateOutputs } from "./artifacts.mjs";
@@ -19,7 +19,7 @@ function repositoryRoot(directory) {
 /** @typedef {import("./model.js").Finding} Finding */
 /** @typedef {ReturnType<typeof openWorkStore>} Store */
 
-/** @param {{directory:string,log:(message:string)=>void,readSession?:(id:string)=>Promise<unknown>,execute?:(name:string,args:import("./model.js").Json)=>Promise<unknown>}} options */
+/** @param {{directory:string,log:(message:string)=>void,readSession?:(id:string)=>Promise<unknown>,execute?:(name:string,args:import("./model.js").Json,callId?:string)=>Promise<unknown>}} options */
 export function createRuntime(options) {
 	let directory = repositoryRoot(options.directory);
 	/** @type {Store|undefined} */
@@ -36,6 +36,8 @@ export function createRuntime(options) {
 	const notifications = new Map();
 	let scheduled = false;
 	let notificationFlush = Promise.resolve();
+	/** @type {string|undefined} */
+	let messageRouteDisabled;
 	const store = () => {
 		if (closed) throw new FoundryError("runtime_closed", "Foundry runtime is closed");
 		return database ??= openWorkStore(directory);
@@ -72,6 +74,10 @@ export function createRuntime(options) {
 	/** @param {Store} db @param {string} actor @param {import("./model.d.ts").Effect} effect */
 	function settlementWake(db, actor, effect) {
 		const goalId = db.getTask(db.getAttempt(effect.attemptId).taskId).goalId;
+		queueWakes(db, actor, goalId);
+	}
+	/** @param {Store} db @param {string} actor @param {string} goalId */
+	function queueWakes(db, actor, goalId) {
 		if (!options.execute || closed || !db.outgoingWakes(actor, true, true).some(wake =>
 			wake.goalId === goalId && db.wakeHasCurrentRecipient(wake.id))) return;
 		const key = JSON.stringify([db.databasePath, actor, goalId]);
@@ -91,6 +97,14 @@ export function createRuntime(options) {
 				} finally { release(job.database); }
 			}
 		}).catch(error => { options.log(`Settlement wake needs reconciliation: ${error instanceof Error ? error.message : String(error)}`); });
+	}
+	/** @param {Store} db @param {string} actor @param {string} goalId */
+	function deferWakes(db, actor, goalId) {
+		queueWakes(db, actor, goalId);
+		return db.outgoingWakes(actor, true).filter(wake => wake.goalId === goalId && db.wakeHasCurrentRecipient(wake.id))
+			.map(wake => ({ owner: wake.owner, generation: wake.generation,
+				state: messageRouteDisabled ? "native-route-disabled" : "native-delivery-scheduled",
+				...(messageRouteDisabled ? { error: messageRouteDisabled, wakeId: wake.id, arguments: wakeRequest(wake) } : {}) }));
 	}
 	/** @param {Store} db @param {string} name @param {unknown} args @param {unknown} result @param {string} actor */
 	const post = (db, name, args, result, actor) => observePost(db, name, args, result, actor,
@@ -125,6 +139,7 @@ export function createRuntime(options) {
 			checks: item.id === task?.id ? item.checks : item.checks.map(briefCheck) });
 		return {
 			databasePath: store().databasePath, actor, goals,
+			...(messageRouteDisabled ? { messageRouteDisabled } : {}),
 			tasks: tasks.map(taskDefinition),
 			attempts: attempts.map(item => ({ ...item, checks: item.taskId === task?.id ? item.checks : item.checks.map(briefCheck) })),
 			refreshRequired,
@@ -198,6 +213,10 @@ export function createRuntime(options) {
 			/** @type {Array<{owner:string,generation:number,state:string,error?:string}>} */
 			const delivery = [];
 			for (const wake of pending) {
+				if (messageRouteDisabled) {
+					delivery.push({ owner: wake.owner, generation: wake.generation, state: "native-route-disabled", error: messageRouteDisabled });
+					continue;
+				}
 				if (!options.execute) {
 					delivery.push({ owner: wake.owner, generation: wake.generation, state: "pending-native-delivery" });
 					continue;
@@ -208,6 +227,7 @@ export function createRuntime(options) {
 					if (!effect) continue;
 					const result = await options.execute("send_session_message", request);
 					const envelope = record(result);
+					if (disabledSessionRoute(result)) messageRouteDisabled = "This session management tool is disabled";
 					const unavailable = unavailableSession(result);
 					db.settleWakeDelivery(wake.id, effect.id, wake.generation, json(result), envelope.resultType === "success", actor, unavailable);
 					if (envelope.resultType !== "success") {
@@ -243,12 +263,20 @@ export function createRuntime(options) {
 				&& (goalId === undefined || db.getTask(db.getAttempt(effect.attemptId).taskId).goalId === goalId)
 				&& (db.ownsTask(db.getAttempt(effect.attemptId).taskId, actor)
 					|| db.getAttempt(effect.attemptId).nativeId === actor));
-			/** @type {Array<{effectId:string,state:string,error?:string}>} */
+			/** @type {Array<{effectId:string,state:string,error?:string,tool?:"send_session_message",arguments?:ReturnType<typeof stopRequest>}>} */
 			const delivery = [];
 			const handled = new Set();
 			for (const effect of pending) {
 				if (handled.has(effect.id)) continue;
 				const request = record(effect.request);
+				if (request.nativeId !== actor && messageRouteDisabled) {
+					const group = pending.filter(item => record(item.request).nativeId === request.nativeId);
+					for (const item of group) handled.add(item.id);
+					delivery.push({ effectId: effect.id, state: "native-route-disabled",
+						error: messageRouteDisabled, tool: "send_session_message",
+						arguments: stopRequest(db, group, text(request.nativeId, "cancelled native session")) });
+					continue;
+				}
 				if (!options.execute) {
 					delivery.push({ effectId: effect.id, state: "pending-local-stop" });
 					continue;
@@ -287,18 +315,9 @@ export function createRuntime(options) {
 						handled.add(item.id);
 						db.recordEffect({ ...item, state: "issued" }, actor);
 					}
-					const assignments = group.map(item => ({
-						attemptId: item.attemptId, reason: record(item.request).reason,
-						commands: db.effectsForAttempt(item.attemptId).filter(command => command.kind === "command"
-							&& ["issued", "uncertain"].includes(command.state)).map(command => ({
-							effectId: command.id, shellId: effectShell(command),
-							relatedAttemptIds: command.relatedAttemptIds ?? [],
-						})),
-					}));
-					const result = await options.execute("send_session_message", json({
-						session_id: text(request.nativeId, "cancelled native session"), delivery_mode: "immediate",
-						message: `Foundry stop assignments: ${JSON.stringify(assignments)}. Stop execution of every listed attempt, including a listed warm repair. Do not stop an unlisted newer attempt or unrelated job. Use the listed actual shell IDs only in this native session, and do not stop a shared command while any related attempt is still active. Preserve files, worktrees, actual command settlement and historical outcomes. Queue acceptance alone is not command settlement.`,
-					}));
+					const result = await options.execute("send_session_message",
+						json(stopRequest(db, group, text(request.nativeId, "cancelled native session"))));
+					if (disabledSessionRoute(result)) messageRouteDisabled = "This session management tool is disabled";
 					const accepted = record(result).resultType === "success";
 					const unavailable = unavailableSession(result);
 					for (const item of group) {
@@ -356,6 +375,7 @@ export function createRuntime(options) {
 			case "get_context": {
 				const goalId = typeof args.goalId === "string" ? args.goalId
 					: args.taskId === undefined ? undefined : ownedTask(args.taskId, actor, true).goalId;
+				recoverChecks(store(), actor, effect => settlementWake(store(), actor, effect), goalId);
 				const stops = await deliverStops(actor, goalId);
 				if (options.readSession && store().openInputRequests(actor, goalId).some(attempt => attempt.nativeId === actor)) {
 					clearObservedInputs(await options.readSession(actor), actor);
@@ -415,33 +435,73 @@ export function createRuntime(options) {
 					if (attempt.taskId !== task.id || attempt.nativeId !== actor) {
 						throw new FoundryError("foreign_execution", "Execute the assigned evaluator in its actual native worker");
 					}
-					if (!options.execute) throw new FoundryError("native_execution_unavailable", "This check requires the native permission pipeline");
 					const checkId = text(args.checkId, "check id");
+					const publish = args.publish === undefined ? undefined : text(args.publish, "output name");
+					if (publish && !attempt.checks.find(check => check.id === checkId)?.artifactFiles) {
+						throw new FoundryError("unbound_artifact", "Publish requires an artifact-bound assigned check");
+					}
+					if (publish && task.currentAttemptId === attempt.id && task.state === "done"
+						&& task.outputs.some(output => output.name === publish)) {
+						return { state: "passed", attemptId: attempt.id, publication: { state: "already-published", outputs: task.outputs } };
+					}
 					const repair = args.repair === undefined ? false : boolean(args.repair, "repair");
-					const prepared = prepareCheck(db, attempt.id, checkId, directory, actor);
-					const response = await options.execute(prepared.tool, json(prepared.arguments));
-					const envelope = typeof response === "string" ? undefined : record(response);
-					if (envelope && envelope.resultType !== "success") {
-						if (envelope.resultType === "denied" || envelope.resultType === "rejected") {
-							const effect = db.getEffect(prepared.effectId);
-							db.recordEffect({ ...effect, state: "settled", result: json({ nativeResult: response, neverIssued: true }) }, actor);
+					const pending = db.effectsForAttempt(attempt.id).filter(effect => effect.kind === "command"
+						&& ["issued", "uncertain"].includes(effect.state) && record(effect.request).checkId === checkId);
+					recoverChecks(db, actor, effect => settlementWake(db, actor, effect), task.goalId);
+					const latest = db.effectsForAttempt(attempt.id).filter(effect => effect.kind === "command"
+						&& record(effect.request).checkId === checkId).at(-1);
+					let effectId = pending.at(-1)?.id ?? (latest?.result && record(latest.result).runnerReceipt !== undefined ? latest.id : undefined);
+					if (effectId !== undefined) admittedEvidence(db, attempt.id);
+					if (effectId === undefined) {
+						if (!options.execute) throw new FoundryError("native_execution_unavailable", "This check requires the native permission pipeline");
+						const prepared = prepareCheck(db, attempt.id, checkId, directory, actor);
+						effectId = prepared.effectId;
+						const response = await options.execute(prepared.tool, json(prepared.arguments), effectId);
+						const envelope = typeof response === "string" ? undefined : record(response);
+						if (envelope && envelope.resultType !== "success") {
+							if (envelope.resultType === "denied" || envelope.resultType === "rejected") {
+								const effect = db.getEffect(effectId);
+								db.recordEffect({ ...effect, state: "settled", result: json({ nativeResult: response, neverIssued: true }) }, actor);
+							}
+							const message = `Native check ${checkId} was not accepted: ${JSON.stringify(response)}`;
+							options.log(message);
+							return { state: "native-execution-rejected", attemptId: attempt.id, effectId, nativeResult: response };
 						}
-						const message = `Native check ${checkId} was not accepted: ${JSON.stringify(response)}`;
-						options.log(message);
-						return { state: "native-execution-rejected", attemptId: attempt.id, effectId: prepared.effectId, nativeResult: response };
+						post(db, prepared.tool, prepared.arguments, response, actor);
 					}
-					post(db, prepared.tool, prepared.arguments, response, actor);
-					const evidence = db.evidenceForAttempt(attempt.id, prepared.effectId).at(-1);
+					const evidence = db.evidenceForAttempt(attempt.id, effectId).at(-1);
 					if (!evidence) {
-						return { state: "pending-native-evidence", attemptId: attempt.id, effectId: prepared.effectId };
+						return { state: "pending-native-evidence", attemptId: attempt.id, effectId };
 					}
-					const outcome = { state: evidence.outcome, attemptId: attempt.id, effectId: prepared.effectId, evidence };
+					const outcome = { state: evidence.outcome, attemptId: attempt.id, effectId, evidence };
+					if (publish && evidence.outcome === "passed") {
+						const current = db.getTask(task.id);
+						if (current.currentAttemptId !== attempt.id || current.version !== attempt.taskVersion
+							|| !["running", "waiting"].includes(current.state)) {
+							return { ...outcome, publication: { state: "historical" } };
+						}
+						const verdict = evaluate(attempt.checks, admittedEvidence(db, attempt.id));
+						if (!verdict.passed) return { ...outcome, publication: { state: "incomplete", ...verdict } };
+						if (!evidence.candidate) throw new FoundryError("unbound_artifact", "Passing check has no evaluated candidate");
+						try {
+							const result = report({ taskId: task.id, attemptId: attempt.id, state: "done",
+								resultId: `result:publish:${attempt.id}:${publish}`,
+								summary: `Publish ${publish} after all assigned checks passed`,
+								outputs: [{ name: publish, kind: "code", reference: evidence.candidate.reference, version: evidence.candidate.version }],
+							}, actor, db);
+							return { ...outcome, ...result, delivery: result.promoted ? deferWakes(db, actor, task.goalId) : [] };
+						} catch (error) {
+							if (!(error instanceof FoundryError) || !["mixed_candidate_checks", "unbound_artifact", "candidate_not_evaluated"].includes(error.code)) throw error;
+							options.log(`Publication blocked: ${error.message}`);
+							return { ...outcome, publication: { state: "blocked", code: error.code, message: error.message } };
+						}
+					}
 					if (!repair || evidence.outcome !== "failed") return outcome;
 					const result = report({ taskId: task.id, attemptId: attempt.id,
-						resultId: `result:${prepared.effectId}`, ...(evidence.blocker ? { state: "blocked" } : { repair: true }),
+						resultId: `result:${effectId}`, ...(evidence.blocker ? { state: "blocked" } : { repair: true }),
 						summary: evidence.summary }, actor, db);
 					return { ...outcome, ...result, state: evidence.blocker ? "blocked" : outcome.state, delivery: result.promoted
-						? await deliverWakes(actor, "continuation" in result ? undefined : result.result.attemptId, undefined, false, db) : [] };
+						? deferWakes(db, actor, task.goalId) : [] };
 				} finally { release(db); }
 			}
 			case "prepare_command": {
@@ -458,8 +518,8 @@ export function createRuntime(options) {
 			}
 			case "report_result": {
 				const result = report(args, actor);
-				return { ...result, delivery: result.promoted
-					? await deliverWakes(actor, "continuation" in result ? undefined : result.result.attemptId) : [] };
+				const task = store().getTask(store().getAttempt(result.result.attemptId).taskId);
+				return { ...result, delivery: result.promoted ? deferWakes(store(), actor, task.goalId) : [] };
 			}
 
 			case "retry_task": return store().retryTask(text(args.taskId, "task id"), text(args.attemptId, "failed attempt"), actor);
@@ -572,6 +632,27 @@ function unavailableSession(result) {
 	const envelope = record(result);
 	return envelope.resultType !== "success"
 		&& /session.*(?:not found|does not exist|archived|unavailable|offline)|(?:not found|archived|unavailable|offline).*session/iu.test(JSON.stringify(envelope));
+}
+
+/** @param {unknown} result */
+function disabledSessionRoute(result) {
+	return typeof result !== "string" && record(result).resultType !== "success"
+		&& /session[\s-]+management.*disabled/iu.test(JSON.stringify(result));
+}
+
+/** @param {Store} db @param {import("./model.d.ts").Effect[]} effects @param {string} nativeId */
+function stopRequest(db, effects, nativeId) {
+	const assignments = effects.map(item => ({
+		attemptId: item.attemptId, reason: record(item.request).reason,
+		commands: db.effectsForAttempt(item.attemptId).filter(command => command.kind === "command"
+			&& ["issued", "uncertain"].includes(command.state)).map(command => ({
+				effectId: command.id, shellId: effectShell(command), relatedAttemptIds: command.relatedAttemptIds ?? [],
+			})),
+	}));
+	return {
+		session_id: nativeId, delivery_mode: "immediate",
+		message: `Foundry stop assignments: ${JSON.stringify(assignments)}. Stop execution of every listed attempt, including a listed warm repair. Do not stop an unlisted newer attempt or unrelated job. Use the listed actual shell IDs only in this native session, and do not stop a shared command while any related attempt is still active. Preserve files, worktrees, actual command settlement and historical outcomes. Queue acceptance alone is not command settlement.`,
+	};
 }
 
 /** @param {unknown} input @param {string} label */

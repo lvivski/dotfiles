@@ -93,6 +93,7 @@ function decodeAttempt(value) {
 		createdAt: text(row.createdAt, "attempt.createdAt"),
 		...(nativeId === undefined ? {} : { nativeId }), ...(repairOf === undefined ? {} : { repairOf }),
 		...(row.assignedOwner === undefined ? {} : { assignedOwner: text(row.assignedOwner, "assigned coordinator") }),
+		...(row.endedBy === undefined ? {} : { endedBy: text(row.endedBy, "attempt terminator") }),
 		...(row.waiting === undefined ? {} : { waiting: decodeWaiting(row.waiting) }),
 	};
 }
@@ -649,14 +650,21 @@ export function openWorkStore(workingDirectory, options = {}) {
 			}
 		}
 	}
-	/** @param {Attempt} attempt @param {boolean} [notify] */
-	function releaseSlot(attempt, notify = true) {
+	/** @param {Attempt} attempt */
+	function releaseOwnedClaims(attempt) {
+		if (attempt.nativeId === undefined || !["done", "failed", "cancelled"].includes(attempt.state) || attempt.endedBy !== attempt.nativeId
+			|| outstanding(attempt, true) || get("tasks", attempt.taskId).repairReservation?.attemptId === attempt.id) return;
+		db.prepare("DELETE FROM claims WHERE json_extract(document,'$.attemptId')=?").run(attempt.id);
+	}
+	/** @param {Attempt} attempt @param {boolean} [notify] @param {boolean} [preserveClaims] */
+	function releaseSlot(attempt, notify = true, preserveClaims = false) {
 		if (attempt.slot && !outstanding(attempt, true)
 			&& ["done", "failed", "cancelled", "waiting"].includes(attempt.state)) {
 			attempt.slot = false;
 			put("attempts", attempt);
 			if (notify) wakeCapacity(get("tasks", attempt.taskId).goalId);
 		}
+		if (!preserveClaims) releaseOwnedClaims(attempt);
 	}
 	/** @param {Goal} goal */
 	function budgetAvailable(goal) {
@@ -733,6 +741,12 @@ export function openWorkStore(workingDirectory, options = {}) {
 		delete task.repairReservation;
 		put("attempts", attempt);
 		put("tasks", task);
+		if (localRepairOf !== undefined) {
+			for (const claim of list("claims", "WHERE json_extract(document,'$.attemptId')=?", [localRepairOf])) {
+				db.prepare("DELETE FROM claims WHERE id=?").run(claim.id);
+				put("claims", { ...claim, id: randomUUID(), attemptId: attempt.id });
+			}
+		}
 		return attempt;
 	}
 	/** @param {string} attemptId @param {string} nativeId @param {string} actor @param {Json} [receipt] @param {boolean} [local] @returns {Attempt} */
@@ -810,7 +824,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 		if (result.evidence.some((evidence) => {
 			const check = attempt.checks.find((item) => item.id === evidence.checkId && item.version === evidence.checkVersion);
 			const actual = admitted.get(evidence.id);
-			return evidence.attemptId !== attempt.id || !check || evidence.source !== "native-command"
+			return evidence.attemptId !== attempt.id || !check
 				|| !actual || digest(json(actual)) !== digest(json(evidence));
 		})) return false;
 		if (result.state === "done" && attempt.checks.some((check) => {
@@ -848,10 +862,11 @@ export function openWorkStore(workingDirectory, options = {}) {
 		delete task.waiting;
 		if (result.state === "done") task.outputs = result.outputs;
 		attempt.state = result.state === "done" ? "done" : "failed";
+		attempt.endedBy = result.reportedBy ?? result.sender;
 		put("tasks", task);
 		put("attempts", attempt);
 		db.prepare("UPDATE outcomes SET pending=0 WHERE result_id IN (SELECT id FROM results WHERE attempt_id=?)").run(attempt.id);
-		releaseSlot(attempt, !quiet);
+		releaseSlot(attempt, !quiet, quiet && result.state === "failed");
 		if (!quiet) notifyOutcome(task);
 		if (result.state === "done") {
 			const consumers = db.prepare("SELECT DISTINCT task_id FROM dependencies WHERE producer_id=?").all(task.id);
@@ -981,6 +996,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 			if (task.waiting?.kind === "input") attempt.waiting = task.waiting;
 			if (!["done", "failed", "cancelled"].includes(attempt.state) || outstanding(attempt, true)) {
 				attempt.state = "cancelled";
+				attempt.endedBy = actor;
 				put("attempts", attempt);
 				retirePrepared(attempt, "superseded");
 				scheduleStop(attempt, actor, "superseded");
@@ -1444,7 +1460,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 					for (const value of observations) {
 						const evidence = decodeEvidence(value);
 						const check = attempt.checks.find((item) => item.id === evidence.checkId && item.version === evidence.checkVersion);
-						if (evidence.attemptId !== attempt.id || !check || evidence.source !== "native-command") {
+						if (evidence.attemptId !== attempt.id || !check) {
 							throw new FoundryError("evidence_mismatch", "Admitted evidence must match this operation's assigned attempt and evaluator");
 						}
 					}
@@ -1480,6 +1496,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 				const task = get("tasks", old.taskId);
 				if (old.nativeId !== actor) throw new FoundryError("foreign_execution", "A local repair must retain the actual reporting worker");
 				const announce = () => {
+					releaseOwnedClaims(get("attempts", old.id));
 					if (recorded.promoted && recorded.result.state === "failed" && !previouslyPromoted) {
 						notifyOutcome(task);
 						wakeCapacity(task.goalId);
@@ -1611,6 +1628,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 						if (["done", "failed", "cancelled"].includes(attempt.state) && !outstanding(attempt, true)) continue;
 						if (attempt.id === task.currentAttemptId && waiting?.kind === "input") attempt.waiting = waiting;
 						attempt.state = "cancelled";
+						attempt.endedBy = actor;
 						put("attempts", attempt);
 						retirePrepared(attempt, "cancelled");
 						scheduleStop(attempt, actor);
@@ -1853,6 +1871,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 				const affected = [task];
 				const seen = new Set([task.id]);
 				for (const producer of affected) {
+					if (!producer.outputs.length) continue;
 					for (const row of db.prepare("SELECT DISTINCT task_id FROM dependencies WHERE producer_id=? AND version IS NULL").all(producer.id)) {
 						const consumer = get("tasks", text(row.task_id, "consumer"));
 						if (!seen.has(consumer.id) && consumer.state !== "cancelled") { seen.add(consumer.id); affected.push(consumer); }
