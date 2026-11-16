@@ -10,10 +10,10 @@ import { createRuntime } from "./runtime.mjs";
 import { renderBoard, startBoard } from "./board.mjs";
 import { record, text } from "./values.mjs";
 import { readCandidate } from "./artifacts.mjs";
-import { createIssueSource } from "./issue-source.mjs";
+import { createIssueSource } from "./issues.mjs";
 import { buildHooks } from "../hooks.mjs";
 import { admittedEvidence } from "./native.mjs";
-import { readCommandEvents } from "./native-recovery.mjs";
+import { readCommandEvents } from "./recovery.mjs";
 
 /** @param {import("node:test").TestContext} t @param {Partial<Omit<Parameters<typeof createRuntime>[0],"directory">>} [hooks] */
 function fixture(t, hooks = {}) {
@@ -37,7 +37,7 @@ const definition = {
 function factorySource(directory, overrides = {}) {
 	mkdirSync(path.join(directory, ".foundry"), { recursive: true });
 	const policy = {
-		format: "foundry-factory", version: 1, id: "fixture-factory", mechanism: "stop-hook",
+		format: "foundry-factory", version: 2, id: "fixture-factory", mechanism: "stop-hook",
 		maximumJobs: 1, blocks: 3, completionTaskId: "complete",
 		goal: { ...definition, scope: { ...definition.scope, mode: "interactive" },
 			tasks: [{ ...definition.tasks[0], id: "complete" }] },
@@ -373,15 +373,230 @@ const authorizedFactory = { stopHookQualified: true, readMode: async () => "inte
 const issuePolicy = { kind: "github-issue", repository: "example/project", actors: ["trusted"], maximumEvents: 2 };
 const sourceEvent = { number: 1, state: "open", user: { login: "trusted" }, title: "Requested outcome", body: "Source data", last_edited_at: null, updated_at: "2026-01-01T00:00:00Z" };
 
-/** @param {ReturnType<typeof createRuntime>} runtime @param {string} taskId */
-async function acceptInline(runtime, taskId) {
-	await runtime.operation("start_task", { taskId }, "director");
-	const prepared = record(await runtime.operation("prepare_check", { taskId, checkId: "behavior" }, "director"));
-	runtime.pre("bash", prepared.arguments, "director", `native:${String(prepared.effectId)}`);
+/** @param {ReturnType<typeof createRuntime>} runtime @param {string} taskId @param {string} [actor] */
+async function acceptInline(runtime, taskId, actor = "director") {
+	await runtime.operation("start_task", { taskId }, actor);
+	const prepared = record(await runtime.operation("prepare_check", { taskId, checkId: "behavior" }, actor));
+	runtime.pre("bash", prepared.arguments, actor, `native:${String(prepared.effectId)}`);
 	const stdout = execFileSync("/bin/sh", ["-c", text(record(prepared.arguments).command, "command")], { encoding: "utf8" });
-	runtime.post("bash", prepared.arguments, { resultType: "success", textResultForLlm: stdout }, "director");
-	return runtime.operation("report_result", { taskId, summary: "Accepted inline behavior" }, "director");
+	runtime.post("bash", prepared.arguments, { resultType: "success", textResultForLlm: stdout }, actor);
+	return runtime.operation("report_result", { taskId, summary: "Accepted inline behavior" }, actor);
 }
+
+test("factory templates staff three native coordinator levels locally under a one-worker ceiling", async t => {
+	const { runtime, directory } = fixture(t, authorizedFactory);
+	const source = factorySource(directory, { goal: {
+		...definition, scope: { ...definition.scope, mode: "interactive" }, limits: { workers: 1 },
+		units: [{ id: "auth", name: "Authentication", parentId: "mail" },
+			{ id: "organization", name: "<Product>", kind: "organization" }, { id: "mail", name: "Mail", parentId: "organization" }],
+		tasks: [
+			{ id: "org-lead", unitId: "organization", role: "coordinator", title: "Organization lead", workType: "analysis", assignment: "Coordinate the organization" },
+			{ id: "mail-lead", parentId: "org-lead", unitId: "mail", role: "coordinator", title: "Mail lead", workType: "analysis", assignment: "Coordinate mail" },
+			{ id: "auth-lead", parentId: "mail-lead", unitId: "auth", role: "coordinator", title: "Auth lead", workType: "analysis", assignment: "Coordinate authentication" },
+			{ ...definition.tasks[0], id: "complete", parentId: "auth-lead", unitId: "auth" },
+		],
+	} });
+	await runtime.operation("start_factory", { source }, "director");
+	let batch = record(await runtime.operation("advance", {}, "director"));
+	let actor = "director";
+	for (const nativeId of ["native-org", "native-mail", "native-auth"]) {
+		assert.ok(Array.isArray(batch.prepared));
+		assert.equal(batch.prepared.length, 1);
+		const call = record(batch.prepared[0]);
+		const args = record(call.arguments);
+		assert.match(text(record(args.kickoff).prompt, "coordinator prompt"), /continuing coordination/);
+		runtime.pre("create_session", args, actor, `create:${nativeId}`);
+		runtime.post("create_session", args, { id: nativeId }, actor);
+		const attempt = runtime.store().getAttempt(text(call.attemptId, "attempt"));
+		assert.equal(attempt.creator, actor);
+		actor = nativeId;
+		const task = runtime.store().getTask(attempt.taskId);
+		await runtime.operation("wait_task", { taskId: task.id, attemptId: attempt.id, kind: "events",
+			reason: "Staff the authorized child", handledGeneration: task.coordination?.generation }, actor);
+		assert.throws(() => runtime.pre("bash", { command: "echo unadmitted" }, actor, "unadmitted-command"), { code: "capacity_required" });
+		assert.throws(() => runtime.pre("apply_patch", {}, actor, "unadmitted-edit"), { code: "capacity_required" });
+		batch = record(await runtime.operation("prepare_dispatch", { goalId: task.goalId }, actor));
+	}
+	assert.ok(Array.isArray(batch.prepared));
+	assert.equal(batch.prepared.length, 1);
+	const snapshot = runtime.store().snapshot();
+	assert.equal(snapshot.attempts.filter(attempt => attempt.slot).length, 1);
+	assert.equal(snapshot.units.length, 3);
+	const board = renderBoard(snapshot);
+	assert.match(board, /&lt;Product&gt;/);
+	assert.match(board, /within Mail/);
+	assert.match(board, /Original native creator/);
+	assert.match(board, /Coordination work: handled/);
+});
+
+test("a natural coordinator stop parks one attempt and does not create a stop-hook bookkeeping loop", async t => {
+	const { runtime, directory } = fixture(t, authorizedFactory);
+	await runtime.operation("start_factory", { source: factorySource(directory, { goal: { ...definition,
+		scope: { ...definition.scope, mode: "interactive" }, tasks: [
+			{ id: "lead", title: "Lead", assignment: "Coordinate", workType: "analysis", role: "coordinator" },
+			{ ...definition.tasks[0], id: "complete", parentId: "lead" },
+		] } }) }, "director");
+	const lead = runtime.store().snapshot().tasks.find(task => task.role === "coordinator");
+	assert.ok(lead);
+	const attempt = record(await runtime.operation("start_task", { taskId: lead.id }, "director"));
+	const final = runtime.store().snapshot().tasks.find(task => task.role === "producer");
+	assert.ok(final);
+	const batch = record(await runtime.operation("prepare_dispatch", { taskIds: [final.id] }, "director"));
+	assert.ok(Array.isArray(batch.prepared));
+	const call = record(batch.prepared[0]);
+	runtime.pre("create_session", call.arguments, "director", "staff-final");
+	runtime.post("create_session", call.arguments, { id: "native-final-worker" }, "director");
+	runtime.agentStop("director");
+	assert.equal(runtime.store().getTask(lead.id).waiting?.kind, "events");
+	assert.equal(runtime.store().getAttempt(text(attempt.id, "attempt")).slot, false);
+	const count = runtime.store().snapshot().attempts.length;
+	runtime.agentStop("director", true);
+	assert.equal(runtime.store().snapshot().attempts.length, count);
+	assert.equal(runtime.store().snapshot().factories?.[0].state, "active");
+});
+
+test("product acceptance retires a coordinator lease and explicit reopen restores its existing session without repair", async t => {
+	const { runtime, directory } = fixture(t, authorizedFactory);
+	await runtime.operation("start_factory", { source: factorySource(directory, { goal: { ...definition,
+		scope: { ...definition.scope, mode: "interactive" }, tasks: [
+			{ id: "lead", title: "Lead", assignment: "Coordinate", workType: "analysis", role: "coordinator" },
+			{ ...definition.tasks[0], id: "complete", parentId: "lead" },
+		] } }) }, "director");
+	const lead = runtime.store().snapshot().tasks.find(task => task.role === "coordinator");
+	const final = runtime.store().snapshot().tasks.find(task => task.role === "producer");
+	assert.ok(lead && final);
+	const original = record(await runtime.operation("start_task", { taskId: lead.id }, "director"));
+	await runtime.operation("wait_task", { taskId: lead.id, attemptId: original.id, kind: "events", reason: "Await checked acceptance",
+		handledGeneration: runtime.store().getTask(lead.id).coordination?.generation }, "director");
+	await acceptInline(runtime, final.id);
+	assert.equal(runtime.store().getTask(lead.id).state, "done");
+	assert.equal(runtime.store().snapshot().completions?.[0].settled, true);
+	await runtime.operation("reopen_job", { goalId: final.goalId }, "director");
+	const restored = runtime.store().getTask(lead.id);
+	const lease = runtime.store().getAttempt(restored.currentAttemptId ?? "");
+	assert.notEqual(lease.id, original.id);
+	assert.equal(lease.nativeId, "director");
+	assert.equal(lease.slot, false);
+	assert.equal(restored.waiting?.kind, "events");
+	assert.equal(restored.repairs ?? 0, 0);
+	assert.equal(runtime.store().getAttempt(text(original.id, "old lease")).state, "done");
+});
+
+test("required cross-goal commitments fence both final acceptances until actual producer fulfillment", async t => {
+	const { runtime, directory } = fixture(t, authorizedFactory);
+	/** @param {string} id */
+	const policy = id => factorySource(directory, { id, goal: { ...definition,
+		scope: { ...definition.scope, mode: "interactive" }, tasks: [
+			{ id: "lead", title: `${id} lead`, assignment: "Coordinate", workType: "analysis", role: "coordinator" },
+			{ ...definition.tasks[0], id: "complete", parentId: "lead" },
+		] } });
+	await runtime.operation("start_factory", { source: policy("source-org") }, "source-owner");
+	await runtime.operation("start_factory", { source: policy("destination-org") }, "destination-owner");
+	const snapshot = runtime.store().snapshot();
+	const source = snapshot.tasks.find(task => task.title === "source-org lead");
+	const destination = snapshot.tasks.find(task => task.title === "destination-org lead");
+	assert.ok(source && destination);
+	const consumer = snapshot.tasks.find(task => task.parentId === source.id);
+	const final = snapshot.tasks.find(task => task.parentId === destination.id);
+	assert.ok(consumer && final);
+	await runtime.operation("start_task", { taskId: source.id }, "source-owner");
+	await runtime.operation("start_task", { taskId: destination.id }, "destination-owner");
+	const proposed = record(record(await runtime.operation("request_collaboration", { id: "peer-contract", sourceTaskId: source.id,
+		destinationTaskId: destination.id, consumerTaskId: consumer.id, expectedVersion: consumer.version,
+		title: "Peer interface", output: "interface" }, "source-owner")).request);
+	const accepted = record(record(await runtime.operation("respond_collaboration", { collaborationId: proposed.id, expectedRevision: proposed.revision,
+		action: "accept", producer: { title: "Produce interface", assignment: "Publish the interface", workType: "analysis" } }, "destination-owner")).request);
+	await assert.rejects(runtime.operation("start_task", { taskId: consumer.id }, "source-owner"), { code: "inputs_unavailable" });
+	const early = record(await acceptInline(runtime, final.id, "destination-owner"));
+	assert.equal(early.promoted, false);
+	const producerId = text(accepted.producerTaskId, "committed producer");
+	await runtime.operation("start_task", { taskId: producerId }, "destination-owner");
+	await runtime.operation("report_result", { taskId: producerId, summary: "Interface published",
+		outputs: [{ name: "interface", kind: "analysis", reference: "immutable:peer-interface", version: "peer-v1" }] }, "destination-owner");
+	await runtime.operation("respond_collaboration", { collaborationId: proposed.id, expectedRevision: accepted.revision, action: "fulfill" }, "destination-owner");
+	assert.match(renderBoard(runtime.store().snapshot()), /Collaboration commitments/);
+	assert.match(renderBoard(runtime.store().snapshot()), /peer-v1/);
+	await runtime.operation("report_result", { taskId: final.id, summary: "Accepted inline behavior" }, "destination-owner");
+	assert.equal(runtime.store().snapshot().completions?.find(completion => completion.goalId === final.goalId)?.delivered, true);
+	await acceptInline(runtime, consumer.id, "source-owner");
+	assert.equal(runtime.store().snapshot().completions?.find(completion => completion.goalId === consumer.goalId)?.delivered, true);
+});
+
+test("old factory and source-contract protocols are rejected rather than silently reinterpreted", async t => {
+	const { runtime, directory } = fixture(t, authorizedFactory);
+	await assert.rejects(runtime.operation("start_factory", { source: factorySource(directory, { version: 1 }) }, "director"), { code: "unsupported_factory" });
+	writeFileSync(path.join(directory, ".foundry/contract.json"), JSON.stringify({ ...definition, format: "foundry-contract", version: 1 }));
+	await assert.rejects(runtime.operation("start_goal", { source: ".foundry/contract.json" }, "director"), { code: "unsupported_contract" });
+	assert.equal(runtime.store().snapshot().goals.length, 0);
+});
+
+test("coordinator replacement inspects native absence and rejects caller claims or temporary offline status", async t => {
+	let state = "available";
+	const { runtime, directory } = fixture(t, { readSession: async id => state === "available" ? { id }
+		: { resultType: "failure", error: state === "offline" ? "Session offline" : "Session archived" } });
+	execFileSync("git", ["-C", directory, "-c", "user.name=Foundry tests", "-c", "user.email=foundry@example.invalid",
+		"commit", "--quiet", "--allow-empty", "-m", "fixture"]);
+	await runtime.operation("start_goal", { ...definition, tasks: [
+		{ id: "lead", title: "Lead", assignment: "Coordinate", workType: "analysis", role: "coordinator" },
+	] }, "director");
+	const batch = record(await runtime.operation("prepare_dispatch", { taskIds: ["lead"] }, "director"));
+	assert.ok(Array.isArray(batch.prepared));
+	const call = record(batch.prepared[0]);
+	runtime.pre("create_session", call.arguments, "director", "old-lead-create");
+	runtime.post("create_session", call.arguments, { id: "old-lead" }, "director");
+	runtime.store().captureUsageAffinity("native-baseline", "old-lead");
+	const request = { taskId: "lead", attemptId: call.attemptId, newOwner: "director", unavailable: true };
+	await assert.rejects(runtime.operation("handoff_task", request, "director"), { code: "foreign_execution" });
+	state = "offline";
+	await assert.rejects(runtime.operation("handoff_task", request, "director"), { code: "foreign_execution" });
+	state = "archived";
+	await runtime.operation("handoff_task", request, "director");
+	assert.equal(runtime.store().getTask("lead").owner, "director");
+	assert.equal(runtime.store().getTask("lead").repairs ?? 0, 0);
+});
+
+test("execution handoff conserves its baseline when the project's branch advances before replacement", async t => {
+	const { runtime, directory } = fixture(t, { readSession: async id => ({ id }) });
+	const commit = () => execFileSync("git", ["-C", directory, "-c", "user.name=Foundry tests",
+		"-c", "user.email=foundry@example.invalid", "commit", "--quiet", "--allow-empty", "-m", "fixture"]);
+	commit();
+	await runtime.operation("start_goal", { ...definition, tasks: [{ ...definition.tasks[0], id: "work" }] }, "director");
+	await runtime.operation("start_task", { taskId: "work" }, "director");
+	const attemptId = runtime.store().getTask("work").currentAttemptId;
+	assert.ok(attemptId);
+	const original = runtime.store().getAttempt(attemptId);
+	await runtime.operation("handoff_task", { taskId: "work", attemptId, newOwner: "replacement" }, "director");
+	commit();
+	await assert.rejects(runtime.operation("start_task", { taskId: "work" }, "replacement"), { code: "execution_base_mismatch" });
+	assert.equal(runtime.store().getTask("work").state, "ready");
+	const batch = record(await runtime.operation("prepare_dispatch", { taskIds: ["work"] }, "replacement"));
+	assert.ok(Array.isArray(batch.prepared));
+	const call = record(batch.prepared[0]);
+	assert.equal(record(call.arguments).base_branch, original.baseCommit);
+	runtime.pre("create_session", call.arguments, "replacement", "replacement-create");
+	runtime.post("create_session", call.arguments, { id: "replacement-worker" }, "replacement");
+	assert.throws(() => runtime.pre("bash", { command: "true" }, "replacement-worker", "wrong-baseline-command"),
+		{ code: "execution_base_mismatch" });
+});
+
+test("one recorded human input wait does not suppress another coordinator's ready factory work", async t => {
+	const { runtime, directory } = fixture(t, authorizedFactory);
+	await runtime.operation("start_factory", { source: factorySource(directory, { goal: {
+		...definition, scope: { ...definition.scope, mode: "interactive" },
+		tasks: [{ ...definition.tasks[0], id: "human" }, { ...definition.tasks[0], id: "complete" }],
+	} }) }, "director");
+	const tasks = runtime.store().snapshot().tasks;
+	const human = tasks.find(task => task.id.endsWith(":human"));
+	const ready = tasks.find(task => task.id.endsWith(":complete"));
+	assert.ok(human && ready);
+	await runtime.operation("start_task", { taskId: human.id }, "director");
+	await runtime.operation("wait_task", { taskId: human.id, kind: "input", requestId: "real-native-question", reason: "A human decision" }, "director");
+	runtime.store().reassignTask(ready.id, "independent-coordinator", "director");
+	const advanced = record(await runtime.operation("advance", {}, "independent-coordinator"));
+	assert.ok(Array.isArray(advanced.prepared));
+	assert.equal(advanced.prepared.length, 1);
+	assert.equal(runtime.store().getTask(human.id).waiting?.requestId, "real-native-question");
+});
 
 for (const workers of [undefined, 1]) test(`one default job ${workers === undefined ? "dispatches independent workers in parallel" : "retains its explicit worker ceiling"}`, async t => {
 	const { runtime, directory } = fixture(t, authorizedFactory);

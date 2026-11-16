@@ -11,7 +11,7 @@ import { checkReceiptPath } from "./native.mjs";
 const sha256 = value => createHash("sha256").update(value).digest("hex");
 
 const [directory, attemptId, checkId, effectId] = process.argv.slice(2);
-if (!directory || !attemptId || !checkId || !effectId) throw new Error("Usage: check-runner.mjs WORKING_DIRECTORY ATTEMPT_ID CHECK_ID EFFECT_ID");
+if (!directory || !attemptId || !checkId || !effectId) throw new Error("Usage: runner.mjs WORKING_DIRECTORY ATTEMPT_ID CHECK_ID EFFECT_ID");
 const store = openWorkStore(directory);
 try {
 	const attempt = store.getAttempt(attemptId);

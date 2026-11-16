@@ -4,8 +4,8 @@ import { buildHooks } from "./hooks.mjs";
 import { createRuntime } from "./work/runtime.mjs";
 import { buildTools } from "./work/tools.mjs";
 import { FoundryError } from "./work/values.mjs";
-import { createIssueSource } from "./work/issue-source.mjs";
-import { readCommandEvents } from "./work/native-recovery.mjs";
+import { createIssueSource } from "./work/issues.mjs";
+import { readCommandEvents } from "./work/recovery.mjs";
 
 /** @type {import("@github/copilot-sdk").CopilotSession|undefined} */
 let session;

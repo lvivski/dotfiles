@@ -29,7 +29,7 @@ export function compileCheck(value) {
 
 /**
  * A source contract describes meaning; its execution records live in work.sqlite.
- * Compilation makes no model calls and invents neither teams nor a verifier DAG.
+ * Compilation makes no model calls and invents neither units nor a verifier DAG.
  *
  * @param {unknown} value
  * @param {ReturnType<typeof import("./store.mjs").openWorkStore>} store
@@ -38,27 +38,31 @@ export function compileCheck(value) {
  */
 export function compileGoal(value, store, actor, source) {
 	const compiled = compileDefinition(value, source);
-	return store.createGoalWithTasks(compiled.goal, compiled.tasks, actor);
+	return store.createGoalWithTasks(compiled.goal, compiled.tasks, actor, compiled.units);
 }
 
 /** @param {unknown} value @param {{reference:string,sha256:string}} [source] */
 export function compileDefinition(value, source) {
 	const input = record(value);
-	closed(input, ["id", "title", "scope", "projectId", "limits", "tasks", "format", "version"]);
+	closed(input, ["id", "title", "scope", "projectId", "limits", "tasks", "units", "format", "version"]);
+	if ((input.format !== undefined || input.version !== undefined) && (input.format !== "foundry-contract" || input.version !== 2)) {
+		throw new FoundryError("unsupported_contract", "Expected a foundry-contract version 2 definition");
+	}
 	const scope = decodeScope(input.scope);
 	const definitions = array(input.tasks ?? [], "tasks").map(value => {
 		const task = record(value);
-		closed(task, ["id", "parentId", "teamId", "title", "assignment", "workType", "checks", "scope", "inputs"]);
+		closed(task, ["id", "parentId", "unitId", "role", "title", "assignment", "workType", "checks", "scope", "inputs"]);
 		const workType = text(task.workType, "work type");
 		if (!scope.workTypes.includes("*") && !scope.workTypes.includes(workType)) throw new FoundryError("scope_widening", `Work type ${workType} is outside the goal scope`);
 		return {
 			title: text(task.title, "task title"),
 			assignment: text(task.assignment, "complete assignment"),
 			workType,
+			...(task.role === undefined ? {} : { role: taskRole(task.role) }),
 			checks: array(task.checks ?? [], "checks").map(compileCheck),
 			...(task.id === undefined ? {} : { id: text(task.id, "task id") }),
 			...(task.parentId === undefined ? {} : { parentId: text(task.parentId, "parent task") }),
-			...(task.teamId === undefined ? {} : { teamId: text(task.teamId, "task team") }),
+			...(task.unitId === undefined ? {} : { unitId: text(task.unitId, "task unit") }),
 			...(task.scope === undefined ? {} : { scope: record(task.scope) }),
 			inputs: array(task.inputs ?? [], "versioned inputs").map(decodeInput),
 		};
@@ -73,7 +77,24 @@ export function compileDefinition(value, source) {
 		if (index < 0) throw new FoundryError("dependency_cycle", "Initial task relationships contain a cycle");
 		ordered.push(...pending.splice(index, 1));
 	}
-	return { goal: {
+	const units = array(input.units ?? [], "organizational units").map(value => {
+		const unit = record(value);
+		closed(unit, ["id", "parentId", "name", "kind", "context"]);
+		return { id: text(unit.id, "unit template id"), name: text(unit.name, "unit name"),
+			context: array(unit.context ?? [], "unit context").map(value => text(value, "unit context")),
+			...(unit.parentId === undefined ? {} : { parentId: text(unit.parentId, "parent unit") }),
+			...(unit.kind === undefined ? {} : { kind: text(unit.kind, "unit kind") }) };
+	});
+	const pendingUnits = [...units];
+	/** @type {typeof units} */
+	const orderedUnits = [];
+	if (new Set(units.map(unit => unit.id)).size !== units.length) throw new FoundryError("duplicate_template", "Unit template identities must be unique");
+	while (pendingUnits.length) {
+		const index = pendingUnits.findIndex(unit => unit.parentId === undefined || orderedUnits.some(parent => parent.id === unit.parentId));
+		if (index < 0) throw new FoundryError("invalid_parent", "Unit template parents must exist and be acyclic");
+		orderedUnits.push(...pendingUnits.splice(index, 1));
+	}
+	return { units: orderedUnits, goal: {
 		title: text(input.title, "goal title"),
 		scope,
 		...(input.id === undefined ? {} : { id: text(input.id, "goal id") }),
@@ -111,8 +132,15 @@ export function readContract(directory, filename) {
 	}
 	const content = readFileSync(resolved, "utf8");
 	const input = record(/** @type {unknown} */ (JSON.parse(content)));
-	if (input.format !== "foundry-contract" || input.version !== 1) {
-		throw new FoundryError("unsupported_contract", "Expected a foundry-contract version 1 source document");
+	if (input.format !== "foundry-contract" || input.version !== 2) {
+		throw new FoundryError("unsupported_contract", "Expected a foundry-contract version 2 source document");
 	}
+
 	return { definition: input, reference: relative, sha256: createHash("sha256").update(content).digest("hex") };
+}
+
+/** @param {unknown} value @returns {Task["role"]} */
+function taskRole(value) {
+	if (value === "coordinator" || value === "producer") return value;
+	throw new FoundryError("invalid_role", "Task role must be producer or coordinator");
 }

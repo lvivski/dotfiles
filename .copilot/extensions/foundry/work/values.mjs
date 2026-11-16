@@ -310,7 +310,7 @@ export function decodeWaiting(value) {
 	if (value === undefined) return undefined;
 	const item = record(value);
 	const requestId = optionalText(item.requestId, "waiting.requestId");
-	const kind = choice(item.kind, /** @type {const} */ (["children", "input", "capacity", "factory"]), "waiting.kind");
+	const kind = choice(item.kind, /** @type {const} */ (["children", "input", "capacity", "factory", "events"]), "waiting.kind");
 	return {
 		kind,
 		reason: text(item.reason, "waiting.reason"),

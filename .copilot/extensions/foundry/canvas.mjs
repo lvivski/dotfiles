@@ -10,7 +10,7 @@ export function createFoundryCanvas(runtime) {
 	const goals = new Map();
 	return createCanvas({
 		id: "foundry-board", displayName: "Foundry",
-		description: "Inspect goals, teams, local ownership, current attempts and versioned delivered work.",
+		description: "Inspect organizations, accountable coordinators, collaboration commitments and versioned delivered work.",
 		inputSchema: { type: "object", additionalProperties: false, properties: { goalId: { type: "string" } } },
 		actions: [{
 			name: "get_snapshot", description: "Read the current canonical work records displayed by this board.",

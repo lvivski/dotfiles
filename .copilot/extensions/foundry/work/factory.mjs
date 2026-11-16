@@ -115,8 +115,8 @@ export function readFactory(directory, filename) {
 	const definition = record(/** @type {unknown} */ (JSON.parse(content)));
 	closed(definition, ["format", "version", "id", "mechanism", "maximumJobs", "blocks", "unchangedFailures",
 		"aggregateRepairs", "completionTaskId", "goal", "source", "charters", "grains"]);
-	if (definition.format !== "foundry-factory" || definition.version !== 1) {
-		throw new FoundryError("unsupported_factory", "Expected a foundry-factory version 1 definition");
+	if (definition.format !== "foundry-factory" || definition.version !== 2) {
+		throw new FoundryError("unsupported_factory", "Expected a foundry-factory version 2 definition");
 	}
 	const goal = record(definition.goal);
 	const mechanism = choice(definition.mechanism, ["native", "stop-hook"], "continuation mechanism");

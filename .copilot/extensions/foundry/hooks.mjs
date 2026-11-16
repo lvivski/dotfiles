@@ -1,5 +1,5 @@
 import { attemptToken } from "./work/prompt.mjs";
-import { toolName } from "./work/native.mjs";
+import { runner, toolName } from "./work/native.mjs";
 import { FoundryError } from "./work/values.mjs";
 
 /** @param {ReturnType<typeof import("./work/runtime.mjs").createRuntime>} runtime */
@@ -29,7 +29,7 @@ export function buildHooks(runtime) {
 					(name === "create_session" && "kickoff" in args && typeof args.kickoff === "object"
 						&& args.kickoff !== null && "prompt" in args.kickoff && typeof args.kickoff.prompt === "string"
 						&& attemptToken(args.kickoff.prompt) !== undefined)
-					|| ("command" in args && typeof args.command === "string" && args.command.includes("check-runner.mjs")));
+					|| ("command" in args && typeof args.command === "string" && args.command.includes(runner)));
 				const admissionFailure = error instanceof FoundryError && [
 					"factory_paused", "job_closed", "job_cancelled", "stale_activation", "stale_attempt",
 					"cancelled", "capacity_required", "assignment_changed", "foreign_execution", "command_retired",

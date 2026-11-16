@@ -15,6 +15,7 @@ import { readCandidate, verifyCandidate } from "./artifacts.mjs";
 export const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
 /** @param {string} value */
 export const toolName = value => value.split(".").at(-1) ?? value;
+export const runner = fileURLToPath(new URL("./runner.mjs", import.meta.url));
 
 /** @param {Store} store @param {string} effectId */
 export const checkReceiptPath = (store, effectId) => path.join(path.dirname(store.databasePath), "evidence",
@@ -30,8 +31,11 @@ export function prepareDispatch(store, taskId, actor) {
 	const goal = store.getGoal(task.goalId);
 	const snapshot = store.contextSnapshot(actor, goal.id, task.id);
 	const source = task.dispatch;
+	const baseBranch = attempt.startCommit ?? source?.baseBranch;
 	const context = source?.generator ? source.context : [
-		...snapshot.teams.filter(team => team.id === task.teamId).flatMap(team => team.context),
+		...snapshot.units.filter(unit => unit.id === task.unitId).flatMap(unit => unit.context),
+		...snapshot.collaborations.filter(item => item.producerTaskId === task.id).map(item =>
+			`Accepted collaboration ${item.id}: publish the named output "${item.output}" for consumer ${item.consumerTaskId}. Its ${item.required ? "required" : "optional"} delivery remains your accountable coordinator's commitment; publishing alone does not grant source-task mutation rights. Notify your coordinator to fulfill the actual immutable output.`),
 		...snapshot.lessons.filter(lesson => lesson.workType === task.workType).map(lesson => lesson.summary),
 		...(source?.context ?? []),
 	];
@@ -39,7 +43,7 @@ export function prepareDispatch(store, taskId, actor) {
 		name: nativeSessionName(`${task.title.slice(0, 30)} ${attempt.token.slice(0, 8)}`),
 		...(goal.projectId === undefined ? {} : { project_id: goal.projectId }),
 		workspace_type: "worktree",
-		...(source?.baseBranch === undefined ? {} : { base_branch: source.baseBranch }),
+		...(baseBranch === undefined ? {} : { base_branch: baseBranch }),
 		coordinate_with_creator: true,
 		notify_on_idle: "once",
 		kickoff: { mode: task.scope.mode, prompt: assignmentPrompt(goal, task, attempt, context),
@@ -56,7 +60,6 @@ export function prepareCheck(store, attemptId, checkId, directory, actor) {
 	const attempt = store.getAttempt(attemptId);
 	const check = attempt.checks.find(item => item.id === checkId);
 	if (!check || !check.command) throw new FoundryError("invalid_check", "This check has no assigned executable procedure");
-	const runner = fileURLToPath(new URL("./check-runner.mjs", import.meta.url));
 	const effectId = `check:${randomUUID()}`;
 	const command = ["node", runner, directory, attemptId, checkId, effectId].map(quote).join(" ");
 	const effect = store.recordEffect({
@@ -107,6 +110,10 @@ function creationAttempt(store, args) {
 
 /** @param {Store} store @param {string} name @param {unknown} args @param {string} actor @param {string|undefined} callId */
 export function observePre(store, name, args, actor, callId) {
+	if (["apply_patch", "edit", "create", "write_file", "str_replace_editor"].includes(toolName(name))) {
+		store.assertCommandAdmission(actor);
+		return;
+	}
 	if (!["create_session", "bash", "shell", "read_bash", "stop_bash"].includes(toolName(name))) return;
 	const value = record(args);
 	if (toolName(name) === "read_bash" || toolName(name) === "stop_bash") {
@@ -138,6 +145,7 @@ export function observePre(store, name, args, actor, callId) {
 		return;
 	}
 	if (typeof value.command !== "string") return;
+	store.assertCommandAdmission(actor);
 	const original = typeof value.shellId === "string" ? store.commandForShell(value.shellId, actor) : undefined;
 	if (original?.state === "settled" && original.result !== undefined && record(original.result).neverIssued === true) {
 		throw new FoundryError("command_retired", "This definitely unissued command is retired; reserve current work rather than replaying its old arguments");

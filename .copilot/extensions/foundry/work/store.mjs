@@ -1,9 +1,10 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { closeSync, constants, lstatSync, mkdirSync, openSync, realpathSync } from "node:fs";
+import { closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { decodeNativeUsage, decodeUsageAffinity } from "./usage.mjs";
+import { decodeCollaboration, decodeCoordination } from "./organization.mjs";
 import { bindCandidateOutputs, normalizeCandidateOutputs, readCandidate } from "./artifacts.mjs";
 import { compileFactoryContext, decodeCompletion, decodeFactory, factorySettings } from "./factory.mjs";
 import {
@@ -14,7 +15,8 @@ import {
 
 /** @typedef {import("./model.d.ts").Json} Json */
 /** @typedef {import("./model.d.ts").Goal} Goal */
-/** @typedef {import("./model.d.ts").Team} Team */
+/** @typedef {import("./model.d.ts").Unit} Unit */
+/** @typedef {import("./model.d.ts").Collaboration} Collaboration */
 /** @typedef {import("./model.d.ts").Task} Task */
 /** @typedef {import("./model.d.ts").Attempt} Attempt */
 /** @typedef {import("./model.d.ts").Effect} Effect */
@@ -25,10 +27,11 @@ import {
 /** @typedef {import("./model.d.ts").Lesson} Lesson */
 /** @typedef {import("./model.d.ts").Delivery} Delivery */
 /** @typedef {{id?: string, title: string, projectId?: string, scope: import("./model.d.ts").Scope, limits?: import("./model.d.ts").Limits, source?: Goal["source"]}} GoalInput */
-/** @typedef {{id?: string, goalId: string, parentId?: string, teamId?: string, title: string, assignment: string, dispatch?: Task["dispatch"], workType: string, scope?: unknown, checks?: import("./model.d.ts").Check[], inputs?: import("./model.d.ts").Input[]}} TaskInput */
+/** @typedef {{id?: string, goalId: string, parentId?: string, unitId?: string, role?:Task["role"], title: string, assignment: string, dispatch?: Task["dispatch"], workType: string, scope?: unknown, checks?: import("./model.d.ts").Check[], inputs?: import("./model.d.ts").Input[]}} TaskInput */
+/** @typedef {{id?:string,goalId:string,name:string,context?:string[],parentId?:string,taskId?:string,kind?:string}} UnitInput */
 /** @typedef {import("./model.d.ts").FactoryControl} Factory */
 /** @typedef {import("./model.d.ts").GoalCompletion} Completion */
-/** @typedef {{goals: Goal, teams: Team, tasks: Task, attempts: Attempt, effects: Effect, claims: Claim, wakes: Wake, signals: Signal, lessons: Lesson, results: Result, deliveries: Delivery, native_usage: import("./model.d.ts").NativeUsage, usage_affinity: import("./model.d.ts").UsageAffinity, factory_controls: Factory, goal_completions: Completion}} Records */
+/** @typedef {{goals: Goal, units: Unit, collaborations: Collaboration, tasks: Task, attempts: Attempt, effects: Effect, claims: Claim, wakes: Wake, signals: Signal, lessons: Lesson, results: Result, deliveries: Delivery, native_usage: import("./model.d.ts").NativeUsage, usage_affinity: import("./model.d.ts").UsageAffinity, factory_controls: Factory, goal_completions: Completion}} Records */
 /** @typedef {keyof Records} Table */
 const MANAGED_TASKS = `WITH RECURSIVE managed(id,goal_id) AS (
 	SELECT id,goal_id FROM tasks WHERE owner=? OR goal_id IN (SELECT id FROM goals WHERE owner=?)
@@ -49,12 +52,15 @@ function decodeGoal(value) {
 	};
 }
 
-/** @param {unknown} value @returns {Team} */
-function decodeTeam(value) {
+/** @param {unknown} value @returns {Unit} */
+function decodeUnit(value) {
 	const row = record(value);
 	return {
-		id: text(row.id, "team.id"), goalId: text(row.goalId, "team.goalId"), name: text(row.name, "team.name"),
-		owner: text(row.owner, "team.owner"), context: strings(row.context),
+		id: text(row.id, "unit.id"), goalId: text(row.goalId, "unit.goalId"), name: text(row.name, "unit.name"),
+		owner: text(row.owner, "unit.owner"), context: strings(row.context),
+		...(row.parentId === undefined ? {} : { parentId: text(row.parentId, "parent unit") }),
+		...(row.taskId === undefined ? {} : { taskId: text(row.taskId, "unit task boundary") }),
+		...(row.kind === undefined ? {} : { kind: text(row.kind, "unit kind") }),
 	};
 }
 
@@ -62,12 +68,14 @@ function decodeTeam(value) {
 function decodeTask(value) {
 	const row = record(value);
 	const parentId = optionalText(row.parentId, "task.parentId");
-	const teamId = optionalText(row.teamId, "task.teamId");
+	const unitId = optionalText(row.unitId, "task.unitId");
 	const currentAttemptId = optionalText(row.currentAttemptId, "task.currentAttemptId");
 	const waiting = decodeWaiting(row.waiting);
 	return {
 		id: text(row.id, "task.id"), goalId: text(row.goalId, "task.goalId"), owner: text(row.owner, "task.owner"),
 		title: text(row.title, "task.title"), assignment: text(row.assignment, "task.assignment"),
+		role: choice(row.role ?? "producer", ["producer", "coordinator"], "task.role"),
+		...(row.coordination === undefined ? {} : { coordination: decodeCoordination(row.coordination) }),
 		...(row.dispatch === undefined ? {} : { dispatch: decodeDispatch(row.dispatch) }),
 		workType: text(row.workType, "task.workType"), scope: decodeScope(row.scope),
 		checks: array(row.checks, decodeCheck), inputs: array(row.inputs, decodeInput), outputs: array(row.outputs, decodeOutput),
@@ -78,7 +86,7 @@ function decodeTask(value) {
 			attemptId: text(record(row.repairReservation).attemptId, "reserved failed attempt"),
 			worker: text(record(row.repairReservation).worker, "reserved repair worker"),
 		} }),
-		...(parentId === undefined ? {} : { parentId }), ...(teamId === undefined ? {} : { teamId }),
+		...(parentId === undefined ? {} : { parentId }), ...(unitId === undefined ? {} : { unitId }),
 		...(currentAttemptId === undefined ? {} : { currentAttemptId }), ...(waiting === undefined ? {} : { waiting }),
 	};
 }
@@ -98,6 +106,10 @@ function decodeAttempt(value) {
 		...(nativeId === undefined ? {} : { nativeId }), ...(repairOf === undefined ? {} : { repairOf }),
 		...(row.assignedOwner === undefined ? {} : { assignedOwner: text(row.assignedOwner, "assigned coordinator") }),
 		...(row.endedBy === undefined ? {} : { endedBy: text(row.endedBy, "attempt terminator") }),
+		...(row.supersededBy === undefined ? {} : { supersededBy: text(row.supersededBy, "superseding owner") }),
+		...(row.baseCommit === undefined ? {} : { baseCommit: text(row.baseCommit, "execution baseline") }),
+		...(row.startCommit === undefined ? {} : { startCommit: text(row.startCommit, "conserved execution base") }),
+		...(row.executionDirectory === undefined ? {} : { executionDirectory: text(row.executionDirectory, "actual executing worktree") }),
 		...(row.waiting === undefined ? {} : { waiting: decodeWaiting(row.waiting) }),
 	};
 }
@@ -164,7 +176,7 @@ function decodeSignal(value) {
 	return { id: text(row.id, "signal.id"), goalId: text(row.goalId, "signal.goalId"),
 		kind: text(row.kind, "signal.kind"), summary: text(row.summary, "signal.summary"), references: strings(row.references),
 		...(taskId === undefined ? {} : { taskId }),
-		...(row.teamId === undefined ? {} : { teamId: text(row.teamId, "signal.teamId") }) };
+		...(row.unitId === undefined ? {} : { unitId: text(row.unitId, "signal.unitId") }) };
 }
 
 /** @param {unknown} value @returns {Lesson} */
@@ -186,7 +198,8 @@ function decodeDelivery(value) {
 
 /** @type {{[K in Table]: (value: unknown) => Records[K]}} */
 const decoders = {
-	goals: decodeGoal, teams: decodeTeam, tasks: decodeTask, attempts: decodeAttempt, effects: decodeEffect,
+	goals: decodeGoal, units: decodeUnit, tasks: decodeTask, attempts: decodeAttempt, effects: decodeEffect,
+	collaborations: decodeCollaboration,
 	claims: decodeClaim, wakes: decodeWake, signals: decodeSignal, lessons: decodeLesson, results: decodeResult, deliveries: decodeDelivery,
 	native_usage: decodeNativeUsage, usage_affinity: decodeUsageAffinity,
 	factory_controls: decodeFactory, goal_completions: decodeCompletion,
@@ -295,14 +308,32 @@ export function openWorkStore(workingDirectory, options = {}) {
 		if (!(date instanceof Date) || !Number.isFinite(date.getTime())) throw new FoundryError("invalid_clock", "Clock must return a valid Date");
 		return date.toISOString();
 	};
+	function executionBase(directory = cwd) {
+		const result = spawnSync("git", ["-C", directory, "rev-parse", "--verify", "--quiet", "HEAD"], { encoding: "utf8" });
+		if (result.error) throw result.error;
+		if (result.status === 1) return undefined;
+		if (result.status !== 0) throw new FoundryError("baseline_unavailable", result.stderr || "The actual execution baseline could not be inspected");
+		return text(result.stdout.trim(), "execution baseline");
+	}
+	/** @param {Attempt} attempt */
+	function observeExecutionBase(attempt) {
+		if (attempt.executionDirectory || attemptEffects(attempt.id).some(effect => effect.kind === "command" && effect.state !== "prepared")) return;
+		const base = executionBase();
+		if (attempt.startCommit && base !== attempt.startCommit) {
+			throw new FoundryError("execution_base_mismatch", "The replacement execution must start from its recorded unchanged baseline");
+		}
+		attempt.baseCommit = base;
+		attempt.executionDirectory = realpathSync(cwd);
+		put("attempts", attempt);
+	}
 	try {
 		db.exec("PRAGMA busy_timeout=5000; PRAGMA trusted_schema=OFF; PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;");
 		db.exec("BEGIN IMMEDIATE");
 		const version = db.prepare("PRAGMA user_version").get()?.user_version;
 		const tables = new Set(db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT GLOB 'sqlite_*'")
 			.all().map(row => row.name));
-		if (version !== 0 && version !== 2 || version === 0 && tables.size
-			|| version === 2 && [...Object.keys(decoders), "dependencies", "outcomes", "evidence_admissions",
+		if (version !== 0 && version !== 3 || version === 0 && tables.size
+			|| version === 3 && [...Object.keys(decoders), "dependencies", "outcomes", "evidence_admissions",
 				"usage", "local_attempts", "usage_aliases"].some(table => !tables.has(table))) {
 			throw new FoundryError("unsupported_store", "Reset obsolete or incomplete canonical state; only the current Foundry schema is supported");
 		}
@@ -314,7 +345,8 @@ export function openWorkStore(workingDirectory, options = {}) {
 			);`);
 		}
 		const indexed = {
-			goals: ["owner"], teams: ["goal", "owner"], tasks: ["goal", "owner"], attempts: ["task"],
+			goals: ["owner"], units: ["goal", "owner"], tasks: ["goal", "owner"], attempts: ["task"],
+			collaborations: ["goal"],
 			effects: ["attempt", "owner"], claims: ["attempt", "owner"], wakes: ["goal", "owner"],
 			signals: ["goal", "task"], lessons: ["goal"], results: ["attempt"],
 			deliveries: ["goal", "attempt", "owner"], native_usage: ["goal", "attempt"],
@@ -349,7 +381,10 @@ export function openWorkStore(workingDirectory, options = {}) {
 			CREATE INDEX IF NOT EXISTS evidence_attempt ON evidence_admissions(attempt_id,sequence);
 			CREATE TABLE IF NOT EXISTS usage (event_id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL REFERENCES attempts(id), credits REAL NOT NULL);
 			CREATE TABLE IF NOT EXISTS local_attempts (attempt_id TEXT PRIMARY KEY REFERENCES attempts(id));
-			PRAGMA user_version=2;`);
+			CREATE INDEX IF NOT EXISTS collaborations_destination ON collaborations(json_extract(document,'$.destinationGoalId'));
+			CREATE INDEX IF NOT EXISTS collaborations_consumer ON collaborations(json_extract(document,'$.consumerTaskId'));
+			CREATE INDEX IF NOT EXISTS collaborations_producer ON collaborations(json_extract(document,'$.producerTaskId'));
+			PRAGMA user_version=3;`);
 		db.exec(`CREATE TABLE IF NOT EXISTS usage_aliases (
 			alias TEXT NOT NULL, receipt_id TEXT NOT NULL REFERENCES native_usage(id) ON DELETE CASCADE,
 			PRIMARY KEY(alias,receipt_id)
@@ -487,11 +522,53 @@ export function openWorkStore(workingDirectory, options = {}) {
 	function requireGoalOwner(goal, actor) {
 		if (goal.owner !== text(actor, "actor")) throw new FoundryError("forbidden", "Only the goal owner may manage this goal");
 	}
+	/** @param {Task} task */
+	function coordinationAdmission(task) {
+		uncancelled(task);
+		requireAdmission(task);
+		if (task.role !== "coordinator" || ["done", "failed", "cancelled"].includes(task.state)) {
+			throw new FoundryError("coordinator_required", "An active coordinator task is required; a title or unit membership grants no authority");
+		}
+		if (!budgetAvailable(get("goals", task.goalId))) throw new FoundryError("limit_exhausted", "The coordinator goal's observed credits or deadline are exhausted");
+	}
+	/** @param {Task} task @param {string} boundary */
+	function below(task, boundary) {
+		return task.id === boundary || ancestors(task).some(parent => parent.id === boundary);
+	}
+	/** @param {Unit} unit @param {string} boundaryId */
+	function unitBelow(unit, boundaryId) {
+		for (let current = unit; current.parentId;) {
+			if (current.parentId === boundaryId) return true;
+			current = get("units", current.parentId);
+		}
+		return unit.id === boundaryId;
+	}
+	/** @param {UnitInput} input @param {string} actor @returns {Unit} */
+	function insertUnit(input, actor) {
+		const goal = get("goals", input.goalId);
+		const boundary = input.taskId === undefined ? undefined : get("tasks", input.taskId);
+		if (boundary) {
+			requireOwner(boundary, actor);
+			uncancelled(boundary);
+			requireAdmission(boundary);
+			if (boundary.role === "coordinator") coordinationAdmission(boundary);
+			if (boundary.goalId !== goal.id || !boundary.scope.delegation) throw new FoundryError("forbidden", "A unit needs an authorized delegating task in its goal");
+		} else requireGoalOwner(goal, actor);
+		if (input.parentId) {
+			const parent = get("units", input.parentId);
+			if (parent.goalId !== goal.id || parent.taskId && (!boundary || !below(boundary, parent.taskId))) {
+				throw new FoundryError("invalid_parent", "A sub-unit must stay inside its parent's goal and task boundary");
+			}
+		}
+		const unit = decodeUnit({ ...input, id: newId("units", input.id), owner: actor, context: input.context ?? [] });
+		put("units", unit);
+		return unit;
+	}
 	/** @param {Goal} goal @param {string} actor */
 	function goalMember(goal, actor) {
 		text(actor, "actor");
 		return goal.owner === actor || db.prepare(`SELECT id FROM tasks WHERE goal_id=? AND owner=?
-			UNION SELECT id FROM teams WHERE goal_id=? AND owner=?
+			UNION SELECT id FROM units WHERE goal_id=? AND owner=?
 			UNION SELECT t.id FROM attempts a JOIN tasks t ON t.id=a.task_id WHERE t.goal_id=? AND a.native_id=? LIMIT 1`)
 			.get(goal.id, actor, goal.id, actor, goal.id, actor) !== undefined;
 	}
@@ -536,7 +613,12 @@ export function openWorkStore(workingDirectory, options = {}) {
 	}
 	/** @param {Completion} completion */
 	function productionClosure(completion) {
-		const tasks = [get("tasks", completion.taskId)];
+		const commitments = list("collaborations").filter(item => item.required);
+		const tasks = [...new Set([completion.taskId,
+			...commitments.filter(item => item.goalId === completion.goalId).map(item => item.consumerTaskId),
+			...commitments.filter(item => item.destinationGoalId === completion.goalId && item.producerTaskId)
+				.map(item => text(item.producerTaskId, "committed producer")),
+		])].map(id => get("tasks", id));
 		const seen = new Set(tasks.map(task => task.id));
 		for (const task of tasks) for (const input of task.inputs) {
 			const producer = get("tasks", input.taskId);
@@ -566,7 +648,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 	/** @param {import("./model.d.ts").Input} input @returns {import("./model.d.ts").Output|undefined} */
 	function inputOutput(input) {
 		const producer = get("tasks", input.taskId);
-		if (producer.state === "cancelled") return undefined;
+		if (producer.state === "cancelled" && input.version === undefined) return undefined;
 		const current = producer.state === "done" ? producer.outputs.find(output => output.name === input.output
 			&& (input.version === undefined || output.version === input.version)) : undefined;
 		if (current || input.version === undefined) return current;
@@ -577,6 +659,8 @@ export function openWorkStore(workingDirectory, options = {}) {
 	}
 	/** @param {Task} task @returns {import("./model.d.ts").Input[] | undefined} */
 	function resolvedInputs(task) {
+		if (list("collaborations", "WHERE json_extract(document,'$.consumerTaskId')=?", [task.id])
+			.some(item => item.required && (item.state !== "fulfilled" || !item.bound))) return undefined;
 		const resolved = [];
 		for (const input of task.inputs) {
 			const output = inputOutput(input);
@@ -585,8 +669,16 @@ export function openWorkStore(workingDirectory, options = {}) {
 		}
 		return resolved;
 	}
-	/** @param {string} owner @param {string} goalId @param {string} reason */
-	function wake(owner, goalId, reason) {
+	/** @param {string} owner @param {string} goalId @param {string} reason @param {string} [coordinatorId] */
+	function wake(owner, goalId, reason, coordinatorId) {
+		if (!reason.startsWith("coordination:") && !reason.startsWith("coordination-stalled:")) {
+			for (const coordinator of coordinatorId ? [get("tasks", coordinatorId)]
+				: list("tasks", "WHERE owner=? AND goal_id=? AND json_extract(document,'$.role')='coordinator'", [owner, goalId])) {
+				if (coordinatorId || coordinator.currentAttemptId && get("attempts", coordinator.currentAttemptId).nativeId === owner) {
+					coordinationEvent(coordinator, reason);
+				}
+			}
+		}
 		const existing = list("wakes", "WHERE owner=? AND goal_id=?", [owner, goalId])[0];
 		const relatedReasons = [...new Set([
 			...(existing && existing.generation > existing.consumed ? existing.relatedReasons ?? [existing.reason] : []),
@@ -596,6 +688,20 @@ export function openWorkStore(workingDirectory, options = {}) {
 			: { id: randomUUID(), owner, goalId, reason, relatedReasons, generation: 1, consumed: 0, sent: 0 };
 		put("wakes", result);
 		return result;
+	}
+	/** @param {Task} task @param {string} cause */
+	function coordinationEvent(task, cause) {
+		if (!task.coordination || ["done", "failed", "cancelled"].includes(task.state)) return;
+		task.coordination.generation++;
+		task.coordination.causes = [...new Set([...task.coordination.causes, cause])];
+		put("tasks", task);
+	}
+	/** @param {Task} task @param {string} cause */
+	function notifyCoordination(task, cause) {
+		const coordinator = [task, ...ancestors(task)].find(item => item.role === "coordinator");
+		if (!coordinator) return;
+		coordinationEvent(coordinator, cause);
+		wake(coordinator.owner, coordinator.goalId, `coordination:${coordinator.id}`);
 	}
 	/** @param {Attempt} attempt @param {boolean} [substantive] */
 	function outstanding(attempt, substantive = false) {
@@ -637,7 +743,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 		const goal = get("goals", goalId);
 		if (goal.limits.workers === undefined || !hasSlot(goal) || !budgetAvailable(goal)) return;
 		for (const task of list("tasks", "WHERE goal_id=? AND state IN ('ready','waiting')", [goalId])) {
-			if (runnable(task)) wake(task.repairReservation?.worker ?? task.owner, task.goalId, "capacity");
+			if (task.waiting?.kind !== "events" && runnable(task)) wake(task.repairReservation?.worker ?? task.owner, task.goalId, "capacity");
 		}
 	}
 	/** @param {Wake} notification @returns {string[]} */
@@ -659,7 +765,17 @@ export function openWorkStore(workingDirectory, options = {}) {
 			const failed = optional("wakes", taskId);
 			return failed?.unavailable ? [fallbackOwner(failed)] : [];
 		}
-		if (prefix === "team") return [get("teams", taskId).owner];
+		if (prefix === "unit") return [get("units", taskId).owner];
+		if (prefix === "coordination") return [get("tasks", taskId).owner];
+		if (prefix === "coordination-stalled") {
+			const coordinator = get("tasks", taskId);
+			return [coordinator.parentId ? get("tasks", coordinator.parentId).owner : get("goals", coordinator.goalId).owner];
+		}
+		if (prefix === "collaboration") {
+			const collaboration = get("collaborations", taskId);
+			return [get("tasks", collaboration.sourceTaskId), get("tasks", collaboration.destinationTaskId)]
+				.filter(task => task.goalId === notification.goalId).map(task => task.owner);
+		}
 		const task = optional("tasks", taskId);
 		if (!task) return [];
 		if (prefix === "reassignment" || prefix === "revision") return [task.owner];
@@ -676,11 +792,16 @@ export function openWorkStore(workingDirectory, options = {}) {
 	}
 	/** @param {Signal} signal */
 	function signalOwner(signal) {
-		if (signal.teamId) return get("teams", signal.teamId).owner;
+		if (signal.unitId) {
+			const unit = get("units", signal.unitId);
+			const coordinator = list("tasks", "WHERE json_extract(document,'$.unitId')=? AND json_extract(document,'$.role')='coordinator' AND state<>'cancelled'", [unit.id])[0];
+			return coordinator?.owner ?? (unit.taskId ? get("tasks", unit.taskId).owner : get("goals", unit.goalId).owner);
+		}
 		if (!signal.taskId) return get("goals", signal.goalId).owner;
 		const task = get("tasks", signal.taskId);
+		if (task.role === "coordinator") return task.owner;
 		return task.parentId ? get("tasks", task.parentId).owner
-			: task.teamId ? get("teams", task.teamId).owner : get("goals", task.goalId).owner;
+			: task.unitId ? get("units", task.unitId).owner : get("goals", task.goalId).owner;
 	}
 	/** @param {Wake} notification */
 	function fallbackOwner(notification) {
@@ -692,9 +813,9 @@ export function openWorkStore(workingDirectory, options = {}) {
 	}
 	/** @param {string} owner @param {Wake} notification */
 	function wakeOwnerFallback(owner, notification) { wake(owner, notification.goalId, `unavailable:${notification.id}`); }
-	/** @param {Task} task @param {string} newOwner @param {string} actor @param {boolean} [teamHandoff] */
-	function transfer(task, newOwner, actor, teamHandoff = false) {
-		if (!teamHandoff && get("goals", task.goalId).owner !== text(actor, "actor")
+	/** @param {Task} task @param {string} newOwner @param {string} actor */
+	function transfer(task, newOwner, actor) {
+		if (get("goals", task.goalId).owner !== text(actor, "actor")
 			&& !ancestors(task).some(parent => parent.owner === actor)) {
 			throw new FoundryError("forbidden", "Only an accountable owner or ancestor may transfer this subtree");
 		}
@@ -760,6 +881,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 	function resumable(task) {
 		if (task.state !== "waiting" || !task.currentAttemptId || get("attempts", task.currentAttemptId).slot) return false;
 		if (task.waiting?.kind === "capacity" || task.waiting?.kind === "factory") return true;
+		if (task.waiting?.kind === "events") return task.role === "coordinator";
 		if (task.waiting?.kind !== "children") return false;
 		if (task.inputs.length) return resolvedInputs(task) !== undefined;
 		const children = list("tasks", "WHERE parent_id=?", [task.id]);
@@ -769,6 +891,13 @@ export function openWorkStore(workingDirectory, options = {}) {
 	function runnable(task) {
 		return (task.state === "ready" || resumable(task)) && !ancestors(task).some((parent) => parent.state === "cancelled")
 			&& resolvedInputs(task) !== undefined;
+	}
+	/** @param {Task} task */
+	function coordinatorsBound(task) {
+		return ancestors(task).filter(parent => parent.role === "coordinator").every(parent => {
+			const attempt = parent.currentAttemptId ? get("attempts", parent.currentAttemptId) : undefined;
+			return attempt?.nativeId !== undefined && attempt.taskVersion === parent.version && ["running", "waiting"].includes(attempt.state);
+		});
 	}
 	/** @param {Task} task */
 	function preparedDispatch(task) {
@@ -802,6 +931,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 				|| task.version !== previous.taskVersion + 1) throw new FoundryError("foreign_execution", "Repair must retain its exact failed worker and current task");
 		}
 		uncancelled(task);
+		if (!coordinatorsBound(task)) throw new FoundryError("coordinator_pending", "Bind the accountable coordinator before staffing its recorded descendants");
 		if (task.currentAttemptId && task.state === "running") {
 			const existing = get("attempts", task.currentAttemptId);
 			if (existing.state === "prepared" && existing.slot) {
@@ -820,9 +950,13 @@ export function openWorkStore(workingDirectory, options = {}) {
 		if (inputs === undefined) throw new FoundryError("inputs_unavailable", "Required named producer outputs and versions are not available");
 		const denied = allocate(task);
 		if (denied) return denied;
+		const previous = task.currentAttemptId ? get("attempts", task.currentAttemptId) : undefined;
+		const startCommit = previous?.supersededBy ? previous.baseCommit
+			: previous?.state === "cancelled" && !previous.nativeId ? previous.startCommit : undefined;
 		const attempt = decodeAttempt({ id: randomUUID(), taskId, token: randomUUID(), creator: actor,
 			state: "prepared", taskVersion: task.version, checks: task.checks, inputs, slot: true,
-			createdAt: timestamp(), ...(task.currentAttemptId ? { repairOf: task.currentAttemptId } : {}),
+			createdAt: timestamp(), ...(task.currentAttemptId && !get("attempts", task.currentAttemptId).supersededBy ? { repairOf: task.currentAttemptId } : {}),
+			...(startCommit ? { startCommit } : {}),
 			...(localRepairOf !== undefined && task.owner !== actor ? { assignedOwner: task.owner } : {}) });
 		task.currentAttemptId = attempt.id;
 		task.state = "running";
@@ -856,10 +990,19 @@ export function openWorkStore(workingDirectory, options = {}) {
 		}
 		if (attempt.nativeId && attempt.nativeId !== nativeId) throw new FoundryError("binding_conflict", "Attempt is already bound to another native identity");
 		const firstBinding = !attempt.nativeId;
+		if (!stale && task.role === "coordinator" && list("attempts", "WHERE native_id=?", [nativeId]).some(other => {
+			const assigned = get("tasks", other.taskId);
+			return assigned.role === "coordinator" && assigned.goalId !== task.goalId && assigned.currentAttemptId === other.id
+				&& !["done", "cancelled", "failed"].includes(assigned.state);
+		})) throw new FoundryError("binding_conflict", "A native coordinator cannot carry execution authority and usage affinity across different active goals");
 		if (firstBinding && !local && list("attempts", "WHERE native_id=? AND id NOT IN (SELECT attempt_id FROM local_attempts)", [nativeId])
 			.some((other) => other.taskId !== task.id)) throw new FoundryError("binding_conflict", "Native identity already owns another task");
 		attempt.nativeId = nativeId;
-		if (!stale && firstBinding && attempt.assignedOwner === undefined) task.owner = nativeId;
+		if (!stale && firstBinding && attempt.assignedOwner === undefined) {
+			const previousOwner = task.owner;
+			task.owner = nativeId;
+			if (task.role === "coordinator") transferOwnedDescendants(task, previousOwner, nativeId);
+		}
 		for (const effect of list("effects", "WHERE attempt_id=? AND kind='create' AND state<>'settled'", [attemptId])) {
 			effect.state = "settled";
 			effect.result = receipt === undefined ? { nativeId } : json(receipt);
@@ -877,6 +1020,110 @@ export function openWorkStore(workingDirectory, options = {}) {
 		if (attempt.state === "cancelled") scheduleStop(attempt, actor);
 		releaseSlot(get("attempts", attemptId));
 		return get("attempts", attemptId);
+	}
+	/** @param {Task} root @param {string} previous @param {string} replacement */
+	function transferOwnedDescendants(root, previous, replacement) {
+		for (const child of list("tasks", "WHERE goal_id=? AND owner=?", [root.goalId, previous])) {
+			if (child.id === root.id || !below(child, root.id) || ["done", "cancelled"].includes(child.state)) continue;
+			child.owner = replacement;
+			if (child.currentAttemptId) {
+				if (preparedDispatch(child)) revise(child, previous);
+				else {
+					const attempt = get("attempts", child.currentAttemptId);
+					attempt.assignedOwner = replacement;
+					put("attempts", attempt);
+				}
+			}
+			put("tasks", child);
+		}
+	}
+	/** @param {Task} root @param {string} actor */
+	function reviseDependents(root, actor) {
+		const affected = [root];
+		const seen = new Set([root.id]);
+		for (const producer of affected) {
+			if (!producer.outputs.length) continue;
+			for (const row of db.prepare("SELECT DISTINCT task_id FROM dependencies WHERE producer_id=? AND version IS NULL").all(producer.id)) {
+				const consumer = get("tasks", text(row.task_id, "consumer"));
+				if (!seen.has(consumer.id) && consumer.state !== "cancelled") { seen.add(consumer.id); affected.push(consumer); }
+			}
+		}
+		for (const task of affected) revise(task, actor);
+		return affected.map(task => task.id);
+	}
+	/** @param {Task} consumer @param {number} previous */
+	function syncConsumerVersions(consumer, previous) {
+		for (const item of list("collaborations", "WHERE json_extract(document,'$.consumerTaskId')=?", [consumer.id])) {
+			const source = get("tasks", item.sourceTaskId);
+			if (item.consumerVersion === previous && item.sourceOwner === source.owner && item.sourceVersion === source.version) {
+				item.consumerVersion = consumer.version;
+				put("collaborations", item);
+			}
+		}
+	}
+	/** @param {Task} task @param {import("./model.d.ts").Input[]} inputs @param {string} actor */
+	function replaceInputs(task, inputs, actor) {
+		requireAdmission(task);
+		const completion = optional("goal_completions", task.goalId);
+		if (completion?.taskId === task.id && completion.requiredInputs.some(required => !inputs.some(input => digest(json(input)) === digest(json(required))))) {
+			throw new FoundryError("protected_input", "Collaboration cannot remove an accepted completion requirement");
+		}
+		for (const input of inputs) {
+			const cycle = db.prepare(`WITH RECURSIVE upstream(id) AS (
+				SELECT ? UNION SELECT producer_id FROM dependencies JOIN upstream ON task_id=upstream.id
+			) SELECT id FROM upstream WHERE id=? LIMIT 1`).get(input.taskId, task.id);
+			if (cycle) throw new FoundryError("dependency_cycle", "Collaboration dependencies must remain acyclic");
+		}
+		if (digest(json(inputs)) === digest(json(task.inputs))) return;
+		task.inputs = inputs;
+		db.prepare("DELETE FROM dependencies WHERE task_id=?").run(task.id);
+		for (const input of inputs) db.prepare("INSERT INTO dependencies(task_id,producer_id,output,version) VALUES(?,?,?,?)")
+			.run(task.id, input.taskId, input.output, input.version ?? null);
+		const previous = task.version;
+		reviseDependents(task, actor);
+		syncConsumerVersions(get("tasks", task.id), previous);
+	}
+	/** @param {Collaboration} item @param {string} actor */
+	function bindCollaboration(item, actor) {
+		if (!item.delivery) throw new FoundryError("delivery_unavailable", "Only a published exact-version delivery can satisfy a collaboration");
+		const consumer = get("tasks", item.consumerTaskId);
+		const input = { taskId: item.delivery.taskId, output: item.delivery.output,
+			...(consumer.goalId === get("tasks", item.delivery.taskId).goalId ? {} : { version: item.delivery.version }) };
+		item.bound = true;
+		delete item.reason;
+		put("collaborations", item);
+		if (item.required) replaceInputs(consumer,
+			[...consumer.inputs.filter(previous => previous.taskId !== input.taskId || previous.output !== input.output), input], actor);
+		item.consumerVersion = get("tasks", consumer.id).version;
+		put("collaborations", item);
+		wake(consumer.owner, consumer.goalId, `collaboration:${item.id}`);
+	}
+	/** @param {Collaboration} item */
+	function notifyCollaboration(item) {
+		for (const id of [item.sourceTaskId, item.destinationTaskId]) {
+			const task = get("tasks", id);
+			wake(task.owner, task.goalId, `collaboration:${item.id}`, task.id);
+		}
+	}
+	/** @param {Wake} notification @param {string} actor */
+	function collaborationReasons(notification, actor) {
+		const permitted = new Set(list("collaborations").filter(item =>
+			(notification.goalId === item.goalId || notification.goalId === item.destinationGoalId)
+			&& [item.sourceTaskId, item.destinationTaskId, ...(item.producerTaskId ? [item.producerTaskId] : [])]
+				.some(id => { const task = get("tasks", id); return authorized(task, actor) || assignedExecution(task, actor); }))
+			.flatMap(item => [`collaboration:${item.id}`, ...(item.producerTaskId ? [`output:${item.producerTaskId}`] : [])]));
+		return (notification.relatedReasons ?? [notification.reason]).filter(reason =>
+			permitted.has(reason) && wakeTargets({ ...notification, reason }).includes(notification.owner));
+	}
+	/** @param {Wake} notification @param {string} actor */
+	function collaborationWake(notification, actor) { return collaborationReasons(notification, actor).length > 0; }
+	/** @param {Wake} notification */
+	function wakeReady(notification) {
+		return !notification.inFlight && !notification.unavailable
+			&& notification.generation > Math.max(notification.sent ?? 0, notification.consumed)
+			&& ((notification.sent ?? 0) <= notification.consumed
+				|| list("tasks", "WHERE owner=? AND goal_id=? AND json_extract(document,'$.role')='coordinator' AND state IN ('running','waiting')",
+					[notification.owner, notification.goalId]).length > 0);
 	}
 	/** @param {Attempt} attempt @param {string} actor */
 	function scheduleStop(attempt, actor, reason = "cancelled") {
@@ -930,13 +1177,30 @@ export function openWorkStore(workingDirectory, options = {}) {
 		}
 		const completion = optional("goal_completions", task.goalId);
 		if (result.state === "done" && completion?.taskId === task.id) {
+			if (list("collaborations").some(item => item.required
+				&& (item.goalId === task.goalId && (item.state !== "fulfilled" || !item.bound)
+					|| item.destinationGoalId === task.goalId && item.producerTaskId && item.state !== "fulfilled"))) return false;
 			const closure = productionClosure(completion);
 			if (closure.some(producer => producer.id !== task.id && producer.state !== "done")) return false;
+			if (closure.some(producer => producer.inputs.some(input => get("tasks", input.taskId).goalId !== task.goalId && input.version === undefined))) {
+				throw new FoundryError("floating_external_input", "Required cross-goal inputs must pin their fulfilled published version before acceptance");
+			}
 			completion.accepted = { revision: completion.revision, tasks: closure.map(producer => ({
 				id: producer.id, version: producer.version, inputs: resolvedInputs(producer) ?? [],
 			})) };
 			completion.closed = true;
 			put("goal_completions", completion);
+			for (const coordinator of list("tasks", "WHERE goal_id=? AND json_extract(document,'$.role')='coordinator' AND state NOT IN ('cancelled','failed')", [task.goalId])) {
+				coordinator.state = "done";
+				if (coordinator.currentAttemptId) {
+					const lease = get("attempts", coordinator.currentAttemptId);
+					lease.state = "done";
+					lease.endedBy = result.sender;
+					put("attempts", lease);
+					releaseSlot(lease);
+				}
+				put("tasks", coordinator);
+			}
 		}
 		return true;
 	}
@@ -949,6 +1213,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 	function promote(result, quiet = false) {
 		const attempt = get("attempts", result.attemptId);
 		const task = get("tasks", attempt.taskId);
+		if (task.role === "coordinator") throw new FoundryError("coordination_result", "Publish bounded producer/integration work, not the coordinator's continuing role; yield with an event disposition");
 		if (!canPromote(task, attempt, result)) return false;
 		if (result.state === "done") {
 			result.outputs = bindCandidateOutputs(attempt.checks, admittedEvidence(attempt.id), result.outputs, databasePath);
@@ -1046,13 +1311,34 @@ export function openWorkStore(workingDirectory, options = {}) {
 			uncancelled(parent);
 			if (parent.goalId !== goal.id) throw new FoundryError("invalid_parent", "Parent must belong to the task's goal");
 			if (!parent.scope.delegation) throw new FoundryError("delegation_forbidden", "This parent cannot delegate");
+			if (parent.role === "coordinator") coordinationAdmission(parent);
 		} else requireGoalOwner(goal, actor);
-		if (input.teamId !== undefined && get("teams", input.teamId).goalId !== goal.id) {
-			throw new FoundryError("invalid_team", "Team must belong to the task's goal");
+		if (input.unitId !== undefined && get("units", input.unitId).goalId !== goal.id) {
+			throw new FoundryError("invalid_team", "Unit must belong to the task's goal");
 		}
 		const task = decodeTask({ ...record(input), id: newId("tasks", input.id), owner: actor,
 			scope: narrowScope(parent?.scope ?? goal.scope, input.scope), checks: input.checks ?? [],
-			inputs: input.inputs ?? [], outputs: [], state: "ready", version: 1, currentAttemptId: undefined, waiting: undefined });
+			inputs: input.inputs ?? [], outputs: [], state: "ready", version: 1, currentAttemptId: undefined, waiting: undefined,
+			...(input.role === "coordinator" ? { coordination: { generation: 1, handled: 0, causes: ["admission"] } } : {}) });
+		if (task.role === "coordinator" && (!task.scope.delegation || task.checks.length || task.inputs.length)) {
+			throw new FoundryError("invalid_coordinator", "A coordinator delegates scoped producer work; put executable checks and product prerequisites on its producer children");
+		}
+		if (task.unitId) {
+			const unit = get("units", task.unitId);
+			if (unit.taskId && !below(task, unit.taskId)) throw new FoundryError("forbidden", "Unit membership cannot escape its canonical task boundary");
+			if (task.role === "coordinator") {
+				if (list("tasks", "WHERE json_extract(document,'$.unitId')=? AND json_extract(document,'$.role')='coordinator' AND state<>'cancelled'", [unit.id]).length) {
+					throw new FoundryError("coordinator_conflict", "This unit already has a coordinator task in this goal");
+				}
+				for (const other of list("tasks", "WHERE goal_id=? AND json_extract(document,'$.role')='coordinator'", [goal.id])) {
+					const otherUnit = other.unitId ? get("units", other.unitId) : undefined;
+					if (otherUnit && other.state !== "cancelled" && (unitBelow(unit, otherUnit.id) && !below(task, other.id)
+						|| unitBelow(otherUnit, unit.id) && !below(other, task.id))) {
+						throw new FoundryError("invalid_parent", "Nested coordinator units must retain compatible task ancestry");
+					}
+				}
+			}
+		}
 		if (completion && !task.dispatch) {
 			const factory = get("factory_controls", completion.factoryId);
 			task.dispatch = compileFactoryContext(factory.definition, factory.source);
@@ -1079,6 +1365,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 		put("tasks", task);
 		for (const input of task.inputs) db.prepare("INSERT INTO dependencies(task_id,producer_id,output,version) VALUES(?,?,?,?)")
 			.run(task.id, input.taskId, input.output, input.version ?? null);
+		if (parent) notifyCoordination(parent, `admission:${task.id}:${task.version}`);
 		return task;
 	}
 	/** @param {Task} task @param {string} actor */
@@ -1152,6 +1439,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 		}
 		const attempt = prepare(taskId, actor, localRepairOf);
 		if (attempt instanceof FoundryError) return attempt;
+		observeExecutionBase(attempt);
 		if (list("effects", "WHERE attempt_id=? AND kind='create'", [attempt.id]).length) {
 			throw new FoundryError("invalid_transition", "A prepared native creation cannot be silently converted to local execution");
 		}
@@ -1254,8 +1542,8 @@ export function openWorkStore(workingDirectory, options = {}) {
 		put("deliveries", { ...delivery, state: "settled", result });
 	}
 
-	/** @param {GoalInput} input @param {Array<Omit<TaskInput,"goalId">>} tasks @param {string} factoryId @param {string} completionTaskId @param {string} actor @param {number} [generation] @param {boolean} [validation] */
-	function admitFactoryJob(input, tasks, factoryId, completionTaskId, actor, generation, validation = false) {
+	/** @param {GoalInput} input @param {Array<Omit<TaskInput,"goalId">>} tasks @param {string} factoryId @param {string} completionTaskId @param {string} actor @param {number} [generation] @param {boolean} [validation] @param {Array<Omit<UnitInput,"goalId">>} [units] */
+	function admitFactoryJob(input, tasks, factoryId, completionTaskId, actor, generation, validation = false, units = []) {
 		const factory = get("factory_controls", factoryId);
 		if (factory.owner !== actor || factory.state !== "active") throw new FoundryError("factory_paused", "Only the active factory's actual coordinator can admit source work");
 		if (generation !== undefined && factory.generation !== generation) throw new FoundryError("stale_activation", "Source observation belongs to a revoked activation");
@@ -1277,6 +1565,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 			.filter(completion => { const status = completionStatus(completion); return !(status.delivered || status.cancelled) || !status.settled; });
 		if (!validation && unsettled.length >= factory.maximumJobs) throw new FoundryError("factory_capacity", "The factory's effective active-job bound is exhausted");
 		const goal = insertGoal({ ...input, scope }, actor);
+		for (const unit of units) insertUnit({ ...unit, goalId: goal.id }, actor);
 		const admitted = tasks.map(task => insertTask({ ...task, goalId: goal.id }, actor));
 		const final = get("tasks", completionTaskId);
 		if (final.goalId !== goal.id || !final.checks.length) throw new FoundryError("unattended_acceptance", "Factory completion requires its own executable acceptance checks");
@@ -1310,7 +1599,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 				},
 			})), false);
 		},
-		/** @param {Omit<Factory,"owner"|"state"|"generation"|"pausedWorkers"|"reminders">} input @param {string} actor @param {{goal:GoalInput,tasks:Array<Omit<TaskInput,"goalId">>,completionTaskId:string}} initial */
+		/** @param {Omit<Factory,"owner"|"state"|"generation"|"pausedWorkers"|"reminders">} input @param {string} actor @param {{goal:GoalInput,tasks:Array<Omit<TaskInput,"goalId">>,units?:Array<Omit<UnitInput,"goalId">>,completionTaskId:string}} initial */
 		activateFactory(input, actor, initial) {
 			return transaction(() => {
 				const existing = optional("factory_controls", input.id);
@@ -1335,11 +1624,11 @@ export function openWorkStore(workingDirectory, options = {}) {
 				}
 				if (record(factory.definition).source !== undefined) {
 					db.exec("SAVEPOINT factory_template");
-					try { admitFactoryJob(initial.goal, initial.tasks, factory.id, initial.completionTaskId, actor, factory.generation, true); }
+					try { admitFactoryJob(initial.goal, initial.tasks, factory.id, initial.completionTaskId, actor, factory.generation, true, initial.units); }
 					finally { db.exec("ROLLBACK TO factory_template; RELEASE factory_template"); }
 					return { factory, tasks: [], replay: false };
 				}
-				return { factory, ...admitFactoryJob(initial.goal, initial.tasks, factory.id, initial.completionTaskId, actor, factory.generation) };
+				return { factory, ...admitFactoryJob(initial.goal, initial.tasks, factory.id, initial.completionTaskId, actor, factory.generation, false, initial.units) };
 			});
 		},
 		/** @param {string} actor @param {string} reason @param {string} [factoryId] */
@@ -1383,18 +1672,41 @@ export function openWorkStore(workingDirectory, options = {}) {
 				if (factory.owner !== actor) throw new FoundryError("forbidden", "Only the factory owner can reopen its bounded job");
 				const task = get("tasks", completion.taskId);
 				requireAdmission(task, undefined, true);
-				if (!completion.closed) return completion;
-				completion.closed = false;
-				completion.revision++;
-				delete completion.accepted;
-				put("goal_completions", completion);
-				revise(task, actor);
+				if (completion.closed) {
+					completion.closed = false;
+					completion.revision++;
+					delete completion.accepted;
+					put("goal_completions", completion);
+					revise(task, actor);
+				}
+				for (const coordinator of list("tasks", "WHERE goal_id=? AND json_extract(document,'$.role')='coordinator' AND state='done'", [goalId])) {
+					const previous = coordinator.currentAttemptId ? get("attempts", coordinator.currentAttemptId) : undefined;
+					if (previous && (previous.waiting?.kind === "input" || outstanding(previous, true)
+						|| list("claims", "WHERE attempt_id=?", [previous.id]).length)) continue;
+					coordinator.version++;
+					coordinator.state = previous?.nativeId ? "waiting" : "ready";
+					coordinator.coordination = { generation: (coordinator.coordination?.generation ?? 0) + 1,
+						handled: coordinator.coordination?.generation ?? 0, causes: ["job-reopened"] };
+					if (previous?.nativeId) {
+						const lease = decodeAttempt({ ...previous, id: randomUUID(), token: randomUUID(), taskVersion: coordinator.version,
+							state: "waiting", slot: false, waiting: { kind: "events", reason: "Explicitly reopened coordination" },
+							createdAt: timestamp(), endedBy: undefined, supersededBy: undefined });
+						put("attempts", lease);
+						if (db.prepare("SELECT attempt_id FROM local_attempts WHERE attempt_id=?").get(previous.id)) {
+							db.prepare("INSERT INTO local_attempts(attempt_id) VALUES(?)").run(lease.id);
+						}
+						coordinator.currentAttemptId = lease.id;
+						coordinator.waiting = lease.waiting;
+					}
+					put("tasks", coordinator);
+					wake(coordinator.owner, goalId, `coordination:${coordinator.id}`);
+				}
 				return completion;
 			});
 		},
-		/** @param {GoalInput} input @param {Array<Omit<TaskInput,"goalId">>} tasks @param {string} factoryId @param {string} completionTaskId @param {string} actor @param {number} [generation] */
-		admitFactoryJob(input, tasks, factoryId, completionTaskId, actor, generation) {
-			return transaction(() => admitFactoryJob(input, tasks, factoryId, completionTaskId, actor, generation));
+		/** @param {GoalInput} input @param {Array<Omit<TaskInput,"goalId">>} tasks @param {string} factoryId @param {string} completionTaskId @param {string} actor @param {number} [generation] @param {Array<Omit<UnitInput,"goalId">>} [units] */
+		admitFactoryJob(input, tasks, factoryId, completionTaskId, actor, generation, units) {
+			return transaction(() => admitFactoryJob(input, tasks, factoryId, completionTaskId, actor, generation, false, units));
 		},
 		/** @param {string} factoryId @param {string} actor @param {number} generation @param {string|undefined} cursor */
 		updateSourceCursor(factoryId, actor, generation, cursor) {
@@ -1420,12 +1732,17 @@ export function openWorkStore(workingDirectory, options = {}) {
 					const input = own.some(task => task.waiting?.kind === "input");
 					const actions = own.filter(task => !factory.pausedWorkers.includes(task.owner)
 						&& !factory.pausedWorkers.includes(actor)).flatMap(task => {
+						if (task.role === "coordinator" && task.coordination && task.waiting?.kind !== "input"
+							&& ["running", "waiting"].includes(task.state)) {
+							return task.owner === actor && task.coordination.generation > task.coordination.handled
+								&& budgetAvailable(get("goals", task.goalId)) ? [{ taskId: task.id, kind: "coordinate" }] : [];
+						}
 						if (task.state === "running" && task.currentAttemptId) {
 							const attempt = get("attempts", task.currentAttemptId);
 							if (attempt.nativeId === actor && !outstanding(attempt, true)) return [{ taskId: task.id, kind: "execute" }];
 							if (preparedDispatch(task)) return [{ taskId: task.id, kind: "dispatch" }];
 						}
-						if (!runnable(task) || !hasSlot(get("goals", task.goalId)) || !budgetAvailable(get("goals", task.goalId))) return [];
+						if (!runnable(task) || !coordinatorsBound(task) || !hasSlot(get("goals", task.goalId)) || !budgetAvailable(get("goals", task.goalId))) return [];
 						if (task.repairReservation) return task.repairReservation.worker === actor ? [{ taskId: task.id, kind: "repair" }] : [];
 						if (task.state === "waiting") return task.currentAttemptId && get("attempts", task.currentAttemptId).nativeId === actor
 							? [{ taskId: task.id, kind: "resume" }] : [];
@@ -1433,8 +1750,8 @@ export function openWorkStore(workingDirectory, options = {}) {
 					});
 					return { ...status, generation: factory.generation, mechanism: factory.mechanism,
 						disposition: factory.state === "paused" || factory.pausedWorkers.includes(actor) ? "paused"
-							: status.cancelled ? "cancelled" : status.delivered ? "delivered" : input ? "needs-input" : actions.length ? "actionable" : "waiting",
-						actions: factory.state === "active" && !input ? actions : [] };
+							: status.cancelled ? "cancelled" : status.delivered ? "delivered" : actions.length ? "actionable" : input ? "needs-input" : "waiting",
+						actions: factory.state === "active" ? actions : [] };
 				}), false);
 		},
 		/** @param {string} factoryId @param {string} actor @param {number} generation @param {boolean} [reentry] */
@@ -1445,7 +1762,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 					|| factory.mechanism !== "stop-hook") return;
 				const own = list("tasks", `WHERE (owner=? OR json_extract(document,'$.currentAttemptId') IN (SELECT id FROM attempts WHERE native_id=?))
 					AND goal_id IN (SELECT goal_id FROM goal_completions WHERE json_extract(document,'$.factoryId')=?)`, [actor, actor, factoryId])
-					.filter(task => ["running", "ready", "waiting"].includes(task.state));
+					.filter(task => ["running", "ready", "waiting"].includes(task.state) && !(task.role === "coordinator" && task.waiting?.kind === "events"));
 				if (!own.length || own.some(task => task.waiting?.kind === "input")) return;
 				if (list("wakes", "WHERE owner=? AND json_extract(document,'$.sent')>json_extract(document,'$.consumed')", [actor]).length) return;
 				const marker = digest(json(own.map(task => ({ id: task.id, version: task.version, state: task.state,
@@ -1504,31 +1821,144 @@ export function openWorkStore(workingDirectory, options = {}) {
 		createGoal(input, actor) {
 			return transaction(() => insertGoal(input, actor));
 		},
-		/** @param {GoalInput} input @param {Array<Omit<TaskInput, "goalId">>} tasks @param {string} actor */
-		createGoalWithTasks(input, tasks, actor) {
+		/** @param {GoalInput} input @param {Array<Omit<TaskInput, "goalId">>} tasks @param {string} actor @param {Array<Omit<UnitInput,"goalId">>} [units] */
+		createGoalWithTasks(input, tasks, actor, units = []) {
 			return transaction(() => {
 				const goal = insertGoal(input, actor);
+				for (const unit of units) insertUnit({ ...unit, goalId: goal.id }, actor);
 				return { goal, tasks: tasks.map(task => insertTask({ ...task, goalId: goal.id }, actor)) };
 			});
 		},
-		/** @param {{id?: string, goalId: string, name: string, context?: string[]}} input @param {string} actor @returns {Team} */
-		createTeam(input, actor) {
-			return transaction(() => {
-				const goal = get("goals", input.goalId);
-				if (goal.owner !== text(actor, "actor")
-					&& !list("tasks", "WHERE goal_id=? AND owner=?", [goal.id, actor])
-						.some((task) => task.scope.delegation && task.state !== "cancelled"
-							&& !ancestors(task).some((parent) => parent.state === "cancelled"))) {
-					throw new FoundryError("forbidden", "A team must be owned by the goal coordinator or an authorized local coordinator");
-				}
-				const team = decodeTeam({ ...record(input), id: newId("teams", input.id), owner: actor, context: input.context ?? [] });
-				put("teams", team);
-				return team;
-			});
+		/** @param {UnitInput} input @param {string} actor @returns {Unit} */
+		createUnit(input, actor) {
+			return transaction(() => insertUnit(input, actor));
 		},
 		/** @param {TaskInput} input @param {string} actor @returns {Task} */
 		createTask(input, actor) {
 			return transaction(() => insertTask(input, actor));
+		},
+		/** @param {{id?:string,sourceTaskId:string,destinationTaskId:string,consumerTaskId:string,expectedVersion:number,title:string,output:string,required?:boolean}} input @param {string} actor */
+		requestCollaboration(input, actor) {
+			return transaction(() => {
+				const source = get("tasks", input.sourceTaskId);
+				const destination = get("tasks", input.destinationTaskId);
+				const consumer = get("tasks", input.consumerTaskId);
+				requireOwner(source, actor);
+				requireOwner(consumer, actor);
+				coordinationAdmission(source);
+				coordinationAdmission(destination);
+				if (consumer.role !== "producer" || consumer.goalId !== source.goalId || !below(consumer, source.id)) {
+					throw new FoundryError("forbidden", "A request can govern only a producer inside its source coordinator's task boundary");
+				}
+				requireAdmission(consumer);
+				const proposal = digest(json(input));
+				const previous = input.id === undefined ? undefined : optional("collaborations", input.id);
+				if (previous) {
+					if (previous.proposal !== proposal) throw new FoundryError("collaboration_conflict", "A request identity cannot change its immutable proposal");
+					return previous;
+				}
+				if (consumer.version !== input.expectedVersion) throw new FoundryError("stale_task", "Request the consumer's current definition");
+				const item = decodeCollaboration({ ...input, id: newId("collaborations", input.id), goalId: source.goalId,
+					destinationGoalId: destination.goalId, sourceOwner: source.owner, sourceVersion: source.version,
+					destinationVersion: destination.version, consumerVersion: consumer.version,
+					required: input.required ?? true, revision: 1, state: "proposed", proposal, bound: false });
+				put("collaborations", item);
+				if (item.required) {
+					const version = consumer.version;
+					reviseDependents(consumer, actor);
+					syncConsumerVersions(get("tasks", consumer.id), version);
+					item.consumerVersion = get("tasks", consumer.id).version;
+					put("collaborations", item);
+				}
+				notifyCollaboration(item);
+				return item;
+			});
+		},
+		/** @param {{collaborationId:string,expectedRevision:number,action:"accept"|"fulfill"|"bind"|"decline"|"block"|"cancel"|"release",reason?:string,producer?:Omit<TaskInput,"goalId"|"parentId"|"unitId"|"role">}} input @param {string} actor */
+		respondCollaboration(input, actor) {
+			return transaction(() => {
+				let item = get("collaborations", input.collaborationId);
+				const source = get("tasks", item.sourceTaskId);
+				const destination = get("tasks", item.destinationTaskId);
+				const sourceAuthority = authorized(source, actor);
+				const destinationAuthority = authorized(destination, actor);
+				if (!sourceAuthority && !destinationAuthority) throw new FoundryError("forbidden", "Only a request's actual accountable coordinators can change it");
+				if (["accept", "fulfill", "decline", "block"].includes(input.action) && !destinationAuthority
+					|| ["bind", "release"].includes(input.action) && !sourceAuthority) {
+					throw new FoundryError("forbidden", "A source cannot promise another unit's work, and a destination cannot release the source's requirements");
+				}
+				const action = digest(json({ input, actor }));
+				if (item.lastAction === action) return item;
+				if (item.revision !== input.expectedRevision) throw new FoundryError("stale_collaboration", "Use the current collaboration revision");
+				if (input.action === "accept") {
+					coordinationAdmission(source);
+					coordinationAdmission(destination);
+					const consumer = get("tasks", item.consumerTaskId);
+					requireAdmission(consumer);
+					if (item.state !== "proposed" || !input.producer) throw new FoundryError("invalid_transition", "Only a proposed request can accept a complete producer assignment");
+					if (item.sourceOwner !== source.owner || item.sourceVersion !== source.version
+						|| item.destinationVersion !== destination.version || item.consumerVersion !== consumer.version) {
+						throw new FoundryError("source_update_required", "Changed source/destination authority or consumer definition requires a fresh authorized proposal");
+					}
+					const producer = insertTask({ ...input.producer, goalId: destination.goalId, parentId: destination.id,
+						...(destination.unitId ? { unitId: destination.unitId } : {}) }, actor);
+					item.producerTaskId = producer.id;
+					item.state = "accepted";
+					put("collaborations", item);
+					if (item.required) {
+						replaceInputs(consumer, [...consumer.inputs, { taskId: producer.id, output: item.output }], actor);
+						item = get("collaborations", item.id);
+					}
+				} else if (input.action === "fulfill") {
+					if (!["accepted", "blocked"].includes(item.state) || !item.producerTaskId) throw new FoundryError("invalid_transition", "Only an accepted producer can fulfill a request");
+					const producer = get("tasks", item.producerTaskId);
+					const output = producer.state === "done" ? producer.outputs.find(output => output.name === item.output) : undefined;
+					if (!output) throw new FoundryError("delivery_unavailable", "The accepted producer has not published the requested named output");
+					readCandidate(output.reference, output.version, databasePath);
+					item.delivery = { taskId: producer.id, output: output.name, version: output.version };
+					item.state = "fulfilled";
+					const consumer = get("tasks", item.consumerTaskId);
+					const completion = optional("goal_completions", consumer.goalId);
+					const factory = completion ? get("factory_controls", completion.factoryId) : undefined;
+					if (!completion?.closed && source.owner === item.sourceOwner && source.version === item.sourceVersion
+						&& consumer.version === item.consumerVersion && !ancestors(consumer).some(parent => parent.state === "cancelled")
+						&& consumer.state !== "cancelled" && budgetAvailable(get("goals", consumer.goalId))
+						&& (!factory || factory.state === "active" && !factory.pausedWorkers.includes(source.owner) && !factory.pausedWorkers.includes(consumer.owner))) bindCollaboration(item, actor);
+					else item.reason = "Delivery retained; changed or unavailable source admission requires explicit source binding";
+				} else if (input.action === "bind") {
+					coordinationAdmission(source);
+					requireOwner(get("tasks", item.consumerTaskId), actor);
+					if (item.state !== "fulfilled") throw new FoundryError("invalid_transition", "Only a fulfilled delivery can be explicitly bound");
+					bindCollaboration(item, actor);
+				} else {
+					const reason = text(input.reason, "collaboration disposition");
+					if (input.action === "release") {
+						coordinationAdmission(source);
+						const consumer = get("tasks", item.consumerTaskId);
+						requireOwner(consumer, actor);
+						requireAdmission(consumer);
+						item.required = false;
+						put("collaborations", item);
+						replaceInputs(consumer, consumer.inputs.filter(previous =>
+							previous.taskId !== item.producerTaskId || previous.output !== item.output), actor);
+						item.consumerVersion = get("tasks", consumer.id).version;
+					} else {
+						requireAdmission(sourceAuthority ? source : destination);
+						if (input.action === "decline" && item.state !== "proposed"
+							|| input.action === "block" && !["accepted", "blocked"].includes(item.state)
+							|| input.action === "cancel" && ["fulfilled", "declined", "cancelled"].includes(item.state)) {
+							throw new FoundryError("invalid_transition", "This collaboration transition does not apply to its current state");
+						}
+						item.state = input.action === "decline" ? "declined" : input.action === "block" ? "blocked" : "cancelled";
+					}
+					item.reason = reason;
+				}
+				item.revision++;
+				item.lastAction = action;
+				put("collaborations", item);
+				notifyCollaboration(item);
+				return item;
+			});
 		},
 		/** @param {string} id */
 		getGoal(id) { return transaction(() => get("goals", id), false); },
@@ -1541,7 +1971,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 			return transaction(() => goalMember(get("goals", goalId), actor), false);
 		},
 		/** @param {string} id */
-		getTeam(id) { return transaction(() => get("teams", id), false); },
+		getUnit(id) { return transaction(() => get("units", id), false); },
 		/** @param {string} id */
 		getDelivery(id) { return transaction(() => get("deliveries", id), false); },
 		/** @param {string} actor @param {string} [goalId] */
@@ -1644,7 +2074,9 @@ export function openWorkStore(workingDirectory, options = {}) {
 					factories: list("factory_controls").filter(factory => goalId === undefined
 						|| optional("goal_completions", goalId)?.factoryId === factory.id),
 					completions: list("goal_completions", goalWhere, parameters).map(completionStatus),
-					teams: list("teams", goalWhere, parameters),
+					units: list("units", goalWhere, parameters).map(unit => ({ ...unit,
+						coordinatorTaskId: tasks.find(task => task.unitId === unit.id && task.role === "coordinator" && task.state !== "cancelled")?.id })),
+					collaborations: list("collaborations").filter(item => goalId === undefined || item.goalId === goalId || item.destinationGoalId === goalId),
 					wakes: list("wakes", goalWhere, parameters),
 					effects: history ? list("effects", effectWhere, parameters) : [],
 					claims: history ? list("claims", effectWhere, parameters) : [],
@@ -1695,25 +2127,64 @@ export function openWorkStore(workingDirectory, options = {}) {
 						OR id IN (SELECT value FROM effects,json_each(document,'$.relatedAttemptIds')
 							WHERE kind='command' AND state IN ('issued','uncertain')))`, [ids, ids]);
 				const goalJson = JSON.stringify(goalIds);
-				const teams = list("teams", "WHERE goal_id IN (SELECT value FROM json_each(?)) AND (owner=? OR id IN (SELECT json_extract(value,'$.teamId') FROM json_each(?)))",
+				const units = list("units", "WHERE goal_id IN (SELECT value FROM json_each(?)) AND (owner=? OR id IN (SELECT json_extract(value,'$.unitId') FROM json_each(?)))",
 					[goalJson, actor, JSON.stringify(tasks)]);
 				const signals = list("signals", `WHERE goal_id IN (SELECT value FROM json_each(?))
 					AND (id IN (SELECT value FROM json_each(?)) OR id IN (
 						SELECT id FROM signals WHERE goal_id IN (SELECT value FROM json_each(?))
-						AND (task_id=? OR json_extract(document,'$.teamId') IN (SELECT value FROM json_each(?))
+						AND (task_id=? OR json_extract(document,'$.unitId') IN (SELECT value FROM json_each(?))
 							OR (task_id IS NULL AND goal_id IN (SELECT id FROM goals WHERE owner=?)))
 						ORDER BY rowid DESC LIMIT 20))`,
 					[goalJson, JSON.stringify(causes.filter(reason => reason.startsWith("signal:")).map(reason => reason.slice(7))),
-						goalJson, taskId ?? "", JSON.stringify(teams.map(team => team.id)), actor]);
+						goalJson, taskId ?? "", JSON.stringify(units.map(unit => unit.id)), actor]);
 				const lessons = list("lessons", `WHERE id IN (SELECT id FROM lessons WHERE goal_id IN (SELECT value FROM json_each(?))
 					${taskId === undefined ? "" : "AND json_extract(document,'$.workType')=(SELECT json_extract(document,'$.workType') FROM tasks WHERE id=?)"}
 					ORDER BY rowid DESC LIMIT 20)`, taskId === undefined ? [goalJson] : [goalJson, taskId]);
 				const wakes = list("wakes", `WHERE goal_id IN (SELECT value FROM json_each(?))
 					AND json_extract(document,'$.generation')>json_extract(document,'$.consumed')`, [goalJson]);
 				const ready = tasks.filter(task => (task.repairReservation ? task.repairReservation.worker === actor : authorized(task, actor))
-					&& (runnable(task) || preparedDispatch(task)));
-				return { goals, tasks, attempts, teams, signals, lessons, wakes, effects, ready, claims: [] };
+					&& coordinatorsBound(task) && (runnable(task) || preparedDispatch(task)));
+				const collaborations = list("collaborations").filter(item =>
+					[ item.sourceTaskId, item.destinationTaskId, ...(item.producerTaskId ? [item.producerTaskId] : []) ]
+						.some(id => authorized(get("tasks", id), actor) || assignedExecution(get("tasks", id), actor))
+					&& (goalId === undefined || item.goalId === goalId || item.destinationGoalId === goalId));
+				return { goals, tasks, attempts, units, collaborations, signals, lessons, wakes, effects, ready, claims: [] };
 			}, false);
+		},
+		/** @param {string} actor @param {string[]} goalIds @param {number} [offset] */
+		unitDirectory(actor, goalIds, offset = 0) {
+			return transaction(() => {
+				natural(offset, "unit directory offset");
+				for (const goalId of goalIds) if (!goalMember(get("goals", goalId), actor)) throw new FoundryError("foreign_goal", "Unit discovery stays inside assigned goals");
+				const units = list("units", "WHERE goal_id IN (SELECT value FROM json_each(?))", [JSON.stringify(goalIds)])
+					.sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
+				const coordinators = list("tasks", "WHERE goal_id IN (SELECT value FROM json_each(?)) AND json_extract(document,'$.role')='coordinator' AND state<>'cancelled'",
+					[JSON.stringify(goalIds)]);
+				return { total: units.length, offset, ...(offset + 100 < units.length ? { nextOffset: offset + 100 } : {}),
+					units: units.slice(offset, offset + 100).map(unit => {
+						const coordinator = coordinators.find(task => task.unitId === unit.id);
+						return { id: unit.id, goalId: unit.goalId, parentId: unit.parentId, name: unit.name, kind: unit.kind,
+							...(coordinator ? { coordinatorTaskId: coordinator.id, coordinator: coordinator.owner, state: coordinator.state } : {}) };
+					}) };
+			}, false);
+		},
+		/** @param {string} actor @param {string} [goalId] */
+		coordinationViews(actor, goalId) {
+			return transaction(() => list("tasks", `WHERE owner=? AND json_extract(document,'$.role')='coordinator' ${goalId === undefined ? "" : "AND goal_id=?"}`,
+				goalId === undefined ? [actor] : [actor, goalId]).map(task => {
+				const attempt = task.currentAttemptId ? get("attempts", task.currentAttemptId) : undefined;
+				const completion = optional("goal_completions", task.goalId);
+				const factory = completion ? get("factory_controls", completion.factoryId) : undefined;
+				return { taskId: task.id, attemptId: attempt?.id, ...task.coordination,
+					state: ["done", "cancelled", "failed"].includes(task.state) || completion?.closed ? "closed"
+						: factory && (factory.state !== "active" || factory.pausedWorkers.includes(actor)) ? "paused"
+							: !budgetAvailable(get("goals", task.goalId)) ? "limit-exhausted"
+								: task.waiting?.kind === "input" ? "needs-input"
+									: attempt && outstanding(attempt, true) ? "settlement-blocked"
+										: !attempt?.nativeId ? "awaiting-dispatch"
+											: task.coordination && task.coordination.generation > task.coordination.handled ? "actionable"
+												: task.coordination?.disposition?.reason ?? "waiting-for-events" };
+			}), false);
 		},
 		/** @param {string} actor @param {string} [goalId] @param {boolean} [dispatchOnly] @returns {Task[]} */
 		readyTasks(actor, goalId, dispatchOnly = false) {
@@ -1723,8 +2194,8 @@ export function openWorkStore(workingDirectory, options = {}) {
 				return list("tasks", `WHERE state IN ('ready','waiting','running') ${goalId === undefined ? "" : "AND goal_id=?"}`, goalId === undefined ? [] : [goalId]).filter((task) => (goalId === undefined || task.goalId === goalId)
 					&& (task.repairReservation ? task.repairReservation.worker === actor : authorized(task, actor))
 					&& (!dispatchOnly || !task.repairReservation && task.state !== "waiting"
-						&& (!optional("goal_completions", task.goalId) || task.owner === actor))
-					&& (runnable(task) || preparedDispatch(task)));
+						&& (!optional("goal_completions", task.goalId) && !ancestors(task).some(parent => parent.role === "coordinator") || task.owner === actor))
+					&& coordinatorsBound(task) && (runnable(task) || preparedDispatch(task)));
 			}, false);
 		},
 		/** @param {string} taskId @param {string} actor @returns {Attempt} */
@@ -1952,8 +2423,8 @@ export function openWorkStore(workingDirectory, options = {}) {
 		retryTask(taskId, expectedAttemptId, actor) {
 			return transaction(() => retry(taskId, expectedAttemptId, actor));
 		},
-		/** @param {string} taskId @param {string} actor @param {Task["waiting"]} waiting @returns {Task} */
-		waitTask(taskId, actor, waiting) {
+		/** @param {string} taskId @param {string} actor @param {Task["waiting"]} waiting @param {{attemptId:string,handledGeneration?:number,relatedIds?:string[]}} [event] @returns {Task} */
+		waitTask(taskId, actor, waiting, event) {
 			return transaction(() => {
 				const task = get("tasks", taskId);
 				const attempt = task.currentAttemptId ? get("attempts", task.currentAttemptId) : undefined;
@@ -1964,6 +2435,33 @@ export function openWorkStore(workingDirectory, options = {}) {
 				}
 				const decoded = decodeWaiting(waiting);
 				if (!decoded) throw new FoundryError("invalid_field", "Waiting must name its reason");
+				if (decoded.kind === "events") {
+					if (task.role !== "coordinator" || !task.coordination || attempt.nativeId !== actor || task.owner !== actor) {
+						throw new FoundryError("foreign_execution", "Only the current executing coordinator can yield its event lease");
+					}
+					if (event?.attemptId !== attempt.id) throw new FoundryError("stale_attempt", "Event handling must retain the exact current coordinator attempt");
+					if (attempt.waiting?.kind === "input" || outstanding(attempt, true)) {
+						throw new FoundryError("settlement_required", "Resolve actual native inputs and substantive commands before yielding coordination");
+					}
+					if (event.handledGeneration !== undefined) {
+						const generation = natural(event.handledGeneration, "handled generation");
+						if (generation > task.coordination.generation || generation < task.coordination.handled) {
+							throw new FoundryError("stale_generation", "A disposition can acknowledge only observed current work generations");
+						}
+						const relatedIds = event.relatedIds ?? [];
+						for (const id of relatedIds) {
+							const related = optional("tasks", id);
+							const request = optional("collaborations", id);
+							if (!(related && authorized(related, actor))
+								&& !(request && [request.sourceTaskId, request.destinationTaskId].some(id => authorized(get("tasks", id), actor)))) {
+								throw new FoundryError("forbidden", "A disposition may reference only locally accountable work or collaboration");
+							}
+						}
+						task.coordination.handled = generation;
+						task.coordination.disposition = { generation, reason: decoded.reason, relatedIds };
+						if (generation === task.coordination.generation) task.coordination.causes = [];
+					}
+				}
 				task.state = "waiting";
 				task.waiting = decoded;
 				attempt.state = "waiting";
@@ -1972,6 +2470,49 @@ export function openWorkStore(workingDirectory, options = {}) {
 				put("attempts", attempt);
 				releaseSlot(attempt);
 				return task;
+			});
+		},
+		/** @param {string} actor */
+		parkCoordinators(actor) {
+			return transaction(() => {
+				/** @type {Task[]} */
+				const parked = [];
+				for (const task of list("tasks", "WHERE owner=? AND json_extract(document,'$.role')='coordinator' AND state IN ('running','waiting')", [actor])) {
+					const attempt = task.currentAttemptId ? get("attempts", task.currentAttemptId) : undefined;
+					if (!attempt || attempt.nativeId !== actor || !task.coordination || task.waiting?.kind === "input" || outstanding(attempt, true)) continue;
+					if (attempt.slot) {
+						task.state = "waiting";
+						task.waiting = { kind: "events", reason: "Native coordination turn ended; retained work is not implicitly handled" };
+						attempt.state = "waiting";
+						attempt.waiting = task.waiting;
+						put("attempts", attempt);
+						put("tasks", task);
+						releaseSlot(attempt);
+					}
+					if (task.coordination.generation > task.coordination.handled && task.coordination.escalated !== task.coordination.generation) {
+						task.coordination.escalated = task.coordination.generation;
+						put("tasks", task);
+						const sponsor = task.parentId ? get("tasks", task.parentId).owner : get("goals", task.goalId).owner;
+						wake(sponsor, task.goalId, `coordination-stalled:${task.id}`);
+					}
+					parked.push(task);
+				}
+				return parked;
+			});
+		},
+		/** @param {string} actor */
+		assertCommandAdmission(actor) {
+			return transaction(() => {
+				const executing = list("attempts", "WHERE native_id=? AND slot=1 AND state='running'", [actor])
+					.filter(attempt => get("tasks", attempt.taskId).currentAttemptId === attempt.id);
+				for (const attempt of executing) {
+					requireAdmission(get("tasks", attempt.taskId));
+					observeExecutionBase(attempt);
+				}
+				if (!executing.length && list("attempts", "WHERE native_id=?", [actor])
+					.some(attempt => get("tasks", attempt.taskId).role === "coordinator")) {
+					throw new FoundryError("capacity_required", "A waiting or closed coordinator must resume an admitted execution attempt before running commands");
+				}
 			});
 		},
 		/** @param {string} taskId @param {string} actor @returns {Attempt} */
@@ -2108,13 +2649,19 @@ export function openWorkStore(workingDirectory, options = {}) {
 		outgoingWakes(actor, capacity = false, includeInFlight = false) {
 			return transaction(() => list("wakes", `WHERE owner<>? ${includeInFlight ? "" : "AND json_extract(document,'$.inFlight') IS NULL"}
 				AND json_extract(document,'$.unavailable') IS NULL
-				AND json_extract(document,'$.generation')>MAX(COALESCE(json_extract(document,'$.sent'),0),json_extract(document,'$.consumed'))
-				AND (goal_id IN (SELECT id FROM goals WHERE owner=? UNION SELECT goal_id FROM tasks WHERE owner=?
-					UNION SELECT goal_id FROM teams WHERE owner=?
-					UNION SELECT t.goal_id FROM attempts a JOIN tasks t ON a.task_id=t.id WHERE a.native_id=?)
-					OR (? AND EXISTS(SELECT 1 FROM json_each(document,'$.relatedReasons') WHERE value='capacity')))`,
-				[actor, actor, actor, actor, actor, capacity ? 1 : 0]), false);
+				AND json_extract(document,'$.generation')>MAX(COALESCE(json_extract(document,'$.sent'),0),json_extract(document,'$.consumed'))`,
+				[actor]).flatMap(wake => {
+					if (!includeInFlight && !wakeReady(wake)) return [];
+					if (goalMember(get("goals", wake.goalId), actor)) return [wake];
+					const reasons = collaborationReasons(wake, actor);
+					if (capacity && (wake.relatedReasons ?? [wake.reason]).includes("capacity")) reasons.push("capacity");
+					return reasons.length ? [{ ...wake, reason: text(reasons.at(-1), "permitted wake reason"), relatedReasons: reasons }] : [];
+				}), false);
 		},
+		/** @param {string} wakeId */
+		wakeCanSend(wakeId) { return transaction(() => wakeReady(get("wakes", wakeId)), false); },
+		/** @param {string} wakeId @param {string} actor */
+		canRelayCollaboration(wakeId, actor) { return transaction(() => collaborationWake(get("wakes", wakeId), actor), false); },
 		/** @param {string} wakeId */
 		wakeHasCurrentRecipient(wakeId) {
 			return transaction(() => {
@@ -2133,21 +2680,21 @@ export function openWorkStore(workingDirectory, options = {}) {
 					if (factory.state !== "active" || factory.pausedWorkers.includes(wake.owner)) return;
 				}
 				if (attemptId === undefined) {
-					if (!goalMember(get("goals", wake.goalId), actor)) throw new FoundryError("foreign_wake", "Bookkeeping cannot deliver another goal's messages");
+					if (!goalMember(get("goals", wake.goalId), actor) && !collaborationWake(wake, actor)) throw new FoundryError("foreign_wake", "Bookkeeping cannot deliver unrelated goals' messages");
 				} else {
 					const attempt = get("attempts", attemptId);
 					requireReporter(attempt, actor);
 					const task = current(attempt);
 					if (attempt.nativeId !== actor) requireOwner(task, actor);
 					if (!goalMember(get("goals", wake.goalId), actor)
+						&& !collaborationWake(wake, actor)
 						&& !(wake.relatedReasons ?? [wake.reason]).some(reason => reason === `output:${task.id}` || reason === "capacity")) {
 						throw new FoundryError("foreign_wake", "This reporter cannot deliver unrelated goals' messages");
 					}
 				}
 				natural(generation, "generation");
 				if (generation > wake.generation) throw new FoundryError("wake_generation", "Cannot send an unseen generation");
-				if (wake.inFlight || generation <= Math.max(wake.consumed, wake.sent ?? 0)
-					|| (wake.sent ?? 0) > wake.consumed) return;
+				if (!wakeReady(wake) || generation <= Math.max(wake.consumed, wake.sent ?? 0)) return;
 				const delivery = decodeDelivery({ id: `wake:${wake.id}:${randomUUID()}`, wakeId, goalId: wake.goalId,
 					generation, owner: actor, state: "issued", request,
 					...(attemptId === undefined ? {} : { attemptId }) });
@@ -2219,6 +2766,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 				const producers = (wake.relatedReasons ?? [wake.reason]).filter(reason => reason.startsWith("output:"))
 					.map(reason => optional("tasks", reason.slice("output:".length)));
 				if (wake.owner !== actor && !goalMember(get("goals", wake.goalId), actor)
+					&& !collaborationWake(wake, actor)
 					&& !producers.some(producer => producer && goalMember(get("goals", producer.goalId), actor))) {
 					throw new FoundryError("forbidden", "Only a legitimate goal member or the affected output's publisher may acknowledge native delivery");
 				}
@@ -2239,25 +2787,79 @@ export function openWorkStore(workingDirectory, options = {}) {
 		/** @param {string} taskId @param {string} newOwner @param {string} actor @returns {Task} */
 		reassignTask(taskId, newOwner, actor) {
 			return transaction(() => {
+				const existing = get("tasks", taskId);
+				if (existing.role === "coordinator" && existing.currentAttemptId && get("attempts", existing.currentAttemptId).nativeId
+					&& !get("attempts", existing.currentAttemptId).supersededBy) {
+					throw new FoundryError("execution_handoff_required", "Supersede the settled coordinator execution before changing its accountable binding");
+				}
 				const task = transfer(get("tasks", taskId), newOwner, actor);
 				rerouteWakes(task.goalId);
 				return task;
 			});
 		},
-		/** @param {string} teamId @param {string} newOwner @param {string} actor */
-		reassignTeam(teamId, newOwner, actor) {
+		/** @param {string} unitId @param {string} newOwner @param {string} actor */
+		reassignUnit(unitId, newOwner, actor) {
 			return transaction(() => {
-				const team = get("teams", teamId);
-				if (team.owner !== actor) requireGoalOwner(get("goals", team.goalId), actor);
-				const previousOwner = team.owner;
-				team.owner = text(newOwner, "new team coordinator");
-				for (const task of list("tasks", "WHERE goal_id=? AND owner=? AND json_extract(document,'$.teamId')=?", [team.goalId, previousOwner, team.id])) {
-					if (task.state !== "cancelled") transfer(task, newOwner, actor, true);
+				const unit = get("units", unitId);
+				if (unit.taskId) requireOwner(get("tasks", unit.taskId), actor);
+				else requireGoalOwner(get("goals", unit.goalId), actor);
+				unit.owner = text(newOwner, "new unit coordinator");
+				put("units", unit);
+				wake(unit.owner, unit.goalId, `unit:${unit.id}`);
+				return unit;
+			});
+		},
+		/** @param {string} taskId @param {string} attemptId @param {string} newOwner @param {string} actor @param {boolean} [unavailable] */
+		handoffTask(taskId, attemptId, newOwner, actor, unavailable = false) {
+			return transaction(() => {
+				const task = get("tasks", taskId);
+				const old = get("attempts", attemptId);
+				if (old.taskId === task.id && old.supersededBy === newOwner && (old.nativeId === actor || authorized(task, actor))) return task;
+				requireOwner(task, actor);
+				requireAdmission(task);
+				if (old.taskId !== task.id) throw new FoundryError("stale_attempt", "Handoff requires this task's exact attempt");
+				current(old);
+				if (!["running", "waiting"].includes(old.state) || !["running", "waiting"].includes(task.state)) {
+					throw new FoundryError("invalid_transition", "Only a current executing or waiting attempt can be relinquished");
 				}
-				put("teams", team);
-				rerouteWakes(team.goalId);
-				wake(team.owner, team.goalId, `team:${team.id}`);
-				return team;
+				if (newOwner === old.nativeId) throw new FoundryError("invalid_owner", "Handoff must change the actual accountable execution");
+				if (actor !== old.nativeId && (!unavailable || task.role !== "coordinator"
+					|| !ancestors(task).some(parent => parent.owner === actor) && get("goals", task.goalId).owner !== actor)) {
+					throw new FoundryError("foreign_execution", "Only the actual worker can relinquish, or its ancestor replace a verified unavailable coordinator");
+				}
+				if (old.waiting?.kind === "input" || outstanding(old, true)
+					|| list("claims", "WHERE attempt_id=?", [old.id]).length) {
+					throw new FoundryError("settlement_required", "Handoff cannot erase pending native requests, effects, or owned claims");
+				}
+				const directory = old.executionDirectory;
+				if (!directory || !existsSync(directory) || realpathSync(directory) !== directory || !old.baseCommit
+					|| actor === old.nativeId && realpathSync(cwd) !== directory
+					|| realpathSync(execFileSync("git", ["-C", directory, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+						{ encoding: "utf8" }).trim()) !== path.dirname(path.dirname(databasePath))
+					|| executionBase(directory) !== old.baseCommit) {
+					throw new FoundryError("implementation_transfer_required", "Only the actual unchanged, verified executing worktree can move; dirty, missing or unverified checkpoints are unsupported");
+				}
+				const worktree = execFileSync("git", ["-C", directory, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
+				if (execFileSync("git", ["--literal-pathspecs", "-C", worktree, "status", "--porcelain", "--untracked-files=all", "--ignored=matching", "--", ...task.scope.paths],
+					{ encoding: "utf8" }).trim()) {
+					throw new FoundryError("implementation_transfer_required", "Scoped changes, including untracked or ignored files, require an unsupported checkpoint transfer");
+				}
+				const previousOwner = task.owner;
+				retirePrepared(old, "execution handoff");
+				old.state = "cancelled";
+				old.endedBy = actor;
+				old.supersededBy = text(newOwner, "new accountable owner");
+				put("attempts", old);
+				releaseSlot(old);
+				task.state = "ready";
+				task.owner = newOwner;
+				delete task.waiting;
+				delete task.repairReservation;
+				if (task.role === "coordinator") transferOwnedDescendants(task, previousOwner, newOwner);
+				put("tasks", task);
+				rerouteWakes(task.goalId);
+				wake(task.owner, task.goalId, `reassignment:${task.id}`);
+				return task;
 			});
 		},
 		/** @param {{taskId:string,expectedVersion:number,checks?:import("./model.d.ts").Check[],inputs?:import("./model.d.ts").Input[]}} input @param {string} actor */
@@ -2280,6 +2882,9 @@ export function openWorkStore(workingDirectory, options = {}) {
 					throw new FoundryError("protected_check", "Internal evolution cannot invent a new user or accepted-contract obligation");
 				}
 				const inputs = input.inputs === undefined ? task.inputs : input.inputs.map(decodeInput);
+				if (task.role === "coordinator" && (checks.length || inputs.length)) {
+					throw new FoundryError("invalid_coordinator", "Put product checks and prerequisites on producer children, not the coordinator role");
+				}
 				const completion = optional("goal_completions", task.goalId);
 				if (completion) {
 					requireAdmission(task);
@@ -2300,22 +2905,13 @@ export function openWorkStore(workingDirectory, options = {}) {
 					) SELECT id FROM upstream WHERE id=? LIMIT 1`).get(input.taskId, task.id);
 					if (cycle) throw new FoundryError("dependency_cycle", "Artifact dependencies must remain acyclic");
 				}
-				const affected = [task];
-				const seen = new Set([task.id]);
-				for (const producer of affected) {
-					if (!producer.outputs.length) continue;
-					for (const row of db.prepare("SELECT DISTINCT task_id FROM dependencies WHERE producer_id=? AND version IS NULL").all(producer.id)) {
-						const consumer = get("tasks", text(row.task_id, "consumer"));
-						if (!seen.has(consumer.id) && consumer.state !== "cancelled") { seen.add(consumer.id); affected.push(consumer); }
-					}
-				}
 				task.checks = checks;
 				task.inputs = inputs;
 				db.prepare("DELETE FROM dependencies WHERE task_id=?").run(task.id);
 				for (const input of inputs) db.prepare("INSERT INTO dependencies(task_id,producer_id,output,version) VALUES(?,?,?,?)")
 					.run(task.id, input.taskId, input.output, input.version ?? null);
-				for (const item of affected) revise(item, actor);
-				return { task: get("tasks", task.id), affected: affected.map(item => item.id) };
+				const affected = reviseDependents(task, actor);
+				return { task: get("tasks", task.id), affected };
 			});
 		},
 		/** @param {string} id @param {string} observedAt @returns {import("./model.d.ts").UsageAffinity|undefined} */
@@ -2335,6 +2931,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 						const task = get("tasks", attempt.taskId);
 						return task.currentAttemptId === attempt.id && task.version === attempt.taskVersion;
 					});
+				for (const attempt of attempts) observeExecutionBase(attempt);
 				const assignment = token ? list("attempts", "WHERE json_extract(document,'$.token')=?", [token])[0] : undefined;
 				const activeToken = token && (!assignment || (!assignment.nativeId || assignment.nativeId === actor)
 					&& !["done", "failed", "cancelled"].includes(assignment.state)
@@ -2459,7 +3056,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 					const task = get("tasks", input.taskId);
 					if (task.goalId !== goal.id) throw new FoundryError("invalid_task", "Signal task must belong to its goal");
 				}
-				if (input.teamId && get("teams", input.teamId).goalId !== goal.id) throw new FoundryError("invalid_team", "Feedback team must belong to the goal");
+				if (input.unitId && get("units", input.unitId).goalId !== goal.id) throw new FoundryError("invalid_team", "Feedback unit must belong to the goal");
 				const candidate = decodeSignal({ ...record(input), id: input.id ?? randomUUID() });
 				const existing = input.id === undefined ? list("signals", "WHERE goal_id=?", [goal.id]).find((signal) => {
 					const { id: _left, ...left } = signal;

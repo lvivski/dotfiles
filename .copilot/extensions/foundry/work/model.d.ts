@@ -113,19 +113,55 @@ export interface NativeUsage {
 	attemptId?: string;
 	goalId?: string;
 }
-export interface Team {
+export interface Unit {
 	id: string;
 	goalId: string;
 	name: string;
 	owner: string;
 	context: string[];
+	parentId?: string;
+	taskId?: string;
+	kind?: string;
+	coordinatorTaskId?: string;
+}
+export interface Coordination {
+	generation: number;
+	handled: number;
+	causes: string[];
+	escalated?: number;
+	disposition?: { generation: number; reason: string; relatedIds: string[] };
+}
+export interface Collaboration {
+	id: string;
+	goalId: string;
+	destinationGoalId: string;
+	sourceTaskId: string;
+	destinationTaskId: string;
+	consumerTaskId: string;
+	sourceOwner: string;
+	sourceVersion: number;
+	destinationVersion: number;
+	consumerVersion: number;
+	title: string;
+	output: string;
+	required: boolean;
+	revision: number;
+	state: "proposed" | "accepted" | "blocked" | "fulfilled" | "declined" | "cancelled";
+	proposal: string;
+	lastAction?: string;
+	producerTaskId?: string;
+	delivery?: Input;
+	bound: boolean;
+	reason?: string;
 }
 export type TaskState = "ready" | "running" | "waiting" | "blocked" | "failed" | "done" | "cancelled";
 export interface Task {
 	id: string;
 	goalId: string;
 	parentId?: string;
-	teamId?: string;
+	unitId?: string;
+	role: "producer" | "coordinator";
+	coordination?: Coordination;
 	owner: string;
 	title: string;
 	assignment: string;
@@ -140,7 +176,7 @@ export interface Task {
 	version: number;
 	repairs?: number;
 	repairReservation?: { attemptId: string; worker: string };
-	waiting?: { kind: "children" | "input" | "capacity" | "factory"; requestId?: string; reason: string; cause?: "paused" | "stalled" };
+	waiting?: { kind: "children" | "input" | "capacity" | "factory" | "events"; requestId?: string; reason: string; cause?: "paused" | "stalled" };
 }
 export interface Attempt {
 	id: string;
@@ -157,6 +193,10 @@ export interface Attempt {
 	repairOf?: string;
 	assignedOwner?: string;
 	endedBy?: string;
+	supersededBy?: string;
+	baseCommit?: string;
+	startCommit?: string;
+	executionDirectory?: string;
 	waiting?: Task["waiting"];
 }
 export interface Evidence {
@@ -235,7 +275,7 @@ export interface Signal {
 	id: string;
 	goalId: string;
 	taskId?: string;
-	teamId?: string;
+	unitId?: string;
 	kind: string;
 	summary: string;
 	references: string[];
@@ -249,7 +289,8 @@ export interface Lesson {
 }
 export interface Snapshot {
 	goals: Goal[];
-	teams: Team[];
+	units: Unit[];
+	collaborations: Collaboration[];
 	tasks: Task[];
 	attempts: Attempt[];
 	wakes: Wake[];

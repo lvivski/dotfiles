@@ -7,26 +7,46 @@ const escape = value => String(value).replaceAll("&", "&amp;").replaceAll("<", "
 
 /** @param {Snapshot} snapshot */
 export function renderBoard(snapshot) {
+	const attempts = new Map(snapshot.attempts.map(attempt => [attempt.id, attempt]));
 	const sections = snapshot.goals.map(goal => {
 		const tasks = snapshot.tasks.filter(task => task.goalId === goal.id);
-		const teams = snapshot.teams.filter(team => team.goalId === goal.id);
+		const units = snapshot.units.filter(unit => unit.goalId === goal.id);
+		const collaborations = snapshot.collaborations.filter(item => item.goalId === goal.id || item.destinationGoalId === goal.id);
 		const completion = snapshot.completions?.find(completion => completion.goalId === goal.id);
 		const factory = snapshot.factories?.find(factory => factory.id === completion?.factoryId);
 		return `<section aria-labelledby="goal-${escape(goal.id)}">
 <h2 id="goal-${escape(goal.id)}">${escape(goal.title)}</h2>
-<p class="secondary">${tasks.filter(task => task.state === "done").length} of ${tasks.length} tasks completed &middot; ${teams.length} teams &middot; ${escape(goal.scope.mode)}</p>
+<p class="secondary">${tasks.filter(task => task.state === "done").length} of ${tasks.length} tasks completed &middot; ${units.length} units &middot; ${escape(goal.scope.mode)}</p>
+${units.length ? `<details><summary>Organization and accountable coordinators</summary><ul>${units.slice(0, 100).map(unit => {
+			const coordinator = tasks.find(task => task.id === unit.coordinatorTaskId);
+			const parent = units.find(parent => parent.id === unit.parentId);
+			return `<li><strong>${escape(unit.name)}</strong> &middot; ${escape(unit.kind ?? "unit")}${parent ? ` &middot; within ${escape(parent.name)}` : " &middot; organization root"}
+<p class="secondary">${coordinator ? `Coordinator: ${escape(coordinator.title)} &middot; <code>${escape(coordinator.owner)}</code>` : "No coordinator assigned"}${unit.taskId ? ` &middot; task boundary <code>${escape(unit.taskId)}</code>` : ""}</p>
+${unit.context.length ? `<p>${unit.context.map(escape).join("<br>")}</p>` : ""}</li>`;
+		}).join("")}</ul>${units.length > 100 ? `<p>Showing 100 of ${units.length} units. Inspect the relevant task context for more detail.</p>` : ""}</details>` : ""}
 ${goal.source ? `<p class="secondary">Contract: <code>${escape(goal.source.reference)}</code></p>` : ""}
 ${completion ? `<p>Factory: ${escape(factory?.state ?? "unknown")} &middot; delivery: ${completion.delivered ? "accepted" : "incomplete"} &middot; settlement: ${completion.settled ? "settled" : "outstanding"} &middot; closure ${escape(completion.revision)}${factory?.reason ? ` &middot; ${escape(factory.reason)}` : ""}</p>` : ""}
 ${tasks.length ? `<div class="table-scroll"><table><caption class="visually-hidden">Work in ${escape(goal.title)}</caption><thead><tr><th scope="col">Task</th><th scope="col">State</th><th scope="col">Owner</th></tr></thead><tbody>
-${tasks.map(task => `<tr><td><details><summary>${escape(task.title)}</summary>
+${tasks.map(task => {
+			const attempt = task.currentAttemptId ? attempts.get(task.currentAttemptId) : undefined;
+			return `<tr><td><details><summary>${escape(task.title)}${task.role === "coordinator" ? " (coordinator)" : ""}</summary>
 <p>${escape(task.assignment)}</p>
-${task.parentId ? `<p class="secondary">Delegated under ${escape(tasks.find(parent => parent.id === task.parentId)?.title ?? task.parentId)}</p>` : ""}
+${task.parentId ? `<p class="secondary">Canonical parent: ${escape(tasks.find(parent => parent.id === task.parentId)?.title ?? task.parentId)} &middot; <code>${escape(task.parentId)}</code></p>` : ""}
+${attempt ? `<p class="secondary">Native execution: <code>${escape(attempt.nativeId ?? "not bound")}</code><br>Original native creator: <code>${escape(attempt.creator)}</code> &middot; slot ${attempt.slot ? "in use" : "released"}${attempt.assignedOwner ? `<br>Assigned accountable owner: <code>${escape(attempt.assignedOwner)}</code>` : ""}</p>` : ""}
+${task.coordination ? `<p>Coordination work: handled ${task.coordination.handled} of ${task.coordination.generation} generations${task.coordination.generation > task.coordination.handled ? " &middot; pending work" : " &middot; awaiting new events"}</p>
+${task.coordination.disposition ? `<p class="secondary">Last disposition: ${escape(task.coordination.disposition.reason)}</p>` : ""}` : ""}
 ${task.waiting ? `<p>Waiting: ${escape(task.waiting.reason)}${task.waiting.requestId ? ` &middot; native request <code>${escape(task.waiting.requestId)}</code>` : ""}</p>` : ""}
 ${task.inputs.length ? `<h3>Inputs</h3><ul>${task.inputs.map(input => `<li><code>${escape(input.taskId)}</code> &middot; ${escape(input.output)}${input.version ? ` &middot; ${escape(input.version)}` : ""}</li>`).join("")}</ul>` : ""}
 ${task.checks.length ? `<h3>Acceptance</h3><ul>${task.checks.map(check => `<li>${escape(check.requirement)} <span class="secondary">(${escape(check.origin)}, ${escape(check.id)})</span></li>`).join("")}</ul>` : ""}
 ${task.outputs.length ? `<h3>Outputs</h3><ul>${task.outputs.map(output => `<li>${escape(output.name)} &middot; ${escape(output.kind)}<br><code>${escape(output.reference)}</code><br><span class="secondary">Version ${escape(output.version)}</span></li>`).join("")}</ul>` : ""}
-</details></td><td><span class="state" data-state="${escape(task.state)}">${escape(task.state)}</span></td><td><code title="${escape(task.owner)}">${escape(task.owner.slice(0, 8))}</code></td></tr>`).join("")}
+</details></td><td><span class="state" data-state="${escape(task.state)}">${escape(task.state)}</span>${task.waiting ? `<br><span class="secondary">${escape(task.waiting.kind)}</span>` : ""}</td><td><code title="${escape(task.owner)}">${escape(task.owner.slice(0, 8))}</code></td></tr>`;
+		}).join("")}
 </tbody></table></div>` : `<p>No tasks yet. Add scoped work with <code>foundry_create_task</code>.</p>`}
+${collaborations.length ? `<h3>Collaboration commitments</h3><ul>${collaborations.map(item => `<li><details><summary>${escape(item.title)} &middot; ${escape(item.state)}${item.required ? " &middot; required" : " &middot; optional"}</summary>
+<p>Source coordinator <code>${escape(item.sourceTaskId)}</code><br>Destination coordinator <code>${escape(item.destinationTaskId)}</code><br>Consumer <code>${escape(item.consumerTaskId)}</code></p>
+<p>Output: ${escape(item.output)} &middot; revision ${item.revision}${item.producerTaskId ? `<br>Committed producer: <code>${escape(item.producerTaskId)}</code>` : ""}</p>
+${item.delivery ? `<p>Delivered version: <code>${escape(item.delivery.version)}</code> &middot; ${item.bound ? "bound to source" : "source binding required"}</p>` : ""}
+${item.reason ? `<p>${escape(item.reason)}</p>` : ""}</details></li>`).join("")}</ul>` : ""}
 </section>`;
 	}).join("");
 	return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Foundry</title>

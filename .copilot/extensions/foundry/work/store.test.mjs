@@ -82,6 +82,307 @@ function fails(operation, code) {
 	assert.throws(operation, (error) => error instanceof FoundryError && error.code === code);
 }
 
+test("recursive organizational units retain task ancestry and never grant authority through metadata", t => {
+	const { store } = fixture(t);
+	goal(store);
+	const organization = store.createUnit({ goalId: "goal", name: "Product", kind: "organization" }, "root");
+	const directorTask = task(store, "director", { role: "coordinator", unitId: organization.id });
+	const queued = task(store, "already-queued", { parentId: directorTask.id });
+	const director = start(store, directorTask);
+	assert.equal(store.getTask(queued.id).owner, director.nativeId);
+	const team = store.createUnit({ goalId: "goal", parentId: organization.id, taskId: directorTask.id, name: "Mail" }, "native:director");
+	const lead = start(store, task(store, "mail-lead", { parentId: directorTask.id, unitId: team.id, role: "coordinator" }, "native:director"), "native:director");
+	const subteam = store.createUnit({ goalId: "goal", parentId: team.id, taskId: lead.taskId, name: "Authentication" }, "native:mail-lead");
+	const sublead = start(store, task(store, "auth-lead", { parentId: lead.taskId, unitId: subteam.id, role: "coordinator" }, "native:mail-lead"), "native:mail-lead");
+	const worker = task(store, "auth-worker", { parentId: sublead.taskId, unitId: subteam.id }, "native:auth-lead");
+	assert.equal(store.snapshot().units.find(unit => unit.id === subteam.id)?.coordinatorTaskId, sublead.taskId);
+	assert.equal(worker.parentId, sublead.taskId);
+	fails(() => store.createUnit({ goalId: "goal", name: "Unauthorized root" }, "native:auth-lead"), "forbidden");
+	fails(() => task(store, "escape", { unitId: organization.id }, "native:auth-lead"), "forbidden");
+	fails(() => task(store, "wrong-boundary", { parentId: directorTask.id, unitId: subteam.id }, "native:director"), "forbidden");
+	fails(() => task(store, "duplicate-role", { parentId: lead.taskId, unitId: subteam.id, role: "coordinator" }, "native:mail-lead"), "coordinator_conflict");
+	fails(() => store.evolveTask({ taskId: sublead.taskId, expectedVersion: 1, checks: [check] }, "native:auth-lead"), "protected_check");
+});
+
+test("one-slot coordinators yield without ending their role, and later production reuses the same attempt", t => {
+	const { store } = fixture(t);
+	goal(store, "goal", "root", { workers: 1 });
+	const lead = start(store, task(store, "lead", { role: "coordinator" }));
+	const observed = store.getTask(lead.taskId).coordination?.generation;
+	store.waitTask(lead.taskId, "native:lead", { kind: "events", reason: "Ready to staff workers" },
+		{ attemptId: lead.id, handledGeneration: observed, relatedIds: [] });
+	assert.equal(store.getAttempt(lead.id).slot, false);
+	fails(() => store.assertCommandAdmission("native:lead"), "capacity_required");
+	const producer = start(store, task(store, "first", { parentId: lead.taskId }, "native:lead"), "native:lead");
+	store.recordResult(outcome(producer), "native:first");
+	assert.equal(store.getTask(lead.taskId).state, "waiting");
+	assert.ok((store.getTask(lead.taskId).coordination?.generation ?? 0) > (observed ?? 0));
+	const wake = store.pendingWakes("native:lead")[0];
+	store.consumeWake(wake.id, wake.generation, "native:lead");
+	assert.equal(store.getTask(lead.taskId).coordination?.handled, observed);
+	const next = task(store, "second", { parentId: lead.taskId }, "native:lead");
+	assert.equal(next.parentId, lead.taskId);
+	assert.equal(store.getTask(lead.taskId).currentAttemptId, lead.id);
+	assert.equal(store.snapshot().attempts.filter(attempt => attempt.taskId === lead.taskId).length, 1);
+	const affinity = store.captureUsageAffinity(affinityId("native:lead"), "native:lead", undefined,
+		{ id: "first-waking-request", timestamp: "2030-01-01T00:00:00Z" });
+	assert.deepEqual(affinity.attemptIds, [lead.id]);
+	fails(() => store.waitTask(lead.taskId, "native:lead", { kind: "events", reason: "Unseen work" },
+		{ attemptId: lead.id, handledGeneration: 999 }), "stale_generation");
+});
+
+test("peer organization discovery reveals accountable identities without peer backlog or mutation rights", t => {
+	const { store } = fixture(t);
+	goal(store);
+	const mail = store.createUnit({ goalId: "goal", name: "Mail organization" }, "root");
+	const platform = store.createUnit({ goalId: "goal", name: "Platform organization", context: ["Private platform charter"] }, "root");
+	const source = start(store, task(store, "mail", { role: "coordinator", unitId: mail.id }));
+	const peer = start(store, task(store, "platform", { role: "coordinator", unitId: platform.id }));
+	const directory = store.unitDirectory("native:mail", ["goal"]);
+	assert.equal(directory.units.find(unit => unit.id === platform.id)?.coordinatorTaskId, peer.taskId);
+	assert.equal(directory.units.find(unit => unit.id === platform.id)?.coordinator, peer.nativeId);
+	assert.equal(Object.hasOwn(directory.units.find(unit => unit.id === platform.id) ?? {}, "context"), false);
+	assert.equal(store.contextSnapshot("native:mail", "goal").tasks.some(task => task.id === peer.taskId), false);
+	fails(() => store.cancelTask(peer.taskId, source.nativeId ?? ""), "forbidden");
+	for (let index = 0; index < 99; index++) store.createUnit({ goalId: "goal", name: `Additional unit ${index}` }, "root");
+	const first = store.unitDirectory("native:mail", ["goal"]);
+	assert.equal(first.units.length, 100);
+	assert.equal(first.nextOffset, 100);
+	const last = store.unitDirectory("native:mail", ["goal"], first.nextOffset);
+	assert.equal(last.units.length, 1);
+	assert.equal(last.nextOffset, undefined);
+	assert.equal(new Set([...first.units, ...last.units].map(unit => unit.id)).size, 101);
+	goal(store, "unassigned", "another-owner");
+	fails(() => store.unitDirectory("native:mail", ["unassigned"]), "foreign_goal");
+});
+
+test("natural stop retains undisposed coordination, releases settled capacity and escalates only once", t => {
+	const { store } = fixture(t);
+	goal(store, "goal", "root", { workers: 1 });
+	const lead = start(store, task(store, "lead", { role: "coordinator" }));
+	const command = { id: "real-command", attemptId: lead.id, kind: /** @type {const} */ ("command"),
+		request: { command: "bounded work" } };
+	store.recordEffect({ ...command, state: "issued" }, "native:lead");
+	assert.equal(store.parkCoordinators("native:lead").length, 0);
+	assert.equal(store.getAttempt(lead.id).slot, true);
+	store.recordEffect({ ...command, state: "settled", result: { exitCode: 0 } }, "native:lead");
+	assert.equal(store.parkCoordinators("native:lead").length, 1);
+	const generation = store.pendingWakes("root")[0].generation;
+	store.parkCoordinators("native:lead");
+	assert.equal(store.pendingWakes("root")[0].generation, generation);
+	assert.equal(store.getAttempt(lead.id).slot, false);
+	assert.equal(store.getTask(lead.taskId).coordination?.handled, 0);
+});
+
+test("new coordinator work rearms an acknowledged wake without replaying an uncertain native send", t => {
+	const { store } = fixture(t);
+	goal(store);
+	const lead = start(store, task(store, "lead", { role: "coordinator" }));
+	store.waitTask(lead.taskId, "native:lead", { kind: "events", reason: "Waiting for work" }, { attemptId: lead.id });
+	const first = store.recordSignal({ goalId: "goal", taskId: lead.taskId, kind: "production", summary: "First", references: ["first"] }, "root");
+	const notification = store.pendingWakes("native:lead")[0];
+	store.markWakeSent(notification.id, notification.generation, "root");
+	store.recordSignal({ goalId: "goal", taskId: lead.taskId, kind: "production", summary: "Second", references: ["second"] }, "root");
+	const newer = store.pendingWakes("native:lead")[0];
+	assert.ok(newer.generation > notification.generation);
+	assert.ok(store.outgoingWakes("root").some(wake => wake.id === newer.id));
+	const delivery = store.claimWakeDelivery(newer.id, newer.generation, undefined, { session_id: "native:lead" }, "root");
+	assert.ok(delivery);
+	store.recordSignal({ goalId: "goal", taskId: lead.taskId, kind: "production", summary: "Third", references: ["third"] }, "root");
+	assert.equal(store.wakeCanSend(newer.id), false);
+	assert.equal(store.claimWakeDelivery(newer.id, store.pendingWakes("native:lead")[0].generation, undefined, {}, "root"), undefined);
+	assert.ok(store.getTask(lead.taskId).coordination?.causes.includes(`signal:${first.id}`));
+});
+
+/** @param {import("node:test").TestContext} t */
+function collaboratingOrganizations(t) {
+	const fixtureState = fixture(t);
+	const { store } = fixtureState;
+	goal(store);
+	goal(store, "peer-goal", "peer-root");
+	const source = start(store, task(store, "source", { role: "coordinator" }));
+	const destination = start(store, task(store, "destination", { goalId: "peer-goal", role: "coordinator" }, "peer-root"), "peer-root");
+	const consumer = task(store, "consumer", { parentId: source.taskId }, "native:source");
+	const request = store.requestCollaboration({ id: "interface-request", sourceTaskId: source.taskId,
+		destinationTaskId: destination.taskId, consumerTaskId: consumer.id, expectedVersion: consumer.version,
+		title: "A usable interface", output: "interface" }, "native:source");
+	return { ...fixtureState, source, destination, consumer, request };
+}
+
+test("cross-goal collaboration atomically staffs destination work and pins actual delivery without sharing authority", t => {
+	const { store, source, destination, consumer, request } = collaboratingOrganizations(t);
+	fails(() => store.prepareAttempt(consumer.id, "native:source"), "inputs_unavailable");
+	const acceptance = { collaborationId: request.id, expectedRevision: request.revision, action: /** @type {const} */ ("accept"),
+		producer: { title: "Interface", assignment: "Produce the requested interface", workType: "analysis" } };
+	fails(() => store.respondCollaboration(acceptance, "native:source"), "forbidden");
+	const accepted = store.respondCollaboration(acceptance, "native:destination");
+	assert.equal(store.respondCollaboration(acceptance, "native:destination").producerTaskId, accepted.producerTaskId);
+	const producer = store.getTask(accepted.producerTaskId ?? "");
+	assert.equal(producer.parentId, destination.taskId);
+	fails(() => store.cancelTask(consumer.id, "native:destination"), "forbidden");
+	const attempt = start(store, producer, "native:destination", "native:interface");
+	store.recordResult(outcome(attempt, { outputs: [{ name: "interface", kind: "analysis", reference: "artifact:interface", version: "interface-v1" }] }), "native:interface");
+	const fulfilled = store.respondCollaboration({ collaborationId: request.id, expectedRevision: accepted.revision, action: "fulfill" }, "native:destination");
+	assert.equal(fulfilled.bound, true);
+	assert.deepEqual(store.getTask(consumer.id).inputs, [{ taskId: producer.id, output: "interface", version: "interface-v1" }]);
+	store.cancelTask(producer.id, "peer-root");
+	const consumption = start(store, store.getTask(consumer.id), "native:source", "native:consumer");
+	assert.equal(consumption.inputs[0].version, "interface-v1");
+	assert.equal(store.recordResult(outcome(consumption), "native:consumer").promoted, true);
+	assert.equal(store.getTask(source.taskId).currentAttemptId, source.id);
+});
+
+test("changed consumers retain delivered collaboration bytes but need explicit source rebinding", t => {
+	const { store, consumer, request } = collaboratingOrganizations(t);
+	const accepted = store.respondCollaboration({ collaborationId: request.id, expectedRevision: 1, action: "accept",
+		producer: { title: "Interface", assignment: "Produce the interface", workType: "analysis" } }, "native:destination");
+	const producer = start(store, store.getTask(accepted.producerTaskId ?? ""), "native:destination");
+	store.evolveTask({ taskId: consumer.id, expectedVersion: store.getTask(consumer.id).version,
+		checks: [{ ...check, origin: "derived" }] }, "native:source");
+	store.respondCollaboration({ collaborationId: request.id, expectedRevision: 2, action: "block", reason: "Source definition changed" }, "native:destination");
+	store.recordResult(outcome(producer, { outputs: [{ name: "interface", kind: "analysis", reference: "artifact:interface", version: "v1" }] }), producer.nativeId ?? "");
+	const fulfilled = store.respondCollaboration({ collaborationId: request.id, expectedRevision: 3, action: "fulfill" }, "native:destination");
+	assert.equal(fulfilled.bound, false);
+	fails(() => store.prepareAttempt(consumer.id, "native:source"), "inputs_unavailable");
+	const bound = store.respondCollaboration({ collaborationId: request.id, expectedRevision: 4, action: "bind" }, "native:source");
+	assert.equal(bound.bound, true);
+	assert.equal(store.prepareAttempt(consumer.id, "native:source").inputs[0].version, "v1");
+});
+
+test("decline and cancellation never satisfy required requests, while explicit release preserves original inputs", t => {
+	const { store, consumer, request } = collaboratingOrganizations(t);
+	const original = start(store, task(store, "original-input", { parentId: "source" }, "native:source"), "native:source");
+	store.recordResult(outcome(original), original.nativeId ?? "");
+	const inputs = [{ taskId: original.taskId, output: "delivery" }];
+	store.evolveTask({ taskId: consumer.id, expectedVersion: store.getTask(consumer.id).version, inputs }, "native:source");
+	const declined = store.respondCollaboration({ collaborationId: request.id, expectedRevision: 1, action: "decline", reason: "No available service" }, "native:destination");
+	fails(() => store.prepareAttempt(consumer.id, "native:source"), "inputs_unavailable");
+	fails(() => store.respondCollaboration({ collaborationId: request.id, expectedRevision: declined.revision, action: "release", reason: "Drop consumer requirements" }, "native:destination"), "forbidden");
+	store.respondCollaboration({ collaborationId: request.id, expectedRevision: declined.revision, action: "release", reason: "Source no longer requires this derived interface" }, "native:source");
+	assert.deepEqual(store.getTask(consumer.id).inputs, inputs);
+	assert.equal(store.prepareAttempt(consumer.id, "native:source").taskId, consumer.id);
+	const another = task(store, "another-consumer", { parentId: "source" }, "native:source");
+	const cancelled = store.requestCollaboration({ sourceTaskId: "source", destinationTaskId: "destination", consumerTaskId: another.id,
+		expectedVersion: 1, title: "Cancelled requirement", output: "cancelled-output" }, "native:source");
+	store.respondCollaboration({ collaborationId: cancelled.id, expectedRevision: 1, action: "cancel", reason: "Service is unavailable" }, "native:source");
+	fails(() => store.prepareAttempt(another.id, "native:source"), "inputs_unavailable");
+});
+
+test("parallel collaboration grants preserve each other and each new revision remains unhandled work", t => {
+	const { store, consumer, request } = collaboratingOrganizations(t);
+	const second = store.requestCollaboration({ id: "another-interface", sourceTaskId: "source", destinationTaskId: "destination",
+		consumerTaskId: consumer.id, expectedVersion: store.getTask(consumer.id).version, title: "Another interface", output: "interface" }, "native:source");
+	const observed = store.getTask("source").coordination?.generation ?? 0;
+	for (const item of [request, second]) {
+		const accepted = store.respondCollaboration({ collaborationId: item.id, expectedRevision: 1, action: "accept",
+			producer: { title: item.title, assignment: item.title, workType: "analysis" } }, "native:destination");
+		assert.ok((store.getTask("source").coordination?.generation ?? 0) > observed);
+		const producer = start(store, store.getTask(accepted.producerTaskId ?? ""), "native:destination");
+		store.recordResult(outcome(producer, { outputs: [{ name: "interface", kind: "analysis", reference: `artifact:${item.id}`, version: item.id }] }), producer.nativeId ?? "");
+		const fulfilled = store.respondCollaboration({ collaborationId: item.id, expectedRevision: 2, action: "fulfill" }, "native:destination");
+		assert.equal(fulfilled.bound, true);
+	}
+	assert.equal(store.getTask(consumer.id).inputs.length, 2);
+	assert.equal(store.prepareAttempt(consumer.id, "native:source").inputs.length, 2);
+});
+
+test("cross-goal wake entitlement is tied to actual requests, not shared source-goal membership", t => {
+	const { store, request } = collaboratingOrganizations(t);
+	const peerWake = store.outgoingWakes("native:source").find(wake => wake.goalId === request.destinationGoalId);
+	assert.ok(peerWake);
+	start(store, task(store, "unrelated-specialist"));
+	assert.equal(store.outgoingWakes("native:unrelated-specialist").some(wake => wake.id === peerWake.id), false);
+	fails(() => store.claimWakeDelivery(peerWake.id, peerWake.generation, undefined, {}, "native:unrelated-specialist"), "foreign_wake");
+	assert.ok(store.claimWakeDelivery(peerWake.id, peerWake.generation, undefined, { session_id: peerWake.owner }, "native:source"));
+});
+
+test("foreign collaboration relays project only entitled reasons without swallowing newer generations", t => {
+	const { store, request } = collaboratingOrganizations(t);
+	const signal = store.recordSignal({ goalId: "peer-goal", taskId: "destination", kind: "production",
+		summary: "Private peer backlog", references: ["peer-only"] }, "peer-root");
+	const pending = store.pendingWakes("native:destination")[0];
+	assert.equal(pending.reason, `signal:${signal.id}`);
+	const projected = store.outgoingWakes("native:source").find(wake => wake.id === pending.id);
+	assert.ok(projected);
+	assert.equal(projected.reason, `collaboration:${request.id}`);
+	assert.deepEqual(projected.relatedReasons, [`collaboration:${request.id}`]);
+	assert.equal(projected.generation, pending.generation);
+	const delivery = store.claimWakeDelivery(projected.id, projected.generation, undefined, {}, "native:source");
+	assert.ok(delivery);
+	store.respondCollaboration({ collaborationId: request.id, expectedRevision: request.revision, action: "accept",
+		producer: { title: "Interface", assignment: "Publish the interface", workType: "analysis" } }, "native:destination");
+	store.settleWakeDelivery(projected.id, delivery.id, projected.generation, {}, true, "native:source");
+	const newer = store.outgoingWakes("native:source").find(wake => wake.id === pending.id);
+	assert.ok(newer && newer.generation > projected.generation);
+	assert.equal(store.getTask("destination").coordination?.handled, 0);
+	assert.ok(store.pendingWakes("native:destination")[0].relatedReasons?.includes(`signal:${signal.id}`));
+});
+
+test("collaboration detects actual dependency cycles and rolls back staffing without rejecting peer organizations", t => {
+	const { store, consumer, request } = collaboratingOrganizations(t);
+	const before = store.snapshot().tasks.length;
+	fails(() => store.respondCollaboration({ collaborationId: request.id, expectedRevision: 1, action: "accept",
+		producer: { title: "Cycle", assignment: "Needs its own consumer", workType: "analysis", inputs: [{ taskId: consumer.id, output: "delivery" }] } }, "native:destination"), "dependency_cycle");
+	assert.equal(store.snapshot().tasks.length, before);
+	assert.equal(store.snapshot().collaborations[0].state, "proposed");
+});
+
+test("settled execution handoff preserves history and repairs while rejecting dirty, claimed and stale attempts", t => {
+	const { store, repo } = fixture(t);
+	goal(store);
+	const producer = task(store, "relocatable");
+	const original = store.startLocalTask(producer.id, "root");
+	writeFileSync(path.join(repo, "untracked-work.txt"), "Do not lose this");
+	fails(() => store.handoffTask(producer.id, original.id, "replacement", "root"), "implementation_transfer_required");
+	rmSync(path.join(repo, "untracked-work.txt"));
+	const claim = store.claim({ attemptId: original.id, surface: repo, resource: "work.txt" }, "root");
+	fails(() => store.handoffTask(producer.id, original.id, "replacement", "root"), "settlement_required");
+	store.releaseClaim(claim.id, "root");
+	const handed = store.handoffTask(producer.id, original.id, "replacement", "root");
+	assert.equal(handed.version, 1);
+	assert.equal(handed.repairs, producer.repairs);
+	const successor = start(store, handed, "replacement", "native:replacement");
+	assert.equal(successor.repairOf, undefined);
+	assert.equal(successor.startCommit, original.baseCommit);
+	assert.equal(store.recordResult(outcome(original), "root").promoted, false);
+	assert.equal(store.handoffTask(producer.id, original.id, "replacement", "root").currentAttemptId, successor.id);
+	fails(() => store.handoffTask(producer.id, original.id, "another", "root"), "stale_attempt");
+});
+
+test("coordinator replacement retains native descendant ancestry and only transfers the outgoing owner's pending work", t => {
+	const { store } = fixture(t);
+	goal(store);
+	const lead = start(store, task(store, "lead", { role: "coordinator" }));
+	store.captureUsageAffinity(affinityId("native:lead"), "native:lead");
+	const leaf = start(store, task(store, "delegated", { parentId: lead.taskId }, "native:lead"), "native:lead");
+	const pending = task(store, "pending", { parentId: lead.taskId }, "native:lead");
+	fails(() => store.reassignTask(lead.taskId, "replacement", "root"), "execution_handoff_required");
+	store.handoffTask(lead.taskId, lead.id, "replacement", "root", true);
+	assert.equal(store.getTask(pending.id).owner, "replacement");
+	assert.equal(store.getTask(leaf.taskId).owner, "native:delegated");
+	assert.equal(store.getAttempt(leaf.id).creator, "native:lead");
+	assert.equal(store.getTask(leaf.taskId).parentId, lead.taskId);
+	const replacement = start(store, store.getTask(lead.taskId), "replacement", "native:new-lead");
+	assert.equal(store.getTask(pending.id).owner, replacement.nativeId);
+	assert.equal(store.getAttempt(leaf.id).creator, "native:lead");
+	assert.equal(store.getTask(lead.taskId).repairs ?? 0, 0);
+});
+
+test("handoff inspects repository-relative scope even when execution starts in a subdirectory", t => {
+	const { store, repo } = fixture(t);
+	goal(store);
+	const producer = task(store, "nested-execution", { scope: { paths: ["work.txt"] } });
+	const directory = path.join(repo, "nested");
+	mkdirSync(directory);
+	const nested = openWorkStore(directory);
+	try {
+		const attempt = nested.startLocalTask(producer.id, "root");
+		writeFileSync(path.join(repo, "work.txt"), "Uncommitted implementation outside the execution subdirectory");
+		fails(() => nested.handoffTask(producer.id, attempt.id, "replacement", "root"), "implementation_transfer_required");
+		assert.equal(store.getTask(producer.id).state, "running");
+	} finally { nested.close(); }
+});
+
 test("retired native-command evidence is rejected rather than coerced into a current runner receipt", () => {
 	fails(() => decodeEvidence({ id: "old-evidence", attemptId: "attempt", checkId: "behavior", checkVersion: "oracle",
 		outcome: "passed", reference: "old-command", summary: "Old check", source: "native-command" }), "invalid_field");
@@ -282,25 +583,24 @@ test("explicit cancellation, evolution and reassignment clear parked repairs wit
 	}
 });
 
-test("a team handoff preserves charter, delegated leaves and feedback accountability", t => {
+test("unit metadata cannot transfer task authority or redirect coordinator feedback", t => {
 	const { store } = fixture(t);
 	goal(store);
-	const team = store.createTeam({ goalId: "goal", name: "Capability research", context: ["Keep the reproducible fixture"] }, "root");
-	const coordinator = task(store, "coordinator", { teamId: team.id });
-	const unit = start(store, coordinator);
-	store.reassignTeam(team.id, "native:coordinator", "root");
-	const leaf = start(store, task(store, "delegated", { parentId: coordinator.id, teamId: team.id }, "native:coordinator"), "native:coordinator");
-	const signal = store.recordSignal({ goalId: "goal", teamId: team.id, kind: "analysis", summary: "Disproved hypothesis",
+	const unit = store.createUnit({ goalId: "goal", name: "Capability research", context: ["Keep the reproducible fixture"] }, "root");
+	const coordinator = task(store, "coordinator", { unitId: unit.id, role: "coordinator" });
+	const coordinatorAttempt = start(store, coordinator);
+	const leaf = start(store, task(store, "delegated", { parentId: coordinator.id, unitId: unit.id }, "native:coordinator"), "native:coordinator");
+	const signal = store.recordSignal({ goalId: "goal", unitId: unit.id, kind: "analysis", summary: "Disproved hypothesis",
 		references: ["fixture:negative"] }, "root");
-	const transferred = store.reassignTeam(team.id, "replacement", "root");
-	assert.deepEqual(transferred.context, team.context);
-	assert.equal(store.getTask(coordinator.id).owner, "replacement");
+	const transferred = store.reassignUnit(unit.id, "replacement", "root");
+	assert.deepEqual(transferred.context, unit.context);
+	assert.equal(store.getTask(coordinator.id).owner, "native:coordinator");
 	assert.equal(store.getTask(leaf.taskId).owner, leaf.nativeId);
-	assert.equal(store.getAttempt(unit.id).creator, "root");
-	assert.equal(store.getAttempt(unit.id).assignedOwner, "replacement");
-	assert.ok(store.pendingWakes("replacement").some(wake => wake.relatedReasons?.includes(`signal:${signal.id}`)));
+	assert.equal(store.getAttempt(coordinatorAttempt.id).creator, "root");
+	assert.equal(store.getAttempt(coordinatorAttempt.id).assignedOwner, undefined);
+	assert.ok(store.pendingWakes("native:coordinator").some(wake => wake.relatedReasons?.includes(`signal:${signal.id}`)));
 	assert.equal(store.getTask(leaf.taskId).version, 1);
-	fails(() => store.reassignTeam(team.id, "adopted", leaf.nativeId ?? ""), "forbidden");
+	fails(() => store.reassignUnit(unit.id, "adopted", leaf.nativeId ?? ""), "forbidden");
 });
 
 test("a larger delegated queue preserves resource ownership, coalesced wakes and capped resumption across restart", t => {
@@ -474,7 +774,7 @@ test("native pre/post hooks use the prepared effect identity and add only actual
 	assert.equal(store.recordEffect({ ...issued, state: "settled", result: receipt }, "root").state, "settled");
 	assert.equal(store.recordEffect({ ...issued, state: "settled", result: receipt }, "root").state, "settled");
 	const commandId = "check-call";
-	const commandRequest = { command: "node check-runner.mjs", checkId: check.id, checkVersion: check.version };
+	const commandRequest = { command: "node runner.mjs", checkId: check.id, checkVersion: check.version };
 	store.recordEffect({ id: commandId, attemptId: prepared.id, kind: "command", state: "prepared", request: commandRequest }, "root");
 	const command = store.recordEffect({ id: commandId, attemptId: prepared.id, kind: "command", state: "issued",
 		request: { ...commandRequest, nativeToolCallId: "actual-shell-call" } }, "root");
@@ -530,8 +830,8 @@ test("scope is inherited or narrowed; sibling mutations and delegated root goals
 	const left = start(store, task(store, "left", { scope: { ...scope, mode: "interactive", paths: ["src"], workTypes: ["code"] } }));
 	const right = start(store, task(store, "right"));
 	const child = task(store, "child", { parentId: left.taskId, scope: { ...scope, mode: "interactive", paths: ["src/lib"], workTypes: ["code"] } }, "native:left");
-	const team = store.createTeam({ goalId: "goal", name: "Open-ended local specialist team" }, "native:left");
-	assert.equal(team.owner, "native:left");
+	const unit = store.createUnit({ goalId: "goal", taskId: left.taskId, name: "Open-ended local specialist unit" }, "native:left");
+	assert.equal(unit.owner, "native:left");
 	assert.equal(child.owner, "native:left");
 	assert.equal(child.scope.mode, "interactive");
 	fails(() => task(store, "wide", { parentId: left.taskId, scope }, "native:left"), "scope_widening");
@@ -1024,9 +1324,11 @@ test("previous and incomplete store schemas are rejected without migrating or di
 	fails(() => openWorkStore(repo), "unsupported_store");
 	db.exec("PRAGMA user_version=1");
 	fails(() => openWorkStore(repo), "unsupported_store");
+	db.exec("PRAGMA user_version=2");
+	fails(() => openWorkStore(repo), "unsupported_store");
 	assert.equal(db.prepare("SELECT document FROM native_usage WHERE id='receipt-id'").get()?.document, original);
-	assert.equal(db.prepare("PRAGMA user_version").get()?.user_version, 1);
-	db.exec("PRAGMA user_version=2; DROP TRIGGER native_usage_alias_insert; DROP TRIGGER native_usage_alias_update; DROP TABLE usage_aliases");
+	assert.equal(db.prepare("PRAGMA user_version").get()?.user_version, 2);
+	db.exec("PRAGMA user_version=3; DROP TRIGGER native_usage_alias_insert; DROP TRIGGER native_usage_alias_update; DROP TABLE usage_aliases");
 	fails(() => openWorkStore(repo), "unsupported_store");
 	assert.equal(db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name='usage_aliases'").get(), undefined);
 	assert.equal(db.prepare("SELECT count(*) AS n FROM native_usage WHERE id='receipt-id'").get()?.n, 1);

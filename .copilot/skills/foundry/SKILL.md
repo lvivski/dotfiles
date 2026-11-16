@@ -17,13 +17,18 @@ exclusive finished runner receipts; current prepared native requests retain thei
 ## Unattended factories
 
 Keep ordinary goal execution below activation-free. Only an explicitly requested unattended
-factory uses `foundry_start_factory` with an accepted `.foundry` `foundry-factory` version 1
+factory uses `foundry_start_factory` with an accepted `.foundry` `foundry-factory` version 2
 policy. The user's direct request to start or restart within the agreed policy scope is authorization;
 do not request a separate activation dialog or duplicate chat approval. Inspect the exact snapshot
 and actual native-owner continuation mode. Native permissions remain authoritative; scope expansion
 still requires the user's authorization. Installation, tokens, timer wakes, and hook-generated user
 messages do not authorize activation or restart.
 Quiesce old participants before enabling this protocol.
+This revision requires canonical schema 3 and does not migrate old stores. Finish or explicitly
+dispose of every unfinished old job and stop all old workers/commands/usage writers before an
+authorized upgrade; pausing a factory alone is insufficient. Preserve database and evidence/artifact/
+request/receipt/worktree history together. Never reset or sync/reload a live old-protocol factory
+merely to try these features.
 
 The main coordinator may stay interactive while a `native` factory's `goal.scope.mode` remains
 `autopilot` for its workers. Do not require switching the main session to Autopilot or supplying
@@ -85,7 +90,9 @@ an old-source read sandbox; retain honest audit/provenance and never claim stron
 2. Create useful units with `foundry_create_task`; record a persistent native child or job when
    it needs independent admission, shared-write ownership or recovery. Give children their
    parent task and only narrowing scope overrides; restrictions inherit automatically.
-   Teams are open-ended, not a fixed list of departments.
+   Recursive `foundry_create_unit` metadata describes organizations, teams and subteams without a
+   fixed department list. Delegated units require their actual `taskId` boundary; `parentId` names
+   another unit. Metadata membership does not grant task authority.
 3. Use `foundry_prepare_dispatch` for native children. Execute independent returned
    `create_session` calls concurrently, preserving their complete kickoff and explicit mode.
    `autopilot` executes authorized autonomous work; `interactive` preserves narrower supervision.
@@ -167,8 +174,9 @@ derived-check changes. It preserves user/contract/standing obligations, retires 
 and reevaluates only unpinned dependents. Explicitly pinned published inputs retain their meanings.
 Propagation stops at producers without published outputs, avoiding revision churn during setup.
 Signals alone do not change requirements or dispatch a speculative repair.
-Signals target accountable coordinators. Use `foundry_reassign_team` to retain a charter and its
-delegated leaves through coordinator replacement; unknown recipients are verified once natively.
+Signals target accountable coordinators. `foundry_reassign_unit` changes descriptive metadata,
+not authority or execution. Use exact settled `foundry_handoff_task` for coordinator replacement;
+unknown recipients and unavailable outgoing coordinators require actual native inspection.
 Charters organize existing scoped tasks, not new root-level authority for a leaf. Add work through
 the goal owner or an existing delegating task in the canonical tree.
 Pure notification bookkeeping needs no executing attempt. Known unavailable recipients wake an
@@ -176,6 +184,56 @@ existing accountable ancestor, not an automatically appointed replacement.
 Preserve reproducible procedures, versioned authorized inputs, parameters and raw results for
 analyses; a disproved hypothesis can be a completed result. Curate concise evidenced lessons by
 goal/work type with `foundry_record_lesson`, not global prohibitions or full-history prompts.
+
+## Coordinate organizations
+
+Explicit `role: "coordinator"` tasks retain ongoing responsibility under the same canonical task
+tree and goal scope. Staff real native worker subsessions and useful subordinate coordinators;
+do not end the role at its first report or invent headcounts, idle departments or extra approval
+gates. Give producer children their concrete executable checks/inputs; the role itself publishes
+no product result. Unit templates in accepted `goal.units` persist structure, not cross-job
+authority, sessions or multiplied budgets. A native coordinator carries one active goal.
+
+Keep the same role attempt/session across events. Yield with
+`foundry_wait_task(kind: "events", attemptId, reason)` before dispatching children when needed
+for an explicit worker ceiling. Management requires no implementation slot; resume normally
+before commands/file edits or use a bounded admitted producer. Context exposes pending/handled
+coordination generations separately from native wakes. After staffing or genuinely waiting/
+exhausting the observed work, record `handledGeneration` and relevant task/request `relatedIds`
+with the event wait. Reading context is not acknowledgment of completed coordination work.
+Newer generations stay pending. Do not poll, redispatch a waiting role, or create self-wake loops.
+A settled natural stop releases capacity and escalates undisposed work once to its sponsor;
+there is no independent dead-process watchdog.
+
+Use `foundry_request_collaboration` for a named output from a peer coordinator task in this
+canonical store. A required proposal blocks its own producer consumer. Discover peer coordinator
+task identities in assigned-goal context `directory`; continue its bounded pages with `nextOffset`
+as `directoryOffset`. Directory metadata grants no peer
+backlog/mutation rights or unassigned-goal discovery. The destination accepts
+through `foundry_respond_collaboration(action: "accept", producer)` under its own current scope,
+staffing its child and acquiring an outgoing obligation atomically. No peer receives general
+source-task mutation rights. Required requests fence acceptance on both sides.
+Fulfill only actual published named outputs. Cross-goal delivery pins the exact immutable
+version; mutable in-job production floats. Changed/unavailable consumers retain delivery with
+`bound: false` for explicit source `bind`. Decline/block/cancel is not delivery; source `release`
+can remove this derived obligation, never original protected inputs/checks. Preserve request
+IDs/revisions for retry and let actual dependency cycles reject admission, not harmless peer
+collaboration. Narrow request/output notification entitlement is not general cross-goal access.
+
+`foundry_handoff_task` moves only exact settled no-transfer work. Preserve native creation
+ancestry and independently delegated workers; move outgoing-owned pending descendants only.
+Actual recorded execution worktree/HEAD must be verifiably unchanged, including untracked and
+ignored files. Missing/dirty/unknown worktrees, claims, commands and real input requests block
+handoff. Replacement execution conserves the verified commit; a newer project HEAD is not a
+substitute. Do not fabricate checked failures, evolve requirements for cosmetic ancestry, or
+debit repairs. Dirty checkpoint relocation and cross-repository federation are unsupported.
+
+Only executable product acceptance seals a job and retires coordinator roles. Explicit reopen
+can restore settled leases in their existing sessions without repair debit; settle real outstanding
+native work before restoring those leases. New jobs get fresh native coordinators.
+Read `get_context.capabilities`: same-store organizations/goals are supported, but native peer
+provenance, durable cross-store receipts and artifact transport remain unqualified. Mock tests do
+not prove host lifecycle, permission, wake/accounting ordering or restart guarantees.
 
 ## Recover without replay
 

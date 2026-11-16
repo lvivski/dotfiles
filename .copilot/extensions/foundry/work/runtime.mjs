@@ -7,10 +7,10 @@ import { array, compileCheck, compileDefinition, compileGoal, number, readContra
 import { compileFactoryContext, factorySettings, readFactory } from "./factory.mjs";
 import { evaluate } from "./evaluation.mjs";
 import { admittedEvidence, effectShell, nativeObject, observeCompletion, observePost, observePre, observeRefusal, prepareCheck, prepareCommand, prepareDispatch, reconcileDetail, recoverChecks } from "./native.mjs";
-import { FoundryError, boolean, decodeFinding as finding, decodeInput, decodeOutput, digest, json, latestEvidence, record, text } from "./values.mjs";
+import { FoundryError, boolean, choice, closedFields, decodeFinding as finding, decodeInput, decodeOutput, digest, json, latestEvidence, record, text } from "./values.mjs";
 import { affinityId, nativeUsage } from "./usage.mjs";
 import { createHeartbeat } from "./heartbeat.mjs";
-import { commandForRecovery, reconcileCommand } from "./native-recovery.mjs";
+import { commandForRecovery, reconcileCommand } from "./recovery.mjs";
 
 /** @param {string} directory */
 function repositoryRoot(directory) {
@@ -21,7 +21,7 @@ function repositoryRoot(directory) {
 /** @typedef {import("./model.js").Finding} Finding */
 /** @typedef {ReturnType<typeof openWorkStore>} Store */
 
-/** @param {{directory:string,log:(message:string)=>void,readSession?:(id:string)=>Promise<unknown>,readCommand?:(actor:string,toolCallId:string)=>Promise<import("./native-recovery.mjs").CommandEvents>,execute?:(name:string,args:import("./model.js").Json,callId?:string)=>Promise<unknown>,confirm?:(message:string)=>Promise<boolean>,stopHookQualified?:boolean,readMode?:(actor:string)=>Promise<string>,readEvent?:(repository:string,id:number)=>Promise<unknown>,readEvents?:(repository:string,maximum:number,cursor?:string)=>Promise<unknown>}} options */
+/** @param {{directory:string,log:(message:string)=>void,readSession?:(id:string)=>Promise<unknown>,readCommand?:(actor:string,toolCallId:string)=>Promise<import("./recovery.mjs").CommandEvents>,execute?:(name:string,args:import("./model.js").Json,callId?:string)=>Promise<unknown>,confirm?:(message:string)=>Promise<boolean>,stopHookQualified?:boolean,readMode?:(actor:string)=>Promise<string>,readEvent?:(repository:string,id:number)=>Promise<unknown>,readEvents?:(repository:string,maximum:number,cursor?:string)=>Promise<unknown>}} options */
 export function createRuntime(options) {
 	let directory = repositoryRoot(options.directory);
 	/** @type {Store|undefined} */
@@ -145,10 +145,10 @@ export function createRuntime(options) {
 		for (const wake of ownWakes) {
 			if (store().consumeWake(wake.id, wake.generation, actor).generation > wake.generation) refreshRequired = true;
 		}
-		const outgoing = snapshot.wakes.filter(wake => wake.owner !== actor && wake.generation > Math.max(wake.sent ?? 0, wake.consumed)
-			&& !wake.inFlight && !wake.unavailable && (wake.sent ?? 0) <= wake.consumed
+		const outgoing = store().outgoingWakes(actor).filter(wake => wake.owner !== actor && wake.generation > Math.max(wake.sent ?? 0, wake.consumed)
+			&& store().wakeCanSend(wake.id)
 			&& store().wakeHasCurrentRecipient(wake.id)
-			&& goals.some(goal => goal.id === wake.goalId));
+			&& (goals.some(goal => goal.id === wake.goalId) || store().canRelayCollaboration(wake.id, actor)));
 		const briefCheck = (/** @type {import("./model.d.ts").Check} */ check) => {
 			const { command: _command, oracleFiles: _files, ...definition } = check;
 			return definition;
@@ -158,6 +158,9 @@ export function createRuntime(options) {
 			checks: item.id === task?.id ? item.checks : item.checks.map(briefCheck) });
 		return {
 			databasePath: store().databasePath, actor, goals,
+			capabilities: { protocol: 2, schema: 3, organization: "task-backed-coordinators",
+				federation: { supported: false, reason: "Native peer provenance, durable receipts and artifact transport are not qualified" },
+				dirtyWorktreeHandoff: { supported: false, reason: "Only settled unchanged execution can move without a checkpoint protocol" } },
 			factories: store().factoryViews(actor),
 			...(messageRouteDisabled ? { messageRouteDisabled } : {}),
 			tasks: tasks.map(taskDefinition),
@@ -177,10 +180,14 @@ export function createRuntime(options) {
 				const producer = store().getTask(input.taskId);
 				return { taskId: producer.id, state: producer.state, output: store().outputForInput(input) };
 			}) ?? [],
-			teams: snapshot.teams.filter(team => goals.some(goal => goal.id === team.goalId)
-				&& ((task === undefined && team.owner === actor) || tasks.some(task => task.teamId === team.id))),
+			units: snapshot.units.filter(unit => goals.some(goal => goal.id === unit.goalId)
+				&& ((task === undefined && unit.owner === actor) || tasks.some(task => task.unitId === unit.id))),
+			directory: store().unitDirectory(actor, goals.map(goal => goal.id),
+				args.directoryOffset === undefined ? 0 : number(args.directoryOffset, "directory offset")),
 			lessons: snapshot.lessons.filter(lesson => goals.some(goal => goal.id === lesson.goalId) && (!task || lesson.workType === task.workType)),
 			signals: snapshot.signals,
+			collaborations: snapshot.collaborations,
+			coordination: store().coordinationViews(actor, goalId),
 			ready: ready.map(taskDefinition),
 			wakes: outgoing.map(wake => ({
 				wakeId: wake.id, generation: wake.generation, tool: "send_session_message",
@@ -234,7 +241,7 @@ export function createRuntime(options) {
 		const key = `${text(source.repository, "repository")}:${eventId}:${digest(normalized)}`;
 		const compiled = factoryJob(factory.definition, { reference: `${factory.source.reference}#${key}`,
 			sha256: digest(json({ policy: factory.source.sha256, event: normalized })) }, key, normalized);
-		return db.admitFactoryJob(compiled.goal, compiled.tasks, factory.id, compiled.completionTaskId, actor, factory.generation);
+		return db.admitFactoryJob(compiled.goal, compiled.tasks, factory.id, compiled.completionTaskId, actor, factory.generation, compiled.units);
 	}
 	/** @param {unknown} input @param {string} actor @param {Store} [db] @param {string} [publicationKey] */
 	function report(input, actor, db = store(), publicationKey) {
@@ -275,7 +282,7 @@ export function createRuntime(options) {
 		retain(db);
 		try {
 			const pending = db.outgoingWakes(actor, worker || attemptId !== undefined).filter(wake =>
-				(goalId === undefined || wake.goalId === goalId) && db.wakeHasCurrentRecipient(wake.id));
+				(goalId === undefined || wake.goalId === goalId || db.canRelayCollaboration(wake.id, actor)) && db.wakeHasCurrentRecipient(wake.id));
 			/** @type {Array<{owner:string,generation:number,state:string,error?:string}>} */
 			const delivery = [];
 			for (const wake of pending) {
@@ -554,15 +561,19 @@ export function createRuntime(options) {
 				return compileGoal(source.definition, store(), actor, { reference: source.reference, sha256: source.sha256 });
 			}
 			case "get_context": return refreshContext(args, actor);
-			case "create_team": return store().createTeam({
-				goalId: text(args.goalId, "goal id"), name: text(args.name, "team name"),
-				context: strings(args.context ?? [], "team context"),
+			case "create_unit": return store().createUnit({
+				goalId: text(args.goalId, "goal id"), name: text(args.name, "unit name"),
+				context: strings(args.context ?? [], "unit context"),
+				...(args.parentId === undefined ? {} : { parentId: text(args.parentId, "parent unit") }),
+				...(args.taskId === undefined ? {} : { taskId: text(args.taskId, "task boundary") }),
+				...(args.kind === undefined ? {} : { kind: text(args.kind, "unit kind") }),
 			}, actor);
 			case "create_task": return store().createTask({
 				goalId: text(args.goalId, "goal id"), title: text(args.title, "task title"),
 				assignment: text(args.assignment, "complete assignment"), workType: text(args.workType, "work type"),
 				...(args.parentId === undefined ? {} : { parentId: text(args.parentId, "parent task") }),
-				...(args.teamId === undefined ? {} : { teamId: text(args.teamId, "team id") }),
+				...(args.unitId === undefined ? {} : { unitId: text(args.unitId, "unit id") }),
+				...(args.role === undefined ? {} : { role: choice(args.role, /** @type {const} */ (["producer", "coordinator"]), "task role") }),
 				...(args.scope === undefined ? {} : { scope: args.scope }),
 				checks: array(args.checks ?? [], "checks").map(compileCheck),
 				inputs: array(args.inputs ?? [], "inputs").map(decodeInput),
@@ -692,10 +703,15 @@ export function createRuntime(options) {
 			case "retry_task": return store().retryTask(text(args.taskId, "task id"), text(args.attemptId, "failed attempt"), actor);
 			case "wait_task": {
 				const kind = args.kind;
-				if (kind !== "input" && kind !== "children" && kind !== "capacity") throw new FoundryError("invalid_wait", "Expected input, children or capacity waiting");
-				return store().waitTask(text(args.taskId, "task id"), actor, {
+				if (kind !== "input" && kind !== "children" && kind !== "capacity" && kind !== "events") throw new FoundryError("invalid_wait", "Expected input, children, capacity or coordinator event waiting");
+				const task = store().waitTask(text(args.taskId, "task id"), actor, {
 					kind, reason: text(args.reason, "waiting reason"), ...(args.requestId === undefined ? {} : { requestId: text(args.requestId, "native request id") }),
+				}, kind !== "events" ? undefined : {
+					attemptId: text(args.attemptId, "current coordinator attempt"),
+					...(args.handledGeneration === undefined ? {} : { handledGeneration: number(args.handledGeneration, "handled work generation") }),
+					relatedIds: strings(args.relatedIds ?? [], "disposition references"),
 				});
+				return kind === "events" ? { task, refreshRequired: (task.coordination?.generation ?? 0) > (task.coordination?.handled ?? 0) } : task;
 			}
 			case "resume_task": return store().resumeTask(text(args.taskId, "task id"), actor);
 			case "cancel_task": {
@@ -711,10 +727,49 @@ export function createRuntime(options) {
 				const recipient = await verifiedRecipient(task.goalId, text(args.newOwner, "new native owner"));
 				return store().reassignTask(task.id, recipient, actor);
 			}
-			case "reassign_team": {
-				const team = store().getTeam(text(args.teamId, "team"));
-				if (team.owner !== actor && store().getGoal(team.goalId).owner !== actor) throw new FoundryError("forbidden", "Only this team's accountable owner may transfer its charter");
-				return store().reassignTeam(team.id, await verifiedRecipient(team.goalId, text(args.newOwner, "new native coordinator")), actor);
+			case "reassign_unit": {
+				const unit = store().getUnit(text(args.unitId, "unit"));
+				return store().reassignUnit(unit.id, await verifiedRecipient(unit.goalId, text(args.newOwner, "new native coordinator")), actor);
+			}
+			case "handoff_task": {
+				const db = store();
+				const task = ownedTask(args.taskId, actor);
+				const attempt = db.getAttempt(text(args.attemptId, "exact attempt"));
+				const replacement = await verifiedRecipient(task.goalId, text(args.newOwner, "new accountable owner"));
+				let unavailable = false;
+				if (attempt.nativeId !== actor) {
+					if (!attempt.nativeId || !options.readSession) throw new FoundryError("native_inspection_unavailable", "Coordinator replacement needs actual native unavailability evidence");
+					const inspection = await options.readSession(attempt.nativeId);
+					unavailable = unavailableSession(inspection) && /not found|does not exist|archived|deleted/iu.test(JSON.stringify(inspection));
+				}
+				return db.handoffTask(task.id, attempt.id, replacement, actor, unavailable);
+			}
+			case "request_collaboration": {
+				const request = store().requestCollaboration({
+					...(args.id === undefined ? {} : { id: text(args.id, "idempotent request id") }),
+					sourceTaskId: text(args.sourceTaskId, "source coordinator"), destinationTaskId: text(args.destinationTaskId, "destination coordinator"),
+					consumerTaskId: text(args.consumerTaskId, "consumer task"), expectedVersion: number(args.expectedVersion, "consumer version"),
+					title: text(args.title, "requested outcome"), output: text(args.output, "named output"),
+					...(args.required === undefined ? {} : { required: boolean(args.required, "required prerequisite") }),
+				}, actor);
+				return { request, delivery: deferWakes(store(), actor, request.goalId) };
+			}
+			case "respond_collaboration": {
+				const producer = args.producer === undefined ? undefined : record(args.producer);
+				if (producer) closedFields(producer, ["title", "assignment", "workType", "scope", "checks", "inputs"]);
+				const request = store().respondCollaboration({
+					collaborationId: text(args.collaborationId, "collaboration id"), expectedRevision: number(args.expectedRevision, "request revision"),
+					action: choice(args.action, ["accept", "fulfill", "bind", "decline", "block", "cancel", "release"], "collaboration action"),
+					...(args.reason === undefined ? {} : { reason: text(args.reason, "collaboration reason") }),
+					...(producer === undefined ? {} : { producer: {
+						title: text(producer.title, "producer title"), assignment: text(producer.assignment, "complete producer assignment"),
+						workType: text(producer.workType, "producer work type"),
+						...(producer.scope === undefined ? {} : { scope: producer.scope }),
+						checks: array(producer.checks ?? [], "producer checks").map(compileCheck),
+						inputs: array(producer.inputs ?? [], "producer inputs").map(decodeInput),
+					} }),
+				}, actor);
+				return { request, delivery: deferWakes(store(), actor, request.destinationGoalId) };
 			}
 			case "evolve_task": {
 				const evolved = store().evolveTask({
@@ -729,7 +784,7 @@ export function createRuntime(options) {
 				const signal = store().recordSignal({
 					goalId: text(args.goalId, "goal id"), kind: text(args.kind, "signal kind"), summary: text(args.summary, "signal summary"),
 					...(args.taskId === undefined ? {} : { taskId: text(args.taskId, "affected task") }),
-					...(args.teamId === undefined ? {} : { teamId: text(args.teamId, "affected team") }),
+					...(args.unitId === undefined ? {} : { unitId: text(args.unitId, "affected unit") }),
 					references: strings(args.references ?? [], "signal references"),
 				}, actor);
 				const attemptId = store().contextSnapshot(actor, signal.goalId).attempts.find(attempt => attempt.nativeId === actor
@@ -750,6 +805,7 @@ export function createRuntime(options) {
 		agentStop(actor, reentry = false) {
 			stopHookObserved = true;
 			if (!database) return;
+			for (const task of database.parkCoordinators(actor)) queueWakes(database, actor, task.goalId);
 			const actionable = database.advance(actor).find(job => job.disposition === "actionable" && job.mechanism === "stop-hook");
 			if (!actionable) return;
 			const result = database.remindFactory(actionable.factoryId, actor, actionable.generation, reentry);
@@ -819,6 +875,8 @@ function factoryJob(definition, source, eventKey, event) {
 	const template = record(policy.goal);
 	const id = `job:${digest(json({ factory: policy.id, eventKey }))}`;
 	const tasks = array(template.tasks, "factory task templates").map(record);
+	const units = array(template.units ?? [], "factory unit templates").map(record);
+	const unitIdentities = new Map(units.map(unit => [text(unit.id, "unit template id"), `${id}:unit:${text(unit.id, "unit template id")}`]));
 	const identities = new Map(tasks.map(task => {
 		const original = text(task.id, "factory template task id");
 		return [original, `${id}:${original}`];
@@ -827,6 +885,7 @@ function factoryJob(definition, source, eventKey, event) {
 	const mapped = tasks.map(task => ({
 		...task, id: identities.get(text(task.id, "task id")),
 		...(task.parentId === undefined ? {} : { parentId: identities.get(text(task.parentId, "parent id")) ?? task.parentId }),
+		...(task.unitId === undefined ? {} : { unitId: unitIdentities.get(text(task.unitId, "unit id")) ?? task.unitId }),
 		inputs: array(task.inputs ?? [], "template inputs").map(value => {
 			const input = record(value);
 			return { ...input, taskId: identities.get(text(input.taskId, "input task")) ?? input.taskId };
@@ -856,7 +915,10 @@ function factoryJob(definition, source, eventKey, event) {
 	}
 	const completionTaskId = identities.get(text(policy.completionTaskId, "completion template"));
 	if (!completionTaskId) throw new FoundryError("completion_missing", "Completion must name one of this factory's task templates");
-	const compiled = compileDefinition({ ...template, id, tasks: mapped }, source);
+	const compiled = compileDefinition({ ...template, id, tasks: mapped, units: units.map(unit => ({
+		...unit, id: unitIdentities.get(text(unit.id, "unit template id")),
+		...(unit.parentId === undefined ? {} : { parentId: unitIdentities.get(text(unit.parentId, "parent unit id")) ?? unit.parentId }),
+	})) }, source);
 	const templates = new Map([...identities].map(([templateId, id]) => [id, templateId]));
 	return { ...compiled, tasks: compiled.tasks.map(task => ({
 		...task, dispatch: compileFactoryContext(definition, source, templates.get(text(task.id, "compiled task"))),
