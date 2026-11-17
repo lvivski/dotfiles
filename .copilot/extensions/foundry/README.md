@@ -46,6 +46,30 @@ but an uncertain send is never blindly repeated. A settled natural stop parks th
 releases capacity and escalates undisposed work once per generation to its sponsor. This is a live
 stop/event bridge, not a dead-process watchdog. Producer completion does not end its coordinator.
 
+### Delivery contracts
+
+For software delivery, define the smallest coherent runnable increment and its integration/delivery
+producer when admitting the goal. Design packets, worker bundles and component passes are inputs
+to that delivery, not substitutes for it. The generated coordinator assignment carries this default;
+it does not add a new schema, permission, approval stage or pipeline to research-only work.
+
+Use the existing contract fields to make the boundary executable:
+
+- Give the integration/delivery producer `inputs` naming the implementation outputs it must join.
+  Required mutable in-job edges float; outside-job inputs retain their exact published versions.
+- Assign its `checks` to the actual combined candidate with the relevant `artifactFiles` and pinned
+  `oracleFiles`, rather than treating separate producer passes or design previews as acceptance.
+- For a factory, point `completionTaskId` at the producer that proves the requested delivery.
+  Include authorized landing, build, launch and visual inspection when the requested outcome needs
+  them. Missing authorization or evidence is an explicit blocker, not permission to skip that step,
+  claim delivery or infer Git/release permission.
+
+Plan landing from the start without manufacturing no-commit/no-landing restrictions. Keep a delivery
+cut stable through repair and qualification; next proposals belong to the next increment unless
+they fix a real blocker in this cut. Independent useful work may proceed. Distinguish publication,
+qualification, integration, landing and runnable delivery in reports, preserving real regression
+assertions and continuing coordinator responsibility without extra status-relay layers.
+
 ### Collaboration and execution handoff
 
 `foundry_request_collaboration` names source/destination coordinator tasks, the source's producer
@@ -80,6 +104,9 @@ Accepted job closure retires organizational leases without inventing product res
 native requests/effects/claims. Explicit reopen restores settled coordinator leases in their existing
 native sessions without a repair debit. Unsettled leases remain historical blockers; repeat reopen
 after their actual settlement. New jobs reuse templates, not these sessions or authority.
+Closure atomically retires their definitely unissued creation/command intents with `neverIssued`;
+it never relabels issued or uncertain work as unissued. Late native creation receipts settle the
+original identity without reactivating a closed coordinator lease.
 
 `get_context.capabilities` reports cross-store federation as unsupported: native peer provenance,
 durable receipt and artifact-byte transport have not been qualified. Same-store collaboration can
@@ -383,6 +410,9 @@ Unit charters organize existing scoped ownership; they do not grant a leaf root-
 New work follows the goal owner or an existing delegating task in the same canonical tree.
 
 `foundry_prepare_command` gives ordinary commands explicit affinity when multiple local units execute.
+An exact prepared command/check validates its own current running native attempt and factory
+activation, not unrelated leases in that caller's other goals. Closed, paused, superseded or
+foreign assignments remain inadmissible; retired intents cannot be replayed.
 Without explicit affinity, one ambiguous command conservatively retains all possible units' slots
 and claims until actual settlement; cancelling one unit cannot stop unrelated shared work.
 Generated shell identities come from native telemetry. Repeated generic follow-up IDs do not identify

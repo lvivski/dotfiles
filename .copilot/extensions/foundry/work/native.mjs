@@ -138,14 +138,13 @@ export function observePre(store, name, args, actor, callId) {
 		if (effect.result !== undefined && record(effect.result).neverIssued === true) {
 			throw new FoundryError("creation_retired", "This definitely unissued creation is retired; read current context before reserving fresh work");
 		}
-		if (attempt.state !== "prepared" && (!callId || previousCall !== callId)) {
+		if (effect.state !== "prepared" && (!callId || previousCall !== callId)) {
 			throw new FoundryError("creation_already_issued", "This attempt's creation was already issued; reconcile it without another create");
 		}
 		store.issueAttempt(attempt.id, actor, effect.id, json({ ...value, nativeToolCallId: callId ?? null }));
 		return;
 	}
 	if (typeof value.command !== "string") return;
-	store.assertCommandAdmission(actor);
 	const original = typeof value.shellId === "string" ? store.commandForShell(value.shellId, actor) : undefined;
 	if (original?.state === "settled" && original.result !== undefined && record(original.result).neverIssued === true) {
 		throw new FoundryError("command_retired", "This definitely unissued command is retired; reserve current work rather than replaying its old arguments");
@@ -157,9 +156,11 @@ export function observePre(store, name, args, actor, callId) {
 	if (effect) {
 		if (effect.owner !== actor) throw new FoundryError("foreign_execution", "This prepared command belongs to another actual native worker");
 		if (record(effect.request).shellId !== value.shellId) throw new FoundryError("assignment_changed", "Use the assigned command's returned shell identity");
+		store.assertCommandAdmission(actor, effect.attemptId);
 		store.recordEffect({ ...effect, state: "issued", request: json({ ...record(effect.request), nativeToolCallId: callId ?? null }) }, actor);
 		return;
 	}
+	store.assertCommandAdmission(actor);
 	const executing = store.executingAttempts(actor);
 	if (executing.length) store.recordEffect({
 		id: `command:${callId ?? randomUUID()}`, attemptId: executing[0].id, kind: "command", state: "issued",

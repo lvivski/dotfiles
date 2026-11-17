@@ -14,6 +14,27 @@ and reset obsolete canonical state before upgrading. Missing factory assignment 
 message effects and flat check receipts are not migrated or replayed. Current checks require their
 exclusive finished runner receipts; current prepared native requests retain their identities.
 
+## Deliver usable increments
+
+For requested software delivery, choose the smallest coherent runnable increment and assign its
+integration/delivery owner at admission, not after producer publication. Design packets, code
+bundles and component passes are intermediate inputs. Give the bounded delivery producer actual
+named inputs and executable checks of the combined candidate. For a factory, `completionTaskId`
+must identify that requested delivery, not an intermediate packet. Use existing checks and input
+edges; do not add a separate approval workflow or impose app-delivery stages on research-only work.
+
+Include landing, build, launch and visual inspection when required by the user's requested outcome.
+Respect actual Git/release authorization: do not invent no-commit/no-landing restrictions, infer
+permission from a task, or call an unlanded/unlaunched artifact delivered when those steps are
+required. Report the exact outstanding step and its owner if permission or evidence is missing.
+
+Keep the current delivery cut fixed through repair and qualification; put new proposals in the next
+increment unless they fix a concrete blocker in this cut. Useful independent work may continue.
+Preserve real regression assertions. Report implemented, qualified, integrated, landed and runnable
+outcomes distinctly; factory-active labels, message acceptance and status relays are not delivery.
+Ongoing coordination continues with the next concrete increment or a genuine event wait, not
+speculative tasks, additional management layers or polling to stay busy.
+
 ## Unattended factories
 
 Keep ordinary goal execution below activation-free. Only an explicitly requested unattended

@@ -205,7 +205,7 @@ export function recordEffect(tx, input, actor) {
 		for (const id of [attempt.id, ...effect.relatedAttemptIds ?? []]) parkPausedExecution(tx, tx.get("attempts", id));
 	}
 	if (effect.kind === "create" && effect.state === "uncertain" && !attempt.nativeId
-		&& attempt.state !== "cancelled") {
+		&& !["done", "failed", "cancelled"].includes(attempt.state)) {
 		attempt.state = "uncertain";
 		tx.put("attempts", attempt);
 	}

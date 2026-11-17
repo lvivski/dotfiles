@@ -150,8 +150,8 @@ export function openWorkStore(workingDirectory, options = {}) {
 		waitTask(taskId, actor, waiting, event) { return database.transaction(tx => Attempts.waitTask(tx, taskId, actor, waiting, event)); },
 		/** @param {string} actor */
 		parkCoordinators(actor) { return database.transaction(tx => Organization.parkCoordinators(tx, actor)); },
-		/** @param {string} actor */
-		assertCommandAdmission(actor) { return database.transaction(tx => Attempts.assertCommandAdmission(tx, actor)); },
+		/** @param {string} actor @param {string} [attemptId] */
+		assertCommandAdmission(actor, attemptId) { return database.transaction(tx => Attempts.assertCommandAdmission(tx, actor, attemptId)); },
 		/** @param {string} taskId @param {string} actor @returns {Attempt} */
 		resumeTask(taskId, actor) { return database.transaction(tx => Attempts.resumeTask(tx, taskId, actor)); },
 		/** @param {string} taskId @param {string} actor @returns {Task[]} */

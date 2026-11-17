@@ -482,6 +482,93 @@ test("product acceptance retires a coordinator lease and explicit reopen restore
 	assert.equal(runtime.store().getAttempt(text(original.id, "old lease")).state, "done");
 });
 
+for (const state of ["prepared", "issued", "uncertain"]) test(`job sealing retires only unissued coordinator creations: ${state}`, async t => {
+	const { runtime, directory } = fixture(t, authorizedFactory);
+	await runtime.operation("start_factory", { source: factorySource(directory, { goal: { ...definition,
+		scope: { ...definition.scope, mode: "interactive" }, tasks: [
+			{ id: "lead", title: "Lead", assignment: "Coordinate", workType: "analysis", role: "coordinator" },
+			{ ...definition.tasks[0], id: "complete" },
+		] } }) }, "director");
+	const lead = runtime.store().snapshot().tasks.find(task => task.role === "coordinator");
+	const final = runtime.store().snapshot().tasks.find(task => task.role === "producer");
+	assert.ok(lead && final);
+	const batch = record(await runtime.operation("prepare_dispatch", { taskIds: [lead.id] }, "director"));
+	assert.ok(Array.isArray(batch.prepared));
+	const call = record(batch.prepared[0]);
+	const effectId = text(call.effectId, "creation effect");
+	const attemptId = text(call.attemptId, "coordinator attempt");
+	if (state !== "prepared") runtime.pre("create_session", call.arguments, "director", "original-create");
+	if (state === "uncertain") {
+		runtime.store().recordEffect({ ...runtime.store().getEffect(effectId), state: "uncertain",
+			result: { pending: true } }, "director");
+	}
+	const original = runtime.store().getEffect(effectId);
+	await acceptInline(runtime, final.id);
+	assert.equal(runtime.store().getTask(lead.id).state, "done");
+	if (state === "prepared") {
+		const retired = runtime.store().getEffect(effectId);
+		assert.equal(retired.state, "settled");
+		assert.deepEqual(retired.request, original.request);
+		assert.equal(record(retired.result).neverIssued, true);
+		assert.equal(runtime.store().getAttempt(attemptId).slot, false);
+		assert.throws(() => runtime.pre("create_session", call.arguments, "director", "late-create"), { code: "creation_retired" });
+		await runtime.operation("reopen_job", { goalId: final.goalId }, "director");
+		const fresh = record(await runtime.operation("prepare_dispatch", { taskIds: [lead.id] }, "director"));
+		assert.ok(Array.isArray(fresh.prepared));
+		assert.notEqual(record(fresh.prepared[0]).attemptId, attemptId);
+		assert.throws(() => runtime.pre("create_session", call.arguments, "director", "replayed-create"), { code: "creation_retired" });
+	} else {
+		assert.deepEqual(runtime.store().getEffect(effectId), original);
+		assert.equal(runtime.store().getAttempt(attemptId).slot, true);
+		assert.equal(runtime.store().snapshot().completions?.[0].settled, false);
+		assert.throws(() => runtime.post("create_session", call.arguments, { pending: true }, "director"), { code: "creation_identity_pending" });
+		assert.equal(runtime.store().getAttempt(attemptId).state, "done");
+		runtime.post("create_session", call.arguments, { id: "late-native-lead" }, "director");
+		const settled = runtime.store().getAttempt(attemptId);
+		assert.equal(settled.nativeId, "late-native-lead");
+		assert.equal(settled.state, "done");
+		assert.equal(settled.slot, false);
+		assert.deepEqual(runtime.store().getEffect(effectId).result, { id: "late-native-lead" });
+		assert.equal(runtime.store().snapshot().completions?.[0].settled, true);
+	}
+});
+
+test("job sealing preserves issued coordinator commands, native inputs and claims while retiring prepared commands", async t => {
+	const { runtime, directory } = fixture(t, authorizedFactory);
+	await runtime.operation("start_factory", { source: factorySource(directory, { goal: { ...definition,
+		scope: { ...definition.scope, mode: "interactive" }, tasks: [
+			{ id: "lead", title: "Lead", assignment: "Coordinate", workType: "analysis", role: "coordinator" },
+			{ ...definition.tasks[0], id: "complete" },
+		] } }) }, "director");
+	const lead = runtime.store().snapshot().tasks.find(task => task.role === "coordinator");
+	const final = runtime.store().snapshot().tasks.find(task => task.role === "producer");
+	assert.ok(lead && final);
+	const batch = record(await runtime.operation("prepare_dispatch", { taskIds: [lead.id] }, "director"));
+	assert.ok(Array.isArray(batch.prepared));
+	const call = record(batch.prepared[0]);
+	runtime.pre("create_session", call.arguments, "director", "create-lead");
+	runtime.post("create_session", call.arguments, { id: "native-lead" }, "director");
+	const attemptId = text(call.attemptId, "lead attempt");
+	const claim = runtime.store().claim({ attemptId, surface: directory, resource: "shared" }, "native-lead");
+	const prepared = record(await runtime.operation("prepare_command", { taskId: lead.id, command: "echo unissued" }, "native-lead"));
+	runtime.pre("bash", { command: "echo issued", shellId: "lead-shell" }, "native-lead", "lead-command");
+	await runtime.operation("wait_task", { taskId: lead.id, kind: "input", requestId: "real-native-input",
+		reason: "Await the native user's answer" }, "native-lead");
+	await acceptInline(runtime, final.id);
+	const lease = runtime.store().getAttempt(attemptId);
+	assert.equal(lease.state, "done");
+	assert.equal(lease.waiting?.requestId, "real-native-input");
+	assert.equal(lease.slot, true);
+	assert.deepEqual(runtime.store().snapshot().claims, [claim]);
+	assert.equal(record(runtime.store().getEffect(text(prepared.effectId, "prepared command")).result).neverIssued, true);
+	assert.equal(runtime.store().getEffect("command:lead-command").state, "issued");
+	runtime.toolComplete({ toolCallId: "lead-command", success: true, shellExecution: { exitCode: 0 } }, "native-lead");
+	assert.equal(runtime.store().getEffect("command:lead-command").state, "settled");
+	assert.equal(runtime.store().getAttempt(attemptId).slot, false);
+	assert.deepEqual(runtime.store().snapshot().claims, [claim]);
+	assert.equal(runtime.store().snapshot().completions?.[0].settled, false);
+});
+
 test("required cross-goal commitments fence both final acceptances until actual producer fulfillment", async t => {
 	const { runtime, directory } = fixture(t, authorizedFactory);
 	/** @param {string} id */
@@ -1627,6 +1714,75 @@ test("explicit command affinity and shared follow-up IDs settle only the exact n
 	}, "director");
 	assert.equal(runtime.store().getEffect(prepared[1].effectId)?.state, "settled");
 	assert.equal(runtime.store().getEffect(prepared[0].effectId)?.state, "issued");
+});
+
+for (const kind of ["check", "command"]) test(`exact ${kind} affinity admits a live successor without executing sealed old work`, async t => {
+	const { runtime, directory } = fixture(t, authorizedFactory);
+	await runtime.operation("start_factory", { source: factorySource(directory, { goal: { ...definition,
+		scope: { ...definition.scope, mode: "interactive" }, tasks: [
+			{ ...definition.tasks[0], id: "unfinished" }, { ...definition.tasks[0], id: "complete" },
+		] } }) }, "director");
+	const [old, final] = runtime.store().snapshot().tasks;
+	await runtime.operation("start_task", { taskId: old.id }, "director");
+	const oldCommand = record(await runtime.operation("prepare_command", { taskId: old.id, command: "echo old" }, "director"));
+	await acceptInline(runtime, final.id);
+	const oldAttempt = runtime.store().getAttempt(text(runtime.store().getTask(old.id).currentAttemptId, "old attempt"));
+	assert.equal(oldAttempt.state, "running");
+	assert.equal(oldAttempt.slot, true);
+	await runtime.operation("start_goal", definition, "director");
+	const successor = runtime.store().snapshot().tasks.find(task => task.goalId !== old.goalId);
+	assert.ok(successor);
+	await runtime.operation("start_task", { taskId: successor.id }, "director");
+	const prepared = record(await runtime.operation(kind === "check" ? "prepare_check" : "prepare_command",
+		{ taskId: successor.id, ...(kind === "check" ? { checkId: "behavior" } : { command: "echo successor" }) }, "director"));
+	assert.throws(() => runtime.pre("bash", prepared.arguments, "stranger", "wrong-owner"), { code: "foreign_execution" });
+	assert.throws(() => runtime.pre("bash", { ...record(prepared.arguments), shellId: "wrong-shell" }, "director", "wrong-shell"),
+		{ code: "assignment_changed" });
+	assert.throws(() => runtime.pre("bash", oldCommand.arguments, "director", "closed-command"), { code: "job_closed" });
+	assert.throws(() => runtime.pre("bash", { command: "echo ambiguous" }, "director", "ambiguous-command"), { code: "job_closed" });
+	assert.throws(() => runtime.pre("apply_patch", {}, "director", "ambiguous-edit"), { code: "job_closed" });
+	runtime.pre("bash", prepared.arguments, "director", "successor-command");
+	const effect = runtime.store().getEffect(text(prepared.effectId, "successor effect"));
+	assert.equal(effect.state, "issued");
+	assert.equal(effect.attemptId, runtime.store().getTask(successor.id).currentAttemptId);
+	assert.equal(effect.relatedAttemptIds, undefined);
+	assert.equal(runtime.store().getEffect(text(oldCommand.effectId, "old effect")).state, "prepared");
+	assert.deepEqual(runtime.store().getAttempt(oldAttempt.id), oldAttempt);
+});
+
+for (const disposition of ["waiting", "paused", "superseded"]) test(`exact prepared commands cannot execute a ${disposition} attempt`, async t => {
+	const { runtime, directory } = fixture(t, authorizedFactory);
+	await runtime.operation("start_factory", { source: factorySource(directory) }, "director");
+	const task = runtime.store().snapshot().tasks[0];
+	await runtime.operation("start_task", { taskId: task.id }, "director");
+	const prepared = record(await runtime.operation("prepare_command", { taskId: task.id, command: "echo scoped" }, "director"));
+	if (disposition === "waiting") {
+		await runtime.operation("wait_task", { taskId: task.id, kind: "capacity", reason: "Yield execution capacity" }, "director");
+	} else if (disposition === "paused") {
+		await runtime.operation("pause_factory", { factoryId: "fixture-factory" }, "director");
+	} else {
+		await runtime.operation("evolve_task", { taskId: task.id, expectedVersion: task.version,
+			checks: [...task.checks, { id: "extra", origin: "derived", kind: "command", requirement: "New assigned behavior", command: "true" }] }, "director");
+	}
+	assert.throws(() => runtime.pre("bash", prepared.arguments, "director", "inactive-command"),
+		{ code: disposition === "waiting" ? "capacity_required" : "command_retired" });
+	assert.notEqual(runtime.store().getEffect(text(prepared.effectId, "effect")).state, "issued");
+});
+
+test("prepared effect ownership cannot substitute for the actual executing native identity", async t => {
+	const { runtime } = fixture(t);
+	await runtime.operation("start_goal", definition, "director");
+	const task = runtime.store().snapshot().tasks[0];
+	const batch = record(await runtime.operation("prepare_dispatch", { taskIds: [task.id] }, "director"));
+	assert.ok(Array.isArray(batch.prepared));
+	const call = record(batch.prepared[0]);
+	runtime.pre("create_session", call.arguments, "director", "create-worker");
+	runtime.post("create_session", call.arguments, { id: "native-worker" }, "director");
+	const request = { command: "echo creator", shellId: "creator-command" };
+	runtime.store().recordEffect({ id: "creator-command", attemptId: text(call.attemptId, "attempt"),
+		kind: "command", state: "prepared", request }, "director");
+	assert.throws(() => runtime.pre("bash", request, "director", "creator-execution"), { code: "foreign_execution" });
+	assert.equal(runtime.store().getEffect("creator-command").state, "prepared");
 });
 
 test("unknown replacements are inspected once and mismatched native metadata never grants ownership", async t => {

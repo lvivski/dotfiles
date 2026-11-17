@@ -207,7 +207,7 @@ export function bindAttempt(tx, attemptId, nativeId, actor, receipt, local = fal
 	else if (task.state === "cancelled" || ancestors(tx, task).some((parent) => parent.state === "cancelled")) {
 		task.state = "cancelled";
 		attempt.state = "cancelled";
-	} else if (firstBinding) attempt.state = task.state === "waiting" ? "waiting" : "running";
+	} else if (firstBinding && task.state !== "done") attempt.state = task.state === "waiting" ? "waiting" : "running";
 	tx.put("tasks", task);
 	tx.put("attempts", attempt);
 	for (const observation of tx.list("native_usage", "WHERE native_id=? AND goal_id IS NULL", [nativeId])) settleUsage(tx, observation);
@@ -386,12 +386,19 @@ export function waitTask(tx, taskId, actor, waiting, event) {
 	return task;
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {string} actor */
-export function assertCommandAdmission(tx, actor) {
-	const executing = tx.list("attempts", "WHERE native_id=? AND slot=1 AND state='running'", [actor])
-		.filter(attempt => tx.get("tasks", attempt.taskId).currentAttemptId === attempt.id);
+/** @param {import("./database.mjs").Transaction} tx @param {string} actor @param {string} [attemptId] */
+export function assertCommandAdmission(tx, actor, attemptId) {
+	const executing = attemptId === undefined
+		? tx.list("attempts", "WHERE native_id=? AND slot=1 AND state='running'", [actor])
+			.filter(attempt => tx.get("tasks", attempt.taskId).currentAttemptId === attempt.id)
+		: [tx.get("attempts", attemptId)];
 	for (const attempt of executing) {
-		requireAdmission(tx, tx.get("tasks", attempt.taskId));
+		const task = current(tx, attempt);
+		if (attempt.nativeId !== actor) throw new FoundryError("foreign_execution", "A command needs this caller's actually executing attempt");
+		if (!attempt.slot || attempt.state !== "running" || task.state !== "running") {
+			throw new FoundryError("capacity_required", "A command requires its current running execution slot");
+		}
+		requireAdmission(tx, task);
 		observeExecutionBase(tx, attempt);
 	}
 	if (!executing.length && tx.list("attempts", "WHERE native_id=?", [actor])

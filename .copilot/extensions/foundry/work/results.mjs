@@ -1,7 +1,7 @@
 import { bindCandidateOutputs, normalizeCandidateOutputs, readCandidate } from "./artifacts.mjs";
 import { releaseSlot, retryTask, runnable, startLocalTask } from "./attempts.mjs";
 import { releaseOwnedClaims } from "./claims.mjs";
-import { outstanding } from "./effects.mjs";
+import { outstanding, retirePrepared } from "./effects.mjs";
 import { productionClosure } from "./jobs.mjs";
 import { ancestors, authorized, budgetAvailable, requireOwner, requireReporter } from "./policy.mjs";
 import { decodeResult } from "./records.mjs";
@@ -69,6 +69,7 @@ export function canPromote(tx, task, attempt, result) {
 			coordinator.state = "done";
 			if (coordinator.currentAttemptId) {
 				const lease = tx.get("attempts", coordinator.currentAttemptId);
+				retirePrepared(tx, lease, "job accepted");
 				lease.state = "done";
 				lease.endedBy = result.sender;
 				tx.put("attempts", lease);
