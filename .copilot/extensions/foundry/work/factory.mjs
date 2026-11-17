@@ -1,8 +1,8 @@
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
-import { createHash } from "node:crypto";
-import { execFileSync } from "node:child_process";
-import { FoundryError, array, choice, closedFields, decodeInput, decodeLimits, decodeSource, digest, json, natural, positive, record, resourcePath, strings, text } from "./values.mjs";
+import { FoundryError, array, choice, closedFields, decodeLimits, digest, json, natural, positive, record, resourcePath, strings, text } from "./values.mjs";
 
 /** @param {Record<string,unknown>} definition @param {"native"|"stop-hook"} mechanism
  * @returns {{maximumJobs:number,blocks?:number,settingOrigins:NonNullable<import("./model.d.ts").FactoryControl["settingOrigins"]>}} */
@@ -33,68 +33,6 @@ export function factorySettings(factory) {
 			value: positive(factory.blocks, "stop-hook continuation blocks"), origin: factory.settingOrigins?.blocks ?? "unrecorded",
 		} }),
 		perJobLimits: Object.fromEntries(Object.entries(limits).map(([name, value]) => [name, { value, origin: "policy" }])),
-	};
-}
-
-/** @param {unknown} value @returns {import("./model.d.ts").FactoryControl} */
-export function decodeFactory(value) {
-	const row = record(value);
-	const mechanism = choice(row.mechanism, ["native", "stop-hook"], "continuation mechanism");
-	const origins = row.settingOrigins === undefined ? undefined : record(row.settingOrigins);
-	if (origins) closedFields(origins, ["maximumJobs", ...(mechanism === "native" ? [] : ["blocks"])], "factory setting origins");
-	const heartbeat = row.heartbeat === undefined ? undefined : record(row.heartbeat);
-	const request = heartbeat === undefined ? undefined : record(heartbeat.request);
-	const reminders = Object.fromEntries(Object.entries(record(row.reminders)).map(([id, value]) => {
-		const reminder = record(value);
-		return [id, { marker: text(reminder.marker, "progress marker"), count: natural(reminder.count, "reminder count"),
-			generation: natural(reminder.generation, "reminder generation") }];
-	}));
-	return {
-		id: text(row.id, "factory id"), owner: text(row.owner, "factory owner"),
-		state: choice(row.state, ["active", "paused"], "factory state"),
-		generation: positive(row.generation, "activation generation"),
-		mechanism,
-		source: decodeSource(row.source), definition: json(row.definition),
-		maximumJobs: positive(row.maximumJobs, "maximum concurrent jobs"),
-		...(row.blocks === undefined && mechanism === "native" ? {} : { blocks: positive(row.blocks, "stop-hook continuation blocks") }),
-		...(origins === undefined ? {} : { settingOrigins: {
-			maximumJobs: choice(origins.maximumJobs, ["policy", "default"], "maximumJobs origin"),
-			...(mechanism === "native" ? {} : { blocks: choice(origins.blocks, /** @type {const} */ (["policy", "default"]), "blocks origin") }),
-		} }),
-		pausedWorkers: strings(row.pausedWorkers), reminders,
-		...(row.unchangedFailures === undefined ? {} : { unchangedFailures: positive(row.unchangedFailures, "unchanged failures") }),
-		...(row.aggregateRepairs === undefined ? {} : { aggregateRepairs: natural(row.aggregateRepairs, "aggregate repairs") }),
-		...(heartbeat === undefined || request === undefined ? {} : { heartbeat: {
-			state: choice(heartbeat.state, ["issued", "bound", "uncertain"], "heartbeat state"),
-			generation: positive(heartbeat.generation, "heartbeat generation"),
-			request: { interval: choice(request.interval, ["minutes"], "heartbeat cadence"),
-				every_minutes: positive(request.every_minutes, "heartbeat minutes"), prompt: text(request.prompt, "heartbeat prompt") },
-			...(heartbeat.id === undefined ? {} : { id: text(heartbeat.id, "native heartbeat identity") }),
-			...(heartbeat.receipt === undefined ? {} : { receipt: json(heartbeat.receipt) }),
-		} }),
-		...(row.sourceCursor === undefined ? {} : { sourceCursor: text(row.sourceCursor, "native source cursor") }),
-		...(row.reason === undefined ? {} : { reason: text(row.reason, "pause reason") }),
-	};
-}
-
-/** @param {unknown} value @returns {import("./model.d.ts").GoalCompletion} */
-export function decodeCompletion(value) {
-	const row = record(value);
-	if (typeof row.closed !== "boolean") throw new FoundryError("invalid_field", "Completion closure must be boolean");
-	const accepted = row.accepted === undefined ? undefined : record(row.accepted);
-	return {
-		id: text(row.id, "completion id"), goalId: text(row.goalId, "completion goal"), owner: text(row.owner, "completion owner"),
-		taskId: text(row.taskId, "completion task"), factoryId: text(row.factoryId, "completion factory"),
-		revision: positive(row.revision, "closure revision"), closed: row.closed,
-		requiredInputs: array(row.requiredInputs, decodeInput), repairs: natural(row.repairs, "aggregate repairs"),
-		...(accepted === undefined ? {} : { accepted: {
-			revision: positive(accepted.revision, "accepted closure"),
-			tasks: array(accepted.tasks, value => {
-				const item = record(value);
-				return { id: text(item.id, "required task"), version: positive(item.version, "required version"),
-					inputs: array(item.inputs, decodeInput) };
-			}),
-		} }),
 	};
 }
 

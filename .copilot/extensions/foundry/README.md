@@ -451,6 +451,33 @@ Both extensions load independently; factory execution does not require analysis 
 
 Modules in `work/` use single-word filenames and each has one responsibility.
 
+`store.mjs` preserves the public API and establishes each operation's read or write transaction.
+`database.mjs` owns the single SQLite connection, schema, filesystem integrity checks and typed
+record primitives; `records.mjs` owns stored-record decoding. Domain functions take the current
+transaction explicitly and call each other directly, never the transaction-wrapped public API.
+Each operation has one canonical implementation, without forwarding aliases.
+
+| Module | Responsibility |
+| --- | --- |
+| `policy.mjs` | Ownership, scope and admission rules |
+| `tasks.mjs` | Definitions, dependencies, evolution and reassignment |
+| `attempts.mjs` | Execution lifecycle, capacity, repair and handoff |
+| `claims.mjs` | Shared-resource ownership and release |
+| `effects.mjs` | Native effects, issuance and settlement |
+| `results.mjs` | Evidence admission and checked-output promotion |
+| `organization.mjs` | Unit hierarchy and coordinator responsibilities |
+| `collaboration.mjs` | Bilateral requests, obligations and delivery binding |
+| `wakes.mjs` | Notification generations, routing and acknowledgment |
+| `jobs.mjs` | Persisted factory controls and bounded-job lifecycle |
+| `usage.mjs` | Native billing identity, attribution and accounting |
+| `context.mjs` | Authorized read-only projections |
+| `feedback.mjs` | Scoped signals and reusable lessons |
+
+Cross-domain mutations commit or roll back together. Thrown errors roll back; a returned
+`FoundryError` commits deliberate state such as a capacity wake before being thrown to the caller.
+Callbacks remain synchronous and non-reentrant. Native RPC stays outside these transactions.
+`factory.mjs` continues to parse accepted factory definitions rather than manage their stored lifecycle.
+
 Source is dotfiles-managed in `.copilot/extensions/foundry/`; `sync` mirrors it and the independent
 `recon` extension to their user directories. For scoped development, mirror only the
 updated extension directories and their directly updated skills, then reload extensions only after

@@ -9,6 +9,10 @@ import { fileURLToPath } from "node:url";
 import { openWorkStore } from "./store.mjs";
 import { FoundryError, decodeEvidence, digest, json } from "./values.mjs";
 import { affinityId, nativeUsage } from "./usage.mjs";
+import { openDatabase } from "./database.mjs";
+import { createGoal, createTask } from "./tasks.mjs";
+import { prepareAttempt, startLocalTask } from "./attempts.mjs";
+import { claim as claimResource } from "./claims.mjs";
 
 /** @typedef {ReturnType<typeof openWorkStore>} Store */
 /** @typedef {import("./model.d.ts").Scope} Scope */
@@ -81,6 +85,58 @@ function admit(store, attempt, evidence = outcome(attempt).evidence) {
 function fails(operation, code) {
 	assert.throws(operation, (error) => error instanceof FoundryError && error.code === code);
 }
+
+test("one transaction spans task, attempt, claim and wake changes, including committed capacity denial", t => {
+	const { repo, store } = fixture(t);
+	const database = openDatabase(repo);
+	/** @param {import("./database.mjs").Transaction} tx @param {string} id */
+	function populate(tx, id) {
+		createGoal(tx, { id, title: id, scope, limits: { workers: 1 } }, "root");
+		const active = createTask(tx, { id: `${id}:active`, goalId: id, title: id, assignment: id, workType: "code" }, "root");
+		const attempt = startLocalTask(tx, active.id, "root");
+		assert.ok(!(attempt instanceof FoundryError));
+		claimResource(tx, { attemptId: attempt.id, surface: repo, resource: "src/shared" }, "root");
+		return createTask(tx, { id: `${id}:waiting`, goalId: id, title: id, assignment: id, workType: "code" }, "root");
+	}
+	try {
+		const before = store.snapshot();
+		fails(() => database.transaction(tx => {
+			populate(tx, "rolled-back");
+			throw new FoundryError("rollback", "Roll back every participating module");
+		}), "rollback");
+		assert.deepEqual(store.snapshot(), before);
+
+		fails(() => database.transaction(tx => {
+			const waiting = populate(tx, "committed");
+			return prepareAttempt(tx, waiting.id, "root");
+		}), "capacity_wait");
+		const active = store.getTask("committed:active");
+		assert.equal(active.state, "running");
+		assert.ok(active.currentAttemptId);
+		assert.equal(store.getAttempt(active.currentAttemptId).slot, true);
+		assert.equal(store.snapshot().claims[0]?.attemptId, active.currentAttemptId);
+		assert.equal(store.getTask("committed:waiting").state, "ready");
+		assert.ok(store.pendingWakes("root").some(wake => wake.goalId === "committed" && wake.reason === "capacity"));
+	} finally { database.close(); }
+});
+
+test("transaction callbacks reject nested and asynchronous work without retaining partial domain changes", t => {
+	const { repo, store } = fixture(t);
+	const database = openDatabase(repo);
+	try {
+		fails(() => database.transaction(tx => {
+			createGoal(tx, { id: "nested", title: "Nested", scope }, "root");
+			return database.transaction(() => undefined);
+		}), "store_reentrant");
+		fails(() => database.transaction(tx => {
+			createGoal(tx, { id: "async", title: "Async", scope }, "root");
+			return Promise.resolve("not synchronous");
+		}), "async_transaction");
+		assert.deepEqual(store.snapshot().goals, []);
+		assert.equal(database.transaction(tx => tx.list("goals").length, false), 0);
+	} finally { database.close(); }
+	fails(() => database.transaction(() => undefined), "store_closed");
+});
 
 test("recursive organizational units retain task ancestry and never grant authority through metadata", t => {
 	const { store } = fixture(t);
