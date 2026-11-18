@@ -12,7 +12,7 @@ fi
 git pull
 
 push() {
-	rsync --exclude ".git/" --exclude ".DS_Store" --exclude "sync" --exclude "/README.md" -av . ~ || return
+	rsync --exclude ".git/" --exclude ".DS_Store" --exclude "sync" --exclude "/README.md" --exclude "/.copilot/editor/node_modules/" -av . ~ || return
 	# Extension and skill directories are mirrors
 	local item
 	for item in extensions/{foundry,recon} skills/{foundry,deep-research,review-queue,security-review}; do
@@ -35,7 +35,7 @@ push() {
 }
 
 pull() {
-	find . -type f \( ! -path "*.git/*" ! -name ".DS_Store" ! -path "./README.md" ! -name "sync" \) -exec cp ~/{} {} \;
+	find . -path "./.copilot/editor/node_modules" -prune -o -type f \( ! -path "*.git/*" ! -name ".DS_Store" ! -path "./README.md" ! -name "sync" \) -exec cp ~/{} {} \;
 }
 
 case "$1" in

@@ -1,8 +1,11 @@
 import { preparedDispatch, runnable } from "./attempts.mjs";
+import { views as backlogViews } from "./backlog.mjs";
 import { completionStatus } from "./jobs.mjs";
 import { coordinatorsBound } from "./organization.mjs";
 import { ancestors, assignedExecution, authorized, goalMember, MANAGED_TASKS, taskForCaller } from "./policy.mjs";
-import { FoundryError, text } from "./values.mjs";
+import { FoundryError, record, text } from "./values.mjs";
+import { lane } from "./diagnostics.mjs";
+import { deliveryStatus } from "./landing.mjs";
 
 /** @typedef {import("./model.d.ts").Task} Task */
 /** @typedef {import("./model.d.ts").Lesson} Lesson */
@@ -18,7 +21,11 @@ export function snapshot(tx, goalId, history = true) {
 	const tasks = tx.list("tasks", goalWhere, parameters);
 	const attempts = tx.list("attempts", history ? attemptWhere
 		: `WHERE id IN (SELECT json_extract(document,'$.currentAttemptId') FROM tasks ${goalWhere})`, parameters);
-	return { goals, tasks, attempts,
+	return { goals, tasks, attempts, backlog: backlogViews(tx, undefined, goalId),
+		...(history ? { lanes: tasks.map(task => lane(tx, task)), deliveries: tx.list("deliveries", goalWhere, parameters),
+			products: tx.list("goal_completions", goalWhere, parameters).filter(completion =>
+				record(tx.get("factory_controls", completion.factoryId).definition).delivery !== undefined)
+				.map(completion => deliveryStatus(tx, completion.goalId, tx.get("goals", completion.goalId).owner)) } : {}),
 		factories: tx.list("factory_controls").filter(factory => goalId === undefined
 			|| tx.optional("goal_completions", goalId)?.factoryId === factory.id),
 		completions: tx.list("goal_completions", goalWhere, parameters).map(completionStatus.bind(undefined, tx)),

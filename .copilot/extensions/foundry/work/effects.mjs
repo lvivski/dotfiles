@@ -9,7 +9,7 @@ import { notifyOutcome } from "./wakes.mjs";
 /** @typedef {import("./model.d.ts").Attempt} Attempt */
 /** @typedef {import("./model.d.ts").Effect} Effect */
 
-/** @param {Json} before @param {Json} after @param {boolean} [issuing] */
+/** @param {Json} before @param {Json} after @param {boolean} [issuing] @returns {boolean} */
 export function sameRequest(before, after, issuing = false) {
 	if (digest(before) === digest(after)) return true;
 	if (!issuing || before === null || after === null || typeof before !== "object" || typeof after !== "object"
@@ -20,19 +20,19 @@ export function sameRequest(before, after, issuing = false) {
 		&& digest(oldRequest) === digest(newRequest);
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Attempt} attempt @param {boolean} [substantive] */
+/** @param {import("./database.mjs").Transaction} tx @param {Attempt} attempt @param {boolean} [substantive] @returns {boolean} */
 export function outstanding(tx, attempt, substantive = false) {
 	return effectsForAttempt(tx, attempt.id, "AND state IN ('issued','uncertain')")
 		.some((effect) => !substantive || effect.kind === "command" || effect.kind === "create");
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {string} attemptId @param {string} [where] */
+/** @param {import("./database.mjs").Transaction} tx @param {string} attemptId @param {string} [where] @returns {Effect[]} */
 export function effectsForAttempt(tx, attemptId, where = "") {
 	return tx.list("effects", `WHERE (attempt_id=? OR EXISTS (
 		SELECT 1 FROM json_each(document,'$.relatedAttemptIds') WHERE value=?)) ${where}`, [attemptId, attemptId]);
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Attempt} attempt @param {string} reason */
+/** @param {import("./database.mjs").Transaction} tx @param {Attempt} attempt @param {string} reason @returns {void} */
 export function retirePrepared(tx, attempt, reason) {
 	for (const effect of tx.list("effects", "WHERE attempt_id=? AND state='prepared' AND kind IN ('create','command')", [attempt.id])) {
 		effect.state = "settled";
@@ -41,7 +41,7 @@ export function retirePrepared(tx, attempt, reason) {
 	}
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Attempt} attempt @param {string} actor */
+/** @param {import("./database.mjs").Transaction} tx @param {Attempt} attempt @param {string} actor @param {string} [reason] @returns {void} */
 export function scheduleStop(tx, attempt, actor, reason = "cancelled") {
 	if (!attempt.nativeId) return;
 	const local = tx.db.prepare("SELECT attempt_id FROM local_attempts WHERE attempt_id=?").get(attempt.id) !== undefined;
@@ -56,19 +56,19 @@ export function scheduleStop(tx, attempt, actor, reason = "cancelled") {
 	});
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {string} shellId @param {string} actor */
+/** @param {import("./database.mjs").Transaction} tx @param {string} shellId @param {string} actor @returns {Effect|undefined} */
 export function commandForShell(tx, shellId, actor) {
 	const effects = tx.list("effects", "WHERE kind='command' AND owner=? AND json_extract(document,'$.request.shellId')=?", [actor, shellId]);
 	if (effects.length > 1) throw new FoundryError("effect_identity_conflict", "A command shell cannot identify multiple native operations");
 	return effects[0];
 }
 
-/** @param {import("./database.mjs").Transaction} tx */
+/** @param {import("./database.mjs").Transaction} tx @returns {Effect[]} */
 export function pendingEffects(tx) {
 	return tx.list("effects", "WHERE state IN ('prepared','issued','uncertain')");
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {string} callId @param {boolean} [includeSettled] */
+/** @param {import("./database.mjs").Transaction} tx @param {string} callId @param {boolean} [includeSettled] @returns {Effect|undefined} */
 export function effectByNativeCall(tx, callId, includeSettled = false) {
 	const effects = tx.list("effects", `WHERE ${includeSettled ? "" : "state IN ('issued','uncertain') AND "}(json_extract(document,'$.request.nativeToolCallId')=?
 	OR (state IN ('issued','uncertain') AND EXISTS (
@@ -107,7 +107,7 @@ export function issueAttempt(tx, attemptId, actor, effectId, request) {
 	return effect;
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {string} effectId @param {string} actor @param {Json} receipt */
+/** @param {import("./database.mjs").Transaction} tx @param {string} effectId @param {string} actor @param {Json} receipt @returns {Effect} */
 export function rejectCreation(tx, effectId, actor, receipt) {
 	const effect = tx.get("effects", effectId);
 	const attempt = tx.get("attempts", effect.attemptId);
@@ -129,8 +129,25 @@ export function rejectCreation(tx, effectId, actor, receipt) {
 	return effect;
 }
 
+/** @param {import("./database.mjs").Transaction} tx @param {string} effectId @param {string} actor @param {Json} receipt @returns {boolean} */
+export function refuseDisabledDispatch(tx, effectId, actor, receipt) {
+	const envelope = record(receipt);
+	if (envelope.resultType !== "failure" || envelope.error !== "This session management tool is disabled"
+		|| envelope.structuredContent || envelope.textResultForLlm) throw new FoundryError("refusal_mismatch", "No definite pre-start route refusal");
+	const effect = rejectCreation(tx, effectId, actor, receipt);
+	const attempt = tx.get("attempts", effect.attemptId), task = tx.get("tasks", attempt.taskId);
+	if (task.state !== "blocked" || task.currentAttemptId !== attempt.id || task.version !== attempt.taskVersion
+		|| task.owner !== actor) return false;
+	// No worker ran. Keep the immutable refusal and allow an ordinary native
+	// call with a new token, not another issuance of the first call.
+	task.state = "ready";
+	tx.put("tasks", task);
+	return true;
+}
+
 /** @param {import("./database.mjs").Transaction} tx @param {{id: string, attemptId: string, kind: Effect["kind"], state: Effect["state"], request: Json, result?: Json, factoryGeneration?:number, relatedAttemptIds?:string[]}} input @param {string} actor @returns {Effect} */
 export function recordEffect(tx, input, actor) {
+	if (input.kind === "archive") throw new FoundryError("archive_receipt_required", "Use the owner-bound native retirement protocol");
 	const attempt = tx.get("attempts", input.attemptId);
 	requireReporter(tx, attempt, text(actor, "actor"));
 	const existing = tx.optional("effects", input.id);
@@ -214,7 +231,7 @@ export function recordEffect(tx, input, actor) {
 	return effect;
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {string} actor @param {string} [goalId] */
+/** @param {import("./database.mjs").Transaction} tx @param {string} actor @param {string} [goalId] @returns {void} */
 export function retryFailedStops(tx, actor, goalId) {
 	for (const failed of tx.list("effects", `WHERE kind='stop' AND state='settled' AND json_extract(document,'$.result.accepted')=0
 		AND attempt_id IN (SELECT id FROM attempts WHERE state='cancelled')`)) {

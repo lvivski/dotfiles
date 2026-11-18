@@ -11,6 +11,7 @@ import { latestEvidence } from "./values.mjs";
  * @param {Check[]} checks
  * @param {Evidence[]} evidence in canonical admission order
  * @param {Finding[]} [findings]
+ * @returns {{passed:boolean,missing:string[],failed:string[],advisory:Finding[]}}
  */
 export function evaluate(checks, evidence, findings = []) {
 	const latest = latestEvidence(evidence);

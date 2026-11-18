@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { releaseOwnedClaims } from "./claims.mjs";
+import { recycleCapacity } from "./backlog.mjs";
 import { effectsForAttempt, outstanding, retirePrepared, scheduleStop } from "./effects.mjs";
 import { coordinatorsBound, transferOwnedDescendants } from "./organization.mjs";
 import { ancestors, authorized, budgetAvailable, current, requireAdmission, requireOwner, requireReporter, uncancelled } from "./policy.mjs";
@@ -17,7 +18,7 @@ import { notifyOutcome, rerouteWakes, wake, wakeCapacity } from "./wakes.mjs";
 /** @typedef {import("./model.d.ts").Task} Task */
 /** @typedef {import("./model.d.ts").Attempt} Attempt */
 
-/** @param {import("./database.mjs").Transaction} tx */
+/** @param {import("./database.mjs").Transaction} tx @param {string} [directory] @returns {string|undefined} */
 export function executionBase(tx, directory = tx.cwd) {
 	const result = spawnSync("git", ["-C", directory, "rev-parse", "--verify", "--quiet", "HEAD"], { encoding: "utf8" });
 	if (result.error) throw result.error;
@@ -26,7 +27,7 @@ export function executionBase(tx, directory = tx.cwd) {
 	return text(result.stdout.trim(), "execution baseline");
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Attempt} attempt */
+/** @param {import("./database.mjs").Transaction} tx @param {Attempt} attempt @returns {void} */
 export function observeExecutionBase(tx, attempt) {
 	if (attempt.executionDirectory || effectsForAttempt(tx, attempt.id).some(effect => effect.kind === "command" && effect.state !== "prepared")) return;
 	const base = executionBase(tx);
@@ -38,13 +39,13 @@ export function observeExecutionBase(tx, attempt) {
 	tx.put("attempts", attempt);
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Attempt} attempt @param {"paused"|"stalled"} [cause] */
+/** @param {import("./database.mjs").Transaction} tx @param {Attempt} attempt @param {"paused"|"stalled"} [cause] @returns {void} */
 export function parkPausedExecution(tx, attempt, cause = "paused") {
 	const task = tx.get("tasks", attempt.taskId);
-	const completion = tx.optional("goal_completions", task.goalId);
-	if (!completion || !attempt.nativeId || task.currentAttemptId !== attempt.id || task.version !== attempt.taskVersion
+	const authority = tx.optional("goal_completions", task.goalId) ?? tx.list("squads", "WHERE task_id=?", [task.id])[0];
+	if (!authority || !attempt.nativeId || task.currentAttemptId !== attempt.id || task.version !== attempt.taskVersion
 		|| task.state !== "running" || outstanding(tx, attempt, true)) return;
-	const factory = tx.get("factory_controls", completion.factoryId);
+	const factory = tx.get("factory_controls", authority.factoryId);
 	if (factory.state !== "paused" && !factory.pausedWorkers.includes(attempt.nativeId)) return;
 	task.state = "blocked";
 	task.waiting = { kind: "factory", cause, reason: cause === "paused" ? "factory_paused" : "continuation_stalled" };
@@ -56,7 +57,7 @@ export function parkPausedExecution(tx, attempt, cause = "paused") {
 	notifyOutcome(tx, task);
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Attempt} attempt @param {boolean} [notify] @param {boolean} [preserveClaims] */
+/** @param {import("./database.mjs").Transaction} tx @param {Attempt} attempt @param {boolean} [notify] @param {boolean} [preserveClaims] @returns {void} */
 export function releaseSlot(tx, attempt, notify = true, preserveClaims = false) {
 	if (attempt.slot && !outstanding(tx, attempt, true)
 		&& ["done", "failed", "cancelled", "waiting"].includes(attempt.state)) {
@@ -65,16 +66,17 @@ export function releaseSlot(tx, attempt, notify = true, preserveClaims = false) 
 		if (notify) wakeCapacity(tx, tx.get("tasks", attempt.taskId).goalId);
 	}
 	if (!preserveClaims) releaseOwnedClaims(tx, attempt);
+	if (["done", "cancelled", "failed"].includes(attempt.state)) recycleCapacity(tx, tx.get("tasks", attempt.taskId).goalId);
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Goal} goal */
+/** @param {import("./database.mjs").Transaction} tx @param {Goal} goal @returns {boolean} */
 export function hasSlot(tx, goal) {
 	if (goal.limits.workers === undefined) return true;
 	const count = tx.db.prepare("SELECT count(*) AS n FROM attempts a JOIN tasks t ON t.id=a.task_id WHERE t.goal_id=? AND a.slot=1").get(goal.id)?.n;
 	return natural(count, "active slots") < goal.limits.workers;
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Task} task */
+/** @param {import("./database.mjs").Transaction} tx @param {Task} task @returns {boolean} */
 export function resumable(tx, task) {
 	if (task.state !== "waiting" || !task.currentAttemptId || tx.get("attempts", task.currentAttemptId).slot) return false;
 	if (task.waiting?.kind === "capacity" || task.waiting?.kind === "factory") return true;
@@ -85,13 +87,13 @@ export function resumable(tx, task) {
 	return children.length > 0 && children.every((child) => ["done", "failed", "blocked", "cancelled"].includes(child.state));
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Task} task */
+/** @param {import("./database.mjs").Transaction} tx @param {Task} task @returns {boolean} */
 export function runnable(tx, task) {
 	return (task.state === "ready" || resumable(tx, task)) && !ancestors(tx, task).some((parent) => parent.state === "cancelled")
 		&& resolvedInputs(tx, task) !== undefined;
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Task} task */
+/** @param {import("./database.mjs").Transaction} tx @param {Task} task @returns {boolean} */
 export function preparedDispatch(tx, task) {
 	if (task.state !== "running" || !task.currentAttemptId) return false;
 	const attempt = tx.get("attempts", task.currentAttemptId);
@@ -213,6 +215,8 @@ export function bindAttempt(tx, attemptId, nativeId, actor, receipt, local = fal
 	for (const observation of tx.list("native_usage", "WHERE native_id=? AND goal_id IS NULL", [nativeId])) settleUsage(tx, observation);
 	if (firstBinding && !stale) rerouteWakes(tx, task.goalId);
 	if (attempt.state === "cancelled") scheduleStop(tx, attempt, actor);
+	if (firstBinding && tx.optional("effects", `archive:${attempt.id}`)?.state === "prepared")
+		wake(tx, attempt.creator, task.goalId, `retirement:${task.id}`);
 	releaseSlot(tx, tx.get("attempts", attemptId));
 	return tx.get("attempts", attemptId);
 }
@@ -291,7 +295,7 @@ export function retryTask(tx, taskId, expectedAttemptId, actor, notify = true, e
 	return task;
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {string} actor @param {string} [goalId] */
+/** @param {import("./database.mjs").Transaction} tx @param {string} actor @param {string} [goalId] @returns {Attempt[]} */
 export function openInputRequests(tx, actor, goalId) {
 	return tx.list("attempts", "WHERE json_extract(document,'$.waiting.kind')='input'")
 	.filter(attempt => {
@@ -300,7 +304,7 @@ export function openInputRequests(tx, actor, goalId) {
 	});
 }
 
-/** @param {import("./database.mjs").Transaction} tx Only invoked with explicitly observed native input clearance. @param {string} nativeId @param {string} actor */
+/** @param {import("./database.mjs").Transaction} tx Only invoked with explicitly observed native input clearance. @param {string} nativeId @param {string} actor @returns {void} */
 export function clearNativeInputs(tx, nativeId, actor) {
 	for (const attempt of tx.list("attempts", "WHERE native_id=? AND json_extract(document,'$.waiting.kind')='input'", [nativeId])) {
 		requireReporter(tx, attempt, actor);
@@ -316,7 +320,7 @@ export function clearNativeInputs(tx, nativeId, actor) {
 	}
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {string} name */
+/** @param {import("./database.mjs").Transaction} tx @param {string} name @returns {Attempt|undefined} */
 export function attemptByCreationName(tx, name) {
 	let effects = tx.list("effects", "WHERE kind='create' AND json_extract(document,'$.request.name')=?", [name]);
 	const suffix = nativeSessionName(name).match(/ [0-9a-f]{8}$/u)?.[0];
@@ -327,13 +331,13 @@ export function attemptByCreationName(tx, name) {
 	return effects.length === 1 ? tx.get("attempts", effects[0].attemptId) : undefined;
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {string} actor */
+/** @param {import("./database.mjs").Transaction} tx @param {string} actor @returns {Attempt[]} */
 export function executingAttempts(tx, actor) {
 	return tx.list("attempts", `WHERE native_id=? AND slot=1 AND state='running'
 	AND id IN (SELECT json_extract(document,'$.currentAttemptId') FROM tasks WHERE state='running')`, [actor]);
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {string} token */
+/** @param {import("./database.mjs").Transaction} tx @param {string} token @returns {Attempt|undefined} */
 export function attemptByToken(tx, token) {
 	return tx.list("attempts", "WHERE json_extract(document,'$.token')=?", [text(token, "token")])[0];
 }
@@ -386,7 +390,7 @@ export function waitTask(tx, taskId, actor, waiting, event) {
 	return task;
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {string} actor @param {string} [attemptId] */
+/** @param {import("./database.mjs").Transaction} tx @param {string} actor @param {string} [attemptId] @returns {void} */
 export function assertCommandAdmission(tx, actor, attemptId) {
 	const executing = attemptId === undefined
 		? tx.list("attempts", "WHERE native_id=? AND slot=1 AND state='running'", [actor])
@@ -441,7 +445,7 @@ export function resumeTask(tx, taskId, actor) {
 	return attempt;
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {string} taskId @param {string} attemptId @param {string} newOwner @param {string} actor @param {boolean} [unavailable] */
+/** @param {import("./database.mjs").Transaction} tx @param {string} taskId @param {string} attemptId @param {string} newOwner @param {string} actor @param {boolean} [unavailable] @returns {Task} */
 export function handoffTask(tx, taskId, attemptId, newOwner, actor, unavailable = false) {
 	const task = tx.get("tasks", taskId);
 	const old = tx.get("attempts", attemptId);

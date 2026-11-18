@@ -16,3 +16,4 @@ Thumbs.db
 __pycache__/
 *.pyc
 .security-review/
+/.copilot/editor/node_modules/

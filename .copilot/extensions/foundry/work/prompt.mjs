@@ -2,7 +2,7 @@
 /** @typedef {import("./model.js").Task} Task */
 /** @typedef {import("./model.js").Attempt} Attempt */
 
-/** @param {Goal} goal @param {Task} task @param {Attempt} attempt @param {string[]} [context] */
+/** @param {Goal} goal @param {Task} task @param {Attempt} attempt @param {string[]} [context] @returns {string} */
 export function assignmentPrompt(goal, task, attempt, context = []) {
 	return [
 		`Foundry attempt: ${attempt.token}`,
@@ -15,7 +15,7 @@ export function assignmentPrompt(goal, task, attempt, context = []) {
 		...(task.role === "coordinator" ? [
 			"",
 			"Own this subtree until delivery. Staff ready producers in parallel and assign one integration owner with named inputs and executable checks of the combined candidate. A blocked input or claim stops only dependent work. Keep the delivery scope and governing checks intact.",
-			`Before staffing, yield with foundry_wait_task kind:events and attemptId ${attempt.id}; resume before doing your own implementation. Use foundry_advance for locally owned actions and execute the returned prepared calls. Keep this coordinator attempt between events; producers publish the deliverables.`,
+			`Before staffing, yield with foundry_wait_task kind:events and attemptId ${attempt.id}. This is a coordination surface, not an implementation checkout: delegate commands, product checks and edits to isolated producers. Use foundry_advance for locally owned actions and execute only remaining ordinary native calls. Keep this coordinator attempt between events; producers publish the deliverables.`,
 			"Once the observed generation is staffed or explicitly waiting/exhausted, record handledGeneration and relevant relatedIds with the event wait. Reading isn't handling. Don't poll or redispatch a waiting coordinator.",
 			"Use the directory from foundry_get_context to find peer coordinator tasks. Request needed versioned peer outputs through foundry_request_collaboration and staff accepted requests locally; required commitments must be fulfilled or explicitly released by their source.",
 			"The director owns priorities, cross-team tradeoffs and shared delivery blockers that peers cannot resolve. Do not copy the director on routine exchanges, relay them through the hierarchy, or require director approval for work already within scope.",
@@ -41,7 +41,7 @@ export function assignmentPrompt(goal, task, attempt, context = []) {
 	].join("\n");
 }
 
-/** @param {string} prompt */
+/** @param {string} prompt @returns {string|undefined} */
 export function attemptToken(prompt) {
 	return /(?:^|\n)Foundry attempt: ([a-zA-Z0-9_-]+)(?:\n|$)/u.exec(prompt)?.[1];
 }

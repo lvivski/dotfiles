@@ -44,6 +44,9 @@ for (const shell of ["bash", "zsh"]) {
 			".copilot/skills/foundry/references/activation.md",
 		];
 		const preserved = ".copilot/extensions/unrelated/extension.mjs";
+		const editorPackage = ".copilot/editor/node_modules/typescript/package.json";
+		mkdirSync(path.dirname(path.join(repository, editorPackage)), { recursive: true });
+		writeFileSync(path.join(repository, editorPackage), "{}");
 		for (const relative of [...stale, preserved]) {
 			const target = path.join(home, relative);
 			mkdirSync(path.dirname(target), { recursive: true });
@@ -61,5 +64,6 @@ for (const shell of ["bash", "zsh"]) {
 		assert.equal(readFileSync(path.join(home, preserved), "utf8"), "preserve unless obsolete\n");
 		assert.equal(readFileSync(database, "utf8"), "repository-owned factory data\n");
 		assert.equal(existsSync(path.join(home, ".git/foundry/work.sqlite")), false);
+		assert.equal(existsSync(path.join(home, editorPackage)), false);
 	});
 }

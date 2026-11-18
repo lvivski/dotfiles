@@ -78,7 +78,7 @@ export function readCandidate(reference, version, databasePath) {
 	return candidate;
 }
 
-/** @param {Candidate} candidate @param {string} databasePath */
+/** @param {Candidate} candidate @param {string} databasePath @returns {void} */
 export function verifyCandidate(candidate, databasePath) {
 	const actual = readCandidate(candidate.reference, candidate.version, databasePath);
 	if (!actual || digest(json(actual)) !== digest(json(candidate))) throw new FoundryError("candidate_identity_mismatch", "Captured candidate metadata changed");
@@ -146,12 +146,12 @@ function normalizedOutputs(candidates, outputs, databasePath) {
 	});
 }
 
-/** @param {import("./model.d.ts").Check[]} checks @param {import("./model.d.ts").Evidence[]} evidence @param {import("./model.d.ts").Output[]} outputs @param {string} databasePath */
+/** @param {import("./model.d.ts").Check[]} checks @param {import("./model.d.ts").Evidence[]} evidence @param {import("./model.d.ts").Output[]} outputs @param {string} databasePath @returns {import("./model.d.ts").Output[]} */
 export function normalizeCandidateOutputs(checks, evidence, outputs, databasePath) {
 	return normalizedOutputs(evaluatedCandidates(checks, evidence), outputs, databasePath);
 }
 
-/** @param {import("./model.d.ts").Check[]} checks @param {import("./model.d.ts").Evidence[]} evidence @param {import("./model.d.ts").Output[]} outputs @param {string} databasePath */
+/** @param {import("./model.d.ts").Check[]} checks @param {import("./model.d.ts").Evidence[]} evidence @param {import("./model.d.ts").Output[]} outputs @param {string} databasePath @returns {import("./model.d.ts").Output[]} */
 export function bindCandidateOutputs(checks, evidence, outputs, databasePath) {
 	const candidates = evaluatedCandidates(checks, evidence);
 	for (const candidate of candidates) verifyCandidate(candidate, databasePath);

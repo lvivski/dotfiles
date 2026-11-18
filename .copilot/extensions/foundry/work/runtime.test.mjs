@@ -3337,9 +3337,10 @@ test("a native creation cannot be issued twice with different call identities", 
 	const task = runtime.store().snapshot().tasks[0];
 	const calls = await runtime.operation("prepare_dispatch", { taskIds: [task.id] }, "director");
 	assert.ok(calls && typeof calls === "object" && "prepared" in calls);
-	assert.ok(calls.prepared);
-	runtime.pre("create_session", calls.prepared[0].arguments, "director", "first-call");
-	assert.throws(() => runtime.pre("create_session", calls.prepared[0].arguments, "director", "second-call"), /already issued/);
+	const prepared = calls.prepared;
+	assert.ok(prepared);
+	runtime.pre("create_session", prepared[0].arguments, "director", "first-call");
+	assert.throws(() => runtime.pre("create_session", prepared[0].arguments, "director", "second-call"), /already issued/);
 });
 
 test("board escapes stored content and protects its scoped loopback endpoint", async t => {

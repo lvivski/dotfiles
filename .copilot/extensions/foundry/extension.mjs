@@ -3,7 +3,7 @@ import { createFoundryCanvas } from "./canvas.mjs";
 import { buildHooks } from "./hooks.mjs";
 import { createRuntime } from "./work/runtime.mjs";
 import { buildTools } from "./work/tools.mjs";
-import { FoundryError } from "./work/values.mjs";
+import { FoundryError, record } from "./work/values.mjs";
 import { createIssueSource } from "./work/issues.mjs";
 import { readCommandEvents } from "./work/recovery.mjs";
 
@@ -25,7 +25,13 @@ const runtime = createRuntime({
 	},
 	execute: async (name, args, toolCallId) => {
 		if (!session) throw new Error("Native session is not attached yet");
+		if (name === "archive_session_if_safe" && record(record(args).guard).owner !== session.sessionId)
+			throw new FoundryError("native_identity_mismatch", "Guarded archival must run in the actual native creator");
 		return session.rpc.tools.execute({ name, arguments: args, ...(toolCallId === undefined ? {} : { toolCallId }) });
+	},
+	createSession: async (args, toolCallId) => {
+		if (!session) throw new Error("Native session is not attached yet");
+		return session.rpc.tools.execute({ name: "create_session", arguments: args, toolCallId });
 	},
 	confirm: async message => {
 		if (!session?.capabilities.ui?.elicitation) throw new FoundryError("native_authorization_unavailable", "The host does not expose native user confirmation");
@@ -43,13 +49,7 @@ const runtime = createRuntime({
 session = await joinSession({
 	tools: buildTools(runtime),
 	canvases: [createFoundryCanvas(runtime)],
-	hooks: {
-		...buildHooks(runtime),
-		onSessionEnd: () => {
-			runtime.close();
-			return {};
-		},
-	},
+	hooks: buildHooks(runtime),
 });
 runtime.attachUsage(session.sessionId);
 session.on("assistant.turn_start", event => {

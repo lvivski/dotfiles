@@ -1,10 +1,16 @@
 import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { closeSync, constants, lstatSync, mkdirSync, openSync, realpathSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { closeSync, constants, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { guardRetirementWrite } from "./retirement.mjs";
 import { decoders } from "./records.mjs";
 import { FoundryError, record, text } from "./values.mjs";
+
+export const schema = 4;
+const modules = readdirSync(new URL(".", import.meta.url)).filter(name => name.endsWith(".mjs") && !name.endsWith(".test.mjs")).sort();
+export const engine = [...modules, "../extension.mjs", "../hooks.mjs"].reduce((hash, name) =>
+	hash.update(name).update("\0").update(readFileSync(new URL(name, import.meta.url))).update("\0"), createHash("sha256")).digest("hex");
 
 /** @typedef {import("./records.mjs").Records} Records */
 /** @typedef {import("./records.mjs").Table} Table */
@@ -16,6 +22,7 @@ import { FoundryError, record, text } from "./values.mjs";
  * put: <K extends Table>(table: K, value: Records[K]) => void,
  * newId: (table: Table, supplied: unknown) => string
  * }} Transaction */
+/** @typedef {{databasePath:string, transaction:<T>(operation:(tx:Transaction)=>T|FoundryError,write?:boolean)=>T, close:()=>void}} Database */
 
 /** @param {string} pathname */
 function inspect(pathname) {
@@ -26,7 +33,7 @@ function inspect(pathname) {
 	}
 }
 
-/** @param {string} workingDirectory @param {{clock?: () => Date}} [options] */
+/** @param {string} workingDirectory @param {{clock?: () => Date}} [options] @returns {Database} */
 export function openDatabase(workingDirectory, options = {}) {
 	const cwd = text(workingDirectory, "workingDirectory");
 	const commonPath = execFileSync("git", ["-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"],
@@ -111,10 +118,17 @@ export function openDatabase(workingDirectory, options = {}) {
 		const version = db.prepare("PRAGMA user_version").get()?.user_version;
 		const tables = new Set(db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT GLOB 'sqlite_*'")
 			.all().map(row => row.name));
-		if (version !== 0 && version !== 3 || version === 0 && tables.size
-			|| version === 3 && [...Object.keys(decoders), "dependencies", "outcomes", "evidence_admissions",
-				"usage", "local_attempts", "usage_aliases"].some(table => !tables.has(table))) {
+		if (version !== 0 && version !== schema || version === 0 && tables.size
+			|| version === schema && [...Object.keys(decoders), "dependencies", "outcomes", "evidence_admissions", "engine_pin",
+				"usage", "local_attempts", "usage_aliases", "delivery_manifests"].some(table => !tables.has(table))) {
 			throw new FoundryError("unsupported_store", "Reset obsolete or incomplete canonical state; only the current Foundry schema is supported");
+		}
+		if (version === schema && db.prepare("SELECT hash FROM engine_pin").get()?.hash !== engine) {
+			throw new FoundryError("incompatible_engine", "Use the pinned Foundry engine or quiesce writers and authorize a fresh ledger");
+		}
+		if (version === 0) {
+			db.exec("CREATE TABLE engine_pin(hash TEXT PRIMARY KEY NOT NULL)");
+			db.prepare("INSERT INTO engine_pin VALUES(?)").run(engine);
 		}
 		for (const table of Object.keys(decoders)) {
 			db.exec(`CREATE TABLE IF NOT EXISTS ${table} (
@@ -123,13 +137,16 @@ export function openDatabase(workingDirectory, options = {}) {
 				parent_id TEXT, native_id TEXT, slot INTEGER NOT NULL DEFAULT 0
 			);`);
 		}
+		db.exec(`CREATE TABLE IF NOT EXISTS delivery_manifests (
+			id TEXT PRIMARY KEY NOT NULL, goal_id TEXT NOT NULL REFERENCES goals(id), document TEXT NOT NULL);
+			CREATE INDEX IF NOT EXISTS delivery_manifest_goal ON delivery_manifests(goal_id);`);
 		const indexed = {
 			goals: ["owner"], units: ["goal", "owner"], tasks: ["goal", "owner"], attempts: ["task"],
 			collaborations: ["goal"],
 			effects: ["attempt", "owner"], claims: ["attempt", "owner"], wakes: ["goal", "owner"],
 			signals: ["goal", "task"], lessons: ["goal"], results: ["attempt"],
 			deliveries: ["goal", "attempt", "owner"], native_usage: ["goal", "attempt"],
-			factory_controls: ["owner"], goal_completions: ["goal", "task", "owner"],
+			factory_controls: ["owner"], goal_completions: ["goal", "task", "owner"], squads: ["goal", "task"], backlog_items: ["goal"],
 		};
 		for (const [table, columns] of Object.entries(indexed)) for (const column of columns) {
 			db.exec(`CREATE INDEX IF NOT EXISTS ${table}_${column} ON ${table}(${column === "owner" ? column : `${column}_id`})`);
@@ -140,6 +157,8 @@ export function openDatabase(workingDirectory, options = {}) {
 			CREATE INDEX IF NOT EXISTS attempts_native ON attempts(native_id);
 			CREATE INDEX IF NOT EXISTS effects_outstanding ON effects(attempt_id,state,kind);
 			CREATE INDEX IF NOT EXISTS effects_state ON effects(state);
+			CREATE INDEX IF NOT EXISTS archive_native ON effects(json_extract(document,'$.request.nativeId')) WHERE kind='archive';
+			CREATE INDEX IF NOT EXISTS archive_tree ON effects(json_extract(document,'$.request.arguments.guard.workspace.path')) WHERE kind='archive';
 			CREATE INDEX IF NOT EXISTS effects_native_call ON effects(json_extract(document,'$.request.nativeToolCallId'));
 			CREATE INDEX IF NOT EXISTS native_usage_native ON native_usage(native_id);
 			CREATE INDEX IF NOT EXISTS usage_affinity_start ON usage_affinity(json_extract(document,'$.groupId'),json_extract(document,'$.startedAt'));
@@ -163,7 +182,10 @@ export function openDatabase(workingDirectory, options = {}) {
 			CREATE INDEX IF NOT EXISTS collaborations_destination ON collaborations(json_extract(document,'$.destinationGoalId'));
 			CREATE INDEX IF NOT EXISTS collaborations_consumer ON collaborations(json_extract(document,'$.consumerTaskId'));
 			CREATE INDEX IF NOT EXISTS collaborations_producer ON collaborations(json_extract(document,'$.producerTaskId'));
-			PRAGMA user_version=3;`);
+			CREATE INDEX IF NOT EXISTS items_factory ON backlog_items(json_extract(document,'$.factoryId'),state);
+			CREATE INDEX IF NOT EXISTS squads_factory ON squads(json_extract(document,'$.factoryId'));
+			CREATE UNIQUE INDEX IF NOT EXISTS direction_revision ON directions(json_extract(document,'$.factoryId'),json_extract(document,'$.revision'));
+			PRAGMA user_version=${schema};`);
 		db.exec(`CREATE TABLE IF NOT EXISTS usage_aliases (
 			alias TEXT NOT NULL, receipt_id TEXT NOT NULL REFERENCES native_usage(id) ON DELETE CASCADE,
 			PRIMARY KEY(alias,receipt_id)
@@ -240,6 +262,7 @@ export function openDatabase(workingDirectory, options = {}) {
 	/** @template {Table} K @param {K} table @param {Records[K]} value */
 	function put(table, value) {
 		const row = record(value);
+		guardRetirementWrite(context, table, row);
 		const str = (/** @type {string} */ key) => row[key] === undefined ? null : text(row[key], key);
 		db.prepare(`INSERT INTO ${table}(id,document,goal_id,task_id,attempt_id,owner,state,kind,parent_id,native_id,slot)
 			VALUES(?,?,?,?,?,?,?,?,?,?,?)

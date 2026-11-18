@@ -2,10 +2,13 @@ import { attemptToken } from "./work/prompt.mjs";
 import { runner, toolName } from "./work/native.mjs";
 import { FoundryError } from "./work/values.mjs";
 
-/** @param {ReturnType<typeof import("./work/runtime.mjs").createRuntime>} runtime */
+/** @typedef {Required<Pick<import("@github/copilot-sdk").SessionHooks,
+ * "onSessionStart" | "onPreToolUse" | "onPostToolUse" | "onAgentStop" | "onSessionEnd">>} FoundryHooks */
+
+/** @param {ReturnType<typeof import("./work/runtime.mjs").createRuntime>} runtime @returns {FoundryHooks} */
 export function buildHooks(runtime) {
 	let tracking = false;
-	return /** @satisfies {import("@github/copilot-sdk").SessionHooks} */ ({
+	return {
 		onSessionStart: (input, invocation) => {
 			runtime.setDirectory(input.workingDirectory);
 			const token = input.initialPrompt ? attemptToken(input.initialPrompt) : undefined;
@@ -16,8 +19,13 @@ export function buildHooks(runtime) {
 		},
 		onPreToolUse: (input, invocation) => {
 			const name = toolName(input.toolName);
+			try {
+				if (runtime.guardSurface(name, input.toolArgs, invocation.sessionId)) tracking = true;
+			} catch (error) {
+				return { permissionDecision: "deny", permissionDecisionReason: error instanceof Error ? error.message : String(error) };
+			}
 			if (name.startsWith("foundry_")) tracking = true;
-			if (!tracking || !["create_session", "bash", "shell", "read_bash", "stop_bash"].includes(name)) return;
+			if (!tracking || !["create_session", "send_session_message", "bash", "shell", "read_bash", "stop_bash", "apply_patch", "edit", "create", "write_file", "str_replace_editor"].includes(name)) return;
 			runtime.setDirectory(input.workingDirectory);
 			try {
 				runtime.pre(input.toolName, input.toolArgs, invocation.sessionId, input.toolCallId);
@@ -29,6 +37,7 @@ export function buildHooks(runtime) {
 					(name === "create_session" && "kickoff" in args && typeof args.kickoff === "object"
 						&& args.kickoff !== null && "prompt" in args.kickoff && typeof args.kickoff.prompt === "string"
 						&& attemptToken(args.kickoff.prompt) !== undefined)
+					|| (name === "send_session_message" && "message" in args && typeof args.message === "string" && args.message.startsWith("Foundry wake: "))
 					|| ("command" in args && typeof args.command === "string" && args.command.includes(runner)));
 				const admissionFailure = error instanceof FoundryError && [
 					"factory_paused", "job_closed", "job_cancelled", "stale_activation", "stale_attempt",
@@ -41,7 +50,7 @@ export function buildHooks(runtime) {
 		onPostToolUse: async (input, invocation) => {
 			if (!tracking) return;
 			try {
-				runtime.post(input.toolName, input.toolArgs, input.toolResult, invocation.sessionId);
+				runtime.post(input.toolName, input.toolArgs, input.toolResult, invocation.sessionId, input.toolCallId);
 				if (toolName(input.toolName) === "create_session") await runtime.deliverStops(invocation.sessionId);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
@@ -56,5 +65,9 @@ export function buildHooks(runtime) {
 				runtime.log(`Foundry continuation paused: ${error instanceof Error ? error.message : String(error)}`);
 			}
 		},
-	});
+		onSessionEnd: () => {
+			runtime.close();
+			return {};
+		},
+	};
 }

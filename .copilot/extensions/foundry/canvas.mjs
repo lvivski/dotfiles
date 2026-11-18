@@ -16,7 +16,7 @@ export function createFoundryCanvas(runtime) {
 			name: "get_snapshot", description: "Read the current canonical work records displayed by this board.",
 			handler: context => {
 				if (!boards.has(context.instanceId)) throw new CanvasError("board_not_open", "This Foundry board is not open");
-				return runtime.store().snapshot(goals.get(context.instanceId));
+				return runtime.boardSnapshot(goals.get(context.instanceId));
 			},
 		}],
 		open: async context => {
@@ -27,7 +27,7 @@ export function createFoundryCanvas(runtime) {
 				if (goals.get(context.instanceId) !== goalId) throw new CanvasError("board_scope_changed", "Open a different instance for another goal");
 				return { title: "Foundry", status: "Ready", url: existing.url };
 			}
-			const board = await startBoard({ snapshot: () => runtime.store().snapshot(goalId), log: runtime.log });
+			const board = await startBoard({ snapshot: () => runtime.boardSnapshot(goalId), log: runtime.log });
 			boards.set(context.instanceId, board);
 			goals.set(context.instanceId, goalId);
 			return { title: "Foundry", status: "Ready", url: board.url };

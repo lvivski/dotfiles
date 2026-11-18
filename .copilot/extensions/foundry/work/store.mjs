@@ -1,6 +1,9 @@
 import { FoundryError, text } from "./values.mjs";
 import { openDatabase } from "./database.mjs";
+import * as Landing from "./landing.mjs";
+import { retirementStore } from "./retirement.mjs";
 import * as Attempts from "./attempts.mjs";
+import * as Backlog from "./backlog.mjs";
 import * as Claims from "./claims.mjs";
 import * as Collaboration from "./collaboration.mjs";
 import * as Context from "./context.mjs";
@@ -41,12 +44,47 @@ export function openWorkStore(workingDirectory, options = {}) {
 	const database = openDatabase(workingDirectory, options);
 	return {
 		databasePath: database.databasePath,
+		/** @param {string} goalId @param {string} actor */
+		prepareDelivery(goalId, actor) {
+			const basis = database.transaction(tx => Landing.captureDelivery(tx,goalId,actor),false);
+			const joined = Landing.prepareJoin(database.databasePath,basis);
+			return database.transaction(tx => Landing.recordJoin(tx,basis,joined,actor));
+		},
+		/** @param {string} goalId @param {string} id @param {string} actor */
+		qualifyDelivery(goalId,id,actor) { return database.transaction(tx => Landing.qualifyDelivery(tx,goalId,id,actor)); },
+		/** @param {string} goalId @param {string} id @param {string} actor */
+		authorizeLanding(goalId,id,actor) { return database.transaction(tx => Landing.authorizeLanding(tx,goalId,id,actor),false); },
+		/** @param {string} goalId @param {string} id @param {string} actor */
+		issueLanding(goalId,id,actor) { return database.transaction(tx => Landing.issueLanding(tx,goalId,id,actor)); },
+		/** @param {string} goalId @param {string} id @param {string} token @param {string} reason */
+		blockLanding(goalId,id,token,reason) { return database.transaction(tx => Landing.blockLanding(tx,goalId,id,token,reason)); },
+		/** @param {string} goalId @param {string} id @param {string} actor */
+		reconcileLanding(goalId,id,actor) { return database.transaction(tx => Landing.reconcileLanding(tx,goalId,id,actor)); },
+		/** @param {string} goalId @param {string} actor */
+		deliveryStatus(goalId,actor) { return database.transaction(tx => Landing.deliveryStatus(tx,goalId,actor),false); },
+		/** @param {string} goalId @param {string} actor */
+		nextDelivery(goalId,actor) { return database.transaction(tx => Landing.nextDelivery(tx,goalId,actor),false); },
+		/** @param {string} attemptId */
+		productCheckPlan(attemptId) { return database.transaction(tx => Landing.productCheckPlan(tx,attemptId),false); },
+		...retirementStore(database),
 		/** @param {string} id @param {string} actor */
 		factory(id, actor) { return database.transaction(tx => Jobs.factory(tx, id, actor), false); },
 		/** @param {string} actor */
 		factoryViews(actor) { return database.transaction(tx => Jobs.factoryViews(tx, actor), false); },
-		/** @param {Omit<Factory,"owner"|"state"|"generation"|"pausedWorkers"|"reminders">} input @param {string} actor @param {{goal:GoalInput,tasks:Array<Omit<TaskInput,"goalId">>,units?:Array<Omit<UnitInput,"goalId">>,completionTaskId:string}} initial */
+		/** @param {Omit<Factory,"owner"|"state"|"generation"|"pausedWorkers"|"reminders">} input @param {string} actor @param {{goal:GoalInput,tasks:Array<Omit<TaskInput,"goalId">>,units?:Array<Omit<UnitInput,"goalId">>,completionTaskId:string}} [initial] */
 		activateFactory(input, actor, initial) { return database.transaction(tx => Jobs.activateFactory(tx, input, actor, initial)); },
+		/** @param {Record<string,unknown>} input @param {string} actor */
+		observeWork(input, actor) { return database.transaction(tx => Backlog.observe(tx, input, actor)); },
+		/** @param {Record<string,unknown>} input @param {string} actor */
+		inspectEvidence(input, actor) { return database.transaction(tx => Backlog.inspect(tx, input, actor), false); },
+		/** @param {Record<string,unknown>} input @param {string} actor */
+		pullWork(input, actor) { return database.transaction(tx => Backlog.pull(tx, input, actor)); },
+		/** @param {Record<string,unknown>} input @param {string} actor */
+		splitWork(input, actor) { return database.transaction(tx => Backlog.split(tx, input, actor)); },
+		/** @param {string} id @param {number} revision @param {unknown} direction @param {string} source @param {string} actor */
+		reviseDirection(id, revision, direction, source, actor) { return database.transaction(tx => Backlog.reviseDirection(tx, id, revision, direction, source, actor)); },
+		/** @param {string} actor @param {string} [goalId] */
+		backlog(actor, goalId) { return database.transaction(tx => Backlog.views(tx, actor, goalId), false); },
 		/** @param {string} actor @param {string} reason @param {string} [factoryId] */
 		pauseFactories(actor, reason, factoryId) { return database.transaction(tx => Jobs.pauseFactories(tx, actor, reason, factoryId)); },
 		/** @param {string} goalId @param {string} actor */
@@ -74,7 +112,7 @@ export function openWorkStore(workingDirectory, options = {}) {
 		createTask(input, actor) { return database.transaction(tx => Tasks.createTask(tx, input, actor)); },
 		/** @param {{id?:string,sourceTaskId:string,destinationTaskId:string,consumerTaskId:string,expectedVersion:number,title:string,output:string,required?:boolean}} input @param {string} actor */
 		requestCollaboration(input, actor) { return database.transaction(tx => Collaboration.requestCollaboration(tx, input, actor)); },
-		/** @param {{collaborationId:string,expectedRevision:number,action:"accept"|"fulfill"|"bind"|"decline"|"block"|"cancel"|"release",reason?:string,producer?:Omit<TaskInput,"goalId"|"parentId"|"unitId"|"role">}} input @param {string} actor */
+		/** @param {{collaborationId:string,expectedRevision:number,action:"accept"|"fulfill"|"bind"|"decline"|"block"|"cancel"|"release",reason?:string,producerTaskId?:string,producer?:Omit<TaskInput,"goalId"|"parentId"|"unitId"|"role">}} input @param {string} actor */
 		respondCollaboration(input, actor) { return database.transaction(tx => Collaboration.respondCollaboration(tx, input, actor)); },
 		/** @param {string} id */
 		getGoal(id) { return database.transaction(tx => tx.get("goals", id), false); },
@@ -131,6 +169,12 @@ export function openWorkStore(workingDirectory, options = {}) {
 		issueAttempt(attemptId, actor, effectId, request) { return database.transaction(tx => Effects.issueAttempt(tx, attemptId, actor, effectId, request)); },
 		/** @param {string} effectId @param {string} actor @param {Json} receipt */
 		rejectCreation(effectId, actor, receipt) { return database.transaction(tx => Effects.rejectCreation(tx, effectId, actor, receipt)); },
+		/** @param {string} effectId @param {string} actor @param {Json} receipt */
+		refuseDisabledDispatch(effectId, actor, receipt) { return database.transaction(tx => Effects.refuseDisabledDispatch(tx, effectId, actor, receipt)); },
+		/** @param {string} actor */
+		sharedCoordinator(actor) { return database.transaction(tx => Boolean(tx.db.prepare(`SELECT 1 FROM effects e
+			JOIN attempts a ON a.id=e.attempt_id JOIN tasks t ON t.id=a.task_id WHERE a.native_id=? AND e.kind='create'
+			AND json_extract(e.document,'$.request.workspace_type')='branch' AND json_extract(t.document,'$.role')='coordinator' LIMIT 1`).get(actor)), false); },
 		/** @param {string} attemptId @param {string} nativeId @param {string} actor @param {Json} [receipt] @returns {Attempt} */
 		bindAttempt(attemptId, nativeId, actor, receipt) { return database.transaction(tx => Attempts.bindAttempt(tx, attemptId, nativeId, actor, receipt)); },
 		/** @param {{id: string, attemptId: string, kind: Effect["kind"], state: Effect["state"], request: Json, result?: Json, factoryGeneration?:number, relatedAttemptIds?:string[]}} input @param {string} actor @returns {Effect} */
@@ -176,6 +220,8 @@ export function openWorkStore(workingDirectory, options = {}) {
 		wakeCanSend(wakeId) { return database.transaction(tx => Wakes.wakeCanSend(tx, wakeId), false); },
 		/** @param {string} wakeId @param {string} actor */
 		canRelayCollaboration(wakeId, actor) { return database.transaction(tx => Collaboration.canRelayCollaboration(tx, wakeId, actor), false); },
+		/** @param {string} wakeId @param {string} actor @param {string} [origin] */
+		canRelayOutput(wakeId, actor, origin) { return database.transaction(tx => Wakes.canRelayOutput(tx, wakeId, actor, origin), false); },
 		/** @param {string} wakeId */
 		wakeHasCurrentRecipient(wakeId) { return database.transaction(tx => Wakes.wakeHasCurrentRecipient(tx, wakeId), false); },
 		/** @param {string} wakeId @param {number} generation @param {string|undefined} attemptId @param {Json} request @param {string} actor @returns {Delivery|undefined} */
@@ -186,8 +232,8 @@ export function openWorkStore(workingDirectory, options = {}) {
 		settleWakeDelivery(wakeId, effectId, generation, result, accepted, actor, unavailable = false) { return database.transaction(tx => Wakes.settleWakeDelivery(tx, wakeId, effectId, generation, result, accepted, actor, unavailable)); },
 		/** @param {string} wakeId @param {number} generation @param {string} actor @returns {Wake} */
 		consumeWake(wakeId, generation, actor) { return database.transaction(tx => Wakes.consumeWake(tx, wakeId, generation, actor)); },
-		/** @param {string} wakeId @param {number} generation @param {string} actor @returns {Wake} */
-		markWakeSent(wakeId, generation, actor) { return database.transaction(tx => Wakes.markWakeSent(tx, wakeId, generation, actor)); },
+		/** @param {string} wakeId @param {number} generation @param {string} actor @param {boolean} [observedOnly] @returns {Wake} */
+		markWakeSent(wakeId, generation, actor, observedOnly = false) { return database.transaction(tx => Wakes.markWakeSent(tx, wakeId, generation, actor, observedOnly), !observedOnly); },
 		/** @param {string} taskId @param {string} newOwner @param {string} actor @returns {Task} */
 		reassignTask(taskId, newOwner, actor) { return database.transaction(tx => Tasks.reassignTask(tx, taskId, newOwner, actor)); },
 		/** @param {string} unitId @param {string} newOwner @param {string} actor */

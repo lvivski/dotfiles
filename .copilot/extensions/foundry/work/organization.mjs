@@ -10,7 +10,7 @@ import { wake } from "./wakes.mjs";
 /** @typedef {import("./model.d.ts").Task} Task */
 /** @typedef {import("./records.mjs").UnitInput} UnitInput */
 
-/** @param {import("./database.mjs").Transaction} tx @param {Task} task */
+/** @param {import("./database.mjs").Transaction} tx @param {Task} task @returns {void} */
 export function coordinationAdmission(tx, task) {
 	uncancelled(tx, task);
 	requireAdmission(tx, task);
@@ -20,7 +20,7 @@ export function coordinationAdmission(tx, task) {
 	if (!budgetAvailable(tx, tx.get("goals", task.goalId))) throw new FoundryError("limit_exhausted", "The coordinator goal's observed credits or deadline are exhausted");
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Unit} unit @param {string} boundaryId */
+/** @param {import("./database.mjs").Transaction} tx @param {Unit} unit @param {string} boundaryId @returns {boolean} */
 export function unitBelow(tx, unit, boundaryId) {
 	for (let current = unit; current.parentId;) {
 		if (current.parentId === boundaryId) return true;
@@ -51,7 +51,7 @@ export function createUnit(tx, input, actor) {
 	return unit;
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Task} task @param {string} cause */
+/** @param {import("./database.mjs").Transaction} tx @param {Task} task @param {string} cause @returns {void} */
 export function coordinationEvent(tx, task, cause) {
 	if (!task.coordination || ["done", "failed", "cancelled"].includes(task.state)) return;
 	task.coordination.generation++;
@@ -59,7 +59,7 @@ export function coordinationEvent(tx, task, cause) {
 	tx.put("tasks", task);
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Task} task @param {string} cause */
+/** @param {import("./database.mjs").Transaction} tx @param {Task} task @param {string} cause @returns {void} */
 export function notifyCoordination(tx, task, cause) {
 	const coordinator = [task, ...ancestors(tx, task)].find(item => item.role === "coordinator");
 	if (!coordinator) return;
@@ -67,7 +67,7 @@ export function notifyCoordination(tx, task, cause) {
 	wake(tx, coordinator.owner, coordinator.goalId, `coordination:${coordinator.id}`);
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Task} task */
+/** @param {import("./database.mjs").Transaction} tx @param {Task} task @returns {boolean} */
 export function coordinatorsBound(tx, task) {
 	return ancestors(tx, task).filter(parent => parent.role === "coordinator").every(parent => {
 		const attempt = parent.currentAttemptId ? tx.get("attempts", parent.currentAttemptId) : undefined;
@@ -75,7 +75,7 @@ export function coordinatorsBound(tx, task) {
 	});
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Task} root @param {string} previous @param {string} replacement */
+/** @param {import("./database.mjs").Transaction} tx @param {Task} root @param {string} previous @param {string} replacement @returns {void} */
 export function transferOwnedDescendants(tx, root, previous, replacement) {
 	for (const child of tx.list("tasks", "WHERE goal_id=? AND owner=?", [root.goalId, previous])) {
 		if (child.id === root.id || !below(tx, child, root.id) || ["done", "cancelled"].includes(child.state)) continue;
@@ -127,7 +127,7 @@ export function coordinationViews(tx, actor, goalId) {
 });
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {string} actor */
+/** @param {import("./database.mjs").Transaction} tx @param {string} actor @returns {Task[]} */
 export function parkCoordinators(tx, actor) {
 	/** @type {Task[]} */
 	const parked = [];
@@ -154,7 +154,7 @@ export function parkCoordinators(tx, actor) {
 	return parked;
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {string} unitId @param {string} newOwner @param {string} actor */
+/** @param {import("./database.mjs").Transaction} tx @param {string} unitId @param {string} newOwner @param {string} actor @returns {Unit} */
 export function reassignUnit(tx, unitId, newOwner, actor) {
 	const unit = tx.get("units", unitId);
 	if (unit.taskId) requireOwner(tx, tx.get("tasks", unit.taskId), actor);

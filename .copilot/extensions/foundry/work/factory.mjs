@@ -2,13 +2,17 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
-import { FoundryError, array, choice, closedFields, decodeLimits, digest, json, natural, positive, record, resourcePath, strings, text } from "./values.mjs";
+import { deliveryPolicy } from "./landing.mjs";
+import { compileCheck, compileDefinition } from "./compiler.mjs";
+import { decodeDirection } from "./direction.mjs";
+import { contracts, validateContracts } from "./lineage.mjs";
+import { FoundryError, array, choice, closedFields, decodeLimits, decodeScope, digest, json, narrowScope, natural, positive, record, resourcePath, strings, text } from "./values.mjs";
 
 /** @param {Record<string,unknown>} definition @param {"native"|"stop-hook"} mechanism
  * @returns {{maximumJobs:number,blocks?:number,settingOrigins:NonNullable<import("./model.d.ts").FactoryControl["settingOrigins"]>}} */
 function resolveFactorySettings(definition, mechanism) {
 	const maximumJobs = definition.maximumJobs === undefined ? 1 : positive(definition.maximumJobs, "maximum concurrent jobs");
-	if (maximumJobs > 1 && definition.source === undefined) {
+	if (maximumJobs > 1 && definition.source === undefined && definition.direction === undefined) {
 		throw new FoundryError("factory_capacity_scope", "maximumJobs above 1 requires multi-job source intake; leads and subtasks execute in parallel within one job");
 	}
 	if (mechanism === "native" && definition.blocks !== undefined) {
@@ -52,11 +56,14 @@ export function readFactory(directory, filename) {
 	const content = readFileSync(resolved, "utf8");
 	const definition = record(/** @type {unknown} */ (JSON.parse(content)));
 	closed(definition, ["format", "version", "id", "mechanism", "maximumJobs", "blocks", "unchangedFailures",
-		"aggregateRepairs", "completionTaskId", "goal", "source", "charters", "grains"]);
+		"aggregateRepairs", "completionTaskId", "goal", "source", "charters", "grains", "direction", "delivery", "requiredProducts"]);
 	if (definition.format !== "foundry-factory" || definition.version !== 2) {
 		throw new FoundryError("unsupported_factory", "Expected a foundry-factory version 2 definition");
 	}
 	const goal = record(definition.goal);
+	if (definition.delivery !== undefined) deliveryPolicy(definition.delivery);
+	const direction = definition.direction === undefined ? undefined : decodeDirection(definition.direction);
+	if (direction && !decodeScope(goal.scope).delegation) throw new FoundryError("delegation_forbidden", "Squad discovery requires scoped delegation");
 	const mechanism = choice(definition.mechanism, ["native", "stop-hook"], "continuation mechanism");
 	if (record(goal.scope).mode !== (mechanism === "native" ? "autopilot" : "interactive")) {
 		throw new FoundryError("continuation_conflict", "Native continuation requires autopilot workers; exclusive stop-hook continuation requires interactive workers");
@@ -96,13 +103,36 @@ export function readFactory(directory, filename) {
 	};
 	const charters = array(definition.charters ?? [], value => {
 		const charter = record(value);
-		closed(charter, ["name", "taskIds", "agent", "context", "knowledgeFiles"]);
+		closed(charter, ["name", "taskIds", "agent", "context", "knowledgeFiles", ...(direction ? ["outcomes", "scope", "discoveryLimit"] : [])]);
 		const taskIds = strings(charter.taskIds);
 		if (taskIds.some(id => !ids.has(id))) throw new FoundryError("unknown_template", "Charters must reference actual task templates");
+		const outcomes = strings(charter.outcomes ?? []);
+		// Subscriptions are durable. A later direction may suspend an outcome
+		// without modifying charter authority or waking its dormant lead.
+		const scope = outcomes.length ? narrowScope(decodeScope(goal.scope), record(charter.scope)) : undefined;
+		if (scope && (!scope.paths.length || !scope.workTypes.length || !taskIds.length)) throw new FoundryError("empty_charter", "Subscriptions require a scope and checked producer templates");
+		for (const task of tasks.filter(task => scope && taskIds.includes(text(task.id, "template")))) {
+			const checks = array(task.checks ?? [], compileCheck);
+			const boundary = narrowScope(scope ?? decodeScope(goal.scope), task.scope);
+			if (task.role === "coordinator" || task.parentId !== undefined || array(task.inputs ?? [], record).length
+				|| !checks.length || checks.some(check => check.origin === "derived" || !check.artifactFiles?.length)
+				|| !(boundary.workTypes.includes("*") || boundary.workTypes.includes(text(task.workType, "work type")))) {
+				throw new FoundryError("invalid_template", "A discovery template is an independent producer with protected artifact-bound checks inside its charter");
+			}
+		}
 		return { name: text(charter.name, "charter name"), taskIds, context: strings(charter.context),
+			...(scope ? { outcomes, scope, discoveryLimit: natural(charter.discoveryLimit, "bounded questions per revision") } : {}),
 			knowledgeFiles: array(charter.knowledgeFiles ?? [], capture),
 			...(charter.agent === undefined ? {} : { agent: text(charter.agent, "native agent reference") }) };
 	});
+	if (direction && (!charters.some(charter => charter.outcomes?.length) || new Set(charters.map(charter => charter.name)).size !== charters.length)) {
+		throw new FoundryError("invalid_charter", "Direction requires distinct charters and at least one outcome subscription");
+	}
+	if (direction) compileDefinition(goal);
+	if (definition.requiredProducts !== undefined) {
+		if (!direction || source) throw new FoundryError("invalid_product_contract", "Product lineage requires charter-bound item admission, not source-template ingress");
+		validateContracts(contracts(definition.requiredProducts), new Set(charters.filter(charter => charter.outcomes?.length).flatMap(charter => charter.taskIds)));
+	}
 	const grains = array(definition.grains ?? [], value => {
 		const grain = record(value);
 		closed(grain, ["id", "taskIds", "generators", "baseBranch", "specification", "evaluators", "boundary", "context"]);
@@ -135,7 +165,7 @@ export function readFactory(directory, filename) {
 		}
 	}
 	const snapshot = json({ ...definition, ...settings, charters, grains, captured });
-	return { definition: snapshot, goal, completionTaskId: text(definition.completionTaskId, "completion task"),
+	return { definition: snapshot, goal, ...(direction && !source ? {} : { completionTaskId: text(definition.completionTaskId, "completion task") }),
 		source: { reference: relative, sha256: createHash("sha256").update(content).digest("hex") },
 		control: {
 			id: text(definition.id, "factory id"), mechanism, ...settings,
@@ -143,6 +173,23 @@ export function readFactory(directory, filename) {
 			...(definition.aggregateRepairs === undefined ? {} : { aggregateRepairs: natural(definition.aggregateRepairs, "aggregate repairs") }),
 		},
 	};
+}
+
+/** @param {Record<string,unknown>} policy @param {string} templateId @param {unknown} checks */
+export function templateChecks(policy, templateId, checks) {
+	const grain = array(policy.grains ?? [], record).find(grain => strings(grain.taskIds).includes(templateId));
+	const conserved = grain ? [record(grain.specification), ...array(grain.evaluators, record), ...array(grain.boundary, record)] : [];
+	return array(checks, compileCheck).map(check => {
+		if (!conserved.length) return check;
+		const { version: _version, ...definition } = check;
+		const files = new Map();
+		for (const file of [...(check.oracleFiles ?? []), ...conserved]) {
+			const name = text(file.path, "conserved input");
+			if (files.has(name) && files.get(name).sha256 !== file.sha256) throw new FoundryError("oracle_conflict", `Conserved oracle ${name} has conflicting pinned versions`);
+			files.set(name, file);
+		}
+		return compileCheck({ ...definition, oracleFiles: [...files.values()] });
+	});
 }
 
 /** @param {import("./model.d.ts").Json} definition @param {{reference:string,sha256:string}} source @param {string} [templateId] @returns {NonNullable<import("./model.d.ts").Task["dispatch"]>} */

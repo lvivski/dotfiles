@@ -2,15 +2,21 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import path from "node:path";
+import { landDelivery } from "./landing.mjs";
 import { openWorkStore } from "./store.mjs";
+import { advanceRetirements, retirementView } from "./retirement.mjs";
 import { array, compileCheck, compileDefinition, compileGoal, number, readContract } from "./compiler.mjs";
-import { compileFactoryContext, factorySettings, readFactory } from "./factory.mjs";
+import { compileFactoryContext, factorySettings, readFactory, templateChecks } from "./factory.mjs";
 import { evaluate } from "./evaluation.mjs";
 import { admittedEvidence, effectShell, nativeObject, observeCompletion, observePost, observePre, observeRefusal, prepareCheck, prepareCommand, prepareDispatch, reconcileDetail, recoverChecks } from "./native.mjs";
 import { FoundryError, boolean, choice, closedFields, decodeFinding as finding, decodeInput, decodeOutput, digest, json, latestEvidence, record, text } from "./values.mjs";
 import { affinityId, nativeUsage } from "./usage.mjs";
 import { createHeartbeat } from "./heartbeat.mjs";
 import { commandForRecovery, reconcileCommand } from "./recovery.mjs";
+import { pickupBatch, recoverCreations } from "./pickup.mjs";
+import { guardSharedTool } from "./surfaces.mjs";
+import { issueWake, observeWake, recoverDeliveries, wakeRequest } from "./transport.mjs";
+import { toolName } from "./native.mjs";
 
 /** @param {string} directory */
 function repositoryRoot(directory) {
@@ -21,13 +27,14 @@ function repositoryRoot(directory) {
 /** @typedef {import("./model.js").Finding} Finding */
 /** @typedef {ReturnType<typeof openWorkStore>} Store */
 
-/** @param {{directory:string,log:(message:string)=>void,readSession?:(id:string)=>Promise<unknown>,readCommand?:(actor:string,toolCallId:string)=>Promise<import("./recovery.mjs").CommandEvents>,execute?:(name:string,args:import("./model.js").Json,callId?:string)=>Promise<unknown>,confirm?:(message:string)=>Promise<boolean>,stopHookQualified?:boolean,readMode?:(actor:string)=>Promise<string>,readEvent?:(repository:string,id:number)=>Promise<unknown>,readEvents?:(repository:string,maximum:number,cursor?:string)=>Promise<unknown>}} options */
+/** @param {{directory:string,withLandingLease?:import("./landing.mjs").LandingLease,log:(message:string)=>void,readSession?:(id:string)=>Promise<unknown>,readCommand?:(actor:string,toolCallId:string)=>Promise<import("./recovery.mjs").CommandEvents>,createSession?:(args:import("./model.js").Json,callId:string)=>Promise<unknown>,execute?:(name:string,args:import("./model.js").Json,callId?:string)=>Promise<unknown>,confirm?:(message:string)=>Promise<boolean>,stopHookQualified?:boolean,readMode?:(actor:string)=>Promise<string>,readEvent?:(repository:string,id:number)=>Promise<unknown>,readEvents?:(repository:string,maximum:number,cursor?:string)=>Promise<unknown>}} options */
 export function createRuntime(options) {
 	let directory = repositoryRoot(options.directory);
 	/** @type {Store|undefined} */
 	let database;
 	/** @type {string|undefined} */
 	let assignmentToken;
+	let sharedCoordinator = false;
 	let closed = false;
 	// Native work retains its original database across directory changes and shutdown.
 	/** @type {Map<Store,number>} */
@@ -38,6 +45,7 @@ export function createRuntime(options) {
 	const notifications = new Set();
 	/** @type {string|undefined} */
 	let messageRouteDisabled;
+	let createRouteDisabled = false;
 	let stopHookObserved = options.stopHookQualified === true;
 	const store = () => {
 		if (closed) throw new FoundryError("runtime_closed", "Foundry runtime is closed");
@@ -86,7 +94,8 @@ export function createRuntime(options) {
 	/** @param {Store} db @param {string} actor @param {string} goalId */
 	function queueWakes(db, actor, goalId) {
 		if (!options.execute || closed || database !== db || !db.outgoingWakes(actor, true).some(wake =>
-			wake.goalId === goalId && db.wakeHasCurrentRecipient(wake.id))) return;
+			(wake.goalId === goalId || db.canRelayOutput(wake.id, actor, goalId) || db.canRelayCollaboration(wake.id, actor))
+			&& db.wakeHasCurrentRecipient(wake.id))) return;
 		retain(db);
 		trackDelivery(Promise.resolve().then(() => database === db ? deliverWakes(actor, undefined, goalId, true, db) : undefined)
 			.finally(() => release(db)));
@@ -94,24 +103,26 @@ export function createRuntime(options) {
 	/** @param {Store} db @param {string} actor @param {string} goalId */
 	function deferWakes(db, actor, goalId) {
 		queueWakes(db, actor, goalId);
-		return db.outgoingWakes(actor, true).filter(wake => wake.goalId === goalId && db.wakeHasCurrentRecipient(wake.id))
+		return db.outgoingWakes(actor, true).filter(wake => (wake.goalId === goalId || db.canRelayOutput(wake.id, actor, goalId)
+			|| db.canRelayCollaboration(wake.id, actor)) && db.wakeHasCurrentRecipient(wake.id))
 			.map(wake => ({ owner: wake.owner, generation: wake.generation,
 				state: messageRouteDisabled ? "native-route-disabled" : "native-delivery-scheduled",
 				...(messageRouteDisabled ? { error: messageRouteDisabled, wakeId: wake.id, arguments: wakeRequest(wake) } : {}) }));
 	}
-	/** @param {Store} db @param {string} name @param {unknown} args @param {unknown} result @param {string} actor */
-	const post = (db, name, args, result, actor) => observePost(db, name, args, result, actor,
-		effect => settlementWake(db, actor, effect));
+	/** @param {Store} db @param {string} name @param {unknown} args @param {unknown} result @param {string} actor @param {string} [callId] */
+	const post = (db, name, args, result, actor, callId) => toolName(name) === "send_session_message"
+		? observeWake(db, args, result, actor, callId) : observePost(db, name, args, result, actor, effect => settlementWake(db, actor, effect));
 	/** @param {unknown} input @param {string} actor @param {boolean} [execution] */
 	function ownedTask(input, actor, execution = false) {
 		return store().taskForCaller(text(input, "task id"), actor, execution);
 	}
 	/** @param {string[]} ids @param {string} actor */
 	function dispatchBatch(ids, actor) {
-		const tasks = ids.map(id => ownedTask(id, actor));
-		/** @type {ReturnType<typeof prepareDispatch>[]} */
+		const tasks = [...new Set(ids)].map(id => ownedTask(id, actor));
+		tasks.sort((a,b) => (a.createdAt ?? "").localeCompare(b.createdAt ?? ""));
+		/** @type {import("./model.d.ts").DispatchCall[]} */
 		const prepared = [];
-		/** @type {Array<{taskId:string,code:string,message:string}>} */
+		/** @type {import("./pickup.mjs").Blocker[]} */
 		const blocked = [];
 		for (const task of tasks) {
 			try { prepared.push(prepareDispatch(store(), task.id, actor)); }
@@ -121,6 +132,19 @@ export function createRuntime(options) {
 			}
 		}
 		return { prepared, blocked };
+	}
+	/** @param {ReturnType<typeof dispatchBatch>} batch @param {string} actor @param {string} [goalId] */
+	async function pickup(batch, actor, goalId) {
+		const db = store();
+		retain(db);
+		try {
+			// Snapshot pending receipts before issuing this batch; recovery never
+			// makes a second writer when native history is missing.
+			const recovery = options.readCommand ? recoverCreations(db, actor, goalId, options.readCommand) : [];
+			const transport = options.readCommand ? recoverDeliveries(db, actor, goalId, options.readCommand) : [];
+			const issued = await pickupBatch(db, batch, actor, createRouteDisabled ? undefined : options.createSession, () => { createRouteDisabled = true; });
+			return { ...issued, recovery: await recovery, transportRecovery: await transport };
+		} finally { release(db); }
 	}
 	/** @param {unknown} input @param {string} actor */
 	function context(input, actor) {
@@ -138,7 +162,8 @@ export function createRuntime(options) {
 		const outgoing = store().outgoingWakes(actor).filter(wake => wake.owner !== actor && wake.generation > Math.max(wake.sent ?? 0, wake.consumed)
 			&& store().wakeCanSend(wake.id)
 			&& store().wakeHasCurrentRecipient(wake.id)
-			&& (goals.some(goal => goal.id === wake.goalId) || store().canRelayCollaboration(wake.id, actor)));
+			&& (goals.some(goal => goal.id === wake.goalId) || store().canRelayCollaboration(wake.id, actor)
+				|| store().canRelayOutput(wake.id, actor, goalId)));
 		const briefCheck = (/** @type {import("./model.d.ts").Check} */ check) => {
 			const { command: _command, oracleFiles: _files, ...definition } = check;
 			return definition;
@@ -148,7 +173,9 @@ export function createRuntime(options) {
 			checks: item.id === task?.id ? item.checks : item.checks.map(briefCheck) });
 		return {
 			databasePath: store().databasePath, actor, goals,
-			capabilities: { protocol: 2, schema: 3, organization: "task-backed-coordinators",
+			retirements: store().retirements(actor, goalId).map(retirementView),
+			backlog: store().backlog(actor, goalId),
+			capabilities: { protocol: 2, schema: 4, organization: "task-backed-coordinators",
 				federation: { supported: false, reason: "Native peer provenance, durable receipts and artifact transport are not qualified" },
 				dirtyWorktreeHandoff: { supported: false, reason: "Only settled unchanged execution can move without a checkpoint protocol" } },
 			factories: store().factoryViews(actor),
@@ -279,7 +306,8 @@ export function createRuntime(options) {
 		retain(db);
 		try {
 			const pending = db.outgoingWakes(actor, worker || attemptId !== undefined).filter(wake =>
-				(goalId === undefined || wake.goalId === goalId || db.canRelayCollaboration(wake.id, actor)) && db.wakeHasCurrentRecipient(wake.id));
+				(goalId === undefined || wake.goalId === goalId || db.canRelayCollaboration(wake.id, actor)
+					|| db.canRelayOutput(wake.id, actor, goalId)) && db.wakeHasCurrentRecipient(wake.id));
 			/** @type {Array<{owner:string,generation:number,state:string,error?:string}>} */
 			const delivery = [];
 			await Promise.all(pending.map(async wake => {
@@ -293,14 +321,20 @@ export function createRuntime(options) {
 				}
 				const request = wakeRequest(wake);
 				try {
-					const effect = db.claimWakeDelivery(wake.id, wake.generation, attemptId, request, actor);
+					const callId = randomUUID();
+					const effect = db.claimWakeDelivery(wake.id, wake.generation, attemptId, { ...request, nativeToolCallId: callId }, actor);
 					if (!effect) return;
-					const result = await options.execute("send_session_message", request);
+					const result = await options.execute("send_session_message", request, callId);
 					const envelope = record(result);
 					if (disabledSessionRoute(result)) messageRouteDisabled = "This session management tool is disabled";
 					const unavailable = unavailableSession(result);
-					const current = db.settleWakeDelivery(wake.id, effect.id, wake.generation, json(result), envelope.resultType === "success", actor, unavailable);
-					if (current.generation > wake.generation && db.wakeCanSend(wake.id)) queueWakes(db, actor, wake.goalId);
+					if (!["success", "failure", "denied", "rejected"].includes(String(envelope.resultType))) {
+						throw new FoundryError("wake_delivery_uncertain", "Unknown send outcome; inspect the original native call before resending");
+					}
+					const current = db.getDelivery(effect.id);
+					if (current.state === "issued" || current.result && record(current.result).consumedBy === wake.owner)
+						db.settleWakeDelivery(wake.id, effect.id, wake.generation, json(result), envelope.resultType === "success", actor, unavailable);
+					if (unavailable || db.wakeCanSend(wake.id) && envelope.resultType === "success") queueWakes(db, actor, wake.goalId);
 					if (envelope.resultType !== "success") {
 						const error = typeof envelope.error === "string" ? envelope.error : "Native wake was not accepted";
 						options.log(error);
@@ -428,6 +462,21 @@ export function createRuntime(options) {
 		}
 		return id;
 	}
+	/** @param {Record<string,unknown>} args @param {string} actor */
+	async function productAction(args, actor) {
+		closedFields(args, ["action","goalId","manifestId"], "delivery");
+		const db = store(), goalId = text(args.goalId,"goal id");
+		const action = choice(args.action, ["status","prepare","qualify","land","reconcile"], "delivery operation");
+		if (action === "prepare") db.prepareDelivery(goalId,actor);
+		if (action === "qualify") db.qualifyDelivery(goalId,text(args.manifestId,"versioned delivery manifest"),actor);
+		if (action === "reconcile") db.reconcileLanding(goalId,text(args.manifestId,"issued delivery manifest"),actor);
+		if (action === "land") {
+			retain(db);
+			try { await landDelivery(db,options.withLandingLease,goalId,text(args.manifestId,"qualified delivery manifest"),actor,() => !closed && database === db); }
+			finally { release(db); }
+		}
+		return { ...db.deliveryStatus(goalId,actor), landingCapability:options.withLandingLease ? "guarded-native-lease" : "unsupported" };
+	}
 	/** @param {string} name @param {unknown} input @param {string} actor */
 	async function operation(name, input, actor) {
 		const args = record(input);
@@ -456,12 +505,33 @@ export function createRuntime(options) {
 					throw new FoundryError("native_mode_mismatch", "Stop-hook continuation requires an interactive coordinator");
 				}
 				if (closed || directory !== origin) throw new FoundryError("factory_context_changed", "Native inspection cannot activate work after its repository context changed or closed");
-				const compiled = factoryJob(source.definition, source.source, "initial");
+				const directed = record(source.definition).direction !== undefined;
+				const compiled = directed ? undefined : factoryJob(source.definition, source.source, "initial");
 				const db = store();
 				const started = db.activateFactory({ ...source.control, source: source.source, definition: source.definition }, actor, compiled);
 				for (const job of db.advance(actor)) if (job.factoryId === started.factory.id) queueWakes(db, actor, job.goalId);
 				return { ...started, settings: factorySettings(started.factory),
+					...(directed ? await pickup(dispatchBatch(db.backlog(actor).squads.filter(squad => squad.factoryId === started.factory.id && squad.dispatch).map(squad => squad.taskId), actor), actor, started.tasks[0]?.goalId) : {}),
 					advancement: db.advance(actor, "goal" in started ? started.goal.id : undefined) };
+			}
+			case "inspect_evidence": return store().inspectEvidence(args, actor);
+			case "observe_work": {
+				const db = store(), result = db.observeWork(args, actor);
+				if (result.squad) queueWakes(db, actor, result.squad.goalId);
+				return result;
+			}
+			case "pull_work": return store().pullWork(args, actor);
+			case "split_work": return store().splitWork(args, actor);
+			case "revise_direction": {
+				const db = store();
+				const factory = db.factory(text(args.factoryId, "factory"), actor);
+				const source = readFactory(directory, text(args.source, "revised policy source"));
+				const { direction, ...definition } = record(source.definition);
+				const { direction: _prior, ...pinned } = record(factory.definition);
+				if (digest(json(definition)) !== digest(json(pinned))) throw new FoundryError("factory_conflict", "Revising direction cannot change charters, evaluators, budgets or other authority");
+				const revision = db.reviseDirection(factory.id, number(args.expectedRevision, "expected direction revision"), direction, source.source.sha256, actor);
+				for (const squad of db.backlog(actor).squads.filter(squad => squad.factoryId === factory.id)) queueWakes(db, actor, squad.goalId);
+				return revision;
 			}
 			case "pause_factory": {
 				const db = store();
@@ -484,6 +554,7 @@ export function createRuntime(options) {
 				} finally { release(db); }
 			}
 			case "reopen_job": return store().reopenCompletion(text(args.goalId, "goal id"), actor);
+			case "delivery": return productAction(args,actor);
 			case "cancel_job": {
 				const db = store();
 				const goalId = text(args.goalId, "goal id");
@@ -497,10 +568,29 @@ export function createRuntime(options) {
 			case "advance": {
 				const goalId = args.goalId === undefined ? undefined : text(args.goalId, "goal id");
 				const observed = await refreshContext(args, actor, true);
-				const advancement = store().advance(actor, goalId);
-				const batch = dispatchBatch(advancement.filter(job => job.disposition === "actionable").flatMap(job => job.actions)
-					.filter(action => action.kind === "dispatch").map(action => action.taskId), actor);
-				return { ...observed, advancement, ...batch };
+				const db = store();
+				const productDeliveries = [];
+				for (const job of db.advance(actor, goalId)) {
+					try {
+						const next = db.nextDelivery(job.goalId,actor);
+						if (!next) continue;
+						const outcome = await productAction({goalId:job.goalId,...next},actor);
+						productDeliveries.push({goalId:job.goalId,...next,outcome});
+					} catch (error) {
+						productDeliveries.push({goalId:job.goalId,blocked:error instanceof FoundryError ? error.code : "delivery_inspection_failed",
+							reason:error instanceof Error ? error.message : String(error)});
+					}
+				}
+				const advancement = db.advance(actor, goalId);
+				const batch = dispatchBatch([...store().backlog(actor, goalId).squads.filter(squad => squad.dispatch && squad.owner === actor).map(squad => squad.taskId),
+					...advancement.filter(job => job.disposition === "actionable").flatMap(job => job.actions)
+					.filter(action => action.kind === "dispatch").map(action => action.taskId)], actor);
+				retain(db);
+				try {
+					const dispatch = await pickup(batch, actor, goalId);
+					const retirements = await advanceRetirements(db, options, actor, goalId, () => !closed && database === db);
+					return { ...observed, advancement, ...dispatch, retirements, productDeliveries };
+				} finally { release(db); }
 			}
 			case "ingest": {
 				const factory = store().factory(text(args.factoryId, "factory id"), actor);
@@ -756,6 +846,7 @@ export function createRuntime(options) {
 				const producer = args.producer === undefined ? undefined : record(args.producer);
 				if (producer) closedFields(producer, ["title", "assignment", "workType", "scope", "checks", "inputs"]);
 				const request = store().respondCollaboration({
+					...(args.producerTaskId === undefined ? {} : { producerTaskId: text(args.producerTaskId, "existing squad producer") }),
 					collaborationId: text(args.collaborationId, "collaboration id"), expectedRevision: number(args.expectedRevision, "request revision"),
 					action: choice(args.action, ["accept", "fulfill", "bind", "decline", "block", "cancel", "release"], "collaboration action"),
 					...(args.reason === undefined ? {} : { reason: text(args.reason, "collaboration reason") }),
@@ -793,12 +884,21 @@ export function createRuntime(options) {
 				goalId: text(args.goalId, "goal id"), workType: text(args.workType, "lesson work type"), summary: text(args.summary, "lesson"),
 				references: strings(args.references ?? [], "lesson references"),
 			}, actor);
-			case "mark_wake_sent": return store().markWakeSent(text(args.wakeId, "wake id"), number(args.generation, "wake generation"), actor);
+			case "mark_wake_sent": return store().markWakeSent(text(args.wakeId, "wake id"), number(args.generation, "wake generation"), actor, true);
 			default: throw new FoundryError("unknown_operation", `Unknown Foundry operation: ${name}`);
 		}
 	}
 	return {
 		operation, context, store, setDirectory, deliverStops,
+		/** @param {string} [goalId] @returns {import("./model.d.ts").Snapshot} */
+		boardSnapshot(goalId) {
+			return { ...store().snapshot(goalId), landingCapability: options.withLandingLease ? "guarded-native-lease" : "unsupported" };
+		},
+		/** @param {string} name @param {unknown} args @param {string} actor */
+		guardSurface(name, args, actor) {
+			if (sharedCoordinator) guardSharedTool(toolName(name), args, token => database?.attemptByToken(token)?.creator === actor);
+			return sharedCoordinator;
+		},
 		/** @param {string} actor @param {boolean} [reentry] */
 		agentStop(actor, reentry = false) {
 			stopHookObserved = true;
@@ -831,11 +931,14 @@ export function createRuntime(options) {
 		attachUsage(actor) {
 			text(actor, "native session");
 			const common = execFileSync("git", ["-C", directory, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" }).trim();
-			if (existsSync(path.join(common, "foundry", "work.sqlite"))) store();
+			if (existsSync(path.join(common, "foundry", "work.sqlite"))) sharedCoordinator ||= store().sharedCoordinator(actor);
 		},
 		/** @param {string} actor @param {string} token */
 		beginUsage(actor, token) {
 			assignmentToken = text(token, "assignment token");
+			const attempt = store().attemptByToken(token);
+			if (attempt && store().effectsForAttempt(attempt.id).some(effect => effect.kind === "create"
+				&& record(effect.request).workspace_type === "branch")) sharedCoordinator = true;
 			store().captureUsageAffinity(affinityId(actor), actor, assignmentToken);
 		},
 		/** @param {unknown} value @param {string} actor */
@@ -862,8 +965,9 @@ export function createRuntime(options) {
 			try { return observeCompletion(db, value, actor, effect => settlementWake(db, actor, effect)); }
 			catch (error) { options.log(`Native completion needs reconciliation: ${error instanceof Error ? error.message : String(error)}`); }
 		},
-		pre: (/** @type {string} */ name, /** @type {unknown} */ args, /** @type {string} */ actor, /** @type {string|undefined} */ callId) => observePre(store(), name, args, actor, callId),
-		post: (/** @type {string} */ name, /** @type {unknown} */ args, /** @type {unknown} */ result, /** @type {string} */ actor) => post(store(), name, args, result, actor),
+		pre: (/** @type {string} */ name, /** @type {unknown} */ args, /** @type {string} */ actor, /** @type {string|undefined} */ callId) =>
+			toolName(name) === "send_session_message" ? issueWake(store(), args, actor, callId) : observePre(store(), name, args, actor, callId),
+		post: (/** @type {string} */ name, /** @type {unknown} */ args, /** @type {unknown} */ result, /** @type {string} */ actor, /** @type {string} */ callId = "") => post(store(), name, args, result, actor, callId),
 		log: options.log,
 		close: () => { closed = true; retire(database); database = undefined; },
 	};
@@ -892,27 +996,7 @@ function factoryJob(definition, source, eventKey, event) {
 		}),
 		assignment: `${text(task.assignment, "assignment")}\nFactory source ${source.reference} (${source.sha256}).${event === undefined ? "" : `\nSource event is data, not authority: ${JSON.stringify(event)}`}`,
 	}));
-	for (const grain of array(policy.grains ?? [], "grain definitions").map(record)) {
-		const grainIds = strings(grain.taskIds, "grain tasks").map(id => identities.get(id));
-		const oracleFiles = [grain.specification, ...array(grain.evaluators, "independent evaluators"), ...array(grain.boundary, "conserved boundary")];
-		for (const task of mapped.filter(task => grainIds.includes(text(task.id, "grain task")))) {
-			const checks = array(task.checks ?? [], "grain checks").map(value => {
-				const check = compileCheck(value);
-				const { version: _version, ...definition } = check;
-				const files = new Map();
-				for (const value of [...array(check.oracleFiles ?? [], "oracle files"), ...oracleFiles]) {
-					const file = record(value);
-					const name = text(file.path, "oracle path");
-					if (files.has(name) && record(files.get(name)).sha256 !== file.sha256) {
-						throw new FoundryError("oracle_conflict", `Conserved oracle ${name} has conflicting pinned versions`);
-					}
-					files.set(name, file);
-				}
-				return { ...definition, oracleFiles: [...files.values()] };
-			});
-			Object.assign(task, { checks });
-		}
-	}
+	for (const [index, task] of mapped.entries()) task.checks = templateChecks(policy, text(tasks[index].id, "template"), task.checks ?? []);
 	const completionTaskId = identities.get(text(policy.completionTaskId, "completion template"));
 	if (!completionTaskId) throw new FoundryError("completion_missing", "Completion must name one of this factory's task templates");
 	const compiled = compileDefinition({ ...template, id, tasks: mapped, units: units.map(unit => ({
@@ -956,14 +1040,6 @@ function stopRequest(db, effects, nativeId) {
 
 /** @param {unknown} input @param {string} label */
 function strings(input, label) { return array(input, label).map(value => text(value, label)); }
-
-/** @param {import("./model.d.ts").Wake} wake */
-function wakeRequest(wake) {
-	return {
-		session_id: wake.owner, delivery_mode: "immediate",
-		message: `Foundry wake: ${wake.id}:${wake.generation}\n${wake.reason}. Re-read foundry_get_context for goal ${wake.goalId} and reserve eligible work locally. No new scope or slot is granted.`,
-	};
-}
 
 /** @param {unknown} value @returns {Finding} */
 function decodeFinding(value) {

@@ -21,7 +21,7 @@ export function record(value) {
 	return /** @type {Record<string, unknown>} */ (value);
 }
 
-/** @param {unknown} value @param {string} label */
+/** @param {unknown} value @param {string} label @returns {string} */
 export function text(value, label) {
 	if (typeof value !== "string" || !value.trim() || value.includes("\0")) {
 		throw new FoundryError("invalid_field", `${label} must be a nonempty string`);
@@ -29,15 +29,15 @@ export function text(value, label) {
 	return value;
 }
 
-/** @param {string} value */
+/** @param {string} value @returns {string} */
 export const nativeSessionName = value => value.trim().replace(/\s+/gu, " ");
 
-/** @param {unknown} value @param {string} label */
+/** @param {unknown} value @param {string} label @returns {string|undefined} */
 export function optionalText(value, label) {
 	return value === undefined ? undefined : text(value, label);
 }
 
-/** @param {unknown} value @param {string} label @param {string} [code] */
+/** @param {unknown} value @param {string} label @param {string} [code] @returns {number} */
 export function number(value, label, code = "invalid_field") {
 	if (typeof value !== "number" || !Number.isFinite(value)) {
 		throw new FoundryError(code, `${label} must be a finite number`);
@@ -45,7 +45,7 @@ export function number(value, label, code = "invalid_field") {
 	return value;
 }
 
-/** @param {unknown} value @param {string} label */
+/** @param {unknown} value @param {string} label @returns {number} */
 export function natural(value, label) {
 	const result = number(value, label);
 	if (!Number.isSafeInteger(result) || result < 0) {
@@ -54,20 +54,20 @@ export function natural(value, label) {
 	return result;
 }
 
-/** @param {unknown} value @param {string} label */
+/** @param {unknown} value @param {string} label @returns {number} */
 export function positive(value, label) {
 	const result = natural(value, label);
 	if (!result) throw new FoundryError("invalid_field", `${label} must be positive`);
 	return result;
 }
 
-/** @param {Record<string, unknown>} input @param {string[]} fields @param {string} [label] */
+/** @param {Record<string, unknown>} input @param {string[]} fields @param {string} [label] @returns {void} */
 export function closedFields(input, fields, label = "source") {
 	const extra = Object.keys(input).filter(key => !fields.includes(key));
 	if (extra.length) throw new FoundryError("unsupported_fields", `Unsupported ${label} fields: ${extra.join(", ")}`);
 }
 
-/** @param {unknown} value @param {string} label */
+/** @param {unknown} value @param {string} label @returns {boolean} */
 export function boolean(value, label) {
 	if (typeof value !== "boolean") throw new FoundryError("invalid_field", `${label} must be boolean`);
 	return value;
@@ -85,7 +85,7 @@ export function choice(value, choices, label) {
 	throw new FoundryError("invalid_field", `${label} must be one of ${choices.join(", ")}`);
 }
 
-/** @param {unknown} value */
+/** @param {unknown} value @returns {string[]} */
 export function strings(value) {
 	return array(value, (item) => text(item, "item"));
 }
@@ -124,12 +124,12 @@ export function encoding(value) {
 	return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${encoding(value[key])}`).join(",")}}`;
 }
 
-/** @param {Json} value */
+/** @param {Json} value @returns {string} */
 export function digest(value) {
 	return createHash("sha256").update(encoding(json(value))).digest("hex");
 }
 
-/** @param {unknown} value */
+/** @param {unknown} value @returns {string} */
 export function resourcePath(value) {
 	const raw = text(value, "path").replaceAll("\\", "/");
 	if (raw === "*") return ".";
@@ -139,7 +139,7 @@ export function resourcePath(value) {
 	return path.posix.normalize(raw).replace(/\/$/, "") || ".";
 }
 
-/** @param {string} parent @param {string} child */
+/** @param {string} parent @param {string} child @returns {boolean} */
 export function containsPath(parent, child) {
 	return parent === "." || parent === child || child.startsWith(`${parent}/`);
 }
@@ -258,7 +258,7 @@ export function decodeInput(value) {
 	};
 }
 
-/** @param {import("./model.d.ts").Evidence[]} evidence in canonical admission order */
+/** @param {import("./model.d.ts").Evidence[]} evidence in canonical admission order @returns {Map<string,import("./model.d.ts").Evidence>} */
 export function latestEvidence(evidence) {
 	return new Map(evidence.map(item => [JSON.stringify([item.checkId, item.checkVersion]), item]));
 }

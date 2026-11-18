@@ -11,7 +11,14 @@ import { wake, wakeTargets } from "./wakes.mjs";
 /** @typedef {import("./model.d.ts").Wake} Wake */
 /** @typedef {import("./records.mjs").TaskInput} TaskInput */
 
-/** @param {import("./database.mjs").Transaction} tx @param {Task} consumer @param {number} previous */
+/** @param {import("./database.mjs").Transaction} tx @param {Task} coordinator @param {Task} producer */
+function ownsItem(tx, coordinator, producer) {
+	const squad = tx.list("squads", "WHERE task_id=?", [coordinator.id])[0];
+	if (!squad || !coordinator.currentAttemptId || tx.get("attempts", coordinator.currentAttemptId).nativeId !== coordinator.owner) return false;
+	return tx.list("backlog_items", "WHERE goal_id=? AND state='pulled'", [producer.goalId]).some(item => item.squad === squad.id);
+}
+
+/** @param {import("./database.mjs").Transaction} tx @param {Task} consumer @param {number} previous @returns {void} */
 export function syncConsumerVersions(tx, consumer, previous) {
 	for (const item of tx.list("collaborations", "WHERE json_extract(document,'$.consumerTaskId')=?", [consumer.id])) {
 		const source = tx.get("tasks", item.sourceTaskId);
@@ -22,7 +29,7 @@ export function syncConsumerVersions(tx, consumer, previous) {
 	}
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Collaboration} item @param {string} actor */
+/** @param {import("./database.mjs").Transaction} tx @param {Collaboration} item @param {string} actor @returns {void} */
 export function bindCollaboration(tx, item, actor) {
 	if (!item.delivery) throw new FoundryError("delivery_unavailable", "Only a published exact-version delivery can satisfy a collaboration");
 	const consumer = tx.get("tasks", item.consumerTaskId);
@@ -38,7 +45,7 @@ export function bindCollaboration(tx, item, actor) {
 	wake(tx, consumer.owner, consumer.goalId, `collaboration:${item.id}`);
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Collaboration} item */
+/** @param {import("./database.mjs").Transaction} tx @param {Collaboration} item @returns {void} */
 export function notifyCollaboration(tx, item) {
 	for (const id of [item.sourceTaskId, item.destinationTaskId]) {
 		const task = tx.get("tasks", id);
@@ -46,10 +53,11 @@ export function notifyCollaboration(tx, item) {
 	}
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Wake} notification @param {string} actor */
+/** @param {import("./database.mjs").Transaction} tx @param {Wake} notification @param {string} actor @returns {string[]} */
 export function collaborationReasons(tx, notification, actor) {
 	const permitted = new Set(tx.list("collaborations").filter(item =>
-		(notification.goalId === item.goalId || notification.goalId === item.destinationGoalId)
+		(notification.goalId === item.goalId || notification.goalId === item.destinationGoalId
+			|| [item.sourceTaskId, item.destinationTaskId].some(id => tx.get("tasks", id).goalId === notification.goalId))
 		&& [item.sourceTaskId, item.destinationTaskId, ...(item.producerTaskId ? [item.producerTaskId] : [])]
 			.some(id => { const task = tx.get("tasks", id); return authorized(tx, task, actor) || assignedExecution(tx, task, actor); }))
 		.flatMap(item => [`collaboration:${item.id}`, ...(item.producerTaskId ? [`output:${item.producerTaskId}`] : [])]));
@@ -57,10 +65,10 @@ export function collaborationReasons(tx, notification, actor) {
 		permitted.has(reason) && wakeTargets(tx, { ...notification, reason }).includes(notification.owner));
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Wake} notification @param {string} actor */
+/** @param {import("./database.mjs").Transaction} tx @param {Wake} notification @param {string} actor @returns {boolean} */
 export function collaborationWake(tx, notification, actor) { return collaborationReasons(tx, notification, actor).length > 0; }
 
-/** @param {import("./database.mjs").Transaction} tx @param {{id?:string,sourceTaskId:string,destinationTaskId:string,consumerTaskId:string,expectedVersion:number,title:string,output:string,required?:boolean}} input @param {string} actor */
+/** @param {import("./database.mjs").Transaction} tx @param {{id?:string,sourceTaskId:string,destinationTaskId:string,consumerTaskId:string,expectedVersion:number,title:string,output:string,required?:boolean}} input @param {string} actor @returns {Collaboration} */
 export function requestCollaboration(tx, input, actor) {
 	const source = tx.get("tasks", input.sourceTaskId);
 	const destination = tx.get("tasks", input.destinationTaskId);
@@ -69,7 +77,7 @@ export function requestCollaboration(tx, input, actor) {
 	requireOwner(tx, consumer, actor);
 	coordinationAdmission(tx, source);
 	coordinationAdmission(tx, destination);
-	if (consumer.role !== "producer" || consumer.goalId !== source.goalId || !below(tx, consumer, source.id)) {
+	if (consumer.role !== "producer" || !(consumer.goalId === source.goalId && below(tx, consumer, source.id) || ownsItem(tx, source, consumer))) {
 		throw new FoundryError("forbidden", "A request can govern only a producer inside its source coordinator's task boundary");
 	}
 	requireAdmission(tx, consumer);
@@ -80,7 +88,7 @@ export function requestCollaboration(tx, input, actor) {
 		return previous;
 	}
 	if (consumer.version !== input.expectedVersion) throw new FoundryError("stale_task", "Request the consumer's current definition");
-	const item = decodeCollaboration({ ...input, id: tx.newId("collaborations", input.id), goalId: source.goalId,
+	const item = decodeCollaboration({ ...input, id: tx.newId("collaborations", input.id), goalId: consumer.goalId,
 		destinationGoalId: destination.goalId, sourceOwner: source.owner, sourceVersion: source.version,
 		destinationVersion: destination.version, consumerVersion: consumer.version,
 		required: input.required ?? true, revision: 1, state: "proposed", proposal, bound: false });
@@ -96,7 +104,7 @@ export function requestCollaboration(tx, input, actor) {
 	return item;
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {{collaborationId:string,expectedRevision:number,action:"accept"|"fulfill"|"bind"|"decline"|"block"|"cancel"|"release",reason?:string,producer?:Omit<TaskInput,"goalId"|"parentId"|"unitId"|"role">}} input @param {string} actor */
+/** @param {import("./database.mjs").Transaction} tx @param {{collaborationId:string,expectedRevision:number,action:"accept"|"fulfill"|"bind"|"decline"|"block"|"cancel"|"release",reason?:string,producerTaskId?:string,producer?:Omit<TaskInput,"goalId"|"parentId"|"unitId"|"role">}} input @param {string} actor @returns {Collaboration} */
 export function respondCollaboration(tx, input, actor) {
 	let item = tx.get("collaborations", input.collaborationId);
 	const source = tx.get("tasks", item.sourceTaskId);
@@ -116,13 +124,23 @@ export function respondCollaboration(tx, input, actor) {
 		coordinationAdmission(tx, destination);
 		const consumer = tx.get("tasks", item.consumerTaskId);
 		requireAdmission(tx, consumer);
-		if (item.state !== "proposed" || !input.producer) throw new FoundryError("invalid_transition", "Only a proposed request can accept a complete producer assignment");
+		if (item.state !== "proposed" || Boolean(input.producer) === Boolean(input.producerTaskId)) throw new FoundryError("invalid_transition", "Accept with exactly one new producer assignment or current declared producing task");
 		if (item.sourceOwner !== source.owner || item.sourceVersion !== source.version
 			|| item.destinationVersion !== destination.version || item.consumerVersion !== consumer.version) {
 			throw new FoundryError("source_update_required", "Changed source/destination authority or consumer definition requires a fresh authorized proposal");
 		}
-		const producer = createTask(tx, { ...input.producer, goalId: destination.goalId, parentId: destination.id,
+		let producer;
+		if (input.producerTaskId) {
+			producer = tx.get("tasks", input.producerTaskId);
+			if (destination.owner !== actor || !ownsItem(tx, destination, producer) || producer.deliverable !== item.output
+				|| tx.get("goal_completions", producer.goalId).taskId === producer.id) {
+				throw new FoundryError("foreign_producer", "Offer this squad's actual scoped output producer, not its final product gate or another owner's work");
+			}
+			requireAdmission(tx, producer);
+			item.destinationGoalId = producer.goalId;
+		} else if (input.producer) producer = createTask(tx, { ...input.producer, goalId: destination.goalId, parentId: destination.id,
 			...(destination.unitId ? { unitId: destination.unitId } : {}) }, actor);
+		else throw new FoundryError("invalid_transition", "Missing collaboration producer");
 		item.producerTaskId = producer.id;
 		item.state = "accepted";
 		tx.put("collaborations", item);
@@ -181,7 +199,7 @@ export function respondCollaboration(tx, input, actor) {
 	return item;
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {string} wakeId @param {string} actor */
+/** @param {import("./database.mjs").Transaction} tx @param {string} wakeId @param {string} actor @returns {boolean} */
 export function canRelayCollaboration(tx, wakeId, actor) {
 	return collaborationWake(tx, tx.get("wakes", wakeId), actor);
 }

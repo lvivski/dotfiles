@@ -13,6 +13,87 @@ export interface Limits {
 	deadline?: string;
 	repairs?: number;
 }
+export interface Direction {
+	revision: number;
+	outcomes: { id: string; title: string; priority: number; success: string }[];
+	nonGoals: string[];
+	constraints: string[];
+}
+export interface DirectionRecord extends Direction {
+	id: string;
+	factoryId: string;
+	direction: Direction;
+	source: string;
+}
+export interface Squad {
+	id: string;
+	factoryId: string;
+	name: string;
+	goalId: string;
+	taskId: string;
+	outcomes: string[];
+	templates: string[];
+	scope: Scope;
+	discoveryLimit: number;
+	questions: number;
+	generation: number;
+	handled: number;
+	reason: string;
+	revision: number;
+}
+export interface BacklogItem {
+	id: string;
+	factoryId: string;
+	squad: string;
+	outcome: string;
+	gapKey: string;
+	kind: "gap" | "question" | "advisory";
+	state: "proposal" | "queued" | "pulled" | "accepted" | "retired";
+	revision: number;
+	currentRevision: number;
+	template: string;
+	title: string;
+	gap: string;
+	improvement: string;
+	stop: string;
+	evidence: Json[];
+	observations: Json[];
+	scope: Scope;
+	dependencies: string[];
+	sources: Record<string, string>;
+	owner: string;
+	createdAt: string;
+	severity: number;
+	cost: number;
+	predecessor?: string;
+	reason?: string;
+	goalId?: string;
+	resultId?: string;
+	capacityReleased: boolean;
+	splits: { id: string; hash: string; plan: Json; taskIds: string[] }[];
+}
+export interface ProductRule {
+	consumer: string;
+	producer: string;
+	output: string;
+}
+export interface BacklogView {
+	directions: DirectionRecord[];
+	squads: (Squad & {
+		owner: string;
+		bound: boolean;
+		activation: number;
+		active: boolean;
+		requiredProducts: (ProductRule & { sources: { itemId: string; title: string; state: BacklogItem["state"]; resultId?: string }[] })[];
+		pinned?: FactoryControl["pin"];
+		knowledgeFiles: Record<string, unknown>[];
+		readyItems: string[];
+		pullable: boolean;
+		needsDiscovery: boolean;
+		dispatch: boolean;
+	})[];
+	items: BacklogItem[];
+}
 export interface Check {
 	id: string;
 	origin: "user" | "contract" | "standing" | "derived";
@@ -40,6 +121,17 @@ export interface Input {
 	output: string;
 	version?: string;
 }
+export interface PinnedInput extends Input {
+	version: string;
+}
+export interface DispatchCall {
+	taskId: string;
+	attemptId: string;
+	token: string;
+	effectId: string;
+	tool: "create_session";
+	arguments: Json;
+}
 export interface Goal {
 	id: string;
 	title: string;
@@ -53,6 +145,7 @@ export interface Goal {
 }
 export interface FactoryControl {
 	id: string;
+	pin?: { schema: number; engine: string; policy: string };
 	owner: string;
 	state: "active" | "paused";
 	generation: number;
@@ -90,6 +183,16 @@ export interface GoalCompletion {
 	requiredInputs: Input[];
 	repairs: number;
 	accepted?: { revision: number; tasks: { id: string; version: number; inputs: Input[] }[] };
+}
+export interface CompletionStatus {
+	goalId: string;
+	factoryId: string;
+	taskId: string;
+	delivered: boolean;
+	settled: boolean;
+	cancelled: boolean;
+	closed: boolean;
+	revision: number;
 }
 export interface UsageAffinity {
 	id: string;
@@ -157,6 +260,8 @@ export interface Collaboration {
 export type TaskState = "ready" | "running" | "waiting" | "blocked" | "failed" | "done" | "cancelled";
 export interface Task {
 	id: string;
+	createdAt?: string;
+	deliverable?: string;
 	goalId: string;
 	parentId?: string;
 	unitId?: string;
@@ -241,6 +346,7 @@ export interface Wake {
 	relatedReasons?: string[];
 	sent?: number;
 	inFlight?: string;
+	retry?: { generation: number; failures: number; after?: string; reason: string };
 	unavailable?: { effectId: string; generation: number; fallback: string; message: string };
 }
 export interface Delivery {
@@ -257,7 +363,7 @@ export interface Delivery {
 export interface Effect {
 	id: string;
 	attemptId: string;
-	kind: "create" | "command" | "stop";
+	kind: "create" | "command" | "stop" | "archive";
 	state: "prepared" | "issued" | "settled" | "uncertain";
 	owner: string;
 	request: Json;
@@ -288,6 +394,11 @@ export interface Lesson {
 	references: string[];
 }
 export interface Snapshot {
+	lanes?: { taskId: string; owner: string; reason: string; next: string }[];
+	deliveries?: Delivery[];
+	products?: import("./landing.mjs").ProductStatus[];
+	landingCapability?: "guarded-native-lease" | "unsupported";
+	backlog?: BacklogView;
 	goals: Goal[];
 	units: Unit[];
 	collaborations: Collaboration[];
@@ -299,5 +410,5 @@ export interface Snapshot {
 	signals: Signal[];
 	lessons: Lesson[];
 	factories?: FactoryControl[];
-	completions?: { goalId: string; factoryId: string; delivered: boolean; settled: boolean; closed: boolean; revision: number }[];
+	completions?: CompletionStatus[];
 }

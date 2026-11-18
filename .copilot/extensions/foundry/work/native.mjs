@@ -5,23 +5,24 @@ import { fileURLToPath } from "node:url";
 import { assignmentPrompt, attemptToken } from "./prompt.mjs";
 import { FoundryError, choice, decodeCandidate, digest, json, nativeSessionName, record, text } from "./values.mjs";
 import { readCandidate, verifyCandidate } from "./artifacts.mjs";
+import { workspaceFor } from "./surfaces.mjs";
 
 /** @typedef {ReturnType<typeof import("./store.mjs").openWorkStore>} Store */
 /** @typedef {import("./model.js").Attempt} Attempt */
 /** @typedef {import("./model.js").Effect} Effect */
 /** @typedef {import("./model.js").Evidence} Evidence */
 
-/** @param {string} value */
+/** @param {string} value @returns {string} */
 export const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
-/** @param {string} value */
+/** @param {string} value @returns {string} */
 export const toolName = value => value.split(".").at(-1) ?? value;
 export const runner = fileURLToPath(new URL("./runner.mjs", import.meta.url));
 
-/** @param {Store} store @param {string} effectId */
+/** @param {Store} store @param {string} effectId @returns {string} */
 export const checkReceiptPath = (store, effectId) => path.join(path.dirname(store.databasePath), "evidence",
 	`check-${createHash("sha256").update(effectId).digest("hex")}.json`);
 
-/** @param {Store} store @param {string} taskId @param {string} actor */
+/** @param {Store} store @param {string} taskId @param {string} actor @returns {import("./model.d.ts").DispatchCall} */
 export function prepareDispatch(store, taskId, actor) {
 	const attempt = store.prepareAttempt(taskId, actor);
 	const prepared = store.effectsForAttempt(attempt.id).find(effect => effect.kind === "create" && effect.state === "prepared");
@@ -42,7 +43,7 @@ export function prepareDispatch(store, taskId, actor) {
 	const arguments_ = json({
 		name: nativeSessionName(`${task.title.slice(0, 30)} ${attempt.token.slice(0, 8)}`),
 		...(goal.projectId === undefined ? {} : { project_id: goal.projectId }),
-		workspace_type: "worktree",
+		workspace_type: workspaceFor(task, baseBranch),
 		...(baseBranch === undefined ? {} : { base_branch: baseBranch }),
 		coordinate_with_creator: true,
 		notify_on_idle: "once",
@@ -81,13 +82,13 @@ export function prepareCommand(store, attemptId, command, actor) {
 	store.recordEffect({ id: effectId, attemptId, kind: "command", state: "prepared", request: { command, shellId: effectId } }, actor);
 	return { effectId, tool: "bash", arguments: { command, shellId: effectId, description: "Execute recorded work" } };
 }
-/** @param {Effect} effect */
+/** @param {Effect} effect @returns {unknown} */
 export function effectShell(effect) {
 	const result = effect.result === undefined ? undefined : record(effect.result);
 	return record(effect.request).shellId ?? result?.shellId;
 }
 
-/** @param {Record<string, unknown>} event */
+/** @param {Record<string, unknown>} event @returns {string|undefined} */
 export function continuedShell(event) {
 	const telemetry = record(event.toolTelemetry ?? {});
 	const properties = record(telemetry.properties ?? {});
@@ -126,7 +127,7 @@ function creationAttempt(store, args) {
 	return token ? store.attemptByToken(token) : undefined;
 }
 
-/** @param {Store} store @param {string} name @param {unknown} args @param {string} actor @param {string|undefined} callId */
+/** @param {Store} store @param {string} name @param {unknown} args @param {string} actor @param {string|undefined} callId @returns {void} */
 export function observePre(store, name, args, actor, callId) {
 	if (["apply_patch", "edit", "create", "write_file", "str_replace_editor"].includes(toolName(name))) {
 		store.assertCommandAdmission(actor);
@@ -187,7 +188,7 @@ export function observePre(store, name, args, actor, callId) {
 	}, actor);
 }
 
-/** @param {Store} store @param {Attempt} attempt @param {unknown} result @param {string} actor */
+/** @param {Store} store @param {Attempt} attempt @param {unknown} result @param {string} actor @returns {Attempt} */
 export function captureCreation(store, attempt, result, actor) {
 	const value = nativeObject(result);
 	const receipt = record(result);
@@ -212,7 +213,7 @@ export function captureCreation(store, attempt, result, actor) {
 	return bound;
 }
 
-/** @param {Store} store @param {unknown} value @param {string} actor */
+/** @param {Store} store @param {unknown} value @param {string} actor @returns {Attempt|undefined} */
 export function reconcileDetail(store, value, actor) {
 	const detail = nativeObject(value);
 	if (!detail || typeof detail.id !== "string" || typeof detail.name !== "string") return;
@@ -301,7 +302,7 @@ export function checkObservation(store, value, verifyArtifacts = true) {
 	};
 }
 
-/** @param {Store} store @param {string} actor @param {(effect:Effect)=>void} [settled] @param {string} [goalId] */
+/** @param {Store} store @param {string} actor @param {(effect:Effect)=>void} [settled] @param {string} [goalId] @returns {void} */
 export function recoverChecks(store, actor, settled, goalId) {
 	for (const effect of store.pendingEffects()) {
 		if (effect.kind !== "command" || !["issued", "uncertain"].includes(effect.state)
@@ -413,7 +414,7 @@ export function admittedEvidence(store, attemptId) {
 	});
 }
 
-/** @param {Store} store @param {unknown} value @param {string} actor @param {(effect:Effect)=>void} [settled] @param {{effectId:string, receipt:import("./model.js").Json, shellId?:string}} [recovery] */
+/** @param {Store} store @param {unknown} value @param {string} actor @param {(effect:Effect)=>void} [settled] @param {{effectId:string, receipt:import("./model.js").Json, shellId?:string}} [recovery] @returns {Effect|undefined} */
 export function observeCompletion(store, value, actor, settled, recovery) {
 	const event = record(value);
 	if (typeof event.toolCallId !== "string") return;
@@ -463,7 +464,7 @@ export function observeCompletion(store, value, actor, settled, recovery) {
 	return observation;
 }
 
-/** @param {Store} store @param {unknown} value @param {string} actor @param {(effect:Effect)=>void} [settled] */
+/** @param {Store} store @param {unknown} value @param {string} actor @param {(effect:Effect)=>void} [settled] @returns {Effect|undefined} */
 export function observeRefusal(store, value, actor, settled) {
 	const receipt = record(value);
 	if (!["denied", "rejected"].includes(String(receipt.status)) || receipt.exitCode !== undefined

@@ -1,0 +1,11 @@
+{
+	"name": "copilot-extension-editor-types",
+	"private": true,
+	"scripts": {
+		"check": "tsc -p ../extensions/foundry/jsconfig.json"
+	},
+	"devDependencies": {
+		"@types/node": "26.1.1",
+		"typescript": "6.0.3"
+	}
+}

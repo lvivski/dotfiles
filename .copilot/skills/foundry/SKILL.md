@@ -14,6 +14,30 @@ and reset obsolete canonical state before upgrading. Missing factory assignment 
 message effects and flat check receipts are not migrated or replayed. Current checks require their
 exclusive finished runner receipts; current prepared native requests retain their identities.
 
+## Running a squad from direction
+
+With an active direction policy, each bound squad owns discovery and ordering within its charter.
+Do not ask the director for seed tickets. Read `foundry_get_context` for the current direction,
+activation, squad revision and ready items. Compare an assigned outcome with its actual product
+behavior or consumer need. Use `foundry_inspect_evidence` for a charter source or scoped
+committed file, then `foundry_observe_work` to record the gap, the improvement and how to tell
+when it is done. A bounded question is useful when evidence is missing; advisory suggestions
+are not requirements. With no justified gap, record an evidenced `no-gap` for the observed
+generation and wait for change.
+
+Use `foundry_pull_work` on the highest-ranked ready item. It admits a bounded job, not a new
+direction. Before staffing, use `foundry_split_work` if producers can deliver independently
+checkable outputs; preserve the governing checks on the combined result. Communicate with the
+actual consumer, not through the director. When an increment is accepted, reassess the outcome
+and pull the next eligible item rather than reopening the old one. On an explicit operator
+change, use `foundry_revise_direction`; stale work cannot grant new authority. Respect real
+holds, limits and host availability without treating one lane's wait as a factory-wide stop.
+
+On a desktop host that offers only `archive_session(id)`, leave workspaces for operator-reviewed
+archival. Report the retention reason rather than deleting the checkout. Likewise, a qualified
+join is not a landing receipt: if Foundry cannot update the authorized target safely, keep the
+candidate and identify the remaining landing step.
+
 ## Deliver usable increments
 
 For requested software delivery, choose the smallest coherent runnable increment and assign its
@@ -50,7 +74,7 @@ and actual native-owner continuation mode. Native permissions remain authoritati
 still requires the user's authorization. Installation, tokens, timer wakes, and hook-generated user
 messages do not authorize activation or restart.
 Quiesce old participants before enabling this protocol.
-This revision requires canonical schema 3 and does not migrate old stores. Finish or explicitly
+This revision requires its current canonical schema and does not migrate old stores. Finish or explicitly
 dispose of every unfinished old job and stop all old workers/commands/usage writers before an
 authorized upgrade; pausing a factory alone is insufficient. Preserve database and evidence/artifact/
 request/receipt/worktree history together. Never reset or sync/reload a live old-protocol factory
@@ -66,7 +90,8 @@ user-input requests and resume the same work after the answer.
 
 Omit tuning unless a meaningful override is needed; do not ask users to estimate internal counters.
 `maximumJobs` defaults to 1 whole delivery job, which can run many independent leads and subtasks
-in parallel. Higher values require actual multi-job source intake, not more subtasks. Do not copy
+in parallel. Higher values require multi-job intake from trusted issues or direction-driven squads,
+not more subtasks. Do not copy
 that bound into worker limits or invent worker, credit, deadline, or repair caps. Preserve actual
 user/runtime constraints and schedule ready independent work within them; investigate concrete
 dependencies and contention as work proceeds, not through a mandatory tuning preflight.
@@ -76,8 +101,9 @@ their origins. Present these without stopping for another approval. `policy` rec
 value, not user provenance; do not call it user-chosen or runtime-observed without actual evidence.
 Reload uses the persisted resolution; source edits do not silently change active settings.
 
-Use `foundry_advance` for current locally owned actions. Execute every returned prepared call,
-even alongside per-task capacity blockers; do not send resume or reserved repair to creation.
+Use `foundry_advance` for current locally owned actions. Keep its native `started` receipts;
+execute only the remaining `prepared` calls, even alongside per-task capacity blockers. Do not
+replay an uncertain create or send resume or reserved repair to creation.
 Request the actual task's context before implementation. Hooks only classify; native side effects
 run in ordinary turns. Input, abort, permission refusal and stalled continuation pause truthfully.
 User-requested restart resumes safely parked coordination without inventing checked failures or

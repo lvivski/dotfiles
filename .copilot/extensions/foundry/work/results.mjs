@@ -1,20 +1,22 @@
 import { bindCandidateOutputs, normalizeCandidateOutputs, readCandidate } from "./artifacts.mjs";
-import { releaseSlot, retryTask, runnable, startLocalTask } from "./attempts.mjs";
+import { releaseSlot, retryTask, startLocalTask } from "./attempts.mjs";
 import { releaseOwnedClaims } from "./claims.mjs";
 import { effectsForAttempt, outstanding, retirePrepared } from "./effects.mjs";
 import { productionClosure } from "./jobs.mjs";
+import { verifyConservation } from "./lineage.mjs";
+import { accepted } from "./backlog.mjs";
 import { ancestors, authorized, budgetAvailable, requireOwner, requireReporter } from "./policy.mjs";
 import { decodeResult } from "./records.mjs";
 import { inputOutput, resolvedInputs, revise } from "./tasks.mjs";
 import { FoundryError, containsPath, decodeEvidence, digest, json, latestEvidence, record, text } from "./values.mjs";
-import { notifyOutcome, wake, wakeCapacity } from "./wakes.mjs";
+import { notifyOutcome, receivesOutput, wake, wakeCapacity } from "./wakes.mjs";
 
 /** @typedef {import("./model.d.ts").Task} Task */
 /** @typedef {import("./model.d.ts").Attempt} Attempt */
 /** @typedef {import("./model.d.ts").Effect} Effect */
 /** @typedef {import("./model.d.ts").Result} Result */
 
-/** @param {import("./database.mjs").Transaction} tx @param {Task} task @param {Attempt} attempt @param {Result} result */
+/** @param {import("./database.mjs").Transaction} tx @param {Task} task @param {Attempt} attempt @param {Result} result @returns {boolean} */
 export function canPromote(tx, task, attempt, result) {
 	if (task.currentAttemptId !== attempt.id || task.version !== attempt.taskVersion
 		|| task.state === "cancelled" || ancestors(tx, task).some((parent) => parent.state === "cancelled")
@@ -64,45 +66,56 @@ export function canPromote(tx, task, attempt, result) {
 		completion.accepted = { revision: completion.revision, tasks: closure.map(producer => ({
 			id: producer.id, version: producer.version, inputs: resolvedInputs(tx, producer) ?? [],
 		})) };
-		completion.closed = true;
+		completion.closed = record(tx.get("factory_controls", completion.factoryId).definition).delivery === undefined;
 		tx.put("goal_completions", completion);
-		const liveConsumer = tx.db.prepare(`SELECT 1 FROM dependencies d JOIN tasks t ON t.id=d.task_id
-			WHERE d.producer_id=? AND t.id<>? AND t.state NOT IN ('done','cancelled') LIMIT 1`);
-		for (const optional of tx.list("tasks", "WHERE goal_id=? AND state IN ('running','waiting')", [task.goalId])) {
-			if (optional.role !== "producer" || optional.id === task.id || !optional.currentAttemptId) continue;
-			const reservation = tx.get("attempts", optional.currentAttemptId);
-			// Never infer settlement for a different native session.
-			if (reservation.waiting?.kind === "input" || reservation.nativeId && reservation.nativeId !== result.sender
-				|| liveConsumer.get(optional.id, task.id)
-				|| collaborations.some(item => item.producerTaskId === optional.id && ["accepted", "blocked"].includes(item.state))
-				|| tx.list("claims", "WHERE attempt_id=?", [reservation.id]).length
-				|| effectsForAttempt(tx, reservation.id).some(effect => effect.state !== "prepared")) continue;
-			revise(tx, optional, result.sender, false);
-		}
-		for (const coordinator of tx.list("tasks", "WHERE goal_id=? AND json_extract(document,'$.role')='coordinator' AND state NOT IN ('cancelled','failed')", [task.goalId])) {
-			coordinator.state = "done";
-			if (coordinator.currentAttemptId) {
-				const lease = tx.get("attempts", coordinator.currentAttemptId);
-				retirePrepared(tx, lease, "job accepted");
-				lease.state = "done";
-				lease.endedBy = result.sender;
-				tx.put("attempts", lease);
-				releaseSlot(tx, lease);
-			}
-			tx.put("tasks", coordinator);
+		if (completion.closed) {
+			finishClosure(tx, task, result);
+			accepted(tx, task.goalId, result.id);
 		}
 	}
 	return true;
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Result} result @param {boolean} [quiet] */
+/** @param {import("./database.mjs").Transaction} tx @param {Task} task @param {Result} result @returns {void} */
+export function finishClosure(tx, task, result) {
+	const collaborations = tx.list("collaborations");
+	const liveConsumer = tx.db.prepare(`SELECT 1 FROM dependencies d JOIN tasks t ON t.id=d.task_id
+		WHERE d.producer_id=? AND t.id<>? AND t.state NOT IN ('done','cancelled') LIMIT 1`);
+	for (const optional of tx.list("tasks", "WHERE goal_id=? AND state IN ('running','waiting')", [task.goalId])) {
+		if (optional.role !== "producer" || optional.id === task.id || !optional.currentAttemptId) continue;
+		const reservation = tx.get("attempts", optional.currentAttemptId);
+		// Never infer settlement for a different native session.
+		if (reservation.waiting?.kind === "input" || reservation.nativeId && reservation.nativeId !== result.sender
+			|| liveConsumer.get(optional.id, task.id)
+			|| collaborations.some(item => item.producerTaskId === optional.id && ["accepted", "blocked"].includes(item.state))
+			|| tx.list("claims", "WHERE attempt_id=?", [reservation.id]).length
+			|| effectsForAttempt(tx, reservation.id).some(effect => effect.state !== "prepared")) continue;
+		revise(tx, optional, result.sender, false);
+	}
+	for (const coordinator of tx.list("tasks", "WHERE goal_id=? AND json_extract(document,'$.role')='coordinator' AND state NOT IN ('cancelled','failed')", [task.goalId])) {
+		coordinator.state = "done";
+		if (coordinator.currentAttemptId) {
+			const lease = tx.get("attempts", coordinator.currentAttemptId);
+			retirePrepared(tx, lease, "job accepted");
+			lease.state = "done";
+			lease.endedBy = result.sender;
+			tx.put("attempts", lease);
+			releaseSlot(tx, lease);
+		}
+		tx.put("tasks", coordinator);
+	}
+}
+
+/** @param {import("./database.mjs").Transaction} tx @param {Result} result @param {boolean} [quiet] @returns {boolean} */
 export function promote(tx, result, quiet = false) {
 	const attempt = tx.get("attempts", result.attemptId);
 	const task = tx.get("tasks", attempt.taskId);
 	if (task.role === "coordinator") throw new FoundryError("coordination_result", "Publish bounded producer/integration work, not the coordinator's continuing role; yield with an event disposition");
 	if (!canPromote(tx, task, attempt, result)) return false;
 	if (result.state === "done") {
+		if (task.deliverable && !result.outputs.some(output => output.name === task.deliverable)) throw new FoundryError("missing_output", `Publish the declared output: ${task.deliverable}`);
 		result.outputs = bindCandidateOutputs(attempt.checks, admittedEvidence(tx, attempt.id), result.outputs, tx.databasePath);
+		verifyConservation(tx, task, result);
 		for (const output of result.outputs) {
 			const published = inputOutput(tx, { taskId: task.id, output: output.name, version: output.version });
 			if (published && digest(json(published)) !== digest(json(output))) {
@@ -123,7 +136,7 @@ export function promote(tx, result, quiet = false) {
 		const consumers = tx.db.prepare("SELECT DISTINCT task_id FROM dependencies WHERE producer_id=?").all(task.id);
 		for (const row of consumers) {
 			const consumer = tx.get("tasks", text(row.task_id, "consumer"));
-			if (runnable(tx, consumer)) wake(tx, consumer.owner, consumer.goalId, `output:${task.id}`);
+			if (receivesOutput(tx, task, consumer)) wake(tx, consumer.owner, consumer.goalId, `output:${task.id}`);
 		}
 	}
 	return true;
@@ -140,12 +153,12 @@ export function admittedEvidence(tx, attemptId, effectId) {
 	});
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {import("./model.d.ts").Check[]} checks */
+/** @param {import("./database.mjs").Transaction} tx @param {import("./model.d.ts").Check[]} checks @returns {string} */
 export function checksDigest(tx, checks) {
 	return digest(json(checks.map(({ requirement: _prose, ...check }) => check).sort((a, b) => a.id.localeCompare(b.id))));
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {import("./model.d.ts").Check[]} checks @param {import("./model.d.ts").Scope} scope */
+/** @param {import("./database.mjs").Transaction} tx @param {import("./model.d.ts").Check[]} checks @param {import("./model.d.ts").Scope} scope @returns {void} */
 export function checkArtifactScope(tx, checks, scope) {
 	for (const name of checks.flatMap(check => check.artifactFiles ?? [])) {
 		if (name === "." || name.split("/")[0] === ".git" || !scope.paths.some(base => containsPath(base, name))) {
@@ -154,7 +167,7 @@ export function checkArtifactScope(tx, checks, scope) {
 	}
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Effect} effect */
+/** @param {import("./database.mjs").Transaction} tx @param {Effect} effect @returns {void} */
 export function admitEffectEvidence(tx, effect) {
 	if (effect.kind !== "command" || effect.state !== "settled" || effect.result === null
 		|| typeof effect.result !== "object" || Array.isArray(effect.result) || effect.result.evidence === undefined) return;

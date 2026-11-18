@@ -6,7 +6,7 @@ import { FoundryError, digest, natural, number, record, text } from "./values.mj
 
 /** @typedef {import("./model.d.ts").Goal} Goal */
 
-/** @param {import("./database.mjs").Transaction} tx @param {string[]} identities */
+/** @param {import("./database.mjs").Transaction} tx @param {string[]} identities @returns {import("./model.d.ts").NativeUsage|undefined} */
 export function usageReceipts(tx, identities) {
 	const matches = tx.list("native_usage", `WHERE id IN (SELECT receipt_id FROM usage_aliases
 		WHERE alias IN (SELECT value FROM json_each(?)))`, [JSON.stringify(identities)]);
@@ -14,7 +14,7 @@ export function usageReceipts(tx, identities) {
 	return matches[0];
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {import("./model.d.ts").NativeUsage} observation */
+/** @param {import("./database.mjs").Transaction} tx @param {import("./model.d.ts").NativeUsage} observation @returns {import("./model.d.ts").NativeUsage} */
 export function settleUsage(tx, observation) {
 	let attempts = observation.attemptIds.map(id => tx.get("attempts", id));
 	if (!attempts.length && observation.token) {
@@ -49,12 +49,12 @@ export function settleUsage(tx, observation) {
 	return observation;
 }
 
-/** @param {string} actor @param {unknown} [agentId] */
+/** @param {string} actor @param {unknown} [agentId] @returns {string} */
 export function affinityId(actor, agentId) {
 	return `affinity:${digest([text(actor, "native session"), agentId === undefined ? null : text(agentId, "agent id")])}`;
 }
 
-/** @param {unknown} value @param {string} actor @param {import("./model.d.ts").UsageAffinity|undefined} affinity */
+/** @param {unknown} value @param {string} actor @param {import("./model.d.ts").UsageAffinity|undefined} affinity @returns {import("./model.d.ts").NativeUsage} */
 export function nativeUsage(value, actor, affinity) {
 	const event = record(value);
 	if (event.type !== "assistant.usage") throw new FoundryError("invalid_field", "Expected an actual native assistant.usage event");
@@ -83,7 +83,7 @@ export function usageAffinity(tx, id, observed) {
 	[text(id, "affinity group"), new Date(observed).toISOString()])[0];
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {string} id @param {string} actor @param {string} [token] @param {{id: string,timestamp: string}} [request] */
+/** @param {import("./database.mjs").Transaction} tx @param {string} id @param {string} actor @param {string} [token] @param {{id: string,timestamp: string}} [request] @returns {import("./model.d.ts").UsageAffinity} */
 export function captureUsageAffinity(tx, id, actor, token, request) {
 	const attempts = tx.list("attempts", "WHERE native_id=? AND state IN ('prepared','issued','running','waiting','uncertain')", [text(actor, "native session")])
 		.filter(attempt => {
@@ -114,7 +114,7 @@ export function captureUsageAffinity(tx, id, actor, token, request) {
 	return affinity;
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {import("./model.d.ts").NativeUsage} input @param {string} actor @param {boolean} [idle] */
+/** @param {import("./database.mjs").Transaction} tx @param {import("./model.d.ts").NativeUsage} input @param {string} actor @param {boolean} [idle] @returns {import("./model.d.ts").NativeUsage|undefined} */
 export function recordNativeUsage(tx, input, actor, idle = false) {
 	const incoming = decodeNativeUsage(input);
 	if (incoming.nativeId !== actor) throw new FoundryError("foreign_usage", "Only the actual native session can observe its usage");

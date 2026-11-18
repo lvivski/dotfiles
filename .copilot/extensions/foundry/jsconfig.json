@@ -7,15 +7,19 @@
     "moduleResolution": "nodenext",
     "moduleDetection": "legacy",
     "noEmit": true,
+    "paths": {
+      "@github/copilot-sdk": ["/Applications/GitHub Copilot.app/Contents/Resources/copilot-sdk/index.d.ts"],
+      "@github/copilot-sdk/extension": ["/Applications/GitHub Copilot.app/Contents/Resources/copilot-sdk/extension.d.ts"]
+    },
     "resolveJsonModule": true,
     "skipLibCheck": false,
     "strict": true,
     "target": "es2023",
+    "typeRoots": ["../../editor/node_modules/@types"],
     "types": ["node"]
   },
   "typeAcquisition": {
-    "enable": true,
-    "include": ["node"]
+    "enable": false
   },
   "include": [
     "**/*.mjs",

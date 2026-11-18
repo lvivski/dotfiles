@@ -20,25 +20,27 @@ export function ancestors(tx, task) {
 	return result;
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Task} task @param {string} actor */
+/** @param {import("./database.mjs").Transaction} tx @param {Task} task @param {string} actor @returns {boolean} */
 export function authorized(tx, task, actor) {
 	text(actor, "actor");
 	if (task.owner === actor || tx.get("goals", task.goalId).owner === actor) return true;
+	const completion = tx.optional("goal_completions", task.goalId);
+	if (completion && tx.get("factory_controls", completion.factoryId).owner === actor) return true;
 	return tx.db.prepare(`${MANAGED_TASKS} SELECT id FROM managed WHERE id=?`).get(actor, actor, task.id) !== undefined;
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Task} task @param {string} actor */
+/** @param {import("./database.mjs").Transaction} tx @param {Task} task @param {string} actor @returns {void} */
 export function requireOwner(tx, task, actor) {
 	if (!authorized(tx, task, actor)) throw new FoundryError("forbidden", "Only the task owner or its accountable ancestors may manage this task");
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Task} task @param {string} actor */
+/** @param {import("./database.mjs").Transaction} tx @param {Task} task @param {string} actor @returns {boolean} */
 export function assignedExecution(tx, task, actor) {
 	const attempt = task.currentAttemptId ? tx.get("attempts", task.currentAttemptId) : undefined;
 	return task.repairReservation?.worker === actor || attempt?.nativeId === actor && attempt.taskVersion === task.version;
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {string} taskId @param {string} actor @param {boolean} [execution] */
+/** @param {import("./database.mjs").Transaction} tx @param {string} taskId @param {string} actor @param {boolean} [execution] @returns {Task} */
 export function taskForCaller(tx, taskId, actor, execution = false) {
 	const task = tx.get("tasks", taskId);
 	if (!authorized(tx, task, actor) && !(execution && assignedExecution(tx, task, actor))) {
@@ -47,31 +49,33 @@ export function taskForCaller(tx, taskId, actor, execution = false) {
 	return task;
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Goal} goal @param {string} actor */
+/** @param {import("./database.mjs").Transaction} tx @param {Goal} goal @param {string} actor @returns {void} */
 export function requireGoalOwner(tx, goal, actor) {
 	if (goal.owner !== text(actor, "actor")) throw new FoundryError("forbidden", "Only the goal owner may manage this goal");
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Task} task @param {string} boundary */
+/** @param {import("./database.mjs").Transaction} tx @param {Task} task @param {string} boundary @returns {boolean} */
 export function below(tx, task, boundary) {
 	return task.id === boundary || ancestors(tx, task).some(parent => parent.id === boundary);
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Goal} goal @param {string} actor */
+/** @param {import("./database.mjs").Transaction} tx @param {Goal} goal @param {string} actor @returns {boolean} */
 export function goalMember(tx, goal, actor) {
 	text(actor, "actor");
-	return goal.owner === actor || tx.db.prepare(`SELECT id FROM tasks WHERE goal_id=? AND owner=?
+	const completion = tx.optional("goal_completions", goal.id);
+	return goal.owner === actor || completion !== undefined && tx.get("factory_controls", completion.factoryId).owner === actor
+		|| tx.db.prepare(`SELECT id FROM tasks WHERE goal_id=? AND owner=?
 		UNION SELECT id FROM units WHERE goal_id=? AND owner=?
 		UNION SELECT t.id FROM attempts a JOIN tasks t ON t.id=a.task_id WHERE t.goal_id=? AND a.native_id=? LIMIT 1`)
 		.get(goal.id, actor, goal.id, actor, goal.id, actor) !== undefined;
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Attempt} attempt @param {string} actor */
+/** @param {import("./database.mjs").Transaction} tx @param {Attempt} attempt @param {string} actor @returns {void} */
 export function requireReporter(tx, attempt, actor) {
 	if (attempt.nativeId !== actor && attempt.creator !== actor) requireOwner(tx, tx.get("tasks", attempt.taskId), actor);
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Task} task */
+/** @param {import("./database.mjs").Transaction} tx @param {Task} task @returns {void} */
 export function uncancelled(tx, task) {
 	if (task.state === "cancelled" || ancestors(tx, task).some((parent) => parent.state === "cancelled")) {
 		throw new FoundryError("cancelled", "This task's subtree is cancelled");
@@ -88,15 +92,21 @@ export function current(tx, attempt) {
 	return task;
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Task} task @param {number} [generation] @param {boolean} [allowClosed] */
+/** @param {import("./database.mjs").Transaction} tx @param {Task} task @param {number} [generation] @param {boolean} [allowClosed] @returns {import("./model.d.ts").FactoryControl|undefined} */
 export function requireAdmission(tx, task, generation, allowClosed = false) {
 	const completion = tx.optional("goal_completions", task.goalId);
-	if (!completion) return undefined;
-	const factory = tx.get("factory_controls", completion.factoryId);
-	if (tx.get("tasks", completion.taskId).state === "cancelled") {
+	const subscription = completion ? undefined : tx.list("squads", "WHERE goal_id=?", [task.goalId])[0];
+	if (!completion && !subscription) return undefined;
+	const factory = tx.get("factory_controls", text(completion?.factoryId ?? subscription?.factoryId, "factory"));
+	if (subscription && task.role === "coordinator") {
+		const squad = tx.list("squads", "WHERE task_id=?", [task.id])[0];
+		const direction = tx.list("directions", "WHERE json_extract(document,'$.factoryId')=?", [factory.id]).at(-1);
+		if (!direction?.outcomes.some(outcome => squad?.outcomes.includes(outcome.id))) throw new FoundryError("dormant_subscription", "No current outcome matches this charter");
+	}
+	if (completion && tx.get("tasks", completion.taskId).state === "cancelled") {
 		throw new FoundryError("job_cancelled", "This bounded job is cancelled; settle its existing work without admitting new execution");
 	}
-	if (completion.closed && !allowClosed) throw new FoundryError("job_closed", "Accepted bounded jobs admit no new execution; reopen explicitly before starting or resuming work");
+	if (completion?.closed && !allowClosed) throw new FoundryError("job_closed", "Accepted bounded jobs admit no new execution; reopen explicitly before starting or resuming work");
 	const nativeId = task.currentAttemptId ? tx.get("attempts", task.currentAttemptId).nativeId : undefined;
 	if (factory.state !== "active" || factory.pausedWorkers.includes(task.owner)
 		|| nativeId !== undefined && factory.pausedWorkers.includes(nativeId)) {
@@ -109,7 +119,7 @@ export function requireAdmission(tx, task, generation, allowClosed = false) {
 	return factory;
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Goal} goal */
+/** @param {import("./database.mjs").Transaction} tx @param {Goal} goal @returns {boolean} */
 export function budgetAvailable(tx, goal) {
 	return (goal.limits.credits === undefined || goal.credits < goal.limits.credits)
 		&& (goal.limits.deadline === undefined || Date.parse(tx.timestamp()) < Date.parse(goal.limits.deadline));
@@ -120,12 +130,12 @@ export const MANAGED_TASKS = `WITH RECURSIVE managed(id,goal_id) AS (
 	UNION SELECT t.id,t.goal_id FROM tasks t JOIN managed p ON t.parent_id=p.id AND t.goal_id=p.goal_id
 )`;
 
-/** @param {import("./database.mjs").Transaction} tx @param {string} taskId @param {string} actor */
+/** @param {import("./database.mjs").Transaction} tx @param {string} taskId @param {string} actor @returns {boolean} */
 export function ownsTask(tx, taskId, actor) {
 	return authorized(tx, tx.get("tasks", taskId), actor);
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {string} goalId @param {string} actor */
+/** @param {import("./database.mjs").Transaction} tx @param {string} goalId @param {string} actor @returns {boolean} */
 export function isNativeMember(tx, goalId, actor) {
 	return goalMember(tx, tx.get("goals", goalId), actor);
 }

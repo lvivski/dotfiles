@@ -1,4 +1,6 @@
 import { preparedDispatch, releaseSlot } from "./attempts.mjs";
+import { recycleCapacity } from "./backlog.mjs";
+import { archivedCreator, enqueueCancelledRetirements } from "./retirement.mjs";
 import { syncConsumerVersions } from "./collaboration.mjs";
 import { outstanding, retirePrepared, scheduleStop } from "./effects.mjs";
 import { compileFactoryContext } from "./factory.mjs";
@@ -28,7 +30,7 @@ export function inputOutput(tx, input) {
 	return published.flatMap(result => result.outputs).find(output => output.name === input.output && output.version === input.version);
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Task} task @returns {import("./model.d.ts").Input[] | undefined} */
+/** @param {import("./database.mjs").Transaction} tx @param {Task} task @returns {import("./model.d.ts").PinnedInput[] | undefined} */
 export function resolvedInputs(tx, task) {
 	if (tx.list("collaborations", "WHERE json_extract(document,'$.consumerTaskId')=?", [task.id])
 		.some(item => item.required && (item.state !== "fulfilled" || !item.bound))) return undefined;
@@ -41,7 +43,7 @@ export function resolvedInputs(tx, task) {
 	return resolved;
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Task} task @param {string} newOwner @param {string} actor */
+/** @param {import("./database.mjs").Transaction} tx @param {Task} task @param {string} newOwner @param {string} actor @returns {Task} */
 export function transfer(tx, task, newOwner, actor) {
 	if (tx.get("goals", task.goalId).owner !== text(actor, "actor")
 		&& !ancestors(tx, task).some(parent => parent.owner === actor)) {
@@ -62,7 +64,7 @@ export function transfer(tx, task, newOwner, actor) {
 	return task;
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Task} root @param {string} actor */
+/** @param {import("./database.mjs").Transaction} tx @param {Task} root @param {string} actor @returns {string[]} */
 export function reviseDependents(tx, root, actor) {
 	const affected = [root];
 	const seen = new Set([root.id]);
@@ -77,7 +79,7 @@ export function reviseDependents(tx, root, actor) {
 	return affected.map(task => task.id);
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Task} task @param {import("./model.d.ts").Input[]} inputs @param {string} actor */
+/** @param {import("./database.mjs").Transaction} tx @param {Task} task @param {import("./model.d.ts").Input[]} inputs @param {string} actor @returns {void} */
 export function replaceInputs(tx, task, inputs, actor) {
 	requireAdmission(tx, task);
 	const completion = tx.optional("goal_completions", task.goalId);
@@ -107,15 +109,24 @@ export function createGoal(tx, input, actor) {
 		|| tx.list("attempts", "WHERE native_id=?", [actor]).some((attempt) => tx.get("goals", tx.get("tasks", attempt.taskId).goalId).owner !== actor)) {
 		throw new FoundryError("forbidden", "Delegated workers cannot create root goals");
 	}
+	return insertGoal(tx, input, actor);
+}
+
+/** Call only after ordinary root authorization or charter-bound item admission.
+ * @param {import("./database.mjs").Transaction} tx @param {GoalInput} input @param {string} actor @returns {Goal} */
+export function insertGoal(tx, input, actor) {
 	const goal = decodeGoal({ ...record(input), id: tx.newId("goals", input.id), owner: actor,
 		limits: input.limits ?? {}, credits: 0, createdAt: tx.timestamp() });
 	tx.put("goals", goal);
 	return goal;
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {TaskInput} input @param {string} actor @returns {Task} */
-export function createTask(tx, input, actor) {
+/** @param {import("./database.mjs").Transaction} tx @param {TaskInput} input @param {string} actor @param {boolean} [planned] @returns {Task} */
+export function createTask(tx, input, actor, planned = false) {
 	const goal = tx.get("goals", input.goalId);
+	if (!planned && (tx.list("backlog_items", "WHERE goal_id=?", [goal.id]).length || tx.list("squads", "WHERE goal_id=?", [goal.id]).length)) {
+		throw new FoundryError("item_required", "Charter subscriptions admit only bounded items; split pulled items through their protected local graph");
+	}
 	const completion = tx.optional("goal_completions", goal.id);
 	if (completion) {
 		requireAdmission(tx, tx.get("tasks", completion.taskId));
@@ -132,7 +143,7 @@ export function createTask(tx, input, actor) {
 	if (input.unitId !== undefined && tx.get("units", input.unitId).goalId !== goal.id) {
 		throw new FoundryError("invalid_team", "Unit must belong to the task's goal");
 	}
-	const task = decodeTask({ ...record(input), id: tx.newId("tasks", input.id), owner: actor,
+	const task = decodeTask({ ...record(input), id: tx.newId("tasks", input.id), owner: actor, createdAt: tx.timestamp(),
 		scope: narrowScope(parent?.scope ?? goal.scope, input.scope), checks: input.checks ?? [],
 		inputs: input.inputs ?? [], outputs: [], state: "ready", version: 1, currentAttemptId: undefined, waiting: undefined,
 		...(input.role === "coordinator" ? { coordination: { generation: 1, handled: 0, causes: ["admission"] } } : {}) });
@@ -185,8 +196,9 @@ export function createTask(tx, input, actor) {
 	return task;
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Task} task @param {string} actor @param {boolean} [notify] */
+/** @param {import("./database.mjs").Transaction} tx @param {Task} task @param {string} actor @param {boolean} [notify] @returns {void} */
 export function revise(tx, task, actor, notify = true) {
+	task.owner = archivedCreator(tx, task.owner) ?? task.owner;
 	if (task.currentAttemptId) {
 		const attempt = tx.get("attempts", task.currentAttemptId);
 		if (task.waiting?.kind === "input") attempt.waiting = task.waiting;
@@ -208,14 +220,14 @@ export function revise(tx, task, actor, notify = true) {
 	if (notify) wake(tx, task.owner, task.goalId, `revision:${task.id}`);
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {GoalInput} input @param {Array<Omit<TaskInput, "goalId">>} tasks @param {string} actor @param {Array<Omit<UnitInput,"goalId">>} [units] */
+/** @param {import("./database.mjs").Transaction} tx @param {GoalInput} input @param {Array<Omit<TaskInput, "goalId">>} tasks @param {string} actor @param {Array<Omit<UnitInput,"goalId">>} [units] @returns {{goal:Goal,tasks:Task[]}} */
 export function createGoalWithTasks(tx, input, tasks, actor, units = []) {
 	const goal = createGoal(tx, input, actor);
 	for (const unit of units) createUnit(tx, { ...unit, goalId: goal.id }, actor);
 	return { goal, tasks: tasks.map(task => createTask(tx, { ...task, goalId: goal.id }, actor)) };
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {import("./model.d.ts").Input} input */
+/** @param {import("./database.mjs").Transaction} tx @param {import("./model.d.ts").Input} input @returns {import("./model.d.ts").Output|undefined} */
 export function outputForInput(tx, input) {
 	return inputOutput(tx, decodeInput(input));
 }
@@ -246,7 +258,9 @@ export function cancelTask(tx, taskId, actor) {
 			scheduleStop(tx, attempt, actor);
 			releaseSlot(tx, attempt);
 		}
+		enqueueCancelledRetirements(tx, task);
 	}
+	recycleCapacity(tx, root.goalId);
 	return tasks;
 }
 
@@ -262,7 +276,7 @@ export function reassignTask(tx, taskId, newOwner, actor) {
 	return task;
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {{taskId:string,expectedVersion:number,checks?:import("./model.d.ts").Check[],inputs?:import("./model.d.ts").Input[]}} input @param {string} actor */
+/** @param {import("./database.mjs").Transaction} tx @param {{taskId:string,expectedVersion:number,checks?:import("./model.d.ts").Check[],inputs?:import("./model.d.ts").Input[]}} input @param {string} actor @returns {{task:Task,affected:string[]}} */
 export function evolveTask(tx, input, actor) {
 	const task = tx.get("tasks", input.taskId);
 	requireOwner(tx, task, actor);

@@ -1,22 +1,38 @@
 import { createServer } from "node:http";
 import { randomBytes } from "node:crypto";
+import { retirementView } from "./retirement.mjs";
+import { record } from "./values.mjs";
 
 /** @typedef {import("./model.js").Snapshot} Snapshot */
 /** @param {unknown} value */
 const escape = value => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
 
-/** @param {Snapshot} snapshot */
+/** @param {Snapshot} snapshot @returns {string} */
 export function renderBoard(snapshot) {
 	const attempts = new Map(snapshot.attempts.map(attempt => [attempt.id, attempt]));
+	const lanes = new Map(snapshot.lanes?.map(lane => [lane.taskId, lane]));
 	const sections = snapshot.goals.map(goal => {
 		const tasks = snapshot.tasks.filter(task => task.goalId === goal.id);
 		const units = snapshot.units.filter(unit => unit.goalId === goal.id);
 		const collaborations = snapshot.collaborations.filter(item => item.goalId === goal.id || item.destinationGoalId === goal.id);
 		const completion = snapshot.completions?.find(completion => completion.goalId === goal.id);
 		const factory = snapshot.factories?.find(factory => factory.id === completion?.factoryId);
+		const taskIds = new Set(tasks.map(task => task.id));
+		const used = snapshot.attempts.filter(attempt => taskIds.has(attempt.taskId) && attempt.slot).length;
+		const wakes = snapshot.wakes.filter(wake => wake.goalId === goal.id && wake.generation > wake.consumed);
+		const product = snapshot.products?.find(item => item.goalId === goal.id);
+		const leases = snapshot.effects.filter(effect => effect.kind === "create" && taskIds.has(attempts.get(effect.attemptId)?.taskId ?? ""));
 		return `<section aria-labelledby="goal-${escape(goal.id)}">
 <h2 id="goal-${escape(goal.id)}">${escape(goal.title)}</h2>
 <p class="secondary">${tasks.filter(task => task.state === "done").length} of ${tasks.length} tasks completed &middot; ${units.length} units &middot; ${escape(goal.scope.mode)}</p>
+<p>Worker slots: ${used} in use &middot; ${goal.limits.workers === undefined ? "no configured slot limit" : `${Math.max(0, goal.limits.workers - used)} free of ${goal.limits.workers}`} &middot; ${tasks.filter(task => lanes.get(task.id)?.reason === "eligible").length} eligible for owner pickup</p>
+${wakes.length ? `<details><summary>Pending owner notifications (${wakes.length})</summary><ul>${wakes.map(wake => {
+			const last = snapshot.deliveries?.filter(d => d.wakeId === wake.id).at(-1);
+			const status = wake.unavailable ? wake.unavailable.message : wake.inFlight ? "issued; await or reconcile actual native queue receipt"
+				: wake.retry?.generation === wake.generation ? `${wake.retry.reason}; ${wake.retry.after ? `retry eligible after ${wake.retry.after}` : "unchanged send held; wait for new work or recipient recovery"}`
+				: (wake.sent ?? 0) >= wake.generation ? "queued; waiting for the owner to receive it" : "pending transport";
+			return `<li><code>${escape(wake.owner)}</code>: ${escape(wake.reason)} &middot; generation ${wake.generation}; received ${wake.consumed}; ${escape(status)}${last ? ` &middot; last transport ${escape(last.state)}` : ""}</li>`;
+		}).join("")}</ul></details>` : ""}
 ${units.length ? `<details><summary>Organization and accountable coordinators</summary><ul>${units.slice(0, 100).map(unit => {
 			const coordinator = tasks.find(task => task.id === unit.coordinatorTaskId);
 			const parent = units.find(parent => parent.id === unit.parentId);
@@ -26,9 +42,24 @@ ${unit.context.length ? `<p>${unit.context.map(escape).join("<br>")}</p>` : ""}<
 		}).join("")}</ul>${units.length > 100 ? `<p>Showing 100 of ${units.length} units. Inspect the relevant task context for more detail.</p>` : ""}</details>` : ""}
 ${goal.source ? `<p class="secondary">Contract: <code>${escape(goal.source.reference)}</code></p>` : ""}
 ${completion ? `<p>Factory: ${escape(factory?.state ?? "unknown")} &middot; delivery: ${completion.delivered ? "accepted" : "incomplete"} &middot; settlement: ${completion.settled ? "settled" : "outstanding"} &middot; closure ${escape(completion.revision)}${factory?.reason ? ` &middot; ${escape(factory.reason)}` : ""}</p>` : ""}
+${product ? `<p>Product target: <code>${escape(product.policy.targetRef)}</code> &middot; ${product.qualified ? "qualified together" : "not qualified"} &middot; ${product.landed ? `landed <code>${escape(product.landed.newTip)}</code> (receipt ${escape(product.landed.receiptId)})` : "no verified landing"} &middot; ${product.released ? "released" : "not released"}${product.intent?.reason ? `<br>${escape(product.intent.reason)}` : ""}
+${product.policy.level !== "qualified" && !product.landed && snapshot.landingCapability === "unsupported" ? "<br>Automatic landing unavailable: this host cannot keep the destination checkout safe through the ref update." : ""}</p>` : ""}
+${leases.length ? `<details><summary>Workspace leases and retention</summary><ul>${leases.map(effect => {
+			const attempt = attempts.get(effect.attemptId);
+			const request = effect.request && typeof effect.request === "object" && !Array.isArray(effect.request) ? record(effect.request) : {};
+			const archive = snapshot.effects.filter(item => item.kind === "archive" && item.attemptId === effect.attemptId).at(-1);
+			const lifecycle = archive ? retirementView(archive) : undefined;
+			const reason = lifecycle ? lifecycle.reason ?? lifecycle.disposition ?? `${archive?.state} retirement; creator must inspect before archival`
+				: request.workspace_type === "branch" ? "shared checkout; no dedicated writer worktree"
+				: !attempt?.nativeId ? "no confirmed workspace; inspect creation state"
+				: attempt.slot || ["running", "waiting"].includes(attempt.state) ? "active execution or retained waiting assignment"
+				: "retained until verified landing or cancellation; publication alone is insufficient";
+			return `<li><code>${escape(attempt?.nativeId ?? effect.attemptId)}</code> &middot; ${escape(request.workspace_type ?? "surface unknown")} &middot; ${escape(reason)}${lifecycle?.receiptId ? ` &middot; receipt <code>${escape(lifecycle.receiptId)}</code>` : ""}</li>`;
+		}).join("")}</ul></details>` : ""}
 ${tasks.length ? `<div class="table-scroll"><table><caption class="visually-hidden">Work in ${escape(goal.title)}</caption><thead><tr><th scope="col">Task</th><th scope="col">State</th><th scope="col">Owner</th></tr></thead><tbody>
 ${tasks.map(task => {
 			const attempt = task.currentAttemptId ? attempts.get(task.currentAttemptId) : undefined;
+			const lane = lanes.get(task.id);
 			return `<tr><td><details><summary>${escape(task.title)}${task.role === "coordinator" ? " (coordinator)" : ""}</summary>
 <p>${escape(task.assignment)}</p>
 ${task.parentId ? `<p class="secondary">Canonical parent: ${escape(tasks.find(parent => parent.id === task.parentId)?.title ?? task.parentId)} &middot; <code>${escape(task.parentId)}</code></p>` : ""}
@@ -38,8 +69,8 @@ ${task.coordination.disposition ? `<p class="secondary">Last disposition: ${esca
 ${task.waiting ? `<p>Waiting: ${escape(task.waiting.reason)}${task.waiting.requestId ? ` &middot; native request <code>${escape(task.waiting.requestId)}</code>` : ""}</p>` : ""}
 ${task.inputs.length ? `<h3>Inputs</h3><ul>${task.inputs.map(input => `<li><code>${escape(input.taskId)}</code> &middot; ${escape(input.output)}${input.version ? ` &middot; ${escape(input.version)}` : ""}</li>`).join("")}</ul>` : ""}
 ${task.checks.length ? `<h3>Acceptance</h3><ul>${task.checks.map(check => `<li>${escape(check.requirement)} <span class="secondary">(${escape(check.origin)}, ${escape(check.id)})</span></li>`).join("")}</ul>` : ""}
-${task.outputs.length ? `<h3>Outputs</h3><ul>${task.outputs.map(output => `<li>${escape(output.name)} &middot; ${escape(output.kind)}<br><code>${escape(output.reference)}</code><br><span class="secondary">Version ${escape(output.version)}</span></li>`).join("")}</ul>` : ""}
-</details></td><td><span class="state" data-state="${escape(task.state)}">${escape(task.state)}</span>${task.waiting ? `<br><span class="secondary">${escape(task.waiting.kind)}</span>` : ""}</td><td><code title="${escape(task.owner)}">${escape(task.owner.slice(0, 8))}</code></td></tr>`;
+${task.outputs.length ? `<h3>Published outputs (not landing receipts)</h3><ul>${task.outputs.map(output => `<li>${escape(output.name)} &middot; ${escape(output.kind)}<br><code>${escape(output.reference)}</code><br><span class="secondary">Version ${escape(output.version)}</span></li>`).join("")}</ul>` : ""}
+</details></td><td><span class="state" data-state="${escape(task.state)}">${escape(task.state)}</span>${lane ? `<br><strong>${escape(lane.reason)}</strong><br>${escape(lane.next)}` : task.waiting ? `<br><span class="secondary">${escape(task.waiting.kind)}</span>` : ""}</td><td><code title="${escape(task.owner)}">${escape(task.owner.slice(0, 8))}</code></td></tr>`;
 		}).join("")}
 </tbody></table></div>` : `<p>No tasks yet. Add scoped work with <code>foundry_create_task</code>.</p>`}
 ${collaborations.length ? `<h3>Collaboration commitments</h3><ul>${collaborations.map(item => `<li><details><summary>${escape(item.title)} &middot; ${escape(item.state)}${item.required ? " &middot; required" : " &middot; optional"}</summary>
@@ -59,12 +90,18 @@ table{width:100%;border-collapse:collapse;text-align:left}th{font-weight:600;col
 @media(max-width:540px){main{padding:16px}td,th{padding:12px 4px}td:first-child{width:60%}}
 </style></head><body><main><header><h1>Foundry</h1><form method="get"><button type="submit">Refresh</button></form></header>
 <p class="secondary">Goals, local ownership and delivered work. Expand a task for its checks and versioned inputs.</p>
+${snapshot.backlog?.squads.length ? `<section><h2>Squad backlogs</h2>${snapshot.backlog.squads.map(squad => {
+		const items = snapshot.backlog?.items.filter(item => item.factoryId === squad.factoryId && (item.squad === squad.name || item.squad === squad.id)) ?? [];
+		return `<details><summary>${escape(squad.name)} &middot; direction ${squad.revision} &middot; ${items.filter(item => item.state === "queued").length} queued</summary>
+<p>${escape(squad.reason)} &middot; discovery generation ${squad.handled}/${squad.generation}</p>
+<ul>${items.map(item => `<li>${escape(item.outcome)}: <strong>${escape(item.title)}</strong> &middot; ${escape(item.state)}<br>${escape(item.gap)} &rarr; ${escape(item.improvement)}${item.reason ? `<br>${escape(item.reason)}` : ""}</li>`).join("")}</ul></details>`;
+	}).join("")}</section>` : ""}
 ${sections || "<section><h2>No active goals</h2><p>Start explicitly authorized work with <code>foundry_start_goal</code>. Installing Foundry does not change ordinary coding or native permissions.</p></section>"}
 ${snapshot.effects.some(effect => effect.state === "uncertain" || effect.state === "issued") ? `<section><h2>Outstanding native effects</h2><ul>${snapshot.effects.filter(effect => effect.state === "uncertain" || effect.state === "issued").map(effect => `<li>${escape(effect.kind)} &middot; ${escape(effect.state)} &middot; <code>${escape(effect.attemptId)}</code></li>`).join("")}</ul><p class="secondary">Logical outcomes do not prove that a command stopped. Reconcile the affected effect; unrelated work remains independent.</p></section>` : ""}
 </main></body></html>`;
 }
 
-/** @param {{snapshot:()=>Snapshot,log:(message:string)=>void}} options */
+/** @param {{snapshot:()=>Snapshot,log:(message:string)=>void}} options @returns {Promise<{url:string,close:()=>Promise<void>}>} */
 export async function startBoard(options) {
 	const token = randomBytes(24).toString("hex");
 	const server = createServer((request, response) => {

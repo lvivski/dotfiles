@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { recycleCapacity } from "./backlog.mjs";
 import { outstanding } from "./effects.mjs";
 import { current, requireAdmission, requireOwner, requireReporter } from "./policy.mjs";
 import { FoundryError, containsPath, resourcePath, text } from "./values.mjs";
@@ -6,7 +7,7 @@ import { FoundryError, containsPath, resourcePath, text } from "./values.mjs";
 /** @typedef {import("./model.d.ts").Attempt} Attempt */
 /** @typedef {import("./model.d.ts").Claim} Claim */
 
-/** @param {import("./database.mjs").Transaction} tx @param {Attempt} attempt */
+/** @param {import("./database.mjs").Transaction} tx @param {Attempt} attempt @returns {void} */
 export function releaseOwnedClaims(tx, attempt) {
 	if (attempt.nativeId === undefined || !["done", "failed", "cancelled"].includes(attempt.state) || attempt.endedBy !== attempt.nativeId
 		|| outstanding(tx, attempt, true) || tx.get("tasks", attempt.taskId).repairReservation?.attemptId === attempt.id) return;
@@ -46,5 +47,6 @@ export function releaseClaim(tx, claimId, actor) {
 	requireReporter(tx, attempt, actor);
 	if (outstanding(tx, attempt, true)) throw new FoundryError("effects_outstanding", "This attempt's substantive issued effects must settle before releasing its claim");
 	tx.db.prepare("DELETE FROM claims WHERE id=?").run(claimId);
+	recycleCapacity(tx, tx.get("tasks", attempt.taskId).goalId);
 	return claim;
 }

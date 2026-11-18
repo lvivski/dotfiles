@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { signalDiscovery } from "./backlog.mjs";
 import { goalMember, requireGoalOwner } from "./policy.mjs";
 import { decodeLesson, decodeSignal } from "./records.mjs";
 import { FoundryError, digest, json, record } from "./values.mjs";
@@ -27,6 +28,7 @@ export function recordSignal(tx, input, actor) {
 		return existing;
 	}
 	tx.put("signals", candidate);
+	signalDiscovery(tx, candidate);
 	wake(tx, signalOwner(tx, candidate), goal.id, `signal:${candidate.id}`);
 	return candidate;
 }

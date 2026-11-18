@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { archivedCreator } from "./retirement.mjs";
+import { activateSubscriptions, requireSquad } from "./backlog.mjs";
+import { engine, schema } from "./database.mjs";
 import { hasSlot, parkPausedExecution, preparedDispatch, runnable } from "./attempts.mjs";
 import { outstanding, retirePrepared } from "./effects.mjs";
 import { factorySettings } from "./factory.mjs";
@@ -6,7 +9,7 @@ import { coordinatorsBound, createUnit } from "./organization.mjs";
 import { budgetAvailable, goalMember, requireAdmission } from "./policy.mjs";
 import { decodeAttempt, decodeCompletion, decodeFactory } from "./records.mjs";
 import { admittedEvidence } from "./results.mjs";
-import { createGoal, createTask, resolvedInputs, revise } from "./tasks.mjs";
+import { createGoal, createTask, insertGoal, resolvedInputs, revise } from "./tasks.mjs";
 import { FoundryError, decodeLimits, decodeScope, digest, json, narrowScope, positive, record, text } from "./values.mjs";
 import { wake } from "./wakes.mjs";
 
@@ -16,7 +19,7 @@ import { wake } from "./wakes.mjs";
 /** @typedef {import("./records.mjs").TaskInput} TaskInput */
 /** @typedef {import("./records.mjs").UnitInput} UnitInput */
 
-/** @param {import("./database.mjs").Transaction} tx @param {Completion} completion */
+/** @param {import("./database.mjs").Transaction} tx @param {Completion} completion @returns {import("./model.d.ts").Task[]} */
 export function productionClosure(tx, completion) {
 	const commitments = tx.list("collaborations").filter(item => item.required);
 	const tasks = [...new Set([completion.taskId,
@@ -34,7 +37,7 @@ export function productionClosure(tx, completion) {
 	return tasks;
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Completion} completion */
+/** @param {import("./database.mjs").Transaction} tx @param {Completion} completion @returns {import("./model.d.ts").CompletionStatus} */
 export function completionStatus(tx, completion) {
 	const accepted = completion.accepted;
 	const delivered = completion.closed && accepted?.revision === completion.revision
@@ -52,10 +55,18 @@ export function completionStatus(tx, completion) {
 		closed: completion.closed, revision: completion.revision };
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {GoalInput} input @param {Array<Omit<TaskInput,"goalId">>} tasks @param {string} factoryId @param {string} completionTaskId @param {string} actor @param {number} [generation] @param {boolean} [validation] @param {Array<Omit<UnitInput,"goalId">>} [units] */
-export function admitFactoryJob(tx, input, tasks, factoryId, completionTaskId, actor, generation, validation = false, units = []) {
+/** @param {import("./database.mjs").Transaction} tx @param {Factory} factory @returns {number} */
+export function freeJobs(tx, factory) {
+	const unsettled = tx.list("goal_completions", "WHERE json_extract(document,'$.factoryId')=?", [factory.id])
+		.filter(completion => { const status = completionStatus(tx, completion); return !(status.delivered || status.cancelled) || !status.settled; });
+	return Math.max(0, factory.maximumJobs - unsettled.length);
+}
+
+/** @param {import("./database.mjs").Transaction} tx @param {GoalInput} input @param {Array<Omit<TaskInput,"goalId">>} tasks @param {string} factoryId @param {string} completionTaskId @param {string} actor @param {number} [generation] @param {boolean} [validation] @param {Array<Omit<UnitInput,"goalId">>} [units] @param {import("./records.mjs").Records["backlog_items"]} [item] */
+export function admitFactoryJob(tx, input, tasks, factoryId, completionTaskId, actor, generation, validation = false, units = [], item) {
 	const factory = tx.get("factory_controls", factoryId);
-	if (factory.owner !== actor || factory.state !== "active") throw new FoundryError("factory_paused", "Only the active factory's actual coordinator can admit source work");
+	if (item) requireSquad(tx, item.squad, item.currentRevision, actor, generation);
+	if (!item && factory.owner !== actor || factory.state !== "active") throw new FoundryError("factory_paused", "Only the active factory's actual coordinator or bound squad can admit authorized work");
 	if (generation !== undefined && factory.generation !== generation) throw new FoundryError("stale_activation", "Source observation belongs to a revoked activation");
 	const accepted = record(record(factory.definition).goal);
 	const scope = narrowScope(decodeScope(accepted.scope), input.scope);
@@ -71,10 +82,8 @@ export function admitFactoryJob(tx, input, tasks, factoryId, completionTaskId, a
 		}
 		return { goal: existing, tasks: tx.list("tasks", "WHERE goal_id=?", [existing.id]), replay: true };
 	}
-	const unsettled = tx.list("goal_completions", "WHERE json_extract(document,'$.factoryId')=?", [factoryId])
-		.filter(completion => { const status = completionStatus(tx, completion); return !(status.delivered || status.cancelled) || !status.settled; });
-	if (!validation && unsettled.length >= factory.maximumJobs) throw new FoundryError("factory_capacity", "The factory's effective active-job bound is exhausted");
-	const goal = createGoal(tx, { ...input, scope }, actor);
+	if (!validation && !freeJobs(tx, factory)) throw new FoundryError("factory_capacity", "The factory's effective active-job bound is exhausted");
+	const goal = (item ? insertGoal : createGoal)(tx, { ...input, scope }, actor);
 	for (const unit of units) createUnit(tx, { ...unit, goalId: goal.id }, actor);
 	const admitted = tasks.map(task => createTask(tx, { ...task, goalId: goal.id }, actor));
 	const final = tx.get("tasks", completionTaskId);
@@ -89,7 +98,7 @@ export function admitFactoryJob(tx, input, tasks, factoryId, completionTaskId, a
 	return { goal, tasks: admitted, replay: false };
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {string} id @param {string} actor */
+/** @param {import("./database.mjs").Transaction} tx @param {string} id @param {string} actor @returns {Factory} */
 export function factory(tx, id, actor) {
 	const factory = tx.get("factory_controls", id);
 	if (factory.owner !== actor) throw new FoundryError("forbidden", "Only the actual factory owner can manage its policy");
@@ -107,19 +116,30 @@ export function factoryViews(tx, actor) {
 }));
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Omit<Factory,"owner"|"state"|"generation"|"pausedWorkers"|"reminders">} input @param {string} actor @param {{goal:GoalInput,tasks:Array<Omit<TaskInput,"goalId">>,units?:Array<Omit<UnitInput,"goalId">>,completionTaskId:string}} initial */
+/** @param {import("./database.mjs").Transaction} tx @param {Omit<Factory,"owner"|"state"|"generation"|"pausedWorkers"|"reminders">} input @param {string} actor @param {{goal:GoalInput,tasks:Array<Omit<TaskInput,"goalId">>,units?:Array<Omit<UnitInput,"goalId">>,completionTaskId:string}} [initial] */
 export function activateFactory(tx, input, actor, initial) {
 	const existing = tx.optional("factory_controls", input.id);
+	const direction = tx.list("directions", "WHERE json_extract(document,'$.factoryId')=?", [input.id]).at(-1);
+	if (existing && direction) {
+		if (input.source.sha256 !== direction.source || digest(json(record(input.definition).direction)) !== digest(json(direction.direction))) {
+			throw new FoundryError("stale_direction", "Restart from the latest explicitly accepted direction, not the original or an unapproved edit");
+		}
+		const { direction: _old, ...original } = record(existing.definition), { direction: _new, ...incoming } = record(input.definition);
+		if (digest(json(original)) !== digest(json(incoming))) throw new FoundryError("factory_conflict", "Restart cannot change the accepted charter, evaluator or budget");
+		// In-flight jobs keep their original factory snapshot. Direction has its own immutable history.
+		input = { ...input, definition: existing.definition, source: existing.source };
+	}
 	if (existing && (existing.owner !== actor || digest(existing.definition) !== digest(input.definition)
 		|| digest(json(existing.source)) !== digest(json(input.source)))) {
 		throw new FoundryError("factory_conflict", "Factory identity cannot change its native owner or accepted policy snapshot");
 	}
-	const factory = decodeFactory({ ...input, owner: actor, state: "active",
+	const factory = decodeFactory({ ...input, owner: actor, state: "active", pin: { schema, engine, policy: direction?.source ?? input.source.sha256 },
 		generation: (existing?.generation ?? 0) + 1, pausedWorkers: [], reminders: {},
 		...(existing?.heartbeat === undefined ? {} : { heartbeat: existing.heartbeat }),
 		...(existing?.sourceCursor === undefined ? {} : { sourceCursor: existing.sourceCursor }) });
 	tx.put("factory_controls", factory);
-	for (const completion of tx.list("goal_completions", "WHERE json_extract(document,'$.factoryId')=?", [factory.id])) {
+	const subscriptionGoals = new Map(tx.list("squads", "WHERE json_extract(document,'$.factoryId')=?", [factory.id]).map(squad => [squad.goalId, squad]));
+	for (const completion of [...tx.list("goal_completions", "WHERE json_extract(document,'$.factoryId')=?", [factory.id]), ...subscriptionGoals.values()]) {
 		for (const task of tx.list("tasks", "WHERE goal_id=? AND state='blocked'", [completion.goalId])) {
 			if (!task.currentAttemptId || task.waiting?.kind !== "factory") continue;
 			const attempt = tx.get("attempts", task.currentAttemptId);
@@ -129,6 +149,8 @@ export function activateFactory(tx, input, actor, initial) {
 			wake(tx, attempt.nativeId ?? task.owner, task.goalId, "capacity");
 		}
 	}
+	if (record(factory.definition).direction !== undefined) return { factory, ...activateSubscriptions(tx, factory, actor) };
+	if (!initial) throw new FoundryError("completion_missing", "A legacy template requires a completion task");
 	if (record(factory.definition).source !== undefined) {
 		tx.db.exec("SAVEPOINT factory_template");
 		try { admitFactoryJob(tx, initial.goal, initial.tasks, factory.id, initial.completionTaskId, actor, factory.generation, true, initial.units); }
@@ -138,9 +160,10 @@ export function activateFactory(tx, input, actor, initial) {
 	return { factory, ...admitFactoryJob(tx, initial.goal, initial.tasks, factory.id, initial.completionTaskId, actor, factory.generation, false, initial.units) };
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {string} actor @param {string} reason @param {string} [factoryId] */
+/** @param {import("./database.mjs").Transaction} tx @param {string} actor @param {string} reason @param {string} [factoryId] @returns {Factory[]} */
 export function pauseFactories(tx, actor, reason, factoryId) {
 	const completions = tx.list("goal_completions", factoryId === undefined ? "" : "WHERE json_extract(document,'$.factoryId')=?", factoryId === undefined ? [] : [factoryId]);
+	/** @type {Map<string,Factory>} */
 	const changed = new Map();
 	for (const factory of tx.list("factory_controls", "WHERE owner=?", [actor])) {
 		if (factoryId !== undefined && factory.id !== factoryId) continue;
@@ -150,7 +173,9 @@ export function pauseFactories(tx, actor, reason, factoryId) {
 		tx.put("factory_controls", factory);
 		changed.set(factory.id, factory);
 	}
-	for (const completion of completions) {
+	const subscriptionGoals = new Map(tx.list("squads").filter(squad => factoryId === undefined || squad.factoryId === factoryId)
+		.map(squad => [squad.goalId, squad]));
+	for (const completion of [...completions, ...subscriptionGoals.values()]) {
 		const factory = tx.get("factory_controls", completion.factoryId);
 		if (factory.owner !== actor && !tx.list("attempts", "WHERE native_id=? AND task_id IN (SELECT id FROM tasks WHERE goal_id=?)", [actor, completion.goalId]).length) continue;
 		if (factory.owner !== actor) factory.pausedWorkers = [...new Set([...factory.pausedWorkers, actor])];
@@ -170,11 +195,12 @@ export function pauseFactories(tx, actor, reason, factoryId) {
 	return [...changed.values()];
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {string} goalId @param {string} actor */
+/** @param {import("./database.mjs").Transaction} tx @param {string} goalId @param {string} actor @returns {Completion} */
 export function reopenCompletion(tx, goalId, actor) {
 	const completion = tx.get("goal_completions", goalId);
 	const factory = tx.get("factory_controls", completion.factoryId);
 	if (factory.owner !== actor) throw new FoundryError("forbidden", "Only the factory owner can reopen its bounded job");
+	if (tx.list("backlog_items", "WHERE goal_id=?", [goalId]).length) throw new FoundryError("successor_required", "Accepted squad work is immutable; admit a justified successor instead");
 	const task = tx.get("tasks", completion.taskId);
 	requireAdmission(tx, task, undefined, true);
 	if (completion.closed) {
@@ -188,11 +214,17 @@ export function reopenCompletion(tx, goalId, actor) {
 		const previous = coordinator.currentAttemptId ? tx.get("attempts", coordinator.currentAttemptId) : undefined;
 		if (previous && (previous.waiting?.kind === "input" || outstanding(tx, previous, true)
 			|| tx.list("claims", "WHERE attempt_id=?", [previous.id]).length)) continue;
+		const creator = previous?.nativeId && archivedCreator(tx, previous.nativeId);
+		if (creator) {
+			coordinator.owner = creator;
+			delete coordinator.currentAttemptId;
+			delete coordinator.waiting;
+		}
 		coordinator.version++;
-		coordinator.state = previous?.nativeId ? "waiting" : "ready";
+		coordinator.state = previous?.nativeId && !creator ? "waiting" : "ready";
 		coordinator.coordination = { generation: (coordinator.coordination?.generation ?? 0) + 1,
 			handled: coordinator.coordination?.generation ?? 0, causes: ["job-reopened"] };
-		if (previous?.nativeId) {
+		if (previous?.nativeId && !creator) {
 			const lease = decodeAttempt({ ...previous, id: randomUUID(), token: randomUUID(), taskVersion: coordinator.version,
 				state: "waiting", slot: false, waiting: { kind: "events", reason: "Explicitly reopened coordination" },
 				createdAt: tx.timestamp(), endedBy: undefined, supersededBy: undefined });
@@ -209,7 +241,7 @@ export function reopenCompletion(tx, goalId, actor) {
 	return completion;
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {string} factoryId @param {string} actor @param {number} generation @param {string|undefined} cursor */
+/** @param {import("./database.mjs").Transaction} tx @param {string} factoryId @param {string} actor @param {number} generation @param {string|undefined} cursor @returns {Factory} */
 export function updateSourceCursor(tx, factoryId, actor, generation, cursor) {
 	const factory = tx.get("factory_controls", factoryId);
 	if (factory.owner !== actor || factory.state !== "active" || factory.generation !== generation) {
@@ -290,7 +322,7 @@ export function remindFactory(tx, factoryId, actor, generation, reentry = false)
 	return { decision: /** @type {const} */ ("block"), reason: `Foundry continuation ${factory.id}:${generation}. Read foundry_advance and execute only its current locally owned actions. This reminder grants no authority.` };
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {string} factoryId @param {Factory["heartbeat"]} heartbeat @param {string} actor @param {number} generation */
+/** @param {import("./database.mjs").Transaction} tx @param {string} factoryId @param {Factory["heartbeat"]} heartbeat @param {string} actor @param {number} generation @returns {Factory} */
 export function recordHeartbeat(tx, factoryId, heartbeat, actor, generation) {
 	const factory = tx.get("factory_controls", factoryId);
 	if (factory.owner !== actor || factory.generation !== generation) {

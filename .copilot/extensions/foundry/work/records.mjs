@@ -1,3 +1,4 @@
+import { directionRecord, itemRecord, squadRecord } from "./direction.mjs";
 import {
 	FoundryError, array, boolean, choice, closedFields, decodeCheck, decodeDispatch, decodeEvidence, decodeFinding,
 	decodeInput, decodeLimits, decodeOutput, decodeScope, decodeSource, decodeWaiting, json, natural, number, optionalText,
@@ -18,11 +19,11 @@ import {
 /** @typedef {import("./model.d.ts").Lesson} Lesson */
 /** @typedef {import("./model.d.ts").Delivery} Delivery */
 /** @typedef {{id?: string, title: string, projectId?: string, scope: import("./model.d.ts").Scope, limits?: import("./model.d.ts").Limits, source?: Goal["source"]}} GoalInput */
-/** @typedef {{id?: string, goalId: string, parentId?: string, unitId?: string, role?:Task["role"], title: string, assignment: string, dispatch?: Task["dispatch"], workType: string, scope?: unknown, checks?: import("./model.d.ts").Check[], inputs?: import("./model.d.ts").Input[]}} TaskInput */
+/** @typedef {{id?: string, goalId: string, parentId?: string, unitId?: string, role?:Task["role"], title: string, assignment: string, dispatch?: Task["dispatch"], deliverable?:string, workType: string, scope?: unknown, checks?: import("./model.d.ts").Check[], inputs?: import("./model.d.ts").Input[]}} TaskInput */
 /** @typedef {{id?:string,goalId:string,name:string,context?:string[],parentId?:string,taskId?:string,kind?:string}} UnitInput */
 /** @typedef {import("./model.d.ts").FactoryControl} Factory */
 /** @typedef {import("./model.d.ts").GoalCompletion} Completion */
-/** @typedef {{goals: Goal, units: Unit, collaborations: Collaboration, tasks: Task, attempts: Attempt, effects: Effect, claims: Claim, wakes: Wake, signals: Signal, lessons: Lesson, results: Result, deliveries: Delivery, native_usage: import("./model.d.ts").NativeUsage, usage_affinity: import("./model.d.ts").UsageAffinity, factory_controls: Factory, goal_completions: Completion}} Records */
+/** @typedef {{goals: Goal, units: Unit, collaborations: Collaboration, tasks: Task, attempts: Attempt, effects: Effect, claims: Claim, wakes: Wake, signals: Signal, lessons: Lesson, results: Result, deliveries: Delivery, native_usage: import("./model.d.ts").NativeUsage, usage_affinity: import("./model.d.ts").UsageAffinity, factory_controls: Factory, goal_completions: Completion, directions: import("./model.d.ts").DirectionRecord, squads: import("./model.d.ts").Squad, backlog_items: import("./model.d.ts").BacklogItem}} Records */
 /** @typedef {keyof Records} Table */
 
 /** @param {unknown} value @returns {Goal} */
@@ -68,6 +69,8 @@ export function decodeTask(value) {
 		checks: array(row.checks, decodeCheck), inputs: array(row.inputs, decodeInput), outputs: array(row.outputs, decodeOutput),
 		state: choice(row.state, /** @type {const} */ (["ready", "running", "waiting", "blocked", "failed", "done", "cancelled"]), "task.state"),
 		version: natural(row.version, "task.version"),
+		...(row.createdAt === undefined ? {} : { createdAt: text(row.createdAt, "task.createdAt") }),
+		...(row.deliverable === undefined ? {} : { deliverable: text(row.deliverable, "declared deliverable") }),
 		...(row.repairs === undefined ? {} : { repairs: natural(row.repairs, "task.repairs") }),
 		...(row.repairReservation === undefined ? {} : { repairReservation: {
 			attemptId: text(record(row.repairReservation).attemptId, "reserved failed attempt"),
@@ -106,7 +109,7 @@ export function decodeEffect(value) {
 	const row = record(value);
 	return {
 		id: text(row.id, "effect.id"), attemptId: text(row.attemptId, "effect.attemptId"),
-		kind: choice(row.kind, /** @type {const} */ (["create", "command", "stop"]), "effect.kind"),
+		kind: choice(row.kind, /** @type {const} */ (["create", "command", "stop", "archive"]), "effect.kind"),
 		state: choice(row.state, /** @type {const} */ (["prepared", "issued", "settled", "uncertain"]), "effect.state"),
 		owner: text(row.owner, "effect.owner"), request: json(row.request),
 		...(row.result === undefined ? {} : { result: json(row.result) }),
@@ -146,6 +149,12 @@ export function decodeWake(value) {
 		reason: text(row.reason, "wake.reason"),
 		...(row.relatedReasons === undefined ? {} : { relatedReasons: strings(row.relatedReasons) }),
 		...(row.inFlight === undefined ? {} : { inFlight: text(row.inFlight, "wake delivery effect") }),
+		...(row.retry === undefined ? {} : { retry: {
+			generation: natural(record(row.retry).generation, "retry generation"),
+			failures: natural(record(row.retry).failures, "failed deliveries"),
+			reason: text(record(row.retry).reason, "delivery hold"),
+			...(record(row.retry).after === undefined ? {} : { after: text(record(row.retry).after, "next eligible delivery") }),
+		} }),
 		...(sent === undefined ? {} : { sent }),
 		...(row.unavailable === undefined ? {} : { unavailable: {
 			effectId: text(record(row.unavailable).effectId, "failed delivery"),
@@ -272,6 +281,7 @@ export function decodeFactory(value) {
 	}));
 	return {
 		id: text(row.id, "factory id"), owner: text(row.owner, "factory owner"),
+		...(row.pin === undefined ? {} : { pin: { schema: positive(record(row.pin).schema, "pinned schema"), engine: text(record(row.pin).engine, "pinned engine"), policy: text(record(row.pin).policy, "pinned policy") } }),
 		state: choice(row.state, ["active", "paused"], "factory state"),
 		generation: positive(row.generation, "activation generation"),
 		mechanism,
@@ -321,6 +331,7 @@ export function decodeCompletion(value) {
 
 /** @type {{[K in Table]: (value: unknown) => Records[K]}} */
 export const decoders = {
+	directions: directionRecord, squads: squadRecord, backlog_items: itemRecord,
 	goals: decodeGoal, units: decodeUnit, tasks: decodeTask, attempts: decodeAttempt, effects: decodeEffect,
 	collaborations: decodeCollaboration,
 	claims: decodeClaim, wakes: decodeWake, signals: decodeSignal, lessons: decodeLesson, results: decodeResult, deliveries: decodeDelivery,

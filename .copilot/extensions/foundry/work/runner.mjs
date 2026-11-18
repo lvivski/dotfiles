@@ -6,6 +6,7 @@ import { openWorkStore } from "./store.mjs";
 import { FoundryError, digest, json, record } from "./values.mjs";
 import { captureCandidate, readCandidate, verifyCandidate } from "./artifacts.mjs";
 import { checkReceiptPath } from "./native.mjs";
+import { materializeProduct, verifyProduct } from "./promotion.mjs";
 
 /** @param {string | Uint8Array} value */
 const sha256 = value => createHash("sha256").update(value).digest("hex");
@@ -45,6 +46,7 @@ try {
 		/** @type {string | null} */ error: null,
 		stdout: "", stderr: "",
 		/** @type {import("./model.d.ts").Candidate|undefined} */ candidate: undefined,
+		/** @type {{manifestId:string,tree:string}|undefined} */ product: undefined,
 		/** @type {"input-artifact"|null} */ blocker: null,
 	};
 	const verifyOracles = (root = directory) => {
@@ -70,8 +72,10 @@ try {
 			}
 		};
 		verifyInputs();
-		if (check.artifactFiles) raw.candidate = captureCandidate(directory, check.artifactFiles, check.oracleFiles ?? [], task.scope.paths, store.databasePath);
-		const candidateDirectory = raw.candidate?.reference ?? directory;
+		raw.product = store.productCheckPlan(attempt.id);
+		const productRoot = raw.product ? materializeProduct(store.databasePath, raw.product.tree) : undefined;
+		if (check.artifactFiles) raw.candidate = captureCandidate(productRoot ?? directory, check.artifactFiles, check.oracleFiles ?? [], task.scope.paths, store.databasePath);
+		const candidateDirectory = productRoot ?? raw.candidate?.reference ?? directory;
 		verifyOracles(candidateDirectory);
 		const remaining = goal.limits.deadline === undefined ? undefined : Date.parse(goal.limits.deadline) - Date.now();
 		if (remaining !== undefined && remaining <= 0) throw new FoundryError("deadline_exhausted", "The assigned goal deadline has elapsed");
@@ -91,6 +95,7 @@ try {
 		verifyOracles(candidateDirectory);
 		verifyInputs();
 		if (raw.candidate) verifyCandidate(raw.candidate, store.databasePath);
+		if (raw.product && productRoot) verifyProduct(store.databasePath, raw.product.tree, productRoot);
 	} catch (error) {
 		raw.error = error instanceof Error ? error.message : String(error);
 	}
