@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { deliveryPolicy } from "./landing.mjs";
+import { committedOracles } from "./artifacts.mjs";
 import { compileCheck, compileDefinition } from "./compiler.mjs";
 import { decodeDirection } from "./direction.mjs";
 import { contracts, validateContracts } from "./lineage.mjs";
@@ -165,6 +166,16 @@ export function readFactory(directory, filename) {
 		}
 	}
 	const snapshot = json({ ...definition, ...settings, charters, grains, captured });
+	let checkoutBase;
+	for (const task of tasks) {
+		const id = text(task.id, "template task id");
+		for (const check of templateChecks(record(snapshot), id, task.checks ?? [])) {
+			if (!check.artifactFiles || !check.oracleFiles?.length || (!direction && !check.oracleCommit)) continue;
+			const base = check.oracleCommit ?? grains.find(grain => grain.generators.includes(id))?.baseBranch
+				?? (checkoutBase ??= execFileSync("git", ["-C", root, "rev-parse", "--verify", "HEAD^{commit}"], { encoding: "utf8" }).trim());
+			committedOracles(root, base, check.oracleFiles);
+		}
+	}
 	return { definition: snapshot, goal, ...(direction && !source ? {} : { completionTaskId: text(definition.completionTaskId, "completion task") }),
 		source: { reference: relative, sha256: createHash("sha256").update(content).digest("hex") },
 		control: {

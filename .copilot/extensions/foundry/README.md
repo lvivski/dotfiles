@@ -396,6 +396,26 @@ repository and are copied with their pinned hashes. Use that list for required c
 or package files outside the mutable unit too; capturing them grants no editing scope. `kind`,
 `path` and existing check versions are unchanged for checks without this option.
 
+When a worker's base deliberately omits frozen build dependencies or independent evaluators,
+set `oracleCommit` on its artifact-bound **check** to a full, locally retained Git commit ID.
+Every `oracleFiles` path (including grain specification, boundary and evaluators added by the
+factory) must match its declared SHA-256 at that commit. The factory checks this before
+activation. A direction-driven factory without `oracleCommit` must have those files in its
+declared generator base or its current default checkout commit; uncommitted files in the
+director's checkout cannot provision a worker. The assigned runner with `oracleCommit` takes
+only those regular files from Git and only the candidate
+files from the worker, then executes in its private captured directory. Nothing is installed in
+the generator worktree or published as candidate code from the evaluator commit. Missing or
+mismatched committed inputs block evaluation; they are not a reason to repair the producer.
+Whole-product qualification still uses the actual product tree, not an overlaid file bundle.
+
+`oracleCommit` changes the check version. It cannot retrofit an already issued check, including a
+same-worker repair that inherited the old pins. On an engine that only reads the worker checkout,
+do not retry a missing evaluator, copy a predecessor into the generator, or accept a standalone
+check as evidence. Preserve the attempt, checkout and receipts; if independently staged support
+is not permitted there, the old assignment stays blocked. Move to a revised policy only through
+the authorized engine cutover and new admission, never by rewriting the old store or its engine pin.
+
 The assigned procedure runs in a private captured bundle instead of the mutable checkout.
 `FOUNDRY_CANDIDATE_DIR` identifies that bundle. Raw evidence retains its file hashes, modes, candidate
 version and actual versioned inputs. Changes to the bundle or evaluator during execution fail the

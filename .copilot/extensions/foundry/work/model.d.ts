@@ -102,6 +102,7 @@ export interface Check {
 	version: string;
 	command: string;
 	oracleFiles?: { path: string; sha256: string }[];
+	oracleCommit?: string;
 	artifactFiles?: string[];
 	path?: string;
 }
@@ -314,7 +315,7 @@ export interface Evidence {
 	summary: string;
 	source: "runner-receipt";
 	candidate?: Candidate;
-	blocker?: "input-artifact";
+	blocker?: "input-artifact" | "oracle-input";
 }
 export interface Finding {
 	summary: string;

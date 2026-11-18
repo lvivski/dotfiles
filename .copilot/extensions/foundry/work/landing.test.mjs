@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {execFileSync, spawnSync} from "node:child_process";
-import {randomUUID} from "node:crypto";
+import {createHash, randomUUID} from "node:crypto";
 import {mkdirSync, readFileSync, rmSync, writeFileSync} from "node:fs";
 import path from "node:path";
 import test from "node:test";
@@ -8,7 +8,7 @@ import {createRuntime} from "./runtime.mjs";
 import {applyExpectedTip} from "./promotion.mjs";
 import {record, text} from "./values.mjs";
 
-/** @param {import("node:test").TestContext} t @param {{restrictions?:string[],hostLease?:boolean,unsplit?:boolean}} [options] */
+/** @param {import("node:test").TestContext} t @param {{restrictions?:string[],hostLease?:boolean,unsplit?:boolean,versionedSupport?:boolean}} [options] */
 function fixture(t, options = {}) {
 	const root = path.resolve(`.foundry-delivery-fixture-${randomUUID()}`);
 	mkdirSync(root);
@@ -37,7 +37,8 @@ function fixture(t, options = {}) {
 	t.after(() => {runtime.close(); rmSync(root,{recursive:true});});
 	/** @param {string} id @param {string} filename @param {string} content @param {string} [level] @param {string} [acceptance] @param {string} [productCommand] */
 	async function lane(id, filename, content, level="landed", acceptance="artifact-command", productCommand=`test "$(cat base.txt)" = base && test "$(cat ${filename})" = ${content}`) {
-		const check = {id:"test", origin:"contract", kind:"command", requirement:"Check exact files", command:`test "$(cat ${filename})" = ${content}`, artifactFiles:[filename]};
+		const check = {id:"test", origin:"contract", kind:"command", requirement:"Check exact files", command:`test "$(cat ${filename})" = ${content}`, artifactFiles:[filename],
+			...(options.versionedSupport ? {oracleCommit:git("rev-parse","HEAD"),oracleFiles:[{path:"base.txt",sha256:createHash("sha256").update("base").digest("hex")}]} : {})};
 		const source = `.foundry/${id}.json`;
 		writeFileSync(path.join(root,source),JSON.stringify({format:"foundry-factory",version:2,id,mechanism:"stop-hook", completionTaskId:"accept",
 			delivery:{level, acceptance, targetRef:"refs/heads/product"},
@@ -91,6 +92,21 @@ test("isolated lanes requalify only a stale join, land exact bytes, never confla
 	assert.equal(git("show","product:a.txt"),"one"); assert.equal(git("show","product:b.txt"),"two");
 	assert.equal(git("rev-parse","product^"),first.newTip);
 	assert.equal(readFileSync(path.join(root,"base.txt"),"utf8"),"base");
+});
+
+for (const changed of [false,true]) test(`joined qualification uses actual tree with versioned support (changed: ${changed})`,async t => {
+	const {lane,git,root} = fixture(t,{versionedSupport:true});
+	const job = await lane("versioned","leaf.txt","one","qualified","artifact-command","test -e leaf.txt");
+	if (changed) {
+		const work = git("branch","--show-current");
+		git("switch","-q","product");
+		writeFileSync(path.join(root,"base.txt"),"wrong");
+		git("commit","-qam","changed product support"); git("switch","-q",work);
+	}
+	const id = text((await job.deliver("prepare")).manifestId,"manifest");
+	assert.equal((await job.verify()).state,changed ? "failed" : "passed");
+	if (changed) await assert.rejects(job.deliver("qualify",id),{code:"delivery_not_qualified"});
+	else assert.ok((await job.deliver("qualify",id)).qualified);
 });
 
 test("checked-out target in a linked worktree is retained; release and interactive routes remain unsupported",async t => {

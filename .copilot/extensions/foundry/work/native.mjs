@@ -268,7 +268,7 @@ export function checkObservation(store, value, verifyArtifacts = true) {
 	const attempt = store.getAttempt(attemptId);
 	const check = attempt.checks.find(item => item.id === observation.checkId);
 	const request = record(store.getEffect(effectId).request);
-	if (!check || check.version !== observation.checkVersion || raw.command !== check.command
+	if (!check || check.version !== observation.checkVersion || raw.command !== check.command || raw.oracleCommit !== check.oracleCommit
 		|| raw.attemptId !== attemptId || raw.checkId !== check.id || raw.checkVersion !== check.version
 		|| request.checkId !== check.id || request.checkVersion !== check.version) {
 		throw new FoundryError("evaluator_mismatch", "Captured evidence is not for the assigned evaluator snapshot");
@@ -297,7 +297,7 @@ export function checkObservation(store, value, verifyArtifacts = true) {
 		source: "runner-receipt",
 		...(candidate === undefined ? {} : { candidate }),
 		...(raw.blocker === undefined || raw.blocker === null ? {} : {
-			blocker: choice(raw.blocker, /** @type {const} */ (["input-artifact"]), "native input blocker"),
+			blocker: choice(raw.blocker, /** @type {const} */ (["input-artifact", "oracle-input"]), "native input blocker"),
 		}),
 	};
 }

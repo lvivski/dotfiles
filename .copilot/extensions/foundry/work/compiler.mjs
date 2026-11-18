@@ -9,7 +9,7 @@ import { FoundryError, closedFields as closed, decodeCheck, decodeInput, decodeL
 /** @param {unknown} value @returns {Check} */
 export function compileCheck(value) {
 	const input = record(value);
-	closed(input, ["id", "origin", "requirement", "kind", "command", "path", "oracleFiles", "artifactFiles", "version"]);
+	closed(input, ["id", "origin", "requirement", "kind", "command", "path", "oracleFiles", "oracleCommit", "artifactFiles", "version"]);
 	const definition = {
 		id: text(input.id, "check id"),
 		origin: input.origin ?? "contract",
@@ -18,6 +18,7 @@ export function compileCheck(value) {
 		...(input.command === undefined ? {} : { command: input.command }),
 		...(input.path === undefined ? {} : { path: input.path }),
 		...(input.oracleFiles === undefined ? {} : { oracleFiles: input.oracleFiles }),
+		...(input.oracleCommit === undefined ? {} : { oracleCommit: input.oracleCommit }),
 		...(input.artifactFiles === undefined ? {} : { artifactFiles: array(input.artifactFiles, "artifact files").map(resourcePath).sort() }),
 	};
 	const version = digest(json(definition));

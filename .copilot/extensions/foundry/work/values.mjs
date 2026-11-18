@@ -214,6 +214,10 @@ export function decodeCheck(value) {
 		return { path: text(oracle.path, "oracle.path"), sha256 };
 	});
 	const artifactFiles = item.artifactFiles === undefined ? undefined : array(item.artifactFiles, resourcePath).sort();
+	const oracleCommit = optionalText(item.oracleCommit, "oracle commit");
+	if (oracleCommit !== undefined && (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(oracleCommit) || !artifactFiles?.length || !oracleFiles?.length)) {
+		throw new FoundryError("invalid_oracle_source", "A versioned evaluator requires a full local commit ID, artifact files and pinned oracle files");
+	}
 	if (artifactFiles && (!artifactFiles.length || new Set(artifactFiles).size !== artifactFiles.length)) {
 		throw new FoundryError("invalid_field", "Artifact files must be a nonempty unique file set");
 	}
@@ -226,6 +230,7 @@ export function decodeCheck(value) {
 		command,
 		...(pathname === undefined ? {} : { path: pathname }),
 		...(oracleFiles === undefined ? {} : { oracleFiles }),
+		...(oracleCommit === undefined ? {} : { oracleCommit }),
 		...(artifactFiles === undefined ? {} : { artifactFiles }),
 	};
 }
@@ -284,7 +289,7 @@ export function decodeEvidence(value) {
 		reference: text(item.reference, "evidence.reference"), summary: text(item.summary, "evidence.summary"),
 		source: choice(item.source, /** @type {const} */ (["runner-receipt"]), "evidence.source"),
 		...(item.candidate === undefined ? {} : { candidate: decodeCandidate(item.candidate) }),
-		...(item.blocker === undefined ? {} : { blocker: choice(item.blocker, /** @type {const} */ (["input-artifact"]), "evidence.blocker") }),
+		...(item.blocker === undefined ? {} : { blocker: choice(item.blocker, /** @type {const} */ (["input-artifact", "oracle-input"]), "evidence.blocker") }),
 	};
 }
 

@@ -2853,6 +2853,45 @@ function evaluatedFixture(t, log) {
 const artifactCheck = { ...definition.tasks[0].checks[0], artifactFiles: ["unit.mjs"],
 	command: `node --input-type=module -e 'import { value } from "./unit.mjs"; if (value < 2) process.exit(1)'` };
 
+for (const scenario of ["missing-from-worktree", "different-in-worktree", "bad-pin", "absent-object"]) {
+	test(`versioned evaluator source: ${scenario}`, async t => {
+		const { runtime, directory } = evaluatedFixture(t);
+		const git = (/** @type {string[]} */ args) => execFileSync("git", ["-C", directory, "-c", "core.hooksPath=/dev/null", ...args], { encoding: "utf8" }).trim();
+		const file = path.join(directory, "checks", "probe.mjs");
+		const probe = `import { value } from "../unit.mjs"; if (value !== 2) process.exit(1);\n`;
+		mkdirSync(path.dirname(file));
+		writeFileSync(file, probe);
+		git(["add", "--", "checks/probe.mjs"]);
+		git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgSign=false", "commit", "-qm", "Evaluator"]);
+		const commit = git(["rev-parse", "HEAD"]);
+		const check = { ...artifactCheck, command: "node checks/probe.mjs",
+			oracleCommit: scenario === "absent-object" ? "a".repeat(40) : commit,
+			oracleFiles: [{ path: "checks/probe.mjs", sha256: createHash("sha256").update(scenario === "bad-pin" ? "other" : probe).digest("hex") }] };
+		rmSync(file);
+		if (scenario === "different-in-worktree") writeFileSync(file, "process.exit(1)");
+		writeFileSync(path.join(directory, "unit.mjs"), "export const value = 2;\n");
+		await runtime.operation("start_goal", { ...definition, scope: { ...definition.scope, paths: ["unit.mjs"] },
+			tasks: [{ ...definition.tasks[0], checks: [check] }] }, "director");
+		const task = runtime.store().snapshot().tasks[0];
+		await runtime.operation("start_task", { taskId: task.id }, "director");
+		const checked = record(await runtime.operation("run_check", { taskId: task.id, checkId: "behavior", repair: true, publish: "unit" }, "director"));
+		if (scenario === "bad-pin" || scenario === "absent-object") {
+			assert.equal(checked.state, "blocked");
+			assert.equal(record(checked.evidence).blocker, "oracle-input");
+			assert.equal(runtime.store().snapshot().attempts.length, 1);
+		} else {
+			assert.equal(checked.state, "passed");
+			const [output] = runtime.store().getTask(task.id).outputs;
+			assert.equal(output.name, "unit");
+			assert.equal(existsSync(path.join(output.reference, "checks/probe.mjs")), false);
+			const receipt = JSON.parse(readFileSync(text(record(checked.evidence).reference, "receipt"), "utf8"));
+			assert.equal(receipt.oracleCommit, commit);
+		}
+		if (scenario === "different-in-worktree") assert.equal(readFileSync(file, "utf8"), "process.exit(1)");
+		else assert.equal(existsSync(file), false);
+	});
+}
+
 /** @param {import("node:test").TestContext} t */
 async function issuedFileCheck(t) {
 	const { runtime, directory } = fixture(t);

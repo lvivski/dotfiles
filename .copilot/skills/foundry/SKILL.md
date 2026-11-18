@@ -191,6 +191,11 @@ filename for an entry. Do not substitute a newer checkout or combine passing che
 candidate versions. Integration declares and evaluates its final unit too. This opt-in format
 does not pin undeclared runtime/data dependencies or require commits. Non-artifact checks still run
 their assigned commands without capturing a file bundle.
+If the worker base omits evaluator or retained support files, declare `oracleCommit` on the
+artifact-bound check before admission. Use a full local commit containing all SHA-256-pinned
+oracle files; only those files are read into the runner's private bundle. Missing support is a
+provisioning blocker, not a product-code repair. Do not copy support into a restricted generator
+checkout, change old attempts' snapshots, or publish an out-of-band evaluation.
 When publication of the evaluated unit is intended, use `publish: "<output name>"` on
 `foundry_run_check`. It uses the normal promotion path once all governing checks pass on the same
 candidate, without another model turn. Partial acceptance keeps work running; mixed candidates

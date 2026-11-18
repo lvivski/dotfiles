@@ -47,7 +47,8 @@ try {
 		stdout: "", stderr: "",
 		/** @type {import("./model.d.ts").Candidate|undefined} */ candidate: undefined,
 		/** @type {{manifestId:string,tree:string}|undefined} */ product: undefined,
-		/** @type {"input-artifact"|null} */ blocker: null,
+		...(check.oracleCommit ? { oracleCommit: check.oracleCommit } : {}),
+		/** @type {"input-artifact"|"oracle-input"|null} */ blocker: null,
 	};
 	const verifyOracles = (root = directory) => {
 		for (const file of check.oracleFiles ?? []) {
@@ -63,7 +64,7 @@ try {
 			|| task.state !== "running" || attempt.state !== "running") {
 			throw new FoundryError("attempt_not_current", "This check belongs to a superseded or cancelled attempt");
 		}
-		verifyOracles();
+		if (!check.oracleCommit) verifyOracles();
 		if (inputOutputs.some(input => input.output === undefined)) throw new FoundryError("inputs_unavailable", "An assigned versioned input is no longer available");
 		const verifyInputs = () => {
 			for (const input of inputOutputs) if (input.output) {
@@ -74,7 +75,8 @@ try {
 		verifyInputs();
 		raw.product = store.productCheckPlan(attempt.id);
 		const productRoot = raw.product ? materializeProduct(store.databasePath, raw.product.tree) : undefined;
-		if (check.artifactFiles) raw.candidate = captureCandidate(productRoot ?? directory, check.artifactFiles, check.oracleFiles ?? [], task.scope.paths, store.databasePath);
+		// Product qualification must find the pinned bytes in the actual joined tree, never in an overlay.
+		if (check.artifactFiles) raw.candidate = captureCandidate(productRoot ?? directory, check.artifactFiles, check.oracleFiles ?? [], task.scope.paths, store.databasePath, productRoot ? undefined : check.oracleCommit);
 		const candidateDirectory = productRoot ?? raw.candidate?.reference ?? directory;
 		verifyOracles(candidateDirectory);
 		const remaining = goal.limits.deadline === undefined ? undefined : Date.parse(goal.limits.deadline) - Date.now();
@@ -91,12 +93,13 @@ try {
 		raw.error = result.error?.message ?? null;
 		raw.stdout = result.stdout ?? "";
 		raw.stderr = result.stderr ?? "";
-		verifyOracles();
+		if (!check.oracleCommit) verifyOracles();
 		verifyOracles(candidateDirectory);
 		verifyInputs();
 		if (raw.candidate) verifyCandidate(raw.candidate, store.databasePath);
 		if (raw.product && productRoot) verifyProduct(store.databasePath, raw.product.tree, productRoot);
 	} catch (error) {
+		if (error instanceof FoundryError && error.code === "oracle_input") raw.blocker = "oracle-input";
 		raw.error = error instanceof Error ? error.message : String(error);
 	}
 	raw.completedAt = new Date().toISOString();

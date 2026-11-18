@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { FoundryError, containsPath, decodeCandidate, digest, json, latestEvidence, resourcePath } from "./values.mjs";
@@ -21,19 +22,42 @@ function fileAt(root, name) {
 	return { filename, path: relative, mode: metadata.mode & 0o777, content: readFileSync(filename) };
 }
 
-/** @param {string} directory @param {string[]} files @param {NonNullable<import("./model.d.ts").Check["oracleFiles"]>} oracles @param {string[]} scope @param {string} databasePath @returns {Candidate} */
-export function captureCandidate(directory, files, oracles, scope, databasePath) {
+/** @param {string} directory @param {string} commit @param {NonNullable<import("./model.d.ts").Check["oracleFiles"]>} pins */
+export function committedOracles(directory, commit, pins) {
+	const git = (/** @type {string[]} */ args) => execFileSync("git", ["--no-pager", "--no-replace-objects", "--no-lazy-fetch",
+		"--literal-pathspecs", "-C", directory, ...args], { env: { PATH: process.env.PATH, GIT_CONFIG_GLOBAL: "/dev/null",
+			GIT_CONFIG_NOSYSTEM: "1", GIT_ALLOW_PROTOCOL: "" }, stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024, timeout: 30000 });
+	try {
+		if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(commit) || git(["cat-file", "-t", commit]).toString().trim() !== "commit")
+			throw new Error("expected an immutable local commit");
+		return pins.map(pin => {
+			const name = resourcePath(pin.path);
+			if (name !== pin.path || name.split("/").some(part => !part || part === "." || /^\.git[ .]*$/i.test(part))
+				|| /[\x00-\x1f\\:]/.test(name)) throw new Error(`invalid evaluator path: ${pin.path}`);
+			const entry = /^(100644|100755) blob ([a-f0-9]+)\t([^\0]+)\0$/.exec(git(["ls-tree", "--full-tree", "-z", commit, "--", name]).toString());
+			if (!entry || entry[3] !== name) throw new Error(`missing regular file: ${name}`);
+			const content = git(["cat-file", "blob", entry[2]]);
+			if (hash(content) !== pin.sha256) throw new Error(`hash mismatch: ${name}`);
+			return { path: name, mode: entry[1] === "100755" ? 0o755 : 0o644, content };
+		});
+	} catch (error) {
+		throw new FoundryError("oracle_input", `Cannot provision assigned evaluators from ${commit}: ${error instanceof Error ? error.message : String(error)}`);
+	}
+}
+
+/** @param {string} directory @param {string[]} files @param {NonNullable<import("./model.d.ts").Check["oracleFiles"]>} oracles @param {string[]} scope @param {string} databasePath @param {string} [oracleCommit] @returns {Candidate} */
+export function captureCandidate(directory, files, oracles, scope, databasePath, oracleCommit) {
 	const sources = files.map(name => {
 		const source = fileAt(directory, name);
 		if (!scope.some(base => containsPath(base, source.path))) throw new FoundryError("artifact_scope", `Artifact is outside this task's paths: ${source.path}`);
 		return source;
 	});
-	const evaluators = oracles.map(oracle => {
+	const evaluators = oracleCommit ? committedOracles(directory, oracleCommit, oracles) : oracles.map(oracle => {
 		const source = fileAt(directory, oracle.path);
 		if (hash(source.content) !== oracle.sha256) throw new FoundryError("oracle_changed", `Assigned evaluator changed: ${oracle.path}`);
-		if (sources.some(file => file.path === source.path)) throw new FoundryError("artifact_oracle_overlap", "Candidate files and conserved evaluator files must be distinct");
 		return source;
 	});
+	if (evaluators.some(source => sources.some(file => file.path === source.path))) throw new FoundryError("artifact_oracle_overlap", "Candidate files and conserved evaluator files must be distinct");
 	const root = artifactRoot(databasePath);
 	mkdirSync(root, { recursive: true, mode: 0o700 });
 	if (lstatSync(root).isSymbolicLink() || path.dirname(realpathSync(root)) !== realpathSync(path.dirname(databasePath))) {
