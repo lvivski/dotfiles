@@ -53,6 +53,12 @@ producer when admitting the goal. Design packets, worker bundles and component p
 to that delivery, not substitutes for it. The generated coordinator assignment carries this default;
 it does not add a new schema, permission, approval stage or pipeline to research-only work.
 
+For a first usable product flow, build and exercise one real end-to-end journey on the
+runnable candidate. For design work, compare its actual interface with the agreed reference.
+Add focused checks for material risks in that slice, such as data loss or actions against
+the wrong account. Defer broad regression coverage until the flow works; passing checks
+on the debug UI are not a design milestone. Preserve already-governing checks.
+
 Use the existing contract fields to make the boundary executable:
 
 - Give the integration/delivery producer `inputs` naming the implementation outputs it must join.
@@ -69,6 +75,12 @@ cut stable through repair and qualification; next proposals belong to the next i
 they fix a real blocker in this cut. Independent useful work may proceed. Distinguish publication,
 qualification, integration, landing and runnable delivery in reports, preserving real regression
 assertions and continuing coordinator responsibility without extra status-relay layers.
+
+Keep module work independently regenerable: scope producers to their own paths and give
+them the accepted interfaces and fixtures they actually need. Use separate worktrees.
+A missing input, unsettled operation, or shared landing claim blocks the work that needs
+it, not other modules. Preserve existing receipts, permissions, and claims; don't turn a
+local blocker or completed maintenance into an organization-wide hold.
 
 ### Collaboration and execution handoff
 
@@ -341,8 +353,10 @@ runner observations. For a missed ordinary completion, its actual worker can cal
 `foundry_reconcile_native(sessionId: "<this session>", toolCallId: "<original issued call>")`.
 The extension reads its own native history, validates the original start/arguments, final shell exit
 and session/project identity, and records the retained receipt against that exact attempt, even if
-retired. It neither reruns commands nor promotes check outputs; missing/expired history or a
-started-only result remains blocked. Caller-supplied receipt JSON is not accepted.
+retired. If the original call timed out while running, recovery can use a retained `read_bash`
+exit for the same shell before any restart or shell-handle reuse. It neither reruns commands nor
+promotes check outputs; missing/expired history or a started-only result remains blocked.
+Caller-supplied receipt JSON is not accepted.
 
 Operational authority is `<git-common-dir>/foundry/work.sqlite`, shared by repository worktrees,
 using WAL and short synchronous transactions. Ownership follows native identity and task ancestry,

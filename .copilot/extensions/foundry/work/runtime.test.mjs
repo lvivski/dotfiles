@@ -2221,6 +2221,78 @@ function retainedCommandEvents(toolCallId, args) {
 	};
 }
 
+function timedOutCommandEvents() {
+	const { start, completion } = retainedCommandEvents("build", { command: "Build preview", initial_wait: 30 });
+	return {
+		start,
+		completion: { ...completion, data: { toolCallId: "build", turnId: "original-turn", success: true,
+			toolTelemetry: { properties: { shell_error_category: "command_timeout", is_timeout: "true", executionMode: "sync" },
+				/** @type {{shell_id?: string}} */ restrictedProperties: {} },
+			result: { content: "Build started\n<command with shellId: 64 is still running after 30 seconds. The command is still running. You will be automatically notified when it completes; if you need the command to complete end your response with no tool calls to wait for the notification. Use stop_bash to stop it.>" } } },
+		readStart: { id: "read-start", type: "tool.execution_start", timestamp: "2030-01-01T00:00:02Z",
+			data: { toolName: "read_bash", toolCallId: "read", turnId: "read-turn", arguments: { shellId: "64", delay: 120 } } },
+		readEnd: { id: "read-exit", type: "tool.execution_complete", timestamp: "2030-01-01T00:00:03Z",
+			data: { toolCallId: "read", turnId: "read-turn", success: true, shellExecution: { exitCode: 0 },
+				toolTelemetry: { properties: { read_target_state: "active", read_target_original_mode: "sync" } } } },
+	};
+}
+
+test("live native timeout records the generated handle for the later read", async t => {
+	const { start, completion, readStart, readEnd } = timedOutCommandEvents();
+	const { runtime } = fixture(t);
+	await runtime.operation("start_goal", definition, "director");
+	await runtime.operation("start_task", { taskId: runtime.store().snapshot().tasks[0].id }, "director");
+	runtime.pre(start.data.toolName, start.data.arguments, "director", "build");
+	runtime.toolComplete(completion.data, "director");
+	assert.equal(runtime.store().getEffect("command:build")?.state, "uncertain");
+	assert.equal(record(runtime.store().getEffect("command:build")?.result).shellId, "64");
+	runtime.pre(readStart.data.toolName, readStart.data.arguments, "director", "read");
+	runtime.toolComplete(readEnd.data, "director");
+	assert.equal(runtime.store().getEffect("command:build")?.state, "settled");
+});
+
+for (const variant of ["valid", "structured shell", "conflicting shell", "other shell", "other mode", "subagent read", "new command", "resumed", "no exit", "quoted timeout"]) test(`native continued recovery: ${variant}`, async t => {
+	const { start, completion, readStart, readEnd } = timedOutCommandEvents();
+	/** @type {Record<string, unknown>[]} */
+	const starts = [variant === "subagent read" ? { ...readStart, data: { ...readStart.data, agentId: "child" } } : readStart];
+	if (variant === "structured shell") {
+		completion.data.toolTelemetry.restrictedProperties.shell_id = "64";
+		completion.data.result.content = "Build started";
+	}
+	if (variant === "conflicting shell") completion.data.toolTelemetry.restrictedProperties.shell_id = "65";
+	if (variant === "other shell") readStart.data.arguments.shellId = "65";
+	if (variant === "other mode") readEnd.data.toolTelemetry.properties.read_target_original_mode = "async";
+	if (variant === "new command") starts.unshift({ ...readStart, id: "new-start",
+		data: { ...readStart.data, toolCallId: "new", toolName: "bash" } });
+	if (variant === "resumed") starts.unshift({ id: "resumed", type: "session.resume", data: {} });
+	if (variant === "quoted timeout") completion.data.toolTelemetry.properties.is_timeout = "false";
+	const pages = [
+		{ events: variant === "no exit" ? starts : [...starts, readEnd], cursor: "older", hasMore: true, cursorStatus: "ok" },
+		{ events: [start, completion], cursor: "end", hasMore: false, cursorStatus: "ok" },
+	];
+	const { runtime } = fixture(t, { readSession: async id => ({ id }),
+		readCommand: async (_id, callId) => readCommandEvents(async () => /** @type {NonNullable<ReturnType<typeof pages.shift>>} */ (pages.shift()), callId) });
+	await runtime.operation("start_goal", definition, "director");
+	await runtime.operation("start_task", { taskId: runtime.store().snapshot().tasks[0].id }, "director");
+	runtime.pre(start.data.toolName, start.data.arguments, "director", "build");
+	// Legacy effect captured the timeout but missed the shell identity and follow-up hooks.
+	const effect = runtime.store().snapshot().effects[0];
+	runtime.store().recordEffect({ ...effect, state: "uncertain", result: { nativeCompletion: completion.data } }, "director");
+	const request = { sessionId: "director", toolCallId: "build" };
+	if (!["valid", "structured shell"].includes(variant)) {
+		await assert.rejects(runtime.operation("reconcile_native", request, "director"), { code: "native_completion_pending" });
+		assert.equal(runtime.store().getEffect("command:build")?.state, "uncertain");
+		return;
+	}
+	const recovered = record(await runtime.operation("reconcile_native", request, "director"));
+	assert.equal(recovered.state, "settled");
+	const receipt = record(recovered.nativeRecovery);
+	assert.equal(receipt.continuationEventId, completion.id);
+	assert.equal(receipt.readStartEventId, readStart.id);
+	assert.equal(receipt.completionEventId, readEnd.id);
+	assert.equal(runtime.store().snapshot().effects.length, 1);
+});
+
 test("ordinary native commands ignore quoted check markers and retain their actual completion", async t => {
 	const { runtime } = fixture(t);
 	await runtime.operation("start_goal", definition, "director");

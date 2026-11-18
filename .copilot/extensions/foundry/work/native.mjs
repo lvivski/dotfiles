@@ -87,6 +87,20 @@ export function effectShell(effect) {
 	return record(effect.request).shellId ?? result?.shellId;
 }
 
+/** @param {Record<string, unknown>} event */
+export function continuedShell(event) {
+	const telemetry = record(event.toolTelemetry ?? {});
+	const properties = record(telemetry.properties ?? {});
+	if (event.success !== true || event.shellExecution !== undefined
+		|| properties.shell_error_category !== "command_timeout" || properties.is_timeout !== "true") return;
+	const shellId = record(telemetry.restrictedProperties ?? {}).shell_id;
+	if (typeof shellId === "string" && shellId.length > 0) return shellId;
+	// Older hosts omit the generated shell ID from telemetry, but append it to the native timeout result.
+	const content = record(event.result ?? {}).content;
+	if (typeof content !== "string") return;
+	return /(?:^|\n)<command with shellId: ([^<>\s]+) is still running after \d+ seconds\. The command is still running\. You will be automatically notified when it completes; if you need the command to complete end your response with no tool calls to wait for the notification\. Use stop_bash to stop it\.>\n?$/.exec(content)?.[1];
+}
+
 /** @param {unknown} value @returns {Record<string, unknown> | undefined} */
 export function nativeObject(value) {
 	const envelope = record(value);
@@ -395,8 +409,8 @@ export function admittedEvidence(store, attemptId) {
 	});
 }
 
-/** @param {Store} store @param {unknown} value @param {string} actor @param {(effect:Effect)=>void} [settled] @param {import("./model.js").Json} [nativeRecovery] */
-export function observeCompletion(store, value, actor, settled, nativeRecovery) {
+/** @param {Store} store @param {unknown} value @param {string} actor @param {(effect:Effect)=>void} [settled] @param {{effectId:string, receipt:import("./model.js").Json, shellId?:string}} [recovery] */
+export function observeCompletion(store, value, actor, settled, recovery) {
 	const event = record(value);
 	if (typeof event.toolCallId !== "string") return;
 	const error = event.error === undefined ? undefined : record(event.error);
@@ -404,13 +418,19 @@ export function observeCompletion(store, value, actor, settled, nativeRecovery) 
 	const telemetry = nativeTelemetry === undefined ? undefined : record(nativeTelemetry);
 	const properties = telemetry?.properties === undefined ? undefined : record(telemetry.properties);
 	const identifiers = telemetry?.restrictedProperties === undefined ? undefined : record(telemetry.restrictedProperties);
-	const returnedShell = typeof identifiers?.shell_id === "string" ? identifiers.shell_id : undefined;
-	let effect = store.effectByNativeCall(event.toolCallId);
+	const reportedShell = typeof identifiers?.shell_id === "string" ? identifiers.shell_id : undefined;
+	let effect = recovery ? store.getEffect(recovery.effectId) : store.effectByNativeCall(event.toolCallId);
+	const originalCall = effect && record(effect.request).nativeToolCallId === event.toolCallId;
+	const returnedShell = reportedShell ?? recovery?.shellId ?? (originalCall ? continuedShell(event) : undefined);
 	if (returnedShell !== undefined) {
+		const expectedShell = effect && effectShell(effect);
+		if (expectedShell !== undefined && expectedShell !== returnedShell) return;
+		if (recovery?.shellId !== undefined && recovery.shellId !== returnedShell) return;
+	}
+	if (!effect && reportedShell !== undefined && !recovery) {
 		const matching = store.pendingEffects().filter(candidate => candidate.kind === "command" && effectShell(candidate) === returnedShell
 			&& store.getAttempt(candidate.attemptId).nativeId === actor);
 		if (matching.length === 1) effect = matching[0];
-		else if (effect && effectShell(effect) !== undefined && effectShell(effect) !== returnedShell) return;
 	}
 
 	if (effect && effect.kind !== "command") return;
@@ -431,7 +451,7 @@ export function observeCompletion(store, value, actor, settled, nativeRecovery) 
 	const observation = store.recordEffect({
 		...effect, state,
 		result: json({ ...(effect.result === undefined ? {} : record(effect.result)), nativeCompletion: event, nativeResult,
-			...(nativeRecovery === undefined ? {} : { nativeRecovery }),
+			...(recovery === undefined ? {} : { nativeRecovery: recovery.receipt }),
 			...(returnedShell === undefined ? {} : { shellId: returnedShell }),
 			...(stopped ? { stopped: true } : {}), ...(evidence ? { evidence } : {}) }),
 	}, actor);

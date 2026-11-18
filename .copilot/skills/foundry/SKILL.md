@@ -23,6 +23,11 @@ named inputs and executable checks of the combined candidate. For a factory, `co
 must identify that requested delivery, not an intermediate packet. Use existing checks and input
 edges; do not add a separate approval workflow or impose app-delivery stages on research-only work.
 
+For a first usable product flow, build and exercise one real end-to-end journey on the
+runnable candidate. For design work, compare the actual interface with the agreed reference.
+Add focused checks for material risks in the slice, not a broad regression matrix for the
+prototype or debug UI. Expand coverage once the flow works; keep already-governing checks.
+
 Include landing, build, launch and visual inspection when required by the user's requested outcome.
 Respect actual Git/release authorization: do not invent no-commit/no-landing restrictions, infer
 permission from a task, or call an unlanded/unlaunched artifact delivered when those steps are
@@ -171,7 +176,11 @@ consumer; route the actual failed input identity to its accountable owner.
 ## Continue locally
 
 Parents integrate declared child outputs. Only real named-output prerequisites serialize work;
-delegation edges do not. Record genuine native input pauses with their actual request IDs using
+delegation edges do not. Regenerate independent modules in separate worktrees against their
+declared, pinned interfaces and fixtures. Keep a blocker on the affected work only; continue
+eligible independent work without waiting on the same release or landing surface. Preserve
+actual permissions, effects and claims; do not extend a completed maintenance hold to new work.
+Record genuine native input pauses with their actual request IDs using
 `foundry_wait_task`, without duplicating the question. A solely waiting parent releases capacity
 only after substantive commands settle; `foundry_resume_task` reacquires through the same per-goal allocator.
 Unrelated ready goals never block an admission with available capacity.
