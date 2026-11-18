@@ -131,6 +131,75 @@ test("rank and pull skip blocked items, respect whole-job capacity and replay; e
 	assert.equal(db.snapshot().completions?.find(completion => completion.goalId === current.goalId)?.closed, true);
 });
 
+test("accepted product, consumed wake, no runnable jobs: the same lead still owes discovery without holding a slot", async t => {
+	const { db, runtime, binding, admit, knowledge } = await setup(t);
+	const squad = db.backlog("mail").squads[0], stale = binding("mail");
+	const itemId = admit("mail", "route");
+	const lead = () => db.getTask(squad.taskId);
+	const wait = () => ({ taskId: squad.taskId, attemptId: lead().currentAttemptId, kind: "events",
+		reason: "No further work", handledGeneration: lead().coordination?.generation });
+	const advance = async () => record(await runtime.operation("advance", {}, "mail"));
+	const [pull] = db.squadTurns("mail", squad.goalId).actions;
+	assert.equal(pull.tool, "foundry_pull_work");
+	assert.equal(db.backlog("mail").squads[0].needsDiscovery, false);
+	await assert.rejects(runtime.operation("wait_task", wait(), "mail"), { code: "squad_work_pending" });
+	assert.equal(db.getAttempt(text(lead().currentAttemptId, "lead attempt")).slot, false);
+	const taskId = text(db.pullWork(pull.arguments, "mail").tasks?.[0].id, "product");
+	const batch = record(await runtime.operation("dispatch", { taskIds: [taskId] }, "mail"));
+	assert.ok(Array.isArray(batch.prepared));
+	runtime.pre("create_session", batch.prepared[0].arguments, "mail", "leaf-create");
+	runtime.post("create_session", batch.prepared[0].arguments, { id: "leaf" }, "mail");
+	await runtime.operation("wait_task", wait(), "mail"); // genuinely waiting on the product
+	const publication = record(await runtime.operation("run_check", { taskId, checkId: "scenario", publish: "product" }, "leaf"));
+	const resultId = text(record(publication.result).id, "promoted result");
+	const expected = { tool: "foundry_observe_work", arguments: binding("mail"), reason: `accepted:${itemId}`, resultId };
+	assert.deepEqual((await advance()).squadActions, [expected]);
+	assert.equal(db.pendingWakes("mail").length, 0);
+	assert.deepEqual(db.squadTurns("director", squad.goalId).actions, []);
+	const handled = lead().coordination?.handled;
+	await assert.rejects(runtime.operation("wait_task", wait(), "mail"), { code: "squad_work_pending", message: /foundry_observe_work/ });
+	assert.equal(lead().coordination?.handled, handled);
+
+	// Natural termination is allowed. The one exceptional continuation uses the
+	// existing attempt and transport, even when its original wake was consumed.
+	const workers = db.snapshot().attempts.length;
+	runtime.agentStop("mail");
+	const [continuation] = db.pendingWakes("mail");
+	assert.equal(continuation?.reason, `coordination:${squad.taskId}`);
+	await runtime.operation("advance", { goalId: squad.goalId }, "director");
+	await runtime.flushNotifications();
+	assert.equal(db.snapshot().wakes.find(w => w.id === continuation.id)?.sent, continuation.generation);
+	assert.deepEqual((await advance()).squadActions, [expected]);
+	runtime.agentStop("mail");
+	assert.deepEqual(db.pendingWakes("mail"), []);
+	const observation = { kind: "no-gap", gap: "Published scenario covers the charter", evidence: [{ resultId }] };
+	assert.throws(() => db.observeWork({ ...stale, observation }, "mail"), { code: "stale_generation" });
+	assert.throws(() => db.observeWork({ ...binding("mail"), observation: { ...observation, evidence: [{ ...knowledge, sha256: "wrong" }] } }, "mail"), { code: "unverified_observation" });
+	db.observeWork({ ...binding("mail"), observation }, "mail");
+	assert.deepEqual((await advance()).squadActions, []);
+	assert.equal(lead().coordination?.handled, lead().coordination?.generation);
+	assert.equal(db.snapshot().attempts.length, workers);
+	assert.equal(db.backlog("mail").items[0].state, "accepted");
+});
+
+test("backlog detail is paged, read-only and version checked; a proposal cannot dispose of a pending review", async t => {
+	const { db, runtime, observation, admit } = await setup(t);
+	const input = { view: "backlog" };
+	const before = db.squadTurns("mail").actions;
+	db.observeWork(observation("mail", "suggestion", { kind: "advisory", gap: "large detail ".repeat(4000) }), "mail");
+	const first = record(await runtime.operation("get_context", input, "mail"));
+	assert.ok(typeof first.content === "string" && first.content.length <= 4096 && first.nextOffset !== undefined);
+	const page = { ...input, offset: first.nextOffset, version: first.version };
+	assert.ok(record(await runtime.operation("get_context", page, "mail")).content);
+	assert.deepEqual(db.squadTurns("mail").actions, before);
+	assert.equal(db.backlog("quality").items.length, 0);
+	await assert.rejects(runtime.operation("get_context", page, "quality"), { code: "backlog_changed" });
+	admit("mail", "clarify", { kind: "question", evidence: [] });
+	await assert.rejects(runtime.operation("get_context", page, "mail"), { code: "backlog_changed" });
+	assert.equal(db.squadTurns("mail").actions[0]?.tool, "foundry_pull_work");
+	assert.equal(db.backlog("mail").squads[0].needsDiscovery, false);
+});
+
 test("local spec graph preserves named acceptance; invalid plans roll back, independent outputs run together and incremental splits are idempotent", async t => {
 	const { db, binding, admit } = await setup(t);
 	const itemId = admit("mail", "fixture-split"), { tasks } = db.pullWork({ ...binding("mail"), itemId }, "mail");

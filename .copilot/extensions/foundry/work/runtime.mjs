@@ -9,7 +9,7 @@ import { array, compileCheck, compileDefinition, compileGoal, number, readContra
 import { compileFactoryContext, factorySettings, readFactory, templateChecks } from "./factory.mjs";
 import { evaluate } from "./evaluation.mjs";
 import { admittedEvidence, effectShell, nativeObject, observeCompletion, observePost, observePre, observeRefusal, prepareCheck, prepareCommand, prepareDispatch, reconcileDetail, recoverChecks } from "./native.mjs";
-import { FoundryError, boolean, choice, closedFields, decodeFinding as finding, decodeInput, decodeOutput, digest, json, latestEvidence, record, text } from "./values.mjs";
+import { FoundryError, boolean, choice, closedFields, decodeFinding as finding, decodeInput, decodeOutput, digest, json, latestEvidence, record, text, textPage } from "./values.mjs";
 import { affinityId, nativeUsage } from "./usage.mjs";
 import { createHeartbeat } from "./heartbeat.mjs";
 import { commandForRecovery, reconcileCommand } from "./recovery.mjs";
@@ -577,7 +577,8 @@ export function createRuntime(options) {
 					}
 				}
 				const advancement = db.advance(actor, goalId);
-				const batch = dispatchBatch([...store().backlog(actor, goalId).squads.filter(squad => squad.dispatch && squad.owner === actor).map(squad => squad.taskId),
+				const turns = db.squadTurns(actor, goalId);
+				const batch = dispatchBatch([...turns.dispatch,
 					...advancement.filter(job => job.disposition === "actionable").flatMap(job => job.actions)
 					.filter(action => action.kind === "dispatch").map(action => action.taskId)], actor);
 				retain(db);
@@ -590,7 +591,7 @@ export function createRuntime(options) {
 					]);
 					const retirements = await advanceRetirements(db, options, actor, goalId, () => !closed && database === db);
 					const stops = !closed && database === db && messageRouteDisabled ? await deliverStops(actor, goalId) : [];
-					return { received, advancement, ...dispatch, recovery, transportRecovery, retirements, productDeliveries, stops };
+					return { received, squadActions: turns.actions, advancement, ...dispatch, recovery, transportRecovery, retirements, productDeliveries, stops };
 				} finally { release(db); }
 			}
 			case "ingest": {
@@ -650,6 +651,13 @@ export function createRuntime(options) {
 				return compileGoal(source.definition, store(), actor, { reference: source.reference, sha256: source.sha256 });
 			}
 			case "get_context": {
+				if (args.view === "backlog") {
+					closedFields(args, ["view", "goalId", "offset", "version"], "backlog read");
+					const body = JSON.stringify(store().backlog(actor, args.goalId === undefined ? undefined : text(args.goalId, "goal id")));
+					const version = digest(body), offset = number(args.offset ?? 0, "offset");
+					if ((offset || args.version !== undefined) && args.version !== version) throw new FoundryError("backlog_changed", "Read the current backlog from the first page");
+					return { version, ...textPage(body, offset) };
+				}
 				if (args.assignmentId === undefined) return context(args, actor);
 				return store().assignmentPage(text(args.assignmentId, "assignment attempt"), actor, number(args.offset ?? 0, "offset"),
 					args.checkId === undefined ? undefined : text(args.checkId, "check id"));

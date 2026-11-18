@@ -28,8 +28,8 @@ export function recordSignal(tx, input, actor) {
 		return existing;
 	}
 	tx.put("signals", candidate);
-	signalDiscovery(tx, candidate);
-	wake(tx, signalOwner(tx, candidate), goal.id, `signal:${candidate.id}`);
+	const recipient = signalOwner(tx, candidate);
+	if (!signalDiscovery(tx, candidate, recipient)) wake(tx, recipient, goal.id, `signal:${candidate.id}`);
 	return candidate;
 }
 

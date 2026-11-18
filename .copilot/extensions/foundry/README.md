@@ -23,15 +23,18 @@ a successor only when justified. Change priorities by revising direction, not by
 assignments. A submitted message, a qualified artifact, a landed change and a retired workspace
 are separate facts; inspect their receipts rather than inferring them from a session's activity.
 
-`foundry_get_context` returns the squad's activation, direction revision, pending discovery
-generation, declared evidence files, ranked ready items and whether a whole-job slot can be
-pulled. Use those exact revisions with the following operations:
+`foundry_advance` gives a bound lead its next `squadActions` with the exact generation and
+eligible queue head or review trigger. For details, `foundry_get_context({view:"backlog"})`
+pages just the scoped backlog; use `offset:nextOffset` and the returned `version`.
 
 1. `foundry_inspect_evidence` reads a captured charter source or bounded committed file.
    `foundry_observe_work` records its digest (or a promoted result ID), a stable gap key,
    expected improvement, stop condition and governing template. A specific discovery question
    can use the charter's per-revision allowance without evidence. A `no-gap` disposition
-   needs evidence and the observed generation; context reads do not consume discovery work.
+   needs evidence. Only a current review can discharge discovery. A wait yields capacity but
+   refuses to mark work handled while a review or eligible pull is due. Queue openings don't
+   create new reviews. If a lead nevertheless stops, its existing one-shot escalation can
+   route a continuation to that same lead; no heartbeat is required.
 2. `foundry_pull_work` claims the current ready head. It ranks by outcome priority, severity,
    estimated cost and age; an older eligible squad gets first claim when whole-job slots are
    contested. Dependencies are accepted items, not advisory messages. A predecessor links an

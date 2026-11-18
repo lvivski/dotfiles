@@ -1,10 +1,11 @@
 import { preparedDispatch, releaseSlot } from "./attempts.mjs";
+import { squadAction } from "./backlog.mjs";
 import { outstanding } from "./effects.mjs";
 import { ancestors, below, budgetAvailable, goalMember, requireAdmission, requireGoalOwner, requireOwner, uncancelled } from "./policy.mjs";
 import { decodeUnit } from "./records.mjs";
 import { revise } from "./tasks.mjs";
 import { FoundryError, natural, text } from "./values.mjs";
-import { wake } from "./wakes.mjs";
+import { enqueueWake, pendingWakes, wake } from "./wakes.mjs";
 
 /** @typedef {import("./model.d.ts").Unit} Unit */
 /** @typedef {import("./model.d.ts").Task} Task */
@@ -59,12 +60,12 @@ export function coordinationEvent(tx, task, cause) {
 	tx.put("tasks", task);
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Task} task @param {string} cause @returns {void} */
-export function notifyCoordination(tx, task, cause) {
+/** @param {import("./database.mjs").Transaction} tx @param {Task} task @param {string} cause @param {string} [notification] @returns {void} */
+export function notifyCoordination(tx, task, cause, notification) {
 	const coordinator = [task, ...ancestors(tx, task)].find(item => item.role === "coordinator");
 	if (!coordinator) return;
 	coordinationEvent(tx, coordinator, cause);
-	wake(tx, coordinator.owner, coordinator.goalId, `coordination:${coordinator.id}`);
+	enqueueWake(tx, coordinator.owner, coordinator.goalId, notification ?? `coordination:${coordinator.id}`);
 }
 
 /** @param {import("./database.mjs").Transaction} tx @param {Task} task @returns {boolean} */
@@ -147,6 +148,11 @@ export function parkCoordinators(tx, actor) {
 			task.coordination.escalated = task.coordination.generation;
 			tx.put("tasks", task);
 			const sponsor = task.parentId ? tx.get("tasks", task.parentId).owner : tx.get("goals", task.goalId).owner;
+			// A stopped lead cannot message itself. Let the existing sponsor wake drain one
+			// addressed continuation, without creating work or repeating an unconsumed send.
+			if (sponsor !== actor && squadAction(tx, task) && !pendingWakes(tx, actor).some(w => w.goalId === task.goalId)) {
+				enqueueWake(tx, actor, task.goalId, `coordination:${task.id}`);
+			}
 			wake(tx, sponsor, task.goalId, `coordination-stalled:${task.id}`);
 		}
 		parked.push(task);

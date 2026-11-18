@@ -24,6 +24,12 @@ export function wake(tx, owner, goalId, reason, coordinatorId) {
 			}
 		}
 	}
+	return enqueueWake(tx, owner, goalId, reason);
+}
+
+/** Transport only: the caller has already recorded the coordination event.
+ * @param {import("./database.mjs").Transaction} tx @param {string} owner @param {string} goalId @param {string} reason @returns {Wake} */
+export function enqueueWake(tx, owner, goalId, reason) {
 	const existing = tx.list("wakes", "WHERE owner=? AND goal_id=?", [owner, goalId])[0];
 	const relatedReasons = [...new Set([
 		...(existing && existing.generation > existing.consumed ? existing.relatedReasons ?? [existing.reason] : []),

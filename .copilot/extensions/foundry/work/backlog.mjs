@@ -5,11 +5,11 @@ import { compileDefinition } from "./compiler.mjs";
 import { decodeDirection, directionRecord, itemRecord, squadRecord } from "./direction.mjs";
 import { compileFactoryContext, templateChecks } from "./factory.mjs";
 import { admitFactoryJob, completionStatus, freeJobs } from "./jobs.mjs";
+import { outstanding } from "./effects.mjs";
 import { contracts, inputs as productInputs } from "./lineage.mjs";
 import { createUnit, notifyCoordination } from "./organization.mjs";
 import { budgetAvailable } from "./policy.mjs";
 import { cancelTask, createGoal, createTask, replaceInputs } from "./tasks.mjs";
-import { wake } from "./wakes.mjs";
 import { FoundryError, array, choice, closedFields, containsPath, decodeLimits, decodeScope, digest, json, narrowScope, natural, positive, record, resourcePath, strings, text } from "./values.mjs";
 
 /** @typedef {import("./database.mjs").Transaction} Tx */
@@ -18,18 +18,18 @@ import { FoundryError, array, choice, closedFields, containsPath, decodeLimits, 
 /** @typedef {import("./model.d.ts").BacklogItem} Item */
 /** @typedef {import("./model.d.ts").Task} Task */
 /** @typedef {{path:string,sha256:string,content:string} & ({source:"policy",commit?:never}|{source:"git",commit:string})} ObservationSource */
-/** @typedef {{squad:Squad,item?:never,duplicateOf?:never,state?:never}|{item:Item,squad?:never,duplicateOf?:never,state?:never}|{duplicateOf:string,state:Item["state"],squad?:never,item?:never}} ObservationResult */
+/** @typedef {{squad:Squad,next?:ReturnType<typeof squadAction>,item?:never,duplicateOf?:never,state?:never}|{item:Item,squad?:never,duplicateOf?:never,state?:never}|{duplicateOf:string,state:Item["state"],squad?:never,item?:never}} ObservationResult */
 /** @param {string} kind @param {...string} parts */
 const key = (kind, ...parts) => `${kind}:${digest(parts)}`;
 const byFactory = "WHERE json_extract(document,'$.factoryId')=?";
 /** @param {Tx} tx @param {string} id */
 function latest(tx, id) { return tx.list("directions", byFactory, [id]).at(-1); }
-/** @param {Tx} tx @param {Squad} squad @param {string} reason */
-function trigger(tx, squad, reason) {
+/** @param {Tx} tx @param {Squad} squad @param {string} reason @param {string} [notification] */
+function trigger(tx, squad, reason, notification) {
 	squad.generation++;
 	squad.reason = reason;
 	tx.put("squads", squad);
-	notifyCoordination(tx, tx.get("tasks", squad.taskId), reason);
+	notifyCoordination(tx, tx.get("tasks", squad.taskId), "backlog", notification);
 }
 
 /** @param {Tx} tx @param {Factory} factory @param {string} actor @returns {{tasks:Task[],replay:boolean}} */
@@ -56,7 +56,7 @@ export function activateSubscriptions(tx, factory, actor) {
 		const scope = decodeScope(charter.scope);
 		const unit = createUnit(tx, { goalId: goal.id, name, kind: "squad", context: strings(charter.context) }, actor);
 		const task = createTask(tx, { goalId: goal.id, id: `${id}:lead`, unitId: unit.id, role: "coordinator",
-			title: `${name} discovery`, assignment: `Own ${name}'s backlog for ${factory.id}. Read foundry_get_context for current direction and evidence. Use foundry_inspect_evidence and foundry_observe_work to record a specific gap, bounded question, or evidenced no-gap disposition. Pull the highest eligible item with foundry_pull_work, and split independently testable outputs when justified. Charter membership alone grants no execution authority.`,
+			title: `${name} discovery`, assignment: `Own ${name}'s backlog for ${factory.id}. Follow squadActions from foundry_advance on your owner turn. Read foundry_get_context with view:"backlog" for direction and evidence. Record a gap, bounded question, or evidenced no-gap for the observed generation; pull eligible work and split independently testable outputs. A wait note does not complete discovery.`,
 			workType: text(scope.workTypes[0], "charter work type"), scope,
 			dispatch: { generator: false, context: strings(charter.context), ...(charter.agent ? { agent: text(charter.agent, "agent") } : {}) } }, actor, true);
 		tx.put("squads", squadRecord({ id, factoryId: factory.id, name, taskId: task.id, goalId: goal.id, outcomes: charter.outcomes,
@@ -66,21 +66,31 @@ export function activateSubscriptions(tx, factory, actor) {
 	return { tasks, replay: false };
 }
 
+/** @param {Tx} tx @param {Task} task */
+function boundLead(tx, task) {
+	const attempt = task.currentAttemptId ? tx.get("attempts", task.currentAttemptId) : undefined;
+	return attempt && attempt.nativeId === task.owner && attempt.taskVersion === task.version && !attempt.supersededBy
+		&& ["waiting", "running"].includes(attempt.state) && ["waiting", "running"].includes(task.state)
+		&& !tx.db.prepare("SELECT 1 FROM local_attempts WHERE attempt_id=?").get(attempt.id) ? attempt : undefined;
+}
+/** @param {Tx} tx @param {Squad} squad */
+function relevant(tx, squad) {
+	return latest(tx, squad.factoryId)?.outcomes.some(outcome => squad.outcomes.includes(outcome.id));
+}
 /** @param {Tx} tx @param {string} squadId @param {number} revision @param {string} actor @param {number} [activation]
  * @returns {{squad:Squad,factory:Factory,task:Task,attempt:import("./model.d.ts").Attempt}} */
 export function requireSquad(tx, squadId, revision, actor, activation) {
 	const squad = tx.get("squads", squadId);
 	const factory = tx.get("factory_controls", squad.factoryId);
 	const task = tx.get("tasks", squad.taskId);
-	const attempt = task.currentAttemptId ? tx.get("attempts", task.currentAttemptId) : undefined;
-	if (task.owner !== actor || attempt?.nativeId !== actor || attempt.taskVersion !== task.version || attempt.supersededBy
-		|| !["waiting", "running"].includes(attempt.state) || !["waiting", "running"].includes(task.state)
-		|| tx.db.prepare("SELECT 1 FROM local_attempts WHERE attempt_id=?").get(attempt.id)) {
+	const attempt = boundLead(tx, task);
+	if (task.owner !== actor || !attempt) {
 		throw new FoundryError("unbound_squad", "Only the charter's current native coordinator can admit, pull or decompose its work");
 	}
 	if (factory.state !== "active" || factory.pausedWorkers.includes(actor)) throw new FoundryError("factory_paused", "The factory or squad owner is paused");
 	if (activation !== factory.generation) throw new FoundryError("stale_activation", "Read the current factory generation before changing its backlog");
 	if (squad.revision !== revision) throw new FoundryError("stale_direction", "Reassess against the active direction");
+	if (!relevant(tx, squad)) throw new FoundryError("dormant_subscription", "No current outcome matches this charter");
 	if (task.waiting?.kind === "input" || !budgetAvailable(tx, tx.get("goals", squad.goalId))) throw new FoundryError("squad_held", "Resolve the squad's actual input or budget hold first");
 	return { squad, factory, task, attempt };
 }
@@ -147,18 +157,21 @@ export function observe(tx, input, actor) {
 	const { squad, factory, task, attempt } = bound(tx, input, actor);
 	const entry = record(input.observation);
 	const kind = choice(entry.kind, ["no-gap", "gap", "question", "advisory"], "observation kind");
+	if (positive(input.generation, "observed generation") !== squad.generation) {
+		throw new FoundryError("stale_generation", "New evidence arrived; do not clear a newer discovery turn");
+	}
 	const evidence = pin(tx, factory, squad, entry.evidence ?? []);
 	const gap = text(entry.gap, "specific observation or question");
 	if (kind === "no-gap") {
 		closedFields(entry, ["kind", "gap", "evidence"], "no-gap observation");
-		if (positive(input.generation, "observed generation") !== squad.generation) throw new FoundryError("stale_generation", "New evidence arrived; do not clear a newer discovery turn");
 		if (!evidence.length) throw new FoundryError("unverified_observation", "Record the source checked before sleeping");
 		squad.reason = `${gap} (${JSON.stringify(evidence)})`;
 		squad.handled = squad.generation;
 		tx.put("squads", squad);
-		const otherWork = task.coordination?.causes.some(cause => !/^(?:admission$|admitted:|accepted:|signal:|activation:|direction:)/u.test(cause));
-		waitTask(tx, task.id, actor, { kind: "events", reason: squad.reason }, { attemptId: attempt.id, ...(otherWork ? {} : { handledGeneration: task.coordination?.generation }) });
-		return { squad };
+		const next = squadAction(tx, task, squad);
+		const otherWork = task.coordination?.causes.some(cause => cause !== "admission" && cause !== "backlog");
+		waitTask(tx, task.id, actor, { kind: "events", reason: squad.reason }, { attemptId: attempt.id, ...(next || otherWork ? {} : { handledGeneration: task.coordination?.generation }) });
+		return { squad, ...(next ? { next } : {}) };
 	}
 	closedFields(entry, ["kind", "gapKey", "outcome", "template", "title", "gap", "improvement", "stop", "evidence", "scope", "dependencies", "predecessor", "severity", "cost", "sources"], "work observation");
 	const outcome = text(entry.outcome, "outcome"), template = text(entry.template, "acceptance template");
@@ -203,6 +216,10 @@ export function observe(tx, input, actor) {
 			existing.observations.push(observation);
 			tx.put("backlog_items", existing);
 		}
+		if (!reason && ["queued", "pulled"].includes(existing.state)) {
+			squad.handled = squad.generation;
+			tx.put("squads", squad);
+		}
 		return { duplicateOf: existing.id, state: existing.state };
 	}
 	if (!reason && kind === "question" && squad.questions >= squad.discoveryLimit) throw new FoundryError("discovery_exhausted", "This revision's bounded question allowance is exhausted");
@@ -213,7 +230,9 @@ export function observe(tx, input, actor) {
 	tx.put("backlog_items", item);
 	if (!reason) {
 		if (kind === "question") squad.questions++;
-		trigger(tx, squad, `admitted:${item.id}`);
+		squad.handled = squad.generation;
+		tx.put("squads", squad);
+		notifyCoordination(tx, task, "backlog");
 	}
 	return { item };
 }
@@ -234,13 +253,50 @@ function pullWindow(tx, factory) {
 	const slots = freeJobs(tx, factory);
 	const contenders = tx.list("squads", byFactory, [factory.id]).flatMap(squad => {
 		const lead = tx.get("tasks", squad.taskId);
-		const attempt = lead.currentAttemptId && tx.get("attempts", lead.currentAttemptId);
-		if (!attempt || attempt.nativeId !== lead.owner || attempt.taskVersion !== lead.version || !["waiting", "running"].includes(attempt.state)
+		if (!boundLead(tx, lead) || !relevant(tx, squad)
 			|| lead.waiting?.kind === "input" || factory.pausedWorkers.includes(lead.owner) || !budgetAvailable(tx, tx.get("goals", squad.goalId))) return [];
 		const head = ranked(tx, squad)[0];
 		return head ? [head] : [];
 	}).sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
 	return { slots, eligible: contenders.slice(0, slots).map(item => item.id) };
+}
+
+/** The same owner action drives advance and the event-wait fence. It is not a reservation.
+ * @param {Tx} tx @param {Task} task @param {Squad} [squad] */
+export function squadAction(tx, task, squad = tx.list("squads", "WHERE task_id=?", [task.id])[0]) {
+	if (!squad || task.waiting?.kind === "input") return;
+	const attempt = boundLead(tx, task), factory = tx.get("factory_controls", squad.factoryId);
+	if (!attempt || attempt.waiting?.kind === "input" || outstanding(tx, attempt, true) || factory.state !== "active"
+		|| factory.pausedWorkers.includes(task.owner) || !relevant(tx, squad) || !budgetAvailable(tx, tx.get("goals", squad.goalId))) return;
+	const binding = { squadId: squad.id, revision: squad.revision, activation: factory.generation };
+	const head = ranked(tx, squad)[0];
+	if (head && pullWindow(tx, factory).eligible.includes(head.id)) return { tool: "foundry_pull_work", arguments: { ...binding, itemId: head.id } };
+	if (squad.generation > squad.handled) {
+		const accepted = squad.reason.startsWith("accepted:") ? tx.get("backlog_items", squad.reason.slice(9)) : undefined;
+		return { tool: "foundry_observe_work", arguments: { ...binding, generation: squad.generation }, reason: squad.reason,
+			...(accepted ? { resultId: accepted.resultId } : {}) };
+	}
+}
+
+/** @param {Tx} tx @param {string} actor @param {string} [goalId] */
+export function turns(tx, actor, goalId) {
+	const local = tx.list("squads", `WHERE task_id IN (SELECT id FROM tasks WHERE owner=?)${goalId ? " AND goal_id=?" : ""}`,
+		goalId ? [actor, goalId] : [actor]);
+	const actions = [], dispatch = [];
+	for (const squad of local) {
+		const task = tx.get("tasks", squad.taskId);
+		const action = squadAction(tx, task, squad);
+		if (action) actions.push(action);
+		else if (dispatchable(tx, squad, task)) dispatch.push(task.id);
+	}
+	return { actions, dispatch };
+}
+
+/** @param {Tx} tx @param {Squad} squad @param {Task} task */
+function dispatchable(tx, squad, task) {
+	if (task.state !== "ready" && !preparedDispatch(tx, task)) return false;
+	const factory = tx.get("factory_controls", squad.factoryId);
+	return factory.state === "active" && !factory.pausedWorkers.includes(task.owner) && relevant(tx, squad);
 }
 /** @param {Factory} factory @param {Squad} squad @param {Item} item @param {string} templateId */
 function templateFor(factory, squad, item, templateId) {
@@ -383,8 +439,7 @@ export function accepted(tx, goalId, resultId) {
 	item.state = "accepted"; item.resultId = resultId;
 	tx.put("backlog_items", item);
 	const squad = tx.get("squads", item.squad);
-	trigger(tx, squad, `accepted:${item.id}`);
-	wake(tx, tx.get("tasks", squad.taskId).owner, squad.goalId, `output:${tx.get("goal_completions", goalId).taskId}`);
+	trigger(tx, squad, `accepted:${item.id}`, `output:${tx.get("goal_completions", goalId).taskId}`);
 	recycleCapacity(tx, goalId);
 }
 
@@ -403,8 +458,7 @@ export function recycleCapacity(tx, goalId) {
 	for (const id of new Set(tx.list("backlog_items", `${byFactory} AND state='queued'`, [item.factoryId]).map(other => other.squad))) {
 		const squad = tx.get("squads", id);
 		if (!ranked(tx, squad).length) continue;
-		trigger(tx, squad, `queue-opening:${item.id}`);
-		if (status.delivered) wake(tx, tx.get("tasks", squad.taskId).owner, squad.goalId, `output:${completion.taskId}`);
+		notifyCoordination(tx, tx.get("tasks", squad.taskId), "backlog", status.delivered ? `output:${completion.taskId}` : undefined);
 	}
 }
 
@@ -419,11 +473,14 @@ export function successorOwners(tx, taskId, goalId) {
 		&& (squad.id === item.squad || ranked(tx, squad).length)).map(squad => tx.get("tasks", squad.taskId).owner);
 }
 
-/** @param {Tx} tx @param {import("./model.d.ts").Signal} signal @returns {void} */
-export function signalDiscovery(tx, signal) {
+/** @param {Tx} tx @param {import("./model.d.ts").Signal} signal @param {string} recipient @returns {boolean} */
+export function signalDiscovery(tx, signal, recipient) {
 	const unitTask = signal.unitId ? tx.list("tasks", "WHERE json_extract(document,'$.unitId')=? AND json_extract(document,'$.role')='coordinator'", [signal.unitId])[0] : undefined;
 	const squad = tx.list("squads", "WHERE task_id=?", [signal.taskId ?? unitTask?.id ?? ""])[0];
-	if (squad) trigger(tx, squad, `signal:${signal.id}`);
+	if (!squad) return false;
+	const addressed = tx.get("tasks", squad.taskId).owner === recipient;
+	trigger(tx, squad, `signal:${signal.id}`, addressed ? `signal:${signal.id}` : undefined);
+	return addressed;
 }
 
 /** @param {Tx} tx @param {string} [actor] @param {string} [goalId] @returns {import("./model.d.ts").BacklogView} */
@@ -440,8 +497,8 @@ export function views(tx, actor, goalId) {
 		const task = tx.get("tasks", squad.taskId), factory = tx.get("factory_controls", squad.factoryId);
 		const entries = ranked(tx, squad);
 		const active = factory.state === "active" && !factory.pausedWorkers.includes(task.owner);
-		const bound = task.currentAttemptId ? tx.get("attempts", task.currentAttemptId).nativeId === task.owner : false;
-		const relevant = latest(tx, factory.id)?.outcomes.some(outcome => squad.outcomes.includes(outcome.id));
+		const bound = Boolean(boundLead(tx, task));
+		const subscribed = relevant(tx, squad);
 		const rules = contracts(record(factory.definition).requiredProducts).filter(rule => squad.templates.includes(rule.consumer));
 		return { ...squad, owner: task.owner, bound, activation: factory.generation, active,
 			requiredProducts: rules.map(rule => ({ ...rule, sources: tx.list("backlog_items", `${byFactory} AND json_extract(document,'$.template')=? AND state NOT IN ('proposal','retired')`, [factory.id, rule.producer])
@@ -449,8 +506,8 @@ export function views(tx, actor, goalId) {
 			pinned: factory.pin,
 			knowledgeFiles: array(charter(factory, squad).knowledgeFiles ?? [], record),
 			readyItems: entries.map(item => item.id), pullable: active && entries.length ? pullWindow(tx, factory).eligible.includes(entries[0].id) : false,
-			needsDiscovery: Boolean(relevant && active && squad.generation > squad.handled),
-			dispatch: Boolean(relevant && active && !bound && (task.state === "ready" || preparedDispatch(tx, task))) };
+			needsDiscovery: Boolean(subscribed && active && squad.generation > squad.handled),
+			dispatch: Boolean(dispatchable(tx, squad, task)) };
 	});
 	const mine = new Set(squads.map(squad => squad.id));
 	return { directions: [...ids].map(id => latest(tx, id)).filter(value => value !== undefined), squads,

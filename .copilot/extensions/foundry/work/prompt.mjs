@@ -15,24 +15,26 @@ export function assignmentPrompt(goal, task, attempt, context = []) {
 		...(task.role === "coordinator" ? [
 			"",
 			"Own this subtree until delivery. Staff ready producers in parallel and assign one integration owner with named inputs and executable checks of the combined candidate. A blocked input or claim stops only dependent work. Keep the delivery scope and governing checks intact.",
-			`Before staffing, yield with foundry_wait_task kind:events and attemptId ${attempt.id}. This is a coordination surface, not an implementation checkout: delegate commands, product checks and edits to isolated producers. Use foundry_advance for locally owned actions and execute only remaining ordinary native calls. Keep this coordinator attempt between events; producers publish the deliverables.`,
-			"Once the observed generation is staffed or explicitly waiting/exhausted, record handledGeneration and relevant relatedIds with the event wait. Reading isn't handling. Don't poll or redispatch a waiting coordinator.",
+			`Yield capacity with foundry_wait_task kind:events, attemptId ${attempt.id}, before staffing. Follow locally owned actions from foundry_advance. Keep this coordinator attempt between events; delegate edits and checks to producers.`,
+			"Only send handledGeneration and relatedIds after dealing with the work. Yielding is not acknowledgment. If the wait returns a squad action, handle it now.",
 			"Use the directory from foundry_get_context to find peer coordinator tasks. Request needed versioned peer outputs through foundry_request_collaboration and staff accepted requests locally; required commitments must be fulfilled or explicitly released by their source.",
 			"The director owns priorities, cross-team tradeoffs and shared delivery blockers that peers cannot resolve. Do not copy the director on routine exchanges, relay them through the hierarchy, or require director approval for work already within scope.",
 		] : []),
 		"",
 		`Execution scope: ${JSON.stringify(task.scope)}`,
 		`Shared goal limits: ${JSON.stringify(goal.limits)}. These are not fresh per-child budgets.`,
-		`Assigned acceptance checks: ${JSON.stringify(attempt.checks.map(({ id, version, requirement, kind }) => ({ id, version, requirement, kind })))}`,
-		...(attempt.checks.length ? ["Use foundry_get_context with assignmentId and checkId for an exact evaluator when needed."] : []),
-		`Versioned inputs: ${JSON.stringify(attempt.inputs)}`,
+		...(task.role !== "coordinator" ? [
+			`Assigned acceptance checks: ${JSON.stringify(attempt.checks.map(({ id, version, requirement, kind }) => ({ id, version, requirement, kind })))}`,
+			`Versioned inputs: ${JSON.stringify(attempt.inputs)}`,
+			...(attempt.checks.length ? ["Use foundry_get_context with assignmentId and checkId for an exact evaluator when needed."] : []),
+			"Run assigned checks with foundry_run_check (repair:true for a same-worker retry). Publish with publish:<output name> or foundry_report_result. A parked repair stays with you; resume it with foundry_start_task after the capacity wake.",
+		] : []),
 		...(attempt.checks.some(check => check.artifactFiles) ? [
 			"Artifact-bound checks execute a captured file bundle, not the mutable checkout. Include required evaluator files with pinned oracleFiles. Report code/artifact outputs using the returned evidence.candidate.version and its reference or a declared filename; publication retains those evaluated bytes. All artifact-bound checks for this unit must evaluate the same final file set/version.",
 			"When you intend to publish the complete evaluated unit, pass publish:<output name> to foundry_run_check. It publishes through the normal result path only after every governing check passes on the same candidate; incomplete acceptance keeps the task running.",
 		] : []),
 		...(context.length ? ["Relevant context:", ...context] : []),
 		"",
-		"Run assigned checks with foundry_run_check (repair:true for a same-worker retry). Publish with publish:<output name> or foundry_report_result. A parked repair stays with you; resume it with foundry_start_task after the capacity wake.",
 		"Wait only on a concrete dependency, capacity, or verified native request. Use foundry_get_context for changed records or a delivery fallback; never replay an uncertain send or command.",
 		task.scope.delegation
 			? "Delegate independent work with foundry_create_task and foundry_dispatch. Started children are already running; execute only remaining prepared fallback calls."

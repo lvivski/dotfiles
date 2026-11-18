@@ -17,13 +17,14 @@ exclusive finished runner receipts; current prepared native requests retain thei
 ## Running a squad from direction
 
 With an active direction policy, each bound squad owns discovery and ordering within its charter.
-Do not ask the director for seed tickets. Read `foundry_get_context` for the current direction,
-activation, squad revision and ready items. Compare an assigned outcome with its actual product
+On a wake, `foundry_advance` returns your `squadActions` with exact bindings. For direction and
+evidence use `foundry_get_context({view:"backlog"})`; continue with `version` and `nextOffset` as `offset`.
+Compare an assigned outcome with its actual product
 behavior or consumer need. Use `foundry_inspect_evidence` for a charter source or scoped
 committed file, then `foundry_observe_work` to record the gap, the improvement and how to tell
 when it is done. A bounded question is useful when evidence is missing; advisory suggestions
 are not requirements. With no justified gap, record an evidenced `no-gap` for the observed
-generation and wait for change.
+generation. Yielding capacity or consuming a wake does not dispose of a review.
 
 Use `foundry_pull_work` on the highest-ranked ready item. It admits a bounded job, not a new
 direction. Before staffing, use `foundry_split_work` if producers can deliver independently

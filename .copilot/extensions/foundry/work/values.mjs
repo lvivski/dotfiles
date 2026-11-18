@@ -32,6 +32,13 @@ export function text(value, label) {
 /** @param {string} value @returns {string} */
 export const nativeSessionName = value => value.trim().replace(/\s+/gu, " ");
 
+/** @param {string} body @param {number} offset */
+export function textPage(body, offset) {
+	if (!Number.isSafeInteger(offset) || offset < 0 || offset >= body.length) throw new FoundryError("invalid_offset", "Offset must be inside the requested text");
+	const end = Math.min(offset + 4096, body.length);
+	return { content: body.slice(offset, end), ...(end < body.length ? { nextOffset: end } : {}) };
+}
+
 /** @param {unknown} value @param {string} label @returns {string|undefined} */
 export function optionalText(value, label) {
 	return value === undefined ? undefined : text(value, label);

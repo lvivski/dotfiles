@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { releaseOwnedClaims } from "./claims.mjs";
-import { recycleCapacity } from "./backlog.mjs";
+import { recycleCapacity, squadAction } from "./backlog.mjs";
 import { effectsForAttempt, outstanding, retirePrepared, scheduleStop } from "./effects.mjs";
 import { coordinatorsBound, transferOwnedDescendants } from "./organization.mjs";
 import { ancestors, authorized, budgetAvailable, current, requireAdmission, requireOwner, requireReporter, uncancelled } from "./policy.mjs";
@@ -343,7 +343,7 @@ export function attemptByToken(tx, token) {
 	return tx.list("attempts", "WHERE json_extract(document,'$.token')=?", [text(token, "token")])[0];
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {string} taskId @param {string} actor @param {Task["waiting"]} waiting @param {{attemptId:string,handledGeneration?:number,relatedIds?:string[]}} [event] @returns {Task} */
+/** @param {import("./database.mjs").Transaction} tx @param {string} taskId @param {string} actor @param {Task["waiting"]} waiting @param {{attemptId:string,handledGeneration?:number,relatedIds?:string[]}} [event] @returns {Task|FoundryError} */
 export function waitTask(tx, taskId, actor, waiting, event) {
 	const task = tx.get("tasks", taskId);
 	const attempt = task.currentAttemptId ? tx.get("attempts", task.currentAttemptId) : undefined;
@@ -354,6 +354,7 @@ export function waitTask(tx, taskId, actor, waiting, event) {
 	}
 	const decoded = decodeWaiting(waiting);
 	if (!decoded) throw new FoundryError("invalid_field", "Waiting must name its reason");
+	let pending;
 	if (decoded.kind === "events") {
 		if (task.role !== "coordinator" || !task.coordination || attempt.nativeId !== actor || task.owner !== actor) {
 			throw new FoundryError("foreign_execution", "Only the current executing coordinator can yield its event lease");
@@ -376,9 +377,12 @@ export function waitTask(tx, taskId, actor, waiting, event) {
 					throw new FoundryError("forbidden", "A disposition may reference only locally accountable work or collaboration");
 				}
 			}
-			task.coordination.handled = generation;
-			task.coordination.disposition = { generation, reason: decoded.reason, relatedIds };
-			if (generation === task.coordination.generation) task.coordination.causes = [];
+			if (generation === task.coordination.generation) pending = squadAction(tx, task);
+			if (!pending) {
+				task.coordination.handled = generation;
+				task.coordination.disposition = { generation, reason: decoded.reason, relatedIds };
+				if (generation === task.coordination.generation) task.coordination.causes = [];
+			} else decoded.reason = `Yielded capacity; ${pending.tool} remains due`;
 		}
 	}
 	task.state = "waiting";
@@ -388,7 +392,8 @@ export function waitTask(tx, taskId, actor, waiting, event) {
 	tx.put("tasks", task);
 	tx.put("attempts", attempt);
 	releaseSlot(tx, attempt);
-	return task;
+	// Commit the capacity yield even when rejecting a false end-of-work disposition.
+	return pending ? new FoundryError("squad_work_pending", `Capacity yielded, generation not acknowledged. Continue in this turn: ${JSON.stringify(pending)}`) : task;
 }
 
 /** @param {import("./database.mjs").Transaction} tx @param {string} actor @param {string} [attemptId] @returns {void} */

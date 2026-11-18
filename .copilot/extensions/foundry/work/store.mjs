@@ -1,4 +1,4 @@
-import { FoundryError, text } from "./values.mjs";
+import { FoundryError, text, textPage } from "./values.mjs";
 import { openDatabase } from "./database.mjs";
 import * as Landing from "./landing.mjs";
 import { retirementStore } from "./retirement.mjs";
@@ -85,6 +85,8 @@ export function openWorkStore(workingDirectory, options = {}) {
 		reviseDirection(id, revision, direction, source, actor) { return database.transaction(tx => Backlog.reviseDirection(tx, id, revision, direction, source, actor)); },
 		/** @param {string} actor @param {string} [goalId] */
 		backlog(actor, goalId) { return database.transaction(tx => Backlog.views(tx, actor, goalId), false); },
+		/** @param {string} actor @param {string} [goalId] */
+		squadTurns(actor, goalId) { return database.transaction(tx => Backlog.turns(tx, actor, goalId), false); },
 		/** @param {string} actor @param {string} reason @param {string} [factoryId] */
 		pauseFactories(actor, reason, factoryId) { return database.transaction(tx => Jobs.pauseFactories(tx, actor, reason, factoryId)); },
 		/** @param {string} goalId @param {string} actor */
@@ -189,9 +191,8 @@ export function openWorkStore(workingDirectory, options = {}) {
 			const check = attempt.checks.find(item => item.id === checkId);
 			if (checkId !== undefined && !check) throw new FoundryError("invalid_check", "No such evaluator on this assignment");
 			const body = check ? JSON.stringify(check) : text(tx.get("effects", `create:${attemptId}`).assignment, "captured assignment");
-			if (!Number.isSafeInteger(offset) || offset < 0 || offset >= body.length) throw new FoundryError("invalid_offset", "Offset must be inside this assignment");
-			const end = Math.min(offset + 4096, body.length);
-			return { taskId: task.id, attemptId, assignment: body.slice(offset, end), ...(end < body.length ? { nextOffset: end } : {}) };
+			const { content, ...page } = textPage(body, offset);
+			return { taskId: task.id, attemptId, assignment: content, ...page };
 		}, false); },
 		/**
 		 * reportedSender is a separately supplied, native-verified identity for
