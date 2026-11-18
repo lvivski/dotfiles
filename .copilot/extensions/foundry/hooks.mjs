@@ -15,7 +15,7 @@ export function buildHooks(runtime) {
 			if (!token) return;
 			tracking = true;
 			runtime.beginUsage(invocation.sessionId, token);
-			return { additionalContext: "This is a complete Foundry assignment, not a setup handshake. Execute it now. Your first ownership-specific mutation may reconcile actual native session metadata inline; do not wait for parent attachment or activation." };
+			return { additionalContext: "Read the assigned attempt from foundry_get_context as directed in the kickoff. If binding is pending, reconcile your own native session and read again; do not wait for a parent message or activation." };
 		},
 		onPreToolUse: (input, invocation) => {
 			const name = toolName(input.toolName);

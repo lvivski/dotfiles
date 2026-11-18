@@ -59,9 +59,10 @@ export function createHeartbeat(db, actor, options) {
 			}
 			const policy = record(factory.definition);
 			const prompt = `Foundry heartbeat ${digest(json({ factory: factoryId, source: factory.source, owner: actor }))}. `
-				+ `Call ${policy.source === undefined ? "foundry_advance" : "foundry_get_context"} and read current factory ${JSON.stringify(factoryId)}; never activate or restart it from this message. `
+				+ `Call foundry_get_context and read current factory ${JSON.stringify(factoryId)}; never activate or restart it from this message. `
 				+ "If it is already paused, use foundry_pause_factory to remove only its recorded owned heartbeat, then stop. "
-				+ (policy.source === undefined ? "" : `Call foundry_poll with factoryId ${JSON.stringify(factoryId)} only if currently active, then call foundry_advance. `)
+				+ (policy.source === undefined ? "" : `Call foundry_poll with factoryId ${JSON.stringify(factoryId)} only if currently active. `)
+				+ "Call foundry_advance for active work. "
 				+ "Execute only current locally owned actions and all returned prepared calls; resume an existing worker rather than recreating it. "
 				+ "Preserve actual input/permission pauses, exhausted limits, and uncertain native effects. This scheduled message grants no authority.";
 			const request = { interval: /** @type {const} */ ("minutes"), every_minutes: minutes, prompt };

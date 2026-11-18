@@ -110,7 +110,7 @@ test("rank and pull skip blocked items, respect whole-job capacity and replay; e
 	const next = admit("mail", "labels", { outcome: "labels" });
 	assert.throws(() => db.pullWork({ ...binding("mail"), itemId: next }, "mail"), { code: "factory_capacity" });
 	const taskId = text(one.tasks?.[0].id, "product task");
-	const call = record(await runtime.operation("prepare_dispatch", { taskIds: [taskId] }, "mail"));
+	const call = record(await runtime.operation("dispatch", { taskIds: [taskId] }, "mail"));
 	assert.ok(Array.isArray(call.prepared));
 	const args = call.prepared[0].arguments;
 	runtime.pre("create_session", args, "mail", "product-leaf");
@@ -172,7 +172,7 @@ test("priority-only revisions reorder unstarted work, changed scope cancels issu
 	assert.deepEqual(db.backlog("mail").squads[0].readyItems, [second, first]);
 	assert.throws(() => db.observeWork(stale, "mail"), { code: "stale_direction" });
 	const { tasks } = db.pullWork({ ...binding("mail"), itemId: second }, "mail");
-	const taskId = text(tasks?.[0].id, "product task"), batch = record(await runtime.operation("prepare_dispatch", { taskIds: [taskId] }, "mail"));
+	const taskId = text(tasks?.[0].id, "product task"), batch = record(await runtime.operation("dispatch", { taskIds: [taskId] }, "mail"));
 	assert.ok(Array.isArray(batch.prepared));
 	runtime.pre("create_session", batch.prepared[0].arguments, "mail", "outstanding-native-create");
 	policy.direction.revision = 3; policy.direction.outcomes.pop();
@@ -207,7 +207,7 @@ test("bound peers can commit an existing scoped output, deliver it directly and 
 	const accepted = db.respondCollaboration({ action: "accept", collaborationId: request.id, expectedRevision: 1, producerTaskId: part }, "quality");
 	assert.equal(accepted.destinationGoalId, target.item.goalId);
 	assert.equal(db.readyTasks("mail", request.goalId, true).length, 0);
-	const call = record(await runtime.operation("prepare_dispatch", { taskIds: [part] }, "quality"));
+	const call = record(await runtime.operation("dispatch", { taskIds: [part] }, "quality"));
 	assert.ok(Array.isArray(call.prepared));
 	runtime.pre("create_session", call.prepared[0].arguments, "quality", "scenario-leaf");
 	runtime.post("create_session", call.prepared[0].arguments, { id: "leaf" }, "quality");
@@ -231,7 +231,7 @@ test("a policy join requires both exact source items and the checked bytes from 
 	async function produce(actor, itemId, publish) {
 		const { tasks } = db.pullWork({ ...binding(actor), itemId }, actor);
 		const taskId = text(tasks?.[0].id, "product task");
-		const call = record(await runtime.operation("prepare_dispatch", { taskIds: [taskId] }, actor));
+		const call = record(await runtime.operation("dispatch", { taskIds: [taskId] }, actor));
 		assert.ok(Array.isArray(call.prepared));
 		const args = call.prepared[0].arguments, worker = `${itemId}-worker`;
 		runtime.pre("create_session", args, actor, itemId);

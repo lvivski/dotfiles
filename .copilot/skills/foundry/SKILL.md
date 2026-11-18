@@ -145,8 +145,11 @@ an old-source read sandbox; retain honest audit/provenance and never claim stron
    Recursive `foundry_create_unit` metadata describes organizations, teams and subteams without a
    fixed department list. Delegated units require their actual `taskId` boundary; `parentId` names
    another unit. Metadata membership does not grant task authority.
-3. Use `foundry_prepare_dispatch` for native children. Execute independent returned
-   `create_session` calls concurrently, preserving their complete kickoff and explicit mode.
+3. Use `foundry_dispatch` to start native children concurrently. `started` entries already have
+   a native worker; execute only `prepared` fallback calls, unchanged. Each worker reads its own
+   frozen brief with `foundry_get_context({assignmentId})`. Follow `nextOffset` with `offset`;
+   supply `checkId` to inspect one exact evaluator. If binding is pending, reconcile your own
+   native session with `foundry_reconcile_native`, not a message to the creator.
    `autopilot` executes authorized autonomous work; `interactive` preserves narrower supervision.
    Never default executing children to `plan`, demand a readiness acknowledgment, or send an
    activation. Native pre/post hooks record issuance and returned identity without another
@@ -155,9 +158,9 @@ an old-source read sandbox; retain honest audit/provenance and never claim stron
    than creating an unnecessary model session. Lightweight subagents remain part of that
    attempt unless they cross the independent-record boundary. Never multiply a goal budget
    at each delegation level.
-5. Retrieve only relevant `foundry_get_context`. If `refreshRequired` is true, read the changed
-   context again: a concurrent update was not covered, not a request to poll. Ownership is
-   parent-local. A parent may delegate
+5. Use `foundry_get_context` to inspect work without advancing it. On a wake, call
+   `foundry_advance` for that goal to consume the notification and recover unfinished native
+   bookkeeping. This does not mark the coordination generation handled. Ownership is parent-local. A parent may delegate
    further while its parent finishes bookkeeping. An early ownership-specific mutation can
    reconcile actual `get_session` metadata inline; ordinary assignment work does not stop.
    Use separate native worktrees for concurrent writers and claim actual shared integration
@@ -323,7 +326,7 @@ execution after coordinator handoff; it does not acquire new delegation authorit
 
 Checked repair normally uses `repair: true` on `foundry_run_check` or `foundry_report_result`.
 Assigned commands have one exclusively claimed, atomically finished runner receipt. Your
-normal context/check calls recover finished receipts without rerunning, retaining their
+`foundry_advance` and `foundry_run_check` calls recover finished receipts without rerunning, retaining their
 `runner-receipt` source and assigned evidence checks. A recovered check replays its result; use
 `foundry_prepare_check` for an explicit new evaluation. Started-only receipts and ordinary commands
 without actual completion remain unknown; never manufacture settlement.

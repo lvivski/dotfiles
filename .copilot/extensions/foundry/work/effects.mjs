@@ -100,6 +100,7 @@ export function issueAttempt(tx, attemptId, actor, effectId, request) {
 	const other = tx.list("effects", "WHERE attempt_id=? AND kind='create'", [attemptId]).find((effect) => effect.id !== effectId);
 	if (other) throw new FoundryError("already_issued", "This attempt already has a creation identity");
 	const effect = decodeEffect({ id: effectId, attemptId, kind: "create", state: "issued", owner: actor, request: safeRequest,
+		assignment: existing?.assignment,
 		...(factory === undefined ? {} : { factoryGeneration: factory.generation }) });
 	attempt.state = "issued";
 	tx.put("effects", effect);
@@ -145,13 +146,16 @@ export function refuseDisabledDispatch(tx, effectId, actor, receipt) {
 	return true;
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {{id: string, attemptId: string, kind: Effect["kind"], state: Effect["state"], request: Json, result?: Json, factoryGeneration?:number, relatedAttemptIds?:string[]}} input @param {string} actor @returns {Effect} */
+/** @param {import("./database.mjs").Transaction} tx @param {Omit<Effect,"owner">} input @param {string} actor @returns {Effect} */
 export function recordEffect(tx, input, actor) {
 	if (input.kind === "archive") throw new FoundryError("archive_receipt_required", "Use the owner-bound native retirement protocol");
 	const attempt = tx.get("attempts", input.attemptId);
 	requireReporter(tx, attempt, text(actor, "actor"));
 	const existing = tx.optional("effects", input.id);
-	const effect = decodeEffect({ ...record(input), owner: existing?.owner ?? actor });
+	if (input.assignment !== undefined && (input.kind !== "create" || existing && existing.assignment !== input.assignment)) {
+		throw new FoundryError("effect_identity_conflict", "A creation's captured assignment cannot change");
+	}
+	const effect = decodeEffect({ ...record(input), assignment: existing?.assignment ?? input.assignment, owner: existing?.owner ?? actor });
 	if (["command", "create"].includes(effect.kind) && (!existing || existing.state === "prepared")
 		&& effect.state !== "settled") {
 		const factory = requireAdmission(tx, tx.get("tasks", attempt.taskId), existing?.factoryGeneration);

@@ -304,13 +304,14 @@ export function openInputRequests(tx, actor, goalId) {
 	});
 }
 
-/** @param {import("./database.mjs").Transaction} tx Only invoked with explicitly observed native input clearance. @param {string} nativeId @param {string} actor @returns {void} */
-export function clearNativeInputs(tx, nativeId, actor) {
+/** @param {import("./database.mjs").Transaction} tx Only invoked with explicitly observed native input clearance. @param {string} nativeId @param {string} actor @param {string} [goalId] @returns {void} */
+export function clearNativeInputs(tx, nativeId, actor, goalId) {
 	for (const attempt of tx.list("attempts", "WHERE native_id=? AND json_extract(document,'$.waiting.kind')='input'", [nativeId])) {
+		const task = tx.get("tasks", attempt.taskId);
+		if (goalId !== undefined && task.goalId !== goalId) continue;
 		requireReporter(tx, attempt, actor);
 		delete attempt.waiting;
 		tx.put("attempts", attempt);
-		const task = tx.get("tasks", attempt.taskId);
 		if (task.currentAttemptId === attempt.id && task.version === attempt.taskVersion
 			&& task.state === "waiting" && task.waiting?.kind === "input") {
 			task.waiting = { kind: "capacity", reason: "The actual native input request was answered" };

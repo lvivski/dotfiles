@@ -241,8 +241,10 @@ assignment. Timeout, partial creation, or lost identity does not. On restart, ad
 creator's own native history: exact original call, arguments and successful completion, never a
 name guess or another create. There is no background polling loop or promise of delivery while
 the host is stopped.
-`foundry_get_context` still returns delivery results and any fallback arguments.
-Execute complete prepared calls in the ordinary native turn, including calls returned alongside capacity blockers.
+`foundry_get_context` is observational: reading a goal does not recover receipts, inspect native
+sessions, send stops or consume wakes. On a wake, call `foundry_advance` for its goal; `received`
+lists the wake generations and reasons consumed on that turn. This does not mark coordination work handled.
+Execute only remaining `prepared` calls, including any returned alongside capacity blockers.
 Resume an existing worker rather than recreating it. A stop hook performs classification only,
 not native side effects. Unchanged re-entry and explicit continuation bounds pause work rather
 than manufacture failed evaluator evidence. Safely settled local execution yields capacity while
@@ -329,9 +331,12 @@ deterministically compiles task definitions. `foundry_create_task` adds useful p
 Task scope is a set of narrowing overrides: omitted fields inherit and restrictions are unioned
 automatically. Repeating or omitting an inherited restriction never removes it; actual expansion
 of paths, work types, autonomy or delegation is still rejected.
-`foundry_prepare_dispatch` prepares complete native `create_session` calls; pre/post hooks record
-their actual issuance and returned identity while the child executes. No setup acknowledgment,
-attachment, activation, global DAG reapproval or duplicate completion approval exists.
+`foundry_dispatch` starts children directly and returns `started` identities and per-task blockers.
+A child gets a short kickoff with an `assignmentId`, not a copy of the specification and every
+evaluator. It reads its frozen brief with `foundry_get_context({assignmentId})`; `checkId` selects
+an exact evaluator and `offset: nextOffset` continues a long response. Only the current bound worker
+can use that handle. If it starts before the creation receipt arrives, it reconciles its own
+native session and reads again. There is no parent acknowledgment or activation step.
 
 Use `foundry_start_task` for in-session work or deterministic jobs. Tasks need stable check IDs,
 check origin and versioned named inputs/outputs, not a fixed organizational chart. Teams and work
@@ -532,7 +537,7 @@ without repeated delivery. An ambiguous delivery is not blindly replayed.
 Context retains relevant outstanding command identities and superseded attempts until settlement.
 Each new assigned command records one fixed private runner receipt. The runner claims it exclusively
 before executing, atomically finalizes it, and rejects duplicate or legacy invocations without a
-replacement result. Normal context/check calls recover finished receipts only for their actual owner,
+replacement result. `foundry_advance` and `foundry_run_check` recover finished receipts only for their actual owner,
 retaining `runner-receipt` provenance and evaluator/input/candidate verification. Native initial wait
 is 120 seconds. A recovered check replays its existing result; use `foundry_prepare_check` for an
 explicit new evaluation. Started-only receipts and ordinary commands without

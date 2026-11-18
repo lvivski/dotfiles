@@ -47,11 +47,12 @@ export function prepareDispatch(store, taskId, actor) {
 		...(baseBranch === undefined ? {} : { base_branch: baseBranch }),
 		coordinate_with_creator: true,
 		notify_on_idle: "once",
-		kickoff: { mode: task.scope.mode, prompt: assignmentPrompt(goal, task, attempt, context),
+		kickoff: { mode: task.scope.mode, prompt: `Foundry attempt: ${attempt.token}\nStart this assignment now. Read foundry_get_context with assignmentId "${attempt.id}". Follow nextOffset until the complete assignment is read before taking action.`,
 			...(source?.agent === undefined ? {} : { agent: source.agent }) },
 	});
 	const effect = store.recordEffect({
 		id: `create:${attempt.id}`, attemptId: attempt.id, kind: "create", state: "prepared", request: arguments_,
+		assignment: assignmentPrompt(goal, task, attempt, context),
 	}, actor);
 	return { taskId, attemptId: attempt.id, token: attempt.token, effectId: effect.id, tool: "create_session", arguments: arguments_ };
 }
@@ -227,6 +228,9 @@ export function reconcileDetail(store, value, actor) {
 	}
 	if (actor !== attempt.creator && actor !== detail.id && !store.ownsTask(attempt.taskId, actor)) {
 		throw new FoundryError("foreign_native_observation", "Only the actual child or its accountable coordinator can reconcile this identity");
+	}
+	if (!attempt.nativeId && !["issued", "uncertain"].includes(store.getEffect(`create:${attempt.id}`).state)) {
+		throw new FoundryError("creation_not_issued", "Native detail cannot bind a reservation that has no outstanding issued creation");
 	}
 	return store.bindAttempt(attempt.id, detail.id, actor === detail.id ? attempt.creator : actor, json(value));
 }

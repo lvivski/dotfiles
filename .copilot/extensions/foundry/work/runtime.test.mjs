@@ -24,6 +24,28 @@ function fixture(t, hooks = {}) {
 	return { runtime, directory };
 }
 
+/** @param {ReturnType<typeof createRuntime>} runtime @param {unknown} assignmentId @param {string} actor @param {string} [checkId] */
+async function readAssignment(runtime, assignmentId, actor, checkId) {
+	let body = "", offset = 0;
+	for (;;) {
+		const page = record(await runtime.operation("get_context", { assignmentId, checkId, offset }, actor));
+		assert.ok(Buffer.byteLength(JSON.stringify(page)) < 32 * 1024);
+		assert.equal(typeof page.assignment, "string");
+		body += page.assignment;
+		if (page.nextOffset === undefined) return body;
+		assert.equal(page.nextOffset, body.length);
+		offset = body.length;
+	}
+}
+
+/** @param {ReturnType<typeof createRuntime>} runtime @param {unknown} request @param {string} owner @param {string} child */
+async function takeAssignment(runtime, request, owner, child) {
+	const call = record(request);
+	runtime.pre("create_session", call.arguments, owner, `create:${child}`);
+	runtime.post("create_session", call.arguments, { id: child }, owner);
+	return readAssignment(runtime, call.attemptId, child);
+}
+
 const definition = {
 	title: "One independently evaluated assignment",
 	scope: { mode: "autopilot", delegation: true, workTypes: ["analysis"], paths: ["."], restrictions: ["Do not commit or push"] },
@@ -431,14 +453,11 @@ test("factory templates staff three native coordinator levels locally under a on
 		assert.ok(Array.isArray(batch.prepared));
 		assert.equal(batch.prepared.length, 1);
 		const call = record(batch.prepared[0]);
-		const args = record(call.arguments);
-		const prompt = text(record(args.kickoff).prompt, "coordinator prompt");
+		const prompt = await takeAssignment(runtime, call, actor, nativeId);
 		assert.match(prompt, /Keep this coordinator attempt between events/);
 		assert.match(prompt, /foundry_request_collaboration/);
 		assert.match(prompt, /The director owns priorities, cross-team tradeoffs and shared delivery blockers/);
 		assert.match(prompt, /A directory owner alone does not establish that binding/);
-		runtime.pre("create_session", args, actor, `create:${nativeId}`);
-		runtime.post("create_session", args, { id: nativeId }, actor);
 		const attempt = runtime.store().getAttempt(text(call.attemptId, "attempt"));
 		assert.equal(attempt.creator, actor);
 		actor = nativeId;
@@ -447,11 +466,11 @@ test("factory templates staff three native coordinator levels locally under a on
 			reason: "Staff the authorized child", handledGeneration: task.coordination?.generation }, actor);
 		assert.throws(() => runtime.pre("bash", { command: "echo unadmitted" }, actor, "unadmitted-command"), { code: "capacity_required" });
 		assert.throws(() => runtime.pre("apply_patch", {}, actor, "unadmitted-edit"), { code: "capacity_required" });
-		batch = record(await runtime.operation("prepare_dispatch", { goalId: task.goalId }, actor));
+		batch = record(await runtime.operation("dispatch", { goalId: task.goalId }, actor));
 	}
 	assert.ok(Array.isArray(batch.prepared));
 	assert.equal(batch.prepared.length, 1);
-	const producer = text(record(record(record(batch.prepared[0]).arguments).kickoff).prompt, "producer prompt");
+	const producer = await takeAssignment(runtime, batch.prepared[0], actor, "native-producer");
 	assert.match(producer, /send_session_message .* when you know the native session bound to the peer's assignment/);
 	assert.match(producer, /If you cannot identify or reach the peer and work is blocked, ask your local coordinator/);
 	assert.doesNotMatch(producer, /The director owns priorities/);
@@ -477,7 +496,7 @@ test("a natural coordinator stop parks one attempt and does not create a stop-ho
 	const attempt = record(await runtime.operation("start_task", { taskId: lead.id }, "director"));
 	const final = runtime.store().snapshot().tasks.find(task => task.role === "producer");
 	assert.ok(final);
-	const batch = record(await runtime.operation("prepare_dispatch", { taskIds: [final.id] }, "director"));
+	const batch = record(await runtime.operation("dispatch", { taskIds: [final.id] }, "director"));
 	assert.ok(Array.isArray(batch.prepared));
 	const call = record(batch.prepared[0]);
 	runtime.pre("create_session", call.arguments, "director", "staff-final");
@@ -528,7 +547,7 @@ for (const state of ["prepared", "issued", "uncertain"]) test(`job sealing retir
 	const lead = runtime.store().snapshot().tasks.find(task => task.role === "coordinator");
 	const final = runtime.store().snapshot().tasks.find(task => task.role === "producer");
 	assert.ok(lead && final);
-	const batch = record(await runtime.operation("prepare_dispatch", { taskIds: [lead.id] }, "director"));
+	const batch = record(await runtime.operation("dispatch", { taskIds: [lead.id] }, "director"));
 	assert.ok(Array.isArray(batch.prepared));
 	const call = record(batch.prepared[0]);
 	const effectId = text(call.effectId, "creation effect");
@@ -549,7 +568,7 @@ for (const state of ["prepared", "issued", "uncertain"]) test(`job sealing retir
 		assert.equal(runtime.store().getAttempt(attemptId).slot, false);
 		assert.throws(() => runtime.pre("create_session", call.arguments, "director", "late-create"), { code: "creation_retired" });
 		await runtime.operation("reopen_job", { goalId: final.goalId }, "director");
-		const fresh = record(await runtime.operation("prepare_dispatch", { taskIds: [lead.id] }, "director"));
+		const fresh = record(await runtime.operation("dispatch", { taskIds: [lead.id] }, "director"));
 		assert.ok(Array.isArray(fresh.prepared));
 		assert.notEqual(record(fresh.prepared[0]).attemptId, attemptId);
 		assert.throws(() => runtime.pre("create_session", call.arguments, "director", "replayed-create"), { code: "creation_retired" });
@@ -579,7 +598,7 @@ test("job sealing preserves issued coordinator commands, native inputs and claim
 	const lead = runtime.store().snapshot().tasks.find(task => task.role === "coordinator");
 	const final = runtime.store().snapshot().tasks.find(task => task.role === "producer");
 	assert.ok(lead && final);
-	const batch = record(await runtime.operation("prepare_dispatch", { taskIds: [lead.id] }, "director"));
+	const batch = record(await runtime.operation("dispatch", { taskIds: [lead.id] }, "director"));
 	assert.ok(Array.isArray(batch.prepared));
 	const call = record(batch.prepared[0]);
 	runtime.pre("create_session", call.arguments, "director", "create-lead");
@@ -663,7 +682,7 @@ test("coordinator replacement inspects native absence and rejects caller claims 
 	await runtime.operation("start_goal", { ...definition, tasks: [
 		{ id: "lead", title: "Lead", assignment: "Coordinate", workType: "analysis", role: "coordinator" },
 	] }, "director");
-	const batch = record(await runtime.operation("prepare_dispatch", { taskIds: ["lead"] }, "director"));
+	const batch = record(await runtime.operation("dispatch", { taskIds: ["lead"] }, "director"));
 	assert.ok(Array.isArray(batch.prepared));
 	const call = record(batch.prepared[0]);
 	runtime.pre("create_session", call.arguments, "director", "old-lead-create");
@@ -693,7 +712,7 @@ test("execution handoff conserves its baseline when the project's branch advance
 	commit();
 	await assert.rejects(runtime.operation("start_task", { taskId: "work" }, "replacement"), { code: "execution_base_mismatch" });
 	assert.equal(runtime.store().getTask("work").state, "ready");
-	const batch = record(await runtime.operation("prepare_dispatch", { taskIds: ["work"] }, "replacement"));
+	const batch = record(await runtime.operation("dispatch", { taskIds: ["work"] }, "replacement"));
 	assert.ok(Array.isArray(batch.prepared));
 	const call = record(batch.prepared[0]);
 	assert.equal(record(call.arguments).base_branch, original.baseCommit);
@@ -908,7 +927,7 @@ for (const stage of ["local", "prepared", "issued", "referenced"]) test(`job acc
 	let creation;
 	if (stage === "local") await runtime.operation("start_task", { taskId: alternative.id }, "director");
 	else {
-		const batch = record(await runtime.operation("prepare_dispatch", { taskIds: [alternative.id] }, "director"));
+		const batch = record(await runtime.operation("dispatch", { taskIds: [alternative.id] }, "director"));
 		assert.ok(Array.isArray(batch.prepared));
 		creation = record(batch.prepared[0]);
 		if (stage === "issued") runtime.pre("create_session", creation.arguments, "director", "optional-create");
@@ -956,12 +975,13 @@ test("declared charter knowledge remains an immutable assignment snapshot after 
 	}] });
 	await runtime.operation("start_factory", { source }, "director");
 	writeFileSync(path.join(directory, ".foundry/knowledge.txt"), "A later unrelated decision");
-	const dispatch = record(await runtime.operation("prepare_dispatch", {}, "director"));
+	const dispatch = record(await runtime.operation("dispatch", {}, "director"));
 	assert.ok(Array.isArray(dispatch.prepared));
 	const kickoff = record(record(record(dispatch.prepared[0]).arguments).kickoff);
 	assert.equal(kickoff.agent, "declared-specialist");
-	assert.match(text(kickoff.prompt, "assignment"), /Originally curated and evidenced/);
-	assert.doesNotMatch(text(kickoff.prompt, "assignment"), /later unrelated/);
+	const assignment = await takeAssignment(runtime, dispatch.prepared[0], "director", "reviewer");
+	assert.match(assignment, /Originally curated and evidenced/);
+	assert.doesNotMatch(assignment, /later unrelated/);
 });
 
 test("empty captured knowledge stays valid during activation, dispatch and reopening the current store", async t => {
@@ -974,10 +994,9 @@ test("empty captured knowledge stays valid during activation, dispatch and reope
 		}],
 	}] });
 	await runtime.operation("start_factory", { source }, "director");
-	const batch = record(await runtime.operation("prepare_dispatch", {}, "director"));
+	const batch = record(await runtime.operation("dispatch", {}, "director"));
 	assert.ok(Array.isArray(batch.prepared));
-	const kickoff = record(record(record(batch.prepared[0]).arguments).kickoff);
-	assert.match(text(kickoff.prompt, "assignment"), /Declared context \.foundry\/empty\.txt/);
+	assert.match(await takeAssignment(runtime, batch.prepared[0], "director", "reader"), /Declared context \.foundry\/empty\.txt/);
 	runtime.close();
 	const reopened = createRuntime({ directory, log: message => { throw new Error(message); }, ...authorizedFactory });
 	t.after(() => reopened.close());
@@ -990,7 +1009,7 @@ test("factory work missing its admitted snapshot is rejected without reconstruct
 		name: "Reviewer", taskIds: ["complete"], agent: "declared-specialist", context: ["Captured charter"], knowledgeFiles: [],
 	}] }) }, "director");
 	const task = runtime.store().snapshot().tasks[0];
-	const batch = record(await runtime.operation("prepare_dispatch", {}, "director"));
+	const batch = record(await runtime.operation("dispatch", {}, "director"));
 	assert.ok(Array.isArray(batch.prepared));
 	const original = runtime.store().getTask(task.id);
 	const effects = runtime.store().effectsForAttempt(text(original.currentAttemptId, "attempt"));
@@ -1004,7 +1023,7 @@ test("factory work missing its admitted snapshot is rejected without reconstruct
 	t.after(() => resumed.close());
 	assert.deepEqual(resumed.store().getTask(task.id), legacy);
 	assert.deepEqual(resumed.store().effectsForAttempt(text(original.currentAttemptId, "attempt")), effects);
-	const rejected = record(await resumed.operation("prepare_dispatch", {}, "director"));
+	const rejected = record(await resumed.operation("dispatch", {}, "director"));
 	assert.deepEqual(rejected.prepared, []);
 	assert.ok(Array.isArray(rejected.blocked));
 	assert.equal(record(rejected.blocked[0]).code, "assignment_snapshot_required");
@@ -1060,13 +1079,14 @@ test("grain generation pins an implementation-free commit and excludes implicit 
 	await runtime.operation("start_factory", { source }, "director");
 	const task = runtime.store().snapshot().tasks[0];
 	runtime.store().recordLesson({ goalId: task.goalId, workType: task.workType, summary: "PRIOR_IMPLEMENTATION_DETAILS", references: ["fixture:history"] }, "director");
-	const prepared = record(await runtime.operation("prepare_dispatch", { taskIds: [task.id] }, "director"));
+	const prepared = record(await runtime.operation("dispatch", { taskIds: [task.id] }, "director"));
 	assert.ok(Array.isArray(prepared.prepared));
 	const args = record(record(prepared.prepared[0]).arguments);
 	assert.equal(args.base_branch, base);
 	assert.equal(task.checks[0].oracleFiles?.length, 3);
-	assert.match(text(record(args.kickoff).prompt, "generator assignment"), /Declared behavioral specification/);
-	assert.doesNotMatch(text(record(args.kickoff).prompt, "generator assignment"), /PRIOR_IMPLEMENTATION_DETAILS/);
+	const assignment = await takeAssignment(runtime, prepared.prepared[0], "director", "generator");
+	assert.match(assignment, /Declared behavioral specification/);
+	assert.doesNotMatch(assignment, /PRIOR_IMPLEMENTATION_DETAILS/);
 });
 
 test("completion sealing prevents new execution of an unused alternative until explicit reopening", async t => {
@@ -1574,7 +1594,7 @@ async function delegatedRepairFixture(t, hooks = {}) {
 		tasks: [{ ...definition.tasks[0], checks: [{ ...definition.tasks[0].checks[0], command: "node -e 'process.exit(1)'" }] }],
 	}, "director");
 	const task = director.store().snapshot().tasks[0];
-	const dispatch = record(await director.operation("prepare_dispatch", { taskIds: [task.id] }, "director"));
+	const dispatch = record(await director.operation("dispatch", { taskIds: [task.id] }, "director"));
 	assert.ok(Array.isArray(dispatch.prepared));
 	const args = record(dispatch.prepared[0]).arguments;
 	director.pre("create_session", args, "director", "worker-creation");
@@ -1645,7 +1665,7 @@ test("a reserved repair survives reload and cannot be dispatched or locally star
 	assert.equal(director.store().getTask(task.id).repairs, 1);
 	assert.equal(worker.context({ taskId: task.id }, "worker").ready[0].id, task.id);
 	assert.ok(!director.context({ goalId: task.goalId }, "director").ready.some(item => item.id === task.id));
-	const dispatch = record(await director.operation("prepare_dispatch", { taskIds: [task.id] }, "director"));
+	const dispatch = record(await director.operation("dispatch", { taskIds: [task.id] }, "director"));
 	assert.ok(Array.isArray(dispatch.blocked));
 	assert.equal(record(dispatch.blocked[0]).code, "repair_reserved");
 	await assert.rejects(director.operation("start_task", { taskId: task.id }, "director"), /reserved/);
@@ -1834,7 +1854,7 @@ test("prepared effect ownership cannot substitute for the actual executing nativ
 	const { runtime } = fixture(t);
 	await runtime.operation("start_goal", definition, "director");
 	const task = runtime.store().snapshot().tasks[0];
-	const batch = record(await runtime.operation("prepare_dispatch", { taskIds: [task.id] }, "director"));
+	const batch = record(await runtime.operation("dispatch", { taskIds: [task.id] }, "director"));
 	assert.ok(Array.isArray(batch.prepared));
 	const call = record(batch.prepared[0]);
 	runtime.pre("create_session", call.arguments, "director", "create-worker");
@@ -1872,6 +1892,8 @@ test("retired native input clears only on an explicit actual native observation"
 	assert.ok(before && typeof before === "object" && "inputRequests" in before);
 	assert.equal(before.inputRequests[0].retired, true);
 	answered = true;
+	assert.deepEqual(await runtime.operation("get_context", { goalId: task.goalId }, "director"), before);
+	await runtime.operation("advance", { goalId: task.goalId }, "director");
 	const after = await runtime.operation("get_context", { goalId: task.goalId }, "director");
 	assert.ok(after && typeof after === "object" && "inputRequests" in after);
 	assert.equal(after.inputRequests.length, 0);
@@ -1890,7 +1912,7 @@ test("a rejected unavailable-owner wake survives runtime restart without replay 
 		id: "coordinator", title: "Existing coordinator", workType: "analysis", assignment: "Retain ownership", checks: [],
 	}] }, "director");
 	const task = runtime.store().getTask("coordinator");
-	const dispatch = await runtime.operation("prepare_dispatch", { taskIds: [task.id] }, "director");
+	const dispatch = await runtime.operation("dispatch", { taskIds: [task.id] }, "director");
 	assert.ok(dispatch && typeof dispatch === "object" && "prepared" in dispatch && dispatch.prepared);
 	const call = dispatch.prepared[0];
 	runtime.pre("create_session", call.arguments, "director", "coordinator-create");
@@ -1902,7 +1924,8 @@ test("a rejected unavailable-owner wake survives runtime restart without replay 
 	await runtime.operation("start_task", { taskId: leaf.id }, "unavailable-coordinator");
 	await runtime.operation("report_result", { taskId: leaf.id, summary: "Local leaf completed" }, "unavailable-coordinator");
 	// Publishing from this coordinator does not send itself a wake; another accountable owner does.
-	await runtime.operation("get_context", { goalId: task.goalId }, "director");
+	await runtime.operation("advance", { goalId: task.goalId }, "director");
+	await runtime.flushNotifications();
 	assert.equal(deliveries, 1);
 	assert.equal(failures.length, 1);
 	const rejected = runtime.store().snapshot(task.goalId).wakes.find(wake => wake.owner === "unavailable-coordinator");
@@ -1970,7 +1993,7 @@ test("inspecting an original native session preserves a fresh warm attempt and i
 	await runtime.operation("start_goal", { ...definition, tasks: [{ title: "Warm worker", workType: "analysis",
 		assignment: "Preserve original native provenance", checks: [] }] }, "director");
 	const task = runtime.store().snapshot().tasks[0];
-	const prepared = await runtime.operation("prepare_dispatch", { taskIds: [task.id] }, "director");
+	const prepared = await runtime.operation("dispatch", { taskIds: [task.id] }, "director");
 	assert.ok(prepared && typeof prepared === "object" && "prepared" in prepared);
 	assert.ok(Array.isArray(prepared.prepared));
 	const call = prepared.prepared[0];
@@ -2007,13 +2030,63 @@ test("native name whitespace normalization recovers an issued child without gran
 	assert.equal(runtime.store().getTask(task.id).state, "running");
 });
 
-test("complete kickoff, captured native identity and actual command evidence produce a result without activation", async t => {
+test("direct dispatch starts independent children once, with bounded kickoffs and worker-only pinned pages", async t => {
+	/** @type {Array<{name:string, prompt:string, release:()=>void}>} */
+	const calls = [];
+	let inspections = 0;
+	const { runtime, directory } = fixture(t, {
+		createSession: async args => {
+			const name = text(record(args).name, "native name"), prompt = text(record(record(args).kickoff).prompt, "kickoff");
+			await new Promise(resolve => calls.push({ name, prompt, release: () => resolve(undefined) }));
+			return { resultType: "success", structuredContent: { id: name } };
+		},
+		readSession: async id => { inspections++; return { id, name: id, project_id: "fixture",
+			creator_session_id: "lead", coordinating_creator_session_id: "lead" }; },
+	});
+	const command = `echo ${"X".repeat(43_000)}`;
+	await runtime.operation("start_goal", { ...definition, projectId: "fixture", limits: { workers: 2 },
+		tasks: ["first", "second", "third"].map(id => ({ ...definition.tasks[0], id, title: id, checks: [{ ...definition.tasks[0].checks[0], command }] })),
+	}, "lead");
+	const staffing = runtime.operation("dispatch", { taskIds: ["missing", "first", "second", "third"] }, "lead");
+	try {
+		assert.equal(calls.length, 2, "both children start before either create returns");
+		assert.ok(calls.every(call => Buffer.byteLength(call.prompt) < 512));
+		const attemptId = text(runtime.store().getTask("first").currentAttemptId, "first attempt");
+		const child = calls.find(call => call.prompt.includes(attemptId));
+		assert.ok(child);
+		await runtime.operation("dispatch", { taskIds: ["first", "second"] }, "lead");
+		assert.equal(calls.length, 2);
+		await assert.rejects(runtime.operation("get_context", { taskId: "first" }, child.name), { code: "foreign_task" });
+		await assert.rejects(runtime.operation("get_context", { assignmentId: attemptId }, child.name), { code: "foreign_execution" });
+		assert.equal(inspections, 0, "reads must not inspect or bind the child");
+		await runtime.operation("reconcile_native", { sessionId: child.name }, child.name);
+		await assert.rejects(runtime.operation("get_context", { assignmentId: attemptId }, "sibling"), { code: "foreign_execution" });
+		const reopened = createRuntime({ directory, log: message => assert.fail(message) });
+		t.after(() => reopened.close());
+		const brief = await readAssignment(reopened, attemptId, child.name);
+		assert.match(brief, /The assigned calculation holds/);
+		assert.ok(Buffer.byteLength(brief) < 4096);
+		const evaluator = JSON.parse(await readAssignment(reopened, attemptId, child.name, "behavior"));
+		assert.deepEqual(evaluator, runtime.store().getAttempt(attemptId).checks[0]);
+		assert.equal(evaluator.command, command);
+		await runtime.operation("cancel_task", { taskId: "first" }, "lead");
+		await assert.rejects(reopened.operation("get_context", { assignmentId: attemptId }, child.name), /cancelled|no longer active/i);
+	} finally { calls.forEach(call => call.release()); }
+	const result = record(await staffing);
+	assert.ok(Array.isArray(result.started) && result.started.length === 2);
+	assert.deepEqual(result.prepared, []);
+	assert.ok(Array.isArray(result.blocked));
+	assert.deepEqual(result.blocked.map(({ taskId, code }) => [taskId, code]), [["missing", "not_found"], ["third", "capacity_wait"]]);
+	assert.ok(Buffer.byteLength(JSON.stringify(result)) < 2048);
+});
+
+test("compact kickoff, captured native identity and actual command evidence produce a result without activation", async t => {
 	const { runtime } = fixture(t);
 	const created = await runtime.operation("start_goal", definition, "director");
 	const goal = runtime.store().snapshot().goals[0];
 	const task = runtime.store().snapshot().tasks[0];
 	assert.ok(created);
-	const calls = await runtime.operation("prepare_dispatch", { taskIds: [task.id] }, "director");
+	const calls = await runtime.operation("dispatch", { taskIds: [task.id] }, "director");
 	assert.ok(calls && typeof calls === "object" && "prepared" in calls);
 	assert.ok(calls.prepared);
 	const call = calls.prepared[0];
@@ -2057,7 +2130,7 @@ test("a replacement coordinator reconciles original issuance and reports the act
 	}) }) });
 	await runtime.operation("start_goal", definition, "director");
 	const task = runtime.store().snapshot().tasks[0];
-	const dispatch = await runtime.operation("prepare_dispatch", { taskIds: [task.id] }, "director");
+	const dispatch = await runtime.operation("dispatch", { taskIds: [task.id] }, "director");
 	assert.ok(dispatch && typeof dispatch === "object" && "prepared" in dispatch);
 	assert.ok(dispatch.prepared);
 	const args = dispatch.prepared[0].arguments;
@@ -2093,7 +2166,7 @@ test("coordinator handoff does not hide a worker's actual outstanding shell or g
 	});
 	await runtime.operation("start_goal", definition, "director");
 	const task = runtime.store().snapshot().tasks[0];
-	const dispatch = await runtime.operation("prepare_dispatch", { taskIds: [task.id] }, "director");
+	const dispatch = await runtime.operation("dispatch", { taskIds: [task.id] }, "director");
 	assert.ok(dispatch && typeof dispatch === "object" && "prepared" in dispatch && dispatch.prepared);
 	const args = dispatch.prepared[0].arguments;
 	runtime.pre("create_session", args, "director", "worker-creation");
@@ -2193,7 +2266,7 @@ test("a definitely rejected stop retries on an owner turn without reopening or r
 
 	await runtime.operation("start_goal", definition, "director");
 	const task = runtime.store().snapshot().tasks[0];
-	const dispatch = await runtime.operation("prepare_dispatch", { taskIds: [task.id] }, "director");
+	const dispatch = await runtime.operation("dispatch", { taskIds: [task.id] }, "director");
 	assert.ok(dispatch && typeof dispatch === "object" && "prepared" in dispatch && dispatch.prepared);
 	const args = dispatch.prepared[0].arguments;
 	runtime.pre("create_session", args, "director", "created-worker");
@@ -2201,9 +2274,9 @@ test("a definitely rejected stop retries on an owner turn without reopening or r
 	await runtime.operation("cancel_task", { taskId: task.id }, "director");
 	assert.equal(calls, 1);
 	accepted = true;
-	await runtime.operation("get_context", { goalId: task.goalId }, "director");
+	await runtime.operation("advance", { goalId: task.goalId }, "director");
 	assert.equal(calls, 2);
-	await runtime.operation("get_context", { goalId: task.goalId }, "director");
+	await runtime.operation("advance", { goalId: task.goalId }, "director");
 	assert.equal(calls, 2);
 	const stops = runtime.store().snapshot().effects.filter(effect => effect.kind === "stop");
 	assert.equal(stops.length, 2);
@@ -2475,7 +2548,7 @@ test("cancelling an issued child queues a direct stop without pretending its com
 	const { runtime } = fixture(t, { execute: async () => { stopMessages++; return { resultType: "success" }; } });
 	await runtime.operation("start_goal", definition, "director");
 	const task = runtime.store().snapshot().tasks[0];
-	const calls = await runtime.operation("prepare_dispatch", {}, "director");
+	const calls = await runtime.operation("dispatch", {}, "director");
 	assert.ok(calls && typeof calls === "object" && "prepared" in calls && calls.prepared);
 	const worker = "22222222-2222-4222-8222-222222222222";
 	const call = calls.prepared[0];
@@ -2521,7 +2594,7 @@ test("non-executable artifact acceptance fails before any work is created", asyn
 	assert.equal(runtime.store().snapshot().goals.length, 0);
 });
 
-test("reading one goal does not consume another goal's unseen wake", async t => {
+test("repeated status reads leave wake generations intact; advance consumes only the addressed goal", async t => {
 	const { runtime } = fixture(t);
 	for (let i = 0; i < 2; i++) {
 		await runtime.operation("start_goal", {
@@ -2532,7 +2605,11 @@ test("reading one goal does not consume another goal's unseen wake", async t => 
 		await runtime.operation("report_result", { taskId: task.id, summary: "Scoped work delivered" }, "director");
 	}
 	const goals = runtime.store().snapshot().goals;
-	await runtime.operation("get_context", { goalId: goals[0].id }, "director");
+	const before = runtime.store().snapshot();
+	const status = await runtime.operation("get_context", { goalId: goals[0].id }, "director");
+	assert.deepEqual(await runtime.operation("get_context", { goalId: goals[0].id }, "director"), status);
+	assert.deepEqual(runtime.store().snapshot(), before);
+	await runtime.operation("advance", { goalId: goals[0].id }, "director");
 	assert.deepEqual(runtime.store().pendingWakes("director").map(wake => wake.goalId), [goals[1].id]);
 });
 
@@ -2548,7 +2625,7 @@ test("unrelated delivered history does not grow a focused task context", async t
 		await runtime.operation("start_task", { taskId: unrelated.id }, "director");
 		await runtime.operation("report_result", { taskId: unrelated.id, summary: "Delivered unrelated work" }, "director");
 	}
-	await runtime.operation("get_context", { goalId: focused.goalId }, "director");
+	await runtime.operation("advance", { goalId: focused.goalId }, "director");
 	const after = await runtime.operation("get_context", { taskId: focused.id }, "director");
 	assert.deepEqual(after, before);
 });
@@ -2566,7 +2643,7 @@ test("concurrent leaf outputs share one queued wake without swallowing the later
 		...definition, tasks: Array.from({ length: 3 }, () => ({ ...definition.tasks[0], checks: [] })),
 	}, "director");
 	const tasks = runtime.store().snapshot().tasks;
-	const prepared = await runtime.operation("prepare_dispatch", {}, "director");
+	const prepared = await runtime.operation("dispatch", {}, "director");
 	assert.ok(prepared && typeof prepared === "object" && "prepared" in prepared && prepared.prepared);
 	const workers = tasks.map((_, index) => `22222222-2222-4222-8222-${String(index).padStart(12, "0")}`);
 	for (const [index, call] of prepared.prepared.entries()) {
@@ -2587,7 +2664,7 @@ test("concurrent leaf outputs share one queued wake without swallowing the later
 	assert.equal(pending[0].generation, 2);
 	assert.equal(pending[0].sent, 1);
 	assert.equal(pending[0].consumed, 0);
-	await runtime.operation("get_context", { goalId: tasks[0].goalId }, "director");
+	await runtime.operation("advance", { goalId: tasks[0].goalId }, "director");
 	await runtime.operation("report_result", { taskId: tasks[2].id, summary: "Third output" }, workers[2]);
 	await runtime.flushNotifications();
 	assert.equal(messages, 2);
@@ -2628,14 +2705,14 @@ async function settlementFixture(t, hooks) {
 	await runtime.operation("start_goal", { ...definition, limits: { workers: 1 },
 		tasks: Array.from({ length: 2 }, () => ({ ...definition.tasks[0], checks: [] })) }, "director");
 	const task = runtime.store().snapshot().tasks[0];
-	const dispatch = record(await runtime.operation("prepare_dispatch", { taskIds: [task.id] }, "director"));
+	const dispatch = record(await runtime.operation("dispatch", { taskIds: [task.id] }, "director"));
 	assert.ok(Array.isArray(dispatch.prepared));
 	const args = record(dispatch.prepared[0]).arguments;
 	runtime.pre("create_session", args, "director", "settlement-worker-creation");
 	runtime.post("create_session", args, { id: "worker" }, "director");
 	runtime.pre("bash", { command: "sleep 1", shellId: "settlement-shell" }, "worker", "settlement-command");
 	await runtime.operation("report_result", { taskId: task.id, summary: "Output reported before shell settlement" }, "worker");
-	runtime.context({ goalId: task.goalId }, "director");
+	await runtime.operation("advance", { goalId: task.goalId }, "director");
 	return { ...fixtureResult, task };
 }
 
@@ -2658,7 +2735,7 @@ test("a disabled management route is tried once, retains manual wakes and return
 	assert.equal(record(context.wakes[0]).tool, "send_session_message");
 	assert.equal(runtime.store().pendingWakes("director")[0].unavailable, undefined);
 	const extra = runtime.store().createTask({ goalId: task.goalId, title: "Active worker", assignment: "Keep actual work tracked", workType: "analysis" }, "director");
-	const dispatch = record(await runtime.operation("prepare_dispatch", { taskIds: [extra.id] }, "director"));
+	const dispatch = record(await runtime.operation("dispatch", { taskIds: [extra.id] }, "director"));
 	assert.ok(Array.isArray(dispatch.prepared));
 	const args = record(dispatch.prepared[0]).arguments;
 	runtime.pre("create_session", args, "director", "disabled-stop-create");
@@ -2669,7 +2746,7 @@ test("a disabled management route is tried once, retains manual wakes and return
 	const first = record(cancelled.delivery[0]);
 	assert.equal(first.state, "native-route-disabled");
 	assert.equal(first.tool, "send_session_message");
-	const again = record(await runtime.operation("get_context", { goalId: task.goalId }, "director"));
+	const again = record(await runtime.operation("advance", { goalId: task.goalId }, "director"));
 	assert.ok(Array.isArray(again.stops));
 	assert.deepEqual(record(again.stops[0]).arguments, first.arguments);
 	assert.equal(calls, 1);
@@ -2700,15 +2777,15 @@ test("an initially disabled cooperative stop creates one retained fallback inste
 	});
 	await runtime.operation("start_goal", { ...definition, tasks: [{ ...definition.tasks[0], checks: [] }] }, "director");
 	const task = runtime.store().snapshot().tasks[0];
-	const prepared = record(await runtime.operation("prepare_dispatch", {}, "director"));
+	const prepared = record(await runtime.operation("dispatch", {}, "director"));
 	assert.ok(Array.isArray(prepared.prepared));
 	const args = record(prepared.prepared[0]).arguments;
 	runtime.pre("create_session", args, "director", "first-disabled-stop");
 	runtime.post("create_session", args, { id: "worker" }, "director");
 	runtime.pre("bash", { command: "sleep 1", shellId: "first-disabled-shell" }, "worker", "first-disabled-command");
 	await runtime.operation("cancel_task", { taskId: task.id }, "director");
-	const first = record(await runtime.operation("get_context", { goalId: task.goalId }, "director"));
-	const again = record(await runtime.operation("get_context", { goalId: task.goalId }, "director"));
+	const first = record(await runtime.operation("advance", { goalId: task.goalId }, "director"));
+	const again = record(await runtime.operation("advance", { goalId: task.goalId }, "director"));
 	assert.deepEqual(again.stops, first.stops);
 	assert.equal(runtime.store().snapshot().effects.filter(effect => effect.kind === "stop").length, 2);
 	assert.equal(runtime.store().getEffect("command:first-disabled-command").state, "issued");
@@ -2773,7 +2850,7 @@ for (const outcome of ["success", "failure"]) test(`a newer wake survives an in-
 		tasks: Array.from({ length: 3 }, () => ({ ...definition.tasks[0], checks: [] })) }, "director");
 	const tasks = runtime.store().snapshot().tasks;
 	const workers = ["first-worker", "second-worker"];
-	const dispatch = record(await runtime.operation("prepare_dispatch", { taskIds: tasks.slice(0, 2).map(task => task.id) }, "director"));
+	const dispatch = record(await runtime.operation("dispatch", { taskIds: tasks.slice(0, 2).map(task => task.id) }, "director"));
 	assert.ok(Array.isArray(dispatch.prepared));
 	for (const [index, call] of dispatch.prepared.entries()) {
 		const args = record(call).arguments;
@@ -2782,11 +2859,11 @@ for (const outcome of ["success", "failure"]) test(`a newer wake survives an in-
 		runtime.pre("bash", { command: "sleep 1", shellId: `generation-shell-${index}` }, workers[index], `generation-command-${index}`);
 		await runtime.operation("report_result", { taskId: tasks[index].id, summary: "Reported before actual process exit" }, workers[index]);
 		await runtime.flushNotifications();
-		runtime.context({ goalId: tasks[index].goalId }, "director");
+		await runtime.operation("advance", { goalId: tasks[index].goalId }, "director");
 	}
 	runtime.toolComplete({ toolCallId: "generation-command-0", success: true, shellExecution: { exitCode: 0 } }, workers[0]);
 	await sending;
-	runtime.context({ goalId: tasks[0].goalId }, "director");
+	await runtime.operation("advance", { goalId: tasks[0].goalId }, "director");
 	runtime.toolComplete({ toolCallId: "generation-command-1", success: true, shellExecution: { exitCode: 0 } }, workers[1]);
 	accept({ resultType: outcome, ...(outcome === "failure" ? { error: "queue rejected" } : {}) });
 	await runtime.flushNotifications();
@@ -2812,7 +2889,7 @@ for (const transition of ["directory", "close"]) {
 		const databasePath = runtime.store().databasePath;
 		runtime.toolComplete({ toolCallId: "settlement-command", success: true, shellExecution: { exitCode: 0 } }, "worker");
 		await sending;
-		runtime.context({ goalId: task.goalId }, "director");
+		await runtime.operation("advance", { goalId: task.goalId }, "director");
 		runtime.store().recordSignal({ goalId: task.goalId, kind: "observation", summary: "A newer observation arrived", references: [] }, "worker");
 		if (transition === "close") runtime.close();
 		else {
@@ -2998,7 +3075,7 @@ test("a finished receipt cannot be admitted by another worker or an unrelated sh
 	assert.equal(runtime.store().getEffect(effectId).state, "issued");
 });
 
-test("context admits finished receipts, keeps started commands unknown and rejects changed receipt contents", async t => {
+test("advance admits finished receipts, keeps started commands unknown and rejects changed receipt contents", async t => {
 	const { runtime, task, args, effectId, receipt } = await issuedFileCheck(t);
 	mkdirSync(path.dirname(receipt), { recursive: true });
 	writeFileSync(receipt, JSON.stringify({ state: "started", effectId }), { flag: "wx" });
@@ -3012,10 +3089,13 @@ test("context admits finished receipts, keeps started commands unknown and rejec
 	const changed = record(/** @type {unknown} */ (JSON.parse(content)));
 	changed.exitCode = 99;
 	writeFileSync(receipt, JSON.stringify(changed));
-	await assert.rejects(runtime.operation("get_context", { taskId: task.id }, "director"), /receipt content changed/);
+	await runtime.operation("get_context", { taskId: task.id }, "director");
+	await assert.rejects(runtime.operation("advance", { goalId: task.goalId }, "director"), /receipt content changed/);
 	assert.equal(runtime.store().getEffect(effectId).state, "issued");
 	writeFileSync(receipt, content);
 	await runtime.operation("get_context", { taskId: task.id }, "director");
+	assert.equal(runtime.store().getEffect(effectId).state, "issued");
+	await runtime.operation("advance", { goalId: task.goalId }, "director");
 	assert.equal(runtime.store().getEffect(effectId).state, "settled");
 	assert.equal(record(await runtime.operation("run_check", { taskId: task.id, checkId: "behavior" }, "director")).state, "passed");
 	assert.equal(runtime.store().snapshot().effects.filter(effect => effect.kind === "command").length, 1);
@@ -3028,7 +3108,7 @@ test("a replaced attempt retains its finished receipt as history and a first-run
 		await runtime.operation("evolve_task", { taskId: task.id, expectedVersion: 1,
 			checks: [artifactCheck, { ...artifactCheck, id: "additional", origin: "derived" }] }, "director");
 		if (!finishBeforeRevision) assert.equal(spawnSync("/bin/sh", ["-c", text(args.command, "command")]).status, 0);
-		await runtime.operation("get_context", { goalId: task.goalId }, "director");
+		await runtime.operation("advance", { goalId: task.goalId }, "director");
 		const evidence = runtime.store().evidenceForAttempt(text(task.currentAttemptId, "attempt"));
 		assert.equal(evidence.length, 1);
 		assert.equal(evidence[0].outcome, finishBeforeRevision ? "passed" : "failed");
@@ -3082,7 +3162,7 @@ for (const reevaluateOther of [false, true]) test(`paused publication ${reevalua
 	} });
 	await runtime.operation("start_factory", { source }, "director");
 	const task = runtime.store().snapshot().tasks[0];
-	const batch = record(await runtime.operation("prepare_dispatch", {}, "director"));
+	const batch = record(await runtime.operation("dispatch", {}, "director"));
 	assert.ok(Array.isArray(batch.prepared));
 	const call = record(batch.prepared[0]);
 	runtime.pre("create_session", call.arguments, "director", "publication-worker");
@@ -3341,7 +3421,7 @@ test("artifact failures remain checked failures for same-worker repair, while es
 test("partial dispatch returns the reserved call when another task reaches capacity", async t => {
 	const { runtime } = fixture(t);
 	await runtime.operation("start_goal", { ...definition, limits: { workers: 1 }, tasks: [definition.tasks[0], definition.tasks[0]] }, "director");
-	const prepared = await runtime.operation("prepare_dispatch", {}, "director");
+	const prepared = await runtime.operation("dispatch", {}, "director");
 	assert.ok(prepared && typeof prepared === "object" && "prepared" in prepared && prepared.prepared && "blocked" in prepared && prepared.blocked);
 	assert.equal(prepared.prepared.length, 1);
 	assert.equal(prepared.blocked.length, 1);
@@ -3374,7 +3454,7 @@ test("a native creation cannot be issued twice with different call identities", 
 	const { runtime } = fixture(t);
 	await runtime.operation("start_goal", definition, "director");
 	const task = runtime.store().snapshot().tasks[0];
-	const calls = await runtime.operation("prepare_dispatch", { taskIds: [task.id] }, "director");
+	const calls = await runtime.operation("dispatch", { taskIds: [task.id] }, "director");
 	assert.ok(calls && typeof calls === "object" && "prepared" in calls);
 	const prepared = calls.prepared;
 	assert.ok(prepared);

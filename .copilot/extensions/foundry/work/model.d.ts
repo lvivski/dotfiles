@@ -368,6 +368,7 @@ export interface Effect {
 	state: "prepared" | "issued" | "settled" | "uncertain";
 	owner: string;
 	request: Json;
+	assignment?: string;
 	result?: Json;
 	relatedAttemptIds?: string[];
 	factoryGeneration?: number;

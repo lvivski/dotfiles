@@ -130,8 +130,8 @@ export function openWorkStore(workingDirectory, options = {}) {
 		pendingDeliveries(actor, goalId) { return database.transaction(tx => Wakes.pendingDeliveries(tx, actor, goalId), false); },
 		/** @param {string} actor @param {string} [goalId] */
 		openInputRequests(actor, goalId) { return database.transaction(tx => Attempts.openInputRequests(tx, actor, goalId), false); },
-		/** Only invoked with explicitly observed native input clearance. @param {string} nativeId @param {string} actor */
-		clearNativeInputs(nativeId, actor) { return database.transaction(tx => Attempts.clearNativeInputs(tx, nativeId, actor)); },
+		/** Only invoked with explicitly observed native input clearance. @param {string} nativeId @param {string} actor @param {string} [goalId] */
+		clearNativeInputs(nativeId, actor, goalId) { return database.transaction(tx => Attempts.clearNativeInputs(tx, nativeId, actor, goalId)); },
 		/** @param {import("./model.d.ts").Input} input */
 		outputForInput(input) { return database.transaction(tx => Tasks.outputForInput(tx, input), false); },
 		/** @param {string} id */
@@ -177,8 +177,22 @@ export function openWorkStore(workingDirectory, options = {}) {
 			AND json_extract(e.document,'$.request.workspace_type')='branch' AND json_extract(t.document,'$.role')='coordinator' LIMIT 1`).get(actor)), false); },
 		/** @param {string} attemptId @param {string} nativeId @param {string} actor @param {Json} [receipt] @returns {Attempt} */
 		bindAttempt(attemptId, nativeId, actor, receipt) { return database.transaction(tx => Attempts.bindAttempt(tx, attemptId, nativeId, actor, receipt)); },
-		/** @param {{id: string, attemptId: string, kind: Effect["kind"], state: Effect["state"], request: Json, result?: Json, factoryGeneration?:number, relatedAttemptIds?:string[]}} input @param {string} actor @returns {Effect} */
+		/** @param {Omit<Effect,"owner">} input @param {string} actor @returns {Effect} */
 		recordEffect(input, actor) { return database.transaction(tx => Effects.recordEffect(tx, input, actor)); },
+		/** @param {string} attemptId @param {string} actor @param {number} offset @param {string} [checkId] */
+		assignmentPage(attemptId, actor, offset, checkId) { return database.transaction(tx => {
+			const attempt = tx.get("attempts", attemptId);
+			if (attempt.nativeId !== actor) throw new FoundryError("foreign_execution",
+				`Only the bound worker can read this assignment. If binding is pending, use foundry_reconcile_native with your sessionId "${actor}" before reading again.`);
+			const task = Policy.current(tx, attempt);
+			if (!["running", "waiting"].includes(attempt.state)) throw new FoundryError("stale_attempt", "This assignment is no longer active");
+			const check = attempt.checks.find(item => item.id === checkId);
+			if (checkId !== undefined && !check) throw new FoundryError("invalid_check", "No such evaluator on this assignment");
+			const body = check ? JSON.stringify(check) : text(tx.get("effects", `create:${attemptId}`).assignment, "captured assignment");
+			if (!Number.isSafeInteger(offset) || offset < 0 || offset >= body.length) throw new FoundryError("invalid_offset", "Offset must be inside this assignment");
+			const end = Math.min(offset + 4096, body.length);
+			return { taskId: task.id, attemptId, assignment: body.slice(offset, end), ...(end < body.length ? { nextOffset: end } : {}) };
+		}, false); },
 		/**
 		 * reportedSender is a separately supplied, native-verified identity for
 		 * parent-local reporting; it is never read from the result payload.

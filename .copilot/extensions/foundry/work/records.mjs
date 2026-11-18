@@ -112,6 +112,7 @@ export function decodeEffect(value) {
 		kind: choice(row.kind, /** @type {const} */ (["create", "command", "stop", "archive"]), "effect.kind"),
 		state: choice(row.state, /** @type {const} */ (["prepared", "issued", "settled", "uncertain"]), "effect.state"),
 		owner: text(row.owner, "effect.owner"), request: json(row.request),
+		...(row.assignment === undefined ? {} : { assignment: text(row.assignment, "creation assignment") }),
 		...(row.result === undefined ? {} : { result: json(row.result) }),
 		...(row.relatedAttemptIds === undefined ? {} : { relatedAttemptIds: strings(row.relatedAttemptIds) }),
 		...(row.factoryGeneration === undefined ? {} : { factoryGeneration: natural(row.factoryGeneration, "effect activation") }),

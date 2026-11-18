@@ -10,7 +10,7 @@ export function workspaceFor(task, base) {
 
 const ledger = new Set([
 	"foundry_get_context", "foundry_advance", "foundry_inspect_evidence", "foundry_observe_work", "foundry_pull_work", "foundry_split_work",
-	"foundry_wait_task", "foundry_prepare_dispatch", "foundry_create_task", "foundry_create_unit", "foundry_cancel_task",
+	"foundry_wait_task", "foundry_dispatch", "foundry_create_task", "foundry_create_unit", "foundry_cancel_task",
 	"foundry_request_collaboration", "foundry_respond_collaboration", "foundry_record_signal", "foundry_record_lesson",
 	"foundry_reconcile_native", "foundry_mark_wake_sent", "foundry_handoff_task", "foundry_reassign_task", "foundry_reassign_unit",
 	"foundry_retry_task", "foundry_evolve_task", "foundry_delivery",
