@@ -84,6 +84,16 @@ local blocker or completed maintenance into an organization-wide hold.
 
 ### Collaboration and execution handoff
 
+Send scoped questions, advisory feedback, and handoff notes directly with `send_session_message`
+when you know the native session bound to the peer's assignment. The assigned-goal directory
+lists unit-backed coordinator tasks and their owners. An owner may still be the parent or director
+before the peer is dispatched; the directory alone does not establish a native binding.
+If you cannot identify or reach the peer and work is blocked, ask your local coordinator for help.
+The director owns priorities, cross-team tradeoffs, and shared delivery blockers the owners
+cannot resolve. Routine exchanges do not need a relay, copy, or approval from the director.
+Advisory feedback does not block delivery; use a recorded collaboration for an actual output
+dependency. Existing scope and required checks still apply.
+
 `foundry_request_collaboration` names source/destination coordinator tasks, the source's producer
 consumer, its current version and an output. A required proposal immediately blocks that consumer.
 The destination uses `foundry_respond_collaboration(action: "accept", producer)` to atomically staff
@@ -167,9 +177,9 @@ source file. Reload and context reads use those stored values, not current defau
 Changing an accepted snapshot still requires a distinct policy identity; it is not an implicit
 limit increase. Present effective settings without an extra confirmation or tuning questionnaire.
 
-`foundry_advance` recovers receipts, reconciles observed owner-input answers, delivers/retries owner
-notifications through the same recovery path as `foundry_get_context`, consumes the actual owner's
-wakes, and classifies its local execution, dispatch, repair, resume, input, and settlement needs.
+`foundry_advance` recovers receipts, reconciles observed owner-input answers, and consumes the actual
+owner's wakes. It returns local actions and complete dispatches without waiting for peer delivery.
+`foundry_get_context` still returns delivery results and any fallback arguments.
 Execute complete prepared calls in the ordinary native turn, including calls returned alongside capacity blockers.
 Resume an existing worker rather than recreating it. A stop hook performs classification only,
 not native side effects. Unchanged re-entry and explicit continuation bounds pause work rather
@@ -181,8 +191,10 @@ Unknown commands, child identity and genuine input requests remain settlement bl
 
 The ordinary completion task has its own executable checks and protected required inputs.
 Acceptance atomically seals the transitive in-job production closure, including exact versions
-and resolved inputs. Required mutable production edges must float; ordinary historical pins
-outside that closure remain usable. In-job producer cancellation or changed accepted inputs invalidate
+and resolved inputs. It retires unused producer reservations, not reservations with live consumers
+or commitments, issued work, native questions, or shared-write claims. Required mutable production
+edges must float; ordinary historical pins outside that closure remain usable. In-job producer
+cancellation or changed accepted inputs invalidate
 current delivery. Code outputs require evaluated file-bound evidence. Accepted jobs admit no new
 execution, including unused alternatives, until `foundry_reopen_job`; historical publications
 remain recorded. `foundry_cancel_job` cancels without claiming delivery. Neither delivery nor a
@@ -354,8 +366,10 @@ runner observations. For a missed ordinary completion, its actual worker can cal
 The extension reads its own native history, validates the original start/arguments, final shell exit
 and session/project identity, and records the retained receipt against that exact attempt, even if
 retired. If the original call timed out while running, recovery can use a retained `read_bash`
-exit for the same shell before any restart or shell-handle reuse. It neither reruns commands nor
-promotes check outputs; missing/expired history or a started-only result remains blocked.
+exit for the same shell before any restart or shell-handle reuse. When timeout telemetry omits
+the shell ID, Foundry recognizes only the exact native continuation footers, with or without
+command output. It neither reruns commands nor promotes check outputs; missing/expired history
+or a started-only result remains blocked.
 Caller-supplied receipt JSON is not accepted.
 
 Operational authority is `<git-common-dir>/foundry/work.sqlite`, shared by repository worktrees,

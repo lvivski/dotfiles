@@ -266,16 +266,44 @@ test("factory advancement alone retries known failed owner wakes without replayi
 	await runtime.operation("start_factory", { source: factorySource(directory) }, "director");
 	const task = runtime.store().snapshot().tasks[0];
 	await runtime.operation("reassign_task", { taskId: task.id, newOwner: "worker-b" }, "director");
-	const failed = record(await runtime.operation("advance", {}, "director"));
-	assert.ok(Array.isArray(failed.delivery));
-	assert.equal(record(failed.delivery[0]).state, "failed-native-delivery");
-	const retried = record(await runtime.operation("advance", {}, "director"));
-	assert.ok(Array.isArray(retried.delivery));
-	assert.equal(record(retried.delivery[0]).state, "native-queue-accepted");
+	await runtime.operation("advance", {}, "director");
+	await runtime.flushNotifications();
+	assert.equal(requests.length, 1);
+	await runtime.operation("advance", {}, "director");
+	await runtime.flushNotifications();
+	assert.equal(requests.length, 2);
 	await runtime.operation("advance", {}, "director");
 	assert.equal(requests.length, 2);
 	assert.equal(errors.length, 1);
 	assert.equal(runtime.store().getTask(task.id).owner, "worker-b");
+});
+
+test("a held peer wake does not delay a prepared dispatch or another recipient", { timeout: 5000 }, async t => {
+	/** @type {()=>void} */
+	let release = () => {};
+	const held = new Promise(resolve => { release = () => resolve(undefined); });
+	const sent = new Set();
+	const { runtime, directory } = fixture(t, { ...authorizedFactory, execute: async (name, args) => {
+		assert.equal(name, "send_session_message");
+		const recipient = record(args).session_id;
+		sent.add(recipient);
+		if (recipient === "worker-x") await held;
+		return { resultType: "success" };
+	} });
+	await runtime.operation("start_factory", { source: factorySource(directory, { goal: {
+		...definition, scope: { ...definition.scope, mode: "interactive" },
+		tasks: ["x", "y", "complete"].map(id => ({ ...definition.tasks[0], id })),
+	} }) }, "director");
+	const [x, y, final] = runtime.store().snapshot().tasks;
+	runtime.store().reassignTask(x.id, "worker-x", "director");
+	runtime.store().reassignTask(y.id, "worker-y", "director");
+	try {
+		const { prepared } = record(await runtime.operation("advance", {}, "director"));
+		assert.ok(Array.isArray(prepared));
+		assert.deepEqual(prepared.map(call => record(call).taskId), [final.id]);
+		assert.deepEqual(sent, new Set(["worker-x", "worker-y"]));
+	} finally { release(); }
+	await runtime.flushNotifications();
 });
 
 for (const mechanism of ["native", "stop-hook"]) for (const nativeFlag of [false, true]) test(`${mechanism} factory advancement observes ${nativeFlag ? "the native input flag" : "nullable input clearance"} before resuming the same attempt`, async t => {
@@ -404,7 +432,11 @@ test("factory templates staff three native coordinator levels locally under a on
 		assert.equal(batch.prepared.length, 1);
 		const call = record(batch.prepared[0]);
 		const args = record(call.arguments);
-		assert.match(text(record(args.kickoff).prompt, "coordinator prompt"), /continuing coordination/);
+		const prompt = text(record(args.kickoff).prompt, "coordinator prompt");
+		assert.match(prompt, /Keep this coordinator attempt between events/);
+		assert.match(prompt, /foundry_request_collaboration/);
+		assert.match(prompt, /The director owns priorities, cross-team tradeoffs and shared delivery blockers/);
+		assert.match(prompt, /A directory owner alone does not establish that binding/);
 		runtime.pre("create_session", args, actor, `create:${nativeId}`);
 		runtime.post("create_session", args, { id: nativeId }, actor);
 		const attempt = runtime.store().getAttempt(text(call.attemptId, "attempt"));
@@ -419,6 +451,10 @@ test("factory templates staff three native coordinator levels locally under a on
 	}
 	assert.ok(Array.isArray(batch.prepared));
 	assert.equal(batch.prepared.length, 1);
+	const producer = text(record(record(record(batch.prepared[0]).arguments).kickoff).prompt, "producer prompt");
+	assert.match(producer, /send_session_message .* when you know the native session bound to the peer's assignment/);
+	assert.match(producer, /If you cannot identify or reach the peer and work is blocked, ask your local coordinator/);
+	assert.doesNotMatch(producer, /The director owns priorities/);
 	const snapshot = runtime.store().snapshot();
 	assert.equal(snapshot.attempts.filter(attempt => attempt.slot).length, 1);
 	assert.equal(snapshot.units.length, 3);
@@ -569,7 +605,7 @@ test("job sealing preserves issued coordinator commands, native inputs and claim
 	assert.equal(runtime.store().snapshot().completions?.[0].settled, false);
 });
 
-test("required cross-goal commitments fence both final acceptances until actual producer fulfillment", async t => {
+for (const required of [true, false]) test(`${required ? "required" : "optional"} cross-goal commitments retain their accepted producer`, async t => {
 	const { runtime, directory } = fixture(t, authorizedFactory);
 	/** @param {string} id */
 	const policy = id => factorySource(directory, { id, goal: { ...definition,
@@ -590,20 +626,21 @@ test("required cross-goal commitments fence both final acceptances until actual 
 	await runtime.operation("start_task", { taskId: destination.id }, "destination-owner");
 	const proposed = record(record(await runtime.operation("request_collaboration", { id: "peer-contract", sourceTaskId: source.id,
 		destinationTaskId: destination.id, consumerTaskId: consumer.id, expectedVersion: consumer.version,
-		title: "Peer interface", output: "interface" }, "source-owner")).request);
+		title: "Peer interface", output: "interface", required }, "source-owner")).request);
 	const accepted = record(record(await runtime.operation("respond_collaboration", { collaborationId: proposed.id, expectedRevision: proposed.revision,
 		action: "accept", producer: { title: "Produce interface", assignment: "Publish the interface", workType: "analysis" } }, "destination-owner")).request);
-	await assert.rejects(runtime.operation("start_task", { taskId: consumer.id }, "source-owner"), { code: "inputs_unavailable" });
-	const early = record(await acceptInline(runtime, final.id, "destination-owner"));
-	assert.equal(early.promoted, false);
+	if (required) await assert.rejects(runtime.operation("start_task", { taskId: consumer.id }, "source-owner"), { code: "inputs_unavailable" });
 	const producerId = text(accepted.producerTaskId, "committed producer");
-	await runtime.operation("start_task", { taskId: producerId }, "destination-owner");
+	const producer = record(await runtime.operation("start_task", { taskId: producerId }, "destination-owner"));
+	const early = record(await acceptInline(runtime, final.id, "destination-owner"));
+	assert.equal(early.promoted, !required);
+	assert.equal(runtime.store().getAttempt(text(producer.id, "committed attempt")).state, "running");
 	await runtime.operation("report_result", { taskId: producerId, summary: "Interface published",
 		outputs: [{ name: "interface", kind: "analysis", reference: "immutable:peer-interface", version: "peer-v1" }] }, "destination-owner");
 	await runtime.operation("respond_collaboration", { collaborationId: proposed.id, expectedRevision: accepted.revision, action: "fulfill" }, "destination-owner");
 	assert.match(renderBoard(runtime.store().snapshot()), /Collaboration commitments/);
 	assert.match(renderBoard(runtime.store().snapshot()), /peer-v1/);
-	await runtime.operation("report_result", { taskId: final.id, summary: "Accepted inline behavior" }, "destination-owner");
+	if (required) await runtime.operation("report_result", { taskId: final.id, summary: "Accepted inline behavior" }, "destination-owner");
 	assert.equal(runtime.store().snapshot().completions?.find(completion => completion.goalId === final.goalId)?.delivered, true);
 	await acceptInline(runtime, consumer.id, "source-owner");
 	assert.equal(runtime.store().snapshot().completions?.find(completion => completion.goalId === consumer.goalId)?.delivered, true);
@@ -858,18 +895,41 @@ test("an in-flight native source observation cannot admit work after pause and a
 	assert.equal(runtime.store().snapshot().goals.length, 0);
 });
 
-test("accepted completion remains delivered-but-unsettled while an unused native execution still holds its slot", async t => {
+for (const stage of ["local", "prepared", "issued", "referenced"]) test(`job acceptance retires only unused reservations: ${stage}`, async t => {
 	const { runtime, directory } = fixture(t, authorizedFactory);
 	await runtime.operation("start_factory", { source: factorySource(directory, { goal: {
 		...definition, scope: { ...definition.scope, mode: "interactive" },
 		tasks: ["alternative", "complete"].map(id => ({ ...definition.tasks[0], id })),
 	} }) }, "director");
 	const [alternative, complete] = runtime.store().snapshot().tasks;
-	await runtime.operation("start_task", { taskId: alternative.id }, "director");
+	if (stage === "referenced") await runtime.operation("start_goal", { ...definition, tasks: [
+		{ ...definition.tasks[0], inputs: [{ taskId: alternative.id, output: "analysis" }] },
+	] }, "consumer");
+	let creation;
+	if (stage === "local") await runtime.operation("start_task", { taskId: alternative.id }, "director");
+	else {
+		const batch = record(await runtime.operation("prepare_dispatch", { taskIds: [alternative.id] }, "director"));
+		assert.ok(Array.isArray(batch.prepared));
+		creation = record(batch.prepared[0]);
+		if (stage === "issued") runtime.pre("create_session", creation.arguments, "director", "optional-create");
+	}
 	await acceptInline(runtime, complete.id);
 	const status = runtime.store().advance("director", complete.goalId)[0];
 	assert.equal(status.delivered, true);
-	assert.equal(status.settled, false);
+	const factory = runtime.store().factory(status.factoryId, "director");
+	const goal = runtime.store().getGoal(complete.goalId);
+	const admitNext = () => runtime.store().admitFactoryJob({ ...goal, id: "next-job" }, [{
+		...complete, id: "next-completion", inputs: [], checks: complete.checks,
+	}], factory.id, "next-completion", "director", factory.generation);
+	assert.equal(status.settled, stage !== "issued" && stage !== "referenced");
+	if (stage === "issued" || stage === "referenced") {
+		assert.throws(admitNext, { code: "factory_capacity" });
+		assert.ok(creation);
+		assert.equal(runtime.store().getEffect(text(creation.effectId, "create effect")).state, stage === "issued" ? "issued" : "prepared");
+	} else {
+		assert.equal(admitNext().tasks[0].id, "next-completion");
+		if (creation) assert.throws(() => runtime.pre("create_session", creation.arguments, "director", "retired"), { code: "creation_retired" });
+	}
 });
 
 test("native source receipt parsing rejects foreign identity and provider failure rather than inventing empty intake", async () => {
@@ -1725,6 +1785,7 @@ for (const kind of ["check", "command"]) test(`exact ${kind} affinity admits a l
 	const [old, final] = runtime.store().snapshot().tasks;
 	await runtime.operation("start_task", { taskId: old.id }, "director");
 	const oldCommand = record(await runtime.operation("prepare_command", { taskId: old.id, command: "echo old" }, "director"));
+	runtime.pre("bash", { command: "echo already running" }, "director", "issued-old-command");
 	await acceptInline(runtime, final.id);
 	const oldAttempt = runtime.store().getAttempt(text(runtime.store().getTask(old.id).currentAttemptId, "old attempt"));
 	assert.equal(oldAttempt.state, "running");
@@ -1958,7 +2019,7 @@ test("complete kickoff, captured native identity and actual command evidence pro
 	const call = calls.prepared[0];
 	const kickoff = record(record(call.arguments).kickoff);
 	assert.equal(kickoff.mode, "autopilot");
-	assert.match(text(kickoff.prompt, "complete kickoff"), /Execute this complete assignment now/);
+	assert.match(text(kickoff.prompt, "complete kickoff"), /Start this assignment now/);
 	runtime.pre("create_session", call.arguments, "director", "native-create");
 	const worker = "22222222-2222-4222-8222-222222222222";
 	const receipt = { textResultForLlm: `Created session '${record(call.arguments).name}' (id: ${worker}) in project 'fixture' with a kickoff prompt. The session will start automatically.`, resultType: "success" };
@@ -2221,14 +2282,17 @@ function retainedCommandEvents(toolCallId, args) {
 	};
 }
 
-function timedOutCommandEvents() {
+function timedOutCommandEvents(noOutput = false) {
 	const { start, completion } = retainedCommandEvents("build", { command: "Build preview", initial_wait: 30 });
+	const content = noOutput
+		? "<command with shellId: 64 is still running after 30 seconds. The command is still running but hasn't produced output yet. You will be automatically notified when it completes; if you need the command to complete end your response with no tool calls to wait for the notification, or use stop_bash to stop it.>"
+		: "Build started\n<command with shellId: 64 is still running after 30 seconds. The command is still running. You will be automatically notified when it completes; if you need the command to complete end your response with no tool calls to wait for the notification. Use stop_bash to stop it.>";
 	return {
 		start,
 		completion: { ...completion, data: { toolCallId: "build", turnId: "original-turn", success: true,
 			toolTelemetry: { properties: { shell_error_category: "command_timeout", is_timeout: "true", executionMode: "sync" },
 				/** @type {{shell_id?: string}} */ restrictedProperties: {} },
-			result: { content: "Build started\n<command with shellId: 64 is still running after 30 seconds. The command is still running. You will be automatically notified when it completes; if you need the command to complete end your response with no tool calls to wait for the notification. Use stop_bash to stop it.>" } } },
+			result: { content } } },
 		readStart: { id: "read-start", type: "tool.execution_start", timestamp: "2030-01-01T00:00:02Z",
 			data: { toolName: "read_bash", toolCallId: "read", turnId: "read-turn", arguments: { shellId: "64", delay: 120 } } },
 		readEnd: { id: "read-exit", type: "tool.execution_complete", timestamp: "2030-01-01T00:00:03Z",
@@ -2237,8 +2301,8 @@ function timedOutCommandEvents() {
 	};
 }
 
-test("live native timeout records the generated handle for the later read", async t => {
-	const { start, completion, readStart, readEnd } = timedOutCommandEvents();
+for (const noOutput of [false, true]) test(`live native timeout records the generated handle (${noOutput ? "no output" : "with output"})`, async t => {
+	const { start, completion, readStart, readEnd } = timedOutCommandEvents(noOutput);
 	const { runtime } = fixture(t);
 	await runtime.operation("start_goal", definition, "director");
 	await runtime.operation("start_task", { taskId: runtime.store().snapshot().tasks[0].id }, "director");
@@ -2251,8 +2315,9 @@ test("live native timeout records the generated handle for the later read", asyn
 	assert.equal(runtime.store().getEffect("command:build")?.state, "settled");
 });
 
-for (const variant of ["valid", "structured shell", "conflicting shell", "other shell", "other mode", "subagent read", "new command", "resumed", "no exit", "quoted timeout"]) test(`native continued recovery: ${variant}`, async t => {
-	const { start, completion, readStart, readEnd } = timedOutCommandEvents();
+for (const variant of ["valid", "no output", "no output wrong shell", "quoted no output", "altered no output footer",
+	"structured shell", "conflicting shell", "other shell", "other mode", "subagent read", "new command", "resumed", "no exit", "quoted timeout"]) test(`native continued recovery: ${variant}`, async t => {
+	const { start, completion, readStart, readEnd } = timedOutCommandEvents(variant.includes("no output"));
 	/** @type {Record<string, unknown>[]} */
 	const starts = [variant === "subagent read" ? { ...readStart, data: { ...readStart.data, agentId: "child" } } : readStart];
 	if (variant === "structured shell") {
@@ -2260,12 +2325,13 @@ for (const variant of ["valid", "structured shell", "conflicting shell", "other 
 		completion.data.result.content = "Build started";
 	}
 	if (variant === "conflicting shell") completion.data.toolTelemetry.restrictedProperties.shell_id = "65";
-	if (variant === "other shell") readStart.data.arguments.shellId = "65";
+	if (variant === "other shell" || variant === "no output wrong shell") readStart.data.arguments.shellId = "65";
 	if (variant === "other mode") readEnd.data.toolTelemetry.properties.read_target_original_mode = "async";
 	if (variant === "new command") starts.unshift({ ...readStart, id: "new-start",
 		data: { ...readStart.data, toolCallId: "new", toolName: "bash" } });
 	if (variant === "resumed") starts.unshift({ id: "resumed", type: "session.resume", data: {} });
-	if (variant === "quoted timeout") completion.data.toolTelemetry.properties.is_timeout = "false";
+	if (variant === "quoted timeout" || variant === "quoted no output") completion.data.toolTelemetry.properties.is_timeout = "false";
+	if (variant === "altered no output footer") completion.data.result.content = completion.data.result.content.replace("notification, or use", "notification. Use");
 	const pages = [
 		{ events: variant === "no exit" ? starts : [...starts, readEnd], cursor: "older", hasMore: true, cursorStatus: "ok" },
 		{ events: [start, completion], cursor: "end", hasMore: false, cursorStatus: "ok" },
@@ -2279,7 +2345,7 @@ for (const variant of ["valid", "structured shell", "conflicting shell", "other 
 	const effect = runtime.store().snapshot().effects[0];
 	runtime.store().recordEffect({ ...effect, state: "uncertain", result: { nativeCompletion: completion.data } }, "director");
 	const request = { sessionId: "director", toolCallId: "build" };
-	if (!["valid", "structured shell"].includes(variant)) {
+	if (!["valid", "no output", "structured shell"].includes(variant)) {
 		await assert.rejects(runtime.operation("reconcile_native", request, "director"), { code: "native_completion_pending" });
 		assert.equal(runtime.store().getEffect("command:build")?.state, "uncertain");
 		return;
@@ -2690,7 +2756,7 @@ test("cancelled command settlement releases capacity and a failed send does not 
 	assert.equal(runtime.store().snapshot().attempts[0].slot, false);
 });
 
-test("a second actual settlement queues a fresh generation when its owner consumed the in-flight notification", async t => {
+for (const outcome of ["success", "failure"]) test(`a newer wake survives an in-flight send returning ${outcome}`, async t => {
 	/** @type {(value:unknown)=>void} */
 	let accept = () => {};
 	/** @type {()=>void} */
@@ -2698,7 +2764,7 @@ test("a second actual settlement queues a fresh generation when its owner consum
 	const held = new Promise(resolve => { accept = resolve; });
 	const sending = new Promise(resolve => { entered = () => resolve(undefined); });
 	let messages = 0;
-	const { runtime } = fixture(t, { execute: async () => {
+	const { runtime } = fixture(t, { log: message => assert.equal(message, "queue rejected"), execute: async () => {
 		if (++messages !== 3) return { resultType: "success" };
 		entered();
 		return held;
@@ -2722,7 +2788,7 @@ test("a second actual settlement queues a fresh generation when its owner consum
 	await sending;
 	runtime.context({ goalId: tasks[0].goalId }, "director");
 	runtime.toolComplete({ toolCallId: "generation-command-1", success: true, shellExecution: { exitCode: 0 } }, workers[1]);
-	accept({ resultType: "success" });
+	accept({ resultType: outcome, ...(outcome === "failure" ? { error: "queue rejected" } : {}) });
 	await runtime.flushNotifications();
 	assert.equal(messages, 4);
 	assert.equal(runtime.store().pendingWakes("director")[0].sent, 4);

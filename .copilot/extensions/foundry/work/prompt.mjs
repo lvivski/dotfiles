@@ -10,19 +10,15 @@ export function assignmentPrompt(goal, task, attempt, context = []) {
 		`Task: ${task.title} (${task.id}); attempt ${attempt.id}.`,
 		`Local accountable coordinator: ${attempt.creator}.`,
 		"",
-		"Execute this complete assignment now under the user's existing scope and native permissions. Bookkeeping does not require a readiness acknowledgment or an activation message.",
+		"Start this assignment now under the user's scope and native permissions; no readiness acknowledgment is needed.",
 		task.assignment,
 		...(task.role === "coordinator" ? [
 			"",
-			"You own continuing coordination for this scoped task subtree throughout this goal, not a one-shot report. Maintain the actual backlog, staff native worker subsessions, integrate evaluated outputs, and handle real dependencies and collaboration requests locally. Create subordinate coordinator tasks (role:coordinator) for useful independent subteams; do not manufacture departments, headcounts, idle workers or extra approval gates.",
-			"For requested software delivery, assign the smallest coherent runnable increment and its integration/delivery owner from the start. Design packets and producer publications are intermediate inputs, not delivery. Give the bounded integration/delivery producer actual named inputs and executable checks of the combined candidate; include landing, build, launch and visual inspection only as required by the requested outcome and actual authorization. Do not invent no-commit/no-landing restrictions or infer Git/release permission from this assignment.",
-			"For a first usable product flow, build and run that flow before expanding regression coverage. Exercise it end to end on the actual candidate, and for design work compare the running interface with the agreed reference. Use only focused new checks for material risks in the slice; broad prototype or debug-pane regression coverage is not a prerequisite. This does not remove any already-governing check.",
-			"Keep the current delivery cut fixed while repairing and qualifying it; put new proposals in the next increment unless they correct a real blocker in this cut. Independent useful work may continue. Report actual integrated/runnable/landed outcomes or the concrete blocker, not factory-active labels, queue acceptance or routine status relays. Preserve genuine regressions rather than weakening checks to claim delivery.",
-			"Keep independent modules moving in separate worktrees against their declared, pinned interfaces. A missing input, unsettled operation, or shared landing claim blocks only the work that needs it. Keep the affected attempt and its records intact, but dispatch eligible independent work without waiting for a global release, reload, or hold to clear.",
-			`Keep this attempt ${attempt.id} alive between events. Yield your execution slot with foundry_wait_task kind:events and this attemptId before staffing children; bookkeeping needs no implementation slot. Use foundry_resume_task before running your own commands/checks/implementation. Do not redispatch this waiting role or report_result merely because its first producer finished.`,
-			"Read coordination pending/handled work generations in foundry_get_context. Once the observed work is staffed or genuinely waiting/exhausted, persist its disposition with foundry_wait_task kind:events, handledGeneration and relevant task/request relatedIds. Reading a notification is not handling work. Newer work stays pending; do not poll or create a self-wake loop.",
-			"Request work from peer coordinator tasks through foundry_request_collaboration; accept and staff requests under your own scope with foundry_respond_collaboration. Required commitments constrain both deliveries. A declined/blocked/cancelled request does not satisfy its output requirement. Use source-authorized release explicitly, never silently drop acceptance obligations.",
-			"Publish concrete code/research/integration through bounded producer children with their own executable checks. The organizational role itself publishes no product deliverable. Retain one goal per native coordinator session; organization templates, not execution rights or budgets, can be reused by later jobs.",
+			"Own this subtree until delivery. Staff ready producers in parallel and assign one integration owner with named inputs and executable checks of the combined candidate. A blocked input or claim stops only dependent work. Keep the delivery scope and governing checks intact.",
+			`Before staffing, yield with foundry_wait_task kind:events and attemptId ${attempt.id}; resume before doing your own implementation. Use foundry_advance for locally owned actions and execute the returned prepared calls. Keep this coordinator attempt between events; producers publish the deliverables.`,
+			"Once the observed generation is staffed or explicitly waiting/exhausted, record handledGeneration and relevant relatedIds with the event wait. Reading isn't handling. Don't poll or redispatch a waiting coordinator.",
+			"Use the directory from foundry_get_context to find peer coordinator tasks. Request needed versioned peer outputs through foundry_request_collaboration and staff accepted requests locally; required commitments must be fulfilled or explicitly released by their source.",
+			"The director owns priorities, cross-team tradeoffs and shared delivery blockers that peers cannot resolve. Do not copy the director on routine exchanges, relay them through the hierarchy, or require director approval for work already within scope.",
 		] : []),
 		"",
 		`Execution scope: ${JSON.stringify(task.scope)}`,
@@ -35,12 +31,13 @@ export function assignmentPrompt(goal, task, attempt, context = []) {
 		] : []),
 		...(context.length ? ["Relevant context:", ...context] : []),
 		"",
-		"Use foundry_get_context only when you need this task's changed records. Run assigned procedures with foundry_run_check, repair:true. A checked failure records evidence and atomically reserves a fresh same-worker attempt under this goal's limits: implement next without report/retry/start bookkeeping, activation or a parent wake. A real capacity/limit wait is explicit; a parked repair remains yours across reload, so resume it with foundry_start_task or the exact failed report after its capacity wake. Report completed outputs with foundry_report_result. Native spend is observed automatically; do not manually repeat its receipts.",
-		"Context/check calls recover your finished runner receipts without rerunning a command; started-only receipts and commands without verified completion stay unknown. Self-ended settled claims release automatically and warm repair retains them. If context reports a disabled native message route, deliver its returned wake/stop arguments with the ordinary app tool; mark only the accepted wake generation with foundry_mark_wake_sent. Do not bypass host policy or replay an uncertain delivery.",
+		"Run assigned checks with foundry_run_check (repair:true for a same-worker retry). Publish with publish:<output name> or foundry_report_result. A parked repair stays with you; resume it with foundry_start_task after the capacity wake.",
+		"Wait only on a concrete dependency, capacity, or verified native request. Use foundry_get_context for changed records or a delivery fallback; never replay an uncertain send or command.",
 		task.scope.delegation
-			? "Delegate useful independent recorded work below this task with foundry_create_task and foundry_prepare_dispatch. Pass complete kickoffs and explicit execution mode. Use separate native worktrees for writers. Lightweight in-session work remains part of your attempt."
+			? "Delegate independent work with foundry_create_task and foundry_prepare_dispatch. Execute the complete returned calls; keep independent writers in separate worktrees."
 			: "This task does not authorize further delegation or creation of sessions.",
-		"Report concrete blockers or native input requests to the current local owner. Do not forward routine progress through every ancestor, broaden scope, commit, push or release without the user's actual authorization.",
+		"Use send_session_message for scoped questions, advisory feedback, and handoff notes when you know the native session bound to the peer's assignment. A directory owner alone does not establish that binding. If you cannot identify or reach the peer and work is blocked, ask your local coordinator for help. Escalate decisions outside your scope there too. Do not turn advisory feedback into a dependency.",
+		"Report concrete blockers or native input requests to the current local owner. Do not broaden scope, commit, push or release without the user's actual authorization.",
 	].join("\n");
 }
 

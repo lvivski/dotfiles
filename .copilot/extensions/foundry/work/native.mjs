@@ -98,7 +98,11 @@ export function continuedShell(event) {
 	// Older hosts omit the generated shell ID from telemetry, but append it to the native timeout result.
 	const content = record(event.result ?? {}).content;
 	if (typeof content !== "string") return;
-	return /(?:^|\n)<command with shellId: ([^<>\s]+) is still running after \d+ seconds\. The command is still running\. You will be automatically notified when it completes; if you need the command to complete end your response with no tool calls to wait for the notification\. Use stop_bash to stop it\.>\n?$/.exec(content)?.[1];
+	const footer = /(?:^|\n)<command with shellId: ([^<>\s]+) is still running after \d+ seconds\. The command is still running([^\n]*)>\n?$/.exec(content);
+	if (!footer) return;
+	const notice = " You will be automatically notified when it completes; if you need the command to complete end your response with no tool calls to wait for the notification";
+	if (footer[2] === `.${notice}. Use stop_bash to stop it.`
+		|| footer[2] === ` but hasn't produced output yet.${notice}, or use stop_bash to stop it.`) return footer[1];
 }
 
 /** @param {unknown} value @returns {Record<string, unknown> | undefined} */

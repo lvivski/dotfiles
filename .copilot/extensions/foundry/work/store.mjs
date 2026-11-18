@@ -162,6 +162,12 @@ export function openWorkStore(workingDirectory, options = {}) {
 		releaseClaim(claimId, actor) { return database.transaction(tx => Claims.releaseClaim(tx, claimId, actor)); },
 		/** @param {string} actor @param {string} [goalId] */
 		retryFailedStops(actor, goalId) { return database.transaction(tx => Effects.retryFailedStops(tx, actor, goalId)); },
+		/** @param {Effect[]} stops @param {string} actor */
+		claimStops(stops, actor) { return database.transaction(tx => stops.flatMap(stop => {
+			const current = tx.get("effects", stop.id);
+			return current.kind === "stop" && current.state === "prepared"
+				? [Effects.recordEffect(tx, { ...current, state: "issued" }, actor)] : [];
+		})); },
 		/** @param {string} owner @returns {Wake[]} */
 		pendingWakes(owner) { return database.transaction(tx => Wakes.pendingWakes(tx, owner), false); },
 		/** @param {string} actor @param {boolean} [capacity] @param {boolean} [includeInFlight] */

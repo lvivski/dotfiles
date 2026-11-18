@@ -34,10 +34,8 @@ export function createRuntime(options) {
 	const retained = new Map();
 	/** @type {Set<Store>} */
 	const retired = new Set();
-	/** @type {Map<string,{database:Store,actor:string,goalId:string}>} */
-	const notifications = new Map();
-	let scheduled = false;
-	let notificationFlush = Promise.resolve();
+	/** @type {Set<Promise<unknown>>} */
+	const notifications = new Set();
 	/** @type {string|undefined} */
 	let messageRouteDisabled;
 	let stopHookObserved = options.stopHookQualified === true;
@@ -79,27 +77,19 @@ export function createRuntime(options) {
 		const goalId = db.getTask(db.getAttempt(effect.attemptId).taskId).goalId;
 		queueWakes(db, actor, goalId);
 	}
+	/** @param {Promise<unknown>} delivery */
+	function trackDelivery(delivery) {
+		const pending = delivery.catch(error => options.log(`Native delivery needs reconciliation: ${String(error)}`))
+			.finally(() => notifications.delete(pending));
+		notifications.add(pending);
+	}
 	/** @param {Store} db @param {string} actor @param {string} goalId */
 	function queueWakes(db, actor, goalId) {
-		if (!options.execute || closed || !db.outgoingWakes(actor, true, true).some(wake =>
+		if (!options.execute || closed || database !== db || !db.outgoingWakes(actor, true).some(wake =>
 			wake.goalId === goalId && db.wakeHasCurrentRecipient(wake.id))) return;
-		const key = JSON.stringify([db.databasePath, actor, goalId]);
-		if (!notifications.has(key)) {
-			retain(db);
-			notifications.set(key, { database: db, actor, goalId });
-		}
-		if (scheduled) return;
-		scheduled = true;
-		notificationFlush = notificationFlush.then(async () => {
-			scheduled = false;
-			const batch = [...notifications.values()];
-			notifications.clear();
-			for (const job of batch) {
-				try {
-					if (!closed) await deliverWakes(job.actor, undefined, job.goalId, true, job.database);
-				} finally { release(job.database); }
-			}
-		}).catch(error => { options.log(`Settlement wake needs reconciliation: ${error instanceof Error ? error.message : String(error)}`); });
+		retain(db);
+		trackDelivery(Promise.resolve().then(() => database === db ? deliverWakes(actor, undefined, goalId, true, db) : undefined)
+			.finally(() => release(db)));
 	}
 	/** @param {Store} db @param {string} actor @param {string} goalId */
 	function deferWakes(db, actor, goalId) {
@@ -196,8 +186,8 @@ export function createRuntime(options) {
 			accounting: store().accounting(actor, goals.map(goal => goal.id)),
 		};
 	}
-	/** @param {unknown} input @param {string} actor */
-	async function refreshContext(input, actor) {
+	/** @param {unknown} input @param {string} actor @param {boolean} [deferDelivery] */
+	async function refreshContext(input, actor, deferDelivery = false) {
 		const args = record(input);
 		const goalId = typeof args.goalId === "string" ? args.goalId
 			: args.taskId === undefined ? undefined : ownedTask(args.taskId, actor, true).goalId;
@@ -209,7 +199,9 @@ export function createRuntime(options) {
 		retain(db);
 		try {
 			recoverChecks(db, actor, effect => settlementWake(db, actor, effect), goalId);
-			const stops = await deliverStops(actor, goalId);
+			const stops = deliverStops(actor, goalId);
+			if (deferDelivery) trackDelivery(stops);
+			else await stops;
 			requireContext();
 			if (options.readSession && db.openInputRequests(actor, goalId).some(attempt => attempt.nativeId === actor)) {
 				const inspected = await options.readSession(actor);
@@ -217,9 +209,14 @@ export function createRuntime(options) {
 				if (nativeObject(inspected)?.id !== actor) throw new FoundryError("native_identity_mismatch", "Input clearance requires the actual requested native owner");
 				clearObservedInputs(inspected, actor, db);
 			}
-			const delivery = await deliverWakes(actor, undefined, goalId, false, db);
+			const delivery = deliverWakes(actor, undefined, goalId, false, db);
+			if (deferDelivery) {
+				trackDelivery(delivery);
+				return context(args, actor);
+			}
+			const sent = await delivery;
 			requireContext();
-			return { ...context(args, actor), stops, delivery };
+			return { ...context(args, actor), stops: await stops, delivery: sent };
 		} finally { release(db); }
 	}
 	/** @param {Store} db @param {import("./model.d.ts").FactoryControl} factory @param {number} eventId @param {unknown} value @param {string} actor */
@@ -285,29 +282,30 @@ export function createRuntime(options) {
 				(goalId === undefined || wake.goalId === goalId || db.canRelayCollaboration(wake.id, actor)) && db.wakeHasCurrentRecipient(wake.id));
 			/** @type {Array<{owner:string,generation:number,state:string,error?:string}>} */
 			const delivery = [];
-			for (const wake of pending) {
+			await Promise.all(pending.map(async wake => {
 				if (messageRouteDisabled) {
 					delivery.push({ owner: wake.owner, generation: wake.generation, state: "native-route-disabled", error: messageRouteDisabled });
-					continue;
+					return;
 				}
 				if (!options.execute) {
 					delivery.push({ owner: wake.owner, generation: wake.generation, state: "pending-native-delivery" });
-					continue;
+					return;
 				}
 				const request = wakeRequest(wake);
 				try {
 					const effect = db.claimWakeDelivery(wake.id, wake.generation, attemptId, request, actor);
-					if (!effect) continue;
+					if (!effect) return;
 					const result = await options.execute("send_session_message", request);
 					const envelope = record(result);
 					if (disabledSessionRoute(result)) messageRouteDisabled = "This session management tool is disabled";
 					const unavailable = unavailableSession(result);
-					db.settleWakeDelivery(wake.id, effect.id, wake.generation, json(result), envelope.resultType === "success", actor, unavailable);
+					const current = db.settleWakeDelivery(wake.id, effect.id, wake.generation, json(result), envelope.resultType === "success", actor, unavailable);
+					if (current.generation > wake.generation && db.wakeCanSend(wake.id)) queueWakes(db, actor, wake.goalId);
 					if (envelope.resultType !== "success") {
 						const error = typeof envelope.error === "string" ? envelope.error : "Native wake was not accepted";
 						options.log(error);
 						delivery.push({ owner: wake.owner, generation: wake.generation, state: "failed-native-delivery", error });
-						continue;
+						return;
 					}
 					delivery.push({ owner: wake.owner, generation: wake.generation, state: "native-queue-accepted" });
 				} catch (error) {
@@ -315,7 +313,7 @@ export function createRuntime(options) {
 					options.log(`Owner wake needs reconciliation: ${message}`);
 					delivery.push({ owner: wake.owner, generation: wake.generation, state: "uncertain-native-delivery", error: message });
 				}
-			}
+			}));
 			return delivery;
 		} finally { release(db); }
 	}
@@ -340,6 +338,7 @@ export function createRuntime(options) {
 			const delivery = [];
 			const handled = new Set();
 			for (const effect of pending) {
+				if (database !== db) break;
 				if (handled.has(effect.id)) continue;
 				const request = record(effect.request);
 				if (request.nativeId !== actor && messageRouteDisabled) {
@@ -367,7 +366,7 @@ export function createRuntime(options) {
 							delivery.push({ effectId: effect.id, state: "pending-local-stop" });
 							continue;
 						}
-						db.recordEffect({ ...effect, state: "issued" }, actor);
+						if (!db.claimStops([effect], actor).length) continue;
 						const responses = [];
 						for (const command of commands) {
 							const args = { shellId: text(effectShell(command), "owned command shell") };
@@ -383,11 +382,10 @@ export function createRuntime(options) {
 						if (!accepted) options.log(`Local stop was not accepted for ${effect.attemptId}`);
 						continue;
 					}
-					const group = pending.filter(item => record(item.request).nativeId === request.nativeId);
-					for (const item of group) {
-						handled.add(item.id);
-						db.recordEffect({ ...item, state: "issued" }, actor);
-					}
+					const matches = pending.filter(item => record(item.request).nativeId === request.nativeId);
+					for (const item of matches) handled.add(item.id);
+					const group = db.claimStops(matches, actor);
+					if (!group.length) continue;
 					const result = await options.execute("send_session_message",
 						json(stopRequest(db, group, text(request.nativeId, "cancelled native session"))));
 					if (disabledSessionRoute(result)) messageRouteDisabled = "This session management tool is disabled";
@@ -498,7 +496,7 @@ export function createRuntime(options) {
 			}
 			case "advance": {
 				const goalId = args.goalId === undefined ? undefined : text(args.goalId, "goal id");
-				const observed = await refreshContext(args, actor);
+				const observed = await refreshContext(args, actor, true);
 				const advancement = store().advance(actor, goalId);
 				const batch = dispatchBatch(advancement.filter(job => job.disposition === "actionable").flatMap(job => job.actions)
 					.filter(action => action.kind === "dispatch").map(action => action.taskId), actor);
@@ -826,7 +824,9 @@ export function createRuntime(options) {
 				return db.pauseFactories(actor, text(event.reason ?? event.stopReason, "native pause reason"));
 			}
 		},
-		flushNotifications: () => notificationFlush,
+		async flushNotifications() {
+			while (notifications.size) await Promise.all([...notifications]);
+		},
 		/** @param {string} actor */
 		attachUsage(actor) {
 			text(actor, "native session");

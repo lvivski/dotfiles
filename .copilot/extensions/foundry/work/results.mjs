@@ -1,11 +1,11 @@
 import { bindCandidateOutputs, normalizeCandidateOutputs, readCandidate } from "./artifacts.mjs";
 import { releaseSlot, retryTask, runnable, startLocalTask } from "./attempts.mjs";
 import { releaseOwnedClaims } from "./claims.mjs";
-import { outstanding, retirePrepared } from "./effects.mjs";
+import { effectsForAttempt, outstanding, retirePrepared } from "./effects.mjs";
 import { productionClosure } from "./jobs.mjs";
 import { ancestors, authorized, budgetAvailable, requireOwner, requireReporter } from "./policy.mjs";
 import { decodeResult } from "./records.mjs";
-import { inputOutput, resolvedInputs } from "./tasks.mjs";
+import { inputOutput, resolvedInputs, revise } from "./tasks.mjs";
 import { FoundryError, containsPath, decodeEvidence, digest, json, latestEvidence, record, text } from "./values.mjs";
 import { notifyOutcome, wake, wakeCapacity } from "./wakes.mjs";
 
@@ -52,7 +52,8 @@ export function canPromote(tx, task, attempt, result) {
 	}
 	const completion = tx.optional("goal_completions", task.goalId);
 	if (result.state === "done" && completion?.taskId === task.id) {
-		if (tx.list("collaborations").some(item => item.required
+		const collaborations = tx.list("collaborations");
+		if (collaborations.some(item => item.required
 			&& (item.goalId === task.goalId && (item.state !== "fulfilled" || !item.bound)
 				|| item.destinationGoalId === task.goalId && item.producerTaskId && item.state !== "fulfilled"))) return false;
 		const closure = productionClosure(tx, completion);
@@ -65,6 +66,19 @@ export function canPromote(tx, task, attempt, result) {
 		})) };
 		completion.closed = true;
 		tx.put("goal_completions", completion);
+		const liveConsumer = tx.db.prepare(`SELECT 1 FROM dependencies d JOIN tasks t ON t.id=d.task_id
+			WHERE d.producer_id=? AND t.id<>? AND t.state NOT IN ('done','cancelled') LIMIT 1`);
+		for (const optional of tx.list("tasks", "WHERE goal_id=? AND state IN ('running','waiting')", [task.goalId])) {
+			if (optional.role !== "producer" || optional.id === task.id || !optional.currentAttemptId) continue;
+			const reservation = tx.get("attempts", optional.currentAttemptId);
+			// Never infer settlement for a different native session.
+			if (reservation.waiting?.kind === "input" || reservation.nativeId && reservation.nativeId !== result.sender
+				|| liveConsumer.get(optional.id, task.id)
+				|| collaborations.some(item => item.producerTaskId === optional.id && ["accepted", "blocked"].includes(item.state))
+				|| tx.list("claims", "WHERE attempt_id=?", [reservation.id]).length
+				|| effectsForAttempt(tx, reservation.id).some(effect => effect.state !== "prepared")) continue;
+			revise(tx, optional, result.sender, false);
+		}
 		for (const coordinator of tx.list("tasks", "WHERE goal_id=? AND json_extract(document,'$.role')='coordinator' AND state NOT IN ('cancelled','failed')", [task.goalId])) {
 			coordinator.state = "done";
 			if (coordinator.currentAttemptId) {

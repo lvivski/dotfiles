@@ -235,6 +235,14 @@ Newer generations stay pending. Do not poll, redispatch a waiting role, or creat
 A settled natural stop releases capacity and escalates undisposed work once to its sponsor;
 there is no independent dead-process watchdog.
 
+Send scoped questions, advisory feedback, and handoff notes directly with `send_session_message`
+when you know the native session bound to the peer's assignment. A directory owner alone does not
+establish that binding. If you cannot identify or reach the peer and work is blocked, ask your local
+coordinator for help; don't copy the director on routine exchanges. The director owns priorities,
+cross-team tradeoffs, and shared delivery blockers peer owners cannot resolve. When escalating,
+name the concrete blocker and decision needed. Do not make advisory feedback a delivery prerequisite
+or change existing governing checks.
+
 Use `foundry_request_collaboration` for a named output from a peer coordinator task in this
 canonical store. A required proposal blocks its own producer consumer. Discover peer coordinator
 task identities in assigned-goal context `directory`; continue its bounded pages with `nextOffset`

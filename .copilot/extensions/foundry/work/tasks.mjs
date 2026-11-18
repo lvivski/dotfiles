@@ -185,8 +185,8 @@ export function createTask(tx, input, actor) {
 	return task;
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {Task} task @param {string} actor */
-export function revise(tx, task, actor) {
+/** @param {import("./database.mjs").Transaction} tx @param {Task} task @param {string} actor @param {boolean} [notify] */
+export function revise(tx, task, actor, notify = true) {
 	if (task.currentAttemptId) {
 		const attempt = tx.get("attempts", task.currentAttemptId);
 		if (task.waiting?.kind === "input") attempt.waiting = task.waiting;
@@ -205,7 +205,7 @@ export function revise(tx, task, actor) {
 	delete task.waiting;
 	delete task.repairReservation;
 	tx.put("tasks", task);
-	wake(tx, task.owner, task.goalId, `revision:${task.id}`);
+	if (notify) wake(tx, task.owner, task.goalId, `revision:${task.id}`);
 }
 
 /** @param {import("./database.mjs").Transaction} tx @param {GoalInput} input @param {Array<Omit<TaskInput, "goalId">>} tasks @param {string} actor @param {Array<Omit<UnitInput,"goalId">>} [units] */
