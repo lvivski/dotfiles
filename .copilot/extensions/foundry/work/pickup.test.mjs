@@ -145,6 +145,7 @@ test("ordinary app delivery claims its real call before sending, rejects a repla
 		start: { type: "tool.execution_start", id: "s", data: { toolCallId: "original-call", toolName: "send_session_message", arguments: original, turnId: "one" } },
 		completion: { type: "tool.execution_complete", id: "e", data: { toolCallId: "original-call", turnId: "one", success: true, result: { content } } },
 	});
+
 	assert.equal((await recoverDeliveries(resumed,"owner","job",read({ ...args, session_id: "different" })))[0].state, "reconciliation-required");
 	assert.equal((await recoverDeliveries(resumed,"owner","job",read(args, "No queue receipt.")))[0].state, "reconciliation-required");
 	assert.equal(resumed.pendingDeliveries("owner").length, 1);
@@ -173,4 +174,37 @@ test("known transient queue refusal backs off and stops until work changes; adva
 	assert.equal(timed.wakeCanSend(wake.id), false);
 	add("new-evidence"); timed.reassignTask("new-evidence", "peer", "owner");
 	assert.equal(timed.wakeCanSend(wake.id), true);
+});
+
+test("a publisher reconciles an issued peer wake from its originating goal without membership in the recipient goal", async t => {
+	const { root, db, add, scope } = fixture(t);
+	db.createGoal({ id: "consumer", scope, title: "consumer" }, "peer");
+	add("producer");
+	add("use-result", { goalId: "consumer", inputs: [{ taskId: "producer", output: "contract" }] }, "peer");
+	const call = prepareDispatch(db, "producer", "owner");
+	await pickupBatch(db, { prepared: [call], blocked: [] }, "owner", async () => ({ resultType: "success", structuredContent: { id: "publisher" } }));
+	const issued = new Map();
+	const sender = createRuntime({ directory: root, log() {}, execute: async (name, args, callId) => {
+		assert.equal(name, "send_session_message");
+		issued.set(callId, args);
+		throw new Error("transport uncertain");
+	} });
+	await sender.operation("report_result", { taskId: "producer", summary: "Done", state: "done",
+		outputs: [{ name: "contract", kind: "analysis", reference: "v1", version: "v1" }] }, "publisher");
+	await sender.flushNotifications();
+	sender.close();
+	const pending = db.pendingDeliveries("publisher", "job").find(d => d.goalId === "consumer");
+	assert.ok(pending);
+	assert.deepEqual(db.pendingDeliveries("peer", "job"), []);
+	const resumed = createRuntime({ directory: root, log() {}, readCommand: async (actor, id) => {
+		assert.equal(actor, "publisher");
+		assert.ok(issued.has(id));
+		return { start: { type: "tool.execution_start", id: "start", data: { toolName: "send_session_message", toolCallId: id, turnId: "turn", arguments: issued.get(id) } },
+			completion: { type: "tool.execution_complete", id: "end", data: { toolCallId: id, turnId: "turn", success: true, result: { content: "Message accepted for priority delivery to session 'Peer'." } } } };
+	} });
+	t.after(() => resumed.close());
+	await assert.rejects(resumed.operation("advance", { goalId: "consumer" }, "publisher"), { code: "foreign_goal" });
+	await resumed.operation("advance", { goalId: "job" }, "publisher");
+	assert.equal(db.getDelivery(pending.id).state, "settled");
+	assert.equal(db.pendingWakes("peer").find(w => w.id === pending.wakeId)?.consumed, 0);
 });

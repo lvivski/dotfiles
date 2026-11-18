@@ -316,7 +316,7 @@ export function createRuntime(options) {
 				const request = wakeRequest(wake);
 				try {
 					const callId = randomUUID();
-					const effect = db.claimWakeDelivery(wake.id, wake.generation, attemptId, { ...request, nativeToolCallId: callId }, actor);
+					const effect = db.claimWakeDelivery(wake.id, wake.generation, attemptId, { ...request, nativeToolCallId: callId }, actor, goalId);
 					if (!effect) return;
 					const result = await options.execute("send_session_message", request, callId);
 					const envelope = record(result);
@@ -591,7 +591,8 @@ export function createRuntime(options) {
 					]);
 					const retirements = await advanceRetirements(db, options, actor, goalId, () => !closed && database === db);
 					const stops = !closed && database === db && messageRouteDisabled ? await deliverStops(actor, goalId) : [];
-					return { received, squadActions: turns.actions, advancement, ...dispatch, recovery, transportRecovery, retirements, productDeliveries, stops };
+					return { received, squadActions: turns.actions, ...(turns.handoffs.length ? { squadHandoffs: turns.handoffs } : {}),
+						advancement, ...dispatch, recovery, transportRecovery, retirements, productDeliveries, stops };
 				} finally { release(db); }
 			}
 			case "ingest": {

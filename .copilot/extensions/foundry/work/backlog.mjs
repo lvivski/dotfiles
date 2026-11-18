@@ -163,8 +163,28 @@ export function observe(tx, input, actor) {
 	const evidence = pin(tx, factory, squad, entry.evidence ?? []);
 	const gap = text(entry.gap, "specific observation or question");
 	if (kind === "no-gap") {
-		closedFields(entry, ["kind", "gap", "evidence"], "no-gap observation");
+		closedFields(entry, ["kind", "gap", "evidence", "withdrawItemId"], "no-gap observation");
 		if (!evidence.length) throw new FoundryError("unverified_observation", "Record the source checked before sleeping");
+		if (entry.withdrawItemId !== undefined) {
+			const item = tx.get("backlog_items", text(entry.withdrawItemId, "obsolete queued item"));
+			if (item.squad !== squad.id || item.currentRevision !== squad.revision || item.goalId)
+				throw new FoundryError("withdrawal_conflict", "Only this squad's unstarted current item can be withdrawn");
+			const disposition = json({ kind: "withdrawal", actor, generation: squad.generation, revision: squad.revision, gap, evidence });
+			const replay = item.state === "retired" && item.observations.some(prior => digest(prior) === digest(disposition));
+			if (!replay) {
+				if (item.state !== "queued") throw new FoundryError("withdrawal_conflict", "The item is no longer queued");
+				const consumer = tx.list("backlog_items", `${byFactory} AND state IN ('queued','pulled')`, [factory.id])
+					.find(other => other.dependencies.includes(item.id));
+				if (consumer) throw new FoundryError("required_item", `Still required by ${consumer.id}; do not strand its consumer`);
+				const before = new Set(pullWindow(tx, factory).eligible);
+				item.state = "retired"; item.reason = gap; item.observations.push(disposition);
+				tx.put("backlog_items", item);
+				for (const head of pullWindow(tx, factory).eligible.filter(id => !before.has(id))) {
+					const peer = tx.get("squads", tx.get("backlog_items", head).squad);
+					if (peer.id !== squad.id) notifyCoordination(tx, tx.get("tasks", peer.taskId), "backlog");
+				}
+			}
+		}
 		squad.reason = `${gap} (${JSON.stringify(evidence)})`;
 		squad.handled = squad.generation;
 		tx.put("squads", squad);
@@ -207,8 +227,8 @@ export function observe(tx, input, actor) {
 	let existing = tx.optional("backlog_items", id);
 	if (existing?.state === "retired" && existing.revision < squad.revision && !reason) {
 		const related = tx.list("backlog_items", `${byFactory} AND json_extract(document,'$.outcome')=? AND json_extract(document,'$.gapKey')=?`, [factory.id, outcome, gapKey]);
-		existing = related.find(item => !["proposal", "retired"].includes(item.state));
 		id = key("item", factory.id, outcome, gapKey, String(squad.revision));
+		existing = related.find(item => !["proposal", "retired"].includes(item.state)) ?? tx.optional("backlog_items", id);
 	}
 	const observation = json({ actor, squad: squad.id, revision: squad.revision, gap, kind, evidence, requestedScope: entry.scope ?? null });
 	if (existing) {
@@ -280,16 +300,28 @@ export function squadAction(tx, task, squad = tx.list("squads", "WHERE task_id=?
 
 /** @param {Tx} tx @param {string} actor @param {string} [goalId] */
 export function turns(tx, actor, goalId) {
-	const local = tx.list("squads", `WHERE task_id IN (SELECT id FROM tasks WHERE owner=?)${goalId ? " AND goal_id=?" : ""}`,
-		goalId ? [actor, goalId] : [actor]);
-	const actions = [], dispatch = [];
+	const local = tx.list("squads", `WHERE (task_id IN (SELECT id FROM tasks WHERE owner=?) OR json_extract(document,'$.factoryId') IN
+		(SELECT id FROM factory_controls WHERE owner=?))${goalId ? " AND goal_id=?" : ""}`, goalId ? [actor, actor, goalId] : [actor, actor]);
+	const actions = [], dispatch = [], handoffs = [];
 	for (const squad of local) {
 		const task = tx.get("tasks", squad.taskId);
 		const action = squadAction(tx, task, squad);
-		if (action) actions.push(action);
-		else if (dispatchable(tx, squad, task)) dispatch.push(task.id);
+		if (task.owner === actor) {
+			if (action) actions.push(action);
+			else if (dispatchable(tx, squad, task)) dispatch.push(task.id);
+		} else if (action) {
+			const wake = tx.list("wakes", "WHERE goal_id=? AND owner=?", [squad.goalId, task.owner])[0];
+			const delivery = wake?.inFlight ? tx.get("deliveries", wake.inFlight) : undefined;
+			const pending = wake && wake.generation > wake.consumed;
+			handoffs.push({ squad: squad.name, owner: task.owner, due: action.tool, ...("itemId" in action.arguments ? { itemId: action.arguments.itemId } : { generation: squad.generation }),
+				state: !pending ? (task.coordination && task.coordination.stalled === task.coordination.generation ? "owner-stopped-with-work" : "owner-action-due")
+					: delivery ? "send-unconfirmed" : wake.unavailable ? "owner-unavailable"
+					: (wake.sent ?? 0) >= wake.generation ? "awaiting-owner-turn"
+					: wake.retry?.generation === wake.generation ? "send-refused" : "wake-pending",
+				...(delivery ? { sender: delivery.owner, deliveryId: delivery.id } : {}) });
+		}
 	}
-	return { actions, dispatch };
+	return { actions, dispatch, handoffs };
 }
 
 /** @param {Tx} tx @param {Squad} squad @param {Task} task */

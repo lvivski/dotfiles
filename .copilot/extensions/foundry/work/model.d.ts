@@ -233,6 +233,7 @@ export interface Coordination {
 	handled: number;
 	causes: string[];
 	escalated?: number;
+	stalled?: number;
 	disposition?: { generation: number; reason: string; relatedIds: string[] };
 }
 export interface Collaboration {
@@ -353,6 +354,7 @@ export interface Wake {
 export interface Delivery {
 	id: string;
 	goalId: string;
+	originGoalId?: string;
 	wakeId: string;
 	generation: number;
 	owner: string;

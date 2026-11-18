@@ -35,10 +35,20 @@ pages just the scoped backlog; use `offset:nextOffset` and the returned `version
    refuses to mark work handled while a review or eligible pull is due. Queue openings don't
    create new reviews. If a lead nevertheless stops, its existing one-shot escalation can
    route a continuation to that same lead; no heartbeat is required.
+   If new evidence disproves this squad's queued item before it has a job, include its
+   `withdrawItemId` in the evidenced `no-gap`. Retirement preserves the observation and
+   does not publish a result; it is refused while a queued or pulled consumer depends on it.
+   Without an explicit item ID a no-gap changes no queue entry.
 2. `foundry_pull_work` claims the current ready head. It ranks by outcome priority, severity,
    estimated cost and age; an older eligible squad gets first claim when whole-job slots are
    contested. Dependencies are accepted items, not advisory messages. A predecessor links an
    evidenced successor to a previous accepted item without altering that job's history.
+   On director advance, `squadHandoffs` distinguishes due work, native send/queue state,
+   and a lead that stopped again without acting after its continuation. The last case
+   notifies the sponsor once, not the lead repeatedly. An issued cross-goal native send
+   can be reconciled by its original sender advancing its own originating goal, without
+   advancing the recipient's goal or replaying the message. An unavailable host cannot
+   guarantee progress; a send receipt is never a pickup receipt.
 3. Before staffing final acceptance, `foundry_split_work` can add a versioned behavior spec,
    examples, negative cases and a checked producer graph. Additional splits may depend on
    already-declared outputs. Every producer must reach product acceptance; templates, grain

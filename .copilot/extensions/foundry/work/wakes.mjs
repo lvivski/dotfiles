@@ -199,10 +199,10 @@ export function finishDelivery(tx, delivery, result) {
 
 /** @param {import("./database.mjs").Transaction} tx @param {string} actor @param {string} [goalId] @returns {Delivery[]} */
 export function pendingDeliveries(tx, actor, goalId) {
-	return tx.list("wakes", `WHERE json_extract(document,'$.inFlight') IS NOT NULL
-	${goalId === undefined ? "" : "AND goal_id=?"}`, goalId === undefined ? [] : [goalId])
-	.map(wake => tx.get("deliveries", text(wake.inFlight, "in-flight delivery")))
-	.filter(delivery => delivery.owner === actor && delivery.state === "issued");
+	return tx.list("deliveries", `WHERE owner=? AND state='issued'${goalId === undefined ? ""
+		: " AND (goal_id=? OR json_extract(document,'$.originGoalId')=?)"} AND id IN
+		(SELECT json_extract(document,'$.inFlight') FROM wakes WHERE json_extract(document,'$.inFlight') IS NOT NULL)`,
+		goalId === undefined ? [actor] : [actor, goalId, goalId]);
 }
 
 /** @param {import("./database.mjs").Transaction} tx @param {string} owner @returns {Wake[]} */
@@ -236,8 +236,8 @@ export function wakeHasCurrentRecipient(tx, wakeId) {
 		.some(reason => wakeTargets(tx, { ...notification, reason }).includes(notification.owner));
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {string} wakeId @param {number} generation @param {string|undefined} attemptId @param {Json} request @param {string} actor @returns {Delivery|undefined} */
-export function claimWakeDelivery(tx, wakeId, generation, attemptId, request, actor) {
+/** @param {import("./database.mjs").Transaction} tx @param {string} wakeId @param {number} generation @param {string|undefined} attemptId @param {Json} request @param {string} actor @param {string} [originGoalId] @returns {Delivery|undefined} */
+export function claimWakeDelivery(tx, wakeId, generation, attemptId, request, actor, originGoalId) {
 	const wake = tx.get("wakes", wakeId);
 	const authority = tx.optional("goal_completions", wake.goalId) ?? tx.list("squads", "WHERE goal_id=?", [wake.goalId])[0];
 	if (authority) {
@@ -261,6 +261,7 @@ export function claimWakeDelivery(tx, wakeId, generation, attemptId, request, ac
 	if (generation > wake.generation) throw new FoundryError("wake_generation", "Cannot send an unseen generation");
 	if (!wakeReady(tx, wake) || generation <= Math.max(wake.consumed, wake.sent ?? 0) || !wakeHasCurrentRecipient(tx, wakeId)) return;
 	const delivery = decodeDelivery({ id: `wake:${wake.id}:${randomUUID()}`, wakeId, goalId: wake.goalId,
+		...(originGoalId && originGoalId !== wake.goalId ? { originGoalId } : {}),
 		generation, owner: actor, state: "issued", request,
 		...(attemptId === undefined ? {} : { attemptId }) });
 	wake.inFlight = delivery.id;

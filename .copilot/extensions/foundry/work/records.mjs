@@ -188,6 +188,7 @@ export function decodeLesson(value) {
 export function decodeDelivery(value) {
 	const row = record(value);
 	return { id: text(row.id, "delivery"), goalId: text(row.goalId, "delivery goal"), wakeId: text(row.wakeId, "wake"),
+		...(row.originGoalId === undefined ? {} : { originGoalId: text(row.originGoalId, "delivery origin") }),
 		generation: natural(row.generation, "delivery generation"), owner: text(row.owner, "native sender"),
 		state: choice(row.state, ["issued", "settled"], "delivery state"), request: json(row.request),
 		...(row.attemptId === undefined ? {} : { attemptId: text(row.attemptId, "delivery attempt") }),
@@ -201,13 +202,15 @@ export function decodeCoordination(value) {
 	const generation = natural(item.generation, "coordination generation");
 	const handled = natural(item.handled, "handled generation");
 	if (handled > generation || disposition && natural(disposition.generation, "disposition generation") > handled
-		|| item.escalated !== undefined && natural(item.escalated, "escalated generation") > generation) {
+		|| item.escalated !== undefined && natural(item.escalated, "escalated generation") > generation
+		|| item.stalled !== undefined && natural(item.stalled, "stalled generation") > generation) {
 		throw new FoundryError("invalid_field", "Handled, disposed and escalated work cannot exceed its recorded generation");
 	}
 	return {
 		generation, handled,
 		causes: strings(item.causes),
 		...(item.escalated === undefined ? {} : { escalated: natural(item.escalated, "escalated generation") }),
+		...(item.stalled === undefined ? {} : { stalled: natural(item.stalled, "stalled generation") }),
 		...(disposition === undefined ? {} : { disposition: {
 			generation: natural(disposition.generation, "disposition generation"),
 			reason: text(disposition.reason, "coordination disposition"), relatedIds: strings(disposition.relatedIds),

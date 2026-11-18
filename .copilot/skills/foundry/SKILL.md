@@ -25,6 +25,12 @@ committed file, then `foundry_observe_work` to record the gap, the improvement a
 when it is done. A bounded question is useful when evidence is missing; advisory suggestions
 are not requirements. With no justified gap, record an evidenced `no-gap` for the observed
 generation. Yielding capacity or consuming a wake does not dispose of a review.
+If pinned evidence makes a specific queued item obsolete, include `withdrawItemId` in
+the `no-gap` observation. Do not start a pointless job or retire an item needed by a
+consumer. A plain no-gap does not withdraw work. Directors: read `squadHandoffs` on
+advance. For an unconfirmed send the issuing worker can advance its own originating
+goal; never replay an uncertain send or interpret queue acceptance as pickup. A lead
+that stops twice with the same due action surfaces a blocker instead of a wake loop.
 
 Use `foundry_pull_work` on the highest-ranked ready item. It admits a bounded job, not a new
 direction. Before staffing, use `foundry_split_work` if producers can deliver independently

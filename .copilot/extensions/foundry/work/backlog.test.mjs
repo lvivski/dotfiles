@@ -97,6 +97,39 @@ test("cold discovery requires binding and verified evidence; duplicate, advisory
 	assert.throws(() => admit("quality", "second-question", { kind: "question", evidence: [] }), { code: "discovery_exhausted" });
 });
 
+test("evidenced no-gap can withdraw one obsolete queue head and notify the next eligible squad without fabricating acceptance", async t => {
+	const { db, binding, admit, knowledge } = await setup(t);
+	const mail = admit("mail", "route");
+	db.pullWork({ ...binding("mail"), itemId: mail }, "mail"); // one remaining whole-job slot
+	const obsolete = admit("quality", "does-fixture-exist", { kind: "question" });
+	const design = admit("design", "labels");
+	const noGap = { kind: "no-gap", gap: "The pinned scenario already answers the fixture question", evidence: [knowledge] };
+	const submit = (/** @type {string} */ actor, /** @type {Record<string,unknown>} */ fields) => {
+		const result = db.observeWork({ ...binding(actor), observation: { ...noGap, ...fields } }, actor);
+		assert.ok(result.squad);
+		return result.next;
+	};
+	assert.deepEqual(submit("quality", {}), db.squadTurns("quality").actions[0]);
+	assert.throws(() => submit("design", { withdrawItemId: obsolete }), { code: "withdrawal_conflict" });
+	assert.throws(() => submit("quality", { withdrawItemId: obsolete, evidence: [] }), { code: "unverified_observation" });
+	assert.throws(() => submit("mail", { withdrawItemId: mail }), { code: "withdrawal_conflict" });
+	assert.equal(db.backlog("design").squads[0].pullable, false);
+	const generation = db.getTask(db.backlog("design").squads[0].taskId).coordination?.generation;
+	assert.equal(submit("quality", { withdrawItemId: obsolete }), undefined);
+	submit("quality", { withdrawItemId: obsolete });
+	const withdrawn = db.backlog("quality").items.find(item => item.id === obsolete);
+	assert.equal(withdrawn?.state, "retired");
+	assert.equal(withdrawn.goalId, undefined);
+	assert.equal(withdrawn.resultId, undefined);
+	assert.equal(withdrawn.observations.filter(o => record(o).kind === "withdrawal").length, 1);
+	assert.equal(db.getTask(db.backlog("design").squads[0].taskId).coordination?.generation, Number(generation) + 1);
+	assert.deepEqual(db.backlog("design").squads[0].readyItems, [design]);
+	assert.equal(db.backlog("design").squads[0].pullable, true);
+	admit("mail", "needs-design", { dependencies: [design] });
+	assert.throws(() => submit("design", { withdrawItemId: design }), { code: "required_item" });
+	assert.equal(db.backlog("design").squads[0].pullable, true);
+});
+
 test("rank and pull skip blocked items, respect whole-job capacity and replay; exact product publication opens a successor without reopening", async t => {
 	const { db, runtime, binding, admit } = await setup(t);
 	const mail = admit("mail", "route");
@@ -166,17 +199,34 @@ test("accepted product, consumed wake, no runnable jobs: the same lead still owe
 	runtime.agentStop("mail");
 	const [continuation] = db.pendingWakes("mail");
 	assert.equal(continuation?.reason, `coordination:${squad.taskId}`);
-	await runtime.operation("advance", { goalId: squad.goalId }, "director");
+	const issued = db.claimWakeDelivery(continuation.id, continuation.generation, undefined, { session_id: "mail" }, "director");
+	assert.ok(issued);
+	const handoff = db.squadTurns("director", squad.goalId).handoffs.find(h => h.owner === "mail");
+	assert.equal(handoff?.state, "send-unconfirmed");
+	assert.equal(handoff.deliveryId, issued.id);
+	assert.equal(handoff.sender, "director");
+	await runtime.operation("advance", { goalId: squad.goalId }, "director"); // never replay an issued send
+	assert.equal(db.getDelivery(issued.id).state, "issued");
+	db.settleWakeDelivery(continuation.id, issued.id, continuation.generation, { resultType: "success" }, true, "director");
 	await runtime.flushNotifications();
 	assert.equal(db.snapshot().wakes.find(w => w.id === continuation.id)?.sent, continuation.generation);
 	assert.deepEqual((await advance()).squadActions, [expected]);
 	runtime.agentStop("mail");
 	assert.deepEqual(db.pendingWakes("mail"), []);
+	const report = db.squadTurns("director", squad.goalId).handoffs.find(h => h.owner === "mail");
+	assert.equal(report?.state, "owner-stopped-with-work");
+	assert.equal(report.due, "foundry_observe_work");
+	assert.deepEqual(db.squadTurns("quality", squad.goalId).handoffs, []);
+	const escalated = db.pendingWakes("director").find(w => w.goalId === squad.goalId);
+	assert.ok(escalated?.relatedReasons?.includes(`coordination-stalled:${squad.taskId}`));
+	runtime.agentStop("mail");
+	assert.equal(db.pendingWakes("director").find(w => w.goalId === squad.goalId)?.generation, escalated?.generation);
 	const observation = { kind: "no-gap", gap: "Published scenario covers the charter", evidence: [{ resultId }] };
 	assert.throws(() => db.observeWork({ ...stale, observation }, "mail"), { code: "stale_generation" });
 	assert.throws(() => db.observeWork({ ...binding("mail"), observation: { ...observation, evidence: [{ ...knowledge, sha256: "wrong" }] } }, "mail"), { code: "unverified_observation" });
 	db.observeWork({ ...binding("mail"), observation }, "mail");
 	assert.deepEqual((await advance()).squadActions, []);
+	assert.equal(db.squadTurns("director", squad.goalId).handoffs.some(h => h.owner === "mail"), false);
 	assert.equal(lead().coordination?.handled, lead().coordination?.generation);
 	assert.equal(db.snapshot().attempts.length, workers);
 	assert.equal(db.backlog("mail").items[0].state, "accepted");

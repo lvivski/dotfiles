@@ -154,6 +154,13 @@ export function parkCoordinators(tx, actor) {
 				enqueueWake(tx, actor, task.goalId, `coordination:${task.id}`);
 			}
 			wake(tx, sponsor, task.goalId, `coordination-stalled:${task.id}`);
+		} else if (task.coordination.generation > task.coordination.handled && task.coordination.stalled !== task.coordination.generation
+			&& squadAction(tx, task) && !pendingWakes(tx, actor).some(w => w.goalId === task.goalId)) {
+			// Its continuation was consumed but the owner stopped again without disposition.
+			task.coordination.stalled = task.coordination.generation;
+			tx.put("tasks", task);
+			const sponsor = task.parentId ? tx.get("tasks", task.parentId).owner : tx.get("goals", task.goalId).owner;
+			if (sponsor !== actor) wake(tx, sponsor, task.goalId, `coordination-stalled:${task.id}`);
 		}
 		parked.push(task);
 	}

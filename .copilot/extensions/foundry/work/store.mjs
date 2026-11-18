@@ -239,8 +239,8 @@ export function openWorkStore(workingDirectory, options = {}) {
 		canRelayOutput(wakeId, actor, origin) { return database.transaction(tx => Wakes.canRelayOutput(tx, wakeId, actor, origin), false); },
 		/** @param {string} wakeId */
 		wakeHasCurrentRecipient(wakeId) { return database.transaction(tx => Wakes.wakeHasCurrentRecipient(tx, wakeId), false); },
-		/** @param {string} wakeId @param {number} generation @param {string|undefined} attemptId @param {Json} request @param {string} actor @returns {Delivery|undefined} */
-		claimWakeDelivery(wakeId, generation, attemptId, request, actor) { return database.transaction(tx => Wakes.claimWakeDelivery(tx, wakeId, generation, attemptId, request, actor)); },
+		/** @param {string} wakeId @param {number} generation @param {string|undefined} attemptId @param {Json} request @param {string} actor @param {string} [originGoalId] @returns {Delivery|undefined} */
+		claimWakeDelivery(wakeId, generation, attemptId, request, actor, originGoalId) { return database.transaction(tx => Wakes.claimWakeDelivery(tx, wakeId, generation, attemptId, request, actor, originGoalId)); },
 		/** Native queue acceptance settles only the claimed generation, never a concurrent update.
 		 * @param {string} wakeId @param {string} effectId @param {number} generation @param {Json} result @param {boolean} accepted @param {string} actor @param {boolean} [unavailable] @returns {Wake}
 		 */
