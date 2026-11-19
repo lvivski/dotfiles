@@ -1,6 +1,13 @@
 import { attemptToken } from "./prompt.mjs";
 import { FoundryError, record } from "./values.mjs";
 
+/** @param {import("./database.mjs").Transaction} tx @param {string} actor */
+export function sharedCoordinator(tx, actor) {
+	return Boolean(tx.db.prepare(`SELECT 1 FROM effects e
+		JOIN attempts a ON a.id=e.attempt_id JOIN tasks t ON t.id=a.task_id WHERE a.native_id=? AND e.kind='create'
+		AND json_extract(e.document,'$.request.workspace_type')='branch' AND json_extract(t.document,'$.role')='coordinator' LIMIT 1`).get(actor));
+}
+
 /** @param {import("./model.d.ts").Task} task @param {string|undefined} base @returns {"branch"|"worktree"} */
 export function workspaceFor(task, base) {
 	// A branch session inherits the existing checkout. Never pass a base ref

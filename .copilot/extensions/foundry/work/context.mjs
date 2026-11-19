@@ -2,13 +2,27 @@ import { preparedDispatch, runnable } from "./attempts.mjs";
 import { views as backlogViews } from "./backlog.mjs";
 import { completionStatus } from "./jobs.mjs";
 import { coordinatorsBound } from "./organization.mjs";
-import { ancestors, assignedExecution, authorized, goalMember, MANAGED_TASKS, taskForCaller } from "./policy.mjs";
-import { FoundryError, record, text } from "./values.mjs";
+import { ancestors, assignedExecution, authorized, current, goalMember, MANAGED_TASKS, taskForCaller } from "./policy.mjs";
+import { FoundryError, record, text, textPage } from "./values.mjs";
 import { lane } from "./diagnostics.mjs";
 import { deliveryStatus } from "./landing.mjs";
 
 /** @typedef {import("./model.d.ts").Task} Task */
 /** @typedef {import("./model.d.ts").Lesson} Lesson */
+
+/** @param {import("./database.mjs").Transaction} tx @param {string} attemptId @param {string} actor @param {number} offset @param {string} [checkId] */
+export function assignmentPage(tx, attemptId, actor, offset, checkId) {
+	const attempt = tx.get("attempts", attemptId);
+	if (attempt.nativeId !== actor) throw new FoundryError("foreign_execution",
+		`Only the bound worker can read this assignment. If binding is pending, use foundry_reconcile_native with your sessionId "${actor}" before reading again.`);
+	const task = current(tx, attempt);
+	if (!["running", "waiting"].includes(attempt.state)) throw new FoundryError("stale_attempt", "This assignment is no longer active");
+	const check = attempt.checks.find(item => item.id === checkId);
+	if (checkId !== undefined && !check) throw new FoundryError("invalid_check", "No such evaluator on this assignment");
+	const body = check ? JSON.stringify(check) : text(tx.get("effects", `create:${attemptId}`).assignment, "captured assignment");
+	const { content, ...page } = textPage(body, offset);
+	return { taskId: task.id, attemptId, assignment: content, ...page };
+}
 
 /** @param {import("./database.mjs").Transaction} tx @param {string} [goalId] @param {boolean} [history] @returns {import("./model.d.ts").Snapshot} */
 export function snapshot(tx, goalId, history = true) {

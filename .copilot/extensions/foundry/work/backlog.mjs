@@ -341,7 +341,7 @@ export function squadAction(tx, task, squad = tx.list("squads", "WHERE task_id=?
 }
 
 /** @param {Tx} tx @param {string} actor @param {string} [goalId] */
-export function advance(tx, actor, goalId) {
+export function advanceSquads(tx, actor, goalId) {
 	const local = tx.list("squads", `WHERE (task_id IN (SELECT id FROM tasks WHERE owner=?) OR json_extract(document,'$.factoryId') IN
 		(SELECT id FROM factory_controls WHERE owner=?))${goalId ? " AND goal_id=?" : ""}`, goalId ? [actor, actor, goalId] : [actor, actor]);
 	const actions = [], dispatch = [], handoffs = [], goals = new Set([goalId]);
@@ -394,7 +394,7 @@ function admit(tx, squad, item, actor) {
 	const factory = tx.get("factory_controls", squad.factoryId);
 	const inputs = productInputs(tx, factory.id, item.template, item.sources, true);
 	const { goal, tasks, finalId } = jobDefinition(factory, squad, item, latest(tx, factory.id), inputs);
-	const job = admitFactoryJob(tx, goal, tasks, factory.id, finalId, actor, factory.generation, false, [], item);
+	const job = admitFactoryJob(tx, goal, tasks, factory.id, finalId, actor, factory.generation, { item });
 	item.state = "admitted"; item.goalId = job.goal.id;
 	tx.put("backlog_items", item);
 }

@@ -19,6 +19,16 @@ import { wake } from "./wakes.mjs";
 /** @typedef {import("./records.mjs").TaskInput} TaskInput */
 /** @typedef {import("./records.mjs").UnitInput} UnitInput */
 
+/** @param {import("./database.mjs").Transaction} tx @param {string} actor @returns {string[]} */
+export function nativeGoals(tx, actor) {
+	return tx.db.prepare(`SELECT DISTINCT a.goal_id FROM (
+		SELECT goal_id, document FROM squads UNION ALL SELECT goal_id, document FROM goal_completions WHERE json_extract(document,'$.closed')=0
+	) a JOIN factory_controls f ON f.id=json_extract(a.document,'$.factoryId')
+	WHERE f.state='active' AND json_extract(f.document,'$.mechanism')='native' AND
+	(a.goal_id IN (SELECT id FROM goals WHERE owner=?) OR a.goal_id IN (SELECT goal_id FROM tasks WHERE owner=?))`)
+		.all(actor, actor).map(row => text(row.goal_id, "native goal"));
+}
+
 /** @param {import("./database.mjs").Transaction} tx @param {Completion} completion @returns {import("./model.d.ts").Task[]} */
 export function productionClosure(tx, completion) {
 	const commitments = tx.list("collaborations").filter(item => item.required);
@@ -62,8 +72,9 @@ export function freeJobs(tx, factory) {
 	return Math.max(0, factory.maximumJobs - unsettled.length);
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {GoalInput} input @param {Array<Omit<TaskInput,"goalId">>} tasks @param {string} factoryId @param {string} completionTaskId @param {string} actor @param {number} [generation] @param {boolean} [validation] @param {Array<Omit<UnitInput,"goalId">>} [units] @param {import("./records.mjs").Records["backlog_items"]} [item] */
-export function admitFactoryJob(tx, input, tasks, factoryId, completionTaskId, actor, generation, validation = false, units = [], item) {
+/** @param {import("./database.mjs").Transaction} tx @param {GoalInput} input @param {Array<Omit<TaskInput,"goalId">>} tasks @param {string} factoryId @param {string} completionTaskId @param {string} actor @param {number} [generation]
+ * @param {{validation?:boolean,units?:Array<Omit<UnitInput,"goalId">>,item?:import("./model.d.ts").BacklogItem}} [options] */
+export function admitFactoryJob(tx, input, tasks, factoryId, completionTaskId, actor, generation, { validation = false, units = [], item } = {}) {
 	const factory = tx.get("factory_controls", factoryId);
 	if (item) requireSquad(tx, item.squad, item.currentRevision, actor, generation);
 	if (!item && factory.owner !== actor || factory.state !== "active") throw new FoundryError("factory_paused", "Only the active factory's actual coordinator or bound squad can admit authorized work");
@@ -153,11 +164,11 @@ export function activateFactory(tx, input, actor, initial) {
 	if (!initial) throw new FoundryError("completion_missing", "A legacy template requires a completion task");
 	if (record(factory.definition).source !== undefined) {
 		tx.db.exec("SAVEPOINT factory_template");
-		try { admitFactoryJob(tx, initial.goal, initial.tasks, factory.id, initial.completionTaskId, actor, factory.generation, true, initial.units); }
+		try { admitFactoryJob(tx, initial.goal, initial.tasks, factory.id, initial.completionTaskId, actor, factory.generation, { validation: true, units: initial.units }); }
 		finally { tx.db.exec("ROLLBACK TO factory_template; RELEASE factory_template"); }
 		return { factory, tasks: [], replay: false };
 	}
-	return { factory, ...admitFactoryJob(tx, initial.goal, initial.tasks, factory.id, initial.completionTaskId, actor, factory.generation, false, initial.units) };
+	return { factory, ...admitFactoryJob(tx, initial.goal, initial.tasks, factory.id, initial.completionTaskId, actor, factory.generation, { units: initial.units }) };
 }
 
 /** @param {import("./database.mjs").Transaction} tx @param {string} actor @param {string} reason @param {string} [factoryId] @returns {Factory[]} */
@@ -254,7 +265,7 @@ export function updateSourceCursor(tx, factoryId, actor, generation, cursor) {
 }
 
 /** @param {import("./database.mjs").Transaction} tx @param {string} actor @param {string} [goalId] */
-export function advance(tx, actor, goalId) {
+export function jobActions(tx, actor, goalId) {
 	return tx.list("goal_completions", goalId === undefined ? "" : "WHERE goal_id=?", goalId === undefined ? [] : [goalId])
 	.filter(completion => goalMember(tx, tx.get("goals", completion.goalId), actor)).map(completion => {
 		const factory = tx.get("factory_controls", completion.factoryId);

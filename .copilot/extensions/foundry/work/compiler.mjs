@@ -1,6 +1,7 @@
 import { readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import * as Tasks from "./tasks.mjs";
 import { FoundryError, closedFields as closed, decodeCheck, decodeInput, decodeLimits as limits, decodeScope, digest, json, number as finiteNumber, record, resourcePath, text } from "./values.mjs";
 
 /** @typedef {import("./model.js").Check} Check */
@@ -33,13 +34,13 @@ export function compileCheck(value) {
  * Compilation makes no model calls and invents neither units nor a verifier DAG.
  *
  * @param {unknown} value
- * @param {ReturnType<typeof import("./store.mjs").openWorkStore>} store
+ * @param {import("./database.mjs").Database} store
  * @param {string} actor
  * @param {{reference:string,sha256:string}} [source]
  */
 export function compileGoal(value, store, actor, source) {
 	const compiled = compileDefinition(value, source);
-	return store.createGoalWithTasks(compiled.goal, compiled.tasks, actor, compiled.units);
+	return store.write(Tasks.createGoalWithTasks, compiled.goal, compiled.tasks, actor, compiled.units);
 }
 
 /** @param {unknown} value @param {{reference:string,sha256:string}} [source] */

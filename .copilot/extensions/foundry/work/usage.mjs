@@ -74,9 +74,11 @@ export function nativeUsage(value, actor, affinity) {
 		billing: nano === undefined ? "unavailable" : data.aiCreditsStatus === "complete" ? "complete" : "partial" });
 }
 
-/** @param {import("./database.mjs").Transaction} tx @param {string} id @param {number} observed
+/** @param {import("./database.mjs").Transaction} tx @param {string} id @param {string} observedAt
  * @returns {import("./model.d.ts").UsageAffinity|undefined} */
-export function usageAffinity(tx, id, observed) {
+export function usageAffinity(tx, id, observedAt) {
+	const observed = Date.parse(text(observedAt, "native event timestamp"));
+	if (!Number.isFinite(observed)) throw new FoundryError("invalid_field", "Native usage must retain its actual timestamp");
 	return tx.list("usage_affinity", `WHERE id=(SELECT id FROM usage_affinity
 	WHERE json_extract(document,'$.groupId')=? AND json_extract(document,'$.startedAt')<=?
 	ORDER BY json_extract(document,'$.startedAt') DESC,rowid DESC LIMIT 1)`,

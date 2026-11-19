@@ -107,6 +107,13 @@ export function prepareJoin(db, basis) {
 	const tree = joinTree(db, expectedTip, basis.sources);
 	return { expectedTip, tree };
 }
+/** Capture and recheck the inputs in separate transactions; Git joins do not hold the writer lock.
+ * @param {import("./database.mjs").Database} db @param {string} goalId @param {string} actor */
+export function prepareDelivery(db, goalId, actor) {
+	const basis = db.read(captureDelivery, goalId, actor);
+	const joined = prepareJoin(db.databasePath, basis);
+	return db.write(recordJoin, basis, joined, actor);
+}
 /** @typedef {Basis & {expectedTip:string,tree:string,targetRef:string,format:1}} Manifest */
 /** @typedef {{id:string,manifest:Manifest,newTip:string,qualified:{resultId:string,attemptId:string,evidenceIds:string[]}|null,
  * intent:{token:string,actor:string,state:"issued"|"blocked",reason?:string}|null,
@@ -302,27 +309,27 @@ export function deliveryStatus(tx, goalId, actor) {
  * the matching repository and freeze checkout/registry transitions until apply
  * returns. The current Desktop SDK does not expose this capability.
  * @typedef {(request:{databasePath:string,goalId:string,actor:string,manifestId:string,targetRef:string,expectedTip:string,newTip:string}, apply:()=>void)=>Promise<void>} LandingLease
- * @param {ReturnType<typeof import("./store.mjs").openWorkStore>} db @param {LandingLease|undefined} lease
+ * @param {import("./database.mjs").Database} db @param {LandingLease|undefined} lease
  * @param {string} goalId @param {string} id @param {string} actor @param {()=>boolean} isCurrent @returns {Promise<Delivery>} */
 export async function landDelivery(db, lease, goalId, id, actor, isCurrent) {
 	if (!lease) fail("landing_host_unsupported","Native host cannot authorize and freeze local checkout/worktree changes across an expected-tip update");
-	const status = db.authorizeLanding(goalId,id,actor);
+	const status = db.write(authorizeLanding, goalId,id,actor);
 	let applied = false, open = true;
 	try {
 		await lease({databasePath:db.databasePath,goalId,actor,manifestId:id,targetRef:status.manifest.targetRef,
 			expectedTip:status.manifest.expectedTip,newTip:status.newTip}, () => {
 			if (!open || applied || !isCurrent()) fail("landing_context_changed","Landing lease lost its exact caller context");
 			applied = true;
-			const {target,token} = db.issueLanding(goalId,id,actor);
+			const {target,token} = db.write(issueLanding, goalId,id,actor);
 			try { applyExpectedTip(db.databasePath,target,token); }
 			catch (error) {
-				if (error instanceof FoundryError) db.blockLanding(goalId,id,token,error.code);
+				if (error instanceof FoundryError) db.write(blockLanding, goalId,id,token,error.code);
 				throw error;
 			}
 		});
 	} finally { open = false; }
 	if (!applied) fail("landing_host_unsupported","No verified checkout-topology lease was granted");
-	return db.reconcileLanding(goalId,id,actor);
+	return db.write(reconcileLanding, goalId,id,actor);
 }
 
 /** @param {Tx} tx @param {string} goalId @param {string} actor @returns {DeliveryAction|undefined} */

@@ -9,6 +9,14 @@ import { notifyOutcome } from "./wakes.mjs";
 /** @typedef {import("./model.d.ts").Attempt} Attempt */
 /** @typedef {import("./model.d.ts").Effect} Effect */
 
+/** @param {import("./database.mjs").Transaction} tx @param {Effect[]} stops @param {string} actor */
+export function claimStops(tx, stops, actor) {
+	return stops.flatMap(stop => {
+		const effect = tx.get("effects", stop.id);
+		return effect.kind === "stop" && effect.state === "prepared" ? [recordEffect(tx, { ...effect, state: "issued" }, actor)] : [];
+	});
+}
+
 /** @param {Json} before @param {Json} after @param {boolean} [issuing] @returns {boolean} */
 export function sameRequest(before, after, issuing = false) {
 	if (digest(before) === digest(after)) return true;

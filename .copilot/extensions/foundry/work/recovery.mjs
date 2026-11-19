@@ -1,7 +1,8 @@
+import * as Effects from "./effects.mjs";
 import { FoundryError, digest, json, record, text } from "./values.mjs";
 import { continuedShell, effectShell, nativeObject, observeCompletion, toolName } from "./native.mjs";
 
-/** @typedef {ReturnType<typeof import("./store.mjs").openWorkStore>} Store */
+/** @typedef {import("./database.mjs").Database} Database */
 /** @typedef {{start: unknown, completion: unknown, following?: Record<string, unknown>[]}} CommandEvents */
 const boundaries = ["session.start", "session.resume", "session.shutdown"];
 /** @param {Record<string, unknown>} event */
@@ -79,22 +80,22 @@ function continuedRead(following, timeout, shellId) {
 	}
 }
 
-/** @param {Store} store @param {string} toolCallId @param {string} actor */
+/** @param {Database} store @param {string} toolCallId @param {string} actor */
 export function commandForRecovery(store, toolCallId, actor) {
-	const effect = store.effectByNativeCall(toolCallId, true);
+	const effect = store.read(Effects.effectByNativeCall, toolCallId, true);
 	if (!effect || effect.kind !== "command" || !["issued", "uncertain", "settled"].includes(effect.state)
 		|| record(effect.request).nativeToolCallId !== toolCallId) {
 		throw new FoundryError("unissued_command", "Recovery requires the ordinary command's original issued native call");
 	}
-	if (store.getAttempt(effect.attemptId).nativeId !== actor) throw new FoundryError("foreign_execution", "Recover commands only in their actual native worker");
+	if (store.get("attempts", effect.attemptId).nativeId !== actor) throw new FoundryError("foreign_execution", "Recover commands only in their actual native worker");
 	if (typeof record(effect.request).checkId === "string") throw new FoundryError("assigned_check", "Assigned checks recover through their exclusive runner receipts");
 	return effect;
 }
 
-/** @param {Store} store @param {string} toolCallId @param {string} actor @param {unknown} detail @param {CommandEvents} events @param {(effect:import("./model.js").Effect)=>void} [settled] */
+/** @param {Database} store @param {string} toolCallId @param {string} actor @param {unknown} detail @param {CommandEvents} events @param {(effect:import("./model.js").Effect)=>void} [settled] */
 export function reconcileCommand(store, toolCallId, actor, detail, events, settled) {
 	const effect = commandForRecovery(store, toolCallId, actor);
-	const goal = store.getGoal(store.getTask(store.getAttempt(effect.attemptId).taskId).goalId);
+	const goal = store.get("goals", store.get("tasks", store.get("attempts", effect.attemptId).taskId).goalId);
 	const native = nativeObject(detail);
 	if (native?.id !== actor || goal.projectId !== undefined && native.project_id !== goal.projectId) {
 		throw new FoundryError("native_identity_mismatch", "Command recovery requires its actual native session and project");
@@ -125,7 +126,7 @@ export function reconcileCommand(store, toolCallId, actor, detail, events, settl
 		...(follow ? { continuationEventId: text(completion.id, "native timeout event"), continuationSha256: digest(json(completion)),
 			readStartEventId: text(follow.start.id, "native read start event"), readStartSha256: digest(json(follow.start)) } : {}) });
 	observeCompletion(store, data(final), actor, settled, { effectId: effect.id, receipt, ...(follow ? { shellId } : {}) });
-	const recovered = store.getEffect(effect.id);
+	const recovered = store.get("effects", effect.id);
 	if (recovered.state !== "settled") throw new FoundryError("native_receipt_mismatch", "The retained final exit does not match the recorded shell");
 	return { effectId: recovered.id, attemptId: recovered.attemptId, state: recovered.state,
 		nativeRecovery: recovered.result === undefined ? undefined : record(recovered.result).nativeRecovery };

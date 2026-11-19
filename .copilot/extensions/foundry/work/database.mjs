@@ -22,7 +22,8 @@ export const engine = [...modules, "../extension.mjs", "../hooks.mjs"].reduce((h
  * put: <K extends Table>(table: K, value: Records[K]) => void,
  * newId: (table: Table, supplied: unknown) => string
  * }} Transaction */
-/** @typedef {{databasePath:string, transaction:<T>(operation:(tx:Transaction)=>T|FoundryError,write?:boolean)=>T, close:()=>void}} Database */
+/** @typedef {<A extends unknown[], T>(operation:(tx:Transaction,...args:A)=>T|FoundryError,...args:NoInfer<A>)=>T} Run */
+/** @typedef {{databasePath:string, read:Run, write:Run, get:Transaction["get"], close:()=>void}} Database */
 
 /** @param {string} pathname */
 function inspect(pathname) {
@@ -208,17 +209,17 @@ export function openDatabase(workingDirectory, options = {}) {
 		throw error;
 	}
 
-	/** @template T @param {(tx: Transaction) => T | FoundryError} operation @param {boolean} [write] @returns {T} */
-	function transaction(operation, write = true) {
+	/** @template {unknown[]} A @template T @param {boolean} write @param {(tx:Transaction,...args:A)=>T|FoundryError} operation @param {A} args @returns {T} */
+	function transaction(write, operation, args) {
 		if (closed) throw new FoundryError("store_closed", "Work store is closed");
 		if (busy) throw new FoundryError("store_reentrant", "Work store operations cannot nest");
 		busy = true;
 		let begun = false;
 		try {
 			verify();
-			db.exec(write ? "BEGIN IMMEDIATE" : "BEGIN");
+			db.exec(write ? "BEGIN IMMEDIATE" : "PRAGMA query_only=ON; BEGIN");
 			begun = true;
-			const result = operation(context);
+			const result = operation(context, ...args);
 			if (result !== null && (typeof result === "object" || typeof result === "function") && "then" in result) {
 				throw new FoundryError("async_transaction", "Work store transactions must be synchronous");
 			}
@@ -230,9 +231,11 @@ export function openDatabase(workingDirectory, options = {}) {
 		} catch (error) {
 			if (begun) db.exec("ROLLBACK");
 			throw error;
-		} finally { busy = false; }
+		} finally {
+			busy = false;
+			if (!write) db.exec("PRAGMA query_only=OFF");
+		}
 	}
-
 
 	/** @template {Table} K @param {K} table @param {string} id @returns {Records[K] | undefined} */
 	function optional(table, id) {
@@ -283,5 +286,11 @@ export function openDatabase(workingDirectory, options = {}) {
 
 	/** @type {Transaction} */
 	const context = { cwd, databasePath, db, timestamp, optional, get, list, put, newId };
-	return { databasePath, transaction, close() { if (!closed) { db.close(); closed = true; } } };
+	return {
+		databasePath,
+		read: (operation, ...args) => transaction(false, operation, args),
+		write: (operation, ...args) => transaction(true, operation, args),
+		get: (table, id) => transaction(false, tx => tx.get(table, id), []),
+		close() { if (!closed) { db.close(); closed = true; } },
+	};
 }

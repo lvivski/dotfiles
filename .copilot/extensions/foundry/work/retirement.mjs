@@ -10,7 +10,7 @@ import { wake } from "./wakes.mjs";
 /** @typedef {import("./database.mjs").Transaction} Tx */
 /** @typedef {import("./model.d.ts").Effect} Effect */
 /** @typedef {import("./model.d.ts").Json} Json */
-/** @typedef {ReturnType<typeof import("./store.mjs").openWorkStore>} Store */
+/** @typedef {import("./database.mjs").Database} Database */
 /** @typedef {{receiptId:string,targetRef:string,newTip:string}} Landing */
 /** @typedef {import("./preservation.mjs").TreeProof} Tree */
 /** @typedef {{reason:string}|{guardToken:string, tree:Tree, constraintsDigest:string}} Inspection */
@@ -154,66 +154,64 @@ export function guardRetirementWrite(tx, table, row) {
 	}
 }
 
-/** @param {ReturnType<typeof import("./database.mjs").openDatabase>} db */
-export function retirementStore(db) {
-	return {
-		/** @param {string} actor @param {string} [goalId] */
-		retirements(actor, goalId) {
-			return db.transaction(tx => tx.list("effects", `WHERE kind='archive' AND owner=? ${goalId ? "AND json_extract(document,'$.request.goalId')=?" : ""}`,
-				goalId ? [actor, goalId] : [actor]), false);
-		},
-		/** @param {string} id @param {string} actor */
-		retirementTarget(id, actor) { return db.transaction(tx => {
-			const effect = tx.get("effects", id);
-			return { ...target(tx, effect, actor), reason: ledgerBlocker(tx, effect, actor) };
-		}, false); },
-		/** @param {string} id @param {string} actor @param {Inspection} inspection */
-		reserveArchive(id, actor, inspection) { return db.transaction(tx => {
-			const effect = tx.get("effects", id);
-			const { nativeId, restrictions } = target(tx, effect, actor);
-			if (effect.state !== "prepared") return;
-			const reason = ledgerBlocker(tx, effect, actor, "tree" in inspection ? inspection.tree.path : undefined)
-				?? ("tree" in inspection && inspection.constraintsDigest !== digest(json(restrictions)) ? "retention-constraints-changed" : undefined);
-			if (reason || "reason" in inspection || !nativeId) {
-				const result = { disposition: "retained", reason: reason ?? ("reason" in inspection ? inspection.reason : "creation-identity-unresolved") };
-				if (object(effect.result).reason !== result.reason) tx.put("effects", { ...effect, result });
-				return;
-			}
-			const callId = randomUUID();
-			const arguments_ = { id: nativeId, guard: { protocol: archiveProtocol, token: inspection.guardToken, owner: actor,
-				operationId: callId, workspace: inspection.tree, constraintsDigest: inspection.constraintsDigest } };
-			tx.put("effects", { ...effect, state: "issued", request: json({ ...object(effect.request), nativeId, callId, arguments: arguments_ }),
-				result: { disposition: "awaiting-native-receipt" } });
-			return { arguments: arguments_, callId };
-		}); },
-		/** @param {string} id @param {string} actor @param {unknown} receipt @param {boolean} recovered */
-		archiveReceipt(id, actor, receipt, recovered) { return db.transaction(tx => {
-			const effect = tx.get("effects", id);
-			target(tx, effect, actor);
-			if (!["issued", "uncertain"].includes(effect.state)) return;
-			const request = object(effect.request);
-			const value = object(receipt);
-			const match = value.protocol === archiveProtocol && value.operationId === request.callId && value.sessionId === request.nativeId
-				&& value.owner === actor && typeof value.receiptId === "string" && value.receiptId.length > 0;
-			if (match && (value.outcome === "archived" || recovered && value.outcome === "not-applied" && typeof value.reason === "string")) {
-				const result = { disposition: value.outcome === "archived" ? "archived" : "retained", receipt: json(value), recovered,
-					...(value.outcome === "not-applied" ? { reason: value.reason } : {}) };
-				tx.put("effects", { ...effect, state: "settled", result: json(result) });
-				// Retry only a positively reconciled, unapplied guard conflict, under a
-				// fresh token. Permission refusals and unavailable history never retry.
-				if (value.outcome === "not-applied" && value.reason === "guard-expired") {
-					const { nativeId, callId, arguments: args, ...original } = request;
-					tx.put("effects", { ...effect, id: `archive:${effect.attemptId}:${callId}`, state: "prepared",
-						request: json({ ...original, previousCallId: callId, expiredToken: object(object(args).guard).token }),
-						result: { disposition: "queued" } });
-				}
-			} else if (effect.state !== "uncertain") tx.put("effects", { ...effect, state: "uncertain",
-				result: { disposition: "retained", reason: "archive-issuance-unreconciled" } });
-		}); },
-	};
+/** @param {Tx} tx @param {string} actor @param {string} [goalId] */
+export function retirements(tx, actor, goalId) {
+	return tx.list("effects", `WHERE kind='archive' AND owner=? ${goalId ? "AND json_extract(document,'$.request.goalId')=?" : ""}`,
+		goalId ? [actor, goalId] : [actor]);
 }
 
-/** @param {unknown} raw @param {Exclude<Awaited<ReturnType<Store["retirementTarget"]>>,undefined>} target @param {string} databasePath @param {Effect} effect @returns {Inspection} */
+/** @param {Tx} tx @param {string} id @param {string} actor */
+export function retirementTarget(tx, id, actor) {
+	const effect = tx.get("effects", id);
+	return { ...target(tx, effect, actor), reason: ledgerBlocker(tx, effect, actor) };
+}
+
+/** @param {Tx} tx @param {string} id @param {string} actor @param {Inspection} inspection */
+export function reserveArchive(tx, id, actor, inspection) {
+	const effect = tx.get("effects", id);
+	const { nativeId, restrictions } = target(tx, effect, actor);
+	if (effect.state !== "prepared") return;
+	const reason = ledgerBlocker(tx, effect, actor, "tree" in inspection ? inspection.tree.path : undefined)
+		?? ("tree" in inspection && inspection.constraintsDigest !== digest(json(restrictions)) ? "retention-constraints-changed" : undefined);
+	if (reason || "reason" in inspection || !nativeId) {
+		const result = { disposition: "retained", reason: reason ?? ("reason" in inspection ? inspection.reason : "creation-identity-unresolved") };
+		if (object(effect.result).reason !== result.reason) tx.put("effects", { ...effect, result });
+		return;
+	}
+	const callId = randomUUID();
+	const arguments_ = { id: nativeId, guard: { protocol: archiveProtocol, token: inspection.guardToken, owner: actor,
+		operationId: callId, workspace: inspection.tree, constraintsDigest: inspection.constraintsDigest } };
+	tx.put("effects", { ...effect, state: "issued", request: json({ ...object(effect.request), nativeId, callId, arguments: arguments_ }),
+		result: { disposition: "awaiting-native-receipt" } });
+	return { arguments: arguments_, callId };
+}
+
+/** @param {Tx} tx @param {string} id @param {string} actor @param {unknown} receipt @param {boolean} recovered */
+export function archiveReceipt(tx, id, actor, receipt, recovered) {
+	const effect = tx.get("effects", id);
+	target(tx, effect, actor);
+	if (!["issued", "uncertain"].includes(effect.state)) return;
+	const request = object(effect.request);
+	const value = object(receipt);
+	const match = value.protocol === archiveProtocol && value.operationId === request.callId && value.sessionId === request.nativeId
+		&& value.owner === actor && typeof value.receiptId === "string" && value.receiptId.length > 0;
+	if (match && (value.outcome === "archived" || recovered && value.outcome === "not-applied" && typeof value.reason === "string")) {
+		const result = { disposition: value.outcome === "archived" ? "archived" : "retained", receipt: json(value), recovered,
+			...(value.outcome === "not-applied" ? { reason: value.reason } : {}) };
+		tx.put("effects", { ...effect, state: "settled", result: json(result) });
+		// Retry only a positively reconciled, unapplied guard conflict, under a
+		// fresh token. Permission refusals and unavailable history never retry.
+		if (value.outcome === "not-applied" && value.reason === "guard-expired") {
+			const { nativeId, callId, arguments: args, ...original } = request;
+			tx.put("effects", { ...effect, id: `archive:${effect.attemptId}:${callId}`, state: "prepared",
+				request: json({ ...original, previousCallId: callId, expiredToken: object(object(args).guard).token }),
+				result: { disposition: "queued" } });
+		}
+	} else if (effect.state !== "uncertain") tx.put("effects", { ...effect, state: "uncertain",
+		result: { disposition: "retained", reason: "archive-issuance-unreconciled" } });
+}
+
+/** @param {unknown} raw @param {ReturnType<typeof retirementTarget>} target @param {string} databasePath @param {Effect} effect @returns {Inspection} */
 function inspect(raw, target, databasePath, effect) {
 	const detail = nativeObject(raw);
 	if (object(raw).resultType !== undefined && object(raw).resultType !== "success" || !detail
@@ -259,18 +257,18 @@ async function recover(effect, host) {
 	return nativeObject(result.structuredContent ?? { textResultForLlm: result.content })?.archive_receipt;
 }
 
-/** @param {Store} db @param {Host} host @param {string} actor @param {string|undefined} goalId @param {()=>boolean} current */
+/** @param {Database} db @param {Host} host @param {string} actor @param {string|undefined} goalId @param {()=>boolean} current */
 export async function advanceRetirements(db, host, actor, goalId, current) {
-	for (const effect of db.retirements(actor, goalId)) {
+	for (const effect of db.read(retirements, actor, goalId)) {
 		if (!current()) break;
 		if (effect.state === "settled") continue;
 		if (effect.state !== "prepared") {
 			let receipt;
 			try { receipt = await recover(effect, host); } catch { /* Missing history is not proof of non-issuance. */ }
-			db.archiveReceipt(effect.id, actor, receipt, true);
+			db.write(archiveReceipt, effect.id, actor, receipt, true);
 			continue;
 		}
-		const target = db.retirementTarget(effect.id, actor);
+		const target = db.read(retirementTarget, effect.id, actor);
 		/** @type {Inspection} */
 		let inspection = { reason: target.reason ?? "native-session-inspection-unavailable" };
 		if (!target.reason && host.readSession && target.nativeId) {
@@ -279,16 +277,16 @@ export async function advanceRetirements(db, host, actor, goalId, current) {
 		}
 		if (!host.execute || !host.readCommand) inspection = { reason: "reason" in inspection ? inspection.reason : "recoverable-native-archive-unavailable" };
 		if (!current()) break;
-		const issued = db.reserveArchive(effect.id, actor, inspection);
+		const issued = db.write(reserveArchive, effect.id, actor, inspection);
 		if (!issued || !host.execute) continue;
 		let receipt;
 		try {
 			const response = await host.execute(guardedTool, issued.arguments, issued.callId);
 			if (object(response).resultType === "success") receipt = nativeObject(response)?.archive_receipt;
 		} catch { /* The host may have applied the operation. Only reconcile. */ }
-		db.archiveReceipt(effect.id, actor, receipt, false);
+		db.write(archiveReceipt, effect.id, actor, receipt, false);
 	}
-	return db.retirements(actor, goalId).map(retirementView);
+	return db.read(retirements, actor, goalId).map(retirementView);
 }
 
 /** @param {Effect} effect */

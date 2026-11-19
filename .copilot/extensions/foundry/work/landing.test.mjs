@@ -4,6 +4,8 @@ import {createHash, randomUUID} from "node:crypto";
 import {mkdirSync, readFileSync, rmSync, writeFileSync} from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import * as Context from "./context.mjs";
+import * as Landing from "./landing.mjs";
 import {createRuntime} from "./runtime.mjs";
 import {applyExpectedTip} from "./promotion.mjs";
 import {record, text} from "./values.mjs";
@@ -49,7 +51,7 @@ function fixture(t, options = {}) {
 			]}}));
 		const started = record(await runtime.operation("start_factory",{source},"director"));
 		const goalId = text(record(started.goal).id,"goal");
-		const tasks = runtime.store().snapshot().tasks.filter(task => task.goalId === goalId);
+		const tasks = runtime.getDatabase().read(Context.snapshot).tasks.filter(task => task.goalId === goalId);
 		const producer = tasks[0], final = tasks.at(-1);
 		assert.ok(final);
 		const finalId = final.id;
@@ -164,10 +166,10 @@ test("missing checkout lease is unsupported even on a host which can run shell c
 
 test("uncertain issuance never reissues or treats tip equality as its own receipt",async t => {
 	const {lane,runtime,git} = fixture(t);
-	const job = await lane("uncertain","leaf.txt","one"), db = runtime.store();
+	const job = await lane("uncertain","leaf.txt","one"), db = runtime.getDatabase();
 	const id = text((await job.deliver("prepare")).manifestId,"manifest");
 	await job.verify(); await job.deliver("qualify",id);
-	const intent = db.issueLanding(job.goalId,id,"director");
+	const intent = db.write(Landing.issueLanding, job.goalId,id,"director");
 	await assert.rejects(job.deliver("reconcile",id),{code:"delivery_uncertain"});
 	await assert.rejects(job.deliver("land",id),{code:"delivery_uncertain"});
 	// Simulate lost host response after a real authorized fast-forward.

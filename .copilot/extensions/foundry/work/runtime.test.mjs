@@ -6,6 +6,16 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import * as Attempts from "./attempts.mjs";
+import * as Claims from "./claims.mjs";
+import * as Context from "./context.mjs";
+import * as Effects from "./effects.mjs";
+import * as Feedback from "./feedback.mjs";
+import * as Jobs from "./jobs.mjs";
+import * as Results from "./results.mjs";
+import * as Tasks from "./tasks.mjs";
+import * as Usage from "./usage.mjs";
+import * as Wakes from "./wakes.mjs";
 import { createRuntime } from "./runtime.mjs";
 import { renderBoard, startBoard } from "./board.mjs";
 import { record, text } from "./values.mjs";
@@ -75,11 +85,11 @@ test("factory activation still requires actual native mode and observed stop-hoo
 	await assert.rejects(runtime.operation("start_factory", { source }, "director"), /actual stop hook/);
 	runtime.agentStop("director");
 	await assert.rejects(runtime.operation("start_factory", { source }, "director"), { code: "native_inspection_unavailable" });
-	assert.equal(runtime.store().snapshot().goals.length, 0);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).goals.length, 0);
 	const mismatched = fixture(t, { stopHookQualified: true, readMode: async () => "autopilot" });
 	await assert.rejects(mismatched.runtime.operation("start_factory", { source: factorySource(mismatched.directory) }, "director"),
 		{ code: "native_mode_mismatch" });
-	assert.equal(mismatched.runtime.store().snapshot().factories?.length, 0);
+	assert.equal(mismatched.runtime.getDatabase().read(Context.snapshot).factories?.length, 0);
 });
 
 for (const [mechanism, mode] of [["native", "autopilot"], ["native", "interactive"], ["stop-hook", "interactive"]]) for (const unavailable of [true, false]) {
@@ -95,14 +105,14 @@ for (const [mechanism, mode] of [["native", "autopilot"], ["native", "interactiv
 		assert.ok(Array.isArray(dispatch.prepared));
 		assert.equal(record(record(record(dispatch.prepared[0]).arguments).kickoff).mode, workerMode);
 		if (mechanism === "native") {
-			assert.equal(runtime.store().factory("fixture-factory", "director").blocks, undefined);
+			assert.equal(runtime.getDatabase().read(Jobs.factory, "fixture-factory", "director").blocks, undefined);
 			assert.equal(runtime.agentStop("director"), undefined);
-			assert.equal(runtime.store().factory("fixture-factory", "director").state, "active");
+			assert.equal(runtime.getDatabase().read(Jobs.factory, "fixture-factory", "director").state, "active");
 		}
 		runtime.nativeAbort({ reason: "user_initiated" }, "director");
-		assert.equal(runtime.store().factory("fixture-factory", "director").state, "paused");
+		assert.equal(runtime.getDatabase().read(Jobs.factory, "fixture-factory", "director").state, "paused");
 		await runtime.operation("start_factory", { source }, "director");
-		assert.equal(runtime.store().factory("fixture-factory", "director").state, "active");
+		assert.equal(runtime.getDatabase().read(Jobs.factory, "fixture-factory", "director").state, "active");
 	});
 }
 
@@ -112,14 +122,14 @@ test("native factory activation rejects plan mode without requiring an unused st
 		mechanism: "native", blocks: undefined,
 		goal: { ...definition, tasks: [{ ...definition.tasks[0], id: "complete" }] },
 	}) }, "director"), { code: "native_mode_mismatch" });
-	assert.equal(runtime.store().snapshot().factories?.length, 0);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).factories?.length, 0);
 });
 
 for (const blocks of [0, -1]) test(`stop-hook factory rejects a ${blocks === 0 ? "zero" : "negative"} continuation bound`, async t => {
 	const { runtime, directory } = fixture(t, { stopHookQualified: true, readMode: async () => "interactive" });
 	await assert.rejects(runtime.operation("start_factory", { source: factorySource(directory, { blocks }) }, "director"),
 		{ code: "invalid_field", message: /stop-hook continuation blocks/ });
-	assert.equal(runtime.store().snapshot().factories?.length, 0);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).factories?.length, 0);
 });
 
 test("omitted tuning is resolved, reported, and enforced without changing recorded settings on reload", async t => {
@@ -133,7 +143,7 @@ test("omitted tuning is resolved, reported, and enforced without changing record
 	const expected = { maximumJobs: { value: 1, origin: "default" }, blocks: { value: 3, origin: "default" }, perJobLimits: {} };
 	assert.deepEqual(started.settings, expected);
 	assert.equal(readFileSync(path.join(directory, source), "utf8"), original);
-	const saved = runtime.store().factory("fixture-factory", "director");
+	const saved = runtime.getDatabase().read(Jobs.factory, "fixture-factory", "director");
 	assert.equal(record(saved.definition).maximumJobs, 1);
 	assert.equal(record(saved.definition).blocks, 3);
 	assert.deepEqual(saved.settingOrigins, { maximumJobs: "default", blocks: "default" });
@@ -147,7 +157,7 @@ test("omitted tuning is resolved, reported, and enforced without changing record
 	assert.deepEqual(record(context.factories[0]).settings, expected);
 	for (let index = 0; index < 3; index++) assert.equal(resumed.agentStop("director")?.decision, "block");
 	assert.equal(resumed.agentStop("director"), undefined);
-	assert.equal(resumed.store().factory("fixture-factory", "director").state, "paused");
+	assert.equal(resumed.getDatabase().read(Jobs.factory, "fixture-factory", "director").state, "paused");
 	assert.equal(warnings.length, 1);
 	await assert.rejects(resumed.operation("start_factory", { source }, "director"), { code: "factory_conflict" });
 });
@@ -163,8 +173,8 @@ const invalidFactorySettings = [
 for (const [overrides, code] of invalidFactorySettings) test(`invalid or unsupported factory settings are not silently defaulted: ${JSON.stringify(overrides)}`, async t => {
 	const { runtime, directory } = fixture(t, { stopHookQualified: true, readMode: async () => "interactive" });
 	await assert.rejects(runtime.operation("start_factory", { source: factorySource(directory, overrides) }, "director"), { code });
-	assert.equal(runtime.store().snapshot().factories?.length, 0);
-	assert.equal(runtime.store().snapshot().goals.length, 0);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).factories?.length, 0);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).goals.length, 0);
 });
 
 test("native factories reject irrelevant stop-hook settings instead of requesting a bound", async t => {
@@ -172,7 +182,7 @@ test("native factories reject irrelevant stop-hook settings instead of requestin
 	await assert.rejects(runtime.operation("start_factory", { source: factorySource(directory, {
 		mechanism: "native", goal: { ...definition, tasks: [{ ...definition.tasks[0], id: "complete" }] },
 	}) }, "director"), { code: "continuation_setting_conflict" });
-	assert.equal(runtime.store().snapshot().factories?.length, 0);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).factories?.length, 0);
 });
 
 for (const change of ["directory", "close"]) test(`factory activation rejects a runtime ${change} during native mode inspection`, async t => {
@@ -217,15 +227,15 @@ test("exclusive stop-hook continuation pauses unchanged execution without invent
 	const { runtime, directory } = fixture(t, { stopHookQualified: true, readMode: async () => "interactive",
 		confirm: async () => true, log: message => { warnings.push(message); } });
 	await runtime.operation("start_factory", { source: factorySource(directory) }, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	await runtime.operation("start_task", { taskId: task.id }, "director");
 	assert.equal(runtime.agentStop("director")?.decision, "block");
 	assert.equal(runtime.agentStop("director", true), undefined);
-	assert.equal(runtime.store().getTask(task.id).state, "blocked");
-	assert.equal(runtime.store().getTask(task.id).waiting?.cause, "stalled");
-	assert.equal(runtime.store().snapshot().attempts[0].slot, false);
-	assert.equal(runtime.store().evidenceForAttempt(text(runtime.store().getTask(task.id).currentAttemptId, "attempt")).length, 0);
-	assert.equal(runtime.store().snapshot().factories?.[0].state, "paused");
+	assert.equal(runtime.getDatabase().get("tasks", task.id).state, "blocked");
+	assert.equal(runtime.getDatabase().get("tasks", task.id).waiting?.cause, "stalled");
+	assert.equal(runtime.getDatabase().read(Context.snapshot).attempts[0].slot, false);
+	assert.equal(runtime.getDatabase().read(Results.evidenceForAttempt, text(runtime.getDatabase().get("tasks", task.id).currentAttemptId, "attempt")).length, 0);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).factories?.[0].state, "paused");
 	assert.equal(warnings.length, 1);
 });
 
@@ -239,7 +249,7 @@ for (const stalled of [true, false]) test(`explicit ${stalled ? "stalled" : "act
 	if (stalled) {
 		assert.equal(runtime.agentStop("director")?.decision, "block");
 		assert.equal(runtime.agentStop("director", true), undefined);
-		assert.equal(runtime.store().factory("fixture-factory", "director").state, "paused");
+		assert.equal(runtime.getDatabase().read(Jobs.factory, "fixture-factory", "director").state, "paused");
 	}
 	await runtime.operation("start_factory", { source }, "director");
 	const restarted = record(await runtime.operation("advance", {}, "director"));
@@ -247,13 +257,13 @@ for (const stalled of [true, false]) test(`explicit ${stalled ? "stalled" : "act
 	const fresh = record(restarted.prepared[0]);
 	assert.notEqual(fresh.attemptId, old.attemptId);
 	assert.notEqual(fresh.token, old.token);
-	const retired = runtime.store().getEffect(text(old.effectId, "old create"));
+	const retired = runtime.getDatabase().get("effects", text(old.effectId, "old create"));
 	assert.equal(retired.state, "settled");
 	assert.equal(record(retired.result).neverIssued, true);
-	assert.equal(runtime.store().getAttempt(text(old.attemptId, "old attempt")).slot, false);
-	assert.equal(runtime.store().getTask(text(old.taskId, "task")).repairs ?? 0, 0);
+	assert.equal(runtime.getDatabase().get("attempts", text(old.attemptId, "old attempt")).slot, false);
+	assert.equal(runtime.getDatabase().get("tasks", text(old.taskId, "task")).repairs ?? 0, 0);
 	runtime.pre("create_session", fresh.arguments, "director", "fresh-generation-create");
-	assert.equal(runtime.store().getEffect(text(fresh.effectId, "fresh create")).state, "issued");
+	assert.equal(runtime.getDatabase().get("effects", text(fresh.effectId, "fresh create")).state, "issued");
 	assert.throws(() => runtime.pre("create_session", old.arguments, "director", "revoked-create"), /current|cancelled|stale/);
 });
 
@@ -268,11 +278,11 @@ test("explicit restart retains an already-issued creation and its late native id
 	await runtime.operation("start_factory", { source }, "director");
 	const restarted = record(await runtime.operation("advance", {}, "director"));
 	assert.deepEqual(restarted.prepared, []);
-	assert.equal(runtime.store().snapshot().attempts.length, 1);
-	assert.equal(runtime.store().getEffect(text(call.effectId, "issued create")).state, "issued");
+	assert.equal(runtime.getDatabase().read(Context.snapshot).attempts.length, 1);
+	assert.equal(runtime.getDatabase().get("effects", text(call.effectId, "issued create")).state, "issued");
 	runtime.post("create_session", call.arguments, { id: "existing-worker" }, "director");
-	assert.equal(runtime.store().getAttempt(text(call.attemptId, "existing attempt")).nativeId, "existing-worker");
-	assert.equal(runtime.store().snapshot().attempts.length, 1);
+	assert.equal(runtime.getDatabase().get("attempts", text(call.attemptId, "existing attempt")).nativeId, "existing-worker");
+	assert.equal(runtime.getDatabase().read(Context.snapshot).attempts.length, 1);
 });
 
 test("factory advancement alone retries known failed owner wakes without replaying queue acceptance", async t => {
@@ -286,7 +296,7 @@ test("factory advancement alone retries known failed owner wakes without replayi
 				: { resultType: "success", textResultForLlm: "Queued" };
 		} });
 	await runtime.operation("start_factory", { source: factorySource(directory) }, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	await runtime.operation("reassign_task", { taskId: task.id, newOwner: "worker-b" }, "director");
 	await runtime.operation("advance", {}, "director");
 	await runtime.flushNotifications();
@@ -297,7 +307,7 @@ test("factory advancement alone retries known failed owner wakes without replayi
 	await runtime.operation("advance", {}, "director");
 	assert.equal(requests.length, 2);
 	assert.equal(errors.length, 1);
-	assert.equal(runtime.store().getTask(task.id).owner, "worker-b");
+	assert.equal(runtime.getDatabase().get("tasks", task.id).owner, "worker-b");
 });
 
 test("a held peer wake does not delay a prepared dispatch or another recipient", { timeout: 5000 }, async t => {
@@ -316,9 +326,9 @@ test("a held peer wake does not delay a prepared dispatch or another recipient",
 		...definition, scope: { ...definition.scope, mode: "interactive" },
 		tasks: ["x", "y", "complete"].map(id => ({ ...definition.tasks[0], id })),
 	} }) }, "director");
-	const [x, y, final] = runtime.store().snapshot().tasks;
-	runtime.store().reassignTask(x.id, "worker-x", "director");
-	runtime.store().reassignTask(y.id, "worker-y", "director");
+	const [x, y, final] = runtime.getDatabase().read(Context.snapshot).tasks;
+	runtime.getDatabase().write(Tasks.reassignTask, x.id, "worker-x", "director");
+	runtime.getDatabase().write(Tasks.reassignTask, y.id, "worker-y", "director");
 	try {
 		const { prepared } = record(await runtime.operation("advance", {}, "director"));
 		assert.ok(Array.isArray(prepared));
@@ -336,24 +346,24 @@ for (const mechanism of ["native", "stop-hook"]) for (const nativeFlag of [false
 	await runtime.operation("start_factory", { source: factorySource(directory, mechanism === "native" ? {
 		mechanism, blocks: undefined, goal: { ...definition, tasks: [{ ...definition.tasks[0], id: "complete" }] },
 	} : {}) }, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	const attempt = record(await runtime.operation("start_task", { taskId: task.id }, "director"));
 	await runtime.operation("wait_task", { taskId: task.id, kind: "input", reason: "Actual decision",
 		requestId: "native-question" }, "director");
 	const waiting = record(await runtime.operation("advance", {}, "director"));
 	assert.ok(Array.isArray(waiting.advancement));
 	assert.equal(record(waiting.advancement[0]).disposition, "needs-input");
-	assert.equal(runtime.store().getTask(task.id).waiting?.kind, "input");
+	assert.equal(runtime.getDatabase().get("tasks", task.id).waiting?.kind, "input");
 	answered = true;
 	const cleared = record(await runtime.operation("advance", {}, "director"));
 	assert.ok(Array.isArray(cleared.advancement));
 	assert.deepEqual(record(cleared.advancement[0]).actions, [{ taskId: task.id, kind: "resume" }]);
 	assert.deepEqual(cleared.prepared, []);
-	assert.equal(runtime.store().openInputRequests("director").length, 0);
+	assert.equal(runtime.getDatabase().read(Attempts.openInputRequests, "director").length, 0);
 	const resumed = record(await runtime.operation("resume_task", { taskId: task.id }, "director"));
 	assert.equal(resumed.id, attempt.id);
 	assert.equal(resumed.nativeId, "director");
-	assert.equal(runtime.store().snapshot().attempts.length, 1);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).attempts.length, 1);
 });
 
 for (const changedDirectory of [false, true]) test(`owner input recovery refuses ${changedDirectory ? "a changed repository context" : "a foreign native identity"}`, async t => {
@@ -364,10 +374,10 @@ for (const changedDirectory of [false, true]) test(`owner input recovery refuses
 	mkdirSync(path.join(directory, "replacement"));
 	execFileSync("git", ["init", "--quiet", path.join(directory, "replacement")]);
 	await runtime.operation("start_factory", { source: factorySource(directory) }, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	await runtime.operation("start_task", { taskId: task.id }, "director");
 	await runtime.operation("wait_task", { taskId: task.id, kind: "input", reason: "Actual decision", requestId: "native-question" }, "director");
-	const databasePath = runtime.store().databasePath;
+	const databasePath = runtime.getDatabase().databasePath;
 	await assert.rejects(runtime.operation("advance", {}, "director"), {
 		code: changedDirectory ? "context_changed" : "native_identity_mismatch",
 	});
@@ -384,39 +394,39 @@ test("factory completion seals actual acceptance, protects inputs, and preserves
 		{ ...definition.tasks[0], id: "complete", inputs: [{ taskId: "producer", output: "result" }] },
 	] } });
 	await runtime.operation("start_factory", { source }, "director");
-	const [producer, complete] = runtime.store().snapshot().tasks;
+	const [producer, complete] = runtime.getDatabase().read(Context.snapshot).tasks;
 	await runtime.operation("start_task", { taskId: producer.id }, "director");
 	await runtime.operation("report_result", { taskId: producer.id, summary: "Input ready",
 		outputs: [{ name: "result", kind: "analysis", reference: "immutable:fixture", version: "v1" }] }, "director");
 	await assert.rejects(runtime.operation("evolve_task", { taskId: complete.id, expectedVersion: 1, inputs: [] }, "director"), /requirements cannot be removed/);
 	await runtime.operation("start_task", { taskId: complete.id }, "director");
-	assert.equal(runtime.store().snapshot().completions?.[0].delivered, false);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).completions?.[0].delivered, false);
 	const prepared = record(await runtime.operation("prepare_check", { taskId: complete.id, checkId: "behavior" }, "director"));
 	runtime.pre("bash", prepared.arguments, "director", "completion-check");
 	const stdout = execFileSync("/bin/sh", ["-c", text(record(prepared.arguments).command, "command")], { encoding: "utf8" });
 	runtime.post("bash", prepared.arguments, { resultType: "success", textResultForLlm: stdout }, "director");
 	await runtime.operation("report_result", { taskId: complete.id, summary: "Final behavior accepted",
 		outputs: [{ name: "accepted", kind: "analysis", reference: "immutable:completion", version: "v1" }] }, "director");
-	assert.equal(runtime.store().snapshot().completions?.[0].delivered, true);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).completions?.[0].delivered, true);
 	await assert.rejects(runtime.operation("create_task", { goalId: producer.goalId, title: "Late work", assignment: "Unaccounted work", workType: "analysis" }, "director"), { code: "job_closed" });
 	await runtime.operation("reopen_job", { goalId: producer.goalId }, "director");
-	assert.equal(runtime.store().snapshot().completions?.[0].delivered, false);
-	assert.equal(runtime.store().outputForInput({ taskId: complete.id, output: "accepted", version: "v1" })?.version, "v1");
+	assert.equal(runtime.getDatabase().read(Context.snapshot).completions?.[0].delivered, false);
+	assert.equal(runtime.getDatabase().read(Tasks.outputForInput, { taskId: complete.id, output: "accepted", version: "v1" })?.version, "v1");
 });
 
 test("qualified native refusal settles only its actual pre-start command, not a rejected follow-up read", async t => {
 	const { runtime } = fixture(t);
 	await runtime.operation("start_goal", definition, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	await runtime.operation("start_task", { taskId: task.id }, "director");
 	runtime.pre("bash", { command: "echo inspected", shellId: "refused-shell" }, "director", "refused-call");
 	runtime.nativeAbort({ finalTool: { status: "denied", toolCallId: "refused-call" } }, "director");
-	assert.equal(runtime.store().getEffect("command:refused-call").state, "settled");
-	assert.equal(record(runtime.store().getEffect("command:refused-call").result).neverIssued, true);
+	assert.equal(runtime.getDatabase().get("effects", "command:refused-call").state, "settled");
+	assert.equal(record(runtime.getDatabase().get("effects", "command:refused-call").result).neverIssued, true);
 	runtime.pre("bash", { command: "sleep 1", shellId: "live-shell" }, "director", "live-call");
 	runtime.pre("read_bash", { shellId: "live-shell" }, "director", "rejected-read");
 	runtime.nativeAbort({ finalTool: { status: "rejected", toolCallId: "rejected-read" } }, "director");
-	assert.equal(runtime.store().getEffect("command:live-call").state, "issued");
+	assert.equal(runtime.getDatabase().get("effects", "command:live-call").state, "issued");
 });
 
 const authorizedFactory = { stopHookQualified: true, readMode: async () => "interactive", confirm: async () => true };
@@ -458,10 +468,10 @@ test("factory templates staff three native coordinator levels locally under a on
 		assert.match(prompt, /foundry_request_collaboration/);
 		assert.match(prompt, /The director owns priorities, cross-team tradeoffs and shared delivery blockers/);
 		assert.match(prompt, /A directory owner alone does not establish that binding/);
-		const attempt = runtime.store().getAttempt(text(call.attemptId, "attempt"));
+		const attempt = runtime.getDatabase().get("attempts", text(call.attemptId, "attempt"));
 		assert.equal(attempt.creator, actor);
 		actor = nativeId;
-		const task = runtime.store().getTask(attempt.taskId);
+		const task = runtime.getDatabase().get("tasks", attempt.taskId);
 		await runtime.operation("wait_task", { taskId: task.id, attemptId: attempt.id, kind: "events",
 			reason: "Staff the authorized child", handledGeneration: task.coordination?.generation }, actor);
 		assert.throws(() => runtime.pre("bash", { command: "echo unadmitted" }, actor, "unadmitted-command"), { code: "capacity_required" });
@@ -474,7 +484,7 @@ test("factory templates staff three native coordinator levels locally under a on
 	assert.match(producer, /send_session_message .* when you know the native session bound to the peer's assignment/);
 	assert.match(producer, /If you cannot identify or reach the peer and work is blocked, ask your local coordinator/);
 	assert.doesNotMatch(producer, /The director owns priorities/);
-	const snapshot = runtime.store().snapshot();
+	const snapshot = runtime.getDatabase().read(Context.snapshot);
 	assert.equal(snapshot.attempts.filter(attempt => attempt.slot).length, 1);
 	assert.equal(snapshot.units.length, 3);
 	const board = renderBoard(snapshot);
@@ -491,10 +501,10 @@ test("a natural coordinator stop parks one attempt and does not create a stop-ho
 			{ id: "lead", title: "Lead", assignment: "Coordinate", workType: "analysis", role: "coordinator" },
 			{ ...definition.tasks[0], id: "complete", parentId: "lead" },
 		] } }) }, "director");
-	const lead = runtime.store().snapshot().tasks.find(task => task.role === "coordinator");
+	const lead = runtime.getDatabase().read(Context.snapshot).tasks.find(task => task.role === "coordinator");
 	assert.ok(lead);
 	const attempt = record(await runtime.operation("start_task", { taskId: lead.id }, "director"));
-	const final = runtime.store().snapshot().tasks.find(task => task.role === "producer");
+	const final = runtime.getDatabase().read(Context.snapshot).tasks.find(task => task.role === "producer");
 	assert.ok(final);
 	const batch = record(await runtime.operation("dispatch", { taskIds: [final.id] }, "director"));
 	assert.ok(Array.isArray(batch.prepared));
@@ -502,12 +512,12 @@ test("a natural coordinator stop parks one attempt and does not create a stop-ho
 	runtime.pre("create_session", call.arguments, "director", "staff-final");
 	runtime.post("create_session", call.arguments, { id: "native-final-worker" }, "director");
 	runtime.agentStop("director");
-	assert.equal(runtime.store().getTask(lead.id).waiting?.kind, "events");
-	assert.equal(runtime.store().getAttempt(text(attempt.id, "attempt")).slot, false);
-	const count = runtime.store().snapshot().attempts.length;
+	assert.equal(runtime.getDatabase().get("tasks", lead.id).waiting?.kind, "events");
+	assert.equal(runtime.getDatabase().get("attempts", text(attempt.id, "attempt")).slot, false);
+	const count = runtime.getDatabase().read(Context.snapshot).attempts.length;
 	runtime.agentStop("director", true);
-	assert.equal(runtime.store().snapshot().attempts.length, count);
-	assert.equal(runtime.store().snapshot().factories?.[0].state, "active");
+	assert.equal(runtime.getDatabase().read(Context.snapshot).attempts.length, count);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).factories?.[0].state, "active");
 });
 
 test("product acceptance retires a coordinator lease and explicit reopen restores its existing session without repair", async t => {
@@ -517,24 +527,24 @@ test("product acceptance retires a coordinator lease and explicit reopen restore
 			{ id: "lead", title: "Lead", assignment: "Coordinate", workType: "analysis", role: "coordinator" },
 			{ ...definition.tasks[0], id: "complete", parentId: "lead" },
 		] } }) }, "director");
-	const lead = runtime.store().snapshot().tasks.find(task => task.role === "coordinator");
-	const final = runtime.store().snapshot().tasks.find(task => task.role === "producer");
+	const lead = runtime.getDatabase().read(Context.snapshot).tasks.find(task => task.role === "coordinator");
+	const final = runtime.getDatabase().read(Context.snapshot).tasks.find(task => task.role === "producer");
 	assert.ok(lead && final);
 	const original = record(await runtime.operation("start_task", { taskId: lead.id }, "director"));
 	await runtime.operation("wait_task", { taskId: lead.id, attemptId: original.id, kind: "events", reason: "Await checked acceptance",
-		handledGeneration: runtime.store().getTask(lead.id).coordination?.generation }, "director");
+		handledGeneration: runtime.getDatabase().get("tasks", lead.id).coordination?.generation }, "director");
 	await acceptInline(runtime, final.id);
-	assert.equal(runtime.store().getTask(lead.id).state, "done");
-	assert.equal(runtime.store().snapshot().completions?.[0].settled, true);
+	assert.equal(runtime.getDatabase().get("tasks", lead.id).state, "done");
+	assert.equal(runtime.getDatabase().read(Context.snapshot).completions?.[0].settled, true);
 	await runtime.operation("reopen_job", { goalId: final.goalId }, "director");
-	const restored = runtime.store().getTask(lead.id);
-	const lease = runtime.store().getAttempt(restored.currentAttemptId ?? "");
+	const restored = runtime.getDatabase().get("tasks", lead.id);
+	const lease = runtime.getDatabase().get("attempts", restored.currentAttemptId ?? "");
 	assert.notEqual(lease.id, original.id);
 	assert.equal(lease.nativeId, "director");
 	assert.equal(lease.slot, false);
 	assert.equal(restored.waiting?.kind, "events");
 	assert.equal(restored.repairs ?? 0, 0);
-	assert.equal(runtime.store().getAttempt(text(original.id, "old lease")).state, "done");
+	assert.equal(runtime.getDatabase().get("attempts", text(original.id, "old lease")).state, "done");
 });
 
 for (const state of ["prepared", "issued", "uncertain"]) test(`job sealing retires only unissued coordinator creations: ${state}`, async t => {
@@ -544,8 +554,8 @@ for (const state of ["prepared", "issued", "uncertain"]) test(`job sealing retir
 			{ id: "lead", title: "Lead", assignment: "Coordinate", workType: "analysis", role: "coordinator" },
 			{ ...definition.tasks[0], id: "complete" },
 		] } }) }, "director");
-	const lead = runtime.store().snapshot().tasks.find(task => task.role === "coordinator");
-	const final = runtime.store().snapshot().tasks.find(task => task.role === "producer");
+	const lead = runtime.getDatabase().read(Context.snapshot).tasks.find(task => task.role === "coordinator");
+	const final = runtime.getDatabase().read(Context.snapshot).tasks.find(task => task.role === "producer");
 	assert.ok(lead && final);
 	const batch = record(await runtime.operation("dispatch", { taskIds: [lead.id] }, "director"));
 	assert.ok(Array.isArray(batch.prepared));
@@ -554,18 +564,18 @@ for (const state of ["prepared", "issued", "uncertain"]) test(`job sealing retir
 	const attemptId = text(call.attemptId, "coordinator attempt");
 	if (state !== "prepared") runtime.pre("create_session", call.arguments, "director", "original-create");
 	if (state === "uncertain") {
-		runtime.store().recordEffect({ ...runtime.store().getEffect(effectId), state: "uncertain",
+		runtime.getDatabase().write(Effects.recordEffect, { ...runtime.getDatabase().get("effects", effectId), state: "uncertain",
 			result: { pending: true } }, "director");
 	}
-	const original = runtime.store().getEffect(effectId);
+	const original = runtime.getDatabase().get("effects", effectId);
 	await acceptInline(runtime, final.id);
-	assert.equal(runtime.store().getTask(lead.id).state, "done");
+	assert.equal(runtime.getDatabase().get("tasks", lead.id).state, "done");
 	if (state === "prepared") {
-		const retired = runtime.store().getEffect(effectId);
+		const retired = runtime.getDatabase().get("effects", effectId);
 		assert.equal(retired.state, "settled");
 		assert.deepEqual(retired.request, original.request);
 		assert.equal(record(retired.result).neverIssued, true);
-		assert.equal(runtime.store().getAttempt(attemptId).slot, false);
+		assert.equal(runtime.getDatabase().get("attempts", attemptId).slot, false);
 		assert.throws(() => runtime.pre("create_session", call.arguments, "director", "late-create"), { code: "creation_retired" });
 		await runtime.operation("reopen_job", { goalId: final.goalId }, "director");
 		const fresh = record(await runtime.operation("dispatch", { taskIds: [lead.id] }, "director"));
@@ -573,18 +583,18 @@ for (const state of ["prepared", "issued", "uncertain"]) test(`job sealing retir
 		assert.notEqual(record(fresh.prepared[0]).attemptId, attemptId);
 		assert.throws(() => runtime.pre("create_session", call.arguments, "director", "replayed-create"), { code: "creation_retired" });
 	} else {
-		assert.deepEqual(runtime.store().getEffect(effectId), original);
-		assert.equal(runtime.store().getAttempt(attemptId).slot, true);
-		assert.equal(runtime.store().snapshot().completions?.[0].settled, false);
+		assert.deepEqual(runtime.getDatabase().get("effects", effectId), original);
+		assert.equal(runtime.getDatabase().get("attempts", attemptId).slot, true);
+		assert.equal(runtime.getDatabase().read(Context.snapshot).completions?.[0].settled, false);
 		assert.throws(() => runtime.post("create_session", call.arguments, { pending: true }, "director"), { code: "creation_identity_pending" });
-		assert.equal(runtime.store().getAttempt(attemptId).state, "done");
+		assert.equal(runtime.getDatabase().get("attempts", attemptId).state, "done");
 		runtime.post("create_session", call.arguments, { id: "late-native-lead" }, "director");
-		const settled = runtime.store().getAttempt(attemptId);
+		const settled = runtime.getDatabase().get("attempts", attemptId);
 		assert.equal(settled.nativeId, "late-native-lead");
 		assert.equal(settled.state, "done");
 		assert.equal(settled.slot, false);
-		assert.deepEqual(runtime.store().getEffect(effectId).result, { id: "late-native-lead" });
-		assert.equal(runtime.store().snapshot().completions?.[0].settled, true);
+		assert.deepEqual(runtime.getDatabase().get("effects", effectId).result, { id: "late-native-lead" });
+		assert.equal(runtime.getDatabase().read(Context.snapshot).completions?.[0].settled, true);
 	}
 });
 
@@ -595,8 +605,8 @@ test("job sealing preserves issued coordinator commands, native inputs and claim
 			{ id: "lead", title: "Lead", assignment: "Coordinate", workType: "analysis", role: "coordinator" },
 			{ ...definition.tasks[0], id: "complete" },
 		] } }) }, "director");
-	const lead = runtime.store().snapshot().tasks.find(task => task.role === "coordinator");
-	const final = runtime.store().snapshot().tasks.find(task => task.role === "producer");
+	const lead = runtime.getDatabase().read(Context.snapshot).tasks.find(task => task.role === "coordinator");
+	const final = runtime.getDatabase().read(Context.snapshot).tasks.find(task => task.role === "producer");
 	assert.ok(lead && final);
 	const batch = record(await runtime.operation("dispatch", { taskIds: [lead.id] }, "director"));
 	assert.ok(Array.isArray(batch.prepared));
@@ -604,24 +614,24 @@ test("job sealing preserves issued coordinator commands, native inputs and claim
 	runtime.pre("create_session", call.arguments, "director", "create-lead");
 	runtime.post("create_session", call.arguments, { id: "native-lead" }, "director");
 	const attemptId = text(call.attemptId, "lead attempt");
-	const claim = runtime.store().claim({ attemptId, surface: directory, resource: "shared" }, "native-lead");
+	const claim = runtime.getDatabase().write(Claims.claim, { attemptId, surface: directory, resource: "shared" }, "native-lead");
 	const prepared = record(await runtime.operation("prepare_command", { taskId: lead.id, command: "echo unissued" }, "native-lead"));
 	runtime.pre("bash", { command: "echo issued", shellId: "lead-shell" }, "native-lead", "lead-command");
 	await runtime.operation("wait_task", { taskId: lead.id, kind: "input", requestId: "real-native-input",
 		reason: "Await the native user's answer" }, "native-lead");
 	await acceptInline(runtime, final.id);
-	const lease = runtime.store().getAttempt(attemptId);
+	const lease = runtime.getDatabase().get("attempts", attemptId);
 	assert.equal(lease.state, "done");
 	assert.equal(lease.waiting?.requestId, "real-native-input");
 	assert.equal(lease.slot, true);
-	assert.deepEqual(runtime.store().snapshot().claims, [claim]);
-	assert.equal(record(runtime.store().getEffect(text(prepared.effectId, "prepared command")).result).neverIssued, true);
-	assert.equal(runtime.store().getEffect("command:lead-command").state, "issued");
+	assert.deepEqual(runtime.getDatabase().read(Context.snapshot).claims, [claim]);
+	assert.equal(record(runtime.getDatabase().get("effects", text(prepared.effectId, "prepared command")).result).neverIssued, true);
+	assert.equal(runtime.getDatabase().get("effects", "command:lead-command").state, "issued");
 	runtime.toolComplete({ toolCallId: "lead-command", success: true, shellExecution: { exitCode: 0 } }, "native-lead");
-	assert.equal(runtime.store().getEffect("command:lead-command").state, "settled");
-	assert.equal(runtime.store().getAttempt(attemptId).slot, false);
-	assert.deepEqual(runtime.store().snapshot().claims, [claim]);
-	assert.equal(runtime.store().snapshot().completions?.[0].settled, false);
+	assert.equal(runtime.getDatabase().get("effects", "command:lead-command").state, "settled");
+	assert.equal(runtime.getDatabase().get("attempts", attemptId).slot, false);
+	assert.deepEqual(runtime.getDatabase().read(Context.snapshot).claims, [claim]);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).completions?.[0].settled, false);
 });
 
 for (const required of [true, false]) test(`${required ? "required" : "optional"} cross-goal commitments retain their accepted producer`, async t => {
@@ -634,7 +644,7 @@ for (const required of [true, false]) test(`${required ? "required" : "optional"
 		] } });
 	await runtime.operation("start_factory", { source: policy("source-org") }, "source-owner");
 	await runtime.operation("start_factory", { source: policy("destination-org") }, "destination-owner");
-	const snapshot = runtime.store().snapshot();
+	const snapshot = runtime.getDatabase().read(Context.snapshot);
 	const source = snapshot.tasks.find(task => task.title === "source-org lead");
 	const destination = snapshot.tasks.find(task => task.title === "destination-org lead");
 	assert.ok(source && destination);
@@ -653,16 +663,16 @@ for (const required of [true, false]) test(`${required ? "required" : "optional"
 	const producer = record(await runtime.operation("start_task", { taskId: producerId }, "destination-owner"));
 	const early = record(await acceptInline(runtime, final.id, "destination-owner"));
 	assert.equal(early.promoted, !required);
-	assert.equal(runtime.store().getAttempt(text(producer.id, "committed attempt")).state, "running");
+	assert.equal(runtime.getDatabase().get("attempts", text(producer.id, "committed attempt")).state, "running");
 	await runtime.operation("report_result", { taskId: producerId, summary: "Interface published",
 		outputs: [{ name: "interface", kind: "analysis", reference: "immutable:peer-interface", version: "peer-v1" }] }, "destination-owner");
 	await runtime.operation("respond_collaboration", { collaborationId: proposed.id, expectedRevision: accepted.revision, action: "fulfill" }, "destination-owner");
-	assert.match(renderBoard(runtime.store().snapshot()), /Collaboration commitments/);
-	assert.match(renderBoard(runtime.store().snapshot()), /peer-v1/);
+	assert.match(renderBoard(runtime.getDatabase().read(Context.snapshot)), /Collaboration commitments/);
+	assert.match(renderBoard(runtime.getDatabase().read(Context.snapshot)), /peer-v1/);
 	if (required) await runtime.operation("report_result", { taskId: final.id, summary: "Accepted inline behavior" }, "destination-owner");
-	assert.equal(runtime.store().snapshot().completions?.find(completion => completion.goalId === final.goalId)?.delivered, true);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).completions?.find(completion => completion.goalId === final.goalId)?.delivered, true);
 	await acceptInline(runtime, consumer.id, "source-owner");
-	assert.equal(runtime.store().snapshot().completions?.find(completion => completion.goalId === consumer.goalId)?.delivered, true);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).completions?.find(completion => completion.goalId === consumer.goalId)?.delivered, true);
 });
 
 test("old factory and source-contract protocols are rejected rather than silently reinterpreted", async t => {
@@ -670,7 +680,7 @@ test("old factory and source-contract protocols are rejected rather than silentl
 	await assert.rejects(runtime.operation("start_factory", { source: factorySource(directory, { version: 1 }) }, "director"), { code: "unsupported_factory" });
 	writeFileSync(path.join(directory, ".foundry/contract.json"), JSON.stringify({ ...definition, format: "foundry-contract", version: 1 }));
 	await assert.rejects(runtime.operation("start_goal", { source: ".foundry/contract.json" }, "director"), { code: "unsupported_contract" });
-	assert.equal(runtime.store().snapshot().goals.length, 0);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).goals.length, 0);
 });
 
 test("coordinator replacement inspects native absence and rejects caller claims or temporary offline status", async t => {
@@ -687,15 +697,15 @@ test("coordinator replacement inspects native absence and rejects caller claims 
 	const call = record(batch.prepared[0]);
 	runtime.pre("create_session", call.arguments, "director", "old-lead-create");
 	runtime.post("create_session", call.arguments, { id: "old-lead" }, "director");
-	runtime.store().captureUsageAffinity("native-baseline", "old-lead");
+	runtime.getDatabase().write(Usage.captureUsageAffinity, "native-baseline", "old-lead");
 	const request = { taskId: "lead", attemptId: call.attemptId, newOwner: "director", unavailable: true };
 	await assert.rejects(runtime.operation("handoff_task", request, "director"), { code: "foreign_execution" });
 	state = "offline";
 	await assert.rejects(runtime.operation("handoff_task", request, "director"), { code: "foreign_execution" });
 	state = "archived";
 	await runtime.operation("handoff_task", request, "director");
-	assert.equal(runtime.store().getTask("lead").owner, "director");
-	assert.equal(runtime.store().getTask("lead").repairs ?? 0, 0);
+	assert.equal(runtime.getDatabase().get("tasks", "lead").owner, "director");
+	assert.equal(runtime.getDatabase().get("tasks", "lead").repairs ?? 0, 0);
 });
 
 test("execution handoff conserves its baseline when the project's branch advances before replacement", async t => {
@@ -705,13 +715,13 @@ test("execution handoff conserves its baseline when the project's branch advance
 	commit();
 	await runtime.operation("start_goal", { ...definition, tasks: [{ ...definition.tasks[0], id: "work" }] }, "director");
 	await runtime.operation("start_task", { taskId: "work" }, "director");
-	const attemptId = runtime.store().getTask("work").currentAttemptId;
+	const attemptId = runtime.getDatabase().get("tasks", "work").currentAttemptId;
 	assert.ok(attemptId);
-	const original = runtime.store().getAttempt(attemptId);
+	const original = runtime.getDatabase().get("attempts", attemptId);
 	await runtime.operation("handoff_task", { taskId: "work", attemptId, newOwner: "replacement" }, "director");
 	commit();
 	await assert.rejects(runtime.operation("start_task", { taskId: "work" }, "replacement"), { code: "execution_base_mismatch" });
-	assert.equal(runtime.store().getTask("work").state, "ready");
+	assert.equal(runtime.getDatabase().get("tasks", "work").state, "ready");
 	const batch = record(await runtime.operation("dispatch", { taskIds: ["work"] }, "replacement"));
 	assert.ok(Array.isArray(batch.prepared));
 	const call = record(batch.prepared[0]);
@@ -728,17 +738,17 @@ test("one recorded human input wait does not suppress another coordinator's read
 		...definition, scope: { ...definition.scope, mode: "interactive" },
 		tasks: [{ ...definition.tasks[0], id: "human" }, { ...definition.tasks[0], id: "complete" }],
 	} }) }, "director");
-	const tasks = runtime.store().snapshot().tasks;
+	const tasks = runtime.getDatabase().read(Context.snapshot).tasks;
 	const human = tasks.find(task => task.id.endsWith(":human"));
 	const ready = tasks.find(task => task.id.endsWith(":complete"));
 	assert.ok(human && ready);
 	await runtime.operation("start_task", { taskId: human.id }, "director");
 	await runtime.operation("wait_task", { taskId: human.id, kind: "input", requestId: "real-native-question", reason: "A human decision" }, "director");
-	runtime.store().reassignTask(ready.id, "independent-coordinator", "director");
+	runtime.getDatabase().write(Tasks.reassignTask, ready.id, "independent-coordinator", "director");
 	const advanced = record(await runtime.operation("advance", {}, "independent-coordinator"));
 	assert.ok(Array.isArray(advanced.prepared));
 	assert.equal(advanced.prepared.length, 1);
-	assert.equal(runtime.store().getTask(human.id).waiting?.requestId, "real-native-question");
+	assert.equal(runtime.getDatabase().get("tasks", human.id).waiting?.requestId, "real-native-question");
 });
 
 for (const workers of [undefined, 1]) test(`one default job ${workers === undefined ? "dispatches independent workers in parallel" : "retains its explicit worker ceiling"}`, async t => {
@@ -762,10 +772,10 @@ for (const workers of [undefined, 1]) test(`one default job ${workers === undefi
 	assert.equal(result.blocked.length, workers === undefined ? 0 : 1);
 	if (workers !== undefined) assert.match(text(record(result.blocked[0]).code, "capacity code"), /capacity/);
 	for (const request of result.prepared) assert.equal(record(record(record(request).arguments).kickoff).mode, "autopilot");
-	assert.equal(runtime.store().snapshot().goals.length, 1);
-	assert.equal(runtime.store().snapshot().goals[0].limits.workers, workers);
-	assert.equal(runtime.store().snapshot().attempts.filter(attempt => attempt.slot).length, workers === undefined ? 2 : 1);
-	assert.equal(runtime.store().snapshot().tasks.find(task => task.id.endsWith(":complete"))?.currentAttemptId, undefined);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).goals.length, 1);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).goals[0].limits.workers, workers);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).attempts.filter(attempt => attempt.slot).length, workers === undefined ? 2 : 1);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).tasks.find(task => task.id.endsWith(":complete"))?.currentAttemptId, undefined);
 });
 
 test("invalid final acceptance and incompatible task modes roll back initial activation and job admission together", async t => {
@@ -777,8 +787,8 @@ test("invalid final acceptance and incompatible task modes roll back initial act
 		await assert.rejects(runtime.operation("start_factory", { source: factorySource(directory, { goal: {
 			...definition, scope: { ...definition.scope, mode: "interactive" }, tasks: [final],
 		} }) }, "director"), /acceptance checks|scope.mode/);
-		assert.equal(runtime.store().snapshot().factories?.length, 0);
-		assert.equal(runtime.store().snapshot().goals.length, 0);
+		assert.equal(runtime.getDatabase().read(Context.snapshot).factories?.length, 0);
+		assert.equal(runtime.getDatabase().read(Context.snapshot).goals.length, 0);
 	}
 });
 
@@ -788,8 +798,8 @@ test("source contracts preserve genuinely partial task scope instead of widening
 		...definition, scope: { ...definition.scope, mode: "interactive" },
 		tasks: [{ ...definition.tasks[0], id: "complete", scope: { paths: ["unit"] } }],
 	} }) }, "director");
-	assert.deepEqual(runtime.store().snapshot().tasks[0].scope.paths, ["unit"]);
-	assert.deepEqual(runtime.store().snapshot().tasks[0].scope.restrictions, definition.scope.restrictions);
+	assert.deepEqual(runtime.getDatabase().read(Context.snapshot).tasks[0].scope.paths, ["unit"]);
+	assert.deepEqual(runtime.getDatabase().read(Context.snapshot).tasks[0].scope.restrictions, definition.scope.restrictions);
 });
 
 test("a real bound worker is continued locally and a cap/restart resumes its same attempt without a repair debit", async t => {
@@ -797,27 +807,27 @@ test("a real bound worker is continued locally and a cap/restart resumes its sam
 	const source = factorySource(directory, { goal: { ...definition, scope: { ...definition.scope, mode: "interactive" },
 		limits: { workers: 1, repairs: 0 }, tasks: [{ ...definition.tasks[0], id: "complete" }] } });
 	await runtime.operation("start_factory", { source }, "director");
-	const task = runtime.store().snapshot().tasks[0];
-	const attempt = runtime.store().prepareAttempt(task.id, "director");
-	runtime.store().issueAttempt(attempt.id, "director", `create:${attempt.id}`, {});
-	runtime.store().bindAttempt(attempt.id, "worker", "director", { session_id: "worker" });
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
+	const attempt = runtime.getDatabase().write(Attempts.prepareAttempt, task.id, "director");
+	runtime.getDatabase().write(Effects.issueAttempt, attempt.id, "director", `create:${attempt.id}`, {});
+	runtime.getDatabase().write(Attempts.bindAttempt, attempt.id, "worker", "director", { session_id: "worker" });
 	assert.equal(runtime.agentStop("worker")?.decision, "block");
 	runtime.nativeAbort({ stopReason: "agent_stop_block_limit" }, "worker");
-	assert.equal(runtime.store().getTask(task.id).state, "blocked");
-	assert.equal(runtime.store().getAttempt(attempt.id).slot, false);
+	assert.equal(runtime.getDatabase().get("tasks", task.id).state, "blocked");
+	assert.equal(runtime.getDatabase().get("attempts", attempt.id).slot, false);
 	await runtime.operation("start_factory", { source }, "director");
 	const resumed = record(await runtime.operation("resume_task", { taskId: task.id }, "worker"));
 	assert.equal(resumed.id, attempt.id);
-	assert.equal(runtime.store().getTask(task.id).repairs, undefined);
-	assert.equal(runtime.store().getAttempt(attempt.id).slot, true);
+	assert.equal(runtime.getDatabase().get("tasks", task.id).repairs, undefined);
+	assert.equal(runtime.getDatabase().get("attempts", attempt.id).slot, true);
 });
 
 test("recurring source activation validates its template but admits no synthetic seed job", async t => {
 	const { runtime, directory } = fixture(t, authorizedFactory);
 	await runtime.operation("start_factory", { source: factorySource(directory, { source: issuePolicy }) }, "director");
-	assert.equal(runtime.store().snapshot().factories?.[0].state, "active");
-	assert.equal(runtime.store().snapshot().goals.length, 0);
-	assert.equal(runtime.store().snapshot().tasks.length, 0);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).factories?.[0].state, "active");
+	assert.equal(runtime.getDatabase().read(Context.snapshot).goals.length, 0);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).tasks.length, 0);
 });
 
 test("multi-job intake retains policy overrides and reports them without claiming user or runtime provenance", async t => {
@@ -838,8 +848,8 @@ test("multi-job intake retains policy overrides and reports them without claimin
 	const context = record(await runtime.operation("get_context", {}, "director"));
 	assert.ok(Array.isArray(context.factories));
 	assert.deepEqual(record(context.factories[0]).settings, expected);
-	assert.equal(runtime.store().snapshot().goals.length, 2);
-	for (const goal of runtime.store().snapshot().goals) assert.deepEqual(goal.limits, { workers: 1, repairs: 0 });
+	assert.equal(runtime.getDatabase().read(Context.snapshot).goals.length, 2);
+	for (const goal of runtime.getDatabase().read(Context.snapshot).goals) assert.deepEqual(goal.limits, { workers: 1, repairs: 0 });
 });
 
 test("trusted source content is deduplicated across concurrent ingress and comment-only updates", async t => {
@@ -851,7 +861,7 @@ test("trusted source content is deduplicated across concurrent ingress and comme
 	assert.equal(responses.filter(value => record(value).replay === false).length, 1);
 	event = { ...event, updated_at: "2026-02-01T00:00:00Z" };
 	assert.equal(record(await runtime.operation("ingest", args, "director")).replay, true);
-	assert.equal(runtime.store().snapshot().goals.length, 1);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).goals.length, 1);
 });
 
 test("untrusted authors and last editors cannot consume source admission or an active-job allowance", async t => {
@@ -861,7 +871,7 @@ test("untrusted authors and last editors cannot consume source admission or an a
 	await assert.rejects(runtime.operation("ingest", { factoryId: "fixture-factory", eventId: 1 }, "director"), /author\/editor policy/);
 	event = { ...event, user: { login: "trusted" }, editor: { login: "untrusted" } };
 	await assert.rejects(runtime.operation("ingest", { factoryId: "fixture-factory", eventId: 1 }, "director"), /author\/editor policy/);
-	assert.equal(runtime.store().snapshot().goals.length, 0);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).goals.length, 0);
 });
 
 test("distinct source events respect the factory-wide active-job bound; settled cancellation is not delivery", async t => {
@@ -871,10 +881,10 @@ test("distinct source events respect the factory-wide active-job bound; settled 
 	await assert.rejects(runtime.operation("ingest", { factoryId: "fixture-factory", eventId: 2 }, "director"), /active-job bound/);
 	const goalId = text(record(first.goal).id, "first job");
 	await runtime.operation("cancel_job", { goalId }, "director");
-	assert.equal(runtime.store().advance("director", goalId)[0].cancelled, true);
-	assert.equal(runtime.store().advance("director", goalId)[0].delivered, false);
+	assert.equal(runtime.getDatabase().read(Jobs.jobActions, "director", goalId)[0].cancelled, true);
+	assert.equal(runtime.getDatabase().read(Jobs.jobActions, "director", goalId)[0].delivered, false);
 	await runtime.operation("ingest", { factoryId: "fixture-factory", eventId: 2 }, "director");
-	assert.equal(runtime.store().snapshot().goals.length, 2);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).goals.length, 2);
 });
 
 test("paged intake retains deferred events, then moves only its actual provider cursor after capacity clears", async t => {
@@ -890,13 +900,13 @@ test("paged intake retains deferred events, then moves only its actual provider 
 	assert.ok(Array.isArray(first.jobs) && Array.isArray(first.blocked));
 	assert.equal(first.jobs.length, 1);
 	assert.equal(record(first.blocked[0]).code, "factory_capacity");
-	assert.equal(runtime.store().factory("fixture-factory", "director").sourceCursor, undefined);
-	await runtime.operation("cancel_job", { goalId: runtime.store().snapshot().goals[0].id }, "director");
+	assert.equal(runtime.getDatabase().read(Jobs.factory, "fixture-factory", "director").sourceCursor, undefined);
+	await runtime.operation("cancel_job", { goalId: runtime.getDatabase().read(Context.snapshot).goals[0].id }, "director");
 	await runtime.operation("poll", args, "director");
-	assert.equal(runtime.store().factory("fixture-factory", "director").sourceCursor, "native-next-page");
+	assert.equal(runtime.getDatabase().read(Jobs.factory, "fixture-factory", "director").sourceCursor, "native-next-page");
 	await runtime.operation("poll", args, "director");
 	assert.equal(seen[2].cursor, "native-next-page");
-	assert.equal(runtime.store().snapshot().goals.length, 2);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).goals.length, 2);
 });
 
 test("an in-flight native source observation cannot admit work after pause and a newer explicit restart", async t => {
@@ -911,7 +921,7 @@ test("an in-flight native source observation cannot admit work after pause and a
 	assert.ok(finish);
 	finish(sourceEvent);
 	await assert.rejects(pending, /revoked activation/);
-	assert.equal(runtime.store().snapshot().goals.length, 0);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).goals.length, 0);
 });
 
 for (const stage of ["local", "prepared", "issued", "referenced"]) test(`job acceptance retires only unused reservations: ${stage}`, async t => {
@@ -920,7 +930,7 @@ for (const stage of ["local", "prepared", "issued", "referenced"]) test(`job acc
 		...definition, scope: { ...definition.scope, mode: "interactive" },
 		tasks: ["alternative", "complete"].map(id => ({ ...definition.tasks[0], id })),
 	} }) }, "director");
-	const [alternative, complete] = runtime.store().snapshot().tasks;
+	const [alternative, complete] = runtime.getDatabase().read(Context.snapshot).tasks;
 	if (stage === "referenced") await runtime.operation("start_goal", { ...definition, tasks: [
 		{ ...definition.tasks[0], inputs: [{ taskId: alternative.id, output: "analysis" }] },
 	] }, "consumer");
@@ -933,18 +943,18 @@ for (const stage of ["local", "prepared", "issued", "referenced"]) test(`job acc
 		if (stage === "issued") runtime.pre("create_session", creation.arguments, "director", "optional-create");
 	}
 	await acceptInline(runtime, complete.id);
-	const status = runtime.store().advance("director", complete.goalId)[0];
+	const status = runtime.getDatabase().read(Jobs.jobActions, "director", complete.goalId)[0];
 	assert.equal(status.delivered, true);
-	const factory = runtime.store().factory(status.factoryId, "director");
-	const goal = runtime.store().getGoal(complete.goalId);
-	const admitNext = () => runtime.store().admitFactoryJob({ ...goal, id: "next-job" }, [{
+	const factory = runtime.getDatabase().read(Jobs.factory, status.factoryId, "director");
+	const goal = runtime.getDatabase().get("goals", complete.goalId);
+	const admitNext = () => runtime.getDatabase().write(Jobs.admitFactoryJob, { ...goal, id: "next-job" }, [{
 		...complete, id: "next-completion", inputs: [], checks: complete.checks,
 	}], factory.id, "next-completion", "director", factory.generation);
 	assert.equal(status.settled, stage !== "issued" && stage !== "referenced");
 	if (stage === "issued" || stage === "referenced") {
 		assert.throws(admitNext, { code: "factory_capacity" });
 		assert.ok(creation);
-		assert.equal(runtime.store().getEffect(text(creation.effectId, "create effect")).state, stage === "issued" ? "issued" : "prepared");
+		assert.equal(runtime.getDatabase().get("effects", text(creation.effectId, "create effect")).state, stage === "issued" ? "issued" : "prepared");
 	} else {
 		assert.equal(admitNext().tasks[0].id, "next-completion");
 		if (creation) assert.throws(() => runtime.pre("create_session", creation.arguments, "director", "retired"), { code: "creation_retired" });
@@ -1000,7 +1010,7 @@ test("empty captured knowledge stays valid during activation, dispatch and reope
 	runtime.close();
 	const reopened = createRuntime({ directory, log: message => { throw new Error(message); }, ...authorizedFactory });
 	t.after(() => reopened.close());
-	assert.equal(reopened.store().snapshot().tasks.length, 1);
+	assert.equal(reopened.getDatabase().read(Context.snapshot).tasks.length, 1);
 });
 
 test("factory work missing its admitted snapshot is rejected without reconstructing or rewriting native work", async t => {
@@ -1008,12 +1018,12 @@ test("factory work missing its admitted snapshot is rejected without reconstruct
 	await runtime.operation("start_factory", { source: factorySource(directory, { charters: [{
 		name: "Reviewer", taskIds: ["complete"], agent: "declared-specialist", context: ["Captured charter"], knowledgeFiles: [],
 	}] }) }, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	const batch = record(await runtime.operation("dispatch", {}, "director"));
 	assert.ok(Array.isArray(batch.prepared));
-	const original = runtime.store().getTask(task.id);
-	const effects = runtime.store().effectsForAttempt(text(original.currentAttemptId, "attempt"));
-	const databasePath = runtime.store().databasePath;
+	const original = runtime.getDatabase().get("tasks", task.id);
+	const effects = runtime.getDatabase().read(Effects.effectsForAttempt, text(original.currentAttemptId, "attempt"));
+	const databasePath = runtime.getDatabase().databasePath;
 	runtime.close();
 	const db = new DatabaseSync(databasePath);
 	const { dispatch: _snapshot, ...legacy } = original;
@@ -1021,13 +1031,13 @@ test("factory work missing its admitted snapshot is rejected without reconstruct
 	db.close();
 	const resumed = createRuntime({ directory, log: message => { throw new Error(message); }, ...authorizedFactory });
 	t.after(() => resumed.close());
-	assert.deepEqual(resumed.store().getTask(task.id), legacy);
-	assert.deepEqual(resumed.store().effectsForAttempt(text(original.currentAttemptId, "attempt")), effects);
+	assert.deepEqual(resumed.getDatabase().get("tasks", task.id), legacy);
+	assert.deepEqual(resumed.getDatabase().read(Effects.effectsForAttempt, text(original.currentAttemptId, "attempt")), effects);
 	const rejected = record(await resumed.operation("dispatch", {}, "director"));
 	assert.deepEqual(rejected.prepared, []);
 	assert.ok(Array.isArray(rejected.blocked));
 	assert.equal(record(rejected.blocked[0]).code, "assignment_snapshot_required");
-	assert.deepEqual(resumed.store().effectsForAttempt(text(original.currentAttemptId, "attempt")), effects);
+	assert.deepEqual(resumed.getDatabase().read(Effects.effectsForAttempt, text(original.currentAttemptId, "attempt")), effects);
 });
 
 test("delayed native observations use canonical admission order rather than command completion time", async t => {
@@ -1036,7 +1046,7 @@ test("delayed native observations use canonical admission order rather than comm
 	writeFileSync(allowed, "");
 	await runtime.operation("start_goal", { ...definition, tasks: [{ ...definition.tasks[0],
 		checks: [{ ...definition.tasks[0].checks[0], command: `test -f ${JSON.stringify(allowed)}` }] }] }, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	await runtime.operation("start_task", { taskId: task.id }, "director");
 	const passing = record(await runtime.operation("prepare_check", { taskId: task.id, checkId: "behavior" }, "director"));
 	runtime.pre("bash", passing.arguments, "director", "passing-check");
@@ -1047,10 +1057,10 @@ test("delayed native observations use canonical admission order rather than comm
 	const fail = execFileSync("/bin/sh", ["-c", text(record(failing.arguments).command, "command")], { encoding: "utf8" });
 	runtime.post("bash", failing.arguments, { resultType: "success", textResultForLlm: fail }, "director");
 	runtime.post("bash", passing.arguments, { resultType: "success", textResultForLlm: pass }, "director");
-	const attemptId = text(runtime.store().getTask(task.id).currentAttemptId, "attempt");
-	const canonical = runtime.store().evidenceForAttempt(attemptId);
+	const attemptId = text(runtime.getDatabase().get("tasks", task.id).currentAttemptId, "attempt");
+	const canonical = runtime.getDatabase().read(Results.evidenceForAttempt, attemptId);
 	assert.deepEqual(canonical.map(item => item.outcome), ["failed", "passed"]);
-	assert.deepEqual(admittedEvidence(runtime.store(), attemptId), canonical);
+	assert.deepEqual(admittedEvidence(runtime.getDatabase(), attemptId), canonical);
 	assert.equal(record(await runtime.operation("report_result", { taskId: task.id, state: "done",
 		summary: "Latest admitted evaluation passed" }, "director")).promoted, true);
 });
@@ -1077,8 +1087,8 @@ test("grain generation pins an implementation-free commit and excludes implicit 
 			specification: references[0], evaluators: [references[1]], boundary: [references[2]], context: [] }],
 	});
 	await runtime.operation("start_factory", { source }, "director");
-	const task = runtime.store().snapshot().tasks[0];
-	runtime.store().recordLesson({ goalId: task.goalId, workType: task.workType, summary: "PRIOR_IMPLEMENTATION_DETAILS", references: ["fixture:history"] }, "director");
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
+	runtime.getDatabase().write(Feedback.recordLesson, { goalId: task.goalId, workType: task.workType, summary: "PRIOR_IMPLEMENTATION_DETAILS", references: ["fixture:history"] }, "director");
 	const prepared = record(await runtime.operation("dispatch", { taskIds: [task.id] }, "director"));
 	assert.ok(Array.isArray(prepared.prepared));
 	const args = record(record(prepared.prepared[0]).arguments);
@@ -1095,10 +1105,10 @@ test("completion sealing prevents new execution of an unused alternative until e
 		...definition, scope: { ...definition.scope, mode: "interactive" },
 		tasks: ["alternative", "complete"].map(id => ({ ...definition.tasks[0], id })),
 	} }) }, "director");
-	const [alternative, complete] = runtime.store().snapshot().tasks;
+	const [alternative, complete] = runtime.getDatabase().read(Context.snapshot).tasks;
 	await acceptInline(runtime, complete.id);
 	await assert.rejects(runtime.operation("start_task", { taskId: alternative.id }, "director"), { code: "job_closed" });
-	assert.equal(runtime.store().advance("director", complete.goalId)[0].settled, true);
+	assert.equal(runtime.getDatabase().read(Jobs.jobActions, "director", complete.goalId)[0].settled, true);
 });
 
 test("paused recorded ordinary commands are denied by native hooks without denying unrelated shell work", async t => {
@@ -1109,7 +1119,7 @@ test("paused recorded ordinary commands are denied by native hooks without denyi
 	await hooks.onPreToolUse({ ...native, toolName: "foundry_start_factory", toolArgs: {}, toolCallId: "activate",
 		workingDirectory: directory }, actor);
 	await runtime.operation("start_factory", { source: factorySource(directory) }, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	await runtime.operation("start_task", { taskId: task.id }, "director");
 	const prepared = record(await runtime.operation("prepare_command", { taskId: task.id, command: "echo recorded" }, "director"));
 	runtime.nativeAbort({ reason: "user_initiated" }, "director");
@@ -1128,7 +1138,7 @@ test("explicit aggregate repair allowance is shared by independent descendants w
 		tasks: ["one", "complete"].map(id => ({ ...definition.tasks[0], id,
 			checks: [{ ...definition.tasks[0].checks[0], command: "node -e 'process.exit(1)'" }] })),
 	} }) }, "director");
-	const [one, complete] = runtime.store().snapshot().tasks;
+	const [one, complete] = runtime.getDatabase().read(Context.snapshot).tasks;
 	for (const task of [one, complete]) await runtime.operation("start_task", { taskId: task.id }, "director");
 	for (const [index, task] of [one, complete].entries()) {
 		const prepared = record(await runtime.operation("prepare_check", { taskId: task.id, checkId: "behavior" }, "director"));
@@ -1139,9 +1149,9 @@ test("explicit aggregate repair allowance is shared by independent descendants w
 		assert.equal(record(result.continuation).state, index === 0 ? "running" : "blocked");
 		if (index === 1) assert.equal(record(result.continuation).code, "repair_limit");
 	}
-	assert.equal(runtime.store().snapshot().completions?.[0].delivered, false);
-	assert.equal(runtime.store().getTask(complete.id).state, "failed");
-	assert.equal(runtime.store().getTask(complete.id).repairs, undefined);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).completions?.[0].delivered, false);
+	assert.equal(runtime.getDatabase().get("tasks", complete.id).state, "failed");
+	assert.equal(runtime.getDatabase().get("tasks", complete.id).repairs, undefined);
 });
 
 /** @param {import("./model.d.ts").Json} [initial] */
@@ -1177,15 +1187,15 @@ test("heartbeat uses observed same-session casing, binds native identity, and cl
 	await runtime.operation("start_factory", { source: factorySource(directory) }, "director");
 	const args = { factoryId: "fixture-factory", everyMinutes: 1 };
 	await runtime.operation("set_heartbeat", args, "director");
-	const factory = runtime.store().factory("fixture-factory", "director");
+	const factory = runtime.getDatabase().read(Jobs.factory, "fixture-factory", "director");
 	assert.equal(factory.heartbeat?.state, "bound");
 	assert.equal(factory.heartbeat?.id, "observed-native-automation");
 	assert.match(factory.heartbeat?.request.prompt ?? "", /never activate or restart/);
 	await runtime.operation("set_heartbeat", args, "director");
 	assert.equal(scheduler.calls.filter(call => call.name === "save_session_automation").length, 1);
 	await runtime.operation("pause_factory", { factoryId: "fixture-factory" }, "director");
-	assert.equal(runtime.store().factory("fixture-factory", "director").state, "paused");
-	assert.equal(runtime.store().factory("fixture-factory", "director").heartbeat, undefined);
+	assert.equal(runtime.getDatabase().read(Jobs.factory, "fixture-factory", "director").state, "paused");
+	assert.equal(runtime.getDatabase().read(Jobs.factory, "fixture-factory", "director").heartbeat, undefined);
 	assert.deepEqual(record(scheduler.calls.filter(call => call.name === "save_session_automation")[1].args), { clear: true });
 });
 
@@ -1200,7 +1210,7 @@ test("unrelated or externally changed native automations are never deliberately 
 	await runtime.operation("set_heartbeat", args, "director");
 	scheduler.replace({ id: "observed-native-automation", prompt: "Changed by the user" });
 	await assert.rejects(runtime.operation("pause_factory", { factoryId: "fixture-factory" }, "director"), { code: "heartbeat_conflict" });
-	assert.equal(runtime.store().factory("fixture-factory", "director").state, "paused");
+	assert.equal(runtime.getDatabase().read(Jobs.factory, "fixture-factory", "director").state, "paused");
 	assert.equal(scheduler.calls.filter(call => call.name === "save_session_automation").length, 1);
 });
 
@@ -1214,9 +1224,9 @@ test("lost native schedule acknowledgment is reconciled from actual ownership in
 	await runtime.operation("start_factory", { source: factorySource(directory) }, "director");
 	const args = { factoryId: "fixture-factory", everyMinutes: 1 };
 	await assert.rejects(runtime.operation("set_heartbeat", args, "director"), /Lost native return/);
-	assert.equal(runtime.store().factory("fixture-factory", "director").heartbeat?.state, "uncertain");
+	assert.equal(runtime.getDatabase().read(Jobs.factory, "fixture-factory", "director").heartbeat?.state, "uncertain");
 	await runtime.operation("set_heartbeat", args, "director");
-	assert.equal(runtime.store().factory("fixture-factory", "director").heartbeat?.state, "bound");
+	assert.equal(runtime.getDatabase().read(Jobs.factory, "fixture-factory", "director").heartbeat?.state, "bound");
 	assert.equal(scheduler.calls.filter(call => call.name === "save_session_automation").length, 1);
 });
 
@@ -1232,9 +1242,9 @@ test("directory changes during native schedule save preserve uncertainty and exp
 	await assert.rejects(runtime.operation("set_heartbeat", { factoryId: "fixture-factory", everyMinutes: 1 }, "director"),
 		{ code: "factory_context_changed", message: /observed-native-automation/ });
 	runtime.setDirectory(directory);
-	assert.equal(runtime.store().factory("fixture-factory", "director").heartbeat?.state, "uncertain");
+	assert.equal(runtime.getDatabase().read(Jobs.factory, "fixture-factory", "director").heartbeat?.state, "uncertain");
 	await runtime.operation("set_heartbeat", { factoryId: "fixture-factory", everyMinutes: 1 }, "director");
-	assert.equal(runtime.store().factory("fixture-factory", "director").heartbeat?.state, "bound");
+	assert.equal(runtime.getDatabase().read(Jobs.factory, "fixture-factory", "director").heartbeat?.state, "bound");
 	assert.equal(scheduler.calls.filter(call => call.name === "save_session_automation").length, 1);
 });
 
@@ -1254,7 +1264,7 @@ test("pause during native heartbeat save fences admission and retains the return
 	runtime.nativeAbort({ reason: "user_initiated" }, "director");
 	finish(undefined);
 	await assert.rejects(pending, { code: "stale_activation" });
-	const factory = runtime.store().factory("fixture-factory", "director");
+	const factory = runtime.getDatabase().read(Jobs.factory, "fixture-factory", "director");
 	assert.equal(factory.state, "paused");
 	assert.equal(factory.heartbeat?.state, "uncertain");
 	assert.equal(factory.heartbeat?.id, "observed-native-automation");
@@ -1278,27 +1288,27 @@ test("an explicit restart during heartbeat inspection prevents a stale pause fro
 	await runtime.operation("set_heartbeat", { factoryId: "fixture-factory", everyMinutes: 1 }, "director");
 	restartNextRead = true;
 	await assert.rejects(runtime.operation("pause_factory", { factoryId: "fixture-factory" }, "director"), { code: "stale_activation" });
-	assert.equal(runtime.store().factory("fixture-factory", "director").state, "active");
+	assert.equal(runtime.getDatabase().read(Jobs.factory, "fixture-factory", "director").state, "active");
 	assert.equal(scheduler.calls.filter(call => call.name === "save_session_automation").length, 1);
 });
 
 test("continuation cap retains an unsettled command, then releases only its actual settled execution capacity", async t => {
 	const { runtime, directory } = fixture(t, authorizedFactory);
 	await runtime.operation("start_factory", { source: factorySource(directory) }, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	await runtime.operation("start_task", { taskId: task.id }, "director");
 	runtime.pre("bash", { command: "sleep 1", shellId: "cap-process" }, "director", "cap-native-call");
 	runtime.nativeAbort({ stopReason: "agent_stop_block_limit" }, "director");
-	const id = text(runtime.store().getTask(task.id).currentAttemptId, "attempt");
-	assert.equal(runtime.store().getAttempt(id).slot, true);
-	assert.equal(runtime.store().getTask(task.id).state, "running");
+	const id = text(runtime.getDatabase().get("tasks", task.id).currentAttemptId, "attempt");
+	assert.equal(runtime.getDatabase().get("attempts", id).slot, true);
+	assert.equal(runtime.getDatabase().get("tasks", task.id).state, "running");
 	runtime.toolComplete({ toolCallId: "cap-native-call", success: true, shellExecution: { exitCode: 0 } }, "director");
-	assert.equal(runtime.store().getAttempt(id).slot, false);
-	assert.equal(runtime.store().getTask(task.id).state, "blocked");
-	assert.equal(runtime.store().getTask(task.id).waiting?.reason, "factory_paused");
-	assert.equal(runtime.store().getTask(task.id).waiting?.kind, "factory");
-	assert.equal(runtime.store().getTask(task.id).waiting?.cause, "paused");
-	assert.equal(runtime.store().evidenceForAttempt(id).length, 0);
+	assert.equal(runtime.getDatabase().get("attempts", id).slot, false);
+	assert.equal(runtime.getDatabase().get("tasks", task.id).state, "blocked");
+	assert.equal(runtime.getDatabase().get("tasks", task.id).waiting?.reason, "factory_paused");
+	assert.equal(runtime.getDatabase().get("tasks", task.id).waiting?.kind, "factory");
+	assert.equal(runtime.getDatabase().get("tasks", task.id).waiting?.cause, "paused");
+	assert.equal(runtime.getDatabase().read(Results.evidenceForAttempt, id).length, 0);
 });
 
 /** @param {number} sequence @param {number|undefined} credits @param {string} [id] */
@@ -1316,7 +1326,7 @@ function usageTurn() {
 test("native accounting keeps missing billing unknown, refines explicit zero and survives reload without double-debit", async t => {
 	const { runtime, directory } = fixture(t);
 	await runtime.operation("start_goal", definition, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	await runtime.operation("start_task", { taskId: task.id }, "director");
 	runtime.usageTurn(usageTurn(), "director");
 	runtime.usage(usageEvent(1, undefined), "director");
@@ -1327,8 +1337,8 @@ test("native accounting keeps missing billing unknown, refines explicit zero and
 	runtime.usage(usageEvent(1, 0, "completed-zero"), "director");
 	assert.equal(runtime.context({ taskId: task.id }, "director").accounting.byGoal[0].reportedCredits, 0);
 	const charged = runtime.usage(usageEvent(2, 2), "director");
-	assert.equal(charged?.attemptId, runtime.store().getTask(task.id).currentAttemptId);
-	assert.equal(runtime.store().getGoal(task.goalId).credits, 2);
+	assert.equal(charged?.attemptId, runtime.getDatabase().get("tasks", task.id).currentAttemptId);
+	assert.equal(runtime.getDatabase().get("goals", task.goalId).credits, 2);
 	runtime.close();
 	const restarted = createRuntime({ directory, log: message => { throw new Error(message); } });
 	t.after(() => restarted.close());
@@ -1341,7 +1351,7 @@ test("native accounting keeps missing billing unknown, refines explicit zero and
 	assert.equal(accounting.captureComplete, false);
 	assert.equal(accounting.complete, false);
 	assert.throws(() => restarted.usage(usageEvent(2, 3), "director"), /cannot change/);
-	assert.equal(restarted.store().getGoal(task.goalId).credits, 2);
+	assert.equal(restarted.getDatabase().get("goals", task.goalId).credits, 2);
 });
 
 test("shared native calls debit a known goal once and leave cross-goal attribution explicitly unallocated", async t => {
@@ -1349,31 +1359,31 @@ test("shared native calls debit a known goal once and leave cross-goal attributi
 	await runtime.operation("start_goal", { ...definition, tasks: ["one", "two"].map(title => ({
 		...definition.tasks[0], title,
 	})) }, "director");
-	const tasks = runtime.store().snapshot().tasks;
+	const tasks = runtime.getDatabase().read(Context.snapshot).tasks;
 	for (const task of tasks) await runtime.operation("start_task", { taskId: task.id }, "director");
 	runtime.usageTurn(usageTurn(), "director");
 	const shared = runtime.usage(usageEvent(1, 4), "director");
 	assert.equal(shared?.goalId, tasks[0].goalId);
 	assert.equal(shared?.attemptId, undefined);
-	assert.equal(runtime.store().getGoal(tasks[0].goalId).credits, 4);
+	assert.equal(runtime.getDatabase().get("goals", tasks[0].goalId).credits, 4);
 	await runtime.operation("start_goal", definition, "director");
-	const other = runtime.store().snapshot().tasks.at(-1);
+	const other = runtime.getDatabase().read(Context.snapshot).tasks.at(-1);
 	assert.ok(other);
 	await runtime.operation("start_task", { taskId: other.id }, "director");
 	runtime.usageTurn(usageTurn(), "director");
 	assert.equal(runtime.usage(usageEvent(2, 7), "director")?.goalId, undefined);
-	const accounting = runtime.store().accounting("director", [tasks[0].goalId, other.goalId]);
+	const accounting = runtime.getDatabase().read(Usage.accounting, "director", [tasks[0].goalId, other.goalId]);
 	assert.equal(accounting.unallocatedReceipts, 1);
 	assert.equal(accounting.unallocatedCredits, 7);
-	assert.equal(runtime.store().getGoal(tasks[0].goalId).credits, 4);
-	assert.equal(runtime.store().getGoal(other.goalId).credits, 0);
+	assert.equal(runtime.getDatabase().get("goals", tasks[0].goalId).credits, 4);
+	assert.equal(runtime.getDatabase().get("goals", other.goalId).credits, 0);
 	assert.equal(accounting.byGoal[1].reportedCredits, null);
 });
 
 test("idle turns have one durable boundary while late charges and receipt refinements retain their actual work", async t => {
 	const { runtime, directory } = fixture(t);
 	await runtime.operation("start_goal", { ...definition, tasks: [{ ...definition.tasks[0], checks: [] }] }, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	const attempt = record(await runtime.operation("start_task", { taskId: task.id }, "director"));
 	const time = Date.now();
 	const at = (/** @type {number} */ offset) => new Date(time + offset).toISOString();
@@ -1394,11 +1404,11 @@ test("idle turns have one durable boundary while late charges and receipt refine
 	assert.equal(late?.attemptId, attempt.id);
 	resumed.usageTurn({ ...usageTurn(), timestamp: at(90) }, "director");
 	assert.equal(resumed.usage({ ...usageEvent(999, 20), timestamp: at(91) }, "director"), undefined);
-	const db = new DatabaseSync(resumed.store().databasePath, { readOnly: true });
+	const db = new DatabaseSync(resumed.getDatabase().databasePath, { readOnly: true });
 	assert.equal(db.prepare("SELECT count(*) AS n FROM usage_affinity").get()?.n, 2);
 	assert.equal(db.prepare("SELECT count(*) AS n FROM native_usage").get()?.n, 2);
 	db.close();
-	assert.equal(resumed.store().getGoal(task.goalId).credits, 5);
+	assert.equal(resumed.getDatabase().get("goals", task.goalId).credits, 5);
 });
 
 test("an attached session with no executing assignment records one idle boundary rather than every unrelated turn", async t => {
@@ -1408,7 +1418,7 @@ test("an attached session with no executing assignment records one idle boundary
 		runtime.usageTurn(usageTurn(), "director");
 		assert.equal(runtime.usage(usageEvent(index, 1), "director"), undefined);
 	}
-	const db = new DatabaseSync(runtime.store().databasePath, { readOnly: true });
+	const db = new DatabaseSync(runtime.getDatabase().databasePath, { readOnly: true });
 	assert.equal(db.prepare("SELECT count(*) AS n FROM usage_affinity").get()?.n, 1);
 	assert.equal(db.prepare("SELECT count(*) AS n FROM native_usage").get()?.n, 0);
 	db.close();
@@ -1417,36 +1427,36 @@ test("an attached session with no executing assignment records one idle boundary
 test("a completed assignment token is removed at the idle boundary without losing pre-binding charges", async t => {
 	const { runtime } = fixture(t);
 	await runtime.operation("start_goal", { ...definition, tasks: [{ ...definition.tasks[0], checks: [] }] }, "director");
-	const task = runtime.store().snapshot().tasks[0];
-	const prepared = runtime.store().prepareAttempt(task.id, "director");
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
+	const prepared = runtime.getDatabase().write(Attempts.prepareAttempt, task.id, "director");
 	runtime.beginUsage("worker", prepared.token);
 	assert.equal(runtime.usage(usageEvent(1, 2), "worker")?.goalId, undefined);
-	runtime.store().issueAttempt(prepared.id, "director", `create:${prepared.id}`, {});
-	runtime.store().bindAttempt(prepared.id, "worker", "director", { id: "worker" });
-	assert.equal(runtime.store().getGoal(task.goalId).credits, 2);
+	runtime.getDatabase().write(Effects.issueAttempt, prepared.id, "director", `create:${prepared.id}`, {});
+	runtime.getDatabase().write(Attempts.bindAttempt, prepared.id, "worker", "director", { id: "worker" });
+	assert.equal(runtime.getDatabase().get("goals", task.goalId).credits, 2);
 	await runtime.operation("report_result", { taskId: task.id, summary: "Finished" }, "worker");
 	const boundary = runtime.usageTurn(usageTurn(), "worker");
 	assert.equal(boundary?.token, undefined);
 	assert.deepEqual(boundary?.attemptIds, []);
 	assert.equal(runtime.usage(usageEvent(2, 7), "worker"), undefined);
-	assert.equal(runtime.store().getGoal(task.goalId).credits, 2);
+	assert.equal(runtime.getDatabase().get("goals", task.goalId).credits, 2);
 });
 
 test("focused accounting excludes another goal's lifetime charges but retains correlated cross-goal ambiguity", async t => {
 	const { runtime } = fixture(t);
 	await runtime.operation("start_goal", definition, "director");
-	const first = runtime.store().snapshot().tasks[0];
+	const first = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	await runtime.operation("start_task", { taskId: first.id }, "director");
 	runtime.usageTurn(usageTurn(), "director");
 	runtime.usage(usageEvent(1, 2), "director");
 	await runtime.operation("start_goal", definition, "director");
-	const second = runtime.store().snapshot().tasks.at(-1);
+	const second = runtime.getDatabase().read(Context.snapshot).tasks.at(-1);
 	assert.ok(second);
 	await runtime.operation("start_task", { taskId: second.id }, "director");
 	runtime.usageTurn(usageTurn(), "director");
 	runtime.usage(usageEvent(2, 3), "director");
-	runtime.store().recordNativeUsage({ id: "second-only-charge", nativeId: "director", sourceSessionId: "director",
-		aliases: [], attemptIds: [text(runtime.store().getTask(second.id).currentAttemptId, "second attempt")],
+	runtime.getDatabase().write(Usage.recordNativeUsage, { id: "second-only-charge", nativeId: "director", sourceSessionId: "director",
+		aliases: [], attemptIds: [text(runtime.getDatabase().get("tasks", second.id).currentAttemptId, "second attempt")],
 		credits: 100, billing: "complete" }, "director");
 	const focused = runtime.context({ taskId: first.id }, "director").accounting;
 	assert.equal(focused.capturedReceipts, 2);
@@ -1479,42 +1489,42 @@ test("a native checked failure records and fairly starts one same-worker repair 
 			command: "node -e 'process.exit(require(\"node:fs\").existsSync(\"fixed\") ? 0 : 1)'",
 		}],
 	}] }, "director");
-	const task = runtime.store().snapshot().tasks[0];
-	const initial = runtime.store().startLocalTask(task.id, "director");
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
+	const initial = runtime.getDatabase().write(Attempts.startLocalTask, task.id, "director");
 	runtime.usageTurn(usageTurn(), "director");
 	const oldCharge = usageEvent(1, 2);
 	const failed = record(await runtime.operation("run_check", { taskId: task.id, checkId: "behavior", repair: true }, "director"));
 	const failedResult = record(failed.result);
-	const fresh = runtime.store().getAttempt(text(record(record(failed.continuation).attempt).id, "fresh attempt"));
+	const fresh = runtime.getDatabase().get("attempts", text(record(record(failed.continuation).attempt).id, "fresh attempt"));
 	assert.equal(failedResult.state, "failed");
 	assert.equal(failedResult.attemptId, initial.id);
 	assert.equal(fresh.nativeId, initial.nativeId);
 	assert.notEqual(fresh.token, initial.token);
 	assert.equal(fresh.repairOf, initial.id);
 	assert.equal(fresh.state, "running");
-	assert.equal(runtime.store().getAttempt(initial.id).slot, false);
-	assert.equal(runtime.store().snapshot().attempts.filter(attempt => attempt.slot).length, 1);
+	assert.equal(runtime.getDatabase().get("attempts", initial.id).slot, false);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).attempts.filter(attempt => attempt.slot).length, 1);
 	const replay = record(await runtime.operation("report_result", { taskId: task.id, attemptId: initial.id,
 		resultId: failedResult.id, summary: failedResult.summary, repair: true }, "director"));
 	assert.equal(record(record(replay.continuation).attempt).id, fresh.id);
-	assert.equal(runtime.store().snapshot().attempts.length, 2);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).attempts.length, 2);
 	assert.equal(calls, 1);
 	runtime.usageTurn(usageTurn(), "director");
 	assert.equal(runtime.usage(oldCharge, "director")?.attemptId, initial.id);
 	assert.equal(runtime.usage(usageEvent(1, 2, "same-native-charge"), "director")?.attemptId, initial.id);
-	assert.equal(runtime.store().recordUsage(initial.id, 2, "same-native-charge", "director").credits, 2);
+	assert.equal(runtime.getDatabase().write(Usage.recordUsage, initial.id, 2, "same-native-charge", "director").credits, 2);
 	runtime.usageTurn(usageTurn(), "director");
 	assert.equal(runtime.usage(usageEvent(2, 3), "director")?.attemptId, fresh.id);
-	assert.equal(runtime.store().getGoal(task.goalId).credits, 5);
+	assert.equal(runtime.getDatabase().get("goals", task.goalId).credits, 5);
 	writeFileSync(path.join(directory, "fixed"), "");
 	await runtime.operation("run_check", { taskId: task.id, checkId: "behavior", repair: true }, "director");
 	const done = await runtime.operation("report_result", { taskId: task.id, summary: "Actual repaired behavior passed" }, "director");
 	assert.ok(done && typeof done === "object" && "verdict" in done);
 	assert.equal(done.verdict.passed, true);
-	assert.equal(runtime.store().getTask(task.id).state, "done");
+	assert.equal(runtime.getDatabase().get("tasks", task.id).state, "done");
 	assert.equal(calls, 2);
-	assert.equal(runtime.store().snapshot().effects.filter(effect => effect.kind === "create").length, 0);
-	assert.ok(runtime.store().snapshot().attempts.every(attempt => !attempt.slot));
+	assert.equal(runtime.getDatabase().read(Context.snapshot).effects.filter(effect => effect.kind === "create").length, 0);
+	assert.ok(runtime.getDatabase().read(Context.snapshot).attempts.every(attempt => !attempt.slot));
 });
 
 test("automatic repair is not blocked by another ready goal and still preserves explicit repair limits", async t => {
@@ -1530,7 +1540,7 @@ test("automatic repair is not blocked by another ready goal and still preserves 
 		await runtime.operation("start_goal", { ...definition, limits: capped ? { repairs: 0 } : {},
 			tasks: [{ ...definition.tasks[0], checks: [{ ...definition.tasks[0].checks[0], command: "node -e 'process.exit(1)'" }] }],
 		}, "director");
-		const task = runtime.store().snapshot().tasks[0];
+		const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 		await runtime.operation("start_task", { taskId: task.id }, "director");
 		if (!capped) await runtime.operation("start_goal", definition, "competitor");
 		const result = record(await runtime.operation("run_check", { taskId: task.id, checkId: "behavior", repair: true }, "director"));
@@ -1538,9 +1548,9 @@ test("automatic repair is not blocked by another ready goal and still preserves 
 		if (capped) assert.equal(record(result.continuation).code, "repair_limit");
 		assert.equal(record(result.result).state, "failed");
 		assert.equal(result.promoted, true);
-		assert.equal(runtime.store().snapshot(task.goalId).attempts.length, capped ? 1 : 2);
-		assert.equal(runtime.store().getTask(task.id).state, capped ? "failed" : "running");
-		assert.equal(runtime.store().snapshot().attempts.filter(attempt => attempt.slot).length, capped ? 0 : 1);
+		assert.equal(runtime.getDatabase().read(Context.snapshot, task.goalId).attempts.length, capped ? 1 : 2);
+		assert.equal(runtime.getDatabase().get("tasks", task.id).state, capped ? "failed" : "running");
+		assert.equal(runtime.getDatabase().read(Context.snapshot).attempts.filter(attempt => attempt.slot).length, capped ? 0 : 1);
 	}
 });
 
@@ -1557,15 +1567,15 @@ test("a pending chained check cannot reuse a previous check's failed evidence to
 	await runtime.operation("start_goal", { ...definition,
 		tasks: [{ ...definition.tasks[0], checks: [{ ...definition.tasks[0].checks[0], command: "node -e 'process.exit(1)'" }] }],
 	}, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	await runtime.operation("start_task", { taskId: task.id }, "director");
 	await runtime.operation("run_check", { taskId: task.id, checkId: "behavior" }, "director");
 	const pending = record(await runtime.operation("run_check", { taskId: task.id, checkId: "behavior", repair: true }, "director"));
 	assert.equal(pending.state, "pending-native-evidence");
-	assert.equal(runtime.store().getTask(task.id).state, "running");
-	assert.equal(runtime.store().snapshot().attempts.length, 1);
-	assert.equal(runtime.store().resultsForAttempt(text(runtime.store().getTask(task.id).currentAttemptId, "attempt")).length, 0);
-	assert.equal(runtime.store().getEffect(text(pending.effectId, "effect")).state, "issued");
+	assert.equal(runtime.getDatabase().get("tasks", task.id).state, "running");
+	assert.equal(runtime.getDatabase().read(Context.snapshot).attempts.length, 1);
+	assert.equal(runtime.getDatabase().read(Results.resultsForAttempt, text(runtime.getDatabase().get("tasks", task.id).currentAttemptId, "attempt")).length, 0);
+	assert.equal(runtime.getDatabase().get("effects", text(pending.effectId, "effect")).state, "issued");
 });
 
 /** @param {import("node:test").TestContext} t @param {Partial<Pick<Parameters<typeof createRuntime>[0], "execute"|"log">>} [hooks] */
@@ -1593,7 +1603,7 @@ async function delegatedRepairFixture(t, hooks = {}) {
 	await director.operation("start_goal", { ...definition, limits: { workers: 1, repairs: 3 },
 		tasks: [{ ...definition.tasks[0], checks: [{ ...definition.tasks[0].checks[0], command: "node -e 'process.exit(1)'" }] }],
 	}, "director");
-	const task = director.store().snapshot().tasks[0];
+	const task = director.getDatabase().read(Context.snapshot).tasks[0];
 	const dispatch = record(await director.operation("dispatch", { taskIds: [task.id] }, "director"));
 	assert.ok(Array.isArray(dispatch.prepared));
 	const args = record(dispatch.prepared[0]).arguments;
@@ -1607,16 +1617,16 @@ test("each warm repair stays quiet while exhausted repairs produce one coalesced
 	for (let index = 0; index < 3; index++) {
 		const result = record(await worker.operation("run_check", { taskId: task.id, checkId: "behavior", repair: true }, "worker"));
 		assert.equal(record(result.continuation).state, "running");
-		assert.deepEqual(director.store().pendingWakes("director"), []);
+		assert.deepEqual(director.getDatabase().read(Wakes.pendingWakes, "director"), []);
 	}
 	const exhausted = record(await worker.operation("run_check", { taskId: task.id, checkId: "behavior", repair: true }, "worker"));
 	await worker.flushNotifications();
 	assert.equal(record(exhausted.continuation).code, "repair_limit");
-	const wakes = director.store().pendingWakes("director");
+	const wakes = director.getDatabase().read(Wakes.pendingWakes, "director");
 	assert.equal(wakes.length, 1);
 	assert.equal(wakes[0].generation, 1);
 	assert.equal(wakes[0].sent, 1);
-	assert.equal(director.store().getTask(task.id).repairs, 3);
+	assert.equal(director.getDatabase().get("tasks", task.id).repairs, 3);
 	assert.equal(notifications.length, 0);
 });
 
@@ -1627,7 +1637,7 @@ test("the coordinator sends cancellation or supersession to the actual repairing
 		const freshId = text(record(record(result.continuation).attempt).id, "repair attempt");
 		if (runningCommand) worker.pre("bash", { command: "sleep 1", shellId: "worker-only" }, "worker", "worker-process");
 		if (evolve) await director.operation("evolve_task", { taskId: task.id, expectedVersion: 2,
-			checks: [...worker.store().getTask(task.id).checks, { id: "derived-observation", origin: "derived",
+			checks: [...worker.getDatabase().get("tasks", task.id).checks, { id: "derived-observation", origin: "derived",
 				requirement: "Check the changed observation", kind: "command", command: "node -e 'process.exit(0)'" }],
 		}, "director");
 		else await director.operation("cancel_task", { taskId: task.id }, "director");
@@ -1638,11 +1648,11 @@ test("the coordinator sends cancellation or supersession to the actual repairing
 		assert.ok(String(stop.args.message).includes(freshId));
 		assert.ok(String(stop.args.message).includes(evolve ? "superseded" : "cancelled"));
 		assert.equal(String(stop.args.message).includes("worker-only"), runningCommand);
-		assert.equal(director.store().getAttempt(freshId).state, "cancelled");
-		assert.equal(director.store().getAttempt(freshId).slot, runningCommand);
+		assert.equal(director.getDatabase().get("attempts", freshId).state, "cancelled");
+		assert.equal(director.getDatabase().get("attempts", freshId).slot, runningCommand);
 		if (runningCommand) {
 			worker.toolComplete({ toolCallId: "worker-process", success: true, shellExecution: { exitCode: 1 } }, "worker");
-			assert.equal(director.store().getAttempt(freshId).slot, false);
+			assert.equal(director.getDatabase().get("attempts", freshId).slot, false);
 		}
 		await director.operation("get_context", { goalId: task.goalId }, "director");
 		assert.equal(notifications.filter(item => String(item.args.message).startsWith("Foundry stop assignments:")).length, 1);
@@ -1654,15 +1664,15 @@ test("a reserved repair survives reload and cannot be dispatched or locally star
 	await worker.operation("run_check", { taskId: task.id, checkId: "behavior" }, "worker");
 	const failed = record(await worker.operation("report_result", { taskId: task.id, resultId: "recorded-failure",
 		summary: "Actual failed check" }, "worker"));
-	director.store().reassignTask(task.id, "replacement", "director");
-	const competitor = director.store().createTask({ goalId: task.goalId, title: "Own-slot competitor",
+	director.getDatabase().write(Tasks.reassignTask, task.id, "replacement", "director");
+	const competitor = director.getDatabase().write(Tasks.createTask, { goalId: task.goalId, title: "Own-slot competitor",
 		assignment: "Occupy the actual goal slot", workType: "analysis" }, "director");
-	const occupied = director.store().startLocalTask(competitor.id, "director");
+	const occupied = director.getDatabase().write(Attempts.startLocalTask, competitor.id, "director");
 	const repair = record(await worker.operation("report_result", { taskId: task.id,
 		attemptId: record(failed.result).attemptId, resultId: "recorded-failure", summary: "Actual failed check", repair: true }, "worker"));
 	assert.equal(record(repair.continuation).code, "capacity_wait");
-	assert.equal(director.store().getTask(task.id).owner, "replacement");
-	assert.equal(director.store().getTask(task.id).repairs, 1);
+	assert.equal(director.getDatabase().get("tasks", task.id).owner, "replacement");
+	assert.equal(director.getDatabase().get("tasks", task.id).repairs, 1);
 	assert.equal(worker.context({ taskId: task.id }, "worker").ready[0].id, task.id);
 	assert.ok(!director.context({ goalId: task.goalId }, "director").ready.some(item => item.id === task.id));
 	const dispatch = record(await director.operation("dispatch", { taskIds: [task.id] }, "director"));
@@ -1673,41 +1683,41 @@ test("a reserved repair survives reload and cannot be dispatched or locally star
 	const resumed = createRuntime({ directory, log: message => { throw new Error(message); } });
 	t.after(() => resumed.close());
 	assert.equal(resumed.context({ taskId: task.id }, "worker").ready[0].id, task.id);
-	director.store().recordResult({ id: "slot-freed", attemptId: occupied.id, state: "done",
+	director.getDatabase().write(Results.recordResult, { id: "slot-freed", attemptId: occupied.id, state: "done",
 		summary: "Finished actual competing unit", evidence: [], outputs: [], findings: [] }, "director");
-	assert.ok(director.store().pendingWakes("worker").some(wake => wake.relatedReasons?.includes("capacity")));
+	assert.ok(director.getDatabase().read(Wakes.pendingWakes, "worker").some(wake => wake.relatedReasons?.includes("capacity")));
 	const fresh = record(await resumed.operation("start_task", { taskId: task.id }, "worker"));
 	assert.equal(fresh.nativeId, "worker");
 	assert.equal(fresh.assignedOwner, "replacement");
-	assert.equal(director.store().getTask(task.id).owner, "replacement");
-	assert.equal(director.store().getTask(task.id).repairs, 1);
-	assert.equal(director.store().getTask(task.id).repairReservation, undefined);
+	assert.equal(director.getDatabase().get("tasks", task.id).owner, "replacement");
+	assert.equal(director.getDatabase().get("tasks", task.id).repairs, 1);
+	assert.equal(director.getDatabase().get("tasks", task.id).repairReservation, undefined);
 	const replay = record(await resumed.operation("report_result", { taskId: task.id,
 		attemptId: record(failed.result).attemptId, resultId: "recorded-failure", summary: "Actual failed check", repair: true }, "worker"));
 	assert.equal(record(record(replay.continuation).attempt).id, fresh.id);
-	assert.equal(director.store().snapshot(task.goalId).attempts.filter(attempt => attempt.taskId === task.id).length, 2);
+	assert.equal(director.getDatabase().read(Context.snapshot, task.goalId).attempts.filter(attempt => attempt.taskId === task.id).length, 2);
 });
 
 test("cancel stops multiple active units in one worker message and never wakes settled finished attempts", async t => {
 	const { director, worker, task, notifications } = await delegatedRepairFixture(t);
-	const completed = worker.store().createTask({ goalId: task.goalId, parentId: task.id, title: "Finished child",
+	const completed = worker.getDatabase().write(Tasks.createTask, { goalId: task.goalId, parentId: task.id, title: "Finished child",
 		assignment: "Finish locally", workType: "analysis" }, "worker");
-	worker.store().waitTask(task.id, "worker", { kind: "children", reason: "Delegate local work" });
-	const finished = worker.store().startLocalTask(completed.id, "worker");
-	worker.store().recordResult({ id: "finished-child", attemptId: finished.id, state: "done",
+	worker.getDatabase().write(Attempts.waitTask, task.id, "worker", { kind: "children", reason: "Delegate local work" });
+	const finished = worker.getDatabase().write(Attempts.startLocalTask, completed.id, "worker");
+	worker.getDatabase().write(Results.recordResult, { id: "finished-child", attemptId: finished.id, state: "done",
 		summary: "Finished", evidence: [], findings: [], outputs: [] }, "worker");
-	worker.store().resumeTask(task.id, "worker");
-	const active = worker.store().createTask({ goalId: task.goalId, parentId: task.id, title: "Active child",
+	worker.getDatabase().write(Attempts.resumeTask, task.id, "worker");
+	const active = worker.getDatabase().write(Tasks.createTask, { goalId: task.goalId, parentId: task.id, title: "Active child",
 		assignment: "Work locally", workType: "analysis" }, "worker");
-	worker.store().waitTask(task.id, "worker", { kind: "children", reason: "Await active child" });
-	const child = worker.store().startLocalTask(active.id, "worker");
+	worker.getDatabase().write(Attempts.waitTask, task.id, "worker", { kind: "children", reason: "Await active child" });
+	const child = worker.getDatabase().write(Attempts.startLocalTask, active.id, "worker");
 	await director.operation("cancel_task", { taskId: task.id }, "director");
 	const stops = notifications.filter(item => String(item.args.message).startsWith("Foundry stop assignments:"));
 	assert.equal(stops.length, 1);
 	assert.ok(String(stops[0].args.message).includes(child.id));
-	assert.ok(String(stops[0].args.message).includes(text(worker.store().getTask(task.id).currentAttemptId, "parent attempt")));
+	assert.ok(String(stops[0].args.message).includes(text(worker.getDatabase().get("tasks", task.id).currentAttemptId, "parent attempt")));
 	assert.ok(!String(stops[0].args.message).includes(finished.id));
-	assert.equal(worker.store().getAttempt(finished.id).state, "done");
+	assert.equal(worker.getDatabase().get("attempts", finished.id).state, "done");
 });
 
 test("an unavailable stop recipient is retained once without retrying or inventing command settlement", async t => {
@@ -1720,11 +1730,11 @@ test("an unavailable stop recipient is retained once without retrying or inventi
 	await director.operation("cancel_task", { taskId: task.id }, "director");
 	for (let index = 0; index < 3; index++) await director.operation("get_context", { goalId: task.goalId }, "director");
 	assert.equal(sends, 1);
-	const stops = director.store().snapshot().effects.filter(effect => effect.kind === "stop");
+	const stops = director.getDatabase().read(Context.snapshot).effects.filter(effect => effect.kind === "stop");
 	assert.equal(stops.length, 1);
 	assert.equal(record(stops[0].result).unavailable, true);
-	assert.equal(director.store().getEffect("command:pending-process").state, "issued");
-	assert.equal(director.store().getAttempt(text(director.store().getTask(task.id).currentAttemptId, "attempt")).slot, true);
+	assert.equal(director.getDatabase().get("effects", "command:pending-process").state, "issued");
+	assert.equal(director.getDatabase().get("attempts", text(director.getDatabase().get("tasks", task.id).currentAttemptId, "attempt")).slot, true);
 });
 
 test("a declined native check does not fabricate evidence or start a repair", async t => {
@@ -1734,15 +1744,15 @@ test("a declined native check does not fabricate evidence or start a repair", as
 		return { resultType: "denied", textResultForLlm: "Actual native permission was declined" };
 	} });
 	await runtime.operation("start_goal", definition, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	await runtime.operation("start_task", { taskId: task.id }, "director");
 	const result = await runtime.operation("run_check", { taskId: task.id, checkId: "behavior", repair: true }, "director");
 	assert.ok(result && typeof result === "object" && "state" in result);
 	assert.equal(result.state, "native-execution-rejected");
 	assert.equal(warnings.length, 1);
-	assert.equal(runtime.store().snapshot().attempts.length, 1);
-	assert.equal(runtime.store().snapshot().effects[0].state, "settled");
-	assert.deepEqual(runtime.store().evidenceForAttempt(text(task.currentAttemptId ?? runtime.store().getTask(task.id).currentAttemptId, "attempt")), []);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).attempts.length, 1);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).effects[0].state, "settled");
+	assert.deepEqual(runtime.getDatabase().read(Results.evidenceForAttempt, text(task.currentAttemptId ?? runtime.getDatabase().get("tasks", task.id).currentAttemptId, "attempt")), []);
 });
 
 test("ambiguous local commands retain both attempts and are not stopped with an unrelated unit", async t => {
@@ -1751,23 +1761,23 @@ test("ambiguous local commands retain both attempts and are not stopped with an 
 	await runtime.operation("start_goal", { ...definition, tasks: ["one", "two"].map(title => ({
 		title, workType: "analysis", assignment: "Execute local work", checks: [],
 	})) }, "director");
-	const tasks = runtime.store().snapshot().tasks;
+	const tasks = runtime.getDatabase().read(Context.snapshot).tasks;
 	for (const task of tasks) await runtime.operation("start_task", { taskId: task.id }, "director");
 	runtime.pre("bash", { command: "sleep 1" }, "director", "shared-bash");
 	runtime.toolComplete({ toolCallId: "shared-bash", success: true, toolTelemetry: {
 		restrictedProperties: { shell_id: "generated-shell" },
 	} }, "director");
-	const effect = runtime.store().getEffect("command:shared-bash");
+	const effect = runtime.getDatabase().get("effects", "command:shared-bash");
 	assert.equal(effect?.relatedAttemptIds?.length, 1);
 	await runtime.operation("cancel_task", { taskId: tasks[1].id }, "director");
 	assert.equal(stops, 0);
-	assert.equal(runtime.store().getAttempt(text(runtime.store().getTask(tasks[1].id).currentAttemptId, "attempt")).slot, true);
+	assert.equal(runtime.getDatabase().get("attempts", text(runtime.getDatabase().get("tasks", tasks[1].id).currentAttemptId, "attempt")).slot, true);
 	assert.ok(runtime.context({ goalId: tasks[0].goalId }, "director").tasks.some(task => task.id === tasks[1].id));
 	const focused = runtime.context({ taskId: tasks[0].id }, "director");
 	assert.equal(focused.commands[0].shellId, "generated-shell");
 	runtime.toolComplete({ toolCallId: "shared-bash", success: true, shellExecution: { exitCode: 0 } }, "director");
-	assert.equal(runtime.store().getAttempt(text(runtime.store().getTask(tasks[1].id).currentAttemptId, "attempt")).slot, false);
-	assert.equal(runtime.store().getTask(tasks[0].id).state, "running");
+	assert.equal(runtime.getDatabase().get("attempts", text(runtime.getDatabase().get("tasks", tasks[1].id).currentAttemptId, "attempt")).slot, false);
+	assert.equal(runtime.getDatabase().get("tasks", tasks[0].id).state, "running");
 });
 
 test("explicit command affinity and shared follow-up IDs settle only the exact native shell", async t => {
@@ -1775,7 +1785,7 @@ test("explicit command affinity and shared follow-up IDs settle only the exact n
 	await runtime.operation("start_goal", { ...definition, tasks: ["one", "two"].map(title => ({
 		title, workType: "analysis", assignment: "Execute local work", checks: [],
 	})) }, "director");
-	const tasks = runtime.store().snapshot().tasks;
+	const tasks = runtime.getDatabase().read(Context.snapshot).tasks;
 	for (const task of tasks) await runtime.operation("start_task", { taskId: task.id }, "director");
 	const prepared = [];
 	for (const task of tasks) {
@@ -1788,12 +1798,12 @@ test("explicit command affinity and shared follow-up IDs settle only the exact n
 		runtime.pre("read_bash", { shellId: command.effectId }, "director", "direct-read_bash");
 	}
 	runtime.toolComplete({ toolCallId: "direct-read_bash", success: true, shellExecution: { exitCode: 0 } }, "director");
-	assert.equal(runtime.store().getEffect(prepared[0].effectId)?.state, "issued");
+	assert.equal(runtime.getDatabase().get("effects", prepared[0].effectId)?.state, "issued");
 	runtime.toolComplete({ toolCallId: "direct-read_bash", success: true, shellExecution: { exitCode: 0 },
 		toolTelemetry: { restrictedProperties: { shell_id: prepared[1].effectId } },
 	}, "director");
-	assert.equal(runtime.store().getEffect(prepared[1].effectId)?.state, "settled");
-	assert.equal(runtime.store().getEffect(prepared[0].effectId)?.state, "issued");
+	assert.equal(runtime.getDatabase().get("effects", prepared[1].effectId)?.state, "settled");
+	assert.equal(runtime.getDatabase().get("effects", prepared[0].effectId)?.state, "issued");
 });
 
 for (const kind of ["check", "command"]) test(`exact ${kind} affinity admits a live successor without executing sealed old work`, async t => {
@@ -1802,16 +1812,16 @@ for (const kind of ["check", "command"]) test(`exact ${kind} affinity admits a l
 		scope: { ...definition.scope, mode: "interactive" }, tasks: [
 			{ ...definition.tasks[0], id: "unfinished" }, { ...definition.tasks[0], id: "complete" },
 		] } }) }, "director");
-	const [old, final] = runtime.store().snapshot().tasks;
+	const [old, final] = runtime.getDatabase().read(Context.snapshot).tasks;
 	await runtime.operation("start_task", { taskId: old.id }, "director");
 	const oldCommand = record(await runtime.operation("prepare_command", { taskId: old.id, command: "echo old" }, "director"));
 	runtime.pre("bash", { command: "echo already running" }, "director", "issued-old-command");
 	await acceptInline(runtime, final.id);
-	const oldAttempt = runtime.store().getAttempt(text(runtime.store().getTask(old.id).currentAttemptId, "old attempt"));
+	const oldAttempt = runtime.getDatabase().get("attempts", text(runtime.getDatabase().get("tasks", old.id).currentAttemptId, "old attempt"));
 	assert.equal(oldAttempt.state, "running");
 	assert.equal(oldAttempt.slot, true);
 	await runtime.operation("start_goal", definition, "director");
-	const successor = runtime.store().snapshot().tasks.find(task => task.goalId !== old.goalId);
+	const successor = runtime.getDatabase().read(Context.snapshot).tasks.find(task => task.goalId !== old.goalId);
 	assert.ok(successor);
 	await runtime.operation("start_task", { taskId: successor.id }, "director");
 	const prepared = record(await runtime.operation(kind === "check" ? "prepare_check" : "prepare_command",
@@ -1823,18 +1833,18 @@ for (const kind of ["check", "command"]) test(`exact ${kind} affinity admits a l
 	assert.throws(() => runtime.pre("bash", { command: "echo ambiguous" }, "director", "ambiguous-command"), { code: "job_closed" });
 	assert.throws(() => runtime.pre("apply_patch", {}, "director", "ambiguous-edit"), { code: "job_closed" });
 	runtime.pre("bash", prepared.arguments, "director", "successor-command");
-	const effect = runtime.store().getEffect(text(prepared.effectId, "successor effect"));
+	const effect = runtime.getDatabase().get("effects", text(prepared.effectId, "successor effect"));
 	assert.equal(effect.state, "issued");
-	assert.equal(effect.attemptId, runtime.store().getTask(successor.id).currentAttemptId);
+	assert.equal(effect.attemptId, runtime.getDatabase().get("tasks", successor.id).currentAttemptId);
 	assert.equal(effect.relatedAttemptIds, undefined);
-	assert.equal(runtime.store().getEffect(text(oldCommand.effectId, "old effect")).state, "prepared");
-	assert.deepEqual(runtime.store().getAttempt(oldAttempt.id), oldAttempt);
+	assert.equal(runtime.getDatabase().get("effects", text(oldCommand.effectId, "old effect")).state, "prepared");
+	assert.deepEqual(runtime.getDatabase().get("attempts", oldAttempt.id), oldAttempt);
 });
 
 for (const disposition of ["waiting", "paused", "superseded"]) test(`exact prepared commands cannot execute a ${disposition} attempt`, async t => {
 	const { runtime, directory } = fixture(t, authorizedFactory);
 	await runtime.operation("start_factory", { source: factorySource(directory) }, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	await runtime.operation("start_task", { taskId: task.id }, "director");
 	const prepared = record(await runtime.operation("prepare_command", { taskId: task.id, command: "echo scoped" }, "director"));
 	if (disposition === "waiting") {
@@ -1847,32 +1857,32 @@ for (const disposition of ["waiting", "paused", "superseded"]) test(`exact prepa
 	}
 	assert.throws(() => runtime.pre("bash", prepared.arguments, "director", "inactive-command"),
 		{ code: disposition === "waiting" ? "capacity_required" : "command_retired" });
-	assert.notEqual(runtime.store().getEffect(text(prepared.effectId, "effect")).state, "issued");
+	assert.notEqual(runtime.getDatabase().get("effects", text(prepared.effectId, "effect")).state, "issued");
 });
 
 test("prepared effect ownership cannot substitute for the actual executing native identity", async t => {
 	const { runtime } = fixture(t);
 	await runtime.operation("start_goal", definition, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	const batch = record(await runtime.operation("dispatch", { taskIds: [task.id] }, "director"));
 	assert.ok(Array.isArray(batch.prepared));
 	const call = record(batch.prepared[0]);
 	runtime.pre("create_session", call.arguments, "director", "create-worker");
 	runtime.post("create_session", call.arguments, { id: "native-worker" }, "director");
 	const request = { command: "echo creator", shellId: "creator-command" };
-	runtime.store().recordEffect({ id: "creator-command", attemptId: text(call.attemptId, "attempt"),
+	runtime.getDatabase().write(Effects.recordEffect, { id: "creator-command", attemptId: text(call.attemptId, "attempt"),
 		kind: "command", state: "prepared", request }, "director");
 	assert.throws(() => runtime.pre("bash", request, "director", "creator-execution"), { code: "foreign_execution" });
-	assert.equal(runtime.store().getEffect("creator-command").state, "prepared");
+	assert.equal(runtime.getDatabase().get("effects", "creator-command").state, "prepared");
 });
 
 test("unknown replacements are inspected once and mismatched native metadata never grants ownership", async t => {
 	let calls = 0;
 	const { runtime } = fixture(t, { readSession: async id => { calls++; return { structuredContent: { id: id === "bad" ? "someone-else" : id } }; } });
 	await runtime.operation("start_goal", definition, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	await assert.rejects(runtime.operation("reassign_task", { taskId: task.id, newOwner: "bad" }, "director"), /actual replacement/);
-	assert.equal(runtime.store().getTask(task.id).owner, "director");
+	assert.equal(runtime.getDatabase().get("tasks", task.id).owner, "director");
 	await runtime.operation("reassign_task", { taskId: task.id, newOwner: "replacement" }, "director");
 	await runtime.operation("reassign_task", { taskId: task.id, newOwner: "replacement" }, "director");
 	assert.equal(calls, 2);
@@ -1882,7 +1892,7 @@ test("retired native input clears only on an explicit actual native observation"
 	let answered = false;
 	const { runtime } = fixture(t, { readSession: async id => ({ structuredContent: { id, ...(answered ? { awaiting_input: null } : {}) } }) });
 	await runtime.operation("start_goal", { ...definition, tasks: [{ title: "Input boundary", workType: "analysis", assignment: "Preserve the real question", checks: [] }] }, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	await runtime.operation("start_task", { taskId: task.id }, "director");
 	await runtime.operation("wait_task", { taskId: task.id, kind: "input", reason: "Actual decision", requestId: "native-request" }, "director");
 	await runtime.operation("evolve_task", { taskId: task.id, expectedVersion: 1, checks: [{
@@ -1897,7 +1907,7 @@ test("retired native input clears only on an explicit actual native observation"
 	const after = await runtime.operation("get_context", { goalId: task.goalId }, "director");
 	assert.ok(after && typeof after === "object" && "inputRequests" in after);
 	assert.equal(after.inputRequests.length, 0);
-	assert.equal(runtime.store().getTask(task.id).state, "ready");
+	assert.equal(runtime.getDatabase().get("tasks", task.id).state, "ready");
 });
 
 test("a rejected unavailable-owner wake survives runtime restart without replay or adopting its work", async t => {
@@ -1911,7 +1921,7 @@ test("a rejected unavailable-owner wake survives runtime restart without replay 
 	await runtime.operation("start_goal", { ...definition, tasks: [{
 		id: "coordinator", title: "Existing coordinator", workType: "analysis", assignment: "Retain ownership", checks: [],
 	}] }, "director");
-	const task = runtime.store().getTask("coordinator");
+	const task = runtime.getDatabase().get("tasks", "coordinator");
 	const dispatch = await runtime.operation("dispatch", { taskIds: [task.id] }, "director");
 	assert.ok(dispatch && typeof dispatch === "object" && "prepared" in dispatch && dispatch.prepared);
 	const call = dispatch.prepared[0];
@@ -1919,7 +1929,7 @@ test("a rejected unavailable-owner wake survives runtime restart without replay 
 	runtime.post("create_session", call.arguments, { id: "unavailable-coordinator" }, "director");
 	await runtime.operation("create_task", { goalId: task.goalId, parentId: task.id, title: "Completed local leaf",
 		workType: "analysis", assignment: "Finish only this local observation", checks: [] }, "unavailable-coordinator");
-	const leaf = runtime.store().snapshot(task.goalId).tasks.find(candidate => candidate.parentId === task.id);
+	const leaf = runtime.getDatabase().read(Context.snapshot, task.goalId).tasks.find(candidate => candidate.parentId === task.id);
 	assert.ok(leaf);
 	await runtime.operation("start_task", { taskId: leaf.id }, "unavailable-coordinator");
 	await runtime.operation("report_result", { taskId: leaf.id, summary: "Local leaf completed" }, "unavailable-coordinator");
@@ -1928,7 +1938,7 @@ test("a rejected unavailable-owner wake survives runtime restart without replay 
 	await runtime.flushNotifications();
 	assert.equal(deliveries, 1);
 	assert.equal(failures.length, 1);
-	const rejected = runtime.store().snapshot(task.goalId).wakes.find(wake => wake.owner === "unavailable-coordinator");
+	const rejected = runtime.getDatabase().read(Context.snapshot, task.goalId).wakes.find(wake => wake.owner === "unavailable-coordinator");
 	assert.ok(rejected?.unavailable);
 	assert.equal(rejected.unavailable.fallback, "director");
 	runtime.close();
@@ -1938,11 +1948,11 @@ test("a rejected unavailable-owner wake survives runtime restart without replay 
 	assert.ok(context && typeof context === "object" && "unavailableOwners" in context);
 	assert.equal(context.unavailableOwners[0].owner, "unavailable-coordinator");
 	assert.equal(deliveries, 1);
-	assert.equal(restarted.store().getTask(task.id).owner, "unavailable-coordinator");
-	assert.equal(restarted.store().getTask(leaf.id).state, "done");
-	assert.equal(restarted.store().snapshot(task.goalId).attempts.length, 2);
-	assert.equal(restarted.store().snapshot(task.goalId).effects.filter(effect => effect.kind === "create").length, 1);
-	assert.equal(restarted.store().getDelivery(rejected.unavailable.effectId).state, "settled");
+	assert.equal(restarted.getDatabase().get("tasks", task.id).owner, "unavailable-coordinator");
+	assert.equal(restarted.getDatabase().get("tasks", leaf.id).state, "done");
+	assert.equal(restarted.getDatabase().read(Context.snapshot, task.goalId).attempts.length, 2);
+	assert.equal(restarted.getDatabase().read(Context.snapshot, task.goalId).effects.filter(effect => effect.kind === "create").length, 1);
+	assert.equal(restarted.getDatabase().get("deliveries", rejected.unavailable.effectId).state, "settled");
 });
 
 test("the assigned runner supplies actual versioned inputs and retains them in raw evidence", async t => {
@@ -1969,13 +1979,13 @@ test("the assigned runner supplies actual versioned inputs and retains them in r
 	assert.equal(result.result.state, "done");
 	assert.equal(result.verdict.passed, true);
 	assert.deepEqual(JSON.parse(readFileSync(result.result.evidence[0].reference, "utf8")).inputs,
-		runtime.store().getAttempt(result.result.attemptId).inputs);
+		runtime.getDatabase().get("attempts", result.result.attemptId).inputs);
 });
 
 test("coordinator context summarizes procedures while the assigned task retains its executable definition", async t => {
 	const { runtime } = fixture(t);
 	await runtime.operation("start_goal", definition, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	const parent = runtime.context({ goalId: task.goalId }, "director");
 	assert.equal(parent.tasks[0].assignment, undefined);
 	assert.equal("command" in parent.tasks[0].checks[0], false);
@@ -1992,7 +2002,7 @@ test("inspecting an original native session preserves a fresh warm attempt and i
 	const worker = "55555555-5555-4555-8555-555555555555";
 	await runtime.operation("start_goal", { ...definition, tasks: [{ title: "Warm worker", workType: "analysis",
 		assignment: "Preserve original native provenance", checks: [] }] }, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	const prepared = await runtime.operation("dispatch", { taskIds: [task.id] }, "director");
 	assert.ok(prepared && typeof prepared === "object" && "prepared" in prepared);
 	assert.ok(Array.isArray(prepared.prepared));
@@ -2009,25 +2019,25 @@ test("inspecting an original native session preserves a fresh warm attempt and i
 	runtime.post("get_session", { project_session_id: worker }, { structuredContent: {
 		id: worker, name: record(call.arguments).name, creator_session_id: "director", coordinating_creator_session_id: "director",
 	} }, "director");
-	assert.equal(runtime.store().getTask(task.id).currentAttemptId, fresh.id);
-	assert.equal(runtime.store().getAttempt(call.attemptId).state, "done");
-	assert.equal(runtime.store().getAttempt(text(fresh.id, "attempt")).state, "running");
+	assert.equal(runtime.getDatabase().get("tasks", task.id).currentAttemptId, fresh.id);
+	assert.equal(runtime.getDatabase().get("attempts", call.attemptId).state, "done");
+	assert.equal(runtime.getDatabase().get("attempts", text(fresh.id, "attempt")).state, "running");
 });
 
 test("native name whitespace normalization recovers an issued child without granting identity from its name", async t => {
 	const { runtime } = fixture(t);
 	await runtime.operation("start_goal", { ...definition, tasks: [{ title: "Native   normalized child",
 		workType: "analysis", assignment: "Execute without activation", checks: [] }] }, "director");
-	const task = runtime.store().snapshot().tasks[0];
-	const attempt = runtime.store().prepareAttempt(task.id, "director");
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
+	const attempt = runtime.getDatabase().write(Attempts.prepareAttempt, task.id, "director");
 	const originalName = `Native   normalized child  ${attempt.token.slice(0, 8)}`;
-	runtime.store().issueAttempt(attempt.id, "director", `create:${attempt.id}`, { name: originalName });
+	runtime.getDatabase().write(Effects.issueAttempt, attempt.id, "director", `create:${attempt.id}`, { name: originalName });
 	const detail = { id: "native-worker", name: originalName.replace(/\s+/gu, " "),
 		creator_session_id: "foreign", coordinating_creator_session_id: "director" };
 	assert.throws(() => runtime.post("get_session", { project_session_id: detail.id }, detail, "director"), /actual native detail/i);
 	runtime.post("get_session", { project_session_id: detail.id }, { ...detail, creator_session_id: "director" }, "director");
-	assert.equal(runtime.store().getAttempt(attempt.id).nativeId, detail.id);
-	assert.equal(runtime.store().getTask(task.id).state, "running");
+	assert.equal(runtime.getDatabase().get("attempts", attempt.id).nativeId, detail.id);
+	assert.equal(runtime.getDatabase().get("tasks", task.id).state, "running");
 });
 
 test("direct dispatch starts independent children once, with bounded kickoffs and worker-only pinned pages", async t => {
@@ -2051,7 +2061,7 @@ test("direct dispatch starts independent children once, with bounded kickoffs an
 	try {
 		assert.equal(calls.length, 2, "both children start before either create returns");
 		assert.ok(calls.every(call => Buffer.byteLength(call.prompt) < 512));
-		const attemptId = text(runtime.store().getTask("first").currentAttemptId, "first attempt");
+		const attemptId = text(runtime.getDatabase().get("tasks", "first").currentAttemptId, "first attempt");
 		const child = calls.find(call => call.prompt.includes(attemptId));
 		assert.ok(child);
 		await runtime.operation("dispatch", { taskIds: ["first", "second"] }, "lead");
@@ -2067,7 +2077,7 @@ test("direct dispatch starts independent children once, with bounded kickoffs an
 		assert.match(brief, /The assigned calculation holds/);
 		assert.ok(Buffer.byteLength(brief) < 4096);
 		const evaluator = JSON.parse(await readAssignment(reopened, attemptId, child.name, "behavior"));
-		assert.deepEqual(evaluator, runtime.store().getAttempt(attemptId).checks[0]);
+		assert.deepEqual(evaluator, runtime.getDatabase().get("attempts", attemptId).checks[0]);
 		assert.equal(evaluator.command, command);
 		await runtime.operation("cancel_task", { taskId: "first" }, "lead");
 		await assert.rejects(reopened.operation("get_context", { assignmentId: attemptId }, child.name), /cancelled|no longer active/i);
@@ -2083,8 +2093,8 @@ test("direct dispatch starts independent children once, with bounded kickoffs an
 test("compact kickoff, captured native identity and actual command evidence produce a result without activation", async t => {
 	const { runtime } = fixture(t);
 	const created = await runtime.operation("start_goal", definition, "director");
-	const goal = runtime.store().snapshot().goals[0];
-	const task = runtime.store().snapshot().tasks[0];
+	const goal = runtime.getDatabase().read(Context.snapshot).goals[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	assert.ok(created);
 	const calls = await runtime.operation("dispatch", { taskIds: [task.id] }, "director");
 	assert.ok(calls && typeof calls === "object" && "prepared" in calls);
@@ -2098,7 +2108,7 @@ test("compact kickoff, captured native identity and actual command evidence prod
 	const receipt = { textResultForLlm: `Created session '${record(call.arguments).name}' (id: ${worker}) in project 'fixture' with a kickoff prompt. The session will start automatically.`, resultType: "success" };
 	runtime.post("create_session", call.arguments, receipt, "director");
 	runtime.post("create_session", call.arguments, receipt, "director");
-	assert.equal(runtime.store().getTask(task.id).owner, worker);
+	assert.equal(runtime.getDatabase().get("tasks", task.id).owner, worker);
 	const check = await runtime.operation("prepare_check", { taskId: task.id, checkId: "behavior" }, worker);
 	assert.ok(check && typeof check === "object" && "arguments" in check);
 	const args = check.arguments;
@@ -2112,8 +2122,8 @@ test("compact kickoff, captured native identity and actual command evidence prod
 		findings: [{ summary: "Architecture might need more review", evidenceIds: [] }],
 	}, worker);
 	assert.ok(reported && typeof reported === "object" && "promoted" in reported && reported.promoted);
-	assert.equal(runtime.store().getTask(task.id).state, "done");
-	assert.equal(runtime.store().pendingWakes(goal.owner).length, 1);
+	assert.equal(runtime.getDatabase().get("tasks", task.id).state, "done");
+	assert.equal(runtime.getDatabase().read(Wakes.pendingWakes, goal.owner).length, 1);
 });
 
 test("ordinary freeform edits are not intercepted by native creation bookkeeping", async t => {
@@ -2129,7 +2139,7 @@ test("a replacement coordinator reconciles original issuance and reports the act
 		id: id === "replacement" ? id : worker, name, creator_session_id: "director", coordinating_creator_session_id: "director",
 	}) }) });
 	await runtime.operation("start_goal", definition, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	const dispatch = await runtime.operation("dispatch", { taskIds: [task.id] }, "director");
 	assert.ok(dispatch && typeof dispatch === "object" && "prepared" in dispatch);
 	assert.ok(dispatch.prepared);
@@ -2139,8 +2149,8 @@ test("a replacement coordinator reconciles original issuance and reports the act
 	await runtime.operation("reassign_task", { taskId: task.id, newOwner: "replacement" }, "director");
 	await assert.rejects(runtime.operation("reconcile_native", { sessionId: worker }, "sibling"), /accountable coordinator/);
 	await runtime.operation("reconcile_native", { sessionId: worker }, "replacement");
-	assert.equal(runtime.store().getTask(task.id).owner, "replacement");
-	const attempt = runtime.store().getAttempt(text(runtime.store().getTask(task.id).currentAttemptId, "attempt"));
+	assert.equal(runtime.getDatabase().get("tasks", task.id).owner, "replacement");
+	const attempt = runtime.getDatabase().get("attempts", text(runtime.getDatabase().get("tasks", task.id).currentAttemptId, "attempt"));
 	assert.equal(attempt.creator, "director");
 	await assert.rejects(runtime.operation("prepare_check", { taskId: task.id, checkId: "behavior" }, "replacement"), /actual native worker/);
 	const prepared = await runtime.operation("prepare_check", { taskId: task.id, checkId: "behavior" }, worker);
@@ -2154,7 +2164,7 @@ test("a replacement coordinator reconciles original issuance and reports the act
 	assert.ok(result && typeof result === "object" && "result" in result && "promoted" in result && result.promoted);
 	assert.equal(result.result.sender, worker);
 	assert.equal(result.result.reportedBy, "replacement");
-	assert.equal(runtime.store().getTask(task.id).state, "done");
+	assert.equal(runtime.getDatabase().get("tasks", task.id).state, "done");
 });
 
 test("coordinator handoff does not hide a worker's actual outstanding shell or grant it ownership", async t => {
@@ -2165,7 +2175,7 @@ test("coordinator handoff does not hide a worker's actual outstanding shell or g
 		execute: async (name, args) => { calls.push({ name, args }); return { resultType: "success" }; },
 	});
 	await runtime.operation("start_goal", definition, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	const dispatch = await runtime.operation("dispatch", { taskIds: [task.id] }, "director");
 	assert.ok(dispatch && typeof dispatch === "object" && "prepared" in dispatch && dispatch.prepared);
 	const args = dispatch.prepared[0].arguments;
@@ -2176,38 +2186,38 @@ test("coordinator handoff does not hide a worker's actual outstanding shell or g
 	await assert.rejects(runtime.operation("reassign_task", { taskId: task.id, newOwner: "worker" }, "worker"), /does not own|accountable/);
 	assert.equal(runtime.context({ taskId: task.id }, "worker").commands[0].shellId, "worker-owned-shell");
 	await runtime.operation("wait_task", { taskId: task.id, kind: "capacity", reason: "Settle the actual command before yielding" }, "worker");
-	assert.equal(runtime.store().getAttempt(dispatch.prepared[0].attemptId).slot, true);
+	assert.equal(runtime.getDatabase().get("attempts", dispatch.prepared[0].attemptId).slot, true);
 	runtime.toolComplete({ toolCallId: "worker-process", success: true, shellExecution: { exitCode: 0 } }, "worker");
-	assert.equal(runtime.store().getAttempt(dispatch.prepared[0].attemptId).slot, false);
+	assert.equal(runtime.getDatabase().get("attempts", dispatch.prepared[0].attemptId).slot, false);
 	await runtime.operation("resume_task", { taskId: task.id }, "worker");
-	assert.equal(runtime.store().getAttempt(dispatch.prepared[0].attemptId).slot, true);
+	assert.equal(runtime.getDatabase().get("attempts", dispatch.prepared[0].attemptId).slot, true);
 	runtime.pre("bash", { command: "sleep 1", shellId: "resumed-worker-shell" }, "worker", "resumed-worker-process");
 	await runtime.operation("cancel_task", { taskId: task.id }, "director");
 	const recovery = runtime.context({ goalId: task.goalId }, "worker");
 	assert.equal(recovery.commands[0].shellId, "resumed-worker-shell");
 	assert.equal(recovery.tasks[0].owner, "replacement");
-	assert.equal(runtime.store().getAttempt(dispatch.prepared[0].attemptId).slot, true);
+	assert.equal(runtime.getDatabase().get("attempts", dispatch.prepared[0].attemptId).slot, true);
 	runtime.post("stop_bash", { shellId: "resumed-worker-shell" }, {
 		resultType: "success", textResultForLlm: "<command with id: resumed-worker-shell stopped>",
 		toolTelemetry: { properties: { shell_status: "stopped" } },
 	}, "worker");
-	assert.equal(runtime.store().getAttempt(dispatch.prepared[0].attemptId).slot, false);
-	assert.equal(runtime.store().getTask(task.id).state, "cancelled");
+	assert.equal(runtime.getDatabase().get("attempts", dispatch.prepared[0].attemptId).slot, false);
+	assert.equal(runtime.getDatabase().get("tasks", task.id).state, "cancelled");
 	assert.ok(calls.every(call => call.name !== "stop_bash"));
 });
 
 test("scoped check evolution produces fresh native evaluation without changing a contract check", async t => {
 	const { runtime } = fixture(t);
 	await runtime.operation("start_goal", definition, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	await runtime.operation("start_task", { taskId: task.id }, "director");
 	const checks = [...task.checks, { id: "follow-up", origin: "derived", kind: "command", requirement: "Observed follow-up", command: "node -e 'if (2 * 3 !== 6) process.exit(1)'" }];
 	const changed = await runtime.operation("evolve_task", { taskId: task.id, expectedVersion: 1, checks }, "director");
 	assert.ok(changed && typeof changed === "object" && "affected" in changed);
 	assert.deepEqual(changed.affected, [task.id]);
-	assert.deepEqual(runtime.store().getTask(task.id).checks[0], task.checks[0]);
+	assert.deepEqual(runtime.getDatabase().get("tasks", task.id).checks[0], task.checks[0]);
 	await runtime.operation("start_task", { taskId: task.id }, "director");
-	for (const check of runtime.store().getTask(task.id).checks) {
+	for (const check of runtime.getDatabase().get("tasks", task.id).checks) {
 		const prepared = await runtime.operation("prepare_check", { taskId: task.id, checkId: check.id }, "director");
 		assert.ok(prepared && typeof prepared === "object" && "arguments" in prepared);
 		runtime.pre("bash", prepared.arguments, "director", `check-${check.id}`);
@@ -2216,7 +2226,7 @@ test("scoped check evolution produces fresh native evaluation without changing a
 	}
 	const reported = await runtime.operation("report_result", { taskId: task.id, summary: "Reevaluated only the changed task" }, "director");
 	assert.ok(reported && typeof reported === "object" && "promoted" in reported && reported.promoted);
-	assert.equal(runtime.store().getTask(task.id).version, 2);
+	assert.equal(runtime.getDatabase().get("tasks", task.id).version, 2);
 });
 
 test("initial source order does not become an execution dependency", async t => {
@@ -2229,7 +2239,7 @@ test("initial source order does not become an execution dependency", async t => 
 			{ ...definition.tasks[0], id: "parent" },
 		],
 	}, "director");
-	const ready = runtime.store().readyTasks("director").map(task => task.id);
+	const ready = runtime.getDatabase().read(Context.readyTasks, "director").map(task => task.id);
 	assert.ok(ready.includes("leaf"));
 	assert.ok(ready.includes("producer"));
 	assert.ok(!ready.includes("consumer"));
@@ -2240,18 +2250,18 @@ test("local cancellation stops only known owned shells and retains capacity unti
 	const calls = [];
 	const { runtime } = fixture(t, { execute: async (name, args) => { calls.push({ name, args }); return { resultType: "success" }; } });
 	await runtime.operation("start_goal", definition, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	await runtime.operation("start_task", { taskId: task.id }, "director");
 	runtime.pre("bash", { command: "sleep 1", shellId: "owned-only" }, "director", "owned-process");
 	await runtime.operation("cancel_task", { taskId: task.id }, "director");
 	assert.deepEqual(calls, [{ name: "stop_bash", args: { shellId: "owned-only" } }]);
-	const attemptId = text(runtime.store().getTask(task.id).currentAttemptId, "attempt");
-	assert.equal(runtime.store().getAttempt(attemptId).slot, true);
+	const attemptId = text(runtime.getDatabase().get("tasks", task.id).currentAttemptId, "attempt");
+	assert.equal(runtime.getDatabase().get("attempts", attemptId).slot, true);
 	const waiting = await runtime.operation("get_context", { taskId: task.id }, "director");
 	assert.ok(waiting && typeof waiting === "object" && "commands" in waiting);
 	assert.equal(waiting.commands[0].shellId, "owned-only");
 	runtime.toolComplete({ toolCallId: "owned-process", success: true, shellExecution: { exitCode: 1 }, result: { content: "Stopped" } }, "director");
-	assert.equal(runtime.store().getAttempt(attemptId).slot, false);
+	assert.equal(runtime.getDatabase().get("attempts", attemptId).slot, false);
 	await runtime.operation("get_context", { taskId: task.id }, "director");
 	assert.equal(calls.length, 1);
 });
@@ -2265,7 +2275,7 @@ test("a definitely rejected stop retries on an owner turn without reopening or r
 	});
 
 	await runtime.operation("start_goal", definition, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	const dispatch = await runtime.operation("dispatch", { taskIds: [task.id] }, "director");
 	assert.ok(dispatch && typeof dispatch === "object" && "prepared" in dispatch && dispatch.prepared);
 	const args = dispatch.prepared[0].arguments;
@@ -2278,7 +2288,7 @@ test("a definitely rejected stop retries on an owner turn without reopening or r
 	assert.equal(calls, 2);
 	await runtime.operation("advance", { goalId: task.goalId }, "director");
 	assert.equal(calls, 2);
-	const stops = runtime.store().snapshot().effects.filter(effect => effect.kind === "stop");
+	const stops = runtime.getDatabase().read(Context.snapshot).effects.filter(effect => effect.kind === "stop");
 	assert.equal(stops.length, 2);
 	assert.equal(record(stops[0].result).accepted, false);
 	assert.equal(record(stops[1].result).accepted, true);
@@ -2290,23 +2300,23 @@ test("native stopped-shell evidence settles cancellation without an invented pro
 		toolTelemetry: { properties: { shell_status: "stopped" } },
 	}) });
 	await runtime.operation("start_goal", definition, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	await runtime.operation("start_task", { taskId: task.id }, "director");
 	runtime.pre("bash", { command: "sleep 1", shellId: "actually-stopped" }, "director", "original-process");
 	await runtime.operation("cancel_task", { taskId: task.id }, "director");
-	const attempt = runtime.store().getAttempt(text(runtime.store().getTask(task.id).currentAttemptId, "attempt"));
+	const attempt = runtime.getDatabase().get("attempts", text(runtime.getDatabase().get("tasks", task.id).currentAttemptId, "attempt"));
 	assert.equal(attempt.slot, false);
-	const command = runtime.store().getEffect("command:original-process");
+	const command = runtime.getDatabase().get("effects", "command:original-process");
 	assert.equal(command?.state, "settled");
 	assert.equal(record(command?.result).stopped, true);
 	assert.equal(record(command?.result).evidence, undefined);
-	assert.equal(runtime.store().getTask(task.id).outputs.length, 0);
+	assert.equal(runtime.getDatabase().get("tasks", task.id).outputs.length, 0);
 });
 
 test("a retained native stopped-read reconciles its own shell, never a missing or different shell", async t => {
 	const { runtime } = fixture(t);
 	await runtime.operation("start_goal", definition, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	await runtime.operation("start_task", { taskId: task.id }, "director");
 	runtime.pre("bash", { command: "sleep 1", shellId: "stopped-read" }, "director", "original-process");
 	await runtime.operation("cancel_task", { taskId: task.id }, "director");
@@ -2319,17 +2329,17 @@ test("a retained native stopped-read reconciles its own shell, never a missing o
 		},
 	};
 	runtime.toolComplete(event, "director");
-	assert.equal(runtime.store().getEffect("command:original-process")?.state, "issued");
+	assert.equal(runtime.getDatabase().get("effects", "command:original-process")?.state, "issued");
 	event.toolTelemetry.restrictedProperties.shell_id = "stopped-read";
 	runtime.toolComplete(event, "director");
-	assert.equal(runtime.store().getEffect("command:original-process")?.state, "settled");
-	assert.equal(runtime.store().getAttempt(text(runtime.store().getTask(task.id).currentAttemptId, "attempt")).slot, false);
+	assert.equal(runtime.getDatabase().get("effects", "command:original-process")?.state, "settled");
+	assert.equal(runtime.getDatabase().get("attempts", text(runtime.getDatabase().get("tasks", task.id).currentAttemptId, "attempt")).slot, false);
 });
 
 test("native asynchronous follow-up settles its original command, not another attempt", async t => {
 	const { runtime } = fixture(t);
 	await runtime.operation("start_goal", definition, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	await runtime.operation("start_task", { taskId: task.id }, "director");
 	runtime.pre("bash", { command: "sleep 1", shellId: "owned-shell" }, "director", "original-command");
 	runtime.toolComplete({ toolCallId: "original-command", success: true, result: { content: "Still running" } }, "director");
@@ -2337,7 +2347,7 @@ test("native asynchronous follow-up settles its original command, not another at
 	runtime.toolComplete({
 		toolCallId: "native-follow-up", success: true, shellExecution: { exitCode: 1 }, result: { content: "Process exited" },
 	}, "director");
-	const effects = runtime.store().snapshot().effects;
+	const effects = runtime.getDatabase().read(Context.snapshot).effects;
 	assert.equal(effects.length, 1);
 	assert.equal(effects[0].state, "settled");
 	assert.equal(record(record(effects[0].result).nativeCompletion).toolCallId, "native-follow-up");
@@ -2378,14 +2388,14 @@ for (const noOutput of [false, true]) test(`live native timeout records the gene
 	const { start, completion, readStart, readEnd } = timedOutCommandEvents(noOutput);
 	const { runtime } = fixture(t);
 	await runtime.operation("start_goal", definition, "director");
-	await runtime.operation("start_task", { taskId: runtime.store().snapshot().tasks[0].id }, "director");
+	await runtime.operation("start_task", { taskId: runtime.getDatabase().read(Context.snapshot).tasks[0].id }, "director");
 	runtime.pre(start.data.toolName, start.data.arguments, "director", "build");
 	runtime.toolComplete(completion.data, "director");
-	assert.equal(runtime.store().getEffect("command:build")?.state, "uncertain");
-	assert.equal(record(runtime.store().getEffect("command:build")?.result).shellId, "64");
+	assert.equal(runtime.getDatabase().get("effects", "command:build")?.state, "uncertain");
+	assert.equal(record(runtime.getDatabase().get("effects", "command:build")?.result).shellId, "64");
 	runtime.pre(readStart.data.toolName, readStart.data.arguments, "director", "read");
 	runtime.toolComplete(readEnd.data, "director");
-	assert.equal(runtime.store().getEffect("command:build")?.state, "settled");
+	assert.equal(runtime.getDatabase().get("effects", "command:build")?.state, "settled");
 });
 
 for (const variant of ["valid", "no output", "no output wrong shell", "quoted no output", "altered no output footer",
@@ -2412,15 +2422,15 @@ for (const variant of ["valid", "no output", "no output wrong shell", "quoted no
 	const { runtime } = fixture(t, { readSession: async id => ({ id }),
 		readCommand: async (_id, callId) => readCommandEvents(async () => /** @type {NonNullable<ReturnType<typeof pages.shift>>} */ (pages.shift()), callId) });
 	await runtime.operation("start_goal", definition, "director");
-	await runtime.operation("start_task", { taskId: runtime.store().snapshot().tasks[0].id }, "director");
+	await runtime.operation("start_task", { taskId: runtime.getDatabase().read(Context.snapshot).tasks[0].id }, "director");
 	runtime.pre(start.data.toolName, start.data.arguments, "director", "build");
 	// Legacy effect captured the timeout but missed the shell identity and follow-up hooks.
-	const effect = runtime.store().snapshot().effects[0];
-	runtime.store().recordEffect({ ...effect, state: "uncertain", result: { nativeCompletion: completion.data } }, "director");
+	const effect = runtime.getDatabase().read(Context.snapshot).effects[0];
+	runtime.getDatabase().write(Effects.recordEffect, { ...effect, state: "uncertain", result: { nativeCompletion: completion.data } }, "director");
 	const request = { sessionId: "director", toolCallId: "build" };
 	if (!["valid", "no output", "structured shell"].includes(variant)) {
 		await assert.rejects(runtime.operation("reconcile_native", request, "director"), { code: "native_completion_pending" });
-		assert.equal(runtime.store().getEffect("command:build")?.state, "uncertain");
+		assert.equal(runtime.getDatabase().get("effects", "command:build")?.state, "uncertain");
 		return;
 	}
 	const recovered = record(await runtime.operation("reconcile_native", request, "director"));
@@ -2429,13 +2439,13 @@ for (const variant of ["valid", "no output", "no output wrong shell", "quoted no
 	assert.equal(receipt.continuationEventId, completion.id);
 	assert.equal(receipt.readStartEventId, readStart.id);
 	assert.equal(receipt.completionEventId, readEnd.id);
-	assert.equal(runtime.store().snapshot().effects.length, 1);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).effects.length, 1);
 });
 
 test("ordinary native commands ignore quoted check markers and retain their actual completion", async t => {
 	const { runtime } = fixture(t);
 	await runtime.operation("start_goal", definition, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	await runtime.operation("start_task", { taskId: task.id }, "director");
 	const args = { command: "Read ordinary metadata" };
 	const events = retainedCommandEvents("ordinary-metadata", args);
@@ -2443,11 +2453,11 @@ test("ordinary native commands ignore quoted check markers and retain their actu
 	assert.doesNotThrow(() => runtime.post("bash", args, { resultType: "success",
 		textResultForLlm: events.completion.data.result.content }, "director"));
 	runtime.toolComplete(events.completion.data, "director");
-	const effect = runtime.store().getEffect("command:ordinary-metadata");
+	const effect = runtime.getDatabase().get("effects", "command:ordinary-metadata");
 	assert.equal(effect?.state, "settled");
 	assert.deepEqual(record(effect?.result).nativeCompletion, events.completion.data);
 	assert.equal(record(effect?.result).evidence, undefined);
-	assert.equal(runtime.store().evidenceForAttempt(text(task.currentAttemptId ?? runtime.store().getTask(task.id).currentAttemptId, "attempt")).length, 0);
+	assert.equal(runtime.getDatabase().read(Results.evidenceForAttempt, text(task.currentAttemptId ?? runtime.getDatabase().get("tasks", task.id).currentAttemptId, "attempt")).length, 0);
 });
 
 test("own-session native recovery settles a retired ordinary command without replay or releasing a successor's claim", async t => {
@@ -2457,30 +2467,30 @@ test("own-session native recovery settles a retired ordinary command without rep
 	const { runtime } = fixture(t, { readSession: async id => ({ id, project_id: "actual-project" }),
 		readCommand: async () => { reads++; return events; } });
 	await runtime.operation("start_goal", { ...definition, projectId: "actual-project" }, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	await runtime.operation("start_task", { taskId: task.id }, "director");
-	const oldId = text(runtime.store().getTask(task.id).currentAttemptId, "old attempt");
-	runtime.store().claim({ attemptId: oldId, surface: "worktree:integration", resource: "apps" }, "director");
+	const oldId = text(runtime.getDatabase().get("tasks", task.id).currentAttemptId, "old attempt");
+	runtime.getDatabase().write(Claims.claim, { attemptId: oldId, surface: "worktree:integration", resource: "apps" }, "director");
 	runtime.pre("bash", args, "director", "retired-metadata");
 	await runtime.operation("evolve_task", { taskId: task.id, expectedVersion: 1, checks: [...task.checks,
 		{ id: "joined-behavior", origin: "derived", kind: "command", requirement: "Check joined behavior", command: "node -e 'process.exit(0)'" }],
 	}, "director");
 	await runtime.operation("start_task", { taskId: task.id }, "director");
-	const currentId = text(runtime.store().getTask(task.id).currentAttemptId, "successor");
-	assert.throws(() => runtime.store().claim({ attemptId: currentId, surface: "worktree:integration", resource: "apps" }, "director"), { code: "claim_conflict" });
+	const currentId = text(runtime.getDatabase().get("tasks", task.id).currentAttemptId, "successor");
+	assert.throws(() => runtime.getDatabase().write(Claims.claim, { attemptId: currentId, surface: "worktree:integration", resource: "apps" }, "director"), { code: "claim_conflict" });
 	const request = { sessionId: "director", toolCallId: "retired-metadata" };
 	const recovered = record(await runtime.operation("reconcile_native", request, "director"));
 	assert.equal(recovered.state, "settled");
 	assert.equal(recovered.attemptId, oldId);
 	assert.equal(record(recovered.nativeRecovery).completionEventId, events.completion.id);
-	assert.equal(runtime.store().getTask(task.id).currentAttemptId, currentId);
-	assert.equal(runtime.store().getAttempt(oldId).slot, false);
-	const claim = runtime.store().claim({ attemptId: currentId, surface: "worktree:integration", resource: "apps" }, "director");
+	assert.equal(runtime.getDatabase().get("tasks", task.id).currentAttemptId, currentId);
+	assert.equal(runtime.getDatabase().get("attempts", oldId).slot, false);
+	const claim = runtime.getDatabase().write(Claims.claim, { attemptId: currentId, surface: "worktree:integration", resource: "apps" }, "director");
 	await runtime.operation("reconcile_native", request, "director");
 	assert.equal(reads, 2);
-	assert.ok(runtime.store().snapshot().claims.some(item => item.id === claim.id));
-	assert.equal(runtime.store().snapshot().effects.filter(effect => effect.kind === "command").length, 1);
-	assert.equal(runtime.store().evidenceForAttempt(oldId).length, 0);
+	assert.ok(runtime.getDatabase().read(Context.snapshot).claims.some(item => item.id === claim.id));
+	assert.equal(runtime.getDatabase().read(Context.snapshot).effects.filter(effect => effect.kind === "command").length, 1);
+	assert.equal(runtime.getDatabase().read(Results.evidenceForAttempt, oldId).length, 0);
 });
 
 for (const mismatch of ["project", "arguments", "call", "pending"]) test(`native command recovery rejects ${mismatch} mismatch without settling`, async t => {
@@ -2494,12 +2504,12 @@ for (const mismatch of ["project", "arguments", "call", "pending"]) test(`native
 	const { runtime } = fixture(t, { readSession: async id => ({ id, project_id: mismatch === "project" ? "other-project" : "actual-project" }),
 		readCommand: async () => events });
 	await runtime.operation("start_goal", { ...definition, projectId: "actual-project" }, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	await runtime.operation("start_task", { taskId: task.id }, "director");
 	runtime.pre("bash", args, "director", "native-command");
 	await assert.rejects(runtime.operation("reconcile_native", { sessionId: "director", toolCallId: "native-command" }, "director"),
 		{ code: mismatch === "project" ? "native_identity_mismatch" : mismatch === "pending" ? "native_completion_pending" : "native_receipt_mismatch" });
-	assert.equal(runtime.store().getEffect("command:native-command")?.state, "issued");
+	assert.equal(runtime.getDatabase().get("effects", "command:native-command")?.state, "issued");
 });
 
 test("native recovery rejects foreign callers and never accepts caller-supplied completion JSON", async t => {
@@ -2507,7 +2517,7 @@ test("native recovery rejects foreign callers and never accepts caller-supplied 
 	const { runtime } = fixture(t, { readSession: async id => ({ id }),
 		readCommand: async () => { reads++; throw new Error("No native receipt retained"); } });
 	await runtime.operation("start_goal", definition, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	await runtime.operation("start_task", { taskId: task.id }, "director");
 	const args = { command: "Read metadata" };
 	runtime.pre("bash", args, "director", "native-command");
@@ -2516,7 +2526,7 @@ test("native recovery rejects foreign callers and never accepts caller-supplied 
 	assert.equal(reads, 0);
 	await assert.rejects(runtime.operation("reconcile_native", supplied, "director"), /No native receipt retained/);
 	assert.equal(reads, 1);
-	assert.equal(runtime.store().getEffect("command:native-command")?.state, "issued");
+	assert.equal(runtime.getDatabase().get("effects", "command:native-command")?.state, "issued");
 });
 
 test("native history pages backwards for an exact pair and rejects expired or stalled cursors", async () => {
@@ -2547,7 +2557,7 @@ test("cancelling an issued child queues a direct stop without pretending its com
 	let stopMessages = 0;
 	const { runtime } = fixture(t, { execute: async () => { stopMessages++; return { resultType: "success" }; } });
 	await runtime.operation("start_goal", definition, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	const calls = await runtime.operation("dispatch", {}, "director");
 	assert.ok(calls && typeof calls === "object" && "prepared" in calls && calls.prepared);
 	const worker = "22222222-2222-4222-8222-222222222222";
@@ -2560,9 +2570,9 @@ test("cancelling an issued child queues a direct stop without pretending its com
 	await runtime.operation("cancel_task", { taskId: task.id }, "director");
 	await runtime.operation("cancel_task", { taskId: task.id }, "director");
 	assert.equal(stopMessages, 1);
-	assert.equal(runtime.store().getTask(task.id).state, "cancelled");
-	assert.equal(runtime.store().snapshot().effects.find(effect => effect.kind === "command")?.state, "issued");
-	assert.equal(runtime.store().getAttempt(text(task.currentAttemptId ?? runtime.store().getTask(task.id).currentAttemptId, "attempt")).slot, true);
+	assert.equal(runtime.getDatabase().get("tasks", task.id).state, "cancelled");
+	assert.equal(runtime.getDatabase().read(Context.snapshot).effects.find(effect => effect.kind === "command")?.state, "issued");
+	assert.equal(runtime.getDatabase().get("attempts", text(task.currentAttemptId ?? runtime.getDatabase().get("tasks", task.id).currentAttemptId, "attempt")).slot, true);
 });
 
 for (const kind of ["artifact", "judgment"]) {
@@ -2571,7 +2581,7 @@ for (const kind of ["artifact", "judgment"]) {
 		await runtime.operation("start_goal", {
 			...definition, tasks: [{ ...definition.tasks[0], checks: [{ ...definition.tasks[0].checks[0], kind }] }],
 		}, "director");
-		const task = runtime.store().snapshot().tasks[0];
+		const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 		await runtime.operation("start_task", { taskId: task.id }, "director");
 		const check = await runtime.operation("prepare_check", { taskId: task.id, checkId: "behavior" }, "director");
 		assert.ok(check && typeof check === "object" && "arguments" in check);
@@ -2580,7 +2590,7 @@ for (const kind of ["artifact", "judgment"]) {
 		const stdout = execFileSync("/bin/sh", ["-c", text(args.command, "assigned procedure")], { encoding: "utf8" });
 		runtime.post("bash", args, { textResultForLlm: stdout, resultType: "success" }, "director");
 		await runtime.operation("report_result", { taskId: task.id, summary: "Assigned procedure passed" }, "director");
-		assert.equal(runtime.store().getTask(task.id).state, "done");
+		assert.equal(runtime.getDatabase().get("tasks", task.id).state, "done");
 	});
 }
 
@@ -2591,7 +2601,7 @@ test("non-executable artifact acceptance fails before any work is created", asyn
 			id: "presence", origin: "contract", kind: "artifact", requirement: "Validate the output", path: "output.json",
 		}] }],
 	}, "director"), /assigned check procedure/);
-	assert.equal(runtime.store().snapshot().goals.length, 0);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).goals.length, 0);
 });
 
 test("repeated status reads leave wake generations intact; advance consumes only the addressed goal", async t => {
@@ -2600,26 +2610,26 @@ test("repeated status reads leave wake generations intact; advance consumes only
 		await runtime.operation("start_goal", {
 			...definition, tasks: [{ ...definition.tasks[0], checks: [] }],
 		}, "director");
-		const task = runtime.store().snapshot().tasks[i];
+		const task = runtime.getDatabase().read(Context.snapshot).tasks[i];
 		await runtime.operation("start_task", { taskId: task.id }, "director");
 		await runtime.operation("report_result", { taskId: task.id, summary: "Scoped work delivered" }, "director");
 	}
-	const goals = runtime.store().snapshot().goals;
-	const before = runtime.store().snapshot();
+	const goals = runtime.getDatabase().read(Context.snapshot).goals;
+	const before = runtime.getDatabase().read(Context.snapshot);
 	const status = await runtime.operation("get_context", { goalId: goals[0].id }, "director");
 	assert.deepEqual(await runtime.operation("get_context", { goalId: goals[0].id }, "director"), status);
-	assert.deepEqual(runtime.store().snapshot(), before);
+	assert.deepEqual(runtime.getDatabase().read(Context.snapshot), before);
 	await runtime.operation("advance", { goalId: goals[0].id }, "director");
-	assert.deepEqual(runtime.store().pendingWakes("director").map(wake => wake.goalId), [goals[1].id]);
+	assert.deepEqual(runtime.getDatabase().read(Wakes.pendingWakes, "director").map(wake => wake.goalId), [goals[1].id]);
 });
 
 test("unrelated delivered history does not grow a focused task context", async t => {
 	const { runtime } = fixture(t);
 	await runtime.operation("start_goal", definition, "director");
-	const focused = runtime.store().snapshot().tasks[0];
+	const focused = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	const before = await runtime.operation("get_context", { taskId: focused.id }, "director");
 	for (let index = 0; index < 5; index++) {
-		const unrelated = runtime.store().createTask({
+		const unrelated = runtime.getDatabase().write(Tasks.createTask, {
 			goalId: focused.goalId, title: `Past work ${index}`, assignment: "Unrelated completed work", workType: "analysis",
 		}, "director");
 		await runtime.operation("start_task", { taskId: unrelated.id }, "director");
@@ -2642,7 +2652,7 @@ test("concurrent leaf outputs share one queued wake without swallowing the later
 	await runtime.operation("start_goal", {
 		...definition, tasks: Array.from({ length: 3 }, () => ({ ...definition.tasks[0], checks: [] })),
 	}, "director");
-	const tasks = runtime.store().snapshot().tasks;
+	const tasks = runtime.getDatabase().read(Context.snapshot).tasks;
 	const prepared = await runtime.operation("dispatch", {}, "director");
 	assert.ok(prepared && typeof prepared === "object" && "prepared" in prepared && prepared.prepared);
 	const workers = tasks.map((_, index) => `22222222-2222-4222-8222-${String(index).padStart(12, "0")}`);
@@ -2659,7 +2669,7 @@ test("concurrent leaf outputs share one queued wake without swallowing the later
 	accept({ resultType: "success" });
 	await first;
 	await runtime.flushNotifications();
-	const pending = runtime.store().pendingWakes("director");
+	const pending = runtime.getDatabase().read(Wakes.pendingWakes, "director");
 	assert.equal(pending.length, 1);
 	assert.equal(pending[0].generation, 2);
 	assert.equal(pending[0].sent, 1);
@@ -2676,20 +2686,20 @@ test("a contract compilation failure rolls back its goal and every initial task"
 	await assert.rejects(runtime.operation("start_goal", {
 		...definition, tasks: [definition.tasks[0], { ...definition.tasks[0], checks: [duplicate, duplicate] }],
 	}, "director"), /Check identities must be unique/);
-	assert.equal(runtime.store().snapshot().goals.length, 0);
-	assert.equal(runtime.store().snapshot().tasks.length, 0);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).goals.length, 0);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).tasks.length, 0);
 	await assert.rejects(runtime.operation("start_goal", {
 		...definition, tasks: [{ ...definition.tasks[0], accidentallyIgnored: true }],
 	}, "director"), /Unsupported source fields/);
-	assert.equal(runtime.store().snapshot().goals.length, 0);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).goals.length, 0);
 	await assert.rejects(runtime.operation("start_goal", { ...definition, limits: { worker: 2 } }, "director"), /Unsupported source fields/);
-	assert.equal(runtime.store().snapshot().goals.length, 0);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).goals.length, 0);
 });
 
 test("shared finding parsing retains the runtime's omitted evidence default", async t => {
 	const { runtime } = fixture(t);
 	await runtime.operation("start_goal", { ...definition, tasks: [{ ...definition.tasks[0], checks: [] }] }, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	await runtime.operation("start_task", { taskId: task.id }, "director");
 	const result = record(await runtime.operation("report_result", { taskId: task.id, summary: "Unsupported opinion remains advisory",
 		findings: [{ summary: "Consider a different strategy" }] }, "director"));
@@ -2704,7 +2714,7 @@ async function settlementFixture(t, hooks) {
 	const { runtime } = fixtureResult;
 	await runtime.operation("start_goal", { ...definition, limits: { workers: 1 },
 		tasks: Array.from({ length: 2 }, () => ({ ...definition.tasks[0], checks: [] })) }, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	const dispatch = record(await runtime.operation("dispatch", { taskIds: [task.id] }, "director"));
 	assert.ok(Array.isArray(dispatch.prepared));
 	const args = record(dispatch.prepared[0]).arguments;
@@ -2733,8 +2743,8 @@ test("a disabled management route is tried once, retains manual wakes and return
 	assert.equal(context.messageRouteDisabled, "This session management tool is disabled");
 	assert.ok(Array.isArray(context.wakes) && context.wakes.length === 1);
 	assert.equal(record(context.wakes[0]).tool, "send_session_message");
-	assert.equal(runtime.store().pendingWakes("director")[0].unavailable, undefined);
-	const extra = runtime.store().createTask({ goalId: task.goalId, title: "Active worker", assignment: "Keep actual work tracked", workType: "analysis" }, "director");
+	assert.equal(runtime.getDatabase().read(Wakes.pendingWakes, "director")[0].unavailable, undefined);
+	const extra = runtime.getDatabase().write(Tasks.createTask, { goalId: task.goalId, title: "Active worker", assignment: "Keep actual work tracked", workType: "analysis" }, "director");
 	const dispatch = record(await runtime.operation("dispatch", { taskIds: [extra.id] }, "director"));
 	assert.ok(Array.isArray(dispatch.prepared));
 	const args = record(dispatch.prepared[0]).arguments;
@@ -2751,7 +2761,7 @@ test("a disabled management route is tried once, retains manual wakes and return
 	assert.deepEqual(record(again.stops[0]).arguments, first.arguments);
 	assert.equal(calls, 1);
 	assert.equal(errors.length, 1);
-	assert.equal(runtime.store().getEffect("command:disabled-stop-command").state, "issued");
+	assert.equal(runtime.getDatabase().get("effects", "command:disabled-stop-command").state, "issued");
 });
 
 test("successful reporting returns while native delivery is still waiting for queue acceptance", async t => {
@@ -2760,12 +2770,12 @@ test("successful reporting returns while native delivery is still waiting for qu
 	const held = new Promise(resolve => { accept = resolve; });
 	t.after(() => accept({ resultType: "success" }));
 	const { runtime, task } = await settlementFixture(t, { execute: async () => held });
-	assert.equal(runtime.store().getTask(task.id).state, "done");
-	assert.equal(runtime.store().snapshot().wakes[0].inFlight, undefined);
-	assert.equal(runtime.store().snapshot().wakes[0].consumed, 1);
+	assert.equal(runtime.getDatabase().get("tasks", task.id).state, "done");
+	assert.equal(runtime.getDatabase().read(Context.snapshot).wakes[0].inFlight, undefined);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).wakes[0].consumed, 1);
 	accept({ resultType: "success" });
 	await runtime.flushNotifications();
-	assert.equal(runtime.store().snapshot().wakes[0].inFlight, undefined);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).wakes[0].inFlight, undefined);
 });
 
 test("an initially disabled cooperative stop creates one retained fallback instead of repeated retries", async t => {
@@ -2776,7 +2786,7 @@ test("an initially disabled cooperative stop creates one retained fallback inste
 		execute: async () => { calls++; return { resultType: "failure", error: "This session management tool is disabled" }; },
 	});
 	await runtime.operation("start_goal", { ...definition, tasks: [{ ...definition.tasks[0], checks: [] }] }, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	const prepared = record(await runtime.operation("dispatch", {}, "director"));
 	assert.ok(Array.isArray(prepared.prepared));
 	const args = record(prepared.prepared[0]).arguments;
@@ -2787,8 +2797,8 @@ test("an initially disabled cooperative stop creates one retained fallback inste
 	const first = record(await runtime.operation("advance", { goalId: task.goalId }, "director"));
 	const again = record(await runtime.operation("advance", { goalId: task.goalId }, "director"));
 	assert.deepEqual(again.stops, first.stops);
-	assert.equal(runtime.store().snapshot().effects.filter(effect => effect.kind === "stop").length, 2);
-	assert.equal(runtime.store().getEffect("command:first-disabled-command").state, "issued");
+	assert.equal(runtime.getDatabase().read(Context.snapshot).effects.filter(effect => effect.kind === "stop").length, 2);
+	assert.equal(runtime.getDatabase().get("effects", "command:first-disabled-command").state, "issued");
 	assert.equal(calls, 1);
 	assert.equal(errors.length, 1);
 });
@@ -2798,7 +2808,7 @@ for (const route of ["completion", "post-stop"]) {
 		let messages = 0;
 		const { runtime, task } = await settlementFixture(t, { execute: async () => { messages++; return { resultType: "success" }; } });
 		assert.equal(messages, 1);
-		assert.equal(runtime.store().getAttempt(text(runtime.store().getTask(task.id).currentAttemptId, "attempt")).slot, true);
+		assert.equal(runtime.getDatabase().get("attempts", text(runtime.getDatabase().get("tasks", task.id).currentAttemptId, "attempt")).slot, true);
 		if (route === "post-stop") {
 			runtime.post("stop_bash", { shellId: "settlement-shell" }, {
 				resultType: "success", textResultForLlm: "<command with id: settlement-shell stopped>",
@@ -2808,8 +2818,8 @@ for (const route of ["completion", "post-stop"]) {
 		runtime.toolComplete({ toolCallId: "settlement-command", success: true, shellExecution: { exitCode: 0 } }, "worker");
 		await runtime.flushNotifications();
 		assert.equal(messages, 2);
-		assert.equal(runtime.store().pendingWakes("director")[0].sent, 2);
-		assert.equal(runtime.store().snapshot().attempts[0].slot, false);
+		assert.equal(runtime.getDatabase().read(Wakes.pendingWakes, "director")[0].sent, 2);
+		assert.equal(runtime.getDatabase().read(Context.snapshot).attempts[0].slot, false);
 	});
 }
 
@@ -2820,7 +2830,7 @@ test("cancelled command settlement releases capacity and a failed send does not 
 		log: message => { errors.push(message); },
 		execute: async () => ({ resultType: ++messages === 1 ? "success" : "failure", error: "queue rejected" }),
 	});
-	runtime.store().cancelTask(task.id, "director");
+	runtime.getDatabase().write(Tasks.cancelTask, task.id, "director");
 	const event = { toolCallId: "settlement-command", success: true, shellExecution: { exitCode: 0 } };
 	runtime.toolComplete(event, "worker");
 	await runtime.flushNotifications();
@@ -2829,8 +2839,8 @@ test("cancelled command settlement releases capacity and a failed send does not 
 	await runtime.flushNotifications();
 	assert.equal(messages, 2);
 	assert.equal(errors.length, 1);
-	assert.equal(runtime.store().pendingWakes("director")[0].inFlight, undefined);
-	assert.equal(runtime.store().snapshot().attempts[0].slot, false);
+	assert.equal(runtime.getDatabase().read(Wakes.pendingWakes, "director")[0].inFlight, undefined);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).attempts[0].slot, false);
 });
 
 for (const outcome of ["success", "failure"]) test(`a newer wake survives an in-flight send returning ${outcome}`, async t => {
@@ -2848,7 +2858,7 @@ for (const outcome of ["success", "failure"]) test(`a newer wake survives an in-
 	} });
 	await runtime.operation("start_goal", { ...definition, limits: { workers: 2 },
 		tasks: Array.from({ length: 3 }, () => ({ ...definition.tasks[0], checks: [] })) }, "director");
-	const tasks = runtime.store().snapshot().tasks;
+	const tasks = runtime.getDatabase().read(Context.snapshot).tasks;
 	const workers = ["first-worker", "second-worker"];
 	const dispatch = record(await runtime.operation("dispatch", { taskIds: tasks.slice(0, 2).map(task => task.id) }, "director"));
 	assert.ok(Array.isArray(dispatch.prepared));
@@ -2868,8 +2878,8 @@ for (const outcome of ["success", "failure"]) test(`a newer wake survives an in-
 	accept({ resultType: outcome, ...(outcome === "failure" ? { error: "queue rejected" } : {}) });
 	await runtime.flushNotifications();
 	assert.equal(messages, 4);
-	assert.equal(runtime.store().pendingWakes("director")[0].sent, 4);
-	assert.equal(runtime.store().pendingWakes("director")[0].consumed, 3);
+	assert.equal(runtime.getDatabase().read(Wakes.pendingWakes, "director")[0].sent, 4);
+	assert.equal(runtime.getDatabase().read(Wakes.pendingWakes, "director")[0].consumed, 3);
 });
 
 for (const transition of ["directory", "close"]) {
@@ -2886,11 +2896,11 @@ for (const transition of ["directory", "close"]) {
 			entered();
 			return queued;
 		} });
-		const databasePath = runtime.store().databasePath;
+		const databasePath = runtime.getDatabase().databasePath;
 		runtime.toolComplete({ toolCallId: "settlement-command", success: true, shellExecution: { exitCode: 0 } }, "worker");
 		await sending;
 		await runtime.operation("advance", { goalId: task.goalId }, "director");
-		runtime.store().recordSignal({ goalId: task.goalId, kind: "observation", summary: "A newer observation arrived", references: [] }, "worker");
+		runtime.getDatabase().write(Feedback.recordSignal, { goalId: task.goalId, kind: "observation", summary: "A newer observation arrived", references: [] }, "worker");
 		if (transition === "close") runtime.close();
 		else {
 			const other = mkdtempSync(path.join(os.tmpdir(), "foundry-directory-"));
@@ -2898,7 +2908,7 @@ for (const transition of ["directory", "close"]) {
 			t.after(() => rmSync(other, { recursive: true, force: true }));
 			runtime.setDirectory(other);
 			await runtime.operation("start_goal", definition, "director");
-			assert.deepEqual(runtime.store().pendingWakes("director"), []);
+			assert.deepEqual(runtime.getDatabase().read(Wakes.pendingWakes, "director"), []);
 		}
 		accept({ resultType: "success" });
 		await runtime.flushNotifications();
@@ -2949,16 +2959,16 @@ for (const scenario of ["missing-from-worktree", "different-in-worktree", "bad-p
 		writeFileSync(path.join(directory, "unit.mjs"), "export const value = 2;\n");
 		await runtime.operation("start_goal", { ...definition, scope: { ...definition.scope, paths: ["unit.mjs"] },
 			tasks: [{ ...definition.tasks[0], checks: [check] }] }, "director");
-		const task = runtime.store().snapshot().tasks[0];
+		const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 		await runtime.operation("start_task", { taskId: task.id }, "director");
 		const checked = record(await runtime.operation("run_check", { taskId: task.id, checkId: "behavior", repair: true, publish: "unit" }, "director"));
 		if (scenario === "bad-pin" || scenario === "absent-object") {
 			assert.equal(checked.state, "blocked");
 			assert.equal(record(checked.evidence).blocker, "oracle-input");
-			assert.equal(runtime.store().snapshot().attempts.length, 1);
+			assert.equal(runtime.getDatabase().read(Context.snapshot).attempts.length, 1);
 		} else {
 			assert.equal(checked.state, "passed");
-			const [output] = runtime.store().getTask(task.id).outputs;
+			const [output] = runtime.getDatabase().get("tasks", task.id).outputs;
 			assert.equal(output.name, "unit");
 			assert.equal(existsSync(path.join(output.reference, "checks/probe.mjs")), false);
 			const receipt = JSON.parse(readFileSync(text(record(checked.evidence).reference, "receipt"), "utf8"));
@@ -2974,14 +2984,14 @@ async function issuedFileCheck(t) {
 	const { runtime, directory } = fixture(t);
 	writeFileSync(path.join(directory, "unit.mjs"), "export const value = 2;\n");
 	await runtime.operation("start_goal", { ...definition, tasks: [{ ...definition.tasks[0], checks: [artifactCheck] }] }, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	await runtime.operation("start_task", { taskId: task.id }, "director");
 	const prepared = record(await runtime.operation("prepare_check", { taskId: task.id, checkId: "behavior" }, "director"));
 	const args = record(prepared.arguments);
 	runtime.pre("bash", args, "director", "issued-file-check");
 	const effectId = text(prepared.effectId, "effect");
-	const receipt = text(record(runtime.store().getEffect(effectId).request).receipt, "receipt");
-	return { runtime, directory, task: runtime.store().getTask(task.id), args, effectId, receipt };
+	const receipt = text(record(runtime.getDatabase().get("effects", effectId).request).receipt, "receipt");
+	return { runtime, directory, task: runtime.getDatabase().get("tasks", task.id), args, effectId, receipt };
 }
 
 test("runner executes an issued command once and duplicate or legacy invocations cannot overwrite its result", async t => {
@@ -2998,17 +3008,17 @@ test("runner executes an issued command once and duplicate or legacy invocations
 	assert.equal(readFileSync(receipt, "utf8"), captured);
 	assert.deepEqual(readdirSync(path.dirname(receipt)), [path.basename(receipt)]);
 	runtime.post("bash", args, { resultType: "success", textResultForLlm: first.stdout }, "director");
-	assert.equal(runtime.store().getEffect(effectId).state, "settled");
-	const attempt = runtime.store().getAttempt(text(task.currentAttemptId, "attempt"));
+	assert.equal(runtime.getDatabase().get("effects", effectId).state, "settled");
+	const attempt = runtime.getDatabase().get("attempts", text(task.currentAttemptId, "attempt"));
 	const legacyId = "check:legacy";
 	const command = text(args.command, "command").replaceAll(effectId, legacyId);
-	runtime.store().recordEffect({ id: legacyId, attemptId: attempt.id, kind: "command", state: "issued",
+	runtime.getDatabase().write(Effects.recordEffect, { id: legacyId, attemptId: attempt.id, kind: "command", state: "issued",
 		request: { command, shellId: legacyId, checkId: "behavior", checkVersion: attempt.checks[0].version } }, "director");
 	const legacy = spawnSync("/bin/sh", ["-c", command], { encoding: "utf8" });
 	assert.equal(legacy.status, 1);
 	assert.equal(legacy.stdout, "");
 	assert.match(legacy.stderr, /receipt-bound/);
-	assert.equal(runtime.store().getEffect(legacyId).state, "issued");
+	assert.equal(runtime.getDatabase().get("effects", legacyId).state, "issued");
 	assert.deepEqual(readdirSync(path.dirname(receipt)), [path.basename(receipt)]);
 });
 
@@ -3026,7 +3036,7 @@ test("legacy flat check receipts are rejected rather than admitted as current ru
 	const output = `FOUNDRY_CHECK_RESULT:${Buffer.from(JSON.stringify(observation)).toString("base64")}`;
 	assert.throws(() => runtime.post("bash", args, { resultType: "success", textResultForLlm: output }, "director"),
 		{ code: "unsupported_receipt" });
-	assert.equal(runtime.store().evidenceForAttempt(text(runtime.store().getTask(task.id).currentAttemptId, "attempt")).length, 0);
+	assert.equal(runtime.getDatabase().read(Results.evidenceForAttempt, text(runtime.getDatabase().get("tasks", task.id).currentAttemptId, "attempt")).length, 0);
 });
 
 test("quoted historical check results cannot block or become evidence for an ordinary metadata command", async t => {
@@ -3039,10 +3049,10 @@ test("quoted historical check results cannot block or become evidence for an ord
 	runtime.pre("bash", metadata, "director", "metadata-after-check");
 	assert.doesNotThrow(() => runtime.post("bash", metadata, { resultType: "success", textResultForLlm: content }, "director"));
 	runtime.toolComplete({ toolCallId: "metadata-after-check", success: true, shellExecution: { exitCode: 0 }, result: { content } }, "director");
-	const ordinary = runtime.store().getEffect("command:metadata-after-check");
+	const ordinary = runtime.getDatabase().get("effects", "command:metadata-after-check");
 	assert.equal(ordinary?.state, "settled");
 	assert.equal(record(ordinary?.result).evidence, undefined);
-	assert.equal(runtime.store().getEffect(effectId).state, "settled");
+	assert.equal(runtime.getDatabase().get("effects", effectId).state, "settled");
 });
 
 test("lost tool output recovers the original finished receipt once and can publish without rerunning", async t => {
@@ -3050,18 +3060,18 @@ test("lost tool output recovers the original finished receipt once and can publi
 	const command = spawnSync("/bin/sh", ["-c", text(args.command, "command")], { encoding: "utf8" });
 	assert.equal(command.status, 0, command.stderr);
 	runtime.toolComplete({ toolCallId: "issued-file-check", success: true, result: { content: "" }, shellExecution: { exitCode: 0 } }, "director");
-	assert.equal(runtime.store().getEffect(effectId).state, "uncertain");
+	assert.equal(runtime.getDatabase().get("effects", effectId).state, "uncertain");
 	const recovered = record(await runtime.operation("run_check", { taskId: task.id, checkId: "behavior", publish: "unit" }, "director"));
 	assert.equal(recovered.effectId, effectId);
 	assert.equal(recovered.promoted, true);
 	assert.equal(record(recovered.evidence).source, "runner-receipt");
-	assert.equal(runtime.store().snapshot().effects.filter(effect => effect.kind === "command").length, 1);
-	assert.equal(runtime.store().evidenceForAttempt(text(recovered.attemptId, "attempt")).length, 1);
-	assert.ok(record(runtime.store().getEffect(effectId).result).nativeCompletion);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).effects.filter(effect => effect.kind === "command").length, 1);
+	assert.equal(runtime.getDatabase().read(Results.evidenceForAttempt, text(recovered.attemptId, "attempt")).length, 1);
+	assert.ok(record(runtime.getDatabase().get("effects", effectId).result).nativeCompletion);
 	runtime.post("bash", args, { resultType: "success", textResultForLlm: command.stdout }, "director");
 	const repeated = record(await runtime.operation("run_check", { taskId: task.id, checkId: "behavior", publish: "unit" }, "director"));
 	assert.equal(record(repeated.publication).state, "already-published");
-	assert.equal(runtime.store().snapshot().effects.filter(effect => effect.kind === "command").length, 1);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).effects.filter(effect => effect.kind === "command").length, 1);
 });
 
 test("a finished receipt cannot be admitted by another worker or an unrelated shell", async t => {
@@ -3072,7 +3082,7 @@ test("a finished receipt cannot be admitted by another worker or an unrelated sh
 	assert.throws(() => runtime.post("bash", args, result, "foreign"), /actual worker and assigned shell/);
 	assert.throws(() => runtime.post("bash", { ...args, shellId: "foreign-shell" }, result, "director"), /actual worker and assigned shell/);
 	await assert.rejects(runtime.operation("get_context", { goalId: task.goalId }, "foreign"), /no assignment/);
-	assert.equal(runtime.store().getEffect(effectId).state, "issued");
+	assert.equal(runtime.getDatabase().get("effects", effectId).state, "issued");
 });
 
 test("advance admits finished receipts, keeps started commands unknown and rejects changed receipt contents", async t => {
@@ -3081,7 +3091,7 @@ test("advance admits finished receipts, keeps started commands unknown and rejec
 	writeFileSync(receipt, JSON.stringify({ state: "started", effectId }), { flag: "wx" });
 	await runtime.operation("get_context", { taskId: task.id }, "director");
 	assert.equal(record(await runtime.operation("run_check", { taskId: task.id, checkId: "behavior" }, "director")).state, "pending-native-evidence");
-	assert.equal(runtime.store().getEffect(effectId).state, "issued");
+	assert.equal(runtime.getDatabase().get("effects", effectId).state, "issued");
 	rmSync(receipt);
 	const command = spawnSync("/bin/sh", ["-c", text(args.command, "command")], { encoding: "utf8" });
 	assert.equal(command.status, 0, command.stderr);
@@ -3091,14 +3101,14 @@ test("advance admits finished receipts, keeps started commands unknown and rejec
 	writeFileSync(receipt, JSON.stringify(changed));
 	await runtime.operation("get_context", { taskId: task.id }, "director");
 	await assert.rejects(runtime.operation("advance", { goalId: task.goalId }, "director"), /receipt content changed/);
-	assert.equal(runtime.store().getEffect(effectId).state, "issued");
+	assert.equal(runtime.getDatabase().get("effects", effectId).state, "issued");
 	writeFileSync(receipt, content);
 	await runtime.operation("get_context", { taskId: task.id }, "director");
-	assert.equal(runtime.store().getEffect(effectId).state, "issued");
+	assert.equal(runtime.getDatabase().get("effects", effectId).state, "issued");
 	await runtime.operation("advance", { goalId: task.goalId }, "director");
-	assert.equal(runtime.store().getEffect(effectId).state, "settled");
+	assert.equal(runtime.getDatabase().get("effects", effectId).state, "settled");
 	assert.equal(record(await runtime.operation("run_check", { taskId: task.id, checkId: "behavior" }, "director")).state, "passed");
-	assert.equal(runtime.store().snapshot().effects.filter(effect => effect.kind === "command").length, 1);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).effects.filter(effect => effect.kind === "command").length, 1);
 });
 
 test("a replaced attempt retains its finished receipt as history and a first-run refusal records no executed work", async t => {
@@ -3109,17 +3119,17 @@ test("a replaced attempt retains its finished receipt as history and a first-run
 			checks: [artifactCheck, { ...artifactCheck, id: "additional", origin: "derived" }] }, "director");
 		if (!finishBeforeRevision) assert.equal(spawnSync("/bin/sh", ["-c", text(args.command, "command")]).status, 0);
 		await runtime.operation("advance", { goalId: task.goalId }, "director");
-		const evidence = runtime.store().evidenceForAttempt(text(task.currentAttemptId, "attempt"));
+		const evidence = runtime.getDatabase().read(Results.evidenceForAttempt, text(task.currentAttemptId, "attempt"));
 		assert.equal(evidence.length, 1);
 		assert.equal(evidence[0].outcome, finishBeforeRevision ? "passed" : "failed");
-		assert.equal(runtime.store().getEffect(effectId).state, "settled");
-		assert.equal(runtime.store().getTask(task.id).state, "ready");
-		assert.deepEqual(runtime.store().getTask(task.id).outputs, []);
+		assert.equal(runtime.getDatabase().get("effects", effectId).state, "settled");
+		assert.equal(runtime.getDatabase().get("tasks", task.id).state, "ready");
+		assert.deepEqual(runtime.getDatabase().get("tasks", task.id).outputs, []);
 		const historical = record(await runtime.operation("run_check", { taskId: task.id, attemptId: task.currentAttemptId,
 			checkId: "behavior", publish: "unit", repair: true }, "director"));
 		assert.equal(finishBeforeRevision ? record(historical.publication).state : record(historical.continuation).state,
 			finishBeforeRevision ? "historical" : "not-repaired");
-		assert.equal(runtime.store().getTask(task.id).state, "ready");
+		assert.equal(runtime.getDatabase().get("tasks", task.id).state, "ready");
 		if (!finishBeforeRevision) assert.equal(JSON.parse(readFileSync(receipt, "utf8")).stdout, "");
 	}
 });
@@ -3128,19 +3138,19 @@ test("opt-in publication waits for complete checks, preserves pinned deliveries 
 	const { runtime, directory } = evaluatedFixture(t);
 	writeFileSync(path.join(directory, "unit.mjs"), "export const value = 2;\n");
 	await runtime.operation("start_goal", { ...definition, tasks: [{ ...definition.tasks[0], checks: [artifactCheck, { ...artifactCheck, id: "second" }] }] }, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	await runtime.operation("start_task", { taskId: task.id }, "director");
 	const partial = record(await runtime.operation("run_check", { taskId: task.id, checkId: "behavior", publish: "unit" }, "director"));
 	assert.deepEqual(record(partial.publication).missing, ["second"]);
-	assert.equal(runtime.store().getTask(task.id).state, "running");
-	assert.equal(runtime.store().resultsForAttempt(text(task.currentAttemptId ?? runtime.store().getTask(task.id).currentAttemptId, "attempt")).length, 0);
+	assert.equal(runtime.getDatabase().get("tasks", task.id).state, "running");
+	assert.equal(runtime.getDatabase().read(Results.resultsForAttempt, text(task.currentAttemptId ?? runtime.getDatabase().get("tasks", task.id).currentAttemptId, "attempt")).length, 0);
 	const final = record(await runtime.operation("run_check", { taskId: task.id, checkId: "second", publish: "unit" }, "director"));
 	assert.equal(final.promoted, true);
-	const output = runtime.store().getTask(task.id).outputs[0];
+	const output = runtime.getDatabase().get("tasks", task.id).outputs[0];
 	assert.equal(output.version, record(record(final.evidence).candidate).version);
 	await runtime.operation("evolve_task", { taskId: task.id, expectedVersion: 1,
 		checks: [artifactCheck, { ...artifactCheck, id: "second" }, { ...artifactCheck, id: "third", origin: "derived" }] }, "director");
-	assert.deepEqual(runtime.store().outputForInput({ taskId: task.id, output: "unit", version: output.version }), output);
+	assert.deepEqual(runtime.getDatabase().read(Tasks.outputForInput, { taskId: task.id, output: "unit", version: output.version }), output);
 });
 
 for (const reevaluateOther of [false, true]) test(`paused publication ${reevaluateOther ? "uses a fresh receipt-set identity" : "replays the unchanged receipt-set identity"} after restart`, async t => {
@@ -3161,7 +3171,7 @@ for (const reevaluateOther of [false, true]) test(`paused publication ${reevalua
 		tasks: [{ ...definition.tasks[0], id: "complete", checks: [artifactCheck, { ...artifactCheck, id: "second" }] }],
 	} });
 	await runtime.operation("start_factory", { source }, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	const batch = record(await runtime.operation("dispatch", {}, "director"));
 	assert.ok(Array.isArray(batch.prepared));
 	const call = record(batch.prepared[0]);
@@ -3170,17 +3180,17 @@ for (const reevaluateOther of [false, true]) test(`paused publication ${reevalua
 	await runtime.operation("run_check", { taskId: task.id, checkId: "second" }, "worker-b");
 	await runtime.operation("run_check", { taskId: task.id, checkId: "second" }, "worker-b");
 	await runtime.operation("run_check", { taskId: task.id, checkId: "behavior", publish: "unit" }, "worker-b");
-	const db = runtime.store();
-	const save = db.recordResult;
-	db.recordResult = (...args) => {
-		db.pauseFactories("director", "Pause after runtime validation and before canonical promotion", "fixture-factory");
-		return save(...args);
+	const db = runtime.getDatabase();
+	const write = db.write;
+	db.write = (operation, ...args) => {
+		if (Object.is(operation, Results.recordResult)) write(Jobs.pauseFactories, "director", "Pause after runtime validation and before canonical promotion", "fixture-factory");
+		return write(operation, ...args);
 	};
 	const paused = record(await runtime.operation("run_check", { taskId: task.id, checkId: "behavior", publish: "unit" }, "worker-b"));
-	db.recordResult = save;
+	db.write = write;
 	assert.equal(paused.promoted, false);
 	const original = record(paused.result);
-	assert.equal(runtime.store().getTask(task.id).state, "running");
+	assert.equal(runtime.getDatabase().get("tasks", task.id).state, "running");
 	assert.equal(executions, 2);
 	await runtime.operation("start_factory", { source }, "director");
 	if (reevaluateOther) {
@@ -3194,10 +3204,10 @@ for (const reevaluateOther of [false, true]) test(`paused publication ${reevalua
 	assert.equal(retried.promoted, true);
 	assert.equal(retried.effectId, paused.effectId);
 	assert.equal(record(retried.result).id === original.id, !reevaluateOther);
-	assert.equal(runtime.store().resultsForAttempt(text(call.attemptId, "attempt")).length, reevaluateOther ? 2 : 1);
+	assert.equal(runtime.getDatabase().read(Results.resultsForAttempt, text(call.attemptId, "attempt")).length, reevaluateOther ? 2 : 1);
 	assert.equal(executions, 2);
-	assert.equal(runtime.store().getTask(task.id).state, "done");
-	assert.equal(readFileSync(path.join(runtime.store().getTask(task.id).outputs[0].reference, "unit.mjs"), "utf8"), "export const value = 2;\n");
+	assert.equal(runtime.getDatabase().get("tasks", task.id).state, "done");
+	assert.equal(readFileSync(path.join(runtime.getDatabase().get("tasks", task.id).outputs[0].reference, "unit.mjs"), "utf8"), "export const value = 2;\n");
 });
 
 test("mixed-candidate publication preserves the check result without failing or publishing its task", async t => {
@@ -3205,15 +3215,15 @@ test("mixed-candidate publication preserves the check result without failing or 
 	const { runtime, directory } = evaluatedFixture(t, message => { errors.push(message); });
 	writeFileSync(path.join(directory, "unit.mjs"), "export const value = 2;\n");
 	await runtime.operation("start_goal", { ...definition, tasks: [{ ...definition.tasks[0], checks: [artifactCheck, { ...artifactCheck, id: "second" }] }] }, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	await runtime.operation("start_task", { taskId: task.id }, "director");
 	await runtime.operation("run_check", { taskId: task.id, checkId: "behavior", publish: "unit" }, "director");
 	writeFileSync(path.join(directory, "unit.mjs"), "export const value = 3;\n");
 	const mixed = record(await runtime.operation("run_check", { taskId: task.id, checkId: "second", publish: "unit" }, "director"));
 	assert.equal(mixed.state, "passed");
 	assert.equal(record(mixed.publication).code, "mixed_candidate_checks");
-	assert.equal(runtime.store().getTask(task.id).state, "running");
-	assert.equal(runtime.store().resultsForAttempt(text(runtime.store().getTask(task.id).currentAttemptId, "attempt")).length, 0);
+	assert.equal(runtime.getDatabase().get("tasks", task.id).state, "running");
+	assert.equal(runtime.getDatabase().read(Results.resultsForAttempt, text(runtime.getDatabase().get("tasks", task.id).currentAttemptId, "attempt")).length, 0);
 	assert.equal(errors.length, 1);
 });
 
@@ -3221,7 +3231,7 @@ test("publication without declared artifacts is rejected before executing a nati
 	let calls = 0;
 	const { runtime } = fixture(t, { execute: async () => { calls++; return { resultType: "success" }; } });
 	await runtime.operation("start_goal", definition, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	await runtime.operation("start_task", { taskId: task.id }, "director");
 	await assert.rejects(runtime.operation("run_check", { taskId: task.id, checkId: "behavior", publish: "unit" }, "director"), /artifact-bound/);
 	assert.equal(calls, 0);
@@ -3245,9 +3255,9 @@ for (const transition of ["directory", "close"]) {
 		} });
 		writeFileSync(path.join(directory, "unit.mjs"), "export const value = 2;\n");
 		await runtime.operation("start_goal", { ...definition, tasks: [{ ...definition.tasks[0], checks: [artifactCheck] }] }, "director");
-		const task = runtime.store().snapshot().tasks[0];
+		const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 		await runtime.operation("start_task", { taskId: task.id }, "director");
-		const databasePath = runtime.store().databasePath;
+		const databasePath = runtime.getDatabase().databasePath;
 		const checking = runtime.operation("run_check", { taskId: task.id, checkId: "behavior" }, "director");
 		await issuing;
 		if (transition === "close") runtime.close();
@@ -3257,7 +3267,7 @@ for (const transition of ["directory", "close"]) {
 			t.after(() => rmSync(other, { recursive: true, force: true }));
 			runtime.setDirectory(other);
 			await runtime.operation("start_goal", definition, "director");
-			assert.equal(runtime.store().snapshot().effects.length, 0);
+			assert.equal(runtime.getDatabase().read(Context.snapshot).effects.length, 0);
 		}
 		continueNative();
 		assert.equal(record(await checking).state, "passed");
@@ -3273,7 +3283,7 @@ test("file checks run on captured code and publication cannot substitute the lat
 	writeFileSync(path.join(directory, "unit.mjs"), "export const value = 2;\n");
 	const command = `node --input-type=module -e 'import fs from "node:fs"; fs.writeFileSync(${JSON.stringify(path.join(directory, "unit.mjs"))}, "export const value = 99;\\n"); const { value } = await import("./unit.mjs"); if (value !== 2) process.exit(1)'`;
 	await runtime.operation("start_goal", { ...definition, tasks: [{ ...definition.tasks[0], checks: [{ ...artifactCheck, command }] }] }, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	await runtime.operation("start_task", { taskId: task.id }, "director");
 	const checked = record(await runtime.operation("run_check", { taskId: task.id, checkId: "behavior" }, "director"));
 	const candidate = record(record(checked.evidence).candidate);
@@ -3283,10 +3293,10 @@ test("file checks run on captured code and publication cannot substitute the lat
 		outputs: [{ name: "unit", kind: "code", reference: "unit.mjs", version: "untested" }] }, "director"), /candidate version/);
 	await runtime.operation("report_result", { taskId: task.id, summary: "Publish exactly evaluated code",
 		outputs: [{ name: "unit", kind: "code", reference: "unit.mjs", version: candidate.version }] }, "director");
-	const output = runtime.store().getTask(task.id).outputs[0];
+	const output = runtime.getDatabase().get("tasks", task.id).outputs[0];
 	assert.notEqual(output.reference, path.join(directory, "unit.mjs"));
 	assert.equal(readFileSync(output.reference, "utf8"), "export const value = 2;\n");
-	assert.equal(readCandidate(output.reference, output.version, runtime.store().databasePath)?.version, candidate.version);
+	assert.equal(readCandidate(output.reference, output.version, runtime.getDatabase().databasePath)?.version, candidate.version);
 	writeFileSync(path.join(directory, "unit.mjs"), "export const value = 2;\n");
 	await runtime.operation("evolve_task", { taskId: task.id, expectedVersion: 1, checks: [
 		{ ...artifactCheck, command }, { ...artifactCheck, id: "additional", origin: "derived",
@@ -3298,21 +3308,21 @@ test("file checks run on captured code and publication cannot substitute the lat
 	await runtime.operation("run_check", { taskId: task.id, checkId: "additional" }, "director");
 	await runtime.operation("report_result", { taskId: task.id, summary: "Reevaluated identical code",
 		outputs: [{ name: "unit", kind: "code", reference: "unit.mjs", version: candidate.version }] }, "director");
-	assert.deepEqual(runtime.store().getTask(task.id).outputs[0], output);
+	assert.deepEqual(runtime.getDatabase().get("tasks", task.id).outputs[0], output);
 });
 
 test("canonical publication selects latest admitted candidates and replay never rematerializes them", async t => {
 	const { runtime, directory } = evaluatedFixture(t);
 	writeFileSync(path.join(directory, "unit.mjs"), "export const value = 2;\n");
 	await runtime.operation("start_goal", { ...definition, tasks: [{ ...definition.tasks[0], checks: [artifactCheck] }] }, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	await runtime.operation("start_task", { taskId: task.id }, "director");
 	await runtime.operation("run_check", { taskId: task.id, checkId: "behavior" }, "director");
 	writeFileSync(path.join(directory, "unit.mjs"), "export const value = 3;\n");
 	const candidate = record(record(record(await runtime.operation("run_check", { taskId: task.id, checkId: "behavior" }, "director")).evidence).candidate);
-	const attemptId = text(runtime.store().getTask(task.id).currentAttemptId, "attempt");
+	const attemptId = text(runtime.getDatabase().get("tasks", task.id).currentAttemptId, "attempt");
 	const observation = { id: "canonical-publication", attemptId, state: /** @type {const} */ ("done"),
-		summary: "Publish the latest admitted candidate", evidence: runtime.store().evidenceForAttempt(attemptId).reverse(), findings: [],
+		summary: "Publish the latest admitted candidate", evidence: runtime.getDatabase().read(Results.evidenceForAttempt, attemptId).reverse(), findings: [],
 		outputs: [{ name: "unit", kind: /** @type {const} */ ("code"), reference: "unit.mjs", version: text(candidate.version, "candidate version") }] };
 	writeFileSync(path.join(directory, "unit.mjs"), "export const value = 4;\n");
 	const later = record(await runtime.operation("prepare_check", { taskId: task.id, checkId: "behavior" }, "director"));
@@ -3320,14 +3330,14 @@ test("canonical publication selects latest admitted candidates and replay never 
 	runtime.pre("bash", args, "director", "late-candidate");
 	const finished = spawnSync("/bin/sh", ["-c", text(args.command, "command")], { encoding: "utf8" });
 	assert.equal(finished.status, 0, finished.stderr);
-	const published = runtime.store().recordResult(observation, "director");
+	const published = runtime.getDatabase().write(Results.recordResult, observation, "director");
 	assert.equal(published.promoted, true);
 	const output = published.result.outputs[0];
 	assert.equal(readFileSync(output.reference, "utf8"), "export const value = 3;\n");
 	runtime.post("bash", args, { resultType: "success", textResultForLlm: finished.stdout }, "director");
-	assert.equal(runtime.store().evidenceForAttempt(attemptId).length, 3);
+	assert.equal(runtime.getDatabase().read(Results.evidenceForAttempt, attemptId).length, 3);
 	rmSync(path.join(text(candidate.reference, "original captured candidate"), "unit.mjs"));
-	assert.deepEqual(runtime.store().recordResult(observation, "director"), published);
+	assert.deepEqual(runtime.getDatabase().write(Results.recordResult, observation, "director"), published);
 	assert.equal(readFileSync(output.reference, "utf8"), "export const value = 3;\n");
 });
 
@@ -3335,7 +3345,7 @@ test("damaged historical candidate files do not block a newer genuine failed rep
 	const { runtime, directory } = evaluatedFixture(t);
 	writeFileSync(path.join(directory, "unit.mjs"), "export const value = 2;\n");
 	await runtime.operation("start_goal", { ...definition, tasks: [{ ...definition.tasks[0], checks: [artifactCheck] }] }, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	await runtime.operation("start_task", { taskId: task.id }, "director");
 	const earlier = record(record(record(await runtime.operation("run_check", { taskId: task.id, checkId: "behavior" }, "director")).evidence).candidate);
 	writeFileSync(path.join(directory, "unit.mjs"), "export const value = 1;\n");
@@ -3343,7 +3353,7 @@ test("damaged historical candidate files do not block a newer genuine failed rep
 	writeFileSync(path.join(text(earlier.reference, "historical candidate"), "unit.mjs"), "damaged old candidate");
 	assert.equal(record(await runtime.operation("report_result", { taskId: task.id, state: "failed",
 		summary: "Latest assigned evaluation genuinely failed" }, "director")).promoted, true);
-	assert.equal(runtime.store().getTask(task.id).state, "failed");
+	assert.equal(runtime.getDatabase().get("tasks", task.id).state, "failed");
 });
 
 test("mixed passing candidate checks require final reevaluation rather than publishing the last passing file", async t => {
@@ -3351,17 +3361,17 @@ test("mixed passing candidate checks require final reevaluation rather than publ
 	writeFileSync(path.join(directory, "unit.mjs"), "export const value = 2;\n");
 	await runtime.operation("start_goal", { ...definition, tasks: [{ ...definition.tasks[0],
 		checks: [artifactCheck, { ...artifactCheck, id: "second" }] }] }, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	await runtime.operation("start_task", { taskId: task.id }, "director");
 	const earlier = record(record(record(await runtime.operation("run_check", { taskId: task.id, checkId: "behavior" }, "director")).evidence).candidate);
 	writeFileSync(path.join(directory, "unit.mjs"), "export const value = 3;\n");
 	await runtime.operation("run_check", { taskId: task.id, checkId: "second" }, "director");
 	await assert.rejects(runtime.operation("report_result", { taskId: task.id, summary: "Both checks passed" }, "director"), /different candidates/);
 	await runtime.operation("run_check", { taskId: task.id, checkId: "behavior" }, "director");
-	const attemptId = text(runtime.store().getTask(task.id).currentAttemptId, "attempt");
-	assert.throws(() => runtime.store().recordResult({ id: "older-candidate-cannot-override-latest", attemptId, state: "done",
+	const attemptId = text(runtime.getDatabase().get("tasks", task.id).currentAttemptId, "attempt");
+	assert.throws(() => runtime.getDatabase().write(Results.recordResult, { id: "older-candidate-cannot-override-latest", attemptId, state: "done",
 		summary: "Includes every real pass but tries publishing an earlier candidate", findings: [],
-		evidence: runtime.store().evidenceForAttempt(attemptId),
+		evidence: runtime.getDatabase().read(Results.evidenceForAttempt, attemptId),
 		outputs: [{ name: "unit", kind: "code", reference: path.join(text(earlier.reference, "old materialization"), "unit.mjs"),
 			version: text(earlier.version, "old version") }] }, "director"), /declared evaluated artifact/);
 	assert.equal(record(await runtime.operation("report_result", { taskId: task.id, summary: "One final candidate checked" }, "director")).promoted, true);
@@ -3385,7 +3395,7 @@ test("integration evaluates its own final bundle and detects mutation of a publi
 	const integrated = record(await runtime.operation("run_check", { taskId: "integration", checkId: "behavior" }, "director"));
 	assert.equal(integrated.state, "passed");
 	assert.notEqual(record(record(integrated.evidence).candidate).version, source.version);
-	writeFileSync(runtime.store().getTask("source-unit").outputs[0].reference, "export const value = 9;\n");
+	writeFileSync(runtime.getDatabase().get("tasks", "source-unit").outputs[0].reference, "export const value = 9;\n");
 	const mutated = record(await runtime.operation("run_check", { taskId: "integration", checkId: "behavior" }, "director"));
 	assert.equal(mutated.state, "failed");
 	assert.match(text(record(mutated.evidence).summary, "failure summary"), /Evaluated artifact changed/);
@@ -3393,18 +3403,18 @@ test("integration evaluates its own final bundle and detects mutation of a publi
 	const blocked = record(await runtime.operation("run_check", { taskId: "integration", checkId: "behavior", repair: true }, "director"));
 	assert.equal(blocked.state, "blocked");
 	assert.equal(record(blocked.result).state, "blocked");
-	assert.equal(runtime.store().getTask("integration").state, "blocked");
-	assert.equal(runtime.store().snapshot().attempts.length, 2);
+	assert.equal(runtime.getDatabase().get("tasks", "integration").state, "blocked");
+	assert.equal(runtime.getDatabase().read(Context.snapshot).attempts.length, 2);
 });
 
 test("artifact failures remain checked failures for same-worker repair, while escaped candidates are never captured", async t => {
 	const { runtime, directory } = evaluatedFixture(t);
 	await assert.rejects(runtime.operation("start_goal", { ...definition, scope: { ...definition.scope, paths: ["allowed"] },
 		tasks: [{ ...definition.tasks[0], checks: [artifactCheck] }] }, "director"), /inside this task's paths/);
-	assert.equal(runtime.store().snapshot().goals.length, 0);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).goals.length, 0);
 	writeFileSync(path.join(directory, "unit.mjs"), "export const value = 1;\n");
 	await runtime.operation("start_goal", { ...definition, tasks: [{ ...definition.tasks[0], checks: [artifactCheck] }] }, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	await runtime.operation("start_task", { taskId: task.id }, "director");
 	const failed = record(await runtime.operation("run_check", { taskId: task.id, checkId: "behavior", repair: true }, "director"));
 	assert.equal(record(failed.result).state, "failed");
@@ -3425,35 +3435,35 @@ test("partial dispatch returns the reserved call when another task reaches capac
 	assert.ok(prepared && typeof prepared === "object" && "prepared" in prepared && prepared.prepared && "blocked" in prepared && prepared.blocked);
 	assert.equal(prepared.prepared.length, 1);
 	assert.equal(prepared.blocked.length, 1);
-	assert.equal(runtime.store().snapshot().attempts.length, 1);
+	assert.equal(runtime.getDatabase().read(Context.snapshot).attempts.length, 1);
 });
 
 test("native process completion settles an ordinary command without inventing passed check evidence", async t => {
 	const { runtime } = fixture(t);
 	await runtime.operation("start_goal", definition, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	await runtime.operation("start_task", { taskId: task.id }, "director");
 	runtime.pre("bash", { command: "node -e 'process.exit(1)'" }, "director", "ordinary-command");
-	assert.equal(runtime.store().snapshot().effects[0].state, "issued");
+	assert.equal(runtime.getDatabase().read(Context.snapshot).effects[0].state, "issued");
 	runtime.toolComplete({
 		toolCallId: "ordinary-command", success: true, shellExecution: { exitCode: 1 },
 		result: { content: "<shellId: test-shell completed with exit code 1>" },
 	}, "director");
-	assert.equal(runtime.store().snapshot().effects[0].state, "settled");
+	assert.equal(runtime.getDatabase().read(Context.snapshot).effects[0].state, "settled");
 	const result = await runtime.operation("report_result", { taskId: task.id, state: "failed", summary: "The ordinary command failed; the assigned check did not run" }, "director");
 	assert.ok(result && typeof result === "object" && "promoted" in result && result.promoted);
-	const attemptId = runtime.store().getTask(task.id).currentAttemptId;
+	const attemptId = runtime.getDatabase().get("tasks", task.id).currentAttemptId;
 	assert.ok(attemptId);
-	assert.equal(runtime.store().getAttempt(attemptId).slot, false);
+	assert.equal(runtime.getDatabase().get("attempts", attemptId).slot, false);
 	await runtime.operation("retry_task", { taskId: task.id, attemptId }, "director");
 	await runtime.operation("start_task", { taskId: task.id }, "director");
-	assert.notEqual(runtime.store().getTask(task.id).currentAttemptId, attemptId);
+	assert.notEqual(runtime.getDatabase().get("tasks", task.id).currentAttemptId, attemptId);
 });
 
 test("a native creation cannot be issued twice with different call identities", async t => {
 	const { runtime } = fixture(t);
 	await runtime.operation("start_goal", definition, "director");
-	const task = runtime.store().snapshot().tasks[0];
+	const task = runtime.getDatabase().read(Context.snapshot).tasks[0];
 	const calls = await runtime.operation("dispatch", { taskIds: [task.id] }, "director");
 	assert.ok(calls && typeof calls === "object" && "prepared" in calls);
 	const prepared = calls.prepared;
@@ -3465,7 +3475,7 @@ test("a native creation cannot be issued twice with different call identities", 
 test("board escapes stored content and protects its scoped loopback endpoint", async t => {
 	const { runtime } = fixture(t);
 	await runtime.operation("start_goal", { ...definition, title: "<script>alert(1)</script>" }, "director");
-	const snapshot = runtime.store().snapshot();
+	const snapshot = runtime.getDatabase().read(Context.snapshot);
 	assert.match(renderBoard(snapshot), /&lt;script&gt;/);
 	assert.doesNotMatch(renderBoard(snapshot), /<script>alert/);
 	const board = await startBoard({ snapshot: () => snapshot, log: message => { throw new Error(message); } });

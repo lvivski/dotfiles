@@ -2,7 +2,9 @@ import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { openWorkStore } from "./store.mjs";
+import * as Landing from "./landing.mjs";
+import * as Tasks from "./tasks.mjs";
+import { openDatabase } from "./database.mjs";
 import { FoundryError, digest, json, record } from "./values.mjs";
 import { captureCandidate, readCandidate, verifyCandidate } from "./artifacts.mjs";
 import { checkReceiptPath } from "./native.mjs";
@@ -13,14 +15,14 @@ const sha256 = value => createHash("sha256").update(value).digest("hex");
 
 const [directory, attemptId, checkId, effectId] = process.argv.slice(2);
 if (!directory || !attemptId || !checkId || !effectId) throw new Error("Usage: runner.mjs WORKING_DIRECTORY ATTEMPT_ID CHECK_ID EFFECT_ID");
-const store = openWorkStore(directory);
+const store = openDatabase(directory);
 try {
-	const attempt = store.getAttempt(attemptId);
-	const task = store.getTask(attempt.taskId);
-	const goal = store.getGoal(task.goalId);
+	const attempt = store.get("attempts", attemptId);
+	const task = store.get("tasks", attempt.taskId);
+	const goal = store.get("goals", task.goalId);
 	const check = attempt.checks.find(item => item.id === checkId);
 	if (!check || !check.command) throw new FoundryError("invalid_check", "Expected the assigned executable check procedure");
-	const effect = store.getEffect(effectId);
+	const effect = store.get("effects", effectId);
 	const reference = checkReceiptPath(store, effectId);
 	if (effect.attemptId !== attemptId || effect.kind !== "command" || !["issued", "uncertain"].includes(effect.state)
 		|| typeof effect.request !== "object" || effect.request === null || Array.isArray(effect.request)
@@ -35,7 +37,7 @@ try {
 		throw new FoundryError("unsafe_evidence_path", "Evidence must remain in the repository's Foundry directory");
 	}
 	writeFileSync(reference, JSON.stringify({ state: "started", effectId, attemptId, checkId }), { flag: "wx", mode: 0o600 });
-	const inputOutputs = attempt.inputs.map(input => ({ taskId: input.taskId, output: store.outputForInput(input) }));
+	const inputOutputs = attempt.inputs.map(input => ({ taskId: input.taskId, output: store.read(Tasks.outputForInput, input) }));
 	const raw = {
 		effectId, attemptId, checkId, checkVersion: check.version, command: check.command,
 		inputs: attempt.inputs,
@@ -73,7 +75,7 @@ try {
 			}
 		};
 		verifyInputs();
-		raw.product = store.productCheckPlan(attempt.id);
+		raw.product = store.write(Landing.productCheckPlan, attempt.id);
 		const productRoot = raw.product ? materializeProduct(store.databasePath, raw.product.tree) : undefined;
 		// Product qualification must find the pinned bytes in the actual joined tree, never in an overlay.
 		if (check.artifactFiles) raw.candidate = captureCandidate(productRoot ?? directory, check.artifactFiles, check.oracleFiles ?? [], task.scope.paths, store.databasePath, productRoot ? undefined : check.oracleCommit);

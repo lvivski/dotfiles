@@ -608,11 +608,11 @@ Both extensions load independently; factory execution does not require analysis 
 
 Modules in `work/` use single-word filenames and each has one responsibility.
 
-`store.mjs` preserves the public API and establishes each operation's read or write transaction.
-`database.mjs` owns the single SQLite connection, schema, filesystem integrity checks and typed
-record primitives; `records.mjs` owns stored-record decoding. Domain functions take the current
-transaction explicitly and call each other directly, never the transaction-wrapped public API.
-Each operation has one canonical implementation, without forwarding aliases.
+`database.mjs` owns the SQLite connection, schema, filesystem integrity checks and transaction
+boundaries. Call the domain operation directly: `db.read(Context.readyTasks, actor)` or
+`db.write(Attempts.prepareAttempt, taskId, actor)`. Reads cannot write. Use `db.get("tasks", id)`
+for a single typed record. Domain functions receive the current transaction and pass it to other
+domain functions; they never open nested transactions. `records.mjs` decodes stored records.
 
 | Module | Responsibility |
 | --- | --- |
