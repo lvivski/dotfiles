@@ -91,13 +91,13 @@ export function createRuntime(options) {
 			.finally(() => notifications.delete(pending));
 		notifications.add(pending);
 	}
-	/** @param {Store} db @param {string} actor @param {string} goalId */
-	function queueWakes(db, actor, goalId) {
+	/** @param {Store} db @param {string} actor @param {string} goalId @param {string[]} [owners] */
+	function queueWakes(db, actor, goalId, owners) {
 		if (!options.execute || closed || database !== db || !db.outgoingWakes(actor, true).some(wake =>
 			(wake.goalId === goalId || db.canRelayOutput(wake.id, actor, goalId) || db.canRelayCollaboration(wake.id, actor))
-			&& db.wakeHasCurrentRecipient(wake.id))) return;
+			&& (!owners || owners.includes(wake.owner)) && db.wakeHasCurrentRecipient(wake.id))) return;
 		retain(db);
-		trackDelivery(Promise.resolve().then(() => database === db ? deliverWakes(actor, undefined, goalId, true, db) : undefined)
+		trackDelivery(Promise.resolve().then(() => database === db ? deliverWakes(actor, undefined, goalId, true, db, owners) : undefined)
 			.finally(() => release(db)));
 	}
 	/** @param {Store} db @param {string} actor @param {string} goalId */
@@ -295,13 +295,13 @@ export function createRuntime(options) {
 			reportTo: task.parentId ? db.getTask(task.parentId).owner : db.getGoal(task.goalId).owner,
 		};
 	}
-	/** @param {string} actor @param {string|undefined} attemptId @param {string} [goalId] @param {boolean} [worker] @param {Store} [db] */
-	async function deliverWakes(actor, attemptId, goalId, worker = false, db = store()) {
+	/** @param {string} actor @param {string|undefined} attemptId @param {string} [goalId] @param {boolean} [worker] @param {Store} [db] @param {string[]} [owners] */
+	async function deliverWakes(actor, attemptId, goalId, worker = false, db = store(), owners) {
 		retain(db);
 		try {
 			const pending = db.outgoingWakes(actor, worker || attemptId !== undefined).filter(wake =>
 				(goalId === undefined || wake.goalId === goalId || db.canRelayCollaboration(wake.id, actor)
-					|| db.canRelayOutput(wake.id, actor, goalId)) && db.wakeHasCurrentRecipient(wake.id));
+					|| db.canRelayOutput(wake.id, actor, goalId)) && (!owners || owners.includes(wake.owner)) && db.wakeHasCurrentRecipient(wake.id));
 			/** @type {Array<{owner:string,generation:number,state:string,error?:string}>} */
 			const delivery = [];
 			await Promise.all(pending.map(async wake => {
@@ -512,6 +512,7 @@ export function createRuntime(options) {
 			case "observe_work": {
 				const db = store(), result = db.observeWork(args, actor);
 				if (result.squad) queueWakes(db, actor, result.squad.goalId);
+				if (result.item && result.sourceWake) queueWakes(db, actor, result.sourceWake.goalId, result.sourceWake.owners);
 				return result;
 			}
 			case "pull_work": return store().pullWork(args, actor);

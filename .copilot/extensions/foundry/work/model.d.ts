@@ -85,6 +85,7 @@ export interface BacklogView {
 		activation: number;
 		active: boolean;
 		requiredProducts: (ProductRule & { sources: { itemId: string; title: string; state: BacklogItem["state"]; resultId?: string }[] })[];
+		awaitingSources?: string[];
 		pinned?: FactoryControl["pin"];
 		knowledgeFiles: Record<string, unknown>[];
 		readyItems: string[];

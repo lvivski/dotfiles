@@ -8,8 +8,8 @@ import test from "node:test";
 import { createRuntime } from "./runtime.mjs";
 import { record, text } from "./values.mjs";
 
-/** @param {import("node:test").TestContext} t @param {boolean} [lineage] */
-async function setup(t, lineage = false) {
+/** @param {import("node:test").TestContext} t @param {boolean} [lineage] @param {boolean} [mixed] */
+async function setup(t, lineage = false, mixed = false) {
 	const root = mkdtempSync(path.join(os.tmpdir(), "foundry-discovery-"));
 	execFileSync("git", ["init", "-q", root]);
 	mkdirSync(path.join(root, ".foundry"));
@@ -27,14 +27,19 @@ async function setup(t, lineage = false) {
 			checks: [{ id: "scenario", kind: "command", requirement: "Pass the checked scenario", command: `grep -qx correct ${id}/product.txt`, artifactFiles: (lineage && id === "design" ? names : [id]).map(name => `${name}/product.txt`) }],
 		})) },
 		...(lineage ? { requiredProducts: [{ consumer: "design", producer: "mail", output: "folder-store" }, {consumer: "design", producer: "quality", output: "editor-routing"}] } : {}),
-		charters: names.map(name => ({ name, taskIds: [name], outcomes: outcomes.map(outcome => outcome.id), scope: { paths: lineage && name === "design" ? names : [name], workTypes: ["product"] },
+		charters: names.map(name => ({ name, taskIds: mixed && name === "design" ? [name, "mail"] : [name], outcomes: outcomes.map(outcome => outcome.id), scope: { paths: lineage && name === "design" ? names : [name], workTypes: ["product"] },
 			context: ["Compare scoped evidence to the desired behavior."], knowledgeFiles: [knowledge], discoveryLimit: 1 })) };
 	for (const name of names) { mkdirSync(path.join(root, name)); writeFileSync(path.join(root, name, "product.txt"), "correct\n"); }
 	writeFileSync(path.join(root, source), JSON.stringify(policy));
 	let worker = "leaf", receipt = 0;
+	/** @type {string[]} */
+	const recipients = [];
 	const runtime = createRuntime({ directory: root, readMode: async () => "interactive", log() {},
 		execute: async (name, args) => {
-			if (name === "send_session_message") return { resultType: "success", textResultForLlm: "Queued" };
+			if (name === "send_session_message") {
+				recipients.push(text(record(args).session_id, "recipient"));
+				return { resultType: "success", textResultForLlm: "Queued" };
+			}
 			assert.equal(name, "bash");
 			runtime.pre(name, args, worker, `receipt-call-${++receipt}`);
 			const execution = spawnSync("/bin/sh", ["-c", text(record(args).command, "oracle")], { encoding: "utf8" });
@@ -73,7 +78,21 @@ async function setup(t, lineage = false) {
 	function admit(actor, gapKey, extra) {
 		return text(record(db.observeWork(observation(actor, gapKey, extra), actor).item).id, "admitted item");
 	}
-	return { root, runtime, db, binding, observation, admit, policy, source, knowledge, selectWorker(/** @type {string} */ name) { worker = name; } };
+	/** @param {string} actor @param {string} itemId @param {string} publish */
+	async function produce(actor, itemId, publish) {
+		const { tasks } = db.pullWork({ ...binding(actor), itemId }, actor);
+		const taskId = text(tasks?.[0].id, "product task");
+		const call = record(await runtime.operation("dispatch", { taskIds: [taskId] }, actor));
+		assert.ok(Array.isArray(call.prepared));
+		const args = call.prepared[0].arguments;
+		worker = `${itemId}-worker`;
+		runtime.pre("create_session", args, actor, itemId);
+		runtime.post("create_session", args, { id: worker }, actor);
+		const result = record(await runtime.operation("run_check", { taskId, checkId: "scenario", publish }, worker));
+		assert.equal(result.promoted, true);
+		return db.getTask(taskId);
+	}
+	return { root, runtime, db, binding, observation, admit, policy, source, knowledge, recipients, produce };
 }
 
 test("cold discovery requires binding and verified evidence; duplicate, advisory, scope and empty-lane dispositions create no demand", async t => {
@@ -338,28 +357,69 @@ test("bound peers can commit an existing scoped output, deliver it directly and 
 	assert.ok(db.readyTasks("quality", target.item.goalId, true).some(task => task.id === target.tasks?.[0].id));
 });
 
+test("a cold join waits without peer ID requests; admitting its last missing source wakes only its owner once", async t => {
+	const { db, runtime, binding, observation, admit, recipients, produce } = await setup(t, true);
+	const consumer = db.backlog("design").squads[0];
+	const advance = async () => record(await runtime.operation("advance", { goalId: consumer.goalId }, "design"));
+	assert.deepEqual((await advance()).squadActions, []);
+	assert.deepEqual(consumer.awaitingSources, ["folder-store", "editor-routing"]);
+	await runtime.operation("wait_task", { taskId: consumer.taskId, attemptId: db.getTask(consumer.taskId).currentAttemptId,
+		kind: "events", handledGeneration: db.getTask(consumer.taskId).coordination?.generation, reason: "Waiting for canonical source items" }, "design");
+	const before = binding("design").generation, unrelated = binding("quality").generation;
+	const first = admit("quality", "routing");
+	assert.equal(binding("design").generation, before);
+	assert.deepEqual(db.squadTurns("design").actions, []);
+	assert.equal(db.squadTurns("quality").actions[0]?.tool, "foundry_pull_work");
+	await runtime.operation("observe_work", observation("mail", "not-admitted", { kind: "advisory" }), "mail");
+	assert.equal(binding("design").generation, before);
+	const input = observation("mail", "folders");
+	await runtime.flushNotifications();
+	const sent = recipients.length;
+	const second = text(record(record(await runtime.operation("observe_work", input, "mail")).item).id, "last source");
+	await runtime.operation("observe_work", input, "mail");
+	await runtime.flushNotifications();
+	assert.deepEqual(recipients.slice(sent), ["design"]);
+	assert.equal(binding("design").generation, before + 1);
+	assert.equal(binding("quality").generation, unrelated);
+	const wake = db.snapshot().wakes.find(w => w.owner === "design" && w.goalId === consumer.goalId);
+	assert.ok(wake && wake.sent === wake.generation && wake.sent > wake.consumed);
+	const { squadActions } = await advance();
+	assert.ok(Array.isArray(squadActions));
+	assert.equal(squadActions[0].tool, "foundry_observe_work");
+	const sources = Object.fromEntries(db.backlog("design").squads[0].requiredProducts.map(rule => [rule.output, rule.sources[0].itemId]));
+	assert.deepEqual(sources, { "folder-store": second, "editor-routing": first });
+	const join = admit("design", "join", { sources });
+	assert.deepEqual(db.backlog("design").squads[0].readyItems, []);
+	assert.throws(() => db.pullWork({ ...binding("design"), itemId: join }, "design"), { code: "not_highest_ready" });
+	await produce("quality", first, "editor-routing");
+	await runtime.flushNotifications();
+	assert.deepEqual(db.backlog("design").squads[0].readyItems, []);
+	const beforePublish = recipients.length;
+	await produce("mail", second, "folder-store");
+	await runtime.flushNotifications();
+	assert.ok(recipients.slice(beforePublish).includes("design"));
+	const pickup = (await advance()).squadActions;
+	assert.ok(Array.isArray(pickup));
+	assert.equal(pickup[0].arguments.itemId, join);
+	await produce("design", pickup[0].arguments.itemId, "product");
+	assert.equal(db.pullWork(pickup[0].arguments, "design").replay, true);
+	assert.equal(db.backlog("design").items.find(item => item.id === join)?.state, "accepted");
+});
+
+test("missing sources for one template do not park discovery for an independent template in the same charter", async t => {
+	const { db } = await setup(t, true, true);
+	assert.equal(db.backlog("design").squads[0].awaitingSources, undefined);
+	assert.equal(db.squadTurns("design").actions[0]?.tool, "foundry_observe_work");
+});
+
 test("a policy join requires both exact source items and the checked bytes from both published products", async t => {
-	const { root, runtime, db, binding, admit, selectWorker } = await setup(t, true);
+	const { root, db, binding, admit, produce } = await setup(t, true);
 	const mail = admit("mail", "folder-store"), quality = admit("quality", "editor-routing");
 	const sources = { "folder-store": mail, "editor-routing": quality };
 	assert.throws(() => admit("design", "missing"), { code: "required_products" });
 	assert.throws(() => admit("design", "wrong", { sources: { ...sources, "folder-store": quality } }), { code: "wrong_product_source" });
 	const join = admit("design", "mismatched-bytes", { sources });
 	assert.throws(() => db.pullWork({ ...binding("design"), itemId: join }, "design"), { code: "not_highest_ready" });
-	/** @param {string} actor @param {string} itemId @param {string} publish */
-	async function produce(actor, itemId, publish) {
-		const { tasks } = db.pullWork({ ...binding(actor), itemId }, actor);
-		const taskId = text(tasks?.[0].id, "product task");
-		const call = record(await runtime.operation("dispatch", { taskIds: [taskId] }, actor));
-		assert.ok(Array.isArray(call.prepared));
-		const args = call.prepared[0].arguments, worker = `${itemId}-worker`;
-		runtime.pre("create_session", args, actor, itemId);
-		runtime.post("create_session", args, { id: worker }, actor);
-		selectWorker(worker);
-		const result = record(await runtime.operation("run_check", { taskId, checkId: "scenario", publish }, worker));
-		assert.equal(result.promoted, true);
-		return db.getTask(taskId);
-	}
 	const first = await produce("mail", mail, "folder-store");
 	const second = await produce("quality", quality, "editor-routing");
 	assert.deepEqual(db.backlog("design").squads[0].readyItems, [join]);

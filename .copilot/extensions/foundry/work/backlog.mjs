@@ -18,18 +18,22 @@ import { FoundryError, array, choice, closedFields, containsPath, decodeLimits, 
 /** @typedef {import("./model.d.ts").BacklogItem} Item */
 /** @typedef {import("./model.d.ts").Task} Task */
 /** @typedef {{path:string,sha256:string,content:string} & ({source:"policy",commit?:never}|{source:"git",commit:string})} ObservationSource */
-/** @typedef {{squad:Squad,next?:ReturnType<typeof squadAction>,item?:never,duplicateOf?:never,state?:never}|{item:Item,squad?:never,duplicateOf?:never,state?:never}|{duplicateOf:string,state:Item["state"],squad?:never,item?:never}} ObservationResult */
+/** @typedef {{squad:Squad,next?:ReturnType<typeof squadAction>,item?:never,duplicateOf?:never,state?:never}|{item:Item,sourceWake?:{goalId:string,owners:string[]},squad?:never,duplicateOf?:never,state?:never}|{duplicateOf:string,state:Item["state"],squad?:never,item?:never}} ObservationResult */
 /** @param {string} kind @param {...string} parts */
 const key = (kind, ...parts) => `${kind}:${digest(parts)}`;
 const byFactory = "WHERE json_extract(document,'$.factoryId')=?";
 /** @param {Tx} tx @param {string} id */
 function latest(tx, id) { return tx.list("directions", byFactory, [id]).at(-1); }
-/** @param {Tx} tx @param {Squad} squad @param {string} reason @param {string} [notification] */
-function trigger(tx, squad, reason, notification) {
+/** @param {Tx} tx @param {Squad} squad @param {string} reason */
+function openReview(tx, squad, reason) {
 	squad.generation++;
 	squad.reason = reason;
 	tx.put("squads", squad);
-	notifyCoordination(tx, tx.get("tasks", squad.taskId), "backlog", notification);
+	return tx.get("tasks", squad.taskId);
+}
+/** @param {Tx} tx @param {Squad} squad @param {string} reason @param {string} [notification] */
+function trigger(tx, squad, reason, notification) {
+	notifyCoordination(tx, openReview(tx, squad, reason), "backlog", notification);
 }
 
 /** @param {Tx} tx @param {Factory} factory @param {string} actor @returns {{tasks:Task[],replay:boolean}} */
@@ -56,7 +60,7 @@ export function activateSubscriptions(tx, factory, actor) {
 		const scope = decodeScope(charter.scope);
 		const unit = createUnit(tx, { goalId: goal.id, name, kind: "squad", context: strings(charter.context) }, actor);
 		const task = createTask(tx, { goalId: goal.id, id: `${id}:lead`, unitId: unit.id, role: "coordinator",
-			title: `${name} discovery`, assignment: `Own ${name}'s backlog for ${factory.id}. Follow squadActions from foundry_advance on your owner turn. Read foundry_get_context with view:"backlog" for direction and evidence. Record a gap, bounded question, or evidenced no-gap for the observed generation; pull eligible work and split independently testable outputs. A wait note does not complete discovery.`,
+			title: `${name} discovery`, assignment: `Own ${name}'s backlog for ${factory.id}. Follow squadActions from foundry_advance on your owner turn. Read foundry_get_context with view:"backlog" for direction and evidence. Use requiredProducts[].sources for producer item IDs; if awaitingSources, yield for the source-admission event rather than messaging peers for IDs. Record a gap, bounded question, or evidenced no-gap for an actionable review; pull eligible work and split independently testable outputs. A wait note does not complete discovery.`,
 			workType: text(scope.workTypes[0], "charter work type"), scope,
 			dispatch: { generator: false, context: strings(charter.context), ...(charter.agent ? { agent: text(charter.agent, "agent") } : {}) } }, actor, true);
 		tx.put("squads", squadRecord({ id, factoryId: factory.id, name, taskId: task.id, goalId: goal.id, outcomes: charter.outcomes,
@@ -76,6 +80,39 @@ function boundLead(tx, task) {
 /** @param {Tx} tx @param {Squad} squad */
 function relevant(tx, squad) {
 	return latest(tx, squad.factoryId)?.outcomes.some(outcome => squad.outcomes.includes(outcome.id));
+}
+/** @param {Tx} tx @param {Factory} factory @param {string[]} templates */
+function requiredProducts(tx, factory, templates) {
+	return contracts(record(factory.definition).requiredProducts).filter(rule => templates.includes(rule.consumer))
+		.map(rule => ({ ...rule, sources: tx.list("backlog_items", `${byFactory} AND json_extract(document,'$.template')=? AND state NOT IN ('proposal','retired')`, [factory.id, rule.producer])
+			.map(item => ({ itemId: item.id, title: item.title, state: item.state, resultId: item.resultId })) }));
+}
+/** Wait only when *every* template needs a source not yet admitted.
+ * @param {Squad} squad @param {ReturnType<typeof requiredProducts>} products */
+function awaitingSources(squad, products) {
+	const missing = products.filter(product => !product.sources.length);
+	return missing.length && squad.templates.every(id => missing.some(rule => rule.consumer === id))
+		? [...new Set(missing.map(rule => rule.output))] : [];
+}
+
+/** Re-open discovery when an admission makes a policy join possible for the first time.
+ * @param {Tx} tx @param {Factory} factory @param {Item} item */
+function sourceAdmitted(tx, factory, item) {
+	const consumers = contracts(record(factory.definition).requiredProducts).filter(rule => rule.producer === item.template).map(rule => rule.consumer);
+	if (!consumers.length) return [];
+	const products = requiredProducts(tx, factory, consumers);
+	const ready = consumers.filter(id => products.filter(rule => rule.consumer === id).every(rule => rule.sources.length)
+		&& products.some(rule => rule.consumer === id && rule.sources.length === 1 && rule.sources[0].itemId === item.id));
+	const recipients = [];
+	for (const squad of tx.list("squads", byFactory, [factory.id])) {
+		if (!squad.templates.some(id => ready.includes(id)) || !relevant(tx, squad)) continue;
+		const task = openReview(tx, squad, `source-admitted:${item.id}`);
+		// A still-unbound lead will read the review on startup. Its creator is not the consumer.
+		if (!boundLead(tx, task)) continue;
+		notifyCoordination(tx, task, "backlog");
+		recipients.push(task.owner);
+	}
+	return recipients;
 }
 /** @param {Tx} tx @param {string} squadId @param {number} revision @param {string} actor @param {number} [activation]
  * @returns {{squad:Squad,factory:Factory,task:Task,attempt:import("./model.d.ts").Attempt}} */
@@ -253,6 +290,8 @@ export function observe(tx, input, actor) {
 		squad.handled = squad.generation;
 		tx.put("squads", squad);
 		notifyCoordination(tx, task, "backlog");
+		const owners = sourceAdmitted(tx, factory, item);
+		if (owners.length) return { item, sourceWake: { goalId: squad.goalId, owners } };
 	}
 	return { item };
 }
@@ -291,7 +330,7 @@ export function squadAction(tx, task, squad = tx.list("squads", "WHERE task_id=?
 	const binding = { squadId: squad.id, revision: squad.revision, activation: factory.generation };
 	const head = ranked(tx, squad)[0];
 	if (head && pullWindow(tx, factory).eligible.includes(head.id)) return { tool: "foundry_pull_work", arguments: { ...binding, itemId: head.id } };
-	if (squad.generation > squad.handled) {
+	if (squad.generation > squad.handled && !awaitingSources(squad, requiredProducts(tx, factory, squad.templates)).length) {
 		const accepted = squad.reason.startsWith("accepted:") ? tx.get("backlog_items", squad.reason.slice(9)) : undefined;
 		return { tool: "foundry_observe_work", arguments: { ...binding, generation: squad.generation }, reason: squad.reason,
 			...(accepted ? { resultId: accepted.resultId } : {}) };
@@ -531,14 +570,14 @@ export function views(tx, actor, goalId) {
 		const active = factory.state === "active" && !factory.pausedWorkers.includes(task.owner);
 		const bound = Boolean(boundLead(tx, task));
 		const subscribed = relevant(tx, squad);
-		const rules = contracts(record(factory.definition).requiredProducts).filter(rule => squad.templates.includes(rule.consumer));
+		const products = requiredProducts(tx, factory, squad.templates);
+		const missing = awaitingSources(squad, products);
 		return { ...squad, owner: task.owner, bound, activation: factory.generation, active,
-			requiredProducts: rules.map(rule => ({ ...rule, sources: tx.list("backlog_items", `${byFactory} AND json_extract(document,'$.template')=? AND state NOT IN ('proposal','retired')`, [factory.id, rule.producer])
-				.map(item => ({ itemId: item.id, title: item.title, state: item.state, resultId: item.resultId })) })),
+			requiredProducts: products, ...(missing.length ? { awaitingSources: missing } : {}),
 			pinned: factory.pin,
 			knowledgeFiles: array(charter(factory, squad).knowledgeFiles ?? [], record),
 			readyItems: entries.map(item => item.id), pullable: active && entries.length ? pullWindow(tx, factory).eligible.includes(entries[0].id) : false,
-			needsDiscovery: Boolean(subscribed && active && squad.generation > squad.handled),
+			needsDiscovery: Boolean(subscribed && active && squad.generation > squad.handled && !missing.length),
 			dispatch: Boolean(dispatchable(tx, squad, task)) };
 	});
 	const mine = new Set(squads.map(squad => squad.id));

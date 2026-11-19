@@ -25,6 +25,9 @@ committed file, then `foundry_observe_work` to record the gap, the improvement a
 when it is done. A bounded question is useful when evidence is missing; advisory suggestions
 are not requirements. With no justified gap, record an evidenced `no-gap` for the observed
 generation. Yielding capacity or consuming a wake does not dispose of a review.
+For a protected join, read producer item IDs from your backlog's `requiredProducts[].sources`,
+not from peer chat. If `awaitingSources` is present and no action is due, yield for events:
+the last missing source admission reopens discovery. Pull only after its products publish.
 If pinned evidence makes a specific queued item obsolete, include `withdrawItemId` in
 the `no-gap` observation. Do not start a pointless job or retire an item needed by a
 consumer. A plain no-gap does not withdraw work. Directors: read `squadHandoffs` on

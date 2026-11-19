@@ -63,8 +63,12 @@ pages just the scoped backlog; use `offset:nextOffset` and the returned `version
 
 A direction policy can require independently published products with
 `requiredProducts: [{consumer, producer, output}, ...]`, where `consumer` and `producer` are
-chartered template IDs. A join observation must name its source items in `sources`, keyed by
-output. Only after each named producer passes its own acceptance can the squad pull the join.
+chartered template IDs. A join observation names its source items in `sources`, keyed by
+output. Read the actual IDs from the squad's `requiredProducts[].sources`; peers do not need
+to exchange IDs by chat. If all of the squad's templates lack a required source, the backlog
+lists `awaitingSources` and discovery can yield for events without acknowledging its review.
+Admitting the last missing source wakes the consumer to review the join. This is not a
+publication: only after each named producer passes its own acceptance can the squad pull the join.
 The bounded job pins the published versions as protected inputs. Its evaluated product bundle
 must conserve **every source path, byte and mode**; passing a check on unrelated bytes at
 the same filenames is not acceptance. There is no implicit conflict resolution or file override.
