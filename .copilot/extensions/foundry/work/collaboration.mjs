@@ -15,7 +15,7 @@ import { wake, wakeTargets } from "./wakes.mjs";
 function ownsItem(tx, coordinator, producer) {
 	const squad = tx.list("squads", "WHERE task_id=?", [coordinator.id])[0];
 	if (!squad || !coordinator.currentAttemptId || tx.get("attempts", coordinator.currentAttemptId).nativeId !== coordinator.owner) return false;
-	return tx.list("backlog_items", "WHERE goal_id=? AND state='pulled'", [producer.goalId]).some(item => item.squad === squad.id);
+	return tx.list("backlog_items", "WHERE goal_id=? AND state='admitted'", [producer.goalId]).some(item => item.squad === squad.id);
 }
 
 /** @param {import("./database.mjs").Transaction} tx @param {Task} consumer @param {number} previous @returns {void} */

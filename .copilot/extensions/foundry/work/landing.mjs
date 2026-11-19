@@ -147,6 +147,8 @@ export function recordJoin(tx, captured, joined, actor) {
 		if (task.currentAttemptId && (outstanding(tx, tx.get("attempts",task.currentAttemptId), true) || task.waiting?.kind === "input")) {
 			fail("delivery_in_flight", "Settle outstanding product checks before recomputing this lane");
 		}
+		// The previous writer has finished. The job owner staffs the fresh combined check.
+		if (task.currentAttemptId && tx.get("attempts", task.currentAttemptId).nativeId === task.owner) task.owner = actor;
 		revise(tx, task, actor);
 		manifest.taskVersion = task.version;
 	}

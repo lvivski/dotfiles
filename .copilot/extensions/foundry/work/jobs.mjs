@@ -6,7 +6,7 @@ import { hasSlot, parkPausedExecution, preparedDispatch, runnable } from "./atte
 import { outstanding, retirePrepared } from "./effects.mjs";
 import { factorySettings } from "./factory.mjs";
 import { coordinatorsBound, createUnit } from "./organization.mjs";
-import { budgetAvailable, goalMember, requireAdmission } from "./policy.mjs";
+import { budgetAvailable, goalMember, requireAdmission, squadHeld } from "./policy.mjs";
 import { decodeAttempt, decodeCompletion, decodeFactory } from "./records.mjs";
 import { admittedEvidence } from "./results.mjs";
 import { createGoal, createTask, insertGoal, resolvedInputs, revise } from "./tasks.mjs";
@@ -259,10 +259,19 @@ export function advance(tx, actor, goalId) {
 	.filter(completion => goalMember(tx, tx.get("goals", completion.goalId), actor)).map(completion => {
 		const factory = tx.get("factory_controls", completion.factoryId);
 		const status = completionStatus(tx, completion);
-		const own = tx.list("tasks", "WHERE goal_id=?", [completion.goalId]).filter(task => task.owner === actor
+		const item = tx.list("backlog_items", "WHERE goal_id=?", [completion.goalId])[0];
+		const held = squadHeld(tx, item, factory);
+		const tasks = tx.list("tasks", "WHERE goal_id=?", [completion.goalId]);
+		const own = tasks.filter(task => task.owner === actor
 			|| task.repairReservation?.worker === actor || task.currentAttemptId !== undefined && tx.get("attempts", task.currentAttemptId).nativeId === actor);
+		if (item?.producers.length) {
+			/** @type {Map<string,number>} */ const consumers = new Map();
+			for (const t of tasks) if (!["done", "cancelled"].includes(t.state))
+				for (const input of t.inputs) consumers.set(input.taskId, (consumers.get(input.taskId) ?? 0) + 1);
+			own.sort((a, b) => (consumers.get(b.id) ?? 0) - (consumers.get(a.id) ?? 0));
+		}
 		const input = own.some(task => task.waiting?.kind === "input");
-		const actions = own.filter(task => !factory.pausedWorkers.includes(task.owner)
+		const actions = own.filter(task => !held && !factory.pausedWorkers.includes(task.owner)
 			&& !factory.pausedWorkers.includes(actor)).flatMap(task => {
 			if (task.role === "coordinator" && task.coordination && task.waiting?.kind !== "input"
 				&& ["running", "waiting"].includes(task.state)) {
@@ -282,7 +291,7 @@ export function advance(tx, actor, goalId) {
 		});
 		return { ...status, generation: factory.generation, mechanism: factory.mechanism,
 			disposition: factory.state === "paused" || factory.pausedWorkers.includes(actor) ? "paused"
-				: status.cancelled ? "cancelled" : status.delivered ? "delivered" : actions.length ? "actionable" : input ? "needs-input" : "waiting",
+				: status.cancelled ? "cancelled" : status.delivered ? "delivered" : actions.length ? "actionable" : input || held ? "needs-input" : "waiting",
 			actions: factory.state === "active" ? actions : [] };
 	});
 }

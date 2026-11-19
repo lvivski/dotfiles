@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { landDelivery } from "./landing.mjs";
+import { schema } from "./database.mjs";
 import { openWorkStore } from "./store.mjs";
 import { advanceRetirements, retirementView } from "./retirement.mjs";
 import { array, compileCheck, compileDefinition, compileGoal, number, readContract } from "./compiler.mjs";
@@ -82,8 +83,7 @@ export function createRuntime(options) {
 	};
 	/** @param {Store} db @param {string} actor @param {import("./model.d.ts").Effect} effect */
 	function settlementWake(db, actor, effect) {
-		const goalId = db.getTask(db.getAttempt(effect.attemptId).taskId).goalId;
-		queueWakes(db, actor, goalId);
+		notifyReady(db, actor, db.getTask(db.getAttempt(effect.attemptId).taskId).goalId);
 	}
 	/** @param {Promise<unknown>} delivery */
 	function trackDelivery(delivery) {
@@ -91,18 +91,26 @@ export function createRuntime(options) {
 			.finally(() => notifications.delete(pending));
 		notifications.add(pending);
 	}
-	/** @param {Store} db @param {string} actor @param {string} goalId @param {string[]} [owners] */
-	function queueWakes(db, actor, goalId, owners) {
+	/** @param {Store} db @param {string} actor @param {string} goalId */
+	function queueWakes(db, actor, goalId) {
 		if (!options.execute || closed || database !== db || !db.outgoingWakes(actor, true).some(wake =>
 			(wake.goalId === goalId || db.canRelayOutput(wake.id, actor, goalId) || db.canRelayCollaboration(wake.id, actor))
-			&& (!owners || owners.includes(wake.owner)) && db.wakeHasCurrentRecipient(wake.id))) return;
+			&& db.wakeHasCurrentRecipient(wake.id))) return;
 		retain(db);
-		trackDelivery(Promise.resolve().then(() => database === db ? deliverWakes(actor, undefined, goalId, true, db, owners) : undefined)
+		trackDelivery(Promise.resolve().then(() => database === db ? deliverWakes(actor, undefined, goalId, true, db) : undefined)
 			.finally(() => release(db)));
 	}
 	/** @param {Store} db @param {string} actor @param {string} goalId */
-	function deferWakes(db, actor, goalId) {
+	function notifyReady(db, actor, goalId) {
 		queueWakes(db, actor, goalId);
+		if (!options.createSession || createRouteDisabled || database !== db) return;
+		ownerTurn(actor, goalId);
+		for (const wake of db.pendingWakes(actor)) if (wake.goalId !== goalId && db.canRelayOutput(wake.id, actor, goalId))
+			ownerTurn(actor, wake.goalId);
+	}
+	/** @param {Store} db @param {string} actor @param {string} goalId */
+	function deferWakes(db, actor, goalId) {
+		notifyReady(db, actor, goalId);
 		return db.outgoingWakes(actor, true).filter(wake => (wake.goalId === goalId || db.canRelayOutput(wake.id, actor, goalId)
 			|| db.canRelayCollaboration(wake.id, actor)) && db.wakeHasCurrentRecipient(wake.id))
 			.map(wake => ({ owner: wake.owner, generation: wake.generation,
@@ -122,25 +130,15 @@ export function createRuntime(options) {
 		const prepared = [];
 		/** @type {import("./pickup.mjs").Blocker[]} */
 		const blocked = [];
-		/** @type {Task[]} */
-		const tasks = [];
 		for (const taskId of new Set(ids)) {
-			try { tasks.push(ownedTask(taskId, actor)); }
-			catch (error) {
-				if (!(error instanceof FoundryError)) throw error;
-				blocked.push({ taskId, code: error.code, message: error.message });
-			}
-		}
-		tasks.sort((a,b) => (a.createdAt ?? "").localeCompare(b.createdAt ?? ""));
-		for (const task of tasks) {
 			try {
+				const task = ownedTask(taskId, actor);
 				if (goalId !== undefined && task.goalId !== goalId) throw new FoundryError("foreign_task", "Task is outside the requested goal");
 				if (task.owner !== actor && !task.repairReservation) throw new FoundryError("foreign_execution", "Only the local task owner dispatches this work");
 				prepared.push(prepareDispatch(store(), task.id, actor));
-			}
-			catch (error) {
+			} catch (error) {
 				if (!(error instanceof FoundryError)) throw error;
-				blocked.push({ taskId: task.id, code: error.code, message: error.message });
+				blocked.push({ taskId, code: error.code, message: error.message });
 			}
 		}
 		return { prepared, blocked };
@@ -177,7 +175,7 @@ export function createRuntime(options) {
 			databasePath: store().databasePath, actor, goals,
 			retirements: store().retirements(actor, goalId).map(retirementView),
 			backlog: store().backlog(actor, goalId),
-			capabilities: { protocol: 2, schema: 4, organization: "task-backed-coordinators",
+			capabilities: { protocol: 2, schema, organization: "task-backed-coordinators",
 				federation: { supported: false, reason: "Native peer provenance, durable receipts and artifact transport are not qualified" },
 				dirtyWorktreeHandoff: { supported: false, reason: "Only settled unchanged execution can move without a checkpoint protocol" } },
 			factories: store().factoryViews(actor),
@@ -295,13 +293,13 @@ export function createRuntime(options) {
 			reportTo: task.parentId ? db.getTask(task.parentId).owner : db.getGoal(task.goalId).owner,
 		};
 	}
-	/** @param {string} actor @param {string|undefined} attemptId @param {string} [goalId] @param {boolean} [worker] @param {Store} [db] @param {string[]} [owners] */
-	async function deliverWakes(actor, attemptId, goalId, worker = false, db = store(), owners) {
+	/** @param {string} actor @param {string|undefined} attemptId @param {string} [goalId] @param {boolean} [worker] @param {Store} [db] */
+	async function deliverWakes(actor, attemptId, goalId, worker = false, db = store()) {
 		retain(db);
 		try {
 			const pending = db.outgoingWakes(actor, worker || attemptId !== undefined).filter(wake =>
 				(goalId === undefined || wake.goalId === goalId || db.canRelayCollaboration(wake.id, actor)
-					|| db.canRelayOutput(wake.id, actor, goalId)) && (!owners || owners.includes(wake.owner)) && db.wakeHasCurrentRecipient(wake.id));
+					|| db.canRelayOutput(wake.id, actor, goalId)) && db.wakeHasCurrentRecipient(wake.id));
 			/** @type {Array<{owner:string,generation:number,state:string,error?:string}>} */
 			const delivery = [];
 			await Promise.all(pending.map(async wake => {
@@ -469,7 +467,56 @@ export function createRuntime(options) {
 			try { await landDelivery(db,options.withLandingLease,goalId,text(args.manifestId,"qualified delivery manifest"),actor,() => !closed && database === db); }
 			finally { release(db); }
 		}
-		return { ...db.deliveryStatus(goalId,actor), landingCapability:options.withLandingLease ? "guarded-native-lease" : "unsupported" };
+		const status = db.deliveryStatus(goalId,actor);
+		if (status.closed && action !== "status") notifyReady(db, actor, goalId);
+		return { ...status, landingCapability:options.withLandingLease ? "guarded-native-lease" : "unsupported" };
+	}
+	/** @param {string} actor @param {string} [goalId] */
+	function ownerTurn(actor, goalId) {
+		if (!database || closed || !options.createSession || createRouteDisabled) return;
+		for (const id of database.nativeGoals(actor)) {
+			if (!goalId || goalId === id) trackDelivery(advance(actor, id));
+		}
+	}
+	/** @param {string} actor @param {string} [goalId] */
+	async function advance(actor, goalId) {
+		const db = store(), received = await settleOwner(actor, goalId);
+		if (closed || database !== db) throw new FoundryError("context_changed", "Owner advance lost its original store");
+		const turns = db.advanceSquads(actor, goalId);
+		const jobs = () => turns.goals.flatMap(id => db.advance(actor, id));
+		const productDeliveries = [], blockedChecks = new Set();
+		retain(db);
+		try {
+			for (const job of jobs()) {
+				if (job.disposition === "needs-input" || job.disposition === "paused") continue;
+				try {
+					const next = db.nextDelivery(job.goalId, actor);
+					if (!next) continue;
+					const outcome = await productAction({goalId:job.goalId,...next}, actor);
+					productDeliveries.push({goalId:job.goalId,...next,outcome});
+					if (closed || database !== db) throw new FoundryError("context_changed", "Product delivery lost its original store");
+				} catch (error) {
+					if (closed || database !== db) throw error;
+					blockedChecks.add(job.taskId);
+					productDeliveries.push({goalId:job.goalId,blocked:error instanceof FoundryError ? error.code : "delivery_inspection_failed",
+						reason:error instanceof Error ? error.message : String(error)});
+				}
+			}
+			const advancement = jobs();
+			const batch = dispatchBatch([...turns.dispatch, ...advancement.filter(job => job.disposition === "actionable")
+				.flatMap(job => job.actions).filter(action => action.kind === "dispatch" && !blockedChecks.has(action.taskId)).map(action => action.taskId)], actor);
+			const [recovery, transportRecovery, dispatch] = await Promise.all([
+				Promise.all(turns.goals.map(id => options.readCommand ? recoverCreations(db, actor, id, options.readCommand) : [])).then(rows => rows.flat()),
+				options.readCommand ? recoverDeliveries(db, actor, goalId, options.readCommand) : [],
+				pickup(batch, actor),
+			]);
+			const retirements = await advanceRetirements(db, options, actor, goalId, () => !closed && database === db);
+			const stops = !closed && database === db && messageRouteDisabled ? await deliverStops(actor, goalId) : [];
+			for (const id of new Set(dispatch.blocked.filter(b => b.code === "native_permission_refused").map(b => db.getTask(b.taskId).goalId)))
+				notifyReady(db, actor, id);
+			return { received, squadActions: turns.actions, ...(turns.handoffs.length ? { squadHandoffs: turns.handoffs } : {}),
+				advancement, ...dispatch, recovery, transportRecovery, retirements, productDeliveries, stops };
+		} finally { release(db); }
 	}
 	/** @param {string} name @param {unknown} input @param {string} actor */
 	async function operation(name, input, actor) {
@@ -510,13 +557,9 @@ export function createRuntime(options) {
 			}
 			case "inspect_evidence": return store().inspectEvidence(args, actor);
 			case "observe_work": {
-				const db = store(), result = db.observeWork(args, actor);
-				if (result.squad) queueWakes(db, actor, result.squad.goalId);
-				if (result.item && result.sourceWake) queueWakes(db, actor, result.sourceWake.goalId, result.sourceWake.owners);
-				return result;
+				const { goalId, observation } = store().observeWork(args, actor);
+				return { observation, ...await advance(actor, goalId) };
 			}
-			case "pull_work": return store().pullWork(args, actor);
-			case "split_work": return store().splitWork(args, actor);
 			case "revise_direction": {
 				const db = store();
 				const factory = db.factory(text(args.factoryId, "factory"), actor);
@@ -560,42 +603,7 @@ export function createRuntime(options) {
 				for (const task of [db.getTask(job.taskId), ...tasks.filter(task => task.id !== job.taskId)]) db.cancelTask(task.id, actor);
 				return { jobs: db.advance(actor, goalId), stops: await deliverStops(actor, goalId), delivery: await deliverWakes(actor, undefined, goalId) };
 			}
-			case "advance": {
-				const goalId = args.goalId === undefined ? undefined : text(args.goalId, "goal id");
-				const db = store();
-				const received = await settleOwner(actor, goalId);
-				if (closed || database !== db) throw new FoundryError("context_changed", "Owner advance lost its original store");
-				const productDeliveries = [];
-				for (const job of db.advance(actor, goalId)) {
-					try {
-						const next = db.nextDelivery(job.goalId,actor);
-						if (!next) continue;
-						const outcome = await productAction({goalId:job.goalId,...next},actor);
-						productDeliveries.push({goalId:job.goalId,...next,outcome});
-					} catch (error) {
-						productDeliveries.push({goalId:job.goalId,blocked:error instanceof FoundryError ? error.code : "delivery_inspection_failed",
-							reason:error instanceof Error ? error.message : String(error)});
-					}
-				}
-				const advancement = db.advance(actor, goalId);
-				const turns = db.squadTurns(actor, goalId);
-				const batch = dispatchBatch([...turns.dispatch,
-					...advancement.filter(job => job.disposition === "actionable").flatMap(job => job.actions)
-					.filter(action => action.kind === "dispatch").map(action => action.taskId)], actor);
-				retain(db);
-				try {
-					// Recover only previously issued calls; neither recovery nor a held notification gates new staffing.
-					const [recovery, transportRecovery, dispatch] = await Promise.all([
-						options.readCommand ? recoverCreations(db, actor, goalId, options.readCommand) : [],
-						options.readCommand ? recoverDeliveries(db, actor, goalId, options.readCommand) : [],
-						pickup(batch, actor),
-					]);
-					const retirements = await advanceRetirements(db, options, actor, goalId, () => !closed && database === db);
-					const stops = !closed && database === db && messageRouteDisabled ? await deliverStops(actor, goalId) : [];
-					return { received, squadActions: turns.actions, ...(turns.handoffs.length ? { squadHandoffs: turns.handoffs } : {}),
-						advancement, ...dispatch, recovery, transportRecovery, retirements, productDeliveries, stops };
-				} finally { release(db); }
-			}
+			case "advance": return advance(actor, args.goalId === undefined ? undefined : text(args.goalId, "goal id"));
 			case "ingest": {
 				const factory = store().factory(text(args.factoryId, "factory id"), actor);
 				if (factory.state !== "active") throw new FoundryError("factory_paused", "Paused factories cannot poll or admit source work");
@@ -812,13 +820,22 @@ export function createRuntime(options) {
 			case "wait_task": {
 				const kind = args.kind;
 				if (kind !== "input" && kind !== "children" && kind !== "capacity" && kind !== "events") throw new FoundryError("invalid_wait", "Expected input, children, capacity or coordinator event waiting");
-				const task = store().waitTask(text(args.taskId, "task id"), actor, {
-					kind, reason: text(args.reason, "waiting reason"), ...(args.requestId === undefined ? {} : { requestId: text(args.requestId, "native request id") }),
-				}, kind !== "events" ? undefined : {
-					attemptId: text(args.attemptId, "current coordinator attempt"),
-					...(args.handledGeneration === undefined ? {} : { handledGeneration: number(args.handledGeneration, "handled work generation") }),
-					relatedIds: strings(args.relatedIds ?? [], "disposition references"),
-				});
+				const db = store(), id = text(args.taskId, "task id");
+				let task;
+				try {
+					task = db.waitTask(id, actor, {
+						kind, reason: text(args.reason, "waiting reason"), ...(args.requestId === undefined ? {} : { requestId: text(args.requestId, "native request id") }),
+					}, kind !== "events" ? undefined : {
+						attemptId: text(args.attemptId, "current coordinator attempt"),
+						...(args.handledGeneration === undefined ? {} : { handledGeneration: number(args.handledGeneration, "handled work generation") }),
+						relatedIds: strings(args.relatedIds ?? [], "disposition references"),
+					});
+				} catch (error) {
+					// The store commits the slot release even when it refuses a false acknowledgment.
+					if (error instanceof FoundryError && error.code === "squad_work_pending") notifyReady(db, actor, db.getTask(id).goalId);
+					throw error;
+				}
+				notifyReady(db, actor, task.goalId);
 				return kind === "events" ? { task, refreshRequired: (task.coordination?.generation ?? 0) > (task.coordination?.handled ?? 0) } : task;
 			}
 			case "resume_task": return store().resumeTask(text(args.taskId, "task id"), actor);
@@ -909,7 +926,7 @@ export function createRuntime(options) {
 		}
 	}
 	return {
-		operation, context, store, setDirectory, deliverStops,
+		operation, context, store, setDirectory, deliverStops, ownerTurn,
 		/** @param {string} [goalId] @returns {import("./model.d.ts").Snapshot} */
 		boardSnapshot(goalId) {
 			return { ...store().snapshot(goalId), landingCapability: options.withLandingLease ? "guarded-native-lease" : "unsupported" };

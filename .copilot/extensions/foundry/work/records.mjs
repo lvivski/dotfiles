@@ -274,8 +274,8 @@ export function decodeNativeUsage(value) {
 export function decodeFactory(value) {
 	const row = record(value);
 	const mechanism = choice(row.mechanism, ["native", "stop-hook"], "continuation mechanism");
-	const origins = row.settingOrigins === undefined ? undefined : record(row.settingOrigins);
-	if (origins) closedFields(origins, ["maximumJobs", ...(mechanism === "native" ? [] : ["blocks"])], "factory setting origins");
+	const origins = record(row.settingOrigins);
+	closedFields(origins, ["maximumJobs", ...(mechanism === "native" ? [] : ["blocks"])], "factory setting origins");
 	const heartbeat = row.heartbeat === undefined ? undefined : record(row.heartbeat);
 	const request = heartbeat === undefined ? undefined : record(heartbeat.request);
 	const reminders = Object.fromEntries(Object.entries(record(row.reminders)).map(([id, value]) => {
@@ -292,10 +292,10 @@ export function decodeFactory(value) {
 		source: decodeSource(row.source), definition: json(row.definition),
 		maximumJobs: positive(row.maximumJobs, "maximum concurrent jobs"),
 		...(row.blocks === undefined && mechanism === "native" ? {} : { blocks: positive(row.blocks, "stop-hook continuation blocks") }),
-		...(origins === undefined ? {} : { settingOrigins: {
+		settingOrigins: {
 			maximumJobs: choice(origins.maximumJobs, ["policy", "default"], "maximumJobs origin"),
 			...(mechanism === "native" ? {} : { blocks: choice(origins.blocks, /** @type {const} */ (["policy", "default"]), "blocks origin") }),
-		} }),
+		},
 		pausedWorkers: strings(row.pausedWorkers), reminders,
 		...(row.unchangedFailures === undefined ? {} : { unchangedFailures: positive(row.unchangedFailures, "unchanged failures") }),
 		...(row.aggregateRepairs === undefined ? {} : { aggregateRepairs: natural(row.aggregateRepairs, "aggregate repairs") }),

@@ -14,11 +14,9 @@ export function assignmentPrompt(goal, task, attempt, context = []) {
 		task.assignment,
 		...(task.role === "coordinator" ? [
 			"",
-			"Own this subtree until delivery. Staff ready producers in parallel and assign one integration owner with named inputs and executable checks of the combined candidate. A blocked input or claim stops only dependent work. Keep the delivery scope and governing checks intact.",
-			`Yield capacity with foundry_wait_task kind:events, attemptId ${attempt.id}, before staffing. Follow locally owned actions from foundry_advance. Keep this coordinator attempt between events; delegate edits and checks to producers.`,
-			"Only send handledGeneration and relatedIds after dealing with the work. Yielding is not acknowledgment. If the wait returns a squad action, handle it now.",
-			"Use the directory from foundry_get_context to find peer coordinator tasks. Request needed versioned peer outputs through foundry_request_collaboration and staff accepted requests locally; required commitments must be fulfilled or explicitly released by their source.",
-			"The director owns priorities, cross-team tradeoffs and shared delivery blockers that peers cannot resolve. Do not copy the director on routine exchanges, relay them through the hierarchy, or require director approval for work already within scope.",
+			"Own the combined result. Foundry staffs producers named on a milestone observation; do not duplicate them. Follow discovery actions from foundry_advance and handle only remaining prepared native calls.",
+			`Keep this coordinator attempt between events. Yield capacity with foundry_wait_task kind:events, attemptId ${attempt.id}. Mark a generation handled only after dealing with its work.`,
+			"Use foundry_request_collaboration for a missing named peer output. The director owns priorities, cross-team tradeoffs and shared delivery blockers, not routine staffing.",
 		] : []),
 		"",
 		`Execution scope: ${JSON.stringify(task.scope)}`,
@@ -37,7 +35,7 @@ export function assignmentPrompt(goal, task, attempt, context = []) {
 		"",
 		"Wait only on a concrete dependency, capacity, or verified native request. Use foundry_get_context for changed records or a delivery fallback; never replay an uncertain send or command.",
 		task.scope.delegation
-			? "Delegate independent work with foundry_create_task and foundry_dispatch. Started children are already running; execute only remaining prepared fallback calls."
+			? "Use foundry_create_task and foundry_dispatch only for independent work not already assigned. Started workers are already running."
 			: "This task does not authorize further delegation or creation of sessions.",
 		"Use send_session_message for scoped questions, advisory feedback, and handoff notes when you know the native session bound to the peer's assignment. A directory owner alone does not establish that binding. If you cannot identify or reach the peer and work is blocked, ask your local coordinator for help. Escalate decisions outside your scope there too. Do not turn advisory feedback into a dependency.",
 		"Report concrete blockers or native input requests to the current local owner. Do not broaden scope, commit, push or release without the user's actual authorization.",

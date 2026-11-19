@@ -7,7 +7,7 @@ import { guardRetirementWrite } from "./retirement.mjs";
 import { decoders } from "./records.mjs";
 import { FoundryError, record, text } from "./values.mjs";
 
-export const schema = 4;
+export const schema = 5;
 const modules = readdirSync(new URL(".", import.meta.url)).filter(name => name.endsWith(".mjs") && !name.endsWith(".test.mjs")).sort();
 export const engine = [...modules, "../extension.mjs", "../hooks.mjs"].reduce((hash, name) =>
 	hash.update(name).update("\0").update(readFileSync(new URL(name, import.meta.url))).update("\0"), createHash("sha256")).digest("hex");

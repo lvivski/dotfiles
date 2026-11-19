@@ -38,7 +38,7 @@ export function itemRecord(value) {
 	const row = record(value);
 	return { id: text(row.id, "work item"), factoryId: text(row.factoryId, "factory"), squad: text(row.squad, "squad"),
 		outcome: text(row.outcome, "outcome"), gapKey: text(row.gapKey, "gap identity"), kind: choice(row.kind, ["gap", "question", "advisory"], "observation"),
-		state: choice(row.state, ["proposal", "queued", "pulled", "accepted", "retired"], "queue state"),
+		state: choice(row.state, ["proposal", "queued", "admitted", "accepted", "retired"], "queue state"),
 		revision: positive(row.revision, "admitted direction"), currentRevision: positive(row.currentRevision, "assessed direction"),
 		template: text(row.template, "acceptance template"), title: text(row.title, "work title"), gap: text(row.gap, "observed gap"),
 		improvement: text(row.improvement, "improvement"), stop: text(row.stop, "stopping condition"),
@@ -51,9 +51,16 @@ export function itemRecord(value) {
 		...(row.goalId === undefined ? {} : { goalId: text(row.goalId, "bounded job") }),
 		...(row.resultId === undefined ? {} : { resultId: text(row.resultId, "acceptance result") }),
 		capacityReleased: boolean(row.capacityReleased ?? false, "bounded job capacity released"),
-		splits: array(row.splits, value => {
-			const split = record(value);
-			return { id: text(split.id, "split id"), hash: text(split.hash, "split hash"), plan: json(split.plan), taskIds: strings(split.taskIds) };
-		}),
+		producers: producers(row.producers),
 	};
+}
+
+/** @param {unknown} value @returns {import("./model.d.ts").BacklogItem["producers"]} */
+export function producers(value) {
+	return array(value, entry => {
+		const p = record(entry);
+		closedFields(p, ["template", "output", "purpose", "inputs"], "milestone producer");
+		return { template: text(p.template, "producer template"), output: text(p.output, "named output"),
+			purpose: text(p.purpose, "producer purpose"), inputs: [...new Set(strings(p.inputs ?? []))] };
+	});
 }

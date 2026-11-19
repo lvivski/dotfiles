@@ -56,6 +56,7 @@ session.on("assistant.turn_start", event => {
 	if (!session) return;
 	try { runtime.usageTurn(event, session.sessionId); }
 	catch (error) { runtime.log(`Native usage affinity failed: ${error instanceof Error ? error.message : String(error)}`); }
+	if (!event.agentId) runtime.ownerTurn(session.sessionId);
 });
 session.on("assistant.usage", event => {
 	if (!session) return;

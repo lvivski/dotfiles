@@ -108,6 +108,9 @@ export function requireAdmission(tx, task, generation, allowClosed = false) {
 	}
 	if (completion?.closed && !allowClosed) throw new FoundryError("job_closed", "Accepted bounded jobs admit no new execution; reopen explicitly before starting or resuming work");
 	const nativeId = task.currentAttemptId ? tx.get("attempts", task.currentAttemptId).nativeId : undefined;
+	if (completion && !nativeId && squadHeld(tx, tx.list("backlog_items", "WHERE goal_id=?", [task.goalId])[0], factory)) {
+		throw new FoundryError("squad_held", "Resolve the milestone owner's hold before starting another worker");
+	}
 	if (factory.state !== "active" || factory.pausedWorkers.includes(task.owner)
 		|| nativeId !== undefined && factory.pausedWorkers.includes(nativeId)) {
 		throw new FoundryError("factory_paused", "Factory execution is paused; only an explicit user-requested restart can admit work");
@@ -117,6 +120,13 @@ export function requireAdmission(tx, task, generation, allowClosed = false) {
 	}
 	if (!task.dispatch) throw new FoundryError("assignment_snapshot_required", "Factory execution requires its admitted assignment snapshot; reset obsolete state rather than reconstructing policy at dispatch");
 	return factory;
+}
+
+/** @param {import("./database.mjs").Transaction} tx @param {import("./model.d.ts").BacklogItem|undefined} item @param {import("./model.d.ts").FactoryControl} factory */
+export function squadHeld(tx, item, factory) {
+	if (!item) return false;
+	const lead = tx.get("tasks", tx.get("squads", item.squad).taskId);
+	return lead.waiting?.kind === "input" || factory.pausedWorkers.includes(lead.owner);
 }
 
 /** @param {import("./database.mjs").Transaction} tx @param {Goal} goal @returns {boolean} */

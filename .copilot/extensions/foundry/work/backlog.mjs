@@ -2,14 +2,14 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { preparedDispatch, waitTask } from "./attempts.mjs";
 import { compileDefinition } from "./compiler.mjs";
-import { decodeDirection, directionRecord, itemRecord, squadRecord } from "./direction.mjs";
+import { decodeDirection, directionRecord, itemRecord, producers, squadRecord } from "./direction.mjs";
 import { compileFactoryContext, templateChecks } from "./factory.mjs";
 import { admitFactoryJob, completionStatus, freeJobs } from "./jobs.mjs";
 import { outstanding } from "./effects.mjs";
 import { contracts, inputs as productInputs } from "./lineage.mjs";
 import { createUnit, notifyCoordination } from "./organization.mjs";
 import { budgetAvailable } from "./policy.mjs";
-import { cancelTask, createGoal, createTask, replaceInputs } from "./tasks.mjs";
+import { cancelTask, createGoal, createTask } from "./tasks.mjs";
 import { FoundryError, array, choice, closedFields, containsPath, decodeLimits, decodeScope, digest, json, narrowScope, natural, positive, record, resourcePath, strings, text } from "./values.mjs";
 
 /** @typedef {import("./database.mjs").Transaction} Tx */
@@ -18,7 +18,7 @@ import { FoundryError, array, choice, closedFields, containsPath, decodeLimits, 
 /** @typedef {import("./model.d.ts").BacklogItem} Item */
 /** @typedef {import("./model.d.ts").Task} Task */
 /** @typedef {{path:string,sha256:string,content:string} & ({source:"policy",commit?:never}|{source:"git",commit:string})} ObservationSource */
-/** @typedef {{squad:Squad,next?:ReturnType<typeof squadAction>,item?:never,duplicateOf?:never,state?:never}|{item:Item,sourceWake?:{goalId:string,owners:string[]},squad?:never,duplicateOf?:never,state?:never}|{duplicateOf:string,state:Item["state"],squad?:never,item?:never}} ObservationResult */
+/** @typedef {{disposition:"no-gap"}|{disposition:"recorded"|"duplicate"|"proposal",itemId:string,reason?:string}} Observation */
 /** @param {string} kind @param {...string} parts */
 const key = (kind, ...parts) => `${kind}:${digest(parts)}`;
 const byFactory = "WHERE json_extract(document,'$.factoryId')=?";
@@ -60,7 +60,7 @@ export function activateSubscriptions(tx, factory, actor) {
 		const scope = decodeScope(charter.scope);
 		const unit = createUnit(tx, { goalId: goal.id, name, kind: "squad", context: strings(charter.context) }, actor);
 		const task = createTask(tx, { goalId: goal.id, id: `${id}:lead`, unitId: unit.id, role: "coordinator",
-			title: `${name} discovery`, assignment: `Own ${name}'s backlog for ${factory.id}. Follow squadActions from foundry_advance on your owner turn. Read foundry_get_context with view:"backlog" for direction and evidence. Use requiredProducts[].sources for producer item IDs; if awaitingSources, yield for the source-admission event rather than messaging peers for IDs. Record a gap, bounded question, or evidenced no-gap for an actionable review; pull eligible work and split independently testable outputs. A wait note does not complete discovery.`,
+			title: `${name} discovery`, assignment: `Review ${name}'s direction and evidence for ${factory.id} with foundry_get_context({view:"backlog"}). When needsDiscovery, record a gap, bounded question, or evidenced no-gap with foundry_observe_work. Name independent checked outputs in observation.producers. Use requiredProducts[].sources for source item IDs; wait if awaitingSources. Foundry admits and staffs ready work; do not start a relay worker.`,
 			workType: text(scope.workTypes[0], "charter work type"), scope,
 			dispatch: { generator: false, context: strings(charter.context), ...(charter.agent ? { agent: text(charter.agent, "agent") } : {}) } }, actor, true);
 		tx.put("squads", squadRecord({ id, factoryId: factory.id, name, taskId: task.id, goalId: goal.id, outcomes: charter.outcomes,
@@ -99,20 +99,16 @@ function awaitingSources(squad, products) {
  * @param {Tx} tx @param {Factory} factory @param {Item} item */
 function sourceAdmitted(tx, factory, item) {
 	const consumers = contracts(record(factory.definition).requiredProducts).filter(rule => rule.producer === item.template).map(rule => rule.consumer);
-	if (!consumers.length) return [];
+	if (!consumers.length) return;
 	const products = requiredProducts(tx, factory, consumers);
 	const ready = consumers.filter(id => products.filter(rule => rule.consumer === id).every(rule => rule.sources.length)
 		&& products.some(rule => rule.consumer === id && rule.sources.length === 1 && rule.sources[0].itemId === item.id));
-	const recipients = [];
 	for (const squad of tx.list("squads", byFactory, [factory.id])) {
 		if (!squad.templates.some(id => ready.includes(id)) || !relevant(tx, squad)) continue;
 		const task = openReview(tx, squad, `source-admitted:${item.id}`);
 		// A still-unbound lead will read the review on startup. Its creator is not the consumer.
-		if (!boundLead(tx, task)) continue;
-		notifyCoordination(tx, task, "backlog");
-		recipients.push(task.owner);
+		if (boundLead(tx, task)) notifyCoordination(tx, task, "backlog");
 	}
-	return recipients;
 }
 /** @param {Tx} tx @param {string} squadId @param {number} revision @param {string} actor @param {number} [activation]
  * @returns {{squad:Squad,factory:Factory,task:Task,attempt:import("./model.d.ts").Attempt}} */
@@ -122,7 +118,7 @@ export function requireSquad(tx, squadId, revision, actor, activation) {
 	const task = tx.get("tasks", squad.taskId);
 	const attempt = boundLead(tx, task);
 	if (task.owner !== actor || !attempt) {
-		throw new FoundryError("unbound_squad", "Only the charter's current native coordinator can admit, pull or decompose its work");
+		throw new FoundryError("unbound_squad", "Only the charter's current native coordinator can act on its backlog");
 	}
 	if (factory.state !== "active" || factory.pausedWorkers.includes(actor)) throw new FoundryError("factory_paused", "The factory or squad owner is paused");
 	if (activation !== factory.generation) throw new FoundryError("stale_activation", "Read the current factory generation before changing its backlog");
@@ -189,7 +185,7 @@ function pin(tx, factory, squad, evidence) {
 	});
 }
 
-/** @param {Tx} tx @param {Record<string,unknown>} input @param {string} actor @returns {ObservationResult} */
+/** @param {Tx} tx @param {Record<string,unknown>} input @param {string} actor @returns {{goalId:string,observation:Observation}} */
 export function observe(tx, input, actor) {
 	const { squad, factory, task, attempt } = bound(tx, input, actor);
 	const entry = record(input.observation);
@@ -210,13 +206,13 @@ export function observe(tx, input, actor) {
 			const replay = item.state === "retired" && item.observations.some(prior => digest(prior) === digest(disposition));
 			if (!replay) {
 				if (item.state !== "queued") throw new FoundryError("withdrawal_conflict", "The item is no longer queued");
-				const consumer = tx.list("backlog_items", `${byFactory} AND state IN ('queued','pulled')`, [factory.id])
+				const consumer = tx.list("backlog_items", `${byFactory} AND state IN ('queued','admitted')`, [factory.id])
 					.find(other => other.dependencies.includes(item.id));
 				if (consumer) throw new FoundryError("required_item", `Still required by ${consumer.id}; do not strand its consumer`);
-				const before = new Set(pullWindow(tx, factory).eligible);
+				const before = new Set(eligibleHeads(tx, factory));
 				item.state = "retired"; item.reason = gap; item.observations.push(disposition);
 				tx.put("backlog_items", item);
-				for (const head of pullWindow(tx, factory).eligible.filter(id => !before.has(id))) {
+				for (const head of eligibleHeads(tx, factory).filter(id => !before.has(id))) {
 					const peer = tx.get("squads", tx.get("backlog_items", head).squad);
 					if (peer.id !== squad.id) notifyCoordination(tx, tx.get("tasks", peer.taskId), "backlog");
 				}
@@ -228,10 +224,15 @@ export function observe(tx, input, actor) {
 		const next = squadAction(tx, task, squad);
 		const otherWork = task.coordination?.causes.some(cause => cause !== "admission" && cause !== "backlog");
 		waitTask(tx, task.id, actor, { kind: "events", reason: squad.reason }, { attemptId: attempt.id, ...(next || otherWork ? {} : { handledGeneration: task.coordination?.generation }) });
-		return { squad, ...(next ? { next } : {}) };
+		return { goalId: squad.goalId, observation: { disposition: "no-gap" } };
 	}
-	closedFields(entry, ["kind", "gapKey", "outcome", "template", "title", "gap", "improvement", "stop", "evidence", "scope", "dependencies", "predecessor", "severity", "cost", "sources"], "work observation");
+	closedFields(entry, ["kind", "gapKey", "outcome", "template", "title", "gap", "improvement", "stop", "evidence", "scope", "dependencies", "predecessor", "severity", "cost", "sources", "producers"], "work observation");
 	const outcome = text(entry.outcome, "outcome"), template = text(entry.template, "acceptance template");
+	const policy = record(factory.definition);
+	if (kind !== "advisory" && policy.source === undefined && policy.completionTaskId !== undefined && template !== policy.completionTaskId
+		&& !contracts(policy.requiredProducts).some(rule => rule.producer === template || rule.consumer === template)) {
+		throw new FoundryError("milestone_acceptance", "Use the product acceptance template or a declared required-product template");
+	}
 	const gapKey = text(entry.gapKey, "stable gap identity").trim().normalize("NFKC").toLowerCase();
 	const predecessor = entry.predecessor === undefined ? undefined : tx.get("backlog_items", text(entry.predecessor, "predecessor"));
 	if (predecessor && (predecessor.factoryId !== factory.id || predecessor.state !== "accepted")) throw new FoundryError("successor_unverified", "Link successors to an actually accepted item");
@@ -244,18 +245,15 @@ export function observe(tx, input, actor) {
 	}
 	let scope = squad.scope;
 	let reason;
-	try { scope = narrowScope(squad.scope, entry.scope); }
-	catch (error) { if (!(error instanceof FoundryError) || error.code !== "scope_widening") throw error; reason = error.message; }
 	const direction = latest(tx, factory.id);
 	if (!squad.outcomes.includes(outcome) || !direction?.outcomes.some(item => item.id === outcome) || !squad.templates.includes(template)) reason = "Outside this charter's current outcomes or acceptance templates";
 	if (kind === "gap" && !evidence.length) reason = "No verified observation";
 	if (kind === "advisory") reason = "Advisory only";
 	if (!reason) {
 		const row = array(record(record(factory.definition).goal).tasks, record).find(row => row.id === template);
-		const governing = narrowScope(squad.scope, row?.scope);
-		if (!scope.paths.every(p => governing.paths.some(root => containsPath(root, p))) && entry.scope !== undefined) reason = "Requested write boundary is outside the accepted template";
-		else if (entry.scope === undefined) scope = governing;
-		if (!scope.workTypes.includes("*") && !scope.workTypes.includes(text(row?.workType, "template work type"))
+		try { scope = narrowScope(narrowScope(squad.scope, row?.scope), entry.scope); }
+		catch (error) { if (!(error instanceof FoundryError) || error.code !== "scope_widening") throw error; reason = error.message; }
+		if (scope.mode !== squad.scope.mode || !scope.workTypes.includes("*") && !scope.workTypes.includes(text(row?.workType, "template work type"))
 			|| templateChecks(record(factory.definition), template, row?.checks).some(check => check.artifactFiles?.some(p => !scope.paths.some(root => containsPath(root, p))))) {
 			reason = "Requested scope cannot deliver this template's required artifact";
 		}
@@ -269,31 +267,34 @@ export function observe(tx, input, actor) {
 	}
 	const observation = json({ actor, squad: squad.id, revision: squad.revision, gap, kind, evidence, requestedScope: entry.scope ?? null });
 	if (existing) {
+		if (!reason && existing.squad === squad.id && digest(producers(entry.producers ?? [])) !== digest(existing.producers)) {
+			throw new FoundryError("observation_conflict", "A replay cannot change the milestone's producers");
+		}
 		if (!existing.observations.some(prior => digest(prior) === digest(observation))) {
 			existing.observations.push(observation);
 			tx.put("backlog_items", existing);
 		}
-		if (!reason && ["queued", "pulled"].includes(existing.state)) {
+		if (!reason && ["queued", "admitted"].includes(existing.state)) {
 			squad.handled = squad.generation;
 			tx.put("squads", squad);
 		}
-		return { duplicateOf: existing.id, state: existing.state };
+		return { goalId: squad.goalId, observation: { disposition: "duplicate", itemId: existing.id } };
 	}
 	if (!reason && kind === "question" && squad.questions >= squad.discoveryLimit) throw new FoundryError("discovery_exhausted", "This revision's bounded question allowance is exhausted");
 	const item = itemRecord({ id, factoryId: factory.id, squad: squad.id, outcome, gapKey, kind, state: reason ? "proposal" : "queued",
 		revision: squad.revision, currentRevision: squad.revision, template, title: entry.title, gap, improvement: entry.improvement, stop: entry.stop,
 		evidence, observations: [observation], scope, dependencies, sources, predecessor: predecessor?.id, severity: entry.severity ?? 0, cost: entry.cost ?? 1, owner: actor,
-		createdAt: tx.timestamp(), reason, splits: [] });
+		createdAt: tx.timestamp(), reason, producers: entry.producers ?? [] });
+	if (!reason && item.producers.length) jobDefinition(factory, squad, item, direction, []);
 	tx.put("backlog_items", item);
 	if (!reason) {
 		if (kind === "question") squad.questions++;
 		squad.handled = squad.generation;
 		tx.put("squads", squad);
 		notifyCoordination(tx, task, "backlog");
-		const owners = sourceAdmitted(tx, factory, item);
-		if (owners.length) return { item, sourceWake: { goalId: squad.goalId, owners } };
+		sourceAdmitted(tx, factory, item);
 	}
-	return { item };
+	return { goalId: squad.goalId, observation: { itemId: item.id, disposition: reason ? "proposal" : "recorded", ...(reason ? { reason } : {}) } };
 }
 
 /** @param {Tx} tx @param {Squad} squad */
@@ -308,16 +309,18 @@ function ranked(tx, squad) {
 /** When squads contend for the last whole-job slots, older eligible queue heads
  * take precedence. No reservation is made on behalf of another owner.
  * @param {Tx} tx @param {Factory} factory */
-function pullWindow(tx, factory) {
+function eligibleHeads(tx, factory) {
 	const slots = freeJobs(tx, factory);
+	if (!slots) return [];
 	const contenders = tx.list("squads", byFactory, [factory.id]).flatMap(squad => {
 		const lead = tx.get("tasks", squad.taskId);
-		if (!boundLead(tx, lead) || !relevant(tx, squad)
+		const attempt = boundLead(tx, lead);
+		if (!attempt || outstanding(tx, attempt, true) || !relevant(tx, squad)
 			|| lead.waiting?.kind === "input" || factory.pausedWorkers.includes(lead.owner) || !budgetAvailable(tx, tx.get("goals", squad.goalId))) return [];
 		const head = ranked(tx, squad)[0];
 		return head ? [head] : [];
 	}).sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
-	return { slots, eligible: contenders.slice(0, slots).map(item => item.id) };
+	return contenders.slice(0, slots).map(item => item.id);
 }
 
 /** The same owner action drives advance and the event-wait fence. It is not a reservation.
@@ -329,7 +332,7 @@ export function squadAction(tx, task, squad = tx.list("squads", "WHERE task_id=?
 		|| factory.pausedWorkers.includes(task.owner) || !relevant(tx, squad) || !budgetAvailable(tx, tx.get("goals", squad.goalId))) return;
 	const binding = { squadId: squad.id, revision: squad.revision, activation: factory.generation };
 	const head = ranked(tx, squad)[0];
-	if (head && pullWindow(tx, factory).eligible.includes(head.id)) return { tool: "foundry_pull_work", arguments: { ...binding, itemId: head.id } };
+	if (head && eligibleHeads(tx, factory).includes(head.id)) return { tool: "foundry_advance", arguments: { goalId: squad.goalId }, itemId: head.id };
 	if (squad.generation > squad.handled && !awaitingSources(squad, requiredProducts(tx, factory, squad.templates)).length) {
 		const accepted = squad.reason.startsWith("accepted:") ? tx.get("backlog_items", squad.reason.slice(9)) : undefined;
 		return { tool: "foundry_observe_work", arguments: { ...binding, generation: squad.generation }, reason: squad.reason,
@@ -338,21 +341,28 @@ export function squadAction(tx, task, squad = tx.list("squads", "WHERE task_id=?
 }
 
 /** @param {Tx} tx @param {string} actor @param {string} [goalId] */
-export function turns(tx, actor, goalId) {
+export function advance(tx, actor, goalId) {
 	const local = tx.list("squads", `WHERE (task_id IN (SELECT id FROM tasks WHERE owner=?) OR json_extract(document,'$.factoryId') IN
 		(SELECT id FROM factory_controls WHERE owner=?))${goalId ? " AND goal_id=?" : ""}`, goalId ? [actor, actor, goalId] : [actor, actor]);
-	const actions = [], dispatch = [], handoffs = [];
+	const actions = [], dispatch = [], handoffs = [], goals = new Set([goalId]);
 	for (const squad of local) {
 		const task = tx.get("tasks", squad.taskId);
-		const action = squadAction(tx, task, squad);
+		let action = squadAction(tx, task, squad);
 		if (task.owner === actor) {
+			while (action?.itemId) {
+				admit(tx, squad, tx.get("backlog_items", action.itemId), actor);
+				action = squadAction(tx, task, squad);
+			}
+			// A repeated subscription turn must also recover work admitted on a prior turn.
+			if (goalId) for (const item of tx.list("backlog_items", "WHERE state='admitted' AND json_extract(document,'$.squad')=?", [squad.id]))
+				goals.add(text(item.goalId, "admitted job"));
 			if (action) actions.push(action);
 			else if (dispatchable(tx, squad, task)) dispatch.push(task.id);
 		} else if (action) {
 			const wake = tx.list("wakes", "WHERE goal_id=? AND owner=?", [squad.goalId, task.owner])[0];
 			const delivery = wake?.inFlight ? tx.get("deliveries", wake.inFlight) : undefined;
 			const pending = wake && wake.generation > wake.consumed;
-			handoffs.push({ squad: squad.name, owner: task.owner, due: action.tool, ...("itemId" in action.arguments ? { itemId: action.arguments.itemId } : { generation: squad.generation }),
+			handoffs.push({ squad: squad.name, owner: task.owner, due: action.tool, ...(action.itemId ? { itemId: action.itemId } : { generation: squad.generation }),
 				state: !pending ? (task.coordination && task.coordination.stalled === task.coordination.generation ? "owner-stopped-with-work" : "owner-action-due")
 					: delivery ? "send-unconfirmed" : wake.unavailable ? "owner-unavailable"
 					: (wake.sent ?? 0) >= wake.generation ? "awaiting-owner-turn"
@@ -360,7 +370,7 @@ export function turns(tx, actor, goalId) {
 				...(delivery ? { sender: delivery.owner, deliveryId: delivery.id } : {}) });
 		}
 	}
-	return { actions, dispatch, handoffs };
+	return { actions, dispatch, handoffs, goals: [...goals] };
 }
 
 /** @param {Tx} tx @param {Squad} squad @param {Task} task */
@@ -379,99 +389,47 @@ function templateFor(factory, squad, item, templateId) {
 		scope: templateId === item.template ? item.scope : narrowScope(item.scope, row.scope), checks: templateChecks(policy, templateId, row.checks), dispatch: compileFactoryContext(factory.definition, factory.source, templateId) };
 }
 
-/** @param {Tx} tx @param {Record<string,unknown>} input @param {string} actor
- * @returns {{item:Item,replay:true,tasks?:never}|{item:Item,replay:false,tasks:Task[]}} */
-export function pull(tx, input, actor) {
-	const { squad, factory } = bound(tx, input, actor);
-	const itemId = text(input.itemId, "observed highest ready item");
-	const item = tx.get("backlog_items", itemId);
-	if (item.squad !== squad.id) throw new FoundryError("foreign_item", "Cannot pull another squad's queue");
-	if (item.goalId) return { item, replay: true };
-	if (ranked(tx, squad)[0]?.id !== itemId) throw new FoundryError("not_highest_ready", "Pull the current highest-ranked unblocked item");
-	const window = pullWindow(tx, factory);
-	if (!window.slots) throw new FoundryError("factory_capacity", "Wait for a bounded job to seal and settle");
-	if (!window.eligible.includes(itemId)) throw new FoundryError("older_squad_ready", "Another squad has an older eligible queue head for the remaining capacity");
-	const policy = record(record(factory.definition).goal);
-	const goalId = key("job", item.id), finalId = `${goalId}:acceptance`;
-	const producer = templateFor(factory, squad, item, item.template);
-	const deliverable = contracts(record(factory.definition).requiredProducts).find(rule => rule.producer === item.template)?.output ?? "product";
+/** @param {Tx} tx @param {Squad} squad @param {Item} item @param {string} actor */
+function admit(tx, squad, item, actor) {
+	const factory = tx.get("factory_controls", squad.factoryId);
 	const inputs = productInputs(tx, factory.id, item.template, item.sources, true);
-	const direction = latest(tx, factory.id);
-	const source = { reference: `${factory.source.reference}#${item.id}`, sha256: digest(json({ item, policy: factory.source.sha256, direction: direction?.source })) };
-	const compiled = compileDefinition({ title: item.title, id: goalId, scope: narrowScope(item.scope, { restrictions: direction?.constraints }),
-		projectId: policy.projectId, limits: policy.limits,
-		tasks: [{ id: finalId, title: item.title, assignment: `${producer.assignment}\nItem ${item.id}: ${item.gap}\nExpected: ${item.improvement}\nStop: ${item.stop}\nPinned evidence: ${JSON.stringify(item.evidence)}\nPublish output: ${deliverable}.`,
-			workType: producer.workType, scope: producer.scope, checks: producer.checks, inputs }] }, source);
-	const job = admitFactoryJob(tx, compiled.goal, compiled.tasks.map(task => ({ ...task, dispatch: producer.dispatch, deliverable })),
-		factory.id, finalId, actor, factory.generation, false, [], item);
-	item.state = "pulled"; item.goalId = job.goal.id;
+	const { goal, tasks, finalId } = jobDefinition(factory, squad, item, latest(tx, factory.id), inputs);
+	const job = admitFactoryJob(tx, goal, tasks, factory.id, finalId, actor, factory.generation, false, [], item);
+	item.state = "admitted"; item.goalId = job.goal.id;
 	tx.put("backlog_items", item);
-	return { item, tasks: job.tasks, replay: false };
 }
 
-/** @param {Tx} tx @param {Record<string,unknown>} input @param {string} actor @returns {{split:Item["splits"][number],replay:boolean}} */
-export function split(tx, input, actor) {
-	const { squad, factory } = bound(tx, input, actor);
-	const item = tx.get("backlog_items", text(input.itemId, "item"));
-	if (item.squad !== squad.id || item.state !== "pulled" || !item.goalId) throw new FoundryError("foreign_item", "Only this squad's active pulled item can be split");
-	const completion = tx.get("goal_completions", item.goalId);
-	const final = tx.get("tasks", completion.taskId);
-	const id = text(input.splitId, "stable split identity");
-	const plan = record(input.plan);
-	closedFields(plan, ["specification", "boundary", "examples", "negativeCases", "producers", "requires"], "local plan");
-	const hash = digest(json(plan));
-	const previous = item.splits.find(split => split.id === id);
-	if (previous) {
-		if (previous.hash !== hash) throw new FoundryError("split_conflict", "A split identity cannot change its spec or graph");
-		return { split: previous, replay: true };
-	}
-	if (final.version !== positive(input.expectedVersion, "acceptance version") || final.state !== "ready") throw new FoundryError("split_conflict", "Split only before the current acceptance execution is reserved");
-	const specification = text(plan.specification, "behavior specification"), boundary = text(plan.boundary, "observable boundary");
-	const examples = strings(plan.examples), negatives = strings(plan.negativeCases);
-	if (!examples.length || !negatives.length) throw new FoundryError("invalid_spec", "Provide both examples and distinguishing negative cases");
-	const nodes = array(plan.producers, record);
-	const descriptors = new Map(nodes.map(node => {
-		closedFields(node, ["id", "template", "title", "output", "purpose", "stop", "scope", "inputs"], "atomic producer");
-		const nodeId = text(node.id, "local producer id");
-		return [nodeId, { id: key("producer", item.id, id, nodeId), output: text(node.output, "named output") }];
-	}));
-	if (!nodes.length || descriptors.size !== nodes.length) throw new FoundryError("invalid_plan", "A split needs distinct independently checkable producer identities");
-	/** @param {unknown} value */
-	const edge = value => {
-		const row = record(value), local = text(row.taskId, "producer"), output = text(row.output, "required output");
-		const node = descriptors.get(local);
-		if (node?.output === output) return { taskId: node.id, output };
-		const older = item.splits.some(split => split.taskIds.includes(local)) ? tx.get("tasks", local) : undefined;
-		if (older?.deliverable === output) return { taskId: local, output };
-		throw new FoundryError("missing_output", "A dependency must name a declared producer and its exact output inside this item");
+/** @param {Factory} factory @param {Squad} squad @param {Item} item @param {ReturnType<typeof latest>} direction
+ * @param {Task["inputs"]} sources */
+function jobDefinition(factory, squad, item, direction, sources) {
+	const policy = record(factory.definition), goal = record(policy.goal);
+	const goalId = key("job", item.id), finalId = `${goalId}:acceptance`;
+	const outputs = new Map(item.producers.map(({ output }) => [output, { taskId: key("producer", item.id, output), output }]));
+	if (outputs.size !== item.producers.length) throw new FoundryError("duplicate_output", "Give each producer a distinct output");
+	/** @param {string} name */
+	const edge = name => {
+		const input = outputs.get(name);
+		if (!input) throw new FoundryError("missing_output", `No producer supplies ${name}`);
+		return input;
 	};
-	const tasks = nodes.map(row => {
-		const template = text(row.template, "governing template"), producer = templateFor(factory, squad, item, template);
-		const node = descriptors.get(text(row.id, "local producer id"));
-		if (!node) throw new FoundryError("invalid_plan", "Missing producer");
-		return { id: node.id, title: text(row.title, "atomic outcome"), workType: producer.workType, scope: narrowScope(producer.scope, row.scope),
-			checks: producer.checks, inputs: array(row.inputs ?? [], edge),
-			assignment: `${producer.assignment}\nSpecification ${hash}: ${specification}\nBoundary: ${boundary}\nExamples: ${JSON.stringify(examples)}\nCounterexamples: ${JSON.stringify(negatives)}\nPurpose: ${text(row.purpose, "product or consumer purpose")}\nPublish: ${node.output}\nStop: ${text(row.stop, "stop condition")}`,
-			dispatch: producer.dispatch, deliverable: node.output };
+	const context = `\nExpected: ${item.improvement}\nStop: ${item.stop}\nEvidence: ${JSON.stringify(item.evidence)}`;
+	const tasks = item.producers.map(({ template: templateId, output, purpose, inputs }) => {
+		const template = templateFor(factory, squad, item, templateId);
+		if (template.scope.mode !== item.scope.mode || !template.scope.workTypes.includes("*") && !template.scope.workTypes.includes(template.workType)
+			|| template.checks.some(c => c.artifactFiles?.some(p => !template.scope.paths.some(root => containsPath(root, p)))))
+			throw new FoundryError("scope_widening", "The milestone must cover its producer's checked outputs");
+		return { ...template, id: edge(output).taskId, title: purpose, deliverable: output, inputs: inputs.map(edge),
+			assignment: `${template.assignment}\n${purpose}${context}\nPublish: ${output}` };
 	});
-	const required = array(plan.requires, edge);
-	const reachable = new Set(required.map(input => input.taskId));
-	for (const id of reachable) for (const input of tasks.find(task => task.id === id)?.inputs ?? []) reachable.add(input.taskId);
-	if (tasks.some(task => !reachable.has(task.id))) throw new FoundryError("unused_producer", "No speculative leaves: each output must reach product acceptance");
-	const compiled = compileDefinition({ title: item.title, scope: tx.get("goals", item.goalId).scope, tasks: tasks.map(({ dispatch, deliverable, ...task }) => task) });
-	for (const task of compiled.tasks) {
-		const descriptor = tasks.find(node => node.id === task.id);
-		if (!descriptor) throw new FoundryError("invalid_plan", "Missing compiled producer");
-		createTask(tx, { ...task, dispatch: descriptor.dispatch, deliverable: descriptor.deliverable, goalId: item.goalId }, actor, true);
-	}
-	const inputs = [...final.inputs, ...required.filter(next => !final.inputs.some(old => old.taskId === next.taskId && old.output === next.output))];
-	replaceInputs(tx, final, inputs, actor);
-	completion.requiredInputs = inputs;
-	tx.put("goal_completions", completion);
-	const split = { id, hash, plan: json(plan), taskIds: tasks.map(task => task.id) };
-	item.splits.push(split);
-	tx.put("backlog_items", item);
-	return { split, replay: false };
+	const final = templateFor(factory, squad, item, item.template);
+	const deliverable = contracts(policy.requiredProducts).find(rule => rule.producer === item.template)?.output ?? "product";
+	const definitions = [...tasks, { ...final, id: finalId, title: item.title, deliverable, inputs: [...sources, ...outputs.values()],
+		assignment: `${final.assignment}\n${item.gap}${context}\nPublish: ${deliverable}` }];
+	const descriptors = new Map(definitions.map(({id, dispatch, deliverable}) => [id, {dispatch, deliverable}]));
+	const compiled = compileDefinition({ title: item.title, id: goalId, scope: narrowScope(item.scope, { restrictions: direction?.constraints }),
+		projectId: goal.projectId, limits: goal.limits, tasks: definitions.map(({dispatch, deliverable, ...task}) => task) },
+		{ reference: `${factory.source.reference}#${item.id}`, sha256: digest(json({ item, policy: factory.source.sha256, direction: direction?.source })) });
+	return { goal: compiled.goal, tasks: compiled.tasks.map(task => ({ ...task, ...descriptors.get(text(task.id, "compiled producer")) })), finalId };
 }
 
 /** @param {Tx} tx @param {string} factoryId @param {number} revision @param {unknown} value @param {string} source @param {string} actor
@@ -485,7 +443,7 @@ export function reviseDirection(tx, factoryId, revision, value, source, actor) {
 	const direction = directionRecord({ factoryId, id: key("direction", factoryId, String(next.revision)), direction: next, source });
 	tx.put("directions", direction);
 	for (const item of tx.list("backlog_items", byFactory, [factoryId])) {
-		if (!["queued", "pulled"].includes(item.state)) continue;
+		if (!["queued", "admitted"].includes(item.state)) continue;
 		const previous = prior.outcomes.find(outcome => outcome.id === item.outcome), current = next.outcomes.find(outcome => outcome.id === item.outcome);
 		if (!current || previous?.success !== current.success || previous.title !== current.title
 			|| digest(prior.constraints) !== digest(next.constraints) || digest(prior.nonGoals) !== digest(next.nonGoals)) {
@@ -505,7 +463,7 @@ export function reviseDirection(tx, factoryId, revision, value, source, actor) {
 
 /** @param {Tx} tx @param {string} goalId @param {string} resultId @returns {void} */
 export function accepted(tx, goalId, resultId) {
-	const item = tx.list("backlog_items", "WHERE goal_id=? AND state='pulled'", [goalId])[0];
+	const item = tx.list("backlog_items", "WHERE goal_id=? AND state='admitted'", [goalId])[0];
 	if (!item || !tx.get("goal_completions", goalId).closed) return;
 	item.state = "accepted"; item.resultId = resultId;
 	tx.put("backlog_items", item);
@@ -524,7 +482,7 @@ export function recycleCapacity(tx, goalId) {
 	const status = completionStatus(tx, completion);
 	if (!status.settled || !status.delivered && !status.cancelled) return;
 	item.capacityReleased = true;
-	if (status.cancelled && item.state === "pulled") { item.state = "retired"; item.reason = "Bounded job cancelled"; }
+	if (status.cancelled && item.state === "admitted") { item.state = "retired"; item.reason = "Bounded job cancelled"; }
 	tx.put("backlog_items", item);
 	for (const id of new Set(tx.list("backlog_items", `${byFactory} AND state='queued'`, [item.factoryId]).map(other => other.squad))) {
 		const squad = tx.get("squads", id);
@@ -576,7 +534,7 @@ export function views(tx, actor, goalId) {
 			requiredProducts: products, ...(missing.length ? { awaitingSources: missing } : {}),
 			pinned: factory.pin,
 			knowledgeFiles: array(charter(factory, squad).knowledgeFiles ?? [], record),
-			readyItems: entries.map(item => item.id), pullable: active && entries.length ? pullWindow(tx, factory).eligible.includes(entries[0].id) : false,
+			readyItems: entries.map(item => item.id), canAdmit: active && entries.length ? eligibleHeads(tx, factory).includes(entries[0].id) : false,
 			needsDiscovery: Boolean(subscribed && active && squad.generation > squad.handled && !missing.length),
 			dispatch: Boolean(dispatchable(tx, squad, task)) };
 	});

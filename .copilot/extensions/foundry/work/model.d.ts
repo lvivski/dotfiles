@@ -48,7 +48,7 @@ export interface BacklogItem {
 	outcome: string;
 	gapKey: string;
 	kind: "gap" | "question" | "advisory";
-	state: "proposal" | "queued" | "pulled" | "accepted" | "retired";
+	state: "proposal" | "queued" | "admitted" | "accepted" | "retired";
 	revision: number;
 	currentRevision: number;
 	template: string;
@@ -57,6 +57,7 @@ export interface BacklogItem {
 	improvement: string;
 	stop: string;
 	evidence: Json[];
+	producers: { template: string; output: string; purpose: string; inputs: string[] }[];
 	observations: Json[];
 	scope: Scope;
 	dependencies: string[];
@@ -70,7 +71,6 @@ export interface BacklogItem {
 	goalId?: string;
 	resultId?: string;
 	capacityReleased: boolean;
-	splits: { id: string; hash: string; plan: Json; taskIds: string[] }[];
 }
 export interface ProductRule {
 	consumer: string;
@@ -89,7 +89,7 @@ export interface BacklogView {
 		pinned?: FactoryControl["pin"];
 		knowledgeFiles: Record<string, unknown>[];
 		readyItems: string[];
-		pullable: boolean;
+		canAdmit: boolean;
 		needsDiscovery: boolean;
 		dispatch: boolean;
 	})[];
@@ -156,7 +156,7 @@ export interface FactoryControl {
 	definition: Json;
 	maximumJobs: number;
 	blocks?: number;
-	settingOrigins?: {
+	settingOrigins: {
 		maximumJobs: "policy" | "default";
 		blocks?: "policy" | "default";
 	};

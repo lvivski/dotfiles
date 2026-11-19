@@ -1,65 +1,36 @@
 # Foundry
 
-A lean repository-local factory for explicitly authorized engineering work. Many native workers
-and local coordinators execute; a shared record model is not a central executing agent.
+Foundry runs independent parts of an authorized milestone in parallel. Workers publish named
+outputs; the final check waits for the inputs it needs.
 
 ## Starting with direction, not tickets
 
-Use a direction-driven factory when the operator knows the desired outcome but should not have
-to stock the backlog. The policy describes prioritized outcomes, success criteria, non-goals
-and constraints. Each subscribed charter names the outcomes it owns, the scope it can change,
-and the acceptance templates its workers can use. Templates are not tickets: activation
-starts discovery for the subscribed squads without admitting a product job.
+The policy names prioritized outcomes and the teams, paths and acceptance checks authorized
+to deliver them. Activation starts discovery, not a job for every template.
 
-For example, “opening a draft must preserve its account and folder” is direction. A Mail squad
-can inspect its reference behavior and record a specific mismatch; Quality can independently
-record a missing two-account scenario. Each squad pulls its highest-ranked ready item and
-splits only independently checkable outputs. An unrelated squad that finds no gap records the
-evidence and waits. The director need not assign tickets, forward findings or approve the split.
+1. **Identify a milestone.** A bound squad reads `foundry_get_context({view:"backlog"})`,
+   inspects scoped evidence with `foundry_inspect_evidence`, and records the gap, improvement,
+   stopping condition and acceptance template in `foundry_observe_work`. If there is no gap,
+   record the evidence and wait. An advisory is not work.
+2. **Name only independently checkable outputs.** Omit `producers` for an atomic milestone.
+   Otherwise each producer names its template, output, purpose and optional prerequisite outputs:
 
-A squad's responsibility outlives a bounded job. Accepting a job does not reopen it or declare
-the whole direction fulfilled. Reassess the remaining gap against the product evidence; admit
-a successor only when justified. Change priorities by revising direction, not by resending old
-assignments. A submitted message, a qualified artifact, a landed change and a retired workspace
-are separate facts; inspect their receipts rather than inferring them from a session's activity.
+   ```json
+   {"producers": [
+     {"template":"store","output":"index","purpose":"Persist the document index"},
+     {"template":"reader","output":"reader","purpose":"Open a document using the index","inputs":["index"]},
+     {"template":"menu","output":"menu","purpose":"Expose the open command"}
+   ]}
+   ```
 
-`foundry_advance` gives a bound lead its next `squadActions` with the exact generation and
-eligible queue head or review trigger. For details, `foundry_get_context({view:"backlog"})`
-pages just the scoped backlog; use `offset:nextOffset` and the returned `version`.
-
-1. `foundry_inspect_evidence` reads a captured charter source or bounded committed file.
-   `foundry_observe_work` records its digest (or a promoted result ID), a stable gap key,
-   expected improvement, stop condition and governing template. A specific discovery question
-   can use the charter's per-revision allowance without evidence. A `no-gap` disposition
-   needs evidence. Only a current review can discharge discovery. A wait yields capacity but
-   refuses to mark work handled while a review or eligible pull is due. Queue openings don't
-   create new reviews. If a lead nevertheless stops, its existing one-shot escalation can
-   route a continuation to that same lead; no heartbeat is required.
-   If new evidence disproves this squad's queued item before it has a job, include its
-   `withdrawItemId` in the evidenced `no-gap`. Retirement preserves the observation and
-   does not publish a result; it is refused while a queued or pulled consumer depends on it.
-   Without an explicit item ID a no-gap changes no queue entry.
-2. `foundry_pull_work` claims the current ready head. It ranks by outcome priority, severity,
-   estimated cost and age; an older eligible squad gets first claim when whole-job slots are
-   contested. Dependencies are accepted items, not advisory messages. A predecessor links an
-   evidenced successor to a previous accepted item without altering that job's history.
-   On director advance, `squadHandoffs` distinguishes due work, native send/queue state,
-   and a lead that stopped again without acting after its continuation. The last case
-   notifies the sponsor once, not the lead repeatedly. An issued cross-goal native send
-   can be reconciled by its original sender advancing its own originating goal, without
-   advancing the recipient's goal or replaying the message. An unavailable host cannot
-   guarantee progress; a send receipt is never a pickup receipt.
-3. Before staffing final acceptance, `foundry_split_work` can add a versioned behavior spec,
-   examples, negative cases and a checked producer graph. Additional splits may depend on
-   already-declared outputs. Every producer must reach product acceptance; templates, grain
-   versions and required inputs stay pinned. Use `producerTaskId` to offer such an output to
-   another bound squad through an actual collaboration. Final acceptance publishes `product`
-   unless policy declares the template's output name.
-4. `foundry_revise_direction` reads a revised policy file. Only direction may differ.
-   Reprioritization preserves compatible work. Removing or changing an outcome, non-goal or
-   constraint conservatively retires affected unfinished work; commands and claims are not
-   discarded. A restart must use the latest accepted revision. A different engine build or
-   canonical schema cannot write the ledger; quiesce and authorize a fresh store at cutover.
+   Foundry starts `store` and `menu` together if two workers are available; `reader` waits
+   only for `index`. The same owner picks up newly ready work on publication or a freed slot.
+   All producers belong to one job. Its final task requires all their outputs; with a delivery
+   policy it checks the combined candidate. A component pass is not product acceptance.
+3. **Reassess after acceptance.** Submit another milestone only for a remaining gap. Use
+   `foundry_revise_direction` for an explicit priority or outcome change. Use `foundry_advance`
+   for discovery actions, outstanding ordinary native calls or recovery. A send receipt is
+   not proof that the owner ran; do not issue a replacement for an uncertain worker start.
 
 A direction policy can require independently published products with
 `requiredProducts: [{consumer, producer, output}, ...]`, where `consumer` and `producer` are
@@ -68,14 +39,14 @@ output. Read the actual IDs from the squad's `requiredProducts[].sources`; peers
 to exchange IDs by chat. If all of the squad's templates lack a required source, the backlog
 lists `awaitingSources` and discovery can yield for events without acknowledging its review.
 Admitting the last missing source wakes the consumer to review the join. This is not a
-publication: only after each named producer passes its own acceptance can the squad pull the join.
+publication: the join becomes eligible only after each named source passes its own acceptance.
 The bounded job pins the published versions as protected inputs. Its evaluated product bundle
 must conserve **every source path, byte and mode**; passing a check on unrelated bytes at
 the same filenames is not acceptance. There is no implicit conflict resolution or file override.
 
 ## Organizations and ongoing coordination
 
-Protocol 2 replaces flat teams with recursive goal-scoped `units`. A unit has a name, optional
+Goal-scoped `units` describe teams and subteams. A unit has a name, optional
 descriptive `kind`, parent unit and charter/context. Multiple roots can represent independent
 organizations. Unit names, membership and metadata contacts never grant execution authority.
 `foundry_create_unit` requires an authorized `taskId` boundary for delegated units; the goal owner
@@ -136,6 +107,8 @@ Use the existing contract fields to make the boundary executable:
 - Assign its `checks` to the actual combined candidate with the relevant `artifactFiles` and pinned
   `oracleFiles`, rather than treating separate producer passes or design previews as acceptance.
 - For a factory, point `completionTaskId` at the producer that proves the requested delivery.
+  In a direction policy, declared `requiredProducts` producers and consumers can also accept
+  their own pieces of work; an unrelated component template cannot replace the final check.
   Include authorized landing, build, launch and visual inspection when the requested outcome needs
   them. Missing authorization or evidence is an explicit blocker, not permission to skip that step,
   claim delivery or infer Git/release permission.
@@ -232,18 +205,15 @@ factory-wide; worker, observed-credit, deadline and ordinary repair limits remai
 Optional `aggregateRepairs` is a separate per-job debit; `unchangedFailures` bounds repeated
 evaluated failures in an activation. No limits are inferred from token estimates.
 
-`maximumJobs` defaults to 1 concurrent whole job, not 1 worker or subtask. Independent leads and
-subtasks within that job can execute in parallel. Higher values require multi-job intake from a
-trusted issue source or direction-driven squad backlogs; do not select them from a count of
-teams, leads, or subtasks. Worker slots remain governed
-only by existing dependency readiness and any explicit per-job `goal.limits.workers` ceiling.
-No worker, spending, deadline, or repair limit is manufactured from these defaults.
+`maximumJobs` defaults to one whole milestone. Set `goal.limits.workers` to limit parallel
+workers **within** a milestone. Multiple simultaneous jobs require issue intake or direction;
+parallel producers in one job do not.
 
 Activation returns `settings`; context exposes the same projection in `factories[].settings`.
 Each effective value has a `policy` or `default` origin, with explicit per-job limits reported
 under `perJobLimits`. `policy` means present in the policy document, not proof that the user chose
 the number. No runtime-limit provenance or resource-aware tuning is claimed without an actual
-runtime observation. Older records without origin metadata report `unrecorded`, not guessed origins.
+runtime observation.
 Resolution captures values and origins in the canonical policy snapshot without rewriting its
 source file. Reload and context reads use those stored values, not current defaults or source edits.
 Changing an accepted snapshot still requires a distinct policy identity; it is not an implicit
@@ -518,21 +488,9 @@ using WAL and short synchronous transactions. Ownership follows native identity 
 not session-folder equality. Inputs, evaluators and attempt tokens are immutable snapshots.
 Current-attempt guards protect publication, readiness, repair and resource settlement.
 
-Retired operational formats are not imported. This revision has an explicit reset boundary:
-quiesce old participants and reset obsolete canonical state before upgrading; mixed-version
-Foundry writers remain unsupported. Factory work missing its admitted assignment snapshot is
-rejected, not reconstructed from old policy. Prepared current native calls retain their original
-complete requests. The current schema accepts only fresh or complete current stores; previous
-schemas and missing tables are rejected without migration or receipt-index backfilling.
-An upgrade must finish or explicitly dispose of every old unfinished job, then stop all old
-coordinators, workers, commands and usage writers; pausing admission alone is insufficient.
-Preserve the database/WAL, evidence, artifacts, requests, receipts and worktrees as one historical
-set before an explicitly authorized reset. Do not copy/reload this revision into a live old-protocol
-factory or replace its canonical store in place.
-There are no compatibility modes or parallel authorization ledgers. Wake delivery uses only
-delivery records; legacy message effects and flat check receipts are unsupported. Check evidence
-requires an exclusive finished receipt bound to the issued runner command. New stores omit inert
-priority and pending-result columns and impossible all-null indices.
+The store is pinned to its schema and engine digest. Mismatched or incomplete stores are
+refused, never migrated or overwritten. A check requires a finished receipt for its issued
+runner command; a prepared native call retains its exact original request.
 Repository-owned `.foundry` contracts
 describe meaning, not competing operational authority. A source contract has `format:
 "foundry-contract"`, `version: 2`, a title, scope and task definitions.
@@ -679,9 +637,8 @@ Callbacks remain synchronous and non-reentrant. Native RPC stays outside these t
 
 Source is dotfiles-managed in `.copilot/extensions/foundry/`; `sync` mirrors it and the independent
 `recon` extension to their user directories. For scoped development, mirror only the
-updated extension directories and their directly updated skills, then reload extensions only after
-the quiescence/reset requirements above are satisfied. Keep development isolated from active old
-factories. Do not run the entire dotfiles sync to test this component.
+updated extension directories and their directly updated skills. Test in disposable repositories;
+do not reload a live factory or run the entire dotfiles sync to test this component.
 
 For editor diagnostics in this checkout, install the development-only Node declarations and
 TypeScript, then run the same `jsconfig.json` the editor loads:

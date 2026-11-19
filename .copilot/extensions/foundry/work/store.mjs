@@ -77,16 +77,19 @@ export function openWorkStore(workingDirectory, options = {}) {
 		observeWork(input, actor) { return database.transaction(tx => Backlog.observe(tx, input, actor)); },
 		/** @param {Record<string,unknown>} input @param {string} actor */
 		inspectEvidence(input, actor) { return database.transaction(tx => Backlog.inspect(tx, input, actor), false); },
-		/** @param {Record<string,unknown>} input @param {string} actor */
-		pullWork(input, actor) { return database.transaction(tx => Backlog.pull(tx, input, actor)); },
-		/** @param {Record<string,unknown>} input @param {string} actor */
-		splitWork(input, actor) { return database.transaction(tx => Backlog.split(tx, input, actor)); },
 		/** @param {string} id @param {number} revision @param {unknown} direction @param {string} source @param {string} actor */
 		reviseDirection(id, revision, direction, source, actor) { return database.transaction(tx => Backlog.reviseDirection(tx, id, revision, direction, source, actor)); },
 		/** @param {string} actor @param {string} [goalId] */
 		backlog(actor, goalId) { return database.transaction(tx => Backlog.views(tx, actor, goalId), false); },
 		/** @param {string} actor @param {string} [goalId] */
-		squadTurns(actor, goalId) { return database.transaction(tx => Backlog.turns(tx, actor, goalId), false); },
+		advanceSquads(actor, goalId) { return database.transaction(tx => Backlog.advance(tx, actor, goalId)); },
+		/** @param {string} actor */
+		nativeGoals(actor) { return database.transaction(tx => tx.db.prepare(`SELECT DISTINCT a.goal_id FROM (
+			SELECT goal_id, document FROM squads UNION ALL SELECT goal_id, document FROM goal_completions WHERE json_extract(document,'$.closed')=0
+		) a JOIN factory_controls f ON f.id=json_extract(a.document,'$.factoryId')
+		WHERE f.state='active' AND json_extract(f.document,'$.mechanism')='native' AND
+		(a.goal_id IN (SELECT id FROM goals WHERE owner=?) OR a.goal_id IN (SELECT goal_id FROM tasks WHERE owner=?))`)
+			.all(actor,actor).map(row => text(row.goal_id, "native goal")), false); },
 		/** @param {string} actor @param {string} reason @param {string} [factoryId] */
 		pauseFactories(actor, reason, factoryId) { return database.transaction(tx => Jobs.pauseFactories(tx, actor, reason, factoryId)); },
 		/** @param {string} goalId @param {string} actor */

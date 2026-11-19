@@ -10,7 +10,7 @@ import { contracts, validateContracts } from "./lineage.mjs";
 import { FoundryError, array, choice, closedFields, decodeLimits, decodeScope, digest, json, narrowScope, natural, positive, record, resourcePath, strings, text } from "./values.mjs";
 
 /** @param {Record<string,unknown>} definition @param {"native"|"stop-hook"} mechanism
- * @returns {{maximumJobs:number,blocks?:number,settingOrigins:NonNullable<import("./model.d.ts").FactoryControl["settingOrigins"]>}} */
+ * @returns {Pick<import("./model.d.ts").FactoryControl,"maximumJobs"|"blocks"|"settingOrigins">} */
 function resolveFactorySettings(definition, mechanism) {
 	const maximumJobs = definition.maximumJobs === undefined ? 1 : positive(definition.maximumJobs, "maximum concurrent jobs");
 	if (maximumJobs > 1 && definition.source === undefined && definition.direction === undefined) {
@@ -33,9 +33,9 @@ function resolveFactorySettings(definition, mechanism) {
 export function factorySettings(factory) {
 	const limits = decodeLimits(record(record(factory.definition).goal).limits ?? {});
 	return {
-		maximumJobs: { value: factory.maximumJobs, origin: factory.settingOrigins?.maximumJobs ?? "unrecorded" },
+		maximumJobs: { value: factory.maximumJobs, origin: factory.settingOrigins.maximumJobs },
 		...(factory.mechanism === "native" ? {} : { blocks: {
-			value: positive(factory.blocks, "stop-hook continuation blocks"), origin: factory.settingOrigins?.blocks ?? "unrecorded",
+			value: positive(factory.blocks, "stop-hook continuation blocks"), origin: factory.settingOrigins.blocks,
 		} }),
 		perJobLimits: Object.fromEntries(Object.entries(limits).map(([name, value]) => [name, { value, origin: "policy" }])),
 	};
@@ -84,6 +84,9 @@ export function readFactory(directory, filename) {
 	const tasks = array(goal.tasks, record);
 	const ids = new Set(tasks.map(task => text(task.id, "template task id")));
 	if (ids.size !== tasks.length) throw new FoundryError("duplicate_template", "Factory task template identities must be unique");
+	if (definition.completionTaskId !== undefined && !ids.has(text(definition.completionTaskId, "completion template"))) {
+		throw new FoundryError("completion_missing", "Completion must name a task template");
+	}
 	/** @type {Record<string,{sha256:string,content:string}>} */
 	const captured = {};
 	/** @param {unknown} value */

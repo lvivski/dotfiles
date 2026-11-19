@@ -125,7 +125,7 @@ export function insertGoal(tx, input, actor) {
 export function createTask(tx, input, actor, planned = false) {
 	const goal = tx.get("goals", input.goalId);
 	if (!planned && (tx.list("backlog_items", "WHERE goal_id=?", [goal.id]).length || tx.list("squads", "WHERE goal_id=?", [goal.id]).length)) {
-		throw new FoundryError("item_required", "Charter subscriptions admit only bounded items; split pulled items through their protected local graph");
+		throw new FoundryError("item_required", "Declare independent outputs on the milestone observation, not as children of a subscription");
 	}
 	const completion = tx.optional("goal_completions", goal.id);
 	if (completion) {

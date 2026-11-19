@@ -6,7 +6,7 @@ import { FoundryError, digest, json, record, text } from "./values.mjs";
 export function wakeRequest(wake) {
 	return {
 		session_id: wake.owner, delivery_mode: "immediate",
-		message: `Foundry wake: ${wake.id}:${wake.generation}\n${wake.reason}. Call foundry_advance for goal ${wake.goalId} on this owner turn. Follow your squadActions and any remaining prepared calls; no new scope or slot is granted.`,
+		message: `Foundry wake: ${wake.id}:${wake.generation}\n${wake.reason}. Use foundry_advance for ${wake.goalId} to see discovery actions or remaining prepared calls. Native factory pickup runs on the owner's turn; do not duplicate started workers.`,
 	};
 }
 
