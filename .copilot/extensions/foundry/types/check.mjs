@@ -1,12 +1,13 @@
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const [sdk, compiler, typeRoots, dependencies, additional] = process.argv.slice(2);
-if (!sdk || !compiler || !typeRoots) throw new Error("Usage: node types/check.mjs SDK_DIRECTORY TSC_EXECUTABLE TYPE_ROOTS [DEPENDENCY_ROOT]");
+if (!sdk || !compiler || !typeRoots) throw new Error("Usage: node types/check.mjs SDK_DIRECTORY TSC_EXECUTABLE TYPE_ROOTS [DEPENDENCY_ROOT [ADDITIONAL_EXTENSION]]");
+if (additional && (await lstat(path.resolve(additional))).isSymbolicLink()) throw new Error(`Refusing a source symlink: ${additional}`);
 
 /** @param {string} directory @returns {Promise<string[]>} */
 async function sources(directory) {

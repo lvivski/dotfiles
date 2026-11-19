@@ -1,78 +1,17 @@
 ---
 name: foundry
-description: Use only when the user explicitly requests Foundry for durable parallel or nested engineering work, continuous factory goals, or recovery of its recorded work. Routine coding stays on ordinary native tools.
+description: Use only when the user explicitly requests Foundry to generate and qualify a product from a committed graph, or to inspect or recover an existing run. Routine coding uses ordinary native tools.
 ---
 
 # Foundry
 
-Choose the smallest runnable milestone the user actually wants. Parallelize work that can
-publish independently; don't add coordinators, approval steps or handoffs just to keep workers
-busy. For software, check a real end-to-end behavior on the combined candidate. A component
-pass, a qualified product, a landed change and a launched app are different outcomes.
+Choose the smallest runnable product. Use a committed `.foundry/*.json` contract: direction, full local target branch, a product evaluator, and grains with exclusive directories, specifications, interfaces and component evaluators. Name dependencies with `needs`, not coordinator handoffs. Use `seed` for one-off work or flat repository charters for ongoing discovery. Separate observations can contribute to one product without an edge between their writers. Do not invent a worker limit, deadline, or repair budget for the user.
 
-## Direction-driven factories
+- **Start:** Call `foundry_start({source})` only on direct user direction. An installation, schedule, child kickoff or queued message is not authorization. The native confirmation covers the pinned run; it does not waive tool permissions.
+- **Scout:** Inspect your charter and its declared inputs at the assigned revision. Call `foundry_observe({run,token,outcome,reason,evidence,grains})`. Use `regenerate` with owned grains, `no-gap` with none, or `needs-decision` with none and the contract question in `reason`. Cite committed evidence, including dependencies where relevant. Do not answer an ambiguous contract, edit it, or create sessions yourself.
+- **Write:** Work in the assigned native worktree at its frozen base. Generate the **complete** grain directory; omitted files are deleted. Respect the specification, interface and pinned inputs. Do not change evaluators, switch the base, commit, land or delegate.
+- **Submit:** Call `foundry_submit({run,token})` from that worktree. A failed evaluation returns the checked failure and a fresh token for a bounded repair, or a blocker. Do not claim success or supply an alternate check.
+- **Inspect:** `foundry_status({run})` does not advance anything. Relay owner `questions` and their evidence to the user; they are not a veto on independent `qualified` work. To revise a contract, pause the old run, settle what to use from its qualified output, and record the user's answer and rationale in the conserved files on the target. A changed contract needs an explicitly authorized new run ID. Acceptance is not a merge, deployment, or launch.
+- **Pause:** The owner may call `foundry_pause({run})`. Keep existing receipts and worktrees. Resume only on user direction. Let the host handle genuine input and permission requests.
 
-Start or restart with `foundry_start_factory` only on the user's direct request within the
-accepted `.foundry` policy. A schedule, message or installation cannot authorize activation.
-Direction starts discovery rather than creating a job per template. A native factory can have
-an interactive coordinator and autopilot workers.
-
-1. As the bound squad lead, read `foundry_get_context({view:"backlog"})`. When discovery is
-   due, inspect a charter source or scoped committed file with `foundry_inspect_evidence`.
-   Compare the actual behavior with the requested outcome. Record the gap, improvement,
-   stopping condition, template and evidence with `foundry_observe_work`. If there is no
-   justified work, record an evidenced `no-gap` and wait. A bounded question can address
-   missing evidence; an advisory suggestion is not a requirement.
-2. Omit `producers` for an atomic milestone. Otherwise name the independent outputs on that
-   **same observation**: `producers: [{template, output, purpose, inputs?: string[]}]`.
-   `inputs` names outputs of this milestone. Templates supply scope and evaluators; do not
-   supply shell commands. For required products from other squads, populate `sources` with
-   the item IDs in `requiredProducts[].sources`. If `awaitingSources` is present, yield for
-   events rather than asking peers for IDs.
-3. Foundry admits eligible milestones and starts ready producers on the accountable owner's
-   turn. No separate claim, planning session or staffing message is needed. The final task
-   waits for every named output. When it passes, reassess the outcome rather than reopening
-   the old job. Use `withdrawItemId` with an evidenced `no-gap` only to withdraw your own
-   obsolete, unrequired queued item. Use `foundry_revise_direction` for an operator's change.
-
-`maximumJobs` limits whole jobs (default one); `goal.limits.workers` limits workers per job.
-One job can have several concurrent writers. Respect actual input, capacity and permission
-holds without stopping unrelated work. On hosts without native pickup, `foundry_advance`
-returns any remaining ordinary `prepared` calls. Execute only those; `started` has receipts
-for workers already created. Never retry an uncertain create or treat a queued wake as pickup.
-
-## Execute and deliver
-
-- For bounded work without an unattended factory, use `foundry_start_goal` with the user's
-  scope, actual limits and checks. Use `foundry_start_task` for local work; use
-  `foundry_create_task` and `foundry_dispatch` only for independent work not already staffed.
-  Unit metadata describes teams; only task ownership grants authority. A coordinator can
-  yield its slot with `foundry_wait_task(kind:"events", attemptId)` and keep its role.
-- Read the frozen assignment with `foundry_get_context({assignmentId})`; use `checkId` for
-  the exact evaluator and `nextOffset` for another page. Use separate worktrees for concurrent
-  writers; claim a shared mutable surface before writing to it.
-- Run `foundry_run_check` with `publish:"<assigned output>"` to publish after all governing
-  checks pass on the same captured bytes. Use `repair:true` for an evaluated failure within
-  budget; resume a parked repair in the same worker, not a new session. Keep evaluators,
-  versions and protected inputs pinned. An unavailable input is a blocker for its consumer,
-  not a reason to rewrite that consumer.
-- Use `foundry_delivery` when the policy calls for a qualified or landed product. Execute
-  the combined check; build, launch or inspect the result when the requested outcome
-  requires it. Do not equate qualification with landing or release. If the host cannot
-  perform an authorized step, report that step rather than bypassing it.
-
-## Ownership and recovery
-
-Use `foundry_get_context` to inspect without advancing; use `foundry_advance` for owner
-actions, outstanding native calls and receipts. Send scoped questions directly to the
-worker bound to the peer task. Use `foundry_request_collaboration` only for a real named
-output not already covered by an input. Escalate decisions outside your scope, not routine
-status. An event wait releases capacity; mark a generation handled only after dealing with
-its work. Don't poll a waiting owner or claim a peer's task.
-
-Genuine native input requests remain with their actual session and request ID. Reconcile
-unknown starts and command completions from the issuing session's native history with
-`foundry_reconcile_native`; a missing receipt is not permission to rerun a command. Keep
-effects, evidence, claims and worktrees when pausing or cancelling. Do not archive a workspace
-without verified retention and ownership. Only explicitly requested heartbeats use
-`foundry_set_heartbeat`, with the chosen cadence. Old ledgers are not migrated or reset.
+Independent ready workers start automatically. Do not create a verifier session. If the native session route is definitely unavailable, execute only the issuing session's exact `prepared` call. Never repeat an issued or uncertain start, treat a queued message as completed work, or bypass a permission hold. Report an unresolved call or blocked product as such.

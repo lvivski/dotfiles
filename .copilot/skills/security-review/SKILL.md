@@ -26,10 +26,8 @@ metadata:
 4. Return independently confirmed findings with their locations, severity, exploit evidence,
    and recommendations. Preserve the scope and any failed-coverage warnings. No confirmed
    finding means bounded static coverage, not proof that the code is vulnerability-free.
-5. When an explicit Foundry goal exists, retain appropriately scoped findings and coverage gaps
-   with `foundry_record_signal`, referencing the exact native report and repository revision.
-   Use `foundry_record_lesson` for evidenced recurring lessons. A static finding is not replacement
-   acceptance and does not silently change governing checks.
+5. Retain findings and coverage gaps in the native report with their repository revision.
+   A static finding does not silently change governing checks.
 
 ## Essential safeguards
 

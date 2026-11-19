@@ -1,669 +1,100 @@
 # Foundry
 
-Foundry runs independent parts of an authorized milestone in parallel. Workers publish named
-outputs; the final check waits for the inputs it needs.
-
-## Starting with direction, not tickets
-
-The policy names prioritized outcomes and the teams, paths and acceptance checks authorized
-to deliver them. Activation starts discovery, not a job for every template.
-
-1. **Identify a milestone.** A bound squad reads `foundry_get_context({view:"backlog"})`,
-   inspects scoped evidence with `foundry_inspect_evidence`, and records the gap, improvement,
-   stopping condition and acceptance template in `foundry_observe_work`. If there is no gap,
-   record the evidence and wait. An advisory is not work.
-2. **Name only independently checkable outputs.** Omit `producers` for an atomic milestone.
-   Otherwise each producer names its template, output, purpose and optional prerequisite outputs:
-
-   ```json
-   {"producers": [
-     {"template":"store","output":"index","purpose":"Persist the document index"},
-     {"template":"reader","output":"reader","purpose":"Open a document using the index","inputs":["index"]},
-     {"template":"menu","output":"menu","purpose":"Expose the open command"}
-   ]}
-   ```
-
-   Foundry starts `store` and `menu` together if two workers are available; `reader` waits
-   only for `index`. The same owner picks up newly ready work on publication or a freed slot.
-   All producers belong to one job. Its final task requires all their outputs; with a delivery
-   policy it checks the combined candidate. A component pass is not product acceptance.
-3. **Reassess after acceptance.** Submit another milestone only for a remaining gap. Use
-   `foundry_revise_direction` for an explicit priority or outcome change. Use `foundry_advance`
-   for discovery actions, outstanding ordinary native calls or recovery. A send receipt is
-   not proof that the owner ran; do not issue a replacement for an uncertain worker start.
-
-A direction policy can require independently published products with
-`requiredProducts: [{consumer, producer, output}, ...]`, where `consumer` and `producer` are
-chartered template IDs. A join observation names its source items in `sources`, keyed by
-output. Read the actual IDs from the squad's `requiredProducts[].sources`; peers do not need
-to exchange IDs by chat. If all of the squad's templates lack a required source, the backlog
-lists `awaitingSources` and discovery can yield for events without acknowledging its review.
-Admitting the last missing source wakes the consumer to review the join. This is not a
-publication: the join becomes eligible only after each named source passes its own acceptance.
-The bounded job pins the published versions as protected inputs. Its evaluated product bundle
-must conserve **every source path, byte and mode**; passing a check on unrelated bytes at
-the same filenames is not acceptance. There is no implicit conflict resolution or file override.
-
-## Organizations and ongoing coordination
-
-Goal-scoped `units` describe teams and subteams. A unit has a name, optional
-descriptive `kind`, parent unit and charter/context. Multiple roots can represent independent
-organizations. Unit names, membership and metadata contacts never grant execution authority.
-`foundry_create_unit` requires an authorized `taskId` boundary for delegated units; the goal owner
-may declare root metadata. Where ancestor and descendant units have coordinators, their task
-ancestry must agree, including across descriptive levels without an agent.
-
-Tasks default to `role: "producer"`. An explicit `role: "coordinator"` is continuing responsibility
-under the same canonical parent tree, scope, native binding and per-goal limits. One current
-coordinator task belongs to each staffed unit. Coordinators maintain real backlog, staff native
-workers/subcoordinators, handle dependencies, integrate checked outputs and disposition new work.
-Product checks and inputs belong to producer children; a coordinator role cannot finish through
-`foundry_report_result`. No fixed hierarchy, headcount or speculative busywork is imposed.
-
-Factory `goal.units` templates use stable `id`/`parentId` keys; tasks reference them with `unitId`.
-Admission creates fresh unit/task identities per job, not sessions carrying authority across goals.
-An ordinary source contract may also declare `units` and task roles. Dynamic sub-units follow the
-caller's actual delegating task boundary, not a second organizational authority ledger.
-Initial descendants remain recorded but are not staffed ahead of their unbound coordinator.
-Binding passes its sponsor-owned queue to that coordinator, which creates its own native children;
-this is ownership routing, not a fabricated product dependency.
-Context `directory` lists peer unit/coordinator identities within assigned goals without exposing
-their backlogs or granting mutation rights. Follow its `nextOffset` with `get_context.directoryOffset`
-for another bounded page. Cross-goal target identities must be explicitly known; discovery is not
-repository-wide admission or an implicit sharing grant.
-
-A coordinator keeps one current attempt/native session while alternating execution and
-`foundry_wait_task(kind: "events", attemptId, reason, handledGeneration, relatedIds)`.
-Yield before dispatching children when an explicit worker ceiling would otherwise leave no slot.
-Management remains possible without an implementation slot; commands and file edits require
-`foundry_resume_task` or another admitted executing producer. Native reasoning calls themselves are
-not all hard-gated by recorded-worker limits.
-
-Context exposes coordination generations and dispositions separately from transport wakes.
-Reading/consuming a wake does not handle pending work. Acknowledge only the observed generation
-actually staffed or explicitly waiting/exhausted, naming relevant tasks/requests. Newer work stays
-pending; do not poll. New real work can rearm coordinator delivery after an earlier accepted wake,
-but an uncertain send is never blindly repeated. A settled natural stop parks the same role,
-releases capacity and escalates undisposed work once per generation to its sponsor. This is a live
-stop/event bridge, not a dead-process watchdog. Producer completion does not end its coordinator.
-
-### Delivery contracts
-
-For software delivery, define the smallest coherent runnable increment and its integration/delivery
-producer when admitting the goal. Design packets, worker bundles and component passes are inputs
-to that delivery, not substitutes for it. The generated coordinator assignment carries this default;
-it does not add a new schema, permission, approval stage or pipeline to research-only work.
-
-For a first usable product flow, build and exercise one real end-to-end journey on the
-runnable candidate. For design work, compare its actual interface with the agreed reference.
-Add focused checks for material risks in that slice, such as data loss or actions against
-the wrong account. Defer broad regression coverage until the flow works; passing checks
-on the debug UI are not a design milestone. Preserve already-governing checks.
-
-Use the existing contract fields to make the boundary executable:
-
-- Give the integration/delivery producer `inputs` naming the implementation outputs it must join.
-  Required mutable in-job edges float; outside-job inputs retain their exact published versions.
-- Assign its `checks` to the actual combined candidate with the relevant `artifactFiles` and pinned
-  `oracleFiles`, rather than treating separate producer passes or design previews as acceptance.
-- For a factory, point `completionTaskId` at the producer that proves the requested delivery.
-  In a direction policy, declared `requiredProducts` producers and consumers can also accept
-  their own pieces of work; an unrelated component template cannot replace the final check.
-  Include authorized landing, build, launch and visual inspection when the requested outcome needs
-  them. Missing authorization or evidence is an explicit blocker, not permission to skip that step,
-  claim delivery or infer Git/release permission.
-
-Plan landing from the start without manufacturing no-commit/no-landing restrictions. Keep a delivery
-cut stable through repair and qualification; next proposals belong to the next increment unless
-they fix a real blocker in this cut. Independent useful work may proceed. Distinguish publication,
-qualification, integration, landing and runnable delivery in reports, preserving real regression
-assertions and continuing coordinator responsibility without extra status-relay layers.
-
-Keep module work independently regenerable: scope producers to their own paths and give
-them the accepted interfaces and fixtures they actually need. Use separate worktrees.
-A missing input, unsettled operation, or shared landing claim blocks the work that needs
-it, not other modules. Preserve existing receipts, permissions, and claims; don't turn a
-local blocker or completed maintenance into an organization-wide hold.
-
-### Collaboration and execution handoff
-
-Send scoped questions, advisory feedback, and handoff notes directly with `send_session_message`
-when you know the native session bound to the peer's assignment. The assigned-goal directory
-lists unit-backed coordinator tasks and their owners. An owner may still be the parent or director
-before the peer is dispatched; the directory alone does not establish a native binding.
-If you cannot identify or reach the peer and work is blocked, ask your local coordinator for help.
-The director owns priorities, cross-team tradeoffs, and shared delivery blockers the owners
-cannot resolve. Routine exchanges do not need a relay, copy, or approval from the director.
-Advisory feedback does not block delivery; use a recorded collaboration for an actual output
-dependency. Existing scope and required checks still apply.
-
-`foundry_request_collaboration` names source/destination coordinator tasks, the source's producer
-consumer, its current version and an output. A required proposal immediately blocks that consumer.
-The destination uses `foundry_respond_collaboration(action: "accept", producer)` to atomically staff
-a scoped producer child, bind the preauthorized source prerequisite and acquire its own delivery
-obligation. Changed source ownership/version requires a new proposal; actual artifact cycles are
-rejected, not all reciprocal organizational collaboration.
-
-Only the accepted producer's actual published named output can fulfill a request. Cross-goal
-delivery pins that immutable version; same-job mutable production floats. Historical foreign pins
-survive later producer evolution or cancellation. A changed/unavailable source keeps the delivery
-with `bound: false` until source-authorized `bind`. Both sides' required commitments fence final
-acceptance. `decline`, `block` and `cancel` preserve unmet requirements; only explicit source
-`release` removes this derived commitment, never original protected inputs/checks.
-Request IDs and revision-checked transitions make retries idempotent. Foreign contract/output
-wakes expose only entitled reasons, retaining the real coalesced generation; they do not grant
-arbitrary cross-goal mutation or messaging rights.
-
-`foundry_handoff_task` supersedes an exact settled execution without a repair debit or requirement
-revision. The actual worker may relinquish; an ancestor may replace a natively verified absent or
-archived coordinator. The recorded actual executing worktree must still exist, share this canonical
-store, retain its recorded HEAD and have no scoped changes, untracked or ignored files. Inputs,
-commands and claims must settle first. Original native creation provenance and separately delegated
-workers remain intact; only the outgoing coordinator's owned pending descendants move.
-Replacement dispatch conserves the verified commit, not a newer project branch. Local execution
-on a different HEAD is rejected rather than silently changing the handoff's starting point.
-Dirty/missing/unverified worktree relocation needs a checkpoint protocol and is unsupported.
-`foundry_reassign_unit` changes metadata only; it cannot move task authority or execution.
-
-Accepted job closure retires organizational leases without inventing product results or erasing real
-native requests/effects/claims. Explicit reopen restores settled coordinator leases in their existing
-native sessions without a repair debit. Unsettled leases remain historical blockers; repeat reopen
-after their actual settlement. New jobs reuse templates, not these sessions or authority.
-Closure atomically retires their definitely unissued creation/command intents with `neverIssued`;
-it never relabels issued or uncertain work as unissued. Late native creation receipts settle the
-original identity without reactivating a closed coordinator lease.
-
-`get_context.capabilities` reports cross-store federation as unsupported: native peer provenance,
-durable receipt and artifact-byte transport have not been qualified. Same-store collaboration can
-span organizations and accepted goals; it is not cross-repository execution. Automated native
-lifecycle behavior still needs host qualification; unit tests do not establish native transport,
-permission, wake/accounting order or process-restart guarantees.
-
-## Bounded factories
-
-Ordinary `foundry_start_goal` work stays activation-free. Unattended factories opt in with
-`foundry_start_factory`, a repository-owned `.foundry` JSON document with `format:
-"foundry-factory"` and `version: 2`, and actual native-owner mode inspection. The user's direct
-request to start or restart within the agreed policy scope is authorization; no separate activation
-dialog is required. Native permissions remain authoritative. Installation, scheduling, hook messages,
-and completion events never authorize a start or restart, and do not activate it automatically.
-Only the current Foundry protocol and canonical schema are supported.
-
-Seed and issue-source policies require `id`, `mechanism`, `completionTaskId`, and `goal`.
-Direction-only policies use subscribed acceptance templates instead of a seed completion task.
-The goal uses the ordinary title/scope/limits/task format, with stable task template IDs.
-`goal.scope.mode` governs worker execution, not the main coordinator's conversation mode.
-`native` continuation requires Autopilot workers, but its coordinator may be interactive or Autopilot.
-An interactive coordinator can ask the user questions; after a natural stop, it resumes on native
-messages, user input, or an explicitly scheduled heartbeat, not an automatic stop-hook loop.
-Exclusive `stop-hook` continuation requires interactive workers and coordinator, an observed
-natural-stop hook, and a positive `blocks` continuation bound. Omitted `blocks` resolves to the
-internal safeguard of 3 forced continuations per session per activation; this is not a
-performance recommendation or an override of host limits. Native factories reject `blocks`
-because they do not use stop-hook continuation. All factory tasks retain the policy's worker mode. The job limit is
-factory-wide; worker, observed-credit, deadline and ordinary repair limits remain per job.
-Optional `aggregateRepairs` is a separate per-job debit; `unchangedFailures` bounds repeated
-evaluated failures in an activation. No limits are inferred from token estimates.
-
-`maximumJobs` defaults to one whole milestone. Set `goal.limits.workers` to limit parallel
-workers **within** a milestone. Multiple simultaneous jobs require issue intake or direction;
-parallel producers in one job do not.
-
-Activation returns `settings`; context exposes the same projection in `factories[].settings`.
-Each effective value has a `policy` or `default` origin, with explicit per-job limits reported
-under `perJobLimits`. `policy` means present in the policy document, not proof that the user chose
-the number. No runtime-limit provenance or resource-aware tuning is claimed without an actual
-runtime observation.
-Resolution captures values and origins in the canonical policy snapshot without rewriting its
-source file. Reload and context reads use those stored values, not current defaults or source edits.
-Changing an accepted snapshot still requires a distinct policy identity; it is not an implicit
-limit increase. Present effective settings without an extra confirmation or tuning questionnaire.
-
-`foundry_advance` recovers receipts, reconciles observed owner-input answers, and consumes the actual
-owner's wakes. It reserves eligible writers in admission order and issues independent native
-creates concurrently in the owner turn, without joining another owner's message delivery.
-`started` lists bound native identities; only `prepared` calls remain for the ordinary app tools.
-An exact pre-start disabled-route refusal retains its native receipt and permits a fresh foreground
-assignment. Timeout, partial creation, or lost identity does not. On restart, advance checks the
-creator's own native history: exact original call, arguments and successful completion, never a
-name guess or another create. There is no background polling loop or promise of delivery while
-the host is stopped.
-`foundry_get_context` is observational: reading a goal does not recover receipts, inspect native
-sessions, send stops or consume wakes. On a wake, call `foundry_advance` for its goal; `received`
-lists the wake generations and reasons consumed on that turn. This does not mark coordination work handled.
-Execute only remaining `prepared` calls, including any returned alongside capacity blockers.
-Resume an existing worker rather than recreating it. A stop hook performs classification only,
-not native side effects. Unchanged re-entry and explicit continuation bounds pause work rather
-than manufacture failed evaluator evidence. Safely settled local execution yields capacity while
-retaining its attempt and claims; user-requested restart resumes it without a code-repair debit.
-Revoked, definitely unissued creates are retired before fresh preparation. Issued creates retain
-their original identity for reconciliation, never replacement.
-Unknown commands, child identity and genuine input requests remain settlement blockers.
-
-The ordinary completion task has its own executable checks and protected required inputs.
-Acceptance atomically seals the transitive in-job production closure, including exact versions
-and resolved inputs. It retires unused producer reservations, not reservations with live consumers
-or commitments, issued work, native questions, or shared-write claims. Required mutable production
-edges must float; ordinary historical pins outside that closure remain usable. In-job producer
-cancellation or changed accepted inputs invalidate
-current delivery. Code outputs require evaluated file-bound evidence. Accepted jobs admit no new
-execution, including unused alternatives, until `foundry_reopen_job`; historical publications
-remain recorded. `foundry_cancel_job` cancels without claiming delivery. Neither delivery nor a
-queued stop proves native execution and write claims have settled.
-
-### Intake and reusable context
-
-An optional `source` has `kind: "github-issue"`, `repository`, and explicitly trusted `actors`.
-`foundry_ingest` inspects the actual issue through the native permission path. Both its author and
-last editor must satisfy that policy. Each accepted title/body/author/editor snapshot is admitted
-once; comment-only timestamp changes do not spawn another job. Source content is data, not a
-permission grant. Closed or inaccessible issues and unknown provenance do not become empty jobs.
-Activating an intake policy validates its template without creating a synthetic seed job.
-
-For `foundry_poll`, also set `source.maximumEvents` explicitly (1 through GitHub's 100-item page
-ceiling). It reads one native page, retains capacity-deferred events, and records the provider's
-opaque cursor only under the same active owner/generation. Pages wrap for later source changes;
-edits during pagination are not a stable multi-page snapshot. There is no extension-owned timer,
-daemon, distributed queue, or automatic owner replacement. `foundry_set_heartbeat` takes an
-explicit `everyMinutes`, requests native confirmation, inspects the actual same-session scheduler,
-and binds its returned identity. One coordinator's singleton schedule covers the selected factory's
-jobs; separately scheduled policies need separate native owners. Another factory or an unrelated automation is a conflict, not
-permission to overwrite it. Lost acknowledgments are reconciled from matching native ownership,
-prompt and cadence, never blindly resaved. A save returning after pause stays recorded for cleanup.
-`foundry_pause_factory` fences admission first, then removes only the matching native heartbeat
-using the ordinary-session `clear: true` route and verifies absence. The scheduled prompt only
-continues an already-active policy; it never restarts one. Native abort/host-off may postpone that
-ordinary-turn cleanup, but persisted fencing prevents new work in the meantime.
-
-The host's same-session setter has no compare-and-swap argument: preflight identity checks and
-local canonical issuance serialize Foundry changes, not simultaneous external edits in the app.
-Conflicting observed edits stop management. Atomic exclusion of a user edit between inspection
-and native mutation is not a supported guarantee. Unsupported extension-originated scheduler
-routes remain explicit blockers, even when the ordinary app tools work.
-
-Optional `charters` bind `name`, `taskIds`, declared native `agent`, `context`, and hash-pinned
-`knowledgeFiles`. Curate concise evidenced knowledge explicitly in repository-owned files,
-then reference their exact hashes in a new accepted policy identity. Existing assignments retain
-their captured content; curation never expands another goal's mutation rights.
-Factory admission lowers charter/grain membership into typed task assignment snapshots, including
-captured context, the declared agent, conserved base and generator history exclusion. Dispatch
-reads those snapshots, not policy JSON or task-ID suffixes. Multiple matching charters combine
-context and select their one declared agent, even when the first charter declares none.
-
-Optional `grains` declare `id`, `taskIds`, `generators`, an implementation-free `baseBranch`,
-hash-pinned `specification`, nonempty `evaluators` and `boundary`, and explicit `context`.
-The base resolves to a conserved commit and must contain those exact contract files.
-Generator prompts exclude implicit team/lesson history and use declared specification/context.
-Checks bind and deduplicate the conserved oracles; publications retain actual candidate versions.
-A clean base and scoped prompt are **not an enforced old-source read sandbox**: Git history,
-other worktrees and host-global files may still be readable. Audited non-consultation and enforced
-unavailability are different claims. Installation, merge, deployment, automatic rollback, generic
-metric languages, and native task projection are not acceptance authority provided by this core.
-
-### Qualification boundary
-
-A bounded local probe exercised native activation gating, an ordinary one-minute scheduler wake,
-natural-stop continuation with acceptance deliberately unfinished, artifact-bound publication,
-settlement and verified ordinary scheduler removal. Its factory was then paused; no production
-factory or applied replacement was launched. A separate read-only extension probe confirmed actual
-mode inspection and extension-originated scheduler reads. Extension-originated schedule mutations,
-native task projection and applied regeneration remain unqualified; ordinary app-tool receipts
-are not proof of those routes. Fresh-source provenance does not establish old-source read isolation,
-and incomplete native accounting does not establish a hard hidden-model-call ceiling.
-
-## Execution
-
-`foundry_start_goal` records scope, explicit execution mode and optional actual limits, and
-deterministically compiles task definitions. `foundry_create_task` adds useful parent-local work.
-Task scope is a set of narrowing overrides: omitted fields inherit and restrictions are unioned
-automatically. Repeating or omitting an inherited restriction never removes it; actual expansion
-of paths, work types, autonomy or delegation is still rejected.
-`foundry_dispatch` starts children directly and returns `started` identities and per-task blockers.
-A child gets a short kickoff with an `assignmentId`, not a copy of the specification and every
-evaluator. It reads its frozen brief with `foundry_get_context({assignmentId})`; `checkId` selects
-an exact evaluator and `offset: nextOffset` continues a long response. Only the current bound worker
-can use that handle. If it starts before the creation receipt arrives, it reconciles its own
-native session and reads again. There is no parent acknowledgment or activation step.
-
-Use `foundry_start_task` for in-session work or deterministic jobs. Tasks need stable check IDs,
-check origin and versioned named inputs/outputs, not a fixed organizational chart. Teams and work
-types are open-ended. Dependency edges require outputs; delegation is a tree, not serialization.
-Independent writers use native worktrees; claims are specific to actual shared mutable surfaces.
-Ledger-only coordinators use native `branch` sessions without a base switch; this is a shared
-checkout, **not** an OS read-only sandbox. The Foundry tool hook restricts those sessions to
-approved ledger operations, bounded committed evidence reads and exact child assignments, including
-on resume. Producers (including arbitrary command-based inspection) retain isolated worktrees.
-A coordinator needing a prescribed Git base also stays isolated. This does not claim that chat-only
-sessions can discover the correct repository or that a disconnected provider enforces isolation.
-
-`foundry_evolve_task` replaces derived checks or declared inputs using the affected task's version,
-not a whole-factory revision. User, contract and standing checks remain unchanged. It retires active
-superseded attempts without losing their command effects and reevaluates only unpinned dependents.
-Propagation stops at a producer that had no published outputs; definition setup does not repeatedly
-revise unrelated downstream work that has not consumed a delivery.
-Explicit input versions resolve already-published deliveries, even while their producer evolves;
-a published version cannot be reused for different output content. Signals remain advisory until
-an accountable coordinator applies a concrete in-scope revision or creates appropriate follow-up work.
-Real pending input requests remain attached to retired attempts; evolving a producer does not wait
-for every consumer's question. Native clearance, not a graph edit, resolves those requests.
-
-Technical outcomes use pinned command evidence. Raw command results are kept as contained private
-artifacts. Latest evidence means **canonical admission sequence**, not command completion time;
-receipt verification preserves that sequence. Reporting, promotion and publication use the same
-latest-check projection. Findings remain diagnostic: a new governing obligation must become an
-explicit assigned/protected check, not a second finding-based veto.
-A genuine failed obligation can justify an in-scope repair. Observations and lessons remain scoped
-and non-governing. Early reports retain history but never promote automatically when binding or
-evidence arrives. Report explicitly again with current admitted evidence; an immutable result ID
-cannot be reused for a changed observation.
-Use `foundry_run_check` to prepare and execute an assigned check through the ordinary native
-permission pipeline in one call. With `repair: true`, a genuine checked failure is retained and its
-fresh same-worker attempt is reserved atomically under the goal's own limits. Implement the repair next; no activation,
-report/retry/start chain or automatic rerun of unchanged failing code is required.
-`foundry_report_result` also accepts `repair: true` for an already checked failure.
-Replay returns the existing repair or retries its real capacity wait without creating duplicates.
-Explicit repair/spend/deadline limits and unsettled commands retain the failure and return an
-honest blocked/waiting continuation. `foundry_prepare_check` and explicit retry remain available.
-An immediate warm repair does not notify the coordinator or announce momentary capacity.
-A capacity-parked repair remains reserved for its original worker across reload; ordinary dispatch
-cannot replace it. Its worker resumes with `foundry_start_task` or replays the exact checked report
-after a capacity wake. Explicit reassignment, evolution or cancellation clears the reservation.
-Only actual repair transitions consume the repair allowance; superseded attempts do not.
-
-Every governing check supplies an executable procedure, including artifact and judgment checks.
-An artifact's existence or an unsupported reviewer assertion is not an implicit pass: its assigned
-procedure must validate the declared properties or the versioned review/data inputs. Human-required
-decisions remain ordinary native input requests, not another Foundry approval service.
-Procedures receive their actual attempt/task IDs and versioned input metadata in
-`FOUNDRY_ATTEMPT_ID`, `FOUNDRY_TASK_ID` and `FOUNDRY_INPUTS_JSON`; raw results retain those inputs.
-Referenced files are not automatically deep-pinned. Declare evaluator files explicitly and validate
-data hashes in the procedure, or publish immutable artifact references rather than mutable paths.
-
-### Evaluated file bundles
-
-Checks may opt into `artifactFiles`, a nonempty list of existing repository-relative implementation
-files inside the task's paths. Include the complete unit, including any required module/package files.
-Declare reproducible evaluator files separately in `oracleFiles`; those files must be relative to the
-repository and are copied with their pinned hashes. Use that list for required conserved dependency
-or package files outside the mutable unit too; capturing them grants no editing scope. `kind`,
-`path` and existing check versions are unchanged for checks without this option.
-
-When a worker's base deliberately omits frozen build dependencies or independent evaluators,
-set `oracleCommit` on its artifact-bound **check** to a full, locally retained Git commit ID.
-Every `oracleFiles` path (including grain specification, boundary and evaluators added by the
-factory) must match its declared SHA-256 at that commit. The factory checks this before
-activation. A direction-driven factory without `oracleCommit` must have those files in its
-declared generator base or its current default checkout commit; uncommitted files in the
-director's checkout cannot provision a worker. The assigned runner with `oracleCommit` takes
-only those regular files from Git and only the candidate
-files from the worker, then executes in its private captured directory. Nothing is installed in
-the generator worktree or published as candidate code from the evaluator commit. Missing or
-mismatched committed inputs block evaluation; they are not a reason to repair the producer.
-Whole-product qualification still uses the actual product tree, not an overlaid file bundle.
-
-`oracleCommit` changes the check version. It cannot retrofit an already issued check, including a
-same-worker repair that inherited the old pins. On an engine that only reads the worker checkout,
-do not retry a missing evaluator, copy a predecessor into the generator, or accept a standalone
-check as evidence. Preserve the attempt, checkout and receipts; if independently staged support
-is not permitted there, the old assignment stays blocked. Move to a revised policy only through
-the authorized engine cutover and new admission, never by rewriting the old store or its engine pin.
-
-The assigned procedure runs in a private captured bundle instead of the mutable checkout.
-`FOUNDRY_CANDIDATE_DIR` identifies that bundle. Raw evidence retains its file hashes, modes, candidate
-version and actual versioned inputs. Changes to the bundle or evaluator during execution fail the
-check; failed observations remain usable for normal same-worker repair. Historical observations
-remain historical: a later broken artifact does not prevent reporting a newer checked failure.
-An unusable published input returns a recorded blocker instead of reserving another consumer-code
-repair that cannot restore its producer's delivery.
-
-Use the returned `evidence.candidate.version` when reporting a code/artifact output, with either
-`evidence.candidate.reference` for the unit or a declared filename for an entry file. Publication
-copies only those evaluated bytes into a stable content-addressed bundle. Rechecking unchanged code
-does not invent a different delivery reference. Every artifact-bound governing check for one task
-must identify the same final file set/version; old passes from another candidate cannot be combined.
-The canonical promotion path verifies and materializes these references once; runtime reports
-delegate to it. Replay of an already-promoted result normalizes references without rematerializing bytes.
-For a complete evaluated unit, pass `publish: "<output name>"` to `foundry_run_check`. This explicitly
-uses the existing result/promotion path without a second model turn. Partial acceptance returns the
-missing/failed checks and leaves the task running; mixed candidates remain a publication blocker,
-not a fabricated failed check. Publication identity follows its evaluated run and latest governing
-receipts, so unchanged retries are idempotent and reevaluation cannot conflict with a paused report.
-Already-published replay does not execute another command.
-
-Consumers receive the captured delivery's actual reference through `FOUNDRY_INPUTS_JSON`.
-Managed file bundles are hash-checked at evaluation and publication boundaries. Integration must
-declare and evaluate its own final unit; producer receipts alone do not accept combined code.
-This is one opt-in plain-file format, not automatic pinning of undeclared dependencies, external
-data, installed packages or deployment state. Existing procedures retain their original execution
-directory and behavior. Workers executing this new option need the updated extension.
-
-### Workspace retirement
-
-A confirmed local landing or a cancelled task enqueues retirement for the **original native creator**.
-Publishing a candidate does not enqueue it. `foundry_get_context` shows that creator's `retirements`;
-`foundry_advance` checks them. Each entry names an attempt, effect, disposition and, when retained,
-the reason. A queued or issued archive is not an archive receipt.
-
-Foundry considers only its own coordinated, dedicated worktrees in the same canonical repository.
-It preserves live assignments (including warm repairs and squad subscriptions), pending commands,
-claims, wakes, descendants and input requests. It inspects the full worktree, including the index,
-untracked and ignored paths and raw tracked bytes, without running repository filters or changing
-refs. The tip must survive on the recorded landing ref or, for cancellation, the independent primary
-checkout's branch. Shared checkouts, ambiguous ownership, skipped files, submodules, unreadable
-trees and unproven commit reachability are retained.
-
-**Current desktop host:** the native `archive_session` accepts only an ID. Its success text does
-not prove that Git data, user drafts/retention, PRs, Agent merge, automations, active work and
-descendants were still safe at removal. Foundry never calls this tool or substitutes Git pruning
-or permanent deletion. An otherwise eligible workspace records `host-lacks-atomic-archive-guard`.
-
-A supporting host must return a fresh `archive_guard` from native `get_session` and implement
-`archive_session_if_safe` (`foundry-conditional-archive/v1`). Under its lifecycle lock it must
-compare the creator, session, token, exact worktree and preserved tips, enforce every guard again,
-and archive **only this child**. Nonempty goal/task restrictions also require a native retention
-decision bound to their digest; unknown policy retains the checkout. The host must persist an operation-bound receipt (`operationId`, `owner`,
-`sessionId`, `receiptId`, `outcome`, `protocol`) recoverable from the creator's original native
-call history. This contract is tested in disposable fixtures, not qualified on a live host.
-An interrupted call fences that session against new work. Missing history, a missing session or a
-generic failure never licenses reissue. Only an attributed `not-applied`/`guard-expired` receipt
-can authorize another attempt, and that attempt requires a fresh guard.
-
-## Persistence and recovery
-
-Ordinary command stdout is data: quoted `FOUNDRY_CHECK_RESULT` markers cannot become check evidence
-or prevent its native completion from settling. Only the actual assigned check command parses
-runner observations. For a missed ordinary completion, its actual worker can call
-`foundry_reconcile_native(sessionId: "<this session>", toolCallId: "<original issued call>")`.
-The extension reads its own native history, validates the original start/arguments, final shell exit
-and session/project identity, and records the retained receipt against that exact attempt, even if
-retired. If the original call timed out while running, recovery can use a retained `read_bash`
-exit for the same shell before any restart or shell-handle reuse. When timeout telemetry omits
-the shell ID, Foundry recognizes only the exact native continuation footers, with or without
-command output. It neither reruns commands nor promotes check outputs; missing/expired history
-or a started-only result remains blocked.
-Caller-supplied receipt JSON is not accepted.
-
-Operational authority is `<git-common-dir>/foundry/work.sqlite`, shared by repository worktrees,
-using WAL and short synchronous transactions. Ownership follows native identity and task ancestry,
-not session-folder equality. Inputs, evaluators and attempt tokens are immutable snapshots.
-Current-attempt guards protect publication, readiness, repair and resource settlement.
-
-The store is pinned to its schema and engine digest. Mismatched or incomplete stores are
-refused, never migrated or overwritten. A check requires a finished receipt for its issued
-runner command; a prepared native call retains its exact original request.
-Repository-owned `.foundry` contracts
-describe meaning, not competing operational authority. A source contract has `format:
-"foundry-contract"`, `version: 2`, a title, scope and task definitions.
-
-Prepared and issued creation are distinct. Reconcile actual returned native identity rather than
-recreating uncertain work. Generated names and native receipts normalize whitespace; recovery of
-an issued name still requires an unambiguous match and verified native creator/project identity.
-Native permissions remain authoritative; a token or caller JSON cannot
-grant scope. Cancelling logical work is independent of conversation lifetime. Known commands and
-claims remain tracked until settled; no automatic archival or global terminal attestation.
-Known local shells are stopped through ordinary native `stop_bash` in their actual worker session;
-coordinators send cooperative notices listing all affected attempts and known commands rather than
-trying the worker's shell IDs in their own session. Settled finished attempts are not woken.
-Actual command completion,
-or a native stopped-shell receipt for that exact shell, releases capacity. A queued stop message
-alone does not. A definitely rejected stop retries on a later
-owner turn with its original failure retained; definitely unavailable recipients are recorded
-without repeated delivery. An ambiguous delivery is not blindly replayed.
-Context retains relevant outstanding command identities and superseded attempts until settlement.
-Each new assigned command records one fixed private runner receipt. The runner claims it exclusively
-before executing, atomically finalizes it, and rejects duplicate or legacy invocations without a
-replacement result. `foundry_advance` and `foundry_run_check` recover finished receipts only for their actual owner,
-retaining `runner-receipt` provenance and evaluator/input/candidate verification. Native initial wait
-is 120 seconds. A recovered check replays its existing result; use `foundry_prepare_check` for an
-explicit new evaluation. Started-only receipts and ordinary commands without
-actual completion remain unknown. Recovery of retired attempts admits history, not publication or repair.
-Self-ended terminal attempts automatically release only their settled claims. Waiting, unknown effects
-and externally ended attempts retain ownership. Warm same-worker repair atomically transfers claims
-with fresh IDs, so an old release cannot release a successor's resources.
-An existing worker retains visibility of its actual outstanding shells after coordinator handoff,
-and can yield or resume its current execution under the same goal limits without acquiring the replacement coordinator's
-delegation authority. Inspecting its original native session
-does not overwrite a newer warm attempt or reject already-bound historical identity.
-
-Reassignment retires definitely unissued dispatches before preparing fresh attempts. Issued native
-creation keeps its original creator; a new accountable coordinator can reconcile it without
-recreating the child or losing the reassignment. Existing workers execute their pinned checks;
-coordinators can report admitted results using the canonical execution identity, with the actual
-reporting coordinator retained separately. A late stop identifies its old attempt, never a newer one.
-Bound coordinator execution moves only through settled `foundry_handoff_task`, not metadata
-reassignment. Unknown recipients require actual native inspection, not a new approval handshake.
-Scoped signals go to accountable coordinators rather than already-finished leaves.
-Unit charters organize existing scoped ownership; they do not grant a leaf root-level delegation.
-New work follows the goal owner or an existing delegating task in the same canonical tree.
-
-`foundry_prepare_command` gives ordinary commands explicit affinity when multiple local units execute.
-An exact prepared command/check validates its own current running native attempt and factory
-activation, not unrelated leases in that caller's other goals. Closed, paused, superseded or
-foreign assignments remain inadmissible; retired intents cannot be replayed.
-Without explicit affinity, one ambiguous command conservatively retains all possible units' slots
-and claims until actual settlement; cancelling one unit cannot stop unrelated shared work.
-Generated shell identities come from native telemetry. Repeated generic follow-up IDs do not identify
-a command without its actual shell.
-
-Optional recorded-worker caps are atomic and shared by descendants of each goal. Unrelated goals
-do not contend for these per-goal slots; dormant work never blocks an uncontended admission.
-Waiting parents resume through the same allocator. Owner-directed wakes are
-coalesced per owner/goal, with one in-flight native notification. Ordinary producer wakes wait for
-consumption; new real coordinator work may rearm delivery before the prior generation is consumed. Sending one
-generation cannot consume a newer update. An uncertain native delivery remains tracked rather than
-being blindly repeated. Observed AI-credit accounting is not a hard native spend ceiling.
-Actual command settlement requests one coalesced notification drain for the affected goal, including
-native completion and post-hook stopped-shell receipts. Late cancelled or superseded commands may
-release capacity without needing a current execution attempt for notification bookkeeping.
-Native observations and sends retain their original store through directory changes/shutdown;
-they never settle a claim against a replacement store. Send-completion events do not recursively
-trigger retries. This live event bridge is not an independent dead-session watchdog.
-Native `assistant.usage` receipts debit the canonical store automatically using the runtime's
-source/sequence identity and reported nano-AI units, not token estimates. Request-start affinity
-keeps late charges on their actual old attempt; early child receipts wait for verified native
-binding. Shared calls debit a known goal once, without inventing an attempt split; cross-goal
-ambiguity stays unallocated. Receipt aliases deduplicate native redelivery and manual observations.
-Use the returned receipt ID or actual native event ID for any manual observation, not a new label.
-Accounting exposes unavailable billing as `reportedCredits: null`, distinguishing it from a
-reported zero. Captured records and affinity survive reload, but transient SDK events do not provide
-history/restart-gap recovery: `captureComplete` remains false and missing spend is never called zero.
-Pure coordinator notifications use native-delivery records in the same work store and need no
-executing worker slot. Definitely unavailable recipients are recorded and wake their nearest
-accountable ancestor without appointing a new owner or replaying the failed delivery.
-Successful reporting/publication queues notification draining without awaiting native message delivery.
-A host-disabled session-management route is distinct from an unavailable recipient: the provider stops
-retrying that route for its lifetime, retains pending messages, and returns ordinary app-tool wake/stop
-arguments in context. Deliver those through the normal tool and acknowledge only the accepted wake
-generation with `foundry_mark_wake_sent`. This mitigates the blocked route; it does not change host policy
-or grant a privileged transport. Unknown queue acceptance still must not be blindly replayed.
-Operational context uses scoped current-record queries; full historical snapshots are for inspection.
-Coordinator contexts summarize procedures without repeating entire kickoffs and executable bodies.
-Request the assigned `taskId` for its complete execution definition.
-The store owns ancestry authorization and context visibility; runtime only projects those records.
-Deep outstanding commands remain visible to accountable ancestors without expanding ordinary
-parent-local context or giving handed-off workers management rights.
-
-All new wake sends use one delivery lifecycle, optionally attributed to an attempt. Original
-in-flight message effects remain settleable without replay; they are not new worker execution.
-Native receipt IDs and aliases use a derived SQLite lookup maintained for every writer.
-Conflicting identities remain explicit errors rather than silently dropping or double-charging a receipt.
-Idle turns retain one boundary per native agent group, not one row per turn. The boundary has no
-attempt or assignment token; late active receipts and refinements retain their actual identities.
-Focused accounting includes the requested goals and correlated ambiguity, not lifetime unrelated
-session spend. Uncorrelated charges and missing history remain outside that subtotal, never proof
-of complete billing. Goal priority is not a supported setting; per-goal admission is not a scheduler.
-
-## Board and standalone workflows
-
-The `foundry-board` canvas accepts an optional `goalId` and shows unit hierarchy, accountable
-coordinators, pending/handled work, collaboration commitments, canonical parentage versus original
-native creators, ownership, checks, inputs, outputs and outstanding effects. Refresh reads current canonical records. It introduces no UI
-approval workflow.
-
-Standalone `audit`, `deep-research`, `review-queue`, `security-review` and `triage` workflows live
-in the separate `recon` extension under their existing explicit activation rules.
-Both extensions load independently; factory execution does not require analysis workflows.
+Foundry turns an engineering gap into a **checked Git commit**. A squad identifies what is worth changing. Independent writers regenerate whole directories. Once their outputs are ready, a process evaluates the joined tree; no agent is hired to run the final check. Foundry never moves the destination branch.
+
+## Commit the contract
+
+Keep the direction, each unit's specification and interface, and both levels of evaluator in the repository. A *grain* is one regenerable unit. Its directory belongs to it exclusively. Conserved files must live outside all grain directories.
+
+```json
+{
+  "version": 1,
+  "id": "catalog",
+  "direction": "A customer can find a product and see its current price.",
+  "target": "refs/heads/main",
+  "productCheck": ".foundry/checks/customer-lookup.mjs",
+  "grains": [
+    {
+      "id": "search",
+      "directory": "src/search",
+      "specification": "spec/search.md",
+      "boundary": ["interfaces/search.d.ts"],
+      "check": ".foundry/checks/search.mjs"
+    },
+    {
+      "id": "pricing",
+      "directory": "src/pricing",
+      "specification": "spec/pricing.md",
+      "boundary": ["interfaces/pricing.d.ts"],
+      "check": ".foundry/checks/pricing.mjs"
+    }
+  ],
+  "limits": { "workers": 2, "repairs": 1 },
+  "seed": ["search", "pricing"]
+}
+```
+
+Save this as e.g. `.foundry/catalog.json`. The policy is read from the activating checkout's `HEAD`, not from uncommitted edits. `target` is an existing local branch. Foundry checks that the target still contains the pinned policy, specifications, interfaces, charters and evaluators. A changed contract needs an explicitly authorized new run ID. An optional `limits.deadline` is an ISO timestamp. `workers` limits simultaneous assignments, including scouts; `repairs` limits checked repairs per writer output.
+
+For ongoing work, **omit `seed`** and add flat `squads`, e.g.:
+
+```json
+"squads": [
+  { "id": "browse", "charter": "squads/browse.md", "grains": ["search"] },
+  { "id": "offers", "charter": "squads/offers.md", "grains": ["pricing"] }
+]
+```
+
+A charter owns named grains and may specify an installed native `agent`. A scout cites files at its assigned revision: the charter, policy, or code and contracts of its grains and their declared dependencies. It can request changes only to grains it owns. A new participant turn (including a native child-idle notification) revisits discovery when the chartered inputs change, not just because time has passed. A host trigger can wake an existing run, not authorize one.
+
+An observation has one `outcome`: `regenerate` names the grains to rebuild; `no-gap` and `needs-decision` take `grains: []`. For `needs-decision`, write the contract question in `reason` and cite the conflicting evidence. The report starts no writer and does not veto other work. Owner status lists each squad's latest reported question until a newer observation supersedes it; the original stays in review history. To change the contract, pause the old run, decide whether to use its qualified work, and record the operator's answer and rationale in the spec or shared interface on the target branch. Start the revised contract under a new ID only on explicit direction.
+
+Declare real edges with `"needs": ["pricing"]` on a consumer. The run tracks one current writer per grain, including prerequisites requested by multiple squads. Observations record why work was requested; they do not split the product. Search and pricing can be reported separately and written in parallel. Once the requested outputs are ready, `productCheck` sees both together; neither writer needs a fake dependency on the other.
+
+## Five operations
+
+| Tool | Who uses it | Result |
+|---|---|---|
+| `foundry_start({source})` | Operator's session, on explicit request | Confirm a new or paused run. A seed names the requested grains; otherwise start charter review. |
+| `foundry_observe({run,token,outcome,reason,evidence,grains})` | Bound scout | Request regeneration, report no gap, or raise a contract question. An exact replay does not request work again. |
+| `foundry_submit({run,token})` | Bound writer, from its worktree | Capture the whole directory and run its committed evaluator. Ready work is picked up internally. |
+| `foundry_status({run})` | Owner or bound participant | Read assignments, input versions and receipts. The owner also sees outstanding questions and the exact qualified output. No side effects. |
+| `foundry_pause({run})` | Owner | Stop new work. Retain worktrees, assignments, issued calls and results. |
+
+### Regeneration and checks
+
+- Each writer starts at a retained Git commit with **no parent and no old copy of its grain**. Its specification, interface and required outputs are present. This is a generation context, not an OS sandbox against reading repository history.
+- Submission captures regular files and executable modes under the assigned directory, not arbitrary edits or a worker's assertion of success. Missing files are deletions; a missing directory removes the unit. Neighboring source and uncommitted work in the operator's checkout are not copied.
+- Checks run via the host's native `bash` permissions. `.js` and `.mjs` evaluators use Node; other evaluators must be executable. Raw Git blobs are streamed into a temporary directory, without smudge filters, export substitutions or the writer's uncommitted files. Use externally installed dependencies or temp space outside the product. End with the product unchanged. Symlinks, submodules, special files and case-aliased paths are unsupported. As with other local builds, run only trusted repository code.
+- A component failure returns its bounded repair to the responsible writer. A failed product evaluator can print exactly one `FOUNDRY_REPAIR=<grain-id>` line to stdout to identify responsibility. Changing a shared output regenerates consumers pinned to its superseded version, but preserves past qualified commits and their receipts. An unattributed product failure keeps the checked components and reports a blocker. If a later observation adds a missing grain, the next candidate includes those components without staffing them again. A native refusal or infrastructure error is not a failed implementation.
+- The final check freezes the **combined** outputs on the current target tip. If new work is admitted or the target moves during evaluation, the old result cannot qualify the new candidate. Nonoverlapping target edits are incorporated and rechecked; incompatible edits to an owned directory block rather than disappear. `qualified` is the exact commit that passed, with the evaluated target tip as its parent. Inspect its changes with `git diff <qualified>^ <qualified>`; ordinary fast-forward or cherry-pick preserves deletions from that tip. Foundry does not land it.
+- Every seeded output is required. In discovery, if a grain is blocked, independent outputs can still qualify **if the product evaluator passes**. Its blocked grain and dependents remain visible and are not marked complete.
+
+### Interruptions
+
+Foundry records reservations before issuing native calls. Only an explicitly unavailable, definitely unissued native session route yields an ordinary `prepared` call. Execute it **once, unchanged, in its issuing session**. A confirmed denial blocks the assignment and releases its slot. Missing or ambiguous receipts stay pending, never cause another creation, and can be reconciled from that session's original tool history. A queued repair is not proof the recipient acted. A native permission or input request remains with its actual session. Pausing stops new work; an already-issued check may finish, and its result is applied on resume. A runner records its own exclusive check receipt; a lost process without a receipt cannot declare success or authorize replay.
+
+Versions and generation bases are retained in `refs/foundry/objects/`. Run state lives in the repository's common Git directory at `foundry/work.sqlite`, shared by its linked worktrees. It has an explicit execution protocol, not a hash of the installed extension. Incompatible stores are refused unchanged; there is no migration or compatibility mode. There is no polling, board, credit accounting, automatic session archival, branch landing or release adapter.
 
 ## Development
 
-Modules in `work/` use single-word filenames and each has one responsibility.
-
-`database.mjs` owns the SQLite connection, schema, filesystem integrity checks and transaction
-boundaries. Call the domain operation directly: `db.read(Context.readyTasks, actor)` or
-`db.write(Attempts.prepareAttempt, taskId, actor)`. Reads cannot write. Use `db.get("tasks", id)`
-for a single typed record. Domain functions receive the current transaction and pass it to other
-domain functions; they never open nested transactions. `records.mjs` decodes stored records.
-
-| Module | Responsibility |
-| --- | --- |
-| `policy.mjs` | Ownership, scope and admission rules |
-| `tasks.mjs` | Definitions, dependencies, evolution and reassignment |
-| `attempts.mjs` | Execution lifecycle, capacity, repair and handoff |
-| `claims.mjs` | Shared-resource ownership and release |
-| `effects.mjs` | Native effects, issuance and settlement |
-| `results.mjs` | Evidence admission and checked-output promotion |
-| `organization.mjs` | Unit hierarchy and coordinator responsibilities |
-| `collaboration.mjs` | Bilateral requests, obligations and delivery binding |
-| `wakes.mjs` | Notification generations, routing and acknowledgment |
-| `jobs.mjs` | Persisted factory controls and bounded-job lifecycle |
-| `usage.mjs` | Native billing identity, attribution and accounting |
-| `context.mjs` | Authorized read-only projections |
-| `feedback.mjs` | Scoped signals and reusable lessons |
-
-Cross-domain mutations commit or roll back together. Thrown errors roll back; a returned
-`FoundryError` commits deliberate state such as a capacity wake before being thrown to the caller.
-Callbacks remain synchronous and non-reentrant. Native RPC stays outside these transactions.
-`factory.mjs` continues to parse accepted factory definitions rather than manage their stored lifecycle.
-
-Source is dotfiles-managed in `.copilot/extensions/foundry/`; `sync` mirrors it and the independent
-`recon` extension to their user directories. For scoped development, mirror only the
-updated extension directories and their directly updated skills. Test in disposable repositories;
-do not reload a live factory or run the entire dotfiles sync to test this component.
-
-For editor diagnostics in this checkout, install the development-only Node declarations and
-TypeScript, then run the same `jsconfig.json` the editor loads:
+The dotfiles `sync` operation installs the extension and skill. Test the repository copy in disposable Git fixtures, not a running factory. The host supplies the SDK; TypeScript and Node declarations are development-only.
 
 ```sh
 npm ci --prefix .copilot/editor
 npm --prefix .copilot/editor run check
-```
-
-The editor resolves the SDK declarations from `/Applications/GitHub Copilot.app` on macOS;
-Foundry still loads the SDK from the host at runtime. The npm packages are not extension
-dependencies and are not synced. For a different SDK location or to check Recon alongside
-Foundry, use the explicit SDK check below.
-
-```sh
 node --experimental-vm-modules --test '.copilot/extensions/foundry/**/*.test.mjs' '.copilot/extensions/recon/**/*.test.mjs'
 node .copilot/extensions/foundry/types/check.mjs SDK_DIRECTORY TSC_EXECUTABLE TYPE_ROOTS DEPENDENCY_ROOT .copilot/extensions/recon
 ```
 
-The SDK is supplied by the extension host, not a new package dependency. The second command checks
-every owned source and test directly against its bundled declarations with strict checking; there
-are no offline protocol shims.
+Run the installed-SDK checker after fixtures finish. Work modules have single-word names and one responsibility. Persisted records have independent types in `work/model.d.ts`; validate decoded data at the storage boundary.
 
-Declare JSDoc parameter and return types on exported domain operations. Give persisted records an
-independent contract in `work/model.d.ts`: decoders accept `unknown`, validate it, and return that
-contract. Do not derive a record's schema from the decoder's `ReturnType`. A declared input may
-omit its version; a resolved `PinnedInput` may not. Use literal result states for operations such
-as worker pickup and wake recovery so callers can distinguish a receipt from an unresolved call.
+For an occasional blind rebuild, give a fresh writer only the contract below and `jsconfig.json`; hold back the original `types/` and its test. Run the same test against the original, the rebuild, and a disposable copy that checks only the primary extension. Both working versions must pass, and the primary-only copy must fail specifically because it accepted the bad companion. This is a development exercise, not a phase of a Foundry run.
+
+### Installed-SDK checker contract
+
+`types/` is a replaceable development tool. Its entry point is `node types/check.mjs SDK_DIRECTORY TSC_EXECUTABLE TYPE_ROOTS [DEPENDENCY_ROOT [ADDITIONAL_EXTENSION]]`. The first three arguments are required; missing arguments must fail with usage. Resolve caller-supplied paths from the working directory. Find the primary extension one directory above `types/`, regardless of where the command is invoked.
+
+Check all `.mjs`, `.js` and `.ts` files recursively in the primary extension (including the checker) and the optional additional extension. Refuse source symlinks rather than following them. Use the primary extension's `jsconfig.json` compiler options, replacing `typeRoots` with the supplied directory and `paths` with the supplied SDK's `index.d.ts` and `extension.d.ts` for `@github/copilot-sdk` and `@github/copilot-sdk/extension`. If given a dependency root, resolve `vscode-jsonrpc/node.js` to its `vscode-jsonrpc/lib/node/main.d.ts`. Run the supplied TypeScript CLI with Node, forward its diagnostics and exit status, and fail if it cannot complete. Leave the input trees unchanged and remove temporary configuration even on failure. No Git history, other extension sources, or installed Copilot service are inputs.
+
+To try a replacement, set `FOUNDRY_TYPES_GRAIN` to its `types/` directory and run `node --test .copilot/extensions/foundry/test/types.test.mjs`. The same check should accept a clean companion extension and diagnose a type error introduced **only** in that companion.

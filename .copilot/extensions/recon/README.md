@@ -6,9 +6,8 @@ workflows, separated from Foundry's coordination/evidence runtime. Registered na
 arguments, outputs, verification, recovery, and explicit skill activation gates are unchanged.
 They work without a Foundry goal or work store.
 
-The extension owns research time-review dialogs and only its workflow lifecycle. Findings can
-still be explicitly retained in an appropriately scoped Foundry goal using its existing signal
-and lesson tools; a research opinion never becomes an acceptance requirement automatically.
+The extension owns research time-review dialogs and its workflow lifecycle. Findings stay in
+the native report. A research opinion does not become a Foundry acceptance requirement.
 
 `sync` mirrors this directory independently. For scoped development, mirror this extension
 without running the full dotfiles operation, then reload extensions. The host supplies the SDK.

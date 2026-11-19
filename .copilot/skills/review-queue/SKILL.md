@@ -46,11 +46,8 @@ Fetch first, then run `review-queue`. Never approve PRs; report triage only.
    coverage, decision, risk, why-assigned, justification, and focus hints. Preserve the metric-limit
    note; do not turn the output into a numeric code-quality ranking. Once the workflow has persisted
    the input and produced its result, remove only this run's temporary queue file before replying.
-5. If an explicit Foundry goal exists, retain scoped observations/proposals and
-   coverage gaps with original repository/revision provenance. Do not attach an entire
-   multi-repository queue to one goal. Use `foundry_record_signal` with the matching native report
-   and revision references; use `foundry_record_lesson` for evidenced recurring lessons.
-   Triage remains non-governing and does not approve PRs, obligations or replacements.
+5. Keep original repository and revision references with the native report. Triage remains
+   non-governing and does not approve PRs, obligations or replacements.
 
 ## Essential safeguards
 

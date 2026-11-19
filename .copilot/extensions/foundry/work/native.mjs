@@ -1,498 +1,133 @@
-import { createHash, randomUUID } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
-import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import * as Attempts from "./attempts.mjs";
-import * as Context from "./context.mjs";
-import * as Effects from "./effects.mjs";
-import * as Policy from "./policy.mjs";
-import * as Results from "./results.mjs";
-import * as Tasks from "./tasks.mjs";
-import { assignmentPrompt, attemptToken } from "./prompt.mjs";
-import { FoundryError, choice, decodeCandidate, digest, json, nativeSessionName, record, text } from "./values.mjs";
-import { readCandidate, verifyCandidate } from "./artifacts.mjs";
-import { workspaceFor } from "./surfaces.mjs";
+import { digest, fail, record, text } from "./values.mjs";
 
-/** @typedef {import("./database.mjs").Database} Database */
-/** @typedef {import("./model.js").Attempt} Attempt */
 /** @typedef {import("./model.js").Effect} Effect */
-/** @typedef {import("./model.js").Evidence} Evidence */
+/** @typedef {import("./model.js").Run} Run */
+const runner = fileURLToPath(new URL("./runner.mjs", import.meta.url));
+/** @param {string} value */
+const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
+/** @param {string} run @param {string} token */
+const marker = (run, token) => `Foundry assignment: ${run} ${token}`;
 
-/** @param {string} value @returns {string} */
-export const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
-/** @param {string} value @returns {string} */
-export const toolName = value => value.split(".").at(-1) ?? value;
-export const runner = fileURLToPath(new URL("./runner.mjs", import.meta.url));
-
-/** @param {Database} store @param {string} effectId @returns {string} */
-export const checkReceiptPath = (store, effectId) => path.join(path.dirname(store.databasePath), "evidence",
-	`check-${createHash("sha256").update(effectId).digest("hex")}.json`);
-
-/** @param {Database} store @param {string} taskId @param {string} actor @returns {import("./model.d.ts").DispatchCall} */
-export function prepareDispatch(store, taskId, actor) {
-	const attempt = store.write(Attempts.prepareAttempt, taskId, actor);
-	const prepared = store.read(Effects.effectsForAttempt, attempt.id).find(effect => effect.kind === "create" && effect.state === "prepared");
-	if (prepared) return { taskId, attemptId: attempt.id, token: attempt.token, effectId: prepared.id,
-		tool: "create_session", arguments: prepared.request };
-	const task = store.get("tasks", taskId);
-	const goal = store.get("goals", task.goalId);
-	const snapshot = store.read(Context.contextSnapshot, actor, goal.id, task.id);
-	const source = task.dispatch;
-	const baseBranch = attempt.startCommit ?? source?.baseBranch;
-	const context = source?.generator ? source.context : [
-		...snapshot.units.filter(unit => unit.id === task.unitId).flatMap(unit => unit.context),
-		...snapshot.collaborations.filter(item => item.producerTaskId === task.id).map(item =>
-			`Accepted collaboration ${item.id}: publish the named output "${item.output}" for consumer ${item.consumerTaskId}. Its ${item.required ? "required" : "optional"} delivery remains your accountable coordinator's commitment; publishing alone does not grant source-task mutation rights. Notify your coordinator to fulfill the actual immutable output.`),
-		...snapshot.lessons.filter(lesson => lesson.workType === task.workType).map(lesson => lesson.summary),
-		...(source?.context ?? []),
-	];
-	const arguments_ = json({
-		name: nativeSessionName(`${task.title.slice(0, 30)} ${attempt.token.slice(0, 8)}`),
-		...(goal.projectId === undefined ? {} : { project_id: goal.projectId }),
-		workspace_type: workspaceFor(task, baseBranch),
-		...(baseBranch === undefined ? {} : { base_branch: baseBranch }),
-		coordinate_with_creator: true,
-		notify_on_idle: "once",
-		kickoff: { mode: task.scope.mode, prompt: `Foundry attempt: ${attempt.token}\nStart this assignment now. Read foundry_get_context with assignmentId "${attempt.id}". Follow nextOffset until the complete assignment is read before taking action.`,
-			...(source?.agent === undefined ? {} : { agent: source.agent }) },
-	});
-	const effect = store.write(Effects.recordEffect, {
-		id: `create:${attempt.id}`, attemptId: attempt.id, kind: "create", state: "prepared", request: arguments_,
-		assignment: assignmentPrompt(goal, task, attempt, context),
-	}, actor);
-	return { taskId, attemptId: attempt.id, token: attempt.token, effectId: effect.id, tool: "create_session", arguments: arguments_ };
+/** @param {string} value */
+export function assignment(value) {
+	const match = /^Foundry assignment: ([A-Za-z0-9][A-Za-z0-9._-]*) ([a-f0-9-]{36})(?:\n|$)/.exec(value);
+	return match ? { run: match[1], token: match[2] } : undefined;
 }
 
-/** @param {Database} store @param {string} attemptId @param {string} checkId @param {string} directory @param {string} actor */
-export function prepareCheck(store, attemptId, checkId, directory, actor) {
-	const attempt = store.get("attempts", attemptId);
-	const check = attempt.checks.find(item => item.id === checkId);
-	if (!check || !check.command) throw new FoundryError("invalid_check", "This check has no assigned executable procedure");
-	const effectId = `check:${randomUUID()}`;
-	const command = ["node", runner, directory, attemptId, checkId, effectId].map(quote).join(" ");
-	const effect = store.write(Effects.recordEffect, {
-		id: effectId, attemptId, kind: "command", state: "prepared",
-		request: json({ command, shellId: effectId, checkId, checkVersion: check.version,
-			receipt: checkReceiptPath(store, effectId) }),
-	}, actor);
-	return { effectId: effect.id, tool: "bash", arguments: {
-		command, shellId: effectId, initial_wait: 120, description: `Evaluate ${check.id}`.slice(0, 100),
-	} };
-}
-/** @param {Database} store @param {string} attemptId @param {string} command @param {string} actor */
-export function prepareCommand(store, attemptId, command, actor) {
-	const attempt = store.get("attempts", attemptId);
-	if (attempt.nativeId !== actor || !attempt.slot || attempt.state !== "running") {
-		throw new FoundryError("foreign_execution", "A command needs this caller's actually executing attempt");
-	}
-	const effectId = `command:${randomUUID()}`;
-	store.write(Effects.recordEffect, { id: effectId, attemptId, kind: "command", state: "prepared", request: { command, shellId: effectId } }, actor);
-	return { effectId, tool: "bash", arguments: { command, shellId: effectId, description: "Execute recorded work" } };
-}
-/** @param {Effect} effect @returns {unknown} */
-export function effectShell(effect) {
-	const result = effect.result === undefined ? undefined : record(effect.result);
-	return record(effect.request).shellId ?? result?.shellId;
-}
-
-/** @param {Record<string, unknown>} event @returns {string|undefined} */
-export function continuedShell(event) {
-	const telemetry = record(event.toolTelemetry ?? {});
-	const properties = record(telemetry.properties ?? {});
-	if (event.success !== true || event.shellExecution !== undefined
-		|| properties.shell_error_category !== "command_timeout" || properties.is_timeout !== "true") return;
-	const shellId = record(telemetry.restrictedProperties ?? {}).shell_id;
-	if (typeof shellId === "string" && shellId.length > 0) return shellId;
-	// Older hosts omit the generated shell ID from telemetry, but append it to the native timeout result.
-	const content = record(event.result ?? {}).content;
-	if (typeof content !== "string") return;
-	const footer = /(?:^|\n)<command with shellId: ([^<>\s]+) is still running after \d+ seconds\. The command is still running([^\n]*)>\n?$/.exec(content);
-	if (!footer) return;
-	const notice = " You will be automatically notified when it completes; if you need the command to complete end your response with no tool calls to wait for the notification";
-	if (footer[2] === `.${notice}. Use stop_bash to stop it.`
-		|| footer[2] === ` but hasn't produced output yet.${notice}, or use stop_bash to stop it.`) return footer[1];
-}
-
-/** @param {unknown} value @returns {Record<string, unknown> | undefined} */
-export function nativeObject(value) {
-	const envelope = record(value);
-	if (envelope.structuredContent !== undefined) return record(envelope.structuredContent);
-	if (typeof envelope.textResultForLlm === "string") {
-		const content = envelope.textResultForLlm.trim();
-		if (!content.startsWith("{")) return undefined;
-		return record(/** @type {unknown} */ (JSON.parse(content)));
-	}
-	return envelope;
-}
-
-/** @param {Database} store @param {unknown} args @returns {Attempt|undefined} */
-function creationAttempt(store, args) {
-	const value = record(args);
-	const kickoff = value.kickoff === undefined ? undefined : record(value.kickoff);
-	if (!kickoff || typeof kickoff.prompt !== "string") return undefined;
-	const token = attemptToken(kickoff.prompt);
-	return token ? store.read(Attempts.attemptByToken, token) : undefined;
-}
-
-/** @param {Database} store @param {string} name @param {unknown} args @param {string} actor @param {string|undefined} callId @returns {void} */
-export function observePre(store, name, args, actor, callId) {
-	if (["apply_patch", "edit", "create", "write_file", "str_replace_editor"].includes(toolName(name))) {
-		store.write(Attempts.assertCommandAdmission, actor);
-		return;
-	}
-	if (!["create_session", "bash", "shell", "read_bash", "stop_bash"].includes(toolName(name))) return;
-	const value = record(args);
-	if (toolName(name) === "read_bash" || toolName(name) === "stop_bash") {
-		if (typeof value.shellId !== "string" || !callId) return;
-		const effects = store.read(Effects.pendingEffects).filter(effect => effect.kind === "command"
-			&& effectShell(effect) === value.shellId && store.get("attempts", effect.attemptId).nativeId === actor);
-		if (effects.length !== 1) return;
-		const effect = effects[0];
-		const previous = effect.result === undefined ? {} : record(effect.result);
-		const calls = Array.isArray(previous.followUpCallIds) ? previous.followUpCallIds : [];
-		store.write(Effects.recordEffect, { ...effect, result: json({ ...previous, followUpCallIds: [...new Set([...calls, callId])] }) }, actor);
-		return;
-	}
-	if (toolName(name) === "create_session") {
-		const attempt = creationAttempt(store, args);
-		if (!attempt) return;
-		const effect = store.get("effects", `create:${attempt.id}`);
-		const { nativeToolCallId: previousCall, ...expected } = effect ? record(effect.request) : {};
-		if (!effect || digest(json(args)) !== digest(json(expected))) {
-			throw new FoundryError("assignment_changed", "Create the prepared complete assignment with its explicit mode and scope");
-		}
-		if (effect.result !== undefined && record(effect.result).neverIssued === true) {
-			throw new FoundryError("creation_retired", "This definitely unissued creation is retired; read current context before reserving fresh work");
-		}
-		if (effect.state !== "prepared" && (!callId || previousCall !== callId)) {
-			throw new FoundryError("creation_already_issued", "This attempt's creation was already issued; reconcile it without another create");
-		}
-		store.write(Effects.issueAttempt, attempt.id, actor, effect.id, json({ ...value, nativeToolCallId: callId ?? null }));
-		return;
-	}
-	if (typeof value.command !== "string") return;
-	const original = typeof value.shellId === "string" ? store.read(Effects.commandForShell, value.shellId, actor) : undefined;
-	if (original?.state === "settled" && original.result !== undefined && record(original.result).neverIssued === true) {
-		throw new FoundryError("command_retired", "This definitely unissued command is retired; reserve current work rather than replaying its old arguments");
-	}
-	const matches = store.read(Effects.pendingEffects).filter(item => item.kind === "command" && item.state === "prepared"
-		&& record(item.request).command === value.command);
-	const effect = matches.find(item => record(item.request).shellId === value.shellId);
-	if (matches.length && !effect) throw new FoundryError("assignment_changed", "Use the prepared command's exact returned shell identity");
-	if (effect) {
-		if (effect.owner !== actor) throw new FoundryError("foreign_execution", "This prepared command belongs to another actual native worker");
-		if (record(effect.request).shellId !== value.shellId) throw new FoundryError("assignment_changed", "Use the assigned command's returned shell identity");
-		store.write(Attempts.assertCommandAdmission, actor, effect.attemptId);
-		store.write(Effects.recordEffect, { ...effect, state: "issued", request: json({ ...record(effect.request), nativeToolCallId: callId ?? null }) }, actor);
-		return;
-	}
-	store.write(Attempts.assertCommandAdmission, actor);
-	const executing = store.read(Attempts.executingAttempts, actor);
-	if (executing.length) store.write(Effects.recordEffect, {
-		id: `command:${callId ?? randomUUID()}`, attemptId: executing[0].id, kind: "command", state: "issued",
-		request: json({ ...value, nativeToolCallId: callId ?? null }),
-		...(executing.length > 1 ? { relatedAttemptIds: executing.slice(1).map(attempt => attempt.id) } : {}),
-	}, actor);
-}
-
-/** @param {Database} store @param {Attempt} attempt @param {unknown} result @param {string} actor @returns {Attempt} */
-export function captureCreation(store, attempt, result, actor) {
-	const value = nativeObject(result);
-	const receipt = record(result);
-	const effect = store.get("effects", `create:${attempt.id}`);
-	const name = effect ? record(effect.request).name : undefined;
-	const content = typeof receipt.textResultForLlm === "string" ? receipt.textResultForLlm : "";
-	const prefix = `Created session '${typeof name === "string" ? nativeSessionName(name) : name}' (id: `;
-	const printedId = content.startsWith(prefix)
-		? content.slice(prefix.length).match(/^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\)/u)?.[1] : undefined;
-	const id = value?.project_session_id ?? value?.session_id ?? value?.id ?? printedId;
-	if (typeof id !== "string" || !id) {
-		store.write(Effects.recordEffect, {
-			id: `create:${attempt.id}`, attemptId: attempt.id, kind: "create", state: "uncertain",
-			request: effect?.request ?? null,
-			result: json(result),
-		}, actor);
-		throw new FoundryError("creation_identity_pending", "The native creation was issued; retain this attempt and reconcile its actual returned session identity without creating another child");
-	}
-	const current = store.get("attempts", attempt.id);
-	if (current.nativeId === id) return current;
-	const bound = store.write(Attempts.bindAttempt, attempt.id, id, actor, json(result));
-	return bound;
-}
-
-/** @param {Database} store @param {unknown} value @param {string} actor @returns {Attempt|undefined} */
-export function reconcileDetail(store, value, actor) {
-	const detail = nativeObject(value);
-	if (!detail || typeof detail.id !== "string" || typeof detail.name !== "string") return;
-	const attempt = store.read(Attempts.attemptByCreationName, detail.name);
-	if (!attempt) return;
-	const goal = store.get("goals", store.get("tasks", attempt.taskId).goalId);
-	if (detail.creator_session_id !== attempt.creator
-		|| detail.coordinating_creator_session_id !== attempt.creator
-		|| (goal.projectId !== undefined && detail.project_id !== goal.projectId)) {
-		throw new FoundryError("native_identity_mismatch", "Actual native detail is not this attempt creator's coordinated child");
-	}
-	if (actor !== attempt.creator && actor !== detail.id && !store.read(Policy.ownsTask, attempt.taskId, actor)) {
-		throw new FoundryError("foreign_native_observation", "Only the actual child or its accountable coordinator can reconcile this identity");
-	}
-	if (!attempt.nativeId && !["issued", "uncertain"].includes(store.get("effects", `create:${attempt.id}`).state)) {
-		throw new FoundryError("creation_not_issued", "Native detail cannot bind a reservation that has no outstanding issued creation");
-	}
-	return store.write(Attempts.bindAttempt, attempt.id, detail.id, actor === detail.id ? attempt.creator : actor, json(value));
-}
-
-/** @param {Database} store @param {string} reference */
-function evidenceContent(store, reference) {
-	const directory = path.join(path.dirname(store.databasePath), "evidence");
-	const metadata = lstatSync(reference);
-	if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1
-		|| path.dirname(realpathSync(reference)) !== realpathSync(directory)) {
-		throw new FoundryError("invalid_evidence_reference", "Native evidence must be a contained regular artifact");
-	}
-	return readFileSync(reference, "utf8");
-}
-
-/** @param {Database} store @param {unknown} value @param {boolean} [verifyArtifacts] @returns {(Evidence & {effectId:string,completedAt:string})|undefined} */
-export function checkObservation(store, value, verifyArtifacts = true) {
-	const output = typeof value === "string" ? value : record(value).textResultForLlm;
-	if (typeof output !== "string") return;
-	const matches = [...output.matchAll(/FOUNDRY_CHECK_RESULT:([a-zA-Z0-9+/=]+)/gu)];
-	const encoded = matches.at(-1)?.[1];
-	if (!encoded) return;
-	const observation = record(/** @type {unknown} */ (JSON.parse(Buffer.from(encoded, "base64").toString("utf8"))));
-	const reference = text(observation.reference, "native evidence reference");
-	const content = evidenceContent(store, reference);
-	if (createHash("sha256").update(content).digest("hex") !== observation.sha256) throw new FoundryError("evidence_changed", "Native evidence content no longer matches the captured observation");
-	const receipt = record(/** @type {unknown} */ (JSON.parse(content)));
-	if (receipt.state !== "finished") throw new FoundryError("unsupported_receipt", "Check evidence requires a finished receipt-bound runner result");
-	const { state: _state, sha256: _sha, ...raw } = receipt;
-	if (digest(json(raw)) !== receipt.sha256) {
-		throw new FoundryError("evidence_changed", "Finished runner receipt content changed");
-	}
-	const effectId = text(raw.effectId, "native check effect");
-	if (observation.effectId !== effectId) throw new FoundryError("effect_mismatch", "Native check correlation changed");
-	if (record(store.get("effects", effectId).request).receipt !== reference) {
-		throw new FoundryError("effect_mismatch", "Runner receipt is not the issued command's recorded file");
-	}
-	const attemptId = text(observation.attemptId, "evidence attempt");
-	const attempt = store.get("attempts", attemptId);
-	const check = attempt.checks.find(item => item.id === observation.checkId);
-	const request = record(store.get("effects", effectId).request);
-	if (!check || check.version !== observation.checkVersion || raw.command !== check.command || raw.oracleCommit !== check.oracleCommit
-		|| raw.attemptId !== attemptId || raw.checkId !== check.id || raw.checkVersion !== check.version
-		|| request.checkId !== check.id || request.checkVersion !== check.version) {
-		throw new FoundryError("evaluator_mismatch", "Captured evidence is not for the assigned evaluator snapshot");
-	}
-	const passed = raw.exitCode === 0 && raw.error === null;
-	if ((raw.inputs !== undefined || check.artifactFiles) && digest(json(raw.inputs)) !== digest(json(attempt.inputs))) {
-		throw new FoundryError("input_identity_mismatch", "Captured evidence changed its assigned versioned inputs");
-	}
-	if (passed && (raw.inputOutputs !== undefined || check.artifactFiles)) {
-		const inputs = attempt.inputs.map(input => ({ taskId: input.taskId, output: store.read(Tasks.outputForInput, input) }));
-		if (digest(json(raw.inputOutputs)) !== digest(json(inputs))) throw new FoundryError("input_identity_mismatch", "Captured evidence does not identify the actual pinned deliveries");
-		if (verifyArtifacts) for (const input of inputs) if (input.output) readCandidate(input.output.reference, input.output.version, store.databasePath);
-	}
-	const candidate = raw.candidate === undefined ? undefined : decodeCandidate(raw.candidate);
-	if (passed && check.artifactFiles) {
-		if (!candidate || digest(json(candidate.files.map(file => file.path).sort())) !== digest(json(check.artifactFiles))) {
-			throw new FoundryError("candidate_not_evaluated", "Passed evidence must identify its exact declared candidate files");
-		}
-		if (verifyArtifacts) verifyCandidate(candidate, store.databasePath);
-	}
-	if (observation.outcome !== (passed ? "passed" : "failed")) throw new FoundryError("invalid_evidence_outcome", "Evidence outcome contradicts its raw native result");
+/** @param {Run} run @param {string} issuer @param {"writer"|"scout"|"repair"} kind @param {string} token @param {string} base
+ * @param {string} brief @param {{grain?:string,worker?:string,agent?:string}} [target] @returns {Effect} */
+export function assignmentEffect(run, issuer, kind, token, base, brief, target = {}) {
+	const message = `${marker(run.id, token)}\n${brief}`;
 	return {
-		id: `evidence:${observation.sha256}`, attemptId, checkId: check.id, checkVersion: check.version, effectId,
-		completedAt: text(raw.completedAt, "native completion time"),
-		outcome: passed ? "passed" : "failed", reference, summary: text(observation.summary, "evidence summary"),
-		source: "runner-receipt",
-		...(candidate === undefined ? {} : { candidate }),
-		...(raw.blocker === undefined || raw.blocker === null ? {} : {
-			blocker: choice(raw.blocker, /** @type {const} */ (["input-artifact", "oracle-input"]), "native input blocker"),
-		}),
+		id: randomUUID(), issuer, kind, token, state: "ready", ...(target.grain ? { grain: target.grain } : {}),
+		tool: target.worker ? "send_session_message" : "create_session", args: target.worker ? {
+			session_id: target.worker, delivery_mode: "immediate", message,
+		} : {
+			name: `${(target.grain ?? "Review").slice(0, 22)} ${token.slice(0, 8)}`, workspace_type: "worktree", base_branch: base,
+			coordinate_with_creator: true, notify_on_idle: "once", kickoff: { mode: "autopilot", prompt: message, ...(target.agent ? { agent: target.agent } : {}) }
+		}
 	};
 }
 
-/** @param {Database} store @param {string} actor @param {(effect:Effect)=>void} [settled] @param {string} [goalId] @returns {void} */
-export function recoverChecks(store, actor, settled, goalId) {
-	for (const effect of store.read(Effects.pendingEffects)) {
-		if (effect.kind !== "command" || !["issued", "uncertain"].includes(effect.state)
-			|| store.get("attempts", effect.attemptId).nativeId !== actor
-			|| (goalId !== undefined && store.get("tasks", store.get("attempts", effect.attemptId).taskId).goalId !== goalId)) continue;
-		const reference = record(effect.request).receipt;
-		if (typeof reference !== "string" || reference !== checkReceiptPath(store, effect.id) || !existsSync(reference)) continue;
-		const content = evidenceContent(store, reference);
-		const receipt = record(/** @type {unknown} */ (JSON.parse(content)));
-		if (receipt.state === "started") continue;
-		if (receipt.state !== "finished") throw new FoundryError("invalid_receipt", "Expected a started or finished runner receipt");
-		const { state: _state, sha256: _sha, ...raw } = receipt;
-		const observation = {
-			effectId: effect.id, attemptId: effect.attemptId, checkId: raw.checkId, checkVersion: raw.checkVersion,
-			outcome: raw.exitCode === 0 && raw.error === null ? "passed" : "failed",
-			reference, sha256: createHash("sha256").update(content).digest("hex"),
-			summary: typeof raw.error === "string" ? raw.error : `Assigned command exited ${raw.exitCode ?? raw.signal}`,
-		};
-		const evidence = checkObservation(store, {
-			textResultForLlm: `FOUNDRY_CHECK_RESULT:${Buffer.from(JSON.stringify(observation)).toString("base64")}`,
-		});
-		if (!evidence) throw new FoundryError("invalid_receipt", "Finished runner receipt did not yield assigned evidence");
-		const completed = store.write(Effects.recordEffect, { ...effect, state: "settled",
-			result: json({ ...(effect.result === undefined ? {} : record(effect.result)), runnerReceipt: observation, evidence }) }, actor);
-		settled?.(completed);
-	}
+/** @param {Run} run @param {string} issuer @param {string} cwd @param {string} commit @param {string} check @param {string} [grain] @returns {Effect} */
+export function checkEffect(run, issuer, cwd, commit, check, grain) {
+	const id = randomUUID();
+	return {
+		id, issuer, kind: grain ? "component" : "product", state: "ready", tool: "bash", commit, check, ...(grain ? { grain } : {}),
+		args: {
+			command: [process.execPath, runner, cwd, run.id, id].map(quote).join(" "), shellId: `foundry-${id}`, initial_wait: 120,
+			description: `Check ${grain ?? "joined product"} at ${commit.slice(0, 12)}`.slice(0, 100)
+		}
+	};
 }
 
-/** @param {Database} store @param {string} name @param {unknown} args @param {unknown} result @param {string} actor @param {(effect:Effect)=>void} [settled] */
-export function observePost(store, name, args, result, actor, settled) {
-	if (!["create_session", "get_session", "bash", "shell", "read_bash", "stop_bash"].includes(toolName(name))) return;
-	if (toolName(name) === "create_session") {
-		const attempt = creationAttempt(store, args);
-		return attempt ? captureCreation(store, attempt, result, actor) : undefined;
-	}
-	if (toolName(name) === "get_session") return reconcileDetail(store, result, actor);
-	if (toolName(name) === "stop_bash") {
-		const shellId = record(args).shellId;
-		const receipt = record(result);
-		const telemetry = receipt.toolTelemetry === undefined ? undefined : record(receipt.toolTelemetry);
-		const properties = telemetry?.properties === undefined ? undefined : record(telemetry.properties);
-		if (typeof shellId !== "string" || receipt.resultType !== "success" || properties?.shell_status !== "stopped"
-			|| receipt.textResultForLlm !== `<command with id: ${shellId} stopped>`) return;
-		const effects = store.read(Effects.pendingEffects).filter(effect => effect.kind === "command"
-			&& effectShell(effect) === shellId && store.get("attempts", effect.attemptId).nativeId === actor);
-		if (effects.length !== 1) return;
-		const effect = effects[0];
-		const observation = store.write(Effects.recordEffect, { ...effect, state: "settled",
-			result: json({ ...(effect.result === undefined ? {} : record(effect.result)), nativeTermination: receipt, stopped: true }) }, actor);
-		settled?.(observation);
-		return observation;
-	}
-	const value = record(args);
-	const effect = (typeof value.shellId === "string" ? store.read(Effects.commandForShell, value.shellId, actor) : undefined)
-		?? store.read(Effects.pendingEffects).find(item => item.kind === "command" && typeof record(item.request).checkId === "string"
-			&& record(item.request).command === value.command);
-	if (!effect || effect.kind !== "command" || typeof record(effect.request).checkId !== "string") return;
-	if (toolName(name) !== "read_bash" && value.command !== record(effect.request).command) return;
-	if (store.get("attempts", effect.attemptId).nativeId !== actor
-		|| value.shellId !== effectShell(effect)) {
-		throw new FoundryError("foreign_execution", "Check output must come from its actual worker and assigned shell");
-	}
-	const observation = checkObservation(store, result);
-	if (!observation) return;
-	if (observation.effectId !== effect.id || observation.attemptId !== effect.attemptId) {
-		throw new FoundryError("effect_mismatch", "Native check output belongs to another assigned command");
-	}
-	if (effect.state === "settled") {
-		const previousResult = record(effect.result);
-		const previous = previousResult.runnerReceipt !== undefined || previousResult.nativeResult === undefined ? record(previousResult.evidence)
-			: checkObservation(store, previousResult.nativeResult, false);
-		if (!previous || digest(json(previous)) !== digest(json(observation))) {
-			throw new FoundryError("evidence_conflict", "The settled command has a different native observation");
-		}
-		return previous;
-	}
-	if (!["issued", "uncertain"].includes(effect.state)) throw new FoundryError("unissued_check", "This native command was not issued");
-	const completed = store.write(Effects.recordEffect, { ...effect, state: "settled", result: json({ nativeResult: result, evidence: observation }) }, actor);
-	settled?.(completed);
-	return observation;
+/** @param {Run} run @param {Effect} e */
+function assignee(run, e) {
+	return e.kind === "scout" ? run.reviews.find(r => r.token === e.token) : e.grain ? run.nodes[e.grain] : undefined;
 }
 
-/** @param {Database} store @param {string} attemptId @returns {Evidence[]} */
-export function admittedEvidence(store, attemptId) {
-	/** @type {Map<string, Effect>} */
-	const sources = new Map();
-	for (const effect of store.read(Effects.effectsForAttempt, attemptId).filter(effect => effect.kind === "command" && effect.state === "settled")) {
-		const value = record(effect.result);
-		for (const item of Array.isArray(value.evidence) ? value.evidence : value.evidence === undefined ? [] : [value.evidence]) {
-			sources.set(text(record(item).id, "admitted observation"), effect);
-		}
-	}
-	return store.read(Results.evidenceForAttempt, attemptId).map(admitted => {
-		const effect = sources.get(admitted.id);
-		if (!effect) throw new FoundryError("evidence_source_missing", "Admitted evidence has no original settled native effect");
-		const value = record(effect.result);
-		const result = value.runnerReceipt === undefined ? value.nativeResult : {
-			textResultForLlm: `FOUNDRY_CHECK_RESULT:${Buffer.from(JSON.stringify(value.runnerReceipt)).toString("base64")}`,
-		};
-		const observation = result === undefined ? undefined : checkObservation(store, result, false);
-		if (!observation || observation.effectId !== effect.id) {
-			throw new FoundryError("evidence_source_missing", "Admitted evidence must retain its original native receipt");
-		}
-		const { effectId: _effect, completedAt: _time, ...original } = observation;
-		if (digest(json(original)) !== digest(json(admitted))) {
-			throw new FoundryError("evidence_conflict", "Admitted evidence changed from its original native observation");
-		}
-		return admitted;
-	});
+/** @param {Run} run @param {Effect} e */
+export function current(run, e) {
+	if (e.kind === "product")
+		return !run.blocker && run.join?.check === e.id;
+	const n = assignee(run, e);
+	if (e.kind === "component")
+		return n?.state === "checking" && n.check === e.id;
+	return !!n && n.token === e.token && n.state === (e.kind === "scout" ? "reading" : "writing");
 }
 
-/** @param {Database} store @param {unknown} value @param {string} actor @param {(effect:Effect)=>void} [settled] @param {{effectId:string, receipt:import("./model.js").Json, shellId?:string}} [recovery] @returns {Effect|undefined} */
-export function observeCompletion(store, value, actor, settled, recovery) {
-	const event = record(value);
-	if (typeof event.toolCallId !== "string") return;
-	const error = event.error === undefined ? undefined : record(event.error);
-	const nativeTelemetry = event.toolTelemetry ?? error?.toolTelemetry;
-	const telemetry = nativeTelemetry === undefined ? undefined : record(nativeTelemetry);
-	const properties = telemetry?.properties === undefined ? undefined : record(telemetry.properties);
-	const identifiers = telemetry?.restrictedProperties === undefined ? undefined : record(telemetry.restrictedProperties);
-	const reportedShell = typeof identifiers?.shell_id === "string" ? identifiers.shell_id : undefined;
-	let effect = recovery ? store.get("effects", recovery.effectId) : store.read(Effects.effectByNativeCall, event.toolCallId);
-	const originalCall = effect && record(effect.request).nativeToolCallId === event.toolCallId;
-	const returnedShell = reportedShell ?? recovery?.shellId ?? (originalCall ? continuedShell(event) : undefined);
-	if (returnedShell !== undefined) {
-		const expectedShell = effect && effectShell(effect);
-		if (expectedShell !== undefined && expectedShell !== returnedShell) return;
-		if (recovery?.shellId !== undefined && recovery.shellId !== returnedShell) return;
-	}
-	if (!effect && reportedShell !== undefined && !recovery) {
-		const matching = store.read(Effects.pendingEffects).filter(candidate => candidate.kind === "command" && effectShell(candidate) === returnedShell
-			&& store.get("attempts", candidate.attemptId).nativeId === actor);
-		if (matching.length === 1) effect = matching[0];
-	}
-
-	if (effect && effect.kind !== "command") return;
-	if (!effect || effect.state === "settled") return;
-	if (store.get("attempts", effect.attemptId).nativeId !== actor) throw new FoundryError("foreign_execution", "Only this native command's actual worker can settle it");
-	const result = event.result === undefined ? undefined : record(event.result);
-	const nativeResult = { resultType: event.success ? "success" : "failure", textResultForLlm: typeof result?.content === "string" ? result.content : "" };
-	const assigned = typeof record(effect.request).checkId === "string";
-	const evidence = assigned ? checkObservation(store, nativeResult) : undefined;
-	if (evidence && evidence.effectId !== effect.id) {
-		throw new FoundryError("effect_mismatch", "Native completion belongs to another check operation");
-	}
-	const shell = event.shellExecution === undefined ? undefined : record(event.shellExecution);
-	const stopped = properties?.shell_error_category === "shell_stopped" && properties.shell_operation === "read"
-		&& properties.read_target_state === "stopped" && identifiers?.shell_id === effectShell(effect)
-		&& store.get("attempts", effect.attemptId).nativeId === actor;
-	const state = stopped || evidence || (typeof shell?.exitCode === "number" && (!assigned || shell.exitCode !== 0)) ? "settled" : "uncertain";
-	const observation = store.write(Effects.recordEffect, {
-		...effect, state,
-		result: json({ ...(effect.result === undefined ? {} : record(effect.result)), nativeCompletion: event, nativeResult,
-			...(recovery === undefined ? {} : { nativeRecovery: recovery.receipt }),
-			...(returnedShell === undefined ? {} : { shellId: returnedShell }),
-			...(stopped ? { stopped: true } : {}), ...(evidence ? { evidence } : {}) }),
-	}, actor);
-	if (state === "settled") settled?.(observation);
-	return observation;
+/** @param {Run} run */
+export function admitted(run) {
+	if (!run.active)
+		fail("paused", "Foundry is paused");
+	if (run.policy.deadline && Date.now() >= Date.parse(run.policy.deadline))
+		fail("deadline", "The authorized deadline has elapsed");
 }
 
-/** @param {Database} store @param {unknown} value @param {string} actor @param {(effect:Effect)=>void} [settled] @returns {Effect|undefined} */
-export function observeRefusal(store, value, actor, settled) {
-	const receipt = record(value);
-	if (!["denied", "rejected"].includes(String(receipt.status)) || receipt.exitCode !== undefined
-		|| typeof receipt.toolCallId !== "string") return;
-	const effect = store.read(Effects.effectByNativeCall, receipt.toolCallId);
-	if (!effect || effect.state === "settled" || record(effect.request).nativeToolCallId !== receipt.toolCallId) return;
-	const previous = effect.result === undefined ? {} : record(effect.result);
-	const completion = previous.nativeCompletion === undefined ? {} : record(previous.nativeCompletion);
-	if (previous.shellId !== undefined || previous.runnerReceipt !== undefined || previous.evidence !== undefined
-		|| completion.shellExecution !== undefined) return;
-	if (effect.kind === "create") {
-		const observation = store.write(Effects.rejectCreation, effect.id, actor, json(receipt));
-		settled?.(observation);
-		return observation;
+/** @param {Run} run @param {string} actor @param {string} tool @param {unknown} args @param {string} callId @param {string} id */
+export function issue(run, actor, tool, args, callId, id) {
+	const e = run.effects.find(e => e.id === id);
+	if (!e || e.issuer !== actor || e.tool !== tool || digest(e.args) !== digest(args) || !current(run, e))
+		fail("stale_call", "Only the current exact reserved call may execute");
+	const issued = e.state === "issued" && e.callId === callId;
+	if (!issued || tool !== "bash") admitted(run);
+	if (issued)
+		return;
+	if (e.state !== "ready" && e.state !== "ordinary")
+		fail("already_issued", "Do not repeat an issued or uncertain native call");
+	e.callId = text(callId, "original call ID");
+	e.state = "issued";
+	delete e.error;
+}
+
+/** @param {Run} run @param {Effect} e @param {string} reason */
+function block(run, e, reason) {
+	e.error = reason;
+	if (!current(run, e))
+		return;
+	const n = assignee(run, e);
+	if (n) {
+		n.state = "blocked";
+		n.reason = reason;
+	} else if (e.kind === "product")
+		run.blocker = reason;
+}
+
+/** @param {Run} run @param {Effect} e @param {unknown} raw @param {boolean} automatic */
+export function receive(run, e, raw, automatic) {
+	const value = record(raw);
+	if (automatic && value.resultType === "failure" && value.error === "This session management tool is disabled" &&
+		!value.structuredContent && !value.textResultForLlm && e.tool !== "bash") {
+		e.state = "ordinary";
+		e.error = "Native route disabled; execute the exact prepared call in its owner session";
+		return;
 	}
-	if (effect.kind !== "command" || store.get("attempts", effect.attemptId).nativeId !== actor) return;
-	const observation = store.write(Effects.recordEffect, { ...effect, state: "settled",
-		result: json({ ...previous, neverIssued: true, nativeRefusal: receipt }) }, actor);
-	settled?.(observation);
-	return observation;
+	if (["denied", "rejected"].includes(String(value.resultType))) {
+		e.state = "refused";
+		block(run, e, "Native permission refused");
+		return;
+	}
+	if (value.resultType !== "success")
+		fail("native_unconfirmed", typeof value.error === "string" ? value.error : "No conclusive native receipt");
+	if (e.tool === "create_session") {
+		const content = typeof value.textResultForLlm === "string" ? value.textResultForLlm.trim() : "";
+		const data = record(value.structuredContent ?? (content.startsWith("{") ? JSON.parse(content) : {}));
+		const prefix = `Created session '${e.args.name}' (id: `;
+		const printed = content.startsWith(prefix) ? /^([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\)/i.exec(content.slice(prefix.length))?.[1] : undefined;
+		e.nativeId = text(data.project_session_id ?? data.id ?? data.session_id ?? printed, "native worker identity");
+		if (current(run, e)) {
+			const entry = assignee(run, e);
+			if (entry)
+				entry.worker = e.nativeId;
+		}
+	}
+	else if (e.tool === "bash")
+		fail("missing_receipt", "The pinned runner has not finished");
+	else if (!(typeof value.textResultForLlm === "string" && /^(?:Queued\.?$|Message accepted for priority delivery to session '[^\n]+'\.)/.test(value.textResultForLlm))
+		&& !(value.structuredContent && ["accepted", "queued", "delivered"].includes(String(record(value.structuredContent).status))))
+		fail("missing_receipt", "Repair message queue admission was not confirmed");
+	e.state = "done";
+	delete e.error;
 }

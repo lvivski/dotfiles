@@ -54,11 +54,8 @@ Follow these steps only after the activation gate is satisfied.
 4. Return the cited report with its finding-level coverage, corrections, limitations, and open
    questions. Supported findings survive even when other claims fail. Keep the deterministic
    verification notes; never present unresolved claims as established facts.
-5. If an explicit Foundry goal already exists and the report matches its scope, retain its native
-   run reference with `foundry_record_signal`, or preserve a concise evidenced lesson with
-   `foundry_record_lesson`. The native run retains the exact report. Preserve uncertainty and
-   contrary evidence; observations do not become acceptance obligations. Unrelated research
-   stays standalone and the heavy-research activation gate is unchanged.
+5. The native run retains the exact report. Preserve uncertainty and contrary evidence;
+   research observations do not become acceptance obligations.
 
 ## Essential safeguards
 
