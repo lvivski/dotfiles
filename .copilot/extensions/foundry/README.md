@@ -1,6 +1,6 @@
 # Foundry
 
-Foundry turns an engineering gap into a **checked Git commit**. A squad identifies what is worth changing. Independent writers regenerate whole directories. Once their outputs are ready, a process evaluates the joined tree; no agent is hired to run the final check. Foundry never moves the destination branch.
+Foundry regenerates whole directories and produces a **checked Git commit**. A seed selects the work directly; otherwise, scouts identify gaps under their squads' charters. Writers regenerate independent directories in parallel. Foundry runs the committed product evaluator on their combined Git tree and records the exact commit that passed. The destination branch stays put.
 
 ## Commit the contract
 
@@ -29,12 +29,15 @@ Keep the direction, each unit's specification and interface, and both levels of 
       "check": ".foundry/checks/pricing.mjs"
     }
   ],
-  "limits": { "workers": 2, "repairs": 1 },
   "seed": ["search", "pricing"]
 }
 ```
 
-Save this as e.g. `.foundry/catalog.json`. The policy is read from the activating checkout's `HEAD`, not from uncommitted edits. `target` is an existing local branch. Foundry checks that the target still contains the pinned policy, specifications, interfaces, charters and evaluators. A changed contract needs an explicitly authorized new run ID. An optional `limits.deadline` is an ISO timestamp. `workers` limits simultaneous assignments, including scouts; `repairs` limits checked repairs per writer output.
+Save this as e.g. `.foundry/catalog.json`. The policy is read from the activating checkout's `HEAD`, not from uncommitted edits. `target` is an existing local branch. Foundry checks that the target still contains the pinned policy, specifications, interfaces, charters and evaluators. A changed contract needs an explicitly authorized new run ID.
+
+By default, Foundry runs up to two independent assignments in parallel and allows one checked repair per writer output. `limits.workers` and `limits.repairs` override those defaults; zero repairs is valid. `limits.deadline` accepts an optional ISO timestamp.
+
+Scouts and writers share the cap. When all slots are assigned **and another assignment is ready now**, the owner's session offers **Keep** or **Increase**. Work continues while you decide. Keep or dismiss the choice to stop capacity questions for this run. Increase sets the cap to the number shown if work is still waiting. The decision survives pause/resume without changing the contract. Work waiting for a dependency is not a reason to ask.
 
 For ongoing work, **omit `seed`** and add flat `squads`, e.g.:
 
@@ -49,7 +52,7 @@ A charter owns named grains and may specify an installed native `agent`. A scout
 
 An observation has one `outcome`: `regenerate` names the grains to rebuild; `no-gap` and `needs-decision` take `grains: []`. For `needs-decision`, write the contract question in `reason` and cite the conflicting evidence. The report starts no writer and does not veto other work. Owner status lists each squad's latest reported question until a newer observation supersedes it; the original stays in review history. To change the contract, pause the old run, decide whether to use its qualified work, and record the operator's answer and rationale in the spec or shared interface on the target branch. Start the revised contract under a new ID only on explicit direction.
 
-Declare real edges with `"needs": ["pricing"]` on a consumer. The run tracks one current writer per grain, including prerequisites requested by multiple squads. Observations record why work was requested; they do not split the product. Search and pricing can be reported separately and written in parallel. Once the requested outputs are ready, `productCheck` sees both together; neither writer needs a fake dependency on the other.
+Use `"needs": ["pricing"]` if a writer consumes the pricing output. There is one current writer per grain, even when multiple squads request the same prerequisite. If search and pricing are independent, their squads can report separate gaps and their writers can run in parallel. Once the requested outputs are ready, `productCheck` sees both together.
 
 ## Five operations
 
@@ -74,7 +77,7 @@ Declare real edges with `"needs": ["pricing"]` on a consumer. The run tracks one
 
 Foundry records reservations before issuing native calls. Only an explicitly unavailable, definitely unissued native session route yields an ordinary `prepared` call. Execute it **once, unchanged, in its issuing session**. A confirmed denial blocks the assignment and releases its slot. Missing or ambiguous receipts stay pending, never cause another creation, and can be reconciled from that session's original tool history. A queued repair is not proof the recipient acted. A native permission or input request remains with its actual session. Pausing stops new work; an already-issued check may finish, and its result is applied on resume. A runner records its own exclusive check receipt; a lost process without a receipt cannot declare success or authorize replay.
 
-Versions and generation bases are retained in `refs/foundry/objects/`. Run state lives in the repository's common Git directory at `foundry/work.sqlite`, shared by its linked worktrees. It has an explicit execution protocol, not a hash of the installed extension. Incompatible stores are refused unchanged; there is no migration or compatibility mode. There is no polling, board, credit accounting, automatic session archival, branch landing or release adapter.
+Foundry retains versions and generation bases in `refs/foundry/objects/`. Linked worktrees share run state at `foundry/work.sqlite` in the repository's common Git directory. Foundry checks the store's execution protocol before using it and leaves an incompatible store untouched.
 
 ## Development
 

@@ -215,7 +215,7 @@ count() {
   [ "$actual" -eq "$2" ] || fail "Expected $2 calls matching $1, got $actual"
 }
 triage() {
-  node --input-type=module - "$script_dir/../../../extensions/foundry/workflows/review.mjs" "$temp_dir/stdout" "$1" "${2:-false}" <<'NODE'
+  node --input-type=module - "$script_dir/../../../extensions/recon/workflows/review.mjs" "$temp_dir/stdout" "$1" "${2:-false}" <<'NODE'
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";

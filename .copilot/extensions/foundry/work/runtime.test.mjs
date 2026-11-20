@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
-import { openDatabase, ledgerPath } from "./database.mjs";
+import { openDatabase, ledgerPath, protocol } from "./database.mjs";
 import { readPolicy } from "./contract.mjs";
 import { assignment } from "./native.mjs";
 import { withProduct } from "./product.mjs";
@@ -26,11 +26,12 @@ const source = ".foundry/policy.json", run = "sum";
 const policy = () => ({
 	version: 1, id: run, direction: "Make the joined exports sum to three", target: "refs/heads/main", productCheck: ".foundry/product.mjs",
 	grains: grainIds.map(id => ({ id, directory: `lib/${id}`, specification: `.foundry/${id}.md`, boundary: [".foundry/api.md"], check: `.foundry/${id}.mjs`, needs: /** @type {string[]} */ ([]) })),
-	limits: { workers: 2, repairs: 1 }, seed: /** @type {string[]|undefined} */ ([...grainIds]),
+	limits: /** @type {{workers?:number,repairs?:number,deadline?:string}|undefined} */ (undefined), seed: /** @type {string[]|undefined} */ ([...grainIds]),
 	squads: grainIds.map(id => ({ id, charter: `.foundry/${id}.md`, grains: [id], agent: `${id}-specialist` }))
 });
 
-/** @param {import("node:test").TestContext} t @param {(p:ReturnType<typeof policy>)=>void} [configure]
+/** @typedef {ReturnType<typeof policy>} FixturePolicy */
+/** @param {import("node:test").TestContext} t @param {(p:FixturePolicy)=>void} [configure]
  * @param {Record<string,string>} [files] */
 function fixture(t, configure, files = {}) {
 	const dir = mkdtempSync(path.join(tmpdir(), "foundry-graph-")), root = path.join(dir, "repo");
@@ -74,7 +75,7 @@ function fixture(t, configure, files = {}) {
 		return { resultType: "success", structuredContent: { project_session_id: id, path: cwd } };
 	};
 	/** @param {string} cwd @param {Partial<Host>} [options] */
-	function runtime(cwd, options) { const r = createRuntime(cwd, { mode: async () => "interactive", confirm: async () => true, execute, ...options }); t.after(() => r.close()); return r; }
+	function runtime(cwd, options) { const r = createRuntime(cwd, { mode: async () => "interactive", confirm: async () => true, select: async () => null, execute, ...options }); t.after(() => r.close()); return r; }
 	const owner = runtime(root);
 	/** @param {string} [actor] */
 	const status = (actor = "owner") => owner.operation("status", { run }, actor);
@@ -99,7 +100,7 @@ function fixture(t, configure, files = {}) {
 
 for (const slots of [1, 2])
 	test(`whole-tree replacement, ${slots} slot(s), no qualification worker`, async (t) => {
-		const f = fixture(t, p => { p.limits.workers = slots; });
+		const f = fixture(t, p => { p.limits = { workers: slots }; });
 		f.owner.turn("ordinary");
 		await f.owner.flush();
 		assert.equal(existsSync(ledgerPath(f.root)), false);
@@ -241,7 +242,7 @@ test("lost creation reply survives process restart; no second create or forged b
 });
 
 test("denying a prepared scout frees the only slot for another squad, without replay", async (t) => {
-	const f = fixture(t, p => { delete p.seed; p.limits.workers = 1; });
+	const f = fixture(t, p => { delete p.seed; p.limits = { workers: 1 }; });
 	const r = f.runtime(f.root, { execute: async () => ({ resultType: "failure", error: "This session management tool is disabled" }) });
 	const s = await r.operation("start", { source }, "owner"), prepared = s.prepared[0];
 	assert.ok(prepared);
@@ -537,10 +538,11 @@ for (const kind of ["left", "joined product"])
 		assert.equal(f.workers.size, 1);
 	});
 
-test("independent starts overlap; a racing owner turn cannot issue them again", async (t) => {
+test("independent starts overlap by default without a capacity prompt; a racing owner turn cannot issue them again", async (t) => {
 	const f = fixture(t);
-	let active = 0, peak = 0, total = 0;
+	let active = 0, peak = 0, total = 0, offers = 0;
 	const owner = f.runtime(f.root, {
+		select: async () => { offers++; return null; },
 		execute: async (...args) => {
 			total++;
 			peak = Math.max(peak, ++active);
@@ -554,7 +556,117 @@ test("independent starts overlap; a racing owner turn cannot issue them again", 
 	await f.owner.flush();
 	assert.equal(peak, 2);
 	assert.equal(total, 2);
+	assert.equal(offers, 0);
 	assert.equal(f.workers.size, 2);
+});
+
+/** @param {FixturePolicy} p */
+function addIndependent(p) {
+	p.grains.push({ ...p.grains[0], id: "extra", directory: "lib/extra", check: ".foundry/extra.mjs" });
+	p.seed?.push("extra");
+	p.squads[0].grains.push("extra");
+}
+const extraCheck = { ".foundry/extra.mjs": 'import "../lib/extra/index.mjs";' };
+
+for (const raise of [false, true])
+	test(`saturation offers only ready work; ${raise ? "increase" : "keep"} survives resume`, async t => {
+		const f = fixture(t, p => {
+			addIndependent(p);
+			// A fourth writer belongs to the graph, but its input is not ready.
+			p.grains.push({ ...p.grains[0], id: "last", directory: "lib/last", needs: ["left"] });
+			p.seed?.push("last");
+		}, extraCheck);
+		/** @type {(choice:string)=>void} */ let answer = () => assert.fail("no worker-cap question");
+		/** @type {string[][]} */ const choices = [];
+		const owner = f.runtime(f.root, { select: (_message, options) => {
+			choices.push(options);
+			return new Promise(resolve => { answer = resolve; });
+		} });
+		await owner.operation("start", { source }, "owner");
+		assert.equal(f.workers.size, 2, "launch the authorized workers before asking");
+		owner.turn("owner");
+		await owner.operation("start", { source }, "owner");
+		assert.deepEqual(choices, [["Keep 2", "Increase to 3"]]);
+		answer(choices[0][raise ? 1 : 0]);
+		await owner.flush();
+		const cap = raise ? 3 : 2;
+		assert.equal((await f.status()).limit, cap);
+		assert.equal(f.workers.size, cap);
+		await owner.operation("pause", { run }, "owner");
+		const restarted = f.runtime(f.root, { select: async (_msg, options) => { choices.push(options); return null; } });
+		assert.equal((await restarted.operation("start", { source }, "owner")).limit, cap);
+		await f.submit("worker-1");
+		assert.equal(f.workers.size, cap + 1, "keeping the cap must not stall queued work");
+		restarted.turn("owner");
+		await restarted.flush();
+		assert.equal(choices.length, 1, "no repeat after Keep, or for work merely waiting on an input");
+	});
+
+test("work drains under the old cap while a decision is open; an obsolete approval cannot raise it", async t => {
+	const f = fixture(t, addIndependent, extraCheck);
+	/** @type {()=>void} */ let answer = () => assert.fail("no worker-cap question");
+	const owner = f.runtime(f.root, { select: (_message, options) => new Promise(resolve => { answer = () => resolve(options[1]); }) });
+	await owner.operation("start", { source }, "owner");
+	await f.submit("worker-1");
+	assert.equal(f.workers.size, 3);
+	await f.submit("worker-2");
+	await f.submit("worker-3");
+	assert.ok((await f.status()).qualified);
+	answer();
+	await owner.flush();
+	assert.equal((await f.status()).limit, 2);
+});
+
+test("reopening an unanswered choice still requires consent for the exact cap shown", async t => {
+	const f = fixture(t, p => {
+		addIndependent(p);
+		p.grains.push({ ...p.grains[0], id: "fourth", directory: "lib/fourth" });
+		p.seed?.push("fourth");
+	}, extraCheck);
+	/** @type {()=>void} */ let oldYes = () => assert.fail("no original dialog");
+	const old = f.runtime(f.root, { select: (_msg, options) => new Promise(resolve => { oldYes = () => resolve(options[1]); }) });
+	await old.operation("start", { source }, "owner");
+	old.close();
+	oldYes();
+	await old.flush();
+	assert.equal((await f.status()).limit, 2);
+	/** @type {()=>void} */ let yes = () => assert.fail("no new dialog");
+	const owner = f.runtime(f.root, { select: (_msg, options) => new Promise(resolve => {
+		assert.deepEqual(options, ["Keep 2", "Increase to 4"]);
+		yes = () => resolve(options[1]);
+	}) });
+	await owner.operation("start", { source }, "owner");
+	await f.submit("worker-1");
+	assert.equal((await f.status()).proposedLimit, 3);
+	yes();
+	await owner.flush();
+	assert.equal((await f.status()).limit, 4);
+	assert.equal(f.workers.size, 4);
+});
+
+test("a scout that discovers overflow wakes the owner; only the owner's choice can grant more slots", async t => {
+	const f = fixture(t, p => { delete p.seed; addIndependent(p); }, extraCheck);
+	await f.start();
+	const scout = f.workers.get("worker-1");
+	assert.ok(scout);
+	let notices = 0, childPrompts = 0, ownerPrompts = 0;
+	const child = f.runtime(scout.cwd, {
+		select: async (_msg, options) => { childPrompts++; return options[1]; },
+		execute: async (tool, args, id) => {
+			if (tool === "send_session_message") { notices++; assert.equal(args.session_id, "owner"); }
+			return f.execute(tool, args, id);
+		}
+	});
+	await child.operation("observe", { run, token: scout.token, outcome: "regenerate", grains: ["left", "extra"], reason: "missing implementations", evidence: [".foundry/left.md"] }, scout.id);
+	assert.equal(notices, 1);
+	assert.equal(childPrompts, 0);
+	assert.equal(f.workers.size, 3, "one scout and one writer occupy the two slots");
+	const owner = f.runtime(f.root, { select: async (_msg, options) => { ownerPrompts++; return options[1]; } });
+	owner.turn("owner");
+	await owner.flush();
+	assert.equal(ownerPrompts, 1);
+	assert.equal((await f.status()).limit, 3);
+	assert.equal(f.workers.size, 4);
 });
 
 test("only the original top-level call, arguments and turn can recover an uncertain start", async (t) => {
@@ -580,7 +692,7 @@ test("unknown protocols are not migrated and invalid nested records are refused,
 	const f = fixture(t, p => { delete p.seed; }), file = ledgerPath(f.root);
 	openDatabase(f.root, file, true).close();
 	const old = new DatabaseSync(file);
-	old.exec("PRAGMA user_version=7;");
+	old.exec(`PRAGMA user_version=${protocol - 1};`);
 	old.close();
 	const bytes = readFileSync(file);
 	assert.throws(() => openDatabase(f.root), /Incompatible/);
@@ -598,6 +710,7 @@ test("unknown protocols are not migrated and invalid nested records are refused,
 	const raw = new DatabaseSync(file);
 	for (const broken of [
 		{ ...initial, nodes: { left: { state: "finished-by-claim", repairs: 0 } } },
+		{ ...initial, capacity: { ...initial.capacity, limit: 0 } },
 		{ ...initial, reviews: [{ ...review, observation: { ...review.observation, outcome: "needs-decision", grains: ["left"] } }] },
 		{ ...initial, reviews: [{ ...review, observation: { reason: "missing outcome", evidence: [".foundry/left.md"], grains: [] } }] },
 	]) {
@@ -768,5 +881,7 @@ test("contracts reject overlapping ownership, missing boundaries and dependency 
 	check(p => { p.grains[0].boundary = []; }, /boundary/);
 	check(p => { p.grains[0].needs = ["right"]; p.grains[1].needs = ["left"]; }, /cycle/);
 	check(p => { p.productCheck = "lib/left/old.mjs"; }, /overlap/);
+	check(p => { p.limits = { workers: 0 }; }, /worker limit/);
+	check(p => { p.limits = { repairs: -1 }; }, /repair limit/);
 	assert.equal(existsSync(ledgerPath(f.root)), false);
 });

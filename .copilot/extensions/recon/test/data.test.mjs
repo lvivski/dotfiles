@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { analysisInputDigest, stableStringify } from "../digest.mjs";
 import { arrayOf, isList, isRecord, optional, parseJson, readBoolean, readJsonValue, readNumber, readString, recordOf } from "../data.mjs";
-import { FoundryAnalysisError } from "../errors.mjs";
+import { ReconAnalysisError } from "../errors.mjs";
 
 test("JSON readers retain valid values without borrowing mutable input", () => {
 	const shared = { result: [1, null, false, "claim"] };
@@ -38,15 +38,15 @@ test("canonical hashing rejects circular arrays explicitly without changing vali
 	const cyclic = [];
 	cyclic.push(cyclic);
 	assert.throws(() => analysisInputDigest(cyclic), (error) => {
-		assert.ok(error instanceof FoundryAnalysisError);
-		assert.equal(error.constructor, FoundryAnalysisError);
-		assert.equal(error.name, "FoundryAnalysisError");
+		assert.ok(error instanceof ReconAnalysisError);
+		assert.equal(error.constructor, ReconAnalysisError);
+		assert.equal(error.name, "ReconAnalysisError");
 		assert.equal(error.code, "invalid_analysis_input");
 		assert.equal(error.message, "Cannot digest a circular value");
 		assert.equal(error.details, null);
 		return true;
 	});
-	assert.throws(() => stableStringify(() => { }), { name: "FoundryAnalysisError", code: "invalid_analysis_input" });
+	assert.throws(() => stableStringify(() => { }), { name: "ReconAnalysisError", code: "invalid_analysis_input" });
 	assert.equal(stableStringify(undefined), "null");
 	assert.equal(stableStringify({ z: [2, { b: 1, a: 0 }], a: false }), '{"a":false,"z":[2,{"a":0,"b":1}]}');
 });

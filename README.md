@@ -36,32 +36,27 @@ safeguards; directly linked local references provide phase protocols or options 
 Bundled script paths are resolved from the skill directory, not a hard-coded installation path.
 `source ./sync` installs these skills along with their references and scripts.
 
-The queue fetcher's offline CLI tests use Bash and standard OS utilities, with no additional
-runtime or test framework:
+Test the queue fetcher's CLI offline with Bash. The provider integration suite also needs `jq`
+and Node.js; it passes manifests from mock GitHub and Azure CLIs through Recon's review workflow.
 
 ```sh
 bash .copilot/skills/review-queue/scripts/review-queue-fetch.test.sh
+bash .copilot/skills/review-queue/scripts/review-queue-providers.test.sh
 ```
 
-## Copilot Foundry — local software factory
+## Copilot extensions
 
-`source ./sync` also installs the **Foundry** Copilot extension. Foundry runs one graph of
-regenerable directories, from a seed or a gap observed by a repository-defined squad. Independent
-writers run in parallel. A deterministic evaluator checks their exact joined Git tree without a
-verifier agent. Foundry records the qualified commit but never moves the destination branch.
-Sync checksum-mirrors Foundry and its skill: obsolete implementation files are removed and
-older contents are replaced even when their sizes and timestamps match. Unrelated extensions
-and repository-owned factory data are preserved.
-The separate Recon extension registers the standalone `audit`, `deep-research`,
-`review-queue`, `security-review`, and `triage` native Dynamic Workflows. Invoke workflows with
-`run_dynamic_workflow` and inspect runs with `dynamic_workflows_manage`; the native runtime owns
-limits, durable steps, resume, cancellation, progress, and results.
+`source ./sync` checksum-mirrors the Foundry and Recon extensions and their bundled skills under
+`~/.copilot/`. It prunes stale files from those mirrors and preserves unrelated extensions and
+repository run data.
 
-Foundry coordination is opt-in. Use native plan mode and direct tools for routine changes, and
-the native `orchestrate` or `pr-stack` flows for ordinary multi-session or stacked-PR work. Choose
-Foundry when you explicitly want checked regeneration or ongoing charter-driven discovery;
-installing it does not put ordinary coding through a factory protocol. Native permissions remain
-authoritative. Superseded protocols have no compatibility mode; existing user data is not migrated
-or removed.
+**[Foundry](.copilot/extensions/foundry/README.md)** regenerates directories from a committed
+contract. Seed a one-off change or give squads charters to discover gaps. Writers work in
+parallel, then the committed product evaluator checks their combined Git tree at the target tip.
+Foundry records the exact commit that passes and leaves the target branch untouched. Use the
+[Foundry skill](.copilot/skills/foundry/SKILL.md) on explicit request; routine changes use native
+planning and direct tools. Normal tool permissions apply throughout a run.
 
-See the [contract and example](.copilot/extensions/foundry/README.md) and [Foundry skill](.copilot/skills/foundry/SKILL.md).
+**[Recon](.copilot/extensions/recon/README.md)** registers five standalone native workflows:
+`audit`, `deep-research`, `review-queue`, `security-review`, and `triage`. Their reports belong
+to the native workflow run. Use `dynamic_workflows_manage` to inspect arguments or results.

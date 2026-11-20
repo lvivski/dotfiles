@@ -13,6 +13,8 @@ const path = value => typeof value === "string" && relative(value) === value;
 /** @type {Guard} */
 const count = value => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 /** @type {Guard} */
+const positive = v => count(v) && v !== 0;
+/** @type {Guard} */
 const bool = value => typeof value === "boolean";
 /** @param {unknown} v @returns {v is Record<string,unknown>} */
 const object = v => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -30,7 +32,7 @@ const grain = shape({ id, directory: path, specification: path, boundary: list(p
 const squad = shape({ id, charter: path, grains: list(id), agent: optional(string) });
 const policy = shape({
 	id, direction: string, target: string, source: path, base: commit, productCheck: path, grains: list(grain),
-	squads: list(squad), workers: v => count(v) && v !== 0, repairs: count, deadline: optional(string), seed: optional(list(id))
+	squads: list(squad), workers: positive, repairs: count, deadline: optional(string), seed: optional(list(id))
 });
 /** @type {Guard} */
 const observation = v => object(v) && string(v.reason) && Array.isArray(v.evidence) && v.evidence.length > 0 && v.evidence.every(path) &&
@@ -47,13 +49,14 @@ const node = shape({
 const product = shape({ target: commit, commit, check: id, outputs: named(commit) });
 const receipt = shape({ commit, check: path, exit: v => v === null || count(v), output: string, repair: optional(id) });
 const effect = shape({
-	id, issuer: string, kind: one("writer", "scout", "component", "product", "repair"), grain: optional(id),
+	id, issuer: string, kind: one("writer", "scout", "component", "product", "repair", "capacity"), grain: optional(id),
 	token: optional(id), tool: one("create_session", "bash", "send_session_message"), args: object, state: one("ready", "issued", "uncertain", "ordinary", "done", "refused"),
 	callId: optional(string), nativeId: optional(string), error: optional(string), commit: optional(commit), check: optional(path),
 	runnerStarted: optional(bool), receipt: optional(receipt)
 });
 const snapshot = shape({
-	id, owner: string, policy, active: bool, reviews: list(review), nodes: named(node), effects: list(effect),
+	id, owner: string, policy, capacity: shape({ limit: positive, kept: bool, offer: optional(shape({ id, to: positive })) }),
+	active: bool, reviews: list(review), nodes: named(node), effects: list(effect),
 	products: list(product), join: optional(product), blocker: optional(string), discoveryError: optional(string)
 });
 
@@ -62,7 +65,8 @@ function isRun(value) { return snapshot(value); }
 
 /** @param {unknown} value @returns {import("./model.js").Run} */
 export function decode(value) {
-	if (!isRun(value) || value.policy.id !== value.id)
+	if (!isRun(value) || value.policy.id !== value.id || value.capacity.limit < value.policy.workers ||
+		value.capacity.offer && (value.capacity.kept || value.capacity.offer.to <= value.capacity.limit))
 		fail("corrupt_run", "Invalid Foundry execution snapshot");
 	return value;
 }

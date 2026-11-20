@@ -24,7 +24,7 @@ function reviewLimit(run, observed) {
 }
 
 /**
- * Native waits recover missed checkpoint invalidations even with the board closed.
+ * Native waits recover missed checkpoint events for active research runs.
  * Only dialogs are serialized; a resumed run never holds the decision queue.
  *
  * @param {{
@@ -56,7 +56,7 @@ export function createResearchTimeReview({ workflow, getUi, log }) {
 		try {
 			await log(message);
 		} catch (error) {
-			console.error(`${message} (Foundry could not notify the session: ${errorMessage(error)})`);
+			console.error(`${message} (Recon could not notify the session: ${errorMessage(error)})`);
 		}
 	}
 

@@ -6,7 +6,7 @@ import { digest, fail } from "./values.mjs";
 import { decode } from "./snapshot.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
-export const protocol = 8;
+export const protocol = 9;
 
 /** @param {string} cwd */
 export function ledgerPath(cwd) {

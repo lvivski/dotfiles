@@ -73,8 +73,9 @@ export function readPolicy(cwd, source) {
 		fail("invalid_seed", "Supply a nonempty seed or discovery squad");
 	if (!seed && grains.some(g => !squads.some(s => s.grains.includes(g.id))))
 		fail("invalid_charter", "Every output needs a chartered producer");
-	const limits = record(row.limits);
+	const limits = row.limits === undefined ? {} : record(row.limits);
 	fields(limits, ["workers", "repairs", "deadline"]);
+	const { workers = 2, repairs = 1 } = limits;
 	const deadline = limits.deadline === undefined ? undefined : text(limits.deadline, "ISO deadline");
 	if (deadline && !Number.isFinite(Date.parse(deadline)))
 		fail("invalid_limit", "Invalid deadline");
@@ -87,6 +88,6 @@ export function readPolicy(cwd, source) {
 	regularFiles(cwd, base, files);
 	return {
 		id: name(row.id, "policy ID"), direction: text(row.direction, "engineering direction"), source: filename, target, base, productCheck, grains, squads,
-		workers: integer(limits.workers, 1, "worker limit"), repairs: integer(limits.repairs, 0, "repair limit"), ...(deadline ? { deadline } : {}), ...(seed ? { seed } : {})
+		workers: integer(workers, 1, "worker limit"), repairs: integer(repairs, 0, "repair limit"), ...(deadline ? { deadline } : {}), ...(seed ? { seed } : {})
 	};
 }

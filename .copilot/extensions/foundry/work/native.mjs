@@ -16,6 +16,16 @@ export function assignment(value) {
 	return match ? { run: match[1], token: match[2] } : undefined;
 }
 
+/** @param {string} value */
+export const capacityNotice = value => /^Foundry capacity: ([A-Za-z0-9][A-Za-z0-9._-]*) [a-f0-9-]{36}\n/.exec(value)?.[1];
+
+/** @param {Run} run @param {string} issuer @param {string} token @returns {Effect} */
+export function notifyOwner(run, issuer, token) {
+	return { id: randomUUID(), issuer, kind: "capacity", token, state: "ready", tool: "send_session_message",
+		args: { session_id: run.owner, delivery_mode: "immediate",
+			message: `Foundry capacity: ${run.id} ${token}\nReady work is waiting at the worker cap. The owner session will present the choice if it is still needed. This notice does not authorize an increase.` } };
+}
+
 /** @param {Run} run @param {string} issuer @param {"writer"|"scout"|"repair"} kind @param {string} token @param {string} base
  * @param {string} brief @param {{grain?:string,worker?:string,agent?:string}} [target] @returns {Effect} */
 export function assignmentEffect(run, issuer, kind, token, base, brief, target = {}) {
@@ -50,6 +60,8 @@ function assignee(run, e) {
 
 /** @param {Run} run @param {Effect} e */
 export function current(run, e) {
+	if (e.kind === "capacity")
+		return !!e.token && run.capacity.offer?.id === e.token;
 	if (e.kind === "product")
 		return !run.blocker && run.join?.check === e.id;
 	const n = assignee(run, e);
@@ -127,7 +139,7 @@ export function receive(run, e, raw, automatic) {
 		fail("missing_receipt", "The pinned runner has not finished");
 	else if (!(typeof value.textResultForLlm === "string" && /^(?:Queued\.?$|Message accepted for priority delivery to session '[^\n]+'\.)/.test(value.textResultForLlm))
 		&& !(value.structuredContent && ["accepted", "queued", "delivered"].includes(String(record(value.structuredContent).status))))
-		fail("missing_receipt", "Repair message queue admission was not confirmed");
+		fail("missing_receipt", "Message queue admission was not confirmed");
 	e.state = "done";
 	delete e.error;
 }

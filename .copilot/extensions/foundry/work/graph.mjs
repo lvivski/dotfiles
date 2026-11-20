@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { validOutcome } from "./contract.mjs";
-import { admitted, assignmentEffect, checkEffect, current } from "./native.mjs";
+import { admitted, assignmentEffect, checkEffect, current, notifyOwner } from "./native.mjs";
 import { combine, commitAt, regularFiles, retain, verifyContracts, versionOf, withoutGrain } from "./product.mjs";
 import { FoundryError, contains, digest, fail, fields, names, relative, text } from "./values.mjs";
 
@@ -40,7 +40,7 @@ function request(run, roots, review) {
 /** @param {Policy} policy @param {string} owner @returns {Run} */
 export function newRun(policy, owner) {
 	/** @type {Run} */
-	const run = { id: policy.id, owner, policy, active: true, reviews: [], effects: [], nodes: {}, products: [] };
+	const run = { id: policy.id, owner, policy, capacity: { limit: policy.workers, kept: false }, active: true, reviews: [], effects: [], nodes: {}, products: [] };
 	if (policy.seed)
 		request(run, policy.seed);
 	return run;
@@ -236,18 +236,20 @@ export function advance(cwd, run, actor, discover) {
 	if (!owner && !run.effects.some(e => e.nativeId === actor))
 		return;
 	settleChecks(cwd, run);
-	const nodes = Object.entries(run.nodes);
-	let slots = run.policy.workers - run.reviews.filter(r => r.state === "reading").length - nodes.filter(([, n]) => n.state === "writing" || n.state === "checking").length;
-	let base, target;
+	const nodes = Object.entries(run.nodes), cap = run.capacity;
+	let slots = cap.limit - run.reviews.filter(r => r.state === "reading").length - nodes.filter(([, n]) => n.state === "writing" || n.state === "checking").length;
+	let base, target, waiting = 0;
 	const tip = () => target ??= commitAt(cwd, run.policy.target);
 	const startingPoint = () => base ??= productBase(cwd, run, tip());
 	for (const [id, n] of nodes) {
-		if (slots <= 0) break;
+		if (slots <= 0 && cap.kept) break;
 		if (n.state !== "waiting") continue;
 		const required = versions(run, dependencies(run.policy, grain(run.policy, id).needs));
 		if (!required) continue;
 		try {
-			reserveWriter(cwd, run, id, n, required, startingPoint(), actor);
+			const from = startingPoint();
+			if (slots <= 0) { waiting++; continue; }
+			reserveWriter(cwd, run, id, n, required, from, actor);
 			slots--;
 		} catch (error) {
 			if (!(error instanceof FoundryError)) throw error;
@@ -269,30 +271,36 @@ export function advance(cwd, run, actor, discover) {
 			run.blocker = error.message;
 		}
 	}
-	if (!discover || slots <= 0 || run.policy.seed)
-		return;
-	delete run.discoveryError;
-	for (const squad of run.policy.squads) {
-		if (slots <= 0)
-			break;
-		if (run.reviews.some(r => r.squad === squad.id && r.state === "reading"))
-			continue;
-		let commit;
-		try {
-			commit = startingPoint();
+	if (!run.policy.seed && (slots > 0 ? discover : !cap.kept)) {
+		delete run.discoveryError;
+		for (const squad of run.policy.squads) {
+			if (slots <= 0 && cap.kept) break;
+			if (run.reviews.some(r => r.squad === squad.id && r.state === "reading"))
+				continue;
+			let commit;
+			try {
+				commit = startingPoint();
+			}
+			catch (error) {
+				if (!(error instanceof FoundryError)) throw error;
+				run.discoveryError = error.message;
+				break;
+			}
+			const version = reviewVersion(cwd, run, squad, commit);
+			if (run.reviews.findLast(r => r.squad === squad.id)?.version === version)
+				continue;
+			if (slots <= 0) { waiting++; continue; }
+			const token = randomUUID(), id = randomUUID();
+			run.reviews.push({ id, squad: squad.id, state: "reading", token, base: commit, version });
+			run.effects.push(assignmentEffect(run, actor, "scout", token, commit, `Review ${squad.charter} against this direction: ${run.policy.direction}. Your grains: ${squad.grains.join(", ")}. Do not edit or delegate. Call foundry_observe with run "${run.id}", token "${token}", outcome, reason, evidence paths and grains. Use regenerate for owned changes, no-gap if none, or needs-decision with the contract question as reason. Only regenerate names grains. Cite your chartered inputs, including declared dependencies.`, { agent: squad.agent }));
+			slots--;
 		}
-		catch (error) {
-			if (!(error instanceof FoundryError))
-				throw error;
-			run.discoveryError = error.message;
-			return;
-		}
-		const version = reviewVersion(cwd, run, squad, commit);
-		if (run.reviews.findLast(r => r.squad === squad.id)?.version === version)
-			continue;
-		const token = randomUUID(), id = randomUUID();
-		run.reviews.push({ id, squad: squad.id, state: "reading", token, base: commit, version });
-		run.effects.push(assignmentEffect(run, actor, "scout", token, commit, `Review ${squad.charter} against this direction: ${run.policy.direction}. Your grains: ${squad.grains.join(", ")}. Do not edit or delegate. Call foundry_observe with run "${run.id}", token "${token}", outcome, reason, evidence paths and grains. Use regenerate for owned changes, no-gap if none, or needs-decision with the contract question as reason. Only regenerate names grains. Cite your chartered inputs, including declared dependencies.`, { agent: squad.agent }));
-		slots--;
+	}
+	if (!waiting) delete cap.offer;
+	else if (cap.offer) cap.offer.to = cap.limit + waiting;
+	else if (!cap.kept) {
+		const id = randomUUID();
+		cap.offer = { id, to: cap.limit + waiting };
+		if (!owner) run.effects.push(notifyOwner(run, actor, id));
 	}
 }

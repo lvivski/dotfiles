@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { openDatabase, ledgerPath } from "./database.mjs";
 import { readPolicy } from "./contract.mjs";
 import { advance, newRun, observe } from "./graph.mjs";
-import { admitted, assignment, checkEffect, current, issue, receive } from "./native.mjs";
+import { admitted, assignment, capacityNotice, checkEffect, current, issue, receive } from "./native.mjs";
 import { capture, commitAt, retain, rootAt, verifyContracts } from "./product.mjs";
 import { refusedCall } from "./recovery.mjs";
 import { digest, fail, fields, name, record, text } from "./values.mjs";
@@ -12,7 +12,7 @@ import { digest, fail, fields, name, record, text } from "./values.mjs";
 /** @typedef {import("./model.js").Effect} Effect */
 /** @typedef {{run:string,id:string,actor:string}} Call */
 /** @typedef {{execute:(tool:string,args:Effect["args"],id:string)=>Promise<unknown>,recover?:(effect:Effect)=>Promise<unknown>,
- * mode:()=>Promise<string>,confirm:(message:string)=>Promise<boolean>,log?:(message:string)=>void}} Host */
+ * mode:()=>Promise<string>,confirm:(message:string)=>Promise<boolean>,select:(message:string,options:string[])=>Promise<string|null>,log?:(message:string)=>void}} Host */
 /** @param {Run} run @param {string} actor */
 function status(run, actor) {
 	const mine = run.owner === actor;
@@ -26,8 +26,8 @@ function status(run, actor) {
 	const latestReports = new Map(reviews.filter(r => r.observation).map(r => [r.squad, r]));
 	return {
 		run: run.id, active: run.active, direction: run.policy.direction, contract: { commit: run.policy.base, path: run.policy.source },
-		limit: run.policy.workers, deadline: run.policy.deadline, expired: Boolean(run.policy.deadline && Date.now() >= Date.parse(run.policy.deadline)),
-		...(mine ? { qualified: last?.commit ?? null, target: last?.target, outputs: last?.outputs ?? {}, discoveryError: run.discoveryError,
+		limit: run.capacity.limit, deadline: run.policy.deadline, expired: Boolean(run.policy.deadline && Date.now() >= Date.parse(run.policy.deadline)),
+		...(mine ? { proposedLimit: run.capacity.offer?.to, qualified: last?.commit ?? null, target: last?.target, outputs: last?.outputs ?? {}, discoveryError: run.discoveryError,
 			questions: [...latestReports.values()].flatMap(r => r.observation?.outcome === "needs-decision"
 				? [{ squad: r.squad, base: r.base, question: r.observation.reason, evidence: r.observation.evidence }] : []),
 			products: run.products.map(p => ({ ...p, receipt: checks.get(p.check) })), candidate: run.join && { ...run.join, receipt: checks.get(run.join.check) } } : {}),
@@ -52,6 +52,7 @@ export function createRuntime(directory, host) {
 	/** @type {Set<string>} */ const running = new Set();
 	/** @type {Set<Promise<unknown>>} */ const background = new Set();
 	/** @type {Set<string>} */ const attemptedRecovery = new Set();
+	/** @type {Map<string,{token:string,open:boolean}>} */ const dialogs = new Map();
 	/** @type {Map<string,Call>} */ const nativeCalls = new Map();
 	/** @type {string|undefined} */ let existingPath;
 	const cwd = () => root ??= rootAt(directory);
@@ -143,6 +144,36 @@ export function createRuntime(directory, host) {
 			}
 		}
 	}
+	/** Only the owner session presents choices. The proposal and decision survive reload, not the UI.
+	 * @param {Run} run @param {NonNullable<Run["capacity"]["offer"]>} offer */
+	async function askCapacity(run, offer) {
+		const { id, owner, capacity: { limit } } = run, prior = dialogs.get(id);
+		if (prior?.open || prior?.token === offer.id) return;
+		const dialog = { token: offer.id, open: true }, keep = `Keep ${limit}`, raise = `Increase to ${offer.to}`;
+		dialogs.set(id, dialog);
+		const waiting = offer.to - limit;
+		let choice;
+		try {
+			choice = await host.select(`Foundry ${id} is at its worker cap of ${limit}. ${waiting} more ${waiting === 1 ? "assignment is" : "assignments are"} ready. Work continues while you decide; Keep means no more capacity questions for this run.`, [keep, raise]);
+		} catch (error) {
+			throw new Error(`Could not ask about the worker cap for ${id}; continuing at ${limit}: ${String(error)}`);
+		} finally {
+			dialog.open = false;
+		}
+		if (closed || !await executable()) return;
+		if (choice !== null && choice !== keep && choice !== raise) fail("invalid_choice", "Unknown worker-cap decision; cap unchanged");
+		change(id, r => {
+			if (!r.active || r.capacity.limit !== limit || r.policy.deadline && Date.now() >= Date.parse(r.policy.deadline)) return;
+			if (choice === raise) {
+				if (r.capacity.offer?.id !== offer.id) return;
+				advance(cwd(), r, owner, true);
+				if (r.capacity.offer?.id !== offer.id) return;
+				r.capacity.limit = offer.to;
+			} else r.capacity.kept = true;
+			delete r.capacity.offer;
+		});
+		if (choice === raise) await drive(id, owner, true);
+	}
 	/** @param {string} id @param {string} actor @param {boolean} [discover] */
 	async function drive(id, actor, discover = false) {
 		if (!await executable() || closed)
@@ -154,8 +185,11 @@ export function createRuntime(directory, host) {
 			if (!run.active || run.policy.deadline && Date.now() >= Date.parse(run.policy.deadline))
 				return;
 			const ready = run.effects.filter(e => e.issuer === actor && e.state === "ready" && current(run, e));
-			if (!ready.length)
+			if (!ready.length) {
+				const offer = run.capacity.offer;
+				if (actor === run.owner && offer) track(askCapacity(run, offer));
 				return;
+			}
 			await Promise.all(ready.map(e => send(id, e, actor)));
 		}
 	}
@@ -204,7 +238,7 @@ export function createRuntime(directory, host) {
 			}
 			const fresh = newRun(policy, actor);
 			admitted(fresh);
-			if (!prior?.active && !await host.confirm(`Start ${policy.seed ? "one-off" : "ongoing"} Foundry run ${policy.id} at ${policy.base.slice(0, 12)} on ${policy.target} with ${policy.workers} concurrent workers and ${policy.repairs} repairs per grain?\n${policy.direction}`))
+			if (!prior?.active && !await host.confirm(`Start ${policy.seed ? "one-off" : "ongoing"} Foundry run ${policy.id} at ${policy.base.slice(0, 12)} on ${policy.target} with up to ${prior?.capacity.limit ?? policy.workers} concurrent workers and ${policy.repairs} repairs per grain?\n${policy.direction}`))
 				fail("activation_refused", "Foundry was not activated");
 			if (closed || cwd() !== origin || !await executable())
 				fail("context_changed", "Activation context changed during confirmation");
@@ -231,7 +265,9 @@ export function createRuntime(directory, host) {
 			fields(a, ["run"]);
 			db().update(id, r => {
 				if (r.owner !== actor)
-					fail("foreign_run", "Only the owner can pause"); r.active = false;
+					fail("foreign_run", "Only the owner can pause");
+				r.active = false;
+				delete r.capacity.offer;
 			});
 			return status(read(id), actor);
 		}
@@ -257,6 +293,7 @@ export function createRuntime(directory, host) {
 		const marker = typeof message === "string" ? assignment(message) : undefined;
 		if (marker)
 			return marker.run;
+		if (tool === "send_session_message" && typeof message === "string") return capacityNotice(message);
 		if (tool === "bash" && typeof a.command === "string" && a.command.includes("/work/runner.mjs' ") && /^foundry-[a-f0-9-]{36}$/.test(String(a.shellId)))
 			return / '([A-Za-z0-9][A-Za-z0-9._-]*)' '[a-f0-9-]{36}'$/.exec(a.command)?.[1];
 	}
@@ -329,6 +366,6 @@ export function createRuntime(directory, host) {
 			while (background.size)
 				await Promise.all([...background]);
 		},
-		close() { closed = true; database?.close(); },
+		close() { closed = true; database?.close(); database = undefined; },
 	};
 }

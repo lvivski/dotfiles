@@ -1,15 +1,22 @@
 # Recon
 
-Evidence gathering, investigation, risk review, and triage through standalone native
-`audit`, `deep-research`, `review-queue`, `security-review`, and `triage`
-workflows, separated from Foundry's coordination/evidence runtime. Registered names,
-arguments, outputs, verification, recovery, and explicit skill activation gates are unchanged.
-They work without a Foundry goal or work store.
+Recon registers five standalone native Copilot workflows:
 
-The extension owns research time-review dialogs and its workflow lifecycle. Findings stay in
-the native report. A research opinion does not become a Foundry acceptance requirement.
+| Workflow | Result |
+|---|---|
+| `audit` | Findings from checking specified paths for a concern and independently verifying the reviews. |
+| `deep-research` | A report on a question from multiple angles, with source checks and unresolved claims identified. |
+| `review-queue` | A triage table for supplied PR diffs and fetch evidence. An approval recommendation is not a PR approval. |
+| `security-review` | A report from independent security perspectives on a repository scope, with findings verified. |
+| `triage` | A table classifying supplied tickets and suggesting next actions. |
 
-`sync` mirrors this directory independently. For scoped development, mirror this extension
-without running the full dotfiles operation, then reload extensions. The host supplies the SDK.
-Run the behavioral tests in `test/`; Foundry's SDK checker accepts this directory as its optional
-fifth argument to check both source trees with the same installed declarations.
+Use `run_dynamic_workflow` when the user explicitly requests work at this scale or an activated
+skill directs it. Inspect the argument schema with `dynamic_workflows_manage inspect` and the
+report with `inspect-run`. The native runtime owns limits, checkpoints and results; use the
+original run ID to resume. When deep research reaches a time review, the user can extend the
+same run by an hour, keep it paused, or stop. Dismissing the decision leaves it stopped.
+
+The host supplies the SDK. From the repository root, run the offline behavioral tests with
+`node --test '.copilot/extensions/recon/**/*.test.mjs'`. To type-check against the host's
+declarations, pass `.copilot/extensions/recon` as the fifth argument to the
+[installed-SDK checker](../foundry/README.md#installed-sdk-checker-contract).

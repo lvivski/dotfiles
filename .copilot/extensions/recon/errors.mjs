@@ -1,5 +1,5 @@
 /** Typed failure raised when analysis input or output violates its contract. */
-export class FoundryAnalysisError extends Error {
+export class ReconAnalysisError extends Error {
 	/**
 	 * @param {string} code Stable machine-readable error code.
 	 * @param {string} message Human-readable failure summary.
@@ -7,7 +7,7 @@ export class FoundryAnalysisError extends Error {
 	 */
 	constructor(code, message, details = null) {
 		super(message);
-		this.name = "FoundryAnalysisError";
+		this.name = "ReconAnalysisError";
 		this.code = code;
 		this.details = details;
 	}
@@ -22,5 +22,5 @@ export class FoundryAnalysisError extends Error {
  * @returns {never}
  */
 export function fail(code, message, details) {
-	throw new FoundryAnalysisError(code, message, details);
+	throw new ReconAnalysisError(code, message, details);
 }

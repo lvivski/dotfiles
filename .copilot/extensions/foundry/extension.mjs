@@ -8,6 +8,7 @@ let session;
 const runtime = createRuntime(process.cwd(), {
 	mode: () => session.rpc.mode.get(),
 	confirm: message => session.ui.confirm(message),
+	select: (message, options) => session.ui.select(message, options),
 	execute: (name, args, toolCallId) => session.rpc.tools.execute({ name, arguments: args, toolCallId }),
 	recover: effect => recover(page => session.rpc.eventLog.read(page), effect),
 	log: message => session.log(message, { level: "warning" }),

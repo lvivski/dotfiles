@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { isList, isRecord, parseJson } from "../../data.mjs";
-import { RECON_WORKFLOWS as FOUNDRY_WORKFLOWS } from "../../workflows/registry.mjs";
+import { RECON_WORKFLOWS } from "../../workflows/registry.mjs";
 import { must } from "../assertions.mjs";
 import { workflowDetail as nativeDetail } from "../workflows/detail.mjs";
 import { assertOutputSchemas } from "../workflows/assertions.mjs";
@@ -18,7 +18,7 @@ test("deep research calls the built-in research agent directly", async () => {
 			? ["Regulatory landscape for Example in the European Union"]
 			: undefined,
 	);
-	await FOUNDRY_WORKFLOWS.deepResearch.run(researchWorkflow);
+	await RECON_WORKFLOWS.deepResearch.run(researchWorkflow);
 	const researchCalls = researchWorkflow.calls.filter(
 		(call) => call.options.label.startsWith("research:"),
 	);
@@ -33,11 +33,11 @@ test("deep research calls the built-in research agent directly", async () => {
 test("an oversized explicit research plan is trimmed transparently and replays its prepared scope on resume", async () => {
 	const first = createWorkflowContext({ question: "Compare regions", angles: 2, pauseBeforeWork: true },
 		(_prompt, options) => options.label === "plan" ? ["one", "two", "three", "one", ""] : undefined);
-	await assert.rejects(FOUNDRY_WORKFLOWS.deepResearch.run(first), { name: "AbortError", key: "deep-research:before-research:v1" });
+	await assert.rejects(RECON_WORKFLOWS.deepResearch.run(first), { name: "AbortError", key: "deep-research:before-research:v1" });
 	assert.deepEqual(first.calls.map(call => call.options.label), ["plan"]);
 	assert.match(first.logs.join("\n"), /omitted planner angles.*2.*three/);
 	const resumed = createWorkflowContext(first.args, null, first.journal);
-	const result = await FOUNDRY_WORKFLOWS.deepResearch.run(resumed);
+	const result = await RECON_WORKFLOWS.deepResearch.run(resumed);
 	assert.ok(!resumed.calls.some(call => call.options.label === "plan"));
 	assert.deepEqual(resumed.pipelineBatches, [2]);
 	assert.equal(resumed.calls.filter(call => call.options.label.startsWith("research:")).length, 2);
@@ -51,7 +51,7 @@ test("deep research uses one native pipeline without inventing a concurrency gra
 			? ["one", "two", "three", "four", "five"]
 			: undefined,
 	);
-	await FOUNDRY_WORKFLOWS.deepResearch.run(researchWorkflow);
+	await RECON_WORKFLOWS.deepResearch.run(researchWorkflow);
 	assert.equal(ADDITIONAL_WORKFLOWS.deepResearch.meta.limits, undefined);
 	assert.equal(researchWorkflow.calls.length, 12);
 	assert.deepEqual(researchWorkflow.pipelineBatches, [5]);
@@ -81,7 +81,7 @@ test("deep research checkpoints the main flow and replays completed agents after
 	first.pause = async (key) => {
 		try { await pause(key); } catch (error) { controller.abort(error); throw error; }
 	};
-	const stopped = assert.rejects(FOUNDRY_WORKFLOWS.deepResearch.run(first), {
+	const stopped = assert.rejects(RECON_WORKFLOWS.deepResearch.run(first), {
 		name: "AbortError", key: "deep-research:time-review:v1:3600",
 	});
 	await new Promise((resolve) => setImmediate(resolve));
@@ -97,7 +97,7 @@ test("deep research checkpoints the main flow and replays completed agents after
 		runId: resumed.runId, workflowName: "deep-research", status: "running",
 		approved: { timeoutSeconds: 7200 }, consumed: { activeMs: 3_540_000, nanoAiu: 0, subagents: 0 }, observedAt: Date.now(),
 	});
-	const result = await FOUNDRY_WORKFLOWS.deepResearch.run(resumed);
+	const result = await RECON_WORKFLOWS.deepResearch.run(resumed);
 	assert.match(result, /2 source-verified findings/);
 	assert.deepEqual(resumed.calls.map((call) => call.options.label), [
 		"research:2:two", "verify-findings:2:two", "report-findings",
@@ -116,13 +116,13 @@ test("an opt-in scope checkpoint clears the deadline timer and paused time is no
 		runId: workflow.runId, workflowName: "deep-research", status: "running",
 		approved: { timeoutSeconds: 3600 }, consumed: { activeMs: 1000, nanoAiu: 0, subagents: 0 }, observedAt: Date.now(),
 	});
-	await assert.rejects(FOUNDRY_WORKFLOWS.deepResearch.run(workflow), {
+	await assert.rejects(RECON_WORKFLOWS.deepResearch.run(workflow), {
 		name: "AbortError", key: "deep-research:before-research:v1",
 	});
 	assert.equal(scheduled.mock.callCount(), 1);
 	assert.equal(cleared.mock.calls[0].arguments[0], scheduled.mock.calls[0].result);
 	t.mock.timers.tick(86_400_000);
-	const result = await FOUNDRY_WORKFLOWS.deepResearch.run(workflow);
+	const result = await RECON_WORKFLOWS.deepResearch.run(workflow);
 	assert.match(result, /source-verified findings/);
 	assert.deepEqual(workflow.pauseCalls, ["deep-research:before-research:v1", "deep-research:before-research:v1"]);
 	assert.equal(workflow.calls.filter((call) => call.options.label === "plan").length, 1);
@@ -132,7 +132,7 @@ test("an opt-in scope checkpoint clears the deadline timer and paused time is no
 
 test("deep research preserves supported claims and corrects only unresolved findings", async () => {
 	const workflow = createWorkflowContext({ question: "Compare evidence", angles: 1 }, mixedResearchResponse);
-	const result = await FOUNDRY_WORKFLOWS.deepResearch.run(workflow);
+	const result = await RECON_WORKFLOWS.deepResearch.run(workflow);
 	const correction = must(workflow.calls.find((call) => call.options.label.startsWith("correct-findings:")));
 	const recheck = must(workflow.calls.find((call) => call.options.label.startsWith("reverify-findings:")));
 	const report = must(workflow.calls.find((call) => call.options.label === "report-findings"));
@@ -164,7 +164,7 @@ test("deep research retains unresolved distinctions and reasons after one unsucc
 		}
 		return undefined;
 	});
-	const result = await FOUNDRY_WORKFLOWS.deepResearch.run(workflow);
+	const result = await RECON_WORKFLOWS.deepResearch.run(workflow);
 	assert.match(result, /Research unsupported/);
 	assert.match(result, /0 source-verified findings; 1 incorrect, 1 inaccessible, 1 insufficient/);
 	assert.match(result, /1 independently reviewed targeted correction passes/);
@@ -183,7 +183,7 @@ test("deep research retains verified evidence when correction or reverification 
 		await t.test(stage, async () => {
 			const workflow = createWorkflowContext({ question: "Compare evidence", angles: 1 }, (prompt, options) =>
 				options.label.startsWith(`${stage}:`) ? null : mixedResearchResponse(prompt, options));
-			const result = await FOUNDRY_WORKFLOWS.deepResearch.run(workflow);
+			const result = await RECON_WORKFLOWS.deepResearch.run(workflow);
 			const report = must(workflow.calls.find((call) => call.options.label === "report-findings"));
 			assert.match(report.prompt, /KEEP_VERIFIED/);
 			assert.doesNotMatch(report.prompt, /WRONG_DETAIL|CORRECTED_DETAIL/);
@@ -209,7 +209,7 @@ test("deep research preserves accepted findings when a later pipeline stage thro
 					if (index === failingStage) throw new Error("ordinary stage failure");
 					return stage(...args);
 				}));
-			const result = await FOUNDRY_WORKFLOWS.deepResearch.run(workflow);
+			const result = await RECON_WORKFLOWS.deepResearch.run(workflow);
 			assert.match(result, /1 source-verified findings/);
 			assert.match(result, /pipeline stage failed/);
 			assert.match(must(workflow.calls.find((call) => call.options.label === "report-findings")).prompt, /KEEP_VERIFIED/);
@@ -244,7 +244,7 @@ test("deep research refuses unknown, duplicate, missing, or already accepted cor
 		}
 		return mixedResearchResponse(prompt, options);
 	});
-	const result = await FOUNDRY_WORKFLOWS.deepResearch.run(workflow);
+	const result = await RECON_WORKFLOWS.deepResearch.run(workflow);
 	const report = must(workflow.calls.find((call) => call.options.label === "report-findings")).prompt;
 	assert.match(report, /KEEP_VERIFIED/);
 	assert.match(report, /CORRECTED_DETAIL/);
@@ -276,7 +276,7 @@ test("deep research never accepts malformed or uncited supported verdicts", asyn
 				if (options.label.startsWith("correct-findings:")) return null;
 				return undefined;
 			});
-			const result = await FOUNDRY_WORKFLOWS.deepResearch.run(workflow);
+			const result = await RECON_WORKFLOWS.deepResearch.run(workflow);
 			assert.match(result, /1 source-verified findings; 0 incorrect, 0 inaccessible, 1 insufficient/);
 			assert.match(result, /not accepted/);
 			assert.doesNotMatch(must(workflow.calls.find((call) => call.options.label === "report-findings")).prompt, /UNTRUSTED_CLAIM/);
@@ -291,7 +291,7 @@ test("deep research applies evidence requirements again after correction", async
 		}
 		return mixedResearchResponse(prompt, options);
 	});
-	const result = await FOUNDRY_WORKFLOWS.deepResearch.run(workflow);
+	const result = await RECON_WORKFLOWS.deepResearch.run(workflow);
 	assert.match(result, /1 source-verified findings; 0 incorrect, 0 inaccessible, 1 insufficient/);
 	assert.match(result, /Supported verdict lacked source evidence/);
 	assert.match(result, /Initial review: incorrect: Edition mismatch/);
@@ -304,7 +304,7 @@ test("deep research does not discard supported findings over incomplete limitati
 		}
 		return undefined;
 	});
-	const result = await FOUNDRY_WORKFLOWS.deepResearch.run(workflow);
+	const result = await RECON_WORKFLOWS.deepResearch.run(workflow);
 	assert.match(result, /1 source-verified findings/);
 	assert.match(result, /incomplete limitation notes/);
 	assert.match(result, /Only the selected scope was checked/);
@@ -314,7 +314,7 @@ test("deep research does not discard supported findings over incomplete limitati
 test("deep research returns verified findings when narrative synthesis fails", async () => {
 	const workflow = createWorkflowContext({ question: "Compare evidence", angles: 1 }, (_prompt, options) =>
 		options.label === "report-findings" ? null : undefined);
-	const result = await FOUNDRY_WORKFLOWS.deepResearch.run(workflow);
+	const result = await RECON_WORKFLOWS.deepResearch.run(workflow);
 	assert.match(result, /Research incomplete/);
 	assert.match(result, /Synthesis failed/);
 	assert.match(result, /An independently sourced claim/);
@@ -338,7 +338,7 @@ test("successful research prose cannot discard the complete supported evidence l
 		};
 		if (options.label === "report-findings") return "A narrative that omits the second claim.";
 	});
-	const result = await FOUNDRY_WORKFLOWS.deepResearch.run(workflow);
+	const result = await RECON_WORKFLOWS.deepResearch.run(workflow);
 	for (const text of ["First qualified claim", "First source locator", "Second qualified claim",
 		"https://example.test/second", "Second source locator", "https://example.test/third",
 		"Third source locator", "Only this scope was checked", "Supported findings ledger"]) {
@@ -352,7 +352,7 @@ test("deep research reports empty or failed stages without manufacturing finding
 		await t.test(stage, async () => {
 			const workflow = createWorkflowContext({ question: "Compare evidence", angles: 1 }, (_prompt, options) =>
 				options.label.startsWith(stage) ? null : undefined);
-			const result = await FOUNDRY_WORKFLOWS.deepResearch.run(workflow);
+			const result = await RECON_WORKFLOWS.deepResearch.run(workflow);
 			assert.match(result, /Research incomplete|Research unsupported/);
 			assert.equal(workflow.calls.some((call) => call.options.label.startsWith("correct-findings:")), false);
 			assert.equal(workflow.calls.some((call) => call.options.label === "report-findings"), false);
@@ -361,7 +361,7 @@ test("deep research reports empty or failed stages without manufacturing finding
 	}
 	const empty = createWorkflowContext({ question: "Compare evidence" }, (_prompt, options) =>
 		options.label.startsWith("verify-findings:") ? { findings: [], limitations: [] } : undefined);
-	assert.match(await FOUNDRY_WORKFLOWS.deepResearch.run(empty), /Verification returned no findings/);
+	assert.match(await RECON_WORKFLOWS.deepResearch.run(empty), /Verification returned no findings/);
 });
 
 test("deep research recovers supplied drafts without planning or broad research", async () => {
@@ -370,7 +370,7 @@ test("deep research recovers supplied drafts without planning or broad research"
 		question: "Recover saved research",
 		drafts: [{ angle: "Saved angle", text: injection, feedback: "Previously rejected: edition mismatch" }],
 	}, mixedResearchResponse);
-	const result = await FOUNDRY_WORKFLOWS.deepResearch.run(workflow);
+	const result = await RECON_WORKFLOWS.deepResearch.run(workflow);
 	assert.equal(workflow.calls.some((call) => call.options.label === "plan" || call.options.label.startsWith("research:")), false);
 	const review = must(workflow.calls.find((call) => call.options.label.startsWith("verify-findings:")));
 	assert.match(review.prompt, /Previously rejected: edition mismatch/);
@@ -388,7 +388,7 @@ test("deep research preserves every explicitly requested angle and saved draft b
 		}
 		return mixedResearchResponse(prompt, options);
 	});
-	const result = await FOUNDRY_WORKFLOWS.deepResearch.run(workflow);
+	const result = await RECON_WORKFLOWS.deepResearch.run(workflow);
 	assert.doesNotMatch(result, /capped at/);
 	assert.deepEqual(workflow.pipelineBatches, [12]);
 	assert.equal(workflow.calls.length, 50);
@@ -398,7 +398,7 @@ test("deep research preserves every explicitly requested angle and saved draft b
 		question: "Recover",
 		drafts: Array.from({ length: 13 }, () => ({ angle: "Saved", text: "Draft" })),
 	});
-	await FOUNDRY_WORKFLOWS.deepResearch.run(recovery);
+	await RECON_WORKFLOWS.deepResearch.run(recovery);
 	assert.deepEqual(recovery.pipelineBatches, [13]);
 });
 
@@ -412,7 +412,7 @@ test("deep research preserves correction and reverification for all twelve saved
 		}
 		return mixedResearchResponse(prompt, options);
 	});
-	const result = await FOUNDRY_WORKFLOWS.deepResearch.run(workflow);
+	const result = await RECON_WORKFLOWS.deepResearch.run(workflow);
 	assert.match(result, /12 angles reused from saved drafts/);
 	assert.deepEqual(workflow.pipelineBatches, [12]);
 	assert.equal(workflow.calls.length, 37);
@@ -421,8 +421,8 @@ test("deep research preserves correction and reverification for all twelve saved
 
 test("deep research uses stable distinct calls that native journals can replay", async () => {
 	const workflow = createWorkflowContext({ question: "Compare evidence", angles: 1 }, mixedResearchResponse);
-	const first = await FOUNDRY_WORKFLOWS.deepResearch.run(workflow);
-	const second = await FOUNDRY_WORKFLOWS.deepResearch.run(workflow);
+	const first = await RECON_WORKFLOWS.deepResearch.run(workflow);
+	const second = await RECON_WORKFLOWS.deepResearch.run(workflow);
 	assert.equal(second, first);
 	assert.equal(workflow.calls.length, 6);
 	assert.equal(workflow.journal.agents.size, 6);
@@ -450,7 +450,7 @@ test("independent substantive progress permits further corrections and exact nat
 				: [researchFinding("supported", { id: "1.3", claim: "SECOND_RESOLVED" })], limitations: [] };
 		}
 	});
-	const first = await FOUNDRY_WORKFLOWS.deepResearch.run(workflow);
+	const first = await RECON_WORKFLOWS.deepResearch.run(workflow);
 	assert.match(first, /3 source-verified findings/);
 	assert.match(first, /2 independently reviewed targeted correction passes/);
 	assert.match(first, /FIRST_ISSUE/);
@@ -460,7 +460,7 @@ test("independent substantive progress permits further corrections and exact nat
 	assert.equal(corrections.length, 2);
 	assert.doesNotMatch(corrections[1].prompt, /KEEP_VERIFIED|FIRST_ISSUE|FIRST_RESOLVED/);
 	assert.notEqual(corrections[0].options.label, corrections[1].options.label);
-	assert.equal(await FOUNDRY_WORKFLOWS.deepResearch.run(workflow), first);
+	assert.equal(await RECON_WORKFLOWS.deepResearch.run(workflow), first);
 	assert.equal(reviews, 2);
 });
 
@@ -478,7 +478,7 @@ test("a failed later correction retains history without counting another indepen
 		if (options.label.startsWith("correct-findings:")) return ++corrections === 1 ? "First proposed correction" : null;
 		if (options.label.startsWith("reverify-findings:")) return review;
 	});
-	const result = await FOUNDRY_WORKFLOWS.deepResearch.run(workflow);
+	const result = await RECON_WORKFLOWS.deepResearch.run(workflow);
 	assert.match(result, /1 source-verified findings; 1 incorrect/);
 	assert.match(result, /1 independently reviewed targeted correction passes/);
 	assert.match(result, /Targeted correction failed/);
@@ -499,7 +499,7 @@ test("a failed later correction retains history without counting another indepen
 	}), [["FIRST_ISSUE", "SECOND_ISSUE"], ["FIRST_RESOLVED", "SECOND_ISSUE"]]);
 	assert.equal(workflow.calls.filter(call => call.options.label.startsWith("reverify-findings:")).length, 1);
 	const calls = workflow.calls.length;
-	assert.equal(await FOUNDRY_WORKFLOWS.deepResearch.run(workflow), result);
+	assert.equal(await RECON_WORKFLOWS.deepResearch.run(workflow), result);
 	assert.equal(workflow.calls.length, calls);
 });
 
@@ -514,7 +514,7 @@ test("cosmetic or alternating unresolved diagnostics cannot authorize another co
 			limitations: [],
 		};
 	});
-	const result = await FOUNDRY_WORKFLOWS.deepResearch.run(workflow);
+	const result = await RECON_WORKFLOWS.deepResearch.run(workflow);
 	assert.match(result, /Further correction held/);
 	assert.match(result, /ORIGINAL_ISSUE/);
 	assert.match(result, /Original causal diagnostic/);
@@ -535,7 +535,7 @@ test("regressing or uncertain review cannot overwrite established findings or tr
 			researchFinding("inaccessible", { id: "1.3", claim: "SECOND_ISSUE" }),
 		], limitations: [] };
 	});
-	const result = await FOUNDRY_WORKFLOWS.deepResearch.run(workflow);
+	const result = await RECON_WORKFLOWS.deepResearch.run(workflow);
 	assert.match(result, /Further correction held/);
 	const narrativeInput = must(workflow.calls.find(call => call.options.label === "report-findings")).prompt;
 	assert.match(narrativeInput, /KEEP_VERIFIED|FIRST_RESOLVED/);
@@ -556,7 +556,7 @@ test("native denial after progress stops subsequent admission without replay or 
 			researchFinding("supported", { id: "1.1" }), researchFinding("incorrect", { id: "1.2" }),
 		], limitations: [] };
 	});
-	await assert.rejects(FOUNDRY_WORKFLOWS.deepResearch.run(workflow), /native permission revoked/);
+	await assert.rejects(RECON_WORKFLOWS.deepResearch.run(workflow), /native permission revoked/);
 	assert.equal(workflow.calls.filter(call => call.options.label.startsWith("correct-findings:")).length, 2);
 	assert.equal(workflow.calls.filter(call => call.options.label.startsWith("reverify-findings:")).length, 1);
 	assert.equal(workflow.calls.some(call => call.options.label === "report-findings"), false);
@@ -579,13 +579,13 @@ test("deep research validates recovery arguments before spawning agents", async 
 		await t.test(JSON.stringify(args), async () => {
 			const workflow = createWorkflowContext(args);
 			workflow.session.workflow.getRunDetail = async () => assert.fail("Invalid arguments must fail before time review");
-			await assert.rejects(FOUNDRY_WORKFLOWS.deepResearch.run(workflow), /deep-research:/);
+			await assert.rejects(RECON_WORKFLOWS.deepResearch.run(workflow), /deep-research:/);
 			assert.equal(workflow.calls.length, 0);
 			assert.deepEqual(workflow.stepCalls, []);
 		});
 	}
 	for (const args of ["Question", { q: "Question" }]) {
-		assert.match(await FOUNDRY_WORKFLOWS.deepResearch.run(createWorkflowContext(args)), /source-verified findings/);
+		assert.match(await RECON_WORKFLOWS.deepResearch.run(createWorkflowContext(args)), /source-verified findings/);
 	}
 });
 
@@ -597,7 +597,7 @@ test("deep research propagates cancellation and limits from every stage", async 
 				if (options.label.startsWith(stage)) throw failure;
 				return mixedResearchResponse(prompt, options);
 			});
-			await assert.rejects(FOUNDRY_WORKFLOWS.deepResearch.run(workflow), (error) => error === failure);
+			await assert.rejects(RECON_WORKFLOWS.deepResearch.run(workflow), (error) => error === failure);
 		});
 	}
 });

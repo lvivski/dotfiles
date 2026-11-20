@@ -6,7 +6,7 @@ import { isList, isRecord } from "../../data.mjs";
 
 /** @param {AgentOptions} options @returns {asserts options is NamedAgentOptions} */
 export function assertLabeled(options) {
-	assert.equal(typeof options.label, "string", "Foundry workflow agents must have stable diagnostic labels");
+	assert.equal(typeof options.label, "string", "Recon workflow agents must have stable diagnostic labels");
 }
 
 /** @param {unknown} schema @returns {asserts schema is import("../../types/json.js").JsonSchema} */

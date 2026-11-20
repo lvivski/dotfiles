@@ -84,7 +84,7 @@ export interface Receipt {
 export interface Effect {
 	id: string;
 	issuer: string;
-	kind: "writer" | "scout" | "component" | "product" | "repair";
+	kind: "writer" | "scout" | "component" | "product" | "repair" | "capacity";
 	grain?: string;
 	token?: string;
 	tool: "create_session" | "bash" | "send_session_message";
@@ -105,6 +105,7 @@ export interface Run {
 	id: string;
 	owner: string;
 	policy: Policy;
+	capacity: { limit: number; kept: boolean; offer?: { id: string; to: number } };
 	active: boolean;
 	reviews: Review[];
 	nodes: Record<string, Node>;
