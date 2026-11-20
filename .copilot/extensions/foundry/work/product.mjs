@@ -116,7 +116,7 @@ function pin(cwd, tree, label, parent) {
 }
 
 /** @param {string} cwd @param {string} commit */
-const treeOf = (cwd, commit) => git(cwd, ["rev-parse", "--verify", `${commit}^{tree}`]).toString().trim();
+export const treeOf = (cwd, commit) => git(cwd, ["rev-parse", "--verify", `${commit}^{tree}`]).toString().trim();
 /** @param {string} cwd @param {string} commit @param {string} directory */
 export const withoutGrain = (cwd, commit, directory) => pin(cwd, replace(cwd, treeOf(cwd, commit), directory, null), "Foundry generation base");
 
@@ -203,6 +203,7 @@ export function verifyContracts(cwd, policy, commit) {
 	if (commit === policy.base)
 		return;
 	const files = new Set([policy.source, policy.productCheck, ...policy.grains.flatMap(g => [g.specification, ...g.boundary, g.check]), ...policy.squads.map(s => s.charter)]);
+	if (policy.goalCheck) files.add(policy.goalCheck);
 	const changed = git(cwd, ["diff-tree", "--no-ext-diff", "--no-renames", "-r", "--name-only", "-z", policy.base, commit, "--", ...files]).toString().split("\0").filter(Boolean);
 	if (changed.length)
 		fail("contract_changed", `The conserved contract changed: ${changed.join(", ")}`);

@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { openDatabase, ledgerPath } from "./database.mjs";
 import { readPolicy } from "./contract.mjs";
 import { advance, newRun, observe } from "./graph.mjs";
+import { goalReceipt, missingObservation } from "./goal.mjs";
 import { admitted, assignment, capacityNotice, checkEffect, current, issue, receive } from "./native.mjs";
 import { capture, commitAt, retain, rootAt, verifyContracts } from "./product.mjs";
 import { refusedCall } from "./recovery.mjs";
@@ -23,15 +24,17 @@ function status(run, actor) {
 	const pending = run.effects.filter(e => (mine || e.issuer === actor) && e.state !== "done" && (current(run, e) || e.state === "uncertain" || e.state === "issued"));
 	const checks = new Map(run.effects.filter(e => e.receipt).map(e => [e.id, e.receipt]));
 	const last = run.products.at(-1);
+	const missing = missingObservation(run);
 	const latestReports = new Map(reviews.filter(r => r.observation).map(r => [r.squad, r]));
 	return {
 		run: run.id, active: run.active, direction: run.policy.direction, contract: { commit: run.policy.base, path: run.policy.source },
 		limit: run.capacity.limit, deadline: run.policy.deadline, expired: Boolean(run.policy.deadline && Date.now() >= Date.parse(run.policy.deadline)),
-		...(mine ? { proposedLimit: run.capacity.offer?.to, qualified: last?.commit ?? null, target: last?.target, outputs: last?.outputs ?? {}, discoveryError: run.discoveryError,
+		...(mine ? { proposedLimit: run.capacity.offer?.to, qualified: (run.goal ? run.accepted : last?.commit) ?? null, target: last?.target, outputs: last?.outputs ?? {}, discoveryError: run.discoveryError,
+			...(run.goal ? { checkpoint: last?.commit ?? null, goal: { commit: run.goal.commit, evaluator: run.policy.goalCheck, receipt: goalReceipt(run) } } : {}),
 			questions: [...latestReports.values()].flatMap(r => r.observation?.outcome === "needs-decision"
 				? [{ squad: r.squad, base: r.base, question: r.observation.reason, evidence: r.observation.evidence }] : []),
 			products: run.products.map(p => ({ ...p, receipt: checks.get(p.check) })), candidate: run.join && { ...run.join, receipt: checks.get(run.join.check) } } : {}),
-		blocker: run.blocker,
+		blocker: run.blocker ?? run.goal?.stall ?? (missing ? `Goal check at ${missing.commit} awaits external evidence (exit 2): ${missing.output.trim() || "no diagnostic"}. Pause and explicitly resume after supplying it.` : undefined),
 		reviews: reviews.map(({ worker, token, ...r }) => ({ ...r, worker, ...(actor === worker ? { token } : {}) })),
 		nodes: nodes.map(([grain, n]) => ({
 			grain, review: n.review, state: n.state, worker: n.worker, repairs: n.repairs, inputs: n.inputs, generation: n.generation,
@@ -73,11 +76,11 @@ export function createRuntime(directory, host) {
 	/** @param {string} id @param {(run:Run)=>void} mutate */
 	function change(id, mutate) {
 		for (;;) {
-			const run = read(id), before = digest(run), count = run.products.length;
+			const run = read(id), before = digest(run), count = run.products.length, accepted = run.accepted;
 			mutate(run);
 			if (digest(run) === before)
 				return;
-			if (db().swap(before, run, () => run.products.length === count || commitAt(cwd(), run.policy.target) === run.products.at(-1)?.target))
+			if (db().swap(before, run, () => run.products.length === count && run.accepted === accepted || commitAt(cwd(), run.policy.target) === run.products.at(-1)?.target))
 				return;
 		}
 	}
@@ -235,22 +238,28 @@ export function createRuntime(directory, host) {
 				if (prior.owner !== actor || digest({ ...prior.policy, base: policy.base }) !== digest(policy))
 					fail("run_conflict", "Another owner or contract already uses this run ID");
 				verifyContracts(cwd(), prior.policy, policy.base);
+				if (prior.accepted) return status(prior, actor);
 			}
-			const fresh = newRun(policy, actor);
-			admitted(fresh);
-			if (!prior?.active && !await host.confirm(`Start ${policy.seed ? "one-off" : "ongoing"} Foundry run ${policy.id} at ${policy.base.slice(0, 12)} on ${policy.target} with up to ${prior?.capacity.limit ?? policy.workers} concurrent workers and ${policy.repairs} repairs per grain?\n${policy.direction}`))
+			const fresh = prior ?? newRun(origin, policy, actor);
+			admitted({ ...fresh, active: true });
+			const mode = policy.goalCheck ? `ongoing goal (finish check: ${policy.goalCheck})` : policy.seed ? "one-off" : "ongoing";
+			const retry = prior && !prior.active && missingObservation(prior) ? prior.goal : undefined;
+			const retryNotice = retry ? `\nRecheck the missing external evidence for ${retry.commit} (rejoin first if the target has moved).` : "";
+			if (!prior?.active && !await host.confirm(`Start ${mode} Foundry run ${policy.id} at ${policy.base.slice(0, 12)} on ${policy.target} with up to ${prior?.capacity.limit ?? policy.workers} concurrent workers and ${policy.repairs} repairs per grain?\n${policy.direction}${retryNotice}`))
 				fail("activation_refused", "Foundry was not activated");
 			if (closed || cwd() !== origin || !await executable())
 				fail("context_changed", "Activation context changed during confirmation");
 			const store = db(true);
 			if (prior)
-				store.update(policy.id, r => {
-					if (r.active !== prior.active)
+				change(policy.id, r => {
+					if (r.active !== prior.active || retry && (r.goal?.check !== retry.check || !missingObservation(r)))
 						fail("run_conflict", "Run activation changed while starting");
 					r.active = true;
+					if (retry) advance(origin, r, actor, false, true);
 				});
 			else {
 				retain(origin, policy.base);
+				if (fresh.goal && fresh.goal.commit !== policy.base) retain(origin, fresh.goal.commit);
 				store.insert(fresh);
 			}
 			await drive(policy.id, actor, true);

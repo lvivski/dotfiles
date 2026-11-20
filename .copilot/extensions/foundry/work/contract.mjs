@@ -17,7 +17,7 @@ export function readPolicy(cwd, source) {
 	if (!filename.startsWith(".foundry/"))
 		fail("contract_scope", "Start from a committed .foundry policy");
 	const base = commitAt(cwd, "HEAD"), row = record(JSON.parse(committedFile(cwd, base, filename).toString()));
-	fields(row, ["version", "id", "direction", "target", "productCheck", "grains", "squads", "limits", "seed"]);
+	fields(row, ["version", "id", "direction", "target", "productCheck", "goalCheck", "grains", "squads", "limits", "seed"]);
 	if (row.version !== 1)
 		fail("unsupported_contract", "Expected a Foundry graph version 1");
 	const target = text(row.target, "full local target ref");
@@ -71,6 +71,12 @@ export function readPolicy(cwd, source) {
 	const seed = row.seed === undefined ? undefined : names(row.seed, "seed grain");
 	if (seed && (!seed.length || seed.some(id => !complete.has(id))) || !seed && !squads.length)
 		fail("invalid_seed", "Supply a nonempty seed or discovery squad");
+	const productCheck = relative(row.productCheck);
+	const goalCheck = row.goalCheck === undefined ? undefined : relative(row.goalCheck);
+	if (goalCheck && !outside(goalCheck, [productCheck]))
+		fail("invalid_goal", "Use distinct checks for a milestone and the final goal");
+	if (goalCheck && seed)
+		fail("invalid_goal", "seed selects a one-off; omit seed and use squads for a final goal");
 	if (!seed && grains.some(g => !squads.some(s => s.grains.includes(g.id))))
 		fail("invalid_charter", "Every output needs a chartered producer");
 	const limits = row.limits === undefined ? {} : record(row.limits);
@@ -79,8 +85,7 @@ export function readPolicy(cwd, source) {
 	const deadline = limits.deadline === undefined ? undefined : text(limits.deadline, "ISO deadline");
 	if (deadline && !Number.isFinite(Date.parse(deadline)))
 		fail("invalid_limit", "Invalid deadline");
-	const productCheck = relative(row.productCheck);
-	const files = [...new Set([filename, productCheck, ...grains.flatMap(g => [g.specification, ...g.boundary, g.check]), ...squads.map(s => s.charter)])];
+	const files = [...new Set([filename, productCheck, ...(goalCheck ? [goalCheck] : []), ...grains.flatMap(g => [g.specification, ...g.boundary, g.check]), ...squads.map(s => s.charter)])];
 	for (const file of files) {
 		if (grains.some(g => !outside(g.directory, [file])))
 			fail("contract_scope", `Conserved file overlaps a writable grain: ${file}`);
@@ -88,6 +93,7 @@ export function readPolicy(cwd, source) {
 	regularFiles(cwd, base, files);
 	return {
 		id: name(row.id, "policy ID"), direction: text(row.direction, "engineering direction"), source: filename, target, base, productCheck, grains, squads,
+		...(goalCheck ? { goalCheck } : {}),
 		workers: integer(workers, 1, "worker limit"), repairs: integer(repairs, 0, "repair limit"), ...(deadline ? { deadline } : {}), ...(seed ? { seed } : {})
 	};
 }

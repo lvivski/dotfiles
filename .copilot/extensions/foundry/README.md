@@ -1,10 +1,10 @@
 # Foundry
 
-Foundry regenerates whole directories and produces a **checked Git commit**. A seed selects the work directly; otherwise, scouts identify gaps under their squads' charters. Writers regenerate independent directories in parallel. Foundry runs the committed product evaluator on their combined Git tree and records the exact commit that passed. The destination branch stays put.
+Foundry works toward a committed product brief. Writers regenerate independent directories in parallel. A passing milestone is progress, not the finish line: squads inspect the remaining gap on the combined tree and choose the next work under the same authorization. Foundry records the exact commit that satisfies the goal and leaves the destination branch untouched.
 
 ## Commit the contract
 
-Keep the direction, each unit's specification and interface, and both levels of evaluator in the repository. A *grain* is one regenerable unit. Its directory belongs to it exclusively. Conserved files must live outside all grain directories.
+Keep the full product direction, specifications, interfaces and evaluators in the repository. A *grain* is one regenerable unit with an exclusive directory. Conserved files must live outside all grain directories.
 
 ```json
 {
@@ -12,7 +12,8 @@ Keep the direction, each unit's specification and interface, and both levels of 
   "id": "catalog",
   "direction": "A customer can find a product and see its current price.",
   "target": "refs/heads/main",
-  "productCheck": ".foundry/checks/customer-lookup.mjs",
+  "productCheck": ".foundry/checks/catalog-invariants.mjs",
+  "goalCheck": ".foundry/checks/customer-lookup.mjs",
   "grains": [
     {
       "id": "search",
@@ -29,7 +30,10 @@ Keep the direction, each unit's specification and interface, and both levels of 
       "check": ".foundry/checks/pricing.mjs"
     }
   ],
-  "seed": ["search", "pricing"]
+  "squads": [
+    { "id": "browse", "charter": "squads/browse.md", "grains": ["search"] },
+    { "id": "offers", "charter": "squads/offers.md", "grains": ["pricing"] }
+  ]
 }
 ```
 
@@ -39,16 +43,11 @@ By default, Foundry runs up to two independent assignments in parallel and allow
 
 Scouts and writers share the cap. When all slots are assigned **and another assignment is ready now**, the owner's session offers **Keep** or **Increase**. Work continues while you decide. Keep or dismiss the choice to stop capacity questions for this run. Increase sets the cap to the number shown if work is still waiting. The decision survives pause/resume without changing the contract. Work waiting for a dependency is not a reason to ask.
 
-For ongoing work, **omit `seed`** and add flat `squads`, e.g.:
+`productCheck` tests invariants that a useful intermediate tree must preserve. `goalCheck` tests the whole brief: in this example, look up a product through the customer-facing interface and check the returned price. Confirm that the evaluator fails on an unfinished product, not just that it passes on a sample. Exit **0** when the goal is met, **1** when a required behavior is missing, or **2** when a required external observation is unavailable. Print what is missing. Other exits and infrastructure failures block the run.
 
-```json
-"squads": [
-  { "id": "browse", "charter": "squads/browse.md", "grains": ["search"] },
-  { "id": "offers", "charter": "squads/offers.md", "grains": ["pricing"] }
-]
-```
+Foundry checks the baseline before staffing anyone. If it already meets the goal, the milestone evaluator must pass on that same commit before Foundry accepts it. On an unmet baseline or milestone, every squad can inspect the combined tree and goal diagnostic, even if its own files did not change or a peer's assignment was refused. Ready writers start without a fresh activation or user turn. If nothing actionable remains or the outputs reproduce a previously failing tree, status reports the gap and the reasons; the checkpoint is retained, not accepted as the goal.
 
-A charter owns named grains and may specify an installed native `agent`. A scout cites files at its assigned revision: the charter, policy, or code and contracts of its grains and their declared dependencies. It can request changes only to grains it owns. A new participant turn (including a native child-idle notification) revisits discovery when the chartered inputs change, not just because time has passed. A host trigger can wake an existing run, not authorize one.
+A charter owns named grains and may specify an installed native `agent`. A scout cites committed evidence: the charter, policy, final goal evaluator, or code and contracts of its grains and their declared dependencies. It can request changes only to grains it owns. For an explicitly requested one-off, supply `seed` and omit `goalCheck`: a passing `productCheck` qualifies that batch. A charter-only graph without `goalCheck` continues to discover changes on participant turns when its chartered inputs change. A host trigger can wake an existing run, not authorize one.
 
 An observation has one `outcome`: `regenerate` names the grains to rebuild; `no-gap` and `needs-decision` take `grains: []`. For `needs-decision`, write the contract question in `reason` and cite the conflicting evidence. The report starts no writer and does not veto other work. Owner status lists each squad's latest reported question until a newer observation supersedes it; the original stays in review history. To change the contract, pause the old run, decide whether to use its qualified work, and record the operator's answer and rationale in the spec or shared interface on the target branch. Start the revised contract under a new ID only on explicit direction.
 
@@ -61,19 +60,21 @@ Use `"needs": ["pricing"]` if a writer consumes the pricing output. There is one
 | `foundry_start({source})` | Operator's session, on explicit request | Confirm a new or paused run. A seed names the requested grains; otherwise start charter review. |
 | `foundry_observe({run,token,outcome,reason,evidence,grains})` | Bound scout | Request regeneration, report no gap, or raise a contract question. An exact replay does not request work again. |
 | `foundry_submit({run,token})` | Bound writer, from its worktree | Capture the whole directory and run its committed evaluator. Ready work is picked up internally. |
-| `foundry_status({run})` | Owner or bound participant | Read assignments, input versions and receipts. The owner also sees outstanding questions and the exact qualified output. No side effects. |
+| `foundry_status({run})` | Owner or bound participant | Read assignments, blockers and receipts. The owner sees questions and, in a goal run, the latest `checkpoint`, the `goal` assessment and final `qualified` commit (null until both checks pass). No side effects. |
 | `foundry_pause({run})` | Owner | Stop new work. Retain worktrees, assignments, issued calls and results. |
 
 ### Regeneration and checks
 
-- Each writer starts at a retained Git commit with **no parent and no old copy of its grain**. Its specification, interface and required outputs are present. This is a generation context, not an OS sandbox against reading repository history.
+- Each writer starts at a retained Git commit with **no parent and no old copy of its grain**. Its specification, interface and required outputs are present. A goal writer's brief names the `Reviewed input revision`: the baseline or checkpoint its squad reviewed. Only if the grain specification explicitly permits it may the writer consult its own prior directory at that SHA. Foundry copies none of it. This generation context is not an OS sandbox against reading repository history.
 - Submission captures regular files and executable modes under the assigned directory, not arbitrary edits or a worker's assertion of success. Missing files are deletions; a missing directory removes the unit. Neighboring source and uncommitted work in the operator's checkout are not copied.
-- Checks run via the host's native `bash` permissions. `.js` and `.mjs` evaluators use Node; other evaluators must be executable. Raw Git blobs are streamed into a temporary directory, without smudge filters, export substitutions or the writer's uncommitted files. Use externally installed dependencies or temp space outside the product. End with the product unchanged. Symlinks, submodules, special files and case-aliased paths are unsupported. As with other local builds, run only trusted repository code.
+- Checks run via the host's native `bash` permissions. The shell needs `node` with `node:sqlite` on `PATH` to launch the runner; the desktop Copilot binary is not a Node interpreter. `.js` and `.mjs` evaluators use that Node; other evaluators must be executable. Raw Git blobs are streamed into a temporary directory, without smudge filters, export substitutions or the writer's uncommitted files. Use externally installed dependencies or temp space outside the product. End with the product unchanged. Symlinks, submodules, special files and case-aliased paths are unsupported. As with other local builds, run only trusted repository code.
 - A component failure returns its bounded repair to the responsible writer. A failed product evaluator can print exactly one `FOUNDRY_REPAIR=<grain-id>` line to stdout to identify responsibility. Changing a shared output regenerates consumers pinned to its superseded version, but preserves past qualified commits and their receipts. An unattributed product failure keeps the checked components and reports a blocker. If a later observation adds a missing grain, the next candidate includes those components without staffing them again. A native refusal or infrastructure error is not a failed implementation.
-- The final check freezes the **combined** outputs on the current target tip. If new work is admitted or the target moves during evaluation, the old result cannot qualify the new candidate. Nonoverlapping target edits are incorporated and rechecked; incompatible edits to an owned directory block rather than disappear. `qualified` is the exact commit that passed, with the evaluated target tip as its parent. Inspect its changes with `git diff <qualified>^ <qualified>`; ordinary fast-forward or cherry-pick preserves deletions from that tip. Foundry does not land it.
+- The product check freezes the **combined** outputs on the current target tip. If new work is admitted or the target moves during evaluation, the old result cannot qualify the new candidate. Nonoverlapping target edits are incorporated and rechecked; incompatible edits to an owned directory block rather than disappear. Inspect the final changes with `git diff <target-tip> <qualified>`. A generated candidate has the evaluated target tip as its parent; if the baseline already passed, `qualified` is the tip itself. Foundry does not land it.
 - Every seeded output is required. In discovery, if a grain is blocked, independent outputs can still qualify **if the product evaluator passes**. Its blocked grain and dependents remain visible and are not marked complete.
 
 ### Interruptions
+
+For an exit-2 goal receipt, supply the missing observation and have the owner pause and explicitly resume the run. Confirmation reserves a fresh check of the retained candidate, keeping the previous receipt. A moved target must be incorporated and checked before it can qualify. Ordinary turns do not retry an unavailable observation; a denied or uncertain call is not an exit-2 receipt.
 
 Foundry records reservations before issuing native calls. Only an explicitly unavailable, definitely unissued native session route yields an ordinary `prepared` call. Execute it **once, unchanged, in its issuing session**. A confirmed denial blocks the assignment and releases its slot. Missing or ambiguous receipts stay pending, never cause another creation, and can be reconciled from that session's original tool history. A queued repair is not proof the recipient acted. A native permission or input request remains with its actual session. Pausing stops new work; an already-issued check may finish, and its result is applied on resume. A runner records its own exclusive check receipt; a lost process without a receipt cannot declare success or authorize replay.
 

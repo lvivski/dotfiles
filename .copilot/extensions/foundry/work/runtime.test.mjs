@@ -25,6 +25,7 @@ const grainIds = ["left", "right"];
 const source = ".foundry/policy.json", run = "sum";
 const policy = () => ({
 	version: 1, id: run, direction: "Make the joined exports sum to three", target: "refs/heads/main", productCheck: ".foundry/product.mjs",
+	goalCheck: /** @type {string|undefined} */ (undefined),
 	grains: grainIds.map(id => ({ id, directory: `lib/${id}`, specification: `.foundry/${id}.md`, boundary: [".foundry/api.md"], check: `.foundry/${id}.mjs`, needs: /** @type {string[]} */ ([]) })),
 	limits: /** @type {{workers?:number,repairs?:number,deadline?:string}|undefined} */ (undefined), seed: /** @type {string[]|undefined} */ ([...grainIds]),
 	squads: grainIds.map(id => ({ id, charter: `.foundry/${id}.md`, grains: [id], agent: `${id}-specialist` }))
@@ -98,6 +99,251 @@ function fixture(t, configure, files = {}) {
 	return { root, tip, p, owner, workers, checks, execute, runtime, submit, status, observe, start: () => owner.operation("start", { source }, "owner") };
 }
 
+const goalCheck = ".foundry/final.mjs";
+/** @param {FixturePolicy} p */
+function goal(p) { p.goalCheck = goalCheck; delete p.seed; }
+const goalFiles = {
+	".foundry/product.mjs": 'import n from "../lib/left/index.mjs"; if (n !== 1) throw Error("left regressed");',
+	[goalCheck]: `import { existsSync } from "node:fs";
+		const checked = async side => existsSync("lib/"+side+"/index.mjs") ? (await import("../lib/"+side+"/index.mjs")).default : 0;
+		const left = await checked("left"), right = await checked("right");
+		if (left + right !== 3) { console.log(left === 1 ? "Left is ready; right does not contribute two." : "Left does not contribute one."); process.exit(1); }
+		console.log("Observed the joined result: 3");`
+};
+
+/** @param {ReturnType<typeof fixture>} f */
+async function firstGoalWriter(f) {
+	await f.observe("worker-1", "left");
+	await f.observe("worker-2", "right", []);
+	return "worker-3";
+}
+
+test("one goal activation checks a milestone, dispatches independent work on that tree, and stops only at the final result", async t => {
+	const f = fixture(t, goal, goalFiles);
+	let confirmations = 0;
+	const owner = f.runtime(f.root, { confirm: async () => { confirmations++; return true; } });
+	const start = await owner.operation("start", { source }, "owner");
+	assert.equal(start.qualified, null);
+	assert.match(String(start.goal?.receipt?.output), /Left does not contribute one/);
+	assert.equal(f.workers.size, 2, "both charters can inspect the initial goal gap");
+	await f.submit(await firstGoalWriter(f));
+	const checkpoint = await f.status();
+	assert.equal(checkpoint.qualified, null, "a passing product check is not goal acceptance");
+	assert.ok(checkpoint.checkpoint);
+	assert.equal(checkpoint.products?.[0].receipt?.exit, 0);
+	assert.equal(checkpoint.goal?.receipt?.commit, checkpoint.checkpoint);
+	assert.equal(checkpoint.goal.receipt.exit, 1);
+	for (const scout of [...f.workers.values()].slice(3)) {
+		assert.equal(git(scout.cwd, "rev-parse", "HEAD"), checkpoint.checkpoint);
+		assert.match(scout.prompt, /Left is ready; right does not contribute two/);
+	}
+	await f.observe("worker-4", "left", []);
+	await f.observe("worker-5", "right");
+	const writer = f.workers.get("worker-6");
+	assert.ok(writer);
+	assert.equal(readFileSync(path.join(writer.cwd, "lib/left/index.mjs"), "utf8"), "export default 1;\n");
+	await f.submit(writer.id);
+	const done = await f.status();
+	assert.equal(done.products?.length, 2);
+	assert.equal(done.products?.[0].commit, checkpoint.checkpoint);
+	assert.equal(done.goal?.receipt?.commit, done.qualified);
+	assert.equal(done.products?.[1].receipt?.commit, done.qualified);
+	assert.match(String(done.goal?.receipt?.output), /Observed the joined result: 3/);
+	assert.equal(done.active, false);
+	const checks = f.checks.length;
+	owner.turn("owner");
+	await owner.flush();
+	assert.equal((await owner.operation("start", { source }, "owner")).qualified, done.qualified);
+	assert.equal(f.checks.length, checks);
+	assert.equal(f.workers.size, 6);
+	assert.equal(confirmations, 1);
+	assert.equal(git(f.root, "rev-parse", "main"), f.tip);
+});
+
+test("an already-good goal baseline passes both exact checks without staffing anyone", async t => {
+	const f = fixture(t, goal, { ...goalFiles, "lib/left/index.mjs": "export default 1;", "lib/right/index.mjs": "export default 2;" });
+	const done = await f.start();
+	assert.equal(done.qualified, f.tip);
+	assert.equal(done.products?.[0].receipt?.commit, f.tip);
+	assert.equal(done.goal?.receipt?.commit, f.tip);
+	assert.equal(done.active, false);
+	assert.equal(f.workers.size, 0);
+	assert.equal(f.checks.length, 2);
+});
+
+test("if an already-good baseline moves during its milestone check, both gates must pass on the new tip", async t => {
+	const f = fixture(t, goal, { ...goalFiles, "lib/left/index.mjs": "export default 1;", "lib/right/index.mjs": "export default 2;" });
+	let moved = false;
+	const owner = f.runtime(f.root, { execute: async (...args) => {
+		const result = await f.execute(...args);
+		if (!moved && String(args[1].description).startsWith("Check joined product")) {
+			moved = true;
+			put(f.root, "neighbor.txt", "a newer good tip\n");
+			git(f.root, "commit", "-qam", "new baseline");
+		}
+		return result;
+	} });
+	const done = await owner.operation("start", { source }, "owner");
+	assert.notEqual(done.qualified, f.tip);
+	assert.equal(done.qualified, git(f.root, "rev-parse", "main"));
+	assert.equal(done.products?.[0].receipt?.commit, done.qualified);
+	assert.equal(done.goal?.receipt?.commit, done.qualified);
+	assert.equal(done.active, false);
+	assert.equal(f.workers.size, 0);
+});
+
+test("an unmet baseline admits chartered work; an inconclusive/denied call cannot staff writers or be retried on resume", async t => {
+	const unseeded = fixture(t, p => { goal(p); p.limits = { workers: 1 }; }, goalFiles);
+	await unseeded.start();
+	assert.equal(unseeded.workers.size, 1);
+	assert.match(String(unseeded.workers.get("worker-1")?.prompt), /Left does not contribute one/);
+	await unseeded.observe("worker-1", "left", []);
+	await unseeded.observe("worker-2", "right", []);
+	assert.match(String((await unseeded.status()).blocker), /No actionable grain/);
+	assert.equal(unseeded.checks.length, 1);
+
+	for (const result of ["denied", "unconfirmed", "evaluator-error"]) {
+		const f = fixture(t, goal, { ...goalFiles, [goalCheck]: 'console.error("backend error"); process.exit(3);' });
+		let calls = 0;
+		const owner = f.runtime(f.root, { execute: async (...args) => {
+			calls++;
+			return result === "evaluator-error" ? f.execute(...args) : { resultType: result };
+		} });
+		const s = await owner.operation("start", { source }, "owner");
+		assert.equal(s.qualified, null);
+		if (result === "unconfirmed") assert.equal(s.pending[0].state, "uncertain");
+		else assert.match(String(s.blocker), result === "denied" ? /permission refused/ : /exit 3.*backend error/s);
+		await owner.operation("pause", { run }, "owner");
+		await owner.operation("start", { source }, "owner");
+		assert.equal(calls, 1, "resume cannot provide a missing receipt or override a native refusal");
+		assert.equal(f.workers.size, 0);
+	}
+});
+
+test("a denied first goal writer releases its slot for the other charter without reissuing the refusal", async t => {
+	const f = fixture(t, p => { goal(p); p.limits = { workers: 1 }; }, { ...goalFiles,
+		".foundry/product.mjs": 'import n from "../lib/right/index.mjs"; if (n !== 2) throw Error("wrong contribution");' });
+	await f.start();
+	const left = f.workers.get("worker-1"); assert.ok(left);
+	const scout = f.runtime(left.cwd, { execute: async (...args) =>
+		String(record(args[1].kickoff).prompt).includes("Generate the complete lib/left/") ? { resultType: "denied" } : f.execute(...args) });
+	await scout.operation("observe", { run, token: left.token, outcome: "regenerate", grains: ["left"],
+		evidence: [".foundry/left.md"], reason: "Left has no export" }, left.id);
+	const denied = await f.status();
+	assert.equal(denied.nodes.find(n => n.grain === "left")?.state, "blocked");
+	assert.equal(denied.blocker, undefined);
+	assert.equal(denied.reviews.find(r => r.squad === "right")?.worker, "worker-2");
+	await f.observe("worker-2", "right"); await f.submit("worker-3");
+	const checked = await f.status();
+	assert.ok(checked.checkpoint);
+	assert.equal(checked.qualified, null);
+	assert.equal(git(f.root, "show", `${checked.checkpoint}:lib/right/index.mjs`), "export default 2;");
+	await f.observe("worker-4", "left"); await f.observe("worker-5", "right", []);
+	assert.match(String((await f.status()).blocker), /permission refused/);
+	assert.equal([...f.workers.values()].filter(w => w.prompt.includes("Generate the complete lib/")).length, 1);
+});
+
+for (const stage of ["baseline", "checkpoint", "moved target"])
+test(`only a confirmed resume retries missing external evidence: ${stage}`, async t => {
+	const dir = mkdtempSync(path.join(tmpdir(), "foundry-observation-")), witness = path.join(dir, "observation");
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	const f = fixture(t, goal, { ...goalFiles, ...(stage === "baseline" ? { "lib/left/index.mjs": "export default 1;" } : {}),
+		[goalCheck]: `import { existsSync, readFileSync } from "node:fs";
+		if (!existsSync("lib/left/index.mjs")) process.exit(1);
+		if (!existsSync(${JSON.stringify(witness)})) { console.log("Awaiting external observation"); process.exit(2); }
+		if ((await import("../lib/left/index.mjs")).default !== Number(readFileSync(${JSON.stringify(witness)}, "utf8"))) process.exit(1);` });
+	await f.start();
+	if (stage !== "baseline") await f.submit(await firstGoalWriter(f));
+	const held = await f.status(), checkpoint = stage === "baseline" ? f.tip : text(held.checkpoint, "checkpoint");
+	assert.equal(held.qualified, null);
+	assert.equal(held.goal?.receipt?.exit, 2);
+	assert.equal(held.goal.receipt.commit, checkpoint);
+	const db = openDatabase(f.root); t.after(() => db.close());
+	const before = db.read(run);
+	const original = before?.effects.find(e => e.id === before.goal?.check);
+	assert.ok(original?.receipt);
+	const calls = f.checks.length;
+	put(dir, "observation", "1");
+	if (stage === "moved target") {
+		put(f.root, "neighbor.txt", "a newer target\n"); git(f.root, "commit", "-qam", "move target during hold");
+	}
+	const owner = f.runtime(f.root);
+	owner.turn("owner"); await owner.flush();
+	assert.deepEqual((await owner.operation("start", { source }, "owner")).goal, held.goal);
+	await owner.operation("pause", { run }, "owner");
+	await assert.rejects(f.runtime(f.root, { confirm: async () => false }).operation("start", { source }, "owner"), /not activated/);
+	assert.equal(f.checks.length, calls);
+	const done = await owner.operation("start", { source }, "owner");
+	if (stage === "moved target") {
+		assert.notEqual(done.qualified, checkpoint);
+		assert.equal(git(f.root, "show", `${done.qualified}:neighbor.txt`), "a newer target");
+		assert.equal(done.target, git(f.root, "rev-parse", "main"));
+	} else assert.equal(done.qualified, checkpoint);
+	assert.equal(done.goal?.receipt?.exit, 0);
+	assert.equal(done.goal.receipt.commit, done.qualified);
+	assert.deepEqual(done.products?.slice(0, held.products?.length), held.products);
+	assert.deepEqual(done.nodes, held.nodes);
+	assert.equal(f.workers.size, stage === "baseline" ? 0 : 3);
+	assert.equal(f.checks.length, calls + (stage === "checkpoint" ? 1 : 2));
+	assert.deepEqual(db.read(run)?.effects.find(e => e.id === original.id), original);
+});
+
+for (const repeat of [false, true])
+	test(`an unmet goal reports ${repeat ? "a repeated tree" : "a contract decision"} and does not retry the same work`, async t => {
+		const f = fixture(t, goal, goalFiles);
+		await f.start(); await f.submit(await firstGoalWriter(f));
+		await f.observe("worker-4", "left", repeat ? ["left"] : []);
+		const right = f.workers.get("worker-5"); assert.ok(right);
+		await f.runtime(right.cwd).operation("observe", { run, token: right.token, outcome: "needs-decision",
+			reason: "Which right-hand value is authorized?", evidence: [goalCheck, ".foundry/right.md"], grains: [] }, right.id);
+		if (repeat) {
+			const writer = f.workers.get("worker-6"); assert.ok(writer);
+			const revision = /^Reviewed input revision: ([a-f0-9]+)$/m.exec(writer.prompt)?.[1];
+			assert.ok(revision);
+			assert.equal(revision, (await f.status()).checkpoint);
+			assert.notEqual(revision, f.tip);
+			assert.equal(git(writer.cwd, "show", `${revision}:lib/left/index.mjs`), "export default 1;");
+			assert.equal(git(writer.cwd, "rev-list", "--count", "HEAD"), "1");
+			assert.equal(existsSync(path.join(writer.cwd, "lib/left")), false);
+			await f.submit(writer.id);
+		}
+		const s = await f.status();
+		assert.equal(s.qualified, null);
+		assert.ok(s.checkpoint);
+		assert.match(String(s.blocker), /right does not contribute two/);
+		assert.match(String(s.blocker), repeat ? /reproduce a tree/ : /No actionable grain/);
+		assert.match(String(s.blocker), /Which right-hand value/);
+		const checks = f.checks.length, workers = f.workers.size;
+		const restarted = f.runtime(f.root);
+		restarted.turn("owner"); await restarted.flush();
+		assert.equal((await f.status()).blocker, s.blocker);
+		assert.equal(f.workers.size, workers);
+		assert.equal(f.checks.length, checks);
+	});
+
+test("a target move during a passing goal check cannot qualify the obsolete commit", async t => {
+	const f = fixture(t, goal, { ...goalFiles, [goalCheck]: `import {readFileSync,existsSync} from "node:fs";
+		if (!existsSync("lib/left/index.mjs") || readFileSync("neighbor.txt","utf8").includes("regressed")) { console.log("goal unmet"); process.exit(1) }` });
+	await f.start();
+	/** @type {string|null|undefined} */ let stale;
+	await f.submit(await firstGoalWriter(f), 1, { execute: async (...args) => {
+		const result = await f.execute(...args);
+		if (!stale && String(args[1].description).startsWith("Check final goal")) {
+			stale = (await f.status()).checkpoint;
+			put(f.root, "neighbor.txt", "regressed\n");
+			git(f.root, "commit", "-qam", "concurrent");
+		}
+		return result;
+	} });
+	const s = await f.status();
+	assert.ok(stale);
+	assert.notEqual(s.checkpoint, stale);
+	assert.equal(s.qualified, null);
+	assert.equal(s.goal?.receipt?.exit, 1);
+	assert.equal(s.goal.receipt.commit, s.checkpoint);
+	assert.equal(s.target, git(f.root, "rev-parse", "main"));
+});
+
 for (const slots of [1, 2])
 	test(`whole-tree replacement, ${slots} slot(s), no qualification worker`, async (t) => {
 		const f = fixture(t, p => { p.limits = { workers: slots }; });
@@ -108,6 +354,7 @@ for (const slots of [1, 2])
 		assert.equal(f.workers.size, slots);
 		const first = f.workers.get("worker-1");
 		assert.ok(first);
+		assert.doesNotMatch(first.prompt, /^Reviewed input revision:/m);
 		assert.equal(existsSync(path.join(first.cwd, "lib/left")), false);
 		assert.equal(git(first.cwd, "rev-list", "--count", "HEAD"), "1");
 		put(first.cwd, "neighbor.txt", "ignore this change\n");
@@ -352,6 +599,41 @@ test("after restart shell history can prove refusal but not evaluator success", 
 	assert.equal(s.nodes[0].receipt, undefined);
 	assert.equal(s.qualified, null);
 	assert.equal(issued, 1);
+});
+
+test("component and product checks run under Node when the extension host is not a Node executable", async t => {
+	const f = fixture(t, p => { p.seed = ["left"]; }, { ".foundry/product.mjs": 'import "../lib/left/index.mjs";' });
+	await f.start();
+	const host = process.execPath;
+	try {
+		process.execPath = path.join(f.root, "not-a-node-interpreter");
+		await f.submit("worker-1");
+	} finally {
+		process.execPath = host;
+	}
+	assert.ok((await f.status()).qualified);
+	assert.equal(f.checks.length, 2);
+});
+
+test("a terminal launcher failure before the check starts blocks without retrying or charging a repair", async t => {
+	const f = fixture(t, p => { p.seed = ["left"]; });
+	await f.start();
+	let calls = 0;
+	await f.submit("worker-1", 1, { execute: async () => {
+		calls++;
+		return { resultType: "success", toolTelemetry: { properties: {
+			executionMode: "sync", shell_error_category: "command_nonzero_exit"
+		}, metrics: { exit_code: 1 } } };
+	} });
+	f.owner.turn("owner");
+	await f.owner.flush();
+	const s = await f.status();
+	assert.equal(s.nodes[0].state, "blocked");
+	assert.match(String(s.nodes[0].reason), /launcher exited 1 before the evaluator started/);
+	assert.equal(s.nodes[0].receipt, undefined);
+	assert.equal(s.nodes[0].repairs, 0);
+	assert.equal(s.qualified, null);
+	assert.equal(calls, 1);
 });
 
 test("reads, native callbacks and rejected activations do not initialize unrelated work", async (t) => {
@@ -881,6 +1163,10 @@ test("contracts reject overlapping ownership, missing boundaries and dependency 
 	check(p => { p.grains[0].boundary = []; }, /boundary/);
 	check(p => { p.grains[0].needs = ["right"]; p.grains[1].needs = ["left"]; }, /cycle/);
 	check(p => { p.productCheck = "lib/left/old.mjs"; }, /overlap/);
+	check(p => { goal(p); p.goalCheck = "lib/left/old.mjs"; }, /overlap/);
+	check(p => { p.goalCheck = p.productCheck; }, /distinct/);
+	check(p => { goal(p); p.squads.pop(); }, /chartered producer/);
+	check(p => { p.goalCheck = goalCheck; }, /seed selects a one-off/);
 	check(p => { p.limits = { workers: 0 }; }, /worker limit/);
 	check(p => { p.limits = { repairs: -1 }; }, /repair limit/);
 	assert.equal(existsSync(ledgerPath(f.root)), false);

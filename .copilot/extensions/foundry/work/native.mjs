@@ -44,11 +44,12 @@ export function assignmentEffect(run, issuer, kind, token, base, brief, target =
 /** @param {Run} run @param {string} issuer @param {string} cwd @param {string} commit @param {string} check @param {string} [grain] @returns {Effect} */
 export function checkEffect(run, issuer, cwd, commit, check, grain) {
 	const id = randomUUID();
+	const kind = grain ? "component" : check === run.policy.goalCheck ? "goal" : "product";
 	return {
-		id, issuer, kind: grain ? "component" : "product", state: "ready", tool: "bash", commit, check, ...(grain ? { grain } : {}),
+		id, issuer, kind, state: "ready", tool: "bash", commit, check, ...(grain ? { grain } : {}),
 		args: {
-			command: [process.execPath, runner, cwd, run.id, id].map(quote).join(" "), shellId: `foundry-${id}`, initial_wait: 120,
-			description: `Check ${grain ?? "joined product"} at ${commit.slice(0, 12)}`.slice(0, 100)
+			command: `command node ${[runner, cwd, run.id, id].map(quote).join(" ")}`, shellId: `foundry-${id}`, initial_wait: 120,
+			description: `Check ${grain ?? (kind === "goal" ? "final goal" : "joined product")} at ${commit.slice(0, 12)}`.slice(0, 100)
 		}
 	};
 }
@@ -62,6 +63,8 @@ function assignee(run, e) {
 export function current(run, e) {
 	if (e.kind === "capacity")
 		return !!e.token && run.capacity.offer?.id === e.token;
+	if (e.kind === "goal")
+		return !run.accepted && !run.blocker && run.goal?.check === e.id;
 	if (e.kind === "product")
 		return !run.blocker && run.join?.check === e.id;
 	const n = assignee(run, e);
@@ -72,6 +75,8 @@ export function current(run, e) {
 
 /** @param {Run} run */
 export function admitted(run) {
+	if (run.accepted)
+		fail("goal_met", `Goal met at ${run.accepted}`);
 	if (!run.active)
 		fail("paused", "Foundry is paused");
 	if (run.policy.deadline && Date.now() >= Date.parse(run.policy.deadline))
@@ -103,7 +108,7 @@ function block(run, e, reason) {
 	if (n) {
 		n.state = "blocked";
 		n.reason = reason;
-	} else if (e.kind === "product")
+	} else if (e.kind === "product" || e.kind === "goal")
 		run.blocker = reason;
 }
 
@@ -135,8 +140,17 @@ export function receive(run, e, raw, automatic) {
 				entry.worker = e.nativeId;
 		}
 	}
-	else if (e.tool === "bash")
+	else if (e.tool === "bash") {
+		const telemetry = record(value.toolTelemetry ?? {}), properties = record(telemetry.properties ?? {});
+		const exit = record(telemetry.metrics ?? {}).exit_code;
+		if (!e.runnerStarted && properties.executionMode === "sync" && properties.shell_error_category === "command_nonzero_exit" &&
+			typeof exit === "number" && Number.isSafeInteger(exit) && exit > 0) {
+			e.state = "done";
+			block(run, e, `Check launcher exited ${exit} before the evaluator started; no check result. Verify Node.js with node:sqlite is on the shell PATH.`);
+			return;
+		}
 		fail("missing_receipt", "The pinned runner has not finished");
+	}
 	else if (!(typeof value.textResultForLlm === "string" && /^(?:Queued\.?$|Message accepted for priority delivery to session '[^\n]+'\.)/.test(value.textResultForLlm))
 		&& !(value.structuredContent && ["accepted", "queued", "delivered"].includes(String(record(value.structuredContent).status))))
 		fail("missing_receipt", "Message queue admission was not confirmed");

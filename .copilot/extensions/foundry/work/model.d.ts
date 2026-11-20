@@ -25,6 +25,7 @@ export interface Policy {
 	source: string;
 	base: string;
 	productCheck: string;
+	goalCheck?: string;
 	grains: Grain[];
 	squads: Squad[];
 	workers: number;
@@ -54,10 +55,13 @@ export interface Node {
 	reason?: string;
 }
 
-export interface Product {
+export interface Assessment {
 	target: string;
 	commit: string;
 	check: string;
+}
+
+export interface Product extends Assessment {
 	outputs: Record<string, string>;
 }
 
@@ -84,7 +88,7 @@ export interface Receipt {
 export interface Effect {
 	id: string;
 	issuer: string;
-	kind: "writer" | "scout" | "component" | "product" | "repair" | "capacity";
+	kind: "writer" | "scout" | "component" | "product" | "goal" | "repair" | "capacity";
 	grain?: string;
 	token?: string;
 	tool: "create_session" | "bash" | "send_session_message";
@@ -112,6 +116,8 @@ export interface Run {
 	effects: Effect[];
 	products: Product[];
 	join?: Product;
+	goal?: Assessment & { stall?: string };
+	accepted?: string;
 	blocker?: string;
 	discoveryError?: string;
 }

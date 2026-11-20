@@ -51,9 +51,10 @@ bash .copilot/skills/review-queue/scripts/review-queue-providers.test.sh
 repository run data.
 
 **[Foundry](.copilot/extensions/foundry/README.md)** regenerates directories from a committed
-contract. Seed a one-off change or give squads charters to discover gaps. Writers work in
-parallel, then the committed product evaluator checks their combined Git tree at the target tip.
-Foundry records the exact commit that passes and leaves the target branch untouched. Use the
+product brief. Independent writers work in parallel. Each checked milestone gives squads a new
+combined tree to inspect; work continues under the original authorization until the final goal
+check passes or a concrete blocker needs attention. A seeded one-off is also available.
+Foundry records the exact passing commit and leaves the target branch untouched. Use the
 [Foundry skill](.copilot/skills/foundry/SKILL.md) on explicit request; routine changes use native
 planning and direct tools. Normal tool permissions apply throughout a run.
 

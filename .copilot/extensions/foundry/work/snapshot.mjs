@@ -1,4 +1,5 @@
 import { validOutcome } from "./contract.mjs";
+import { goalReceipt } from "./goal.mjs";
 import { fail, relative } from "./values.mjs";
 
 /** @typedef {(value:unknown)=>boolean} Guard */
@@ -31,7 +32,7 @@ const shape = fields => v => object(v) && Object.entries(fields).every(([key, gu
 const grain = shape({ id, directory: path, specification: path, boundary: list(path), check: path, needs: list(id) });
 const squad = shape({ id, charter: path, grains: list(id), agent: optional(string) });
 const policy = shape({
-	id, direction: string, target: string, source: path, base: commit, productCheck: path, grains: list(grain),
+	id, direction: string, target: string, source: path, base: commit, productCheck: path, goalCheck: optional(path), grains: list(grain),
 	squads: list(squad), workers: positive, repairs: count, deadline: optional(string), seed: optional(list(id))
 });
 /** @type {Guard} */
@@ -46,10 +47,11 @@ const node = shape({
 	generation: optional(commit), inputs: optional(named(commit)), base: optional(commit), candidate: optional(commit), check: optional(id),
 	repairs: count, reason: optional(string)
 });
-const product = shape({ target: commit, commit, check: id, outputs: named(commit) });
+const assessment = { target: commit, commit, check: id };
+const product = shape({ ...assessment, outputs: named(commit) });
 const receipt = shape({ commit, check: path, exit: v => v === null || count(v), output: string, repair: optional(id) });
 const effect = shape({
-	id, issuer: string, kind: one("writer", "scout", "component", "product", "repair", "capacity"), grain: optional(id),
+	id, issuer: string, kind: one("writer", "scout", "component", "product", "goal", "repair", "capacity"), grain: optional(id),
 	token: optional(id), tool: one("create_session", "bash", "send_session_message"), args: object, state: one("ready", "issued", "uncertain", "ordinary", "done", "refused"),
 	callId: optional(string), nativeId: optional(string), error: optional(string), commit: optional(commit), check: optional(path),
 	runnerStarted: optional(bool), receipt: optional(receipt)
@@ -57,7 +59,8 @@ const effect = shape({
 const snapshot = shape({
 	id, owner: string, policy, capacity: shape({ limit: positive, kept: bool, offer: optional(shape({ id, to: positive })) }),
 	active: bool, reviews: list(review), nodes: named(node), effects: list(effect),
-	products: list(product), join: optional(product), blocker: optional(string), discoveryError: optional(string)
+	products: list(product), join: optional(product), goal: optional(shape({ ...assessment, stall: optional(string) })), accepted: optional(commit),
+	blocker: optional(string), discoveryError: optional(string)
 });
 
 /** @param {unknown} value @returns {value is import("./model.js").Run} */
@@ -66,7 +69,16 @@ function isRun(value) { return snapshot(value); }
 /** @param {unknown} value @returns {import("./model.js").Run} */
 export function decode(value) {
 	if (!isRun(value) || value.policy.id !== value.id || value.capacity.limit < value.policy.workers ||
+		Boolean(value.policy.goalCheck) !== Boolean(value.goal) || value.goal && value.policy.seed ||
 		value.capacity.offer && (value.capacity.kept || value.capacity.offer.to <= value.capacity.limit))
 		fail("corrupt_run", "Invalid Foundry execution snapshot");
+	if (value.accepted) {
+		const last = value.products.at(-1);
+		const milestone = value.effects.find(e => e.id === last?.check);
+		if (value.active || value.accepted !== value.goal?.commit || value.accepted !== last?.commit || goalReceipt(value)?.exit !== 0 ||
+			milestone?.kind !== "product" || milestone.state !== "done" || !milestone.runnerStarted || milestone.receipt?.exit !== 0 ||
+			milestone.receipt.commit !== value.accepted || milestone.receipt.check !== value.policy.productCheck)
+			fail("corrupt_run", "Goal acceptance requires both exact runner receipts");
+	}
 	return value;
 }
