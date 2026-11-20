@@ -7,6 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { openDatabase, ledgerPath, protocol } from "./database.mjs";
 import { readPolicy } from "./contract.mjs";
+import { newRun } from "./graph.mjs";
 import { assignment } from "./native.mjs";
 import { withProduct } from "./product.mjs";
 import { recover } from "./recovery.mjs";
@@ -821,9 +822,10 @@ for (const kind of ["left", "joined product"])
 	});
 
 test("independent starts overlap by default without a capacity prompt; a racing owner turn cannot issue them again", async (t) => {
-	const f = fixture(t);
+	const f = fixture(t, addIndependent, extraCheck);
 	let active = 0, peak = 0, total = 0, offers = 0;
 	const owner = f.runtime(f.root, {
+		confirm: async msg => { assert.match(msg, /no worker cap/); return true; },
 		select: async () => { offers++; return null; },
 		execute: async (...args) => {
 			total++;
@@ -834,12 +836,12 @@ test("independent starts overlap by default without a capacity prompt; a racing 
 			return f.execute(...args);
 		}
 	});
-	await owner.operation("start", { source }, "owner");
+	assert.equal((await owner.operation("start", { source }, "owner")).limit, null);
 	await f.owner.flush();
-	assert.equal(peak, 2);
-	assert.equal(total, 2);
+	assert.equal(peak, 3);
+	assert.equal(total, 3);
 	assert.equal(offers, 0);
-	assert.equal(f.workers.size, 2);
+	assert.equal(f.workers.size, 3);
 });
 
 /** @param {FixturePolicy} p */
@@ -850,10 +852,43 @@ function addIndependent(p) {
 }
 const extraCheck = { ".foundry/extra.mjs": 'import "../lib/extra/index.mjs";' };
 
+test("a repairs-only goal starts every scout and admits a ready writer alongside the remaining scouts", async t => {
+	const f = fixture(t, p => {
+		goal(p); addIndependent(p);
+		p.limits = { repairs: 0 };
+		p.squads[0].grains = ["left"];
+		p.squads.push({ ...p.squads[0], id: "extra", grains: ["extra"] });
+	}, { ...goalFiles, ...extraCheck });
+	const start = await f.start();
+	assert.equal(start.reviews.filter(r => r.state === "reading").length, 3);
+	await f.observe("worker-1", "left");
+	const active = await f.status();
+	assert.equal(active.reviews.filter(r => r.state === "reading").length, 2);
+	assert.equal(active.nodes.find(n => n.grain === "left")?.state, "writing");
+	assert.equal(active.limit, null);
+	assert.equal(active.proposedLimit, undefined);
+});
+
+test("resuming a run activated under the old default preserves its confirmed cap", async t => {
+	const f = fixture(t, addIndependent, extraCheck);
+	const db = openDatabase(f.root, ledgerPath(f.root), true); t.after(() => db.close());
+	const prior = newRun(f.root, { ...readPolicy(f.root, source), workers: 2 }, "owner");
+	prior.active = false;
+	db.insert(prior);
+	const owner = f.runtime(f.root, { confirm: async msg => { assert.match(msg, /up to 2 concurrent workers/); return true; } });
+	const resumed = await owner.operation("start", { source }, "owner");
+	assert.equal(resumed.limit, 2);
+	assert.equal(f.workers.size, 2);
+	f.p.limits = { workers: 2 }; // Same effective limit, but a different committed contract.
+	put(f.root, source, JSON.stringify(f.p));
+	git(f.root, "commit", "-qam", "edit the worker limit");
+	await assert.rejects(owner.operation("start", { source }, "owner"), /conserved contract changed/i);
+});
+
 for (const raise of [false, true])
 	test(`saturation offers only ready work; ${raise ? "increase" : "keep"} survives resume`, async t => {
 		const f = fixture(t, p => {
-			addIndependent(p);
+			addIndependent(p); p.limits = { workers: 2 };
 			// A fourth writer belongs to the graph, but its input is not ready.
 			p.grains.push({ ...p.grains[0], id: "last", directory: "lib/last", needs: ["left"] });
 			p.seed?.push("last");
@@ -885,7 +920,7 @@ for (const raise of [false, true])
 	});
 
 test("work drains under the old cap while a decision is open; an obsolete approval cannot raise it", async t => {
-	const f = fixture(t, addIndependent, extraCheck);
+	const f = fixture(t, p => { addIndependent(p); p.limits = { workers: 2 }; }, extraCheck);
 	/** @type {()=>void} */ let answer = () => assert.fail("no worker-cap question");
 	const owner = f.runtime(f.root, { select: (_message, options) => new Promise(resolve => { answer = () => resolve(options[1]); }) });
 	await owner.operation("start", { source }, "owner");
@@ -901,7 +936,7 @@ test("work drains under the old cap while a decision is open; an obsolete approv
 
 test("reopening an unanswered choice still requires consent for the exact cap shown", async t => {
 	const f = fixture(t, p => {
-		addIndependent(p);
+		addIndependent(p); p.limits = { workers: 2 };
 		p.grains.push({ ...p.grains[0], id: "fourth", directory: "lib/fourth" });
 		p.seed?.push("fourth");
 	}, extraCheck);
@@ -927,7 +962,7 @@ test("reopening an unanswered choice still requires consent for the exact cap sh
 });
 
 test("a scout that discovers overflow wakes the owner; only the owner's choice can grant more slots", async t => {
-	const f = fixture(t, p => { delete p.seed; addIndependent(p); }, extraCheck);
+	const f = fixture(t, p => { delete p.seed; addIndependent(p); p.limits = { workers: 2 }; }, extraCheck);
 	await f.start();
 	const scout = f.workers.get("worker-1");
 	assert.ok(scout);
@@ -992,7 +1027,9 @@ test("unknown protocols are not migrated and invalid nested records are refused,
 	const raw = new DatabaseSync(file);
 	for (const broken of [
 		{ ...initial, nodes: { left: { state: "finished-by-claim", repairs: 0 } } },
-		{ ...initial, capacity: { ...initial.capacity, limit: 0 } },
+		{ ...initial, policy: { ...initial.policy, workers: 2 }, capacity: { limit: 0, kept: false } },
+		{ ...initial, policy: { ...initial.policy, workers: 2 } },
+		{ ...initial, capacity: { limit: 2, kept: false } },
 		{ ...initial, reviews: [{ ...review, observation: { ...review.observation, outcome: "needs-decision", grains: ["left"] } }] },
 		{ ...initial, reviews: [{ ...review, observation: { reason: "missing outcome", evidence: [".foundry/left.md"], grains: [] } }] },
 	]) {

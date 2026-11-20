@@ -65,7 +65,7 @@ export function goalAllowsWork(cwd, run, actor, target, retry) {
 	if (last) {
 		run.accepted = at.commit;
 		run.active = false;
-		delete run.capacity.offer;
+		delete run.capacity?.offer;
 	} else if (!run.join) {
 		// The baseline already satisfies the goal. Check its milestone invariants without hiring a writer.
 		const e = checkEffect(run, actor, cwd, at.commit, run.policy.productCheck);

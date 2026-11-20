@@ -62,7 +62,7 @@ function assignee(run, e) {
 /** @param {Run} run @param {Effect} e */
 export function current(run, e) {
 	if (e.kind === "capacity")
-		return !!e.token && run.capacity.offer?.id === e.token;
+		return !!e.token && run.capacity?.offer?.id === e.token;
 	if (e.kind === "goal")
 		return !run.accepted && !run.blocker && run.goal?.check === e.id;
 	if (e.kind === "product")

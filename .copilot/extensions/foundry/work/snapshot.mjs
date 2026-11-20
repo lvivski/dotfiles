@@ -33,7 +33,7 @@ const grain = shape({ id, directory: path, specification: path, boundary: list(p
 const squad = shape({ id, charter: path, grains: list(id), agent: optional(string) });
 const policy = shape({
 	id, direction: string, target: string, source: path, base: commit, productCheck: path, goalCheck: optional(path), grains: list(grain),
-	squads: list(squad), workers: positive, repairs: count, deadline: optional(string), seed: optional(list(id))
+	squads: list(squad), workers: optional(positive), repairs: count, deadline: optional(string), seed: optional(list(id))
 });
 /** @type {Guard} */
 const observation = v => object(v) && string(v.reason) && Array.isArray(v.evidence) && v.evidence.length > 0 && v.evidence.every(path) &&
@@ -57,7 +57,7 @@ const effect = shape({
 	runnerStarted: optional(bool), receipt: optional(receipt)
 });
 const snapshot = shape({
-	id, owner: string, policy, capacity: shape({ limit: positive, kept: bool, offer: optional(shape({ id, to: positive })) }),
+	id, owner: string, policy, capacity: optional(shape({ limit: positive, kept: bool, offer: optional(shape({ id, to: positive })) })),
 	active: bool, reviews: list(review), nodes: named(node), effects: list(effect),
 	products: list(product), join: optional(product), goal: optional(shape({ ...assessment, stall: optional(string) })), accepted: optional(commit),
 	blocker: optional(string), discoveryError: optional(string)
@@ -68,9 +68,10 @@ function isRun(value) { return snapshot(value); }
 
 /** @param {unknown} value @returns {import("./model.js").Run} */
 export function decode(value) {
-	if (!isRun(value) || value.policy.id !== value.id || value.capacity.limit < value.policy.workers ||
+	if (!isRun(value) || value.policy.id !== value.id ||
+		(value.policy.workers === undefined ? value.capacity !== undefined : !value.capacity || value.capacity.limit < value.policy.workers) ||
 		Boolean(value.policy.goalCheck) !== Boolean(value.goal) || value.goal && value.policy.seed ||
-		value.capacity.offer && (value.capacity.kept || value.capacity.offer.to <= value.capacity.limit))
+		value.capacity?.offer && (value.capacity.kept || value.capacity.offer.to <= value.capacity.limit))
 		fail("corrupt_run", "Invalid Foundry execution snapshot");
 	if (value.accepted) {
 		const last = value.products.at(-1);

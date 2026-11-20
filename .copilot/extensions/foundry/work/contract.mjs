@@ -81,7 +81,7 @@ export function readPolicy(cwd, source) {
 		fail("invalid_charter", "Every output needs a chartered producer");
 	const limits = row.limits === undefined ? {} : record(row.limits);
 	fields(limits, ["workers", "repairs", "deadline"]);
-	const { workers = 2, repairs = 1 } = limits;
+	const { workers, repairs = 1 } = limits;
 	const deadline = limits.deadline === undefined ? undefined : text(limits.deadline, "ISO deadline");
 	if (deadline && !Number.isFinite(Date.parse(deadline)))
 		fail("invalid_limit", "Invalid deadline");
@@ -94,6 +94,7 @@ export function readPolicy(cwd, source) {
 	return {
 		id: name(row.id, "policy ID"), direction: text(row.direction, "engineering direction"), source: filename, target, base, productCheck, grains, squads,
 		...(goalCheck ? { goalCheck } : {}),
-		workers: integer(workers, 1, "worker limit"), repairs: integer(repairs, 0, "repair limit"), ...(deadline ? { deadline } : {}), ...(seed ? { seed } : {})
+		...(workers === undefined ? {} : { workers: integer(workers, 1, "worker limit") }),
+		repairs: integer(repairs, 0, "repair limit"), ...(deadline ? { deadline } : {}), ...(seed ? { seed } : {})
 	};
 }

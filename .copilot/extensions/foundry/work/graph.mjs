@@ -41,7 +41,8 @@ function request(run, roots, review) {
 /** @param {string} cwd @param {Policy} policy @param {string} owner @returns {Run} */
 export function newRun(cwd, policy, owner) {
 	/** @type {Run} */
-	const run = { id: policy.id, owner, policy, capacity: { limit: policy.workers, kept: false }, active: true, reviews: [], effects: [], nodes: {}, products: [] };
+	const run = { id: policy.id, owner, policy, active: true, reviews: [], effects: [], nodes: {}, products: [] };
+	if (policy.workers !== undefined) run.capacity = { limit: policy.workers, kept: false };
 	if (policy.goalCheck) {
 		const target = commitAt(cwd, policy.target);
 		assess(cwd, run, owner, target, target);
@@ -260,9 +261,9 @@ export function advance(cwd, run, actor, discover, retryGoal = false) {
 		}
 	}
 	const nodes = Object.entries(run.nodes), cap = run.capacity;
-	let slots = cap.limit - run.reviews.filter(r => r.state === "reading").length - nodes.filter(([, n]) => n.state === "writing" || n.state === "checking").length;
+	let slots = cap ? cap.limit - run.reviews.filter(r => r.state === "reading").length - nodes.filter(([, n]) => n.state === "writing" || n.state === "checking").length : Infinity;
 	for (const [id, n] of nodes) {
-		if (slots <= 0 && cap.kept) break;
+		if (slots <= 0 && cap?.kept) break;
 		if (n.state !== "waiting") continue;
 		const required = versions(run, dependencies(run.policy, grain(run.policy, id).needs));
 		if (!required) continue;
@@ -279,11 +280,11 @@ export function advance(cwd, run, actor, discover, retryGoal = false) {
 	}
 	const gap = goalReceipt(run);
 	const survey = run.goal ? gap?.exit === 1 && run.goal.target === tip()
-		: !run.policy.seed && (slots > 0 ? discover : !cap.kept);
+		: !run.policy.seed && (slots > 0 ? discover : !cap?.kept);
 	if (survey) {
 		delete run.discoveryError;
 		for (const squad of run.policy.squads) {
-			if (slots <= 0 && cap.kept) break;
+			if (slots <= 0 && cap?.kept) break;
 			if (run.reviews.some(r => r.squad === squad.id && r.state === "reading"))
 				continue;
 			let commit;
@@ -306,12 +307,14 @@ export function advance(cwd, run, actor, discover, retryGoal = false) {
 			slots--;
 		}
 	}
-	if (!waiting) delete cap.offer;
-	else if (cap.offer) cap.offer.to = cap.limit + waiting;
-	else if (!cap.kept) {
-		const id = randomUUID();
-		cap.offer = { id, to: cap.limit + waiting };
-		if (!owner) run.effects.push(notifyOwner(run, actor, id));
+	if (cap) {
+		if (!waiting) delete cap.offer;
+		else if (cap.offer) cap.offer.to = cap.limit + waiting;
+		else if (!cap.kept) {
+			const id = randomUUID();
+			cap.offer = { id, to: cap.limit + waiting };
+			if (!owner) run.effects.push(notifyOwner(run, actor, id));
+		}
 	}
 	// All squads in a goal round inspect the same revision. Writers can start as soon as their squad reports.
 	if (run.goal && (run.reviews.some(r => r.state === "reading") ||

@@ -28,7 +28,7 @@ export interface Policy {
 	goalCheck?: string;
 	grains: Grain[];
 	squads: Squad[];
-	workers: number;
+	workers?: number;
 	repairs: number;
 	deadline?: string;
 	seed?: string[];
@@ -109,7 +109,7 @@ export interface Run {
 	id: string;
 	owner: string;
 	policy: Policy;
-	capacity: { limit: number; kept: boolean; offer?: { id: string; to: number } };
+	capacity?: { limit: number; kept: boolean; offer?: { id: string; to: number } };
 	active: boolean;
 	reviews: Review[];
 	nodes: Record<string, Node>;

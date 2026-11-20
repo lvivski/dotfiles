@@ -28,8 +28,8 @@ function status(run, actor) {
 	const latestReports = new Map(reviews.filter(r => r.observation).map(r => [r.squad, r]));
 	return {
 		run: run.id, active: run.active, direction: run.policy.direction, contract: { commit: run.policy.base, path: run.policy.source },
-		limit: run.capacity.limit, deadline: run.policy.deadline, expired: Boolean(run.policy.deadline && Date.now() >= Date.parse(run.policy.deadline)),
-		...(mine ? { proposedLimit: run.capacity.offer?.to, qualified: (run.goal ? run.accepted : last?.commit) ?? null, target: last?.target, outputs: last?.outputs ?? {}, discoveryError: run.discoveryError,
+		limit: run.capacity?.limit ?? null, deadline: run.policy.deadline, expired: Boolean(run.policy.deadline && Date.now() >= Date.parse(run.policy.deadline)),
+		...(mine ? { proposedLimit: run.capacity?.offer?.to, qualified: (run.goal ? run.accepted : last?.commit) ?? null, target: last?.target, outputs: last?.outputs ?? {}, discoveryError: run.discoveryError,
 			...(run.goal ? { checkpoint: last?.commit ?? null, goal: { commit: run.goal.commit, evaluator: run.policy.goalCheck, receipt: goalReceipt(run) } } : {}),
 			questions: [...latestReports.values()].flatMap(r => r.observation?.outcome === "needs-decision"
 				? [{ squad: r.squad, base: r.base, question: r.observation.reason, evidence: r.observation.evidence }] : []),
@@ -148,10 +148,11 @@ export function createRuntime(directory, host) {
 		}
 	}
 	/** Only the owner session presents choices. The proposal and decision survive reload, not the UI.
-	 * @param {Run} run @param {NonNullable<Run["capacity"]["offer"]>} offer */
-	async function askCapacity(run, offer) {
-		const { id, owner, capacity: { limit } } = run, prior = dialogs.get(id);
-		if (prior?.open || prior?.token === offer.id) return;
+	 * @param {Run} run */
+	async function askCapacity({ id, owner, capacity }) {
+		const offer = capacity?.offer, prior = dialogs.get(id);
+		if (!offer || prior?.open || prior?.token === offer.id) return;
+		const { limit } = capacity;
 		const dialog = { token: offer.id, open: true }, keep = `Keep ${limit}`, raise = `Increase to ${offer.to}`;
 		dialogs.set(id, dialog);
 		const waiting = offer.to - limit;
@@ -166,7 +167,7 @@ export function createRuntime(directory, host) {
 		if (closed || !await executable()) return;
 		if (choice !== null && choice !== keep && choice !== raise) fail("invalid_choice", "Unknown worker-cap decision; cap unchanged");
 		change(id, r => {
-			if (!r.active || r.capacity.limit !== limit || r.policy.deadline && Date.now() >= Date.parse(r.policy.deadline)) return;
+			if (!r.active || r.capacity?.limit !== limit || r.policy.deadline && Date.now() >= Date.parse(r.policy.deadline)) return;
 			if (choice === raise) {
 				if (r.capacity.offer?.id !== offer.id) return;
 				advance(cwd(), r, owner, true);
@@ -189,8 +190,7 @@ export function createRuntime(directory, host) {
 				return;
 			const ready = run.effects.filter(e => e.issuer === actor && e.state === "ready" && current(run, e));
 			if (!ready.length) {
-				const offer = run.capacity.offer;
-				if (actor === run.owner && offer) track(askCapacity(run, offer));
+				if (actor === run.owner && run.capacity?.offer) track(askCapacity(run));
 				return;
 			}
 			await Promise.all(ready.map(e => send(id, e, actor)));
@@ -235,7 +235,10 @@ export function createRuntime(directory, host) {
 			if (existsSync(path) && db().involving(actor).some(id => read(id).owner !== actor))
 				fail("worker_cannot_start", "Workers cannot activate or restart a run");
 			if (prior) {
-				if (prior.owner !== actor || digest({ ...prior.policy, base: policy.base }) !== digest(policy))
+				const pinned = { ...prior.policy, base: policy.base };
+				// Older runs pinned two for an omitted cap. Compare the source below but retain that authorization.
+				if (policy.workers === undefined && pinned.workers === 2) delete pinned.workers;
+				if (prior.owner !== actor || digest(pinned) !== digest(policy))
 					fail("run_conflict", "Another owner or contract already uses this run ID");
 				verifyContracts(cwd(), prior.policy, policy.base);
 				if (prior.accepted) return status(prior, actor);
@@ -245,7 +248,8 @@ export function createRuntime(directory, host) {
 			const mode = policy.goalCheck ? `ongoing goal (finish check: ${policy.goalCheck})` : policy.seed ? "one-off" : "ongoing";
 			const retry = prior && !prior.active && missingObservation(prior) ? prior.goal : undefined;
 			const retryNotice = retry ? `\nRecheck the missing external evidence for ${retry.commit} (rejoin first if the target has moved).` : "";
-			if (!prior?.active && !await host.confirm(`Start ${mode} Foundry run ${policy.id} at ${policy.base.slice(0, 12)} on ${policy.target} with up to ${prior?.capacity.limit ?? policy.workers} concurrent workers and ${policy.repairs} repairs per grain?\n${policy.direction}${retryNotice}`))
+			const staffing = fresh.capacity ? `up to ${fresh.capacity.limit} concurrent workers` : "no worker cap";
+			if (!prior?.active && !await host.confirm(`Start ${mode} Foundry run ${policy.id} at ${policy.base.slice(0, 12)} on ${policy.target} with ${staffing} and ${policy.repairs} repairs per grain?\n${policy.direction}${retryNotice}`))
 				fail("activation_refused", "Foundry was not activated");
 			if (closed || cwd() !== origin || !await executable())
 				fail("context_changed", "Activation context changed during confirmation");
@@ -276,7 +280,7 @@ export function createRuntime(directory, host) {
 				if (r.owner !== actor)
 					fail("foreign_run", "Only the owner can pause");
 				r.active = false;
-				delete r.capacity.offer;
+				delete r.capacity?.offer;
 			});
 			return status(read(id), actor);
 		}
