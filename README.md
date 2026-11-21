@@ -60,7 +60,7 @@ Current charter questions reach the owner without blocking independent writers. 
 writer is a separate, [opt-in native Archive](.copilot/skills/foundry/references/handoff.md),
 never a consequence of a passing check.
 
-1. [**`/foundry brief <idea>`**](.copilot/skills/foundry/references/brief.md) interviews you [grill-me](https://github.com/mattpocock/skills/blob/main/skills/productivity/grill-me/SKILL.md)-style. It looks up facts, asks one product question at a time with a recommendation, and uses your answer to decide which follow-ups matter. You confirm the agreed outcome before it writes. Say “draft it now” for a provisional version with open decisions marked. Neither path starts a factory.
+1. [**`/foundry brief <idea>`**](.copilot/skills/foundry/references/brief.md) uses the installed `grilling` skill for the interview. Foundry looks up repo facts first, then asks one product question at a time with a recommendation. You confirm the outcome before it writes. Say “draft it now” for a provisional brief with open decisions marked. Neither path starts a factory.
 2. [**`/foundry start catalog`**](.copilot/skills/foundry/references/runs.md#start) runs the reviewed, committed `.foundry/catalog.json` on your explicit request. Use `/foundry plans` for available names or `/foundry` for the [command menu](.copilot/skills/foundry/SKILL.md#commands). You don't need a new plan after each milestone. Normal tool permissions still apply.
 3. [**`/foundry measure <run-id>`**](.copilot/skills/foundry/references/metrics.md) shows time to the first verified native writer kickoff and the exact qualified commit. It distinguishes kickoff from a delayed binding receipt and reports only usage the host can attribute.
 

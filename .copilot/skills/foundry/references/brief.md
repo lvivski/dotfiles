@@ -4,7 +4,7 @@
 
 ## Interview before writing
 
-For a new or revised brief, use the installed `grilling` skill when available; it is the interview behind Matt Pocock's [grill-me](https://github.com/mattpocock/skills/blob/main/skills/productivity/grill-me/SKILL.md). Load it once for the interview, not for help, a review-only request, or `start`. If it isn't installed, use the same approach below; no download or separate user command is needed.
+For a new or revised brief, use the skill tool to load `grilling` by name. If it isn't available in this session, follow the interview below. Skip the interview for help, review-only requests, and `start`.
 
 Read the conversation and inspect the repo first. For an existing product, trace one real action from its public surface to its result; distinguish what worked, what failed, and what you couldn't observe. Don't quiz the user on facts you can find or assume current code must be kept or replaced. For a new product, start from the promised user experience.
 
