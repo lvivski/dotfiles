@@ -215,6 +215,33 @@ function replyFixture(t, files = {}) {
 /** @param {string} id @param {string} directory @param {string[]} [needs] */
 const work = (id, directory, needs = []) => ({ id, directory, task: `Implement ${id} behavior`, needs, check: unitCheck });
 
+for (const correct of [true, false]) test(`packaging cannot retire its own checked inputs; corrected plan: ${correct}`, async t => {
+	const f = replyFixture(t), evidence = ".foundry/right.md";
+	await f.start(); await f.reportGrains("engine", []);
+	await report(await f.reading("mail"), evidence, [work("editor", "mail/compose/editor"), work("storage", "mail/compose/storage")]);
+	await f.write("editor", "export default text=>text"); await f.write("storage", "export default ()=>true");
+	const checkpoint = await f.status(); assert.ok(checkpoint.checkpoint);
+	await f.reportGrains("engine", []);
+	const packaging = await f.reading("mail"), needs = ["editor", "storage"], parent = work("send", "mail/compose", needs);
+	await report(packaging, evidence, [parent]);
+	const rejected = await f.status(), reason = rejected.reviews.find(r => r.id === packaging.id)?.reason;
+	assert.match(String(reason), /mail\/compose.*editor.*mail\/compose\/editor/);
+	assert.deepEqual(rejected.nodes, checkpoint.nodes); assert.equal(f.workers.size, 2);
+	const correction = await f.reading("mail");
+	assert.equal(correction.base, packaging.base); assert.ok(reason && correction.prompt.includes(reason));
+	await report(correction, evidence, [correct ? { ...parent, directory: "mail/compose/send" } : parent]);
+	if (!correct) {
+		const stopped = await f.status();
+		assert.deepEqual(stopped.nodes, checkpoint.nodes); assert.equal(stopped.checkpoint, checkpoint.checkpoint);
+		assert.match(String(stopped.blocker), /editor/);
+		assert.equal(stopped.reviews.at(-1)?.id, correction.id, "an invalid correction is not retried indefinitely");
+		return;
+	}
+	await f.write("send", `export default async(text,send)=>{try{await send(text)}catch{return "outcome unknown"}}`);
+	const done = await f.status(); assert.ok(done.qualified); assert.equal(done.goal?.receipt?.commit, done.qualified);
+	assert.equal(f.workers.size, 3); assert.equal(git(f.root, "rev-parse", "main"), f.tip);
+});
+
 test("independent writers start together and a fixture-only integration cannot finish the run", async t => {
 	const f = replyFixture(t);
 	let confirmations = 0;
@@ -790,6 +817,27 @@ test("a graph edit is atomic, charter-limited, and cannot rewrite issued work or
 	assert.deepEqual(split.nodes.find(n => n.grain === "abi")?.requires, ["recover", "shim"]);
 	assert.deepEqual(split.nodes.find(n => n.grain === "wire")?.requires, ["abi"]);
 	assert.equal(f.workers.size, 3);
+});
+
+test("owner resume can recover an unbound scout dispatch from a finished writer", async t => {
+	const f = replyFixture(t);
+	await f.start(); await f.reportGrains("engine", []);
+	await report(await f.reading("mail"), ".foundry/right.md", [work("editor", "mail/compose/editor")]);
+	let ticket = "";
+	const writer = await f.write("editor", "export default text=>text", { scout: async (_, dispatch) => {
+		ticket = dispatch; throw Error("unbound scout launch");
+	} });
+	const failed = await f.status();
+	assert.ok(ticket && failed.checkpoint);
+	assert.ok(failed.pending.some(e => e.issuer === "worker-1" && e.state === "uncertain"));
+	writer.close();
+	await f.owner.operation("pause", { run }, "owner");
+	const resumed = await f.start(), fresh = f.scouts.filter(s => s.base === failed.checkpoint);
+	assert.deepEqual(fresh.map(s => s.id).sort(), failed.pending.map(e => e.id).sort());
+	assert.ok(fresh.every(s => s.issuer === "owner" && s.dispatch !== ticket));
+	await assert.rejects(f.owner.scoutBatch(run, ticket, "worker-1", "late-workflow"), { code: "foreign_assignment" });
+	assert.deepEqual(resumed.assignments, failed.assignments); assert.equal(resumed.checkpoint, failed.checkpoint);
+	assert.equal(f.workers.size, 1);
 });
 
 test("a paused workflow result survives an issuer reload and starts exactly one writer on confirmed resume", async t => {

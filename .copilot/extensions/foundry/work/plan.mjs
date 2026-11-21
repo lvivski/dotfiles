@@ -101,6 +101,15 @@ export function proposal(value) {
 		check: relative(g.check), needs: names(g.needs === undefined ? [] : g.needs, "required output") };
 }
 
+/** @param {Run["nodes"]} current @param {(string|import("./model.js").Output)[]} grains */
+export function displacedInputs(current, grains) {
+	const added = new Set(grains.map(g => typeof g === "string" ? g : g.id));
+	for (const g of grains) if (typeof g !== "string") {
+		const lost = g.needs.filter(id => !added.has(id) && current[id] && settledOutput(current[id]) && !outside(g.directory, [current[id].grain.directory]));
+		if (lost.length) return { lost, reason: `${g.id} would own ${g.directory} and retire its required checked output(s): ${lost.map(id => `${id} (${current[id].grain.directory})`).join(", ")}. Use a disjoint directory to consume these outputs, or propose a complete replacement that does not require them.` };
+	}
+}
+
 /** Check the entire replacement before changing any node, including consumers in other charters.
  * @param {Run["nodes"]} current @param {Area} squad @param {import("./model.js").Observation} report @param {string} review */
 export function revise(current, squad, report, review) {
@@ -127,6 +136,8 @@ export function revise(current, squad, report, review) {
 	const nodes = { ...current };
 	for (const id of superseded(current, remove)) delete nodes[id];
 	for (const g of added) nodes[g.id] = waiting(g, review);
+	const conflict = displacedInputs(current, added);
+	if (conflict) fail("displaced_input", conflict.reason);
 	validateNodes(nodes);
 	return nodes;
 }

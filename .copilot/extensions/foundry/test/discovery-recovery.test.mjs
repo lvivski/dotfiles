@@ -67,6 +67,18 @@ test("simultaneous reports with no new assignments require just one scheduler wa
 	assert.ok((await f.status()).reviews.every(r => r.state === "observed"));
 });
 
+test("the issuer consumes a durable report even when a different runtime received it", async t => {
+	const f = trial(t), workflow = "bound-workflow";
+	const issuer = f.runtime(f.root, { scout: async (id, ticket, actor) => {
+		const [job] = await f.owner.scoutBatch(id, ticket, actor, workflow);
+		await f.owner.scoutResult(id, ticket, actor, workflow, job.id,
+			{ ...noGap, outcome: "regenerate", grains: ["price"] }, job.packet);
+		return { runId: workflow, status: "completed" };
+	} });
+	await f.start(issuer); await issuer.flush();
+	assert.equal((await f.status()).reviews[0].state, "observed"); assert.equal(f.workers.size, 1);
+});
+
 test("a workflow cannot use another review's delivery receipt or another base", async t => {
 	const f = trial(t, ["price", "browse"]); await f.start();
 	const [a, b] = f.scouts;

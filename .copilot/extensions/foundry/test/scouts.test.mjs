@@ -171,6 +171,7 @@ test("partial packets reject unseen citations and exhaustive no-gap but may obta
 	const s = await f.status();
 	assert.match(String(s.reviews[0].reason), /doc-44.*not delivered/);
 	assert.match(String(s.reviews[1].reason), /partial packet/);
+	assert.deepEqual(s.pending.filter(e => e.reason?.includes("workflow body")), [], "focused evidence must launch from the issuer, not the reporting workflow");
 	const focused = f.scouts[3]; assert.equal(focused.squad, third.squad);
 	assert.match(focused.prompt, /Requested evidence/); assert.match(focused.packet.files["doc-44"], /^[a-f0-9]+$/);
 	await focused.report({ ...build("unrelated"), evidence: ["doc-44"] });

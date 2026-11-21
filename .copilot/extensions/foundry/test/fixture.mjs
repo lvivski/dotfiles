@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -38,6 +39,7 @@ export async function loadEntry(session) {
 /** Stand-in for workflow transport only. A batch has a real issuer and ledger binding but no
  * participant session. Keep its terminal envelope pending until all its callbacks have returned. */
 export function workflowHost() {
+	const body = new AsyncLocalStorage();
 	/** @type {Scout[]} */ const scouts = [];
 	/** @type {Set<Promise<void>>} */ const registrations = new Set();
 	async function settle() {
@@ -46,13 +48,14 @@ export function workflowHost() {
 	}
 	/** @param {Runtime} runtime @param {string} run @param {string} dispatch @param {string} issuer */
 	async function launch(runtime, run, dispatch, issuer) {
+		if (body.getStore()) throw Error("workflow.run is not allowed while a workflow body is running on this call path");
 		const workflowId = randomUUID();
 		let finish = () => {};
 		const completed = new Promise(resolve => { finish = () => resolve(undefined); });
-		const registration = runtime.scoutBatch(run, dispatch, issuer, workflowId).then(jobs => {
+		const registration = body.run(workflowId, () => runtime.scoutBatch(run, dispatch, issuer, workflowId)).then(jobs => {
 			const waiting = new Set(jobs.map(job => job.id));
 			for (const job of jobs) scouts.push({ ...job, issuer, dispatch, workflowId, async report(raw) {
-				await runtime.scoutResult(run, dispatch, issuer, workflowId, job.id, raw, job.packet);
+				await body.run(workflowId, () => runtime.scoutResult(run, dispatch, issuer, workflowId, job.id, raw, job.packet));
 				waiting.delete(job.id);
 				if (!waiting.size) finish();
 				await settle();

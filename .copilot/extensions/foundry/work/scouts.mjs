@@ -2,7 +2,7 @@ import { isUtf8 } from "node:buffer";
 import { goalReceipt } from "./evidence.mjs";
 import { checked, dependencies, liveNeeds, owns } from "./plan.mjs";
 import { entries, git } from "./product.mjs";
-import { wakeSource } from "./reviews.mjs";
+import { correction, wakeSource } from "./reviews.mjs";
 import { contains, fail, fields, name, record, text } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
@@ -147,6 +147,8 @@ export function scoutPacket(cwd, run, review) {
 	const required = directoryBlobs(cwd, base, dependencyRoots, packet, 8192);
 	const prev = wakeSource(run, review), report = prev?.observation;
 	const context = [];
+	if (prev && review.wake?.key === "displaced-input")
+		context.push(`Previous proposal rejected; no assignments changed. ${packet.clip(correction(run, prev) ?? prev.error ?? "Recheck the live graph.", 2048)} If the required layout cannot be expressed within the charter, report needs-decision.`);
 	if (report && prev?.decision?.status === "answered")
 		context.push(`Operator clarification for review ${prev.id} of ${squad.id} at ${base} (context, not authority): ${JSON.stringify({ question: packet.clip(report.reason, 1024), answer: packet.clip(prev.decision.answer, 2048) })}. If the committed contract would need to change, report needs-decision; do not change scope or checks.`);
 	const focus = report?.file ?? (prev?.decision?.status === "answered" ? wakeSource(run, prev)?.observation?.file : undefined);
@@ -164,6 +166,7 @@ export function scoutPacket(cwd, run, review) {
 		"areas" in squad ? [
 			`If work needs a checked output that cannot yet be named by grain ID, report waiting with grains: [] and waitFor: the producing charter ID. Other charters: ${packet.clip(JSON.stringify(policy.squads.filter(s => s.id !== squad.id).map(s => s.id)), 2048)}. A wait does not grant file access.`,
 			"Propose disjoint complete directories inside your areas as {id,task,directory,check,needs}, using allowed checks only. Use existing graph IDs or IDs in this report for needs; no cycles. You may request an owned qualified or repeated output by ID.",
+			"A new directory retires overlapping settled outputs, including children. To consume a checked output, keep its directory disjoint from the consumer's; do not list a retired ID in needs. If packaging requires a file at an area's root, plan that ownership before splitting the area.",
 			"For every needs entry, name the exact checked output in reason and explain why the consumer cannot start without it. If disjoint writers can start from the committed interface, propose both now. Defer only the integration that needs their outputs.",
 			"Only regenerate may replace IDs. Split your never-issued work with replace; qualified or repeated outputs may be reused or split unless a current assignment uses that version. Never displace issued work, a repair or an output awaiting its milestone. Never retry refused work.",
 			"A repeated tree is not progress. Propose materially different work, not the same task on the same base and checked inputs under a new ID.",

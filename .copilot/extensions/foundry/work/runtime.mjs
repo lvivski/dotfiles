@@ -67,7 +67,7 @@ export function createRuntime(directory, host) {
 	/** @type {Set<{run:string,actor:string,token:string}>} */ const submitting = new Set();
 	/** @type {Set<string>} */ const asking = new Set();
 	/** @type {Map<string,Call>} */ const nativeCalls = new Map();
-	/** @type {Set<string>} */ const scoutCalls = new Set();
+	/** @type {Map<string,Map<string,()=>Promise<void>>>} */ const scoutCalls = new Map();
 	/** @type {Map<string,{discover:boolean,recover:boolean,work:Promise<void>}>} */ const wakes = new Map();
 	/** @type {string|undefined} */ let existingPath;
 	const cwd = () => root ??= rootAt(directory);
@@ -234,18 +234,27 @@ export function createRuntime(directory, host) {
 	/** A workflow's terminal envelope accounts for missing reports, never for checked work.
 	 * @param {string} id @param {string} ticket @param {string} actor @param {()=>Promise<ScoutEnvelope>} invoke */
 	function watchScouts(id, ticket, actor, invoke) {
-		scoutCalls.add(ticket);
+		// Arm these continuations on the issuing call path. A workflow body only
+		// journals and signals its report; it must not launch the next workflow.
+		/** @type {Map<string,()=>Promise<void>>} */ const reports = new Map();
+		for (const r of batchOf(read(id), ticket, actor).filter(awaitingReply)) {
+			let signal = () => {};
+			const reported = new Promise(resolve => { signal = () => resolve(undefined); });
+			const wake = reported.then(() => { if (!closed) return drive(id, actor, true, false); });
+			reports.set(r.id, () => { reports.delete(r.id); signal(); return wake; });
+		}
+		scoutCalls.set(ticket, reports);
 		void Promise.resolve().then(invoke).then(result => {
 			if (closed) return;
-			const missing = db().update(id, r => {
-				const pending = batchOf(r, ticket, actor).filter(awaitingReply);
+			const reconcile = db().update(id, r => {
+				const batch = batchOf(r, ticket, actor), pending = batch.filter(awaitingReply);
 				for (const e of pending) {
 					if (e.workflowId && e.workflowId !== result.runId) fail("wrong_workflow", "Discovery result belongs to another workflow");
 					blockReview(e, `Discovery ${result.status}: ${result.error ?? result.reason ?? "no report was received"}`);
 				}
-				return pending.length;
+				return pending.length > 0 || batch.some(e => reports.has(e.id));
 			});
-			if (missing) track(drive(id, actor, true, false));
+			if (reconcile) track(drive(id, actor, true, false));
 		}).catch(error => { if (!closed) unconfirmedScouts(id, actor, ticket, String(error)); })
 			.catch(error => host.log?.(`Foundry discovery: ${String(error)}`)).finally(() => scoutCalls.delete(ticket));
 	}
@@ -290,7 +299,9 @@ export function createRuntime(directory, host) {
 			}
 			return true;
 		});
-		if (changed) await drive(id, actor, true, false);
+		// On reconnect without a local watcher, the durable report is consumed
+		// by the next issuer reconciliation, not by a nested workflow launch.
+		if (changed) await scoutCalls.get(ticket)?.get(reviewId)?.();
 	}
 	/** @param {string} id @param {string} actor @param {string} token */
 	function submit(id, actor, token) {
@@ -344,7 +355,7 @@ export function createRuntime(directory, host) {
 					delete r.pauseReason;
 					// An interrupted, unbound discovery cannot have spent an agent call. Invalidate its old ticket.
 					for (const e of r.effects) if (e.tool === "workflow" && e.state === "uncertain" && !e.workflowId) {
-						e.state = "ready"; delete e.callId; delete e.error;
+						e.issuer = actor; e.state = "ready"; delete e.callId; delete e.error;
 					}
 					admitted(r);
 					if (retry) advance(origin, r, actor, false, { retryGoal: true });

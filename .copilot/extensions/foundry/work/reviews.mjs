@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { qualifiedProduct } from "./evidence.mjs";
-import { actionable, checked, owns } from "./plan.mjs";
+import { actionable, checked, displacedInputs, owns } from "./plan.mjs";
 import { digest } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
@@ -18,6 +18,16 @@ export function reserveReview(run, issuer, squad, base, version, wake) {
 
 /** @param {Run} run @param {Review} r */
 export const wakeSource = (run, r) => r.wake && reviews(run).find(p => p.id === r.wake?.review && p.squad === r.squad && p.base === r.base);
+
+/** Reconstruct the diagnostic for already-recorded "unknown output" failures only
+ * when the rejected plan actually displaces that checked input.
+ * @param {Run} run @param {Review} review */
+export function correction(run, review) {
+	if (review.state !== "blocked" || review.observation?.outcome !== "regenerate") return;
+	const conflict = displacedInputs(run.nodes, review.observation.grains);
+	if (conflict && (review.error === conflict.reason || conflict.lost.some(id => review.error === `Unknown required output: ${id}`)))
+		return conflict.reason;
+}
 
 /** Prefer an attributed gap until that charter runs out of work. Under a cap, rotate
  * the others by last review so successive checkpoints don't starve them.
@@ -48,6 +58,7 @@ export function nextReview(run, past, base, version) {
 	const seen = run.goal ? past.some(r => r.version === version) : last?.version === version;
 	const obs = last?.state === "observed" && last.base === base ? last.observation : undefined;
 	let key;
+	if (last?.base === base && correction(run, last)) key = "displaced-input";
 	if (obs?.outcome === "needs-decision" && last?.decision?.status === "answered") key = last.id;
 	if (obs?.outcome === "needs-evidence") key = "focused-evidence";
 	if (obs?.outcome === "waiting") {
