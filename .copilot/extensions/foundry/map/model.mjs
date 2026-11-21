@@ -11,11 +11,14 @@ export function mapSnapshot(s) {
 			qualifiedMs: s.metrics.qualified.elapsedMs } : null,
 		blocker: s.blocker ?? s.discoveryError ?? "",
 		holds: [...new Set(s.pending.flatMap(p => p.reason ? [p.reason] : []))],
-		scoutIssues: s.goal && s.qualified ? [] : [...latest.values()].flatMap(r => r.state === "blocked" && r.reason ? [`${r.squad}: ${r.reason}`] : []),
+		scoutIssues: s.goal && s.qualified ? [] : [...latest.values()].flatMap(r => {
+			if (r.state === "blocked" && r.reason) return [`${r.squad}: ${r.reason}`];
+			const o = r.state === "observed" ? r.observation : undefined;
+			return o?.outcome === "waiting" ? [`${r.squad} waits for ${o.waitFor}: ${o.reason}`] : [];
+		}),
 		questions: (s.questions ?? []).map(q => {
 			const d = q.delivery;
-			return d?.status === "writer" ? `${q.question} — see writer ${d.writer}, request ${d.request}` :
-				d?.status === "unavailable" ? `${q.question} — ${d.reason}` :
+			return d?.status === "unavailable" ? `${q.question} — ${d.reason}` :
 				d ? `${q.question} — ${d.status === "presenting" ? "sent to owner; delivery may be unconfirmed" : d.status}` : q.question;
 		}),
 		scouting: s.reviews.filter(r => r.state === "reading" && r.workflowId).length,

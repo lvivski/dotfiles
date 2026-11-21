@@ -19,7 +19,7 @@ export function assignment(value) {
 }
 
 /** @param {string} value */
-const ownerNotice = value => /^Foundry (?:capacity|decision|handoff): ([A-Za-z0-9][A-Za-z0-9._-]*) [a-f0-9-]{36}\n/.exec(value)?.[1];
+const ownerNotice = value => /^Foundry (?:decision|handoff): ([A-Za-z0-9][A-Za-z0-9._-]*) [a-f0-9-]{36}\n/.exec(value)?.[1];
 
 /** @param {string} tool @param {unknown} args */
 export function identify(tool, args) {
@@ -32,7 +32,7 @@ export function identify(tool, args) {
 		return / '([A-Za-z0-9][A-Za-z0-9._-]*)' '[a-f0-9-]{36}'$/.exec(a.command)?.[1];
 }
 
-/** @param {Run} run @param {string} issuer @param {string} token @param {"repair"|"capacity"|"decision"|"handoff"} kind
+/** @param {Run} run @param {string} issuer @param {string} token @param {"repair"|"decision"|"handoff"} kind
  * @param {string} body @param {import("./model.js").Node} [node] */
 export function reserveNotice(run, issuer, token, kind, body, node) {
 	const to = node ? text(node.worker, "assigned writer") : run.owner;
@@ -77,6 +77,12 @@ export const awaitingReply = e => e.state === "issued" || e.state === "uncertain
 /** @param {Run} run */
 export const expired = run => !!run.policy.deadline && Date.now() >= Date.parse(run.policy.deadline);
 
+/** Count reservations, not deliveries or today's graph. An inline repair has no notice;
+ * its new assignment token is recorded on the writer's preceding component check.
+ * @param {Run} run */
+export const assignmentCount = run => run.effects.filter(e => e.kind === "scout" || e.kind === "writer" ||
+	e.kind === "repair" || e.kind === "component" && e.inlineRepair).length;
+
 /** @param {Run} run @param {Effect} e */
 function assignee(run, e) {
 	return e.grain ? run.nodes[e.grain] : undefined;
@@ -87,8 +93,6 @@ export function current(run, e) {
 	if (e.tool === "workflow")
 		return reading(e);
 	if (run.conflict && (e.kind === "product" || e.kind === "goal") && e.state === "ready") return false;
-	if (e.kind === "capacity")
-		return !!e.token && run.capacity?.offer?.id === e.token;
 	if (e.kind === "decision")
 		return questions(run).some(r => r.id === e.token && !r.decision);
 	if (e.kind === "handoff") {
@@ -151,6 +155,19 @@ function block(run, e, reason) {
 		run.blocker = reason;
 }
 
+/** Decode a confirmed launch only. Contradictory IDs must be reconciled against the
+ * original call rather than attaching a submit token to the wrong session.
+ * @param {Record<string,unknown>} value @param {import("./model.js").Json} name */
+function workerId(value, name) {
+	const content = typeof value.textResultForLlm === "string" ? value.textResultForLlm.trim() : "";
+	const sources = [value.structuredContent, content.startsWith("{") ? JSON.parse(content) : undefined];
+	const prefix = `Created session '${name}' (id: `;
+	const printed = content.startsWith(prefix) ? /^([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\)/i.exec(content.slice(prefix.length))?.[1] : undefined;
+	const ids = new Set([printed, ...sources.filter(s => s != null).map(record).flatMap(s => [s.project_session_id, s.id, s.session_id])].filter(id => id != null));
+	if (ids.size > 1) fail("ambiguous_receipt", "Conflicting native worker identities in the original launch reply");
+	return text([...ids][0], "native worker identity");
+}
+
 /** @param {Run} run @param {import("./model.js").NativeCall} e @param {unknown} raw @param {boolean} automatic */
 export function receive(run, e, raw, automatic) {
 	const value = record(raw);
@@ -168,11 +185,7 @@ export function receive(run, e, raw, automatic) {
 	if (value.resultType !== "success")
 		fail("native_unconfirmed", typeof value.error === "string" ? value.error : "No conclusive native receipt");
 	if (e.tool === "create_session") {
-		const content = typeof value.textResultForLlm === "string" ? value.textResultForLlm.trim() : "";
-		const data = record(value.structuredContent ?? (content.startsWith("{") ? JSON.parse(content) : {}));
-		const prefix = `Created session '${e.args.name}' (id: `;
-		const printed = content.startsWith(prefix) ? /^([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\)/i.exec(content.slice(prefix.length))?.[1] : undefined;
-		e.nativeId = text(data.project_session_id ?? data.id ?? data.session_id ?? printed, "native worker identity");
+		e.nativeId = workerId(value, e.args.name);
 		e.boundAt = Date.now();
 		if (current(run, e)) {
 			const entry = assignee(run, e);

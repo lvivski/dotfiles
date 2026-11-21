@@ -8,13 +8,13 @@ const definitions = [
 	["start", "Start or resume a committed .foundry brief only on explicit operator direction. goalCheck defines the finish line for squads; seed selects a one-off instead.", { source: string }],
 	["pause", "Stop new Foundry work without discarding native calls, evidence, worktrees or checked products.", { run: string }],
 	["submit", "Bound writer: after joining your helpers and integrating their files, capture and check the complete assigned directory. A failed check returns its bounded repair or blocker. Never supply a command or a success claim.", { run: string, token: string }],
-	["status", "Inspect assignments and receipts. Owners see current questions, the exact qualified handoff and elapsed-time facts. A goal checkpoint is progress, not completion. Reading does not advance or archive anything.", { run: string }],
+	["status", "Inspect assignments, blockers and exact receipts. A goal checkpoint is not qualification. For an explicit owner request use detail: proof, cleanup or usage. Reading never advances or archives work.", { run: string, detail: { type: "string", enum: ["proof", "cleanup", "usage"] } }],
 ];
 
 /** @param {Runtime} runtime @param {()=>string} primary @returns {import("@github/copilot-sdk").Tool[]} */
 export function buildTools(runtime, primary) {
 	return definitions.map(([op, description, properties]) => ({
-		name: `foundry_${op}`, description, parameters: { type: "object", properties, required: Object.keys(properties), additionalProperties: false },
+		name: `foundry_${op}`, description, parameters: { type: "object", properties, required: Object.keys(properties).filter(k => k !== "detail"), additionalProperties: false },
 		handler: async (args, invocation) => {
 			try {
 				if (fromHelper(invocation, primary()))

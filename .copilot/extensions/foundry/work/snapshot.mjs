@@ -1,6 +1,6 @@
 import { validOutcome } from "./contract.mjs";
 import { checkReceipt, goalReceipt } from "./evidence.mjs";
-import { unissued } from "./native.mjs";
+import { assignmentCount, unissued } from "./native.mjs";
 import { checked, owns, validateNodes } from "./plan.mjs";
 import { outside } from "./product.mjs";
 import { fail, relative } from "./values.mjs";
@@ -41,15 +41,20 @@ const area = shape({ ...charter, areas: list(path), boundary: list(path), checks
 const policy = shape({
 	id, direction: string, target: string, source: path, base: commit, productCheck: path, goalCheck: optional(path), files: list(path),
 	squads: list(s => object(s) && ("areas" in s ? !("grains" in s) && area(s) : fixed(s))),
-	workers: optional(positive), repairs: count, deadline: optional(string), seed: optional(list(id))
+	workers: optional(positive), assignments: optional(count), repairs: count, deadline: optional(string), seed: optional(list(id))
 });
 /** @type {Guard} */
 const observation = v => object(v) && string(v.reason) && Array.isArray(v.evidence) && v.evidence.length > 0 && v.evidence.every(path) &&
 	Array.isArray(v.grains) && v.grains.every(g => id(g) || proposal(g)) && validOutcome(v.outcome, v.grains.length) &&
+	(v.outcome === "waiting" ? id(v.waitFor) : v.waitFor === undefined) &&
+	(v.outcome === "needs-evidence" ? path(v.file) : v.file === undefined) &&
 	(v.replace === undefined || v.outcome === "regenerate" && list(id)(v.replace));
+/** @param {unknown} v @returns {v is import("./model.js").Packet} */
+export const isPacket = v => object(v) && id(v.review) && commit(v.base) && bool(v.partial) && object(v.files) &&
+	Object.entries(v.files).every(([p, oid]) => path(p) && commit(oid)) && named(commit)(v.outputs);
 /** @type {Guard} */
 const decision = v => object(v) && (one("presenting", "dismissed")(v.status) ||
-	v.status === "answered" && string(v.answer) || v.status === "writer" && string(v.writer) && string(v.request) ||
+	v.status === "answered" && string(v.answer) ||
 	v.status === "unavailable" && string(v.reason));
 const node = shape({
 	grain, review: optional(id), state: one("idle", "waiting", "writing", "checking", "published", "qualified", "repeated", "blocked"), token: optional(id), worker: optional(string),
@@ -62,15 +67,15 @@ const receipt = shape({ commit, check: path, exit: v => v === null || count(v), 
 const dispatch = { id, issuer: string, args: object, callId: optional(string), error: optional(string), permissionHold: optional(string) };
 const scout = shape({ ...dispatch, kind: one("scout"), tool: one("workflow"), squad: id, base: commit, version: string,
 	state: one("ready", "issued", "uncertain", "reported", "observed", "blocked"), observation: optional(observation),
-	workflowId: optional(string), decision: optional(decision) });
+	workflowId: optional(string), decision: optional(decision), packet: optional(isPacket), wake: optional(shape({ review: id, key: string })) });
 const native = shape({
-	...dispatch, kind: one("writer", "component", "product", "goal", "repair", "capacity", "decision", "handoff"), grain: optional(id),
+	...dispatch, kind: one("writer", "component", "product", "goal", "repair", "decision", "handoff"), grain: optional(id), inlineRepair: optional(id),
 	token: optional(id), tool: one("create_session", "bash", "send_session_message", "session.send"), state: one("ready", "issued", "uncertain", "ordinary", "done", "refused"),
 	nativeId: optional(string), boundAt: optional(positive), commit: optional(commit), check: optional(path),
 	runnerStarted: optional(bool), receipt: optional(receipt)
 });
 const snapshot = shape({
-	id, owner: string, policy, capacity: optional(shape({ limit: positive, kept: bool, offer: optional(shape({ id, to: positive })) })),
+	id, owner: string, policy,
 	active: bool, activatedAt: positive, pauseReason: optional(string), nodes: named(node), effects: list(v => scout(v) || native(v)),
 	products: list(product), join: optional(product), goal: optional(shape({ ...assessment, stall: optional(string),
 		tried: optional(list(v => typeof v === "string" && /^[0-9a-f]{64}$/.test(v))) })),
@@ -86,11 +91,13 @@ function validDispatch(run, e) {
 	if (e.tool === "workflow") {
 		const squad = run.policy.squads.find(s => s.id === e.squad), report = e.observation;
 		return !!squad && !e.nativeId && !e.token && !e.receipt && !e.boundAt && (!e.workflowId || !!e.callId) &&
-			(e.state !== "reported" && e.state !== "observed" || !!report && !!e.workflowId) &&
+			(!e.packet || e.packet.review === e.id && e.packet.base === e.base) &&
+			(e.state !== "reported" && e.state !== "observed" || !!report && !!e.workflowId && !!e.packet) &&
 			(!e.decision || e.state === "observed" && report?.outcome === "needs-decision") &&
 			("areas" in squad || !report || !report.replace && report.grains.every(g => typeof g === "string"));
 	}
 	if (e.workflowId || Boolean(e.nativeId) !== Boolean(e.boundAt)) return false;
+	if (e.inlineRepair && (e.kind !== "component" || !checkReceipt(e))) return false;
 	if (e.kind === "writer") return e.tool === "create_session" && !!e.grain && !!e.token && (e.state === "done") === !!e.nativeId;
 	if (e.nativeId) return false;
 	if (e.kind === "goal" || e.kind === "product" || e.kind === "component")
@@ -106,9 +113,8 @@ function validDispatch(run, e) {
 /** @param {unknown} value @returns {import("./model.js").Run} */
 export function decode(value) {
 	if (!isRun(value) || value.policy.id !== value.id || value.active && value.pauseReason !== undefined ||
-		(value.policy.workers === undefined ? value.capacity !== undefined : !value.capacity || value.capacity.limit < value.policy.workers) ||
-		Boolean(value.policy.goalCheck) !== Boolean(value.goal) || value.goal && value.policy.seed ||
-		value.capacity?.offer && (value.capacity.kept || value.capacity.offer.to <= value.capacity.limit))
+		"capacity" in value || value.policy.assignments !== undefined && assignmentCount(value) > value.policy.assignments ||
+		Boolean(value.policy.goalCheck) !== Boolean(value.goal) || value.goal && value.policy.seed)
 		fail("corrupt_run", "Invalid Foundry execution snapshot");
 	const { policy: p, nodes, products } = value, areas = p.squads.filter(s => "areas" in s), files = new Set(p.files);
 	const effects = new Map(value.effects.map(e => [e.id, e]));

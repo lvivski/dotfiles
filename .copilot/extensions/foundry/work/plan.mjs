@@ -31,6 +31,43 @@ export function dependencies(nodes, roots) {
 	return ids;
 }
 
+/** Undefined means not ready; an empty map is a ready writer with no prerequisites.
+ * @param {Run["nodes"]} nodes @param {Node} n */
+export function writerInputs(nodes, n) {
+	if (n.state !== "waiting") return;
+	/** @type {Record<string,string>} */ const pins = {};
+	for (const id of dependencies(nodes, n.grain.needs)) {
+		const input = nodes[id];
+		if (!input.candidate || !checked(input)) return;
+		pins[id] = input.candidate;
+	}
+	return pins;
+}
+
+/** @param {Node} n */
+export const working = n => n.state === "writing" || n.state === "checking";
+/** @param {Run} run @param {Node} n */
+const blockedInput = (run, n) => [...dependencies(run.nodes, [n.grain.id])].some(id => run.nodes[id].state === "blocked");
+/** @param {Run} run @param {Node} n */
+export const actionable = (run, n) => working(n) || n.state === "waiting" && !blockedInput(run, n);
+
+/** A seed needs every requested output. In discovery, blocked or unfunded work
+ * cannot veto verification of an independent checked output.
+ * @param {Run} run @param {string|undefined} target @param {number} remaining */
+export function productOutputs(run, target, remaining) {
+	/** @type {Record<string,string>} */ const outputs = {};
+	let changed = false;
+	for (const n of Object.values(run.nodes)) {
+		if (n.state === "idle") continue;
+		if (!run.policy.seed && remaining === 0 && n.state === "waiting") continue;
+		if (checked(n)) {
+			outputs[n.grain.id] = text(n.candidate, "checked output");
+			if (n.state === "published") changed = true;
+		} else if (run.policy.seed || !blockedInput(run, n)) return;
+	}
+	if (changed || run.goal && (run.goal.target !== target || !run.products.length && run.join?.commit === target)) return outputs;
+}
+
 /** @param {Run["nodes"]} nodes */
 export const validateNodes = nodes => validateGraph(Object.values(nodes).map(n => ({ ...n.grain, needs: liveNeeds(n) })));
 

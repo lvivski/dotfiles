@@ -36,7 +36,6 @@ if (fileURLToPath(import.meta.url) === process.argv[1]) {
 	/** @type {ReturnType<typeof createRuntime>} */
 	const runtime = createRuntime(process.cwd(), {
 		mode: async () => "interactive", permissionBlocker: async () => null, confirm: async () => assert.fail("unexpected activation"),
-		select: async () => assert.fail("unexpected capacity prompt"),
 		scout: (id, dispatch, issuer) => discovery.launch(runtime, id, dispatch, issuer),
 		execute: async (tool, args, id) => {
 			if (withhold && tool === "bash" && String(args.description).startsWith(`Check ${withhold} at `)) {

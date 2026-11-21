@@ -1,6 +1,5 @@
 import { defineWorkflow, joinSession } from "@github/copilot-sdk/extension";
 import { foundryBoard } from "./canvas.mjs";
-import { writerRequest } from "./work/decisions.mjs";
 import { identify } from "./work/native.mjs";
 import { permissionCheck } from "./work/permissions.mjs";
 import { recover } from "./work/recovery.mjs";
@@ -15,9 +14,7 @@ const runtime = createRuntime(process.cwd(), {
 	helpersRunning: async () => (await session.rpc.tasks.list()).tasks.some(t => t.type === "agent" && t.status === "running"),
 	permissionBlocker: permissionCheck(() => session.rpc.managedSettings.get(), () => session.rpc.permissions.getMode()),
 	confirm: message => session.ui.confirm(message),
-	select: (message, options) => session.ui.select(message, options),
 	ask: message => session.ui.input(message),
-	writerInput: async writer => writerRequest(writer, await session.rpc.tools.execute({ name: "get_session", arguments: { project_session_id: writer } })),
 	execute: (name, args, toolCallId) => session.rpc.tools.execute({ name, arguments: args, toolCallId }),
 	scout: (run, dispatch) => session.workflow.run("foundry-scout", { args: { run, dispatch }, notifyOnComplete: false }),
 	scoutState: id => session.workflow.waitForRun(id),

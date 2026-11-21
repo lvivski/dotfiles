@@ -26,7 +26,7 @@ const policy = () => ({
 	version: 1, id: run, direction: "Make the joined exports sum to three", target: "refs/heads/main", productCheck: ".foundry/product.mjs",
 	goalCheck: /** @type {string|undefined} */ (undefined),
 	grains: grainIds.map(id => ({ id, directory: `lib/${id}`, specification: `.foundry/${id}.md`, boundary: [".foundry/api.md"], check: `.foundry/${id}.mjs`, needs: /** @type {string[]} */ ([]) })),
-	limits: /** @type {{workers?:number,repairs?:number,deadline?:string}|undefined} */ (undefined), seed: /** @type {string[]|undefined} */ ([...grainIds]),
+	limits: /** @type {{workers?:number,assignments?:number,repairs?:number,deadline?:string}|undefined} */ (undefined), seed: /** @type {string[]|undefined} */ ([...grainIds]),
 	squads: grainIds.map(id => ({ id, charter: `.foundry/${id}.md`, grains: [id], agent: `${id}-specialist` }))
 });
 
@@ -177,7 +177,7 @@ const result = (evidence, grains, replace) => ({ outcome: grains.length ? "regen
 const report = (job, evidence, grains, replace) => job.report(result(evidence, grains, replace));
 
 /** @param {ReturnType<typeof createRuntime>} runtime @param {Scout} job @param {unknown} raw */
-const deliver = (runtime, job, raw) => runtime.scoutResult(run, job.dispatch, job.issuer, job.workflowId, job.id, raw);
+const deliver = (runtime, job, raw) => runtime.scoutResult(run, job.dispatch, job.issuer, job.workflowId, job.id, raw, job.packet);
 /** @param {import("node:test").TestContext} t @param {Record<string,string>} [files] */
 function replyFixture(t, files = {}) {
 	const f = fixture(t, undefined, {
@@ -928,13 +928,20 @@ test("one goal activation checks a milestone, dispatches independent work on tha
 	assert.equal(git(f.root, "rev-parse", "main"), f.tip);
 });
 
-test("an already-good goal baseline passes both exact checks without staffing anyone", async t => {
-	const f = fixture(t, goal, { ...goalFiles, "lib/left/index.mjs": "export default 1;", "lib/right/index.mjs": "export default 2;" });
-	const done = await f.start();
+test("an already-good goal baseline passes both exact checks with a zero assignment limit", async t => {
+	const f = fixture(t, p => { goal(p); p.limits = { assignments: 0 }; },
+		{ ...goalFiles, "lib/left/index.mjs": "export default 1;", "lib/right/index.mjs": "export default 2;" });
+	let notice;
+	const done = await f.start(f.runtime(f.root, { notify: async message => { notice = message; return "delivered"; } }));
 	assert.equal(done.qualified, f.tip);
 	assert.equal(done.products?.[0].receipt?.commit, f.tip);
 	assert.equal(done.goal?.receipt?.commit, f.tip);
 	assert.equal(done.active, false);
+	assert.equal(done.blocker, undefined);
+	assert.deepEqual(done.assignments, { used: 0, limit: 0 });
+	assert.match(String(notice), new RegExp(f.tip));
+	assert.doesNotMatch(String(notice), /archive/i);
+	assert.equal(f.scouts.length, 0);
 	assert.equal(f.workers.size, 0);
 	assert.equal(f.checks.length, 2);
 });
@@ -1304,18 +1311,34 @@ test("lost creation reply survives process restart; no second create or forged b
 		execute: async () => { throw Error("unexpected second start"); },
 		recover: async (e) => ({ resultType: "success", textResultForLlm: `Created session '${e.args.name}' (id: 6feaa83a-039b-482b-be33-2f683aa18d37) in project 'fixture'.` })
 	});
+
 	recovered.turn("owner");
 	await recovered.flush();
 	assert.equal((await f.status()).nodes[0].worker, "6feaa83a-039b-482b-be33-2f683aa18d37");
 	assert.equal(sends, 1);
 });
 
+for (const other of [{ structuredContent: { project_session_id: "worker-one", session_id: "worker-two" } },
+	{ structuredContent: { id: "worker-one" }, textResultForLlm: '{"id":"worker-two"}' }])
+test(`conflicting native identities leave the original launch uncertain: ${Object.keys(other).join(", ")}`, async t => {
+	const f = fixture(t, p => { p.seed = ["left"]; });
+	let launches = 0;
+	const owner = f.runtime(f.root, { execute: async () => {
+		launches++; return { resultType: "success", ...other };
+	} });
+	await f.start(owner); owner.turn("owner"); await owner.flush();
+	const s = await f.status();
+	assert.equal(launches, 1); assert.equal(s.nodes[0].worker, undefined);
+	assert.equal(s.pending[0].state, "uncertain"); assert.match(String(s.pending[0].reason), /Conflicting native worker identities/);
+});
+
 test("denying a prepared writer frees the only slot for another writer, without replay", async (t) => {
-	const f = fixture(t, p => { p.limits = { workers: 1 }; });
+	const f = fixture(t, p => { p.limits = { workers: 1, assignments: 2 }; });
 	const r = f.runtime(f.root, { execute: async (...args) => String(args[1].name).startsWith("left ") ?
 		{ resultType: "failure", error: "This session management tool is disabled" } : f.execute(...args) });
 	const s = await r.operation("start", { source }, "owner"), prepared = s.prepared[0];
 	assert.ok(prepared);
+	assert.deepEqual(s.assignments, { used: 1, limit: 2 });
 	await assert.rejects(r.pre(prepared.tool, { ...prepared.arguments, base_branch: "main" }, "owner", "changed"), /prepared/i);
 	await r.pre(prepared.tool, prepared.arguments, "owner", "native-1");
 	await assert.rejects(r.pre(prepared.tool, prepared.arguments, "owner", "duplicate"), /prepared/i);
@@ -1323,10 +1346,12 @@ test("denying a prepared writer frees the only slot for another writer, without 
 	r.refusal({ ...refusal, agentId: "nested" }, "owner");
 	r.refusal(refusal, "peer");
 	r.refusal({ ...refusal, data: { ...refusal.data, result: { kind: "approved" } } }, "owner");
+	assert.deepEqual((await f.status()).assignments, s.assignments, "issuing the original prepared call costs no new assignment");
 	assert.deepEqual((await f.status()).nodes.map(n => n.state), ["writing", "waiting"]);
 	r.refusal(refusal, "owner");
 	await r.flush();
 	const stopped = await f.status();
+	assert.deepEqual(stopped.assignments, { used: 2, limit: 2 }, "refusal frees a slot, not a reservation");
 	assert.equal(stopped.nodes[0].state, "blocked");
 	assert.match(String(stopped.nodes[0].reason), /permission refused/i);
 	assert.equal(stopped.prepared.length, 0);
@@ -1716,12 +1741,11 @@ for (const kind of ["left", "joined product"])
 		assert.equal(f.workers.size, 1);
 	});
 
-test("independent starts overlap by default without a capacity prompt; a racing owner turn cannot issue them again", async (t) => {
+test("independent starts overlap by default; a racing owner turn cannot issue them again", async (t) => {
 	const f = fixture(t, addIndependent, extraCheck);
-	let active = 0, peak = 0, total = 0, offers = 0;
+	let active = 0, peak = 0, total = 0;
 	const owner = f.runtime(f.root, {
 		confirm: async msg => { assert.match(msg, /no worker cap/); return true; },
-		select: async () => { offers++; return null; },
 		execute: async (...args) => {
 			total++;
 			peak = Math.max(peak, ++active);
@@ -1735,7 +1759,6 @@ test("independent starts overlap by default without a capacity prompt; a racing 
 	await f.owner.flush();
 	assert.equal(peak, 3);
 	assert.equal(total, 3);
-	assert.equal(offers, 0);
 	assert.equal(f.workers.size, 3);
 });
 
@@ -1886,11 +1909,10 @@ test("a repairs-only goal starts every scout and admits a ready writer alongside
 	assert.equal(active.reviews.filter(r => r.state === "reading").length, 2);
 	assert.equal(active.nodes.find(n => n.grain === "left")?.state, "writing");
 	assert.equal(active.limit, null);
-	assert.equal(active.proposedLimit, undefined);
 });
 
-test("resume cannot change the confirmed cap or fixed assignments", async t => {
-	const f = fixture(t, p => { p.limits = { workers: 1 }; });
+test("resume cannot change the confirmed limits or fixed assignments", async t => {
+	const f = fixture(t, p => { p.limits = { workers: 1, assignments: 2 }; });
 	await f.start();
 	await f.owner.operation("pause", { run }, "owner");
 	delete f.p.limits;
@@ -1899,111 +1921,130 @@ test("resume cannot change the confirmed cap or fixed assignments", async t => {
 	git(f.root, "commit", "-qam", "change contract");
 	await assert.rejects(f.start(), /conserved contract changed/i);
 	assert.equal((await f.status()).limit, 1);
+	assert.deepEqual((await f.status()).assignments, { used: 1, limit: 2 });
 	assert.equal(f.workers.size, 1);
 });
 
-for (const raise of [false, true])
-	test(`saturation offers only ready work; ${raise ? "increase" : "keep"} survives resume`, async t => {
-		const f = fixture(t, p => {
-			addIndependent(p); p.limits = { workers: 2 };
-			// A fourth writer belongs to the graph, but its input is not ready.
-			p.grains.push({ ...p.grains[0], id: "last", directory: "lib/last", needs: ["left"] });
-			p.seed?.push("last");
-		}, extraCheck);
-		/** @type {(choice:string)=>void} */ let answer = () => assert.fail("no worker-cap question");
-		/** @type {string[][]} */ const choices = [];
-		const owner = f.runtime(f.root, { select: (_message, options) => {
-			choices.push(options);
-			return new Promise(resolve => { answer = resolve; });
-		} });
-		await owner.operation("start", { source }, "owner");
-		assert.equal(f.workers.size, 2, "launch the authorized workers before asking");
-		owner.turn("owner");
-		await owner.operation("start", { source }, "owner");
-		assert.deepEqual(choices, [["Keep 2", "Increase to 3"]]);
-		answer(choices[0][raise ? 1 : 0]);
-		await owner.flush();
-		const cap = raise ? 3 : 2;
-		assert.equal((await f.status()).limit, cap);
-		assert.equal(f.workers.size, cap);
-		await owner.operation("pause", { run }, "owner");
-		const restarted = f.runtime(f.root, { select: async (_msg, options) => { choices.push(options); return null; } });
-		assert.equal((await restarted.operation("start", { source }, "owner")).limit, cap);
-		await f.submit("worker-1");
-		assert.equal(f.workers.size, cap + 1, "keeping the cap must not stall queued work");
-		restarted.turn("owner");
-		await restarted.flush();
-		assert.equal(choices.length, 1, "no repeat after Keep, or for work merely waiting on an input");
+test("a fixed worker cap refills from a writer's check without an owner turn, including after resume", async t => {
+	const f = fixture(t, p => { addIndependent(p); p.limits = { workers: 2 }; }, extraCheck);
+	await f.start();
+	await f.owner.operation("pause", { run }, "owner");
+	const resumed = await f.start(f.runtime(f.root));
+	assert.equal(resumed.limit, 2);
+	assert.deepEqual(resumed.nodes.map(n => n.state), ["writing", "writing", "waiting"]);
+	await f.submit("worker-2");
+	assert.deepEqual((await f.status()).nodes.map(n => n.state), ["writing", "published", "writing"]);
+	await f.submit("worker-3");
+	await f.submit("worker-1");
+	assert.ok((await f.status()).qualified);
+	assert.equal((await f.status()).limit, 2);
+	assert.equal(f.workers.size, 3);
+});
+
+test("a fixed cap drains an independent charter after its sibling writer frees the only slot", async t => {
+	const f = fixture(t, p => { delete p.seed; p.limits = { workers: 1 }; });
+	await f.start();
+	assert.deepEqual(f.scouts.map(s => s.squad), ["left"]);
+	await f.reportGrains("left");
+	assert.equal(f.scouts.length, 1);
+	await f.submit("worker-1");
+	await f.settle();
+	assert.deepEqual(f.scouts.map(s => s.squad), ["left", "right"]);
+	await f.reportGrains("right");
+	await f.submit("worker-2");
+	assert.ok((await f.status()).qualified);
+});
+
+for (const seed of [true, false])
+	test(`the total assignment limit bounds the first ${seed ? "writer" : "scout"} batch without a concurrency cap`, async t => {
+		const f = fixture(t, p => { if (!seed) goal(p); p.limits = { assignments: 1 }; }, goalFiles);
+		const start = await f.start();
+		assert.equal(start.limit, null);
+		assert.deepEqual(start.assignments, { used: 1, limit: 1 });
+		assert.equal(f.scouts.length, seed ? 0 : 1);
+		if (seed) await f.submit("worker-1");
+		else await f.reportGrains("left");
+		const stopped = await f.status();
+		assert.equal(f.workers.size, seed ? 1 : 0);
+		assert.equal(f.scouts.length, seed ? 0 : 1);
+		assert.deepEqual(stopped.assignments, start.assignments);
+		assert.match(String(stopped.blocker), /total assignment limit reached/i);
+		assert.equal(stopped.qualified, null, "a missing seed or unmet goal cannot qualify");
 	});
 
-test("work drains under the old cap while a decision is open; an obsolete approval cannot raise it", async t => {
-	const f = fixture(t, p => { addIndependent(p); p.limits = { workers: 2 }; }, extraCheck);
-	/** @type {()=>void} */ let answer = () => assert.fail("no worker-cap question");
-	const owner = f.runtime(f.root, { select: (_message, options) => new Promise(resolve => { answer = () => resolve(options[1]); }) });
-	await owner.operation("start", { source }, "owner");
-	await f.submit("worker-1");
-	assert.equal(f.workers.size, 3);
-	await f.submit("worker-2");
-	await f.submit("worker-3");
-	assert.ok((await f.status()).qualified);
-	answer();
-	await owner.flush();
-	assert.equal((await f.status()).limit, 2);
-});
-
-test("reopening an unanswered choice still requires consent for the exact cap shown", async t => {
-	const f = fixture(t, p => {
-		addIndependent(p); p.limits = { workers: 2 };
-		p.grains.push({ ...p.grains[0], id: "fourth", directory: "lib/fourth" });
-		p.seed?.push("fourth");
-	}, extraCheck);
-	/** @type {()=>void} */ let oldYes = () => assert.fail("no original dialog");
-	const old = f.runtime(f.root, { select: (_msg, options) => new Promise(resolve => { oldYes = () => resolve(options[1]); }) });
-	await old.operation("start", { source }, "owner");
-	old.close();
-	oldYes();
-	await old.flush();
-	assert.equal((await f.status()).limit, 2);
-	/** @type {()=>void} */ let yes = () => assert.fail("no new dialog");
-	const owner = f.runtime(f.root, { select: (_msg, options) => new Promise(resolve => {
-		assert.deepEqual(options, ["Keep 2", "Increase to 4"]);
-		yes = () => resolve(options[1]);
-	}) });
-	await owner.operation("start", { source }, "owner");
-	await f.submit("worker-1");
-	assert.equal((await f.status()).proposedLimit, 3);
-	yes();
-	await owner.flush();
-	assert.equal((await f.status()).limit, 4);
-	assert.equal(f.workers.size, 4);
-});
-
-test("overflow discovered by a writer's checkpoint workflow wakes the owner; only the owner's choice can grant more slots", async t => {
-	const f = fixture(t, p => { goal(p); addIndependent(p); p.limits = { workers: 2 }; }, { ...goalFiles, ...extraCheck });
-	await f.start();
-	let notices = 0, childPrompts = 0, ownerPrompts = 0;
-	await f.submit(await firstGoalWriter(f), 1, {
-		select: async (_msg, options) => { childPrompts++; return options[1]; },
-		execute: async (tool, args, id) => {
-			if (tool === "send_session_message") { notices++; assert.equal(args.session_id, "owner"); }
-			return f.execute(tool, args, id);
+test("the total assignment limit admits late evidence, finishes in-flight checks and retains the unmet checkpoint", async t => {
+	const f = replyFixture(t, { [source]: JSON.stringify({ ...areaPolicy(), limits: { assignments: 3 } }) });
+	const start = await f.start(f.runtime(f.root, { confirm: async msg => {
+		assert.match(msg, /total assignment limit.*3/i); return true;
+	} }));
+	assert.deepEqual(start.assignments, { used: 2, limit: 3 }, "two charters in one workflow are two assignments");
+	const [core, mail] = f.scouts;
+	await report(mail, ".foundry/right.md", [work("editor", "mail/compose/editor")]);
+	await f.write("editor", "export default text=>text;", {
+		execute: async (...args) => {
+			if (String(args[1].description).startsWith("Check joined product")) {
+				await report(core, ".foundry/left.md", [work("recover", "engine/recovery")]);
+				assert.equal((await f.status()).pending.find(e => e.kind === "product")?.state, "issued");
+			}
+			return f.execute(...args);
 		}
 	});
-	const scout = await f.reading("left");
-	assert.equal(scout.issuer, "worker-1");
-	await report(scout, ".foundry/left.md", ["left", "extra"]);
-	assert.equal(notices, 1);
-	assert.equal(childPrompts, 0);
-	const limited = await f.status();
-	assert.equal(limited.reviews.filter(r => r.state === "reading").length, 1);
-	assert.equal(limited.nodes.filter(n => n.state === "writing").length, 1);
-	assert.equal(f.workers.size, 2, "one previous writer and one new writer; the reading review occupies the other slot");
-	const owner = f.runtime(f.root, { select: async (_msg, options) => { ownerPrompts++; return options[1]; } });
-	owner.turn("owner");
-	await owner.flush();
-	assert.equal(ownerPrompts, 1);
-	assert.equal((await f.status()).limit, 3);
-	assert.equal(f.workers.size, 3);
+	const stopped = await f.status();
+	assert.match(String(stopped.blocker), /total assignment limit reached \(3\/3\)/i);
+	assert.ok(stopped.checkpoint); assert.equal(stopped.qualified, null);
+	assert.equal(stopped.products?.[0].receipt?.exit, 0);
+	assert.equal(stopped.goal?.receipt?.commit, stopped.checkpoint);
+	assert.equal(stopped.goal.receipt.exit, 1);
+	assert.equal(stopped.nodes.find(n => n.grain === "recover")?.state, "waiting");
+	await f.owner.operation("pause", { run }, "owner");
+	const resumed = await f.start(f.runtime(f.root));
+	assert.deepEqual(resumed.assignments, { used: 3, limit: 3 });
+	assert.deepEqual(resumed.products, stopped.products);
+	assert.deepEqual(resumed.reviews, stopped.reviews);
+	assert.equal(f.workers.size, 1);
+});
+
+test("the total assignment limit charges a repair returned inline and preserves the next failed receipt", async t => {
+	const f = fixture(t, p => { p.seed = ["left"]; p.limits = { assignments: 2, repairs: 4 }; });
+	await f.start();
+	const [writer] = f.workers.values();
+	await assert.rejects(f.runtime(writer.cwd, { helpersRunning: async () => true }).operation("submit", { run, token: writer.token }, writer.id),
+		{ code: "helpers_running" });
+	assert.deepEqual((await f.status()).assignments, { used: 1, limit: 2 }, "helpers and an unready submission are not assignments");
+	const repair = await f.submit("worker-1", 0);
+	assert.deepEqual(repair.assignments, { used: 2, limit: 2 });
+	assert.equal(repair.nodes[0].state, "writing");
+	assert.notEqual(repair.nodes[0].token, f.inbox[0].token);
+	assert.equal(f.inbox.length, 1, "an inline repair is not a second message or session");
+	await f.submit("worker-1", 0);
+	const stopped = await f.status();
+	assert.equal(stopped.nodes[0].state, "blocked");
+	assert.equal(stopped.nodes[0].repairs, 1);
+	const failed = stopped.nodes[0].receipt;
+	assert.ok(failed); assert.equal(failed.exit, 1);
+	assert.match(String(stopped.blocker), /total assignment limit reached \(2\/2\)/i);
+	assert.equal(f.workers.size, 1);
+});
+
+test("a queued repair uses the last total assignment; a further attributed failure retains the checked join", async t => {
+	const f = fixture(t, p => { p.limits = { assignments: 3, repairs: 4 }; },
+		{ ".foundry/product.mjs": 'console.log("FOUNDRY_REPAIR=left");process.exit(1);' });
+	await f.start();
+	await f.submit("worker-1");
+	await f.submit("worker-2");
+	const repair = f.inbox.at(-1);
+	assert.equal(repair?.worker, "worker-1");
+	assert.notEqual(repair.token, f.inbox[0].token);
+	assert.deepEqual((await f.status()).assignments, { used: 3, limit: 3 });
+	await f.submit("worker-1");
+	const stopped = await f.status();
+	assert.equal(stopped.qualified, null);
+	assert.equal(stopped.candidate?.receipt?.repair, "left");
+	assert.equal(stopped.candidate?.receipt?.commit, stopped.candidate?.commit);
+	assert.ok(stopped.nodes.every(n => n.receipt && n.receipt.exit === 0));
+	assert.equal(stopped.nodes[0].repairs, 1);
+	assert.match(String(stopped.blocker), /total assignment limit reached \(3\/3\)/i);
+	assert.equal(f.inbox.length, 3);
 });
 
 test("only the original top-level call, arguments and turn can recover an uncertain start", async (t) => {
@@ -2092,9 +2133,10 @@ test("unknown protocols are not migrated and invalid nested records are refused,
 	const raw = new DatabaseSync(file);
 	for (const broken of [
 		{ ...initial, nodes: { left: { state: "finished-by-claim", repairs: 0 } } },
-		{ ...initial, policy: { ...initial.policy, workers: 2 }, capacity: { limit: 0, kept: false } },
-		{ ...initial, policy: { ...initial.policy, workers: 2 } },
-		{ ...initial, capacity: { limit: 2, kept: false } },
+		{ ...initial, policy: { ...initial.policy, workers: 0 } },
+		{ ...initial, policy: { ...initial.policy, assignments: -1 } },
+		{ ...initial, policy: { ...initial.policy, assignments: 1 } }, // Fewer than the two reserved scouts.
+		{ ...initial, capacity: { limit: 2, kept: false } }, // Obsolete mutable cap.
 		{ ...initial, effects: initial.effects.map(e => e === review ? { ...e, observation: { ...review.observation, outcome: "needs-decision", grains: ["left"] } } : e) },
 		{ ...initial, effects: initial.effects.map(e => e === review ? { ...e, observation: { reason: "missing outcome", evidence: [".foundry/left.md"], grains: [] } } : e) },
 	]) {
@@ -2274,6 +2316,8 @@ test("contracts reject overlapping ownership, missing boundaries and dependency 
 	check(p => { goal(p); p.squads.pop(); }, /chartered producer/);
 	check(p => { p.goalCheck = goalCheck; }, /seed selects a one-off/);
 	check(p => { p.limits = { workers: 0 }; }, /worker limit/);
+	check(p => { p.limits = { assignments: -1 }; }, /total assignment limit/);
+	check(p => { p.limits = { assignments: 1.5 }; }, /total assignment limit/);
 	check(p => { p.limits = { repairs: -1 }; }, /repair limit/);
 	assert.equal(existsSync(ledgerPath(f.root)), false);
 });

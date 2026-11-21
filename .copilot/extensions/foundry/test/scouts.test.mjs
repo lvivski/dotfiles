@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { setImmediate } from "node:timers/promises";
 import test from "node:test";
+import { mapSnapshot } from "../map/model.mjs";
 import { git } from "../work/product.mjs";
-import { scoutAgent, scoutDefinition, scoutPrompt } from "../work/scouts.mjs";
+import { availableHistory, nextReview } from "../work/reviews.mjs";
+import { scoutAgent, scoutDefinition, scoutPacket } from "../work/scouts.mjs";
 import { factory, put } from "./fixture.mjs";
 
 /** @param {import("node:test").TestContext} t */
@@ -52,7 +54,8 @@ function filesIn(prompt) {
 }
 
 test("area scout receives pinned Git blobs, its exact goal receipt and safe cross-charter edges, not the checkout", t => {
-	const f = fixture(t), prompt = scoutPrompt(f.cwd, f.run, f.review), files = filesIn(prompt);
+	const f = fixture(t), { prompt, packet } = scoutPacket(f.cwd, f.run, f.review), files = filesIn(prompt);
+	assert.deepEqual(packet.files, Object.fromEntries([...files].filter(([, row]) => "text" in row).map(([path, row]) => [path, row.oid])));
 	for (const path of [f.source, f.charter, f.boundary, f.check, f.productCheck, f.goalCheck, f.productFile, f.directFile, f.transitiveFile, f.inputSpec]) {
 		const expected = git(f.cwd, ["cat-file", "blob", `${f.base}:${path}`]).toString();
 		const row = files.get(path);
@@ -68,8 +71,8 @@ test("area scout receives pinned Git blobs, its exact goal receipt and safe cros
 	assert.match(prompt, /Native permission refused for the packaging assignment/);
 	assert.match(prompt, /Exercise the consumer/);
 	assert.doesNotMatch(prompt, /private-(?:call-args|owner|worker|token|foreign-diagnostic|uncommitted-content|untracked-content)|not-the-scout-profile/);
-	assert.throws(() => scoutPrompt(f.cwd, f.run, { ...f.review, base: "HEAD" }), /immutable/);
-	assert.throws(() => scoutPrompt(f.cwd, f.run, { ...f.review, base: "0".repeat(40) }), "must not fall back to HEAD");
+	assert.throws(() => scoutPacket(f.cwd, f.run, { ...f.review, base: "HEAD" }), /immutable/);
+	assert.throws(() => scoutPacket(f.cwd, f.run, { ...f.review, base: "0".repeat(40) }), "must not fall back to HEAD");
 });
 
 test("fixed charter includes owned idle grains and their declared inputs but not unrelated idle work", t => {
@@ -79,7 +82,7 @@ test("fixed charter includes owned idle grains and their declared inputs but not
 	nodes.types.state = nodes.consumer.state = "idle";
 	nodes.consumer.grain.specification = f.productCheck;
 	nodes.unrelated = { ...nodes.consumer, grain: { ...nodes.consumer.grain, id: "unrelated", task: "private-unchartered-idle" } };
-	const prompt = scoutPrompt(f.cwd, f.run, f.review), files = filesIn(prompt);
+	const { prompt } = scoutPacket(f.cwd, f.run, f.review), files = filesIn(prompt);
 	assert.match(prompt, /fixed charter[\s\S]*only owned grain IDs/);
 	assert.match(prompt, /"ownedGrains":\["types"\]/);
 	assert.match(prompt, /"id":"consumer"/);
@@ -88,18 +91,106 @@ test("fixed charter includes owned idle grains and their declared inputs but not
 	assert.ok(![...files.keys()].some(p => p.startsWith(`${f.sibling}/`)));
 });
 
+test("a wait on an already visible producer version needs new evidence before another assignment", t => {
+	const { cwd, run, review, squad } = fixture(t);
+	run.policy.squads.push({ ...squad, id: "library", areas: ["src/protocol"] });
+	const history = () => availableHistory(run, [review], squad.id);
+	assert.equal(history(), undefined, "the issued review owns this revision");
+	review.state = "observed";
+	review.observation = { outcome: "waiting", waitFor: "library", reason: "Need a revised protocol.", evidence: [squad.charter], grains: [] };
+	review.packet = scoutPacket(cwd, run, review).packet;
+	const next = () => { const past = history(); assert.ok(past); return nextReview(run, past, review.base, review.version); };
+	assert.equal(next(), undefined);
+	run.nodes.protocol.candidate = "f".repeat(40);
+	assert.equal(next()?.wake?.review, review.id);
+});
+
 test("unavailable or truncated evidence never warrants an exhaustive no-gap", t => {
 	const f = fixture(t);
 	f.squad.areas.push(...Array.from({ length: 33 }, (_, i) => `src/not-yet-built-${i}`));
 	f.run.policy.direction = "D".repeat(150_000);
 	f.run.effects[0].commit = "e".repeat(40); // A receipt for a different revision is not evidence.
-	const prompt = scoutPrompt(f.cwd, f.run, f.review);
+	const { prompt } = scoutPacket(f.cwd, f.run, f.review);
 	assert.ok(prompt.length < 64 * 1024);
 	assert.match(prompt, /\[truncated:/);
 	assert.match(prompt, /directory roots omitted/);
 	assert.match(prompt, /no verified goal receipt/);
 	assert.match(prompt, /Coverage: PARTIAL[\s\S]*Do not return no-gap/);
 	assert.doesNotMatch(prompt, /Companion check did not run/);
+});
+
+/** @param {import("node:test").TestContext} t @param {string[]} [boundary] @param {Record<string,string>} [extra] */
+function factoryTrial(t, boundary = ["interface"], extra = {}) {
+	const source = ".foundry/pair.json", ids = ["encoder", "display", "unrelated"];
+	const both = `import {existsSync,readFileSync} from 'node:fs';process.exit(['encoder','display'].every(p=>existsSync(p+'/value')&&readFileSync(p+'/value','utf8')==='v2')?0:1)`;
+	return factory(t, "pair", source, {
+		[source]: JSON.stringify({ version: 2, id: "pair", direction: "Display the encoded v2 value.", target: "refs/heads/main",
+			squads: ids.map(id => ({ id, charter: "charter", areas: [id], boundary, checks: ["unit.mjs"] })), goalCheck: "goal.mjs", productCheck: "product.mjs" }),
+		charter: "Replace one complete directory to implement the shared v2 format.", ...Object.fromEntries(boundary.map(p => [p, p])),
+		"goal.mjs": both, "product.mjs": both, "unit.mjs": `import {readFileSync} from 'node:fs';process.exit(readFileSync(process.env.FOUNDRY_DIRECTORY+'/value','utf8')==='v2'?0:1)`, ...extra,
+	});
+}
+const noGap = { outcome: "no-gap", grains: [], evidence: ["charter"], reason: "Nothing owned needs a change." };
+/** @param {string} id @param {string[]} [needs] */
+const build = (id, needs = []) => ({ ...noGap, outcome: "regenerate", grains: [{ id, directory: id, task: `Implement ${id} v2`, check: "unit.mjs", needs }] });
+
+for (const again of [false, true]) test(`waiting for a producer wakes only the interested charter, still waiting: ${again}`, async t => {
+	const f = factoryTrial(t); await f.start();
+	const [encoder, display, other] = f.scouts;
+	const wait = { ...noGap, outcome: "waiting", waitFor: "encoder", reason: "Display must consume the checked v2 encoder." };
+	await display.report(wait); await other.report(noGap);
+	assert.deepEqual(mapSnapshot(await f.status()).scoutIssues, ["display waits for encoder: " + wait.reason]);
+	await encoder.report(build("encoder"));
+	const w = [...f.workers.values()][0]; put(w.cwd, "encoder/value", "v2");
+	await f.runtime(w.cwd).operation("submit", { run: "pair", token: w.token }, w.id); await f.settle();
+	const half = await f.status();
+	assert.equal(half.qualified, null); assert.equal(half.candidate?.receipt?.exit, 1);
+	assert.deepEqual(f.scouts.slice(3).map(j => j.squad), ["display"]);
+	f.owner.turn("owner"); await f.owner.flush(); await f.settle(); assert.equal(f.scouts.length, 4);
+	assert.match(f.scouts[3].prompt, /Checked outputs changed for encoder/);
+	if (again) {
+		await f.scouts[3].report(wait); f.owner.turn("owner"); await f.owner.flush(); await f.settle();
+		assert.equal(f.scouts.length, 4); assert.equal(f.workers.size, 1); assert.equal((await f.status()).qualified, null);
+		return;
+	}
+	await f.scouts[3].report(build("display", ["encoder"]));
+	const d = [...f.workers.values()][1]; put(d.cwd, "display/value", "v2");
+	await f.runtime(d.cwd).operation("submit", { run: "pair", token: d.token }, d.id);
+	const done = await f.status(); assert.ok(done.qualified);
+	assert.equal(done.products?.at(-1)?.receipt?.commit, done.qualified); assert.equal(done.goal?.receipt?.commit, done.qualified);
+	assert.equal(f.workers.size, 2); assert.equal(f.scouts.length, 4);
+});
+
+test("partial packets reject unseen citations and exhaustive no-gap but may obtain a bounded focused read", async t => {
+	const boundary = Array.from({ length: 45 }, (_, i) => `doc-${i}`), f = factoryTrial(t, boundary);
+	await f.start(); const [first, second, third] = f.scouts;
+	assert.equal(first.packet.partial, true); assert.ok(!Object.hasOwn(first.packet.files, "doc-44"));
+	await first.report({ ...noGap, evidence: ["doc-44"] });
+	await second.report(noGap);
+	await third.report({ ...noGap, outcome: "needs-evidence", file: "doc-44" });
+	const s = await f.status();
+	assert.match(String(s.reviews[0].reason), /doc-44.*not delivered/);
+	assert.match(String(s.reviews[1].reason), /partial packet/);
+	const focused = f.scouts[3]; assert.equal(focused.squad, third.squad);
+	assert.match(focused.prompt, /Requested evidence/); assert.match(focused.packet.files["doc-44"], /^[a-f0-9]+$/);
+	await focused.report({ ...build("unrelated"), evidence: ["doc-44"] });
+	assert.equal(f.workers.size, 1);
+});
+
+test("binary metadata is not delivered text, and a focused read cannot cross a charter boundary or loop", async t => {
+	const f = factoryTrial(t, ["binary"], { binary: "a\0b", "display/private": "private display evidence" });
+	await f.start(); const [a, b, c] = f.scouts;
+	assert.match(a.prompt, /binary or non-UTF-8/); assert.ok(!Object.hasOwn(a.packet.files, "binary"));
+	await a.report({ ...noGap, evidence: ["binary"] });
+	await b.report({ ...noGap, outcome: "needs-evidence", file: "binary" });
+	await c.report({ ...noGap, outcome: "needs-evidence", file: "display/private" });
+	const focus = f.scouts[3]; assert.equal(focus.squad, b.squad);
+	await focus.report({ ...noGap, outcome: "needs-evidence", file: "binary" });
+	const { reviews } = await f.status();
+	assert.match(String(reviews[0].reason), /not delivered/);
+	assert.match(String(reviews[2].reason), /outside this charter/);
+	assert.match(String(reviews[3].reason), /No further focused read/);
+	assert.equal(f.scouts.length, 4); assert.equal(f.workers.size, 0);
 });
 
 /** @typedef {Parameters<ReturnType<typeof scoutDefinition>["run"]>[0]} Context */
@@ -115,7 +206,7 @@ function context(agent, signal = new AbortController().signal) {
 }
 
 /** @param {string} id */
-const item = id => ({ id: `review-${id}`, squad: id, base: "a".repeat(40), prompt: `packet-${id}` });
+const item = id => ({ id: `review-${id}`, squad: id, base: "a".repeat(40), prompt: `packet-${id}`, packet: { review: `review-${id}`, base: "a".repeat(40), partial: false, files: {}, outputs: {} } });
 
 test("SDK tool-less scouts deliver fast, null and failed results before a slow sibling", async () => {
 	const batch = ["slow", "fast", "empty", "broken"].map(item), calls = new Map(), reports = new Map();
@@ -180,8 +271,11 @@ test("resume reauthorizes the charter but does not change a journaled agent's pa
 	/** @type {[string, string|undefined][]} */ const calls = [];
 	let attempts = 0, deliveries = 0;
 	const definition = scoutDefinition(() => ({
-		async scoutBatch() { attempts++; return deliveries > 1 ? [] : [{ ...review, prompt: `graph at attempt ${attempts}` }]; },
-		async scoutResult() { if (++deliveries === 1) throw new Error("interrupted persistence"); },
+		async scoutBatch() { attempts++; return deliveries > 1 ? [] : [{ ...review, prompt: `graph at attempt ${attempts}`, packet: { ...review.packet, partial: attempts === 1 } }]; },
+		async scoutResult(_run, _ticket, _actor, _workflow, _id, _raw, pinned) {
+			assert.deepEqual(pinned, { ...review.packet, partial: true });
+			if (++deliveries === 1) throw new Error("interrupted persistence");
+		},
 	}));
 	const ctx = context(async (prompt, options) => {
 		calls.push([prompt, options?.label]);

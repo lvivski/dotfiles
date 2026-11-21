@@ -54,13 +54,26 @@ const stock = {
 	],
 	fault: "product", bad: `(initial,commands)=>{const rows={};for(const c of commands)if(c.op==='sale')sale(initial,rows,c);
 		return Object.fromEntries(Object.keys(initial).map(s=>[s,balance(initial,rows,s)]))}`,
-	shortcut: `(initial,commands)=>{const rows={};for(const c of commands)if(Object.hasOwn(initial,c.sku)){
+	shortcut: `(initial,commands)=>{const rows={};for(const c of commands)if(Object.hasOwn(initial,c.sku.toUpperCase())){
 		if(c.op==='sale')sale(initial,rows,c);else cancel(rows,c)}return Object.fromEntries(Object.keys(initial).map(s=>[s,balance(initial,rows,s)]))}`,
 	gap: "A scanned SKU disappeared from closeout",
 	smoke: "assert.deepEqual(unit({P:3},[{op:'sale',id:'s',sku:'P',n:1}]),{P:2});",
 	invariant: `const sale={op:'sale',id:'s',sku:'P',n:1};assert.deepEqual(unit({P:3},[sale,{...sale,op:'cancel'}]),{P:3},'cancellation did not restore stock');`,
-	journey: `const sale={op:'sale',id:'s',sku:' p ',n:2};assert.deepEqual(unit({P:3,Q:4},[sale,sale,
-		{...sale,id:'oversell',n:5},{...sale,op:'cancel',sku:'Q'},{...sale,op:'cancel'},sale,{...sale,id:'q',sku:'q',n:3}]),{P:3,Q:1},'A scanned SKU disappeared from closeout');`
+	// A later cancellation can hide a dropped scan. Start with enough stock to sell twice,
+	// so rejecting an oversell cannot masquerade as recognizing a retried sale.
+	journey: `const sale={op:'sale',id:'s',sku:' p ',n:2}, commands=[];
+		for(const [command,p,q,reason] of [
+			[sale,3,4,'A scanned SKU disappeared from closeout'],
+			[sale,3,4,'Retrying a sale deducted stock twice'],
+			[{...sale,id:'oversell',n:5},3,4,'A sale exceeded remaining stock'],
+			[{...sale,op:'cancel',sku:'Q'},3,4,'Cancelling the wrong SKU changed stock'],
+			[{...sale,op:'cancel'},5,4,'Cancellation did not restore stock'],
+			[sale,5,4,'Retrying a cancelled sale reopened it'],
+			[{...sale,id:'q',sku:'q',n:3},5,1,'A second SKU was not counted independently']
+		]){
+			commands.push(command);
+			assert.deepEqual(unit({P:5,Q:4},structuredClone(commands)),{P:p,Q:q},reason);
+		}`
 };
 
 const source = ".foundry/policy.json", unitCheck = ".foundry/unit.mjs", productCheck = ".foundry/product.mjs", goalCheck = ".foundry/goal.mjs";

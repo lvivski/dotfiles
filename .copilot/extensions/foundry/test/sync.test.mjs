@@ -28,7 +28,7 @@ for (const shell of ["bash", "zsh"]) {
 		}
 		const installed = [".copilot/extensions/foundry/extension.mjs", ".copilot/extensions/recon/extension.mjs",
 			...["SKILL.md", "references/brief.md", "references/runs.md", "references/assignments.md", "references/handoff.md",
-				"references/metrics.md", "scripts/plans.mjs", "scripts/archive-check.mjs"]
+				"references/metrics.md", "scripts/plans.mjs", "scripts/archive-check.mjs", "scripts/usage.mjs", "scripts/qualification.mjs"]
 				.map(file => `.copilot/skills/foundry/${file}`)];
 		for (const relative of installed) {
 			const source = path.join(repository, relative);

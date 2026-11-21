@@ -7,7 +7,7 @@ import { fail } from "./values.mjs";
 import { decode } from "./snapshot.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
-export const protocol = 12;
+export const protocol = 13;
 /** @param {string} document */
 export const checksum = document => createHash("sha256").update(document).digest("hex");
 

@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { writerRequest } from "../work/decisions.mjs";
 import { factory, git, put } from "./fixture.mjs";
 
 const run = "lookup", source = ".foundry/lookup.json";
@@ -44,7 +43,7 @@ test("an open owner question is claimed once across reconnect; an independent wr
 	const done = await f.status(); assert.ok(done.qualified);
 	assert.equal(done.handoff?.commit, done.qualified);
 	assert.deepEqual(done.questions, []);
-	assert.equal(done.handoff?.writers[0].id, w.id);
+	assert.equal(done.handoff?.writers, undefined, "ordinary handoff does not invite cleanup");
 	assert.equal(done.metrics?.qualified.commit, done.qualified);
 	assert.equal(done.metrics?.firstWriter.state, "bound");
 	assert.deepEqual(calls.filter(c => c.tool === "send_session_message").map(c => [
@@ -58,29 +57,54 @@ test("an open owner question is claimed once across reconnect; an independent wr
 	assert.equal((await f.status(w.id)).handoff, undefined); assert.equal((await f.status(w.id)).metrics, undefined);
 });
 
-for (const state of ["waiting", "unknown", "wrong writer", "superseded"]) test(`route a current native question without guessing: ${state}`, async t => {
-	const f = trial(t), started = latch(), gate = latch();
-	let dialogs = 0, lookups = 0;
-	const owner = f.runtime(f.root, {
-		ask: async () => { dialogs++; return null; },
-		writerInput: async writer => {
-			assert.equal(writer, "worker-1"); lookups++; started.resolve(); await gate.promise;
-			return writerRequest(writer, state === "waiting" || state === "wrong writer" ? { resultType: "success", textResultForLlm: JSON.stringify({
-				id: state === "wrong writer" ? "other" : writer, awaiting_user_input: true,
-				awaiting_input: { request_id: "native-request", question: "Which currency?", choices: ["EUR", "CAD"] },
-			}) } : state === "unknown" ? { resultType: "failure" } : { resultType: "success", structuredContent: { id: writer, awaiting_user_input: false } });
-		},
-	});
-	await f.start(owner); await f.scouts[1].report(regenerate); await f.scouts[0].report(question);
-	await started.promise;
-	if (state === "superseded") { put(f.root, "news", "moved target"); git(f.root, "add", "news"); git(f.root, "commit", "-qm", "independent edit"); }
-	gate.resolve(); await owner.flush();
-	const s = await f.status(), delivery = s.reviews[0].decision;
-	if (state === "waiting") assert.deepEqual(delivery, { status: "writer", writer: "worker-1", request: "native-request" });
-	else if (state !== "superseded") assert.ok(delivery?.status === "unavailable" && delivery.reason.includes("worker-1"));
-	else assert.equal(delivery, undefined);
-	assert.equal(dialogs, 0); assert.equal(lookups, 1);
-	assert.equal(s.nodes[0].state, "writing");
+for (const moved of [false, true]) test(`a charter clarification wakes only its current review, target moved: ${moved}`, async t => {
+	const f = trial(t), opened = latch(), release = latch();
+	let asks = 0;
+	const owner = f.runtime(f.root, { ask: async () => {
+		asks++; opened.resolve(); await release.promise; return "Use EUR";
+	}, execute: (tool, args, id) => {
+		assert.notEqual(tool, "get_session", "an unrelated writer's pending request is not a charter decision");
+		return f.execute(tool, args, id);
+	} });
+	await f.start(owner);
+	await f.scouts[1].report(regenerate);
+	await f.scouts[0].report(question); await opened.promise;
+	if (moved) { put(f.root, "news", "new tip"); git(f.root, "add", "news"); git(f.root, "commit", "-qm", "independent change"); }
+	release.resolve(); await owner.flush(); await f.settle();
+	const follow = f.scouts.slice(2);
+	if (moved) assert.equal(follow.length, 0);
+	else {
+		assert.deepEqual(follow.map(j => j.squad), ["catalog"]);
+		assert.match(follow[0].prompt, /Which currency.*Use EUR/);
+		await follow[0].report(question); owner.turn("owner"); await owner.flush(); await f.settle();
+		assert.equal(asks, 1); assert.equal(f.scouts.length, 3);
+		assert.match(String((await f.status()).questions?.[0].delivery?.status), /unavailable/);
+	}
+	assert.deepEqual((await f.status()).reviews[0].decision, { status: "answered", answer: "Use EUR" });
+	assert.equal(f.workers.size, 1);
+});
+
+for (const hold of ["none", "pause", "plan"]) test(`an in-scope answer reaches the stalled charter once, hold: ${hold}`, async t => {
+	const f = trial(t), opened = latch(), release = latch();
+	let mode = "interactive", asks = 0;
+	const owner = f.runtime(f.root, { mode: async () => mode, ask: async () => { asks++; opened.resolve(); await release.promise; return "Use EUR"; } });
+	await f.start(owner); await f.scouts[0].report({ ...question, outcome: "no-gap" }); await f.scouts[1].report(question);
+	await opened.promise; assert.match(String((await f.status()).blocker), /No actionable grain/);
+	if (hold === "pause") await owner.operation("pause", { run }, "owner");
+	if (hold === "plan") mode = "plan";
+	release.resolve(); await owner.flush(); await f.settle();
+	assert.equal((await f.status()).reviews[1].decision?.status, "answered");
+	if (hold !== "none") {
+		assert.equal(f.scouts.length, 2); assert.equal(f.workers.size, 0);
+		mode = "interactive";
+		if (hold === "pause") await f.start(owner);
+		else { owner.turn("owner"); await owner.flush(); await f.settle(); }
+	}
+	const fresh = f.scouts[2]; assert.equal(fresh.squad, "lookup"); assert.match(fresh.prompt, /Use EUR/);
+	await fresh.report(regenerate);
+	const [w] = f.workers.values(); put(w.cwd, "lib/lookup/index", "EUR");
+	await f.runtime(w.cwd).operation("submit", { run, token: w.token }, w.id);
+	assert.ok((await f.status()).qualified); assert.equal(f.scouts.length, 3); assert.equal(asks, 1);
 });
 
 test("an already-satisfied baseline sends the checked SHA without inventing a writer or an archive target", async t => {
@@ -89,17 +113,15 @@ test("an already-satisfied baseline sends the checked SHA without inventing a wr
 	const owner = f.runtime(f.root, { notify: async message => { notes.push(message); return "admitted"; } });
 	const done = await f.start(owner);
 	assert.equal(done.qualified, f.tip); assert.equal(done.metrics?.firstWriter.state, "not-applicable");
-	assert.equal(done.metrics?.firstWriter.elapsedMs, null); assert.deepEqual(done.handoff?.writers, []);
+	assert.equal(done.metrics?.firstWriter.elapsedMs, null); assert.equal(done.handoff?.writers, undefined);
 	owner.turn("owner"); await owner.flush();
 	assert.equal(notes.length, 1); assert.ok(notes[0].includes(f.tip));
 });
 
 test("a scout dispatched by a finished writer wakes the owner without consulting the old writer for input", async t => {
 	const f = trial(t, "process.exit(1)"), questionsAsked = [];
-	let lookups = 0;
 	/** @type {string[]} */ const notices = [];
-	const owner = f.runtime(f.root, { writerInput: async () => { lookups++; throw new Error("Finished writer unavailable"); },
-		ask: async prompt => { questionsAsked.push(prompt); return "Use EUR"; } });
+	const owner = f.runtime(f.root, { ask: async prompt => { questionsAsked.push(prompt); return "Use EUR"; } });
 	await f.start(owner);
 	await f.scouts[0].report({ ...question, outcome: "no-gap" });
 	await f.scouts[1].report(regenerate);
@@ -116,9 +138,8 @@ test("a scout dispatched by a finished writer wakes the owner without consulting
 	assert.equal(questionsAsked.length, 0);
 	assert.deepEqual(notices.map(n => n.split("\n")[0]), [`Foundry decision: ${run} ${scout.id}`]);
 	owner.turn("owner"); await owner.flush();
-	assert.equal(lookups, 0);
 	assert.equal(questionsAsked.length, 1);
-	assert.deepEqual((await f.status()).questions?.[0].delivery, { status: "answered", answer: "Use EUR" });
+	assert.deepEqual((await f.status()).reviews.find(r => r.id === scout.id)?.decision, { status: "answered", answer: "Use EUR" });
 });
 
 test("an unavailable native handoff route prepares only the notice; refusal cannot revoke or replay qualification", async t => {

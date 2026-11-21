@@ -12,7 +12,7 @@ import { record, text } from "../work/values.mjs";
 
 /** @typedef {Parameters<typeof createRuntime>[1]} Host */
 /** @typedef {ReturnType<typeof createRuntime>} Runtime */
-/** @typedef {{id:string,squad:string,base:string,prompt:string,issuer:string,dispatch:string,workflowId:string,report:(raw:unknown)=>Promise<void>}} Scout */
+/** @typedef {{id:string,squad:string,base:string,prompt:string,packet:import("../work/model.js").Packet,issuer:string,dispatch:string,workflowId:string,report:(raw:unknown)=>Promise<void>}} Scout */
 /** @param {string} cwd @param {...string} args */
 export const git = (cwd, ...args) => execFileSync("git", ["-C", cwd, "-c", "core.hooksPath=/dev/null", "-c", "user.name=Fixture", "-c", "user.email=test@invalid", ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 /** @param {string} dir @param {string} p @param {string} bytes */
@@ -52,7 +52,7 @@ export function workflowHost() {
 		const registration = runtime.scoutBatch(run, dispatch, issuer, workflowId).then(jobs => {
 			const waiting = new Set(jobs.map(job => job.id));
 			for (const job of jobs) scouts.push({ ...job, issuer, dispatch, workflowId, async report(raw) {
-				await runtime.scoutResult(run, dispatch, issuer, workflowId, job.id, raw);
+				await runtime.scoutResult(run, dispatch, issuer, workflowId, job.id, raw, job.packet);
 				waiting.delete(job.id);
 				if (!waiting.size) finish();
 				await settle();
@@ -101,7 +101,7 @@ export function nativeHost(root, prefix = "worker") {
 /** workers/inbox are writer sessions and their token deliveries only. scouts is an append-only
  * delivery log in batch/job order. start([ownerRuntime]) and settle() wait for registration, not
  * reports. Call scout.report(rawObject) to deliver to the issuing runtime; a reloaded issuer can
- * use scoutResult(run, scout.dispatch, scout.issuer, scout.workflowId, scout.id, rawObject).
+ * return its journaled packet receipt together with its report through scoutResult.
  * @param {import("node:test").TestContext} t @param {string} run @param {string} source @param {Record<string,string>} files */
 export function factory(t, run, source, files) {
 	const dir = mkdtempSync(path.join(tmpdir(), "foundry-graph-")), root = path.join(dir, "repo");
@@ -115,7 +115,7 @@ export function factory(t, run, source, files) {
 	/** @param {string} cwd @param {Partial<Host>} [options] */
 	function runtime(cwd, options) {
 		/** @type {Runtime} */
-		const r = createRuntime(cwd, { mode: async () => "interactive", permissionBlocker: async () => null, confirm: async () => true, select: async () => null, execute,
+		const r = createRuntime(cwd, { mode: async () => "interactive", permissionBlocker: async () => null, confirm: async () => true, execute,
 			scout: (id, dispatch, actor) => discovery.launch(r, id, dispatch, actor),
 			notify: async message => {
 				const job = assignment(message);

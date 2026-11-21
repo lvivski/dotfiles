@@ -10,7 +10,8 @@ import { checked } from "./plan.mjs";
 import { capture, commitAt, retain, rootAt, verifyContracts } from "./product.mjs";
 import { refusedCall } from "./recovery.mjs";
 import { blockReview, questions, reviews } from "./reviews.mjs";
-import { scoutPrompt } from "./scouts.mjs";
+import { scoutPacket } from "./scouts.mjs";
+import { isPacket } from "./snapshot.mjs";
 import { status } from "./status.mjs";
 import { FoundryError, digest, fail, fields, name, record, text } from "./values.mjs";
 
@@ -19,22 +20,22 @@ import { FoundryError, digest, fail, fields, name, record, text } from "./values
 /** @typedef {{run:string,id:string,actor:string,inFlight?:boolean,recoveredOn?:number}} Call */
 /** @typedef {{runId:string,status:string,error?:string,reason?:string}} ScoutEnvelope */
 /** @typedef {{execute:(tool:string,args:Effect["args"],id:string)=>Promise<unknown>,notify:(message:string)=>Promise<string>,recover?:(effect:Effect)=>Promise<unknown>,
- * ask?:(message:string)=>Promise<string|null>, writerInput?:(writer:string)=>Promise<string|null>,
+ * ask?:(message:string)=>Promise<string|null>,
  * scout?:(run:string,dispatch:string,actor:string)=>Promise<ScoutEnvelope>,scoutState?:(workflowId:string)=>Promise<ScoutEnvelope>,
- * mode:()=>Promise<string>,helpersRunning?:()=>Promise<boolean>,permissionBlocker:()=>Promise<import("./permissions.mjs").PermissionBlock|null>,confirm:(message:string)=>Promise<boolean>,select:(message:string,options:string[])=>Promise<string|null>,log?:(message:string)=>void}} Host */
+ * mode:()=>Promise<string>,helpersRunning?:()=>Promise<boolean>,permissionBlocker:()=>Promise<import("./permissions.mjs").PermissionBlock|null>,confirm:(message:string)=>Promise<boolean>,log?:(message:string)=>void}} Host */
 /** @param {Run} run @param {string} [reason] */
 function pause(run, reason) {
 	run.active = false;
-	delete run.capacity?.offer;
 	if (reason) run.pauseReason = reason;
 }
 
-/** @param {{policy:Run["policy"],capacity?:{limit:number}}} run @param {string} [retry] */
-function activationPrompt({ policy, capacity }, retry) {
+/** @param {Run["policy"]} policy @param {string} [retry] */
+function activationPrompt(policy, retry) {
 	const mode = policy.goalCheck ? `ongoing goal (finish check: ${policy.goalCheck})` : policy.seed ? "one-off" : "ongoing";
-	const staffing = capacity ? `up to ${capacity.limit} concurrent scout/writer assignments (not counting in-session helpers)` : "no worker cap";
+	const staffing = policy.workers === undefined ? "no worker cap" : `up to ${policy.workers} concurrent scout/writer assignments (not counting in-session helpers)`;
 	return [
 		`Start ${mode} Foundry run ${policy.id} at ${policy.base.slice(0, 12)} on ${policy.target} with ${staffing} and ${policy.repairs} repairs per grain?`,
+		...(policy.assignments === undefined ? [] : [`Total assignment limit for the entire run: ${policy.assignments} (scouts, writers and bounded repairs; not helpers, checks or original-call retries). Resuming does not reset it.`]),
 		policy.direction,
 		...(!policy.seed ? ["Discovery uses tool-less workflow agents on committed evidence. Only writers get worktrees. Resuming may retry interrupted discovery."] : []),
 		...policy.squads.flatMap(s => "areas" in s ? [`${s.id} may assign work in ${s.areas.join(", ")} using ${s.checks.join(", ")}.`] : []),
@@ -64,7 +65,6 @@ export function createRuntime(directory, host) {
 	/** @type {Set<string>} */ const known = new Set();
 	/** @type {Set<Promise<unknown>>} */ const background = new Set();
 	/** @type {Set<{run:string,actor:string,token:string}>} */ const submitting = new Set();
-	/** @type {Map<string,{token:string,open:boolean}>} */ const dialogs = new Map();
 	/** @type {Set<string>} */ const asking = new Set();
 	/** @type {Map<string,Call>} */ const nativeCalls = new Map();
 	/** @type {Set<string>} */ const scoutCalls = new Set();
@@ -149,37 +149,6 @@ export function createRuntime(directory, host) {
 	}
 	/** @param {string} id @param {Effect} effect @param {string} callId */
 	const claim = (id, effect, callId) => db().update(id, run => issue(run, effect, callId));
-	/** Only the owner session presents choices. The proposal and decision survive reload, not the UI.
-	 * @param {Run} run */
-	async function askCapacity({ id, owner, capacity }) {
-		const offer = capacity?.offer, prior = dialogs.get(id);
-		if (!offer || prior?.open || prior?.token === offer.id) return;
-		const { limit } = capacity;
-		const dialog = { token: offer.id, open: true }, keep = `Keep ${limit}`, raise = `Increase to ${offer.to}`;
-		dialogs.set(id, dialog);
-		const waiting = offer.to - limit;
-		let choice;
-		try {
-			choice = await host.select(`Foundry ${id} is at its worker cap of ${limit}. ${waiting} more ${waiting === 1 ? "assignment is" : "assignments are"} ready. Work continues while you decide; Keep means no more capacity questions for this run.`, [keep, raise]);
-		} catch (error) {
-			throw new Error(`Could not ask about the worker cap for ${id}; continuing at ${limit}: ${String(error)}`);
-		} finally {
-			dialog.open = false;
-		}
-		if (!await executable()) return;
-		if (choice !== null && choice !== keep && choice !== raise) fail("invalid_choice", "Unknown worker-cap decision; cap unchanged");
-		change(id, r => {
-			if (!r.active || r.capacity?.limit !== limit || expired(r)) return;
-			if (choice === raise) {
-				if (r.capacity.offer?.id !== offer.id) return;
-				advance(cwd(), r, owner, true);
-				if (r.capacity.offer?.id !== offer.id) return;
-				r.capacity.limit = offer.to;
-			} else r.capacity.kept = true;
-			delete r.capacity.offer;
-		});
-		if (choice === raise) await drive(id, owner, true);
-	}
 	/** Merge wakeups for one issuer, never its in-flight calls or permission dialogs.
 	 * @param {string} id @param {string} actor @param {boolean} [discover] @param {boolean} [recover] @returns {Promise<void>} */
 	function drive(id, actor, discover = false, recover = true) {
@@ -229,13 +198,10 @@ export function createRuntime(directory, host) {
 			});
 			if (actor === run.owner && run.active && !expired(run) && host.ask && !asking.has(id) && questions(run).some(r => !r.decision)) {
 				asking.add(id);
-				track(presentQuestions(cwd(), db(), id, actor, host, executable).finally(() => asking.delete(id)));
+				track(presentQuestions(cwd(), () => closed ? undefined : db(), id, actor, host, executable, refill).finally(() => asking.delete(id)));
 			}
 			const batch = reservations(run, actor).filter(e => e.state === "ready" || e.permissionHold);
-			if (!batch.length) {
-				if (actor === run.owner && run.active && !expired(run) && run.capacity?.offer) track(askCapacity(run));
-				return;
-			}
+			if (!batch.length) return;
 			if (await dispatchBlocker(id, actor, batch) !== null) return;
 			const ready = batch.filter(e => e.state === "ready");
 			if (!ready.length) return refill(); // Prepared calls are visible again; this issuer can now plan.
@@ -303,10 +269,10 @@ export function createRuntime(directory, host) {
 			return r;
 		});
 		return batchOf(run, ticket, actor).filter(awaitingReply).map(r =>
-			({ id: r.id, squad: r.squad, base: r.base, prompt: scoutPrompt(cwd(), run, r) }));
+			({ id: r.id, squad: r.squad, base: r.base, ...scoutPacket(cwd(), run, r) }));
 	}
-	/** @param {string} id @param {string} ticket @param {string} actor @param {string} workflowId @param {string} reviewId @param {unknown} raw */
-	async function scoutResult(id, ticket, actor, workflowId, reviewId, raw) {
+	/** @param {string} id @param {string} ticket @param {string} actor @param {string} workflowId @param {string} reviewId @param {unknown} raw @param {unknown} [packet] */
+	async function scoutResult(id, ticket, actor, workflowId, reviewId, raw, packet) {
 		const changed = db().update(id, r => {
 			const q = batchOf(r, ticket, actor).find(e => e.id === reviewId && e.workflowId === workflowId);
 			if (!q) fail("foreign_assignment", "Only the bound workflow may return this report");
@@ -315,7 +281,9 @@ export function createRuntime(directory, host) {
 			const squad = r.policy.squads.find(s => s.id === q.squad) ?? fail("invalid_charter", "No matching charter");
 			try {
 				if (raw === null) fail("missing_report", "No structured scout report was returned");
-				q.observation = parseObservation(squad, raw); q.state = "reported";
+				if (!isPacket(packet) || packet.review !== q.id || packet.base !== q.base)
+					fail("missing_packet", "Missing or mismatched journaled scout packet");
+				q.observation = parseObservation(squad, raw); q.packet = packet; q.state = "reported";
 			} catch (error) {
 				if (!(error instanceof FoundryError)) throw error;
 				blockReview(q, `Invalid scout result: ${error.message}`);
@@ -366,7 +334,7 @@ export function createRuntime(directory, host) {
 		if (!prior?.active) {
 			const retry = prior && missingObservation(prior) ? prior.goal : undefined;
 			await requireReadyOwner(origin);
-			if (!await host.confirm(activationPrompt(prior ?? { policy, capacity: policy.workers ? { limit: policy.workers } : undefined }, retry?.commit))) fail("activation_refused", "Foundry was not activated");
+			if (!await host.confirm(activationPrompt(prior?.policy ?? policy, retry?.commit))) fail("activation_refused", "Foundry was not activated");
 			await requireReadyOwner(origin);
 			if (prior)
 				change(policy.id, r => {
@@ -401,8 +369,8 @@ export function createRuntime(directory, host) {
 		}
 		const id = name(a.run, "run");
 		if (op === "status") {
-			fields(a, ["run"]);
-			return status(read(id), actor);
+			fields(a, ["run", "detail"]);
+			return status(read(id), actor, a.detail);
 		}
 		if (op === "pause") {
 			fields(a, ["run"]);

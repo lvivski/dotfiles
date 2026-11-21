@@ -19,7 +19,7 @@ export function assess(cwd, run, actor, target, commit) {
 export function qualify(run, actor, product) {
 	product.qualifiedAt = Date.now();
 	reserveNotice(run, actor, product.check, "handoff",
-		`Foundry ${run.id} qualified ${product.commit}. The target was not changed. Read foundry_status({run:"${run.id}"}) for the checked product and named writer handoff. Archive is separate and opt-in; do not archive on this notice.`);
+		`Foundry ${run.id} qualified ${product.commit}. The target was not changed. Read foundry_status({run:"${run.id}"}) for the checked product and its receipts.`);
 }
 
 /** Gate graph admission on the exact baseline or latest checkpoint, never on a worker's report.
@@ -64,7 +64,6 @@ export function goalAllowsWork(cwd, run, actor, target, retry) {
 	if (last) {
 		qualify(run, actor, last);
 		run.active = false;
-		delete run.capacity?.offer;
 		for (const r of reviews(run).filter(reading)) blockReview(r, "Goal met; no further review is needed");
 	} else if (!run.join) {
 		// The baseline already satisfies the goal. Check its milestone invariants without hiring a writer.

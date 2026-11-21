@@ -2,7 +2,8 @@ import { commitAt, committedFile, outside, regularFiles } from "./product.mjs";
 import { fail, fields, integer, name, names, record, relative, text } from "./values.mjs";
 
 /** @param {unknown} outcome @param {number} grains @returns {outcome is import("./model.js").Observation["outcome"]} */
-export const validOutcome = (outcome, grains) => grains > 0 ? outcome === "regenerate" : outcome === "no-gap" || outcome === "needs-decision";
+export const validOutcome = (outcome, grains) => grains > 0 ? outcome === "regenerate" :
+	outcome === "no-gap" || outcome === "needs-decision" || outcome === "waiting" || outcome === "needs-evidence";
 
 /** @param {unknown} value @param {string} label */
 function list(value, label) {
@@ -105,8 +106,8 @@ export function readPolicy(cwd, source) {
 	if (goalCheck && row.seed !== undefined)
 		fail("invalid_goal", "seed selects a one-off; omit seed and use squads for a final goal");
 	const limits = row.limits === undefined ? {} : record(row.limits);
-	fields(limits, ["workers", "repairs", "deadline"]);
-	const { workers, repairs = 1 } = limits;
+	fields(limits, ["workers", "assignments", "repairs", "deadline"]);
+	const { workers, assignments, repairs = 1 } = limits;
 	const deadline = limits.deadline === undefined ? undefined : text(limits.deadline, "ISO deadline");
 	if (deadline && !Number.isFinite(Date.parse(deadline)))
 		fail("invalid_limit", "Invalid deadline");
@@ -123,6 +124,7 @@ export function readPolicy(cwd, source) {
 		files, squads, ...(seed ? { seed } : {}),
 		...(goalCheck ? { goalCheck } : {}),
 		...(workers === undefined ? {} : { workers: integer(workers, 1, "worker limit") }),
+		...(assignments === undefined ? {} : { assignments: integer(assignments, 0, "total assignment limit") }),
 		repairs: integer(repairs, 0, "repair limit"), ...(deadline ? { deadline } : {})
 	};
 	return { policy, grains: grains.map(g => {

@@ -45,18 +45,23 @@ export interface Policy {
 	files: string[];
 	squads: Squad[];
 	workers?: number;
+	assignments?: number;
 	repairs: number;
 	deadline?: string;
 	seed?: string[];
 }
 
 export interface Observation {
-	outcome: "regenerate" | "no-gap" | "needs-decision";
+	outcome: "regenerate" | "no-gap" | "needs-decision" | "waiting" | "needs-evidence";
 	reason: string;
 	evidence: string[];
 	grains: (string | Proposal)[];
 	replace?: string[];
+	waitFor?: string;
+	file?: string;
 }
+
+export type Packet = { review: string; base: string; files: Record<string, string>; outputs: Record<string, string>; partial: boolean };
 
 export interface Node {
 	grain: Grain;
@@ -92,9 +97,11 @@ export interface Review extends Dispatch {
 	squad: string;
 	base: string;
 	version: string;
+	packet?: Packet;
+	wake?: { review: string; key: string };
 	observation?: Observation;
 	decision?: { status: "presenting" | "dismissed" } | { status: "answered"; answer: string }
-		| { status: "writer"; writer: string; request: string } | { status: "unavailable"; reason: string };
+		| { status: "unavailable"; reason: string };
 }
 
 export interface Receipt {
@@ -127,7 +134,8 @@ interface Dispatch {
 }
 
 export interface NativeCall extends Dispatch {
-	kind: "writer" | "component" | "product" | "goal" | "repair" | "capacity" | "decision" | "handoff";
+	kind: "writer" | "component" | "product" | "goal" | "repair" | "decision" | "handoff";
+	inlineRepair?: string;
 	tool: "create_session" | "bash" | "send_session_message" | "session.send";
 	state: "ready" | "issued" | "uncertain" | "ordinary" | "done" | "refused";
 }
@@ -139,7 +147,6 @@ export interface Run {
 	owner: string;
 	policy: Policy;
 	activatedAt: number;
-	capacity?: { limit: number; kept: boolean; offer?: { id: string; to: number } };
 	active: boolean;
 	pauseReason?: string;
 	nodes: Record<string, Node>;

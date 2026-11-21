@@ -1,6 +1,6 @@
 # Measure one Foundry run
 
-Read `foundry_status({run})` **once in the owning session**. Use its `metrics`, not a factory with a similar name. This is an on-demand report: don't start or resume a run, launch helpers, poll for completion, or export a transcript.
+Ordinary status already reports binding and qualification latencies; answer timing questions from those facts when sufficient. **Only for an explicit usage or hosted-kickoff report**, read `foundry_status({run, detail:"usage"})` once in the owning session. Use its private `metrics`, not a factory with a similar name. Never include the identity/history projection in a portable qualification record. Don't start or resume a run, launch helpers, poll for completion, or export a transcript.
 
 | Question | Evidence to report |
 |---|---|
@@ -11,7 +11,7 @@ Read `foundry_status({run})` **once in the owning session**. Use its `metrics`, 
 
 ### Read kickoff timing and observed model usage
 
-1. Use the [read-only query builder](../../../extensions/foundry/work/metrics.mjs). It reads JSON from standard input and prints a native `session_store_sql` query, **not** a usage estimate. From the skill base directory run `node ../../extensions/foundry/work/metrics.mjs`. Supply `{"metrics": …}` using only the owning status's `metrics` object. For an unfinished run, also give `asOf` as the UTC epoch millisecond of that status snapshot and label the report **through that instant**. It is not a qualification time. A qualified run always uses the qualifying product's clock instead.
+1. Use the [read-only query builder](../scripts/usage.mjs). It reads JSON from standard input and prints a native `session_store_sql` query, **not** a usage estimate. From the skill base directory run `node scripts/usage.mjs`. Supply `{"metrics": …}` using only the owning status's `metrics` object. For an unfinished run, also give `asOf` as the UTC epoch millisecond of that status snapshot and label the report **through that instant**. It is not a qualification time. A qualified run always uses the qualifying product's clock instead.
 2. If the builder returns `query: null`, report the reason. Otherwise run its single exact query with `session_store_sql`, `source: "cloud"` (personal scope). Read only the cloud result; local history IDs are a separate namespace. No raw prompts or submit tokens need to leave the session; the query compares message hashes in the native store. No read of the Foundry SQLite file or application data directory is required.
 3. Read `hosted_kickoff_elapsed_ms` per writer even when there are no usage records. `first_hosted_kickoff_elapsed_ms` is the minimum only if **every** confirmed writer has a verified kickoff and no creation is unconfirmed. With missing, ambiguous or partial history the run's first kickoff is **unknown**; don't substitute the earliest visible row or the binding latency. No writer was required on a qualified no-writer baseline.
 4. Show the `observed writer-session usage only` rows **by native writer and model**: usage records, input tokens, output tokens. A measured zero is a number; a null is **unknown**. Preserve unresolved writers and missing counters alongside measured rows. Cost, credits and cache usage are unknown; don't infer them from token counts.

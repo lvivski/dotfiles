@@ -1,10 +1,41 @@
 # Hand the checked product to its owner
 
-In the **owning session**, read `foundry_status({run})`. A notice is a prompt to read, not evidence or consent. On non-null `handoff`, tell the operator: **“Checked product: `<handoff.commit>` against `<handoff.targetRef>` at `<handoff.target>`. The branch was not updated.”** Use the full OIDs. For review, `git diff <target> <commit>` uses the checked pair even if the branch later moves. Don't land the product. A component receipt, idle notification, or goal checkpoint without acceptance is not this handoff.
+In the owning session, read `foundry_status({run})`. For a non-null `handoff`, report the outcome in one sentence, using full object IDs: **“Goal passed at `<commit>` against `<targetRef>` at `<target>`. The branch was not updated.”** For `mode: "one-off"` say **“Seeded product passed”** instead; for `"ongoing"` say **“Product check passed; discovery has no final goal.”** For a goal checkpoint without acceptance, say the goal hasn't qualified. An idle notification or component pass is not a product verdict.
 
-`handoff.writers` are **prospects**, not an archive list. Each is a current, included, component-checked grain with a confirmed `create_session` receipt issued by the owner. A writer can create another writer; the run owner does not thereby own the grandchild. Skip both delegated writers and known delegating parents. Never substitute an old worker, scout, helper, sibling, name match or cascading archive. Ongoing legacy discovery can report a checked revision without offering writers. An empty list is a successful product handoff; keep the sessions.
+Stop there. Keep the sessions. No archive offer, usage query, export, landing or push follows from a notice or status read. `git diff <target> <commit>` compares what was actually checked even if the branch has since moved.
 
-## Inspect one writer, read-only
+## Export a goal record on request
+
+In the owner, read `foundry_status({run, detail:"proof"})` afresh. Save **only** its non-null `qualification` object as `qualification.json` at the operator's chosen location. A null record means no export: don't assemble a replacement from status, Git or a writer's claim. A passing `productCheck` alone (including a v1 seeded or ongoing product) is not a goal. A v1 fixed-grain goal and a v2 chartered goal both need separate runner receipts on the same accepted commit; a baseline may qualify with no outputs.
+
+`foundry-qualification/v1` names the committed contract and direction, checked target ref and revision, qualified commit, and the evaluator path, commit and exit code for each verdict. `outputs` describes the pins declared by this accepted join, not every retired assignment. Each includes its captured version, charter, specification, boundary files, accepted task where available (v1 uses the pinned specification), component receipt, reviewed base, parentless generation, and direct/transitive input pins. Paths to conserved files resolve at `contract.commit`; evaluator paths resolve at the receipt's commit. The record omits native IDs, tokens, kickoffs, decisions/answers, usage and raw evaluator output. Review the included behavior text and repository paths before sharing.
+
+The JSON is an **owner-reported result**, not a signature, permission to execute the evaluators, or a way to resume the ledger. Git verifies object identities, not who ran the checks. Obtain the record through a trusted channel.
+
+### Transfer the Git objects only when requested
+
+An ordinary clone need not have the product or its **parentless** captures and generations. If the operator also wants those bytes, choose a private staging directory outside the checkout and review the disclosure first: the bundle contains the referenced trees **and reachable history**, not just the diff. Use a trusted copy of [qualification.mjs](../scripts/qualification.mjs), Git and Node. `helper`, `manifest` and `bundle` below stand for absolute paths selected by the operator; `bundle` must be a new file.
+
+```sh
+# From the complete source checkout, where Foundry retained the pins:
+node "$helper" pack "$bundle" < "$manifest"
+
+# Transfer qualification.json and the bundle by the operator's chosen channel.
+# From a clean, independent clone of the same repository and object format:
+node "$helper" import "$bundle" < "$manifest"
+```
+
+If making the clean clone from a local repository, use `git clone --no-local --no-tags --single-branch --branch "$branch" -- "$source" "$dest"` (`branch` is the short target name). This copies branch history rather than hard-linking the entire source object store.
+
+`pack` reads only the content-addressed refs needed by this record, not every run or branch. `import` checks the exact advertised IDs and refs, verifies and unbundles the objects, then creates only `refs/foundry/objects/<oid>` in one transaction. It refuses missing/extra heads, mismatched object IDs or existing destination pins; a failed import may leave unreachable objects, not a partially updated branch. Neither side checks out, updates a target, contacts a remote, pushes or installs Foundry. Use `git diff <target.commit> <commit>` and `git show <receipt.commit>:<receipt.check>` for inspection. Review or landing is a separate decision.
+
+If separately asked to replay **trusted** checks, use a disposable detached checkout at `qualification.commit`, not the moving target branch. Run the recorded evaluator paths from that root with the required environment/observations; for `productCheck`, `FOUNDRY_OUTPUTS` is the JSON map of output IDs to directories. The original receipts and a new replay are different evidence.
+
+## Only on a separate cleanup request
+
+Read `foundry_status({run, detail:"cleanup"})` in the owning session. Its private `handoff.writers` are **prospects**, not an archive list. Each is a current, included, component-checked grain with a confirmed `create_session` receipt issued by the owner. A writer can create another writer; the run owner does not thereby own the grandchild. Skip both delegated writers and known delegating parents. Never substitute an old worker, scout, helper, sibling, name match or cascading archive. Ongoing legacy discovery can report a checked revision without offering writers. With no prospects, keep the sessions.
+
+### Inspect one writer, read-only
 
 Use the [preflight](../scripts/archive-check.mjs) **from the canonical root of the owner's local checkout**. It reads JSON on stdin; supply values as data, never interpolate session names/paths into executable shell text. For each prospect, build `{ "handoff": <fresh owner status.handoff>, "native": <facts below> }`. The following are normalized observations, **not** assumed response fields. Use the actual ID returned by native creation. If the host exposes multiple ID forms, require an authoritative match, never translate by name. Don't put a default `false` on a missing field.
 
@@ -26,10 +57,10 @@ Run `node <skill-base-dir>/scripts/archive-check.mjs offer` with that JSON on st
 
 This deliberately narrow check can decline harmless work: staged changes, empty extra directories, special/linked files, missing reflogs, uncommon Git layouts and moved targets. It checks Git-representable content, not the value of ACLs, extended attributes, mount contents or app data. Require separate evidence for material outside that model; if unique or unverifiable, keep. Never clean, commit, stash, delete or “fix” a writer to make the check pass.
 
-## Explicit choice and last check
+### Explicit choice and last check
 
 1. Present each **verified** writer by its display name, exact ID and grain at the checked product SHA. Offer **Keep** (default) or **Archive _name_ (_ID_)**. Explain that native Archive stops its CLI and removes the worktree; session history remains. Retain the exact `offer` for that individual. A run start, status request, silence, “all idle”, general cleanup request, notification or a worker message is **not** this choice.
-2. Only for an unambiguous, direct operator selection in this owner, read `foundry_status({run})` and **all** native evidence again. Run `node <skill-base-dir>/scripts/archive-check.mjs recheck` with `{ "handoff": <new projection>, "native": <new facts>, "selected": <the exact offer the operator selected> }`. Never reuse the earlier inputs or fabricate a selection from the new status. This reruns the Git/filesystem proof as well; an earlier successful offer is not a lease.
+2. Only for an unambiguous, direct operator selection in this owner, read `foundry_status({run, detail:"cleanup"})` and **all** native evidence again. Run `node <skill-base-dir>/scripts/archive-check.mjs recheck` with `{ "handoff": <new projection>, "native": <new facts>, "selected": <the exact offer the operator selected> }`. Never reuse the earlier inputs or fabricate a selection from the new status. This reruns the Git/filesystem proof as well; an earlier successful offer is not a lease.
 3. On exit 0 with `{ "tool": "archive_session", "arguments": { "id": "…" } }`, **immediately** call the native `archive_session({id})` in the owner for that ID only. Do not batch, loop over a run, use Delete, or substitute shell cleanup. Respect any native confirmation/refusal. A delay, intervening change, lost result or uncertainty means stop; never automatically retry. Repeat the two passes and opt-in separately for another named writer.
 
 The helper cannot authenticate a copied status, a host observation or a human choice; obtain each from its indicated source. Native Archive takes an ID, not a compare-and-swap token. Neither the helper nor the permission prompt can make cross-tool reads atomic. If quiescence through the action isn't verifiable, do not call it.

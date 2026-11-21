@@ -47,7 +47,7 @@ test("a reconnected issuer observes the original workflow; evidence received thr
 	assert.deepEqual(lookups, [job.workflowId]);
 	await issuer.operation("pause", { run }, "owner");
 	await issuer.scoutResult(run, job.dispatch, job.issuer, job.workflowId, job.id,
-		{ outcome: "regenerate", reason: "The price lookup is missing.", evidence: ["charter"], grains: ["price"] });
+		{ outcome: "regenerate", reason: "The price lookup is missing.", evidence: ["charter"], grains: ["price"] }, job.packet);
 	finish(); await nextTurn();
 	const paused = await f.status();
 	assert.equal(paused.reviews[0].state, "reported"); assert.deepEqual(paused.nodes, []); assert.equal(f.workers.size, 0);
@@ -65,4 +65,16 @@ test("simultaneous reports with no new assignments require just one scheduler wa
 	await Promise.all(f.scouts.map(job => job.report(noGap)));
 	assert.equal(reads, 1, "a single executable-mode read served the merged wake");
 	assert.ok((await f.status()).reviews.every(r => r.state === "observed"));
+});
+
+test("a workflow cannot use another review's delivery receipt or another base", async t => {
+	const f = trial(t, ["price", "browse"]); await f.start();
+	const [a, b] = f.scouts;
+	await f.owner.scoutResult(run, a.dispatch, a.issuer, a.workflowId, a.id, noGap, b.packet);
+	await f.owner.scoutResult(run, b.dispatch, b.issuer, b.workflowId, b.id, noGap, { ...b.packet, base: "a".repeat(40) });
+	await a.report(noGap); await b.report(noGap);
+	for (const review of (await f.status()).reviews) {
+		assert.equal(review.state, "blocked"); assert.match(String(review.reason), /mismatched journaled scout packet/);
+	}
+	assert.equal(f.workers.size, 0);
 });

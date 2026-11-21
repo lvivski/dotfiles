@@ -26,3 +26,27 @@ export function qualifiedProduct(run) {
 	const last = run.products.at(-1);
 	return last?.qualifiedAt ? last : undefined;
 }
+
+/** Project the runner verdict, not native IDs, command arguments or evaluator output.
+ * @param {import("./model.js").Effect|undefined} e @param {"product"|"goal"|"component"} kind
+ * @param {string} commit @param {string} check @param {string} [grain] */
+export function passingReceipt(e, kind, commit, check, grain) {
+	if (e?.kind === kind && e.grain === grain && e.commit === commit && e.check === check && checkReceipt(e)?.exit === 0)
+		return { commit, check, exit: 0 };
+}
+
+/** The last *applied* product. A native success, a pending join, or two green checks
+ * from different assessments do not make a goal handoff.
+ * @param {Run} run */
+export function acceptedChecks(run) {
+	const last = qualifiedProduct(run);
+	if (!last) return;
+	const { productCheck, goalCheck } = run.policy;
+	const product = passingReceipt(run.effects.find(e => e.id === last.check), "product", last.commit, productCheck);
+	if (!product) return;
+	if (!goalCheck && !run.goal) return { last, product };
+	if (!goalCheck || goalCheck === productCheck || run.active || run.join || run.blocker || run.conflict ||
+		run.goal?.commit !== last.commit || run.goal.target !== last.target || run.goal.stall) return;
+	const goal = passingReceipt(run.effects.find(e => e.id === run.goal?.check), "goal", last.commit, goalCheck);
+	if (goal) return { last, product, goal };
+}

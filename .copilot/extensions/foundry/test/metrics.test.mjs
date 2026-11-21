@@ -4,7 +4,8 @@ import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { metricsFacts, usageQuery } from "../work/metrics.mjs";
+import { metricsFacts } from "../work/metrics.mjs";
+import { usageQuery } from "../../../skills/foundry/scripts/usage.mjs";
 
 const activation = 1700000000000, base = "a".repeat(40), tip = "b".repeat(40), commit = "c".repeat(40);
 /** @returns {import("../work/model.js").Run} */
@@ -105,7 +106,7 @@ test("native IDs resolve through task_id or history id; only verified, bounded w
 	assert.deepEqual(rows.map(x => [x.native_id, x.history_id, x.usage_records, x.input_tokens, x.output_tokens]), [
 		[a, "history-A", 2, 13, 4], [b, b, 1, 0, 2],
 	]);
-	const cli = spawnSync(process.execPath, [fileURLToPath(new URL("../work/metrics.mjs", import.meta.url))],
+	const cli = spawnSync(process.execPath, [fileURLToPath(new URL("../../../skills/foundry/scripts/usage.mjs", import.meta.url))],
 		{ input: JSON.stringify({ metrics: facts }), encoding: "utf8" });
 	assert.equal(cli.status, 0, cli.stderr); assert.deepEqual(JSON.parse(cli.stdout), plan);
 });

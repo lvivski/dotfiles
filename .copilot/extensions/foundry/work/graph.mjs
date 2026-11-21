@@ -2,10 +2,10 @@ import { randomUUID } from "node:crypto";
 import { validOutcome } from "./contract.mjs";
 import { checkReceipt, goalReceipt } from "./evidence.mjs";
 import { assess, goalAllowsWork, qualify, rejectRepeat, stall } from "./goal.mjs";
-import { admitted, expired, reserveNotice, reserveProduct, reserveWorker } from "./native.mjs";
-import { checked, dependencies, liveNeeds, owns, proposal, requireNewWork, revise, settledOutput, superseded, waiting } from "./plan.mjs";
+import { admitted, assignmentCount, expired, reserveNotice, reserveProduct, reserveWorker } from "./native.mjs";
+import { actionable, dependencies, liveNeeds, owns, productOutputs, proposal, requireNewWork, revise, settledOutput, superseded, waiting, working, writerInputs } from "./plan.mjs";
 import { changedFiles, combine, commitAt, outside, regularFiles, rejoin, retain, verifyContracts, versionOf, withoutGrain } from "./product.mjs";
-import { blockReview, reading, reserveReview, reviews } from "./reviews.mjs";
+import { availableHistory, blockReview, discoverySquads, nextReview, reading, reserveReview, reviews, wakeSource } from "./reviews.mjs";
 import { FoundryError, contains, digest, fail, fields, name, names, record, relative, text } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
@@ -35,7 +35,6 @@ export function newRun(cwd, policy, owner, grains) {
 	/** @type {Run} */
 	const run = { id: policy.id, owner, policy, active: true, activatedAt: Date.now(), effects: [], nodes: {}, products: [] };
 	for (const g of grains) run.nodes[g.id] = { grain: g, repairs: 0, state: "idle" };
-	if (policy.workers !== undefined) run.capacity = { limit: policy.workers, kept: false };
 	if (policy.goalCheck) {
 		const target = commitAt(cwd, policy.target);
 		assess(cwd, run, owner, target, target);
@@ -60,19 +59,24 @@ function reviewVersion(cwd, run, squad, commit) {
 /** @param {import("./model.js").Squad} squad @param {unknown} raw @returns {import("./model.js").Observation} */
 export function parseObservation(squad, raw) {
 	const input = record(raw);
-	fields(input, ["outcome", "reason", "evidence", "grains", "replace"]);
+	fields(input, ["outcome", "reason", "evidence", "grains", "replace", "waitFor", "file"]);
 	if (!Array.isArray(input.grains)) fail("invalid_field", "Expected a list of grains");
 	const grains = input.grains.map(v => "areas" in squad && typeof v !== "string" ? proposal(v) : name(v, "grain"));
 	names(grains.map(g => typeof g === "string" ? g : g.id), "grain");
 	const outcome = input.outcome;
 	if (!validOutcome(outcome, grains.length))
-		fail("invalid_outcome", "Expected outcome regenerate with owned grains, or no-gap/needs-decision with an empty list");
+		fail("invalid_outcome", "Expected regenerate with owned grains, or a non-writing outcome with an empty list");
+	if (outcome === "waiting" ? !("areas" in squad) || input.waitFor === undefined : input.waitFor !== undefined)
+		fail("invalid_outcome", "Only a waiting area charter names a producer in waitFor");
+	if ((outcome === "needs-evidence") !== (input.file !== undefined)) fail("invalid_outcome", "Only needs-evidence names a file");
 	const replace = names(input.replace === undefined ? [] : input.replace, "pending grain");
 	if (replace.length && (outcome !== "regenerate" || !("areas" in squad))) fail("invalid_outcome", "Only area regeneration can split pending work");
 	if (!Array.isArray(input.evidence) || !input.evidence.length)
 		fail("no_evidence", "Identify committed evidence for the observation");
 	const evidence = input.evidence.map(relative);
-	return { outcome, reason: text(input.reason, "observation"), evidence, grains, ...(replace.length ? { replace } : {}) };
+	return { outcome, reason: text(input.reason, "observation"), evidence, grains, ...(replace.length ? { replace } : {}),
+		...(outcome === "waiting" ? { waitFor: name(input.waitFor, "producer charter") } : {}),
+		...(outcome === "needs-evidence" ? { file: relative(input.file) } : {}) };
 }
 
 /** @param {string} cwd @param {Run} run @param {import("./model.js").Review} review */
@@ -96,79 +100,39 @@ export function observe(cwd, run, review, observation) {
 		fail("stale_assignment", "Chartered inputs changed during review");
 	}
 	const planned = "areas" in squad && outcome === "regenerate" ? revise(run.nodes, squad, observation, review.id) : run.nodes;
-	if (run.goal?.tried && planned !== run.nodes) for (const id of ids) {
-		const g = planned[id].grain;
-		requireNewWork(run, g, review.base, versions(planned, dependencies(planned, g.needs)));
-	}
+	if (run.goal?.tried && planned !== run.nodes) for (const id of ids)
+		requireNewWork(run, planned[id].grain, review.base, writerInputs(planned, planned[id]));
 	if ("grains" in squad && ids.some(id => !squad.grains.includes(id))) fail("charter_scope", "This observation includes another squad's grain");
 	const roots = "areas" in squad ? Object.keys(planned).filter(id => owns(squad, planned[id].grain.directory)) : squad.grains;
 	const inputs = [...dependencies(planned, roots)].map(id => planned[id].grain);
-	for (const file of evidence) {
+	for (const file of observation.file ? [...evidence, observation.file] : evidence) {
 		if (file !== squad.charter && file !== run.policy.source && file !== run.policy.goalCheck &&
 			!("areas" in squad && (owns(squad, file) || [run.policy.productCheck, ...squad.boundary, ...squad.checks].includes(file))) &&
 			!inputs.some(g => contains(g.directory, file) || [g.specification, ...g.boundary, g.check].includes(file)))
 			fail("charter_scope", `Evidence is outside this charter: ${file}`);
 	}
-	regularFiles(cwd, review.base, evidence);
+	const packet = review.packet ?? fail("missing_packet", "Missing journaled scout packet");
+	for (const e of regularFiles(cwd, review.base, evidence))
+		if (!Object.hasOwn(packet.files, e.name) || packet.files[e.name] !== e.oid)
+			fail("unseen_evidence", `Text of ${e.name} at ${e.oid} was not delivered in this packet`);
+	if (outcome === "no-gap" && packet.partial) fail("partial_coverage", "Cannot conclude no-gap from a partial packet");
+	if (observation.file) {
+		if (!packet.partial || wakeSource(run, review)?.observation?.outcome === "needs-evidence")
+			fail("unresolved_evidence", "No further focused read: identify the remaining blocker");
+		regularFiles(cwd, review.base, [observation.file]);
+	}
+	if (observation.waitFor && (observation.waitFor === squad.id || !run.policy.squads.some(s => s.id === observation.waitFor)))
+		fail("charter_scope", "Wait for a different declared producer charter");
 	review.state = "observed";
 	review.observation = observation;
+	if (outcome === "needs-decision" && wakeSource(run, review)?.decision?.status === "answered")
+		review.decision = { status: "unavailable", reason: "The clarification did not resolve this charter. A change to the committed contract needs a newly authorized brief." };
 	if (outcome === "regenerate") {
 		if ("areas" in squad) {
 			run.nodes = planned;
 			if (run.goal) delete run.goal.stall;
 		} else request(run, ids, review.id);
 	}
-}
-
-/** @param {Run["nodes"]} nodes @param {Iterable<string>} ids */
-function versions(nodes, ids) {
-	/** @type {Record<string,string>} */ const result = {};
-	for (const id of ids) {
-		const n = nodes[id];
-		if (!n?.candidate || !checked(n))
-			return;
-		result[id] = n.candidate;
-	}
-	return result;
-}
-
-/** @param {Run} run @param {string} id */
-const blockedInput = (run, id) => [...dependencies(run.nodes, [id])].some(dep => run.nodes[dep]?.state === "blocked");
-
-/** @param {Run} run @param {Node} n */
-const actionable = (run, n) => n.state === "writing" || n.state === "checking" || n.state === "waiting" && !blockedInput(run, n.grain.id);
-
-/** An evaluator can point to an existing charter, never grant new scope. If that
- * review produces no usable work, the other charters still get a turn.
- * @param {Run} run @param {import("./model.js").Receipt|undefined} gap */
-function discoverySquads(run, gap) {
-	const squads = run.policy.squads, focus = gap?.squad && squads.find(s => s.id === gap.squad);
-	if (focus && !run.blocker) {
-		const report = reviews(run).findLast(r => r.squad === focus.id && r.base === gap.commit);
-		if (!report || reading(report) || Object.values(run.nodes).some(n => n.review === report.id && (n.state === "published" || actionable(run, n))))
-			return [focus];
-	}
-	if (!gap || !run.capacity) return squads;
-	// Successive early checkpoints must not always spend the first capped slot on the same squad.
-	const last = new Map(reviews(run).map((r, i) => [r.squad, i]));
-	return squads.toSorted((a, b) => (last.get(a.id) ?? -1) - (last.get(b.id) ?? -1));
-}
-
-/** A seed requires every requested output. In discovery, a refused grain and its
- * dependents cannot contribute a new version, but cannot veto an independent product either.
- * @param {Run} run @param {string} [target] */
-function productOutputs(run, target) {
-	/** @type {Record<string,string>} */ const outputs = {};
-	let changed = false;
-	for (const [id, n] of Object.entries(run.nodes)) {
-		if (n.state === "idle") continue;
-		if (checked(n)) {
-			outputs[id] = text(n.candidate, "checked output");
-			if (n.state === "published") changed = true;
-		} else if (run.policy.seed || !blockedInput(run, id))
-			return;
-	}
-	if (changed || run.goal && (run.goal.target !== target || !run.products.length && run.join?.commit === target)) return outputs;
 }
 
 /** @param {Run["join"]} join @param {string} target @param {Record<string,string>|undefined} outputs */
@@ -186,15 +150,13 @@ function repair(run, id, reason) {
 		return;
 	}
 	if (node.state === "qualified") node.replaces = node.candidate; // Repair this version without rebasing its writer.
-	node.repairs++;
 	node.reason = reason;
-	delete node.candidate;
 	node.state = "waiting";
 }
 
 /** Apply only runner-owned receipts for the current attempt. No native calls here.
- * @param {string} cwd @param {Run} run @param {string} actor */
-function settleChecks(cwd, run, actor) {
+ * @param {string} cwd @param {Run} run @param {string} actor @param {number} remaining */
+function settleChecks(cwd, run, actor, remaining) {
 	const checks = new Map(run.effects.filter(e => e.tool === "bash").map(e => [e.id, e]));
 	for (const id of Object.keys(run.nodes)) {
 		const n = run.nodes[id]; // Repair can invalidate a later consumer in this same pass.
@@ -203,12 +165,13 @@ function settleChecks(cwd, run, actor) {
 		if (!receipt) continue;
 		if (receipt.exit === 0) { n.state = "published"; delete n.reason; }
 		else if (receipt.exit === null) { n.state = "blocked"; n.reason = `Evaluation did not complete: ${receipt.output}`; }
+		else if (remaining === 0) { n.state = "blocked"; n.reason = `No assignment remains to repair ${id}: ${receipt.output || "Evaluator failed"}`; }
 		else repair(run, n.grain.id, receipt.output || "Evaluator failed");
 	}
 	const join = run.join, receipt = join && checkReceipt(checks.get(join.check));
 	if (!join || !receipt || run.blocker) return;
 	const target = commitAt(cwd, run.policy.target);
-	if (!sameProduct(join, target, productOutputs(run, target))) return;
+	if (!sameProduct(join, target, productOutputs(run, target, remaining))) return;
 	const { exit, output, repair: grain } = receipt;
 	if (exit === 0) {
 		delete run.join;
@@ -216,6 +179,10 @@ function settleChecks(cwd, run, actor) {
 		run.products.push(join);
 		for (const id of Object.keys(join.outputs)) run.nodes[id].state = "qualified";
 	} else if (exit !== null && grain && Object.hasOwn(join.outputs, grain)) {
+		if (remaining === 0) {
+			run.blocker = `No assignment remains to repair ${grain}: ${output || "Evaluator failed"}`;
+			return; // Keep the exact failed candidate and its component receipts.
+		}
 		delete run.join;
 		repair(run, grain, output || "Evaluator failed");
 	} else run.blocker = exit === null ? `Evaluation did not complete: ${output}` : `Product check failed without identifying a repairable output: ${output || "Evaluator failed"}`;
@@ -244,6 +211,14 @@ function reserveWriter(cwd, run, n, required, base, actor, submitToken) {
 	const g = n.grain, token = randomUUID();
 	const inline = n.worker === actor && submitToken !== undefined && n.token === submitToken;
 	if (n.worker) {
+		if (inline) {
+			const previous = run.effects.find(e => e.id === n.check);
+			if (previous?.kind !== "component" || !checkReceipt(previous) || previous.inlineRepair)
+				fail("invalid_repair", "An inline repair requires its own checked submission");
+			previous.inlineRepair = token;
+		}
+		n.repairs++;
+		delete n.candidate;
 		n.state = "writing";
 		n.token = token;
 		if (!inline) reserveNotice(run, actor, token, "repair",
@@ -283,15 +258,16 @@ export function advance(cwd, run, actor, discover, context = {}) {
 		try {
 			observe(cwd, run, r, r.observation);
 			if (!owner && r.observation.outcome === "needs-decision")
-				reserveNotice(run, actor, r.id, "decision", `Foundry ${run.id} has a charter question. Its owner will check the current revision and existing writer requests. This notice grants no authority.`);
+				reserveNotice(run, actor, r.id, "decision", `Foundry ${run.id} has a charter question for its owner at ${r.base}. This notice grants no authority.`);
 		}
 		catch (error) {
 			if (!(error instanceof FoundryError)) throw error;
 			blockReview(r, error.message);
 		}
 	}
-	settleChecks(cwd, run, actor);
-	let base, target, waiting = 0;
+	const remaining = run.policy.assignments === undefined ? Infinity : run.policy.assignments - assignmentCount(run);
+	settleChecks(cwd, run, actor, remaining);
+	let base, target;
 	const tip = () => target ??= commitAt(cwd, run.policy.target);
 	const startingPoint = () => base ??= productBase(cwd, run, tip());
 	try {
@@ -316,18 +292,16 @@ export function advance(cwd, run, actor, discover, context = {}) {
 		run.conflict = error.message;
 		return;
 	}
-	const nodes = Object.values(run.nodes), cap = run.capacity;
-	let slots = cap ? cap.limit - history.filter(reading).length - nodes.filter(n => n.state === "writing" || n.state === "checking").length : Infinity;
+	const nodes = Object.values(run.nodes), cap = run.policy.workers;
+	const limit = Math.min(remaining, (cap ?? Infinity) - history.filter(reading).length - nodes.filter(working).length);
+	let reserved = 0;
 	for (const n of nodes) {
-		if (slots <= 0 && cap?.kept) break;
-		if (n.state !== "waiting") continue;
-		const required = versions(run.nodes, dependencies(run.nodes, n.grain.needs));
+		if (reserved >= limit) break;
+		const required = writerInputs(run.nodes, n);
 		if (!required) continue;
 		try {
-			const from = run.goal?.commit ?? startingPoint();
-			if (slots <= 0) { waiting++; continue; }
-			reserveWriter(cwd, run, n, required, from, actor, context.submitToken);
-			slots--;
+			reserveWriter(cwd, run, n, required, run.goal?.commit ?? startingPoint(), actor, context.submitToken);
+			reserved++;
 		} catch (error) {
 			if (!(error instanceof FoundryError)) throw error;
 			n.state = "blocked";
@@ -335,7 +309,7 @@ export function advance(cwd, run, actor, discover, context = {}) {
 		}
 	}
 	const gap = goalReceipt(run);
-	const outputs = (run.join || !run.blocker) && productOutputs(run, target);
+	const outputs = (run.join || !run.blocker) && productOutputs(run, target, remaining - reserved);
 	let repeated;
 	if (outputs && !sameProduct(run.join, tip(), outputs)) {
 		delete run.join;
@@ -350,48 +324,33 @@ export function advance(cwd, run, actor, discover, context = {}) {
 			return;
 		}
 	}
+	if (reserved === remaining) return; // Staffing stops, not receipt settlement or product/goal verification.
 	const survey = run.goal ? gap?.exit === 1 && run.goal.target === tip() && !(outputs && run.join && !run.blocker)
-		: !run.policy.seed && (slots > 0 ? discover : !cap?.kept);
-	const squads = survey ? discoverySquads(run, gap) : [];
-	if (survey) {
-		delete run.discoveryError;
-		for (const squad of squads) {
-			if (slots <= 0 && cap?.kept) break;
-			const last = history.findLast(r => r.squad === squad.id);
-			if (last && reading(last) && (!run.goal || last.base === run.goal.commit)) continue;
-			let commit;
-			try {
-				commit = run.goal?.commit ?? startingPoint();
-			}
-			catch (error) {
-				if (!(error instanceof FoundryError)) throw error;
-				run.discoveryError = error.message;
-				break;
-			}
-			const version = reviewVersion(cwd, run, squad, commit);
-			if (run.goal ? history.some(r => r.squad === squad.id && r.version === version) : last?.version === version)
-				continue;
-			if (slots <= 0) { waiting++; continue; }
-			reserveReview(run, actor, squad.id, commit, version);
-			slots--;
+		: !run.policy.seed && (discover || cap !== undefined);
+	if (!survey) return;
+	const squads = discoverySquads(run, history, gap);
+	delete run.discoveryError;
+	for (const squad of squads) {
+		if (reserved >= limit) break;
+		const past = availableHistory(run, history, squad.id);
+		if (!past) continue;
+		let commit;
+		try { commit = run.goal?.commit ?? startingPoint(); }
+		catch (error) {
+			if (!(error instanceof FoundryError)) throw error;
+			run.discoveryError = error.message;
+			break;
 		}
-	}
-	if (cap) {
-		if (!waiting) delete cap.offer;
-		else if (cap.offer) cap.offer.to = cap.limit + waiting;
-		else if (!cap.kept) {
-			const id = randomUUID();
-			cap.offer = { id, to: cap.limit + waiting };
-			if (!owner) reserveNotice(run, actor, id, "capacity", "Ready work is waiting at the worker cap. The owner session will present the choice if it is still needed. This notice does not authorize an increase.");
-		}
+		const version = reviewVersion(cwd, run, squad, commit);
+		const next = nextReview(run, past, commit, version);
+		if (!next) continue;
+		reserveReview(run, actor, squad.id, commit, version, next.wake);
+		reserved++;
 	}
 	// Wait for discovery only before declaring a stall, not before checking a ready product.
-	if (!survey || gap?.exit !== 1 || run.blocker || run.join ||
-		squads.some(s => {
-			const last = reviews(run).findLast(r => r.squad === s.id);
-			return last?.base !== gap.commit || reading(last);
-		}) ||
-		nodes.some(n => actionable(run, n))) return;
+	if (gap?.exit !== 1 || run.blocker || run.join || nodes.some(n => actionable(run, n))) return;
+	const finished = new Map(reviews(run).map(r => [r.squad, r.base === gap.commit && !reading(r)]));
+	if (squads.some(s => !finished.get(s.id))) return;
 	stall(run, repeated || nodes.some(n => n.state === "repeated")
 		? "The proposed outputs reproduce a tree already checked against the goal." : "No actionable grain remains on this revision.", repeated || gap);
 }

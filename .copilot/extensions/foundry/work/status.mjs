@@ -1,18 +1,20 @@
 import { goalReceipt, missingObservation, qualifiedProduct } from "./evidence.mjs";
-import { handoff } from "./handoff.mjs";
-import { metricsFacts } from "./metrics.mjs";
-import { awaitingReply, canDispatch, current, expired } from "./native.mjs";
+import { handoff, qualification } from "./handoff.mjs";
+import { metricsFacts, timingFacts } from "./metrics.mjs";
+import { assignmentCount, awaitingReply, canDispatch, current, expired } from "./native.mjs";
 import { checked, liveNeeds } from "./plan.mjs";
 import { questions, reviews, reviewStatus } from "./reviews.mjs";
 import { fail } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
-/** @param {Run} run @param {Map<string,import("./model.js").Receipt|undefined>} receipts */
-function ownerStatus(run, receipts) {
+/** @param {Run} run @param {Map<string,import("./model.js").Receipt|undefined>} receipts @param {unknown} detail */
+function ownerStatus(run, receipts, detail) {
 	const last = run.products.at(-1);
 	return {
-		handoff: handoff(run), metrics: metricsFacts(run),
-		proposedLimit: run.capacity?.offer?.to, discoveryError: run.discoveryError,
+		handoff: handoff(run, detail === "cleanup"),
+		...(detail === "proof" ? { qualification: qualification(run) } : {}),
+		metrics: detail === "usage" ? metricsFacts(run) : timingFacts(run),
+		discoveryError: run.discoveryError,
 		qualified: qualifiedProduct(run)?.commit ?? null, target: last?.target, outputs: last?.outputs ?? {},
 		...(run.goal ? { checkpoint: last?.commit ?? null, goal: { commit: run.goal.commit, evaluator: run.policy.goalCheck, receipt: goalReceipt(run) } } : {}),
 		questions: questions(run).flatMap(r => r.observation ? [{ squad: r.squad, base: r.base, question: r.observation.reason,
@@ -22,9 +24,13 @@ function ownerStatus(run, receipts) {
 	};
 }
 
-/** @param {Run} run @param {string} actor */
-export function status(run, actor) {
+/** @param {Run} run @param {string} actor @param {unknown} [detail] */
+export function status(run, actor, detail) {
 	const owner = run.owner === actor;
+	if (detail !== undefined) {
+		if (!owner) fail("foreign_run", "Only the owner can request handoff details");
+		if (detail !== "proof" && detail !== "cleanup" && detail !== "usage") fail("invalid_field", "Unknown status detail");
+	}
 	const nodes = Object.values(run.nodes).filter(n => n.state !== "idle" && (owner || n.worker === actor));
 	if (!owner && !nodes.length && !run.effects.some(e => e.nativeId === actor))
 		fail("foreign_run", "No bound assignment in this run");
@@ -32,11 +38,16 @@ export function status(run, actor) {
 	const pending = run.effects.filter(e => (owner || e.issuer === actor) && e.state !== "done" && (awaitingReply(e) || current(run, e)));
 	const receipts = new Map(run.effects.filter(e => e.receipt).map(e => [e.id, e.receipt]));
 	const missing = missingObservation(run);
+	const assignments = run.policy.assignments === undefined ? undefined : { limit: run.policy.assignments, used: assignmentCount(run) };
+	const finished = (run.goal || run.policy.seed) && qualifiedProduct(run);
+	const stop = !finished && assignments && assignments.used === assignments.limit
+		? `Total assignment limit reached (${assignments.used}/${assignments.limit}); no new scouts, writers or repairs. Reserved work and checks can finish.` : undefined;
+	const blocker = run.pauseReason ?? run.blocker ?? run.conflict ?? run.goal?.stall ?? (missing ? `Goal check at ${missing.commit} awaits external evidence (exit 2): ${missing.output.trim() || "no diagnostic"}. Pause and explicitly resume after supplying it.` : undefined);
 	return {
 		run: run.id, active: run.active, direction: run.policy.direction, contract: { commit: run.policy.base, path: run.policy.source },
-		limit: run.capacity?.limit ?? null, deadline: run.policy.deadline, expired: expired(run),
-		...(owner ? ownerStatus(run, receipts) : {}),
-		blocker: run.pauseReason ?? run.blocker ?? run.conflict ?? run.goal?.stall ?? (missing ? `Goal check at ${missing.commit} awaits external evidence (exit 2): ${missing.output.trim() || "no diagnostic"}. Pause and explicitly resume after supplying it.` : undefined),
+		limit: run.policy.workers ?? null, ...(assignments ? { assignments } : {}), deadline: run.policy.deadline, expired: expired(run),
+		...(owner ? ownerStatus(run, receipts, detail) : {}),
+		blocker: blocker && stop ? `${blocker}\n${stop}` : blocker ?? stop,
 		reviews: owner ? reviews(run).map(reviewStatus) : [],
 		nodes: nodes.map(n => ({
 			grain: n.grain.id, directory: n.grain.directory, task: n.grain.task, requires: liveNeeds(n), evaluator: n.grain.check,
