@@ -3,150 +3,138 @@ import { existsSync } from "node:fs";
 import { openDatabase, ledgerPath } from "./database.mjs";
 import { readPolicy } from "./contract.mjs";
 import { advance, newRun, observe } from "./graph.mjs";
-import { goalReceipt, missingObservation } from "./goal.mjs";
-import { admitted, assignment, capacityNotice, checkEffect, current, issue, receive } from "./native.mjs";
+import { missingObservation } from "./goal.mjs";
+import { admitted, assignment, awaitingReply, current, expired, identify, issue, receive, reserveCheck, unissued } from "./native.mjs";
+import { checked } from "./plan.mjs";
 import { capture, commitAt, retain, rootAt, verifyContracts } from "./product.mjs";
 import { refusedCall } from "./recovery.mjs";
+import { status } from "./status.mjs";
 import { digest, fail, fields, name, record, text } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @typedef {import("./model.js").Effect} Effect */
-/** @typedef {{run:string,id:string,actor:string}} Call */
-/** @typedef {{execute:(tool:string,args:Effect["args"],id:string)=>Promise<unknown>,recover?:(effect:Effect)=>Promise<unknown>,
- * mode:()=>Promise<string>,confirm:(message:string)=>Promise<boolean>,select:(message:string,options:string[])=>Promise<string|null>,log?:(message:string)=>void}} Host */
-/** @param {Run} run @param {string} actor */
-function status(run, actor) {
-	const mine = run.owner === actor;
-	const reviews = run.reviews.filter(r => mine || r.worker === actor);
-	const nodes = Object.entries(run.nodes).filter(([, n]) => mine || n.worker === actor);
-	if (!mine && !nodes.length && !reviews.length && !run.effects.some(e => e.nativeId === actor))
-		fail("foreign_run", "No bound assignment in this run");
-	const pending = run.effects.filter(e => (mine || e.issuer === actor) && e.state !== "done" && (current(run, e) || e.state === "uncertain" || e.state === "issued"));
-	const checks = new Map(run.effects.filter(e => e.receipt).map(e => [e.id, e.receipt]));
-	const last = run.products.at(-1);
-	const missing = missingObservation(run);
-	const latestReports = new Map(reviews.filter(r => r.observation).map(r => [r.squad, r]));
-	return {
-		run: run.id, active: run.active, direction: run.policy.direction, contract: { commit: run.policy.base, path: run.policy.source },
-		limit: run.capacity?.limit ?? null, deadline: run.policy.deadline, expired: Boolean(run.policy.deadline && Date.now() >= Date.parse(run.policy.deadline)),
-		...(mine ? { proposedLimit: run.capacity?.offer?.to, qualified: (run.goal ? run.accepted : last?.commit) ?? null, target: last?.target, outputs: last?.outputs ?? {}, discoveryError: run.discoveryError,
-			...(run.goal ? { checkpoint: last?.commit ?? null, goal: { commit: run.goal.commit, evaluator: run.policy.goalCheck, receipt: goalReceipt(run) } } : {}),
-			questions: [...latestReports.values()].flatMap(r => r.observation?.outcome === "needs-decision"
-				? [{ squad: r.squad, base: r.base, question: r.observation.reason, evidence: r.observation.evidence }] : []),
-			products: run.products.map(p => ({ ...p, receipt: checks.get(p.check) })), candidate: run.join && { ...run.join, receipt: checks.get(run.join.check) } } : {}),
-		blocker: run.blocker ?? run.goal?.stall ?? (missing ? `Goal check at ${missing.commit} awaits external evidence (exit 2): ${missing.output.trim() || "no diagnostic"}. Pause and explicitly resume after supplying it.` : undefined),
-		reviews: reviews.map(({ worker, token, ...r }) => ({ ...r, worker, ...(actor === worker ? { token } : {}) })),
-		nodes: nodes.map(([grain, n]) => ({
-			grain, review: n.review, state: n.state, worker: n.worker, repairs: n.repairs, inputs: n.inputs, generation: n.generation,
-			...(n.state === "waiting" ? { requires: run.policy.grains.find(g => g.id === grain)?.needs } : {}),
-			...(actor === n.worker ? { token: n.token } : {}), checked: n.state === "published" || n.state === "qualified" ? n.candidate : undefined,
-			receipt: n.check && checks.get(n.check), reason: n.reason,
-		})),
-		pending: pending.map(e => ({ id: e.id, issuer: e.issuer, kind: e.kind, state: e.state, reason: e.error })),
-		prepared: run.active ? pending.filter(e => e.issuer === actor && e.state === "ordinary" && current(run, e)).map(e => ({ tool: e.tool, arguments: e.args })) : []
-	};
+/** @typedef {{run:string,id:string,actor:string,inFlight?:boolean,recoveredOn?:number}} Call */
+/** @typedef {{execute:(tool:string,args:Effect["args"],id:string)=>Promise<unknown>,remind:(run:string,token:string)=>Promise<string>,recover?:(effect:Effect)=>Promise<unknown>,
+ * mode:()=>Promise<string>,helpersRunning?:()=>Promise<boolean>,permissionBlocker:()=>Promise<import("./permissions.mjs").PermissionBlock|null>,confirm:(message:string)=>Promise<boolean>,select:(message:string,options:string[])=>Promise<string|null>,log?:(message:string)=>void}} Host */
+/** @param {Run} run @param {string} [reason] */
+function pause(run, reason) {
+	run.active = false;
+	delete run.capacity?.offer;
+	if (reason) run.pauseReason = reason;
 }
+
+/** @param {Run} run @param {string} [retry] */
+function activationPrompt({ policy, capacity }, retry) {
+	const mode = policy.goalCheck ? `ongoing goal (finish check: ${policy.goalCheck})` : policy.seed ? "one-off" : "ongoing";
+	const staffing = capacity ? `up to ${capacity.limit} concurrent scout/writer assignments (not counting in-session helpers)` : "no worker cap";
+	return [
+		`Start ${mode} Foundry run ${policy.id} at ${policy.base.slice(0, 12)} on ${policy.target} with ${staffing} and ${policy.repairs} repairs per grain?`,
+		policy.direction,
+		...policy.squads.flatMap(s => "areas" in s ? [`${s.id} may assign work in ${s.areas.join(", ")} using ${s.checks.join(", ")}.`] : []),
+		...(retry ? [`Recheck the missing external evidence for ${retry} (rejoin first if the target has moved).`] : []),
+	].join("\n");
+}
+
+/** @param {Run} run @param {string} actor @param {string} token */
+function writable(run, actor, token) {
+	admitted(run);
+	const node = Object.values(run.nodes).find(n => n.token === token && n.worker === actor) ??
+		fail("stale_assignment", "No current worker assignment matches this token");
+	if (node.state === "checking" || checked(node)) return;
+	if (node.state !== "writing") fail("stale_assignment", "This attempt is no longer writable");
+	return node;
+}
+
+/** @param {Run} run @param {string} actor */
+const reservations = (run, actor) => run.effects.filter(e => e.issuer === actor && unissued(e) && current(run, e));
 
 /** @param {string} directory @param {Host} host */
 export function createRuntime(directory, host) {
 	/** @type {ReturnType<typeof openDatabase>|undefined} */ let database;
-	let root, closed = false, outsideRepository = false;
+	let root, closed = false, outsideRepository = false, turnNumber = 0;
 	/** @type {Set<string>} */ const known = new Set();
-	/** @type {Set<string>} */ const running = new Set();
 	/** @type {Set<Promise<unknown>>} */ const background = new Set();
-	/** @type {Set<string>} */ const attemptedRecovery = new Set();
+	/** @type {Set<{run:string,actor:string,token:string}>} */ const submitting = new Set();
 	/** @type {Map<string,{token:string,open:boolean}>} */ const dialogs = new Map();
 	/** @type {Map<string,Call>} */ const nativeCalls = new Map();
 	/** @type {string|undefined} */ let existingPath;
 	const cwd = () => root ??= rootAt(directory);
-	const executable = async () => ["interactive", "autopilot"].includes(await host.mode());
+	const file = () => existingPath ??= ledgerPath(directory);
+	async function executable() {
+		if (closed) return false;
+		const mode = await host.mode();
+		return !closed && (mode === "interactive" || mode === "autopilot");
+	}
 	/** @param {boolean} [create] */
 	function db(create = false) {
 		if (closed)
 			fail("runtime_closed", "Foundry is closed");
-		if (!database) {
-			if (!create && !existsSync(existingPath ??= ledgerPath(cwd())))
-				fail("missing_run", "No Foundry run in this repository");
-			database = openDatabase(cwd(), existingPath ??= ledgerPath(cwd()), create);
-		}
-		return database;
+		return database ??= openDatabase(cwd(), file(), create);
 	}
 	/** @param {string} id */
 	const read = id => db().read(id) ?? fail("missing_run", `Unknown run ${id}`);
 	/** @param {string} id @param {(run:Run)=>void} mutate */
 	function change(id, mutate) {
-		for (;;) {
-			const run = read(id), before = digest(run), count = run.products.length, accepted = run.accepted;
+		return db().change(id, run => {
+			const count = run.products.length, accepted = run.accepted;
 			mutate(run);
-			if (digest(run) === before)
-				return;
-			if (db().swap(before, run, () => run.products.length === count && run.accepted === accepted || commitAt(cwd(), run.policy.target) === run.products.at(-1)?.target))
-				return;
-		}
+			if (run.products.length !== count || run.accepted !== accepted)
+				return () => commitAt(cwd(), run.policy.target) === run.products.at(-1)?.target;
+		});
+	}
+	/** Check once for a batch, outside the write lock. A stale result must not pause unrelated work.
+	 * @param {string} id @param {string} actor @param {Effect[]} batch */
+	async function dispatchBlocker(id, actor, batch) {
+		const block = await host.permissionBlocker();
+		if (!await executable()) return "The issuing session is no longer in an executable mode.";
+		if (!block && !batch.some(e => e.permissionHold)) return null;
+		const message = block ? `${block.message} Check session ${actor}.` +
+			(block.scope === "run" ? ` Then explicitly resume ${id} from its owner.` : " Its next turn rechecks the hold.") : null;
+		const expected = new Map(batch.map(e => [e.id, e.state]));
+		const transition = db().update(id, run => {
+			const live = reservations(run, actor);
+			if (!run.active || !live.some(e => expected.get(e.id) === e.state)) return "stale";
+			if (block?.scope === "run" && message) { pause(run, message); return "paused"; }
+			const changed = message && live.some(e => e.permissionHold !== message);
+			for (const e of live) {
+				if (message) e.permissionHold = message;
+				else delete e.permissionHold;
+			}
+			return changed ? "held" : undefined;
+		});
+		if (transition === "stale") return "The reservation changed or the run is already paused. Check foundry_status.";
+		if (transition) host.log?.(`Foundry ${id} ${transition}: ${message}`);
+		return message;
 	}
 	/** @param {Call} ctx @param {string} callId @param {unknown} result @param {boolean} [automatic] */
 	function settle(ctx, callId, result, automatic = false) {
 		if (closed) return;
 		const terminal = db().update(ctx.run, run => {
 			const e = run.effects.find(x => x.id === ctx.id);
-			if (!e || e.callId !== callId || e.issuer !== ctx.actor || e.state !== "issued" && e.state !== "uncertain") return true;
+			if (!e || e.callId !== callId || e.issuer !== ctx.actor || !awaitingReply(e)) return true;
 			try {
 				receive(run, e, result, automatic);
 			} catch (error) {
 				e.state = "uncertain";
 				e.error = String(error);
 			}
-			return e.state !== "uncertain" && e.state !== "issued";
+			return !awaitingReply(e);
 		});
 		if (terminal) nativeCalls.delete(callId);
 		return terminal;
 	}
-	/** @param {string} id @param {Effect} effect @param {string} actor */
-	async function send(id, effect, actor) {
-		const callId = randomUUID();
-		const granted = db().update(id, run => {
-			const e = run.effects.find(e => e.id === effect.id);
-			if (!e || e.state !== "ready" || !run.active || !current(run, e))
-				return false;
-			issue(run, actor, e.tool, e.args, callId, e.id);
-			return true;
-		});
-		if (!granted)
-			return;
-		const ctx = { run: id, id: effect.id, actor };
+	/** @param {string} id @param {Effect} e @param {string} callId @param {()=>Promise<unknown>} invoke @param {boolean} [automatic] */
+	async function resolveCall(id, e, callId, invoke, automatic = false) {
+		const ctx = { run: id, id: e.id, actor: e.issuer, inFlight: true, recoveredOn: automatic ? undefined : turnNumber };
 		nativeCalls.set(callId, ctx);
-		running.add(callId);
-		try {
-			const result = await host.execute(effect.tool, effect.args, callId);
-			settle(ctx, callId, result, true);
-		}
-		catch (error) {
-			settle(ctx, callId, { resultType: "unconfirmed", error: String(error) });
-		}
-		finally {
-			running.delete(callId);
-		}
+		let result;
+		try { result = await invoke(); }
+		catch (error) { result = { resultType: "unconfirmed", error: String(error) }; }
+		finally { ctx.inFlight = false; }
+		return settle(ctx, callId, result, automatic);
 	}
-	/** @param {string} id @param {string} actor */
-	async function reconcile(id, actor) {
-		if (!host.recover)
-			return;
-		for (const e of read(id).effects.filter(e => e.issuer === actor && (e.state === "issued" || e.state === "uncertain"))) {
-			if (closed) return;
-			if (!e.callId || running.has(e.callId) || attemptedRecovery.has(e.callId))
-				continue;
-			attemptedRecovery.add(e.callId);
-			const ctx = { run: id, id: e.id, actor };
-			nativeCalls.set(e.callId, ctx);
-			try {
-				const result = await host.recover(e);
-				settle(ctx, e.callId, result);
-			}
-			catch (error) {
-				settle(ctx, e.callId, { resultType: "unconfirmed", error: String(error) });
-			}
-		}
-	}
+	/** @param {string} id @param {Effect} effect @param {string} callId */
+	const claim = (id, effect, callId) => db().update(id, run => issue(run, effect, callId));
 	/** Only the owner session presents choices. The proposal and decision survive reload, not the UI.
 	 * @param {Run} run */
 	async function askCapacity({ id, owner, capacity }) {
@@ -164,10 +152,10 @@ export function createRuntime(directory, host) {
 		} finally {
 			dialog.open = false;
 		}
-		if (closed || !await executable()) return;
+		if (!await executable()) return;
 		if (choice !== null && choice !== keep && choice !== raise) fail("invalid_choice", "Unknown worker-cap decision; cap unchanged");
 		change(id, r => {
-			if (!r.active || r.capacity?.limit !== limit || r.policy.deadline && Date.now() >= Date.parse(r.policy.deadline)) return;
+			if (!r.active || r.capacity?.limit !== limit || expired(r)) return;
 			if (choice === raise) {
 				if (r.capacity.offer?.id !== offer.id) return;
 				advance(cwd(), r, owner, true);
@@ -180,148 +168,176 @@ export function createRuntime(directory, host) {
 	}
 	/** @param {string} id @param {string} actor @param {boolean} [discover] */
 	async function drive(id, actor, discover = false) {
-		if (!await executable() || closed)
+		if (!await executable())
 			return;
-		await reconcile(id, actor);
-		while (!closed) {
-			change(id, run => advance(cwd(), run, actor, discover));
-			const run = read(id);
-			if (!run.active || run.policy.deadline && Date.now() >= Date.parse(run.policy.deadline))
-				return;
-			const ready = run.effects.filter(e => e.issuer === actor && e.state === "ready" && current(run, e));
-			if (!ready.length) {
+		const recover = host.recover, lookups = [];
+		if (recover) for (const e of read(id).effects) {
+			// A same-session SDK notice has no native tool history. Never replay it.
+			const callId = e.callId;
+			if (!callId || e.issuer !== actor || e.tool === "session.send" || !awaitingReply(e)) continue;
+			const call = nativeCalls.get(callId);
+			if (call?.inFlight || call?.recoveredOn === turnNumber) continue;
+			lookups.push(resolveCall(id, e, callId, () => recover(e)).then(terminal => terminal ? refill() : undefined));
+		}
+		await Promise.all([dispatch(), ...lookups]);
+		async function refill() {
+			if (await executable()) await dispatch();
+		}
+		async function dispatch() {
+			if (closed) return;
+			const reply = [...submitting].findLast(s => s.run === id && s.actor === actor);
+			const run = change(id, run => {
+				// Don't reserve newly available work on behalf of an issuer already on hold.
+				if (!reservations(run, actor).some(e => e.permissionHold))
+					advance(cwd(), run, actor, discover, { submitToken: reply?.token });
+			});
+			if (!run.active || expired(run)) return;
+			const batch = reservations(run, actor).filter(e => e.state === "ready" || e.permissionHold);
+			if (!batch.length) {
 				if (actor === run.owner && run.capacity?.offer) track(askCapacity(run));
 				return;
 			}
-			await Promise.all(ready.map(e => send(id, e, actor)));
+			if (await dispatchBlocker(id, actor, batch) !== null) return;
+			const ready = batch.filter(e => e.state === "ready");
+			if (!ready.length) return refill(); // Prepared calls are visible again; this issuer can now plan.
+			// A sibling's native permission prompt must not hold up work unlocked by this reply.
+			await Promise.all(ready.map(async e => {
+				const callId = randomUUID();
+				if (!closed && claim(id, e, callId))
+					await resolveCall(id, e, callId, async () => e.tool === "session.send"
+						? { resultType: "success", messageId: await host.remind(id, text(e.token, "repair token")) }
+						: host.execute(e.tool, e.args, callId), true);
+				await refill();
+			}));
 		}
 	}
-	/** @param {string} id @param {string} actor @param {Record<string,unknown>} a */
-	function submit(id, actor, a) {
-		fields(a, ["run", "token"]);
-		const run = read(id);
-		admitted(run);
-		const [grain, n] = Object.entries(run.nodes).find(([, n]) => n.token === a.token && n.worker === actor) ??
-			fail("stale_assignment", "No current worker assignment matches this token");
-		if (n.state === "checking" || n.state === "published" || n.state === "qualified")
-			return;
-		if (n.state !== "writing")
-			fail("stale_assignment", "This attempt is no longer writable");
-		const g = run.policy.grains.find(g => g.id === grain) ?? fail("unknown_grain", "No assigned grain");
+	/** @param {string} id @param {string} actor @param {string} token */
+	function submit(id, actor, token) {
+		const run = read(id), n = writable(run, actor, token);
+		if (!n) return;
+		const g = n.grain;
 		const commit = capture(cwd(), text(n.generation, "generation commit"), g.directory);
-		const check = checkEffect(run, actor, cwd(), commit, g.check, grain);
 		db().update(id, r => {
 			admitted(r);
-			const node = r.nodes[grain];
+			const node = r.nodes[g.id];
 			if (!node || node.worker !== actor || node.token !== n.token || node.state !== "writing")
 				fail("stale_assignment", "Assignment changed during capture");
 			node.state = "checking";
 			node.candidate = commit;
-			node.check = check.id;
-			r.effects.push(check);
+			node.check = reserveCheck(r, actor, cwd(), commit, g.check, g.id);
 		});
+	}
+	/** @param {string} origin */
+	async function requireReadyOwner(origin) {
+		const block = await host.permissionBlocker();
+		if (block !== null) fail("permissions_unready", block.message);
+		if (!await executable() || cwd() !== origin)
+			fail("context_changed", "Activation context changed during confirmation");
+	}
+	/** @param {unknown} source @param {string} actor */
+	async function start(source, actor) {
+		if (known.has(actor)) fail("worker_cannot_start", "Workers cannot activate or restart a run");
+		if (!await executable()) fail("unsupported_mode", "Start only from an interactive or autopilot owner");
+		const origin = cwd(), { policy, grains } = readPolicy(origin, source);
+		const store = existsSync(file()) ? db() : undefined;
+		if (store?.involving(actor).some(id => read(id).owner !== actor))
+			fail("worker_cannot_start", "Workers cannot activate or restart a run");
+		const prior = store?.read(policy.id);
+		if (prior) {
+			if (prior.owner !== actor || prior.policy.source !== policy.source)
+				fail("run_conflict", "Another owner or contract already uses this run ID");
+			verifyContracts(origin, prior.policy, policy.base);
+			if (prior.accepted) return status(prior, actor);
+		}
+		const run = prior ?? newRun(origin, policy, actor, grains);
+		admitted({ ...run, active: true });
+		if (!prior?.active) {
+			const retry = prior && missingObservation(prior) ? prior.goal : undefined;
+			await requireReadyOwner(origin);
+			if (!await host.confirm(activationPrompt(run, retry?.commit))) fail("activation_refused", "Foundry was not activated");
+			await requireReadyOwner(origin);
+			if (prior)
+				change(policy.id, r => {
+					if (r.active || retry && (r.goal?.check !== retry.check || !missingObservation(r)))
+						fail("run_conflict", "Run activation changed while starting");
+					r.active = true;
+					delete r.pauseReason;
+					admitted(r);
+					if (retry) advance(origin, r, actor, false, { retryGoal: true });
+				});
+			else {
+				admitted(run);
+				retain(origin, policy.base);
+				if (run.goal && run.goal.commit !== policy.base) retain(origin, run.goal.commit);
+				db(true).insert(run);
+			}
+		}
+		await drive(policy.id, actor, true);
+		return status(read(policy.id), actor);
 	}
 	/** @param {string} op @param {unknown} args @param {string} actor */
 	async function operation(op, args, actor) {
 		const a = record(args);
 		if (op === "start") {
 			fields(a, ["source"]);
-			if (known.has(actor))
-				fail("worker_cannot_start", "Workers cannot activate or restart a run");
-			if (!await executable())
-				fail("unsupported_mode", "Start only from an interactive or autopilot owner");
-			const origin = cwd(), policy = readPolicy(origin, a.source), path = existingPath ??= ledgerPath(origin);
-			const prior = existsSync(path) ? db().read(policy.id) : undefined;
-			if (existsSync(path) && db().involving(actor).some(id => read(id).owner !== actor))
-				fail("worker_cannot_start", "Workers cannot activate or restart a run");
-			if (prior) {
-				const pinned = { ...prior.policy, base: policy.base };
-				// Older runs pinned two for an omitted cap. Compare the source below but retain that authorization.
-				if (policy.workers === undefined && pinned.workers === 2) delete pinned.workers;
-				if (prior.owner !== actor || digest(pinned) !== digest(policy))
-					fail("run_conflict", "Another owner or contract already uses this run ID");
-				verifyContracts(cwd(), prior.policy, policy.base);
-				if (prior.accepted) return status(prior, actor);
-			}
-			const fresh = prior ?? newRun(origin, policy, actor);
-			admitted({ ...fresh, active: true });
-			const mode = policy.goalCheck ? `ongoing goal (finish check: ${policy.goalCheck})` : policy.seed ? "one-off" : "ongoing";
-			const retry = prior && !prior.active && missingObservation(prior) ? prior.goal : undefined;
-			const retryNotice = retry ? `\nRecheck the missing external evidence for ${retry.commit} (rejoin first if the target has moved).` : "";
-			const staffing = fresh.capacity ? `up to ${fresh.capacity.limit} concurrent workers` : "no worker cap";
-			if (!prior?.active && !await host.confirm(`Start ${mode} Foundry run ${policy.id} at ${policy.base.slice(0, 12)} on ${policy.target} with ${staffing} and ${policy.repairs} repairs per grain?\n${policy.direction}${retryNotice}`))
-				fail("activation_refused", "Foundry was not activated");
-			if (closed || cwd() !== origin || !await executable())
-				fail("context_changed", "Activation context changed during confirmation");
-			const store = db(true);
-			if (prior)
-				change(policy.id, r => {
-					if (r.active !== prior.active || retry && (r.goal?.check !== retry.check || !missingObservation(r)))
-						fail("run_conflict", "Run activation changed while starting");
-					r.active = true;
-					if (retry) advance(origin, r, actor, false, true);
-				});
-			else {
-				retain(origin, policy.base);
-				if (fresh.goal && fresh.goal.commit !== policy.base) retain(origin, fresh.goal.commit);
-				store.insert(fresh);
-			}
-			await drive(policy.id, actor, true);
-			return status(read(policy.id), actor);
+			return start(a.source, actor);
 		}
-		const id = name(a.run, "run"), run = read(id);
+		const id = name(a.run, "run");
 		if (op === "status") {
 			fields(a, ["run"]);
-			return status(run, actor);
+			return status(read(id), actor);
 		}
 		if (op === "pause") {
 			fields(a, ["run"]);
 			db().update(id, r => {
 				if (r.owner !== actor)
 					fail("foreign_run", "Only the owner can pause");
-				r.active = false;
-				delete r.capacity?.offer;
+				pause(r);
 			});
 			return status(read(id), actor);
+		}
+		const reply = op === "submit" ? { run: id, actor, token: text(a.token, "submission token") } : undefined;
+		if (reply) {
+			fields(a, ["run", "token"]);
+			// Check the host, not a local count lost on reload. Revalidate mode and ownership after the read.
+			if (host.helpersRunning && writable(read(id), actor, reply.token) && await host.helpersRunning())
+				fail("helpers_running", "Native helpers are still running. Join them, integrate their work, then submit with the same token.");
 		}
 		if (!await executable())
 			fail("unsupported_mode", "Plan mode cannot submit work or make an observation");
 		if (op === "observe") {
 			change(id, r => observe(cwd(), r, actor, a));
 		}
-		else if (op === "submit")
-			submit(id, actor, a);
+		else if (reply) {
+			submit(id, actor, reply.token);
+			// A shell notification can drive the same actor before this call returns.
+			submitting.add(reply);
+		}
 		else
 			fail("unknown_operation", `Unknown Foundry operation ${op}`);
-		known.add(actor);
-		await drive(id, actor, op === "observe");
-		return status(read(id), actor);
-	}
-	/** @param {string} tool @param {unknown} args */
-	function identify(tool, args) {
-		if (!args || typeof args !== "object" || Array.isArray(args)) return;
-		const a = record(args);
-		const message = tool === "create_session" && a.kickoff && typeof a.kickoff === "object" && "prompt" in a.kickoff
-			? a.kickoff.prompt : tool === "send_session_message" ? a.message : undefined;
-		const marker = typeof message === "string" ? assignment(message) : undefined;
-		if (marker)
-			return marker.run;
-		if (tool === "send_session_message" && typeof message === "string") return capacityNotice(message);
-		if (tool === "bash" && typeof a.command === "string" && a.command.includes("/work/runner.mjs' ") && /^foundry-[a-f0-9-]{36}$/.test(String(a.shellId)))
-			return / '([A-Za-z0-9][A-Za-z0-9._-]*)' '[a-f0-9-]{36}'$/.exec(a.command)?.[1];
+		try {
+			await drive(id, actor, op === "observe");
+			return status(read(id), actor);
+		} finally {
+			if (reply) submitting.delete(reply);
+		}
 	}
 	/** @param {string} tool @param {unknown} args @param {string} actor @param {string} callId */
-	function pre(tool, args, actor, callId) {
+	async function pre(tool, args, actor, callId) {
 		const id = identify(tool, args);
 		if (!id)
 			return;
-		db().update(id, r => {
-			const e = r.effects.find(e => e.issuer === actor && e.tool === tool && digest(e.args) === digest(args) && current(r, e));
-			if (!e || e.state !== "ordinary" && !(e.state === "issued" && e.callId === callId))
-				fail("unreserved_call", "Not a current prepared Foundry call");
-			issue(r, actor, tool, args, callId, e.id);
-			nativeCalls.set(callId, { run: id, id: e.id, actor });
-		});
+		const run = read(id), key = digest(args);
+		const e = run.effects.find(e => e.issuer === actor && e.tool === tool && digest(e.args) === key && current(run, e));
+		if (!e || e.state !== "ordinary" && !(e.state === "issued" && e.callId === callId))
+			fail("unreserved_call", "Not a current prepared Foundry call");
+		if (e.state === "ordinary") {
+			admitted(run);
+			const reason = await dispatchBlocker(id, actor, [e]);
+			if (reason !== null) fail("dispatch_held", reason);
+		}
+		if (!claim(id, e, callId)) fail("unreserved_call", "The prepared call is no longer current");
+		if (!nativeCalls.has(callId)) nativeCalls.set(callId, { run: id, id: e.id, actor });
 	}
 	/** @param {Promise<unknown>} p */
 	function track(p) {
@@ -330,32 +346,28 @@ export function createRuntime(directory, host) {
 	}
 	return {
 		operation, pre,
-		/** @param {string} actor @param {string} prompt */
-		bind(actor, prompt) {
-			if (assignment(prompt)) known.add(actor);
+		/** @param {string} actor @param {string} path @param {string} [prompt] */
+		sessionStart(actor, path, prompt) {
+			if (directory !== path) {
+				if (database) fail("workspace_changed", "Foundry's bound workspace changed; reopen the session");
+				directory = path;
+				root = existingPath = undefined;
+				outsideRepository = false;
+			}
+			if (prompt && assignment(prompt)) known.add(actor);
 		},
-		/** @param {string} path */
-		setDirectory(path) {
-			if (directory === path)
-				return;
-			if (database || running.size)
-				fail("workspace_changed", "Foundry's bound workspace changed; reopen the session");
-			directory = path;
-			root = undefined;
-			existingPath = undefined;
-			outsideRepository = false;
-		},
-		/** @param {string} actor */
-		turn(actor) {
-			if (closed || outsideRepository)
+		/** @param {string} actor @param {string} [shellId] */
+		turn(actor, shellId) {
+			if (closed || outsideRepository || shellId !== undefined && !/^foundry-[a-f0-9-]{36}$/.test(shellId))
 				return;
 			try {
-				if (!database && !existsSync(existingPath ??= ledgerPath(directory)))
+				if (!database && !existsSync(file()))
 					return;
-				attemptedRecovery.clear();
-				const ids = new Set(db().involving(actor));
-				for (const id of ids)
+				turnNumber++;
+				for (const id of db().involving(actor)) {
+					if (shellId && !read(id).effects.some(e => e.issuer === actor && e.tool === "bash" && e.args.shellId === shellId)) continue;
 					track(drive(id, actor, true));
+				}
 			}
 			catch (e) {
 				if (!database && e instanceof Error && "stderr" in e && String(e.stderr).includes("not a git repository"))

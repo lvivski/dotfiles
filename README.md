@@ -51,8 +51,9 @@ bash .copilot/skills/review-queue/scripts/review-queue-providers.test.sh
 repository run data.
 
 **[Foundry](.copilot/extensions/foundry/README.md)** regenerates directories from a committed
-product brief. Independent writers work in parallel. Each checked milestone gives squads a new
-combined tree to inspect; work continues under the original authorization until the final goal
+product brief. Goal contracts pin writable areas and checks; scouts decide how to split the work
+so independent writers can start together. Each checked milestone preserves the combined tree,
+not the old directory assignments. Work continues under the original authorization until the final goal
 check passes or a concrete blocker needs attention. A seeded one-off is also available.
 Foundry records the exact passing commit and leaves the target branch untouched. Use the
 [Foundry skill](.copilot/skills/foundry/SKILL.md) on explicit request; routine changes use native

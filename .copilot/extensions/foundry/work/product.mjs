@@ -16,10 +16,10 @@ const env = {
 /** @param {string} cwd @param {string[]} args */
 const gitArgs = (cwd, args) => ["--no-pager", "--no-replace-objects", "--no-lazy-fetch", "--literal-pathspecs", "-c", "core.hooksPath=/dev/null", "-C", cwd, ...args];
 
-/** @param {string} cwd @param {string[]} args @param {string|Buffer} [input] */
-export function git(cwd, args, input) {
+/** @param {string} cwd @param {string[]} args @param {string|Buffer} [input] @param {string} [index] */
+export function git(cwd, args, input, index) {
 	return execFileSync("git", gitArgs(cwd, args), {
-		input, env, stdio: ["pipe", "pipe", "pipe"], timeout: 30000, maxBuffer: 128 * 1024 * 1024,
+		input, env: index ? { ...env, GIT_INDEX_FILE: index } : env, stdio: ["pipe", "pipe", "pipe"], timeout: 30000, maxBuffer: 128 * 1024 * 1024,
 	});
 }
 
@@ -49,6 +49,25 @@ export function regularFiles(cwd, commit, files) {
 }
 
 /** @typedef {{name:string,mode:string,type:string,oid:string}} Entry */
+/** @param {string} name */
+const pathKey = name => name.normalize("NFC").toLowerCase();
+
+/** Include directories: A/x and a/y also alias on a case-insensitive filesystem.
+ * @param {{name:string}[]} files */
+function pathNames(files) {
+	const paths = new Map();
+	for (const { name } of files) {
+		let prefix = "";
+		for (const part of name.split("/")) {
+			prefix = prefix ? `${prefix}/${part}` : part;
+			const key = pathKey(prefix);
+			if (paths.has(key) && paths.get(key) !== prefix) fail("tree_conflict", `Case-aliased path: ${prefix}`);
+			paths.set(key, prefix);
+		}
+	}
+	return paths;
+}
+
 /** @param {string} cwd @param {string} tree @param {boolean} [recursive] @param {string[]} [filter] @returns {Entry[]} */
 function entries(cwd, tree, recursive = false, filter) {
 	const raw = git(cwd, ["ls-tree", "--full-tree", "-z", ...(recursive ? ["-r"] : []), tree, ...(filter ? ["--", ...filter] : [])]);
@@ -65,13 +84,7 @@ function entries(cwd, tree, recursive = false, filter) {
 
 /** @param {string} cwd @param {Entry[]} items */
 function build(cwd, items) {
-	const seen = new Set();
-	for (const { name } of items) {
-		const key = name.normalize("NFC").toLowerCase();
-		if (seen.has(key))
-			fail("tree_conflict", `Case-aliased product path: ${name}`);
-		seen.add(key);
-	}
+	pathNames(items);
 	return git(cwd, ["mktree", "-z"], items.map(e => `${e.mode} ${e.type} ${e.oid}\t${e.name}\0`).join("")).toString().trim();
 }
 
@@ -120,65 +133,72 @@ export const treeOf = (cwd, commit) => git(cwd, ["rev-parse", "--verify", `${com
 /** @param {string} cwd @param {string} commit @param {string} directory */
 export const withoutGrain = (cwd, commit, directory) => pin(cwd, replace(cwd, treeOf(cwd, commit), directory, null), "Foundry generation base");
 
+/** @param {string} cwd @param {string[]} paths @param {boolean} [write] */
+function blobIds(cwd, paths, write = false) {
+	if (!paths.length) return [];
+	const ids = git(cwd, ["hash-object", ...(write ? ["-w"] : []), "--no-filters", "--stdin-paths"], `${paths.join("\n")}\n`).toString().trimEnd().split("\n");
+	if (ids.length !== paths.length) fail("missing_blob", "Incomplete Git blob list");
+	return ids;
+}
+
+/** @param {string} cwd @param {(staged:(args:string[], input?:string)=>Buffer)=>string} use */
+function withIndex(cwd, use) {
+	const dir = mkdtempSync(path.join(tmpdir(), "foundry-index-"));
+	try {
+		return use((args, input) => git(cwd, ["-c", "core.splitIndex=false", "-c", "core.sparseCheckout=false", "-c", "core.fsmonitor=false", ...args], input, path.join(dir, "index")));
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+/** @param {string} dir @param {Map<string,string>} [expected] */
+function diskFiles(dir, expected) {
+	/** @type {{name:string,mode:string}[]} */ const files = [];
+	/** @param {string} prefix */
+	function visit(prefix) {
+		for (const entry of readdirSync(path.join(dir, prefix))) {
+			const name = path.join(prefix, relative(entry)), file = path.join(dir, name);
+			if (expected && expected.get(pathKey(name)) !== name) fail("product_changed", `Evaluator added ${name}`);
+			const stat = lstatSync(file);
+			if (stat.isSymbolicLink() || realpathSync(file) !== file || !stat.isDirectory() && (!stat.isFile() || stat.nlink !== 1))
+				fail("unsupported_tree", `Linked or special file: ${name}`);
+			if (stat.isDirectory()) visit(name);
+			else files.push({ name, mode: stat.mode & 0o100 ? "100755" : "100644" });
+		}
+	}
+	visit("");
+	return files;
+}
+
+/** @param {string} root @param {string} directory */
+function grainTree(root, directory) {
+	let dir = root;
+	for (const part of relative(directory).split("/")) {
+		dir = path.join(dir, part);
+		const stat = lstatSync(dir, { throwIfNoEntry: false });
+		if (!stat) return null;
+		if (!stat.isDirectory() || realpathSync(dir) !== dir) fail("unsupported_tree", `Invalid grain directory: ${dir}`);
+	}
+	const files = diskFiles(dir);
+	if (!files.length) return null;
+	pathNames(files);
+	const ids = blobIds(root, files.map(f => `./${directory}/${f.name}`), true);
+	return withIndex(root, staged => {
+		staged(["update-index", "-z", "--index-info"], files.map((f, i) => `${f.mode} ${ids[i]}\t${f.name}\0`).join(""));
+		// update-index can exit successfully after ignoring a path. Never publish a partial directory.
+		const indexed = new Set(staged(["ls-files", "-z"]).toString().split("\0"));
+		for (const f of files) if (!indexed.has(f.name)) fail("unsupported_tree", `Git cannot index ${f.name}`);
+		return staged(["write-tree"]).toString().trim();
+	});
+}
+
 /** @param {string} cwd @param {string} generation @param {string} directory */
 export function capture(cwd, generation, directory) {
-	const root = rootAt(cwd), dir = path.join(root, relative(directory));
+	const root = rootAt(cwd);
 	const [local, common, head] = git(root, ["rev-parse", "--path-format=absolute", "--absolute-git-dir", "--git-common-dir", "HEAD"]).toString().trimEnd().split("\n");
 	if (head !== generation || local === common)
 		fail("wrong_workspace", "Submit from the assigned native worktree at its frozen generation base");
-	/** @type {Map<string,Entry[]>} */ const directories = new Map();
-	/** @type {Array<[string,Entry]>} */ const files = [];
-	/** @param {string} location */
-	function scan(location) {
-		if (!lstatSync(location).isDirectory() || realpathSync(location) !== location)
-			fail("unsupported_tree", `Expected an unlinked directory at ${location}`);
-		/** @type {Entry[]} */ const items = [];
-		for (const name of readdirSync(location).sort()) {
-			relative(name);
-			const filename = path.join(location, name), stat = lstatSync(filename);
-			if (stat.isDirectory()) {
-				scan(filename);
-				if (directories.has(filename))
-					items.push({ name, oid: "", type: "tree", mode: "040000" });
-			}
-			else {
-				if (!stat.isFile() || stat.nlink !== 1 || realpathSync(filename) !== filename)
-					fail("unsupported_tree", `Cannot publish a linked or special file: ${filename}`);
-				/** @type {Entry} */ const e = { name, oid: "", type: "blob", mode: stat.mode & 0o100 ? "100755" : "100644" };
-				files.push([`./${path.relative(root, filename)}`, e]);
-				items.push(e);
-			}
-		}
-		if (items.length)
-			directories.set(location, items);
-	}
-	let current = root, missing = false;
-	for (const part of directory.split("/")) {
-		current = path.join(current, part);
-		const stat = lstatSync(current, { throwIfNoEntry: false });
-		if (!stat) {
-			missing = true;
-			break;
-		}
-		if (!stat.isDirectory() || realpathSync(current) !== current)
-			fail("unsupported_tree", `Invalid grain directory: ${current}`);
-	}
-	if (!missing)
-		scan(dir);
-	if (files.length) {
-		const hashes = git(root, ["hash-object", "-w", "--no-filters", "--stdin-paths"], files.map(([p]) => `${p}\n`).join("")).toString().trim().split("\n");
-		if (hashes.length !== files.length)
-			fail("missing_blob", "Incomplete directory capture");
-		files.forEach(([, e], i) => { e.oid = hashes[i]; });
-	}
-	/** @type {Map<string,string>} */ const trees = new Map();
-	for (const [folder, items] of directories) {
-		for (const e of items)
-			if (e.type === "tree")
-				e.oid = trees.get(path.join(folder, e.name)) ?? fail("missing_tree", "Incomplete directory capture");
-		trees.set(folder, build(root, items));
-	}
-	return pin(root, replace(root, treeOf(root, generation), directory, trees.get(dir) ?? null), "Foundry grain candidate");
+	return pin(root, replace(root, treeOf(root, generation), directory, grainTree(root, directory)), "Foundry grain candidate");
 }
 
 /** @param {string} cwd @param {string} base @param {{directory:string,from:string,to:string}[]} updates @param {string} [parent] */
@@ -198,13 +218,26 @@ export function combine(cwd, base, updates, parent) {
 	return pin(cwd, tree, "Foundry product candidate", parent);
 }
 
+/** Carry the actual checkpoint delta onto a moved target, not a reconstruction from past jobs.
+ * read-tree does only trivial three-way merges; no worktree, content merge drivers or real index.
+ * @param {string} cwd @param {import("./model.js").Product} last @param {string} target */
+export function rejoin(cwd, last, target) {
+	return withIndex(cwd, staged => {
+		staged(["read-tree", "-i", "-m", "--aggressive", last.target, target, last.commit]);
+		const conflict = staged(["ls-files", "--unmerged", "-z"]).toString().split("\0", 1)[0];
+		if (conflict) fail("tree_conflict", `Concurrent modification since checkpoint: ${conflict.slice(conflict.indexOf("\t") + 1)}`);
+		return pin(cwd, staged(["write-tree"]).toString().trim(), "Foundry checkpoint on new target");
+	});
+}
+
+/** @param {string} cwd @param {string} from @param {string} to @param {string[]} [paths] */
+export const changedFiles = (cwd, from, to, paths = []) => git(cwd, ["diff-tree", "--no-ext-diff", "--no-renames", "-r", "--name-only", "-z", from, to, "--", ...paths]).toString().split("\0").filter(Boolean);
+
 /** @param {string} cwd @param {import("./model.js").Policy} policy @param {string} commit */
 export function verifyContracts(cwd, policy, commit) {
 	if (commit === policy.base)
 		return;
-	const files = new Set([policy.source, policy.productCheck, ...policy.grains.flatMap(g => [g.specification, ...g.boundary, g.check]), ...policy.squads.map(s => s.charter)]);
-	if (policy.goalCheck) files.add(policy.goalCheck);
-	const changed = git(cwd, ["diff-tree", "--no-ext-diff", "--no-renames", "-r", "--name-only", "-z", policy.base, commit, "--", ...files]).toString().split("\0").filter(Boolean);
+	const changed = changedFiles(cwd, policy.base, commit, policy.files);
 	if (changed.length)
 		fail("contract_changed", `The conserved contract changed: ${changed.join(", ")}`);
 }
@@ -264,38 +297,15 @@ async function materialize(cwd, root, items) {
 export async function withProduct(cwd, commit, evaluate) {
 	const root = realpathSync(mkdtempSync(path.join(tmpdir(), "foundry-check-")));
 	try {
-		const items = entries(cwd, commit, true), paths = new Map();
-		for (const e of items) {
+		const items = entries(cwd, commit, true), paths = pathNames(items);
+		for (const e of items)
 			if (!["100644", "100755"].includes(e.mode))
 				fail("unsupported_tree", `Cannot evaluate ${e.name}: not a regular file`);
-			let p = "";
-			for (const part of e.name.split("/")) {
-				p = p ? `${p}/${part}` : part;
-				const k = p.normalize("NFC").toLowerCase();
-				if (paths.has(k) && paths.get(k) !== p)
-					fail("tree_conflict", `Case-aliased path: ${p}`);
-				paths.set(k, p);
-			}
-		}
 		await materialize(cwd, root, items);
 		evaluate(root);
-		/** @param {string} dir */
-		function verifyNames(dir) {
-			for (const entry of readdirSync(path.join(root, dir), { withFileTypes: true })) {
-				const name = dir ? `${dir}/${entry.name}` : entry.name;
-				if (paths.get(name.normalize("NFC").toLowerCase()) !== name)
-					fail("product_changed", `Evaluator added ${name}`);
-				if (entry.isDirectory())
-					verifyNames(name);
-			}
-		}
-		verifyNames("");
-		for (const e of items) {
-			const file = path.join(root, e.name), stat = lstatSync(file);
-			if (!stat.isFile() || stat.nlink !== 1 || realpathSync(file) !== file || Boolean(stat.mode & 0o100) !== (e.mode === "100755"))
-				fail("product_changed", `Evaluator changed ${e.name}`);
-		}
-		const hashes = git(cwd, ["hash-object", "--no-filters", "--stdin-paths"], items.map(e => `${path.join(root, e.name)}\n`).join("")).toString().trimEnd().split("\n");
+		const modes = new Map(diskFiles(root, paths).map(f => [f.name, f.mode]));
+		for (const e of items) if (modes.get(e.name) !== e.mode) fail("product_changed", `Evaluator changed ${e.name}`);
+		const hashes = blobIds(cwd, items.map(e => path.join(root, e.name)));
 		for (const [i, e] of items.entries())
 			if (hashes[i] !== e.oid) fail("product_changed", `Evaluator changed ${e.name}`);
 	}
@@ -306,6 +316,6 @@ export async function withProduct(cwd, commit, evaluate) {
 
 /** @param {string} dir @param {string[]} paths */
 export const outside = (dir, paths) => !paths.some(p => {
-	const a = dir.normalize("NFC").toLowerCase(), b = p.normalize("NFC").toLowerCase();
+	const a = pathKey(dir), b = pathKey(p);
 	return contains(a, b) || contains(b, a);
 });

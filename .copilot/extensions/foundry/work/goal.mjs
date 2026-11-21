@@ -1,4 +1,5 @@
-import { checkEffect } from "./native.mjs";
+import { checkReceipt, reserveCheck, reserveProduct, retireUnissuedScout } from "./native.mjs";
+import { workKey } from "./plan.mjs";
 import { retain, treeOf, verifyContracts } from "./product.mjs";
 import { text } from "./values.mjs";
 
@@ -6,18 +7,15 @@ import { text } from "./values.mjs";
 /** @param {string} cwd @param {Run} run @param {string} actor @param {string} target @param {string} commit */
 export function assess(cwd, run, actor, target, commit) {
 	verifyContracts(cwd, run.policy, target);
-	const e = checkEffect(run, actor, cwd, commit, text(run.policy.goalCheck, "goal evaluator"));
-	run.goal = { target, commit, check: e.id };
-	run.effects.push(e);
+	run.goal = { target, commit, check: reserveCheck(run, actor, cwd, commit, text(run.policy.goalCheck, "goal evaluator")) };
+	for (const effect of run.effects) retireUnissuedScout(run, effect);
 }
 
 /** @param {Run} run */
 export function goalReceipt(run) {
 	const at = run.goal;
 	const e = at && run.effects.find(e => e.id === at.check);
-	if (e?.kind === "goal" && e.state === "done" && e.runnerStarted && e.commit === at?.commit &&
-		e.check === run.policy.goalCheck && e.receipt?.commit === e.commit && e.receipt?.check === e.check)
-		return e.receipt;
+	if (e?.kind === "goal" && e.commit === at?.commit && e.check === run.policy.goalCheck) return checkReceipt(e);
 }
 
 /** @param {Run} run */
@@ -38,7 +36,10 @@ export function goalAllowsWork(cwd, run, actor, target, retry) {
 		return false;
 	}
 	const receipt = goalReceipt(run);
-	if (!receipt || run.blocker) return false;
+	if (!receipt) return false;
+	// A later scout can still add missing work to a failed milestone. Its exact failed
+	// candidate stays pinned so the same native refusal or failure cannot be retried.
+	if (run.blocker) return !!run.join && receipt.exit === 1;
 	if (receipt.exit === 2) {
 		if (!retry && !run.join) return false;
 		if (at.target === target) {
@@ -53,7 +54,7 @@ export function goalAllowsWork(cwd, run, actor, target, retry) {
 	}
 	if (at.target !== target) {
 		delete at.stall;
-		if (!last && !Object.keys(run.nodes).length && !run.reviews.some(r => r.state === "reading")) {
+		if (!last && !Object.values(run.nodes).some(n => n.state !== "idle") && !run.reviews.some(r => r.state === "reading")) {
 			delete run.join; // A baseline milestone reserved on the old tip cannot attest to the new one.
 			assess(cwd, run, actor, target, retain(cwd, target));
 			return false;
@@ -66,20 +67,33 @@ export function goalAllowsWork(cwd, run, actor, target, retry) {
 		run.accepted = at.commit;
 		run.active = false;
 		delete run.capacity?.offer;
+		for (const r of run.reviews) if (r.state === "reading") {
+			r.state = "blocked";
+			r.reason = "Goal met; no further review is needed";
+		}
 	} else if (!run.join) {
 		// The baseline already satisfies the goal. Check its milestone invariants without hiring a writer.
-		const e = checkEffect(run, actor, cwd, at.commit, run.policy.productCheck);
-		run.join = { target, commit: at.commit, check: e.id, outputs: {} };
-		run.effects.push(e);
+		reserveProduct(run, actor, cwd, target, at.commit, {});
 	}
 	return false;
 }
 
-/** Joined commits on one target are deterministic. The initial probe checks the target commit itself.
- * @param {string} cwd @param {Run} run @param {string} target @param {string} commit */
-export function repeatedGoal(cwd, run, target, commit) {
-	return run.effects.find(e => e.kind === "goal" && e.state === "done" && e.receipt?.exit === 1 &&
+/** A new assignment or report is not progress if it reproduces an already assessed tree.
+ * @param {string} cwd @param {Run} run @param {string} target @param {string} commit @param {Record<string,string>} outputs */
+export function rejectRepeat(cwd, run, target, commit, outputs) {
+	if (run.goal?.target !== target) return;
+	const receipt = run.effects.find(e => e.kind === "goal" && e.check === run.policy.goalCheck && checkReceipt(e)?.exit === 1 &&
 		(e.commit === commit || e.commit === target && treeOf(cwd, commit) === treeOf(cwd, target)))?.receipt;
+	if (!receipt) return;
+	const tried = new Set(run.goal.tried);
+	for (const id of Object.keys(outputs)) {
+		const n = run.nodes[id];
+		if (n.state !== "published") continue;
+		if (n.grain.task) tried.add(workKey(n.grain, text(n.base, "producer base"), n.inputs));
+		n.state = "repeated";
+	}
+	if (tried.size) run.goal.tried = [...tried];
+	return receipt;
 }
 
 /** @param {Run} run @param {string} why @param {import("./model.js").Receipt} receipt */

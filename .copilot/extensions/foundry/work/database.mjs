@@ -6,7 +6,7 @@ import { digest, fail } from "./values.mjs";
 import { decode } from "./snapshot.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
-export const protocol = 9;
+export const protocol = 10;
 
 /** @param {string} cwd */
 export function ledgerPath(cwd) {
@@ -39,10 +39,12 @@ export function openDatabase(cwd, file = ledgerPath(cwd), create = false) {
 		const d = lstatSync(home), f = lstatSync(file);
 		if (!d.isDirectory() || d.ino !== dir.ino || d.dev !== dir.dev || realpathSync(home) !== home || f.ino !== inode.ino || f.dev !== inode.dev)
 			fail("unsafe_storage", "Ledger or directory was replaced");
-		for (const suffix of ["", "-wal", "-shm", "-journal"]) {
+		if (!f.isFile() || f.nlink !== 1) fail("unsafe_storage", "Expected an unlinked regular ledger");
+		for (const suffix of ["-wal", "-shm", "-journal"]) {
 			const stat = lstatSync(file + suffix, { throwIfNoEntry: false });
-			if (stat && (!stat.isFile() || stat.nlink !== 1))
-				fail("unsafe_storage", "Expected unlinked regular SQLite files");
+			// A concurrent SQLite unlink can return a regular sidecar with zero links on macOS.
+			if (stat && (!stat.isFile() || stat.nlink > 1))
+				fail("unsafe_storage", `Expected an unlinked regular SQLite ${suffix.slice(1)} file`);
 		}
 	}
 	verify();
@@ -65,8 +67,8 @@ export function openDatabase(cwd, file = ledgerPath(cwd), create = false) {
 		db.close();
 		throw error;
 	}
-	/** @param {string} id @returns {Run|undefined} */
-	function read(id) {
+	/** @param {string} id */
+	function snapshot(id) {
 		verify();
 		const row = db.prepare("SELECT document,checksum,owner FROM runs WHERE id=?").get(id);
 		if (!row)
@@ -74,8 +76,10 @@ export function openDatabase(cwd, file = ledgerPath(cwd), create = false) {
 		const parsed = decode(JSON.parse(String(row.document)));
 		if (digest(parsed) !== row.checksum || parsed.id !== id || parsed.owner !== row.owner)
 			fail("corrupt_run", "Run no longer matches its recorded execution snapshot");
-		return parsed;
+		return { run: parsed, checksum: row.checksum };
 	}
+	/** @param {string} id */
+	const required = id => snapshot(id) ?? fail("missing_run", `Unknown run ${id}`);
 	/** @template T @param {()=>T} fn @returns {T} */
 	function write(fn) {
 		verify();
@@ -94,7 +98,9 @@ export function openDatabase(cwd, file = ledgerPath(cwd), create = false) {
 		}
 	}
 	return {
-		read, file,
+		file,
+		/** @param {string} id */
+		read(id) { return snapshot(id)?.run; },
 		/** @param {string} actor */
 		involving(actor) {
 			verify();
@@ -102,20 +108,23 @@ export function openDatabase(cwd, file = ledgerPath(cwd), create = false) {
 				SELECT 1 FROM json_each(document,'$.effects') WHERE json_extract(value,'$.nativeId')=?
 			) ORDER BY id`).all(actor, actor).map(r => String(r.id));
 		},
-		/** @param {string} before @param {Run} run @param {()=>boolean} valid */
-		swap(before, run, valid) {
-			return write(() => valid() && db.prepare("UPDATE runs SET document=?,checksum=? WHERE id=? AND checksum=?")
-				.run(JSON.stringify(run), digest(run), run.id, before).changes === 1);
+		/** Plan outside the lock. A new checkpoint can also require the target tip to still match at publication.
+		 * @param {string} id @param {(run:Run)=>(()=>boolean)|void} plan */
+		change(id, plan) {
+			for (;;) {
+				const { run, checksum } = required(id);
+				const valid = plan(run), next = digest(run);
+				if (next === checksum || write(() => (!valid || valid()) && db.prepare("UPDATE runs SET document=?,checksum=? WHERE id=? AND checksum=?")
+					.run(JSON.stringify(run), next, id, checksum).changes === 1)) return run;
+			}
 		},
 		/** @param {Run} run */
 		insert(run) { return write(() => db.prepare("INSERT INTO runs VALUES(?,?,?,?)").run(run.id, run.owner, JSON.stringify(run), digest(run))); },
 		/** @template T @param {string} id @param {(run:Run)=>T} fn @returns {T} */
 		update(id, fn) {
 			return write(() => {
-				const run = read(id) ?? fail("missing_run", `Unknown run ${id}`);
+				const { run } = required(id);
 				const result = fn(run);
-				if (result && typeof result === "object" && "then" in result)
-					fail("async_transaction", "Ledger mutations must be synchronous");
 				const doc = JSON.stringify(run);
 				db.prepare("UPDATE runs SET document=?,checksum=? WHERE id=? AND document<>?").run(doc, digest(run), id, doc);
 				return result;

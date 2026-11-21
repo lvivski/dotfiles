@@ -17,50 +17,89 @@ export function assignment(value) {
 }
 
 /** @param {string} value */
-export const capacityNotice = value => /^Foundry capacity: ([A-Za-z0-9][A-Za-z0-9._-]*) [a-f0-9-]{36}\n/.exec(value)?.[1];
+const capacityNotice = value => /^Foundry capacity: ([A-Za-z0-9][A-Za-z0-9._-]*) [a-f0-9-]{36}\n/.exec(value)?.[1];
 
-/** @param {Run} run @param {string} issuer @param {string} token @returns {Effect} */
-export function notifyOwner(run, issuer, token) {
-	return { id: randomUUID(), issuer, kind: "capacity", token, state: "ready", tool: "send_session_message",
-		args: { session_id: run.owner, delivery_mode: "immediate",
-			message: `Foundry capacity: ${run.id} ${token}\nReady work is waiting at the worker cap. The owner session will present the choice if it is still needed. This notice does not authorize an increase.` } };
+/** @param {string} tool @param {unknown} args */
+export function identify(tool, args) {
+	if (!args || typeof args !== "object" || Array.isArray(args)) return;
+	const a = record(args);
+	const message = tool === "create_session" && a.kickoff && typeof a.kickoff === "object" && "prompt" in a.kickoff
+		? a.kickoff.prompt : tool === "send_session_message" ? a.message : undefined;
+	if (typeof message === "string") return assignment(message)?.run ?? (tool === "send_session_message" ? capacityNotice(message) : undefined);
+	if (tool === "bash" && typeof a.command === "string" && a.command.includes("/work/runner.mjs' ") && /^foundry-[a-f0-9-]{36}$/.test(String(a.shellId)))
+		return / '([A-Za-z0-9][A-Za-z0-9._-]*)' '[a-f0-9-]{36}'$/.exec(a.command)?.[1];
 }
 
-/** @param {Run} run @param {string} issuer @param {"writer"|"scout"|"repair"} kind @param {string} token @param {string} base
- * @param {string} brief @param {{grain?:string,worker?:string,agent?:string}} [target] @returns {Effect} */
-export function assignmentEffect(run, issuer, kind, token, base, brief, target = {}) {
-	const message = `${marker(run.id, token)}\n${brief}`;
-	return {
-		id: randomUUID(), issuer, kind, token, state: "ready", ...(target.grain ? { grain: target.grain } : {}),
-		tool: target.worker ? "send_session_message" : "create_session", args: target.worker ? {
-			session_id: target.worker, delivery_mode: "immediate", message,
-		} : {
-			name: `${(target.grain ?? "Review").slice(0, 22)} ${token.slice(0, 8)}`, workspace_type: "worktree", base_branch: base,
-			coordinate_with_creator: true, notify_on_idle: "once", kickoff: { mode: "autopilot", prompt: message, ...(target.agent ? { agent: target.agent } : {}) }
-		}
-	};
+/** @param {Run} run @param {string} issuer @param {string} token @param {import("./model.js").Node} [repair] */
+export function reserveNotice(run, issuer, token, repair) {
+	const to = repair ? text(repair.worker, "assigned writer") : run.owner;
+	const message = repair
+		? `${marker(run.id, token)}\nRepair the checked failure in ${repair.grain.directory}/: ${repair.reason}\nKeep the original scope and inputs. Join any helpers, integrate their work, then call foundry_submit({run:"${run.id}",token:"${token}"}).`
+		: `Foundry capacity: ${run.id} ${token}\nReady work is waiting at the worker cap. The owner session will present the choice if it is still needed. This notice does not authorize an increase.`;
+	run.effects.push({ id: randomUUID(), issuer, token, state: "ready", ...(repair ? { kind: "repair", grain: repair.grain.id } : { kind: "capacity" }),
+		tool: to === issuer ? "session.send" : "send_session_message", args: to === issuer ? {} : { session_id: to, delivery_mode: "immediate", message } });
 }
 
-/** @param {Run} run @param {string} issuer @param {string} cwd @param {string} commit @param {string} check @param {string} [grain] @returns {Effect} */
-export function checkEffect(run, issuer, cwd, commit, check, grain) {
+/** @param {Run} run @param {string} issuer @param {string} token @param {string} base @param {string} brief @param {string} [agent] @param {string} [grain] */
+export function reserveWorker(run, issuer, token, base, brief, agent, grain) {
+	run.effects.push({ id: randomUUID(), issuer, token, state: "ready", ...(grain ? { kind: "writer", grain } : { kind: "scout" }),
+		tool: "create_session", args: {
+			name: `${(grain ?? "Review").slice(0, 22)} ${token.slice(0, 8)}`, workspace_type: "worktree", base_branch: base,
+			coordinate_with_creator: true, notify_on_idle: "once", kickoff: { mode: "autopilot", prompt: `${marker(run.id, token)}\n${brief}`, ...(agent ? { agent } : {}) }
+		} });
+}
+
+/** @param {Run} run @param {string} issuer @param {string} cwd @param {string} commit @param {string} check @param {string} [grain] */
+export function reserveCheck(run, issuer, cwd, commit, check, grain) {
 	const id = randomUUID();
 	const kind = grain ? "component" : check === run.policy.goalCheck ? "goal" : "product";
-	return {
+	run.effects.push({
 		id, issuer, kind, state: "ready", tool: "bash", commit, check, ...(grain ? { grain } : {}),
 		args: {
 			command: `command node ${[runner, cwd, run.id, id].map(quote).join(" ")}`, shellId: `foundry-${id}`, initial_wait: 120,
 			description: `Check ${grain ?? (kind === "goal" ? "final goal" : "joined product")} at ${commit.slice(0, 12)}`.slice(0, 100)
 		}
-	};
+	});
+	return id;
 }
+
+/** @param {Run} run @param {string} issuer @param {string} cwd @param {string} target @param {string} commit @param {Record<string,string>} outputs */
+export function reserveProduct(run, issuer, cwd, target, commit, outputs) {
+	run.join = { target, commit, outputs, check: reserveCheck(run, issuer, cwd, commit, run.policy.productCheck) };
+}
+
+/** @param {Effect|undefined} e */
+export function checkReceipt(e) {
+	if (e?.tool === "bash" && e.runnerStarted && e.state === "done" && e.receipt &&
+		e.receipt.commit === e.commit && e.receipt.check === e.check) return e.receipt;
+}
+
+/** @param {Effect} e */
+export const unissued = e => e.state === "ready" || e.state === "ordinary";
+/** @param {Effect} e */
+export const awaitingReply = e => e.state === "issued" || e.state === "uncertain";
+/** @param {Run} run */
+export const expired = run => !!run.policy.deadline && Date.now() >= Date.parse(run.policy.deadline);
 
 /** @param {Run} run @param {Effect} e */
 function assignee(run, e) {
 	return e.kind === "scout" ? run.reviews.find(r => r.token === e.token) : e.grain ? run.nodes[e.grain] : undefined;
 }
 
+/** An old review can release its slot only when we know it never started.
+ * @param {Run} run @param {Effect} e */
+export function retireUnissuedScout(run, e) {
+	if (!run.goal || e.kind !== "scout" || !unissued(e)) return;
+	const r = run.reviews.find(r => r.token === e.token);
+	if (r?.state === "reading" && !r.worker && r.base !== run.goal.commit) {
+		r.state = "blocked";
+		r.reason = "Reviewed revision was superseded before dispatch";
+	}
+}
+
 /** @param {Run} run @param {Effect} e */
 export function current(run, e) {
+	if (run.conflict && (e.kind === "product" || e.kind === "goal") && e.state === "ready") return false;
 	if (e.kind === "capacity")
 		return !!e.token && run.capacity?.offer?.id === e.token;
 	if (e.kind === "goal")
@@ -70,6 +109,7 @@ export function current(run, e) {
 	const n = assignee(run, e);
 	if (e.kind === "component")
 		return n?.state === "checking" && n.check === e.id;
+	if (e.tool === "session.send" && n?.worker !== e.issuer) return false;
 	return !!n && n.token === e.token && n.state === (e.kind === "scout" ? "reading" : "writing");
 }
 
@@ -78,25 +118,28 @@ export function admitted(run) {
 	if (run.accepted)
 		fail("goal_met", `Goal met at ${run.accepted}`);
 	if (!run.active)
-		fail("paused", "Foundry is paused");
-	if (run.policy.deadline && Date.now() >= Date.parse(run.policy.deadline))
+		fail("paused", run.pauseReason ?? "Foundry is paused");
+	if (expired(run))
 		fail("deadline", "The authorized deadline has elapsed");
 }
 
-/** @param {Run} run @param {string} actor @param {string} tool @param {unknown} args @param {string} callId @param {string} id */
-export function issue(run, actor, tool, args, callId, id) {
-	const e = run.effects.find(e => e.id === id);
-	if (!e || e.issuer !== actor || e.tool !== tool || digest(e.args) !== digest(args) || !current(run, e))
-		fail("stale_call", "Only the current exact reserved call may execute");
-	const issued = e.state === "issued" && e.callId === callId;
-	if (!issued || tool !== "bash") admitted(run);
-	if (issued)
-		return;
-	if (e.state !== "ready" && e.state !== "ordinary")
-		fail("already_issued", "Do not repeat an issued or uncertain native call");
+/** Claim exactly the reservation seen before the permission read, inside the ledger transaction.
+ * @param {Run} run @param {Effect} expected @param {string} callId */
+export function issue(run, expected, callId) {
+	const e = run.effects.find(e => e.id === expected.id);
+	if (!e || e.issuer !== expected.issuer || e.state !== expected.state || e.tool !== expected.tool ||
+		digest(e.args) !== digest(expected.args) || !current(run, e)) return false;
+	if (e.state === "issued") {
+		if (e.callId !== callId) return false;
+		if (e.tool !== "bash") admitted(run); // An already-issued runner may finish through a pause.
+		return true;
+	}
+	if (!run.active || e.permissionHold || !unissued(e)) return false;
+	admitted(run);
 	e.callId = text(callId, "original call ID");
 	e.state = "issued";
 	delete e.error;
+	return true;
 }
 
 /** @param {Run} run @param {Effect} e @param {string} reason */
@@ -116,9 +159,10 @@ function block(run, e, reason) {
 export function receive(run, e, raw, automatic) {
 	const value = record(raw);
 	if (automatic && value.resultType === "failure" && value.error === "This session management tool is disabled" &&
-		!value.structuredContent && !value.textResultForLlm && e.tool !== "bash") {
+		!value.structuredContent && !value.textResultForLlm && (e.tool === "create_session" || e.tool === "send_session_message")) {
 		e.state = "ordinary";
 		e.error = "Native route disabled; execute the exact prepared call in its owner session";
+		retireUnissuedScout(run, e);
 		return;
 	}
 	if (["denied", "rejected"].includes(String(value.resultType))) {
@@ -151,6 +195,7 @@ export function receive(run, e, raw, automatic) {
 		}
 		fail("missing_receipt", "The pinned runner has not finished");
 	}
+	else if (e.tool === "session.send") text(value.messageId, "admitted repair notice");
 	else if (!(typeof value.textResultForLlm === "string" && /^(?:Queued\.?$|Message accepted for priority delivery to session '[^\n]+'\.)/.test(value.textResultForLlm))
 		&& !(value.structuredContent && ["accepted", "queued", "delivered"].includes(String(record(value.structuredContent).status))))
 		fail("missing_receipt", "Message queue admission was not confirmed");
