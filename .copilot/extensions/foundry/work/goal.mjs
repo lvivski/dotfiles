@@ -1,6 +1,8 @@
-import { checkReceipt, reserveCheck, reserveProduct, retireUnissuedScout } from "./native.mjs";
+import { checkReceipt, goalReceipt } from "./evidence.mjs";
+import { reserveCheck, reserveNotice, reserveProduct } from "./native.mjs";
 import { workKey } from "./plan.mjs";
 import { retain, treeOf, verifyContracts } from "./product.mjs";
+import { blockReview, reading, reviews } from "./reviews.mjs";
 import { text } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
@@ -8,20 +10,16 @@ import { text } from "./values.mjs";
 export function assess(cwd, run, actor, target, commit) {
 	verifyContracts(cwd, run.policy, target);
 	run.goal = { target, commit, check: reserveCheck(run, actor, cwd, commit, text(run.policy.goalCheck, "goal evaluator")) };
-	for (const effect of run.effects) retireUnissuedScout(run, effect);
+	for (const r of reviews(run)) if (r.state === "ready" && r.base !== commit)
+		blockReview(r, "Reviewed revision was superseded before dispatch");
 }
 
-/** @param {Run} run */
-export function goalReceipt(run) {
-	const at = run.goal;
-	const e = at && run.effects.find(e => e.id === at.check);
-	if (e?.kind === "goal" && e.commit === at?.commit && e.check === run.policy.goalCheck) return checkReceipt(e);
-}
-
-/** @param {Run} run */
-export function missingObservation(run) {
-	const receipt = goalReceipt(run);
-	if (!run.blocker && !run.join && receipt?.exit === 2) return receipt;
+/** Publish the timestamp and owner notification in the same transition as the exact receipt.
+ * @param {Run} run @param {string} actor @param {import("./model.js").Product} product */
+export function qualify(run, actor, product) {
+	product.qualifiedAt = Date.now();
+	reserveNotice(run, actor, product.check, "handoff",
+		`Foundry ${run.id} qualified ${product.commit}. The target was not changed. Read foundry_status({run:"${run.id}"}) for the checked product and named writer handoff. Archive is separate and opt-in; do not archive on this notice.`);
 }
 
 /** Gate graph admission on the exact baseline or latest checkpoint, never on a worker's report.
@@ -54,7 +52,7 @@ export function goalAllowsWork(cwd, run, actor, target, retry) {
 	}
 	if (at.target !== target) {
 		delete at.stall;
-		if (!last && !Object.values(run.nodes).some(n => n.state !== "idle") && !run.reviews.some(r => r.state === "reading")) {
+		if (!last && !Object.values(run.nodes).some(n => n.state !== "idle") && !reviews(run).some(reading)) {
 			delete run.join; // A baseline milestone reserved on the old tip cannot attest to the new one.
 			assess(cwd, run, actor, target, retain(cwd, target));
 			return false;
@@ -64,13 +62,10 @@ export function goalAllowsWork(cwd, run, actor, target, retry) {
 	if (at.stall) return false;
 	if (receipt.exit === 1) return true;
 	if (last) {
-		run.accepted = at.commit;
+		qualify(run, actor, last);
 		run.active = false;
 		delete run.capacity?.offer;
-		for (const r of run.reviews) if (r.state === "reading") {
-			r.state = "blocked";
-			r.reason = "Goal met; no further review is needed";
-		}
+		for (const r of reviews(run).filter(reading)) blockReview(r, "Goal met; no further review is needed");
 	} else if (!run.join) {
 		// The baseline already satisfies the goal. Check its milestone invariants without hiring a writer.
 		reserveProduct(run, actor, cwd, target, at.commit, {});
@@ -99,8 +94,8 @@ export function rejectRepeat(cwd, run, target, commit, outputs) {
 /** @param {Run} run @param {string} why @param {import("./model.js").Receipt} receipt */
 export function stall(run, why, receipt) {
 	if (!run.goal) return;
-	const decisions = run.reviews.filter(r => r.base === run.goal?.commit).map(r =>
-		`${r.squad}: ${r.observation?.reason ?? r.reason}`);
+	const decisions = reviews(run).filter(r => r.base === run.goal?.commit).map(r =>
+		`${r.squad}: ${r.error ?? r.observation?.reason}`);
 	const blocked = Object.entries(run.nodes).filter(([, n]) => n.state === "blocked").map(([id, n]) => `${id}: ${n.reason}`);
 	run.goal.stall = [`Goal unmet at ${receipt.commit}: ${receipt.output.trim() || `${receipt.check} exited 1`}.`, why, ...decisions, ...blocked].join("\n");
 }

@@ -1,0 +1,13 @@
+# How work reaches a writer
+
+**Discovery:** Foundry gives each tool-less workflow scout the pinned evidence, goal diagnostic and relevant assignments. Its one structured report may propose `{id,task,directory,check,needs}` in an area charter. Fixed charters request owned IDs only. No scout session, token or tool call is needed.
+
+**Before making B wait for A:** Name in `reason` the exact checked output A must supply and what B cannot start without it. If both can start from the committed interface in disjoint directories, propose both now with no dependency between them. If only the integration needs A's output, split that part out and give it the dependency. Shared writable files aren't a reason to race two writers: split ownership or keep one assignment. Every `needs` ID must already exist or be in the same batch.
+
+Use `replace` for unstarted work. A milestone preserves the tree, not its assignments: reuse or split qualified outputs. Repeated or blocked area work can trigger fresh discovery on the same revision. Never displace a live assignment or its inputs, or retry refused work.
+
+**Report:** Cite committed evidence within your charter and inputs. Use `no-gap` with an empty list if no work is actionable; use `needs-decision` with an empty list and the contract question in `reason` if the charter or success criteria need an operator. Do not answer that question, change a check, or create sessions yourself. On goal exit 1, a single `FOUNDRY_SQUAD=<id>` hint can send a gap to an existing charter first; an unclear or unproductive hint falls back to full discovery.
+
+**Write:** Generate the **complete** assigned directory at its frozen base; omitted files are deleted. For independent pieces, launch native `task` agents in parallel **in this worktree**, not new desktop sessions. Give each disjoint files or a read-only question, the permitted inputs and the assignment constraints, never the token. Ask for results, not further delegation. Keep shared files for integration. Work solo for small changes or when helpers are unavailable. Neither writer nor helpers may change contracts or evaluators, switch base, commit or land.
+
+**Submit:** Only the bound writer calls `foundry_submit({run,token})`. Collect every helper, check its changes and finish missing pieces before submitting. If helpers are still running, the same token remains writable. A failed evaluation returns a fresh token for a bounded repair or a blocker. Repair in the same worktree; don't repeat finished slices. Do not claim success or supply an alternate check. For a permission hold or an uncertain native call, follow the [run recovery rules](runs.md#pause-and-resume).

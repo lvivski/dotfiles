@@ -1,0 +1,49 @@
+<!doctype html>
+<!--
+Thesis: show the fork and the join, not a queue of jobs.
+World: a host-themed wiring diagram; cool ink for work, oxide for a stop.
+Story: follow an output to its consumers, then inspect its check.
+First viewport: run, current activity, then the actual map. Select a junction to trace it.
+Form: an operator's dependency diagram, left to right in a wide panel and top to bottom in a narrow one.
+-->
+<html lang="en">
+<head>
+	<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Foundry dependency map</title>
+	<link rel="stylesheet" href="./style.css"><script type="module" src="./view.mjs"></script>
+</head>
+<body>
+<svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+	<symbol id="fork" viewBox="0 0 24 24"><path d="M4 12h4c4 0 3-7 7-7h3M8 12c4 0 3 7 7 7h3"/><circle cx="3" cy="12" r="1.8"/><circle cx="20" cy="5" r="1.8"/><circle cx="20" cy="19" r="1.8"/></symbol>
+	<symbol id="write" viewBox="0 0 24 24"><path d="m4 20 5-1 12-12-4-4L5 15zM14 6l4 4"/></symbol>
+	<symbol id="inspect" viewBox="0 0 24 24"><circle cx="10" cy="10" r="6.5"/><path d="m15 15 5 5"/></symbol>
+	<symbol id="clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3 2"/></symbol>
+	<symbol id="stop" viewBox="0 0 24 24"><path d="M8 3.5h8l4.5 4.5v8L16 20.5H8L3.5 16V8zM8.5 12h7"/></symbol>
+	<symbol id="tick" viewBox="0 0 24 24"><path d="m4.5 12.5 5 5 10-11"/></symbol>
+	<symbol id="refresh-icon" viewBox="0 0 24 24"><path d="M20 10a8 8 0 1 0-1 7M20 4v6h-6"/></symbol>
+</svg>
+<main>
+	<header>
+		<div class="title-row"><svg class="mark" aria-hidden="true"><use href="#fork"/></svg><h1>Dependency map</h1>
+			<button id="refresh" type="button" title="Refresh map" aria-label="Refresh map"><svg class="icon" aria-hidden="true"><use href="#refresh-icon"/></svg></button>
+		</div>
+		<div class="identity" id="identity" hidden><code id="run"></code><span id="phase"></span><span id="source"></span></div>
+		<p id="direction"></p>
+	</header>
+	<div id="notice" role="status">Reading the run…</div>
+	<div id="content" hidden>
+		<div id="alerts"></div>
+		<section class="map" aria-labelledby="assignments">
+			<div class="map-head"><h2 id="assignments">Assignments</h2><div id="counts"></div></div>
+			<a class="skip" href="#inspector">Skip to assignment details</a>
+			<div id="plot" role="region" aria-label="Assignment dependency diagram" tabindex="0">
+				<div id="stage"></div><div id="empty" hidden></div>
+			</div>
+			<div id="key" class="legend"><span><i></i>Checked input</span><span><i class="pending"></i>Pending input</span><span id="flow"></span></div>
+		</section>
+		<section id="inspector" aria-label="Assignment details" tabindex="-1" hidden></section>
+		<details id="evidence"><summary>Product evidence <span id="verdict"></span></summary><div id="proof"></div></details>
+	</div>
+</main>
+</body>
+</html>

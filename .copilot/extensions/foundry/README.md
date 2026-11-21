@@ -2,6 +2,14 @@
 
 Foundry works toward a committed product brief. Writers regenerate independent directories in parallel. A passing milestone is progress, not the finish line: squads inspect the remaining gap on the combined tree and choose the next work under the same authorization. Foundry records the exact commit that satisfies the goal and leaves the destination branch untouched.
 
+Use [`/foundry brief <idea>`](../../skills/foundry/references/brief.md) to work through the product decisions and confirm the outcome before the brief is written. To run `.foundry/catalog.json`, use [`/foundry start catalog`](../../skills/foundry/references/runs.md#start). The skill resolves the name to the committed path the runtime needs. `/foundry` shows the [commands](../../skills/foundry/SKILL.md#commands); `/foundry plans` lists plan names in this checkout. Confirming a brief does not start workers.
+
+### See what can run in parallel
+
+`/foundry status <run-id>` opens a read-only dependency map in the desktop app. Each arrow goes from a required output to the assignment that uses it. A solid line means the input is checked; a dashed line means it is still outstanding. Select an assignment to see its current prerequisites, direct dependents and check result. An assignment waiting for input isn't a blocked run, and a checked output isn't a qualified product. Open **Product evidence** for the checkpoint and final goal result.
+
+The owner's **Product evidence** also shows elapsed time to the first confirmed writer and to qualification, when known. The map refreshes while visible, using the same session-scoped status read as the command. It never advances or starts a run. Without a run, ask for the **example dependency map** to see a labeled, static file-catalog example.
+
 ## Commit the contract
 
 For a goal run, commit what the product must do, not a list of implementation tasks. Give each squad disjoint writable `areas`, a charter describing its responsibilities, shared interface files (`boundary`), and trusted component `checks`. Pin check helpers in `boundary` too. Keep all of these files and both product evaluators outside every writable area.
@@ -47,9 +55,9 @@ Ready writers start without a new activation or user turn. As soon as the admitt
 
 ### Discover and split work
 
-The run starts without assignments. A bound scout reports `outcome: "regenerate"`, cites files on its reviewed revision, and proposes one or more *grains*: complete, independently checkable directories. The owner and scouts can read current assignments and dependencies in `foundry_status.nodes`. Each squad may specify an installed native `agent`.
+The run starts without assignments. Foundry dispatches ready charters to a `foundry-scout` workflow. Each scout gets a bounded packet of Git evidence from the exact assessed commit, the goal diagnostic and the relevant graph. It has no tools, session worktree or submit token. It returns one structured report; Foundry checks its citations, ownership and dependencies before releasing a writer. One slow charter does not hold up the others. A squad's optional native `agent` selects its **writer**, not its scout.
 
-For example, the browse scout initially proposed a `lookup` directory that waits for `price`. It discovers the query editor needs only the committed interface. With the `nextToken` returned by its last report it can submit this change while the pricing writer is still working (other `observe` arguments omitted):
+For example, a browse scout can separate the query editor from the work that actually needs pricing. If an earlier plan still has a never-issued `lookup` assignment, its replacement can look like this (other report fields omitted):
 
 ```json
 {
@@ -61,25 +69,24 @@ For example, the browse scout initially proposed a `lookup` directory that waits
 }
 ```
 
-`needs` means **the writer needs that checked output to start**, not that the finished product will eventually use it. A prerequisite ID must already exist or be proposed in the same report. If its producer hasn't reported yet, propose independent work now and defer integration. In the example, `query` and `price` can run together; only `lookup` waits. A fixture-backed editor alone cannot satisfy the customer lookup goal.
+Before adding `needs`, name in `reason` **which checked output the consumer needs to start and why**. A prerequisite ID must already exist or be proposed in the same report. In the example, `query` can edit text using the committed interface; it doesn't need the pricing implementation. Propose `query` and `price` in parallel. Only `lookup`, which connects the checked editor to the checked price lookup, waits for both. If a producer hasn't reported yet, propose the independent work now and defer integration. A fixture-backed editor alone cannot satisfy the customer lookup goal.
 
 - A split is all-or-nothing. The directories must be disjoint, IDs unique, and the resulting graph free of cycles and dangling dependencies, including other squads' consumers. Use `replace` to remove your own never-started assignments. A scout cannot displace an issued writer, bounded repair, refused or uncertain call, or an output awaiting its milestone check.
-- A report and its token are immutable; replaying it does nothing. Only the bound scout may use its next token for a follow-up on the same assessed revision. It need not follow up for work to proceed. A later checkpoint gets fresh reviews.
+- Each review accepts one result. Replaying it does nothing, and a superseded review cannot change a newer plan. A later checkpoint or a newly blocked or repeated area assignment supplies new evidence for discovery without another operator turn.
 - **A checkpoint preserves the tree, not the division of work.** You can request a checked output by ID, or propose new directories and IDs anywhere inside your charter. For example, after `src/browse` passes, propose `src/browse/query` and `src/browse/results` together. An overlapping checked name is retired automatically; `replace` can also retire a checked name explicitly. Old commits, receipts and files outside the new assignments stay intact. Checked names that depended on the superseded version retire with it. If a current assignment still uses that version, the split is rejected. Unaffected checked outputs remain available by name.
 - A refused assignment cannot be retried, but it no longer pins its inputs. A conflict with a moving target is rechecked on participant turns: resolving the edit or releasing its last live input can unblock the run without overriding a refusal.
-- If a batch reproduces a tree that already failed the goal, status marks its new outputs `repeated`, not qualified. A scout can split them or use them as checked inputs. A new token, label or report does not restart the same assignment on the same base with the same inputs, even after a pause. Change the task, boundaries or actual prerequisites; an unchanged plan is rejected without consuming the follow-up token. If a pending prerequisite later resolves to the same input, that never-issued job is marked blocked and can be replaced. None of these cases creates a checkpoint.
-- Use `no-gap` or `needs-decision` with `grains: []` for no actionable work or an ambiguous contract. Put the question in `reason` and cite the conflicting committed evidence. A question starts no writer and does not veto independent work. To change the contract, pause and record the operator's decision in the conserved files; it requires a new run ID and explicit authorization.
+- If a batch reproduces a tree that already failed the goal, status marks its new outputs `repeated`, not qualified. A scout can split them or use them as checked inputs. A new ID or report does not restart the same assignment on the same base with the same inputs, even after a pause. Change the task, boundaries or actual prerequisites. If a pending prerequisite later resolves to the same input, that never-issued job is marked blocked and can be replaced. None of these cases creates a checkpoint.
+- Use `no-gap` or `needs-decision` with `grains: []` for no actionable work or an ambiguous contract. Put the question in `reason` and cite the conflicting committed evidence. Foundry presents a current question once through the owner's native input UI. If a writer on a current assignment is already asking, the owner gets the writer and its actual request ID instead. If that writer's request state can't be verified, check its original session; finished writers do not hold up new questions. Other assignments continue while the owner decides. Answers are attached to the reviewed revision; changing the conserved contract still requires a new run ID and explicit authorization.
 
 **Fixed contracts:** version 1 retains its committed `grains` (`id`, `directory`, `specification`, `boundary`, `check`, optional `needs`) and squad-to-grain ID lists. Existing runs do not acquire broader authority on resume. For an explicitly requested one-off, use version 1 with `seed` and no `goalCheck`: a passing `productCheck` qualifies that batch. Unseeded version-1 discovery without a goal still reviews changes to chartered inputs on participant turns. A host trigger can wake an existing run, not authorize one.
 
-## Five operations
+## Four operations
 
 | Tool | Who uses it | Result |
 |---|---|---|
 | `foundry_start({source})` | Operator's session, on explicit request | Confirm a new or paused run. A seed names the requested grains; otherwise start charter review. |
-| `foundry_observe({run,token,outcome,reason,evidence,grains,replace?})` | Bound scout | Propose work, split pending or checked directories, report no gap, or raise a contract question. |
 | `foundry_submit({run,token})` | Bound writer, from its worktree | Capture the whole directory and run its committed evaluator. Ready work is picked up internally. |
-| `foundry_status({run})` | Owner or bound participant | Read assignments, blockers and receipts. The owner sees questions and, in a goal run, the latest `checkpoint`, the `goal` assessment and final `qualified` commit (null until both checks pass). No side effects. |
+| `foundry_status({run})` | Owner or bound participant | Read assignments, blockers and receipts. The owner also sees current questions, timing facts, checkpoint, and qualified handoff. In a goal run, `qualified` stays null until both checks pass. No side effects. |
 | `foundry_pause({run})` | Owner | Stop new work. Retain worktrees, assignments, issued calls and results. |
 
 **Tool permissions:** Autopilot controls how the session works, not what it may execute. Before confirming a start or resume, Foundry reads the owner's managed settings and selected tool permission mode. If settings are unresolved, unreadable, or set to Manual, it reports the blocker without running a baseline or starting workers. Use Assisted if your policy allows it; Allow All is not required. Foundry never changes settings or approves a tool call. A ready owner does not guarantee prompt-free tools, hook registration, or permissions in a child.
@@ -95,6 +102,14 @@ For example, the browse scout initially proposed a `lookup` directory that waits
 - The product check freezes the **combined** outputs on the current target tip. If new work is admitted or the target moves during evaluation, the old result cannot qualify the new candidate. Nonoverlapping target edits are incorporated and rechecked; incompatible edits to an owned directory block rather than disappear. Inspect the final changes with `git diff <target-tip> <qualified>`. A generated candidate has the evaluated target tip as its parent; if the baseline already passed, `qualified` is the tip itself. Foundry does not land it.
 - Every seeded output is required. In discovery, if a grain is blocked, independent outputs can still qualify **if the product evaluator passes**. Its blocked grain and dependents remain visible and are not marked complete.
 
+### Hand off and measure the result
+
+Qualification reserves a notice to the owner in the same ledger transition that records the checked product. Use `handoff.commit` and `handoff.target` to inspect **exactly** what passed: `git diff <checked-target> <qualified>`. The branch is not updated. A notice may still await native delivery; the qualified result remains readable from status. Nothing is archived automatically.
+
+Follow the [owner handoff guide](../../skills/foundry/references/handoff.md) to offer native Archive for one named, verified writer. At offer **and again immediately before the action**, compare the complete worktree (including untracked and ignored files) to the retained capture and verify native ownership, activity, PR, Agent merge and automation state. Unknown, unique, or ongoing work means **keep the session**. An approved start or a finished component is not approval for Archive.
+
+[`/foundry measure <run-id>`](../../skills/foundry/references/metrics.md) reports wall time from activation to the first writer's verified kickoff in native history and to exact product qualification. It distinguishes kickoff from Foundry's confirmation of a writer binding, which can arrive later after recovery. Missing history is unknown. A reservation is not a writer; a checkpoint is not a finished goal. A successful baseline may need no writer. Count only observed writer usage attributable to this run, not lifetime totals or estimates for the owner, helpers or workflows.
+
 ### Interruptions
 
 Before issuing new work, including a `prepared` call, Foundry checks the **issuing session's** permissions. If managed settings are resolved and that session has selected **Manual**, only its unissued calls are held. `foundry_status.pending` shows the reason and issuer; other authorized sessions continue. After selecting a permitted mode in the held session, its next turn rechecks the original reservation. No owner restart or replacement worker is needed.
@@ -105,17 +120,19 @@ For an exit-2 goal receipt, supply the missing observation and have the owner pa
 
 Foundry records reservations before issuing native calls. Only an explicitly unavailable, definitely unissued native session route yields an ordinary `prepared` call. Execute it **once, unchanged, in its issuing session**. A confirmed denial blocks the assignment and releases its slot. Recovery reads backward to the start of the issuing turn: an older permission decision is not evidence for this call. Missing or conflicting receipts stay pending and never cause another creation.
 
+Scouting requires an eligible Dynamic Workflows runtime. Foundry does not substitute desktop scouts if it is unavailable. A bound workflow can return evidence through a pause, but cannot issue work while paused. On reconnect, Foundry reads the original workflow's outcome rather than launching a second one. If a dispatch was interrupted *before* the workflow bound it, the owner may pause and explicitly resume to retry that read-only discovery. This does not retry an uncertain writer creation.
+
 A queued repair is not proof the recipient acted. A native permission or input request remains with its actual session. Pausing stops new work; an already-issued check may finish, and its result is applied on resume. A confirmed nonzero launcher exit before the runner started blocks the check and frees its slot, even after reload. It is not an evaluator failure or a reason to retry. Once the runner starts, only its own receipt can settle the evaluation.
 
 Foundry processes parallel replies independently, including after reload. A slow history lookup does not hold up an unissued assignment or a slot freed by a confirmed refusal. The unresolved start still occupies its own slot and is never sent again. If the issuing session switches to plan mode while waiting, Foundry records the reply but starts no follow-up work there until an interactive or autopilot turn.
 
 If a long check finishes after `submit` returns, a matching shell completion wakes the scheduler. Only the runner's recorded verdict can issue a repair. If that writer is driving the run, Foundry queues a notice in its own session to read the new token; otherwise the usual cross-session repair applies. An unconfirmed notice stays pending rather than being sent again.
 
-Foundry retains versions and generation bases in `refs/foundry/objects/`. Linked worktrees share `foundry/work.sqlite` in the repository's common Git directory. This runtime uses ledger protocol 10 for both contract formats. It does not open or migrate a protocol-9 run; a new run ID or linked worktree still uses the old database. Leave that clone intact and use a separate clone with a fresh ledger for a new run.
+Foundry retains versions and generation bases in `refs/foundry/objects/`. Linked worktrees share `foundry/work.sqlite` in the repository's common Git directory. This runtime uses ledger protocol **12**. A scout's dispatch, report and question belong to one record; qualification belongs to the checked product, not a separate mutable commit pointer. Older ledgers are refused, not migrated or deleted. Leave an old clone intact; use a fresh clone for a new run.
 
 ## Development
 
-The dotfiles `sync` operation installs the extension and skill. Test the repository copy in disposable Git fixtures, not a running factory. The host supplies the SDK; TypeScript and Node declarations are development-only.
+The dotfiles `sync` operation installs the extension and Foundry skill. Test the repository copy in disposable Git fixtures, not a running factory. The host supplies the SDK; TypeScript and Node declarations are development-only.
 
 ```sh
 npm ci --prefix .copilot/editor
@@ -135,7 +152,7 @@ The outbox and stock journeys each use four squads and nine directories. After a
 
 The wide transit and clearing factories use separate writer processes against one ledger per product. A rendezvous measures 12 or 16 overlapping component checks, including after a checkpoint. One check stays open until an independent district finishes; its own dependent must still be waiting. Clearing also repairs a shared journal after three checkpoints and checks that only its consumers rerun. With the repair receipt withheld, they must stay waiting. The rendezvous measures concurrency, not speedup.
 
-**Native end-to-end testing** is separate. Use the installed personal extension in a fresh registered Git repo with a committed brief, interfaces and evaluators, but no implementation or scripted workers. Calibrate the trial goal in a disposable copy: a working control should pass; breaking one promised behavior at a time (such as accepting an invalid option) should fail. Keep those controls out of the trial repo. The operator starts the run in its owning desktop conversation. Record actual scout and writer sessions, overlapping activity, subsequent deliveries, and the product and goal receipts at the same `qualified` commit. An activation prompt, an issued assignment, a passing fixture suite or a checkpoint alone is not an end-to-end pass.
+**Native end-to-end testing** is separate. Use a fresh registered clone with a committed brief, interfaces and evaluators, but no implementation or scripted workers. Calibrate the goal in a disposable copy: a working control should pass; breaking one promised behavior should fail. The operator starts the run in its owning desktop conversation. Record workflow scout calls, native writer sessions, and both receipts at the same `qualified` commit. To measure a speedup, compare the old and new versions on separate fresh clones of that same commit with the same model, worker cap and finish condition. Compare the two elapsed times and label usage by its actual coverage. A fixture pass, fewer sessions or overlapping work alone does not establish a speedup.
 
 On a fresh desktop session, check for **register hooks** permission cards in that session before diagnosing a scheduler stall. The app can create the worktree and session before its kickoff is delivered. A successful reload in the parent does not answer the child's cards; don't launch a replacement.
 

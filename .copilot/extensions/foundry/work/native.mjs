@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { qualifiedProduct } from "./evidence.mjs";
+import { questions, reading } from "./reviews.mjs";
 import { digest, fail, record, text } from "./values.mjs";
 
 /** @typedef {import("./model.js").Effect} Effect */
@@ -17,7 +19,7 @@ export function assignment(value) {
 }
 
 /** @param {string} value */
-const capacityNotice = value => /^Foundry capacity: ([A-Za-z0-9][A-Za-z0-9._-]*) [a-f0-9-]{36}\n/.exec(value)?.[1];
+const ownerNotice = value => /^Foundry (?:capacity|decision|handoff): ([A-Za-z0-9][A-Za-z0-9._-]*) [a-f0-9-]{36}\n/.exec(value)?.[1];
 
 /** @param {string} tool @param {unknown} args */
 export function identify(tool, args) {
@@ -25,26 +27,26 @@ export function identify(tool, args) {
 	const a = record(args);
 	const message = tool === "create_session" && a.kickoff && typeof a.kickoff === "object" && "prompt" in a.kickoff
 		? a.kickoff.prompt : tool === "send_session_message" ? a.message : undefined;
-	if (typeof message === "string") return assignment(message)?.run ?? (tool === "send_session_message" ? capacityNotice(message) : undefined);
+	if (typeof message === "string") return assignment(message)?.run ?? (tool === "send_session_message" ? ownerNotice(message) : undefined);
 	if (tool === "bash" && typeof a.command === "string" && a.command.includes("/work/runner.mjs' ") && /^foundry-[a-f0-9-]{36}$/.test(String(a.shellId)))
 		return / '([A-Za-z0-9][A-Za-z0-9._-]*)' '[a-f0-9-]{36}'$/.exec(a.command)?.[1];
 }
 
-/** @param {Run} run @param {string} issuer @param {string} token @param {import("./model.js").Node} [repair] */
-export function reserveNotice(run, issuer, token, repair) {
-	const to = repair ? text(repair.worker, "assigned writer") : run.owner;
-	const message = repair
-		? `${marker(run.id, token)}\nRepair the checked failure in ${repair.grain.directory}/: ${repair.reason}\nKeep the original scope and inputs. Join any helpers, integrate their work, then call foundry_submit({run:"${run.id}",token:"${token}"}).`
-		: `Foundry capacity: ${run.id} ${token}\nReady work is waiting at the worker cap. The owner session will present the choice if it is still needed. This notice does not authorize an increase.`;
-	run.effects.push({ id: randomUUID(), issuer, token, state: "ready", ...(repair ? { kind: "repair", grain: repair.grain.id } : { kind: "capacity" }),
-		tool: to === issuer ? "session.send" : "send_session_message", args: to === issuer ? {} : { session_id: to, delivery_mode: "immediate", message } });
+/** @param {Run} run @param {string} issuer @param {string} token @param {"repair"|"capacity"|"decision"|"handoff"} kind
+ * @param {string} body @param {import("./model.js").Node} [node] */
+export function reserveNotice(run, issuer, token, kind, body, node) {
+	const to = node ? text(node.worker, "assigned writer") : run.owner;
+	const message = `${kind === "repair" ? marker(run.id, token) : `Foundry ${kind}: ${run.id} ${token}`}\n${body}`;
+	run.effects.push({ id: randomUUID(), issuer, token, state: "ready", kind, ...(node ? { grain: node.grain.id } : {}),
+		tool: to === issuer ? "session.send" : "send_session_message",
+		args: to === issuer ? { message } : { session_id: to, delivery_mode: "immediate", message } });
 }
 
-/** @param {Run} run @param {string} issuer @param {string} token @param {string} base @param {string} brief @param {string} [agent] @param {string} [grain] */
+/** @param {Run} run @param {string} issuer @param {string} token @param {string} base @param {string} brief @param {string|undefined} agent @param {string} grain */
 export function reserveWorker(run, issuer, token, base, brief, agent, grain) {
-	run.effects.push({ id: randomUUID(), issuer, token, state: "ready", ...(grain ? { kind: "writer", grain } : { kind: "scout" }),
+	run.effects.push({ id: randomUUID(), issuer, token, state: "ready", kind: "writer", grain,
 		tool: "create_session", args: {
-			name: `${(grain ?? "Review").slice(0, 22)} ${token.slice(0, 8)}`, workspace_type: "worktree", base_branch: base,
+			name: `${grain.slice(0, 22)} ${token.slice(0, 8)}`, workspace_type: "worktree", base_branch: base,
 			coordinate_with_creator: true, notify_on_idle: "once", kickoff: { mode: "autopilot", prompt: `${marker(run.id, token)}\n${brief}`, ...(agent ? { agent } : {}) }
 		} });
 }
@@ -68,12 +70,6 @@ export function reserveProduct(run, issuer, cwd, target, commit, outputs) {
 	run.join = { target, commit, outputs, check: reserveCheck(run, issuer, cwd, commit, run.policy.productCheck) };
 }
 
-/** @param {Effect|undefined} e */
-export function checkReceipt(e) {
-	if (e?.tool === "bash" && e.runnerStarted && e.state === "done" && e.receipt &&
-		e.receipt.commit === e.commit && e.receipt.check === e.check) return e.receipt;
-}
-
 /** @param {Effect} e */
 export const unissued = e => e.state === "ready" || e.state === "ordinary";
 /** @param {Effect} e */
@@ -83,45 +79,46 @@ export const expired = run => !!run.policy.deadline && Date.now() >= Date.parse(
 
 /** @param {Run} run @param {Effect} e */
 function assignee(run, e) {
-	return e.kind === "scout" ? run.reviews.find(r => r.token === e.token) : e.grain ? run.nodes[e.grain] : undefined;
-}
-
-/** An old review can release its slot only when we know it never started.
- * @param {Run} run @param {Effect} e */
-export function retireUnissuedScout(run, e) {
-	if (!run.goal || e.kind !== "scout" || !unissued(e)) return;
-	const r = run.reviews.find(r => r.token === e.token);
-	if (r?.state === "reading" && !r.worker && r.base !== run.goal.commit) {
-		r.state = "blocked";
-		r.reason = "Reviewed revision was superseded before dispatch";
-	}
+	return e.grain ? run.nodes[e.grain] : undefined;
 }
 
 /** @param {Run} run @param {Effect} e */
 export function current(run, e) {
+	if (e.tool === "workflow")
+		return reading(e);
 	if (run.conflict && (e.kind === "product" || e.kind === "goal") && e.state === "ready") return false;
 	if (e.kind === "capacity")
 		return !!e.token && run.capacity?.offer?.id === e.token;
+	if (e.kind === "decision")
+		return questions(run).some(r => r.id === e.token && !r.decision);
+	if (e.kind === "handoff") {
+		const product = run.products.at(-1);
+		return !!product?.qualifiedAt && product.check === e.token;
+	}
 	if (e.kind === "goal")
-		return !run.accepted && !run.blocker && run.goal?.check === e.id;
+		return !qualifiedProduct(run) && !run.blocker && run.goal?.check === e.id;
 	if (e.kind === "product")
 		return !run.blocker && run.join?.check === e.id;
 	const n = assignee(run, e);
 	if (e.kind === "component")
 		return n?.state === "checking" && n.check === e.id;
 	if (e.tool === "session.send" && n?.worker !== e.issuer) return false;
-	return !!n && n.token === e.token && n.state === (e.kind === "scout" ? "reading" : "writing");
+	return !!n && n.token === e.token && n.state === "writing";
 }
 
 /** @param {Run} run */
 export function admitted(run) {
-	if (run.accepted)
-		fail("goal_met", `Goal met at ${run.accepted}`);
+	const final = run.goal && qualifiedProduct(run);
+	if (final) fail("goal_met", `Goal met at ${final.commit}`);
 	if (!run.active)
 		fail("paused", run.pauseReason ?? "Foundry is paused");
 	if (expired(run))
 		fail("deadline", "The authorized deadline has elapsed");
 }
+
+/** A final handoff may notify its owner after goal acceptance. It cannot authorize work.
+ * @param {Run} run @param {Effect} e */
+export const canDispatch = (run, e) => !expired(run) && (run.active || e.kind === "handoff" && !!run.goal) && current(run, e);
 
 /** Claim exactly the reservation seen before the permission read, inside the ledger transaction.
  * @param {Run} run @param {Effect} expected @param {string} callId */
@@ -131,11 +128,10 @@ export function issue(run, expected, callId) {
 		digest(e.args) !== digest(expected.args) || !current(run, e)) return false;
 	if (e.state === "issued") {
 		if (e.callId !== callId) return false;
-		if (e.tool !== "bash") admitted(run); // An already-issued runner may finish through a pause.
+		if (e.tool !== "bash" && !canDispatch(run, e)) return false; // An already-issued runner may finish through a pause.
 		return true;
 	}
-	if (!run.active || e.permissionHold || !unissued(e)) return false;
-	admitted(run);
+	if (!canDispatch(run, e) || e.permissionHold || !unissued(e)) return false;
 	e.callId = text(callId, "original call ID");
 	e.state = "issued";
 	delete e.error;
@@ -155,14 +151,13 @@ function block(run, e, reason) {
 		run.blocker = reason;
 }
 
-/** @param {Run} run @param {Effect} e @param {unknown} raw @param {boolean} automatic */
+/** @param {Run} run @param {import("./model.js").NativeCall} e @param {unknown} raw @param {boolean} automatic */
 export function receive(run, e, raw, automatic) {
 	const value = record(raw);
 	if (automatic && value.resultType === "failure" && value.error === "This session management tool is disabled" &&
 		!value.structuredContent && !value.textResultForLlm && (e.tool === "create_session" || e.tool === "send_session_message")) {
 		e.state = "ordinary";
 		e.error = "Native route disabled; execute the exact prepared call in its owner session";
-		retireUnissuedScout(run, e);
 		return;
 	}
 	if (["denied", "rejected"].includes(String(value.resultType))) {
@@ -178,6 +173,7 @@ export function receive(run, e, raw, automatic) {
 		const prefix = `Created session '${e.args.name}' (id: `;
 		const printed = content.startsWith(prefix) ? /^([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\)/i.exec(content.slice(prefix.length))?.[1] : undefined;
 		e.nativeId = text(data.project_session_id ?? data.id ?? data.session_id ?? printed, "native worker identity");
+		e.boundAt = Date.now();
 		if (current(run, e)) {
 			const entry = assignee(run, e);
 			if (entry)
@@ -195,7 +191,7 @@ export function receive(run, e, raw, automatic) {
 		}
 		fail("missing_receipt", "The pinned runner has not finished");
 	}
-	else if (e.tool === "session.send") text(value.messageId, "admitted repair notice");
+	else if (e.tool === "session.send") text(value.messageId, "admitted notice");
 	else if (!(typeof value.textResultForLlm === "string" && /^(?:Queued\.?$|Message accepted for priority delivery to session '[^\n]+'\.)/.test(value.textResultForLlm))
 		&& !(value.structuredContent && ["accepted", "queued", "delivered"].includes(String(record(value.structuredContent).status))))
 		fail("missing_receipt", "Message queue admission was not confirmed");

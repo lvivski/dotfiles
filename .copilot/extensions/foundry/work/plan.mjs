@@ -21,6 +21,16 @@ export const checked = n => settledOutput(n) || n.state === "published";
 /** A terminal assignment keeps its original brief and pins as history, not prerequisites.
  * @param {Node} n */
 export const liveNeeds = n => n.state === "blocked" ? [] : n.grain.needs;
+/** @param {Run["nodes"]} nodes @param {Iterable<string>} roots */
+export function dependencies(nodes, roots) {
+	const ids = new Set(roots);
+	for (const id of ids) {
+		const n = nodes[id] ?? fail("unknown_grain", `Missing required output: ${id}`);
+		for (const dep of liveNeeds(n)) ids.add(dep);
+	}
+	return ids;
+}
+
 /** @param {Run["nodes"]} nodes */
 export const validateNodes = nodes => validateGraph(Object.values(nodes).map(n => ({ ...n.grain, needs: liveNeeds(n) })));
 

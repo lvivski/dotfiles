@@ -5,25 +5,66 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import { assignment } from "../work/native.mjs";
 import { createRuntime } from "../work/runtime.mjs";
 import { record, text } from "../work/values.mjs";
 
 /** @typedef {Parameters<typeof createRuntime>[1]} Host */
+/** @typedef {ReturnType<typeof createRuntime>} Runtime */
+/** @typedef {{id:string,squad:string,base:string,prompt:string,issuer:string,dispatch:string,workflowId:string,report:(raw:unknown)=>Promise<void>}} Scout */
 /** @param {string} cwd @param {...string} args */
 export const git = (cwd, ...args) => execFileSync("git", ["-C", cwd, "-c", "core.hooksPath=/dev/null", "-c", "user.name=Fixture", "-c", "user.email=test@invalid", ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 /** @param {string} dir @param {string} p @param {string} bytes */
 export function put(dir, p, bytes) { mkdirSync(path.dirname(path.join(dir, p)), { recursive: true }); writeFileSync(path.join(dir, p), bytes); }
+/** Scripted discovery inspects the pinned tree, never the issuer's checkout or the current target.
+ * @param {string} root @param {string} base */
+export function pinnedFiles(root, base) {
+	assert.match(base, /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/, "scripted scouts require an immutable Git revision");
+	return new Set(git(root, "--no-replace-objects", "ls-tree", "-r", "-z", "--name-only", base).split("\0").filter(Boolean));
+}
 
 /** Load the real extension, substituting only the joined SDK session. @param {object} session */
 export async function loadEntry(session) {
 	/** @type {import("@github/copilot-sdk/extension").JoinSessionConfig} */ let declaration = {};
-	const sdk = "data:text/javascript,export let joinSession; export function use(fn) { joinSession = fn; }";
-	(await import(sdk)).use((/** @type {typeof declaration} */ config) => { declaration = config; return session; });
+	const sdk = "data:text/javascript,export let joinSession; export class CanvasError extends Error { constructor(code,message){super(message);this.code=code} } export const createCanvas = options => options; export const defineWorkflow = definition => definition; export function use(fn) { joinSession = fn; }";
+	(await import(sdk)).use((/** @type {typeof declaration} */ config) => { declaration = config; return { capabilities: { ui: { elicitation: true } }, ...session }; });
 	const loader = registerHooks({ resolve: (specifier, context, next) => specifier === "@github/copilot-sdk/extension"
 		? { url: sdk, shortCircuit: true } : next(specifier, context) });
 	try { await import(`../extension.mjs?${randomUUID()}`); } finally { loader.deregister(); }
 	return declaration;
+}
+
+/** Stand-in for workflow transport only. A batch has a real issuer and ledger binding but no
+ * participant session. Keep its terminal envelope pending until all its callbacks have returned. */
+export function workflowHost() {
+	/** @type {Scout[]} */ const scouts = [];
+	/** @type {Set<Promise<void>>} */ const registrations = new Set();
+	async function settle() {
+		await nextTurn();
+		while (registrations.size) await Promise.all([...registrations]);
+	}
+	/** @param {Runtime} runtime @param {string} run @param {string} dispatch @param {string} issuer */
+	async function launch(runtime, run, dispatch, issuer) {
+		const workflowId = randomUUID();
+		let finish = () => {};
+		const completed = new Promise(resolve => { finish = () => resolve(undefined); });
+		const registration = runtime.scoutBatch(run, dispatch, issuer, workflowId).then(jobs => {
+			const waiting = new Set(jobs.map(job => job.id));
+			for (const job of jobs) scouts.push({ ...job, issuer, dispatch, workflowId, async report(raw) {
+				await runtime.scoutResult(run, dispatch, issuer, workflowId, job.id, raw);
+				waiting.delete(job.id);
+				if (!waiting.size) finish();
+				await settle();
+			} });
+			if (!waiting.size) finish();
+		});
+		registrations.add(registration);
+		try { await registration; } finally { registrations.delete(registration); }
+		await completed;
+		return { runId: workflowId, status: "completed" };
+	}
+	return { scouts, launch, settle };
 }
 
 /** @param {string} root @param {string} [prefix] */
@@ -47,6 +88,7 @@ export function nativeHost(root, prefix = "worker") {
 		assert.equal(tool, "create_session");
 		const prompt = text(record(args.kickoff).prompt, "kickoff"), marker = assignment(prompt);
 		assert.ok(marker);
+		assert.match(prompt, /\bfoundry_submit\b/, "only writers get native sessions");
 		const id = `${prefix}-${workers.size + 1}`, cwd = path.join(path.dirname(root), id);
 		git(root, "worktree", "add", "-q", "--detach", cwd, text(args.base_branch, "generation"));
 		workers.set(id, { id, token: marker.token, cwd, prompt });
@@ -56,7 +98,11 @@ export function nativeHost(root, prefix = "worker") {
 	return { workers, inbox, checks, execute };
 }
 
-/** @param {import("node:test").TestContext} t @param {string} run @param {string} source @param {Record<string,string>} files */
+/** workers/inbox are writer sessions and their token deliveries only. scouts is an append-only
+ * delivery log in batch/job order. start([ownerRuntime]) and settle() wait for registration, not
+ * reports. Call scout.report(rawObject) to deliver to the issuing runtime; a reloaded issuer can
+ * use scoutResult(run, scout.dispatch, scout.issuer, scout.workflowId, scout.id, rawObject).
+ * @param {import("node:test").TestContext} t @param {string} run @param {string} source @param {Record<string,string>} files */
 export function factory(t, run, source, files) {
 	const dir = mkdtempSync(path.join(tmpdir(), "foundry-graph-")), root = path.join(dir, "repo");
 	t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -65,18 +111,27 @@ export function factory(t, run, source, files) {
 	for (const [name, bytes] of Object.entries(files)) put(root, name, bytes);
 	git(root, "add", ".");
 	git(root, "commit", "-qm", "fixture");
-	const tip = git(root, "rev-parse", "HEAD"), { workers, inbox, checks, execute } = nativeHost(root);
+	const tip = git(root, "rev-parse", "HEAD"), { workers, inbox, checks, execute } = nativeHost(root), discovery = workflowHost();
 	/** @param {string} cwd @param {Partial<Host>} [options] */
 	function runtime(cwd, options) {
+		/** @type {Runtime} */
 		const r = createRuntime(cwd, { mode: async () => "interactive", permissionBlocker: async () => null, confirm: async () => true, select: async () => null, execute,
-			remind: async (id, token) => {
-				const w = [...workers.values()].find(w => w.cwd === cwd); assert.ok(w); assert.equal(id, run);
-				inbox.push({ worker: w.id, token }); return `message-${token}`;
+			scout: (id, dispatch, actor) => discovery.launch(r, id, dispatch, actor),
+			notify: async message => {
+				const job = assignment(message);
+				if (!job) return "owner-notice";
+				const w = [...workers.values()].find(w => w.cwd === cwd); assert.ok(w); assert.equal(job.run, run);
+				inbox.push({ worker: w.id, token: job.token }); return `message-${job.token}`;
 			}, ...options });
 		t.after(() => r.close()); return r;
 	}
 	const owner = runtime(root);
 	/** @param {string} [actor] */
 	const status = (actor = "owner") => owner.operation("status", { run }, actor);
-	return { root, tip, owner, workers, inbox, checks, execute, runtime, status, start: () => owner.operation("start", { source }, "owner") };
+	async function start(issuer = owner) {
+		await issuer.operation("start", { source }, "owner");
+		await discovery.settle();
+		return status();
+	}
+	return { root, tip, owner, scouts: discovery.scouts, settle: discovery.settle, workers, inbox, checks, execute, runtime, status, start };
 }

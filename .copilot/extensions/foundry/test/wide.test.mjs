@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { openDatabase } from "../work/database.mjs";
 import { factory, git } from "./fixture.mjs";
+import { reportProjections } from "./participant.mjs";
 
 const source = ".foundry/contract.json", unit = ".foundry/unit.mjs", product = ".foundry/product.mjs", goal = ".foundry/goal.mjs";
 const participant = fileURLToPath(new URL("./participant.mjs", import.meta.url)), exec = promisify(execFile);
@@ -128,6 +129,8 @@ for (const app of [transit, clearing]) for (const missing of app === clearing ? 
 	skip: process.env.FOUNDRY_FACTORY_MATRIX !== "1" && "set FOUNDRY_FACTORY_MATRIX=1 for the multiprocess stress run"
 }, async t => {
 	const { files, nodes, lanes, squads } = layout(app), f = factory(t, app.id, source, files);
+	const plan = { direction: app.direction, check: unit, parts: [...nodes.values()].map(({ body, ...part }) => part) };
+	const script = JSON.stringify(plan);
 	const gate = path.join(path.dirname(f.root), "gates");
 	for (const pass of ["0","1"]) mkdirSync(path.join(gate, pass), { recursive: true });
 	const seen = new Set(), held = `view-${lanes.at(-1)}`, consumer = `section-${squads.length - 1}`;
@@ -135,7 +138,19 @@ for (const app of [transit, clearing]) for (const missing of app === clearing ? 
 	/** @type {Map<string,NonNullable<State["products"]>[number]>} */ const history = new Map();
 	/** @type {Map<string,number>} */ const attempts = new Map();
 	/** @typedef {typeof f.inbox[number]} Delivery */
-	/** @typedef {{workers:Array<NonNullable<ReturnType<typeof f.workers.get>>>,inbox:Delivery[]}} Reply */
+	/** @typedef {{workers:Array<NonNullable<ReturnType<typeof f.workers.get>>>,inbox:Delivery[],reviews:Awaited<ReturnType<typeof reportProjections>>}} Reply */
+	/** Capture the checked milestone before admitting any writer produced by these reports.
+	 * @param {Reply["reviews"]} reviews */
+	async function recordReviews(reviews) {
+		if (!reviews.length) return;
+		const { products } = await f.status();
+		for (const { id, base } of reviews) {
+			assert.ok(!seen.has(id), `duplicate review ${id}`); seen.add(id);
+			if (base === f.tip || history.has(base)) continue;
+			const checkpoint = products?.find(p => p.commit === base); assert.ok(checkpoint);
+			history.set(base, checkpoint);
+		}
+	}
 	/** Descendants are driven only by actual deliveries, never by polling the owner's actionable nodes.
 	 * @param {Delivery[]} events @returns {Promise<void>} */
 	async function drain(events) {
@@ -143,30 +158,14 @@ for (const app of [transit, clearing]) for (const missing of app === clearing ? 
 			try {
 				assert.ok(!seen.has(token), `duplicate delivery ${token}`); seen.add(token);
 				const w = f.workers.get(worker); assert.ok(w);
-				const state = await f.status(worker), review = state.reviews.find(r => r.token === token && r.state === "reading");
-				let op, payload, grain = "", pass = 0;
-				if (review) {
-					if (review.base !== f.tip && !history.has(review.base)) {
-						const checkpoint = (await f.status()).products?.at(-1); assert.equal(checkpoint?.commit, review.base);
-						assert.ok(checkpoint); history.set(review.base, checkpoint);
-					}
-					/** @param {string} id */
-					const present = id => existsSync(path.join(w.cwd, nodes.get(id)?.directory ?? assert.fail(id), "index.mjs"));
-					const batch = [...nodes.values()].filter(p => p.squad === review.squad && !present(p.id) && p.needs.every(present));
-					// A district can propose its section together with its own views in the same report.
-					const section = [...nodes.values()].find(p => p.squad === review.squad && p.id.startsWith("section-"));
-					if (section && !present(section.id) && !batch.includes(section) && section.needs.every(id => present(id) || batch.some(p => p.id === id))) batch.push(section);
-					const grains = batch.map(p => ({ id: p.id, directory: p.directory, needs: p.needs, task: `Implement ${p.id}: ${app.direction}`, check: unit }));
-					op = "observe"; payload = JSON.stringify({ grains, outcome: grains.length ? "regenerate" : "no-gap", reason: "Implement the next incomplete projection on this checked tree", evidence: [`.foundry/${review.squad}.md`] });
-				} else {
-					const n = state.nodes.find(n => n.token === token && n.state === "writing"); assert.ok(n, "delivery without a writable assignment");
-					const p = nodes.get(n.grain); assert.ok(p);
-					pass = attempts.get(p.id) ?? 0; assert.ok(pass < 2, `unbounded regeneration of ${p.id}`); attempts.set(p.id, pass + 1);
-					op = "submit"; grain = p.id; payload = p.body;
-					if (app === clearing && p.id === "reduce-0" && !pass) payload = payload.replace("!r.reversed", "true");
-				}
+				const state = await f.status(worker);
+				const n = state.nodes.find(n => n.token === token && n.state === "writing"); assert.ok(n, "delivery without a writable assignment");
+				const p = nodes.get(n.grain); assert.ok(p);
+				const grain = p.id, pass = attempts.get(grain) ?? 0;
+				assert.ok(pass < 2, `unbounded regeneration of ${grain}`); attempts.set(grain, pass + 1);
+				const payload = app === clearing && grain === "reduce-0" && !pass ? p.body.replace("!r.reversed", "true") : p.body;
 				const wave = path.join(gate, String(pass)), withhold = missing && pass && grain === "reduce-0" ? grain : "";
-				const { stdout } = await exec(process.execPath, [participant, f.root, app.id, worker, token, op, payload, wave, withhold],
+				const { stdout } = await exec(process.execPath, [participant, f.root, app.id, worker, token, payload, wave, withhold, script],
 					{ cwd: w.cwd, timeout: 180000, maxBuffer: 8 * 1024 * 1024 });
 				if (grain === "section-0") {
 					const s = await f.status(), independent = s.nodes.find(n => n.grain === grain);
@@ -178,6 +177,7 @@ for (const app of [transit, clearing]) for (const missing of app === clearing ? 
 					writeFileSync(path.join(wave, "release"), "", { flag: "wx" }); // Release only the test evaluator, not the scheduler.
 				}
 				const reply = /** @type {Reply} */ (JSON.parse(stdout));
+				await recordReviews(reply.reviews);
 				for (const child of reply.workers) { assert.ok(!f.workers.has(child.id)); f.workers.set(child.id, child); }
 				await drain(reply.inbox);
 			} catch (error) {
@@ -187,6 +187,9 @@ for (const app of [transit, clearing]) for (const missing of app === clearing ? 
 		const failure = results.find(r => r.status === "rejected"); if (failure) throw failure.reason;
 	}
 	assert.equal((await f.start()).limit, null);
+	assert.equal(f.workers.size, 0);
+	assert.deepEqual(f.scouts.map(s => s.squad), squads);
+	await recordReviews(await reportProjections(f.root, f, plan));
 	await drain(f.inbox);
 	const s = await f.status(), db = openDatabase(f.root); t.after(() => db.close());
 	const run = db.read(app.id); assert.ok(run);

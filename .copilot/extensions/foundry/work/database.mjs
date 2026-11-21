@@ -1,12 +1,15 @@
 import { closeSync, constants, lstatSync, mkdirSync, openSync, realpathSync } from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { git } from "./product.mjs";
-import { digest, fail } from "./values.mjs";
+import { fail } from "./values.mjs";
 import { decode } from "./snapshot.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
-export const protocol = 10;
+export const protocol = 12;
+/** @param {string} document */
+export const checksum = document => createHash("sha256").update(document).digest("hex");
 
 /** @param {string} cwd */
 export function ledgerPath(cwd) {
@@ -73,10 +76,12 @@ export function openDatabase(cwd, file = ledgerPath(cwd), create = false) {
 		const row = db.prepare("SELECT document,checksum,owner FROM runs WHERE id=?").get(id);
 		if (!row)
 			return;
-		const parsed = decode(JSON.parse(String(row.document)));
-		if (digest(parsed) !== row.checksum || parsed.id !== id || parsed.owner !== row.owner)
+		const document = String(row.document);
+		if (checksum(document) !== row.checksum) fail("corrupt_run", "Run no longer matches its recorded execution snapshot");
+		const parsed = decode(JSON.parse(document));
+		if (parsed.id !== id || parsed.owner !== row.owner)
 			fail("corrupt_run", "Run no longer matches its recorded execution snapshot");
-		return { run: parsed, checksum: row.checksum };
+		return { run: parsed, document, sum: row.checksum };
 	}
 	/** @param {string} id */
 	const required = id => snapshot(id) ?? fail("missing_run", `Unknown run ${id}`);
@@ -112,21 +117,24 @@ export function openDatabase(cwd, file = ledgerPath(cwd), create = false) {
 		 * @param {string} id @param {(run:Run)=>(()=>boolean)|void} plan */
 		change(id, plan) {
 			for (;;) {
-				const { run, checksum } = required(id);
-				const valid = plan(run), next = digest(run);
-				if (next === checksum || write(() => (!valid || valid()) && db.prepare("UPDATE runs SET document=?,checksum=? WHERE id=? AND checksum=?")
-					.run(JSON.stringify(run), next, id, checksum).changes === 1)) return run;
+				const { run, document, sum } = required(id);
+				const valid = plan(run), next = JSON.stringify(run);
+				if (next === document || write(() => (!valid || valid()) && db.prepare("UPDATE runs SET document=?,checksum=? WHERE id=? AND checksum=?")
+					.run(next, checksum(next), id, sum).changes === 1)) return run;
 			}
 		},
 		/** @param {Run} run */
-		insert(run) { return write(() => db.prepare("INSERT INTO runs VALUES(?,?,?,?)").run(run.id, run.owner, JSON.stringify(run), digest(run))); },
+		insert(run) {
+			const doc = JSON.stringify(run);
+			return write(() => db.prepare("INSERT INTO runs VALUES(?,?,?,?)").run(run.id, run.owner, doc, checksum(doc)));
+		},
 		/** @template T @param {string} id @param {(run:Run)=>T} fn @returns {T} */
 		update(id, fn) {
 			return write(() => {
-				const { run } = required(id);
+				const { run, document } = required(id);
 				const result = fn(run);
 				const doc = JSON.stringify(run);
-				db.prepare("UPDATE runs SET document=?,checksum=? WHERE id=? AND document<>?").run(doc, digest(run), id, doc);
+				if (doc !== document) db.prepare("UPDATE runs SET document=?,checksum=? WHERE id=?").run(doc, checksum(doc), id);
 				return result;
 			});
 		},

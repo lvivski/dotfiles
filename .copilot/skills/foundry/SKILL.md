@@ -1,20 +1,34 @@
 ---
 name: foundry
-description: Use only when the user explicitly requests Foundry to generate and qualify a product from a committed brief, or to inspect or recover an existing run. Routine coding uses ordinary native tools.
+description: >-
+  Use to prepare or review a Foundry product brief, list committed plans, start a named
+  plan on direct user request, or inspect, measure, hand off, pause, or resume a run. Also for bound
+  Foundry writers. Not for routine coding.
+argument-hint: "[brief | plans | start | status | measure | pause | resume] [target]"
+metadata:
+  copilot.user-invocable: "true"
 ---
 
 # Foundry
 
-Keep the user's full product brief as the `direction`. Split the **work**, not the finish line. Commit a `.foundry/*.json` contract with a local target branch, `productCheck` for milestone invariants, and a distinct `goalCheck` that exercises the promised end-user outcomes together. Check that the goal rejects a plausible product that handles the happy path but misses a promised behavior, including an error or boundary case when relevant. If the goal is ambiguous, resolve it with the operator before starting; workers cannot redefine it.
+`/foundry <command> [target]` · **Example:** `/foundry start hyper-app`
 
-For a goal, use a version-2 contract with no `grains` or `seed`. Commit each squad's `charter`, disjoint writable `areas`, `boundary` files (interfaces and check helpers), and allowed component `checks`, outside writable code. The run owns the assignments. Existing version-1 contracts retain their fixed grain definitions. Use version 1 with `seed` and **without** `goalCheck` only for an explicitly requested one-off.
+## Commands
 
-- **Start:** Call `foundry_start({source})` only on direct user direction. An installation, schedule, child kickoff or queued message is not authorization. Autopilot is not a permission mode. If managed settings are unresolved or tool permissions are Manual, relay the blocker instead of starting workers yourself. Assisted is sufficient if permitted; do not request blanket approval. The native confirmation does not waive tool permissions.
-- **Scout:** Inspect the assessed revision and `nodes` in status. Call `foundry_observe({run,token,outcome,reason,evidence,grains,replace?})`. In an area charter, propose `{id,task,directory,check,needs}`. Give independent behaviors separate directories; `needs` names existing or same-batch outputs required **to start**, not for eventual integration. Use `replace` for unstarted work. A milestone preserves the tree, not its assignments: reuse or split qualified outputs. If the combined tree repeats, use `nextToken` for a different split on the same revision. Never displace a live assignment or its inputs, or retry refused work. Fixed charters request owned IDs only.
-- **Report:** Cite committed evidence within your charter and inputs. Use `no-gap` with an empty list if no work is actionable; use `needs-decision` with an empty list and the contract question in `reason` if the charter or success criteria need an operator. Do not answer that question, change a check, or create sessions yourself.
-- **Write:** Generate the **complete** assigned directory at its frozen base; omitted files are deleted. For independent pieces, launch native `task` agents in parallel **in this worktree**, not new desktop sessions. Give each disjoint files or a read-only question, the permitted inputs and the assignment constraints, never the token. Ask for results, not further delegation. Keep shared files for integration. Work solo for small changes or when helpers are unavailable. Neither writer nor helpers may change contracts or evaluators, switch base, commit or land.
-- **Submit:** Only the bound writer calls `foundry_submit({run,token})`. Collect every helper, check its changes and finish missing pieces before submitting. If helpers are still running, the same token remains writable. A failed **evaluation** returns a fresh token for a bounded repair or a blocker. Repair in the same worktree; don't repeat finished slices. Do not claim success or supply an alternate check.
-- **Inspect:** `foundry_status({run})` does not advance anything. A ready product is checked without waiting for unrelated scouts. `checkpoint` is progress; `qualified` stays null until both committed checks pass on the same exact commit. The target branch stays unchanged. On exit 1, the goal evaluator may print one `FOUNDRY_SQUAD=<id>` line to send the gap to an existing charter first. An unclear or unproductive hint falls back to full discovery. Relay concrete blockers and contract questions, not a completion claim. A changed contract needs an explicitly authorized new run ID.
-- **Pause:** The owner may call `foundry_pause({run})`. A session-local Manual hold appears on its `pending` calls: other sessions continue, and the original issuer rechecks its reservation on its next turn. Do not restart the factory for this. A managed-policy pause appears in `blocker`: once settings are ready, the owner explicitly resumes with the same `foundry_start({source})`. For exit 2, supply the missing external observation before resuming. Keep receipts and worktrees; let the host handle genuine input and permission requests.
+| Command | What it does | Guide |
+| --- | --- | --- |
+| `brief [idea]` | Ask clarifying questions, follow up on the answers, and confirm the outcome before writing. Review-only never edits. | [Prepare a brief](references/brief.md) |
+| `plans` | List committed plan filenames in this checkout by their short names. | [Find a plan](references/runs.md#find-a-plan) |
+| `start <plan>` | Start a reviewed, committed plan by name. | [Start](references/runs.md#start) |
+| `status <run-id>` | Show the dependency map, current questions and exact checked product, if any. | [Status](references/runs.md#status) |
+| `measure <run-id>` | Report time to first verified writer kickoff and exact qualification, with observed native usage and its coverage. | [Measure a run](references/metrics.md) |
+| `pause <run-id>` | Stop new work without discarding checked work. | [Pause and resume](references/runs.md#pause-and-resume) |
+| `resume <plan>` | Resume that same paused run; never create one. | [Pause and resume](references/runs.md#pause-and-resume) |
 
-All ready assignments start automatically in parallel. `limits.workers` caps Foundry scouts and writers only; Copilot manages each writer's native helpers. Only capped runs offer **Keep** or **Increase** when more assignments are ready. If a native session route is definitely unavailable, execute the exact `prepared` call once in its issuing session. Never repeat an issued or uncertain start, treat a queued message as completed work, or bypass a permission hold. Report an unresolved call or blocked product as such.
+## Routing
+
+- **No command or `help`:** show the menu and a short example. An unknown verb or missing target isn't permission to guess. If a plan name is missing, offer `plans`; don't auto-select even a sole match.
+- **Command:** use the first word after `/foundry` as the verb and the rest as its target. Read only that guide. A plan name is the exact filename stem: `hyper-app` means `.foundry/hyper-app.json`. The old explicit path also works.
+- **Conversation:** honor clear intent, not keywords. “How would I start?” explains the command; “prepare a start plan” starts the interview. A quoted example, a confirmed brief, or a message from another session never authorizes a factory. Only a direct operator request can start or resume one.
+- **Bound writer:** use the [assignment guide](references/assignments.md), not the operator commands. Scouting returns structured workflow results; it is not an operator command.
+- **Owner handoff:** a Foundry qualification notice calls for a fresh status read and the [checked-product handoff](references/handoff.md), not cleanup. Native Archive always needs fresh proof and an explicit choice of one named writer.

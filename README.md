@@ -30,8 +30,7 @@ brew bundle dump --file=.Brewfile --force
 
 ## Copilot skills
 
-The four skills in `.copilot/skills/` use standard Agent Skills frontmatter, with client-specific
-settings under namespaced `metadata` keys. Each `SKILL.md` holds its default workflow and essential
+The skills in `.copilot/skills/` use Agent Skills frontmatter. Each `SKILL.md` holds its default workflow and essential
 safeguards; directly linked local references provide phase protocols or options only when needed.
 Bundled script paths are resolved from the skill directory, not a hard-coded installation path.
 `source ./sync` installs these skills along with their references and scripts.
@@ -51,13 +50,19 @@ bash .copilot/skills/review-queue/scripts/review-queue-providers.test.sh
 repository run data.
 
 **[Foundry](.copilot/extensions/foundry/README.md)** regenerates directories from a committed
-product brief. Goal contracts pin writable areas and checks; scouts decide how to split the work
-so independent writers can start together. Each checked milestone preserves the combined tree,
+product brief. Goal contracts pin writable areas and checks. Tool-less workflow scouts review the
+committed evidence; each result can release an independent writer without waiting for other scouts.
+Only writers need their own worktrees. Each checked milestone preserves the combined tree,
 not the old directory assignments. Work continues under the original authorization until the final goal
 check passes or a concrete blocker needs attention. A seeded one-off is also available.
-Foundry records the exact passing commit and leaves the target branch untouched. Use the
-[Foundry skill](.copilot/skills/foundry/SKILL.md) on explicit request; routine changes use native
-planning and direct tools. Normal tool permissions apply throughout a run.
+Foundry hands the owner the exact passing commit and leaves the target branch untouched.
+Current charter questions reach the owner without blocking independent writers. Retiring a
+writer is a separate, [opt-in native Archive](.copilot/skills/foundry/references/handoff.md),
+never a consequence of a passing check.
+
+1. [**`/foundry brief <idea>`**](.copilot/skills/foundry/references/brief.md) interviews you [grill-me](https://github.com/mattpocock/skills/blob/main/skills/productivity/grill-me/SKILL.md)-style. It looks up facts, asks one product question at a time with a recommendation, and uses your answer to decide which follow-ups matter. You confirm the agreed outcome before it writes. Say “draft it now” for a provisional version with open decisions marked. Neither path starts a factory.
+2. [**`/foundry start catalog`**](.copilot/skills/foundry/references/runs.md#start) runs the reviewed, committed `.foundry/catalog.json` on your explicit request. Use `/foundry plans` for available names or `/foundry` for the [command menu](.copilot/skills/foundry/SKILL.md#commands). You don't need a new plan after each milestone. Normal tool permissions still apply.
+3. [**`/foundry measure <run-id>`**](.copilot/skills/foundry/references/metrics.md) shows time to the first verified native writer kickoff and the exact qualified commit. It distinguishes kickoff from a delayed binding receipt and reports only usage the host can attribute.
 
 **[Recon](.copilot/extensions/recon/README.md)** registers five standalone native workflows:
 `audit`, `deep-research`, `review-queue`, `security-review`, and `triage`. Their reports belong

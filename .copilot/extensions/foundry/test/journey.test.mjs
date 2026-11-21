@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { setTimeout as wait } from "node:timers/promises";
 import { promisify } from "node:util";
-import { factory, git, put } from "./fixture.mjs";
+import { factory, git, pinnedFiles, put } from "./fixture.mjs";
 
 /** @param {string} directory @param {string[]} needs @param {string} body */
 const part = (directory, needs, body) => ({ directory, squad: directory.split("/")[0], id: path.basename(directory), needs, body });
@@ -112,30 +112,31 @@ for (const app of [outbox, stock]) for (const delivery of ["inline", "later", "n
 		const handled = new Set();
 		/** @type {Awaited<ReturnType<typeof f.status>>["nodes"][number]|undefined} */ let originalWriter;
 		/** @type {NonNullable<Awaited<ReturnType<typeof f.status>>["products"]>} */ let beforeFault = [];
-		let peak = 0, withheld = false, notices = 0;
+		let peak = 0, withheld = false, notices = 0, nextScout = 0;
 		await f.start(); // No later owner turns or starts to propel the factory.
-		for (let event = f.inbox.shift(); event; event = f.inbox.shift()) {
-			const { worker, token } = event, w = f.workers.get(worker); assert.ok(w);
-			assert.ok(!handled.has(token) && handled.size < 60, "duplicate dispatch or unbounded rework"); handled.add(token);
-			const state = await f.status(worker), review = state.reviews.find(r => r.token === token);
+		for (;;) {
+			await f.settle();
+			const review = f.scouts[nextScout];
 			if (review) {
-				if (review.state === "blocked") {
-					assert.ok(!state.active && (await f.status()).qualified, "only an accepted product can obsolete a delivered, unread scout here");
-					continue;
-				}
-				assert.equal(review.state, "reading");
-				const present = (/** @type {string} */ id) => existsSync(path.join(w.cwd, parts.get(id)?.directory ?? assert.fail(id), "index.mjs"));
+				nextScout++;
+				assert.ok(!handled.has(review.id) && handled.size < 60, "duplicate review or unbounded rework"); handled.add(review.id);
+				const files = pinnedFiles(f.root, review.base);
+				const present = (/** @type {string} */ id) => files.has(`${parts.get(id)?.directory ?? assert.fail(id)}/index.mjs`);
 				const next = app.parts.filter(p => p.squad === review.squad && !present(p.id) && p.needs.every(present));
-				if (replan && review.squad === last.squad && present(last.id) && w.prompt.includes(app.gap)) {
+				if (replan && review.squad === last.squad && present(last.id) && review.prompt.includes(app.gap)) {
 					const gap = await f.status();
 					assert.equal(gap.qualified, null); assert.equal(gap.products?.length, beforeFault.length + 1);
 					assert.equal(gap.goal?.receipt?.exit, 1); assert.equal(gap.checkpoint, review.base);
 					next.push(last); // An observed user journey failed despite a passing integration milestone.
 				}
-				await f.runtime(w.cwd).operation("observe", { run, token, outcome: next.length ? "regenerate" : "no-gap", reason: "Implement missing behavior using the available interfaces",
-					evidence: [`.foundry/${review.squad}.md`], grains: next.map(p => ({ id: p.id, task: `Implement ${p.id} for ${app.direction}`, directory: p.directory, needs: p.needs, check: unitCheck })) }, worker);
+				await review.report({ outcome: next.length ? "regenerate" : "no-gap", reason: "Implement missing behavior using the available interfaces",
+					evidence: [`.foundry/${review.squad}.md`], grains: next.map(p => ({ id: p.id, task: `Implement ${p.id} for ${app.direction}`, directory: p.directory, needs: p.needs, check: unitCheck })) });
 				continue;
 			}
+			const event = f.inbox.shift(); if (!event) break;
+			const { worker, token } = event, w = f.workers.get(worker); assert.ok(w);
+			assert.ok(!handled.has(token) && handled.size < 60, "duplicate dispatch or unbounded rework"); handled.add(token);
+			const state = await f.status(worker);
 			const n = state.nodes.find(n => n.token === token && n.state === "writing"); assert.ok(n, "a delivered assignment must be writable");
 			const p = parts.get(n.grain); assert.ok(p);
 			const s = await f.status(); peak = Math.max(peak, s.nodes.filter(n => n.state === "writing").length);
@@ -184,23 +185,22 @@ for (const app of [outbox, stock]) for (const delivery of ["inline", "later", "n
 			const reply = await r.operation("submit", { run, token }, worker);
 			const inline = reply.nodes.find(a => a.worker === worker && a.state === "writing" && a.token !== token);
 			if (inline?.token) f.inbox.push({ worker, token: inline.token }); // Only a token actually returned to this submitter.
-			r.close();
 			if (broken && !replan && delivery !== "inline") {
+				r.close();
 				assert.ok(!inline);
-				const delivered = [...f.inbox]; // An unrelated scout may still be reading when the product check starts.
-				assert.ok(delivered.every(d => s.reviews.some(r => r.worker === d.worker)));
+				assert.deepEqual(f.inbox, [], "the failing writer must not receive a repair before the runner finishes");
 				await finish?.();
-				const reopened = f.runtime(w.cwd, delivery === "notice unconfirmed" ? { remind: async () => { notices++; throw Error("No queue admission receipt"); } } : {});
+				const reopened = f.runtime(w.cwd, delivery === "notice unconfirmed" ? { notify: async () => { notices++; throw Error("No queue admission receipt"); } } : {});
 				reopened.turn(worker, "foundry-00000000-0000-0000-0000-000000000000"); await reopened.flush();
-				assert.deepEqual(f.inbox, delivered, "unrelated completion is not a Foundry wakeup");
+				assert.deepEqual(f.inbox, [], "unrelated completion is not a Foundry wakeup");
 				reopened.turn(worker, shell); reopened.turn(worker, shell); await reopened.flush();
 				const held = await f.status();
 				assert.deepEqual(held.products, s.products, "a late failure cannot erase or advance a checkpoint");
 				assert.equal(held.qualified, null);
 				if (delivery === "no receipt") {
-					assert.deepEqual(f.inbox, delivered); assert.ok(held.pending.some(e => e.kind === app.fault && ["uncertain","issued"].includes(e.state)));
+					assert.deepEqual(f.inbox, []); assert.ok(held.pending.some(e => e.kind === app.fault && ["uncertain","issued"].includes(e.state)));
 				} else if (delivery === "notice unconfirmed") {
-					reopened.close(); const again = f.runtime(w.cwd, { remind: async () => { notices++; return "duplicate"; } });
+					reopened.close(); const again = f.runtime(w.cwd, { notify: async () => { notices++; return "duplicate"; } });
 					again.turn(worker); await again.flush(); assert.equal(notices, 1);
 					assert.ok(held.pending.some(e => e.kind === "repair" && e.state === "uncertain"));
 				}

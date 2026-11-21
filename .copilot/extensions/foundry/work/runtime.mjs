@@ -2,19 +2,25 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { openDatabase, ledgerPath } from "./database.mjs";
 import { readPolicy } from "./contract.mjs";
-import { advance, newRun, observe } from "./graph.mjs";
-import { missingObservation } from "./goal.mjs";
-import { admitted, assignment, awaitingReply, current, expired, identify, issue, receive, reserveCheck, unissued } from "./native.mjs";
+import { presentQuestions } from "./decisions.mjs";
+import { advance, newRun, parseObservation } from "./graph.mjs";
+import { missingObservation, qualifiedProduct } from "./evidence.mjs";
+import { admitted, assignment, awaitingReply, canDispatch, current, expired, identify, issue, receive, reserveCheck, unissued } from "./native.mjs";
 import { checked } from "./plan.mjs";
 import { capture, commitAt, retain, rootAt, verifyContracts } from "./product.mjs";
 import { refusedCall } from "./recovery.mjs";
+import { blockReview, questions, reviews } from "./reviews.mjs";
+import { scoutPrompt } from "./scouts.mjs";
 import { status } from "./status.mjs";
-import { digest, fail, fields, name, record, text } from "./values.mjs";
+import { FoundryError, digest, fail, fields, name, record, text } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @typedef {import("./model.js").Effect} Effect */
 /** @typedef {{run:string,id:string,actor:string,inFlight?:boolean,recoveredOn?:number}} Call */
-/** @typedef {{execute:(tool:string,args:Effect["args"],id:string)=>Promise<unknown>,remind:(run:string,token:string)=>Promise<string>,recover?:(effect:Effect)=>Promise<unknown>,
+/** @typedef {{runId:string,status:string,error?:string,reason?:string}} ScoutEnvelope */
+/** @typedef {{execute:(tool:string,args:Effect["args"],id:string)=>Promise<unknown>,notify:(message:string)=>Promise<string>,recover?:(effect:Effect)=>Promise<unknown>,
+ * ask?:(message:string)=>Promise<string|null>, writerInput?:(writer:string)=>Promise<string|null>,
+ * scout?:(run:string,dispatch:string,actor:string)=>Promise<ScoutEnvelope>,scoutState?:(workflowId:string)=>Promise<ScoutEnvelope>,
  * mode:()=>Promise<string>,helpersRunning?:()=>Promise<boolean>,permissionBlocker:()=>Promise<import("./permissions.mjs").PermissionBlock|null>,confirm:(message:string)=>Promise<boolean>,select:(message:string,options:string[])=>Promise<string|null>,log?:(message:string)=>void}} Host */
 /** @param {Run} run @param {string} [reason] */
 function pause(run, reason) {
@@ -23,13 +29,14 @@ function pause(run, reason) {
 	if (reason) run.pauseReason = reason;
 }
 
-/** @param {Run} run @param {string} [retry] */
+/** @param {{policy:Run["policy"],capacity?:{limit:number}}} run @param {string} [retry] */
 function activationPrompt({ policy, capacity }, retry) {
 	const mode = policy.goalCheck ? `ongoing goal (finish check: ${policy.goalCheck})` : policy.seed ? "one-off" : "ongoing";
 	const staffing = capacity ? `up to ${capacity.limit} concurrent scout/writer assignments (not counting in-session helpers)` : "no worker cap";
 	return [
 		`Start ${mode} Foundry run ${policy.id} at ${policy.base.slice(0, 12)} on ${policy.target} with ${staffing} and ${policy.repairs} repairs per grain?`,
 		policy.direction,
+		...(!policy.seed ? ["Discovery uses tool-less workflow agents on committed evidence. Only writers get worktrees. Resuming may retry interrupted discovery."] : []),
 		...policy.squads.flatMap(s => "areas" in s ? [`${s.id} may assign work in ${s.areas.join(", ")} using ${s.checks.join(", ")}.`] : []),
 		...(retry ? [`Recheck the missing external evidence for ${retry} (rejoin first if the target has moved).`] : []),
 	].join("\n");
@@ -46,7 +53,9 @@ function writable(run, actor, token) {
 }
 
 /** @param {Run} run @param {string} actor */
-const reservations = (run, actor) => run.effects.filter(e => e.issuer === actor && unissued(e) && current(run, e));
+const reservations = (run, actor) => run.effects.filter(e => e.issuer === actor && unissued(e) && canDispatch(run, e));
+/** @param {Run} run @param {string} ticket @param {string} actor */
+const batchOf = (run, ticket, actor) => reviews(run).filter(e => e.callId === ticket && e.issuer === actor);
 
 /** @param {string} directory @param {Host} host */
 export function createRuntime(directory, host) {
@@ -56,7 +65,10 @@ export function createRuntime(directory, host) {
 	/** @type {Set<Promise<unknown>>} */ const background = new Set();
 	/** @type {Set<{run:string,actor:string,token:string}>} */ const submitting = new Set();
 	/** @type {Map<string,{token:string,open:boolean}>} */ const dialogs = new Map();
+	/** @type {Set<string>} */ const asking = new Set();
 	/** @type {Map<string,Call>} */ const nativeCalls = new Map();
+	/** @type {Set<string>} */ const scoutCalls = new Set();
+	/** @type {Map<string,{discover:boolean,recover:boolean,work:Promise<void>}>} */ const wakes = new Map();
 	/** @type {string|undefined} */ let existingPath;
 	const cwd = () => root ??= rootAt(directory);
 	const file = () => existingPath ??= ledgerPath(directory);
@@ -76,9 +88,9 @@ export function createRuntime(directory, host) {
 	/** @param {string} id @param {(run:Run)=>void} mutate */
 	function change(id, mutate) {
 		return db().change(id, run => {
-			const count = run.products.length, accepted = run.accepted;
+			const count = run.products.length, final = qualifiedProduct(run);
 			mutate(run);
-			if (run.products.length !== count || run.accepted !== accepted)
+			if (run.products.length !== count || qualifiedProduct(run) !== final)
 				return () => commitAt(cwd(), run.policy.target) === run.products.at(-1)?.target;
 		});
 	}
@@ -88,30 +100,32 @@ export function createRuntime(directory, host) {
 		const block = await host.permissionBlocker();
 		if (!await executable()) return "The issuing session is no longer in an executable mode.";
 		if (!block && !batch.some(e => e.permissionHold)) return null;
-		const message = block ? `${block.message} Check session ${actor}.` +
-			(block.scope === "run" ? ` Then explicitly resume ${id} from its owner.` : " Its next turn rechecks the hold.") : null;
 		const expected = new Map(batch.map(e => [e.id, e.state]));
-		const transition = db().update(id, run => {
+		const result = db().update(id, run => {
 			const live = reservations(run, actor);
-			if (!run.active || !live.some(e => expected.get(e.id) === e.state)) return "stale";
-			if (block?.scope === "run" && message) { pause(run, message); return "paused"; }
+			if (!live.some(e => expected.get(e.id) === e.state)) return;
+			// Only the final notice can still be dispatched in a stopped goal. Never reopen it.
+			const stop = block?.scope === "run" && run.active;
+			const message = block ? `${block.message} Check session ${actor}.` +
+				(stop ? ` Then explicitly resume ${id} from its owner.` : " Its next turn rechecks the hold.") : null;
+			if (stop && message) { pause(run, message); return { state: "paused", message }; }
 			const changed = message && live.some(e => e.permissionHold !== message);
 			for (const e of live) {
 				if (message) e.permissionHold = message;
 				else delete e.permissionHold;
 			}
-			return changed ? "held" : undefined;
+			return { state: changed ? "held" : undefined, message };
 		});
-		if (transition === "stale") return "The reservation changed or the run is already paused. Check foundry_status.";
-		if (transition) host.log?.(`Foundry ${id} ${transition}: ${message}`);
-		return message;
+		if (!result) return "The reservation changed or the run is already paused. Check foundry_status.";
+		if (result.state) host.log?.(`Foundry ${id} ${result.state}: ${result.message}`);
+		return result.message;
 	}
 	/** @param {Call} ctx @param {string} callId @param {unknown} result @param {boolean} [automatic] */
 	function settle(ctx, callId, result, automatic = false) {
 		if (closed) return;
 		const terminal = db().update(ctx.run, run => {
 			const e = run.effects.find(x => x.id === ctx.id);
-			if (!e || e.callId !== callId || e.issuer !== ctx.actor || !awaitingReply(e)) return true;
+			if (!e || e.tool === "workflow" || e.callId !== callId || e.issuer !== ctx.actor || !awaitingReply(e)) return true;
 			try {
 				receive(run, e, result, automatic);
 			} catch (error) {
@@ -166,22 +180,44 @@ export function createRuntime(directory, host) {
 		});
 		if (choice === raise) await drive(id, owner, true);
 	}
-	/** @param {string} id @param {string} actor @param {boolean} [discover] */
-	async function drive(id, actor, discover = false) {
+	/** Merge wakeups for one issuer, never its in-flight calls or permission dialogs.
+	 * @param {string} id @param {string} actor @param {boolean} [discover] @param {boolean} [recover] @returns {Promise<void>} */
+	function drive(id, actor, discover = false, recover = true) {
+		const key = JSON.stringify([id, actor]), prior = wakes.get(key);
+		if (prior) { prior.discover ||= discover; prior.recover ||= recover; return prior.work; }
+		/** @type {Promise<void>} */
+		const work = Promise.resolve().then(() => {
+			wakes.delete(key);
+			return reconcile(id, actor, wake.discover, wake.recover);
+		});
+		const wake = { discover, recover, work }; wakes.set(key, wake);
+		return work;
+	}
+	/** @param {string} id @param {string} actor @param {boolean} discover @param {boolean} recoverCalls */
+	async function reconcile(id, actor, discover, recoverCalls) {
 		if (!await executable())
 			return;
 		const recover = host.recover, lookups = [];
-		if (recover) for (const e of read(id).effects) {
+		if (recoverCalls) for (const e of read(id).effects) {
 			// A same-session SDK notice has no native tool history. Never replay it.
 			const callId = e.callId;
 			if (!callId || e.issuer !== actor || e.tool === "session.send" || !awaitingReply(e)) continue;
+			if (e.tool === "workflow") {
+				if (!scoutCalls.has(callId)) {
+					const { workflowId } = e, lookup = host.scoutState;
+					if (workflowId && lookup) watchScouts(id, callId, actor, () => lookup(workflowId));
+					else if (!e.workflowId && e.state === "issued") unconfirmedScouts(id, actor, callId, "No workflow ID was recorded before reconnect.");
+				}
+				continue;
+			}
+			if (!recover) continue;
 			const call = nativeCalls.get(callId);
 			if (call?.inFlight || call?.recoveredOn === turnNumber) continue;
 			lookups.push(resolveCall(id, e, callId, () => recover(e)).then(terminal => terminal ? refill() : undefined));
 		}
 		await Promise.all([dispatch(), ...lookups]);
 		async function refill() {
-			if (await executable()) await dispatch();
+			await drive(id, actor, discover, false);
 		}
 		async function dispatch() {
 			if (closed) return;
@@ -191,25 +227,102 @@ export function createRuntime(directory, host) {
 				if (!reservations(run, actor).some(e => e.permissionHold))
 					advance(cwd(), run, actor, discover, { submitToken: reply?.token });
 			});
-			if (!run.active || expired(run)) return;
+			if (actor === run.owner && run.active && !expired(run) && host.ask && !asking.has(id) && questions(run).some(r => !r.decision)) {
+				asking.add(id);
+				track(presentQuestions(cwd(), db(), id, actor, host, executable).finally(() => asking.delete(id)));
+			}
 			const batch = reservations(run, actor).filter(e => e.state === "ready" || e.permissionHold);
 			if (!batch.length) {
-				if (actor === run.owner && run.capacity?.offer) track(askCapacity(run));
+				if (actor === run.owner && run.active && !expired(run) && run.capacity?.offer) track(askCapacity(run));
 				return;
 			}
 			if (await dispatchBlocker(id, actor, batch) !== null) return;
 			const ready = batch.filter(e => e.state === "ready");
 			if (!ready.length) return refill(); // Prepared calls are visible again; this issuer can now plan.
+			const scouts = ready.filter(e => e.tool === "workflow");
+			if (scouts.length) {
+				const ticket = randomUUID();
+				if (db().update(id, r => scouts.filter(e => issue(r, e, ticket)).length))
+					watchScouts(id, ticket, actor, () => host.scout?.(id, ticket, actor) ?? Promise.reject(new Error("Workflow scouting is unavailable")));
+			}
 			// A sibling's native permission prompt must not hold up work unlocked by this reply.
-			await Promise.all(ready.map(async e => {
+			await Promise.all(ready.filter(e => e.tool !== "workflow").map(async e => {
 				const callId = randomUUID();
 				if (!closed && claim(id, e, callId))
 					await resolveCall(id, e, callId, async () => e.tool === "session.send"
-						? { resultType: "success", messageId: await host.remind(id, text(e.token, "repair token")) }
+						? { resultType: "success", messageId: await host.notify(text(e.args.message, "session notice")) }
 						: host.execute(e.tool, e.args, callId), true);
 				await refill();
 			}));
 		}
+	}
+	/** @param {string} id @param {string} actor @param {string} ticket @param {string} message */
+	function unconfirmedScouts(id, actor, ticket, message) {
+		db().update(id, r => {
+			for (const e of batchOf(r, ticket, actor).filter(awaitingReply)) {
+				e.state = "uncertain";
+				e.error = `Discovery unconfirmed: ${message}. ${e.workflowId ? "Recheck the original workflow; no replacement started." : "Pause and explicitly resume to retry unbound discovery."}`;
+			}
+		});
+	}
+	/** A workflow's terminal envelope accounts for missing reports, never for checked work.
+	 * @param {string} id @param {string} ticket @param {string} actor @param {()=>Promise<ScoutEnvelope>} invoke */
+	function watchScouts(id, ticket, actor, invoke) {
+		scoutCalls.add(ticket);
+		void Promise.resolve().then(invoke).then(result => {
+			if (closed) return;
+			const missing = db().update(id, r => {
+				const pending = batchOf(r, ticket, actor).filter(awaitingReply);
+				for (const e of pending) {
+					if (e.workflowId && e.workflowId !== result.runId) fail("wrong_workflow", "Discovery result belongs to another workflow");
+					blockReview(e, `Discovery ${result.status}: ${result.error ?? result.reason ?? "no report was received"}`);
+				}
+				return pending.length;
+			});
+			if (missing) track(drive(id, actor, true, false));
+		}).catch(error => { if (!closed) unconfirmedScouts(id, actor, ticket, String(error)); })
+			.catch(error => host.log?.(`Foundry discovery: ${String(error)}`)).finally(() => scoutCalls.delete(ticket));
+	}
+	/** @param {string} id @param {string} ticket @param {string} actor @param {string} workflowId */
+	async function scoutBatch(id, ticket, actor, workflowId) {
+		text(workflowId, "workflow ID");
+		const block = await host.permissionBlocker(), eligible = await executable();
+		const run = db().update(id, r => {
+			const batch = batchOf(r, ticket, actor);
+			if (!batch.length || batch.some(e => e.workflowId && e.workflowId !== workflowId))
+				fail("foreign_assignment", "No matching Foundry discovery dispatch in this session");
+			const pending = batch.filter(e => awaitingReply(e) && current(r, e));
+			for (const e of pending) {
+				if (!eligible || !r.active || expired(r) || block) {
+					e.state = "ready"; delete e.callId; delete e.workflowId;
+					if (block) e.permissionHold = `${block.message} Check session ${actor}.`;
+				} else { e.workflowId = workflowId; e.state = "issued"; }
+				delete e.error;
+			}
+			if (pending.length && r.active && block?.scope === "run") pause(r, `${block.message} Check session ${actor}.`);
+			return r;
+		});
+		return batchOf(run, ticket, actor).filter(awaitingReply).map(r =>
+			({ id: r.id, squad: r.squad, base: r.base, prompt: scoutPrompt(cwd(), run, r) }));
+	}
+	/** @param {string} id @param {string} ticket @param {string} actor @param {string} workflowId @param {string} reviewId @param {unknown} raw */
+	async function scoutResult(id, ticket, actor, workflowId, reviewId, raw) {
+		const changed = db().update(id, r => {
+			const q = batchOf(r, ticket, actor).find(e => e.id === reviewId && e.workflowId === workflowId);
+			if (!q) fail("foreign_assignment", "Only the bound workflow may return this report");
+			if (!awaitingReply(q)) return false;
+			delete q.error;
+			const squad = r.policy.squads.find(s => s.id === q.squad) ?? fail("invalid_charter", "No matching charter");
+			try {
+				if (raw === null) fail("missing_report", "No structured scout report was returned");
+				q.observation = parseObservation(squad, raw); q.state = "reported";
+			} catch (error) {
+				if (!(error instanceof FoundryError)) throw error;
+				blockReview(q, `Invalid scout result: ${error.message}`);
+			}
+			return true;
+		});
+		if (changed) await drive(id, actor, true, false);
 	}
 	/** @param {string} id @param {string} actor @param {string} token */
 	function submit(id, actor, token) {
@@ -247,14 +360,13 @@ export function createRuntime(directory, host) {
 			if (prior.owner !== actor || prior.policy.source !== policy.source)
 				fail("run_conflict", "Another owner or contract already uses this run ID");
 			verifyContracts(origin, prior.policy, policy.base);
-			if (prior.accepted) return status(prior, actor);
+			if (prior.goal && qualifiedProduct(prior)) return status(prior, actor);
 		}
-		const run = prior ?? newRun(origin, policy, actor, grains);
-		admitted({ ...run, active: true });
+		if (policy.deadline && Date.now() >= Date.parse(policy.deadline)) fail("deadline", "The authorized deadline has elapsed");
 		if (!prior?.active) {
 			const retry = prior && missingObservation(prior) ? prior.goal : undefined;
 			await requireReadyOwner(origin);
-			if (!await host.confirm(activationPrompt(run, retry?.commit))) fail("activation_refused", "Foundry was not activated");
+			if (!await host.confirm(activationPrompt(prior ?? { policy, capacity: policy.workers ? { limit: policy.workers } : undefined }, retry?.commit))) fail("activation_refused", "Foundry was not activated");
 			await requireReadyOwner(origin);
 			if (prior)
 				change(policy.id, r => {
@@ -262,10 +374,15 @@ export function createRuntime(directory, host) {
 						fail("run_conflict", "Run activation changed while starting");
 					r.active = true;
 					delete r.pauseReason;
+					// An interrupted, unbound discovery cannot have spent an agent call. Invalidate its old ticket.
+					for (const e of r.effects) if (e.tool === "workflow" && e.state === "uncertain" && !e.workflowId) {
+						e.state = "ready"; delete e.callId; delete e.error;
+					}
 					admitted(r);
 					if (retry) advance(origin, r, actor, false, { retryGoal: true });
 				});
 			else {
+				const run = newRun(origin, policy, actor, grains);
 				admitted(run);
 				retain(origin, policy.base);
 				if (run.goal && run.goal.commit !== policy.base) retain(origin, run.goal.commit);
@@ -304,11 +421,8 @@ export function createRuntime(directory, host) {
 				fail("helpers_running", "Native helpers are still running. Join them, integrate their work, then submit with the same token.");
 		}
 		if (!await executable())
-			fail("unsupported_mode", "Plan mode cannot submit work or make an observation");
-		if (op === "observe") {
-			change(id, r => observe(cwd(), r, actor, a));
-		}
-		else if (reply) {
+			fail("unsupported_mode", "Plan mode cannot submit work");
+		if (reply) {
 			submit(id, actor, reply.token);
 			// A shell notification can drive the same actor before this call returns.
 			submitting.add(reply);
@@ -316,7 +430,7 @@ export function createRuntime(directory, host) {
 		else
 			fail("unknown_operation", `Unknown Foundry operation ${op}`);
 		try {
-			await drive(id, actor, op === "observe");
+			await drive(id, actor);
 			return status(read(id), actor);
 		} finally {
 			if (reply) submitting.delete(reply);
@@ -332,7 +446,7 @@ export function createRuntime(directory, host) {
 		if (!e || e.state !== "ordinary" && !(e.state === "issued" && e.callId === callId))
 			fail("unreserved_call", "Not a current prepared Foundry call");
 		if (e.state === "ordinary") {
-			admitted(run);
+			if (!canDispatch(run, e)) admitted(run);
 			const reason = await dispatchBlocker(id, actor, [e]);
 			if (reason !== null) fail("dispatch_held", reason);
 		}
@@ -345,7 +459,7 @@ export function createRuntime(directory, host) {
 		background.add(task);
 	}
 	return {
-		operation, pre,
+		operation, pre, scoutBatch, scoutResult,
 		/** @param {string} actor @param {string} path @param {string} [prompt] */
 		sessionStart(actor, path, prompt) {
 			if (directory !== path) {

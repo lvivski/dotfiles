@@ -82,18 +82,19 @@ export interface Assessment {
 
 export interface Product extends Assessment {
 	outputs: Record<string, string>;
+	qualifiedAt?: number;
 }
 
-export interface Review {
-	id: string;
+export interface Review extends Dispatch {
+	kind: "scout";
+	tool: "workflow";
+	state: "ready" | "issued" | "uncertain" | "reported" | "observed" | "blocked";
 	squad: string;
-	state: "reading" | "observed" | "blocked";
-	worker?: string;
-	token: string;
 	base: string;
 	version: string;
 	observation?: Observation;
-	reason?: string;
+	decision?: { status: "presenting" | "dismissed" } | { status: "answered"; answer: string }
+		| { status: "writer"; writer: string; request: string } | { status: "unavailable"; reason: string };
 }
 
 export interface Receipt {
@@ -105,19 +106,18 @@ export interface Receipt {
 	squad?: string;
 }
 
-export interface Effect {
+interface Dispatch {
 	id: string;
 	issuer: string;
-	kind: "writer" | "scout" | "component" | "product" | "goal" | "repair" | "capacity";
 	grain?: string;
 	token?: string;
-	tool: "create_session" | "bash" | "send_session_message" | "session.send";
 	args: {
 		[key: string]: Json;
 	};
-	state: "ready" | "issued" | "uncertain" | "ordinary" | "done" | "refused";
 	callId?: string;
 	nativeId?: string;
+	boundAt?: number;
+	workflowId?: string;
 	error?: string;
 	permissionHold?: string;
 	commit?: string;
@@ -126,20 +126,27 @@ export interface Effect {
 	receipt?: Receipt;
 }
 
+export interface NativeCall extends Dispatch {
+	kind: "writer" | "component" | "product" | "goal" | "repair" | "capacity" | "decision" | "handoff";
+	tool: "create_session" | "bash" | "send_session_message" | "session.send";
+	state: "ready" | "issued" | "uncertain" | "ordinary" | "done" | "refused";
+}
+
+export type Effect = NativeCall | Review;
+
 export interface Run {
 	id: string;
 	owner: string;
 	policy: Policy;
+	activatedAt: number;
 	capacity?: { limit: number; kept: boolean; offer?: { id: string; to: number } };
 	active: boolean;
 	pauseReason?: string;
-	reviews: Review[];
 	nodes: Record<string, Node>;
 	effects: Effect[];
 	products: Product[];
 	join?: Product;
 	goal?: Assessment & { stall?: string; tried?: string[] };
-	accepted?: string;
 	blocker?: string;
 	conflict?: string;
 	discoveryError?: string;

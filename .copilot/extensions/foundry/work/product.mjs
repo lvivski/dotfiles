@@ -1,4 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
+import { isUtf8 } from "node:buffer";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { closeSync, fchmodSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -69,7 +70,7 @@ function pathNames(files) {
 }
 
 /** @param {string} cwd @param {string} tree @param {boolean} [recursive] @param {string[]} [filter] @returns {Entry[]} */
-function entries(cwd, tree, recursive = false, filter) {
+export function entries(cwd, tree, recursive = false, filter) {
 	const raw = git(cwd, ["ls-tree", "--full-tree", "-z", ...(recursive ? ["-r"] : []), tree, ...(filter ? ["--", ...filter] : [])]);
 	const string = raw.toString("utf8");
 	if (!Buffer.from(string).equals(raw))
@@ -151,16 +152,19 @@ function withIndex(cwd, use) {
 	}
 }
 
-/** @param {string} dir @param {Map<string,string>} [expected] */
-function diskFiles(dir, expected) {
+/** @param {string} dir @param {Map<string,string>} [expected] @param {boolean} [worktree] */
+function diskFiles(dir, expected, worktree = false) {
 	/** @type {{name:string,mode:string}[]} */ const files = [];
+	const device = lstatSync(dir).dev;
 	/** @param {string} prefix */
 	function visit(prefix) {
-		for (const entry of readdirSync(path.join(dir, prefix))) {
-			const name = path.join(prefix, relative(entry)), file = path.join(dir, name);
-			if (expected && expected.get(pathKey(name)) !== name) fail("product_changed", `Evaluator added ${name}`);
+		for (const entry of readdirSync(path.join(dir, prefix), { encoding: "buffer" })) {
+			if (!isUtf8(entry)) fail("unsupported_tree", "Non-UTF-8 file name");
+			if (worktree && !prefix && entry.toString() === ".git") continue;
+			const name = path.join(prefix, relative(entry.toString())), file = path.join(dir, name);
+			if (expected && expected.get(pathKey(name)) !== name) fail("product_changed", `Unexpected path: ${name}`);
 			const stat = lstatSync(file);
-			if (stat.isSymbolicLink() || realpathSync(file) !== file || !stat.isDirectory() && (!stat.isFile() || stat.nlink !== 1))
+			if (stat.dev !== device || stat.isSymbolicLink() || realpathSync(file) !== file || !stat.isDirectory() && (!stat.isFile() || stat.nlink !== 1))
 				fail("unsupported_tree", `Linked or special file: ${name}`);
 			if (stat.isDirectory()) visit(name);
 			else files.push({ name, mode: stat.mode & 0o100 ? "100755" : "100644" });
@@ -293,21 +297,29 @@ async function materialize(cwd, root, items) {
 	}
 }
 
+/** Prove all bytes and executable bits against Git, including ignored and untracked paths.
+ * Only a separately verified linked worktree may omit its root .git administrative file.
+ * @param {string} cwd @param {string} root @param {Entry[]} items @param {boolean} [worktree] */
+export function verifyTree(cwd, root, items, worktree = false) {
+	const modes = new Map(diskFiles(root, pathNames(items), worktree).map(f => [f.name, f.mode]));
+	for (const e of items) if (modes.get(e.name) !== e.mode) fail("product_changed", `Product changed: ${e.name}`);
+	const hashes = blobIds(cwd, items.map(e => path.join(root, e.name)));
+	for (const [i, e] of items.entries())
+		if (hashes[i] !== e.oid) fail("product_changed", `Product changed: ${e.name}`);
+}
+
 /** @param {string} cwd @param {string} commit @param {(root:string)=>void} evaluate */
 export async function withProduct(cwd, commit, evaluate) {
 	const root = realpathSync(mkdtempSync(path.join(tmpdir(), "foundry-check-")));
 	try {
-		const items = entries(cwd, commit, true), paths = pathNames(items);
+		const items = entries(cwd, commit, true);
+		pathNames(items); // Refuse aliases before writing any files.
 		for (const e of items)
 			if (!["100644", "100755"].includes(e.mode))
 				fail("unsupported_tree", `Cannot evaluate ${e.name}: not a regular file`);
 		await materialize(cwd, root, items);
 		evaluate(root);
-		const modes = new Map(diskFiles(root, paths).map(f => [f.name, f.mode]));
-		for (const e of items) if (modes.get(e.name) !== e.mode) fail("product_changed", `Evaluator changed ${e.name}`);
-		const hashes = blobIds(cwd, items.map(e => path.join(root, e.name)));
-		for (const [i, e] of items.entries())
-			if (hashes[i] !== e.oid) fail("product_changed", `Evaluator changed ${e.name}`);
+		verifyTree(cwd, root, items);
 	}
 	finally {
 		rmSync(root, { recursive: true, force: true });

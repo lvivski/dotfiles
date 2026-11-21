@@ -1,8 +1,11 @@
-import { joinSession } from "@github/copilot-sdk/extension";
+import { defineWorkflow, joinSession } from "@github/copilot-sdk/extension";
+import { foundryBoard } from "./canvas.mjs";
+import { writerRequest } from "./work/decisions.mjs";
 import { identify } from "./work/native.mjs";
 import { permissionCheck } from "./work/permissions.mjs";
 import { recover } from "./work/recovery.mjs";
 import { createRuntime } from "./work/runtime.mjs";
+import { scoutAgent, scoutDefinition } from "./work/scouts.mjs";
 import { buildTools, fromHelper, primaryOnly } from "./work/tools.mjs";
 
 /** @type {import("@github/copilot-sdk").CopilotSession} */
@@ -13,14 +16,20 @@ const runtime = createRuntime(process.cwd(), {
 	permissionBlocker: permissionCheck(() => session.rpc.managedSettings.get(), () => session.rpc.permissions.getMode()),
 	confirm: message => session.ui.confirm(message),
 	select: (message, options) => session.ui.select(message, options),
+	ask: message => session.ui.input(message),
+	writerInput: async writer => writerRequest(writer, await session.rpc.tools.execute({ name: "get_session", arguments: { project_session_id: writer } })),
 	execute: (name, args, toolCallId) => session.rpc.tools.execute({ name, arguments: args, toolCallId }),
-	remind: (run, token) => session.send({ source: "system", mode: "enqueue",
-		prompt: `Foundry repair ${token}: read foundry_status({run:"${run}"}). If this is still your writable token, repair the checked failure in your assigned directory and submit it. No new assignment or permission is granted by this notice.` }),
+	scout: (run, dispatch) => session.workflow.run("foundry-scout", { args: { run, dispatch }, notifyOnComplete: false }),
+	scoutState: id => session.workflow.waitForRun(id),
+	notify: prompt => session.send({ source: "system", mode: "enqueue", prompt }),
 	recover: effect => recover(page => session.rpc.eventLog.read(page), effect),
 	log: message => session.log(message, { level: "warning" }),
 });
 session = await joinSession({
+	customAgents: [scoutAgent],
+	workflows: [defineWorkflow(scoutDefinition(() => runtime))],
 	tools: buildTools(runtime, () => session.sessionId),
+	canvases: [foundryBoard((run, actor) => runtime.operation("status", { run }, actor))],
 	hooks: {
 		onSessionStart(input, ctx) {
 			if (!fromHelper(input, ctx.sessionId)) runtime.sessionStart(ctx.sessionId, input.workingDirectory, input.initialPrompt);
