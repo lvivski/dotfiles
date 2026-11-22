@@ -1,12 +1,19 @@
 import { goalReceipt } from "./evidence.mjs";
 import { reserveWriter, verifyRepairInputs } from "./graph.mjs";
 import { admitted, assignmentCount } from "./native.mjs";
-import { stalePins, validateNodes, waiting, working, writerInputs } from "./plan.mjs";
+import { assignmentCalls, stalePins, validateNodes, waiting, working, writerInputs } from "./plan.mjs";
 import { commitAt, directoryBaseline, entries, verifyContracts } from "./product.mjs";
 import { reading, reviews } from "./reviews.mjs";
 import { digest, fail, names } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
+/** @param {Run} run @param {import("./model.js").Node} n */
+function originalAttempt(run, n) {
+	const calls = assignmentCalls(run, n), launch = calls.find(e => e.kind === "writer" && e.token === n.token);
+	if (!launch?.callId || launch.state !== "done" || launch.nativeId !== n.worker) return false;
+	return calls.every(e => e === launch || e.kind === "artifact" && e.state === "done");
+}
+
 /** @param {string} cwd @param {Run} run @param {string} actor @param {string[]} ids */
 function manifest(cwd, run, actor, ids) {
 	if (actor !== run.owner) fail("foreign_run", "Only the run owner may request a baseline grant");
@@ -19,11 +26,10 @@ function manifest(cwd, run, actor, ids) {
 		run.policy.workers !== undefined && Object.values(run.nodes).filter(working).length + reviews(run).filter(reading).length + ids.length > run.policy.workers)
 		fail("limit", "Select assignments within the remaining worker and assignment limits");
 	return ids.map(id => {
-		const n = run.nodes[id], launch = run.effects.find(e => e.kind === "writer" && e.grain === id && e.token === n?.token);
+		const n = run.nodes[id];
 		if (!n?.worker || n.state !== "blocked" || !n.generation || !n.token || !n.base || n.check || n.candidate ||
-			!n.reason?.startsWith("Writer reports missing input: ") || !launch?.callId || launch.state !== "done" || launch.nativeId !== n.worker ||
-			run.effects.some(e => (e.issuer === actor || e.issuer === n.worker) && e.permissionHold ||
-				e.grain === id && e !== launch && (e.kind !== "artifact" || e.state !== "done")))
+			!n.reason?.startsWith("Writer reports missing input: ") || !originalAttempt(run, n) ||
+			run.effects.some(e => (e.issuer === actor || e.issuer === n.worker) && e.permissionHold))
 			fail("stale_assignment", `${id}: not an original bound missing-input attempt`);
 		if (n.repairs >= run.policy.repairs) fail("limit", `${id}: repair limit exhausted`);
 		if (n.grain.revision && n.grain.revision !== n.base) fail("stale_assignment", `${id}: a grant cannot replace the assignment's explicit revision`);

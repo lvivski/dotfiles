@@ -38,6 +38,22 @@ export function supersededAttempt(run, n) {
  * @param {Node} n */
 export const liveNeeds = n => n.state === "blocked" ? [] : n.grain.needs;
 
+/** @param {Node|undefined} n @param {import("./model.js").Effect} e */
+export function targetsWriter(n, e) {
+	return n?.state === "writing" && n.token === e.token && (e.tool !== "session.send" || e.issuer === n.worker);
+}
+
+/** A reference offer that never reached a native call cannot keep its former writer's directory.
+ * Keep the reservation in the journal; a held, prepared, issued or uncertain call is not obsolete.
+ * @param {Node} n @param {import("./model.js").Effect} e */
+function obsoleteOffer(n, e) {
+	if (e.kind !== "artifact" || e.state !== "ready" || targetsWriter(n, e)) return false;
+	return e.callId === undefined && e.permissionHold === undefined && e.error === undefined;
+}
+
+/** @param {Run} run @param {Node} n */
+export const assignmentCalls = (run, n) => run.effects.filter(e => e.grain === n.grain.id && !obsoleteOffer(n, e));
+
 /** A writer's own missing-input stop releases no files. Only a different job at a later
  * checkpoint may take exactly this directory; unresolved native calls still own it.
  * @param {Run} run @param {import("./model.js").Review} review @param {import("./model.js").Observation} report */
@@ -50,7 +66,7 @@ export function stoppedPredecessor(run, review, report) {
 		!n.worker || !n.base || !n.token || !n.generation || n.base === review.base || n.grain.check !== g.check ||
 		g.task === n.grain.task || report.replace?.some(id => id !== n.grain.id) ||
 		Object.values(run.nodes).some(other => liveNeeds(other).includes(n.grain.id) || other.state !== "blocked" && Object.hasOwn(other.inputs ?? {}, n.grain.id))) return;
-	const calls = run.effects.filter(e => e.grain === n.grain.id), launches = calls.filter(e => e.kind === "writer");
+	const calls = assignmentCalls(run, n), launches = calls.filter(e => e.kind === "writer");
 	if (launches.length !== 1 || !launches[0].callId || launches[0].nativeId !== n.worker || launches[0].args.base_branch !== n.generation ||
 		calls.some(e => e.state !== "done" || e.permissionHold || e.error)) return;
 	const repaired = calls.some(e => e.kind === "component" && e.id === n.check && e.issuer === n.worker && checkReceipt(e) && e.inlineRepair === n.token ||

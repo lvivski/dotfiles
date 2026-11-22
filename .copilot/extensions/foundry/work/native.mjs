@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { milestoneBlocker, qualifiedProduct } from "./evidence.mjs";
+import { targetsWriter } from "./plan.mjs";
 import { questions, reading } from "./reviews.mjs";
 import { digest, fail, record, text } from "./values.mjs";
 
@@ -108,8 +109,7 @@ export function current(run, e) {
 	const n = assignee(run, e);
 	if (e.kind === "component")
 		return n?.state === "checking" && n.check === e.id;
-	if (e.tool === "session.send" && n?.worker !== e.issuer) return false;
-	return !!n && n.token === e.token && n.state === "writing";
+	return targetsWriter(n, e);
 }
 
 /** @param {Run} run */

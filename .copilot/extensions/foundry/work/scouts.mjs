@@ -6,7 +6,7 @@ import { checked, dependencies, liveNeeds, owns, supersededAttempt } from "./pla
 import { evidencePage } from "./pages.mjs";
 import { entries, git, regularFiles } from "./product.mjs";
 import { researchSchema } from "./research.mjs";
-import { canInvestigate, correction, evidenceDecision, investigation, requestedFiles, researchContext, wakeSource } from "./reviews.mjs";
+import { canInvestigate, correction, evidenceDecision, fileProgress, investigation, requestedFiles, researchContext, reviews, wakeSource } from "./reviews.mjs";
 import { FoundryError, contains, fail, fields, name, record, referenceRepo, text } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
@@ -208,9 +208,9 @@ export function scoutPacket(cwd, run, review, budget = Infinity) {
 		const partial = "Coverage: PARTIAL. Rows without text or excerpt are names only, not evidence. Cite only delivered text, and only the displayed range for excerpts. Do not return no-gap." +
 			(deciding ? " Decide from this packet or report unresolved." : researchAgent ? " Report unknown if the supplied evidence cannot answer your question." : " Use needs-evidence with the exact file for its first or next page.") +
 			(report?.file ? `\nRequested ${report.file}: ${report.reason}` : "");
-		const last = prev?.packet?.excerpt, focus = report?.file;
-		const page = evidencePage(packet.index, budget - Buffer.byteLength(render(header, partial)), squad.charter,
-			focus, last && last.path === focus ? (deciding ? last.start : last.end) : 0);
+		const focus = report?.file;
+		const offset = focus ? fileProgress(reviews(run), deciding && prev ? prev : review, focus, packet.index.get(focus)?.oid).offset : 0;
+		const page = evidencePage(packet.index, budget - Buffer.byteLength(render(header, partial)), squad.charter, focus, offset);
 		receiptPacket.files = page.files;
 		if (policy.sharedBrief) receiptPacket.files[policy.sharedBrief] = packet.delivered.get(policy.sharedBrief) ?? fail("missing_brief", "Missing shared brief");
 		if (page.excerpt) receiptPacket.excerpt = page.excerpt;

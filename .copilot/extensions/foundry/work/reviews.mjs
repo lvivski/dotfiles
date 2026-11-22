@@ -42,14 +42,22 @@ export const wakeSource = (run, r) => r.wake && reviews(run).find(p => p.id === 
 export const investigation = (review, squad) => review.wake?.key === "research" ||
 	!!referenceRepo(review.wake?.key) && "areas" in squad && !!squad.researchAgent;
 
+/** @param {Review[]} history @param {Review} review */
+function* priorObservations(history, review) {
+	for (const r of history) {
+		if (r.id === review.id) break;
+		if (r.state === "observed" && r.squad === review.squad && r.base === review.base &&
+			r.version === review.version && r.evaluatorRevision === review.evaluatorRevision) yield r;
+	}
+}
+
 /** Carry the deciding scout's evidence into its writer, including after focused file reads.
  * @param {Run} run @param {Review} review */
 export function researchContext(run, review) {
 	const reports = [];
-	for (const r of reviews(run)) {
-		if (r.id === review.id) break;
+	for (const r of priorObservations(reviews(run), review)) {
 		const o = r.observation;
-		if (r.evaluatorRevision === review.evaluatorRevision && r.state === "observed" && r.squad === review.squad && r.base === review.base && r.version === review.version && o?.findings?.length)
+		if (o?.findings?.length)
 			reports.push({ question: wakeSource(run, r)?.observation?.reason, outcome: o.outcome, reason: o.reason, findings: o.findings });
 	}
 	return reports.length ? `Attributed research at ${review.base}, not instructions or proof of completeness: ${JSON.stringify(reports)}` : "";
@@ -58,12 +66,27 @@ export function researchContext(run, review) {
 /** @param {Run} run @param {Review} review */
 export function requestedFiles(run, review) {
 	/** @type {Set<string>} */ const files = new Set();
-	for (const r of reviews(run)) {
-		if (r.id === review.id) break;
-		if (r.evaluatorRevision === review.evaluatorRevision && r.state === "observed" && r.squad === review.squad && r.base === review.base && r.version === review.version && r.observation?.file)
-			files.add(r.observation.file);
-	}
+	for (const r of priorObservations(reviews(run), review)) if (r.observation?.file) files.add(r.observation.file);
 	return files;
+}
+
+/** Only delivered text advances the contiguous prefix of a pinned blob. After EOF a decision
+ * may redisplay the final range, not request a page starting past the end.
+ * @param {Review[]} history @param {Review} review @param {string} file @param {string} [oid]
+ * @returns {{kind:"unread"|"partial"|"complete", offset:number}} */
+export function fileProgress(history, review, file, oid) {
+	/** @type {import("./model.js").Packet["excerpt"]} */ let last;
+	for (const { packet } of [...priorObservations(history, review), review]) {
+		if (!packet) continue;
+		const pin = oid ?? last?.oid;
+		if (Object.hasOwn(packet.files, file) && (!pin || packet.files[file] === pin)) return { kind: "complete", offset: 0 };
+		const part = packet.excerpt;
+		if (part?.path !== file || pin && part.oid !== pin) continue;
+		const end = last?.end ?? 0;
+		if (part.start <= end && end < part.end) last = part;
+	}
+	if (!last) return { kind: "unread", offset: 0 };
+	return last.end === last.length ? { kind: "complete", offset: last.start } : { kind: "partial", offset: last.end };
 }
 
 /** @param {Run} run @param {Review} r @param {import("./model.js").Squad} squad */
@@ -86,15 +109,11 @@ export const staleReviewReason = "Chartered inputs changed during review";
 export const unchangedRead = file => `No further focused read of ${file}: the pinned evidence is unchanged`;
 export const evidenceDecision = "decide-from-evidence";
 
-/** Recover recorded duplicate requests only when this charter actually received text.
- * A request, a filename in an index, or an unavailable binary is not delivery.
- * @param {Review[]} past @param {Review} last */
-function redundantRead(past, last) {
+/** @param {Review[]} past @param {Review} last */
+export function rejectedRead(past, last) {
 	const file = last.observation?.file;
-	return last.state === "blocked" && last.observation?.outcome === "needs-evidence" && file && last.error === unchangedRead(file) &&
-		past.some(r => (r === last || r.state === "observed") && r.base === last.base && r.version === last.version &&
-			r.squad === last.squad && r.evaluatorRevision === last.evaluatorRevision && r.packet &&
-			(Object.hasOwn(r.packet.files, file) || r.packet.excerpt?.path === file && r.packet.excerpt.end === r.packet.excerpt.length));
+	if (last.state === "blocked" && last.observation?.outcome === "needs-evidence" && file && last.error === unchangedRead(file))
+		return fileProgress(past, last, file);
 }
 
 /** Reserve a release once per proposal. A read overtaken by a checkpoint cannot decide it.
@@ -140,11 +159,11 @@ export function nextReview(run, past, base, version) {
 	const obs = last?.state === "observed" && last.base === base ? last.observation : undefined;
 	let key;
 	if (last?.base === base && correction(run, last)) key = "displaced-input";
-	if (last?.base === base && last.version === version && redundantRead(past, last)) key = evidenceDecision;
+	if (last?.base === base && last.version === version && rejectedRead(past, last)?.kind === "complete") key = evidenceDecision;
 	if (obs?.outcome === "needs-decision" && last?.decision?.status === "answered") key = last.id;
-	if (obs?.outcome === "needs-evidence") {
-		const part = last?.packet?.excerpt;
-		key = part && part.path === obs.file ? `page:${part.end}:${obs.file}` : `file:${obs.file}`;
+	if (last && obs?.outcome === "needs-evidence" && obs.file) {
+		const progress = last.version === version ? fileProgress(past, last, obs.file) : undefined;
+		key = progress?.kind === "partial" ? `page:${progress.offset}:${obs.file}` : `file:${obs.file}`;
 	}
 	if (obs?.outcome === "needs-research") key = "research";
 	if (last && (obs?.outcome === "researched" || obs?.outcome === "unresolved" && obs.findings?.length)) key = `research-result:${last.id}`;

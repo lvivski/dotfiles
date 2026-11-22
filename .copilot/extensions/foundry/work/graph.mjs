@@ -7,7 +7,7 @@ import { admitted, assignmentCount, expired, reserveNotice, reserveProduct, rese
 import { actionable, consumersOf, dependencies, liveNeeds, owns, productOutputs, proposal, requireNewWork, revise, settledOutput, stalePins, stoppedPredecessor, superseded, supersededAttempt, validateNodes, waiting, working, writerInputs } from "./plan.mjs";
 import { changedFiles, combine, commitAt, directoryBaseline, outside, regularFiles, rejoin, retain, verifyContracts, verifyDirectoryPin, versionOf, withoutGrain } from "./product.mjs";
 import { referenceCheckout } from "./research.mjs";
-import { availableHistory, blockReview, canInvestigate, discoverySquads, evidenceDecision, nextReview, reading, requestedFiles, researchContext, reserveReview, reviews, staleReviewReason, unchangedRead, wakeSource } from "./reviews.mjs";
+import { availableHistory, blockReview, canInvestigate, discoverySquads, evidenceDecision, fileProgress, nextReview, reading, rejectedRead, requestedFiles, researchContext, reserveReview, reviews, staleReviewReason, unchangedRead, wakeSource } from "./reviews.mjs";
 import { FoundryError, contains, digest, fail, fields, name, names, record, referenceRepo, relative, text, waitTarget } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
@@ -191,9 +191,10 @@ export function observe(cwd, run, review, observation) {
 			fail("unseen_evidence", `Text of ${e.name} at ${e.oid} was not delivered in this packet`);
 	if (outcome === "no-gap" && packet.partial) fail("partial_coverage", "Cannot conclude no-gap from a partial packet");
 	if (observation.file) {
-		if (focused.has(observation.file) && !(part?.path === observation.file && part.end < part.length) || Object.hasOwn(packet.files, observation.file))
-			fail("unresolved_evidence", unchangedRead(observation.file));
-		regularFiles(cwd, review.base, [observation.file]);
+		const file = observation.file, [entry] = regularFiles(cwd, review.base, [file]);
+		const progress = fileProgress(reviews(run), review, file, entry.oid);
+		if (Object.hasOwn(packet.files, file) || focused.has(file) && progress.kind !== "partial")
+			fail("unresolved_evidence", unchangedRead(file));
 	}
 	if (observation.waitFor && !referenceRepo(observation.waitFor) && (observation.waitFor === squad.id || !run.policy.squads.some(s => s.id === observation.waitFor)))
 		fail("charter_scope", "Wait for a different declared producer charter");
@@ -418,6 +419,23 @@ export function reserveWriter(cwd, run, n, required, base, actor, submitToken, b
 	reserveWorker(run, actor, token, n.generation, brief, g.agent, g.id);
 }
 
+/** Only the latest report can be reconsidered, and only for a rejection whose cause we can
+ * disprove at the original pins. Admit its recorded observation, never replay the workflow.
+ * @param {string} cwd @param {Run} run @param {import("./model.js").Review[]} history
+ * @param {import("./model.js").Review} r @param {import("./model.js").Observation} observation */
+function readmitReport(cwd, run, history, r, observation) {
+	const goal = run.goal;
+	if (!goal || r.base !== goal.commit || r.evaluatorRevision !== run.repins?.at(-1)?.revision || !r.workflowId || !r.callId) return;
+	const released = r.error === "Writable directories must be disjoint" && stoppedPredecessor(run, r, observation);
+	const unfinished = rejectedRead(history, r)?.kind === "partial";
+	if ((!released && !unfinished) || !sameReviewInputs(cwd, run, r)) return;
+	observe(cwd, run, r, observation);
+	if (unfinished) {
+		delete r.error;
+		delete goal.stall;
+	}
+}
+
 /** Plan on a snapshot outside the SQLite write lock; the caller compare-and-swaps the changes.
  * @param {string} cwd @param {Run} run @param {string} actor @param {boolean} discover @param {{retryGoal?:boolean,submitToken?:string}} [context] */
 export function advance(cwd, run, actor, discover, context = {}) {
@@ -429,15 +447,13 @@ export function advance(cwd, run, actor, discover, context = {}) {
 	notifyWriters(run, actor);
 	delete run.conflict; // Recompute from the current target and live pins. Never clear a refusal to do this.
 	const history = reviews(run);
-	// Earlier readers durably rejected these reports before considering missing-input stops.
-	// Readmit the latest exact report on the owner's normal turn, never replay the workflow.
 	const latest = owner && run.goal ? new Map(history.map(r => [r.squad, r])) : undefined;
 	for (const r of history) if (r.observation) {
-		const saved = r.state === "blocked" && latest?.get(r.squad) === r && r.base === run.goal?.commit &&
-			r.evaluatorRevision === run.repins?.at(-1)?.revision && r.error === "Writable directories must be disjoint" && r.workflowId && r.callId;
-		if (r.state !== "reported" && !saved) continue;
 		try {
-			if (saved && (!stoppedPredecessor(run, r, r.observation) || !sameReviewInputs(cwd, run, r))) continue;
+			if (r.state !== "reported") {
+				if (r.state === "blocked" && latest?.get(r.squad) === r) readmitReport(cwd, run, history, r, r.observation);
+				continue;
+			}
 			observe(cwd, run, r, r.observation);
 			if (!owner && r.observation.outcome === "needs-decision")
 				reserveNotice(run, actor, r.id, "decision", `Foundry ${run.id} has a charter question for its owner at ${r.base}. This notice grants no authority.`);

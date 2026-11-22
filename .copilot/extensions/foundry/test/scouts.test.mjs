@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { setImmediate } from "node:timers/promises";
 import test from "node:test";
 import { mapSnapshot } from "../map/model.mjs";
+import { openDatabase } from "../work/database.mjs";
 import { git } from "../work/product.mjs";
-import { availableHistory, nextReview } from "../work/reviews.mjs";
+import { availableHistory, nextReview, reviews } from "../work/reviews.mjs";
 import { scoutAgent, scoutDefinition, scoutPacket } from "../work/scouts.mjs";
 import { factory, loadEntry, put } from "./fixture.mjs";
 
@@ -191,6 +192,53 @@ for (const limit of [24000, 400000]) test(`SDK session budget gates unseen citat
 });
 /** @param {string} id @param {string[]} [needs] */
 const build = (id, needs = []) => ({ ...noGap, outcome: "regenerate", grains: [{ id, directory: id, task: `Implement ${id} v2`, check: "unit.mjs", needs }] });
+
+for (const saved of [false, true]) test(`switching between partial files resumes each pinned read: ${saved ? "previously stalled" : "live"}`, async t => {
+	const a = "encoder/format", b = "encoder/examples", format = "A".repeat(24000) + "\nformat=v2";
+	const check = `import {existsSync,readFileSync} from "node:fs";process.exit(existsSync("encoder/value") && readFileSync("encoder/value","utf8")==="v2" ? 0 : 1)`;
+	const f = factoryTrial(t, ["interface"], { [a]: format, [b]: "B".repeat(24000), "product.mjs": check, "goal.mjs": check });
+	const issuer = () => f.runtime(f.root, { scoutBudget: async () => 9000 }), owner = issuer();
+	await f.start(owner);
+	let [job, ...others] = f.scouts, cite = "charter";
+	for (const other of others) await other.report({ ...noGap, outcome: "unresolved" });
+	/** @type {Map<string,string>} */ const received = new Map();
+	/** @param {string} file @param {boolean} [restore] */
+	async function page(file, restore) {
+		const before = f.scouts.length;
+		const request = { ...noGap, outcome: /** @type {const} */ ("needs-evidence"), evidence: [cite], file };
+		if (restore) {
+			owner.close();
+			const db = openDatabase(f.root);
+			try {
+				db.update("pair", run => {
+					const r = reviews(run).find(r => r.id === job.id); assert.ok(r?.workflowId && run.goal);
+					r.state = "blocked"; r.packet = job.packet; r.observation = request;
+					r.error = `No further focused read of ${file}: the pinned evidence is unchanged`;
+					run.goal.stall = "No actionable grain remains on this revision.";
+				});
+			} finally { db.close(); }
+			const reloaded = issuer();
+			reloaded.turn("owner"); await reloaded.flush(); await f.settle();
+		} else await job.report(request);
+		const next = f.scouts.at(-1);
+		assert.ok(next && next.id !== job.id, `Missing next page of ${file}`);
+		assert.equal(f.scouts.length, before + 1, "one continuation, no replay of the earlier review");
+		const part = next.packet.excerpt, prior = received.get(file) ?? "";
+		assert.equal(part?.path, file); assert.equal(part.start, prior.length);
+		const text = prior + filesIn(next.prompt).get(file).excerpt;
+		assert.ok(text.length > prior.length); assert.equal(part.end, text.length);
+		received.set(file, text);
+		job = next; cite = file;
+	}
+	await page(a); await page(b); await page(a, saved); await page(b);
+	do { await page(a); } while ((received.get(a)?.length ?? 0) < format.length);
+	assert.equal(received.get(a), format);
+	await job.report({ ...build("encoder"), evidence: [a] });
+	const [writer] = f.workers.values();
+	put(writer.cwd, "encoder/value", "v2");
+	await f.runtime(writer.cwd).operation("submit", { run: "pair", token: writer.token }, writer.id);
+	assert.ok((await f.status()).qualified);
+});
 
 for (const decides of [true, false]) test(`a redundant read gets one decision from earlier delivered text; proposes work: ${decides}`, async t => {
 	const a = "encoder/format", b = "encoder/consumer", extra = "encoder/appendix";

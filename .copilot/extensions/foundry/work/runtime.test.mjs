@@ -856,6 +856,52 @@ for (const saved of [false, true]) test(`a stopped writer releases its exact dir
 	assert.deepEqual(s.products?.at(-1)?.outputs, { "new-input": successor.inputs?.["new-input"] });
 });
 
+for (const issued of [false, true]) test(`a stopped writer's baseline distinguishes reserved and issued artifact notices: issued=${issued}`, async t => {
+	const f = await assemblyRound(t, { [goalCheck]: `import ready from "../${assembly}/index.mjs";process.exit(ready() ? 0 : 1)` });
+	const [w] = f.workers.values(), writer = f.runtime(w.cwd), db = openDatabase(f.root);
+	t.after(() => db.close());
+	const notice = () => db.read(run)?.effects.find(e => e.kind === "artifact");
+	let entered = () => {}, release = () => {}, deliveries = 0, approvals = 0;
+	const atNotice = new Promise(resolve => { entered = () => resolve(undefined); });
+	const untilStop = new Promise(resolve => { release = () => resolve(undefined); });
+	const publisher = f.runtime(f.root, {
+		permissionBlocker: async () => {
+			if (!issued && notice()?.state === "ready") { entered(); await untilStop; }
+			return null;
+		},
+		execute: async (tool, args, id) => {
+			if (tool === "send_session_message" && String(args.message).startsWith("Foundry artifact:")) {
+				deliveries++; entered(); await untilStop; throw Error("Lost notice reply");
+			}
+			return f.execute(tool, args, id);
+		},
+	});
+	const owner = f.runtime(f.root, { confirm: async () => { approvals++; return true; } });
+	const grant = () => owner.operation("publish", { run, baselines: ["assembly"] }, "owner");
+	const publish = publisher.operation("publish", { run, file: ".foundry/api.md", to: [assembly] }, "owner");
+	try {
+		await atNotice;
+		assert.equal(notice()?.state, issued ? "issued" : "ready");
+		const stopped = await writer.operation("submit", { run, token: w.token, missingInput: "Need the prior inventory." }, w.id);
+		assert.equal(stopped.nodes.find(n => n.worker === w.id)?.state, "blocked");
+		if (issued) await assert.rejects(grant(), { code: "stale_assignment" });
+	} finally { release(); await publish; }
+	assert.equal(deliveries, issued ? 1 : 0);
+	if (issued) {
+		const callId = notice()?.callId; assert.ok(callId);
+		publisher.turn("owner"); await publisher.flush();
+		assert.equal(notice()?.state, "uncertain"); assert.equal(notice()?.callId, callId);
+		await assert.rejects(grant(), { code: "stale_assignment" });
+		assert.equal(approvals, 0); assert.equal(deliveries, 1); return;
+	}
+	assert.equal(notice()?.callId, undefined);
+	const recovered = await grant();
+	assert.equal(approvals, 1); assert.ok(recovered.nodes.find(n => n.worker === w.id)?.baseline);
+	await f.write("assembly", assemblyBody);
+	assert.ok((await f.status()).qualified);
+	assert.equal(notice()?.callId, undefined, "never replay the old notice under the new token");
+});
+
 test("a changed target during baseline approval leaves the missing-input writer stopped", async t => {
 	const { f, nextCore, nextPipeline } = await assemblyCheckpoint(t);
 	await report(nextCore, ".foundry/left.md", []);
