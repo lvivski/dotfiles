@@ -21,6 +21,45 @@ export async function scoutFailure(session, id, label) {
 		cursor = page.cursor; seen.add(cursor);
 	}
 }
+
+/** A null result alone cannot distinguish a refusal from input too large for
+ * the model. Legacy ledgers have only the generic missing-report diagnostic.
+ * @param {import("@github/copilot-sdk").CopilotSession} session @param {import("./model.js").Review} review */
+export async function confirmNoReport(session, review) {
+	const id = text(review.workflowId, "bound workflow");
+	const [run, detail] = await Promise.all([session.workflow.getRun(id), session.workflow.getRunDetail(id)]);
+	if (run.runId !== id || detail.runId !== id || detail.workflowName !== "foundry-scout" ||
+		run.status !== "completed" || detail.status !== "completed" || run.failure)
+		fail("not_terminal", "The original scout workflow has no successful terminal envelope");
+	const result = record(run.result), label = `scout:${review.squad}:${review.id}@${review.base}`;
+	const agents = detail.agents.filter(a => a.runId === id && a.label === label);
+	if (!Number.isSafeInteger(result.reported) || Number(result.reported) < 0 || !Array.isArray(result.failed) ||
+		result.failed.filter(key => key === review.id).length !== 1 || agents.length !== 1 || agents[0].status !== "failed" || !agents[0].toolCallId ||
+		detail.agents.filter(a => a.toolCallId === agents[0].toolCallId).length !== 1)
+		fail("missing_report_evidence", "The terminal result and direct failed scout do not identify this exact no-report review");
+	const call = agents[0].toolCallId, seen = new Set();
+	let cursor, diagnostic;
+	for (;;) {
+		const page = await session.rpc.eventLog.read({ direction: "backward", cursor, view: "history", includeEphemeral: false,
+			types: ["subagent.failed", "subagent.completed", "permission.completed", "tool.execution_complete"], agentScope: "primary" });
+		if (page.cursorStatus !== "ok") fail("missing_history", "Original scout history is unavailable");
+		for (const ev of page.events) {
+			if (ev.type === "subagent.failed" && ev.data.toolCallId === call) {
+				if (diagnostic || ev.data.totalToolCalls !== 0 || ev.agentId && ev.agentId !== agents[0].agentId ||
+					!/^Request exceeds the model's prompt budget after reserving output \(\d+ tokens; limit \d+\)\. Reduce context or compact before continuing\.$/.test(ev.data.error))
+					fail("not_recoverable", "Not a unique pre-tool prompt-budget failure");
+				diagnostic = ev.data.error;
+			} else if (ev.type === "subagent.completed" && ev.data.toolCallId === call || refusedCall(ev) === call)
+				fail("conflicting_receipt", "Conflicting scout completion or refusal");
+		}
+		if (!page.hasMore) break;
+		if (seen.has(page.cursor)) fail("missing_history", "Original scout history cursor did not advance");
+		seen.add(page.cursor); cursor = page.cursor;
+	}
+	if (!diagnostic || review.error !== "Invalid scout result: No structured scout report was returned" &&
+		review.error !== `Invalid scout result: ${diagnostic}`)
+		fail("missing_report_evidence", "No matching recoverable no-report diagnostic in native history and ledger");
+}
 /** @param {{type?:unknown,agentId?:unknown,data?:unknown}} event */
 export function refusedCall(event) {
 	const d = record(event.data);

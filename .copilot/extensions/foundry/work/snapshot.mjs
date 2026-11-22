@@ -77,10 +77,11 @@ const scout = shape({ ...dispatch, kind: one("scout"), tool: one("workflow"), sq
 	state: one("ready", "issued", "uncertain", "suspended", "reported", "observed", "blocked", "deferred"), observation: optional(observation),
 	deferred: optional(shape({ pins: v => named(commit)(v) && object(v) && Object.keys(v).length > 0,
 		consumers: v => Array.isArray(v) && v.length > 0 && v.every(id) && new Set(v).size === v.length })),
-	workflowId: optional(string), decision: optional(decision), packet: optional(isPacket), wake: optional(shape({ review: id, key: string })) });
+	workflowId: optional(string), decision: optional(decision), packet: optional(isPacket), retryOf: optional(id), wake: optional(shape({ review: id, key: string })) });
 const native = shape({
 	...dispatch, kind: one("writer", "component", "product", "goal", "repair", "decision", "handoff", "artifact"), grain: optional(id), inlineRepair: optional(id),
 	usedArtifacts: optional(list(commit)), comparedArtifacts: optional(list(commit)),
+	claims: optional(list(shape({ actor: string, path: string, start: string, kickoff: string, identity: string }))), claimedRequest: optional(string),
 	token: optional(id), tool: one("create_session", "bash", "send_session_message", "session.send"), state: one("ready", "issued", "uncertain", "ordinary", "done", "refused"),
 	nativeId: optional(string), boundAt: optional(positive), commit: optional(commit), check: optional(path),
 	runnerStarted: optional(bool), receipt: optional(receipt)
@@ -104,6 +105,10 @@ function validDispatch(run, e) {
 	if (e.evaluatorRevision && (!(e.kind === "goal" || e.kind === "scout") || !run.repins?.some(p => p.revision === e.evaluatorRevision))) return false;
 	if (e.tool === "workflow") {
 		const squad = run.policy.squads.find(s => s.id === e.squad), report = e.observation;
+		if (e.retryOf && (e.issuer !== run.owner || !run.effects.some(src => src.kind === "scout" && src.id === e.retryOf &&
+			!src.retryOf && src.state === "blocked" && !src.observation && src.workflowId && src.squad === e.squad && src.base === e.base &&
+			src.version === e.version && src.evaluatorRevision === e.evaluatorRevision) ||
+			run.effects.some(other => other !== e && other.kind === "scout" && other.retryOf === e.retryOf))) return false;
 		return !!squad && !e.nativeId && !e.token && !e.receipt && !e.boundAt && (!e.workflowId || !!e.callId) &&
 			(e.state !== "suspended" || !!e.workflowId) &&
 			(e.wake?.key !== "research" && report?.outcome !== "needs-research" || "areas" in squad && !!squad.researchAgent) &&
@@ -117,6 +122,9 @@ function validDispatch(run, e) {
 			("areas" in squad || !report || !report.replace && report.grains.every(g => typeof g === "string"));
 	}
 	if (e.workflowId || Boolean(e.nativeId) !== Boolean(e.boundAt)) return false;
+	if (e.claims && (e.kind !== "writer" || !e.callId || !e.claims.length ||
+		new Set(e.claims.map(c => c.actor)).size !== e.claims.length)) return false;
+	if (e.claimedRequest && (e.state !== "done" || e.claims?.length !== 1 || e.claims[0].actor !== e.nativeId)) return false;
 	if (e.inlineRepair && (e.kind !== "component" || !checkReceipt(e))) return false;
 	if ((e.usedArtifacts || e.comparedArtifacts) && e.kind !== "component") return false;
 	if (e.kind === "writer") return e.tool === "create_session" && !!e.grain && !!e.token && (e.state === "done") === !!e.nativeId;

@@ -2,19 +2,84 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { scoutDefinition } from "../work/scouts.mjs";
-import { factory } from "./fixture.mjs";
+import { factory, git, loadEntry, put } from "./fixture.mjs";
 
 const run = "catalog", source = ".foundry/catalog.json";
-/** @param {import("node:test").TestContext} t @param {string[]} [ids] */
-function trial(t, ids = ["price"]) {
+/** @param {import("node:test").TestContext} t @param {string[]} [ids] @param {object} [policy] */
+function trial(t, ids = ["price"], policy = {}) {
 	const grains = ids.map(id => ({ id, directory: `src/${id}`, specification: "charter", boundary: ["interface"], check: "unit.mjs" }));
 	return factory(t, run, source, {
 		[source]: JSON.stringify({ version: 1, id: run, direction: "Look up the price of a product.", target: "refs/heads/main",
-			grains, squads: ids.map(id => ({ id, charter: "charter", grains: [id] })), productCheck: "product.mjs" }),
+			grains, squads: ids.map(id => ({ id, charter: "charter", grains: [id] })), productCheck: "product.mjs", ...policy }),
+		"goal.mjs": "process.exit(1)",
 		charter: "Own the requested directory.", interface: "Return a decimal price.", "unit.mjs": "", "product.mjs": "",
 	});
 }
 const noGap = { outcome: "no-gap", reason: "Nothing to change here.", evidence: ["charter"], grains: [] };
+
+test("explicit review of one proven no-report charter, including the legacy ledger reason", async t => {
+	const f = trial(t, ["price", "browse"], { goalCheck: "goal.mjs", limits: { assignments: 3, workers: 2 } });
+	await f.start(); const [old, sibling] = f.scouts;
+	await old.report(null); await sibling.report(noGap);
+	const before = (await f.status()).reviews;
+	assert.equal(before[0].reason, "Invalid scout result: No structured scout report was returned");
+	assert.match(String((await f.status()).blocker), /No actionable/);
+	const label = `scout:${old.squad}:${old.id}@${old.base}`, call = `call-${old.id}`;
+	let status = "running", error = "Permission denied", toolCalls = 0, manual = false, launches = 0;
+	let failed = [old.id];
+	const conf = await loadEntry({ sessionId: "owner", on() {}, rpc: { mode: { get: async () => "interactive" },
+		managedSettings: { get: async () => ({ failClosed: false }) }, permissions: { getMode: async () => ({ mode: manual ? "manual" : "assisted" }) },
+		eventLog: { read: async () => ({ cursorStatus: "ok", hasMore: false, events: [
+			{ type: "subagent.failed", data: { toolCallId: call, error, totalToolCalls: toolCalls } }] }) },
+	}, workflow: {
+		getRun: async () => ({ runId: old.workflowId, status, result: { reported: 1, failed } }),
+		getRunDetail: async () => ({ runId: old.workflowId, workflowName: "foundry-scout", status,
+			agents: [{ label, runId: old.workflowId, toolCallId: call, status: "failed" }] }),
+		run: async (/** @type {string} */ name, /** @type {{args:{run:string,dispatch:string}}} */ opts) => {
+			launches++; assert.equal(name, "foundry-scout");
+			const jobs = await f.owner.scoutBatch(run, opts.args.dispatch, "owner", "fresh-workflow");
+			assert.deepEqual(jobs.map(j => j.squad), [old.squad]);
+			await f.owner.scoutResult(run, opts.args.dispatch, "owner", "fresh-workflow", jobs[0].id, noGap, jobs[0].packet);
+			return { runId: "fresh-workflow", status: "completed" };
+		} } });
+	const ctx = { sessionId: "owner" }, hook = { ...ctx, timestamp: new Date(), workingDirectory: f.root };
+	await conf.hooks?.onSessionStart?.({ ...hook, source: "resume" }, ctx);
+	t.after(() => conf.hooks?.onSessionEnd?.({ ...hook, reason: "complete" }, ctx));
+	const tool = conf.tools?.find(t => t.name === "foundry_rereview"); assert.ok(tool?.handler, "missing foundry_rereview");
+	const request = (review = old.id) => tool.handler?.({ run, review }, { ...ctx, arguments: {}, toolName: tool.name, toolCallId: "rereview" });
+	assert.match(JSON.stringify(await request()), /terminal|completed/i);
+	status = "completed";
+	assert.match(JSON.stringify(await request()), /budget|recoverable/);
+	error = "Request exceeds the model's prompt budget after reserving output (3210 tokens; limit 1234). Reduce context or compact before continuing.";
+	toolCalls = 1; assert.match(JSON.stringify(await request()), /budget|recoverable/);
+	toolCalls = 0; failed = [sibling.id]; assert.match(JSON.stringify(await request()), /no.report|failed/i);
+	failed = [old.id]; manual = true; assert.match(JSON.stringify(await request()), /manual/i);
+	manual = false;
+	assert.match(JSON.stringify(await request(sibling.id)), /no.report|blocked/i);
+	assert.equal(launches, 0); assert.deepEqual((await f.status()).reviews, before);
+	assert.equal(typeof await request(), "string");
+	for (let i = 0; i < 20 && (await f.status()).reviews.at(-1)?.state !== "observed"; i++) await nextTurn();
+	const after = (await f.status()).reviews;
+	assert.deepEqual(after.slice(0, 2), before);
+	assert.equal(after.length, 3); assert.deepEqual([after[2].squad, after[2].base, after[2].state], [old.squad, old.base, "observed"]);
+	assert.match(JSON.stringify(await request()), /superseded|current/); assert.equal(launches, 1);
+});
+
+for (const changed of ["target", "paused", "limit"]) test(`owner rereview cannot bypass ${changed} during native verification`, async t => {
+	const limit = changed === "limit" ? 1 : 2, f = trial(t, ["price"], { goalCheck: "goal.mjs", limits: { assignments: limit } });
+	await f.start(); const [job] = f.scouts; await job.report(null);
+	let reads = 0;
+	const r = f.runtime(f.root, { confirmNoReport: async () => {
+		reads++;
+		if (changed === "paused") await f.owner.operation("pause", { run }, "owner");
+		else { put(f.root, "changed-product", "a different product"); git(f.root, "add", "changed-product"); git(f.root, "commit", "-qm", "new product"); }
+	}, scout: async () => assert.fail("no new work") });
+	const args = { run, review: job.id };
+	await assert.rejects(r.operation("rereview", args, "stranger"), { code: "foreign_run" });
+	await assert.rejects(r.operation("rereview", args, "owner"), { code: changed === "target" ? "superseded" : changed });
+	assert.equal(reads, changed === "limit" ? 0 : 1);
+	assert.equal((await f.status()).reviews.length, 1);
+});
 
 test("an unbound workflow launch is not retried on turns; explicit resume invalidates its old dispatch", async t => {
 	const f = trial(t);

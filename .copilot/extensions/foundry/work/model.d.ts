@@ -117,6 +117,7 @@ export interface Review extends Dispatch {
 	version: string;
 	packet?: Packet;
 	wake?: { review: string; key: string };
+	retryOf?: string;
 	observation?: Observation;
 	deferred?: { pins: Record<string, string>; consumers: string[] };
 	decision?: { status: "presenting"; presentation?: string } | { status: "dismissed" } | { status: "answered"; answer: string }
@@ -160,6 +161,8 @@ export interface ArtifactReport {
 }
 
 export interface NativeCall extends Dispatch, ArtifactReport {
+	claims?: { actor: string; path: string; start: string; kickoff: string; identity: string }[];
+	claimedRequest?: string;
 	kind: "writer" | "component" | "product" | "goal" | "repair" | "decision" | "handoff" | "artifact";
 	inlineRepair?: string;
 	tool: "create_session" | "bash" | "send_session_message" | "session.send";

@@ -2,7 +2,7 @@ import { defineWorkflow, joinSession } from "@github/copilot-sdk/extension";
 import { foundryBoard } from "./canvas.mjs";
 import { identify } from "./work/native.mjs";
 import { permissionCheck } from "./work/permissions.mjs";
-import { recover, scoutFailure } from "./work/recovery.mjs";
+import { confirmNoReport, recover, scoutFailure } from "./work/recovery.mjs";
 import { researchAgent } from "./work/research.mjs";
 import { createRuntime } from "./work/runtime.mjs";
 import { scoutAgent, scoutDefinition } from "./work/scouts.mjs";
@@ -40,6 +40,7 @@ const runtime = createRuntime(process.cwd(), {
 		return Math.max(0, Math.floor((info.promptTokenLimit - c.systemPrompt - c.customInstructions - c.systemTools - c.mcpTools) / 2));
 	},
 	scoutFailure: (id, label) => scoutFailure(session, id, label),
+	confirmNoReport: review => confirmNoReport(session, review),
 	async isResearcher(id, agentId) {
 		const detail = await session.workflow.getRunDetail(id);
 		const running = detail.agents.filter(a => a.status === "running"), [direct] = running;
@@ -58,6 +59,7 @@ const runtime = createRuntime(process.cwd(), {
 	resumeScout: id => session.workflow.resume(id, { notifyOnComplete: false }),
 	notify: prompt => session.send({ source: "system", mode: "enqueue", prompt }),
 	recover: effect => recover(page => session.rpc.eventLog.read(page), effect),
+	readHistory: page => session.rpc.eventLog.read(page),
 	log: message => session.log(message, { level: "warning" }),
 });
 session = await joinSession({

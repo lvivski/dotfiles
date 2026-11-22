@@ -28,7 +28,10 @@ export function retireSuperseded(run, r) {
  * @param {Run} run @param {string} issuer @param {string} squad @param {string} base @param {string} version @param {Review["wake"]} [wake] */
 export function reserveReview(run, issuer, squad, base, version, wake) {
 	const evaluatorRevision = run.repins?.at(-1)?.revision;
-	run.effects.push({ id: randomUUID(), issuer, squad, base, version, ...(evaluatorRevision ? { evaluatorRevision } : {}), ...(wake ? { wake } : {}), kind: "scout", tool: "workflow", args: {}, state: "ready" });
+	/** @type {Review} */
+	const review = { id: randomUUID(), issuer, squad, base, version, ...(evaluatorRevision ? { evaluatorRevision } : {}), ...(wake ? { wake } : {}), kind: "scout", tool: "workflow", args: {}, state: "ready" };
+	run.effects.push(review);
+	return review;
 }
 
 /** @param {Run} run @param {Review} r */
@@ -156,7 +159,7 @@ export function blockReview(r, reason) {
 /** @param {Review} r */
 export function reviewStatus(r) {
 	return { id: r.id, squad: r.squad, state: reading(r) ? "reading" : r.state, base: r.base, version: r.version,
-		workflowId: r.workflowId, observation: r.observation, wake: r.wake,
+		workflowId: r.workflowId, observation: r.observation, wake: r.wake, ...(r.retryOf ? { retryOf: r.retryOf } : {}),
 		reason: r.deferred ? `Deferred: current assignments using ${Object.keys(r.deferred.pins).join(", ")}: ${r.deferred.consumers.join(", ")}` : r.state === "blocked" ? r.error : undefined,
 		decision: r.decision };
 }

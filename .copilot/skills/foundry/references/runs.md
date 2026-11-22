@@ -40,6 +40,14 @@ A session-local Manual hold appears in `pending`: other sessions continue; the o
 
 An unavailable scout workflow is a discovery blocker, not a request to start a desktop scout. For unbound, interrupted discovery, owner resume can retry the dispatch. A bound paused or recoverably halted workflow can continue only on the original native ID in its issuing session. Owner resume handles owner-issued workflows. For a writer-issued workflow, relay the session and ID from `pending`; on explicit operator request there, use `run_dynamic_workflow({resumeFromRunId: "<original ID>"})`. Do not change limits, retry a cancellation or refusal, or launch a replacement. Older ledger protocols are not migrated: preserve the old clone and use a fresh clone for a new run.
 
+On an explicit request for one fresh review after a scout returned no report, use `foundry_rereview({run, review})` in the original owner session with the exact blocked review ID from status. The owner must have the original workflow's native evidence: that exact direct scout failed for prompt budget before any tool calls. Missing or refused evidence, a changed pin, a superseding review or product revision, or exhausted limits cannot be overridden. Do not loop on a failed request or retry an entire batch.
+
+### Recover an existing writer
+
+1. In the **existing writer session**, call the ordinary App `get_session` on itself, then `foundry_claim({run, grain})`. `awaiting_issuer` means its original startup path and generation, first issuer-sourced kickoff and App creation edge match. It is not bound yet.
+2. In the **original issuing session** (see `pending.issuer`), call `foundry_claim({run, grain})` for the same reservation. `bound` requires its unique original external request, matching arguments and UI dismissal, no conflicting native completion or refusal, and the existing linked worktree at the original parentless generation.
+3. Only in that writer, after its helpers finish, use the ordinary `foundry_submit` with its original token. Neither claim proves the component passes. If either proof is missing or conflicting, stop; do not recreate the session, paste an identity or prompt as evidence, or edit the ledger.
+
 ## Evaluator repinning
 
 Only on a direct operator request in the active run's **owner session**, read status for `goal.pin`. Prepare or identify a separately reviewed evaluator-only commit based on that pin, **off the run's target branch**. Do not commit working-tree changes without authorization. Inspect the complete diff, including additions, deletions, and helpers shared across plan directories. Reject changes to what counts as a pass; path checks cannot establish that the requirements are unchanged.

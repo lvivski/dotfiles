@@ -96,6 +96,31 @@ export function currentReview(cwd, run, review, exactTarget) {
 	return base === review.base || !exactTarget && reviewVersion(cwd, run, squad, base) === review.version;
 }
 
+/** @param {string} cwd @param {Run} run @param {import("./model.js").Review} r */
+export function sameReviewInputs(cwd, run, r) {
+	const squad = run.policy.squads.find(s => s.id === r.squad), target = commitAt(cwd, run.policy.target);
+	verifyContracts(cwd, run.policy, target);
+	return !!squad && !run.blocker && !run.conflict && !run.join && currentReview(cwd, run, r, target) &&
+		(!run.goal || !run.products.length || run.products.at(-1)?.commit === r.base) && reviewVersion(cwd, run, squad, r.base) === r.version;
+}
+
+/** @param {string} cwd @param {Run} run @param {string} actor @param {string} id */
+export function retryableReview(cwd, run, actor, id) {
+	if (actor !== run.owner) fail("foreign_run", "Only the original run owner may request a fresh review");
+	admitted(run);
+	const history = reviews(run), r = history.find(r => r.id === id);
+	if (!r || r.state !== "blocked" || r.observation || !r.workflowId || !r.callId || r.retryOf)
+		fail("not_recoverable", "Expected an original blocked no-report review");
+	if (!sameReviewInputs(cwd, run, r))
+		fail("superseded", "No longer the current charter, evaluator and product revision");
+	if (history.some(x => reading(x) && x.squad === r.squad) || run.effects.some(e => e.issuer === actor && e.permissionHold))
+		fail("dispatch_held", "Charter still running or owner dispatch held");
+	if (run.policy.assignments !== undefined && assignmentCount(run) >= run.policy.assignments ||
+		run.policy.workers !== undefined && history.filter(reading).length + Object.values(run.nodes).filter(working).length >= run.policy.workers)
+		fail("limit", "No authorized assignment or worker slot for a new review");
+	return r;
+}
+
 /** @param {string} cwd @param {Run} run @param {import("./model.js").Review} review @param {import("./model.js").Observation} observation */
 export function observe(cwd, run, review, observation) {
 	admitted(run);

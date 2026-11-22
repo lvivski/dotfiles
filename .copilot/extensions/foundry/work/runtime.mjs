@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { preparePublication, reportedReferences } from "./artifacts.mjs";
+import { childProof, issuerProof, linkedGeneration, reservation } from "./binding.mjs";
 import { openDatabase, ledgerPath } from "./database.mjs";
 import { readPolicy } from "./contract.mjs";
 import { presentQuestions } from "./decisions.mjs";
-import { advance, currentReview, newRun, parseObservation } from "./graph.mjs";
+import { advance, currentReview, newRun, parseObservation, retryableReview, sameReviewInputs } from "./graph.mjs";
 import { missingObservation, qualifiedProduct } from "./evidence.mjs";
 import { admitted, assignment, awaitingReply, boundWriter, canDispatch, current, expired, identify, issue, receive, reserveCheck, transferableWriter, unissued } from "./native.mjs";
 import { checked } from "./plan.mjs";
@@ -12,7 +13,7 @@ import { capture, commitAt, retain, rootAt, verifyContracts } from "./product.mj
 import { refusedCall } from "./recovery.mjs";
 import { prepareRepin } from "./repin.mjs";
 import { referenceText, researchResult } from "./research.mjs";
-import { blockReview, currentPin, investigation, questions, retireSuperseded, reviews } from "./reviews.mjs";
+import { blockReview, currentPin, investigation, questions, reserveReview, retireSuperseded, reviews } from "./reviews.mjs";
 import { scoutPacket } from "./scouts.mjs";
 import { isPacket } from "./snapshot.mjs";
 import { status } from "./status.mjs";
@@ -35,8 +36,8 @@ function requireCurrentReader() {
 /** @typedef {{runId:string,status:string,error?:string,reason?:string,failure?:{type:string}}} ScoutEnvelope */
 /** @typedef {{execute:(tool:string,args:Effect["args"],id:string)=>Promise<unknown>,notify:(message:string)=>Promise<string>,recover?:(effect:Effect)=>Promise<unknown>,
  * ask?:(message:string)=>Promise<string|null>,confirm?:(message:string)=>Promise<boolean>,
- * isResearcher?:(workflowId:string,agentId:string)=>Promise<boolean>,
- * scoutBudget?:()=>Promise<number>,scoutFailure?:(workflowId:string,label:string)=>Promise<string|undefined>,
+ * readHistory?:import("@github/copilot-sdk").CopilotSession["rpc"]["eventLog"]["read"],isResearcher?:(workflowId:string,agentId:string)=>Promise<boolean>,
+ * scoutBudget?:()=>Promise<number>,scoutFailure?:(workflowId:string,label:string)=>Promise<string|undefined>,confirmNoReport?:(r:import("./model.js").Review)=>Promise<void>,
  * scout?:(run:string,dispatch:string,actor:string)=>Promise<ScoutEnvelope>,scoutState?:(workflowId:string)=>Promise<ScoutEnvelope>,
  * scoutSnapshot?:(workflowId:string)=>Promise<ScoutEnvelope>,resumeScout?:(workflowId:string)=>Promise<ScoutEnvelope>,
  * mode:()=>Promise<string>,runningHelpers?:(workflows:string[])=>Promise<string[]>,permissionBlocker:()=>Promise<import("./permissions.mjs").PermissionBlock|null>,log?:(message:string)=>void}} Host */
@@ -305,6 +306,9 @@ export function createRuntime(directory, host) {
 			const batch = batchOf(r, ticket, actor);
 			if (!batch.length || batch.some(e => e.workflowId && e.workflowId !== workflowId))
 				fail("foreign_assignment", "No matching Foundry discovery dispatch in this session");
+			for (const e of batch)
+				if (e.retryOf && awaitingReply(e) && !sameReviewInputs(cwd(), r, e))
+					blockReview(e, "Superseded charter or product revision; the requested review was not dispatched.");
 			const pending = batch.filter(e => awaitingReply(e) && currentPin(r, e));
 			const held = !eligible || !r.active || expired(r) || block;
 			if (pending.length && r.active && block?.scope === "run") pause(r, `${block.message} Check session ${actor}.`);
@@ -507,6 +511,25 @@ export function createRuntime(directory, host) {
 				return status(read(id), actor);
 			} finally { asking.delete(id); }
 		}
+		if (op === "rereview") {
+			fields(a, ["run", "review"]);
+			const review = name(a.review, "review"), origin = cwd(), prior = retryableReview(origin, read(id), actor, review);
+			if (prior.issuer !== actor || !host.confirmNoReport) fail("missing_history", "Need the original workflow's issuer-scoped native no-report evidence in the owner session");
+			await requireReadyOwner(origin);
+			await host.confirmNoReport(prior);
+			await requireReadyOwner(origin);
+			const ticket = randomUUID(), launch = host.scout ?? fail("unavailable", "Discovery workflow unavailable");
+			db().update(id, run => {
+				const live = retryableReview(origin, run, actor, review);
+				if (digest(live) !== digest(prior)) fail("stale_assignment", "Review changed during native verification");
+				const fresh = reserveReview(run, actor, live.squad, live.base, live.version, live.wake);
+				fresh.retryOf = live.id;
+				if (!issue(run, fresh, ticket)) fail("stale_assignment", "Cannot issue fresh review");
+				if (run.goal) delete run.goal.stall;
+			});
+			watchScouts(id, ticket, actor, () => launch(id, ticket, actor));
+			return status(read(id), actor);
+		}
 		const reply = op === "submit" ? { run: id, actor, token: text(a.token, "submission token") } : undefined;
 		if (reply) {
 			fields(a, ["run", "token", "usedArtifacts", "comparedArtifacts"]);
@@ -569,6 +592,43 @@ export function createRuntime(directory, host) {
 	}
 	return {
 		operation, pre, scoutBatch, scoutResult,
+		/** @param {unknown} args @param {string} actor */
+		async claimWriter(args, actor) {
+			const a = record(args); fields(a, ["run", "grain"]);
+			const id = name(a.run, "run"), grain = name(a.grain, "grain"), origin = cwd();
+			const run = read(id), job = reservation(run, grain), issuer = job.e.issuer === actor;
+			if (!issuer && (run.owner === actor || db().involving(actor).length))
+				fail("foreign_assignment", "A session already involved in a run cannot claim a new worker identity");
+			const claimant = job.e.claims?.[0];
+			if (issuer && job.e.claims?.length !== 1)
+				fail("missing_claim", "Exactly one existing writer must claim from its original worktree first");
+			if (!await executable()) fail("unsupported_mode", "Writer recovery needs an executable session");
+			const history = host.readHistory ?? fail("missing_history", "Native eventLog.read is unavailable");
+			const proof = issuer ? undefined : await childProof(history, actor, origin, job);
+			const request = issuer ? await issuerProof(history, job) : undefined;
+			await requireReadyOwner(origin);
+			const conflict = db().update(id, r => {
+				const live = reservation(r, grain), e = live.e;
+				if (e.id !== job.e.id || e.callId !== job.e.callId || e.issuer !== job.e.issuer ||
+					digest(e.args) !== digest(job.e.args) || live.generation !== job.generation)
+					fail("stale_assignment", "Reservation changed while checking native provenance");
+				const child = proof ?? claimant ?? fail("missing_claim", "Missing writer claim");
+				if (r.owner === child.actor || db().involving(child.actor).length || Object.values(r.nodes).some(n => n.worker === child.actor))
+					fail("conflicting_binding", "Writer identity is already bound");
+				linkedGeneration(child.path, live.generation, origin);
+				if (proof) {
+					if (!e.claims?.some(c => c.actor === actor)) (e.claims ??= []).push(proof);
+					else fail("duplicate_claim", "This writer already claimed; return to the original issuer");
+					return e.claims.length !== 1;
+				}
+				if (!request || e.claims?.length !== 1 || digest(e.claims[0]) !== digest(child))
+					fail("ambiguous_receipt", "Conflicting writer claims; no binding");
+				e.nativeId = child.actor; e.boundAt = Date.now(); e.claimedRequest = request;
+				e.state = "done"; delete e.error; r.nodes[grain].worker = child.actor;
+			});
+			if (conflict) fail("ambiguous_receipt", "Conflicting writer claims; no binding");
+			return { state: issuer ? "bound" : "awaiting_issuer", run: id, grain };
+		},
 		/** @param {unknown} args @param {string} actor @param {string} agentId */
 		async readReference(args, actor, agentId) {
 			const a = record(args); fields(a, ["run", "review", "repo", "revision", "path"]);

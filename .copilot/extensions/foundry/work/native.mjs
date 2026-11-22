@@ -202,7 +202,10 @@ export function receive(run, e, raw, automatic) {
 	if (value.resultType !== "success")
 		fail("native_unconfirmed", typeof value.error === "string" ? value.error : "No conclusive native receipt");
 	if (e.tool === "create_session") {
-		e.nativeId = workerId(value, e.args.name);
+		const id = workerId(value, e.args.name);
+		if (e.claims?.some(c => c.actor !== id))
+			fail("ambiguous_receipt", "Original launch reply conflicts with a proven writer claim");
+		e.nativeId = id;
 		e.boundAt = Date.now();
 		if (current(run, e)) {
 			const entry = assignee(run, e);

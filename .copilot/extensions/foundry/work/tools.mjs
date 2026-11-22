@@ -10,6 +10,8 @@ const definitions = [
 	["start", "Start or resume a committed .foundry brief only on explicit operator direction. goalCheck defines the finish line for squads; seed selects a one-off instead.", { source: string }],
 	["resume", "On explicit owner request, continue a paused run, recover interrupted discovery or an unclaimed writer launch, or retry missing goal evidence. Never create a run or replay an issued call.", { source: string }],
 	["pause", "Stop new Foundry work without discarding native calls, evidence, worktrees or checked products.", { run: string }],
+	["claim", "Recover only an existing uncertain writer: the original child proves its kickoff and native get_session identity, then the original issuer verifies the launch request. Never launches or checks work.", { run: string, grain: string }],
+	["rereview", "Only on explicit owner request: start one fresh review for this still-current blocked review ID after verifying its terminal native no-report prompt-budget failure. No sibling or refused work is retried.", { run: string, review: string }],
 	["clarify", "Only on the owner's explicit request after losing a charter question: reopen that exact native text dialog using its recovery fields from foundry_status. The operator enters the clarification; it cannot change the contract or approve permissions.", { run: string, review: string, presentation: string }],
 	["repin", "Owner only: request operator approval of an exact committed fix to the final goal evaluator and its helpers. Provide the current pin, new full commit ID and complete changed file list. Does not change the brief, product, or in-flight checks.", { run: string, from: string, revision: string, files: strings }],
 	["submit", "Bound writer: after joining helpers, capture and check your complete directory. Optionally identify exact offered blobs you used or actually compared against the product. These are writer reports, not check results. A failed check returns a bounded repair or blocker.", { run: string, token: string }, { usedArtifacts: strings, comparedArtifacts: strings }],
@@ -30,6 +32,7 @@ export function buildTools(runtime, primary) {
 				}
 				if (fromHelper(invocation, primary()))
 					throw new Error(primaryOnly);
+				if (op === "claim") return JSON.stringify(await runtime.claimWriter(args, invocation.sessionId));
 				return JSON.stringify(await runtime.operation(op, args, invocation.sessionId));
 			}
 			catch (error) {
