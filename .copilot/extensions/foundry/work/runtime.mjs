@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { preparePublication, reportedReferences } from "./artifacts.mjs";
 import { openDatabase, ledgerPath } from "./database.mjs";
 import { readPolicy } from "./contract.mjs";
@@ -16,6 +16,17 @@ import { scoutPacket } from "./scouts.mjs";
 import { isPacket } from "./snapshot.mjs";
 import { status } from "./status.mjs";
 import { FoundryError, digest, fail, fields, name, record, referenceRepo, text } from "./values.mjs";
+
+const readerFile = new URL("./reader.version", import.meta.url);
+const loadedReader = readFileSync(readerFile, "utf8");
+function requireCurrentReader() {
+	try {
+		if (readFileSync(readerFile, "utf8") === loadedReader) return;
+	} catch (error) {
+		if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+	}
+	fail("stale_reader", "The installed Foundry reader changed. Reload Foundry in this session, then check the original assignment's status. Do not restart the run.");
+}
 
 /** @typedef {import("./model.js").Run} Run */
 /** @typedef {import("./model.js").Effect} Effect */
@@ -77,7 +88,7 @@ export function createRuntime(directory, host) {
 	function db(create = false) {
 		if (closed)
 			fail("runtime_closed", "Foundry is closed");
-		return database ??= openDatabase(cwd(), file(), create);
+		return database ??= openDatabase(cwd(), file(), create, requireCurrentReader);
 	}
 	/** @param {string} id */
 	const read = id => db().read(id) ?? fail("missing_run", `Unknown run ${id}`);

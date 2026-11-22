@@ -17,8 +17,9 @@ export function ledgerPath(cwd) {
 	return path.join(realpathSync(common), "foundry", "work.sqlite");
 }
 
-/** @param {string} cwd @param {string} [file] @param {boolean} [create] */
-export function openDatabase(cwd, file = ledgerPath(cwd), create = false) {
+/** @param {string} cwd @param {string} [file] @param {boolean} [create] @param {()=>void} [checkSession] */
+export function openDatabase(cwd, file = ledgerPath(cwd), create = false, checkSession) {
+	checkSession?.();
 	const home = path.dirname(file);
 	if (create) mkdirSync(home, { recursive: true, mode: 0o700 });
 	else if (!lstatSync(file, { throwIfNoEntry: false })) fail("missing_run", "No Foundry ledger in this repository");
@@ -39,6 +40,7 @@ export function openDatabase(cwd, file = ledgerPath(cwd), create = false) {
 	}
 	const inode = lstatSync(file);
 	function verify() {
+		checkSession?.();
 		const d = lstatSync(home), f = lstatSync(file);
 		if (!d.isDirectory() || d.ino !== dir.ino || d.dev !== dir.dev || realpathSync(home) !== home || f.ino !== inode.ino || f.dev !== inode.dev)
 			fail("unsafe_storage", "Ledger or directory was replaced");

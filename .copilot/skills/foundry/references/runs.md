@@ -26,6 +26,8 @@ When showing the operator a run in the desktop app, open the **Foundry dependenc
 
 ## Pause and resume
 
+If Foundry says its installed reader changed, reload extensions **in the session that reported it**, then read status for the same run. A writer submits only if its original token is still writing with no check pending. Don't resume the run, replace the writer, or retry a pending submission.
+
 Only the owner pauses with `foundry_pause({run})`. On an explicit `/foundry resume <plan>` in the owner session, resolve the committed plan and call `foundry_resume({source})` directly. Do not pause first or substitute `foundry_start`. Resume never creates a run. For an active run it retries only a goal waiting for external evidence or an interrupted, unbound discovery; otherwise it returns the current state. A changed contract needs a new run ID and separate authorization.
 
 A session-local Manual hold appears in `pending`: other sessions continue; the original issuer rechecks on its next turn. Don't restart for this. For a managed-policy pause, first resolve the setting in `blocker`. For goal exit 2, supply the missing external observation, then resume the same run. Preserve receipts and worktrees. If a native session route is definitely unavailable, execute the exact `prepared` call once in its issuing session. Never repeat an issued or uncertain start, treat a queued message as completed work, or bypass a permission hold.

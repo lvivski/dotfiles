@@ -155,6 +155,8 @@ If a long check finishes after `submit` returns, a matching shell completion wak
 
 Foundry retains versions and generation bases in `refs/foundry/objects/`. Linked worktrees share `foundry/work.sqlite` in the repository's common Git directory. This runtime uses ledger protocol **13**. A reported review retains its packet coverage, delivered path/blob IDs, checked versions the scout saw, and any event that reopened it. Qualification belongs to the checked product. Older ledgers are refused, not migrated or deleted. Leave an old clone intact; use a fresh clone for a new run.
 
+`work/reader.version` identifies the session's ledger reader, independently of the SQLite protocol. Bump it when changing which records Foundry can write or interpret, including new dispatch kinds or states. An already-open session with a different installed reader refuses ledger access and asks for a local extension reload. Reload that session, then check the existing run; don't recreate it. A matching reader still checks the ledger and reports invalid snapshots as errors.
+
 ## Development
 
 The dotfiles `sync` operation installs the extension and Foundry skill. Test the repository copy in disposable Git fixtures, not a running factory. The host supplies the SDK; TypeScript and Node declarations are development-only.

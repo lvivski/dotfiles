@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmodSync, existsSync, linkSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, linkSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { factory, git, put } from "../test/fixture.mjs";
 import { mapSnapshot } from "../map/model.mjs";
@@ -2200,6 +2201,43 @@ test("ledger readers survive concurrent SQLite journal removal but still refuse 
 	linkSync(db.file, alias);
 	try { assert.throws(() => db.read("scratch"), { code: "unsafe_storage" }); }
 	finally { rmSync(alias); }
+});
+
+test("an upgraded reader requires the original writer to reload before status or submission", async t => {
+	const f = fixture(t);
+	await f.start();
+	const [w] = f.workers.values();
+	const dir = mkdtempSync(path.join(tmpdir(), "foundry-install-"));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	const installed = path.join(dir, "work");
+	cpSync(new URL("./", import.meta.url), installed, { recursive: true });
+	const version = path.join(installed, "reader.version");
+	writeFileSync(version, "previous\n");
+	/** Load a fresh session from the same installation, leaving the original one alive. @param {string} session */
+	async function load(session) {
+		/** @type {{createRuntime:typeof createRuntime}} */
+		const copy = await import(`${pathToFileURL(path.join(installed, "runtime.mjs")).href}?${session}`);
+		const runtime = copy.createRuntime(w.cwd, { mode: async () => "interactive", permissionBlocker: async () => null,
+			execute: f.execute, notify: async () => assert.fail("unexpected notice") });
+		t.after(() => runtime.close());
+		return runtime;
+	}
+	const stale = await load("original");
+	const status = await stale.operation("status", { run }, w.id);
+	const node = status.nodes.find(n => n.token === w.token);
+	assert.equal(node?.state, "writing");
+	assert.ok(node);
+	put(w.cwd, `lib/${node.grain}/index.mjs`, `export default ${grainIds.indexOf(node.grain) + 1};\n`);
+	const file = ledgerPath(f.root), before = readFileSync(file);
+	writeFileSync(version, "updated\n");
+	const expected = { code: "stale_reader", message: /reload Foundry in this session.*status/i };
+	await assert.rejects(stale.operation("status", { run }, w.id), expected);
+	await assert.rejects(stale.operation("submit", { run, token: w.token }, w.id), expected);
+	assert.deepEqual(readFileSync(file), before);
+	const reloaded = await load("reloaded");
+	assert.deepEqual(await reloaded.operation("status", { run }, w.id), status);
+	const submitted = await reloaded.operation("submit", { run, token: w.token }, w.id);
+	assert.equal(submitted.nodes.find(n => n.grain === node.grain)?.state, "published");
 });
 
 test("unknown protocols are not migrated and invalid nested records are refused, even with a matching checksum", async (t) => {
