@@ -89,6 +89,7 @@ const native = shape({
 	...dispatch, kind: one("writer", "component", "product", "goal", "repair", "decision", "handoff", "artifact"), grain: optional(id), inlineRepair: optional(id),
 	usedArtifacts: optional(list(commit)), comparedArtifacts: optional(list(commit)),
 	baseline: optional(shape({ directory: path, revision: commit, tree: commit })),
+	readGrant: optional(shape({ directory: path, revision: commit, tree: commit })),
 	claims: optional(list(shape({ actor: string, path: string, start: string, kickoff: string, identity: string }))), claimedRequest: optional(string),
 	token: optional(id), tool: one("create_session", "bash", "send_session_message", "session.send"), state: one("ready", "issued", "uncertain", "ordinary", "done", "refused"),
 	nativeId: optional(string), boundAt: optional(positive), commit: optional(commit), check: optional(path),
@@ -147,6 +148,7 @@ function validDispatch(run, e) {
 			("areas" in squad || !report || !report.replace && report.grains.every(g => typeof g === "string"));
 	}
 	if (e.workflowId || Boolean(e.nativeId) !== Boolean(e.boundAt)) return false;
+	if (e.readGrant && (e.kind !== "writer" || e.state !== "done" || !e.callId)) return false;
 	if (e.baseline && (e.kind !== "repair" || e.issuer !== run.owner || e.tool !== "send_session_message" ||
 		!run.effects.some(w => w.kind === "writer" && w.state === "done" && w.grain === e.grain && w.nativeId === e.args.session_id))) return false;
 	if (e.claims && (e.kind !== "writer" || !e.callId || !e.claims.length ||
@@ -174,6 +176,7 @@ export function decode(value) {
 		fail("corrupt_run", "Invalid Foundry execution snapshot");
 	const { policy: p, nodes, products } = value, areas = p.squads.filter(s => "areas" in s), files = new Set(p.files);
 	const effects = new Map(value.effects.map(e => [e.id, e]));
+	const grants = new Map(value.effects.flatMap(e => e.kind === "writer" && e.readGrant ? [[e.token, e]] : []));
 	const queued = value.pendingReviewNotes ?? [];
 	if (new Set(queued.map(n => n.squad)).size !== queued.length || queued.some(n => n.after > value.effects.length ||
 		!p.squads.some(s => s.id === n.squad) || !sourceReceipt(effects.get(n.receipt), n)) ||
@@ -196,6 +199,9 @@ export function decode(value) {
 		Object.entries(nodes).some(([id, n]) => {
 			const g = n.grain, e = n.check ? effects.get(n.check) : undefined;
 			if (n.priorSource && (!n.base || n.priorSource.directory !== g.directory || n.priorSource.revision !== (g.revision ?? n.base))) return true;
+			const w = grants.get(n.token);
+			if (w?.readGrant && (w.grain !== id || w.nativeId !== n.worker || w.readGrant.directory !== g.directory ||
+				w.readGrant.revision !== n.priorSource?.revision || w.readGrant.tree !== n.priorSource.tree)) return true;
 			if (id !== g.id || ![g.specification, g.check, ...g.boundary].every(f => files.has(f)) || !outside(g.directory, p.files)) return true;
 			if ((n.state === "checking" || checked(n)) && (e?.kind !== "component" || e.grain !== id || e.commit !== n.candidate || e.check !== g.check)) return true;
 			if (checked(n) && checkReceipt(e)?.exit !== 0) return true;

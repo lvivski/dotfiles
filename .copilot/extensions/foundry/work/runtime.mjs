@@ -649,15 +649,17 @@ export function createRuntime(directory, host) {
 			// A shell notification can drive the same actor before this call returns.
 			submitting.add(reply);
 		}
-		else if (op === "publish" && a.baselines !== undefined) {
-			fields(a, ["run", "baselines"]);
-			const origin = cwd(), request = prepareBaselines(origin, read(id), actor, a.baselines);
+		else if (op === "publish" && (a.baselines !== undefined || a.readBaselines !== undefined)) {
+			const inspect = a.readBaselines !== undefined, key = inspect ? "readBaselines" : "baselines";
+			fields(a, ["run", key]);
+			const origin = cwd(), request = prepareBaselines(origin, read(id), actor, a[key], inspect);
 			await requireReadyOwner(origin);
 			const approved = await host.confirm?.(request.prompt);
 			if (approved === false) fail("approval_declined", "Baseline access not approved. No assignment changed. Do not ask again without a fresh request.");
 			if (approved !== true) fail("approval_required", "Baseline approval is unavailable; no access granted.");
 			await requireReadyOwner(origin);
 			db().change(id, request.apply);
+			if (inspect) return status(read(id), actor);
 		}
 		else if (op === "publish") {
 			fields(a, ["run", "token", "file", "to"]);

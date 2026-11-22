@@ -181,6 +181,7 @@ export interface Baseline {
 
 export interface NativeCall extends Dispatch, ArtifactReport {
 	baseline?: Baseline;
+	readGrant?: Baseline;
 	claims?: { actor: string; path: string; start: string; kickoff: string; identity: string }[];
 	claimedRequest?: string;
 	kind: "writer" | "component" | "product" | "goal" | "repair" | "decision" | "handoff" | "artifact";

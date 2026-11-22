@@ -902,7 +902,61 @@ for (const issued of [false, true]) test(`a stopped writer's baseline distinguis
 	assert.equal(notice()?.callId, undefined, "never replay the old notice under the new token");
 });
 
-test("a changed target during baseline approval leaves the missing-input writer stopped", async t => {
+test("an owner can approve inspection of a stopped writer's inventory during an unrelated goal check, without starting a repair", async t => {
+	const f = pipelineFixture(t, { [`${assembly}/index.mjs`]: originalAssembly, ".foundry/product.mjs": "process.exit(0)" });
+	await f.start();
+	await report(await f.reading("engine"), ".foundry/left.md", [work("independent", "engine/input")]);
+	await report(await f.reading("pipeline"), ".foundry/right.md", [work("inventory", assembly)]);
+	const n = (await f.status()).nodes.find(n => n.grain === "inventory"), w = f.workers.get(n?.worker ?? ""); assert.ok(w && n?.priorSource);
+	const sourceTree = n.priorSource.tree;
+	const writer = f.runtime(w.cwd);
+	await writer.operation("submit", { run, token: w.token, missingInput: "Need to preserve the accepted inventory." }, w.id);
+	let entered = () => {}, release = () => {};
+	const atGoal = new Promise(resolve => { entered = () => resolve(undefined); });
+	const hold = new Promise(resolve => { release = () => resolve(undefined); });
+	const checking = f.write("independent", assemblyBody, { execute: async (...args) => {
+		if (args[0] === "bash" && String(args[1].description).startsWith("Check final goal")) { entered(); await hold; }
+		return f.execute(...args);
+	} });
+	try {
+		await Promise.race([atGoal, checking.then(() => assert.fail("Did not hold the issued goal"))]);
+		const before = await f.status(), stopped = (await f.status(w.id)).nodes[0];
+		const read = { run, readBaselines: ["inventory"] }, repair = { run, baselines: ["inventory"] };
+		let consent = false, prompts = 0;
+		const owner = f.runtime(f.root, { confirm: async prompt => {
+			prompts++;
+			for (const field of [w.id, assembly, f.tip, sourceTree, "read-only", "no repair"]) assert.ok(prompt.includes(field), field);
+			return consent;
+		} });
+		await assert.rejects(owner.operation("publish", read, w.id), /owner/);
+		await assert.rejects(owner.operation("publish", repair, "owner"), /current unmet goal/);
+		await assert.rejects(owner.operation("publish", read, "owner"), /not approved/);
+		assert.deepEqual((await f.status(w.id)).nodes[0], stopped);
+		consent = true;
+		await owner.operation("publish", read, "owner");
+		const current = await f.runtime(w.cwd).operation("status", { run }, w.id), granted = current.nodes[0];
+		assert.deepEqual(granted.readGrant, n.priorSource);
+		assert.deepEqual({ ...granted, readGrant: undefined }, { ...stopped, readGrant: undefined });
+		assert.equal(git(w.cwd, "show", `${granted.readGrant.revision}:${granted.readGrant.directory}/index.mjs`), originalAssembly);
+		assert.equal(existsSync(path.join(w.cwd, assembly)), false);
+		assert.equal(granted.baseline, undefined); assert.equal(granted.repairs, 0);
+		assert.deepEqual((await f.status()).pending, before.pending);
+		assert.deepEqual((await f.status()).assignments, before.assignments); assert.equal(prompts, 2);
+		await assert.rejects(writer.operation("submit", { run, token: w.token }, w.id), /writable/);
+		await assert.rejects(owner.operation("publish", repair, "owner"), /current unmet goal/);
+		await assert.rejects(owner.operation("publish", read, "owner"), /already approved/);
+		assert.equal(prompts, 2);
+	} finally { release(); await checking; }
+	assert.equal((await f.status()).goal?.receipt?.exit, 1);
+	assert.equal((await f.status(w.id)).nodes[0].state, "blocked");
+	const owner = f.runtime(f.root, { confirm: async () => true });
+	await owner.operation("publish", { run, baselines: ["inventory"] }, "owner");
+	const repaired = (await f.status(w.id)).nodes[0];
+	assert.equal(repaired.state, "writing"); assert.equal(repaired.repairs, 1);
+	assert.deepEqual(repaired.baseline, n.priorSource); assert.equal(repaired.readGrant, undefined);
+});
+
+for (const key of ["baselines", "readBaselines"]) test(`a changed target during baseline approval leaves the missing-input writer stopped: ${key}`, async t => {
 	const { f, nextCore, nextPipeline } = await assemblyCheckpoint(t);
 	await report(nextCore, ".foundry/left.md", []);
 	await report(nextPipeline, ".foundry/right.md", [work("inventory", assembly)]);
@@ -915,7 +969,7 @@ test("a changed target during baseline approval leaves the missing-input writer 
 		git(f.root, "commit", "-qam", "change inventory while approval is open");
 		return true;
 	} });
-	await assert.rejects(owner.operation("publish", { run, baselines: ["inventory"] }, "owner"), /current unmet goal/);
+	await assert.rejects(owner.operation("publish", { run, [key]: ["inventory"] }, "owner"), /current (?:unmet goal|goal target)/);
 	assert.deepEqual((await f.status(w.id)).nodes[0], before);
 	assert.deepEqual(f.inbox, inbox);
 });
