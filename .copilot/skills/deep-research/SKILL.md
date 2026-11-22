@@ -25,7 +25,7 @@ explicitly requests deep/exhaustive research or invokes `/deep-research`, or app
 specific heavy investigation. Loading this skill is not itself authorization to launch a workflow.
 
 If ordinary research reveals genuinely substantial remaining work, explain the scope and additional
-time/credit cost and ask for approval with `ask_user` before escalating. When basic research suffices,
+time/credit cost and offer **Start deep research** or **Keep ordinary research** as `ask_user` choices before escalating. Don't ask for a typed confirmation. When basic research suffices,
 answer directly and stop; do not routinely offer an upgrade or manufacture extra angles to justify one.
 
 ## Workflow

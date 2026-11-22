@@ -34,7 +34,7 @@ function requireCurrentReader() {
 /** @typedef {{run:string,id:string,actor:string,inFlight?:boolean,recoveredOn?:number}} Call */
 /** @typedef {{runId:string,status:string,error?:string,reason?:string}} ScoutEnvelope */
 /** @typedef {{execute:(tool:string,args:Effect["args"],id:string)=>Promise<unknown>,notify:(message:string)=>Promise<string>,recover?:(effect:Effect)=>Promise<unknown>,
- * ask?:(message:string)=>Promise<string|null>,
+ * ask?:(message:string)=>Promise<string|null>,confirm?:(message:string)=>Promise<boolean>,
  * scout?:(run:string,dispatch:string,actor:string)=>Promise<ScoutEnvelope>,scoutState?:(workflowId:string)=>Promise<ScoutEnvelope>,
  * mode:()=>Promise<string>,runningHelpers?:(workflows:string[])=>Promise<string[]>,permissionBlocker:()=>Promise<import("./permissions.mjs").PermissionBlock|null>,log?:(message:string)=>void}} Host */
 /** @param {Run} run @param {string} [reason] */
@@ -429,7 +429,7 @@ export function createRuntime(directory, host) {
 		}
 		else if (op === "repin") {
 			const request = prepareRepin(cwd(), read(id), actor, a);
-			if ((await host.ask?.(request.prompt))?.trim() !== "approve")
+			if (await host.confirm?.(request.prompt) !== true)
 				fail("approval_required", "No approval for this evaluator change; the pin is unchanged");
 			if (!await executable()) fail("unsupported_mode", "The owner session is no longer executable");
 			change(id, request.apply);

@@ -36,7 +36,7 @@ export function prepareRepin(cwd, run, actor, args) {
 	return {
 		prompt: `Run ${run.id}: authorize the following committed diff for goal checks only?\n` +
 			`git diff --no-ext-diff --no-textconv ${from} ${revision}\nFiles: ${JSON.stringify(files)}\n` +
-			"Confirm only if this fixes evaluation without changing the product requirements. Type approve to recheck the existing product.",
+			"Approve to recheck the existing product only if this fixes evaluation without changing the product requirements.",
 		/** @param {Run} live */
 		apply(live) {
 			allowed(live, actor, from);

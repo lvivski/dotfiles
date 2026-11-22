@@ -84,7 +84,7 @@ for (const [oldExit, newExit] of [[1, 0], [0, 2]]) test(`repin finishes the issu
 	let issued = () => {}, release = () => {};
 	const held = new Promise(resolve => { issued = () => resolve(undefined); });
 	const until = new Promise(resolve => { release = () => resolve(undefined); });
-	const owner = f.runtime(f.root, { ask: async () => "approve", execute: async (tool, a, call) => {
+	const owner = f.runtime(f.root, { confirm: async () => true, execute: async (tool, a, call) => {
 		if (tool === "bash" && !f.checks.length) { issued(); await until; }
 		return f.execute(tool, a, call);
 	} });
@@ -127,7 +127,15 @@ test("repin keeps the writer and rejects changes outside the goal harness or wit
 	const [w] = f.workers.values(), side = path.join(path.dirname(f.root), "probe-fix");
 	git(f.root, "worktree", "add", "-q", "--detach", side, f.tip);
 	let approved = false, prompts = 0;
-	const owner = f.runtime(f.root, { ask: async () => { prompts++; return approved ? "approve" : null; } });
+	const owner = f.runtime(f.root, {
+		ask: async () => assert.fail("Repinning must not request text input"),
+		confirm: async prompt => {
+			assert.ok(prompt.includes(f.tip) && prompt.includes(revision) && prompt.includes(goalCheck));
+			assert.doesNotMatch(prompt, /type approve/i);
+			prompts++;
+			return approved;
+		},
+	});
 	put(side, goalCheck, 'import {existsSync} from "node:fs"; process.exit(existsSync("lib/left/index.mjs") ? 0 : 1);');
 	git(side, "commit", "-qam", "Repair goal probe");
 	const revision = git(side, "rev-parse", "HEAD"), args = { run, from: f.tip, revision, files: [goalCheck] };
@@ -141,6 +149,7 @@ test("repin keeps the writer and rejects changes outside the goal harness or wit
 	assert.equal((await f.status()).goal?.pin, f.tip);
 	approved = true;
 	await owner.operation("repin", args, "owner");
+	assert.equal(prompts, 2, "one button decision per valid request");
 	await assert.rejects(owner.operation("repin", args, "owner"), /pin changed/);
 	assert.equal((await f.runtime(w.cwd).operation("status", { run }, w.id)).nodes.find(n => n.grain === "left")?.token, w.token);
 	await f.submit(w.id);

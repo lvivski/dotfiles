@@ -32,6 +32,7 @@ const runtime = createRuntime(process.cwd(), {
 	runningHelpers,
 	permissionBlocker: permissionCheck(() => session.rpc.managedSettings.get(), () => session.rpc.permissions.getMode()),
 	ask: message => session.ui.input(message),
+	confirm: message => session.ui.confirm(message),
 	execute: (name, args, toolCallId) => session.rpc.tools.execute({ name, arguments: args, toolCallId }),
 	scout: (run, dispatch) => session.workflow.run("foundry-scout", { args: { run, dispatch }, notifyOnComplete: false }),
 	scoutState: id => session.workflow.waitForRun(id),
