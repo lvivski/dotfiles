@@ -2,6 +2,8 @@
 
 Foundry coordinates a committed product brief from an ordinary repository session, not the Copilot app's Projects feature. Writers regenerate independent directories in native worktrees. A passing milestone is progress, not the finish line: squads inspect the remaining gap on the combined tree and choose the next work under the same authorization. Foundry records the exact commit that satisfies the goal and leaves the destination branch untouched.
 
+Writers keep the host-assigned worktree branch so similar assignments cannot rename two branches to the same feature name. Foundry denies the native `rename_branch` action for writers and their helpers; `rename_session` changes only the display title. The assignment also forbids renaming through Git commands; the extension is not a Git sandbox.
+
 Use [`/foundry brief <idea>`](../../skills/foundry/references/brief.md) to work through the product decisions and confirm the outcome before the brief is written. To run `.foundry/catalog.json`, use [`/foundry start catalog`](../../skills/foundry/references/runs.md#start). The skill resolves the name to the committed path the runtime needs. `/foundry` shows the [commands](../../skills/foundry/SKILL.md#commands); `/foundry plans` lists plan names in this checkout. Confirming a brief does not start workers.
 
 ### See what can run in parallel

@@ -394,6 +394,7 @@ export function reserveWriter(cwd, run, n, required, base, actor, submitToken, b
 		review && researchContext(run, review),
 		...("task" in g ? [`Assigned behavior: ${g.task}`, `Component check: ${g.check}`] : []),
 		`Generate the complete ${g.directory}/ directory; omitted files are deleted.`,
+		"Keep the host-assigned Git branch. Neither you nor your helpers may rename it with rename_branch or Git commands. For a readable title, use rename_session instead.",
 		`Read ${g.specification} and ${g.boundary.join(", ")} at this base. Required outputs: ${JSON.stringify(required)}.`,
 		...supporting.map(file => `Read-only supporting file: ${review?.base}:${file}`),
 		takeArtifactBrief(run, n),

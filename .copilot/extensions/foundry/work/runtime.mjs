@@ -122,6 +122,8 @@ export function createRuntime(directory, host) {
 	}
 	/** @param {string} id */
 	const read = id => db().read(id) ?? fail("missing_run", `Unknown run ${id}`);
+	/** @param {string} actor */
+	const writerSession = actor => known.has(actor) || hasLedger() && db().involving(actor).some(id => read(id).owner !== actor);
 	/** @param {string} id @param {(run:Run)=>void} mutate */
 	function change(id, mutate) {
 		return db().change(id, run => {
@@ -487,12 +489,10 @@ export function createRuntime(directory, host) {
 	}
 	/** @param {unknown} source @param {string} actor @param {boolean} resume */
 	async function start(source, actor, resume) {
-		if (known.has(actor)) fail("worker_cannot_start", "Workers cannot activate or restart a run");
+		if (writerSession(actor)) fail("worker_cannot_start", "Workers cannot activate or restart a run");
 		if (!await executable()) fail("unsupported_mode", "Start only from an interactive or autopilot owner");
 		const origin = cwd(), { policy, grains } = readPolicy(origin, source);
 		const store = existsSync(file()) ? db() : undefined;
-		if (store?.involving(actor).some(id => read(id).owner !== actor))
-			fail("worker_cannot_start", "Workers cannot activate or restart a run");
 		const prior = store?.read(policy.id);
 		if (resume && !prior) fail("missing_run", `No run to resume for ${policy.source}`);
 		if (prior) {
@@ -647,6 +647,10 @@ export function createRuntime(directory, host) {
 	}
 	/** @param {string} tool @param {unknown} args @param {string} actor @param {string} callId */
 	async function pre(tool, args, actor, callId) {
+		if (tool === "rename_branch") {
+			if (writerSession(actor)) fail("writer_branch", "Keep the host-assigned Foundry branch. Use rename_session for a readable title; do not retry the rename through Git.");
+			return;
+		}
 		const id = identify(tool, args);
 		if (!id)
 			return;
@@ -744,7 +748,9 @@ export function createRuntime(directory, host) {
 				root = existingPath = undefined;
 				outsideRepository = false;
 			}
-			if (prompt && assignment(prompt)) known.add(actor);
+			// Desktop can prepend tagged workspace instructions to the original kickoff.
+			// This marker restricts the session before binding; it does not authorize any writer operation.
+			if (prompt && assignment(prompt.replace(/^(?:<([\w-]+)>\n[\s\S]*?\n<\/\1>\n+)+/, ""))) known.add(actor);
 		},
 		/** @param {string} actor @param {string} [shellId] */
 		turn(actor, shellId) {

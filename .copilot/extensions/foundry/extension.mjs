@@ -74,12 +74,12 @@ session = await joinSession({
 		},
 		async onPreToolUse(input, ctx) {
 			const name = input.toolName.split(".").at(-1) ?? "";
-			if (fromHelper(input, ctx.sessionId)) {
+			if (fromHelper(input, ctx.sessionId) && name !== "rename_branch") {
 				if ((name.startsWith("foundry_") && name !== "foundry_reference") || identify(name, input.toolArgs))
 					return { permissionDecision: "deny", permissionDecisionReason: primaryOnly };
 				return;
 			}
-			if (!["create_session", "send_session_message", "bash"].includes(name))
+			if (!["create_session", "send_session_message", "bash", "rename_branch"].includes(name))
 				return;
 			try {
 				await runtime.pre(name, input.toolArgs, ctx.sessionId, input.toolCallId ?? "");

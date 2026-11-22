@@ -4,6 +4,7 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { Worker } from "node:worker_threads";
+import { record } from "../work/values.mjs";
 import { factory, git, loadEntry, put } from "./fixture.mjs";
 
 const source = ".foundry/codec.json", run = "codec", dir = "lib/codec";
@@ -39,6 +40,45 @@ async function entry(t, sessionId, workingDirectory, { execute, tasks, workflow 
 	}
 	return { hooks, hook, ctx, call };
 }
+
+test("writers keep their host branches before binding and after reconnect; session titles remain editable", async t => {
+	const seed = ["channel-rust", "channel-ui"];
+	const f = factory(t, run, source, { [source]: JSON.stringify({ version: 1, id: run, direction: "Show channel reminders.", target: "refs/heads/main",
+		productCheck: "product.mjs", seed, squads: [{ id: "channels", charter: "job.md", grains: seed }],
+		grains: seed.map(id => ({ id, directory: id, specification: "job.md", boundary: ["api"], check: "unit.mjs" })) }),
+		"job.md": "Show reminders.", api: "Channel reminders", "unit.mjs": "", "product.mjs": "" });
+	/** @param {Awaited<ReturnType<typeof entry>>} s @param {boolean} writer */
+	async function check(s, writer) {
+		const call = { ...s.hook, toolName: "rename_branch", toolArgs: { name: "channel-root-reminders" }, toolCallId: "rename" };
+		for (const actor of [{}, { agentId: "helper" }, { sessionId: "helper-session" }]) {
+			const result = await s.hooks.onPreToolUse?.({ ...call, ...actor }, s.ctx);
+			assert.equal(result?.permissionDecision, writer ? "deny" : undefined);
+		}
+		assert.equal(await s.hooks.onPreToolUse?.({ ...call, toolName: "rename_session", toolArgs: { title: "Channel reminders" } }, s.ctx), undefined);
+	}
+	// Exercise the first tool call before the host has returned its binding receipt.
+	const status = await f.start(f.runtime(f.root, { execute: async (tool, args, id) => {
+		const reply = await f.execute(tool, args, id);
+		const w = [...f.workers.values()].find(w => w.prompt === record(args.kickoff).prompt);
+		assert.ok(w);
+		if (w === f.workers.values().next().value) {
+			const s = await entry(t, w.id, w.cwd, f);
+			await s.hooks.onSessionStart?.({ ...s.hook, source: "startup",
+				initialPrompt: `<cross_session_message>\nFrom owner\n</cross_session_message>\n\n<branch_rename_request>\nRename before editing.\n</branch_rename_request>\n\n${w.prompt}` }, s.ctx);
+			await check(s, true);
+		}
+		return reply;
+	} }));
+	assert.equal(f.workers.size, 2);
+	assert.deepEqual(status.nodes.map(n => n.worker).sort(), [...f.workers.keys()].sort());
+	for (const w of f.workers.values()) {
+		const s = await entry(t, w.id, w.cwd, f); // Reconnect without an initial prompt.
+		await check(s, true);
+	}
+	await check(await entry(t, "owner", f.root, f), false);
+	await check(await entry(t, "ordinary-session", f.root, f), false);
+	assert.deepEqual(f.checks, []);
+});
 
 test("two helpers in one capped assignment finish before its writer publishes one integrated directory", async t => {
 	const f = trial(t);
