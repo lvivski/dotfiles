@@ -24,7 +24,7 @@ import { FoundryError, digest, fail, fields, name, record, referenceRepo, text }
 /** @typedef {{execute:(tool:string,args:Effect["args"],id:string)=>Promise<unknown>,notify:(message:string)=>Promise<string>,recover?:(effect:Effect)=>Promise<unknown>,
  * ask?:(message:string)=>Promise<string|null>,
  * scout?:(run:string,dispatch:string,actor:string)=>Promise<ScoutEnvelope>,scoutState?:(workflowId:string)=>Promise<ScoutEnvelope>,
- * mode:()=>Promise<string>,helpersRunning?:()=>Promise<boolean>,permissionBlocker:()=>Promise<import("./permissions.mjs").PermissionBlock|null>,log?:(message:string)=>void}} Host */
+ * mode:()=>Promise<string>,runningHelpers?:(workflows:string[])=>Promise<string[]>,permissionBlocker:()=>Promise<import("./permissions.mjs").PermissionBlock|null>,log?:(message:string)=>void}} Host */
 /** @param {Run} run @param {string} [reason] */
 function pause(run, reason) {
 	run.active = false;
@@ -397,8 +397,12 @@ export function createRuntime(directory, host) {
 		if (reply) {
 			fields(a, ["run", "token", "usedArtifacts", "comparedArtifacts"]);
 			// Check the host, not a local count lost on reload. Revalidate mode and ownership after the read.
-			if (host.helpersRunning && writable(read(id), actor, reply.token) && await host.helpersRunning())
-				fail("helpers_running", "Native helpers are still running. Join them, integrate their work, then submit with the same token.");
+			const run = read(id);
+			if (host.runningHelpers && writable(run, actor, reply.token)) {
+				const workflows = new Set(reviews(run).flatMap(r => r.issuer === actor && awaitingReply(r) && r.workflowId ? [r.workflowId] : []));
+				const helpers = await host.runningHelpers([...workflows]);
+				if (helpers.length) fail("helpers_running", `Native helpers are still running: ${helpers.join(", ")}. Join them, integrate their work, then submit with the same token.`);
+			}
 		}
 		if (!await executable())
 			fail("unsupported_mode", "Plan mode cannot submit work or publish references");

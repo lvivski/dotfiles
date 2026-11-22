@@ -237,36 +237,36 @@ test("late waits reuse the run-wide pin and a conflicting publication by another
 });
 
 test("a descriptive source label does not strand the Mac charter before the window check", async t => {
-	const squads = ["runtime", "mac"].map(id => ({ id, areas: [id], charter: `${id}.md`, boundary: ["interface"],
-		checks: ["unit.mjs"], ...(id === "mac" ? { researchAgent: profile } : {}) }));
+	const squads = ["runtime", "client"].map(id => ({ id, areas: [id], charter: `${id}.md`, boundary: ["interface"],
+		checks: ["unit.mjs"], ...(id === "client" ? { researchAgent: profile } : {}) }));
 	const f = factory(t, run, source, {
-		[source]: JSON.stringify({ version: 2, id: run, direction: "Open the offline account.", target: "refs/heads/main",
+		[source]: JSON.stringify({ version: 2, id: run, direction: "Open the default dataset.", target: "refs/heads/main",
 			squads, productCheck: "product.mjs", goalCheck: "goal.mjs" }),
-		"runtime.md": "Provide the offline account.", "mac.md": "Research the ordinary launch before assigning the Mac client.",
+		"runtime.md": "Provide the default dataset.", "client.md": "Research the ordinary launch before assigning the viewer.",
 		interface: "Launch without a registration.", "product.mjs": "", "unit.mjs": "",
 		"goal.mjs": `import {existsSync} from "node:fs";
-			if (!existsSync("runtime/account")) process.exit(1);
+			if (!existsSync("runtime/dataset")) process.exit(1);
 			console.log("Window observer unavailable"); process.exit(2);`,
 	});
 	const plan = (/** @type {string} */ id) => ({ outcome: "regenerate", reason: `Fix ${id} launch.`,
 		evidence: [`${id}.md`], grains: [{ id, directory: id, check: "unit.mjs", needs: [], task: `Implement ${id}.` }] });
 	await f.start();
-	const mac = f.scouts.find(r => r.squad === "mac"), core = f.scouts.find(r => r.squad === "runtime");
-	assert.ok(mac && core); await core.report(plan("runtime"));
-	await mac.report({ outcome: "needs-research", reason: question, evidence: ["mac.md"], grains: [] });
+	const client = f.scouts.find(r => r.squad === "client"), core = f.scouts.find(r => r.squad === "runtime");
+	assert.ok(client && core); await core.report(plan("runtime"));
+	await client.report({ outcome: "needs-research", reason: question, evidence: ["client.md"], grains: [] });
 	const kind = "local checkout: static source inspection (not a runtime observation)";
 	await f.scouts.at(-1)?.report({ status: "answered", reason: "Compared the two launch paths.",
 		findings: [{ kind, source: "reference@abc:src/restore", finding: "The reference restores without a registration." }] });
 	const decision = f.scouts.at(-1); assert.ok(decision && decision.prompt.includes(kind), "a fresh scout must get the attributed finding");
-	await decision.report(plan("mac"));
+	await decision.report(plan("client"));
 	assert.equal(f.workers.size, 2);
-	for (const [id, file] of [["runtime", "account"], ["mac", "window"]]) {
+	for (const [id, file] of [["runtime", "dataset"], ["client", "window"]]) {
 		const n = (await f.status()).nodes.find(n => n.grain === id);
 		const w = n?.worker && f.workers.get(n.worker); assert.ok(w);
 		put(w.cwd, `${id}/${file}`, "implemented");
 		await f.runtime(w.cwd).operation("submit", { run, token: w.token }, w.id);
 	}
 	const s = await f.status(); assert.ok(s.checkpoint);
-	assert.deepEqual(Object.keys(s.outputs ?? {}).sort(), ["mac", "runtime"]);
+	assert.deepEqual(Object.keys(s.outputs ?? {}).sort(), ["client", "runtime"]);
 	assert.equal(s.goal?.receipt?.exit, 2); assert.equal(s.qualified, null);
 });

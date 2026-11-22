@@ -166,9 +166,9 @@ test("an early failed milestone widens a focused search and preserves its checke
 
 const unitCheck = ".foundry/unit.mjs";
 const areaPolicy = () => ({
-	version: 2, id: run, direction: "Reply in the selected account; keep the draft when the send outcome is unknown.", target: "refs/heads/main",
+	version: 2, id: run, direction: "Send a transformed record once; retain its value when the result is unknown.", target: "refs/heads/main",
 	productCheck: ".foundry/product.mjs", goalCheck,
-	squads: ["engine", "mail"].map((id, i) => ({ id, charter: `.foundry/${grainIds[i]}.md`, areas: [id], boundary: [".foundry/api.md"], checks: [unitCheck] }))
+	squads: ["engine", "pipeline"].map((id, i) => ({ id, charter: `.foundry/${grainIds[i]}.md`, areas: [id], boundary: [".foundry/api.md"], checks: [unitCheck] }))
 });
 /** @param {string} evidence @param {(string|import("./model.js").Proposal)[]} grains @param {string[]} [replace] */
 const result = (evidence, grains, replace) => ({ outcome: grains.length ? "regenerate" : "no-gap",
@@ -179,23 +179,23 @@ const report = (job, evidence, grains, replace) => job.report(result(evidence, g
 /** @param {ReturnType<typeof createRuntime>} runtime @param {Scout} job @param {unknown} raw */
 const deliver = (runtime, job, raw) => runtime.scoutResult(run, job.dispatch, job.issuer, job.workflowId, job.id, raw, job.packet);
 /** @param {import("node:test").TestContext} t @param {Record<string,string>} [files] */
-function replyFixture(t, files = {}) {
+function pipelineFixture(t, files = {}) {
 	const f = fixture(t, undefined, {
 		[source]: JSON.stringify(areaPolicy()),
 		[unitCheck]: `import assert from "node:assert/strict";
 			const unit = (await import("../"+process.env.FOUNDRY_DIRECTORY+"/index.mjs")).default;
 			assert.equal(typeof unit,"function");
-			if(process.env.FOUNDRY_GRAIN==="editor") assert.equal(unit("unfinished reply"),"unfinished reply");
+			if(process.env.FOUNDRY_GRAIN==="editor") assert.equal(unit("unfinished record"),"unfinished record");
 			if(process.env.FOUNDRY_GRAIN==="recover") assert.equal(unit(),"outcome unknown");`,
-		".foundry/product.mjs": `import assert from "node:assert/strict"; import edit from "../mail/compose/editor/index.mjs";
-			assert.equal(edit("typed reply"),"typed reply");`,
+		".foundry/product.mjs": `import assert from "node:assert/strict"; import edit from "../pipeline/assembly/editor/index.mjs";
+			assert.equal(edit("typed record"),"typed record");`,
 		[goalCheck]: `import {existsSync} from "node:fs";
-			if(existsSync("mail/compose/send/index.mjs")) {
-				const reply=(await import("../mail/compose/send/index.mjs")).default, calls=[];
-				const state=await reply("retained text",async text=>{calls.push(text);throw Error("acknowledgment lost")});
+			if(existsSync("pipeline/assembly/send/index.mjs")) {
+				const transmit=(await import("../pipeline/assembly/send/index.mjs")).default, calls=[];
+				const state=await transmit("retained text",async text=>{calls.push(text);throw Error("acknowledgment lost")});
 				if(state==="outcome unknown" && calls.length===1 && calls[0]==="retained text") process.exit(0);
 			}
-			console.log("Reply did not send the typed draft once and preserve the unknown outcome");process.exit(1);`,
+			console.log("Pipeline did not send the input record once and preserve the unknown outcome");process.exit(1);`,
 		...files
 	});
 	/** @param {string} id @param {string} body @param {Partial<Host>} [options] */
@@ -216,20 +216,20 @@ function replyFixture(t, files = {}) {
 const work = (id, directory, needs = []) => ({ id, directory, task: `Implement ${id} behavior`, needs, check: unitCheck });
 
 for (const correct of [true, false]) test(`packaging cannot retire its own checked inputs; corrected plan: ${correct}`, async t => {
-	const f = replyFixture(t), evidence = ".foundry/right.md";
+	const f = pipelineFixture(t), evidence = ".foundry/right.md";
 	await f.start(); await f.reportGrains("engine", []);
-	await report(await f.reading("mail"), evidence, [work("editor", "mail/compose/editor"), work("storage", "mail/compose/storage")]);
+	await report(await f.reading("pipeline"), evidence, [work("editor", "pipeline/assembly/editor"), work("storage", "pipeline/assembly/storage")]);
 	await f.write("editor", "export default text=>text"); await f.write("storage", "export default ()=>true");
 	const checkpoint = await f.status(); assert.ok(checkpoint.checkpoint);
 	await f.reportGrains("engine", []);
-	const packaging = await f.reading("mail"), needs = ["editor", "storage"], parent = work("send", "mail/compose", needs);
+	const packaging = await f.reading("pipeline"), needs = ["editor", "storage"], parent = work("send", "pipeline/assembly", needs);
 	await report(packaging, evidence, [parent]);
 	const rejected = await f.status(), reason = rejected.reviews.find(r => r.id === packaging.id)?.reason;
-	assert.match(String(reason), /mail\/compose.*editor.*mail\/compose\/editor/);
+	assert.match(String(reason), /pipeline\/assembly.*editor.*pipeline\/assembly\/editor/);
 	assert.deepEqual(rejected.nodes, checkpoint.nodes); assert.equal(f.workers.size, 2);
-	const correction = await f.reading("mail");
+	const correction = await f.reading("pipeline");
 	assert.equal(correction.base, packaging.base); assert.ok(reason && correction.prompt.includes(reason));
-	await report(correction, evidence, [correct ? { ...parent, directory: "mail/compose/send" } : parent]);
+	await report(correction, evidence, [correct ? { ...parent, directory: "pipeline/assembly/send" } : parent]);
 	if (!correct) {
 		const stopped = await f.status();
 		assert.deepEqual(stopped.nodes, checkpoint.nodes); assert.equal(stopped.checkpoint, checkpoint.checkpoint);
@@ -243,14 +243,14 @@ for (const correct of [true, false]) test(`packaging cannot retire its own check
 });
 
 test("independent writers start together and a fixture-only integration cannot finish the run", async t => {
-	const f = replyFixture(t);
+	const f = pipelineFixture(t);
 	const start = await f.start();
 	assert.deepEqual(start.nodes, []);
-	const [core, mail] = f.scouts;
+	const [core, pipeline] = f.scouts;
 	await report(core, ".foundry/left.md", [work("recover", "engine/recovery")]);
-	const editor = work("editor", "mail/compose/editor"), send = work("send", "mail/compose/send", ["editor", "recover"]);
-	await report(mail, ".foundry/api.md", [editor, send]);
-	await report(mail, ".foundry/api.md", [editor, send]); // A duplicated result cannot create a second job.
+	const editor = work("editor", "pipeline/assembly/editor"), send = work("send", "pipeline/assembly/send", ["editor", "recover"]);
+	await report(pipeline, ".foundry/api.md", [editor, send]);
+	await report(pipeline, ".foundry/api.md", [editor, send]); // A duplicated result cannot create a second job.
 	const parallel = await f.status(), jobs = parallel.nodes.filter(n => n.state === "writing");
 	assert.deepEqual(jobs.map(n => n.grain).sort(), ["editor", "recover"]);
 	assert.deepEqual(parallel.nodes.find(n => n.grain === "send")?.requires, ["editor", "recover"]);
@@ -274,10 +274,10 @@ test("independent writers start together and a fixture-only integration cannot f
 	const map = mapSnapshot(checkpoint);
 	assert.ok(map.checkpoint && !map.qualified && map.goal?.result?.exit === 1);
 	assert.match(String(checkpoint.goal.receipt.output), /did not send/);
-	await report(mail, ".foundry/right.md", ["send"]);
+	await report(pipeline, ".foundry/right.md", ["send"]);
 	assert.deepEqual(await f.status(), checkpoint, "a completed review cannot authorize further work");
 	await report(await f.reading("engine"), ".foundry/left.md", []);
-	await report(await f.reading("mail"), "mail/compose/send/index.mjs", [{ ...send, task: "Connect the actual transport" }]);
+	await report(await f.reading("pipeline"), "pipeline/assembly/send/index.mjs", [{ ...send, task: "Connect the actual transport" }]);
 	const writer = [...f.workers.values()].at(-1); assert.ok(writer);
 	assert.ok(writer.prompt.includes(`Reviewed input revision: ${checkpoint.checkpoint}`));
 	assert.equal(existsSync(path.join(writer.cwd, send.directory)), false);
@@ -294,26 +294,26 @@ test("independent writers start together and a fixture-only integration cannot f
 
 for (const conflict of [false, true])
 	test(`a checked parent becomes the base for two child writers; a ${conflict ? "conflicting" : "disjoint"} target edit is ${conflict ? "blocked" : "preserved"}`, async t => {
-		const dir = "mail/compose";
-		const f = replyFixture(t, {
+		const dir = "pipeline/assembly";
+		const f = pipelineFixture(t, {
 			".foundry/product.mjs": `import {readFileSync} from "node:fs";if(readFileSync("${dir}/keep","utf8")!=="retained")throw Error("lost checkpoint");`,
 			[goalCheck]: `import {existsSync} from "node:fs";
 				if(!existsSync("${dir}/editor/index.mjs")||!existsSync("${dir}/send/index.mjs"))process.exit(1);
 				const edit=(await import("../${dir}/editor/index.mjs")).default, send=(await import("../${dir}/send/index.mjs")).default;
-				if(send(edit("reply"))!=="sent:reply")process.exit(1);`
+				if(send(edit("record"))!=="sent:record")process.exit(1);`
 		});
 		await f.start();
-		const [core, mail] = f.scouts;
-		await report(mail, ".foundry/right.md", [work("compose", dir)]);
+		const [core, pipeline] = f.scouts;
+		await report(pipeline, ".foundry/right.md", [work("assembly", dir)]);
 		const parent = [...f.workers.values()].at(-1); assert.ok(parent);
-		await report(core, ".foundry/left.md", [work("preview", "engine/preview", ["compose"])]);
+		await report(core, ".foundry/left.md", [work("preview", "engine/preview", ["assembly"])]);
 		put(parent.cwd, `${dir}/keep`, "retained");
 		put(parent.cwd, `${dir}/editor/obsolete`, "old editor");
-		await f.write("compose", "export default ()=>false;");
+		await f.write("assembly", "export default ()=>false;");
 		await f.write("preview", "export default ()=>true;");
 		const checkpoint = (await f.status()).products?.[0]; assert.ok(checkpoint?.receipt);
 		await report(await f.reading("engine"), ".foundry/left.md", []);
-		await report(await f.reading("mail"), `${dir}/keep`, [work("editor", `${dir}/editor`), work("send", `${dir}/send`)], conflict ? ["compose"] : []);
+		await report(await f.reading("pipeline"), `${dir}/keep`, [work("editor", `${dir}/editor`), work("send", `${dir}/send`)], conflict ? ["assembly"] : []);
 		const writers = (await f.status()).nodes;
 		assert.deepEqual(writers.map(n => [n.grain, n.state]), [["editor", "writing"], ["send", "writing"]]);
 		for (const n of writers) {
@@ -338,7 +338,7 @@ for (const conflict of [false, true])
 		if (conflict) {
 			assert.equal(result.qualified, null);
 			assert.equal(result.checkpoint, checkpoint.commit);
-			assert.match(String(result.blocker), /Concurrent modification.*mail\/compose\/keep/);
+			assert.match(String(result.blocker), /Concurrent modification.*pipeline\/assembly\/keep/);
 		} else {
 			assert.ok(result.qualified);
 			assert.equal(result.goal?.receipt?.commit, result.qualified);
@@ -349,48 +349,48 @@ for (const conflict of [false, true])
 		}
 	});
 
-const compose = "mail/compose", composeBody = "export default ()=>true;", originalCompose = "export default ()=>false;";
-const splitCompose = () => ["editor", "send"].map(id => work(id, `${compose}/${id}`));
+const assembly = "pipeline/assembly", assemblyBody = "export default ()=>true;", originalAssembly = "export default ()=>false;";
+const splitAssembly = () => ["editor", "send"].map(id => work(id, `${assembly}/${id}`));
 
 /** @param {import("node:test").TestContext} t @param {Record<string,string>} [files] */
-async function composeRound(t, files) {
-	const f = replyFixture(t, { [`${compose}/index.mjs`]: originalCompose, ".foundry/product.mjs": `import "../${compose}/index.mjs";`, ...files });
+async function assemblyRound(t, files) {
+	const f = pipelineFixture(t, { [`${assembly}/index.mjs`]: originalAssembly, ".foundry/product.mjs": `import "../${assembly}/index.mjs";`, ...files });
 	await f.start();
-	const [core, mail] = f.scouts;
+	const [core, pipeline] = f.scouts;
 	await report(core, ".foundry/left.md", []);
-	await report(mail, ".foundry/right.md", [work("compose", compose)]);
+	await report(pipeline, ".foundry/right.md", [work("assembly", assembly)]);
 	return f;
 }
 
 /** @param {import("node:test").TestContext} t @param {Record<string,string>} [files] */
-async function composeCheckpoint(t, files) {
-	const f = await composeRound(t, files);
-	await f.write("compose", composeBody);
-	const nextCore = await f.reading("engine"), nextMail = await f.reading("mail");
-	return { f, nextCore, nextMail };
+async function assemblyCheckpoint(t, files) {
+	const f = await assemblyRound(t, files);
+	await f.write("assembly", assemblyBody);
+	const nextCore = await f.reading("engine"), nextPipeline = await f.reading("pipeline");
+	return { f, nextCore, nextPipeline };
 }
 
 for (const repeat of [false, true])
 	test(`a current consumer pins its ${repeat ? "repeated" : "checkpoint"} input against both a repartition and a target edit`, async t => {
-		const { f, nextCore, nextMail } = await composeCheckpoint(t);
+		const { f, nextCore, nextPipeline } = await assemblyCheckpoint(t);
 		if (repeat) {
 			await report(nextCore, ".foundry/left.md", []);
-			await report(nextMail, `${compose}/index.mjs`, ["compose"]);
-			await f.write("compose", originalCompose); // Reproduce the failed baseline, not the latest checkpoint.
+			await report(nextPipeline, `${assembly}/index.mjs`, ["assembly"]);
+			await f.write("assembly", originalAssembly); // Reproduce the failed baseline, not the latest checkpoint.
 		}
-		const core = await f.reading("engine"), mail = await f.reading("mail");
-		await report(core, ".foundry/left.md", [work("adapter", "engine/adapter", ["compose"])]);
+		const core = await f.reading("engine"), pipeline = await f.reading("pipeline");
+		await report(core, ".foundry/left.md", [work("adapter", "engine/adapter", ["assembly"])]);
 		const before = await f.status(), w = [...f.workers.values()].at(-1); assert.ok(w);
-		const input = before.nodes.find(n => n.grain === "compose");
+		const input = before.nodes.find(n => n.grain === "assembly");
 		assert.ok(input?.checked);
 		assert.equal(input.state, repeat ? "repeated" : "qualified");
-		assert.equal(before.nodes.find(n => n.grain === "adapter")?.inputs?.compose, input.checked);
-		assert.equal(readFileSync(path.join(w.cwd, compose, "index.mjs"), "utf8"), repeat ? originalCompose : composeBody);
-		await report(mail, `${compose}/index.mjs`, splitCompose());
+		assert.equal(before.nodes.find(n => n.grain === "adapter")?.inputs?.assembly, input.checked);
+		assert.equal(readFileSync(path.join(w.cwd, assembly, "index.mjs"), "utf8"), repeat ? originalAssembly : assemblyBody);
+		await report(pipeline, `${assembly}/index.mjs`, splitAssembly());
 		const denied = await f.status();
-		assert.match(String(denied.reviews.find(r => r.id === mail.id)?.reason), /current assignment.*adapter/);
+		assert.match(String(denied.reviews.find(r => r.id === pipeline.id)?.reason), /current assignment.*adapter/);
 		assert.deepEqual(denied.nodes, before.nodes);
-		put(f.root, `${compose}/external`, "from target"); git(f.root, "add", compose); git(f.root, "commit", "-qm", "change the checked input");
+		put(f.root, `${assembly}/external`, "from target"); git(f.root, "add", assembly); git(f.root, "commit", "-qm", "change the checked input");
 		f.owner.turn("owner"); await f.owner.flush();
 		const blocked = await f.status();
 		assert.match(String(blocked.blocker), /current assignment.*adapter/);
@@ -400,125 +400,125 @@ for (const repeat of [false, true])
 	});
 
 test("a target edit supersedes an unused repeated output even before the first checkpoint", async t => {
-	const f = await composeRound(t);
-	await f.write("compose", originalCompose);
+	const f = await assemblyRound(t);
+	await f.write("assembly", originalAssembly);
 	const stalled = await f.status();
 	assert.equal(stalled.checkpoint, null);
 	assert.equal(stalled.nodes[0].state, "repeated");
-	put(f.root, `${compose}/index.mjs`, composeBody); git(f.root, "commit", "-qam", "edit the repeated directory");
+	put(f.root, `${assembly}/index.mjs`, assemblyBody); git(f.root, "commit", "-qam", "edit the repeated directory");
 	f.owner.turn("owner"); await f.owner.flush();
 	const moved = await f.status();
 	assert.ok(moved.goal?.receipt, moved.blocker ?? "target edit was not assessed");
 	assert.equal(moved.goal.receipt.exit, 1);
 	assert.deepEqual(moved.nodes, []);
 	assert.equal(moved.qualified, null);
-	assert.equal(git(f.root, "show", `${moved.goal.receipt.commit}:${compose}/index.mjs`), composeBody);
+	assert.equal(git(f.root, "show", `${moved.goal.receipt.commit}:${assembly}/index.mjs`), assemblyBody);
 });
 
 test("a deferred area repair waits for every pinned consumer, then asks once on the assessed checkpoint", async t => {
-	const { f, nextCore, nextMail } = await composeCheckpoint(t, {
-		[goalCheck]: `import compose from "../${compose}/index.mjs"; import {existsSync} from "node:fs";
-			if (existsSync("engine/preview/index.mjs")) console.log("FOUNDRY_SQUAD=engine"); process.exit(compose() === "fixed" ? 0 : 1);`
+	const { f, nextCore, nextPipeline } = await assemblyCheckpoint(t, {
+		[goalCheck]: `import assembly from "../${assembly}/index.mjs"; import {existsSync} from "node:fs";
+			if (existsSync("engine/preview/index.mjs")) console.log("FOUNDRY_SQUAD=engine"); process.exit(assembly() === "fixed" ? 0 : 1);`
 	});
-	const evidence = `${compose}/index.mjs`, proposal = { ...result(evidence, splitCompose(), ["compose"]), reason: "Repair the shared controls" };
-	await report(nextCore, ".foundry/left.md", ["adapter", "preview"].map(id => work(id, `engine/${id}`, ["compose"])));
+	const evidence = `${assembly}/index.mjs`, proposal = { ...result(evidence, splitAssembly(), ["assembly"]), reason: "Repair the shared controls" };
+	await report(nextCore, ".foundry/left.md", ["adapter", "preview"].map(id => work(id, `engine/${id}`, ["assembly"])));
 	const before = await f.status();
-	await nextMail.report(proposal);
-	const held = await f.status(), source = held.reviews.find(r => r.id === nextMail.id);
+	await nextPipeline.report(proposal);
+	const held = await f.status(), source = held.reviews.find(r => r.id === nextPipeline.id);
 	assert.equal(source?.state, "deferred");
 	assert.deepEqual(source.observation, proposal);
 	assert.match(String(source.reason), /adapter/); assert.match(String(source.reason), /preview/);
 	assert.deepEqual(held.nodes, before.nodes);
 	assert.deepEqual(held.products, before.products);
-	await f.write("adapter", composeBody);
+	await f.write("adapter", assemblyBody);
 	await f.owner.operation("pause", { run }, "owner");
 	await f.start(f.runtime(f.root));
-	assert.equal(f.scouts.filter(s => s.squad === "mail").at(-1)?.id, nextMail.id);
+	assert.equal(f.scouts.filter(s => s.squad === "pipeline").at(-1)?.id, nextPipeline.id);
 	assert.equal((await f.status()).nodes.find(n => n.grain === "adapter")?.state, "published");
-	await f.write("preview", composeBody);
-	const released = await f.status(), fresh = await f.reading("mail");
-	assert.notEqual(fresh.base, nextMail.base);
+	await f.write("preview", assemblyBody);
+	const released = await f.status(), fresh = await f.reading("pipeline");
+	assert.notEqual(fresh.base, nextPipeline.base);
 	assert.equal(fresh.base, released.goal?.receipt?.commit);
-	assert.equal(released.reviews.find(r => r.id === fresh.id)?.wake?.review, nextMail.id);
-	for (const detail of [proposal.reason, nextMail.base, evidence, ...splitCompose().map(g => g.task)]) assert.ok(fresh.prompt.includes(detail), detail);
+	assert.equal(released.reviews.find(r => r.id === fresh.id)?.wake?.review, nextPipeline.id);
+	for (const detail of [proposal.reason, nextPipeline.base, evidence, ...splitAssembly().map(g => g.task)]) assert.ok(fresh.prompt.includes(detail), detail);
 	assert.equal(f.workers.size, 3, "release reserves a scout, not the proposed writers");
-	await report(fresh, evidence, [work("controls", compose)]); // Different from the deferred split.
+	await report(fresh, evidence, [work("controls", assembly)]); // Different from the deferred split.
 	const changed = await f.status();
 	assert.deepEqual(changed.nodes.map(n => [n.grain, n.review]), [["controls", fresh.id]]);
-	await nextMail.report(proposal);
+	await nextPipeline.report(proposal);
 	await f.write("controls", 'export default ()=>"fixed";');
 	const done = await f.status();
 	assert.ok(done.qualified); assert.deepEqual(Object.keys(done.outputs ?? {}), ["controls"]);
 	assert.deepEqual(done.products?.slice(0, 2), released.products);
-	assert.equal(done.reviews.filter(r => r.wake?.review === nextMail.id).length, 1);
+	assert.equal(done.reviews.filter(r => r.wake?.review === nextPipeline.id).length, 1);
 });
 
 for (const late of [false, true]) test(`a refused consumer releases its input, but not its refusal / ${late ? "checkpoint during review" : "same version"}`, async t => {
-	const f = await composeRound(t);
-	const adapter = work("adapter", "engine/adapter", ["compose"]);
+	const f = await assemblyRound(t);
+	const adapter = work("adapter", "engine/adapter", ["assembly"]);
 	let callId = "";
-	const issuer = await f.write("compose", composeBody, { execute: async (tool, args, id) => {
+	const issuer = await f.write("assembly", assemblyBody, { execute: async (tool, args, id) => {
 		if (tool !== "create_session" || !text(record(args.kickoff).prompt, "brief").includes("complete engine/adapter/")) return f.execute(tool, args, id);
 		callId = id;
 		return { resultType: "unconfirmed" };
 	} });
-	const core = await f.reading("engine"), mail = await f.reading("mail");
+	const core = await f.reading("engine"), pipeline = await f.reading("pipeline");
 	await report(core, ".foundry/left.md", [adapter, work("parser", "engine/parser")]);
-	await report(mail, `${compose}/index.mjs`, splitCompose());
-	assert.match(String((await f.status()).reviews.find(r => r.id === mail.id)?.reason), /current assignment.*adapter/);
+	await report(pipeline, `${assembly}/index.mjs`, splitAssembly());
+	assert.match(String((await f.status()).reviews.find(r => r.id === pipeline.id)?.reason), /current assignment.*adapter/);
 	issuer.refusal({ type: "permission.completed", data: { toolCallId: callId, result: { kind: "denied-interactively-by-user" } } }, core.issuer);
 	await issuer.flush();
-	const released = await f.reading("mail");
-	assert.equal(released.base, mail.base);
-	assert.equal((await f.status()).reviews.find(r => r.id === released.id)?.wake?.review, mail.id);
-	if (!late) await report(released, `${compose}/index.mjs`, []);
+	const released = await f.reading("pipeline");
+	assert.equal(released.base, pipeline.base);
+	assert.equal((await f.status()).reviews.find(r => r.id === released.id)?.wake?.review, pipeline.id);
+	if (!late) await report(released, `${assembly}/index.mjs`, []);
 	f.owner.turn("owner"); await f.owner.flush();
-	assert.equal(f.scouts.filter(s => s.squad === "mail").at(-1)?.id, released.id, "no second wake on the same version");
-	await f.write("parser", composeBody);
-	const before = await f.status(), engine = await f.reading("engine"), host = await f.reading("mail");
+	assert.equal(f.scouts.filter(s => s.squad === "pipeline").at(-1)?.id, released.id, "no second wake on the same version");
+	await f.write("parser", assemblyBody);
+	const before = await f.status(), engine = await f.reading("engine"), host = await f.reading("pipeline");
 	if (late) {
-		assert.ok(host.prompt.includes(mail.base) && host.prompt.includes(splitCompose()[0].task), "the new checkpoint review retains the undecided proposal");
-		await report(released, `${compose}/index.mjs`, splitCompose());
+		assert.ok(host.prompt.includes(pipeline.base) && host.prompt.includes(splitAssembly()[0].task), "the new checkpoint review retains the undecided proposal");
+		await report(released, `${assembly}/index.mjs`, splitAssembly());
 		assert.deepEqual((await f.status()).nodes, before.nodes, "the superseded release review cannot authorize a writer");
 	}
 	assert.equal(before.products?.length, 2);
 	const denied = before.nodes.find(n => n.grain === "adapter");
 	assert.match(String(denied?.reason), /permission refused/);
-	assert.equal(denied?.inputs?.compose, text(before.outputs?.compose, "checkpoint input"));
+	assert.equal(denied?.inputs?.assembly, text(before.outputs?.assembly, "checkpoint input"));
 	await report(engine, ".foundry/left.md", [adapter]);
 	assert.match(String((await f.status()).reviews.find(r => r.id === engine.id)?.reason), /assigned grain/);
-	await report(host, `${compose}/index.mjs`, splitCompose());
+	await report(host, `${assembly}/index.mjs`, splitAssembly());
 	const after = await f.status();
 	assert.deepEqual(after.nodes.filter(n => n.state === "writing").map(n => n.grain), ["editor", "send"]);
 	assert.deepEqual(after.nodes.find(n => n.grain === "adapter"), denied);
 	assert.deepEqual(after.products, before.products);
-	assert.equal(after.reviews.filter(r => r.wake?.review === mail.id && r.base === mail.base).length, 1);
-	if (!late) assert.equal(host.prompt.includes(splitCompose()[0].task), false, "a later checkpoint does not replay a consumed deferral");
+	assert.equal(after.reviews.filter(r => r.wake?.review === pipeline.id && r.base === pipeline.base).length, 1);
+	if (!late) assert.equal(host.prompt.includes(splitAssembly()[0].task), false, "a later checkpoint does not replay a consumed deferral");
 	const db = openDatabase(f.root); t.after(() => db.close());
 	assert.deepEqual(db.read(run)?.effects.filter(e => e.grain === "adapter").map(e => [e.callId, e.state]), [[callId, "refused"]]);
 });
 
 test("a repeated tree stays unmet and releases the parent for a different split on the same revision", async t => {
-	const { f, nextCore: core, nextMail: mail } = await composeCheckpoint(t);
+	const { f, nextCore: core, nextPipeline: pipeline } = await assemblyCheckpoint(t);
 	const before = await f.status();
 	await report(core, ".foundry/left.md", []);
-	await report(mail, `${compose}/index.mjs`, ["compose"]);
+	await report(pipeline, `${assembly}/index.mjs`, ["assembly"]);
 	const writer = [...f.workers.values()].at(-1); assert.ok(writer);
-	await f.write("compose", composeBody);
+	await f.write("assembly", assemblyBody);
 	const stalled = await f.status();
-	assert.equal(stalled.nodes.find(n => n.grain === "compose")?.state, "repeated");
+	assert.equal(stalled.nodes.find(n => n.grain === "assembly")?.state, "repeated");
 	assert.deepEqual(stalled.products, before.products);
 	assert.deepEqual(stalled.goal, before.goal);
 	assert.equal(stalled.qualified, null);
-	const engine = await f.reading("engine"), host = await f.reading("mail");
-	assert.notEqual(host.id, mail.id, "new evidence admits a new review, not a second result on the first");
-	assert.equal(host.base, mail.base);
-	assert.notEqual(stalled.reviews.find(r => r.id === mail.id)?.version, stalled.reviews.find(r => r.id === host.id)?.version);
+	const engine = await f.reading("engine"), host = await f.reading("pipeline");
+	assert.notEqual(host.id, pipeline.id, "new evidence admits a new review, not a second result on the first");
+	assert.equal(host.base, pipeline.base);
+	assert.notEqual(stalled.reviews.find(r => r.id === pipeline.id)?.version, stalled.reviews.find(r => r.id === host.id)?.version);
 	await report(engine, ".foundry/api.md", [work("parser", "engine/parser")]);
-	await report(host, `${compose}/index.mjs`, splitCompose());
+	await report(host, `${assembly}/index.mjs`, splitAssembly());
 	assert.deepEqual((await f.status()).nodes.filter(n => n.state === "writing").map(n => n.grain).sort(), ["editor", "parser", "send"]);
 	await assert.rejects(f.runtime(writer.cwd).operation("submit", { run, token: writer.token }, writer.id), /assignment/);
-	await f.write("parser", composeBody); await f.write("editor", "export default text=>text;");
+	await f.write("parser", assemblyBody); await f.write("editor", "export default text=>text;");
 	await f.write("send", `export default async(text, send)=>{try {await send(text)} catch {return "outcome unknown"}}`);
 	const done = await f.status();
 	assert.ok(done.qualified, done.blocker ?? done.goal?.receipt?.output ?? "no final result");
@@ -538,8 +538,8 @@ for (const edit of ["input", "neighbor"])
 	for (const steps of orders(["edit", "reopen", "deny", "submit"])) {
 		if (!matrix && (edit !== "input" || steps.join() !== "edit,reopen,deny,submit")) continue;
 		test(`factory matrix: ${edit} / ${steps.join("-")}`, async t => {
-			const file = edit === "input" ? `${compose}/external` : "target-note";
-			const f = await composeRound(t, {
+			const file = edit === "input" ? `${assembly}/external` : "target-note";
+			const f = await assemblyRound(t, {
 				[goalCheck]: `import {existsSync} from "node:fs"; process.exit(existsSync("${file}") && existsSync("engine/parser/index.mjs") ? 0 : 1);`
 			});
 			let call = "", denied = false, tip = f.tip, submitted = false;
@@ -552,12 +552,12 @@ for (const edit of ["input", "neighbor"])
 			};
 			/** @type {Partial<Host>} */
 			const host = { execute, recover: async e => ({ resultType: e.callId === call && denied ? "denied" : "unconfirmed" }) };
-			let issuer = await f.write("compose", composeBody, host);
-			const core = await f.reading("engine"), mail = await f.reading("mail");
+			let issuer = await f.write("assembly", assemblyBody, host);
+			const core = await f.reading("engine"), pipeline = await f.reading("pipeline");
 			const writer = f.workers.get(core.issuer); assert.ok(writer);
 			const before = await f.status(), db = openDatabase(f.root); t.after(() => db.close());
-			await report(core, ".foundry/left.md", [work("adapter", "engine/adapter", ["compose"]), work("parser", "engine/parser")]);
-			await report(mail, ".foundry/right.md", []);
+			await report(core, ".foundry/left.md", [work("adapter", "engine/adapter", ["assembly"]), work("parser", "engine/parser")]);
+			await report(pipeline, ".foundry/right.md", []);
 			put(f.root, "only-staged", "not in the product"); git(f.root, "add", "only-staged");
 			for (const step of steps) {
 				if (step === "edit") {
@@ -569,7 +569,7 @@ for (const edit of ["input", "neighbor"])
 					issuer.turn(core.issuer); await issuer.flush();
 				} else if (step === "submit") {
 					submitted = true;
-					await f.write("parser", composeBody);
+					await f.write("parser", assemblyBody);
 				} else {
 					const held = await f.owner.operation("pause", { run }, "owner");
 					issuer.close(); issuer = f.runtime(writer.cwd, host);
@@ -608,29 +608,29 @@ for (const form of ["id", "definition", "replace", "rename"])
 		for (const restart of [false, true]) {
 			if (!matrix && (form !== "id" || phase !== "backtrack" || !restart)) continue;
 			test(`factory matrix: duplicate ${form} / ${phase} / ${restart ? "resume" : "turn"}`, async t => {
-				const { f, nextCore: core, nextMail: mail } = await composeCheckpoint(t);
-				const before = await f.status(), evidence = `${compose}/index.mjs`, task = work("compose", compose);
+				const { f, nextCore: core, nextPipeline: pipeline } = await assemblyCheckpoint(t);
+				const before = await f.status(), evidence = `${assembly}/index.mjs`, task = work("assembly", assembly);
 				await report(core, ".foundry/left.md", []);
-				await report(mail, evidence, ["compose"]);
-				await f.write("compose", composeBody);
+				await report(pipeline, evidence, ["assembly"]);
+				await f.write("assembly", assemblyBody);
 				if (phase === "backtrack") {
 					await report(await f.reading("engine"), ".foundry/left.md", []);
-					await report(await f.reading("mail"), evidence, [{ ...task, task: "Try a different implementation of compose" }]);
-					await f.write("compose", composeBody); // The changed task also reproduces the exact failing tree.
+					await report(await f.reading("pipeline"), evidence, [{ ...task, task: "Try a different implementation of assembly" }]);
+					await f.write("assembly", assemblyBody); // The changed task also reproduces the exact failing tree.
 				}
 				await report(await f.reading("engine"), ".foundry/left.md", phase === "peer" ? [work("parser", "engine/parser")] : []);
 				if (restart) {
 					await f.owner.operation("pause", { run }, "owner");
 					await f.runtime(f.root).operation("start", { source }, "owner");
 				}
-				const workers = f.workers.size, old = await f.status(), next = await f.reading("mail");
-				await report(next, evidence, form === "id" ? ["compose"] : [{ ...task, id: form === "rename" ? "relabeled" : task.id }], form === "replace" ? ["compose"] : []);
+				const workers = f.workers.size, old = await f.status(), next = await f.reading("pipeline");
+				await report(next, evidence, form === "id" ? ["assembly"] : [{ ...task, id: form === "rename" ? "relabeled" : task.id }], form === "replace" ? ["assembly"] : []);
 				const rejected = await f.status(), review = rejected.reviews.find(r => r.id === next.id);
 				assert.equal(review?.state, "blocked");
 				assert.match(String(review.reason), /already reproduced/);
 				assert.deepEqual(rejected.nodes, old.nodes);
 				assert.equal(f.workers.size, workers);
-				await report(next, evidence, splitCompose());
+				await report(next, evidence, splitAssembly());
 				assert.deepEqual(await f.status(), rejected, "even a useful plan cannot replace a consumed result");
 				assert.deepEqual(rejected.products, before.products);
 			});
@@ -638,20 +638,20 @@ for (const form of ["id", "definition", "replace", "rename"])
 
 for (const changed of [false, true])
 	test(`factory matrix: delayed ${changed ? "changed" : "identical"} prerequisite on the same revision`, async t => {
-		const dep = "engine/interface", parser = work("parser", dep), adapter = work("adapter", "mail/adapter", ["parser"]);
-		const f = replyFixture(t, {
-			[`${dep}/index.mjs`]: originalCompose, "mail/adapter/index.mjs": originalCompose,
-			".foundry/product.mjs": 'import "../mail/adapter/index.mjs";',
-			[goalCheck]: `import p from "../${dep}/index.mjs";import a from "../mail/adapter/index.mjs";process.exit(p() && a() ? 0 : 1);`
+		const dep = "engine/interface", parser = work("parser", dep), adapter = work("adapter", "pipeline/adapter", ["parser"]);
+		const f = pipelineFixture(t, {
+			[`${dep}/index.mjs`]: originalAssembly, "pipeline/adapter/index.mjs": originalAssembly,
+			".foundry/product.mjs": 'import "../pipeline/adapter/index.mjs";',
+			[goalCheck]: `import p from "../${dep}/index.mjs";import a from "../pipeline/adapter/index.mjs";process.exit(p() && a() ? 0 : 1);`
 		});
 		await f.start();
-		const [core, mail] = f.scouts;
+		const [core, pipeline] = f.scouts;
 		await report(core, ".foundry/left.md", [parser]);
-		await report(mail, ".foundry/right.md", [adapter]);
-		await f.write("parser", originalCompose); await f.write("adapter", originalCompose);
+		await report(pipeline, ".foundry/right.md", [adapter]);
+		await f.write("parser", originalAssembly); await f.write("adapter", originalAssembly);
 		assert.deepEqual((await f.status()).nodes.map(n => n.state), ["repeated", "repeated"]);
 		const first = [...f.workers.values()].at(-1); assert.ok(first);
-		const current = await f.reading("mail");
+		const current = await f.reading("pipeline");
 		await report(await f.reading("engine"), ".foundry/left.md", [{ ...parser, task: "Implement the revised interface" }]);
 		assert.ok(!(await f.status()).nodes.some(n => n.grain === "adapter"), "retire the consumer of the superseded parser");
 		await report(current, ".foundry/right.md", [adapter]);
@@ -659,20 +659,20 @@ for (const changed of [false, true])
 		assert.equal(waiting.reviews.find(r => r.id === current.id)?.state, "observed");
 		assert.equal(waiting.nodes.find(n => n.grain === "adapter")?.state, "waiting");
 		const workers = f.workers.size;
-		await f.write("parser", changed ? composeBody : originalCompose);
+		await f.write("parser", changed ? assemblyBody : originalAssembly);
 		const s = await f.status(), n = s.nodes.find(n => n.grain === "adapter"); assert.ok(n);
 		assert.equal(s.qualified, null);
 		await assert.rejects(f.runtime(first.cwd).operation("submit", { run, token: first.token }, first.id), /assignment/);
 		if (changed) {
 			assert.equal(n.state, "writing");
 			assert.equal(f.workers.size, workers + 1);
-			await f.write("adapter", composeBody);
+			await f.write("adapter", assemblyBody);
 		} else {
 			assert.equal(f.workers.size, workers);
 			assert.equal(n.generation, undefined, "do not reserve a second attempt");
 			assert.match(String(n.reason), /already reproduced/);
 			assert.equal(s.checkpoint, null);
-			await report(await f.reading("mail"), ".foundry/right.md", [{ ...adapter, task: "Use the corrected interface" }], ["adapter"]);
+			await report(await f.reading("pipeline"), ".foundry/right.md", [{ ...adapter, task: "Use the corrected interface" }], ["adapter"]);
 			assert.equal((await f.status()).nodes.find(n => n.grain === "adapter")?.state, "writing");
 		}
 		if (changed) assert.ok((await f.status()).qualified);
@@ -680,16 +680,16 @@ for (const changed of [false, true])
 
 for (const resolve of ["refusal", "target"])
 	test(`factory matrix: a prepared call under an input conflict / ${resolve}`, async t => {
-		const f = await composeRound(t);
-		const issuer = await f.write("compose", composeBody, { execute: async (...args) => args[0] === "create_session" &&
+		const f = await assemblyRound(t);
+		const issuer = await f.write("assembly", assemblyBody, { execute: async (...args) => args[0] === "create_session" &&
 			text(record(args[1].kickoff).prompt, "brief").includes("complete engine/adapter/") ?
 			{ resultType: "failure", error: "This session management tool is disabled" } : f.execute(...args) });
-		const core = await f.reading("engine"), mail = await f.reading("mail"), before = await f.status();
-		await report(core, ".foundry/left.md", [work("adapter", "engine/adapter", ["compose"])]);
+		const core = await f.reading("engine"), pipeline = await f.reading("pipeline"), before = await f.status();
+		await report(core, ".foundry/left.md", [work("adapter", "engine/adapter", ["assembly"])]);
 		const reserved = await f.status(core.issuer);
 		const [call] = reserved.prepared; assert.ok(call);
-		await report(mail, ".foundry/right.md", []);
-		put(f.root, `${compose}/external`, "concurrent"); git(f.root, "add", compose); git(f.root, "commit", "-qm", "move target");
+		await report(pipeline, ".foundry/right.md", []);
+		put(f.root, `${assembly}/external`, "concurrent"); git(f.root, "add", assembly); git(f.root, "commit", "-qm", "move target");
 		f.owner.turn("owner"); await f.owner.flush();
 		const held = await f.status();
 		assert.match(String(held.blocker), /current assignment.*adapter/);
@@ -710,24 +710,24 @@ for (const resolve of ["refusal", "target"])
 	});
 
 for (const cap of [undefined, 2])
-	for (const firstScout of ["engine", "mail"])
+	for (const firstScout of ["engine", "pipeline"])
 		for (const firstWriter of ["editor", "recover"])
 			for (const receipt of ["send", "joined product", "final goal"]) {
-				if (!matrix && (cap !== 2 || firstScout !== "mail" || firstWriter !== "recover" || receipt !== "final goal")) continue;
+				if (!matrix && (cap !== 2 || firstScout !== "pipeline" || firstWriter !== "recover" || receipt !== "final goal")) continue;
 				test(`factory matrix: fan-in ${cap ?? "uncapped"} / ${firstScout}-${firstWriter} / lost ${receipt}`, async t => {
 					const policy = areaPolicy();
-					policy.squads[1].areas = [`${compose}/editor`];
-					policy.squads.push({ ...policy.squads[1], id: "transport", areas: [`${compose}/send`] });
-					const f = replyFixture(t, { [source]: JSON.stringify({ ...policy, ...(cap ? { limits: { workers: cap } } : {}) }) });
+					policy.squads[1].areas = [`${assembly}/editor`];
+					policy.squads.push({ ...policy.squads[1], id: "transport", areas: [`${assembly}/send`] });
+					const f = pipelineFixture(t, { [source]: JSON.stringify({ ...policy, ...(cap ? { limits: { workers: cap } } : {}) }) });
 					await f.start();
-					const [core, mail] = f.scouts;
+					const [core, pipeline] = f.scouts;
 					const engine = () => report(core, ".foundry/left.md", [work("recover", "engine/recovery")]);
-					const host = () => report(mail, ".foundry/right.md", [work("editor", `${compose}/editor`)]);
+					const host = () => report(pipeline, ".foundry/right.md", [work("editor", `${assembly}/editor`)]);
 					if (firstScout === "engine") await engine();
 					await host();
-					if (firstScout === "mail") await engine();
+					if (firstScout === "pipeline") await engine();
 					const wire = async () => {
-						const job = await f.reading("transport"), plans = [work("send", `${compose}/send`, ["recover", "editor"])];
+						const job = await f.reading("transport"), plans = [work("send", `${assembly}/send`, ["recover", "editor"])];
 						await report(job, ".foundry/api.md", plans);
 						await report(job, ".foundry/api.md", plans);
 					};
@@ -824,13 +824,13 @@ for (const crash of ["none", "before", "after"])
 	});
 
 test("a graph edit is atomic, charter-limited, and cannot rewrite issued work or strand a dependent", async t => {
-	const f = replyFixture(t);
+	const f = pipelineFixture(t);
 	await f.start();
-	const [core, mail] = f.scouts, reading = ".foundry/left.md", host = ".foundry/right.md";
+	const [core, pipeline] = f.scouts, reading = ".foundry/left.md", host = ".foundry/right.md";
 	const live = work("recover", "engine/recovery"), pending = work("abi", "engine/bindings", ["recover"]);
 	await report(core, reading, [live, pending, work("probe", "engine/probe")]);
-	await report(mail, host, [work("wire", "mail/wire", ["abi"])]);
-	await f.write("probe", composeBody, { execute: async (...args) => String(args[1].description).startsWith("Check probe at ") ?
+	await report(pipeline, host, [work("wire", "pipeline/wire", ["abi"])]);
+	await f.write("probe", assemblyBody, { execute: async (...args) => String(args[1].description).startsWith("Check probe at ") ?
 		{ resultType: "denied" } : f.execute(...args) });
 	const next = await f.reading("engine");
 	const before = await f.status();
@@ -841,7 +841,7 @@ test("a graph edit is atomic, charter-limited, and cannot rewrite issued work or
 	const squad = graph.policy.squads.find(s => s.id === review.squad); assert.ok(squad);
 	const snapshot = structuredClone(graph);
 	for (const [proposals, replace, reason] of /** @type {Array<[typeof live[],string[],RegExp]>} */ ([
-		[[work("escape", "mail/other")], [], /outside/],
+		[[work("escape", "pipeline/other")], [], /outside/],
 		[[{ ...work("exec", "engine/x"), check: "neighbor.txt" }], [], /component check/],
 		[[work("alias", "engine/Bindings/next")], [], /disjoint/],
 		[[work("cycle", "engine/c", ["abi"]), { ...pending, needs: ["cycle"] }], ["abi"], /cycle/],
@@ -869,9 +869,9 @@ test("a graph edit is atomic, charter-limited, and cannot rewrite issued work or
 });
 
 test("owner resume can recover an unbound scout dispatch from a finished writer", async t => {
-	const f = replyFixture(t);
+	const f = pipelineFixture(t);
 	await f.start(); await f.reportGrains("engine", []);
-	await report(await f.reading("mail"), ".foundry/right.md", [work("editor", "mail/compose/editor")]);
+	await report(await f.reading("pipeline"), ".foundry/right.md", [work("editor", "pipeline/assembly/editor")]);
 	let ticket = "";
 	const writer = await f.write("editor", "export default text=>text", { scout: async (_, dispatch) => {
 		ticket = dispatch; throw Error("unbound scout launch");
@@ -921,17 +921,17 @@ test("a paused workflow result survives an issuer reload and starts exactly one 
 });
 
 test("the product evaluator can attribute a bounded repair to a discovered directory after reload", async t => {
-	const dir = "mail/delivery";
-	const f = replyFixture(t, {
+	const dir = "pipeline/delivery";
+	const f = pipelineFixture(t, {
 		[goalCheck]: `import {existsSync} from "node:fs";process.exit(existsSync("${dir}/index.mjs")?0:1);`,
 		".foundry/product.mjs": `import deliver from "../${dir}/index.mjs";if(deliver()!=="sent"){
 			const [id]=Object.entries(JSON.parse(process.env.FOUNDRY_OUTPUTS)).find(([,dir])=>dir==="${dir}");
 			console.log("FOUNDRY_REPAIR="+id);process.exit(1);}`
 	});
 	await f.start();
-	const [core, mail] = f.scouts;
+	const [core, pipeline] = f.scouts;
 	await report(core, ".foundry/left.md", [], []);
-	await report(mail, ".foundry/right.md", [work("chosen-by-scout", dir)]);
+	await report(pipeline, ".foundry/right.md", [work("chosen-by-scout", dir)]);
 	const before = await f.owner.operation("pause", { run }, "owner");
 	const resumed = await f.runtime(f.root).operation("start", { source }, "owner");
 	assert.deepEqual(resumed.nodes, before.nodes);
@@ -947,13 +947,13 @@ test("the product evaluator can attribute a bounded repair to a discovered direc
 });
 
 test("area contracts conserve interfaces and check implementations, not a catalog of tasks", async t => {
-	const f = replyFixture(t);
+	const f = pipelineFixture(t);
 	const original = areaPolicy();
 	for (const [invalid, error] of /** @type {Array<[object,RegExp]>} */ ([
 		[{ ...original, seed: ["seed"] }, /Unsupported field/],
 		[{ ...original, grains: [] }, /Unsupported field/],
 		[{ ...original, goalCheck: undefined }, /final goal/],
-		[{ ...original, squads: original.squads.map(s => ({ ...s, areas: ["mail"] })) }, /disjoint/],
+		[{ ...original, squads: original.squads.map(s => ({ ...s, areas: ["pipeline"] })) }, /disjoint/],
 		[{ ...original, squads: [{ ...original.squads[0], checks: ["engine/test.mjs"] }] }, /overlap/]
 	])) {
 		put(f.root, source, JSON.stringify(invalid)); git(f.root, "commit", "-qam", "invalid contract");
@@ -961,10 +961,10 @@ test("area contracts conserve interfaces and check implementations, not a catalo
 	}
 	put(f.root, source, JSON.stringify(original)); git(f.root, "commit", "-qam", "restore contract");
 	await f.start();
-	const [core, mail] = f.scouts;
+	const [core, pipeline] = f.scouts;
 	put(f.root, unitCheck, "process.exit(0)"); git(f.root, "commit", "-qam", "replace permitted check");
 	await report(core, ".foundry/left.md", [work("recover", "engine/recovery")]);
-	await report(mail, ".foundry/right.md", []);
+	await report(pipeline, ".foundry/right.md", []);
 	const stale = await f.status();
 	assert.deepEqual(stale.reviews.map(r => r.state), ["blocked", "blocked"]);
 	assert.match(String(stale.blocker), /conserved contract changed/);
@@ -2066,11 +2066,11 @@ for (const seed of [true, false])
 	});
 
 test("the total assignment limit admits late evidence, finishes in-flight checks and retains the unmet checkpoint", async t => {
-	const f = replyFixture(t, { [source]: JSON.stringify({ ...areaPolicy(), limits: { assignments: 3 } }) });
+	const f = pipelineFixture(t, { [source]: JSON.stringify({ ...areaPolicy(), limits: { assignments: 3 } }) });
 	const start = await f.start();
 	assert.deepEqual(start.assignments, { used: 2, limit: 3 }, "two charters in one workflow are two assignments");
-	const [core, mail] = f.scouts;
-	await report(mail, ".foundry/right.md", [work("editor", "mail/compose/editor")]);
+	const [core, pipeline] = f.scouts;
+	await report(pipeline, ".foundry/right.md", [work("editor", "pipeline/assembly/editor")]);
 	await f.write("editor", "export default text=>text;", {
 		execute: async (...args) => {
 			if (String(args[1].description).startsWith("Check joined product")) {
@@ -2099,7 +2099,7 @@ test("the total assignment limit charges a repair returned inline and preserves 
 	const f = fixture(t, p => { p.seed = ["left"]; p.limits = { assignments: 2, repairs: 4 }; });
 	await f.start();
 	const [writer] = f.workers.values();
-	await assert.rejects(f.runtime(writer.cwd, { helpersRunning: async () => true }).operation("submit", { run, token: writer.token }, writer.id),
+	await assert.rejects(f.runtime(writer.cwd, { runningHelpers: async () => ["helper"] }).operation("submit", { run, token: writer.token }, writer.id),
 		{ code: "helpers_running" });
 	assert.deepEqual((await f.status()).assignments, { used: 1, limit: 2 }, "helpers and an unready submission are not assignments");
 	const repair = await f.submit("worker-1", 0);

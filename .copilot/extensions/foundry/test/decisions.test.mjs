@@ -109,42 +109,42 @@ for (const hold of ["none", "pause", "plan"]) test(`an in-scope answer reaches t
 });
 
 test("a verbose check keeps its exit code and diagnostics at both ends for the scout", async t => {
-	const f = trial(t, `import { writeFileSync } from 'node:fs'; writeFileSync(2, 'Start: account ok\\n'+'warning\\n'.repeat(550000)+'Window: Inbox missing\\n'); process.exit(1)`);
+	const f = trial(t, `import { writeFileSync } from 'node:fs'; writeFileSync(2, 'Start: dataset ok\\n'+'warning\\n'.repeat(550000)+'Window: Catalog missing\\n'); process.exit(1)`);
 	await f.start();
 	const result = (await f.status()).goal?.receipt;
 	assert.equal(result?.exit, 1);
-	assert.ok(result.output.startsWith("Start: account ok\n") && result.output.endsWith("Window: Inbox missing\n"));
+	assert.ok(result.output.startsWith("Start: dataset ok\n") && result.output.endsWith("Window: Catalog missing\n"));
 	assert.ok(f.scouts[0].prompt.includes(result.output));
 });
 
 for (const research of [false, true]) test(`a diagnostic question after a focused read never opens an owner dialog: research ${research}`, async t => {
 	const f = factory(t, run, source, {
-		[source]: JSON.stringify({ version: 2, id: run, direction: "Open the Inbox.", target: "refs/heads/main",
-			squads: ["account", "window"].map(id => ({ id, areas: [id], charter: "charter", checks: ["unit.mjs"],
-				...(id === "account" && research ? { researchAgent: "foundry-research" } : {}) })), goalCheck: "goal.mjs", productCheck: "product.mjs" }),
-		charter: "Use the shared account.", ".foundry/lookup/journey.md": "Open the Inbox.", interface: "a".repeat(9000), "unit.mjs": "", "product.mjs": "",
-		"goal.mjs": `console.error("warning\\n".repeat(700)); console.error(["Window", "Inbox missing"].join(": ")); process.exit(1)`,
+		[source]: JSON.stringify({ version: 2, id: run, direction: "Open the Catalog.", target: "refs/heads/main",
+			squads: ["dataset", "window"].map(id => ({ id, areas: [id], charter: "charter", checks: ["unit.mjs"],
+				...(id === "dataset" && research ? { researchAgent: "foundry-research" } : {}) })), goalCheck: "goal.mjs", productCheck: "product.mjs" }),
+		charter: "Use the shared dataset.", ".foundry/lookup/journey.md": "Open the Catalog.", interface: "a".repeat(9000), "unit.mjs": "", "product.mjs": "",
+		"goal.mjs": `console.error("warning\\n".repeat(700)); console.error(["Window", "Catalog missing"].join(": ")); process.exit(1)`,
 	});
 	let asks = 0;
 	const owner = f.runtime(f.root, { ask: async () => { asks++; return null; } });
-	await f.start(owner); const [account, window] = f.scouts;
-	await account.report({ outcome: "needs-evidence", file: "interface", reason: "Check the account API.", evidence: ["charter"], grains: [] });
+	await f.start(owner); const [dataset, window] = f.scouts;
+	await dataset.report({ outcome: "needs-evidence", file: "interface", reason: "Check the dataset API.", evidence: ["charter"], grains: [] });
 	const focus = f.scouts.at(-1); assert.ok(focus && focus.id !== window.id);
-	const reason = "Did the Rust account step fail? The combined exit does not say.";
+	const reason = "Did the dataset step fail? The combined exit does not say.";
 	await focus.report({ outcome: "needs-decision", reason, evidence: ["interface"], grains: [] });
 	await owner.flush();
 	assert.equal(asks, 0, "an operator is not a test runner");
 	if (research) {
 		const job = f.scouts.at(-1); assert.ok(job && job.id !== focus.id);
-		assert.ok(job.prompt.includes(reason) && job.prompt.includes("Window: Inbox missing"));
+		assert.ok(job.prompt.includes(reason) && job.prompt.includes("Window: Catalog missing"));
 		await job.report({ status: "unknown", reason: "No independent Rust verdict.", findings: [] });
 	}
 	await window.report({ outcome: "regenerate", reason: "Repair ordinary launch.", evidence: ["charter"],
-		grains: [{ id: "window", directory: "window", check: "unit.mjs", task: "Display the Inbox.", needs: [] }] });
+		grains: [{ id: "window", directory: "window", check: "unit.mjs", task: "Display the Catalog.", needs: [] }] });
 	owner.turn("owner"); await owner.flush(); await f.settle();
 	const s = await f.status();
 	assert.equal(asks, 0); assert.deepEqual(s.questions, []);
-	assert.equal(s.reviews.filter(r => r.squad === "account").at(-1)?.observation?.outcome, "unresolved");
+	assert.equal(s.reviews.filter(r => r.squad === "dataset").at(-1)?.observation?.outcome, "unresolved");
 	assert.equal(f.workers.size, 1); assert.equal(s.nodes[0].grain, "window");
 	assert.equal(f.scouts.length, research ? 4 : 3); assert.equal(s.qualified, null);
 });

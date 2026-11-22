@@ -10,31 +10,31 @@ import { factory, git, pinnedFiles, put } from "./fixture.mjs";
 
 /** @param {string} directory @param {string[]} needs @param {string} body */
 const part = (directory, needs, body) => ({ directory, squad: directory.split("/")[0], id: path.basename(directory), needs, body });
-const outbox = {
-	id: "outbox", direction: "After reopening a two-client outbox, preserve an unacknowledged reply without resending it. A different account can still send.",
+const spooler = {
+	id: "spooler", direction: "Reopen the print queue without repeating a job whose acknowledgment was lost. Another printer can still accept work.",
 	parts: [
-		part("core/key", [], "(account,id)=>JSON.stringify([account,id])"),
-		part("desktop/editor", [], "text=>({kind:'reply',text})"),
-		part("mobile/composer", [], "text=>({kind:'post',text})"),
-		part("delivery/transport", [], "async(send,message)=>{try{await send(message);return 'sent'}catch{return 'unknown'}}"),
-		part("core/journal", ["key"], "(rows,account,id,message)=>rows[key(account,id)]??=( {account,id,...message,state:'draft'} )"),
-		part("delivery/dispatch", ["journal","transport"], `async(rows,account,id,msg,send)=>{
-			const entry=journal(rows,account,id,msg);if(entry.state==='draft'){entry.state='unknown';entry.state=await transport(send,{...entry})}return entry.state}`),
-		part("desktop/reply", ["editor","dispatch"], "(rows,account,id,text,send)=>dispatch(rows,account,id,editor(text),send)"),
-		part("mobile/post", ["composer","dispatch"], "(rows,account,id,text,send)=>dispatch(rows,account,id,composer(text),send)"),
-		part("core/workspace", ["reply","post"], "rows=>({reply:(...a)=>reply(rows,...a),post:(...a)=>post(rows,...a)})")
+		part("core/key", [], "(printer,id)=>JSON.stringify([printer,id])"),
+		part("labels/label", [], "text=>({format:'label',text})"),
+		part("sheets/sheet", [], "text=>({format:'sheet',text})"),
+		part("device/print", [], "async(write,job)=>{try{await write(job);return 'printed'}catch{return 'unknown'}}"),
+		part("core/jobs", ["key"], "(rows,printer,id,job)=>rows[key(printer,id)]??={printer,id,...job,state:'queued'}"),
+		part("device/dispatch", ["jobs","print"], `async(rows,printer,id,job,write)=>{
+			const entry=jobs(rows,printer,id,job);if(entry.state==='queued'){entry.state='unknown';entry.state=await print(write,{...entry})}return entry.state}`),
+		part("labels/tag", ["label","dispatch"], "(rows,printer,id,text,write)=>dispatch(rows,printer,id,label(text),write)"),
+		part("sheets/page", ["sheet","dispatch"], "(rows,printer,id,text,write)=>dispatch(rows,printer,id,sheet(text),write)"),
+		part("core/queue", ["tag","page"], "rows=>({tag:(...a)=>tag(rows,...a),page:(...a)=>page(rows,...a)})")
 	],
-	fault: "component", bad: "rows=>({reply:(...a)=>reply(rows,...a)})",
-	shortcut: "()=>({reply:(...a)=>reply({},...a),post:(...a)=>post({},...a)})", gap: "Reopening duplicated a send",
-	smoke: "assert.equal(typeof unit({}).post,'function','missing mobile client');",
-	invariant: "assert.equal(typeof unit({}).reply,'function');",
+	fault: "component", bad: "rows=>({tag:(...a)=>tag(rows,...a)})",
+	shortcut: "()=>({tag:(...a)=>tag({},...a),page:(...a)=>page({},...a)})", gap: "Reopening duplicated a print job",
+	smoke: "assert.equal(typeof unit({}).page,'function','missing sheet printer');",
+	invariant: "assert.equal(typeof unit({}).tag,'function');",
 	journey: `const rows={},calls=[];const lose=m=>{calls.push(m);throw Error('ack lost')};
-		assert.equal(await unit(rows).reply('a','1','draft body',lose),'unknown');
+		assert.equal(await unit(rows).tag('a','1','box 7',lose),'unknown');
 		const reopened=JSON.parse(JSON.stringify(rows));
-		assert.equal(await unit(reopened).reply('a','1','wrong retry body',lose),'unknown');
-		assert.equal(await unit(reopened).post('b','1','hello',m=>calls.push(m)),'sent');
-		assert.deepEqual(calls.map(m=>[m.account,m.kind,m.text]),[['a','reply','draft body'],['b','post','hello']],'Reopening duplicated a send');
-		assert.equal(Object.values(reopened).find(m=>m.account==='a').text,'draft body');`
+		assert.equal(await unit(reopened).tag('a','1','wrong retry',lose),'unknown');
+		assert.equal(await unit(reopened).page('b','1','sample',m=>calls.push(m)),'printed');
+		assert.deepEqual(calls.map(m=>[m.printer,m.format,m.text]),[['a','label','box 7'],['b','sheet','sample']],'Reopening duplicated a print job');
+		assert.equal(Object.values(reopened).find(m=>m.printer==='a').text,'box 7');`
 };
 const stock = {
 	id: "stock", direction: "Process scanned sales and cancellations. Report remaining stock per SKU without double-counting retried sales or overselling.",
@@ -77,7 +77,7 @@ const stock = {
 };
 
 const source = ".foundry/policy.json", unitCheck = ".foundry/unit.mjs", productCheck = ".foundry/product.mjs", goalCheck = ".foundry/goal.mjs";
-/** @param {typeof outbox} app @param {number|undefined} cap */
+/** @param {typeof spooler} app @param {number|undefined} cap */
 function contract(app, cap) {
 	const entry = app.parts.at(-1); assert.ok(entry);
 	const squads = [...new Set(app.parts.map(p => p.squad))].map(id => ({
@@ -115,7 +115,7 @@ async function slowCheck(t, cwd, command) {
 	return async () => { put(gate, "finish", ""); await child; };
 }
 
-for (const app of [outbox, stock]) for (const delivery of ["inline", "later", "no receipt", "replan", ...(app === stock ? ["notice unconfirmed"] : [])]) {
+for (const app of [spooler, stock]) for (const delivery of ["inline", "later", "no receipt", "replan", ...(app === stock ? ["notice unconfirmed"] : [])]) {
 	const replan = delivery === "replan";
 	test(`long factory: ${app.id} / late ${replan ? "goal" : app.fault} failure / ${delivery}`, async t => {
 		const run = app.id, cap = app === stock ? 2 : undefined, f = factory(t, run, source, contract(app, cap));

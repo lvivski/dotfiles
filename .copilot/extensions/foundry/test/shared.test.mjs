@@ -5,23 +5,23 @@ import { readPolicy } from "../work/contract.mjs";
 import { verifyContracts } from "../work/product.mjs";
 import { factory, git, put } from "./fixture.mjs";
 
-const source = ".foundry/inbox.json", suite = ".foundry/inbox", journey = `${suite}/journey.md`;
+const source = ".foundry/catalog.json", suite = ".foundry/catalog", journey = `${suite}/journey.md`;
 const api = "interfaces/launch.txt", helper = `${suite}/observe.mjs`;
 const unit = `${suite}/unit.mjs`, goal = `${suite}/goal.mjs`, product = `${suite}/product.mjs`;
-const promised = "Fresh launch opens a populated Inbox.", pinned = "Select the offline account.";
-const request = { outcome: "needs-evidence", reason: "Which account does normal launch select?", evidence: [journey], grains: [], file: api };
+const promised = "Fresh launch opens a populated catalog.", pinned = "Select the sample dataset.";
+const request = { outcome: "needs-evidence", reason: "Which dataset does normal launch select?", evidence: [journey], grains: [], file: api };
 /** @param {import("node:test").TestContext} t @param {Record<string,string>} [extra] */
 function trial(t, extra = {}) {
-	return factory(t, "offline", source, {
-		[source]: JSON.stringify({ version: 2, id: "offline", direction: "Open the workspace.", target: "refs/heads/main",
-			productCheck: product, goalCheck: goal, squads: ["runtime", "mac"].map(id => ({
+	return factory(t, "catalog-run", source, {
+		[source]: JSON.stringify({ version: 2, id: "catalog-run", direction: "Open the catalog.", target: "refs/heads/main",
+			productCheck: product, goalCheck: goal, squads: ["runtime", "client"].map(id => ({
 				id, charter: `${suite}/${id}.md`, areas: [id], checks: [unit],
 			})) }),
-		[journey]: "Shared background.\n".repeat(240) + promised, [`${suite}/mac.md`]: "Implement the window.", [`${suite}/runtime.md`]: "Supply the account.",
+		[journey]: "Shared background.\n".repeat(240) + promised, [`${suite}/client.md`]: "Implement the window.", [`${suite}/runtime.md`]: "Supply the dataset.",
 		[api]: pinned, [goal]: 'import "./observe.mjs"', [product]: "", [unit]: "",
 		[helper]: `import {existsSync, readFileSync} from 'node:fs';
-			if (!existsSync('mac/inbox') || readFileSync('mac/inbox','utf8') !== readFileSync('${api}','utf8')) {
-				console.log("Inbox missing"); process.exit(1);
+			if (!existsSync('client/catalog') || readFileSync('client/catalog','utf8') !== readFileSync('${api}','utf8')) {
+				console.log("catalog missing"); process.exit(1);
 			}`, ...extra,
 	});
 }
@@ -29,9 +29,9 @@ function trial(t, extra = {}) {
 test("both scouts receive the same committed journey without declaring any boundary files", async t => {
 	const brief = "Shared background.\n".repeat(3000) + promised;
 	const f = trial(t, { [journey]: brief }); put(f.root, journey, "Uncommitted direction");
-	await f.start(); assert.deepEqual(f.scouts.map(s => s.squad).sort(), ["mac", "runtime"]);
+	await f.start(); assert.deepEqual(f.scouts.map(s => s.squad).sort(), ["client", "runtime"]);
 	for (const s of f.scouts) {
-		assert.ok(s.prompt.includes(brief) && s.prompt.includes("Inbox missing"));
+		assert.ok(s.prompt.includes(brief) && s.prompt.includes("catalog missing"));
 		assert.ok(!s.prompt.includes("Uncommitted direction"));
 		assert.equal(s.packet.files[journey], git(f.root, "rev-parse", `${f.tip}:${journey}`));
 		assert.ok(s.packet.files[`${suite}/${s.squad}.md`]);
@@ -50,7 +50,7 @@ test("a non-text or blank shared brief is rejected before checks or scouts", asy
 
 test("a long squad name survives plan admission, goal attribution and scout dispatch", async t => {
 	const id = "catalog-".repeat(14) + "owner";
-	const f = trial(t, { [source]: JSON.stringify({ version: 2, id: "offline", target: "refs/heads/main", direction: promised,
+	const f = trial(t, { [source]: JSON.stringify({ version: 2, id: "catalog-run", target: "refs/heads/main", direction: promised,
 		productCheck: product, goalCheck: goal, squads: [{ id, areas: ["runtime"], charter: `${suite}/runtime.md`, checks: [unit] }] }),
 		[goal]: `console.log("FOUNDRY_SQUAD=${id}"); process.exit(1)` });
 	await f.start();
@@ -72,33 +72,33 @@ test("a scout discovers a committed interface by name, then requests its content
 });
 
 test("a scout may cite the pinned interface after requesting it, but not before", async t => {
-	const f = trial(t); await f.start(); const [runtime, mac] = f.scouts;
-	assert.equal(mac.packet.partial, false); assert.equal(mac.packet.files[api], undefined);
+	const f = trial(t); await f.start(); const [runtime, client] = f.scouts;
+	assert.equal(client.packet.partial, false); assert.equal(client.packet.files[api], undefined);
 	put(f.root, api, "Dirty alternative");
 	await runtime.report({ outcome: "no-gap", reason: "Unsupported conclusion.", evidence: [api], grains: [] });
-	await mac.report(request);
+	await client.report(request);
 	const focus = f.scouts[2]; assert.ok(focus, "a complete initial packet may still lack a relevant file");
-	assert.equal(focus.squad, "mac"); assert.equal(focus.packet.files[api], git(f.root, "rev-parse", `${f.tip}:${api}`));
+	assert.equal(focus.squad, "client"); assert.equal(focus.packet.files[api], git(f.root, "rev-parse", `${f.tip}:${api}`));
 	assert.ok(focus.prompt.includes(pinned) && !focus.prompt.includes("Dirty alternative"));
 	await focus.report({ outcome: "regenerate", reason: "Implement the window against this interface.", evidence: [api], grains: [
-		{ id: "launch", directory: "mac", task: "Open the Inbox.", needs: [], check: unit }] });
+		{ id: "launch", directory: "client", task: "Open the catalog.", needs: [], check: unit }] });
 	const s = await f.status();
 	assert.equal(s.reviews.find(r => r.id === runtime.id)?.state, "blocked");
 	assert.equal(s.reviews.find(r => r.id === focus.id)?.state, "observed");
-	assert.deepEqual(s.nodes.map(n => [n.directory, n.state]), [["mac", "writing"]]);
+	assert.deepEqual(s.nodes.map(n => [n.directory, n.state]), [["client", "writing"]]);
 	const [w] = f.workers.values();
 	const pin = /Read-only supporting file: ([0-9a-f]+):([^\n]+)/.exec(w.prompt);
 	assert.ok(pin, "writer needs the admitted citation, not the test's hard-coded answer");
 	assert.equal(pin[1], focus.base); assert.equal(pin[2], api);
-	put(w.cwd, "mac/inbox", git(w.cwd, "show", `${pin[1]}:${pin[2]}`));
-	await f.runtime(w.cwd).operation("submit", { run: "offline", token: w.token }, w.id);
+	put(w.cwd, "client/catalog", git(w.cwd, "show", `${pin[1]}:${pin[2]}`));
+	await f.runtime(w.cwd).operation("submit", { run: "catalog-run", token: w.token }, w.id);
 	const done = await f.status();
 	assert.ok(done.qualified && done.qualified !== f.tip);
 	assert.equal(done.goal?.receipt?.commit, done.qualified); assert.equal(done.goal?.receipt?.exit, 0);
 });
 
 test("a scout can follow a second reference without losing the first or looping back", async t => {
-	const second = "interfaces/accounts.txt", value = "v".repeat(300_000) + "Final account";
+	const second = "interfaces/datasets.txt", value = "v".repeat(300_000) + "Final dataset";
 	const f = trial(t, { [api]: second, [second]: value }); await f.start();
 	await f.scouts[1].report(request);
 	await f.scouts[2].report({ ...request, evidence: [api], file: second });
@@ -126,13 +126,13 @@ test("a discovered source may evolve but an unlisted acceptance helper stays pin
 });
 
 test("a target cannot qualify an empty product by changing a sibling plan's goal helper", async t => {
-	const shared = ".foundry/unified-inbox/checks.mjs";
-	const f = trial(t, { [goal]: 'import "../unified-inbox/checks.mjs"', [shared]: 'import "../inbox/observe.mjs"' });
+	const shared = ".foundry/shared-checks/checks.mjs";
+	const f = trial(t, { [goal]: 'import "../shared-checks/checks.mjs"', [shared]: 'import "../catalog/observe.mjs"' });
 	put(f.root, shared, "export {};"); git(f.root, "commit", "-qam", "change shared acceptance helper");
 	git(f.root, "switch", "-q", "--detach", f.tip); // Review the original brief against the advanced target.
 	await assert.rejects(async () => {
 		const s = await f.start();
 		if (s.qualified) assert.fail(`Empty product qualified at ${s.qualified}`);
-	}, /contract changed.*unified-inbox\/checks\.mjs/i);
+	}, /contract changed.*shared-checks\/checks\.mjs/i);
 	assert.equal(f.checks.length, 0);
 });

@@ -7,11 +7,11 @@ import test from "node:test";
 import { factory, git, put } from "./fixture.mjs";
 
 test("a late mockup reaches its live screen writer and future reviewer without changing either worktree or the contract", async t => {
-	const run = "screen", source = ".foundry/screen.json", file = "targets/inbox.svg";
-	const squads = ["mail", "review", "other"].map(id => ({ id, charter: `${id}.md`, areas: [id], checks: ["unit.mjs"] }));
+	const run = "screen", source = ".foundry/screen.json", file = "targets/chart.svg";
+	const squads = ["chart", "review", "other"].map(id => ({ id, charter: `${id}.md`, areas: [id], checks: ["unit.mjs"] }));
 	const f = factory(t, run, source, {
 		[source]: JSON.stringify({ id: run, version: 2, target: "refs/heads/main", direction: "Review the real screen.", squads, goalCheck: "goal.mjs", productCheck: "product.mjs" }),
-		".foundry/screen/journey.md": "Only the packaged screen counts.", "mail.md": "Build the screen.", "review.md": "Compare the result.",
+		".foundry/screen/journey.md": "Only the packaged screen counts.", "chart.md": "Build the screen.", "review.md": "Compare the result.",
 		"other.md": "Independent work.", "unit.mjs": "", "product.mjs": "", "goal.mjs": "process.exit(1)",
 	});
 	/** @type {Array<{to:string, message:string}>} */ const notices = [];
@@ -26,33 +26,33 @@ test("a late mockup reaches its live screen writer and future reviewer without c
 	await f.start(owner);
 	const assign = (/** @type {string} */ id) => f.scouts.find(r => r.squad === id)?.report({ outcome: "regenerate", evidence: [`${id}.md`],
 		reason: "Missing behavior.", grains: [{ id, directory: id === "review" ? "review/visual" : id, check: "unit.mjs", task: "Implement the charter.", needs: [] }] });
-	await assign("mail"); await assign("other");
-	const [mail, other] = f.workers.values(), worker = f.runtime(mail.cwd);
-	const publish = { run, file, to: ["mail", "review/visual"] }, svg = '<svg xmlns="http://www.w3.org/2000/svg"><title>Inbox</title></svg>';
+	await assign("chart"); await assign("other");
+	const [chart, other] = f.workers.values(), worker = f.runtime(chart.cwd);
+	const publish = { run, file, to: ["chart", "review/visual"] }, svg = '<svg xmlns="http://www.w3.org/2000/svg"><title>Chart</title></svg>';
 	put(f.root, file, svg);
 	await owner.operation("publish", publish, "owner");
 	const art = (await f.status()).artifacts?.[0]; assert.ok(art);
-	assert.equal(git(mail.cwd, "cat-file", "blob", art.blob), svg);
-	assert.equal(f.workers.size, 2); assert.equal(notices.length, 1); assert.equal(notices[0].to, mail.id);
-	assert.ok(notices[0].message.includes(art.blob)); assert.ok(!existsSync(path.join(mail.cwd, file)));
+	assert.equal(git(chart.cwd, "cat-file", "blob", art.blob), svg);
+	assert.equal(f.workers.size, 2); assert.equal(notices.length, 1); assert.equal(notices[0].to, chart.id);
+	assert.ok(notices[0].message.includes(art.blob)); assert.ok(!existsSync(path.join(chart.cwd, file)));
 	assert.deepEqual((await f.status(other.id)).artifacts, []);
-	await owner.operation("publish", { ...publish, to: ["review/visual", "mail"] }, "owner"); assert.equal(notices.length, 1);
+	await owner.operation("publish", { ...publish, to: ["review/visual", "chart"] }, "owner"); assert.equal(notices.length, 1);
 	decline = true; put(f.root, file, "<svg>new draft</svg>"); await owner.operation("publish", publish, "owner");
-	assert.equal(notices.length, 2); assert.equal(git(mail.cwd, "cat-file", "blob", art.blob), svg);
-	assert.equal((await f.status(mail.id)).nodes[0].token, mail.token);
+	assert.equal(notices.length, 2); assert.equal(git(chart.cwd, "cat-file", "blob", art.blob), svg);
+	assert.equal((await f.status(chart.id)).nodes[0].token, chart.token);
 	await assign("review"); const reviewer = [...f.workers.values()].at(-1); assert.ok(reviewer && reviewer.prompt.includes(art.blob));
 	const visual = execFileSync("/bin/sh", ["-c", art.extract], { cwd: reviewer.cwd, encoding: "utf8" }).trim();
 	try { assert.equal(path.extname(visual), ".svg"); assert.equal(readFileSync(visual, "utf8"), svg); }
 	finally { unlinkSync(visual); rmdirSync(path.dirname(visual)); }
-	put(mail.cwd, "mail/pane", "view");
-	await assert.rejects(worker.operation("submit", { run, token: mail.token, usedArtifacts: ["b".repeat(40)] }, mail.id), /not offered/);
-	await worker.operation("submit", { run, token: mail.token, usedArtifacts: [art.blob] }, mail.id);
+	put(chart.cwd, "chart/pane", "view");
+	await assert.rejects(worker.operation("submit", { run, token: chart.token, usedArtifacts: ["b".repeat(40)] }, chart.id), /not offered/);
+	await worker.operation("submit", { run, token: chart.token, usedArtifacts: [art.blob] }, chart.id);
 	put(f.root, file, "<svg>after submission</svg>"); await owner.operation("publish", publish, "owner");
-	assert.deepEqual(notices.map(n => n.to), [mail.id, mail.id, reviewer.id]); assert.equal(f.workers.size, 3);
+	assert.deepEqual(notices.map(n => n.to), [chart.id, chart.id, reviewer.id]); assert.equal(f.workers.size, 3);
 	put(reviewer.cwd, "review/visual/result", "Mismatch"); await f.runtime(reviewer.cwd).operation("submit", { run, token: reviewer.token, comparedArtifacts: [art.blob] }, reviewer.id);
 	const status = await f.status();
-	assert.deepEqual(status.artifactReports.find(n => n.worker === mail.id)?.usedArtifacts, [art.blob]);
-	assert.equal(status.artifactReports.find(n => n.worker === mail.id)?.comparedArtifacts, undefined);
+	assert.deepEqual(status.artifactReports.find(n => n.worker === chart.id)?.usedArtifacts, [art.blob]);
+	assert.equal(status.artifactReports.find(n => n.worker === chart.id)?.comparedArtifacts, undefined);
 	assert.deepEqual(status.artifactReports.find(n => n.worker === reviewer.id)?.comparedArtifacts, [art.blob]);
 	assert.equal(status.qualified, null); assert.equal(git(f.root, "rev-parse", "HEAD"), f.tip);
 	assert.equal(git(f.root, "ls-files", file), "");

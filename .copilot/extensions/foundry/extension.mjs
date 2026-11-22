@@ -10,9 +10,26 @@ import { buildTools, fromHelper, primaryOnly } from "./work/tools.mjs";
 
 /** @type {import("@github/copilot-sdk").CopilotSession} */
 let session;
+/** The task registry also contains direct agents of discovery workflows hosted by this writer.
+ * Only an exact native identity from one of its bound workflows can exempt a running task.
+ * @param {string[]} workflows */
+async function runningHelpers(workflows) {
+	const tasks = (await session.rpc.tasks.list()).tasks.filter(t => t.type === "agent" && t.status === "running");
+	if (!tasks.length || !workflows.length) return tasks.map(t => t.id);
+	const discoveries = new Map();
+	for (const id of workflows) {
+		const detail = await session.workflow.getRunDetail(id);
+		if (detail.runId === id && detail.workflowName === "foundry-scout")
+			for (const a of detail.agents)
+				if (a.runId === id && a.status === "running") discoveries.set(a.agentId, a.toolCallId);
+	}
+	// A new helper may have started while workflow details were being read.
+	return (await session.rpc.tasks.list()).tasks.flatMap(t => t.type === "agent" && t.status === "running" &&
+		!(discoveries.has(t.id) && discoveries.get(t.id) === t.toolCallId) ? [t.id] : []);
+}
 const runtime = createRuntime(process.cwd(), {
 	mode: () => session.rpc.mode.get(),
-	helpersRunning: async () => (await session.rpc.tasks.list()).tasks.some(t => t.type === "agent" && t.status === "running"),
+	runningHelpers,
 	permissionBlocker: permissionCheck(() => session.rpc.managedSettings.get(), () => session.rpc.permissions.getMode()),
 	ask: message => session.ui.input(message),
 	execute: (name, args, toolCallId) => session.rpc.tools.execute({ name, arguments: args, toolCallId }),

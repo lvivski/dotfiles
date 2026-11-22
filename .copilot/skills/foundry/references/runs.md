@@ -4,7 +4,7 @@
 
 Run `node <skill-base-dir>/scripts/plans.mjs` from the user's checkout for `plans`. It lists short names for top-level `.foundry/*.json` files at `HEAD`, not uncommitted drafts or running factories. Listing a filename is not a readiness check.
 
-For `start` or `resume`, pass the operator's target as one literal argument to that same [read-only helper](../scripts/plans.mjs). For example, `hyper-app` resolves only `.foundry/hyper-app.json`; an explicitly supplied repository-relative `.foundry/...` path is also accepted. It returns the canonical `source`, actual `run` ID and `target` after checking the committed contract, its pinned files on the target, and any pending edits to those files. It does not run evaluators or open a ledger. A filename and a run ID can differ. Don't substitute a run ID, fuzzy match, different branch, or uncommitted brief for the requested source. On error, report it; offer `plans` for a missing name.
+For `start` or `resume`, pass the operator's target as one literal argument to that same [read-only helper](../scripts/plans.mjs). For example, `catalog` resolves only `.foundry/catalog.json`; an explicitly supplied repository-relative `.foundry/...` path is also accepted. It returns the canonical `source`, actual `run` ID and `target` after checking the committed contract, its pinned files on the target, and any pending edits to those files. It does not run evaluators or open a ledger. A filename and a run ID can differ. Don't substitute a run ID, fuzzy match, different branch, or uncommitted brief for the requested source. On error, report it; offer `plans` for a missing name.
 
 ## Start
 

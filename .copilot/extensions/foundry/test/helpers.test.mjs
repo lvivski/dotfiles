@@ -21,9 +21,9 @@ function trial(t) {
 }
 
 /** @param {import("node:test").TestContext} t @param {string} sessionId @param {string} workingDirectory
- * @param {{execute:ReturnType<typeof factory>["execute"],tasks?:()=>Promise<unknown>}} options */
-async function entry(t, sessionId, workingDirectory, { execute, tasks }) {
-	const config = await loadEntry({ sessionId, on() {}, rpc: {
+ * @param {{execute:ReturnType<typeof factory>["execute"],tasks?:()=>Promise<unknown>,workflow?:object}} options */
+async function entry(t, sessionId, workingDirectory, { execute, tasks, workflow }) {
+	const config = await loadEntry({ sessionId, workflow, on() {}, rpc: {
 		mode: { get: async () => "autopilot" }, managedSettings: { get: async () => ({ failClosed: false }) }, permissions: { getMode: async () => ({ mode: "assisted" }) },
 		tasks: { list: tasks }, tools: { execute: (/** @type {{name:string,arguments:import("../work/model.js").Effect["args"],toolCallId:string}} */ a) =>
 			execute(a.name, a.arguments, a.toolCallId) }
@@ -83,6 +83,48 @@ test("two helpers in one capped assignment finish before its writer publishes on
 	assert.equal(git(f.root, "ls-tree", "--name-only", `${done.qualified}:${dir}`), "decode.mjs\nencode.mjs\nindex.mjs");
 	assert.equal(f.checks.length, 2); // One component check and one combined check.
 	assert.equal(f.workers.size, 1);
+});
+
+test("a writer can submit with its helper idle while its session hosts independent discovery", async t => {
+	const grain = (/** @type {string} */ id) => ({ id, directory: id, specification: `${id}.md`, boundary: ["api"], check: "unit.mjs" });
+	const ids = ["encoder", "analysis"];
+	const f = factory(t, run, source, { [source]: JSON.stringify({ version: 1, id: run, direction: "Encode a sample.", target: "refs/heads/main",
+		productCheck: "product.mjs", grains: ids.map(grain), squads: ids.map(id => ({ id, charter: `${id}.md`, grains: [id] })) }),
+		"encoder.md": "Write the encoded sample.", "analysis.md": "Analyze independent inputs.", api: "Work independently.",
+		"unit.mjs": "import {accessSync} from 'node:fs'; accessSync('encoder/sample');", "product.mjs": "" });
+	await f.start();
+	const [encoder, analysis] = f.scouts;
+	await encoder.report({ outcome: "regenerate", evidence: ["encoder.md"], reason: "Missing sample.", grains: ["encoder"] });
+	await analysis.report({ outcome: "no-gap", evidence: ["analysis.md"], reason: "No new evidence.", grains: [] });
+	const [w] = f.workers.values(), args = { run, token: w.token };
+	put(f.root, "analysis/input", "New source"); git(f.root, "add", "analysis/input"); git(f.root, "commit", "-qm", "New analysis evidence");
+	const issuer = f.runtime(w.cwd);
+	issuer.turn(w.id); await issuer.flush(); await f.settle();
+	const review = f.scouts.at(-1); assert.ok(review && review.squad === "analysis" && review.issuer === w.id);
+	put(w.cwd, "encoder/sample", "saved");
+
+	let helper = "running", analysisCall = "call:scout-task";
+	const agent = (/** @type {string} */ id, /** @type {string} */ status) => ({ type: "agent", id, toolCallId: `call:${id}`, displayName: "analysis", status });
+	const writer = await entry(t, w.id, w.cwd, { execute: f.execute, tasks: async () => ({ tasks: [agent("writer-helper", helper), agent("scout-task", "running")] }),
+		workflow: { getRunDetail: async (/** @type {string} */ id) => {
+			assert.equal(id, review.workflowId);
+			return { runId: id, workflowName: "foundry-scout", agents: [{ runId: id, agentId: "scout-task", toolCallId: analysisCall, status: "running" }] };
+		}, waitForRun: () => new Promise(() => {}) } });
+	const refused = await writer.call("foundry_submit", args);
+	assert.match(JSON.stringify(refused), /helpers.*running/i); assert.deepEqual(f.checks, []);
+	helper = "idle";
+	analysisCall = "different-launch";
+	const unverified = await writer.call("foundry_submit", args);
+	assert.equal((await f.status(w.id)).nodes[0].state, "writing");
+	analysisCall = "call:scout-task";
+	const result = await writer.call("foundry_submit", args);
+	assert.equal(typeof result, "string", JSON.stringify(result));
+	const status = await f.status(w.id);
+	const { receipt, token } = status.nodes[0]; assert.ok(receipt);
+	assert.equal(receipt.exit, 0); assert.equal(token, w.token);
+	assert.equal((await f.status()).reviews.find(r => r.id === review.id)?.state, "reading");
+	assert.match(JSON.stringify(unverified), /scout-task/);
+	assert.match(JSON.stringify(refused), /writer-helper/); assert.doesNotMatch(JSON.stringify(refused), /scout-task/);
 });
 
 test("a failed task lookup or a pause during it cannot consume a repair token", async t => {
