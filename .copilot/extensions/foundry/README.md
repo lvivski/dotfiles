@@ -86,16 +86,17 @@ Before adding `needs`, name in `reason` **which checked output the consumer need
 
 **Fixed contracts:** version 1 retains its committed `grains` (`id`, `directory`, `specification`, `boundary`, `check`, optional `needs`) and squad-to-grain ID lists. Existing runs do not acquire broader authority on resume. For an explicitly requested one-off, use version 1 with `seed` and no `goalCheck`: a passing `productCheck` qualifies that batch. Unseeded version-1 discovery without a goal still reviews changes to chartered inputs on participant turns. A host trigger can wake an existing run, not authorize one.
 
-## Four operations
+## Run operations
 
 | Tool | Who uses it | Result |
 |---|---|---|
-| `foundry_start({source})` | Operator's session, on explicit request | Confirm a new or paused run. A seed names the requested grains; otherwise start charter review. |
+| `foundry_start({source})` | Operator's session, on explicit request | Activate the committed brief. A seed names the requested grains; otherwise start charter review. |
+| `foundry_resume({source})` | Owning session, on explicit request | Continue a paused run or retry a recoverable stall without pausing. Never create a run. |
 | `foundry_submit({run,token})` | Bound writer, from its worktree | Capture the whole directory and run its committed evaluator. Ready work is picked up internally. |
 | `foundry_status({run})` | Owner or bound participant | Read assignments, blockers and receipts. The owner also sees current questions, timing facts, checkpoint, and qualified handoff. In a goal run, `qualified` stays null until both checks pass. No side effects. |
 | `foundry_pause({run})` | Owner | Stop new work. Retain worktrees, assignments, issued calls and results. |
 
-**Tool permissions:** Autopilot controls how the session works, not what it may execute. Before confirming a start or resume, Foundry reads the owner's managed settings and selected tool permission mode. If settings are unresolved, unreadable, or set to Manual, it reports the blocker without running a baseline or starting workers. Use Assisted if your policy allows it; Allow All is not required. Foundry never changes settings or approves a tool call. A ready owner does not guarantee prompt-free tools, hook registration, or permissions in a child.
+**Tool permissions:** An explicit start or resume from the owner authorizes the named committed brief without a second Foundry dialog. Autopilot controls how the session works, not what it may execute. Before activation, Foundry reads the owner's managed settings and selected tool permission mode. If settings are unresolved, unreadable, or set to Manual, it reports the blocker without running a baseline or starting workers. Use Assisted if your policy allows it; Allow All is not required. Foundry never changes settings or approves a tool call. A ready owner does not guarantee prompt-free tools, hook registration, or permissions in a child.
 
 ### Regeneration and checks
 
@@ -120,13 +121,13 @@ Keep writer sessions after handoff. Only if the operator separately requests cle
 
 Before issuing new work, including a `prepared` call, Foundry checks the **issuing session's** permissions. If managed settings are resolved and that session has selected **Manual**, only its unissued calls are held. `foundry_status.pending` shows the reason and issuer; other authorized sessions continue. After selecting a permitted mode in the held session, its next turn rechecks the original reservation. No owner restart or replacement worker is needed.
 
-If managed policy is unresolved, restricts the selected mode, or cannot be read, Foundry pauses the run. `foundry_status.blocker` names the session to check. Once the settings are ready, the owner explicitly resumes with the same `foundry_start({source})`. Both kinds of hold preserve receipts and reservations. Neither reroutes a call or retries an uncertain start.
+If managed policy is unresolved, restricts the selected mode, or cannot be read, Foundry pauses the run. `foundry_status.blocker` names the session to check. Once the settings are ready, the owner uses `/foundry resume <plan>`. Both kinds of hold preserve receipts and reservations. Neither reroutes a call or retries an uncertain writer start.
 
-For an exit-2 goal receipt, supply the missing observation and have the owner pause and explicitly resume the run. Confirmation reserves a fresh check of the retained candidate, keeping the previous receipt. A moved target must be incorporated and checked before it can qualify. Ordinary turns do not retry an unavailable observation; a denied or uncertain call is not an exit-2 receipt.
+For an exit-2 goal receipt, supply the missing observation and use `/foundry resume <plan>` in the owner session. No pause is needed. This reserves a fresh check of the retained candidate, keeping the previous receipt. A moved target must be incorporated and checked before it can qualify. Ordinary turns do not retry an unavailable observation; a denied or uncertain call is not an exit-2 receipt.
 
 Foundry records reservations before issuing native calls. Only an explicitly unavailable, definitely unissued native session route yields an ordinary `prepared` call. Execute it **once, unchanged, in its issuing session**. A confirmed denial blocks the assignment and releases its slot. Recovery reads backward to the start of the issuing turn: an older permission decision is not evidence for this call. Missing or conflicting receipts stay pending and never cause another creation.
 
-Scouting requires an eligible Dynamic Workflows runtime. The issuing session schedules follow-ups; a scout workflow reports evidence without launching another workflow on its call path. Foundry does not substitute desktop scouts if discovery is unavailable. A bound workflow can return evidence through a pause, but cannot issue work while paused. On reconnect, Foundry reads the original workflow's outcome rather than launching a second one. If a dispatch was interrupted *before* the workflow bound it, the owner may pause and explicitly resume to retry that read-only discovery from the owner session, even if the original issuer was a writer. This does not retry an uncertain writer creation.
+Scouting requires an eligible Dynamic Workflows runtime. The issuing session schedules follow-ups; a scout workflow reports evidence without launching another workflow on its call path. Foundry does not substitute desktop scouts if discovery is unavailable. A bound workflow can return evidence through a pause, but cannot issue work while paused. On reconnect, Foundry reads the original workflow's outcome rather than launching a second one. If a dispatch was interrupted *before* the workflow bound it, `/foundry resume <plan>` retries that read-only discovery from the owner session, even if the original issuer was a writer. This does not retry an uncertain writer creation.
 
 A queued repair is not proof the recipient acted. A native permission or input request remains with its actual session. Pausing stops new work; an already-issued check may finish, and its result is applied on resume. A confirmed nonzero launcher exit before the runner started blocks the check and frees its slot, even after reload. It is not an evaluator failure or a reason to retry. Once the runner starts, only its own receipt can settle the evaluation.
 

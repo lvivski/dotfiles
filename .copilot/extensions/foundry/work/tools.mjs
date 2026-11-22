@@ -6,6 +6,7 @@ const string = { type: "string", minLength: 1 };
 /** @type {Array<[string,string,Record<string,import("./model.js").Json>]>} */
 const definitions = [
 	["start", "Start or resume a committed .foundry brief only on explicit operator direction. goalCheck defines the finish line for squads; seed selects a one-off instead.", { source: string }],
+	["resume", "On explicit owner request, continue an existing paused run or retry missing goal evidence or interrupted unbound discovery. Never create a run or replay a writer.", { source: string }],
 	["pause", "Stop new Foundry work without discarding native calls, evidence, worktrees or checked products.", { run: string }],
 	["submit", "Bound writer: after joining your helpers and integrating their files, capture and check the complete assigned directory. A failed check returns its bounded repair or blocker. Never supply a command or a success claim.", { run: string, token: string }],
 	["status", "Inspect assignments, blockers and exact receipts. A goal checkpoint is not qualification. For an explicit owner request use detail: proof, cleanup or usage. Reading never advances or archives work.", { run: string, detail: { type: "string", enum: ["proof", "cleanup", "usage"] } }],

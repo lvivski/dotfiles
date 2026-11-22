@@ -42,7 +42,7 @@ export function status(run, actor, detail) {
 	const finished = (run.goal || run.policy.seed) && qualifiedProduct(run);
 	const stop = !finished && assignments && assignments.used === assignments.limit
 		? `Total assignment limit reached (${assignments.used}/${assignments.limit}); no new scouts, writers or repairs. Reserved work and checks can finish.` : undefined;
-	const blocker = run.pauseReason ?? run.blocker ?? run.conflict ?? run.goal?.stall ?? (missing ? `Goal check at ${missing.commit} awaits external evidence (exit 2): ${missing.output.trim() || "no diagnostic"}. Pause and explicitly resume after supplying it.` : undefined);
+	const blocker = run.pauseReason ?? run.blocker ?? run.conflict ?? run.goal?.stall ?? (missing ? `Goal check at ${missing.commit} awaits external evidence (exit 2): ${missing.output.trim() || "no diagnostic"}. After supplying it, use /foundry resume ${run.policy.source}.` : undefined);
 	return {
 		run: run.id, active: run.active, direction: run.policy.direction, contract: { commit: run.policy.base, path: run.policy.source },
 		limit: run.policy.workers ?? null, ...(assignments ? { assignments } : {}), deadline: run.policy.deadline, expired: expired(run),

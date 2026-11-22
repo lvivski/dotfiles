@@ -244,9 +244,7 @@ for (const correct of [true, false]) test(`packaging cannot retire its own check
 
 test("independent writers start together and a fixture-only integration cannot finish the run", async t => {
 	const f = replyFixture(t);
-	let confirmations = 0;
-	const owner = f.runtime(f.root, { confirm: async () => { confirmations++; return true; } });
-	const start = await f.start(owner);
+	const start = await f.start();
 	assert.deepEqual(start.nodes, []);
 	const [core, mail] = f.scouts;
 	await report(core, ".foundry/left.md", [work("recover", "engine/recovery")]);
@@ -291,7 +289,6 @@ test("independent writers start together and a fixture-only integration cannot f
 	assert.equal(done.products?.at(-1)?.receipt?.commit, done.qualified);
 	assert.equal(mapSnapshot(done).phase, "Qualified");
 	assert.deepEqual(done.products?.[0], checkpoint.products?.[0]);
-	assert.equal(confirmations, 1);
 	assert.equal(git(f.root, "rev-parse", "main"), f.tip);
 });
 
@@ -931,8 +928,7 @@ async function firstGoalWriter(f) {
 
 test("one goal activation checks a milestone, dispatches independent work on that tree, and stops only at the final result", async t => {
 	const f = fixture(t, goal, goalFiles);
-	let confirmations = 0;
-	const owner = f.runtime(f.root, { confirm: async () => { confirmations++; return true; } });
+	const owner = f.owner;
 	const start = await f.start(owner);
 	assert.equal(start.qualified, null);
 	assert.match(String(start.goal?.receipt?.output), /Left does not contribute one/);
@@ -972,7 +968,6 @@ test("one goal activation checks a milestone, dispatches independent work on tha
 	assert.equal(f.checks.length, checks);
 	assert.equal(f.workers.size, 2);
 	assert.equal(f.scouts.length, 4);
-	assert.equal(confirmations, 1);
 	assert.equal(git(f.root, "rev-parse", "main"), f.tip);
 });
 
@@ -1072,7 +1067,7 @@ test("a denied first goal writer releases its slot for the other charter without
 });
 
 for (const stage of ["baseline", "checkpoint", "moved target"])
-test(`only a confirmed resume retries missing external evidence: ${stage}`, async t => {
+test(`only an explicit resume retries missing external evidence: ${stage}`, async t => {
 	const dir = mkdtempSync(path.join(tmpdir(), "foundry-observation-")), witness = path.join(dir, "observation");
 	t.after(() => rmSync(dir, { recursive: true, force: true }));
 	const f = fixture(t, goal, { ...goalFiles, ...(stage === "baseline" ? { "lib/left/index.mjs": "export default 1;" } : {}),
@@ -1098,10 +1093,9 @@ test(`only a confirmed resume retries missing external evidence: ${stage}`, asyn
 	const owner = f.runtime(f.root);
 	owner.turn("owner"); await owner.flush();
 	assert.deepEqual((await owner.operation("start", { source }, "owner")).goal, held.goal);
-	await owner.operation("pause", { run }, "owner");
-	await assert.rejects(f.runtime(f.root, { confirm: async () => false }).operation("start", { source }, "owner"), /not activated/);
+	await assert.rejects(owner.operation("resume", { source }, "stranger"), { code: "run_conflict" });
 	assert.equal(f.checks.length, calls);
-	const done = await owner.operation("start", { source }, "owner");
+	const done = await owner.operation("resume", { source }, "owner");
 	if (stage === "moved target") {
 		assert.notEqual(done.qualified, checkpoint);
 		assert.equal(git(f.root, "show", `${done.qualified}:neighbor.txt`), "a newer target");
@@ -1586,8 +1580,8 @@ test("reads, native callbacks and rejected activations do not initialize unrelat
 	await assert.rejects(r.operation("start", { source }, "stranger"), /mode|interactive/);
 	await assert.rejects(r.operation("status", { run }, "stranger"), /No Foundry/);
 	assert.equal(existsSync(ledgerPath(f.root)), false);
-	const denied = f.runtime(f.root, { confirm: async () => false });
-	await assert.rejects(denied.operation("start", { source }, "owner"), /not activated/);
+	const denied = f.runtime(f.root, { permissionBlocker: async () => ({ scope: "run", message: "Policy unavailable" }) });
+	await assert.rejects(denied.operation("start", { source }, "owner"), { code: "permissions_unready" });
 	assert.equal(existsSync(ledgerPath(f.root)), false);
 });
 
@@ -1793,7 +1787,6 @@ test("independent starts overlap by default; a racing owner turn cannot issue th
 	const f = fixture(t, addIndependent, extraCheck);
 	let active = 0, peak = 0, total = 0;
 	const owner = f.runtime(f.root, {
-		confirm: async msg => { assert.match(msg, /no worker cap/); return true; },
 		execute: async (...args) => {
 			total++;
 			peak = Math.max(peak, ++active);
@@ -1900,7 +1893,7 @@ for (const sibling of ["ready", "denied", "unconfirmed"])
 		// Exit after issuance is durable, either before or after the second reservation is issued.
 		const child = `import {createRuntime} from ${JSON.stringify(new URL("./runtime.mjs", import.meta.url).href)};
 			const [root,source,stop]=process.argv.slice(1);
-			const r=createRuntime(root,{mode:async()=>"interactive",permissionBlocker:async()=>null,confirm:async()=>true,execute:(_,args)=>{
+			const r=createRuntime(root,{mode:async()=>"interactive",permissionBlocker:async()=>null,execute:(_,args)=>{
 				if(args.name.startsWith(stop+" "))process.exit(86);return new Promise(()=>{});
 			}});await r.operation("start",{source},"owner");`;
 		await assert.rejects(promisify(execFile)(process.execPath, ["--input-type=module", "-e", child,
@@ -2022,9 +2015,7 @@ for (const seed of [true, false])
 
 test("the total assignment limit admits late evidence, finishes in-flight checks and retains the unmet checkpoint", async t => {
 	const f = replyFixture(t, { [source]: JSON.stringify({ ...areaPolicy(), limits: { assignments: 3 } }) });
-	const start = await f.start(f.runtime(f.root, { confirm: async msg => {
-		assert.match(msg, /total assignment limit.*3/i); return true;
-	} }));
+	const start = await f.start();
 	assert.deepEqual(start.assignments, { used: 2, limit: 3 }, "two charters in one workflow are two assignments");
 	const [core, mail] = f.scouts;
 	await report(mail, ".foundry/right.md", [work("editor", "mail/compose/editor")]);

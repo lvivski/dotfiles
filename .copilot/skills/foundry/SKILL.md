@@ -23,7 +23,7 @@ metadata:
 | `status <run-id>` | Show the dependency map, current questions and exact checked product, if any. | [Status](references/runs.md#status) |
 | `measure <run-id>` | Report time to first verified writer kickoff and exact qualification, with observed native usage and its coverage. | [Measure a run](references/metrics.md) |
 | `pause <run-id>` | Stop new work without discarding checked work. | [Pause and resume](references/runs.md#pause-and-resume) |
-| `resume <plan>` | Resume that same paused run; never create one. | [Pause and resume](references/runs.md#pause-and-resume) |
+| `resume <plan>` | Continue the same run after a pause or a recoverable stall. No preliminary pause. | [Pause and resume](references/runs.md#pause-and-resume) |
 
 ## Routing
 

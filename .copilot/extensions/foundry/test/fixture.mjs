@@ -118,7 +118,7 @@ export function factory(t, run, source, files) {
 	/** @param {string} cwd @param {Partial<Host>} [options] */
 	function runtime(cwd, options) {
 		/** @type {Runtime} */
-		const r = createRuntime(cwd, { mode: async () => "interactive", permissionBlocker: async () => null, confirm: async () => true, execute,
+		const r = createRuntime(cwd, { mode: async () => "interactive", permissionBlocker: async () => null, execute,
 			scout: (id, dispatch, actor) => discovery.launch(r, id, dispatch, actor),
 			notify: async message => {
 				const job = assignment(message);

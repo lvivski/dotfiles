@@ -23,7 +23,7 @@ function trial(t) {
 /** @param {import("node:test").TestContext} t @param {string} sessionId @param {string} workingDirectory
  * @param {{execute:ReturnType<typeof factory>["execute"],tasks?:()=>Promise<unknown>}} options */
 async function entry(t, sessionId, workingDirectory, { execute, tasks }) {
-	const config = await loadEntry({ sessionId, on() {}, ui: { confirm: async () => true }, rpc: {
+	const config = await loadEntry({ sessionId, on() {}, rpc: {
 		mode: { get: async () => "autopilot" }, managedSettings: { get: async () => ({ failClosed: false }) }, permissions: { getMode: async () => ({ mode: "assisted" }) },
 		tasks: { list: tasks }, tools: { execute: (/** @type {{name:string,arguments:import("../work/model.js").Effect["args"],toolCallId:string}} */ a) =>
 			execute(a.name, a.arguments, a.toolCallId) }

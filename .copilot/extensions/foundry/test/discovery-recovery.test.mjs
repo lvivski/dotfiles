@@ -24,12 +24,21 @@ test("an unbound workflow launch is not retried on turns; explicit resume invali
 	assert.match(String(s.pending[0]?.reason), /dynamic_workflows_unavailable/);
 	old.turn("owner"); await old.flush();
 	assert.equal(tickets.length, 1); assert.equal(f.workers.size, 0); assert.equal(f.scouts.length, 0);
-	await old.operation("pause", { run }, "owner"); old.close();
-	await f.start();
+	old.close();
+	await f.owner.operation("resume", { source }, "owner"); await f.settle();
 	const [job] = f.scouts; assert.equal(job.id, s.reviews[0].id); assert.notEqual(job.dispatch, tickets[0]);
 	await assert.rejects(f.owner.scoutBatch(run, tickets[0], "owner", "late-workflow"), { code: "foreign_assignment" });
 	await job.report(noGap);
 	assert.equal((await f.status()).reviews[0].state, "observed");
+});
+
+test("resume cannot start a missing run or disturb a bound workflow", async t => {
+	const f = trial(t);
+	await assert.rejects(f.owner.operation("resume", { source }, "owner"), { code: "missing_run" });
+	assert.equal(f.scouts.length, 0); assert.equal(f.workers.size, 0);
+	const live = await f.start();
+	assert.deepEqual(await f.owner.operation("resume", { source }, "owner"), live);
+	assert.equal(f.scouts.length, 1);
 });
 
 test("a reconnected issuer observes the original workflow; evidence received through a pause issues work only on resume", async t => {
@@ -51,7 +60,7 @@ test("a reconnected issuer observes the original workflow; evidence received thr
 	finish(); await nextTurn();
 	const paused = await f.status();
 	assert.equal(paused.reviews[0].state, "reported"); assert.deepEqual(paused.nodes, []); assert.equal(f.workers.size, 0);
-	const live = await f.start(issuer);
+	const live = await issuer.operation("resume", { source }, "owner");
 	assert.equal(live.reviews[0].state, "observed"); assert.equal(live.nodes[0].state, "writing"); assert.equal(f.workers.size, 1);
 });
 

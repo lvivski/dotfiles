@@ -55,16 +55,16 @@ test("concurrent permission reads share a timeout, not a decision for the next b
 	assert.equal(await check(), null);
 });
 
-test("extension entry: unresolved permissions stop confirmation, baseline and all four scouts; Assisted resumes once", async t => {
+test("extension entry: explicit start and resume need no Foundry dialog and still enforce host permissions", async t => {
 	const f = trial(t);
-	let failClosed = true, mode = "manual", policyReads = 0, modeReads = 0, confirmations = 0, loseOnConfirm = false;
+	let failClosed = true, mode = "manual", policyReads = 0, modeReads = 0;
 	/** @type {string[]} */ const calls = [], notices = [];
 	/** @type {{name:string,args:{run:string,dispatch:string}}[]} */ const batches = [];
 	const getMode = async () => { modeReads++; return { mode }; };
 	/** @type {{getMode?:typeof getMode}} */ const permissions = { getMode };
 	const session = {
 		sessionId: actor, on() {}, log: (/** @type {string} */ message) => notices.push(message),
-		ui: { confirm: async () => { confirmations++; if (loseOnConfirm) failClosed = true; return true; } },
+		ui: { confirm: async () => assert.fail("unexpected second activation prompt") },
 		workflow: { run: async (/** @type {string|{meta:{name:string}}} */ workflow, /** @type {{args:{run:string,dispatch:string}}} */ options) => {
 			calls.push("workflow.run");
 			batches.push({ name: typeof workflow === "string" ? workflow : workflow.meta.name, args: options.args });
@@ -97,20 +97,15 @@ test("extension entry: unresolved permissions stop confirmation, baseline and al
 		assert.equal(existsSync(ledgerPath(f.root)), false);
 	}
 	await blocked(/not resolved/);
-	assert.deepEqual([policyReads, modeReads, confirmations], [1, 1, 0]);
+	assert.deepEqual([policyReads, modeReads], [1, 1]);
 	failClosed = false;
 	await blocked(/manual tool approvals/);
 	delete permissions.getMode;
 	await blocked(/could not confirm/);
 	permissions.getMode = async () => { throw Error("RPC unavailable"); };
 	await blocked(/could not confirm/);
-	assert.equal(confirmations, 0);
 	permissions.getMode = getMode;
-	mode = "assisted"; loseOnConfirm = true;
-	await blocked(/not resolved/);
-	assert.equal(confirmations, 1);
-
-	failClosed = false; loseOnConfirm = false;
+	mode = "assisted";
 	assert.equal(typeof await start(), "string");
 	const paused = await f.status();
 	assert.equal(paused.active, false);
@@ -120,7 +115,8 @@ test("extension entry: unresolved permissions stop confirmation, baseline and al
 	assert.equal(notices.length, 1);
 
 	failClosed = false;
-	assert.equal(typeof await start(), "string");
+	const resume = declaration.tools?.find(tool => tool.name === "foundry_resume")?.handler; assert.ok(resume);
+	assert.equal(typeof await resume({ source }, { sessionId: actor, toolName: "foundry_resume", toolCallId: "resume", arguments: { source } }), "string");
 	await f.settle();
 	const resumed = await f.status();
 	assert.equal(resumed.active, true);

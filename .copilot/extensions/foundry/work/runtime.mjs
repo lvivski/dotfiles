@@ -23,26 +23,11 @@ import { FoundryError, digest, fail, fields, name, record, text } from "./values
 /** @typedef {{execute:(tool:string,args:Effect["args"],id:string)=>Promise<unknown>,notify:(message:string)=>Promise<string>,recover?:(effect:Effect)=>Promise<unknown>,
  * ask?:(message:string)=>Promise<string|null>,
  * scout?:(run:string,dispatch:string,actor:string)=>Promise<ScoutEnvelope>,scoutState?:(workflowId:string)=>Promise<ScoutEnvelope>,
- * mode:()=>Promise<string>,helpersRunning?:()=>Promise<boolean>,permissionBlocker:()=>Promise<import("./permissions.mjs").PermissionBlock|null>,confirm:(message:string)=>Promise<boolean>,log?:(message:string)=>void}} Host */
+ * mode:()=>Promise<string>,helpersRunning?:()=>Promise<boolean>,permissionBlocker:()=>Promise<import("./permissions.mjs").PermissionBlock|null>,log?:(message:string)=>void}} Host */
 /** @param {Run} run @param {string} [reason] */
 function pause(run, reason) {
 	run.active = false;
 	if (reason) run.pauseReason = reason;
-}
-
-/** @param {Run["policy"]} policy @param {string} [retry] */
-function activationPrompt(policy, retry) {
-	const mode = policy.goalCheck ? `ongoing goal (finish check: ${policy.goalCheck})` : policy.seed ? "one-off" : "ongoing";
-	const staffing = policy.workers === undefined ? "no worker cap" : `up to ${policy.workers} concurrent scout/writer assignments (not counting in-session helpers)`;
-	return [
-		`Start ${mode} Foundry run ${policy.id} at ${policy.base.slice(0, 12)} on ${policy.target} with ${staffing} and ${policy.repairs} repairs per grain?`,
-		...(policy.assignments === undefined ? [] : [`Total assignment limit for the entire run: ${policy.assignments} (scouts, writers and bounded repairs; not helpers, checks or original-call retries). Resuming does not reset it.`]),
-		policy.direction,
-		...(!policy.seed ? ["Scouts review committed evidence without tools. Only writers get worktrees. Resuming may retry interrupted discovery."] : []),
-		...policy.squads.flatMap(s => "areas" in s ? [`${s.id} may assign work in ${s.areas.join(", ")} using ${s.checks.join(", ")}.`] : []),
-		...policy.squads.flatMap(s => "areas" in s && s.researchAgent ? [`${s.id} may request pre-writer investigation using the installed ${s.researchAgent} profile and its host-permitted tools.`] : []),
-		...(retry ? [`Recheck the missing external evidence for ${retry} (rejoin first if the target has moved).`] : []),
-	].join("\n");
 }
 
 /** @param {Run} run @param {string} actor @param {string} token */
@@ -229,7 +214,7 @@ export function createRuntime(directory, host) {
 		db().update(id, r => {
 			for (const e of batchOf(r, ticket, actor).filter(awaitingReply)) {
 				e.state = "uncertain";
-				e.error = `Discovery unconfirmed: ${message}. ${e.workflowId ? "Recheck the original workflow; no replacement started." : "Pause and explicitly resume to retry unbound discovery."}`;
+				e.error = `Discovery unconfirmed: ${message}. ${e.workflowId ? "Recheck the original workflow; no replacement started." : "Resume to retry unbound discovery."}`;
 			}
 		});
 	}
@@ -327,10 +312,10 @@ export function createRuntime(directory, host) {
 		const block = await host.permissionBlocker();
 		if (block !== null) fail("permissions_unready", block.message);
 		if (!await executable() || cwd() !== origin)
-			fail("context_changed", "Activation context changed during confirmation");
+			fail("context_changed", "Activation context changed during the permission check");
 	}
-	/** @param {unknown} source @param {string} actor */
-	async function start(source, actor) {
+	/** @param {unknown} source @param {string} actor @param {boolean} resume */
+	async function start(source, actor, resume) {
 		if (known.has(actor)) fail("worker_cannot_start", "Workers cannot activate or restart a run");
 		if (!await executable()) fail("unsupported_mode", "Start only from an interactive or autopilot owner");
 		const origin = cwd(), { policy, grains } = readPolicy(origin, source);
@@ -338,6 +323,7 @@ export function createRuntime(directory, host) {
 		if (store?.involving(actor).some(id => read(id).owner !== actor))
 			fail("worker_cannot_start", "Workers cannot activate or restart a run");
 		const prior = store?.read(policy.id);
+		if (resume && !prior) fail("missing_run", `No run to resume for ${policy.source}`);
 		if (prior) {
 			if (prior.owner !== actor || prior.policy.source !== policy.source)
 				fail("run_conflict", "Another owner or contract already uses this run ID");
@@ -345,19 +331,20 @@ export function createRuntime(directory, host) {
 			if (prior.goal && qualifiedProduct(prior)) return status(prior, actor);
 		}
 		if (policy.deadline && Date.now() >= Date.parse(policy.deadline)) fail("deadline", "The authorized deadline has elapsed");
-		if (!prior?.active) {
+		if (!prior?.active || resume) {
 			const retry = prior && missingObservation(prior) ? prior.goal : undefined;
-			await requireReadyOwner(origin);
-			if (!await host.confirm(activationPrompt(prior?.policy ?? policy, retry?.commit))) fail("activation_refused", "Foundry was not activated");
+			const tickets = new Map(prior?.effects.filter(e => e.tool === "workflow" && e.state === "uncertain" && !e.workflowId).map(e => [e.id, e.callId]));
+			if (prior?.active && !retry && !tickets.size) return status(prior, actor);
 			await requireReadyOwner(origin);
 			if (prior)
 				change(policy.id, r => {
-					if (r.active || retry && (r.goal?.check !== retry.check || !missingObservation(r)))
+					if (r.active !== prior.active || retry && (r.goal?.check !== retry.check || !missingObservation(r)))
 						fail("run_conflict", "Run activation changed while starting");
 					r.active = true;
 					delete r.pauseReason;
 					// An interrupted, unbound discovery cannot have spent an agent call. Invalidate its old ticket.
-					for (const e of r.effects) if (e.tool === "workflow" && e.state === "uncertain" && !e.workflowId) {
+					for (const e of r.effects) if (e.tool === "workflow" && e.state === "uncertain" && !e.workflowId &&
+						e.callId && tickets.get(e.id) === e.callId) {
 						e.issuer = actor; e.state = "ready"; delete e.callId; delete e.error;
 					}
 					admitted(r);
@@ -377,9 +364,9 @@ export function createRuntime(directory, host) {
 	/** @param {string} op @param {unknown} args @param {string} actor */
 	async function operation(op, args, actor) {
 		const a = record(args);
-		if (op === "start") {
+		if (op === "start" || op === "resume") {
 			fields(a, ["source"]);
-			return start(a.source, actor);
+			return start(a.source, actor, op === "resume");
 		}
 		const id = name(a.run, "run");
 		if (op === "status") {
