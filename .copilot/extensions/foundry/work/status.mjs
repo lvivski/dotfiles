@@ -46,7 +46,12 @@ export function status(run, actor, detail) {
 	const finished = (run.goal || run.policy.seed) && qualifiedProduct(run);
 	const stop = !finished && assignments && assignments.used === assignments.limit
 		? `Total assignment limit reached (${assignments.used}/${assignments.limit}); no new scouts, writers or repairs. Reserved work and checks can finish.` : undefined;
-	const blocker = run.pauseReason ?? run.blocker ?? run.conflict ?? run.goal?.stall ?? (missing ? `Goal check at ${missing.commit} awaits external evidence (exit 2): ${missing.output.trim() || "no diagnostic"}. After supplying it, use /foundry resume ${run.policy.source}.` : undefined);
+	const pin = run.repins?.at(-1)?.revision;
+	const previous = pin && owner ? pending.find(e => e.id === run.goal?.check && e.evaluatorRevision !== pin &&
+		e.runnerStarted && awaitingReply(e) && !e.receipt && !e.permissionHold) : undefined;
+	const blocker = run.pauseReason ?? run.blocker ?? run.conflict ?? run.goal?.stall ?? (previous
+		? `Approved evaluator ${pin} is waiting for the receipt of superseded goal ${previous.id} in session ${previous.issuer}. Verify the original runner before intervening; do not replay it.`
+		: missing ? `Goal check at ${missing.commit} awaits external evidence (exit 2): ${missing.output.trim() || "no diagnostic"}. After supplying it, use /foundry resume ${run.policy.source}.` : undefined);
 	return {
 		run: run.id, active: run.active, direction: run.policy.direction, contract: { commit: run.policy.base, path: run.policy.source },
 		limit: run.policy.workers ?? null, ...(assignments ? { assignments } : {}), deadline: run.policy.deadline, expired: expired(run),

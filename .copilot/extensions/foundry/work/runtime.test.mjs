@@ -72,6 +72,49 @@ function fixture(t, configure, files = {}) {
 }
 
 const goalCheck = ".foundry/final.mjs";
+test("repin identifies the obsolete running goal and rechecks once after its real interruption", async t => {
+	const f = fixture(t, goal, { [goalCheck]: `import {writeFileSync} from "node:fs";
+		writeFileSync(process.env.READY, String(process.pid)); setTimeout(() => process.exit(3), 30000);`,
+		".foundry/product.mjs": "process.exit(0);" });
+	const side = path.join(path.dirname(f.root), "amendment"), ready = path.join(path.dirname(f.root), "evaluator.pid");
+	git(f.root, "worktree", "add", "-q", "--detach", side, f.tip);
+	put(side, goalCheck, 'console.log("replacement observed"); process.exit(2);');
+	git(side, "commit", "-qam", "Repair stalled probe");
+	const revision = git(side, "rev-parse", "HEAD");
+	/** @type {Promise<unknown>|undefined} */ let runner;
+	const owner = f.runtime(f.root, { confirm: async () => true, execute: async (tool, a, call) => {
+		if (tool !== "bash" || runner) return f.execute(tool, a, call);
+		runner = promisify(execFile)("/bin/sh", ["-c", text(a.command, "runner")], { cwd: f.root, env: { ...process.env, READY: ready } });
+		return { resultType: "unconfirmed" }; // Lost host reply while the actual runner is still alive.
+	} });
+	await owner.operation("start", { source }, "owner");
+	try {
+		const deadline = Date.now() + 15000;
+		while (!existsSync(ready) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
+		assert.ok(existsSync(ready), "exclusive runner did not launch the fixture evaluator");
+		const s = await owner.operation("repin", { run, from: f.tip, revision, files: [goalCheck] }, "owner");
+		const old = s.pending.find(e => e.kind === "goal");
+		assert.ok(old?.awaitingEvaluator);
+		assert.equal(old.state, "uncertain");
+		assert.equal(s.goalChecks?.length, 1, "no duplicate evaluation while the obsolete one is alive");
+		assert.ok(s.blocker?.includes(old.id) && s.blocker.includes(revision), "owner cannot identify what is holding the approved pin");
+	} finally {
+		if (existsSync(ready)) {
+			const pid = Number(readFileSync(ready, "utf8"));
+			assert.ok(Number.isSafeInteger(pid) && pid > 1);
+			process.kill(pid, "SIGTERM"); // The disposable evaluator, not its receipt-writing parent.
+		}
+		await runner;
+	}
+	owner.turn("owner"); await owner.flush();
+	const done = await f.status();
+	assert.deepEqual(done.goalChecks?.map(e => [e.commit, e.evaluatorRevision, e.receipt?.exit]), [[f.tip, f.tip, null], [f.tip, revision, 2]]);
+	assert.match(done.goalChecks?.[0].receipt?.output ?? "", /SIGTERM/);
+	assert.match(done.goalChecks?.[1].receipt?.output ?? "", /replacement observed/);
+	assert.equal(done.qualified, null);
+	assert.equal(f.workers.size, 0);
+});
+
 for (const [oldExit, newExit] of [[1, 0], [0, 2]]) test(`repin finishes the issued goal on its old pin, then rechecks the same product: ${oldExit} -> ${newExit}`, async t => {
 	const helper = ".foundry/probe.mjs";
 	const f = fixture(t, goal, { [goalCheck]: `import verdict from "./probe.mjs"; process.exit(verdict);`,
