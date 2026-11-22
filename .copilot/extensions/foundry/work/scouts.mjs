@@ -95,7 +95,7 @@ export function scoutPacket(cwd, run, review) {
 		goalCheck: policy.goalCheck,
 	});
 	const receipt = goalReceipt(run);
-	const goal = receipt?.commit === base ? `${JSON.stringify({ commit: base, check: receipt.check, exit: receipt.exit })}\n${receipt.output}`
+	const goal = receipt?.commit === base ? `${JSON.stringify({ commit: base, check: receipt.check, evaluatorRevision: receipt.evaluatorRevision, exit: receipt.exit })}\n${receipt.output}`
 		: policy.goalCheck ? packet.omitted("no verified goal receipt for this revision") : "(no goal check)";
 	// Put owned failures first so a broad graph cannot bury the reason for a
 	// same-revision review. Other charters' diagnostics and private pins stay local.
@@ -128,6 +128,7 @@ export function scoutPacket(cwd, run, review) {
 	const required = directoryBlobs(cwd, base, dependencyRoots, packet);
 	const prev = wakeSource(run, review), report = prev?.observation;
 	const context = [];
+	if (receipt?.evaluatorRevision) context.push(`Goal receipt used the approved evaluator overlay at ${receipt.evaluatorRevision}. Files shown from the product revision are not the amended harness.`);
 	const shared = run.references ? `Published reference revisions (metadata, not product evidence or access permission):\n${Object.entries(run.references).map(([repo, revision]) => JSON.stringify({ repo, revision })).join("\n")}` : "";
 	if (shared) context.push(shared);
 	const priorResearch = researchContext(run, review);

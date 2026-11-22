@@ -17,7 +17,10 @@ function ownerStatus(run, receipts, detail) {
 		metrics: detail === "usage" ? metricsFacts(run) : timingFacts(run),
 		discoveryError: run.discoveryError,
 		qualified: qualifiedProduct(run)?.commit ?? null, target: last?.target, outputs: last?.outputs ?? {},
-		...(run.goal ? { checkpoint: last?.commit ?? null, goal: { commit: run.goal.commit, evaluator: run.policy.goalCheck, receipt: goalReceipt(run) } } : {}),
+		...(run.goal ? { checkpoint: last?.commit ?? null, goal: { commit: run.goal.commit, evaluator: run.policy.goalCheck,
+			pin: run.repins?.at(-1)?.revision ?? run.policy.base, receipt: goalReceipt(run) } } : {}),
+		...(run.repins ? { evaluatorChanges: run.repins, goalChecks: run.effects.filter(e => e.kind === "goal").map(e => ({
+			commit: e.commit, evaluatorRevision: e.evaluatorRevision ?? e.commit, state: e.state, receipt: receipts.get(e.id) })) } : {}),
 		questions: questions(run).flatMap(r => r.observation ? [{ squad: r.squad, base: r.base, question: r.observation.reason,
 			evidence: r.observation.evidence, ...(r.decision ? { delivery: r.decision } : {}) }] : []),
 		products: run.products.map(p => ({ ...p, receipt: receipts.get(p.check) })),

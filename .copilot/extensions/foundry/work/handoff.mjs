@@ -24,7 +24,7 @@ export function qualification(run) {
 			squad: squad.id, charter: squad.charter, boundary: [...grain.boundary], receipt, base, generation,
 			needs: [...grain.needs], inputs: { ...inputs }, ...(n.replaces ? { replaces: n.replaces } : {}) });
 	}
-	return { format: "foundry-qualification/v1", direction: policy.direction,
+	return { format: goal.evaluatorRevision ? "foundry-qualification/v2" : "foundry-qualification/v1", direction: policy.direction,
 		contract: { version: policy.squads.some(s => "areas" in s) ? 2 : 1, path: policy.source, commit: policy.base },
 		target: { ref: policy.target, commit: last.target }, commit: last.commit, qualifiedAt: last.qualifiedAt,
 		receipts: { product, goal }, outputs };

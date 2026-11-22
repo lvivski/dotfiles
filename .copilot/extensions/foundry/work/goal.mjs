@@ -1,6 +1,6 @@
 import { checkReceipt, goalReceipt } from "./evidence.mjs";
-import { reserveCheck, reserveNotice, reserveProduct } from "./native.mjs";
-import { workKey } from "./plan.mjs";
+import { awaitingReply, reserveCheck, reserveNotice, reserveProduct } from "./native.mjs";
+import { working, workKey } from "./plan.mjs";
 import { retain, treeOf, verifyContracts } from "./product.mjs";
 import { blockReview, reading, reviews } from "./reviews.mjs";
 import { text } from "./values.mjs";
@@ -22,6 +22,9 @@ export function qualify(run, actor, product) {
 		`Foundry ${run.id} qualified ${product.commit}. The target was not changed. Read foundry_status({run:"${run.id}"}) for the checked product and its receipts.`);
 }
 
+/** @param {import("./model.js").Receipt} receipt */
+const undecided = receipt => `Final goal check could not decide at ${receipt.commit} (exit ${receipt.exit ?? "unknown"}): ${receipt.output || "no diagnostic"}`;
+
 /** Gate graph admission on the exact baseline or latest checkpoint, never on a worker's report.
  * @param {string} cwd @param {Run} run @param {string} actor @param {string} target @param {boolean} retry */
 export function goalAllowsWork(cwd, run, actor, target, retry) {
@@ -29,6 +32,15 @@ export function goalAllowsWork(cwd, run, actor, target, retry) {
 	if (!at) return true;
 	verifyContracts(cwd, run.policy, target);
 	const last = run.products.at(-1);
+	const old = run.effects.find(e => e.id === at.check);
+	if (old?.kind === "goal" && old.evaluatorRevision !== run.repins?.at(-1)?.revision) {
+		if (awaitingReply(old) || old.permissionHold || old.state === "refused") return false;
+		const receipt = checkReceipt(old);
+		if (receipt && run.blocker === undecided(receipt)) delete run.blocker;
+		if (run.blocker) return false;
+		assess(cwd, run, actor, last?.target ?? at.target, last?.commit ?? at.commit);
+		return false;
+	}
 	if (last && at.commit !== last.commit) {
 		assess(cwd, run, actor, last.target, last.commit);
 		return false;
@@ -47,9 +59,10 @@ export function goalAllowsWork(cwd, run, actor, target, retry) {
 		}
 		// A confirmed retry on a moved target goes through the normal rejoin below.
 	} else if (receipt.exit !== 0 && receipt.exit !== 1) {
-		run.blocker = `Final goal check could not decide at ${at.commit} (exit ${receipt.exit ?? "unknown"}): ${receipt.output || "no diagnostic"}`;
+		run.blocker = undecided(receipt);
 		return false;
 	}
+
 	if (at.target !== target) {
 		delete at.stall;
 		if (!last && !Object.values(run.nodes).some(n => n.state !== "idle") && !reviews(run).some(reading)) {
@@ -61,6 +74,8 @@ export function goalAllowsWork(cwd, run, actor, target, retry) {
 	}
 	if (at.stall) return false;
 	if (receipt.exit === 1) return true;
+	if (run.repins?.length && Object.values(run.nodes).some(n => working(n) || n.state === "published" || n.worker && n.state === "waiting"))
+		return true; // Finish and include already-admitted work rather than orphan a writer on repin.
 	if (last) {
 		qualify(run, actor, last);
 		run.active = false;
@@ -76,7 +91,7 @@ export function goalAllowsWork(cwd, run, actor, target, retry) {
  * @param {string} cwd @param {Run} run @param {string} target @param {string} commit @param {Record<string,string>} outputs */
 export function rejectRepeat(cwd, run, target, commit, outputs) {
 	if (run.goal?.target !== target) return;
-	const receipt = run.effects.find(e => e.kind === "goal" && e.check === run.policy.goalCheck && checkReceipt(e)?.exit === 1 &&
+	const receipt = run.effects.find(e => e.kind === "goal" && e.evaluatorRevision === run.repins?.at(-1)?.revision && e.check === run.policy.goalCheck && checkReceipt(e)?.exit === 1 &&
 		(e.commit === commit || e.commit === target && treeOf(cwd, commit) === treeOf(cwd, target)))?.receipt;
 	if (!receipt) return;
 	const tried = new Set(run.goal.tried);

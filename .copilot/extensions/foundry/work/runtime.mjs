@@ -10,6 +10,7 @@ import { admitted, assignment, awaitingReply, boundWriter, canDispatch, current,
 import { checked } from "./plan.mjs";
 import { capture, commitAt, retain, rootAt, verifyContracts } from "./product.mjs";
 import { refusedCall } from "./recovery.mjs";
+import { prepareRepin } from "./repin.mjs";
 import { referenceText, researchResult } from "./research.mjs";
 import { blockReview, investigation, questions, reviews } from "./reviews.mjs";
 import { scoutPacket } from "./scouts.mjs";
@@ -416,7 +417,7 @@ export function createRuntime(directory, host) {
 			}
 		}
 		if (!await executable())
-			fail("unsupported_mode", "Plan mode cannot submit work or publish references");
+			fail("unsupported_mode", "Plan mode cannot change a Foundry run");
 		if (reply) {
 			submit(id, actor, reply.token, a);
 			// A shell notification can drive the same actor before this call returns.
@@ -425,6 +426,13 @@ export function createRuntime(directory, host) {
 		else if (op === "publish") {
 			fields(a, ["run", "token", "file", "to"]);
 			db().update(id, preparePublication(cwd(), read(id), actor, a));
+		}
+		else if (op === "repin") {
+			const request = prepareRepin(cwd(), read(id), actor, a);
+			if ((await host.ask?.(request.prompt))?.trim() !== "approve")
+				fail("approval_required", "No approval for this evaluator change; the pin is unchanged");
+			if (!await executable()) fail("unsupported_mode", "The owner session is no longer executable");
+			change(id, request.apply);
 		}
 		else
 			fail("unknown_operation", `Unknown Foundry operation ${op}`);

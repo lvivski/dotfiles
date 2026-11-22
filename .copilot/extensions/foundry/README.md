@@ -157,6 +157,8 @@ Foundry retains versions and generation bases in `refs/foundry/objects/`. Linked
 
 `work/reader.version` identifies the session's ledger reader, independently of the SQLite protocol. Bump it when changing which records Foundry can write or interpret, including new dispatch kinds or states. An already-open session with a different installed reader refuses ledger access and asks for a local extension reload. Reload that session, then check the existing run; don't recreate it. A matching reader still checks the ledger and reports invalid snapshots as errors.
 
+The owner can [repin the final goal evaluator](../../skills/foundry/references/runs.md#evaluator-repinning) to an approved, committed harness fix without changing the contract base or the target. Keep the fix on a separate ref. Issued checks finish against their reserved evaluator; the updated goal is checked on the product itself, with only the approved evaluator delta overlaid in its temporary export. Product and component checks do not use the overlay.
+
 ## Development
 
 The dotfiles `sync` operation installs the extension and Foundry skill. Test the repository copy in disposable Git fixtures, not a running factory. The host supplies the SDK; TypeScript and Node declarations are development-only.

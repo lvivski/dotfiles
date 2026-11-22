@@ -56,8 +56,9 @@ export function reserveWorker(run, issuer, token, base, brief, agent, grain) {
 export function reserveCheck(run, issuer, cwd, commit, check, grain, reports) {
 	const id = randomUUID();
 	const kind = grain ? "component" : check === run.policy.goalCheck ? "goal" : "product";
+	const evaluatorRevision = kind === "goal" ? run.repins?.at(-1)?.revision : undefined;
 	run.effects.push({
-		id, issuer, kind, state: "ready", tool: "bash", commit, check, ...(grain ? { grain } : {}), ...reports,
+		id, issuer, kind, state: "ready", tool: "bash", commit, check, ...(evaluatorRevision ? { evaluatorRevision } : {}), ...(grain ? { grain } : {}), ...reports,
 		args: {
 			command: `command node ${[runner, cwd, run.id, id].map(quote).join(" ")}`, shellId: `foundry-${id}`, initial_wait: 120,
 			description: `Check ${grain ?? (kind === "goal" ? "final goal" : "joined product")} at ${commit.slice(0, 12)}`.slice(0, 100)

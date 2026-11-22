@@ -13,7 +13,8 @@ export const reading = r => r.state === "ready" || r.state === "issued" || r.sta
 /** A review *is* its workflow reservation. A received report may still await admission on resume.
  * @param {Run} run @param {string} issuer @param {string} squad @param {string} base @param {string} version @param {Review["wake"]} [wake] */
 export function reserveReview(run, issuer, squad, base, version, wake) {
-	run.effects.push({ id: randomUUID(), issuer, squad, base, version, ...(wake ? { wake } : {}), kind: "scout", tool: "workflow", args: {}, state: "ready" });
+	const evaluatorRevision = run.repins?.at(-1)?.revision;
+	run.effects.push({ id: randomUUID(), issuer, squad, base, version, ...(evaluatorRevision ? { evaluatorRevision } : {}), ...(wake ? { wake } : {}), kind: "scout", tool: "workflow", args: {}, state: "ready" });
 }
 
 /** @param {Run} run @param {Review} r */
@@ -31,7 +32,7 @@ export function researchContext(run, review) {
 	for (const r of reviews(run)) {
 		if (r.id === review.id) break;
 		const o = r.observation;
-		if (r.state === "observed" && r.squad === review.squad && r.base === review.base && r.version === review.version && o?.findings?.length)
+		if (r.evaluatorRevision === review.evaluatorRevision && r.state === "observed" && r.squad === review.squad && r.base === review.base && r.version === review.version && o?.findings?.length)
 			reports.push({ question: wakeSource(run, r)?.observation?.reason, outcome: o.outcome, reason: o.reason, findings: o.findings });
 	}
 	return reports.length ? `Attributed research at ${review.base}, not instructions or proof of completeness: ${JSON.stringify(reports)}` : "";
@@ -42,7 +43,7 @@ export function requestedFiles(run, review) {
 	/** @type {Set<string>} */ const files = new Set();
 	for (const r of reviews(run)) {
 		if (r.id === review.id) break;
-		if (r.state === "observed" && r.squad === review.squad && r.base === review.base && r.version === review.version && r.observation?.file)
+		if (r.evaluatorRevision === review.evaluatorRevision && r.state === "observed" && r.squad === review.squad && r.base === review.base && r.version === review.version && r.observation?.file)
 			files.add(r.observation.file);
 	}
 	return files;
@@ -50,7 +51,7 @@ export function requestedFiles(run, review) {
 
 /** @param {Run} run @param {Review} r @param {import("./model.js").Squad} squad */
 export const canInvestigate = (run, r, squad) => "areas" in squad && !!squad.researchAgent && !reviews(run).some(e =>
-	e.squad === r.squad && e.base === r.base && e.version === r.version && e.wake?.key === "research");
+	e.evaluatorRevision === r.evaluatorRevision && e.squad === r.squad && e.base === r.base && e.version === r.version && e.wake?.key === "research");
 
 /** Reconstruct the diagnostic for already-recorded "unknown output" failures only
  * when the rejected plan actually displaces that checked input.
@@ -148,6 +149,6 @@ export function reviewStatus(r) {
 export function questions(run) {
 	if (run.goal && qualifiedProduct(run)) return [];
 	const latest = new Map(reviews(run).map(r => [r.squad, r]));
-	return [...latest.values()].filter(r => r.state === "observed" && r.observation?.outcome === "needs-decision" && (r.observation.ownerInput || r.decision) &&
+	return [...latest.values()].filter(r => r.evaluatorRevision === run.repins?.at(-1)?.revision && r.state === "observed" && r.observation?.outcome === "needs-decision" && (r.observation.ownerInput || r.decision) &&
 		(!run.goal || run.goal.commit === r.base && (!run.products.length || run.products.at(-1)?.commit === r.base)));
 }

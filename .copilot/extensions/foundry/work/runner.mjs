@@ -21,10 +21,11 @@ try {
 			env.FOUNDRY_OUTPUTS = JSON.stringify(Object.fromEntries(outputs.map(id => [id, run.nodes[id].grain.directory])));
 		}
 		const squads = e.kind === "goal" ? run.policy.squads.map(s => s.id) : [];
-		return { commit: text(e.commit, "check commit"), check: text(e.check, "assigned evaluator"), deadline: run.policy.deadline, outputs, squads, env };
+		return { commit: text(e.commit, "check commit"), check: text(e.check, "assigned evaluator"), deadline: run.policy.deadline, outputs, squads, env,
+			overlay: e.evaluatorRevision && e.kind === "goal" ? { base: run.policy.base, revision: e.evaluatorRevision } : undefined };
 	});
 	/** @type {import("./model.js").Receipt} */
-	const receipt = { commit: command.commit, check: command.check, exit: null, output: "" };
+	const receipt = { commit: command.commit, check: command.check, ...(command.overlay ? { evaluatorRevision: command.overlay.revision } : {}), exit: null, output: "" };
 	try {
 		await withProduct(cwd, command.commit, root => {
 			const evaluator = path.join(root, command.check);
@@ -45,7 +46,7 @@ try {
 				const hints = [...String(result.stdout ?? "").matchAll(/^FOUNDRY_SQUAD=([^\r\n]*)$/gm)];
 				if (hints.length === 1 && command.squads.includes(hints[0][1])) receipt.squad = hints[0][1];
 			}
-		});
+		}, command.overlay);
 	}
 	catch (error) {
 		receipt.exit = null;

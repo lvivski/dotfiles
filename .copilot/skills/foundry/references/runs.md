@@ -26,6 +26,8 @@ When showing the operator a run in the desktop app, open the **Foundry dependenc
 
 ## Pause and resume
 
+Changing the brief or product acceptance requirements still requires a separately authorized run. For a fix solely to the way the final goal is observed, use [evaluator repinning](#evaluator-repinning).
+
 If Foundry says its installed reader changed, reload extensions **in the session that reported it**, then read status for the same run. A writer submits only if its original token is still writing with no check pending. Don't resume the run, replace the writer, or retry a pending submission.
 
 Only the owner pauses with `foundry_pause({run})`. On an explicit `/foundry resume <plan>` in the owner session, resolve the committed plan and call `foundry_resume({source})` directly. Do not pause first or substitute `foundry_start`. Resume never creates a run. For an active run it retries only a goal waiting for external evidence or an interrupted, unbound discovery; otherwise it returns the current state. A changed contract needs a new run ID and separate authorization.
@@ -33,3 +35,11 @@ Only the owner pauses with `foundry_pause({run})`. On an explicit `/foundry resu
 A session-local Manual hold appears in `pending`: other sessions continue; the original issuer rechecks on its next turn. Don't restart for this. For a managed-policy pause, first resolve the setting in `blocker`. For goal exit 2, supply the missing external observation, then resume the same run. Preserve receipts and worktrees. If a native session route is definitely unavailable, execute the exact `prepared` call once in its issuing session. Never repeat an issued or uncertain start, treat a queued message as completed work, or bypass a permission hold.
 
 An unavailable scout workflow is a discovery blocker, not a request to start a desktop scout. For a bound workflow inspect the original run ID; only an explicitly unbound, interrupted discovery can be retried with resume. Older ledger protocols are not migrated: preserve the old clone and use a fresh clone for a new run.
+
+## Evaluator repinning
+
+Only on a direct operator request in the active run's **owner session**, read status for `goal.pin`. Prepare or identify a separately reviewed evaluator-only commit based on that pin, **off the run's target branch**. Do not commit working-tree changes without authorization. Inspect the complete diff, including additions, deletions, and helpers shared across plan directories. Reject changes to what counts as a pass; path checks cannot establish that the requirements are unchanged.
+
+Call `foundry_repin({run, from, revision, files})` with both full commit IDs and the exact changed paths. The operator must confirm in the owner dialog. A dismissal, stale pin, or missing approval changes nothing. Do not answer that dialog for the operator. Reload any participating session predating the reader-version guard before repinning.
+
+The runner applies only the reviewed evaluator changes to a temporary export for **goal checks only**. An issued or uncertain check keeps its original reservation. Once it settles, Foundry checks the checkpoint under the new evaluator, preserving product bytes, writer tokens, prior receipts and the original contract. `goal.pin`, `evaluatorChanges` and `goalChecks` in owner status distinguish the approved revision from checks already issued. A refusal or permission hold is not bypassed. No pause, resume, or writer resubmission is needed.

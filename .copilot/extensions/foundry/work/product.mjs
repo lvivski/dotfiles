@@ -338,11 +338,19 @@ export function verifyTree(cwd, root, items, worktree = false) {
 		if (hashes[i] !== e.oid) fail("product_changed", `Product changed: ${e.name}`);
 }
 
-/** @param {string} cwd @param {string} commit @param {(root:string)=>void} evaluate */
-export async function withProduct(cwd, commit, evaluate) {
+/** @param {string} cwd @param {string} commit @param {(root:string)=>void} evaluate @param {{base:string, revision:string}} [overlay] */
+export async function withProduct(cwd, commit, evaluate, overlay) {
 	const root = realpathSync(mkdtempSync(path.join(tmpdir(), "foundry-check-")));
 	try {
-		const items = entries(cwd, commit, true);
+		let items = entries(cwd, commit, true);
+		if (overlay) {
+			const paths = changedFiles(cwd, overlay.base, overlay.revision);
+			if (paths.some(p => !p.startsWith(".foundry/"))) fail("contract_scope", "Evaluator overlay includes product paths");
+			if (paths.length) {
+				const replaced = new Set(paths);
+				items = [...items.filter(e => !replaced.has(e.name)), ...entries(cwd, overlay.revision, true, paths)];
+			}
+		}
 		pathNames(items); // Refuse aliases before writing any files.
 		for (const e of items)
 			if (!["100644", "100755"].includes(e.mode))

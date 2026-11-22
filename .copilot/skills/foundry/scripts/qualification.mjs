@@ -16,9 +16,10 @@ const oid = s => {
 function objects(record) {
 	const { product, goal } = record?.receipts ?? {};
 	const passed = (r, commit) => r && r.commit === commit && r.exit === 0 && typeof r.check === "string" && r.check.length;
-	if (record?.format !== "foundry-qualification/v1" || !passed(product, record.commit) || !passed(goal, record.commit) ||
+	if (record?.format !== (goal?.evaluatorRevision !== undefined ? "foundry-qualification/v2" : "foundry-qualification/v1") || !passed(product, record.commit) || !passed(goal, record.commit) ||
 		product.check === goal.check || !Array.isArray(record.outputs)) throw Error("Expected the owner's exact goal qualification record");
 	const pins = [record.commit, record.contract.commit, record.target.commit];
+	if (goal.evaluatorRevision !== undefined) pins.push(oid(goal.evaluatorRevision));
 	for (const out of record.outputs) {
 		if (!passed(out.receipt, out.commit) || !out.inputs || typeof out.inputs !== "object" || Array.isArray(out.inputs))
 			throw Error("Missing included component receipt or input pins");

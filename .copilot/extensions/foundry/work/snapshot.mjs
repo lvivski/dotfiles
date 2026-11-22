@@ -68,8 +68,8 @@ const node = shape({
 });
 const assessment = { target: commit, commit, check: id };
 const product = shape({ ...assessment, outputs: named(commit), qualifiedAt: optional(positive) });
-const receipt = shape({ commit, check: path, exit: v => v === null || count(v), output: string, repair: optional(id), squad: optional(id) });
-const dispatch = { id, issuer: string, args: object, callId: optional(string), error: optional(string), permissionHold: optional(string) };
+const receipt = shape({ commit, check: path, evaluatorRevision: optional(commit), exit: v => v === null || count(v), output: string, repair: optional(id), squad: optional(id) });
+const dispatch = { id, issuer: string, args: object, evaluatorRevision: optional(commit), callId: optional(string), error: optional(string), permissionHold: optional(string) };
 const scout = shape({ ...dispatch, kind: one("scout"), tool: one("workflow"), squad: id, base: commit, version: string,
 	state: one("ready", "issued", "uncertain", "reported", "observed", "blocked", "deferred"), observation: optional(observation),
 	deferred: optional(shape({ pins: v => named(commit)(v) && object(v) && Object.keys(v).length > 0,
@@ -84,6 +84,7 @@ const native = shape({
 });
 const snapshot = shape({
 	id, owner: string, policy, references: optional(named(commit)),
+	repins: optional(list(shape({ from: commit, revision: commit, files: list(path) }))),
 	artifacts: optional(list(shape({ file: path, blob: commit, base: commit, publisher: string, to: list(path) }))),
 	active: bool, activatedAt: positive, pauseReason: optional(string), nodes: named(node), effects: list(v => scout(v) || native(v)),
 	products: list(product), join: optional(product), goal: optional(shape({ ...assessment, stall: optional(string),
@@ -97,6 +98,7 @@ function isRun(value) { return snapshot(value); }
 /** @param {import("./model.js").Run} run @param {import("./model.js").Effect} e */
 function validDispatch(run, e) {
 	if (e.permissionHold !== undefined && !unissued(e)) return false;
+	if (e.evaluatorRevision && (!(e.kind === "goal" || e.kind === "scout") || !run.repins?.some(p => p.revision === e.evaluatorRevision))) return false;
 	if (e.tool === "workflow") {
 		const squad = run.policy.squads.find(s => s.id === e.squad), report = e.observation;
 		return !!squad && !e.nativeId && !e.token && !e.receipt && !e.boundAt && (!e.workflowId || !!e.callId) &&
@@ -117,7 +119,7 @@ function validDispatch(run, e) {
 	if (e.nativeId) return false;
 	if (e.kind === "goal" || e.kind === "product" || e.kind === "component")
 		return e.tool === "bash" && !!e.commit && !!e.check && (e.kind === "component") === !!e.grain &&
-			(!e.receipt || e.receipt.commit === e.commit && e.receipt.check === e.check) &&
+			(!e.receipt || e.receipt.commit === e.commit && e.receipt.check === e.check && e.receipt.evaluatorRevision === e.evaluatorRevision) &&
 			(!e.receipt?.squad || e.kind === "goal" && e.receipt.exit === 1 && run.policy.squads.some(s => s.id === e.receipt?.squad));
 	if (!e.token || e.receipt || !string(e.args.message)) return false;
 	if (e.kind === "repair" || e.kind === "artifact") return !!e.grain && (e.tool === "send_session_message" || e.tool === "session.send" && e.state !== "ordinary");
@@ -133,6 +135,11 @@ export function decode(value) {
 		fail("corrupt_run", "Invalid Foundry execution snapshot");
 	const { policy: p, nodes, products } = value, areas = p.squads.filter(s => "areas" in s), files = new Set(p.files);
 	const effects = new Map(value.effects.map(e => [e.id, e]));
+	const pins = value.repins ?? [];
+	if (pins.length && (!value.goal || new Set([p.base, ...pins.map(pin => pin.revision)]).size !== pins.length + 1 ||
+		pins.some((pin, i) => pin.from !== (i ? pins[i-1].revision : p.base) || !pin.files.length ||
+			new Set(pin.files).size !== pin.files.length || !pin.files.every(f => f.startsWith(".foundry/")))))
+		fail("corrupt_run", "Invalid goal evaluator pin history");
 	const last = products.at(-1);
 	if (effects.size !== value.effects.length || value.effects.some(e => !validDispatch(value, e)))
 		fail("corrupt_run", "Invalid Foundry dispatch");

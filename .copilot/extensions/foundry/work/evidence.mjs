@@ -4,14 +4,15 @@
  * @param {import("./model.js").Effect|undefined} e */
 export function checkReceipt(e) {
 	if (e?.tool === "bash" && e.runnerStarted && e.state === "done" && e.receipt &&
-		e.receipt.commit === e.commit && e.receipt.check === e.check) return e.receipt;
+		e.receipt.commit === e.commit && e.receipt.check === e.check && e.receipt.evaluatorRevision === e.evaluatorRevision) return e.receipt;
 }
 
 /** @param {Run} run */
 export function goalReceipt(run) {
 	const at = run.goal;
 	const e = at && run.effects.find(e => e.id === at.check);
-	if (e?.kind === "goal" && e.commit === at?.commit && e.check === run.policy.goalCheck) return checkReceipt(e);
+	if (e?.kind === "goal" && e.commit === at?.commit && e.check === run.policy.goalCheck &&
+		e.evaluatorRevision === run.repins?.at(-1)?.revision) return checkReceipt(e);
 }
 
 /** @param {Run} run */
@@ -32,7 +33,7 @@ export function qualifiedProduct(run) {
  * @param {string} commit @param {string} check @param {string} [grain] */
 export function passingReceipt(e, kind, commit, check, grain) {
 	if (e?.kind === kind && e.grain === grain && e.commit === commit && e.check === check && checkReceipt(e)?.exit === 0)
-		return { commit, check, exit: 0 };
+		return { commit, check, exit: 0, ...(e.evaluatorRevision ? { evaluatorRevision: e.evaluatorRevision } : {}) };
 }
 
 /** The last *applied* product. A native success, a pending join, or two green checks
@@ -48,5 +49,5 @@ export function acceptedChecks(run) {
 	if (!goalCheck || goalCheck === productCheck || run.active || run.join || run.blocker || run.conflict ||
 		run.goal?.commit !== last.commit || run.goal.target !== last.target || run.goal.stall) return;
 	const goal = passingReceipt(run.effects.find(e => e.id === run.goal?.check), "goal", last.commit, goalCheck);
-	if (goal) return { last, product, goal };
+	if (goal && goalReceipt(run)?.exit === 0) return { last, product, goal };
 }

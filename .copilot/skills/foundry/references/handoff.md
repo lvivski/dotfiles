@@ -10,6 +10,8 @@ In the owner, read `foundry_status({run, detail:"proof"})` afresh. Save **only**
 
 `foundry-qualification/v1` names the committed contract and direction, checked target ref and revision, qualified commit, and the evaluator path, commit and exit code for each verdict. `outputs` describes the pins declared by this accepted join, not every retired assignment. Each includes its captured version, charter, specification, boundary files, accepted task where available (v1 uses the pinned specification), component receipt, reviewed base, parentless generation, and direct/transitive input pins. Paths to conserved files resolve at `contract.commit`; evaluator paths resolve at the receipt's commit. The record omits native IDs, tokens, kickoffs, decisions/answers, usage and raw evaluator output. Review the included behavior text and repository paths before sharing.
 
+For a repinned goal, `foundry-qualification/v2` adds `receipts.goal.evaluatorRevision`. The bundle includes this commit. The product is still `receipt.commit`; only the final goal used the files changed between `contract.commit` and `evaluatorRevision`. Never replay the product check against a repinned harness or the goal against the original harness.
+
 The JSON is an **owner-reported result**, not a signature, permission to execute the evaluators, or a way to resume the ledger. Git verifies object identities, not who ran the checks. Obtain the record through a trusted channel.
 
 ### Transfer the Git objects only when requested
@@ -29,7 +31,7 @@ If making the clean clone from a local repository, use `git clone --no-local --n
 
 `pack` reads only the content-addressed refs needed by this record, not every run or branch. `import` checks the exact advertised IDs and refs, verifies and unbundles the objects, then creates only `refs/foundry/objects/<oid>` in one transaction. It refuses missing/extra heads, mismatched object IDs or existing destination pins; a failed import may leave unreachable objects, not a partially updated branch. Neither side checks out, updates a target, contacts a remote, pushes or installs Foundry. Use `git diff <target.commit> <commit>` and `git show <receipt.commit>:<receipt.check>` for inspection. Review or landing is a separate decision.
 
-If separately asked to replay **trusted** checks, use a disposable detached checkout at `qualification.commit`, not the moving target branch. Run the recorded evaluator paths from that root with the required environment/observations; for `productCheck`, `FOUNDRY_OUTPUTS` is the JSON map of output IDs to directories. The original receipts and a new replay are different evidence.
+If separately asked to replay **trusted** checks, use a disposable detached checkout at `qualification.commit`, not the moving target branch. For a v2 goal replay, use a separate export of that same product and overlay the exact changed files (including deletions and executable bits) from the recorded evaluator diff. Run the recorded evaluator paths from the appropriate root with the required environment/observations; for `productCheck`, `FOUNDRY_OUTPUTS` is the JSON map of output IDs to directories. The original receipts and a new replay are different evidence.
 
 ## Only on a separate cleanup request
 

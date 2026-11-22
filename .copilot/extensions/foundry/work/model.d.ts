@@ -125,6 +125,7 @@ export interface Review extends Dispatch {
 export interface Receipt {
 	commit: string;
 	check: string;
+	evaluatorRevision?: string;
 	exit: number | null;
 	output: string;
 	repair?: string;
@@ -147,6 +148,7 @@ interface Dispatch {
 	permissionHold?: string;
 	commit?: string;
 	check?: string;
+	evaluatorRevision?: string;
 	runnerStarted?: boolean;
 	receipt?: Receipt;
 }
@@ -170,6 +172,7 @@ export interface Run {
 	owner: string;
 	references?: Record<string, string>;
 	artifacts?: Artifact[];
+	repins?: { from: string; revision: string; files: string[] }[];
 	policy: Policy;
 	activatedAt: number;
 	active: boolean;

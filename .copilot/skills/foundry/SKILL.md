@@ -4,7 +4,7 @@ description: >-
   Use to prepare or review a Foundry product brief, list committed plans, start a named
   plan on direct user request, or inspect, measure, hand off, pause, or resume a run. Also for bound
   Foundry writers. Not for routine coding.
-argument-hint: "[brief | plans | start | status | measure | pause | resume] [target]"
+argument-hint: "[brief | plans | start | status | measure | pause | resume | repin] [target]"
 metadata:
   copilot.user-invocable: "true"
 ---
@@ -24,6 +24,7 @@ metadata:
 | `measure <run-id>` | Report time to first verified writer kickoff and exact qualification, with observed native usage and its coverage. | [Measure a run](references/metrics.md) |
 | `pause <run-id>` | Stop new work without discarding checked work. | [Pause and resume](references/runs.md#pause-and-resume) |
 | `resume <plan>` | Continue the same run after a pause or a recoverable stall. No preliminary pause. | [Pause and resume](references/runs.md#pause-and-resume) |
+| `repin <run-id>` | Review and approve a committed fix to the final goal evaluator without restarting writers. | [Evaluator repinning](references/runs.md#evaluator-repinning) |
 
 ## Routing
 

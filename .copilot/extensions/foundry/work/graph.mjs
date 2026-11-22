@@ -89,7 +89,7 @@ export function currentReview(cwd, run, review) {
 	const squad = run.policy.squads.find(s => s.id === review.squad);
 	if (!squad || reviews(run).findLast(r => r.squad === squad.id)?.id !== review.id) return false;
 	const target = commitAt(cwd, run.policy.target);
-	if (run.goal) return run.goal.commit === review.base && run.goal.target === target && goalReceipt(run)?.exit === 1;
+	if (run.goal) return review.evaluatorRevision === run.repins?.at(-1)?.revision && run.goal.commit === review.base && run.goal.target === target && goalReceipt(run)?.exit === 1;
 	const base = productBase(cwd, run, target);
 	return base === review.base || reviewVersion(cwd, run, squad, base) === review.version;
 }
@@ -361,11 +361,12 @@ export function advance(cwd, run, actor, discover, context = {}) {
 	const survey = run.goal ? gap?.exit === 1 && run.goal.target === tip() && !(outputs && run.join && !run.blocker)
 		: !run.policy.seed && (discover || cap !== undefined);
 	if (!survey) return;
-	const squads = discoverySquads(run, history, gap);
+	const applicable = history.filter(r => r.evaluatorRevision === run.repins?.at(-1)?.revision);
+	const squads = discoverySquads(run, applicable, gap);
 	delete run.discoveryError;
 	for (const squad of squads) {
 		if (reserved >= limit) break;
-		const past = availableHistory(run, history, squad.id);
+		const past = availableHistory(run, applicable, squad.id);
 		if (!past) continue;
 		let commit;
 		try { commit = run.goal?.commit ?? startingPoint(); }
@@ -382,7 +383,7 @@ export function advance(cwd, run, actor, discover, context = {}) {
 	}
 	// Wait for discovery only before declaring a stall, not before checking a ready product.
 	if (gap?.exit !== 1 || run.blocker || run.join || nodes.some(n => actionable(run, n))) return;
-	const finished = new Map(reviews(run).map(r => [r.squad, r.base === gap.commit && !reading(r)]));
+	const finished = new Map(reviews(run).filter(r => r.evaluatorRevision === run.repins?.at(-1)?.revision).map(r => [r.squad, r.base === gap.commit && !reading(r)]));
 	if (squads.some(s => !finished.get(s.id))) return;
 	stall(run, repeated || nodes.some(n => n.state === "repeated")
 		? "The proposed outputs reproduce a tree already checked against the goal." : "No actionable grain remains on this revision.", repeated || gap);

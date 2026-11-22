@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, linkSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { factory, git, put } from "../test/fixture.mjs";
 import { mapSnapshot } from "../map/model.mjs";
@@ -72,6 +72,43 @@ function fixture(t, configure, files = {}) {
 }
 
 const goalCheck = ".foundry/final.mjs";
+for (const [oldExit, newExit] of [[1, 0], [0, 2]]) test(`repin finishes the issued goal on its old pin, then rechecks the same product: ${oldExit} -> ${newExit}`, async t => {
+	const helper = ".foundry/probe.mjs";
+	const f = fixture(t, goal, { [goalCheck]: `import verdict from "./probe.mjs"; process.exit(verdict);`,
+		[helper]: `export default ${oldExit};`, ".foundry/product.mjs": "process.exit(0);" });
+	const side = path.join(path.dirname(f.root), "reviewed");
+	git(f.root, "worktree", "add", "-q", "--detach", side, f.tip);
+	put(side, helper, `export default ${newExit};`);
+	git(side, "commit", "-qam", "Fix the probe");
+	const revision = git(side, "rev-parse", "HEAD"), args = { run, from: f.tip, revision, files: [helper] };
+	let issued = () => {}, release = () => {};
+	const held = new Promise(resolve => { issued = () => resolve(undefined); });
+	const until = new Promise(resolve => { release = () => resolve(undefined); });
+	const owner = f.runtime(f.root, { ask: async () => "approve", execute: async (tool, a, call) => {
+		if (tool === "bash" && !f.checks.length) { issued(); await until; }
+		return f.execute(tool, a, call);
+	} });
+	const starting = owner.operation("start", { source }, "owner");
+	await held;
+	try {
+		const s = await owner.operation("repin", args, "owner");
+		assert.equal(s.qualified, null);
+		assert.equal(s.pending?.filter(e => e.kind === "goal").length, 1);
+	} finally { release(); await starting; }
+	const done = await owner.operation("status", { run, detail: "proof" }, "owner");
+	assert.equal(git(f.root, "rev-parse", "HEAD"), f.tip);
+	assert.equal(f.workers.size, 0);
+	assert.deepEqual(done.goalChecks?.map(e => [e.commit, e.evaluatorRevision, e.receipt?.exit]), [[f.tip, f.tip, oldExit], [f.tip, revision, newExit]]);
+	assert.equal(done.qualified, newExit === 0 ? f.tip : null);
+	if (newExit !== 0) { assert.equal(done.qualification, null); return; }
+	assert.equal(done.qualification?.format, "foundry-qualification/v2");
+	assert.equal(done.qualification?.receipts.goal.evaluatorRevision, revision);
+	const bundle = path.join(path.dirname(f.root), "qualification.bundle");
+	execFileSync(process.execPath, [fileURLToPath(new URL("../../../skills/foundry/scripts/qualification.mjs", import.meta.url)), "pack", bundle],
+		{ cwd: f.root, input: JSON.stringify(done.qualification) });
+	assert.ok(git(f.root, "bundle", "list-heads", bundle).includes(`${revision} refs/foundry/objects/${revision}`));
+});
+
 /** @param {FixturePolicy} p */
 function goal(p) { p.goalCheck = goalCheck; delete p.seed; }
 const goalFiles = {
@@ -82,6 +119,37 @@ const goalFiles = {
 		if (left + right !== 3) { console.log(left === 1 ? "Left is ready; right does not contribute two." : "Left does not contribute one."); process.exit(1); }
 		console.log("Observed the joined result: 3");`
 };
+
+test("repin keeps the writer and rejects changes outside the goal harness or without operator approval", async t => {
+	const f = fixture(t, goal, goalFiles);
+	await f.start();
+	await f.reportGrains("left");
+	const [w] = f.workers.values(), side = path.join(path.dirname(f.root), "probe-fix");
+	git(f.root, "worktree", "add", "-q", "--detach", side, f.tip);
+	let approved = false, prompts = 0;
+	const owner = f.runtime(f.root, { ask: async () => { prompts++; return approved ? "approve" : null; } });
+	put(side, goalCheck, 'import {existsSync} from "node:fs"; process.exit(existsSync("lib/left/index.mjs") ? 0 : 1);');
+	git(side, "commit", "-qam", "Repair goal probe");
+	const revision = git(side, "rev-parse", "HEAD"), args = { run, from: f.tip, revision, files: [goalCheck] };
+	await assert.rejects(owner.operation("repin", args, w.id), /owner/i);
+	await assert.rejects(owner.operation("repin", { ...args, files: [] }, "owner"), /diff/i);
+	put(side, ".foundry/api.md", "Different requirements");
+	git(side, "commit", "-qam", "Change boundary");
+	await assert.rejects(owner.operation("repin", { ...args, revision: git(side, "rev-parse", "HEAD"), files: [goalCheck, ".foundry/api.md"] }, "owner"), /not the brief/);
+	assert.equal(prompts, 0);
+	await assert.rejects(owner.operation("repin", args, "owner"), /No approval/);
+	assert.equal((await f.status()).goal?.pin, f.tip);
+	approved = true;
+	await owner.operation("repin", args, "owner");
+	await assert.rejects(owner.operation("repin", args, "owner"), /pin changed/);
+	assert.equal((await f.runtime(w.cwd).operation("status", { run }, w.id)).nodes.find(n => n.grain === "left")?.token, w.token);
+	await f.submit(w.id);
+	const done = await f.status();
+	assert.ok(done.qualified && done.qualified !== f.tip);
+	assert.equal(done.goal?.receipt?.evaluatorRevision, revision);
+	assert.equal(done.goal?.receipt?.commit, done.qualified);
+	assert.equal(git(f.root, "show", `${done.qualified}:${goalCheck}`), goalFiles[goalCheck].trim());
+});
 
 for (const lateWork of [false, true])
 	test(`a ready product is checked before the other scout reports / ${lateWork ? "superseded" : "accepted"}`, async t => {
