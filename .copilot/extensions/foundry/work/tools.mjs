@@ -10,6 +10,7 @@ const definitions = [
 	["pause", "Stop new Foundry work without discarding native calls, evidence, worktrees or checked products.", { run: string }],
 	["submit", "Bound writer: after joining your helpers and integrating their files, capture and check the complete assigned directory. A failed check returns its bounded repair or blocker. Never supply a command or a success claim.", { run: string, token: string }],
 	["status", "Inspect assignments, blockers and exact receipts. A goal checkpoint is not qualification. For an explicit owner request use detail: proof, cleanup or usage. Reading never advances or archives work.", { run: string, detail: { type: "string", enum: ["proof", "cleanup", "usage"] } }],
+	["reference", "Bound Foundry researcher: read a permitted UTF-8 file from a local sibling Git checkout at the exact published commit. Not a checkout read, shell, or visual observation.", { run: string, review: string, repo: string, revision: string, path: string }],
 ];
 
 /** @param {Runtime} runtime @param {()=>string} primary @returns {import("@github/copilot-sdk").Tool[]} */
@@ -18,6 +19,10 @@ export function buildTools(runtime, primary) {
 		name: `foundry_${op}`, description, parameters: { type: "object", properties, required: Object.keys(properties).filter(k => k !== "detail"), additionalProperties: false },
 		handler: async (args, invocation) => {
 			try {
+				if (op === "reference") {
+					if (invocation.sessionId !== primary() || !invocation.agentId) throw new Error("Only a bound research subagent may use the pinned reader");
+					return runtime.readReference(args, invocation.sessionId);
+				}
 				if (fromHelper(invocation, primary()))
 					throw new Error(primaryOnly);
 				return JSON.stringify(await runtime.operation(op, args, invocation.sessionId));

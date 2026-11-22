@@ -29,6 +29,14 @@ export function name(value, label) {
 	return id;
 }
 
+/** @param {string|undefined} key */
+export const referenceRepo = key => key?.startsWith("reference:") ? name(key.slice(10), "reference checkout") : undefined;
+/** @param {unknown} value */
+export function waitTarget(value) {
+	const target = text(value, "wait target");
+	return referenceRepo(target) ? target : name(target, "producer charter");
+}
+
 /** @param {unknown} value @param {string} label */
 export function names(value, label) {
 	if (!Array.isArray(value))

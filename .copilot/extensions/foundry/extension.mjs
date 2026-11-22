@@ -34,7 +34,7 @@ session = await joinSession({
 		async onPreToolUse(input, ctx) {
 			const name = input.toolName.split(".").at(-1) ?? "";
 			if (fromHelper(input, ctx.sessionId)) {
-				if (name.startsWith("foundry_") || identify(name, input.toolArgs))
+				if ((name.startsWith("foundry_") && name !== "foundry_reference") || identify(name, input.toolArgs))
 					return { permissionDecision: "deny", permissionDecisionReason: primaryOnly };
 				return;
 			}

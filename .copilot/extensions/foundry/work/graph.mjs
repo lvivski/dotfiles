@@ -5,8 +5,8 @@ import { assess, goalAllowsWork, qualify, rejectRepeat, stall } from "./goal.mjs
 import { admitted, assignmentCount, expired, reserveNotice, reserveProduct, reserveWorker } from "./native.mjs";
 import { actionable, dependencies, liveNeeds, owns, productOutputs, proposal, requireNewWork, revise, settledOutput, superseded, waiting, working, writerInputs } from "./plan.mjs";
 import { changedFiles, combine, commitAt, outside, regularFiles, rejoin, retain, verifyContracts, versionOf, withoutGrain } from "./product.mjs";
-import { availableHistory, blockReview, canInvestigate, discoverySquads, nextReview, reading, requestedFiles, reserveReview, reviews, wakeSource } from "./reviews.mjs";
-import { FoundryError, contains, digest, fail, fields, name, names, record, relative, text } from "./values.mjs";
+import { availableHistory, blockReview, canInvestigate, discoverySquads, nextReview, reading, requestedFiles, researchContext, reserveReview, reviews, wakeSource } from "./reviews.mjs";
+import { FoundryError, contains, digest, fail, fields, name, names, record, referenceRepo, relative, text, waitTarget } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @typedef {import("./model.js").Node} Node */
@@ -80,7 +80,7 @@ export function parseObservation(squad, raw) {
 		fail("no_evidence", "Identify committed evidence for the observation");
 	const evidence = input.evidence.map(relative);
 	return { outcome, ...(ownerInput ? { ownerInput } : {}), reason: text(input.reason, "observation"), evidence, grains, ...(replace.length ? { replace } : {}),
-		...(outcome === "waiting" ? { waitFor: name(input.waitFor, "producer charter") } : {}),
+		...(outcome === "waiting" ? { waitFor: waitTarget(input.waitFor) } : {}),
 		...(outcome === "needs-evidence" ? { file: relative(input.file) } : {}) };
 }
 
@@ -99,7 +99,7 @@ export function observe(cwd, run, review, observation) {
 	admitted(run);
 	const squad = run.policy.squads.find(s => s.id === review.squad) ?? fail("invalid_charter", "Missing charter");
 	// An unspecialized question (including a report from an older workflow) is not an operator decision.
-	if (observation.outcome === "unresolved" || observation.outcome === "needs-decision" && !observation.ownerInput)
+	if (!observation.findings && (observation.outcome === "unresolved" || observation.outcome === "needs-decision" && !observation.ownerInput))
 		observation = { ...observation, outcome: canInvestigate(run, review, squad) ? "needs-research" : "unresolved" };
 	const { outcome, grains, evidence } = observation, ids = grains.map(g => typeof g === "string" ? g : g.id);
 	if (outcome === "needs-research" && !canInvestigate(run, review, squad))
@@ -133,8 +133,16 @@ export function observe(cwd, run, review, observation) {
 			fail("unresolved_evidence", `No further focused read of ${observation.file}: the pinned evidence is unchanged`);
 		regularFiles(cwd, review.base, [observation.file]);
 	}
-	if (observation.waitFor && (observation.waitFor === squad.id || !run.policy.squads.some(s => s.id === observation.waitFor)))
+	if (observation.waitFor && !referenceRepo(observation.waitFor) && (observation.waitFor === squad.id || !run.policy.squads.some(s => s.id === observation.waitFor)))
 		fail("charter_scope", "Wait for a different declared producer charter");
+	if (observation.references?.length) {
+		const pins = { ...run.references };
+		for (const { repo, revision } of observation.references) {
+			if (pins[repo] && pins[repo] !== revision) fail("frozen_reference", `${repo} is already frozen for this run at ${pins[repo]}; rejected ${revision}`);
+			pins[repo] = revision;
+		}
+		run.references = pins;
+	}
 	review.state = "observed";
 	review.observation = observation;
 	if (outcome === "needs-decision" && wakeSource(run, review)?.decision?.status === "answered")
@@ -248,6 +256,7 @@ function reserveWriter(cwd, run, n, required, base, actor, submitToken) {
 	const supporting = review && run.policy.sharedBrief ? [...requestedFiles(run, review)].filter(file =>
 		!contains(g.directory, file) && review.observation?.evidence.includes(file)) : [];
 	const brief = [run.policy.direction, review?.observation?.reason,
+		review && researchContext(run, review),
 		...("task" in g ? [`Assigned behavior: ${g.task}`, `Component check: ${g.check}`] : []),
 		`Generate the complete ${g.directory}/ directory; omitted files are deleted.`,
 		`Read ${g.specification} and ${g.boundary.join(", ")} at this base. Required outputs: ${JSON.stringify(required)}.`,

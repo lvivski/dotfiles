@@ -3,18 +3,18 @@ import { existsSync } from "node:fs";
 import { openDatabase, ledgerPath } from "./database.mjs";
 import { readPolicy } from "./contract.mjs";
 import { presentQuestions } from "./decisions.mjs";
-import { advance, newRun, parseObservation } from "./graph.mjs";
+import { advance, currentReview, newRun, parseObservation } from "./graph.mjs";
 import { missingObservation, qualifiedProduct } from "./evidence.mjs";
 import { admitted, assignment, awaitingReply, canDispatch, current, expired, identify, issue, receive, reserveCheck, unissued } from "./native.mjs";
 import { checked } from "./plan.mjs";
 import { capture, commitAt, retain, rootAt, verifyContracts } from "./product.mjs";
 import { refusedCall } from "./recovery.mjs";
-import { researchResult } from "./research.mjs";
-import { blockReview, questions, reviews } from "./reviews.mjs";
+import { referenceText, researchResult } from "./research.mjs";
+import { blockReview, investigation, questions, reviews } from "./reviews.mjs";
 import { scoutPacket } from "./scouts.mjs";
 import { isPacket } from "./snapshot.mjs";
 import { status } from "./status.mjs";
-import { FoundryError, digest, fail, fields, name, record, text } from "./values.mjs";
+import { FoundryError, digest, fail, fields, name, record, referenceRepo, text } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @typedef {import("./model.js").Effect} Effect */
@@ -285,10 +285,11 @@ export function createRuntime(directory, host) {
 			delete q.error;
 			const squad = r.policy.squads.find(s => s.id === q.squad) ?? fail("invalid_charter", "No matching charter");
 			try {
-				if (raw === null && q.wake?.key !== "research") fail("missing_report", "No structured scout report was returned");
+				const research = investigation(q, squad);
+				if (raw === null && !research) fail("missing_report", "No structured scout report was returned");
 				if (!isPacket(packet) || packet.review !== q.id || packet.base !== q.base)
 					fail("missing_packet", "Missing or mismatched journaled scout packet");
-				q.observation = q.wake?.key === "research" ? researchResult(raw, squad.charter) : parseObservation(squad, raw);
+				q.observation = research ? researchResult(raw, squad.charter) : parseObservation(squad, raw);
 				q.packet = packet; q.state = "reported";
 			} catch (error) {
 				if (!(error instanceof FoundryError)) throw error;
@@ -438,6 +439,20 @@ export function createRuntime(directory, host) {
 	}
 	return {
 		operation, pre, scoutBatch, scoutResult,
+		/** @param {unknown} args @param {string} actor */
+		readReference(args, actor) {
+			const a = record(args); fields(a, ["run", "review", "repo", "revision", "path"]);
+			const run = read(name(a.run, "run"));
+			admitted(run);
+			const repo = name(a.repo, "reference checkout");
+			const job = reviews(run).find(r => r.id === a.review && r.issuer === actor && r.state === "issued" && r.workflowId);
+			const squad = run.policy.squads.find(s => s.id === job?.squad);
+			if (!job || !squad || !investigation(job, squad) || referenceRepo(job.wake?.key) !== repo || !currentReview(cwd(), run, job))
+				fail("foreign_assignment", "This investigation is not bound to that reference checkout");
+			const revision = run.references?.[repo];
+			if (!revision || revision !== a.revision) fail("missing_reference", "The requested revision is not the frozen reference");
+			return referenceText(cwd(), { repo, revision }, text(a.path, "reference path"));
+		},
 		/** @param {string} actor */
 		defaultMapRun(actor) {
 			if (!hasLedger()) return;

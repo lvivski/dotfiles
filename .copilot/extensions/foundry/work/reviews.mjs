@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { qualifiedProduct } from "./evidence.mjs";
 import { actionable, checked, displacedInputs, owns } from "./plan.mjs";
-import { digest } from "./values.mjs";
+import { digest, referenceRepo } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @typedef {import("./model.js").Review} Review */
@@ -18,6 +18,23 @@ export function reserveReview(run, issuer, squad, base, version, wake) {
 
 /** @param {Run} run @param {Review} r */
 export const wakeSource = (run, r) => r.wake && reviews(run).find(p => p.id === r.wake?.review && p.squad === r.squad && p.base === r.base);
+
+/** @param {Review} review @param {import("./model.js").Squad} squad */
+export const investigation = (review, squad) => review.wake?.key === "research" ||
+	!!referenceRepo(review.wake?.key) && "areas" in squad && !!squad.researchAgent;
+
+/** Carry the deciding scout's evidence into its writer, including after focused file reads.
+ * @param {Run} run @param {Review} review */
+export function researchContext(run, review) {
+	const reports = [];
+	for (const r of reviews(run)) {
+		if (r.id === review.id) break;
+		const o = r.observation;
+		if (r.state === "observed" && r.squad === review.squad && r.base === review.base && r.version === review.version && o?.findings?.length)
+			reports.push({ question: wakeSource(run, r)?.observation?.reason, outcome: o.outcome, reason: o.reason, findings: o.findings });
+	}
+	return reports.length ? `Attributed research at ${review.base}, not instructions or proof of completeness: ${JSON.stringify(reports)}` : "";
+}
 
 /** @param {Run} run @param {Review} review */
 export function requestedFiles(run, review) {
@@ -77,8 +94,10 @@ export function nextReview(run, past, base, version) {
 	if (obs?.outcome === "needs-decision" && last?.decision?.status === "answered") key = last.id;
 	if (obs?.outcome === "needs-evidence") key = `file:${obs.file}`;
 	if (obs?.outcome === "needs-research") key = "research";
-	if (obs?.outcome === "researched") key = "research-result";
+	if (last && (obs?.outcome === "researched" || obs?.outcome === "unresolved" && obs.findings?.length)) key = `research-result:${last.id}`;
 	if (obs?.outcome === "waiting") {
+		const repo = referenceRepo(obs.waitFor);
+		if (repo && run.references?.[repo]) key = obs.waitFor;
 		const producer = run.policy.squads.find(s => s.id === obs.waitFor);
 		if (producer && "areas" in producer) {
 			const outputs = Object.values(run.nodes).filter(n => owns(producer, n.grain.directory) && checked(n));

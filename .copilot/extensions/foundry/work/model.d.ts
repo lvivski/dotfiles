@@ -63,9 +63,11 @@ export interface Observation {
 	waitFor?: string;
 	file?: string;
 	findings?: Finding[];
+	references?: Reference[];
 }
 
 export interface Finding { kind: string; source: string; finding: string }
+export interface Reference { repo: string; revision: string }
 
 export type Packet = { review: string; base: string; files: Record<string, string>; outputs: Record<string, string>; partial: boolean };
 
@@ -151,6 +153,7 @@ export type Effect = NativeCall | Review;
 export interface Run {
 	id: string;
 	owner: string;
+	references?: Record<string, string>;
 	policy: Policy;
 	activatedAt: number;
 	active: boolean;

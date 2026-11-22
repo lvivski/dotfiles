@@ -3,6 +3,7 @@ import { checkReceipt, goalReceipt } from "./evidence.mjs";
 import { assignmentCount, unissued } from "./native.mjs";
 import { checked, owns, validateNodes } from "./plan.mjs";
 import { outside } from "./product.mjs";
+import { investigation } from "./reviews.mjs";
 import { fail, relative } from "./values.mjs";
 
 /** @typedef {(value:unknown)=>boolean} Guard */
@@ -47,9 +48,10 @@ const policy = shape({
 const observation = v => object(v) && string(v.reason) && Array.isArray(v.evidence) && v.evidence.length > 0 && v.evidence.every(path) &&
 	Array.isArray(v.grains) && v.grains.every(g => id(g) || proposal(g)) && validOutcome(v.outcome, v.grains.length) &&
 	(v.ownerInput === undefined || v.outcome === "needs-decision" && one("product-choice", "external-action")(v.ownerInput)) &&
-	(v.findings === undefined ? v.outcome !== "researched" : (v.outcome === "researched" || v.outcome === "needs-decision" || v.outcome === "unresolved") &&
+	(v.references === undefined || Array.isArray(v.findings) && list(shape({ repo: id, revision: commit }))(v.references)) &&
+	(v.findings === undefined ? v.outcome !== "researched" : (v.outcome === "researched" || v.outcome === "needs-decision" || v.outcome === "unresolved" || v.outcome === "waiting") &&
 		list(shape({ kind: string, source: string, finding: string }))(v.findings) && (v.outcome !== "researched" || Array.isArray(v.findings) && v.findings.length > 0)) &&
-	(v.outcome === "waiting" ? id(v.waitFor) : v.waitFor === undefined) &&
+	(v.outcome === "waiting" ? id(v.waitFor) || typeof v.waitFor === "string" && v.waitFor.startsWith("reference:") && id(v.waitFor.slice(10)) : v.waitFor === undefined) &&
 	(v.outcome === "needs-evidence" ? path(v.file) : v.file === undefined) &&
 	(v.replace === undefined || v.outcome === "regenerate" && list(id)(v.replace));
 /** @param {unknown} v @returns {v is import("./model.js").Packet} */
@@ -78,7 +80,7 @@ const native = shape({
 	runnerStarted: optional(bool), receipt: optional(receipt)
 });
 const snapshot = shape({
-	id, owner: string, policy,
+	id, owner: string, policy, references: optional(named(commit)),
 	active: bool, activatedAt: positive, pauseReason: optional(string), nodes: named(node), effects: list(v => scout(v) || native(v)),
 	products: list(product), join: optional(product), goal: optional(shape({ ...assessment, stall: optional(string),
 		tried: optional(list(v => typeof v === "string" && /^[0-9a-f]{64}$/.test(v))) })),
@@ -95,7 +97,7 @@ function validDispatch(run, e) {
 		const squad = run.policy.squads.find(s => s.id === e.squad), report = e.observation;
 		return !!squad && !e.nativeId && !e.token && !e.receipt && !e.boundAt && (!e.workflowId || !!e.callId) &&
 			(e.wake?.key !== "research" && report?.outcome !== "needs-research" || "areas" in squad && !!squad.researchAgent) &&
-			(!report || (e.wake?.key === "research") === (report.findings !== undefined)) &&
+			(!report || investigation(e, squad) === (report.findings !== undefined)) &&
 			(!e.packet || e.packet.review === e.id && e.packet.base === e.base) &&
 			(e.state !== "reported" && e.state !== "observed" || !!report && !!e.workflowId && !!e.packet) &&
 			(!e.decision || e.state === "observed" && report?.outcome === "needs-decision") &&
