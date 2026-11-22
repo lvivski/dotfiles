@@ -7,10 +7,11 @@ import { openDatabase, ledgerPath } from "./database.mjs";
 import { readPolicy } from "./contract.mjs";
 import { presentQuestions } from "./decisions.mjs";
 import { advance, currentReview, newRun, parseObservation, reserveChangedRepair, retryableReview, sameReviewInputs } from "./graph.mjs";
-import { baselineNotice, changedFrom, missingObservation, qualifiedProduct } from "./evidence.mjs";
+import { baselineNotice, changedFrom, goalReceipt, missingObservation, qualifiedProduct } from "./evidence.mjs";
 import { admitted, assignment, awaitingReply, boundWriter, canDispatch, current, expired, identify, issue, receive, reserveCheck, transferableWriter, unissued } from "./native.mjs";
 import { checked } from "./plan.mjs";
 import { queueNote } from "./notes.mjs";
+import { diagnosticLine, indexBudgetError } from "./pages.mjs";
 import { capture, commitAt, generationRoot, retain, rootAt, verifyContracts } from "./product.mjs";
 import { refusedCall } from "./recovery.mjs";
 import { prepareRepin } from "./repin.mjs";
@@ -346,7 +347,7 @@ export function createRuntime(directory, host) {
 			if (!batch.length || batch.some(e => e.workflowId && e.workflowId !== workflowId))
 				fail("foreign_assignment", "No matching Foundry discovery dispatch in this session");
 			for (const e of batch)
-				if (e.retryOf && awaitingReply(e) && !sameReviewInputs(cwd(), r, e))
+				if (e.retryOf && awaitingReply(e) && (!sameReviewInputs(cwd(), r, e) || e.diagnostic && e.diagnostic.receipt !== r.goal?.check))
 					blockReview(e, "Superseded charter or product revision; the requested review was not dispatched.");
 			const pending = batch.filter(e => awaitingReply(e) && currentPin(r, e));
 			const held = !eligible || !r.active || expired(r) || block;
@@ -412,7 +413,7 @@ export function createRuntime(directory, host) {
 				const research = investigation(q, squad);
 				if (raw === null && diagnostic) fail("missing_report", diagnostic);
 				if (raw === null && !research) fail("missing_report", "No structured scout report was returned");
-				if (!isPacket(packet) || packet.review !== q.id || packet.base !== q.base)
+				if (!isPacket(packet) || packet.review !== q.id || packet.base !== q.base || q.diagnostic && !packet.partial)
 					fail("missing_packet", "Missing or mismatched journaled scout packet");
 				q.observation = research ? researchResult(raw, squad.charter) : parseObservation(squad, raw);
 				q.packet = packet; q.state = "reported";
@@ -585,19 +586,37 @@ export function createRuntime(directory, host) {
 		}
 		if (op === "rereview") {
 			fields(a, ["run", "review"]);
-			const review = name(a.review, "review"), origin = cwd(), prior = retryableReview(origin, read(id), actor, review);
-			if (prior.issuer !== actor || !host.confirmNoReport) fail("missing_history", "Need the original workflow's issuer-scoped native no-report evidence in the owner session");
+			const review = name(a.review, "review"), origin = cwd(), original = read(id), prior = retryableReview(origin, original, actor, review);
+			const receipt = original.goal?.check;
+			if (prior.error === indexBudgetError && (!receipt || prior.packet || prior.note ||
+				original.effects.slice(0, original.effects.findIndex(e => e.id === prior.id)).findLast(e => e.kind === "goal")?.id !== receipt ||
+				original.policy.squads.some(s => s.id === prior.squad && investigation(prior, s))))
+				fail("not_recoverable", "Need the original pre-dispatch review and its still-current goal receipt");
+			if (prior.issuer !== actor || !host.confirmNoReport) fail("missing_history", "Need the original workflow's issuer-scoped native evidence in the owner session");
 			await requireReadyOwner(origin);
 			await host.confirmNoReport(prior);
+			const budget = await host.scoutBudget?.();
 			await requireReadyOwner(origin);
 			const ticket = randomUUID(), launch = host.scout ?? fail("unavailable", "Discovery workflow unavailable");
-			db().update(id, run => {
+			db().change(id, run => {
 				const live = retryableReview(origin, run, actor, review);
-				if (digest(live) !== digest(prior)) fail("stale_assignment", "Review changed during native verification");
+				if (digest(live) !== digest(prior) || run.goal?.check !== receipt) fail("stale_assignment", "Review or goal changed during native verification");
+				if (budget === undefined || !Number.isSafeInteger(budget) || budget < 0)
+					fail("packet_budget", "Missing a valid issuing-session scout budget");
 				const fresh = reserveReview(run, actor, live.squad, live.base, live.version, live.wake);
 				fresh.retryOf = live.id;
+				if (live.error === indexBudgetError && receipt) {
+					const full = goalReceipt(run);
+					if (!full || full.commit !== live.base) fail("invalid_receipt", "Missing the reviewed goal receipt");
+					const excerpt = diagnosticLine(full.output, live.squad);
+					if (excerpt && Buffer.byteLength(full.output) > budget / 8) fresh.diagnostic = { receipt, excerpt };
+				}
+				const { prompt } = scoutPacket(origin, run, fresh, budget);
+				if (Buffer.byteLength(prompt) > budget) fail("packet_budget", "New packet exceeds the scout budget");
 				if (!issue(run, fresh, ticket)) fail("stale_assignment", "Cannot issue fresh review");
 				if (run.goal) delete run.goal.stall;
+				const target = run.goal?.target;
+				if (target) return () => commitAt(origin, run.policy.target) === target;
 			});
 			watchScouts(id, ticket, actor, () => launch(id, ticket, actor));
 			return status(read(id), actor);

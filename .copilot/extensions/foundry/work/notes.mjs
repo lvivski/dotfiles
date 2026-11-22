@@ -6,7 +6,7 @@ import { fail, name, text } from "./values.mjs";
 /** @param {unknown} s @param {number} bytes */
 export const boundedText = (s, bytes) => typeof s === "string" && !!s.trim() && Buffer.byteLength(s) <= bytes;
 
-/** @param {import("./model.js").Effect|undefined} e @param {Note} note */
+/** @param {import("./model.js").Effect|undefined} e @param {Pick<Note,"receipt"|"excerpt">} note */
 export function sourceReceipt(e, note) {
 	const r = e?.kind === "goal" && e.id === note.receipt ? checkReceipt(e) : undefined;
 	if (r && r.exit !== null && (note.excerpt === undefined ? Buffer.byteLength(r.output) <= 8192 :

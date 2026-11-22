@@ -1,5 +1,24 @@
 import { fail } from "./values.mjs";
 
+export const indexBudgetError = "The charter instructions and pinned file index exceed this session's scout budget.";
+
+/** Prefer an actual line representing a repeated diagnostic in the selected squad's output.
+ * Labels affect scheduling context only; an excerpt is never a new verdict.
+ * @param {string} output @param {string} squad */
+export function diagnosticLine(output, squad) {
+	const lines = output.split("\n"), counts = new Map();
+	let best = "", max = 0;
+	for (const line of lines) {
+		if (!line.startsWith(`${squad}/`)) continue;
+		const label = line.indexOf(": "), key = label < 0 ? line : line.slice(label + 2);
+		const row = counts.get(key) ?? { line, count: 0 };
+		counts.set(key, row); row.count++;
+		if (row.count > max) { best = row.line; max = row.count; }
+	}
+	const line = best || lines.find(l => /\b(?:error|fail(?:ed|ure)?|gap|mismatch)\b/i.test(l)) || lines.find(l => l.trim()) || "";
+	return line.trim().slice(0, 1024).replace(/[\uD800-\uDBFF]$/, "");
+}
+
 /** @typedef {{path:string,oid?:string,text?:string,omitted?:string}} FileRow */
 /** Pack whole blobs when possible. Only the requested blob may be split, and its
  * receipt identifies precisely the displayed range (UTF-16 indices, never half a surrogate).
@@ -8,7 +27,7 @@ import { fail } from "./values.mjs";
 export function evidencePage(rows, bytes, charter, focus, start) {
 	const index = [...rows.values()].map(({ path, oid, omitted }) => JSON.stringify({ path, oid, ...(omitted ? { omitted } : {}) }));
 	let free = bytes - Buffer.byteLength(index.join("\n"));
-	if (free < 0) fail("packet_budget", "The charter instructions and pinned file index exceed this session's scout budget.");
+	if (free < 0) fail("packet_budget", indexBudgetError);
 	const order = [...rows.values()].map((row, i) => ({ row, i })).sort((a, b) =>
 		rank(a.row) - rank(b.row) || (a.row.text?.length ?? 0) - (b.row.text?.length ?? 0));
 	/** @param {FileRow} r */

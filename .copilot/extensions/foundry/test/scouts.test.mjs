@@ -76,6 +76,16 @@ test("area scout receives pinned Git blobs, its exact goal receipt and safe cros
 	assert.throws(() => scoutPacket(f.cwd, f.run, { ...f.review, base: "0".repeat(40) }), "must not fall back to HEAD");
 });
 
+test("an oversized current goal diagnostic fits the scout budget without shortening its proof", t => {
+	const f = fixture(t), receipt = f.run.effects[0].receipt; assert.ok(receipt);
+	const output = "First failed action: open row\n" + "雪😀".repeat(22000) + "\nLast diagnostic: row missing\n";
+	receipt.output = output;
+	const { prompt, packet } = scoutPacket(f.cwd, f.run, f.review, 18000);
+	assert.ok(Buffer.byteLength(prompt) <= 18000 && packet.partial && packet.files[f.charter]);
+	assert.match(prompt, /goal-effect/); assert.match(prompt, /First failed action/); assert.match(prompt, /Last diagnostic/);
+	assert.ok(!prompt.includes("\uFFFD") && !prompt.includes(output)); assert.equal(receipt.output, output);
+});
+
 test("fixed charter includes owned idle grains and their declared inputs but not unrelated idle work", t => {
 	const f = fixture(t), { policy, nodes } = f.run;
 	delete policy.goalCheck; delete f.run.goal;

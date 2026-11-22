@@ -26,9 +26,11 @@ test("explicit review of one proven no-report charter, including the legacy ledg
 	assert.equal(before[0].reason, "Invalid scout result: No structured scout report was returned");
 	assert.match(String((await f.status()).blocker), /No actionable/);
 	const label = `scout:${old.squad}:${old.id}@${old.base}`, call = `call-${old.id}`;
-	let status = "running", error = "Permission denied", toolCalls = 0, manual = false, launches = 0;
+	let status = "running", error = "Permission denied", toolCalls = 0, manual = false, launches = 0, budget = 1;
 	let failed = [old.id];
 	const conf = await loadEntry({ sessionId: "owner", on() {}, rpc: { mode: { get: async () => "interactive" },
+		metadata: { getContextAttribution: async () => ({ contextAttribution: { promptTokenLimit: 2 * budget, categories: {
+			systemPrompt: 0, customInstructions: 0, systemTools: 0, mcpTools: 0 } } }) },
 		managedSettings: { get: async () => ({ failClosed: false }) }, permissions: { getMode: async () => ({ mode: manual ? "manual" : "assisted" }) },
 		eventLog: { read: async () => ({ cursorStatus: "ok", hasMore: false, events: [
 			{ type: "subagent.failed", data: { toolCallId: call, error, totalToolCalls: toolCalls } }] }) },
@@ -57,6 +59,8 @@ test("explicit review of one proven no-report charter, including the legacy ledg
 	failed = [old.id]; manual = true; assert.match(JSON.stringify(await request()), /manual/i);
 	manual = false;
 	assert.match(JSON.stringify(await request(sibling.id)), /no.report|blocked/i);
+	assert.match(JSON.stringify(await request()), /scout budget/);
+	budget = 16000;
 	assert.equal(launches, 0); assert.deepEqual((await f.status()).reviews, before);
 	assert.equal(typeof await request(), "string");
 	for (let i = 0; i < 20 && (await f.status()).reviews.at(-1)?.state !== "observed"; i++) await nextTurn();
@@ -64,6 +68,52 @@ test("explicit review of one proven no-report charter, including the legacy ledg
 	assert.deepEqual(after.slice(0, 2), before);
 	assert.equal(after.length, 3); assert.deepEqual([after[2].squad, after[2].base, after[2].state], [old.squad, old.base, "observed"]);
 	assert.match(JSON.stringify(await request()), /superseded|current/); assert.equal(launches, 1);
+});
+
+test("a proven zero-agent packet failure admits just one first scout with an exact current excerpt", async t => {
+	const f = trial(t, ["price", "browse"], { goalCheck: "goal.mjs", limits: { assignments: 3 } });
+	const excerpt = "price/cart: mismatch at checkout", code = `console.log("browse/row: unrelated failure\\n" + "x".repeat(150000) + "\\nprice/other: different failure\\n${excerpt}\\nprice/again: mismatch at checkout\\n" + "y".repeat(9000));process.exitCode=1`;
+	put(f.root, "goal.mjs", code); git(f.root, "commit", "-qam", "verbose diagnostic");
+	// This allowance cannot even fit the index, regardless of any diagnostic reduction.
+	await f.start(f.runtime(f.root, { scoutBudget: async () => 1 }));
+	const before = (await f.status()).reviews, [old] = before;
+	assert.equal(f.scouts.length, 0); assert.match(String(old.reason), /pinned file index/);
+	const db = openDatabase(f.root); t.after(() => db.close());
+	const proof = db.read(run)?.goal?.check; assert.ok(proof);
+	const original = db.read(run)?.effects.find(e => e.id === proof)?.receipt; assert.ok(original);
+	assert.ok(original.output.includes(excerpt) && original.output.length >= 150000);
+	let launched = 0, budget = 1, priorAgents = 0;
+	const conf = await loadEntry({ sessionId: "owner", on() {}, rpc: { mode: { get: async () => "interactive" },
+		metadata: { getContextAttribution: async () => ({ contextAttribution: { promptTokenLimit: 2 * budget, categories: {
+			systemPrompt: 0, customInstructions: 0, systemTools: 0, mcpTools: 0 } } }) },
+		managedSettings: { get: async () => ({ failClosed: false }) }, permissions: { getMode: async () => ({ mode: "assisted" }) }
+	}, workflow: {
+		getRun: async () => ({ runId: old.workflowId, status: "completed", result: { reported: 0, failed: [] } }),
+		getRunDetail: async () => ({ runId: old.workflowId, workflowName: "foundry-scout", status: "completed", agents: Array(priorAgents).fill({}) }),
+		run: async (/** @type {string} */ name, /** @type {{args:{dispatch:string}}} */ opts) => {
+			launched++; const [job, ...others] = await f.owner.scoutBatch(run, opts.args.dispatch, "owner", "first-scout");
+			assert.equal(name, "foundry-scout"); assert.deepEqual(others, []); assert.equal(job.squad, old.squad);
+			assert.ok(job.prompt.includes(excerpt) && !job.prompt.includes("x".repeat(1000)) && job.packet.partial);
+			await f.owner.scoutResult(run, opts.args.dispatch, "owner", "first-scout", job.id, { ...noGap, outcome: "unresolved" }, job.packet);
+			return { runId: "first-scout", status: "completed" };
+		} } });
+	const ctx = { sessionId: "owner" }, hook = { ...ctx, timestamp: new Date(), workingDirectory: f.root };
+	await conf.hooks?.onSessionStart?.({ ...hook, source: "resume" }, ctx);
+	t.after(() => conf.hooks?.onSessionEnd?.({ ...hook, reason: "complete" }, ctx));
+	const tool = conf.tools?.find(t => t.name === "foundry_rereview"); assert.ok(tool?.handler);
+	const request = () => tool.handler?.({ run, review: old.id },
+		{ ...ctx, arguments: {}, toolName: tool.name, toolCallId: "request-first-scout" });
+	assert.match(JSON.stringify(await request()), /scout budget/);
+	budget = 16000; priorAgents = 1; assert.match(JSON.stringify(await request()), /zero.agent|no agents/);
+	priorAgents = 0;
+	assert.equal(launched, 0); assert.deepEqual((await f.status()).reviews, before);
+	assert.equal(typeof await request(), "string");
+	for (let i = 0; i < 30 && (await f.status()).reviews.at(-1)?.state !== "observed"; i++) await nextTurn();
+	const after = (await f.status()).reviews;
+	assert.deepEqual(after.slice(0, 2), before); assert.equal(after.length, 3); assert.equal(after[2].state, "observed");
+	assert.equal(after[2].retryOf, old.id); assert.equal(after[2].squad, old.squad);
+	assert.match(JSON.stringify(await request()), /superseded|current/);
+	assert.equal(launched, 1); assert.equal(f.checks.length, 1); assert.deepEqual(db.read(run)?.effects.find(e => e.id === proof)?.receipt, original);
 });
 
 for (const changed of ["target", "paused", "limit"]) test(`owner rereview cannot bypass ${changed} during native verification`, async t => {

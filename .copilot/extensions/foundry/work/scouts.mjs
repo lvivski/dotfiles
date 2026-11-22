@@ -100,7 +100,11 @@ export function scoutPacket(cwd, run, review, budget = Infinity) {
 		goalCheck: policy.goalCheck,
 	});
 	const receipt = goalReceipt(run);
-	const goal = receipt?.commit === base ? `${JSON.stringify({ commit: base, check: receipt.check, evaluatorRevision: receipt.evaluatorRevision, exit: receipt.exit })}\n${receipt.output}`
+	const meta = receipt && JSON.stringify({ receipt: run.goal?.check, commit: base, check: receipt.check, evaluatorRevision: receipt.evaluatorRevision ?? policy.base, exit: receipt.exit });
+	const selected = review.diagnostic;
+	if (selected && (selected.receipt !== run.goal?.check || receipt?.commit !== base || !sourceReceipt(run.effects.find(e => e.id === selected.receipt), selected)))
+		fail("invalid_receipt", "Need the current exact goal receipt and a verbatim excerpt of at most 8192 UTF-8 bytes");
+	let goal = receipt?.commit === base ? `${meta}\n${selected ? `Partial diagnostic (selected excerpt; full receipt retained):\n${selected.excerpt}` : receipt.output}`
 		: policy.goalCheck ? packet.omitted("no verified goal receipt for this revision") : "(no goal check)";
 	// Put owned failures first so a broad graph cannot bury the reason for a
 	// same-revision review. Other charters' diagnostics and private pins stay local.
@@ -165,7 +169,7 @@ export function scoutPacket(cwd, run, review, budget = Infinity) {
 	if (report?.outcome === "waiting") context.push(`${referenceRepo(report.waitFor) ? "Reference published" : "Checked outputs changed"} for ${report.waitFor}; reconsider this wait: ${report.reason}`);
 	const complete = [`Conserved Git blobs at ${base}:\n${conserved}`, `Owned product Git blobs at ${base}:\n${product}`,
 		`Declared dependency Git blobs at ${base} (read-only):\n${required}`, requested].filter(Boolean).join("\n\n");
-	const notice = packet.partial ? "Coverage: PARTIAL. Evidence was unavailable. Do not return no-gap from this packet. Propose supported work, request a different file with needs-evidence, or report unresolved."
+	const notice = packet.partial || selected ? "Coverage: PARTIAL. Evidence was unavailable. Do not return no-gap from this packet. Propose supported work, request a different file with needs-evidence, or report unresolved."
 		: "Coverage: no packet truncation. Only this charter's supplied evidence was reviewed.";
 	/** @type {(evidence:string, coverage:string)=>string} */
 	let render = (evidence, coverage) => [
@@ -187,7 +191,7 @@ export function scoutPacket(cwd, run, review, budget = Infinity) {
 		`Current graph (metadata, not file evidence):\n${graph}`, evidence, ...context, coverage,
 	].join("\n\n");
 	/** @type {import("./model.js").Packet} */
-	const receiptPacket = { review: review.id, base, files: Object.fromEntries(packet.delivered), outputs: Object.fromEntries(packet.outputs), partial: packet.partial };
+	const receiptPacket = { review: review.id, base, files: Object.fromEntries(packet.delivered), outputs: Object.fromEntries(packet.outputs), partial: packet.partial || !!selected };
 	let researchAgent;
 	if (investigation(review, squad)) {
 		if (!("areas" in squad && squad.researchAgent && report && (report.outcome === "needs-research" || report.outcome === "waiting" && report.waitFor === review.wake?.key)))
@@ -204,6 +208,13 @@ export function scoutPacket(cwd, run, review, budget = Infinity) {
 	}
 	let prompt = render(complete, notice);
 	if (Buffer.byteLength(prompt) > budget) {
+		if (!selected && receipt?.commit === base && Buffer.byteLength(receipt.output) > budget / 8) {
+			// Leave space for citable files. These two verbatim pieces need not be adjacent.
+			const width = Math.min(512, Math.floor(budget / 128)), output = receipt.output;
+			const first = output.slice(0, width).replace(/[\uD800-\uDBFF]$/, "");
+			const last = width ? output.slice(-width).replace(/^[\uDC00-\uDFFF]/, "") : "";
+			goal = `${meta}\nPartial diagnostic (${Buffer.byteLength(output)} UTF-8 bytes in full receipt):\n${first}\n[...omitted...]\n${last}`;
+		}
 		const header = `${journey}Pinned file index at ${base}:\n`;
 		const partial = "Coverage: PARTIAL. Rows without text or excerpt are names only, not evidence. Cite only delivered text, and only the displayed range for excerpts. Do not return no-gap." +
 			(deciding ? " Decide from this packet or report unresolved." : researchAgent ? " Report unknown if the supplied evidence cannot answer your question." : " Use needs-evidence with the exact file for its first or next page.") +

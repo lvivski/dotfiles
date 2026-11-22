@@ -2,6 +2,7 @@ import { planDirectory, validOutcome } from "./contract.mjs";
 import { checkReceipt, goalReceipt } from "./evidence.mjs";
 import { validFeedback } from "./feedback.mjs";
 import { boundedText, sourceReceipt } from "./notes.mjs";
+import { indexBudgetError } from "./pages.mjs";
 import { assignmentCount, unissued } from "./native.mjs";
 import { checked, owns, validateNodes } from "./plan.mjs";
 import { outside } from "./product.mjs";
@@ -82,7 +83,8 @@ const scout = shape({ ...dispatch, kind: one("scout"), tool: one("workflow"), sq
 	state: one("ready", "issued", "uncertain", "suspended", "reported", "observed", "blocked", "deferred"), observation: optional(observation),
 	deferred: optional(shape({ pins: v => named(commit)(v) && object(v) && Object.keys(v).length > 0,
 		consumers: v => Array.isArray(v) && v.length > 0 && v.every(id) && new Set(v).size === v.length })),
-	workflowId: optional(string), decision: optional(decision), packet: optional(isPacket), retryOf: optional(id), note: optional(shape(noteFields)), predecessor: optional(node), wake: optional(shape({ review: id, key: string })) });
+	workflowId: optional(string), decision: optional(decision), packet: optional(isPacket), retryOf: optional(id), note: optional(shape(noteFields)), predecessor: optional(node),
+	diagnostic: optional(shape({ receipt: id, excerpt: v => boundedText(v, 8192) })), wake: optional(shape({ review: id, key: string })) });
 const native = shape({
 	...dispatch, kind: one("writer", "component", "product", "goal", "repair", "decision", "handoff", "artifact"), grain: optional(id), inlineRepair: optional(id),
 	usedArtifacts: optional(list(commit)), comparedArtifacts: optional(list(commit)),
@@ -116,6 +118,11 @@ function validDispatch(run, e) {
 		e.receipt.repair || e.receipt.squad || e.state !== "done" && e.state !== "refused")) return false;
 	if (e.tool === "workflow") {
 		const squad = run.policy.squads.find(s => s.id === e.squad), report = e.observation;
+		if (e.diagnostic) {
+			const d = e.diagnostic, src = run.effects.find(r => r.id === e.retryOf), receipt = sourceReceipt(run.effects.find(r => r.id === d.receipt), d);
+			if (src?.kind !== "scout" || src.error !== indexBudgetError || src.packet || src.note ||
+				receipt?.exit !== 1 || receipt.commit !== e.base || receipt.evaluatorRevision !== e.evaluatorRevision || e.packet && !e.packet.partial) return false;
+		}
 		if (e.predecessor) {
 			const n = e.predecessor, g = report?.grains[0];
 			if (e.state !== "observed" || report?.outcome !== "regenerate" || report.grains.length !== 1 || typeof g !== "object" ||

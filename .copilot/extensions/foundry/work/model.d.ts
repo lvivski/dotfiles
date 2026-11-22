@@ -126,6 +126,7 @@ export interface Review extends Dispatch {
 	packet?: Packet;
 	wake?: { review: string; key: string };
 	retryOf?: string;
+	diagnostic?: { receipt: string; excerpt: string };
 	note?: ReviewNote;
 	predecessor?: Node;
 	observation?: Observation;

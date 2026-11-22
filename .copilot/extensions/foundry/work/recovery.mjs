@@ -1,3 +1,4 @@
+import { indexBudgetError } from "./pages.mjs";
 import { digest, fail, record, text } from "./values.mjs";
 
 /** @typedef {import("./model.js").Effect} Effect */
@@ -32,6 +33,11 @@ export async function confirmNoReport(session, review) {
 		run.status !== "completed" || detail.status !== "completed" || run.failure)
 		fail("not_terminal", "The original scout workflow has no successful terminal envelope");
 	const result = record(run.result), label = `scout:${review.squad}:${review.id}@${review.base}`;
+	if (review.error === indexBudgetError) {
+		if (!Array.isArray(detail.agents) || detail.agents.length || result.reported !== 0 || !Array.isArray(result.failed) || result.failed.length)
+			fail("not_recoverable", "The original workflow did not confirm a zero-agent batch");
+		return;
+	}
 	const agents = detail.agents.filter(a => a.runId === id && a.label === label);
 	if (!Number.isSafeInteger(result.reported) || Number(result.reported) < 0 || !Array.isArray(result.failed) ||
 		result.failed.filter(key => key === review.id).length !== 1 || agents.length !== 1 || agents[0].status !== "failed" || !agents[0].toolCallId ||
