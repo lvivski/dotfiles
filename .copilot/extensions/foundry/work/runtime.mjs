@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
+import { preparePublication, reportedReferences } from "./artifacts.mjs";
 import { openDatabase, ledgerPath } from "./database.mjs";
 import { readPolicy } from "./contract.mjs";
 import { presentQuestions } from "./decisions.mjs";
 import { advance, currentReview, newRun, parseObservation } from "./graph.mjs";
 import { missingObservation, qualifiedProduct } from "./evidence.mjs";
-import { admitted, assignment, awaitingReply, canDispatch, current, expired, identify, issue, receive, reserveCheck, unissued } from "./native.mjs";
+import { admitted, assignment, awaitingReply, boundWriter, canDispatch, current, expired, identify, issue, receive, reserveCheck, unissued } from "./native.mjs";
 import { checked } from "./plan.mjs";
 import { capture, commitAt, retain, rootAt, verifyContracts } from "./product.mjs";
 import { refusedCall } from "./recovery.mjs";
@@ -33,8 +34,7 @@ function pause(run, reason) {
 /** @param {Run} run @param {string} actor @param {string} token */
 function writable(run, actor, token) {
 	admitted(run);
-	const node = Object.values(run.nodes).find(n => n.token === token && n.worker === actor) ??
-		fail("stale_assignment", "No current worker assignment matches this token");
+	const node = boundWriter(run, actor, token);
 	if (node.state === "checking" || checked(node)) return;
 	if (node.state !== "writing") fail("stale_assignment", "This attempt is no longer writable");
 	return node;
@@ -301,11 +301,12 @@ export function createRuntime(directory, host) {
 		// by the next issuer reconciliation, not by a nested workflow launch.
 		if (changed) await scoutCalls.get(ticket)?.get(reviewId)?.();
 	}
-	/** @param {string} id @param {string} actor @param {string} token */
-	function submit(id, actor, token) {
+	/** @param {string} id @param {string} actor @param {string} token @param {Record<string,unknown>} args */
+	function submit(id, actor, token, args) {
 		const run = read(id), n = writable(run, actor, token);
 		if (!n) return;
 		const g = n.grain;
+		const reports = reportedReferences(run, n, args);
 		const commit = capture(cwd(), text(n.generation, "generation commit"), g.directory);
 		db().update(id, r => {
 			admitted(r);
@@ -314,7 +315,7 @@ export function createRuntime(directory, host) {
 				fail("stale_assignment", "Assignment changed during capture");
 			node.state = "checking";
 			node.candidate = commit;
-			node.check = reserveCheck(r, actor, cwd(), commit, g.check, g.id);
+			node.check = reserveCheck(r, actor, cwd(), commit, g.check, g.id, reports);
 		});
 	}
 	/** @param {string} origin */
@@ -394,17 +395,21 @@ export function createRuntime(directory, host) {
 		}
 		const reply = op === "submit" ? { run: id, actor, token: text(a.token, "submission token") } : undefined;
 		if (reply) {
-			fields(a, ["run", "token"]);
+			fields(a, ["run", "token", "usedArtifacts", "comparedArtifacts"]);
 			// Check the host, not a local count lost on reload. Revalidate mode and ownership after the read.
 			if (host.helpersRunning && writable(read(id), actor, reply.token) && await host.helpersRunning())
 				fail("helpers_running", "Native helpers are still running. Join them, integrate their work, then submit with the same token.");
 		}
 		if (!await executable())
-			fail("unsupported_mode", "Plan mode cannot submit work");
+			fail("unsupported_mode", "Plan mode cannot submit work or publish references");
 		if (reply) {
-			submit(id, actor, reply.token);
+			submit(id, actor, reply.token, a);
 			// A shell notification can drive the same actor before this call returns.
 			submitting.add(reply);
+		}
+		else if (op === "publish") {
+			fields(a, ["run", "token", "file", "to"]);
+			db().update(id, preparePublication(cwd(), read(id), actor, a));
 		}
 		else
 			fail("unknown_operation", `Unknown Foundry operation ${op}`);

@@ -81,15 +81,30 @@ export function requireNewWork(run, g, base, inputs) {
 		fail("no_progress", `${g.directory}: this assignment with these inputs already reproduced a failing tree. Reuse its checked output or propose different work.`);
 }
 
-/** An assignment's inputs already include transitive versions. Never discard an issued consumer.
+/** Inputs include transitive versions. Blocked assignments keep their pins only as history.
+ * @param {Run["nodes"]} current @param {Record<string,string>} pins */
+export function consumersOf(current, pins) {
+	const versions = Object.entries(pins);
+	return Object.values(current).filter(n => n.state !== "blocked" && versions.some(([id, version]) => n.inputs?.[id] === version));
+}
+
+/** Project retirement for validation only; a live consumer vetoes applying the entire change.
  * @param {Run["nodes"]} current @param {Iterable<string>} ids */
-export function superseded(current, ids) {
-	const remove = new Set(ids), retired = [...remove].filter(id => settledOutput(current[id]));
-	for (const n of Object.values(current)) {
-		if (n.state === "blocked" || !retired.some(id => n.inputs?.[id] === current[id].candidate)) continue;
-		if (!settledOutput(n)) fail("frozen_assignment", `A current assignment still consumes a superseded output: ${n.grain.id}`);
+function retirement(current, ids) {
+	const remove = new Set(ids), pins = Object.fromEntries([...remove].filter(id => settledOutput(current[id]))
+		.map(id => [id, text(current[id].candidate, "checked output")]));
+	const consumers = [];
+	for (const n of consumersOf(current, pins)) {
+		if (!settledOutput(n)) consumers.push(n.grain.id);
 		remove.add(n.grain.id);
 	}
+	return { remove, deferred: consumers.length ? { pins, consumers } : undefined };
+}
+
+/** @param {Run["nodes"]} current @param {Iterable<string>} ids */
+export function superseded(current, ids) {
+	const { remove, deferred } = retirement(current, ids);
+	if (deferred) fail("frozen_assignment", `A current assignment still consumes a superseded output: ${deferred.consumers.join(", ")}`);
 	return remove;
 }
 
@@ -134,10 +149,11 @@ export function revise(current, squad, report, review) {
 	for (const n of Object.values(current))
 		if (settledOutput(n) && (added.some(g => g.id === n.grain.id) || !outside(n.grain.directory, dirs))) remove.add(n.grain.id);
 	const nodes = { ...current };
-	for (const id of superseded(current, remove)) delete nodes[id];
+	const retired = retirement(current, remove);
+	for (const id of retired.remove) delete nodes[id];
 	for (const g of added) nodes[g.id] = waiting(g, review);
 	const conflict = displacedInputs(current, added);
 	if (conflict) fail("displaced_input", conflict.reason);
 	validateNodes(nodes);
-	return nodes;
+	return { nodes, deferred: retired.deferred };
 }

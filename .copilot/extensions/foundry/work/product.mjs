@@ -2,7 +2,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { isUtf8 } from "node:buffer";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
-import { closeSync, fchmodSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -124,6 +124,25 @@ export function retain(cwd, oid) {
 	return oid;
 }
 
+/** Pin only the explicitly selected file, including untracked or binary data. Never touch the index.
+ * @param {string} cwd @param {string} file */
+export function pinFile(cwd, file) {
+	const source = path.join(cwd, relative(file));
+	const stat = lstatSync(source);
+	if (!stat.isFile() || stat.nlink !== 1 || realpathSync(source) !== source || stat.dev !== lstatSync(cwd).dev)
+		fail("unsupported_tree", `Expected a regular, unlinked file: ${file}`);
+	const fd = openSync(source, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+	try {
+		const opened = fstatSync(fd);
+		if (!opened.isFile() || opened.nlink !== 1 || opened.dev !== stat.dev || opened.ino !== stat.ino || realpathSync(source) !== source)
+			fail("artifact_changed", `File changed during publication: ${file}`);
+		const oid = execFileSync("git", gitArgs(cwd, ["hash-object", "-w", "--stdin"]), { env, stdio: [fd, "pipe", "pipe"] }).toString().trim();
+		const after = fstatSync(fd);
+		if (opened.ctimeMs !== after.ctimeMs || opened.size !== after.size) fail("artifact_changed", `File changed during publication: ${file}`);
+		return retain(cwd, oid);
+	} finally { closeSync(fd); }
+}
+
 /** @param {string} cwd @param {string|null} tree @param {string} label @param {string} [parent] */
 function pin(cwd, tree, label, parent) {
 	const oid = git(cwd, ["-c", "commit.gpgSign=false", "commit-tree", tree ?? build(cwd, []), ...(parent ? ["-p", parent] : [])], `${label}\n`).toString().trim();
@@ -197,12 +216,18 @@ function grainTree(root, directory) {
 	});
 }
 
-/** @param {string} cwd @param {string} generation @param {string} directory */
-export function capture(cwd, generation, directory) {
+/** @param {string} cwd @param {string} generation */
+export function generationRoot(cwd, generation) {
 	const root = rootAt(cwd);
 	const [local, common, head] = git(root, ["rev-parse", "--path-format=absolute", "--absolute-git-dir", "--git-common-dir", "HEAD"]).toString().trimEnd().split("\n");
 	if (head !== generation || local === common)
 		fail("wrong_workspace", "Submit from the assigned native worktree at its frozen generation base");
+	return root;
+}
+
+/** @param {string} cwd @param {string} generation @param {string} directory */
+export function capture(cwd, generation, directory) {
+	const root = generationRoot(cwd, generation);
 	return pin(root, replace(root, treeOf(root, generation), directory, grainTree(root, directory)), "Foundry grain candidate");
 }
 

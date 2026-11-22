@@ -1,3 +1,4 @@
+import { materialize, offered } from "./artifacts.mjs";
 import { goalReceipt, missingObservation, qualifiedProduct } from "./evidence.mjs";
 import { handoff, qualification } from "./handoff.mjs";
 import { metricsFacts, timingFacts } from "./metrics.mjs";
@@ -47,6 +48,9 @@ export function status(run, actor, detail) {
 		run: run.id, active: run.active, direction: run.policy.direction, contract: { commit: run.policy.base, path: run.policy.source },
 		limit: run.policy.workers ?? null, ...(assignments ? { assignments } : {}), deadline: run.policy.deadline, expired: expired(run),
 		...(owner ? ownerStatus(run, receipts, detail) : {}),
+		artifacts: (run.artifacts ?? []).filter(a => owner || a.publisher === actor || nodes.some(n => offered(a, n))).map(a => ({ ...a, extract: materialize(a) })),
+		artifactReports: run.effects.flatMap(e => e.kind === "component" && (owner || e.issuer === actor) && (e.usedArtifacts || e.comparedArtifacts)
+			? [{ grain: e.grain, worker: e.issuer, candidate: e.commit, usedArtifacts: e.usedArtifacts, comparedArtifacts: e.comparedArtifacts }] : []),
 		blocker: blocker && stop ? `${blocker}\n${stop}` : blocker ?? stop,
 		reviews: owner ? reviews(run).map(reviewStatus) : [],
 		nodes: nodes.map(n => ({

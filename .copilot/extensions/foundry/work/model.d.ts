@@ -69,6 +69,14 @@ export interface Observation {
 export interface Finding { kind: string; source: string; finding: string }
 export interface Reference { repo: string; revision: string }
 
+export interface Artifact {
+	file: string;
+	blob: string;
+	publisher: string;
+	base: string;
+	to: string[];
+}
+
 export type Packet = { review: string; base: string; files: Record<string, string>; outputs: Record<string, string>; partial: boolean };
 
 export interface Node {
@@ -81,6 +89,7 @@ export interface Node {
 	inputs?: Record<string, string>;
 	base?: string;
 	replaces?: string;
+	artifactCursor?: number;
 	candidate?: string;
 	check?: string;
 	repairs: number;
@@ -101,13 +110,14 @@ export interface Product extends Assessment {
 export interface Review extends Dispatch {
 	kind: "scout";
 	tool: "workflow";
-	state: "ready" | "issued" | "uncertain" | "reported" | "observed" | "blocked";
+	state: "ready" | "issued" | "uncertain" | "reported" | "observed" | "blocked" | "deferred";
 	squad: string;
 	base: string;
 	version: string;
 	packet?: Packet;
 	wake?: { review: string; key: string };
 	observation?: Observation;
+	deferred?: { pins: Record<string, string>; consumers: string[] };
 	decision?: { status: "presenting" | "dismissed" } | { status: "answered"; answer: string }
 		| { status: "unavailable"; reason: string };
 }
@@ -141,8 +151,13 @@ interface Dispatch {
 	receipt?: Receipt;
 }
 
-export interface NativeCall extends Dispatch {
-	kind: "writer" | "component" | "product" | "goal" | "repair" | "decision" | "handoff";
+export interface ArtifactReport {
+	usedArtifacts?: string[];
+	comparedArtifacts?: string[];
+}
+
+export interface NativeCall extends Dispatch, ArtifactReport {
+	kind: "writer" | "component" | "product" | "goal" | "repair" | "decision" | "handoff" | "artifact";
 	inlineRepair?: string;
 	tool: "create_session" | "bash" | "send_session_message" | "session.send";
 	state: "ready" | "issued" | "uncertain" | "ordinary" | "done" | "refused";
@@ -154,6 +169,7 @@ export interface Run {
 	id: string;
 	owner: string;
 	references?: Record<string, string>;
+	artifacts?: Artifact[];
 	policy: Policy;
 	activatedAt: number;
 	active: boolean;

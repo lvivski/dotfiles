@@ -2,7 +2,7 @@
 /** @param {Status["pending"][number]} p */
 function pendingMessage(p) {
 	const labels = { goal: "Goal check", component: "Component check", product: "Product check", writer: "Writer launch",
-		scout: "Scout", repair: "Repair notice", handoff: "Handoff notice", decision: "Decision notice" };
+		scout: "Scout", repair: "Repair notice", handoff: "Handoff notice", decision: "Decision notice", artifact: "Reference notice" };
 	const label = labels[p.kind] + (p.grain ? ` (${p.grain})` : "");
 	const reason = p.reason?.replace(/^(?:Error: )+/, "");
 	if (p.awaitingEvaluator && (!reason || reason === "Original call is not confirmed; it will not be replayed" || reason === "The pinned runner has not finished"))

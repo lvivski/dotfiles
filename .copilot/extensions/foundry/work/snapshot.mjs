@@ -64,23 +64,27 @@ const decision = v => object(v) && (one("presenting", "dismissed")(v.status) ||
 const node = shape({
 	grain, review: optional(id), state: one("idle", "waiting", "writing", "checking", "published", "qualified", "repeated", "blocked"), token: optional(id), worker: optional(string),
 	generation: optional(commit), inputs: optional(named(commit)), base: optional(commit), replaces: optional(commit), candidate: optional(commit), check: optional(id),
-	repairs: count, reason: optional(string)
+	repairs: count, reason: optional(string), artifactCursor: optional(count)
 });
 const assessment = { target: commit, commit, check: id };
 const product = shape({ ...assessment, outputs: named(commit), qualifiedAt: optional(positive) });
 const receipt = shape({ commit, check: path, exit: v => v === null || count(v), output: string, repair: optional(id), squad: optional(id) });
 const dispatch = { id, issuer: string, args: object, callId: optional(string), error: optional(string), permissionHold: optional(string) };
 const scout = shape({ ...dispatch, kind: one("scout"), tool: one("workflow"), squad: id, base: commit, version: string,
-	state: one("ready", "issued", "uncertain", "reported", "observed", "blocked"), observation: optional(observation),
+	state: one("ready", "issued", "uncertain", "reported", "observed", "blocked", "deferred"), observation: optional(observation),
+	deferred: optional(shape({ pins: v => named(commit)(v) && object(v) && Object.keys(v).length > 0,
+		consumers: v => Array.isArray(v) && v.length > 0 && v.every(id) && new Set(v).size === v.length })),
 	workflowId: optional(string), decision: optional(decision), packet: optional(isPacket), wake: optional(shape({ review: id, key: string })) });
 const native = shape({
-	...dispatch, kind: one("writer", "component", "product", "goal", "repair", "decision", "handoff"), grain: optional(id), inlineRepair: optional(id),
+	...dispatch, kind: one("writer", "component", "product", "goal", "repair", "decision", "handoff", "artifact"), grain: optional(id), inlineRepair: optional(id),
+	usedArtifacts: optional(list(commit)), comparedArtifacts: optional(list(commit)),
 	token: optional(id), tool: one("create_session", "bash", "send_session_message", "session.send"), state: one("ready", "issued", "uncertain", "ordinary", "done", "refused"),
 	nativeId: optional(string), boundAt: optional(positive), commit: optional(commit), check: optional(path),
 	runnerStarted: optional(bool), receipt: optional(receipt)
 });
 const snapshot = shape({
 	id, owner: string, policy, references: optional(named(commit)),
+	artifacts: optional(list(shape({ file: path, blob: commit, base: commit, publisher: string, to: list(path) }))),
 	active: bool, activatedAt: positive, pauseReason: optional(string), nodes: named(node), effects: list(v => scout(v) || native(v)),
 	products: list(product), join: optional(product), goal: optional(shape({ ...assessment, stall: optional(string),
 		tried: optional(list(v => typeof v === "string" && /^[0-9a-f]{64}$/.test(v))) })),
@@ -99,12 +103,16 @@ function validDispatch(run, e) {
 			(e.wake?.key !== "research" && report?.outcome !== "needs-research" || "areas" in squad && !!squad.researchAgent) &&
 			(!report || investigation(e, squad) === (report.findings !== undefined)) &&
 			(!e.packet || e.packet.review === e.id && e.packet.base === e.base) &&
-			(e.state !== "reported" && e.state !== "observed" || !!report && !!e.workflowId && !!e.packet) &&
+			(e.state !== "reported" && e.state !== "observed" && e.state !== "deferred" || !!report && !!e.workflowId && !!e.packet) &&
+			(e.state === "deferred" ? !!e.deferred && "areas" in squad && report?.outcome === "regenerate" : !e.deferred) &&
+			(e.wake?.key !== "released-inputs" || run.effects.some(src => src.kind === "scout" && src.state === "deferred" &&
+				src.squad === e.squad && src.id === e.wake?.review)) &&
 			(!e.decision || e.state === "observed" && report?.outcome === "needs-decision") &&
 			("areas" in squad || !report || !report.replace && report.grains.every(g => typeof g === "string"));
 	}
 	if (e.workflowId || Boolean(e.nativeId) !== Boolean(e.boundAt)) return false;
 	if (e.inlineRepair && (e.kind !== "component" || !checkReceipt(e))) return false;
+	if ((e.usedArtifacts || e.comparedArtifacts) && e.kind !== "component") return false;
 	if (e.kind === "writer") return e.tool === "create_session" && !!e.grain && !!e.token && (e.state === "done") === !!e.nativeId;
 	if (e.nativeId) return false;
 	if (e.kind === "goal" || e.kind === "product" || e.kind === "component")
@@ -112,7 +120,7 @@ function validDispatch(run, e) {
 			(!e.receipt || e.receipt.commit === e.commit && e.receipt.check === e.check) &&
 			(!e.receipt?.squad || e.kind === "goal" && e.receipt.exit === 1 && run.policy.squads.some(s => s.id === e.receipt?.squad));
 	if (!e.token || e.receipt || !string(e.args.message)) return false;
-	if (e.kind === "repair") return !!e.grain && (e.tool === "send_session_message" || e.tool === "session.send" && e.state !== "ordinary");
+	if (e.kind === "repair" || e.kind === "artifact") return !!e.grain && (e.tool === "send_session_message" || e.tool === "session.send" && e.state !== "ordinary");
 	return e.issuer === run.owner ? e.kind === "handoff" && e.tool === "session.send" && e.state !== "ordinary"
 		: e.tool === "send_session_message" && e.args.session_id === run.owner;
 }

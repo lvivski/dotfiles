@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { qualifiedProduct } from "./evidence.mjs";
-import { actionable, checked, displacedInputs, owns } from "./plan.mjs";
+import { actionable, checked, consumersOf, displacedInputs, owns, settledOutput } from "./plan.mjs";
 import { digest, referenceRepo } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
@@ -17,7 +17,8 @@ export function reserveReview(run, issuer, squad, base, version, wake) {
 }
 
 /** @param {Run} run @param {Review} r */
-export const wakeSource = (run, r) => r.wake && reviews(run).find(p => p.id === r.wake?.review && p.squad === r.squad && p.base === r.base);
+export const wakeSource = (run, r) => r.wake && reviews(run).find(p => p.id === r.wake?.review && p.squad === r.squad &&
+	(r.wake.key === "released-inputs" ? p.state === "deferred" : p.base === r.base));
 
 /** @param {Review} review @param {import("./model.js").Squad} squad */
 export const investigation = (review, squad) => review.wake?.key === "research" ||
@@ -61,6 +62,19 @@ export function correction(run, review) {
 		return conflict.reason;
 }
 
+export const staleReviewReason = "Chartered inputs changed during review";
+
+/** Reserve a release once per proposal. A read overtaken by a checkpoint cannot decide it.
+ * Refusals and invalid results are terminal, not excuses to retry on a later turn.
+ * @param {Run} run @param {Review[]} history */
+function releasedReviews(run, history) {
+	const consumed = new Set(history.filter(r => r.wake?.key === "released-inputs" &&
+		(r.base === run.goal?.commit || r.state === "observed" || r.state === "deferred" ||
+			r.state === "blocked" && r.callId && r.error !== staleReviewReason)).map(r => r.wake?.review));
+	return history.filter(r => r.deferred && !consumed.has(r.id) &&
+		!consumersOf(run.nodes, r.deferred.pins).some(n => !settledOutput(n)));
+}
+
 /** Prefer an attributed gap until that charter runs out of work. Under a cap, rotate
  * the others by last review so successive checkpoints don't starve them.
  * @param {Run} run @param {Review[]} history @param {import("./model.js").Receipt|undefined} gap */
@@ -68,8 +82,10 @@ export function discoverySquads(run, history, gap) {
 	const squads = run.policy.squads, focus = gap?.squad && squads.find(s => s.id === gap.squad);
 	if (focus && !run.blocker) {
 		const report = history.findLast(r => r.squad === focus.id && r.base === gap.commit);
-		if (!report || reading(report) || Object.values(run.nodes).some(n => n.review === report.id && (n.state === "published" || actionable(run, n))))
-			return [focus];
+		if (!report || reading(report) || Object.values(run.nodes).some(n => n.review === report.id && (n.state === "published" || actionable(run, n)))) {
+			const released = new Set(releasedReviews(run, history).map(r => r.squad));
+			return [...squads.filter(s => s !== focus && released.has(s.id)), focus];
+		}
 	}
 	if (!gap || run.policy.workers === undefined) return squads;
 	const last = new Map(history.map((r, i) => [r.squad, i]));
@@ -107,6 +123,8 @@ export function nextReview(run, past, base, version) {
 	}
 	if (key && last && !past.some(r => r.base === base && r.version === version && r.wake?.key === key))
 		return { wake: { review: last.id, key } };
+	const [deferred] = releasedReviews(run, past);
+	if (deferred) return { wake: { review: deferred.id, key: "released-inputs" } };
 	if (!seen) return {};
 }
 
@@ -120,7 +138,9 @@ export function blockReview(r, reason) {
 /** @param {Review} r */
 export function reviewStatus(r) {
 	return { id: r.id, squad: r.squad, state: reading(r) ? "reading" : r.state, base: r.base, version: r.version,
-		workflowId: r.workflowId, observation: r.observation, wake: r.wake, reason: r.state === "blocked" ? r.error : undefined, decision: r.decision };
+		workflowId: r.workflowId, observation: r.observation, wake: r.wake,
+		reason: r.deferred ? `Deferred: current assignments using ${Object.keys(r.deferred.pins).join(", ")}: ${r.deferred.consumers.join(", ")}` : r.state === "blocked" ? r.error : undefined,
+		decision: r.decision };
 }
 
 /** Only the latest review can ask for input; historical questions remain in the reviews list.

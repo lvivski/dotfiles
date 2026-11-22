@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
+import { notifyWriters, takeArtifactBrief } from "./artifacts.mjs";
 import { validOutcome } from "./contract.mjs";
 import { checkReceipt, goalReceipt } from "./evidence.mjs";
 import { assess, goalAllowsWork, qualify, rejectRepeat, stall } from "./goal.mjs";
 import { admitted, assignmentCount, expired, reserveNotice, reserveProduct, reserveWorker } from "./native.mjs";
-import { actionable, dependencies, liveNeeds, owns, productOutputs, proposal, requireNewWork, revise, settledOutput, superseded, waiting, working, writerInputs } from "./plan.mjs";
+import { actionable, consumersOf, dependencies, liveNeeds, owns, productOutputs, proposal, requireNewWork, revise, settledOutput, superseded, waiting, working, writerInputs } from "./plan.mjs";
 import { changedFiles, combine, commitAt, outside, regularFiles, rejoin, retain, verifyContracts, versionOf, withoutGrain } from "./product.mjs";
-import { availableHistory, blockReview, canInvestigate, discoverySquads, nextReview, reading, requestedFiles, researchContext, reserveReview, reviews, wakeSource } from "./reviews.mjs";
+import { availableHistory, blockReview, canInvestigate, discoverySquads, nextReview, reading, requestedFiles, researchContext, reserveReview, reviews, staleReviewReason, wakeSource } from "./reviews.mjs";
 import { FoundryError, contains, digest, fail, fields, name, names, record, referenceRepo, relative, text, waitTarget } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
@@ -15,9 +16,8 @@ import { FoundryError, contains, digest, fail, fields, name, names, record, refe
  * @param {Run} run @param {string} id @param {string|undefined} version */
 function invalidateConsumers(run, id, version) {
 	if (!version) return;
-	for (const [key, child] of Object.entries(run.nodes))
-		if (child.inputs?.[id] === version && child.state !== "blocked")
-			run.nodes[key] = waiting(child.grain, child.review, child.repairs);
+	for (const child of consumersOf(run.nodes, { [id]: version }))
+		run.nodes[child.grain.id] = waiting(child.grain, child.review, child.repairs);
 }
 
 /** @param {Run} run @param {string[]} roots @param {string} [review] */
@@ -107,9 +107,10 @@ export function observe(cwd, run, review, observation) {
 	// A sibling can finish while this scout reads. On the same assessed commit, revalidate the
 	// proposal against the live graph; never let an older charter review edit a newer plan.
 	if (!currentReview(cwd, run, review)) {
-		fail("stale_assignment", "Chartered inputs changed during review");
+		fail("stale_assignment", staleReviewReason);
 	}
-	const planned = "areas" in squad && outcome === "regenerate" ? revise(run.nodes, squad, observation, review.id) : run.nodes;
+	const revision = "areas" in squad && outcome === "regenerate" ? revise(run.nodes, squad, observation, review.id) : undefined;
+	const planned = revision?.nodes ?? run.nodes;
 	if (run.goal?.tried && planned !== run.nodes) for (const id of ids)
 		requireNewWork(run, planned[id].grain, review.base, writerInputs(planned, planned[id]));
 	if ("grains" in squad && ids.some(id => !squad.grains.includes(id))) fail("charter_scope", "This observation includes another squad's grain");
@@ -143,8 +144,13 @@ export function observe(cwd, run, review, observation) {
 		}
 		run.references = pins;
 	}
-	review.state = "observed";
 	review.observation = observation;
+	if (revision?.deferred) {
+		review.state = "deferred";
+		review.deferred = revision.deferred;
+		return;
+	}
+	review.state = "observed";
 	if (outcome === "needs-decision" && wakeSource(run, review)?.decision?.status === "answered")
 		review.decision = { status: "unavailable", reason: "The clarification did not resolve this charter. A change to the committed contract needs a newly authorized brief." };
 	if (outcome === "regenerate") {
@@ -261,6 +267,7 @@ function reserveWriter(cwd, run, n, required, base, actor, submitToken) {
 		`Generate the complete ${g.directory}/ directory; omitted files are deleted.`,
 		`Read ${g.specification} and ${g.boundary.join(", ")} at this base. Required outputs: ${JSON.stringify(required)}.`,
 		...supporting.map(file => `Read-only supporting file: ${review?.base}:${file}`),
+		takeArtifactBrief(run, n),
 		...(run.goal ? [`Reviewed input revision: ${base}`,
 			`Read prior implementation only if ${g.specification} explicitly permits it, and only from ${g.directory}/ at that revision.`] : []),
 		"Split independent work across native in-session `task` agents in parallel. Give each a disjoint set of files under your directory or a read-only question, the permitted inputs and the same constraints; ask for results, not further delegation. Keep shared files for yourself. Work solo for small or indivisible changes, or if helpers are unavailable.",
@@ -277,6 +284,7 @@ export function advance(cwd, run, actor, discover, context = {}) {
 	const owner = actor === run.owner;
 	if (!owner && !run.effects.some(e => e.nativeId === actor))
 		return;
+	notifyWriters(run, actor);
 	delete run.conflict; // Recompute from the current target and live pins. Never clear a refusal to do this.
 	const history = reviews(run);
 	for (const r of history) if (r.state === "reported" && r.observation) {

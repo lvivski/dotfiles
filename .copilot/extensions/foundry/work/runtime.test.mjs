@@ -415,7 +415,45 @@ test("a target edit supersedes an unused repeated output even before the first c
 	assert.equal(git(f.root, "show", `${moved.goal.receipt.commit}:${compose}/index.mjs`), composeBody);
 });
 
-test("a refused consumer releases its input, but not permission to retry the refused work", async t => {
+test("a deferred area repair waits for every pinned consumer, then asks once on the assessed checkpoint", async t => {
+	const { f, nextCore, nextMail } = await composeCheckpoint(t, {
+		[goalCheck]: `import compose from "../${compose}/index.mjs"; import {existsSync} from "node:fs";
+			if (existsSync("engine/preview/index.mjs")) console.log("FOUNDRY_SQUAD=engine"); process.exit(compose() === "fixed" ? 0 : 1);`
+	});
+	const evidence = `${compose}/index.mjs`, proposal = { ...result(evidence, splitCompose(), ["compose"]), reason: "Repair the shared controls" };
+	await report(nextCore, ".foundry/left.md", ["adapter", "preview"].map(id => work(id, `engine/${id}`, ["compose"])));
+	const before = await f.status();
+	await nextMail.report(proposal);
+	const held = await f.status(), source = held.reviews.find(r => r.id === nextMail.id);
+	assert.equal(source?.state, "deferred");
+	assert.deepEqual(source.observation, proposal);
+	assert.match(String(source.reason), /adapter/); assert.match(String(source.reason), /preview/);
+	assert.deepEqual(held.nodes, before.nodes);
+	assert.deepEqual(held.products, before.products);
+	await f.write("adapter", composeBody);
+	await f.owner.operation("pause", { run }, "owner");
+	await f.start(f.runtime(f.root));
+	assert.equal(f.scouts.filter(s => s.squad === "mail").at(-1)?.id, nextMail.id);
+	assert.equal((await f.status()).nodes.find(n => n.grain === "adapter")?.state, "published");
+	await f.write("preview", composeBody);
+	const released = await f.status(), fresh = await f.reading("mail");
+	assert.notEqual(fresh.base, nextMail.base);
+	assert.equal(fresh.base, released.goal?.receipt?.commit);
+	assert.equal(released.reviews.find(r => r.id === fresh.id)?.wake?.review, nextMail.id);
+	for (const detail of [proposal.reason, nextMail.base, evidence, ...splitCompose().map(g => g.task)]) assert.ok(fresh.prompt.includes(detail), detail);
+	assert.equal(f.workers.size, 3, "release reserves a scout, not the proposed writers");
+	await report(fresh, evidence, [work("controls", compose)]); // Different from the deferred split.
+	const changed = await f.status();
+	assert.deepEqual(changed.nodes.map(n => [n.grain, n.review]), [["controls", fresh.id]]);
+	await nextMail.report(proposal);
+	await f.write("controls", 'export default ()=>"fixed";');
+	const done = await f.status();
+	assert.ok(done.qualified); assert.deepEqual(Object.keys(done.outputs ?? {}), ["controls"]);
+	assert.deepEqual(done.products?.slice(0, 2), released.products);
+	assert.equal(done.reviews.filter(r => r.wake?.review === nextMail.id).length, 1);
+});
+
+for (const late of [false, true]) test(`a refused consumer releases its input, but not its refusal / ${late ? "checkpoint during review" : "same version"}`, async t => {
 	const f = await composeRound(t);
 	const adapter = work("adapter", "engine/adapter", ["compose"]);
 	let callId = "";
@@ -429,8 +467,20 @@ test("a refused consumer releases its input, but not permission to retry the ref
 	await report(mail, `${compose}/index.mjs`, splitCompose());
 	assert.match(String((await f.status()).reviews.find(r => r.id === mail.id)?.reason), /current assignment.*adapter/);
 	issuer.refusal({ type: "permission.completed", data: { toolCallId: callId, result: { kind: "denied-interactively-by-user" } } }, core.issuer);
+	await issuer.flush();
+	const released = await f.reading("mail");
+	assert.equal(released.base, mail.base);
+	assert.equal((await f.status()).reviews.find(r => r.id === released.id)?.wake?.review, mail.id);
+	if (!late) await report(released, `${compose}/index.mjs`, []);
+	f.owner.turn("owner"); await f.owner.flush();
+	assert.equal(f.scouts.filter(s => s.squad === "mail").at(-1)?.id, released.id, "no second wake on the same version");
 	await f.write("parser", composeBody);
 	const before = await f.status(), engine = await f.reading("engine"), host = await f.reading("mail");
+	if (late) {
+		assert.ok(host.prompt.includes(mail.base) && host.prompt.includes(splitCompose()[0].task), "the new checkpoint review retains the undecided proposal");
+		await report(released, `${compose}/index.mjs`, splitCompose());
+		assert.deepEqual((await f.status()).nodes, before.nodes, "the superseded release review cannot authorize a writer");
+	}
 	assert.equal(before.products?.length, 2);
 	const denied = before.nodes.find(n => n.grain === "adapter");
 	assert.match(String(denied?.reason), /permission refused/);
@@ -442,6 +492,8 @@ test("a refused consumer releases its input, but not permission to retry the ref
 	assert.deepEqual(after.nodes.filter(n => n.state === "writing").map(n => n.grain), ["editor", "send"]);
 	assert.deepEqual(after.nodes.find(n => n.grain === "adapter"), denied);
 	assert.deepEqual(after.products, before.products);
+	assert.equal(after.reviews.filter(r => r.wake?.review === mail.id && r.base === mail.base).length, 1);
+	if (!late) assert.equal(host.prompt.includes(splitCompose()[0].task), false, "a later checkpoint does not replay a consumed deferral");
 	const db = openDatabase(f.root); t.after(() => db.close());
 	assert.deepEqual(db.read(run)?.effects.filter(e => e.grain === "adapter").map(e => [e.callId, e.state]), [[callId, "refused"]]);
 });

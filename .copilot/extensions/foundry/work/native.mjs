@@ -19,7 +19,7 @@ export function assignment(value) {
 }
 
 /** @param {string} value */
-const ownerNotice = value => /^Foundry (?:decision|handoff): ([A-Za-z0-9][A-Za-z0-9._-]*) [a-f0-9-]{36}\n/.exec(value)?.[1];
+const noticeRun = value => /^Foundry (?:decision|handoff|artifact): ([A-Za-z0-9][A-Za-z0-9._-]*) [a-f0-9-]{36}\n/.exec(value)?.[1];
 
 /** @param {string} tool @param {unknown} args */
 export function identify(tool, args) {
@@ -27,16 +27,16 @@ export function identify(tool, args) {
 	const a = record(args);
 	const message = tool === "create_session" && a.kickoff && typeof a.kickoff === "object" && "prompt" in a.kickoff
 		? a.kickoff.prompt : tool === "send_session_message" ? a.message : undefined;
-	if (typeof message === "string") return assignment(message)?.run ?? (tool === "send_session_message" ? ownerNotice(message) : undefined);
+	if (typeof message === "string") return assignment(message)?.run ?? (tool === "send_session_message" ? noticeRun(message) : undefined);
 	if (tool === "bash" && typeof a.command === "string" && a.command.includes("/work/runner.mjs' ") && /^foundry-[a-f0-9-]{36}$/.test(String(a.shellId)))
 		return / '([A-Za-z0-9][A-Za-z0-9._-]*)' '[a-f0-9-]{36}'$/.exec(a.command)?.[1];
 }
 
-/** @param {Run} run @param {string} issuer @param {string} token @param {"repair"|"decision"|"handoff"} kind
+/** @param {Run} run @param {string} issuer @param {string} token @param {"repair"|"decision"|"handoff"|"artifact"} kind
  * @param {string} body @param {import("./model.js").Node} [node] */
 export function reserveNotice(run, issuer, token, kind, body, node) {
 	const to = node ? text(node.worker, "assigned writer") : run.owner;
-	const message = `${kind === "repair" ? marker(run.id, token) : `Foundry ${kind}: ${run.id} ${token}`}\n${body}`;
+	const message = `${kind === "repair" ? marker(run.id, token) : `Foundry ${kind}: ${run.id} ${kind === "artifact" ? randomUUID() : token}`}\n${body}`;
 	run.effects.push({ id: randomUUID(), issuer, token, state: "ready", kind, ...(node ? { grain: node.grain.id } : {}),
 		tool: to === issuer ? "session.send" : "send_session_message",
 		args: to === issuer ? { message } : { session_id: to, delivery_mode: "immediate", message } });
@@ -51,12 +51,13 @@ export function reserveWorker(run, issuer, token, base, brief, agent, grain) {
 		} });
 }
 
-/** @param {Run} run @param {string} issuer @param {string} cwd @param {string} commit @param {string} check @param {string} [grain] */
-export function reserveCheck(run, issuer, cwd, commit, check, grain) {
+/** @param {Run} run @param {string} issuer @param {string} cwd @param {string} commit @param {string} check @param {string} [grain]
+ * @param {import("./model.js").ArtifactReport} [reports] */
+export function reserveCheck(run, issuer, cwd, commit, check, grain, reports) {
 	const id = randomUUID();
 	const kind = grain ? "component" : check === run.policy.goalCheck ? "goal" : "product";
 	run.effects.push({
-		id, issuer, kind, state: "ready", tool: "bash", commit, check, ...(grain ? { grain } : {}),
+		id, issuer, kind, state: "ready", tool: "bash", commit, check, ...(grain ? { grain } : {}), ...reports,
 		args: {
 			command: `command node ${[runner, cwd, run.id, id].map(quote).join(" ")}`, shellId: `foundry-${id}`, initial_wait: 120,
 			description: `Check ${grain ?? (kind === "goal" ? "final goal" : "joined product")} at ${commit.slice(0, 12)}`.slice(0, 100)
@@ -120,6 +121,12 @@ export function admitted(run) {
 		fail("deadline", "The authorized deadline has elapsed");
 }
 
+/** @param {Run} run @param {string} actor @param {string} token */
+export function boundWriter(run, actor, token) {
+	return Object.values(run.nodes).find(n => n.worker === actor && n.token === token) ??
+		fail("stale_assignment", "No current worker assignment matches this token");
+}
+
 /** A final handoff may notify its owner after goal acceptance. It cannot authorize work.
  * @param {Run} run @param {Effect} e */
 export const canDispatch = (run, e) => !expired(run) && (run.active || e.kind === "handoff" && !!run.goal) && current(run, e);
@@ -145,7 +152,7 @@ export function issue(run, expected, callId) {
 /** @param {Run} run @param {Effect} e @param {string} reason */
 function block(run, e, reason) {
 	e.error = reason;
-	if (!current(run, e))
+	if (e.kind === "artifact" || !current(run, e))
 		return;
 	const n = assignee(run, e);
 	if (n) {
