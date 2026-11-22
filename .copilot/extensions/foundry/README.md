@@ -61,6 +61,8 @@ The run starts without assignments. Foundry dispatches ready charters to a `foun
 
 One investigation per charter/review version returns attributed source, documentation or probe findings. An answered investigation goes to a fresh **tool-less** scout for the writer decision; denied or insufficient evidence goes to the owner as an unresolved question. Both follow-ups consume ordinary assignment slots and budget. Findings are journaled context, never evaluator receipts, proof of live behavior, or permission to modify another directory. Existing briefs without `researchAgent` stay packet-only.
 
+Research labels are descriptive text, not identifiers. A report can contain up to 12 citations; its reason, labels, locators and findings share a single 24,576 UTF-16 code unit budget. There is no per-label length limit.
+
 For example, a browse scout can separate the query editor from the work that actually needs pricing. If an earlier plan still has a never-issued `lookup` assignment, its replacement can look like this (other report fields omitted):
 
 ```json
