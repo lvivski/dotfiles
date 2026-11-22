@@ -105,7 +105,9 @@ test("a scout can follow a second reference without losing the first or looping 
 	const last = f.scouts[3]; assert.ok(last, "a different pinned file is new evidence");
 	assert.ok(last.prompt.includes(value) && last.packet.files[api] && last.packet.files[second]);
 	await last.report({ ...request, evidence: [second], file: api });
-	assert.equal(f.scouts.length, 4); assert.equal((await f.status()).reviews.at(-1)?.state, "blocked");
+	const decision = f.scouts[4]; assert.ok(decision?.packet.files[api] && decision.packet.files[second]);
+	await decision.report({ outcome: "unresolved", evidence: [second], grains: [], reason: "These interfaces do not specify a compatible dataset." });
+	assert.equal(f.scouts.length, 5); assert.equal((await f.status()).reviews.at(-1)?.state, "observed");
 });
 
 test("reading a shared interface cannot give a squad ownership of it", async t => {

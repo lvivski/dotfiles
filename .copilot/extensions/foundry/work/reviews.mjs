@@ -82,6 +82,21 @@ export function correction(run, review) {
 
 export const staleReviewReason = "Chartered inputs changed during review";
 
+/** @param {string} file */
+export const unchangedRead = file => `No further focused read of ${file}: the pinned evidence is unchanged`;
+export const evidenceDecision = "decide-from-evidence";
+
+/** Recover recorded duplicate requests only when this charter actually received text.
+ * A request, a filename in an index, or an unavailable binary is not delivery.
+ * @param {Review[]} past @param {Review} last */
+function redundantRead(past, last) {
+	const file = last.observation?.file;
+	return last.state === "blocked" && last.observation?.outcome === "needs-evidence" && file && last.error === unchangedRead(file) &&
+		past.some(r => (r === last || r.state === "observed") && r.base === last.base && r.version === last.version &&
+			r.squad === last.squad && r.evaluatorRevision === last.evaluatorRevision && r.packet &&
+			(Object.hasOwn(r.packet.files, file) || r.packet.excerpt?.path === file && r.packet.excerpt.end === r.packet.excerpt.length));
+}
+
 /** Reserve a release once per proposal. A read overtaken by a checkpoint cannot decide it.
  * Refusals and invalid results are terminal, not excuses to retry on a later turn.
  * @param {Run} run @param {Review[]} history */
@@ -125,6 +140,7 @@ export function nextReview(run, past, base, version) {
 	const obs = last?.state === "observed" && last.base === base ? last.observation : undefined;
 	let key;
 	if (last?.base === base && correction(run, last)) key = "displaced-input";
+	if (last?.base === base && last.version === version && redundantRead(past, last)) key = evidenceDecision;
 	if (obs?.outcome === "needs-decision" && last?.decision?.status === "answered") key = last.id;
 	if (obs?.outcome === "needs-evidence") {
 		const part = last?.packet?.excerpt;

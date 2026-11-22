@@ -192,6 +192,30 @@ for (const limit of [24000, 400000]) test(`SDK session budget gates unseen citat
 /** @param {string} id @param {string[]} [needs] */
 const build = (id, needs = []) => ({ ...noGap, outcome: "regenerate", grains: [{ id, directory: id, task: `Implement ${id} v2`, check: "unit.mjs", needs }] });
 
+for (const decides of [true, false]) test(`a redundant read gets one decision from earlier delivered text; proposes work: ${decides}`, async t => {
+	const a = "encoder/format", b = "encoder/consumer", extra = "encoder/appendix";
+	const f = factoryTrial(t, ["interface"], { [a]: "A".repeat(12000), [b]: "B".repeat(13000), [extra]: "C".repeat(8000) });
+	const budget = 22000, owner = f.runtime(f.root, { scoutBudget: async () => budget });
+	await f.start(owner);
+	const request = (/** @type {string} */ file) => ({ ...noGap, outcome: "needs-evidence", file });
+	const [first] = f.scouts;
+	assert.ok(!first.packet.files[a]); await first.report(request(a));
+	const readA = f.scouts[3]; assert.ok(readA.packet.files[a]); await readA.report(request(b));
+	const readB = f.scouts[4]; assert.ok(readB.packet.files[b]); assert.ok(!readB.packet.files[a]);
+	await readB.report(request(a));
+	assert.match(String((await f.status()).reviews[4].reason), /No further focused read/);
+	const decision = f.scouts[5]; assert.ok(decision, "same checkpoint needs a decision, not a terminal duplicate-read stall");
+	assert.equal(decision.squad, first.squad); assert.equal(decision.base, first.base);
+	assert.ok(Buffer.byteLength(decision.prompt) <= budget);
+	assert.equal(decision.packet.files[a], readA.packet.files[a]); assert.match(decision.prompt, /already delivered/i);
+	assert.equal(f.workers.size, 0);
+	await decision.report(decides ? { ...build("encoder"), evidence: [a] } : request(extra));
+	owner.turn("owner"); await owner.flush(); await f.settle();
+	assert.equal(f.workers.size, decides ? 1 : 0);
+	assert.equal((await f.status()).reviews[5].state, decides ? "observed" : "blocked");
+	assert.equal(f.scouts.length, 6, "no second decision, file request, or sibling retry");
+});
+
 for (const again of [false, true]) test(`waiting for a producer wakes only the interested charter, still waiting: ${again}`, async t => {
 	const f = factoryTrial(t); await f.start();
 	const [encoder, display, other] = f.scouts;

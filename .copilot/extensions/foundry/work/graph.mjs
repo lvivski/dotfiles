@@ -7,7 +7,7 @@ import { admitted, assignmentCount, expired, reserveNotice, reserveProduct, rese
 import { actionable, consumersOf, dependencies, liveNeeds, owns, productOutputs, proposal, requireNewWork, revise, settledOutput, stalePins, superseded, supersededAttempt, validateNodes, waiting, working, writerInputs } from "./plan.mjs";
 import { changedFiles, combine, commitAt, directoryBaseline, outside, regularFiles, rejoin, retain, verifyContracts, verifyDirectoryPin, versionOf, withoutGrain } from "./product.mjs";
 import { referenceCheckout } from "./research.mjs";
-import { availableHistory, blockReview, canInvestigate, discoverySquads, nextReview, reading, requestedFiles, researchContext, reserveReview, reviews, staleReviewReason, wakeSource } from "./reviews.mjs";
+import { availableHistory, blockReview, canInvestigate, discoverySquads, evidenceDecision, nextReview, reading, requestedFiles, researchContext, reserveReview, reviews, staleReviewReason, unchangedRead, wakeSource } from "./reviews.mjs";
 import { FoundryError, contains, digest, fail, fields, name, names, record, referenceRepo, relative, text, waitTarget } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
@@ -129,8 +129,11 @@ export function observe(cwd, run, review, observation) {
 	admitted(run);
 	const squad = run.policy.squads.find(s => s.id === review.squad) ?? fail("invalid_charter", "Missing charter");
 	// An unspecialized question (including a report from an older workflow) is not an operator decision.
+	const deciding = review.wake?.key === evidenceDecision;
+	if (deciding && (observation.outcome === "needs-evidence" || observation.outcome === "needs-research"))
+		fail("unresolved_evidence", "The decision follow-up must decide from delivered evidence or report unresolved");
 	if (!observation.findings && (observation.outcome === "unresolved" || observation.outcome === "needs-decision" && !observation.ownerInput))
-		observation = { ...observation, outcome: canInvestigate(run, review, squad) ? "needs-research" : "unresolved" };
+		observation = { ...observation, outcome: !deciding && canInvestigate(run, review, squad) ? "needs-research" : "unresolved" };
 	const { outcome, grains, evidence } = observation, ids = grains.map(g => typeof g === "string" ? g : g.id);
 	if (outcome === "needs-research" && !canInvestigate(run, review, squad))
 		fail("unresolved_research", "Investigation already requested on this revision; identify the remaining blocker");
@@ -182,7 +185,7 @@ export function observe(cwd, run, review, observation) {
 	if (outcome === "no-gap" && packet.partial) fail("partial_coverage", "Cannot conclude no-gap from a partial packet");
 	if (observation.file) {
 		if (focused.has(observation.file) && !(part?.path === observation.file && part.end < part.length) || Object.hasOwn(packet.files, observation.file))
-			fail("unresolved_evidence", `No further focused read of ${observation.file}: the pinned evidence is unchanged`);
+			fail("unresolved_evidence", unchangedRead(observation.file));
 		regularFiles(cwd, review.base, [observation.file]);
 	}
 	if (observation.waitFor && !referenceRepo(observation.waitFor) && (observation.waitFor === squad.id || !run.policy.squads.some(s => s.id === observation.waitFor)))
