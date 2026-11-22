@@ -16,11 +16,13 @@ function ownerStatus(run, receipts, detail) {
 		...(detail === "proof" ? { qualification: qualification(run) } : {}),
 		metrics: detail === "usage" ? metricsFacts(run) : timingFacts(run),
 		discoveryError: run.discoveryError,
+		...(run.pendingReviewNotes?.length ? { pendingReviewNotes: run.pendingReviewNotes.map(({ squad, receipt, question, excerpt }) => ({ squad, receipt, question, excerpt })) } : {}),
 		qualified: qualifiedProduct(run)?.commit ?? null, target: last?.target, outputs: last?.outputs ?? {},
 		...(run.goal ? { checkpoint: last?.commit ?? null, goal: { commit: run.goal.commit, evaluator: run.policy.goalCheck,
 			pin: run.repins?.at(-1)?.revision ?? run.policy.base, receipt: goalReceipt(run) } } : {}),
-		...(run.repins ? { evaluatorChanges: run.repins, goalChecks: run.effects.filter(e => e.kind === "goal").map(e => ({
-			commit: e.commit, evaluatorRevision: e.evaluatorRevision ?? e.commit, state: e.state, receipt: receipts.get(e.id) })) } : {}),
+		...(run.repins ? { evaluatorChanges: run.repins } : {}),
+		...(run.repins || run.goal && detail === "proof" ? { goalChecks: run.effects.filter(e => e.kind === "goal").map(e => ({
+			id: e.id, commit: e.commit, evaluatorRevision: e.evaluatorRevision ?? run.policy.base, state: e.state, receipt: receipts.get(e.id) })) } : {}),
 		questions: questions(run).flatMap(r => {
 			const claim = presentation(r);
 			return r.observation ? [{ squad: r.squad, base: r.base, question: r.observation.reason,

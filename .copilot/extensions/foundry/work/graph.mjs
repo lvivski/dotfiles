@@ -4,7 +4,7 @@ import { validOutcome } from "./contract.mjs";
 import { checkReceipt, goalReceipt, milestoneBlocker } from "./evidence.mjs";
 import { assess, goalAllowsWork, qualify, rejectRepeat, stall } from "./goal.mjs";
 import { admitted, assignmentCount, expired, reserveNotice, reserveProduct, reserveWorker } from "./native.mjs";
-import { actionable, consumersOf, dependencies, liveNeeds, owns, productOutputs, proposal, requireNewWork, revise, settledOutput, stalePins, superseded, supersededAttempt, validateNodes, waiting, working, writerInputs } from "./plan.mjs";
+import { actionable, consumersOf, dependencies, liveNeeds, owns, productOutputs, proposal, requireNewWork, revise, settledOutput, stalePins, stoppedPredecessor, superseded, supersededAttempt, validateNodes, waiting, working, writerInputs } from "./plan.mjs";
 import { changedFiles, combine, commitAt, directoryBaseline, outside, regularFiles, rejoin, retain, verifyContracts, verifyDirectoryPin, versionOf, withoutGrain } from "./product.mjs";
 import { referenceCheckout } from "./research.mjs";
 import { availableHistory, blockReview, canInvestigate, discoverySquads, evidenceDecision, nextReview, reading, requestedFiles, researchContext, reserveReview, reviews, staleReviewReason, unchangedRead, wakeSource } from "./reviews.mjs";
@@ -160,7 +160,14 @@ export function observe(cwd, run, review, observation) {
 			fail("stale_assignment", `Replacement of ${id} must name newly checked inputs and retain the writer's still-current pins`);
 		replaceable.add(id);
 	}
-	const revision = "areas" in squad && outcome === "regenerate" ? revise(run.nodes, squad, observation, review.id, replaceable) : undefined;
+	const stopped = "areas" in squad && stoppedPredecessor(run, review, observation);
+	if (stopped) {
+		if (!sameReviewInputs(cwd, run, review) || run.policy.assignments !== undefined && assignmentCount(run) >= run.policy.assignments)
+			fail("stale_assignment", "No current reviewed assignment is available for this directory");
+		replaceable.add(stopped.grain.id);
+	}
+	const revision = "areas" in squad && outcome === "regenerate"
+		? revise(run.nodes, squad, stopped ? { ...observation, replace: [stopped.grain.id] } : observation, review.id, replaceable) : undefined;
 	const planned = revision?.nodes ?? run.nodes;
 	if (revision) for (const g of grains) if (typeof g !== "string" && g.revision)
 		verifyDirectoryPin(cwd, g.revision, g.directory);
@@ -214,6 +221,10 @@ export function observe(cwd, run, review, observation) {
 				if (pin) retain(cwd, pin);
 			}
 			run.nodes = planned;
+			if (stopped) {
+				review.predecessor = stopped;
+				delete review.error;
+			}
 			if (run.goal) delete run.goal.stall;
 		} else request(run, ids, review.id);
 	}
@@ -418,8 +429,15 @@ export function advance(cwd, run, actor, discover, context = {}) {
 	notifyWriters(run, actor);
 	delete run.conflict; // Recompute from the current target and live pins. Never clear a refusal to do this.
 	const history = reviews(run);
-	for (const r of history) if (r.state === "reported" && r.observation) {
+	// Earlier readers durably rejected these reports before considering missing-input stops.
+	// Readmit the latest exact report on the owner's normal turn, never replay the workflow.
+	const latest = owner && run.goal ? new Map(history.map(r => [r.squad, r])) : undefined;
+	for (const r of history) if (r.observation) {
+		const saved = r.state === "blocked" && latest?.get(r.squad) === r && r.base === run.goal?.commit &&
+			r.evaluatorRevision === run.repins?.at(-1)?.revision && r.error === "Writable directories must be disjoint" && r.workflowId && r.callId;
+		if (r.state !== "reported" && !saved) continue;
 		try {
+			if (saved && (!stoppedPredecessor(run, r, r.observation) || !sameReviewInputs(cwd, run, r))) continue;
 			observe(cwd, run, r, r.observation);
 			if (!owner && r.observation.outcome === "needs-decision")
 				reserveNotice(run, actor, r.id, "decision", `Foundry ${run.id} has a charter question for its owner at ${r.base}. This notice grants no authority.`);

@@ -110,6 +110,12 @@ export interface Product extends Assessment {
 	qualifiedAt?: number;
 }
 
+export interface ReviewNote {
+	receipt: string;
+	question: string;
+	excerpt?: string;
+}
+
 export interface Review extends Dispatch {
 	kind: "scout";
 	tool: "workflow";
@@ -120,6 +126,8 @@ export interface Review extends Dispatch {
 	packet?: Packet;
 	wake?: { review: string; key: string };
 	retryOf?: string;
+	note?: ReviewNote;
+	predecessor?: Node;
 	observation?: Observation;
 	deferred?: { pins: Record<string, string>; consumers: string[] };
 	decision?: { status: "presenting"; presentation?: string } | { status: "dismissed" } | { status: "answered"; answer: string }
@@ -187,6 +195,7 @@ export interface Run {
 	owner: string;
 	references?: Record<string, string>;
 	artifacts?: Artifact[];
+	pendingReviewNotes?: (ReviewNote & { squad: string; after: number })[];
 	repins?: { from: string; revision: string; files: string[] }[];
 	policy: Policy;
 	activatedAt: number;

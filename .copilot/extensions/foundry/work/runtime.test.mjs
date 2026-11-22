@@ -17,6 +17,7 @@ import { withProduct } from "./product.mjs";
 import { recover } from "./recovery.mjs";
 import { reviews } from "./reviews.mjs";
 import { createRuntime } from "./runtime.mjs";
+import { buildTools } from "./tools.mjs";
 import { record, text } from "./values.mjs";
 
 /** @typedef {Parameters<typeof createRuntime>[1]} Host */
@@ -361,6 +362,60 @@ test("an attributed goal gap staffs only its squad and widens discovery if that 
 	assert.equal(full.blocker, undefined);
 	await f.reportGrains("left", []);
 	assert.match(String((await f.status()).blocker), /no actionable grain/i);
+});
+
+test("the owner can attach a past goal receipt to the next normal scout without launching or replaying work", async t => {
+	const f = fixture(t, goal, goalFiles), start = await f.start();
+	const db = openDatabase(f.root); t.after(() => db.close());
+	const [source] = (await f.owner.operation("status", { run, detail: "proof" }, "owner")).goalChecks ?? [];
+	assert.equal(source.commit, f.tip); const receipt = source.id;
+	const question = "Which boundary first loses the new value?", args = { run, squad: "right", receipt, question };
+	const original = await f.reading("right"), before = db.read(run)?.effects;
+	const owner = f.runtime(f.root);
+	await owner.operation("review_note", args, "owner");
+	await owner.operation("review_note", args, "owner");
+	assert.deepEqual(db.read(run)?.effects, before);
+	assert.equal(f.workers.size, 0); assert.equal(f.scouts.length, 2);
+	const replay = await owner.scoutBatch(run, original.dispatch, original.issuer, original.workflowId);
+	assert.ok(replay.every(job => !job.prompt.includes(question)));
+	await assert.rejects(owner.operation("review_note", { ...args, question: "Different question?" }, "owner"), /pending/i);
+	await assert.rejects(owner.operation("review_note", args, "foreign"), /owner/i);
+	await assert.rejects(owner.operation("review_note", { ...args, receipt: f.tip }, "owner"), /receipt/i);
+	await f.reportGrains("left"); await f.submit("worker-1");
+	const next = await f.reading("right"), other = await f.reading("left");
+	assert.notEqual(next.base, f.tip); assert.notEqual(next.id, original.id);
+	assert.ok(next.prompt.includes(question)); assert.ok(!other.prompt.includes(question));
+	assert.ok(start.goal?.receipt?.output);
+	assert.ok(next.prompt.includes(receipt) && next.prompt.includes(f.tip) && next.prompt.includes(start.goal.receipt.output.trim()));
+	assert.match(next.prompt, /historical.*not re-observed/i);
+	const seen = await f.status();
+	assert.equal(seen.qualified, null); assert.equal(seen.reviews.find(r => r.id === next.id)?.note?.receipt, receipt);
+	assert.equal(seen.pendingReviewNotes?.length ?? 0, 0);
+	await f.reportGrains("right"); await f.submit("worker-2");
+	assert.equal(f.scouts.filter(s => s.prompt.includes(question)).length, 1);
+});
+
+test("review notes require a real receipt and bound the owner's question and historical excerpt", async t => {
+	const f = fixture(t, goal, { ...goalFiles, [goalCheck]: 'console.log("z".repeat(9000) + "\\nlast observed: value mismatch"); process.exit(1);' });
+	await f.start();
+	const [check] = (await f.owner.operation("status", { run, detail: "proof" }, "owner")).goalChecks ?? [];
+	const args = { run, receipt: check.id, question: "What changed?", squad: "right" }, op = "review_note";
+	const tool = buildTools(f.owner, () => "owner").find(t => t.name === `foundry_${op}`); assert.ok(tool?.handler);
+	const actor = { sessionId: "owner", toolName: tool.name, toolCallId: "note", arguments: args };
+	assert.match(JSON.stringify(await tool.handler(args, { ...actor, agentId: "helper" })), /subagents/);
+	await assert.rejects(f.owner.operation(op, args, "owner"), /verbatim excerpt/);
+	await assert.rejects(f.owner.operation(op, { ...args, excerpt: "not in stdout or stderr" }, "owner"), /verbatim excerpt/);
+	const excerpt = "last observed: value mismatch";
+	await assert.rejects(f.owner.operation(op, { ...args, excerpt, question: "é".repeat(513) }, "owner"), /1024/);
+	await assert.rejects(f.owner.operation(op, { ...args, excerpt, squad: "missing" }, "owner"), /squad/);
+	assert.equal(typeof await tool.handler({ ...args, excerpt }, actor), "string");
+	const reloaded = f.runtime(f.root);
+	assert.deepEqual((await reloaded.operation("status", { run }, "owner")).pendingReviewNotes, [{ squad: "right", receipt: check.id, question: args.question, excerpt }]);
+	const count = f.scouts.length;
+	await f.reportGrains("left"); await f.submit("worker-1");
+	const next = f.scouts.slice(count).find(s => s.squad === "right"); assert.ok(next);
+	assert.ok(next.prompt.includes(JSON.stringify({ excerpt }).slice(1, -1)));
+	assert.equal((next.prompt.match(/z{9000}/g) ?? []).length, 1, "full long output appears only in the current receipt, not in the historical note");
 });
 
 test("an early failed milestone widens a focused search and preserves its checked writer", async t => {
@@ -742,6 +797,63 @@ test("a bound writer reports missing input without replacing the checked invento
 	const recovered = await f.status();
 	assert.ok(recovered.qualified); assert.equal(recovered.goal?.receipt?.exit, 0);
 	assert.equal(db.read(run)?.effects.filter(e => e.kind === "component" && e.grain === "inventory").length, 1);
+});
+
+for (const saved of [false, true]) test(`a stopped writer releases its exact directory to later reviewed work / ${saved ? "saved overlap" : "normal discovery"}`, async t => {
+	const f = pipelineFixture(t, { ".foundry/product.mjs": "process.exit(0)" });
+	await f.start();
+	await report(await f.reading("engine"), ".foundry/left.md", [work("new-input", "engine/input")]);
+	await report(await f.reading("pipeline"), ".foundry/right.md", [work("old-task", assembly)]);
+	const old = (await f.status()).nodes.find(n => n.grain === "old-task");
+	const w = f.workers.get(old?.worker ?? ""); assert.ok(w);
+	if (saved) await f.write("old-task", "export default 17"); // A failed check and one inline repair before the stop.
+	const token = (await f.status(w.id)).nodes[0].token; assert.ok(token);
+	put(w.cwd, `${assembly}/unsubmitted`, "keep my work");
+	await f.runtime(w.cwd).operation("submit", { run, token, missingInput: "No checked input for old behavior." }, w.id);
+	await f.write("new-input", assemblyBody);
+	const next = await f.reading("pipeline"), proposal = result(".foundry/right.md", [work("new-task", assembly, ["new-input"])]);
+	await report(await f.reading("engine"), ".foundry/left.md", []);
+	const scoutCount = f.scouts.length;
+	const db = openDatabase(f.root); t.after(() => db.close());
+	if (saved) {
+		// Durable state written by reader 15 after a real workflow reported its proposal.
+		db.update(run, r => {
+			const e = reviews(r).find(r => r.id === next.id); assert.ok(e?.workflowId);
+			e.observation = parseObservation(r.policy.squads[1], proposal); e.packet = next.packet;
+			e.state = "blocked"; e.error = "Writable directories must be disjoint";
+		});
+		const recorded = db.read(run); assert.ok(recorded);
+		for (const guard of ["uncertain launch", "live consumer", "same task", "unseen evidence", "changed checkpoint"]) {
+			/** @type {import("./model.js").Run} */
+			const copy = structuredClone(recorded);
+			const e = reviews(copy).find(r => r.id === next.id);
+			assert.ok(e?.observation && e.packet);
+			const observation = e.observation, old = copy.nodes["old-task"], g = observation.grains[0]; assert.ok(typeof g !== "string");
+			if (guard === "uncertain launch") {
+				const launch = copy.effects.find(e => e.kind === "writer" && e.grain === "old-task"); assert.ok(launch);
+				launch.state = "uncertain";
+			} else if (guard === "live consumer") copy.nodes["new-input"].grain.needs.push("old-task");
+			else if (guard === "same task") g.task = text(old.grain.task, "old task");
+			else if (guard === "unseen evidence") delete e.packet.files[".foundry/right.md"];
+			else { assert.ok(copy.goal); copy.goal.commit = f.tip; }
+			assert.throws(() => observe(f.root, copy, e, observation), /disjoint|not delivered|changed during review/);
+			assert.ok(!copy.nodes["new-task"] && !e.predecessor, guard);
+		}
+		const owner = f.runtime(f.root);
+		owner.turn("owner"); await owner.flush(); await f.settle();
+	} else await next.report(proposal);
+	const s = await f.status(), successor = s.nodes.find(n => n.grain === "new-task");
+	const decision = s.reviews.find(r => r.id === next.id);
+	assert.equal(successor?.state, "writing", String(decision?.reason));
+	assert.equal(decision?.predecessor?.worker, w.id);
+	assert.equal(decision.predecessor.grain, "old-task");
+	assert.equal(f.scouts.length, scoutCount, "the report is not replayed and the ownership transfer does not solicit another review");
+	assert.equal(successor.review, next.id); assert.notEqual(successor.worker, w.id);
+	assert.equal(s.nodes.some(n => n.grain === "old-task"), false);
+	assert.equal(readFileSync(path.join(w.cwd, assembly, "unsubmitted"), "utf8"), "keep my work");
+	await assert.rejects(f.runtime(w.cwd).operation("submit", { run, token }, w.id), /assignment/);
+	assert.equal(f.workers.size, 3); assert.equal(s.qualified, null);
+	assert.deepEqual(s.products?.at(-1)?.outputs, { "new-input": successor.inputs?.["new-input"] });
 });
 
 test("a changed target during baseline approval leaves the missing-input writer stopped", async t => {

@@ -1,6 +1,7 @@
 import { planDirectory, validOutcome } from "./contract.mjs";
 import { checkReceipt, goalReceipt } from "./evidence.mjs";
 import { validFeedback } from "./feedback.mjs";
+import { boundedText, sourceReceipt } from "./notes.mjs";
 import { assignmentCount, unissued } from "./native.mjs";
 import { checked, owns, validateNodes } from "./plan.mjs";
 import { outside } from "./product.mjs";
@@ -76,11 +77,12 @@ const product = shape({ ...assessment, outputs: named(commit), qualifiedAt: opti
 const receipt = shape({ commit, check: path, evaluatorRevision: optional(commit), exit: v => v === null || count(v), output: string,
 	failure: optional(one("changed-export", "incomplete")), repair: optional(id), squad: optional(id), feedback: optional(validFeedback) });
 const dispatch = { id, issuer: string, args: object, evaluatorRevision: optional(commit), callId: optional(string), error: optional(string), permissionHold: optional(string) };
+const noteFields = { receipt: id, question: /** @param {unknown} q */ q => boundedText(q, 1024), excerpt: optional(v => boundedText(v, 8192)) };
 const scout = shape({ ...dispatch, kind: one("scout"), tool: one("workflow"), squad: id, base: commit, version: string,
 	state: one("ready", "issued", "uncertain", "suspended", "reported", "observed", "blocked", "deferred"), observation: optional(observation),
 	deferred: optional(shape({ pins: v => named(commit)(v) && object(v) && Object.keys(v).length > 0,
 		consumers: v => Array.isArray(v) && v.length > 0 && v.every(id) && new Set(v).size === v.length })),
-	workflowId: optional(string), decision: optional(decision), packet: optional(isPacket), retryOf: optional(id), wake: optional(shape({ review: id, key: string })) });
+	workflowId: optional(string), decision: optional(decision), packet: optional(isPacket), retryOf: optional(id), note: optional(shape(noteFields)), predecessor: optional(node), wake: optional(shape({ review: id, key: string })) });
 const native = shape({
 	...dispatch, kind: one("writer", "component", "product", "goal", "repair", "decision", "handoff", "artifact"), grain: optional(id), inlineRepair: optional(id),
 	usedArtifacts: optional(list(commit)), comparedArtifacts: optional(list(commit)),
@@ -94,6 +96,7 @@ const snapshot = shape({
 	id, owner: string, policy, references: optional(named(commit)),
 	repins: optional(list(shape({ from: commit, revision: commit, files: list(path) }))),
 	artifacts: optional(list(shape({ file: path, blob: commit, base: commit, publisher: string, to: list(path) }))),
+	pendingReviewNotes: optional(list(shape({ ...noteFields, squad: id, after: count }))),
 	active: bool, activatedAt: positive, pauseReason: optional(string), nodes: named(node), effects: list(v => scout(v) || native(v)),
 	products: list(product), join: optional(product), goal: optional(shape({ ...assessment, stall: optional(string),
 		tried: optional(list(v => typeof v === "string" && /^[0-9a-f]{64}$/.test(v))) })),
@@ -113,6 +116,13 @@ function validDispatch(run, e) {
 		e.receipt.repair || e.receipt.squad || e.state !== "done" && e.state !== "refused")) return false;
 	if (e.tool === "workflow") {
 		const squad = run.policy.squads.find(s => s.id === e.squad), report = e.observation;
+		if (e.predecessor) {
+			const n = e.predecessor, g = report?.grains[0];
+			if (e.state !== "observed" || report?.outcome !== "regenerate" || report.grains.length !== 1 || typeof g !== "object" ||
+				n.state !== "blocked" || !n.reason?.startsWith("Writer reports missing input: ") || !n.worker || !n.base || n.base === e.base ||
+				g.id === n.grain.id || g.directory !== n.grain.directory || g.check !== n.grain.check ||
+				!run.effects.some(w => w.kind === "writer" && w.grain === n.grain.id && w.nativeId === n.worker && w.state === "done")) return false;
+		}
 		if (e.retryOf && (e.issuer !== run.owner || !run.effects.some(src => src.kind === "scout" && src.id === e.retryOf &&
 			!src.retryOf && src.state === "blocked" && !src.observation && src.workflowId && src.squad === e.squad && src.base === e.base &&
 			src.version === e.version && src.evaluatorRevision === e.evaluatorRevision) ||
@@ -157,6 +167,12 @@ export function decode(value) {
 		fail("corrupt_run", "Invalid Foundry execution snapshot");
 	const { policy: p, nodes, products } = value, areas = p.squads.filter(s => "areas" in s), files = new Set(p.files);
 	const effects = new Map(value.effects.map(e => [e.id, e]));
+	const queued = value.pendingReviewNotes ?? [];
+	if (new Set(queued.map(n => n.squad)).size !== queued.length || queued.some(n => n.after > value.effects.length ||
+		!p.squads.some(s => s.id === n.squad) || !sourceReceipt(effects.get(n.receipt), n)) ||
+		value.effects.some(e => e.kind === "scout" && e.note && (!e.workflowId || e.retryOf ||
+			p.squads.some(s => s.id === e.squad && investigation(e, s)) || !sourceReceipt(effects.get(e.note.receipt), e.note))))
+		fail("corrupt_run", "Invalid historical receipt for scout review");
 	const pins = value.repins ?? [];
 	if (pins.length && (!value.goal || new Set([p.base, ...pins.map(pin => pin.revision)]).size !== pins.length + 1 ||
 		pins.some((pin, i) => pin.from !== (i ? pins[i-1].revision : p.base) || !pin.files.length ||

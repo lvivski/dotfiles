@@ -1,5 +1,5 @@
 import { validateGraph } from "./contract.mjs";
-import { blockedComponent } from "./evidence.mjs";
+import { blockedComponent, checkReceipt } from "./evidence.mjs";
 import { outside } from "./product.mjs";
 import { assignmentDirectory, contains, digest, fail, fields, name, names, record, relative, text } from "./values.mjs";
 
@@ -37,6 +37,29 @@ export function supersededAttempt(run, n) {
 /** A terminal assignment keeps its original brief and pins as history, not prerequisites.
  * @param {Node} n */
 export const liveNeeds = n => n.state === "blocked" ? [] : n.grain.needs;
+
+/** A writer's own missing-input stop releases no files. Only a different job at a later
+ * checkpoint may take exactly this directory; unresolved native calls still own it.
+ * @param {Run} run @param {import("./model.js").Review} review @param {import("./model.js").Observation} report */
+export function stoppedPredecessor(run, review, report) {
+	const [g] = report.grains;
+	if (report.outcome !== "regenerate" || report.grains.length !== 1 || typeof g !== "object" || run.nodes[g.id] ||
+		run.effects.some(e => e.grain === g.id) || !review.packet || review.retryOf) return;
+	const n = Object.values(run.nodes).find(n => n.grain.directory === g.directory);
+	if (!n || n.state !== "blocked" || !n.reason?.startsWith("Writer reports missing input: ") || n.candidate ||
+		!n.worker || !n.base || !n.token || !n.generation || n.base === review.base || n.grain.check !== g.check ||
+		g.task === n.grain.task || report.replace?.some(id => id !== n.grain.id) ||
+		Object.values(run.nodes).some(other => liveNeeds(other).includes(n.grain.id) || other.state !== "blocked" && Object.hasOwn(other.inputs ?? {}, n.grain.id))) return;
+	const calls = run.effects.filter(e => e.grain === n.grain.id), launches = calls.filter(e => e.kind === "writer");
+	if (launches.length !== 1 || !launches[0].callId || launches[0].nativeId !== n.worker || launches[0].args.base_branch !== n.generation ||
+		calls.some(e => e.state !== "done" || e.permissionHold || e.error)) return;
+	const repaired = calls.some(e => e.kind === "component" && e.id === n.check && e.issuer === n.worker && checkReceipt(e) && e.inlineRepair === n.token ||
+		e.kind === "repair" && e.token === n.token && (e.args.session_id === n.worker || e.tool === "session.send" && e.issuer === n.worker));
+	if (launches[0].token !== n.token && !repaired || g.needs.some(id => !run.nodes[id])) return;
+	const deps = writerInputs(run.nodes, waiting({ ...n.grain, needs: g.needs }));
+	if (deps && Object.entries(deps).every(([id, pin]) => run.nodes[id].state === "qualified" && review.packet?.outputs[id] === pin))
+		return n;
+}
 /** @param {Run["nodes"]} nodes @param {Iterable<string>} roots */
 export function dependencies(nodes, roots) {
 	const ids = new Set(roots);

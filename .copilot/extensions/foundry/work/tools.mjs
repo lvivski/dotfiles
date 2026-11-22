@@ -9,6 +9,7 @@ const strings = { type: "array", items: string, uniqueItems: true };
 /** @typedef {Record<string,import("./model.js").Json>} Properties */
 /** @type {Array<[name:string,description:string,required:Properties,optional?:Properties]>} */
 const definitions = [
+	["review_note", "Owner only: attach an exact historical goal receipt and a question to the named squad's next normal review. Does not start discovery or assign work. Use a receipt ID from proof status; optional excerpt must be verbatim.", { run: string, squad: string, receipt: string, question: string }, { excerpt: string }],
 	["start", "Start or resume a committed .foundry brief only on explicit operator direction. goalCheck defines the finish line for squads; seed selects a one-off instead.", { source: string }],
 	["resume", "On explicit owner request, continue a paused run, recover interrupted discovery or an unclaimed writer launch, or retry missing goal evidence. Never create a run or replay an issued call.", { source: string }],
 	["pause", "Stop new Foundry work without discarding native calls, evidence, worktrees or checked products.", { run: string }],

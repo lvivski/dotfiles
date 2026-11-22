@@ -10,6 +10,7 @@ import { advance, currentReview, newRun, parseObservation, reserveChangedRepair,
 import { baselineNotice, changedFrom, missingObservation, qualifiedProduct } from "./evidence.mjs";
 import { admitted, assignment, awaitingReply, boundWriter, canDispatch, current, expired, identify, issue, receive, reserveCheck, transferableWriter, unissued } from "./native.mjs";
 import { checked } from "./plan.mjs";
+import { queueNote } from "./notes.mjs";
 import { capture, commitAt, generationRoot, retain, rootAt, verifyContracts } from "./product.mjs";
 import { refusedCall } from "./recovery.mjs";
 import { prepareRepin } from "./repin.mjs";
@@ -358,7 +359,17 @@ export function createRuntime(directory, host) {
 				if (held) {
 					e.state = "ready"; delete e.callId;
 					if (block) e.permissionHold = `${block.message} Check session ${actor}.`;
-				} else { e.workflowId = workflowId; e.state = "issued"; }
+				} else {
+					if (!e.workflowId && !e.retryOf && r.goal?.commit === e.base) {
+						const squad = r.policy.squads.find(s => s.id === e.squad);
+						const note = r.pendingReviewNotes?.find(n => n.squad === e.squad && n.after <= r.effects.indexOf(e));
+						if (note && squad && !investigation(e, squad)) {
+							e.note = { receipt: note.receipt, question: note.question, ...(note.excerpt !== undefined ? { excerpt: note.excerpt } : {}) };
+							r.pendingReviewNotes = r.pendingReviewNotes?.filter(n => n !== note);
+						}
+					}
+					e.workflowId = workflowId; e.state = "issued";
+				}
 				delete e.error;
 			}
 			return { run: r };
@@ -605,6 +616,15 @@ export function createRuntime(directory, host) {
 		}
 		if (!await executable())
 			fail("unsupported_mode", "Plan mode cannot change a Foundry run");
+		if (op === "review_note") {
+			fields(a, ["run", "squad", "receipt", "question", "excerpt"]);
+			db().update(id, r => {
+				if (r.owner !== actor) fail("foreign_run", "Only the run owner can queue a review note");
+				admitted(r);
+				queueNote(r, a);
+			});
+			return status(read(id), actor); // Queue context only; do not drive the run.
+		}
 		if (reply) {
 			reply.token = submit(id, actor, reply.token, a) ?? reply.token;
 			// A shell notification can drive the same actor before this call returns.

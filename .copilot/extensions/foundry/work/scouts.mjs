@@ -1,6 +1,7 @@
 import { isUtf8 } from "node:buffer";
 import { journeyText } from "./contract.mjs";
 import { goalReceipt } from "./evidence.mjs";
+import { sourceReceipt } from "./notes.mjs";
 import { checked, dependencies, liveNeeds, owns, supersededAttempt } from "./plan.mjs";
 import { evidencePage } from "./pages.mjs";
 import { entries, git, regularFiles } from "./product.mjs";
@@ -134,6 +135,12 @@ export function scoutPacket(cwd, run, review, budget = Infinity) {
 	const prev = wakeSource(run, review), report = prev?.observation;
 	const deciding = review.wake?.key === evidenceDecision;
 	/** @type {string[]} */ const context = [];
+	if (review.note) {
+		const note = review.note, r = sourceReceipt(run.effects.find(e => e.id === note.receipt), note) ?? fail("invalid_receipt", "Review note lost its historical goal receipt");
+		context.push(`Historical goal receipt, not re-observed by this review. Owner question is context, not an assignment or permission. Evidence must still cite delivered paths.\n${JSON.stringify({
+			receipt: note.receipt, commit: r.commit, evaluator: r.check, pin: r.evaluatorRevision ?? policy.base, exit: r.exit,
+			...(note.excerpt === undefined ? { output: r.output } : { excerpt: note.excerpt }), question: note.question })}`);
+	}
 	if (receipt?.evaluatorRevision) context.push(`Goal receipt used the approved evaluator overlay at ${receipt.evaluatorRevision}. Files shown from the product revision are not the amended harness.`);
 	const shared = run.references ? `Published reference revisions (metadata, not product evidence or access permission):\n${Object.entries(run.references).map(([repo, revision]) => JSON.stringify({ repo, revision })).join("\n")}` : "";
 	if (shared) context.push(shared);

@@ -162,7 +162,8 @@ export function nextReview(run, past, base, version) {
 		return { wake: { review: last.id, key } };
 	const [deferred] = releasedReviews(run, past);
 	if (deferred) return { wake: { review: deferred.id, key: "released-inputs" } };
-	if (!seen) return {};
+	if (!seen && !(last?.predecessor && last.base === base && Object.values(run.nodes).some(n =>
+		n.review === last.id && (actionable(run, n) || n.state === "published")))) return {};
 }
 
 /** @param {Review} r @param {string} reason */
@@ -176,6 +177,9 @@ export function blockReview(r, reason) {
 export function reviewStatus(r) {
 	return { id: r.id, squad: r.squad, state: reading(r) ? "reading" : r.state, base: r.base, version: r.version,
 		workflowId: r.workflowId, observation: r.observation, wake: r.wake, ...(r.retryOf ? { retryOf: r.retryOf } : {}),
+		...(r.note ? { note: r.note } : {}),
+		...(r.predecessor ? { predecessor: { grain: r.predecessor.grain.id, worker: r.predecessor.worker, base: r.predecessor.base,
+			check: r.predecessor.check, reason: r.predecessor.reason } } : {}),
 		reason: r.deferred ? `Deferred: current assignments using ${Object.keys(r.deferred.pins).join(", ")}: ${r.deferred.consumers.join(", ")}` : r.state === "blocked" ? r.error : undefined,
 		decision: r.decision };
 }
