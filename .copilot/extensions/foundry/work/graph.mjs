@@ -5,7 +5,7 @@ import { assess, goalAllowsWork, qualify, rejectRepeat, stall } from "./goal.mjs
 import { admitted, assignmentCount, expired, reserveNotice, reserveProduct, reserveWorker } from "./native.mjs";
 import { actionable, dependencies, liveNeeds, owns, productOutputs, proposal, requireNewWork, revise, settledOutput, superseded, waiting, working, writerInputs } from "./plan.mjs";
 import { changedFiles, combine, commitAt, outside, regularFiles, rejoin, retain, verifyContracts, versionOf, withoutGrain } from "./product.mjs";
-import { availableHistory, blockReview, canInvestigate, discoverySquads, nextReview, reading, reserveReview, reviews, wakeSource } from "./reviews.mjs";
+import { availableHistory, blockReview, canInvestigate, discoverySquads, nextReview, reading, requestedFiles, reserveReview, reviews, wakeSource } from "./reviews.mjs";
 import { FoundryError, contains, digest, fail, fields, name, names, record, relative, text } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
@@ -115,8 +115,10 @@ export function observe(cwd, run, review, observation) {
 	if ("grains" in squad && ids.some(id => !squad.grains.includes(id))) fail("charter_scope", "This observation includes another squad's grain");
 	const roots = "areas" in squad ? Object.keys(planned).filter(id => owns(squad, planned[id].grain.directory)) : squad.grains;
 	const inputs = [...dependencies(planned, roots)].map(id => planned[id].grain);
+	const focused = requestedFiles(run, review);
 	for (const file of observation.file ? [...evidence, observation.file] : evidence) {
 		if (file !== squad.charter && file !== run.policy.source && file !== run.policy.goalCheck &&
+			!(run.policy.sharedBrief && (file === observation.file || focused.has(file))) &&
 			!("areas" in squad && (owns(squad, file) || [run.policy.productCheck, ...squad.boundary, ...squad.checks].includes(file))) &&
 			!inputs.some(g => contains(g.directory, file) || [g.specification, ...g.boundary, g.check].includes(file)))
 			fail("charter_scope", `Evidence is outside this charter: ${file}`);
@@ -127,8 +129,8 @@ export function observe(cwd, run, review, observation) {
 			fail("unseen_evidence", `Text of ${e.name} at ${e.oid} was not delivered in this packet`);
 	if (outcome === "no-gap" && packet.partial) fail("partial_coverage", "Cannot conclude no-gap from a partial packet");
 	if (observation.file) {
-		if (!packet.partial || wakeSource(run, review)?.observation?.outcome === "needs-evidence")
-			fail("unresolved_evidence", "No further focused read: identify the remaining blocker");
+		if (focused.has(observation.file) || Object.hasOwn(packet.files, observation.file))
+			fail("unresolved_evidence", `No further focused read of ${observation.file}: the pinned evidence is unchanged`);
 		regularFiles(cwd, review.base, [observation.file]);
 	}
 	if (observation.waitFor && (observation.waitFor === squad.id || !run.policy.squads.some(s => s.id === observation.waitFor)))
@@ -242,10 +244,14 @@ function reserveWriter(cwd, run, n, required, base, actor, submitToken) {
 	n.base = base;
 	n.token = token;
 	n.state = "writing";
-	const brief = [run.policy.direction, reviews(run).find(r => r.id === n.review)?.observation?.reason,
+	const review = reviews(run).find(r => r.id === n.review);
+	const supporting = review && run.policy.sharedBrief ? [...requestedFiles(run, review)].filter(file =>
+		!contains(g.directory, file) && review.observation?.evidence.includes(file)) : [];
+	const brief = [run.policy.direction, review?.observation?.reason,
 		...("task" in g ? [`Assigned behavior: ${g.task}`, `Component check: ${g.check}`] : []),
 		`Generate the complete ${g.directory}/ directory; omitted files are deleted.`,
 		`Read ${g.specification} and ${g.boundary.join(", ")} at this base. Required outputs: ${JSON.stringify(required)}.`,
+		...supporting.map(file => `Read-only supporting file: ${review?.base}:${file}`),
 		...(run.goal ? [`Reviewed input revision: ${base}`,
 			`Read prior implementation only if ${g.specification} explicitly permits it, and only from ${g.directory}/ at that revision.`] : []),
 		"Split independent work across native in-session `task` agents in parallel. Give each a disjoint set of files under your directory or a read-only question, the permitted inputs and the same constraints; ask for results, not further delegation. Keep shared files for yourself. Work solo for small or indivisible changes, or if helpers are unavailable.",

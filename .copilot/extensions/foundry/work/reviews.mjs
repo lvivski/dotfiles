@@ -19,6 +19,17 @@ export function reserveReview(run, issuer, squad, base, version, wake) {
 /** @param {Run} run @param {Review} r */
 export const wakeSource = (run, r) => r.wake && reviews(run).find(p => p.id === r.wake?.review && p.squad === r.squad && p.base === r.base);
 
+/** @param {Run} run @param {Review} review */
+export function requestedFiles(run, review) {
+	/** @type {Set<string>} */ const files = new Set();
+	for (const r of reviews(run)) {
+		if (r.id === review.id) break;
+		if (r.state === "observed" && r.squad === review.squad && r.base === review.base && r.version === review.version && r.observation?.file)
+			files.add(r.observation.file);
+	}
+	return files;
+}
+
 /** @param {Run} run @param {Review} r @param {import("./model.js").Squad} squad */
 export const canInvestigate = (run, r, squad) => "areas" in squad && !!squad.researchAgent && !reviews(run).some(e =>
 	e.squad === r.squad && e.base === r.base && e.version === r.version && e.wake?.key === "research");
@@ -64,7 +75,7 @@ export function nextReview(run, past, base, version) {
 	let key;
 	if (last?.base === base && correction(run, last)) key = "displaced-input";
 	if (obs?.outcome === "needs-decision" && last?.decision?.status === "answered") key = last.id;
-	if (obs?.outcome === "needs-evidence") key = "focused-evidence";
+	if (obs?.outcome === "needs-evidence") key = `file:${obs.file}`;
 	if (obs?.outcome === "needs-research") key = "research";
 	if (obs?.outcome === "researched") key = "research-result";
 	if (obs?.outcome === "waiting") {

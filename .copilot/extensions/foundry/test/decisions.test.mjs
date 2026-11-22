@@ -59,10 +59,10 @@ test("an open owner question is claimed once across reconnect; an independent wr
 });
 
 for (const moved of [false, true]) test(`a charter clarification wakes only its current review, target moved: ${moved}`, async t => {
-	const f = trial(t), opened = latch(), release = latch();
+	const f = trial(t), opened = latch(), release = latch(), answer = "Currency context. ".repeat(300) + "Use EUR";
 	let asks = 0;
 	const owner = f.runtime(f.root, { ask: async () => {
-		asks++; opened.resolve(); await release.promise; return "Use EUR";
+		asks++; opened.resolve(); await release.promise; return answer;
 	}, execute: (tool, args, id) => {
 		assert.notEqual(tool, "get_session", "an unrelated writer's pending request is not a charter decision");
 		return f.execute(tool, args, id);
@@ -76,12 +76,12 @@ for (const moved of [false, true]) test(`a charter clarification wakes only its 
 	if (moved) assert.equal(follow.length, 0);
 	else {
 		assert.deepEqual(follow.map(j => j.squad), ["catalog"]);
-		assert.match(follow[0].prompt, /Which currency.*Use EUR/);
+		assert.ok(follow[0].prompt.includes(answer));
 		await follow[0].report(question); owner.turn("owner"); await owner.flush(); await f.settle();
 		assert.equal(asks, 1); assert.equal(f.scouts.length, 3);
 		assert.match(String((await f.status()).questions?.[0].delivery?.status), /unavailable/);
 	}
-	assert.deepEqual((await f.status()).reviews[0].decision, { status: "answered", answer: "Use EUR" });
+	assert.deepEqual((await f.status()).reviews[0].decision, { status: "answered", answer });
 	assert.equal(f.workers.size, 1);
 });
 
@@ -108,20 +108,21 @@ for (const hold of ["none", "pause", "plan"]) test(`an in-scope answer reaches t
 	assert.ok((await f.status()).qualified); assert.equal(f.scouts.length, 3); assert.equal(asks, 1);
 });
 
-test("a warning-heavy combined check delivers the retained terminal failure to the scout", async t => {
-	const f = trial(t, `console.error("compiler warning\\n".repeat(600)); console.error(["Window", "Inbox missing"].join(": ")); process.exit(1)`);
+test("a verbose check keeps its exit code and diagnostics at both ends for the scout", async t => {
+	const f = trial(t, `import { writeFileSync } from 'node:fs'; writeFileSync(2, 'Start: account ok\\n'+'warning\\n'.repeat(550000)+'Window: Inbox missing\\n'); process.exit(1)`);
 	await f.start();
 	const result = (await f.status()).goal?.receipt;
-	assert.ok(result?.output.endsWith("Window: Inbox missing\n"));
-	assert.ok(f.scouts[0].prompt.includes("Window: Inbox missing"), "the inspector needs the actual failed step");
+	assert.equal(result?.exit, 1);
+	assert.ok(result.output.startsWith("Start: account ok\n") && result.output.endsWith("Window: Inbox missing\n"));
+	assert.ok(f.scouts[0].prompt.includes(result.output));
 });
 
 for (const research of [false, true]) test(`a diagnostic question after a focused read never opens an owner dialog: research ${research}`, async t => {
 	const f = factory(t, run, source, {
 		[source]: JSON.stringify({ version: 2, id: run, direction: "Open the Inbox.", target: "refs/heads/main",
-			squads: ["account", "window"].map(id => ({ id, areas: [id], charter: "charter", checks: ["unit.mjs"], boundary: ["interface"],
+			squads: ["account", "window"].map(id => ({ id, areas: [id], charter: "charter", checks: ["unit.mjs"],
 				...(id === "account" && research ? { researchAgent: "foundry-research" } : {}) })), goalCheck: "goal.mjs", productCheck: "product.mjs" }),
-		charter: "Use the shared account.", interface: "a".repeat(9000), "unit.mjs": "", "product.mjs": "",
+		charter: "Use the shared account.", ".foundry/lookup/journey.md": "Open the Inbox.", interface: "a".repeat(9000), "unit.mjs": "", "product.mjs": "",
 		"goal.mjs": `console.error("warning\\n".repeat(700)); console.error(["Window", "Inbox missing"].join(": ")); process.exit(1)`,
 	});
 	let asks = 0;

@@ -24,7 +24,7 @@ export function text(value, label) {
 /** @param {unknown} value @param {string} label */
 export function name(value, label) {
 	const id = text(value, label);
-	if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,80}$/.test(id) || Object.hasOwn(Object.prototype, id))
+	if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(id) || Object.hasOwn(Object.prototype, id))
 		fail("invalid_name", `Invalid ${label}: ${id}`);
 	return id;
 }

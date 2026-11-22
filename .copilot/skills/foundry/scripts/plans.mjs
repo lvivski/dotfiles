@@ -1,5 +1,5 @@
 import { readPolicy } from "../../../extensions/foundry/work/contract.mjs";
-import { commitAt, git, rootAt, verifyContracts } from "../../../extensions/foundry/work/product.mjs";
+import { commitAt, contractPaths, git, rootAt, verifyContracts } from "../../../extensions/foundry/work/product.mjs";
 
 /** @param {string[]} args */
 function plans(args) {
@@ -15,7 +15,7 @@ function plans(args) {
 	const source = plan.startsWith(".foundry/") ? plan : `.foundry/${plan}.json`;
 	const { policy } = readPolicy(root, source);
 	verifyContracts(root, policy, commitAt(root, policy.target));
-	const dirty = git(root, ["--no-optional-locks", "status", "--porcelain=v1", "--untracked-files=no", "--", ...policy.files]).toString().trimEnd();
+	const dirty = git(root, ["--no-optional-locks", "status", "--porcelain=v1", "--untracked-files=no", "--", ...contractPaths(policy)]).toString().trimEnd();
 	if (dirty) throw new Error(`Uncommitted changes to the requested brief:\n${dirty}`);
 	return { source, run: policy.id, target: policy.target };
 }

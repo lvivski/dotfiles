@@ -12,7 +12,13 @@ The owner's **Product evidence** also shows elapsed time to the first confirmed 
 
 ## Commit the contract
 
-For a goal run, commit what the product must do, not a list of implementation tasks. Give each squad disjoint writable `areas`, a charter describing its responsibilities, shared interface files (`boundary`), and trusted component `checks`. Pin check helpers in `boundary` too. Keep all of these files and both product evaluators outside every writable area.
+For a goal run, put the shared requirements in `.foundry/<plan>/journey.md` and omit `boundary` from every squad. Use nonempty UTF-8 text. Foundry puts the full committed brief into each scout's prompt alongside its charter and the goal result, without applying the source excerpt limit.
+
+Scouts also see the names of other committed regular files. A scout can request a file by path, then follow a reference to another file. Each new review of the same version includes the previously requested text. A name alone isn't a citation. If a proposal cites a requested interface, the writer gets its exact revision and path, not ownership of its directory.
+
+Keep trusted acceptance code, helpers and fixtures under `.foundry/`; they can be shared across plan directories. Shared-brief runs pin the entire `.foundry/` tree, so even an unrelated change there on the target requires fresh review. An ordinary source file outside it is not pinned merely because a scout reads it.
+
+Give each squad disjoint writable `areas`, a charter describing its responsibilities, and trusted component `checks`. Existing plans that explicitly list `boundary` for each squad keep their original pins and narrower read scope.
 
 ```json
 {
@@ -20,22 +26,20 @@ For a goal run, commit what the product must do, not a list of implementation ta
   "id": "catalog",
   "direction": "A customer can find a product and see its current price.",
   "target": "refs/heads/main",
-  "productCheck": ".foundry/checks/catalog-invariants.mjs",
-  "goalCheck": ".foundry/checks/customer-lookup.mjs",
+  "productCheck": ".foundry/catalog/invariants.mjs",
+  "goalCheck": ".foundry/catalog/customer-lookup.mjs",
   "squads": [
     {
       "id": "browse",
       "charter": "squads/browse.md",
       "areas": ["src/browse"],
-      "boundary": ["interfaces/search.d.ts"],
-      "checks": [".foundry/checks/browse-unit.mjs"]
+      "checks": [".foundry/catalog/browse-unit.mjs"]
     },
     {
       "id": "offers",
       "charter": "squads/offers.md",
       "areas": ["src/offers"],
-      "boundary": ["interfaces/pricing.d.ts"],
-      "checks": [".foundry/checks/price-unit.mjs"]
+      "checks": [".foundry/catalog/price-unit.mjs"]
     }
   ]
 }
@@ -55,13 +59,13 @@ Ready writers start without a new activation or user turn. As soon as the admitt
 
 ### Discover and split work
 
-The run starts without assignments. Foundry dispatches ready charters to a `foundry-scout` workflow. Each scout gets a bounded packet of Git evidence from the exact assessed commit, the goal diagnostic and the relevant graph. It has no tools, session worktree or submit token. It returns one structured report; Foundry checks its citations, ownership and dependencies before releasing a writer. One slow charter does not hold up the others. A squad's optional native `agent` selects its **writer**, not its scout.
+The run starts without assignments. Foundry dispatches ready charters to a `foundry-scout` workflow. Each scout gets its in-scope Git text from the exact assessed commit, the goal diagnostic and the relevant graph. Foundry doesn't shorten these or an operator's clarification to fit a character count. The host's context window still applies. A scout has no tools, session worktree or submit token. It returns one structured report; Foundry checks its citations, ownership and dependencies before releasing a writer. One slow charter does not hold up the others. A squad's optional native `agent` selects its **writer**, not its scout.
 
 **Research before assigning a writer:** An area charter can opt in with `"researchAgent": "foundry-research"` in the committed squad. The scout can then return `needs-research` with its question in `reason`. The bundled researcher can read source and search/fetch public documentation. To use a connector or disposable experiment runner, name an installed custom agent with those specific tools instead. Describe permitted reference checkouts, pins and services in the charter. A profile is not a permission grant or a sandbox: the host must enforce access and isolate any probe tool. Do not give a researcher broad write or shell access to the product.
 
 One investigation per charter/review version returns attributed source, documentation or probe findings. An answered investigation goes to a fresh **tool-less** scout for the writer decision; denied or insufficient evidence stays visible as an unresolved diagnostic without opening an owner dialog. Both follow-ups consume ordinary assignment slots and budget. Findings are journaled context, never evaluator receipts, proof of live behavior, or permission to modify another directory. Existing briefs without `researchAgent` stay packet-only.
 
-Research labels are descriptive text, not identifiers. A report can contain up to 12 citations; its reason, labels, locators and findings share a single 24,576 UTF-16 code unit budget. There is no per-label length limit.
+Answered research must include cited findings with a source, kind and observation. Foundry does not cap their count or text length.
 
 For example, a browse scout can separate the query editor from the work that actually needs pricing. If an earlier plan still has a never-issued `lookup` assignment, its replacement can look like this (other report fields omitted):
 
@@ -69,8 +73,8 @@ For example, a browse scout can separate the query editor from the work that act
 {
   "replace": ["lookup"],
   "grains": [
-    { "id": "query", "task": "Preserve the typed query across navigation.", "directory": "src/browse/query", "check": ".foundry/checks/browse-unit.mjs" },
-    { "id": "lookup", "task": "Look up the entered query and display the returned price.", "directory": "src/browse/lookup", "check": ".foundry/checks/browse-unit.mjs", "needs": ["query", "price"] }
+    { "id": "query", "task": "Preserve the typed query across navigation.", "directory": "src/browse/query", "check": ".foundry/catalog/browse-unit.mjs" },
+    { "id": "lookup", "task": "Look up the entered query and display the returned price.", "directory": "src/browse/lookup", "check": ".foundry/catalog/browse-unit.mjs", "needs": ["query", "price"] }
   ]
 }
 ```
@@ -83,7 +87,7 @@ Before adding `needs`, name in `reason` **which checked output the consumer need
 - **A checkpoint preserves the tree, not the division of work.** You can request a checked output by ID, or propose new directories and IDs anywhere inside your charter. For example, after `src/browse` passes, propose `src/browse/query` and `src/browse/results` together. An overlapping checked name is retired automatically; `replace` can also retire a checked name explicitly. Old commits, receipts and files outside the new assignments stay intact. Checked names that depended on the superseded version retire with it. If a current assignment still uses that version, the split is rejected. Unaffected checked outputs remain available by name.
 - A refused assignment cannot be retried, but it no longer pins its inputs. A conflict with a moving target is rechecked on participant turns: resolving the edit or releasing its last live input can unblock the run without overriding a refusal.
 - If a batch reproduces a tree that already failed the goal, status marks its new outputs `repeated`, not qualified. A scout can split them or use them as checked inputs. A new ID or report does not restart the same assignment on the same base with the same inputs, even after a pause. Change the task, boundaries or actual prerequisites. If a pending prerequisite later resolves to the same input, that never-issued job is marked blocked and can be replaced. None of these cases creates a checkpoint.
-- `no-gap` requires a complete packet. Every citation must match a text-bearing path and blob ID in the journaled packet. On partial coverage use supported positive work, or request one in-scope `file` using `needs-evidence`. A focused read is bounded and never gives a scout tools.
+- `no-gap` requires a complete packet. Every citation must match a text-bearing path and blob ID in the journaled packet. On partial coverage propose supported work, request a new in-scope `file` using `needs-evidence`, or report the missing fact. Re-requesting unchanged evidence doesn't start another scout.
 - Use `waiting` with `waitFor` and `grains: []` if an area charter cannot proceed until another charter has a checked output. Foundry reopens the consumer once per changed set of producer outputs. It still needs an explicit grain dependency to use those files. Use `unresolved` for missing facts: Foundry tries authorized research once if available. Only a `needs-decision` with `ownerInput: "product-choice"` or `"external-action"` asks the owner. The answer is context for one fresh review, not permission to change the contract.
 
 **Fixed contracts:** version 1 retains its committed `grains` (`id`, `directory`, `specification`, `boundary`, `check`, optional `needs`) and squad-to-grain ID lists. Existing runs do not acquire broader authority on resume. For an explicitly requested one-off, use version 1 with `seed` and no `goalCheck`: a passing `productCheck` qualifies that batch. Unseeded version-1 discovery without a goal still reviews changes to chartered inputs on participant turns. A host trigger can wake an existing run, not authorize one.

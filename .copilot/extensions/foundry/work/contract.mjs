@@ -1,4 +1,5 @@
-import { commitAt, committedFile, outside, regularFiles } from "./product.mjs";
+import { isUtf8 } from "node:buffer";
+import { commitAt, committedFile, git, outside, regularFiles } from "./product.mjs";
 import { fail, fields, integer, name, names, record, relative, text } from "./values.mjs";
 
 /** @param {unknown} outcome @param {number} grains @returns {outcome is import("./model.js").Observation["outcome"]} */
@@ -73,19 +74,31 @@ function fixed(row) {
 	return { squads, grains, ...(seed ? { seed } : {}) };
 }
 
-/** @param {Record<string,unknown>} row */
-function chartered(row) {
+/** @param {string} filename */
+export const planDirectory = filename => filename.replace(/\.json$/, "");
+
+/** @param {string} cwd @param {{name:string,oid:string}} entry */
+export function journeyText(cwd, entry) {
+	const bytes = git(cwd, ["cat-file", "blob", entry.oid]);
+	const content = bytes.toString("utf8");
+	if (bytes.includes(0) || !isUtf8(bytes) || !content.trim()) fail("invalid_brief", `${entry.name} must be nonempty UTF-8 text`);
+	return content;
+}
+
+/** @param {Record<string,unknown>} row @param {string} filename */
+function chartered(row, filename) {
 	if (!row.goalCheck) fail("invalid_goal", "Area charters require a final goal check");
-	const squads = list(row.squads, "area charters").map(v => {
-		const s = record(v);
+	const charters = list(row.squads, "area charters").map(record);
+	const sharedBrief = charters.every(s => s.boundary === undefined) ? `${planDirectory(filename)}/journey.md` : undefined;
+	const squads = charters.map(s => {
 		fields(s, ["id", "charter", "agent", "areas", "boundary", "checks", "researchAgent"]);
 		return { id: name(s.id, "squad"), charter: relative(s.charter), areas: list(s.areas, "writable areas").map(relative),
-			boundary: list(s.boundary, "boundary files").map(relative), checks: list(s.checks, "component checks").map(relative),
+			boundary: sharedBrief ? [sharedBrief] : list(s.boundary, "boundary files").map(relative), checks: list(s.checks, "component checks").map(relative),
 			...(s.researchAgent === undefined ? {} : { researchAgent: name(s.researchAgent, "research agent profile") }),
 			...(s.agent === undefined ? {} : { agent: text(s.agent, "native agent") }) };
 	});
 	disjoint(squads.flatMap(s => s.areas));
-	return { squads, grains: [], seed: undefined };
+	return { squads, grains: [], seed: undefined, sharedBrief };
 }
 
 /** @param {string} cwd @param {unknown} source @returns {{policy:import("./model.js").Policy, grains:import("./model.js").Grain[]}} */
@@ -113,17 +126,20 @@ export function readPolicy(cwd, source) {
 	const deadline = limits.deadline === undefined ? undefined : text(limits.deadline, "ISO deadline");
 	if (deadline && !Number.isFinite(Date.parse(deadline)))
 		fail("invalid_limit", "Invalid deadline");
-	const { squads, grains, seed } = row.version === 1 ? fixed(row) : chartered(row);
+	const contract = row.version === 1 ? fixed(row) : chartered(row, filename);
+	const { squads, grains, seed } = contract;
+	const sharedBrief = "sharedBrief" in contract ? contract.sharedBrief : undefined;
 	names(squads.map(s => s.id), "squad");
 	const files = [...new Set([filename, productCheck, ...(goalCheck ? [goalCheck] : []), ...grains.flatMap(g => [g.specification, ...g.boundary, g.check]),
 		...squads.flatMap(s => "areas" in s ? [s.charter, ...s.boundary, ...s.checks] : [s.charter])])];
 	const writable = [...grains.map(g => g.directory), ...squads.flatMap(s => "areas" in s ? s.areas : [])];
 	for (const file of files)
 		if (!outside(file, writable)) fail("contract_scope", `Conserved file overlaps a writable directory: ${file}`);
-	regularFiles(cwd, base, files);
+	const pinned = regularFiles(cwd, base, files);
+	if (sharedBrief) journeyText(cwd, pinned[files.indexOf(sharedBrief)]);
 	const policy = {
 		id: name(row.id, "policy ID"), direction: text(row.direction, "engineering direction"), source: filename, target, base, productCheck,
-		files, squads, ...(seed ? { seed } : {}),
+		files, squads, ...(sharedBrief ? { sharedBrief } : {}), ...(seed ? { seed } : {}),
 		...(goalCheck ? { goalCheck } : {}),
 		...(workers === undefined ? {} : { workers: integer(workers, 1, "worker limit") }),
 		...(assignments === undefined ? {} : { assignments: integer(assignments, 0, "total assignment limit") }),

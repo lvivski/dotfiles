@@ -20,7 +20,8 @@ const gitArgs = (cwd, args) => ["--no-pager", "--no-replace-objects", "--no-lazy
 /** @param {string} cwd @param {string[]} args @param {string|Buffer} [input] @param {string} [index] */
 export function git(cwd, args, input, index) {
 	return execFileSync("git", gitArgs(cwd, args), {
-		input, env: index ? { ...env, GIT_INDEX_FILE: index } : env, stdio: ["pipe", "pipe", "pipe"], timeout: 30000, maxBuffer: 128 * 1024 * 1024,
+		input, env: index ? { ...env, GIT_INDEX_FILE: index } : env, stdio: ["pipe", "pipe", "pipe"], timeout: 30000,
+		maxBuffer: args[0] === "cat-file" ? Infinity : 128 * 1024 * 1024,
 	});
 }
 
@@ -237,11 +238,15 @@ export function rejoin(cwd, last, target) {
 /** @param {string} cwd @param {string} from @param {string} to @param {string[]} [paths] */
 export const changedFiles = (cwd, from, to, paths = []) => git(cwd, ["diff-tree", "--no-ext-diff", "--no-renames", "-r", "--name-only", "-z", from, to, "--", ...paths]).toString().split("\0").filter(Boolean);
 
+/** Acceptance helpers may be shared across plans. Scout reads are not contract pins.
+ * @param {import("./model.js").Policy} policy */
+export const contractPaths = policy => policy.sharedBrief ? [...policy.files, ".foundry"] : policy.files;
+
 /** @param {string} cwd @param {import("./model.js").Policy} policy @param {string} commit */
 export function verifyContracts(cwd, policy, commit) {
 	if (commit === policy.base)
 		return;
-	const changed = changedFiles(cwd, policy.base, commit, policy.files);
+	const changed = changedFiles(cwd, policy.base, commit, contractPaths(policy));
 	if (changed.length)
 		fail("contract_changed", `The conserved contract changed: ${changed.join(", ")}`);
 }

@@ -1,4 +1,4 @@
-import { validOutcome } from "./contract.mjs";
+import { planDirectory, validOutcome } from "./contract.mjs";
 import { checkReceipt, goalReceipt } from "./evidence.mjs";
 import { assignmentCount, unissued } from "./native.mjs";
 import { checked, owns, validateNodes } from "./plan.mjs";
@@ -39,7 +39,7 @@ const charter = { id, charter: path, agent: optional(string) };
 const fixed = shape({ ...charter, grains: list(id) });
 const area = shape({ ...charter, areas: list(path), boundary: list(path), checks: list(path), researchAgent: optional(id) });
 const policy = shape({
-	id, direction: string, target: string, source: path, base: commit, productCheck: path, goalCheck: optional(path), files: list(path),
+	id, direction: string, target: string, source: path, sharedBrief: optional(path), base: commit, productCheck: path, goalCheck: optional(path), files: list(path),
 	squads: list(s => object(s) && ("areas" in s ? !("grains" in s) && area(s) : fixed(s))),
 	workers: optional(positive), assignments: optional(count), repairs: count, deadline: optional(string), seed: optional(list(id))
 });
@@ -127,6 +127,8 @@ export function decode(value) {
 	if (effects.size !== value.effects.length || value.effects.some(e => !validDispatch(value, e)))
 		fail("corrupt_run", "Invalid Foundry dispatch");
 	if (areas.length && (!value.goal || areas.length !== value.policy.squads.length) ||
+		p.sharedBrief !== undefined && (!areas.length || p.sharedBrief !== `${planDirectory(p.source)}/journey.md` ||
+			areas.some(s => s.boundary.length !== 1 || s.boundary[0] !== p.sharedBrief)) ||
 		![p.source, p.productCheck, ...(p.goalCheck ? [p.goalCheck] : []), ...p.squads.flatMap(s => "areas" in s ? [s.charter, ...s.boundary, ...s.checks] : [s.charter])].every(f => files.has(f)) ||
 		[p.seed ?? [], ...p.squads.flatMap(s => "grains" in s ? [s.grains] : [])].some(ids => ids.some(id => !Object.hasOwn(nodes, id))) ||
 		Object.entries(nodes).some(([id, n]) => {

@@ -8,18 +8,16 @@ export const researchAgent = {
 };
 
 const string = { type: "string" };
-const maxFindings = 12, maxText = 24 * 1024;
-export const researchBudget = `Up to ${maxFindings} findings and ${maxText} UTF-16 code units of text across the reason and all citations combined.`;
 export const researchSchema = {
-	type: "object", description: researchBudget, additionalProperties: false, required: ["status", "reason", "findings"],
+	type: "object", additionalProperties: false, required: ["status", "reason", "findings"],
 	properties: { status: { type: "string", enum: ["answered", "unknown"] }, reason: string,
-		findings: { type: "array", maxItems: maxFindings, items: { type: "object", additionalProperties: false, required: ["kind", "source", "finding"],
+		findings: { type: "array", items: { type: "object", additionalProperties: false, required: ["kind", "source", "finding"],
 			properties: { kind: string, source: string, finding: string } } } },
 };
 
 /** @param {unknown} v @returns {import("./model.js").Finding[]} */
 function findings(v) {
-	if (!Array.isArray(v) || v.length > maxFindings) fail("invalid_research", `Expected up to ${maxFindings} cited research findings`);
+	if (!Array.isArray(v)) fail("invalid_research", "Expected a list of cited research findings");
 	return v.map(value => {
 		const f = record(value);
 		fields(f, ["kind", "source", "finding"]);
@@ -36,8 +34,6 @@ export function researchResult(raw, charter) {
 	const result = record(raw);
 	fields(result, ["status", "reason", "findings"]);
 	const cited = findings(result.findings), reason = text(result.reason, "research reason");
-	if (cited.reduce((n, f) => n + f.kind.length + f.source.length + f.finding.length, reason.length) > maxText)
-		fail("invalid_research", `Research report exceeds its text budget. ${researchBudget}`);
 	if (result.status !== "unknown" && !(result.status === "answered" && cited.length))
 		fail("invalid_research", "An answered investigation requires cited findings; otherwise report unknown");
 	return { outcome: result.status === "answered" ? "researched" : "unresolved",

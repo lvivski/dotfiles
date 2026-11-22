@@ -40,6 +40,7 @@ export interface Policy {
 	direction: string;
 	target: string;
 	source: string;
+	sharedBrief?: string;
 	base: string;
 	productCheck: string;
 	goalCheck?: string;

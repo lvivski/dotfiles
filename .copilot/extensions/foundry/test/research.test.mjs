@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 import path from "node:path";
 import { once } from "node:events";
 import test from "node:test";
-import { researchResult } from "../work/research.mjs";
+import { researchResult, researchSchema } from "../work/research.mjs";
 import { scoutDefinition } from "../work/scouts.mjs";
 import { factory, git, put } from "./fixture.mjs";
 
@@ -114,11 +114,10 @@ for (const optedIn of [false, true]) test(`research cannot bypass charter or ass
 	assert.equal(f.workers.size, 0); assert.equal(s.qualified, null);
 });
 
-test("research text is bounded across the whole report without dropping citations", () => {
-	const entry = { kind: "code", source: "repo@rev:file", finding: "x".repeat(12_300) };
-	const report = { status: "answered", reason: "Observed in source.", findings: [entry] };
-	assert.deepEqual(researchResult(report, "charter").findings, [entry]);
-	assert.throws(() => researchResult({ ...report, findings: [entry, entry] }, "charter"), /report exceeds its text budget/i);
+test("all attributed research reaches the scout regardless of count or length", () => {
+	const findings = Array.from({ length: 16 }, (_, i) => ({ kind: "code", source: `repo@rev:file${i}`, finding: "x".repeat(3000) }));
+	assert.deepEqual(researchResult({ status: "answered", reason: "Observed in source.", findings }, "charter").findings, findings);
+	assert.ok(!("maxItems" in researchSchema.properties.findings));
 });
 
 test("a descriptive source label does not strand the Mac charter before the window check", async t => {

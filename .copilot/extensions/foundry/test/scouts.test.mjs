@@ -105,15 +105,14 @@ test("a wait on an already visible producer version needs new evidence before an
 	assert.equal(next()?.wake?.review, review.id);
 });
 
-test("unavailable or truncated evidence never warrants an exhaustive no-gap", t => {
+test("a long direction and all areas reach the scout; an unavailable receipt still forbids no-gap", t => {
 	const f = fixture(t);
 	f.squad.areas.push(...Array.from({ length: 33 }, (_, i) => `src/not-yet-built-${i}`));
 	f.run.policy.direction = "D".repeat(150_000);
 	f.run.effects[0].commit = "e".repeat(40); // A receipt for a different revision is not evidence.
 	const { prompt } = scoutPacket(f.cwd, f.run, f.review);
-	assert.ok(prompt.length < 64 * 1024);
-	assert.match(prompt, /\[truncated:/);
-	assert.match(prompt, /directory roots omitted/);
+	assert.ok(prompt.includes(f.run.policy.direction));
+	assert.ok(prompt.includes("src/not-yet-built-32"));
 	assert.match(prompt, /no verified goal receipt/);
 	assert.match(prompt, /Coverage: PARTIAL[\s\S]*Do not return no-gap/);
 	assert.doesNotMatch(prompt, /Companion check did not run/);
@@ -161,21 +160,15 @@ for (const again of [false, true]) test(`waiting for a producer wakes only the i
 	assert.equal(f.workers.size, 2); assert.equal(f.scouts.length, 4);
 });
 
-test("partial packets reject unseen citations and exhaustive no-gap but may obtain a bounded focused read", async t => {
-	const boundary = Array.from({ length: 45 }, (_, i) => `doc-${i}`), f = factoryTrial(t, boundary);
-	await f.start(); const [first, second, third] = f.scouts;
-	assert.equal(first.packet.partial, true); assert.ok(!Object.hasOwn(first.packet.files, "doc-44"));
-	await first.report({ ...noGap, evidence: ["doc-44"] });
-	await second.report(noGap);
-	await third.report({ ...noGap, outcome: "needs-evidence", file: "doc-44" });
-	const s = await f.status();
-	assert.match(String(s.reviews[0].reason), /doc-44.*not delivered/);
-	assert.match(String(s.reviews[1].reason), /partial packet/);
-	assert.deepEqual(s.pending.filter(e => e.reason?.includes("workflow body")), [], "focused evidence must launch from the issuer, not the reporting workflow");
-	const focused = f.scouts[3]; assert.equal(focused.squad, third.squad);
-	assert.match(focused.prompt, /Requested evidence/); assert.match(focused.packet.files["doc-44"], /^[a-f0-9]+$/);
-	await focused.report({ ...build("unrelated"), evidence: ["doc-44"] });
-	assert.equal(f.workers.size, 1);
+test("all declared files and full charter text reach every scout", async t => {
+	const charter = "charter detail\n".repeat(20000) + "Required ending";
+	const boundary = Array.from({ length: 45 }, (_, i) => `doc-${i}`), f = factoryTrial(t, boundary, { charter });
+	await f.start();
+	for (const s of f.scouts) {
+		assert.equal(s.packet.partial, false); assert.equal(filesIn(s.prompt).get("charter")?.text === charter, true);
+		assert.ok(boundary.every(p => s.packet.files[p])); await s.report({ ...noGap, evidence: ["doc-44"] });
+	}
+	assert.ok((await f.status()).reviews.every(r => r.state === "observed"));
 });
 
 test("binary metadata is not delivered text, and a focused read cannot cross a charter boundary or loop", async t => {
