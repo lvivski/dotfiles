@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { openDatabase } from "./database.mjs";
+import { feedback, goalDelta, priorGoal } from "./feedback.mjs";
 import { awaitingReply, current } from "./native.mjs";
 import { withProduct } from "./product.mjs";
 import { FoundryError, fail, text } from "./values.mjs";
@@ -22,11 +23,18 @@ try {
 		}
 		const squads = e.kind === "goal" ? run.policy.squads.map(s => s.id) : [];
 		return { component: e.kind === "component", commit: text(e.commit, "check commit"), check: text(e.check, "assigned evaluator"), deadline: run.policy.deadline, outputs, squads, env,
+			goal: e.kind === "goal", prior: e.kind === "goal" ? priorGoal(run, e) : undefined,
 			overlay: e.evaluatorRevision && e.kind === "goal" ? { base: run.policy.base, revision: e.evaluatorRevision } : undefined };
 	});
 	/** @type {import("./model.js").Receipt} */
 	const receipt = { commit: command.commit, check: command.check, ...(command.overlay ? { evaluatorRevision: command.overlay.revision } : {}), exit: null, output: "" };
 	try {
+		const env = { ...process.env, ...command.env };
+		delete env.FOUNDRY_GOAL_DELTA;
+		if (command.prior) {
+			const delta = goalDelta(cwd, command.commit, command.prior);
+			if (delta !== undefined) env.FOUNDRY_GOAL_DELTA = delta;
+		}
 		await withProduct(cwd, command.commit, root => {
 			const evaluator = path.join(root, command.check);
 			const remaining = command.deadline === undefined ? undefined : Date.parse(command.deadline) - Date.now();
@@ -34,11 +42,15 @@ try {
 				fail("deadline", "Deadline elapsed before evaluation");
 			const js = /\.m?js$/.test(evaluator);
 			const result = spawnSync(js ? process.execPath : evaluator, js ? [evaluator] : [], {
-				cwd: root, env: { ...process.env, ...command.env }, encoding: "utf8",
+				cwd: root, env,
 				timeout: remaining, maxBuffer: Infinity, stdio: ["ignore", "pipe", "pipe"]
 			});
 			receipt.exit = result.error || result.signal ? null : result.status;
 			receipt.output = [result.stdout, result.stderr, result.error?.message, result.signal].filter(Boolean).join("\n");
+			if (command.goal && (receipt.exit === 0 || receipt.exit === 1)) {
+				const value = feedback(result.stdout);
+				if (value !== undefined) receipt.feedback = value;
+			}
 			const repairs = [...String(result.stdout ?? "").matchAll(/^FOUNDRY_REPAIR=([A-Za-z0-9._-]+)$/gm)];
 			if (repairs.length === 1 && command.outputs.includes(repairs[0][1]) && receipt.exit !== null && receipt.exit !== 0)
 				receipt.repair = repairs[0][1];
@@ -57,6 +69,7 @@ try {
 		receipt.output = error instanceof Error ? error.message : String(error);
 		delete receipt.repair;
 		delete receipt.squad;
+		delete receipt.feedback;
 	}
 	if (command.component && receipt.exit === null) receipt.failure ??= "incomplete";
 	db.update(runId, run => {

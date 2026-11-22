@@ -17,11 +17,11 @@ const env = {
 /** @param {string} cwd @param {string[]} args */
 const gitArgs = (cwd, args) => ["--no-pager", "--no-replace-objects", "--no-lazy-fetch", "--literal-pathspecs", "-c", "core.hooksPath=/dev/null", "-C", cwd, ...args];
 
-/** @param {string} cwd @param {string[]} args @param {string|Buffer} [input] @param {string} [index] */
-export function git(cwd, args, input, index) {
+/** @param {string} cwd @param {string[]} args @param {string|Buffer} [input] @param {string} [index] @param {number} [maxBuffer] */
+export function git(cwd, args, input, index, maxBuffer) {
 	return execFileSync("git", gitArgs(cwd, args), {
 		input, env: index ? { ...env, GIT_INDEX_FILE: index } : env, stdio: ["pipe", "pipe", "pipe"], timeout: 30000,
-		maxBuffer: args[0] === "cat-file" ? Infinity : 128 * 1024 * 1024,
+		maxBuffer: maxBuffer ?? (args[0] === "cat-file" ? Infinity : 128 * 1024 * 1024),
 	});
 }
 
@@ -274,8 +274,12 @@ export function rejoin(cwd, last, target) {
 	});
 }
 
-/** @param {string} cwd @param {string} from @param {string} to @param {string[]} [paths] */
-export const changedFiles = (cwd, from, to, paths = []) => git(cwd, ["diff-tree", "--no-ext-diff", "--no-renames", "-r", "--name-only", "-z", from, to, "--", ...paths]).toString().split("\0").filter(Boolean);
+/** @param {string} cwd @param {string} from @param {string} to @param {string[]} [paths] @param {number} [maxBytes] */
+export function changedFiles(cwd, from, to, paths = [], maxBytes) {
+	const raw = git(cwd, ["diff-tree", "--no-ext-diff", "--no-renames", "--ignore-submodules=none", "-r", "--name-only", "-z", from, to, "--", ...paths], undefined, undefined, maxBytes);
+	if (!isUtf8(raw)) fail("unsupported_tree", "Non-UTF-8 changed paths cannot be represented");
+	return raw.toString().split("\0").filter(Boolean);
+}
 
 /** Acceptance helpers may be shared across plans. Scout reads are not contract pins.
  * @param {import("./model.js").Policy} policy */

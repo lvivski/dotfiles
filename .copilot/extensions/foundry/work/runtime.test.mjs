@@ -11,6 +11,7 @@ import { factory, git, put } from "../test/fixture.mjs";
 import { mapSnapshot } from "../map/model.mjs";
 import { checksum, openDatabase, ledgerPath, protocol } from "./database.mjs";
 import { readPolicy } from "./contract.mjs";
+import { feedback, goalDelta } from "./feedback.mjs";
 import { advance, observe, parseObservation } from "./graph.mjs";
 import { withProduct } from "./product.mjs";
 import { recover } from "./recovery.mjs";
@@ -286,6 +287,59 @@ for (const lateWork of [false, true])
 		assert.equal(done.products?.length, 1);
 		assert.equal(done.products[0].receipt?.commit, done.goal?.receipt?.commit);
 	});
+
+test("rolling goal feedback binds scheduling context to the exact prior goal, not ambient env or a prior pin", async t => {
+	const previous = { gaps: ["right"], title: "two words" };
+	const marker = `console.log('FOUNDRY_GOAL_FEEDBACK=${JSON.stringify(previous)}');`;
+	const check = `console.log("delta=" + (process.env.FOUNDRY_GOAL_DELTA ?? "unset")); ${marker} process.exit(1);`;
+	const rejectAmbient = 'if ("FOUNDRY_GOAL_DELTA" in process.env) throw Error("goal hints leaked");';
+	const f = fixture(t, goal, { [goalCheck]: check, ".foundry/product.mjs": rejectAmbient, ".foundry/left.mjs": rejectAmbient });
+	const saved = process.env.FOUNDRY_GOAL_DELTA; process.env.FOUNDRY_GOAL_DELTA = "untrusted";
+	t.after(() => { if (saved === undefined) delete process.env.FOUNDRY_GOAL_DELTA; else process.env.FOUNDRY_GOAL_DELTA = saved; });
+	assert.match((await f.start()).goal?.receipt?.output ?? "", /^delta=unset$/m);
+	await f.reportGrains("left"); await f.submit("worker-1");
+	const joined = await f.status(), receipt = joined.goal?.receipt; assert.ok(receipt);
+	assert.deepEqual(JSON.parse(/^delta=(.*)$/m.exec(receipt.output)?.[1] ?? "null"),
+		{ version: 1, base: f.tip, head: receipt.commit, paths: ["lib/left/index.mjs", "lib/left/old.mjs"], previous });
+	assert.equal(receipt.exit, 1); assert.equal(joined.qualified, null);
+	const side = path.join(path.dirname(f.root), "new-pin"); git(f.root, "worktree", "add", "-q", "--detach", side, f.tip);
+	put(side, goalCheck, `// new evaluator\n${check}`); git(side, "commit", "-qam", "New goal evaluator");
+	const repinned = await f.runtime(f.root, { confirm: async () => true }).operation("repin",
+		{ run, from: f.tip, revision: git(side, "rev-parse", "HEAD"), files: [goalCheck] }, "owner");
+	assert.match(repinned.goal?.receipt?.output ?? "", /^delta=unset$/m);
+});
+
+test("goal scheduling omits ambiguous or oversized feedback and never truncates a tree diff", t => {
+	const line = "FOUNDRY_GOAL_FEEDBACK=";
+	for (const raw of [line + "{", `${line}{}\n${line}null`, `${line}"${"ä".repeat(4096)}"`, `not a record: ${line}[]`])
+		assert.equal(feedback(Buffer.from(raw)), undefined);
+	assert.equal(feedback(Buffer.concat([Buffer.from(line + '"'), Buffer.from([255]), Buffer.from('"')])), undefined);
+	assert.equal(feedback(Buffer.from(`some output\r\n${line}null\r\n`)), "null");
+	const f = fixture(t), prior = { base: f.tip, previous: "null" };
+	assert.deepEqual(JSON.parse(goalDelta(f.root, f.tip, prior) ?? "null").paths, []);
+	git(f.root, "mv", "neighbor.txt", "renamed file"); git(f.root, "commit", "-qm", "rename");
+	assert.deepEqual(JSON.parse(goalDelta(f.root, git(f.root, "rev-parse", "HEAD"), prior) ?? "null").paths, ["neighbor.txt", "renamed file"]);
+	for (let i = 0; i < 255; i++) put(f.root, `many/${i}`, "");
+	git(f.root, "add", "many"); git(f.root, "commit", "-qm", "257 changed paths");
+	assert.equal(goalDelta(f.root, git(f.root, "rev-parse", "HEAD"), prior), undefined);
+	const base = git(f.root, "rev-parse", "HEAD");
+	for (let i = 0; i < 160; i++) put(f.root, `long/${"x".repeat(210)}-${i}`, "");
+	git(f.root, "add", "long"); git(f.root, "commit", "-qm", "over 32 KiB of paths");
+	assert.equal(goalDelta(f.root, git(f.root, "rev-parse", "HEAD"), { ...prior, base }), undefined);
+	assert.equal(goalDelta(f.root, "0".repeat(40), prior), undefined);
+});
+
+test("a newer goal without usable stdout feedback never borrows an older summary or a stderr record", async t => {
+	const f = fixture(t, goal, { ...goalFiles, [goalCheck]: `import {existsSync} from "node:fs";
+		console.log("delta=" + (process.env.FOUNDRY_GOAL_DELTA ?? "unset"));
+		if (!existsSync("lib/left/index.mjs")) console.log('FOUNDRY_GOAL_FEEDBACK="baseline"');
+		else console.error('FOUNDRY_GOAL_FEEDBACK="not stdout"'); process.exit(1);` });
+	await f.start(); await f.reportGrains("left"); await f.submit("worker-1");
+	assert.match((await f.status()).goal?.receipt?.output ?? "", /"previous":"baseline"/);
+	await f.reportGrains("right"); await f.submit("worker-2");
+	const final = await f.status(); assert.match(final.goal?.receipt?.output ?? "", /^delta=unset$/m);
+	assert.equal(final.qualified, null);
+});
 
 test("an attributed goal gap staffs only its squad and widens discovery if that scout has no work", async t => {
 	const f = fixture(t, goal, { ...goalFiles, [goalCheck]: `import {existsSync} from "node:fs";

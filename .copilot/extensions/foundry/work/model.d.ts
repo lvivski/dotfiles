@@ -132,6 +132,7 @@ export interface Receipt {
 	evaluatorRevision?: string;
 	exit: number | null;
 	output: string;
+	feedback?: string;
 	failure?: "changed-export" | "incomplete";
 	repair?: string;
 	squad?: string;

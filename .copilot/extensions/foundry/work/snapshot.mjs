@@ -1,5 +1,6 @@
 import { planDirectory, validOutcome } from "./contract.mjs";
 import { checkReceipt, goalReceipt } from "./evidence.mjs";
+import { validFeedback } from "./feedback.mjs";
 import { assignmentCount, unissued } from "./native.mjs";
 import { checked, owns, validateNodes } from "./plan.mjs";
 import { outside } from "./product.mjs";
@@ -73,7 +74,7 @@ const node = shape({
 const assessment = { target: commit, commit, check: id };
 const product = shape({ ...assessment, outputs: named(commit), qualifiedAt: optional(positive) });
 const receipt = shape({ commit, check: path, evaluatorRevision: optional(commit), exit: v => v === null || count(v), output: string,
-	failure: optional(one("changed-export", "incomplete")), repair: optional(id), squad: optional(id) });
+	failure: optional(one("changed-export", "incomplete")), repair: optional(id), squad: optional(id), feedback: optional(validFeedback) });
 const dispatch = { id, issuer: string, args: object, evaluatorRevision: optional(commit), callId: optional(string), error: optional(string), permissionHold: optional(string) };
 const scout = shape({ ...dispatch, kind: one("scout"), tool: one("workflow"), squad: id, base: commit, version: string,
 	state: one("ready", "issued", "uncertain", "suspended", "reported", "observed", "blocked", "deferred"), observation: optional(observation),
@@ -105,6 +106,8 @@ function isRun(value) { return snapshot(value); }
 /** @param {import("./model.js").Run} run @param {import("./model.js").Effect} e */
 function validDispatch(run, e) {
 	if (e.permissionHold !== undefined && !unissued(e)) return false;
+	if (e.receipt?.feedback !== undefined && (e.kind !== "goal" || !e.runnerStarted || !e.callId ||
+		e.receipt.exit !== 0 && e.receipt.exit !== 1)) return false;
 	if (e.evaluatorRevision && (!(e.kind === "goal" || e.kind === "scout") || !run.repins?.some(p => p.revision === e.evaluatorRevision))) return false;
 	if (e.receipt?.failure && (e.kind !== "component" || !e.runnerStarted || !e.callId || e.receipt.exit !== null ||
 		e.receipt.repair || e.receipt.squad || e.state !== "done" && e.state !== "refused")) return false;
