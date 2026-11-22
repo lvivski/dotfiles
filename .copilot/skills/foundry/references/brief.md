@@ -26,6 +26,8 @@ Use just enough disjoint writable `areas` for independent work to start together
 
 If deciding whether to create a writer requires investigating other checkouts, public docs or approved tools, an area squad may name `researchAgent`. `foundry-research` reads source and public docs; name a separately configured, appropriately scoped profile for connectors or disposable probes. Review the profile and permitted sources as part of the committed brief; findings cannot substitute for product checks.
 
+For maintenance, authorize writers in the charter to consult their own accepted directory. Assignments then need only `"directory":"workday/coverage/mail"`: Foundry resolves it at kickoff. If the charter permits a particular historical copy, use `"directory":"<full commit>:workday/coverage/mail"`. A new directory with no accepted files starts empty.
+
 - **`productCheck`:** What must still work on a useful intermediate version? A passing milestone lets the factory assess the combined result; it doesn't end the run.
 - **`goalCheck`:** Exercise the promised behavior through the product. Use any supported way to build or drive it. Exit **0** only for the full outcome, **1** for a demonstrated product gap, **2** when required external evidence is unavailable. If a local observation proves one defect while a peer or device is unavailable, report the defect **and** mark the rest unverified. Once that defect is gone, missing evidence is still not a pass.
 

@@ -33,11 +33,11 @@ export function identify(tool, args) {
 }
 
 /** @param {Run} run @param {string} issuer @param {string} token @param {"repair"|"decision"|"handoff"|"artifact"} kind
- * @param {string} body @param {import("./model.js").Node} [node] */
-export function reserveNotice(run, issuer, token, kind, body, node) {
+ * @param {string} body @param {import("./model.js").Node} [node] @param {import("./model.js").Baseline} [baseline] */
+export function reserveNotice(run, issuer, token, kind, body, node, baseline) {
 	const to = node ? text(node.worker, "assigned writer") : run.owner;
 	const message = `${kind === "repair" ? marker(run.id, token) : `Foundry ${kind}: ${run.id} ${kind === "artifact" ? randomUUID() : token}`}\n${body}`;
-	run.effects.push({ id: randomUUID(), issuer, token, state: "ready", kind, ...(node ? { grain: node.grain.id } : {}),
+	run.effects.push({ id: randomUUID(), issuer, token, state: "ready", kind, ...(node ? { grain: node.grain.id } : {}), ...(baseline ? { baseline } : {}),
 		tool: to === issuer ? "session.send" : "send_session_message",
 		args: to === issuer ? { message } : { session_id: to, delivery_mode: "immediate", message } });
 }

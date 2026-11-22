@@ -1,7 +1,7 @@
 import { validateGraph } from "./contract.mjs";
 import { blockedComponent } from "./evidence.mjs";
 import { outside } from "./product.mjs";
-import { contains, digest, fail, fields, name, names, record, relative, text } from "./values.mjs";
+import { assignmentDirectory, contains, digest, fail, fields, name, names, record, relative, text } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @typedef {import("./model.js").Node} Node */
@@ -89,7 +89,7 @@ export const validateNodes = nodes => validateGraph(Object.values(nodes).map(n =
 
 /** A new token, report, or label does not change the job. The charter pins the spec and interface for this directory.
  * @param {Node["grain"]} g @param {string} base @param {Node["inputs"]} inputs */
-export const workKey = (g, base, inputs) => digest([base, g.directory, g.task, g.check, [...g.needs].sort(), inputs]);
+export const workKey = (g, base, inputs) => digest([base, g.directory, g.task, g.check, [...g.needs].sort(), inputs, ...(g.revision && g.revision !== base ? [g.revision] : [])]);
 
 /** @param {Run} run @param {Node["grain"]} g @param {string} base @param {Node["inputs"]} inputs */
 export function requireNewWork(run, g, base, inputs) {
@@ -128,7 +128,7 @@ export function superseded(current, ids) {
 export function proposal(value) {
 	const g = record(value);
 	fields(g, ["id", "task", "directory", "check", "needs"]);
-	return { id: name(g.id, "grain"), task: text(g.task, "missing behavior"), directory: relative(g.directory),
+	return { id: name(g.id, "grain"), task: text(g.task, "missing behavior"), ...assignmentDirectory(g.directory),
 		check: relative(g.check), needs: names(g.needs === undefined ? [] : g.needs, "required output") };
 }
 

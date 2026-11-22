@@ -5,7 +5,7 @@ import { checkReceipt, goalReceipt, milestoneBlocker } from "./evidence.mjs";
 import { assess, goalAllowsWork, qualify, rejectRepeat, stall } from "./goal.mjs";
 import { admitted, assignmentCount, expired, reserveNotice, reserveProduct, reserveWorker } from "./native.mjs";
 import { actionable, consumersOf, dependencies, liveNeeds, owns, productOutputs, proposal, requireNewWork, revise, settledOutput, stalePins, superseded, supersededAttempt, validateNodes, waiting, working, writerInputs } from "./plan.mjs";
-import { changedFiles, combine, commitAt, outside, regularFiles, rejoin, retain, verifyContracts, versionOf, withoutGrain } from "./product.mjs";
+import { changedFiles, combine, commitAt, directoryBaseline, outside, regularFiles, rejoin, retain, verifyContracts, verifyDirectoryPin, versionOf, withoutGrain } from "./product.mjs";
 import { referenceCheckout } from "./research.mjs";
 import { availableHistory, blockReview, canInvestigate, discoverySquads, nextReview, reading, requestedFiles, researchContext, reserveReview, reviews, staleReviewReason, wakeSource } from "./reviews.mjs";
 import { FoundryError, contains, digest, fail, fields, name, names, record, referenceRepo, relative, text, waitTarget } from "./values.mjs";
@@ -159,6 +159,8 @@ export function observe(cwd, run, review, observation) {
 	}
 	const revision = "areas" in squad && outcome === "regenerate" ? revise(run.nodes, squad, observation, review.id, replaceable) : undefined;
 	const planned = revision?.nodes ?? run.nodes;
+	if (revision) for (const g of grains) if (typeof g !== "string" && g.revision)
+		verifyDirectoryPin(cwd, g.revision, g.directory);
 	if (run.goal?.tried && planned !== run.nodes) for (const id of ids)
 		requireNewWork(run, planned[id].grain, review.base, writerInputs(planned, planned[id]));
 	if ("grains" in squad && ids.some(id => !squad.grains.includes(id))) fail("charter_scope", "This observation includes another squad's grain");
@@ -204,6 +206,10 @@ export function observe(cwd, run, review, observation) {
 		review.decision = { status: "unavailable", reason: "The clarification did not resolve this charter. A change to the committed contract needs a newly authorized brief." };
 	if (outcome === "regenerate") {
 		if ("areas" in squad) {
+			for (const id of ids) {
+				const pin = planned[id].grain.revision;
+				if (pin) retain(cwd, pin);
+			}
 			run.nodes = planned;
 			if (run.goal) delete run.goal.stall;
 		} else request(run, ids, review.id);
@@ -299,7 +305,7 @@ function changes(run, outputs) {
 
 /** A stopped writer may have missed a replacement prerequisite or a newer checkpoint.
  * @param {string} cwd @param {Run} run @param {Node} n @param {Record<string,string>} required @param {string} base */
-function verifyRepairInputs(cwd, run, n, required, base) {
+export function verifyRepairInputs(cwd, run, n, required, base) {
 	if (!n.inputs || digest(required) !== digest(n.inputs))
 		fail("stale_assignment", "The writer's pinned prerequisites are no longer current");
 	const original = text(n.base, "writer base"), directory = n.grain.directory;
@@ -340,8 +346,8 @@ export function reserveChangedRepair(cwd, run, n, actor, token, target) {
 	if (run.goal) delete run.goal.stall;
 }
 
-/** @param {string} cwd @param {Run} run @param {Node} n @param {Record<string,string>} required @param {string} base @param {string} actor @param {string} [submitToken] */
-function reserveWriter(cwd, run, n, required, base, actor, submitToken) {
+/** @param {string} cwd @param {Run} run @param {Node} n @param {Record<string,string>} required @param {string} base @param {string} actor @param {string} [submitToken] @param {import("./model.js").Baseline} [baseline] */
+export function reserveWriter(cwd, run, n, required, base, actor, submitToken, baseline) {
 	const g = n.grain, token = randomUUID();
 	const inline = n.worker === actor && submitToken !== undefined && n.token === submitToken;
 	if (n.worker) {
@@ -360,13 +366,20 @@ function reserveWriter(cwd, run, n, required, base, actor, submitToken) {
 		delete n.candidate;
 		n.state = "writing";
 		n.token = token;
-		if (!inline) reserveNotice(run, actor, token, "repair",
-			`Read foundry_status({run:"${run.id}"}). Repair the checked failure in ${g.directory}/ if this token is still writable. Keep the original scope; join any helpers before submitting.`, n);
+		if (!inline) reserveNotice(run, actor, token, "repair", baseline
+			? `Read your foundry_status for ${run.id} before acting. For this attempt only, the operator approved read-only consultation of ${baseline.revision}:${baseline.directory}/ (tree ${baseline.tree}) to preserve your inventory. No other prior paths, revisions or permissions change. Join helpers and submit the complete assigned directory normally.`
+			: `Read foundry_status({run:"${run.id}"}). Repair the checked failure in ${g.directory}/ if this token is still writable. Keep the original scope; join any helpers before submitting.`, n, baseline);
 		return;
 	}
 	requireNewWork(run, g, base, required); // A pending prerequisite may have resolved since admission.
+	const source = directoryBaseline(cwd, g.revision ?? base, g.directory);
+	if (g.revision && !source) fail("invalid_baseline", `No prior directory at ${g.revision}:${g.directory}`);
 	const deps = changes(run, required);
 	n.generation = withoutGrain(cwd, deps.length ? combine(cwd, base, deps) : base, g.directory);
+	if (source) {
+		retain(cwd, source.revision);
+		n.priorSource = source;
+	}
 	n.inputs = required;
 	n.base = base;
 	n.token = token;
@@ -381,8 +394,9 @@ function reserveWriter(cwd, run, n, required, base, actor, submitToken) {
 		`Read ${g.specification} and ${g.boundary.join(", ")} at this base. Required outputs: ${JSON.stringify(required)}.`,
 		...supporting.map(file => `Read-only supporting file: ${review?.base}:${file}`),
 		takeArtifactBrief(run, n),
-		...(run.goal ? [`Reviewed input revision: ${base}`,
-			`Read prior implementation only if ${g.specification} explicitly permits it, and only from ${g.directory}/ at that revision.`] : []),
+		...(run.goal ? [`Reviewed input revision: ${base}`] : []),
+		source ? `Read prior implementation only if ${g.specification} explicitly permits it at this version, and only regular files from ${source.revision}:${g.directory}/ (tree ${source.tree}). The source is not a read grant.`
+			: `No prior directory at ${base}:${g.directory}/; start empty. Do not search history for another version.`,
 		"Split independent work across native in-session `task` agents in parallel. Give each a disjoint set of files under your directory or a read-only question, the permitted inputs and the same constraints; ask for results, not further delegation. Keep shared files for yourself. Work solo for small or indivisible changes, or if helpers are unavailable.",
 		"Keep the token and all Foundry calls to yourself. Do not start desktop sessions, change the contract or evaluators, switch base, commit or land. Join the helpers and integrate their results before you submit. For a repair, reuse finished work; parallelize only the remaining independent pieces.",
 		`From this worktree call foundry_submit({run:"${run.id}",token:"${token}"}).`].filter(Boolean).join("\n");

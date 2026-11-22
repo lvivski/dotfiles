@@ -45,6 +45,7 @@ export function status(run, actor, detail) {
 
 	const pending = run.effects.filter(e => (owner || e.issuer === actor) && e.state !== "done" && (awaitingReply(e) || current(run, e)));
 	const receipts = new Map(run.effects.filter(e => e.receipt).map(e => [e.id, e.receipt]));
+	const baselines = new Map(run.effects.flatMap(e => e.kind === "repair" && e.state === "done" && e.baseline ? [[e.token, e.baseline]] : []));
 	const missing = missingObservation(run);
 	const assignments = run.policy.assignments === undefined ? undefined : { limit: run.policy.assignments, used: assignmentCount(run) };
 	const finished = (run.goal || run.policy.seed) && qualifiedProduct(run);
@@ -68,6 +69,7 @@ export function status(run, actor, detail) {
 		nodes: nodes.map(n => ({
 			grain: n.grain.id, directory: n.grain.directory, task: n.grain.task, requires: liveNeeds(n), evaluator: n.grain.check,
 			state: n.state, checked: checked(n) ? n.candidate : undefined,
+			priorSource: n.priorSource, baseline: n.state === "writing" ? baselines.get(n.token) : undefined,
 			...(actor === n.worker ? { token: n.token, changedFrom: n.state === "blocked" && !stalePins(run, n).length
 				? changedFrom(n, run.effects.find(e => e.id === n.check)) : undefined } : {}),
 			...(owner || actor === n.worker ? { review: n.review, worker: n.worker, repairs: n.repairs, inputs: n.inputs,

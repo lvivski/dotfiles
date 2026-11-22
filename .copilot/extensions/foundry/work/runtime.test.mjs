@@ -561,6 +561,63 @@ for (const conflict of [false, true])
 const assembly = "pipeline/assembly", assemblyBody = "export default ()=>true;", originalAssembly = "export default ()=>false;";
 const splitAssembly = () => ["editor", "send"].map(id => work(id, `${assembly}/${id}`));
 
+for (const pinned of [false, true]) test(`the assignment directory alone selects the writer's read source (explicit pin: ${pinned})`, async t => {
+	const f = pipelineFixture(t, { [`${assembly}/index.mjs`]: originalAssembly, ".foundry/product.mjs": `import "../${assembly}/index.mjs";`,
+		".foundry/right.md": "For maintenance, consult your own prior directory at the latest accepted or explicitly selected revision." });
+	await f.start();
+	await report(await f.reading("engine"), ".foundry/left.md", []);
+	await report(await f.reading("pipeline"), ".foundry/right.md", [work("first", assembly)]);
+	await f.write("first", assemblyBody);
+	const checkpoint = (await f.status()).checkpoint; assert.ok(checkpoint);
+	await report(await f.reading("pipeline"), ".foundry/right.md", [work("second", pinned ? `${f.tip}:${assembly}` : assembly)]);
+	const n = (await f.status()).nodes.find(n => n.grain === "second"); assert.ok(n?.worker);
+	const w = f.workers.get(n.worker); assert.ok(w);
+	const revision = pinned ? f.tip : checkpoint;
+	assert.equal(n.directory, assembly);
+	assert.deepEqual(n.priorSource, { directory: assembly, revision, tree: git(f.root, "rev-parse", `${revision}:${assembly}`) });
+	assert.ok(w.prompt.includes(`${revision}:${assembly}/`));
+	assert.equal(git(w.cwd, "show", `${revision}:${assembly}/index.mjs`), pinned ? originalAssembly : assemblyBody);
+	assert.equal(existsSync(path.join(w.cwd, assembly)), false);
+	const body = git(w.cwd, "show", `${revision}:${assembly}/index.mjs`);
+	await f.write("second", `${body}\n// maintained`);
+	const next = (await f.status()).checkpoint; assert.ok(next && next !== checkpoint);
+	assert.equal(git(f.root, "show", `${next}:${assembly}/index.mjs`), `${body}\n// maintained`);
+});
+
+test("a new directory starts empty and source metadata cannot authorize a sibling read", async t => {
+	const sibling = "pipeline/other";
+	const f = pipelineFixture(t, { [`${sibling}/prior`]: "not a declared input", ".foundry/right.md": "Generate from the interface only. Do not read prior implementation." });
+	await f.start();
+	await report(await f.reading("pipeline"), ".foundry/right.md", [work("new-unit", assembly), work("other", sibling)]);
+	for (const n of (await f.status()).nodes) {
+		const w = f.workers.get(text(n.worker, "writer")); assert.ok(w);
+		assert.equal(n.baseline, undefined);
+		if (n.directory === sibling) {
+			assert.equal(n.priorSource?.directory, sibling);
+			assert.match(w.prompt, /only if .*explicitly permits/i);
+		} else {
+			assert.equal(n.priorSource, undefined);
+			assert.ok(!w.prompt.includes(`${f.tip}:${sibling}`));
+		}
+		assert.equal(existsSync(path.join(w.cwd, n.directory)), false);
+	}
+	assert.equal(f.workers.size, 2);
+});
+
+test("fixed directory pins require an exact commit and an existing directory", async t => {
+	const f = fixture(t), p = policy(), g = p.grains[0];
+	function save() { put(f.root, source, JSON.stringify(p)); git(f.root, "commit", "-qam", "select read source"); }
+	for (const [directory, reason] of /** @type {[string,RegExp][]} */ ([
+		["HEAD:lib/left", /full .*commit/], [`${f.tip}:lib/../right`, /Invalid repository path/],
+		[`${"f".repeat(40)}:lib/left`, /local commit/], [`${f.tip}:lib/absent`, /No .*directory/]
+	])) {
+		g.directory = directory; save(); assert.throws(() => readPolicy(f.root, source), reason);
+	}
+	g.directory = `${f.tip}:lib/left`; save();
+	const s = await f.start(), left = s.nodes.find(n => n.grain === "left");
+	assert.equal(left?.directory, "lib/left"); assert.equal(left.priorSource?.revision, f.tip);
+});
+
 test("a bound writer reports missing input without replacing the checked inventory or holding eleven published outputs", async t => {
 	const f = await assemblyRound(t, {
 		".foundry/product.mjs": `import {readFileSync} from "node:fs"; if(readFileSync("${assembly}/accepted","utf8")!=="frozen citations") throw Error("lost inventory");`,
@@ -600,6 +657,55 @@ test("a bound writer reports missing input without replacing the checked invento
 	await assert.rejects(writer.operation("submit", { run, token: w.token }, w.id), /writable/);
 	assert.deepEqual(f.checks, checks);
 	assert.ok((await f.reading("pipeline")).prompt.includes(args.missingInput));
+
+	// A later, independent checkpoint need not strand a stopped writer whose own tree is unchanged.
+	const publish = { run, baselines: ["inventory"] };
+	const tree = git(f.root, "rev-parse", `${checkpoint.commit}:${assembly}`);
+	let consent = false, prompts = 0;
+	const owner = f.runtime(f.root, { confirm: async prompt => {
+		prompts++;
+		for (const exact of [w.id, "inventory", checkpoint.commit, assembly, tree]) assert.ok(prompt.includes(exact));
+		return consent;
+	} });
+	await assert.rejects(owner.operation("publish", publish, w.id), /owner/);
+	await assert.rejects(owner.operation("publish", { run, baselines: ["inventory", "part-0"] }, "owner"), /missing.input/);
+	await assert.rejects(owner.operation("publish", publish, "owner"), /not approved/);
+	assert.equal((await f.status(w.id)).nodes[0].token, w.token);
+	consent = true;
+	await owner.operation("publish", publish, "owner");
+	const resumed = (await f.status(w.id)).nodes[0];
+	assert.equal(resumed.worker, w.id); assert.equal(resumed.state, "writing");
+	assert.equal(resumed.repairs, 1); assert.notEqual(resumed.token, w.token);
+	assert.deepEqual(resumed.baseline, { directory: assembly, revision: checkpoint.commit, tree });
+	assert.deepEqual(f.checks, checks); assert.equal(existsSync(path.join(w.cwd, assembly, "accepted")), false);
+	await assert.rejects(owner.operation("publish", publish, "owner"), /missing.input/);
+	assert.equal(prompts, 2);
+	await assert.rejects(writer.operation("submit", { run, token: w.token }, w.id), /assignment/);
+	for (const file of ["index.mjs", "accepted", "unaffected"])
+		put(w.cwd, `${assembly}/${file}`, git(f.root, "show", `${checkpoint.commit}:${assembly}/${file}`));
+	assert.ok(resumed.token);
+	await writer.operation("submit", { run, token: resumed.token }, w.id);
+	const recovered = await f.status();
+	assert.ok(recovered.qualified); assert.equal(recovered.goal?.receipt?.exit, 0);
+	assert.equal(db.read(run)?.effects.filter(e => e.kind === "component" && e.grain === "inventory").length, 1);
+});
+
+test("a changed target during baseline approval leaves the missing-input writer stopped", async t => {
+	const { f, nextCore, nextPipeline } = await assemblyCheckpoint(t);
+	await report(nextCore, ".foundry/left.md", []);
+	await report(nextPipeline, ".foundry/right.md", [work("inventory", assembly)]);
+	const n = (await f.status()).nodes.find(n => n.grain === "inventory");
+	const w = f.workers.get(n?.worker ?? ""); assert.ok(w);
+	await f.runtime(w.cwd).operation("submit", { run, token: w.token, missingInput: "Need the accepted inventory." }, w.id);
+	const before = (await f.status(w.id)).nodes[0], inbox = [...f.inbox];
+	const owner = f.runtime(f.root, { confirm: async () => {
+		put(f.root, `${assembly}/index.mjs`, "export default 23;");
+		git(f.root, "commit", "-qam", "change inventory while approval is open");
+		return true;
+	} });
+	await assert.rejects(owner.operation("publish", { run, baselines: ["inventory"] }, "owner"), /current unmet goal/);
+	assert.deepEqual((await f.status(w.id)).nodes[0], before);
+	assert.deepEqual(f.inbox, inbox);
 });
 
 test("a missing-input report needs the original writable attempt and cannot qualify a seeded run", async t => {
@@ -1162,6 +1268,9 @@ test("a graph edit is atomic, charter-limited, and cannot rewrite issued work or
 	const snapshot = structuredClone(graph);
 	for (const [proposals, replace, reason] of /** @type {Array<[typeof live[],string[],RegExp]>} */ ([
 		[[work("escape", "pipeline/other")], [], /outside/],
+		[[work("escape", `${f.tip}:pipeline/other`)], [], /outside/],
+		[[work("missing", `${f.tip}:engine/absent`)], [], /No prior directory/],
+		[[work("alias", `${f.tip}:engine/bindings`)], [], /disjoint/],
 		[[{ ...work("exec", "engine/x"), check: "neighbor.txt" }], [], /component check/],
 		[[work("alias", "engine/Bindings/next")], [], /disjoint/],
 		[[work("cycle", "engine/c", ["abi"]), { ...pending, needs: ["cycle"] }], ["abi"], /cycle/],
@@ -1866,18 +1975,29 @@ for (const mutate of [false, true]) test(`an interrupted evaluator cannot author
 	assert.equal(f.checks.length, 1);
 });
 
-test("a concurrent target edit conflicts instead of restoring old code over it", async (t) => {
-	const f = fixture(t);
+for (const conflict of [false, true]) test(`a frozen prior directory ${conflict ? "conflicts with an edit inside it" : "does not need reconciliation for a sibling edit"}`, async t => {
+	const directory = "lib/left", f = fixture(t, undefined, { ".foundry/left.md": "Maintain the left output using its prior directory." });
 	await f.start();
-	put(f.root, "lib/left/concurrent", "user work");
+	const w = f.workers.get("worker-1"); assert.ok(w);
+	const file = `${conflict ? directory : "lib/neighbor"}/concurrent`;
+	put(f.root, file, "user work");
 	git(f.root, "add", "lib");
 	git(f.root, "commit", "-qm", "concurrent");
+	const [n] = (await f.status(w.id)).nodes; assert.equal(n.priorSource?.revision, f.tip);
+	put(w.cwd, `${directory}/old.mjs`, git(w.cwd, "show", `${n.priorSource.revision}:${directory}/old.mjs`));
 	await f.submit("worker-1");
 	await f.submit("worker-2");
 	const s = await f.status();
-	assert.equal(s.qualified, null);
-	assert.match(String(s.blocker), /Concurrent modification of lib\/left/);
-	assert.equal(f.checks.length, 2);
+	if (conflict) {
+		assert.equal(s.qualified, null);
+		assert.match(String(s.blocker), /Concurrent modification of lib\/left/);
+		assert.equal(f.checks.length, 2);
+	} else {
+		assert.ok(s.qualified);
+		assert.equal(git(f.root, "show", `${s.qualified}:${file}`), "user work");
+		assert.equal(git(f.root, "show", `${s.qualified}:${directory}/old.mjs`), "export default 0;");
+	}
+	assert.equal(f.workers.size, 2);
 });
 
 test("only the exact evaluated tree qualifies, including rejecting files added by the evaluator", async (t) => {

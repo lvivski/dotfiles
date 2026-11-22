@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { preparePublication, reportedReferences } from "./artifacts.mjs";
+import { prepareBaselines } from "./baseline.mjs";
 import { childProof, issuerProof, linkedGeneration, reservation } from "./binding.mjs";
 import { openDatabase, ledgerPath } from "./database.mjs";
 import { readPolicy } from "./contract.mjs";
 import { presentQuestions } from "./decisions.mjs";
 import { advance, currentReview, newRun, parseObservation, reserveChangedRepair, retryableReview, sameReviewInputs } from "./graph.mjs";
-import { changedFrom, missingObservation, qualifiedProduct } from "./evidence.mjs";
+import { baselineNotice, changedFrom, missingObservation, qualifiedProduct } from "./evidence.mjs";
 import { admitted, assignment, awaitingReply, boundWriter, canDispatch, current, expired, identify, issue, receive, reserveCheck, transferableWriter, unissued } from "./native.mjs";
 import { checked } from "./plan.mjs";
 import { capture, commitAt, generationRoot, retain, rootAt, verifyContracts } from "./product.mjs";
@@ -58,6 +59,8 @@ function writable(run, actor, token, from) {
 	}
 	if (node.state === "checking" || checked(node)) return;
 	if (node.state !== "writing") fail("stale_assignment", "This attempt is no longer writable");
+	const notice = baselineNotice(run, node);
+	if (notice && notice.state !== "done") fail("dispatch_held", "Await confirmed delivery of the approved baseline to the original writer");
 	return node;
 }
 
@@ -529,6 +532,7 @@ export function createRuntime(directory, host) {
 				const run = newRun(origin, policy, actor, grains);
 				admitted(run);
 				retain(origin, policy.base);
+				for (const g of grains) if (g.revision) retain(origin, g.revision);
 				if (run.goal && run.goal.commit !== policy.base) retain(origin, run.goal.commit);
 				db(true).insert(run);
 			}
@@ -605,6 +609,16 @@ export function createRuntime(directory, host) {
 			reply.token = submit(id, actor, reply.token, a) ?? reply.token;
 			// A shell notification can drive the same actor before this call returns.
 			submitting.add(reply);
+		}
+		else if (op === "publish" && a.baselines !== undefined) {
+			fields(a, ["run", "baselines"]);
+			const origin = cwd(), request = prepareBaselines(origin, read(id), actor, a.baselines);
+			await requireReadyOwner(origin);
+			const approved = await host.confirm?.(request.prompt);
+			if (approved === false) fail("approval_declined", "Baseline access not approved. No assignment changed. Do not ask again without a fresh request.");
+			if (approved !== true) fail("approval_required", "Baseline approval is unavailable; no access granted.");
+			await requireReadyOwner(origin);
+			db().change(id, request.apply);
 		}
 		else if (op === "publish") {
 			fields(a, ["run", "token", "file", "to"]);

@@ -98,6 +98,20 @@ function subtree(cwd, tree, directory) {
 	return found?.oid ?? null;
 }
 
+/** @param {string} cwd @param {string} revision @param {string} directory */
+export function directoryBaseline(cwd, revision, directory) {
+	const tree = subtree(cwd, revision, directory);
+	return tree ? { directory, revision, tree } : undefined;
+}
+
+/** @param {string} cwd @param {string} revision @param {string} directory */
+export function verifyDirectoryPin(cwd, revision, directory) {
+	if (git(cwd, ["cat-file", "--batch-check=%(objectname) %(objecttype)"], `${revision}\n`).toString().trimEnd() !== `${revision} commit`)
+		fail("invalid_baseline", `Expected a full local commit ID: ${revision}`);
+	if (!directoryBaseline(cwd, revision, directory))
+		fail("invalid_baseline", `No prior directory at ${revision}:${directory}`);
+}
+
 /** @param {string} cwd @param {string|null} tree @param {string} directory @param {string|null} replacement @param {string|null} [expected] @returns {string|null} */
 function replace(cwd, tree, directory, replacement, expected) {
 	const [name, ...tail] = relative(directory).split("/");

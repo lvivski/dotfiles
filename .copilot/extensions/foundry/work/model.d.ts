@@ -5,6 +5,7 @@ export type Json = null | boolean | number | string | Json[] | {
 export interface Output {
 	id: string;
 	directory: string;
+	revision?: string;
 	check: string;
 	needs: string[];
 }
@@ -89,6 +90,7 @@ export interface Node {
 	generation?: string;
 	inputs?: Record<string, string>;
 	base?: string;
+	priorSource?: Baseline;
 	replaces?: string;
 	artifactCursor?: number;
 	candidate?: string;
@@ -161,7 +163,14 @@ export interface ArtifactReport {
 	comparedArtifacts?: string[];
 }
 
+export interface Baseline {
+	directory: string;
+	revision: string;
+	tree: string;
+}
+
 export interface NativeCall extends Dispatch, ArtifactReport {
+	baseline?: Baseline;
 	claims?: { actor: string; path: string; start: string; kickoff: string; identity: string }[];
 	claimedRequest?: string;
 	kind: "writer" | "component" | "product" | "goal" | "repair" | "decision" | "handoff" | "artifact";

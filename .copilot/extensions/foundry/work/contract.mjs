@@ -1,6 +1,6 @@
 import { isUtf8 } from "node:buffer";
-import { commitAt, committedFile, git, outside, regularFiles } from "./product.mjs";
-import { fail, fields, integer, name, names, record, relative, text } from "./values.mjs";
+import { commitAt, committedFile, git, outside, regularFiles, verifyDirectoryPin } from "./product.mjs";
+import { assignmentDirectory, fail, fields, integer, name, names, record, relative, text } from "./values.mjs";
 
 /** @param {unknown} outcome @param {number} grains @returns {outcome is import("./model.js").Observation["outcome"]} */
 export const validOutcome = (outcome, grains) => grains > 0 ? outcome === "regenerate" :
@@ -51,7 +51,7 @@ function fixed(row) {
 	const grains = list(row.grains, "grains").map(v => {
 		const g = record(v);
 		fields(g, ["id", "directory", "specification", "boundary", "check", "needs"]);
-		return { id: name(g.id, "grain"), directory: relative(g.directory), specification: relative(g.specification),
+		return { id: name(g.id, "grain"), ...assignmentDirectory(g.directory), specification: relative(g.specification),
 			boundary: list(g.boundary, "boundary files").map(relative), check: relative(g.check), needs: names(g.needs ?? [], "required output") };
 	});
 	validateGraph(grains);
@@ -133,6 +133,7 @@ export function readPolicy(cwd, source) {
 	const files = [...new Set([filename, productCheck, ...(goalCheck ? [goalCheck] : []), ...grains.flatMap(g => [g.specification, ...g.boundary, g.check]),
 		...squads.flatMap(s => "areas" in s ? [s.charter, ...s.boundary, ...s.checks] : [s.charter])])];
 	const writable = [...grains.map(g => g.directory), ...squads.flatMap(s => "areas" in s ? s.areas : [])];
+	for (const g of grains) if (g.revision) verifyDirectoryPin(cwd, g.revision, g.directory);
 	for (const file of files)
 		if (!outside(file, writable)) fail("contract_scope", `Conserved file overlaps a writable directory: ${file}`);
 	const pinned = regularFiles(cwd, base, files);

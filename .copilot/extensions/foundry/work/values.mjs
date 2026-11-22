@@ -70,6 +70,16 @@ export function relative(value) {
 	return s;
 }
 
+/** @param {unknown} value @returns {{directory:string,revision?:string}} */
+export function assignmentDirectory(value) {
+	const s = text(value, "assignment directory"), colon = s.indexOf(":");
+	if (colon < 0) return { directory: relative(s) };
+	const revision = s.slice(0, colon);
+	if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(revision))
+		fail("invalid_baseline", "A pinned directory needs a full local commit ID before ':'");
+	return { directory: relative(s.slice(colon + 1)), revision };
+}
+
 /** @param {string} root @param {string} p */
 export const contains = (root, p) => p === root || p.startsWith(`${root}/`);
 

@@ -33,7 +33,7 @@ const list = guard => v => Array.isArray(v) && v.every(guard);
 const named = guard => v => object(v) && Object.entries(v).every(([k, item]) => id(k) && guard(item));
 /** @param {Record<string,Guard>} fields @returns {Guard} */
 const shape = fields => v => object(v) && Object.entries(fields).every(([key, guard]) => guard(v[key]));
-const output = { id, directory: path, check: path, needs: list(id) };
+const output = { id, directory: path, revision: optional(commit), check: path, needs: list(id) };
 const grain = shape({ ...output, specification: path, boundary: list(path), task: optional(string), agent: optional(string) });
 const proposal = shape({ ...output, task: string });
 const charter = { id, charter: path, agent: optional(string) };
@@ -67,6 +67,7 @@ const decision = v => object(v) && (v.status === "presenting" && optional(id)(v.
 const node = shape({
 	grain, review: optional(id), state: one("idle", "waiting", "writing", "checking", "published", "qualified", "repeated", "blocked"), token: optional(id), worker: optional(string),
 	generation: optional(commit), inputs: optional(named(commit)), base: optional(commit), replaces: optional(commit), candidate: optional(commit), check: optional(id),
+	priorSource: optional(shape({ directory: path, revision: commit, tree: commit })),
 	repairs: count, reason: optional(string), artifactCursor: optional(count)
 });
 const assessment = { target: commit, commit, check: id };
@@ -82,6 +83,7 @@ const scout = shape({ ...dispatch, kind: one("scout"), tool: one("workflow"), sq
 const native = shape({
 	...dispatch, kind: one("writer", "component", "product", "goal", "repair", "decision", "handoff", "artifact"), grain: optional(id), inlineRepair: optional(id),
 	usedArtifacts: optional(list(commit)), comparedArtifacts: optional(list(commit)),
+	baseline: optional(shape({ directory: path, revision: commit, tree: commit })),
 	claims: optional(list(shape({ actor: string, path: string, start: string, kickoff: string, identity: string }))), claimedRequest: optional(string),
 	token: optional(id), tool: one("create_session", "bash", "send_session_message", "session.send"), state: one("ready", "issued", "uncertain", "ordinary", "done", "refused"),
 	nativeId: optional(string), boundAt: optional(positive), commit: optional(commit), check: optional(path),
@@ -125,6 +127,8 @@ function validDispatch(run, e) {
 			("areas" in squad || !report || !report.replace && report.grains.every(g => typeof g === "string"));
 	}
 	if (e.workflowId || Boolean(e.nativeId) !== Boolean(e.boundAt)) return false;
+	if (e.baseline && (e.kind !== "repair" || e.issuer !== run.owner || e.tool !== "send_session_message" ||
+		!run.effects.some(w => w.kind === "writer" && w.state === "done" && w.grain === e.grain && w.nativeId === e.args.session_id))) return false;
 	if (e.claims && (e.kind !== "writer" || !e.callId || !e.claims.length ||
 		new Set(e.claims.map(c => c.actor)).size !== e.claims.length)) return false;
 	if (e.claimedRequest && (e.state !== "done" || e.claims?.length !== 1 || e.claims[0].actor !== e.nativeId)) return false;
@@ -165,6 +169,7 @@ export function decode(value) {
 		[p.seed ?? [], ...p.squads.flatMap(s => "grains" in s ? [s.grains] : [])].some(ids => ids.some(id => !Object.hasOwn(nodes, id))) ||
 		Object.entries(nodes).some(([id, n]) => {
 			const g = n.grain, e = n.check ? effects.get(n.check) : undefined;
+			if (n.priorSource && (!n.base || n.priorSource.directory !== g.directory || n.priorSource.revision !== (g.revision ?? n.base))) return true;
 			if (id !== g.id || ![g.specification, g.check, ...g.boundary].every(f => files.has(f)) || !outside(g.directory, p.files)) return true;
 			if ((n.state === "checking" || checked(n)) && (e?.kind !== "component" || e.grain !== id || e.commit !== n.candidate || e.check !== g.check)) return true;
 			if (checked(n) && checkReceipt(e)?.exit !== 0) return true;

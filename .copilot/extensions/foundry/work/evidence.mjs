@@ -23,6 +23,12 @@ export function changedFrom(n, e) {
 	if (receipt && !receipt.failure) return receipt.commit;
 }
 
+/** @param {Run} run @param {import("./model.js").Node} n */
+export function baselineNotice(run, n) {
+	const e = run.effects.findLast(e => e.kind === "repair" && e.token === n.token && e.grain === n.grain.id);
+	return e?.kind === "repair" && e.baseline ? e : undefined;
+}
+
 /** @param {Run} run */
 export function goalReceipt(run) {
 	const at = run.goal;
