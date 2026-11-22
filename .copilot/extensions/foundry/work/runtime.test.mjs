@@ -231,7 +231,7 @@ test("repin keeps the writer and rejects changes outside the goal harness or wit
 	git(side, "commit", "-qam", "Change boundary");
 	await assert.rejects(owner.operation("repin", { ...args, revision: git(side, "rev-parse", "HEAD"), files: [goalCheck, ".foundry/api.md"] }, "owner"), /not the brief/);
 	assert.equal(prompts, 0);
-	await assert.rejects(owner.operation("repin", args, "owner"), /No approval/);
+	await assert.rejects(owner.operation("repin", args, "owner"), { code: "approval_declined" });
 	assert.equal((await f.status()).goal?.pin, f.tip);
 	approved = true;
 	await owner.operation("repin", args, "owner");

@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
+import path from "node:path";
 import test from "node:test";
 import { ledgerPath } from "../work/database.mjs";
 import { permissionCheck } from "../work/permissions.mjs";
-import { factory, loadEntry, put } from "./fixture.mjs";
+import { factory, git, loadEntry, put } from "./fixture.mjs";
 
 const source = ".foundry/trial.json", run = "trial", actor = "owner";
 function trial(/** @type {import("node:test").TestContext} */ t) {
@@ -55,6 +56,41 @@ test("concurrent permission reads share a timeout, not a decision for the next b
 	assert.equal(await check(), null);
 });
 
+test("extension entry: repin needs only the form's accept button", async t => {
+	const f = trial(t), file = ".foundry/goal.mjs", side = path.join(path.dirname(f.root), "repin");
+	await f.start();
+	for (const scout of [...f.scouts]) await scout.report(report([]));
+	const before = await f.status();
+	assert.ok(before.blocker);
+	git(f.root, "worktree", "add", "-q", "--detach", side, f.tip);
+	put(side, file, "process.exit(2)"); git(side, "commit", "-qam", "Fix evaluator");
+	const revision = git(side, "rev-parse", "HEAD"), args = { run, from: f.tip, revision, files: [file] };
+	let action = "decline";
+	const declaration = await loadEntry({ sessionId: actor, on() {},
+		ui: { elicitation: async (/** @type {import("@github/copilot-sdk").ElicitationParams} */ form) => {
+			assert.deepEqual(form.requestedSchema, { type: "object", properties: {} });
+			assert.ok([f.tip, revision, file].every(s => form.message.includes(s)));
+			return { action };
+		} }, rpc: { mode: { get: async () => "interactive" }, managedSettings: { get: async () => ({ failClosed: false }) },
+			permissions: { getMode: async () => ({ mode: "assisted" }) },
+			tools: { execute: async (/** @type {{name:string,arguments:import("../work/model.js").Effect["args"],toolCallId:string}} */ c) => f.execute(c.name, c.arguments, c.toolCallId) } } });
+	const ctx = { sessionId: actor }, hook = { ...ctx, timestamp: new Date(), workingDirectory: f.root };
+	await declaration.hooks?.onSessionStart?.({ ...hook, source: "startup" }, ctx);
+	t.after(() => declaration.hooks?.onSessionEnd?.({ ...hook, reason: "complete" }, ctx));
+	const handler = declaration.tools?.find(x => x.name === "foundry_repin")?.handler; assert.ok(handler);
+	for (action of ["decline", "cancel", "accept"]) {
+		const result = await handler(args, { ...ctx, toolName: "foundry_repin", toolCallId: action, arguments: args });
+		const after = await f.status();
+		if (action !== "accept") {
+			assert.ok(result && typeof result === "object" && "resultType" in result && result.resultType === "rejected");
+			assert.ok("textResultForLlm" in result && String(result.textResultForLlm).includes(before.blocker));
+			assert.equal(after.active, true);
+			assert.deepEqual(after.goalChecks, before.goalChecks);
+		}
+		assert.equal(after.goal?.pin, action === "accept" ? revision : f.tip);
+	}
+});
+
 test("extension entry: explicit start and resume need no Foundry dialog and still enforce host permissions", async t => {
 	const f = trial(t);
 	let failClosed = true, mode = "manual", policyReads = 0, modeReads = 0;
@@ -64,7 +100,7 @@ test("extension entry: explicit start and resume need no Foundry dialog and stil
 	/** @type {{getMode?:typeof getMode}} */ const permissions = { getMode };
 	const session = {
 		sessionId: actor, on() {}, log: (/** @type {string} */ message) => notices.push(message),
-		ui: { confirm: async () => assert.fail("unexpected second activation prompt") },
+		ui: { elicitation: async () => assert.fail("unexpected second activation prompt") },
 		workflow: { run: async (/** @type {string|{meta:{name:string}}} */ workflow, /** @type {{args:{run:string,dispatch:string}}} */ options) => {
 			calls.push("workflow.run");
 			batches.push({ name: typeof workflow === "string" ? workflow : workflow.meta.name, args: options.args });

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { setImmediate as nextTurn } from "node:timers/promises";
+import { openDatabase } from "../work/database.mjs";
 import { scoutDefinition } from "../work/scouts.mjs";
 import { factory, git, loadEntry, put } from "./fixture.mjs";
 
@@ -79,6 +80,68 @@ for (const changed of ["target", "paused", "limit"]) test(`owner rereview cannot
 	await assert.rejects(r.operation("rereview", args, "owner"), { code: changed === "target" ? "superseded" : changed });
 	assert.equal(reads, changed === "limit" ? 0 : 1);
 	assert.equal((await f.status()).reviews.length, 1);
+});
+
+const full = "This session already has 4 active workflow runs, which is the concurrent limit";
+
+test("a full native workflow slot queues the same scout until admission, without an operator turn", async t => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const f = trial(t, ["price", "browse"], { limits: { assignments: 2 } });
+	/** @type {string[]} */ const tickets = [];
+	let occupied = 4;
+	const issuer = f.runtime(f.root, { scout: async (id, ticket, actor) => {
+		tickets.push(ticket);
+		if (occupied === 4) throw Error(full);
+		const jobs = await f.owner.scoutBatch(id, ticket, actor, "admitted");
+		for (const job of jobs) await f.owner.scoutResult(id, ticket, actor, "admitted", job.id, noGap, job.packet);
+		return { runId: "admitted", status: "completed" };
+	} });
+	const before = await f.start(issuer);
+	assert.deepEqual(before.pending.map(e => e.state), ["ready", "ready"]);
+	assert.match(String(before.pending[0].reason), /capacity/i);
+	issuer.turn("owner"); await issuer.flush();
+	assert.equal(tickets.length, 1, "other wakes must not hammer a full session");
+	t.mock.timers.tick(60_000); await nextTurn(); await issuer.flush();
+	assert.equal(tickets.length, 2, "still full, only one attempt for the batch");
+	occupied--;
+	t.mock.timers.tick(60_000); await nextTurn(); await issuer.flush();
+	assert.equal(tickets.length, 3);
+	assert.deepEqual((await f.status()).reviews.map(e => [e.id, e.state]), before.reviews.map(e => [e.id, "observed"]));
+	await assert.rejects(f.owner.scoutBatch(run, tickets[0], "owner", "late"), { code: "foreign_assignment" });
+});
+
+test("a capacity wake does not dispatch through a pause", async t => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const f = trial(t);
+	let attempts = 0;
+	const issuer = f.runtime(f.root, { scout: async () => { attempts++; throw Error(full); } });
+	await f.start(issuer);
+	await issuer.operation("pause", { run }, "owner");
+	t.mock.timers.tick(60_000); await nextTurn(); await issuer.flush();
+	assert.equal(attempts, 1);
+	const s = await f.status();
+	assert.equal(s.pending[0].state, "ready");
+});
+
+test("reconnect recovers a persisted capacity rejection but never reissues a bound scout", async t => {
+	const f = trial(t, ["price", "browse"]);
+	const old = f.runtime(f.root, { scout: async () => { throw Error("lost reply"); } });
+	const before = await f.start(old); old.close();
+	const db = openDatabase(f.root);
+	try {
+		db.update(run, r => {
+			// Reproduce one reader-7 unbound rejection and a separate workflow already bound.
+			for (const e of r.effects) if (e.kind === "scout") {
+				if (e.squad === "price") e.error = `Discovery unconfirmed: Error: ${full}. Resume to retry unbound discovery.`;
+				else { e.callId = "other-dispatch"; e.workflowId = "existing"; }
+			}
+		});
+	} finally { db.close(); }
+	f.owner.turn("owner"); await f.owner.flush(); await f.settle();
+	assert.deepEqual(f.scouts.map(s => s.id), [before.reviews[0].id]);
+	await f.scouts[0].report(noGap);
+	assert.deepEqual((await f.status()).reviews.map(r => [r.state, r.workflowId]),
+		[["observed", f.scouts[0].workflowId], ["reading", "existing"]]);
 });
 
 test("an unbound workflow launch is not retried on turns; explicit resume invalidates its old dispatch", async t => {

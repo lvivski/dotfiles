@@ -1,3 +1,5 @@
+import { FoundryError } from "./values.mjs";
+
 /** @typedef {ReturnType<typeof import("./runtime.mjs").createRuntime>} Runtime */
 export const primaryOnly = "Foundry operations belong to the assigned native session, not its subagents";
 /** @param {{sessionId:string,agentId?:string,parentAgentId?:string,agentType?:string}} input @param {string} primary */
@@ -36,6 +38,8 @@ export function buildTools(runtime, primary) {
 				return JSON.stringify(await runtime.operation(op, args, invocation.sessionId));
 			}
 			catch (error) {
+				if (error instanceof FoundryError && error.code === "approval_declined")
+					return { resultType: "rejected", textResultForLlm: error.message };
 				return { resultType: "failure", textResultForLlm: error instanceof Error ? error.message : String(error) };
 			}
 		},

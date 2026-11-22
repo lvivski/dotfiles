@@ -60,6 +60,16 @@ function writable(run, actor, token) {
 const reservations = (run, actor) => run.effects.filter(e => e.issuer === actor && unissued(e) && canDispatch(run, e));
 /** @param {Run} run @param {string} ticket @param {string} actor */
 const batchOf = (run, ticket, actor) => reviews(run).filter(e => e.callId === ticket && e.issuer === actor);
+// workflow.run rejects before creating a run when the session is full. Match only
+// that admission error, including its persisted form from earlier readers.
+const capacityRejection = /^Discovery unconfirmed: Error: This session already has [1-9]\d* active workflow runs, which is the concurrent limit\. Resume to retry unbound discovery\.$/;
+const waitingForSlot = "Queued for workflow capacity; the issuing session will retry automatically.";
+/** @param {import("./model.js").Review} e */
+function requeueCapacity(e) {
+	if (e.state !== "uncertain" || !e.callId || e.workflowId || !capacityRejection.test(e.error ?? "")) return false;
+	e.state = "ready"; delete e.callId; e.error = waitingForSlot;
+	return true;
+}
 /** A halted attempt can also carry a declined limit change, accounting failure,
  * or other typed failure. Do not treat those as permission to resume.
  * @param {ScoutEnvelope} result */
@@ -76,6 +86,7 @@ export function createRuntime(directory, host) {
 	/** @type {Set<string>} */ const asking = new Set();
 	/** @type {Map<string,Call>} */ const nativeCalls = new Map();
 	/** @type {Map<string,Map<string,()=>Promise<void>>>} */ const scoutCalls = new Map();
+	/** @type {Map<string,NodeJS.Timeout>} */ const capacityWakes = new Map();
 	/** @type {Set<string>} */ const continuing = new Set();
 	/** @type {Map<string,{discover:boolean,recover:boolean,work:Promise<void>}>} */ const wakes = new Map();
 	/** @type {string|undefined} */ let existingPath;
@@ -210,6 +221,12 @@ export function createRuntime(directory, host) {
 			if (closed) return;
 			const reply = [...submitting].findLast(s => s.run === id && s.actor === actor);
 			const run = change(id, run => {
+				if (run.active && !expired(run)) for (const e of reviews(run)) {
+					if (e.issuer !== actor) continue;
+					requeueCapacity(e);
+					if (e.state === "ready" && e.error === waitingForSlot && !currentReview(cwd(), run, e))
+						blockReview(e, "Superseded while waiting for workflow capacity.");
+				}
 				// Don't reserve newly available work on behalf of an issuer already on hold.
 				if (!reservations(run, actor).some(e => e.permissionHold))
 					advance(cwd(), run, actor, discover, { submitToken: reply?.token });
@@ -223,7 +240,7 @@ export function createRuntime(directory, host) {
 			if (await dispatchBlocker(id, actor, batch) !== null) return;
 			const ready = batch.filter(e => e.state === "ready");
 			if (!ready.length) return refill(); // Prepared calls are visible again; this issuer can now plan.
-			const scouts = ready.filter(e => e.tool === "workflow");
+			const scouts = capacityWakes.has(id) ? [] : ready.filter(e => e.tool === "workflow");
 			// SDK agent labels aren't unique identities. Give each frozen-reader job
 			// its own dispatch so its native direct agent cannot belong to a peer job.
 			const readers = scouts.filter(e => referenceRepo(e.wake?.key) && run.policy.squads.some(s => s.id === e.squad && investigation(e, s)));
@@ -246,12 +263,23 @@ export function createRuntime(directory, host) {
 	}
 	/** @param {string} id @param {string} actor @param {string} ticket @param {string} message */
 	function unconfirmedScouts(id, actor, ticket, message) {
-		db().update(id, r => {
+		const queued = db().update(id, r => {
+			let deferred = false;
 			for (const e of batchOf(r, ticket, actor).filter(awaitingReply)) {
 				e.state = "uncertain";
 				e.error = `Discovery unconfirmed: ${message}. ${e.workflowId ? "Recheck the original workflow; no replacement started." : "Resume to retry unbound discovery."}`;
+				if (requeueCapacity(e)) deferred = true;
 			}
+			return deferred && r.active && !expired(r);
 		});
+		if (queued && !capacityWakes.has(id)) {
+			// Slots may belong to unrelated workflows. No local completion or user
+			// turn is guaranteed; coalesce retries through the normal dispatch path.
+			capacityWakes.set(id, setTimeout(() => {
+				capacityWakes.delete(id);
+				if (!closed) track(drive(id, actor, true, false));
+			}, 15_000).unref());
+		}
 	}
 	/** @param {Run} run @param {import("./model.js").Review} e @param {ScoutEnvelope} result */
 	function settleScout(run, e, result) {
@@ -285,7 +313,7 @@ export function createRuntime(directory, host) {
 				return pending.length > 0 || batch.some(e => reports.has(e.id));
 			});
 			if (reconcile) track(drive(id, actor, true, false));
-		}).catch(error => { if (!closed && scoutCalls.get(ticket) === reports) unconfirmedScouts(id, actor, ticket, String(error)); })
+		}, error => { if (!closed && scoutCalls.get(ticket) === reports) unconfirmedScouts(id, actor, ticket, String(error)); })
 			.catch(error => host.log?.(`Foundry discovery: ${String(error)}`)).finally(() => {
 				if (scoutCalls.get(ticket) === reports) scoutCalls.delete(ticket);
 			});
@@ -554,8 +582,13 @@ export function createRuntime(directory, host) {
 		}
 		else if (op === "repin") {
 			const request = prepareRepin(cwd(), read(id), actor, a);
-			if (await host.confirm?.(request.prompt) !== true)
-				fail("approval_required", "No approval for this evaluator change; the pin is unchanged");
+			const approved = await host.confirm?.(request.prompt);
+			if (approved === false) {
+				const blocker = status(read(id), actor).blocker;
+				fail("approval_declined", "Evaluator change not approved. No change or recheck was made. Do not ask again unless the operator requests it." +
+					(blocker ? `\nCurrent run blocker: ${blocker}` : ""));
+			}
+			if (approved !== true) fail("approval_required", "The approval form is unavailable; the evaluator was not changed.");
 			if (!await executable()) fail("unsupported_mode", "The owner session is no longer executable");
 			change(id, request.apply);
 		}
@@ -701,6 +734,10 @@ export function createRuntime(directory, host) {
 			while (background.size)
 				await Promise.all([...background]);
 		},
-		close() { closed = true; database?.close(); database = undefined; },
+		close() {
+			closed = true;
+			for (const timer of capacityWakes.values()) clearTimeout(timer);
+			capacityWakes.clear(); database?.close(); database = undefined;
+		},
 	};
 }

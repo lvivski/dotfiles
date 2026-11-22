@@ -51,7 +51,8 @@ const runtime = createRuntime(process.cwd(), {
 	},
 	permissionBlocker: permissionCheck(() => session.rpc.managedSettings.get(), () => session.rpc.permissions.getMode()),
 	ask: message => session.ui.input(message),
-	confirm: message => session.ui.confirm(message),
+	// ui.confirm adds a required checkbox; the form's accept action is the decision.
+	confirm: async message => (await session.ui.elicitation({ message, requestedSchema: { type: "object", properties: {} } })).action === "accept",
 	execute: (name, args, toolCallId) => session.rpc.tools.execute({ name, arguments: args, toolCallId }),
 	scout: (run, dispatch) => session.workflow.run("foundry-scout", { args: { run, dispatch }, notifyOnComplete: false }),
 	scoutState: id => session.workflow.waitForRun(id),
