@@ -53,7 +53,8 @@ export interface Policy {
 }
 
 export interface Observation {
-	outcome: "regenerate" | "no-gap" | "needs-decision" | "waiting" | "needs-evidence" | "needs-research" | "researched";
+	outcome: "regenerate" | "no-gap" | "unresolved" | "needs-decision" | "waiting" | "needs-evidence" | "needs-research" | "researched";
+	ownerInput?: "product-choice" | "external-action";
 	reason: string;
 	evidence: string[];
 	grains: (string | Proposal)[];

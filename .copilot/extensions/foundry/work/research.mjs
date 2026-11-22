@@ -31,7 +31,7 @@ function findings(v) {
  * attributed observations, not charter file citations or evaluator receipts.
  * @param {unknown} raw @param {string} charter @returns {import("./model.js").Observation} */
 export function researchResult(raw, charter) {
-	if (raw === null) return { outcome: "needs-decision", reason: "The research agent returned no evidence. The question remains unresolved.",
+	if (raw === null) return { outcome: "unresolved", reason: "The research agent returned no evidence. The question remains unresolved.",
 		evidence: [charter], grains: [], findings: [] };
 	const result = record(raw);
 	fields(result, ["status", "reason", "findings"]);
@@ -40,6 +40,6 @@ export function researchResult(raw, charter) {
 		fail("invalid_research", `Research report exceeds its text budget. ${researchBudget}`);
 	if (result.status !== "unknown" && !(result.status === "answered" && cited.length))
 		fail("invalid_research", "An answered investigation requires cited findings; otherwise report unknown");
-	return { outcome: result.status === "answered" ? "researched" : "needs-decision",
+	return { outcome: result.status === "answered" ? "researched" : "unresolved",
 		reason, evidence: [charter], grains: [], findings: cited };
 }

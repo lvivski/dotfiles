@@ -1141,7 +1141,7 @@ for (const repeat of [false, true])
 		const f = fixture(t, goal, goalFiles);
 		await f.start(); await f.submit(await firstGoalWriter(f));
 		await f.reportGrains("left", repeat ? ["left"] : []);
-		await (await f.reading("right")).report({ outcome: "needs-decision",
+		await (await f.reading("right")).report({ outcome: "needs-decision", ownerInput: "product-choice",
 			reason: "Which right-hand value is authorized?", evidence: [goalCheck, ".foundry/right.md"], grains: [] });
 		if (repeat) {
 			const writer = f.workers.get("worker-2"); assert.ok(writer);
@@ -1657,7 +1657,7 @@ test("a scout can raise a contract question without staffing work; only a fresh 
 	const f = fixture(t, p => { delete p.seed; p.grains[1].needs = ["left"]; }, { ".foundry/product.mjs": 'import "../lib/left/index.mjs";' });
 	await f.start();
 	const right = await f.reading("right");
-	const question = { outcome: "needs-decision", reason: "Which behavior should right use from left?",
+	const question = { outcome: "needs-decision", ownerInput: "product-choice", reason: "Which behavior should right use from left?",
 		evidence: [".foundry/right.md", ".foundry/left.md", "lib/left/old.mjs"], grains: [] };
 	for (const [dispatch, issuer, workflowId, id] of [
 		["not this dispatch", right.issuer, right.workflowId, right.id], [right.dispatch, "peer", right.workflowId, right.id],

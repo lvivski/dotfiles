@@ -46,7 +46,8 @@ const policy = shape({
 /** @type {Guard} */
 const observation = v => object(v) && string(v.reason) && Array.isArray(v.evidence) && v.evidence.length > 0 && v.evidence.every(path) &&
 	Array.isArray(v.grains) && v.grains.every(g => id(g) || proposal(g)) && validOutcome(v.outcome, v.grains.length) &&
-	(v.findings === undefined ? v.outcome !== "researched" : (v.outcome === "researched" || v.outcome === "needs-decision") &&
+	(v.ownerInput === undefined || v.outcome === "needs-decision" && one("product-choice", "external-action")(v.ownerInput)) &&
+	(v.findings === undefined ? v.outcome !== "researched" : (v.outcome === "researched" || v.outcome === "needs-decision" || v.outcome === "unresolved") &&
 		list(shape({ kind: string, source: string, finding: string }))(v.findings) && (v.outcome !== "researched" || Array.isArray(v.findings) && v.findings.length > 0)) &&
 	(v.outcome === "waiting" ? id(v.waitFor) : v.waitFor === undefined) &&
 	(v.outcome === "needs-evidence" ? path(v.file) : v.file === undefined) &&

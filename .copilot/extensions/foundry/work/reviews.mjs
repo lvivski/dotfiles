@@ -19,6 +19,10 @@ export function reserveReview(run, issuer, squad, base, version, wake) {
 /** @param {Run} run @param {Review} r */
 export const wakeSource = (run, r) => r.wake && reviews(run).find(p => p.id === r.wake?.review && p.squad === r.squad && p.base === r.base);
 
+/** @param {Run} run @param {Review} r @param {import("./model.js").Squad} squad */
+export const canInvestigate = (run, r, squad) => "areas" in squad && !!squad.researchAgent && !reviews(run).some(e =>
+	e.squad === r.squad && e.base === r.base && e.version === r.version && e.wake?.key === "research");
+
 /** Reconstruct the diagnostic for already-recorded "unknown output" failures only
  * when the rejected plan actually displaces that checked input.
  * @param {Run} run @param {Review} review */
@@ -94,6 +98,6 @@ export function reviewStatus(r) {
 export function questions(run) {
 	if (run.goal && qualifiedProduct(run)) return [];
 	const latest = new Map(reviews(run).map(r => [r.squad, r]));
-	return [...latest.values()].filter(r => r.state === "observed" && r.observation?.outcome === "needs-decision" &&
+	return [...latest.values()].filter(r => r.state === "observed" && r.observation?.outcome === "needs-decision" && (r.observation.ownerInput || r.decision) &&
 		(!run.goal || run.goal.commit === r.base && (!run.products.length || run.products.at(-1)?.commit === r.base)));
 }

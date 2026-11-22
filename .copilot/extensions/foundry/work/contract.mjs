@@ -4,7 +4,7 @@ import { fail, fields, integer, name, names, record, relative, text } from "./va
 /** @param {unknown} outcome @param {number} grains @returns {outcome is import("./model.js").Observation["outcome"]} */
 export const validOutcome = (outcome, grains) => grains > 0 ? outcome === "regenerate" :
 	outcome === "no-gap" || outcome === "needs-decision" || outcome === "waiting" || outcome === "needs-evidence" ||
-	outcome === "needs-research" || outcome === "researched";
+	outcome === "needs-research" || outcome === "researched" || outcome === "unresolved";
 
 /** @param {unknown} value @param {string} label */
 function list(value, label) {

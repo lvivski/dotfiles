@@ -90,7 +90,11 @@ for (const scenario of ["correct", "replay", "denied"]) test(`pre-writer researc
 	assert.equal(probes, scenario === "denied" ? 0 : 1); assert.equal(finalScouts, probes);
 	assert.deepEqual(s.nodes.map(n => [n.grain, n.state]), scenario === "replay" ? [["fix-launch", "writing"]] : []);
 	assert.equal(f.workers.size, scenario === "replay" ? 1 : 0);
-	if (scenario === "denied") assert.match(String(s.questions?.[0]?.question), /access denied/);
+	if (scenario === "denied") {
+		assert.deepEqual(s.questions, []);
+		assert.equal(s.reviews.at(-1)?.observation?.outcome, "unresolved");
+		assert.match(String(s.reviews.at(-1)?.observation?.reason), /access denied/);
+	}
 	else assert.equal(s.reviews.at(-1)?.observation?.outcome, scenario === "correct" ? "no-gap" : "regenerate");
 });
 

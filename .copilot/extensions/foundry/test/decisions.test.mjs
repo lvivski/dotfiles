@@ -3,7 +3,8 @@ import test from "node:test";
 import { factory, git, put } from "./fixture.mjs";
 
 const run = "lookup", source = ".foundry/lookup.json";
-const question = { outcome: "needs-decision", reason: "Which currency does the catalog display?", evidence: ["interface"], grains: [] };
+const noGap = { outcome: "no-gap", reason: "No owned change needed.", evidence: ["interface"], grains: [] };
+const question = { ...noGap, outcome: "needs-decision", ownerInput: "product-choice", reason: "Which currency does the catalog display?" };
 const regenerate = { outcome: "regenerate", reason: "No lookup yet.", evidence: ["interface"], grains: ["lookup"] };
 function latch() {
 	let resolve = () => {};
@@ -88,7 +89,7 @@ for (const hold of ["none", "pause", "plan"]) test(`an in-scope answer reaches t
 	const f = trial(t), opened = latch(), release = latch();
 	let mode = "interactive", asks = 0;
 	const owner = f.runtime(f.root, { mode: async () => mode, ask: async () => { asks++; opened.resolve(); await release.promise; return "Use EUR"; } });
-	await f.start(owner); await f.scouts[0].report({ ...question, outcome: "no-gap" }); await f.scouts[1].report(question);
+	await f.start(owner); await f.scouts[0].report(noGap); await f.scouts[1].report(question);
 	await opened.promise; assert.match(String((await f.status()).blocker), /No actionable grain/);
 	if (hold === "pause") await owner.operation("pause", { run }, "owner");
 	if (hold === "plan") mode = "plan";
@@ -107,6 +108,46 @@ for (const hold of ["none", "pause", "plan"]) test(`an in-scope answer reaches t
 	assert.ok((await f.status()).qualified); assert.equal(f.scouts.length, 3); assert.equal(asks, 1);
 });
 
+test("a warning-heavy combined check delivers the retained terminal failure to the scout", async t => {
+	const f = trial(t, `console.error("compiler warning\\n".repeat(600)); console.error(["Window", "Inbox missing"].join(": ")); process.exit(1)`);
+	await f.start();
+	const result = (await f.status()).goal?.receipt;
+	assert.ok(result?.output.endsWith("Window: Inbox missing\n"));
+	assert.ok(f.scouts[0].prompt.includes("Window: Inbox missing"), "the inspector needs the actual failed step");
+});
+
+for (const research of [false, true]) test(`a diagnostic question after a focused read never opens an owner dialog: research ${research}`, async t => {
+	const f = factory(t, run, source, {
+		[source]: JSON.stringify({ version: 2, id: run, direction: "Open the Inbox.", target: "refs/heads/main",
+			squads: ["account", "window"].map(id => ({ id, areas: [id], charter: "charter", checks: ["unit.mjs"], boundary: ["interface"],
+				...(id === "account" && research ? { researchAgent: "foundry-research" } : {}) })), goalCheck: "goal.mjs", productCheck: "product.mjs" }),
+		charter: "Use the shared account.", interface: "a".repeat(9000), "unit.mjs": "", "product.mjs": "",
+		"goal.mjs": `console.error("warning\\n".repeat(700)); console.error(["Window", "Inbox missing"].join(": ")); process.exit(1)`,
+	});
+	let asks = 0;
+	const owner = f.runtime(f.root, { ask: async () => { asks++; return null; } });
+	await f.start(owner); const [account, window] = f.scouts;
+	await account.report({ outcome: "needs-evidence", file: "interface", reason: "Check the account API.", evidence: ["charter"], grains: [] });
+	const focus = f.scouts.at(-1); assert.ok(focus && focus.id !== window.id);
+	const reason = "Did the Rust account step fail? The combined exit does not say.";
+	await focus.report({ outcome: "needs-decision", reason, evidence: ["interface"], grains: [] });
+	await owner.flush();
+	assert.equal(asks, 0, "an operator is not a test runner");
+	if (research) {
+		const job = f.scouts.at(-1); assert.ok(job && job.id !== focus.id);
+		assert.ok(job.prompt.includes(reason) && job.prompt.includes("Window: Inbox missing"));
+		await job.report({ status: "unknown", reason: "No independent Rust verdict.", findings: [] });
+	}
+	await window.report({ outcome: "regenerate", reason: "Repair ordinary launch.", evidence: ["charter"],
+		grains: [{ id: "window", directory: "window", check: "unit.mjs", task: "Display the Inbox.", needs: [] }] });
+	owner.turn("owner"); await owner.flush(); await f.settle();
+	const s = await f.status();
+	assert.equal(asks, 0); assert.deepEqual(s.questions, []);
+	assert.equal(s.reviews.filter(r => r.squad === "account").at(-1)?.observation?.outcome, "unresolved");
+	assert.equal(f.workers.size, 1); assert.equal(s.nodes[0].grain, "window");
+	assert.equal(f.scouts.length, research ? 4 : 3); assert.equal(s.qualified, null);
+});
+
 test("an already-satisfied baseline sends the checked SHA without inventing a writer or an archive target", async t => {
 	const f = trial(t, "");
 	/** @type {string[]} */ const notes = [];
@@ -123,7 +164,7 @@ test("a scout dispatched by a finished writer wakes the owner without consulting
 	/** @type {string[]} */ const notices = [];
 	const owner = f.runtime(f.root, { ask: async prompt => { questionsAsked.push(prompt); return "Use EUR"; } });
 	await f.start(owner);
-	await f.scouts[0].report({ ...question, outcome: "no-gap" });
+	await f.scouts[0].report(noGap);
 	await f.scouts[1].report(regenerate);
 	const [w] = f.workers.values();
 	put(w.cwd, "lib/lookup/index", "price");
@@ -144,7 +185,7 @@ test("a scout dispatched by a finished writer wakes the owner without consulting
 
 test("an unavailable native handoff route prepares only the notice; refusal cannot revoke or replay qualification", async t => {
 	const f = trial(t);
-	await f.start(); await f.scouts[0].report({ ...question, outcome: "no-gap" }); await f.scouts[1].report(regenerate);
+	await f.start(); await f.scouts[0].report(noGap); await f.scouts[1].report(regenerate);
 	const [w] = f.workers.values();
 	put(w.cwd, "lib/lookup/index", "price");
 	const writer = f.runtime(w.cwd, { execute: async (tool, args, id) => tool === "send_session_message"

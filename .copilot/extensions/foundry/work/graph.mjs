@@ -5,7 +5,7 @@ import { assess, goalAllowsWork, qualify, rejectRepeat, stall } from "./goal.mjs
 import { admitted, assignmentCount, expired, reserveNotice, reserveProduct, reserveWorker } from "./native.mjs";
 import { actionable, dependencies, liveNeeds, owns, productOutputs, proposal, requireNewWork, revise, settledOutput, superseded, waiting, working, writerInputs } from "./plan.mjs";
 import { changedFiles, combine, commitAt, outside, regularFiles, rejoin, retain, verifyContracts, versionOf, withoutGrain } from "./product.mjs";
-import { availableHistory, blockReview, discoverySquads, nextReview, reading, reserveReview, reviews, wakeSource } from "./reviews.mjs";
+import { availableHistory, blockReview, canInvestigate, discoverySquads, nextReview, reading, reserveReview, reviews, wakeSource } from "./reviews.mjs";
 import { FoundryError, contains, digest, fail, fields, name, names, record, relative, text } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
@@ -59,7 +59,7 @@ function reviewVersion(cwd, run, squad, commit) {
 /** @param {import("./model.js").Squad} squad @param {unknown} raw @returns {import("./model.js").Observation} */
 export function parseObservation(squad, raw) {
 	const input = record(raw);
-	fields(input, ["outcome", "reason", "evidence", "grains", "replace", "waitFor", "file"]);
+	fields(input, ["outcome", "reason", "evidence", "grains", "replace", "waitFor", "file", "ownerInput"]);
 	if (!Array.isArray(input.grains)) fail("invalid_field", "Expected a list of grains");
 	const grains = input.grains.map(v => "areas" in squad && typeof v !== "string" ? proposal(v) : name(v, "grain"));
 	names(grains.map(g => typeof g === "string" ? g : g.id), "grain");
@@ -68,6 +68,9 @@ export function parseObservation(squad, raw) {
 		fail("invalid_research", "Only an opted-in charter can request an investigation; only its researcher may answer");
 	if (!validOutcome(outcome, grains.length))
 		fail("invalid_outcome", "Expected regenerate with owned grains, or a non-writing outcome with an empty list");
+	const ownerInput = input.ownerInput;
+	if (ownerInput !== undefined && (outcome !== "needs-decision" || ownerInput !== "product-choice" && ownerInput !== "external-action"))
+		fail("invalid_outcome", "Only a decision requiring a product choice or external action may ask the owner");
 	if (outcome === "waiting" ? !("areas" in squad) || input.waitFor === undefined : input.waitFor !== undefined)
 		fail("invalid_outcome", "Only a waiting area charter names a producer in waitFor");
 	if ((outcome === "needs-evidence") !== (input.file !== undefined)) fail("invalid_outcome", "Only needs-evidence names a file");
@@ -76,7 +79,7 @@ export function parseObservation(squad, raw) {
 	if (!Array.isArray(input.evidence) || !input.evidence.length)
 		fail("no_evidence", "Identify committed evidence for the observation");
 	const evidence = input.evidence.map(relative);
-	return { outcome, reason: text(input.reason, "observation"), evidence, grains, ...(replace.length ? { replace } : {}),
+	return { outcome, ...(ownerInput ? { ownerInput } : {}), reason: text(input.reason, "observation"), evidence, grains, ...(replace.length ? { replace } : {}),
 		...(outcome === "waiting" ? { waitFor: name(input.waitFor, "producer charter") } : {}),
 		...(outcome === "needs-evidence" ? { file: relative(input.file) } : {}) };
 }
@@ -95,9 +98,11 @@ export function currentReview(cwd, run, review) {
 export function observe(cwd, run, review, observation) {
 	admitted(run);
 	const squad = run.policy.squads.find(s => s.id === review.squad) ?? fail("invalid_charter", "Missing charter");
+	// An unspecialized question (including a report from an older workflow) is not an operator decision.
+	if (observation.outcome === "unresolved" || observation.outcome === "needs-decision" && !observation.ownerInput)
+		observation = { ...observation, outcome: canInvestigate(run, review, squad) ? "needs-research" : "unresolved" };
 	const { outcome, grains, evidence } = observation, ids = grains.map(g => typeof g === "string" ? g : g.id);
-	if (outcome === "needs-research" && reviews(run).some(r => r.squad === squad.id && r.base === review.base &&
-		r.version === review.version && r.wake?.key === "research"))
+	if (outcome === "needs-research" && !canInvestigate(run, review, squad))
 		fail("unresolved_research", "Investigation already requested on this revision; identify the remaining blocker");
 	// A sibling can finish while this scout reads. On the same assessed commit, revalidate the
 	// proposal against the live graph; never let an older charter review edit a newer plan.

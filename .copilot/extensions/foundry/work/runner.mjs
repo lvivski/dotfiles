@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { openDatabase } from "./database.mjs";
+import { receiptOutputLimit } from "./evidence.mjs";
 import { awaitingReply, current } from "./native.mjs";
 import { withProduct } from "./product.mjs";
 import { fail, text } from "./values.mjs";
@@ -37,7 +38,7 @@ try {
 				timeout: remaining, maxBuffer: 4 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"]
 			});
 			receipt.exit = result.error || result.signal ? null : result.status;
-			receipt.output = [result.stdout, result.stderr, result.error?.message, result.signal].filter(Boolean).join("\n").slice(-8192);
+			receipt.output = [result.stdout, result.stderr, result.error?.message, result.signal].filter(Boolean).join("\n").slice(-receiptOutputLimit);
 			const repairs = [...String(result.stdout ?? "").matchAll(/^FOUNDRY_REPAIR=([A-Za-z0-9._-]+)$/gm)];
 			if (repairs.length === 1 && command.outputs.includes(repairs[0][1]) && receipt.exit !== null && receipt.exit !== 0)
 				receipt.repair = repairs[0][1];

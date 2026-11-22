@@ -1,4 +1,5 @@
 /** @typedef {import("./model.js").Run} Run */
+export const receiptOutputLimit = 8192;
 
 /** Native shell completion is not evidence. Only the runner can attest to its pinned input.
  * @param {import("./model.js").Effect|undefined} e */

@@ -14,6 +14,7 @@ export function mapSnapshot(s) {
 		scoutIssues: s.goal && s.qualified ? [] : [...latest.values()].flatMap(r => {
 			if (r.state === "blocked" && r.reason) return [`${r.squad}: ${r.reason}`];
 			const o = r.state === "observed" ? r.observation : undefined;
+			if (o?.outcome === "unresolved") return [`${r.squad}: ${o.reason}`];
 			return o?.outcome === "waiting" ? [`${r.squad} waits for ${o.waitFor}: ${o.reason}`] : [];
 		}),
 		questions: (s.questions ?? []).map(q => {
