@@ -37,7 +37,7 @@ const grain = shape({ ...output, specification: path, boundary: list(path), task
 const proposal = shape({ ...output, task: string });
 const charter = { id, charter: path, agent: optional(string) };
 const fixed = shape({ ...charter, grains: list(id) });
-const area = shape({ ...charter, areas: list(path), boundary: list(path), checks: list(path) });
+const area = shape({ ...charter, areas: list(path), boundary: list(path), checks: list(path), researchAgent: optional(id) });
 const policy = shape({
 	id, direction: string, target: string, source: path, base: commit, productCheck: path, goalCheck: optional(path), files: list(path),
 	squads: list(s => object(s) && ("areas" in s ? !("grains" in s) && area(s) : fixed(s))),
@@ -46,6 +46,8 @@ const policy = shape({
 /** @type {Guard} */
 const observation = v => object(v) && string(v.reason) && Array.isArray(v.evidence) && v.evidence.length > 0 && v.evidence.every(path) &&
 	Array.isArray(v.grains) && v.grains.every(g => id(g) || proposal(g)) && validOutcome(v.outcome, v.grains.length) &&
+	(v.findings === undefined ? v.outcome !== "researched" : (v.outcome === "researched" || v.outcome === "needs-decision") &&
+		list(shape({ kind: string, source: string, finding: string }))(v.findings) && (v.outcome !== "researched" || Array.isArray(v.findings) && v.findings.length > 0)) &&
 	(v.outcome === "waiting" ? id(v.waitFor) : v.waitFor === undefined) &&
 	(v.outcome === "needs-evidence" ? path(v.file) : v.file === undefined) &&
 	(v.replace === undefined || v.outcome === "regenerate" && list(id)(v.replace));
@@ -91,6 +93,8 @@ function validDispatch(run, e) {
 	if (e.tool === "workflow") {
 		const squad = run.policy.squads.find(s => s.id === e.squad), report = e.observation;
 		return !!squad && !e.nativeId && !e.token && !e.receipt && !e.boundAt && (!e.workflowId || !!e.callId) &&
+			(e.wake?.key !== "research" && report?.outcome !== "needs-research" || "areas" in squad && !!squad.researchAgent) &&
+			(!report || (e.wake?.key === "research") === (report.findings !== undefined)) &&
 			(!e.packet || e.packet.review === e.id && e.packet.base === e.base) &&
 			(e.state !== "reported" && e.state !== "observed" || !!report && !!e.workflowId && !!e.packet) &&
 			(!e.decision || e.state === "observed" && report?.outcome === "needs-decision") &&

@@ -64,6 +64,8 @@ export function parseObservation(squad, raw) {
 	const grains = input.grains.map(v => "areas" in squad && typeof v !== "string" ? proposal(v) : name(v, "grain"));
 	names(grains.map(g => typeof g === "string" ? g : g.id), "grain");
 	const outcome = input.outcome;
+	if (outcome === "researched" || outcome === "needs-research" && !("areas" in squad && squad.researchAgent))
+		fail("invalid_research", "Only an opted-in charter can request an investigation; only its researcher may answer");
 	if (!validOutcome(outcome, grains.length))
 		fail("invalid_outcome", "Expected regenerate with owned grains, or a non-writing outcome with an empty list");
 	if (outcome === "waiting" ? !("areas" in squad) || input.waitFor === undefined : input.waitFor !== undefined)
@@ -94,6 +96,9 @@ export function observe(cwd, run, review, observation) {
 	admitted(run);
 	const squad = run.policy.squads.find(s => s.id === review.squad) ?? fail("invalid_charter", "Missing charter");
 	const { outcome, grains, evidence } = observation, ids = grains.map(g => typeof g === "string" ? g : g.id);
+	if (outcome === "needs-research" && reviews(run).some(r => r.squad === squad.id && r.base === review.base &&
+		r.version === review.version && r.wake?.key === "research"))
+		fail("unresolved_research", "Investigation already requested on this revision; identify the remaining blocker");
 	// A sibling can finish while this scout reads. On the same assessed commit, revalidate the
 	// proposal against the live graph; never let an older charter review edit a newer plan.
 	if (!currentReview(cwd, run, review)) {

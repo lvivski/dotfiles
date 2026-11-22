@@ -9,6 +9,7 @@ import { admitted, assignment, awaitingReply, canDispatch, current, expired, ide
 import { checked } from "./plan.mjs";
 import { capture, commitAt, retain, rootAt, verifyContracts } from "./product.mjs";
 import { refusedCall } from "./recovery.mjs";
+import { researchResult } from "./research.mjs";
 import { blockReview, questions, reviews } from "./reviews.mjs";
 import { scoutPacket } from "./scouts.mjs";
 import { isPacket } from "./snapshot.mjs";
@@ -37,8 +38,9 @@ function activationPrompt(policy, retry) {
 		`Start ${mode} Foundry run ${policy.id} at ${policy.base.slice(0, 12)} on ${policy.target} with ${staffing} and ${policy.repairs} repairs per grain?`,
 		...(policy.assignments === undefined ? [] : [`Total assignment limit for the entire run: ${policy.assignments} (scouts, writers and bounded repairs; not helpers, checks or original-call retries). Resuming does not reset it.`]),
 		policy.direction,
-		...(!policy.seed ? ["Discovery uses tool-less workflow agents on committed evidence. Only writers get worktrees. Resuming may retry interrupted discovery."] : []),
+		...(!policy.seed ? ["Scouts review committed evidence without tools. Only writers get worktrees. Resuming may retry interrupted discovery."] : []),
 		...policy.squads.flatMap(s => "areas" in s ? [`${s.id} may assign work in ${s.areas.join(", ")} using ${s.checks.join(", ")}.`] : []),
+		...policy.squads.flatMap(s => "areas" in s && s.researchAgent ? [`${s.id} may request pre-writer investigation using the installed ${s.researchAgent} profile and its host-permitted tools.`] : []),
 		...(retry ? [`Recheck the missing external evidence for ${retry} (rejoin first if the target has moved).`] : []),
 	].join("\n");
 }
@@ -289,10 +291,11 @@ export function createRuntime(directory, host) {
 			delete q.error;
 			const squad = r.policy.squads.find(s => s.id === q.squad) ?? fail("invalid_charter", "No matching charter");
 			try {
-				if (raw === null) fail("missing_report", "No structured scout report was returned");
+				if (raw === null && q.wake?.key !== "research") fail("missing_report", "No structured scout report was returned");
 				if (!isPacket(packet) || packet.review !== q.id || packet.base !== q.base)
 					fail("missing_packet", "Missing or mismatched journaled scout packet");
-				q.observation = parseObservation(squad, raw); q.packet = packet; q.state = "reported";
+				q.observation = q.wake?.key === "research" ? researchResult(raw, squad.charter) : parseObservation(squad, raw);
+				q.packet = packet; q.state = "reported";
 			} catch (error) {
 				if (!(error instanceof FoundryError)) throw error;
 				blockReview(q, `Invalid scout result: ${error.message}`);

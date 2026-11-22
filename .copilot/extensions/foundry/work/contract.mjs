@@ -3,7 +3,8 @@ import { fail, fields, integer, name, names, record, relative, text } from "./va
 
 /** @param {unknown} outcome @param {number} grains @returns {outcome is import("./model.js").Observation["outcome"]} */
 export const validOutcome = (outcome, grains) => grains > 0 ? outcome === "regenerate" :
-	outcome === "no-gap" || outcome === "needs-decision" || outcome === "waiting" || outcome === "needs-evidence";
+	outcome === "no-gap" || outcome === "needs-decision" || outcome === "waiting" || outcome === "needs-evidence" ||
+	outcome === "needs-research" || outcome === "researched";
 
 /** @param {unknown} value @param {string} label */
 function list(value, label) {
@@ -77,9 +78,10 @@ function chartered(row) {
 	if (!row.goalCheck) fail("invalid_goal", "Area charters require a final goal check");
 	const squads = list(row.squads, "area charters").map(v => {
 		const s = record(v);
-		fields(s, ["id", "charter", "agent", "areas", "boundary", "checks"]);
+		fields(s, ["id", "charter", "agent", "areas", "boundary", "checks", "researchAgent"]);
 		return { id: name(s.id, "squad"), charter: relative(s.charter), areas: list(s.areas, "writable areas").map(relative),
 			boundary: list(s.boundary, "boundary files").map(relative), checks: list(s.checks, "component checks").map(relative),
+			...(s.researchAgent === undefined ? {} : { researchAgent: name(s.researchAgent, "research agent profile") }),
 			...(s.agent === undefined ? {} : { agent: text(s.agent, "native agent") }) };
 	});
 	disjoint(squads.flatMap(s => s.areas));

@@ -3,6 +3,7 @@ import { foundryBoard } from "./canvas.mjs";
 import { identify } from "./work/native.mjs";
 import { permissionCheck } from "./work/permissions.mjs";
 import { recover } from "./work/recovery.mjs";
+import { researchAgent } from "./work/research.mjs";
 import { createRuntime } from "./work/runtime.mjs";
 import { scoutAgent, scoutDefinition } from "./work/scouts.mjs";
 import { buildTools, fromHelper, primaryOnly } from "./work/tools.mjs";
@@ -23,7 +24,7 @@ const runtime = createRuntime(process.cwd(), {
 	log: message => session.log(message, { level: "warning" }),
 });
 session = await joinSession({
-	customAgents: [scoutAgent],
+	customAgents: [scoutAgent, researchAgent],
 	workflows: [defineWorkflow(scoutDefinition(() => runtime))],
 	tools: buildTools(runtime, () => session.sessionId),
 	canvases: [foundryBoard((run, actor) => runtime.operation("status", { run }, actor))],

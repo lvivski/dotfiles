@@ -27,6 +27,7 @@ interface Charter {
 }
 
 export interface Area extends Charter {
+	researchAgent?: string;
 	areas: string[];
 	boundary: string[];
 	checks: string[];
@@ -52,14 +53,17 @@ export interface Policy {
 }
 
 export interface Observation {
-	outcome: "regenerate" | "no-gap" | "needs-decision" | "waiting" | "needs-evidence";
+	outcome: "regenerate" | "no-gap" | "needs-decision" | "waiting" | "needs-evidence" | "needs-research" | "researched";
 	reason: string;
 	evidence: string[];
 	grains: (string | Proposal)[];
 	replace?: string[];
 	waitFor?: string;
 	file?: string;
+	findings?: Finding[];
 }
+
+export interface Finding { kind: string; source: string; finding: string }
 
 export type Packet = { review: string; base: string; files: Record<string, string>; outputs: Record<string, string>; partial: boolean };
 

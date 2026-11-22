@@ -57,6 +57,10 @@ Ready writers start without a new activation or user turn. As soon as the admitt
 
 The run starts without assignments. Foundry dispatches ready charters to a `foundry-scout` workflow. Each scout gets a bounded packet of Git evidence from the exact assessed commit, the goal diagnostic and the relevant graph. It has no tools, session worktree or submit token. It returns one structured report; Foundry checks its citations, ownership and dependencies before releasing a writer. One slow charter does not hold up the others. A squad's optional native `agent` selects its **writer**, not its scout.
 
+**Research before assigning a writer:** An area charter can opt in with `"researchAgent": "foundry-research"` in the committed squad. The scout can then return `needs-research` with its question in `reason`. The bundled researcher can read source and search/fetch public documentation. To use a connector or disposable experiment runner, name an installed custom agent with those specific tools instead. Describe permitted reference checkouts, pins and services in the charter. A profile is not a permission grant or a sandbox: the host must enforce access and isolate any probe tool. Do not give a researcher broad write or shell access to the product.
+
+One investigation per charter/review version returns attributed source, documentation or probe findings. An answered investigation goes to a fresh **tool-less** scout for the writer decision; denied or insufficient evidence goes to the owner as an unresolved question. Both follow-ups consume ordinary assignment slots and budget. Findings are journaled context, never evaluator receipts, proof of live behavior, or permission to modify another directory. Existing briefs without `researchAgent` stay packet-only.
+
 For example, a browse scout can separate the query editor from the work that actually needs pricing. If an earlier plan still has a never-issued `lookup` assignment, its replacement can look like this (other report fields omitted):
 
 ```json

@@ -2,6 +2,8 @@
 
 **Discovery:** Foundry gives each tool-less workflow scout the pinned evidence, goal diagnostic and relevant assignments. Its one structured report may propose `{id,task,directory,check,needs}` in an area charter. Fixed charters request owned IDs only. No scout session, token or tool call is needed.
 
+**Pre-writer research:** Only an area charter that names a `researchAgent` can request `needs-research`. Put the question that would change the writer decision in `reason`, cite the charter evidence, and use `grains: []`. Foundry dispatches the named profile separately under host permissions. It may return cited findings or explain why evidence is unavailable; it cannot submit a writer plan or a goal verdict. A fresh scout reviews an answered investigation, once per review version. Do not send private source or credentials to outside services.
+
 **Before making B wait for A:** Name in `reason` the exact checked output A must supply and what B cannot start without it. If both can start from the committed interface in disjoint directories, propose both now with no dependency between them. If only the integration needs A's output, split that part out and give it the dependency. Shared writable files aren't a reason to race two writers: split ownership or keep one assignment. Every `needs` ID must already exist or be in the same batch.
 
 Use `replace` for unstarted work. A milestone preserves the tree, not its assignments: reuse or split qualified outputs. Repeated or blocked area work can trigger fresh discovery on the same revision. Never displace a live assignment or its inputs, or retry refused work.

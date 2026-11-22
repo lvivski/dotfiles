@@ -61,6 +61,8 @@ export function nextReview(run, past, base, version) {
 	if (last?.base === base && correction(run, last)) key = "displaced-input";
 	if (obs?.outcome === "needs-decision" && last?.decision?.status === "answered") key = last.id;
 	if (obs?.outcome === "needs-evidence") key = "focused-evidence";
+	if (obs?.outcome === "needs-research") key = "research";
+	if (obs?.outcome === "researched") key = "research-result";
 	if (obs?.outcome === "waiting") {
 		const producer = run.policy.squads.find(s => s.id === obs.waitFor);
 		if (producer && "areas" in producer) {
