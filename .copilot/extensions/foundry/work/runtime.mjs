@@ -5,11 +5,11 @@ import { childProof, issuerProof, linkedGeneration, reservation } from "./bindin
 import { openDatabase, ledgerPath } from "./database.mjs";
 import { readPolicy } from "./contract.mjs";
 import { presentQuestions } from "./decisions.mjs";
-import { advance, currentReview, newRun, parseObservation, retryableReview, sameReviewInputs } from "./graph.mjs";
-import { missingObservation, qualifiedProduct } from "./evidence.mjs";
+import { advance, currentReview, newRun, parseObservation, reserveChangedRepair, retryableReview, sameReviewInputs } from "./graph.mjs";
+import { changedFrom, missingObservation, qualifiedProduct } from "./evidence.mjs";
 import { admitted, assignment, awaitingReply, boundWriter, canDispatch, current, expired, identify, issue, receive, reserveCheck, transferableWriter, unissued } from "./native.mjs";
 import { checked } from "./plan.mjs";
-import { capture, commitAt, retain, rootAt, verifyContracts } from "./product.mjs";
+import { capture, commitAt, generationRoot, retain, rootAt, verifyContracts } from "./product.mjs";
 import { refusedCall } from "./recovery.mjs";
 import { prepareRepin } from "./repin.mjs";
 import { referenceText, researchResult } from "./research.mjs";
@@ -47,10 +47,15 @@ function pause(run, reason) {
 	if (reason) run.pauseReason = reason;
 }
 
-/** @param {Run} run @param {string} actor @param {string} token */
-function writable(run, actor, token) {
+/** @param {Run} run @param {string} actor @param {string} token @param {unknown} [from] */
+function writable(run, actor, token, from) {
 	admitted(run);
 	const node = boundWriter(run, actor, token);
+	if (from !== undefined) {
+		if (from !== changedFrom(node, run.effects.find(e => e.id === node.check)))
+			fail("stale_assignment", "Not the bound writer's current blocked, unclassified component attempt");
+		return node;
+	}
 	if (node.state === "checking" || checked(node)) return;
 	if (node.state !== "writing") fail("stale_assignment", "This attempt is no longer writable");
 	return node;
@@ -407,20 +412,44 @@ export function createRuntime(directory, host) {
 	}
 	/** @param {string} id @param {string} actor @param {string} token @param {Record<string,unknown>} args */
 	function submit(id, actor, token, args) {
-		const run = read(id), n = writable(run, actor, token);
+		const from = args.changedFrom, run = read(id), n = writable(run, actor, token, from);
+		if (args.missingInput !== undefined) {
+			if (!n) fail("stale_assignment", "An already submitted attempt cannot report a missing input");
+			const reason = text(args.missingInput, "missing input and why it is needed");
+			if (reason.length > 2048) fail("invalid_field", "Describe the missing input in at most 2048 characters");
+			generationRoot(cwd(), text(n.generation, "generation commit"));
+			db().update(id, live => {
+				const node = writable(live, actor, token);
+				if (!node || node.generation !== n.generation || node.grain.id !== n.grain.id)
+					fail("stale_assignment", "Assignment changed before recording the missing input");
+				if (live.effects.some(e => e.grain === node.grain.id && e.token === token &&
+					(e.permissionHold || e.kind === "repair" && e.state !== "done")))
+					fail("dispatch_held", "Resolve the pending assignment delivery or permission hold first");
+				node.state = "blocked";
+				node.reason = `Writer reports missing input: ${reason}`;
+			});
+			return; // No directory capture, new component reservation, or inferred permission.
+		}
 		if (!n) return;
 		const g = n.grain;
 		const reports = reportedReferences(run, n, args);
 		const commit = capture(cwd(), text(n.generation, "generation commit"), g.directory);
-		db().update(id, r => {
-			admitted(r);
-			const node = r.nodes[g.id];
-			if (!node || node.worker !== actor || node.token !== n.token || node.state !== "writing")
+		const result = db().change(id, r => {
+			const node = writable(r, actor, token, from);
+			if (!node || node.grain.id !== g.id || digest(n) !== digest(node))
 				fail("stale_assignment", "Assignment changed during capture");
+			let target;
+			if (from !== undefined) {
+				if (commit === from) fail("unchanged_candidate", "Change the assigned directory before submitting; the old check will not be replayed");
+				target = commitAt(cwd(), r.policy.target);
+				reserveChangedRepair(cwd(), r, node, actor, token, target);
+			}
 			node.state = "checking";
 			node.candidate = commit;
 			node.check = reserveCheck(r, actor, cwd(), commit, g.check, g.id, reports);
+			if (target) return () => commitAt(cwd(), r.policy.target) === target;
 		});
+		return result.nodes[g.id].token;
 	}
 	/** @param {string} origin */
 	async function requireReadyOwner(origin) {
@@ -560,19 +589,20 @@ export function createRuntime(directory, host) {
 		}
 		const reply = op === "submit" ? { run: id, actor, token: text(a.token, "submission token") } : undefined;
 		if (reply) {
-			fields(a, ["run", "token", "usedArtifacts", "comparedArtifacts"]);
+			fields(a, a.missingInput !== undefined ? ["run", "token", "missingInput"] : ["run", "token", "changedFrom", "usedArtifacts", "comparedArtifacts"]);
 			// Check the host, not a local count lost on reload. Revalidate mode and ownership after the read.
 			const run = read(id);
-			if (host.runningHelpers && writable(run, actor, reply.token)) {
+			if (host.runningHelpers && writable(run, actor, reply.token, a.changedFrom)) {
 				const workflows = new Set(reviews(run).flatMap(r => r.issuer === actor && awaitingReply(r) && r.workflowId ? [r.workflowId] : []));
 				const helpers = await host.runningHelpers([...workflows]);
 				if (helpers.length) fail("helpers_running", `Native helpers are still running: ${helpers.join(", ")}. Join them, integrate their work, then submit with the same token.`);
 			}
+			if (a.changedFrom !== undefined || a.missingInput !== undefined) await requireReadyOwner(cwd());
 		}
 		if (!await executable())
 			fail("unsupported_mode", "Plan mode cannot change a Foundry run");
 		if (reply) {
-			submit(id, actor, reply.token, a);
+			reply.token = submit(id, actor, reply.token, a) ?? reply.token;
 			// A shell notification can drive the same actor before this call returns.
 			submitting.add(reply);
 		}

@@ -561,6 +561,81 @@ for (const conflict of [false, true])
 const assembly = "pipeline/assembly", assemblyBody = "export default ()=>true;", originalAssembly = "export default ()=>false;";
 const splitAssembly = () => ["editor", "send"].map(id => work(id, `${assembly}/${id}`));
 
+test("a bound writer reports missing input without replacing the checked inventory or holding eleven published outputs", async t => {
+	const f = await assemblyRound(t, {
+		".foundry/product.mjs": `import {readFileSync} from "node:fs"; if(readFileSync("${assembly}/accepted","utf8")!=="frozen citations") throw Error("lost inventory");`,
+		[goalCheck]: `import {existsSync} from "node:fs"; process.exit(existsSync("${assembly}/new-journey") ? 0 : 1);`
+	});
+	const [first] = f.workers.values();
+	put(first.cwd, `${assembly}/accepted`, "frozen citations"); put(first.cwd, `${assembly}/unaffected`, "preserve this row");
+	await f.write("assembly", assemblyBody);
+	const checkpoint = (await f.status()).products?.[0]; assert.ok(checkpoint);
+	const ids = Array.from({ length: 11 }, (_, i) => `part-${i}`);
+	await report(await f.reading("engine"), ".foundry/left.md", ids.map(id => work(id, `engine/${id}`)));
+	await report(await f.reading("pipeline"), ".foundry/right.md", [work("inventory", assembly)]);
+	for (const id of ids) await f.write(id, assemblyBody);
+	const before = await f.status(), n = before.nodes.find(n => n.grain === "inventory"), w = f.workers.get(n?.worker ?? "");
+	assert.ok(w); assert.deepEqual(n?.inputs, {}); assert.equal(n.state, "writing");
+	assert.equal(before.nodes.filter(n => n.state === "published").length, 11);
+	assert.equal(before.checkpoint, checkpoint.commit);
+	assert.equal(existsSync(path.join(w.cwd, assembly)), false);
+	const partial = `${assembly}/new-journey`;
+	put(w.cwd, partial, "partial, not evidence");
+	const writer = f.runtime(w.cwd), args = { run, token: w.token, missingInput: "No permitted source specifies the accepted journey, citations or unaffected rows." };
+	await writer.operation("submit", args, w.id);
+	const after = await f.status(), done = after.checkpoint, blocked = after.nodes.find(n => n.grain === "inventory");
+	assert.ok(done && done !== checkpoint.commit);
+	assert.deepEqual(after.products?.[0], checkpoint);
+	assert.equal(git(f.root, "rev-parse", `${done}:${assembly}`), git(f.root, "rev-parse", `${checkpoint.commit}:${assembly}`));
+	assert.equal(readFileSync(path.join(w.cwd, partial), "utf8"), "partial, not evidence");
+	assert.deepEqual(Object.keys(after.outputs ?? {}).sort(), [...ids].sort());
+	assert.equal(blocked?.state, "blocked"); assert.equal(blocked.worker, w.id); assert.ok(blocked.reason?.includes(args.missingInput));
+	assert.equal(blocked.receipt, undefined); assert.equal(blocked.checked, undefined);
+	const db = openDatabase(f.root); t.after(() => db.close());
+	assert.ok(!db.read(run)?.effects.some(e => e.kind === "component" && e.grain === "inventory"));
+	assert.equal(after.products?.at(-1)?.receipt?.exit, 0);
+	assert.equal(after.goal?.receipt?.commit, done); assert.equal(after.goal.receipt.exit, 1); assert.equal(after.qualified, null);
+	const checks = [...f.checks];
+	await assert.rejects(f.runtime(w.cwd).operation("submit", args, w.id), /writable/);
+	await assert.rejects(writer.operation("submit", { run, token: w.token }, w.id), /writable/);
+	assert.deepEqual(f.checks, checks);
+	assert.ok((await f.reading("pipeline")).prompt.includes(args.missingInput));
+});
+
+test("a missing-input report needs the original writable attempt and cannot qualify a seeded run", async t => {
+	const f = fixture(t, p => { p.seed = ["left"]; p.limits = { workers: 1, assignments: 1 }; });
+	await f.start();
+	const [w] = f.workers.values(), writer = f.runtime(w.cwd), args = { run, token: w.token, missingInput: "No permitted source." };
+	await assert.rejects(writer.operation("submit", args, "owner"), /assignment/);
+	await assert.rejects(writer.operation("submit", { ...args, token: "other" }, w.id), /assignment/);
+	await assert.rejects(f.owner.operation("submit", args, w.id), /assigned native worktree/);
+	await assert.rejects(writer.operation("submit", { ...args, usedArtifacts: [] }, w.id), /Unsupported field/);
+	await assert.rejects(f.runtime(w.cwd, { runningHelpers: async () => ["active"] }).operation("submit", args, w.id), /helpers are still running/);
+	await assert.rejects(f.runtime(w.cwd, { permissionBlocker: async () => ({ scope: "session", message: "Permission hold" }) }).operation("submit", args, w.id), /Permission hold/);
+	await f.owner.operation("pause", { run }, "owner");
+	await assert.rejects(writer.operation("submit", args, w.id), /paused/);
+	await f.owner.operation("resume", { source }, "owner");
+	assert.equal((await f.status()).nodes[0].state, "writing");
+	await writer.operation("submit", args, w.id);
+	const s = await f.status();
+	assert.equal(s.nodes[0].state, "blocked");
+	assert.equal(s.nodes[0].repairs, 0); assert.deepEqual(s.assignments, { limit: 1, used: 1 });
+	assert.equal(s.qualified, null); assert.equal(s.products?.length, 0); assert.deepEqual(f.checks, []);
+});
+
+test("a missing-input report cannot retire an uncertain component check", async t => {
+	const f = fixture(t, p => { p.seed = ["left"]; });
+	await f.start();
+	const [w] = f.workers.values();
+	let calls = 0;
+	const writer = f.runtime(w.cwd, { execute: async () => { calls++; throw Error("lost reply"); } });
+	await writer.operation("submit", { run, token: w.token }, w.id);
+	const before = await f.status();
+	assert.equal(before.nodes[0].state, "checking"); assert.ok(before.pending.some(e => e.kind === "component" && e.state === "uncertain"));
+	await assert.rejects(writer.operation("submit", { run, token: w.token, missingInput: "Cannot check it" }, w.id), /already submitted/);
+	assert.equal(calls, 1); assert.deepEqual((await f.status()).nodes, before.nodes); assert.deepEqual((await f.status()).pending, before.pending);
+});
+
 /** @param {import("node:test").TestContext} t @param {Record<string,string>} [files] */
 async function assemblyRound(t, files) {
 	const f = pipelineFixture(t, { [`${assembly}/index.mjs`]: originalAssembly, ".foundry/product.mjs": `import "../${assembly}/index.mjs";`, ...files });
@@ -1606,6 +1681,189 @@ test("bounded component repair retains the worker and rejects prior or foreign s
 	assert.equal(s.nodes[0].state, "blocked");
 	assert.match(String(s.nodes[0].reason), /repair limit/);
 	assert.equal(f.workers.size, 2);
+});
+
+const immutableCheck = {
+	".foundry/left.mjs": 'await import("../lib/left/index.mjs");',
+	".foundry/product.mjs": 'await import("../lib/left/index.mjs");',
+};
+const stagesInExport = 'import {mkdirSync} from "node:fs"; mkdirSync("staging");';
+
+// Keep the exact receipt shape written by pre-discriminator runners, before the
+// scheduler sees it. The check itself still runs exclusively on the pinned export.
+/** @param {ReturnType<typeof fixture>} f @param {ReturnType<typeof openDatabase>} db */
+function priorRunner(f, db) {
+	/** @type {Host["execute"]} */
+	const execute = async (...args) => {
+		const result = await f.execute(...args);
+		db.update(run, r => {
+			const e = r.effects.find(e => e.callId === args[2] && e.kind === "component");
+			if (!e) return;
+			assert.ok(e.receipt && e.state === "done");
+			delete e.receipt.failure;
+		});
+		return result;
+	};
+	return execute;
+}
+
+for (const needs of [[], ["assembly"]]) test(`changed work on a later checkpoint requires the original pins: ${needs.join() || "independent"}`, async t => {
+	const { f, nextCore, nextPipeline } = await assemblyCheckpoint(t, {
+		[goalCheck]: 'import {existsSync} from "node:fs"; process.exit(existsSync("engine/adapter/index.mjs") ? 0 : 1);'
+	});
+	await report(nextCore, ".foundry/left.md", [work("adapter", "engine/adapter", needs)]);
+	const db = openDatabase(f.root); t.after(() => db.close());
+	const prior = await f.write("adapter", stagesInExport + assemblyBody, { execute: priorRunner(f, db) });
+	prior.close();
+	const adapter = (await f.status()).nodes.find(n => n.grain === "adapter"), w = f.workers.get(adapter?.worker ?? "");
+	assert.ok(w);
+	await report(nextPipeline, `${assembly}/index.mjs`, [work("controls", assembly)]);
+	await f.write("controls", "export default ()=>42;");
+	const checkpoint = await f.status();
+	assert.ok(checkpoint.outputs?.controls && !checkpoint.outputs.assembly);
+	assert.equal(checkpoint.goal?.receipt?.exit, 1);
+	const writer = f.runtime(w.cwd);
+	const node = (await writer.operation("status", { run }, w.id)).nodes[0];
+	assert.equal(node.state, "blocked"); assert.ok(node.receipt);
+	put(w.cwd, "engine/adapter/index.mjs", assemblyBody);
+	const args = { run, token: w.token, changedFrom: node.receipt.commit };
+	if (needs.length) {
+		assert.equal(node.changedFrom, undefined);
+		await assert.rejects(writer.operation("submit", args, w.id), /Pinned prerequisites no longer current: assembly@/);
+		assert.deepEqual((await f.status()).nodes, checkpoint.nodes);
+		const old = db.read(run)?.effects.filter(e => e.nativeId === w.id || e.issuer === w.id && e.kind === "component");
+		const review = await f.reading("engine");
+		const proposal = result(".foundry/left.md", [work("fresh-adapter", "engine/adapter", ["controls"])], ["adapter"]);
+		for (const guard of ["refused", "uncertain", "older packet", "moved input", "limit"]) {
+			const snapshot = db.read(run); assert.ok(snapshot);
+			const r = reviews(snapshot).find(r => r.id === review.id), e = snapshot.effects.find(e => e.id === snapshot.nodes.adapter.check);
+			const squad = snapshot.policy.squads.find(s => s.id === "engine"); assert.ok(r && e && squad);
+			r.packet = structuredClone(review.packet);
+			if (guard === "refused" || guard === "uncertain") e.state = guard;
+			else if (guard === "older packet") r.version = "superseded";
+			else if (guard === "moved input") delete r.packet.outputs.controls;
+			else snapshot.policy.assignments = 0;
+			assert.throws(() => observe(f.root, snapshot, r, parseObservation(squad, proposal)),
+				/never reserved|fresh review|current pins|No assignment remains/);
+			assert.equal(snapshot.nodes.adapter.worker, w.id);
+		}
+		await review.report(proposal);
+		const planned = await f.status(), fresh = planned.nodes.find(n => n.grain === "fresh-adapter");
+		assert.ok(fresh?.worker, planned.reviews.find(r => r.id === review.id)?.reason ?? "Missing fresh writer");
+		assert.notEqual(fresh.worker, w.id);
+		assert.deepEqual(fresh.inputs, { controls: checkpoint.outputs.controls });
+		assert.ok(!planned.nodes.some(n => n.grain === "adapter"));
+		assert.deepEqual(db.read(run)?.effects.filter(e => e.nativeId === w.id || e.issuer === w.id && e.kind === "component"), old);
+		await assert.rejects(writer.operation("submit", args, w.id), /assignment/);
+		await f.write("fresh-adapter", assemblyBody);
+	} else {
+		await writer.operation("submit", args, w.id);
+	}
+	assert.ok((await f.status()).qualified);
+});
+
+test("an exclusive post-check export violation returns one bounded repair to the same writer", async t => {
+	const f = fixture(t, p => { p.seed = ["left"]; p.limits = { repairs: 1, assignments: 2 }; }, immutableCheck);
+	await f.start();
+	const [w] = f.workers.values(), writer = f.runtime(w.cwd);
+	put(w.cwd, "lib/left/index.mjs", stagesInExport);
+	const red = (await writer.operation("submit", { run, token: w.token }, w.id)).nodes[0];
+	assert.equal(red.receipt && red.receipt.exit, null);
+	assert.equal(red.receipt && red.receipt.output, "Unexpected path: staging");
+	assert.equal(red.state, "writing");
+	assert.equal(red.repairs, 1);
+	assert.equal(red.worker, w.id);
+	assert.notEqual(red.token, w.token);
+	await assert.rejects(writer.operation("submit", { run, token: w.token }, w.id), /assignment/);
+	put(w.cwd, "lib/left/index.mjs", "export default 1;");
+	const green = await writer.operation("submit", { run, token: red.token }, w.id);
+	assert.equal(green.nodes[0].state, "qualified");
+	assert.ok((await f.status()).qualified);
+	assert.equal(green.assignments?.used, 2);
+	assert.equal(f.workers.size, 1);
+	assert.equal(f.checks.length, 3);
+});
+
+test("a reloaded bound writer can present changed work, not replay a prior reader's blocked component check", async t => {
+	const f = fixture(t, p => { p.seed = ["left"]; p.limits = { repairs: 1, assignments: 2 }; }, immutableCheck);
+	await f.start();
+	const [w] = f.workers.values(), db = openDatabase(f.root); t.after(() => db.close());
+	const prior = f.runtime(w.cwd, { execute: priorRunner(f, db) });
+	put(w.cwd, "lib/left/index.mjs", stagesInExport);
+	await prior.operation("submit", { run, token: w.token }, w.id);
+	prior.close();
+	const writer = f.runtime(w.cwd);
+	writer.turn(w.id); await writer.flush();
+	const node = (await writer.operation("status", { run }, w.id)).nodes[0];
+	assert.equal(node.state, "blocked");
+	assert.equal(node.repairs, 0);
+	assert.equal(node.receipt && node.receipt.output, "Unexpected path: staging");
+	assert.ok(node.changedFrom && node.receipt && node.changedFrom === node.receipt.commit);
+	const historical = db.read(run)?.effects.find(e => e.kind === "component");
+	const args = { run, token: w.token, changedFrom: node.changedFrom };
+	await assert.rejects(writer.operation("submit", args, "owner"), /assignment/);
+	await assert.rejects(writer.operation("submit", args, w.id), /not be replayed/);
+	await assert.rejects(writer.operation("submit", { ...args, changedFrom: f.tip }, w.id), /current blocked/);
+	put(w.cwd, "lib/left/index.mjs", "export default 1;");
+	await assert.rejects(writer.operation("submit", { run, token: w.token }, w.id), /no longer writable/);
+	await assert.rejects(f.runtime(w.cwd, { permissionBlocker: async () => ({ scope: "session", message: "Permission unavailable" }) })
+		.operation("submit", args, w.id), /Permission unavailable/);
+	await assert.rejects(f.runtime(w.cwd, { runningHelpers: async () => ["one"] }).operation("submit", args, w.id), /helpers are still running/);
+	await f.owner.operation("pause", { run }, "owner");
+	await assert.rejects(writer.operation("submit", args, w.id), /paused/);
+	await f.owner.operation("resume", { source }, "owner");
+	assert.deepEqual(db.read(run)?.effects.find(e => e.kind === "component"), historical);
+	assert.equal(f.checks.length, 1);
+	const green = await writer.operation("submit", args, w.id);
+	assert.equal(green.nodes[0].state, "qualified");
+	assert.equal(green.nodes[0].repairs, 1);
+	assert.equal(green.nodes[0].generation, node.generation);
+	assert.equal(green.assignments?.used, 2);
+	assert.equal(f.workers.size, 1);
+	const checks = db.read(run)?.effects.filter(e => e.kind === "component");
+	assert.ok(checks && historical);
+	assert.equal(checks.length, 2);
+	assert.deepEqual(checks[0], { ...historical, inlineRepair: green.nodes[0].token });
+	assert.notEqual(checks[1].commit, checks[0].commit);
+	assert.equal(checks[1].receipt?.exit, 0);
+	assert.equal(f.checks.length, 3);
+	await assert.rejects(writer.operation("submit", args, w.id), /assignment/);
+});
+
+for (const condition of ["repair limit", "assignment limit", "moved directory"]) test(`prior incomplete check does not bypass ${condition}`, async t => {
+	const f = fixture(t, p => { p.seed = ["left"]; p.limits = { repairs: condition === "repair limit" ? 0 : 1, assignments: condition === "assignment limit" ? 1 : 2 }; }, immutableCheck);
+	await f.start();
+	const [w] = f.workers.values(), db = openDatabase(f.root); t.after(() => db.close());
+	const prior = f.runtime(w.cwd, { execute: priorRunner(f, db) });
+	put(w.cwd, "lib/left/index.mjs", stagesInExport);
+	const blocked = (await prior.operation("submit", { run, token: w.token }, w.id)).nodes[0];
+	prior.close();
+	put(w.cwd, "lib/left/index.mjs", "export default 1;");
+	if (condition === "moved directory") {
+		put(f.root, "lib/left/old.mjs", "export default 27;");
+		git(f.root, "commit", "-qam", "target edited the assigned directory");
+	}
+	await assert.rejects(f.runtime(w.cwd).operation("submit", { run, token: w.token, changedFrom: blocked.changedFrom }, w.id),
+		condition === "moved directory" ? /directory .* changed/ : /No authorized repair/);
+	const s = await f.status();
+	assert.equal(s.nodes[0].state, "blocked");
+	assert.equal(s.nodes[0].repairs, 0);
+	assert.equal(s.assignments?.used, 1);
+	assert.equal(f.checks.length, 1);
+});
+
+for (const mutate of [false, true]) test(`an interrupted evaluator cannot authorize export repair (mutation ${mutate})`, async t => {
+	const f = fixture(t, p => { p.seed = ["left"]; }, immutableCheck);
+	await f.start();
+	const [w] = f.workers.values(), writer = f.runtime(w.cwd);
+	put(w.cwd, "lib/left/index.mjs", `${mutate ? stagesInExport : ""}console.log("Unexpected path: staging");process.kill(process.pid, "SIGTERM");`);
+	const n = (await writer.operation("submit", { run, token: w.token }, w.id)).nodes[0];
+	assert.equal(n.state, "blocked");
+	assert.equal(n.repairs, 0);
+	assert.equal(n.changedFrom, undefined);
+	assert.ok(n.receipt && n.receipt.failure === "incomplete");
+	await assert.rejects(writer.operation("submit", { run, token: w.token, changedFrom: n.receipt.commit }, w.id), /current blocked/);
+	assert.equal(f.checks.length, 1);
 });
 
 test("a concurrent target edit conflicts instead of restoring old code over it", async (t) => {

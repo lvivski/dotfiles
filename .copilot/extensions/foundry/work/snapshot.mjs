@@ -71,7 +71,8 @@ const node = shape({
 });
 const assessment = { target: commit, commit, check: id };
 const product = shape({ ...assessment, outputs: named(commit), qualifiedAt: optional(positive) });
-const receipt = shape({ commit, check: path, evaluatorRevision: optional(commit), exit: v => v === null || count(v), output: string, repair: optional(id), squad: optional(id) });
+const receipt = shape({ commit, check: path, evaluatorRevision: optional(commit), exit: v => v === null || count(v), output: string,
+	failure: optional(one("changed-export", "incomplete")), repair: optional(id), squad: optional(id) });
 const dispatch = { id, issuer: string, args: object, evaluatorRevision: optional(commit), callId: optional(string), error: optional(string), permissionHold: optional(string) };
 const scout = shape({ ...dispatch, kind: one("scout"), tool: one("workflow"), squad: id, base: commit, version: string,
 	state: one("ready", "issued", "uncertain", "suspended", "reported", "observed", "blocked", "deferred"), observation: optional(observation),
@@ -103,6 +104,8 @@ function isRun(value) { return snapshot(value); }
 function validDispatch(run, e) {
 	if (e.permissionHold !== undefined && !unissued(e)) return false;
 	if (e.evaluatorRevision && (!(e.kind === "goal" || e.kind === "scout") || !run.repins?.some(p => p.revision === e.evaluatorRevision))) return false;
+	if (e.receipt?.failure && (e.kind !== "component" || !e.runnerStarted || !e.callId || e.receipt.exit !== null ||
+		e.receipt.repair || e.receipt.squad || e.state !== "done" && e.state !== "refused")) return false;
 	if (e.tool === "workflow") {
 		const squad = run.policy.squads.find(s => s.id === e.squad), report = e.observation;
 		if (e.retryOf && (e.issuer !== run.owner || !run.effects.some(src => src.kind === "scout" && src.id === e.retryOf &&

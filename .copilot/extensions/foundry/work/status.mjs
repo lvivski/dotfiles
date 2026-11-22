@@ -1,9 +1,9 @@
 import { materialize, offered } from "./artifacts.mjs";
-import { goalReceipt, milestoneBlocker, missingObservation, qualifiedProduct } from "./evidence.mjs";
+import { changedFrom, goalReceipt, milestoneBlocker, missingObservation, qualifiedProduct } from "./evidence.mjs";
 import { handoff, qualification } from "./handoff.mjs";
 import { metricsFacts, timingFacts } from "./metrics.mjs";
 import { assignmentCount, awaitingReply, canDispatch, current, expired } from "./native.mjs";
-import { checked, liveNeeds } from "./plan.mjs";
+import { checked, liveNeeds, stalePins } from "./plan.mjs";
 import { presentation, questions, reviews, reviewStatus } from "./reviews.mjs";
 import { fail } from "./values.mjs";
 
@@ -68,7 +68,8 @@ export function status(run, actor, detail) {
 		nodes: nodes.map(n => ({
 			grain: n.grain.id, directory: n.grain.directory, task: n.grain.task, requires: liveNeeds(n), evaluator: n.grain.check,
 			state: n.state, checked: checked(n) ? n.candidate : undefined,
-			...(actor === n.worker ? { token: n.token } : {}),
+			...(actor === n.worker ? { token: n.token, changedFrom: n.state === "blocked" && !stalePins(run, n).length
+				? changedFrom(n, run.effects.find(e => e.id === n.check)) : undefined } : {}),
 			...(owner || actor === n.worker ? { review: n.review, worker: n.worker, repairs: n.repairs, inputs: n.inputs,
 				generation: n.generation, receipt: n.check && receipts.get(n.check), reason: n.reason } : {}),
 		})),

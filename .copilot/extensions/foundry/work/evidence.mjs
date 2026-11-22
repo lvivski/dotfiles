@@ -7,6 +7,22 @@ export function checkReceipt(e) {
 		e.receipt.commit === e.commit && e.receipt.check === e.check && e.receipt.evaluatorRevision === e.evaluatorRevision) return e.receipt;
 }
 
+/** A prior reader's *terminal* component attempt, not a verdict about what caused it.
+ * @param {import("./model.js").Node} n @param {import("./model.js").Effect|undefined} e */
+export function blockedComponent(n, e) {
+	const receipt = checkReceipt(e);
+	if (n.state === "blocked" && e?.kind === "component" && e.id === n.check && e.grain === n.grain.id &&
+		e.check === n.grain.check && e.issuer === n.worker && e.callId && !e.error && !e.inlineRepair &&
+		receipt?.exit === null && receipt.commit === n.candidate &&
+		(receipt.failure === "changed-export" || !receipt.failure && n.reason === `Evaluation did not complete: ${receipt.output}`)) return receipt;
+}
+
+/** @param {import("./model.js").Node} n @param {import("./model.js").Effect|undefined} e */
+export function changedFrom(n, e) {
+	const receipt = blockedComponent(n, e);
+	if (receipt && !receipt.failure) return receipt.commit;
+}
+
 /** @param {Run} run */
 export function goalReceipt(run) {
 	const at = run.goal;

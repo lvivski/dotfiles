@@ -1,4 +1,5 @@
 import { validateGraph } from "./contract.mjs";
+import { blockedComponent } from "./evidence.mjs";
 import { outside } from "./product.mjs";
 import { contains, digest, fail, fields, name, names, record, relative, text } from "./values.mjs";
 
@@ -17,6 +18,21 @@ export const waiting = (grain, review, repairs = 0) => ({ grain, state: "waiting
 export const settledOutput = n => n.state === "qualified" || n.state === "repeated";
 /** @param {Node} n */
 export const checked = n => settledOutput(n) || n.state === "published";
+
+/** @param {Run} run @param {Node} n */
+export const stalePins = (run, n) => Object.entries(n.inputs ?? {}).filter(([id, pin]) =>
+	run.nodes[id]?.candidate !== pin || !checked(run.nodes[id]));
+
+/** A current terminal check is history, not authority to replay it. A changed
+ * prerequisite can instead justify a newly reviewed assignment.
+ * @param {Run} run @param {Node} n */
+export function supersededAttempt(run, n) {
+	if (n.state !== "blocked" || !n.worker || !n.generation || !n.check || n.repairs >= run.policy.repairs) return;
+	const stale = stalePins(run, n);
+	if (stale.length && !run.effects.some(e => e.grain === n.grain.id && ["component", "writer", "repair"].includes(e.kind) &&
+		e.state !== "done" && e.state !== "refused") && blockedComponent(n, run.effects.find(e => e.id === n.check)))
+		return { check: n.check, staleInputs: Object.fromEntries(stale) };
+}
 
 /** A terminal assignment keeps its original brief and pins as history, not prerequisites.
  * @param {Node} n */
@@ -126,13 +142,13 @@ export function displacedInputs(current, grains) {
 }
 
 /** Check the entire replacement before changing any node, including consumers in other charters.
- * @param {Run["nodes"]} current @param {Area} squad @param {import("./model.js").Observation} report @param {string} review */
-export function revise(current, squad, report, review) {
+ * @param {Run["nodes"]} current @param {Area} squad @param {import("./model.js").Observation} report @param {string} review @param {Set<string>} [replaceable] */
+export function revise(current, squad, report, review, replaceable = new Set()) {
 	const remove = new Set(report.replace);
 	for (const id of remove) {
 		const n = current[id] ?? fail("unknown_grain", `No such assignment: ${id}`);
 		if (!owns(squad, n.grain.directory)) fail("charter_scope", `Not your grain: ${id}`);
-		if (!settledOutput(n) && (n.generation || n.state !== "waiting" && n.state !== "blocked"))
+		if (!replaceable.has(id) && !settledOutput(n) && (n.generation || n.state !== "waiting" && n.state !== "blocked"))
 			fail("frozen_assignment", `Only settled outputs or never reserved work can be split: ${id}`);
 	}
 	const added = report.grains.map(g => {

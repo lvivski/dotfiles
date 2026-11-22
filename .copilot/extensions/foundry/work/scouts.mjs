@@ -1,7 +1,7 @@
 import { isUtf8 } from "node:buffer";
 import { journeyText } from "./contract.mjs";
 import { goalReceipt } from "./evidence.mjs";
-import { checked, dependencies, liveNeeds, owns } from "./plan.mjs";
+import { checked, dependencies, liveNeeds, owns, supersededAttempt } from "./plan.mjs";
 import { evidencePage } from "./pages.mjs";
 import { entries, git, regularFiles } from "./product.mjs";
 import { researchSchema } from "./research.mjs";
@@ -109,10 +109,11 @@ export function scoutPacket(cwd, run, review, budget = Infinity) {
 		for (const id of graphIds) {
 			const n = run.nodes[id], g = n.grain;
 			const reason = n.reason ?? (n.state === "repeated" ? "The combined tree already failed the goal; this checked output did not advance the checkpoint." : undefined);
+			const retired = owned.has(id) && supersededAttempt(run, n);
 			yield { id, directory: g.directory, task: g.task, check: g.check,
 				needs: liveNeeds(n), state: n.state, checked: checked(n) ? n.candidate : undefined,
 				...(inputs.has(id) ? { specification: g.specification, boundary: g.boundary } : {}),
-				...(owned.has(id) ? { reason,
+				...(owned.has(id) ? { reason, ...(retired ? { supersededAttempt: retired, originalInputs: n.inputs } : {}),
 					neverIssued: n.state === "waiting" || n.state === "blocked" ? !n.generation : undefined } : {}) };
 		}
 	}
@@ -167,7 +168,8 @@ export function scoutPacket(cwd, run, review, budget = Infinity) {
 			"Propose disjoint complete directories inside your areas as {id,task,directory,check,needs}, using allowed checks only. Use existing graph IDs or IDs in this report for needs; no cycles. You may request an owned qualified or repeated output by ID.",
 			"A new directory retires overlapping settled outputs, including children. To consume a checked output, keep its directory disjoint from the consumer's; do not list a retired ID in needs. If packaging requires a file at an area's root, plan that ownership before splitting the area.",
 			"For every needs entry, name the exact checked output in reason and explain why the consumer cannot start without it. If disjoint writers can start from the committed interface, propose both now. Defer only the integration that needs their outputs.",
-			"Only regenerate may replace IDs. Split your never-issued work with replace; qualified or repeated outputs may be reused or split unless a current assignment uses that version. Never displace issued work, a repair or an output awaiting its milestone. Never retry refused work.",
+			"Only regenerate may replace IDs. Split your never-issued work with replace; qualified or repeated outputs may be reused or split unless a current assignment uses that version. Never displace live work or retry refused work.",
+			...(stopped.some(id => supersededAttempt(run, run.nodes[id])) ? ["For a supersededAttempt only, explicitly replace its ID in a single-grain report with a fresh ID for the same directory and check, using qualified current inputs including still-current pins."] : []),
 			"A repeated tree is not progress. Propose materially different work, not the same task on the same base and checked inputs under a new ID.",
 		].join("\n") : "This is a fixed charter. Request only owned grain IDs as strings; no proposals, changed dependencies or replace field. The graph also shows other outputs, not authority to request them.",
 		"Report once for this revision. Graph metadata may describe checked work not in this tree. Never treat a missing or cancelled report as no-gap. If the graph or revision is stale, do not switch bases or retry: Foundry revalidates the report. Do not execute checks, edit, delegate, or call tools.",

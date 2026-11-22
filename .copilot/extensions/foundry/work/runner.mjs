@@ -3,7 +3,7 @@ import path from "node:path";
 import { openDatabase } from "./database.mjs";
 import { awaitingReply, current } from "./native.mjs";
 import { withProduct } from "./product.mjs";
-import { fail, text } from "./values.mjs";
+import { FoundryError, fail, text } from "./values.mjs";
 const [cwd, runId, effectId] = process.argv.slice(2);
 const db = openDatabase(cwd);
 try {
@@ -21,7 +21,7 @@ try {
 			env.FOUNDRY_OUTPUTS = JSON.stringify(Object.fromEntries(outputs.map(id => [id, run.nodes[id].grain.directory])));
 		}
 		const squads = e.kind === "goal" ? run.policy.squads.map(s => s.id) : [];
-		return { commit: text(e.commit, "check commit"), check: text(e.check, "assigned evaluator"), deadline: run.policy.deadline, outputs, squads, env,
+		return { component: e.kind === "component", commit: text(e.commit, "check commit"), check: text(e.check, "assigned evaluator"), deadline: run.policy.deadline, outputs, squads, env,
 			overlay: e.evaluatorRevision && e.kind === "goal" ? { base: run.policy.base, revision: e.evaluatorRevision } : undefined };
 	});
 	/** @type {import("./model.js").Receipt} */
@@ -49,11 +49,16 @@ try {
 		}, command.overlay);
 	}
 	catch (error) {
+		// Only a completed evaluator followed by the export verifier can attest a mutation.
+		// A signal/launch error stays incomplete even when it also left files behind.
+		if (command.component && receipt.exit !== null && error instanceof FoundryError &&
+			["product_changed", "unsupported_tree", "invalid_path"].includes(error.code)) receipt.failure = "changed-export";
 		receipt.exit = null;
 		receipt.output = error instanceof Error ? error.message : String(error);
 		delete receipt.repair;
 		delete receipt.squad;
 	}
+	if (command.component && receipt.exit === null) receipt.failure ??= "incomplete";
 	db.update(runId, run => {
 		const e = run.effects.find(e => e.id === effectId);
 		if (!e?.runnerStarted || e.receipt)

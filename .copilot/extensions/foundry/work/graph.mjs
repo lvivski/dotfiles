@@ -4,7 +4,7 @@ import { validOutcome } from "./contract.mjs";
 import { checkReceipt, goalReceipt, milestoneBlocker } from "./evidence.mjs";
 import { assess, goalAllowsWork, qualify, rejectRepeat, stall } from "./goal.mjs";
 import { admitted, assignmentCount, expired, reserveNotice, reserveProduct, reserveWorker } from "./native.mjs";
-import { actionable, consumersOf, dependencies, liveNeeds, owns, productOutputs, proposal, requireNewWork, revise, settledOutput, superseded, waiting, working, writerInputs } from "./plan.mjs";
+import { actionable, consumersOf, dependencies, liveNeeds, owns, productOutputs, proposal, requireNewWork, revise, settledOutput, stalePins, superseded, supersededAttempt, validateNodes, waiting, working, writerInputs } from "./plan.mjs";
 import { changedFiles, combine, commitAt, outside, regularFiles, rejoin, retain, verifyContracts, versionOf, withoutGrain } from "./product.mjs";
 import { referenceCheckout } from "./research.mjs";
 import { availableHistory, blockReview, canInvestigate, discoverySquads, nextReview, reading, requestedFiles, researchContext, reserveReview, reviews, staleReviewReason, wakeSource } from "./reviews.mjs";
@@ -50,7 +50,10 @@ function reviewVersion(cwd, run, squad, commit) {
 		if (!("areas" in squad)) return commit;
 		const stopped = Object.values(run.nodes).filter(n => owns(squad, n.grain.directory) && (n.state === "repeated" || n.state === "blocked"));
 		// Reproducing the combined failing tree is new evidence even for a charter that previously found no gap.
-		return digest([commit, run.goal.tried ?? [], stopped.map(n => [n.grain.id, n.state, n.reason ?? n.candidate])]);
+		return digest([commit, run.goal.tried ?? [], stopped.map(n => {
+			const retired = supersededAttempt(run, n);
+			return [n.grain.id, n.state, n.reason ?? n.candidate, ...(retired ? [retired] : [])];
+		})]);
 	}
 	if (!("grains" in squad)) fail("invalid_goal", "Area charters need an assessed revision");
 	const ids = dependencies(run.nodes, squad.grains);
@@ -136,7 +139,25 @@ export function observe(cwd, run, review, observation) {
 	if (!currentReview(cwd, run, review)) {
 		fail("stale_assignment", staleReviewReason);
 	}
-	const revision = "areas" in squad && outcome === "regenerate" ? revise(run.nodes, squad, observation, review.id) : undefined;
+	const replaceable = new Set();
+	for (const id of observation.replace ?? []) {
+		const n = run.nodes[id];
+		if (!n || !supersededAttempt(run, n)) continue;
+		if (run.policy.assignments !== undefined && assignmentCount(run) >= run.policy.assignments)
+			fail("limit", "No assignment remains for a fresh writer on current inputs");
+		const next = grains.find(g => typeof g !== "string" && g.directory === n.grain.directory);
+		if (grains.length !== 1 || observation.replace?.length !== 1 || !next || typeof next === "string" ||
+			next.check !== n.grain.check || run.nodes[next.id] || run.effects.some(e => e.grain === next.id) ||
+			!next.needs.length || run.join || run.blocker || run.conflict || reviewVersion(cwd, run, squad, review.base) !== review.version)
+			fail("stale_assignment", `Replace only ${id} in a fresh review, with a new ID, the same directory and check, and current checked inputs`);
+		const inputs = writerInputs(run.nodes, waiting({ ...n.grain, needs: next.needs }));
+		if (!inputs || !Object.entries(inputs).every(([dep, pin]) => run.nodes[dep].state === "qualified" && review.packet?.outputs[dep] === pin) ||
+			!Object.entries(inputs).some(([dep, pin]) => n.inputs?.[dep] !== pin) ||
+			Object.entries(n.inputs ?? {}).some(([dep, pin]) => run.nodes[dep]?.candidate === pin && inputs[dep] !== pin))
+			fail("stale_assignment", `Replacement of ${id} must name newly checked inputs and retain the writer's still-current pins`);
+		replaceable.add(id);
+	}
+	const revision = "areas" in squad && outcome === "regenerate" ? revise(run.nodes, squad, observation, review.id, replaceable) : undefined;
 	const planned = revision?.nodes ?? run.nodes;
 	if (run.goal?.tried && planned !== run.nodes) for (const id of ids)
 		requireNewWork(run, planned[id].grain, review.base, writerInputs(planned, planned[id]));
@@ -227,7 +248,7 @@ function settleChecks(cwd, run, actor, remaining) {
 		const receipt = checkReceipt(checks.get(n.check));
 		if (!receipt) continue;
 		if (receipt.exit === 0) { n.state = "published"; delete n.reason; }
-		else if (receipt.exit === null) { n.state = "blocked"; n.reason = `Evaluation did not complete: ${receipt.output}`; }
+		else if (receipt.exit === null && receipt.failure !== "changed-export") { n.state = "blocked"; n.reason = `Evaluation did not complete: ${receipt.output}`; }
 		else if (remaining === 0) { n.state = "blocked"; n.reason = `No assignment remains to repair ${id}: ${receipt.output || "Evaluator failed"}`; }
 		else repair(run, n.grain.id, receipt.output || "Evaluator failed");
 	}
@@ -276,13 +297,61 @@ function changes(run, outputs) {
 		({ directory: run.nodes[id].grain.directory, from: run.nodes[id].replaces ?? text(run.nodes[id].base, "producer base"), to }));
 }
 
+/** A stopped writer may have missed a replacement prerequisite or a newer checkpoint.
+ * @param {string} cwd @param {Run} run @param {Node} n @param {Record<string,string>} required @param {string} base */
+function verifyRepairInputs(cwd, run, n, required, base) {
+	if (!n.inputs || digest(required) !== digest(n.inputs))
+		fail("stale_assignment", "The writer's pinned prerequisites are no longer current");
+	const original = text(n.base, "writer base"), directory = n.grain.directory;
+	if (changedFiles(cwd, n.replaces ?? original, base, [directory]).length)
+		fail("stale_assignment", `The reviewed directory ${directory} changed since this assignment`);
+	for (const [id, pin] of Object.entries(required)) {
+		const dir = run.nodes[id].grain.directory;
+		if (changedFiles(cwd, original, base, [dir]).length && changedFiles(cwd, pin, base, [dir]).length)
+			fail("stale_assignment", `The reviewed input ${dir} changed since this assignment`);
+	}
+	const r = reviews(run).find(r => r.id === n.review);
+	const supporting = r && run.policy.sharedBrief ? [...requestedFiles(run, r)].filter(file =>
+		!contains(directory, file) && r.observation?.evidence.includes(file)) : [];
+	if (supporting.length && changedFiles(cwd, original, base, supporting).length)
+		fail("stale_assignment", "A supporting file in the writer's brief changed since this assignment");
+}
+
+/** Reader 8 did not persist the source of an incomplete check's diagnostic. Never
+ * promote that receipt; only the bound writer may spend a repair on a different tree.
+ * Called on a private snapshot, discarded in full if admission fails.
+ * @param {string} cwd @param {Run} run @param {Node} n @param {string} actor @param {string} token @param {string} target */
+export function reserveChangedRepair(cwd, run, n, actor, token, target) {
+	if (run.blocker || run.conflict || run.join || run.effects.some(e => e.issuer === actor && e.permissionHold))
+		fail("dispatch_held", "Resolve the run, product check or issuer hold before submitting changed work");
+	if (run.goal && (goalReceipt(run)?.exit !== 1 || run.goal.target !== target || (run.products.at(-1)?.commit ?? target) !== run.goal.commit))
+		fail("stale_assignment", "Need a current unmet goal on this target and checkpoint");
+	if (n.repairs >= run.policy.repairs || run.policy.assignments !== undefined && assignmentCount(run) >= run.policy.assignments ||
+		run.policy.workers !== undefined && Object.values(run.nodes).filter(working).length + reviews(run).filter(reading).length >= run.policy.workers)
+		fail("limit", "No authorized repair, assignment or worker slot remains");
+	const base = productBase(cwd, run, target);
+	const stale = stalePins(run, n);
+	if (stale.length) fail("stale_assignment", `Pinned prerequisites no longer current: ${stale.map(([id, pin]) => `${id}@${pin}`).join(", ")}`);
+	repair(run, n.grain.id, "Writer submitted changed work after an incomplete evaluation");
+	validateNodes(run.nodes);
+	const required = writerInputs(run.nodes, n) ?? fail("stale_assignment", "The writer's prerequisites are not ready");
+	verifyRepairInputs(cwd, run, n, required, base);
+	reserveWriter(cwd, run, n, required, base, actor, token);
+	if (run.goal) delete run.goal.stall;
+}
+
 /** @param {string} cwd @param {Run} run @param {Node} n @param {Record<string,string>} required @param {string} base @param {string} actor @param {string} [submitToken] */
 function reserveWriter(cwd, run, n, required, base, actor, submitToken) {
 	const g = n.grain, token = randomUUID();
 	const inline = n.worker === actor && submitToken !== undefined && n.token === submitToken;
 	if (n.worker) {
+		const previous = run.effects.find(e => e.id === n.check);
+		if (previous?.receipt?.failure === "changed-export") {
+			if (run.goal && run.goal.target !== commitAt(cwd, run.policy.target))
+				fail("stale_assignment", "The assessed target changed since the component check");
+			verifyRepairInputs(cwd, run, n, required, base);
+		}
 		if (inline) {
-			const previous = run.effects.find(e => e.id === n.check);
 			if (previous?.kind !== "component" || !checkReceipt(previous) || previous.inlineRepair)
 				fail("invalid_repair", "An inline repair requires its own checked submission");
 			previous.inlineRepair = token;
