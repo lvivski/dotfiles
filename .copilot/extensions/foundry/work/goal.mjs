@@ -1,4 +1,4 @@
-import { checkReceipt, goalReceipt } from "./evidence.mjs";
+import { checkReceipt, goalReceipt, milestoneBlocker } from "./evidence.mjs";
 import { awaitingReply, reserveCheck, reserveNotice, reserveProduct } from "./native.mjs";
 import { working, workKey } from "./plan.mjs";
 import { retain, treeOf, verifyContracts } from "./product.mjs";
@@ -47,13 +47,12 @@ export function goalAllowsWork(cwd, run, actor, target, retry) {
 	}
 	const receipt = goalReceipt(run);
 	if (!receipt) return false;
-	// A later scout can still add missing work to a failed milestone. Its exact failed
-	// candidate stays pinned so the same native refusal or failure cannot be retried.
-	if (run.blocker) return !!run.join && receipt.exit === 1;
+	if (run.blocker) return false;
+	const held = milestoneBlocker(run);
 	if (receipt.exit === 2) {
-		if (!retry && !run.join) return false;
+		if (!retry && (!run.join || held)) return false;
 		if (at.target === target) {
-			delete run.join;
+			if (!held) delete run.join;
 			assess(cwd, run, actor, target, at.commit);
 			return false;
 		}
@@ -63,6 +62,9 @@ export function goalAllowsWork(cwd, run, actor, target, retry) {
 		return false;
 	}
 
+	// Never qualify the earlier base or repeat this join. Only changed outputs or a
+	// changed target may replace it; an unmet goal can still admit missing work.
+	if (held) return true;
 	if (at.target !== target) {
 		delete at.stall;
 		if (!last && !Object.values(run.nodes).some(n => n.state !== "idle") && !reviews(run).some(reading)) {

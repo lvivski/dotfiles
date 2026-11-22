@@ -47,7 +47,7 @@ bash .copilot/skills/review-queue/scripts/review-queue-providers.test.sh
 
 `source ./sync` checksum-mirrors the Foundry and Recon extensions and their bundled skills under
 `~/.copilot/`. It prunes stale files from those mirrors and preserves unrelated extensions and
-repository run data.
+repository run data. Both sync directions leave `.git` directories and linked-worktree `.git` files untouched.
 
 **[Foundry](.copilot/extensions/foundry/README.md)** regenerates directories from a committed
 product brief. Goal contracts pin writable areas and checks. Tool-less workflow scouts review the

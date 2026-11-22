@@ -6,13 +6,13 @@ import { readPolicy } from "./contract.mjs";
 import { presentQuestions } from "./decisions.mjs";
 import { advance, currentReview, newRun, parseObservation } from "./graph.mjs";
 import { missingObservation, qualifiedProduct } from "./evidence.mjs";
-import { admitted, assignment, awaitingReply, boundWriter, canDispatch, current, expired, identify, issue, receive, reserveCheck, unissued } from "./native.mjs";
+import { admitted, assignment, awaitingReply, boundWriter, canDispatch, current, expired, identify, issue, receive, reserveCheck, transferableWriter, unissued } from "./native.mjs";
 import { checked } from "./plan.mjs";
 import { capture, commitAt, retain, rootAt, verifyContracts } from "./product.mjs";
 import { refusedCall } from "./recovery.mjs";
 import { prepareRepin } from "./repin.mjs";
 import { referenceText, researchResult } from "./research.mjs";
-import { blockReview, investigation, questions, reviews } from "./reviews.mjs";
+import { blockReview, currentPin, investigation, questions, retireSuperseded, reviews } from "./reviews.mjs";
 import { scoutPacket } from "./scouts.mjs";
 import { isPacket } from "./snapshot.mjs";
 import { status } from "./status.mjs";
@@ -32,10 +32,13 @@ function requireCurrentReader() {
 /** @typedef {import("./model.js").Run} Run */
 /** @typedef {import("./model.js").Effect} Effect */
 /** @typedef {{run:string,id:string,actor:string,inFlight?:boolean,recoveredOn?:number}} Call */
-/** @typedef {{runId:string,status:string,error?:string,reason?:string}} ScoutEnvelope */
+/** @typedef {{runId:string,status:string,error?:string,reason?:string,failure?:{type:string}}} ScoutEnvelope */
 /** @typedef {{execute:(tool:string,args:Effect["args"],id:string)=>Promise<unknown>,notify:(message:string)=>Promise<string>,recover?:(effect:Effect)=>Promise<unknown>,
  * ask?:(message:string)=>Promise<string|null>,confirm?:(message:string)=>Promise<boolean>,
+ * isResearcher?:(workflowId:string,agentId:string)=>Promise<boolean>,
+ * scoutBudget?:()=>Promise<number>,scoutFailure?:(workflowId:string,label:string)=>Promise<string|undefined>,
  * scout?:(run:string,dispatch:string,actor:string)=>Promise<ScoutEnvelope>,scoutState?:(workflowId:string)=>Promise<ScoutEnvelope>,
+ * scoutSnapshot?:(workflowId:string)=>Promise<ScoutEnvelope>,resumeScout?:(workflowId:string)=>Promise<ScoutEnvelope>,
  * mode:()=>Promise<string>,runningHelpers?:(workflows:string[])=>Promise<string[]>,permissionBlocker:()=>Promise<import("./permissions.mjs").PermissionBlock|null>,log?:(message:string)=>void}} Host */
 /** @param {Run} run @param {string} [reason] */
 function pause(run, reason) {
@@ -56,6 +59,11 @@ function writable(run, actor, token) {
 const reservations = (run, actor) => run.effects.filter(e => e.issuer === actor && unissued(e) && canDispatch(run, e));
 /** @param {Run} run @param {string} ticket @param {string} actor */
 const batchOf = (run, ticket, actor) => reviews(run).filter(e => e.callId === ticket && e.issuer === actor);
+/** A halted attempt can also carry a declined limit change, accounting failure,
+ * or other typed failure. Do not treat those as permission to resume.
+ * @param {ScoutEnvelope} result */
+const resumable = result => (result.status === "paused" || result.status === "halted") &&
+	(!result.failure || result.failure.type === "workflow_provider_disconnected");
 
 /** @param {string} directory @param {Host} host */
 export function createRuntime(directory, host) {
@@ -67,6 +75,7 @@ export function createRuntime(directory, host) {
 	/** @type {Set<string>} */ const asking = new Set();
 	/** @type {Map<string,Call>} */ const nativeCalls = new Map();
 	/** @type {Map<string,Map<string,()=>Promise<void>>>} */ const scoutCalls = new Map();
+	/** @type {Set<string>} */ const continuing = new Set();
 	/** @type {Map<string,{discover:boolean,recover:boolean,work:Promise<void>}>} */ const wakes = new Map();
 	/** @type {string|undefined} */ let existingPath;
 	const cwd = () => root ??= rootAt(directory);
@@ -116,12 +125,12 @@ export function createRuntime(directory, host) {
 			const stop = block?.scope === "run" && run.active;
 			const message = block ? `${block.message} Check session ${actor}.` +
 				(stop ? ` Then explicitly resume ${id} from its owner.` : " Its next turn rechecks the hold.") : null;
-			if (stop && message) { pause(run, message); return { state: "paused", message }; }
 			const changed = message && live.some(e => e.permissionHold !== message);
 			for (const e of live) {
 				if (message) e.permissionHold = message;
 				else delete e.permissionHold;
 			}
+			if (stop && message) { pause(run, message); return { state: "paused", message }; }
 			return { state: changed ? "held" : undefined, message };
 		});
 		if (!result) return "The reservation changed or the run is already paused. Check foundry_status.";
@@ -214,9 +223,13 @@ export function createRuntime(directory, host) {
 			const ready = batch.filter(e => e.state === "ready");
 			if (!ready.length) return refill(); // Prepared calls are visible again; this issuer can now plan.
 			const scouts = ready.filter(e => e.tool === "workflow");
-			if (scouts.length) {
+			// SDK agent labels aren't unique identities. Give each frozen-reader job
+			// its own dispatch so its native direct agent cannot belong to a peer job.
+			const readers = scouts.filter(e => referenceRepo(e.wake?.key) && run.policy.squads.some(s => s.id === e.squad && investigation(e, s)));
+			const ordinary = scouts.filter(e => !readers.includes(e));
+			for (const jobs of [...(ordinary.length ? [ordinary] : []), ...readers.map(e => [e])]) {
 				const ticket = randomUUID();
-				if (db().update(id, r => scouts.filter(e => issue(r, e, ticket)).length))
+				if (db().update(id, r => jobs.filter(e => issue(r, e, ticket)).length))
 					watchScouts(id, ticket, actor, () => host.scout?.(id, ticket, actor) ?? Promise.reject(new Error("Workflow scouting is unavailable")));
 			}
 			// A sibling's native permission prompt must not hold up work unlocked by this reply.
@@ -239,7 +252,18 @@ export function createRuntime(directory, host) {
 			}
 		});
 	}
-	/** A workflow's terminal envelope accounts for missing reports, never for checked work.
+	/** @param {Run} run @param {import("./model.js").Review} e @param {ScoutEnvelope} result */
+	function settleScout(run, e, result) {
+		if (e.workflowId && e.workflowId !== result.runId) fail("wrong_workflow", "Discovery result belongs to another workflow");
+		if (e.workflowId && resumable(result)) {
+			e.state = "suspended";
+			const action = e.issuer === run.owner ? `Use /foundry resume ${run.policy.source} in the owner session.` :
+				`On explicit request resume the original workflow ID in its issuing session ${e.issuer}, without changing limits.`;
+			e.error = `Discovery ${result.status}: workflow ${e.workflowId}. ${action}`;
+			retireSuperseded(run, e);
+		} else blockReview(e, `Discovery ${result.status}: ${result.failure?.type ?? result.error ?? result.reason ?? "no report was received"}`);
+	}
+	/** A workflow's settled attempt accounts for missing reports, never for checked work.
 	 * @param {string} id @param {string} ticket @param {string} actor @param {()=>Promise<ScoutEnvelope>} invoke */
 	function watchScouts(id, ticket, actor, invoke) {
 		// Arm these continuations on the issuing call path. A workflow body only
@@ -253,43 +277,78 @@ export function createRuntime(directory, host) {
 		}
 		scoutCalls.set(ticket, reports);
 		void Promise.resolve().then(invoke).then(result => {
-			if (closed) return;
+			if (closed || scoutCalls.get(ticket) !== reports) return;
 			const reconcile = db().update(id, r => {
 				const batch = batchOf(r, ticket, actor), pending = batch.filter(awaitingReply);
-				for (const e of pending) {
-					if (e.workflowId && e.workflowId !== result.runId) fail("wrong_workflow", "Discovery result belongs to another workflow");
-					blockReview(e, `Discovery ${result.status}: ${result.error ?? result.reason ?? "no report was received"}`);
-				}
+				for (const e of pending) settleScout(r, e, result);
 				return pending.length > 0 || batch.some(e => reports.has(e.id));
 			});
 			if (reconcile) track(drive(id, actor, true, false));
-		}).catch(error => { if (!closed) unconfirmedScouts(id, actor, ticket, String(error)); })
-			.catch(error => host.log?.(`Foundry discovery: ${String(error)}`)).finally(() => scoutCalls.delete(ticket));
+		}).catch(error => { if (!closed && scoutCalls.get(ticket) === reports) unconfirmedScouts(id, actor, ticket, String(error)); })
+			.catch(error => host.log?.(`Foundry discovery: ${String(error)}`)).finally(() => {
+				if (scoutCalls.get(ticket) === reports) scoutCalls.delete(ticket);
+			});
 	}
 	/** @param {string} id @param {string} ticket @param {string} actor @param {string} workflowId */
 	async function scoutBatch(id, ticket, actor, workflowId) {
 		text(workflowId, "workflow ID");
+		/** @type {number|undefined} */ let budget;
+		let budgetError = "";
+		if (host.scoutBudget && batchOf(read(id), ticket, actor).some(awaitingReply)) {
+			try {
+				budget = await host.scoutBudget();
+				if (!Number.isSafeInteger(budget) || budget < 0) budgetError = "Invalid native scout prompt budget.";
+			} catch (error) { budgetError = `Cannot size the scout packet: ${String(error)}`; }
+		}
 		const block = await host.permissionBlocker(), eligible = await executable();
-		const run = db().update(id, r => {
+		const admission = db().update(id, r => {
 			const batch = batchOf(r, ticket, actor);
 			if (!batch.length || batch.some(e => e.workflowId && e.workflowId !== workflowId))
 				fail("foreign_assignment", "No matching Foundry discovery dispatch in this session");
-			const pending = batch.filter(e => awaitingReply(e) && current(r, e));
+			const pending = batch.filter(e => awaitingReply(e) && currentPin(r, e));
+			const held = !eligible || !r.active || expired(r) || block;
+			if (pending.length && r.active && block?.scope === "run") pause(r, `${block.message} Check session ${actor}.`);
+			// A resumed body must not turn a permission race into a completed zero-job
+			// workflow or discard its identity to get another launch.
+			if (held && pending.some(e => e.workflowId))
+				return { held: block?.message ?? `Discovery cannot execute in session ${actor} while paused, expired or ineligible.` };
 			for (const e of pending) {
-				if (!eligible || !r.active || expired(r) || block) {
-					e.state = "ready"; delete e.callId; delete e.workflowId;
+				if (held) {
+					e.state = "ready"; delete e.callId;
 					if (block) e.permissionHold = `${block.message} Check session ${actor}.`;
 				} else { e.workflowId = workflowId; e.state = "issued"; }
 				delete e.error;
 			}
-			if (pending.length && r.active && block?.scope === "run") pause(r, `${block.message} Check session ${actor}.`);
-			return r;
+			return { run: r };
 		});
-		return batchOf(run, ticket, actor).filter(awaitingReply).map(r =>
-			({ id: r.id, squad: r.squad, base: r.base, ...scoutPacket(cwd(), run, r) }));
+		const run = admission.run ?? fail("bound_discovery_held", admission.held);
+		const pending = batchOf(run, ticket, actor).filter(r => awaitingReply(r) && currentPin(run, r));
+		if (!pending.length) return [];
+		return pending.flatMap(r => {
+			try {
+				if (budgetError) fail("packet_budget", budgetError);
+				return [{ id: r.id, squad: r.squad, base: r.base, ...scoutPacket(cwd(), run, r, budget) }];
+			}
+			catch (error) {
+				if (!(error instanceof FoundryError) || error.code !== "packet_budget") throw error;
+				db().update(id, live => {
+					const job = batchOf(live, ticket, actor).find(e => e.id === r.id && e.workflowId === workflowId);
+					if (job && awaitingReply(job)) blockReview(job, error.message);
+				});
+				return [];
+			}
+		});
 	}
 	/** @param {string} id @param {string} ticket @param {string} actor @param {string} workflowId @param {string} reviewId @param {unknown} raw @param {unknown} [packet] */
 	async function scoutResult(id, ticket, actor, workflowId, reviewId, raw, packet) {
+		/** @type {string|undefined} */ let diagnostic;
+		if (raw === null && host.scoutFailure) {
+			const job = batchOf(read(id), ticket, actor).find(e => e.id === reviewId && e.workflowId === workflowId && awaitingReply(e));
+			if (job) {
+				try { diagnostic = await host.scoutFailure(workflowId, `scout:${job.squad}:${job.id}@${job.base}`); }
+				catch (error) { diagnostic = `No report; native diagnostic lookup failed: ${String(error)}`; }
+			}
+		}
 		const changed = db().update(id, r => {
 			const q = batchOf(r, ticket, actor).find(e => e.id === reviewId && e.workflowId === workflowId);
 			if (!q) fail("foreign_assignment", "Only the bound workflow may return this report");
@@ -298,6 +357,7 @@ export function createRuntime(directory, host) {
 			const squad = r.policy.squads.find(s => s.id === q.squad) ?? fail("invalid_charter", "No matching charter");
 			try {
 				const research = investigation(q, squad);
+				if (raw === null && diagnostic) fail("missing_report", diagnostic);
 				if (raw === null && !research) fail("missing_report", "No structured scout report was returned");
 				if (!isPacket(packet) || packet.review !== q.id || packet.base !== q.base)
 					fail("missing_packet", "Missing or mismatched journaled scout packet");
@@ -337,6 +397,30 @@ export function createRuntime(directory, host) {
 		if (!await executable() || cwd() !== origin)
 			fail("context_changed", "Activation context changed during the permission check");
 	}
+	/** SDK observations settle per attempt. Only this explicit owner path may
+	 * continue a verified workflow; waitForRun and ordinary turns never do.
+	 * @param {string} id @param {string} actor @param {string} ticket @param {string} workflowId */
+	async function continueScouts(id, actor, ticket, workflowId) {
+		const lookup = host.scoutSnapshot, resume = host.resumeScout;
+		if (!lookup || !resume) return;
+		await requireReadyOwner(cwd());
+		const result = await lookup(workflowId);
+		if (result.runId !== workflowId) fail("wrong_workflow", "Discovery lookup returned another workflow");
+		if (result.status === "pending" || result.status === "running") return;
+		if (!await executable()) return;
+		if (continuing.has(ticket)) return;
+		const shouldResume = db().update(id, run => {
+			if (run.owner !== actor || !run.active || expired(run)) return false;
+			const pending = batchOf(run, ticket, actor).filter(e => e.workflowId === workflowId && awaitingReply(e));
+			for (const e of pending) settleScout(run, e, result);
+			return pending.some(e => e.state === "suspended");
+		});
+		if (shouldResume) {
+			// Replace any observer that may still be delivering the prior paused envelope.
+			continuing.add(ticket);
+			watchScouts(id, ticket, actor, () => resume(workflowId).finally(() => continuing.delete(ticket)));
+		}
+	}
 	/** @param {unknown} source @param {string} actor @param {boolean} resume */
 	async function start(source, actor, resume) {
 		if (known.has(actor)) fail("worker_cannot_start", "Workers cannot activate or restart a run");
@@ -357,7 +441,10 @@ export function createRuntime(directory, host) {
 		if (!prior?.active || resume) {
 			const retry = prior && missingObservation(prior) ? prior.goal : undefined;
 			const tickets = new Map(prior?.effects.filter(e => e.tool === "workflow" && e.state === "uncertain" && !e.workflowId).map(e => [e.id, e.callId]));
-			if (prior?.active && !retry && !tickets.size) return status(prior, actor);
+			const bound = new Map(resume && prior && host.scoutSnapshot ? reviews(prior).flatMap(e =>
+				e.issuer === actor && e.workflowId && e.callId && awaitingReply(e) ? [[e.callId, e.workflowId]] : []) : []);
+			const writers = new Map(resume && prior ? prior.effects.filter(e => transferableWriter(prior, e)).map(e => [e.id, e.issuer]) : []);
+			if (prior?.active && !retry && !tickets.size && !bound.size && !writers.size) return status(prior, actor);
 			await requireReadyOwner(origin);
 			if (prior)
 				change(policy.id, r => {
@@ -369,8 +456,12 @@ export function createRuntime(directory, host) {
 					for (const e of r.effects) if (e.tool === "workflow" && e.state === "uncertain" && !e.workflowId &&
 						e.callId && tickets.get(e.id) === e.callId) {
 						e.issuer = actor; e.state = "ready"; delete e.callId; delete e.error;
+						retireSuperseded(r, e);
 					}
 					admitted(r);
+					// issue() also compares the issuer inside its transaction. An old permission
+					// read and a takeover can never both claim the same reservation.
+					for (const e of r.effects) if (writers.get(e.id) === e.issuer && transferableWriter(r, e)) e.issuer = actor;
 					if (retry) advance(origin, r, actor, false, { retryGoal: true });
 				});
 			else {
@@ -380,6 +471,7 @@ export function createRuntime(directory, host) {
 				if (run.goal && run.goal.commit !== policy.base) retain(origin, run.goal.commit);
 				db(true).insert(run);
 			}
+			await Promise.all([...bound].map(([ticket, workflowId]) => continueScouts(policy.id, actor, ticket, workflowId)));
 		}
 		await drive(policy.id, actor, true);
 		return status(read(policy.id), actor);
@@ -404,6 +496,16 @@ export function createRuntime(directory, host) {
 				pause(r);
 			});
 			return status(read(id), actor);
+		}
+		if (op === "clarify") {
+			fields(a, ["run", "review", "presentation"]);
+			const request = { review: name(a.review, "review"), presentation: name(a.presentation, "presentation") };
+			if (asking.has(id)) fail("question_open", "A charter question is already open in this runtime");
+			asking.add(id);
+			try {
+				await presentQuestions(cwd(), () => closed ? undefined : db(), id, actor, host, executable, () => drive(id, actor, true), request);
+				return status(read(id), actor);
+			} finally { asking.delete(id); }
 		}
 		const reply = op === "submit" ? { run: id, actor, token: text(a.token, "submission token") } : undefined;
 		if (reply) {
@@ -467,18 +569,24 @@ export function createRuntime(directory, host) {
 	}
 	return {
 		operation, pre, scoutBatch, scoutResult,
-		/** @param {unknown} args @param {string} actor */
-		readReference(args, actor) {
+		/** @param {unknown} args @param {string} actor @param {string} agentId */
+		async readReference(args, actor, agentId) {
 			const a = record(args); fields(a, ["run", "review", "repo", "revision", "path"]);
-			const run = read(name(a.run, "run"));
-			admitted(run);
-			const repo = name(a.repo, "reference checkout");
-			const job = reviews(run).find(r => r.id === a.review && r.issuer === actor && r.state === "issued" && r.workflowId);
-			const squad = run.policy.squads.find(s => s.id === job?.squad);
-			if (!job || !squad || !investigation(job, squad) || referenceRepo(job.wake?.key) !== repo || !currentReview(cwd(), run, job))
-				fail("foreign_assignment", "This investigation is not bound to that reference checkout");
-			const revision = run.references?.[repo];
-			if (!revision || revision !== a.revision) fail("missing_reference", "The requested revision is not the frozen reference");
+			const id = name(a.run, "run"), repo = name(a.repo, "reference checkout"), revision = text(a.revision, "reference revision");
+			function binding() {
+				const run = read(id); admitted(run);
+				const jobs = reviews(run), job = jobs.find(r => r.id === a.review), squad = run.policy.squads.find(s => s.id === job?.squad);
+				if (!job?.workflowId || !job.callId || job.issuer !== actor || job.state !== "issued" || !squad || !investigation(job, squad) ||
+					referenceRepo(job.wake?.key) !== repo || jobs.some(r => r !== job && (r.workflowId === job.workflowId || r.callId === job.callId)) ||
+					!currentReview(cwd(), run, job)) fail("foreign_assignment", "This investigation is not bound to that reference checkout");
+				if (run.references?.[repo] !== revision) fail("missing_reference", "The requested revision is not the frozen reference");
+				return job;
+			}
+			const job = binding();
+			if (!agentId || !await host.isResearcher?.(text(job.workflowId, "workflow ID"), agentId))
+				fail("foreign_assignment", "Only the active investigation's native direct researcher may read");
+			const live = binding(); // The job may have settled or been revoked during SDK lookup.
+			if (live.workflowId !== job.workflowId || live.callId !== job.callId) fail("stale_assignment", "The investigation changed during lookup");
 			return referenceText(cwd(), { repo, revision }, text(a.path, "reference path"));
 		},
 		/** @param {string} actor */

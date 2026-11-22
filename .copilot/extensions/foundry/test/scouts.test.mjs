@@ -5,7 +5,7 @@ import { mapSnapshot } from "../map/model.mjs";
 import { git } from "../work/product.mjs";
 import { availableHistory, nextReview } from "../work/reviews.mjs";
 import { scoutAgent, scoutDefinition, scoutPacket } from "../work/scouts.mjs";
-import { factory, put } from "./fixture.mjs";
+import { factory, loadEntry, put } from "./fixture.mjs";
 
 /** @param {import("node:test").TestContext} t */
 function fixture(t) {
@@ -130,6 +130,65 @@ function factoryTrial(t, boundary = ["interface"], extra = {}) {
 	});
 }
 const noGap = { outcome: "no-gap", grains: [], evidence: ["charter"], reason: "Nothing owned needs a change." };
+for (const budget of [18000, 36000]) test(`session-sized evidence pages deliver the exact pinned inventory and no unseen evidence: ${budget}`, async t => {
+	const file = "encoder/inventory.json", inventory = "quote:\" snow:雪 smile:😀\n".repeat(2800);
+	const f = factoryTrial(t, ["interface"], { [file]: inventory, "encoder/other": "x".repeat(70000) });
+	const owner = f.runtime(f.root, { scoutBudget: async () => budget });
+	await f.start(owner); put(f.root, file, "dirty checkout");
+	const first = f.scouts[0]; assert.equal(first.squad, "encoder");
+	assert.ok(Buffer.byteLength(first.prompt) <= budget, "send only what this session can fit");
+	assert.equal(first.packet.partial, true); assert.ok(!Object.hasOwn(first.packet.files, file)); assert.ok(first.prompt.includes(file));
+	const request = { ...noGap, outcome: "needs-evidence", file };
+	await first.report(request);
+	let read = "", pages = 0;
+	while (read !== inventory && pages++ < 40) {
+		const job = f.scouts.at(-1); assert.ok(job && job.id !== first.id); assert.equal(job.squad, "encoder");
+		assert.ok(Buffer.byteLength(job.prompt) <= budget);
+		const row = filesIn(job.prompt).get(file); assert.equal(row.start, read.length);
+		assert.ok(row.excerpt.length > 0); read += row.excerpt;
+		assert.ok(inventory.startsWith(read)); assert.equal(row.end, read.length);
+		assert.ok(job.packet.partial && !Object.hasOwn(job.packet.files, file));
+		if (read === inventory) await job.report({ ...noGap, evidence: [file], outcome: "unresolved" });
+		else await job.report({ ...request, evidence: [file] });
+	}
+	assert.equal(read, inventory); assert.ok(pages > 1);
+	assert.equal((await f.status()).reviews.at(-1)?.state, "observed");
+});
+
+for (const limit of [24000, 400000]) test(`SDK session budget gates unseen citations and no-gap; a null scout retains its own native failure: ${limit}`, async t => {
+	const inventory = "⚑".repeat(30000), file = "encoder/items";
+	const f = factoryTrial(t, ["interface"], { [file]: inventory, "display/items": inventory });
+	await f.start(); const [a, , c] = f.scouts;
+	const why = "Request exceeds the model's prompt budget after reserving output.", wrong = "another agent failed";
+	const agents = f.scouts.map(j => ({ runId: j.workflowId, label: `scout:${j.squad}:${j.id}@${j.base}`, toolCallId: `launch:${j.id}` }));
+	const extension = await loadEntry({ sessionId: "owner", on() {}, workflow: { getRunDetail: async () => ({ runId: a.workflowId, workflowName: "foundry-scout", agents }) },
+		rpc: { mode: { get: async () => "interactive" }, managedSettings: { get: async () => ({ failClosed: false }) },
+			permissions: { getMode: async () => ({ mode: "assisted" }) },
+			metadata: { getContextAttribution: async () => ({ contextAttribution: { promptTokenLimit: limit, categories: { systemPrompt: 500, customInstructions: 50, systemTools: 250, mcpTools: 0 } } }) },
+			eventLog: { read: async () => ({ cursorStatus: "ok", hasMore: false, events: [[c.id, why], [a.id, wrong]].map(([id, error]) =>
+				({ type: "subagent.failed", data: { toolCallId: `launch:${id}`, error } })) }) } } });
+	const hook = { sessionId: "owner", timestamp: new Date(), workingDirectory: f.root };
+	await extension.hooks?.onSessionStart?.({ ...hook, source: "startup" }, hook);
+	t.after(() => extension.hooks?.onSessionEnd?.({ ...hook, reason: "complete" }, hook));
+	const workflow = extension.workflows?.[0];
+	assert.ok(workflow && "run" in workflow && typeof workflow.run === "function");
+	const ctx = context(async (prompt, options) => {
+		assert.ok(Buffer.byteLength(prompt) < limit);
+		if (options?.label?.includes(a.id)) {
+			assert.equal(prompt.includes(inventory), limit === 400000);
+			return { ...noGap, outcome: "unresolved", evidence: [file] };
+		}
+		return options?.label?.includes(c.id) ? null : noGap;
+	});
+	await workflow.run({ ...ctx, session: /** @type {Context["session"]} */ ({ sessionId: "owner" }),
+		runId: a.workflowId, args: { run: "pair", dispatch: a.dispatch } });
+	f.owner.turn("owner"); await f.owner.flush();
+	const s = await f.status();
+	assert.ok(s.reviews[2].reason?.includes(why)); assert.ok(!s.reviews[2].reason?.includes(wrong));
+	if (limit === 24000) {
+		assert.match(String(s.reviews[0].reason), /not delivered/); assert.match(String(s.reviews[1].reason), /partial packet/);
+	} else assert.deepEqual(s.reviews.slice(0, 2).map(r => r.state), ["observed", "observed"]);
+});
 /** @param {string} id @param {string[]} [needs] */
 const build = (id, needs = []) => ({ ...noGap, outcome: "regenerate", grains: [{ id, directory: id, task: `Implement ${id} v2`, check: "unit.mjs", needs }] });
 

@@ -77,7 +77,8 @@ export interface Artifact {
 	to: string[];
 }
 
-export type Packet = { review: string; base: string; files: Record<string, string>; outputs: Record<string, string>; partial: boolean };
+export type Packet = { review: string; base: string; files: Record<string, string>; outputs: Record<string, string>; partial: boolean;
+	excerpt?: { path: string; oid: string; start: number; end: number; length: number } };
 
 export interface Node {
 	grain: Grain;
@@ -110,7 +111,7 @@ export interface Product extends Assessment {
 export interface Review extends Dispatch {
 	kind: "scout";
 	tool: "workflow";
-	state: "ready" | "issued" | "uncertain" | "reported" | "observed" | "blocked" | "deferred";
+	state: "ready" | "issued" | "uncertain" | "suspended" | "reported" | "observed" | "blocked" | "deferred";
 	squad: string;
 	base: string;
 	version: string;
@@ -118,8 +119,8 @@ export interface Review extends Dispatch {
 	wake?: { review: string; key: string };
 	observation?: Observation;
 	deferred?: { pins: Record<string, string>; consumers: string[] };
-	decision?: { status: "presenting" | "dismissed" } | { status: "answered"; answer: string }
-		| { status: "unavailable"; reason: string };
+	decision?: { status: "presenting"; presentation?: string } | { status: "dismissed" } | { status: "answered"; answer: string }
+		| { status: "unavailable"; reason: string; presentation?: string };
 }
 
 export interface Receipt {

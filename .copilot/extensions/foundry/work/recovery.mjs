@@ -2,6 +2,25 @@ import { digest, fail, record, text } from "./values.mjs";
 
 /** @typedef {import("./model.js").Effect} Effect */
 /** @typedef {Parameters<import("@github/copilot-sdk").CopilotSession["rpc"]["eventLog"]["read"]>[0]} Page */
+/** Workflow agents soft-fail to null. Recover only this direct call's native failure,
+ * never a sibling's error or an inference from an empty structured response.
+ * @param {import("@github/copilot-sdk").CopilotSession} session @param {string} id @param {string} label */
+export async function scoutFailure(session, id, label) {
+	const detail = await session.workflow.getRunDetail(id);
+	if (detail.runId !== id || detail.workflowName !== "foundry-scout") return;
+	const agents = detail.agents.filter(a => a.runId === id && a.label === label);
+	if (agents.length !== 1 || !agents[0].toolCallId) return;
+	const call = agents[0].toolCallId, seen = new Set();
+	let cursor;
+	for (;;) {
+		const page = await session.rpc.eventLog.read({ direction: "backward", cursor, types: ["subagent.failed"],
+			view: "history", includeEphemeral: false, agentScope: "primary" });
+		if (page.cursorStatus !== "ok") return;
+		for (const e of page.events.toReversed()) if (e.type === "subagent.failed" && e.data.toolCallId === call) return e.data.error;
+		if (!page.hasMore || seen.has(page.cursor)) return;
+		cursor = page.cursor; seen.add(cursor);
+	}
+}
 /** @param {{type?:unknown,agentId?:unknown,data?:unknown}} event */
 export function refusedCall(event) {
 	const d = record(event.data);

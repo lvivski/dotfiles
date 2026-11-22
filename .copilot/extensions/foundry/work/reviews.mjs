@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { qualifiedProduct } from "./evidence.mjs";
+import { milestoneBlocker, qualifiedProduct } from "./evidence.mjs";
 import { actionable, checked, consumersOf, displacedInputs, owns, settledOutput } from "./plan.mjs";
 import { digest, referenceRepo } from "./values.mjs";
 
@@ -8,7 +8,21 @@ import { digest, referenceRepo } from "./values.mjs";
 /** @param {Run} run */
 export const reviews = run => run.effects.filter(e => e.kind === "scout");
 /** @param {Review} r */
-export const reading = r => r.state === "ready" || r.state === "issued" || r.state === "uncertain";
+export const reading = r => r.state === "ready" || r.state === "issued" || r.state === "uncertain" || r.state === "suspended";
+/** The first dialog is already identified by its unique review, including before recovery was supported.
+ * @param {Review} r */
+export const presentation = r => r.decision?.status === "presenting" ? r.decision.presentation ?? r.id :
+	r.decision?.status === "unavailable" ? r.decision.presentation : undefined;
+
+/** @param {Run} run @param {Review} r */
+export const currentPin = (run, r) => r.evaluatorRevision === run.repins?.at(-1)?.revision;
+
+/** A lost reply is not a stopped attempt. Only release work that cannot still be spending a scout slot.
+ * @param {Run} run @param {Review} r */
+export function retireSuperseded(run, r) {
+	if ((r.state === "suspended" || r.state === "ready") && !currentPin(run, r))
+		blockReview(r, "Superseded evaluator pin; this review will not continue.");
+}
 
 /** A review *is* its workflow reservation. A received report may still await admission on resume.
  * @param {Run} run @param {string} issuer @param {string} squad @param {string} base @param {string} version @param {Review["wake"]} [wake] */
@@ -81,7 +95,7 @@ function releasedReviews(run, history) {
  * @param {Run} run @param {Review[]} history @param {import("./model.js").Receipt|undefined} gap */
 export function discoverySquads(run, history, gap) {
 	const squads = run.policy.squads, focus = gap?.squad && squads.find(s => s.id === gap.squad);
-	if (focus && !run.blocker) {
+	if (focus && !milestoneBlocker(run)) {
 		const report = history.findLast(r => r.squad === focus.id && r.base === gap.commit);
 		if (!report || reading(report) || Object.values(run.nodes).some(n => n.review === report.id && (n.state === "published" || actionable(run, n)))) {
 			const released = new Set(releasedReviews(run, history).map(r => r.squad));
@@ -109,7 +123,10 @@ export function nextReview(run, past, base, version) {
 	let key;
 	if (last?.base === base && correction(run, last)) key = "displaced-input";
 	if (obs?.outcome === "needs-decision" && last?.decision?.status === "answered") key = last.id;
-	if (obs?.outcome === "needs-evidence") key = `file:${obs.file}`;
+	if (obs?.outcome === "needs-evidence") {
+		const part = last?.packet?.excerpt;
+		key = part && part.path === obs.file ? `page:${part.end}:${obs.file}` : `file:${obs.file}`;
+	}
 	if (obs?.outcome === "needs-research") key = "research";
 	if (last && (obs?.outcome === "researched" || obs?.outcome === "unresolved" && obs.findings?.length)) key = `research-result:${last.id}`;
 	if (obs?.outcome === "waiting") {

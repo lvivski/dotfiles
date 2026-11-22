@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { buildTools } from "../work/tools.mjs";
 import { factory, git, put } from "./fixture.mjs";
 
 const run = "lookup", source = ".foundry/lookup.json";
@@ -11,13 +12,13 @@ function latch() {
 	const promise = new Promise(done => { resolve = () => done(undefined); });
 	return { resolve, promise };
 }
-/** @param {import("node:test").TestContext} t @param {string} [goal] */
+/** @param {import("node:test").TestContext} t @param {string|null} [goal] */
 function trial(t, goal = 'if (!existsSync("lib/lookup/index")) process.exit(1)') {
 	const ids = ["catalog", "lookup"];
 	return factory(t, run, source, {
 		[source]: JSON.stringify({ version: 1, id: run, direction: "Look up an item.", target: "refs/heads/main",
 			grains: ids.map(id => ({ id, directory: `lib/${id}`, specification: "charter", boundary: ["interface"], check: "unit.mjs" })),
-			squads: ids.map(id => ({ id, charter: "charter", grains: [id] })), goalCheck: "goal.mjs", productCheck: "product.mjs" }),
+			squads: ids.map(id => ({ id, charter: "charter", grains: [id] })), goalCheck: goal === null ? undefined : "goal.mjs", productCheck: "product.mjs" }),
 		charter: "Implement the lookup", interface: "Look up the displayed price", "unit.mjs": "", "product.mjs": "",
 		"goal.mjs": `import {existsSync} from 'node:fs'; ${goal}`,
 	});
@@ -56,6 +57,80 @@ test("an open owner question is claimed once across reconnect; an independent wr
 	assert.equal(after.active, false);
 	assert.ok(calls.every(c => c.tool !== "archive_session"));
 	assert.equal((await f.status(w.id)).handoff, undefined); assert.equal((await f.status(w.id)).metrics, undefined);
+});
+
+for (const originalReply of ["closed", "before", "after"]) test(`explicit recovery of one owner question, old callback: ${originalReply}`, async t => {
+	const f = trial(t), opened = latch(), oldReply = latch(), recovered = latch(), newReply = latch();
+	let asks = 0;
+	const original = f.runtime(f.root, { ask: async () => { asks++; opened.resolve(); await oldReply.promise; return "Superseded answer"; } });
+	await f.start(original); await f.scouts[0].report(noGap); await f.scouts[1].report(question); await opened.promise;
+	const review = f.scouts[1].id, args = { run, review, presentation: review };
+	if (originalReply === "closed") original.close();
+	const answer = "Keep the existing default.\nDo not change the acceptance check.";
+	const owner = f.runtime(f.root, { ask: async message => {
+		asks++; assert.ok(message.includes(question.reason)); recovered.resolve(); await newReply.promise; return answer;
+	} });
+	owner.turn("owner"); await owner.flush(); assert.equal(asks, 1, "reconnect must not repeat the dialog");
+	await assert.rejects(owner.operation("clarify", args, "another-owner"), /only the.*owner/i);
+	await assert.rejects(owner.operation("clarify", { ...args, review: f.scouts[0].id }, "owner"), /not current/i);
+	await assert.rejects(owner.operation("clarify", { ...args, answer: "agent-supplied" }, "owner"), /unsupported field/i);
+	if (originalReply !== "closed") await assert.rejects(original.operation("clarify", args, "owner"), /already open/i);
+	assert.deepEqual((await f.status()).questions?.[0].recovery, args);
+	const tool = buildTools(owner, () => "owner").find(t => t.name === "foundry_clarify"); assert.ok(tool?.handler);
+	const invocation = { sessionId: "owner", toolName: tool.name, toolCallId: "clarify", arguments: args };
+	assert.match(JSON.stringify(await tool.handler(args, { ...invocation, agentId: "helper" })), /subagents/);
+	const result = tool.handler(args, invocation); await recovered.promise;
+	const third = f.runtime(f.root, { ask: async () => assert.fail("duplicate dialog") });
+	await assert.rejects(third.operation("clarify", args, "owner"), /not current/i);
+	if (originalReply === "before") {
+		oldReply.resolve(); await original.flush();
+		assert.equal((await f.status()).questions?.[0].delivery?.status, "presenting", "older reply cannot beat the recovered dialog");
+	}
+	newReply.resolve(); assert.equal(typeof await result, "string"); await f.settle();
+	oldReply.resolve(); await original.flush();
+	await assert.rejects(owner.operation("clarify", args, "owner"), /not current/i);
+	owner.turn("owner"); await owner.flush(); await f.settle();
+	assert.equal(asks, 2); assert.equal(f.scouts.length, 3);
+	assert.equal(f.scouts[2].squad, f.scouts[1].squad); assert.equal(f.scouts[2].base, f.tip);
+	assert.ok(f.scouts[2].prompt.includes(JSON.stringify(answer)) && f.scouts[2].prompt.includes("context, not authority"));
+	const s = await f.status();
+	assert.deepEqual(s.reviews[1].decision, { status: "answered", answer }); assert.equal(s.contract.commit, f.tip);
+	assert.equal(s.qualified, null); assert.equal(f.workers.size, 0);
+});
+
+test("a failed replacement dialog leaves an exact explicit retry, not an automatic question", async t => {
+	const f = trial(t), opened = latch(), release = latch();
+	const original = f.runtime(f.root, { ask: async () => { opened.resolve(); await release.promise; return "Old answer"; } });
+	await f.start(original); await f.scouts[0].report(question); await opened.promise;
+	const first = (await f.status()).questions?.[0].recovery; assert.ok(first);
+	const broken = f.runtime(f.root, { ask: async () => { throw Error("Dialog transport disconnected"); } });
+	const failed = await broken.operation("clarify", first, "owner");
+	const retry = failed.questions?.[0].recovery; assert.ok(retry, "an unconfirmed delivery must remain recoverable");
+	assert.equal(retry.review, first.review); assert.notEqual(retry.presentation, first.presentation);
+	release.resolve(); await original.flush();
+	let asks = 0;
+	const restored = f.runtime(f.root, { ask: async () => { asks++; return null; } });
+	restored.turn("owner"); await restored.flush();
+	await assert.rejects(restored.operation("clarify", first, "owner"), /not current/i);
+	assert.equal(asks, 0); assert.deepEqual((await f.status()).questions?.[0].recovery, retry);
+	const dismissed = await restored.operation("clarify", retry, "owner");
+	assert.equal(asks, 1); assert.equal(dismissed.questions?.[0].delivery?.status, "dismissed");
+	assert.equal(dismissed.questions?.[0].recovery, undefined);
+	await assert.rejects(restored.operation("clarify", retry, "owner"), /not current/i);
+});
+
+for (const goal of [true, false]) test(`explicit recovery rejects target movement before opening or recording, goal: ${goal}`, async t => {
+	const f = trial(t, goal ? undefined : null), opened = latch(), oldReply = latch(), recovered = latch(), newReply = latch();
+	const original = f.runtime(f.root, { ask: async () => { opened.resolve(); await oldReply.promise; return null; } });
+	await f.start(original); await f.scouts[0].report(question); await opened.promise; original.close(); oldReply.resolve(); await original.flush();
+	const review = f.scouts[0].id, args = { run, review, presentation: review };
+	const owner = f.runtime(f.root, { ask: async () => { recovered.resolve(); await newReply.promise; return "Outdated clarification"; } });
+	const result = owner.operation("clarify", args, "owner"); await recovered.promise;
+	put(f.root, "news", "new tip"); git(f.root, "add", "news"); git(f.root, "commit", "-qm", "independent change");
+	newReply.resolve(); await assert.rejects(result, /not current/i);
+	const q = (await f.status()).questions?.[0]; assert.ok(q?.recovery); assert.equal(q.delivery?.status, "presenting");
+	await assert.rejects(f.runtime(f.root, { ask: async () => assert.fail("stale review") }).operation("clarify", q.recovery, "owner"), /not current/i);
+	assert.equal(f.scouts.length, 2);
 });
 
 for (const moved of [false, true]) test(`a charter clarification wakes only its current review, target moved: ${moved}`, async t => {

@@ -150,6 +150,14 @@ export function revise(current, squad, report, review) {
 		if (settledOutput(n) && (added.some(g => g.id === n.grain.id) || !outside(n.grain.directory, dirs))) remove.add(n.grain.id);
 	const nodes = { ...current };
 	const retired = retirement(current, remove);
+	// If issued, downstream waiters will inherit the vetoing consumer's pins too.
+	// Project their retirement for validation only; the live graph stays intact.
+	if (retired.deferred) {
+		const consumers = new Set(retired.deferred.consumers);
+		for (const n of Object.values(current))
+			if (n.state === "waiting" && !n.generation && [...dependencies(current, n.grain.needs)].some(id => consumers.has(id)))
+				retired.remove.add(n.grain.id);
+	}
 	for (const id of retired.remove) delete nodes[id];
 	for (const g of added) nodes[g.id] = waiting(g, review);
 	const conflict = displacedInputs(current, added);

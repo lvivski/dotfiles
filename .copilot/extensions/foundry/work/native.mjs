@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { qualifiedProduct } from "./evidence.mjs";
+import { milestoneBlocker, qualifiedProduct } from "./evidence.mjs";
 import { questions, reading } from "./reviews.mjs";
 import { digest, fail, record, text } from "./values.mjs";
 
@@ -75,7 +75,7 @@ export function reserveProduct(run, issuer, cwd, target, commit, outputs) {
 /** @param {Effect} e */
 export const unissued = e => e.state === "ready" || e.state === "ordinary";
 /** @param {Effect} e */
-export const awaitingReply = e => e.state === "issued" || e.state === "uncertain";
+export const awaitingReply = e => e.state === "issued" || e.state === "uncertain" || e.state === "suspended";
 /** @param {Run} run */
 export const expired = run => !!run.policy.deadline && Date.now() >= Date.parse(run.policy.deadline);
 
@@ -104,7 +104,7 @@ export function current(run, e) {
 	if (e.kind === "goal")
 		return !qualifiedProduct(run) && !run.blocker && run.goal?.check === e.id;
 	if (e.kind === "product")
-		return !run.blocker && run.join?.check === e.id;
+		return !run.blocker && run.join?.check === e.id && !milestoneBlocker(run);
 	const n = assignee(run, e);
 	if (e.kind === "component")
 		return n?.state === "checking" && n.check === e.id;
@@ -131,6 +131,15 @@ export function boundWriter(run, actor, token) {
 /** A final handoff may notify its owner after goal acceptance. It cannot authorize work.
  * @param {Run} run @param {Effect} e */
 export const canDispatch = (run, e) => !expired(run) && (run.active || e.kind === "handoff" && !!run.goal) && current(run, e);
+
+/** Only an unclaimed create from a finished issuer can move. An ordinary/manual
+ * call has already visited a native route, even if it has no worker ID yet.
+ * @param {Run} run @param {Effect} e */
+export function transferableWriter(run, e) {
+	return e.kind === "writer" && e.tool === "create_session" && e.issuer !== run.owner && e.state === "ready" &&
+		e.callId === undefined && e.nativeId === undefined && e.permissionHold === undefined && !assignee(run, e)?.worker &&
+		current(run, e) && Object.values(run.nodes).some(n => n.worker === e.issuer && (n.state === "published" || n.state === "qualified"));
+}
 
 /** Claim exactly the reservation seen before the permission read, inside the ledger transaction.
  * @param {Run} run @param {Effect} expected @param {string} callId */
@@ -159,7 +168,7 @@ function block(run, e, reason) {
 	if (n) {
 		n.state = "blocked";
 		n.reason = reason;
-	} else if (e.kind === "product" || e.kind === "goal")
+	} else if (e.kind === "goal")
 		run.blocker = reason;
 }
 

@@ -217,6 +217,8 @@ test("a writer's Manual setting holds its dependent writer reservation, not a si
 	assert.ok(reservation);
 	assert.match(String(reservation.reason), /manual tool approvals/i);
 	assert.equal(reservation.state, "ready");
+	await f.owner.operation("resume", { source }, actor);
+	assert.deepEqual((await f.status()).pending.find(e => e.id === reservation.id), reservation);
 	put(writer.cwd, "stock/projection/index.mjs", "export default 2;");
 	await f.runtime(writer.cwd).operation("submit", { run, token: writer.token }, writer.id);
 	const receipt = (await f.status()).nodes.find(n => n.grain === "projection")?.receipt;
@@ -232,6 +234,83 @@ test("a writer's Manual setting holds its dependent writer reservation, not a si
 	assert.equal((await f.status()).nodes.find(n => n.grain === "emit")?.worker, [...f.workers.keys()].at(-1));
 	reopened.turn(parser.id); await reopened.flush();
 	assert.equal(f.workers.size, 3);
+});
+
+for (const closed of [false, true]) test(`owner resume claims a published writer's never-issued dependent once / ${closed ? "closed" : "racing"} issuer`, async t => {
+	const f = trial(t);
+	await f.start(); const [first, ...others] = f.scouts;
+	await first.report(report([grain("codec", "stock/codec/parse"), grain("emit", "stock/codec/emit", ["codec"])]));
+	for (const scout of others) await scout.report(report([]));
+	const [parser] = f.workers.values();
+	put(parser.cwd, "stock/codec/parse/index.mjs", "export default 1;");
+	let checked = false, starts = 0;
+	let reading = () => {}, release = () => {};
+	const preflight = new Promise(resolve => { reading = () => resolve(undefined); });
+	const gate = new Promise(resolve => { release = () => resolve(undefined); });
+	const worker = f.runtime(parser.cwd, { permissionBlocker: async () => {
+		if (checked) { reading(); await gate; }
+		return null;
+	}, execute: async (...args) => {
+		if (args[0] === "create_session") starts++;
+		const result = await f.execute(...args);
+		checked ||= args[0] === "bash"; return result;
+	} });
+	const submitting = worker.operation("submit", { run, token: parser.token }, parser.id);
+	await preflight;
+	const before = await f.status();
+	const e = before.pending.find(p => p.grain === "emit"); assert.equal(e?.issuer, parser.id);
+	assert.equal(e.state, "ready"); assert.equal(before.nodes.find(n => n.grain === "codec")?.state, "published");
+	if (closed) worker.close();
+	const denied = f.runtime(f.root, { permissionBlocker: async () => ({ scope: "session", message: "Manual approvals." }) });
+	await denied.operation("resume", { source }, actor).catch(error => assert.match(String(error), /Manual approvals/));
+	assert.deepEqual((await f.status()).pending.find(p => p.id === e.id), e);
+	f.owner.turn(actor); await f.owner.flush(); assert.equal(f.workers.size, 1);
+	try {
+		const resumed = await f.owner.operation("resume", { source }, actor);
+		assert.ok(resumed.nodes.find(n => n.grain === "emit")?.worker);
+		assert.deepEqual(resumed.nodes.find(n => n.grain === "codec"), before.nodes.find(n => n.grain === "codec"));
+		assert.deepEqual(resumed.assignments, before.assignments);
+	} finally {
+		release();
+		if (closed) await assert.rejects(submitting, { code: "runtime_closed" }); else await submitting;
+	}
+	await f.owner.operation("resume", { source }, actor);
+	assert.equal(starts, 0); assert.equal(f.workers.size, 2);
+});
+
+test("owner resume leaves prepared, refused, uncertain and in-flight dependent launches with their issuer", async t => {
+	const f = trial(t), deps = ["prepared", "denied", "uncertain", "inflight"];
+	await f.start(); const [first, ...others] = f.scouts;
+	await first.report(report([grain("codec", "stock/codec/parse"), ...deps.map(id => grain(id, `stock/codec/${id}`, ["codec"]))]));
+	for (const scout of others) await scout.report(report([]));
+	const [parser] = f.workers.values(); put(parser.cwd, "stock/codec/parse/index.mjs", "export default 1;");
+	let count = 0, started = () => {}, release = () => {};
+	const allIssued = new Promise(resolve => { started = () => resolve(undefined); });
+	const hold = new Promise(resolve => { release = () => resolve(undefined); });
+	const worker = f.runtime(parser.cwd, { execute: async (...args) => {
+		if (args[0] !== "create_session") return f.execute(...args);
+		if (++count === deps.length) started();
+		const kind = String(args[1].name).split(" ")[0];
+		if (kind === "prepared") return { resultType: "failure", error: "This session management tool is disabled" };
+		if (kind === "denied") return { resultType: "denied" };
+		if (kind === "inflight") await hold;
+		return { resultType: "unconfirmed" };
+	} });
+	const submit = worker.operation("submit", { run, token: parser.token }, parser.id);
+	try {
+		await allIssued; await new Promise(resolve => setImmediate(resolve));
+		const before = await f.status();
+		assert.equal(before.pending.find(e => e.grain === "prepared")?.state, "ordinary");
+		assert.equal(before.pending.find(e => e.grain === "uncertain")?.state, "uncertain");
+		assert.equal(before.pending.find(e => e.grain === "inflight")?.state, "issued");
+		assert.match(String(before.nodes.find(n => n.grain === "denied")?.reason), /refused/);
+		const resumed = await f.owner.operation("resume", { source }, actor);
+		assert.deepEqual(resumed.pending, before.pending);
+		assert.deepEqual(resumed.nodes, before.nodes);
+		assert.equal(resumed.prepared.length, 0);
+		assert.equal((await f.status(parser.id)).prepared.length, 1);
+		assert.equal(f.workers.size, 1);
+	} finally { release(); await submit; }
 });
 
 test("prepared calls survive local holds and global pauses; stale preflight cannot undo issuance", async t => {

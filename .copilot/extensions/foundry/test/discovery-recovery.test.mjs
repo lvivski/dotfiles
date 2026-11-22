@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { setImmediate as nextTurn } from "node:timers/promises";
+import { scoutDefinition } from "../work/scouts.mjs";
 import { factory } from "./fixture.mjs";
 
 const run = "catalog", source = ".foundry/catalog.json";
@@ -39,6 +40,92 @@ test("resume cannot start a missing run or disturb a bound workflow", async t =>
 	const live = await f.start();
 	assert.deepEqual(await f.owner.operation("resume", { source }, "owner"), live);
 	assert.equal(f.scouts.length, 1);
+});
+
+for (const status of ["paused", "halted"]) test(`explicit resume continues only the missing report of a bound ${status} batch`, async t => {
+	const f = trial(t, ["price", "browse"]), workflow = "original-workflow";
+	let dispatch = "", starts = 0, resumes = 0;
+	const owner = f.runtime(f.root, { scout: async (id, ticket, actor) => {
+		dispatch = ticket; starts++;
+		const [first] = await f.owner.scoutBatch(id, ticket, actor, workflow);
+		await f.owner.scoutResult(id, ticket, actor, workflow, first.id, noGap, first.packet);
+		return { runId: workflow, status };
+	} });
+	const stopped = await f.start(owner);
+	assert.deepEqual(stopped.reviews.map(r => r.state), ["observed", "reading"]);
+	assert.equal(stopped.reviews[1].workflowId, workflow);
+	owner.close();
+	let held = true;
+	const issuer = f.runtime(f.root, {
+		permissionBlocker: async () => held ? { scope: "session", message: "Manual approvals." } : null,
+		scout: async () => assert.fail("No replacement workflow"),
+		scoutState: async id => ({ runId: id, status }),
+		scoutSnapshot: async id => ({ runId: id, status }),
+		resumeScout: async id => {
+			resumes++; assert.equal(id, workflow);
+			const jobs = await f.owner.scoutBatch(run, dispatch, "owner", workflow);
+			assert.deepEqual(jobs.map(j => j.id), [stopped.reviews[1].id]);
+			await f.owner.scoutResult(run, dispatch, "owner", workflow, jobs[0].id, noGap, jobs[0].packet);
+			return { runId: workflow, status: "completed" };
+		},
+	});
+	issuer.turn("owner"); await issuer.flush(); await nextTurn();
+	assert.equal(resumes, 0);
+	await assert.rejects(issuer.operation("resume", { source }, "owner"), /Manual approvals/);
+	held = false;
+	await issuer.operation("start", { source }, "owner"); await nextTurn();
+	assert.equal(resumes, 0);
+	await issuer.operation("resume", { source }, "owner"); await nextTurn(); await issuer.flush();
+	assert.deepEqual((await f.status()).reviews.map(r => r.state), ["observed", "observed"]);
+	await issuer.operation("resume", { source }, "owner");
+	assert.deepEqual([starts, resumes, f.workers.size], [1, 1, 0]);
+});
+
+for (const envelope of [{ status: "cancelled" }, { status: "error", failure: { type: "workflow_limit_reached" } },
+	{ status: "halted", failure: { type: "workflow_resume_declined" } }])
+	test(`a ${envelope.failure?.type ?? envelope.status} envelope cannot authorize scout continuation`, async t => {
+		const f = trial(t), workflow = "original-workflow";
+		let starts = 0, resumes = 0;
+		const owner = f.runtime(f.root, {
+			scout: async (id, ticket, actor) => { starts++; await f.owner.scoutBatch(id, ticket, actor, workflow); return { runId: workflow, ...envelope }; },
+			scoutSnapshot: async id => ({ runId: id, ...envelope }),
+			resumeScout: async id => { resumes++; return { runId: id, status: "completed" }; },
+		});
+		assert.equal((await f.start(owner)).reviews[0].state, "blocked");
+		await owner.operation("resume", { source }, "owner");
+		assert.deepEqual([starts, resumes, f.workers.size], [1, 0, 0]);
+	});
+
+test("owner resume respects a newer native refusal even when Foundry last saw a paused attempt", async t => {
+	const f = trial(t), workflow = "original-workflow";
+	const owner = f.runtime(f.root, {
+		scout: async (id, ticket, actor) => { await f.owner.scoutBatch(id, ticket, actor, workflow); return { runId: workflow, status: "paused" }; },
+		scoutSnapshot: async id => ({ runId: id, status: "halted", failure: { type: "workflow_resume_declined" } }),
+		resumeScout: async () => assert.fail("Stale paused envelope cannot override refusal"),
+	});
+	assert.equal((await f.start(owner)).reviews[0].state, "reading");
+	const refused = await owner.operation("resume", { source }, "owner");
+	assert.equal(refused.reviews[0].state, "blocked");
+	assert.match(String(refused.reviews[0].reason), /workflow_resume_declined/);
+	assert.equal(f.workers.size, 0);
+});
+
+test("a permission hold inside the resumed workflow checkpoints the original dispatch instead of completing it", async t => {
+	const f = trial(t); await f.start(); const [job] = f.scouts;
+	let manual = true, calls = 0;
+	const issuer = f.runtime(f.root, { permissionBlocker: async () => manual ? { scope: "session", message: "Manual approvals." } : null });
+	const workflow = scoutDefinition(() => issuer);
+	/** @type {Parameters<typeof workflow.run>[0]} */
+	const ctx = { runId: job.workflowId, args: { run, dispatch: job.dispatch }, session: /** @type {typeof ctx.session} */ ({ sessionId: job.issuer }),
+		signal: new AbortController().signal, log() {}, phase() {}, step: async (_key, fn) => fn(), parallel: fs => Promise.all(fs.map(fn => fn())),
+		agent: async () => { calls++; return noGap; }, pause: async key => { assert.equal(key, "dispatch-held:1"); throw new DOMException("paused", "AbortError"); },
+		pipeline: () => assert.fail("unexpected pipeline"), workflow: () => assert.fail("nested workflow") };
+	await assert.rejects(workflow.run(ctx), { name: "AbortError" });
+	assert.equal(calls, 0);
+	assert.equal((await f.status()).reviews[0].workflowId, job.workflowId);
+	manual = false;
+	assert.deepEqual(await workflow.run(ctx), { reported: 1, failed: [] });
+	assert.equal(calls, 1); assert.equal(f.scouts.length, 1);
 });
 
 test("a reconnected issuer observes the original workflow; evidence received through a pause issues work only on resume", async t => {

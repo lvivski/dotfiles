@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { notifyWriters, takeArtifactBrief } from "./artifacts.mjs";
 import { validOutcome } from "./contract.mjs";
-import { checkReceipt, goalReceipt } from "./evidence.mjs";
+import { checkReceipt, goalReceipt, milestoneBlocker } from "./evidence.mjs";
 import { assess, goalAllowsWork, qualify, rejectRepeat, stall } from "./goal.mjs";
 import { admitted, assignmentCount, expired, reserveNotice, reserveProduct, reserveWorker } from "./native.mjs";
 import { actionable, consumersOf, dependencies, liveNeeds, owns, productOutputs, proposal, requireNewWork, revise, settledOutput, superseded, waiting, working, writerInputs } from "./plan.mjs";
 import { changedFiles, combine, commitAt, outside, regularFiles, rejoin, retain, verifyContracts, versionOf, withoutGrain } from "./product.mjs";
+import { referenceCheckout } from "./research.mjs";
 import { availableHistory, blockReview, canInvestigate, discoverySquads, nextReview, reading, requestedFiles, researchContext, reserveReview, reviews, staleReviewReason, wakeSource } from "./reviews.mjs";
 import { FoundryError, contains, digest, fail, fields, name, names, record, referenceRepo, relative, text, waitTarget } from "./values.mjs";
 
@@ -84,14 +85,15 @@ export function parseObservation(squad, raw) {
 		...(outcome === "needs-evidence" ? { file: relative(input.file) } : {}) };
 }
 
-/** @param {string} cwd @param {Run} run @param {import("./model.js").Review} review */
-export function currentReview(cwd, run, review) {
+/** @param {string} cwd @param {Run} run @param {import("./model.js").Review} review
+ * @param {string} [exactTarget] For a clarification, require the exact reviewed product at this target tip, not just equivalent charter inputs. */
+export function currentReview(cwd, run, review, exactTarget) {
 	const squad = run.policy.squads.find(s => s.id === review.squad);
 	if (!squad || reviews(run).findLast(r => r.squad === squad.id)?.id !== review.id) return false;
-	const target = commitAt(cwd, run.policy.target);
+	const target = exactTarget ?? commitAt(cwd, run.policy.target);
 	if (run.goal) return review.evaluatorRevision === run.repins?.at(-1)?.revision && run.goal.commit === review.base && run.goal.target === target && goalReceipt(run)?.exit === 1;
 	const base = productBase(cwd, run, target);
-	return base === review.base || reviewVersion(cwd, run, squad, base) === review.version;
+	return base === review.base || !exactTarget && reviewVersion(cwd, run, squad, base) === review.version;
 }
 
 /** @param {string} cwd @param {Run} run @param {import("./model.js").Review} review @param {import("./model.js").Observation} observation */
@@ -125,12 +127,13 @@ export function observe(cwd, run, review, observation) {
 			fail("charter_scope", `Evidence is outside this charter: ${file}`);
 	}
 	const packet = review.packet ?? fail("missing_packet", "Missing journaled scout packet");
+	const part = packet.excerpt;
 	for (const e of regularFiles(cwd, review.base, evidence))
-		if (!Object.hasOwn(packet.files, e.name) || packet.files[e.name] !== e.oid)
+		if (!(Object.hasOwn(packet.files, e.name) && packet.files[e.name] === e.oid) && !(part?.path === e.name && part.oid === e.oid))
 			fail("unseen_evidence", `Text of ${e.name} at ${e.oid} was not delivered in this packet`);
 	if (outcome === "no-gap" && packet.partial) fail("partial_coverage", "Cannot conclude no-gap from a partial packet");
 	if (observation.file) {
-		if (focused.has(observation.file) || Object.hasOwn(packet.files, observation.file))
+		if (focused.has(observation.file) && !(part?.path === observation.file && part.end < part.length) || Object.hasOwn(packet.files, observation.file))
 			fail("unresolved_evidence", `No further focused read of ${observation.file}: the pinned evidence is unchanged`);
 		regularFiles(cwd, review.base, [observation.file]);
 	}
@@ -140,9 +143,9 @@ export function observe(cwd, run, review, observation) {
 		const pins = { ...run.references };
 		for (const { repo, revision } of observation.references) {
 			if (pins[repo] && pins[repo] !== revision) fail("frozen_reference", `${repo} is already frozen for this run at ${pins[repo]}; rejected ${revision}`);
-			pins[repo] = revision;
+			if (!pins[repo] && referenceCheckout(cwd, { repo, revision })) pins[repo] = revision;
 		}
-		run.references = pins;
+		if (Object.keys(pins).length) run.references = pins;
 	}
 	review.observation = observation;
 	if (revision?.deferred) {
@@ -180,6 +183,15 @@ function repair(run, id, reason) {
 	node.state = "waiting";
 }
 
+/** @param {import("./model.js").Receipt} receipt @param {string|undefined} grain @param {number} remaining */
+function productFailure(receipt, grain, remaining) {
+	if (receipt.exit === 0) return;
+	if (receipt.exit === null) return `Evaluation did not complete: ${receipt.output}`;
+	const reason = receipt.output || "Evaluator failed";
+	if (!grain) return `Product check failed without identifying a repairable output: ${reason}`;
+	if (remaining === 0) return `No assignment remains to repair ${grain}: ${reason}`;
+}
+
 /** Apply only runner-owned receipts for the current attempt. No native calls here.
  * @param {string} cwd @param {Run} run @param {string} actor @param {number} remaining */
 function settleChecks(cwd, run, actor, remaining) {
@@ -194,24 +206,31 @@ function settleChecks(cwd, run, actor, remaining) {
 		else if (remaining === 0) { n.state = "blocked"; n.reason = `No assignment remains to repair ${id}: ${receipt.output || "Evaluator failed"}`; }
 		else repair(run, n.grain.id, receipt.output || "Evaluator failed");
 	}
-	const join = run.join, receipt = join && checkReceipt(checks.get(join.check));
-	if (!join || !receipt || run.blocker) return;
+	const join = run.join, check = join && checks.get(join.check);
+	if (!join || !check) return;
+	const receipt = checkReceipt(check);
+	const blamed = receipt?.repair && Object.hasOwn(join.outputs, receipt.repair) ? receipt.repair : undefined;
+	const failure = receipt && productFailure(receipt, blamed, remaining);
+	// Older snapshots kept this exact check's diagnostic on the run. A goal
+	// launcher/refusal can have the same diagnostic and must keep its own hold.
+	if (run.blocker && run.blocker !== (run.goal && checks.get(run.goal.check)?.error) &&
+		run.blocker === (milestoneBlocker(run) ?? failure)) {
+		check.error = run.blocker;
+		delete run.blocker;
+	}
+	if (!receipt || check.error || run.blocker) return;
 	const target = commitAt(cwd, run.policy.target);
 	if (!sameProduct(join, target, productOutputs(run, target, remaining))) return;
-	const { exit, output, repair: grain } = receipt;
-	if (exit === 0) {
+	if (receipt.exit === 0) {
 		delete run.join;
 		if (!run.goal) qualify(run, actor, join);
 		run.products.push(join);
 		for (const id of Object.keys(join.outputs)) run.nodes[id].state = "qualified";
-	} else if (exit !== null && grain && Object.hasOwn(join.outputs, grain)) {
-		if (remaining === 0) {
-			run.blocker = `No assignment remains to repair ${grain}: ${output || "Evaluator failed"}`;
-			return; // Keep the exact failed candidate and its component receipts.
-		}
+	} else if (failure) check.error = failure;
+	else if (blamed) {
 		delete run.join;
-		repair(run, grain, output || "Evaluator failed");
-	} else run.blocker = exit === null ? `Evaluation did not complete: ${output}` : `Product check failed without identifying a repairable output: ${output || "Evaluator failed"}`;
+		repair(run, blamed, receipt.output || "Evaluator failed");
+	}
 }
 
 /** @param {string} cwd @param {Run} run @param {string} target */
@@ -358,7 +377,7 @@ export function advance(cwd, run, actor, discover, context = {}) {
 		}
 	}
 	if (reserved === remaining) return; // Staffing stops, not receipt settlement or product/goal verification.
-	const survey = run.goal ? gap?.exit === 1 && run.goal.target === tip() && !(outputs && run.join && !run.blocker)
+	const survey = run.goal ? gap?.exit === 1 && run.goal.target === tip() && !(outputs && run.join && !milestoneBlocker(run))
 		: !run.policy.seed && (discover || cap !== undefined);
 	if (!survey) return;
 	const applicable = history.filter(r => r.evaluatorRevision === run.repins?.at(-1)?.revision);

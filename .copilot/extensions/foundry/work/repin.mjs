@@ -1,5 +1,6 @@
 import { admitted } from "./native.mjs";
 import { changedFiles, commitAt, entries, outside, regularFiles, retain, verifyContracts } from "./product.mjs";
+import { retireSuperseded, reviews } from "./reviews.mjs";
 import { fail, fields, relative, text } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
@@ -45,6 +46,7 @@ export function prepareRepin(cwd, run, actor, args) {
 				fail("stale_pin", "Use a new reviewed commit, not a previously applied pin");
 			retain(cwd, revision);
 			(live.repins ??= []).push(pin);
+			for (const r of reviews(live)) retireSuperseded(live, r);
 		},
 	};
 }

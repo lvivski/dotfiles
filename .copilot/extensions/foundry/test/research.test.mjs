@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync } from "node:fs";
 import { createServer } from "node:http";
 import path from "node:path";
 import { once } from "node:events";
 import test from "node:test";
+import { openDatabase } from "../work/database.mjs";
 import { researchResult, researchSchema } from "../work/research.mjs";
 import { scoutDefinition } from "../work/scouts.mjs";
 import { factory, git, loadEntry, put } from "./fixture.mjs";
@@ -158,23 +159,25 @@ test("all attributed research reaches the scout regardless of count or length", 
 });
 
 test("a waiting design squad reads coverage's frozen revision before any inventory or writer exists", async t => {
-	const squads = ["design", "coverage", "other"].map(id => ({ id, areas: [id], charter: `${id}.md`, checks: ["unit.mjs"], researchAgent: "foundry-research" }));
+	const squads = ["design", "peer", "coverage", "other"].map(id => ({ id, areas: [id], charter: `${id}.md`, checks: ["unit.mjs"], researchAgent: "foundry-research" }));
 	const f = factory(t, run, source, {
 		[source]: JSON.stringify({ version: 2, id: run, direction: "Share the reference revision.", target: "refs/heads/main",
 			squads, productCheck: "product.mjs", goalCheck: "goal.mjs" }),
 		".foundry/launch/journey.md": "Coverage freezes the adapter checkout. Design uses that same revision.",
-		"coverage.md": "Freeze ../adapter during discovery.", "design.md": "Compare the layout in ../adapter.", "other.md": "Independent work.",
+		"coverage.md": "Freeze ../adapter during discovery.", "design.md": "Compare the layout in ../adapter.", "peer.md": "Inspect the same pin.", "other.md": "Independent work.",
 		"goal.mjs": "process.exit(1)", "product.mjs": "", "unit.mjs": "",
 	});
 	const ref = path.join(path.dirname(f.root), "adapter");
 	mkdirSync(ref); git(ref, "init", "-q", "-b", "main"); put(ref, "layout", "three panes");
 	git(ref, "add", "."); git(ref, "commit", "-qm", "original"); const revision = git(ref, "rev-parse", "HEAD");
+	git(path.dirname(f.root), "clone", "-q", ref, "other-adapter");
 	await f.start();
 	const latest = (/** @type {string} */ squad) => {
 		const s = f.scouts.findLast(r => r.squad === squad); assert.ok(s); return s;
 	};
 	const request = (/** @type {string} */ id) => ({ outcome: "needs-research", reason: "Inspect the reference.", evidence: [`${id}.md`], grains: [] });
 	await latest("design").report({ outcome: "waiting", waitFor: "reference:adapter", reason: "Read the frozen layout.", evidence: ["design.md"], grains: [] });
+	await latest("peer").report({ outcome: "waiting", waitFor: "reference:adapter", reason: "Compare the same layout.", evidence: ["peer.md"], grains: [] });
 	await latest("other").report({ outcome: "waiting", waitFor: "coverage", reason: "Need the finished inventory.", evidence: ["other.md"], grains: [] });
 	await latest("coverage").report(request("coverage"));
 	await latest("coverage").report({ status: "unknown", reason: "Inventory is incomplete.", findings: [
@@ -191,7 +194,16 @@ test("a waiting design squad reads coverage's frozen revision before any invento
 	assert.deepEqual(pin, { repo: "adapter", revision });
 	assert.doesNotMatch(research.prompt, /coverage-only-/);
 	const ctx = { sessionId: "owner" }, hook = { ...ctx, timestamp: new Date(), workingDirectory: f.root };
-	const extension = await loadEntry({ ...ctx, on() {}, rpc: { mode: { get: async () => "interactive" } } });
+	const peer = latest("peer");
+	const agent = (/** @type {string} */ agentId, /** @type {string} */ runId) => ({
+		agentId, runId, toolCallId: `launch:${agentId}`, agentType: "foundry-research", label: "same label", status: "running",
+	});
+	const direct = [agent("research-helper", research.workflowId), agent("peer-helper", peer.workflowId)];
+	const tasks = [...direct, agent("other-helper", "")].map(a => ({ ...a, type: "agent", id: a.agentId }));
+	let beforeTasks = async () => {};
+	const extension = await loadEntry({ ...ctx, on() {}, rpc: { mode: { get: async () => "interactive" },
+		tasks: { list: async () => { await beforeTasks(); return { tasks }; } } },
+		workflow: { getRunDetail: async (/** @type {string} */ id) => ({ runId: id, workflowName: "foundry-scout", status: "running", agents: direct.filter(a => a.runId === id) }) } });
 	await extension.hooks?.onSessionStart?.({ ...hook, source: "startup" }, ctx);
 	t.after(() => extension.hooks?.onSessionEnd?.({ ...hook, reason: "complete" }, ctx));
 	const tool = extension.tools?.find(t => t.name === "foundry_reference");
@@ -199,38 +211,92 @@ test("a waiting design squad reads coverage's frozen revision before any invento
 	const actor = { ...ctx, agentId: "research-helper", toolName: tool.name, toolCallId: "read" };
 	const args = { run, review: research.id, repo: pin.repo, revision: pin.revision, path: "layout" };
 	assert.notEqual((await extension.hooks?.onPreToolUse?.({ ...hook, ...actor, toolArgs: args }, ctx))?.permissionDecision, "deny");
-	const read = (more = {}) => tool.handler?.({ ...args, ...more }, { ...actor, arguments: { ...args, ...more } });
+	const read = (more = {}, caller = {}) => tool.handler?.({ ...args, ...more }, { ...actor, ...caller, arguments: { ...args, ...more } });
+	const denied = async (more = {}, caller = {}) => assert.match(JSON.stringify(await read(more, caller)), /"resultType":"failure"/);
+	await t.test("the same session and profile do not authorize a different job", async () => {
+		await denied({}, { agentId: "other-helper" });
+		await denied({}, { agentId: "peer-helper" });
+		await denied({ review: peer.id });
+		await denied({}, { agentId: undefined });
+		await denied({}, { sessionId: "other" });
+		assert.equal(await read({ review: peer.id }, { agentId: "peer-helper" }), "three panes");
+	});
+	await t.test("a second direct agent makes the identity ambiguous even with a matching task", async () => {
+		direct.push(agent("unexpected-direct-agent", research.workflowId));
+		try { await denied(); } finally { direct.pop(); }
+	});
+	await t.test("a resumed reader can read alongside a historical direct agent, but its predecessor cannot", async () => {
+		const old = { ...agent("prior-attempt", research.workflowId), status: "completed" };
+		direct.unshift(old); tasks.push({ ...old, id: old.agentId, type: "agent" });
+		try {
+			assert.equal(await read(), "three panes");
+			await denied({}, { agentId: old.agentId });
+		} finally { direct.shift(); tasks.pop(); }
+	});
+	await t.test("the live task must corroborate the native launch", async () => {
+		const launch = tasks[0].toolCallId; tasks[0].toolCallId = "different-launch";
+		try { await denied(); } finally { tasks[0].toolCallId = launch; }
+	});
+	await t.test("an older multi-job reservation cannot establish an exact reader", async () => {
+		const db = openDatabase(f.root);
+		const bindPeer = (/** @type {typeof peer} */ source) => db.update(run, r => {
+			const job = r.effects.find(e => e.id === peer.id); assert.ok(job);
+			job.workflowId = source.workflowId; job.callId = source.dispatch;
+		});
+		try { bindPeer(research); await denied(); } finally { bindPeer(peer); db.close(); }
+	});
 	const observed = await read();
 	assert.equal(observed, "three panes");
 	assert.match(JSON.stringify(await read({ repo: "other-adapter" })), /not bound to that reference/, "knowing another published pin does not expand this read");
 	for (const changed of [{ revision: git(ref, "rev-parse", "HEAD") }, { repo: "../adapter" }, { path: "../layout" }, { review: latest("other").id }])
 		assert.match(JSON.stringify(await read(changed)), /"resultType":"failure"/);
+	renameSync(ref, ref + "-offline");
+	try {
+		await denied();
+		assert.ok((await f.status()).reviews.find(r => r.id === research.id), "a missing recorded pin must not hide unrelated ledger state");
+	} finally { renameSync(ref + "-offline", ref); }
 	await research.report({ status: "answered", reason: "Read the frozen layout.", findings: [{ kind: "code", source: `${revision}:layout`, finding: observed }] });
 	assert.match(latest("design").prompt, /three panes/);
 	assert.match(JSON.stringify(await read()), /"resultType":"failure"/, "a settled research job cannot read again");
+	await t.test("a report arriving during SDK lookup revokes the read", async () => {
+		beforeTasks = () => peer.report({ status: "unknown", reason: "Done.", findings: [] });
+		await denied({ review: peer.id }, { agentId: "peer-helper" });
+	});
 	assert.equal(f.workers.size, 0); assert.equal((await f.status()).qualified, null);
 });
 
 test("late waits reuse the run-wide pin and a conflicting publication by another squad is rejected atomically", async t => {
-	const squads = ["coverage", "design", "peer", "confirm"].map(id => ({ id, areas: [id], charter: `${id}.md`, checks: ["unit"], researchAgent: profile }));
+	const squads = ["coverage", "design", "peer", "confirm", "reconfirm"].map(id => ({ id, areas: [id], charter: `${id}.md`, checks: ["unit"], researchAgent: profile }));
 	const f = factory(t, run, source, { [source]: JSON.stringify({ version: 2, id: run, direction: "Investigate.", target: "refs/heads/main",
 		squads, productCheck: "product.mjs", goalCheck: "goal.mjs" }), ".foundry/launch/journey.md": "Share the frozen revision.",
-		"coverage.md": "Freeze the reference.", "design.md": "Use coverage's revision.", "peer.md": "Investigate.", "confirm.md": "Confirm the revision.", "goal.mjs": "process.exit(1)", "product.mjs": "", unit: "" });
+		"coverage.md": "Freeze the reference.", "design.md": "Use coverage's revision.", "peer.md": "Investigate.", "confirm.md": "Confirm the revision.", "reconfirm.md": "Confirm the same pair.", "goal.mjs": "process.exit(1)", "product.mjs": "", unit: "" });
 	const latest = (/** @type {string} */ squad) => { const r = f.scouts.findLast(r => r.squad === squad); assert.ok(r); return r; };
 	const investigate = (/** @type {string} */ squad) => latest(squad).report({ outcome: "needs-research", evidence: [`${squad}.md`], grains: [], reason: "Inspect source." });
 	await f.start(); await investigate("design"); const early = latest("design");
 	await investigate("coverage");
-	const pin = { repo: "adapter", revision: "1".repeat(40) };
+	const sibling = path.join(path.dirname(f.root), "adapter");
+	mkdirSync(sibling); git(sibling, "init", "-q", "-b", "main");
+	put(sibling, "notes", "fixture"); git(sibling, "add", "."); git(sibling, "commit", "-qm", "fixture");
+	const pin = { repo: "adapter", revision: git(sibling, "rev-parse", "HEAD") };
 	const partial = { status: "unknown", reason: "Still surveying.", findings: [] };
-	await latest("coverage").report({ ...partial, references: [pin] });
+	const missing = { ...pin, revision: "1".repeat(40) };
+	await latest("coverage").report({ ...partial, references: [missing] });
+	await early.report({ ...partial, waitFor: "reference:adapter" });
+	assert.equal(latest("design").id, early.id, "reporting an unreadable SHA must not wake a frozen-input waiter");
 	await investigate("confirm"); await latest("confirm").report({ ...partial, references: [pin] });
 	assert.equal((await f.status()).reviews.filter(r => r.squad === "confirm").at(-1)?.state, "observed");
+	const ready = latest("design"); assert.ok(ready.prompt.includes(pin.revision));
+	renameSync(sibling, path.join(path.dirname(f.root), "spurious"));
+	await investigate("reconfirm"); await latest("reconfirm").report({ ...partial, references: [pin] });
+	assert.equal((await f.status()).reviews.filter(r => r.squad === "reconfirm").at(-1)?.state, "observed");
 	await investigate("peer");
 	const rejected = "2".repeat(40);
-	await latest("peer").report({ ...partial, references: [{ repo: "spurious", revision: rejected }, { ...pin, revision: rejected }] });
+	await latest("peer").report({ ...partial, references: [{ repo: "spurious", revision: pin.revision }, { ...pin, revision: rejected }] });
 	assert.match(String((await f.status()).reviews.filter(r => r.squad === "peer").at(-1)?.reason), /already frozen/);
-	assert.ok(!early.prompt.includes(pin.revision)); await early.report({ ...partial, waitFor: "reference:adapter" });
-	const ready = latest("design"); assert.ok(ready.prompt.includes(pin.revision)); assert.ok(!ready.prompt.includes(rejected));
+	const db = openDatabase(f.root); t.after(() => db.close());
+	assert.deepEqual(db.read(run)?.references, { adapter: pin.revision });
+	assert.ok(!early.prompt.includes(pin.revision));
+	assert.ok(!ready.prompt.includes(rejected));
 	await ready.report({ ...partial, waitFor: "reference:adapter" });
 	assert.equal(latest("design").id, ready.id, "an unchanged reference cannot repeatedly wake the same investigation");
 	assert.deepEqual((await f.status()).questions, []);

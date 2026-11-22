@@ -2,7 +2,7 @@ import { defineWorkflow, joinSession } from "@github/copilot-sdk/extension";
 import { foundryBoard } from "./canvas.mjs";
 import { identify } from "./work/native.mjs";
 import { permissionCheck } from "./work/permissions.mjs";
-import { recover } from "./work/recovery.mjs";
+import { recover, scoutFailure } from "./work/recovery.mjs";
 import { researchAgent } from "./work/research.mjs";
 import { createRuntime } from "./work/runtime.mjs";
 import { scoutAgent, scoutDefinition } from "./work/scouts.mjs";
@@ -30,12 +30,32 @@ async function runningHelpers(workflows) {
 const runtime = createRuntime(process.cwd(), {
 	mode: () => session.rpc.mode.get(),
 	runningHelpers,
+	async scoutBudget() {
+		const { contextAttribution: info } = await session.rpc.metadata.getContextAttribution();
+		if (!info || !Number.isSafeInteger(info.promptTokenLimit) || info.promptTokenLimit <= 0)
+			throw Error("Foundry could not determine the issuing session's effective prompt budget.");
+		// A fresh scout does not inherit the owner's conversation. Allow for its own
+		// instructions and schema, then pack conservatively in UTF-8 bytes, not guessed tokens.
+		const c = info.categories;
+		return Math.max(0, Math.floor((info.promptTokenLimit - c.systemPrompt - c.customInstructions - c.systemTools - c.mcpTools) / 2));
+	},
+	scoutFailure: (id, label) => scoutFailure(session, id, label),
+	async isResearcher(id, agentId) {
+		const detail = await session.workflow.getRunDetail(id);
+		const running = detail.agents.filter(a => a.status === "running"), [direct] = running;
+		if (detail.runId !== id || detail.workflowName !== "foundry-scout" || detail.status !== "running" ||
+			running.length !== 1 || direct.runId !== id || direct.agentId !== agentId || !direct.toolCallId) return false;
+		const tasks = (await session.rpc.tasks.list()).tasks.filter(t => t.id === agentId);
+		return tasks.length === 1 && tasks[0].type === "agent" && tasks[0].status === "running" && tasks[0].toolCallId === direct.toolCallId;
+	},
 	permissionBlocker: permissionCheck(() => session.rpc.managedSettings.get(), () => session.rpc.permissions.getMode()),
 	ask: message => session.ui.input(message),
 	confirm: message => session.ui.confirm(message),
 	execute: (name, args, toolCallId) => session.rpc.tools.execute({ name, arguments: args, toolCallId }),
 	scout: (run, dispatch) => session.workflow.run("foundry-scout", { args: { run, dispatch }, notifyOnComplete: false }),
 	scoutState: id => session.workflow.waitForRun(id),
+	scoutSnapshot: id => session.workflow.getRun(id),
+	resumeScout: id => session.workflow.resume(id, { notifyOnComplete: false }),
 	notify: prompt => session.send({ source: "system", mode: "enqueue", prompt }),
 	recover: effect => recover(page => session.rpc.eventLog.read(page), effect),
 	log: message => session.log(message, { level: "warning" }),

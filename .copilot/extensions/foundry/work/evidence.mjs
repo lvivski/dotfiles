@@ -15,10 +15,17 @@ export function goalReceipt(run) {
 		e.evaluatorRevision === run.repins?.at(-1)?.revision) return checkReceipt(e);
 }
 
+/** A terminal product check holds only its own candidate, not the goal on the assessed base.
+ * @param {Run} run */
+export function milestoneBlocker(run) {
+	const e = run.join && run.effects.find(e => e.id === run.join?.check);
+	if (e?.kind === "product" && (e.state === "done" || e.state === "refused")) return e.error;
+}
+
 /** @param {Run} run */
 export function missingObservation(run) {
 	const receipt = goalReceipt(run);
-	if (!run.blocker && !run.join && receipt?.exit === 2) return receipt;
+	if (!run.blocker && receipt?.exit === 2 && (!run.join || milestoneBlocker(run))) return receipt;
 }
 
 /** A goal milestone doesn't qualify until both exact receipts are applied to this product.

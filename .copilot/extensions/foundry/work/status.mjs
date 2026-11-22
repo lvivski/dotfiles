@@ -1,10 +1,10 @@
 import { materialize, offered } from "./artifacts.mjs";
-import { goalReceipt, missingObservation, qualifiedProduct } from "./evidence.mjs";
+import { goalReceipt, milestoneBlocker, missingObservation, qualifiedProduct } from "./evidence.mjs";
 import { handoff, qualification } from "./handoff.mjs";
 import { metricsFacts, timingFacts } from "./metrics.mjs";
 import { assignmentCount, awaitingReply, canDispatch, current, expired } from "./native.mjs";
 import { checked, liveNeeds } from "./plan.mjs";
-import { questions, reviews, reviewStatus } from "./reviews.mjs";
+import { presentation, questions, reviews, reviewStatus } from "./reviews.mjs";
 import { fail } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
@@ -21,8 +21,12 @@ function ownerStatus(run, receipts, detail) {
 			pin: run.repins?.at(-1)?.revision ?? run.policy.base, receipt: goalReceipt(run) } } : {}),
 		...(run.repins ? { evaluatorChanges: run.repins, goalChecks: run.effects.filter(e => e.kind === "goal").map(e => ({
 			commit: e.commit, evaluatorRevision: e.evaluatorRevision ?? e.commit, state: e.state, receipt: receipts.get(e.id) })) } : {}),
-		questions: questions(run).flatMap(r => r.observation ? [{ squad: r.squad, base: r.base, question: r.observation.reason,
-			evidence: r.observation.evidence, ...(r.decision ? { delivery: r.decision } : {}) }] : []),
+		questions: questions(run).flatMap(r => {
+			const claim = presentation(r);
+			return r.observation ? [{ squad: r.squad, base: r.base, question: r.observation.reason,
+				evidence: r.observation.evidence, ...(r.decision ? { delivery: r.decision } : {}),
+				...(r.observation.ownerInput && claim ? { recovery: { run: run.id, review: r.id, presentation: claim } } : {}) }] : [];
+		}),
 		products: run.products.map(p => ({ ...p, receipt: receipts.get(p.check) })),
 		candidate: run.join && { ...run.join, receipt: receipts.get(run.join.check) },
 	};
@@ -51,7 +55,7 @@ export function status(run, actor, detail) {
 		e.runnerStarted && awaitingReply(e) && !e.receipt && !e.permissionHold) : undefined;
 	const blocker = run.pauseReason ?? run.blocker ?? run.conflict ?? run.goal?.stall ?? (previous
 		? `Approved evaluator ${pin} is waiting for the receipt of superseded goal ${previous.id} in session ${previous.issuer}. Verify the original runner before intervening; do not replay it.`
-		: missing ? `Goal check at ${missing.commit} awaits external evidence (exit 2): ${missing.output.trim() || "no diagnostic"}. After supplying it, use /foundry resume ${run.policy.source}.` : undefined);
+		: missing ? `Goal check at ${missing.commit} awaits external evidence (exit 2): ${missing.output.trim() || "no diagnostic"}. After supplying it, use /foundry resume ${run.policy.source}.` : milestoneBlocker(run));
 	return {
 		run: run.id, active: run.active, direction: run.policy.direction, contract: { commit: run.policy.base, path: run.policy.source },
 		limit: run.policy.workers ?? null, ...(assignments ? { assignments } : {}), deadline: run.policy.deadline, expired: expired(run),

@@ -45,13 +45,23 @@ function references(value) {
 }
 
 /** Use the product's primary worktree, not a transient writer worktree, to locate its sibling.
- * @param {string} cwd @param {import("./model.js").Reference} pin @param {string} file */
-export function referenceText(cwd, pin, file) {
+ * @param {string} cwd @param {import("./model.js").Reference} pin */
+export function referenceCheckout(cwd, pin) {
 	const first = git(cwd, ["worktree", "list", "--porcelain", "-z"]).toString().split("\0", 1)[0];
 	if (!first.startsWith("worktree ")) fail("missing_reference", "Missing primary product worktree");
 	const primary = realpathSync(first.slice(9)), repo = path.join(path.dirname(primary), name(pin.repo, "reference checkout"));
-	if (repo === primary || realpathSync(repo) !== repo || rootAt(repo) !== repo || commitAt(repo, pin.revision) !== pin.revision)
-		fail("missing_reference", `No matching sibling checkout and commit for ${pin.repo}@${pin.revision}`);
+	try {
+		if (repo !== primary && realpathSync(repo) === repo && rootAt(repo) === repo && commitAt(repo, pin.revision) === pin.revision)
+			return repo;
+	} catch (error) {
+		// A missing/inaccessible checkout or a failed local Git lookup isn't a shared input.
+		if (!(error instanceof Error && ("code" in error || "status" in error))) throw error;
+	}
+}
+
+/** @param {string} cwd @param {import("./model.js").Reference} pin @param {string} file */
+export function referenceText(cwd, pin, file) {
+	const repo = referenceCheckout(cwd, pin) ?? fail("missing_reference", `No matching sibling checkout and commit for ${pin.repo}@${pin.revision}`);
 	const bytes = committedFile(repo, pin.revision, relative(file));
 	if (bytes.includes(0) || !isUtf8(bytes)) fail("unsupported_reference", "The pinned blob is not UTF-8 text; no visual observation was made");
 	return bytes.toString("utf8");

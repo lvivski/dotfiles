@@ -56,11 +56,14 @@ const observation = v => object(v) && string(v.reason) && Array.isArray(v.eviden
 	(v.replace === undefined || v.outcome === "regenerate" && list(id)(v.replace));
 /** @param {unknown} v @returns {v is import("./model.js").Packet} */
 export const isPacket = v => object(v) && id(v.review) && commit(v.base) && bool(v.partial) && object(v.files) &&
+	(v.excerpt === undefined || v.partial === true && object(v.excerpt) && path(v.excerpt.path) && commit(v.excerpt.oid) &&
+		[v.excerpt.start, v.excerpt.end, v.excerpt.length].every(count) && Number(v.excerpt.start) < Number(v.excerpt.end) &&
+		Number(v.excerpt.end) <= Number(v.excerpt.length) && !Object.hasOwn(v.files, String(v.excerpt.path))) &&
 	Object.entries(v.files).every(([p, oid]) => path(p) && commit(oid)) && named(commit)(v.outputs);
 /** @type {Guard} */
-const decision = v => object(v) && (one("presenting", "dismissed")(v.status) ||
+const decision = v => object(v) && (v.status === "presenting" && optional(id)(v.presentation) || v.status === "dismissed" ||
 	v.status === "answered" && string(v.answer) ||
-	v.status === "unavailable" && string(v.reason));
+	v.status === "unavailable" && string(v.reason) && optional(id)(v.presentation));
 const node = shape({
 	grain, review: optional(id), state: one("idle", "waiting", "writing", "checking", "published", "qualified", "repeated", "blocked"), token: optional(id), worker: optional(string),
 	generation: optional(commit), inputs: optional(named(commit)), base: optional(commit), replaces: optional(commit), candidate: optional(commit), check: optional(id),
@@ -71,7 +74,7 @@ const product = shape({ ...assessment, outputs: named(commit), qualifiedAt: opti
 const receipt = shape({ commit, check: path, evaluatorRevision: optional(commit), exit: v => v === null || count(v), output: string, repair: optional(id), squad: optional(id) });
 const dispatch = { id, issuer: string, args: object, evaluatorRevision: optional(commit), callId: optional(string), error: optional(string), permissionHold: optional(string) };
 const scout = shape({ ...dispatch, kind: one("scout"), tool: one("workflow"), squad: id, base: commit, version: string,
-	state: one("ready", "issued", "uncertain", "reported", "observed", "blocked", "deferred"), observation: optional(observation),
+	state: one("ready", "issued", "uncertain", "suspended", "reported", "observed", "blocked", "deferred"), observation: optional(observation),
 	deferred: optional(shape({ pins: v => named(commit)(v) && object(v) && Object.keys(v).length > 0,
 		consumers: v => Array.isArray(v) && v.length > 0 && v.every(id) && new Set(v).size === v.length })),
 	workflowId: optional(string), decision: optional(decision), packet: optional(isPacket), wake: optional(shape({ review: id, key: string })) });
@@ -102,6 +105,7 @@ function validDispatch(run, e) {
 	if (e.tool === "workflow") {
 		const squad = run.policy.squads.find(s => s.id === e.squad), report = e.observation;
 		return !!squad && !e.nativeId && !e.token && !e.receipt && !e.boundAt && (!e.workflowId || !!e.callId) &&
+			(e.state !== "suspended" || !!e.workflowId) &&
 			(e.wake?.key !== "research" && report?.outcome !== "needs-research" || "areas" in squad && !!squad.researchAgent) &&
 			(!report || investigation(e, squad) === (report.findings !== undefined)) &&
 			(!e.packet || e.packet.review === e.id && e.packet.base === e.base) &&

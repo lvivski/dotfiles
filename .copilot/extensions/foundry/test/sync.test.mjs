@@ -70,6 +70,34 @@ for (const shell of ["bash", "zsh"]) {
 	});
 }
 
+for (const mode of ["--force", "--pull"]) test(`sync ${mode} leaves worktree pointers untouched`, t => {
+	const root = mkdtempSync(path.join(tmpdir(), "dotfiles-worktree-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const repo = path.join(root, "checkout"), home = path.join(root, "home"), bin = path.join(root, "bin");
+	for (const dir of [repo, home, bin]) mkdirSync(dir);
+	writeFileSync(path.join(bin, "git"), "#!/bin/sh\nexit 0\n", { mode: 0o755 }); // No network pull.
+	writeFileSync(path.join(repo, "sync"), sync);
+	writeFileSync(path.join(home, ".bash_profile"), "");
+	for (const relative of ["extensions/foundry", "extensions/recon", "skills/foundry", "skills/deep-research", "skills/review-queue", "skills/security-review"])
+		mkdirSync(path.join(repo, ".copilot", relative), { recursive: true });
+	const paths = [".git", ".copilot/extensions/foundry/.git"];
+	mkdirSync(path.join(home, ".copilot/extensions/foundry"), { recursive: true });
+	for (const p of paths) {
+		writeFileSync(path.join(repo, p), "gitdir: /repository/private\n");
+		writeFileSync(path.join(home, p), "gitdir: /home/sentinel\n");
+	}
+	writeFileSync(path.join(repo, "example"), "from repository\n");
+	writeFileSync(path.join(home, "example"), "from home\n");
+	execFileSync("bash", ["-c", 'unset ZSH_VERSION; source ./sync "$1"', "sync-test", mode],
+		{ cwd: repo, env: { ...process.env, HOME: home, PATH: `${bin}${path.delimiter}${process.env.PATH}` } });
+	const dest = mode === "--force" ? home : repo;
+	assert.equal(readFileSync(path.join(dest, "example"), "utf8"), mode === "--force" ? "from repository\n" : "from home\n");
+	for (const p of paths) {
+		assert.equal(readFileSync(path.join(home, p), "utf8"), "gitdir: /home/sentinel\n");
+		assert.equal(readFileSync(path.join(repo, p), "utf8"), "gitdir: /repository/private\n");
+	}
+});
+
 test("skill resolves an exact committed plan name to its activation source without starting a run", t => {
 	const root = mkdtempSync(path.join(tmpdir(), "foundry-plan-name-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));

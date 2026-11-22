@@ -72,6 +72,49 @@ function fixture(t, configure, files = {}) {
 }
 
 const goalCheck = ".foundry/final.mjs";
+for (const stopped of ["before repin", "after repin", "at explicit resume"]) test(`repin frees the only scout slot when a superseded attempt stops ${stopped}`, async t => {
+	const f = fixture(t, p => { goal(p); p.limits = { workers: 1 }; }, { [goalCheck]: "process.exit(1);" });
+	const workflow = "original-workflow";
+	let ticket = "", resumes = 0, nativeStatus = "running";
+	const first = f.runtime(f.root, { scout: async (id, dispatch, actor) => {
+		ticket = dispatch; await f.owner.scoutBatch(id, dispatch, actor, workflow);
+		if (stopped === "before repin") return { runId: workflow, status: "paused" };
+		throw Error("lost the native reply after binding");
+	} });
+	const original = (await f.start(first)).reviews[0]; first.close();
+	let stop = () => {};
+	const observed = new Promise(resolve => { stop = () => resolve(undefined); });
+	const owner = f.runtime(f.root, {
+		confirm: async () => true,
+		scoutState: async id => { await observed; return { runId: id, status: "halted" }; },
+		scoutSnapshot: async id => ({ runId: id, status: nativeStatus }),
+		resumeScout: async id => { resumes++; return { runId: id, status: "completed" }; },
+	});
+	const side = path.join(path.dirname(f.root), "repair");
+	git(f.root, "worktree", "add", "-q", "--detach", side, f.tip);
+	put(side, goalCheck, 'console.error("current pin diagnostic"); process.exit(1);');
+	git(side, "commit", "-qam", "Correct the diagnostic"); const revision = git(side, "rev-parse", "HEAD");
+	const repinned = await owner.operation("repin", { run, from: f.tip, revision, files: [goalCheck] }, "owner");
+	assert.deepEqual(repinned.goalChecks?.map(e => [e.commit, e.evaluatorRevision, e.receipt?.exit]), [[f.tip, f.tip, 1], [f.tip, revision, 1]]);
+	if (stopped !== "before repin") {
+		await owner.operation("resume", { source }, "owner"); await f.settle();
+		assert.equal(f.scouts.length, 0, "an unconfirmed or still-running workflow must keep its slot");
+		if (stopped === "after repin") stop();
+		else { nativeStatus = "paused"; await owner.operation("resume", { source }, "owner"); }
+	}
+	await f.settle(); await owner.flush();
+	assert.equal(resumes, 0, "never resume a scout for a superseded evaluator");
+	assert.equal(f.scouts.length, 1, "fresh discovery must get the slot");
+	const [fresh] = f.scouts;
+	assert.notEqual(fresh.workflowId, workflow); assert.notEqual(fresh.id, original.id);
+	assert.ok(fresh.prompt.includes("current pin diagnostic"));
+	assert.deepEqual(await owner.scoutBatch(run, ticket, "owner", workflow), [], "a late native continuation gets no jobs");
+	await fresh.report({ outcome: "regenerate", reason: "Implement the missing output.", evidence: [`.foundry/${fresh.squad}.md`], grains: [fresh.squad] });
+	const s = await f.status();
+	assert.equal(s.reviews[0].state, "blocked"); assert.equal(s.reviews[1].state, "observed");
+	assert.equal(s.nodes[0].state, "writing"); assert.equal(f.workers.size, 1); assert.equal(s.qualified, null);
+});
+
 test("repin identifies the obsolete running goal and rechecks once after its real interruption", async t => {
 	const f = fixture(t, goal, { [goalCheck]: `import {writeFileSync} from "node:fs";
 		writeFileSync(process.env.READY, String(process.pid)); setTimeout(() => process.exit(3), 30000);`,
@@ -283,6 +326,51 @@ test("an early failed milestone widens a focused search and preserves its checke
 	assert.equal(done.goal?.receipt?.commit, done.qualified);
 	assert.equal(done.products?.length, 1);
 	assert.equal(f.checks.filter(c => c.startsWith("Check left ")).length, 1);
+});
+
+test("a diagnostic repin rechecks the assessed base without replaying a failed milestone", async t => {
+	const f = fixture(t, goal, { [goalCheck]: goalFiles[goalCheck] });
+	await f.start();
+	const old = await f.reading("right");
+	await f.reportGrains("left");
+	await f.submit("worker-1");
+	const failed = await f.status(), left = await f.status("worker-1");
+	assert.equal(failed.candidate?.receipt?.exit, 1);
+	assert.equal(failed.reviews.find(r => r.id === old.id)?.state, "reading");
+	// Reopen the previously recorded shape: the failed check's diagnostic lived on the run.
+	const db = openDatabase(f.root); t.after(() => db.close());
+	db.update(run, r => {
+		const effect = r.effects.find(e => e.id === failed.candidate?.check); assert.ok(effect && failed.blocker);
+		delete effect.error;
+		r.blocker = failed.blocker;
+	});
+	const side = path.join(path.dirname(f.root), "diagnostic");
+	git(f.root, "worktree", "add", "-q", "--detach", side, f.tip);
+	put(side, goalCheck, `console.log("amended diagnostic");\n${goalFiles[goalCheck]}`);
+	git(side, "commit", "-qam", "Improve diagnostic");
+	const revision = git(side, "rev-parse", "HEAD");
+	const owner = f.runtime(f.root, { confirm: async () => true });
+	await owner.operation("repin", { run, from: f.tip, revision, files: [goalCheck] }, "owner");
+	await report(old, ".foundry/right.md", ["right"]);
+	const held = await f.status();
+	assert.match(String(held.reviews.find(r => r.id === old.id)?.reason), /changed during review/);
+	assert.deepEqual(held.goalChecks?.map(e => [e.commit, e.evaluatorRevision, e.receipt?.exit]), [[f.tip, f.tip, 1], [f.tip, revision, 1]]);
+	assert.deepEqual(held.candidate, failed.candidate);
+	assert.deepEqual((await f.status("worker-1")).nodes, left.nodes);
+	assert.equal(f.workers.size, 1);
+	const fresh = await f.reading("right");
+	assert.notEqual(fresh.id, old.id);
+	assert.ok(fresh.prompt.includes("amended diagnostic"));
+	await report(fresh, ".foundry/right.md", ["right"]);
+	await f.submit("worker-2");
+	const done = await f.status();
+	assert.ok(done.qualified);
+	assert.equal(done.goal?.receipt?.evaluatorRevision, revision);
+	assert.equal(done.goal?.receipt?.commit, done.qualified);
+	assert.equal(done.products?.at(-1)?.receipt?.commit, done.qualified);
+	assert.equal(f.checks.filter(c => c.startsWith("Check joined product")).length, 2);
+	assert.equal(f.checks.filter(c => c.startsWith("Check left ")).length, 1);
+	assert.deepEqual(db.read(run)?.effects.find(e => e.id === failed.candidate?.check)?.receipt, failed.candidate.receipt);
 });
 
 const unitCheck = ".foundry/unit.mjs";
@@ -572,6 +660,42 @@ test("a deferred area repair waits for every pinned consumer, then asks once on 
 	assert.ok(done.qualified); assert.deepEqual(Object.keys(done.outputs ?? {}), ["controls"]);
 	assert.deepEqual(done.products?.slice(0, 2), released.products);
 	assert.equal(done.reviews.filter(r => r.wake?.review === nextPipeline.id).length, 1);
+});
+
+test("a repair defers while an unissued dependent waits for the pinned consumer", async t => {
+	const { f, nextCore, nextPipeline } = await assemblyCheckpoint(t);
+	await report(nextCore, ".foundry/left.md", [work("b", "engine/b", ["assembly"]), work("c", "engine/c", ["b"])]);
+	const before = await f.status(), b = before.nodes.find(n => n.grain === "b");
+	assert.ok(b?.worker && b.inputs?.assembly);
+	assert.equal(before.nodes.find(n => n.grain === "c")?.state, "waiting");
+	const evidence = `${assembly}/index.mjs`;
+	// A new proposal cannot name a retiring output as its own prerequisite.
+	const db = openDatabase(f.root); t.after(() => db.close());
+	const snapshot = db.read(run); assert.ok(snapshot);
+	const original = structuredClone(snapshot);
+	const pending = reviews(snapshot).find(r => r.id === nextPipeline.id); assert.ok(pending);
+	const squad = snapshot.policy.squads.find(s => s.id === pending.squad); assert.ok(squad);
+	for (const id of ["b", "c", "unknown"]) {
+		const invalid = result(evidence, [work("changed", assembly, [id])], ["assembly"]);
+		assert.throws(() => observe(f.root, snapshot, pending, parseObservation(squad, invalid)), new RegExp(`Unknown required output: ${id}`));
+		assert.deepEqual(snapshot, original);
+	}
+	await report(nextPipeline, evidence, splitAssembly(), ["assembly"]);
+	const held = await f.status(), review = held.reviews.find(r => r.id === nextPipeline.id);
+	assert.equal(review?.state, "deferred", review?.reason ?? "repair was not deferred");
+	assert.deepEqual(held.nodes, before.nodes);
+	assert.deepEqual(held.products, before.products);
+	await f.write("b", assemblyBody);
+	const issued = await f.status();
+	assert.equal(issued.nodes.find(n => n.grain === "c")?.inputs?.assembly, b.inputs.assembly);
+	assert.equal(f.scouts.filter(s => s.squad === "pipeline").at(-1)?.id, nextPipeline.id);
+	await f.write("c", assemblyBody);
+	const fresh = await f.reading("pipeline"), released = await f.status();
+	assert.equal(released.reviews.find(r => r.id === fresh.id)?.wake?.review, nextPipeline.id);
+	assert.equal(fresh.base, released.checkpoint);
+	assert.equal(f.workers.size, 3);
+	await report(fresh, evidence, [work("revised", assembly)]);
+	assert.deepEqual((await f.status()).nodes.map(n => [n.grain, n.state]), [["revised", "writing"]]);
 });
 
 for (const late of [false, true]) test(`a refused consumer releases its input, but not its refusal / ${late ? "checkpoint during review" : "same version"}`, async t => {
@@ -1007,6 +1131,39 @@ test("owner resume can recover an unbound scout dispatch from a finished writer"
 	assert.ok(fresh.every(s => s.issuer === "owner" && s.dispatch !== ticket));
 	await assert.rejects(f.owner.scoutBatch(run, ticket, "worker-1", "late-workflow"), { code: "foreign_assignment" });
 	assert.deepEqual(resumed.assignments, failed.assignments); assert.equal(resumed.checkpoint, failed.checkpoint);
+	assert.equal(f.workers.size, 1);
+});
+
+test("writer-owned paused discovery takes only its original session's remaining report", async t => {
+	const f = pipelineFixture(t), workflow = "writer-checkpoint";
+	await f.start(); await f.reportGrains("engine", []);
+	await report(await f.reading("pipeline"), ".foundry/right.md", [work("editor", "pipeline/assembly/editor")]);
+	let dispatch = "", issuer = "";
+	const writer = await f.write("editor", "export default text=>text", { scout: async (id, ticket, actor) => {
+		dispatch = ticket; issuer = actor;
+		const [first, second] = await f.owner.scoutBatch(id, ticket, actor, workflow);
+		assert.ok(second);
+		await f.owner.scoutResult(id, ticket, actor, workflow, first.id,
+			result(first.squad === "engine" ? ".foundry/left.md" : ".foundry/right.md", []), first.packet);
+		return { runId: workflow, status: "paused" };
+	} });
+	await f.settle();
+	writer.close();
+	const owner = f.runtime(f.root, { scoutSnapshot: async () => assert.fail("Foreign workflow lookup"),
+		resumeScout: async () => assert.fail("Foreign workflow resume") });
+	const paused = await owner.operation("resume", { source }, "owner");
+	const missing = paused.pending.find(e => e.issuer === issuer && e.kind === "scout");
+	assert.ok(missing && missing.reason?.includes(workflow) && missing.reason.includes(issuer));
+	await assert.rejects(owner.scoutBatch(run, dispatch, "owner", workflow), { code: "foreign_assignment" });
+	const w = f.workers.get(issuer); assert.ok(w);
+	const reopened = f.runtime(w.cwd);
+	const jobs = await reopened.scoutBatch(run, dispatch, issuer, workflow);
+	assert.deepEqual(jobs.map(j => j.id), [missing.id]);
+	const [job] = jobs;
+	await reopened.scoutResult(run, dispatch, issuer, workflow, job.id,
+		result(job.squad === "engine" ? ".foundry/left.md" : ".foundry/right.md", []), job.packet);
+	reopened.turn(issuer); await reopened.flush();
+	assert.deepEqual((await f.status()).reviews.filter(r => r.workflowId === workflow).map(r => r.state), ["observed", "observed"]);
 	assert.equal(f.workers.size, 1);
 });
 
