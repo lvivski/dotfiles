@@ -59,6 +59,15 @@ export function createRuntime(directory, host) {
 	/** @type {string|undefined} */ let existingPath;
 	const cwd = () => root ??= rootAt(directory);
 	const file = () => existingPath ??= ledgerPath(directory);
+	function hasLedger() {
+		if (outsideRepository) return false;
+		try { return !!database || existsSync(file()); }
+		catch (e) {
+			if (!(e instanceof Error && "stderr" in e && String(e.stderr).includes("not a git repository"))) throw e;
+			outsideRepository = true;
+			return false;
+		}
+	}
 	async function executable() {
 		if (closed) return false;
 		const mode = await host.mode();
@@ -429,6 +438,16 @@ export function createRuntime(directory, host) {
 	}
 	return {
 		operation, pre, scoutBatch, scoutResult,
+		/** @param {string} actor */
+		defaultMapRun(actor) {
+			if (!hasLedger()) return;
+			/** @type {Run|undefined} */ let best;
+			for (const id of db().involving(actor)) {
+				const r = read(id);
+				if (!best || (r.active !== best.active ? r.active : r.activatedAt > best.activatedAt)) best = r;
+			}
+			return best?.id;
+		},
 		/** @param {string} actor @param {string} path @param {string} [prompt] */
 		sessionStart(actor, path, prompt) {
 			if (directory !== path) {
@@ -444,7 +463,7 @@ export function createRuntime(directory, host) {
 			if (closed || outsideRepository || shellId !== undefined && !/^foundry-[a-f0-9-]{36}$/.test(shellId))
 				return;
 			try {
-				if (!database && !existsSync(file()))
+				if (!hasLedger())
 					return;
 				turnNumber++;
 				for (const id of db().involving(actor)) {
@@ -453,10 +472,7 @@ export function createRuntime(directory, host) {
 				}
 			}
 			catch (e) {
-				if (!database && e instanceof Error && "stderr" in e && String(e.stderr).includes("not a git repository"))
-					outsideRepository = true;
-				else
-					host.log?.(`Foundry: ${String(e)}`);
+				host.log?.(`Foundry: ${String(e)}`);
 			}
 		},
 		/** @param {Parameters<typeof refusedCall>[0]} event @param {string} actor */

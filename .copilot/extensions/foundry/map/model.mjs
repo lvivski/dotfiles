@@ -1,4 +1,15 @@
 /** @typedef {ReturnType<typeof import("../work/status.mjs").status>} Status */
+/** @param {Status["pending"][number]} p */
+function pendingMessage(p) {
+	const labels = { goal: "Goal check", component: "Component check", product: "Product check", writer: "Writer launch",
+		scout: "Scout", repair: "Repair notice", handoff: "Handoff notice", decision: "Decision notice" };
+	const label = labels[p.kind] + (p.grain ? ` (${p.grain})` : "");
+	const reason = p.reason?.replace(/^(?:Error: )+/, "");
+	if (p.awaitingEvaluator && (!reason || reason === "Original call is not confirmed; it will not be replayed" || reason === "The pinned runner has not finished"))
+		return `${label} started; no evaluator result recorded yet.`;
+	return reason ? `${label}: ${reason}` : undefined;
+}
+
 /** @param {Status} s */
 export function mapSnapshot(s) {
 	const latest = new Map(s.reviews.map(r => [r.squad, r]));
@@ -10,7 +21,7 @@ export function mapSnapshot(s) {
 		timing: s.metrics ? { firstWriter: s.metrics.firstWriter.state, writerMs: s.metrics.firstWriter.elapsedMs,
 			qualifiedMs: s.metrics.qualified.elapsedMs } : null,
 		blocker: s.blocker ?? s.discoveryError ?? "",
-		holds: [...new Set(s.pending.flatMap(p => p.reason ? [p.reason] : []))],
+		holds: [...new Set(s.pending.flatMap(p => pendingMessage(p) ?? []))],
 		scoutIssues: s.goal && s.qualified ? [] : [...latest.values()].flatMap(r => {
 			if (r.state === "blocked" && r.reason) return [`${r.squad}: ${r.reason}`];
 			const o = r.state === "observed" ? r.observation : undefined;

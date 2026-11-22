@@ -7,7 +7,7 @@ const assets = new Map([
 	["view.mjs", ["view.mjs", "text/javascript; charset=utf-8"]], ["layout.mjs", ["layout.mjs", "text/javascript; charset=utf-8"]],
 ]);
 
-/** @param {()=>Promise<import("./model.mjs").MapSnapshot>} snapshot */
+/** @param {()=>Promise<import("./model.mjs").MapSnapshot|{notice:string}>} snapshot */
 export async function serveMap(snapshot) {
 	const prefix = `/${randomBytes(24).toString("hex")}/`;
 	let host = "";

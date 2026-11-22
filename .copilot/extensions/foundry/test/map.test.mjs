@@ -2,7 +2,34 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { layout } from "../map/layout.mjs";
 import { example, mapSnapshot } from "../map/model.mjs";
+import { openDatabase } from "../work/database.mjs";
+import { recover } from "../work/recovery.mjs";
+import { status } from "../work/status.mjs";
 import { factory, loadEntry, put } from "./fixture.mjs";
+
+test("the map distinguishes a missing shell receipt from a check that recorded its start", async t => {
+	const run = "pending-map", source = ".foundry/pending.json";
+	const f = factory(t, run, source, {
+		[source]: JSON.stringify({ version: 2, id: run, target: "refs/heads/main", direction: "Open the catalog.",
+			productCheck: "product.mjs", goalCheck: "goal.mjs", squads: [{ id: "catalog", areas: ["app"], charter: "spec", boundary: ["api"], checks: ["unit.mjs"] }] }),
+		spec: "Open catalog.", api: "Show records.", "goal.mjs": "", "product.mjs": "", "unit.mjs": "",
+	});
+	let launches = 0;
+	const issuer = f.runtime(f.root, { execute: async () => { launches++; return { resultType: "success" }; },
+		recover: e => recover(async () => ({ events: [], cursor: "", cursorStatus: "ok", hasMore: false }), e) });
+	await f.start(issuer); issuer.turn("owner"); await issuer.flush();
+	const db = openDatabase(f.root); t.after(() => db.close());
+	const r = db.read(run); assert.ok(r);
+	const e = r.effects.find(e => e.kind === "goal"); assert.ok(e);
+	assert.equal(e.state, "uncertain"); assert.equal(launches, 1);
+	const snap = () => mapSnapshot(status(r, "owner"));
+	assert.deepEqual(snap().holds, ["Goal check: Original call is not confirmed; it will not be replayed"]);
+	e.runnerStarted = true;
+	assert.deepEqual(snap().holds, ["Goal check started; no evaluator result recorded yet."]);
+	assert.equal(snap().phase, "Active"); assert.equal(snap().goal?.result, null); assert.equal(snap().qualified, null);
+	e.permissionHold = "Native permission requires attention.";
+	assert.ok(snap().holds.some(message => message.includes("Native permission requires attention.")));
+});
 
 test("a fork and join keep the same real edges in both orientations, including a skipped rank", () => {
 	for (const width of [340, 900]) {
@@ -27,18 +54,26 @@ test("the open map follows the real parallel run without issuing calls; particip
 			productCheck: "product.mjs", grains, seed: ids, squads: [{ id: "squad", charter: "spec.md", grains: ids }] }),
 		"spec.md": "Own the complete directory.", "api.md": "One module per directory.", "check.mjs": "", "product.mjs": "",
 	});
-	await f.start();
 	const conf = await loadEntry({ sessionId: "owner", on() {} }), canvas = conf.canvases?.[0]; assert.ok(canvas);
 	const ctx = { sessionId: "owner", extensionId: "user:foundry", canvasId: "foundry-board", instanceId: "parallel", input: { run } };
 	const hook = { sessionId: "owner", timestamp: new Date(), workingDirectory: f.root };
 	await conf.hooks?.onSessionStart?.({ ...hook, source: "startup" }, hook);
 	t.after(() => conf.hooks?.onSessionEnd?.({ ...hook, reason: "complete" }, hook));
+	const manual = { ...ctx, input: {}, instanceId: "manual" }, manualPanel = await canvas.open(manual);
+	t.after(() => canvas.onClose?.(manual)); assert.ok(manualPanel.url);
+	const emptyState = await (await fetch(`${manualPanel.url}state`)).json();
+	assert.match(emptyState.notice, /no foundry run.*session/i);
+	await f.start();
 	const before = await f.status(), { url } = await canvas.open(ctx); assert.ok(url);
 	t.after(() => canvas.onClose?.(ctx));
 	/** @param {string} at @returns {Promise<import("../map/model.mjs").MapSnapshot>} */
 	async function refresh(at) { const r = await fetch(`${at}state`); assert.equal(r.status, 200); return r.json(); }
 	assert.deepEqual(await canvas.open(ctx), { url, title: `Foundry · ${run}` });
 	assert.deepEqual(await refresh(url), mapSnapshot(before));
+	assert.deepEqual(await refresh(manualPanel.url), mapSnapshot(before));
+	const other = { ...manual, instanceId: "outside", sessionId: "outsider" }, otherPanel = await canvas.open(other);
+	t.after(() => canvas.onClose?.(other)); assert.ok(otherPanel.url);
+	assert.deepEqual(await (await fetch(`${otherPanel.url}state`)).json(), emptyState);
 	assert.equal((await refresh(url)).timing?.firstWriter, "bound");
 	assert.deepEqual((await refresh(url)).nodes.filter(n => n.state === "writing").map(n => n.id), ["editor", "recover"]);
 	assert.deepEqual((await refresh(url)).nodes.find(n => n.id === "send")?.needs, ["editor", "recover"]);
@@ -47,7 +82,7 @@ test("the open map follows the real parallel run without issuing calls; particip
 	await assert.rejects(async () => canvas.open({ ...ctx, instanceId: "unrelated", sessionId: "outsider" }), /No bound assignment/);
 	await assert.rejects(async () => canvas.open({ ...ctx, instanceId: "missing", input: { run: "no-such-run" } }), /Unknown run/);
 	const [w] = f.workers.values();
-	const workerCtx = { ...ctx, sessionId: w.id, instanceId: "participant" }, worker = await canvas.open(workerCtx); assert.ok(worker.url);
+	const workerCtx = { ...manual, sessionId: w.id, instanceId: "participant" }, worker = await canvas.open(workerCtx); assert.ok(worker.url);
 	t.after(() => canvas.onClose?.(workerCtx));
 	const view = await refresh(worker.url);
 	assert.equal(view.owner, false); assert.equal(view.timing, null); assert.deepEqual(view.nodes.map(n => n.id), ["editor"]);

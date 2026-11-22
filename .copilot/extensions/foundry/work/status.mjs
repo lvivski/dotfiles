@@ -56,7 +56,10 @@ export function status(run, actor, detail) {
 			...(owner || actor === n.worker ? { review: n.review, worker: n.worker, repairs: n.repairs, inputs: n.inputs,
 				generation: n.generation, receipt: n.check && receipts.get(n.check), reason: n.reason } : {}),
 		})),
-		pending: pending.map(e => ({ id: e.id, issuer: e.issuer, kind: e.kind, state: e.state, reason: e.permissionHold ?? e.error })),
+		pending: pending.map(e => ({ id: e.id, issuer: e.issuer, kind: e.kind, state: e.state,
+			...(e.grain ? { grain: e.grain } : {}),
+			...(e.tool === "bash" && e.runnerStarted && !e.receipt && awaitingReply(e) && !e.permissionHold ? { awaitingEvaluator: true } : {}),
+			reason: e.permissionHold ?? e.error })),
 		prepared: pending.filter(e => e.issuer === actor && e.state === "ordinary" && !e.permissionHold && canDispatch(run, e)).map(e => ({ tool: e.tool, arguments: e.args })),
 	};
 }

@@ -26,7 +26,7 @@ session = await joinSession({
 	customAgents: [scoutAgent, researchAgent],
 	workflows: [defineWorkflow(scoutDefinition(() => runtime))],
 	tools: buildTools(runtime, () => session.sessionId),
-	canvases: [foundryBoard((run, actor) => runtime.operation("status", { run }, actor))],
+	canvases: [foundryBoard((run, actor) => runtime.operation("status", { run }, actor), runtime.defaultMapRun)],
 	hooks: {
 		onSessionStart(input, ctx) {
 			if (!fromHelper(input, ctx.sessionId)) runtime.sessionStart(ctx.sessionId, input.workingDirectory, input.initialPrompt);

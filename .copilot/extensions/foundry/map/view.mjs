@@ -192,7 +192,14 @@ async function refresh() {
 		const response = await fetch("./state", { cache: "no-store", signal: AbortSignal.timeout(12000) });
 		if (!response.ok) throw new Error((await response.text()).trim() || `HTTP ${response.status}`);
 		const body = await response.text();
-		if (body !== last) { draw(JSON.parse(body)); last = body; }
+		if (body !== last) {
+			const snapshot = JSON.parse(body);
+			if ("notice" in snapshot) {
+				el("notice").textContent = snapshot.notice;
+				return;
+			}
+			draw(snapshot); last = body;
+		}
 		el("notice").textContent = "";
 	} catch (e) {
 		data = null; nodes.clear(); selected = undefined; last = "";
