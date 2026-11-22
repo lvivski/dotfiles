@@ -28,7 +28,7 @@ If the owner lost a dialog on reload, status alone will not reopen it. **Only on
 
 If dialog delivery fails, status gives the owner a recovery object for the failed presentation. Use that object only on a new explicit request. A dismissed question has no recovery object.
 
-When showing the operator a run in the desktop app, open the **Foundry dependency map** (`canvasId: "foundry-board"`, `input: {run: "<run-id>"}`). Reuse a panel handle such as `run-<run-id>` for that run. Elsewhere, or for a text-only request, summarize the same status in chat. If the run is inaccessible, report that; don't substitute another run. To demonstrate the canvas without a factory, explicitly open it with `{example: true}` and label it as an example.
+When showing the operator a run in the desktop app, open **Foundry** (`canvasId: "foundry-board"`, `input: {run: "<run-id>"}`). Reuse a panel handle such as `run-<run-id>` for that run. Elsewhere, or for a text-only request, summarize the same status in chat. If the run is inaccessible, report that; don't substitute another run. To demonstrate the canvas without a factory, explicitly open it with `{example: true}` and label it as an example.
 
 ## Pause and resume
 

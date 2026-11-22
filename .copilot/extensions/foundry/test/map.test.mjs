@@ -45,6 +45,25 @@ test("a fork and join keep the same real edges in both orientations, including a
 	assert.deepEqual(partial.edges, []); // No invented assignments from outside the viewer's scope.
 });
 
+test("crowded levels stay inside the panel without hiding peers or losing a dependency", () => {
+	const root = example.nodes[0], peers = Array.from({ length: 12 }, (_, i) => ({
+		...root, id: `peer-${i}`, needs: [root.id],
+	}));
+	const join = { ...root, id: "join", needs: [root.id, ...peers.map(n => n.id)] };
+	const nodes = [root, ...peers, join];
+	for (const width of [240, 340, 650, 900]) {
+		const g = layout(nodes, width);
+		assert.equal(g.width, width);
+		assert.deepEqual(g.boxes.map(b => b.id).sort(), nodes.map(n => n.id).sort());
+		for (const [i, b] of g.boxes.entries()) {
+			assert.ok(b.x >= 0 && b.x + g.w <= width && b.y >= 0 && b.y + g.h <= g.height);
+			assert.ok(g.boxes.slice(i + 1).every(o => o.x >= b.x + g.w || b.x >= o.x + g.w ||
+				o.y >= b.y + g.h || b.y >= o.y + g.h));
+		}
+		assert.deepEqual(g.edges.map(e => `${e.from}/${e.to}`).sort(), nodes.flatMap(n => n.needs.map(p => `${p}/${n.id}`)).sort());
+	}
+});
+
 test("the open map follows the real parallel run without issuing calls; participant views stay bound across refresh and re-open", async t => {
 	const run = "map-trial", source = ".foundry/example.json", ids = ["editor", "recover", "send"];
 	const grains = ids.map(id => ({ id, directory: `lib/${id}`, specification: "spec.md", boundary: ["api.md"],
@@ -55,12 +74,14 @@ test("the open map follows the real parallel run without issuing calls; particip
 		"spec.md": "Own the complete directory.", "api.md": "One module per directory.", "check.mjs": "", "product.mjs": "",
 	});
 	const conf = await loadEntry({ sessionId: "owner", on() {} }), canvas = conf.canvases?.[0]; assert.ok(canvas);
+	assert.ok("displayName" in canvas); assert.equal(canvas.displayName, "Foundry");
 	const ctx = { sessionId: "owner", extensionId: "user:foundry", canvasId: "foundry-board", instanceId: "parallel", input: { run } };
 	const hook = { sessionId: "owner", timestamp: new Date(), workingDirectory: f.root };
 	await conf.hooks?.onSessionStart?.({ ...hook, source: "startup" }, hook);
 	t.after(() => conf.hooks?.onSessionEnd?.({ ...hook, reason: "complete" }, hook));
 	const manual = { ...ctx, input: {}, instanceId: "manual" }, manualPanel = await canvas.open(manual);
 	t.after(() => canvas.onClose?.(manual)); assert.ok(manualPanel.url);
+	assert.equal(manualPanel.title, "Foundry");
 	const emptyState = await (await fetch(`${manualPanel.url}state`)).json();
 	assert.match(emptyState.notice, /no foundry run.*session/i);
 	await f.start();

@@ -9,7 +9,7 @@ export function foundryBoard(readStatus, defaultRun) {
 	/** @type {Map<string,{run:string|null|undefined, actor:string, snapshot:Parameters<typeof serveMap>[0], server:ReturnType<typeof serveMap>}>} */
 	const boards = new Map();
 	return createCanvas({
-		id: "foundry-board", displayName: "Foundry dependency map",
+		id: "foundry-board", displayName: "Foundry",
 		description: "See parallel assignments, dependencies and blockers for one Foundry run, or open a labeled example.",
 		inputSchema: { type: "object", oneOf: [
 			{ type: "object", maxProperties: 0 },
@@ -40,7 +40,7 @@ export function foundryBoard(readStatus, defaultRun) {
 				boards.set(ctx.instanceId, board);
 				server.catch(() => { if (boards.get(ctx.instanceId) === board) boards.delete(ctx.instanceId); });
 			}
-			return { url: (await board.server).url, title: run ? `Foundry · ${run}` : run === null ? "Foundry · Example map" : "Foundry dependency map" };
+			return { url: (await board.server).url, title: run ? `Foundry · ${run}` : run === null ? "Foundry · Example map" : "Foundry" };
 		},
 		onClose: async ctx => {
 			const board = boards.get(ctx.instanceId);

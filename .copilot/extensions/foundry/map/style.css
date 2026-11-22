@@ -22,7 +22,7 @@ button { color: inherit; font: inherit; cursor: pointer; }
 :where(button,a,summary,[tabindex]):focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
 .symbols { position: absolute; width: 0; height: 0; overflow: hidden; }
 .icon,.mark { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-.mark { width: 28px; height: 28px; color: var(--work); }
+.mark { width: 28px; height: 28px; color: light-dark(#a54a17, #ffb77d); }
 .title-row,.identity,.map-head,#counts,.legend,.legend span,.summary-item,.node-status,.detail-head { display: flex; align-items: center; }
 .title-row { gap: 10px; }
 #refresh { margin-left: auto; display: grid; place-items: center; width: 34px; height: 32px; border: 1px solid var(--border); border-radius: 6px; color: var(--sub); background: var(--sheet); }
@@ -55,6 +55,9 @@ button { color: inherit; font: inherit; cursor: pointer; }
 .wire.traced.stop { --trace: var(--stop); }
 .wire path { stroke: currentColor; fill: none; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 .wire.traced path { stroke-width: 2.25; }
+.wrapped .wire:not(.traced) { display: none; }
+.level { position: absolute; margin: 0; font-size: 13px; line-height: 18px; }
+.level span { margin-inline-start: 8px; font-size: 12px; font-weight: 400; color: var(--sub); }
 .node { position: absolute; display: flex; flex-direction: column; justify-content: center; align-items: stretch; gap: 4px; padding: 6px 12px;
 	border: 1px solid color-mix(in srgb,var(--sub) 52%,var(--sheet)); border-radius: 6px; background: var(--sheet); text-align: start; }
 .node[data-tone="work"],.node[data-tone="stop"] { border-color: color-mix(in srgb,var(--tone) 57%,var(--sheet)); background: color-mix(in srgb,var(--tone) 5%,var(--sheet)); }

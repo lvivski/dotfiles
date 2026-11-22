@@ -10,7 +10,9 @@ Use [`/foundry brief <idea>`](../../skills/foundry/references/brief.md) to work 
 
 `/foundry status <run-id>` opens a read-only dependency map in the desktop app. Each arrow goes from a required output to the assignment that uses it. A solid line means the input is checked; a dashed line means it is still outstanding. Select an assignment to see its current prerequisites, direct dependents and check result. An assignment waiting for input isn't a blocked run, and a checked output isn't a qualified product. Open **Product evidence** for the checkpoint and final goal result.
 
-Opening **Foundry dependency map** directly from the UI needs no input. It shows the newest active run visible to this session, or the most recently started visible run if none is active. If this session has no run, the panel says so; it does not start one or substitute example data.
+In a narrow panel, crowded dependency levels wrap into rows. Only the selected assignment’s links are drawn in this view; **Requires** and **Used by** list their endpoints.
+
+Opening **Foundry** directly from the UI needs no input. It shows the newest active run visible to this session, or the most recently started visible run if none is active. If this session has no run, the panel says so; it does not start one or substitute example data. To match the in-canvas hammer in the desktop menu, right-click the installed Foundry canvas, choose **Customize…**, then select **Hammer** and **Orange**. The menu icon is an app preference, not an asset supplied by a personal extension.
 
 The owner's **Product evidence** also shows elapsed time to the first confirmed writer and to qualification, when known. A pending-call notice names the affected operation. If the evaluator recorded its start but not its result, the map shows that distinction: a missing shell reply is neither a failed check nor a reason to launch it again. The map refreshes while visible, using the same session-scoped status read as the command. It never advances or starts a run. Without a run, ask for the **example dependency map** to see a labeled, static file-catalog example.
 

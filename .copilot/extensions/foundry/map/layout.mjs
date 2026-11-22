@@ -1,5 +1,31 @@
 /** @typedef {import("./model.mjs").Assignment} Assignment */
 /** @typedef {{x:number,y:number}} Point */
+/** @typedef {{x:number,y:number,count:number}} Level */
+/** @param {string[][]} ranks @param {{from:string,to:string}[]} routes @param {number} width */
+function wrapped(ranks, routes, width) {
+	const pad = Math.min(16, Math.floor(width / 6)), gap = 16, h = 56;
+	const columns = Math.max(1, Math.floor((width - 2 * pad + gap) / (144 + gap)));
+	const w = Math.floor((width - 2 * pad - (columns - 1) * gap) / columns);
+	/** @type {Level[]} */ const levels = [];
+	/** @type {Map<string,{id:string,x:number,y:number}>} */ const positions = new Map();
+	let top = 12;
+	for (const ids of ranks) {
+		levels.push({ x: pad, y: top, count: ids.length }); top += 30;
+		ids.forEach((id, i) => positions.set(id, { id, x: pad + i % columns * (w + gap),
+			y: top + Math.floor(i / columns) * (h + gap) }));
+		top += Math.ceil(ids.length / columns) * (h + gap) + 6;
+	}
+	const edges = routes.map(({ from, to }) => {
+		const a = positions.get(from), b = positions.get(to);
+		if (!a || !b) throw new Error("Missing assignment position");
+		// Travel between columns, then enter above the target, never through a wrapped peer.
+		const ax = a.x + w / 2, ay = a.y + h, bx = b.x + w / 2, by = b.y - 3;
+		const lane = Math.max(1, a.x - gap / 2);
+		return { from, to, d: `M${ax},${ay} v6 H${lane} V${b.y - 8} H${bx} V${by}`, arrow: `M${bx - 3},${by - 4} l3,4 3,-4` };
+	});
+	return { width, height: top, vertical: true, w, h, levels, edges, boxes: [...positions.values()] };
+}
+
 /** @param {Assignment[]} nodes @param {number} available */
 export function layout(nodes, available) {
 	const byId = new Map(nodes.map(n => [n.id, n]));
@@ -63,6 +89,7 @@ export function layout(nodes, available) {
 	const size = id => byId.has(id) ? vertical ? w : h : 4;
 	const spans = ranks.map(ids => ids.reduce((n, id) => n + size(id), 0) + (ids.length - 1) * gap);
 	const cross = Math.max(vertical ? available : 188, ...spans.map(s => s + 2 * pad));
+	if (vertical && cross > available) return wrapped(ranks.map(ids => ids.filter(id => byId.has(id))), routes, available);
 	const along = Math.max(vertical ? 0 : available, 2 * pad + (ranks.length - 1) * step + (vertical ? h : w));
 	const start = (along - (ranks.length - 1) * step) / 2;
 	/** @type {Map<string,Point>} */ const centers = new Map();
@@ -92,6 +119,6 @@ export function layout(nodes, available) {
 		const arrow = vertical ? `M${b.x - 3},${b.y - 4} l3,4 3,-4` : `M${b.x - 4},${b.y - 3} l4,3 -4,3`;
 		return { from, to, d, arrow };
 	});
-	return { width: vertical ? cross : along, height: vertical ? along : cross, vertical, w, h, edges,
+	return { width: vertical ? cross : along, height: vertical ? along : cross, vertical, w, h, edges, levels: /** @type {Level[]} */ ([]),
 		boxes: ranks.flat().filter(id => byId.has(id)).map(id => ({ id, x: center(id).x - w / 2, y: center(id).y - h / 2 })) };
 }

@@ -63,6 +63,7 @@ function drawMap() {
 	const focused = document.activeElement instanceof HTMLButtonElement ? document.activeElement.dataset.id : undefined;
 	width = plot.clientWidth;
 	const g = layout(data.nodes, width);
+	stage.classList.toggle("wrapped", !!g.levels.length);
 	stage.style.width = `${g.width}px`; stage.style.height = `${g.height}px`;
 	const wires = document.createElementNS(ns, "svg");
 	wires.id = "wires"; wires.setAttribute("aria-hidden", "true");
@@ -80,7 +81,15 @@ function drawMap() {
 		wires.append(group);
 	}
 	const fragment = document.createDocumentFragment(); fragment.append(wires);
-	for (const { id, x, y } of g.boxes) {
+	let level = 0, next = 0;
+	for (const [i, { id, x, y }] of g.boxes.entries()) {
+		if (i === next && level < g.levels.length) {
+			const row = g.levels[level++];
+			const heading = tag("h3", `Level ${level}`, "level");
+			heading.style.cssText = `left:${row.x}px;top:${row.y}px`;
+			heading.append(tag("span", `${row.count} ${row.count === 1 ? "assignment" : "assignments"}`));
+			fragment.append(heading); next += row.count;
+		}
 		const n = nodes.get(id); if (!n) continue;
 		const key = state(n), button = tag("button", "", "node");
 		button.type = "button"; button.dataset.id = id; button.dataset.tone = states[key][2];
@@ -94,7 +103,7 @@ function drawMap() {
 	if (focused) (Array.from(stage.querySelectorAll("button")).find(b => b.dataset.id === focused) ??
 		Array.from(stage.querySelectorAll("button")).find(b => b.dataset.id === selected))?.focus({ preventScroll: true });
 	el("key").hidden = !g.edges.length;
-	el("flow").textContent = g.vertical ? "Output ↓ dependent" : "Output → dependent";
+	el("flow").textContent = g.levels.length ? "Showing links for the selected assignment" : g.vertical ? "Output ↓ dependent" : "Output → dependent";
 }
 /** @param {string} label @param {string[]} ids @param {string} none */
 function relations(label, ids, none) {
