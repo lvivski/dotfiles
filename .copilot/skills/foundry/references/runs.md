@@ -14,7 +14,7 @@ Report the **returned run ID** for `status` and `pause`, and the actual state or
 
 ## Status
 
-If a later checkpoint carries a gap but not the original diagnostic, the owner can queue that evidence for one squad’s next normal scout: `foundry_review_note({run,squad,receipt,question})`. Copy the exact goal check `id` from owner `foundry_status({run,detail:"proof"}).goalChecks`. For output larger than 8 KiB, add a verbatim `excerpt` of at most 8 KiB. The note does not replay a review, assign a writer or treat the earlier failure as a fresh observation. Check `pendingReviewNotes` or the receiving review’s `note` in owner status.
+If a later checkpoint carries a gap but not the original diagnostic, queue the original receipt for normal review: `foundry_review_note({run,squad,receipt,question})`. Copy the exact goal check `id` from owner `foundry_status({run,detail:"proof"}).goalChecks`. The ID is sufficient even for large output. Optionally include a verbatim `excerpt` to point at a particular observation. Distinct notes may queue for the same squad. Check `pendingReviewNotes` and the receiving review’s `note` and `otherNotes` before resending. A note does not replay a review, assign a writer, or turn an earlier failure into a fresh observation.
 
 Use `foundry_status({run})` with the run ID from the start receipt. This reads state without advancing it and does not require a clean checkout. `checkpoint` is progress; in a goal run `qualified` stays null until both committed checks pass on the same exact commit. The target branch stays unchanged. Report concrete blockers or contract questions, not a completion claim.
 

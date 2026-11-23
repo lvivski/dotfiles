@@ -31,6 +31,8 @@ For maintenance, authorize writers in the charter to consult their own accepted 
 - **`productCheck`:** What must still work on a useful intermediate version? A passing milestone lets the factory assess the combined result; it doesn't end the run.
 - **`goalCheck`:** Exercise the promised behavior through the product. Use any supported way to build or drive it. Exit **0** only for the full outcome, **1** for a demonstrated product gap, **2** when required external evidence is unavailable. If a local observation proves one defect while a peer or device is unavailable, report the defect **and** mark the rest unverified. Once that defect is gone, missing evidence is still not a pass.
 
+For rolling scheduling hints, read `FOUNDRY_GOAL_DELTA_FILE` if set (`base`, `head`, complete `paths`, `previous`); otherwise start with normal scheduling. Write one UTF-8 JSON value directly to the precreated `FOUNDRY_GOAL_FEEDBACK_FILE`, outside the checked product. Don't also emit a stdout feedback marker. These hints let a harness prioritize observations, not skip full qualification or carry a pass to a different commit.
+
 For example, “add a headless driver and two build scripts” is not a catalog failure. “Filtering by price hid a matching item” is. If no catalog data was available to observe, don't report a filtering failure. The check may name a real prerequisite without assigning its implementation to a squad.
 
 ## Rehearse and hand off

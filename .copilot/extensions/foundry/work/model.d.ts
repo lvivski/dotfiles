@@ -63,6 +63,10 @@ export interface Observation {
 	replace?: string[];
 	waitFor?: string;
 	file?: string;
+	receipt?: string;
+	detail?: string;
+	offset?: number;
+	match?: string;
 	findings?: Finding[];
 	references?: Reference[];
 }
@@ -79,6 +83,8 @@ export interface Artifact {
 }
 
 export type Packet = { review: string; base: string; files: Record<string, string>; outputs: Record<string, string>; partial: boolean;
+	sources?: string[];
+	read?: { source: string; start: number; end: number; length: number; hit?: number; miss?: true };
 	excerpt?: { path: string; oid: string; start: number; end: number; length: number } };
 
 export interface Node {
@@ -128,6 +134,7 @@ export interface Review extends Dispatch {
 	retryOf?: string;
 	diagnostic?: { receipt: string; excerpt: string };
 	note?: ReviewNote;
+	otherNotes?: ReviewNote[];
 	predecessor?: Node;
 	observation?: Observation;
 	deferred?: { pins: Record<string, string>; consumers: string[] };
@@ -142,6 +149,7 @@ export interface Receipt {
 	exit: number | null;
 	output: string;
 	feedback?: string;
+	feedbackFile?: { blob: string; legacy?: boolean };
 	failure?: "changed-export" | "incomplete";
 	repair?: string;
 	squad?: string;

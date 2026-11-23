@@ -310,24 +310,76 @@ test("rolling goal feedback binds scheduling context to the exact prior goal, no
 	assert.match(repinned.goal?.receipt?.output ?? "", /^delta=unset$/m);
 });
 
-test("goal scheduling omits ambiguous or oversized feedback and never truncates a tree diff", t => {
+test("goal scheduling accepts large JSON but not ambiguous or invalid records", () => {
 	const line = "FOUNDRY_GOAL_FEEDBACK=";
-	for (const raw of [line + "{", `${line}{}\n${line}null`, `${line}"${"ä".repeat(4096)}"`, `not a record: ${line}[]`])
+	for (const raw of [line + "{", `${line}{}\n${line}null`, `not a record: ${line}[]`])
 		assert.equal(feedback(Buffer.from(raw)), undefined);
+	const large = `"${"ä".repeat(4096)}"`;
+	assert.equal(feedback(Buffer.from(line + large))?.length, large.length);
 	assert.equal(feedback(Buffer.concat([Buffer.from(line + '"'), Buffer.from([255]), Buffer.from('"')])), undefined);
 	assert.equal(feedback(Buffer.from(`some output\r\n${line}null\r\n`)), "null");
+	assert.equal(feedback(Buffer.from(line + "{}"), Buffer.from("[]")), undefined, "two sources are ambiguous");
+	assert.equal(feedback(Buffer.alloc(0), Buffer.from([255])), undefined, "file must be UTF-8 JSON");
+});
+
+test("goal scheduling delivers complete tree diffs beyond the old path and byte thresholds", t => {
 	const f = fixture(t), prior = { base: f.tip, previous: "null" };
 	assert.deepEqual(JSON.parse(goalDelta(f.root, f.tip, prior) ?? "null").paths, []);
 	git(f.root, "mv", "neighbor.txt", "renamed file"); git(f.root, "commit", "-qm", "rename");
 	assert.deepEqual(JSON.parse(goalDelta(f.root, git(f.root, "rev-parse", "HEAD"), prior) ?? "null").paths, ["neighbor.txt", "renamed file"]);
 	for (let i = 0; i < 255; i++) put(f.root, `many/${i}`, "");
 	git(f.root, "add", "many"); git(f.root, "commit", "-qm", "257 changed paths");
-	assert.equal(goalDelta(f.root, git(f.root, "rev-parse", "HEAD"), prior), undefined);
+	assert.equal(JSON.parse(goalDelta(f.root, git(f.root, "rev-parse", "HEAD"), prior) ?? "null")?.paths.length, 257);
 	const base = git(f.root, "rev-parse", "HEAD");
 	for (let i = 0; i < 160; i++) put(f.root, `long/${"x".repeat(210)}-${i}`, "");
 	git(f.root, "add", "long"); git(f.root, "commit", "-qm", "over 32 KiB of paths");
-	assert.equal(goalDelta(f.root, git(f.root, "rev-parse", "HEAD"), { ...prior, base }), undefined);
+	assert.deepEqual(JSON.parse(goalDelta(f.root, git(f.root, "rev-parse", "HEAD"), { ...prior, base }) ?? "null")?.paths,
+		Array.from({ length: 160 }, (_, i) => `long/${"x".repeat(210)}-${i}`).sort());
 	assert.equal(goalDelta(f.root, "0".repeat(40), prior), undefined);
+});
+
+test("file feedback round-trips exact large JSON through an exclusive goal and never leaks to other checks", async t => {
+	const extra = Array.from({ length: 257 }, (_, i) => `lib/left/cases/${i}`);
+	const check = `import { readFileSync, writeFileSync, statSync } from "node:fs";
+		import assert from "node:assert/strict";
+		const {FOUNDRY_GOAL_FEEDBACK_FILE: out, FOUNDRY_GOAL_DELTA_FILE: input, FOUNDRY_GOAL_DELTA: inline} = process.env;
+		assert.ok(out && out !== "ambient"); assert.equal(inline, undefined);
+		const json = '{\\n"count":9007199254740993, "gaps":"' + "ä".repeat(40000) + '"\\n}\\n';
+		if (input) {
+			assert.equal(statSync(input).mode & 0o222, 0);
+			const wire = readFileSync(input, "utf8"); assert.ok(wire.includes(json));
+			const {base,head,paths} = JSON.parse(wire); assert.notEqual(base,head);
+			assert.deepEqual(paths, [...${JSON.stringify(extra)},"lib/left/index.mjs","lib/left/old.mjs"].sort());
+			console.log("received complete file");
+		}
+		writeFileSync(out,json); console.log("output path=" + out); process.exit(1);`;
+	const reject = `for (const k of ["FOUNDRY_GOAL_FEEDBACK_FILE","FOUNDRY_GOAL_DELTA_FILE","FOUNDRY_GOAL_DELTA"])
+		if (k in process.env) throw Error("goal hints leaked");`;
+	const f = fixture(t, goal, { [goalCheck]: check, ".foundry/product.mjs": reject, ".foundry/left.mjs": reject });
+	for (const key of ["FOUNDRY_GOAL_FEEDBACK_FILE", "FOUNDRY_GOAL_DELTA_FILE", "FOUNDRY_GOAL_DELTA"]) {
+		const saved = process.env[key]; process.env[key] = "ambient";
+		t.after(() => { if (saved === undefined) delete process.env[key]; else process.env[key] = saved; });
+	}
+	const first = (await f.start()).goal?.receipt; assert.match(first?.output ?? "", /^output path=/m);
+	const scratch = /^output path=(.+)$/m.exec(first?.output ?? "")?.[1]; assert.ok(scratch && !existsSync(scratch));
+	const oid = first?.feedbackFile?.blob; assert.ok(oid);
+	assert.equal(git(f.root, "rev-parse", `refs/foundry/objects/${oid}`), oid);
+	await f.reportGrains("left");
+	const writer = f.workers.get("worker-1"); assert.ok(writer);
+	for (const file of extra) put(writer.cwd, file, "");
+	await f.submit("worker-1");
+	const next = await f.status();
+	assert.match(next.goal?.receipt?.output ?? "", /received complete file/);
+	assert.equal(next.goal?.receipt?.exit, 1); assert.equal(next.qualified, null);
+});
+
+test("invalid goal feedback cannot turn a verified pass into a failure or become later scheduling evidence", async t => {
+	const f = fixture(t, goal, { ".foundry/product.mjs": "", [goalCheck]: `import {writeFileSync} from "node:fs";
+		writeFileSync(process.env.FOUNDRY_GOAL_FEEDBACK_FILE, 'not JSON'); console.log('FOUNDRY_GOAL_FEEDBACK={}');` });
+	const status = await f.start();
+	assert.equal(status.qualified, f.tip);
+	assert.equal(status.goal?.receipt?.exit, 0); assert.equal(status.goal?.receipt?.feedbackFile, undefined);
+	assert.match(status.goal?.receipt?.output ?? "", /Foundry scheduling feedback unavailable/);
 });
 
 test("a newer goal without usable stdout feedback never borrows an older summary or a stderr record", async t => {
@@ -378,13 +430,14 @@ test("the owner can attach a past goal receipt to the next normal scout without 
 	assert.equal(f.workers.size, 0); assert.equal(f.scouts.length, 2);
 	const replay = await owner.scoutBatch(run, original.dispatch, original.issuer, original.workflowId);
 	assert.ok(replay.every(job => !job.prompt.includes(question)));
-	await assert.rejects(owner.operation("review_note", { ...args, question: "Different question?" }, "owner"), /pending/i);
+	await owner.operation("review_note", { ...args, question: "Different question?" }, "owner");
 	await assert.rejects(owner.operation("review_note", args, "foreign"), /owner/i);
 	await assert.rejects(owner.operation("review_note", { ...args, receipt: f.tip }, "owner"), /receipt/i);
 	await f.reportGrains("left"); await f.submit("worker-1");
 	const next = await f.reading("right"), other = await f.reading("left");
 	assert.notEqual(next.base, f.tip); assert.notEqual(next.id, original.id);
 	assert.ok(next.prompt.includes(question)); assert.ok(!other.prompt.includes(question));
+	assert.ok(next.prompt.includes("Different question?")); assert.ok(!other.prompt.includes("Different question?"));
 	assert.ok(start.goal?.receipt?.output);
 	assert.ok(next.prompt.includes(receipt) && next.prompt.includes(f.tip) && next.prompt.includes(start.goal.receipt.output.trim()));
 	assert.match(next.prompt, /historical.*not re-observed/i);
@@ -395,7 +448,7 @@ test("the owner can attach a past goal receipt to the next normal scout without 
 	assert.equal(f.scouts.filter(s => s.prompt.includes(question)).length, 1);
 });
 
-test("review notes require a real receipt and bound the owner's question and historical excerpt", async t => {
+test("review notes retain large valid inputs and reject a fabricated historical excerpt", async t => {
 	const f = fixture(t, goal, { ...goalFiles, [goalCheck]: 'console.log("z".repeat(9000) + "\\nlast observed: value mismatch"); process.exit(1);' });
 	await f.start();
 	const [check] = (await f.owner.operation("status", { run, detail: "proof" }, "owner")).goalChecks ?? [];
@@ -403,19 +456,20 @@ test("review notes require a real receipt and bound the owner's question and his
 	const tool = buildTools(f.owner, () => "owner").find(t => t.name === `foundry_${op}`); assert.ok(tool?.handler);
 	const actor = { sessionId: "owner", toolName: tool.name, toolCallId: "note", arguments: args };
 	assert.match(JSON.stringify(await tool.handler(args, { ...actor, agentId: "helper" })), /subagents/);
-	await assert.rejects(f.owner.operation(op, args, "owner"), /verbatim excerpt/);
+	await f.owner.operation(op, args, "owner");
 	await assert.rejects(f.owner.operation(op, { ...args, excerpt: "not in stdout or stderr" }, "owner"), /verbatim excerpt/);
 	const excerpt = "last observed: value mismatch";
-	await assert.rejects(f.owner.operation(op, { ...args, excerpt, question: "é".repeat(513) }, "owner"), /1024/);
+	const long = { ...args, excerpt: "z".repeat(9000), question: "é".repeat(20000) };
+	await f.owner.operation(op, long, "owner");
 	await assert.rejects(f.owner.operation(op, { ...args, excerpt, squad: "missing" }, "owner"), /squad/);
 	assert.equal(typeof await tool.handler({ ...args, excerpt }, actor), "string");
 	const reloaded = f.runtime(f.root);
-	assert.deepEqual((await reloaded.operation("status", { run }, "owner")).pendingReviewNotes, [{ squad: "right", receipt: check.id, question: args.question, excerpt }]);
+	assert.deepEqual((await reloaded.operation("status", { run }, "owner")).pendingReviewNotes, [args, long, { ...args, excerpt }].map(({ run, ...note }) => ({ excerpt: undefined, ...note })));
 	const count = f.scouts.length;
 	await f.reportGrains("left"); await f.submit("worker-1");
 	const next = f.scouts.slice(count).find(s => s.squad === "right"); assert.ok(next);
 	assert.ok(next.prompt.includes(JSON.stringify({ excerpt }).slice(1, -1)));
-	assert.equal((next.prompt.match(/z{9000}/g) ?? []).length, 1, "full long output appears only in the current receipt, not in the historical note");
+	assert.ok(next.prompt.includes(long.question), "unlimited test budget retains the entire question");
 });
 
 test("an early failed milestone widens a focused search and preserves its checked writer", async t => {
@@ -747,7 +801,7 @@ test("a bound writer reports missing input without replacing the checked invento
 	assert.equal(existsSync(path.join(w.cwd, assembly)), false);
 	const partial = `${assembly}/new-journey`;
 	put(w.cwd, partial, "partial, not evidence");
-	const writer = f.runtime(w.cwd), args = { run, token: w.token, missingInput: "No permitted source specifies the accepted journey, citations or unaffected rows." };
+	const writer = f.runtime(w.cwd), args = { run, token: w.token, missingInput: "No permitted source specifies these rows: " + Array.from({length: 480}, (_, i) => `row-${i}`).join(", ") };
 	await writer.operation("submit", args, w.id);
 	const after = await f.status(), done = after.checkpoint, blocked = after.nodes.find(n => n.grain === "inventory");
 	assert.ok(done && done !== checkpoint.commit);

@@ -10,7 +10,7 @@ import { advance, currentReview, newRun, parseObservation, reserveChangedRepair,
 import { baselineNotice, changedFrom, goalReceipt, missingObservation, qualifiedProduct } from "./evidence.mjs";
 import { admitted, assignment, awaitingReply, boundWriter, canDispatch, current, expired, identify, issue, receive, reserveCheck, transferableWriter, unissued } from "./native.mjs";
 import { checked } from "./plan.mjs";
-import { queueNote } from "./notes.mjs";
+import { attachNotes, queueNote } from "./notes.mjs";
 import { diagnosticLine, indexBudgetError } from "./pages.mjs";
 import { capture, commitAt, generationRoot, retain, rootAt, verifyContracts } from "./product.mjs";
 import { refusedCall } from "./recovery.mjs";
@@ -363,11 +363,7 @@ export function createRuntime(directory, host) {
 				} else {
 					if (!e.workflowId && !e.retryOf && r.goal?.commit === e.base) {
 						const squad = r.policy.squads.find(s => s.id === e.squad);
-						const note = r.pendingReviewNotes?.find(n => n.squad === e.squad && n.after <= r.effects.indexOf(e));
-						if (note && squad && !investigation(e, squad)) {
-							e.note = { receipt: note.receipt, question: note.question, ...(note.excerpt !== undefined ? { excerpt: note.excerpt } : {}) };
-							r.pendingReviewNotes = r.pendingReviewNotes?.filter(n => n !== note);
-						}
+						if (squad && !investigation(e, squad)) attachNotes(r, e);
 					}
 					e.workflowId = workflowId; e.state = "issued";
 				}
@@ -433,7 +429,6 @@ export function createRuntime(directory, host) {
 		if (args.missingInput !== undefined) {
 			if (!n) fail("stale_assignment", "An already submitted attempt cannot report a missing input");
 			const reason = text(args.missingInput, "missing input and why it is needed");
-			if (reason.length > 2048) fail("invalid_field", "Describe the missing input in at most 2048 characters");
 			generationRoot(cwd(), text(n.generation, "generation commit"));
 			db().update(id, live => {
 				const node = writable(live, actor, token);

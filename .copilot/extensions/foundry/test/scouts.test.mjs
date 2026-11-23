@@ -3,6 +3,7 @@ import { setImmediate } from "node:timers/promises";
 import test from "node:test";
 import { mapSnapshot } from "../map/model.mjs";
 import { openDatabase } from "../work/database.mjs";
+import { observe } from "../work/graph.mjs";
 import { git } from "../work/product.mjs";
 import { availableHistory, nextReview, reviews } from "../work/reviews.mjs";
 import { scoutAgent, scoutDefinition, scoutPacket } from "../work/scouts.mjs";
@@ -86,6 +87,41 @@ test("an oversized current goal diagnostic fits the scout budget without shorten
 	assert.ok(!prompt.includes("\uFFFD") && !prompt.includes(output)); assert.equal(receipt.output, output);
 });
 
+test("historical receipt, owner question and owned blocker are scoped pageable context, never file citations", t => {
+	const f = fixture(t), { run, review, cwd, base } = f, goal = run.effects[0], budget = 16000;
+	assert.ok(goal.kind === "goal" && goal.receipt);
+	const old = "a".repeat(40), mid = "first unseen cause:", fill = "雪😃".repeat(20000);
+	const output = `historical head ${fill}${mid} old${fill} historical tail`, question = `question head ${fill}${mid} question${fill}`;
+	const receipt = "historical-goal", reason = `Writer reports missing input: ${fill}${mid} owned${fill}`;
+	run.effects.unshift({ ...goal, id: receipt, commit: old, receipt: { ...goal.receipt, commit: old, output } });
+	review.note = { receipt, question }; run.nodes.refused.reason = reason;
+	const initial = scoutPacket(cwd, run, review, budget);
+	assert.ok(Buffer.byteLength(initial.prompt) <= budget && initial.prompt.includes("historical head") && !initial.prompt.includes(mid));
+	const graph = initial.prompt.split("\n").filter(l => l.startsWith('{"id":')).map(l => JSON.parse(l)).find(g => g.id === "refused");
+	const details = initial.packet.sources?.filter(s => s.startsWith("detail:")).map(s => s.slice(7));
+	const questionId = JSON.parse(initial.prompt.split("\n").find(l => l.startsWith(`{"receipt":"${receipt}"`)) ?? "{}").detail;
+	assert.ok(details && details.includes(graph.detail) && details.includes(questionId));
+	for (const [target, expected] of /** @type {const} */([[{ receipt }, "old"], [{ detail: questionId }, "question"], [{ detail: graph.detail }, "owned"]])) {
+		review.state = "observed"; review.packet = initial.packet;
+		review.observation = { outcome: "needs-evidence", ...target, match: mid, evidence: [f.charter], reason: "Locate the cause", grains: [] };
+		const wake = nextReview(run, [review], base, review.version)?.wake; assert.ok(wake);
+		const next = { ...review, id: `follow-${expected}`, note: undefined, state: /** @type {const} */ ("issued"), packet: undefined, observation: undefined, wake };
+		run.effects.push(next);
+		const response = scoutPacket(cwd, run, next, budget);
+		assert.ok(response.prompt.includes(`${mid} ${expected}`) && Buffer.byteLength(response.prompt) <= budget);
+		assert.ok(response.prompt.includes(old) && response.prompt.includes("not re-observed"));
+		assert.ok(!Object.hasOwn(response.packet.files, receipt) && response.packet.excerpt?.path !== receipt);
+		assert.throws(() => observe(cwd, run, { ...next, packet: response.packet }, { outcome: "unresolved", grains: [], reason: "unknown", evidence: [receipt] }), /outside this charter/);
+		run.effects.pop();
+		for (const change of [{ version: "stale-inputs" }, { base: old }, { squad: "another" }, { evaluatorRevision: old }]) {
+			const foreign = { ...next, ...change }; run.effects.push(foreign);
+			assert.throws(() => scoutPacket(cwd, run, foreign, budget), /charter|immutable|revision|tree|reference|context/i);
+			run.effects.pop();
+		}
+	}
+	assert.equal(run.nodes.refused.reason, reason); assert.equal(review.note.question, question);
+});
+
 test("fixed charter includes owned idle grains and their declared inputs but not unrelated idle work", t => {
 	const f = fixture(t), { policy, nodes } = f.run;
 	delete policy.goalCheck; delete f.run.goal;
@@ -141,6 +177,74 @@ function factoryTrial(t, boundary = ["interface"], extra = {}) {
 	});
 }
 const noGap = { outcome: "no-gap", grains: [], evidence: ["charter"], reason: "Nothing owned needs a change." };
+for (const source of ["receipt", "file"]) test(`scoped ${source} lookup continues at a later occurrence and pages from the hit`, async t => {
+	const file = "encoder/catalog", match = "項😀".repeat(100), body = "x".repeat(32000) + match + "y".repeat(32000) + match + "z".repeat(32000);
+	const f = factoryTrial(t, ["interface"], { [file]: body, "goal.mjs": `import {writeFileSync} from "node:fs";writeFileSync(1,${JSON.stringify(body)});process.exitCode=1` });
+	const budget = 16000;
+	await f.start(f.runtime(f.root, { scoutBudget: async () => budget }));
+	const first = f.scouts[0], [goal] = (await f.owner.operation("status", { run: "pair", detail: "proof" }, "owner")).goalChecks ?? [];
+	const target = source === "file" ? { file } : { receipt: goal.id };
+	const indexed = filesIn(first.prompt).get(file); assert.ok(indexed.oid && indexed.preview, "budgeted blob preview");
+	const request = { ...noGap, outcome: "needs-evidence", ...target, match };
+	await first.report(request);
+	const hit = f.scouts.at(-1); assert.ok(hit?.squad === first.squad && hit.id !== first.id, "first lookup");
+	assert.equal(hit.packet.read?.hit, body.indexOf(match)); assert.ok(Buffer.byteLength(hit.prompt) <= budget);
+	assert.ok(!hit.packet.files[goal.id] && (source === "file" || hit.packet.excerpt?.path !== goal.id));
+	await hit.report({ ...request, offset: hit.packet.read.hit + 1 });
+	const later = f.scouts.at(-1); assert.ok(later && later.id !== hit.id, String((await f.status()).reviews.at(-1)?.reason));
+	assert.equal(later.packet.read?.hit, body.lastIndexOf(match));
+	const offset = later.packet.read.end;
+	await later.report({ ...request, match: undefined, offset });
+	const more = f.scouts.at(-1); assert.ok(more && more.id !== later.id, `${(await f.status()).reviews.at(-1)?.reason}: ${JSON.stringify(later.packet.read)}`);
+	assert.equal(more.packet.read?.start, offset); assert.ok(more.packet.read.end > offset);
+	const count = f.scouts.length;
+	await more.report({ ...request, match: undefined, offset });
+	assert.equal(f.scouts.length, count, "do not replay a consumed range");
+	assert.match(String((await f.status()).reviews.at(-1)?.reason), /repeat|progress|cursor|unchanged/i);
+});
+
+test("different literals returning the same range cannot sustain another read", async t => {
+	const file = "encoder/catalog", body = "pre".repeat(12000) + "needle" + "post".repeat(12000);
+	const f = factoryTrial(t, ["interface"], { [file]: body });
+	await f.start(f.runtime(f.root, { scoutBudget: async () => 10000 }));
+	const request = { ...noGap, outcome: "needs-evidence", file, match: "needle" };
+	await f.scouts[0].report(request); const first = f.scouts.at(-1); assert.ok(first?.packet.read);
+	await first.report({ ...request, match: "need" }); const again = f.scouts.at(-1); assert.ok(again?.packet.read);
+	const count = f.scouts.length; await again.report({ ...request, match: "nee" });
+	assert.equal(f.scouts.length, count);
+	assert.match(String((await f.status()).reviews.at(-1)?.reason), /progress|must decide/);
+});
+for (const found of [true, false]) test(`literal lookup decides in one bounded follow-up: ${found ? "matching range" : "absent"}`, async t => {
+	const file = "encoder/catalog", match = "operation.[publish]", budget = 18000;
+	const contents = "unrelated row\n".repeat(45000) + (found ? `{"name":"${match}","state":"pending"}\n` : "end\n") + "other\n".repeat(3000);
+	const f = factoryTrial(t, ["interface"], { [file]: contents, "display/catalog": "private foreign result" });
+	await f.start(f.runtime(f.root, { scoutBudget: async () => budget }));
+	const [first] = f.scouts, before = f.scouts.length;
+	put(f.root, file, found ? "not in dirty checkout" : match);
+	const request = { ...noGap, outcome: "needs-evidence", file, match };
+	const outsider = f.scouts.find(j => j.squad === "display"); assert.ok(outsider);
+	await outsider.report(request);
+	assert.match(String((await f.status()).reviews.find(r => r.id === outsider.id)?.reason), /outside this charter/);
+	await first.report(request);
+	const next = f.scouts.at(-1);
+	assert.ok(next?.squad === first.squad && f.scouts.length === before + 1, "one lookup, not sequential pages");
+	assert.ok(next.packet.partial && !Object.hasOwn(next.packet.files, file) && Buffer.byteLength(next.prompt) <= budget);
+	assert.ok(!next.prompt.includes("private foreign result"));
+	const row = filesIn(next.prompt).get(file);
+	assert.equal(row.oid, git(f.root, ["rev-parse", `${first.base}:${file}`]).toString().trim());
+	if (found) {
+		const range = next.packet.excerpt; assert.ok(range);
+		assert.equal(row.excerpt, contents.slice(range.start, range.end)); assert.ok(row.excerpt.includes(`"${match}"`));
+		await next.report({ ...noGap, outcome: "unresolved", evidence: [file] });
+		assert.equal((await f.status()).reviews.find(r => r.id === next.id)?.state, "observed");
+	} else {
+		assert.match(row.omitted, /no literal match/i); assert.equal(next.packet.excerpt, undefined);
+		await next.report(request);
+		assert.match(String((await f.status()).reviews.find(r => r.id === next.id)?.reason), /must decide/);
+	}
+	assert.equal(f.scouts.length, before + 1);
+});
+
 for (const budget of [18000, 36000]) test(`session-sized evidence pages deliver the exact pinned inventory and no unseen evidence: ${budget}`, async t => {
 	const file = "encoder/inventory.json", inventory = "quote:\" snow:雪 smile:😀\n".repeat(2800);
 	const f = factoryTrial(t, ["interface"], { [file]: inventory, "encoder/other": "x".repeat(70000) });

@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { openDatabase } from "./database.mjs";
-import { feedback, goalDelta, priorGoal } from "./feedback.mjs";
+import { goalFiles, priorGoal, retainFeedback } from "./feedback.mjs";
 import { awaitingReply, current } from "./native.mjs";
 import { withProduct } from "./product.mjs";
 import { FoundryError, fail, text } from "./values.mjs";
@@ -28,13 +28,14 @@ try {
 	});
 	/** @type {import("./model.js").Receipt} */
 	const receipt = { commit: command.commit, check: command.check, ...(command.overlay ? { evaluatorRevision: command.overlay.revision } : {}), exit: null, output: "" };
+	/** @type {ReturnType<typeof goalFiles>|undefined} */ let files;
+	/** @type {Buffer|undefined} */ let goalStdout;
 	try {
 		const env = { ...process.env, ...command.env };
 		delete env.FOUNDRY_GOAL_DELTA;
-		if (command.prior) {
-			const delta = goalDelta(cwd, command.commit, command.prior);
-			if (delta !== undefined) env.FOUNDRY_GOAL_DELTA = delta;
-		}
+		delete env.FOUNDRY_GOAL_DELTA_FILE;
+		delete env.FOUNDRY_GOAL_FEEDBACK_FILE;
+		if (command.goal) files = goalFiles(cwd, command.commit, command.prior, env);
 		await withProduct(cwd, command.commit, root => {
 			const evaluator = path.join(root, command.check);
 			const remaining = command.deadline === undefined ? undefined : Date.parse(command.deadline) - Date.now();
@@ -47,10 +48,7 @@ try {
 			});
 			receipt.exit = result.error || result.signal ? null : result.status;
 			receipt.output = [result.stdout, result.stderr, result.error?.message, result.signal].filter(Boolean).join("\n");
-			if (command.goal && (receipt.exit === 0 || receipt.exit === 1)) {
-				const value = feedback(result.stdout);
-				if (value !== undefined) receipt.feedback = value;
-			}
+			if (command.goal && (receipt.exit === 0 || receipt.exit === 1)) goalStdout = result.stdout;
 			const repairs = [...String(result.stdout ?? "").matchAll(/^FOUNDRY_REPAIR=([A-Za-z0-9._-]+)$/gm)];
 			if (repairs.length === 1 && command.outputs.includes(repairs[0][1]) && receipt.exit !== null && receipt.exit !== 0)
 				receipt.repair = repairs[0][1];
@@ -59,6 +57,14 @@ try {
 				if (hints.length === 1 && command.squads.includes(hints[0][1])) receipt.squad = hints[0][1];
 			}
 		}, command.overlay);
+		if (goalStdout && files) {
+			try {
+				const value = files.collect(goalStdout);
+				if (value) receipt.feedbackFile = retainFeedback(cwd, value);
+			} catch (error) {
+				receipt.output += `\nFoundry scheduling feedback unavailable: ${error instanceof Error ? error.message : String(error)}`;
+			}
+		}
 	}
 	catch (error) {
 		// Only a completed evaluator followed by the export verifier can attest a mutation.
@@ -69,8 +75,8 @@ try {
 		receipt.output = error instanceof Error ? error.message : String(error);
 		delete receipt.repair;
 		delete receipt.squad;
-		delete receipt.feedback;
 	}
+	finally { files?.close(); }
 	if (command.component && receipt.exit === null) receipt.failure ??= "incomplete";
 	db.update(runId, run => {
 		const e = run.effects.find(e => e.id === effectId);

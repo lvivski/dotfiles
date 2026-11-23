@@ -4,11 +4,12 @@ import { validOutcome } from "./contract.mjs";
 import { checkReceipt, goalReceipt, milestoneBlocker } from "./evidence.mjs";
 import { assess, goalAllowsWork, qualify, rejectRepeat, stall } from "./goal.mjs";
 import { admitted, assignmentCount, expired, reserveNotice, reserveProduct, reserveWorker } from "./native.mjs";
+import { validMatch } from "./pages.mjs";
 import { actionable, consumersOf, dependencies, liveNeeds, owns, productOutputs, proposal, requireNewWork, revise, settledOutput, stalePins, stoppedPredecessor, superseded, supersededAttempt, validateNodes, waiting, working, writerInputs } from "./plan.mjs";
 import { changedFiles, combine, commitAt, directoryBaseline, outside, regularFiles, rejoin, retain, verifyContracts, verifyDirectoryPin, versionOf, withoutGrain } from "./product.mjs";
 import { referenceCheckout } from "./research.mjs";
-import { availableHistory, blockReview, canInvestigate, discoverySquads, evidenceDecision, fileProgress, nextReview, reading, rejectedRead, requestedFiles, researchContext, reserveReview, reviews, staleReviewReason, unchangedRead, wakeSource } from "./reviews.mjs";
-import { FoundryError, contains, digest, fail, fields, name, names, record, referenceRepo, relative, text, waitTarget } from "./values.mjs";
+import { availableHistory, blockReview, canContinueRead, canInvestigate, discoverySquads, evidenceDecision, exhaustedRead, fileProgress, nextReview, readKey, readSource, reading, rejectedRead, requestedFiles, researchContext, reserveReview, reviews, scopedNotes, staleReviewReason, unchangedRead, wakeSource } from "./reviews.mjs";
+import { FoundryError, contains, digest, fail, fields, integer, name, names, record, referenceRepo, relative, text, waitTarget } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @typedef {import("./model.js").Node} Node */
@@ -63,7 +64,7 @@ function reviewVersion(cwd, run, squad, commit) {
 /** @param {import("./model.js").Squad} squad @param {unknown} raw @returns {import("./model.js").Observation} */
 export function parseObservation(squad, raw) {
 	const input = record(raw);
-	fields(input, ["outcome", "reason", "evidence", "grains", "replace", "waitFor", "file", "ownerInput"]);
+	fields(input, ["outcome", "reason", "evidence", "grains", "replace", "waitFor", "file", "receipt", "detail", "match", "offset", "ownerInput"]);
 	if (!Array.isArray(input.grains)) fail("invalid_field", "Expected a list of grains");
 	const grains = input.grains.map(v => "areas" in squad && typeof v !== "string" ? proposal(v) : name(v, "grain"));
 	names(grains.map(g => typeof g === "string" ? g : g.id), "grain");
@@ -77,7 +78,11 @@ export function parseObservation(squad, raw) {
 		fail("invalid_outcome", "Only a decision requiring a product choice or external action may ask the owner");
 	if (outcome === "waiting" ? !("areas" in squad) || input.waitFor === undefined : input.waitFor !== undefined)
 		fail("invalid_outcome", "Only a waiting area charter names a producer in waitFor");
-	if ((outcome === "needs-evidence") !== (input.file !== undefined)) fail("invalid_outcome", "Only needs-evidence names a file");
+	if ([input.file, input.receipt, input.detail].filter(v => v !== undefined).length !== Number(outcome === "needs-evidence") ||
+		input.offset !== undefined && outcome !== "needs-evidence") fail("invalid_outcome", "Only needs-evidence selects exactly one file, receipt or detail");
+	const match = input.match;
+	if (match !== undefined && (outcome !== "needs-evidence" || !validMatch(match)))
+		fail("invalid_outcome", "Use match only with needs-evidence: one nonempty Unicode literal");
 	const replace = names(input.replace === undefined ? [] : input.replace, "pending grain");
 	if (replace.length && (outcome !== "regenerate" || !("areas" in squad))) fail("invalid_outcome", "Only area regeneration can split pending work");
 	if (!Array.isArray(input.evidence) || !input.evidence.length)
@@ -85,7 +90,9 @@ export function parseObservation(squad, raw) {
 	const evidence = input.evidence.map(relative);
 	return { outcome, ...(ownerInput ? { ownerInput } : {}), reason: text(input.reason, "observation"), evidence, grains, ...(replace.length ? { replace } : {}),
 		...(outcome === "waiting" ? { waitFor: waitTarget(input.waitFor) } : {}),
-		...(outcome === "needs-evidence" ? { file: relative(input.file) } : {}) };
+		...(outcome === "needs-evidence" ? { ...(input.file !== undefined ? { file: relative(input.file) } :
+			input.receipt !== undefined ? { receipt: name(input.receipt, "receipt") } : { detail: name(input.detail, "detail") }),
+			...(input.offset !== undefined ? { offset: integer(input.offset, 0, "UTF-16 offset") } : {}), ...(match ? { match } : {}) } : {}) };
 }
 
 /** @param {string} cwd @param {Run} run @param {import("./model.js").Review} review
@@ -129,7 +136,7 @@ export function observe(cwd, run, review, observation) {
 	admitted(run);
 	const squad = run.policy.squads.find(s => s.id === review.squad) ?? fail("invalid_charter", "Missing charter");
 	// An unspecialized question (including a report from an older workflow) is not an operator decision.
-	const deciding = review.wake?.key === evidenceDecision;
+	const deciding = review.wake?.key === evidenceDecision || exhaustedRead(reviews(run), review);
 	if (deciding && (observation.outcome === "needs-evidence" || observation.outcome === "needs-research"))
 		fail("unresolved_evidence", "The decision follow-up must decide from delivered evidence or report unresolved");
 	if (!observation.findings && (observation.outcome === "unresolved" || observation.outcome === "needs-decision" && !observation.ownerInput))
@@ -190,10 +197,22 @@ export function observe(cwd, run, review, observation) {
 		if (!(Object.hasOwn(packet.files, e.name) && packet.files[e.name] === e.oid) && !(part?.path === e.name && part.oid === e.oid))
 			fail("unseen_evidence", `Text of ${e.name} at ${e.oid} was not delivered in this packet`);
 	if (outcome === "no-gap" && packet.partial) fail("partial_coverage", "Cannot conclude no-gap from a partial packet");
+	if (outcome === "needs-evidence") {
+		const source = readSource(observation), history = reviews(run);
+		if (!observation.file && (!source || !packet.sources?.includes(source) || observation.receipt && !(
+			observation.receipt === run.goal?.check && goalReceipt(run)?.commit === review.base ||
+			[...scopedNotes(run, review).values()].some(n => n.receipt === observation.receipt))))
+			fail("charter_scope", "Requested source is outside this charter packet");
+		if (!canContinueRead(history, review, observation))
+			fail("unresolved_evidence", "No advancing cursor from the selected source");
+		if (history.some(r => r.squad === review.squad && r.base === review.base && r.version === review.version &&
+			r.evaluatorRevision === review.evaluatorRevision && r.wake?.key === readKey(observation)))
+			fail("unresolved_evidence", "Repeated read of unchanged pinned evidence");
+	}
 	if (observation.file) {
 		const file = observation.file, [entry] = regularFiles(cwd, review.base, [file]);
 		const progress = fileProgress(reviews(run), review, file, entry.oid);
-		if (Object.hasOwn(packet.files, file) || focused.has(file) && progress.kind !== "partial")
+		if (Object.hasOwn(packet.files, file) || !observation.match && observation.offset === undefined && focused.has(file) && progress.kind !== "partial")
 			fail("unresolved_evidence", unchangedRead(file));
 	}
 	if (observation.waitFor && !referenceRepo(observation.waitFor) && (observation.waitFor === squad.id || !run.policy.squads.some(s => s.id === observation.waitFor)))

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { milestoneBlocker, qualifiedProduct } from "./evidence.mjs";
+import { attachedNotes, noteId } from "./notes.mjs";
 import { actionable, checked, consumersOf, displacedInputs, owns, settledOutput } from "./plan.mjs";
 import { digest, referenceRepo } from "./values.mjs";
 
@@ -109,6 +110,57 @@ export const staleReviewReason = "Chartered inputs changed during review";
 export const unchangedRead = file => `No further focused read of ${file}: the pinned evidence is unchanged`;
 export const evidenceDecision = "decide-from-evidence";
 
+/** @param {import("./model.js").Observation|undefined} o */
+export const readSource = o => o?.file ? `file:${o.file}` : o?.receipt ? `receipt:${o.receipt}` : o?.detail ? `detail:${o.detail}` : undefined;
+/** Never store or echo a potentially large literal in the dispatch key.
+ * @param {import("./model.js").Observation} o */
+export const readKey = o => `read:${digest([readSource(o), o.match ?? null, o.offset ?? 0])}`;
+
+/** Notes travel only along their own same-input evidence request chain, not to a later
+ * checkpoint, another squad or an investigation. Never look up an arbitrary receipt by ID.
+ * @param {Run} run @param {Review} review */
+export function scopedNotes(run, review) {
+	const notes = new Map(attachedNotes(review).map(n => [noteId(n), n]));
+	let child = review;
+	for (let i = run.effects.indexOf(review) - 1; i >= 0 && child.wake; i--) {
+		const r = run.effects[i];
+		if (r.id !== child.wake.review) continue;
+		if (r.kind !== "scout" || r.squad !== review.squad || r.base !== review.base || r.version !== review.version ||
+			r.evaluatorRevision !== review.evaluatorRevision || r.observation?.outcome !== "needs-evidence" ||
+			!(r.state === "observed" || r.state === "blocked" && child.wake.key === evidenceDecision)) break;
+		for (const n of attachedNotes(r)) notes.set(noteId(n), n);
+		child = r;
+	}
+	return notes;
+}
+
+/** @param {Review[]} history @param {Review} review @param {import("./model.js").Observation} o */
+export function canContinueRead(history, review, o) {
+	const source = readSource(o), offset = o.offset;
+	if (offset === undefined || offset === 0) return true;
+	for (const r of [...priorObservations(history, review), review]) {
+		const read = r.packet?.read;
+		if (read?.source === source && read && !read.miss && offset < read.length &&
+			(offset === read.end || o.match && read.hit !== undefined && offset === read.hit + 1)) return true;
+	}
+	return false;
+}
+
+/** Another spelling of a query is not progress if it yields neither new text nor a later hit.
+ * @param {Review[]} history @param {Review} review */
+export function exhaustedRead(history, review) {
+	const read = review.packet?.read;
+	if (!read || read.miss) return !!read;
+	let end = read.start, furthestHit = -1;
+	const earlier = [...priorObservations(history, review)].flatMap(r => r.packet?.read?.source === read.source ? [r.packet.read] : []);
+	for (const p of earlier.sort((a, b) => a.start - b.start)) {
+		if (read.hit !== undefined && read.hit === p.hit) return true;
+		if (p.start <= end) end = Math.max(end, p.end);
+		furthestHit = Math.max(furthestHit, p.hit ?? -1);
+	}
+	return end >= read.end && (read.hit === undefined || read.hit <= furthestHit);
+}
+
 /** @param {Review[]} past @param {Review} last */
 export function rejectedRead(past, last) {
 	const file = last.observation?.file;
@@ -161,9 +213,12 @@ export function nextReview(run, past, base, version) {
 	if (last?.base === base && correction(run, last)) key = "displaced-input";
 	if (last?.base === base && last.version === version && rejectedRead(past, last)?.kind === "complete") key = evidenceDecision;
 	if (obs?.outcome === "needs-decision" && last?.decision?.status === "answered") key = last.id;
-	if (last && obs?.outcome === "needs-evidence" && obs.file) {
-		const progress = last.version === version ? fileProgress(past, last, obs.file) : undefined;
-		key = progress?.kind === "partial" ? `page:${progress.offset}:${obs.file}` : `file:${obs.file}`;
+	if (last && obs?.outcome === "needs-evidence" && last.version === version) {
+		if (obs.match || obs.offset !== undefined || !obs.file) key = readKey(obs);
+		else {
+			const progress = fileProgress(past, last, obs.file);
+			key = progress.kind === "partial" ? `page:${progress.offset}:${obs.file}` : `file:${obs.file}`;
+		}
 	}
 	if (obs?.outcome === "needs-research") key = "research";
 	if (last && (obs?.outcome === "researched" || obs?.outcome === "unresolved" && obs.findings?.length)) key = `research-result:${last.id}`;
@@ -197,6 +252,7 @@ export function reviewStatus(r) {
 	return { id: r.id, squad: r.squad, state: reading(r) ? "reading" : r.state, base: r.base, version: r.version,
 		workflowId: r.workflowId, observation: r.observation, wake: r.wake, ...(r.retryOf ? { retryOf: r.retryOf } : {}),
 		...(r.note ? { note: r.note } : {}),
+		...(r.otherNotes ? { otherNotes: r.otherNotes } : {}),
 		...(r.predecessor ? { predecessor: { grain: r.predecessor.grain.id, worker: r.predecessor.worker, base: r.predecessor.base,
 			check: r.predecessor.check, reason: r.predecessor.reason } } : {}),
 		reason: r.deferred ? `Deferred: current assignments using ${Object.keys(r.deferred.pins).join(", ")}: ${r.deferred.consumers.join(", ")}` : r.state === "blocked" ? r.error : undefined,
