@@ -44,3 +44,20 @@ test("only a completed component followed by an export verification failure atte
 		for (const check of [product, goal]) assert.deepEqual(interrupted(check, exit, changed), { exit: null, output: changed.message });
 	}
 });
+
+test("shared-step attribution comes only from one valid completed goal stdout record; it never changes the verdict", () => {
+	const failed = { id: "open", directory: "ui", blocked: 49 }, passed = { id: "open", directory: "ui", passed: true };
+	const marker = (/** @type {unknown} */ data) => Buffer.from(`FOUNDRY_BLOCKERS=${JSON.stringify(data)}\n`);
+	for (const [status, data] of /** @type {const} */ ([[1, failed], [0, passed], [1, passed]])) {
+		const r = { ...result, status, stdout: marker([data]) };
+		assert.deepEqual(interpret(goal, r).fields.blockers, [data]);
+		assert.equal(interpret(product, r).fields.blockers, undefined);
+		assert.equal(interpret(component, r).fields.blockers, undefined);
+		assert.equal(interpret(goal, { ...r, stdout: Buffer.alloc(0), stderr: r.stdout }).fields.blockers, undefined);
+	}
+	for (const [status, data] of /** @type {const} */ ([[0, [failed]], [1, [failed, passed]], [1, [{ ...failed, directory: "../ui" }]],
+		[1, [{ ...failed, blocked: -1 }]], [1, [{ ...failed, passed: true }]], [2, [failed]]])) {
+		const { fields } = interpret(goal, { ...result, status, stdout: marker(data) });
+		assert.equal(fields.blockers, undefined); assert.equal(fields.exit, status);
+	}
+});

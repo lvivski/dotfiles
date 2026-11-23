@@ -910,6 +910,91 @@ for (const saved of [false, true]) test(`a stopped writer releases its exact dir
 	assert.deepEqual(s.products?.at(-1)?.outputs, { "new-input": successor.inputs?.["new-input"] });
 });
 
+for (const saved of [false, true]) test(`a scoped same-checkpoint review reassigns only a terminal predecessor / ${saved ? "persisted evidence-read child" : "new comparison"}`, async t => {
+	const file = ".foundry/right.md", input = "engine/input", nextId = "render-record";
+	const f = pipelineFixture(t, { ".foundry/product.mjs": "", [goalCheck]: `import {existsSync} from "node:fs";
+		if (!existsSync("${assembly}/index.mjs")) { console.log("Rendered record missing"); process.exit(1); }` });
+	await f.start();
+	await report(await f.reading("pipeline"), file, []);
+	await report(await f.reading("engine"), ".foundry/left.md", [work("input", input)]);
+	await f.write("input", assemblyBody);
+	await report(await f.reading("engine"), ".foundry/left.md", []);
+	await report(await f.reading("pipeline"), file, [work("export-record", assembly, ["input"])]);
+	const before = await f.status(), original = before.nodes.find(n => n.grain === "export-record"), checkpoint = before.products?.at(-1);
+	const db = openDatabase(f.root); t.after(() => db.close());
+	const old = f.workers.get(original?.worker ?? ""); assert.ok(old && checkpoint);
+	assert.equal(db.read(run)?.nodes["export-record"].base, checkpoint.commit);
+	put(old.cwd, `${assembly}/draft`, "private unfinished export");
+	await f.runtime(old.cwd).operation("submit", { run, token: old.token, missingInput: "Cannot exercise the export device." }, old.id);
+	const proposal = result(file, [work(nextId, assembly, ["input"])]);
+	const ordinary = await f.reading("pipeline");
+	await ordinary.report(proposal);
+	const rejection = "Writable directories must be disjoint";
+	assert.equal((await f.status()).reviews.find(r => r.id === ordinary.id)?.reason, rejection);
+	const reload = f.runtime(f.root);
+	reload.turn("owner"); await reload.flush(); await f.settle();
+	assert.equal(f.workers.size, 2, "an ordinary same-base review has no authority to evict the stopped assignment");
+
+	put(f.root, "comparison.txt", "Render the input; exporting to a device is a separate task.");
+	const [offered] = (await f.owner.operation("publish", { run, file: "comparison.txt", to: [assembly] }, "owner")).artifacts;
+	const receipt = db.read(run)?.goal?.check; assert.ok(receipt);
+	const args = { run, directory: assembly, blob: offered.blob, receipt, question: "Implement the record view without the export device." };
+	await f.owner.operation("iterate", args, "owner"); await f.settle();
+	const root = await f.reading("pipeline");
+	let reviewer = root;
+	if (saved) {
+		await root.report({ outcome: "needs-evidence", reason: "Locate the exact rendering failure.", evidence: [file], grains: [], receipt });
+		reviewer = await f.reading("pipeline");
+		const child = db.read(run)?.effects.find(e => e.id === reviewer.id);
+		assert.ok(child?.kind === "scout" && !child.iteration && child.wake?.review === root.id && reviewer.base === checkpoint.commit);
+		// Older readers saved the child report and its actual packet, but rejected the overlapping directory.
+		db.mutateLocked(run, r => {
+			const e = reviews(r).find(e => e.id === reviewer.id); assert.ok(e?.workflowId && e.callId);
+			e.packet = reviewer.packet; e.observation = parseObservation(r.policy.squads[1], proposal);
+			e.state = "blocked"; e.error = rejection;
+		});
+		const persisted = db.read(run); assert.ok(persisted);
+		for (const guard of ["different comparison directory", "same task", "unconfirmed writer", "stale prerequisite", "spent budget"]) {
+			/** @type {import("./model.js").Run} */
+			const copy = structuredClone(persisted);
+			const parent = reviews(copy).find(r => r.id === root.id), e = reviews(copy).find(r => r.id === reviewer.id);
+			const launch = copy.effects.find(e => e.kind === "writer" && e.grain === "export-record");
+			assert.ok(parent?.iteration && e?.observation && e.packet && launch);
+			const observation = e.observation, g = observation.grains[0]; assert.ok(typeof g === "object");
+			if (guard === "different comparison directory") parent.iteration.directory = "pipeline/other";
+			if (guard === "same task") g.task = text(copy.nodes["export-record"].grain.task, "original task");
+			if (guard === "unconfirmed writer") launch.state = "uncertain";
+			if (guard === "stale prerequisite") delete e.packet.outputs.input;
+			if (guard === "spent budget") copy.policy.assignments = 1;
+			assert.throws(() => observe(f.root, copy, e, observation), /disjoint|No current reviewed assignment/);
+			assert.ok(!copy.nodes[nextId] && copy.nodes["export-record"] && !e.predecessor, guard);
+		}
+	}
+	const scoutCount = f.scouts.length, checks = [...f.checks];
+	if (saved) { reload.turn("owner"); await reload.flush(); await f.settle(); }
+	else await reviewer.report(proposal);
+	const admitted = await f.status(), decision = admitted.reviews.find(r => r.id === reviewer.id);
+	const next = admitted.nodes.find(n => n.grain === nextId);
+	assert.equal(next?.state, "writing", String(decision?.reason));
+	assert.equal(decision?.predecessor?.worker, old.id);
+	assert.equal(next.review, reviewer.id); assert.deepEqual(next.inputs, { input: checkpoint.outputs.input });
+	assert.equal(admitted.nodes.filter(n => n.directory === assembly).length, 1); assert.equal(db.read(run)?.nodes[nextId].base, checkpoint.commit);
+	assert.deepEqual(admitted.products, before.products); assert.equal(admitted.qualified, null);
+	const worker = f.workers.get(next.worker ?? ""); assert.ok(worker && worker.id !== old.id && worker.token !== old.token);
+	assert.equal(existsSync(path.join(worker.cwd, assembly, "draft")), false);
+	assert.equal(readFileSync(path.join(old.cwd, assembly, "draft"), "utf8"), "private unfinished export");
+	await assert.rejects(f.runtime(old.cwd).operation("submit", { run, token: old.token }, old.id), /assignment/);
+	await deliver(reload, reviewer, proposal);
+	await reload.operation("iterate", args, "owner");
+	reload.turn("owner"); await reload.flush(); await f.settle();
+	assert.equal(f.workers.size, 3); assert.equal(f.scouts.length, scoutCount); assert.deepEqual(f.checks, checks);
+	await f.write(nextId, assemblyBody);
+	const done = await f.status();
+	assert.ok(done.qualified && done.qualified !== checkpoint.commit);
+	assert.equal(done.products?.at(-1)?.receipt?.commit, done.qualified); assert.equal(done.goal?.receipt?.commit, done.qualified);
+	assert.equal(git(f.root, "show", `${done.qualified}:${assembly}/index.mjs`), assemblyBody);
+});
+
 for (const issued of [false, true]) test(`a stopped writer's baseline distinguishes reserved and issued artifact notices: issued=${issued}`, async t => {
 	const f = await assemblyRound(t, { [goalCheck]: `import ready from "../${assembly}/index.mjs";process.exit(ready() ? 0 : 1)` });
 	const [w] = f.workers.values(), writer = f.runtime(w.cwd), db = openDatabase(f.root);

@@ -1,7 +1,8 @@
 import { FoundryError } from "./values.mjs";
+import { signals } from "./signals.mjs";
 
 /** @typedef {{kind:"component"} | {kind:"product",outputs:string[]} | {kind:"goal",squads:string[]}} Evaluation */
-/** @typedef {Pick<import("./model.js").Receipt,"exit"|"output"|"failure"|"repair"|"squad">} Fields */
+/** @typedef {Pick<import("./model.js").Receipt,"exit"|"output"|"failure"|"repair"|"squad"|"blockers">} Fields */
 /** @typedef {{status:number|null,signal:string|null,error?:Error,stdout:Buffer|null,stderr:Buffer|null}} ProcessResult */
 
 /** @param {Evaluation} check @param {ProcessResult} result @returns {{fields:Fields, feedback?:Buffer}} */
@@ -25,7 +26,16 @@ export function interpret(check, result) {
 			const hints = [...String(stdout ?? "").matchAll(/^FOUNDRY_SQUAD=([^\r\n]*)$/gm)];
 			if (hints.length === 1 && check.squads.includes(hints[0][1])) fields.squad = hints[0][1];
 		}
-		if (stdout && (exit === 0 || exit === 1)) return { fields, feedback: stdout };
+		if (stdout && (exit === 0 || exit === 1)) {
+			try {
+				const list = signals(stdout, exit);
+				if (list) fields.blockers = list;
+			} catch (e) {
+				if (!(e instanceof FoundryError)) throw e;
+				fields.output += `\nFoundry blocker attribution unavailable: ${e.message}`;
+			}
+			return { fields, feedback: stdout };
+		}
 	}
 	return { fields };
 }

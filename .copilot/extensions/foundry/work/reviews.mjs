@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { currentFailures, delivered, repairDirectory } from "./blockers.mjs";
 import { workerLimit } from "./policy.mjs";
 import { milestoneBlocker, qualifiedProduct } from "./evidence.mjs";
 import { attachedNotes, noteId } from "./notes.mjs";
@@ -154,6 +155,12 @@ export function comparison(run, review) {
 	return r?.iteration;
 }
 
+/** Only immutable review evidence determines same-checkpoint handoff scope.
+ * @param {Run} run @param {Review} review @param {import("./model.js").Observation} report */
+export function successorDirectory(run, review, report) {
+	return comparison(run, review)?.directory ?? repairDirectory(run, review, report);
+}
+
 /** @param {Review[]} history @param {Review} review @param {import("./model.js").Observation} o */
 export function canContinueRead(history, review, o) {
 	const source = readSource(o), offset = o.offset;
@@ -204,16 +211,20 @@ function releasedReviews(run, history) {
  * @param {Run} run @param {Review[]} history @param {import("./model.js").Receipt|undefined} gap */
 export function discoverySquads(run, history, gap) {
 	const squads = run.policy.squads, focus = gap?.squad && squads.find(s => s.id === gap.squad);
-	if (focus && !milestoneBlocker(run)) {
+	const failures = currentFailures(run);
+	if (!failures.length && focus && !milestoneBlocker(run)) {
 		const report = history.findLast(r => r.squad === focus.id && r.base === gap.commit);
 		if (!report || reading(report) || Object.values(run.nodes).some(n => n.review === report.id && (n.state === "published" || actionable(run, n)))) {
 			const released = new Set(releasedReviews(run, history).map(r => r.squad));
 			return [...squads.filter(s => s !== focus && released.has(s.id)), focus];
 		}
 	}
-	if (!gap || workerLimit(run) === undefined) return squads;
-	const last = new Map(history.map((r, i) => [r.squad, i]));
-	return squads.toSorted((a, b) => (last.get(a.id) ?? -1) - (last.get(b.id) ?? -1));
+	const last = new Map(gap && workerLimit(run) !== undefined ? history.map((r, i) => [r.squad, i]) : []);
+	/** @type {Map<string,number>} */ const impact = new Map();
+	for (const g of failures) if (g.squad && !history.some(r => delivered(g, r)))
+		impact.set(g.squad, Math.max(g.blocked, impact.get(g.squad) ?? 0));
+	return squads.toSorted((a, b) => (impact.get(b.id) ?? 0) - (impact.get(a.id) ?? 0) ||
+		(last.get(a.id) ?? -1) - (last.get(b.id) ?? -1));
 }
 
 /** Only an available charter needs its Git version observed.
@@ -256,6 +267,12 @@ export function nextReview(run, past, base, version) {
 		return { wake: { review: last.id, key } };
 	const [deferred] = releasedReviews(run, past);
 	if (deferred) return { wake: { review: deferred.id, key: "released-inputs" } };
+	if (seen && last?.state === "observed" && last.base === base && !last.iteration &&
+		(obs?.outcome === "no-gap" || obs?.outcome === "unresolved" || obs?.outcome === "regenerate")) {
+		const gaps = currentFailures(run).filter(g => g.squad === last.squad && !past.some(r => delivered(g, r)));
+		const key = gaps.length && `blockers:${digest(gaps.map(g => g.detail))}`;
+		if (key && !past.some(r => r.base === base && r.wake?.key === key)) return { wake: { review: last.id, key } };
+	}
 	if (!seen && !(last?.predecessor && last.base === base && Object.values(run.nodes).some(n =>
 		n.review === last.id && (actionable(run, n) || n.state === "published")))) return {};
 }

@@ -1,4 +1,5 @@
 import { planDirectory, validOutcome } from "./contract.mjs";
+import { validSignals } from "./signals.mjs";
 import { checkpointReceipt, checkReceipt, goalReceipt, missingInput } from "./evidence.mjs";
 import { validFeedback } from "./feedback.mjs";
 import { attachedNotes, noteId, noteText, sourceReceipt } from "./notes.mjs";
@@ -7,7 +8,7 @@ import { assignmentCount } from "./capacity.mjs";
 import { unissued } from "./native.mjs";
 import { checked, owns, validateNodes } from "./plan.mjs";
 import { outside } from "./product.mjs";
-import { investigation } from "./reviews.mjs";
+import { investigation, successorDirectory } from "./reviews.mjs";
 import { contains, fail, relative } from "./values.mjs";
 
 /** @typedef {(value:unknown)=>boolean} Guard */
@@ -60,6 +61,9 @@ const observation = v => object(v) && string(v.reason) && Array.isArray(v.eviden
 	optional(path)(v.file) && optional(id)(v.receipt) && optional(id)(v.detail) &&
 	(v.offset === undefined || v.outcome === "needs-evidence" && count(v.offset)) &&
 	(v.match === undefined || v.outcome === "needs-evidence" && validMatch(v.match)) &&
+	(v.addresses === undefined || Array.isArray(v.addresses) && v.addresses.length > 0 &&
+		v.addresses.every(shape({ id, grain: id, worker: optional(noteText) })) &&
+		new Set(v.addresses.map(a => a.id)).size === v.addresses.length) &&
 	(v.replace === undefined || v.outcome === "regenerate" && list(id)(v.replace));
 /** @param {unknown} v @returns {v is import("./model.js").Packet} */
 export const isPacket = v => object(v) && id(v.review) && commit(v.base) && bool(v.partial) && object(v.files) &&
@@ -93,7 +97,7 @@ const node = n => nodeShape(n) && object(n) && (n.stop === undefined ||
 const assessment = { target: commit, commit, check: id };
 const product = shape({ ...assessment, outputs: named(commit), qualifiedAt: optional(positive) });
 const receipt = shape({ commit, check: path, evaluatorRevision: optional(commit), exit: v => v === null || count(v), output: string,
-	failure: optional(one("changed-export", "incomplete")), repair: optional(id), squad: optional(id), feedback: optional(validFeedback),
+	failure: optional(one("changed-export", "incomplete")), repair: optional(id), squad: optional(id), blockers: optional(validSignals), feedback: optional(validFeedback),
 	feedbackFile: optional(shape({ blob: commit, legacy: optional(bool) })) });
 const dispatch = { id, issuer: string, args: object, evaluatorRevision: optional(commit), callId: optional(string), error: optional(string), permissionHold: optional(string) };
 const noteFields = { receipt: id, question: noteText, excerpt: optional(noteText) };
@@ -105,12 +109,13 @@ const scout = shape({ ...dispatch, kind: one("scout"), tool: one("workflow"), sq
 	iteration: optional(shape({receipt: id, directory: path, blob: commit, question: noteText, basis: optional(one("checkpoint"))})), predecessor: optional(node),
 	otherNotes: optional(list(shape(noteFields))), diagnostic: optional(shape({ receipt: id, excerpt: noteText })), wake: optional(shape({ review: id, key: string })) });
 const native = shape({
-	...dispatch, kind: one("writer", "component", "product", "goal", "repair", "decision", "handoff", "artifact"), grain: optional(id), inlineRepair: optional(id),
+	...dispatch, kind: one("writer", "component", "product", "goal", "repair", "decision", "handoff", "artifact", "escalation"), grain: optional(id), inlineRepair: optional(id),
 	usedArtifacts: optional(list(commit)), comparedArtifacts: optional(list(commit)),
 	baseline: optional(shape({ directory: path, revision: commit, tree: commit })),
 	readGrant: optional(shape({ directory: path, revision: commit, tree: commit })),
 	claims: optional(list(shape({ actor: string, path: string, start: string, kickoff: string, identity: string }))), claimedRequest: optional(string),
-	token: optional(id), tool: one("create_session", "bash", "send_session_message", "session.send"), state: one("ready", "issued", "uncertain", "ordinary", "done", "refused"),
+	retirement: optional(shape({ notification: id, read: id, completion: id })),
+	token: optional(id), tool: one("create_session", "bash", "send_session_message", "session.send"), state: one("ready", "issued", "uncertain", "ordinary", "done", "refused", "retired"),
 	nativeId: optional(string), boundAt: optional(positive), commit: optional(commit), check: optional(path),
 	runnerStarted: optional(bool), runnerClaim: optional(v => typeof v === "string" && /^[A-Za-z0-9_-]{43}$/.test(v)), receipt: optional(receipt)
 });
@@ -120,6 +125,7 @@ const snapshot = shape({
 	repins: optional(list(shape({ from: commit, revision: commit, files: list(path) }))),
 	artifacts: optional(list(shape({ file: path, blob: commit, base: commit, publisher: string, to: list(path) }))),
 	pendingReviewNotes: optional(list(shape({ ...noteFields, squad: id, after: count }))),
+	attributions: optional(list(shape({ receipt: id, id, directory: path, blocked: positive, excerpt: noteText }))),
 	active: bool, activatedAt: positive, pauseReason: optional(string), nodes: named(node), effects: list(v => scout(v) || native(v)),
 	products: list(product), join: optional(product), goal: optional(shape({ ...assessment, stall: optional(string),
 		tried: optional(list(v => typeof v === "string" && /^[0-9a-f]{64}$/.test(v))) })),
@@ -131,10 +137,17 @@ function isRun(value) { return snapshot(value); }
 
 /** @param {import("./model.js").Run} run @param {import("./model.js").Effect} e */
 function validDispatch(run, e) {
+	if (e.state === "retired" || "retirement" in e) {
+		if (e.kind !== "goal" || e.state !== "retired" || !e.retirement || e.issuer !== run.owner || !e.runnerStarted ||
+			!e.callId || e.receipt || e.runnerClaim || e.permissionHold || e.args.shellId !== `foundry-${e.id}` ||
+			new Set(Object.values(e.retirement)).size !== 3) return false;
+	}
 	if (e.runnerClaim !== undefined && (e.tool !== "bash" || !e.runnerStarted || !e.callId ||
 		!(e.kind === "component" || e.kind === "product" || e.kind === "goal"))) return false;
 	if (e.permissionHold !== undefined && !unissued(e)) return false;
 	if (e.receipt?.feedback !== undefined && e.receipt.feedbackFile) return false;
+	if (e.receipt?.blockers && (e.kind !== "goal" || !e.runnerStarted || !e.callId ||
+		e.receipt.exit !== 1 && !(e.receipt.exit === 0 && e.receipt.blockers.every(s => "passed" in s)))) return false;
 	if ((e.receipt?.feedback !== undefined || e.receipt?.feedbackFile) && (e.kind !== "goal" || !e.runnerStarted || !e.callId ||
 		e.receipt.exit !== 0 && e.receipt.exit !== 1)) return false;
 	if (e.evaluatorRevision && (!(e.kind === "goal" || e.kind === "scout") || !run.repins?.some(p => p.revision === e.evaluatorRevision))) return false;
@@ -156,7 +169,8 @@ function validDispatch(run, e) {
 		if (e.predecessor) {
 			const n = e.predecessor, g = report?.grains[0];
 			if (e.state !== "observed" || report?.outcome !== "regenerate" || report.grains.length !== 1 || typeof g !== "object" ||
-				missingInput(n) === undefined || !n.worker || !n.base || n.base === e.base ||
+				missingInput(n) === undefined || !n.worker || !n.base || n.base === e.base && successorDirectory(run, e, report) !== g.directory ||
+				g.task === n.grain.task ||
 				g.id === n.grain.id || g.directory !== n.grain.directory || g.check !== n.grain.check ||
 				!run.effects.some(w => w.kind === "writer" && w.grain === n.grain.id && w.nativeId === n.worker && w.state === "done")) return false;
 		}
@@ -192,6 +206,8 @@ function validDispatch(run, e) {
 			(!e.receipt || e.receipt.commit === e.commit && e.receipt.check === e.check && e.receipt.evaluatorRevision === e.evaluatorRevision) &&
 			(!e.receipt?.squad || e.kind === "goal" && e.receipt.exit === 1 && run.policy.squads.some(s => s.id === e.receipt?.squad));
 	if (!e.token || e.receipt || !string(e.args.message)) return false;
+	if (e.kind === "escalation") return !e.grain && /^[a-f0-9]{64}$/.test(e.token) && (e.issuer === run.owner ?
+		e.tool === "session.send" && e.state !== "ordinary" : e.tool === "send_session_message" && e.args.session_id === run.owner);
 	if (e.kind === "repair" || e.kind === "artifact") return !!e.grain && (e.tool === "send_session_message" || e.tool === "session.send" && e.state !== "ordinary");
 	return e.issuer === run.owner ? e.kind === "handoff" && e.tool === "session.send" && e.state !== "ordinary"
 		: e.tool === "send_session_message" && e.args.session_id === run.owner;
@@ -206,6 +222,11 @@ export function decode(value) {
 		fail("corrupt_run", "Invalid Foundry execution snapshot");
 	const { policy: p, nodes, products } = value, areas = p.squads.filter(s => "areas" in s), files = new Set(p.files);
 	const effects = new Map(value.effects.map(e => [e.id, e]));
+	const attributions = value.attributions ?? [];
+	if (new Set(attributions.map(a => `${a.receipt}:${a.id}`)).size !== attributions.length || attributions.some(a => {
+		const r = sourceReceipt(effects.get(a.receipt), a);
+		return r?.exit !== 1 || r.blockers?.some(s => s.id === a.id) || !Number.isSafeInteger(a.blocked + 1);
+	})) fail("corrupt_run", "Invalid shared blocker attribution");
 	const grants = new Map(value.effects.flatMap(e => e.kind === "writer" && e.readGrant ? [[e.token, e]] : []));
 	const queued = value.pendingReviewNotes ?? [];
 	if (new Set(queued.map(n => `${n.squad}:${noteId(n)}`)).size !== queued.length || queued.some(n => n.after > value.effects.length ||

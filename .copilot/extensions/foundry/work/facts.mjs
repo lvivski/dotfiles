@@ -27,7 +27,7 @@ export function releaseFacts(run, target) {
 	const obsolete = effect?.kind === "goal" && effect.evaluatorRevision !== pin;
 	const old = obsolete && checkReceipt(effect), heldPin = obsolete && (awaitingReply(effect) || effect.permissionHold || effect.state === "refused");
 	const goal = !at ? "absent" : obsolete ? heldPin ? "superseded" : "repin" : last && last.commit !== at.commit ? "new-product" :
-		!receipt ? "pending" : receipt.exit === 2 ? "missing" : receipt.exit === 1 ? "unmet" : receipt.exit === 0 ? "met" : "incomplete";
+		effect?.state === "retired" ? "retired" : !receipt ? "pending" : receipt.exit === 2 ? "missing" : receipt.exit === 1 ? "unmet" : receipt.exit === 0 ? "met" : "incomplete";
 	const history = reviews(run), nodes = Object.values(run.nodes), byId = new Map(history.map(r => [r.id, r]));
 	const review = goal === "met" && [...new Map(history.map(r => [r.squad, r])).values()].some(r =>
 		r.base === at?.commit && r.evaluatorRevision === pin && comparison(run, r)?.basis &&

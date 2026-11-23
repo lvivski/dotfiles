@@ -1,4 +1,6 @@
 import { materialize, offered } from "./artifacts.mjs";
+import { sharedBlockers } from "./blockers.mjs";
+import { remainingAssignments } from "./capacity.mjs";
 import { changedFrom, missingInput } from "./evidence.mjs";
 import { handoff, qualification } from "./handoff.mjs";
 import { metricsFacts, timingFacts } from "./metrics.mjs";
@@ -16,13 +18,15 @@ function ownerStatus(run, { receipts, questions }, detail) {
 	return {
 		handoff: handoff(run, detail === "cleanup"),
 		scheduling: scheduling(run),
+		sharedBlockers: sharedBlockers(run, remainingAssignments(run)),
 		...(detail === "proof" ? { qualification: qualification(run) } : {}),
 		metrics: detail === "usage" ? metricsFacts(run) : timingFacts(run),
 		...(run.pendingReviewNotes?.length ? { pendingReviewNotes: run.pendingReviewNotes.map(({ squad, receipt, question, excerpt }) => ({ squad, receipt, question, excerpt })) } : {}),
 		target: last?.target, outputs: last?.outputs ?? {},
 		...(run.repins ? { evaluatorChanges: run.repins } : {}),
 		...(run.repins || run.goal && detail === "proof" ? { goalChecks: run.effects.filter(e => e.kind === "goal").map(e => ({
-			id: e.id, commit: e.commit, evaluatorRevision: e.evaluatorRevision ?? run.policy.base, state: e.state, receipt: receipts.get(e.id) })) } : {}),
+			id: e.id, commit: e.commit, evaluatorRevision: e.evaluatorRevision ?? run.policy.base, state: e.state,
+			...(e.state === "retired" ? { infrastructureFailure: { reason: "Runner failed before recording a verdict", ...e.retirement } } : {}), receipt: receipts.get(e.id) })) } : {}),
 		questions: questions.map(({ review: r, observation, fact }) => {
 			const claim = presentation(r);
 			return { ...fact, squad: r.squad, base: r.base, evidence: observation.evidence,

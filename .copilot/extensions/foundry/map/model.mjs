@@ -3,7 +3,7 @@ import { boardFacts, projectBoard } from "../work/visibility.mjs";
 /** @param {ReturnType<typeof boardFacts>["pending"][number]} p */
 function pendingMessage(p) {
 	const labels = { goal: "Goal check", component: "Component check", product: "Product check", writer: "Writer launch",
-		scout: "Scout", repair: "Repair notice", handoff: "Handoff notice", decision: "Decision notice", artifact: "Reference notice" };
+		scout: "Scout", repair: "Repair notice", handoff: "Handoff notice", decision: "Decision notice", artifact: "Reference notice", escalation: "Unowned blocker notice" };
 	const label = labels[p.kind] + (p.grain ? ` (${p.grain})` : "");
 	const reason = p.reason?.replace(/^(?:Error: )+/, "");
 	if (p.evaluating) return `${label} started; no evaluator result recorded yet.`;

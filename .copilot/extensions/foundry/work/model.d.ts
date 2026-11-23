@@ -61,6 +61,7 @@ export interface Observation {
 	evidence: string[];
 	grains: (string | Proposal)[];
 	replace?: string[];
+	addresses?: { id: string; grain: string; worker?: string }[];
 	waitFor?: string;
 	file?: string;
 	receipt?: string;
@@ -145,6 +146,9 @@ export interface Review extends Dispatch {
 		| { status: "unavailable"; reason: string; presentation?: string };
 }
 
+export type BlockerSignal = { id: string; directory: string } & ({ blocked: number } | { passed: true });
+export interface Attribution { receipt: string; id: string; directory: string; blocked: number; excerpt: string }
+
 export interface Receipt {
 	commit: string;
 	check: string;
@@ -156,6 +160,7 @@ export interface Receipt {
 	failure?: "changed-export" | "incomplete";
 	repair?: string;
 	squad?: string;
+	blockers?: BlockerSignal[];
 }
 
 interface Dispatch {
@@ -192,14 +197,15 @@ export interface Baseline {
 }
 
 export interface NativeCall extends Dispatch, ArtifactReport {
+	retirement?: { notification: string; read: string; completion: string };
 	baseline?: Baseline;
 	readGrant?: Baseline;
 	claims?: { actor: string; path: string; start: string; kickoff: string; identity: string }[];
 	claimedRequest?: string;
-	kind: "writer" | "component" | "product" | "goal" | "repair" | "decision" | "handoff" | "artifact";
+	kind: "writer" | "component" | "product" | "goal" | "repair" | "decision" | "handoff" | "artifact" | "escalation";
 	inlineRepair?: string;
 	tool: "create_session" | "bash" | "send_session_message" | "session.send";
-	state: "ready" | "issued" | "uncertain" | "ordinary" | "done" | "refused";
+	state: "ready" | "issued" | "uncertain" | "ordinary" | "done" | "refused" | "retired";
 }
 
 export type Effect = NativeCall | Review;
@@ -210,6 +216,7 @@ export interface Run {
 	references?: Record<string, string>;
 	artifacts?: Artifact[];
 	pendingReviewNotes?: (ReviewNote & { squad: string; after: number })[];
+	attributions?: Attribution[];
 	repins?: { from: string; revision: string; files: string[] }[];
 	policy: Policy;
 	scheduling?: { revision: number; workers?: number; checkpointReviews: boolean };

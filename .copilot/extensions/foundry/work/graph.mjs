@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { notifyWriters, takeArtifactBrief } from "./artifacts.mjs";
+import { addresses, checkLinks, unownedBlockers } from "./blockers.mjs";
 import { validOutcome } from "./contract.mjs";
 import { checkReceipt, goalReceipt, milestoneBlocker } from "./evidence.mjs";
 import { checkpointCurrent, pendingGoal } from "./facts.mjs";
@@ -9,9 +10,9 @@ import { admitted, expired, reserveNotice, reserveProduct, reserveWorker } from 
 import { workerLimit } from "./policy.mjs";
 import { validMatch } from "./pages.mjs";
 import { actionable, consumersOf, dependencies, liveNeeds, owns, productOutputs, proposal, requireNewWork, revise, settledOutput, stalePins, stoppedPredecessor, superseded, supersededAttempt, validateNodes, waiting, writerInputs } from "./plan.mjs";
-import { changedFiles, combine, commitAt, directoryBaseline, outside, regularFiles, rejoin, retain, verifyContracts, verifyDirectoryPin, versionOf, withoutGrain } from "./product.mjs";
+import { changedFiles, combine, commitAt, directoryBaseline, outside, regularFiles, rejoin, retain, treeOf, verifyContracts, verifyDirectoryPin, versionOf, withoutGrain } from "./product.mjs";
 import { referenceCheckout } from "./research.mjs";
-import { availableHistory, blockReview, canContinueRead, canInvestigate, comparison, discoverySquads, evidenceDecision, exhaustedRead, fileProgress, nextReview, readKey, readSource, reading, rejectedRead, requestedFiles, researchContext, reserveReview, reviews, scopedNotes, staleReviewReason, unchangedRead, wakeSource } from "./reviews.mjs";
+import { availableHistory, blockReview, canContinueRead, canInvestigate, comparison, discoverySquads, evidenceDecision, exhaustedRead, fileProgress, nextReview, readKey, readSource, reading, rejectedRead, requestedFiles, researchContext, reserveReview, reviews, scopedNotes, staleReviewReason, successorDirectory, unchangedRead, wakeSource } from "./reviews.mjs";
 import { FoundryError, contains, digest, fail, fields, integer, name, names, record, referenceRepo, relative, text, waitTarget } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
@@ -67,7 +68,7 @@ function reviewVersion(cwd, run, squad, commit) {
 /** @param {import("./model.js").Squad} squad @param {unknown} raw @returns {import("./model.js").Observation} */
 export function parseObservation(squad, raw) {
 	const input = record(raw);
-	fields(input, ["outcome", "reason", "evidence", "grains", "replace", "waitFor", "file", "receipt", "detail", "match", "offset", "ownerInput"]);
+	fields(input, ["outcome", "reason", "evidence", "grains", "replace", "waitFor", "file", "receipt", "detail", "match", "offset", "ownerInput", "addresses"]);
 	if (!Array.isArray(input.grains)) fail("invalid_field", "Expected a list of grains");
 	const grains = input.grains.map(v => "areas" in squad && typeof v !== "string" ? proposal(v) : name(v, "grain"));
 	names(grains.map(g => typeof g === "string" ? g : g.id), "grain");
@@ -92,6 +93,7 @@ export function parseObservation(squad, raw) {
 		fail("no_evidence", "Identify committed evidence for the observation");
 	const evidence = input.evidence.map(relative);
 	return { outcome, ...(ownerInput ? { ownerInput } : {}), reason: text(input.reason, "observation"), evidence, grains, ...(replace.length ? { replace } : {}),
+		...(input.addresses === undefined ? {} : { addresses: addresses(input.addresses) }),
 		...(outcome === "waiting" ? { waitFor: waitTarget(input.waitFor) } : {}),
 		...(outcome === "needs-evidence" ? { ...(input.file !== undefined ? { file: relative(input.file) } :
 			input.receipt !== undefined ? { receipt: name(input.receipt, "receipt") } : { detail: name(input.detail, "detail") }),
@@ -108,7 +110,7 @@ export function currentReview(cwd, run, review, exactTarget) {
 		if (review.evaluatorRevision !== run.repins?.at(-1)?.revision || run.goal.commit !== review.base || run.goal.target !== target) return false;
 		const i = comparison(run, review);
 		if (i?.basis) return checkpointCurrent(run, i.receipt, target) && (pendingGoal(run) || [0, 1].some(exit => exit === goalReceipt(run)?.exit));
-		return goalReceipt(run)?.exit === 1;
+		return (!i || i.receipt === run.goal.check) && goalReceipt(run)?.exit === 1;
 	}
 	const base = productBase(cwd, run, target);
 	return base === review.base || !exactTarget && reviewVersion(cwd, run, squad, base) === review.version;
@@ -212,7 +214,8 @@ export function observe(cwd, run, review, observation) {
 			fail("stale_assignment", `Replacement of ${id} must name newly checked inputs and retain the writer's still-current pins`);
 		replaceable.add(id);
 	}
-	const stopped = "areas" in squad && stoppedPredecessor(run, review, observation);
+	const i = comparison(run, review);
+	const stopped = "areas" in squad && stoppedPredecessor(run, review, observation, successorDirectory(run, review, observation));
 	if (stopped) {
 		if (!sameReviewInputs(cwd, run, review) || !remainingAssignments(run))
 			fail("stale_assignment", "No current reviewed assignment is available for this directory");
@@ -221,7 +224,7 @@ export function observe(cwd, run, review, observation) {
 	const revision = "areas" in squad && outcome === "regenerate"
 		? revise(run.nodes, squad, stopped ? { ...observation, replace: [stopped.grain.id] } : observation, review.id, replaceable) : undefined;
 	const planned = revision?.nodes ?? run.nodes;
-	const i = comparison(run, review);
+	checkLinks(run, review, observation, planned);
 	if (i && revision) {
 		const n = planned[ids[0]];
 		if (ids.length !== 1 || n.grain.directory !== i.directory || observation.replace?.some(id => run.nodes[id]?.grain.directory !== i.directory) ||
@@ -512,7 +515,7 @@ export function reserveWriter(cwd, run, n, required, base, actor, submitToken, b
 function readmitReport(cwd, run, history, r, observation) {
 	const goal = run.goal;
 	if (!goal || r.base !== goal.commit || r.evaluatorRevision !== run.repins?.at(-1)?.revision || !r.workflowId || !r.callId) return;
-	const released = r.error === "Writable directories must be disjoint" && stoppedPredecessor(run, r, observation);
+	const released = r.error === "Writable directories must be disjoint" && stoppedPredecessor(run, r, observation, successorDirectory(run, r, observation));
 	const unfinished = rejectedRead(history, r)?.kind === "partial";
 	if ((!released && !unfinished) || !sameReviewInputs(cwd, run, r)) return;
 	observe(cwd, run, r, observation);
@@ -567,6 +570,11 @@ export function advance(cwd, run, actor, discover, context = {}) {
 	let scopedOnly = false;
 	try {
 		const admission = run.goal ? applyGoal(cwd, run, actor, tip, context.retryGoal === true) : "open";
+		if (run.active && run.goal && run.goal.target === tip() && !run.conflict) {
+			for (const g of unownedBlockers(run, remaining)) if (!run.effects.some(e => e.kind === "escalation" && e.token === g.detail)) {
+				reserveNotice(run, actor, g.detail, "escalation", `Foundry ${run.id}: ${g.id} at ${g.directory}: one failed step, ${g.blocked} journeys blocked (${g.affected} affected), no repair owner. Inspect receipt ${g.receipt} and ${g.review ? `review ${g.review}` : "charter ownership"}. This notice grants no authority.`);
+			}
+		}
 		if (admission === "closed") return;
 		scopedOnly = admission === "checkpoint";
 		const reviewed = run.products.at(-1) ?? run.goal;
@@ -626,6 +634,9 @@ export function advance(cwd, run, actor, discover, context = {}) {
 				verifyRepairInputs(cwd, run, n, n.inputs ?? {}, startingPoint());
 			}
 			const commit = combine(cwd, startingPoint(), changes(run, outputs), tip());
+			const at = run.goal;
+			if (at && run.effects.find(e => e.id === at.check)?.state === "retired" && treeOf(cwd, commit) === treeOf(cwd, at.commit))
+				fail("no_progress", "The retained outputs reproduce the retired goal tree; no check was issued");
 			repeated = rejectRepeat(cwd, run, tip(), commit, outputs);
 			if (!repeated) reserveProduct(run, actor, cwd, tip(), commit, outputs);
 		} catch (error) {

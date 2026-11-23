@@ -1,4 +1,4 @@
-/** @typedef {"absent"|"pending"|"superseded"|"repin"|"new-product"|"incomplete"|"missing"|"unmet"|"met"} GoalState */
+/** @typedef {"absent"|"pending"|"retired"|"superseded"|"repin"|"new-product"|"incomplete"|"missing"|"unmet"|"met"} GoalState */
 /** @typedef {{active:boolean, qualified:boolean, goal:GoalState, blocked:boolean, scoped:boolean, stalled:boolean,
  * moved:boolean, idle:boolean, product:boolean, exactProduct:boolean, join:boolean, held:boolean, review:boolean, work:boolean}} Facts */
 /** @typedef {"wait"|"assess"|"retry"|"assess-target"|"undecided"|"rejoin"|"qualify"|"baseline"|"none"} Action */
@@ -33,6 +33,7 @@ export function transition(f, retryEvidence = false) {
 	switch (f.goal) {
 	case "superseded": return decision("wait", f.scoped ? "checkpoint" : "closed", "superseded-goal");
 	case "pending": return decision("wait", f.scoped ? "checkpoint" : "closed", "awaiting-goal-receipt");
+	case "retired": return decision("none", "open", "integrate-retained-work");
 	case "repin": return decision("assess", "closed", "evaluator-changed");
 	case "new-product": return decision("assess", "closed", "new-checkpoint");
 	case "incomplete": return decision("undecided", "closed", "incomplete-goal");

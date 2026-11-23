@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { preparePublication, reportedReferences } from "./artifacts.mjs";
 import { prepareBaselines } from "./baseline.mjs";
+import { attribute } from "./blockers.mjs";
 import { childProof, issuerProof, linkedGeneration, reservation, verifyGeneration } from "./binding.mjs";
 import { openDatabase, ledgerPath } from "./database.mjs";
 import { readPolicy } from "./contract.mjs";
@@ -18,6 +19,7 @@ import { capture, commitAt, generationRoot, retain, rootAt, verifyContracts } fr
 import { refusedCall } from "./recovery.mjs";
 import { prepareRepin } from "./repin.mjs";
 import { reportReceiver } from "./reports.mjs";
+import { retireGoal } from "./retirement.mjs";
 import { referenceText } from "./research.mjs";
 import { blockReview, currentPin, investigation, questions, reserveReview, retireSuperseded, reviews } from "./reviews.mjs";
 import { scoutPacket } from "./scouts.mjs";
@@ -548,6 +550,14 @@ export function createRuntime(directory, host) {
 			return start(a.source, actor, op === "resume");
 		}
 		const id = name(a.run, "run");
+		if (op === "retire") {
+			fields(a, ["run","check"]);
+			const origin = cwd(), reconcile = await retireGoal(origin, actor, name(a.check, "goal check"), {
+				read: () => read(id), ready: () => requireReadyOwner(origin), history: host.readHistory,
+				confirm: host.confirm, swap: fn => db().planAndSwap(id, fn) });
+			if (reconcile) await drive(id, actor, false, false);
+			return status(read(id), actor, "proof");
+		}
 		if (op === "configure") {
 			await requireReadyOwner(cwd());
 			db().planAndSwap(id, run => {
@@ -662,7 +672,19 @@ export function createRuntime(directory, host) {
 			});
 			return status(read(id), actor); // Queue context only; do not drive the run.
 		}
-		if (reply) {
+		if (op === "attribute") {
+			fields(a, ["run", "receipt", "id", "directory", "blocked", "excerpt"]);
+			const origin = cwd();
+			await requireReadyOwner(origin);
+			db().planAndSwap(id, r => {
+				admitted(r);
+				const target = commitAt(origin, r.policy.target);
+				verifyContracts(origin, r.policy, target);
+				if (r.goal?.target !== target || r.join || r.conflict || r.blocker) fail("stale_assignment", "Need the unchanged assessed product");
+				attribute(r, actor, a);
+			});
+		}
+		else if (reply) {
 			reply.token = submit(id, actor, reply.token, a) ?? reply.token;
 			// A shell notification can drive the same actor before this call returns.
 			submitting.add(reply);

@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { unownedBlockers } from "./blockers.mjs";
+import { remainingAssignments } from "./capacity.mjs";
 import { fileURLToPath } from "node:url";
 import { milestoneBlocker, qualifiedProduct } from "./evidence.mjs";
 import { targetsWriter } from "./plan.mjs";
@@ -20,7 +22,7 @@ export function assignment(value) {
 }
 
 /** @param {string} value */
-const noticeRun = value => /^Foundry (?:decision|handoff|artifact): ([A-Za-z0-9][A-Za-z0-9._-]*) [a-f0-9-]{36}\n/.exec(value)?.[1];
+const noticeRun = value => /^Foundry (?:decision|handoff|artifact|escalation): ([A-Za-z0-9][A-Za-z0-9._-]*) (?:[a-f0-9-]{36}|[a-f0-9]{64})\n/.exec(value)?.[1];
 
 /** @param {string} tool @param {unknown} args */
 export function identify(tool, args) {
@@ -33,7 +35,7 @@ export function identify(tool, args) {
 		return / '([A-Za-z0-9][A-Za-z0-9._-]*)' '[a-f0-9-]{36}'$/.exec(a.command)?.[1];
 }
 
-/** @param {Run} run @param {string} issuer @param {string} token @param {"repair"|"decision"|"handoff"|"artifact"} kind
+/** @param {Run} run @param {string} issuer @param {string} token @param {"repair"|"decision"|"handoff"|"artifact"|"escalation"} kind
  * @param {string} body @param {import("./model.js").Node} [node] @param {import("./model.js").Baseline} [baseline] */
 export function reserveNotice(run, issuer, token, kind, body, node, baseline) {
 	const to = node ? text(node.worker, "assigned writer") : run.owner;
@@ -87,11 +89,14 @@ function assignee(run, e) {
 
 /** @param {Run} run @param {Effect} e */
 export function current(run, e) {
+	if (e.state === "retired") return false;
 	if (e.tool === "workflow")
 		return reading(e);
 	if (run.conflict && (e.kind === "product" || e.kind === "goal") && e.state === "ready") return false;
 	if (e.kind === "decision")
 		return questions(run).some(r => r.id === e.token && !r.decision);
+	if (e.kind === "escalation")
+		return unownedBlockers(run, remainingAssignments(run)).some(g => g.detail === e.token);
 	if (e.kind === "handoff") {
 		const product = run.products.at(-1);
 		return !!product?.qualifiedAt && product.check === e.token;

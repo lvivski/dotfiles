@@ -1,7 +1,7 @@
 import { realpathSync } from "node:fs";
 import { admitted, assignment, current } from "./native.mjs";
 import { commitAt, git, rootAt } from "./product.mjs";
-import { refusedCall } from "./recovery.mjs";
+import { history, refusedCall } from "./recovery.mjs";
 import { digest, fail, record, text } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
@@ -20,23 +20,6 @@ export function reservation(run, grain) {
 	const prompt = text(record(e.args.kickoff).prompt, "reserved kickoff"), marker = assignment(prompt);
 	if (marker?.run !== run.id || marker.token !== n.token) fail("invalid_reservation", "Kickoff does not match this assignment");
 	return { e, prompt, generation: n.generation };
-}
-
-/** @param {Reader} read @param {NonNullable<Parameters<Reader>[0]["types"]>} types */
-async function* history(read, types) {
-	const seen = new Set();
-	let cursor;
-	for (;;) {
-		const page = await read({ view: "history", direction: "forward", includeEphemeral: false, agentScope: "primary", types, cursor, max: 256 });
-		if (page.cursorStatus !== "ok") fail("missing_history", "Original native history is unavailable");
-		for (const event of page.events) {
-			const d = record(event.data);
-			if (!event.agentId && !event.checkpoint && !d.agentId && !d.parentToolCallId) yield event;
-		}
-		if (!page.hasMore) return;
-		if (seen.has(page.cursor)) fail("missing_history", "Original native history cursor did not advance");
-		seen.add(page.cursor); cursor = page.cursor;
-	}
 }
 
 /** Parentage is immutable; observe it outside the lock and bind only if the generation still matches.

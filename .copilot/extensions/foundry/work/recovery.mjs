@@ -3,6 +3,23 @@ import { digest, fail, record, text } from "./values.mjs";
 
 /** @typedef {import("./model.js").Effect} Effect */
 /** @typedef {Parameters<import("@github/copilot-sdk").CopilotSession["rpc"]["eventLog"]["read"]>[0]} Page */
+/** @typedef {import("@github/copilot-sdk").CopilotSession["rpc"]["eventLog"]["read"]} Reader */
+/** @param {Reader} read @param {NonNullable<Page["types"]>} types */
+export async function* history(read, types) {
+	const seen = new Set();
+	let cursor;
+	for (;;) {
+		const page = await read({ view: "history", direction: "forward", includeEphemeral: false, agentScope: "primary", types, cursor, max: 256 });
+		if (page.cursorStatus !== "ok") fail("missing_history", "Original native history is unavailable");
+		for (const event of page.events) {
+			const d = record(event.data);
+			if (!event.agentId && !event.checkpoint && !d.agentId && !d.parentToolCallId) yield event;
+		}
+		if (!page.hasMore) return;
+		if (seen.has(page.cursor)) fail("missing_history", "Original native history cursor did not advance");
+		seen.add(page.cursor); cursor = page.cursor;
+	}
+}
 /** Workflow agents soft-fail to null. Recover only this direct call's native failure,
  * never a sibling's error or an inference from an empty structured response.
  * @param {import("@github/copilot-sdk").CopilotSession} session @param {string} id @param {string} label */

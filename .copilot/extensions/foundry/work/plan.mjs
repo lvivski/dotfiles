@@ -54,16 +54,17 @@ function obsoleteOffer(n, e) {
 /** @param {Run} run @param {Node} n */
 export const assignmentCalls = (run, n) => run.effects.filter(e => e.grain === n.grain.id && !obsoleteOffer(n, e));
 
-/** A writer's own missing-input stop releases no files. Only a different job at a later
- * checkpoint may take exactly this directory; unresolved native calls still own it.
- * @param {Run} run @param {import("./model.js").Review} review @param {import("./model.js").Observation} report */
-export function stoppedPredecessor(run, review, report) {
+/** A terminal stop releases no files. On the same base the new task needs
+ * review evidence scoped to this exact directory, not just an ordinary area review.
+ * @param {Run} run @param {import("./model.js").Review} review @param {import("./model.js").Observation} report
+ * @param {string|undefined} scopedDirectory */
+export function stoppedPredecessor(run, review, report, scopedDirectory) {
 	const [g] = report.grains;
 	if (report.outcome !== "regenerate" || report.grains.length !== 1 || typeof g !== "object" || run.nodes[g.id] ||
 		run.effects.some(e => e.grain === g.id) || !review.packet || review.retryOf) return;
 	const n = Object.values(run.nodes).find(n => n.grain.directory === g.directory);
 	if (!n || missingInput(n) === undefined || n.candidate ||
-		!n.worker || !n.base || !n.token || !n.generation || n.base === review.base || n.grain.check !== g.check ||
+		!n.worker || !n.base || !n.token || !n.generation || n.base === review.base && scopedDirectory !== g.directory || n.grain.check !== g.check ||
 		g.task === n.grain.task || report.replace?.some(id => id !== n.grain.id) ||
 		Object.values(run.nodes).some(other => liveNeeds(other).includes(n.grain.id) || other.state !== "blocked" && Object.hasOwn(other.inputs ?? {}, n.grain.id))) return;
 	const calls = assignmentCalls(run, n), launches = calls.filter(e => e.kind === "writer");

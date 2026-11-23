@@ -1,4 +1,5 @@
 import { isUtf8 } from "node:buffer";
+import { currentFailures } from "./blockers.mjs";
 import { journeyText } from "./contract.mjs";
 import { goalReceipt } from "./evidence.mjs";
 import { sourceReceipt } from "./notes.mjs";
@@ -110,7 +111,7 @@ export function scoutPacket(cwd, run, review, budget = Infinity) {
 			const shown = owned.has(id) && reason ? preview(reason, allowance) : undefined;
 			const detail = reason && owned.has(id) ? digest(["reason", base, review.version, review.evaluatorRevision, review.squad, id, reason]) : undefined;
 			if (detail && reason) sources.set(`detail:${detail}`, reason);
-			yield { id, directory: g.directory, task: g.task, check: g.check,
+			yield { id, directory: g.directory, task: g.task, check: g.check, ...(owned.has(id) && n.worker ? { worker: n.worker } : {}),
 				needs: liveNeeds(n), state: n.state, checked: outputs.get(id),
 				...(inputs.has(id) ? { specification: g.specification, boundary: g.boundary } : {}),
 				...(owned.has(id) ? { reason: shown, detail, ...(retired ? { supersededAttempt: retired, originalInputs: n.inputs } : {}),
@@ -134,6 +135,7 @@ export function scoutPacket(cwd, run, review, budget = Infinity) {
 	/** @type {string[]} */ const context = [];
 	const notes = scopedNotes(run, review);
 	const iteration = comparison(run, review);
+	const blockers = currentFailures(run).filter(g => g.commit === base && g.squad === squad.id && (!iteration || iteration.directory === g.directory));
 	function historical() {
 		const rows = [...notes].map(([detail, note]) => {
 			const r = sourceReceipt(run.effects.find(e => e.id === note.receipt), note) ?? fail("invalid_receipt", "Review note lost its historical goal receipt");
@@ -147,6 +149,12 @@ export function scoutPacket(cwd, run, review, budget = Infinity) {
 			sources.set(`detail:${detail}`, question);
 			rows.push(`Scoped implementation comparison on a passing product checkpoint, not a goal verdict. Propose only ${directory} with inputs already checked in this checkpoint; do not replace other directories.\n${JSON.stringify({
 				receipt, directory, blob, detail, question: preview(question, allowance) })}`);
+		}
+		if (blockers.length) rows.push("Prioritize shared failed steps, not their unrun dependents. Link a proposed repair with addresses:[{id,grain}], or add worker with its exact ID when an already bound assignment covers the step. Do not widen its task; explain any missing owner.");
+		for (const g of blockers) {
+			const info = `${g.id} in ${g.directory}: one failed step, ${g.blocked} journeys blocked, ${g.affected} affected. ${g.excerpt ?? ""}`;
+			sources.set(`detail:${g.detail}`, info);
+			rows.push(`Shared blocker ${g.id} (receipt ${g.receipt}, detail ${g.detail}): ${preview(info, allowance)}`);
 		}
 		return rows.join("\n");
 	}
@@ -275,6 +283,8 @@ const schema = {
 	properties: { outcome: { type: "string", enum: ["regenerate", "no-gap", "unresolved", "needs-decision", "waiting", "needs-evidence"] }, reason: string, evidence: strings,
 		ownerInput: { type: "string", enum: ["product-choice", "external-action"] },
 		grains: { type: "array", items: { anyOf: [string, proposal] } }, replace: strings, waitFor: string, file: string, receipt: string, detail: string,
+		addresses: { type: "array", items: { type: "object", required: ["id","grain"], additionalProperties: false,
+			properties: { id: string, grain: string, worker: string } } },
 		match: string, offset: { type: "integer", minimum: 0 } },
 };
 
