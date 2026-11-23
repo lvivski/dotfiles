@@ -2,13 +2,16 @@ import { randomUUID } from "node:crypto";
 import { notifyWriters, takeArtifactBrief } from "./artifacts.mjs";
 import { validOutcome } from "./contract.mjs";
 import { checkReceipt, goalReceipt, milestoneBlocker } from "./evidence.mjs";
-import { assess, goalAllowsWork, qualify, rejectRepeat, stall } from "./goal.mjs";
-import { admitted, assignmentCount, expired, reserveNotice, reserveProduct, reserveWorker } from "./native.mjs";
+import { checkpointCurrent, pendingGoal } from "./facts.mjs";
+import { applyGoal, assess, qualify, rejectRepeat, stall } from "./goal.mjs";
+import { availableReservations, remainingAssignments } from "./capacity.mjs";
+import { admitted, expired, reserveNotice, reserveProduct, reserveWorker } from "./native.mjs";
+import { workerLimit } from "./policy.mjs";
 import { validMatch } from "./pages.mjs";
-import { actionable, consumersOf, dependencies, liveNeeds, owns, productOutputs, proposal, requireNewWork, revise, settledOutput, stalePins, stoppedPredecessor, superseded, supersededAttempt, validateNodes, waiting, working, writerInputs } from "./plan.mjs";
+import { actionable, consumersOf, dependencies, liveNeeds, owns, productOutputs, proposal, requireNewWork, revise, settledOutput, stalePins, stoppedPredecessor, superseded, supersededAttempt, validateNodes, waiting, writerInputs } from "./plan.mjs";
 import { changedFiles, combine, commitAt, directoryBaseline, outside, regularFiles, rejoin, retain, verifyContracts, verifyDirectoryPin, versionOf, withoutGrain } from "./product.mjs";
 import { referenceCheckout } from "./research.mjs";
-import { availableHistory, blockReview, canContinueRead, canInvestigate, discoverySquads, evidenceDecision, exhaustedRead, fileProgress, nextReview, readKey, readSource, reading, rejectedRead, requestedFiles, researchContext, reserveReview, reviews, scopedNotes, staleReviewReason, unchangedRead, wakeSource } from "./reviews.mjs";
+import { availableHistory, blockReview, canContinueRead, canInvestigate, comparison, discoverySquads, evidenceDecision, exhaustedRead, fileProgress, nextReview, readKey, readSource, reading, rejectedRead, requestedFiles, researchContext, reserveReview, reviews, scopedNotes, staleReviewReason, unchangedRead, wakeSource } from "./reviews.mjs";
 import { FoundryError, contains, digest, fail, fields, integer, name, names, record, referenceRepo, relative, text, waitTarget } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
@@ -101,14 +104,19 @@ export function currentReview(cwd, run, review, exactTarget) {
 	const squad = run.policy.squads.find(s => s.id === review.squad);
 	if (!squad || reviews(run).findLast(r => r.squad === squad.id)?.id !== review.id) return false;
 	const target = exactTarget ?? commitAt(cwd, run.policy.target);
-	if (run.goal) return review.evaluatorRevision === run.repins?.at(-1)?.revision && run.goal.commit === review.base && run.goal.target === target && goalReceipt(run)?.exit === 1;
+	if (run.goal) {
+		if (review.evaluatorRevision !== run.repins?.at(-1)?.revision || run.goal.commit !== review.base || run.goal.target !== target) return false;
+		const i = comparison(run, review);
+		if (i?.basis) return checkpointCurrent(run, i.receipt, target) && (pendingGoal(run) || [0, 1].some(exit => exit === goalReceipt(run)?.exit));
+		return goalReceipt(run)?.exit === 1;
+	}
 	const base = productBase(cwd, run, target);
 	return base === review.base || !exactTarget && reviewVersion(cwd, run, squad, base) === review.version;
 }
 
-/** @param {string} cwd @param {Run} run @param {import("./model.js").Review} r */
-export function sameReviewInputs(cwd, run, r) {
-	const squad = run.policy.squads.find(s => s.id === r.squad), target = commitAt(cwd, run.policy.target);
+/** @param {string} cwd @param {Run} run @param {import("./model.js").Review} r @param {string} [target] */
+export function sameReviewInputs(cwd, run, r, target = commitAt(cwd, run.policy.target)) {
+	const squad = run.policy.squads.find(s => s.id === r.squad);
 	verifyContracts(cwd, run.policy, target);
 	return !!squad && !run.blocker && !run.conflict && !run.join && currentReview(cwd, run, r, target) &&
 		(!run.goal || !run.products.length || run.products.at(-1)?.commit === r.base) && reviewVersion(cwd, run, squad, r.base) === r.version;
@@ -123,12 +131,49 @@ export function retryableReview(cwd, run, actor, id) {
 		fail("not_recoverable", "Expected an original blocked no-report review");
 	if (!sameReviewInputs(cwd, run, r))
 		fail("superseded", "No longer the current charter, evaluator and product revision");
-	if (history.some(x => reading(x) && x.squad === r.squad) || run.effects.some(e => e.issuer === actor && e.permissionHold))
-		fail("dispatch_held", "Charter still running or owner dispatch held");
-	if (run.policy.assignments !== undefined && assignmentCount(run) >= run.policy.assignments ||
-		run.policy.workers !== undefined && history.filter(reading).length + Object.values(run.nodes).filter(working).length >= run.policy.workers)
-		fail("limit", "No authorized assignment or worker slot for a new review");
+	reviewSlot(run, actor, r.squad);
 	return r;
+}
+
+/** @param {Run} run @param {string} actor @param {string} squad */
+function reviewSlot(run, actor, squad) {
+	const history = reviews(run);
+	if (history.some(x => reading(x) && x.squad === squad) || run.effects.some(e => e.issuer === actor && e.permissionHold))
+		fail("dispatch_held", "Charter still running or owner dispatch held");
+	if (!availableReservations(run))
+		fail("limit", "No authorized assignment or worker slot for a new review");
+}
+
+/** @param {string} cwd @param {Run} run @param {string} actor @param {NonNullable<import("./model.js").Review["iteration"]>} input */
+export function reserveIteration(cwd, run, actor, input) {
+	if (actor !== run.owner) fail("foreign_run", "Only the run owner can route a comparison");
+	admitted(run);
+	const { directory, receipt, blob } = input, at = run.goal, gap = goalReceipt(run);
+	const target = commitAt(cwd, run.policy.target), checkpoint = pendingGoal(run) && checkpointCurrent(run, receipt, target);
+	if (!at || !checkpoint && (at.check !== receipt || gap?.exit !== 1 || gap.commit !== at.commit) || at.target !== target ||
+		run.join || run.blocker || run.conflict || run.products.length && run.products.at(-1)?.commit !== at.commit)
+		fail("stale_assignment", "Use the current unmet goal receipt, or the latest passing checkpoint check ID while its goal is pending on the unchanged target");
+	if (!run.artifacts?.some(a => a.blob === blob && a.to.some(dir => contains(dir, directory))))
+		fail("foreign_artifact", "Comparison version was not offered to this directory");
+	const squad = run.policy.squads.find(s => "areas" in s && owns(s, directory));
+	if (!squad) fail("charter_scope", "Need a production directory owned by an area charter");
+	if (reviews(run).some(r => r.base === at.commit && r.evaluatorRevision === run.repins?.at(-1)?.revision &&
+		r.iteration?.blob === blob && r.iteration.directory === directory)) return;
+	if (checkpoint && run.scheduling?.checkpointReviews === false)
+		fail("dispatch_held", "New in-flight checkpoint reviews are disabled by the current scheduling policy");
+	const live = Object.values(run.nodes).find(n => ["waiting", "writing", "checking", "published"].includes(n.state) &&
+		(contains(n.grain.directory, directory) || contains(directory, n.grain.directory)));
+	if (live) fail("dispatch_held", `Use the existing assignment ${live.grain.id} (${live.state}); do not duplicate its work.`);
+	const previous = reviews(run).findLast(r => r.squad === squad.id && r.base === at.commit && r.evaluatorRevision === run.repins?.at(-1)?.revision);
+	if (previous && (previous.state === "reported" || previous.state === "deferred" || previous.state === "observed" &&
+		previous.observation?.outcome === "needs-decision" && previous.decision?.status !== "answered"))
+		fail("dispatch_held", "The charter has an unapplied report, deferred proposal or pending decision; do not displace it.");
+	reviewSlot(run, actor, squad.id);
+	verifyContracts(cwd, run.policy, at.target);
+	const review = reserveReview(run, actor, squad.id, at.commit, reviewVersion(cwd, run, squad, at.commit));
+	review.iteration = checkpoint ? { ...input, basis: "checkpoint" } : input;
+	delete at.stall;
+	return review;
 }
 
 /** @param {string} cwd @param {Run} run @param {import("./model.js").Review} review @param {import("./model.js").Observation} observation */
@@ -153,7 +198,7 @@ export function observe(cwd, run, review, observation) {
 	for (const id of observation.replace ?? []) {
 		const n = run.nodes[id];
 		if (!n || !supersededAttempt(run, n)) continue;
-		if (run.policy.assignments !== undefined && assignmentCount(run) >= run.policy.assignments)
+		if (!remainingAssignments(run))
 			fail("limit", "No assignment remains for a fresh writer on current inputs");
 		const next = grains.find(g => typeof g !== "string" && g.directory === n.grain.directory);
 		if (grains.length !== 1 || observation.replace?.length !== 1 || !next || typeof next === "string" ||
@@ -169,13 +214,25 @@ export function observe(cwd, run, review, observation) {
 	}
 	const stopped = "areas" in squad && stoppedPredecessor(run, review, observation);
 	if (stopped) {
-		if (!sameReviewInputs(cwd, run, review) || run.policy.assignments !== undefined && assignmentCount(run) >= run.policy.assignments)
+		if (!sameReviewInputs(cwd, run, review) || !remainingAssignments(run))
 			fail("stale_assignment", "No current reviewed assignment is available for this directory");
 		replaceable.add(stopped.grain.id);
 	}
 	const revision = "areas" in squad && outcome === "regenerate"
 		? revise(run.nodes, squad, stopped ? { ...observation, replace: [stopped.grain.id] } : observation, review.id, replaceable) : undefined;
 	const planned = revision?.nodes ?? run.nodes;
+	const i = comparison(run, review);
+	if (i && revision) {
+		const n = planned[ids[0]];
+		if (ids.length !== 1 || n.grain.directory !== i.directory || observation.replace?.some(id => run.nodes[id]?.grain.directory !== i.directory) ||
+			Object.values(run.nodes).some(old => planned[old.grain.id] !== old && old.grain.directory !== i.directory))
+			fail("charter_scope", `This comparison is for one independent directory: ${i.directory}`);
+		if (i.basis) {
+			if (revision.deferred || n.grain.revision && n.grain.revision !== review.base)
+				fail("stale_assignment", "Comparison is not independent of other work or requests a different baseline");
+			checkpointInputs(run, review, n, writerInputs(planned, n));
+		}
+	}
 	if (revision) for (const g of grains) if (typeof g !== "string" && g.revision)
 		verifyDirectoryPin(cwd, g.revision, g.directory);
 	if (run.goal?.tried && planned !== run.nodes) for (const id of ids)
@@ -191,6 +248,7 @@ export function observe(cwd, run, review, observation) {
 			!inputs.some(g => contains(g.directory, file) || [g.specification, ...g.boundary, g.check].includes(file)))
 			fail("charter_scope", `Evidence is outside this charter: ${file}`);
 	}
+
 	const packet = review.packet ?? fail("missing_packet", "Missing journaled scout packet");
 	const part = packet.excerpt;
 	for (const e of regularFiles(cwd, review.base, evidence))
@@ -248,6 +306,14 @@ export function observe(cwd, run, review, observation) {
 			if (run.goal) delete run.goal.stall;
 		} else request(run, ids, review.id);
 	}
+}
+
+/** @param {Run} run @param {import("./model.js").Review} review @param {Node} n @param {Node["inputs"]} pins */
+function checkpointInputs(run, review, n, pins) {
+	const last = run.products.at(-1);
+	if (last?.commit !== review.base || !pins || Object.entries(pins).some(([id, pin]) =>
+		last.outputs[id] !== pin || run.nodes[id]?.state !== "qualified" || review.packet?.outputs[id] !== pin))
+		fail("stale_assignment", `The required inputs for ${n.grain.directory} must already be checked in the reviewed checkpoint`);
 }
 
 /** @param {Run["join"]} join @param {string} target @param {Record<string,string>|undefined} outputs */
@@ -366,8 +432,7 @@ export function reserveChangedRepair(cwd, run, n, actor, token, target) {
 		fail("dispatch_held", "Resolve the run, product check or issuer hold before submitting changed work");
 	if (run.goal && (goalReceipt(run)?.exit !== 1 || run.goal.target !== target || (run.products.at(-1)?.commit ?? target) !== run.goal.commit))
 		fail("stale_assignment", "Need a current unmet goal on this target and checkpoint");
-	if (n.repairs >= run.policy.repairs || run.policy.assignments !== undefined && assignmentCount(run) >= run.policy.assignments ||
-		run.policy.workers !== undefined && Object.values(run.nodes).filter(working).length + reviews(run).filter(reading).length >= run.policy.workers)
+	if (n.repairs >= run.policy.repairs || !availableReservations(run))
 		fail("limit", "No authorized repair, assignment or worker slot remains");
 	const base = productBase(cwd, run, target);
 	const stale = stalePins(run, n);
@@ -398,6 +463,7 @@ export function reserveWriter(cwd, run, n, required, base, actor, submitToken, b
 		}
 		n.repairs++;
 		delete n.candidate;
+		delete n.stop;
 		n.state = "writing";
 		n.token = token;
 		if (!inline) reserveNotice(run, actor, token, "repair", baseline
@@ -429,6 +495,7 @@ export function reserveWriter(cwd, run, n, required, base, actor, submitToken, b
 		`Read ${g.specification} and ${g.boundary.join(", ")} at this base. Required outputs: ${JSON.stringify(required)}.`,
 		...supporting.map(file => `Read-only supporting file: ${review?.base}:${file}`),
 		takeArtifactBrief(run, n),
+		"For midpoint feedback, join helpers and use foundry_preview with this token. Compare the affected behavior on that draft; do not submit just to obtain a preview.",
 		...(run.goal ? [`Reviewed input revision: ${base}`] : []),
 		source ? `Read prior implementation only if ${g.specification} explicitly permits it at this version, and only regular files from ${source.revision}:${g.directory}/ (tree ${source.tree}). The source is not a read grant.`
 			: `No prior directory at ${base}:${g.directory}/; start empty. Do not search history for another version.`,
@@ -453,6 +520,16 @@ function readmitReport(cwd, run, history, r, observation) {
 		delete r.error;
 		delete goal.stall;
 	}
+}
+
+/** Select from ledger evidence only. Read fresh pins after each preceding reservation.
+ * @param {Run} run @param {Node} node @param {import("./model.js").Review|undefined} review @param {boolean} scoped */
+function writerCandidate(run, node, review, scoped) {
+	const required = writerInputs(run.nodes, node);
+	if (!required) return;
+	const iteration = comparison(run, review);
+	if (scoped && !iteration?.basis) return;
+	return { required, checkpoint: iteration?.basis && iteration.receipt };
 }
 
 /** Plan on a snapshot outside the SQLite write lock; the caller compare-and-swaps the changes.
@@ -482,13 +559,16 @@ export function advance(cwd, run, actor, discover, context = {}) {
 			blockReview(r, error.message);
 		}
 	}
-	const remaining = run.policy.assignments === undefined ? Infinity : run.policy.assignments - assignmentCount(run);
+	const remaining = remainingAssignments(run);
 	settleChecks(cwd, run, actor, remaining);
 	let base, target;
 	const tip = () => target ??= commitAt(cwd, run.policy.target);
 	const startingPoint = () => base ??= productBase(cwd, run, tip());
+	let scopedOnly = false;
 	try {
-		if (run.goal && !goalAllowsWork(cwd, run, actor, tip(), context.retryGoal === true)) return;
+		const admission = run.goal ? applyGoal(cwd, run, actor, tip, context.retryGoal === true) : "open";
+		if (admission === "closed") return;
+		scopedOnly = admission === "checkpoint";
 		const reviewed = run.products.at(-1) ?? run.goal;
 		if (reviewed && !run.policy.seed && reviewed.target !== tip()) {
 			const edits = changedFiles(cwd, reviewed.commit, startingPoint());
@@ -509,14 +589,20 @@ export function advance(cwd, run, actor, discover, context = {}) {
 		run.conflict = error.message;
 		return;
 	}
-	const nodes = Object.values(run.nodes), cap = run.policy.workers;
-	const limit = Math.min(remaining, (cap ?? Infinity) - history.filter(reading).length - nodes.filter(working).length);
+	const nodes = Object.values(run.nodes), limit = availableReservations(run, remaining);
 	let reserved = 0;
 	for (const n of nodes) {
 		if (reserved >= limit) break;
-		const required = writerInputs(run.nodes, n);
-		if (!required) continue;
+		if (n.state !== "waiting") continue;
+		const r = n.review ? history.find(r => r.id === n.review) : undefined;
+		const candidate = writerCandidate(run, n, r, scopedOnly);
+		if (!candidate) continue;
+		const { required, checkpoint } = candidate;
 		try {
+			if (checkpoint && r) {
+				if (!checkpointCurrent(run, checkpoint, tip())) fail("stale_assignment", "The reviewed checkpoint or target changed before staffing");
+				checkpointInputs(run, r, n, required);
+			}
 			reserveWriter(cwd, run, n, required, run.goal?.commit ?? startingPoint(), actor, context.submitToken);
 			reserved++;
 		} catch (error) {
@@ -526,12 +612,19 @@ export function advance(cwd, run, actor, discover, context = {}) {
 		}
 	}
 	const gap = goalReceipt(run);
-	const outputs = (run.join || !run.blocker) && productOutputs(run, target, remaining - reserved);
+	const outputs = !scopedOnly && (run.join || !run.blocker) && productOutputs(run, target, remaining - reserved);
 	let repeated;
 	if (outputs && !sameProduct(run.join, tip(), outputs)) {
 		delete run.join;
 		delete run.blocker;
 		try {
+			for (const id of Object.keys(outputs)) {
+				const n = run.nodes[id];
+				if (n.state !== "published" || !comparison(run, history.find(r => r.id === n.review))?.basis) continue;
+				if (stalePins(run, n).length || Object.entries(n.inputs ?? {}).some(([dep, pin]) => outputs[dep] !== pin))
+					fail("stale_assignment", `A checked input of ${id} changed before integration`);
+				verifyRepairInputs(cwd, run, n, n.inputs ?? {}, startingPoint());
+			}
 			const commit = combine(cwd, startingPoint(), changes(run, outputs), tip());
 			repeated = rejectRepeat(cwd, run, tip(), commit, outputs);
 			if (!repeated) reserveProduct(run, actor, cwd, tip(), commit, outputs);
@@ -542,8 +635,8 @@ export function advance(cwd, run, actor, discover, context = {}) {
 		}
 	}
 	if (reserved === remaining) return; // Staffing stops, not receipt settlement or product/goal verification.
-	const survey = run.goal ? gap?.exit === 1 && run.goal.target === tip() && !(outputs && run.join && !milestoneBlocker(run))
-		: !run.policy.seed && (discover || cap !== undefined);
+	const survey = run.goal ? scopedOnly || gap?.exit === 1 && run.goal.target === tip() && !(outputs && run.join && !milestoneBlocker(run))
+		: !run.policy.seed && (discover || workerLimit(run) !== undefined);
 	if (!survey) return;
 	const applicable = history.filter(r => r.evaluatorRevision === run.repins?.at(-1)?.revision);
 	const squads = discoverySquads(run, applicable, gap);
@@ -552,6 +645,9 @@ export function advance(cwd, run, actor, discover, context = {}) {
 		if (reserved >= limit) break;
 		const past = availableHistory(run, applicable, squad.id);
 		if (!past) continue;
+		const prior = past.at(-1);
+		if (scopedOnly && !(prior?.state === "observed" && prior.base === run.goal?.commit &&
+			prior.observation?.outcome === "needs-evidence" && comparison(run, prior)?.basis)) continue;
 		let commit;
 		try { commit = run.goal?.commit ?? startingPoint(); }
 		catch (error) {
@@ -561,7 +657,7 @@ export function advance(cwd, run, actor, discover, context = {}) {
 		}
 		const version = reviewVersion(cwd, run, squad, commit);
 		const next = nextReview(run, past, commit, version);
-		if (!next) continue;
+		if (!next || scopedOnly && !next.wake) continue;
 		reserveReview(run, actor, squad.id, commit, version, next.wake);
 		reserved++;
 	}

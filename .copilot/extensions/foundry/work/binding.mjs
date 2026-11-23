@@ -39,13 +39,21 @@ async function* history(read, types) {
 	}
 }
 
-/** @param {string} path @param {string} generation @param {string} origin */
+/** Parentage is immutable; observe it outside the lock and bind only if the generation still matches.
+ * @param {string} origin @param {string} generation */
+export function verifyGeneration(origin, generation) {
+	if (/^parent /m.test(git(origin, ["cat-file", "-p", generation]).toString().split("\n\n")[0]))
+		fail("wrong_worktree", "Expected the original parentless generation");
+}
+
+/** Mutable worktree identity and HEAD must still be checked at binding.
+ * @param {string} path @param {string} generation @param {string} origin */
 export function linkedGeneration(path, generation, origin) {
 	const dir = (/** @type {string} */ cwd, /** @type {string} */ flag) =>
 		realpathSync(git(cwd, ["rev-parse", "--path-format=absolute", flag]).toString().trim());
 	const common = dir(origin, "--git-common-dir");
 	if (rootAt(path) !== path || dir(path, "--git-common-dir") !== common || dir(path, "--git-dir") === common ||
-		commitAt(path, "HEAD") !== generation || /^parent /m.test(git(path, ["cat-file", "-p", generation]).toString().split("\n\n")[0]) ||
+		commitAt(path, "HEAD") !== generation ||
 		!git(origin, ["worktree", "list", "--porcelain", "-z"]).toString().split("\0\0").some(row =>
 			row.startsWith(`worktree ${path}\0HEAD ${generation}\0`)))
 		fail("wrong_worktree", "Not the linked writer worktree at the original parentless generation");

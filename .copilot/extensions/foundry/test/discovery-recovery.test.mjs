@@ -179,7 +179,7 @@ test("reconnect recovers a persisted capacity rejection but never reissues a bou
 	const before = await f.start(old); old.close();
 	const db = openDatabase(f.root);
 	try {
-		db.update(run, r => {
+		db.mutateLocked(run, r => {
 			// Reproduce one reader-7 unbound rejection and a separate workflow already bound.
 			for (const e of r.effects) if (e.kind === "scout") {
 				if (e.squad === "price") e.error = `Discovery unconfirmed: Error: ${full}. Resume to retry unbound discovery.`;

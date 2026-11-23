@@ -1,13 +1,14 @@
 import { planDirectory, validOutcome } from "./contract.mjs";
-import { checkReceipt, goalReceipt } from "./evidence.mjs";
+import { checkpointReceipt, checkReceipt, goalReceipt, missingInput } from "./evidence.mjs";
 import { validFeedback } from "./feedback.mjs";
 import { attachedNotes, noteId, noteText, sourceReceipt } from "./notes.mjs";
 import { indexBudgetError, validMatch } from "./pages.mjs";
-import { assignmentCount, unissued } from "./native.mjs";
+import { assignmentCount } from "./capacity.mjs";
+import { unissued } from "./native.mjs";
 import { checked, owns, validateNodes } from "./plan.mjs";
 import { outside } from "./product.mjs";
 import { investigation } from "./reviews.mjs";
-import { fail, relative } from "./values.mjs";
+import { contains, fail, relative } from "./values.mjs";
 
 /** @typedef {(value:unknown)=>boolean} Guard */
 /** @type {Guard} */
@@ -79,12 +80,16 @@ export const isPacket = v => object(v) && id(v.review) && commit(v.base) && bool
 const decision = v => object(v) && (v.status === "presenting" && optional(id)(v.presentation) || v.status === "dismissed" ||
 	v.status === "answered" && string(v.answer) ||
 	v.status === "unavailable" && string(v.reason) && optional(id)(v.presentation));
-const node = shape({
+const nodeShape = shape({
 	grain, review: optional(id), state: one("idle", "waiting", "writing", "checking", "published", "qualified", "repeated", "blocked"), token: optional(id), worker: optional(string),
 	generation: optional(commit), inputs: optional(named(commit)), base: optional(commit), replaces: optional(commit), candidate: optional(commit), check: optional(id),
 	priorSource: optional(shape({ directory: path, revision: commit, tree: commit })),
-	repairs: count, reason: optional(string), artifactCursor: optional(count)
+	repairs: count, reason: optional(string), artifactCursor: optional(count), preview: optional(commit),
+	stop: optional(shape({kind: one("writer-missing-input"), detail: noteText}))
 });
+/** @type {Guard} */
+const node = n => nodeShape(n) && object(n) && (n.stop === undefined ||
+	n.state === "blocked" && !!n.worker && !!n.token && !!n.generation);
 const assessment = { target: commit, commit, check: id };
 const product = shape({ ...assessment, outputs: named(commit), qualifiedAt: optional(positive) });
 const receipt = shape({ commit, check: path, evaluatorRevision: optional(commit), exit: v => v === null || count(v), output: string,
@@ -96,7 +101,8 @@ const scout = shape({ ...dispatch, kind: one("scout"), tool: one("workflow"), sq
 	state: one("ready", "issued", "uncertain", "suspended", "reported", "observed", "blocked", "deferred"), observation: optional(observation),
 	deferred: optional(shape({ pins: v => named(commit)(v) && object(v) && Object.keys(v).length > 0,
 		consumers: v => Array.isArray(v) && v.length > 0 && v.every(id) && new Set(v).size === v.length })),
-	workflowId: optional(string), decision: optional(decision), packet: optional(isPacket), retryOf: optional(id), note: optional(shape(noteFields)), predecessor: optional(node),
+	workflowId: optional(string), decision: optional(decision), packet: optional(isPacket), retryOf: optional(id), note: optional(shape(noteFields)),
+	iteration: optional(shape({receipt: id, directory: path, blob: commit, question: noteText, basis: optional(one("checkpoint"))})), predecessor: optional(node),
 	otherNotes: optional(list(shape(noteFields))), diagnostic: optional(shape({ receipt: id, excerpt: noteText })), wake: optional(shape({ review: id, key: string })) });
 const native = shape({
 	...dispatch, kind: one("writer", "component", "product", "goal", "repair", "decision", "handoff", "artifact"), grain: optional(id), inlineRepair: optional(id),
@@ -106,10 +112,11 @@ const native = shape({
 	claims: optional(list(shape({ actor: string, path: string, start: string, kickoff: string, identity: string }))), claimedRequest: optional(string),
 	token: optional(id), tool: one("create_session", "bash", "send_session_message", "session.send"), state: one("ready", "issued", "uncertain", "ordinary", "done", "refused"),
 	nativeId: optional(string), boundAt: optional(positive), commit: optional(commit), check: optional(path),
-	runnerStarted: optional(bool), receipt: optional(receipt)
+	runnerStarted: optional(bool), runnerClaim: optional(v => typeof v === "string" && /^[A-Za-z0-9_-]{43}$/.test(v)), receipt: optional(receipt)
 });
 const snapshot = shape({
 	id, owner: string, policy, references: optional(named(commit)),
+	scheduling: optional(shape({ revision: positive, workers: optional(positive), checkpointReviews: bool })),
 	repins: optional(list(shape({ from: commit, revision: commit, files: list(path) }))),
 	artifacts: optional(list(shape({ file: path, blob: commit, base: commit, publisher: string, to: list(path) }))),
 	pendingReviewNotes: optional(list(shape({ ...noteFields, squad: id, after: count }))),
@@ -124,6 +131,8 @@ function isRun(value) { return snapshot(value); }
 
 /** @param {import("./model.js").Run} run @param {import("./model.js").Effect} e */
 function validDispatch(run, e) {
+	if (e.runnerClaim !== undefined && (e.tool !== "bash" || !e.runnerStarted || !e.callId ||
+		!(e.kind === "component" || e.kind === "product" || e.kind === "goal"))) return false;
 	if (e.permissionHold !== undefined && !unissued(e)) return false;
 	if (e.receipt?.feedback !== undefined && e.receipt.feedbackFile) return false;
 	if ((e.receipt?.feedback !== undefined || e.receipt?.feedbackFile) && (e.kind !== "goal" || !e.runnerStarted || !e.callId ||
@@ -133,6 +142,12 @@ function validDispatch(run, e) {
 		e.receipt.repair || e.receipt.squad || e.state !== "done" && e.state !== "refused")) return false;
 	if (e.tool === "workflow") {
 		const squad = run.policy.squads.find(s => s.id === e.squad), report = e.observation;
+		if (e.iteration) {
+			const i = e.iteration, r = sourceReceipt(run.effects.find(g => g.id === i.receipt), i);
+			if (!squad || !("areas" in squad) || !owns(squad, i.directory) || e.issuer !== run.owner || e.retryOf || e.wake ||
+				!(i.basis ? checkpointReceipt(run, i.receipt, e.base) : r?.exit === 1 && r.commit === e.base && r.evaluatorRevision === e.evaluatorRevision) ||
+				!run.artifacts?.some(a => a.blob === i.blob && a.to.some(dir => contains(dir, i.directory)))) return false;
+		}
 		if (e.diagnostic) {
 			const d = e.diagnostic, src = run.effects.find(r => r.id === e.retryOf), receipt = sourceReceipt(run.effects.find(r => r.id === d.receipt), d);
 			if (src?.kind !== "scout" || src.error !== indexBudgetError || src.packet || src.note ||
@@ -141,7 +156,7 @@ function validDispatch(run, e) {
 		if (e.predecessor) {
 			const n = e.predecessor, g = report?.grains[0];
 			if (e.state !== "observed" || report?.outcome !== "regenerate" || report.grains.length !== 1 || typeof g !== "object" ||
-				n.state !== "blocked" || !n.reason?.startsWith("Writer reports missing input: ") || !n.worker || !n.base || n.base === e.base ||
+				missingInput(n) === undefined || !n.worker || !n.base || n.base === e.base ||
 				g.id === n.grain.id || g.directory !== n.grain.directory || g.check !== n.grain.check ||
 				!run.effects.some(w => w.kind === "writer" && w.grain === n.grain.id && w.nativeId === n.worker && w.state === "done")) return false;
 		}
@@ -185,6 +200,7 @@ function validDispatch(run, e) {
 /** @param {unknown} value @returns {import("./model.js").Run} */
 export function decode(value) {
 	if (!isRun(value) || value.policy.id !== value.id || value.active && value.pauseReason !== undefined ||
+		value.scheduling?.workers !== undefined && value.policy.workers !== undefined && value.scheduling.workers > value.policy.workers ||
 		"capacity" in value || value.policy.assignments !== undefined && assignmentCount(value) > value.policy.assignments ||
 		Boolean(value.policy.goalCheck) !== Boolean(value.goal) || value.goal && value.policy.seed)
 		fail("corrupt_run", "Invalid Foundry execution snapshot");

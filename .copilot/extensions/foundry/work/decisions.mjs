@@ -10,8 +10,8 @@ const stale = () => fail("stale_question", "This charter question or presentatio
 
 /** Claim the charter decision before opening its dialog. Native writer requests have
  * their own identity and never answer (or suppress) a scout's question.
- * @param {string} cwd @param {()=>ReturnType<typeof import("./database.mjs").openDatabase>|undefined} liveStore
- * @param {string} id @param {string} owner @param {Parameters<typeof import("./runtime.mjs").createRuntime>[1]} host
+ * @param {string} cwd @param {()=>Pick<ReturnType<typeof import("./database.mjs").openDatabase>, "planAndSwap">|undefined} liveStore
+ * @param {string} id @param {string} owner @param {Pick<Parameters<typeof import("./runtime.mjs").createRuntime>[1], "ask"|"permissionBlocker"|"log">} host
  * @param {()=>Promise<boolean>} executable @param {()=>Promise<void>} wake @param {Recovery} [recover] */
 export async function presentQuestions(cwd, liveStore, id, owner, host, executable, wake, recover) {
 	do {
@@ -24,7 +24,7 @@ export async function presentQuestions(cwd, liveStore, id, owner, host, executab
 		if (!store) return;
 		let reviewId = "";
 		const next = recover && randomUUID();
-		const claimed = store.change(id, run => {
+		const claimed = store.planAndSwap(id, run => {
 			reviewId = "";
 			if (recover) {
 				if (run.owner !== owner) fail("foreign_run", "Only the run owner can recover its question");
@@ -55,7 +55,7 @@ export async function presentQuestions(cwd, liveStore, id, owner, host, executab
 		// Record a reply even in plan mode or through a pause. Only dispatch needs permission to run.
 		if (!liveStore()) return;
 		let ready = false;
-		store.change(id, run => {
+		store.planAndSwap(id, run => {
 			ready = false;
 			const q = reviews(run).find(r => r.id === reviewId);
 			if (!q || presentation(q) !== (next ?? reviewId)) {

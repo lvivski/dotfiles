@@ -55,7 +55,23 @@ export function textPage(id, source, content, offset, available, match) {
 	return { text: piece(lo), read: { source, start, end: lo, length, ...(hit === undefined ? {} : { hit }) } };
 }
 
-/** @typedef {{path:string,oid?:string,text?:string,omitted?:string}} FileRow */
+/** @typedef {{path:string,oid:string,text:string,omitted?:never} | {path:string,oid?:string,omitted:string,text?:never}} FileRow */
+
+/** The unpaged packet shows these file groups in full. Only complete text is citable;
+ * keep omissions in the same ordered index used to select a bounded page.
+ * @param {Iterable<Iterable<FileRow>>} groups */
+export function wholeEvidence(groups) {
+	/** @type {Map<string,FileRow>} */ const index = new Map();
+	/** @type {Map<string,string>} */ const files = new Map();
+	let partial = false;
+	for (const group of groups) for (const file of group) {
+		index.set(file.path, file);
+		if (file.text === undefined) partial = true;
+		else files.set(file.path, file.oid);
+	}
+	return { index, files: Object.fromEntries(files), partial };
+}
+
 /** Pack whole blobs when possible. Only the requested blob may be split, and its
  * receipt identifies precisely the displayed range (UTF-16 indices, never half a surrogate).
  * @param {Map<string,FileRow>} rows @param {number} bytes @param {string} charter

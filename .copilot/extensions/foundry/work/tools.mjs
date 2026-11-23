@@ -1,6 +1,6 @@
 import { FoundryError } from "./values.mjs";
 
-/** @typedef {ReturnType<typeof import("./runtime.mjs").createRuntime>} Runtime */
+/** @typedef {Pick<ReturnType<typeof import("./runtime.mjs").createRuntime>, "inspect"|"claimWriter"|"operation"|"readReference">} Commands */
 export const primaryOnly = "Foundry operations belong to the assigned native session, not its subagents";
 /** @param {{sessionId:string,agentId?:string,parentAgentId?:string,agentType?:string}} input @param {string} primary */
 export const fromHelper = (input, primary) => !!(input.agentId || input.parentAgentId || input.agentType) || input.sessionId !== primary;
@@ -9,6 +9,9 @@ const strings = { type: "array", items: string, uniqueItems: true };
 /** @typedef {Record<string,import("./model.js").Json>} Properties */
 /** @type {Array<[name:string,description:string,required:Properties,optional?:Properties]>} */
 const definitions = [
+	["configure", "On operator direction, change scheduling for future reservations without pausing. Use the current scheduling.revision from owner status. workers:null restores the committed ceiling. checkpointReviews affects new pending-goal comparisons only.", {run:string,revision:{type:"integer",minimum:0}}, {workers:{type:["integer","null"],minimum:1},checkpointReviews:{type:"boolean"}}],
+	["iterate", "Owner: route an offered comparison to one production directory. For a settled unmet goal use its goal check ID; while its goal is in flight use the latest passing products[].check ID from status. Starts a scoped review, not a release check. Prefer a bound writer. A checkpoint is not qualification.", {run: string, directory: string, receipt: string, blob: string, question: string}],
+	["preview", "Bound writer, after joining helpers: pin a midpoint snapshot of your assigned directory on its frozen generation for owner inspection. No submission, validation, permission change or new assignment.", {run: string, token: string}],
 	["review_note", "Owner only: attach an exact historical goal receipt and a question to the named squad's next normal review. Does not start discovery or assign work. Use a receipt ID from proof status; optional excerpt must be verbatim.", { run: string, squad: string, receipt: string, question: string }, { excerpt: string }],
 	["start", "Start or resume a committed .foundry brief only on explicit operator direction. goalCheck defines the finish line for squads; seed selects a one-off instead.", { source: string }],
 	["resume", "On explicit owner request, continue a paused run, recover interrupted discovery or an unclaimed writer launch, or retry missing goal evidence. Never create a run or replay an issued call.", { source: string }],
@@ -23,7 +26,7 @@ const definitions = [
 	["reference", "Bound Foundry researcher: read a permitted UTF-8 file from a local sibling Git checkout at the exact published commit. Not a checkout read, shell, or visual observation.", { run: string, review: string, repo: string, revision: string, path: string }],
 ];
 
-/** @param {Runtime} runtime @param {()=>string} primary @returns {import("@github/copilot-sdk").Tool[]} */
+/** @param {Commands} runtime @param {()=>string} primary @returns {import("@github/copilot-sdk").Tool[]} */
 export function buildTools(runtime, primary) {
 	return definitions.map(([op, description, required, optional]) => ({
 		name: `foundry_${op}`, description, parameters: { type: "object", properties: { ...required, ...optional }, required: Object.keys(required), additionalProperties: false },
@@ -35,6 +38,7 @@ export function buildTools(runtime, primary) {
 				}
 				if (fromHelper(invocation, primary()))
 					throw new Error(primaryOnly);
+				if (op === "status") return JSON.stringify(runtime.inspect(args, invocation.sessionId));
 				if (op === "claim") return JSON.stringify(await runtime.claimWriter(args, invocation.sessionId));
 				return JSON.stringify(await runtime.operation(op, args, invocation.sessionId));
 			}

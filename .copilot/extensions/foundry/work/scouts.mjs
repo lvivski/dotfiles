@@ -3,10 +3,10 @@ import { journeyText } from "./contract.mjs";
 import { goalReceipt } from "./evidence.mjs";
 import { sourceReceipt } from "./notes.mjs";
 import { checked, dependencies, liveNeeds, owns, supersededAttempt } from "./plan.mjs";
-import { evidencePage, indexBudgetError, preview, textPage } from "./pages.mjs";
+import { evidencePage, indexBudgetError, preview, textPage, wholeEvidence } from "./pages.mjs";
 import { entries, git, regularFiles } from "./product.mjs";
 import { researchSchema } from "./research.mjs";
-import { canInvestigate, correction, evidenceDecision, exhaustedRead, fileProgress, investigation, readSource, requestedFiles, researchContext, reviews, scopedNotes, wakeSource } from "./reviews.mjs";
+import { canInvestigate, comparison, correction, evidenceDecision, exhaustedRead, fileProgress, investigation, readSource, requestedFiles, researchContext, reviews, scopedNotes, wakeSource } from "./reviews.mjs";
 import { FoundryError, contains, digest, fail, fields, name, record, referenceRepo, text } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
@@ -19,32 +19,11 @@ import { FoundryError, contains, digest, fail, fields, name, record, referenceRe
  * @property {(run:string, dispatch:string, actor:string, workflowId:string, reviewId:string, raw:unknown, packet:unknown) => Promise<void>} scoutResult
  */
 
-function coverage() {
-	let partial = false;
-	/** @type {Map<string,string>} */ const delivered = new Map();
-	/** @type {Map<string,string>} */ const outputs = new Map();
-	/** @type {Map<string,import("./pages.mjs").FileRow>} */ const index = new Map();
-	/** @param {string} why */
-	function omitted(why) { partial = true; return `[unavailable: ${why}]`; }
-	/** @param {Iterable<unknown>} records */
-	function rows(records) {
-		const lines = [];
-		for (const row of records) {
-			lines.push(JSON.stringify(row));
-			if (row && typeof row === "object" && "path" in row && typeof row.path === "string")
-				index.set(row.path, /** @type {import("./pages.mjs").FileRow} */ (row));
-			if (row && typeof row === "object" && "path" in row && typeof row.path === "string" &&
-				"oid" in row && typeof row.oid === "string" && "text" in row) delivered.set(row.path, row.oid);
-			if (row && typeof row === "object" && "id" in row && typeof row.id === "string" &&
-				"checked" in row && typeof row.checked === "string") outputs.set(row.id, row.checked);
-		}
-		return lines.join("\n") || "(none)";
-	}
-	return { rows, omitted, delivered, outputs, index, get partial() { return partial; } };
-}
+/** @param {Iterable<unknown>} records */
+const rows = records => Array.from(records, row => JSON.stringify(row)).join("\n") || "(none)";
 
-/** @param {string} cwd @param {Map<string, Entry|undefined>} files @param {ReturnType<typeof coverage>} packet */
-function* blobs(cwd, files, packet) {
+/** @param {string} cwd @param {Map<string, Entry|undefined>} files @returns {Generator<import("./pages.mjs").FileRow>} */
+function* blobs(cwd, files) {
 	const oids = new Set([...files.values()].flatMap(e => e && (e.mode === "100644" || e.mode === "100755") ? [e.oid] : []));
 	const batch = oids.size ? git(cwd, ["cat-file", "--batch"], [...oids].join("\n") + "\n") : Buffer.alloc(0);
 	const contents = new Map();
@@ -58,21 +37,21 @@ function* blobs(cwd, files, packet) {
 	}
 	for (const [path, entry] of files) {
 		if (!entry || !["100644", "100755"].includes(entry.mode)) {
-			yield { path, omitted: packet.omitted("not a regular committed file") };
+			yield { path, omitted: "[unavailable: not a regular committed file]" };
 			continue;
 		}
 		const { oid } = entry, bytes = contents.get(oid);
 		if (!bytes) fail("missing_blob", `Missing ${path} at ${oid}`);
-		yield bytes.includes(0) || !isUtf8(bytes) ? { path, oid, omitted: packet.omitted("binary or non-UTF-8 blob") }
+		yield bytes.includes(0) || !isUtf8(bytes) ? { path, oid, omitted: "[unavailable: binary or non-UTF-8 blob]" }
 			: { path, oid, text: bytes.toString("utf8") };
 	}
 }
 
-/** @param {string} cwd @param {string} base @param {string[]} roots @param {ReturnType<typeof coverage>} packet */
-function directoryBlobs(cwd, base, roots, packet) {
+/** @param {string} cwd @param {string} base @param {string[]} roots */
+function directoryBlobs(cwd, base, roots) {
 	// An empty ls-tree pathspec means the ENTIRE repository, not an empty scope.
 	const files = roots.length ? entries(cwd, base, true, roots) : [];
-	return packet.rows(blobs(cwd, new Map(files.map(e => [e.name, e])), packet));
+	return [...blobs(cwd, new Map(files.map(e => [e.name, e])))];
 }
 
 /** @param {string} cwd @param {Run} run @param {Review} review @param {number} [budget] */
@@ -84,7 +63,7 @@ export function scoutPacket(cwd, run, review, budget = Infinity) {
 	if (review.wake && /^(read:|file:|page:|decide-from-evidence$)/.test(review.wake.key) &&
 		(!prev || prev.version !== review.version || prev.evaluatorRevision !== review.evaluatorRevision || report?.outcome !== "needs-evidence"))
 		fail("packet_budget", "Requested evidence context is not from this charter, revision and evaluator.");
-	const packet = coverage(), nodes = Object.values(run.nodes);
+	const nodes = Object.values(run.nodes);
 	const contract = new Set([squad.charter, ...(policy.goalCheck ? [policy.goalCheck] : [])]);
 	if ("areas" in squad) for (const file of [...squad.boundary, ...squad.checks, policy.productCheck]) contract.add(file);
 	const owned = new Set("areas" in squad ? nodes.filter(n => owns(squad, n.grain.directory)).map(n => n.grain.id) : squad.grains);
@@ -113,11 +92,16 @@ export function scoutPacket(cwd, run, review, budget = Infinity) {
 	if (selected && (selected.receipt !== run.goal?.check || receipt?.commit !== base || !sourceReceipt(run.effects.find(e => e.id === selected.receipt), selected)))
 		fail("invalid_receipt", "Need the current exact goal receipt and a verbatim excerpt");
 	let goal = receipt?.commit === base ? `${meta}\n${selected ? `Partial diagnostic (selected excerpt; full receipt retained):\n${selected.excerpt}` : receipt.output}`
-		: policy.goalCheck ? packet.omitted("no verified goal receipt for this revision") : "(no goal check)";
+		: policy.goalCheck ? "[unavailable: no verified goal receipt for this revision]" : "(no goal check)";
 	// Put owned failures first so a broad graph cannot bury the reason for a
 	// same-revision review. Other charters' diagnostics and private pins stay local.
 	const stopped = [...owned].filter(id => ["repeated", "blocked"].includes(run.nodes[id].state));
 	const graphIds = new Set([...stopped, ...inputs, ...nodes.filter(n => n.state !== "idle").map(n => n.grain.id)]);
+	/** @type {Map<string,string>} */ const outputs = new Map();
+	for (const id of graphIds) {
+		const n = run.nodes[id];
+		if (checked(n) && n.candidate !== undefined) outputs.set(id, n.candidate);
+	}
 	function* graphRows() {
 		for (const id of graphIds) {
 			const n = run.nodes[id], g = n.grain;
@@ -127,39 +111,44 @@ export function scoutPacket(cwd, run, review, budget = Infinity) {
 			const detail = reason && owned.has(id) ? digest(["reason", base, review.version, review.evaluatorRevision, review.squad, id, reason]) : undefined;
 			if (detail && reason) sources.set(`detail:${detail}`, reason);
 			yield { id, directory: g.directory, task: g.task, check: g.check,
-				needs: liveNeeds(n), state: n.state, checked: checked(n) ? n.candidate : undefined,
+				needs: liveNeeds(n), state: n.state, checked: outputs.get(id),
 				...(inputs.has(id) ? { specification: g.specification, boundary: g.boundary } : {}),
 				...(owned.has(id) ? { reason: shown, detail, ...(retired ? { supersededAttempt: retired, originalInputs: n.inputs } : {}),
 					neverIssued: n.state === "waiting" || n.state === "blocked" ? !n.generation : undefined } : {}) };
 		}
 	}
-	let graph = packet.rows(graphRows());
+	let graph = rows(graphRows());
 
-	let journey = "";
+	let brief;
 	if (policy.sharedBrief) {
 		contract.delete(policy.sharedBrief);
 		const [entry] = regularFiles(cwd, base, [policy.sharedBrief]);
-		const content = journeyText(cwd, entry);
-		journey = `Shared brief ${entry.name} at ${base}:\n${content}\n\n`;
-		packet.delivered.set(entry.name, entry.oid);
-		packet.index.set(entry.name, { path: entry.name, oid: entry.oid, text: content });
+		brief = { path: entry.name, oid: entry.oid, text: journeyText(cwd, entry) };
 	}
 	const contracts = [...contract];
 	const byPath = new Map(entries(cwd, base, false, contracts).map(e => [e.name, e]));
-	const conserved = journey + packet.rows(blobs(cwd, new Map(contracts.map(p => [p, byPath.get(p)])), packet));
-	const product = directoryBlobs(cwd, base, roots, packet);
-	const required = directoryBlobs(cwd, base, dependencyRoots, packet);
+	const conserved = [...blobs(cwd, new Map(contracts.map(p => [p, byPath.get(p)])))];
+	const product = directoryBlobs(cwd, base, roots);
+	const required = directoryBlobs(cwd, base, dependencyRoots);
 	const deciding = review.wake?.key === evidenceDecision;
 	/** @type {string[]} */ const context = [];
 	const notes = scopedNotes(run, review);
+	const iteration = comparison(run, review);
 	function historical() {
-		return [...notes].map(([detail, note]) => {
+		const rows = [...notes].map(([detail, note]) => {
 			const r = sourceReceipt(run.effects.find(e => e.id === note.receipt), note) ?? fail("invalid_receipt", "Review note lost its historical goal receipt");
 			sources.set(`receipt:${note.receipt}`, r.output); sources.set(`detail:${detail}`, note.question);
 			return `Historical goal receipt, not re-observed by this review. Owner question is context, not an assignment or permission. Evidence must still cite delivered paths.\n${JSON.stringify({
 				receipt: note.receipt, commit: r.commit, evaluator: r.check, pin: r.evaluatorRevision ?? policy.base, exit: r.exit, detail,
 				...(note.excerpt === undefined ? { output: preview(r.output, allowance) } : { excerpt: preview(note.excerpt, allowance) }), question: preview(note.question, allowance) })}`;
-		}).join("\n");
+		});
+		if (iteration?.basis) {
+			const {directory, receipt, blob, question} = iteration, detail = digest([receipt, directory, blob, question]);
+			sources.set(`detail:${detail}`, question);
+			rows.push(`Scoped implementation comparison on a passing product checkpoint, not a goal verdict. Propose only ${directory} with inputs already checked in this checkpoint; do not replace other directories.\n${JSON.stringify({
+				receipt, directory, blob, detail, question: preview(question, allowance) })}`);
+		}
+		return rows.join("\n");
 	}
 	let history = historical();
 	if (receipt?.evaluatorRevision) context.push(`Goal receipt used the approved evaluator overlay at ${receipt.evaluatorRevision}. Files shown from the product revision are not the amended harness.`);
@@ -177,16 +166,18 @@ export function scoutPacket(cwd, run, review, budget = Infinity) {
 	if (report && prev?.decision?.status === "answered")
 		context.push(`Operator clarification for review ${prev.id} of ${squad.id} at ${base} (context, not authority): ${JSON.stringify({ question: report.reason, answer: prev.decision.answer })}. If the committed contract would need to change, report needs-decision; do not change scope or checks.`);
 	const focused = [...requestedFiles(run, review)].filter(file => policy.sharedBrief || contract.has(file) || [...roots, ...dependencyRoots].some(root => contains(root, file)));
-	const requested = focused.length ? `Requested evidence at ${base}:\n${packet.rows(blobs(cwd,
-		new Map(regularFiles(cwd, base, focused).map(e => [e.name, e])), packet))}` : "";
+	const requested = focused.length ? [...blobs(cwd, new Map(regularFiles(cwd, base, focused).map(e => [e.name, e])))] : [];
+	const whole = wholeEvidence([brief ? [brief] : [], conserved, product, required, requested]);
 	if (policy.sharedBrief) {
-		const candidates = entries(cwd, base, true).filter(e => ["100644", "100755"].includes(e.mode) && !packet.delivered.has(e.name));
-		context.push(`Other committed paths (names only):\n${packet.rows(candidates.map(e => e.name))}\nUse needs-evidence for another exact path if needed. Only delivered text may be cited. Reading it does not grant ownership.`);
+		const candidates = entries(cwd, base, true).filter(e => ["100644", "100755"].includes(e.mode) && !Object.hasOwn(whole.files, e.name));
+		context.push(`Other committed paths (names only):\n${rows(candidates.map(e => e.name))}\nUse needs-evidence for another exact path if needed. Only delivered text may be cited. Reading it does not grant ownership.`);
 	}
 	if (report?.outcome === "waiting") context.push(`${referenceRepo(report.waitFor) ? "Reference published" : "Checked outputs changed"} for ${report.waitFor}; reconsider this wait: ${report.reason}`);
-	const complete = [`Conserved Git blobs at ${base}:\n${conserved}`, `Owned product Git blobs at ${base}:\n${product}`,
-		`Declared dependency Git blobs at ${base} (read-only):\n${required}`, requested].filter(Boolean).join("\n\n");
-	const notice = packet.partial || selected ? "Coverage: PARTIAL. Evidence was unavailable. Do not return no-gap from this packet. Propose supported work, request a different file with needs-evidence, or report unresolved."
+	const journey = brief ? `Shared brief ${brief.path} at ${base}:\n${brief.text}\n\n` : "";
+	const complete = [`Conserved Git blobs at ${base}:\n${journey}${rows(conserved)}`, `Owned product Git blobs at ${base}:\n${rows(product)}`,
+		`Declared dependency Git blobs at ${base} (read-only):\n${rows(required)}`, focused.length ? `Requested evidence at ${base}:\n${rows(requested)}` : ""].filter(Boolean).join("\n\n");
+	const partialEvidence = whole.partial || !!selected || !!policy.goalCheck && receipt?.commit !== base;
+	const notice = partialEvidence ? "Coverage: PARTIAL. Evidence was unavailable. Do not return no-gap from this packet. Propose supported work, request a different file with needs-evidence, or report unresolved."
 		: "Coverage: no packet truncation. Only this charter's supplied evidence was reviewed.";
 	/** @type {(evidence:string, coverage:string)=>string} */
 	let render = (evidence, coverage) => [
@@ -207,8 +198,6 @@ export function scoutPacket(cwd, run, review, budget = Infinity) {
 		`Scope: ${scope}`, `Goal receipt at reviewed revision: ${goal}`,
 		`Current graph (metadata, not file evidence):\n${graph}`, evidence, ...context, history, coverage,
 	].join("\n\n");
-	/** @type {import("./model.js").Packet} */
-	const receiptPacket = { review: review.id, base, files: Object.fromEntries(packet.delivered), outputs: Object.fromEntries(packet.outputs), partial: packet.partial || !!selected };
 	let researchAgent;
 	if (investigation(review, squad)) {
 		if (!("areas" in squad && squad.researchAgent && report && (report.outcome === "needs-research" || report.outcome === "waiting" && report.waitFor === review.wake?.key)))
@@ -223,11 +212,13 @@ export function scoutPacket(cwd, run, review, budget = Infinity) {
 			`Scope: ${scope}\nGoal receipt at reviewed revision: ${goal}`, evidence, coverage,
 		].join("\n\n");
 	}
+	/** @type {import("./model.js").Packet} */
+	const receiptPacket = { review: review.id, base, files: whole.files, outputs: researchAgent ? {} : Object.fromEntries(outputs), partial: partialEvidence };
 	let prompt = render(complete, notice);
 	const source = readSource(report), contextRead = source && !report?.file;
 	if (Buffer.byteLength(prompt) > budget || report?.match || report?.offset !== undefined || contextRead) {
 		const header = `Pinned file index at ${base}:\n`;
-		const indexSize = [...packet.index.values()].reduce((sum, { path, oid, omitted }) =>
+		const indexSize = [...whole.index.values()].reduce((sum, { path, oid, omitted }) =>
 			sum + Buffer.byteLength(JSON.stringify({ path, oid, omitted })) + 1, 0);
 		const coverage = "Coverage: PARTIAL. Index entries and previews are for orientation; cite only whole file text or a displayed file excerpt. Do not return no-gap.";
 		const instructions = deciding ? " Decide from this packet or report unresolved." : researchAgent ? " Report unknown if this packet cannot answer your question." :
@@ -235,7 +226,7 @@ export function scoutPacket(cwd, run, review, budget = Infinity) {
 		const compact = (/** @type {number} */ bytes) => {
 			allowance = bytes;
 			if (receipt?.commit === base) goal = `${meta}\n${JSON.stringify({ [selected ? "selectedExcerpt" : "output"]: preview(selected?.excerpt ?? receipt.output, bytes) })}`;
-			graph = packet.rows(graphRows()); history = historical();
+			graph = rows(graphRows()); history = historical();
 			const asked = source && report ? `\nRequested ${source}: ${JSON.stringify({ reason: preview(report.reason, bytes), ...(report.match ? { match: preview(report.match, bytes) } : {}) })}` : "";
 			return coverage + asked + instructions;
 		};
@@ -243,7 +234,7 @@ export function scoutPacket(cwd, run, review, budget = Infinity) {
 		const spare = budget - Buffer.byteLength(render(header, minimal)) - indexSize;
 		const partial = spare <= 0 ? minimal : compact(Math.floor(spare / (2 * (3 + 2 * notes.size + owned.size))));
 		const focus = report?.file;
-		const offset = report?.offset ?? (focus && !report?.match ? fileProgress(reviews(run), deciding && prev ? prev : review, focus, packet.index.get(focus)?.oid).offset : 0);
+		const offset = report?.offset ?? (focus && !report?.match ? fileProgress(reviews(run), deciding && prev ? prev : review, focus, whole.index.get(focus)?.oid).offset : 0);
 		let available = budget - Buffer.byteLength(render(header, partial)), extra = "";
 		if (contextRead && source) {
 			const content = sources.get(source);
@@ -254,7 +245,7 @@ export function scoutPacket(cwd, run, review, budget = Infinity) {
 			extra = `\nRequested context (not product file evidence):\n${part.text}`; receiptPacket.read = part.read;
 			available -= Buffer.byteLength(extra);
 		}
-		const page = evidencePage(packet.index, available, squad.charter, focus, focus ? offset : 0, report?.match);
+		const page = evidencePage(whole.index, available, squad.charter, focus, focus ? offset : 0, report?.match);
 		receiptPacket.files = page.files;
 		if (page.excerpt) receiptPacket.excerpt = page.excerpt;
 		if (page.read) receiptPacket.read = page.read;

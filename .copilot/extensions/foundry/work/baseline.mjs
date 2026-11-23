@@ -1,9 +1,9 @@
-import { goalReceipt } from "./evidence.mjs";
+import { goalReceipt, missingInput } from "./evidence.mjs";
+import { availableReservations } from "./capacity.mjs";
 import { reserveWriter, verifyRepairInputs } from "./graph.mjs";
-import { admitted, assignmentCount } from "./native.mjs";
-import { assignmentCalls, stalePins, validateNodes, waiting, working, writerInputs } from "./plan.mjs";
+import { admitted } from "./native.mjs";
+import { assignmentCalls, stalePins, validateNodes, waiting, writerInputs } from "./plan.mjs";
 import { commitAt, directoryBaseline, entries, verifyContracts } from "./product.mjs";
-import { reading, reviews } from "./reviews.mjs";
 import { digest, fail, names } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
@@ -24,13 +24,12 @@ function manifest(cwd, run, actor, ids, inspect) {
 		fail("stale_assignment", inspect ? "Need the current goal target without a conflict" : "Need a settled, current unmet goal");
 	verifyContracts(cwd, run.policy, target);
 	if (!ids.length) fail("invalid_field", "Select at least one blocked assignment");
-	if (!inspect && (run.policy.assignments !== undefined && assignmentCount(run) + ids.length > run.policy.assignments ||
-		run.policy.workers !== undefined && Object.values(run.nodes).filter(working).length + reviews(run).filter(reading).length + ids.length > run.policy.workers))
+	if (!inspect && ids.length > availableReservations(run))
 		fail("limit", "Select assignments within the remaining worker and assignment limits");
 	return ids.map(id => {
 		const n = run.nodes[id], launch = n && originalAttempt(run, n);
 		if (!n?.worker || n.state !== "blocked" || !n.generation || !n.token || !n.base || n.check || n.candidate ||
-			!n.reason?.startsWith("Writer reports missing input: ") || !launch ||
+			missingInput(n) === undefined || !launch ||
 			run.effects.some(e => (e.issuer === actor || e.issuer === n.worker) && e.permissionHold))
 			fail("stale_assignment", `${id}: not an original bound missing-input attempt`);
 		if (inspect && launch.readGrant) fail("already_approved", `${id}: inspection already approved; check writer status`);

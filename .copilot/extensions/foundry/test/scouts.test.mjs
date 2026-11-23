@@ -87,6 +87,30 @@ test("an oversized current goal diagnostic fits the scout budget without shorten
 	assert.ok(!prompt.includes("\uFFFD") && !prompt.includes(output)); assert.equal(receipt.output, output);
 });
 
+test("delivery receipts name checked pins only when the packet shows the graph", t => {
+	const { cwd, run, review, squad, charter } = fixture(t);
+	run.policy.squads = [{ ...squad, researchAgent: "foundry-research" }];
+	const goal = run.effects[0].receipt; assert.ok(goal);
+	goal.output = "diagnostic\n".repeat(5000);
+	review.state = "observed";
+	review.packet = scoutPacket(cwd, run, review).packet;
+	const previous = structuredClone(review.packet);
+	review.observation = { outcome: "needs-research", reason: "Check this interface.", evidence: [charter], grains: [] };
+	const research = { ...review, id: "investigation", state: /** @type {const} */ ("issued"), observation: undefined, packet: undefined,
+		wake: { review: review.id, key: "research" } };
+	run.effects.push(research);
+	for (const budget of [Infinity, 16000]) {
+		const scout = scoutPacket(cwd, run, review, budget), investigator = scoutPacket(cwd, run, research, budget);
+		assert.match(scout.prompt, /"checked":"c{40}"/);
+		assert.deepEqual(scout.packet.outputs, { types: "d".repeat(40), protocol: "c".repeat(40) });
+		assert.doesNotMatch(investigator.prompt, /Current graph|"checked":"c{40}"/);
+		assert.deepEqual(investigator.packet.outputs, {});
+		assert.equal(investigator.packet.files[charter], previous.files[charter]);
+		assert.equal(investigator.packet.partial, Number.isFinite(budget));
+	}
+	assert.deepEqual(review.packet, previous);
+});
+
 test("historical receipt, owner question and owned blocker are scoped pageable context, never file citations", t => {
 	const f = fixture(t), { run, review, cwd, base } = f, goal = run.effects[0], budget = 16000;
 	assert.ok(goal.kind === "goal" && goal.receipt);
@@ -324,7 +348,7 @@ for (const saved of [false, true]) test(`switching between partial files resumes
 			owner.close();
 			const db = openDatabase(f.root);
 			try {
-				db.update("pair", run => {
+				db.mutateLocked("pair", run => {
 					const r = reviews(run).find(r => r.id === job.id); assert.ok(r?.workflowId && run.goal);
 					r.state = "blocked"; r.packet = job.packet; r.observation = request;
 					r.error = `No further focused read of ${file}: the pinned evidence is unchanged`;

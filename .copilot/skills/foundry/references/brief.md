@@ -24,6 +24,8 @@ Put the confirmed journey, material edge cases and exclusions in `.foundry/<plan
 
 Use just enough disjoint writable `areas` for independent work to start together. A charter says what a squad owns, not what it must build first. Keep charters outside writable areas. Component checks must work for newly discovered directories, not a list of predicted assignment IDs. Leave `limits.workers` unset unless the user wants a fixed concurrency cap. For unattended work, `limits.assignments` can bound total scout, writer and repair reservations; zero permits baseline checks only. Neither limit counts native helpers or promises a credit ceiling.
 
+Name the production owner who can act on a midpoint comparison. Permit focused implementation and review on checked prerequisites before the final release sweep; reserve whole-product acceptance for the integrated result.
+
 If deciding whether to create a writer requires investigating other checkouts, public docs or approved tools, an area squad may name `researchAgent`. `foundry-research` reads source and public docs; name a separately configured, appropriately scoped profile for connectors or disposable probes. Review the profile and permitted sources as part of the committed brief; findings cannot substitute for product checks.
 
 For maintenance, authorize writers in the charter to consult their own accepted directory. Assignments then need only `"directory":"workday/coverage/mail"`: Foundry resolves it at kickoff. If the charter permits a particular historical copy, use `"directory":"<full commit>:workday/coverage/mail"`. A new directory with no accepted files starts empty.

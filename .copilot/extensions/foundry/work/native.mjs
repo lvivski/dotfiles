@@ -80,12 +80,6 @@ export const awaitingReply = e => e.state === "issued" || e.state === "uncertain
 /** @param {Run} run */
 export const expired = run => !!run.policy.deadline && Date.now() >= Date.parse(run.policy.deadline);
 
-/** Count reservations, not deliveries or today's graph. An inline repair has no notice;
- * its new assignment token is recorded on the writer's preceding component check.
- * @param {Run} run */
-export const assignmentCount = run => run.effects.filter(e => e.kind === "scout" || e.kind === "writer" ||
-	e.kind === "repair" || e.kind === "component" && e.inlineRepair).length;
-
 /** @param {Run} run @param {Effect} e */
 function assignee(run, e) {
 	return e.grain ? run.nodes[e.grain] : undefined;

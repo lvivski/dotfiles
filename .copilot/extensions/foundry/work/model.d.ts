@@ -99,10 +99,12 @@ export interface Node {
 	priorSource?: Baseline;
 	replaces?: string;
 	artifactCursor?: number;
+	preview?: string;
 	candidate?: string;
 	check?: string;
 	repairs: number;
 	reason?: string;
+	stop?: { kind: "writer-missing-input"; detail: string };
 }
 
 export interface Assessment {
@@ -132,6 +134,7 @@ export interface Review extends Dispatch {
 	packet?: Packet;
 	wake?: { review: string; key: string };
 	retryOf?: string;
+	iteration?: { receipt: string; directory: string; blob: string; question: string; basis?: "checkpoint" };
 	diagnostic?: { receipt: string; excerpt: string };
 	note?: ReviewNote;
 	otherNotes?: ReviewNote[];
@@ -173,6 +176,7 @@ interface Dispatch {
 	check?: string;
 	evaluatorRevision?: string;
 	runnerStarted?: boolean;
+	runnerClaim?: string;
 	receipt?: Receipt;
 }
 
@@ -208,6 +212,7 @@ export interface Run {
 	pendingReviewNotes?: (ReviewNote & { squad: string; after: number })[];
 	repins?: { from: string; revision: string; files: string[] }[];
 	policy: Policy;
+	scheduling?: { revision: number; workers?: number; checkpointReviews: boolean };
 	activatedAt: number;
 	active: boolean;
 	pauseReason?: string;

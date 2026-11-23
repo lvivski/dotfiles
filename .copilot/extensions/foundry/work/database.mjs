@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { git } from "./product.mjs";
 import { fail } from "./values.mjs";
 import { decode } from "./snapshot.mjs";
+import { acceptOutcome, claimOutcome } from "./outcomes.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 export const protocol = 13;
@@ -17,8 +18,8 @@ export function ledgerPath(cwd) {
 	return path.join(realpathSync(common), "foundry", "work.sqlite");
 }
 
-/** @param {string} cwd @param {string} [file] @param {boolean} [create] @param {()=>void} [checkSession] */
-export function openDatabase(cwd, file = ledgerPath(cwd), create = false, checkSession) {
+/** @param {string} file @param {boolean} create @param {(db:DatabaseSync,version:unknown,objects:Record<string,unknown>[])=>void} schema @param {()=>void} [checkSession] */
+function openStore(file, create, schema, checkSession) {
 	checkSession?.();
 	const home = path.dirname(file);
 	if (create) mkdirSync(home, { recursive: true, mode: 0o700 });
@@ -58,35 +59,13 @@ export function openDatabase(cwd, file = ledgerPath(cwd), create = false, checkS
 		db.exec("PRAGMA busy_timeout=5000; PRAGMA trusted_schema=OFF; BEGIN IMMEDIATE");
 		const version = db.prepare("PRAGMA user_version").get()?.user_version;
 		const objects = db.prepare("SELECT type,name FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all();
-		if (create && version === 0 && !objects.length) {
-			db.exec(`CREATE TABLE runs(id TEXT PRIMARY KEY, owner TEXT NOT NULL, document TEXT NOT NULL, checksum TEXT NOT NULL) STRICT;
-				CREATE INDEX runs_owner ON runs(owner); PRAGMA user_version=${protocol}`);
-		}
-		else if (version !== protocol || objects.length !== 2 || objects[0].type !== "table" || objects[0].name !== "runs" ||
-			objects[1].type !== "index" || objects[1].name !== "runs_owner") {
-			fail("unsupported_store", "Incompatible Foundry execution protocol; leave the old ledger intact");
-		}
+		schema(db, version, objects);
 		db.exec("COMMIT");
 	}
 	catch (error) {
 		db.close();
 		throw error;
 	}
-	/** @param {string} id */
-	function snapshot(id) {
-		verify();
-		const row = db.prepare("SELECT document,checksum,owner FROM runs WHERE id=?").get(id);
-		if (!row)
-			return;
-		const document = String(row.document);
-		if (checksum(document) !== row.checksum) fail("corrupt_run", "Run no longer matches its recorded execution snapshot");
-		const parsed = decode(JSON.parse(document));
-		if (parsed.id !== id || parsed.owner !== row.owner)
-			fail("corrupt_run", "Run no longer matches its recorded execution snapshot");
-		return { run: parsed, document, sum: row.checksum };
-	}
-	/** @param {string} id */
-	const required = id => snapshot(id) ?? fail("missing_run", `Unknown run ${id}`);
 	/** @template T @param {()=>T} fn @returns {T} */
 	function write(fn) {
 		verify();
@@ -104,8 +83,84 @@ export function openDatabase(cwd, file = ledgerPath(cwd), create = false, checkS
 			throw error;
 		}
 	}
+	return { db, verify, write };
+}
+
+/** @param {string} cwd @param {string} [file] @param {boolean} [create] @param {()=>void} [checkSession] */
+export function openDatabase(cwd, file = ledgerPath(cwd), create = false, checkSession) {
+	const { db, verify, write } = openStore(file, create, (db, version, objects) => {
+		if (create && version === 0 && !objects.length) {
+			db.exec(`CREATE TABLE runs(id TEXT PRIMARY KEY, owner TEXT NOT NULL, document TEXT NOT NULL, checksum TEXT NOT NULL) STRICT;
+				CREATE INDEX runs_owner ON runs(owner); PRAGMA user_version=${protocol}`);
+		} else if (version !== protocol || objects.length !== 2 || objects[0].type !== "table" || objects[0].name !== "runs" ||
+			objects[1].type !== "index" || objects[1].name !== "runs_owner")
+			fail("unsupported_store", "Incompatible Foundry execution protocol; leave the old ledger intact");
+	}, checkSession);
+	const spool = `${file}.outcomes`;
+	/** @type {ReturnType<typeof openStore>|undefined} */ let mailbox;
+	function journal(create = false) {
+		if (!mailbox && (create || lstatSync(spool, { throwIfNoEntry: false }))) {
+			mailbox = openStore(spool, create, (db, version, objects) => {
+				if (create && version === 0 && !objects.length)
+					db.exec(`CREATE TABLE outcomes(run TEXT NOT NULL, effect TEXT NOT NULL, signature TEXT NOT NULL,
+						document TEXT NOT NULL, PRIMARY KEY(run,effect)) STRICT; PRAGMA user_version=1`);
+				else if (version !== 1 || objects.length !== 1 || objects[0].type !== "table" || objects[0].name !== "outcomes")
+					fail("unsupported_store", "Incompatible Foundry runner outcome journal");
+			}, verify);
+		}
+		mailbox?.verify();
+		return mailbox;
+	}
+	/** @param {string} id */
+	function snapshot(id) {
+		verify();
+		const row = db.prepare("SELECT document,checksum,owner FROM runs WHERE id=?").get(id);
+		if (!row) return;
+		const document = String(row.document);
+		if (checksum(document) !== row.checksum) fail("corrupt_run", "Run no longer matches its recorded execution snapshot");
+		const parsed = decode(JSON.parse(document));
+		if (parsed.id !== id || parsed.owner !== row.owner)
+			fail("corrupt_run", "Run no longer matches its recorded execution snapshot");
+		const pending = parsed.effects.filter(e => e.runnerClaim && !e.receipt);
+		const lookup = pending.length && journal()?.db.prepare("SELECT signature,document FROM outcomes WHERE run=? AND effect=?");
+		let imported = false;
+		if (lookup) for (const e of pending) {
+			const row = lookup.get(id, e.id);
+			if (!row) continue;
+			acceptOutcome(id, e, String(row.signature), String(row.document));
+			imported = true;
+		}
+		if (imported) decode(parsed);
+		return { run: parsed, document, sum: row.checksum };
+	}
+	/** @param {string} id */
+	const required = id => snapshot(id) ?? fail("missing_run", `Unknown run ${id}`);
 	return {
 		file,
+		/** Inside the exclusive claim transaction. Only the holder can publish; publishing
+		 * never reads or mutates the run document. @param {string} run @param {import("./model.js").Effect} effect */
+		outcomeWriter(run, effect) {
+			const seal = claimOutcome(run, effect);
+			const store = journal(true) ?? fail("missing_store", "No runner outcome journal");
+			/** @param {import("./model.js").Receipt} receipt */
+			return receipt => {
+				const {document, signature} = seal(receipt);
+				store.write(() => {
+					const inserted = store.db.prepare("INSERT INTO outcomes VALUES(?,?,?,?) ON CONFLICT(run,effect) DO NOTHING")
+						.run(run, effect.id, signature, document);
+					if (inserted.changes) return;
+					const prior = store.db.prepare("SELECT signature,document FROM outcomes WHERE run=? AND effect=?").get(run,effect.id);
+					if (prior?.signature !== signature || prior.document !== document)
+						fail("conflicting_outcome", "Refusing to replace the original runner outcome");
+				});
+			};
+		},
+		/** Change notification only; consumers must still read and verify the snapshot. @param {string} id */
+		stamp(id) {
+			verify(); mailbox?.verify();
+			const run = db.prepare("SELECT checksum FROM runs WHERE id=?").get(id);
+			return `${run?.checksum ?? ""}:${mailbox?.db.prepare("SELECT max(rowid) AS stamp FROM outcomes WHERE run=?").get(id)?.stamp ?? ""}`;
+		},
 		/** @param {string} id */
 		read(id) { return snapshot(id)?.run; },
 		/** @param {string} actor */
@@ -115,14 +170,17 @@ export function openDatabase(cwd, file = ledgerPath(cwd), create = false, checkS
 				SELECT 1 FROM json_each(document,'$.effects') WHERE json_extract(value,'$.nativeId')=?
 			) ORDER BY id`).all(actor, actor).map(r => String(r.id));
 		},
-		/** Plan outside the lock. A new checkpoint can also require the target tip to still match at publication.
+		/** The planner may run repeatedly. Never send, prompt or launch from it.
+		 * A guarded no-op still needs to confirm the same snapshot and external tip.
 		 * @param {string} id @param {(run:Run)=>(()=>boolean)|void} plan */
-		change(id, plan) {
+		planAndSwap(id, plan) {
 			for (;;) {
 				const { run, document, sum } = required(id);
 				const valid = plan(run), next = JSON.stringify(run);
-				if (next === document || write(() => (!valid || valid()) && db.prepare("UPDATE runs SET document=?,checksum=? WHERE id=? AND checksum=?")
-					.run(next, checksum(next), id, sum).changes === 1)) return run;
+				if (next === document && !valid) return run;
+				if (write(() => (!valid || valid()) && (next === document
+					? db.prepare("SELECT checksum FROM runs WHERE id=?").get(id)?.checksum === sum
+					: db.prepare("UPDATE runs SET document=?,checksum=? WHERE id=? AND checksum=?").run(next, checksum(next), id, sum).changes === 1))) return run;
 			}
 		},
 		/** @param {Run} run */
@@ -130,8 +188,9 @@ export function openDatabase(cwd, file = ledgerPath(cwd), create = false, checkS
 			const doc = JSON.stringify(run);
 			return write(() => db.prepare("INSERT INTO runs VALUES(?,?,?,?)").run(run.id, run.owner, doc, checksum(doc)));
 		},
-		/** @template T @param {string} id @param {(run:Run)=>T} fn @returns {T} */
-		update(id, fn) {
+		/** Single synchronous transaction; keep only final identity checks and bounded mutations here.
+		 * @template T @param {string} id @param {(run:Run)=>T} fn @returns {T} */
+		mutateLocked(id, fn) {
 			return write(() => {
 				const { run, document } = required(id);
 				const result = fn(run);
@@ -140,6 +199,6 @@ export function openDatabase(cwd, file = ledgerPath(cwd), create = false, checkS
 				return result;
 			});
 		},
-		close() { db.close(); },
+		close() { mailbox?.db.close(); db.close(); },
 	};
 }

@@ -502,7 +502,7 @@ test("a diagnostic repin rechecks the assessed base without replaying a failed m
 	assert.equal(failed.reviews.find(r => r.id === old.id)?.state, "reading");
 	// Reopen the previously recorded shape: the failed check's diagnostic lived on the run.
 	const db = openDatabase(f.root); t.after(() => db.close());
-	db.update(run, r => {
+	db.mutateLocked(run, r => {
 		const effect = r.effects.find(e => e.id === failed.candidate?.check); assert.ok(effect && failed.blocker);
 		delete effect.error;
 		r.blocker = failed.blocker;
@@ -871,7 +871,7 @@ for (const saved of [false, true]) test(`a stopped writer releases its exact dir
 	const db = openDatabase(f.root); t.after(() => db.close());
 	if (saved) {
 		// Durable state written by reader 15 after a real workflow reported its proposal.
-		db.update(run, r => {
+		db.mutateLocked(run, r => {
 			const e = reviews(r).find(r => r.id === next.id); assert.ok(e?.workflowId);
 			e.observation = parseObservation(r.policy.squads[1], proposal); e.packet = next.packet;
 			e.state = "blocked"; e.error = "Writable directories must be disjoint";
@@ -956,7 +956,7 @@ for (const issued of [false, true]) test(`a stopped writer's baseline distinguis
 	assert.equal(notice()?.callId, undefined, "never replay the old notice under the new token");
 });
 
-test("an owner can approve inspection of a stopped writer's inventory during an unrelated goal check, without starting a repair", async t => {
+for (const legacy of [false, true]) test(`an owner can approve inspection of a stopped writer's inventory during an unrelated goal check, without starting a repair (${legacy ? "legacy" : "typed"} stop)`, async t => {
 	const f = pipelineFixture(t, { [`${assembly}/index.mjs`]: originalAssembly, ".foundry/product.mjs": "process.exit(0)" });
 	await f.start();
 	await report(await f.reading("engine"), ".foundry/left.md", [work("independent", "engine/input")]);
@@ -964,7 +964,15 @@ test("an owner can approve inspection of a stopped writer's inventory during an 
 	const n = (await f.status()).nodes.find(n => n.grain === "inventory"), w = f.workers.get(n?.worker ?? ""); assert.ok(w && n?.priorSource);
 	const sourceTree = n.priorSource.tree;
 	const writer = f.runtime(w.cwd);
-	await writer.operation("submit", { run, token: w.token, missingInput: "Need to preserve the accepted inventory." }, w.id);
+	const detail = "Need to preserve\n the accepted inventory. ";
+	await writer.operation("submit", { run, token: w.token, missingInput: detail }, w.id);
+	const ledger = openDatabase(f.root); t.after(() => ledger.close());
+	ledger.mutateLocked(run, r => {
+		const n = r.nodes.inventory;
+		assert.deepEqual(n.stop, { kind: "writer-missing-input", detail });
+		if (legacy) delete n.stop; // Existing execution records carry only the original message.
+		else n.reason = "Inventory unavailable."; // Copy is not the authority for a grant.
+	});
 	let entered = () => {}, release = () => {};
 	const atGoal = new Promise(resolve => { entered = () => resolve(undefined); });
 	const hold = new Promise(resolve => { release = () => resolve(undefined); });
@@ -2125,7 +2133,7 @@ function priorRunner(f, db) {
 	/** @type {Host["execute"]} */
 	const execute = async (...args) => {
 		const result = await f.execute(...args);
-		db.update(run, r => {
+		db.mutateLocked(run, r => {
 			const e = r.effects.find(e => e.callId === args[2] && e.kind === "component");
 			if (!e) return;
 			assert.ok(e.receipt && e.state === "done");
@@ -3231,7 +3239,7 @@ test("unknown protocols are not migrated and invalid nested records are refused,
 	t.after(() => db.close());
 	const initial = db.read(run);
 	assert.ok(initial);
-	assert.throws(() => db.update(run, r => { r.active = false; throw Error("rollback"); }), /rollback/);
+	assert.throws(() => db.mutateLocked(run, r => { r.active = false; throw Error("rollback"); }), /rollback/);
 	assert.deepEqual(db.read(run), initial);
 	const [review] = reviews(initial);
 	const raw = new DatabaseSync(file);

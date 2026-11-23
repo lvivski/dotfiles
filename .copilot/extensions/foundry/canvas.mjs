@@ -3,9 +3,9 @@ import { example, mapSnapshot } from "./map/model.mjs";
 import { serveMap } from "./map/server.mjs";
 import { name, record } from "./work/values.mjs";
 
-/** @param {(run:string, actor:string)=>Promise<ReturnType<typeof import("./work/status.mjs").status>>} readStatus
+/** @param {(run:string, actor:string)=>ReturnType<typeof import("./work/visibility.mjs").boardFacts>} readBoard
  * @param {(actor:string)=>string|undefined} defaultRun */
-export function foundryBoard(readStatus, defaultRun) {
+export function foundryBoard(readBoard, defaultRun) {
 	/** @type {Map<string,{run:string|null|undefined, actor:string, snapshot:Parameters<typeof serveMap>[0], server:ReturnType<typeof serveMap>}>} */
 	const boards = new Map();
 	return createCanvas({
@@ -32,7 +32,7 @@ export function foundryBoard(readStatus, defaultRun) {
 				const snapshot = async () => {
 					if (selected === null) return example;
 					selected ??= defaultRun(ctx.sessionId);
-					return selected ? mapSnapshot(await readStatus(selected, ctx.sessionId)) :
+					return selected ? mapSnapshot(readBoard(selected, ctx.sessionId)) :
 						{ notice: "No Foundry run is visible in this session. Open the map in a run’s owner or writer session." };
 				};
 				const server = snapshot().then(() => serveMap(snapshot));

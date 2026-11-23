@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { layout } from "../map/layout.mjs";
-import { example, mapSnapshot } from "../map/model.mjs";
+import { boardSnapshot, example, mapSnapshot } from "../map/model.mjs";
 import { openDatabase } from "../work/database.mjs";
 import { recover } from "../work/recovery.mjs";
 import { status } from "../work/status.mjs";
@@ -22,13 +22,25 @@ test("the map distinguishes a missing shell receipt from a check that recorded i
 	const r = db.read(run); assert.ok(r);
 	const e = r.effects.find(e => e.kind === "goal"); assert.ok(e);
 	assert.equal(e.state, "uncertain"); assert.equal(launches, 1);
-	const snap = () => mapSnapshot(status(r, "owner"));
+	const snap = () => boardSnapshot(r, "owner");
 	assert.deepEqual(snap().holds, ["Goal check: Original call is not confirmed; it will not be replayed"]);
 	e.runnerStarted = true;
+	e.error = "Receipt lookup returned no event."; // Transport wording is not evaluator state.
 	assert.deepEqual(snap().holds, ["Goal check started; no evaluator result recorded yet."]);
 	assert.equal(snap().phase, "Active"); assert.equal(snap().goal?.result, null); assert.equal(snap().qualified, null);
 	e.permissionHold = "Native permission requires attention.";
 	assert.ok(snap().holds.some(message => message.includes("Native permission requires attention.")));
+	const expected = mapSnapshot(status(r, "owner"));
+	// A former participant may still inspect the run, but not owner checks or timings.
+	r.effects.push({ kind: "writer", tool: "create_session", id: "prior-binding", issuer: "owner", state: "done", nativeId: "retired", args: {} });
+	const retired = boardSnapshot(r, "retired");
+	assert.deepEqual(retired, mapSnapshot(status(r, "retired")));
+	assert.equal(retired.owner, false); assert.equal(retired.goal, null);
+	assert.equal(retired.timing, null); assert.deepEqual(retired.holds, []); assert.deepEqual(retired.nodes, []);
+	r.effects.pop();
+	Object.defineProperty(r, "artifacts", { get() { throw Error("Board read chat-only artifact extracts"); } });
+	Object.defineProperty(r.policy, "target", { get() { throw Error("Board requested the live target"); } });
+	assert.deepEqual(snap(), expected);
 });
 
 test("a fork and join keep the same real edges in both orientations, including a skipped rank", () => {
@@ -106,6 +118,7 @@ test("the open map follows the real parallel run without issuing calls; particip
 	const workerCtx = { ...manual, sessionId: w.id, instanceId: "participant" }, worker = await canvas.open(workerCtx); assert.ok(worker.url);
 	t.after(() => canvas.onClose?.(workerCtx));
 	const view = await refresh(worker.url);
+	assert.deepEqual(view, mapSnapshot(await f.status(w.id)));
 	assert.equal(view.owner, false); assert.equal(view.timing, null); assert.deepEqual(view.nodes.map(n => n.id), ["editor"]);
 	assert.ok(!JSON.stringify(view).includes(w.token) && !("prepared" in view));
 	put(w.cwd, "lib/editor/unit.mjs", "export default 1;");

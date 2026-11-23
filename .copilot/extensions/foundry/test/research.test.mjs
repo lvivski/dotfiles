@@ -239,7 +239,7 @@ test("a waiting design squad reads coverage's frozen revision before any invento
 	});
 	await t.test("an older multi-job reservation cannot establish an exact reader", async () => {
 		const db = openDatabase(f.root);
-		const bindPeer = (/** @type {typeof peer} */ source) => db.update(run, r => {
+		const bindPeer = (/** @type {typeof peer} */ source) => db.mutateLocked(run, r => {
 			const job = r.effects.find(e => e.id === peer.id); assert.ok(job);
 			job.workflowId = source.workflowId; job.callId = source.dispatch;
 		});

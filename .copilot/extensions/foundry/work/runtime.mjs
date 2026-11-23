@@ -2,25 +2,29 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { preparePublication, reportedReferences } from "./artifacts.mjs";
 import { prepareBaselines } from "./baseline.mjs";
-import { childProof, issuerProof, linkedGeneration, reservation } from "./binding.mjs";
+import { childProof, issuerProof, linkedGeneration, reservation, verifyGeneration } from "./binding.mjs";
 import { openDatabase, ledgerPath } from "./database.mjs";
 import { readPolicy } from "./contract.mjs";
 import { presentQuestions } from "./decisions.mjs";
-import { advance, currentReview, newRun, parseObservation, reserveChangedRepair, retryableReview, sameReviewInputs } from "./graph.mjs";
-import { baselineNotice, changedFrom, goalReceipt, missingObservation, qualifiedProduct } from "./evidence.mjs";
+import { advance, currentReview, newRun, reserveChangedRepair, reserveIteration, retryableReview, sameReviewInputs } from "./graph.mjs";
+import { baselineNotice, changedFrom, goalReceipt, missingObservation, qualifiedProduct, stopForInput } from "./evidence.mjs";
+import { releaseAssessment } from "./goal.mjs";
 import { admitted, assignment, awaitingReply, boundWriter, canDispatch, current, expired, identify, issue, receive, reserveCheck, transferableWriter, unissued } from "./native.mjs";
 import { checked } from "./plan.mjs";
 import { attachNotes, queueNote } from "./notes.mjs";
 import { diagnosticLine, indexBudgetError } from "./pages.mjs";
+import { configure } from "./policy.mjs";
 import { capture, commitAt, generationRoot, retain, rootAt, verifyContracts } from "./product.mjs";
 import { refusedCall } from "./recovery.mjs";
 import { prepareRepin } from "./repin.mjs";
-import { referenceText, researchResult } from "./research.mjs";
+import { reportReceiver } from "./reports.mjs";
+import { referenceText } from "./research.mjs";
 import { blockReview, currentPin, investigation, questions, reserveReview, retireSuperseded, reviews } from "./reviews.mjs";
 import { scoutPacket } from "./scouts.mjs";
-import { isPacket } from "./snapshot.mjs";
 import { status } from "./status.mjs";
-import { FoundryError, digest, fail, fields, name, record, referenceRepo, text } from "./values.mjs";
+import { FoundryError, digest, fail, fields, name, record, referenceRepo, relative, text } from "./values.mjs";
+import { boardFacts } from "./visibility.mjs";
+import { receiptClock, receiptWakes } from "./wakes.mjs";
 
 const readerFile = new URL("./reader.version", import.meta.url);
 const loadedReader = readFileSync(readerFile, "utf8");
@@ -43,7 +47,7 @@ function requireCurrentReader() {
  * scoutBudget?:()=>Promise<number>,scoutFailure?:(workflowId:string,label:string)=>Promise<string|undefined>,confirmNoReport?:(r:import("./model.js").Review)=>Promise<void>,
  * scout?:(run:string,dispatch:string,actor:string)=>Promise<ScoutEnvelope>,scoutState?:(workflowId:string)=>Promise<ScoutEnvelope>,
  * scoutSnapshot?:(workflowId:string)=>Promise<ScoutEnvelope>,resumeScout?:(workflowId:string)=>Promise<ScoutEnvelope>,
- * mode:()=>Promise<string>,runningHelpers?:(workflows:string[])=>Promise<string[]>,permissionBlocker:()=>Promise<import("./permissions.mjs").PermissionBlock|null>,log?:(message:string)=>void}} Host */
+ * mode:()=>Promise<string>,runningHelpers?:(workflows:string[])=>Promise<string[]>,permissionBlocker:()=>Promise<import("./permissions.mjs").PermissionBlock|null>,log?:(message:string)=>void,watchReceipts?:typeof receiptClock}} Host */
 /** @param {Run} run @param {string} [reason] */
 function pause(run, reason) {
 	run.active = false;
@@ -124,11 +128,13 @@ export function createRuntime(directory, host) {
 	}
 	/** @param {string} id */
 	const read = id => db().read(id) ?? fail("missing_run", `Unknown run ${id}`);
+	const receipts = receiptWakes({ read, stamp: id => db().stamp(id), clock: host.watchReceipts ?? receiptClock,
+		wake: (id, actor) => track(drive(id,actor,false,false)), log: error => host.log?.(`Foundry receipt observer: ${String(error)}`) });
 	/** @param {string} actor */
 	const writerSession = actor => known.has(actor) || hasLedger() && db().involving(actor).some(id => read(id).owner !== actor);
 	/** @param {string} id @param {(run:Run)=>void} mutate */
 	function change(id, mutate) {
-		return db().change(id, run => {
+		return db().planAndSwap(id, run => {
 			const count = run.products.length, final = qualifiedProduct(run);
 			mutate(run);
 			if (run.products.length !== count || qualifiedProduct(run) !== final)
@@ -142,7 +148,7 @@ export function createRuntime(directory, host) {
 		if (!await executable()) return "The issuing session is no longer in an executable mode.";
 		if (!block && !batch.some(e => e.permissionHold)) return null;
 		const expected = new Map(batch.map(e => [e.id, e.state]));
-		const result = db().update(id, run => {
+		const result = db().mutateLocked(id, run => {
 			const live = reservations(run, actor);
 			if (!live.some(e => expected.get(e.id) === e.state)) return;
 			// Only the final notice can still be dispatched in a stopped goal. Never reopen it.
@@ -164,7 +170,7 @@ export function createRuntime(directory, host) {
 	/** @param {Call} ctx @param {string} callId @param {unknown} result @param {boolean} [automatic] */
 	function settle(ctx, callId, result, automatic = false) {
 		if (closed) return;
-		const terminal = db().update(ctx.run, run => {
+		const terminal = db().mutateLocked(ctx.run, run => {
 			const e = run.effects.find(x => x.id === ctx.id);
 			if (!e || e.tool === "workflow" || e.callId !== callId || e.issuer !== ctx.actor || !awaitingReply(e)) return true;
 			try {
@@ -189,7 +195,7 @@ export function createRuntime(directory, host) {
 		return settle(ctx, callId, result, automatic);
 	}
 	/** @param {string} id @param {Effect} effect @param {string} callId */
-	const claim = (id, effect, callId) => db().update(id, run => issue(run, effect, callId));
+	const claim = (id, effect, callId) => db().mutateLocked(id, run => issue(run, effect, callId));
 	/** Merge wakeups for one issuer, never its in-flight calls or permission dialogs.
 	 * @param {string} id @param {string} actor @param {boolean} [discover] @param {boolean} [recover] @returns {Promise<void>} */
 	function drive(id, actor, discover = false, recover = true) {
@@ -248,6 +254,7 @@ export function createRuntime(directory, host) {
 				track(presentQuestions(cwd(), () => closed ? undefined : db(), id, actor, host, executable, refill).finally(() => asking.delete(id)));
 			}
 			const batch = reservations(run, actor).filter(e => e.state === "ready" || e.permissionHold);
+			receipts.observe(run, actor);
 			if (!batch.length) return;
 			if (await dispatchBlocker(id, actor, batch) !== null) return;
 			const ready = batch.filter(e => e.state === "ready");
@@ -259,23 +266,25 @@ export function createRuntime(directory, host) {
 			const ordinary = scouts.filter(e => !readers.includes(e));
 			for (const jobs of [...(ordinary.length ? [ordinary] : []), ...readers.map(e => [e])]) {
 				const ticket = randomUUID();
-				if (db().update(id, r => jobs.filter(e => issue(r, e, ticket)).length))
+				if (db().mutateLocked(id, r => jobs.filter(e => issue(r, e, ticket)).length))
 					watchScouts(id, ticket, actor, () => host.scout?.(id, ticket, actor) ?? Promise.reject(new Error("Workflow scouting is unavailable")));
 			}
 			// A sibling's native permission prompt must not hold up work unlocked by this reply.
 			await Promise.all(ready.filter(e => e.tool !== "workflow").map(async e => {
 				const callId = randomUUID();
-				if (!closed && claim(id, e, callId))
+				if (!closed && claim(id, e, callId)) {
+					if (e.tool === "bash") receipts.observe(read(id), actor);
 					await resolveCall(id, e, callId, async () => e.tool === "session.send"
 						? { resultType: "success", messageId: await host.notify(text(e.args.message, "session notice")) }
 						: host.execute(e.tool, e.args, callId), true);
+				}
 				await refill();
 			}));
 		}
 	}
 	/** @param {string} id @param {string} actor @param {string} ticket @param {string} message */
 	function unconfirmedScouts(id, actor, ticket, message) {
-		const queued = db().update(id, r => {
+		const queued = db().mutateLocked(id, r => {
 			let deferred = false;
 			for (const e of batchOf(r, ticket, actor).filter(awaitingReply)) {
 				e.state = "uncertain";
@@ -319,7 +328,7 @@ export function createRuntime(directory, host) {
 		scoutCalls.set(ticket, reports);
 		void Promise.resolve().then(invoke).then(result => {
 			if (closed || scoutCalls.get(ticket) !== reports) return;
-			const reconcile = db().update(id, r => {
+			const reconcile = db().mutateLocked(id, r => {
 				const batch = batchOf(r, ticket, actor), pending = batch.filter(awaitingReply);
 				for (const e of pending) settleScout(r, e, result);
 				return pending.length > 0 || batch.some(e => reports.has(e.id));
@@ -342,20 +351,28 @@ export function createRuntime(directory, host) {
 			} catch (error) { budgetError = `Cannot size the scout packet: ${String(error)}`; }
 		}
 		const block = await host.permissionBlocker(), eligible = await executable();
-		const admission = db().update(id, r => {
+		/** @type {string|undefined} */ let heldReason;
+		const run = db().planAndSwap(id, r => {
+			heldReason = undefined;
 			const batch = batchOf(r, ticket, actor);
 			if (!batch.length || batch.some(e => e.workflowId && e.workflowId !== workflowId))
 				fail("foreign_assignment", "No matching Foundry discovery dispatch in this session");
-			for (const e of batch)
-				if (e.retryOf && awaitingReply(e) && (!sameReviewInputs(cwd(), r, e) || e.diagnostic && e.diagnostic.receipt !== r.goal?.check))
+			// Plan retry eligibility against one tip outside the lock. Recheck that exact tip at binding.
+			const retries = batch.filter(e => e.retryOf && awaitingReply(e));
+			const target = retries.length ? commitAt(cwd(), r.policy.target) : undefined;
+			const guard = target ? () => commitAt(cwd(), r.policy.target) === target : undefined;
+			for (const e of retries)
+				if (!sameReviewInputs(cwd(), r, e, target) || e.diagnostic && e.diagnostic.receipt !== r.goal?.check)
 					blockReview(e, "Superseded charter or product revision; the requested review was not dispatched.");
 			const pending = batch.filter(e => awaitingReply(e) && currentPin(r, e));
 			const held = !eligible || !r.active || expired(r) || block;
 			if (pending.length && r.active && block?.scope === "run") pause(r, `${block.message} Check session ${actor}.`);
 			// A resumed body must not turn a permission race into a completed zero-job
 			// workflow or discard its identity to get another launch.
-			if (held && pending.some(e => e.workflowId))
-				return { held: block?.message ?? `Discovery cannot execute in session ${actor} while paused, expired or ineligible.` };
+			if (held && pending.some(e => e.workflowId)) {
+				heldReason = block?.message ?? `Discovery cannot execute in session ${actor} while paused, expired or ineligible.`;
+				return guard;
+			}
 			for (const e of pending) {
 				if (held) {
 					e.state = "ready"; delete e.callId;
@@ -369,9 +386,9 @@ export function createRuntime(directory, host) {
 				}
 				delete e.error;
 			}
-			return { run: r };
+			return guard;
 		});
-		const run = admission.run ?? fail("bound_discovery_held", admission.held);
+		if (heldReason !== undefined) fail("bound_discovery_held", heldReason);
 		const pending = batchOf(run, ticket, actor).filter(r => awaitingReply(r) && currentPin(run, r));
 		if (!pending.length) return [];
 		return pending.flatMap(r => {
@@ -381,7 +398,7 @@ export function createRuntime(directory, host) {
 			}
 			catch (error) {
 				if (!(error instanceof FoundryError) || error.code !== "packet_budget") throw error;
-				db().update(id, live => {
+				db().mutateLocked(id, live => {
 					const job = batchOf(live, ticket, actor).find(e => e.id === r.id && e.workflowId === workflowId);
 					if (job && awaitingReply(job)) blockReview(job, error.message);
 				});
@@ -389,40 +406,8 @@ export function createRuntime(directory, host) {
 			}
 		});
 	}
-	/** @param {string} id @param {string} ticket @param {string} actor @param {string} workflowId @param {string} reviewId @param {unknown} raw @param {unknown} [packet] */
-	async function scoutResult(id, ticket, actor, workflowId, reviewId, raw, packet) {
-		/** @type {string|undefined} */ let diagnostic;
-		if (raw === null && host.scoutFailure) {
-			const job = batchOf(read(id), ticket, actor).find(e => e.id === reviewId && e.workflowId === workflowId && awaitingReply(e));
-			if (job) {
-				try { diagnostic = await host.scoutFailure(workflowId, `scout:${job.squad}:${job.id}@${job.base}`); }
-				catch (error) { diagnostic = `No report; native diagnostic lookup failed: ${String(error)}`; }
-			}
-		}
-		const changed = db().update(id, r => {
-			const q = batchOf(r, ticket, actor).find(e => e.id === reviewId && e.workflowId === workflowId);
-			if (!q) fail("foreign_assignment", "Only the bound workflow may return this report");
-			if (!awaitingReply(q)) return false;
-			delete q.error;
-			const squad = r.policy.squads.find(s => s.id === q.squad) ?? fail("invalid_charter", "No matching charter");
-			try {
-				const research = investigation(q, squad);
-				if (raw === null && diagnostic) fail("missing_report", diagnostic);
-				if (raw === null && !research) fail("missing_report", "No structured scout report was returned");
-				if (!isPacket(packet) || packet.review !== q.id || packet.base !== q.base || q.diagnostic && !packet.partial)
-					fail("missing_packet", "Missing or mismatched journaled scout packet");
-				q.observation = research ? researchResult(raw, squad.charter) : parseObservation(squad, raw);
-				q.packet = packet; q.state = "reported";
-			} catch (error) {
-				if (!(error instanceof FoundryError)) throw error;
-				blockReview(q, `Invalid scout result: ${error.message}`);
-			}
-			return true;
-		});
-		// On reconnect without a local watcher, the durable report is consumed
-		// by the next issuer reconciliation, not by a nested workflow launch.
-		if (changed) await scoutCalls.get(ticket)?.get(reviewId)?.();
-	}
+	const scoutResult = reportReceiver({ read, record: (id, fn) => db().mutateLocked(id, fn),
+		diagnostic: host.scoutFailure, signal: (ticket, review) => scoutCalls.get(ticket)?.get(review)?.() });
 	/** @param {string} id @param {string} actor @param {string} token @param {Record<string,unknown>} args */
 	function submit(id, actor, token, args) {
 		const from = args.changedFrom, run = read(id), n = writable(run, actor, token, from);
@@ -430,15 +415,14 @@ export function createRuntime(directory, host) {
 			if (!n) fail("stale_assignment", "An already submitted attempt cannot report a missing input");
 			const reason = text(args.missingInput, "missing input and why it is needed");
 			generationRoot(cwd(), text(n.generation, "generation commit"));
-			db().update(id, live => {
+			db().mutateLocked(id, live => {
 				const node = writable(live, actor, token);
 				if (!node || node.generation !== n.generation || node.grain.id !== n.grain.id)
 					fail("stale_assignment", "Assignment changed before recording the missing input");
 				if (live.effects.some(e => e.grain === node.grain.id && e.token === token &&
 					(e.permissionHold || e.kind === "repair" && e.state !== "done")))
 					fail("dispatch_held", "Resolve the pending assignment delivery or permission hold first");
-				node.state = "blocked";
-				node.reason = `Writer reports missing input: ${reason}`;
+				stopForInput(node, reason);
 			});
 			return; // No directory capture, new component reservation, or inferred permission.
 		}
@@ -446,7 +430,7 @@ export function createRuntime(directory, host) {
 		const g = n.grain;
 		const reports = reportedReferences(run, n, args);
 		const commit = capture(cwd(), text(n.generation, "generation commit"), g.directory);
-		const result = db().change(id, r => {
+		const result = db().planAndSwap(id, r => {
 			const node = writable(r, actor, token, from);
 			if (!node || node.grain.id !== g.id || digest(n) !== digest(node))
 				fail("stale_assignment", "Assignment changed during capture");
@@ -482,7 +466,7 @@ export function createRuntime(directory, host) {
 		if (result.status === "pending" || result.status === "running") return;
 		if (!await executable()) return;
 		if (continuing.has(ticket)) return;
-		const shouldResume = db().update(id, run => {
+		const shouldResume = db().mutateLocked(id, run => {
 			if (run.owner !== actor || !run.active || expired(run)) return false;
 			const pending = batchOf(run, ticket, actor).filter(e => e.workflowId === workflowId && awaitingReply(e));
 			for (const e of pending) settleScout(run, e, result);
@@ -548,21 +532,34 @@ export function createRuntime(directory, host) {
 		await drive(policy.id, actor, true);
 		return status(read(policy.id), actor);
 	}
+	/** @param {unknown} args @param {string} actor @returns {ReturnType<typeof status> & {release?:ReturnType<typeof releaseAssessment>}} */
+	function inspect(args, actor) {
+		const a = record(args); fields(a, ["run", "detail"]);
+		const run = read(name(a.run, "run")), result = status(run, actor, a.detail);
+		if (run.owner !== actor || !run.goal) return result;
+		return { ...result, release: releaseAssessment(cwd(), run, () => commitAt(cwd(), run.policy.target)) };
+	}
 	/** @param {string} op @param {unknown} args @param {string} actor */
 	async function operation(op, args, actor) {
+		if (op === "status") return inspect(args, actor);
 		const a = record(args);
 		if (op === "start" || op === "resume") {
 			fields(a, ["source"]);
 			return start(a.source, actor, op === "resume");
 		}
 		const id = name(a.run, "run");
-		if (op === "status") {
-			fields(a, ["run", "detail"]);
-			return status(read(id), actor, a.detail);
+		if (op === "configure") {
+			await requireReadyOwner(cwd());
+			db().planAndSwap(id, run => {
+				admitted(run);
+				configure(run, actor, a);
+			});
+			await drive(id, actor, false, false);
+			return status(read(id), actor);
 		}
 		if (op === "pause") {
 			fields(a, ["run"]);
-			db().update(id, r => {
+			db().mutateLocked(id, r => {
 				if (r.owner !== actor)
 					fail("foreign_run", "Only the owner can pause");
 				pause(r);
@@ -593,7 +590,7 @@ export function createRuntime(directory, host) {
 			const budget = await host.scoutBudget?.();
 			await requireReadyOwner(origin);
 			const ticket = randomUUID(), launch = host.scout ?? fail("unavailable", "Discovery workflow unavailable");
-			db().change(id, run => {
+			db().planAndSwap(id, run => {
 				const live = retryableReview(origin, run, actor, review);
 				if (digest(live) !== digest(prior) || run.goal?.check !== receipt) fail("stale_assignment", "Review or goal changed during native verification");
 				if (budget === undefined || !Number.isSafeInteger(budget) || budget < 0)
@@ -616,9 +613,25 @@ export function createRuntime(directory, host) {
 			watchScouts(id, ticket, actor, () => launch(id, ticket, actor));
 			return status(read(id), actor);
 		}
-		const reply = op === "submit" ? { run: id, actor, token: text(a.token, "submission token") } : undefined;
+		if (op === "iterate") {
+			fields(a, ["run", "directory", "receipt", "blob", "question"]);
+			const origin = cwd(), input = { directory: relative(a.directory), receipt: name(a.receipt, "receipt"),
+				blob: name(a.blob, "offered comparison blob"), question: text(a.question, "observed mismatch") };
+			await requireReadyOwner(origin);
+			const launch = host.scout ?? fail("unavailable", "Discovery workflow unavailable"), ticket = randomUUID();
+			const after = db().planAndSwap(id, run => {
+				const fresh = reserveIteration(origin, run, actor, input);
+				if (!fresh) return;
+				if (!issue(run, fresh, ticket)) fail("stale_assignment", "Cannot issue focused review");
+				const target = run.goal?.target;
+				return () => commitAt(origin, run.policy.target) === target;
+			});
+			if (batchOf(after, ticket, actor).length) watchScouts(id, ticket, actor, () => launch(id, ticket, actor));
+			return status(after, actor);
+		}
+		const reply = op === "submit" || op === "preview" ? { run: id, actor, token: text(a.token, "submission token") } : undefined;
 		if (reply) {
-			fields(a, a.missingInput !== undefined ? ["run", "token", "missingInput"] : ["run", "token", "changedFrom", "usedArtifacts", "comparedArtifacts"]);
+			fields(a, op === "preview" ? ["run", "token"] : a.missingInput !== undefined ? ["run", "token", "missingInput"] : ["run", "token", "changedFrom", "usedArtifacts", "comparedArtifacts"]);
 			// Check the host, not a local count lost on reload. Revalidate mode and ownership after the read.
 			const run = read(id);
 			if (host.runningHelpers && writable(run, actor, reply.token, a.changedFrom)) {
@@ -626,13 +639,23 @@ export function createRuntime(directory, host) {
 				const helpers = await host.runningHelpers([...workflows]);
 				if (helpers.length) fail("helpers_running", `Native helpers are still running: ${helpers.join(", ")}. Join them, integrate their work, then submit with the same token.`);
 			}
-			if (a.changedFrom !== undefined || a.missingInput !== undefined) await requireReadyOwner(cwd());
+			if (op === "preview" || a.changedFrom !== undefined || a.missingInput !== undefined) await requireReadyOwner(cwd());
 		}
 		if (!await executable())
 			fail("unsupported_mode", "Plan mode cannot change a Foundry run");
+		if (op === "preview" && reply) {
+			const n = writable(read(id), actor, reply.token) ?? fail("stale_assignment", "Cannot preview an already submitted attempt");
+			const commit = capture(cwd(), text(n.generation, "generation"), n.grain.directory);
+			const after = db().planAndSwap(id, run => {
+				const live = writable(run, actor, reply.token);
+				if (!live || digest(live) !== digest(n)) fail("stale_assignment", "Assignment changed during preview");
+				live.preview = commit;
+			});
+			return status(after, actor); // A preview never enters the scheduling or qualification paths.
+		}
 		if (op === "review_note") {
 			fields(a, ["run", "squad", "receipt", "question", "excerpt"]);
-			db().update(id, r => {
+			db().mutateLocked(id, r => {
 				if (r.owner !== actor) fail("foreign_run", "Only the run owner can queue a review note");
 				admitted(r);
 				queueNote(r, a);
@@ -653,12 +676,12 @@ export function createRuntime(directory, host) {
 			if (approved === false) fail("approval_declined", "Baseline access not approved. No assignment changed. Do not ask again without a fresh request.");
 			if (approved !== true) fail("approval_required", "Baseline approval is unavailable; no access granted.");
 			await requireReadyOwner(origin);
-			db().change(id, request.apply);
+			db().planAndSwap(id, request.apply);
 			if (inspect) return status(read(id), actor);
 		}
 		else if (op === "publish") {
 			fields(a, ["run", "token", "file", "to"]);
-			db().update(id, preparePublication(cwd(), read(id), actor, a));
+			db().mutateLocked(id, preparePublication(cwd(), read(id), actor, a));
 		}
 		else if (op === "repin") {
 			const request = prepareRepin(cwd(), read(id), actor, a);
@@ -708,7 +731,9 @@ export function createRuntime(directory, host) {
 		background.add(task);
 	}
 	return {
-		operation, pre, scoutBatch, scoutResult,
+		operation, inspect, pre, scoutBatch, scoutResult,
+		/** @param {string} id @param {string} actor */
+		readBoard(id, actor) { return boardFacts(read(name(id, "run")), actor); },
 		/** @param {unknown} args @param {string} actor */
 		async claimWriter(args, actor) {
 			const a = record(args); fields(a, ["run", "grain"]);
@@ -724,7 +749,8 @@ export function createRuntime(directory, host) {
 			const proof = issuer ? undefined : await childProof(history, actor, origin, job);
 			const request = issuer ? await issuerProof(history, job) : undefined;
 			await requireReadyOwner(origin);
-			const conflict = db().update(id, r => {
+			verifyGeneration(origin, job.generation);
+			const conflict = db().mutateLocked(id, r => {
 				const live = reservation(r, grain), e = live.e;
 				if (e.id !== job.e.id || e.callId !== job.e.callId || e.issuer !== job.e.issuer ||
 					digest(e.args) !== digest(job.e.args) || live.generation !== job.generation)
@@ -822,6 +848,7 @@ export function createRuntime(directory, host) {
 		},
 		close() {
 			closed = true;
+			receipts.close();
 			for (const timer of capacityWakes.values()) clearTimeout(timer);
 			capacityWakes.clear(); database?.close(); database = undefined;
 		},

@@ -1,9 +1,11 @@
 import { checkReceipt, goalReceipt, milestoneBlocker } from "./evidence.mjs";
-import { awaitingReply, reserveCheck, reserveNotice, reserveProduct } from "./native.mjs";
-import { working, workKey } from "./plan.mjs";
+import { transition, unhandled } from "./engine.mjs";
+import { releaseFacts, undecided } from "./facts.mjs";
+import { expired, reserveCheck, reserveNotice, reserveProduct } from "./native.mjs";
+import { workKey } from "./plan.mjs";
 import { retain, treeOf, verifyContracts } from "./product.mjs";
 import { blockReview, reading, reviews } from "./reviews.mjs";
-import { text } from "./values.mjs";
+import { FoundryError, text } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @param {string} cwd @param {Run} run @param {string} actor @param {string} target @param {string} commit */
@@ -22,71 +24,71 @@ export function qualify(run, actor, product) {
 		`Foundry ${run.id} qualified ${product.commit}. The target was not changed. Read foundry_status({run:"${run.id}"}) for the checked product and its receipts.`);
 }
 
-/** @param {import("./model.js").Receipt} receipt */
-const undecided = receipt => `Final goal check could not decide at ${receipt.commit} (exit ${receipt.exit ?? "unknown"}): ${receipt.output || "no diagnostic"}`;
+/** Shared, read-only preflight. Re-evaluate the current tip, not yesterday's persisted conflict.
+ * @param {string} cwd @param {Run} run @param {()=>string} tip @param {boolean} [retry] */
+export function releaseAssessment(cwd, run, tip, retry = false) {
+	const wait = /** @type {const} */ ({ action: "wait", admission: "closed" });
+	if (expired(run)) return { ...wait, reason: "deadline" };
+	let target;
+	try { target = tip(); }
+	catch (error) {
+		if (!(error instanceof Error && "status" in error)) throw error;
+		return { ...wait, reason: "target-unavailable", error: error.message };
+	}
+	if (run.active) {
+		try { verifyContracts(cwd, run.policy, target); }
+		catch (error) {
+			if (!(error instanceof FoundryError) || error.code !== "contract_changed") throw error;
+			return { ...wait, target, reason: "contract-changed", error: error.message };
+		}
+	}
+	return { target, ...transition(releaseFacts(run, target), retry) };
+}
 
-/** Gate graph admission on the exact baseline or latest checkpoint, never on a worker's report.
- * @param {string} cwd @param {Run} run @param {string} actor @param {string} target @param {boolean} retry */
-export function goalAllowsWork(cwd, run, actor, target, retry) {
-	const at = run.goal;
-	if (!at) return true;
-	verifyContracts(cwd, run.policy, target);
-	const last = run.products.at(-1);
-	const old = run.effects.find(e => e.id === at.check);
-	if (old?.kind === "goal" && old.evaluatorRevision !== run.repins?.at(-1)?.revision) {
-		if (awaitingReply(old) || old.permissionHold || old.state === "refused") return false;
-		const receipt = checkReceipt(old);
-		if (receipt && run.blocker === undecided(receipt)) delete run.blocker;
-		if (run.blocker) return false;
+/** @param {string} cwd @param {Run} run @param {string} actor @param {()=>string} tip @param {boolean} retry */
+export function applyGoal(cwd, run, actor, tip, retry) {
+	const decision = releaseAssessment(cwd, run, tip, retry);
+	if ("error" in decision) { run.conflict = decision.error; return decision.admission; }
+	if (!("target" in decision)) return decision.admission;
+	const { action, admission, target } = decision;
+	const at = run.goal, last = run.products.at(-1);
+	if (!at) return admission;
+	switch (action) {
+	case "assess":
+		delete run.blocker;
 		assess(cwd, run, actor, last?.target ?? at.target, last?.commit ?? at.commit);
-		return false;
+		break;
+	case "retry":
+		if (!milestoneBlocker(run)) delete run.join;
+		assess(cwd, run, actor, target, at.commit);
+		break;
+	case "undecided": {
+		const receipt = goalReceipt(run);
+		if (receipt) run.blocker = undecided(receipt);
+		break;
 	}
-	if (last && at.commit !== last.commit) {
-		assess(cwd, run, actor, last.target, last.commit);
-		return false;
-	}
-	const receipt = goalReceipt(run);
-	if (!receipt) return false;
-	if (run.blocker) return false;
-	const held = milestoneBlocker(run);
-	if (receipt.exit === 2) {
-		if (!retry && (!run.join || held)) return false;
-		if (at.target === target) {
-			if (!held) delete run.join;
-			assess(cwd, run, actor, target, at.commit);
-			return false;
-		}
-		// A confirmed retry on a moved target goes through the normal rejoin below.
-	} else if (receipt.exit !== 0 && receipt.exit !== 1) {
-		run.blocker = undecided(receipt);
-		return false;
-	}
-
-	// Never qualify the earlier base or repeat this join. Only changed outputs or a
-	// changed target may replace it; an unmet goal can still admit missing work.
-	if (held) return true;
-	if (at.target !== target) {
+	case "assess-target":
+		delete run.join;
+		assess(cwd, run, actor, target, retain(cwd, target));
+		break;
+	case "rejoin":
 		delete at.stall;
-		if (!last && !Object.values(run.nodes).some(n => n.state !== "idle") && !reviews(run).some(reading)) {
-			delete run.join; // A baseline milestone reserved on the old tip cannot attest to the new one.
-			assess(cwd, run, actor, target, retain(cwd, target));
-			return false;
-		}
-		return true; // Incorporate the new target and recheck before accepting.
-	}
-	if (at.stall) return false;
-	if (receipt.exit === 1) return true;
-	if (run.repins?.length && Object.values(run.nodes).some(n => working(n) || n.state === "published" || n.worker && n.state === "waiting"))
-		return true; // Finish and include already-admitted work rather than orphan a writer on repin.
-	if (last) {
+		break;
+	case "qualify":
+		if (!last) throw Error("Missing checked product for qualification");
 		qualify(run, actor, last);
 		run.active = false;
 		for (const r of reviews(run).filter(reading)) blockReview(r, "Goal met; no further review is needed");
-	} else if (!run.join) {
-		// The baseline already satisfies the goal. Check its milestone invariants without hiring a writer.
+		break;
+	case "baseline":
 		reserveProduct(run, actor, cwd, target, at.commit, {});
+		break;
+	case "none":
+	case "wait":
+		break;
+	default: return unhandled(action);
 	}
-	return false;
+	return admission;
 }
 
 /** A new assignment or report is not progress if it reproduces an already assessed tree.

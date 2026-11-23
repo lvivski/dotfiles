@@ -1,5 +1,21 @@
 /** @typedef {import("./model.js").Run} Run */
 
+const missingPrefix = "Writer reports missing input: ";
+/** @param {import("./model.js").Node} n @param {string} detail */
+export function stopForInput(n, detail) {
+	n.state = "blocked";
+	n.stop = { kind: "writer-missing-input", detail };
+	n.reason = missingPrefix + detail;
+}
+
+/** Return the unmodified original detail; older snapshots recorded only the display reason.
+ * @param {import("./model.js").Node} n */
+export function missingInput(n) {
+	if (n.state !== "blocked") return;
+	if (n.stop) return n.stop.kind === "writer-missing-input" ? n.stop.detail : undefined;
+	if (n.reason?.startsWith(missingPrefix)) return n.reason.slice(missingPrefix.length);
+}
+
 /** Native shell completion is not evidence. Only the runner can attest to its pinned input.
  * @param {import("./model.js").Effect|undefined} e */
 export function checkReceipt(e) {
@@ -63,6 +79,13 @@ export function qualifiedProduct(run) {
 export function passingReceipt(e, kind, commit, check, grain) {
 	if (e?.kind === kind && e.grain === grain && e.commit === commit && e.check === check && checkReceipt(e)?.exit === 0)
 		return { commit, check, exit: 0, ...(e.evaluatorRevision ? { evaluatorRevision: e.evaluatorRevision } : {}) };
+}
+
+/** A milestone is authority for the reviewed inputs, never a goal verdict.
+ * @param {Run} run @param {string} id @param {string} base */
+export function checkpointReceipt(run, id, base) {
+	return run.products.some(p => p.check === id && p.commit === base) &&
+		passingReceipt(run.effects.find(e => e.id === id), "product", base, run.policy.productCheck);
 }
 
 /** The last *applied* product. A native success, a pending join, or two green checks

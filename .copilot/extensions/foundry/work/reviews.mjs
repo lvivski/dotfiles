@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { workerLimit } from "./policy.mjs";
 import { milestoneBlocker, qualifiedProduct } from "./evidence.mjs";
 import { attachedNotes, noteId } from "./notes.mjs";
 import { actionable, checked, consumersOf, displacedInputs, owns, settledOutput } from "./plan.mjs";
@@ -120,7 +121,13 @@ export const readKey = o => `read:${digest([readSource(o), o.match ?? null, o.of
  * checkpoint, another squad or an investigation. Never look up an arbitrary receipt by ID.
  * @param {Run} run @param {Review} review */
 export function scopedNotes(run, review) {
-	const notes = new Map(attachedNotes(review).map(n => [noteId(n), n]));
+	/** @param {Review} r */
+	const inputs = r => {
+		const i = r.iteration;
+		return [...attachedNotes(r), ...(i && !i.basis ? [{ receipt: i.receipt,
+			question: `Owner comparison for ${i.directory}, offered blob ${i.blob}: ${i.question}. Consider an in-scope implementation, not another audit of the same evidence.` }] : [])];
+	};
+	const notes = new Map(inputs(review).map(n => [noteId(n), n]));
 	let child = review;
 	for (let i = run.effects.indexOf(review) - 1; i >= 0 && child.wake; i--) {
 		const r = run.effects[i];
@@ -128,10 +135,23 @@ export function scopedNotes(run, review) {
 		if (r.kind !== "scout" || r.squad !== review.squad || r.base !== review.base || r.version !== review.version ||
 			r.evaluatorRevision !== review.evaluatorRevision || r.observation?.outcome !== "needs-evidence" ||
 			!(r.state === "observed" || r.state === "blocked" && child.wake.key === evidenceDecision)) break;
-		for (const n of attachedNotes(r)) notes.set(noteId(n), n);
+		for (const n of inputs(r)) notes.set(noteId(n), n);
 		child = r;
 	}
 	return notes;
+}
+
+/** Evidence pages continue the same comparison, but an ordinary later review does not.
+ * @param {Run} run @param {Review|undefined} review */
+export function comparison(run, review) {
+	let r = review;
+	while (r && !r.iteration && r.wake) {
+		const prev = wakeSource(run, r);
+		if (!prev || prev.observation?.outcome !== "needs-evidence" || prev.base !== r.base ||
+			prev.version !== r.version || prev.evaluatorRevision !== r.evaluatorRevision || run.effects.indexOf(prev) >= run.effects.indexOf(r)) return;
+		r = prev;
+	}
+	return r?.iteration;
 }
 
 /** @param {Review[]} history @param {Review} review @param {import("./model.js").Observation} o */
@@ -191,7 +211,7 @@ export function discoverySquads(run, history, gap) {
 			return [...squads.filter(s => s !== focus && released.has(s.id)), focus];
 		}
 	}
-	if (!gap || run.policy.workers === undefined) return squads;
+	if (!gap || workerLimit(run) === undefined) return squads;
 	const last = new Map(history.map((r, i) => [r.squad, i]));
 	return squads.toSorted((a, b) => (last.get(a.id) ?? -1) - (last.get(b.id) ?? -1));
 }
@@ -251,6 +271,7 @@ export function blockReview(r, reason) {
 export function reviewStatus(r) {
 	return { id: r.id, squad: r.squad, state: reading(r) ? "reading" : r.state, base: r.base, version: r.version,
 		workflowId: r.workflowId, observation: r.observation, wake: r.wake, ...(r.retryOf ? { retryOf: r.retryOf } : {}),
+		...(r.iteration ? {iteration: r.iteration} : {}),
 		...(r.note ? { note: r.note } : {}),
 		...(r.otherNotes ? { otherNotes: r.otherNotes } : {}),
 		...(r.predecessor ? { predecessor: { grain: r.predecessor.grain.id, worker: r.predecessor.worker, base: r.predecessor.base,

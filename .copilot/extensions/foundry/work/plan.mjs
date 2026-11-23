@@ -1,5 +1,5 @@
 import { validateGraph } from "./contract.mjs";
-import { blockedComponent, checkReceipt } from "./evidence.mjs";
+import { blockedComponent, checkReceipt, missingInput } from "./evidence.mjs";
 import { outside } from "./product.mjs";
 import { assignmentDirectory, contains, digest, fail, fields, name, names, record, relative, text } from "./values.mjs";
 
@@ -62,7 +62,7 @@ export function stoppedPredecessor(run, review, report) {
 	if (report.outcome !== "regenerate" || report.grains.length !== 1 || typeof g !== "object" || run.nodes[g.id] ||
 		run.effects.some(e => e.grain === g.id) || !review.packet || review.retryOf) return;
 	const n = Object.values(run.nodes).find(n => n.grain.directory === g.directory);
-	if (!n || n.state !== "blocked" || !n.reason?.startsWith("Writer reports missing input: ") || n.candidate ||
+	if (!n || missingInput(n) === undefined || n.candidate ||
 		!n.worker || !n.base || !n.token || !n.generation || n.base === review.base || n.grain.check !== g.check ||
 		g.task === n.grain.task || report.replace?.some(id => id !== n.grain.id) ||
 		Object.values(run.nodes).some(other => liveNeeds(other).includes(n.grain.id) || other.state !== "blocked" && Object.hasOwn(other.inputs ?? {}, n.grain.id))) return;

@@ -1,26 +1,31 @@
-/** @typedef {ReturnType<typeof import("../work/status.mjs").status>} Status */
-/** @param {Status["pending"][number]} p */
+import { boardFacts, projectBoard } from "../work/visibility.mjs";
+
+/** @param {ReturnType<typeof boardFacts>["pending"][number]} p */
 function pendingMessage(p) {
 	const labels = { goal: "Goal check", component: "Component check", product: "Product check", writer: "Writer launch",
 		scout: "Scout", repair: "Repair notice", handoff: "Handoff notice", decision: "Decision notice", artifact: "Reference notice" };
 	const label = labels[p.kind] + (p.grain ? ` (${p.grain})` : "");
 	const reason = p.reason?.replace(/^(?:Error: )+/, "");
-	if (p.awaitingEvaluator && (!reason || reason === "Original call is not confirmed; it will not be replayed" || reason === "The pinned runner has not finished"))
-		return `${label} started; no evaluator result recorded yet.`;
+	if (p.evaluating) return `${label} started; no evaluator result recorded yet.`;
 	return reason ? `${label}: ${reason}` : undefined;
 }
 
-/** @param {Status} s */
-export function mapSnapshot(s) {
+/** @param {import("../work/model.js").Run} run @param {string} actor */
+export function boardSnapshot(run, actor) {
+	return mapSnapshot(boardFacts(run, actor));
+}
+
+/** The canvas supplies boardFacts. Older internal callers already holding status
+ * can project it without constructing a second map implementation.
+ * @param {ReturnType<typeof boardFacts>|import("../work/visibility.mjs").BoardSource} source */
+export function mapSnapshot(source) {
+	const s = "owner" in source ? source : projectBoard(source, !!source.metrics);
 	const latest = new Map(s.reviews.map(r => [r.squad, r]));
 	return {
 		run: s.run, direction: s.direction, example: false,
-		owner: "qualified" in s,
-		phase: !s.active ? (s.qualified && s.goal ? "Qualified" : "qualified" in s ? "Paused" : "Inactive") : s.expired ? "Deadline elapsed" : "Active",
-		qualified: s.qualified ?? null, checkpoint: s.checkpoint ?? null,
-		timing: s.metrics ? { firstWriter: s.metrics.firstWriter.state, writerMs: s.metrics.firstWriter.elapsedMs,
-			qualifiedMs: s.metrics.qualified.elapsedMs } : null,
-		blocker: s.blocker ?? s.discoveryError ?? "",
+		owner: s.owner,
+		phase: !s.active ? (s.qualified && s.goal ? "Qualified" : s.owner ? "Paused" : "Inactive") : s.expired ? "Deadline elapsed" : "Active",
+		qualified: s.qualified, checkpoint: s.checkpoint, timing: s.timing, blocker: s.blocker,
 		holds: [...new Set(s.pending.flatMap(p => pendingMessage(p) ?? []))],
 		scoutIssues: s.goal && s.qualified ? [] : [...latest.values()].flatMap(r => {
 			if (r.state === "blocked" && r.reason) return [`${r.squad}: ${r.reason}`];
@@ -28,24 +33,16 @@ export function mapSnapshot(s) {
 			if (o?.outcome === "unresolved") return [`${r.squad}: ${o.reason}`];
 			return o?.outcome === "waiting" ? [`${r.squad} waits for ${o.waitFor}: ${o.reason}`] : [];
 		}),
-		questions: (s.questions ?? []).map(q => {
-			const d = q.delivery;
-			return d?.status === "unavailable" ? `${q.question} — ${d.reason}` :
-				d ? `${q.question} — ${d.status === "presenting" ? "sent to owner; delivery may be unconfirmed" : d.status}` : q.question;
-		}),
-		scouting: s.reviews.filter(r => r.state === "reading" && r.workflowId).length,
-		scoutsStarting: s.reviews.filter(r => r.state === "reading" && !r.workflowId).length,
-		goal: s.goal ? { commit: s.goal.commit, result: s.goal.receipt ? { exit: s.goal.receipt.exit, output: s.goal.receipt.output } : null } : null,
-		nodes: s.nodes.map(n => ({
-			id: n.grain, task: n.task ?? "", directory: n.directory, needs: n.requires,
-			state: n.state === "writing" ? (!("worker" in n) ? "assigned" : n.worker ? "writing" : "starting") : n.state,
-			reason: n.reason ?? "", check: n.evaluator, checked: n.checked ?? null,
-			result: n.receipt ? { commit: n.receipt.commit, exit: n.receipt.exit } : null,
-		})),
+		questions: s.questions.map(q => q.delivery === "unavailable" ? `${q.question} — ${q.reason}` :
+			q.delivery ? `${q.question} — ${q.delivery === "presenting" ? "sent to owner; delivery may be unconfirmed" : q.delivery}` : q.question),
+		scouting: s.reviews.filter(r => r.state === "reading" && r.started).length,
+		scoutsStarting: s.reviews.filter(r => r.state === "reading" && !r.started).length,
+		goal: s.goal, nodes: s.nodes,
 	};
 }
 
-/** @typedef {ReturnType<typeof mapSnapshot>} MapSnapshot */
+/** @typedef {ReturnType<typeof boardSnapshot>} BoardSnapshot */
+/** @typedef {BoardSnapshot} MapSnapshot */
 /** @typedef {MapSnapshot["nodes"][number]} Assignment */
 
 // An explicitly selected example, never a fallback for a missing or inaccessible run.
