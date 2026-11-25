@@ -10,18 +10,25 @@ import { assignmentCount } from "../work/capacity.mjs";
 import { decode } from "../work/snapshot.mjs";
 import { factory, git, put } from "./fixture.mjs";
 
-for (const stop of ["cannotRepair","relinquish","delivered repair"]) test(`fresh narrow successor on the same stopped checkpoint / ${stop}`, async t=>{
+const cases=[
+	{stop:"cannotRepair",mixed:true,exit:2},
+	{stop:"relinquish",mixed:true,exit:2},
+	{stop:"delivered repair",mixed:false,exit:1},
+	{stop:"relinquish",mixed:true,exit:1,label:"unmet goal after secondary exit 251"},
+	{stop:"delivered repair",mixed:true,exit:1,label:"unmet goal after secondary exit 2"}
+];
+for (const {stop,mixed,exit,label=stop} of cases) test(`fresh narrow successor on the same stopped checkpoint / ${label}`, async t=>{
 	const previous=process.env.FOUNDRY_SUCCESSOR_BEFORE;
 	/** @type {typeof factory} */
 	const build=previous?(await import(pathToFileURL(path.resolve(previous,"test/fixture.mjs")).href)).factory:factory;
 	const run="display", brief=".foundry/display.json", check="component.mjs", directory="unit/picker";
-	const mixed=stop!=="delivered repair", exit=mixed?2:1, file=mixed?"unit/entry":`${directory}/entry`, files=mixed?[file]:undefined;
+	const file=mixed?"unit/entry":`${directory}/entry`, files=mixed?[file]:undefined;
 	const scope=files?{primary:directory,files}:directory;
 	const f=build(t,run,brief,{
 		[brief]:JSON.stringify({version:2,id:run,target:"refs/heads/main",direction:"Render the selected item.",ownership:"exact-files",
 			productCheck:"product.mjs",goalCheck:"goal.mjs",squads:[{id:"view",areas:["unit","core"],charter:"brief",checks:[check]}]}),
 		".foundry/display/journey.md":"Select the item.","brief":"Display the selection.",[file]:"disconnected","unit/sibling":"keep",[`${directory}/existing`]:"current",
-		[check]:`import {readFileSync as read} from "node:fs";if(process.env.FOUNDRY_GRAIN==="sample"){console.log("Secondary observation unavailable.");process.exit(${stop==="relinquish"?251:2});}
+		[check]:`import {readFileSync as read} from "node:fs";if(process.env.FOUNDRY_GRAIN==="sample"){${mixed && exit===1?`if(read("${file}","utf8")!=="wired")process.exit(1);console.log("Primary selection connected.");`:""}console.log("Secondary observation unavailable.");process.exit(${stop==="relinquish"?251:2});}
 if(process.env.FOUNDRY_GRAIN==="picker"&&read("${file}","utf8")!=="wired")process.exit(1);`,
 		"product.mjs":`import assert from "node:assert/strict";const m=JSON.parse(process.env.FOUNDRY_OWNERSHIP);assert.ok(!m.sample);if(m.picker)assert.deepEqual(m.picker,{directories:["${directory}"],files:${JSON.stringify(files??[])}});`,
 		"goal.mjs":`import {existsSync as has,readFileSync as read} from "node:fs";process.exit(!has("core/out")?1:read("${file}","utf8")==="wired"?0:${exit});`
@@ -31,7 +38,7 @@ if(process.env.FOUNDRY_GRAIN==="picker"&&read("${file}","utf8")!=="wired")proces
 	await f.scouts[0].report({outcome:"regenerate",reason:"Implement and observe the selection.",evidence:["brief"],grains:[
 		{id:"sample",task:"Connect and observe the selection.",directory:"unit",check,needs:[]},{id:"core",task:"Provide the core.",directory:"core",check,needs:[]}]});
 	const w=f.workers.get((await f.status()).nodes.find(n=>n.grain==="sample")?.worker ?? "");assert.ok(w);
-	put(w.cwd,file,"failed draft");put(w.cwd,`${directory}/draft`,"not an input");
+	put(w.cwd,file,mixed && exit===1?"wired":"failed draft");put(w.cwd,`${directory}/draft`,"not an input");
 	const writer=f.runtime(w.cwd,{execute:async(...a)=>{
 		const result=await f.execute(...a);
 		if(stop==="delivered repair"&&a[0]==="bash"){f.owner.turn("owner");await f.owner.flush();}
@@ -40,6 +47,11 @@ if(process.env.FOUNDRY_GRAIN==="picker"&&read("${file}","utf8")!=="wired")proces
 	await writer.operation("submit",{run,token:w.token},w.id);
 	const bound=writer.inspect({run},w.id).nodes.find(n=>n.grain==="sample"), failed=(await f.status()).nodes.find(n=>n.grain==="sample")?.check;
 	assert.ok(failed && bound?.token);
+	if (mixed && exit===1) {
+		assert.ok(bound.receipt);
+		assert.equal(bound.receipt.exit,stop==="relinquish"?251:2);
+		assert.match(bound.receipt.output,/Primary selection connected\.\s+Secondary observation unavailable\./);
+	}
 	await writer.operation("submit",{run,token:bound.token,[stop==="cannotRepair"?stop:"relinquish"]:{check:failed,reason:"Secondary observation unavailable."}},w.id);
 	const c=f.workers.get((await f.status()).nodes.find(n=>n.grain==="core")?.worker ?? "");assert.ok(c);
 	put(c.cwd,"core/out","checked");await f.runtime(c.cwd).operation("submit",{run,token:c.token},c.id);
