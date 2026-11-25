@@ -48,11 +48,11 @@ export function reserveNotice(run, issuer, token, kind, body, node, baseline) {
 		args: to === issuer ? { message } : { session_id: to, delivery_mode: "immediate", message } });
 }
 
-/** @param {Run} run @param {string} issuer @param {string} token @param {string} base @param {string} brief @param {string|undefined} agent @param {string} grain @param {import("./model.js").CandidateReuse} [reuse] @param {import("./model.js").Observer} [observer] */
-export function reserveWorker(run, issuer, token, base, brief, agent, grain, reuse, observer) {
+/** @param {Run} run @param {string} issuer @param {string} token @param {string} base @param {string} brief @param {string|undefined} agent @param {string} grain @param {import("./model.js").CandidateReuse} [reuse] @param {import("./model.js").Observer} [observer] @param {import("./model.js").Production} [production] */
+export function reserveWorker(run, issuer, token, base, brief, agent, grain, reuse, observer,production) {
 	const id = randomUUID();
-	const restoration=!observer && run.nodes[grain]?.restoration;
-	run.effects.push({ id, issuer, token, state: "ready", kind: "writer", grain, ...(reuse ? {reuse} : {}), ...(restoration && {restoration}), ...(observer && {observer}),
+	const restoration=!observer && !production && run.nodes[grain]?.restoration;
+	run.effects.push({ id, issuer, token, state: "ready", kind: "writer", grain, ...(reuse ? {reuse} : {}), ...(restoration && {restoration}), ...(observer && {observer}), ...(production && {production}),
 		tool: "create_session", args: {
 			name: `${grain.slice(0, 22)} ${token.slice(0, 8)}`, workspace_type: "worktree", base_branch: base,
 			coordinate_with_creator: true, notify_on_idle: "once", kickoff: { mode: "autopilot", prompt: `${marker(run.id, token)}\n${brief}`, ...(agent ? { agent } : {}) }
@@ -161,12 +161,17 @@ export function issue(run, expected, callId) {
 	return true;
 }
 
-/** @param {Run} run @param {Effect} e @param {string} reason */
+/** @param {Run} run @param {import("./model.js").NativeCall} e @param {string} reason */
 function block(run, e, reason) {
 	e.error = reason;
 	if (e.kind === "artifact" || !current(run, e))
 		return;
 	const n = assignee(run, e);
+	if (e.production && n && e.state==="refused") {
+		run.nodes[n.grain.id]=structuredClone(e.production.prior);
+		return;
+	}
+	if (e.remedy) return; // Settle the two observations together, never block the untouched peer.
 	if (n) {
 		n.state = "blocked";
 		n.reason = reason;

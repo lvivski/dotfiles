@@ -1,6 +1,7 @@
 import { outside } from "./product.mjs";
 import { checkReceipt } from "./evidence.mjs";
 import { touchesCut } from "./transfer.mjs";
+import { passingRemedy, productionWriter } from "./remedy.mjs";
 import { contains, covers, digest, mixed, roots, sameScope, scopeLabel } from "./values.mjs";
 
 /** @param {import("./model.js").Run} run @param {string} from @param {string} historical */
@@ -71,6 +72,11 @@ export function restoredProduct(run,writer) {
 	const later=run.effects.slice(run.effects.indexOf(writer)+1);
 	const checks=later.filter(e=>{
 		if (e.kind!=="component" || e.grain!==to || checkReceipt(e)?.exit!==0) return false;
+		if (e.remedy) {
+			const b=passingRemedy(run,e);
+			return b && b.pair.checkpoint===r.checkpoint && b.retainer===r.retainer &&
+				later.some(old=>old.id===b.pair.failed && old.issuer===writer.nativeId);
+		}
 		const pair=pairedInput(run,e);
 		const observer=e.observer;
 		return pair ? (observer ? !!observer.after && later.some(w=>w.kind==="writer" && w.observer?.pair===observer.pair &&
@@ -80,6 +86,10 @@ export function restoredProduct(run,writer) {
 	return run.products.slice(index+1).find(p=>p.ownership?.[to] && p.outputs[r.retainer] && p.ownership[r.retainer] &&
 		checks.some(e=>{
 			if (e.kind!=="component" || e.commit!==p.outputs[to]) return false;
+			if (e.remedy) {
+				const b=passingRemedy(run,e), at=run.effects.findIndex(c=>c.id===p.check);
+				return b && p.target===b.pair.target && b.checks.every(c=>c.grain && p.outputs[c.grain]===c.commit && run.effects.indexOf(c)<at);
+			}
 			const pair=pairedInput(run,e);
 			return (!pair || p.outputs[r.retainer]===pair.candidate && p.target===pair.target) && run.effects.indexOf(e)<run.effects.findIndex(c=>c.id===p.check);
 		}));
@@ -139,9 +149,19 @@ export function partitionConflict(run,outputs,target) {
 		const receiver=Object.values(run.nodes).find(n=>n.restoration?.from===id && n.grain.directory===scope.primary);
 		const retainer=replacements.find(n=>n.grain.id===receiver?.restoration?.retainer);
 		const check=receiver?.check && run.effects.find(e=>e.id===receiver.check);
+		const producing=[receiver,retainer].find(n=>n && (n.state==="writing" || n.state==="checking") && productionWriter(run,n.token));
+		if (producing) return `Production repair of ${id} is in progress in ${producing.grain.id}; release still needs both components, product and goal.`;
 		const pair=check && check.kind==="component" && pairedInput(run,check);
+		if (check && check.kind==="component" && check.remedy) {
+			const b=passingRemedy(run,check);
+			if (!b || b.pair.checkpoint!==run.products.at(-1)?.check || b.pair.goal!==run.goal?.check ||
+				target!==undefined && b.pair.target!==target || b.checks.some(c=>!c.grain || run.nodes[c.grain]?.check!==c.id))
+				return `The production repair for ${id} needs both current components on the approved assembly.`;
+		}
 		if (pair && !matchesPair(run,pair,target))
 			return `The approved pair for ${id} no longer matches the target, checkpoint, goal or retaining component.`;
+		if (receiver?.state==="blocked" && check && check.kind==="component" && check.observer?.previous && checkReceipt(check)?.exit===1)
+			return `Final diagnostic ${check.id} failed. Release is held. The owner may request foundry_remediate for exact production and regression files in ${receiver.grain.id} or ${retainer?.grain.id}; a local observation is not a passing receipt.`;
 		if (receiver && retainer && replacements.length===1 && [receiver,retainer].every(n=>n.candidate &&
 			["published","qualified"].includes(n.state) && (!outputs || outputs[n.grain.id]===n.candidate))) continue;
 		return receiver ? `Ownership restoration of ${scope.primary} requires fresh included evidence from ${receiver.grain.id} and its paired owner ${receiver.restoration?.retainer}.` :

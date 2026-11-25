@@ -8,6 +8,8 @@ Before adding a limit that rejects input, drops evidence or forces another check
 
 Reproduce a framework defect with a synthetic test in a disposable checkout. Observe it fail before the fix and pass afterward; test the user-visible outcome (e.g. exact bytes and all changed paths delivered), not the value of a constant. Never use a live run, a replay, or a repin for red/green validation.
 
+Put regression cases in `<module>.test.mjs` beside the implementation so editors can group them. Keep shared setup in `test/`. Run the cases with the normal Node test runner; do not add a separate proof runner.
+
 When refactoring a regression test, run the original and revised test against the same known defect and its correction. Both must fail for the intended reason and pass with the behavior restored. Distinguish an intentional change in expectations from a test-only refactor.
 
 For recovery, first reproduce the already-affected assignment or review in a disposable run. Upgrade **that run** and exercise the supported operator or writer action for **the same work** through its next useful outcome. A different offer or an unrelated writer succeeding does not demonstrate recovery. Preserve original reports, receipts, earned outputs and outstanding calls; check late or duplicate results where relevant. If no safe path exists, report “prevented for future runs; existing work remains blocked” and explain what is missing. Missing evidence is not a failed product verdict.

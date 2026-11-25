@@ -6,6 +6,7 @@ import { releaseFacts, undecided } from "./facts.mjs";
 import { expired, reserveCheck, reserveNotice, reserveProduct } from "./native.mjs";
 import { workKey } from "./plan.mjs";
 import { partitionConflict } from "./partition.mjs";
+import { heldRepair } from "./successor.mjs";
 import { retain, treeOf, verifyContracts } from "./product.mjs";
 import { blockReview, reading, reviews } from "./reviews.mjs";
 import { FoundryError, deadlineAt, text } from "./values.mjs";
@@ -84,9 +85,9 @@ export function releaseAssessment(cwd, run, tip, retry = false) {
 		if (conflict) {
 			const normal=admissionPolicy(transition(releaseFacts(run,target),false).admission);
 			const repair=run.goal?.target===target && !run.join && !run.blocker && !run.conflict && !run.effects.some(e=>e.permissionHold) &&
-				Object.values(run.nodes).some(n=>n.state==="waiting" && n.worker && n.check) && normal.writers==="eligible";
+				normal.writers==="eligible" && Object.values(run.nodes).some(n=>heldRepair(run,n));
 			return /** @type {const} */ ({...wait,target,reason:"ownership-conflict",error:conflict,
-				admission:!repair ? "closed" : normal.scoped ? "bound-checkpoint-repairs" : "bound-repairs"});
+				admission:!repair ? "closed" : normal.scoped ? "ownership-checkpoint-repairs" : "ownership-repairs"});
 		}
 	}
 	const decision=transition(releaseFacts(run, target), retry);

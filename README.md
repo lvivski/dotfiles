@@ -7,6 +7,8 @@ It must be **sourced** so it can reload your shell afterwards, and the leading
 `./` is required — a bare `. sync` would source `/bin/sync` instead. Works from
 both zsh and bash.
 
+Run `node --test sync.test.mjs` to exercise both sync directions with disposable home directories.
+
 ## Homebrew
 
 The synced `~/.Brewfile` captures Homebrew packages, global npm packages, and

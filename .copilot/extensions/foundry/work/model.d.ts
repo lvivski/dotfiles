@@ -7,6 +7,7 @@ export interface Transfer { from: string; candidate: string; to: string }
 export interface Successor { from: string; check: string; to: string }
 export interface Restoration { from: string; historical: string; checkpoint: string; goal: string; retainer: string; tree: string }
 export interface Observer { pair: string; file: string; before: string; after?: string; previous?: {check:string; candidate:string; phases:string[]} }
+export interface Production { diagnostic:string; candidate:string; checkpoint:string; goal:string; files:string[]; task:string; prior:Node }
 export interface Pairing { failed: string; component: string; candidate: string; retainer: string; checkpoint: string; goal: string; target: string; tree: string }
 export interface Footnote { file:string; blob:string; excerpt:string; inventory:{file:string; keys:string[]; blob:string}; inputs:string[]; reason:string }
 export interface Footprint { component:string; commit:string; stages:Record<"component"|"generated"|"package"|"runtime",Footnote[]> }
@@ -246,6 +247,8 @@ export interface Baseline {
 export type Inventory = Baseline | Baseline[];
 
 export interface NativeCall extends Dispatch, ArtifactReport {
+	production?:Production;
+	remedy?:{writer:string; basis:string};
 	isolation?:string;
 	restoration?: Restoration;
 	pair?: Pairing;

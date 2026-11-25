@@ -4,6 +4,7 @@ import { openDatabase } from "./database.mjs";
 import { goalFiles, priorGoal, retainFeedback } from "./feedback.mjs";
 import { awaitingReply, currentCheck } from "./reservation.mjs";
 import { matchesPair, pairedInput } from "./partition.mjs";
+import { origin, remedyWriter } from "./remedy.mjs";
 import { commitAt, withProduct } from "./product.mjs";
 import { deadlineAt, fail, mixed, ownership, text } from "./values.mjs";
 import { interpret, interrupted } from "./verdict.mjs";
@@ -17,6 +18,12 @@ try {
 		if (e.isolation && (commitAt(cwd,run.policy.target)!==run.independent?.target || run.effects.some(x=>x.permissionHold)))
 			fail("stale_assignment","The approved independent checkpoint target or permissions changed");
 		const pair=pairedInput(run,e);
+		if (e.remedy) {
+			const job=remedyWriter(run,e), b=job && origin(run,job);
+			if (!b || b.pair.target!==commitAt(cwd,run.policy.target) || b.pair.goal!==run.goal?.check ||
+				b.pair.checkpoint!==run.products.at(-1)?.check || run.join || run.conflict || run.blocker || run.effects.some(x=>x.permissionHold))
+				fail("stale_assignment","Production repair inputs changed; no observation was made");
+		}
 		if (pair && (!matchesPair(run,pair,commitAt(cwd,run.policy.target)) || run.join || run.conflict || run.blocker || run.effects.some(x=>x.permissionHold)))
 			fail("stale_assignment","Approved paired inputs are no longer current; no observation was made");
 		const publish = db.outcomeWriter(runId, e);

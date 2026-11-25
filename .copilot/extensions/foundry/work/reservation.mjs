@@ -1,6 +1,7 @@
 import { milestoneBlocker, qualifiedProduct } from "./evidence.mjs";
 import { partitionConflict } from "./partition.mjs";
 import { validIsolation } from "./isolation.mjs";
+import { currentRemedy } from "./remedy.mjs";
 
 /** @param {import("./model.js").Effect} e */
 export const unissued = e => e.state === "ready" || e.state === "ordinary";
@@ -12,6 +13,7 @@ export const awaitingReply = e => e.state === "issued" || e.state === "uncertain
 export function currentCheck(run, e) {
 	if (e.tool !== "bash" || e.state === "retired" || e.state === "withdrawn") return false;
 	if (e.kind === "component") {
+		if (e.remedy) return currentRemedy(run,e);
 		const n = e.grain && run.nodes[e.grain];
 		return !!n && n.state === "checking" && n.check === e.id;
 	}

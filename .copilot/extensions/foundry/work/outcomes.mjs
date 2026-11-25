@@ -10,7 +10,8 @@ function message(run, e, document) {
 		e.commit, e.check, e.evaluatorRevision ?? null, ...(e.productEvaluatorRevision ? [e.productEvaluatorRevision] : []),
 		...(e.kind==="component" && e.pair ? [digest(e.pair)] : []),
 		...(e.tool==="bash" && e.isolation ? ["independent",e.isolation] : []),
-		...(e.kind==="component" && e.observer ? ["observer",digest(e.observer)] : [])])).update("\n").update(document).digest();
+		...(e.kind==="component" && e.observer ? ["observer",digest(e.observer)] : []),
+		...(e.kind==="component" && e.remedy ? ["production",digest(e.remedy)] : [])])).update("\n").update(document).digest();
 }
 
 /** @param {Effect} e @param {Receipt} receipt */

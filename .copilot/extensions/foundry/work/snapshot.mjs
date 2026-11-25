@@ -16,6 +16,7 @@ import { productOwnership, retainedMode, understandsTransfers } from "./transfer
 import { narrower, stoppedCheck } from "./successor.mjs";
 import { historicalGrant, observerInput, restoredProduct, validRestoration } from "./partition.mjs";
 import { validIsolation } from "./isolation.mjs";
+import { validRemedy } from "./remedy.mjs";
 
 /** @typedef {(value:unknown)=>boolean} Guard */
 /** @type {Guard} */
@@ -140,6 +141,8 @@ const scout = shape({ ...dispatch, kind: one("scout"), tool: one("workflow"), sq
 	correction: optional(shape({ worker: noteText, clause: noteText, file: path, excerpt: noteText, blob: optional(commit), predecessorCheck: optional(id) })),
 	otherNotes: optional(list(shape(noteFields))), diagnostic: optional(shape({ receipt: id, excerpt: noteText })), wake: optional(shape({ review: id, key: string })) });
 const native = shape({
+	production:optional(shape({diagnostic:id,candidate:commit,checkpoint:id,goal:id,files:list(path),task:noteText,prior:node})),
+	remedy:optional(shape({writer:id,basis:sha256})),
 	isolation:optional(sha256),
 	observer:optional(shape({pair:id,file:path,before:commit,after:optional(commit),previous:optional(shape({check:id,candidate:commit,
 		phases:v=>Array.isArray(v) && v.length>=2 && v.length<=8 && new Set(v).size===v.length && v.every(p=>typeof p==="string" && p.trim()===p && p.length>0 && p.length<=120 && !/[\0\r\n]/.test(p))}))})),
@@ -218,6 +221,7 @@ function productLineage(run,products) {
  * @param {Map<string,import("./model.js").Effect>} effects @param {Map<string,import("./model.js").Product>} products */
 function validDispatch(run, e, effects, products) {
 	if (e.tool!=="workflow") {
+		if ((e.remedy || e.production) && !validRemedy(run,e)) return false;
 		if (e.observer) {
 			const o=e.observer, old=effects.get(o.pair), prior=run.effects.slice(0,run.effects.indexOf(e));
 			const original=prior.find(w=>old?.kind==="component" && w.kind==="writer" && w.restoration?.goal===old.pair?.goal &&

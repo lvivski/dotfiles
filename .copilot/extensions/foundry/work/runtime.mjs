@@ -33,6 +33,8 @@ import { prepareReuse } from "./reuse.mjs";
 import { prepareRestoration } from "./restoration.mjs";
 import { currentPair, preparePair } from "./pairing.mjs";
 import { observerBasis, observerWriter, prepareObserver, verifyObserver } from "./observer.mjs";
+import { prepareProduction, productionBasis, submitProduction } from "./production.mjs";
+import { productionWriter, remedyWriter } from "./remedy.mjs";
 import { referenceText } from "./research.mjs";
 import { blockReview, comparison, currentPin, investigation, questions, reserveReview, retireSuperseded, reviews, staleReaderMessage } from "./reviews.mjs";
 import { scoutPacket } from "./scouts.mjs";
@@ -205,13 +207,18 @@ export function createRuntime(directory, host) {
 	}
 	/** @param {string} id @param {Effect} effect @param {string} callId */
 	const claim = (id, effect, callId) => {
-		if (effect.tool==="workflow" || !(effect.recheck || effect.pair || effect.observer || effect.isolation) || !unissued(effect)) return db().mutateLocked(id, run => issue(run, effect, callId));
+		if (effect.tool==="workflow" || !(effect.recheck || effect.pair || effect.observer || effect.isolation || effect.production || effect.remedy) || !unissued(effect)) return db().mutateLocked(id, run => issue(run, effect, callId));
 		let target = (effect.recheck ?? effect.pair)?.target;
 		let claimed = false;
 		db().planAndSwap(id,run => {
 			if (effect.isolation) {
 				target=run.independent?.target;
 				claimed=target===commitAt(cwd(),run.policy.target) && !run.effects.some(x=>x.permissionHold) && issue(run,effect,callId);
+			} else if (effect.production || effect.remedy) {
+				const job=effect.production?effect:remedyWriter(run,effect);
+				if (!job) fail("stale_assignment","Missing production repair binding");
+				target=productionBasis(cwd(),run,job,effect.commit).target;
+				claimed=issue(run,effect,callId);
 			} else if (effect.observer) {
 				target=effect.kind==="component" ? verifyObserver(cwd(),run,effect,text(effect.commit,"observer candidate"),true) :
 					observerBasis(cwd(),run,effect).pair.target;
@@ -477,6 +484,12 @@ export function createRuntime(directory, host) {
 				if (live.effects.some(e => e.grain === node.grain.id && (e.permissionHold ||
 					e.token === token && e.kind === "repair" && e.state !== "done")))
 					fail("dispatch_held", "Resolve the pending assignment delivery or permission hold first");
+				const job=productionWriter(live,token);
+				if (job?.production && args.missingInput!==undefined) {
+					job.error=`Production repair stopped without submission: ${reason}`;
+					live.nodes[node.grain.id]=structuredClone(job.production.prior);
+					return;
+				}
 				if (args.relinquish !== undefined) {
 					const failed = relinquishable(live,node);
 					if (!failed || failed.id !== check || node.candidate)
@@ -512,6 +525,11 @@ export function createRuntime(directory, host) {
 			const review = node.review && r.effects.find(e => e.id === node.review);
 			const previous = review && review.kind === "scout" && review.predecessor;
 			const observer=observerWriter(r,node.token);
+			const producer=productionWriter(r,node.token);
+			if (producer) {
+				const target=submitProduction(cwd(),r,producer,commit,actor);
+				return ()=>commitAt(cwd(),r.policy.target)===target;
+			}
 			const observerTarget=observer && verifyObserver(cwd(),r,observer,commit,true);
 			if (!observer && node.restoration && (typeof g.directory!=="string" || directoryBaseline(cwd(),commit,g.directory)?.tree!==node.restoration.tree))
 				fail("changed_restoration","Submit only the unchanged current primary tree authorized for ownership restoration");
@@ -638,10 +656,10 @@ export function createRuntime(directory, host) {
 			writerRoot(cwd(),run,n,true);
 			return status(run,actor);
 		}
-		if (op === "correct" || op === "reuse" || op === "restore" || op==="pair" || op==="diagnose" || op==="checkpoint") {
+		if (op === "correct" || op === "reuse" || op === "restore" || op==="pair" || op==="diagnose" || op==="checkpoint" || op==="remediate") {
 			const origin = cwd(), run = read(id);
 			const prepare = {correct:prepareCorrection,reuse:prepareReuse,restore:prepareRestoration,
-				pair:preparePair,diagnose:prepareObserver,checkpoint:prepareCheckpoint}[op];
+				pair:preparePair,diagnose:prepareObserver,checkpoint:prepareCheckpoint,remediate:prepareProduction}[op];
 			const request = prepare(origin,run,actor,a,e=>db().verifySigned(id,e));
 			await requireReadyOwner(origin);
 			const approved = await host.confirm?.(request.prompt);
@@ -825,7 +843,8 @@ export function createRuntime(directory, host) {
 				const live = writable(run, actor, reply.token);
 				if (!live || digest(live) !== digest(n)) fail("stale_assignment", "Assignment changed during preview");
 				const observer=observerWriter(run,live.token);
-				const target=observer && verifyObserver(cwd(),run,observer,commit,false);
+				const production=productionWriter(run,live.token);
+				const target=production ? productionBasis(cwd(),run,production,commit).target : observer && verifyObserver(cwd(),run,observer,commit,false);
 				live.preview = commit;
 				if (target) return ()=>commitAt(cwd(),run.policy.target)===target;
 			});

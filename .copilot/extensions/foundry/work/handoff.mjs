@@ -24,6 +24,7 @@ export function qualification(run) {
 			squad: squad.id, charter: squad.charter, boundary: [...grain.boundary], receipt, base, generation,
 			needs: [...grain.needs], inputs: { ...inputs }, ...(component?.kind==="component" && component.pair && {pair:component.pair}),
 			...(component?.kind==="component" && component.observer && {observer:component.observer}),
+			...(component?.kind==="component" && component.remedy && {repairWriter:component.remedy.writer}),
 			...(n.replaces ? { replaces: n.replaces } : {}) });
 	}
 	return { format: last.ownership ? "foundry-qualification/v4" : product.evaluatorRevision ? "foundry-qualification/v3" : goal.evaluatorRevision ? "foundry-qualification/v2" : "foundry-qualification/v1", direction: policy.direction,

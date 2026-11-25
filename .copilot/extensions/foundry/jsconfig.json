@@ -24,6 +24,8 @@
   "include": [
     "**/*.mjs",
     "**/*.js",
-    "**/*.ts"
+    "**/*.ts",
+    "../../skills/foundry/scripts/*.test.mjs",
+    "../../../sync.test.mjs"
   ]
 }

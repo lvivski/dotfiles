@@ -1,6 +1,8 @@
 import { checkReceipt, inconclusiveRepair, relinquishable } from "./evidence.mjs";
 import { assignmentCalls, dependencies } from "./plan.mjs";
+import { displacements } from "./partition.mjs";
 import { outside } from "./product.mjs";
+import { comparison } from "./reviews.mjs";
 import { activeConsumer } from "./transfer.mjs";
 import { contains, covers, fail, fields, name, ownership, record, roots, sameScope } from "./values.mjs";
 
@@ -29,6 +31,48 @@ export function stoppedCheck(run,s) {
 		e.grain!==s.from || e.check!==n.grain.check || e.issuer!==n.worker || e.error || e.permissionHold) return;
 	if (n.stop?.kind==="writer-relinquished" && !n.candidate && relinquishable(run,n)?.id===s.check ||
 		n.stop?.kind==="writer-cannot-repair" && n.candidate && inconclusiveRepair(n,e)?.commit===n.candidate && checkReceipt(e)) return e;
+}
+
+/** A successor changes its stopped parent's ownership record as well as adding its own
+ * scope. Neither may intersect a held grant; its evidence and inputs can't come from one.
+ * @param {Run} run @param {Successor|undefined} successor @param {Scope} scope @param {string[]} [reads] */
+export function disjointSuccessor(run,successor,scope,reads=[]) {
+	const parent=successor && run.nodes[successor.from];
+	if (!parent) return false;
+	const writes=[...roots(scope),...roots(parent.grain.directory)];
+	for (const d of displacements(run)) {
+		const owners=[...d.replacements,...Object.values(run.nodes).filter(n=>n.restoration?.from===d.id)];
+		const held=[...roots(d.scope),...owners.flatMap(n=>roots(n.grain.directory))];
+		if (!outside([...writes,...reads],held)) return false;
+		for (const n of owners) {
+			const r=run.effects.find(e=>e.id===n.review);
+			const cited=r?.kind==="scout" ? r.observation?.evidence??[] : [];
+			const inputs=Object.keys(n.inputs??{}).flatMap(id=>run.nodes[id]?roots(run.nodes[id].grain.directory):[]);
+			if (!outside(scope,[...n.supporting??[],...cited,...inputs])) return false;
+		}
+	}
+	return true;
+}
+
+/** @param {Run} run @param {import("./model.js").Observation} report */
+export function successorReads(run,report) {
+	return [...report.evidence,...report.grains.flatMap(g=>typeof g==="string"?[]:
+		[...dependencies(run.nodes,g.needs)].flatMap(id=>roots(run.nodes[id].grain.directory)))];
+}
+
+/** @param {Run} run @param {import("./model.js").Node} n */
+export function heldRepair(run,n) {
+	if (n.state!=="waiting" || n.restoration) return;
+	const review=run.effects.find(e=>e.id===n.review);
+	if (review?.kind==="scout") {
+		const i=comparison(run,review);
+		if (i?.successor) {
+			if (review.observation && i.source && i.successor.to===n.grain.id && disjointSuccessor(run,i.successor,
+				n.grain.directory,successorReads(run,review.observation))) return "successor";
+			return;
+		}
+	}
+	if (n.worker && n.check) return "bound";
 }
 
 /** A blocked node has no included output to repartition. Keep that node intact and

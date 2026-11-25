@@ -15,13 +15,15 @@ import { awaitingReply } from "./reservation.mjs";
 import { workerLimit } from "./policy.mjs";
 import { finishWriters } from "./pool.mjs";
 import { partitionConflict } from "./partition.mjs";
+import { settleProduction } from "./production.mjs";
+import { remedyWriter } from "./remedy.mjs";
 import { validIsolation } from "./isolation.mjs";
 import { deliveredFile, rejectedSource, unseenText, validMatch } from "./pages.mjs";
 import { actionable, consumersOf, dependencies, liveNeeds, owns, productOutputs, proposal, requireNewWork, revise, settledOutput, stalePins, superseded, supersededAttempt, unstartedWriter, validateNodes, waiting, writerInputs } from "./plan.mjs";
 import { changedFiles, checkDirectory, combine, commitAt, committedFile, describeInventory, inventory, outside, regularFiles, rejoin, retain, treeOf, verifyContracts, verifyDirectoryPin, versionOf, withoutGrain } from "./product.mjs";
 import { referenceCheckout } from "./research.mjs";
 import { preflightTransfer, protectsGrant, touchesCut } from "./transfer.mjs";
-import { matchesSuccessor, preflightSuccessor } from "./successor.mjs";
+import { disjointSuccessor, heldRepair, matchesSuccessor, preflightSuccessor, successorReads } from "./successor.mjs";
 import { atCheckpoint, availableHistory, blockReview, canInvestigate, checkpointScope, checkpointWake, comparison, discoverySquads, nextReview, readerInterrupted, reading, requestedFiles, researchContext, reserveReview, reviewHandoff, reviews, scopedNotes, staleReviewReason, wakeSource } from "./reviews.mjs";
 import { FoundryError, comparisonScope, contains, covers, digest, fail, fields, integer, members, mixed, name, names, ownership, record, referenceRepo, relative, sameScope, scopeLabel, text, waitTarget, roots as scopePaths } from "./values.mjs";
 
@@ -222,7 +224,9 @@ export function reserveIteration(cwd, run, actor, input, prior, source) {
 	if (actor !== run.owner) fail("foreign_run", "Only the run owner can route a comparison");
 	admitted(run);
 	const partition=partitionConflict(run);
-	if (partition) fail("ownership_transition",partition);
+	if (partition && !(source && !input.transfer && disjointSuccessor(run,input.successor,comparisonScope(input),[source.file])))
+		fail("ownership_transition",partition);
+	if (partition && run.effects.some(e=>e.permissionHold)) fail("dispatch_held","Resolve outstanding permission holds before opening a disjoint comparison");
 	const { directory, receipt, blob } = input, at = run.goal, gap = goalReceipt(run);
 	const target = commitAt(cwd, run.policy.target), historical = prior && { ...prior, missing: receipt };
 	const checkpoint = historical || source ? run.products.at(-1)?.check : pendingGoal(run) && checkpointCurrent(run, receipt, target) ? receipt :
@@ -309,8 +313,10 @@ export function observe(cwd, run, review, observation) {
 	if (!observation.findings && (observation.outcome === "unresolved" || observation.outcome === "needs-decision" && !observation.ownerInput))
 		observation = { ...observation, outcome: !deciding && canInvestigate(run, review, squad) ? "needs-research" : "unresolved" };
 	const { outcome, grains, evidence } = observation, ids = grains.map(g => typeof g === "string" ? g : g.id);
+	const i = comparison(run, review);
 	const partition=outcome==="regenerate" && partitionConflict(run);
-	if (partition) fail("ownership_transition",partition);
+	if (partition && !(i?.source && i.successor && disjointSuccessor(run,i.successor,comparisonScope(i),successorReads(run,observation))))
+		fail("ownership_transition",partition);
 	if (outcome === "needs-research" && !canInvestigate(run, review, squad))
 		fail("unresolved_research", "Investigation already requested on this revision; identify the remaining blocker");
 	// A sibling can finish while this scout reads. On the same assessed commit, revalidate the
@@ -356,7 +362,6 @@ export function observe(cwd, run, review, observation) {
 			fail("stale_assignment", `Replacement of ${id} must name newly checked inputs and retain the writer's still-current pins`);
 		replaceable.add(id);
 	}
-	const i = comparison(run, review);
 	if (grains.some(g => {
 		const scope=typeof g==="string" ? run.nodes[g]?.grain.directory : g.directory;
 		return scope && mixed(scope) && (!i?.source || !sameScope(scope,comparisonScope(i)));
@@ -519,7 +524,7 @@ function repair(run, id, reason) {
 		node.state="blocked";
 		const e=run.effects.find(e=>e.id===node.check);
 		node.reason=e?.kind==="component" && e.observer?.previous ?
-			`Final diagnostic ${e.id} stopped on ${node.grain.id}. Run owner: use the first expected/actual mismatch for ${e.observer.previous.phases.join(" / ")} below to identify the responsible producer. If the phase was not observed, obtain that observation first. A production fix requires its own grant; another observer is not authorized: ${reason}` :
+			`Final diagnostic ${e.id} stopped on ${node.grain.id}. Run owner: request foundry_remediate for a repository regression and evidence-backed fix in the owning directory. A missing phase is not a production diagnosis. No observer replay: ${reason}` :
 			e?.kind==="component" && e.observer ? `The approved observer change failed. Inspect this new receipt; do not replay it: ${reason}` :
 			`The approved unchanged directory did not pass; this ownership attestation cannot change the bytes or replay the check: ${reason}`;
 		return;
@@ -550,6 +555,12 @@ function settleChecks(cwd, run, actor, remaining, target) {
 	for (const id of Object.keys(run.nodes)) {
 		const n = run.nodes[id]; // Repair can invalidate a later consumer in this same pass.
 		if (n.state !== "checking" || !n.check) continue;
+		const c=checks.get(n.check);
+		if (c?.kind==="component" && c.remedy) {
+			const job=remedyWriter(run,c);
+			if (job) settleProduction(cwd,run,job,c);
+			continue;
+		}
 		const receipt = checkReceipt(checks.get(n.check));
 		if (!receipt) continue;
 		if (receipt.exit === 0) { n.state = "published"; delete n.reason; }
@@ -983,7 +994,8 @@ export function advance(cwd, run, actor, discover, context = {}) {
 	for (const n of nodes) {
 		if (work.writers === "none" || reserved >= limit) break;
 		if (n.state !== "waiting") continue;
-		if (work.writers === "bound" && (!n.worker || !n.check || n.restoration)) continue;
+		const held = work.writers==="repair" && heldRepair(run,n);
+		if (work.writers==="repair" && !held) continue;
 		const r = n.review ? history.find(r => r.id === n.review) : undefined;
 		if (!n.worker && r && answeredLead(run,r,scopePaths(n.grain.directory))) {
 			n.state = "blocked";
@@ -991,11 +1003,11 @@ export function advance(cwd, run, actor, discover, context = {}) {
 			n.reason = "A newer goal receipt observed this historical lead's step passing before staffing";
 			continue;
 		}
-		const candidate = writerCandidate(run, n, r, work.scoped);
+		const candidate = writerCandidate(run, n, r, work.scoped || held==="successor");
 		if (!candidate) continue;
 		const { required, checkpoint, missing, continuation } = candidate;
 		try {
-			if (candidate.retained || work.writers === "bound") verifyRepairInputs(cwd,run,n,required,startingPoint());
+			if (candidate.retained || held && n.worker) verifyRepairInputs(cwd,run,n,required,startingPoint());
 			if (checkpoint && r) {
 				if (missing && missing !== run.goal?.check || !checkpointCurrent(run, checkpoint, tip()))
 					fail("stale_assignment", "The reviewed checkpoint, goal observation or target changed before staffing");
