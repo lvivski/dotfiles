@@ -9,9 +9,10 @@ import { readPolicy } from "./contract.mjs";
 import { prepareCorrection } from "./correction.mjs";
 import { presentQuestions } from "./decisions.mjs";
 import { advance, currentReview, newRun, reserveChangedRepair, reserveIteration, retryableReview, sameReviewInputs } from "./graph.mjs";
-import { baselineNotice, changedFrom, comparisonGoal, comparisonVerdict, goalReceipt, inconclusiveRepair, missingObservation, qualifiedProduct, relinquishable, stopForInput } from "./evidence.mjs";
+import { baselineNotice, changedFrom, comparisonGoal, comparisonVerdict, goalReceipt, inconclusiveRepair, qualifiedProduct, relinquishable, stopForInput } from "./evidence.mjs";
 import { observeTarget, releaseAssessment } from "./goal.mjs";
-import { admitted, assignment, awaitingReply, boundWriter, canDispatch, current, expired, identify, issue, receive, reserveCheck, transferableWriter, unissued } from "./native.mjs";
+import { admitted, assignment, boundWriter, canDispatch, current, expired, identify, issue, receive, reserveCheck } from "./native.mjs";
+import { awaitingReply, unissued } from "./reservation.mjs";
 import { checked } from "./plan.mjs";
 import { attachNotes, queueNote } from "./notes.mjs";
 import { diagnosticLine, indexBudgetError } from "./pages.mjs";
@@ -22,6 +23,7 @@ import { capture, changedFiles, commitAt, directoryBaseline, generationRoot, ret
 import { refusedCall } from "./recovery.mjs";
 import { checkAuthority, prepareRecheck } from "./recheck.mjs";
 import { prepareRepin } from "./repin.mjs";
+import { prepareResume, resumable } from "./resume.mjs";
 import { transferRequest } from "./transfer.mjs";
 import { stoppedCheck, successorRequest } from "./successor.mjs";
 import { reportReceiver } from "./reports.mjs";
@@ -51,7 +53,7 @@ function requireCurrentReader() {
 /** @typedef {import("./model.js").Run} Run */
 /** @typedef {import("./model.js").Effect} Effect */
 /** @typedef {{run:string,id:string,actor:string,inFlight?:boolean,recoveredOn?:number}} Call */
-/** @typedef {{runId:string,status:string,error?:string,reason?:string,failure?:{type:string}}} ScoutEnvelope */
+/** @typedef {import("./resume.mjs").ScoutEnvelope} ScoutEnvelope */
 /** @typedef {{execute:(tool:string,args:Effect["args"],id:string)=>Promise<unknown>,notify:(message:string)=>Promise<string>,recover?:(effect:Effect)=>Promise<unknown>,
  * ask?:(message:string)=>Promise<string|null>,confirm?:(message:string)=>Promise<boolean>,
  * readHistory?:import("@github/copilot-sdk").CopilotSession["rpc"]["eventLog"]["read"],isResearcher?:(workflowId:string,agentId:string)=>Promise<boolean>,
@@ -95,12 +97,6 @@ function requeueCapacity(e) {
 	e.state = "ready"; delete e.callId; e.error = waitingForSlot;
 	return true;
 }
-/** A halted attempt can also carry a declined limit change, accounting failure,
- * or other typed failure. Do not treat those as permission to resume.
- * @param {ScoutEnvelope} result */
-const resumable = result => (result.status === "paused" || result.status === "halted") &&
-	(!result.failure || result.failure.type === "workflow_provider_disconnected");
-
 /** @param {string} directory @param {Host} host */
 export function createRuntime(directory, host) {
 	/** @type {ReturnType<typeof openDatabase>|undefined} */ let database;
@@ -541,11 +537,12 @@ export function createRuntime(directory, host) {
 	async function continueScouts(id, actor, ticket, workflowId) {
 		const lookup = host.scoutSnapshot, resume = host.resumeScout;
 		if (!lookup || !resume) return;
-		await requireReadyOwner(cwd());
+		const origin = cwd();
 		const result = await lookup(workflowId);
 		if (result.runId !== workflowId) fail("wrong_workflow", "Discovery lookup returned another workflow");
 		if (result.status === "pending" || result.status === "running") return;
 		if (!await executable()) return;
+		if (resumable(result)) await requireReadyOwner(origin);
 		if (continuing.has(ticket)) return;
 		const shouldResume = db().mutateLocked(id, run => {
 			if (run.owner !== actor || !run.active || expired(run)) return false;
@@ -574,41 +571,23 @@ export function createRuntime(directory, host) {
 			if (prior.goal && qualifiedProduct(prior)) return status(prior, actor);
 		}
 		if (policy.deadline && Date.now() >= Date.parse(policy.deadline)) fail("deadline", "The authorized deadline has elapsed");
-		if (!prior?.active || resume) {
-			const retry = prior && missingObservation(prior) ? prior.goal : undefined;
-			const tickets = new Map(prior?.effects.filter(e => e.tool === "workflow" && e.state === "uncertain" && !e.workflowId).map(e => [e.id, e.callId]));
-			const bound = new Map(resume && prior && host.scoutSnapshot ? reviews(prior).flatMap(e =>
-				e.issuer === actor && e.workflowId && e.callId && awaitingReply(e) ? [[e.callId, e.workflowId]] : []) : []);
-			const writers = new Map(resume && prior ? prior.effects.filter(e => transferableWriter(prior, e)).map(e => [e.id, e.issuer]) : []);
-			if (prior?.active && !retry && !tickets.size && !bound.size && !writers.size) return status(prior, actor);
+		if (!prior) {
 			await requireReadyOwner(origin);
-			if (prior)
-				change(policy.id, r => {
-					if (r.active !== prior.active || retry && (r.goal?.check !== retry.check || !missingObservation(r)))
-						fail("run_conflict", "Run activation changed while starting");
-					r.active = true;
-					delete r.pauseReason;
-					// An interrupted, unbound discovery cannot have spent an agent call. Invalidate its old ticket.
-					for (const e of r.effects) if (e.tool === "workflow" && e.state === "uncertain" && !e.workflowId &&
-						e.callId && tickets.get(e.id) === e.callId) {
-						e.issuer = actor; e.state = "ready"; delete e.callId; delete e.error;
-						retireSuperseded(r, e);
-					}
-					admitted(r);
-					// issue() also compares the issuer inside its transaction. An old permission
-					// read and a takeover can never both claim the same reservation.
-					for (const e of r.effects) if (writers.get(e.id) === e.issuer && transferableWriter(r, e)) e.issuer = actor;
-					if (retry) advance(origin, r, actor, false, { retryGoal: true });
-				});
-			else {
-				const run = newRun(origin, policy, actor, grains);
-				admitted(run);
-				retain(origin, policy.base);
-				for (const g of grains) if (g.revision) retain(origin, g.revision);
-				if (run.goal && run.goal.commit !== policy.base) retain(origin, run.goal.commit);
-				db(true).insert(run);
-			}
-			await Promise.all([...bound].map(([ticket, workflowId]) => continueScouts(policy.id, actor, ticket, workflowId)));
+			const run = newRun(origin, policy, actor, grains);
+			admitted(run);
+			retain(origin, policy.base);
+			for (const g of grains) if (g.revision) retain(origin, g.revision);
+			if (run.goal && run.goal.commit !== policy.base) retain(origin, run.goal.commit);
+			db(true).insert(run);
+		} else if (!prior.active || resume) {
+			const plan = prepareResume(prior, resume, !!host.scoutSnapshot);
+			if (!plan) return status(prior, actor);
+			await requireReadyOwner(origin);
+			change(policy.id, r => {
+				plan.apply(r);
+				if (plan.retryGoal) advance(origin, r, actor, false, { retryGoal: true });
+			});
+			await Promise.all([...plan.workflows].map(([ticket, workflowId]) => continueScouts(policy.id, actor, ticket, workflowId)));
 		}
 		await drive(policy.id, actor, true);
 		return status(read(policy.id), actor);

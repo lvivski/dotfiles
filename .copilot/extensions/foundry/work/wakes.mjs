@@ -1,5 +1,6 @@
 import { checkReceipt } from "./evidence.mjs";
-import { awaitingReply, expired } from "./native.mjs";
+import { expired } from "./native.mjs";
+import { awaitingReply } from "./reservation.mjs";
 import { timelyChecks } from "./goal.mjs";
 
 /** @typedef {import("./model.js").Run} Run */

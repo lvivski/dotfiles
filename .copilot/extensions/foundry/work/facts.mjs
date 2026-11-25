@@ -1,9 +1,9 @@
 import { remainingAssignments } from "./capacity.mjs";
-import { checkpointReceipt, checkReceipt, comparisonGoal, currentEvaluation, failedCandidate, goalReceipt, leadGoal, milestoneBlocker, productPin } from "./evidence.mjs";
-import { awaitingReply } from "./native.mjs";
+import { checkpointReceipt, checkReceipt, currentEvaluation, failedCandidate, goalReceipt, milestoneBlocker, productPin } from "./evidence.mjs";
+import { awaitingReply } from "./reservation.mjs";
 import { discoverLeads } from "./leads.mjs";
 import { working, writerInputs } from "./plan.mjs";
-import { checkpointWake, comparison, reading, reviews } from "./reviews.mjs";
+import { atCheckpoint, checkpointScope, checkpointWake, reading, reviews } from "./reviews.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @param {Run} run */
@@ -57,25 +57,17 @@ export function releaseFacts(run, target) {
 		obsolete ? heldPin ? "superseded" : "repin" : last && last.commit !== at.commit ? "new-product" :
 		effect?.state === "retired" ? "retired" : !receipt ? "pending" : receipt.exit === 2 ? "missing" : receipt.exit === 1 ? "unmet" : receipt.exit === 0 ? "met" : "incomplete";
 	const history = reviews(run).filter(r=>currentEvaluation(run,r)), nodes = Object.values(run.nodes), byId = new Map(history.map(r => [r.id, r]));
-	/** @param {import("./model.js").Review|undefined} r */
-	const scopedComparison = r => {
-		if (r?.lead) return r.lead.checkpoint === last?.check && leadGoal(r.lead) === at?.check;
-		const i = comparison(run, r);
-		const goal = comparisonGoal(i);
-		return !!i?.basis && i.receipt === last?.check && (!goal || goal === at?.check);
-	};
 	const remaining = remainingAssignments(run);
 	const review = (goal === "met" || goal === "missing") && [...new Map(history.map(r => [r.squad, r])).values()].some(r =>
-		r.base === at?.commit && scopedComparison(r) &&
+		r.base === at?.commit && atCheckpoint(run, checkpointScope(run,r)) &&
 		(reading(r) || r.state === "reported" || remaining > 0 && checkpointWake(run, history.filter(p => p.squad === r.squad), r.base, r.version)));
 	const exactProduct = !!last && at?.commit === last.commit && last.target === target && !!checkpointReceipt(run, last.check, last.commit);
 	const historicalWork = goal === "missing" ? nodes.filter(n => {
 		if (retainedRepair(run,n)) return true;
 		const r = n.review && byId.get(n.review);
 		if (!r) return false;
-		const iteration = comparison(run,r);
-		const checkpoint = r.lead?.checkpoint ?? (iteration?.basis && iteration.receipt);
-		return scopedComparison(r) || n.reuse || continuingRepair(run, n, r, checkpoint);
+		const scope = checkpointScope(run,r);
+		return atCheckpoint(run,scope) || n.reuse || continuingRepair(run, n, r, scope?.check);
 	}) : [];
 	// A chain can advance if some writer is reserved or its next prerequisite can
 	// actually start. A report alone cannot fund another writer (including a repair).

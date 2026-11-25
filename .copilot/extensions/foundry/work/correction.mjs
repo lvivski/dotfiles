@@ -1,34 +1,12 @@
 import { isUtf8 } from "node:buffer";
+import { correctionBasis, revisedTask } from "./amendment.mjs";
 import { generationOf } from "./evidence.mjs";
 import { admitted } from "./native.mjs";
-import { candidateHandoff, originalAttempt, stalePins } from "./plan.mjs";
+import { originalAttempt, stalePins } from "./plan.mjs";
 import { changedFiles, commitAt, committedFile, verifyContracts } from "./product.mjs";
-import { comparison } from "./reviews.mjs";
-import { comparisonScope, covers, digest, fail, fields, name, relative, roots, sameScope, scopeLabel, text } from "./values.mjs";
-
-/** Remove exactly one literal occurrence from the original scoped proposal; never accept replacement instructions.
- * @param {import("./model.js").Review} review @param {string} grain @param {string} clause */
-export function revisedTask(review, grain, clause) {
-	const report = review.observation, g = report?.grains[0];
-	if (review.state !== "observed" || report?.outcome !== "regenerate" || report.grains.length !== 1 ||
-		typeof g !== "object" || g.id !== grain) return;
-	const at = g.task.indexOf(clause);
-	if (at < 0 || g.task.indexOf(clause, at + 1) >= 0) return;
-	const task = g.task.slice(0, at) + g.task.slice(at + clause.length);
-	if (task.trim()) return task;
-}
+import { digest, fail, fields, name, relative, roots, sameScope, scopeLabel, text } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
-/** @param {Run} run @param {import("./model.js").Review} review @param {string} file */
-export function correctionBasis(run,review,file) {
-	const g=review.observation?.grains[0];
-	if (typeof g!=="object") return;
-	const i=comparison(run,review);
-	if (i && sameScope(comparisonScope(i),g.directory)) return {blob:i.blob};
-	const n=review.predecessor;
-	if (!i && n?.stop?.kind==="writer-cannot-repair" && n.check && sameScope(n.grain.directory,g.directory) &&
-		g.check===n.grain.check && covers(g.directory,file) && candidateHandoff(run,n,g,review)) return {predecessorCheck:n.check};
-}
 /** @param {string} cwd @param {Run} run @param {string} actor @param {Record<string,unknown>} a */
 export function prepareCorrection(cwd, run, actor, a) {
 	fields(a, ["run","grain","review","worker","clause","file","excerpt"]);

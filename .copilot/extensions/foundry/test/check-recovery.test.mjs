@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 import { factory, git, put } from "./fixture.mjs";
 import { openDatabase } from "../work/database.mjs";
 import { createRuntime } from "../work/runtime.mjs";
@@ -33,6 +34,35 @@ function upgrade(t,f,cwd,overrides) {
 	t.after(()=>r.close());
 	return r;
 }
+
+test("an issued check can read its ledger and publish its receipt without the scheduler or operator commands", async t => {
+	const f = priorFactory(t,run,source,files('console.log("frozen goal checked")'));
+	git(f.root,"branch","target",f.tip);
+	const issuer = f.runtime(f.root,{watchReceipts:()=>()=>{},execute:async(tool,args,id)=>
+		tool === "bash" ? {resultType:"unconfirmed"} : f.execute(tool,args,id)});
+	await f.start(issuer);
+	issuer.close();
+	const db = openDatabase(f.root); t.after(()=>db.close());
+	const before = db.read(run), issued = before?.effects.find(e=>e.id===before.goal?.check);
+	assert.ok(issued?.kind==="goal" && issued.callId && !issued.runnerClaim && !issued.receipt);
+
+	const work = path.join(path.dirname(f.root),"observer");
+	const coordinator = new Set(["native.mjs","graph.mjs","engine.mjs","runtime.mjs","correction.mjs","repin.mjs","restoration.mjs"]);
+	cpSync(fileURLToPath(new URL("../work/",import.meta.url)),work,{recursive:true,filter:p=>!coordinator.has(path.basename(p))});
+	const observe = () => spawnSync(process.execPath,[path.join(work,"runner.mjs"),f.root,run,issued.id],{encoding:"utf8"});
+	const first = observe();
+	assert.equal(first.status,0,first.stderr);
+	const completed = db.read(run)?.effects.find(e=>e.id===issued.id);
+	assert.ok(completed?.kind==="goal" && completed.callId===issued.callId && completed.runnerClaim);
+	db.verifySigned(run,completed);
+	assert.equal(completed.receipt?.commit,f.tip); assert.equal(completed.receipt.exit,0);
+	assert.match(completed.receipt.output,/frozen goal checked/);
+	const duplicate = observe();
+	assert.notEqual(duplicate.status,0); assert.match(duplicate.stderr,/exclusive to the current issued attempt/);
+	const owner = upgrade(t,f,f.root); await turn(owner,"owner");
+	assert.equal(owner.inspect({run},"owner").qualified,f.tip);
+	assert.deepEqual(db.read(run)?.effects.filter(e=>e.kind==="goal"),[completed]);
+});
 
 for (const fault of ["component","product","goal","signed-null","moved-goal"]) test(`fresh, approved observation of the frozen ${fault} check`, async t => {
 	// The evaluator's external observation can change, not its immutable script.

@@ -1,9 +1,11 @@
 import { remainingAssignments } from "./capacity.mjs";
+import { productOverlayPaths } from "./contract.mjs";
 import { checkpointReceipt, currentEvaluation, goalReceipt, productPin } from "./evidence.mjs";
-import { admitted, awaitingReply, current, reserveProduct, unissued } from "./native.mjs";
+import { admitted, current, reserveProduct } from "./native.mjs";
+import { awaitingReply, unissued } from "./reservation.mjs";
 import { changedFiles, commitAt, entries, outside, regularFiles, retain, verifyContracts } from "./product.mjs";
 import { questions, releasedReviews, retireSuperseded, reviews } from "./reviews.mjs";
-import { digest, fail, fields, relative, roots, text } from "./values.mjs";
+import { digest, fail, fields, relative, text } from "./values.mjs";
 import { retainedMode } from "./transfer.mjs";
 import { partitionConflict } from "./partition.mjs";
 
@@ -34,16 +36,6 @@ function settled(run, target) {
 			e.kind === "scout" && e.state === "reported" && currentEvaluation(run,e) && e.base === goal.commit))
 		fail("unsettled_checkpoint", "Product repinning requires a quiescent current checked product and settled unmet or missing goal; resolve pending work and holds first");
 	return {last, goal};
-}
-
-/** No overlay may replace a conserved contract, another evaluator or a writable path.
- * Product helpers have an explicit private namespace; unlisted .foundry files are not implicitly checker code.
- * @param {Run} run @param {string[]} files */
-export function productOverlayPaths(run,files) {
-	const p = run.policy, check = p.productCheck;
-	const protectedFiles = [p.source, ...p.files.filter(f=>f!==check), ...p.squads.flatMap(s=>"areas" in s ? [s.charter,...s.areas,...s.boundary,...s.checks] : [s.charter]),
-		...Object.values(run.nodes).flatMap(n=>[n.grain.check,n.grain.specification,...n.grain.boundary,...roots(n.grain.directory)])];
-	return check.startsWith(".foundry/") && files.length > 0 && files.every(f=>(f===check || f.startsWith(`${check}.d/`)) && !/^\.foundry\/[^/]+\.json$/i.test(f) && outside(f,protectedFiles));
 }
 
 /** Prepare immutable inputs outside the transaction. The approval is for both revisions and the complete diff.

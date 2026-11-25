@@ -1,5 +1,5 @@
 import { parseObservation } from "./graph.mjs";
-import { awaitingReply } from "./native.mjs";
+import { awaitingReply } from "./reservation.mjs";
 import { researchResult } from "./research.mjs";
 import { blockReview, investigation, reviews } from "./reviews.mjs";
 import { isPacket } from "./snapshot.mjs";

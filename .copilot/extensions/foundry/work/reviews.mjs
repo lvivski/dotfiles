@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { answeredLead, currentFailures, delivered, repairDirectory } from "./blockers.mjs";
+import { evidenceDecision, priorObservations, readWake } from "./cursor.mjs";
 import { workerLimit } from "./policy.mjs";
 import { comparisonGoal, currentEvaluation, leadGoal, milestoneBlocker, productPin, qualifiedProduct, repairDetail, sameEvaluation } from "./evidence.mjs";
 import { attachedNotes, noteId } from "./notes.mjs";
@@ -61,15 +62,6 @@ export const wakeSource = (run, r) => r.wake && reviews(run).find(p => p.id === 
 export const investigation = (review, squad) => review.wake?.key === "research" ||
 	!!referenceRepo(review.wake?.key) && "areas" in squad && !!squad.researchAgent;
 
-/** @param {Review[]} history @param {Review} review */
-function* priorObservations(history, review) {
-	for (const r of history) {
-		if (r.id === review.id) break;
-		if (r.state === "observed" && r.squad === review.squad && r.base === review.base &&
-			r.version === review.version && sameEvaluation(r,review)) yield r;
-	}
-}
-
 /** Carry the deciding scout's evidence into its writer, including after focused file reads.
  * @param {Run} run @param {Review} review */
 export function researchContext(run, review) {
@@ -89,25 +81,6 @@ export function requestedFiles(run, review) {
 	return files;
 }
 
-/** Only delivered text advances the contiguous prefix of a pinned blob. After EOF a decision
- * may redisplay the final range, not request a page starting past the end.
- * @param {Review[]} history @param {Review} review @param {string} file @param {string} [oid]
- * @returns {{kind:"unread"|"partial"|"complete", offset:number}} */
-export function fileProgress(history, review, file, oid) {
-	/** @type {import("./model.js").Packet["excerpt"]} */ let last;
-	for (const { packet } of [...priorObservations(history, review), review]) {
-		if (!packet) continue;
-		const pin = oid ?? last?.oid;
-		if (Object.hasOwn(packet.files, file) && (!pin || packet.files[file] === pin)) return { kind: "complete", offset: 0 };
-		const part = packet.excerpt;
-		if (part?.path !== file || pin && part.oid !== pin) continue;
-		const end = last?.end ?? 0;
-		if (part.start <= end && end < part.end) last = part;
-	}
-	if (!last) return { kind: "unread", offset: 0 };
-	return last.end === last.length ? { kind: "complete", offset: last.start } : { kind: "partial", offset: last.end };
-}
-
 /** @param {Run} run @param {Review} r @param {import("./model.js").Squad} squad */
 export const canInvestigate = (run, r, squad) => "areas" in squad && !!squad.researchAgent && !reviews(run).some(e =>
 	sameEvaluation(e,r) && e.squad === r.squad && e.base === r.base && e.version === r.version && e.wake?.key === "research");
@@ -123,31 +96,6 @@ export function correction(run, review) {
 }
 
 export const staleReviewReason = "Chartered inputs changed during review";
-
-/** @param {string} file */
-export const unchangedRead = file => `No further focused read of ${file}: the pinned evidence is unchanged`;
-export const evidenceDecision = "decide-from-evidence";
-
-/** @param {import("./model.js").Observation|undefined} o */
-export const readSource = o => o?.file ? `file:${o.file}` : o?.receipt ? `receipt:${o.receipt}` : o?.detail ? `detail:${o.detail}` : undefined;
-/** Never store or echo a potentially large literal in the dispatch key.
- * @param {import("./model.js").Observation} o */
-export const readKey = o => `read:${digest([readSource(o), o.match ?? null, o.offset ?? 0])}`;
-
-/** Resume an implicit receipt/detail read at the first unseen unit, even after another source.
- * Explicit offsets and literal searches retain their own no-progress guards.
- * @param {Review[]} history @param {Review} review @param {import("./model.js").Observation} o */
-export function contextProgress(history, review, o) {
-	const source = readSource(o);
-	if (!source || o.file || o.match || o.offset !== undefined) return;
-	let end = 0, last = 0, length = 0;
-	const pages = [...priorObservations(history, review), review].flatMap(r => {
-		const p = r.packet?.read;
-		return p?.source === source && !p.miss ? [p] : [];
-	}).sort((a,b) => a.start - b.start);
-	for (const p of pages) if (p.start <= end && end < p.end) { last = p.start; end = p.end; length = p.length; }
-	if (end) return end === length ? {kind:"complete", offset:last} : {kind:"partial", offset:end};
-}
 
 /** Notes travel only along their own same-input evidence request chain, not to a later
  * checkpoint, another squad or an investigation. Never look up an arbitrary receipt by ID.
@@ -196,6 +144,17 @@ function comparisonReview(run, review) {
 /** @param {Run} run @param {Review|undefined} review */
 export const comparison = (run, review) => comparisonReview(run, review)?.iteration;
 
+/** @param {Run} run @param {Review|undefined} review */
+export function checkpointScope(run, review) {
+	if (review?.lead) return {check:review.lead.checkpoint, goal:leadGoal(review.lead)};
+	const i = comparison(run, review);
+	if (i?.basis) return {check:i.receipt, goal:comparisonGoal(i)};
+}
+
+/** @param {Run} run @param {ReturnType<typeof checkpointScope>} scope */
+export const atCheckpoint = (run, scope) => !!scope && scope.check === run.products.at(-1)?.check &&
+	(!scope.goal || scope.goal === run.goal?.check);
+
 /** Only immutable review evidence determines same-checkpoint handoff scope.
  * @param {Run} run @param {Review} review @param {import("./model.js").Observation} report */
 export function successorDirectory(run, review, report) {
@@ -210,44 +169,6 @@ export function successorDirectory(run, review, report) {
 
 /** @param {Run} run @param {Review} r @param {import("./model.js").Observation} report */
 export const reviewHandoff = (run, r, report) => stoppedHandoff(run, r, report, successorDirectory(run, r, report));
-
-/** @param {Review[]} history @param {Review} review @param {import("./model.js").Observation} o */
-export function canContinueRead(history, review, o) {
-	const source = readSource(o), offset = o.offset;
-	if (offset === undefined || offset === 0) return true;
-	for (const r of [...priorObservations(history, review), review]) {
-		const read = r.packet?.read;
-		if (read?.source === source && read && !read.miss && offset < read.length &&
-			(offset === read.end || o.match && read.hit !== undefined && offset === read.hit + 1)) return true;
-	}
-	return false;
-}
-
-/** Another spelling of a query is not progress if it yields neither new text nor a later hit.
- * @param {Review[]} history @param {Review} review */
-export function exhaustedRead(history, review) {
-	const read = review.packet?.read;
-	if (!read || read.miss) return !!read;
-	if (!review.wake) return false; // An approved opening excerpt is not a repeated scout request.
-	let end = read.start, furthestHit = -1;
-	const earlier = [...priorObservations(history, review)].flatMap(r => r.packet?.read?.source === read.source ? [r.packet.read] : []);
-	for (const p of earlier.sort((a, b) => a.start - b.start)) {
-		if (read.hit !== undefined && read.hit === p.hit) return true;
-		if (p.start <= end) end = Math.max(end, p.end);
-		furthestHit = Math.max(furthestHit, p.hit ?? -1);
-	}
-	return end >= read.end && (read.hit === undefined || read.hit <= furthestHit);
-}
-
-/** @param {Review[]} past @param {Review} last */
-export function rejectedRead(past, last) {
-	const o = last.observation;
-	if (last.state !== "blocked" || o?.outcome !== "needs-evidence") return;
-	if (o.file && last.error === unchangedRead(o.file)) return fileProgress(past, last, o.file);
-	const source = readSource(o);
-	if (source && last.packet?.sources?.includes(source) && last.error === "Repeated read of unchanged pinned evidence")
-		return contextProgress(past, last, o);
-}
 
 /** Reserve a release once per proposal. A read overtaken by a checkpoint cannot decide it.
  * Refusals and invalid results are terminal, not excuses to retry on a later turn.
@@ -294,17 +215,11 @@ export function nextReview(run, past, base, version) {
 	const last = past.at(-1);
 	const seen = run.goal ? past.some(r => r.version === version) : last?.version === version;
 	const obs = last?.state === "observed" && last.base === base ? last.observation : undefined;
+	const wake = last && readWake(past, last, base, version);
+	if (wake) return {wake};
 	let key;
 	if (last?.base === base && correction(run, last)) key = "displaced-input";
-	if (last?.base === base && last.version === version && rejectedRead(past, last)?.kind === "complete") key = evidenceDecision;
 	if (obs?.outcome === "needs-decision" && last?.decision?.status === "answered") key = last.id;
-	if (last && obs?.outcome === "needs-evidence" && last.version === version) {
-		if (obs.match || obs.offset !== undefined || !obs.file) key = readKey({...obs, offset:obs.offset ?? contextProgress(past, last, obs)?.offset});
-		else {
-			const progress = fileProgress(past, last, obs.file);
-			key = progress.kind === "partial" ? `page:${progress.offset}:${obs.file}` : `file:${obs.file}`;
-		}
-	}
 	if (obs?.outcome === "needs-research") key = "research";
 	if (last && (obs?.outcome === "researched" || obs?.outcome === "unresolved" && obs.findings?.length)) key = `research-result:${last.id}`;
 	if (obs?.outcome === "waiting") {
@@ -334,14 +249,10 @@ export function nextReview(run, past, base, version) {
 /** Only continue the work admitted on this checkpoint, not an unrelated deferred review.
  * @param {Run} run @param {Review[]} past @param {string} base @param {string} version */
 export function checkpointWake(run, past, base, version) {
-	const r = past.at(-1), at = run.goal, checkpoint = run.products.at(-1)?.check;
-	if (!r || !at || r.base !== base || !checkpoint || answeredLead(run,r)) return;
-	const lead = r.lead, i = comparison(run, r), missing = comparisonGoal(i);
-	if (lead ? leadGoal(lead) !== at.check || lead.checkpoint !== checkpoint :
-		r.state !== "observed" || r.observation?.outcome !== "needs-evidence" || !i?.basis || i.receipt !== checkpoint ||
-		missing && missing !== at.check) return;
-	const wake = nextReview(run, past, base, version)?.wake;
-	if (wake?.review === r.id) return { wake, lead };
+	const r = past.at(-1);
+	if (!r || !run.goal || r.base !== base || !atCheckpoint(run, checkpointScope(run,r)) || answeredLead(run,r)) return;
+	const wake = r.lead ? nextReview(run, past, base, version)?.wake : readWake(past, r, base, version);
+	if (wake?.review === r.id) return { wake, lead:r.lead };
 }
 
 /** @param {Review} r @param {string} reason */

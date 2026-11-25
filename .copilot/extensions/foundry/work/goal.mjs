@@ -1,3 +1,4 @@
+import { admissionPolicy } from "./admission.mjs";
 import { checkReceipt, currentEvaluation, goalReceipt, milestoneBlocker, productPin } from "./evidence.mjs";
 import { remainingAssignments } from "./capacity.mjs";
 import { transition, unhandled } from "./engine.mjs";
@@ -78,12 +79,11 @@ export function releaseAssessment(cwd, run, tip, retry = false) {
 			return { ...wait, target, reason: "contract-changed", error: error.message };
 		}
 		if (conflict) {
-			const normal=transition(releaseFacts(run,target),false).admission;
+			const normal=admissionPolicy(transition(releaseFacts(run,target),false).admission);
 			const repair=run.goal?.target===target && !run.join && !run.blocker && !run.conflict && !run.effects.some(e=>e.permissionHold) &&
-				Object.values(run.nodes).some(n=>n.state==="waiting" && n.worker && n.check) &&
-				(normal==="open" || normal==="checkpoint" || normal==="repaired-checkpoint");
+				Object.values(run.nodes).some(n=>n.state==="waiting" && n.worker && n.check) && normal.writers==="eligible";
 			return /** @type {const} */ ({...wait,target,reason:"ownership-conflict",error:conflict,
-				admission:!repair ? "closed" : normal==="open" ? "bound-repairs" : "bound-checkpoint-repairs"});
+				admission:!repair ? "closed" : normal.scoped ? "bound-checkpoint-repairs" : "bound-repairs"});
 		}
 	}
 	const decision=transition(releaseFacts(run, target), retry);

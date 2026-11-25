@@ -1,7 +1,8 @@
 import { assignmentCount } from "./capacity.mjs";
 import { goalReceipt, milestoneBlocker, missingObservation, qualifiedProduct } from "./evidence.mjs";
 import { timingFacts } from "./metrics.mjs";
-import { awaitingReply, current, expired } from "./native.mjs";
+import { current, expired } from "./native.mjs";
+import { awaitingReply } from "./reservation.mjs";
 import { checked, liveNeeds } from "./plan.mjs";
 import { questions, reviews, reviewStatus } from "./reviews.mjs";
 import { fail, scopeLabel } from "./values.mjs";

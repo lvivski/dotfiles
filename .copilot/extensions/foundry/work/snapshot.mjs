@@ -1,22 +1,20 @@
-import { planDirectory, validOutcome } from "./contract.mjs";
-import { correctionBasis, revisedTask } from "./correction.mjs";
+import { planDirectory, productOverlayPaths, validOutcome } from "./contract.mjs";
+import { correctionBasis, revisedTask } from "./amendment.mjs";
 import { validSignals } from "./signals.mjs";
 import { checkpointReceipt, checkReceipt, comparisonVerdict, exhaustedCandidate, goalReceipt, inconclusiveRepair, launcherFailure, missingInput, omittedStep, productReceiptAt, relinquishable, sameEvaluation } from "./evidence.mjs";
-import { productOverlayPaths } from "./repin.mjs";
 import { validFeedback } from "./feedback.mjs";
 import { validLead } from "./leads.mjs";
 import { attachedNotes, noteId, noteText, sourceReceipt } from "./notes.mjs";
 import { deliveredFile, indexBudgetError, rejectedSource, validMatch } from "./pages.mjs";
 import { assignmentCount } from "./capacity.mjs";
-import { unissued } from "./native.mjs";
+import { unissued } from "./reservation.mjs";
 import { candidateHandoff, checked, owns, validateNodes } from "./plan.mjs";
 import { outside } from "./product.mjs";
 import { comparison, investigation, readerInterrupted, successorDirectory } from "./reviews.mjs";
 import { assignmentDirectory, comparisonScope, contains, covers, digest, fail, members, mixed, ownership, relative, sameScope, roots as scopePaths } from "./values.mjs";
 import { productOwnership, retainedMode, understandsTransfers } from "./transfer.mjs";
 import { narrower, stoppedCheck } from "./successor.mjs";
-import { historicalGrant, validRestoration } from "./restoration.mjs";
-import { restoredProduct } from "./partition.mjs";
+import { historicalGrant, restoredProduct, validRestoration } from "./partition.mjs";
 
 /** @typedef {(value:unknown)=>boolean} Guard */
 /** @type {Guard} */

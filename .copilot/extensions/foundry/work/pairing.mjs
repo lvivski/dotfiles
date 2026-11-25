@@ -2,11 +2,12 @@ import { availableReservations } from "./capacity.mjs";
 import { checkReceipt, goalReceipt } from "./evidence.mjs";
 import { checkpointCurrent } from "./facts.mjs";
 import { changes, verifyJoinedInputs } from "./graph.mjs";
-import { admitted, awaitingReply, reserveCheck } from "./native.mjs";
-import { matchesPair } from "./partition.mjs";
+import { admitted, reserveCheck } from "./native.mjs";
+import { historicalGrant, matchesPair, validRestoration } from "./partition.mjs";
 import { waiting, writerInputs } from "./plan.mjs";
 import { changedFiles, combinedTree, commitAt, contractPaths, directoryBaseline, pairedCommit, regularFiles, treeOf, verifyContracts } from "./product.mjs";
-import { historicalGrant, validRestoration, verifiedCitations } from "./restoration.mjs";
+import { awaitingReply } from "./reservation.mjs";
+import { verifiedCitations } from "./restoration.mjs";
 import { activeConsumer } from "./transfer.mjs";
 import { digest, fail, fields, name } from "./values.mjs";
 

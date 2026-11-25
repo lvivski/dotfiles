@@ -1,6 +1,37 @@
 import { outside } from "./product.mjs";
 import { checkReceipt } from "./evidence.mjs";
-import { contains, mixed, roots, sameScope, scopeLabel } from "./values.mjs";
+import { touchesCut } from "./transfer.mjs";
+import { contains, covers, digest, mixed, roots, sameScope, scopeLabel } from "./values.mjs";
+
+/** @param {import("./model.js").Run} run @param {string} from @param {string} historical */
+export function historicalGrant(run,from,historical) {
+	const product=run.products.find(p=>p.check===historical), candidate=product?.outputs[from];
+	if (!product || !candidate) return;
+	const index=run.effects.findIndex(e=>e.id===historical), prior=run.effects.slice(0,index);
+	const component=prior.findLast(e=>e.kind==="component" && e.grain===from && e.commit===candidate && checkReceipt(e)?.exit===0);
+	const launch=component && prior.slice(0,prior.indexOf(component)).findLast(e=>e.kind==="writer" && e.grain===from && e.nativeId===component.issuer && e.state==="done");
+	if (!launch || !component?.commit) return;
+	const review=prior.slice(0,prior.indexOf(launch)).findLast(e=>e.kind==="scout" && e.state==="observed" &&
+		e.observation?.outcome==="regenerate" && e.observation.grains.some(g=>typeof g!=="string" && g.id===from));
+	const g=review?.kind==="scout" && review.observation?.grains.find(g=>typeof g!=="string" && g.id===from);
+	if (review?.kind==="scout" && g && typeof g!=="string" && mixed(g.directory) && component.check===g.check &&
+		launch.kind==="writer" && (!launch.finished || sameScope(launch.finished.directory,g.directory)))
+		return {product,component,candidate:component.commit,scope:g.directory,grain:g,squad:review.squad};
+}
+
+/** @param {import("./model.js").Run} run @param {import("./model.js").Node} n */
+export function validRestoration(run,n) {
+	const r=n.restoration;
+	if (!r) return false;
+	const h=historicalGrant(run,r.from,r.historical), p=run.products.find(p=>p.check===r.checkpoint), owner=run.nodes[r.retainer];
+	const goal=run.effects.find(e=>e.id===r.goal);
+	return h && p && run.products.indexOf(h.product)<=run.products.indexOf(p) && owner && !run.nodes[r.from] &&
+		goal?.kind==="goal" && goal.commit===p.commit && [1,2].includes(checkReceipt(goal)?.exit ?? -1) &&
+		n.grain.directory===h.scope.primary && n.grain.check===h.component.check && !n.grain.revision && !n.review && !n.reuse &&
+		digest(n.grain.needs)===digest(h.grain.needs) && h.scope.files.every(f=>covers(owner.grain.directory,f) && !touchesCut(owner.retained ?? [],f)) &&
+		n.base===p.commit && !Array.isArray(n.priorSource) && n.priorSource?.tree===r.tree &&
+		outside(owner.grain.directory,[h.scope.primary]);
+}
 
 /** @param {import("./model.js").Run} run @param {import("./model.js").Pairing} pair @param {string} [target] */
 export function matchesPair(run,pair,target) {

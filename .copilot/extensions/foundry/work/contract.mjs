@@ -69,6 +69,15 @@ function fixed(row) {
 /** @param {string} filename */
 export const planDirectory = filename => filename.replace(/\.json$/, "");
 
+/** Product overlays must stay inside the evaluator's private namespace and outside all other grants.
+ * @param {import("./model.js").Run} run @param {string[]} files */
+export function productOverlayPaths(run,files) {
+	const p = run.policy, check = p.productCheck;
+	const protectedFiles = [p.source, ...p.files.filter(f=>f!==check), ...p.squads.flatMap(s=>"areas" in s ? [s.charter,...s.areas,...s.boundary,...s.checks] : [s.charter]),
+		...Object.values(run.nodes).flatMap(n=>[n.grain.check,n.grain.specification,...n.grain.boundary,...roots(n.grain.directory)])];
+	return check.startsWith(".foundry/") && files.length > 0 && files.every(f=>(f===check || f.startsWith(`${check}.d/`)) && !/^\.foundry\/[^/]+\.json$/i.test(f) && outside(f,protectedFiles));
+}
+
 /** @param {string} cwd @param {{name:string,oid:string}} entry */
 export function journeyText(cwd, entry) {
 	const bytes = git(cwd, ["cat-file", "blob", entry.oid]);

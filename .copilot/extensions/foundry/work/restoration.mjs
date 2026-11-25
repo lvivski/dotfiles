@@ -2,46 +2,17 @@ import { availableReservations } from "./capacity.mjs";
 import { checkReceipt, goalReceipt } from "./evidence.mjs";
 import { checkpointCurrent } from "./facts.mjs";
 import { reserveWriter } from "./graph.mjs";
-import { admitted, awaitingReply } from "./native.mjs";
+import { admitted } from "./native.mjs";
 import { deliveredFile } from "./pages.mjs";
-import { displacement } from "./partition.mjs";
+import { displacement, historicalGrant } from "./partition.mjs";
 import { owns, validateNodes, waiting, writerInputs } from "./plan.mjs";
 import { changedFiles, commitAt, directoryBaseline, outside, regularFiles, verifyContracts } from "./product.mjs";
+import { awaitingReply } from "./reservation.mjs";
 import { comparison, requestedFiles } from "./reviews.mjs";
 import { activeConsumer, touchesCut } from "./transfer.mjs";
-import { covers, digest, fail, fields, mixed, name, sameScope } from "./values.mjs";
+import { covers, digest, fail, fields, name, sameScope } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
-/** @param {Run} run @param {string} from @param {string} historical */
-export function historicalGrant(run,from,historical) {
-	const product=run.products.find(p=>p.check===historical), candidate=product?.outputs[from];
-	if (!product || !candidate) return;
-	const index=run.effects.findIndex(e=>e.id===historical), prior=run.effects.slice(0,index);
-	const component=prior.findLast(e=>e.kind==="component" && e.grain===from && e.commit===candidate && checkReceipt(e)?.exit===0);
-	const launch=component && prior.slice(0,prior.indexOf(component)).findLast(e=>e.kind==="writer" && e.grain===from && e.nativeId===component.issuer && e.state==="done");
-	if (!launch || !component?.commit) return;
-	const review=prior.slice(0,prior.indexOf(launch)).findLast(e=>e.kind==="scout" && e.state==="observed" &&
-		e.observation?.outcome==="regenerate" && e.observation.grains.some(g=>typeof g!=="string" && g.id===from));
-	const g=review?.kind==="scout" && review.observation?.grains.find(g=>typeof g!=="string" && g.id===from);
-	if (review?.kind==="scout" && g && typeof g!=="string" && mixed(g.directory) && component.check===g.check &&
-		launch.kind==="writer" && (!launch.finished || sameScope(launch.finished.directory,g.directory)))
-		return {product,component,candidate:component.commit,scope:g.directory,grain:g,squad:review.squad};
-}
-
-/** @param {Run} run @param {import("./model.js").Node} n */
-export function validRestoration(run,n) {
-	const r=n.restoration;
-	if (!r) return false;
-	const h=historicalGrant(run,r.from,r.historical), p=run.products.find(p=>p.check===r.checkpoint), owner=run.nodes[r.retainer];
-	const goal=run.effects.find(e=>e.id===r.goal);
-	return h && p && run.products.indexOf(h.product)<=run.products.indexOf(p) && owner && !run.nodes[r.from] &&
-		goal?.kind==="goal" && goal.commit===p.commit && [1,2].includes(checkReceipt(goal)?.exit ?? -1) &&
-		n.grain.directory===h.scope.primary && n.grain.check===h.component.check && !n.grain.revision && !n.review && !n.reuse &&
-		digest(n.grain.needs)===digest(h.grain.needs) && h.scope.files.every(f=>covers(owner.grain.directory,f) && !touchesCut(owner.retained ?? [],f)) &&
-		n.base===p.commit && !Array.isArray(n.priorSource) && n.priorSource?.tree===r.tree &&
-		outside(owner.grain.directory,[h.scope.primary]);
-}
-
 /** An assigning scout's citation is not necessarily a writer input. Only the
  * published retainer can use this distinction, and only for the same Git evidence.
  * @param {string} cwd @param {Run} run @param {import("./model.js").Node} owner @param {string} primary @param {string} commit */

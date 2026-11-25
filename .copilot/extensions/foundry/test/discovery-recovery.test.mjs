@@ -327,12 +327,12 @@ for (const status of ["paused", "halted"]) test(`explicit resume continues only 
 	assert.deepEqual(stopped.reviews.map(r => r.state), ["observed", "reading"]);
 	assert.equal(stopped.reviews[1].workflowId, workflow);
 	owner.close();
-	let held = true;
+	let held = true, holdDuringLookup = false;
 	const issuer = f.runtime(f.root, {
 		permissionBlocker: async () => held ? { scope: "session", message: "Manual approvals." } : null,
 		scout: async () => assert.fail("No replacement workflow"),
 		scoutState: async id => ({ runId: id, status }),
-		scoutSnapshot: async id => ({ runId: id, status }),
+		scoutSnapshot: async id => { if (holdDuringLookup) held = true; return { runId: id, status }; },
 		resumeScout: async id => {
 			resumes++; assert.equal(id, workflow);
 			const jobs = await f.owner.scoutBatch(run, dispatch, "owner", workflow);
@@ -347,6 +347,11 @@ for (const status of ["paused", "halted"]) test(`explicit resume continues only 
 	held = false;
 	await issuer.operation("start", { source }, "owner"); await nextTurn();
 	assert.equal(resumes, 0);
+	holdDuringLookup = true;
+	await assert.rejects(issuer.operation("resume", { source }, "owner"), /Manual approvals/);
+	assert.deepEqual((await f.status()).reviews, stopped.reviews);
+	assert.equal(resumes, 0, "a status lookup is not permission to resume the native workflow");
+	holdDuringLookup = false; held = false;
 	await issuer.operation("resume", { source }, "owner"); await nextTurn(); await issuer.flush();
 	assert.deepEqual((await f.status()).reviews.map(r => r.state), ["observed", "observed"]);
 	await issuer.operation("resume", { source }, "owner");

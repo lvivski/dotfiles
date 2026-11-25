@@ -1,13 +1,14 @@
 import { isUtf8 } from "node:buffer";
 import { answeredRoutes, currentFailures } from "./blockers.mjs";
 import { journeyText } from "./contract.mjs";
+import { evidenceDecision, exhaustedRead, readCursor, readSource, validateReadParent } from "./cursor.mjs";
 import { goalReceipt, inconclusiveRepair, repairDetail } from "./evidence.mjs";
 import { sourceReceipt } from "./notes.mjs";
 import { checked, dependencies, liveNeeds, owns, supersededAttempt } from "./plan.mjs";
 import { deliveredFile, evidencePage, indexBudgetError, indexBytes, preview, textPage, wholeEvidence } from "./pages.mjs";
 import { entries, git, outside, regularFiles } from "./product.mjs";
 import { researchSchema } from "./research.mjs";
-import { canInvestigate, comparison, contextProgress, correction, evidenceDecision, exhaustedRead, fileProgress, investigation, readSource, requestedFiles, researchContext, reviews, scopedNotes, wakeSource } from "./reviews.mjs";
+import { canInvestigate, comparison, correction, investigation, requestedFiles, researchContext, reviews, scopedNotes, wakeSource } from "./reviews.mjs";
 import { FoundryError, contains, digest, fail, fields, members, name, record, referenceRepo, text, roots as scopePaths } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
@@ -71,9 +72,7 @@ function buildPacket(cwd, run, review, budget, directory) {
 	if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(base)) fail("invalid_revision", "Scout evidence requires an immutable review base");
 	const squad = policy.squads.find(s => s.id === review.squad) ?? fail("invalid_charter", "Missing scout charter");
 	const prev = wakeSource(run, review), report = prev?.observation;
-	if (review.wake && /^(read:|file:|page:|decide-from-evidence$)/.test(review.wake.key) &&
-		(!prev || prev.version !== review.version || prev.evaluatorRevision !== review.evaluatorRevision || report?.outcome !== "needs-evidence"))
-		fail("packet_budget", "Requested evidence context is not from this charter, revision and evaluator.");
+	validateReadParent(review, prev);
 	const nodes = Object.values(run.nodes);
 	const contract = new Set([squad.charter, ...(policy.goalCheck ? [policy.goalCheck] : [])]);
 	if ("areas" in squad) for (const file of [...squad.boundary, ...squad.checks, policy.productCheck]) contract.add(file);
@@ -286,9 +285,8 @@ function buildPacket(cwd, run, review, budget, directory) {
 		const minimal = compact(0);
 		const spare = budget - Buffer.byteLength(render(header, minimal)) - indexSize;
 		const focus = report?.file ?? citation?.file;
-		const from = deciding && prev ? prev : review;
-		const offset = report?.offset ?? (report?.file && !report.match ? fileProgress(reviews(run), from, report.file, whole.index.get(report.file)?.oid).offset :
-			report ? contextProgress(reviews(run), from, report)?.offset ?? 0 : 0);
+		const offset = prev && report?.outcome === "needs-evidence"
+			? readCursor(reviews(run), prev, report, report.file ? whole.index.get(report.file)?.oid : undefined).offset : 0;
 		const filePage = (/** @type {number} */ bytes) => evidencePage(index, bytes, squad.charter, focus, focus ? offset : 0, report?.match, citation?.excerpt);
 		let catalogPage = spare <= 0 || contextRead && !sources.has(source);
 		let partial = catalogPage ? minimal : compact(Math.floor(spare / (2 * (3 + Number(!!iteration) + 2 * notes.size + owned.size))));

@@ -2,10 +2,11 @@ import { randomUUID } from "node:crypto";
 import { unownedBlockers } from "./blockers.mjs";
 import { remainingAssignments } from "./capacity.mjs";
 import { fileURLToPath } from "node:url";
-import { milestoneBlocker, productPin, qualifiedProduct } from "./evidence.mjs";
+import { productPin, qualifiedProduct } from "./evidence.mjs";
 import { targetsWriter } from "./plan.mjs";
 import { productOwnership } from "./transfer.mjs";
 import { partitionConflict } from "./partition.mjs";
+import { currentCheck, unissued } from "./reservation.mjs";
 import { questions, reading } from "./reviews.mjs";
 import { deadlineAt, digest, fail, record, text } from "./values.mjs";
 
@@ -85,10 +86,6 @@ export function reserveProduct(run, issuer, cwd, target, commit, outputs) {
 	run.join = { target, commit, outputs, ...(ownership && {ownership}), check: reserveCheck(run, issuer, cwd, commit, run.policy.productCheck) };
 }
 
-/** @param {Effect} e */
-export const unissued = e => e.state === "ready" || e.state === "ordinary";
-/** @param {Effect} e */
-export const awaitingReply = e => e.state === "issued" || e.state === "uncertain" || e.state === "suspended";
 /** @param {Run} run */
 export const expired = run => run.policy.deadline !== undefined && Date.now() >= (deadlineAt(run.policy.deadline) ?? -Infinity);
 
@@ -99,11 +96,10 @@ function assignee(run, e) {
 
 /** @param {Run} run @param {Effect} e */
 export function current(run, e) {
+	if (e.tool === "bash") return currentCheck(run, e);
 	if (e.state === "retired" || e.state === "withdrawn") return false;
 	if (e.tool === "workflow")
 		return reading(e);
-	if (run.conflict && (e.kind === "product" || e.kind === "goal") && e.state === "ready") return false;
-	if ((e.kind==="product" || e.kind==="goal") && unissued(e) && partitionConflict(run,e.kind==="product" ? run.join?.outputs : undefined)) return false;
 	if (e.kind === "decision")
 		return questions(run).some(r => r.id === e.token && !r.decision);
 	if (e.kind === "escalation")
@@ -112,14 +108,7 @@ export function current(run, e) {
 		const product = run.products.at(-1);
 		return !!product?.qualifiedAt && product.check === e.token;
 	}
-	if (e.kind === "goal")
-		return !qualifiedProduct(run) && !run.blocker && run.goal?.check === e.id;
-	if (e.kind === "product")
-		return !run.blocker && run.join?.check === e.id && !milestoneBlocker(run);
-	const n = assignee(run, e);
-	if (e.kind === "component")
-		return n?.state === "checking" && n.check === e.id;
-	return targetsWriter(n, e);
+	return targetsWriter(assignee(run, e), e);
 }
 
 /** @param {Run} run */

@@ -2,7 +2,7 @@
 /** @typedef {{active:boolean, qualified:boolean, goal:GoalState, blocked:boolean, scoped:boolean, stalled:boolean,
  * moved:boolean, idle:boolean, product:boolean, exactProduct:boolean, join:boolean, held:boolean, review:boolean, work:boolean}} Facts */
 /** @typedef {"wait"|"assess"|"retry"|"assess-target"|"undecided"|"rejoin"|"qualify"|"baseline"|"none"} Action */
-/** @typedef {"closed"|"checkpoint"|"repaired-checkpoint"|"join-only"|"open"} Admission */
+/** @typedef {import("./admission.mjs").Admission} Admission */
 /** @param {Action} action @param {Admission} admission @param {string} reason */
 const decision = (action, admission, reason) => ({ action, admission, reason });
 
