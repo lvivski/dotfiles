@@ -12,7 +12,11 @@ In the owner, read `foundry_status({run, detail:"proof"})` afresh. Save **only**
 
 For a repinned goal, `foundry-qualification/v2` adds `receipts.goal.evaluatorRevision`. The bundle includes this commit. The product is still `receipt.commit`; only the final goal used the files changed between `contract.commit` and `evaluatorRevision`. Never replay the product check against a repinned harness or the goal against the original harness.
 
+`foundry-qualification/v3` identifies a repinned **product** checker in `receipts.product.evaluatorRevision`. The goal's `productEvaluatorRevision` identifies that generation; it is not the goal executable pin. For each check use a separate export of the qualified bytes and apply only the overlay from `contract.commit` to that check's own `evaluatorRevision`, if present. The bundle retains both evaluator commits when both were repinned. Use the accepted output scopes to reconstruct `FOUNDRY_OWNERSHIP` for product checks; legacy `FOUNDRY_OUTPUTS` alone does not describe exact-file ownership.
+
 The JSON is an **owner-reported result**, not a signature, permission to execute the evaluators, or a way to resume the ledger. Git verifies object identities, not who ran the checks. Obtain the record through a trusted channel.
+
+`foundry-qualification/v4` includes `ownership`, the exact `FOUNDRY_OWNERSHIP` map saved at this product check's reservation. Use it verbatim for product replay. An output's original `directory` and component receipt still describe its historical capture; they do **not** replace the checked map. A donor's `exclude` is subtracted from its positive match (file equality or directory ancestry in both sets). The ordinary object pack/import procedure and evaluator overlay rules are unchanged.
 
 ### Transfer the Git objects only when requested
 
@@ -31,7 +35,7 @@ If making the clean clone from a local repository, use `git clone --no-local --n
 
 `pack` reads only the content-addressed refs needed by this record, not every run or branch. `import` checks the exact advertised IDs and refs, verifies and unbundles the objects, then creates only `refs/foundry/objects/<oid>` in one transaction. It refuses missing/extra heads, mismatched object IDs or existing destination pins; a failed import may leave unreachable objects, not a partially updated branch. Neither side checks out, updates a target, contacts a remote, pushes or installs Foundry. Use `git diff <target.commit> <commit>` and `git show <receipt.commit>:<receipt.check>` for inspection. Review or landing is a separate decision.
 
-If separately asked to replay **trusted** checks, use a disposable detached checkout at `qualification.commit`, not the moving target branch. For a v2 goal replay, use a separate export of that same product and overlay the exact changed files (including deletions and executable bits) from the recorded evaluator diff. Run the recorded evaluator paths from the appropriate root with the required environment/observations; for `productCheck`, `FOUNDRY_OUTPUTS` is the JSON map of output IDs to directories. The original receipts and a new replay are different evidence.
+If separately asked to replay **trusted** checks, use a disposable detached checkout at `qualification.commit`, not the moving target branch. Use separate exports for product and goal evaluator overlays; replay each at its own recorded pin, including deletions and executable bits. For `productCheck` on v1–v3, derive `FOUNDRY_OWNERSHIP` from the included output IDs and their scopes: `{directories:[...],files:[...]}` per ID. On v4 use the recorded map instead. For compatibility `FOUNDRY_OUTPUTS` maps each ID to its directory string or directory array; a mixed grant contributes only its primary directory there. The original receipts and a new replay are different evidence.
 
 ## Only on a separate cleanup request
 

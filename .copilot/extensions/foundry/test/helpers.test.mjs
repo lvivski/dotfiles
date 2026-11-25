@@ -42,19 +42,19 @@ async function entry(t, sessionId, workingDirectory, { execute, tasks, workflow 
 }
 
 test("writers keep their host branches before binding and after reconnect; session titles remain editable", async t => {
-	const seed = ["channel-rust", "channel-ui"];
-	const f = factory(t, run, source, { [source]: JSON.stringify({ version: 1, id: run, direction: "Show channel reminders.", target: "refs/heads/main",
-		productCheck: "product.mjs", seed, squads: [{ id: "channels", charter: "job.md", grains: seed }],
+	const seed = ["encoder", "decoder"];
+	const f = factory(t, run, source, { [source]: JSON.stringify({ version: 1, id: run, direction: "Round-trip a label.", target: "refs/heads/main",
+		productCheck: "product.mjs", seed, squads: [{ id: "labels", charter: "job.md", grains: seed }],
 		grains: seed.map(id => ({ id, directory: id, specification: "job.md", boundary: ["api"], check: "unit.mjs" })) }),
-		"job.md": "Show reminders.", api: "Channel reminders", "unit.mjs": "", "product.mjs": "" });
+		"job.md": "Encode and decode labels.", api: "Label codec", "unit.mjs": "", "product.mjs": "" });
 	/** @param {Awaited<ReturnType<typeof entry>>} s @param {boolean} writer */
 	async function check(s, writer) {
-		const call = { ...s.hook, toolName: "rename_branch", toolArgs: { name: "channel-root-reminders" }, toolCallId: "rename" };
+		const call = { ...s.hook, toolName: "rename_branch", toolArgs: { name: "label-codec" }, toolCallId: "rename" };
 		for (const actor of [{}, { agentId: "helper" }, { sessionId: "helper-session" }]) {
 			const result = await s.hooks.onPreToolUse?.({ ...call, ...actor }, s.ctx);
 			assert.equal(result?.permissionDecision, writer ? "deny" : undefined);
 		}
-		assert.equal(await s.hooks.onPreToolUse?.({ ...call, toolName: "rename_session", toolArgs: { title: "Channel reminders" } }, s.ctx), undefined);
+		assert.equal(await s.hooks.onPreToolUse?.({ ...call, toolName: "rename_session", toolArgs: { title: "Label codec" } }, s.ctx), undefined);
 	}
 	// Exercise the first tool call before the host has returned its binding receipt.
 	const status = await f.start(f.runtime(f.root, { execute: async (tool, args, id) => {

@@ -1,4 +1,14 @@
+import { digest } from "./values.mjs";
+
 /** @typedef {import("./model.js").Run} Run */
+/** @param {Run} run */
+export const productPin = run => run.productRepins?.at(-1)?.revision;
+/** @typedef {Pick<import("./model.js").Effect,"evaluatorRevision"|"productEvaluatorRevision">} Evaluation */
+/** @param {Evaluation} a @param {Evaluation} b */
+export const sameEvaluation = (a,b) => a.evaluatorRevision === b.evaluatorRevision && a.productEvaluatorRevision === b.productEvaluatorRevision;
+/** Current goal/scout generation. Product checks have their own executable pin.
+ * @param {Run} run @param {Evaluation|undefined} e */
+export const currentEvaluation = (run,e) => !!e && e.evaluatorRevision === run.repins?.at(-1)?.revision && e.productEvaluatorRevision === productPin(run);
 
 const missingPrefix = "Writer reports missing input: ";
 /** @param {import("./model.js").Node} n @param {string} detail */
@@ -20,7 +30,61 @@ export function missingInput(n) {
  * @param {import("./model.js").Effect|undefined} e */
 export function checkReceipt(e) {
 	if (e?.tool === "bash" && e.runnerStarted && e.state === "done" && e.receipt &&
-		e.receipt.commit === e.commit && e.receipt.check === e.check && e.receipt.evaluatorRevision === e.evaluatorRevision) return e.receipt;
+		e.receipt.commit === e.commit && e.receipt.check === e.check && sameEvaluation(e.receipt,e)) return e.receipt;
+}
+
+/** Older readers recorded this exact terminal transition as a ledger diagnostic rather
+ * than a numeric field. It was never produced by an uncertain call or by the evaluator.
+ * @param {import("./model.js").Effect|undefined} e */
+export function launcherFailure(e) {
+	if (e?.tool !== "bash" || !e.callId || e.state !== "done" || e.runnerStarted || e.runnerClaim || e.receipt ||
+		e.args.shellId !== `foundry-${e.id}` || e.permissionHold) return;
+	const legacy = /^Check launcher exited ([1-9]\d*) before the evaluator started; no check result\. Verify Node\.js with node:sqlite is on the shell PATH\.$/.exec(e.error ?? "");
+	const exit = e.launcherExit ?? (legacy && Number(legacy[1]));
+	if (typeof exit === "number" && Number.isSafeInteger(exit) && exit > 0) return exit;
+}
+
+/** The issued inline token binds this repair to one completed, inconclusive component attempt.
+ * @param {import("./model.js").Node} n @param {import("./model.js").Effect|undefined} e */
+export function inconclusiveRepair(n, e) {
+	if (!n.token || !n.worker || !n.generation || !n.repairs || e?.kind !== "component" || e.id !== n.check ||
+		e.inlineRepair !== n.token || e.issuer !== n.worker || e.grain !== n.grain.id || e.check !== n.grain.check ||
+		!e.callId || e.error || e.permissionHold) return;
+	const r = checkReceipt(e);
+	if (r?.exit === 2 && !r.failure) return r;
+}
+
+/** The binding authorizes giving up this repair, never reinterpreting its check.
+ * @param {Run} run @param {import("./model.js").Node} n */
+export function relinquishable(run, n) {
+	if (!n.worker || !n.token || !n.generation || !n.repairs || !n.check || n.reuse) return;
+	const calls = run.effects.filter(e => e.grain === n.grain.id);
+	const check = calls.findLast(e => e.kind === "component");
+	if (check?.kind !== "component" || check.id !== n.check || check.issuer !== n.worker || check.check !== n.grain.check ||
+		!check.callId || !check.runnerClaim || check.error || check.permissionHold || inconclusiveRepair(n,check)) return;
+	const receipt = checkReceipt(check);
+	if (!receipt || receipt.exit === null || receipt.exit <= 0 || receipt.failure) return;
+	const writers = calls.filter(e => e.kind === "writer" && e.state !== "withdrawn");
+	const [writer] = writers;
+	if (writers.length !== 1 || writer?.kind !== "writer" || !writer.callId || writer.state !== "done" || writer.error ||
+		writer.nativeId !== n.worker || generationOf(writer) !== n.generation || writer.token === n.token) return;
+	const notices = calls.filter(e => e.kind === "repair" && e.token === n.token);
+	if (check.inlineRepair) {
+		if (check.inlineRepair !== n.token || notices.length) return;
+	} else {
+		const [delivery] = notices;
+		if (notices.length !== 1 || !delivery.callId || delivery.state !== "done" || delivery.error || delivery.permissionHold ||
+			(delivery.tool === "session.send" ? delivery.issuer : delivery.args.session_id) !== n.worker ||
+			calls.indexOf(delivery) < calls.indexOf(check)) return;
+	}
+	return check;
+}
+
+/** A private detail in the owning charter's packet, never a checked dependency.
+ * @param {import("./model.js").Node} n */
+export function repairDetail(n) {
+	if (n.state === "blocked" && n.stop?.kind === "writer-cannot-repair" && n.check && n.candidate)
+		return digest(["stopped-repair", n.grain.id, n.check, n.candidate, n.stop.detail]);
 }
 
 /** A prior reader's *terminal* component attempt, not a verdict about what caused it.
@@ -39,6 +103,24 @@ export function changedFrom(n, e) {
 	if (receipt && !receipt.failure) return receipt.commit;
 }
 
+/** @param {import("./model.js").Effect|undefined} w */
+export const generationOf = w => w?.kind === "writer" ? w.pooled?.generation ?? w.args.base_branch : undefined;
+
+/** @param {Run} run @param {import("./model.js").Node} n */
+export function failedCandidate(run, n) {
+	const e = run.effects.find(e => e.id === n.check), r = checkReceipt(e);
+	return !!n.worker && !!n.generation && !!n.token && !!n.base && !!n.candidate &&
+		e?.kind === "component" && e.grain === n.grain.id && e.issuer === n.worker && e.check === n.grain.check &&
+		!!e.callId && !e.error && !e.inlineRepair && !e.permissionHold && r?.exit === 1 && r.commit === n.candidate &&
+		run.effects.some(w => w.kind === "writer" && w.grain === n.grain.id && w.state === "done" && !!w.callId &&
+			w.nativeId === n.worker && generationOf(w) === n.generation);
+}
+
+/** @param {Run} run @param {import("./model.js").Node} n */
+export function exhaustedCandidate(run, n) {
+	return n.state === "blocked" && !n.reuse && !n.stop && n.repairs === run.policy.repairs && failedCandidate(run, n);
+}
+
 /** @param {Run} run @param {import("./model.js").Node} n */
 export function baselineNotice(run, n) {
 	const e = run.effects.findLast(e => e.kind === "repair" && e.token === n.token && e.grain === n.grain.id);
@@ -50,7 +132,30 @@ export function goalReceipt(run) {
 	const at = run.goal;
 	const e = at && run.effects.find(e => e.id === at.check);
 	if (e?.kind === "goal" && e.commit === at?.commit && e.check === run.policy.goalCheck &&
-		e.evaluatorRevision === run.repins?.at(-1)?.revision) return checkReceipt(e);
+		currentEvaluation(run,e)) return checkReceipt(e);
+}
+
+/** @param {import("./model.js").DiscoveryLead|undefined} lead */
+export const leadGoal = lead => lead?.pending ?? lead?.missing;
+
+/** @param {import("./model.js").Review["iteration"]} comparison */
+export const comparisonGoal = comparison => comparison?.source?.goal ?? comparison?.historical?.missing;
+
+/** @param {number|null|undefined} exit @param {import("./model.js").Successor|undefined} successor */
+export const comparisonVerdict = (exit,successor) => exit===2 || !!successor && exit===1;
+
+/** Only consecutive goal observations on identical bytes. A missing step identifier is
+ * reason to compare both receipts, never proof the old failure still exists.
+ * @param {Run} run @param {import("./model.js").HistoricalStep & {missing:string}} h
+ * @param {string} base @param {string|undefined} pin @param {string|undefined} productRevision */
+export function omittedStep(run, h, base, pin, productRevision) {
+	const at = run.effects.findIndex(e => e.id === h.missing);
+	const missing = run.effects[at], prior = run.effects.slice(0, at).findLast(e => e.kind === "goal");
+	if (!/^[\p{L}\p{N}][\p{L}\p{N}._:/-]*$/u.test(h.step) ||
+		missing?.kind !== "goal" || missing.check !== run.policy.goalCheck || missing.commit !== base || missing.evaluatorRevision !== pin || missing.productEvaluatorRevision !== productRevision ||
+		prior?.id !== h.receipt || prior.check !== missing.check || prior.commit !== base || prior.productEvaluatorRevision !== missing.productEvaluatorRevision) return false;
+	const before = checkReceipt(prior), now = checkReceipt(missing);
+	return before?.exit === 1 && now?.exit === 2 && before.output.includes(h.step) && !now.output.includes(h.step);
 }
 
 /** A terminal product check holds only its own candidate, not the goal on the assessed base.
@@ -78,14 +183,22 @@ export function qualifiedProduct(run) {
  * @param {string} commit @param {string} check @param {string} [grain] */
 export function passingReceipt(e, kind, commit, check, grain) {
 	if (e?.kind === kind && e.grain === grain && e.commit === commit && e.check === check && checkReceipt(e)?.exit === 0)
-		return { commit, check, exit: 0, ...(e.evaluatorRevision ? { evaluatorRevision: e.evaluatorRevision } : {}) };
+		return { commit, check, exit: 0, ...(e.evaluatorRevision ? { evaluatorRevision: e.evaluatorRevision } : {}),
+			...(e.productEvaluatorRevision ? { productEvaluatorRevision:e.productEvaluatorRevision } : {}) };
 }
 
 /** A milestone is authority for the reviewed inputs, never a goal verdict.
  * @param {Run} run @param {string} id @param {string} base */
 export function checkpointReceipt(run, id, base) {
+	return productReceiptAt(run,id,base,productPin(run));
+}
+
+/** Validate historical references against the generation of their consumer, not today's pin.
+ * @param {Run} run @param {string} id @param {string} base @param {string|undefined} pin */
+export function productReceiptAt(run,id,base,pin) {
+	const e = run.effects.find(e => e.id === id);
 	return run.products.some(p => p.check === id && p.commit === base) &&
-		passingReceipt(run.effects.find(e => e.id === id), "product", base, run.policy.productCheck);
+		e?.evaluatorRevision === pin && passingReceipt(e, "product", base, run.policy.productCheck);
 }
 
 /** The last *applied* product. A native success, a pending join, or two green checks
@@ -95,7 +208,7 @@ export function acceptedChecks(run) {
 	const last = qualifiedProduct(run);
 	if (!last) return;
 	const { productCheck, goalCheck } = run.policy;
-	const product = passingReceipt(run.effects.find(e => e.id === last.check), "product", last.commit, productCheck);
+	const product = checkpointReceipt(run,last.check,last.commit);
 	if (!product) return;
 	if (!goalCheck && !run.goal) return { last, product };
 	if (!goalCheck || goalCheck === productCheck || run.active || run.join || run.blocker || run.conflict ||

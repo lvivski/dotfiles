@@ -70,7 +70,7 @@ for (const shell of ["bash", "zsh"]) {
 	});
 }
 
-for (const mode of ["--force", "--pull"]) test(`sync ${mode} leaves worktree pointers untouched`, t => {
+for (const mode of ["--force", "--pull"]) test(`sync ${mode} leaves worktree pointers and repo instructions untouched`, t => {
 	const root = mkdtempSync(path.join(tmpdir(), "dotfiles-worktree-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const repo = path.join(root, "checkout"), home = path.join(root, "home"), bin = path.join(root, "bin");
@@ -88,10 +88,14 @@ for (const mode of ["--force", "--pull"]) test(`sync ${mode} leaves worktree poi
 	}
 	writeFileSync(path.join(repo, "example"), "from repository\n");
 	writeFileSync(path.join(home, "example"), "from home\n");
+	writeFileSync(path.join(repo, "AGENTS.md"), "Repo instructions\n");
+	writeFileSync(path.join(home, "AGENTS.md"), "Personal instructions\n");
 	execFileSync("bash", ["-c", 'unset ZSH_VERSION; source ./sync "$1"', "sync-test", mode],
 		{ cwd: repo, env: { ...process.env, HOME: home, PATH: `${bin}${path.delimiter}${process.env.PATH}` } });
 	const dest = mode === "--force" ? home : repo;
 	assert.equal(readFileSync(path.join(dest, "example"), "utf8"), mode === "--force" ? "from repository\n" : "from home\n");
+	assert.equal(readFileSync(path.join(repo, "AGENTS.md"), "utf8"), "Repo instructions\n");
+	assert.equal(readFileSync(path.join(home, "AGENTS.md"), "utf8"), "Personal instructions\n");
 	for (const p of paths) {
 		assert.equal(readFileSync(path.join(home, p), "utf8"), "gitdir: /home/sentinel\n");
 		assert.equal(readFileSync(path.join(repo, p), "utf8"), "gitdir: /repository/private\n");

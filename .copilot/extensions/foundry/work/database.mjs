@@ -163,6 +163,13 @@ export function openDatabase(cwd, file = ledgerPath(cwd), create = false, checkS
 		},
 		/** @param {string} id */
 		read(id) { return snapshot(id)?.run; },
+		/** Recovery needs positive evidence even for a receipt already copied into the ledger.
+		 * @param {string} id @param {import("./model.js").NativeCall} e */
+		verifySigned(id,e) {
+			const row = journal()?.db.prepare("SELECT signature,document FROM outcomes WHERE run=? AND effect=?").get(id,e.id);
+			if (!row || !e.receipt) fail("missing_receipt","Original signed runner outcome is unavailable");
+			acceptOutcome(id,e,String(row.signature),String(row.document));
+		},
 		/** @param {string} actor */
 		involving(actor) {
 			verify();

@@ -4,7 +4,7 @@ import { admitted } from "./native.mjs";
 import { productOutputs } from "./plan.mjs";
 import { commitAt, verifyContracts } from "./product.mjs";
 import { history, refusedCall } from "./recovery.mjs";
-import { digest, fail, record } from "./values.mjs";
+import { digest, fail, record, roots as scopePaths } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @typedef {import("./model.js").NativeCall} NativeCall */
@@ -32,7 +32,7 @@ function selection(cwd, run, e) {
 	if (!outputs || !Object.values(run.nodes).some(n => n.state === "published"))
 		fail("no_new_work", "No joinable published outputs; retirement does not retry the old goal");
 	return { target, commit: at.commit, pin: e.evaluatorRevision ?? run.policy.base, product: product.check, call: e.callId, outputs,
-		directories: Object.values(run.nodes).filter(n => n.state === "published").map(n => n.grain.directory) };
+		directories: Object.values(run.nodes).filter(n => n.state === "published").flatMap(n => scopePaths(n.grain.directory)) };
 }
 
 /** Require native termination AND the matching shell reader's SDK result. Diagnostic text

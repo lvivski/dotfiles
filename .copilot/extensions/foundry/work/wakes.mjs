@@ -1,5 +1,6 @@
 import { checkReceipt } from "./evidence.mjs";
 import { awaitingReply, expired } from "./native.mjs";
+import { timelyChecks } from "./goal.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @param {()=>void} tick */
@@ -41,7 +42,7 @@ export function receiptWakes(io) {
 				w.stamp = stamp; w.delay = 0;
 				const arrived = next.effects.some(e => selected.has(e.id) && checkReceipt(e));
 				observe(next, actor);
-				if (arrived && next.active && !expired(next)) io.wake(id,actor);
+				if (arrived && next.active && (!expired(next) || timelyChecks(next))) io.wake(id,actor);
 			} catch (error) {
 				if (!contention(error)) { w.stop(); watches.delete(key); io.log(error); return; }
 				if (!w.delay) io.log(error);

@@ -2,9 +2,16 @@ export type Json = null | boolean | number | string | Json[] | {
 	[key: string]: Json;
 };
 
+export interface FileScope { primary: string; files: string[] }
+export interface Transfer { from: string; candidate: string; to: string }
+export interface Successor { from: string; check: string; to: string }
+export interface Restoration { from: string; historical: string; checkpoint: string; goal: string; retainer: string; tree: string }
+export interface Retained extends FileScope { review: string; to: string }
+export type Scope = string | string[] | FileScope;
+
 export interface Output {
 	id: string;
-	directory: string;
+	directory: Scope;
 	revision?: string;
 	check: string;
 	needs: string[];
@@ -44,6 +51,7 @@ export interface Policy {
 	sharedBrief?: string;
 	base: string;
 	productCheck: string;
+	ownership?: "exact-files" | "retain-except-transferred";
 	goalCheck?: string;
 	files: string[];
 	squads: Squad[];
@@ -90,14 +98,21 @@ export type Packet = { review: string; base: string; files: Record<string, strin
 
 export interface Node {
 	grain: Grain;
+	retained?: Retained[];
+	successor?: { to: string; review: string; directory: Scope };
+	restoration?: Restoration;
 	review?: string;
 	state: "idle" | "waiting" | "writing" | "checking" | "published" | "qualified" | "repeated" | "blocked";
 	token?: string;
 	worker?: string;
 	generation?: string;
 	inputs?: Record<string, string>;
+	supporting?: string[]; // External read-only files actually named in this writer's brief, at review.base.
+	excluded?: { path: string; revision: string } | { grain: string; revision: string };
 	base?: string;
-	priorSource?: Baseline;
+	priorSource?: Inventory;
+	workspace?: string;
+	reuse?: string;
 	replaces?: string;
 	artifactCursor?: number;
 	preview?: string;
@@ -105,7 +120,7 @@ export interface Node {
 	check?: string;
 	repairs: number;
 	reason?: string;
-	stop?: { kind: "writer-missing-input"; detail: string };
+	stop?: { kind: "writer-missing-input" | "writer-cannot-repair" | "writer-relinquished"; detail: string };
 }
 
 export interface Assessment {
@@ -116,6 +131,7 @@ export interface Assessment {
 
 export interface Product extends Assessment {
 	outputs: Record<string, string>;
+	ownership?: Record<string,{directories:string[];files:string[];exclude?:{directories:string[];files:string[]}}>;
 	qualifiedAt?: number;
 }
 
@@ -124,6 +140,20 @@ export interface ReviewNote {
 	question: string;
 	excerpt?: string;
 }
+
+export interface HistoricalStep {
+	receipt: string;
+	step: string;
+}
+
+export interface ProductCitation {
+	commit: string;
+	file: string;
+	excerpt: string;
+}
+
+export type DiscoveryLead = { receipt: string; checkpoint: string; priorReview?: string } &
+	({ missing: string; pending?: never } | { pending: string; missing?: never });
 
 export interface Review extends Dispatch {
 	kind: "scout";
@@ -135,11 +165,15 @@ export interface Review extends Dispatch {
 	packet?: Packet;
 	wake?: { review: string; key: string };
 	retryOf?: string;
-	iteration?: { receipt: string; directory: string; blob: string; question: string; basis?: "checkpoint" };
+	retrySource?: string; // Pinned blob omitted from the original reported comparison.
+	lead?: DiscoveryLead;
+	iteration?: { receipt: string; directory: string; files?: string[]; transfer?: Transfer; successor?: Successor; blob: string; question: string; basis?: "checkpoint"; historical?: HistoricalStep & { missing: string }; source?: ProductCitation & { goal: string } };
 	diagnostic?: { receipt: string; excerpt: string };
 	note?: ReviewNote;
 	otherNotes?: ReviewNote[];
 	predecessor?: Node;
+	correction?: { worker: string; clause: string; file: string; excerpt: string } &
+		({blob:string; predecessorCheck?:never} | {predecessorCheck:string; blob?:never});
 	observation?: Observation;
 	deferred?: { pins: Record<string, string>; consumers: string[] };
 	decision?: { status: "presenting"; presentation?: string } | { status: "dismissed" } | { status: "answered"; answer: string }
@@ -150,9 +184,11 @@ export type BlockerSignal = { id: string; directory: string } & ({ blocked: numb
 export interface Attribution { receipt: string; id: string; directory: string; blocked: number; excerpt: string }
 
 export interface Receipt {
+	completedAt?: number;
 	commit: string;
 	check: string;
 	evaluatorRevision?: string;
+	productEvaluatorRevision?: string;
 	exit: number | null;
 	output: string;
 	feedback?: string;
@@ -180,6 +216,7 @@ interface Dispatch {
 	commit?: string;
 	check?: string;
 	evaluatorRevision?: string;
+	productEvaluatorRevision?: string;
 	runnerStarted?: boolean;
 	runnerClaim?: string;
 	receipt?: Receipt;
@@ -195,17 +232,31 @@ export interface Baseline {
 	revision: string;
 	tree: string;
 }
+export type Inventory = Baseline | Baseline[];
 
 export interface NativeCall extends Dispatch, ArtifactReport {
+	restoration?: Restoration;
+	launcherExit?: number;
+	recheck?: { of:string; target:string; goalPin:string; productPin:string };
+	finished?: {squad:string; directory:Scope; component:string; product:string};
+	pooled?: {from:string; home:string; generation:string};
+	reuse?: CandidateReuse;
 	retirement?: { notification: string; read: string; completion: string };
-	baseline?: Baseline;
-	readGrant?: Baseline;
+	baseline?: Inventory;
+	readGrant?: Inventory;
 	claims?: { actor: string; path: string; start: string; kickoff: string; identity: string }[];
 	claimedRequest?: string;
 	kind: "writer" | "component" | "product" | "goal" | "repair" | "decision" | "handoff" | "artifact" | "escalation";
 	inlineRepair?: string;
 	tool: "create_session" | "bash" | "send_session_message" | "session.send";
-	state: "ready" | "issued" | "uncertain" | "ordinary" | "done" | "refused" | "retired";
+	state: "ready" | "issued" | "uncertain" | "ordinary" | "done" | "refused" | "retired" | "withdrawn";
+}
+
+export interface CandidateReuse {
+	predecessor: Node;
+	blob: string;
+	checkpoint: string;
+	goal: string;
 }
 
 export type Effect = NativeCall | Review;
@@ -218,6 +269,7 @@ export interface Run {
 	pendingReviewNotes?: (ReviewNote & { squad: string; after: number })[];
 	attributions?: Attribution[];
 	repins?: { from: string; revision: string; files: string[] }[];
+	productRepins?: { from: string; revision: string; files: string[]; checkpoint: string; goal: string; recheck: string; ownership?: "retain-except-transferred" }[];
 	policy: Policy;
 	scheduling?: { revision: number; workers?: number; checkpointReviews: boolean };
 	activatedAt: number;

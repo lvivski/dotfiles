@@ -2,10 +2,12 @@ import { randomUUID } from "node:crypto";
 import { unownedBlockers } from "./blockers.mjs";
 import { remainingAssignments } from "./capacity.mjs";
 import { fileURLToPath } from "node:url";
-import { milestoneBlocker, qualifiedProduct } from "./evidence.mjs";
+import { milestoneBlocker, productPin, qualifiedProduct } from "./evidence.mjs";
 import { targetsWriter } from "./plan.mjs";
+import { productOwnership } from "./transfer.mjs";
+import { partitionConflict } from "./partition.mjs";
 import { questions, reading } from "./reviews.mjs";
-import { digest, fail, record, text } from "./values.mjs";
+import { deadlineAt, digest, fail, record, text } from "./values.mjs";
 
 /** @typedef {import("./model.js").Effect} Effect */
 /** @typedef {import("./model.js").Run} Run */
@@ -36,7 +38,7 @@ export function identify(tool, args) {
 }
 
 /** @param {Run} run @param {string} issuer @param {string} token @param {"repair"|"decision"|"handoff"|"artifact"|"escalation"} kind
- * @param {string} body @param {import("./model.js").Node} [node] @param {import("./model.js").Baseline} [baseline] */
+ * @param {string} body @param {import("./model.js").Node} [node] @param {import("./model.js").Inventory} [baseline] */
 export function reserveNotice(run, issuer, token, kind, body, node, baseline) {
 	const to = node ? text(node.worker, "assigned writer") : run.owner;
 	const message = `${kind === "repair" ? marker(run.id, token) : `Foundry ${kind}: ${run.id} ${kind === "artifact" ? randomUUID() : token}`}\n${body}`;
@@ -45,13 +47,16 @@ export function reserveNotice(run, issuer, token, kind, body, node, baseline) {
 		args: to === issuer ? { message } : { session_id: to, delivery_mode: "immediate", message } });
 }
 
-/** @param {Run} run @param {string} issuer @param {string} token @param {string} base @param {string} brief @param {string|undefined} agent @param {string} grain */
-export function reserveWorker(run, issuer, token, base, brief, agent, grain) {
-	run.effects.push({ id: randomUUID(), issuer, token, state: "ready", kind: "writer", grain,
+/** @param {Run} run @param {string} issuer @param {string} token @param {string} base @param {string} brief @param {string|undefined} agent @param {string} grain @param {import("./model.js").CandidateReuse} [reuse] */
+export function reserveWorker(run, issuer, token, base, brief, agent, grain, reuse) {
+	const id = randomUUID();
+	const restoration=run.nodes[grain]?.restoration;
+	run.effects.push({ id, issuer, token, state: "ready", kind: "writer", grain, ...(reuse ? {reuse} : {}), ...(restoration && {restoration}),
 		tool: "create_session", args: {
 			name: `${grain.slice(0, 22)} ${token.slice(0, 8)}`, workspace_type: "worktree", base_branch: base,
 			coordinate_with_creator: true, notify_on_idle: "once", kickoff: { mode: "autopilot", prompt: `${marker(run.id, token)}\n${brief}`, ...(agent ? { agent } : {}) }
 		} });
+	return id;
 }
 
 /** @param {Run} run @param {string} issuer @param {string} cwd @param {string} commit @param {string} check @param {string} [grain]
@@ -59,9 +64,11 @@ export function reserveWorker(run, issuer, token, base, brief, agent, grain) {
 export function reserveCheck(run, issuer, cwd, commit, check, grain, reports) {
 	const id = randomUUID();
 	const kind = grain ? "component" : check === run.policy.goalCheck ? "goal" : "product";
-	const evaluatorRevision = kind === "goal" ? run.repins?.at(-1)?.revision : undefined;
+	const evaluatorRevision = kind === "goal" ? run.repins?.at(-1)?.revision : kind === "product" ? productPin(run) : undefined;
+	const productEvaluatorRevision = kind === "goal" && productPin(run);
 	run.effects.push({
-		id, issuer, kind, state: "ready", tool: "bash", commit, check, ...(evaluatorRevision ? { evaluatorRevision } : {}), ...(grain ? { grain } : {}), ...reports,
+		id, issuer, kind, state: "ready", tool: "bash", commit, check, ...(evaluatorRevision ? { evaluatorRevision } : {}),
+		...(productEvaluatorRevision ? {productEvaluatorRevision} : {}), ...(grain ? { grain } : {}), ...reports,
 		args: {
 			command: `command node ${[runner, cwd, run.id, id].map(quote).join(" ")}`, shellId: `foundry-${id}`, initial_wait: 120,
 			description: `Check ${grain ?? (kind === "goal" ? "final goal" : "joined product")} at ${commit.slice(0, 12)}`.slice(0, 100)
@@ -72,7 +79,10 @@ export function reserveCheck(run, issuer, cwd, commit, check, grain, reports) {
 
 /** @param {Run} run @param {string} issuer @param {string} cwd @param {string} target @param {string} commit @param {Record<string,string>} outputs */
 export function reserveProduct(run, issuer, cwd, target, commit, outputs) {
-	run.join = { target, commit, outputs, check: reserveCheck(run, issuer, cwd, commit, run.policy.productCheck) };
+	const conflict=partitionConflict(run,outputs);
+	if (conflict) fail("ownership_transition",conflict);
+	const ownership=productOwnership(run.nodes,outputs);
+	run.join = { target, commit, outputs, ...(ownership && {ownership}), check: reserveCheck(run, issuer, cwd, commit, run.policy.productCheck) };
 }
 
 /** @param {Effect} e */
@@ -80,7 +90,7 @@ export const unissued = e => e.state === "ready" || e.state === "ordinary";
 /** @param {Effect} e */
 export const awaitingReply = e => e.state === "issued" || e.state === "uncertain" || e.state === "suspended";
 /** @param {Run} run */
-export const expired = run => !!run.policy.deadline && Date.now() >= Date.parse(run.policy.deadline);
+export const expired = run => run.policy.deadline !== undefined && Date.now() >= (deadlineAt(run.policy.deadline) ?? -Infinity);
 
 /** @param {Run} run @param {Effect} e */
 function assignee(run, e) {
@@ -89,10 +99,11 @@ function assignee(run, e) {
 
 /** @param {Run} run @param {Effect} e */
 export function current(run, e) {
-	if (e.state === "retired") return false;
+	if (e.state === "retired" || e.state === "withdrawn") return false;
 	if (e.tool === "workflow")
 		return reading(e);
 	if (run.conflict && (e.kind === "product" || e.kind === "goal") && e.state === "ready") return false;
+	if ((e.kind==="product" || e.kind==="goal") && unissued(e) && partitionConflict(run,e.kind==="product" ? run.join?.outputs : undefined)) return false;
 	if (e.kind === "decision")
 		return questions(run).some(r => r.id === e.token && !r.decision);
 	if (e.kind === "escalation")
@@ -123,13 +134,16 @@ export function admitted(run) {
 
 /** @param {Run} run @param {string} actor @param {string} token */
 export function boundWriter(run, actor, token) {
-	return Object.values(run.nodes).find(n => n.worker === actor && n.token === token) ??
+	const n = Object.values(run.nodes).find(n => n.worker === actor && n.token === token);
+	if (!n || n.state==="qualified" && run.effects.some(e=>e.kind==="writer" && e.pooled && e.id!==n.workspace && e.grain!==n.grain.id &&
+		(e.nativeId===actor || e.args.session_id===actor || e.tool==="session.send" && e.issuer===actor) && current(run,e)))
 		fail("stale_assignment", "No current worker assignment matches this token");
+	return n;
 }
 
 /** A final handoff may notify its owner after goal acceptance. It cannot authorize work.
  * @param {Run} run @param {Effect} e */
-export const canDispatch = (run, e) => !expired(run) && (run.active || e.kind === "handoff" && !!run.goal) && current(run, e);
+export const canDispatch = (run, e) => (run.active && !expired(run) || e.kind === "handoff" && !!run.goal) && current(run, e);
 
 /** Only an unclaimed create from a finished issuer can move. An ordinary/manual
  * call has already visited a native route, even if it has no worker ID yet.
@@ -215,10 +229,12 @@ export function receive(run, e, raw, automatic) {
 	else if (e.tool === "bash") {
 		const telemetry = record(value.toolTelemetry ?? {}), properties = record(telemetry.properties ?? {});
 		const exit = record(telemetry.metrics ?? {}).exit_code;
-		if (!e.runnerStarted && properties.executionMode === "sync" && properties.shell_error_category === "command_nonzero_exit" &&
+		if (!e.runnerStarted && !e.runnerClaim && !e.receipt && properties.executionMode === "sync" && properties.shell_error_category === "command_nonzero_exit" &&
 			typeof exit === "number" && Number.isSafeInteger(exit) && exit > 0) {
 			e.state = "done";
-			block(run, e, `Check launcher exited ${exit} before the evaluator started; no check result. Verify Node.js with node:sqlite is on the shell PATH.`);
+			e.launcherExit = exit;
+			block(run, e, `Check launcher exited ${exit} before the evaluator started; no check result.` +
+				(exit === 127 ? " Check that Node.js is available on the shell PATH." : " Inspect the original shell diagnostic."));
 			return;
 		}
 		fail("missing_receipt", "The pinned runner has not finished");
@@ -227,6 +243,12 @@ export function receive(run, e, raw, automatic) {
 	else if (!(typeof value.textResultForLlm === "string" && /^(?:Queued\.?$|Message accepted for priority delivery to session '[^\n]+'\.)/.test(value.textResultForLlm))
 		&& !(value.structuredContent && ["accepted", "queued", "delivered"].includes(String(record(value.structuredContent).status))))
 		fail("missing_receipt", "Message queue admission was not confirmed");
+	if (e.kind === "writer" && e.pooled) {
+		e.nativeId = e.tool === "session.send" ? e.issuer : text(e.args.session_id,"pooled recipient");
+		e.boundAt = Date.now();
+		const n = assignee(run,e);
+		if (n && current(run,e)) n.worker = e.nativeId;
+	}
 	e.state = "done";
 	delete e.error;
 }

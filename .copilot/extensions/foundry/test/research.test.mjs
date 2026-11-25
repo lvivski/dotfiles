@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, renameSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { createServer } from "node:http";
 import path from "node:path";
 import { once } from "node:events";
@@ -303,6 +304,8 @@ test("late waits reuse the run-wide pin and a conflicting publication by another
 });
 
 test("a descriptive source label does not strand the Mac charter before the window check", async t => {
+	const witness = mkdtempSync(path.join(tmpdir(), "foundry-window-"));
+	t.after(() => rmSync(witness, { recursive: true, force: true }));
 	const squads = ["runtime", "client"].map(id => ({ id, areas: [id], charter: `${id}.md`, boundary: ["interface"],
 		checks: ["unit.mjs"], ...(id === "client" ? { researchAgent: profile } : {}) }));
 	const f = factory(t, run, source, {
@@ -312,6 +315,7 @@ test("a descriptive source label does not strand the Mac charter before the wind
 		interface: "Launch without a registration.", "product.mjs": "", "unit.mjs": "",
 		"goal.mjs": `import {existsSync} from "node:fs";
 			if (!existsSync("runtime/dataset")) process.exit(1);
+			if (existsSync(${JSON.stringify(path.join(witness, "ready"))})) process.exit(existsSync("client/window") ? 0 : 1);
 			console.log("Window observer unavailable"); process.exit(2);`,
 	});
 	const plan = (/** @type {string} */ id) => ({ outcome: "regenerate", reason: `Fix ${id} launch.`,
@@ -334,5 +338,12 @@ test("a descriptive source label does not strand the Mac charter before the wind
 	}
 	const s = await f.status(); assert.ok(s.checkpoint);
 	assert.deepEqual(Object.keys(s.outputs ?? {}).sort(), ["client", "runtime"]);
+	assert.equal(git(f.root,"show",`${s.checkpoint}:client/window`),"implemented");
 	assert.equal(s.goal?.receipt?.exit, 2); assert.equal(s.qualified, null);
+	assert.equal(s.goal.receipt.commit,s.checkpoint);
+	assert.equal(s.nodes.find(n => n.grain === "client")?.state, "qualified");
+	put(witness, "ready", "observation available");
+	const done = await f.owner.operation("resume", {source}, "owner");
+	assert.equal(done.qualified,s.checkpoint); assert.deepEqual(done.outputs,s.outputs);
+	assert.equal(done.goal?.receipt?.commit, done.qualified);
 });

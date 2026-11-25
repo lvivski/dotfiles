@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { factory, git, put } from "./fixture.mjs";
 
-const run = "dispatch", source = ".foundry/dispatch.json", directory = "desk/inbox", id = "open-item";
+const run = "dispatch", source = ".foundry/dispatch.json", directory = "desk/items", id = "open-item";
 const gap = { id, directory, blocked: 49 }, cleared = { id, directory, passed: true };
 const desk = { id: "desk", charter: "desk.md", areas: ["desk"], checks: ["component.mjs"] };
 const other = { ...desk, id: "stock", charter: "stock.md", areas: ["stock"] };
@@ -47,7 +47,7 @@ test("after blocker delivery the one review slot rotates to a never-reviewed squ
 		[source]: JSON.stringify({ id: run, version: 2, direction: "Deliver order handling.", target: "refs/heads/main",
 			productCheck: "unit.mjs", goalCheck: "goal.mjs", limits: { workers: 1 },
 			squads: [other, desk, orders].map(s => ({ ...s, checks: ["unit.mjs"] })) }),
-		".foundry/dispatch/journey.md": "Handle a stocked order.", "desk.md": "Own the inbox.",
+		".foundry/dispatch/journey.md": "Handle a stocked order.", "desk.md": "Own the item list.",
 		"stock.md": "Supply inventory.", "orders.md": "Expose orders.", "unit.mjs": "",
 		"goal.mjs": `import {existsSync} from 'node:fs';
 			if (!existsSync('stock/items/ready')) console.log('FOUNDRY_SQUAD=stock');
@@ -104,10 +104,10 @@ test("attribute a stalled legacy receipt, bind one owner, verify the repaired st
 test("an automatically routed shared blocker can hand off its stopped directory without a new checkpoint", async t => {
 	const f = setup(t, false); await f.start();
 	const scout = f.scouts[0]; assert.equal(scout.squad, desk.id);
-	await scout.report({ ...report, outcome: "regenerate", grains: [{ ...grain, id: "folder-press", task: "Open a folder." }] });
+	await scout.report({ ...report, outcome: "regenerate", grains: [{ ...grain, id: "filter-items", task: "Filter the items." }] });
 	const old = [...f.workers.values()][0]; assert.ok(old);
 	assert.notEqual((await f.status()).sharedBlockers?.[0].worker, old.id, "another writer in the directory does not own the reported defect");
-	await f.runtime(old.cwd).operation("submit", { run, token: old.token, missingInput: "A device is unavailable for the folder test." }, old.id);
+	await f.runtime(old.cwd).operation("submit", { run, token: old.token, missingInput: "The filter specification is unavailable." }, old.id);
 	await f.settle();
 	const last = f.scouts.at(-1);
 	if (last?.squad === "stock") await last.report({ ...report, evidence: ["stock.md"] });

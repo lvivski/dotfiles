@@ -2,8 +2,10 @@ import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { admitted, boundWriter, reserveNotice } from "./native.mjs";
 import { owns } from "./plan.mjs";
+import { touchesCut } from "./transfer.mjs";
+import { writerRoot } from "./workspace.mjs";
 import { commitAt, generationRoot, pinFile } from "./product.mjs";
-import { contains, fail, names, relative, text } from "./values.mjs";
+import { covers, fail, members, names, relative, text, roots as scopePaths } from "./values.mjs";
 
 /** @typedef {import("./model.js").Artifact} Artifact */
 /** @typedef {import("./model.js").Run} Run */
@@ -18,18 +20,21 @@ export function preparePublication(cwd, run, actor, args) {
 	/** @param {Run} current */
 	function authorize(current) {
 		admitted(current);
-		const dirs = new Set(Object.values(current.nodes).map(n => n.grain.directory));
+		const dirs = new Set(Object.values(current.nodes).flatMap(n => scopePaths(n.grain.directory)));
 		if (!to.length || !to.every(dir => dirs.has(dir) || current.policy.squads.some(s => "areas" in s && owns(s, dir))))
 			fail("invalid_recipient", "Name a recipient assignment directory or a path within a charter area");
 		if (actor === current.owner && args.token === undefined) return;
 		const node = boundWriter(current, actor, text(args.token, "assignment token"));
 		if (node.state !== "writing") fail("stale_assignment", "This assignment is no longer writing");
-		if (!contains(node.grain.directory, file)) fail("charter_scope", "File is outside the publisher's assignment");
+		if (!covers(node.grain.directory, file) || touchesCut(node.retained ?? [],file)) fail("charter_scope", "File is outside the publisher's assignment");
 		return text(node.generation, "generation");
 	}
 
 	const generation = authorize(run);
-	if (generation) generationRoot(cwd, generation);
+	if (generation) {
+		cwd = writerRoot(cwd,run,boundWriter(run,actor,text(args.token,"assignment token")));
+		generationRoot(cwd, generation);
+	}
 	const base = generation ?? commitAt(cwd, "HEAD");
 	const artifact = { file, blob: pinFile(cwd, file), base, publisher: actor, to };
 	return (/** @type {Run} */ current) => {
@@ -40,7 +45,7 @@ export function preparePublication(cwd, run, actor, args) {
 }
 
 /** @param {Artifact} a @param {Node} n */
-export const offered = (a, n) => a.to.some(dir => contains(dir, n.grain.directory));
+export const offered = (a, n) => scopePaths(n.grain.directory).some(dir => covers(a.to,dir));
 
 /** @param {Run} run @param {Node} node @param {number} [since] */
 const offersFor = (run, node, since = 0) => run.artifacts?.slice(since).filter(a => offered(a, node)) ?? [];

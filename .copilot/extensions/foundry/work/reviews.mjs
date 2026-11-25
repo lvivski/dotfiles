@@ -1,15 +1,30 @@
 import { randomUUID } from "node:crypto";
-import { currentFailures, delivered, repairDirectory } from "./blockers.mjs";
+import { answeredLead, currentFailures, delivered, repairDirectory } from "./blockers.mjs";
 import { workerLimit } from "./policy.mjs";
-import { milestoneBlocker, qualifiedProduct } from "./evidence.mjs";
+import { comparisonGoal, currentEvaluation, leadGoal, milestoneBlocker, productPin, qualifiedProduct, repairDetail, sameEvaluation } from "./evidence.mjs";
 import { attachedNotes, noteId } from "./notes.mjs";
-import { actionable, checked, consumersOf, displacedInputs, owns, settledOutput } from "./plan.mjs";
-import { digest, referenceRepo } from "./values.mjs";
+import { actionable, checked, consumersOf, displacedInputs, owns, settledOutput, stoppedHandoff } from "./plan.mjs";
+import { comparisonScope, digest, fail, referenceRepo } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @typedef {import("./model.js").Review} Review */
 /** @param {Run} run */
 export const reviews = run => run.effects.filter(e => e.kind === "scout");
+export const staleReaderMessage = "The installed Foundry reader changed. Reload Foundry in this session, then check the original assignment's status. Do not restart the run.";
+/** Only the bound workflow's terminal envelope, not a scout's report or an unconfirmed exception.
+ * Keep the original receipt recognizable on installations that already recorded it.
+ * @param {Review} r */
+export const readerInterrupted = r => r.state === "blocked" && !!r.workflowId && !!r.callId && !r.observation && !r.packet &&
+	!r.retryOf && r.error === `Discovery error: Request workflow.execute failed with message: ${staleReaderMessage}`;
+/** A retry has its own workflow and packet, but its routing evidence belongs to the original.
+ * @param {Run} run @param {Review} review */
+function evidenceOrigin(run, review) {
+	if (!review.retryOf) return review;
+	const original = run.effects.find(e => e.id === review.retryOf);
+	if (original?.kind !== "scout" || original.retryOf || run.effects.indexOf(original) >= run.effects.indexOf(review))
+		fail("corrupt_run", "Missing original scout review");
+	return original;
+}
 /** @param {Review} r */
 export const reading = r => r.state === "ready" || r.state === "issued" || r.state === "uncertain" || r.state === "suspended";
 /** The first dialog is already identified by its unique review, including before recovery was supported.
@@ -18,7 +33,7 @@ export const presentation = r => r.decision?.status === "presenting" ? r.decisio
 	r.decision?.status === "unavailable" ? r.decision.presentation : undefined;
 
 /** @param {Run} run @param {Review} r */
-export const currentPin = (run, r) => r.evaluatorRevision === run.repins?.at(-1)?.revision;
+export const currentPin = (run, r) => currentEvaluation(run,r);
 
 /** A lost reply is not a stopped attempt. Only release work that cannot still be spending a scout slot.
  * @param {Run} run @param {Review} r */
@@ -30,15 +45,16 @@ export function retireSuperseded(run, r) {
 /** A review *is* its workflow reservation. A received report may still await admission on resume.
  * @param {Run} run @param {string} issuer @param {string} squad @param {string} base @param {string} version @param {Review["wake"]} [wake] */
 export function reserveReview(run, issuer, squad, base, version, wake) {
-	const evaluatorRevision = run.repins?.at(-1)?.revision;
+	const evaluatorRevision = run.repins?.at(-1)?.revision, productEvaluatorRevision = productPin(run);
 	/** @type {Review} */
-	const review = { id: randomUUID(), issuer, squad, base, version, ...(evaluatorRevision ? { evaluatorRevision } : {}), ...(wake ? { wake } : {}), kind: "scout", tool: "workflow", args: {}, state: "ready" };
+	const review = { id: randomUUID(), issuer, squad, base, version, ...(evaluatorRevision ? { evaluatorRevision } : {}),
+		...(productEvaluatorRevision ? {productEvaluatorRevision} : {}), ...(wake ? { wake } : {}), kind: "scout", tool: "workflow", args: {}, state: "ready" };
 	run.effects.push(review);
 	return review;
 }
 
 /** @param {Run} run @param {Review} r */
-export const wakeSource = (run, r) => r.wake && reviews(run).find(p => p.id === r.wake?.review && p.squad === r.squad &&
+export const wakeSource = (run, r) => r.wake && reviews(run).find(p => p.id === r.wake?.review && p.squad === r.squad && sameEvaluation(p,r) &&
 	(r.wake.key === "released-inputs" ? p.state === "deferred" : p.base === r.base));
 
 /** @param {Review} review @param {import("./model.js").Squad} squad */
@@ -50,7 +66,7 @@ function* priorObservations(history, review) {
 	for (const r of history) {
 		if (r.id === review.id) break;
 		if (r.state === "observed" && r.squad === review.squad && r.base === review.base &&
-			r.version === review.version && r.evaluatorRevision === review.evaluatorRevision) yield r;
+			r.version === review.version && sameEvaluation(r,review)) yield r;
 	}
 }
 
@@ -94,7 +110,7 @@ export function fileProgress(history, review, file, oid) {
 
 /** @param {Run} run @param {Review} r @param {import("./model.js").Squad} squad */
 export const canInvestigate = (run, r, squad) => "areas" in squad && !!squad.researchAgent && !reviews(run).some(e =>
-	e.evaluatorRevision === r.evaluatorRevision && e.squad === r.squad && e.base === r.base && e.version === r.version && e.wake?.key === "research");
+	sameEvaluation(e,r) && e.squad === r.squad && e.base === r.base && e.version === r.version && e.wake?.key === "research");
 
 /** Reconstruct the diagnostic for already-recorded "unknown output" failures only
  * when the rejected plan actually displaces that checked input.
@@ -118,14 +134,36 @@ export const readSource = o => o?.file ? `file:${o.file}` : o?.receipt ? `receip
  * @param {import("./model.js").Observation} o */
 export const readKey = o => `read:${digest([readSource(o), o.match ?? null, o.offset ?? 0])}`;
 
+/** Resume an implicit receipt/detail read at the first unseen unit, even after another source.
+ * Explicit offsets and literal searches retain their own no-progress guards.
+ * @param {Review[]} history @param {Review} review @param {import("./model.js").Observation} o */
+export function contextProgress(history, review, o) {
+	const source = readSource(o);
+	if (!source || o.file || o.match || o.offset !== undefined) return;
+	let end = 0, last = 0, length = 0;
+	const pages = [...priorObservations(history, review), review].flatMap(r => {
+		const p = r.packet?.read;
+		return p?.source === source && !p.miss ? [p] : [];
+	}).sort((a,b) => a.start - b.start);
+	for (const p of pages) if (p.start <= end && end < p.end) { last = p.start; end = p.end; length = p.length; }
+	if (end) return end === length ? {kind:"complete", offset:last} : {kind:"partial", offset:end};
+}
+
 /** Notes travel only along their own same-input evidence request chain, not to a later
  * checkpoint, another squad or an investigation. Never look up an arbitrary receipt by ID.
  * @param {Run} run @param {Review} review */
 export function scopedNotes(run, review) {
 	/** @param {Review} r */
 	const inputs = r => {
+		r = evidenceOrigin(run, r);
 		const i = r.iteration;
-		return [...attachedNotes(r), ...(i && !i.basis ? [{ receipt: i.receipt,
+		const lead = r.lead, source = lead?.priorReview && run.effects.find(e => e.id === lead.priorReview);
+		const question = source && source.kind === "scout"
+			? `Review ${source.id} left this charter open: ${source.observation?.reason ?? source.error}. The other charter's blocker is not evidence against this area. Investigate your charter's open question and cite delivered files in its own area for any repair.`
+			: "Investigate the earlier failure against this charter's current files; do not assume it persists.";
+		return [...attachedNotes(r), ...(lead ? [{receipt:lead.receipt, question:`Automatic follow-up on checkpoint ${lead.checkpoint}. Goal ${leadGoal(lead)} ${lead.pending ? "was pending when this investigation started" : "lacks release evidence"}. ${question} Propose disjoint repairs supported by this product with already checked inputs, or report that none are supported. Do not repeat release verification.`}] : []),
+			...(i?.historical ? [{ receipt:i.historical.receipt, question:`Compare the earlier observation of ${i.historical.step} with the current incomplete receipt. Do not propose a repair unless the delivered product evidence supports it and the newer observations do not contradict it.` }] : []),
+			...(i && !i.basis ? [{ receipt: i.receipt,
 			question: `Owner comparison for ${i.directory}, offered blob ${i.blob}: ${i.question}. Consider an in-scope implementation, not another audit of the same evidence.` }] : [])];
 	};
 	const notes = new Map(inputs(review).map(n => [noteId(n), n]));
@@ -134,7 +172,7 @@ export function scopedNotes(run, review) {
 		const r = run.effects[i];
 		if (r.id !== child.wake.review) continue;
 		if (r.kind !== "scout" || r.squad !== review.squad || r.base !== review.base || r.version !== review.version ||
-			r.evaluatorRevision !== review.evaluatorRevision || r.observation?.outcome !== "needs-evidence" ||
+			!sameEvaluation(r,review) || r.observation?.outcome !== "needs-evidence" ||
 			!(r.state === "observed" || r.state === "blocked" && child.wake.key === evidenceDecision)) break;
 		for (const n of inputs(r)) notes.set(noteId(n), n);
 		child = r;
@@ -144,22 +182,34 @@ export function scopedNotes(run, review) {
 
 /** Evidence pages continue the same comparison, but an ordinary later review does not.
  * @param {Run} run @param {Review|undefined} review */
-export function comparison(run, review) {
-	let r = review;
+function comparisonReview(run, review) {
+	let r = review && evidenceOrigin(run, review);
 	while (r && !r.iteration && r.wake) {
 		const prev = wakeSource(run, r);
 		if (!prev || prev.observation?.outcome !== "needs-evidence" || prev.base !== r.base ||
-			prev.version !== r.version || prev.evaluatorRevision !== r.evaluatorRevision || run.effects.indexOf(prev) >= run.effects.indexOf(r)) return;
-		r = prev;
+			prev.version !== r.version || !sameEvaluation(prev,r) || run.effects.indexOf(prev) >= run.effects.indexOf(r)) return;
+		r = evidenceOrigin(run, prev);
 	}
-	return r?.iteration;
+	return r?.iteration ? r : undefined;
 }
+
+/** @param {Run} run @param {Review|undefined} review */
+export const comparison = (run, review) => comparisonReview(run, review)?.iteration;
 
 /** Only immutable review evidence determines same-checkpoint handoff scope.
  * @param {Run} run @param {Review} review @param {import("./model.js").Observation} report */
 export function successorDirectory(run, review, report) {
-	return comparison(run, review)?.directory ?? repairDirectory(run, review, report);
+	const iteration = comparison(run, review);
+	if (review.retryOf) return iteration && comparisonScope(iteration);
+	if (!iteration && report.replace?.length === 1) {
+		const id = report.replace[0], n = review.predecessor ?? run.nodes[id], detail = n && repairDetail(n);
+		if (detail && n.grain.id === id && review.packet?.sources?.includes(`detail:${detail}`)) return n.grain.directory;
+	}
+	return iteration ? comparisonScope(iteration) : repairDirectory(run, review, report);
 }
+
+/** @param {Run} run @param {Review} r @param {import("./model.js").Observation} report */
+export const reviewHandoff = (run, r, report) => stoppedHandoff(run, r, report, successorDirectory(run, r, report));
 
 /** @param {Review[]} history @param {Review} review @param {import("./model.js").Observation} o */
 export function canContinueRead(history, review, o) {
@@ -178,6 +228,7 @@ export function canContinueRead(history, review, o) {
 export function exhaustedRead(history, review) {
 	const read = review.packet?.read;
 	if (!read || read.miss) return !!read;
+	if (!review.wake) return false; // An approved opening excerpt is not a repeated scout request.
 	let end = read.start, furthestHit = -1;
 	const earlier = [...priorObservations(history, review)].flatMap(r => r.packet?.read?.source === read.source ? [r.packet.read] : []);
 	for (const p of earlier.sort((a, b) => a.start - b.start)) {
@@ -190,15 +241,18 @@ export function exhaustedRead(history, review) {
 
 /** @param {Review[]} past @param {Review} last */
 export function rejectedRead(past, last) {
-	const file = last.observation?.file;
-	if (last.state === "blocked" && last.observation?.outcome === "needs-evidence" && file && last.error === unchangedRead(file))
-		return fileProgress(past, last, file);
+	const o = last.observation;
+	if (last.state !== "blocked" || o?.outcome !== "needs-evidence") return;
+	if (o.file && last.error === unchangedRead(o.file)) return fileProgress(past, last, o.file);
+	const source = readSource(o);
+	if (source && last.packet?.sources?.includes(source) && last.error === "Repeated read of unchanged pinned evidence")
+		return contextProgress(past, last, o);
 }
 
 /** Reserve a release once per proposal. A read overtaken by a checkpoint cannot decide it.
  * Refusals and invalid results are terminal, not excuses to retry on a later turn.
  * @param {Run} run @param {Review[]} history */
-function releasedReviews(run, history) {
+export function releasedReviews(run, history) {
 	const consumed = new Set(history.filter(r => r.wake?.key === "released-inputs" &&
 		(r.base === run.goal?.commit || r.state === "observed" || r.state === "deferred" ||
 			r.state === "blocked" && r.callId && r.error !== staleReviewReason)).map(r => r.wake?.review));
@@ -245,7 +299,7 @@ export function nextReview(run, past, base, version) {
 	if (last?.base === base && last.version === version && rejectedRead(past, last)?.kind === "complete") key = evidenceDecision;
 	if (obs?.outcome === "needs-decision" && last?.decision?.status === "answered") key = last.id;
 	if (last && obs?.outcome === "needs-evidence" && last.version === version) {
-		if (obs.match || obs.offset !== undefined || !obs.file) key = readKey(obs);
+		if (obs.match || obs.offset !== undefined || !obs.file) key = readKey({...obs, offset:obs.offset ?? contextProgress(past, last, obs)?.offset});
 		else {
 			const progress = fileProgress(past, last, obs.file);
 			key = progress.kind === "partial" ? `page:${progress.offset}:${obs.file}` : `file:${obs.file}`;
@@ -277,6 +331,19 @@ export function nextReview(run, past, base, version) {
 		n.review === last.id && (actionable(run, n) || n.state === "published")))) return {};
 }
 
+/** Only continue the work admitted on this checkpoint, not an unrelated deferred review.
+ * @param {Run} run @param {Review[]} past @param {string} base @param {string} version */
+export function checkpointWake(run, past, base, version) {
+	const r = past.at(-1), at = run.goal, checkpoint = run.products.at(-1)?.check;
+	if (!r || !at || r.base !== base || !checkpoint || answeredLead(run,r)) return;
+	const lead = r.lead, i = comparison(run, r), missing = comparisonGoal(i);
+	if (lead ? leadGoal(lead) !== at.check || lead.checkpoint !== checkpoint :
+		r.state !== "observed" || r.observation?.outcome !== "needs-evidence" || !i?.basis || i.receipt !== checkpoint ||
+		missing && missing !== at.check) return;
+	const wake = nextReview(run, past, base, version)?.wake;
+	if (wake?.review === r.id) return { wake, lead };
+}
+
 /** @param {Review} r @param {string} reason */
 export function blockReview(r, reason) {
 	r.state = "blocked";
@@ -284,16 +351,27 @@ export function blockReview(r, reason) {
 	delete r.permissionHold;
 }
 
-/** @param {Review} r */
-export function reviewStatus(r) {
+/** @param {Run} run @param {Review} r */
+export function reviewStatus(run, r) {
+	const origin = comparisonReview(run, r);
+	const approved = origin?.iteration?.source?.commit, checkpoint = run.products.at(-1)?.commit;
+	const superseded = r.state === "blocked" && r.error === staleReviewReason && approved && checkpoint &&
+		checkpoint === run.goal?.commit && approved !== checkpoint;
+	const hold = r.state === "blocked" && r.error === "Writable directories must be disjoint" && r.observation ?
+		reviewHandoff(run, r, r.observation)?.hold : undefined;
 	return { id: r.id, squad: r.squad, state: reading(r) ? "reading" : r.state, base: r.base, version: r.version,
-		workflowId: r.workflowId, observation: r.observation, wake: r.wake, ...(r.retryOf ? { retryOf: r.retryOf } : {}),
-		...(r.iteration ? {iteration: r.iteration} : {}),
+		...(r.productEvaluatorRevision ? {productEvaluatorRevision:r.productEvaluatorRevision} : {}),
+		workflowId: r.workflowId, observation: r.observation, wake: r.wake, ...(r.lead ? {lead:r.lead} : {}), ...(r.retryOf ? { retryOf: r.retryOf } : {}),
+		...(origin ? { iteration: origin.iteration, ...(origin !== r ? { iterationFrom: origin.id } : {}) } : {}),
+		...(r.correction ? { correction: r.correction } : {}),
 		...(r.note ? { note: r.note } : {}),
 		...(r.otherNotes ? { otherNotes: r.otherNotes } : {}),
-		...(r.predecessor ? { predecessor: { grain: r.predecessor.grain.id, worker: r.predecessor.worker, base: r.predecessor.base,
-			check: r.predecessor.check, reason: r.predecessor.reason } } : {}),
-		reason: r.deferred ? `Deferred: current assignments using ${Object.keys(r.deferred.pins).join(", ")}: ${r.deferred.consumers.join(", ")}` : r.state === "blocked" ? r.error : undefined,
+		...(hold ? { handoffHold: hold } : {}),
+		...(r.predecessor ? { predecessor: { grain: r.predecessor.grain.id, worker: r.predecessor.worker, base: r.predecessor.base, ...(r.predecessor.preview ? { preview: r.predecessor.preview } : {}),
+			check: r.predecessor.check, ...(r.predecessor.candidate ? { candidate:r.predecessor.candidate } : {}), reason: r.predecessor.reason } } : {}),
+		reason: r.deferred ? `Deferred: current assignments using ${Object.keys(r.deferred.pins).join(", ")}: ${r.deferred.consumers.join(", ")}` :
+			superseded ? `Source comparison approval covers ${approved}, not the current checked product ${checkpoint}. Even if the cited files are unchanged, this report cannot staff a writer there.` :
+			r.state === "blocked" ? r.error : undefined,
 		decision: r.decision };
 }
 
@@ -302,6 +380,6 @@ export function reviewStatus(r) {
 export function questions(run) {
 	if (run.goal && qualifiedProduct(run)) return [];
 	const latest = new Map(reviews(run).map(r => [r.squad, r]));
-	return [...latest.values()].filter(r => r.evaluatorRevision === run.repins?.at(-1)?.revision && r.state === "observed" && r.observation?.outcome === "needs-decision" && (r.observation.ownerInput || r.decision) &&
+	return [...latest.values()].filter(r => currentEvaluation(run,r) && r.state === "observed" && r.observation?.outcome === "needs-decision" && (r.observation.ownerInput || r.decision) &&
 		(!run.goal || run.goal.commit === r.base && (!run.products.length || run.products.at(-1)?.commit === r.base)));
 }

@@ -1,6 +1,7 @@
 import { defineWorkflow, joinSession } from "@github/copilot-sdk/extension";
 import { foundryBoard } from "./canvas.mjs";
 import { identify } from "./work/native.mjs";
+import { idleHome } from "./work/pool.mjs";
 import { permissionCheck } from "./work/permissions.mjs";
 import { confirmNoReport, recover, scoutFailure } from "./work/recovery.mjs";
 import { researchAgent } from "./work/research.mjs";
@@ -29,15 +30,16 @@ async function runningHelpers(workflows) {
 }
 const runtime = createRuntime(process.cwd(), {
 	mode: () => session.rpc.mode.get(),
+	idleWriter: async id => idleHome(await session.rpc.tools.execute({name:"get_session",arguments:{project_session_id:id}}),id),
 	runningHelpers,
 	async scoutBudget() {
 		const { contextAttribution: info } = await session.rpc.metadata.getContextAttribution();
 		if (!info || !Number.isSafeInteger(info.promptTokenLimit) || info.promptTokenLimit <= 0)
 			throw Error("Foundry could not determine the issuing session's effective prompt budget.");
-		// A fresh scout does not inherit the owner's conversation. Allow for its own
-		// instructions and schema, then pack conservatively in UTF-8 bytes, not guessed tokens.
+		// Size one evidence page against the host window. A fresh scout does not
+		// inherit the owner's conversation. Count UTF-8 bytes conservatively.
 		const c = info.categories;
-		return Math.max(0, Math.floor((info.promptTokenLimit - c.systemPrompt - c.customInstructions - c.systemTools - c.mcpTools) / 2));
+		return Math.max(0, info.promptTokenLimit - c.systemPrompt - c.customInstructions - c.systemTools - c.mcpTools);
 	},
 	scoutFailure: (id, label) => scoutFailure(session, id, label),
 	confirmNoReport: review => confirmNoReport(session, review),

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
+import { openDatabase } from "../work/database.mjs";
 import { assignment } from "../work/native.mjs";
 import { createRuntime } from "../work/runtime.mjs";
 import { nativeHost, pinnedFiles, put, workflowHost } from "./fixture.mjs";
@@ -26,6 +27,22 @@ export async function reportProjections(root, discovery, plan) {
 			reason: "Implement the next incomplete projection on this checked tree", evidence: [`.foundry/${review.squad}.md`] });
 	}
 	return discovery.scouts.map(({ id, base }) => ({ id, base }));
+}
+
+/** @param {string} root @param {string} run @param {string} actor @param {string} grain
+ * @param {string} submitted @param {{nodes:{grain:string,state:string,token?:string}[]}} reply */
+export function inlineDelivery(root, run, actor, grain, submitted, reply) {
+	const own = reply.nodes.find(n => n.grain === grain);
+	if (own?.state !== "writing" || !own.token || own.token === submitted) return;
+	// A peer's native send can race the return of the submitting writer's status snapshot.
+	const db = openDatabase(root);
+	try {
+		const effects = db.read(run)?.effects;
+		assert.ok(effects);
+		if (effects.some(e => e.kind === "component" && e.grain === grain && e.issuer === actor && e.inlineRepair === own.token))
+			return { worker: actor, token: own.token };
+		assert.ok(effects.some(e => e.kind === "repair" && e.grain === grain && e.token === own.token), "repair has no delivery record");
+	} finally { db.close(); }
 }
 
 // Each subprocess is a delivered writer turn in its actual assigned worktree.
@@ -56,8 +73,8 @@ if (fileURLToPath(import.meta.url) === process.argv[1]) {
 		process.env.FOUNDRY_TEST_RENDEZVOUS = gate;
 		put(process.cwd(), `${n.directory}/index.mjs`, payload);
 		const reply = await runtime.operation("submit", { run, token }, actor);
-		const own = reply.nodes.find(a => a.grain === n.grain);
-		if (own?.state === "writing" && own.token && own.token !== token) host.inbox.push({ worker: actor, token: own.token });
+		const inline = inlineDelivery(root, run, actor, n.grain, token, reply);
+		if (inline) host.inbox.push(inline);
 		if (withhold) {
 			assert.equal(lost.length, 1);
 			runtime.turn(actor, lost[0]); await runtime.flush();

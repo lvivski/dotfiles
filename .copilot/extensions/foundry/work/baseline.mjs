@@ -2,17 +2,11 @@ import { goalReceipt, missingInput } from "./evidence.mjs";
 import { availableReservations } from "./capacity.mjs";
 import { reserveWriter, verifyRepairInputs } from "./graph.mjs";
 import { admitted } from "./native.mjs";
-import { assignmentCalls, stalePins, validateNodes, waiting, writerInputs } from "./plan.mjs";
-import { commitAt, directoryBaseline, entries, verifyContracts } from "./product.mjs";
-import { digest, fail, names } from "./values.mjs";
+import { originalAttempt, stalePins, validateNodes, waiting, writerInputs } from "./plan.mjs";
+import { commitAt, describeInventory, entries, inventory, verifyContracts } from "./product.mjs";
+import { digest, fail, members, names, roots as scopePaths } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
-/** @param {Run} run @param {import("./model.js").Node} n */
-function originalAttempt(run, n) {
-	const calls = assignmentCalls(run, n), launch = calls.find(e => e.kind === "writer" && e.token === n.token);
-	if (launch?.kind === "writer" && launch.callId && launch.state === "done" && launch.nativeId === n.worker &&
-		calls.every(e => e === launch || e.kind === "artifact" && e.state === "done")) return launch;
-}
 
 /** @param {string} cwd @param {Run} run @param {string} actor @param {string[]} ids @param {boolean} inspect */
 function manifest(cwd, run, actor, ids, inspect) {
@@ -38,13 +32,14 @@ function manifest(cwd, run, actor, ids, inspect) {
 		const inputs = inspect ? n.inputs : !stalePins(run, n).length && writerInputs(run.nodes, waiting(n.grain));
 		if (!inputs) fail("stale_assignment", `${id}: a pinned prerequisite changed`);
 		if (!inspect) verifyRepairInputs(cwd, run, n, inputs, goal.commit);
-		const directory = n.grain.directory, revision = n.grain.revision ?? n.base, baseline = directoryBaseline(cwd, revision, directory);
-		if (!baseline || inspect && n.priorSource?.tree !== baseline.tree ||
-			directoryBaseline(cwd, goal.commit, directory)?.tree !== baseline.tree ||
-			run.join && directoryBaseline(cwd, run.join.commit, directory)?.tree !== baseline.tree ||
-			entries(cwd, revision, true, [directory]).some(e => !["100644", "100755"].includes(e.mode)))
+		const directory = n.grain.directory, revision = n.grain.revision ?? n.base, baseline = inventory(cwd, revision, directory);
+		const pinned = (/** @type {import("./model.js").Inventory|undefined} */ source) => members(source ?? []).map(b=>[b.directory,b.tree]);
+		const unchanged = (/** @type {string} */ commit) => digest(pinned(inventory(cwd,commit,directory)))===digest(pinned(baseline));
+		if (!baseline || inspect && (!n.priorSource || digest(n.priorSource) !== digest(baseline)) ||
+			!unchanged(goal.commit) || run.join && !unchanged(run.join.commit) ||
+			entries(cwd, revision, true, scopePaths(directory)).some(e => !["100644", "100755"].includes(e.mode)))
 			fail("stale_assignment", `${id}: need the original unchanged regular-file inventory`);
-		return { id, launch, token: n.token, worker: n.worker, generation: n.generation, inputs, specification: n.grain.specification, baseline };
+		return { id, launch, token: n.token, worker: n.worker, generation: n.generation, inputs, specification: n.grain.specification, baseline, revision };
 	});
 }
 
@@ -53,7 +48,7 @@ export function prepareBaselines(cwd, run, actor, selections, inspect = false) {
 	const ids = names(selections, "blocked assignment"), before = manifest(cwd, run, actor, ids, inspect);
 	return {
 		prompt: `Run ${run.id}: allow these original writers to consult only their own prior directories, read-only?\n` +
-			before.map(({ id, worker, baseline: b, specification }) => `${id} (${worker}): ${b.revision}:${b.directory}/\nTree: ${b.tree}; charter: ${specification}`).join("\n") +
+			before.map(({ id, worker, baseline, specification }) => `${id} (${worker}): ${describeInventory(baseline)}; charter: ${specification}`).join("\n") +
 			"\nApprove only if the charter omitted this permission, not if it forbids the read. " +
 			(inspect ? "Inspection only: no repair, new token, edits or submission. Writers remain blocked."
 				: "Each writer receives one bounded repair.") + " No checkout, other revisions, host permissions, evaluators or goals change.",
@@ -65,7 +60,7 @@ export function prepareBaselines(cwd, run, actor, selections, inspect = false) {
 				for (const row of fresh) row.launch.readGrant = row.baseline;
 			} else {
 				for (const row of fresh)
-					reserveWriter(cwd, live, live.nodes[row.id], row.inputs, row.baseline.revision, actor, undefined, row.baseline);
+					reserveWriter(cwd, live, live.nodes[row.id], row.inputs, row.revision, actor, undefined, row.baseline);
 				validateNodes(live.nodes);
 				if (live.goal) delete live.goal.stall;
 			}

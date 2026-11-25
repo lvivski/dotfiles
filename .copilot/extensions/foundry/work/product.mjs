@@ -7,7 +7,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { contains, fail, relative } from "./values.mjs";
+import { contains, covers, fail, members, mixed, ownership, relative, roots } from "./values.mjs";
+import { touchesCut } from "./transfer.mjs";
 
 const env = {
 	PATH: process.env.PATH, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_ALLOW_PROTOCOL: "",
@@ -104,6 +105,29 @@ export function directoryBaseline(cwd, revision, directory) {
 	return tree ? { directory, revision, tree } : undefined;
 }
 
+/** A new subtree may be absent, but none of its ancestors can be a file or a differently spelled alias.
+ * @param {string} cwd @param {string} commit @param {string} directory */
+export function checkDirectory(cwd,commit,directory) {
+	let tree=commit;
+	for (const part of relative(directory).split("/")) {
+		const e=entries(cwd,tree).find(e=>pathKey(e.name)===pathKey(part));
+		if (!e) return;
+		if (e.name!==part || e.type!=="tree") fail("tree_conflict",`Not an unambiguous directory at ${commit}:${directory}`);
+		tree=e.oid;
+	}
+}
+
+/** @param {string} cwd @param {string} revision @param {import("./model.js").Scope} scope */
+export function inventory(cwd, revision, scope) {
+	if (mixed(scope)) return directoryBaseline(cwd,revision,scope.primary);
+	if (!Array.isArray(scope)) return directoryBaseline(cwd,revision,scope);
+	const found = scope.flatMap(dir => directoryBaseline(cwd,revision,dir) ?? []);
+	return found.length ? found : undefined;
+}
+
+/** @param {import("./model.js").Inventory} source */
+export const describeInventory = source => members(source).map(b=>`${b.revision}:${b.directory}/ (tree ${b.tree})`).join(", ");
+
 /** @param {string} cwd @param {string} revision @param {string} directory */
 export function verifyDirectoryPin(cwd, revision, directory) {
 	if (git(cwd, ["cat-file", "--batch-check=%(objectname) %(objecttype)"], `${revision}\n`).toString().trimEnd() !== `${revision} commit`)
@@ -140,7 +164,7 @@ export function retain(cwd, oid) {
 
 /** Pin only the explicitly selected file, including untracked or binary data. Never touch the index.
  * @param {string} cwd @param {string} file */
-export function pinFile(cwd, file) {
+function diskBlob(cwd, file) {
 	const source = path.join(cwd, relative(file));
 	const stat = lstatSync(source);
 	if (!stat.isFile() || stat.nlink !== 1 || realpathSync(source) !== source || stat.dev !== lstatSync(cwd).dev)
@@ -153,8 +177,27 @@ export function pinFile(cwd, file) {
 		const oid = execFileSync("git", gitArgs(cwd, ["hash-object", "-w", "--stdin"]), { env, stdio: [fd, "pipe", "pipe"] }).toString().trim();
 		const after = fstatSync(fd);
 		if (opened.ctimeMs !== after.ctimeMs || opened.size !== after.size) fail("artifact_changed", `File changed during publication: ${file}`);
-		return retain(cwd, oid);
+		return {name:path.basename(file),oid,type:"blob",mode:opened.mode & 0o100 ? "100755" : "100644"};
 	} finally { closeSync(fd); }
+}
+
+/** @param {string} cwd @param {string} file */
+export const pinFile = (cwd,file) => retain(cwd,diskBlob(cwd,file).oid);
+
+/** Replace an existing regular blob only. An absent path or a tree is never an empty file grant.
+ * @param {string} cwd @param {string} tree @param {string} file @param {Entry} replacement @param {Entry} expected */
+function replaceFile(cwd, tree, file, replacement, expected) {
+	const [name,...tail]=relative(file).split("/"), items=entries(cwd,tree), child=items.find(e=>e.name===name);
+	if (!child) fail("tree_conflict",`Missing exact file: ${file}`);
+	if (tail.length) {
+		if (child.type!=="tree") fail("tree_conflict",`Not a directory: ${name}`);
+		child.oid=replaceFile(cwd,child.oid,tail.join("/"),replacement,expected);
+	} else {
+		if (!["100644","100755"].includes(child.mode) || ![expected,replacement].some(e=>e.mode===child.mode && e.oid===child.oid))
+			fail("tree_conflict",`Concurrent modification of exact file: ${file}`);
+		child.oid=replacement.oid; child.mode=replacement.mode;
+	}
+	return build(cwd,items);
 }
 
 /** @param {string} cwd @param {string|null} tree @param {string} label @param {string} [parent] */
@@ -165,8 +208,13 @@ function pin(cwd, tree, label, parent) {
 
 /** @param {string} cwd @param {string} commit */
 export const treeOf = (cwd, commit) => git(cwd, ["rev-parse", "--verify", `${commit}^{tree}`]).toString().trim();
-/** @param {string} cwd @param {string} commit @param {string} directory */
-export const withoutGrain = (cwd, commit, directory) => pin(cwd, replace(cwd, treeOf(cwd, commit), directory, null), "Foundry generation base");
+/** Omit the removed scope for a successor starting with the checked product in a parentless generation.
+ * @param {string} cwd @param {string} commit @param {import("./model.js").Scope} [directory] */
+export function withoutGrain(cwd, commit, directory) {
+	/** @type {string|null} */ let tree = treeOf(cwd,commit);
+	if (directory) for (const dir of ownership(directory).directories) tree = replace(cwd,tree,dir,null);
+	return pin(cwd,tree,"Foundry generation base");
+}
 
 /** @param {string} cwd @param {string[]} paths @param {boolean} [write] */
 function blobIds(cwd, paths, write = false) {
@@ -187,7 +235,7 @@ function withIndex(cwd, use) {
 }
 
 /** @param {string} dir @param {Map<string,string>} [expected] @param {boolean} [worktree] */
-function diskFiles(dir, expected, worktree = false) {
+function diskFiles(dir, expected, worktree = false, /** @type {((name:string)=>boolean)|undefined} */ skip = undefined) {
 	/** @type {{name:string,mode:string}[]} */ const files = [];
 	const device = lstatSync(dir).dev;
 	/** @param {string} prefix */
@@ -196,6 +244,7 @@ function diskFiles(dir, expected, worktree = false) {
 			if (!isUtf8(entry)) fail("unsupported_tree", "Non-UTF-8 file name");
 			if (worktree && !prefix && entry.toString() === ".git") continue;
 			const name = path.join(prefix, relative(entry.toString())), file = path.join(dir, name);
+			if (skip?.(name)) continue;
 			if (expected && expected.get(pathKey(name)) !== name) fail("product_changed", `Unexpected path: ${name}`);
 			const stat = lstatSync(file);
 			if (stat.dev !== device || stat.isSymbolicLink() || realpathSync(file) !== file || !stat.isDirectory() && (!stat.isFile() || stat.nlink !== 1))
@@ -208,8 +257,8 @@ function diskFiles(dir, expected, worktree = false) {
 	return files;
 }
 
-/** @param {string} root @param {string} directory */
-function grainTree(root, directory) {
+/** @param {string} root @param {string} directory @param {import("./model.js").Retained[]} [cuts] */
+function grainTree(root, directory,cuts) {
 	let dir = root;
 	for (const part of relative(directory).split("/")) {
 		dir = path.join(dir, part);
@@ -217,7 +266,7 @@ function grainTree(root, directory) {
 		if (!stat) return null;
 		if (!stat.isDirectory() || realpathSync(dir) !== dir) fail("unsupported_tree", `Invalid grain directory: ${dir}`);
 	}
-	const files = diskFiles(dir);
+	const files = diskFiles(dir,undefined,false,cuts && (name=>cuts.some(c=>roots(c).some(p=>pathKey(p)===pathKey(`${directory}/${name}`)))));
 	if (!files.length) return null;
 	pathNames(files);
 	const ids = blobIds(root, files.map(f => `./${directory}/${f.name}`), true);
@@ -239,17 +288,62 @@ export function generationRoot(cwd, generation) {
 	return root;
 }
 
-/** @param {string} cwd @param {string} generation @param {string} directory */
-export function capture(cwd, generation, directory) {
-	const root = generationRoot(cwd, generation);
-	return pin(root, replace(root, treeOf(root, generation), directory, grainTree(root, directory)), "Foundry grain candidate");
+/** Compose a subtree from owned entries of one tree and transferred entries of the other.
+ * Both tree IDs are relative to directory. Refuse case aliases and file/directory collisions.
+ * @param {string} cwd @param {string} directory @param {string|null} owned @param {string|null} excluded
+ * @param {import("./model.js").Retained[]} cuts */
+function partition(cwd,directory,owned,excluded,cuts) {
+	const take=(/** @type {string|null} */ tree,/** @type {boolean} */ transferred)=>(tree ? entries(cwd,tree,true) : []).filter(e=>{
+		const p=`${directory}/${e.name}`, match=cuts.some(c=>covers(c,p));
+		if (!match && touchesCut(cuts,p)) fail("tree_conflict",`Path aliases or changes the type of a transferred path: ${p}`);
+		return match===transferred;
+	});
+	const items=[...take(owned,false),...take(excluded,true)];
+	if (!items.length) return null;
+	pathNames(items);
+	return withIndex(cwd,staged=>{
+		staged(["update-index","-z","--index-info"],items.map(e=>`${e.mode} ${e.oid}\t${e.name}\0`).join(""));
+		const tree=staged(["write-tree"]).toString().trim();
+		if (entries(cwd,tree,true).length!==items.length) fail("tree_conflict","Cannot represent the retained package without losing a path");
+		return tree;
+	});
 }
 
-/** @param {string} cwd @param {string} base @param {{directory:string,from:string,to:string}[]} updates @param {string} [parent] */
-export function combine(cwd, base, updates, parent) {
+/** @param {string} cwd @param {string} generation @param {import("./model.js").Scope} directory
+ * @param {import("./model.js").Retained[]} [cuts] @param {string} [checkpoint] */
+export function capture(cwd, generation, directory,cuts,checkpoint) {
+	const root = generationRoot(cwd, generation);
+	/** @type {string|null} */ let tree = treeOf(root,generation);
+	const scope=ownership(directory);
+	for (const dir of scope.directories) {
+		const owned=grainTree(root,dir,cuts);
+		tree=replace(root,tree,dir,cuts ? partition(root,dir,owned,subtree(root,checkpoint ?? fail("stale_assignment","Missing retained parent checkpoint"),dir),cuts) : owned);
+	}
+	for (const file of scope.files) {
+		const [original]=regularFiles(root,generation,[file]);
+		tree=replaceFile(root,tree ?? fail("tree_conflict","Missing exact file tree"),file,diskBlob(root,file),original);
+	}
+	return pin(root,tree,"Foundry grain candidate");
+}
+
+/** @param {string} cwd @param {string} base @param {{directory:string,from:string,to:string,exact?:boolean,retained?:import("./model.js").Retained[]}[]} updates @param {string} [parent] @param {string} [attribution] */
+export function combine(cwd, base, updates, parent, attribution) {
 	/** @type {string|null} */ let tree = treeOf(cwd, base);
-	for (const { directory, from, to } of updates) {
+	for (const { directory, from, to, exact, retained } of updates) {
+		if (exact) {
+			tree=replaceFile(cwd,tree ?? fail("tree_conflict","Missing exact file tree"),directory,
+				regularFiles(cwd,to,[directory])[0],regularFiles(cwd,from,[directory])[0]);
+			continue;
+		}
 		const before = from === base ? undefined : subtree(cwd, from, directory);
+		if (retained) {
+			const live=tree && subtree(cwd,tree,directory), after=subtree(cwd,to,directory);
+			const replacement=partition(cwd,directory,after,live,retained);
+			if (before!==undefined && live!==replacement && partition(cwd,directory,before,live,retained)!==live)
+				fail("tree_conflict",`Concurrent modification of retained files in ${directory}`);
+			tree=replace(cwd,tree,directory,replacement);
+			continue;
+		}
 		try {
 			tree = replace(cwd, tree, directory, subtree(cwd, to, directory), before);
 		}
@@ -259,7 +353,7 @@ export function combine(cwd, base, updates, parent) {
 			throw error;
 		}
 	}
-	return pin(cwd, tree, "Foundry product candidate", parent);
+	return pin(cwd, tree, attribution ? `Foundry product candidate\nChecked ownership restoration: ${attribution}` : "Foundry product candidate", parent);
 }
 
 /** Carry the actual checkpoint delta onto a moved target, not a reconstruction from past jobs.
@@ -382,8 +476,8 @@ export async function withProduct(cwd, commit, evaluate, overlay) {
 	}
 }
 
-/** @param {string} dir @param {string[]} paths */
-export const outside = (dir, paths) => !paths.some(p => {
-	const a = pathKey(dir), b = pathKey(p);
+/** @param {import("./model.js").Scope} dir @param {string[]} paths */
+export const outside = (dir, paths) => roots(dir).every(root => !paths.some(p => {
+	const a = pathKey(root), b = pathKey(p);
 	return contains(a, b) || contains(b, a);
-});
+}));

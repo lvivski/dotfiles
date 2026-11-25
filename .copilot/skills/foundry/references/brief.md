@@ -24,11 +24,17 @@ Put the confirmed journey, material edge cases and exclusions in `.foundry/<plan
 
 Use just enough disjoint writable `areas` for independent work to start together. A charter says what a squad owns, not what it must build first. Keep charters outside writable areas. Component checks must work for newly discovered directories, not a list of predicted assignment IDs. Leave `limits.workers` unset unless the user wants a fixed concurrency cap. For unattended work, `limits.assignments` can bound total scout, writer and repair reservations; zero permits baseline checks only. Neither limit counts native helpers or promises a credit ceiling.
 
+Trace two proposed changes all the way to the product that loads them. If both need to edit one registration file, their feature directories alone are not independently shippable. Establish a stable interface or give integration to one owner. For multiple complete directories the component check must accept `FOUNDRY_DIRECTORIES`; `FOUNDRY_DIRECTORY` is for a single root.
+
+For a version-2 area charter, opt into `"ownership":"exact-files"` only if the product checker understands `FOUNDRY_OWNERSHIP`. This lets the owner request a source-backed comparison for one check-bearing directory plus explicitly named existing regular files in the same charter. It does not grant those files to ordinary scouts or writers. In the product checker, match each `files` entry by equality, never by prefix; match `directories` by equality or a slash-delimited descendant. Emit `FOUNDRY_REPAIR=<grainId>` only for a unique real owner. Keep unrelated or ambiguous failures unattributed.
+
+Use `"ownership":"retain-except-transferred"` instead if the checker also subtracts an optional `exclude:{directories,files}` from the positive scope using those same rules. This enables the owner to request a separately approved transfer inside an included parent. No transfer is automatic.
+
 Name the production owner who can act on a midpoint comparison. Permit focused implementation and review on checked prerequisites before the final release sweep; reserve whole-product acceptance for the integrated result.
 
 If deciding whether to create a writer requires investigating other checkouts, public docs or approved tools, an area squad may name `researchAgent`. `foundry-research` reads source and public docs; name a separately configured, appropriately scoped profile for connectors or disposable probes. Review the profile and permitted sources as part of the committed brief; findings cannot substitute for product checks.
 
-For maintenance, authorize writers in the charter to consult their own accepted directory. Assignments then need only `"directory":"workday/coverage/mail"`: Foundry resolves it at kickoff. If the charter permits a particular historical copy, use `"directory":"<full commit>:workday/coverage/mail"`. A new directory with no accepted files starts empty.
+For maintenance, authorize writers in the charter to consult their own accepted directory. Assignments then need only `"directory":"lib/codec"`: Foundry resolves it at kickoff. If the charter permits a particular historical copy, use `"directory":"<full commit>:lib/codec"`. A new directory with no accepted files starts empty.
 
 - **`productCheck`:** What must still work on a useful intermediate version? A passing milestone lets the factory assess the combined result; it doesn't end the run.
 - **`goalCheck`:** Exercise the promised behavior through the product. Use any supported way to build or drive it. Exit **0** only for the full outcome, **1** for a demonstrated product gap, **2** when required external evidence is unavailable. If a local observation proves one defect while a peer or device is unavailable, report the defect **and** mark the rest unverified. Once that defect is gone, missing evidence is still not a pass.
@@ -36,6 +42,8 @@ For maintenance, authorize writers in the charter to consult their own accepted 
 For rolling scheduling hints, read `FOUNDRY_GOAL_DELTA_FILE` if set (`base`, `head`, complete `paths`, `previous`); otherwise start with normal scheduling. Write one UTF-8 JSON value directly to the precreated `FOUNDRY_GOAL_FEEDBACK_FILE`, outside the checked product. Don't also emit a stdout feedback marker. These hints let a harness prioritize observations, not skip full qualification or carry a pass to a different commit.
 
 For example, “add a headless driver and two build scripts” is not a catalog failure. “Filtering by price hid a matching item” is. If no catalog data was available to observe, don't report a filtering failure. The check may name a real prerequisite without assigning its implementation to a squad.
+
+Assert the effect at the public boundary, not a fixture's incidental representation. If an independent consumer observes the promised result but the assertion rejects it, correct the evaluator through the approved process and keep a case that rejects a genuinely wrong result. For multi-step journeys, preserve the first mismatch and label the steps it masked. Focus diagnostic checks there without reducing the agreed release coverage.
 
 ## Rehearse and hand off
 

@@ -3,7 +3,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { changedFiles, commitAt, entries, git, rootAt, verifyTree, versionOf } from "../../../extensions/foundry/work/product.mjs";
-import { contains, fail, record, relative, text } from "../../../extensions/foundry/work/values.mjs";
+import { assignmentDirectory, contains, covers, fail, roots as scopePaths, record, text } from "../../../extensions/foundry/work/values.mjs";
 
 /** @param {unknown} ok @param {string} reason @returns {asserts ok} */
 function requireProof(ok, reason) { if (!ok) fail("keep_writer", reason); }
@@ -58,12 +58,13 @@ function linkedWriter(owner, root, generation, branch) {
 
 /** A capture is generation + the whole new grain, not a commit on the writer's branch.
  * Compare the real index to the generation, raw disk to the capture, and its grain to the qualified product.
- * @param {string} owner @param {string} root @param {string} generation @param {string} candidate @param {string} directory @param {string} commit */
+ * @param {string} owner @param {string} root @param {string} generation @param {string} candidate @param {import("../../../extensions/foundry/work/model.js").Scope} directory @param {string} commit */
 function verifyCapture(owner, root, generation, candidate, directory, commit) {
 	for (const sha of [generation, candidate, commit])
 		requireProof(commitAt(owner, `refs/foundry/objects/${sha}`) === sha, "Foundry object no longer pinned");
-	requireProof(changedFiles(owner, generation, candidate).every(p => contains(directory, p)) &&
-		versionOf(owner, candidate, [directory]) === versionOf(owner, commit, [directory]), "Capture is not the included grain");
+	const roots = scopePaths(directory);
+	requireProof(changedFiles(owner, generation, candidate).every(p => covers(directory, p)) &&
+		versionOf(owner, candidate, roots) === versionOf(owner, commit, roots), "Capture is not the included grain");
 	const index = new Set(git(root, ["--no-optional-locks", "-c", "core.fsmonitor=false", "ls-files", "-v", "--stage", "--resolve-undo", "-z"]).toString().split("\0").filter(Boolean));
 	const base = entries(owner, generation, true);
 	requireProof(index.size === base.length && base.every(e => index.has(`H ${e.mode} ${e.oid} 0\t${e.name}`)), "Index differs from the generation");
@@ -86,7 +87,8 @@ export function archiveCheck(cwd, phase, input) {
 	const root = text(n.path, "native worktree root"), branch = n.branch;
 	requireProof(branch === null || typeof branch === "string" && branch.startsWith("refs/heads/") && branch !== h.targetRef, "Unknown or target branch");
 	const targetRef = text(h.targetRef, "target ref"), target = oid(h.target), commit = oid(h.commit);
-	const generation = oid(w.generation), candidate = oid(w.candidate), directory = relative(w.directory);
+	const generation = oid(w.generation), candidate = oid(w.candidate), {directory,revision} = assignmentDirectory(w.directory);
+	requireProof(!revision && isDeepStrictEqual(w.directory,directory), "Expected the exact canonical writer roots");
 	const offer = { run: text(h.run, "run"), owner, targetRef, target, commit, id, name: n.name, grain: text(w.grain, "grain"), directory, generation, candidate, path: root, branch };
 	if (phase === "recheck") requireProof(isDeepStrictEqual(data.selected, offer), "Selection does not match this exact writer and product");
 	requireProof(targetRef.startsWith("refs/heads/") && commitAt(cwd, targetRef) === target, "Checked target tip changed");

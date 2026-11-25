@@ -193,8 +193,10 @@ for (const app of [transit, clearing]) for (const missing of app === clearing ? 
 	await drain(f.inbox);
 	const s = await f.status(), db = openDatabase(f.root); t.after(() => db.close());
 	const run = db.read(app.id); assert.ok(run);
-	assert.equal(s.products?.length, missing ? 3 : 4, s.blocker ?? "delivery queue drained before the expected checkpoint");
-	assert.deepEqual(s.products.slice(0, 3), [...history.values()], "prior checkpoint commits, outputs and receipts must not change");
+	assert.ok(s.products && s.products.length >= (missing ? 3 : 4), s.blocker ?? "delivery queue drained before the expected checkpoint");
+	assert.ok(history.size >= 3, "reviews must observe the checked stages, not just the final product");
+	for (const checkpoint of history.values())
+		assert.deepEqual(s.products.find(p => p.check === checkpoint.check), checkpoint, "a previously observed checkpoint must not change");
 	assert.ok(s.products.every(p => p.receipt?.commit === p.commit && p.receipt.check === product && p.receipt.exit === 0));
 	assert.equal(git(f.root, "rev-parse", "main"), f.tip);
 	const repair = app === clearing, failedJoins = run.effects.filter(e => e.kind === "product" && e.receipt?.exit !== 0);

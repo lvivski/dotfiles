@@ -7,13 +7,21 @@ import { digest, fail, record, text } from "./values.mjs";
 /** @typedef {import("./model.js").Run} Run */
 /** @typedef {import("./model.js").NativeCall} NativeCall */
 /** @typedef {import("@github/copilot-sdk").CopilotSession["rpc"]["eventLog"]["read"]} Reader */
+/** A kickoff token selects a reservation; only the original child's native proof can claim it.
+ * @param {Run} run @param {string} token */
+export function grainForToken(run, token) {
+	const matches = Object.values(run.nodes).filter(n => n.token === token);
+	if (matches.length !== 1) fail("stale_assignment", "No unique current writer reservation matches this token");
+	return matches[0].grain.id;
+}
+
 /** @param {Run} run @param {string} grain */
 export function reservation(run, grain) {
 	admitted(run);
 	const n = run.nodes[grain], matches = run.effects.filter(e => e.kind === "writer" && e.grain === grain && current(run, e));
 	const [e] = matches;
 	if (matches.length !== 1 || e.kind !== "writer" || e.tool !== "create_session" || e.state !== "uncertain" ||
-		!e.callId || e.nativeId || e.permissionHold || !n?.generation || n.worker || n.generation !== e.args.base_branch ||
+		!e.callId || e.nativeId || e.pooled || e.permissionHold || !n?.generation || n.worker || n.generation !== e.args.base_branch ||
 		e.args.workspace_type !== "worktree" || e.args.coordinate_with_creator !== true ||
 		run.effects.some(other => other !== e && (other.callId === e.callId && other.issuer === e.issuer || other.kind === "writer" && other.token === e.token)))
 		fail("stale_assignment", "No unique current uncertain, unbound writer reservation");

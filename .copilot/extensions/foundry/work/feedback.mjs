@@ -2,7 +2,7 @@ import { isUtf8 } from "node:buffer";
 import { closeSync, fstatSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { checkReceipt } from "./evidence.mjs";
+import { checkReceipt, sameEvaluation } from "./evidence.mjs";
 import { changedFiles, git, retain } from "./product.mjs";
 import { FoundryError } from "./values.mjs";
 
@@ -41,7 +41,7 @@ export function priorGoal(run, current) {
 	for (let i = run.effects.indexOf(current) - 1; i >= 0; i--) {
 		const e = run.effects[i];
 		if (e.kind !== "goal") continue;
-		if (e.check !== current.check || e.evaluatorRevision !== current.evaluatorRevision) return;
+		if (e.check !== current.check || !sameEvaluation(e,current)) return;
 		const r = checkReceipt(e);
 		if (!r || r.exit !== 0 && r.exit !== 1) continue;
 		if (r.feedbackFile) return { base: r.commit, file: r.feedbackFile };

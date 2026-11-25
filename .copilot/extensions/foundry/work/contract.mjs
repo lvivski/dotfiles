@@ -1,6 +1,6 @@
 import { isUtf8 } from "node:buffer";
 import { commitAt, committedFile, git, outside, regularFiles, verifyDirectoryPin } from "./product.mjs";
-import { assignmentDirectory, fail, fields, integer, name, names, record, relative, text } from "./values.mjs";
+import { assignmentDirectory, deadlineAt, disjoint, fail, fields, integer, roots, name, names, record, relative, text } from "./values.mjs";
 
 /** @param {unknown} outcome @param {number} grains @returns {outcome is import("./model.js").Observation["outcome"]} */
 export const validOutcome = (outcome, grains) => grains > 0 ? outcome === "regenerate" :
@@ -14,19 +14,10 @@ function list(value, label) {
 	return value;
 }
 
-/** @param {string[]} directories */
-function disjoint(directories) {
-	const roots = directories.map(dir => `${dir.normalize("NFC").toLowerCase()}/`).sort();
-	for (const [i, dir] of roots.entries()) {
-		if (dir.startsWith(".foundry/")) fail("contract_scope", "Implementation cannot own .foundry");
-		if (i && dir.startsWith(roots[i - 1])) fail("overlapping_ownership", "Writable directories must be disjoint");
-	}
-}
-
-/** @param {import("./model.js").Output[]} grains */
-export function validateGraph(grains) {
+/** @param {import("./model.js").Output[]} grains @param {boolean} [checkScope] */
+export function validateGraph(grains, checkScope = true) {
 	const ids = names(grains.map(g => g.id), "grain");
-	disjoint(grains.map(g => g.directory));
+	if (checkScope) disjoint(grains.flatMap(g => roots(g.directory)));
 	const byId = new Map(grains.map(g => [g.id, g]));
 	const complete = new Set(), pending = new Set();
 	/** @param {string} id */
@@ -51,6 +42,7 @@ function fixed(row) {
 	const grains = list(row.grains, "grains").map(v => {
 		const g = record(v);
 		fields(g, ["id", "directory", "specification", "boundary", "check", "needs"]);
+		if (typeof g.directory !== "string") fail("invalid_charter", "A directory set requires one area's charter in a version 2 plan");
 		return { id: name(g.id, "grain"), ...assignmentDirectory(g.directory), specification: relative(g.specification),
 			boundary: list(g.boundary, "boundary files").map(relative), check: relative(g.check), needs: names(g.needs ?? [], "required output") };
 	});
@@ -109,7 +101,8 @@ export function readPolicy(cwd, source) {
 	const base = commitAt(cwd, "HEAD"), row = record(JSON.parse(committedFile(cwd, base, filename).toString()));
 	if (row.version !== 1 && row.version !== 2)
 		fail("unsupported_contract", "Expected Foundry contract version 1 or 2");
-	fields(row, ["version", "id", "direction", "target", "productCheck", "goalCheck", "squads", "limits", ...(row.version === 1 ? ["grains", "seed"] : [])]);
+	fields(row, ["version", "id", "direction", "target", "productCheck", "goalCheck", "squads", "limits", ...(row.version === 1 ? ["grains", "seed"] : ["ownership"])]);
+	if (row.ownership !== undefined && row.ownership !== "exact-files" && row.ownership !== "retain-except-transferred") fail("invalid_charter","Unknown product ownership interface");
 	const target = text(row.target, "full local target ref");
 	if (!/^refs\/heads\/[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(target) || target.includes("..") || target.endsWith(".lock"))
 		fail("invalid_target", "Expected a literal local branch");
@@ -124,23 +117,24 @@ export function readPolicy(cwd, source) {
 	fields(limits, ["workers", "assignments", "repairs", "deadline"]);
 	const { workers, assignments, repairs = 1 } = limits;
 	const deadline = limits.deadline === undefined ? undefined : text(limits.deadline, "ISO deadline");
-	if (deadline && !Number.isFinite(Date.parse(deadline)))
-		fail("invalid_limit", "Invalid deadline");
+	if (deadline && deadlineAt(deadline) === undefined)
+		fail("invalid_limit", "Deadline must be an ISO timestamp with an explicit Z or numeric UTC offset");
 	const contract = row.version === 1 ? fixed(row) : chartered(row, filename);
 	const { squads, grains, seed } = contract;
 	const sharedBrief = "sharedBrief" in contract ? contract.sharedBrief : undefined;
 	names(squads.map(s => s.id), "squad");
 	const files = [...new Set([filename, productCheck, ...(goalCheck ? [goalCheck] : []), ...grains.flatMap(g => [g.specification, ...g.boundary, g.check]),
 		...squads.flatMap(s => "areas" in s ? [s.charter, ...s.boundary, ...s.checks] : [s.charter])])];
-	const writable = [...grains.map(g => g.directory), ...squads.flatMap(s => "areas" in s ? s.areas : [])];
-	for (const g of grains) if (g.revision) verifyDirectoryPin(cwd, g.revision, g.directory);
+	const writable = [...grains.flatMap(g => roots(g.directory)), ...squads.flatMap(s => "areas" in s ? s.areas : [])];
+	for (const g of grains) if (g.revision) for (const dir of roots(g.directory)) verifyDirectoryPin(cwd, g.revision, dir);
 	for (const file of files)
 		if (!outside(file, writable)) fail("contract_scope", `Conserved file overlaps a writable directory: ${file}`);
 	const pinned = regularFiles(cwd, base, files);
 	if (sharedBrief) journeyText(cwd, pinned[files.indexOf(sharedBrief)]);
+	/** @type {import("./model.js").Policy} */
 	const policy = {
 		id: name(row.id, "policy ID"), direction: text(row.direction, "engineering direction"), source: filename, target, base, productCheck,
-		files, squads, ...(sharedBrief ? { sharedBrief } : {}), ...(seed ? { seed } : {}),
+		files, squads, ...(row.ownership ? {ownership: row.ownership} : {}), ...(sharedBrief ? { sharedBrief } : {}), ...(seed ? { seed } : {}),
 		...(goalCheck ? { goalCheck } : {}),
 		...(workers === undefined ? {} : { workers: integer(workers, 1, "worker limit") }),
 		...(assignments === undefined ? {} : { assignments: integer(assignments, 0, "total assignment limit") }),

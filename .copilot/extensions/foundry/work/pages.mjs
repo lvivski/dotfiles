@@ -1,6 +1,18 @@
 import { fail } from "./values.mjs";
 
 export const indexBudgetError = "The charter instructions and pinned file index exceed this session's scout budget.";
+/** @param {import("./model.js").Packet} packet @param {string} file @param {string} oid */
+export const deliveredFile = (packet, file, oid) => Object.hasOwn(packet.files,file) && packet.files[file]===oid ||
+	packet.excerpt?.path===file && packet.excerpt.oid===oid;
+/** @param {string} file @param {string} oid */
+export const unseenText = (file, oid) => `Text of ${file} at ${oid} was not delivered in this packet`;
+/** Only the opening comparison's own rejected citation, not a missing page on a later read.
+ * @param {import("./model.js").Review} review @param {string} oid */
+export function rejectedSource(review, oid) {
+	const file=review.iteration?.source?.file, packet=review.packet;
+	return !!file && !!packet?.partial && review.observation?.evidence.includes(file) === true &&
+		!Object.hasOwn(packet.files,file) && packet.excerpt?.path!==file && review.error===unseenText(file,oid);
+}
 /** @param {unknown} v @returns {v is string} */
 export const validMatch = v => typeof v === "string" && !!v.length && !/[\0\uD800-\uDFFF]/u.test(v);
 
@@ -57,6 +69,10 @@ export function textPage(id, source, content, offset, available, match) {
 
 /** @typedef {{path:string,oid:string,text:string,omitted?:never} | {path:string,oid?:string,omitted:string,text?:never}} FileRow */
 
+/** @param {Map<string,FileRow>} index */
+export const indexBytes = index => [...index.values()].reduce((n, {path, oid, omitted}) =>
+	n + Buffer.byteLength(JSON.stringify({path, oid, omitted})) + 1, 0);
+
 /** The unpaged packet shows these file groups in full. Only complete text is citable;
  * keep omissions in the same ordered index used to select a bounded page.
  * @param {Iterable<Iterable<FileRow>>} groups */
@@ -75,8 +91,9 @@ export function wholeEvidence(groups) {
 /** Pack whole blobs when possible. Only the requested blob may be split, and its
  * receipt identifies precisely the displayed range (UTF-16 indices, never half a surrogate).
  * @param {Map<string,FileRow>} rows @param {number} bytes @param {string} charter
- * @param {string|undefined} focus @param {number} start @param {string} [match] */
-export function evidencePage(rows, bytes, charter, focus, start, match) {
+ * @param {string|undefined} focus @param {number} start @param {string} [match]
+ * @param {string} [anchor] Approved excerpt to center on only if the whole file does not fit. */
+export function evidencePage(rows, bytes, charter, focus, start, match, anchor) {
 	const target = focus && rows.get(focus);
 	const index = [...rows.values()].map(({ path, oid, omitted }) => JSON.stringify({ path, oid, ...(omitted ? { omitted } : {}) }));
 	let free = bytes - Buffer.byteLength(index.join("\n"));
@@ -101,7 +118,7 @@ export function evidencePage(rows, bytes, charter, focus, start, match) {
 		if (!lookup && !(row === target && start) && Buffer.byteLength(whole) <= available) {
 			files.set(row.path, row.oid); index[i] = whole;
 		} else if (row.path === (focus ?? charter)) {
-			const page = textPage({ path: row.path, oid: row.oid }, `file:${row.path}`, row.text, start, available, lookup);
+			const page = textPage({ path: row.path, oid: row.oid }, `file:${row.path}`, row.text, start, available, lookup ?? anchor);
 			index[i] = page.text;
 			if (row === target) read = page.read;
 			if (!page.read.miss) excerpt = { path: row.path, oid: row.oid, start: page.read.start, end: page.read.end, length: page.read.length };

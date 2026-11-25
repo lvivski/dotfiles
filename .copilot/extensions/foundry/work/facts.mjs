@@ -1,7 +1,9 @@
-import { checkpointReceipt, checkReceipt, goalReceipt, milestoneBlocker } from "./evidence.mjs";
+import { remainingAssignments } from "./capacity.mjs";
+import { checkpointReceipt, checkReceipt, comparisonGoal, currentEvaluation, failedCandidate, goalReceipt, leadGoal, milestoneBlocker, productPin } from "./evidence.mjs";
 import { awaitingReply } from "./native.mjs";
-import { working } from "./plan.mjs";
-import { comparison, nextReview, reading, reviews } from "./reviews.mjs";
+import { discoverLeads } from "./leads.mjs";
+import { working, writerInputs } from "./plan.mjs";
+import { checkpointWake, comparison, reading, reviews } from "./reviews.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @param {Run} run */
@@ -17,28 +19,77 @@ export function checkpointCurrent(run, receipt, target) {
 		last.commit === run.goal?.commit && run.goal.target === target && !!checkpointReceipt(run, receipt, last.commit);
 }
 
+/** A later checkpoint need not reopen a proposal to continue the original writer's
+ * verified component failure. Directory, prerequisites and citations still need Git validation.
+ * @param {Run} run @param {import("./model.js").Node} n @param {import("./model.js").Review|undefined} r
+ * @param {string|undefined} checkpoint */
+export function continuingRepair(run, n, r, checkpoint) {
+	const last = run.products.at(-1);
+	return n.state === "waiting" && n.repairs < run.policy.repairs && !!checkpoint && !!last && last.check !== checkpoint &&
+		r?.state === "observed" && n.base === r.base && currentEvaluation(run,r) &&
+		last.commit === run.goal?.commit && last.target === run.goal.target &&
+		run.products.some(p => p.check === checkpoint && p.commit === r.base && p.target === last.target) &&
+		!!checkpointReceipt(run, checkpoint, r.base) && failedCandidate(run, n);
+}
+
+/** A new joined check blamed the included parent, not its original (pre-transfer) scout.
+ * @param {Run} run @param {import("./model.js").Node} n */
+export function retainedRepair(run,n) {
+	if (!n.retained || !n.worker || n.state!=="waiting" || !n.replaces || run.join) return false;
+	const last=run.products.at(-1), e=run.effects.findLast(e=>e.kind==="product");
+	return last?.outputs[n.grain.id]===n.replaces && last.commit===run.goal?.commit && last.target===run.goal.target &&
+		e?.kind==="product" && e.evaluatorRevision===productPin(run) && !e.error && !e.permissionHold &&
+		checkReceipt(e)?.repair===n.grain.id && run.effects.indexOf(e)>run.effects.findIndex(g=>g.id===run.goal?.check);
+}
+
 /** @param {import("./model.js").Receipt} r */
 export const undecided = r => `Final goal check could not decide at ${r.commit} (exit ${r.exit ?? "unknown"}): ${r.output || "no diagnostic"}`;
 
 /** @param {Run} run @param {string} target @returns {import("./engine.mjs").Facts} */
 export function releaseFacts(run, target) {
 	const at = run.goal, last = run.products.at(-1), effect = at && run.effects.find(e => e.id === at.check);
-	const pin = run.repins?.at(-1)?.revision, receipt = goalReceipt(run);
-	const obsolete = effect?.kind === "goal" && effect.evaluatorRevision !== pin;
+	const receipt = goalReceipt(run), upgrade = run.productRepins?.at(-1);
+	const obsolete = effect?.kind === "goal" && !currentEvaluation(run,effect);
 	const old = obsolete && checkReceipt(effect), heldPin = obsolete && (awaitingReply(effect) || effect.permissionHold || effect.state === "refused");
-	const goal = !at ? "absent" : obsolete ? heldPin ? "superseded" : "repin" : last && last.commit !== at.commit ? "new-product" :
+	const rejoin = at && run.effects.find(e=>e.kind==="product" && e.recheck?.of===at.check);
+	const goal = !at ? "absent" : upgrade && at.check === upgrade.goal && last?.check !== upgrade.recheck ? "product-repin" :
+		rejoin ? last && run.effects.findIndex(e=>e.id===last.check)>=run.effects.indexOf(rejoin) ? "new-product" : "rejoining" :
+		obsolete ? heldPin ? "superseded" : "repin" : last && last.commit !== at.commit ? "new-product" :
 		effect?.state === "retired" ? "retired" : !receipt ? "pending" : receipt.exit === 2 ? "missing" : receipt.exit === 1 ? "unmet" : receipt.exit === 0 ? "met" : "incomplete";
-	const history = reviews(run), nodes = Object.values(run.nodes), byId = new Map(history.map(r => [r.id, r]));
-	const review = goal === "met" && [...new Map(history.map(r => [r.squad, r])).values()].some(r =>
-		r.base === at?.commit && r.evaluatorRevision === pin && comparison(run, r)?.basis &&
-		(reading(r) || r.state === "reported" || r.state === "observed" && r.observation?.outcome === "needs-evidence" &&
-			nextReview(run, history.filter(p => p.squad === r.squad && p.evaluatorRevision === pin), r.base, r.version)?.wake));
+	const history = reviews(run).filter(r=>currentEvaluation(run,r)), nodes = Object.values(run.nodes), byId = new Map(history.map(r => [r.id, r]));
+	/** @param {import("./model.js").Review|undefined} r */
+	const scopedComparison = r => {
+		if (r?.lead) return r.lead.checkpoint === last?.check && leadGoal(r.lead) === at?.check;
+		const i = comparison(run, r);
+		const goal = comparisonGoal(i);
+		return !!i?.basis && i.receipt === last?.check && (!goal || goal === at?.check);
+	};
+	const remaining = remainingAssignments(run);
+	const review = (goal === "met" || goal === "missing") && [...new Map(history.map(r => [r.squad, r])).values()].some(r =>
+		r.base === at?.commit && scopedComparison(r) &&
+		(reading(r) || r.state === "reported" || remaining > 0 && checkpointWake(run, history.filter(p => p.squad === r.squad), r.base, r.version)));
 	const exactProduct = !!last && at?.commit === last.commit && last.target === target && !!checkpointReceipt(run, last.check, last.commit);
+	const historicalWork = goal === "missing" ? nodes.filter(n => {
+		if (retainedRepair(run,n)) return true;
+		const r = n.review && byId.get(n.review);
+		if (!r) return false;
+		const iteration = comparison(run,r);
+		const checkpoint = r.lead?.checkpoint ?? (iteration?.basis && iteration.receipt);
+		return scopedComparison(r) || n.reuse || continuingRepair(run, n, r, checkpoint);
+	}) : [];
+	// A chain can advance if some writer is reserved or its next prerequisite can
+	// actually start. A report alone cannot fund another writer (including a repair).
+	/** @param {import("./model.js").Node} n */
+	const reachable = n => working(n) || remaining > 0 && !!writerInputs(run.nodes, n);
+	// A missing observation restricts new assignments, not integration of already checked work.
+	const work = (goal === "missing" || goal === "met") && nodes.some(n => n.state === "published" || goal === "met" && reachable(n));
+	const scoped = exactProduct && at?.target === target && !run.blocker && !run.conflict && (
+		!run.join && (pendingGoal(run) || review || historicalWork.some(reachable) ||
+			goal === "missing" && remaining > 0 && !!discoverLeads(run, history)?.leads.size) ||
+		goal === "missing" && work && !milestoneBlocker(run));
 	return { active: run.active, qualified: !!last?.qualifiedAt, goal,
 		blocked: !!run.blocker && !(goal === "repin" && old && run.blocker === undecided(old)),
-		scoped: exactProduct && at?.target === target && !run.join && !run.blocker && !run.conflict && (!!pendingGoal(run) || review),
+		scoped,
 		stalled: !!at?.stall, moved: !!at && at.target !== target, idle: !nodes.some(n => n.state !== "idle") && !history.some(reading),
-		product: !!last, exactProduct, join: !!run.join, held: !!milestoneBlocker(run), review,
-		work: goal === "met" && nodes.some(n => n.state !== "qualified" && n.review && comparison(run, byId.get(n.review))?.basis ||
-			run.repins?.length && (working(n) || n.state === "published" || n.worker && n.state === "waiting")) };
+		product: !!last, exactProduct, join: !!run.join, held: !!milestoneBlocker(run), review, work };
 }

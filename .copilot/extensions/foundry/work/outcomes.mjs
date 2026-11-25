@@ -1,17 +1,18 @@
 import { createHash, createPublicKey, generateKeyPairSync, sign, verify } from "node:crypto";
 import { fail } from "./values.mjs";
+import { sameEvaluation } from "./evidence.mjs";
 
 /** @typedef {import("./model.js").Effect} Effect */
 /** @typedef {import("./model.js").Receipt} Receipt */
 /** @param {string} run @param {Effect} e @param {string} document */
 function message(run, e, document) {
 	return createHash("sha256").update(JSON.stringify([run, e.id, e.issuer, e.callId, e.kind, e.grain ?? null,
-		e.commit, e.check, e.evaluatorRevision ?? null])).update("\n").update(document).digest();
+		e.commit, e.check, e.evaluatorRevision ?? null, ...(e.productEvaluatorRevision ? [e.productEvaluatorRevision] : [])])).update("\n").update(document).digest();
 }
 
 /** @param {Effect} e @param {Receipt} receipt */
 function checkPin(e, receipt) {
-	if (!receipt || receipt.commit !== e.commit || receipt.check !== e.check || receipt.evaluatorRevision !== e.evaluatorRevision)
+	if (!receipt || receipt.commit !== e.commit || receipt.check !== e.check || !sameEvaluation(receipt,e))
 		fail("wrong_outcome", "Runner outcome does not match its evaluator pin");
 }
 

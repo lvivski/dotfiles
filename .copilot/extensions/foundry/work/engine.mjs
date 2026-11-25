@@ -1,8 +1,8 @@
-/** @typedef {"absent"|"pending"|"retired"|"superseded"|"repin"|"new-product"|"incomplete"|"missing"|"unmet"|"met"} GoalState */
+/** @typedef {"absent"|"pending"|"retired"|"rejoining"|"superseded"|"repin"|"product-repin"|"new-product"|"incomplete"|"missing"|"unmet"|"met"} GoalState */
 /** @typedef {{active:boolean, qualified:boolean, goal:GoalState, blocked:boolean, scoped:boolean, stalled:boolean,
  * moved:boolean, idle:boolean, product:boolean, exactProduct:boolean, join:boolean, held:boolean, review:boolean, work:boolean}} Facts */
 /** @typedef {"wait"|"assess"|"retry"|"assess-target"|"undecided"|"rejoin"|"qualify"|"baseline"|"none"} Action */
-/** @typedef {"closed"|"checkpoint"|"open"} Admission */
+/** @typedef {"closed"|"checkpoint"|"repaired-checkpoint"|"join-only"|"open"} Admission */
 /** @param {Action} action @param {Admission} admission @param {string} reason */
 const decision = (action, admission, reason) => ({ action, admission, reason });
 
@@ -31,14 +31,17 @@ export function transition(f, retryEvidence = false) {
 	if (f.goal === "absent") return decision("none", "open", "component-work");
 	if (f.blocked) return decision("wait", "closed", "blocked");
 	switch (f.goal) {
+	case "product-repin": return decision("wait","closed",f.moved ? "product-repin-target-changed" : f.held ? "product-repin-held" : "awaiting-product-repin");
 	case "superseded": return decision("wait", f.scoped ? "checkpoint" : "closed", "superseded-goal");
 	case "pending": return decision("wait", f.scoped ? "checkpoint" : "closed", "awaiting-goal-receipt");
 	case "retired": return decision("none", "open", "integrate-retained-work");
+	case "rejoining": return decision("none", "join-only", "verify-current-product");
 	case "repin": return decision("assess", "closed", "evaluator-changed");
 	case "new-product": return decision("assess", "closed", "new-checkpoint");
 	case "incomplete": return decision("undecided", "closed", "incomplete-goal");
 	case "missing":
-		if (!retryEvidence && (!f.join || f.held)) return decision("wait", "closed", "missing-evidence");
+		if (!retryEvidence && f.scoped) return decision("wait", f.work ? "repaired-checkpoint" : "checkpoint", "missing-evidence");
+		if (!retryEvidence && (!f.moved || !f.join || f.held)) return decision("wait", "closed", "missing-evidence");
 		if (!f.moved) return decision("retry", "closed", "retry-evidence");
 		return heldOrMoved(f);
 	case "unmet":

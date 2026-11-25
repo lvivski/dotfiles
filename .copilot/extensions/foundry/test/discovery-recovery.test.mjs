@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { cpSync } from "node:fs";
+import path from "node:path";
 import test from "node:test";
 import { setImmediate as nextTurn } from "node:timers/promises";
+import { pathToFileURL } from "node:url";
 import { openDatabase } from "../work/database.mjs";
 import { scoutDefinition } from "../work/scouts.mjs";
 import { factory, git, loadEntry, put } from "./fixture.mjs";
@@ -17,6 +20,81 @@ function trial(t, ids = ["price"], policy = {}) {
 	});
 }
 const noGap = { outcome: "no-gap", reason: "Nothing to change here.", evidence: ["charter"], grains: [] };
+
+test("a reader upgrade automatically staffs the stranded charter once, without replaying its batch", async t => {
+	const f = trial(t, ["browse", "price"], { goalCheck: "goal.mjs" });
+	const install = path.join(path.dirname(f.root), "install");
+	cpSync(new URL("../work/", import.meta.url), install, { recursive: true });
+	const { createRuntime } = await import(pathToFileURL(path.join(install, "runtime.mjs")).href);
+	/** @type {typeof f.owner} */
+	const old = createRuntime(f.root, { mode: async () => "interactive", permissionBlocker: async () => null, execute: f.execute,
+		scout: (/** @type {string} */ id, /** @type {string} */ dispatch, /** @type {string} */ actor) =>
+			f.owner.scoutBatch(id, dispatch, actor, "original").then(() => new Promise(() => {})) });
+	t.after(() => old.close());
+	const started = await f.start(old), [sibling, original] = started.reviews;
+	const db = openDatabase(f.root); t.after(() => db.close());
+	const dispatch = db.read(run)?.effects.find(e => e.id === original.id)?.callId; assert.ok(dispatch);
+	const [done, interrupted] = await old.scoutBatch(run, dispatch, "owner", "original");
+	await old.scoutResult(run, dispatch, "owner", "original", done.id, noGap, done.packet);
+	await old.flush();
+	put(install, "reader.version", "upgraded\n");
+	let nativeError = "";
+	await assert.rejects(old.scoutResult(run, dispatch, "owner", "original", interrupted.id, noGap, interrupted.packet), error => {
+		assert.ok(error instanceof Error && "code" in error && error.code === "stale_reader");
+		nativeError = `Request workflow.execute failed with message: ${error.message}`; return true;
+	});
+	old.close();
+	// Reconcile the terminal envelope before the issuer can dispatch new work. The
+	// resulting blocked record is also the on-disk shape left by older installations.
+	let mode = "interactive";
+	const reconciler = f.runtime(f.root, { mode: async () => mode, scoutState: async id => {
+		assert.equal(id, "original"); mode = "plan"; return {runId:id, status:"error", error:nativeError};
+	} });
+	reconciler.turn("owner"); await reconciler.flush(); await f.settle();
+	const before = await f.status();
+	assert.deepEqual(before.reviews.map(r => [r.id, r.state]), [[sibling.id,"observed"],[original.id,"blocked"]]);
+	assert.equal(before.reviews[1].reason, `Discovery error: ${nativeError}`);
+	reconciler.close();
+	const next = f.runtime(f.root);
+	next.turn("owner"); f.owner.turn("owner"); await Promise.all([next.flush(), f.owner.flush()]); await f.settle();
+	assert.deepEqual(f.scouts.map(j => j.squad), [original.squad], "one fresh scout for the unreported charter");
+	const [replacement] = f.scouts;
+	assert.equal(replacement.base, original.base); assert.notEqual(replacement.workflowId, "original");
+	await replacement.report({...noGap, outcome:"regenerate", grains:["price"]});
+	await next.scoutResult(run, dispatch, "owner", "original", interrupted.id, noGap, interrupted.packet);
+	next.turn("owner"); await next.flush();
+	const after = await f.status();
+	assert.deepEqual(after.reviews.slice(0,2), before.reviews);
+	assert.equal(after.reviews[2].retryOf, original.id);
+	assert.ok(after.nodes.find(n => n.grain === "price")?.worker);
+	assert.equal(f.workers.size, 1); assert.equal(f.scouts.length, 1);
+	assert.deepEqual(after.goal, before.goal);
+});
+
+const readerError = "Request workflow.execute failed with message: The installed Foundry reader changed. Reload Foundry in this session, then check the original assignment's status. Do not restart the run.";
+for (const scenario of ["current", "superseded", "typed failure", "budget exhausted"]) test(`terminal reader error on delivery: ${scenario}`, async t => {
+	const f = trial(t, ["price"], { goalCheck:"goal.mjs", limits:{assignments:scenario === "budget exhausted" ? 1 : 4} });
+	/** @type {string[]} */ const attempts = [];
+	const issuer = f.runtime(f.root, { scout: async (id, ticket, actor) => {
+		const workflow = `workflow-${attempts.length}`;
+		const [job] = await f.owner.scoutBatch(id, ticket, actor, workflow);
+		if (job.base !== f.tip) {
+			await f.owner.scoutResult(id,ticket,actor,workflow,job.id,noGap,job.packet);
+			return {runId:workflow, status:"completed"};
+		}
+		attempts.push(job.id);
+		if (scenario === "superseded") {
+			put(f.root,"new-product","later"); git(f.root,"add","new-product"); git(f.root,"commit","-qm","new product");
+		}
+		return { runId:workflow, status:"error", error:readerError, ...(scenario === "typed failure" ? {failure:{type:"workflow_limit_reached"}} : {}) };
+	} });
+	await f.start(issuer); await issuer.flush(); await f.settle();
+	assert.equal(attempts.length, scenario === "current" ? 2 : 1, "recover on delivery, without another operator turn");
+	issuer.turn("owner"); await issuer.flush(); await f.settle();
+	const retries = (await f.status()).reviews.filter(r => r.retryOf);
+	assert.deepEqual(retries.map(r => r.retryOf), scenario === "current" ? [attempts[0]] : []);
+	assert.equal(f.workers.size, 0, "a terminal error alone cannot staff a writer");
+});
 
 test("explicit review of one proven no-report charter, including the legacy ledger reason", async t => {
 	const f = trial(t, ["price", "browse"], { goalCheck: "goal.mjs", limits: { assignments: 3, workers: 2 } });
@@ -171,6 +249,22 @@ test("a capacity wake does not dispatch through a pause", async t => {
 	assert.equal(attempts, 1);
 	const s = await f.status();
 	assert.equal(s.pending[0].state, "ready");
+});
+
+test("reopening the issuer re-arms a proven capacity wait without an operator turn", async t => {
+	t.mock.timers.enable({apis:["setTimeout"]});
+	const f = trial(t);
+	const old = f.runtime(f.root,{scout:async()=>{throw Error(full);}});
+	const waiting = await f.start(old); old.close();
+	const [original] = waiting.reviews; assert.equal(waiting.pending[0]?.state,"ready");
+	const issuer = f.runtime(f.root), other = f.runtime(f.root);
+	other.sessionStart("other",f.root);
+	t.mock.timers.tick(20_000); await nextTurn(); await other.flush(); assert.equal(f.scouts.length,0);
+	issuer.sessionStart("owner",f.root); issuer.sessionStart("owner",f.root);
+	t.mock.timers.tick(20_000); await nextTurn(); await issuer.flush(); await f.settle();
+	assert.deepEqual(f.scouts.map(s=>s.id),[original.id]);
+	await f.scouts[0].report(noGap);
+	assert.equal((await f.status()).reviews.find(r=>r.id===original.id)?.state,"observed");
 });
 
 test("reconnect recovers a persisted capacity rejection but never reissues a bound scout", async t => {

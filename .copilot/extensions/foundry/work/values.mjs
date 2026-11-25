@@ -61,6 +61,15 @@ export function integer(value, min, label) {
 	return value;
 }
 
+/** A persisted wall clock without an offset is not portable authority.
+ * @param {string} value */
+export function deadlineAt(value) {
+	const match=/^(\d{4}-\d\d-\d\d)T(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/i.exec(value);
+	if (!match) return;
+	const date=new Date(`${match[1]}T00:00:00Z`), time=Date.parse(value);
+	if (Number.isFinite(time) && Number.isFinite(date.getTime()) && date.toISOString().startsWith(match[1])) return time;
+}
+
 /** @param {unknown} value */
 export function relative(value) {
 	const s = text(value, "repository-relative path");
@@ -70,8 +79,8 @@ export function relative(value) {
 	return s;
 }
 
-/** @param {unknown} value @returns {{directory:string,revision?:string}} */
-export function assignmentDirectory(value) {
+/** @param {unknown} value */
+function pinnedDirectory(value) {
 	const s = text(value, "assignment directory"), colon = s.indexOf(":");
 	if (colon < 0) return { directory: relative(s) };
 	const revision = s.slice(0, colon);
@@ -80,8 +89,59 @@ export function assignmentDirectory(value) {
 	return { directory: relative(s.slice(colon + 1)), revision };
 }
 
+/** @template T @param {T|T[]} value @returns {T[]} */
+export const members = value => Array.isArray(value) ? value : [value];
+
+/** @param {import("./model.js").Scope} scope @returns {scope is import("./model.js").FileScope} */
+export const mixed = scope => typeof scope === "object" && !Array.isArray(scope);
+/** @param {import("./model.js").Scope} scope */
+export const ownership = scope => mixed(scope) ? { directories: [scope.primary], files: scope.files } : { directories: members(scope), files: [] };
+/** Git pathspecs and overlap checks need both kinds. Never use the flattened list for recursive grants.
+ * @param {import("./model.js").Scope} scope */
+export const roots = scope => mixed(scope) ? [scope.primary, ...scope.files] : members(scope);
+/** @param {import("./model.js").Scope} scope */
+export const scopeLabel = scope => mixed(scope) ? `${scope.primary}/ plus exact files ${JSON.stringify(scope.files)}` : members(scope).join(", ");
+
+/** @param {NonNullable<import("./model.js").Review["iteration"]>} i @returns {import("./model.js").Scope} */
+export const comparisonScope = i => i.files ? {primary:i.directory,files:i.files} : i.directory;
+
+/** @param {string[]} directories */
+export function disjoint(directories) {
+	const roots = directories.map(dir => `${dir.normalize("NFC").toLowerCase()}/`).sort();
+	for (const [i, dir] of roots.entries()) {
+		if (dir.startsWith(".foundry/")) fail("contract_scope", "Implementation cannot own .foundry");
+		if (i && dir.startsWith(roots[i - 1])) fail("overlapping_ownership", "Writable directories must be disjoint");
+	}
+}
+
+/** @param {unknown} value @returns {{directory:import("./model.js").Scope,revision?:string}} */
+export function assignmentDirectory(value) {
+	if (value && typeof value === "object" && !Array.isArray(value)) {
+		const scope=record(value);
+		fields(scope,["primary","files"]);
+		const primary=relative(scope.primary);
+		if (!Array.isArray(scope.files) || !scope.files.length) fail("invalid_field","Name at least one exact integration file");
+		const files=scope.files.map(relative).sort();
+		disjoint([primary,...files]);
+		return {directory:{primary,files}};
+	}
+	if (!Array.isArray(value)) return pinnedDirectory(value);
+	if (!value.length) fail("invalid_field", "An assignment needs at least one directory");
+	const pins = value.map(pinnedDirectory), revision = pins[0].revision;
+	if (pins.some(p => p.revision !== revision)) fail("invalid_baseline", "All directories in an assignment must use the same revision");
+	const dirs = pins.map(p => p.directory).sort();
+	disjoint(dirs);
+	return { directory: dirs.length === 1 ? dirs[0] : dirs, ...(revision ? {revision} : {}) };
+}
+
+/** @param {import("./model.js").Scope|undefined} a @param {import("./model.js").Scope|undefined} b */
+export const sameScope = (a,b) => a === b || !!a && !!b && typeof a === "object" && typeof b === "object" && stable(a) === stable(b);
+
 /** @param {string} root @param {string} p */
 export const contains = (root, p) => p === root || p.startsWith(`${root}/`);
+
+/** @param {import("./model.js").Scope} scope @param {string} file */
+export const covers = (scope,file) => mixed(scope) ? contains(scope.primary,file) || scope.files.includes(file) : members(scope).some(dir => contains(dir,file));
 
 /** @param {unknown} value @returns {string} */
 export function stable(value) {

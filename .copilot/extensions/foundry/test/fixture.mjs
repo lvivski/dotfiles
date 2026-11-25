@@ -115,10 +115,10 @@ export function factory(t, run, source, files) {
 	git(root, "add", ".");
 	git(root, "commit", "-qm", "fixture");
 	const tip = git(root, "rev-parse", "HEAD"), { workers, inbox, checks, execute } = nativeHost(root), discovery = workflowHost();
-	/** @param {string} cwd @param {Partial<Host>} [options] */
-	function runtime(cwd, options) {
+	/** @param {string} cwd @param {Partial<Host>} [options] @param {typeof createRuntime} [open] */
+	function runtime(cwd, options, open = createRuntime) {
 		/** @type {Runtime} */
-		const r = createRuntime(cwd, { mode: async () => "interactive", permissionBlocker: async () => null, execute,
+		const r = open(cwd, { mode: async () => "interactive", permissionBlocker: async () => null, execute,
 			scout: (id, dispatch, actor) => discovery.launch(r, id, dispatch, actor),
 			notify: async message => {
 				const job = assignment(message);

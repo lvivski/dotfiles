@@ -92,6 +92,13 @@ test("a pass qualifies exactly one settled product; reorderings cannot qualify p
 	}
 });
 
+test("a same-target join never turns a normal reconciliation into a retry of missing goal evidence", () => {
+	/** @type {import("../work/engine.mjs").Facts} */
+	const facts={active:true, qualified:false, goal:"missing", blocked:false, scoped:false, stalled:false,
+		moved:false, idle:false, product:true, exactProduct:true, join:true, held:false, review:false, work:false};
+	assert.deepEqual(transition(facts),{action:"wait",admission:"closed",reason:"missing-evidence"});
+});
+
 test("an owner changes staffing live without cancelling workers or exceeding the committed ceiling", async t => {
 	const run = "capacity", source = ".foundry/capacity.json", ids = ["one","two","three","four"];
 	const f = factory(t, run, source, { [source]: JSON.stringify({version:1,id:run,target:"refs/heads/main",direction:"Publish four folders.",

@@ -51,6 +51,30 @@ async function trial(t) {
 }
 const selector = { run, grain: "parser" };
 
+test("a stranded writer recovers from its original kickoff without a coordinator message or a replacement launch", async t => {
+	const { f, owner, child, w, childHistory } = await trial(t);
+	put(w.cwd, "parser/index.mjs", 'export const read = () => "green";');
+	const args = {run, token:w.token};
+	assert.match(JSON.stringify(await child("foundry_claim", { ...selector, token:w.token })), /exactly one/);
+	assert.match(JSON.stringify(await child("foundry_claim", {run, token:crypto.randomUUID()})), /No unique current/);
+	assert.match(JSON.stringify(await owner("foundry_claim", args)), /issuer confirms by grain/);
+	const identity = childHistory.pop(); assert.ok(identity);
+	assert.match(JSON.stringify(await child("foundry_claim", args)), /get_session lookup/);
+	childHistory.push(identity);
+	const claimed = await child("foundry_claim", args);
+	assert.equal(typeof claimed, "string", JSON.stringify(claimed));
+	assert.deepEqual(JSON.parse(String(claimed)), {state:"awaiting_issuer", ...selector});
+	const before = await f.status(), launch = before.pending.find(e => e.kind === "writer");
+	assert.partialDeepStrictEqual(launch, {state:"uncertain",grain:"parser",claim:"awaiting_issuer"});
+	assert.equal(before.nodes[0].worker, undefined);
+	assert.deepEqual(f.checks, []); assert.equal(f.workers.size, 1);
+	assert.deepEqual(JSON.parse(String(await owner("foundry_claim", selector))), {state:"bound", ...selector});
+	await child("foundry_submit", args);
+	const after = await f.status(); assert.ok(after.qualified); assert.equal(after.nodes[0].worker, w.id);
+	assert.equal(after.assignments?.used, 1); assert.equal(f.workers.size, 1);
+	assert.equal(git(f.root, "show", `${after.qualified}:parser/index.mjs`), 'export const read = () => "green";');
+});
+
 test("lost create reply: prove both sides, bind the existing child, then run the ordinary component check", async t => {
 	const { f, owner, child, w, generation } = await trial(t);
 	assert.match(JSON.stringify(await owner("foundry_claim", selector)), /existing writer must claim/i);

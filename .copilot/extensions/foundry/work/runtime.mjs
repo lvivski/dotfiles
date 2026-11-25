@@ -3,28 +3,36 @@ import { existsSync, readFileSync } from "node:fs";
 import { preparePublication, reportedReferences } from "./artifacts.mjs";
 import { prepareBaselines } from "./baseline.mjs";
 import { attribute } from "./blockers.mjs";
-import { childProof, issuerProof, linkedGeneration, reservation, verifyGeneration } from "./binding.mjs";
+import { childProof, grainForToken, issuerProof, linkedGeneration, reservation, verifyGeneration } from "./binding.mjs";
 import { openDatabase, ledgerPath } from "./database.mjs";
 import { readPolicy } from "./contract.mjs";
+import { prepareCorrection } from "./correction.mjs";
 import { presentQuestions } from "./decisions.mjs";
 import { advance, currentReview, newRun, reserveChangedRepair, reserveIteration, retryableReview, sameReviewInputs } from "./graph.mjs";
-import { baselineNotice, changedFrom, goalReceipt, missingObservation, qualifiedProduct, stopForInput } from "./evidence.mjs";
-import { releaseAssessment } from "./goal.mjs";
+import { baselineNotice, changedFrom, comparisonGoal, comparisonVerdict, goalReceipt, inconclusiveRepair, missingObservation, qualifiedProduct, relinquishable, stopForInput } from "./evidence.mjs";
+import { observeTarget, releaseAssessment } from "./goal.mjs";
 import { admitted, assignment, awaitingReply, boundWriter, canDispatch, current, expired, identify, issue, receive, reserveCheck, transferableWriter, unissued } from "./native.mjs";
 import { checked } from "./plan.mjs";
 import { attachNotes, queueNote } from "./notes.mjs";
 import { diagnosticLine, indexBudgetError } from "./pages.mjs";
 import { configure } from "./policy.mjs";
-import { capture, commitAt, generationRoot, retain, rootAt, verifyContracts } from "./product.mjs";
+import { chooseWriters } from "./pool.mjs";
+import { acceptWorkspace, writerRoot } from "./workspace.mjs";
+import { capture, changedFiles, commitAt, directoryBaseline, generationRoot, retain, rootAt, treeOf, verifyContracts } from "./product.mjs";
 import { refusedCall } from "./recovery.mjs";
+import { checkAuthority, prepareRecheck } from "./recheck.mjs";
 import { prepareRepin } from "./repin.mjs";
+import { transferRequest } from "./transfer.mjs";
+import { stoppedCheck, successorRequest } from "./successor.mjs";
 import { reportReceiver } from "./reports.mjs";
 import { retireGoal } from "./retirement.mjs";
+import { prepareReuse } from "./reuse.mjs";
+import { prepareRestoration } from "./restoration.mjs";
 import { referenceText } from "./research.mjs";
-import { blockReview, currentPin, investigation, questions, reserveReview, retireSuperseded, reviews } from "./reviews.mjs";
+import { blockReview, comparison, currentPin, investigation, questions, reserveReview, retireSuperseded, reviews, staleReaderMessage } from "./reviews.mjs";
 import { scoutPacket } from "./scouts.mjs";
 import { status } from "./status.mjs";
-import { FoundryError, digest, fail, fields, name, record, referenceRepo, relative, text } from "./values.mjs";
+import { FoundryError, assignmentDirectory, digest, fail, fields, mixed, name, record, referenceRepo, relative, text, roots as scopePaths } from "./values.mjs";
 import { boardFacts } from "./visibility.mjs";
 import { receiptClock, receiptWakes } from "./wakes.mjs";
 
@@ -36,7 +44,7 @@ function requireCurrentReader() {
 	} catch (error) {
 		if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
 	}
-	fail("stale_reader", "The installed Foundry reader changed. Reload Foundry in this session, then check the original assignment's status. Do not restart the run.");
+	fail("stale_reader", staleReaderMessage);
 }
 
 /** @typedef {import("./model.js").Run} Run */
@@ -49,7 +57,7 @@ function requireCurrentReader() {
  * scoutBudget?:()=>Promise<number>,scoutFailure?:(workflowId:string,label:string)=>Promise<string|undefined>,confirmNoReport?:(r:import("./model.js").Review)=>Promise<void>,
  * scout?:(run:string,dispatch:string,actor:string)=>Promise<ScoutEnvelope>,scoutState?:(workflowId:string)=>Promise<ScoutEnvelope>,
  * scoutSnapshot?:(workflowId:string)=>Promise<ScoutEnvelope>,resumeScout?:(workflowId:string)=>Promise<ScoutEnvelope>,
- * mode:()=>Promise<string>,runningHelpers?:(workflows:string[])=>Promise<string[]>,permissionBlocker:()=>Promise<import("./permissions.mjs").PermissionBlock|null>,log?:(message:string)=>void,watchReceipts?:typeof receiptClock}} Host */
+ * mode:()=>Promise<string>,idleWriter?:(id:string)=>Promise<string|undefined>,runningHelpers?:(workflows:string[])=>Promise<string[]>,permissionBlocker:()=>Promise<import("./permissions.mjs").PermissionBlock|null>,log?:(message:string)=>void,watchReceipts?:typeof receiptClock}} Host */
 /** @param {Run} run @param {string} [reason] */
 function pause(run, reason) {
 	run.active = false;
@@ -140,7 +148,7 @@ export function createRuntime(directory, host) {
 			const count = run.products.length, final = qualifiedProduct(run);
 			mutate(run);
 			if (run.products.length !== count || qualifiedProduct(run) !== final)
-				return () => commitAt(cwd(), run.policy.target) === run.products.at(-1)?.target;
+				return () => observeTarget(() => commitAt(cwd(), run.policy.target)).target === run.products.at(-1)?.target;
 		});
 	}
 	/** Check once for a batch, outside the write lock. A stale result must not pause unrelated work.
@@ -197,7 +205,16 @@ export function createRuntime(directory, host) {
 		return settle(ctx, callId, result, automatic);
 	}
 	/** @param {string} id @param {Effect} effect @param {string} callId */
-	const claim = (id, effect, callId) => db().mutateLocked(id, run => issue(run, effect, callId));
+	const claim = (id, effect, callId) => {
+		if (effect.tool!=="bash" || !effect.recheck || !unissued(effect)) return db().mutateLocked(id, run => issue(run, effect, callId));
+		const target = effect.recheck.target;
+		let claimed = false;
+		db().planAndSwap(id,run => {
+			claimed = checkAuthority(cwd(),run,effect) && issue(run,effect,callId);
+			if (claimed) return () => !expired(run) && observeTarget(()=>commitAt(cwd(),run.policy.target)).target===target;
+		});
+		return claimed;
+	};
 	/** Merge wakeups for one issuer, never its in-flight calls or permission dialogs.
 	 * @param {string} id @param {string} actor @param {boolean} [discover] @param {boolean} [recover] @returns {Promise<void>} */
 	function drive(id, actor, discover = false, recover = true) {
@@ -240,23 +257,28 @@ export function createRuntime(directory, host) {
 		async function dispatch() {
 			if (closed) return;
 			const reply = [...submitting].findLast(s => s.run === id && s.actor === actor);
+			let unavailable = false;
 			const run = change(id, run => {
+				const observed = run.active && !expired(run) ? observeTarget(() => commitAt(cwd(),run.policy.target)) : undefined;
+				unavailable = !!observed && observed.target===undefined;
+				if (unavailable) return;
 				if (run.active && !expired(run)) for (const e of reviews(run)) {
 					if (e.issuer !== actor) continue;
 					requeueCapacity(e);
-					if (e.state === "ready" && e.error === waitingForSlot && !currentReview(cwd(), run, e))
+					if (e.state === "ready" && e.error === waitingForSlot && !currentReview(cwd(), run, e, observed?.target))
 						blockReview(e, "Superseded while waiting for workflow capacity.");
 				}
 				// Don't reserve newly available work on behalf of an issuer already on hold.
 				if (!reservations(run, actor).some(e => e.permissionHold))
-					advance(cwd(), run, actor, discover, { submitToken: reply?.token });
+					advance(cwd(), run, actor, discover, { submitToken: reply?.token, target:observed?.target });
 			});
+			receipts.observe(run, actor);
+			if (unavailable) return;
 			if (actor === run.owner && run.active && !expired(run) && host.ask && !asking.has(id) && questions(run).some(r => !r.decision)) {
 				asking.add(id);
 				track(presentQuestions(cwd(), () => closed ? undefined : db(), id, actor, host, executable, refill).finally(() => asking.delete(id)));
 			}
 			const batch = reservations(run, actor).filter(e => e.state === "ready" || e.permissionHold);
-			receipts.observe(run, actor);
 			if (!batch.length) return;
 			if (await dispatchBlocker(id, actor, batch) !== null) return;
 			const ready = batch.filter(e => e.state === "ready");
@@ -272,16 +294,32 @@ export function createRuntime(directory, host) {
 					watchScouts(id, ticket, actor, () => host.scout?.(id, ticket, actor) ?? Promise.reject(new Error("Workflow scouting is unavailable")));
 			}
 			// A sibling's native permission prompt must not hold up work unlocked by this reply.
-			await Promise.all(ready.filter(e => e.tool !== "workflow").map(async e => {
+			const jobs = ready.flatMap(e => host.idleWriter && e.kind === "writer" && e.tool === "create_session" ? [e] : []);
+			await Promise.all([dispatchWriters(), ...ready.filter(e => e.tool !== "workflow" &&
+				!(host.idleWriter && e.tool === "create_session")).map(send)]);
+
+			async function dispatchWriters() {
+				if (!jobs.length || !host.idleWriter) return;
+				const match = await chooseWriters(cwd(), run, jobs, host.idleWriter, host.log);
+				if (closed || await dispatchBlocker(id, actor, jobs) !== null) return;
+				const live = match ? db().planAndSwap(id, match) : read(id), ids = new Set(jobs.map(e => e.id));
+				await Promise.all(reservations(live, actor).filter(e => ids.has(e.id) && e.state === "ready" && !e.permissionHold).map(send));
+			}
+			/** @param {Effect} e */
+			async function send(e) {
 				const callId = randomUUID();
 				if (!closed && claim(id, e, callId)) {
 					if (e.tool === "bash") receipts.observe(read(id), actor);
-					await resolveCall(id, e, callId, async () => e.tool === "session.send"
+					const completion = resolveCall(id, e, callId, async () => e.tool === "session.send"
 						? { resultType: "success", messageId: await host.notify(text(e.args.message, "session notice")) }
 						: host.execute(e.tool, e.args, callId), true);
-				}
+					// Issuing the goal opens checkpoint discovery; don't wait for its native reply to schedule it.
+					if (e.kind === "goal" && run.products.at(-1)?.commit === e.commit && run.scheduling?.checkpointReviews !== false)
+						track(drive(id, actor, false, false));
+					await completion;
+				} else if (e.tool==="bash" && e.recheck) return; // A later eligible issuer turn can recheck the approval.
 				await refill();
-			}));
+			}
 		}
 	}
 	/** @param {string} id @param {string} actor @param {string} ticket @param {string} message */
@@ -295,14 +333,20 @@ export function createRuntime(directory, host) {
 			}
 			return deferred && r.active && !expired(r);
 		});
-		if (queued && !capacityWakes.has(id)) {
-			// Slots may belong to unrelated workflows. No local completion or user
-			// turn is guaranteed; coalesce retries through the normal dispatch path.
-			capacityWakes.set(id, setTimeout(() => {
-				capacityWakes.delete(id);
-				if (!closed) track(drive(id, actor, true, false));
-			}, 15_000).unref());
-		}
+		if (queued) wakeCapacity(id,actor);
+	}
+	/** @param {string} id @param {string} actor */
+	function wakeCapacity(id, actor) {
+		if (capacityWakes.has(id)) return;
+		capacityWakes.set(id, setTimeout(() => {
+			capacityWakes.delete(id);
+			if (!closed) track(Promise.resolve().then(() => capacityWaiting(read(id),actor) ? drive(id, actor, true, false) : undefined));
+		}, 15_000).unref());
+	}
+	/** @param {Run} run @param {string} actor */
+	function capacityWaiting(run,actor) {
+		return run.active && !expired(run) && reviews(run).some(e=>e.issuer===actor && e.state==="ready" &&
+			!e.callId && !e.workflowId && e.error===waitingForSlot);
 	}
 	/** @param {Run} run @param {import("./model.js").Review} e @param {ScoutEnvelope} result */
 	function settleScout(run, e, result) {
@@ -413,30 +457,64 @@ export function createRuntime(directory, host) {
 	/** @param {string} id @param {string} actor @param {string} token @param {Record<string,unknown>} args */
 	function submit(id, actor, token, args) {
 		const from = args.changedFrom, run = read(id), n = writable(run, actor, token, from);
-		if (args.missingInput !== undefined) {
-			if (!n) fail("stale_assignment", "An already submitted attempt cannot report a missing input");
-			const reason = text(args.missingInput, "missing input and why it is needed");
-			generationRoot(cwd(), text(n.generation, "generation commit"));
-			db().mutateLocked(id, live => {
+		if (args.missingInput !== undefined || args.cannotRepair !== undefined || args.relinquish !== undefined) {
+			if (!n) fail("stale_assignment", "An already submitted attempt cannot be stopped");
+			const stop = args.relinquish !== undefined || args.cannotRepair !== undefined ? record(args.relinquish ?? args.cannotRepair) : undefined;
+			if (stop) fields(stop, ["check", "reason"]);
+			const check = stop && name(stop.check, "component check");
+			const reason = text(stop ? stop.reason : args.missingInput, "why the assignment cannot be completed");
+			generationRoot(writerRoot(cwd(),run,n), text(n.generation, "generation commit"));
+			db().planAndSwap(id, live => {
 				const node = writable(live, actor, token);
 				if (!node || node.generation !== n.generation || node.grain.id !== n.grain.id)
-					fail("stale_assignment", "Assignment changed before recording the missing input");
-				if (live.effects.some(e => e.grain === node.grain.id && e.token === token &&
-					(e.permissionHold || e.kind === "repair" && e.state !== "done")))
+					fail("stale_assignment", "Assignment changed before recording the writer stop");
+				if (live.effects.some(e => e.grain === node.grain.id && (e.permissionHold ||
+					e.token === token && e.kind === "repair" && e.state !== "done")))
 					fail("dispatch_held", "Resolve the pending assignment delivery or permission hold first");
-				stopForInput(node, reason);
+				if (args.relinquish !== undefined) {
+					const failed = relinquishable(live,node);
+					if (!failed || failed.id !== check || node.candidate)
+						fail("stale_assignment", "Not the bound writer's current relinquishable component repair");
+					if (live.effects.some(e => e.grain === node.grain.id && (awaitingReply(e) || unissued(e) && current(live,e))))
+						fail("dispatch_held", "Resolve the outstanding assignment call first");
+					db().verifySigned(id,failed);
+					node.stop = {kind:"writer-relinquished",detail:reason};
+					node.reason = `Writer relinquished repair after component ${check} (exit ${failed.receipt?.exit}): ${reason}`;
+					node.state = "blocked";
+					return;
+				}
+				const receipt = inconclusiveRepair(node, live.effects.find(e => e.id === node.check));
+				if (check && (!receipt || check !== node.check)) fail("stale_assignment", "Not the inconclusive component check for this inline repair");
+				if (receipt) {
+					node.stop = {kind:"writer-cannot-repair", detail:reason};
+					node.candidate = receipt.commit;
+					node.reason = `Writer cannot repair component ${node.check} under this assignment: ${reason}`;
+					node.state = "blocked";
+				} else stopForInput(node, reason);
 			});
 			return; // No directory capture, new component reservation, or inferred permission.
 		}
 		if (!n) return;
 		const g = n.grain;
 		const reports = reportedReferences(run, n, args);
-		const commit = capture(cwd(), text(n.generation, "generation commit"), g.directory);
+		const commit = capture(writerRoot(cwd(),run,n), text(n.generation, "generation commit"), g.directory,n.retained,run.products.at(-1)?.commit);
 		const result = db().planAndSwap(id, r => {
 			const node = writable(r, actor, token, from);
 			if (!node || node.grain.id !== g.id || digest(n) !== digest(node))
 				fail("stale_assignment", "Assignment changed during capture");
 			let target;
+			const review = node.review && r.effects.find(e => e.id === node.review);
+			const previous = review && review.kind === "scout" && review.predecessor;
+			if (node.restoration && (typeof g.directory!=="string" || directoryBaseline(cwd(),commit,g.directory)?.tree!==node.restoration.tree))
+				fail("changed_restoration","Submit only the unchanged current primary tree authorized for ownership restoration");
+			if (review && review.kind==="scout" && comparison(r,review)?.successor &&
+				!changedFiles(cwd(),text(node.base,"approved product"),commit,scopePaths(g.directory)).length)
+				fail("unchanged_candidate","The narrow successor must change its approved paths on the current product");
+			if (previous && previous.stop?.kind === "writer-cannot-repair" && previous.candidate &&
+				treeOf(cwd(),previous.candidate) === treeOf(cwd(),commit))
+				fail("unchanged_candidate","This successor reproduced the stopped component's tree; do not replay its observation");
+			if (node.reuse && !changedFiles(cwd(),text(node.generation,"seeded generation"),commit,scopePaths(g.directory)).length)
+				fail("unchanged_candidate","Change the assigned directory before submitting; the retained failure will not be replayed");
 			if (from !== undefined) {
 				if (commit === from) fail("unchanged_candidate", "Change the assigned directory before submitting; the old check will not be replayed");
 				target = commitAt(cwd(), r.policy.target);
@@ -538,8 +616,12 @@ export function createRuntime(directory, host) {
 	function inspect(args, actor) {
 		const a = record(args); fields(a, ["run", "detail"]);
 		const run = read(name(a.run, "run")), result = status(run, actor, a.detail);
-		if (run.owner !== actor || !run.goal) return result;
-		return { ...result, release: releaseAssessment(cwd(), run, () => commitAt(cwd(), run.policy.target)) };
+		const tip = () => commitAt(cwd(), run.policy.target);
+		const release = run.owner===actor && run.goal ? releaseAssessment(cwd(),run,tip) : undefined;
+		const missing = release ? (["target-unavailable","ownership-conflict"].includes(release.reason) && "error" in release && release.error) :
+			run.active && observeTarget(tip).error;
+		return { ...result, ...(release && {release}),
+			...(typeof missing==="string" && !result.blocker?.includes(missing) ? {blocker:[result.blocker,missing].filter(Boolean).join("\n")} : {}) };
 	}
 	/** @param {string} op @param {unknown} args @param {string} actor */
 	async function operation(op, args, actor) {
@@ -550,6 +632,41 @@ export function createRuntime(directory, host) {
 			return start(a.source, actor, op === "resume");
 		}
 		const id = name(a.run, "run");
+		if (op === "workspace") {
+			fields(a,["run","token"]);
+			await requireReadyOwner(cwd());
+			const token = text(a.token,"assignment token");
+			const run = db().planAndSwap(id,r=>acceptWorkspace(r,actor,token,cwd())), n = writable(run,actor,token);
+			if (!n?.workspace || n.state!=="writing") fail("stale_assignment","Need the current pooled writer's writable assignment");
+			writerRoot(cwd(),run,n,true);
+			return status(run,actor);
+		}
+		if (op === "correct" || op === "reuse" || op === "restore") {
+			const origin = cwd(), request = op==="restore" ? prepareRestoration(origin,read(id),actor,a,e=>db().verifySigned(id,e)) :
+				(op === "reuse" ? prepareReuse : prepareCorrection)(origin,read(id),actor,a);
+			await requireReadyOwner(origin);
+			const approved = await host.confirm?.(request.prompt);
+			if (approved === false) fail("approval_declined","Request not approved. No assignment changed. Do not ask again without a fresh request.");
+			if (approved !== true) fail("approval_required","Approval is unavailable; no assignment changed");
+			await requireReadyOwner(origin);
+			const after = db().planAndSwap(id,request.apply);
+			if (op === "correct") return status(after,actor);
+			await drive(id,actor,false,false);
+			return status(read(id),actor);
+		}
+		if (op === "recheck") {
+			fields(a,["run","check"]);
+			const origin = cwd(), before = read(id);
+			const request = prepareRecheck(origin,before,actor,name(a.check,"check"),e=>db().verifySigned(id,e));
+			if (!request) return status(before,actor,"proof");
+			await requireReadyOwner(origin);
+			const approved = await host.confirm?.(request.prompt);
+			if (approved!==true) fail(approved===false ? "approval_declined" : "approval_required","Fresh observation not approved. No check was reserved.");
+			await requireReadyOwner(origin);
+			db().planAndSwap(id,request.apply);
+			await drive(id,actor,false,false);
+			return status(read(id),actor,"proof");
+		}
 		if (op === "retire") {
 			fields(a, ["run","check"]);
 			const origin = cwd(), reconcile = await retireGoal(origin, actor, name(a.check, "goal check"), {
@@ -588,26 +705,40 @@ export function createRuntime(directory, host) {
 		}
 		if (op === "rereview") {
 			fields(a, ["run", "review"]);
-			const review = name(a.review, "review"), origin = cwd(), original = read(id), prior = retryableReview(origin, original, actor, review);
+			const review = name(a.review, "review"), origin = cwd(), original = read(id), {prior, sourceBlob} = retryableReview(origin, original, actor, review);
 			const receipt = original.goal?.check;
-			if (prior.error === indexBudgetError && (!receipt || prior.packet || prior.note ||
+			const checkpoint = prior.iteration?.basis === "checkpoint";
+			if (prior.error === indexBudgetError && (!receipt || prior.packet || prior.note && !checkpoint ||
+				checkpoint && (comparisonGoal(prior.iteration) ? !comparisonVerdict(goalReceipt(original)?.exit,prior.iteration?.successor) : goalReceipt(original)?.exit!==1) ||
 				original.effects.slice(0, original.effects.findIndex(e => e.id === prior.id)).findLast(e => e.kind === "goal")?.id !== receipt ||
 				original.policy.squads.some(s => s.id === prior.squad && investigation(prior, s))))
 				fail("not_recoverable", "Need the original pre-dispatch review and its still-current goal receipt");
-			if (prior.issuer !== actor || !host.confirmNoReport) fail("missing_history", "Need the original workflow's issuer-scoped native evidence in the owner session");
+			if (prior.issuer !== actor) fail("missing_history", "Need the original workflow's issuer in the owner session");
 			await requireReadyOwner(origin);
-			await host.confirmNoReport(prior);
+			const i = prior.iteration;
+			if (sourceBlob && i?.source) {
+				const approved = await host.confirm?.(`Open one replacement scout for blocked review ${review} of ${i.directory}/ in ${id}?\n` +
+					`Checked product: ${prior.base}. Passing checkpoint: ${i.receipt}. Settled goal: ${i.source.goal}. Offered blob: ${i.blob}.\n` +
+					`Question: ${i.question}\nOmitted source: ${i.source.file} at ${sourceBlob}\n${i.source.excerpt}\n` +
+					"The original report stays blocked. Only a new report citing delivered evidence can staff work; no writer or check is replayed.");
+				if (approved !== true) fail(approved===false?"approval_declined":"approval_required","No recovery approved; no replacement was started.");
+			} else {
+				if (!host.confirmNoReport) fail("missing_history", "Need the original workflow's issuer-scoped native evidence in the owner session");
+				await host.confirmNoReport(prior);
+			}
 			const budget = await host.scoutBudget?.();
 			await requireReadyOwner(origin);
 			const ticket = randomUUID(), launch = host.scout ?? fail("unavailable", "Discovery workflow unavailable");
 			db().planAndSwap(id, run => {
-				const live = retryableReview(origin, run, actor, review);
-				if (digest(live) !== digest(prior) || run.goal?.check !== receipt) fail("stale_assignment", "Review or goal changed during native verification");
+				const {prior:live, sourceBlob:verified} = retryableReview(origin, run, actor, review);
+				if (digest(live) !== digest(prior) || sourceBlob!==verified || run.goal?.check !== receipt) fail("stale_assignment", "Review or goal changed during native verification");
 				if (budget === undefined || !Number.isSafeInteger(budget) || budget < 0)
 					fail("packet_budget", "Missing a valid issuing-session scout budget");
 				const fresh = reserveReview(run, actor, live.squad, live.base, live.version, live.wake);
 				fresh.retryOf = live.id;
-				if (live.error === indexBudgetError && receipt) {
+				if (sourceBlob) fresh.retrySource = sourceBlob;
+				if (live.lead) fresh.lead = live.lead;
+				if (live.error === indexBudgetError && receipt && !live.note && !live.lead && !comparisonGoal(live.iteration)) {
 					const full = goalReceipt(run);
 					if (!full || full.commit !== live.base) fail("invalid_receipt", "Missing the reviewed goal receipt");
 					const excerpt = diagnosticLine(full.output, live.squad);
@@ -624,14 +755,48 @@ export function createRuntime(directory, host) {
 			return status(read(id), actor);
 		}
 		if (op === "iterate") {
-			fields(a, ["run", "directory", "receipt", "blob", "question"]);
-			const origin = cwd(), input = { directory: relative(a.directory), receipt: name(a.receipt, "receipt"),
-				blob: name(a.blob, "offered comparison blob"), question: text(a.question, "observed mismatch") };
+			fields(a, ["run", "directory", "files", "receipt", "blob", "question", "historical", "source","transfer","successor"]);
+			const directory=relative(a.directory), scope=a.files===undefined ? directory : assignmentDirectory({primary:directory,files:a.files}).directory;
+			const origin = cwd(), input = { directory, ...(mixed(scope) ? {files:scope.files} : {}), receipt: name(a.receipt, "receipt"),
+				blob: name(a.blob, "offered comparison blob"), question: text(a.question, "observed mismatch"),
+				...(a.transfer===undefined ? {} : {transfer:transferRequest(a.transfer)}),...(a.successor===undefined?{}:{successor:successorRequest(a.successor)}) };
+			const old = a.historical === undefined ? undefined : record(a.historical);
+			if (old) fields(old, ["receipt", "step"]);
+			const historical = old && { receipt:name(old.receipt, "historical receipt"), step:text(old.step, "stable step identifier") };
+			const citation = a.source === undefined ? undefined : record(a.source);
+			if (citation) fields(citation, ["commit","file","excerpt"]);
+			const source = citation && {commit:name(citation.commit,"checked product"),file:relative(citation.file),excerpt:text(citation.excerpt,"verbatim product excerpt")};
 			await requireReadyOwner(origin);
 			const launch = host.scout ?? fail("unavailable", "Discovery workflow unavailable"), ticket = randomUUID();
+			/** @param {Run} run */
+			const reserve = run => {
+				const review=reserveIteration(origin,run,actor,input,historical,source);
+				if (input.successor && review) {
+					const check=stoppedCheck(run,input.successor) ?? fail("invalid_successor","Original stopped component is unavailable");
+					db().verifySigned(id,check);
+				}
+				return review;
+			};
+			/** @type {string|undefined} */ let approvedCheckpoint;
+			if (source) {
+				const preview = reserve(read(id));
+				if (!preview) return status(read(id),actor);
+				approvedCheckpoint = preview.iteration?.receipt;
+				const approved = await host.confirm?.(`Open one source-backed review for ${id}, ${input.directory}/ on checked product ${source.commit}?\n` +
+					`Passing checkpoint: ${approvedCheckpoint}. Current ${input.successor?"settled":"exit-2"} goal: ${input.receipt}. Offered blob: ${input.blob}.\n` +
+					`Question: ${input.question}\nVerbatim source at ${source.commit}:${source.file}:\n${source.excerpt}\n` +
+					(input.files ? `If staffed, the writer may edit the whole primary directory and these exact existing regular files: ${JSON.stringify(input.files)}. No sibling files or parent directories.\n` : "") +
+					(input.successor ? `Authorize one fresh narrow successor ${input.successor.to} to stopped assignment ${input.successor.from}, original signed component ${input.successor.check}, only on this product and only if this review supports it. All other paths remain reserved. Start from the current product, not the stopped writer's bytes. No previous receipt is replayed or promoted.` :
+					input.transfer ? `Approve a conditional ownership transfer from ${input.transfer.from}@${input.transfer.candidate} to ${input.transfer.to} on this checkpoint. The parent retains ALL other paths, including future siblings. Only a matching, still-eligible proposal applies the transfer; no receipts or inputs are rewritten.` :
+					"Approve a comparison only. No failure, release verdict, writer reassignment or check is implied. Only a supported scout proposal can staff a repair."));
+				if (approved === false) fail("approval_declined","Comparison not approved. No review was started; do not ask again without a fresh request.");
+				if (approved !== true) fail("approval_required","Operator approval is unavailable; no review was started");
+				await requireReadyOwner(origin);
+			}
 			const after = db().planAndSwap(id, run => {
-				const fresh = reserveIteration(origin, run, actor, input);
+				const fresh = reserve(run);
 				if (!fresh) return;
+				if (source && fresh.iteration?.receipt !== approvedCheckpoint) fail("stale_assignment","The approved product checkpoint changed");
 				if (!issue(run, fresh, ticket)) fail("stale_assignment", "Cannot issue focused review");
 				const target = run.goal?.target;
 				return () => commitAt(origin, run.policy.target) === target;
@@ -641,7 +806,8 @@ export function createRuntime(directory, host) {
 		}
 		const reply = op === "submit" || op === "preview" ? { run: id, actor, token: text(a.token, "submission token") } : undefined;
 		if (reply) {
-			fields(a, op === "preview" ? ["run", "token"] : a.missingInput !== undefined ? ["run", "token", "missingInput"] : ["run", "token", "changedFrom", "usedArtifacts", "comparedArtifacts"]);
+			fields(a, op === "preview" ? ["run", "token"] : a.relinquish !== undefined ? ["run","token","relinquish"] : a.cannotRepair !== undefined ? ["run", "token", "cannotRepair"] :
+				a.missingInput !== undefined ? ["run", "token", "missingInput"] : ["run", "token", "changedFrom", "usedArtifacts", "comparedArtifacts"]);
 			// Check the host, not a local count lost on reload. Revalidate mode and ownership after the read.
 			const run = read(id);
 			if (host.runningHelpers && writable(run, actor, reply.token, a.changedFrom)) {
@@ -649,13 +815,13 @@ export function createRuntime(directory, host) {
 				const helpers = await host.runningHelpers([...workflows]);
 				if (helpers.length) fail("helpers_running", `Native helpers are still running: ${helpers.join(", ")}. Join them, integrate their work, then submit with the same token.`);
 			}
-			if (op === "preview" || a.changedFrom !== undefined || a.missingInput !== undefined) await requireReadyOwner(cwd());
+			if (op === "preview" || a.changedFrom !== undefined || a.missingInput !== undefined || a.cannotRepair !== undefined || a.relinquish !== undefined) await requireReadyOwner(cwd());
 		}
 		if (!await executable())
 			fail("unsupported_mode", "Plan mode cannot change a Foundry run");
 		if (op === "preview" && reply) {
-			const n = writable(read(id), actor, reply.token) ?? fail("stale_assignment", "Cannot preview an already submitted attempt");
-			const commit = capture(cwd(), text(n.generation, "generation"), n.grain.directory);
+			const run = read(id), n = writable(run, actor, reply.token) ?? fail("stale_assignment", "Cannot preview an already submitted attempt");
+			const commit = capture(writerRoot(cwd(),run,n), text(n.generation, "generation"), n.grain.directory,n.retained,run.products.at(-1)?.commit);
 			const after = db().planAndSwap(id, run => {
 				const live = writable(run, actor, reply.token);
 				if (!live || digest(live) !== digest(n)) fail("stale_assignment", "Assignment changed during preview");
@@ -686,6 +852,7 @@ export function createRuntime(directory, host) {
 		}
 		else if (reply) {
 			reply.token = submit(id, actor, reply.token, a) ?? reply.token;
+			if (a.relinquish !== undefined) return status(read(id),actor);
 			// A shell notification can drive the same actor before this call returns.
 			submitting.add(reply);
 		}
@@ -706,7 +873,8 @@ export function createRuntime(directory, host) {
 			db().mutateLocked(id, preparePublication(cwd(), read(id), actor, a));
 		}
 		else if (op === "repin") {
-			const request = prepareRepin(cwd(), read(id), actor, a);
+			const origin = cwd(), request = prepareRepin(origin, read(id), actor, a);
+			if (a.kind === "product") await requireReadyOwner(origin);
 			const approved = await host.confirm?.(request.prompt);
 			if (approved === false) {
 				const blocker = status(read(id), actor).blocker;
@@ -714,14 +882,15 @@ export function createRuntime(directory, host) {
 					(blocker ? `\nCurrent run blocker: ${blocker}` : ""));
 			}
 			if (approved !== true) fail("approval_required", "The approval form is unavailable; the evaluator was not changed.");
-			if (!await executable()) fail("unsupported_mode", "The owner session is no longer executable");
-			change(id, request.apply);
+			if (a.kind === "product") await requireReadyOwner(origin);
+			else if (!await executable()) fail("unsupported_mode", "The owner session is no longer executable");
+			db().planAndSwap(id, request.apply);
 		}
 		else
 			fail("unknown_operation", `Unknown Foundry operation ${op}`);
 		try {
 			await drive(id, actor);
-			return status(read(id), actor);
+			return op==="submit" ? inspect({run:id},actor) : status(read(id), actor);
 		} finally {
 			if (reply) submitting.delete(reply);
 		}
@@ -758,9 +927,12 @@ export function createRuntime(directory, host) {
 		readBoard(id, actor) { return boardFacts(read(name(id, "run")), actor); },
 		/** @param {unknown} args @param {string} actor */
 		async claimWriter(args, actor) {
-			const a = record(args); fields(a, ["run", "grain"]);
-			const id = name(a.run, "run"), grain = name(a.grain, "grain"), origin = cwd();
-			const run = read(id), job = reservation(run, grain), issuer = job.e.issuer === actor;
+			const a = record(args); fields(a, ["run", "grain", "token"]);
+			if ((a.grain === undefined) === (a.token === undefined)) fail("invalid_selector", "Use exactly one of grain or the writer's kickoff token");
+			const id = name(a.run, "run"), origin = cwd(), run = read(id);
+			const grain = a.token === undefined ? name(a.grain, "grain") : grainForToken(run, text(a.token, "kickoff token"));
+			const job = reservation(run, grain), issuer = job.e.issuer === actor;
+			if (issuer && a.token !== undefined) fail("invalid_selector", "The original issuer confirms by grain, not by writer token");
 			if (!issuer && (run.owner === actor || db().involving(actor).length))
 				fail("foreign_assignment", "A session already involved in a run cannot claim a new worker identity");
 			const claimant = job.e.claims?.[0];
@@ -835,6 +1007,13 @@ export function createRuntime(directory, host) {
 			// Desktop can prepend tagged workspace instructions to the original kickoff.
 			// This marker restricts the session before binding; it does not authorize any writer operation.
 			if (prompt && assignment(prompt.replace(/^(?:<([\w-]+)>\n[\s\S]*?\n<\/\1>\n+)+/, ""))) known.add(actor);
+			try {
+				if (hasLedger()) for (const id of db().involving(actor)) {
+					if (capacityWaiting(read(id),actor)) wakeCapacity(id,actor);
+				}
+			} catch (error) {
+				host.log?.(`Foundry capacity recovery: ${String(error)}`);
+			}
 		},
 		/** @param {string} actor @param {string} [shellId] */
 		turn(actor, shellId) {

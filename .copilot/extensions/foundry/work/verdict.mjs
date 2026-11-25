@@ -10,7 +10,7 @@ export function interpret(check, result) {
 	const { stdout, stderr, error, signal } = result;
 	const exit = error || signal ? null : result.status;
 	/** @type {Fields} */
-	const fields = { exit, output: [stdout, stderr, error?.message, signal].filter(Boolean).join("\n") };
+	const fields = { exit, output: [stdout, stderr, error?.message, signal].filter(part => part?.length).join("\n") };
 	switch (check.kind) {
 	case "component":
 		if (exit === null) fields.failure = "incomplete";
@@ -26,7 +26,7 @@ export function interpret(check, result) {
 			const hints = [...String(stdout ?? "").matchAll(/^FOUNDRY_SQUAD=([^\r\n]*)$/gm)];
 			if (hints.length === 1 && check.squads.includes(hints[0][1])) fields.squad = hints[0][1];
 		}
-		if (stdout && (exit === 0 || exit === 1)) {
+		if (stdout && (exit === 0 || exit === 1 || exit === 2)) {
 			try {
 				const list = signals(stdout, exit);
 				if (list) fields.blockers = list;
@@ -34,7 +34,7 @@ export function interpret(check, result) {
 				if (!(e instanceof FoundryError)) throw e;
 				fields.output += `\nFoundry blocker attribution unavailable: ${e.message}`;
 			}
-			return { fields, feedback: stdout };
+			if (exit !== 2) return { fields, feedback: stdout };
 		}
 	}
 	return { fields };

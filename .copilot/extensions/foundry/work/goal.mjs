@@ -1,11 +1,13 @@
-import { checkReceipt, goalReceipt, milestoneBlocker } from "./evidence.mjs";
+import { checkReceipt, currentEvaluation, goalReceipt, milestoneBlocker, productPin } from "./evidence.mjs";
+import { remainingAssignments } from "./capacity.mjs";
 import { transition, unhandled } from "./engine.mjs";
 import { releaseFacts, undecided } from "./facts.mjs";
 import { expired, reserveCheck, reserveNotice, reserveProduct } from "./native.mjs";
 import { workKey } from "./plan.mjs";
+import { partitionConflict } from "./partition.mjs";
 import { retain, treeOf, verifyContracts } from "./product.mjs";
 import { blockReview, reading, reviews } from "./reviews.mjs";
-import { FoundryError, text } from "./values.mjs";
+import { FoundryError, deadlineAt, text } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @param {string} cwd @param {Run} run @param {string} actor @param {string} target @param {string} commit */
@@ -20,35 +22,81 @@ export function assess(cwd, run, actor, target, commit) {
  * @param {Run} run @param {string} actor @param {import("./model.js").Product} product */
 export function qualify(run, actor, product) {
 	product.qualifiedAt = Date.now();
+	const exclusions = [];
+	if (run.goal) {
+		const budget = remainingAssignments(run);
+		for (const n of Object.values(run.nodes)) if (n.state === "blocked" || n.state === "waiting") {
+			if (n.candidate && product.outputs[n.grain.id] === n.candidate) continue;
+			exclusions.push(`${n.grain.id}: ${n.reason ?? (budget ? "No reachable prerequisite" : "No assignment remains")}`);
+		}
+		if (!budget) for (const r of new Map(reviews(run).filter(r => currentEvaluation(run,r)).map(r => [r.squad,r])).values()) {
+			if (r.base === product.commit && r.state === "observed" && r.observation?.outcome === "needs-evidence")
+				exclusions.push(`Review ${r.id}: no assignment remains for the requested evidence follow-up`);
+		}
+	}
 	reserveNotice(run, actor, product.check, "handoff",
-		`Foundry ${run.id} qualified ${product.commit}. The target was not changed. Read foundry_status({run:"${run.id}"}) for the checked product and its receipts.`);
+		`Foundry ${run.id} qualified ${product.commit}. The target was not changed. Read foundry_status({run:"${run.id}"}) for the checked product and its receipts.` +
+		(exclusions.length ? `\nNot included in this release:\n${exclusions.join("\n")}` : ""));
 }
 
 /** Shared, read-only preflight. Re-evaluate the current tip, not yesterday's persisted conflict.
- * @param {string} cwd @param {Run} run @param {()=>string} tip @param {boolean} [retry] */
-export function releaseAssessment(cwd, run, tip, retry = false) {
-	const wait = /** @type {const} */ ({ action: "wait", admission: "closed" });
-	if (expired(run)) return { ...wait, reason: "deadline" };
-	let target;
-	try { target = tip(); }
+ * @param {()=>string} tip */
+export function observeTarget(tip) {
+	try { return { target:tip() }; }
 	catch (error) {
 		if (!(error instanceof Error && "status" in error)) throw error;
-		return { ...wait, reason: "target-unavailable", error: error.message };
+		return { error:`Target unavailable: ${error.message}` };
 	}
+}
+
+/** Never infer when an older receipt finished. Only completed observations, not a
+ * reservation or a native success, can be settled after the clock expires.
+ * @param {Run} run */
+export function timelyChecks(run) {
+	const until=run.policy.deadline && deadlineAt(run.policy.deadline), product=run.join ?? run.products.at(-1);
+	if (typeof until!=="number" || !product || product.commit!==run.goal?.commit || product.target!==run.goal.target || run.blocker || run.conflict ||
+		run.effects.some(e=>e.permissionHold)) return false;
+	const effect=run.effects.find(e=>e.id===product.check), goal=goalReceipt(run);
+	if (effect?.kind!=="product" || effect.commit!==product.commit || effect.check!==run.policy.productCheck ||
+		effect.evaluatorRevision!==productPin(run)) return false;
+	const milestone=checkReceipt(effect);
+	return [goal,milestone].every(r=>r?.exit===0 && r.completedAt!==undefined && r.completedAt<until);
+}
+
+/** @param {string} cwd @param {Run} run @param {()=>string} tip @param {boolean} [retry] */
+export function releaseAssessment(cwd, run, tip, retry = false) {
+	const wait = /** @type {const} */ ({ action: "wait", admission: "closed" });
+	const elapsed=expired(run);
+	if (elapsed && !timelyChecks(run)) return { ...wait, reason: "deadline" };
+	const { target, error } = observeTarget(tip);
+	if (target === undefined) return { ...wait, reason: "target-unavailable", error };
 	if (run.active) {
+		const conflict=partitionConflict(run);
 		try { verifyContracts(cwd, run.policy, target); }
 		catch (error) {
 			if (!(error instanceof FoundryError) || error.code !== "contract_changed") throw error;
 			return { ...wait, target, reason: "contract-changed", error: error.message };
 		}
+		if (conflict) {
+			const normal=transition(releaseFacts(run,target),false).admission;
+			const repair=run.goal?.target===target && !run.join && !run.blocker && !run.conflict && !run.effects.some(e=>e.permissionHold) &&
+				Object.values(run.nodes).some(n=>n.state==="waiting" && n.worker && n.check) &&
+				(normal==="open" || normal==="checkpoint" || normal==="repaired-checkpoint");
+			return /** @type {const} */ ({...wait,target,reason:"ownership-conflict",error:conflict,
+				admission:!repair ? "closed" : normal==="open" ? "bound-repairs" : "bound-checkpoint-repairs"});
+		}
 	}
-	return { target, ...transition(releaseFacts(run, target), retry) };
+	const decision=transition(releaseFacts(run, target), retry);
+	return elapsed && decision.action!=="qualify" && decision.reason!=="qualified" ? {...wait,target,reason:"deadline"} : {target,...decision};
 }
 
 /** @param {string} cwd @param {Run} run @param {string} actor @param {()=>string} tip @param {boolean} retry */
 export function applyGoal(cwd, run, actor, tip, retry) {
 	const decision = releaseAssessment(cwd, run, tip, retry);
-	if ("error" in decision) { run.conflict = decision.error; return decision.admission; }
+	if ("error" in decision) {
+		if (decision.reason!=="target-unavailable" && decision.reason!=="ownership-conflict") run.conflict = decision.error;
+		return decision.admission;
+	}
 	if (!("target" in decision)) return decision.admission;
 	const { action, admission, target } = decision;
 	const at = run.goal, last = run.products.at(-1);
@@ -95,7 +143,7 @@ export function applyGoal(cwd, run, actor, tip, retry) {
  * @param {string} cwd @param {Run} run @param {string} target @param {string} commit @param {Record<string,string>} outputs */
 export function rejectRepeat(cwd, run, target, commit, outputs) {
 	if (run.goal?.target !== target) return;
-	const receipt = run.effects.find(e => e.kind === "goal" && e.evaluatorRevision === run.repins?.at(-1)?.revision && e.check === run.policy.goalCheck && checkReceipt(e)?.exit === 1 &&
+	const receipt = run.effects.find(e => e.kind === "goal" && currentEvaluation(run,e) && e.check === run.policy.goalCheck && checkReceipt(e)?.exit === 1 &&
 		(e.commit === commit || e.commit === target && treeOf(cwd, commit) === treeOf(cwd, target)))?.receipt;
 	if (!receipt) return;
 	const tried = new Set(run.goal.tried);

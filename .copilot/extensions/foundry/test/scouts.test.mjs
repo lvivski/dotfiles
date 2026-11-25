@@ -87,6 +87,16 @@ test("an oversized current goal diagnostic fits the scout budget without shorten
 	assert.ok(!prompt.includes("\uFFFD") && !prompt.includes(output)); assert.equal(receipt.output, output);
 });
 
+test("a binary comparison is neither observed text nor a pageable or citable source", t => {
+	const {cwd,base,review,run,squad} = fixture(t), file = "selected.bin", directory = squad.areas[0];
+	const blob = git(cwd,["hash-object","-w","--stdin"],Buffer.from("binary\0private bytes")).toString().trim();
+	run.artifacts = [{file,blob,publisher:run.owner,base,to:[directory]}];
+	review.iteration = {receipt:"goal-effect",directory,blob,question:"Compare this observation."};
+	const {prompt,packet} = scoutPacket(cwd,run,review);
+	assert.match(prompt,/binary or non-UTF-8 comparison/i); assert.ok(packet.partial && !prompt.includes("private bytes"));
+	assert.ok(!packet.sources?.includes(`detail:${blob}`) && !Object.hasOwn(packet.files,file));
+});
+
 test("delivery receipts name checked pins only when the packet shows the graph", t => {
 	const { cwd, run, review, squad, charter } = fixture(t);
 	run.policy.squads = [{ ...squad, researchAgent: "foundry-research" }];
@@ -201,6 +211,26 @@ function factoryTrial(t, boundary = ["interface"], extra = {}) {
 	});
 }
 const noGap = { outcome: "no-gap", grains: [], evidence: ["charter"], reason: "Nothing owned needs a change." };
+test("a scout searches an oversized charter index, reads a pinned file, and staffs its repair", async t => {
+	const path = "encoder/catalog/349-item.txt", budget = 12000;
+	const f = factoryTrial(t, ["interface"], Object.fromEntries(Array.from({length:350}, (_, i) =>
+		[`encoder/catalog/${i}-item.txt`, i === 349 ? "encode the displayed value as v2" : "other item"])));
+	await f.start(f.runtime(f.root, {scoutBudget:async () => budget}));
+	const first = f.scouts.find(s => s.squad === "encoder");
+	assert.ok(first, String((await f.status()).reviews.find(r => r.squad === "encoder")?.reason));
+	const detail = /File catalog \(paths only\): detail:([0-9a-f]+)/.exec(first.prompt)?.[1];
+	assert.ok(detail && first.packet.sources?.includes(`detail:${detail}`));
+	assert.ok(!first.packet.files[path] && first.packet.partial);
+	await first.report({...noGap, outcome:"needs-evidence", detail, match:"349-item"});
+	const hit = f.scouts.at(-1); assert.ok(hit?.packet.read?.source === `detail:${detail}`);
+	assert.ok(hit.prompt.includes(path) && !hit.packet.files[path]);
+	await hit.report({...noGap, outcome:"needs-evidence", file:path});
+	const file = f.scouts.at(-1); assert.ok(file?.packet.files[path]);
+	assert.ok(file.prompt.includes("encode the displayed value as v2"));
+	for (const job of [first,hit,file]) assert.ok(Buffer.byteLength(job.prompt) <= budget);
+	await file.report({...build("encoder"), evidence:[path]});
+	assert.ok((await f.status()).nodes.find(n => n.grain === "encoder")?.worker);
+});
 for (const source of ["receipt", "file"]) test(`scoped ${source} lookup continues at a later occurrence and pages from the hit`, async t => {
 	const file = "encoder/catalog", match = "項😀".repeat(100), body = "x".repeat(32000) + match + "y".repeat(32000) + match + "z".repeat(32000);
 	const f = factoryTrial(t, ["interface"], { [file]: body, "goal.mjs": `import {writeFileSync} from "node:fs";writeFileSync(1,${JSON.stringify(body)});process.exitCode=1` });
@@ -237,6 +267,41 @@ test("different literals returning the same range cannot sustain another read", 
 	const count = f.scouts.length; await again.report({ ...request, match: "nee" });
 	assert.equal(f.scouts.length, count);
 	assert.match(String((await f.status()).reviews.at(-1)?.reason), /progress|must decide/);
+});
+for (const complete of [false, true]) test(`return to a pinned receipt after a file read / ${complete ? "already complete" : "unread remainder"}`, async t => {
+	const file = "encoder/catalog", budget = 13000, output = complete ? "Display is missing." : "x".repeat(40000) + "Display is missing.";
+	const f = factoryTrial(t, ["interface"], { [file]:"encoding\n".repeat(4000), "product.mjs":"",
+		"goal.mjs":`import {existsSync} from "node:fs"; if(!existsSync("encoder/value")) {console.log(${JSON.stringify(output)});process.exitCode=1}` });
+	const owner = f.runtime(f.root, {scoutBudget:async () => budget});
+	await f.start(owner);
+	const first = f.scouts[0], proof = await f.owner.operation("status", {run:"pair", detail:"proof"}, "owner");
+	const receipt = proof.goalChecks?.at(-1)?.id; assert.ok(receipt);
+	const request = {...noGap, outcome:"needs-evidence", receipt};
+	await first.report(request);
+	const page = f.scouts.at(-1); assert.ok(page?.packet.read && page.packet.read.source === `receipt:${receipt}`);
+	assert.equal(page.packet.read.end === page.packet.read.length, complete);
+	await page.report({...noGap, outcome:"needs-evidence", file});
+	const other = f.scouts.at(-1); assert.ok(other?.packet.read?.source === `file:${file}`);
+	// Reopen the shape saved by the previous reader after its repeated-read refusal.
+	const db = openDatabase(f.root);
+	try {
+		db.mutateLocked("pair", run => {
+			const r = reviews(run).find(r => r.id === other.id); assert.ok(r && run.goal);
+			r.state = "blocked"; r.packet = other.packet; r.observation = {...noGap, outcome:"needs-evidence", receipt};
+			r.error = "Repeated read of unchanged pinned evidence";
+			run.goal.stall = "No actionable grain remains on this revision.";
+		});
+	} finally { db.close(); }
+	const reloaded = f.runtime(f.root, {scoutBudget:async () => budget});
+	reloaded.turn("owner"); await reloaded.flush(); await f.settle();
+	const next = f.scouts.at(-1); assert.ok(next && next.id !== other.id, "no continuation after returning to the receipt");
+	assert.equal(next.packet.read?.source, `receipt:${receipt}`);
+	assert.equal(next.packet.read.start, complete ? 0 : page.packet.read.end);
+	if (complete) assert.match(next.prompt, /decide from/i);
+	await next.report(build("encoder"));
+	const [w] = f.workers.values(); assert.ok(w);
+	put(w.cwd, "encoder/value", "v2"); await f.runtime(w.cwd).operation("submit", {run:"pair", token:w.token}, w.id);
+	assert.ok((await f.status()).qualified);
 });
 for (const found of [true, false]) test(`literal lookup decides in one bounded follow-up: ${found ? "matching range" : "absent"}`, async t => {
 	const file = "encoder/catalog", match = "operation.[publish]", budget = 18000;

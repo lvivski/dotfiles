@@ -24,7 +24,7 @@ function icon(name) {
 }
 /** @type {Record<string,[string,string,string]>} */
 const states = {
-	writing: ["Writing", "write", "work"], checking: ["Checking", "inspect", "work"], starting: ["Starting", "clock", "work"],
+	unconfirmed: ["Launch unconfirmed", "clock", "stop"], checking: ["Checking", "inspect", "work"], starting: ["Awaiting binding", "clock", "work"],
 	assigned: ["Assigned", "write", "work"], waiting: ["Waiting", "clock", ""], queued: ["Queued", "clock", ""],
 	blocked: ["Blocked", "stop", "stop"], published: ["Checked", "tick", "done"], qualified: ["Integrated", "tick", "done"],
 	repeated: ["Repeated", "tick", "done"], idle: ["Idle", "clock", ""],
@@ -127,6 +127,9 @@ function drawDetails() {
 	if (n.task) box.append(tag("p", n.task, "task"));
 	const need = missing(n), unknown = need.some(id => !nodes.has(id));
 	const why = key === "waiting" ? (unknown ? "Some required outputs are outside this view." : `Waiting for checked output from ${need.join(", ")}.`)
+		: key === "assigned" ? "A writer owns this assignment. Foundry does not track whether its session is busy or idle."
+		: key === "unconfirmed" ? "The launch was issued, but no writer binding is confirmed. Recover the original launch; do not start a replacement."
+		: key === "starting" ? "No writer binding has been recorded yet."
 		: key === "queued" ? "No outstanding input is visible. The assignment has not been issued."
 		: key === "repeated" ? "The output is checked, but the combined tree reproduced an earlier goal failure."
 		: key === "qualified" ? (data?.owner ? "Included in a checked product. See product evidence for the run outcome." : "Included in a checked product.") : "";

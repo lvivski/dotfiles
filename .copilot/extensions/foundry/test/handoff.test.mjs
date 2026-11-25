@@ -19,8 +19,8 @@ const invariant = `import {readFileSync} from 'node:fs'; for(const id of ${JSON.
 const goalProgram = `${invariant}\nif(!readFileSync('lib/cover/extra.ignored','utf8').includes('kept in the capture')) throw Error('cover missing');`;
 
 /** Native transport only is faked. Use the actual dispatcher, captures, evaluator receipts and joined tree.
- * @param {import("node:test").TestContext} t @param {boolean} goal */
-async function qualify(t, goal) {
+ * @param {import("node:test").TestContext} t @param {boolean} goal @param {boolean} [pair] */
+async function qualify(t, goal, pair = false) {
 	const grains = ids.map(id => ({ id, directory: `lib/${id}`, check: component, needs: id === "reader" ? ["tables"] : [] }));
 	const f = factory(t, run, source, {
 		[source]: JSON.stringify({ id: run, direction: "Build the complete reader", target: "refs/heads/main", productCheck, ...(goal
@@ -28,7 +28,8 @@ async function qualify(t, goal) {
 			: { version: 1, seed: ["cover", "reader"], squads: [{ id: "pages", charter: "brief", grains: ids }],
 				grains: grains.map(g => ({ ...g, specification: "brief", boundary: ["api"] })) }) }),
 		brief: "Build the reader", api: "Export value", ".gitignore": "*.ignored\n", "lib/cover/obsolete": "old cover",
-		[component]: `import {readFileSync} from 'node:fs'; if(readFileSync(process.env.FOUNDRY_DIRECTORY+'/value','utf8')!==process.env.FOUNDRY_GRAIN) throw Error('wrong value');`,
+		[component]: `import {readFileSync} from 'node:fs'; for(const dir of JSON.parse(process.env.FOUNDRY_DIRECTORIES))
+			if(readFileSync(dir+'/value','utf8')!==process.env.FOUNDRY_GRAIN) throw Error('wrong value');`,
 		[productCheck]: invariant, [goalCheck]: goalProgram,
 	});
 	const read = () => {
@@ -37,12 +38,13 @@ async function qualify(t, goal) {
 	};
 	await f.start();
 	if (goal) await f.scouts[0].report({ outcome: "regenerate", reason: "Complete the missing pages", evidence: ["brief"],
-		grains: grains.map(g => ({ ...g, task: `Render the ${g.id} page` })) });
+		grains: grains.map(g => ({ ...g, directory:pair && g.id==="cover" ? [g.directory,"lib/illustrations"] : g.directory, task: `Render the ${g.id} page` })) });
 	assert.equal(handoff(read()), null);
 	let checkpoint;
 	for (const id of ids) {
 		const n = read().nodes[id], w = f.workers.get(n.worker ?? ""); assert.ok(w);
 		if (id === "cover") {
+			if (pair) put(w.cwd,"lib/illustrations/value",id);
 			if (!goal) git(w.cwd, "switch", "-qc", "native-cover");
 			put(w.cwd, "lib/cover/extra.ignored", "kept in the capture, despite .gitignore\n");
 		}
@@ -80,6 +82,19 @@ async function qualify(t, goal) {
 		automation: false, nestedWork: false, externalWork: false };
 	return { state, read, details, h, w, root, writer, native };
 }
+
+test("cleanup rechecks every root in the selected qualified writer capture", async t => {
+	const {h,native,root,writer} = await qualify(t,true,true);
+	const {offer} = archiveCheck(root,"offer",{handoff:h,native}); assert.ok(offer);
+	assert.deepEqual(offer.directory,["lib/cover","lib/illustrations"]);
+	const input = {handoff:h,native,selected:offer};
+	assert.deepEqual(archiveCheck(root,"recheck",input),{tool:"archive_session",arguments:{id:native.id}});
+	assert.throws(()=>archiveCheck(root,"recheck",{...input,selected:{...offer,directory:"lib/cover"}}),/Selection/);
+	put(writer,"lib/illustrations/value","private change");
+	assert.throws(()=>archiveCheck(root,"recheck",input),/changed/i);
+	put(writer,"lib/illustrations/value","cover"); put(writer,"lib/neighbor/private","unrelated");
+	assert.throws(()=>archiveCheck(root,"recheck",input),/Unexpected path/);
+});
 
 test("goal: only the accepted exact product reaches the owner; no inferred authority over delegated work", async t => {
 	const { state, h, root, native, details } = await qualify(t, true);
