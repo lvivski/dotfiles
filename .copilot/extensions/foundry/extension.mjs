@@ -11,6 +11,10 @@ import { buildTools, fromHelper, primaryOnly } from "./work/tools.mjs";
 
 /** @type {import("@github/copilot-sdk").CopilotSession} */
 let session;
+const executionMode = () => session.rpc.mode.get();
+const permissions = permissionCheck(() => session.rpc.managedSettings.get(), () => session.rpc.permissions.getMode());
+/** @param {string} message */
+const confirm = async message => (await session.ui.elicitation({ message, requestedSchema: { type: "object", properties: {} } })).action === "accept";
 /** The task registry also contains direct agents of discovery workflows hosted by this writer.
  * Only an exact native identity from one of its bound workflows can exempt a running task.
  * @param {string[]} workflows */
@@ -29,7 +33,7 @@ async function runningHelpers(workflows) {
 		!(discoveries.has(t.id) && discoveries.get(t.id) === t.toolCallId) ? [t.id] : []);
 }
 const runtime = createRuntime(process.cwd(), {
-	mode: () => session.rpc.mode.get(),
+	mode: executionMode,
 	idleWriter: async id => idleHome(await session.rpc.tools.execute({name:"get_session",arguments:{project_session_id:id}}),id),
 	runningHelpers,
 	async scoutBudget() {
@@ -51,10 +55,10 @@ const runtime = createRuntime(process.cwd(), {
 		const tasks = (await session.rpc.tasks.list()).tasks.filter(t => t.id === agentId);
 		return tasks.length === 1 && tasks[0].type === "agent" && tasks[0].status === "running" && tasks[0].toolCallId === direct.toolCallId;
 	},
-	permissionBlocker: permissionCheck(() => session.rpc.managedSettings.get(), () => session.rpc.permissions.getMode()),
+	permissionBlocker: permissions.blocker,
 	ask: message => session.ui.input(message),
-	// ui.confirm adds a required checkbox; the form's accept action is the decision.
-	confirm: async message => (await session.ui.elicitation({ message, requestedSchema: { type: "object", properties: {} } })).action === "accept",
+	confirm,
+	autoConfirm: () => permissions.autoConfirm(executionMode),
 	execute: (name, args, toolCallId) => session.rpc.tools.execute({ name, arguments: args, toolCallId }),
 	scout: (run, dispatch) => session.workflow.run("foundry-scout", { args: { run, dispatch }, notifyOnComplete: false }),
 	scoutState: id => session.workflow.waitForRun(id),

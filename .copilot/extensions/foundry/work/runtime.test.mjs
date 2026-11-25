@@ -1213,7 +1213,11 @@ for (const legacy of [false, true]) test(`an owner can approve inspection of a s
 	} finally { release(); await checking; }
 	assert.equal((await f.status()).goal?.receipt?.exit, 1);
 	assert.equal((await f.status(w.id)).nodes[0].state, "blocked");
-	const owner = f.runtime(f.root, { confirm: async () => true });
+	const owner = f.runtime(f.root, { confirm: async prompt => {
+		assert.match(prompt,/one bounded repair using/); return true;
+	} });
+	await assert.rejects(f.runtime(f.root,{confirm:async()=>false}).operation("publish",{run,baselines:["inventory"]},"owner"),{code:"approval_declined"});
+	assert.equal((await f.status(w.id)).nodes[0].state,"blocked","inspection did not authorize use of those files for a repair");
 	await owner.operation("publish", { run, baselines: ["inventory"] }, "owner");
 	const repaired = (await f.status(w.id)).nodes[0];
 	assert.equal(repaired.state, "writing"); assert.equal(repaired.repairs, 1);

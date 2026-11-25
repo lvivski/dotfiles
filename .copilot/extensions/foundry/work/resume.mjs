@@ -37,7 +37,7 @@ export function prepareResume(prior, explicit, canInspectWorkflows) {
 				fail("run_conflict", "Run activation changed while starting");
 			run.active = true;
 			delete run.pauseReason;
-			admitted(run);
+			admitted(run,true);
 			for (const e of run.effects) {
 				if (e.kind === "scout") {
 					const ticket = unboundTicket(e);

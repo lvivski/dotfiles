@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { isUtf8 } from "node:buffer";
 import { admissionPolicy } from "./admission.mjs";
+import { activeDelivery } from "./batch.mjs";
+import { advanceDelivery } from "./delivery.mjs";
 import { notifyWriters, takeArtifactBrief } from "./artifacts.mjs";
 import { addresses, answeredLead, checkLinks, unownedBlockers } from "./blockers.mjs";
 import { validOutcome } from "./contract.mjs";
@@ -22,6 +24,7 @@ import { deliveredFile, rejectedSource, unseenText, validMatch } from "./pages.m
 import { actionable, consumersOf, dependencies, liveNeeds, owns, productOutputs, proposal, requireNewWork, revise, settledOutput, stalePins, superseded, supersededAttempt, unstartedWriter, validateNodes, waiting, writerInputs } from "./plan.mjs";
 import { changedFiles, checkDirectory, combine, commitAt, committedFile, describeInventory, inventory, outside, regularFiles, rejoin, retain, treeOf, verifyContracts, verifyDirectoryPin, versionOf, withoutGrain } from "./product.mjs";
 import { referenceCheckout } from "./research.mjs";
+import { renewalBasis } from "./renewal.mjs";
 import { preflightTransfer, protectsGrant, touchesCut } from "./transfer.mjs";
 import { disjointSuccessor, heldRepair, matchesSuccessor, preflightSuccessor, successorReads } from "./successor.mjs";
 import { atCheckpoint, availableHistory, blockReview, canInvestigate, checkpointScope, checkpointWake, comparison, discoverySquads, nextReview, readerInterrupted, reading, requestedFiles, researchContext, reserveReview, reviewHandoff, reviews, scopedNotes, staleReviewReason, wakeSource } from "./reviews.mjs";
@@ -321,7 +324,8 @@ export function observe(cwd, run, review, observation) {
 		fail("unresolved_research", "Investigation already requested on this revision; identify the remaining blocker");
 	// A sibling can finish while this scout reads. On the same assessed commit, revalidate the
 	// proposal against the live graph; never let an older charter review edit a newer plan.
-	if (!currentReview(cwd, run, review)) {
+	const renewal=review.renewal?.state==="approved" && renewalBasis(cwd,run,review,commitAt(cwd,run.policy.target));
+	if (!(renewal && !renewal.reason && review.renewal?.checkpoint===renewal.checkpoint && review.renewal.goal===renewal.goal) && !currentReview(cwd, run, review)) {
 		fail("stale_assignment", staleReviewReason);
 	}
 	if (outcome !== "no-gap" && answeredLead(run, review, grains.flatMap(g => typeof g === "string" ? [] : scopePaths(g.directory))))
@@ -497,9 +501,10 @@ export function observe(cwd, run, review, observation) {
 }
 
 /** @param {Run} run @param {import("./model.js").Review} review @param {Node} n @param {Node["inputs"]} pins @param {string} [base] */
-function checkpointInputs(run, review, n, pins, base = review.base) {
+function checkpointInputs(run, review, n, pins, base = review.renewal?.state==="approved" ?
+	run.products.find(p=>p.check===review.renewal?.checkpoint)?.commit : review.base) {
 	const last = run.products.at(-1);
-	if (last?.commit !== base || !pins || Object.entries(pins).some(([id, pin]) =>
+	if (!last || last.commit !== base || !pins || Object.entries(pins).some(([id, pin]) =>
 		last.outputs[id] !== pin || run.nodes[id]?.state !== "qualified" || review.packet?.outputs[id] !== pin))
 		fail("stale_assignment", `The required inputs for ${n.grain.directory} must already be checked in the reviewed checkpoint`);
 }
@@ -887,7 +892,7 @@ function writerCandidate(run, node, review, scoped) {
 }
 
 /** Plan on a snapshot outside the SQLite write lock; the caller compare-and-swaps the changes.
- * @param {string} cwd @param {Run} run @param {string} actor @param {boolean} discover @param {{retryGoal?:boolean,submitToken?:string,target?:string}} [context] */
+ * @param {string} cwd @param {Run} run @param {string} actor @param {boolean} discover @param {{retryGoal?:boolean,submitToken?:string,target?:string,renew?:boolean}} [context] */
 export function advance(cwd, run, actor, discover, context = {}) {
 	const elapsed=expired(run);
 	if (!run.active || elapsed && !timelyChecks(run))
@@ -898,6 +903,11 @@ export function advance(cwd, run, actor, discover, context = {}) {
 	const observed = observeTarget(() => context.target ?? commitAt(cwd, run.policy.target));
 	if (observed.target === undefined) return;
 	const target = observed.target, tip = () => target;
+	const delivery=activeDelivery(run);
+	if (delivery) {
+		if (owner && !elapsed) advanceDelivery(cwd,run,delivery,target);
+		return;
+	}
 	if (run.independent) {
 		const s=run.independent, join=run.join, e=run.effects.find(e=>e.id===s.product);
 		if (!owner || !join || elapsed || !validIsolation(run) || target!==s.target || run.blocker || run.conflict ||
@@ -939,6 +949,23 @@ export function advance(cwd, run, actor, discover, context = {}) {
 		catch (error) {
 			if (!(error instanceof FoundryError)) throw error;
 			blockReview(r, error.message);
+		}
+	}
+	if (owner) for (const r of history) {
+		if (r.renewal?.state==="presenting" || r.renewal?.state==="closed") continue;
+		const pins=renewalBasis(cwd,run,r,target);
+		if (!pins || !r.observation) continue;
+		const {checkpoint,goal,reason}=pins;
+		if (reason) { r.renewal={checkpoint,goal,state:"held",reason};continue; }
+		if (!context.renew) {
+			r.renewal={checkpoint,goal,state:"needed"};
+			continue;
+		}
+		r.renewal={checkpoint,goal,state:"approved"};
+		try { observe(cwd,run,r,r.observation); }
+		catch (error) {
+			if (!(error instanceof FoundryError)) throw error;
+			r.renewal={checkpoint,goal,state:"closed",reason:error.message};
 		}
 	}
 	let remaining = remainingAssignments(run);

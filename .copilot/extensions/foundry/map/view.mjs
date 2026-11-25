@@ -27,6 +27,7 @@ const states = {
 	unconfirmed: ["Launch unconfirmed", "clock", "stop"], checking: ["Checking", "inspect", "work"], starting: ["Awaiting binding", "clock", "work"],
 	assigned: ["Assigned", "write", "work"], waiting: ["Waiting", "clock", ""], queued: ["Queued", "clock", ""],
 	blocked: ["Blocked", "stop", "stop"], published: ["Checked", "tick", "done"], qualified: ["Integrated", "tick", "done"],
+	passed: ["Passed on build · not integrated", "inspect", "work"],
 	repeated: ["Repeated", "tick", "done"], idle: ["Idle", "clock", ""],
 };
 /** @type {Snapshot|null} */ let data = null;
@@ -38,7 +39,7 @@ const title = id => id.replace(/[-_]+/g, " ").replace(/^./, s => s.toUpperCase()
 /** @param {Assignment} n */
 const missing = n => n.needs.filter(id => !nodes.get(id)?.checked);
 /** @param {Assignment} n */
-const state = n => n.state === "waiting" && !missing(n).length ? "queued" : n.state;
+const state = n => n.passedOnBuild ? "passed" : n.state === "waiting" && !missing(n).length ? "queued" : n.state;
 /** @param {string} key @param {string} [text] @param {string} [cls] */
 function badge(key, text, cls = "node-status") {
 	const [name, glyph, tone] = states[key], span = tag("span", "", cls);
@@ -120,8 +121,18 @@ function relations(label, ids, none) {
 function metadata(label, value) {
 	const span = tag("span"); span.append(`${label} `, tag("code", value)); return span;
 }
+/** @param {NonNullable<Assignment["attempts"]>[number]} attempt @param {string} label */
+function checkRow(attempt,label) {
+	const row=tag("div","","check-row"), result=tag("strong",`${label}: ${attempt.status}`);
+	row.append(result,metadata("Check",attempt.check));
+	if (attempt.commit) row.append(metadata(attempt.kind==="delivery" ? "Combined build" : attempt.kind==="rerun" ? "Product" : "Candidate",attempt.commit));
+	if (attempt.exit!=null) row.append(metadata("Exit",String(attempt.exit)));
+	return row;
+}
 function drawDetails() {
 	const box = el("inspector"), n = selected && nodes.get(selected);
+	const previous=box.querySelector("details"), expanded=previous?.open && previous.dataset.grain===selected;
+	const focused=!!previous?.contains(document.activeElement);
 	box.hidden = !n; box.replaceChildren(); if (!n) return;
 	const key = state(n), head = tag("div", "", "detail-head"); head.append(tag("h2", title(n.id)), badge(key)); box.append(head);
 	if (n.task) box.append(tag("p", n.task, "task"));
@@ -132,6 +143,7 @@ function drawDetails() {
 		: key === "starting" ? "No writer binding has been recorded yet."
 		: key === "queued" ? "No outstanding input is visible. The assignment has not been issued."
 		: key === "repeated" ? "The output is checked, but the combined tree reproduced an earlier goal failure."
+		: key === "passed" ? "The full check passed on this checkpoint. The assignment is still stopped: its output is not integrated and dependents cannot use it."
 		: key === "qualified" ? (data?.owner ? "Included in a checked product. See product evidence for the run outcome." : "Included in a checked product.") : "";
 	if (why) box.append(tag("p", why, "why"));
 	if (n.reason) {
@@ -144,8 +156,19 @@ function drawDetails() {
 	const meta = tag("div", "", "metadata");
 	meta.append(metadata("ID", n.id), metadata("Directory", n.directory), metadata("Check", n.check));
 	if (n.checked) meta.append(metadata("Checked output", n.checked));
-	if (n.result) meta.append(metadata("Last check", `exit ${n.result.exit ?? "unknown"} @ ${n.result.commit.slice(0, 9)}`));
+	if (n.result && !n.attempts?.length) meta.append(metadata("Last check", `exit ${n.result.exit ?? "unknown"} @ ${n.result.commit.slice(0, 9)}`));
 	box.append(links, meta);
+	const latest=n.attempts?.at(-1);
+	if (latest && n.attempts) {
+		box.append(checkRow(latest,latest.kind==="delivery" ? "Latest delivery check" : latest.kind==="rerun" ? "Latest component rerun" : "Latest component check"));
+		if (latest.kind==="rerun") box.append(tag("p","This rerun does not change the assignment or release status.","task"));
+		if (n.attempts.length>1) {
+			const history=tag("details"), summary=tag("summary",`Previous attempts (${n.attempts.length-1})`);
+			history.dataset.grain=n.id; history.open=!!expanded; history.append(summary);
+			for (const a of n.attempts.slice(0,-1).reverse()) history.append(checkRow(a,a.kind==="delivery" ? "Delivery check" : a.kind==="rerun" ? "Component rerun" : "Component check"));
+			box.append(history); if (focused) summary.focus({preventScroll:true});
+		}
+	}
 }
 
 /** @param {Snapshot} s */

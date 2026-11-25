@@ -146,6 +146,7 @@ export const comparison = (run, review) => comparisonReview(run, review)?.iterat
 
 /** @param {Run} run @param {Review|undefined} review */
 export function checkpointScope(run, review) {
+	if (review?.renewal?.state==="approved") return {check:review.renewal.checkpoint,goal:review.renewal.goal};
 	if (review?.lead) return {check:review.lead.checkpoint, goal:leadGoal(review.lead)};
 	const i = comparison(run, review);
 	if (i?.basis) return {check:i.receipt, goal:comparisonGoal(i)};
@@ -280,9 +281,13 @@ export function reviewStatus(run, r) {
 		...(hold ? { handoffHold: hold } : {}),
 		...(r.predecessor ? { predecessor: { grain: r.predecessor.grain.id, worker: r.predecessor.worker, base: r.predecessor.base, ...(r.predecessor.preview ? { preview: r.predecessor.preview } : {}),
 			check: r.predecessor.check, ...(r.predecessor.candidate ? { candidate:r.predecessor.candidate } : {}), reason: r.predecessor.reason } } : {}),
-		reason: r.deferred ? `Deferred: current assignments using ${Object.keys(r.deferred.pins).join(", ")}: ${r.deferred.consumers.join(", ")}` :
-			superseded ? `Source comparison approval covers ${approved}, not the current checked product ${checkpoint}. Even if the cited files are unchanged, this report cannot staff a writer there.` :
-			r.state === "blocked" ? r.error : undefined,
+		...(r.renewal && {renewal:r.renewal}),
+		reason: r.renewal?.state==="needed" ? "Awaiting the owner session to revalidate and continue this saved report." :
+			r.renewal?.state==="presenting" ? "Owner approval was requested; do not replay an unanswered dialog. An explicit fresh comparison remains available." :
+			r.renewal?.reason ?? (r.deferred ? `Deferred: current assignments using ${Object.keys(r.deferred.pins).join(", ")}: ${r.deferred.consumers.join(", ")}` :
+			superseded && !currentEvaluation(run,r) ? "The evaluator changed since the original source comparison. The saved proposal cannot continue under a different evaluator." :
+			superseded ? `Source comparison approval covers ${approved}, not the current checked product ${checkpoint}. The report has not been admitted on the newer build.` :
+			r.state === "blocked" ? r.error : undefined),
 		decision: r.decision };
 }
 

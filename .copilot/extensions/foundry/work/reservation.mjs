@@ -2,6 +2,7 @@ import { milestoneBlocker, qualifiedProduct } from "./evidence.mjs";
 import { partitionConflict } from "./partition.mjs";
 import { validIsolation } from "./isolation.mjs";
 import { currentRemedy } from "./remedy.mjs";
+import { activeDelivery } from "./batch.mjs";
 
 /** @param {import("./model.js").Effect} e */
 export const unissued = e => e.state === "ready" || e.state === "ordinary";
@@ -12,6 +13,9 @@ export const awaitingReply = e => e.state === "issued" || e.state === "uncertain
  * @param {import("./model.js").Run} run @param {import("./model.js").NativeCall} e */
 export function currentCheck(run, e) {
 	if (e.tool !== "bash" || e.state === "retired" || e.state === "withdrawn") return false;
+	const delivery=activeDelivery(run);
+	if (delivery || e.delivery) return !!delivery && e.delivery===delivery.id && (unissued(e) || awaitingReply(e));
+	if (e.kind === "rerun") return !!e.rerun && (unissued(e) || awaitingReply(e)) && !run.independent;
 	if (e.kind === "component") {
 		if (e.remedy) return currentRemedy(run,e);
 		const n = e.grain && run.nodes[e.grain];

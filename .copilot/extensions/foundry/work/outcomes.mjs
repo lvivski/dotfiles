@@ -9,6 +9,8 @@ function message(run, e, document) {
 	return createHash("sha256").update(JSON.stringify([run, e.id, e.issuer, e.callId, e.kind, e.grain ?? null,
 		e.commit, e.check, e.evaluatorRevision ?? null, ...(e.productEvaluatorRevision ? [e.productEvaluatorRevision] : []),
 		...(e.kind==="component" && e.pair ? [digest(e.pair)] : []),
+		...(e.kind==="rerun" && e.rerun ? [digest(e.rerun)] : []),
+		...(e.tool==="bash" && e.delivery ? ["delivery",e.delivery] : []),
 		...(e.tool==="bash" && e.isolation ? ["independent",e.isolation] : []),
 		...(e.kind==="component" && e.observer ? ["observer",digest(e.observer)] : []),
 		...(e.kind==="component" && e.remedy ? ["production",digest(e.remedy)] : [])])).update("\n").update(document).digest();
@@ -23,7 +25,7 @@ function checkPin(e, receipt) {
 /** The private key stays in the claiming runner; the journal contains no authority to sign another outcome.
  * @param {string} run @param {Effect} e */
 export function claimOutcome(run, e) {
-	if (e.tool !== "bash" || !(e.kind === "component" || e.kind === "product" || e.kind === "goal") ||
+	if (e.tool !== "bash" || !(e.kind === "component" || e.kind === "rerun" || e.kind === "product" || e.kind === "goal") ||
 		!(e.state === "issued" || e.state === "uncertain") || !e.callId || !e.commit || !e.check || e.runnerStarted || e.receipt)
 		fail("unissued_check", "Expected an unclaimed evaluator reservation");
 	const { publicKey, privateKey } = generateKeyPairSync("ed25519");

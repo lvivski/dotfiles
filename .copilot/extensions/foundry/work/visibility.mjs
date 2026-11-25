@@ -1,5 +1,5 @@
 import { assignmentCount } from "./capacity.mjs";
-import { goalReceipt, milestoneBlocker, missingObservation, qualifiedProduct } from "./evidence.mjs";
+import { checkReceipt, goalReceipt, milestoneBlocker, missingObservation, qualifiedProduct } from "./evidence.mjs";
 import { timingFacts } from "./metrics.mjs";
 import { current, expired } from "./native.mjs";
 import { awaitingReply } from "./reservation.mjs";
@@ -9,6 +9,15 @@ import { fail, scopeLabel } from "./values.mjs";
 import { grant } from "./transfer.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
+/** @param {import("./model.js").NativeCall} e */
+function attempt(e) {
+	const receipt=e.kind!=="rerun" || e.runnerClaim ? checkReceipt(e) : undefined;
+	return {check:e.id,commit:e.commit,kind:e.delivery ? /** @type {const} */ ("delivery") : e.kind, ...(e.rerun && {original:e.rerun.of,after:e.rerun.after ?? e.rerun.of}),
+		status:receipt ? receipt.exit===0 ? "passed" : receipt.exit===2 || receipt.exit===null ? "unavailable" : "failed" :
+			e.state==="refused" ? "refused" : e.launcherExit || e.state==="done" ? "unavailable" :
+			e.state==="uncertain" ? "unconfirmed" : e.runnerStarted ? "running" : "pending",
+		...(receipt && {exit:receipt.exit})};
+}
 /** Ledger-only facts shared by the board and chat. Nodes and effects stay inside the
  * query; each surface projects only the fields it exposes.
  * @param {Run} run @param {string} actor */
@@ -28,6 +37,11 @@ export function visible(run, actor) {
 		if (binding) writerAssignments[binding]++;
 	}
 	const receipts = new Map(run.effects.filter(e => e.receipt).map(e => [e.id, e.receipt]));
+	/** @type {Map<string,ReturnType<typeof attempt>[]>} */ const attempts=new Map();
+	for (const e of run.effects) if ((e.kind==="component" || e.kind==="rerun") && e.grain && (owner || e.issuer===actor)) {
+		const history=attempts.get(e.grain) ?? [];
+		history.push(attempt(e)); attempts.set(e.grain,history);
+	}
 	const missing = missingObservation(run);
 	const assignments = run.policy.assignments === undefined ? undefined : { limit: run.policy.assignments, used: assignmentCount(run) };
 	const qualified = qualifiedProduct(run), finished = (run.goal || run.policy.seed) && qualified;
@@ -42,7 +56,7 @@ export function visible(run, actor) {
 		: missing ? `Goal check at ${missing.commit} awaits external evidence (exit 2): ${missing.output.trim() || "no diagnostic"}. After supplying it, use /foundry resume ${run.policy.source}.` : milestoneBlocker(run));
 	const openQuestions = owner ? questions(run).flatMap(r => r.observation ? [{ review: r, observation: r.observation,
 		fact: { question: r.observation.reason, ...(r.decision ? { delivery: r.decision } : {}) } }] : []) : [];
-	return { owner, nodes, pending, receipts, unconfirmed, assignments, questions: openQuestions, summary: {
+	return { owner, nodes, pending, receipts, attempts, unconfirmed, assignments, questions: openQuestions, summary: {
 		run: run.id, active: run.active, direction: run.policy.direction, expired: expired(run),
 		blocker: blocker && stop ? `${blocker}\n${stop}` : blocker ?? stop,
 		reviews: owner ? reviews(run).map(r => reviewStatus(run, r)) : [],
@@ -58,14 +72,18 @@ function writerBinding(n, unconfirmed) {
 	if (n.state === "writing") return n.worker ? "bound" : n.token && unconfirmed.has(n.token) ? "unconfirmed" : "pending";
 }
 
-/** @param {import("./model.js").Node} n @param {ReturnType<typeof visible>["receipts"]} receipts @param {Set<string>} unconfirmed */
-export function nodeFact(n, receipts, unconfirmed) {
+/** @param {import("./model.js").Node} n @param {Pick<ReturnType<typeof visible>,"receipts"|"unconfirmed"|"attempts"|"summary">} view */
+export function nodeFact(n, {receipts,unconfirmed,attempts,summary}) {
 	const binding = writerBinding(n, unconfirmed);
+	const latest=n.state==="blocked" && n.check && summary.checkpoint
+		? attempts.get(n.grain.id)?.findLast(a=>a.original===n.check && a.commit===summary.checkpoint) : undefined;
 	return { grain: n.grain.id, directory: n.grain.directory, task: n.grain.task, requires: liveNeeds(n), evaluator: n.grain.check,
 		...(n.retained ? {ownership:grant(n)} : {}),
 		...(n.successor ? {successor:n.successor} : {}),
 		...(n.restoration ? {restoration:n.restoration} : {}),
-		state: n.state, ...(binding ? { writerBinding: binding } : {}), checked: checked(n) ? n.candidate : undefined, worker: n.worker, receipt: n.check && receipts.get(n.check), reason: n.reason };
+		...(latest?.status==="passed" && {passedOnBuild:latest.check}),
+		state: n.state, ...(binding ? { writerBinding: binding } : {}), checked: checked(n) ? n.candidate : undefined, worker: n.worker, receipt: n.check && receipts.get(n.check), reason: n.reason,
+		...(attempts.has(n.grain.id) && {attempts:attempts.get(n.grain.id)}) };
 }
 
 /** @param {import("./model.js").Effect} e */
@@ -102,13 +120,15 @@ export function projectBoard(s, owner) {
 			state: n.writerBinding === "bound" ? "assigned" : n.writerBinding === "unconfirmed" ? "unconfirmed" : n.writerBinding === "pending" ? "starting" : n.state,
 			reason: n.reason ?? "", check: n.evaluator, checked: n.checked ?? null,
 			result: n.receipt ? { commit: n.receipt.commit, exit: n.receipt.exit } : null,
+			...(owner && n.passedOnBuild && {passedOnBuild:n.passedOnBuild}),
+			...(n.attempts && {attempts:n.attempts}),
 		})),
 	};
 }
 
 /** @param {Run} run @param {string} actor */
 export function boardFacts(run, actor) {
-	const { owner, summary, questions, nodes, pending, receipts, unconfirmed } = visible(run, actor);
+	const view=visible(run,actor), { owner, summary, questions, nodes, pending } = view;
 	return projectBoard({ ...summary, ...(owner ? { metrics: timingFacts(run), questions: questions.map(q => q.fact) } : {}),
-		nodes: nodes.map(n => nodeFact(n, receipts, unconfirmed)), pending: pending.map(pendingFact) }, owner);
+		nodes: nodes.map(n => nodeFact(n,view)), pending: pending.map(pendingFact) }, owner);
 }

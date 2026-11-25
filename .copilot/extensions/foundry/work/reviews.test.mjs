@@ -8,7 +8,9 @@ import { observe, parseObservation, reserveIteration } from "./graph.mjs";
 import { prepareReuse } from "./reuse.mjs";
 import { exhaustedCandidate } from "./evidence.mjs";
 import { status } from "./status.mjs";
-import { factory, git, put } from "../test/fixture.mjs";
+import { factory, git, loadEntry, put } from "../test/fixture.mjs";
+import { historicalFactory } from "../test/legacy-readers.mjs";
+import { createRuntime } from "./runtime.mjs";
 
 test("a scoped comparison can start product work alongside an independent writer without repeating release validation", async t => {
 	const run = "panels", source = ".foundry/panels.json";
@@ -249,16 +251,12 @@ for (const scenario of ["repair","recover omitted source","unsupported","cited s
 		const blocked=proof().reviews.at(-1); assert.ok(blocked?.state==="blocked");
 		assert.equal(blocked.reason,`Text of ${file} at ${git(f.root,"rev-parse",`${at.commit}:${file}`)} was not delivered in this packet`);
 		owner.close();
-		const recover=f.runtime(f.root,{scoutBudget:async()=>16000,confirm:async message=>{
-			for(const pin of [original.id,at.commit,file,directory,offer.blob,at.id,question]) assert.ok(pin && message.includes(pin));
-			return true;
-		}});
+		const recover=f.runtime(f.root,{scoutBudget:async()=>16000,confirm:async()=>assert.fail("the omitted source was already approved")});
 		await assert.rejects(recover.operation("rereview",request,peer.id),{code:"foreign_run"});
-		await assert.rejects(f.runtime(f.root,{confirm:async()=>false}).operation("rereview",request,"owner"),{code:"approval_declined"});
-		await assert.rejects(f.runtime(f.root,{scoutBudget:async()=>1,confirm:async()=>true}).operation("rereview",request,"owner"),{code:"packet_budget"});
-		await assert.rejects(f.runtime(f.root,{confirm:async()=>{
-			await f.owner.operation("configure",{run,revision:0,checkpointReviews:false},"owner");return true;
-		},scoutBudget:async()=>16000}).operation("rereview",request,"owner"),{code:"dispatch_held"});
+		await assert.rejects(f.runtime(f.root,{scoutBudget:async()=>1}).operation("rereview",request,"owner"),{code:"packet_budget"});
+		await assert.rejects(f.runtime(f.root,{scoutBudget:async()=>{
+			await f.owner.operation("configure",{run,revision:0,checkpointReviews:false},"owner");return 16000;
+		}}).operation("rereview",request,"owner"),{code:"dispatch_held"});
 		await f.owner.operation("configure",{run,revision:1,checkpointReviews:true},"owner");
 		assert.equal(f.scouts.length,scouts+1);
 		await recover.operation("rereview",request,"owner"); await f.settle();
@@ -312,10 +310,12 @@ for (const scenario of ["repair","recover omitted source","unsupported","cited s
 	assert.deepEqual(end.nodes.find(n=>n.worker===peer.id),before.nodes.find(n=>n.worker===peer.id));
 });
 
-test("renew a superseded source comparison on its original run after a disjoint writer joins", async t => {
+for (const scenario of ["manual renewal","reader 64 recovery","Autopilot renewal","Allow All renewal","Autopilot with a product question","Interactive with a product question","new approval","declined","unanswered","missing input pin","target moved during preflight","owned scope with a checked consumer"])
+test(`renew a superseded source comparison on its original run after a disjoint writer joins: ${scenario}`, async t => {
 	const run = "labels", plan = ".foundry/labels.json", file = "labels/spec/sample", directory = "labels/output";
 	const ids = ["data","labels","palette"], unit = "unit.mjs";
-	const f = factory(t,run,plan,{
+	const startFactory = scenario==="new approval" ? factory : await historicalFactory(t,64);
+	const f = startFactory(t,run,plan,{
 		[plan]:JSON.stringify({id:run,version:2,target:"refs/heads/main",direction:"Render labels in color.",productCheck:unit,goalCheck:"goal.mjs",
 			squads:ids.map(id=>({id,charter:`${id}.md`,areas:[id],checks:[unit]}))}),
 		".foundry/labels/journey.md":"Read the colored labels.", ...Object.fromEntries(ids.map(id=>[`${id}.md`,`Own ${id}.`])),
@@ -332,12 +332,21 @@ test("renew a superseded source comparison on its original run after a disjoint 
 		put(w.cwd,file,value); await f.runtime(w.cwd).operation("submit",{run,token:w.token},w.id); await f.settle();
 	};
 	await f.start();
-	for (const s of [...f.scouts]) await s.report(s.squad==="data" ? report("data","data/input","data.md") :
-		{outcome:"no-gap",evidence:[`${s.squad}.md`],reason:"Wait for data.",grains:[]});
+	const incumbent=scenario==="owned scope with a checked consumer";
+	for (const s of [...f.scouts].sort((a,b)=>Number(b.squad==="labels")-Number(a.squad==="labels"))) {
+		const data=report("data","data/input","data.md"), base=report("prior","labels/output","labels.md");
+		base.grains[0].needs=[];
+		if (incumbent) data.grains[0].needs=["prior"];
+		await s.report(s.squad==="data" ? data : incumbent && s.squad==="labels" ? base :
+			{outcome:"no-gap",evidence:[`${s.squad}.md`],reason:"Wait for data.",grains:[]});
+	}
+	if (incumbent) await submit("prior","labels/output/kept","keep");
 	await submit("data","data/input/value","2");
+	for (const s of f.scouts.slice(ids.length)) await s.report({outcome:"no-gap",evidence:[`${s.squad}.md`],reason:"Inputs ready.",grains:[]});
 	const first = f.owner.inspect({run,detail:"proof"},"owner").goalChecks?.at(-1); assert.ok(first?.commit && first.receipt?.exit===2);
 	put(f.root,"sample","A blue label with units.");
-	const [offer] = (await f.owner.operation("publish",{run,file:"sample",to:[directory,"palette/output"]},"owner")).artifacts;
+	const productQuestion=scenario==="Autopilot with a product question" || scenario==="Interactive with a product question";
+	const [offer] = (await f.owner.operation("publish",{run,file:"sample",to:[directory,"palette/output",...(productQuestion?["palette/legend"]:[])]},"owner")).artifacts;
 	const args = {run,receipt:first.id,directory,blob:offer.blob,question:"Show the units.",source:{commit:first.commit,file,excerpt:"Units required"}};
 	const owner = f.runtime(f.root,{confirm:async()=>true});
 	await owner.operation("iterate",args,"owner"); await f.settle();
@@ -348,12 +357,107 @@ test("renew a superseded source comparison on its original run after a disjoint 
 	await sibling.report(report("color","palette/output","palette/spec/sample"));
 	await submit("color","palette/output/value","blue");
 	const proposed = report("units",directory,file);
+	if (scenario==="missing input pin") proposed.grains[0].needs=["color"];
+	if (incumbent) proposed.grains[0].needs=[];
 	await old.report(proposed); owner.close();
 	const read = f.runtime(f.root), blocked = read.inspect({run,detail:"proof"},"owner");
 	const current = blocked.goalChecks?.at(-1), review = blocked.reviews.find(r=>r.id===old.id);
 	assert.ok(current?.commit && current.commit!==first.commit && current.receipt?.exit===2);
-	assert.equal(review?.state,"blocked"); assert.ok(!blocked.nodes.some(n=>n.grain==="units"));
 	assert.equal(git(f.root,"diff","--name-only",first.commit,current.commit),"palette/output/value");
+	if (scenario!=="new approval") {
+		assert.equal(review?.state,"blocked"); assert.ok(!blocked.nodes.some(n=>n.grain==="units"));
+	}
+	if (scenario!=="manual renewal") {
+		const question="Which color should the legend use?";
+		if (productQuestion) {
+			const peer=f.runtime(f.root,{confirm:async()=>true});
+			await peer.operation("iterate",{...args,receipt:current.id,directory:"palette/legend",question,
+				source:{commit:current.commit,file:"palette/spec/sample",excerpt:"Use blue"}},"owner");
+			await f.settle(); const scout=f.scouts.at(-1); assert.ok(scout?.squad==="palette");
+			await scout.report({outcome:"needs-decision",ownerInput:"product-choice",reason:question,evidence:["palette/spec/sample"],grains:[]});
+			peer.close();
+		}
+		const workers=f.workers.size, scouts=f.scouts.length, checks=[...f.checks];
+		if (scenario==="declined" || scenario==="unanswered") {
+			const checkpoint=blocked.products?.at(-1)?.check; assert.ok(checkpoint);
+			const db=openDatabase(f.root); t.after(()=>db.close());
+			db.planAndSwap(run,r=>{
+				const saved=r.effects.find(e=>e.id===old.id); assert.ok(saved?.kind==="scout");
+				saved.renewal={checkpoint,goal:current.id,...(scenario==="declined" ?
+					{state:"closed",reason:"The owner declined continuation."} : {state:"presenting"})};
+			});
+		}
+		const autopilot=scenario.startsWith("Autopilot"), automatic=autopilot || scenario==="Allow All renewal";
+		let execution=autopilot ? "autopilot" : "interactive";
+		let permission=scenario==="Allow All renewal" ? "allow-all" : "assisted", failClosed=automatic, restricted=true;
+		const events=new EventEmitter(), ctx={sessionId:"owner"}, hook={...ctx,timestamp:new Date(),workingDirectory:f.root};
+		/** @type {string[]} */ const prompts=[];
+		/** @type {string[]} */ const questions=[];
+		let move=scenario==="target moved during preflight";
+		const entry=await loadEntry({...ctx,on:events.on.bind(events),send:async()=>"notice",
+			ui:{input:async (/** @type {string} */ message)=>{questions.push(message); return new Promise(()=>{});},
+			elicitation:async (/** @type {{message:string}} */ {message})=>{prompts.push(message);return {action:"decline"};}},
+			rpc:{mode:{get:async()=>execution},permissions:{getMode:async()=>({mode:permission})},
+				managedSettings:{get:async()=>{
+					if (move) {
+						move=false;
+						put(f.root,"moved","target changed");git(f.root,"add","moved");git(f.root,"commit","-qm","Move the target");
+					}
+					return {failClosed,bypassPermissionsDisabled:restricted};
+				}},
+				tools:{execute:(/** @type {{name:string,arguments:import("./model.js").Effect["args"],toolCallId:string}} */ c)=>f.execute(c.name,c.arguments,c.toolCallId)}}});
+		await entry.hooks?.onSessionStart?.({...hook,source:"startup"},ctx);
+		t.after(()=>entry.hooks?.onSessionEnd?.({...hook,reason:"complete"},ctx));
+		const turn=async()=>{events.emit("assistant.turn_start",{data:{}}); await f.settle();};
+		if (automatic) {
+			await turn(); assert.equal(prompts.length,0); assert.equal(f.workers.size,workers);
+			failClosed=false;
+			const allowed=permission;
+			permission=autopilot ? "manual" : "allow-all";
+			await turn(); assert.equal(prompts.length,0); assert.equal(f.workers.size,workers);
+			const pending=f.runtime(f.root,{},createRuntime).inspect({run},"owner").reviews.find(r=>r.id===old.id);
+			assert.equal(pending?.renewal?.state,"needed","a permission hold must leave the original repair recoverable");
+			permission=allowed; restricted=autopilot;
+		}
+		await turn();
+		if (productQuestion) { assert.equal(questions.length,1); assert.ok(questions[0].includes(question)); }
+		if (automatic || productQuestion || scenario==="reader 64 recovery") {
+			assert.equal(prompts.length,0,"the background repair must not ask for a click");
+			assert.equal(f.workers.size,workers+1,"the owner turn must continue the saved repair without waiting for unrelated input");
+		}
+		if (scenario==="declined" || scenario==="unanswered") { execution="autopilot"; permission="allow-all"; restricted=false; await turn(); }
+		const again=f.runtime(f.root,{confirm:async()=>assert.fail("Must not prompt again on reload")},createRuntime);
+		again.turn("owner"); await again.flush(); await f.settle();
+		const proof=()=>again.inspect({run,detail:"proof"},"owner");
+		const node=proof().nodes.find(n=>n.grain==="units");
+		assert.equal(prompts.length,0,"continuing an unchanged repair is not a new owner decision");
+		assert.equal(f.scouts.length,scouts,"do not rediscover the proposed repair"); assert.deepEqual(f.checks,checks);
+		if (incumbent || ["declined","unanswered","missing input pin","target moved during preflight"].includes(scenario)) {
+			assert.equal(node,undefined); assert.equal(f.workers.size,workers);
+			if (scenario==="unanswered") assert.equal(proof().reviews.find(r=>r.id===old.id)?.renewal?.state,"presenting");
+			if (scenario==="missing input pin") assert.match(proof().reviews.find(r=>r.id===old.id)?.reason ?? "",/color/);
+			if (incumbent) {
+				const why=proof().reviews.find(r=>r.id===old.id)?.reason ?? "";
+				assert.ok(why.includes("prior") && why.includes("data"),`expected current owner and dependent, got ${why}`);
+				assert.deepEqual(proof().products,blocked.products);assert.deepEqual(proof().nodes,blocked.nodes);
+			}
+			return;
+		}
+		assert.ok(node?.worker,"the original reported task must reach a writer without a second review");
+		const w=f.workers.get(node.worker);assert.ok(w);
+		assert.equal(node.directory,directory);assert.equal(node.task,proposed.grains[0].task);
+		assert.equal(proof().reviews.find(r=>r.id===old.id)?.base,first.commit);
+		assert.deepEqual(proof().reviews.find(r=>r.id===old.id)?.observation,review?.observation);
+		assert.equal(f.workers.size,scenario==="new approval" ? 3 : workers+1);
+		put(w.cwd,`${directory}/value`,"2 units");
+		await f.runtime(w.cwd,{},createRuntime).operation("submit",{run,token:w.token},w.id);
+		const end=proof();assert.ok(end.qualified && end.qualified===end.goal?.receipt?.commit);
+		assert.equal(end.products?.at(-1)?.receipt?.commit,end.qualified);
+		assert.equal(git(f.root,"show",`${end.qualified}:palette/output/value`),"blue");
+		assert.equal(git(f.root,"show",`${end.qualified}:${directory}/value`),"2 units");
+		assert.deepEqual(end.goalChecks?.slice(0,-1),blocked.goalChecks); return;
+	}
+	assert.ok(review);
 	assert.ok(review.reason?.includes(first.commit) && review.reason.includes(current.commit) && review.reason.includes("approval"),
 		`expected both product pins and the approval boundary, got: ${review.reason}`);
 	const fresh = {...args,receipt:current.id,source:{...args.source,commit:current.commit}}, count=f.scouts.length;
@@ -377,9 +481,9 @@ test("renew a superseded source comparison on its original run after a disjoint 
 	assert.equal(done.reviews.find(r=>r.id===old.id)?.state,"blocked");
 });
 
-for (const scenario of ["repair", "step observed", "moved target", "unchanged repair", "saved conflicting task", "changed correction evidence", "reuse exhausted candidate", "late sibling"]) test(`route an omitted same-product failure after repin, without replay: ${scenario}`, async t => {
+for (const scenario of ["repair", "step observed", "moved target", "unchanged repair", "saved conflicting task", "changed correction evidence", "reuse exhausted candidate", "allow-all reuse", "autopilot reuse", "late sibling"]) test(`route an omitted same-product failure after repin, without replay: ${scenario}`, async t => {
 	const run = "outline", source = ".foundry/outline.json", goalCheck = ".foundry/outline/goal.mjs", directory = "pane/ui", step = "outline/child.expand";
-	const reuse = scenario === "reuse exhausted candidate";
+	const reuse = ["reuse exhausted candidate","allow-all reuse","autopilot reuse"].includes(scenario);
 	const conflicting = scenario === "saved conflicting task" || scenario === "changed correction evidence" || reuse, file = "pane/journal/effects.json";
 	const f = factory(t, run, source, {
 		[source]: JSON.stringify({ version: 2, id: run, target: "refs/heads/main", direction: "Expand the child.", goalCheck, productCheck: "unit.mjs",
@@ -547,7 +651,30 @@ console.log(${JSON.stringify(scenario === "step observed" ? `${step}: passed` : 
 			await assert.rejects(f.runtime(f.root,{confirm:async () => false}).operation("reuse",args,"owner"), /not approved/);
 			await assert.rejects(recovering.operation("reuse",args,w.id), /owner/);
 			await assert.rejects(recovering.operation("reuse",{...args,blob:separate.blob},"owner"), /not offered/);
-			await recovering.operation("reuse",args,"owner");
+			if (scenario === "allow-all reuse" || scenario === "autopilot reuse") {
+				let mode="assisted", execution="interactive", restricted=false, prompts=0;
+				const entry=await loadEntry({sessionId:"owner",on(){},ui:{elicitation:async (/** @type {{message:string}} */ form)=>{
+					assert.match(form.message,/give a new writer access/i); prompts++; return {action:"decline"};
+				}},rpc:{mode:{get:async()=>execution},managedSettings:{get:async()=>({failClosed:false,bypassPermissionsDisabled:restricted})},
+					permissions:{getMode:async()=>({mode})},tools:{execute:(/** @type {{name:string,arguments:import("./model.js").Effect["args"],toolCallId:string}} */ c)=>f.execute(c.name,c.arguments,c.toolCallId)}}});
+				const ctx={sessionId:"owner"},hook={...ctx,timestamp:new Date(),workingDirectory:f.root};
+				await entry.hooks?.onSessionStart?.({...hook,source:"startup"},ctx);
+				t.after(()=>entry.hooks?.onSessionEnd?.({...hook,reason:"complete"},ctx));
+				const name="foundry_reuse", handler=entry.tools?.find((/** @type {import("@github/copilot-sdk").Tool} */ tool)=>tool.name===name)?.handler; assert.ok(handler);
+				const call=()=>handler(args,{...ctx,toolName:name,toolCallId:`reuse-${execution}-${mode}-${restricted}`,arguments:args});
+				assert.match(JSON.stringify(await call()),/not approved/); assert.equal(prompts,1);
+				if (scenario === "autopilot reuse") execution="autopilot";
+				mode="allow-all"; restricted=true;
+				assert.match(JSON.stringify(await call()),/Managed policy/); assert.equal(f.workers.size,previous);
+				restricted=false;
+				if (execution==="autopilot") {
+					mode="manual"; assert.match(JSON.stringify(await call()),/manual tool approvals/); assert.equal(f.workers.size,previous);
+					mode="assisted";
+				}
+				const result=await call();
+				assert.equal(prompts,1,"the allowed tool call must not open a second Foundry confirmation");
+				assert.equal(typeof result,"string",JSON.stringify(result));
+			} else await recovering.operation("reuse",args,"owner");
 			assert.equal(f.workers.size,previous+1); assert.deepEqual(f.checks,beforeChecks);
 			const successor = [...f.workers.values()].at(-1); assert.ok(successor && successor.id !== w.id);
 			const bound = (await recovering.operation("status",{run},"owner")).nodes.find(n => n.worker === successor.id);

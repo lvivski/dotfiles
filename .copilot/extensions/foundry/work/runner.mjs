@@ -2,6 +2,8 @@ import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { openDatabase } from "./database.mjs";
 import { goalFiles, priorGoal, retainFeedback } from "./feedback.mjs";
+import { harnessFiles } from "./harness.mjs";
+import { activeDelivery, currentDelivery } from "./batch.mjs";
 import { awaitingReply, currentCheck } from "./reservation.mjs";
 import { matchesPair, pairedInput } from "./partition.mjs";
 import { origin, remedyWriter } from "./remedy.mjs";
@@ -29,10 +31,10 @@ try {
 		const publish = db.outcomeWriter(runId, e);
 		/** @type {Record<string,string>} */ const env = {};
 		/** @type {import("./verdict.mjs").Evaluation} */ let evaluation;
-		if (e.kind === "component" && e.grain) {
-			evaluation = { kind: e.kind };
+		if ((e.kind === "component" || e.kind==="rerun") && e.grain) {
+			evaluation = { kind: "component" };
 			env.FOUNDRY_GRAIN = e.grain;
-			const scope = run.nodes[e.grain].grain.directory;
+			const scope = e.rerun?.directory ?? run.nodes[e.grain].grain.directory;
 			const {directories,files}=ownership(scope);
 			env.FOUNDRY_DIRECTORIES = JSON.stringify(directories);
 			if (directories.length===1) env.FOUNDRY_DIRECTORY = directories[0];
@@ -50,7 +52,7 @@ try {
 		} else if (e.kind === "goal") {
 			evaluation = { kind: e.kind, squads: run.policy.squads.map(s => s.id) };
 		} else fail("unissued_check", "Expected an evaluator");
-		return { publish, evaluation, commit: text(e.commit, "check commit"), check: text(e.check, "assigned evaluator"), deadline: run.policy.deadline, env,
+		return { publish, evaluation, commit: text(e.commit, "check commit"), check: text(e.check, "assigned evaluator"), deadline: run.policy.deadline, env, rerun:e.rerun,delivery:e.delivery,
 			prior: e.kind === "goal" ? priorGoal(run, e) : undefined,
 			productEvaluatorRevision:e.productEvaluatorRevision,
 			overlay: e.evaluatorRevision && (e.kind === "goal" || e.kind === "product") ? { base: run.policy.base, revision: e.evaluatorRevision } : undefined };
@@ -72,6 +74,18 @@ try {
 		if (command.evaluation.kind === "goal") files = goalFiles(cwd, command.commit, command.prior, env);
 		await withProduct(cwd, command.commit, root => {
 			const evaluator = path.join(root, command.check);
+			if (command.delivery) {
+				const run=db.read(runId), d=run && activeDelivery(run);
+				if (!run?.active || !d || d.id!==command.delivery || run.effects.some(e=>e.permissionHold) || !currentDelivery(run,d,commitAt(cwd,run.policy.target)))
+					fail("stale_assignment","Test delivery authority changed; no evaluator was run");
+			}
+			if (command.rerun) {
+				const run=db.read(runId), product=run?.products.at(-1), node=run?.nodes[command.env.FOUNDRY_GRAIN];
+				if (!run?.active || run.blocker || run.conflict || run.independent || run.effects.some(e=>e.permissionHold) ||
+					!product || product.qualifiedAt || product.check!==command.rerun.checkpoint || product.target!==commitAt(cwd,run.policy.target) ||
+					node?.state!=="blocked" || node.check!==command.rerun.of)
+					fail("stale_assignment","The approved checkpoint, stopped assignment or run permissions changed; no evaluator was run");
+			}
 			const remaining = command.deadline === undefined ? undefined : (deadlineAt(command.deadline) ?? -Infinity) - Date.now();
 			if (remaining !== undefined && remaining <= 0)
 				fail("deadline", "Deadline elapsed before evaluation");
@@ -83,7 +97,7 @@ try {
 			const { fields, feedback } = interpret(command.evaluation, result);
 			receipt = { ...pin, ...fields };
 			goalStdout = feedback;
-		}, command.overlay);
+		}, command.rerun ? {harness:harnessFiles(cwd,command.commit,command.check,command.rerun).files} : command.overlay);
 		if (goalStdout && files) {
 			try {
 				const value = files.collect(goalStdout);

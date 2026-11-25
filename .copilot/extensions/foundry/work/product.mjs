@@ -365,6 +365,9 @@ export function combine(cwd,base,updates,parent,attribution) {
 /** Compute the exact non-release commit for consent without retaining a ref.
  * @param {string} cwd @param {string} base @param {Update[]} updates */
 export const stageCheckpoint=(cwd,base,updates)=>commitTree(cwd,combinedTree(cwd,base,updates),"Foundry independent checkpoint",base);
+/** Same tree, parent and commit identity as the ordinary join, without retaining an unapproved candidate.
+ * @param {string} cwd @param {string} base @param {Update[]} updates @param {string} target */
+export const stageDelivery=(cwd,base,updates,target)=>commitTree(cwd,combinedTree(cwd,base,updates),"Foundry product candidate",target);
 
 /** @param {string} cwd @param {string} tree */
 export const pairedCommit=(cwd,tree)=>pin(cwd,tree,"Foundry paired observation");
@@ -462,12 +465,15 @@ export function verifyTree(cwd, root, items, worktree = false) {
 		if (hashes[i] !== e.oid) fail("product_changed", `Product changed: ${e.name}`);
 }
 
-/** @param {string} cwd @param {string} commit @param {(root:string)=>void} evaluate @param {{base:string, revision:string}} [overlay] */
+/** @param {string} cwd @param {string} commit @param {(root:string)=>void} evaluate @param {{base:string, revision:string}|{harness:Entry[]}} [overlay] */
 export async function withProduct(cwd, commit, evaluate, overlay) {
 	const root = realpathSync(mkdtempSync(path.join(tmpdir(), "foundry-check-")));
 	try {
 		let items = entries(cwd, commit, true);
-		if (overlay) {
+		if (overlay && "harness" in overlay) {
+			const restored=new Set(overlay.harness.map(e=>e.name));
+			items=[...items.filter(e=>!restored.has(e.name)),...overlay.harness];
+		} else if (overlay) {
 			const paths = changedFiles(cwd, overlay.base, overlay.revision);
 			if (paths.some(p => !p.startsWith(".foundry/"))) fail("contract_scope", "Evaluator overlay includes product paths");
 			if (paths.length) {

@@ -71,22 +71,20 @@ function selection(cwd,r,actor,id,signed) {
 			next = {...inputs,kind:"product",commit,outputs,basis:digest([at,last,join,base])};
 		}
 	}
-	return {e,next,why:exit!==undefined ? `confirmed launcher exit ${exit} before claim` : "signed goal with no numeric verdict"};
+	return {e,next};
 }
 
 /** @param {string} cwd @param {Run} run @param {string} actor @param {string} id @param {(e:Call)=>void} signed */
 export function prepareRecheck(cwd,run,actor,id,signed) {
 	const selected = selection(cwd,run,actor,id,signed);
 	if (!selected) return;
-	const {next,why} = selected;
+	const {next} = selected;
 	return {
-		prompt:`Check ${id} in ${run.id}: ${why}. Authorize one fresh ${next.kind} observation at ${next.commit} on target ${next.target} ` +
-			`(product pin ${next.productPin}, goal pin ${next.pin})? Preserve the old call and evidence. No new writer or repair. Ordinary product and goal gates still apply.`,
 		/** @param {Run} r */
 		apply(r) {
 			const live = selection(cwd,r,actor,id,signed);
 			if (!live) return;
-			if (digest(live)!==digest(selected)) fail("stale_assignment","Check, candidate, target or evaluator changed during approval");
+			if (digest(live)!==digest(selected)) fail("stale_assignment","Check, candidate, target or evaluator changed before reservation");
 			const {e} = live;
 			if (e.kind!=="component") delete r.blocker; // selection proved ownership, including legacy product diagnostics.
 			if (next.kind==="component") {
@@ -109,7 +107,7 @@ export function prepareRecheck(cwd,run,actor,id,signed) {
 }
 
 /** Issuer permission reads and, for a component, a writer turn can intervene after
- * approval. A reserved observation is not permission to check different inputs.
+ * reservation. A reserved observation is not permission to check different inputs.
  * @param {string} cwd @param {Run} r @param {Call} e */
 export function checkAuthority(cwd,r,e) {
 	const a=e.recheck;

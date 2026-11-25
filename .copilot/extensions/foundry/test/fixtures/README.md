@@ -10,6 +10,7 @@ the tests without Python, network access or repository history.
 
 | Reader | Source | Used to reproduce |
 | --- | --- | --- |
+| 22 | `bbc52fbb66` | Pre-journal component exit followed by a missing-input stop; no runner signing key |
 | 51 | pre-release; manifest `d3fdc93c746e3a06bc7cfc653dc4d1debc8ea200e9124385a4da9085647e39c3` | Transfer rejected on the checked parent's original grant |
 | 52 | pre-release; manifest `189eb34e1ecb18bb0e7cff4b648025977051fc551b423eb636bab70e6f808838` | Mixed grant displacement, rejected successors and stopped-writer correction |
 | 54 | pre-release; manifest `58f3ad9077fc628b93428032941dd0a96c1b38c1387198de510ed2c2bc210fd5` | Citation prevents restoration |
@@ -19,6 +20,7 @@ the tests without Python, network access or repository history.
 | 59 | `787747a567` | First signed observer failure without a replacement |
 | 60 | `11aad35764` | Final signed diagnostic failure without a production repair |
 | 61 | pre-release; manifest `5d0f135efc0a37cab7dbf7abae5c3cc3d15c8fdc915f0eadb9c7396fdb214210` | Withdrawn production grant while an unrelated stopped assignment needs a narrow successor |
+| 64 | pre-release; manifest `97c58bcbab1a77648b7e40cc7c881d1f15c649142d8ac00961e6fa19fa0d12a9` | A disjoint product update overtakes an approved source comparison before its report returns |
 
 Inspect with `tar -tf legacy-readers.tar.xz` or
 `tar -xOf legacy-readers.tar.xz 59/work/observer.mjs`.

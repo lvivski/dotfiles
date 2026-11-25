@@ -8,6 +8,8 @@ import { openDatabase, ledgerPath } from "./database.mjs";
 import { readPolicy } from "./contract.mjs";
 import { prepareCorrection } from "./correction.mjs";
 import { prepareCheckpoint } from "./checkpoint.mjs";
+import { activeDelivery } from "./batch.mjs";
+import { prepareDelivery } from "./delivery.mjs";
 import { presentQuestions } from "./decisions.mjs";
 import { advance, currentReview, newRun, reserveChangedRepair, reserveIteration, retryableReview, sameReviewInputs } from "./graph.mjs";
 import { baselineNotice, changedFrom, comparisonGoal, comparisonVerdict, goalReceipt, inconclusiveRepair, qualifiedProduct, relinquishable, stopForInput } from "./evidence.mjs";
@@ -23,6 +25,7 @@ import { acceptWorkspace, writerRoot } from "./workspace.mjs";
 import { capture, changedFiles, commitAt, directoryBaseline, generationRoot, retain, rootAt, treeOf, verifyContracts } from "./product.mjs";
 import { refusedCall } from "./recovery.mjs";
 import { checkAuthority, prepareRecheck } from "./recheck.mjs";
+import { prepareRerun } from "./rerun.mjs";
 import { prepareRepin } from "./repin.mjs";
 import { prepareResume, resumable } from "./resume.mjs";
 import { transferRequest } from "./transfer.mjs";
@@ -59,7 +62,7 @@ function requireCurrentReader() {
 /** @typedef {{run:string,id:string,actor:string,inFlight?:boolean,recoveredOn?:number}} Call */
 /** @typedef {import("./resume.mjs").ScoutEnvelope} ScoutEnvelope */
 /** @typedef {{execute:(tool:string,args:Effect["args"],id:string)=>Promise<unknown>,notify:(message:string)=>Promise<string>,recover?:(effect:Effect)=>Promise<unknown>,
- * ask?:(message:string)=>Promise<string|null>,confirm?:(message:string)=>Promise<boolean>,
+ * ask?:(message:string)=>Promise<string|null>,confirm?:(message:string)=>Promise<boolean>,autoConfirm?:()=>Promise<boolean>,
  * readHistory?:import("@github/copilot-sdk").CopilotSession["rpc"]["eventLog"]["read"],isResearcher?:(workflowId:string,agentId:string)=>Promise<boolean>,
  * scoutBudget?:()=>Promise<number>,scoutFailure?:(workflowId:string,label:string)=>Promise<string|undefined>,confirmNoReport?:(r:import("./model.js").Review)=>Promise<void>,
  * scout?:(run:string,dispatch:string,actor:string)=>Promise<ScoutEnvelope>,scoutState?:(workflowId:string)=>Promise<ScoutEnvelope>,
@@ -84,6 +87,10 @@ function writable(run, actor, token, from) {
 	if (node.state !== "writing") fail("stale_assignment", "This attempt is no longer writable");
 	const notice = baselineNotice(run, node);
 	if (notice && notice.state !== "done") fail("dispatch_held", "Await confirmed delivery of the approved baseline to the original writer");
+	const review=run.effects.find(e=>e.id===node.review);
+	if (review?.kind==="scout" && review.correction?.ordinary && review.correction.resumed?.token===token &&
+		!run.effects.some(e=>e.kind==="repair" && e.grain===node.grain.id && e.token===token && e.state==="done" && !e.error))
+		fail("dispatch_held","Await confirmed delivery of the corrected task to the original writer");
 	return node;
 }
 
@@ -147,9 +154,13 @@ export function createRuntime(directory, host) {
 	function change(id, mutate) {
 		return db().planAndSwap(id, run => {
 			const count = run.products.length, final = qualifiedProduct(run);
+			const renewed = () => reviews(run).filter(r=>r.renewal?.state==="approved" && r.state==="observed").length;
+			const prior = renewed();
 			mutate(run);
 			if (run.products.length !== count || qualifiedProduct(run) !== final)
 				return () => observeTarget(() => commitAt(cwd(), run.policy.target)).target === run.products.at(-1)?.target;
+			if (renewed()!==prior)
+				return () => observeTarget(() => commitAt(cwd(),run.policy.target)).target === run.goal?.target;
 		});
 	}
 	/** Check once for a batch, outside the write lock. A stale result must not pause unrelated work.
@@ -271,7 +282,7 @@ export function createRuntime(directory, host) {
 			if (closed) return;
 			const reply = [...submitting].findLast(s => s.run === id && s.actor === actor);
 			let unavailable = false;
-			const run = change(id, run => {
+			const plan = (renew = false) => change(id, run => {
 				const observed = run.active && !expired(run) ? observeTarget(() => commitAt(cwd(),run.policy.target)) : undefined;
 				unavailable = !!observed && observed.target===undefined;
 				if (unavailable) return;
@@ -283,8 +294,12 @@ export function createRuntime(directory, host) {
 				}
 				// Don't reserve newly available work on behalf of an issuer already on hold.
 				if (!reservations(run, actor).some(e => e.permissionHold))
-					advance(cwd(), run, actor, discover, { submitToken: reply?.token, target:observed?.target });
+					advance(cwd(), run, actor, discover, { submitToken: reply?.token, target:observed?.target, renew });
 			});
+			let run = plan();
+			if (!unavailable && actor===run.owner && run.active && !expired(run) && reviews(run).some(r=>r.renewal?.state==="needed") &&
+				!await host.permissionBlocker() && await executable()) run=plan(true);
+			if (closed) return;
 			receipts.observe(run, actor);
 			if (unavailable) return;
 			if (actor === run.owner && run.active && !expired(run) && host.ask && !asking.has(id) && questions(run).some(r => !r.decision)) {
@@ -637,6 +652,10 @@ export function createRuntime(directory, host) {
 		return { ...result, ...(release && {release}),
 			...(typeof missing==="string" && !result.blocker?.includes(missing) ? {blocker:[result.blocker,missing].filter(Boolean).join("\n")} : {}) };
 	}
+	/** @param {string} message */
+	async function confirm(message) {
+		return await host.autoConfirm?.() || host.confirm?.(message);
+	}
 	/** @param {string} op @param {unknown} args @param {string} actor */
 	async function operation(op, args, actor) {
 		if (op === "status") return inspect(args, actor);
@@ -646,6 +665,7 @@ export function createRuntime(directory, host) {
 			return start(a.source, actor, op === "resume");
 		}
 		const id = name(a.run, "run");
+		if (op!=="pause" && activeDelivery(read(id))) fail("dispatch_held","An approved test delivery is in progress; wait for its original checks");
 		if (op!=="pause" && read(id).independent) fail("ownership_transition","Independent checkpoint already reserved; the original ownership hold is not released");
 		if (op === "workspace") {
 			fields(a,["run","token"]);
@@ -656,39 +676,51 @@ export function createRuntime(directory, host) {
 			writerRoot(cwd(),run,n,true);
 			return status(run,actor);
 		}
-		if (op === "correct" || op === "reuse" || op === "restore" || op==="pair" || op==="diagnose" || op==="checkpoint" || op==="remediate") {
+		if (op === "correct" || op === "reuse" || op === "restore" || op==="diagnose" || op==="checkpoint" || op==="remediate" || op==="deliver") {
 			const origin = cwd(), run = read(id);
 			const prepare = {correct:prepareCorrection,reuse:prepareReuse,restore:prepareRestoration,
-				pair:preparePair,diagnose:prepareObserver,checkpoint:prepareCheckpoint,remediate:prepareProduction}[op];
+				diagnose:prepareObserver,checkpoint:prepareCheckpoint,remediate:prepareProduction,deliver:prepareDelivery}[op];
 			const request = prepare(origin,run,actor,a,e=>db().verifySigned(id,e));
 			await requireReadyOwner(origin);
-			const approved = await host.confirm?.(request.prompt);
+			const approved = await confirm(request.prompt);
 			if (approved === false) fail("approval_declined","Request not approved. No assignment changed. Do not ask again without a fresh request.");
 			if (approved !== true) fail("approval_required","Approval is unavailable; no assignment changed");
 			await requireReadyOwner(origin);
 			const after = db().planAndSwap(id,request.apply);
-			if (op === "correct" || op==="diagnose" && a.preview!==undefined) return status(after,actor);
+			if (op === "correct" && a.preview===undefined || op==="diagnose" && a.preview!==undefined) return status(after,actor);
 			await drive(id,actor,false,false);
 			return status(read(id),actor);
 		}
-		if (op === "recheck") {
-			fields(a,["run","check"]);
+		if (op === "recheck" || op === "pair") {
 			const origin = cwd(), before = read(id);
-			const request = prepareRecheck(origin,before,actor,name(a.check,"check"),e=>db().verifySigned(id,e));
+			if (op==="recheck" && a.product===undefined) fields(a,["run","check"]);
+			/** @param {import("./model.js").NativeCall} e */
+			const signed=e=>db().verifySigned(id,e);
+			const rerun = op==="recheck" && a.product!==undefined ? prepareRerun(origin,before,actor,a,signed) : undefined;
+			const request = op==="pair" ? preparePair(origin,before,actor,a,signed) :
+				a.product===undefined ? prepareRecheck(origin,before,actor,name(a.check,"check"),signed) : rerun;
 			if (!request) return status(before,actor,"proof");
 			await requireReadyOwner(origin);
-			const approved = await host.confirm?.(request.prompt);
-			if (approved!==true) fail(approved===false ? "approval_declined" : "approval_required","Fresh observation not approved. No check was reserved.");
-			await requireReadyOwner(origin);
-			db().planAndSwap(id,request.apply);
-			await drive(id,actor,false,false);
-			return status(read(id),actor,"proof");
+			if (rerun?.prompt !== undefined) {
+				const approved = await confirm(rerun.prompt);
+				if (approved!==true) fail(approved===false ? "approval_declined" : "approval_required","Historical harness not approved. No check was reserved.");
+				await requireReadyOwner(origin);
+			}
+			const saved=db().planAndSwap(id,request.apply);
+			if (rerun) {
+				const e=saved.effects.findLast(e=>e.kind==="rerun" && e.commit===a.product && e.rerun?.of===a.check && e.rerun?.after===a.after);
+				if (e?.state==="ready" && await dispatchBlocker(id,actor,[e])===null) {
+					const callId=randomUUID();
+					if (claim(id,e,callId)) await resolveCall(id,e,callId,()=>host.execute(e.tool,e.args,callId),true);
+				}
+			} else await drive(id,actor,false,false);
+			return status(read(id),actor,op==="recheck" ? "proof" : undefined);
 		}
 		if (op === "retire") {
 			fields(a, ["run","check"]);
 			const origin = cwd(), reconcile = await retireGoal(origin, actor, name(a.check, "goal check"), {
 				read: () => read(id), ready: () => requireReadyOwner(origin), history: host.readHistory,
-				confirm: host.confirm, swap: fn => db().planAndSwap(id, fn) });
+				confirm, swap: fn => db().planAndSwap(id, fn) });
 			if (reconcile) await drive(id, actor, false, false);
 			return status(read(id), actor, "proof");
 		}
@@ -732,14 +764,7 @@ export function createRuntime(directory, host) {
 				fail("not_recoverable", "Need the original pre-dispatch review and its still-current goal receipt");
 			if (prior.issuer !== actor) fail("missing_history", "Need the original workflow's issuer in the owner session");
 			await requireReadyOwner(origin);
-			const i = prior.iteration;
-			if (sourceBlob && i?.source) {
-				const approved = await host.confirm?.(`Open one replacement scout for blocked review ${review} of ${i.directory}/ in ${id}?\n` +
-					`Checked product: ${prior.base}. Passing checkpoint: ${i.receipt}. Settled goal: ${i.source.goal}. Offered blob: ${i.blob}.\n` +
-					`Question: ${i.question}\nOmitted source: ${i.source.file} at ${sourceBlob}\n${i.source.excerpt}\n` +
-					"The original report stays blocked. Only a new report citing delivered evidence can staff work; no writer or check is replayed.");
-				if (approved !== true) fail(approved===false?"approval_declined":"approval_required","No recovery approved; no replacement was started.");
-			} else {
+			if (!sourceBlob) {
 				if (!host.confirmNoReport) fail("missing_history", "Need the original workflow's issuer-scoped native evidence in the owner session");
 				await host.confirmNoReport(prior);
 			}
@@ -799,13 +824,13 @@ export function createRuntime(directory, host) {
 				const preview = reserve(read(id));
 				if (!preview) return status(read(id),actor);
 				approvedCheckpoint = preview.iteration?.receipt;
-				const approved = await host.confirm?.(`Open one source-backed review for ${id}, ${input.directory}/ on checked product ${source.commit}?\n` +
+				const approved = await confirm(`Open one source-backed review for ${id}, ${input.directory}/ on checked product ${source.commit}?\n` +
 					`Passing checkpoint: ${approvedCheckpoint}. Current ${input.successor?"settled":"exit-2"} goal: ${input.receipt}. Offered blob: ${input.blob}.\n` +
 					`Question: ${input.question}\nVerbatim source at ${source.commit}:${source.file}:\n${source.excerpt}\n` +
 					(input.files ? `If staffed, the writer may edit the whole primary directory and these exact existing regular files: ${JSON.stringify(input.files)}. No sibling files or parent directories.\n` : "") +
 					(input.successor ? `Authorize one fresh narrow successor ${input.successor.to} to stopped assignment ${input.successor.from}, original signed component ${input.successor.check}, only on this product and only if this review supports it. All other paths remain reserved. Start from the current product, not the stopped writer's bytes. No previous receipt is replayed or promoted.` :
 					input.transfer ? `Approve a conditional ownership transfer from ${input.transfer.from}@${input.transfer.candidate} to ${input.transfer.to} on this checkpoint. The parent retains ALL other paths, including future siblings. Only a matching, still-eligible proposal applies the transfer; no receipts or inputs are rewritten.` :
-					"Approve a comparison only. No failure, release verdict, writer reassignment or check is implied. Only a supported scout proposal can staff a repair."));
+					"Only a supported proposal can staff one repair. It may continue after a disjoint checked output joins if its charter, ownership, evidence, required inputs and evaluators are unchanged. No reassignment or check result is implied."));
 				if (approved === false) fail("approval_declined","Comparison not approved. No review was started; do not ask again without a fresh request.");
 				if (approved !== true) fail("approval_required","Operator approval is unavailable; no review was started");
 				await requireReadyOwner(origin);
@@ -882,7 +907,7 @@ export function createRuntime(directory, host) {
 			fields(a, ["run", key]);
 			const origin = cwd(), request = prepareBaselines(origin, read(id), actor, a[key], inspect);
 			await requireReadyOwner(origin);
-			const approved = await host.confirm?.(request.prompt);
+			const approved = await confirm(request.prompt);
 			if (approved === false) fail("approval_declined", "Baseline access not approved. No assignment changed. Do not ask again without a fresh request.");
 			if (approved !== true) fail("approval_required", "Baseline approval is unavailable; no access granted.");
 			await requireReadyOwner(origin);
@@ -895,16 +920,15 @@ export function createRuntime(directory, host) {
 		}
 		else if (op === "repin") {
 			const origin = cwd(), request = prepareRepin(origin, read(id), actor, a);
-			if (a.kind === "product") await requireReadyOwner(origin);
-			const approved = await host.confirm?.(request.prompt);
+			await requireReadyOwner(origin);
+			const approved = await confirm(request.prompt);
 			if (approved === false) {
 				const blocker = status(read(id), actor).blocker;
 				fail("approval_declined", "Evaluator change not approved. No change or recheck was made. Do not ask again unless the operator requests it." +
 					(blocker ? `\nCurrent run blocker: ${blocker}` : ""));
 			}
 			if (approved !== true) fail("approval_required", "The approval form is unavailable; the evaluator was not changed.");
-			if (a.kind === "product") await requireReadyOwner(origin);
-			else if (!await executable()) fail("unsupported_mode", "The owner session is no longer executable");
+			await requireReadyOwner(origin);
 			db().planAndSwap(id, request.apply);
 		}
 		else

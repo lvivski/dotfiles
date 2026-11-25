@@ -273,7 +273,14 @@ test("the original ledger accepts independent goal and successive product checke
 	const originalGoal=git(goalSide,"show",`HEAD:${goal}`);
 	put(goalSide,goal,`console.log("reviewed goal");\n${originalGoal}`); git(goalSide,"commit","-qam","Review goal evaluator");
 	const goalPin=git(goalSide,"rev-parse","HEAD");
-	await owner.operation("repin",{run,from:f.tip,revision:goalPin,files:[goal]},"owner");
+	const goalArgs={run,from:f.tip,revision:goalPin,files:[goal]};
+	let revoked=false;
+	const autopilot=createRuntime(f.root,{mode:async()=>"autopilot",autoConfirm:async()=>{revoked=true;return true;},
+		permissionBlocker:async()=>revoked?{scope:"session",message:"Manual approvals."}:null,execute:f.execute,notify:async()=>"notice"});
+	t.after(()=>autopilot.close());
+	await assert.rejects(autopilot.operation("repin",goalArgs,"owner"),{code:"permissions_unready"});
+	assert.deepEqual(read(),history);
+	await owner.operation("repin",goalArgs,"owner");
 	const afterGoal=read(); assert.equal(afterGoal.productRepins,undefined);
 	assert.deepEqual(afterGoal.effects.slice(0,history.effects.length).map(e=>[e.id,e.receipt]),history.effects.map(e=>[e.id,e.receipt]));
 	await owner.operation("repin",f.args,"owner");

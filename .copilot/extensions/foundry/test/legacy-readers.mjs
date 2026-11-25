@@ -10,7 +10,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const readers = new WeakMap();
 const archive = fileURLToPath(new URL("./fixtures/legacy-readers.tar.xz", import.meta.url));
 
-/** These are framework modules only. Every repo, ledger, worker and signed result
+/** These are framework modules only. Every repo, ledger, worker and result
  * is created by the test; the old and new runtimes operate on the same fixture.
  * @param {TestContext} t @param {number} version */
 function directory(t, version) {
@@ -18,7 +18,7 @@ function directory(t, version) {
 	if (!opened) readers.set(t, opened = new Map());
 	const existing = opened.get(version);
 	if (existing) return existing;
-	assert.ok([51,52,54,55,56,58,59,60,61].includes(version), `Unknown fixture reader ${version}`);
+	assert.ok([22,51,52,54,55,56,58,59,60,61,64].includes(version), `Unknown fixture reader ${version}`);
 	const root = mkdtempSync(path.join(tmpdir(), "foundry-reader-"));
 	t.after(() => rmSync(root, {recursive:true, force:true}));
 	execFileSync("tar", ["-xf", archive, "-C", root, String(version)]);

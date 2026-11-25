@@ -179,13 +179,15 @@ export interface Review extends Dispatch {
 	retryOf?: string;
 	retrySource?: string; // Pinned blob omitted from the original reported comparison.
 	lead?: DiscoveryLead;
-	iteration?: { receipt: string; directory: string; files?: string[]; transfer?: Transfer; successor?: Successor; blob: string; question: string; basis?: "checkpoint"; historical?: HistoricalStep & { missing: string }; source?: ProductCitation & { goal: string } };
+	iteration?: { receipt: string; directory: string; files?: string[]; transfer?: Transfer; successor?: Successor; blob: string; question: string; basis?: "checkpoint"; historical?: HistoricalStep & { missing: string }; source?: ProductCitation & { goal: string }; follow?: true };
+	renewal?: { checkpoint:string; goal:string; state:"needed"|"presenting"|"approved"|"held"|"closed"; reason?:string };
 	diagnostic?: { receipt: string; excerpt: string };
 	note?: ReviewNote;
 	otherNotes?: ReviewNote[];
 	predecessor?: Node;
 	correction?: { worker: string; clause: string; file: string; excerpt: string } &
-		({blob:string; predecessorCheck?:never} | {predecessorCheck:string; blob?:never});
+		({blob:string; predecessorCheck?:never; ordinary?:never} | {predecessorCheck:string; blob?:never; ordinary?:never} |
+		{ordinary:true; blob?:never; predecessorCheck?:never; resumed?:{prior:Node; token:string}});
 	observation?: Observation;
 	deferred?: { pins: Record<string, string>; consumers: string[] };
 	decision?: { status: "presenting"; presentation?: string } | { status: "dismissed" } | { status: "answered"; answer: string }
@@ -247,6 +249,8 @@ export interface Baseline {
 export type Inventory = Baseline | Baseline[];
 
 export interface NativeCall extends Dispatch, ArtifactReport {
+	delivery?:string;
+	rerun?: Rerun;
 	production?:Production;
 	remedy?:{writer:string; basis:string};
 	isolation?:string;
@@ -263,7 +267,7 @@ export interface NativeCall extends Dispatch, ArtifactReport {
 	readGrant?: Inventory;
 	claims?: { actor: string; path: string; start: string; kickoff: string; identity: string }[];
 	claimedRequest?: string;
-	kind: "writer" | "component" | "product" | "goal" | "repair" | "decision" | "handoff" | "artifact" | "escalation";
+	kind: "writer" | "component" | "rerun" | "product" | "goal" | "repair" | "decision" | "handoff" | "artifact" | "escalation";
 	inlineRepair?: string;
 	tool: "create_session" | "bash" | "send_session_message" | "session.send";
 	state: "ready" | "issued" | "uncertain" | "ordinary" | "done" | "refused" | "retired" | "withdrawn";
@@ -276,9 +280,30 @@ export interface CandidateReuse {
 	goal: string;
 }
 
+export interface Rerun {
+	of:string;
+	checkpoint:string;
+	candidate:string;
+	directory:Scope;
+	harness:string[];
+	current:string[];
+	after?:string;
+}
+
+export interface Delivery {
+	id:string;
+	checkpoint:string;
+	goal:string;
+	assembly:string;
+	selected:{rerun:string; tree:string; prior:Node}[];
+	assessment?:string;
+	error?:string;
+}
+
 export type Effect = NativeCall | Review;
 
 export interface Run {
+	deliveries?:Delivery[];
 	independent?:Subset;
 	id: string;
 	owner: string;

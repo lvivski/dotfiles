@@ -6,7 +6,7 @@ import { reserveWriter, verifyRepairInputs } from "./graph.mjs";
 import { admitted } from "./native.mjs";
 import { assignmentCalls, waiting, writerInputs } from "./plan.mjs";
 import { changedFiles, commitAt, inventory, verifyContracts } from "./product.mjs";
-import { digest, fail, fields, name } from "./values.mjs";
+import { digest, fail, fields, name, scopeLabel } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @param {string} cwd @param {Run} run @param {string} actor @param {Record<string,unknown>} args */
@@ -46,9 +46,9 @@ export function prepareReuse(cwd, run, actor, args) {
 	}
 	const before = select(run);
 	return {
-		prompt:`Run ${run.id}: authorize one successor to ${id} on checked product ${before.base}?\n` +
-			`Seed only ${candidate}:${before.n.grain.directory}/; correct failed component ${check} using offered blob ${blob}.\n` +
-			`Keep the same task and evaluator ${before.n.grain.check}. Approve only if reusing this assignment's own work is consistent with its charter. The previous receipt and spent repairs stand. Only changed bytes may enter a new check.`,
+		prompt:`Run ${run.id}: give a new writer access to ${id}'s failed candidate instead of a clean checkout?\n` +
+			`Seed ${scopeLabel(before.n.grain.directory)} from ${candidate} on checked product ${before.base}. ` +
+			`Failed check: ${check}. Offered correction: ${blob}. Approve only if the charter permits this reuse.`,
 		/** @param {Run} live */
 		apply(live) {
 			const fresh = select(live);

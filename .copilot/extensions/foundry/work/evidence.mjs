@@ -59,7 +59,7 @@ export function inconclusiveRepair(n, e) {
 export function relinquishable(run, n) {
 	if (!n.worker || !n.token || !n.generation || !n.repairs || !n.check || n.reuse) return;
 	const calls = run.effects.filter(e => e.grain === n.grain.id);
-	const check = calls.findLast(e => e.kind === "component");
+	const check = calls.findLast(e => e.kind === "component" && !e.delivery);
 	if (check?.kind !== "component" || check.id !== n.check || check.issuer !== n.worker || check.check !== n.grain.check ||
 		!check.callId || !check.runnerClaim || check.error || check.permissionHold || inconclusiveRepair(n,check)) return;
 	const receipt = checkReceipt(check);

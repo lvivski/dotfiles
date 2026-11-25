@@ -26,7 +26,7 @@ const report = grains => ({ outcome: grains.length ? "regenerate" : "no-gap", re
 
 test("the selected mode must be permitted by the resolved snapshot, not merely available", async () => {
 	/** @param {Awaited<ReturnType<Parameters<typeof permissionCheck>[0]>>} policy @param {string} mode */
-	const decide = (policy, mode) => permissionCheck(async () => policy, async () => ({ mode }))();
+	const decide = (policy, mode) => permissionCheck(async () => policy, async () => ({ mode })).blocker();
 	const resolved = { failClosed: false, permissionsContext: { failClosed: false } };
 	assert.equal(await decide({ ...resolved, bypassPermissionsDisabled: true }, "assisted"), null);
 	assert.equal(await decide({ ...resolved, bypassPermissionsDisabled: false }, "allow-all"), null);
@@ -44,7 +44,7 @@ test("concurrent permission reads share a timeout, not a decision for the next b
 	let reads = 0, release = () => {}, mode = "assisted";
 	const resolved = { failClosed: false };
 	const first = new Promise(resolve => { release = () => resolve(resolved); });
-	const check = permissionCheck(async () => ++reads === 1 ? first : resolved, async () => ({ mode }), 20);
+	const {blocker:check} = permissionCheck(async () => ++reads === 1 ? first : resolved, async () => ({ mode }), 20);
 	const [a, b] = await Promise.all([check(), check()]);
 	assert.equal(reads, 1);
 	assert.equal(a?.scope, "run");
@@ -56,7 +56,7 @@ test("concurrent permission reads share a timeout, not a decision for the next b
 	assert.equal(await check(), null);
 });
 
-test("extension entry: repin needs only the form's accept button", async t => {
+for (const approval of ["the form's accept button","effective allow-all on this call","Autopilot on this call"]) test(`extension entry: repin needs only ${approval}`, async t => {
 	const f = trial(t), file = ".foundry/goal.mjs", side = path.join(path.dirname(f.root), "repin");
 	await f.start();
 	for (const scout of [...f.scouts]) await scout.report(report([]));
@@ -65,19 +65,46 @@ test("extension entry: repin needs only the form's accept button", async t => {
 	git(f.root, "worktree", "add", "-q", "--detach", side, f.tip);
 	put(side, file, "process.exit(2)"); git(side, "commit", "-qam", "Fix evaluator");
 	const revision = git(side, "rev-parse", "HEAD"), args = { run, from: f.tip, revision, files: [file] };
-	let action = "decline";
+	let action = "decline", mode = "assisted", execution = "interactive", failClosed = false, restricted = false, prompts = 0;
 	const declaration = await loadEntry({ sessionId: actor, on() {},
 		ui: { elicitation: async (/** @type {import("@github/copilot-sdk").ElicitationParams} */ form) => {
-			assert.deepEqual(form.requestedSchema, { type: "object", properties: {} });
+			prompts++; assert.deepEqual(form.requestedSchema, { type: "object", properties: {} });
 			assert.ok([f.tip, revision, file].every(s => form.message.includes(s)));
 			return { action };
-		} }, rpc: { mode: { get: async () => "interactive" }, managedSettings: { get: async () => ({ failClosed: false }) },
-			permissions: { getMode: async () => ({ mode: "assisted" }) },
+		} }, rpc: { mode: { get: async () => execution }, managedSettings: { get: async () => ({ failClosed, bypassPermissionsDisabled: restricted }) },
+			permissions: { getMode: async () => ({ mode }) },
 			tools: { execute: async (/** @type {{name:string,arguments:import("./model.js").Effect["args"],toolCallId:string}} */ c) => f.execute(c.name, c.arguments, c.toolCallId) } } });
 	const ctx = { sessionId: actor }, hook = { ...ctx, timestamp: new Date(), workingDirectory: f.root };
 	await declaration.hooks?.onSessionStart?.({ ...hook, source: "startup" }, ctx);
 	t.after(() => declaration.hooks?.onSessionEnd?.({ ...hook, reason: "complete" }, ctx));
 	const handler = declaration.tools?.find(x => x.name === "foundry_repin")?.handler; assert.ok(handler);
+	if (approval !== "the form's accept button") {
+		const call=()=>handler(args,{...ctx,toolName:"foundry_repin",toolCallId:`repin-${execution}-${mode}-${restricted}-${failClosed}`,arguments:args});
+		execution="autopilot";
+		mode="allow-all"; restricted=true;
+		const blocked=await call(); assert.deepEqual((await f.status()).goalChecks,before.goalChecks);
+		if (approval === "Autopilot on this call") {
+			assert.match(JSON.stringify(blocked),/Managed policy/); assert.equal(prompts,0);
+		}
+		restricted=false; failClosed=true;
+		if (approval === "Autopilot on this call") mode="assisted";
+		else execution="interactive";
+		await call(); assert.deepEqual((await f.status()).goalChecks,before.goalChecks);
+		if (execution==="autopilot") {
+			assert.equal(prompts,0,"an unresolved permission cannot be approved via a Foundry prompt");
+			failClosed=false; mode="manual";
+			assert.match(JSON.stringify(await call()),/manual tool approvals/); assert.equal(prompts,0);
+			execution="plan"; mode="assisted";
+			assert.match(JSON.stringify(await call()),/Plan mode|executable/i); assert.equal(prompts,0);
+			execution="autopilot";
+		}
+		failClosed=false; const last=prompts;
+		const result=await call();
+		assert.equal(prompts,last,`${approval} must not elicit an evaluator-change confirmation`);
+		assert.equal(typeof result,"string",JSON.stringify(result));
+		const after=await f.status();
+		assert.equal(after.goal?.pin,revision); assert.equal(after.goal?.receipt?.exit,2); return;
+	}
 	for (action of ["decline", "cancel", "accept"]) {
 		const result = await handler(args, { ...ctx, toolName: "foundry_repin", toolCallId: action, arguments: args });
 		const after = await f.status();
@@ -172,7 +199,7 @@ test("permission loss after the baseline pauses once; explicit resumption dispat
 	const f = trial(t);
 	let failClosed = false;
 	/** @type {string[]} */ const notices = [];
-	const owner = f.runtime(f.root, { permissionBlocker: permissionCheck(async () => ({ failClosed }), async () => ({ mode: "assisted" })),
+	const owner = f.runtime(f.root, { permissionBlocker: permissionCheck(async () => ({ failClosed }), async () => ({ mode: "assisted" })).blocker,
 		log: m => notices.push(m), execute: async (...args) => {
 		const result = await f.execute(...args);
 		if (args[0] === "bash") failClosed = true;
@@ -201,7 +228,7 @@ test("permission loss after the baseline pauses once; explicit resumption dispat
 test("switching to Manual between workflow dispatch and batch binding admits no scout jobs", async t => {
 	const f = trial(t);
 	let mode = "assisted";
-	const permissionBlocker = permissionCheck(async () => ({ failClosed: false }), async () => ({ mode }));
+	const {blocker:permissionBlocker} = permissionCheck(async () => ({ failClosed: false }), async () => ({ mode }));
 	/** @type {ReturnType<typeof f.owner.scoutBatch>|undefined} */ let attempted;
 	/** @type {typeof f.owner} */
 	const owner = f.runtime(f.root, { permissionBlocker, scout: async (id, dispatch, issuer) => {
@@ -238,7 +265,7 @@ test("a writer's Manual setting holds its dependent writer reservation, not a si
 	for (const scout of others) await scout.report(report([]));
 	const writer = [...f.workers.values()].at(-1); assert.ok(writer && writer.prompt.includes("complete stock/projection/"));
 	let mode = "assisted";
-	const permissions = permissionCheck(async () => ({ failClosed: false }), async () => ({ mode }));
+	const {blocker:permissions} = permissionCheck(async () => ({ failClosed: false }), async () => ({ mode }));
 	const issuing = f.runtime(parser.cwd, { permissionBlocker: permissions, execute: async (...args) => {
 		const result = await f.execute(...args);
 		if (args[0] === "bash") mode = "manual"; // The check ran; its dependent's native start has not.
@@ -352,7 +379,7 @@ test("owner resume leaves prepared, refused, uncertain and in-flight dependent l
 test("prepared calls survive local holds and global pauses; stale preflight cannot undo issuance", async t => {
 	const f = trial(t);
 	let mode = "assisted", failClosed = false;
-	const owner = f.runtime(f.root, { permissionBlocker: permissionCheck(async () => ({ failClosed }), async () => ({ mode })),
+	const owner = f.runtime(f.root, { permissionBlocker: permissionCheck(async () => ({ failClosed }), async () => ({ mode })).blocker,
 		execute: async (...args) => args[0] === "bash" ? f.execute(...args) : { resultType: "failure", error: "This session management tool is disabled" } });
 	await f.start(owner);
 	for (const scout of f.scouts) await scout.report(report([grain(scout.squad)]));

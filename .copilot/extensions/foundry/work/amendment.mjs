@@ -23,4 +23,6 @@ export function correctionBasis(run,review,file) {
 	const n=review.predecessor;
 	if (!i && n?.stop?.kind==="writer-cannot-repair" && n.check && sameScope(n.grain.directory,g.directory) &&
 		g.check===n.grain.check && covers(g.directory,file) && candidateHandoff(run,n,g,review)) return {predecessorCheck:n.check};
+	if (!i && !n && typeof g.directory==="string" && !review.observation?.replace?.length)
+		return {ordinary:/** @type {const} */ (true)};
 }

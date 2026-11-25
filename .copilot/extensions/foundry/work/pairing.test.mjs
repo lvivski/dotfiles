@@ -16,7 +16,7 @@ for (const mode of ["failed attestation","negative pair","unchanged pair"]) test
 	}
 	await assert.rejects(next.operation("pair",{...args,candidate:commit},"owner"),{code:"stale_assignment"});
 	await assert.rejects(next.operation("pair",{...args,retainer:"rail",candidate:b.checked,component:b.check},"owner"),{code:"invalid_pair"});
-	await assert.rejects(f.runtime(f.root,{confirm:async()=>false},createRuntime).operation("pair",args,"owner"),{code:"approval_declined"});
+	await assert.rejects(f.runtime(f.root,{permissionBlocker:async()=>({scope:"session",message:"Manual approvals"})},createRuntime).operation("pair",args,"owner"),{code:"permissions_unready"});
 	const inspect=(/** @type {typeof state} */ s)=>preparePair(f.root,s,"owner",args,e=>db.verifySigned(run,e));
 	const consumer=structuredClone(state);consumer.nodes.rail.supporting=[citation];
 	assert.throws(()=>inspect(consumer),{code:"dispatch_held",message:/rail/});
@@ -30,7 +30,8 @@ for (const mode of ["failed attestation","negative pair","unchanged pair"]) test
 	const reserved=structuredClone(state);preview.apply(reserved);
 	const e=reserved.effects.at(-1);assert.ok(e?.kind==="component" && e.pair && currentPair(f.root,reserved,e));
 	reserved.nodes.rail.supporting=[citation];assert.equal(currentPair(f.root,reserved,e),false);
-	const racing=f.runtime(f.root,{confirm:async()=>{await next.operation("pair",args,"owner");return true;}},beforeObserver);
+	const checking=f.runtime(f.root,{confirm:async()=>assert.fail("the read-only pair must not prompt")},createRuntime);
+	const racing=f.runtime(f.root,{permissionBlocker:async()=>{await checking.operation("pair",args,"owner");return null;}},beforeObserver);
 	await assert.rejects(racing.operation("pair",args,"owner"),{code:negative?"invalid_pair":"goal_met"});
 	const {end,checked,receipt,saved,paired}=await checkedPair(c);
 	assert.ok(checked.receipt && receipt?.pair && paired.pair);

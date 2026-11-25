@@ -78,22 +78,18 @@ export function preparePair(cwd,run,actor,a,verify) {
 		const assembly=combinedTree(cwd,p.commit,changes(live,{[retainer]:candidate}));
 		verifyJoinedInputs(cwd,live,{...n.inputs,...owner.inputs,[grain]:old.commit,[retainer]:candidate},p.commit,assembly);
 		const oldFiles=new Map(regularFiles(cwd,old.commit,h.scope.files).map(e=>[e.name,e.oid]));
-		const files=regularFiles(cwd,assembly,h.scope.files).filter(e=>oldFiles.get(e.name)!==e.oid).map(e=>({path:e.name,from:oldFiles.get(e.name),to:e.oid}));
-		if (!files.length || directoryBaseline(cwd,assembly,scope)?.tree!==r.tree ||
+		if (!regularFiles(cwd,assembly,h.scope.files).some(e=>oldFiles.get(e.name)!==e.oid) || directoryBaseline(cwd,assembly,scope)?.tree!==r.tree ||
 			changedFiles(cwd,old.commit,assembly,contractPaths(live.policy)).length)
 			fail("unchanged_pair","Need different retaining integration bytes, the identical primary tree, and the original evaluator");
 		const pair={failed,component,candidate,retainer,checkpoint,goal,target,tree:assembly};
-		return {pair,scope,grant:owner.grain.directory,check:n.grain.check,primary:r.tree,files};
+		return {pair,scope,grant:owner.grain.directory,check:n.grain.check,primary:r.tree};
 	}
 	const before=select(run);
 	return {
-		prompt:`Authorize one fresh ${before.check} observation for ${grain}, unchanged ${before.scope} tree ${before.primary}, after signed failure ${failed}? `+
-			`Checkpoint ${checkpoint}, goal ${goal}. Apply only ${retainer}'s checked scope ${JSON.stringify(before.grant)} from ${candidate} (${component}); `+
-			`changed integration blobs ${JSON.stringify(before.files)}. Observe assembly tree ${before.pair.tree}. No editable grant or repeated check. Keep the original failure. A negative result stops; a pass still needs product and goal checks.`,
 		/** @param {Run} live */
 		apply(live) {
 			const next=select(live);
-			if (digest(next)!==digest(before)) fail("stale_assignment","Approved paired inputs changed");
+			if (digest(next)!==digest(before)) fail("stale_assignment","Paired inputs changed before reservation");
 			const n=live.nodes[grain];
 			n.candidate=pairedCommit(cwd,before.pair.tree);
 			n.check=reserveCheck(live,actor,cwd,n.candidate,n.grain.check,grain);

@@ -47,11 +47,11 @@ function manifest(cwd, run, actor, ids, inspect) {
 export function prepareBaselines(cwd, run, actor, selections, inspect = false) {
 	const ids = names(selections, "blocked assignment"), before = manifest(cwd, run, actor, ids, inspect);
 	return {
-		prompt: `Run ${run.id}: allow these original writers to consult only their own prior directories, read-only?\n` +
+		prompt: `Run ${run.id}: ` + (inspect ? "allow these writers read-only inspection of their own prior directories?"
+			: "give each original writer one bounded repair using its prior directory as a read-only reference?") + "\n" +
 			before.map(({ id, worker, baseline, specification }) => `${id} (${worker}): ${describeInventory(baseline)}; charter: ${specification}`).join("\n") +
-			"\nApprove only if the charter omitted this permission, not if it forbids the read. " +
-			(inspect ? "Inspection only: no repair, new token, edits or submission. Writers remain blocked."
-				: "Each writer receives one bounded repair.") + " No checkout, other revisions, host permissions, evaluators or goals change.",
+			"\nApprove only if the charter omitted this permission, not if it forbids the read." +
+			(inspect ? " Inspection only: no repair, new token, edits or submission. Writers remain blocked." : ""),
 		/** @param {Run} live */
 		apply(live) {
 			const fresh = manifest(cwd, live, actor, ids, inspect);

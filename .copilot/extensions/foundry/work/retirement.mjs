@@ -80,7 +80,7 @@ export async function terminalProof(read, e) {
 
 /** @param {string} cwd @param {string} actor @param {string} check @param {{
  * read:()=>Run, ready:()=>Promise<void>, history:import("./runtime.mjs").Host["readHistory"],
- * confirm:import("./runtime.mjs").Host["confirm"], swap:(fn:(r:Run)=>(()=>boolean)|void)=>Run}} io */
+ * confirm:(message:string)=>Promise<boolean|undefined>, swap:(fn:(r:Run)=>(()=>boolean)|void)=>Run}} io */
 export async function retireGoal(cwd, actor, check, io) {
 	const run = io.read(), e = attempt(run, actor, check);
 	if (e.state === "retired") return false;
@@ -92,7 +92,7 @@ export async function retireGoal(cwd, actor, check, io) {
 	const selected = selection(cwd, run, e);
 	await io.ready();
 	const proof = await terminalProof(io.history ?? fail("missing_history", "Original owner history unavailable"), e);
-	const approved = await io.confirm?.(`Retire failed runner ${e.id} in ${run.id}? Its native shell terminated without recording a goal verdict at ${selected.commit} under ${selected.pin}. Do not rerun this check. Integrate the retained outputs in ${selected.directories.join(", ")} and check the new product.`);
+	const approved = await io.confirm(`Retire failed runner ${e.id} in ${run.id}? Its native shell terminated without recording a goal verdict at ${selected.commit} under ${selected.pin}. Do not rerun this check. Integrate the retained outputs in ${selected.directories.join(", ")} and check the new product.`);
 	if (!approved) fail(approved === false ? "approval_declined" : "approval_required", "Retirement not approved; no work changed");
 	await io.ready();
 	let reconcile = false;

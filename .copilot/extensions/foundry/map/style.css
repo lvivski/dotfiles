@@ -85,6 +85,9 @@ button { color: inherit; font: inherit; cursor: pointer; }
 .relation { border: 1px solid var(--border); border-radius: 4px; padding: 3px 8px; background: var(--sheet); overflow-wrap: anywhere; min-height: 28px; }
 .metadata { display: flex; gap: 4px 18px; flex-wrap: wrap; color: var(--sub); font-size: 12px; }
 .metadata span { min-width: 0; }
+.check-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 3px 14px; margin-top: 10px; color: var(--sub); font-size: 12px; }
+.check-row strong { flex-basis: 100%; font-size: 13px; color: var(--fg); }
+.check-row span { min-width: 0; }
 details { margin-top: 20px; padding-top: 13px; border-top: 1px solid var(--border); }
 summary { cursor: pointer; font-size: 13px; font-weight: 600; width: fit-content; }
 #verdict { margin-inline-start: 6px; color: var(--sub); font-weight: 400; }

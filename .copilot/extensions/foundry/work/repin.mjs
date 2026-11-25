@@ -21,20 +21,20 @@ function allowed(run, actor, from, product) {
 }
 
 /** @param {Run} run @param {string} target */
-function settled(run, target) {
+export function settledCheckpoint(run, target, operation="Product repinning") {
 	const conflict=partitionConflict(run);
 	if (conflict) fail("ownership_transition",conflict);
 	const last = run.products.at(-1), goal = run.goal, receipt = goalReceipt(run);
 	const history = reviews(run).filter(r=>currentEvaluation(run,r)), funded = remainingAssignments(run) > 0;
 	const mutable = Object.values(run.nodes).filter(n=>["writing","checking","published","waiting"].includes(n.state));
-	if (mutable.length) fail("unsettled_checkpoint",`Product repinning must wait for current assignments: ${mutable.map(n=>`${n.grain.id} (${n.state})`).join(", ")}. Finish each original assignment under its existing grant; native idle does not release a writer.`);
+	if (mutable.length) fail("unsettled_checkpoint",`${operation} must wait for current assignments: ${mutable.map(n=>`${n.grain.id} (${n.state})`).join(", ")}. Finish each original assignment under its existing grant; native idle does not release a writer.`);
 	if (!goal || !last || last.target !== target || goal.target !== target || last.commit !== goal.commit ||
 		!checkpointReceipt(run,last.check,last.commit) || !receipt || ![1,2].includes(receipt.exit ?? -1) ||
 		run.join || run.conflict || run.blocker || questions(run).some(r=>r.decision?.status !== "answered") || run.pendingReviewNotes?.length ||
 		funded && releasedReviews(run,history).length ||
 		run.effects.some(e => awaitingReply(e) || (unissued(e) || e.permissionHold) && current(run,e) ||
 			e.kind === "scout" && e.state === "reported" && currentEvaluation(run,e) && e.base === goal.commit))
-		fail("unsettled_checkpoint", "Product repinning requires a quiescent current checked product and settled unmet or missing goal; resolve pending work and holds first");
+		fail("unsettled_checkpoint", `${operation} requires a quiescent current checked product and settled unmet or missing goal; resolve pending work and holds first`);
 	return {last, goal};
 }
 
@@ -50,7 +50,7 @@ export function prepareRepin(cwd, run, actor, args) {
 	const from = text(args.from, "current evaluator pin"), revision = text(args.revision, "new evaluator pin");
 	const evaluator = allowed(run, actor, from, product), target = commitAt(cwd,run.policy.target);
 	verifyContracts(cwd, run.policy, target);
-	const checkpoint = product ? settled(run,target) : undefined, stamp = product && digest(run);
+	const checkpoint = product ? settledCheckpoint(run,target) : undefined, stamp = product && digest(run);
 	if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(revision) || commitAt(cwd, revision) !== revision)
 		fail("invalid_pin", "Use the full object ID of the reviewed local commit");
 	const files = changedFiles(cwd, from, revision).map(relative).sort();
@@ -87,7 +87,7 @@ export function prepareRepin(cwd, run, actor, args) {
 				fail("stale_pin", "Use a new reviewed commit, not a previously applied pin");
 			retain(cwd, revision);
 			if (checkpoint) {
-				const {last,goal} = settled(live,tip);
+				const {last,goal} = settledCheckpoint(live,tip);
 				const upgrade = {...pin,checkpoint:last.check,goal:goal.check,recheck:""};
 				(live.productRepins ??= []).push(upgrade);
 				reserveProduct(live,actor,cwd,tip,last.commit,{...last.outputs});

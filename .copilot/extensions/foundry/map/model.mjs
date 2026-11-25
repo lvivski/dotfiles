@@ -2,7 +2,7 @@ import { boardFacts, projectBoard } from "../work/visibility.mjs";
 
 /** @param {ReturnType<typeof boardFacts>["pending"][number]} p */
 function pendingMessage(p) {
-	const labels = { goal: "Goal check", component: "Component check", product: "Product check", writer: "Writer launch",
+	const labels = { goal: "Goal check", component: "Component check", rerun: "Component rerun", product: "Product check", writer: "Writer launch",
 		scout: "Scout", repair: "Repair notice", handoff: "Handoff notice", decision: "Decision notice", artifact: "Reference notice", escalation: "Unowned blocker notice" };
 	const label = labels[p.kind] + (p.grain ? ` (${p.grain})` : "");
 	const reason = p.reason?.replace(/^(?:Error: )+/, "");
@@ -55,7 +55,10 @@ export const example = {
 		{ id: "catalog-format", task: "Preserve file names and types in a portable catalog.", directory: "src/catalog", needs: [], state: "published", reason: "", check: "checks/catalog", checked: "f41c0a8", result: { commit: "f41c0a8", exit: 0 } },
 		{ id: "file-reader", task: "Read file entries from a saved catalog.", directory: "src/reader", needs: ["catalog-format"], state: "assigned", reason: "", check: "checks/read", checked: null, result: null },
 		{ id: "csv-format", task: "Encode catalog entries as CSV, including names containing commas.", directory: "src/csv", needs: ["catalog-format"], state: "assigned", reason: "", check: "checks/csv", checked: null, result: null },
-		{ id: "search-index", task: "Find files by name without dropping entries that share a name.", directory: "src/index", needs: [], state: "blocked", reason: "The index check found one entry for two files with the same name. The repair allowance is exhausted.", check: "checks/index", checked: null, result: { commit: "2cb634a", exit: 1 } },
+		{ id: "search-index", task: "Find files by name without dropping entries that share a name.", directory: "src/index", needs: [], state: "blocked", reason: "The index check found one entry for two files with the same name. The repair allowance is exhausted.", check: "checks/index", checked: null, result: { commit: "2cb634a", exit: 1 },
+			attempts:[{kind:"component",check:"initial-index",commit:"2cb634a",status:"failed",exit:1},
+				{kind:"rerun",check:"index-recheck-1",original:"initial-index",after:"initial-index",commit:"8c0d27b",status:"unavailable",exit:2},
+				{kind:"rerun",check:"index-recheck-2",original:"initial-index",after:"index-recheck-1",commit:"8c0d27b",status:"passed",exit:0}] },
 		{ id: "export-results", task: "Export the entries from the saved catalog.", directory: "cli/export", needs: ["file-reader", "csv-format"], state: "waiting", reason: "", check: "checks/export", checked: null, result: null },
 		{ id: "search-command", task: "Search the saved catalog from the command line.", directory: "cli/search", needs: ["file-reader", "search-index"], state: "waiting", reason: "", check: "checks/search", checked: null, result: null },
 	],

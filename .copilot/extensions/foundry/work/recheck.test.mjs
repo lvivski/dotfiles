@@ -64,7 +64,7 @@ test("an issued check can read its ledger and publish its receipt without the sc
 	assert.deepEqual(db.read(run)?.effects.filter(e=>e.kind==="goal"),[completed]);
 });
 
-for (const fault of ["component","product","goal","signed-null","moved-goal"]) test(`fresh, approved observation of the frozen ${fault} check`, async t => {
+for (const fault of ["component","product","goal","signed-null","moved-goal"]) test(`fresh observation of the frozen ${fault} check without reconfirmation`, async t => {
 	// The evaluator's external observation can change, not its immutable script.
 	const data = files(fault === "signed-null"
 		? 'import {existsSync} from "node:fs"; if (!existsSync(process.env.TMPDIR+"/observed")) process.kill(process.pid,"SIGKILL");'
@@ -108,7 +108,7 @@ for (const fault of ["component","product","goal","signed-null","moved-goal"]) t
 	const count = () => db.read(run)?.effects.filter(e=>e.tool==="bash").length;
 	const before = count();
 	put(gate,"observed","yes");
-	const owner = upgrade(t,f,f.root,{confirm:async () => true,execute:async(tool,a,id)=>{
+	const owner = upgrade(t,f,f.root,{confirm:async msg=>{assert.match(msg,/committed diff for goal checks only/);return true;},execute:async(tool,a,id)=>{
 		if (fault!=="signed-null" || tool!=="bash") return f.execute(tool,a,id);
 		const result = spawnSync("/bin/sh",["-c",String(a.command)],{cwd:f.root,encoding:"utf8",env:{...process.env,TMPDIR:gate}});
 		assert.equal(result.status,0,result.stderr);
@@ -126,7 +126,7 @@ for (const fault of ["component","product","goal","signed-null","moved-goal"]) t
 		await owner.operation("repin",{run,from:f.tip,revision:git(side,"rev-parse","HEAD"),files:[".foundry/goal.mjs"]},"owner");
 	}
 	const args = {run,check:failed};
-	await assert.rejects(upgrade(t,f,f.root,{confirm:async()=>false}).operation("recheck",args,"owner"),{code:"approval_declined"});
+	await assert.rejects(upgrade(t,f,f.root,{permissionBlocker:async()=>({scope:"session",message:"Manual approvals"})}).operation("recheck",args,"owner"),{code:"permissions_unready"});
 	assert.equal(count(),before);
 	await owner.operation("recheck",args,"owner");
 	if (fault==="component" && writer) {
@@ -195,18 +195,17 @@ for (const fault of ["unknown","claimed","numeric"]) test(`no fresh observation 
 	} finally { if (completion) { put(gate,"finish",""); await completion; } }
 });
 
-for (const race of ["target","pause","deadline","permission"]) test(`a ${race} change during approval does not spend a fresh check`,async t=>{
+for (const race of ["target","pause","deadline","permission"]) test(`a ${race} change during preflight does not spend a fresh check`,async t=>{
 	const deadline=Date.now()+60_000, data=files(""); data[source]=JSON.stringify({...JSON.parse(data[source]),limits:{deadline:new Date(deadline).toISOString()}});
 	const f=priorFactory(t,run,source,data); git(f.root,"branch","target",f.tip);
 	const old=f.runtime(f.root,{execute:async()=>({resultType:"success",toolTelemetry:{properties:{executionMode:"sync",shell_error_category:"command_nonzero_exit"},metrics:{exit_code:1}}})});
 	await f.start(old); old.close();
 	const db=openDatabase(f.root); t.after(()=>db.close()); const before=db.read(run); assert.ok(before?.goal);
-	let held=false;
-	const owner=upgrade(t,f,f.root,{permissionBlocker:async()=>held ? {scope:"run",message:"held"} : null,confirm:async()=>{
+	const owner=upgrade(t,f,f.root,{permissionBlocker:async()=>{
 		if (race==="target") {put(f.root,"moved","yes");git(f.root,"add","moved");git(f.root,"commit","-qm","move");git(f.root,"branch","-f","target","HEAD");}
 		if (race==="pause") await f.owner.operation("pause",{run},"owner");
 		if (race==="deadline") t.mock.method(Date,"now",()=>deadline+1);
-		held=race==="permission"; return true;
+		return race==="permission" ? {scope:"run",message:"held"} : null;
 	}});
 	await assert.rejects(owner.operation("recheck",{run,check:before.goal.check},"owner"),{
 		code:race==="target" ? "stale_assignment" : race==="pause" ? "paused" : race==="deadline" ? "deadline" : "permissions_unready"});

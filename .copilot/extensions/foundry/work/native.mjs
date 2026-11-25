@@ -8,6 +8,7 @@ import { productOwnership } from "./transfer.mjs";
 import { partitionConflict } from "./partition.mjs";
 import { currentCheck, unissued } from "./reservation.mjs";
 import { questions, reading } from "./reviews.mjs";
+import { activeDelivery } from "./batch.mjs";
 import { deadlineAt, digest, fail, record, text } from "./values.mjs";
 
 /** @typedef {import("./model.js").Effect} Effect */
@@ -61,15 +62,15 @@ export function reserveWorker(run, issuer, token, base, brief, agent, grain, reu
 }
 
 /** @param {Run} run @param {string} issuer @param {string} cwd @param {string} commit @param {string} check @param {string} [grain]
- * @param {import("./model.js").ArtifactReport} [reports] */
-export function reserveCheck(run, issuer, cwd, commit, check, grain, reports) {
+ * @param {import("./model.js").ArtifactReport} [reports] @param {import("./model.js").NativeCall["rerun"]} [rerun] */
+export function reserveCheck(run, issuer, cwd, commit, check, grain, reports, rerun) {
 	const id = randomUUID();
-	const kind = grain ? "component" : check === run.policy.goalCheck ? "goal" : "product";
+	const kind = rerun ? "rerun" : grain ? "component" : check === run.policy.goalCheck ? "goal" : "product";
 	const evaluatorRevision = kind === "goal" ? run.repins?.at(-1)?.revision : kind === "product" ? productPin(run) : undefined;
 	const productEvaluatorRevision = kind === "goal" && productPin(run);
 	run.effects.push({
 		id, issuer, kind, state: "ready", tool: "bash", commit, check, ...(evaluatorRevision ? { evaluatorRevision } : {}),
-		...(productEvaluatorRevision ? {productEvaluatorRevision} : {}), ...(grain ? { grain } : {}), ...reports,
+		...(productEvaluatorRevision ? {productEvaluatorRevision} : {}), ...(grain ? { grain } : {}), ...(rerun && {rerun}), ...reports,
 		args: {
 			command: `command node ${[runner, cwd, run.id, id].map(quote).join(" ")}`, shellId: `foundry-${id}`, initial_wait: 120,
 			description: `Check ${grain ?? (kind === "goal" ? "final goal" : "joined product")} at ${commit.slice(0, 12)}`.slice(0, 100)
@@ -111,8 +112,9 @@ export function current(run, e) {
 	return targetsWriter(assignee(run, e), e);
 }
 
-/** @param {Run} run */
-export function admitted(run) {
+/** @param {Run} run @param {boolean} [resume] */
+export function admitted(run,resume=false) {
+	if (!resume && activeDelivery(run)) fail("dispatch_held","An approved test delivery is in progress");
 	const final = run.goal && qualifiedProduct(run);
 	if (final) fail("goal_met", `Goal met at ${final.commit}`);
 	if (!run.active)
@@ -164,7 +166,7 @@ export function issue(run, expected, callId) {
 /** @param {Run} run @param {import("./model.js").NativeCall} e @param {string} reason */
 function block(run, e, reason) {
 	e.error = reason;
-	if (e.kind === "artifact" || !current(run, e))
+	if (e.kind === "artifact" || e.kind === "rerun" || e.delivery || !current(run, e))
 		return;
 	const n = assignee(run, e);
 	if (e.production && n && e.state==="refused") {
