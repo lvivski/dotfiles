@@ -28,6 +28,7 @@ import { reportReceiver } from "./reports.mjs";
 import { retireGoal } from "./retirement.mjs";
 import { prepareReuse } from "./reuse.mjs";
 import { prepareRestoration } from "./restoration.mjs";
+import { currentPair, preparePair } from "./pairing.mjs";
 import { referenceText } from "./research.mjs";
 import { blockReview, comparison, currentPin, investigation, questions, reserveReview, retireSuperseded, reviews, staleReaderMessage } from "./reviews.mjs";
 import { scoutPacket } from "./scouts.mjs";
@@ -206,11 +207,11 @@ export function createRuntime(directory, host) {
 	}
 	/** @param {string} id @param {Effect} effect @param {string} callId */
 	const claim = (id, effect, callId) => {
-		if (effect.tool!=="bash" || !effect.recheck || !unissued(effect)) return db().mutateLocked(id, run => issue(run, effect, callId));
-		const target = effect.recheck.target;
+		if (effect.tool!=="bash" || !(effect.recheck || effect.pair) || !unissued(effect)) return db().mutateLocked(id, run => issue(run, effect, callId));
+		const target = (effect.recheck ?? effect.pair)?.target;
 		let claimed = false;
 		db().planAndSwap(id,run => {
-			claimed = checkAuthority(cwd(),run,effect) && issue(run,effect,callId);
+			claimed = (effect.pair ? currentPair(cwd(),run,effect) : checkAuthority(cwd(),run,effect)) && issue(run,effect,callId);
 			if (claimed) return () => !expired(run) && observeTarget(()=>commitAt(cwd(),run.policy.target)).target===target;
 		});
 		return claimed;
@@ -317,7 +318,7 @@ export function createRuntime(directory, host) {
 					if (e.kind === "goal" && run.products.at(-1)?.commit === e.commit && run.scheduling?.checkpointReviews !== false)
 						track(drive(id, actor, false, false));
 					await completion;
-				} else if (e.tool==="bash" && e.recheck) return; // A later eligible issuer turn can recheck the approval.
+				} else if (e.tool==="bash" && (e.recheck || e.pair)) return; // A later eligible issuer turn can recheck the approval.
 				await refill();
 			}
 		}
@@ -641,8 +642,8 @@ export function createRuntime(directory, host) {
 			writerRoot(cwd(),run,n,true);
 			return status(run,actor);
 		}
-		if (op === "correct" || op === "reuse" || op === "restore") {
-			const origin = cwd(), request = op==="restore" ? prepareRestoration(origin,read(id),actor,a,e=>db().verifySigned(id,e)) :
+		if (op === "correct" || op === "reuse" || op === "restore" || op==="pair") {
+			const origin = cwd(), request = op==="restore" || op==="pair" ? (op==="pair" ? preparePair : prepareRestoration)(origin,read(id),actor,a,e=>db().verifySigned(id,e)) :
 				(op === "reuse" ? prepareReuse : prepareCorrection)(origin,read(id),actor,a);
 			await requireReadyOwner(origin);
 			const approved = await host.confirm?.(request.prompt);

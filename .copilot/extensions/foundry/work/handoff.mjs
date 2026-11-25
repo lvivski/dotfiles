@@ -15,14 +15,15 @@ export function qualification(run) {
 		const n = run.nodes[id];
 		if (n?.state !== "qualified" || n.grain.id !== id || n.candidate !== commit || !n.base || !n.generation || !n.inputs || !n.check) return null;
 		const { grain, base, generation, inputs } = n;
-		const receipt = passingReceipt(effects.get(n.check), "component", commit, grain.check, id);
+		const component=effects.get(n.check), receipt = passingReceipt(component, "component", commit, grain.check, id);
 		const squad = policy.squads.find(s => "areas" in s ? owns(s, grain.directory) : s.grains.includes(id));
 		const required = dependencies(run.nodes, grain.needs);
 		if (!receipt || !squad || required.size !== Object.keys(inputs).length ||
 			[...required].some(dep => !Object.hasOwn(inputs, dep) || inputs[dep] !== last.outputs[dep])) return null;
 		outputs.push({ id, directory: grain.directory, commit, behavior: grain.task ?? null, specification: grain.specification,
 			squad: squad.id, charter: squad.charter, boundary: [...grain.boundary], receipt, base, generation,
-			needs: [...grain.needs], inputs: { ...inputs }, ...(n.replaces ? { replaces: n.replaces } : {}) });
+			needs: [...grain.needs], inputs: { ...inputs }, ...(component?.kind==="component" && component.pair && {pair:component.pair}),
+			...(n.replaces ? { replaces: n.replaces } : {}) });
 	}
 	return { format: last.ownership ? "foundry-qualification/v4" : product.evaluatorRevision ? "foundry-qualification/v3" : goal.evaluatorRevision ? "foundry-qualification/v2" : "foundry-qualification/v1", direction: policy.direction,
 		...(last.ownership && {ownership:last.ownership}),

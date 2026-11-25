@@ -2,6 +2,14 @@ import { outside } from "./product.mjs";
 import { checkReceipt } from "./evidence.mjs";
 import { contains, mixed, roots, sameScope, scopeLabel } from "./values.mjs";
 
+/** @param {import("./model.js").Run} run @param {import("./model.js").Pairing} pair @param {string} [target] */
+export function matchesPair(run,pair,target) {
+	const owner=run.nodes[pair.retainer], p=run.products.at(-1);
+	return !!p && p.target===pair.target && (target===undefined || target===pair.target) &&
+		p.check===pair.checkpoint && run.goal?.check===pair.goal && owner?.state==="published" &&
+		owner.candidate===pair.candidate && owner.check===pair.component;
+}
+
 /** The prior grant is superseded only by a later passing product which included the fresh
  * writer's own check and froze both new owners. A component alone cannot release the hold.
  * @param {import("./model.js").Run} run @param {import("./model.js").NativeCall} writer */
@@ -10,10 +18,13 @@ export function restoredProduct(run,writer) {
 	if (!r || !to || !writer.nativeId || writer.state!=="done") return;
 	const index=run.products.findIndex(p=>p.check===r.checkpoint);
 	if (index<0) return;
-	const checks=run.effects.slice(run.effects.indexOf(writer)+1).filter(e=>e.kind==="component" && e.grain===to &&
-		e.issuer===writer.nativeId && checkReceipt(e)?.exit===0);
+	const later=run.effects.slice(run.effects.indexOf(writer)+1);
+	const checks=later.filter(e=>e.kind==="component" && e.grain===to && checkReceipt(e)?.exit===0 &&
+		(e.pair ? e.issuer===run.owner && e.pair.checkpoint===r.checkpoint && e.pair.retainer===r.retainer &&
+			later.some(old=>old.id===e.pair?.failed && old.issuer===writer.nativeId) : e.issuer===writer.nativeId));
 	return run.products.slice(index+1).find(p=>p.ownership?.[to] && p.outputs[r.retainer] && p.ownership[r.retainer] &&
-		checks.some(e=>e.commit===p.outputs[to] && run.effects.indexOf(e)<run.effects.findIndex(c=>c.id===p.check)));
+		checks.some(e=>e.kind==="component" && e.commit===p.outputs[to] && (!e.pair || p.outputs[r.retainer]===e.pair.candidate && p.target===e.pair.target) &&
+			run.effects.indexOf(e)<run.effects.findIndex(c=>c.id===p.check)));
 }
 
 /** Detect a pre-guard, already-issued replacement. Old products need not have a
@@ -64,11 +75,14 @@ function* displacements(run) {
 /** @param {import("./model.js").Run} run @param {string} from */
 export const displacement=(run,from)=>[...displacements(run)].find(d=>d.id===from);
 
-/** @param {import("./model.js").Run} run @param {Record<string,string>} [outputs] */
-export function partitionConflict(run,outputs) {
+/** @param {import("./model.js").Run} run @param {Record<string,string>} [outputs] @param {string} [target] */
+export function partitionConflict(run,outputs,target) {
 	for (const {id,scope,replacements} of displacements(run)) {
 		const receiver=Object.values(run.nodes).find(n=>n.restoration?.from===id && n.grain.directory===scope.primary);
 		const retainer=replacements.find(n=>n.grain.id===receiver?.restoration?.retainer);
+		const check=receiver?.check && run.effects.find(e=>e.id===receiver.check);
+		if (check && check.kind==="component" && check.pair && !matchesPair(run,check.pair,target))
+			return `The approved pair for ${id} no longer matches the target, checkpoint, goal or retaining component.`;
 		if (receiver && retainer && replacements.length===1 && [receiver,retainer].every(n=>n.candidate &&
 			["published","qualified"].includes(n.state) && (!outputs || outputs[n.grain.id]===n.candidate))) continue;
 		return receiver ? `Ownership restoration of ${scope.primary} requires fresh included evidence from ${receiver.grain.id} and its paired owner ${receiver.restoration?.retainer}.` :

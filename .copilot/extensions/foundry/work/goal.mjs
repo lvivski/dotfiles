@@ -71,7 +71,7 @@ export function releaseAssessment(cwd, run, tip, retry = false) {
 	const { target, error } = observeTarget(tip);
 	if (target === undefined) return { ...wait, reason: "target-unavailable", error };
 	if (run.active) {
-		const conflict=partitionConflict(run);
+		const conflict=partitionConflict(run,undefined,target);
 		try { verifyContracts(cwd, run.policy, target); }
 		catch (error) {
 			if (!(error instanceof FoundryError) || error.code !== "contract_changed") throw error;

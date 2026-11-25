@@ -79,7 +79,7 @@ export function reserveCheck(run, issuer, cwd, commit, check, grain, reports) {
 
 /** @param {Run} run @param {string} issuer @param {string} cwd @param {string} target @param {string} commit @param {Record<string,string>} outputs */
 export function reserveProduct(run, issuer, cwd, target, commit, outputs) {
-	const conflict=partitionConflict(run,outputs);
+	const conflict=partitionConflict(run,outputs,target);
 	if (conflict) fail("ownership_transition",conflict);
 	const ownership=productOwnership(run.nodes,outputs);
 	run.join = { target, commit, outputs, ...(ownership && {ownership}), check: reserveCheck(run, issuer, cwd, commit, run.policy.productCheck) };

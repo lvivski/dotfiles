@@ -326,8 +326,9 @@ export function capture(cwd, generation, directory,cuts,checkpoint) {
 	return pin(root,tree,"Foundry grain candidate");
 }
 
-/** @param {string} cwd @param {string} base @param {{directory:string,from:string,to:string,exact?:boolean,retained?:import("./model.js").Retained[]}[]} updates @param {string} [parent] @param {string} [attribution] */
-export function combine(cwd, base, updates, parent, attribution) {
+/** @typedef {{directory:string,from:string,to:string,exact?:boolean,retained?:import("./model.js").Retained[]}} Update */
+/** @param {string} cwd @param {string} base @param {Update[]} updates */
+export function combinedTree(cwd, base, updates) {
 	/** @type {string|null} */ let tree = treeOf(cwd, base);
 	for (const { directory, from, to, exact, retained } of updates) {
 		if (exact) {
@@ -353,9 +354,16 @@ export function combine(cwd, base, updates, parent, attribution) {
 			throw error;
 		}
 	}
-	return pin(cwd, tree, attribution ? `Foundry product candidate\nChecked ownership restoration: ${attribution}` : "Foundry product candidate", parent);
+	return tree ?? build(cwd, []);
 }
 
+/** @param {string} cwd @param {string} base @param {Update[]} updates @param {string} [parent] @param {string} [attribution] */
+export function combine(cwd,base,updates,parent,attribution) {
+	return pin(cwd,combinedTree(cwd,base,updates),attribution ? `Foundry product candidate\nChecked ownership restoration: ${attribution}` : "Foundry product candidate",parent);
+}
+
+/** @param {string} cwd @param {string} tree */
+export const pairedCommit=(cwd,tree)=>pin(cwd,tree,"Foundry paired observation");
 /** Carry the actual checkpoint delta onto a moved target, not a reconstruction from past jobs.
  * read-tree does only trivial three-way merges; no worktree, content merge drivers or real index.
  * @param {string} cwd @param {import("./model.js").Product} last @param {string} target */

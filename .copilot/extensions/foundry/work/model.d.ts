@@ -6,6 +6,7 @@ export interface FileScope { primary: string; files: string[] }
 export interface Transfer { from: string; candidate: string; to: string }
 export interface Successor { from: string; check: string; to: string }
 export interface Restoration { from: string; historical: string; checkpoint: string; goal: string; retainer: string; tree: string }
+export interface Pairing { failed: string; component: string; candidate: string; retainer: string; checkpoint: string; goal: string; target: string; tree: string }
 export interface Retained extends FileScope { review: string; to: string }
 export type Scope = string | string[] | FileScope;
 
@@ -236,6 +237,7 @@ export type Inventory = Baseline | Baseline[];
 
 export interface NativeCall extends Dispatch, ArtifactReport {
 	restoration?: Restoration;
+	pair?: Pairing;
 	launcherExit?: number;
 	recheck?: { of:string; target:string; goalPin:string; productPin:string };
 	finished?: {squad:string; directory:Scope; component:string; product:string};

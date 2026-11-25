@@ -45,7 +45,7 @@ export function validRestoration(run,n) {
 /** An assigning scout's citation is not necessarily a writer input. Only the
  * published retainer can use this distinction, and only for the same Git evidence.
  * @param {string} cwd @param {Run} run @param {import("./model.js").Node} owner @param {string} primary @param {string} commit */
-function verifiedCitations(cwd,run,owner,primary,commit) {
+export function verifiedCitations(cwd,run,owner,primary,commit) {
 	if (owner.state!=="published") return;
 	const r=run.effects.find(e=>e.id===owner.review);
 	if (r?.kind!=="scout" || r.state!=="observed" || r.observation?.outcome!=="regenerate" || !r.packet) return;

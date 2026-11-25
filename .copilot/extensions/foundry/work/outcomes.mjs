@@ -1,5 +1,5 @@
 import { createHash, createPublicKey, generateKeyPairSync, sign, verify } from "node:crypto";
-import { fail } from "./values.mjs";
+import { digest, fail } from "./values.mjs";
 import { sameEvaluation } from "./evidence.mjs";
 
 /** @typedef {import("./model.js").Effect} Effect */
@@ -7,7 +7,8 @@ import { sameEvaluation } from "./evidence.mjs";
 /** @param {string} run @param {Effect} e @param {string} document */
 function message(run, e, document) {
 	return createHash("sha256").update(JSON.stringify([run, e.id, e.issuer, e.callId, e.kind, e.grain ?? null,
-		e.commit, e.check, e.evaluatorRevision ?? null, ...(e.productEvaluatorRevision ? [e.productEvaluatorRevision] : [])])).update("\n").update(document).digest();
+		e.commit, e.check, e.evaluatorRevision ?? null, ...(e.productEvaluatorRevision ? [e.productEvaluatorRevision] : []),
+		...(e.kind==="component" && e.pair ? [digest(e.pair)] : [])])).update("\n").update(document).digest();
 }
 
 /** @param {Effect} e @param {Receipt} receipt */

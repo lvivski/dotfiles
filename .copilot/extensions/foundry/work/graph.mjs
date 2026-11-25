@@ -559,7 +559,7 @@ function settleChecks(cwd, run, actor, remaining, target) {
 		else if (remaining === 0) { n.state = "blocked"; n.reason = `No assignment remains to repair ${id}: ${receipt.output || "Evaluator failed"}`; }
 		else repair(run, n.grain.id, receipt.output || "Evaluator failed");
 	}
-	const partition=partitionConflict(run,run.join?.outputs);
+	const partition=partitionConflict(run,run.join?.outputs,target);
 	if (partition) return;
 	const join = run.join, check = join && checks.get(join.check);
 	if (!join || !check) return;

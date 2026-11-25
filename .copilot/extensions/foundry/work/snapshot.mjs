@@ -133,6 +133,7 @@ const scout = shape({ ...dispatch, kind: one("scout"), tool: one("workflow"), sq
 	otherNotes: optional(list(shape(noteFields))), diagnostic: optional(shape({ receipt: id, excerpt: noteText })), wake: optional(shape({ review: id, key: string })) });
 const native = shape({
 	restoration:optional(restoration),
+	pair:optional(shape({failed:id,component:id,candidate:commit,retainer:id,checkpoint:id,goal:id,target:commit,tree:commit})),
 	...dispatch, kind: one("writer", "component", "product", "goal", "repair", "decision", "handoff", "artifact", "escalation"), grain: optional(id), inlineRepair: optional(id),
 	usedArtifacts: optional(list(commit)), comparedArtifacts: optional(list(commit)),
 	reuse: optional(shape({predecessor:node, blob:commit, checkpoint:id, goal:id})),
@@ -206,6 +207,18 @@ function productLineage(run,products) {
 function validDispatch(run, e, effects, products) {
 	if (e.tool!=="workflow") {
 		if (e.launcherExit!==undefined && launcherFailure(e)!==e.launcherExit) return false;
+		if (e.pair) {
+			const a=e.pair, prior=run.effects.slice(0,run.effects.indexOf(e)), old=effects.get(a.failed), held=effects.get(a.component);
+			const w=prior.findLast(x=>x.kind==="writer" && x.grain===e.grain), r=w?.kind==="writer" && w.restoration;
+			const p=products.get(a.checkpoint), goal=prior.findLast(x=>x.kind==="goal");
+			if (!r || e.kind!=="component" || e.issuer!==run.owner || e.recheck || !p || p.target!==a.target ||
+				r.checkpoint!==a.checkpoint || r.goal!==a.goal || r.retainer!==a.retainer ||
+				goal?.id!==a.goal || goal.commit!==p.commit || ![1,2].includes(checkReceipt(goal)?.exit ?? -1) ||
+				old?.kind!=="component" || old.pair || old.grain!==e.grain || old.check!==e.check || old.commit===e.commit ||
+				old.issuer!==w.nativeId || !old.runnerClaim || checkReceipt(old)?.exit!==1 || prior.indexOf(old)<=prior.indexOf(w) ||
+				held?.kind!=="component" || held.grain!==a.retainer || !prior.includes(held) || held.commit!==a.candidate ||
+				!held.runnerClaim || checkReceipt(held)?.exit!==0 || prior.some(x=>x.kind==="component" && x.pair?.failed===a.failed)) return false;
+		}
 		if (e.recheck) {
 			const old = effects.get(e.recheck.of);
 			if (e.tool!=="bash" || old?.tool!=="bash" || old===e || run.effects.indexOf(old)>=run.effects.indexOf(e) ||

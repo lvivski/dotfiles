@@ -111,3 +111,17 @@ test("the original claim cannot settle another run, call, reservation, or evalua
 		assert.throws(() => acceptOutcome("run", {...e, ...mismatch}, signature, document), {code:"wrong_outcome"});
 	acceptOutcome("run", e, signature, document); assert.equal(e.state, "done"); assert.deepEqual(e.receipt, receipt);
 });
+
+test("a paired observation cannot be detached from the failed or retaining component, even on identical assembly bytes", () => {
+	const pair={failed:"original",component:"passing",candidate:"a".repeat(40),retainer:"adjacent",
+		checkpoint:"checkpoint",goal:"goal",target:"b".repeat(40),tree:"c".repeat(40)};
+	/** @type {import("../work/model.js").NativeCall} */
+	const e={id:"paired",callId:"native",issuer:"owner",kind:"component",grain:"leaf",tool:"bash",args:{},state:"issued",
+		commit:"d".repeat(40),check:"unit.mjs",pair};
+	const {signature,document}=claimOutcome("run",e)({commit:"d".repeat(40),check:"unit.mjs",exit:1,output:"neighbor changed"});
+	for (const changed of [undefined,{...pair,failed:"other"},{...pair,component:"other"}])
+		assert.throws(()=>acceptOutcome("run",{...e,pair:changed},signature,document),{code:"wrong_outcome"});
+	acceptOutcome("run",e,signature,document);
+	acceptOutcome("run",e,signature,document);
+	assert.equal(e.receipt?.exit,1);
+});

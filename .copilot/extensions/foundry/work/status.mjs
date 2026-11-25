@@ -24,8 +24,9 @@ function ownerStatus(run, { receipts, questions }, detail) {
 		...(detail === "proof" ? { checkRecovery: run.effects.flatMap(e => {
 			if (e.tool!=="bash") return [];
 			const exit = launcherFailure(e);
-			if (exit===undefined && !e.recheck && !(e.kind==="goal" && e.runnerClaim && e.receipt?.exit===null)) return [];
+			if (exit===undefined && !e.recheck && !e.pair && !(e.kind==="goal" && e.runnerClaim && e.receipt?.exit===null)) return [];
 			return [{check:e.id,kind:e.kind,commit:e.commit,issuer:e.issuer,...(exit!==undefined && {launcherExit:exit}),
+				...(e.pair && {pair:e.pair,originalReceipt:receipts.get(e.pair.failed),receipt:receipts.get(e.id)}),
 				...(e.kind==="goal" && e.runnerClaim && e.receipt?.exit===null && {interruptedGoal:true}),...(e.recheck && {approval:e.recheck})}];
 		}) } : {}),
 		metrics: detail === "usage" ? metricsFacts(run) : timingFacts(run),
