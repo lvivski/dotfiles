@@ -3,7 +3,7 @@ import path from "node:path";
 import { openDatabase } from "./database.mjs";
 import { goalFiles, priorGoal, retainFeedback } from "./feedback.mjs";
 import { awaitingReply, currentCheck } from "./reservation.mjs";
-import { matchesPair } from "./partition.mjs";
+import { matchesPair, pairedInput } from "./partition.mjs";
 import { commitAt, withProduct } from "./product.mjs";
 import { deadlineAt, fail, mixed, ownership, text } from "./values.mjs";
 import { interpret, interrupted } from "./verdict.mjs";
@@ -14,7 +14,8 @@ try {
 		const e = run.effects.find(e => e.id === effectId);
 		if (!e || e.tool !== "bash" || !awaitingReply(e) || !currentCheck(run, e) || e.runnerStarted)
 			fail("unissued_check", "Checks are exclusive to the current issued attempt");
-		if (e.pair && (!matchesPair(run,e.pair,commitAt(cwd,run.policy.target)) || run.join || run.conflict || run.blocker || run.effects.some(x=>x.permissionHold)))
+		const pair=pairedInput(run,e);
+		if (pair && (!matchesPair(run,pair,commitAt(cwd,run.policy.target)) || run.join || run.conflict || run.blocker || run.effects.some(x=>x.permissionHold)))
 			fail("stale_assignment","Approved paired inputs are no longer current; no observation was made");
 		const publish = db.outcomeWriter(runId, e);
 		/** @type {Record<string,string>} */ const env = {};

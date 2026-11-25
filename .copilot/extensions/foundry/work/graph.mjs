@@ -516,7 +516,9 @@ function repair(run, id, reason) {
 	invalidateConsumers(run, id, node.candidate);
 	if (node.restoration) {
 		node.state="blocked";
-		node.reason=`The approved unchanged directory did not pass; this ownership attestation cannot change the bytes or replay the check: ${reason}`;
+		const e=run.effects.find(e=>e.id===node.check);
+		node.reason=e?.kind==="component" && e.observer ? `The approved observer change failed. Inspect this new receipt; do not replay it: ${reason}` :
+			`The approved unchanged directory did not pass; this ownership attestation cannot change the bytes or replay the check: ${reason}`;
 		return;
 	}
 	if (node.repairs >= run.policy.repairs) {

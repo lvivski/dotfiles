@@ -41,6 +41,12 @@ export function matchesPair(run,pair,target) {
 		owner.candidate===pair.candidate && owner.check===pair.component;
 }
 
+/** @param {import("./model.js").Run} run @param {import("./model.js").NativeCall} e */
+export function pairedInput(run,e) {
+	const old=e.observer && run.effects.find(x=>x.id===e.observer?.pair);
+	return e.pair ?? (old?.kind==="component" ? old.pair : undefined);
+}
+
 /** The prior grant is superseded only by a later passing product which included the fresh
  * writer's own check and froze both new owners. A component alone cannot release the hold.
  * @param {import("./model.js").Run} run @param {import("./model.js").NativeCall} writer */
@@ -50,12 +56,20 @@ export function restoredProduct(run,writer) {
 	const index=run.products.findIndex(p=>p.check===r.checkpoint);
 	if (index<0) return;
 	const later=run.effects.slice(run.effects.indexOf(writer)+1);
-	const checks=later.filter(e=>e.kind==="component" && e.grain===to && checkReceipt(e)?.exit===0 &&
-		(e.pair ? e.issuer===run.owner && e.pair.checkpoint===r.checkpoint && e.pair.retainer===r.retainer &&
-			later.some(old=>old.id===e.pair?.failed && old.issuer===writer.nativeId) : e.issuer===writer.nativeId));
+	const checks=later.filter(e=>{
+		if (e.kind!=="component" || e.grain!==to || checkReceipt(e)?.exit!==0) return false;
+		const pair=pairedInput(run,e);
+		const observer=e.observer;
+		return pair ? (observer ? !!observer.after && later.some(w=>w.kind==="writer" && w.observer?.pair===observer.pair &&
+			w.nativeId===e.issuer && w.observer.after===observer.after) : e.issuer===run.owner) && pair.checkpoint===r.checkpoint && pair.retainer===r.retainer &&
+			later.some(old=>old.id===pair.failed && old.issuer===writer.nativeId) : e.issuer===writer.nativeId;
+	});
 	return run.products.slice(index+1).find(p=>p.ownership?.[to] && p.outputs[r.retainer] && p.ownership[r.retainer] &&
-		checks.some(e=>e.kind==="component" && e.commit===p.outputs[to] && (!e.pair || p.outputs[r.retainer]===e.pair.candidate && p.target===e.pair.target) &&
-			run.effects.indexOf(e)<run.effects.findIndex(c=>c.id===p.check)));
+		checks.some(e=>{
+			if (e.kind!=="component" || e.commit!==p.outputs[to]) return false;
+			const pair=pairedInput(run,e);
+			return (!pair || p.outputs[r.retainer]===pair.candidate && p.target===pair.target) && run.effects.indexOf(e)<run.effects.findIndex(c=>c.id===p.check);
+		}));
 }
 
 /** Detect a pre-guard, already-issued replacement. Old products need not have a
@@ -112,7 +126,8 @@ export function partitionConflict(run,outputs,target) {
 		const receiver=Object.values(run.nodes).find(n=>n.restoration?.from===id && n.grain.directory===scope.primary);
 		const retainer=replacements.find(n=>n.grain.id===receiver?.restoration?.retainer);
 		const check=receiver?.check && run.effects.find(e=>e.id===receiver.check);
-		if (check && check.kind==="component" && check.pair && !matchesPair(run,check.pair,target))
+		const pair=check && check.kind==="component" && pairedInput(run,check);
+		if (pair && !matchesPair(run,pair,target))
 			return `The approved pair for ${id} no longer matches the target, checkpoint, goal or retaining component.`;
 		if (receiver && retainer && replacements.length===1 && [receiver,retainer].every(n=>n.candidate &&
 			["published","qualified"].includes(n.state) && (!outputs || outputs[n.grain.id]===n.candidate))) continue;

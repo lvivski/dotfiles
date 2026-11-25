@@ -5,24 +5,26 @@ import { pathToFileURL } from "node:url";
 import { factory, git, put } from "./fixture.mjs";
 import { openDatabase } from "../work/database.mjs";
 import { currentPair, preparePair } from "../work/pairing.mjs";
+import { prepareObserver } from "../work/observer.mjs";
 import { decode } from "../work/snapshot.mjs";
 import { partitionConflict } from "../work/partition.mjs";
 import { prepareRestoration } from "../work/restoration.mjs";
 import { createRuntime } from "../work/runtime.mjs";
 
-for (const mode of ["prevent","legacy join","issued writer","restore issued","restore joined","restore pending","restore cited","failed attestation","negative pair","unchanged pair"]) test(`partial repartition of a checked mixed grant / ${mode}`,
+for (const mode of ["prevent","legacy join","issued writer","restore issued","restore joined","restore pending","restore cited","failed attestation","negative pair","unchanged pair","observer pass","observer fail"]) test(`partial repartition of a checked mixed grant / ${mode}`,
 	{skip:mode!=="prevent" && !process.env.FOUNDRY_SUCCESSOR_BEFORE},async t=>{
 	const previous=process.env.FOUNDRY_SUCCESSOR_BEFORE;
 	/** @type {typeof factory} */
 	const build=mode==="prevent"||!previous?factory:(await import(pathToFileURL(path.resolve(previous,"test/fixture.mjs")).href)).factory;
 	const run="display", brief=".foundry/display.json", primary="unit/picker", parent="unit/controls", file=`${parent}/entry`;
-	const failed=["failed attestation","negative pair","unchanged pair"].includes(mode), cited=mode==="restore cited" || failed, pending=cited || mode==="restore pending";
+	const observer=mode.startsWith("observer "), negative=mode==="negative pair" || observer, sourceFile=`${primary}/observer`;
+	const failed=["failed attestation","unchanged pair"].includes(mode) || negative, cited=mode==="restore cited" || failed, pending=cited || mode==="restore pending";
 	const first=failed && process.env.FOUNDRY_PAIR_BEFORE ? (await import(pathToFileURL(path.resolve(process.env.FOUNDRY_PAIR_BEFORE,"work/runtime.mjs")).href)).createRuntime : createRuntime;
 	const f=build(t,run,brief,{[brief]:JSON.stringify({version:2,id:run,target:"refs/heads/main",direction:"Render a selection.",ownership:"exact-files",
 		productCheck:"product.mjs",goalCheck:"goal.mjs",squads:[{id:"view",areas:["unit"],charter:"brief",checks:["unit.mjs"]}]}),
 		".foundry/display/journey.md":"Select the item.","brief":"Maintain the selector.",[file]:"old","unit.mjs":mode==="restore issued"?
 			`import {existsSync} from "node:fs";if(process.env.FOUNDRY_GRAIN==="controls"&&!existsSync("${parent}/fixed"))process.exit(1)`:
-			failed?`import {readFileSync} from "node:fs";if(process.env.FOUNDRY_DIRECTORY==="${primary}"&&!process.env.FOUNDRY_FILES){const control=readFileSync("${file}","utf8");console.log("Checked control: "+control);if(control!=="current button"||${mode==="negative pair"})process.exit(1);}`:"",
+			failed?`import {readFileSync} from "node:fs";if(process.env.FOUNDRY_DIRECTORY==="${primary}"&&!process.env.FOUNDRY_FILES){const control=readFileSync("${file}","utf8");console.log("Checked control: "+control);if(control!=="current button"||${observer?`readFileSync("${sourceFile}","utf8")!=="phase-aware" || ${mode==="observer fail"}`:negative})process.exit(1);}`:"",
 		"product.mjs":`console.log(process.env.FOUNDRY_OWNERSHIP)`,
 		"goal.mjs":`import {existsSync as has} from "node:fs";process.exit(!has("unit/core/result")?1:!has("${primary}/result")?2:!has("${parent}/fixed")?1:${mode==="restore joined"?'!has("unit/done/result")?2:0':pending?`!has("${parent}/button")||!has("unit/rail/change")?1:0`:0})`});
 	const proposal=(/** @type {string} */ id,/** @type {unknown} */ directory,/** @type {string} */ evidence)=>({
@@ -36,6 +38,7 @@ for (const mode of ["prevent","legacy join","issued writer","restore issued","re
 		source:{commit:goal.commit,file,excerpt:"old"}},"owner");await f.settle();
 	await f.scouts.at(-1)?.report(proposal("picker",{primary,files:[file]},file));
 	const [,picker]=f.workers.values();put(picker.cwd,`${primary}/result`,"keep");put(picker.cwd,file,"connected");
+	if (observer) put(picker.cwd,sourceFile,"aggregate");
 	await f.runtime(picker.cwd).operation("submit",{run,token:picker.token},picker.id);await f.settle();
 	const before=owner.inspect({run,detail:"proof"},"owner");assert.ok(before.outputs?.picker && before.goal?.receipt?.exit===1);
 	const broadPlan=proposal("controls",parent,"brief"), railPlan=proposal("rail","unit/rail","brief").grains[0];
@@ -161,7 +164,8 @@ for (const mode of ["prevent","legacy join","issued writer","restore issued","re
 			const pins=Object.fromEntries(Object.entries(state.nodes).flatMap(([id,n])=>n.state==="published" ? [[id,n.candidate]] : []));
 			assert.equal(Object.keys(pins).length,6);
 			const number=f.workers.size;
-			const next=f.runtime(f.root,{confirm:async msg=>{assert.ok([args.failed,args.candidate,args.component].every(x=>msg.includes(x)));return true;}},createRuntime);
+			const beforeObserver=observer && process.env.FOUNDRY_OBSERVER_BEFORE ? (await import(pathToFileURL(path.resolve(process.env.FOUNDRY_OBSERVER_BEFORE,"work/runtime.mjs")).href)).createRuntime : createRuntime;
+			const next=f.runtime(f.root,{confirm:async msg=>{assert.ok([args.failed,args.candidate,args.component].every(x=>msg.includes(x)));return true;}},beforeObserver);
 			if (mode==="unchanged pair") {
 				await assert.rejects(next.operation("pair",args,"owner"),{code:"unchanged_pair"});
 				assert.deepEqual(db.read(run),state);assert.equal(f.workers.size,number);return;
@@ -182,8 +186,8 @@ for (const mode of ["prevent","legacy join","issued writer","restore issued","re
 			const reserved=structuredClone(state);preview.apply(reserved);
 			const e=reserved.effects.at(-1);assert.ok(e?.kind==="component" && e.pair && currentPair(f.root,reserved,e));
 			reserved.nodes.rail.supporting=[citation];assert.equal(currentPair(f.root,reserved,e),false);
-			const racing=f.runtime(f.root,{confirm:async()=>{await next.operation("pair",args,"owner");return true;}},createRuntime);
-			await assert.rejects(racing.operation("pair",args,"owner"),{code:mode==="negative pair"?"invalid_pair":"goal_met"});
+			const racing=f.runtime(f.root,{confirm:async()=>{await next.operation("pair",args,"owner");return true;}},beforeObserver);
+			await assert.rejects(racing.operation("pair",args,"owner"),{code:negative?"invalid_pair":"goal_met"});
 			const end=next.inspect({run,detail:"proof"},"owner"), checked=end.nodes.find(n=>n.grain==="selector");
 			assert.equal(f.workers.size,number);assert.deepEqual(db.read(run)?.effects.find(e=>e.id===node.check),original);
 			assert.ok(checked?.receipt && checked.check!==node.check);
@@ -200,12 +204,69 @@ for (const mode of ["prevent","legacy join","issued writer","restore issued","re
 			assert.throws(()=>db.verifySigned(run,forged),{code:"wrong_outcome"});
 			assert.equal(git(f.root,"rev-parse","refs/heads/main"),f.tip);
 			assert.ok(Object.entries(pins).every(([id,pin])=>saved.nodes[id].candidate===pin && saved.nodes[id].check===state.nodes[id].check));
-			if (mode==="negative pair") {
+			if (negative) {
 				assert.ok(checked.state==="blocked" && checked.receipt.exit===1 && !end.qualified);
 				assert.deepEqual(end.products,current.products);assert.deepEqual(end.goalChecks,current.goalChecks);
 				await assert.rejects(next.operation("pair",{...args,failed:checked.check},"owner"),{code:"invalid_pair"});
 				await assert.rejects(next.operation("pair",args,"owner"),{code:"invalid_pair"});
-				assert.deepEqual(f.checks.slice(priorChecks.length).map(s=>s.split(" at ")[0]),["Check selector","Check selector"]);return;
+				assert.deepEqual(f.checks.slice(priorChecks.length).map(s=>s.split(" at ")[0]),["Check selector","Check selector"]);
+				if (!observer) return;
+				const approve=f.runtime(f.root,{confirm:async msg=>{assert.ok(msg.includes(sourceFile) && msg.includes(paired.id));return true;}},createRuntime);
+				const author={run,grain:"selector",pair:paired.id,file:sourceFile,blob:git(f.root,"rev-parse",`${paired.commit}:${sourceFile}`)};
+				if(process.env.FOUNDRY_OBSERVER_BEFORE){
+					await assert.rejects(next.operation("diagnose",author,"owner"),{code:"unknown_operation"});
+					next.close();
+				}
+				await assert.rejects(approve.operation("diagnose",{...author,file,blob:git(f.root,"rev-parse",`${paired.commit}:${file}`)},"owner"),{code:"observer_scope"});
+				await assert.rejects(approve.operation("diagnose",{...author,file:citation,blob:git(f.root,"rev-parse",`${paired.commit}:${citation}`)},"owner"),{code:"observer_scope"});
+				await assert.rejects(approve.operation("diagnose",{...author,blob:f.tip},"owner"),{code:"observer_scope"});
+				await assert.rejects(approve.operation("diagnose",author,attester.id),{code:"foreign_run"});
+				const consent=prepareObserver(f.root,saved,"owner",author,e=>db.verifySigned(run,e));
+				const moved=structuredClone(saved);moved.nodes.buttons.candidate=f.tip;
+				assert.throws(()=>consent.apply(moved),{code:"stale_assignment"});
+				const consuming=structuredClone(saved);consuming.nodes.rail.supporting=[sourceFile];
+				assert.throws(()=>consent.apply(consuming),{code:"stale_assignment"});
+				const limited=structuredClone(saved);limited.policy.assignments=1;
+				assert.throws(()=>consent.apply(limited),{code:"limit"});
+				await assert.rejects(f.runtime(f.root,{confirm:async()=>false},createRuntime).operation("diagnose",author,"owner"),{code:"approval_declined"});
+				assert.deepEqual(db.read(run),saved);
+				await approve.operation("diagnose",author,"owner");
+				const w=[...f.workers.values()].at(-1);assert.ok(w && w.id!==attester.id && w.id!==buttons.id);
+				assert.equal(f.workers.size,number+1);assert.equal(git(w.cwd,"rev-parse","HEAD^{tree}"),paired.pair.tree);
+				const wr=f.runtime(w.cwd,{},createRuntime), submission={run,token:w.token};
+				await assert.rejects(wr.operation("submit",{run,token:attester.token},attester.id),{code:"stale_assignment"});
+				await assert.rejects(wr.operation("submit",submission,w.id),{code:"observer_scope"});
+				put(w.cwd,sourceFile,"phase-aware");put(w.cwd,citation,"outside approved file");
+				await assert.rejects(wr.operation("preview",submission,w.id),{code:"observer_scope"});
+				put(w.cwd,citation,"keep");
+				const peek=await wr.operation("preview",submission,w.id), preview=peek.nodes.find(n=>n.grain==="selector")?.preview;assert.ok(preview);
+				await assert.rejects(wr.operation("submit",submission,w.id),{code:"approval_required"});
+				const decline=f.runtime(f.root,{confirm:async()=>false},createRuntime);
+				await assert.rejects(decline.operation("diagnose",{...author,preview},"owner"),{code:"approval_declined"});
+				await assert.rejects(wr.operation("submit",submission,w.id),{code:"approval_required"});
+				await approve.operation("diagnose",{...author,preview},"owner");
+				put(w.cwd,sourceFile,"different");await assert.rejects(wr.operation("submit",submission,w.id),{code:"stale_assignment"});
+				put(w.cwd,sourceFile,"phase-aware");await wr.operation("submit",submission,w.id);
+				const proof=approve.inspect({run,detail:"proof"},"owner"), result=proof.nodes.find(n=>n.grain==="selector");
+				assert.ok(result?.receipt);assert.equal(result.receipt.exit,mode==="observer pass"?0:1);
+				const settled=db.read(run);assert.ok(settled);assert.deepEqual(settled.effects.find(e=>e.id===paired.id),paired);
+				const freshCheck=settled.effects.find(e=>e.id===result?.check);assert.ok(freshCheck?.kind==="component" && freshCheck.observer?.after);
+				db.verifySigned(run,freshCheck);
+				assert.throws(()=>db.verifySigned(run,{...freshCheck,observer:undefined}),{code:"wrong_outcome"});
+				assert.deepEqual(settled.effects.find(e=>e.id===original.id),original);
+				assert.ok(Object.entries(pins).every(([id,pin])=>settled.nodes[id].check===saved.nodes[id].check && settled.nodes[id].candidate===pin));
+				assert.deepEqual(f.checks.slice(priorChecks.length).map(s=>s.split(" at ")[0]),["Check selector","Check selector","Check selector",...(mode==="observer pass"?["Check joined product","Check final goal"]:[])]);
+				if(mode==="observer fail"){
+					assert.equal(proof.qualified,null);assert.deepEqual(proof.products,end.products);assert.equal(result?.state,"blocked");
+					await assert.rejects(approve.operation("diagnose",author,"owner"),{code:"invalid_observer"});
+				}else{
+					assert.ok(proof.qualification && proof.qualified && result?.check);
+					assert.equal(proof.qualification.receipts.product.commit,proof.qualified);
+					assert.equal(proof.qualification.receipts.goal.commit,proof.qualified);
+					assert.equal(git(f.root,"show",`${proof.qualified}:${sourceFile}`),"phase-aware");
+					assert.ok(Object.entries(pins).every(([id,pin])=>proof.outputs?.[id]===pin));
+				}
+				return;
 			}
 			assert.ok(end.qualified && end.qualification && end.outputs?.selector===checked.receipt.commit);
 			const restored=end.qualification.outputs.find(o=>o.id==="selector");

@@ -23,6 +23,7 @@ export function qualification(run) {
 		outputs.push({ id, directory: grain.directory, commit, behavior: grain.task ?? null, specification: grain.specification,
 			squad: squad.id, charter: squad.charter, boundary: [...grain.boundary], receipt, base, generation,
 			needs: [...grain.needs], inputs: { ...inputs }, ...(component?.kind==="component" && component.pair && {pair:component.pair}),
+			...(component?.kind==="component" && component.observer && {observer:component.observer}),
 			...(n.replaces ? { replaces: n.replaces } : {}) });
 	}
 	return { format: last.ownership ? "foundry-qualification/v4" : product.evaluatorRevision ? "foundry-qualification/v3" : goal.evaluatorRevision ? "foundry-qualification/v2" : "foundry-qualification/v1", direction: policy.direction,

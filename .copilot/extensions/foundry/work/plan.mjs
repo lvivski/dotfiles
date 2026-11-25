@@ -62,7 +62,7 @@ export function unstartedWriter(run,n) {
 	if (n.state!=="writing" || n.worker || n.repairs || n.check || n.preview || n.reuse || !n.token) return;
 	const w=run.effects.find(e=>e.kind==="writer" && e.grain===n.grain.id && e.token===n.token);
 	if (w?.kind==="writer" && w.state==="ready" && !w.callId && !w.nativeId && !w.permissionHold && !w.error &&
-		!w.reuse && !w.claims && generationOf(w)===n.generation) return w;
+		!w.reuse && !w.observer && !w.claims && generationOf(w)===n.generation) return w;
 }
 
 /** @param {Run} run @param {Node} n */

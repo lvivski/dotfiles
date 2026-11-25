@@ -38,7 +38,7 @@ export function finishWriters(run) {
  * @param {Run} run @param {Call} job */
 export function pool(run, job) {
 	const n = job.grain && run.nodes[job.grain];
-	if (!n || n.token!==job.token || n.worker || job.reuse || job.tool!=="create_session" || job.state!=="ready" || job.callId) return [];
+	if (!n || n.token!==job.token || n.worker || job.reuse || job.observer || job.tool!=="create_session" || job.state!=="ready" || job.callId) return [];
 	const squad = squadOf(run,n), busy = new Set([run.owner]), lastComponent = new Map();
 	for (const node of Object.values(run.nodes)) if (node.worker && node.state!=="qualified") busy.add(node.worker);
 	for (const e of run.effects) {

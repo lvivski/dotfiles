@@ -31,6 +31,7 @@ import { retireGoal } from "./retirement.mjs";
 import { prepareReuse } from "./reuse.mjs";
 import { prepareRestoration } from "./restoration.mjs";
 import { currentPair, preparePair } from "./pairing.mjs";
+import { observerBasis, observerWriter, prepareObserver, verifyObserver } from "./observer.mjs";
 import { referenceText } from "./research.mjs";
 import { blockReview, comparison, currentPin, investigation, questions, reserveReview, retireSuperseded, reviews, staleReaderMessage } from "./reviews.mjs";
 import { scoutPacket } from "./scouts.mjs";
@@ -203,11 +204,15 @@ export function createRuntime(directory, host) {
 	}
 	/** @param {string} id @param {Effect} effect @param {string} callId */
 	const claim = (id, effect, callId) => {
-		if (effect.tool!=="bash" || !(effect.recheck || effect.pair) || !unissued(effect)) return db().mutateLocked(id, run => issue(run, effect, callId));
-		const target = (effect.recheck ?? effect.pair)?.target;
+		if (effect.tool==="workflow" || !(effect.recheck || effect.pair || effect.observer) || !unissued(effect)) return db().mutateLocked(id, run => issue(run, effect, callId));
+		let target = (effect.recheck ?? effect.pair)?.target;
 		let claimed = false;
 		db().planAndSwap(id,run => {
-			claimed = (effect.pair ? currentPair(cwd(),run,effect) : checkAuthority(cwd(),run,effect)) && issue(run,effect,callId);
+			if (effect.observer) {
+				target=effect.kind==="component" ? verifyObserver(cwd(),run,effect,text(effect.commit,"observer candidate"),true) :
+					observerBasis(cwd(),run,effect).pair.target;
+				claimed=issue(run,effect,callId);
+			} else claimed = (effect.pair ? currentPair(cwd(),run,effect) : checkAuthority(cwd(),run,effect)) && issue(run,effect,callId);
 			if (claimed) return () => !expired(run) && observeTarget(()=>commitAt(cwd(),run.policy.target)).target===target;
 		});
 		return claimed;
@@ -499,10 +504,12 @@ export function createRuntime(directory, host) {
 			const node = writable(r, actor, token, from);
 			if (!node || node.grain.id !== g.id || digest(n) !== digest(node))
 				fail("stale_assignment", "Assignment changed during capture");
-			let target;
+			/** @type {string|undefined} */ let target;
 			const review = node.review && r.effects.find(e => e.id === node.review);
 			const previous = review && review.kind === "scout" && review.predecessor;
-			if (node.restoration && (typeof g.directory!=="string" || directoryBaseline(cwd(),commit,g.directory)?.tree!==node.restoration.tree))
+			const observer=observerWriter(r,node.token);
+			const observerTarget=observer && verifyObserver(cwd(),r,observer,commit,true);
+			if (!observer && node.restoration && (typeof g.directory!=="string" || directoryBaseline(cwd(),commit,g.directory)?.tree!==node.restoration.tree))
 				fail("changed_restoration","Submit only the unchanged current primary tree authorized for ownership restoration");
 			if (review && review.kind==="scout" && comparison(r,review)?.successor &&
 				!changedFiles(cwd(),text(node.base,"approved product"),commit,scopePaths(g.directory)).length)
@@ -520,7 +527,12 @@ export function createRuntime(directory, host) {
 			node.state = "checking";
 			node.candidate = commit;
 			node.check = reserveCheck(r, actor, cwd(), commit, g.check, g.id, reports);
-			if (target) return () => commitAt(cwd(), r.policy.target) === target;
+			const effect=r.effects.at(-1);
+			if (observer?.observer) {
+				if (effect?.kind!=="component") fail("invalid_observer","Missing writer component reservation");
+				effect.observer={...observer.observer};
+			}
+			if (observerTarget || target) return () => commitAt(cwd(), r.policy.target) === (observerTarget ?? target);
 		});
 		return result.nodes[g.id].token;
 	}
@@ -621,8 +633,8 @@ export function createRuntime(directory, host) {
 			writerRoot(cwd(),run,n,true);
 			return status(run,actor);
 		}
-		if (op === "correct" || op === "reuse" || op === "restore" || op==="pair") {
-			const origin = cwd(), request = op==="restore" || op==="pair" ? (op==="pair" ? preparePair : prepareRestoration)(origin,read(id),actor,a,e=>db().verifySigned(id,e)) :
+		if (op === "correct" || op === "reuse" || op === "restore" || op==="pair" || op==="diagnose") {
+			const origin = cwd(), request = op==="restore" || op==="pair" || op==="diagnose" ? (op==="diagnose" ? prepareObserver : op==="pair" ? preparePair : prepareRestoration)(origin,read(id),actor,a,e=>db().verifySigned(id,e)) :
 				(op === "reuse" ? prepareReuse : prepareCorrection)(origin,read(id),actor,a);
 			await requireReadyOwner(origin);
 			const approved = await host.confirm?.(request.prompt);
@@ -630,7 +642,7 @@ export function createRuntime(directory, host) {
 			if (approved !== true) fail("approval_required","Approval is unavailable; no assignment changed");
 			await requireReadyOwner(origin);
 			const after = db().planAndSwap(id,request.apply);
-			if (op === "correct") return status(after,actor);
+			if (op === "correct" || op==="diagnose" && a.preview!==undefined) return status(after,actor);
 			await drive(id,actor,false,false);
 			return status(read(id),actor);
 		}
@@ -805,7 +817,10 @@ export function createRuntime(directory, host) {
 			const after = db().planAndSwap(id, run => {
 				const live = writable(run, actor, reply.token);
 				if (!live || digest(live) !== digest(n)) fail("stale_assignment", "Assignment changed during preview");
+				const observer=observerWriter(run,live.token);
+				const target=observer && verifyObserver(cwd(),run,observer,commit,false);
 				live.preview = commit;
+				if (target) return ()=>commitAt(cwd(),run.policy.target)===target;
 			});
 			return status(after, actor); // A preview never enters the scheduling or qualification paths.
 		}

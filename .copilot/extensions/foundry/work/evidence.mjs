@@ -90,6 +90,7 @@ export function repairDetail(n) {
 /** A prior reader's *terminal* component attempt, not a verdict about what caused it.
  * @param {import("./model.js").Node} n @param {import("./model.js").Effect|undefined} e */
 export function blockedComponent(n, e) {
+	if (e?.kind==="component" && e.observer) return;
 	const receipt = checkReceipt(e);
 	if (n.state === "blocked" && e?.kind === "component" && e.id === n.check && e.grain === n.grain.id &&
 		e.check === n.grain.check && e.issuer === n.worker && e.callId && !e.error && !e.inlineRepair &&
@@ -110,7 +111,7 @@ export const generationOf = w => w?.kind === "writer" ? w.pooled?.generation ?? 
 export function failedCandidate(run, n) {
 	const e = run.effects.find(e => e.id === n.check), r = checkReceipt(e);
 	return !!n.worker && !!n.generation && !!n.token && !!n.base && !!n.candidate &&
-		e?.kind === "component" && e.grain === n.grain.id && e.issuer === n.worker && e.check === n.grain.check &&
+		e?.kind === "component" && !e.observer && e.grain === n.grain.id && e.issuer === n.worker && e.check === n.grain.check &&
 		!!e.callId && !e.error && !e.inlineRepair && !e.permissionHold && r?.exit === 1 && r.commit === n.candidate &&
 		run.effects.some(w => w.kind === "writer" && w.grain === n.grain.id && w.state === "done" && !!w.callId &&
 			w.nativeId === n.worker && generationOf(w) === n.generation);

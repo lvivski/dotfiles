@@ -48,11 +48,11 @@ export function reserveNotice(run, issuer, token, kind, body, node, baseline) {
 		args: to === issuer ? { message } : { session_id: to, delivery_mode: "immediate", message } });
 }
 
-/** @param {Run} run @param {string} issuer @param {string} token @param {string} base @param {string} brief @param {string|undefined} agent @param {string} grain @param {import("./model.js").CandidateReuse} [reuse] */
-export function reserveWorker(run, issuer, token, base, brief, agent, grain, reuse) {
+/** @param {Run} run @param {string} issuer @param {string} token @param {string} base @param {string} brief @param {string|undefined} agent @param {string} grain @param {import("./model.js").CandidateReuse} [reuse] @param {import("./model.js").Observer} [observer] */
+export function reserveWorker(run, issuer, token, base, brief, agent, grain, reuse, observer) {
 	const id = randomUUID();
-	const restoration=run.nodes[grain]?.restoration;
-	run.effects.push({ id, issuer, token, state: "ready", kind: "writer", grain, ...(reuse ? {reuse} : {}), ...(restoration && {restoration}),
+	const restoration=!observer && run.nodes[grain]?.restoration;
+	run.effects.push({ id, issuer, token, state: "ready", kind: "writer", grain, ...(reuse ? {reuse} : {}), ...(restoration && {restoration}), ...(observer && {observer}),
 		tool: "create_session", args: {
 			name: `${grain.slice(0, 22)} ${token.slice(0, 8)}`, workspace_type: "worktree", base_branch: base,
 			coordinate_with_creator: true, notify_on_idle: "once", kickoff: { mode: "autopilot", prompt: `${marker(run.id, token)}\n${brief}`, ...(agent ? { agent } : {}) }

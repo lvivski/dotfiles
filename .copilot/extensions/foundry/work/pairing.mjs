@@ -27,13 +27,13 @@ function pairHold(cwd,run,grain,retainer,checkpoint,self) {
 	}
 }
 
-/** @param {string} cwd @param {Run} run @param {Call} e */
-export function currentPair(cwd,run,e) {
+/** @param {string} cwd @param {Run} run @param {Call} e @param {string} [self] */
+export function currentPair(cwd,run,e,self=e.id) {
 	const pair=e.pair;
 	if (!pair || !e.grain || !e.commit) return false;
 	const target=commitAt(cwd,run.policy.target), p=run.products.at(-1);
 	return !!p && matchesPair(run,pair,target) && checkpointCurrent(run,pair.checkpoint,target) &&
-		treeOf(cwd,e.commit)===pair.tree && !pairHold(cwd,run,e.grain,pair.retainer,p.commit,e.id);
+		treeOf(cwd,e.commit)===pair.tree && !pairHold(cwd,run,e.grain,pair.retainer,p.commit,self);
 }
 
 /** @param {string} cwd @param {Run} run @param {string} actor @param {Record<string,unknown>} a @param {(e:Call)=>void} verify */

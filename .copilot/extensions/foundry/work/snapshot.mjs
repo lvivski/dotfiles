@@ -130,6 +130,7 @@ const scout = shape({ ...dispatch, kind: one("scout"), tool: one("workflow"), sq
 	correction: optional(shape({ worker: noteText, clause: noteText, file: path, excerpt: noteText, blob: optional(commit), predecessorCheck: optional(id) })),
 	otherNotes: optional(list(shape(noteFields))), diagnostic: optional(shape({ receipt: id, excerpt: noteText })), wake: optional(shape({ review: id, key: string })) });
 const native = shape({
+	observer:optional(shape({pair:id,file:path,before:commit,after:optional(commit)})),
 	restoration:optional(restoration),
 	pair:optional(shape({failed:id,component:id,candidate:commit,retainer:id,checkpoint:id,goal:id,target:commit,tree:commit})),
 	...dispatch, kind: one("writer", "component", "product", "goal", "repair", "decision", "handoff", "artifact", "escalation"), grain: optional(id), inlineRepair: optional(id),
@@ -204,6 +205,19 @@ function productLineage(run,products) {
  * @param {Map<string,import("./model.js").Effect>} effects @param {Map<string,import("./model.js").Product>} products */
 function validDispatch(run, e, effects, products) {
 	if (e.tool!=="workflow") {
+		if (e.observer) {
+			const o=e.observer, old=effects.get(o.pair), prior=run.effects.slice(0,run.effects.indexOf(e));
+			const original=prior.find(w=>old?.kind==="component" && w.kind==="writer" && w.restoration?.goal===old.pair?.goal &&
+				w.grain===old.grain && !!w.restoration);
+			const h=original?.kind==="writer" && original.restoration && historicalGrant(run,original.restoration.from,original.restoration.historical);
+			if (!h || !o.file.startsWith(h.scope.primary+"/") || old?.kind!=="component" || !old.pair || old.grain!==e.grain ||
+				!prior.includes(old) || !old.runnerClaim || checkReceipt(old)?.exit!==1 || e.pair || e.recheck || e.reuse || e.restoration ||
+				o.before===o.after || !(e.kind==="writer" || e.kind==="component")) return false;
+			const jobs=prior.filter(w=>w.kind==="writer" && w.observer?.pair===o.pair), w=jobs[0];
+			if (e.kind==="writer" ? jobs.length || e.tool!=="create_session" || e.issuer!==run.owner || e.args.base_branch!==old.commit :
+				jobs.length!==1 || w.kind!=="writer" || w.nativeId!==e.issuer || old.check!==e.check || !o.after ||
+				digest(o)!==digest(w.observer) || e.commit===old.commit || prior.some(c=>c.kind==="component" && c.observer?.pair===o.pair)) return false;
+		}
 		if (e.launcherExit!==undefined && launcherFailure(e)!==e.launcherExit) return false;
 		if (e.pair) {
 			const a=e.pair, prior=run.effects.slice(0,run.effects.indexOf(e)), old=effects.get(a.failed), held=effects.get(a.component);
@@ -228,7 +242,7 @@ function validDispatch(run, e, effects, products) {
 				run.effects.some(x=>x!==e && x.tool==="bash" && x.recheck?.of===old.id)) return false;
 		}
 	}
-	if (e.state==="withdrawn" && (e.kind!=="writer" || e.callId || e.permissionHold || e.error || e.claims || e.reuse || e.receipt ||
+	if (e.state==="withdrawn" && (e.kind!=="writer" || e.callId || e.permissionHold || e.error || e.claims || e.reuse || e.observer || e.receipt ||
 		!e.token || !e.grain || run.nodes[e.grain]?.token===e.token)) return false;
 	if (e.state === "retired" || "retirement" in e) {
 		if (e.kind !== "goal" || e.state !== "retired" || !e.retirement || e.issuer !== run.owner || !e.runnerStarted ||
@@ -377,6 +391,7 @@ export function decode(value) {
 		return r?.exit !== 1 || r.blockers?.some(s => s.id === a.id) || !Number.isSafeInteger(a.blocked + 1);
 	})) fail("corrupt_run", "Invalid shared blocker attribution");
 	const grants = new Map(value.effects.flatMap(e => e.kind === "writer" && e.readGrant ? [[e.token, e]] : []));
+	const observers = new Map(value.effects.flatMap(e => e.kind==="writer" && e.observer ? [[e.token,e]] : []));
 	const queued = value.pendingReviewNotes ?? [];
 	if (new Set(queued.map(n => `${n.squad}:${noteId(n)}`)).size !== queued.length || queued.some(n => n.after > value.effects.length ||
 		!p.squads.some(s => s.id === n.squad) || !sourceReceipt(effects.get(n.receipt), n)) ||
@@ -445,6 +460,9 @@ export function decode(value) {
 			if (n.priorSource && (!n.base || Array.isArray(n.priorSource)!==Array.isArray(g.directory) ||
 				members(n.priorSource).some(b=>!ownership(g.directory).directories.includes(b.directory) || b.revision !== (g.revision ?? n.base)))) return true;
 			const w = grants.get(n.token);
+			const observer=observers.get(n.token);
+			if (observer && (observer.grain!==id || observer.nativeId!==n.worker || observer.args.base_branch!==n.generation ||
+				(e && (e.kind!=="component" || !e.observer || e.issuer!==n.worker || digest(e.observer)!==digest(observer.observer))))) return true;
 			if (w?.readGrant && (w.grain !== id || w.nativeId !== n.worker || !n.priorSource || digest(w.readGrant)!==digest(n.priorSource))) return true;
 			if (id !== g.id || ![g.specification, g.check, ...g.boundary].every(f => files.has(f)) || !outside(g.directory, p.files)) return true;
 			if (n.stop?.kind === "writer-cannot-repair" && (!n.candidate || inconclusiveRepair(n,e)?.commit !== n.candidate)) return true;

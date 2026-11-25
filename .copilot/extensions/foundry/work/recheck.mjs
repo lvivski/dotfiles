@@ -18,7 +18,7 @@ function selection(cwd,r,actor,id,signed) {
 	if (r.effects.some(e=>e.tool==="bash" && e.recheck?.of===id)) return;
 	admitted(r);
 	const e = r.effects.find(x=>x.id===id);
-	if (e?.kind==="component" && e.pair) fail("not_recoverable","A paired observation is not repeatable");
+	if (e?.kind==="component" && (e.pair || e.observer)) fail("not_recoverable","A paired or observer observation is not repeatable");
 	if (e?.tool!=="bash" || !e.callId || !e.commit || e.args.shellId!==`foundry-${id}` ||
 		r.effects.some(x=>x!==e && x.issuer===e.issuer && (x.callId===e.callId || x.args.shellId===e.args.shellId)))
 		fail("not_recoverable","Need the exact original check and its unique native call");
