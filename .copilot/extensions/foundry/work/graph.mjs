@@ -518,7 +518,9 @@ function repair(run, id, reason) {
 	if (node.restoration) {
 		node.state="blocked";
 		const e=run.effects.find(e=>e.id===node.check);
-		node.reason=e?.kind==="component" && e.observer ? `The approved observer change failed. Inspect this new receipt; do not replay it: ${reason}` :
+		node.reason=e?.kind==="component" && e.observer?.previous ?
+			`Final diagnostic ${e.id} stopped on ${node.grain.id}. Run owner: use the first expected/actual mismatch for ${e.observer.previous.phases.join(" / ")} below to identify the responsible producer. If the phase was not observed, obtain that observation first. A production fix requires its own grant; another observer is not authorized: ${reason}` :
+			e?.kind==="component" && e.observer ? `The approved observer change failed. Inspect this new receipt; do not replay it: ${reason}` :
 			`The approved unchanged directory did not pass; this ownership attestation cannot change the bytes or replay the check: ${reason}`;
 		return;
 	}

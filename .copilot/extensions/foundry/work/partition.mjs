@@ -47,6 +47,19 @@ export function pairedInput(run,e) {
 	return e.pair ?? (old?.kind==="component" ? old.pair : undefined);
 }
 
+/** The only successor of an observer starts on the first writer's signed,
+ * failed candidate. Never walk a chain of diagnostic assignments.
+ * @param {import("./model.js").Effect[]} history @param {import("./model.js").Observer} o */
+export function observerInput(history,o) {
+	const p=o.previous, pair=history.find(e=>e.id===o.pair);
+	if (pair?.kind!=="component" || !pair.pair || !pair.runnerClaim || checkReceipt(pair)?.exit!==1) return;
+	if (!p) return pair;
+	const prior=history.find(e=>e.id===p.check);
+	if (prior?.kind==="component" && prior.observer && !prior.observer.previous && prior.observer.pair===pair.id &&
+		prior.grain===pair.grain && prior.check===pair.check && prior.commit===p.candidate && prior.observer.file===o.file &&
+		prior.observer.after===o.before && prior.runnerClaim && checkReceipt(prior)?.exit===1) return prior;
+}
+
 /** The prior grant is superseded only by a later passing product which included the fresh
  * writer's own check and froze both new owners. A component alone cannot release the hold.
  * @param {import("./model.js").Run} run @param {import("./model.js").NativeCall} writer */
@@ -61,7 +74,7 @@ export function restoredProduct(run,writer) {
 		const pair=pairedInput(run,e);
 		const observer=e.observer;
 		return pair ? (observer ? !!observer.after && later.some(w=>w.kind==="writer" && w.observer?.pair===observer.pair &&
-			w.nativeId===e.issuer && w.observer.after===observer.after) : e.issuer===run.owner) && pair.checkpoint===r.checkpoint && pair.retainer===r.retainer &&
+			w.nativeId===e.issuer && digest(w.observer)===digest(observer)) : e.issuer===run.owner) && pair.checkpoint===r.checkpoint && pair.retainer===r.retainer &&
 			later.some(old=>old.id===pair.failed && old.issuer===writer.nativeId) : e.issuer===writer.nativeId;
 	});
 	return run.products.slice(index+1).find(p=>p.ownership?.[to] && p.outputs[r.retainer] && p.ownership[r.retainer] &&

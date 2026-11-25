@@ -14,7 +14,7 @@ import { comparison, investigation, readerInterrupted, successorDirectory } from
 import { assignmentDirectory, comparisonScope, contains, covers, digest, fail, members, mixed, ownership, relative, sameScope, roots as scopePaths } from "./values.mjs";
 import { productOwnership, retainedMode, understandsTransfers } from "./transfer.mjs";
 import { narrower, stoppedCheck } from "./successor.mjs";
-import { historicalGrant, restoredProduct, validRestoration } from "./partition.mjs";
+import { historicalGrant, observerInput, restoredProduct, validRestoration } from "./partition.mjs";
 import { validIsolation } from "./isolation.mjs";
 
 /** @typedef {(value:unknown)=>boolean} Guard */
@@ -141,7 +141,8 @@ const scout = shape({ ...dispatch, kind: one("scout"), tool: one("workflow"), sq
 	otherNotes: optional(list(shape(noteFields))), diagnostic: optional(shape({ receipt: id, excerpt: noteText })), wake: optional(shape({ review: id, key: string })) });
 const native = shape({
 	isolation:optional(sha256),
-	observer:optional(shape({pair:id,file:path,before:commit,after:optional(commit)})),
+	observer:optional(shape({pair:id,file:path,before:commit,after:optional(commit),previous:optional(shape({check:id,candidate:commit,
+		phases:v=>Array.isArray(v) && v.length>=2 && v.length<=8 && new Set(v).size===v.length && v.every(p=>typeof p==="string" && p.trim()===p && p.length>0 && p.length<=120 && !/[\0\r\n]/.test(p))}))})),
 	restoration:optional(restoration),
 	pair:optional(shape({failed:id,component:id,candidate:commit,retainer:id,checkpoint:id,goal:id,target:commit,tree:commit})),
 	...dispatch, kind: one("writer", "component", "product", "goal", "repair", "decision", "handoff", "artifact", "escalation"), grain: optional(id), inlineRepair: optional(id),
@@ -225,10 +226,13 @@ function validDispatch(run, e, effects, products) {
 			if (!h || !o.file.startsWith(h.scope.primary+"/") || old?.kind!=="component" || !old.pair || old.grain!==e.grain ||
 				!prior.includes(old) || !old.runnerClaim || checkReceipt(old)?.exit!==1 || e.pair || e.recheck || e.reuse || e.restoration ||
 				o.before===o.after || !(e.kind==="writer" || e.kind==="component")) return false;
-			const jobs=prior.filter(w=>w.kind==="writer" && w.observer?.pair===o.pair), w=jobs[0];
-			if (e.kind==="writer" ? jobs.length || e.tool!=="create_session" || e.issuer!==run.owner || e.args.base_branch!==old.commit :
-				jobs.length!==1 || w.kind!=="writer" || w.nativeId!==e.issuer || old.check!==e.check || !o.after ||
-				digest(o)!==digest(w.observer) || e.commit===old.commit || prior.some(c=>c.kind==="component" && c.observer?.pair===o.pair)) return false;
+			const source=observerInput(prior,o), count=o.previous?1:0;
+			const jobs=prior.filter(w=>w.kind==="writer" && w.observer?.pair===o.pair), w=jobs[count];
+			if (!source?.commit || (o.previous && source.observer?.before===o.after) ||
+				(e.kind==="writer" ? jobs.length!==count || e.tool!=="create_session" || e.issuer!==run.owner || e.args.base_branch!==source.commit :
+				jobs.length!==count+1 || w?.kind!=="writer" || w.nativeId!==e.issuer || old.check!==e.check || !o.after ||
+				digest(o)!==digest(w.observer) || e.commit===source.commit || prior.some(c=>c.kind==="component" && c.observer?.pair===o.pair &&
+					c.observer.previous?.check===o.previous?.check))) return false;
 		}
 		if (e.launcherExit!==undefined && launcherFailure(e)!==e.launcherExit) return false;
 		if (e.pair) {

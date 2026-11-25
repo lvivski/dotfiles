@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
@@ -12,14 +15,23 @@ import { partitionConflict } from "../work/partition.mjs";
 import { prepareRestoration } from "../work/restoration.mjs";
 import { createRuntime } from "../work/runtime.mjs";
 
-for (const mode of ["prevent","legacy join","issued writer","restore issued","restore joined","restore pending","restore cited","failed attestation","negative pair","unchanged pair","observer pass","observer fail","independent pass","independent fail","independent incomplete"]) test(`partial repartition of a checked mixed grant / ${mode}`,
+for (const mode of ["prevent","legacy join","issued writer","restore issued","restore joined","restore pending","restore cited","failed attestation","negative pair","unchanged pair","observer pass","observer fail","independent pass","independent fail","independent incomplete","replacement pass","replacement fail"]) test(`partial repartition of a checked mixed grant / ${mode}`,
 	{skip:mode!=="prevent" && !process.env.FOUNDRY_SUCCESSOR_BEFORE},async t=>{
 	const previous=process.env.FOUNDRY_SUCCESSOR_BEFORE;
 	/** @type {typeof factory} */
 	const build=mode==="prevent"||!previous?factory:(await import(pathToFileURL(path.resolve(previous,"test/fixture.mjs")).href)).factory;
 	const run="display", brief=".foundry/display.json", primary="unit/picker", parent="unit/controls", file=`${parent}/entry`;
-	const independent=mode.startsWith("independent "), observer=mode.startsWith("observer ") || independent, negative=mode==="negative pair" || observer, sourceFile=`${primary}/observer`;
-	const beforeIndependent=independent && process.env.FOUNDRY_INDEPENDENT_BEFORE ? (await import(pathToFileURL(path.resolve(process.env.FOUNDRY_INDEPENDENT_BEFORE,"work/runtime.mjs")).href)).createRuntime : createRuntime;
+	const replacement=mode.startsWith("replacement "), independent=mode.startsWith("independent "), observer=mode.startsWith("observer ") || independent || replacement, negative=mode==="negative pair" || observer, sourceFile=`${primary}/observer`;
+	const previousObserver=replacement?process.env.FOUNDRY_REPLACEMENT_BEFORE:independent && process.env.FOUNDRY_INDEPENDENT_BEFORE;
+	const beforeIndependent=previousObserver ? (await import(pathToFileURL(path.resolve(previousObserver,"work/runtime.mjs")).href)).createRuntime : createRuntime;
+	const phases=["first keyboard open","dismissal","post-dismissal reopen"];
+	const phaseCheck=`const frames=JSON.parse(readFileSync("device/events.json","utf8")),wanted=[true,false,true];
+		const sample=readFileSync(${JSON.stringify(sourceFile)},"utf8");
+		for (const [i,label] of ${JSON.stringify(phases)}.entries()){
+			const observed=frames[i][sample==="after-event"?"after":"before"];
+			if(observed!==wanted[i]){console.log(sample==="after-event"?label+": expected "+wanted[i]+" got "+observed:"missing field");process.exit(1);}
+		}`;
+	const frames=(/** @type {boolean[]} */ values)=>JSON.stringify(values.map((after,i)=>({before:i>0 && values[i-1],after})));
 	const loadInputs='const actions=JSON.parse(readFileSync("build.json","utf8"));const data=actions[process.env.FOUNDRY_GRAIN]?.component;';
 	const stages=["component","generated","package","runtime"];
 	const action=(/** @type {string[]} */ data)=>Object.fromEntries(stages.map(stage=>[stage,stage==="component"?data:[]]));
@@ -29,9 +41,10 @@ for (const mode of ["prevent","legacy join","issued writer","restore issued","re
 		productCheck:"product.mjs",goalCheck:"goal.mjs",squads:[{id:"view",areas:["unit"],charter:"brief",checks:["unit.mjs"]}]}),
 		...(independent?{"build.json":JSON.stringify({alpha:action(["unit/alpha/change"]),buttons:action([file]),selector:action([file,sourceFile]),
 			bundle:action(["unit"]),unknown:{runtime:"inputs discovered at runtime"}})}:{}),
+		...(replacement?{"device/events.json":frames([true,false,mode==="replacement pass"])}:{}),
 		".foundry/display/journey.md":"Select the item.","brief":"Maintain the selector.",[file]:"old","unit.mjs":mode==="restore issued"?
 			`import {existsSync} from "node:fs";if(process.env.FOUNDRY_GRAIN==="controls"&&!existsSync("${parent}/fixed"))process.exit(1)`:
-			failed?`import {readFileSync} from "node:fs";${independent?`import assert from "node:assert/strict";${loadInputs}if(process.env.FOUNDRY_GRAIN==="alpha")assert.equal(readFileSync(data[0],"utf8"),"alpha");if(process.env.FOUNDRY_GRAIN==="buttons")assert.equal(readFileSync(data[0],"utf8"),"current button");`:""}if(process.env.FOUNDRY_DIRECTORY==="${primary}"&&!process.env.FOUNDRY_FILES){const control=readFileSync(${independent?"data[0]":JSON.stringify(file)},"utf8");console.log("Checked control: "+control);if(control!=="current button"||${observer?`readFileSync(${independent?"data[1]":JSON.stringify(sourceFile)},"utf8")!=="phase-aware" || ${mode==="observer fail" || independent}`:negative})process.exit(1);}`:"",
+			failed?`import {readFileSync} from "node:fs";${independent?`import assert from "node:assert/strict";${loadInputs}if(process.env.FOUNDRY_GRAIN==="alpha")assert.equal(readFileSync(data[0],"utf8"),"alpha");if(process.env.FOUNDRY_GRAIN==="buttons")assert.equal(readFileSync(data[0],"utf8"),"current button");`:""}if(process.env.FOUNDRY_DIRECTORY==="${primary}"&&!process.env.FOUNDRY_FILES){const control=readFileSync(${independent?"data[0]":JSON.stringify(file)},"utf8");console.log("Checked control: "+control);if(control!=="current button")process.exit(1);${replacement?phaseCheck:`if(${observer?`readFileSync(${independent?"data[1]":JSON.stringify(sourceFile)},"utf8")!=="phase-aware" || ${mode==="observer fail" || independent}`:negative})process.exit(1);`}}`:"",
 		"product.mjs":`console.log(process.env.FOUNDRY_OWNERSHIP);${mode==="independent fail"?'if(JSON.parse(process.env.FOUNDRY_OUTPUTS).alpha)process.exit(1);':mode==="independent incomplete"?'import {writeFileSync} from "node:fs";if(JSON.parse(process.env.FOUNDRY_OUTPUTS).alpha)writeFileSync("unit/alpha/change","altered");':""}`,
 		"goal.mjs":`import {existsSync as has} from "node:fs";${independent?'if(has("unit/alpha/change"))process.exit(0);':""}process.exit(!has("unit/core/result")?1:!has("${primary}/result")?2:!has("${parent}/fixed")?1:${mode==="restore joined"?'!has("unit/done/result")?2:0':pending?`!has("${parent}/button")||!has("unit/rail/change")?1:0`:0})`});
 	const proposal=(/** @type {string} */ id,/** @type {unknown} */ directory,/** @type {string} */ evidence)=>({
@@ -263,9 +276,76 @@ for (const mode of ["prevent","legacy join","issued writer","restore issued","re
 				assert.deepEqual(settled.effects.find(e=>e.id===original.id),original);
 				assert.ok(Object.entries(pins).every(([id,pin])=>settled.nodes[id].check===saved.nodes[id].check && settled.nodes[id].candidate===pin));
 				assert.deepEqual(f.checks.slice(priorChecks.length).map(s=>s.split(" at ")[0]),["Check selector","Check selector","Check selector",...(mode==="observer pass"?["Check joined product","Check final goal"]:[])]);
-				if(mode==="observer fail" || independent){
+				if(mode==="observer fail" || independent || replacement){
 					assert.equal(proof.qualified,null);assert.deepEqual(proof.products,end.products);assert.equal(result?.state,"blocked");
 					await assert.rejects(approve.operation("diagnose",author,"owner"),{code:"invalid_observer"});
+					if (replacement) {
+						assert.ok(freshCheck.commit && result.check && result.receipt.output.includes("missing field"));
+						const previous={check:result.check,candidate:freshCheck.commit,phases};
+						const request={...author,blob:freshCheck.observer.after,previous};
+						if (previousObserver) await assert.rejects(approve.operation("diagnose",request,"owner"),{code:"unsupported_field"});
+						approve.close();wr.close();
+						const owner=f.runtime(f.root,{confirm:async msg=>{assert.ok([previous.check,previous.candidate,...phases,args.candidate].every(p=>msg.includes(p)));return true;}},createRuntime);
+						const approval=prepareObserver(f.root,settled,"owner",request,e=>db.verifySigned(run,e));
+						const moved=structuredClone(settled);moved.nodes.buttons.candidate=f.tip;
+						assert.throws(()=>approval.apply(moved),{code:"stale_assignment"});
+						const refuse=f.runtime(f.root,{confirm:async()=>assert.fail("invalid writer reached consent")},createRuntime);
+						await assert.rejects(refuse.operation("diagnose",{...request,previous:{...previous,candidate:paired.commit}},"owner"),{code:"invalid_observer"});
+						await assert.rejects(refuse.operation("diagnose",{...request,previous:{...previous,check:paired.id}},"owner"),{code:"invalid_observer"});
+						await assert.rejects(refuse.operation("diagnose",{...request,file:citation},"owner"),{code:"invalid_observer"});
+						await assert.rejects(refuse.operation("diagnose",request,w.id),{code:"foreign_run"});
+						await assert.rejects(f.runtime(f.root,{confirm:async()=>false},createRuntime).operation("diagnose",request,"owner"),{code:"approval_declined"});
+						assert.deepEqual(db.read(run),settled);
+						await owner.operation("diagnose",request,"owner");
+						const next=[...f.workers.values()].at(-1);assert.ok(next && next.id!==w.id && phases.every(p=>next.prompt.includes(p)));
+						assert.equal(git(next.cwd,"rev-parse","HEAD"),previous.candidate);
+						const worker=f.runtime(next.cwd,{},createRuntime), submit={run,token:next.token};
+						await assert.rejects(owner.operation("diagnose",request,"owner"),{code:"invalid_observer"});
+						await assert.rejects(f.runtime(w.cwd,{},createRuntime).operation("submit",submission,w.id),{code:"stale_assignment"});
+						await assert.rejects(worker.operation("submit",submit,next.id),{code:"observer_scope"});
+						put(next.cwd,sourceFile,"aggregate");
+						await assert.rejects(worker.operation("preview",submit,next.id),{code:"observer_scope"});
+						put(next.cwd,sourceFile,"after-event");
+						const control=mkdtempSync(path.join(tmpdir(),"observer-controls-"));t.after(()=>rmSync(control,{recursive:true,force:true}));
+						for (const path of [sourceFile,file,"unit.mjs"]) put(control,path,path===sourceFile?"after-event":git(f.root,"show",`${previous.candidate}:${path}`));
+						for (const fault of [-1,0,1,2]) {
+							const expected=[true,false,true];if (fault>=0) expected[fault]=!expected[fault];
+							put(control,"device/events.json",frames(expected));
+							const check=spawnSync(process.execPath,["unit.mjs"],{cwd:control,encoding:"utf8",env:{FOUNDRY_DIRECTORY:primary}});
+							assert.equal(check.status,fault<0?0:1,check.stderr);
+							if (fault>=0) assert.ok(check.stdout.includes(phases[fault]+": expected "));
+						}
+						const draft=(await worker.operation("preview",submit,next.id)).nodes.find(n=>n.grain==="selector")?.preview;assert.ok(draft);
+						await assert.rejects(worker.operation("submit",submit,next.id),{code:"approval_required"});
+						await assert.rejects(f.runtime(f.root,{confirm:async()=>false},createRuntime).operation("diagnose",{...request,preview:draft},"owner"),{code:"approval_declined"});
+						await owner.operation("diagnose",{...request,preview:draft},"owner");
+						put(next.cwd,sourceFile,"not approved");await assert.rejects(worker.operation("submit",submit,next.id),{code:"stale_assignment"});
+						put(next.cwd,sourceFile,"after-event");
+						await worker.operation("submit",submit,next.id);owner.close();
+						const after=f.runtime(f.root,{},createRuntime);
+						after.turn("owner");await after.flush();
+						const final=after.inspect({run,detail:"proof"},"owner"), outcome=final.nodes.find(n=>n.grain==="selector");
+						assert.ok(outcome?.receipt && outcome.check);
+						const ledger=db.read(run);assert.ok(ledger);
+						const component=ledger.effects.find(e=>e.id===outcome.check);assert.ok(component?.kind==="component" && component.observer);
+						db.verifySigned(run,component);assert.throws(()=>db.verifySigned(run,{...component,observer:freshCheck.observer}),{code:"wrong_outcome"});
+						for(const e of [original,paired,freshCheck]) assert.deepEqual(ledger.effects.find(i=>i.id===e.id),e);
+						assert.ok(Object.entries(pins).every(([id,pin])=>ledger.nodes[id].candidate===pin && ledger.nodes[id].check===settled.nodes[id].check));
+						assert.equal(f.workers.size,number+2);assert.equal(final.pending.length,0);
+						if (mode==="replacement pass") {
+							assert.ok(final.qualified && final.qualification);assert.equal(final.qualification.receipts.goal.commit,final.qualified);
+							assert.equal(final.qualification.receipts.product.commit,final.qualified);
+							assert.equal(git(f.root,"show",`${final.qualified}:${sourceFile}`),"after-event");assert.equal(git(f.root,"show",`${final.qualified}:${file}`),"current button");
+							assert.ok(Object.entries(pins).every(([id,pin])=>final.outputs?.[id]===pin));
+						} else {
+							assert.equal(final.qualified,null);assert.deepEqual(final.products,proof.products);assert.deepEqual(final.goalChecks,proof.goalChecks);
+							assert.equal(outcome.receipt.exit,1);assert.match(outcome.receipt.output,/post-dismissal reopen: expected true got false/);
+							assert.match(outcome.reason??"",/owner/i);
+							await assert.rejects(after.operation("diagnose",{...request,blob:git(f.root,"rev-parse",`${outcome.receipt.commit}:${sourceFile}`),previous:{...previous,check:outcome.check,candidate:outcome.receipt.commit}},"owner"),{code:"invalid_observer"});
+							await assert.rejects(after.operation("recheck",{run,check:outcome.check},"owner"),{code:"not_recoverable"});
+						}
+						return;
+					}
 					if (independent) {
 						const alpha=settled.nodes.alpha, selected=[{grain:"alpha",candidate:alpha.candidate,component:alpha.check}];
 						assert.ok(alpha.check && alpha.candidate && result.check && args.component);

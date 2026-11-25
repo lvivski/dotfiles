@@ -50,7 +50,7 @@ export function prepareCheckpoint(cwd,run,actor,a,verify) {
 		const p=r.products.at(-1), obs=r.effects.find(e=>e.id===observer);
 		const pair=obs?.kind==="component" && obs.observer ? r.effects.find(e=>e.id===obs.observer?.pair) : undefined;
 		const n=obs?.grain && r.nodes[obs.grain];
-		if (r.independent || !p || !n || !obs?.commit || !pair?.grain || pair.kind!=="component" || !pair.pair || !n.restoration ||
+		if (r.independent || !p || !n || !obs?.commit || obs.kind!=="component" || obs.observer?.previous || !pair?.grain || pair.kind!=="component" || !pair.pair || !n.restoration ||
 			pair.grain!==obs.grain || n.check!==observer || n.candidate!==obs.commit || checkReceipt(obs)?.exit!==1 ||
 			n.state!=="blocked" || !validRestoration(r,n) || !currentPair(cwd,r,pair) || !checkpointCurrent(r,checkpoint,target) ||
 			r.goal?.check!==goal || ![1,2].includes(goalReceipt(r)?.exit??-1) || commitAt(cwd,r.policy.target)!==target)
