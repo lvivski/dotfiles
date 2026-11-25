@@ -1,5 +1,6 @@
 import { milestoneBlocker, qualifiedProduct } from "./evidence.mjs";
 import { partitionConflict } from "./partition.mjs";
+import { validIsolation } from "./isolation.mjs";
 
 /** @param {import("./model.js").Effect} e */
 export const unissued = e => e.state === "ready" || e.state === "ordinary";
@@ -16,6 +17,8 @@ export function currentCheck(run, e) {
 	}
 	if (e.kind !== "goal" && e.kind !== "product") return false;
 	if (run.conflict && e.state === "ready" || run.blocker) return false;
+	if (run.independent) return !!e.isolation && validIsolation(run) && !run.conflict &&
+		(e.kind==="product" ? run.join?.check===e.id && !milestoneBlocker(run) : run.independent.assessment===e.id);
 	if (unissued(e) && partitionConflict(run, e.kind === "product" ? run.join?.outputs : undefined)) return false;
 	return e.kind === "goal" ? !qualifiedProduct(run) && run.goal?.check === e.id :
 		run.join?.check === e.id && !milestoneBlocker(run);

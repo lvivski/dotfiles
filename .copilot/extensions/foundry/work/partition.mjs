@@ -16,7 +16,7 @@ export function historicalGrant(run,from,historical) {
 	const g=review?.kind==="scout" && review.observation?.grains.find(g=>typeof g!=="string" && g.id===from);
 	if (review?.kind==="scout" && g && typeof g!=="string" && mixed(g.directory) && component.check===g.check &&
 		launch.kind==="writer" && (!launch.finished || sameScope(launch.finished.directory,g.directory)))
-		return {product,component,candidate:component.commit,scope:g.directory,grain:g,squad:review.squad};
+		return {product,component,candidate:component.commit,scope:g.directory,grain:g,squad:review.squad,review};
 }
 
 /** @param {import("./model.js").Run} run @param {import("./model.js").Node} n */
@@ -77,7 +77,7 @@ export function restoredProduct(run,writer) {
  * the passing product. A single unambiguous observed grant can also be matched to
  * its checked candidate if the writer had not yet been marked finished.
  * @param {import("./model.js").Run} run */
-function* displacements(run) {
+export function* displacements(run) {
 	if (!run.products.length) return;
 	/** @type {Map<string,import("./model.js").FileScope>} */
 	const grants=new Map();

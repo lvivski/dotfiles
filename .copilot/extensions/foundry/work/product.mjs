@@ -201,10 +201,11 @@ function replaceFile(cwd, tree, file, replacement, expected) {
 }
 
 /** @param {string} cwd @param {string|null} tree @param {string} label @param {string} [parent] */
-function pin(cwd, tree, label, parent) {
-	const oid = git(cwd, ["-c", "commit.gpgSign=false", "commit-tree", tree ?? build(cwd, []), ...(parent ? ["-p", parent] : [])], `${label}\n`).toString().trim();
-	return retain(cwd, oid);
+function commitTree(cwd, tree, label, parent) {
+	return git(cwd, ["-c", "commit.gpgSign=false", "commit-tree", tree ?? build(cwd, []), ...(parent ? ["-p", parent] : [])], `${label}\n`).toString().trim();
 }
+/** @param {string} cwd @param {string|null} tree @param {string} label @param {string} [parent] */
+const pin=(cwd,tree,label,parent)=>retain(cwd,commitTree(cwd,tree,label,parent));
 
 /** @param {string} cwd @param {string} commit */
 export const treeOf = (cwd, commit) => git(cwd, ["rev-parse", "--verify", `${commit}^{tree}`]).toString().trim();
@@ -361,6 +362,9 @@ export function combinedTree(cwd, base, updates) {
 export function combine(cwd,base,updates,parent,attribution) {
 	return pin(cwd,combinedTree(cwd,base,updates),attribution ? `Foundry product candidate\nChecked ownership restoration: ${attribution}` : "Foundry product candidate",parent);
 }
+/** Compute the exact non-release commit for consent without retaining a ref.
+ * @param {string} cwd @param {string} base @param {Update[]} updates */
+export const stageCheckpoint=(cwd,base,updates)=>commitTree(cwd,combinedTree(cwd,base,updates),"Foundry independent checkpoint",base);
 
 /** @param {string} cwd @param {string} tree */
 export const pairedCommit=(cwd,tree)=>pin(cwd,tree,"Foundry paired observation");

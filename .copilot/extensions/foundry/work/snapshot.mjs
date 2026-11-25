@@ -15,6 +15,7 @@ import { assignmentDirectory, comparisonScope, contains, covers, digest, fail, m
 import { productOwnership, retainedMode, understandsTransfers } from "./transfer.mjs";
 import { narrower, stoppedCheck } from "./successor.mjs";
 import { historicalGrant, restoredProduct, validRestoration } from "./partition.mjs";
+import { validIsolation } from "./isolation.mjs";
 
 /** @typedef {(value:unknown)=>boolean} Guard */
 /** @type {Guard} */
@@ -112,7 +113,16 @@ const node = n => nodeShape(n) && object(n) && (n.excluded === undefined || n.st
 	n.state === "blocked" && !!n.worker && !!n.token && !!n.generation);
 const assessment = { target: commit, commit, check: id };
 const paths=shape({directories:list(path),files:list(path)});
-const product = shape({ ...assessment, outputs: named(commit), ownership:optional(named(v=>object(v) && paths(v) && optional(paths)(v.exclude))), qualifiedAt: optional(positive) });
+const scopes=named(v=>object(v) && paths(v) && optional(paths)(v.exclude));
+const product = shape({ ...assessment, outputs: named(commit), ownership:optional(scopes), qualifiedAt: optional(positive) });
+const proofNotes=list(shape({file:path,blob:commit,excerpt:string,inventory:shape({file:path,keys:list(string),blob:commit}),inputs:list(path),reason:string}));
+/** @type {Guard} */
+const sha256=v=>typeof v==="string" && /^[0-9a-f]{64}$/.test(v);
+const subset=shape({observer:id,checkpoint:id,goal:id,target:commit,assembly:commit,basis:sha256,ownership:scopes,
+	hold:shape({historical:id,grain:id,original:id,pair:id,retainer:id,candidate:commit,component:id}),
+	selected:list(shape({grain:id,candidate:commit,component:id})),
+	evidence:list(shape({component:id,commit,stages:shape({component:proofNotes,generated:proofNotes,package:proofNotes,runtime:proofNotes})})),
+	product:id,assessment:optional(id)});
 const receipt = shape({ commit, check: path, completedAt:optional(positive), evaluatorRevision: optional(commit), productEvaluatorRevision:optional(commit), exit: v => v === null || count(v), output: string,
 	failure: optional(one("changed-export", "incomplete")), repair: optional(id), squad: optional(id), blockers: optional(validSignals), feedback: optional(validFeedback),
 	feedbackFile: optional(shape({ blob: commit, legacy: optional(bool) })) });
@@ -130,6 +140,7 @@ const scout = shape({ ...dispatch, kind: one("scout"), tool: one("workflow"), sq
 	correction: optional(shape({ worker: noteText, clause: noteText, file: path, excerpt: noteText, blob: optional(commit), predecessorCheck: optional(id) })),
 	otherNotes: optional(list(shape(noteFields))), diagnostic: optional(shape({ receipt: id, excerpt: noteText })), wake: optional(shape({ review: id, key: string })) });
 const native = shape({
+	isolation:optional(sha256),
 	observer:optional(shape({pair:id,file:path,before:commit,after:optional(commit)})),
 	restoration:optional(restoration),
 	pair:optional(shape({failed:id,component:id,candidate:commit,retainer:id,checkpoint:id,goal:id,target:commit,tree:commit})),
@@ -148,6 +159,7 @@ const native = shape({
 	runnerStarted: optional(bool), runnerClaim: optional(v => typeof v === "string" && /^[A-Za-z0-9_-]{43}$/.test(v)), receipt: optional(receipt)
 });
 const snapshot = shape({
+	independent:optional(subset),
 	id, owner: string, policy, references: optional(named(commit)),
 	scheduling: optional(shape({ revision: positive, workers: optional(positive), checkpointReviews: bool })),
 	repins: optional(list(shape({ from: commit, revision: commit, files: list(path) }))),
@@ -405,6 +417,7 @@ export function decode(value) {
 		fail("corrupt_run", "Invalid goal evaluator pin history");
 	const last = products.at(-1);
 	const checkpoints = new Map(products.map(p=>[p.check,p]));
+	if (!validIsolation(value)) fail("corrupt_run","Invalid independent checkpoint or original ownership hold");
 	if (!productLineage(value,checkpoints)) fail("corrupt_run","Invalid product evaluator lineage");
 	if (effects.size !== value.effects.length || value.effects.some(e => !validDispatch(value, e, effects, checkpoints)))
 		fail("corrupt_run", "Invalid Foundry dispatch");
@@ -483,10 +496,10 @@ export function decode(value) {
 			const transfer=understandsTransfers(value,e.evaluatorRevision);
 			const restore=!transfer && !Object.values(product.ownership).some(s=>s.exclude) && value.effects.some(w=>w.kind==="writer" &&
 				w.restoration && (product===value.join ? w.grain && nodes[w.grain]?.restoration && product.outputs[w.grain] : restoredProduct(value,w)===product));
-			if (!transfer && !restore || digest(Object.keys(product.ownership).sort())!==digest(Object.keys(product.outputs).sort()))
+			if (!transfer && !restore && value.independent?.product!==product.check || digest(Object.keys(product.ownership).sort())!==digest(Object.keys(product.outputs).sort()))
 				fail("corrupt_run","Invalid product ownership snapshot");
 		}
-		if (product===value.join && product.ownership && Object.keys(product.outputs).every(id=>nodes[id]) &&
+		if (product===value.join && value.independent?.product!==product.check && product.ownership && Object.keys(product.outputs).every(id=>nodes[id]) &&
 			digest(product.ownership)!==digest(productOwnership(nodes,product.outputs) ?? null))
 			fail("corrupt_run","Product reservation does not match its partition of the current outputs");
 		if (product === value.join ? product.qualifiedAt !== undefined :

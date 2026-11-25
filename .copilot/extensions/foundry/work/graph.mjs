@@ -15,6 +15,7 @@ import { awaitingReply } from "./reservation.mjs";
 import { workerLimit } from "./policy.mjs";
 import { finishWriters } from "./pool.mjs";
 import { partitionConflict } from "./partition.mjs";
+import { validIsolation } from "./isolation.mjs";
 import { deliveredFile, rejectedSource, unseenText, validMatch } from "./pages.mjs";
 import { actionable, consumersOf, dependencies, liveNeeds, owns, productOutputs, proposal, requireNewWork, revise, settledOutput, stalePins, superseded, supersededAttempt, unstartedWriter, validateNodes, waiting, writerInputs } from "./plan.mjs";
 import { changedFiles, checkDirectory, combine, commitAt, committedFile, describeInventory, inventory, outside, regularFiles, rejoin, retain, treeOf, verifyContracts, verifyDirectoryPin, versionOf, withoutGrain } from "./product.mjs";
@@ -884,6 +885,22 @@ export function advance(cwd, run, actor, discover, context = {}) {
 	const observed = observeTarget(() => context.target ?? commitAt(cwd, run.policy.target));
 	if (observed.target === undefined) return;
 	const target = observed.target, tip = () => target;
+	if (run.independent) {
+		const s=run.independent, join=run.join, e=run.effects.find(e=>e.id===s.product);
+		if (!owner || !join || elapsed || !validIsolation(run) || target!==s.target || run.blocker || run.conflict ||
+			run.effects.some(e=>e.permissionHold) || e?.kind!=="product" || e.error) return;
+		const receipt=checkReceipt(e);
+		if (!receipt) return;
+		if (receipt.exit!==0) { e.error=`Independent product check did not pass: ${receipt.output || receipt.exit}`;return; }
+		verifyContracts(cwd,run.policy,target);
+		run.products.push(join);delete run.join;
+		for (const {grain} of s.selected) run.nodes[grain].state="qualified";
+		assess(cwd,run,actor,target,join.commit);
+		const assessment=run.effects.at(-1);
+		if (assessment?.kind!=="goal") throw Error("Independent assessment reservation is missing");
+		assessment.isolation=e.isolation;s.assessment=assessment.id;
+		return;
+	}
 	if (elapsed) {
 		if (run.goal?.target !== target || Object.values(run.nodes).some(n=>n.state==="checking" || n.state==="writing")) return;
 		verifyContracts(cwd,run.policy,target);

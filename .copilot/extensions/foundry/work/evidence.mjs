@@ -175,6 +175,7 @@ export function missingObservation(run) {
 /** A goal milestone doesn't qualify until both exact receipts are applied to this product.
  * @param {Run} run */
 export function qualifiedProduct(run) {
+	if (run.independent) return;
 	const last = run.products.at(-1);
 	return last?.qualifiedAt ? last : undefined;
 }

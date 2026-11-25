@@ -8,6 +8,15 @@ export interface Successor { from: string; check: string; to: string }
 export interface Restoration { from: string; historical: string; checkpoint: string; goal: string; retainer: string; tree: string }
 export interface Observer { pair: string; file: string; before: string; after?: string }
 export interface Pairing { failed: string; component: string; candidate: string; retainer: string; checkpoint: string; goal: string; target: string; tree: string }
+export interface Footnote { file:string; blob:string; excerpt:string; inventory:{file:string; keys:string[]; blob:string}; inputs:string[]; reason:string }
+export interface Footprint { component:string; commit:string; stages:Record<"component"|"generated"|"package"|"runtime",Footnote[]> }
+export interface Subset {
+	observer:string; checkpoint:string; goal:string; target:string; assembly:string; basis:string;
+	hold:{historical:string; grain:string; original:string; pair:string; retainer:string; candidate:string; component:string};
+	ownership:NonNullable<Product["ownership"]>;
+	selected:{grain:string; candidate:string; component:string}[]; evidence:Footprint[];
+	product:string; assessment?:string;
+}
 export interface Retained extends FileScope { review: string; to: string }
 export type Scope = string | string[] | FileScope;
 
@@ -237,6 +246,7 @@ export interface Baseline {
 export type Inventory = Baseline | Baseline[];
 
 export interface NativeCall extends Dispatch, ArtifactReport {
+	isolation?:string;
 	restoration?: Restoration;
 	pair?: Pairing;
 	observer?: Observer;
@@ -266,6 +276,7 @@ export interface CandidateReuse {
 export type Effect = NativeCall | Review;
 
 export interface Run {
+	independent?:Subset;
 	id: string;
 	owner: string;
 	references?: Record<string, string>;

@@ -14,6 +14,8 @@ try {
 		const e = run.effects.find(e => e.id === effectId);
 		if (!e || e.tool !== "bash" || !awaitingReply(e) || !currentCheck(run, e) || e.runnerStarted)
 			fail("unissued_check", "Checks are exclusive to the current issued attempt");
+		if (e.isolation && (commitAt(cwd,run.policy.target)!==run.independent?.target || run.effects.some(x=>x.permissionHold)))
+			fail("stale_assignment","The approved independent checkpoint target or permissions changed");
 		const pair=pairedInput(run,e);
 		if (pair && (!matchesPair(run,pair,commitAt(cwd,run.policy.target)) || run.join || run.conflict || run.blocker || run.effects.some(x=>x.permissionHold)))
 			fail("stale_assignment","Approved paired inputs are no longer current; no observation was made");
@@ -33,6 +35,8 @@ try {
 			evaluation = { kind: e.kind, outputs };
 			env.FOUNDRY_OWNERSHIP = JSON.stringify(run.join?.ownership ?? Object.fromEntries(outputs.map(id => [id,ownership(run.nodes[id].grain.directory)])));
 			env.FOUNDRY_OUTPUTS = JSON.stringify(Object.fromEntries(outputs.map(id => {
+				const frozen=e.isolation && run.join?.ownership?.[id].directories;
+				if (frozen) return [id,frozen.length===1?frozen[0]:frozen];
 				const scope=run.nodes[id].grain.directory;
 				return [id,mixed(scope) ? scope.primary : scope];
 			})));

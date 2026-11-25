@@ -6,6 +6,7 @@ import { git } from "./product.mjs";
 import { fail } from "./values.mjs";
 import { decode } from "./snapshot.mjs";
 import { acceptOutcome, claimOutcome } from "./outcomes.mjs";
+import { isolationSeal, keepsIsolation } from "./isolation.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 export const protocol = 13;
@@ -183,7 +184,8 @@ export function openDatabase(cwd, file = ledgerPath(cwd), create = false, checkS
 		planAndSwap(id, plan) {
 			for (;;) {
 				const { run, document, sum } = required(id);
-				const valid = plan(run), next = JSON.stringify(run);
+				const prior=run.independent && isolationSeal(run.independent), valid = plan(run), next = JSON.stringify(run);
+				if (next!==document && !keepsIsolation(run,prior)) fail("ownership_transition","Mutation conflicts with the approved non-release checkpoint");
 				if (next === document && !valid) return run;
 				if (write(() => (!valid || valid()) && (next === document
 					? db.prepare("SELECT checksum FROM runs WHERE id=?").get(id)?.checksum === sum
@@ -200,8 +202,9 @@ export function openDatabase(cwd, file = ledgerPath(cwd), create = false, checkS
 		mutateLocked(id, fn) {
 			return write(() => {
 				const { run, document } = required(id);
-				const result = fn(run);
+				const prior=run.independent && isolationSeal(run.independent), result = fn(run);
 				const doc = JSON.stringify(run);
+				if (doc!==document && !keepsIsolation(run,prior)) fail("ownership_transition","Mutation conflicts with the approved non-release checkpoint");
 				if (doc !== document) db.prepare("UPDATE runs SET document=?,checksum=? WHERE id=?").run(doc, checksum(doc), id);
 				return result;
 			});

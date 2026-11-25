@@ -6,27 +6,34 @@ import { factory, git, put } from "./fixture.mjs";
 import { openDatabase } from "../work/database.mjs";
 import { currentPair, preparePair } from "../work/pairing.mjs";
 import { prepareObserver } from "../work/observer.mjs";
+import { prepareCheckpoint } from "../work/checkpoint.mjs";
 import { decode } from "../work/snapshot.mjs";
 import { partitionConflict } from "../work/partition.mjs";
 import { prepareRestoration } from "../work/restoration.mjs";
 import { createRuntime } from "../work/runtime.mjs";
 
-for (const mode of ["prevent","legacy join","issued writer","restore issued","restore joined","restore pending","restore cited","failed attestation","negative pair","unchanged pair","observer pass","observer fail"]) test(`partial repartition of a checked mixed grant / ${mode}`,
+for (const mode of ["prevent","legacy join","issued writer","restore issued","restore joined","restore pending","restore cited","failed attestation","negative pair","unchanged pair","observer pass","observer fail","independent pass","independent fail","independent incomplete"]) test(`partial repartition of a checked mixed grant / ${mode}`,
 	{skip:mode!=="prevent" && !process.env.FOUNDRY_SUCCESSOR_BEFORE},async t=>{
 	const previous=process.env.FOUNDRY_SUCCESSOR_BEFORE;
 	/** @type {typeof factory} */
 	const build=mode==="prevent"||!previous?factory:(await import(pathToFileURL(path.resolve(previous,"test/fixture.mjs")).href)).factory;
 	const run="display", brief=".foundry/display.json", primary="unit/picker", parent="unit/controls", file=`${parent}/entry`;
-	const observer=mode.startsWith("observer "), negative=mode==="negative pair" || observer, sourceFile=`${primary}/observer`;
+	const independent=mode.startsWith("independent "), observer=mode.startsWith("observer ") || independent, negative=mode==="negative pair" || observer, sourceFile=`${primary}/observer`;
+	const beforeIndependent=independent && process.env.FOUNDRY_INDEPENDENT_BEFORE ? (await import(pathToFileURL(path.resolve(process.env.FOUNDRY_INDEPENDENT_BEFORE,"work/runtime.mjs")).href)).createRuntime : createRuntime;
+	const loadInputs='const actions=JSON.parse(readFileSync("build.json","utf8"));const data=actions[process.env.FOUNDRY_GRAIN]?.component;';
+	const stages=["component","generated","package","runtime"];
+	const action=(/** @type {string[]} */ data)=>Object.fromEntries(stages.map(stage=>[stage,stage==="component"?data:[]]));
 	const failed=["failed attestation","unchanged pair"].includes(mode) || negative, cited=mode==="restore cited" || failed, pending=cited || mode==="restore pending";
 	const first=failed && process.env.FOUNDRY_PAIR_BEFORE ? (await import(pathToFileURL(path.resolve(process.env.FOUNDRY_PAIR_BEFORE,"work/runtime.mjs")).href)).createRuntime : createRuntime;
 	const f=build(t,run,brief,{[brief]:JSON.stringify({version:2,id:run,target:"refs/heads/main",direction:"Render a selection.",ownership:"exact-files",
 		productCheck:"product.mjs",goalCheck:"goal.mjs",squads:[{id:"view",areas:["unit"],charter:"brief",checks:["unit.mjs"]}]}),
+		...(independent?{"build.json":JSON.stringify({alpha:action(["unit/alpha/change"]),buttons:action([file]),selector:action([file,sourceFile]),
+			bundle:action(["unit"]),unknown:{runtime:"inputs discovered at runtime"}})}:{}),
 		".foundry/display/journey.md":"Select the item.","brief":"Maintain the selector.",[file]:"old","unit.mjs":mode==="restore issued"?
 			`import {existsSync} from "node:fs";if(process.env.FOUNDRY_GRAIN==="controls"&&!existsSync("${parent}/fixed"))process.exit(1)`:
-			failed?`import {readFileSync} from "node:fs";if(process.env.FOUNDRY_DIRECTORY==="${primary}"&&!process.env.FOUNDRY_FILES){const control=readFileSync("${file}","utf8");console.log("Checked control: "+control);if(control!=="current button"||${observer?`readFileSync("${sourceFile}","utf8")!=="phase-aware" || ${mode==="observer fail"}`:negative})process.exit(1);}`:"",
-		"product.mjs":`console.log(process.env.FOUNDRY_OWNERSHIP)`,
-		"goal.mjs":`import {existsSync as has} from "node:fs";process.exit(!has("unit/core/result")?1:!has("${primary}/result")?2:!has("${parent}/fixed")?1:${mode==="restore joined"?'!has("unit/done/result")?2:0':pending?`!has("${parent}/button")||!has("unit/rail/change")?1:0`:0})`});
+			failed?`import {readFileSync} from "node:fs";${independent?`import assert from "node:assert/strict";${loadInputs}if(process.env.FOUNDRY_GRAIN==="alpha")assert.equal(readFileSync(data[0],"utf8"),"alpha");if(process.env.FOUNDRY_GRAIN==="buttons")assert.equal(readFileSync(data[0],"utf8"),"current button");`:""}if(process.env.FOUNDRY_DIRECTORY==="${primary}"&&!process.env.FOUNDRY_FILES){const control=readFileSync(${independent?"data[0]":JSON.stringify(file)},"utf8");console.log("Checked control: "+control);if(control!=="current button"||${observer?`readFileSync(${independent?"data[1]":JSON.stringify(sourceFile)},"utf8")!=="phase-aware" || ${mode==="observer fail" || independent}`:negative})process.exit(1);}`:"",
+		"product.mjs":`console.log(process.env.FOUNDRY_OWNERSHIP);${mode==="independent fail"?'if(JSON.parse(process.env.FOUNDRY_OUTPUTS).alpha)process.exit(1);':mode==="independent incomplete"?'import {writeFileSync} from "node:fs";if(JSON.parse(process.env.FOUNDRY_OUTPUTS).alpha)writeFileSync("unit/alpha/change","altered");':""}`,
+		"goal.mjs":`import {existsSync as has} from "node:fs";${independent?'if(has("unit/alpha/change"))process.exit(0);':""}process.exit(!has("unit/core/result")?1:!has("${primary}/result")?2:!has("${parent}/fixed")?1:${mode==="restore joined"?'!has("unit/done/result")?2:0':pending?`!has("${parent}/button")||!has("unit/rail/change")?1:0`:0})`});
 	const proposal=(/** @type {string} */ id,/** @type {unknown} */ directory,/** @type {string} */ evidence)=>({
 		outcome:"regenerate",reason:"Implement missing behavior.",evidence:[evidence],grains:[{id,directory,task:`Implement ${id}`,check:"unit.mjs",needs:[]}]});
 	await f.start();await f.scouts[0].report(proposal("core","unit/core","brief"));
@@ -211,7 +218,7 @@ for (const mode of ["prevent","legacy join","issued writer","restore issued","re
 				await assert.rejects(next.operation("pair",args,"owner"),{code:"invalid_pair"});
 				assert.deepEqual(f.checks.slice(priorChecks.length).map(s=>s.split(" at ")[0]),["Check selector","Check selector"]);
 				if (!observer) return;
-				const approve=f.runtime(f.root,{confirm:async msg=>{assert.ok(msg.includes(sourceFile) && msg.includes(paired.id));return true;}},createRuntime);
+				const approve=f.runtime(f.root,{confirm:async msg=>{assert.ok(msg.includes(sourceFile) && msg.includes(paired.id));return true;}},beforeIndependent);
 				const author={run,grain:"selector",pair:paired.id,file:sourceFile,blob:git(f.root,"rev-parse",`${paired.commit}:${sourceFile}`)};
 				if(process.env.FOUNDRY_OBSERVER_BEFORE){
 					await assert.rejects(next.operation("diagnose",author,"owner"),{code:"unknown_operation"});
@@ -233,7 +240,7 @@ for (const mode of ["prevent","legacy join","issued writer","restore issued","re
 				await approve.operation("diagnose",author,"owner");
 				const w=[...f.workers.values()].at(-1);assert.ok(w && w.id!==attester.id && w.id!==buttons.id);
 				assert.equal(f.workers.size,number+1);assert.equal(git(w.cwd,"rev-parse","HEAD^{tree}"),paired.pair.tree);
-				const wr=f.runtime(w.cwd,{},createRuntime), submission={run,token:w.token};
+				const wr=f.runtime(w.cwd,{},beforeIndependent), submission={run,token:w.token};
 				await assert.rejects(wr.operation("submit",{run,token:attester.token},attester.id),{code:"stale_assignment"});
 				await assert.rejects(wr.operation("submit",submission,w.id),{code:"observer_scope"});
 				put(w.cwd,sourceFile,"phase-aware");put(w.cwd,citation,"outside approved file");
@@ -256,9 +263,103 @@ for (const mode of ["prevent","legacy join","issued writer","restore issued","re
 				assert.deepEqual(settled.effects.find(e=>e.id===original.id),original);
 				assert.ok(Object.entries(pins).every(([id,pin])=>settled.nodes[id].check===saved.nodes[id].check && settled.nodes[id].candidate===pin));
 				assert.deepEqual(f.checks.slice(priorChecks.length).map(s=>s.split(" at ")[0]),["Check selector","Check selector","Check selector",...(mode==="observer pass"?["Check joined product","Check final goal"]:[])]);
-				if(mode==="observer fail"){
+				if(mode==="observer fail" || independent){
 					assert.equal(proof.qualified,null);assert.deepEqual(proof.products,end.products);assert.equal(result?.state,"blocked");
 					await assert.rejects(approve.operation("diagnose",author,"owner"),{code:"invalid_observer"});
+					if (independent) {
+						const alpha=settled.nodes.alpha, selected=[{grain:"alpha",candidate:alpha.candidate,component:alpha.check}];
+						assert.ok(alpha.check && alpha.candidate && result.check && args.component);
+						const evidence=[original.id,paired.id,result.check,args.component,alpha.check].map(component=>{
+							const key=component===alpha.check?"alpha":component===args.component?"buttons":"selector";
+							return {component,stages:Object.fromEntries(stages.map(stage=>[stage,[
+								{file:"unit.mjs",excerpt:loadInputs,inventory:{file:"build.json",keys:[key,stage]},reason:stage==="component"?"The evaluator reads the selected grain's declared inputs directly":"No generated or packaged dependency: the direct file assertion runs in the evaluator."}
+							]]))};
+						});
+						const batch={run,observer:result.check,checkpoint:args.checkpoint,goal:args.goal,target:f.tip,selected,evidence};
+						if(process.env.FOUNDRY_INDEPENDENT_BEFORE) await assert.rejects(approve.operation("checkpoint",batch,"owner"),{code:"unknown_operation"});
+						approve.close();wr.close();
+						const candidate=alpha.candidate;
+						let movedBefore=false;
+						const fresh=f.runtime(f.root,{confirm:async msg=>{assert.ok(msg.includes(candidate) && msg.includes(result.check??"!"));return true;},
+							permissionBlocker:async()=>{
+								if (mode==="independent pass" && !movedBefore && db.read(run)?.independent) {
+									git(f.root,"update-ref","refs/heads/main",candidate,f.tip);movedBefore=true;
+								}
+								return null;
+							},
+							execute:async(tool,a,id)=>{
+								const reply=await f.execute(tool,a,id);
+								if (mode==="independent pass" && String(a.description).startsWith("Check joined product"))
+									git(f.root,"update-ref","refs/heads/main",candidate,f.tip);
+								return reply;
+							}},createRuntime);
+						if(mode==="independent pass"){
+							const refused=f.runtime(f.root,{confirm:async()=>assert.fail("invalid batch reached approval")},createRuntime);
+							await assert.rejects(refused.operation("checkpoint",{...batch,evidence:evidence.slice(1)},"owner"),{code:"incomplete_evidence"});
+							await assert.rejects(refused.operation("checkpoint",{...batch,selected:[]},"owner"),{code:"incomplete_evidence"});
+							await assert.rejects(refused.operation("checkpoint",{...batch,selected:[...selected,{...selected[0],grain:"delta"}]},"owner"),{code:"dependent_output"});
+							await assert.rejects(refused.operation("checkpoint",{...batch,selected:[{...selected[0],component:args.component}]},"owner"),{code:"dependent_output"});
+							await assert.rejects(refused.operation("checkpoint",{...batch,target:alpha.candidate},"owner"),{code:"stale_assignment"});
+							await assert.rejects(refused.operation("checkpoint",batch,w.id),{code:"foreign_run"});
+							for (const index of [evidence.length-1,0]) {
+								const cross=structuredClone(evidence);cross[index].stages.runtime[0].inventory.keys=["bundle","component"];
+								await assert.rejects(refused.operation("checkpoint",{...batch,evidence:cross},"owner"),{code:"dependent_output"});
+							}
+							const missing=structuredClone(evidence);missing[0].stages.runtime[0].inventory.keys=["unknown","runtime"];
+							await assert.rejects(refused.operation("checkpoint",{...batch,evidence:missing},"owner"),{code:"incomplete_evidence"});
+							const declined=f.runtime(f.root,{confirm:async()=>false},createRuntime);
+							await assert.rejects(declined.operation("checkpoint",batch,"owner"),{code:"approval_declined"});
+							const prepare=(/** @type {typeof settled} */ r)=>prepareCheckpoint(f.root,r,"owner",batch,e=>db.verifySigned(run,e));
+							const consent=prepare(settled), stale=structuredClone(settled);
+							stale.nodes.alpha.check=b.check;assert.throws(()=>consent.apply(stale),{code:"dependent_output"});
+							const pending=structuredClone(settled);
+							const job=pending.effects.find(e=>e.kind==="writer" && e.grain==="delta");assert.ok(job);job.state="uncertain";
+							assert.throws(()=>prepare(pending),{code:"dispatch_held"});
+							const reads=structuredClone(settled);reads.nodes.buttons.supporting=["unit/alpha/change"];
+							assert.throws(()=>prepare(reads),{code:"dependent_output"});
+							const unscoped=structuredClone(settled);unscoped.nodes.alpha.generation=original.commit;
+							assert.throws(()=>prepare(unscoped),{code:"dependent_output"});
+							assert.deepEqual(db.read(run),settled);
+						}
+						const calls=f.checks.length;
+						await fresh.operation("checkpoint",batch,"owner");
+						if (mode==="independent pass") {
+							assert.ok(movedBefore);assert.equal(f.checks.length,calls,"moving before issue must not spend a call");
+							git(f.root,"update-ref","refs/heads/main",f.tip,candidate);
+							fresh.turn("owner");await fresh.flush();
+							const pending=fresh.inspect({run,detail:"proof"},"owner");
+							assert.equal(pending.candidate?.receipt?.exit,0);assert.deepEqual(pending.products,proof.products);
+							assert.equal(f.checks.length,calls+1,"moving before settlement must not advance or retry the passing product");
+							git(f.root,"update-ref","refs/heads/main",f.tip,candidate);
+						}
+						fresh.close();
+						const reloaded=f.runtime(f.root,{},createRuntime);reloaded.turn("owner");await reloaded.flush();
+						const report=reloaded.inspect({run,detail:"proof"},"owner");
+						assert.equal(report.qualified,null);assert.equal(report.qualification,null);
+						assert.equal(reloaded.inspect({run,detail:"cleanup"},"owner").handoff,null);
+						assert.deepEqual(report.checkRecovery,proof.checkRecovery);
+						const updated=db.read(run);assert.ok(updated?.independent);
+						const updatedReceipt=updated.effects.find(e=>e.id===updated.independent?.product);assert.ok(updatedReceipt?.kind==="product");
+						db.verifySigned(run,updatedReceipt);assert.throws(()=>db.verifySigned(run,{...updatedReceipt,isolation:undefined}),{code:"wrong_outcome"});
+						assert.deepEqual(updated.effects.slice(0,settled.effects.length),settled.effects);
+						assert.deepEqual(updated.products.slice(0,settled.products.length),settled.products);
+						assert.ok(Object.entries(pins).every(([id,pin])=>updated.nodes[id].candidate===pin && updated.nodes[id].check===settled.nodes[id].check));
+						const stripped=structuredClone(updated);delete stripped.independent;assert.throws(()=>decode(stripped),{code:"corrupt_run"});
+						assert.throws(()=>db.planAndSwap(run,r=>{r.nodes.buttons.state="qualified";}),{code:"ownership_transition"});
+						assert.deepEqual(db.read(run),updated);
+						if(mode==="independent pass"){
+							assert.deepEqual(report.outputs,{...proof.outputs,alpha:alpha.candidate});assert.notEqual(report.checkpoint,proof.checkpoint);
+							assert.equal(report.goal?.receipt?.exit,0);assert.equal(report.goal?.receipt?.commit,report.checkpoint);
+							assert.equal(git(f.root,"diff-tree","--no-commit-id","-r","--name-only",proof.checkpoint??"",report.checkpoint??""),"unit/alpha/change");
+							assert.equal(git(f.root,"show",`${report.checkpoint}:${file}`),"new control");
+							const goalCheck=updated.effects.at(-1);assert.ok(goalCheck?.kind==="goal");db.verifySigned(run,goalCheck);
+						}else{assert.deepEqual(report.products,proof.products);assert.deepEqual(report.goalChecks,proof.goalChecks);assert.equal(report.candidate?.receipt?.exit,mode==="independent fail"?1:null);}
+						assert.equal(report.nodes.find(n=>n.grain==="buttons")?.state,"published");
+						assert.deepEqual(report.nodes.find(n=>n.grain==="selector"),result);
+						await assert.rejects(reloaded.operation("checkpoint",batch,"owner"),{code:"ownership_transition"});
+						assert.equal(f.workers.size,number+1);assert.equal(report.pending.length,0);
+						assert.equal(f.checks.length,calls+(mode==="independent pass"?2:1));
+					}
 				}else{
 					assert.ok(proof.qualification && proof.qualified && result?.check);
 					assert.equal(proof.qualification.receipts.product.commit,proof.qualified);

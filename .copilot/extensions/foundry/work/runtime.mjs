@@ -7,6 +7,7 @@ import { childProof, grainForToken, issuerProof, linkedGeneration, reservation, 
 import { openDatabase, ledgerPath } from "./database.mjs";
 import { readPolicy } from "./contract.mjs";
 import { prepareCorrection } from "./correction.mjs";
+import { prepareCheckpoint } from "./checkpoint.mjs";
 import { presentQuestions } from "./decisions.mjs";
 import { advance, currentReview, newRun, reserveChangedRepair, reserveIteration, retryableReview, sameReviewInputs } from "./graph.mjs";
 import { baselineNotice, changedFrom, comparisonGoal, comparisonVerdict, goalReceipt, inconclusiveRepair, qualifiedProduct, relinquishable, stopForInput } from "./evidence.mjs";
@@ -204,11 +205,14 @@ export function createRuntime(directory, host) {
 	}
 	/** @param {string} id @param {Effect} effect @param {string} callId */
 	const claim = (id, effect, callId) => {
-		if (effect.tool==="workflow" || !(effect.recheck || effect.pair || effect.observer) || !unissued(effect)) return db().mutateLocked(id, run => issue(run, effect, callId));
+		if (effect.tool==="workflow" || !(effect.recheck || effect.pair || effect.observer || effect.isolation) || !unissued(effect)) return db().mutateLocked(id, run => issue(run, effect, callId));
 		let target = (effect.recheck ?? effect.pair)?.target;
 		let claimed = false;
 		db().planAndSwap(id,run => {
-			if (effect.observer) {
+			if (effect.isolation) {
+				target=run.independent?.target;
+				claimed=target===commitAt(cwd(),run.policy.target) && !run.effects.some(x=>x.permissionHold) && issue(run,effect,callId);
+			} else if (effect.observer) {
 				target=effect.kind==="component" ? verifyObserver(cwd(),run,effect,text(effect.commit,"observer candidate"),true) :
 					observerBasis(cwd(),run,effect).pair.target;
 				claimed=issue(run,effect,callId);
@@ -319,7 +323,7 @@ export function createRuntime(directory, host) {
 					if (e.kind === "goal" && run.products.at(-1)?.commit === e.commit && run.scheduling?.checkpointReviews !== false)
 						track(drive(id, actor, false, false));
 					await completion;
-				} else if (e.tool==="bash" && (e.recheck || e.pair)) return; // A later eligible issuer turn can recheck the approval.
+				} else if (e.tool==="bash" && (e.recheck || e.pair || e.isolation)) return; // A later eligible issuer turn can recheck the approval.
 				await refill();
 			}
 		}
@@ -624,6 +628,7 @@ export function createRuntime(directory, host) {
 			return start(a.source, actor, op === "resume");
 		}
 		const id = name(a.run, "run");
+		if (op!=="pause" && read(id).independent) fail("ownership_transition","Independent checkpoint already reserved; the original ownership hold is not released");
 		if (op === "workspace") {
 			fields(a,["run","token"]);
 			await requireReadyOwner(cwd());
@@ -633,9 +638,11 @@ export function createRuntime(directory, host) {
 			writerRoot(cwd(),run,n,true);
 			return status(run,actor);
 		}
-		if (op === "correct" || op === "reuse" || op === "restore" || op==="pair" || op==="diagnose") {
-			const origin = cwd(), request = op==="restore" || op==="pair" || op==="diagnose" ? (op==="diagnose" ? prepareObserver : op==="pair" ? preparePair : prepareRestoration)(origin,read(id),actor,a,e=>db().verifySigned(id,e)) :
-				(op === "reuse" ? prepareReuse : prepareCorrection)(origin,read(id),actor,a);
+		if (op === "correct" || op === "reuse" || op === "restore" || op==="pair" || op==="diagnose" || op==="checkpoint") {
+			const origin = cwd(), run = read(id);
+			const prepare = {correct:prepareCorrection,reuse:prepareReuse,restore:prepareRestoration,
+				pair:preparePair,diagnose:prepareObserver,checkpoint:prepareCheckpoint}[op];
+			const request = prepare(origin,run,actor,a,e=>db().verifySigned(id,e));
 			await requireReadyOwner(origin);
 			const approved = await host.confirm?.(request.prompt);
 			if (approved === false) fail("approval_declined","Request not approved. No assignment changed. Do not ask again without a fresh request.");

@@ -7,9 +7,15 @@ export const fromHelper = (input, primary) => !!(input.agentId || input.parentAg
 const string = { type: "string", minLength: 1 };
 const strings = { type: "array", items: string, uniqueItems: true };
 const stop = {type:"object",properties:{check:string,reason:string},required:["check","reason"],additionalProperties:false};
+const notes={type:"array",minItems:1,items:{type:"object",properties:{file:string,excerpt:string,
+	inventory:{type:"object",properties:{file:string,keys:{type:"array",items:string}},required:["file","keys"],additionalProperties:false},reason:string},
+	required:["file","excerpt","inventory","reason"],additionalProperties:false}};
 /** @typedef {Record<string,import("./model.js").Json>} Properties */
 /** @type {Array<[name:string,description:string,required:Properties,optional?:Properties]>} */
 const definitions = [
+	["checkpoint","Owner on operator direction: request one non-release checkpoint after a failed paired observer. Supply exact checked target, checkpoint, goal, observer component, nonempty selected published triples, and source-backed complete input proofs for each selected and held component. Unknown build or runtime dependencies are ineligible. No retry, release or cleanup.",{
+		run:string,observer:string,target:string,checkpoint:string,goal:string,selected:{type:"array",minItems:1,items:{type:"object",properties:{grain:string,candidate:string,component:string},required:["grain","candidate","component"],additionalProperties:false}},
+		evidence:{type:"array",minItems:1,items:{type:"object",properties:{component:string,stages:{type:"object",properties:{component:notes,generated:notes,package:notes,runtime:notes},required:["component","generated","package","runtime"],additionalProperties:false}},required:["component","stages"],additionalProperties:false}}}],
 	["diagnose","Owner on operator direction: request a fresh Foundry writer for one existing observer file inside the restored primary after a signed negative pair. Supply that pair check ID and original file blob. Later supply the bound writer's preview to approve its exact diff after reviewing the assertions and fault controls. No imported patch, production grant or replay.",{run:string,grain:string,pair:string,file:string,blob:string},{preview:string}],
 	["workspace", "Bound pooled writer only: open the fresh checkout inside this session's native worktree for this assignment, or verify its existing checkout after reload. Work only under the returned node's workspace. Does not switch branches, copy old work or run checks.", {run:string,token:string}],
 	["restore","Owner on operator direction: request approval for a fresh writer to attest only the unchanged, orphaned primary of a formerly checked mixed grant. The current owner retains all its integration files. Name the historical and current product check IDs and settled current goal ID. No prior output or verdict is edited or reused.",{run:string,from:string,historical:string,retainer:string,to:string,checkpoint:string,goal:string}],

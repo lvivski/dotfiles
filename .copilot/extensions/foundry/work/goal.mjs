@@ -71,6 +71,9 @@ export function releaseAssessment(cwd, run, tip, retry = false) {
 	if (elapsed && !timelyChecks(run)) return { ...wait, reason: "deadline" };
 	const { target, error } = observeTarget(tip);
 	if (target === undefined) return { ...wait, reason: "target-unavailable", error };
+	if (run.independent) return {...wait,target,reason:"ownership-conflict",error:
+		`Non-release checkpoint ${run.independent.product}; ownership remains held at ${run.independent.checkpoint} by failed observer ${run.independent.observer}.`+
+		(target===run.independent.target?"":` Approved target ${run.independent.target} is not current (${target}); no check can advance on this target.`)};
 	if (run.active) {
 		const conflict=partitionConflict(run,undefined,target);
 		try { verifyContracts(cwd, run.policy, target); }

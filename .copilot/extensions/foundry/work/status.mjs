@@ -33,6 +33,8 @@ function ownerStatus(run, { receipts, questions }, detail) {
 		metrics: detail === "usage" ? metricsFacts(run) : timingFacts(run),
 		...(run.pendingReviewNotes?.length ? { pendingReviewNotes: run.pendingReviewNotes.map(({ squad, receipt, question, excerpt }) => ({ squad, receipt, question, excerpt })) } : {}),
 		target: last?.target, outputs: last?.outputs ?? {},
+		...(run.independent && {independentCheckpoint:detail==="proof" ? run.independent :
+			{checkpoint:run.independent.checkpoint,observer:run.independent.observer,product:run.independent.product,assessment:run.independent.assessment}}),
 		...(run.repins ? { evaluatorChanges: run.repins } : {}),
 		productPin:run.productRepins?.at(-1)?.revision ?? run.policy.base,
 		productOwnership:run.productRepins?.length ? run.productRepins.at(-1)?.ownership ?? "exact-files" : run.policy.ownership ?? "directories",
