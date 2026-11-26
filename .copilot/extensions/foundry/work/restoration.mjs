@@ -1,3 +1,4 @@
+import { working } from "./assignment.mjs";
 import { availableReservations } from "./capacity.mjs";
 import { checkReceipt, goalReceipt } from "./evidence.mjs";
 import { checkpointCurrent } from "./facts.mjs";
@@ -42,7 +43,7 @@ export function prepareRestoration(cwd,run,actor,a,verify) {
 		const target=commitAt(cwd,live.policy.target), p=live.products.at(-1), owner=live.nodes[retainer];
 		if (!h || !p || !displaced || !sameScope(h.scope,displaced.scope) || live.nodes[from] || live.nodes[to] || live.effects.some(e=>e.grain===to) ||
 			displaced.replacements.length!==1 || !owner || displaced.replacements[0]!==owner ||
-			!["writing","checking","waiting","published","qualified"].includes(owner.state) ||
+			!(working(owner) || ["waiting","published","qualified"].includes(owner.state)) ||
 			!h.scope.files.every(f=>covers(owner.grain.directory,f) && !touchesCut(owner.retained ?? [],f)) ||
 			Object.values(live.nodes).some(n=>n.restoration?.from===from || !outside(n.grain.directory,[h.scope.primary])))
 			fail("invalid_restoration","Need a displaced checked mixed grant, one current owner covering every exact file, an unowned primary and a fresh ID");

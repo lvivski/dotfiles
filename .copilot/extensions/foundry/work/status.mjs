@@ -21,6 +21,9 @@ function ownerStatus(run, { receipts, questions }, detail) {
 		handoff: handoff(run, detail === "cleanup"),
 		scheduling: scheduling(run),
 		sharedBlockers: sharedBlockers(run, remainingAssignments(run)),
+		...(run.inspections && {codeReviews:run.inspections.map(({id,grain,component,candidate,state,summary,issuer,workflow,previous,permissionHold,base,generation,scope,task,specification})=>({
+			id,grain,component,candidate,state,summary,permissionHold,...(detail==="proof" && {issuer,workflow,previous,base,generation,scope,task,specification}),
+		}))}),
 		...(run.deliveries?.length && {deliveries:run.deliveries.map(d=>({id:d.id,checkpoint:d.checkpoint,goal:d.goal,assembly:d.assembly,
 			selected:d.selected.map(s=>({grain:s.prior.grain.id,original:s.prior.check,stop:s.prior.stop,reason:s.prior.reason,rerun:s.rerun,tree:s.tree})),
 			checks:run.effects.flatMap(e=>e.tool==="bash" && e.delivery===d.id ? [{id:e.id,kind:e.kind,grain:e.grain,state:e.state,exit:receipts.get(e.id)?.exit}] : []),

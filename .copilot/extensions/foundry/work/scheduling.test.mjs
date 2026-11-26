@@ -95,6 +95,20 @@ const sampling=(f,samples)=>async(tool,args,id)=>{
 	return result;
 };
 
+/** Replay planning from the interval after the real reviewer returned but before its output was published.
+ * @param {string} root @param {Run} sample @param {string} grain @param {string} actor */
+function reviewed(root,sample,grain,actor){
+	const draft=structuredClone(sample), db=openDatabase(root);
+	try {
+		trace(root,draft,actor);
+		assert.equal(draft.nodes[grain].state,"reviewing");assert.ok(!draft.join);
+		const check=draft.nodes[grain].check, i=db.read(run)?.inspections?.find(i=>i.component===check);
+		assert.ok(i?.state==="approved" && i.candidate===draft.nodes[grain].candidate && draft.inspections);
+		draft.inspections=draft.inspections.map(reservation=>reservation.component===check ? i : reservation);
+		return draft;
+	}finally{db.close();}
+}
+
 /** Deliver the same verified packet on a detached fixture snapshot, without issuing a new scout.
  * @param {Run} draft @param {import("../test/fixture.mjs").Scout} job @param {unknown} report */
 async function reported(draft,job,report) {
@@ -138,7 +152,7 @@ test("a real pass reserves writers before surveys, records a demonstrated stall,
 	const w=worker(f,"producer");put(w.cwd,"producer/ready","checked");
 	await f.runtime(w.cwd,{execute}).operation("submit",{run,token:w.token},w.id);
 	const component=samples.find(r=>r.nodes.producer?.state==="checking");assert.ok(component);
-	const joined=structuredClone(component), basis=Object.keys(joined).sort(), checks=[...f.checks];
+	const approved=reviewed(f.root,component,"producer",w.id),joined=structuredClone(approved), basis=Object.keys(joined).sort(), checks=[...f.checks];
 	// The explorer can inspect the real next action without building anything or touching the ledger.
 	const before=structuredClone(joined), state={value:"join",context:joined};
 	assert.deepEqual(transition(scheduling,state,{type:"plan"},{outputs:true,sameJoin:false,outstandingProduct:false},true).effects,[{type:"assemble-outputs"}]);
@@ -156,7 +170,7 @@ test("a real pass reserves writers before surveys, records a demonstrated stall,
 
 	// Settlement preceded this conflicting target edit in the pass; it is not rolled back with the failed assembly.
 	put(f.root,"producer/ready","concurrent target edit");git(f.root,"add","producer/ready");git(f.root,"commit","-qm","Move an owned input");
-	const dirty=structuredClone(component);
+	const dirty=structuredClone(approved);
 	assert.deepEqual(trace(f.root,dirty).actions.slice(-2),["assemble-outputs","record-conflict"]);
 	assert.equal(dirty.nodes.producer.state,"published");assert.match(dirty.conflict ?? "",/Concurrent modification of producer/);
 	assert.deepEqual(dirty.effects,component.effects);assert.deepEqual(dirty.products,component.products);assert.equal(dirty.join,undefined);
@@ -176,7 +190,7 @@ test("after a cited input changes, the same pass excludes the checked consumer a
 	put(p.cwd,api,"v2");await f.runtime(p.cwd,{execute}).operation("submit",{run,token:p.token},p.id);
 	put(c.cwd,"consumer/ready","uses v1");await f.runtime(c.cwd,{execute}).operation("submit",{run,token:c.token},c.id);
 	const before=samples.find(r=>r.nodes.consumer?.state==="checking");assert.ok(before);
-	const planned=structuredClone(before), {states,actions}=trace(f.root,planned,c.id);
+	const planned=reviewed(f.root,before,"consumer",c.id), {states,actions}=trace(f.root,planned,c.id);
 	assert.deepEqual(states.slice(states.indexOf("join"),states.lastIndexOf("join")+1),["join","assembly","survivors","readmission","join"]);
 	assert.ok(!actions.includes("reserve-product"));assert.equal(planned.nodes.consumer.state,"blocked");
 	assert.deepEqual(planned.nodes.consumer.excluded,{revision:f.tip,path:api});

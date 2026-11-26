@@ -1,5 +1,5 @@
 import { admissionPolicy } from "./admission.mjs";
-import { assign } from "./assignment.mjs";
+import { assign, working } from "./assignment.mjs";
 import { activate } from "./activity.mjs";
 import { checkpointReceipt, checkReceipt, currentEvaluation, goalReceipt, leadGoal, milestoneBlocker, passingReceipt, productPin } from "./evidence.mjs";
 import { remainingAssignments } from "./capacity.mjs";
@@ -83,7 +83,7 @@ export function movingSurvey(cwd,run,target) {
 		run.join || run.independent || run.blocker || !checkpointReceipt(run,p.check,p.commit) ||
 		!(pendingGoal(run) || goalReceipt(run)?.exit===2) || partitionConflict(run,undefined,p.target)) return;
 	const history=reviews(run).filter(r=>currentEvaluation(run,r));
-	const unfinished=new Set(Object.values(run.nodes).filter(n=>["waiting","writing","checking","published"].includes(n.state)).map(n=>n.review));
+	const unfinished=new Set(Object.values(run.nodes).filter(n=>working(n) || n.state==="waiting" || n.state==="published").map(n=>n.review));
 	const latest=new Map(history.map(r=>[r.squad,r]));
 	const pending=history.some(r=>{
 		if (!checkpointSurvey(run,r)) return false;

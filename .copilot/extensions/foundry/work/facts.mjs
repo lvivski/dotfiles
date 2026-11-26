@@ -2,7 +2,8 @@ import { remainingAssignments } from "./capacity.mjs";
 import { checkpointReceipt, checkReceipt, currentEvaluation, failedCandidate, goalReceipt, milestoneBlocker, productPin } from "./evidence.mjs";
 import { awaitingReply } from "./reservation.mjs";
 import { discoverLeads } from "./leads.mjs";
-import { working, writerInputs } from "./plan.mjs";
+import { working } from "./assignment.mjs";
+import { writerInputs } from "./plan.mjs";
 import { atCheckpoint, checkpointScope, checkpointWake, reading, reviews } from "./reviews.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
@@ -29,7 +30,8 @@ export function continuingRepair(run, n, r, checkpoint) {
 		r?.state === "observed" && n.base === r.base && currentEvaluation(run,r) &&
 		last.commit === run.goal?.commit && last.target === run.goal.target &&
 		run.products.some(p => p.check === checkpoint && p.commit === r.base && p.target === last.target) &&
-		!!checkpointReceipt(run, checkpoint, r.base) && failedCandidate(run, n);
+		!!checkpointReceipt(run, checkpoint, r.base) && (failedCandidate(run, n) || !!run.inspections?.some(i=>i.state==="changes" &&
+			i.component===n.check && i.grain===n.grain.id && i.candidate===n.candidate && i.base===n.base && i.generation===n.generation));
 }
 
 /** A new joined check blamed the included parent, not its original (pre-transfer) scout.

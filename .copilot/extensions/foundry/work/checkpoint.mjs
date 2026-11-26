@@ -1,3 +1,4 @@
+import { working } from "./assignment.mjs";
 import { checkReceipt, goalReceipt } from "./evidence.mjs";
 import { checkpointCurrent } from "./facts.mjs";
 import { footprints, nonempty } from "./footprint.mjs";
@@ -8,6 +9,7 @@ import { currentPair } from "./pairing.mjs";
 import { displacements, historicalGrant, validRestoration } from "./partition.mjs";
 import { waiting, writerInputs } from "./plan.mjs";
 import { changedFiles, commitAt, outside, retain, stageCheckpoint, verifyContracts } from "./product.mjs";
+import { approvedPublication } from "./publication.mjs";
 import { awaitingReply, unissued } from "./reservation.mjs";
 import { comparison, questions } from "./reviews.mjs";
 import { grant } from "./transfer.mjs";
@@ -57,7 +59,7 @@ export function prepareCheckpoint(cwd,run,actor,a,verify) {
 			fail("stale_assignment","Need the unchanged target, checked checkpoint, unmet goal and original blocked negative observer");
 		const held=[...displacements(r)], retainer=r.nodes[pair.pair.retainer];
 		if (held.length!==1 || held[0].id!==n.restoration.from || held[0].replacements.length!==1 || held[0].replacements[0]!==retainer ||
-			Object.values(r.nodes).some(x=>["waiting","checking","writing"].includes(x.state)) || r.pendingReviewNotes?.length ||
+			Object.values(r.nodes).some(n=>n.state==="waiting" || working(n)) || r.pendingReviewNotes?.length ||
 			questions(r).some(q=>q.decision?.status!=="answered") || r.effects.some(e=>e.permissionHold || awaitingReply(e) ||
 				unissued(e) && current(r,e) || e.state==="reported" || e.state==="deferred"))
 			fail("dispatch_held","Independent integration requires one exact unresolved hold and no outstanding checks, reviews, writers or permissions");
@@ -84,7 +86,7 @@ export function prepareCheckpoint(cwd,run,actor,a,verify) {
 		for (const {grain,candidate,component:id} of selected) {
 			const v=r.nodes[grain];
 			if (!v || wrote.has(grain) || heldIds.includes(grain) || !outside(v.grain.directory,heldRoots) || v.state!=="published" ||
-				v.candidate!==candidate || v.check!==id || !v.generation || v.restoration || v.retained || v.successor ||
+				v.candidate!==candidate || v.check!==id || !approvedPublication(r,id,grain,candidate) || !v.generation || v.restoration || v.retained || v.successor ||
 				r.effects.some(e=>e.id===id && e.kind==="component" && (e.usedArtifacts?.length || e.comparedArtifacts?.length)))
 				fail("dependent_output",`Need an exact independently published component and disjoint grant for ${grain}`);
 			if (Object.hasOwn(outputs,grain) && digest(ownership[grain])!==digest(grant(v))) fail("dependent_output","Cannot change an inherited grant");

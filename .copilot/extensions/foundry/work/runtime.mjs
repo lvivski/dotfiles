@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { assign } from "./assignment.mjs";
-import { activate, hold, permitted } from "./activity.mjs";
+import { assign, frozenSubmission } from "./assignment.mjs";
+import { activate, holdFor, permitted } from "./activity.mjs";
+import { auditor } from "./auditor.mjs";
+import { requireChangedReview } from "./inspection.mjs";
+import { boundInspections, inspectionWakes, publicationSample, readyInspections } from "./inspections.mjs";
 import { journal, survey } from "./dispatch.mjs";
 import { existsSync, readFileSync } from "node:fs";
 import { preparePublication, reportedReferences } from "./artifacts.mjs";
@@ -66,21 +69,17 @@ function requireCurrentReader() {
 
 /** @typedef {import("./model.js").Run} Run */
 /** @typedef {import("./model.js").Effect} Effect */
+/** @typedef {import("./model.js").Inspection} Inspection */
 /** @typedef {{run:string,id:string,actor:string,inFlight?:boolean,recoveredOn?:number}} Call */
-/** @typedef {import("./resume.mjs").ScoutEnvelope} ScoutEnvelope */
+/** @typedef {import("./auditor.mjs").Envelope} ScoutEnvelope */
 /** @typedef {{execute:(tool:string,args:Effect["args"],id:string)=>Promise<unknown>,notify:(message:string)=>Promise<string>,recover?:(effect:Effect)=>Promise<unknown>,
  * ask?:(message:string)=>Promise<string|null>,confirm?:(message:string)=>Promise<boolean>,autoConfirm?:()=>Promise<boolean>,
  * readHistory?:import("@github/copilot-sdk").CopilotSession["rpc"]["eventLog"]["read"],isResearcher?:(workflowId:string,agentId:string)=>Promise<boolean>,
  * scoutBudget?:()=>Promise<number>,scoutFailure?:(workflowId:string,label:string)=>Promise<string|undefined>,confirmNoReport?:(r:import("./model.js").Review)=>Promise<void>,
  * scout?:(run:string,dispatch:string,actor:string)=>Promise<ScoutEnvelope>,scoutState?:(workflowId:string)=>Promise<ScoutEnvelope>,
+ * startInspection?:import("./auditor.mjs").StartInspection,inspectionState?:(workflowId:string)=>Promise<import("./auditor.mjs").Envelope>,
  * scoutSnapshot?:(workflowId:string)=>Promise<ScoutEnvelope>,resumeScout?:(workflowId:string)=>Promise<ScoutEnvelope>,
  * mode:()=>Promise<string>,idleWriter?:(id:string)=>Promise<string|undefined>,runningHelpers?:(workflows:string[])=>Promise<string[]>,permissionBlocker:()=>Promise<import("./permissions.mjs").PermissionBlock|null>,log?:(message:string)=>void,watchReceipts?:typeof receiptClock,watchRecovery?:typeof receiptClock}} Host */
-/** @param {Run} run @param {{reason:string,effect:Effect}} [policy] */
-function pause(run, policy) {
-	if (policy) hold(run,{issuer:policy.effect.issuer,effect:policy.effect.id,token:randomUUID()},policy.reason);
-	else activate(run,"pause");
-}
-
 /** @param {Run} run @param {string} actor @param {string} token @param {unknown} [from] */
 function writable(run, actor, token, from) {
 	admitted(run);
@@ -90,7 +89,7 @@ function writable(run, actor, token, from) {
 			fail("stale_assignment", "Not the bound writer's current blocked, unclassified component attempt");
 		return node;
 	}
-	if (node.state === "checking" || checked(node)) return;
+	if (frozenSubmission(node) || checked(node)) return;
 	if (node.state !== "writing") fail("stale_assignment", "This attempt is no longer writable");
 	const notice = baselineNotice(run, node);
 	if (notice && notice.state !== "done") fail("dispatch_held", "Await confirmed delivery of the approved baseline to the original writer");
@@ -116,6 +115,8 @@ const transientStatus=error=>contention(error) || error instanceof Error && "cod
 // that admission error, including its persisted form from earlier readers.
 const capacityRejection = /^Discovery unconfirmed: Error: This session already has [1-9]\d* active workflow runs, which is the concurrent limit\. Resume to retry unbound discovery\.$/;
 const waitingForSlot = "Queued for workflow capacity; the issuing session will retry automatically.";
+/** @param {string} id @param {string} actor */
+const issuerKey=(id,actor)=>JSON.stringify([id,actor]);
 /** @param {import("./model.js").Review} e */
 function requeueCapacity(e) {
 	if (e.state !== "uncertain" || !e.callId || e.workflowId || !capacityRejection.test(e.error ?? "")) return false;
@@ -171,22 +172,32 @@ export function createRuntime(directory, host) {
 	}
 	/** @param {string} id */
 	const read = id => db().read(id) ?? fail("missing_run", `Unknown run ${id}`);
+	/** Settlement continues the submitted work; it does not request another fixed-charter survey.
+	 * @param {string} id @param {string} actor */
+	const receiptWake=(id,actor)=>track(drive(id,actor,false,false));
+	const inspector=auditor({start:host.startInspection,lookup:host.inspectionState??host.scoutState,budget:host.scoutBudget,
+		cwd,read,mutate:(id,fn)=>db().mutateLocked(id,fn),plan:(id,fn)=>db().planAndSwap(id,fn),
+		tip:run=>observeTarget(()=>commitAt(cwd(),run.policy.target)).target,persist:recordReply,closed:()=>closed,
+		verifySigned:(id,c)=>db().verifySigned(id,c),
+		track,log:host.log,queue:wakeCapacity,wake:receiptWake,executable,permissionBlocker:host.permissionBlocker});
 	const receipts = receiptWakes({ read, stamp: id => db().stamp(id), clock: host.watchReceipts ?? receiptClock,
-		wake: (id, actor) => track(drive(id,actor,false,false)), log: error => host.log?.(`Foundry receipt observer: ${String(error)}`) });
+		wake:receiptWake, log: error => host.log?.(`Foundry receipt observer: ${String(error)}`) });
 	/** @param {Run} run @param {string} actor @param {boolean} [missing] @param {import("./supervision.mjs").Gate} [previous] @returns {import("./supervision.mjs").Observation} */
 	function gate(run,actor,missing=false,previous) {
 		const hold=run.policyHold, own=run.effects.filter(e=>e.issuer===actor);
+		const inspection=inspectionWakes(run,actor,previous==="issuer-permission");
 		const unfinished=run.active && own.some(e=>e.kind==="scout" && needsContinuation(e));
 		const ownerWork=previous==="issuer-permission" && run.active && actor===run.owner &&
 			(reviews(run).some(r=>r.renewal?.state==="needed") || !!host.ask && questions(run).some(r=>!r.decision));
 		// A paused issuer may still own an unissued reservation. Observe the owner's
 		// later resume, without treating a readable policy as permission to undo a pause.
-		const participant=!!(run.active || hold) && run.owner===actor || own.some(e=>awaitingReply(e) || unissued(e) && current(run,e));
+		const participant=!!(run.active || hold) && run.owner===actor || own.some(e=>awaitingReply(e) || unissued(e) && current(run,e)) || inspection.participant;
 		const state=watchState({expired:expired(run),managed:!run.active && hold?.issuer===actor,
-			local:ownerWork || own.some(e=>!!e.permissionHold && unissued(e) && canDispatch(run,e)) || unfinished && previous==="issuer-permission",
+			local:ownerWork || inspection.local || own.some(e=>!!e.permissionHold && unissued(e) && canDispatch(run,e)) || unfinished && previous==="issuer-permission",
 			retryRead:unfinished && previous==="workflow-status",
 			missing:run.active && participant && missing,participant});
-		const pending=!!host.recover && run.active && !expired(run) && own.some(externalReply);
+		const pending=!!host.recover && run.active && !expired(run) && own.some(externalReply) ||
+			inspector.canObserve && inspection.pending;
 		return {state,ref:run.policy.target,pending,...(state==="managed-policy" && {token:hold?.token})};
 	}
 	/** @param {string} id @param {string} actor @param {string} token */
@@ -199,6 +210,9 @@ export function createRuntime(directory, host) {
 	 * @param {string} id @param {string} actor @param {string} [only] */
 	async function readCompletions(id,actor,only) {
 		const recover=host.recover;
+		// Looking up a bound workflow is observation, including through a pause or plan
+		// mode. Its receipt wakes separate, permission-checked planning.
+		if (!closed && !only && inspector.canObserve)inspector.observe(read(id),actor);
 		if ((!recover && (only || !host.scoutState)) || !await observerExecutable()) return;
 		const run=read(id), workflows=only?undefined:supervisor.statusReads(id,actor);
 		if (!run.active || expired(run)) {workflows?.clear();return;}
@@ -226,17 +240,18 @@ export function createRuntime(directory, host) {
 	});
 	/** @param {string} actor */
 	const writerSession = actor => known.has(actor) || hasLedger() && db().involving(actor).some(id => read(id).owner !== actor);
-	/** @param {string} id @param {(run:Run)=>void} mutate */
+	/** @param {string} id @param {(run:Run)=>(()=>boolean)|void} mutate */
 	function change(id, mutate) {
 		return db().planAndSwap(id, run => {
 			const count = run.products.length, final = qualifiedProduct(run);
 			const renewed = () => reviews(run).filter(r=>r.renewal?.state==="approved" && r.state==="observed").length;
 			const prior = renewed();
-			mutate(run);
+			const valid=mutate(run);
 			if (run.products.length !== count || qualifiedProduct(run) !== final)
-				return () => observeTarget(() => commitAt(cwd(), run.policy.target)).target === run.products.at(-1)?.target;
+				return () => (!valid || valid()) && observeTarget(() => commitAt(cwd(), run.policy.target)).target === run.products.at(-1)?.target;
 			if (renewed()!==prior)
-				return () => observeTarget(() => commitAt(cwd(),run.policy.target)).target === run.goal?.target;
+				return () => (!valid || valid()) && observeTarget(() => commitAt(cwd(),run.policy.target)).target === run.goal?.target;
+			return valid;
 		});
 	}
 	/** Use the same permission gate for prepared calls and explicit checks, without waking planning.
@@ -247,18 +262,20 @@ export function createRuntime(directory, host) {
 		return check.reason;
 	}
 	/** Commit a selected hold change only if the sampled issuer still has the same reservation.
-	 * @param {string} id @param {string} actor @param {Effect[]} batch @param {string|null} message @param {boolean} managed */
-	function recordBatchPolicy(id,actor,batch,message,managed) {
+	 * @param {string} id @param {string} actor @param {Effect[]} batch @param {Inspection[]} inspecting @param {string|null} message @param {boolean} managed */
+	function recordBatchPolicy(id,actor,batch,inspecting,message,managed) {
 		const expected = new Map(batch.map(e => [e.id, e.state]));
 		const result = db().mutateLocked(id, run => {
 			const live = reservations(run, actor);
-			if (!live.some(e => expected.get(e.id) === e.state)) return;
-			const changed = message && live.some(e => e.permissionHold !== message);
-			for (const e of live) {
+			const subjects=readyInspections(run,actor,inspecting);
+			const anchor=live.find(e=>expected.get(e.id)===e.state) ?? subjects[0];
+			if (!anchor) return;
+			const selected=[...live,...subjects],changed=message && selected.some(e=>e.permissionHold!==message);
+			for (const e of selected) {
 				if (message) e.permissionHold = message;
 				else delete e.permissionHold;
 			}
-			if (managed && run.active && message) { pause(run,{reason:message,effect:live.find(e=>expected.has(e.id)) ?? live[0]}); return { state: "paused", message }; }
+			if (managed && run.active && message) { holdFor(run,anchor,message); return { state: "paused", message }; }
 			return { state: changed ? "held" : undefined, message };
 		});
 		if (!result) return "The reservation changed or the run is already paused. Check foundry_status.";
@@ -320,7 +337,7 @@ export function createRuntime(directory, host) {
 	/** Merge wakeups for one issuer, never its in-flight calls or permission dialogs.
 	 * @param {string} id @param {string} actor @param {boolean} [discover] @param {boolean} [recover] @returns {Promise<void>} */
 	function drive(id, actor, discover = false, recover = true) {
-		const key = JSON.stringify([id, actor]), prior = wakes.get(key);
+		const key = issuerKey(id,actor), prior = wakes.get(key);
 		if (prior) { prior.discover ||= discover; prior.recover ||= recover; return prior.work; }
 		/** @type {Promise<void>} */
 		const work = Promise.resolve().then(() => {
@@ -344,8 +361,11 @@ export function createRuntime(directory, host) {
 		/** @type {Run} */ let planned;
 		let missingTarget=false;
 		/** @type {Effect[]} */ let batch=check?.batch ?? [];
+		/** @type {Inspection[]} */ let inspections=[];
+		const publication=publicationSample(actor);
+		/** @type {import("./permissions.mjs").PermissionBlock|null} */ let block=null;
 		/** @type {string|null} */ let policyMessage=null;
-		let pooled=false;
+		let pooled=false,renewing=false;
 		/** @type {Effect[]} */ let ready;
 		/** @type {import("./model.js").Review[]} */ let scouts;
 		/** @type {import("./model.js").NativeCall[]} */ let writers;
@@ -358,13 +378,18 @@ export function createRuntime(directory, host) {
 			"inspect-issuer":next=>{
 				const run=read(id);
 				supervisor.observe(id,actor,gate(run,actor));
+				inspector.observe(run,actor);
 				held=run.policyHold;
 				workflows=new Map(reviews(run).flatMap(e=>e.issuer===actor && needsContinuation(e) && e.callId && e.workflowId ?
 					[[e.callId,e.workflowId]] : []));
 				return next("inspected",{ownHold:held?.issuer===actor,active:run.active,expired:expired(run),
 					continuations:!!(workflows.size && host.resumeScout && host.scoutSnapshot)});
 			},
-			"sample-policy":async next=>next("policy",{permitted:!await host.permissionBlocker() && await executable(),closed}),
+			"sample-policy":async next=>{
+				block=await host.permissionBlocker();
+				const eligible=await executable();
+				return next("policy",{permitted:!block && eligible,executable:eligible,closed});
+			},
 			"clear-hold":next=>{
 				reactivate(id,actor,text(held?.token,"observed hold token"));
 				return next("recovered");
@@ -379,7 +404,12 @@ export function createRuntime(directory, host) {
 				submitToken=[...submitting].findLast(s=>s.run===id && s.actor===actor)?.token;
 				return plan(next,false);
 			},
-			renew:next=>plan(next,true),
+			renew:next=>{renewing=true;return plan(next,true);},
+			"apply-verdicts":next=>{publication.permit();return plan(next,renewing);},
+			"watch-held-inspections":()=>{
+				if (block) inspector.permission(id,actor,publication.selected,block);
+				supervisor.observe(id,actor,gate(read(id),actor,false,"issuer-permission"));
+			},
 			"watch-plan":watchPlan,
 			"watch-held-renewal":next=>{deferredGate="issuer-permission";return watchPlan(next);},
 			"offer-question":next=>{
@@ -392,11 +422,11 @@ export function createRuntime(directory, host) {
 			"offer-batch":offerBatch,
 			"sample-batch":sampleBatch,
 			"sample-writer-batch":next=>{pooled=true;batch=writers;return sampleBatch(next);},
-			"decline-mode":()=>{if(check)check.reason="The issuing session is no longer in an executable mode.";},
+			"decline-mode":()=>{if(check)check.reason="The issuing session is no longer in an executable mode.";else supervisor.invalidate(id,actor);},
 			"hold-run":next=>recordPolicy(next,policyMessage,true),
 			"hold-issuer":next=>recordPolicy(next,policyMessage,false),
 			"release-batch":next=>recordPolicy(next,null,false),
-			enable:next=>next("authorized",{checkOnly:!!check,pooled,ready:!!ready?.length}),
+			enable:next=>next("authorized",{checkOnly:!!check,pooled,ready:!!ready?.length || !!inspections.length}),
 			"group-batch":()=>{
 				scouts=ready.filter(e=>e.tool==="workflow");
 				writers=ready.flatMap(e=>e.kind==="writer" && e.tool==="create_session" ? [e] : []);
@@ -412,6 +442,7 @@ export function createRuntime(directory, host) {
 						watchScouts(id,ticket,actor,()=>host.scout?.(id,ticket,actor) ?? Promise.reject(new Error("Workflow scouting is unavailable")));
 				}
 			},
+			"launch-inspections":()=>{for(const i of inspections) inspector.launch(id,i);},
 			"match-writers":async next=>{
 				match=await chooseWriters(cwd(),planned,writers,host.idleWriter ?? fail("unavailable","Missing writer lookup"),host.log);
 				return next("matched",{closed});
@@ -426,7 +457,8 @@ export function createRuntime(directory, host) {
 			refill,
 		},check ? {type:"verify-batch"} : {type:"wake",executable:await executable()},{
 			history:()=>({closed,recoverCalls}),dispatch:()=>({closed}),
-			scouts:()=>({jobs:!!scouts.length,capacityWait:capacityWakes.has(id)}),writers:()=>({jobs:!!writers.length,pool:!!host.idleWriter}),
+			scouts:()=>({jobs:!!scouts.length,capacityWait:capacityWakes.has(issuerKey(id,actor))}),
+			inspections:()=>({jobs:!!inspections.length,capacityWait:capacityWakes.has(issuerKey(id,actor))}),writers:()=>({jobs:!!writers.length,pool:!!host.idleWriter}),
 			calls:()=>({jobs:!!calls.length}),
 		});
 
@@ -434,11 +466,12 @@ export function createRuntime(directory, host) {
 		async function sampleBatch(next){
 			const block=await host.permissionBlocker(), eligible=await executable();
 			policyMessage=block ? `${block.message} Check session ${actor}. Its next turn rechecks the hold; Foundry also watches for permitted settings.` : null;
-			return next("sampled",{executable:eligible,managed:block?.scope==="run",blocked:!!block,hadHolds:batch.some(e=>e.permissionHold)});
+			return next("sampled",{executable:eligible,managed:block?.scope==="run",blocked:!!block,
+				hadHolds:batch.some(e=>e.permissionHold) || !pooled && inspections.some(i=>i.permissionHold)});
 		}
 		/** @param {Signal} next @param {string|null} message @param {boolean} managed */
 		function recordPolicy(next,message,managed){
-			const reason=recordBatchPolicy(id,actor,batch,message,managed);
+			const reason=recordBatchPolicy(id,actor,batch,pooled ? [] : inspections,message,managed);
 			if(check)check.reason=reason;
 			return next("recorded",{permitted:reason===null});
 		}
@@ -463,10 +496,13 @@ export function createRuntime(directory, host) {
 		}
 		/** @param {Signal} next @param {boolean} renew */
 		function plan(next,renew) {
+			let inspectionDue=false;
 			planned=change(id,run=>{
+				inspectionDue=false;
 				const observed=run.active && !expired(run) ? observeTarget(()=>commitAt(cwd(),run.policy.target)) : undefined;
 				missingTarget=!!observed && observed.target===undefined;
 				if (missingTarget) return;
+				if(!publication.check(observed ? run : undefined)){inspectionDue=true;return;}
 				if (run.active && !expired(run)) for (const e of reviews(run)) {
 					if (e.issuer!==actor) continue;
 					requeueCapacity(e);
@@ -475,8 +511,9 @@ export function createRuntime(directory, host) {
 				}
 				if (!reservations(run,actor).some(e=>e.permissionHold))
 					advance(cwd(),run,actor,discover,{submitToken,target:observed?.target,renew});
+				if (publication.selected.length) return ()=>!closed && !expired(run);
 			});
-			return next("planned",{closed,missingTarget,owner:actor===planned.owner,active:planned.active,expired:expired(planned),
+			return next("planned",{closed,missingTarget,inspectionDue,owner:actor===planned.owner,active:planned.active,expired:expired(planned),
 				renewalDue:reviews(planned).some(r=>r.renewal?.state==="needed")});
 		}
 		/** @param {Signal} next */
@@ -485,11 +522,12 @@ export function createRuntime(directory, host) {
 			supervisor.observe(id,actor,gate(planned,actor,missingTarget,deferredGate));
 			batch=reservations(planned,actor).filter(e=>e.state==="ready" || e.permissionHold);
 			ready=batch.filter(e=>e.state==="ready");
+			inspections=readyInspections(planned,actor);
 			return next("work",{missingTarget,active:planned.active,expired:expired(planned),handoff:batch.some(e=>e.kind==="handoff"),
 				owner:actor===planned.owner,question:!!host.ask && !asking.has(id) && questions(planned).some(r=>!r.decision)});
 		}
 		/** @param {Signal} next */
-		function offerBatch(next) {return next("batch",{hasBatch:!!batch.length});}
+		function offerBatch(next) {return next("batch",{hasBatch:!!batch.length || !!inspections.length});}
 		/** @param {Effect[]} jobs @param {Signal} next */
 		async function send(jobs,next) {
 			await Promise.all(jobs.map(async e=>{
@@ -521,10 +559,17 @@ export function createRuntime(directory, host) {
 	}
 	/** @param {string} id @param {string} actor @param {number} [delay] */
 	function wakeCapacity(id, actor, delay=15_000) {
-		if (capacityWakes.has(id)) return;
-		capacityWakes.set(id, setTimeout(() => {
-			capacityWakes.delete(id);
-			if (!closed) track(Promise.resolve().then(() => capacityWaiting(read(id),actor) ? drive(id, actor, true, false) : undefined).catch(error=>{
+		const key=issuerKey(id,actor);
+		if (capacityWakes.has(key)) return;
+		capacityWakes.set(key, setTimeout(() => {
+			capacityWakes.delete(key);
+			// A sibling may have become ready while the original queued candidate
+			// was superseded. The capacity wake may inspect both, never replay either.
+			if (!closed) track(Promise.resolve().then(() => {
+				const run=read(id);
+				if (run.active && !expired(run) && (readyInspections(run,actor).length ||
+					reviews(run).some(e=>e.issuer===actor && e.state==="ready"))) return drive(id,actor,true,false);
+			}).catch(error=>{
 				if(!closed && contention(error))wakeCapacity(id,actor,Math.min(60_000,delay*2));
 				throw error;
 			}));
@@ -532,8 +577,8 @@ export function createRuntime(directory, host) {
 	}
 	/** @param {Run} run @param {string} actor */
 	function capacityWaiting(run,actor) {
-		return run.active && !expired(run) && reviews(run).some(e=>e.issuer===actor && e.state==="ready" &&
-			!e.callId && !e.workflowId && e.error===waitingForSlot);
+		return run.active && !expired(run) && (reviews(run).some(e=>e.issuer===actor && e.state==="ready" &&
+			!e.callId && !e.workflowId && e.error===waitingForSlot) || inspector.queued(run,actor));
 	}
 	/** @param {Run} run @param {import("./model.js").Review} e @param {ScoutEnvelope} result */
 	function settleScout(run, e, result) {
@@ -638,7 +683,7 @@ export function createRuntime(directory, host) {
 					blockReview(e, "Superseded charter or product revision; the requested review was not dispatched.");
 			const pending = batch.filter(e => awaitingReply(e) && currentPin(r, e));
 			const held = !eligible || !r.active || expired(r) || block;
-			if (pending.length && r.active && block?.scope === "run") pause(r,{reason:`${block.message} Check session ${actor}.`,effect:pending[0]});
+			if (pending.length && r.active && block?.scope === "run") holdFor(r,pending[0],`${block.message} Check session ${actor}.`);
 			// A resumed body must not turn a permission race into a completed zero-job
 			// workflow or discard its identity to get another launch.
 			if (held && pending.some(e => e.workflowId)) {
@@ -731,6 +776,7 @@ export function createRuntime(directory, host) {
 			const node = writable(r, actor, token, from);
 			if (!node || node.grain.id !== g.id || digest(n) !== digest(node))
 				fail("stale_assignment", "Assignment changed during capture");
+			requireChangedReview(cwd(),r,node,commit);
 			/** @type {string|undefined} */ let target;
 			const review = node.review && r.effects.find(e => e.id === node.review);
 			const previous = review && review.kind === "scout" && review.predecessor;
@@ -862,7 +908,7 @@ export function createRuntime(directory, host) {
 			if (run.goal && run.goal.commit !== policy.base) retain(origin, run.goal.commit);
 			db(true).insert(run);
 		} else {
-			const plan = prepareResume(prior, !!host.scoutSnapshot);
+			const plan = prepareResume(prior, !!host.scoutSnapshot,inspector.canReceive);
 			if (!plan) return status(prior, actor);
 			await requireReadyOwner(origin);
 			change(policy.id, r => {
@@ -978,7 +1024,7 @@ export function createRuntime(directory, host) {
 			db().mutateLocked(id, r => {
 				if (r.owner !== actor)
 					fail("foreign_run", "Only the owner can pause");
-				pause(r);
+				activate(r,"pause");
 			});
 			return status(read(id), actor);
 		}
@@ -1094,6 +1140,7 @@ export function createRuntime(directory, host) {
 			const run = read(id);
 			if (host.runningHelpers && writable(run, actor, reply.token, a.changedFrom)) {
 				const workflows = new Set(reviews(run).flatMap(r => r.issuer === actor && awaitingReply(r) && r.workflowId ? [r.workflowId] : []));
+				for (const i of boundInspections(run,actor))workflows.add(i.workflow);
 				const helpers = await host.runningHelpers([...workflows]);
 				if (helpers.length) fail("helpers_running", `Native helpers are still running: ${helpers.join(", ")}. Join them, integrate their work, then submit with the same token.`);
 			}
@@ -1195,7 +1242,7 @@ export function createRuntime(directory, host) {
 		background.add(task);
 	}
 	return {
-		operation, inspect, pre, scoutBatch, scoutResult,
+		operation, inspect, pre, scoutBatch, scoutResult, inspectionPacket:inspector.packet,
 		/** @param {string} id @param {string} actor */
 		readBoard(id, actor) { return boardFacts(read(name(id, "run")), actor); },
 		/** Read only a visible fixed grain's assigned specification, never a caller-supplied path or working copy.

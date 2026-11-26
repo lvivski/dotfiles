@@ -111,6 +111,7 @@ async function board(){
 				state==="assigned"?"A writer is bound. Session activity is not observed.":
 				state==="unconfirmed"?"The launch was issued, but no binding is confirmed. Do not launch another writer.":
 				state==="starting"?"No writer binding has been recorded.":
+				state==="reviewing"?"The component passed. Its output cannot be used until Rubber Duck approves it.":
 				state==="passed"?"The rerun passed on this checkpoint; its output is not integrated or usable by dependents.":
 				state==="repeated"?"The checked output did not change the assessed product.":
 				state==="qualified"?"Included in a checked product. This is not the run’s release verdict.":"";

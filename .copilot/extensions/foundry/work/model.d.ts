@@ -116,7 +116,7 @@ export interface Node {
 	successor?: { to: string; review: string; directory: Scope };
 	restoration?: Restoration;
 	review?: string;
-	state: "idle" | "waiting" | "writing" | "checking" | "published" | "qualified" | "repeated" | "blocked";
+	state: "idle" | "waiting" | "writing" | "checking" | "reviewing" | "published" | "qualified" | "repeated" | "blocked";
 	token?: string;
 	worker?: string;
 	generation?: string;
@@ -147,6 +147,25 @@ export interface Product extends Assessment {
 	outputs: Record<string, string>;
 	ownership?: Record<string,{directories:string[];files:string[];exclude?:{directories:string[];files:string[]}}>;
 	qualifiedAt?: number;
+}
+
+export interface Inspection {
+	id:string;
+	component:string;
+	grain:string;
+	candidate:string;
+	generation:string;
+	base:string;
+	scope:NonNullable<Product["ownership"]>[string];
+	task:string;
+	specification?:string;
+	issuer:string;
+	state:"ready"|"issued"|"approved"|"changes"|"unavailable";
+	dispatch?:string;
+	workflow?:string;
+	summary?:string;
+	permissionHold?:string;
+	previous?:{issuer:string;dispatch:string;workflow:string;summary:string}[];
 }
 
 export interface ReviewNote {
@@ -318,6 +337,7 @@ export interface Resolution {
 export type Effect = NativeCall | Review;
 
 export interface Run {
+	inspections?:Inspection[]; // Present from activation for runs requiring independent candidate review.
 	deliveries?:Delivery[];
 	independent?:Subset;
 	id: string;

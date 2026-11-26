@@ -7,6 +7,7 @@ import { changes, verifyJoinedInputs } from "./graph.mjs";
 import { productOutputs } from "./plan.mjs";
 import { awaitingReply, unissued } from "./reservation.mjs";
 import { changedFiles, commitAt, contractConflict, contractPaths, descendsFrom, entries, outside, regularFiles, retain, stageDelivery, verifyContracts } from "./product.mjs";
+import { approvedPublication } from "./publication.mjs";
 import { reconciledBase } from "./resolution.mjs";
 import { questions, releasedReviews, retireSuperseded, reviews } from "./reviews.mjs";
 import { digest, fail, fields, relative, text } from "./values.mjs";
@@ -146,6 +147,7 @@ function prepareTarget(cwd,run,actor,args,signed) {
 	for (const [id,candidate] of Object.entries(outputs)) {
 		const n=run.nodes[id];
 		if (!outside(n.grain.directory,edits)) fail("tree_conflict",`Target edited owned output ${id}; reconcile its files before adopting this target`);
+		if (!approvedPublication(run,n.check,id,candidate)) fail("unreviewed_output",`Target adoption cannot include unreviewed output ${id}`);
 		if (last.outputs[id]===candidate) continue;
 		const e=run.effects.find(e=>e.id===n.check);
 		if (e?.kind!=="component" || e.commit!==candidate || e.grain!==id || e.check!==n.grain.check || e.receipt?.exit!==0)

@@ -1,11 +1,11 @@
-import { assign } from "./assignment.mjs";
+import { assign, working } from "./assignment.mjs";
 import { availableReservations, remainingAssignments } from "./capacity.mjs";
 import { checkReceipt, currentEvaluation, launcherFailure, productPin } from "./evidence.mjs";
 import { undecided } from "./facts.mjs";
 import { assess, observeTarget } from "./goal.mjs";
 import { changes, productBase, verifyJoinedInputs, verifyRepairInputs } from "./graph.mjs";
 import { admitted, reserveCheck, reserveProduct } from "./native.mjs";
-import { productOutputs, working, writerInputs } from "./plan.mjs";
+import { productOutputs, writerInputs } from "./plan.mjs";
 import { combine, commitAt, retain } from "./product.mjs";
 import { digest, fail } from "./values.mjs";
 

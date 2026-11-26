@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { openDatabase } from "../work/database.mjs";
 import { assignment } from "../work/native.mjs";
 import { createRuntime } from "../work/runtime.mjs";
-import { nativeHost, pinnedFiles, put, workflowHost } from "./fixture.mjs";
+import { nativeHost, pinnedFiles, put, scriptedInspections, settleSubmitted, workflowHost } from "./fixture.mjs";
 
 /** @typedef {{id:string,directory:string,squad:string,needs:string[]}} Part */
 /** @typedef {{direction:string,check:string,parts:Part[]}} Projections */
@@ -51,8 +51,9 @@ if (fileURLToPath(import.meta.url) === process.argv[1]) {
 	const host = nativeHost(root, token), discovery = workflowHost();
 	/** @type {string[]} */ const lost = [];
 	/** @type {ReturnType<typeof createRuntime>} */
-	const runtime = createRuntime(process.cwd(), {
+	const runtime = settleSubmitted(createRuntime(process.cwd(), {
 		mode: async () => "interactive", permissionBlocker: async () => null,
+		...scriptedInspections(root),
 		scout: (id, dispatch, issuer) => discovery.launch(runtime, id, dispatch, issuer),
 		execute: async (tool, args, id) => {
 			if (withhold && tool === "bash" && String(args.description).startsWith(`Check ${withhold} at `)) {
@@ -65,7 +66,7 @@ if (fileURLToPath(import.meta.url) === process.argv[1]) {
 			const job = assignment(message); assert.ok(job); assert.equal(job.run, run);
 			host.inbox.push({ worker: actor, token: job.token }); return job.token;
 		}
-	});
+	}));
 	try {
 		const n = (await runtime.operation("status", { run }, actor)).nodes.find(n => n.token === token);
 		assert.ok(n?.state === "writing");

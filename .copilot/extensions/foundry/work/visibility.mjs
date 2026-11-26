@@ -37,6 +37,7 @@ export function visible(run, actor) {
 		if (binding) writerAssignments[binding]++;
 	}
 	const receipts = new Map(run.effects.filter(e => e.receipt).map(e => [e.id, e.receipt]));
+	const inspections = new Map((run.inspections??[]).map(i=>[i.component,i]));
 	/** @type {Map<string,ReturnType<typeof attempt>[]>} */ const attempts=new Map();
 	for (const e of run.effects) if ((e.kind==="component" || e.kind==="rerun") && e.grain && (owner || e.issuer===actor)) {
 		const history=attempts.get(e.grain) ?? [];
@@ -56,7 +57,7 @@ export function visible(run, actor) {
 		: missing ? `Goal check at ${missing.commit} awaits external evidence (exit 2): ${missing.output.trim() || "no diagnostic"}. After supplying it, use /foundry resume ${run.policy.source}.` : milestoneBlocker(run));
 	const openQuestions = owner ? questions(run).flatMap(r => r.observation ? [{ review: r, observation: r.observation,
 		fact: { question: r.observation.reason, ...(r.decision ? { delivery: r.decision } : {}) } }] : []) : [];
-	return { owner, nodes, pending, receipts, attempts, unconfirmed, assignments, questions: openQuestions, summary: {
+	return { owner, nodes, pending, receipts, inspections, attempts, unconfirmed, assignments, questions: openQuestions, summary: {
 		run: run.id, active: run.active, direction: run.policy.direction, expired: expired(run),
 		blocker: blocker && stop ? `${blocker}\n${stop}` : blocker ?? stop,
 		reviews: owner ? reviews(run).map(r => reviewStatus(run, r)) : [],
@@ -72,9 +73,10 @@ function writerBinding(n, unconfirmed) {
 	if (n.state === "writing") return n.worker ? "bound" : n.token && unconfirmed.has(n.token) ? "unconfirmed" : "pending";
 }
 
-/** @param {import("./model.js").Node} n @param {Pick<ReturnType<typeof visible>,"receipts"|"unconfirmed"|"attempts"|"summary">} view */
-export function nodeFact(n, {receipts,unconfirmed,attempts,summary}) {
+/** @param {import("./model.js").Node} n @param {Pick<ReturnType<typeof visible>,"receipts"|"inspections"|"unconfirmed"|"attempts"|"summary">} view */
+export function nodeFact(n, {receipts,inspections,unconfirmed,attempts,summary}) {
 	const binding = writerBinding(n, unconfirmed);
+	const i=n.check && inspections.get(n.check);
 	const latest=n.state==="blocked" && n.check && summary.checkpoint
 		? attempts.get(n.grain.id)?.findLast(a=>a.original===n.check && a.commit===summary.checkpoint) : undefined;
 	return { grain: n.grain.id, directory: n.grain.directory, task: n.grain.task, requires: liveNeeds(n), evaluator: n.grain.check,
@@ -83,6 +85,7 @@ export function nodeFact(n, {receipts,unconfirmed,attempts,summary}) {
 		...(n.successor ? {successor:n.successor} : {}),
 		...(n.restoration ? {restoration:n.restoration} : {}),
 		...(latest?.status==="passed" && {passedOnBuild:latest.check}),
+		...(i && {codeReview:{id:i.id,component:i.component,candidate:i.candidate,state:i.state,summary:i.summary,permissionHold:i.permissionHold}}),
 		state: n.state, ...(binding ? { writerBinding: binding } : {}), checked: checked(n) ? n.candidate : undefined, worker: n.worker, receipt: n.check && receipts.get(n.check), reason: n.reason,
 		...(attempts.has(n.grain.id) && {attempts:attempts.get(n.grain.id)}) };
 }
@@ -120,7 +123,7 @@ export function projectBoard(s, owner) {
 			id: n.grain, task: n.task ?? "", directory: scopeLabel(n.directory), needs: n.requires,
 			...(n.specification && {specification:n.specification}),
 			state: n.writerBinding === "bound" ? "assigned" : n.writerBinding === "unconfirmed" ? "unconfirmed" : n.writerBinding === "pending" ? "starting" : n.state,
-			reason: n.reason ?? "", check: n.evaluator, checked: n.checked ?? null,
+			reason: n.reason ?? (n.state==="reviewing" && (n.codeReview?.permissionHold ?? n.codeReview?.summary) || ""), check: n.evaluator, checked: n.checked ?? null,
 			result: n.receipt ? { commit: n.receipt.commit, exit: n.receipt.exit } : null,
 			...(owner && n.passedOnBuild && {passedOnBuild:n.passedOnBuild}),
 			...(n.attempts && {attempts:n.attempts}),

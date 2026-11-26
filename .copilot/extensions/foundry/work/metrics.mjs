@@ -51,7 +51,9 @@ export function metricsFacts(run) {
 	return {
 		...timing,
 		firstWriter: { ...timing.firstWriter, nativeIds: boundAt === null ? [] : [...new Set(writers.filter(w => w.boundAt === boundAt).map(w => w.nativeId))] },
-		history: { owner: run.owner, writers, hasUnconfirmedWriters: creates.some(pendingBinding), workflowIds: [...new Set(run.effects.flatMap(e =>
-			e.kind === "scout" && e.tool === "workflow" && e.workflowId ? [e.workflowId] : []))] },
+		history: { owner: run.owner, writers, hasUnconfirmedWriters: creates.some(pendingBinding), workflowIds: [...new Set([
+			...run.effects.flatMap(e=>e.kind==="scout" && e.workflowId ? [e.workflowId] : []),
+			...(run.inspections??[]).flatMap(i=>[...(i.previous??[]).map(a=>a.workflow),...(i.workflow?[i.workflow]:[])]),
+		])] },
 	};
 }

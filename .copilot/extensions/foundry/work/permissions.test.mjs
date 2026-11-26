@@ -23,6 +23,8 @@ function trial(/** @type {import("node:test").TestContext} */ t) {
 const grain = (id, directory = `stock/${id}`, needs = []) => ({ id, directory, needs, task: `Implement ${id}`, check: ".foundry/component.mjs" });
 /** @param {ReturnType<typeof grain>[]} grains */
 const report = grains => ({ outcome: grains.length ? "regenerate" : "no-gap", reason: "Implement the missing journal operations", evidence: ["brief.md"], grains });
+/** @param {ReturnType<typeof trial>} f */
+const dependentReserved=f=>f.owner.inspect({run},actor).pending.some(e=>e.kind==="writer" && e.grain==="emit" && e.state==="ready");
 
 for (const stop of [false,true]) test(`a reloaded issuer wakes its original managed hold without an operator command; operator pause=${stop}`, async t => {
 	const f=trial(t);
@@ -31,9 +33,7 @@ for (const stop of [false,true]) test(`a reloaded issuer wakes its original mana
 	await codec.report(report([grain("parse","stock/codec/parse"),grain("emit","stock/codec/emit",["parse"])]));
 	for (const s of others) await s.report(report([]));
 	const [writer]=f.workers.values();
-	let denied=false;
-	const original=f.runtime(writer.cwd,{permissionBlocker:async()=>denied ? {scope:"run",message:"Settings not resolved"} : null,
-		execute:async (...args)=>{const result=await f.execute(...args); denied=true; return result;}});
+	const original=f.runtime(writer.cwd,{permissionBlocker:async()=>dependentReserved(f) ? {scope:"run",message:"Settings not resolved"} : null});
 	put(writer.cwd,"stock/codec/parse/value","earned");
 	await original.operation("submit",{run,token:writer.token},writer.id); original.close();
 	const held=await f.status(); assert.equal(held.active,false);
@@ -111,8 +111,9 @@ test("a paused run's issuer can read its applied policy and mode without trying 
 	for (const scout of others) await scout.report(report([]));
 	const [writer] = f.workers.values();
 	let closed = false, mode = "assisted", unreadable = false, reads = 0;
-	const issuing = f.runtime(writer.cwd, { permissionBlocker: async () => closed ? {scope:"run", message:"Unresolved issuer policy"} : null,
-		execute: async (...args) => { const result = await f.execute(...args); closed = true; return result; } });
+	const issuing = f.runtime(writer.cwd, { permissionBlocker: async () => {
+		closed ||= dependentReserved(f);return closed ? {scope:"run", message:"Unresolved issuer policy"} : null;
+	} });
 	put(writer.cwd, "stock/codec/parse/index.mjs", "export default 1;");
 	await issuing.operation("submit", {run, token:writer.token}, writer.id);
 	const held = await f.status();
@@ -366,10 +367,9 @@ test("a writer's Manual setting holds its dependent writer reservation, not a si
 	const writer = [...f.workers.values()].at(-1); assert.ok(writer && writer.prompt.includes("complete stock/projection/"));
 	let mode = "assisted";
 	const {blocker:permissions} = permissionCheck(async () => ({ failClosed: false }), async () => ({ mode }));
-	const issuing = f.runtime(parser.cwd, { permissionBlocker: permissions, execute: async (...args) => {
-		const result = await f.execute(...args);
-		if (args[0] === "bash") mode = "manual"; // The check ran; its dependent's native start has not.
-		return result;
+	const issuing = f.runtime(parser.cwd, { permissionBlocker: async () => {
+		if(dependentReserved(f))mode="manual"; // The review completed; the dependent's start has not.
+		return permissions();
 	} });
 	put(parser.cwd, "stock/codec/parse/index.mjs", "export default 1;");
 	await issuing.operation("submit", { run, token: parser.token }, parser.id);
@@ -406,17 +406,16 @@ for (const closed of [false, true]) test(`owner resume claims a published writer
 	for (const scout of others) await scout.report(report([]));
 	const [parser] = f.workers.values();
 	put(parser.cwd, "stock/codec/parse/index.mjs", "export default 1;");
-	let checked = false, starts = 0;
+	let starts = 0;
 	let reading = () => {}, release = () => {};
 	const preflight = new Promise(resolve => { reading = () => resolve(undefined); });
 	const gate = new Promise(resolve => { release = () => resolve(undefined); });
 	const worker = f.runtime(parser.cwd, { permissionBlocker: async () => {
-		if (checked) { reading(); await gate; }
+		if (dependentReserved(f)) { reading(); await gate; }
 		return null;
 	}, execute: async (...args) => {
 		if (args[0] === "create_session") starts++;
-		const result = await f.execute(...args);
-		checked ||= args[0] === "bash"; return result;
+		return f.execute(...args);
 	} });
 	const submitting = worker.operation("submit", { run, token: parser.token }, parser.id);
 	await preflight;

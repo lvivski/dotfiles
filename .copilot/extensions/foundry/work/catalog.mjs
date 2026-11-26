@@ -9,8 +9,9 @@ import { dialog } from "./dialog.mjs";
 import { renewal } from "./renewal.mjs";
 import { scheduling } from "./scheduling.mjs";
 import { reconciliation } from "./reconciliation.mjs";
+import { inspection } from "./inspection.mjs";
 
-const entities=compose(assignment,review,call,activity,release,workflow,quiescence,dialog,renewal,scheduling,reconciliation,releasePreflight);
+const entities=compose(assignment,review,call,activity,release,workflow,quiescence,dialog,renewal,scheduling,reconciliation,releasePreflight,inspection);
 export const definitions=()=>({...entities.describe(),...monitors.describe()});
 /** Wire projection of the runtime definitions. Reducer code never crosses the canvas boundary. */
 export function catalog() {

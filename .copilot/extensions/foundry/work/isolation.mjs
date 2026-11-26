@@ -1,4 +1,5 @@
 import { checkReceipt } from "./evidence.mjs";
+import { approvedPublication } from "./publication.mjs";
 import { digest } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
@@ -14,7 +15,7 @@ export function isolationBasis(run,product,selected) {
 	const nodes={...run.nodes};
 	if (j>=0) for (const {grain} of selected) if (nodes[grain]?.state==="qualified") nodes[grain]={...nodes[grain],state:"published"};
 	return digest([run.policy,nodes,run.effects.slice(0,i<0?undefined:i),run.products.slice(0,j<0?undefined:j),
-		run.repins,run.productRepins,run.artifacts,run.references,run.attributions,run.pendingReviewNotes]);
+		run.repins,run.productRepins,run.artifacts,run.references,run.attributions,run.pendingReviewNotes,...(run.inspections ? [run.inspections] : [])]);
 }
 
 /** Independent progress has its own lineage; never reinterpret the original pair
@@ -40,7 +41,7 @@ export function validIsolation(run) {
 		checksNeeded.size!==s.evidence.length || s.evidence.some(x=>!checksNeeded.delete(x.component) ||
 			!run.effects.some(e=>e.kind==="component" && e.id===x.component && e.commit===x.commit) ||
 			Object.values(x.stages).some(notes=>!notes.length)) ||
-		s.selected.some(n=>run.nodes[n.grain]?.candidate!==n.candidate || run.nodes[n.grain].check!==n.component ||
+		s.selected.some(n=>run.nodes[n.grain]?.candidate!==n.candidate || run.nodes[n.grain].check!==n.component || !approvedPublication(run,n.component,n.grain,n.candidate) ||
 			run.nodes[n.grain].state!==(applied?"qualified":"published")) ||
 		!join || join.qualifiedAt || join.check!==s.product || join.commit!==s.assembly || join.target!==s.target ||
 		digest(join.outputs)!==digest({...p.outputs,...pins}) || !join.ownership || digest(join.ownership)!==digest(s.ownership) ||

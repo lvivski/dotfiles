@@ -4,9 +4,10 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { setTimeout as wait } from "node:timers/promises";
+import { setImmediate as turn, setTimeout as wait } from "node:timers/promises";
 import { promisify } from "node:util";
 import { factory, git, pinnedFiles, put } from "../test/fixture.mjs";
+import { inlineDelivery } from "../test/participant.mjs";
 
 /** @param {string} directory @param {string[]} needs @param {string} body */
 const part = (directory, needs, body) => ({ directory, squad: directory.split("/")[0], id: path.basename(directory), needs, body });
@@ -186,7 +187,7 @@ for (const app of [spooler, stock]) for (const delivery of ["inline", "later", "
 						const duplicate = await r.operation("submit", { run, token }, worker);
 						assert.ok(!duplicate.nodes.some(n => n.worker === worker && n.state === "writing"));
 						const result = await f.execute(...args);
-						r.turn(worker, shell); await r.flush(); // Completion races the still-open submit response.
+						r.turn(worker, shell); await turn(); // Race the outstanding call without joining the call we are inside.
 						return result;
 					}
 					assert.ok(!withheld, "never reissue the late check"); withheld = true;
@@ -196,8 +197,8 @@ for (const app of [spooler, stock]) for (const delivery of ["inline", "later", "
 				return f.execute(...args);
 			} });
 			const reply = await r.operation("submit", { run, token }, worker);
-			const inline = reply.nodes.find(a => a.worker === worker && a.state === "writing" && a.token !== token);
-			if (inline?.token) f.inbox.push({ worker, token: inline.token }); // Only a token actually returned to this submitter.
+			const inline=inlineDelivery(f.root,run,worker,p.id,token,reply);
+			if (inline) f.inbox.push(inline); // A later review-driven repair notice already made its own delivery.
 			if (broken && !replan && delivery !== "inline") {
 				r.close();
 				assert.ok(!inline);

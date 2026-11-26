@@ -36,7 +36,7 @@ Use the [owner runbook](../../skills/foundry/references/runs.md) for the next ac
 
 ### Regeneration and checks
 
-A writer submits the complete granted output from its frozen inputs. A component pass publishes that candidate. Only a separate product pass establishes a checkpoint; a goal run needs both exact passes on the same commit. [Evaluator inputs, ownership and receipts](PROTOCOL.md#regeneration-and-checks)
+A writer submits the complete granted output from its frozen inputs. In new runs, independent **Rubber Duck** review is part of that same writing assignment: a component pass freezes the candidate for review, without starting another writer or spending another assignment. Only approval makes it available to dependents or the product check. Blocking findings go back to the same writer within its repair budget; an unavailable review leaves the output unpublished. `foundry_status` distinguishes the component receipt from the code review. Only a separate product pass establishes a checkpoint; a goal run needs both product and goal passes on the same commit. [Evaluator inputs, ownership and receipts](PROTOCOL.md#regeneration-and-checks)
 
 ### Hand off and measure the result
 

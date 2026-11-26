@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { openDatabase } from "./database.mjs";
 import { checkpointReceipt } from "./evidence.mjs";
 import { currentReview } from "./graph.mjs";
+import { prepareRepin } from "./repin.mjs";
 import { createRuntime } from "./runtime.mjs";
 import { decode } from "./snapshot.mjs";
 import { factory, git, put } from "../test/fixture.mjs";
@@ -181,6 +182,11 @@ for (const exit of [2,1]) test(`target adoption retains an unissued original rep
 		assert.deepEqual(read(),before);return;
 	}
 	if (process.env.FOUNDRY_PRIOR_FIXTURE) await assert.rejects(f.owner.operation("repin",args,"owner"),/current assignments/);
+	if (before.inspections) {
+		const unreviewed=structuredClone(before);
+		unreviewed.inspections=before.inspections.filter(i=>i.component!==before.nodes.extra.check);
+		assert.throws(()=>prepareRepin(f.root,unreviewed,"owner",args,e=>db.verifySigned(run,e)),{code:"unreviewed_output"});
+	}
 	await assert.rejects(migrated.operation("repin",args,"owner"),/not approved/i);
 	assert.deepEqual(read(),before);
 	const owner=f.runtime(f.root,{confirm:async prompt=>{

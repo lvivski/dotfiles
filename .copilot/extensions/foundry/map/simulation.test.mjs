@@ -38,6 +38,8 @@ function example(id,from,type,facts){
 		return {context:{question:"question",presentation:"presentation"},event:{type,expected,answer:"answer",reason:"offline"}};
 	}
 	case "assignment":return {context:{replaces:"previous"},event:{type,id:"grain",reason:"original outcome",candidate:"candidate"}};
+	case "inspection":return {context:{issuer:"writer",dispatch:facts.unticketed ? undefined : "dispatch",workflow:facts.sameWorkflow || facts.bound || facts.unbound===false ? "workflow" :
+		facts.sameWorkflow===false ? "elsewhere" : undefined,summary:"original diagnostic"},event:{type,issuer:"issuer",dispatch:"new-dispatch",workflow:"workflow",summary:"review finding"}};
 	case "review":case "call":return {context:{},event:{type,callId:"call",workflowId:"workflow",error:"reason",nativeId:"worker",boundAt:1}};
 	case "quiescence":return {context:{held:[],retained:[]},event:{type,label:`sample (${from})`,check:{id:"observation"}}};
 	case "release":case "release-preflight":return {context:null,event:{type,target:"target",workTarget:"checkpoint"}};

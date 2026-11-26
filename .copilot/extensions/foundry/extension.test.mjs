@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
+import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import { setImmediate as turn } from "node:timers/promises";
 import { Worker } from "node:worker_threads";
 import { record } from "./work/values.mjs";
 import { factory, git, loadEntry, put } from "./test/fixture.mjs";
@@ -22,10 +24,28 @@ function trial(t) {
 }
 
 /** @param {import("node:test").TestContext} t @param {string} sessionId @param {string} workingDirectory
- * @param {{execute:ReturnType<typeof factory>["execute"],tasks?:()=>Promise<unknown>,workflow?:object}} options */
-async function entry(t, sessionId, workingDirectory, { execute, tasks, workflow }) {
-	const config = await loadEntry({ sessionId, workflow, on() {}, rpc: {
+ * @param {{execute:ReturnType<typeof factory>["execute"],tasks?:()=>Promise<unknown>,workflow?:object,
+ * agent?:import("@github/copilot-sdk/extension").WorkflowContext["agent"]}} options */
+async function entry(t, sessionId, workingDirectory, { execute, tasks, workflow, agent }) {
+	/** @type {Awaited<ReturnType<typeof loadEntry>>} */ let config;
+	/** @type {Map<string,Promise<unknown>>} */ const calls=new Map();
+	config = await loadEntry({ sessionId, workflow:{...(agent && {
+		async start(/** @type {string} */ name,/** @type {{args:Record<string,string>,notifyOnComplete:boolean}} */ options){
+			assert.equal(name,"foundry-inspect");assert.equal(options.notifyOnComplete,false);
+			const definition=config.workflows.find(w=>w.meta.name===name);
+			assert.ok(definition && "run" in definition && typeof definition.run==="function");
+			const runId=randomUUID(),reject=()=>assert.fail("Unexpected reviewer operation");
+			/** @type {import("@github/copilot-sdk/extension").WorkflowContext} */ const context={args:options.args,runId,signal:new AbortController().signal,
+				session:/** @type {import("@github/copilot-sdk").CopilotSession} */ ({sessionId,
+					rpc:{agent:{list:async()=>({agents:[{id:"rubber-duck",name:"rubber-duck",source:"builtin"}]})}}}),
+				agent,agents:{},step:async(_,fn)=>fn(),phase(){},log(){},parallel:reject,pipeline:reject,pause:reject,workflow:reject};
+			calls.set(runId,Promise.resolve(definition.run(context)));
+			return {runId,status:"running"};
+		},
+		async waitForRun(/** @type {string} */ runId){assert.ok(calls.has(runId));return {runId,status:"completed",result:await calls.get(runId)};},
+	}),...workflow}, on() {}, rpc: {
 		mode: { get: async () => "autopilot" }, managedSettings: { get: async () => ({ failClosed: false }) }, permissions: { getMode: async () => ({ mode: "assisted" }) },
+		metadata:{getContextAttribution:async()=>({contextAttribution:{promptTokenLimit:64000,categories:{systemPrompt:0,customInstructions:0,systemTools:0,mcpTools:0}}})},
 		tasks: { list: tasks }, tools: { execute: (/** @type {{name:string,arguments:import("./work/model.js").Effect["args"],toolCallId:string}} */ a) =>
 			execute(a.name, a.arguments, a.toolCallId) }
 	} });
@@ -95,7 +115,12 @@ test("two helpers in one capped assignment finish before its writer publishes on
 		return { name, worker, ready: once(worker, "message"), done: once(worker, "exit") };
 	});
 	// No local starts to count: a reloaded writer has to consult the host.
-	const writer = await entry(t, w.id, w.cwd, { execute: f.execute, tasks: async () => ({ tasks: [
+	let independent=0;
+	const writer = await entry(t, w.id, w.cwd, { execute: f.execute,agent:async(prompt,options)=>{
+		assert.equal(options?.agent,"rubber-duck");assert.ok(prompt.includes("encodeURIComponent") && prompt.includes("decodeURIComponent"));
+		assert.ok(prompt.includes("Encode and decode labels without losing their text."));
+		assert.ok(!prompt.includes(w.token));independent++;return {outcome:"approved",summary:`${dir}/index.mjs:1 re-exports the matching encode and decode implementations.`};
+	}, tasks: async () => ({ tasks: [
 		...jobs.map(({ name, worker }) => ({ type: "agent", id: name, status: worker.threadId === -1 ? "completed" : "running" })),
 		{ type: "shell", id: "unrelated", status: "running" }, { type: "agent", id: "finished-turn", status: "idle" }
 	] }) });
@@ -114,7 +139,9 @@ test("two helpers in one capped assignment finish before its writer publishes on
 	assert.match(w.prompt, /\btask\b/i);
 	put(w.cwd, `${dir}/index.mjs`, 'export * from "./encode.mjs"; export * from "./decode.mjs";\n');
 	assert.equal(typeof await writer.call("foundry_submit", args), "string");
+	await turn();
 	const done = await f.status();
+	assert.equal(independent,1);assert.equal(done.nodes[0].codeReview?.state,"approved");
 	assert.ok(done.qualified);
 	assert.equal(done.limit, 1);
 	assert.equal(done.products?.[0].receipt?.commit, done.qualified);
@@ -123,6 +150,57 @@ test("two helpers in one capped assignment finish before its writer publishes on
 	assert.equal(git(f.root, "ls-tree", "--name-only", `${done.qualified}:${dir}`), "decode.mjs\nencode.mjs\nindex.mjs");
 	assert.equal(f.checks.length, 2); // One component check and one combined check.
 	assert.equal(f.workers.size, 1);
+});
+
+test("the native hook confines only the active factory reviewer, including ambiguous tool calls, and leaves its result channel open", async t => {
+	const f=trial(t); await f.start(); const [w]=f.workers.values();
+	put(w.cwd,`${dir}/index.mjs`,"export const encode=encodeURIComponent, decode=decodeURIComponent;\n");
+	/** @type {Awaited<ReturnType<typeof entry>>} */ let writer;
+	/** @type {Record<string,string|undefined>} */ const observed={};
+	let label="",detailMode="ok",lookups=0,reviewed=0;
+	const direct="native-duck",manual={agentId:"manual-duck",agentType:"rubber-duck"};
+	/** @param {string} toolName @param {Partial<Parameters<NonNullable<typeof writer.hooks.onPreToolUse>>[0]>} actor */
+	async function decision(toolName,actor) {
+		const result=await writer.hooks.onPreToolUse?.({...writer.hook,...actor,toolName,toolArgs:{agentId:"not-the-reviewer"},toolCallId:"current-child-tool"},writer.ctx);
+		return result?.permissionDecision;
+	}
+	writer=await entry(t,w.id,w.cwd,{execute:f.execute,tasks:async()=>({tasks:[]}),workflow:{
+		async getRunDetail(/** @type {string} */ id) {
+			lookups++;
+			if (detailMode==="offline") throw Error("workflow registry is unavailable");
+			const a={runId:id,agentType:"rubber-duck",agentId:direct,toolCallId:"original-native-launch",label,status:"running"};
+			return {runId:detailMode==="foreign-run"?"unrelated":id,workflowName:detailMode==="foreign-workflow"?"other":"foundry-inspect",
+				status:"running",agents:[{...a,status:"completed",agentId:"older-attempt"},
+					...(detailMode==="missing"?[]:[detailMode==="wrong-launch"?{...a,toolCallId:""}:a]),
+					...(detailMode==="ambiguous"?[{...a,agentId:"second-direct"}]:[])]};
+		},
+	}, agent:async(_prompt,options)=>{
+		reviewed++;label=options?.label??"";
+		for (const tool of ["view","apply_patch","bash","mcp.example.external","web_fetch","task","ask_user","foundry_reference","rename_branch","submit_review_result"])
+			observed[tool]=await decision(tool,{agentId:direct});
+		observed.descendant=await decision("view",{agentId:"nested",parentAgentId:direct,agentType:"explore"});
+		observed.unattributed=await decision("view",{sessionId:"child-session"});
+		observed.blank=await decision("view",{agentId:" "});
+		observed.typeOnly=await decision("view",{agentType:"rubber-duck"});
+		observed.ordinary=await decision("view",{agentId:"unrelated-helper",agentType:"explore"});
+		observed.otherDuck=await decision("view",manual);
+		for (detailMode of ["foreign-run","foreign-workflow","missing","wrong-launch","ambiguous","offline"]) {
+			observed[detailMode]=await decision("view",{agentId:"unattributed",agentType:"rubber-duck"});
+			observed[`primary-${detailMode}`]=await decision("view",{});
+		}
+		return {outcome:"approved",summary:`${dir}/index.mjs:1 — Encode and decode use matching URL component semantics.`};
+	}});
+	assert.equal(await decision("view",manual),undefined);assert.equal(lookups,0);
+	await writer.call("foundry_submit",{run,token:w.token});await turn();
+	assert.equal(reviewed,1);
+	for (const tool of ["view","apply_patch","bash","mcp.example.external","web_fetch","task","ask_user","foundry_reference","rename_branch","submit_review_result",
+		"descendant","unattributed","typeOnly","blank","foreign-run","foreign-workflow","missing","wrong-launch","ambiguous","offline"])
+		assert.equal(observed[tool],"deny",tool);
+	for (const key of ["ordinary","otherDuck",...Object.keys(observed).filter(k=>k.startsWith("primary-"))])
+		assert.equal(observed[key],undefined,key);
+	assert.ok(lookups>0);const prior=lookups;
+	assert.equal(await decision("view",manual),undefined);assert.equal(lookups,prior);
+	const status=await f.status();assert.equal(status.nodes[0].codeReview?.state,"approved");assert.ok(status.qualified);
 });
 
 test("a writer can submit with its helper idle while its session hosts independent discovery", async t => {

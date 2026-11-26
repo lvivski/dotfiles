@@ -41,8 +41,19 @@
           "checking": [
             {
               "on": "component",
+              "target": "reviewing",
+              "description": "Reserve an independent review of the exact passing component before publication.",
+              "when": [
+                "passed",
+                "reviewRequired"
+              ],
+              "update": "clearReason",
+              "action": "reserve-inspection"
+            },
+            {
+              "on": "component",
               "target": "published",
-              "description": "Make the passing candidate available for integration.",
+              "description": "Honor a run activated under its original component-only contract.",
               "when": [
                 "passed"
               ],
@@ -104,6 +115,50 @@
               "target": "published",
               "description": "Publish the exact output supported by the fresh component observation.",
               "update": "clearReason"
+            }
+          ],
+          "reviewing": [
+            {
+              "on": "inspection",
+              "target": "published",
+              "description": "Publish only the candidate approved by the bound independent reviewer.",
+              "when": [
+                "approved"
+              ],
+              "update": "clearReason"
+            },
+            {
+              "on": "inspection",
+              "target": "blocked",
+              "description": "The reviewer requested changes but this grant does not permit a repair.",
+              "when": [
+                "readOnly"
+              ],
+              "update": "recordReason"
+            },
+            {
+              "on": "inspection",
+              "target": "blocked",
+              "description": "Keep the findings when no repair assignment remains.",
+              "when": [
+                "unfunded"
+              ],
+              "update": "recordReason"
+            },
+            {
+              "on": "inspection",
+              "target": "blocked",
+              "description": "Keep the findings when the repair allowance is spent.",
+              "when": [
+                "exhausted"
+              ],
+              "update": "recordRepairLimit"
+            },
+            {
+              "on": "inspection",
+              "target": "waiting",
+              "description": "Return the blocking findings to the same writer within its existing grant.",
+              "update": "queueRepair"
             }
           ],
           "published": [
@@ -306,7 +361,8 @@
             "waiting": "The output or its repair has been requested. Inputs, a reservation or permission may still be missing.",
             "writing": "A writer reservation owns this generation. Its native binding is a separate fact.",
             "checking": "The candidate is frozen for its component evaluation; the writer cannot keep editing that submission.",
-            "published": "The component check supports this candidate. It is not yet an integrated product.",
+            "reviewing": "The writer's assignment stays open while its frozen candidate awaits independent approval. Dependents cannot use it yet.",
+            "published": "The candidate passed its required checks and can be consumed. It is not yet an integrated product.",
             "qualified": "This output was included in a checked product. The whole run has a separate release decision.",
             "repeated": "This checked output would reproduce an already assessed product.",
             "blocked": "A recorded stop prevents this assignment from continuing on its current terms."
@@ -1321,6 +1377,13 @@
               "update": "hold-assignment"
             }
           ],
+          "reviewing": [
+            {
+              "on": "inspect",
+              "reason": "The passing candidate still needs independent review",
+              "update": "hold-assignment"
+            }
+          ],
           "waiting": [
             {
               "on": "inspect",
@@ -1362,6 +1425,7 @@
             "blocked": "The stop is recorded; it is not an active writer or evaluator.",
             "writing": "A writer reservation must be accounted for before changing the assembly.",
             "checking": "An outstanding component observation must keep its original inputs.",
+            "reviewing": "A candidate in code review cannot be adopted or treated as a published output.",
             "waiting": "Distinguish a live queue obligation from an unavailable observation that nobody can act on.",
             "published": "A component passed but awaits integration; adoption requires observing it on the new assembly."
           }
@@ -2297,6 +2361,15 @@
             },
             {
               "on": "planned",
+              "target": "publication",
+              "description": "Recheck permission before applying independent review evidence to the graph.",
+              "when": [
+                "inspectionDue"
+              ],
+              "action": "sample-policy"
+            },
+            {
+              "on": "planned",
               "target": "renewal",
               "description": "Sample fresh permission before renewing the owner's original report.",
               "when": [
@@ -2314,6 +2387,41 @@
               "description": "Observe the committed plan and choose this issuer's outstanding work.",
               "when": [],
               "action": "watch-plan"
+            }
+          ],
+          "publication": [
+            {
+              "on": "policy",
+              "target": "done",
+              "description": "The issuer closed; preserve the review without publishing it.",
+              "when": [
+                "closed"
+              ]
+            },
+            {
+              "on": "policy",
+              "target": "done",
+              "description": "Do not publish or record a policy hold from an ineligible execution mode.",
+              "when": [
+                "!executable"
+              ],
+              "action": "retain-wake"
+            },
+            {
+              "on": "policy",
+              "target": "planning",
+              "description": "Revalidate the sampled candidate reviews before publishing or requesting repair.",
+              "when": [
+                "permitted"
+              ],
+              "action": "apply-verdicts"
+            },
+            {
+              "on": "policy",
+              "target": "done",
+              "description": "Retain the original evidence and watch for permission to apply it.",
+              "when": [],
+              "action": "watch-held-inspections"
             }
           ],
           "renewal": [
@@ -2350,6 +2458,15 @@
               "when": [
                 "closed"
               ]
+            },
+            {
+              "on": "planned",
+              "target": "publication",
+              "description": "Recheck permission before applying independent review evidence to the graph.",
+              "when": [
+                "inspectionDue"
+              ],
+              "action": "sample-policy"
             },
             {
               "on": "planned",
@@ -2515,11 +2632,12 @@
             {
               "on": "authorized",
               "target": "dispatching",
-              "description": "Dispatch the permitted scout, writer-pool and direct native groups independently.",
+              "description": "Dispatch the permitted discovery, candidate review, writer and native calls independently.",
               "when": [],
               "action": "group-batch",
               "fork": [
                 "scouts",
+                "inspections",
                 "writers",
                 "calls"
               ]
@@ -2540,6 +2658,22 @@
               "on": "scouts",
               "target": "done",
               "description": "Absent or capacity-queued scouts need no launch on this pass.",
+              "when": []
+            },
+            {
+              "on": "inspections",
+              "target": "done",
+              "description": "Claim each exact candidate before starting its independent Rubber Duck workflow.",
+              "when": [
+                "jobs",
+                "!capacityWait"
+              ],
+              "action": "launch-inspections"
+            },
+            {
+              "on": "inspections",
+              "target": "done",
+              "description": "Do not issue missing, already-claimed or capacity-queued candidate reviews.",
               "when": []
             },
             {
@@ -2645,7 +2779,8 @@
             "recovering": "A guarded hold or original workflow continuation is being reconciled.",
             "lanes": "Native history and dispatch start from this same point without waiting for one another.",
             "history": "Read only eligible original requests and their matching completions.",
-            "planning": "Plan eligible work and look for a report that needs the owner's permission.",
+            "planning": "Plan eligible work and look for evidence that needs fresh permission.",
+            "publication": "The issuer needs permission to apply a candidate's independent review.",
             "renewal": "The owner needs fresh permission to renew an original report.",
             "renewing": "Revalidate the renewal and commit the resulting plan.",
             "offering": "Select allowed work from the observed plan, including a final handoff if due.",
@@ -2653,7 +2788,7 @@
             "permission": "Only a fresh policy and execution mode can enable this batch.",
             "recording": "Revalidate the original batch against the live ledger before setting or releasing a hold.",
             "enabling": "Choose which work the sampled permission enables.",
-            "dispatching": "Scouts, writer creates and direct calls have independent native routes.",
+            "dispatching": "Discovery, candidate review, writer creation and direct calls have independent native routes.",
             "matching": "Match ready writers without holding the ledger lock.",
             "native": "Individual ledger claims and matching replies determine what the issuer can do next.",
             "done": "This branch of the wake owes no more work."
@@ -2957,6 +3092,107 @@
             "goal": "Inspect the projected release decision; expiry can withhold it but cannot manufacture a pass.",
             "decided": "Preflight supplied the decision; do not dispatch an ordinary release action.",
             "cleared": "Only the inspected ordinary release decision may proceed."
+          }
+        }
+      },
+      "inspection": {
+        "id": "inspection",
+        "initial": "ready",
+        "states": {
+          "ready": [
+            {
+              "on": "issue",
+              "target": "issued",
+              "description": "Claim this exact candidate before starting its independent review.",
+              "update": "claim-review"
+            },
+            {
+              "on": "resume",
+              "target": "ready",
+              "description": "The owner may take an unissued review after checking permission, never another issuer's hold or ticket.",
+              "guard": "unticketed",
+              "when": [
+                "transferable",
+                "unticketed"
+              ],
+              "update": "transfer-unissued-review"
+            }
+          ],
+          "issued": [
+            {
+              "on": "bind",
+              "target": "issued",
+              "description": "Bind the original native workflow; a second identity cannot replace it.",
+              "guard": "sameWorkflow",
+              "when": [
+                "sameWorkflow"
+              ],
+              "update": "bind-workflow"
+            },
+            {
+              "on": "capacity",
+              "target": "ready",
+              "description": "The host confirmed no workflow was admitted; retain the review for an available slot.",
+              "guard": "unbound",
+              "when": [
+                "unbound"
+              ],
+              "update": "release-unstarted-review"
+            },
+            {
+              "on": "approved",
+              "target": "approved",
+              "description": "Record the bound reviewer's approval for these bytes.",
+              "guard": "bound",
+              "when": [
+                "bound"
+              ],
+              "update": "record-review"
+            },
+            {
+              "on": "changes",
+              "target": "changes",
+              "description": "Return the bound reviewer's blocking findings to this assignment.",
+              "guard": "bound",
+              "when": [
+                "bound"
+              ],
+              "update": "record-review"
+            },
+            {
+              "on": "unavailable",
+              "target": "unavailable",
+              "description": "Record why the bound workflow could not return a usable review; keep the candidate unpublished.",
+              "guard": "bound",
+              "when": [
+                "bound"
+              ],
+              "update": "record-review"
+            }
+          ],
+          "unavailable": [
+            {
+              "on": "resume",
+              "target": "ready",
+              "description": "On explicit resume, retain the bound unavailable attempt before reviewing the same pins again.",
+              "guard": "bound",
+              "when": [
+                "bound"
+              ],
+              "update": "retain-unavailable-review"
+            }
+          ],
+          "approved": [],
+          "changes": []
+        },
+        "info": {
+          "description": "Records one independent Rubber Duck code review of an immutable component candidate.",
+          "states": {
+            "ready": "A component passed; no review has been issued for this candidate.",
+            "issued": "Only the original dispatch may bind or return a review; missing history is not a verdict.",
+            "approved": "This review found no blocking issue. Other component, product and goal checks still apply.",
+            "changes": "This exact candidate has blocking findings and cannot be consumed.",
+            "unavailable": "No usable review was obtained. This is not a code defect or permission to publish."
           }
         }
       },
@@ -4741,6 +4977,26 @@
       "additionalProperties": false,
       "properties": {
         "run": {
+          "type": "string"
+        },
+        "dispatch": {
+          "type": "string"
+        }
+      }
+    },
+    "foundry-inspect": {
+      "type": "object",
+      "required": [
+        "run",
+        "inspection",
+        "dispatch"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "run": {
+          "type": "string"
+        },
+        "inspection": {
           "type": "string"
         },
         "dispatch": {

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { machine, guard, to, transition, update } from "./machine.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
@@ -52,6 +53,11 @@ export function activate(run,signal) {
 /** @param {Run} run @param {NonNullable<Run["policyHold"]>} hold @param {string} reason */
 export function hold(run,hold,reason) {
 	sendActivity(run,{type:"policy-hold",hold,reason});
+}
+/** Both native dispatch and candidate review record a managed hold on the exact blocked reservation.
+ * @param {Run} run @param {{id:string,issuer:string}} effect @param {string} reason */
+export function holdFor(run,effect,reason){
+	hold(run,{issuer:effect.issuer,effect:effect.id,token:randomUUID()},reason);
 }
 /** @param {Run} run @param {string} actor @param {string} token */
 export function permitted(run,actor,token) {

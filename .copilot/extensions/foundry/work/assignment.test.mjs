@@ -6,7 +6,7 @@ import { assign, componentOutcome } from "./assignment.mjs";
 /** @typedef {import("./model.js").Node} Node */
 const grain={id:"price",directory:"price",specification:"price.md",check:"unit",needs:[],boundary:[]};
 const restoration={from:"old",historical:"receipt",checkpoint:"checkpoint",goal:"goal",retainer:"keeper",tree:"tree"};
-const states=/** @type {const} */ (["idle","waiting","writing","checking","published","qualified","repeated","blocked"]);
+const states=/** @type {const} */ (["idle","waiting","writing","checking","reviewing","published","qualified","repeated","blocked"]);
 /** @param {Node["state"]} state @returns {Node} */
 const node=state=>({state,grain,repairs:0,candidate:"candidate",check:"check",reason:"original reason",replaces:"previous",worker:"same writer"});
 
@@ -15,7 +15,7 @@ test("the complete command matrix preserves pins and rejects unsupported assignm
 	/** @type {Record<Node["state"],Record<string,Node["state"]>>} */
 	const allowed={
 		idle:{request:"waiting"},waiting:{staff:"writing",stop:"blocked"},writing:{submit:"checking",stop:"blocked"},
-		checking:{stop:"blocked","paired-pass":"published"},published:{integrate:"qualified",stop:"blocked",staff:"writing",repeat:"repeated","paired-pass":"published"},
+		checking:{stop:"blocked","paired-pass":"published"},reviewing:{},published:{integrate:"qualified",stop:"blocked",staff:"writing",repeat:"repeated","paired-pass":"published"},
 		qualified:{integrate:"qualified",request:"waiting"},repeated:{integrate:"qualified",request:"waiting"},
 		blocked:{staff:"writing",recheck:"checking","paired-pass":"published",deliver:"qualified",stop:"blocked"},
 	};

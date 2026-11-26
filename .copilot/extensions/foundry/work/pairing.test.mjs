@@ -18,6 +18,8 @@ for (const mode of ["failed attestation","negative pair","unchanged pair"]) test
 	await assert.rejects(next.operation("pair",{...args,retainer:"rail",candidate:b.checked,component:b.check},"owner"),{code:"invalid_pair"});
 	await assert.rejects(f.runtime(f.root,{permissionBlocker:async()=>({scope:"session",message:"Manual approvals"})},createRuntime).operation("pair",args,"owner"),{code:"permissions_unready"});
 	const inspect=(/** @type {typeof state} */ s)=>preparePair(f.root,s,"owner",args,e=>db.verifySigned(run,e));
+	const unreviewed=structuredClone(state);unreviewed.inspections=[];
+	assert.throws(()=>inspect(unreviewed),{code:"unreviewed_output"},"a read-only primary attestation cannot vouch for the retainer's changes");
 	const consumer=structuredClone(state);consumer.nodes.rail.supporting=[citation];
 	assert.throws(()=>inspect(consumer),{code:"dispatch_held",message:/rail/});
 	const changed=structuredClone(state);assert.ok(changed.nodes.selector.restoration);

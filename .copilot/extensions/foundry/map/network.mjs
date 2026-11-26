@@ -3,6 +3,7 @@
 export const states={
 	blocked:["Blocked","stop","stop"],unconfirmed:["Launch unconfirmed","clock","stop"],
 	assigned:["Assigned","write","work"],starting:["Awaiting binding","clock","work"],checking:["Checking","inspect","work"],
+	reviewing:["In code review","inspect","work"],
 	waiting:["Waiting for input","clock","wait"],queued:["Queued","clock","wait"],idle:["Idle","clock","wait"],
 	passed:["Passed on build · not integrated","inspect","work"],published:["Component checked","tick","done"],
 	qualified:["Integrated","tick","done"],repeated:["Repeated output","tick","done"],

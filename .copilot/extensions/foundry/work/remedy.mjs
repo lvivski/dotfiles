@@ -1,4 +1,7 @@
 import { checkReceipt, generationOf } from "./evidence.mjs";
+import { writerInputs } from "./plan.mjs";
+import { approvedPublication } from "./publication.mjs";
+import { grant } from "./transfer.mjs";
 import { covers, digest } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
@@ -11,7 +14,7 @@ export function origin(run,job) {
 		failed.runnerClaim && checkReceipt(failed)?.exit===1 && !failed.receipt?.failure && failed.commit===grant.candidate &&
 		pair?.kind==="component" && pair.pair && pair.grain===failed.grain && pair.pair.checkpoint===grant.checkpoint &&
 		pair.pair.goal===grant.goal && [failed.grain,pair.pair.retainer].includes(job.grain??""))
-		return {failed,primary:failed.grain,retainer:pair.pair.retainer,pair:pair.pair};
+		return {failed,primary:failed.grain,retainer:pair.pair.retainer,pair:pair.pair,paired:pair};
 }
 
 /** @param {Run} run @param {string|undefined} token */
@@ -58,6 +61,7 @@ export function validRemedy(run,e) {
 	if (e===job) return !e.remedy && generationOf(job)===g.candidate && job.issuer===run.owner;
 	if (e.kind!=="component" || !e.grain || !e.commit || e.commit===g.candidate || job.nativeId!==e.issuer ||
 		job.state!=="done" || run.effects.indexOf(job)>=run.effects.indexOf(e)) return false;
+	if (run.inspections?.some(i=>i.component===e.id && (i.issuer!==run.owner || i.previous?.some(a=>a.issuer!==run.owner)))) return false;
 	const old=run.effects.find(x=>x.id===(e.grain===basis.primary?basis.failed.id:basis.pair.component));
 	const cohort=remedyChecks(run,job);
 	return old?.kind==="component" && old.grain===e.grain && old.check===e.check && cohort.length===2 &&
@@ -72,4 +76,33 @@ export function passingRemedy(run,check) {
 	const checks=remedyChecks(run,job);
 	if (checks.length===2 && [basis.primary,basis.retainer].every(id=>checks.some(c=>c.grain===id && c.commit===check.commit &&
 		c.runnerClaim && checkReceipt(c)?.exit===0))) return {...basis,checks};
+}
+
+/** Reconstruct the two original owners without lending the producer's token to its peer.
+ * The primary's approved observer edit lived on a failed candidate, so include it even when
+ * the production editor worked entirely in the retaining directory.
+ * @param {Run} run @param {Call} c */
+export function remedyInspection(run,c) {
+	const b=passingRemedy(run,c), job=remedyWriter(run,c), g=job?.production, p=run.products.at(-1);
+	if (!b || !job?.grain || !g || !p || !b.paired.commit || !b.failed.observer || !currentRemedy(run,c) ||
+		run.independent || run.blocker || run.conflict || run.join || run.effects.some(e=>e.permissionHold) ||
+		p.check!==g.checkpoint || p.target!==b.pair.target || run.goal?.check!==g.goal ||
+		!approvedPublication(run,b.pair.component,b.retainer,b.pair.candidate) ||
+		!b.checks.includes(c) || b.checks.some(e=>!validRemedy(run,e) || checkReceipt(e)?.failure)) return;
+	const writer=run.nodes[job.grain], editor=job.grain===c.grain;
+	if (writer.generation!==g.candidate || digest(writer.grain)!==digest(g.prior.grain) || digest(writer.inputs)!==digest(g.prior.inputs)) return;
+	for (const id of [b.primary,b.retainer]) {
+		const n=run.nodes[id], inputs=writerInputs(run.nodes,{...n,state:"waiting"});
+		if (!inputs || digest(inputs)!==digest(n.inputs) || Object.entries(inputs).some(([key,pin])=>p.outputs[key]!==pin || run.nodes[key]?.state!=="qualified")) return;
+	}
+	const node=editor ? g.prior : run.nodes[c.grain??""];
+	if (!node?.base || !node.generation) return;
+	const task=editor ? `${g.task} Production edits are restricted to ${JSON.stringify(g.files)}.` : node.grain.task??run.policy.direction;
+	if (c.grain===b.primary) {
+		const file=b.failed.observer.file;
+		return {node,overrides:{base:p.commit,generation:b.paired.commit,scope:{directories:[],files:[...(editor ? g.files : []),file]},
+			task:`${task} Also assess the preserved diagnostic edit to ${file} from ${b.failed.id}; the production writer cannot edit this observer.`}};
+	}
+	if (editor) return {node,overrides:{base:p.commit,generation:g.candidate,scope:{directories:[],files:g.files},task}};
+	return {node,overrides:{base:node.base,generation:node.generation,scope:grant(node),task}};
 }

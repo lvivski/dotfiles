@@ -37,6 +37,8 @@ When driving an authorized run, revisit the **whole brief** on a new checkpoint 
 
 Use `foundry_status({run})` with the run ID from the start receipt. This reads state without advancing it and does not require a clean checkout. `checkpoint` is progress; in a goal run `qualified` stays null until both committed checks pass on the same exact commit. The target branch stays unchanged. Report concrete blockers or contract questions, not a completion claim.
 
+In new runs, `reviewing` means the component passed but its candidate cannot yet be used. `codeReviews` records the independent Rubber Duck verdict; `reviews` records charter discovery. Check the original workflow in `detail:"proof"` rather than asking a writer to review its own submission. Only an explicitly resumed, confirmed unavailable attempt may start a fresh review of the same pins; a missing start reply is not such evidence.
+
 In the desktop app, open **Foundry** (`canvasId: "foundry-board"`, `input: {run: "<run-id>"}`). Reuse the same panel handle for this run. For a text-only request, summarize the same status in chat. If the run is inaccessible, report that; don't substitute another run. `{example:true}` is an explicitly selected demonstration, not live evidence.
 
 Select a node to read its purpose, or open its **assigned specification** for a fixed grain. **Trace selection** shows the declared producer outputs and visible consumers. A node with no edges may still need a read grant, an undeclared output or a shared resource. **Find** searches all visible assignments; **Run** shows checkpoint, goal and questions. Open **Assignment evidence** for exact scope, evaluator and pins.

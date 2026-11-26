@@ -2,6 +2,7 @@ import { outside } from "./product.mjs";
 import { checkReceipt } from "./evidence.mjs";
 import { touchesCut } from "./transfer.mjs";
 import { passingRemedy, productionWriter } from "./remedy.mjs";
+import { approvedPublication } from "./publication.mjs";
 import { contains, covers, digest, mixed, roots, sameScope, scopeLabel } from "./values.mjs";
 
 /** @param {import("./model.js").Run} run @param {string} from @param {string} historical */
@@ -39,7 +40,7 @@ export function matchesPair(run,pair,target) {
 	const owner=run.nodes[pair.retainer], p=run.products.at(-1);
 	return !!p && p.target===pair.target && (target===undefined || target===pair.target) &&
 		p.check===pair.checkpoint && run.goal?.check===pair.goal && owner?.state==="published" &&
-		owner.candidate===pair.candidate && owner.check===pair.component;
+		owner.candidate===pair.candidate && owner.check===pair.component && approvedPublication(run,pair.component,pair.retainer,pair.candidate);
 }
 
 /** @param {import("./model.js").Run} run @param {import("./model.js").NativeCall} e */
@@ -85,13 +86,15 @@ export function restoredProduct(run,writer) {
 	});
 	return run.products.slice(index+1).find(p=>p.ownership?.[to] && p.outputs[r.retainer] && p.ownership[r.retainer] &&
 		checks.some(e=>{
-			if (e.kind!=="component" || e.commit!==p.outputs[to]) return false;
+			if (e.kind!=="component" || e.commit!==p.outputs[to] || !approvedPublication(run,e.id,to,e.commit)) return false;
 			if (e.remedy) {
 				const b=passingRemedy(run,e), at=run.effects.findIndex(c=>c.id===p.check);
-				return b && p.target===b.pair.target && b.checks.every(c=>c.grain && p.outputs[c.grain]===c.commit && run.effects.indexOf(c)<at);
+				return b && p.target===b.pair.target && b.checks.every(c=>c.grain && p.outputs[c.grain]===c.commit &&
+					approvedPublication(run,c.id,c.grain,c.commit) && run.effects.indexOf(c)<at);
 			}
 			const pair=pairedInput(run,e);
-			return (!pair || p.outputs[r.retainer]===pair.candidate && p.target===pair.target) && run.effects.indexOf(e)<run.effects.findIndex(c=>c.id===p.check);
+			return (!pair || p.outputs[r.retainer]===pair.candidate && p.target===pair.target && approvedPublication(run,pair.component,pair.retainer,pair.candidate)) &&
+				run.effects.indexOf(e)<run.effects.findIndex(c=>c.id===p.check);
 		}));
 }
 
@@ -150,7 +153,7 @@ export function partitionConflict(run,outputs,target) {
 		const retainer=replacements.find(n=>n.grain.id===receiver?.restoration?.retainer);
 		const check=receiver?.check && run.effects.find(e=>e.id===receiver.check);
 		const producing=[receiver,retainer].find(n=>n && (n.state==="writing" || n.state==="checking") && productionWriter(run,n.token));
-		if (producing) return `Production repair of ${id} is in progress in ${producing.grain.id}; release still needs both components, product and goal.`;
+		if (producing) return `Production repair of ${id} is in progress in ${producing.grain.id}; release still needs both components${run.inspections ? " and their independent reviews" : ""}, product and goal.`;
 		const pair=check && check.kind==="component" && pairedInput(run,check);
 		if (check && check.kind==="component" && check.remedy) {
 			const b=passingRemedy(run,check);
@@ -162,7 +165,7 @@ export function partitionConflict(run,outputs,target) {
 			return `The approved pair for ${id} no longer matches the target, checkpoint, goal or retaining component.`;
 		if (receiver?.state==="blocked" && check && check.kind==="component" && check.observer?.previous && checkReceipt(check)?.exit===1)
 			return `Final diagnostic ${check.id} failed. Release is held. The owner may request the production form of foundry_grant for exact production and regression files in ${receiver.grain.id} or ${retainer?.grain.id}; a local observation is not a passing receipt.`;
-		if (receiver && retainer && replacements.length===1 && [receiver,retainer].every(n=>n.candidate &&
+		if (receiver && retainer && replacements.length===1 && [receiver,retainer].every(n=>n.candidate && approvedPublication(run,n.check,n.grain.id,n.candidate) &&
 			["published","qualified"].includes(n.state) && (!outputs || outputs[n.grain.id]===n.candidate))) continue;
 		return receiver ? `Ownership restoration of ${scope.primary} requires fresh included evidence from ${receiver.grain.id} and its paired owner ${receiver.restoration?.retainer}.` :
 			`Checked mixed grant ${id} (${scopeLabel(scope)}) lost its owner to ${replacements.map(n=>`${n.grain.id} (${scopeLabel(n.grain.directory)})`).join(", ")}. Keep the issued work and receipts; product integration requires an explicit ownership resolution.`;

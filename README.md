@@ -54,7 +54,8 @@ repository run data. Both sync directions leave `.git` directories and linked-wo
 **[Foundry](.copilot/extensions/foundry/README.md)** regenerates directories from a committed
 product brief. Goal contracts pin writable areas and checks. Tool-less workflow scouts review the
 committed evidence; each result can release an independent writer without waiting for other scouts.
-Only writers need their own worktrees. Each checked milestone preserves the combined tree,
+Only writers need their own worktrees. In new runs, independent Rubber Duck review gates each
+passing candidate before dependents or the product check can use it. Each checked milestone preserves the combined tree,
 not the old directory assignments. Work continues under the original authorization until the final goal
 check passes or a concrete blocker needs attention. A seeded one-off is also available.
 Foundry hands the owner the exact passing commit and leaves the target branch untouched.

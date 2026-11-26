@@ -1,5 +1,6 @@
 import { defineWorkflow, joinSession } from "@github/copilot-sdk/extension";
 import { foundryBoard } from "./canvas.mjs";
+import { critiqueDefinition, inspectionToolBlocked } from "./work/critique.mjs";
 import { identify } from "./work/native.mjs";
 import { idleHome } from "./work/pool.mjs";
 import { permissionCheck } from "./work/permissions.mjs";
@@ -61,6 +62,7 @@ const runtime = createRuntime(process.cwd(), {
 	autoConfirm: () => permissions.autoConfirm(executionMode),
 	execute: (name, args, toolCallId) => session.rpc.tools.execute({ name, arguments: args, toolCallId }),
 	scout: (run, dispatch) => session.workflow.run("foundry-scout", { args: { run, dispatch }, notifyOnComplete: false }),
+	startInspection: (run, inspection, dispatch) => session.workflow.start("foundry-inspect", { args: { run, inspection, dispatch }, notifyOnComplete: false }),
 	scoutState: id => session.workflow.waitForRun(id),
 	scoutSnapshot: id => session.workflow.getRun(id),
 	resumeScout: id => session.workflow.resume(id, { notifyOnComplete: false }),
@@ -71,7 +73,7 @@ const runtime = createRuntime(process.cwd(), {
 });
 session = await joinSession({
 	agents: { definitions: [scoutAgent, researchAgent] },
-	workflows: [defineWorkflow(scoutDefinition(() => runtime))],
+	workflows: [defineWorkflow(scoutDefinition(() => runtime)),defineWorkflow(critiqueDefinition(() => runtime))],
 	tools: { definitions: buildTools(runtime, () => session.sessionId, permissions.snapshot) },
 	canvases: { definitions: [foundryBoard(runtime.readBoard, runtime.defaultMapRun, runtime.readSpecification)] },
 	hooks: { handlers: {
@@ -79,6 +81,8 @@ session = await joinSession({
 			if (!fromHelper(input, ctx.sessionId)) runtime.sessionStart(ctx.sessionId, input.workingDirectory, input.initialPrompt);
 		},
 		async onPreToolUse(input, ctx) {
+			if (await inspectionToolBlocked(runtime,session.sessionId,ctx.sessionId,input,id=>session.workflow.getRunDetail(id)))
+				return {permissionDecision:"deny",permissionDecisionReason:"Factory candidate reviewers may only use their frozen packet; no tool is authorized."};
 			const name = input.toolName.split(".").at(-1) ?? "";
 			if (fromHelper(input, ctx.sessionId) && name !== "rename_branch") {
 				if ((name.startsWith("foundry_") && name !== "foundry_reference") || identify(name, input.toolArgs))

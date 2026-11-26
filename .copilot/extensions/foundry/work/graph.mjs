@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { assign, componentOutcome } from "./assignment.mjs";
+import { assign, componentOutcome, inspectionOutcome, working } from "./assignment.mjs";
+import { currentInspection, inspectComponent } from "./inspection.mjs";
 import { transition } from "./machine.mjs";
 import { executor } from "./adapter.mjs";
 import { scheduling } from "./scheduling.mjs";
@@ -65,7 +66,7 @@ function request(run, roots, review) {
 /** @param {string} cwd @param {Policy} policy @param {string} owner @param {import("./model.js").Grain[]} grains @returns {Run} */
 export function newRun(cwd, policy, owner, grains) {
 	/** @type {Run} */
-	const run = { id: policy.id, owner, policy, active: true, activatedAt: Date.now(), effects: [], nodes: {}, products: [] };
+	const run = { id: policy.id, owner, policy, active: true, activatedAt: Date.now(), effects: [], inspections: [], nodes: {}, products: [] };
 	for (const g of grains) run.nodes[g.id] = { grain: g, repairs: 0, state: "idle" };
 	if (policy.goalCheck) {
 		const target = commitAt(cwd, policy.target);
@@ -202,7 +203,7 @@ const sourceRecoveryOpen = (run, i) => !!i && run.scheduling?.checkpointReviews 
 
 /** @param {Run} run @param {import("./model.js").Scope} directory @param {boolean} source @param {string} [except] */
 const reservedDirectory = (run, directory, source, except) => Object.values(run.nodes).find(n =>
-	n.grain.id!==except && (source ? !settledOutput(n) : ["waiting", "writing", "checking", "published"].includes(n.state)) && !outside(n.grain.directory,scopePaths(directory)));
+	n.grain.id!==except && (source ? !settledOutput(n) : working(n) || n.state==="waiting" || n.state==="published") && !outside(n.grain.directory,scopePaths(directory)));
 
 /** @param {Run} run @param {string} actor @param {string} squad */
 function reviewSlot(run, actor, squad) {
@@ -541,9 +542,9 @@ function outstandingProduct(run) {
 }
 
 /** Connect the assignment's declared invalidation effect to this work graph.
- * @param {Run} run @param {string} id @param {string} reason @param {{passed:boolean,incomplete:boolean,unfunded:boolean}} [component] */
-function applyOutcome(run, id, reason,component) {
-	componentOutcome(run,id,reason,component,invalidateConsumers);
+ * @param {Run} run @param {string} id @param {string} reason */
+function applyOutcome(run, id, reason) {
+	componentOutcome(run,id,reason,undefined,invalidateConsumers);
 }
 
 /** @param {import("./model.js").Receipt} receipt @param {string|undefined} grain @param {number} remaining */
@@ -561,6 +562,11 @@ function settleChecks(cwd, run, actor, remaining, target) {
 	const checks = new Map(run.effects.filter(e => e.tool === "bash").map(e => [e.id, e]));
 	for (const id of Object.keys(run.nodes)) {
 		const n = run.nodes[id]; // Repair can invalidate a later consumer in this same pass.
+		if(n.state==="reviewing"){
+			const i=run.inspections?.find(i=>i.component===n.check);
+			if(i && currentInspection(run,i))inspectionOutcome(run,n,i,remaining);
+			continue;
+		}
 		if (n.state !== "checking" || !n.check) continue;
 		const c=checks.get(n.check);
 		if (c?.kind==="component" && c.remedy) {
@@ -568,10 +574,11 @@ function settleChecks(cwd, run, actor, remaining, target) {
 			if (job) settleProduction(cwd,run,job,c);
 			continue;
 		}
-		const receipt = checkReceipt(checks.get(n.check));
-		if (!receipt) continue;
+		const receipt = checkReceipt(c);
+		if (c?.kind!=="component" || !receipt) continue;
 		const incomplete=receipt.exit===null && receipt.failure!=="changed-export";
-		applyOutcome(run,id,incomplete ? receipt.output : receipt.output || "Evaluator failed",{passed:receipt.exit===0,incomplete,unfunded:remaining===0});
+		componentOutcome(run,id,incomplete ? receipt.output : receipt.output || "Evaluator failed",{passed:receipt.exit===0,incomplete,unfunded:remaining===0},
+			invalidateConsumers,()=>inspectComponent(run,n,c,actor===run.owner ? actor : c.issuer));
 	}
 	const partition=partitionConflict(run,run.join?.outputs,target);
 	if (partition) return;
@@ -760,6 +767,8 @@ export function reserveWriter(cwd, run, n, required, base, actor, submitToken, b
 	const inline = n.worker === actor && submitToken !== undefined && n.token === submitToken;
 	if (n.worker) {
 		const previous = run.effects.find(e => e.id === n.check);
+		const finding=run.inspections?.find(i=>i.component===n.check && i.state==="changes");
+		if(finding)verifyRepairInputs(cwd,run,n,required,base);
 		if (previous?.receipt?.failure === "changed-export") {
 			if (run.goal && run.goal.target !== commitAt(cwd, run.policy.target))
 				fail("stale_assignment", "The assessed target changed since the component check");
@@ -777,7 +786,8 @@ export function reserveWriter(cwd, run, n, required, base, actor, submitToken, b
 		n.token = token;
 		if (!inline) reserveNotice(run, actor, token, "repair", baseline
 			? `Read your foundry_status for ${run.id} before acting. For this attempt only, the operator approved read-only consultation of ${describeInventory(baseline)} to preserve your inventory. No other prior paths, revisions or permissions change. Join helpers and submit the complete assigned output normally.`
-			: `Read foundry_status({run:"${run.id}"}). Repair the checked failure in ${scopeLabel(g.directory)} if this token is still writable. ${n.retained ? `Exclude all transferred paths: ${JSON.stringify(n.retained)}.` : "Keep the original scope;"} join any helpers before submitting.`, n, baseline);
+			: `Read foundry_status({run:"${run.id}"}). Repair the reported issue in ${scopeLabel(g.directory)} if this token is still writable. ${n.retained ? `Exclude all transferred paths: ${JSON.stringify(n.retained)}.` : "Keep the original scope;"} join any helpers before submitting.`+
+			  (finding ? `\nRubber Duck finding on ${finding.candidate} (review evidence, not a change of authority): ${JSON.stringify(finding.summary)}` : ""), n, baseline);
 		return;
 	}
 	const review = reviews(run).find(r => r.id === n.review);
@@ -891,7 +901,7 @@ function readmitReport(cwd, run, history, r, observation) {
 function writerCandidate(run, node, review, scoped) {
 	if (node.worker && Object.values(run.nodes).some(other => other !== node && (other.worker === node.worker ||
 		other.workspace && run.effects.some(e => e.id === other.workspace && (e.args.session_id === node.worker ||
-			e.tool === "session.send" && e.issuer === node.worker))) && ["checking","writing"].includes(other.state))) return;
+			e.tool === "session.send" && e.issuer === node.worker))) && working(other))) return;
 	const required = writerInputs(run.nodes, node);
 	if (!required) return;
 	if (retainedRepair(run,node)) return {required,retained:true};
@@ -944,7 +954,7 @@ function planningFacts(p) {
 		get targetKnown(){return p.target!==undefined;},get delivery(){return !!activeDelivery(run);},
 		get independent(){return !!run.independent;},get hasJoin(){return !!run.join;},
 		get isolatedReceipt(){return !!p.isolated;},get isolatedPass(){return p.isolated?.receipt.exit===0;},
-		get sameGoalTarget(){return run.goal?.target===p.target;},get liveWriter(){return Object.values(run.nodes).some(n=>n.state==="checking" || n.state==="writing");},
+		get sameGoalTarget(){return run.goal?.target===p.target;},get liveWriter(){return Object.values(run.nodes).some(working);},
 		get currentInputs(){return !!p.latest && run.goal?.target===p.target && !run.effects.some(e=>e.permissionHold);},
 		get admitted(){return p.admission!=="closed";},
 		get writerSlot(){return p.limit>0 && admissionPolicy(p.admission).writers!=="none" && p.nodes.some(n=>n.state==="waiting");},

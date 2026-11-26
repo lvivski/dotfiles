@@ -7,7 +7,8 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
-import { factory, git, put } from "../test/fixture.mjs";
+import { factory, git, put, scriptedInspections, settleSubmitted } from "../test/fixture.mjs";
+import { setImmediate as turn } from "node:timers/promises";
 import { inlineDelivery } from "../test/participant.mjs";
 import { mapSnapshot } from "../map/model.mjs";
 import { checksum, openDatabase, ledgerPath, protocol } from "./database.mjs";
@@ -1849,9 +1850,10 @@ for (const crash of ["none", "before", "after"])
 		const gate = mkdtempSync(path.join(tmpdir(), "foundry-rendezvous-"));
 		t.after(() => rmSync(gate, { recursive: true, force: true }));
 		const child = `import {createRuntime} from ${JSON.stringify(new URL("./runtime.mjs", import.meta.url).href)};
+			import {scriptedInspections,settleSubmitted} from ${JSON.stringify(new URL("../test/fixture.mjs",import.meta.url).href)};
 			import {execFileSync} from "node:child_process";import {writeFileSync,existsSync} from "node:fs";import {setTimeout as wait} from "node:timers/promises";
 			const [cwd,worker,token,side,gate,crash,run]=process.argv.slice(1);
-			const runtime=createRuntime(cwd,{mode:async()=>"interactive",permissionBlocker:async()=>null,execute:async(tool,args)=>{
+			const runtime=settleSubmitted(createRuntime(cwd,{...scriptedInspections(cwd),mode:async()=>"interactive",permissionBlocker:async()=>null,execute:async(tool,args)=>{
 				if(tool!=="bash") throw Error("Unexpected native route "+tool);
 				const unit=args.description.startsWith("Check "+side+" at ");
 				if(unit){
@@ -1865,7 +1867,7 @@ for (const crash of ["none", "before", "after"])
 				execFileSync("/bin/sh",["-c",args.command]);
 				if(unit && side==="left" && crash==="after") process.exit(86);
 				return {resultType:"success"};
-			}});
+			}}));
 			await runtime.operation("submit",{run,token},worker);runtime.close();`;
 		await Promise.all((await f.status()).nodes.map(async n => {
 			const w = f.workers.get(text(n.worker, "writer")); assert.ok(w);
@@ -1878,7 +1880,8 @@ for (const crash of ["none", "before", "after"])
 		const reopened = f.runtime(f.root);
 		reopened.turn("owner"); await reopened.flush();
 		if (crash === "before") await reopened.operation("pause", { run }, "owner");
-		const s = await reopened.operation("resume", { source }, "owner"), db = openDatabase(f.root); t.after(() => db.close());
+		await reopened.operation("resume", { source }, "owner");await turn();await reopened.flush();
+		const s=reopened.inspect({run},"owner"), db = openDatabase(f.root); t.after(() => db.close());
 		const effects = db.read(run)?.effects; assert.ok(effects);
 		assert.ok(existsSync(path.join(gate, "left")) && existsSync(path.join(gate, "right")));
 		assert.deepEqual(effects.filter(e => e.kind === "component").map(e => e.grain).sort(), ["left", "right"]);
@@ -3163,7 +3166,8 @@ for (const kind of ["left", "joined product"])
 		assert.equal(paused.active, false);
 		assert.equal(paused.qualified, null);
 		assert.equal(f.checks.length, kind === "left" ? 1 : 2);
-		const resumed = await f.owner.operation("resume",{source},"owner");
+		await f.owner.operation("resume",{source},"owner");await turn();await f.owner.flush();
+		const resumed=f.owner.inspect({run},"owner");
 		assert.ok(resumed.qualified);
 		assert.equal(f.checks.length, 2);
 		assert.equal(f.workers.size, 1);
@@ -3573,8 +3577,8 @@ test("an upgraded reader requires the original writer to reload before status or
 	async function load(session) {
 		/** @type {{createRuntime:typeof createRuntime}} */
 		const copy = await import(`${pathToFileURL(path.join(installed, "runtime.mjs")).href}?${session}`);
-		const runtime = copy.createRuntime(w.cwd, { mode: async () => "interactive", permissionBlocker: async () => null,
-			execute: f.execute, notify: async () => assert.fail("unexpected notice") });
+		const runtime = settleSubmitted(copy.createRuntime(w.cwd, { mode: async () => "interactive", permissionBlocker: async () => null,
+			...scriptedInspections(f.root), execute: f.execute, notify: async () => assert.fail("unexpected notice") }));
 		t.after(() => runtime.close());
 		return runtime;
 	}

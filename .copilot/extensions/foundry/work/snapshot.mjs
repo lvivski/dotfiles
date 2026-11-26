@@ -19,7 +19,9 @@ import { validIsolation } from "./isolation.mjs";
 import { validRemedy } from "./remedy.mjs";
 import { validDeliveries } from "./batch.mjs";
 import { resolutions } from "./resolution.mjs";
-import { assignment } from "./assignment.mjs";
+import { assignment, frozenSubmission } from "./assignment.mjs";
+import { currentInspection, inspection, reviewedGrant } from "./inspection.mjs";
+import { publicationVerdict } from "./publication.mjs";
 import { call, review as discovery } from "./dispatch.mjs";
 
 /** @typedef {(value:unknown)=>boolean} Guard */
@@ -119,7 +121,12 @@ const node = n => nodeShape(n) && object(n) && (n.excluded === undefined || n.st
 	n.state === "blocked" && !!n.worker && !!n.token && !!n.generation);
 const assessment = { target: commit, commit, check: id };
 const paths=shape({directories:list(path),files:list(path)});
-const scopes=named(v=>object(v) && paths(v) && optional(paths)(v.exclude));
+/** @type {Guard} */
+const ownedPaths=v=>object(v) && paths(v) && optional(paths)(v.exclude);
+const scopes=named(ownedPaths);
+const codeReview=shape({id,component:id,grain:id,issuer:noteText,candidate:commit,generation:commit,base:commit,scope:ownedPaths,task:noteText,specification:optional(path),
+	state:one(...Object.keys(inspection.states)),dispatch:optional(id),workflow:optional(noteText),summary:optional(noteText),permissionHold:optional(noteText),
+	previous:optional(list(shape({issuer:noteText,dispatch:id,workflow:noteText,summary:noteText})))});
 const product = shape({ ...assessment, outputs: named(commit), ownership:optional(scopes), qualifiedAt: optional(positive) });
 const proofNotes=list(shape({file:path,blob:commit,excerpt:string,inventory:shape({file:path,keys:list(string),blob:commit}),inputs:list(path),reason:string}));
 /** @type {Guard} */
@@ -173,6 +180,7 @@ const native = shape({
 	runnerStarted: optional(bool), runnerClaim: optional(v => typeof v === "string" && /^[A-Za-z0-9_-]{43}$/.test(v)), receipt: optional(receipt)
 });
 const snapshot = shape({
+	inspections:optional(list(codeReview)),
 	deliveries:optional(list(shape({id:sha256,checkpoint:id,goal:id,assembly:commit,selected:list(shape({rerun:id,tree:commit,prior:node})),assessment:optional(id),error:optional(string)}))),
 	independent:optional(subset),
 	id, owner: string, policy, references: optional(named(commit)),
@@ -190,6 +198,35 @@ const snapshot = shape({
 
 /** @param {unknown} value @returns {value is import("./model.js").Run} */
 function isRun(value) { return snapshot(value); }
+
+/** A signed component, an admitted workflow and an independent approval are three different facts.
+ * Historical approvals remain tied to their component even after its assignment leaves the graph.
+ * @param {import("./model.js").Run} run @param {Map<string,import("./model.js").Effect>} effects */
+function inspectLineage(run,effects){
+	/** @type {Map<string,import("./model.js").Inspection>} */ const reviews=new Map();
+	const approved=new Set(), ids=new Set(effects.keys()), tickets=new Set(), workflows=new Set(run.effects.flatMap(e=>e.workflowId?[e.workflowId]:[]));
+	for(const i of run.inspections??[]){
+		const e=effects.get(i.component);
+		if(ids.has(i.id) || reviews.has(i.component) || e?.kind!=="component" || e.grain!==i.grain || e.commit!==i.candidate ||
+			!e.runnerClaim || checkReceipt(e)?.exit!==0 || i.issuer!==e.issuer && i.issuer!==run.owner ||
+			i.specification!==undefined && (!run.policy.files.includes(i.specification) || run.nodes[i.grain]?.grain.specification!==i.specification ||
+				run.nodes[i.grain].grain.task!==undefined || e.remedy || e.delivery || e.observer) ||
+			!i.scope.directories.length && !i.scope.files.length || (i.state==="ready")!==!i.dispatch || i.workflow && !i.dispatch ||
+			["approved","changes","unavailable"].includes(i.state) && (!i.summary || !i.workflow))
+			fail("corrupt_run","Invalid independent review or component lineage");
+		for(const a of [...i.previous??[],i]){
+			if(a.issuer!==e.issuer && a.issuer!==run.owner || a.dispatch && tickets.has(a.dispatch) || a.workflow && workflows.has(a.workflow))
+				fail("corrupt_run","Invalid independent review issuer, ticket or workflow");
+			if(a.dispatch)tickets.add(a.dispatch);if(a.workflow)workflows.add(a.workflow);
+		}
+		ids.add(i.id);reviews.set(i.component,i);
+		if(publicationVerdict(i)==="approved")approved.add(`${i.grain}:${i.candidate}`);
+	}
+	if(run.inspections && (run.join ? [...run.products,run.join] : run.products).some(p=>
+		Object.entries(p.outputs).some(([grain,sha])=>!approved.has(`${grain}:${sha}`))))
+		fail("corrupt_run","A product includes an output without an independent review approval");
+	return reviews;
+}
 
 /** Each approval starts at its own recheck reservation, never at the beginning of history.
  * @param {import("./model.js").Run} run @param {Map<string,import("./model.js").Product>} products */
@@ -466,7 +503,9 @@ export function decode(value) {
 		fail("corrupt_run", "Invalid Foundry execution snapshot");
 	const { policy: p, nodes, products } = value, areas = p.squads.filter(s => "areas" in s), files = new Set(p.files);
 	const effects = new Map(value.effects.map(e => [e.id, e]));
-	if (value.policyHold && (value.active || !value.pauseReason || effects.get(value.policyHold.effect)?.issuer!==value.policyHold.issuer))
+	const inspections=inspectLineage(value,effects);
+	if (value.policyHold && (value.active || !value.pauseReason ||
+		(effects.get(value.policyHold.effect)??value.inspections?.find(i=>i.id===value.policyHold?.effect))?.issuer!==value.policyHold.issuer))
 		fail("corrupt_run","Invalid managed permission hold");
 	const attributions = value.attributions ?? [];
 	if (new Set(attributions.map(a => `${a.receipt}:${a.id}`)).size !== attributions.length || attributions.some(a => {
@@ -554,7 +593,10 @@ export function decode(value) {
 			if (id !== g.id || ![g.specification, g.check, ...g.boundary].every(f => files.has(f)) || !outside(g.directory, p.files)) return true;
 			if (n.stop?.kind === "writer-cannot-repair" && (!n.candidate || inconclusiveRepair(n,e)?.commit !== n.candidate)) return true;
 			if (n.stop?.kind === "writer-relinquished" && (n.candidate || !relinquishable(value,n))) return true;
-			if ((n.state === "checking" || checked(n)) && (e?.kind !== "component" || e.grain !== id || e.commit !== n.candidate || e.check !== g.check)) return true;
+			if ((frozenSubmission(n) || checked(n)) && (e?.kind !== "component" || e.grain !== id || e.commit !== n.candidate || e.check !== g.check)) return true;
+			const i=n.check && inspections.get(n.check);
+			if(n.state==="reviewing" && (!i || !currentInspection(value,i)) || value.inspections && checked(n) &&
+				(!i || publicationVerdict(i)!=="approved" || e?.kind==="component" && !e.remedy && !e.delivery && !reviewedGrant(value,n,e,i)))return true;
 			if (checked(n) && checkReceipt(e)?.exit !== 0) return true;
 			if (n.state === "qualified" && last?.outputs[id] !== n.candidate) return true;
 			return areas.length ? n.state === "idle" || !g.task || !areas.some(s => owns(s, g.directory) && s.checks.includes(g.check) &&

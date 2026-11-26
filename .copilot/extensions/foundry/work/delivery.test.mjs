@@ -1,14 +1,17 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
-import { factory, git, put } from "../test/fixture.mjs";
+import { factory, git, put, scriptedInspections } from "../test/fixture.mjs";
+import { validDeliveries } from "./batch.mjs";
 import { openDatabase } from "./database.mjs";
+import { advanceDelivery } from "./delivery.mjs";
+import { currentInspection, markInspection } from "./inspection.mjs";
 import { historicalFactory } from "../test/legacy-readers.mjs";
 import { createRuntime } from "./runtime.mjs";
 import { decode } from "./snapshot.mjs";
 
 const run="catalog", source=".foundry/catalog.json", ids=["names","dates","store"];
-for (const outcome of ["pass","component","product","unmet goal","mixed","moved target","repinned checker"]) test(`deliver stopped tests on the original run: ${outcome}`,async t=>{
+for (const outcome of ["pass","component","product","review blocker","review pending at reload","unmet goal","mixed","moved target","repinned checker"]) test(`deliver stopped tests on the original run: ${outcome}`,async t=>{
 	const product=".foundry/catalog/product.mjs";
 	const build=outcome==="pass" ? await historicalFactory(t,61) : factory;
 	const f=build(t,run,source,{
@@ -29,12 +32,22 @@ for (const outcome of ["pass","component","product","unmet goal","mixed","moved 
 		if (id==="store") put(w.cwd,"store/data","current production");
 		else put(w.cwd,`${id}/suite.mjs`,`import {existsSync} from "node:fs";
 			process.exit(!existsSync("store/data") ? 2 : ${outcome==="component" && id==="dates"} && existsSync("names/suite.mjs") ? 1 : 0);`);
-		await f.runtime(w.cwd).operation("submit",{run,token:w.token},w.id);
+		const writer=f.runtime(w.cwd);await writer.operation("submit",{run,token:w.token},w.id);await writer.flush();
 	}
 	const db=openDatabase(f.root);t.after(()=>db.close());
 	const original=db.read(run), p=original?.products.at(-1);assert.ok(original?.goal && p);
 	f.owner.close();
-	const owner=f.runtime(f.root,{confirm:async()=>true},createRuntime);
+	const reviews=scriptedInspections(f.root);
+	let hold=outcome==="review pending at reload";
+	const inspectionState=async(/** @type {string} */ id)=>{
+		const e=await reviews.inspectionState(id), i=db.read(run)?.inspections?.find(i=>i.id===e.result.inspection);
+		assert.ok(i);
+		if (i.grain!=="dates") return e;
+		return hold ? {...e,status:"running",result:undefined} : outcome==="review blocker" ?
+			{...e,result:{...e.result,outcome:"changes",summary:"This test skips its assertion."}} : e;
+	};
+	const host={confirm:async()=>true,...reviews,inspectionState};
+	let owner=f.runtime(f.root,host,createRuntime);
 	const reruns=[];
 	for (const id of ids.slice(0,2)) {
 		assert.equal(original.nodes[id].state,"blocked");
@@ -82,22 +95,55 @@ for (const outcome of ["pass","component","product","unmet goal","mixed","moved 
 		const issued=paused.effects.slice(before.effects.length);
 		assert.equal(issued.length,1);assert.equal(issued[0].receipt?.exit,0);
 		await f.runtime(f.root,{},createRuntime).operation("resume",{source},"owner");
-	} else await owner.operation("deliver",args,"owner");
+	} else {await owner.operation("deliver",args,"owner");await owner.flush();}
+	if (hold) {
+		const parked=db.read(run);assert.ok(parked);
+		assert.equal(parked.join,undefined);assert.deepEqual(parked.nodes,before.nodes);assert.deepEqual(parked.products,before.products);
+		const i=parked.inspections?.find(i=>i.grain==="dates" && i.state==="issued");assert.ok(i?.workflow);
+		assert.ok(currentInspection(parked,i));assert.equal(currentInspection(parked,{...i,task:"a different batch"}),false);
+		assert.equal(currentInspection(parked,{...i,scope:{directories:["dates","store"],files:[]}}),false);
+		const held=structuredClone(parked), review=held.inspections?.find(r=>r.id===i.id), batch=held.deliveries?.at(-1);assert.ok(review && batch);
+		markInspection(review,"approved",{summary:"The second directory passes review."});review.permissionHold="issuer may not publish";
+		advanceDelivery(f.root,held,batch,f.tip);
+		assert.equal(held.join,undefined);assert.deepEqual(held.nodes,parked.nodes);assert.deepEqual(held.effects,parked.effects);
+		owner.close();hold=false;owner=f.runtime(f.root,host,createRuntime);
+		owner.turn("owner");await owner.flush();
+		const resumed=db.read(run)?.inspections?.find(x=>x.id===i.id);
+		assert.equal(resumed?.state,"approved");assert.equal(resumed.workflow,i.workflow);assert.equal(resumed.dispatch,i.dispatch);
+	}
 	const end=db.read(run);assert.ok(end?.goal);
 	const added=end.effects.slice(before.effects.length), components=added.filter(e=>e.kind==="component");
 	assert.equal(components.length,2);
 	for (const e of components) {assert.ok(e.kind==="component" && e.runnerClaim);db.verifySigned(run,e);}
 	assert.equal(components[0].commit,components[1].commit);
+	if (outcome==="pass") assert.equal(end.inspections,undefined,"upgrading a stopped run does not change its original authority");
+	if (outcome==="unmet goal") {
+		const d=end.deliveries?.at(-1);assert.ok(d);
+		const approvals=end.inspections?.filter(i=>components.some(c=>c.id===i.component));
+		assert.deepEqual(approvals?.map(i=>[i.grain,i.state,i.generation,i.base,i.candidate,i.scope]),
+			ids.slice(0,2).map(id=>[id,"approved",p.commit,p.commit,d.assembly,{directories:[id],files:[]}]));
+		for (const c of components) {
+			/** @type {import("./model.js").Run} */ const missing=structuredClone(end);
+			missing.inspections=missing.inspections?.filter(i=>i.component!==c.id);
+			assert.equal(validDeliveries(missing),false,"a checked batch cannot lose either exact approval");
+		}
+	}
 	const changed=structuredClone(end);assert.ok(changed.deliveries?.[0]);
 	changed.deliveries[0].selected[0].rerun=reruns[1];
 	assert.throws(()=>decode(changed),{code:"corrupt_run"});
 	assert.deepEqual(end.effects.slice(0,before.effects.length),before.effects);
 	assert.equal(f.workers.size,3);assert.equal(git(f.root,"rev-parse","HEAD"),f.tip);
-	if (outcome==="component" || outcome==="product") {
+	if (outcome==="component" || outcome==="product" || outcome==="review blocker") {
 		assert.deepEqual(end.products,before.products);assert.deepEqual(end.nodes,before.nodes);assert.deepEqual(end.goal,before.goal);
 		assert.equal(added.filter(e=>e.kind==="product").length,outcome==="product"?1:0);
 		assert.equal(added.filter(e=>e.kind==="goal").length,0);
+		if (outcome==="review blocker") {
+			assert.ok(components.every(c=>c.receipt?.exit===0));
+			assert.match(end.deliveries?.at(-1)?.error??"",/This test skips its assertion.*separate write grant/);
+			assert.deepEqual(end.inspections?.filter(i=>components.some(c=>i.component===c.id)).map(i=>i.state),["approved","changes"]);
+		}
 		if (outcome==="component") {
+			assert.ok(end.inspections?.every(i=>!components.some(c=>i.component===c.id)),"a failing assembly does not start publication review");
 			const card=owner.readBoard(run,"owner").nodes.find(n=>n.id==="dates");
 			assert.ok(card);
 			assert.deepEqual([card.state,card.checked,card.passedOnBuild],["blocked",null,reruns[1]]);

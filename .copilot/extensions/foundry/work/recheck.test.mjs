@@ -4,9 +4,9 @@ import { cpSync, existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
-import { setTimeout as delay } from "node:timers/promises";
+import { setImmediate as tick, setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { factory, git, put } from "../test/fixture.mjs";
+import { factory, git, put, scriptedInspections } from "../test/fixture.mjs";
 import { openDatabase } from "./database.mjs";
 import { createRuntime } from "./runtime.mjs";
 
@@ -26,11 +26,11 @@ const itemGoal = 'import {existsSync} from "node:fs";process.exit(existsSync("it
 /** @param {unknown} description */
 const kind = description => String(description).startsWith("Check final goal") ? "goal" : String(description).startsWith("Check joined product") ? "product" : "component";
 /** @param {{turn:(actor:string)=>void,flush:()=>Promise<void>}} r @param {string} actor */
-async function turn(r,actor) { r.turn(actor); await r.flush(); }
+async function turn(r,actor) { r.turn(actor);await tick();await r.flush(); }
 /** @param {import("node:test").TestContext} t @param {ReturnType<typeof factory>} f @param {string} cwd @param {Partial<Parameters<typeof createRuntime>[1]>} [overrides] */
 function upgrade(t,f,cwd,overrides) {
 	const r = createRuntime(cwd,{mode:async()=>"interactive",permissionBlocker:async()=>null,execute:f.execute,notify:async()=>"handoff",
-		watchReceipts:()=>()=>{}, ...overrides});
+		watchReceipts:()=>()=>{}, ...scriptedInspections(f.root),...overrides});
 	t.after(()=>r.close());
 	return r;
 }

@@ -10,7 +10,7 @@ import path from "node:path";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { assignment } from "../work/native.mjs";
 import { createRuntime } from "../work/runtime.mjs";
-import { ledgerPath } from "../work/database.mjs";
+import { ledgerPath, openDatabase } from "../work/database.mjs";
 import { record, text } from "../work/values.mjs";
 
 /** @typedef {Parameters<typeof createRuntime>[1]} Host */
@@ -94,6 +94,50 @@ export function workflowHost() {
 	return { scouts, launch, settle };
 }
 
+/** A deterministic stand-in for the SDK reviewer, not a production approval fallback.
+ * The SDK start returns admission only; its separate result identifies the exact component checked.
+ * @param {string} root */
+export function scriptedInspections(root) {
+	/** @type {Map<string,{inspection:string,component:string,candidate:string,outcome:string,summary:string}>} */ const results=new Map();
+	return {
+		/** @param {string} run @param {string} inspection @param {string} dispatch @param {string} issuer */
+		async startInspection(run,inspection,dispatch,issuer) {
+			const db=openDatabase(root);
+			try {
+				const i=db.read(run)?.inspections?.find(i=>i.id===inspection);
+				assert.ok(i?.state==="issued" && i.dispatch===dispatch && i.issuer===issuer,"expected a committed review reservation");
+				const runId=randomUUID();
+				results.set(runId,{inspection,component:i.component,candidate:i.candidate,outcome:"approved",summary:"Scripted independent reviewer approved the fixture output."});
+				return {runId,status:"running",workflowName:"foundry-inspect"};
+			} finally {db.close();}
+		},
+		/** @param {string} runId */
+		async inspectionState(runId) {
+			const result=results.get(runId);assert.ok(result,"unexpected inspection workflow lookup");
+			return {runId,status:"completed",workflowName:"foundry-inspect",result};
+		},
+	};
+}
+
+/** Existing fixture submissions represent the end of one delivered writer turn. Settle the
+ * immediate scripted review and its resulting work, but never wait here for a real or deferred reviewer.
+ * @param {Runtime} r */
+export function settleSubmitted(r){
+	if(typeof r.inspectionPacket!=="function")return r; // Historical readers have no asynchronous candidate review.
+	const operation=r.operation;
+	const writerTurn=new AsyncLocalStorage();
+	/** @type {Runtime["operation"]} */
+	r.operation=(op,args,actor)=>{
+		if(op!=="submit" || writerTurn.getStore())return operation(op,args,actor);
+		return writerTurn.run(true,async()=>{
+			const result=await operation(op,args,actor);
+			await nextTurn();await r.flush();
+			return r.inspect({run:result.run},actor);
+		});
+	};
+	return r;
+}
+
 /** @param {string} root @param {string} [prefix] */
 export function nativeHost(root, prefix = "worker") {
 	/** @type {Map<string,{id:string,token:string,cwd:string,prompt:string}>} */ const workers = new Map();
@@ -138,11 +182,11 @@ export function factory(t, run, source, files) {
 	for (const [name, bytes] of Object.entries(files)) put(root, name, bytes);
 	git(root, "add", ".");
 	git(root, "commit", "-qm", "fixture");
-	const tip = git(root, "rev-parse", "HEAD"), { workers, inbox, checks, execute } = nativeHost(root), discovery = workflowHost();
+	const tip = git(root, "rev-parse", "HEAD"), { workers, inbox, checks, execute } = nativeHost(root), discovery = workflowHost(), inspections=scriptedInspections(root);
 	/** @param {string} cwd @param {Partial<Host>} [options] @param {typeof createRuntime} [open] */
 	function runtime(cwd, options, open = createRuntime) {
 		/** @type {Runtime} */
-		const r = open(cwd, { mode: async () => "interactive", permissionBlocker: async () => null, execute,
+		const r = open(cwd, { mode: async () => "interactive", permissionBlocker: async () => null, execute, ...inspections,
 			scout: (id, dispatch, actor) => discovery.launch(r, id, dispatch, actor),
 			notify: async message => {
 				const job = assignment(message);
@@ -150,7 +194,8 @@ export function factory(t, run, source, files) {
 				const w = [...workers.values()].find(w => w.cwd === cwd); assert.ok(w); assert.equal(job.run, run);
 				inbox.push({ worker: w.id, token: job.token }); return `message-${job.token}`;
 			}, ...options });
-		t.after(() => r.close()); return r;
+		t.after(() => r.close());
+		return options && ("startInspection" in options || "inspectionState" in options) ? r : settleSubmitted(r);
 	}
 	const owner = runtime(root);
 	/** @param {string} [actor] */

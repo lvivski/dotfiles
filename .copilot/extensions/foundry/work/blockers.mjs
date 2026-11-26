@@ -1,3 +1,4 @@
+import { working } from "./assignment.mjs";
 import { checkReceipt, currentEvaluation, goalReceipt, sameEvaluation } from "./evidence.mjs";
 import { owns } from "./plan.mjs";
 import { signal } from "./signals.mjs";
@@ -129,7 +130,7 @@ export function checkLinks(run, review, observation, planned) {
 	for (const link of observation.addresses) {
 		const g = gaps.find(g => g.id === link.id && delivered(g, review)), n = planned[link.grain];
 		const fresh = !link.worker && observation.outcome === "regenerate" && observation.grains.some(x => (typeof x === "string" ? x : x.id) === link.grain);
-		const bound = !!link.worker && n === run.nodes[link.grain] && n?.worker === link.worker && ["writing", "checking"].includes(n.state);
+		const bound = !!link.worker && n === run.nodes[link.grain] && n?.worker === link.worker && working(n);
 		if (!g || !n || !scopePaths(n.grain.directory).includes(g.directory) || !(fresh || bound))
 			fail("invalid_blocker", "Link only delivered current blockers to their proposed repair or an explicitly bound writer in that directory");
 	}
@@ -144,7 +145,7 @@ function ownership(nodes, g, reviews, remaining) {
 		if (link && n && scopePaths(n.grain.directory).includes(g.directory) && (link.worker ? n.worker === link.worker : n.review === r.id) &&
 			n.state !== "blocked" && n.state !== "idle" && n.state !== "repeated") {
 			return { state: n.state === "waiting" || n.state === "writing" && !n.worker ? "reserved" :
-				n.state === "writing" || n.state === "checking" ? "assigned" : "awaiting-verification", grain: link.grain, worker: n.worker, review: r.id };
+				working(n) ? "assigned" : "awaiting-verification", grain: link.grain, worker: n.worker, review: r.id };
 		}
 	}
 	const reviewing = reviews.findLast(r => r.squad === g.squad && r.base === g.commit);

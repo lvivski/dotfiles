@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { realpathSync } from "node:fs";
-import { factory, git, loadEntry, put } from "../test/fixture.mjs";
+import { setImmediate as turn } from "node:timers/promises";
+import { factory, git, loadEntry, put, scriptedInspections } from "../test/fixture.mjs";
 import { openDatabase } from "./database.mjs";
 
 const run = "labels", source = ".foundry/labels.json";
@@ -31,7 +32,12 @@ async function trial(t) {
 		event("tool.execution_complete", { toolCallId: "lookup", success: true, result: { content: JSON.stringify(identity) } })];
 	/** @param {string} actor @param {string} dir @param {typeof childHistory} history */
 	async function entry(actor, dir, history) {
-		const conf = await loadEntry({ sessionId: actor, on() {}, rpc: { mode: { get: async () => "interactive" },
+		const reviewer=scriptedInspections(dir);
+		const conf = await loadEntry({ sessionId: actor, on() {},workflow:{
+			start:(/** @type {string} */ name,/** @type {{args:{run:string,inspection:string,dispatch:string}}} */ {args})=>{
+				assert.equal(name,"foundry-inspect");return reviewer.startInspection(args.run,args.inspection,args.dispatch,actor);
+			},waitForRun:reviewer.inspectionState,
+		}, rpc: { mode: { get: async () => "interactive" },
 			managedSettings: { get: async () => ({ failClosed: false }) }, permissions: { getMode: async () => ({ mode: "assisted" }) },
 			eventLog: { read: async (/** @type {{types:string[],cursor?:string}} */ page) => {
 				const rows = history.filter(e => page.types.includes(e.type)), at = Number(page.cursor ?? 0);
@@ -69,7 +75,7 @@ test("a stranded writer recovers from its original kickoff without a coordinator
 	assert.equal(before.nodes[0].worker, undefined);
 	assert.deepEqual(f.checks, []); assert.equal(f.workers.size, 1);
 	assert.deepEqual(JSON.parse(String(await owner("foundry_claim", selector))), {state:"bound", ...selector});
-	await child("foundry_submit", args);
+	await child("foundry_submit", args);await turn();
 	const after = await f.status(); assert.ok(after.qualified); assert.equal(after.nodes[0].worker, w.id);
 	assert.equal(after.assignments?.used, 1); assert.equal(f.workers.size, 1);
 	assert.equal(git(f.root, "show", `${after.qualified}:parser/index.mjs`), 'export const read = () => "green";');
@@ -87,7 +93,7 @@ test("lost create reply: prove both sides, bind the existing child, then run the
 	assert.deepEqual([before.nodes[0].worker, before.nodes[0].generation, before.nodes[0].receipt, before.assignments?.used, f.checks.length],
 		[w.id, generation, undefined, 1, 0]);
 	put(w.cwd, "parser/index.mjs", 'export const read = () => "green";');
-	assert.equal(typeof await child("foundry_submit", { run, token: w.token }), "string");
+	assert.equal(typeof await child("foundry_submit", { run, token: w.token }), "string");await turn();
 	const after = await f.status();
 	assert.ok(after.nodes[0].receipt); assert.equal(after.nodes[0].receipt.exit, 0); assert.equal(after.assignments?.used, 1); assert.equal(f.workers.size, 1);
 });

@@ -1,5 +1,6 @@
 import { missingObservation } from "./evidence.mjs";
 import { activate } from "./activity.mjs";
+import { prepareInspectionResume } from "./inspections.mjs";
 import { survey } from "./dispatch.mjs";
 import { admitted, transferableWriter } from "./native.mjs";
 import { awaitingReply } from "./reservation.mjs";
@@ -18,8 +19,9 @@ const unboundTicket = r => r.state === "uncertain" && !r.workflowId ? r.callId :
 
 /** Freeze what an owner may recover before checking host permissions. Revalidate those
  * identities on the live ledger; work that became recoverable during the wait is not selected.
- * @param {Run} prior @param {boolean} canInspectWorkflows */
-export function prepareResume(prior, canInspectWorkflows) {
+ * @param {Run} prior @param {boolean} canInspectWorkflows @param {boolean} [canReceiveInspection] */
+export function prepareResume(prior, canInspectWorkflows, canReceiveInspection=false) {
+	const inspections=prepareInspectionResume(prior,canReceiveInspection);
 	const goal = missingObservation(prior) ? prior.goal?.check : undefined;
 	/** @type {Map<string,string>} */ const tickets = new Map();
 	/** @type {Map<string,string>} */ const workflows = new Map();
@@ -30,13 +32,14 @@ export function prepareResume(prior, canInspectWorkflows) {
 			workflows.set(r.callId, r.workflowId);
 	}
 	const writers = new Map(prior.effects.filter(e => transferableWriter(prior, e)).map(e => [e.id, e.issuer]));
-	if (prior.active && !goal && !tickets.size && !workflows.size && !writers.size) return;
+	if (prior.active && !goal && !tickets.size && !workflows.size && !writers.size && !inspections) return;
 	return {
 		workflows, retryGoal: !!goal,
 		/** @param {Run} run */
 		apply(run) {
 			if (run.owner !== prior.owner || run.active !== prior.active || goal && (run.goal?.check !== goal || !missingObservation(run)))
 				fail("run_conflict", "Run activation changed while starting");
+			inspections?.(run); // Observe the issuer's original hold before clearing an operator pause.
 			activate(run,"resume");
 			admitted(run,true);
 			for (const e of run.effects) {

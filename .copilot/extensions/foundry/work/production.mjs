@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { assign } from "./assignment.mjs";
 import { availableReservations } from "./capacity.mjs";
+import { inspectedBatch } from "./inspection.mjs";
 import { admitted, current, reserveCheck, reserveWorker } from "./native.mjs";
 import { verifyObserver } from "./observer.mjs";
 import { changedFiles, commitAt, contractPaths, entries, outside, regularFiles } from "./product.mjs";
+import { approvedPublication } from "./publication.mjs";
 import { origin, passingRemedy, remedyChecks } from "./remedy.mjs";
 import { awaitingReply, unissued } from "./reservation.mjs";
 import { activeConsumer } from "./transfer.mjs";
@@ -31,6 +33,8 @@ export function productionBasis(cwd,run,job,commit) {
 		!receiver.restoration ||
 		run.effects.some(e=>e.permissionHold))
 		fail("stale_assignment","The original diagnostic, published retaining owner or permissions changed");
+	if (!approvedPublication(run,pair.component,retainer,pair.candidate))
+		fail("unreviewed_output","Production work cannot adopt an unreviewed retaining publication");
 	if (view.effects.some(e=>(e.grain===primary || e.grain===retainer) && (awaitingReply(e) || unissued(e) && current(view,e))))
 		fail("dispatch_held","Resolve the outstanding call for the affected pair before production work");
 	const target=verifyObserver(cwd,view,failed,grant.candidate,true);
@@ -81,7 +85,8 @@ export function prepareProduction(cwd,run,actor,a,verify) {
 		return {grant,target:basis.target,retained:basis.pair.component};
 	}
 	const before=select(run);
-	return {prompt:`Authorize a production writer for ${producer} on ${candidate} after diagnostic ${diagnostic}? Retaining check ${before.retained}, checkpoint ${checkpoint}, goal ${goal}. Exact editable files: ${JSON.stringify(files)}. Task: ${task}. Reproduce with a repository regression before changing implementation. Both owners' original evaluators must pass on the new assembly, then a joined product and goal. No observer edits or replay.`,
+	return {prompt:`Authorize a production writer for ${producer} on ${candidate} after diagnostic ${diagnostic}? Retaining check ${before.retained}, checkpoint ${checkpoint}, goal ${goal}. Exact editable files: ${JSON.stringify(files)}. Task: ${task}. Reproduce with a repository regression before changing implementation. Both owners' original evaluators must pass on the new assembly, then a joined product and goal. No observer edits or replay.`+
+		(run.inspections ? " This grants one submission. Independent reviews of both owners' contributions must approve it before publication." : ""),
 		/** @param {Run} r */
 		apply(r) {
 			const choice=select(r);
@@ -114,11 +119,18 @@ export function submitProduction(cwd,run,job,commit,actor) {
  * @param {string} cwd @param {Run} run @param {Call} job @param {Call} check */
 export function settleProduction(cwd,run,job,check) {
 	const g=job.production, checks=remedyChecks(run,job);
-	if (!g || !job.grain || checks.length!==2 || checks.some(awaitingReply)) return;
+	if (!g || !job.grain || run.nodes[job.grain]?.state!=="checking" || run.nodes[job.grain].check!==check.id ||
+		run.nodes[job.grain].token!==job.token || checks.length!==2 || checks.some(awaitingReply)) return;
 	if (checks.some(c=>c.state==="refused" || c.launcherExit!==undefined)) {run.nodes[job.grain]=structuredClone(g.prior);return;}
 	if (checks.some(c=>!c.receipt || c.state!=="done")) return;
 	if (!passingRemedy(run,check)) {run.nodes[job.grain]=structuredClone(g.prior);return;}
+	if (run.inspections && run.effects.some(e=>e.permissionHold)) return;
 	productionBasis(cwd,run,job,check.commit);
+	if (!inspectedBatch(run,checks,review=>{
+		job.error=`Production stopped at review ${review.id} of ${review.grain} (${review.component}): ${review.summary} `+
+			`The grant covered one submission of ${JSON.stringify(g.files)} and its two checks. It does not authorize another submission or changes to its peer or observer. Both original bindings are retained.`;
+		run.nodes[g.prior.grain.id]=structuredClone(g.prior);
+	})) return;
 	for (const c of checks) {
 		const n=run.nodes[text(c.grain,"paired grain")];
 		if (c.grain!==job.grain) {

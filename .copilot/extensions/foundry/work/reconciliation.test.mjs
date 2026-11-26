@@ -32,7 +32,10 @@ test("a missing target, pause or deadline cannot staff work; only a final handof
 	}
 	assert.deepEqual(effects(step("offering","work",{active:false,expired:true,missingTarget:false,handoff:true,owner:true,question:true})),["offer-batch"]);
 	assert.deepEqual(effects(step("reservations","batch",{hasBatch:false})),[]);
-	assert.deepEqual(effects(step("planning","planned",{closed:false,missingTarget:false,owner:true,active:true,expired:false,renewalDue:true})),["sample-policy"]);
+	assert.deepEqual(effects(step("planning","planned",{closed:false,inspectionDue:false,missingTarget:false,owner:true,active:true,expired:false,renewalDue:true})),["sample-policy"]);
+	assert.deepEqual(effects(step("planning","planned",{closed:false,inspectionDue:true})),["sample-policy"]);
+	assert.deepEqual(effects(step("publication","policy",{closed:false,executable:true,permitted:false})),["watch-held-inspections"]);
+	assert.deepEqual(effects(step("publication","policy",{closed:false,executable:true,permitted:true})),["apply-verdicts"]);
 	assert.deepEqual(effects(step("renewal","policy",{closed:false,permitted:false})),["watch-held-renewal"]);
 	assert.deepEqual(effects(step("renewal","policy",{closed:false,permitted:true})),["renew"]);
 	assert.deepEqual(effects(step("enabling","authorized",{checkOnly:false,pooled:false,ready:false})),["refill"]);
@@ -51,7 +54,7 @@ test("inspecting every fork reports its independent signals; restoring the targe
 	const model=compose(reconciliation);
 	for(const accepted of branches){
 		const target=accepted.snapshot.value;
-		assert.deepEqual(accepted.fork,target==="lanes"?["history","dispatch"]:["scouts","writers","calls"]);
+		assert.deepEqual(accepted.fork,target==="lanes"?["history","dispatch"]:["scouts","inspections","writers","calls"]);
 		const restored=model.actor({reconciliation:target});
 		assert.deepEqual(restored.send("wake"),[],"hydration is not an issuer wake");
 		assert.deepEqual(restored.snapshot(),{reconciliation:target});
@@ -67,6 +70,7 @@ test("each fork lane needs its own evidence; a permitted sibling cannot bypass a
 	}
 	for(const jobs of [true,false]) for(const capacityWait of [true,false]) for(const pool of [true,false]){
 		assert.deepEqual(effects(step("dispatching","scouts",{jobs,capacityWait})),jobs && !capacityWait ? ["launch-scouts"] : []);
+		assert.deepEqual(effects(step("dispatching","inspections",{jobs,capacityWait})),jobs && !capacityWait ? ["launch-inspections"] : []);
 		assert.deepEqual(effects(step("dispatching","writers",{jobs,pool})),!jobs ? [] : pool ? ["match-writers"] : ["send-writers"]);
 		assert.deepEqual(effects(step("dispatching","calls",{jobs})),jobs ? ["send-calls"] : []);
 	}
@@ -92,13 +96,14 @@ test("declared lanes dispatch from one observation while native history and writ
 	const inspected={
 		"inspect-issuer":next=>next("inspected",{ownHold:false,active:true,expired:false,continuations:false}),
 		"read-originals":async next=>{events.push("history");await history.wait;await next("completion",{terminal:false});await next("drained");},
-		plan:next=>next("planned",{closed:false,missingTarget:false,owner:false}),
+		plan:next=>next("planned",{closed:false,inspectionDue:false,missingTarget:false,owner:false}),
 		"watch-plan":next=>next("work",{missingTarget:false,active:true,expired:false,owner:false,question:false}),
 		"offer-batch":next=>next("batch",{hasBatch:true}),
 		"sample-batch":next=>next("sampled",{executable:true,managed:false,blocked:false,hadHolds:false}),
 		enable:next=>next("authorized",{checkOnly:false,pooled:false,ready:true}),
 		"group-batch":()=>{events.push("partition");},
 		"launch-scouts":()=>{events.push("scouts");},
+		"launch-inspections":()=>{events.push("inspections");},
 		"match-writers":async next=>{events.push("matching");await matching.wait;await next("matched",{closed:false});},
 		"sample-writer-batch":next=>{events.push("recheck");return next("sampled",{executable:false});},
 		"decline-mode":()=>{},
@@ -107,11 +112,11 @@ test("declared lanes dispatch from one observation while native history and writ
 	};
 	/** @type {Parameters<typeof reconcileWake>[2]} */
 	const inputs={history:()=>({closed:false,recoverCalls:true}),dispatch:()=>({closed:false}),
-		scouts:()=>({jobs:true,capacityWait:false}),writers:()=>({jobs:true,pool:true}),calls:()=>({jobs:true})};
+		scouts:()=>({jobs:true,capacityWait:false}),inspections:()=>({jobs:true,capacityWait:false}),writers:()=>({jobs:true,pool:true}),calls:()=>({jobs:true})};
 	const task=reconcileWake({...handlers,...inspected},{type:"wake",executable:true},inputs);
 	try{
 		await turn();
-		assert.deepEqual(events,["history","partition","scouts","matching","direct","refill"]);
+		assert.deepEqual(events,["history","partition","scouts","inspections","matching","direct","refill"]);
 		matching.open();await turn();assert.equal(events.at(-1),"recheck");
 	}finally{history.open();matching.open();await task;}
 });
@@ -192,7 +197,7 @@ test("reloaded issuer binds a lost reply once while an unissued sibling proceeds
 	issuer.sessionStart("owner",f.root);
 	// Trace the eligible dispatch on this restored fixture without authorizing the corresponding adapter.
 	const inspected=step("enabling","authorized",{checkOnly:false,pooled:false,ready:true});
-	assert.deepEqual(inspected.fork,["scouts","writers","calls"]);assert.deepEqual(db.read(run),saved);
+	assert.deepEqual(inspected.fork,["scouts","inspections","writers","calls"]);assert.deepEqual(db.read(run),saved);
 	assert.equal(reads,0);assert.equal(creates,1);
 	issuer.turn("owner");
 	try{

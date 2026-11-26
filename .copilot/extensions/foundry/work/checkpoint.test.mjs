@@ -3,6 +3,7 @@ import test from "node:test";
 import { git } from "../test/fixture.mjs";
 import { firstObserver } from "../test/ownership.mjs";
 import { prepareCheckpoint } from "./checkpoint.mjs";
+import { inspectComponent, markInspection } from "./inspection.mjs";
 import { createRuntime } from "./runtime.mjs";
 import { decode } from "./snapshot.mjs";
 
@@ -51,6 +52,17 @@ for (const mode of ["independent pass","independent fail","independent incomplet
 		const declined=f.runtime(f.root,{confirm:async()=>false},createRuntime);
 		await assert.rejects(declined.operation("checkpoint",batch,"owner"),{code:"approval_declined"});
 		const prepare=(/** @type {typeof settled} */ r)=>prepareCheckpoint(f.root,r,"owner",batch,e=>db.verifySigned(run,e));
+		const gated=structuredClone(settled);gated.inspections=[];
+		function approveComponent(/** @type {string} */ id) {
+			const n=gated.nodes[id], c=gated.effects.find(e=>e.id===n.check);assert.ok(c?.kind==="component");
+			const i=inspectComponent(gated,n,c,gated.owner);assert.ok(i);
+			markInspection(i,"issue",{dispatch:`dispatch-${id}`});markInspection(i,"bind",{workflow:`workflow-${id}`});
+			markInspection(i,"approved",{summary:"The scoped output matches the task."});return i;
+		}
+		approveComponent("buttons");assert.throws(()=>prepare(gated),{code:"dependent_output"});
+		const approval=approveComponent("alpha");approval.permissionHold="issuer cannot publish";
+		assert.throws(()=>prepare(gated),{code:"dependent_output"});
+		delete approval.permissionHold;assert.doesNotThrow(()=>prepare(gated));
 		const consent=prepare(settled), stale=structuredClone(settled);
 		stale.nodes.alpha.check=b.check;assert.throws(()=>consent.apply(stale),{code:"dependent_output"});
 		const pending=structuredClone(settled);

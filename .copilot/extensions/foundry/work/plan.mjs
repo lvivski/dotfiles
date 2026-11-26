@@ -1,5 +1,5 @@
 import { topology } from "./topology.mjs";
-import { assign } from "./assignment.mjs";
+import { assign, working } from "./assignment.mjs";
 import { blockedComponent, checkReceipt, exhaustedCandidate, generationOf, inconclusiveRepair, missingInput, repairDetail } from "./evidence.mjs";
 import { outside } from "./product.mjs";
 import { assignmentDirectory, covers, digest, disjoint, fail, fields, roots, mixed, name, names, record, relative, sameScope, text } from "./values.mjs";
@@ -144,8 +144,6 @@ export function writerInputs(nodes, n) {
 	return pins;
 }
 
-/** @param {Node} n */
-export const working = n => n.state === "writing" || n.state === "checking";
 /** @param {Run} run @param {Node} n */
 const blockedInput = (run, n) => [...dependencies(run.nodes, [n.grain.id])].some(id => run.nodes[id].state === "blocked");
 /** @param {Run} run @param {Node} n */

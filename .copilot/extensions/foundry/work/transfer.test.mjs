@@ -6,6 +6,7 @@ import { openDatabase } from "./database.mjs";
 import { createRuntime } from "./runtime.mjs";
 import { capture, combine } from "./product.mjs";
 import { observe, parseObservation } from "./graph.mjs";
+import { preflightTransfer } from "./transfer.mjs";
 import { spawnSync } from "node:child_process";
 import { factory, git, put } from "../test/fixture.mjs";
 import { historicalFactory } from "../test/legacy-readers.mjs";
@@ -62,6 +63,11 @@ if(${parentRepair}&&!((await import("node:fs")).existsSync("pkg/views/future")))
 		await owner.operation("repin",{run,kind:"product",from:f.tip,revision:git(side,"rev-parse","HEAD"),files:[check],ownership:"retain-except-transferred"},"owner");
 	}
 	const ready=read(), input={...args(),transfer};
+	if (ready.inspections) {
+		const unreviewed=structuredClone(ready);
+		unreviewed.inspections=ready.inspections.filter(i=>i.component!==ready.nodes.package.check);
+		assert.throws(()=>preflightTransfer(unreviewed,transfer,{primary:directory,files:[file]}),{code:"unreviewed_output"});
+	}
 	const stale=f.runtime(f.root,{confirm:async()=>{put(f.root,"external","moved");git(f.root,"add","external");git(f.root,"commit","-qm","Move target");return true;}},createRuntime);
 	await assert.rejects(stale.operation("iterate",input,"owner"),{code:"invalid_receipt"});
 	assert.deepEqual(read(),ready);git(f.root,"update-ref","refs/heads/main",f.tip,git(f.root,"rev-parse","HEAD"));

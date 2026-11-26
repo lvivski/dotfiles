@@ -1,3 +1,4 @@
+import { approvedPublication } from "./publication.mjs";
 import { contains, covers, fail, fields, name, ownership, record, roots, sameScope } from "./values.mjs";
 
 /** @typedef {import("./model.js").Node} Node */
@@ -47,6 +48,8 @@ export function preflightTransfer(run,t,scope) {
 		run.nodes[t.to] || run.effects.some(e=>e.grain===t.to) || run.join || !roots(scope).every(p=>
 			ownership(n.grain.directory).directories.some(d=>p.startsWith(d+"/")) && !touchesCut(n.retained ?? [],p)))
 		fail("ownership_transition","Need a fresh receiving ID and strict, unassigned descendants of the exact included parent output");
+	if (!approvedPublication(run,n.check,t.from,t.candidate))
+		fail("unreviewed_output","Transferring ownership cannot publish an unreviewed parent candidate");
 	if (run.effects.some(e=>e.grain===t.from && (e.permissionHold || !["done","refused","withdrawn","retired"].includes(e.state))))
 		fail("dispatch_held","Resolve outstanding parent calls before transferring paths");
 	const live=activeConsumer(run,t.from,scope);
