@@ -1,4 +1,5 @@
-import { chart, select, to } from "./chart.mjs";
+import { machine, to, transition, update } from "./machine.mjs";
+import { executor } from "./adapter.mjs";
 import { currentEvaluation, goalReceipt } from "./evidence.mjs";
 import { checkpointCurrent } from "./facts.mjs";
 import { availableReservations } from "./capacity.mjs";
@@ -11,12 +12,18 @@ import { FoundryError, comparisonScope, covers, roots, sameScope } from "./value
 
 /** @typedef {import("./model.js").Run} Run */
 /** @typedef {import("./model.js").Review} Review */
+/** @typedef {NonNullable<Review["renewal"]>} Renewal */
+/** @typedef {Omit<Renewal,"state">} Pins */
 
-const consider=[{...to("evidence","held","Keep the saved report on hold because its inputs or ownership conflict."),when:["conflict"]},
-	{...to("evidence","approved","Use the original report after its inputs and current permissions have been revalidated."),when:["permitted"]},
-	to("evidence","needed","Keep the eligible report until the issuing session has permission to admit it.")];
-export const renewal=chart("renewal","initial",{
-	initial:consider,held:consider,needed:consider,approved:[...consider,to("invalid","closed","Retain the admission error rather than rerunning or silently changing the report.")],
+const pins=update("record-renewal-pins",(/** @type {Pins|undefined} */ _,/** @type {Pins} */ e)=>({
+	checkpoint:e.checkpoint,goal:e.goal,...(e.reason && {reason:e.reason})}));
+/** @param {string} on @param {Renewal["state"]} target @param {string} description @param {...string} when */
+const record=(on,target,description,...when)=>({...to(on,target,description),when,...pins});
+const consider=[record("evidence","held","Keep the saved report on hold because its inputs or ownership conflict.","conflict"),
+	{...record("evidence","approved","Use the original report after its inputs and current permissions have been revalidated.","permitted"),action:"admit-report"},
+	record("evidence","needed","Keep the eligible report until the issuing session has permission to admit it.")];
+export const renewal=machine("renewal","initial",{
+	initial:consider,held:consider,needed:consider,approved:[...consider,record("invalid","closed","Retain the admission error rather than rerunning or silently changing the report.")],
 	// Older readers may already have presented an approval. Silence is not permission to replace it.
 	presenting:[],closed:[],
 },{description:"Determines whether an existing scout report can be admitted after a checkpoint changes.",states:{
@@ -26,6 +33,17 @@ export const renewal=chart("renewal","initial",{
 	closed:"The renewed proposal failed admission. Preserve its diagnostic.",
 }});
 
+/** @typedef {NonNullable<Review["observation"]>} Report */
+const applyRenewal=executor(renewal,{
+	"admit-report"(/** @type {{report:Report,admit:(report:Report)=>void}} */ {admit,report}) {admit(report);},
+});
+
+/** @param {{value:keyof typeof renewal.states,context:Pins|undefined}} snapshot @returns {Renewal} */
+function renewed({value,context}) {
+	if (!context || value==="initial") throw Error("Renewal did not enter a state with reviewed pins");
+	return {...context,state:value};
+}
+
 /** @param {string} cwd @param {Run} run @param {Review} r @param {string} target @param {boolean} permitted
  * @param {(report:NonNullable<Review["observation"]>)=>void} admit */
 export function renew(cwd,run,r,target,permitted,admit) {
@@ -33,14 +51,13 @@ export function renew(cwd,run,r,target,permitted,admit) {
 	if (!r.observation || !renewal.states[state].length) return;
 	const basis=renewalBasis(cwd,run,r,target);
 	if (!basis) return;
-	const {checkpoint,goal,reason}=basis;
-	const next=select(renewal,state,"evidence",{conflict:!!reason,permitted}).target;
-	r.renewal={checkpoint,goal,state:next,...(reason && {reason})};
-	if (next!=="approved") return;
-	try {admit(r.observation);}
+	const selected=transition(renewal,{value:state,context:/** @type {Pins|undefined} */ (r.renewal)},
+		{type:"evidence",...basis},{conflict:!!basis.reason,permitted},true);
+	r.renewal=renewed(selected.snapshot);
+	try {applyRenewal(selected,{admit,report:r.observation});}
 	catch (error) {
 		if (!(error instanceof FoundryError)) throw error;
-		r.renewal={checkpoint,goal,state:select(renewal,next,"invalid").target,reason:error.message};
+		r.renewal=renewed(transition(renewal,selected.snapshot,{type:"invalid",...basis,reason:error.message},{},true).snapshot);
 	}
 }
 

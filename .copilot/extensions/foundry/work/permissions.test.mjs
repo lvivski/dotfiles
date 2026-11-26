@@ -129,14 +129,14 @@ test("a paused run's issuer can read its applied policy and mode without trying 
 	const ctx = {sessionId:writer.id}, hook = {...ctx, timestamp:new Date(), workingDirectory:writer.cwd};
 	await declaration.hooks?.onSessionStart?.({...hook, source:"startup"}, ctx);
 	t.after(() => declaration.hooks?.onSessionEnd?.({...hook, reason:"complete"}, ctx));
-	const tool = declaration.tools?.find((/** @type {import("@github/copilot-sdk").Tool} */ t) => t.name === "foundry_status"); assert.ok(tool?.handler);
-	const args = {run, detail:"permissions"}, invocation = {...ctx, toolName:tool.name, toolCallId:"read", arguments:args};
+	const name = "foundry_status", handler = declaration.tools.find(t => t.name === name)?.handler; assert.ok(handler);
+	const args = {run, detail:"permissions"}, invocation = {...ctx, toolName:name, toolCallId:"read", arguments:args};
 	const read = async () => {
-		const result = await tool.handler(args, invocation);
+		const result = await handler(args, invocation);
 		assert.equal(typeof result, "string", JSON.stringify(result));
 		return JSON.parse(String(result));
 	};
-	assert.match(JSON.stringify(await tool.handler(args, {...invocation, agentId:"helper"})), /subagents/);
+	assert.match(JSON.stringify(await handler(args, {...invocation, agentId:"helper"})), /subagents/);
 	assert.equal(reads, 0);
 	const blocked = await read();
 	assert.deepEqual([blocked.session, blocked.policy, blocked.mode, blocked.ready], [writer.id, "unresolved", "assisted", false]);

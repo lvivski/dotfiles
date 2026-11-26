@@ -10,6 +10,34 @@ import { createRuntime } from "./runtime.mjs";
 import { fixture, propose, run, stored } from "../test/release.mjs";
 import { openDatabase } from "./database.mjs";
 
+test("the new interpreter resumes the same paused dependency graph, tokens and signed assessment",async t=>{
+	const previous=process.env.FOUNDRY_MACHINE_FIXTURE;
+	const f=fixture(t,["producer","consumer"],`has("${stored}") && read("${stored}")==="checked"`,4,
+		previous ? (await import(previous)).factory : undefined);
+	await f.start();const [producer,consumer]=f.scouts, db=openDatabase(f.root);t.after(()=>db.close());
+	await producer.report(propose("producer"));await consumer.report(propose("consumer",undefined,["producer"]));
+	const original=db.read(run), p=f.workers.get(original?.nodes.producer.worker??"");assert.ok(original && p);
+	const signed=original.effects.find(e=>e.kind==="goal");assert.ok(signed?.kind==="goal" && signed.receipt?.exit===1);
+	db.verifySigned(run,signed);
+	put(p.cwd,"producer/value","checked");
+	await f.owner.operation("pause",{run},"owner");f.owner.close();
+	const clock=recoveryClock(), issuer=f.runtime(f.root,{watchRecovery:clock.watch},createRuntime);
+	issuer.sessionStart("owner",f.root);await clock.pulse(issuer,8);
+	const paused=db.read(run);assert.ok(paused && !paused.active);
+	assert.deepEqual(paused.nodes,original.nodes);assert.deepEqual(paused.effects,original.effects);
+	await issuer.operation("resume",{source:original.policy.source},"owner");
+	assert.equal(f.workers.size,1);
+	await f.runtime(p.cwd,{},createRuntime).operation("submit",{run,token:p.token},p.id);
+	const dependent=db.read(run)?.nodes.consumer,c=f.workers.get(dependent?.worker??"");assert.ok(c);
+	put(c.cwd,stored,git(c.cwd,"show","HEAD:producer/value"));
+	await f.runtime(c.cwd,{},createRuntime).operation("submit",{run,token:c.token},c.id);
+	await clock.pulse(issuer,8);
+	const done=issuer.inspect({run,detail:"proof"},"owner");
+	assert.ok(done.qualified && done.goal?.receipt?.commit===done.qualified && done.products?.at(-1)?.receipt?.commit===done.qualified);
+	assert.deepEqual(db.read(run)?.effects.find(e=>e.id===signed.id),signed);
+	assert.equal(f.scouts.length,2);assert.equal(f.workers.size,2);
+});
+
 test("a late producer admits the original consumer report once, including after issuer reload",async t=>{
 	const prior=process.env.FOUNDRY_PRIOR_FIXTURE;
 	const f=fixture(t,["consumer","producer"],`has("${stored}") && read("${stored}")==="checked"`,4,

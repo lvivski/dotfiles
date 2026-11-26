@@ -55,5 +55,5 @@ export function acceptOutcome(run, e, signature, document) {
 		return;
 	}
 	e.receipt = receipt;
-	if (e.state !== "refused") { journal(e,"confirm"); delete e.error; }
+	if (e.state !== "refused") journal(e,"confirm");
 }

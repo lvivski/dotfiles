@@ -125,6 +125,6 @@ export function settleProduction(cwd,run,job,check) {
 			delete n.token;delete n.worker;delete n.workspace;delete n.preview;
 			n.generation=g.candidate;
 		}
-		n.candidate=c.commit;n.check=c.id;assign(n,"paired-pass");delete n.reason;
+		n.candidate=c.commit;n.check=c.id;assign(n,"paired-pass");
 	}
 }

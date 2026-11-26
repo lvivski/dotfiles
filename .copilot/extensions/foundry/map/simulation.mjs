@@ -1,4 +1,4 @@
-import { compose } from "../work/chart.mjs";
+import { compose } from "../work/machine.mjs";
 
 /** @typedef {import("./statechart.mjs").Model} Model */
 /** @typedef {Record<string,Record<string,boolean>>} Inputs */

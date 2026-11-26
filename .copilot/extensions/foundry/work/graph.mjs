@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { assign, assignment } from "./assignment.mjs";
-import { select, step } from "./chart.mjs";
-import { journal, review as reviewChart, survey } from "./dispatch.mjs";
+import { assign, componentOutcome } from "./assignment.mjs";
+import { transition } from "./machine.mjs";
+import { executor } from "./adapter.mjs";
+import { scheduling } from "./scheduling.mjs";
+import { journal, producersDeclared, survey } from "./dispatch.mjs";
 import { decide } from "./dialog.mjs";
 import { isUtf8 } from "node:buffer";
 import { admissionPolicy } from "./admission.mjs";
@@ -13,7 +15,7 @@ import { validOutcome } from "./contract.mjs";
 import { evidenceDecision, exhaustedRead, readSource, readWake, rejectedRead, validateRead } from "./cursor.mjs";
 import { checkReceipt, comparisonGoal, comparisonVerdict, currentEvaluation, exhaustedCandidate, goalReceipt, leadGoal, milestoneBlocker, omittedStep, productPin } from "./evidence.mjs";
 import { checkpointCurrent, continuingRepair, pendingGoal, retainedRepair } from "./facts.mjs";
-import { release } from "./engine.mjs";
+import { decisionOf, release } from "./engine.mjs";
 import { discoverLeads } from "./leads.mjs";
 import { applyGoal, assess, checkpointSurvey, movingSurvey, observeTarget, qualify, rejectRepeat, stall, timelyChecks } from "./goal.mjs";
 import { availableReservations, remainingAssignments } from "./capacity.mjs";
@@ -493,13 +495,11 @@ export function observe(cwd, run, review, observation) {
 		}
 		if (Object.keys(pins).length) run.references = pins;
 	}
-	review.observation = observation;
 	if (revision?.deferred) {
-		survey(review,"defer");
-		review.deferred = revision.deferred;
+		survey(review,{type:"defer",observation,deferred:revision.deferred});
 		return;
 	}
-	survey(review,"admit");
+	survey(review,{type:"admit",observation});
 	if (outcome === "needs-decision" && wakeSource(run, review)?.decision?.status === "answered")
 		decide(review,{ status: "unavailable", reason: "The clarification did not resolve this charter. A change to the committed contract needs a newly authorized brief." });
 	if (outcome === "regenerate") {
@@ -540,34 +540,10 @@ function outstandingProduct(run) {
 	return check && (awaitingReply(check) || check.permissionHold || check.state === "ordinary");
 }
 
-/** Apply the selected receipt transition. The chart decides; only this adapter changes pins or invalidates consumers.
+/** Connect the assignment's declared invalidation effect to this work graph.
  * @param {Run} run @param {string} id @param {string} reason @param {{passed:boolean,incomplete:boolean,unfunded:boolean}} [component] */
 function applyOutcome(run, id, reason,component) {
-	const node = run.nodes[id];
-	const from=node.state, edge=select(assignment,from,component ? "component" : "repair",{...component,attestation:!!node.restoration,exhausted:node.repairs>=run.policy.repairs});
-	if (!("action" in edge)) throw Error("Missing component outcome");
-	if (edge.action==="publish") {node.state=edge.target;delete node.reason;return;}
-	if (edge.action==="incomplete" || edge.action==="unfunded") {
-		node.state=edge.target;
-		node.reason=edge.action==="incomplete" ? `Evaluation did not complete: ${reason}` : `No assignment remains to repair ${id}: ${reason}`;
-		return;
-	}
-	invalidateConsumers(run, id, node.candidate);
-	node.state=edge.target;
-	if (edge.action==="attestation") {
-		const e=run.effects.find(e=>e.id===node.check);
-		node.reason=e?.kind==="component" && e.observer?.previous ?
-			`Final diagnostic ${e.id} stopped on ${node.grain.id}. Run owner: request the production form of foundry_grant for a repository regression and evidence-backed fix in the owning directory. A missing phase is not a production diagnosis. No observer replay: ${reason}` :
-			e?.kind==="component" && e.observer ? `The approved observer change failed. Inspect this new receipt; do not replay it: ${reason}` :
-			`The approved unchanged directory did not pass; this ownership attestation cannot change the bytes or replay the check: ${reason}`;
-		return;
-	}
-	if (edge.action==="exhausted") {
-		node.reason = `${id}: repair limit exhausted: ${reason}`;
-		return;
-	}
-	if (from === "qualified") node.replaces = node.candidate; // Repair this version without rebasing its writer.
-	node.reason = reason;
+	componentOutcome(run,id,reason,component,invalidateConsumers);
 }
 
 /** @param {import("./model.js").Receipt} receipt @param {string|undefined} grain @param {number} remaining */
@@ -633,8 +609,8 @@ function settleChecks(cwd, run, actor, remaining, target) {
 		return;
 	}
 	if (receipt.exit === 0) {
+		if (!run.goal) qualify(run, actor, join,target);
 		delete run.join;
-		if (!run.goal) qualify(run, actor, join);
 		run.products.push(join);
 		for (const id of Object.keys(join.outputs)) {
 			assign(run.nodes[id],"integrate");
@@ -750,8 +726,7 @@ export function verifyJoinedInputs(cwd,run,outputs,base,commit) {
 function excludeIncompatible(cwd,run,outputs,base,commit) {
 	const conflicts = [...incompatibleInputs(cwd,run,outputs,base,commit)];
 	for (const {n,error} of conflicts) {
-		assign(n,"stop");
-		n.reason = error.message;
+		assign(n,{type:"stop",reason:error.message});
 		n.excluded = error.input;
 	}
 	return !!conflicts.length;
@@ -929,51 +904,70 @@ function writerCandidate(run, node, review, scoped) {
 	return { required, checkpoint, missing };
 }
 
-/** Plan on a snapshot outside the SQLite write lock; the caller compare-and-swaps the changes.
- * @param {string} cwd @param {Run} run @param {string} actor @param {boolean} discover @param {{retryGoal?:boolean,submitToken?:string,target?:string,renew?:boolean}} [context] */
-export function advance(cwd, run, actor, discover, context = {}) {
-	const elapsed=expired(run);
-	if (!run.active || elapsed && !timelyChecks(run))
-		return;
-	const owner = actor === run.owner;
-	if (!owner && !run.effects.some(e => e.nativeId === actor))
-		return;
-	const observed = observeTarget(() => context.target ?? commitAt(cwd, run.policy.target));
-	if (observed.target === undefined) return;
-	const target = observed.target, tip = () => target;
-	const delivery=activeDelivery(run);
-	if (delivery) {
-		if (owner && !elapsed) advanceDelivery(cwd,run,delivery,target);
-		return;
-	}
-	if (run.independent) {
-		const s=run.independent, join=run.join, e=run.effects.find(e=>e.id===s.product);
-		if (!owner || !join || elapsed || !validIsolation(run) || target!==s.target || run.blocker || run.conflict ||
-			run.effects.some(e=>e.permissionHold) || e?.kind!=="product" || e.error) return;
-		const receipt=checkReceipt(e);
-		if (!receipt) return;
-		if (receipt.exit!==0) { e.error=`Independent product check did not pass: ${receipt.output || receipt.exit}`;return; }
-		verifyContracts(cwd,run.policy,target);
-		run.products.push(join);delete run.join;
-		for (const {grain} of s.selected) assign(run.nodes[grain],"integrate");
-		assess(cwd,run,actor,target,join.commit);
-		const assessment=run.effects.at(-1);
-		if (assessment?.kind!=="goal") throw Error("Independent assessment reservation is missing");
-		assessment.isolation=e.isolation;s.assessment=assessment.id;
-		return;
-	}
-	if (elapsed) {
-		if (run.goal?.target !== target || Object.values(run.nodes).some(n=>n.state==="checking" || n.state==="writing")) return;
-		verifyContracts(cwd,run.policy,target);
-		if (run.join) settleChecks(cwd,run,actor,remainingAssignments(run),target);
-		applyGoal(cwd,run,actor,tip,false);
-		return;
-	}
-	finishWriters(run);
-	notifyWriters(run, actor);
-	delete run.conflict; // Recompute from the current target and live pins. Never clear a refusal to do this.
-	const history = reviews(run);
-	const latest = owner && run.goal ? new Map(history.map(r => [r.squad, r])) : undefined;
+/** @param {Run} run @param {string} target */
+function isolationEvidence(run,target) {
+	const s=run.independent, join=run.join, e=s && run.effects.find(e=>e.id===s.product);
+	if (!s || !join || !validIsolation(run) || target!==s.target || run.blocker || run.conflict ||
+		run.effects.some(e=>e.permissionHold) || e?.kind!=="product" || e.error) return;
+	const receipt=checkReceipt(e);
+	if (receipt) return {s,join,e,receipt};
+}
+
+/** @typedef {import("./model.js").Review} Review */
+/** @typedef {import("./model.js").Receipt} Receipt */
+/** @typedef {{from:string,edge:import("./machine.mjs").Edge}} PlanningStep */
+/** @typedef {{retryGoal?:boolean,submitToken?:string,target?:string,renew?:boolean,trace?:PlanningStep[]}} PlanningOptions */
+/** @typedef {{cwd:string,run:Run,actor:string,owner:boolean,discover:boolean,options:PlanningOptions,target?:string,base?:string,
+ * isolated?:ReturnType<typeof isolationEvidence>,history:Review[],latest?:Map<string,Review>,remaining:number,reserved:number,limit:number,
+ * admission:import("./admission.mjs").Admission,workTarget?:string,nodes:Node[],stoppedWaiting:boolean,gap?:Receipt,
+ * outputs?:Record<string,string>,assembly?:{commit:string,attribution?:string},excluded?:boolean,unchanged?:boolean,repeated?:Receipt,diagnostic?:string,
+ * squads:import("./model.js").Squad[]}} Plan */
+
+/** @template T @param {T|undefined} value @param {string} input */
+function needed(value,input) {
+	if (value===undefined) throw Error(`Missing scheduling input: ${input}`);
+	return value;
+}
+/** @param {Plan} p */
+const tip=p=>needed(p.target,"observed target");
+/** @param {Plan} p */
+const startingPoint=p=>p.base??=productBase(p.cwd,p.run,tip(p));
+
+/** Guards are observations of the current draft. Do not speculatively read Git or assess a receipt.
+ * @param {Plan} p */
+function planningFacts(p) {
+	const {run,owner,actor}=p;
+	return {
+		owner,elapsed:expired(run),
+		get active(){return run.active;},get timely(){return timelyChecks(run);},
+		get participant(){return owner || run.effects.some(e=>e.nativeId===actor);},
+		get targetKnown(){return p.target!==undefined;},get delivery(){return !!activeDelivery(run);},
+		get independent(){return !!run.independent;},get hasJoin(){return !!run.join;},
+		get isolatedReceipt(){return !!p.isolated;},get isolatedPass(){return p.isolated?.receipt.exit===0;},
+		get sameGoalTarget(){return run.goal?.target===p.target;},get liveWriter(){return Object.values(run.nodes).some(n=>n.state==="checking" || n.state==="writing");},
+		get currentInputs(){return !!p.latest && run.goal?.target===p.target && !run.effects.some(e=>e.permissionHold);},
+		get admitted(){return p.admission!=="closed";},
+		get writerSlot(){return p.limit>0 && admissionPolicy(p.admission).writers!=="none" && p.nodes.some(n=>n.state==="waiting");},
+		get outputs(){return !!p.outputs;},get sameJoin(){return sameProduct(run.join,tip(p),p.outputs);},
+		get outstandingProduct(){return !!outstandingProduct(run);},get excluded(){return !!p.excluded;},get hasGoal(){return !!run.goal;},
+		get noNewProduct(){return !!(p.unchanged || p.repeated);},
+		get recheckStopped(){
+			const work=admissionPolicy(p.admission);
+			return p.stoppedWaiting && p.gap?.exit===0 && !run.join && !p.outputs && work.discover && !work.scoped;
+		},
+		get mayDiscover(){return admissionPolicy(p.admission).discover;},get budget(){return p.reserved!==p.remaining;},
+		get surveyDue(){return run.goal ? admissionPolicy(p.admission).scoped || p.gap?.exit===1 && run.goal.target===p.target && !(p.outputs && run.join && !milestoneBlocker(run))
+			: !run.policy.seed && (p.discover || workerLimit(run)!==undefined);},
+		get unmet(){return p.gap?.exit===1;},get pendingWork(){return !!(run.blocker || run.join) || p.nodes.some(n=>actionable(run,n));},
+		get surveysFinished(){
+			const finished=new Map(reviews(run).filter(r=>currentEvaluation(run,r)).map(r=>[r.squad,r.base===p.gap?.commit && !reading(r)]));
+			return p.squads.every(s=>finished.get(s.id));
+		},
+	};
+}
+
+/** @param {Plan} p */
+function settleReports({cwd,run,actor,owner,history,latest}) {
 	for (const r of history) if (r.observation) {
 		try {
 			if (r.state !== "reported") {
@@ -989,163 +983,161 @@ export function advance(cwd, run, actor, discover, context = {}) {
 			blockReview(r, error.message);
 		}
 	}
-	if (latest && run.goal?.target===target && !run.effects.some(e=>e.permissionHold)) for (const r of inputArrivals(run,latest.values())) {
-		if (!r.observation) continue;
+}
+
+/** @param {Plan} p */
+function admitArrivals(p) {
+	const {cwd,run}=p, target=tip(p);
+	for (const r of inputArrivals(run,needed(p.latest,"owner reports").values())) {
+		const report=r.observation;
+		if (!report) continue;
 		try {
-			const edge=step(reviewChart,r.state,"producers-declared",{inputsCurrent:sameReviewInputs(cwd,run,r,target)});
-			if (!edge || edge.target!=="reported") continue;
-			r.state=edge.target;
-			observe(cwd,run,r,r.observation);
-			delete r.error;
+			producersDeclared(r,sameReviewInputs(cwd,run,r,target),()=>{
+				observe(cwd,run,r,report);
+				delete r.error;
+			});
 		} catch (error) {
 			if (!(error instanceof FoundryError)) throw error;
 			blockReview(r,error.message);
 		}
 	}
-	if (owner) for (const r of history) renew(cwd,run,r,target,context.renew===true,report=>observe(cwd,run,r,report));
-	let remaining = remainingAssignments(run);
-	let base;
-	const startingPoint = () => base ??= productBase(cwd, run, tip());
-	let work = admissionPolicy("open");
-	/** @type {string|undefined} */ let workTarget;
-	try {
-		settleChecks(cwd, run, actor, remaining, target);
-		for (const r of history) {
-			if (!readerInterrupted(r) || (!owner && r.issuer !== actor) ||
-				history.findLast(h => h.squad === r.squad) !== r || history.some(h => h.squad === r.squad && reading(h)) ||
-				run.effects.some(e => e.permissionHold && (e.issuer === actor || e.issuer === r.issuer)) ||
-				!availableReservations(run, remaining) || !sameReviewInputs(cwd, run, r, tip())) continue;
-			const fresh = reserveReview(run, actor, r.squad, r.base, r.version, r.wake);
-			fresh.retryOf = r.id;
-			if (r.lead) fresh.lead = r.lead;
-			history.push(fresh);
-			if (run.goal) delete run.goal.stall;
-			remaining--;
-		}
-		const decision = run.goal ? applyGoal(cwd, run, actor, tip, context.retryGoal === true) : select(release,"absent","assess");
-		const admission = decision.admission;
-		workTarget = "workTarget" in decision && typeof decision.workTarget==="string" ? decision.workTarget : undefined;
-		if (run.active && run.goal && run.goal.target === tip() && !run.conflict) {
-			for (const g of unownedBlockers(run, remaining)) if (!run.effects.some(e => e.kind === "escalation" && e.token === g.detail)) {
-				reserveNotice(run, actor, g.detail, "escalation", `Foundry ${run.id}: ${g.id} at ${g.directory}: one failed step, ${g.blocked} journeys blocked (${g.affected} affected), no repair owner. Inspect receipt ${g.receipt} and ${g.review ? `review ${g.review}` : "charter ownership"}. This notice grants no authority.`);
-			}
-		}
-		if (admission === "closed") return;
-		work = admissionPolicy(admission);
-		const reviewed = run.products.at(-1) ?? run.goal;
-		if (reviewed && !workTarget && !run.policy.seed && reviewed.target !== tip()) {
-			const edits = changedFiles(cwd, reviewed.commit, startingPoint());
-			const stale = Object.values(run.nodes).filter(n => settledOutput(n) && !outside(n.grain.directory, edits));
-			if (stale.length) {
-				const ids = superseded(run.nodes, stale.map(n => n.grain.id));
-				if (Object.values(run.nodes).some(n=>protectsGrant(n,ids)))
-					fail("tree_conflict","Target changed a transferred ownership group; cannot retire its grants on a moved target");
-				if (Object.values(run.nodes).some(n => !ids.has(n.grain.id) && n.state !== "idle" && liveNeeds(n).some(id => ids.has(id))))
-					fail("tree_conflict", "A target edit changed a required checkpoint output");
-				for (const id of ids) {
-					const { grain } = run.nodes[id];
-					if (grain.task) delete run.nodes[id];
-					else run.nodes[id] = { grain, state: "idle", repairs: 0 };
-				}
-			}
-		}
-	} catch (error) {
-		if (!(error instanceof FoundryError)) throw error;
-		run.conflict = error.message;
-		return;
+}
+
+/** @param {Plan} p */
+function retryReaders(p) {
+	const {cwd,run,actor,owner,history}=p;
+	for (const r of history) {
+		if (!readerInterrupted(r) || (!owner && r.issuer !== actor) ||
+			history.findLast(h => h.squad === r.squad) !== r || history.some(h => h.squad === r.squad && reading(h)) ||
+			run.effects.some(e => e.permissionHold && (e.issuer === actor || e.issuer === r.issuer)) ||
+			!availableReservations(run, p.remaining) || !sameReviewInputs(cwd, run, r, tip(p))) continue;
+		const fresh = reserveReview(run, actor, r.squad, r.base, r.version, r.wake);
+		fresh.retryOf = r.id;
+		if (r.lead) fresh.lead = r.lead;
+		history.push(fresh);
+		if (run.goal) delete run.goal.stall;
+		p.remaining--;
 	}
-	const nodes = Object.values(run.nodes), limit = availableReservations(run, remaining);
-	let reserved = 0, stoppedWaiting = false;
+}
+
+/** @param {Plan} p */
+function assessRelease(p) {
+	const {cwd,run,actor}=p;
+	const decision=run.goal ? applyGoal(cwd,run,actor,()=>tip(p),p.options.retryGoal===true)
+		: decisionOf(transition(release,{value:"absent",context:null},{type:"assess"},{},true));
+	p.admission=decision.admission;
+	p.workTarget="workTarget" in decision && typeof decision.workTarget==="string" ? decision.workTarget : undefined;
+	if (run.active && run.goal?.target===tip(p) && !run.conflict) {
+		for (const g of unownedBlockers(run,p.remaining)) if (!run.effects.some(e=>e.kind==="escalation" && e.token===g.detail)) {
+			reserveNotice(run, actor, g.detail, "escalation", `Foundry ${run.id}: ${g.id} at ${g.directory}: one failed step, ${g.blocked} journeys blocked (${g.affected} affected), no repair owner. Inspect receipt ${g.receipt} and ${g.review ? `review ${g.review}` : "charter ownership"}. This notice grants no authority.`);
+		}
+	}
+}
+
+/** @param {Plan} p */
+function prepareAdmission(p) {
+	const {cwd,run}=p, reviewed=run.products.at(-1) ?? run.goal;
+	if (reviewed && !p.workTarget && !run.policy.seed && reviewed.target!==tip(p)) {
+		const edits = changedFiles(cwd, reviewed.commit, startingPoint(p));
+		const stale = Object.values(run.nodes).filter(n => settledOutput(n) && !outside(n.grain.directory, edits));
+		if (stale.length) {
+			const ids = superseded(run.nodes, stale.map(n => n.grain.id));
+			if (Object.values(run.nodes).some(n=>protectsGrant(n,ids)))
+				fail("tree_conflict","Target changed a transferred ownership group; cannot retire its grants on a moved target");
+			if (Object.values(run.nodes).some(n => !ids.has(n.grain.id) && n.state !== "idle" && liveNeeds(n).some(id => ids.has(id))))
+				fail("tree_conflict", "A target edit changed a required checkpoint output");
+			for (const id of ids) {
+				const { grain } = run.nodes[id];
+				if (grain.task) delete run.nodes[id];
+				else run.nodes[id] = { grain, state: "idle", repairs: 0 };
+			}
+		}
+	}
+	p.nodes=Object.values(run.nodes);
+	p.limit=availableReservations(run,p.remaining);
+}
+
+/** @param {Plan} p */
+function allocateWriters(p) {
+	const {cwd,run,actor,history,nodes,limit,workTarget}=p, work=admissionPolicy(p.admission);
 	for (const n of nodes) {
-		if (work.writers === "none" || reserved >= limit) break;
+		if (p.reserved >= limit) break;
 		if (n.state !== "waiting") continue;
 		const held = work.writers==="repair" && heldRepair(run,n);
 		if (work.writers==="repair" && !held) continue;
 		const r = n.review ? history.find(r => r.id === n.review) : undefined;
 		if (workTarget && !checkpointSurvey(run,r)) continue;
 		if (!n.worker && r && answeredLead(run,r,scopePaths(n.grain.directory))) {
-			assign(n,"stop");
-			stoppedWaiting = true;
-			n.reason = "A newer goal receipt observed this historical lead's step passing before staffing";
+			assign(n,{type:"stop",reason:"A newer goal receipt observed this historical lead's step passing before staffing"});
+			p.stoppedWaiting = true;
 			continue;
 		}
 		const candidate = writerCandidate(run, n, r, work.scoped || held==="successor");
 		if (!candidate) continue;
 		const { required, checkpoint, missing, continuation } = candidate;
 		try {
-			if (candidate.retained || held && n.worker) verifyRepairInputs(cwd,run,n,required,startingPoint());
+			if (candidate.retained || held && n.worker) verifyRepairInputs(cwd,run,n,required,startingPoint(p));
 			if (checkpoint && r) {
-				if (missing && missing !== run.goal?.check || !checkpointCurrent(run, checkpoint, workTarget ?? tip()))
+				if (missing && missing !== run.goal?.check || !checkpointCurrent(run, checkpoint, workTarget ?? tip(p)))
 					fail("stale_assignment", "The reviewed checkpoint, goal observation or target changed before staffing");
-				if (continuation) verifyRepairInputs(cwd, run, n, required, startingPoint());
-				checkpointInputs(run, r, n, required, continuation ? startingPoint() : undefined);
+				if (continuation) verifyRepairInputs(cwd, run, n, required, startingPoint(p));
+				checkpointInputs(run, r, n, required, continuation ? startingPoint(p) : undefined);
 			}
-			reserveWriter(cwd, run, n, required, run.goal?.commit ?? startingPoint(), actor, context.submitToken);
-			reserved++;
+			reserveWriter(cwd, run, n, required, run.goal?.commit ?? startingPoint(p), actor, p.options.submitToken);
+			p.reserved++;
 		} catch (error) {
 			if (!(error instanceof FoundryError)) throw error;
-			assign(n,"stop");
-			stoppedWaiting = true;
-			n.reason = error.message;
+			assign(n,{type:"stop",reason:error.message});
+			p.stoppedWaiting = true;
 			if (error instanceof InputMismatch) n.excluded = error.input;
 		}
 	}
-	const gap = goalReceipt(run);
-	const joinable = () => work.join !== "none" && (run.join || !run.blocker) && productOutputs(run, target, remaining - reserved);
-	let outputs = joinable();
-	let repeated;
-	while (outputs && !sameProduct(run.join, tip(), outputs) && !outstandingProduct(run)) {
-		try {
-			const last=run.products.at(-1), restored=last ? Object.keys(outputs).filter(id=>run.nodes[id].restoration?.checkpoint===last.check && !last.outputs[id]) : [];
-			const attribution=restored.length ? digest(restored.sort().map(id=>[id,run.nodes[id].check,run.nodes[id].restoration])) : undefined;
-			const commit = combine(cwd, startingPoint(), changes(run, outputs), tip(),attribution);
-			if (excludeIncompatible(cwd,run,outputs,startingPoint(),commit)) {
-				const survivors = productOutputs(run,target,remaining-reserved);
-				if (sameProduct(run.join,target,survivors)) settleChecks(cwd,run,actor,remaining-reserved,target);
-				else if (!milestoneBlocker(run)) delete run.join;
-				if (run.goal) {
-					const {admission:next} = applyGoal(cwd,run,actor,tip,false);
-					if (next === "closed") return;
-					work = admissionPolicy(next);
-				}
-				outputs = joinable();
-				continue;
-			}
-			delete run.join;
-			delete run.blocker;
-			const at = run.goal;
-			if (at && run.effects.find(e => e.id === at.check)?.state === "retired" && treeOf(cwd, commit) === treeOf(cwd, at.commit))
-				fail("no_progress", "The retained outputs reproduce the retired goal tree; no check was issued");
-			if (!attribution && work.join === "changed" && at && treeOf(cwd, commit) === treeOf(cwd, at.commit)) {
-				for (const n of nodes) if (n.state === "published") {
-					assign(n,"repeat");
-					n.reason = "Checked output leaves the assessed product unchanged; the missing observation was not retried.";
-				}
-			} else {
-				repeated = !attribution && rejectRepeat(cwd, run, tip(), commit, outputs);
-				if (!repeated) reserveProduct(run, actor, cwd, tip(), commit, outputs);
-			}
-			break;
-		} catch (error) {
-			if (!(error instanceof FoundryError)) throw error;
-			run.conflict = error.message;
-			return;
+}
+
+/** @param {Plan} p */
+function joinInputs(p) {
+	return admissionPolicy(p.admission).join!=="none" && (p.run.join || !p.run.blocker)
+		? productOutputs(p.run,tip(p),p.remaining-p.reserved) : undefined;
+}
+
+/** @param {Plan} p */
+function assembleOutputs(p) {
+	const {cwd,run}=p, outputs=needed(p.outputs,"join outputs"), last=run.products.at(-1);
+	const restored=last ? Object.keys(outputs).filter(id=>run.nodes[id].restoration?.checkpoint===last.check && !last.outputs[id]) : [];
+	const attribution=restored.length ? digest(restored.sort().map(id=>[id,run.nodes[id].check,run.nodes[id].restoration])) : undefined;
+	const commit=combine(cwd,startingPoint(p),changes(run,outputs),tip(p),attribution);
+	p.assembly={commit,attribution};
+	p.excluded=excludeIncompatible(cwd,run,outputs,startingPoint(p),commit);
+}
+
+/** @param {Plan} p */
+function compareAssembly(p) {
+	const {cwd,run}=p, {commit,attribution}=needed(p.assembly,"verified assembly");
+	delete run.join;
+	delete run.blocker;
+	const at=run.goal;
+	if (at && run.effects.find(e=>e.id===at.check)?.state==="retired" && treeOf(cwd,commit)===treeOf(cwd,at.commit))
+		fail("no_progress", "The retained outputs reproduce the retired goal tree; no check was issued");
+	p.unchanged=!attribution && admissionPolicy(p.admission).join==="changed" && !!at && treeOf(cwd,commit)===treeOf(cwd,at.commit);
+	if (p.unchanged) {
+		for (const n of p.nodes) if (n.state==="published") {
+			assign(n,{type:"repeat",reason:"Checked output leaves the assessed product unchanged; the missing observation was not retried."});
 		}
-	}
-	if (stoppedWaiting && gap?.exit === 0 && !run.join && !outputs && work.discover && !work.scoped) applyGoal(cwd,run,actor,tip,false);
-	if (!run.active || !work.discover || reserved === remaining) return;
-	const survey = run.goal ? work.scoped || gap?.exit === 1 && run.goal.target === tip() && !(outputs && run.join && !milestoneBlocker(run))
-		: !run.policy.seed && (discover || workerLimit(run) !== undefined);
-	if (!survey) return;
+	} else if (!attribution) p.repeated=rejectRepeat(cwd,run,tip(p),commit,needed(p.outputs,"join outputs"));
+}
+
+/** @param {Plan} p */
+function reserveSurveys(p) {
+	const {cwd,run,actor,history,workTarget,remaining,limit}=p, work=admissionPolicy(p.admission);
 	const applicable = history.filter(r => currentEvaluation(run,r));
 	const leads = work.scoped ? discoverLeads(run, history) : undefined;
-	const order = discoverySquads(run, applicable, gap);
-	const squads = leads?.owners.size ? order.toSorted((a, b) => Number(leads.owners.has(b.id)) - Number(leads.owners.has(a.id))) : order;
+	const order = discoverySquads(run, applicable, p.gap);
+	p.squads = leads?.owners.size ? order.toSorted((a, b) => Number(leads.owners.has(b.id)) - Number(leads.owners.has(a.id))) : order;
 	const protectQueue=!work.scoped || !workTarget && pendingGoal(run);
 	const scoutLimit=Number.isFinite(remaining) && protectQueue ? Math.min(limit,remaining-queuedWriters(run.nodes)) : limit;
 	delete run.discoveryError;
-	for (const squad of squads) {
-		if (reserved >= scoutLimit) break;
+	for (const squad of p.squads) {
+		if (p.reserved >= scoutLimit) break;
 		const past = availableHistory(run, applicable, squad.id);
 		if (!past) continue;
 		const prior = past.at(-1);
@@ -1154,7 +1146,7 @@ export function advance(cwd, run, actor, discover, context = {}) {
 		const initial = lead ? { lead, wake: undefined } : undefined;
 		if (work.scoped && !initial && !atCheckpoint(run, checkpointScope(run,prior))) continue;
 		let commit;
-		try { commit = run.goal?.commit ?? startingPoint(); }
+		try { commit = run.goal?.commit ?? startingPoint(p); }
 		catch (error) {
 			if (!(error instanceof FoundryError)) throw error;
 			run.discoveryError = error.message;
@@ -1166,12 +1158,90 @@ export function advance(cwd, run, actor, discover, context = {}) {
 		if (!next) continue;
 		const fresh = reserveReview(run, actor, squad.id, commit, version, next.wake);
 		if (next.lead) fresh.lead = next.lead;
-		reserved++;
+		p.reserved++;
 	}
-	// Wait for discovery only before declaring a stall, not before checking a ready product.
-	if (gap?.exit !== 1 || run.blocker || run.join || nodes.some(n => actionable(run, n))) return;
-	const finished = new Map(reviews(run).filter(r => currentEvaluation(run,r)).map(r => [r.squad, r.base === gap.commit && !reading(r)]));
-	if (squads.some(s => !finished.get(s.id))) return;
-	stall(run, repeated || nodes.some(n => n.state === "repeated")
-		? "The proposed outputs reproduce a tree already checked against the goal." : "No actionable grain remains on this revision.", repeated || gap);
+}
+
+/** Preserve the original conflict boundary: earlier reservations and diagnostics on this
+ * draft remain eligible for the caller's CAS. Unexpected errors still discard the plan.
+ * @param {(p:Plan)=>void} effect */
+const fallible=effect=>(/** @type {Plan} */ p)=>{
+	try {effect(p);} catch (error) {
+		if (!(error instanceof FoundryError)) throw error;
+		p.diagnostic=error.message;
+		return /** @type {const} */ ("conflict");
+	}
+};
+
+/** @typedef {Extract<(typeof scheduling.states)[keyof typeof scheduling.states][number],{action:string}>["action"]} PlanningAction */
+/** @type {Record<PlanningAction,(p:Plan)=>void|"conflict">} */
+const planningActions={
+	"record-conflict"(p){p.run.conflict=needed(p.diagnostic,"planning diagnostic");},
+	"observe-target"(p){p.target=observeTarget(()=>p.options.target ?? commitAt(p.cwd,p.run.policy.target)).target;},
+	"advance-delivery"(p){advanceDelivery(p.cwd,p.run,needed(activeDelivery(p.run),"approved delivery"),tip(p));},
+	"read-isolation"(p){p.isolated=isolationEvidence(p.run,tip(p));},
+	"reject-isolation"(p){
+		const {e,receipt}=needed(p.isolated,"isolated receipt");
+		e.error=`Independent product check did not pass: ${receipt.output || receipt.exit}`;
+	},
+	"accept-isolation"(p){
+		const {cwd,run,actor}=p,{s,join,e}=needed(p.isolated,"isolated receipt");
+		verifyContracts(cwd,run.policy,tip(p));
+		run.products.push(join);delete run.join;
+		for (const {grain} of s.selected) assign(run.nodes[grain],"integrate");
+		assess(cwd,run,actor,tip(p),join.commit);
+		const assessment=run.effects.at(-1);
+		if (assessment?.kind!=="goal") throw Error("Independent assessment reservation is missing");
+		assessment.isolation=e.isolation;s.assessment=assessment.id;
+	},
+	"settle-timely"(p){
+		const {cwd,run,actor}=p;
+		verifyContracts(cwd,run.policy,tip(p));
+		if (run.join) settleChecks(cwd,run,actor,remainingAssignments(run),tip(p));
+		applyGoal(cwd,run,actor,()=>tip(p),false);
+	},
+	"reconcile-writers"(p){
+		const {run,actor}=p;
+		finishWriters(run);notifyWriters(run,actor);
+		delete run.conflict; // Recompute from the current target and live pins, not a refusal.
+		p.history=reviews(run);
+		if (p.owner && run.goal) p.latest=new Map(p.history.map(r=>[r.squad,r]));
+	},
+	"settle-reports":settleReports,"admit-arrivals":admitArrivals,
+	"renew-reports"(p){for (const r of p.history) renew(p.cwd,p.run,r,tip(p),p.options.renew===true,report=>observe(p.cwd,p.run,r,report));},
+	"settle-checks":fallible(p=>{p.remaining=remainingAssignments(p.run);settleChecks(p.cwd,p.run,p.actor,p.remaining,tip(p));}),
+	"retry-readers":fallible(retryReaders),"assess-release":fallible(assessRelease),"prepare-admission":fallible(prepareAdmission),
+	"allocate-writers":allocateWriters,"collect-outputs"(p){p.gap=goalReceipt(p.run);p.outputs=joinInputs(p);},
+	"assemble-outputs":fallible(assembleOutputs),"compare-assembly":fallible(compareAssembly),
+	"settle-survivors":fallible(p=>{
+		const {cwd,run,actor}=p,remaining=p.remaining-p.reserved,target=tip(p);
+		if (sameProduct(run.join,target,productOutputs(run,target,remaining))) settleChecks(cwd,run,actor,remaining,target);
+		else if (!milestoneBlocker(run)) delete run.join;
+	}),
+	"reassess-survivors":fallible(p=>{p.admission=applyGoal(p.cwd,p.run,p.actor,()=>tip(p),false).admission;}),
+	"refresh-outputs":fallible(p=>{p.outputs=joinInputs(p);}),
+	"reserve-product":fallible(p=>{reserveProduct(p.run,p.actor,p.cwd,tip(p),needed(p.assembly,"verified assembly").commit,needed(p.outputs,"join outputs"));}),
+	"reassess-stopped"(p){applyGoal(p.cwd,p.run,p.actor,()=>tip(p),false);},
+	"reserve-surveys":reserveSurveys,
+	"record-stall"(p){
+		stall(p.run,p.repeated || p.nodes.some(n=>n.state==="repeated") ? "The proposed outputs reproduce a tree already checked against the goal."
+			: "No actionable grain remains on this revision.",p.repeated ?? needed(p.gap,"unmet goal"));
+	},
+};
+const executePlanning=executor(scheduling,planningActions);
+
+/** Plan on a private snapshot outside the SQLite write lock. Only the caller may commit it.
+ * @param {string} cwd @param {Run} run @param {string} actor @param {boolean} discover @param {PlanningOptions} [options] */
+export function advance(cwd,run,actor,discover,options={}) {
+	/** @type {Plan} */ const p={cwd,run,actor,owner:actor===run.owner,discover,options,history:[],remaining:0,reserved:0,limit:0,
+		admission:"closed",nodes:[],stoppedWaiting:false,squads:[]};
+	const facts=planningFacts(p);
+	let snapshot={value:scheduling.initial,context:null}, type="plan";
+	while (snapshot.value!=="done") {
+		const result=transition(scheduling,snapshot,{type},facts,true);
+		if (result.edge) options.trace?.push({from:snapshot.value,edge:result.edge});
+		snapshot=result.snapshot;
+		const [signal]=executePlanning(result,p);
+		type=signal ?? "plan";
+	}
 }

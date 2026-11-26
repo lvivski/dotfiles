@@ -159,15 +159,13 @@ export function issue(run, expected, callId) {
 		return true;
 	}
 	if (!canDispatch(run, e) || e.permissionHold || !unissued(e)) return false;
-	e.callId = text(callId, "original call ID");
-	if (e.kind==="scout") survey(e,"issue"); else journal(e,"issue");
-	delete e.error;
+	const event=/** @type {const} */ ({type:"issue",callId:text(callId,"original call ID")});
+	if (e.kind==="scout") survey(e,event); else journal(e,event);
 	return true;
 }
 
 /** @param {Run} run @param {import("./model.js").NativeCall} e @param {string} reason */
 function block(run, e, reason) {
-	e.error = reason;
 	if (e.kind === "artifact" || e.kind === "rerun" || e.delivery || !current(run, e))
 		return;
 	const n = assignee(run, e);
@@ -177,8 +175,7 @@ function block(run, e, reason) {
 	}
 	if (e.remedy) return; // Settle the two observations together, never block the untouched peer.
 	if (n) {
-		assign(n,"stop");
-		n.reason = reason;
+		assign(n,{type:"stop",reason});
 	} else if (e.kind === "goal")
 		run.blocker = reason;
 }
@@ -201,38 +198,33 @@ export function receive(run, e, raw, automatic) {
 	const value = record(raw);
 	if (automatic && value.resultType === "failure" && value.error === "This session management tool is disabled" &&
 		!value.structuredContent && !value.textResultForLlm && (e.tool === "create_session" || e.tool === "send_session_message")) {
-		journal(e,"prepare");
-		e.error = "Native route disabled; execute the exact prepared call in its owner session";
+		journal(e,{type:"prepare",error:"Native route disabled; execute the exact prepared call in its owner session"});
 		return;
 	}
 	if (["denied", "rejected"].includes(String(value.resultType))) {
-		journal(e,"deny");
+		journal(e,{type:"deny",error:"Native permission refused"});
 		block(run, e, "Native permission refused");
 		return;
 	}
 	if (value.resultType !== "success")
 		fail("native_unconfirmed", typeof value.error === "string" ? value.error : "No conclusive native receipt");
+	let nativeId;
 	if (e.tool === "create_session") {
 		const id = workerId(value, e.args.name);
 		if (e.claims?.some(c => c.actor !== id))
 			fail("ambiguous_receipt", "Original launch reply conflicts with a proven writer claim");
-		e.nativeId = id;
-		e.boundAt = Date.now();
-		if (current(run, e)) {
-			const entry = assignee(run, e);
-			if (entry)
-				entry.worker = e.nativeId;
-		}
+		nativeId=id;
 	}
 	else if (e.tool === "bash") {
 		const telemetry = record(value.toolTelemetry ?? {}), properties = record(telemetry.properties ?? {});
 		const exit = record(telemetry.metrics ?? {}).exit_code;
 		if (!e.runnerStarted && !e.runnerClaim && !e.receipt && properties.executionMode === "sync" && properties.shell_error_category === "command_nonzero_exit" &&
 			typeof exit === "number" && Number.isSafeInteger(exit) && exit > 0) {
-			journal(e,"confirm");
+			const error=`Check launcher exited ${exit} before the evaluator started; no check result.`+
+				(exit===127 ? " Check that Node.js is available on the shell PATH." : " Inspect the original shell diagnostic.");
+			journal(e,{type:"confirm",error});
 			e.launcherExit = exit;
-			block(run, e, `Check launcher exited ${exit} before the evaluator started; no check result.` +
-				(exit === 127 ? " Check that Node.js is available on the shell PATH." : " Inspect the original shell diagnostic."));
+			block(run,e,error);
 			return;
 		}
 		fail("missing_receipt", "The pinned runner has not finished");
@@ -242,11 +234,9 @@ export function receive(run, e, raw, automatic) {
 		&& !(value.structuredContent && ["accepted", "queued", "delivered"].includes(String(record(value.structuredContent).status))))
 		fail("missing_receipt", "Message queue admission was not confirmed");
 	if (e.kind === "writer" && e.pooled) {
-		e.nativeId = e.tool === "session.send" ? e.issuer : text(e.args.session_id,"pooled recipient");
-		e.boundAt = Date.now();
-		const n = assignee(run,e);
-		if (n && current(run,e)) n.worker = e.nativeId;
+		nativeId=e.tool==="session.send" ? e.issuer : text(e.args.session_id,"pooled recipient");
 	}
-	journal(e,"confirm");
-	delete e.error;
+	journal(e,{type:"confirm",...(nativeId!==undefined && {nativeId,boundAt:Date.now()})});
+	const n=assignee(run,e);
+	if(nativeId!==undefined && n && current(run,e))n.worker=nativeId;
 }

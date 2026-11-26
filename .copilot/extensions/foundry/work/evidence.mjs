@@ -14,9 +14,8 @@ export const currentEvaluation = (run,e) => !!e && e.evaluatorRevision === run.r
 const missingPrefix = "Writer reports missing input: ";
 /** @param {import("./model.js").Node} n @param {string} detail */
 export function stopForInput(n, detail) {
-	assign(n,"stop");
+	assign(n,{type:"stop",reason:missingPrefix+detail});
 	n.stop = { kind: "writer-missing-input", detail };
-	n.reason = missingPrefix + detail;
 }
 
 /** Return the unmodified original detail; older snapshots recorded only the display reason.

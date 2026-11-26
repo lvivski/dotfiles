@@ -293,9 +293,7 @@ export function checkpointWake(run, past, base, version) {
 
 /** @param {Review} r @param {string} reason */
 export function blockReview(r, reason) {
-	survey(r,"block");
-	r.error = reason;
-	delete r.permissionHold;
+	survey(r,{type:"block",error:reason});
 }
 
 /** @param {Run} run @param {Review} r */

@@ -1,6 +1,5 @@
 import { topology } from "./topology.mjs";
-import { assignment } from "./assignment.mjs";
-import { select } from "./chart.mjs";
+import { assign } from "./assignment.mjs";
 import { blockedComponent, checkReceipt, exhaustedCandidate, generationOf, inconclusiveRepair, missingInput, repairDetail } from "./evidence.mjs";
 import { outside } from "./product.mjs";
 import { assignmentDirectory, covers, digest, disjoint, fail, fields, roots, mixed, name, names, record, relative, sameScope, text } from "./values.mjs";
@@ -14,7 +13,11 @@ import { protectsGrant, transferredTo } from "./transfer.mjs";
 export const owns = (squad, directory) => roots(directory).every(dir => covers(squad.areas, dir));
 
 /** @param {import("./model.js").Grain} grain @param {string} [review] @param {number} [repairs] @returns {Node} */
-export const waiting = (grain, review, repairs = 0) => ({ grain, state:select(assignment,"idle","request").target, repairs, ...(review ? { review } : {}) });
+export function waiting(grain,review,repairs=0){
+	/** @type {Node} */ const n={grain,state:"idle",repairs,...(review && {review})};
+	assign(n,"request");
+	return n;
+}
 
 /** A published output still owns its directory until the combined tree is assessed.
  * @param {Node} n */

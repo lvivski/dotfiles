@@ -125,7 +125,8 @@ async function studio({machines,groups}) {
 			const wins=e===winning,row=html("li",undefined,wins?"wins":"");
 			row.append(html("span",(wins?"● ":"")+(e.when?.length?`[${e.when.join(" & ")}] `:"")+`→ ${e.target??"(stay)"}`),
 				html("p",e.description??e.reason??"No transition purpose supplied.","pane-help"));
-			const detail=[inspected?.includes(e)&&"Inspected branch",e.action&&`Action: ${e.action}`,e.admission&&`Admission: ${e.admission}`,e.description && e.reason].filter(Boolean).join(" · ");
+			const detail=[inspected?.includes(e)&&"Inspected branch",e.update&&`Context update: ${e.update}`,e.action&&`Queued effect: ${e.action}`,
+				e.fork&&`Parallel events: ${e.fork.join(", ")}`,e.admission&&`Admission: ${e.admission}`,e.description && e.reason].filter(Boolean).join(" · ");
 			if(detail)row.append(html("small",detail));
 			if(wins)row.setAttribute("aria-current","true");list.append(row);
 		}
@@ -144,13 +145,13 @@ async function studio({machines,groups}) {
 		const log=html("ol",undefined,"event-log");
 		sim.history.forEach((f,i)=>{
 			const row=html("li"),b=control(`${i}  ${f.label}`,"history-row",`step:${i}`,()=>seek(i));
-			b.append(html("small",f.changes.length ? f.changes.map(s=>`${s.region}: ${s.from} → ${s.to}${s.edge.action?` / ${s.edge.action}`:""}`).join("; ") : configuration(f.states)+(i&&!f.label.startsWith("Set ")?" · ignored":"")));
+			b.append(html("small",f.changes.length ? f.changes.map(s=>`${s.region}: ${s.from} → ${s.to}${s.edge.action?` / ${s.edge.action}`:""}${s.fork.length?` · fork: ${s.fork.join(" ∥ ")}`:""}`).join("; ") : configuration(f.states)+(i&&!f.label.startsWith("Set ")?" · ignored":"")));
 			if(i===sim.index())b.setAttribute("aria-current","step");row.append(b);log.append(row);
 		});pane.append(log);
 	}
 	function definitionPanel(){
 		pane.append(html("h2",region),html("p",machines[region].info?.description??"No machine purpose supplied.","purpose"),
-			html("p","Installed machine definition · read only","subcopy"));
+			html("p","Projected from the running definition. Simulation never writes the ledger or executes effects.","subcopy"));
 		const pre=html("pre",undefined,"definition"),source=JSON.stringify(machines[region],null,2);
 		for(const token of source.split(/("(?:[^"\\]|\\.)*"(?=:))/g)){
 			if(token.startsWith('"'))pre.append(html("span",token,"key"));else pre.append(token);

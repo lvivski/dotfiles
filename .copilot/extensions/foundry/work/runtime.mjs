@@ -31,6 +31,7 @@ import { checkAuthority, prepareRecheck } from "./recheck.mjs";
 import { prepareRerun } from "./rerun.mjs";
 import { prepareRepin } from "./repin.mjs";
 import { prepareResume, resumable } from "./resume.mjs";
+import { reconcileWake } from "./reconciliation.mjs";
 import { transferRequest } from "./transfer.mjs";
 import { stoppedCheck, successorRequest } from "./successor.mjs";
 import { reportReceiver } from "./reports.mjs";
@@ -49,7 +50,8 @@ import { FoundryError, assignmentDirectory, digest, fail, fields, mixed, name, r
 import { boardFacts, visible } from "./visibility.mjs";
 import { contention, persist, receiptClock, receiptWakes } from "./wakes.mjs";
 import { supervise, watchState, workflow } from "./supervision.mjs";
-import { select } from "./chart.mjs";
+import { transition } from "./machine.mjs";
+import { executor } from "./adapter.mjs";
 
 const readerFile = new URL("./reader.version", import.meta.url);
 const loadedReader = readFileSync(readerFile, "utf8");
@@ -117,7 +119,7 @@ const waitingForSlot = "Queued for workflow capacity; the issuing session will r
 /** @param {import("./model.js").Review} e */
 function requeueCapacity(e) {
 	if (e.state !== "uncertain" || !e.callId || e.workflowId || !capacityRejection.test(e.error ?? "")) return false;
-	survey(e,"requeue"); delete e.callId; e.error = waitingForSlot;
+	survey(e,{type:"requeue",error:waitingForSlot});
 	return true;
 }
 /** @param {string} directory @param {Host} host */
@@ -237,26 +239,26 @@ export function createRuntime(directory, host) {
 				return () => observeTarget(() => commitAt(cwd(),run.policy.target)).target === run.goal?.target;
 		});
 	}
-	/** Check once for a batch, outside the write lock. A stale result must not pause unrelated work.
+	/** Use the same permission gate for prepared calls and explicit checks, without waking planning.
 	 * @param {string} id @param {string} actor @param {Effect[]} batch */
 	async function dispatchBlocker(id, actor, batch) {
-		const block = await host.permissionBlocker();
-		if (!await executable()) return "The issuing session is no longer in an executable mode.";
-		if (!block && !batch.some(e => e.permissionHold)) return null;
+		/** @type {{batch:Effect[],reason:string|null}} */ const check={batch,reason:null};
+		await reconcile(id,actor,false,false,check);
+		return check.reason;
+	}
+	/** Commit a selected hold change only if the sampled issuer still has the same reservation.
+	 * @param {string} id @param {string} actor @param {Effect[]} batch @param {string|null} message @param {boolean} managed */
+	function recordBatchPolicy(id,actor,batch,message,managed) {
 		const expected = new Map(batch.map(e => [e.id, e.state]));
 		const result = db().mutateLocked(id, run => {
 			const live = reservations(run, actor);
 			if (!live.some(e => expected.get(e.id) === e.state)) return;
-			// Only the final notice can still be dispatched in a stopped goal. Never reopen it.
-			const stop = block?.scope === "run" && run.active;
-			const message = block ? `${block.message} Check session ${actor}.` +
-				" Its next turn rechecks the hold; Foundry also watches for permitted settings." : null;
 			const changed = message && live.some(e => e.permissionHold !== message);
 			for (const e of live) {
 				if (message) e.permissionHold = message;
 				else delete e.permissionHold;
 			}
-			if (stop && message) { pause(run,{reason:message,effect:live.find(e=>expected.has(e.id)) ?? live[0]}); return { state: "paused", message }; }
+			if (managed && run.active && message) { pause(run,{reason:message,effect:live.find(e=>expected.has(e.id)) ?? live[0]}); return { state: "paused", message }; }
 			return { state: changed ? "held" : undefined, message };
 		});
 		if (!result) return "The reservation changed or the run is already paused. Check foundry_status.";
@@ -274,8 +276,7 @@ export function createRuntime(directory, host) {
 			try {
 				receive(run, e, result, automatic);
 			} catch (error) {
-				journal(e,"unconfirmed");
-				e.error = String(error);
+				journal(e,{type:"unconfirmed",error:String(error)});
 			}
 			return !awaitingReply(e);
 		}));
@@ -332,119 +333,177 @@ export function createRuntime(directory, host) {
 		const wake = { discover, recover, work }; wakes.set(key, wake);
 		return work;
 	}
-	/** @param {string} id @param {string} actor @param {boolean} discover @param {boolean} recoverCalls */
-	async function reconcile(id, actor, discover, recoverCalls) {
-		if (!await executable()){
-			supervisor.invalidate(id,actor);
-			return;
-		}
-		const before=read(id), held=before.policyHold;
-		supervisor.observe(id,actor,gate(before,actor));
-		if (held?.issuer===actor && !expired(before) && !await host.permissionBlocker() && await executable())
-			reactivate(id,actor,held.token);
+	/** @param {string} id @param {string} actor @param {boolean} discover @param {boolean} recoverCalls
+	 * @param {{batch:Effect[],reason:string|null}} [check] */
+	async function reconcile(id, actor, discover, recoverCalls,check) {
+		/** @typedef {import("./reconciliation.mjs").Signal} Signal */
+		/** @type {Run["policyHold"]} */ let held;
+		/** @type {Map<string,string>} */ let workflows;
 		/** @type {import("./supervision.mjs").Gate|undefined} */ let deferredGate;
-		if (before.active && !expired(before) && host.resumeScout && host.scoutSnapshot) {
-			const tickets=new Map(reviews(before).flatMap(e=>e.issuer===actor && needsContinuation(e) && e.callId && e.workflowId ?
-				[[e.callId,e.workflowId]] : []));
-			for (const [ticket,native] of tickets) {
-				const held=await continueScouts(id,actor,ticket,native,true);
-				if (held) deferredGate=held;
-			}
-		}
-		const recover = host.recover, lookups = [];
-		if (recoverCalls) for (const e of read(id).effects) {
-			// A same-session SDK notice has no native tool history. Never replay it.
-			const callId = e.callId;
-			if (!callId || e.issuer !== actor || e.tool === "session.send" || !awaitingReply(e)) continue;
-			if (e.tool === "workflow") {
-				if (e.workflowId) observeWorkflow(id,callId,actor,e.workflowId);
-				else if (e.state === "issued" && !scoutCalls.has(callId)) unconfirmedScouts(id, actor, callId, "No workflow ID was recorded before reconnect.");
-				continue;
-			}
-			if (!recover) continue;
-			const call = nativeCalls.get(callId);
-			if (call?.inFlight || call?.recoveredOn === turnNumber) continue;
-			lookups.push(resolveCall(id, e, callId, () => recover(e)).then(terminal => terminal ? refill() : undefined));
-		}
-		await Promise.all([dispatch(), ...lookups]);
-		async function refill() {
-			await drive(id, actor, discover, false);
-		}
-		async function dispatch() {
-			if (closed) return;
-			const reply = [...submitting].findLast(s => s.run === id && s.actor === actor);
-			let unavailable = false;
-			const plan = (renew = false) => change(id, run => {
-				const observed = run.active && !expired(run) ? observeTarget(() => commitAt(cwd(),run.policy.target)) : undefined;
-				unavailable = !!observed && observed.target===undefined;
-				if (unavailable) return;
-				if (run.active && !expired(run)) for (const e of reviews(run)) {
-					if (e.issuer !== actor) continue;
-					requeueCapacity(e);
-					if (e.state === "ready" && e.error === waitingForSlot && !currentReview(cwd(), run, e, checkpointSurvey(run,e) ? undefined : observed?.target))
-						blockReview(e, "Superseded while waiting for workflow capacity.");
-				}
-				// Don't reserve newly available work on behalf of an issuer already on hold.
-				if (!reservations(run, actor).some(e => e.permissionHold))
-					advance(cwd(), run, actor, discover, { submitToken: reply?.token, target:observed?.target, renew });
-			});
-			let run = plan();
-			if (!unavailable && actor===run.owner && run.active && !expired(run) && reviews(run).some(r=>r.renewal?.state==="needed")) {
-				if (!await host.permissionBlocker() && await executable()) run=plan(true);
-				else deferredGate="issuer-permission";
-			}
-			if (closed) return;
-			receipts.observe(run, actor);
-			supervisor.observe(id,actor,gate(run,actor,unavailable,deferredGate));
-			if (unavailable) return;
-			if (actor === run.owner && run.active && !expired(run) && host.ask && !asking.has(id) && questions(run).some(r => !r.decision)) {
+		/** @type {string|undefined} */ let submitToken;
+		/** @type {Run} */ let planned;
+		let missingTarget=false;
+		/** @type {Effect[]} */ let batch=check?.batch ?? [];
+		/** @type {string|null} */ let policyMessage=null;
+		let pooled=false;
+		/** @type {Effect[]} */ let ready;
+		/** @type {import("./model.js").Review[]} */ let scouts;
+		/** @type {import("./model.js").NativeCall[]} */ let writers;
+		/** @type {Effect[]} */ let calls;
+		/** @type {Awaited<ReturnType<typeof chooseWriters>>} */ let match;
+		const refill=()=>drive(id,actor,discover,false);
+
+		return reconcileWake({
+			"retain-wake":()=>supervisor.invalidate(id,actor),
+			"inspect-issuer":next=>{
+				const run=read(id);
+				supervisor.observe(id,actor,gate(run,actor));
+				held=run.policyHold;
+				workflows=new Map(reviews(run).flatMap(e=>e.issuer===actor && needsContinuation(e) && e.callId && e.workflowId ?
+					[[e.callId,e.workflowId]] : []));
+				return next("inspected",{ownHold:held?.issuer===actor,active:run.active,expired:expired(run),
+					continuations:!!(workflows.size && host.resumeScout && host.scoutSnapshot)});
+			},
+			"sample-policy":async next=>next("policy",{permitted:!await host.permissionBlocker() && await executable(),closed}),
+			"clear-hold":next=>{
+				reactivate(id,actor,text(held?.token,"observed hold token"));
+				return next("recovered");
+			},
+			"continue-workflows":async next=>{
+				for (const [ticket,native] of workflows)
+					deferredGate=await continueScouts(id,actor,ticket,native,true) || deferredGate;
+				return next("recovered");
+			},
+			"read-originals":readOriginals,
+			plan:next=>{
+				submitToken=[...submitting].findLast(s=>s.run===id && s.actor===actor)?.token;
+				return plan(next,false);
+			},
+			renew:next=>plan(next,true),
+			"watch-plan":watchPlan,
+			"watch-held-renewal":next=>{deferredGate="issuer-permission";return watchPlan(next);},
+			"offer-question":next=>{
 				asking.add(id);
 				track(presentQuestions(cwd(), () => closed ? undefined : db(), id, actor, host, executable, refill, recordReply).then(held=>{
 					if (!closed && held) supervisor.observe(id,actor,gate(read(id),actor,false,held));
 				}).finally(() => asking.delete(id)));
-			}
-			const batch = reservations(run, actor).filter(e => e.state === "ready" || e.permissionHold);
-			if (!batch.length) return;
-			if (await dispatchBlocker(id, actor, batch) !== null) return;
-			const ready = batch.filter(e => e.state === "ready");
-			if (!ready.length) return refill(); // Prepared calls are visible again; this issuer can now plan.
-			const scouts = capacityWakes.has(id) ? [] : ready.filter(e => e.tool === "workflow");
-			// SDK agent labels aren't unique identities. Give each frozen-reader job
-			// its own dispatch so its native direct agent cannot belong to a peer job.
-			const readers = scouts.filter(e => referenceRepo(e.wake?.key) && run.policy.squads.some(s => s.id === e.squad && investigation(e, s)));
-			const ordinary = scouts.filter(e => !readers.includes(e));
-			for (const jobs of [...(ordinary.length ? [ordinary] : []), ...readers.map(e => [e])]) {
-				const ticket = randomUUID();
-				if (db().mutateLocked(id, r => jobs.filter(e => issue(r, e, ticket)).length))
-					watchScouts(id, ticket, actor, () => host.scout?.(id, ticket, actor) ?? Promise.reject(new Error("Workflow scouting is unavailable")));
-			}
-			// A sibling's native permission prompt must not hold up work unlocked by this reply.
-			const jobs = ready.flatMap(e => host.idleWriter && e.kind === "writer" && e.tool === "create_session" ? [e] : []);
-			await Promise.all([dispatchWriters(), ...ready.filter(e => e.tool !== "workflow" &&
-				!(host.idleWriter && e.tool === "create_session")).map(send)]);
+				return offerBatch(next);
+			},
+			"offer-batch":offerBatch,
+			"sample-batch":sampleBatch,
+			"sample-writer-batch":next=>{pooled=true;batch=writers;return sampleBatch(next);},
+			"decline-mode":()=>{if(check)check.reason="The issuing session is no longer in an executable mode.";},
+			"hold-run":next=>recordPolicy(next,policyMessage,true),
+			"hold-issuer":next=>recordPolicy(next,policyMessage,false),
+			"release-batch":next=>recordPolicy(next,null,false),
+			enable:next=>next("authorized",{checkOnly:!!check,pooled,ready:!!ready?.length}),
+			"group-batch":()=>{
+				scouts=ready.filter(e=>e.tool==="workflow");
+				writers=ready.flatMap(e=>e.kind==="writer" && e.tool==="create_session" ? [e] : []);
+				calls=ready.filter(e=>e.tool!=="workflow" && e.tool!=="create_session");
+			},
+			"launch-scouts":()=>{
+				// A native agent label is not an identity: frozen-reference readers cannot share a ticket.
+				const readers=scouts.filter(e=>referenceRepo(e.wake?.key) && planned.policy.squads.some(s=>s.id===e.squad && investigation(e,s)));
+				const ordinary=scouts.filter(e=>!readers.includes(e));
+				for (const jobs of [...(ordinary.length ? [ordinary] : []),...readers.map(e=>[e])]) {
+					const ticket=randomUUID();
+					if (db().mutateLocked(id,r=>jobs.filter(e=>issue(r,e,ticket)).length))
+						watchScouts(id,ticket,actor,()=>host.scout?.(id,ticket,actor) ?? Promise.reject(new Error("Workflow scouting is unavailable")));
+				}
+			},
+			"match-writers":async next=>{
+				match=await chooseWriters(cwd(),planned,writers,host.idleWriter ?? fail("unavailable","Missing writer lookup"),host.log);
+				return next("matched",{closed});
+			},
+			"send-matched":next=>{
+				const live=match ? db().planAndSwap(id,match) : read(id), ids=new Set(writers.map(e=>e.id));
+				return send(reservations(live,actor).filter(e=>ids.has(e.id) && e.state==="ready" && !e.permissionHold),next);
+			},
+			"send-writers":next=>send(writers,next),
+			"send-calls":next=>send(calls,next),
+			"wake-checkpoint":()=>track(drive(id,actor,false,false)),
+			refill,
+		},check ? {type:"verify-batch"} : {type:"wake",executable:await executable()},{
+			history:()=>({closed,recoverCalls}),dispatch:()=>({closed}),
+			scouts:()=>({jobs:!!scouts.length,capacityWait:capacityWakes.has(id)}),writers:()=>({jobs:!!writers.length,pool:!!host.idleWriter}),
+			calls:()=>({jobs:!!calls.length}),
+		});
 
-			async function dispatchWriters() {
-				if (!jobs.length || !host.idleWriter) return;
-				const match = await chooseWriters(cwd(), run, jobs, host.idleWriter, host.log);
-				if (closed || await dispatchBlocker(id, actor, jobs) !== null) return;
-				const live = match ? db().planAndSwap(id, match) : read(id), ids = new Set(jobs.map(e => e.id));
-				await Promise.all(reservations(live, actor).filter(e => ids.has(e.id) && e.state === "ready" && !e.permissionHold).map(send));
+		/** @param {Signal} next */
+		async function sampleBatch(next){
+			const block=await host.permissionBlocker(), eligible=await executable();
+			policyMessage=block ? `${block.message} Check session ${actor}. Its next turn rechecks the hold; Foundry also watches for permitted settings.` : null;
+			return next("sampled",{executable:eligible,managed:block?.scope==="run",blocked:!!block,hadHolds:batch.some(e=>e.permissionHold)});
+		}
+		/** @param {Signal} next @param {string|null} message @param {boolean} managed */
+		function recordPolicy(next,message,managed){
+			const reason=recordBatchPolicy(id,actor,batch,message,managed);
+			if(check)check.reason=reason;
+			return next("recorded",{permitted:reason===null});
+		}
+		/** @param {Signal} next */
+		async function readOriginals(next) {
+			const recover=host.recover, lookups=[];
+			for (const e of read(id).effects) {
+				// A same-session SDK notice has no native tool history. Never replay it.
+				const callId=e.callId;
+				if (!callId || e.issuer!==actor || e.tool==="session.send" || !awaitingReply(e)) continue;
+				if (e.tool==="workflow") {
+					if (e.workflowId) observeWorkflow(id,callId,actor,e.workflowId);
+					else if (e.state==="issued" && !scoutCalls.has(callId)) unconfirmedScouts(id,actor,callId,"No workflow ID was recorded before reconnect.");
+					continue;
+				}
+				const call=nativeCalls.get(callId);
+				if (!recover || call?.inFlight || call?.recoveredOn===turnNumber) continue;
+				lookups.push(resolveCall(id,e,callId,()=>recover(e)).then(terminal=>next("completion",{terminal:!!terminal})));
 			}
-			/** @param {Effect} e */
-			async function send(e) {
-				const callId = randomUUID();
-				if (!closed && claim(id, e, callId)) {
-					if (e.tool === "bash") receipts.observe(read(id), actor);
-					const completion = resolveCall(id, e, callId, async () => e.tool === "session.send"
-						? { resultType: "success", messageId: await host.notify(text(e.args.message, "session notice")) }
-						: host.execute(e.tool, e.args, callId), true);
-					// Issuing the goal opens checkpoint discovery; don't wait for its native reply to schedule it.
-					if (e.kind === "goal" && run.products.at(-1)?.commit === e.commit && run.scheduling?.checkpointReviews !== false)
-						track(drive(id, actor, false, false));
-					await completion;
-				} else if (e.tool==="bash" && (e.recheck || e.pair || e.isolation)) return; // A later eligible issuer turn can recheck the approval.
-				await refill();
-			}
+			await Promise.all(lookups);
+			return next("drained");
+		}
+		/** @param {Signal} next @param {boolean} renew */
+		function plan(next,renew) {
+			planned=change(id,run=>{
+				const observed=run.active && !expired(run) ? observeTarget(()=>commitAt(cwd(),run.policy.target)) : undefined;
+				missingTarget=!!observed && observed.target===undefined;
+				if (missingTarget) return;
+				if (run.active && !expired(run)) for (const e of reviews(run)) {
+					if (e.issuer!==actor) continue;
+					requeueCapacity(e);
+					if (e.state==="ready" && e.error===waitingForSlot && !currentReview(cwd(),run,e,checkpointSurvey(run,e) ? undefined : observed?.target))
+						blockReview(e,"Superseded while waiting for workflow capacity.");
+				}
+				if (!reservations(run,actor).some(e=>e.permissionHold))
+					advance(cwd(),run,actor,discover,{submitToken,target:observed?.target,renew});
+			});
+			return next("planned",{closed,missingTarget,owner:actor===planned.owner,active:planned.active,expired:expired(planned),
+				renewalDue:reviews(planned).some(r=>r.renewal?.state==="needed")});
+		}
+		/** @param {Signal} next */
+		function watchPlan(next) {
+			receipts.observe(planned,actor);
+			supervisor.observe(id,actor,gate(planned,actor,missingTarget,deferredGate));
+			batch=reservations(planned,actor).filter(e=>e.state==="ready" || e.permissionHold);
+			ready=batch.filter(e=>e.state==="ready");
+			return next("work",{missingTarget,active:planned.active,expired:expired(planned),handoff:batch.some(e=>e.kind==="handoff"),
+				owner:actor===planned.owner,question:!!host.ask && !asking.has(id) && questions(planned).some(r=>!r.decision)});
+		}
+		/** @param {Signal} next */
+		function offerBatch(next) {return next("batch",{hasBatch:!!batch.length});}
+		/** @param {Effect[]} jobs @param {Signal} next */
+		async function send(jobs,next) {
+			await Promise.all(jobs.map(async e=>{
+				const callId=randomUUID(), claimed=!closed && claim(id,e,callId);
+				if (claimed) {
+					if (e.tool==="bash") receipts.observe(read(id),actor);
+					const completion=resolveCall(id,e,callId,async()=>e.tool==="session.send"
+						? {resultType:"success",messageId:await host.notify(text(e.args.message,"session notice"))}
+						: host.execute(e.tool,e.args,callId),true);
+					await Promise.all([completion,next("issued",{checkpointGoal:e.kind==="goal" && planned.products.at(-1)?.commit===e.commit,
+						checkpointReviews:planned.scheduling?.checkpointReviews!==false})]);
+				}
+				return next("attempt",{claimed,pinnedCheck:e.tool==="bash" && !!(e.recheck || e.pair || e.isolation)});
+			}));
 		}
 	}
 	/** @param {string} id @param {string} actor @param {string} ticket @param {string} message
@@ -453,8 +512,7 @@ export function createRuntime(directory, host) {
 		const queued = db().mutateLocked(id, r => {
 			let deferred = false;
 			for (const e of batchOf(r, ticket, actor).filter(pending)) {
-				survey(e,"unconfirmed");
-				e.error = `Discovery unconfirmed: ${message}. ${e.workflowId ? "Recheck the original workflow; no replacement started." : "Resume to retry unbound discovery."}`;
+				survey(e,{type:"unconfirmed",error:`Discovery unconfirmed: ${message}. ${e.workflowId ? "Recheck the original workflow; no replacement started." : "Resume to retry unbound discovery."}`});
 				if (requeueCapacity(e)) deferred = true;
 			}
 			return deferred && r.active && !expired(r);
@@ -481,14 +539,11 @@ export function createRuntime(directory, host) {
 	function settleScout(run, e, result) {
 		if (e.workflowId && e.workflowId !== result.runId) fail("wrong_workflow", "Discovery result belongs to another workflow");
 		if (e.workflowId && resumable(result)) {
-			survey(e,"suspend");
 			const disconnected=result.status==="halted" && result.failure?.type==="workflow_provider_disconnected";
-			if (disconnected) e.providerRecovery ??= "needed";
-			else if (e.providerRecovery==="needed") delete e.providerRecovery;
-			const action = disconnected && e.providerRecovery==="needed" ? "The issuer will verify the provider and continue this workflow once." :
+			const action = disconnected && e.providerRecovery!=="claimed" ? "The issuer will verify the provider and continue this workflow once." :
 				e.issuer === run.owner ? `Use /foundry resume ${run.policy.source} in the owner session.` :
 				`On explicit request resume the original workflow ID in its issuing session ${e.issuer}, without changing limits.`;
-			e.error = `Discovery ${result.status}: workflow ${e.workflowId}. ${action}`;
+			survey(e,{type:"suspend",disconnected,error:`Discovery ${result.status}: workflow ${e.workflowId}. ${action}`});
 			retireSuperseded(run, e);
 		} else blockReview(e, `Discovery ${result.status}: ${result.failure?.type ?? result.error ?? result.reason ?? "no report was received"}`);
 	}
@@ -592,16 +647,14 @@ export function createRuntime(directory, host) {
 			}
 			for (const e of pending) {
 				if (held) {
-					survey(e,"requeue"); delete e.callId;
-					if (block) e.permissionHold = `${block.message} Check session ${actor}.`;
+					survey(e,{type:"requeue",...(block && {permissionHold:`${block.message} Check session ${actor}.`})});
 				} else {
 					if (!e.workflowId && !e.retryOf && r.goal?.commit === e.base) {
 						const squad = r.policy.squads.find(s => s.id === e.squad);
 						if (squad && !investigation(e, squad)) attachNotes(r, e);
 					}
-					e.workflowId = workflowId; survey(e,"bind");
+					survey(e,{type:"bind",workflowId});
 				}
-				delete e.error;
 			}
 			return guard;
 		});
@@ -657,8 +710,7 @@ export function createRuntime(directory, host) {
 						fail("dispatch_held", "Resolve the outstanding assignment call first");
 					db().verifySigned(id,failed);
 					node.stop = {kind:"writer-relinquished",detail:reason};
-					node.reason = `Writer relinquished repair after component ${check} (exit ${failed.receipt?.exit}): ${reason}`;
-					assign(node,"stop");
+					assign(node,{type:"stop",reason:`Writer relinquished repair after component ${check} (exit ${failed.receipt?.exit}): ${reason}`});
 					return;
 				}
 				const receipt = inconclusiveRepair(node, live.effects.find(e => e.id === node.check));
@@ -666,8 +718,7 @@ export function createRuntime(directory, host) {
 				if (receipt) {
 					node.stop = {kind:"writer-cannot-repair", detail:reason};
 					node.candidate = receipt.commit;
-					node.reason = `Writer cannot repair component ${node.check} under this assignment: ${reason}`;
-					assign(node,"stop");
+					assign(node,{type:"stop",reason:`Writer cannot repair component ${node.check} under this assignment: ${reason}`});
 				} else stopForInput(node, reason);
 			});
 			return; // No directory capture, new component reservation, or inferred permission.
@@ -724,6 +775,12 @@ export function createRuntime(directory, host) {
 		if (!await executable() || cwd() !== origin)
 			fail("context_changed", "Activation context changed during the permission check");
 	}
+	/** @typedef {{run:Run,pending:import("./model.js").Review[],result:ScoutEnvelope}} Verification */
+	const verifyWorkflow=executor(workflow,{
+		continue(/** @type {Verification} */ c){for(const e of c.pending)e.providerRecovery="claimed";return true;},
+		"record-status"(/** @type {Verification} */ c){for(const e of c.pending)settleScout(c.run,e,c.result);return false;},
+		wait(){return false;},
+	});
 	/** @param {string} id @param {string} actor @param {string} ticket @param {string} workflowId @param {boolean} [automatic] */
 	async function continueScouts(id, actor, ticket, workflowId,automatic=false) {
 		const lookup = host.scoutSnapshot, resume = host.resumeScout;
@@ -754,19 +811,14 @@ export function createRuntime(directory, host) {
 			if (automatic) {
 				if (!pending.length || !pending.every(e=>e.state==="suspended" && e.providerRecovery==="needed")) return;
 				const target=observeTarget(()=>commitAt(origin,run.policy.target)).target;
-				const action=select(workflow,"suspended","verified",{unused:!batch.some(e=>e.providerRecovery==="claimed"),
+				const resolution=transition(workflow,{value:"suspended",context:null},{type:"verified"},{unused:!batch.some(e=>e.providerRecovery==="claimed"),
 					disconnected:result.status==="halted" && result.failure?.type==="workflow_provider_disconnected",
 					current:!!target && !run.independent && !activeDelivery(run) && !run.blocker && !run.conflict &&
 						!run.effects.some(e=>e.permissionHold) && !contractConflict(origin,run.policy,target) &&
-						pending.every(e=>sameReviewInputs(origin,run,e,target))}).action;
-				if (action!=="continue") {
-					if (result.status!=="halted" || result.failure?.type!=="workflow_provider_disconnected")
-						for (const e of pending) settleScout(run,e,result);
-					return;
-				}
-				for (const e of pending) e.providerRecovery="claimed";
-				shouldResume=true;
-				return ()=>observeTarget(()=>commitAt(origin,run.policy.target)).target===target;
+						pending.every(e=>sameReviewInputs(origin,run,e,target))},true);
+				[shouldResume]=verifyWorkflow(resolution,{run,pending,result});
+				if(shouldResume)return ()=>observeTarget(()=>commitAt(origin,run.policy.target)).target===target;
+				return;
 			}
 			for (const e of pending) settleScout(run, e, result);
 			for (const e of pending) if (e.providerRecovery==="needed") e.providerRecovery="claimed";
@@ -1189,8 +1241,8 @@ export function createRuntime(directory, host) {
 				}
 				if (!request || e.claims?.length !== 1 || digest(e.claims[0]) !== digest(child))
 					fail("ambiguous_receipt", "Conflicting writer claims; no binding");
-				e.nativeId = child.actor; e.boundAt = Date.now(); e.claimedRequest = request;
-				journal(e,"confirm"); delete e.error; r.nodes[grain].worker = child.actor;
+				journal(e,{type:"confirm",nativeId:child.actor,boundAt:Date.now()});
+				e.claimedRequest=request;r.nodes[grain].worker=child.actor;
 			});
 			if (conflict) fail("ambiguous_receipt", "Conflicting writer claims; no binding");
 			return { state: issuer ? "bound" : "awaiting_issuer", run: id, grain };

@@ -9,7 +9,7 @@ import { createRuntime } from "./work/runtime.mjs";
 import { scoutAgent, scoutDefinition } from "./work/scouts.mjs";
 import { buildTools, fromHelper, primaryOnly } from "./work/tools.mjs";
 
-/** @type {import("@github/copilot-sdk").CopilotSession} */
+/** @type {import("@github/copilot-sdk/extension").JoinedSession} */
 let session;
 const executionMode = () => session.rpc.mode.get();
 const permissions = permissionCheck(() => session.rpc.managedSettings.get(), () => session.rpc.permissions.getMode());
@@ -21,7 +21,7 @@ const confirm = async message => (await session.ui.elicitation({ message, reques
 async function runningHelpers(workflows) {
 	const tasks = (await session.rpc.tasks.list()).tasks.filter(t => t.type === "agent" && t.status === "running");
 	if (!tasks.length || !workflows.length) return tasks.map(t => t.id);
-	const discoveries = new Map();
+	/** @type {Map<string,string>} */ const discoveries = new Map();
 	for (const id of workflows) {
 		const detail = await session.workflow.getRunDetail(id);
 		if (detail.runId === id && detail.workflowName === "foundry-scout")
@@ -70,11 +70,11 @@ const runtime = createRuntime(process.cwd(), {
 	log: message => session.log(message, { level: "warning" }),
 });
 session = await joinSession({
-	customAgents: [scoutAgent, researchAgent],
+	agents: { definitions: [scoutAgent, researchAgent] },
 	workflows: [defineWorkflow(scoutDefinition(() => runtime))],
-	tools: buildTools(runtime, () => session.sessionId, permissions.snapshot),
-	canvases: [foundryBoard(runtime.readBoard, runtime.defaultMapRun, runtime.readSpecification)],
-	hooks: {
+	tools: { definitions: buildTools(runtime, () => session.sessionId, permissions.snapshot) },
+	canvases: { definitions: [foundryBoard(runtime.readBoard, runtime.defaultMapRun, runtime.readSpecification)] },
+	hooks: { handlers: {
 		onSessionStart(input, ctx) {
 			if (!fromHelper(input, ctx.sessionId)) runtime.sessionStart(ctx.sessionId, input.workingDirectory, input.initialPrompt);
 		},
@@ -99,7 +99,7 @@ session = await joinSession({
 				runtime.post(input.toolCallId, input.toolResult, ctx.sessionId);
 		},
 		onSessionEnd(input, ctx) { if (!fromHelper(input, ctx.sessionId)) runtime.close(); },
-	},
+	} },
 });
 session.on("assistant.turn_start", event => {
 	if (!event.agentId && !event.data.parentToolCallId)

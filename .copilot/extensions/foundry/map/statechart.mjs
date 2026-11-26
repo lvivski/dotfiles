@@ -1,7 +1,7 @@
 import {transitions} from "./routes.mjs";
 
-/** @typedef {import("../work/chart.mjs").Edge & {reason?:string,admission?:string}} Rule */
-/** @typedef {import("../work/chart.mjs").Machine<Record<string,readonly Rule[]>>} Model */
+/** @typedef {import("../work/machine.mjs").Edge & {reason?:string,admission?:string}} Rule */
+/** @typedef {import("../work/machine.mjs").Machine<Record<string,readonly Rule[]>>} Model */
 /** @typedef {{x:number,y:number}} Point */
 /** @typedef {{source:string,signal:string,target?:string,rules:number[]}} Transition */
 /** @param {Model} model */

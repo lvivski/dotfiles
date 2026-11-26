@@ -177,8 +177,7 @@ function prepareTarget(cwd,run,actor,args,signed) {
 			live.policy.contractTarget=revision;
 			for (const e of retained) {
 				const n=live.nodes[text(e.grain,"retained grain")];
-				assign(n,"stop");
-				n.reason=`Unavailable component ${e.id} (exit 2); target adoption superseded the unissued repair. Candidate ${e.commit} retained.`;
+				assign(n,{type:"stop",reason:`Unavailable component ${e.id} (exit 2); target adoption superseded the unissued repair. Candidate ${e.commit} retained.`});
 			}
 			delete live.conflict;
 			reserveProduct(live,actor,cwd,revision,assembly,outputs);

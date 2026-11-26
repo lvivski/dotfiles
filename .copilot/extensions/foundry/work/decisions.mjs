@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { decide } from "./dialog.mjs";
+import { decide, observeReply, presentDialog } from "./dialog.mjs";
 import { currentReview } from "./graph.mjs";
 import { admitted, expired } from "./native.mjs";
 import { commitAt } from "./product.mjs";
@@ -18,16 +18,19 @@ const stale = () => fail("stale_question", "This charter question or presentatio
 export async function presentQuestions(cwd, liveStore, id, owner, host, executable, wake, recordReply, recover) {
 	do {
 		const block = await host.permissionBlocker();
-		if (!host.ask || block || !await executable()) {
+		const ask=host.ask;
+		if (!ask || block || !await executable()) {
 			if (recover) fail("question_unavailable", block?.message ?? "The owner session cannot present a question now.");
 			return host.ask ? "issuer-permission" : undefined;
 		}
 		const store = liveStore();
 		if (!store) return;
 		let reviewId = "";
+		/** @type {ReturnType<typeof decide>|undefined} */ let claim;
 		const next = recover && randomUUID();
 		const claimed = store.planAndSwap(id, run => {
 			reviewId = "";
+			claim=undefined;
 			if (recover) {
 				if (run.owner !== owner) fail("foreign_run", "Only the run owner can recover its question");
 				admitted(run);
@@ -38,16 +41,18 @@ export async function presentQuestions(cwd, liveStore, id, owner, host, executab
 				: !r.decision) && currentReview(cwd, run, r, target));
 			if (recover && !q) stale();
 			if (!q?.observation) return;
-			decide(q,{ status: "presenting", ...(next ? { presentation: next } : {}) },!!recover);
+			claim=decide(q,{ status: "presenting", ...(next ? { presentation: next } : {}) },!!recover,recover?.presentation);
 			reviewId = q.id;
 			if (target) return () => commitAt(cwd, run.policy.target) === target;
 		});
 		const q = reviews(claimed).find(r => r.id === reviewId);
-		if (!q?.observation) return;
+		if (!q?.observation || !claim) return;
 		const label = `${q.squad} at ${q.base}: ${q.observation.reason}\nEvidence: ${q.observation.evidence.join(", ")}`;
-		/** @type {NonNullable<import("./model.js").Review["decision"]>} */ let decision;
+		/** @type {import("./dialog.mjs").Reply} */ let decision;
+		// Normalize synchronous host failures without misclassifying an invalid effect claim as a delivery failure.
+		const asking=presentDialog(claim,async()=>ask(`Foundry ${id}: ${label}\nClarify within the committed brief for one fresh review. This cannot change the contract or approve permissions.`));
 		try {
-			const answer = await host.ask(`Foundry ${id}: ${label}\nClarify within the committed brief for one fresh review. This cannot change the contract or approve permissions.`);
+			const answer = await asking;
 			decision = answer?.trim() ? { status: "answered", answer } : { status: "dismissed" };
 		} catch {
 			decision = { status: "unavailable", presentation: next ?? reviewId,
@@ -59,14 +64,14 @@ export async function presentQuestions(cwd, liveStore, id, owner, host, executab
 		const recorded=await recordReply(()=>liveStore()?.planAndSwap(id, run => {
 			ready = false;
 			const q = reviews(run).find(r => r.id === reviewId);
-			if (!q || presentation(q) !== (next ?? reviewId)) {
+			const wasOpen=q && (!recover || questions(run).includes(q));
+			if (!q || !observeReply(q,next??reviewId,decision).edge) {
 				if (recover) stale();
 				return;
 			}
 			const target = recover && commitAt(cwd, run.policy.target);
 			const current = (recover || decision.status === "answered") && !expired(run) && currentReview(cwd, run, q, target);
-			if (recover && (!current || !questions(run).includes(q))) stale();
-			decide(q,decision);
+			if (recover && (!current || !wasOpen)) stale();
 			if (decision.status === "answered" && current) {
 				if (run.goal) delete run.goal.stall;
 				ready = run.active;

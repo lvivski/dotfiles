@@ -43,7 +43,7 @@ export function prepareResume(prior, canInspectWorkflows) {
 				if (e.kind === "scout") {
 					const ticket = unboundTicket(e);
 					if (!ticket || tickets.get(e.id) !== ticket) continue;
-					e.issuer = run.owner; survey(e,"requeue"); delete e.callId; delete e.error;
+					e.issuer = run.owner; survey(e,"requeue");
 					retireSuperseded(run, e);
 				} else if (writers.get(e.id) === e.issuer && transferableWriter(run, e)) e.issuer = run.owner;
 			}

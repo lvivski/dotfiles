@@ -6,7 +6,7 @@ import { catalog } from "../work/catalog.mjs";
 const assets = new Map([
 	["", ["index.html", "text/html; charset=utf-8"]], ["style.css", ["style.css", "text/css; charset=utf-8"]],
 	["machine.html",["machine.html","text/html; charset=utf-8"]], ["map/machine.mjs",["machine.mjs","text/javascript; charset=utf-8"]],
-	["work/chart.mjs",["../work/chart.mjs","text/javascript; charset=utf-8"]],
+	["work/machine.mjs",["../work/machine.mjs","text/javascript; charset=utf-8"]],
 	["studio.css",["studio.css","text/css; charset=utf-8"]],
 	["run.css",["run.css","text/css; charset=utf-8"]],
 ]);

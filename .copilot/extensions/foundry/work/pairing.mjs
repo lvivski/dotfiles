@@ -97,7 +97,7 @@ export function preparePair(cwd,run,actor,a,verify) {
 			const effect=live.effects.at(-1);
 			if (effect?.kind!=="component") fail("invalid_pair","Missing paired component reservation");
 			effect.pair=before.pair;
-			assign(n,"recheck");delete n.reason;
+			assign(n,"recheck");
 			if (live.goal) delete live.goal.stall;
 			return ()=>commitAt(cwd,live.policy.target)===before.pair.target;
 		}

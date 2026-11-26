@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { mapSnapshot } from "./map/model.mjs";
 import { factory, loadEntry, put } from "./test/fixture.mjs";
-import { compose, step } from "./work/chart.mjs";
-import { catalog } from "./work/catalog.mjs";
+import { compose, step } from "./work/machine.mjs";
+import { catalog, definitions as runtimeModels } from "./work/catalog.mjs";
 
 /** @param {string} url */
 async function panelModules(url){
@@ -24,11 +24,14 @@ test("the state explorer serves the executable models and browser selector witho
 	const ctx={sessionId:"viewer",extensionId:"user:foundry",canvasId:"foundry-board",instanceId:"logic",input:{machine:true}};
 	const {url}=await canvas.open(ctx); assert.ok(url); t.after(()=>canvas.onClose?.(ctx));
 	const {html,modules}=await panelModules(url);assert.match(html,/State explorer/);
-	assert.ok(modules.has(`${url}work/chart.mjs`),"the browser uses the real interpreter");
+	assert.ok(modules.has(`${url}work/machine.mjs`),"the browser uses the real interpreter");
 	assert.ok(modules.has(`${url}map/statechart.mjs`));
 	assert.ok([...modules].every(href=>!href.includes("/vendor/")),"the explorer uses only first-party modules");
 	assert.equal((await fetch(`${url}studio.css`)).status,200);
 	const definitions=await (await fetch(`${url}machines`)).json(); assert.deepEqual(definitions,catalog());const model=definitions.machines;
+	// Compute the browser representation independently, without using catalog() as its own oracle.
+	assert.deepEqual(model,JSON.parse(JSON.stringify(runtimeModels())));
+	for(const id of ["scheduling","reconciliation","release-preflight"])assert.ok(model[id],`${id} must be available in the real explorer`);
 	assert.equal(step(model.supervision,"managed-policy","sample",{permitted:false})?.action,"wait");
 	assert.equal(step(model.supervision,"managed-policy","sample",{permitted:true})?.action,"reactivate");
 	assert.equal(step(model.call,"uncertain","issue"),undefined);
@@ -48,7 +51,7 @@ test("the open map follows the real parallel run without issuing calls; particip
 		"spec.md": "Own the complete directory.", "recover.md":"Restore the pending entries.", "api.md": "One module per directory.", "check.mjs": "", "product.mjs": "",
 	});
 	const conf = await loadEntry({ sessionId: "owner", on() {} }), canvas = conf.canvases?.[0]; assert.ok(canvas);
-	assert.ok("displayName" in canvas); assert.equal(canvas.displayName, "Foundry");
+	assert.equal(canvas.declaration.displayName, "Foundry");
 	const ctx = { sessionId: "owner", extensionId: "user:foundry", canvasId: "foundry-board", instanceId: "parallel", input: { run } };
 	const hook = { sessionId: "owner", timestamp: new Date(), workingDirectory: f.root };
 	await conf.hooks?.onSessionStart?.({ ...hook, source: "startup" }, hook);
@@ -90,7 +93,8 @@ test("the open map follows the real parallel run without issuing calls; particip
 	assert.equal(await (await fetch(`${worker.url}specification/editor`)).text(),"Own the complete directory.");
 	assert.equal(await (await fetch(`${url}specification/recover`)).text(),"Restore the pending entries.");
 	for(const id of ["recover","recover.md","not-visible"]){
-		const r=await fetch(`${worker.url}specification/${id}`);assert.equal(r.status,404);assert.doesNotMatch(await r.text(),/Restore the pending entries/);
+		/** @type {Response} */ const response=await fetch(`${worker.url}specification/${id}`);
+		assert.equal(response.status,404);assert.doesNotMatch(await response.text(),/Restore the pending entries/);
 	}
 	assert.ok(!JSON.stringify(view).includes(w.token) && !("prepared" in view));
 	put(w.cwd, "lib/editor/unit.mjs", "export default 1;");

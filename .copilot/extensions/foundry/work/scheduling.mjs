@@ -1,0 +1,110 @@
+import {machine,to} from "./machine.mjs";
+
+/** @template {string} S @param {S} target @param {string} why @param {...string} when
+ * @returns {{on:"plan",target:S,description?:string,action?:never,when:string[]}} */
+const go=(target,why,...when)=>({...to("plan",target,why),when});
+/** @template {string} S @template {string} A @param {S} target @param {A} action @param {string} why @param {...string} when */
+const act=(target,action,why,...when)=>({...go(target,why,...when),action});
+const conflict={...to("conflict","done","Keep the planning diagnostic and any work already settled on this snapshot."),action:/** @type {const} */ ("record-conflict")};
+
+export const scheduling=machine("scheduling","ready",{
+	ready:[
+		go("done","Leave an inactive run untouched.","!active"),
+		go("done","The deadline passed without the exact timely receipts needed for settlement.","elapsed","!timely"),
+		go("done","This session is neither the owner nor a recorded participant.","!participant"),
+		act("route","observe-target","Read the target once for this planning pass."),
+	],
+	route:[
+		go("done","Wait for the target to be observable.","!targetKnown"),
+		go("delivery","An approved delivery takes precedence over ordinary work.","delivery"),
+		act("isolated","read-isolation","Read the approved subset's own product evidence.","independent","owner","!elapsed","hasJoin"),
+		go("done","Do not advance an independent checkpoint without its owner, time and pending join.","independent"),
+		go("expired","After the deadline only timely, completed observations may settle.","elapsed"),
+		act("reports","reconcile-writers","Finish previous writer reservations and notices before considering reports."),
+	],
+	delivery:[
+		act("done","advance-delivery","Settle only the approved delivery on this target.","owner","!elapsed"),
+		go("done","Leave delivery to its owner before the deadline."),
+	],
+	isolated:[
+		go("done","Wait for a current, unheld isolation and its runner-owned receipt.","!isolatedReceipt"),
+		act("done","accept-isolation","Record the checked subset and reserve its goal assessment, not a release.","isolatedPass"),
+		act("done","reject-isolation","Keep the failed subset's own product diagnostic."),
+	],
+	expired:[
+		act("done","settle-timely","Settle timely checks on the unchanged target without admitting work.","sameGoalTarget","!liveWriter"),
+		go("done","Do not settle a moved target or an unfinished writer after expiry."),
+	],
+	reports:[act("inputs","settle-reports","Apply completed reports and reconsider eligible original reports at their pins.")],
+	inputs:[
+		act("renewal","admit-arrivals","Drain reports whose missing producers have now been declared.","currentInputs"),
+		go("renewal","No current owner admission of newly declared inputs is possible."),
+	],
+	renewal:[
+		act("checks","renew-reports","Revalidate eligible reports without replaying their scouts.","owner"),
+		go("checks","A participant cannot renew the owner's reports."),
+	],
+	checks:[act("retries","settle-checks","Apply available component and product receipts before making reservations.")],
+	retries:[conflict,act("release","retry-readers","Reserve eligible interrupted reads within the remaining budgets.")],
+	release:[conflict,act("admission","assess-release","Ask the release machine what work may proceed and report unowned blockers.")],
+	admission:[conflict,
+		go("done","The release decision admits no more work in this pass.","!admitted"),
+		act("allocation","prepare-admission","Revalidate moved-target outputs and take the current reservation capacity."),
+	],
+	allocation:[conflict,
+		act("outputs","allocate-writers","Staff eligible waiting writers first, checking their inputs at each reservation.","writerSlot"),
+		go("outputs","No writer is admissible or no slot is free; already checked outputs still matter."),
+	],
+	outputs:[act("join","collect-outputs","Keep the current goal observation and select the permitted product inputs.")],
+	join:[conflict,
+		go("after-join","There is no permitted set of checked outputs to integrate.","!outputs"),
+		go("after-join","These exact outputs already have their join on this target.","sameJoin"),
+		go("after-join","An outstanding product check still owns its original join.","outstandingProduct"),
+		act("assembly","assemble-outputs","Build the candidate Git commit and verify its input pins. Assembly is not qualification."),
+	],
+	assembly:[conflict,
+		act("survivors","settle-survivors","Settle a matching surviving join or clear an obsolete one after excluding incompatible inputs.","excluded"),
+		act("novelty","compare-assembly","Compare the assembled tree with already assessed work before reserving a check."),
+	],
+	survivors:[conflict,
+		act("readmission","reassess-survivors","Ask release again after the incompatible outputs were stopped.","hasGoal"),
+		act("join","refresh-outputs","Recompute the component-only join from the surviving outputs."),
+	],
+	readmission:[conflict,
+		go("done","The new release assessment closes admission.","!admitted"),
+		act("join","refresh-outputs","Select the remaining outputs under the new admission and reconsider their join."),
+	],
+	novelty:[conflict,
+		go("after-join","Do not reserve a product check for a repeated or unchanged assessment.","noNewProduct"),
+		act("after-join","reserve-product","Reserve the distinct product evaluator for this exact assembly; do not mark it passed."),
+	],
+	"after-join":[conflict,
+		act("discovery","reassess-stopped","Reassess a passing goal after its last outstanding waiter was stopped.","recheckStopped"),
+		go("discovery","Continue with the existing goal observation."),
+	],
+	discovery:[
+		go("done","The run is no longer active.","!active"),
+		go("done","This admission does not permit discovery.","!mayDiscover"),
+		go("done","All remaining assignments were reserved.","!budget"),
+		act("progress","reserve-surveys","Offer eligible scouts the remaining capacity, protecting the admitted writer queue.","surveyDue"),
+		go("done","No survey is due on this revision."),
+	],
+	progress:[
+		act("done","record-stall","Record the unmet goal only after work and all current surveys have settled.","unmet","!pendingWork","surveysFinished"),
+		go("done","A goal, assignment, join or survey still has its own next observation."),
+	],
+	done:[],
+},{description:"Plans one pass on the caller's private ledger snapshot. No planning phase survives the pass or grants release.",states:{
+	ready:"Check activity, deadline and issuer before observing a target.",route:"Choose the kind of planning allowed on the observed target.",
+	delivery:"Only the approved delivery may advance.",isolated:"The non-release subset has its own product observation.",
+	expired:"Only already completed checks may still matter.",reports:"Completed or blocked reviews may change the dependency graph.",
+	inputs:"A later producer may have released a previously rejected report.",renewal:"An owner may renew a report on revalidated inputs.",
+	checks:"Current receipts may publish, stop or repair work.",retries:"Interrupted readers may use a remaining reservation.",
+	release:"The current obligations and receipts determine admission.",admission:"The release decision bounds this pass.",
+	allocation:"Waiting writers have priority over speculative discovery.",outputs:"Snapshot the goal evidence and admissible outputs after staffing.",
+	join:"Choose whether the checked outputs need a new assembly.",assembly:"Input compatibility determines whether the assembled set survives.",
+	survivors:"An exclusion may have changed release eligibility.",readmission:"Use the revised permission for the surviving join.",
+	novelty:"Only a distinct, permitted assembly needs a product reservation.","after-join":"A stopped waiter can change a passing goal's release decision.",
+	discovery:"Check the remaining authority and need for surveys.",progress:"Distinguish a demonstrated stall from outstanding work.",
+	done:"This pass has no further steps. The caller still owns the snapshot commit.",
+}});

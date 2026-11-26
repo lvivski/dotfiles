@@ -107,7 +107,7 @@ export async function retireGoal(cwd, actor, check, io) {
 		}
 		if (digest(selection(cwd, live, original)) !== digest(selected))
 			fail("stale_assignment", "Goal, evaluator, or retained outputs changed during approval");
-		journal(original,"retire"); original.retirement = proof; delete original.error;
+		journal(original,{type:"retire",retirement:proof});
 		reconcile = true;
 		return () => commitAt(cwd, live.policy.target) === selected.target;
 	});

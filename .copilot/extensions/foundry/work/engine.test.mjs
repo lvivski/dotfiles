@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { openDatabase } from "./database.mjs";
-import { transition } from "./engine.mjs";
-import { select, step } from "./chart.mjs";
+import { decisionOf, releasePreflight, transition } from "./engine.mjs";
+import { select, step, transition as next } from "./machine.mjs";
 import { catalog } from "./catalog.mjs";
+import { applyGoal, qualify, releaseAssessment } from "./goal.mjs";
 import { receiptWakes } from "./wakes.mjs";
 import { factory, git, put } from "../test/fixture.mjs";
 
@@ -14,11 +15,86 @@ test("every registered transition can win; unknown states, guards and unreachabl
 		for (let mask=0;mask<2**flags.length;mask++) {
 			const facts=Object.fromEntries(flags.map((g,i)=>[g,!!(mask & (1<<i))]));
 			const edge=step(model,state,signal,facts);if(edge) reached.add(edge);
-			if (model.id==="release") assert.ok(edge,"Every release assessment must have a decision");
+			if (model.id==="release" && signal==="assess" || model.id==="release-preflight") assert.ok(edge,"A release assessment must not drop an observation");
 		}
 		assert.equal(reached.size,edges.length,`Dead transition in ${state}`);
 	}
 	assert.throws(()=>select(machines.supervision,"managed-policy","sample",{}),/missing boolean/i);
+});
+
+test("a changed contract cannot promote a frozen checkpoint, and a published repair only rejoins when its admission permits it",()=>{
+	const flags=[false,true];
+	for (const contractChanged of flags) for (const checkpointWriters of flags) for (const changedJoin of flags) for (const published of flags) {
+		const observed={type:"inspect",target:"live",workTarget:"signed",...(contractChanged && {error:"contract changed"})};
+		const res=next(releasePreflight,{value:"frozen",context:/** @type {import("./engine.mjs").Decision|null} */ (null)},observed,
+			{contractChanged,checkpointWriters,changedJoin,published},true);
+		const rejoin=!contractChanged && changedJoin && published;
+		assert.deepEqual(decisionOf(res),{action:rejoin?"rejoin":"wait",admission:rejoin?"join-only":checkpointWriters?"checkpoint":"closed",
+			reason:contractChanged?"contract-changed":rejoin?"target-changed":"checkpoint-work",target:"live",
+			...(!rejoin && {workTarget:"signed"}),...(contractChanged && {error:"contract changed"})});
+		assert.deepEqual(res.effects.map(e=>e.type),rejoin?["rejoin"]:[]);
+	}
+});
+
+test("ownership repair admission is the intersection of ordinary writer permission, current pins and a designated repair",()=>{
+	const inputs=["sameTarget","joining","blocked","recordedConflict","permissionHold","eligibleWriters","scoped","designatedRepair"];
+	for (let mask=0;mask<2**inputs.length;mask++) {
+		const f=Object.fromEntries(inputs.map((key,i)=>[key,!!(mask & 1<<i)])), event={type:"inspect",target:"pin",error:"held ownership"};
+		let plan=next(releasePreflight,{value:"repair-admission",context:/** @type {import("./engine.mjs").Decision|null} */ (null)},event,f,true);
+		if (plan.snapshot.value==="repairs") plan=next(releasePreflight,plan.snapshot,event,f,true);
+		const permitted=f.sameTarget && !f.joining && !f.blocked && !f.recordedConflict && !f.permissionHold && f.eligibleWriters && f.designatedRepair;
+		assert.deepEqual(decisionOf(plan),{action:"wait",reason:"ownership-conflict",target:"pin",error:"held ownership",
+			admission:permitted ? f.scoped ? "ownership-checkpoint-repairs" : "ownership-repairs" : "closed"});
+		assert.deepEqual(plan.effects,[]);
+	}
+});
+
+/** @returns {import("./model.js").Run} */
+function checkedRun() {
+	const commit="pin", product={target:commit,commit,check:"p",outputs:{}}, goal={target:commit,commit,check:"g"};
+	/** @param {"product"|"goal"} kind @param {string} id @returns {import("./model.js").NativeCall} */
+	const signed=(kind,id)=>({id,kind,issuer:"owner",tool:"bash",args:{},callId:id,state:"done",runnerStarted:true,check:kind,commit,
+		receipt:{check:kind,commit,exit:0,output:"passed",completedAt:1}});
+	return {id:"release",active:true,activatedAt:1,owner:"owner",nodes:{},goal,products:[product],effects:[signed("goal","g"),signed("product","p")],
+		policy:{id:"release",source:"plan",direction:"Verify the output.",target:"main",base:commit,files:[],squads:[],repairs:0,goalCheck:"goal",productCheck:"product"}};
+}
+
+test("an expired assessment reads the target only for two timely passes, and hands off only the exact settled product",()=>{
+	for (const variant of ["late product","unsigned goal","wrong evaluator","missing target","work still owed","exact"]) {
+		const run=checkedRun(), before=run.effects.slice(), product=run.products[0];
+		run.policy.deadline=new Date(5000).toISOString();
+		const [goal,joined]=run.effects;
+		if(variant==="late product") {assert.ok(joined.receipt);joined.receipt.completedAt=5000;}
+		if(variant==="unsigned goal") delete goal.runnerStarted;
+		if(variant==="wrong evaluator") run.policy.productCheck="different-check";
+		if(variant==="work still owed") run.nodes.part={grain:{id:"part",specification:"spec",directory:"part",boundary:[],needs:[],check:"unit"},state:"published",repairs:0};
+		const hidden=variant==="missing target", exact=variant==="exact", early=["late product","unsigned goal","wrong evaluator"].includes(variant);
+		let reads=0;
+		const tip=()=>{reads++;assert.ok(!early,"Do not look up a target after the early deadline gate");
+			if(hidden)throw Object.assign(Error("absent ref"),{status:128});return "pin";};
+		const assessment=releaseAssessment(".",run,tip);
+		assert.equal(assessment.reason,exact?"exact-checks-passed":hidden?"target-unavailable":"deadline");
+		assert.equal(assessment.action,exact?"qualify":"wait");
+		assert.equal(reads,early?0:1);assert.equal(product.qualifiedAt,undefined);assert.deepEqual(run.effects,before);
+		assert.deepEqual(applyGoal(".",run,"owner",tip,false),assessment);
+		applyGoal(".",run,"owner",tip,false);
+		assert.equal(run.effects.filter(e=>e.kind==="handoff").length,Number(exact));
+		assert.equal(!!product.qualifiedAt,exact);assert.deepEqual(run.effects.slice(0,2),before);
+	}
+});
+
+test("a component-only handoff cannot use a past join, a goal run's milestone or an unsigned product",()=>{
+	for(const variant of ["not current join","target moved","goal requires assessment","native success only","already qualified","exact"]) {
+		const run=checkedRun(), [product]=run.products.splice(0);delete run.goal;delete run.policy.goalCheck;
+		run.join=variant==="not current join"?{...product}:product;
+		if(variant==="goal requires assessment") run.policy.goalCheck="goal";
+		if(variant==="native success only") delete run.effects[1].runnerStarted;
+		if(variant==="already qualified") product.qualifiedAt=1;
+		const before=structuredClone(run), handoff=()=>qualify(run,"owner",product,variant==="target moved"?"new":"pin");
+		if(variant!=="exact") {assert.throws(handoff,/unhandled transition/i);assert.deepEqual(run,before);continue;}
+		handoff();assert.ok(product.qualifiedAt);assert.equal(run.active,true);
+		assert.equal(run.effects.filter(e=>e.kind==="handoff").length,1);assert.throws(handoff,/unhandled transition/i);
+	}
 });
 
 test("release inspection and execution agree on a changed contract and recover when restored", async t => {

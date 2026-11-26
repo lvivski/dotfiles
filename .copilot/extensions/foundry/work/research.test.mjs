@@ -82,7 +82,7 @@ for (const scenario of ["correct", "replay", "denied"]) test(`pre-writer researc
 	let counter = 0;
 	const issuer = f.runtime(f.root, { scout: (id, ticket, actor) => {
 		const runId = `workflow-${++counter}`;
-		const work = scoutDefinition(() => issuer).run({ args: { run: id, dispatch: ticket }, runId, agent,
+		const work = scoutDefinition(() => issuer).run({ args: { run: id, dispatch: ticket }, runId, agent, agents: {},
 			session: /** @type {Context["session"]} */ ({ sessionId: actor }), signal: new AbortController().signal,
 			step: async (_key, produce) => produce(), parallel: fns => Promise.all(fns.map(fn => fn())), phase() {}, log() {},
 			pause: () => assert.fail(), pipeline: () => assert.fail(), workflow: () => assert.fail() });
@@ -208,7 +208,7 @@ test("a waiting design squad reads coverage's frozen revision before any invento
 	await extension.hooks?.onSessionStart?.({ ...hook, source: "startup" }, ctx);
 	t.after(() => extension.hooks?.onSessionEnd?.({ ...hook, reason: "complete" }, ctx));
 	const tool = extension.tools?.find(t => t.name === "foundry_reference");
-	assert.ok(tool?.handler && extension.customAgents?.find(a => a.name === "foundry-research")?.tools?.includes(tool.name));
+	assert.ok(tool?.handler && extension.agents.find(a => a.name === "foundry-research")?.tools?.includes(tool.name));
 	const actor = { ...ctx, agentId: "research-helper", toolName: tool.name, toolCallId: "read" };
 	const args = { run, review: research.id, repo: pin.repo, revision: pin.revision, path: "layout" };
 	assert.notEqual((await extension.hooks?.onPreToolUse?.({ ...hook, ...actor, toolArgs: args }, ctx))?.permissionDecision, "deny");

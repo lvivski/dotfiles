@@ -526,7 +526,7 @@ test("binary metadata is not delivered text, and a focused read cannot cross a c
 /** @param {Context["agent"]} agent @param {AbortSignal} [signal] @returns {Context} */
 function context(agent, signal = new AbortController().signal) {
 	return { args: { run: "product", dispatch: "ticket" }, session: /** @type {Context["session"]} */ ({ sessionId: "issuer" }),
-		runId: "workflow-id", signal, agent, phase() {}, log() {}, step: async (_key, produce) => produce(),
+		runId: "workflow-id", signal, agent, agents: {}, phase() {}, log() {}, step: async (_key, produce) => produce(),
 		parallel: thunks => Promise.all(thunks.map(async fn => {
 			try { return await fn(); } catch (e) { if (e instanceof Error && e.name === "AbortError") throw e; return null; }
 		})), pause: () => assert.fail("unexpected pause"), pipeline: () => assert.fail("unexpected pipeline"), workflow: () => assert.fail("nested workflow"),

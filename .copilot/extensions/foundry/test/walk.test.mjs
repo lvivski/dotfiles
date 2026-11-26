@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {chart,extend,step} from "../work/chart.mjs";
+import {machine,extend,step} from "../work/machine.mjs";
 import {catalog} from "../work/catalog.mjs";
 import {monitors} from "../work/supervision.mjs";
 import {inventory,obstruction,walk} from "./walk.mjs";
 
-/** @type {import("../work/chart.mjs").Machine} */
-const m=chart("ticket","new",{
+/** @type {import("../work/machine.mjs").Machine} */
+const m=machine("ticket","new",{
 	new:[{on:"queue",target:"waiting"},{on:"accept",when:["signed"],target:"done"},{on:"accept",action:"observe"}],
 	waiting:[{on:"receipt",target:"done"}],done:[{on:"read",action:"show"}],
 	restored:[{on:"retry",target:"waiting"}],
@@ -26,7 +26,7 @@ test("shortest witnesses replay on the real selector; an internal action is not 
 });
 
 test("a cycle is closed only under the supplied evidence; an unknown guard is not false",()=>{
-	const cycle=chart("sample","a",{a:[{on:"wake",target:"b"}],
+	const cycle=machine("sample","a",{a:[{on:"wake",target:"b"}],
 		b:[{on:"wake",when:["ready"],target:"end"},{on:"wake",target:"a"}],end:[]});
 	assert.deepEqual(walk(cycle).closed,[["end"]]);
 	assert.deepEqual(walk(cycle,["a"],{signal:"wake",facts:{ready:false}}).closed,[["a","b"]]);

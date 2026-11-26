@@ -1,16 +1,24 @@
-import { chart, select } from "./chart.mjs";
+import { machine, to, transition, update } from "./machine.mjs";
 import { checkReceipt, generationOf } from "./evidence.mjs";
 import { assignmentCalls, liveNeeds } from "./plan.mjs";
 
-/** @param {"hold"|"retain"|"settled"} action @param {string} reason @param {...("retarget"|"unissuedUnavailable")} when */
-const edge=(action,reason,...when)=>({on:"inspect",action,reason,when});
-const settled=[edge("settled","No mutable assignment")];
-export const quiescence=chart("quiescence","idle",{
-	idle:settled,qualified:settled,repeated:settled,blocked:settled,
-	writing:[edge("hold","Current writer reservation")],checking:[edge("hold","Current component observation")],
-	waiting:[edge("retain","Keep the unavailable attempt outside the adopted product","retarget","unissuedUnavailable"),
-		edge("hold","A pending assignment still needs scheduler admission")],
-	published:[edge("settled","Recheck the published output on the adopted assembly","retarget"),edge("hold","Pending integration")],
+/** @typedef {NonNullable<ReturnType<typeof unavailable>>} Check */
+/** @typedef {{held:string[],retained:Check[]}} Queue */
+/** @param {string} reason */
+const hold=reason=>({on:"inspect",reason,...update("hold-assignment",
+	(/** @type {Queue} */ q,/** @type {{label:string}} */ e)=>({...q,held:[e.label]}))});
+const retain={on:"inspect",when:["retarget","unissuedUnavailable"],reason:"Keep the unavailable attempt outside the adopted product",
+	...update("retain-unavailable-check",(/** @type {Queue} */ q,/** @type {{check?:Check}} */ e)=>{
+		if (!e.check) throw Error("Missing observation to retain during target adoption");
+		return {...q,retained:[e.check]};
+	})};
+/** @param {string} state */
+const settled=state=>[to("inspect",state,"No mutable assignment")];
+export const quiescence=machine("quiescence","idle",{
+	idle:settled("idle"),qualified:settled("qualified"),repeated:settled("repeated"),blocked:settled("blocked"),
+	writing:[hold("Current writer reservation")],checking:[hold("Current component observation")],
+	waiting:[retain,hold("A pending assignment still needs scheduler admission")],
+	published:[{...to("inspect","published","Recheck the published output on the adopted assembly"),when:["retarget"]},hold("Pending integration")],
 },{description:"Determines whether an assignment needs current authority before a checkpoint or target can change.",states:{
 	idle:"No work was requested for this output.",qualified:"The output already belongs to a checked product.",
 	repeated:"The output was retained without a changed product.",blocked:"The stop is recorded; it is not an active writer or evaluator.",
@@ -42,12 +50,13 @@ function unavailable(run,n) {
 
 /** @param {import("./model.js").Run} run @param {boolean} retarget */
 export function checkpointQueue(run,retarget) {
-	const held=[], retained=[];
+	/** @type {Queue} */ const queue={held:[],retained:[]};
 	for (const n of Object.values(run.nodes)) {
-		const check=retarget && unavailable(run,n);
-		const {action}=select(quiescence,n.state,"inspect",{retarget,unissuedUnavailable:!!check});
-		if (action==="hold") held.push(`${n.grain.id} (${n.state})`);
-		if (action==="retain" && check) retained.push(check);
+		const check=retarget ? unavailable(run,n) : undefined;
+		const {snapshot}=transition(quiescence,{value:n.state,context:/** @type {Queue} */ ({held:[],retained:[]})},
+			{type:"inspect",label:`${n.grain.id} (${n.state})`,check},{retarget,unissuedUnavailable:!!check},true);
+		queue.held.push(...snapshot.context.held);
+		queue.retained.push(...snapshot.context.retained);
 	}
-	return {held,retained};
+	return queue;
 }

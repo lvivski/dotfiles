@@ -613,7 +613,7 @@ test("a permission hold inside the resumed workflow checkpoints the original dis
 	const workflow = scoutDefinition(() => issuer);
 	/** @type {Parameters<typeof workflow.run>[0]} */
 	const ctx = { runId: job.workflowId, args: { run, dispatch: job.dispatch }, session: /** @type {typeof ctx.session} */ ({ sessionId: job.issuer }),
-		signal: new AbortController().signal, log() {}, phase() {}, step: async (_key, fn) => fn(), parallel: fs => Promise.all(fs.map(fn => fn())),
+		signal: new AbortController().signal, agents: {}, log() {}, phase() {}, step: async (_key, fn) => fn(), parallel: fs => Promise.all(fs.map(fn => fn())),
 		agent: async () => { calls++; return noGap; }, pause: async key => { assert.equal(key, "dispatch-held:1"); throw new DOMException("paused", "AbortError"); },
 		pipeline: () => assert.fail("unexpected pipeline"), workflow: () => assert.fail("nested workflow") };
 	await assert.rejects(workflow.run(ctx), { name: "AbortError" });

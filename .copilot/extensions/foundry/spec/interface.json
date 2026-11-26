@@ -21,7 +21,8 @@
             {
               "on": "stop",
               "target": "blocked",
-              "description": "Record why this assignment cannot proceed under its current grant."
+              "description": "Record why this assignment cannot proceed under its current grant.",
+              "update": "recordReason"
             }
           ],
           "writing": [
@@ -33,7 +34,8 @@
             {
               "on": "stop",
               "target": "blocked",
-              "description": "Record why this assignment cannot proceed under its current grant."
+              "description": "Record why this assignment cannot proceed under its current grant.",
+              "update": "recordReason"
             }
           ],
           "checking": [
@@ -41,63 +43,67 @@
               "on": "component",
               "target": "published",
               "description": "Make the passing candidate available for integration.",
-              "action": "publish",
               "when": [
                 "passed"
-              ]
+              ],
+              "update": "clearReason"
             },
             {
               "on": "component",
               "target": "blocked",
               "description": "Keep the incomplete observation without treating it as a verdict.",
-              "action": "incomplete",
               "when": [
                 "incomplete"
-              ]
+              ],
+              "update": "recordIncompleteCheck"
             },
             {
               "on": "component",
               "target": "blocked",
               "description": "Stop because the run has no assignment budget for repair.",
-              "action": "unfunded",
               "when": [
                 "unfunded"
-              ]
+              ],
+              "update": "recordMissingBudget"
             },
             {
               "on": "component",
               "target": "blocked",
               "description": "Keep the failed attestation: its grant forbids changing the bytes.",
-              "action": "attestation",
               "when": [
                 "attestation"
-              ]
+              ],
+              "update": "recordAttestationFailure",
+              "action": "invalidate-consumers"
             },
             {
               "on": "component",
               "target": "blocked",
               "description": "Preserve the candidate and failure when the repair allowance is spent.",
-              "action": "exhausted",
               "when": [
                 "exhausted"
-              ]
+              ],
+              "update": "recordRepairLimit",
+              "action": "invalidate-consumers"
             },
             {
               "on": "component",
               "target": "waiting",
               "description": "Queue the permitted repair; the queue itself is not a write grant.",
-              "action": "repair",
-              "when": []
+              "update": "queueRepair",
+              "action": "invalidate-consumers"
             },
             {
               "on": "stop",
               "target": "blocked",
-              "description": "Record why this assignment cannot proceed under its current grant."
+              "description": "Record why this assignment cannot proceed under its current grant.",
+              "update": "recordReason"
             },
             {
               "on": "paired-pass",
               "target": "published",
-              "description": "Publish the exact output supported by the fresh component observation."
+              "description": "Publish the exact output supported by the fresh component observation.",
+              "update": "clearReason"
             }
           ],
           "published": [
@@ -109,37 +115,41 @@
             {
               "on": "repeat",
               "target": "repeated",
-              "description": "Retain the checked output without treating an unchanged product as progress."
+              "description": "Retain the checked output without treating an unchanged product as progress.",
+              "update": "recordReason"
             },
             {
               "on": "repair",
               "target": "blocked",
               "description": "Keep the failed attestation: its grant forbids changing the bytes.",
-              "action": "attestation",
               "when": [
                 "attestation"
-              ]
+              ],
+              "update": "recordAttestationFailure",
+              "action": "invalidate-consumers"
             },
             {
               "on": "repair",
               "target": "blocked",
               "description": "Preserve the candidate and failure when the repair allowance is spent.",
-              "action": "exhausted",
               "when": [
                 "exhausted"
-              ]
+              ],
+              "update": "recordRepairLimit",
+              "action": "invalidate-consumers"
             },
             {
               "on": "repair",
               "target": "waiting",
               "description": "Queue the permitted repair; the queue itself is not a write grant.",
-              "action": "repair",
-              "when": []
+              "update": "queueRepair",
+              "action": "invalidate-consumers"
             },
             {
               "on": "stop",
               "target": "blocked",
-              "description": "Record why this assignment cannot proceed under its current grant."
+              "description": "Record why this assignment cannot proceed under its current grant.",
+              "update": "recordReason"
             },
             {
               "on": "staff",
@@ -149,7 +159,8 @@
             {
               "on": "paired-pass",
               "target": "published",
-              "description": "Publish the exact output supported by the fresh component observation."
+              "description": "Publish the exact output supported by the fresh component observation.",
+              "update": "clearReason"
             }
           ],
           "qualified": [
@@ -162,26 +173,28 @@
               "on": "repair",
               "target": "blocked",
               "description": "Keep the failed attestation: its grant forbids changing the bytes.",
-              "action": "attestation",
               "when": [
                 "attestation"
-              ]
+              ],
+              "update": "recordAttestationFailure",
+              "action": "invalidate-consumers"
             },
             {
               "on": "repair",
               "target": "blocked",
               "description": "Preserve the candidate and failure when the repair allowance is spent.",
-              "action": "exhausted",
               "when": [
                 "exhausted"
-              ]
+              ],
+              "update": "recordRepairLimit",
+              "action": "invalidate-consumers"
             },
             {
               "on": "repair",
               "target": "waiting",
               "description": "Queue the permitted repair; the queue itself is not a write grant.",
-              "action": "repair",
-              "when": []
+              "update": "replaceIntegratedOutput",
+              "action": "invalidate-consumers"
             },
             {
               "on": "request",
@@ -199,26 +212,28 @@
               "on": "repair",
               "target": "blocked",
               "description": "Keep the failed attestation: its grant forbids changing the bytes.",
-              "action": "attestation",
               "when": [
                 "attestation"
-              ]
+              ],
+              "update": "recordAttestationFailure",
+              "action": "invalidate-consumers"
             },
             {
               "on": "repair",
               "target": "blocked",
               "description": "Preserve the candidate and failure when the repair allowance is spent.",
-              "action": "exhausted",
               "when": [
                 "exhausted"
-              ]
+              ],
+              "update": "recordRepairLimit",
+              "action": "invalidate-consumers"
             },
             {
               "on": "repair",
               "target": "waiting",
               "description": "Queue the permitted repair; the queue itself is not a write grant.",
-              "action": "repair",
-              "when": []
+              "update": "queueRepair",
+              "action": "invalidate-consumers"
             },
             {
               "on": "request",
@@ -235,37 +250,41 @@
             {
               "on": "recheck",
               "target": "checking",
-              "description": "Observe the retained candidate under an authorized check."
+              "description": "Observe the retained candidate under an authorized check.",
+              "update": "clearReason"
             },
             {
               "on": "repair",
               "target": "blocked",
               "description": "Keep the failed attestation: its grant forbids changing the bytes.",
-              "action": "attestation",
               "when": [
                 "attestation"
-              ]
+              ],
+              "update": "recordAttestationFailure",
+              "action": "invalidate-consumers"
             },
             {
               "on": "repair",
               "target": "blocked",
               "description": "Preserve the candidate and failure when the repair allowance is spent.",
-              "action": "exhausted",
               "when": [
                 "exhausted"
-              ]
+              ],
+              "update": "recordRepairLimit",
+              "action": "invalidate-consumers"
             },
             {
               "on": "repair",
               "target": "waiting",
               "description": "Queue the permitted repair; the queue itself is not a write grant.",
-              "action": "repair",
-              "when": []
+              "update": "queueRepair",
+              "action": "invalidate-consumers"
             },
             {
               "on": "paired-pass",
               "target": "published",
-              "description": "Publish the exact output supported by the fresh component observation."
+              "description": "Publish the exact output supported by the fresh component observation.",
+              "update": "clearReason"
             },
             {
               "on": "deliver",
@@ -275,7 +294,8 @@
             {
               "on": "stop",
               "target": "blocked",
-              "description": "Record why this assignment cannot proceed under its current grant."
+              "description": "Record why this assignment cannot proceed under its current grant.",
+              "update": "recordReason"
             }
           ]
         },
@@ -301,142 +321,168 @@
             {
               "on": "issue",
               "target": "issued",
-              "description": "Claim this reservation before making its native request."
+              "description": "Claim this reservation before making its native request.",
+              "update": "claimReservation"
             },
             {
               "on": "block",
               "target": "blocked",
-              "description": "Preserve the review and the reason its observation cannot proceed."
+              "description": "Preserve the review and the reason its observation cannot proceed.",
+              "update": "blockReview"
             }
           ],
           "issued": [
             {
               "on": "unconfirmed",
               "target": "uncertain",
-              "description": "Keep the original request observable when its reply cannot yet be confirmed."
+              "description": "Keep the original request observable when its reply cannot yet be confirmed.",
+              "update": "recordDispatchError"
             },
             {
               "on": "block",
               "target": "blocked",
-              "description": "Preserve the review and the reason its observation cannot proceed."
+              "description": "Preserve the review and the reason its observation cannot proceed.",
+              "update": "blockReview"
             },
             {
               "on": "requeue",
               "target": "ready",
-              "description": "Return an eligible review to the queue on confirmed evidence, not a missing reply."
+              "description": "Return an eligible review to the queue on confirmed evidence, not a missing reply.",
+              "update": "releaseReviewTicket"
             },
             {
               "on": "bind",
               "target": "issued",
-              "description": "Associate this review with its confirmed native workflow."
+              "description": "Associate this review with its confirmed native workflow.",
+              "update": "bindWorkflow"
             },
             {
               "on": "suspend",
               "target": "suspended",
-              "description": "Remember the halted workflow for possible continuation on its original identity."
+              "description": "Remember the halted workflow for possible continuation on its original identity.",
+              "update": "suspendWorkflow"
             },
             {
               "on": "report",
               "target": "reported",
-              "description": "Save the scout's complete observation before deciding whether to admit it."
+              "description": "Save the scout's complete observation before deciding whether to admit it.",
+              "update": "recordReport"
             }
           ],
           "uncertain": [
             {
               "on": "unconfirmed",
               "target": "uncertain",
-              "description": "Keep the original request observable when its reply cannot yet be confirmed."
+              "description": "Keep the original request observable when its reply cannot yet be confirmed.",
+              "update": "recordDispatchError"
             },
             {
               "on": "block",
               "target": "blocked",
-              "description": "Preserve the review and the reason its observation cannot proceed."
+              "description": "Preserve the review and the reason its observation cannot proceed.",
+              "update": "blockReview"
             },
             {
               "on": "requeue",
               "target": "ready",
-              "description": "Return an eligible review to the queue on confirmed evidence, not a missing reply."
+              "description": "Return an eligible review to the queue on confirmed evidence, not a missing reply.",
+              "update": "releaseReviewTicket"
             },
             {
               "on": "bind",
               "target": "issued",
-              "description": "Associate this review with its confirmed native workflow."
+              "description": "Associate this review with its confirmed native workflow.",
+              "update": "bindWorkflow"
             },
             {
               "on": "suspend",
               "target": "suspended",
-              "description": "Remember the halted workflow for possible continuation on its original identity."
+              "description": "Remember the halted workflow for possible continuation on its original identity.",
+              "update": "suspendWorkflow"
             },
             {
               "on": "report",
               "target": "reported",
-              "description": "Save the scout's complete observation before deciding whether to admit it."
+              "description": "Save the scout's complete observation before deciding whether to admit it.",
+              "update": "recordReport"
             }
           ],
           "suspended": [
             {
               "on": "unconfirmed",
               "target": "uncertain",
-              "description": "Keep the original request observable when its reply cannot yet be confirmed."
+              "description": "Keep the original request observable when its reply cannot yet be confirmed.",
+              "update": "recordDispatchError"
             },
             {
               "on": "block",
               "target": "blocked",
-              "description": "Preserve the review and the reason its observation cannot proceed."
+              "description": "Preserve the review and the reason its observation cannot proceed.",
+              "update": "blockReview"
             },
             {
               "on": "requeue",
               "target": "ready",
-              "description": "Return an eligible review to the queue on confirmed evidence, not a missing reply."
+              "description": "Return an eligible review to the queue on confirmed evidence, not a missing reply.",
+              "update": "releaseReviewTicket"
             },
             {
               "on": "bind",
               "target": "issued",
-              "description": "Associate this review with its confirmed native workflow."
+              "description": "Associate this review with its confirmed native workflow.",
+              "update": "bindWorkflow"
             },
             {
               "on": "suspend",
               "target": "suspended",
-              "description": "Remember the halted workflow for possible continuation on its original identity."
+              "description": "Remember the halted workflow for possible continuation on its original identity.",
+              "update": "suspendWorkflow"
             },
             {
               "on": "report",
               "target": "reported",
-              "description": "Save the scout's complete observation before deciding whether to admit it."
+              "description": "Save the scout's complete observation before deciding whether to admit it.",
+              "update": "recordReport"
             }
           ],
           "reported": [
             {
               "on": "admit",
               "target": "observed",
-              "description": "Apply the saved observation to discovery on validated inputs."
+              "description": "Apply the saved observation to discovery on validated inputs.",
+              "update": "admitObservation"
             },
             {
               "on": "defer",
               "target": "deferred",
-              "description": "Keep the observation without displacing work that is still needed."
+              "description": "Keep the observation without displacing work that is still needed.",
+              "update": "deferObservation"
             },
             {
               "on": "block",
               "target": "blocked",
-              "description": "Preserve the review and the reason its observation cannot proceed."
+              "description": "Preserve the review and the reason its observation cannot proceed.",
+              "update": "blockReview"
             }
           ],
           "blocked": [
             {
               "on": "admit",
               "target": "observed",
-              "description": "Apply the saved observation to discovery on validated inputs."
+              "description": "Apply the saved observation to discovery on validated inputs.",
+              "update": "admitObservation"
             },
             {
               "on": "defer",
               "target": "deferred",
-              "description": "Keep the observation without displacing work that is still needed."
+              "description": "Keep the observation without displacing work that is still needed.",
+              "update": "deferObservation"
             },
             {
               "on": "block",
               "target": "blocked",
-              "description": "Preserve the review and the reason its observation cannot proceed."
+              "description": "Preserve the review and the reason its observation cannot proceed.",
+              "update": "blockReview"
             },
             {
               "on": "producers-declared",
@@ -444,19 +490,22 @@
               "description": "Reconsider the original missing-producer report on its still-current inputs.",
               "when": [
                 "inputsCurrent"
-              ]
+              ],
+              "action": "readmit-report"
             }
           ],
           "observed": [
             {
               "on": "admit",
               "target": "observed",
-              "description": "Apply the saved observation to discovery on validated inputs."
+              "description": "Apply the saved observation to discovery on validated inputs.",
+              "update": "admitObservation"
             },
             {
               "on": "defer",
               "target": "deferred",
-              "description": "Keep the observation without displacing work that is still needed."
+              "description": "Keep the observation without displacing work that is still needed.",
+              "update": "deferObservation"
             }
           ],
           "deferred": []
@@ -483,7 +532,8 @@
             {
               "on": "issue",
               "target": "issued",
-              "description": "Claim this reservation before making its native request."
+              "description": "Claim this reservation before making its native request.",
+              "update": "claimReservation"
             },
             {
               "on": "withdraw",
@@ -495,61 +545,72 @@
             {
               "on": "issue",
               "target": "issued",
-              "description": "Claim this reservation before making its native request."
+              "description": "Claim this reservation before making its native request.",
+              "update": "claimReservation"
             }
           ],
           "issued": [
             {
               "on": "unconfirmed",
               "target": "uncertain",
-              "description": "Keep the original request observable when its reply cannot yet be confirmed."
+              "description": "Keep the original request observable when its reply cannot yet be confirmed.",
+              "update": "recordDispatchError"
             },
             {
               "on": "deny",
               "target": "refused",
-              "description": "Record the host's explicit refusal without issuing a replacement."
+              "description": "Record the host's explicit refusal without issuing a replacement.",
+              "update": "recordDispatchError"
             },
             {
               "on": "confirm",
               "target": "done",
-              "description": "Attach the matching completion to this reservation."
+              "description": "Attach the matching completion to this reservation.",
+              "update": "recordCompletion"
             },
             {
               "on": "prepare",
               "target": "ordinary",
-              "description": "Expose the exact call to its issuer after the automatic route was confirmed disabled."
+              "description": "Expose the exact call to its issuer after the automatic route was confirmed disabled.",
+              "update": "recordDispatchError"
             },
             {
               "on": "retire",
               "target": "retired",
-              "description": "Close a proven dead reservation without manufacturing a verdict."
+              "description": "Close a proven dead reservation without manufacturing a verdict.",
+              "update": "recordRetirement"
             }
           ],
           "uncertain": [
             {
               "on": "unconfirmed",
               "target": "uncertain",
-              "description": "Keep the original request observable when its reply cannot yet be confirmed."
+              "description": "Keep the original request observable when its reply cannot yet be confirmed.",
+              "update": "recordDispatchError"
             },
             {
               "on": "deny",
               "target": "refused",
-              "description": "Record the host's explicit refusal without issuing a replacement."
+              "description": "Record the host's explicit refusal without issuing a replacement.",
+              "update": "recordDispatchError"
             },
             {
               "on": "confirm",
               "target": "done",
-              "description": "Attach the matching completion to this reservation."
+              "description": "Attach the matching completion to this reservation.",
+              "update": "recordCompletion"
             },
             {
               "on": "prepare",
               "target": "ordinary",
-              "description": "Expose the exact call to its issuer after the automatic route was confirmed disabled."
+              "description": "Expose the exact call to its issuer after the automatic route was confirmed disabled.",
+              "update": "recordDispatchError"
             },
             {
               "on": "retire",
               "target": "retired",
-              "description": "Close a proven dead reservation without manufacturing a verdict."
+              "description": "Close a proven dead reservation without manufacturing a verdict.",
+              "update": "recordRetirement"
             }
           ],
           "done": [],
@@ -579,61 +640,72 @@
             {
               "on": "pause",
               "target": "paused",
-              "description": "Stop new work without discarding issued calls or checked outputs."
+              "description": "Stop new work without discarding issued calls or checked outputs.",
+              "update": "clearHold"
             },
             {
               "on": "resume",
               "target": "active",
-              "description": "Continue eligible work on the original run under the operator's direction."
+              "description": "Continue eligible work on the original run under the operator's direction.",
+              "update": "clearHold"
             },
             {
               "on": "policy-hold",
               "target": "held",
-              "description": "Suspend dispatch while the issuing session cannot confirm managed permissions."
+              "description": "Suspend dispatch while the issuing session cannot confirm managed permissions.",
+              "update": "recordHold"
             },
             {
               "on": "goal-met",
               "target": "qualified",
-              "description": "End dispatch after the accepted product meets the release conditions."
+              "description": "End dispatch after the accepted product meets the release conditions.",
+              "update": "clearHold"
             }
           ],
           "held": [
             {
               "on": "pause",
               "target": "paused",
-              "description": "Stop new work without discarding issued calls or checked outputs."
+              "description": "Stop new work without discarding issued calls or checked outputs.",
+              "update": "clearHold"
             },
             {
               "on": "resume",
               "target": "active",
-              "description": "Continue eligible work on the original run under the operator's direction."
+              "description": "Continue eligible work on the original run under the operator's direction.",
+              "update": "clearHold"
             },
             {
               "on": "policy-ready",
               "target": "active",
               "description": "Clear only the issuing session's matching permission hold.",
+              "guard": "sameHold",
               "when": [
                 "sameHold"
-              ]
+              ],
+              "update": "clearHold"
             }
           ],
           "paused": [
             {
               "on": "pause",
               "target": "paused",
-              "description": "Stop new work without discarding issued calls or checked outputs."
+              "description": "Stop new work without discarding issued calls or checked outputs.",
+              "update": "clearHold"
             },
             {
               "on": "resume",
               "target": "active",
-              "description": "Continue eligible work on the original run under the operator's direction."
+              "description": "Continue eligible work on the original run under the operator's direction.",
+              "update": "clearHold"
             }
           ],
           "qualified": [
             {
               "on": "pause",
               "target": "qualified",
-              "description": "Keep the finished product qualified; pausing it creates no new work."
+              "description": "Keep the finished product qualified; pausing it creates no new work.",
+              "update": "clearHold"
             }
           ]
         },
@@ -654,170 +726,203 @@
           "paused": [
             {
               "on": "assess",
-              "action": "wait",
+              "outcome": "wait",
               "admission": "closed",
               "reason": "paused",
               "description": "Keep release and new work on hold.",
+              "update": "release-wait",
               "when": []
             }
           ],
           "qualified": [
             {
               "on": "assess",
-              "action": "wait",
+              "outcome": "wait",
               "admission": "closed",
               "reason": "qualified",
               "description": "Keep the qualified commit available for handoff; no more work is needed.",
-              "when": []
+              "update": "release-wait",
+              "when": [],
+              "settlesAfterExpiry": true
             }
           ],
           "blocked": [
             {
               "on": "assess",
-              "action": "wait",
+              "outcome": "wait",
               "admission": "closed",
               "reason": "blocked",
               "description": "Keep the recorded run blocker visible rather than working around it.",
+              "update": "release-wait",
               "when": []
             }
           ],
           "absent": [
             {
               "on": "assess",
-              "action": "none",
+              "outcome": "none",
               "admission": "open",
               "reason": "component-work",
               "description": "Allow ordinary component work without making a goal decision.",
+              "update": "release-none",
               "when": []
+            },
+            {
+              "on": "product-settled",
+              "action": "handoff-product",
+              "when": [
+                "oneOff",
+                "currentJoin",
+                "signedProduct",
+                "!alreadyHandedOff",
+                "!held"
+              ],
+              "description": "Hand off the exact settled product without stopping a run that has no goal evaluator."
             }
           ],
           "product-repin": [
             {
               "on": "assess",
-              "action": "wait",
+              "outcome": "wait",
               "admission": "closed",
               "reason": "product-repin-target-changed",
               "description": "Do not apply a product-checker upgrade to a different target.",
+              "update": "release-wait",
               "when": [
                 "moved"
               ]
             },
             {
               "on": "assess",
-              "action": "wait",
+              "outcome": "wait",
               "admission": "closed",
               "reason": "product-repin-held",
               "description": "Preserve the milestone hold while the upgraded check is outstanding.",
+              "update": "release-wait",
               "when": [
                 "held"
               ]
             },
             {
               "on": "assess",
-              "action": "wait",
+              "outcome": "wait",
               "admission": "closed",
               "reason": "awaiting-product-repin",
               "description": "Wait for the newly pinned product checker to verify the existing checkpoint.",
+              "update": "release-wait",
               "when": []
             }
           ],
           "superseded": [
             {
               "on": "assess",
-              "action": "wait",
+              "outcome": "wait",
               "admission": "checkpoint",
               "reason": "superseded-goal",
               "description": "Let independent work use the checked checkpoint while the original goal call settles.",
+              "update": "release-wait",
               "when": [
                 "scoped"
               ]
             },
             {
               "on": "assess",
-              "action": "wait",
+              "outcome": "wait",
               "admission": "closed",
               "reason": "superseded-goal",
               "description": "Wait for the outstanding goal call without issuing another one.",
+              "update": "release-wait",
               "when": []
             }
           ],
           "pending": [
             {
               "on": "assess",
-              "action": "wait",
+              "outcome": "wait",
               "admission": "checkpoint",
               "reason": "awaiting-goal-receipt",
               "description": "Let independent work use the checked checkpoint while the original goal call settles.",
+              "update": "release-wait",
               "when": [
                 "scoped"
               ]
             },
             {
               "on": "assess",
-              "action": "wait",
+              "outcome": "wait",
               "admission": "closed",
               "reason": "awaiting-goal-receipt",
               "description": "Wait for the outstanding goal call without issuing another one.",
+              "update": "release-wait",
               "when": []
             }
           ],
           "retired": [
             {
               "on": "assess",
-              "action": "none",
+              "outcome": "none",
               "admission": "open",
               "reason": "integrate-retained-work",
               "description": "Allow retained work to integrate without attributing a verdict to the retired runner.",
+              "update": "release-none",
               "when": []
             }
           ],
           "rejoining": [
             {
               "on": "assess",
-              "action": "none",
+              "outcome": "none",
               "admission": "join-only",
               "reason": "verify-current-product",
               "description": "Verify the assembled product without staffing new work.",
+              "update": "release-none",
               "when": []
             }
           ],
           "repin": [
             {
               "on": "assess",
-              "action": "assess",
+              "outcome": "assess",
               "admission": "closed",
               "reason": "evaluator-changed",
               "description": "Assess the existing product with the newly approved goal evaluator.",
-              "when": []
+              "update": "release-assess",
+              "when": [],
+              "action": "assess"
             }
           ],
           "new-product": [
             {
               "on": "assess",
-              "action": "assess",
+              "outcome": "assess",
               "admission": "closed",
               "reason": "new-checkpoint",
               "description": "Assess the goal on the new checkpoint, not the previous commit.",
-              "when": []
+              "update": "release-assess",
+              "when": [],
+              "action": "assess"
             }
           ],
           "incomplete": [
             {
               "on": "assess",
-              "action": "undecided",
+              "outcome": "undecided",
               "admission": "closed",
               "reason": "incomplete-goal",
               "description": "Report an undecided check rather than treating an interruption as a pass or gap.",
-              "when": []
+              "update": "release-undecided",
+              "when": [],
+              "action": "undecided"
             }
           ],
           "missing": [
             {
               "on": "assess",
-              "action": "wait",
+              "outcome": "wait",
               "admission": "repaired-checkpoint",
               "reason": "missing-evidence",
               "description": "Let scoped work produce a changed join; do not repeat the unavailable observation on unchanged bytes.",
+              "update": "release-wait",
               "when": [
                 "!retryEvidence",
                 "scoped",
@@ -826,10 +931,11 @@
             },
             {
               "on": "assess",
-              "action": "wait",
+              "outcome": "wait",
               "admission": "checkpoint",
               "reason": "missing-evidence",
               "description": "Allow independent checkpoint work but do not join or retry the goal.",
+              "update": "release-wait",
               "when": [
                 "!retryEvidence",
                 "scoped"
@@ -837,10 +943,11 @@
             },
             {
               "on": "assess",
-              "action": "wait",
+              "outcome": "wait",
               "admission": "closed",
               "reason": "missing-evidence",
               "description": "Keep the same target on hold until the missing observation is supplied.",
+              "update": "release-wait",
               "when": [
                 "!retryEvidence",
                 "!moved"
@@ -848,10 +955,11 @@
             },
             {
               "on": "assess",
-              "action": "wait",
+              "outcome": "wait",
               "admission": "closed",
               "reason": "missing-evidence",
               "description": "A target move alone does not justify another observation; no join is pending.",
+              "update": "release-wait",
               "when": [
                 "!retryEvidence",
                 "!join"
@@ -859,10 +967,11 @@
             },
             {
               "on": "assess",
-              "action": "wait",
+              "outcome": "wait",
               "admission": "closed",
               "reason": "missing-evidence",
               "description": "A milestone hold prevents integration while goal evidence is missing.",
+              "update": "release-wait",
               "when": [
                 "!retryEvidence",
                 "held"
@@ -870,146 +979,167 @@
             },
             {
               "on": "assess",
-              "action": "retry",
+              "outcome": "retry",
               "admission": "closed",
               "reason": "retry-evidence",
               "description": "Request a fresh observation on the unchanged target after the retry is authorized.",
+              "update": "release-retry",
               "when": [
                 "!moved"
-              ]
+              ],
+              "action": "retry"
             },
             {
               "on": "assess",
-              "action": "none",
+              "outcome": "none",
               "admission": "open",
               "reason": "milestone-held",
               "description": "Leave the milestone unresolved while eligible work continues.",
+              "update": "release-none",
               "when": [
                 "held"
               ]
             },
             {
               "on": "assess",
-              "action": "assess-target",
+              "outcome": "assess-target",
               "admission": "closed",
               "reason": "new-target",
               "description": "Assess the moved target directly when no product or assignments need carrying forward.",
+              "update": "release-assess-target",
               "when": [
                 "moved",
                 "!product",
                 "idle"
-              ]
+              ],
+              "action": "assess-target"
             },
             {
               "on": "assess",
-              "action": "rejoin",
+              "outcome": "rejoin",
               "admission": "open",
               "reason": "target-changed",
               "description": "Assemble retained work on the moved target instead of retrying the old goal.",
-              "when": []
+              "update": "release-rejoin",
+              "when": [],
+              "action": "rejoin"
             }
           ],
           "unmet": [
             {
               "on": "assess",
-              "action": "none",
+              "outcome": "none",
               "admission": "open",
               "reason": "milestone-held",
               "description": "Leave the milestone unresolved while eligible work continues.",
+              "update": "release-none",
               "when": [
                 "held"
               ]
             },
             {
               "on": "assess",
-              "action": "assess-target",
+              "outcome": "assess-target",
               "admission": "closed",
               "reason": "new-target",
               "description": "Assess the moved target directly when no product or assignments need carrying forward.",
+              "update": "release-assess-target",
               "when": [
                 "moved",
                 "!product",
                 "idle"
-              ]
+              ],
+              "action": "assess-target"
             },
             {
               "on": "assess",
-              "action": "rejoin",
+              "outcome": "rejoin",
               "admission": "open",
               "reason": "target-changed",
               "description": "Bring retained work onto the changed target before judging it.",
+              "update": "release-rejoin",
               "when": [
                 "moved"
-              ]
+              ],
+              "action": "rejoin"
             },
             {
               "on": "assess",
-              "action": "wait",
+              "outcome": "wait",
               "admission": "closed",
               "reason": "no-new-information",
               "description": "Wait for different evidence instead of assessing the same gap again.",
+              "update": "release-wait",
               "when": [
                 "stalled"
               ]
             },
             {
               "on": "assess",
-              "action": "none",
+              "outcome": "none",
               "admission": "open",
               "reason": "goal-unmet",
               "description": "Discover and admit work that addresses the observed gap.",
+              "update": "release-none",
               "when": []
             }
           ],
           "met": [
             {
               "on": "assess",
-              "action": "none",
+              "outcome": "none",
               "admission": "open",
               "reason": "milestone-held",
               "description": "Leave the milestone unresolved while eligible work continues.",
+              "update": "release-none",
               "when": [
                 "held"
               ]
             },
             {
               "on": "assess",
-              "action": "assess-target",
+              "outcome": "assess-target",
               "admission": "closed",
               "reason": "new-target",
               "description": "Assess the moved target directly when no product or assignments need carrying forward.",
+              "update": "release-assess-target",
               "when": [
                 "moved",
                 "!product",
                 "idle"
-              ]
+              ],
+              "action": "assess-target"
             },
             {
               "on": "assess",
-              "action": "rejoin",
+              "outcome": "rejoin",
               "admission": "open",
               "reason": "target-changed",
               "description": "Bring retained work onto the changed target before judging it.",
+              "update": "release-rejoin",
               "when": [
                 "moved"
-              ]
+              ],
+              "action": "rejoin"
             },
             {
               "on": "assess",
-              "action": "wait",
+              "outcome": "wait",
               "admission": "closed",
               "reason": "no-new-information",
               "description": "Wait for different evidence instead of assessing the same gap again.",
+              "update": "release-wait",
               "when": [
                 "stalled"
               ]
             },
             {
               "on": "assess",
-              "action": "wait",
+              "outcome": "wait",
               "admission": "checkpoint",
               "reason": "comparison-in-progress",
               "description": "Let a scoped comparison finish on the checkpoint before release.",
+              "update": "release-wait",
               "when": [
                 "review",
                 "scoped"
@@ -1017,30 +1147,33 @@
             },
             {
               "on": "assess",
-              "action": "wait",
+              "outcome": "wait",
               "admission": "closed",
               "reason": "comparison-in-progress",
               "description": "Wait for the outstanding comparison without admitting new work.",
+              "update": "release-wait",
               "when": [
                 "review"
               ]
             },
             {
               "on": "assess",
-              "action": "none",
+              "outcome": "none",
               "admission": "open",
               "reason": "include-admitted-work",
               "description": "Finish already admitted work before handing off a product.",
+              "update": "release-none",
               "when": [
                 "work"
               ]
             },
             {
               "on": "assess",
-              "action": "wait",
+              "outcome": "wait",
               "admission": "closed",
               "reason": "awaiting-baseline-product",
               "description": "Wait for the already reserved baseline product check.",
+              "update": "release-wait",
               "when": [
                 "!product",
                 "join"
@@ -1048,31 +1181,37 @@
             },
             {
               "on": "assess",
-              "action": "baseline",
+              "outcome": "baseline",
               "admission": "closed",
               "reason": "verify-baseline-product",
               "description": "Obtain the independent product pass even when the baseline goal already passes.",
+              "update": "release-baseline",
               "when": [
                 "!product"
-              ]
+              ],
+              "action": "baseline"
             },
             {
               "on": "assess",
-              "action": "qualify",
+              "outcome": "qualify",
               "admission": "closed",
               "reason": "exact-checks-passed",
               "description": "Hand off the exact commit supported by both current checks.",
+              "update": "release-qualify",
               "when": [
                 "exactProduct",
                 "!join"
-              ]
+              ],
+              "action": "qualify",
+              "settlesAfterExpiry": true
             },
             {
               "on": "assess",
-              "action": "wait",
+              "outcome": "wait",
               "admission": "closed",
               "reason": "awaiting-exact-product",
               "description": "A goal pass alone does not prove this exact product can be released.",
+              "update": "release-wait",
               "when": []
             }
           ]
@@ -1115,6 +1254,14 @@
             },
             {
               "on": "verified",
+              "action": "record-status",
+              "reason": "Record the verified non-disconnect outcome without issuing another workflow.",
+              "when": [
+                "!disconnected"
+              ]
+            },
+            {
+              "on": "verified",
               "action": "wait",
               "reason": "No proven, unused provider recovery",
               "when": []
@@ -1135,82 +1282,74 @@
           "idle": [
             {
               "on": "inspect",
-              "action": "settled",
-              "reason": "No mutable assignment",
-              "when": []
+              "target": "idle",
+              "description": "No mutable assignment"
             }
           ],
           "qualified": [
             {
               "on": "inspect",
-              "action": "settled",
-              "reason": "No mutable assignment",
-              "when": []
+              "target": "qualified",
+              "description": "No mutable assignment"
             }
           ],
           "repeated": [
             {
               "on": "inspect",
-              "action": "settled",
-              "reason": "No mutable assignment",
-              "when": []
+              "target": "repeated",
+              "description": "No mutable assignment"
             }
           ],
           "blocked": [
             {
               "on": "inspect",
-              "action": "settled",
-              "reason": "No mutable assignment",
-              "when": []
+              "target": "blocked",
+              "description": "No mutable assignment"
             }
           ],
           "writing": [
             {
               "on": "inspect",
-              "action": "hold",
               "reason": "Current writer reservation",
-              "when": []
+              "update": "hold-assignment"
             }
           ],
           "checking": [
             {
               "on": "inspect",
-              "action": "hold",
               "reason": "Current component observation",
-              "when": []
+              "update": "hold-assignment"
             }
           ],
           "waiting": [
             {
               "on": "inspect",
-              "action": "retain",
-              "reason": "Keep the unavailable attempt outside the adopted product",
               "when": [
                 "retarget",
                 "unissuedUnavailable"
-              ]
+              ],
+              "reason": "Keep the unavailable attempt outside the adopted product",
+              "update": "retain-unavailable-check"
             },
             {
               "on": "inspect",
-              "action": "hold",
               "reason": "A pending assignment still needs scheduler admission",
-              "when": []
+              "update": "hold-assignment"
             }
           ],
           "published": [
             {
               "on": "inspect",
-              "action": "settled",
-              "reason": "Recheck the published output on the adopted assembly",
+              "target": "published",
+              "description": "Recheck the published output on the adopted assembly",
               "when": [
                 "retarget"
               ]
             },
             {
               "on": "inspect",
-              "action": "hold",
               "reason": "Pending integration",
-              "when": []
+              "update": "hold-assignment"
             }
           ]
         },
@@ -1236,41 +1375,75 @@
             {
               "on": "presenting",
               "target": "presenting",
-              "description": "Present this unanswered question to its owner."
+              "description": "Present this unanswered question to its owner.",
+              "update": "recordPresentation",
+              "action": "present-question"
             },
             {
               "on": "unavailable",
               "target": "unavailable",
-              "description": "Retain the question and delivery failure without inferring an answer."
+              "description": "Retain the question and delivery failure without inferring an answer.",
+              "update": "recordDeliveryFailure",
+              "guard": "unpresented",
+              "when": [
+                "unpresented"
+              ]
             }
           ],
           "presenting": [
             {
               "on": "answered",
               "target": "answered",
-              "description": "Record the reply to this exact presentation."
+              "description": "Record the reply to this exact presentation.",
+              "guard": "samePresentation",
+              "when": [
+                "samePresentation"
+              ],
+              "update": "recordAnswer"
             },
             {
               "on": "dismissed",
               "target": "dismissed",
-              "description": "Preserve the dismissal; silence is not approval."
+              "description": "Preserve the dismissal; silence is not approval.",
+              "guard": "samePresentation",
+              "when": [
+                "samePresentation"
+              ],
+              "update": "dismissQuestion"
             },
             {
               "on": "unavailable",
               "target": "unavailable",
-              "description": "Retain the question and delivery failure without inferring an answer."
+              "description": "Retain the question and delivery failure without inferring an answer.",
+              "update": "recordDeliveryFailure",
+              "guard": "samePresentation",
+              "when": [
+                "samePresentation"
+              ]
             },
             {
               "on": "reopen",
               "target": "presenting",
-              "description": "Present the same lost question again on explicit recovery."
+              "description": "Present the same lost question again on explicit recovery.",
+              "update": "recordPresentation",
+              "action": "present-question",
+              "guard": "samePresentation",
+              "when": [
+                "samePresentation"
+              ]
             }
           ],
           "unavailable": [
             {
               "on": "reopen",
               "target": "presenting",
-              "description": "Present the same lost question again on explicit recovery."
+              "description": "Present the same lost question again on explicit recovery.",
+              "update": "recordPresentation",
+              "action": "present-question",
+              "guard": "samePresentation",
+              "when": [
+                "samePresentation"
+              ]
             }
           ],
           "answered": [],
@@ -1298,7 +1471,8 @@
               "description": "Keep the saved report on hold because its inputs or ownership conflict.",
               "when": [
                 "conflict"
-              ]
+              ],
+              "update": "record-renewal-pins"
             },
             {
               "on": "evidence",
@@ -1306,12 +1480,16 @@
               "description": "Use the original report after its inputs and current permissions have been revalidated.",
               "when": [
                 "permitted"
-              ]
+              ],
+              "update": "record-renewal-pins",
+              "action": "admit-report"
             },
             {
               "on": "evidence",
               "target": "needed",
-              "description": "Keep the eligible report until the issuing session has permission to admit it."
+              "description": "Keep the eligible report until the issuing session has permission to admit it.",
+              "when": [],
+              "update": "record-renewal-pins"
             }
           ],
           "held": [
@@ -1321,7 +1499,8 @@
               "description": "Keep the saved report on hold because its inputs or ownership conflict.",
               "when": [
                 "conflict"
-              ]
+              ],
+              "update": "record-renewal-pins"
             },
             {
               "on": "evidence",
@@ -1329,12 +1508,16 @@
               "description": "Use the original report after its inputs and current permissions have been revalidated.",
               "when": [
                 "permitted"
-              ]
+              ],
+              "update": "record-renewal-pins",
+              "action": "admit-report"
             },
             {
               "on": "evidence",
               "target": "needed",
-              "description": "Keep the eligible report until the issuing session has permission to admit it."
+              "description": "Keep the eligible report until the issuing session has permission to admit it.",
+              "when": [],
+              "update": "record-renewal-pins"
             }
           ],
           "needed": [
@@ -1344,7 +1527,8 @@
               "description": "Keep the saved report on hold because its inputs or ownership conflict.",
               "when": [
                 "conflict"
-              ]
+              ],
+              "update": "record-renewal-pins"
             },
             {
               "on": "evidence",
@@ -1352,12 +1536,16 @@
               "description": "Use the original report after its inputs and current permissions have been revalidated.",
               "when": [
                 "permitted"
-              ]
+              ],
+              "update": "record-renewal-pins",
+              "action": "admit-report"
             },
             {
               "on": "evidence",
               "target": "needed",
-              "description": "Keep the eligible report until the issuing session has permission to admit it."
+              "description": "Keep the eligible report until the issuing session has permission to admit it.",
+              "when": [],
+              "update": "record-renewal-pins"
             }
           ],
           "approved": [
@@ -1367,7 +1555,8 @@
               "description": "Keep the saved report on hold because its inputs or ownership conflict.",
               "when": [
                 "conflict"
-              ]
+              ],
+              "update": "record-renewal-pins"
             },
             {
               "on": "evidence",
@@ -1375,17 +1564,23 @@
               "description": "Use the original report after its inputs and current permissions have been revalidated.",
               "when": [
                 "permitted"
-              ]
+              ],
+              "update": "record-renewal-pins",
+              "action": "admit-report"
             },
             {
               "on": "evidence",
               "target": "needed",
-              "description": "Keep the eligible report until the issuing session has permission to admit it."
+              "description": "Keep the eligible report until the issuing session has permission to admit it.",
+              "when": [],
+              "update": "record-renewal-pins"
             },
             {
               "on": "invalid",
               "target": "closed",
-              "description": "Retain the admission error rather than rerunning or silently changing the report."
+              "description": "Retain the admission error rather than rerunning or silently changing the report.",
+              "when": [],
+              "update": "record-renewal-pins"
             }
           ],
           "presenting": [],
@@ -1403,6 +1598,1368 @@
           }
         }
       },
+      "scheduling": {
+        "id": "scheduling",
+        "initial": "ready",
+        "states": {
+          "ready": [
+            {
+              "on": "plan",
+              "target": "done",
+              "description": "Leave an inactive run untouched.",
+              "when": [
+                "!active"
+              ]
+            },
+            {
+              "on": "plan",
+              "target": "done",
+              "description": "The deadline passed without the exact timely receipts needed for settlement.",
+              "when": [
+                "elapsed",
+                "!timely"
+              ]
+            },
+            {
+              "on": "plan",
+              "target": "done",
+              "description": "This session is neither the owner nor a recorded participant.",
+              "when": [
+                "!participant"
+              ]
+            },
+            {
+              "on": "plan",
+              "target": "route",
+              "description": "Read the target once for this planning pass.",
+              "when": [],
+              "action": "observe-target"
+            }
+          ],
+          "route": [
+            {
+              "on": "plan",
+              "target": "done",
+              "description": "Wait for the target to be observable.",
+              "when": [
+                "!targetKnown"
+              ]
+            },
+            {
+              "on": "plan",
+              "target": "delivery",
+              "description": "An approved delivery takes precedence over ordinary work.",
+              "when": [
+                "delivery"
+              ]
+            },
+            {
+              "on": "plan",
+              "target": "isolated",
+              "description": "Read the approved subset's own product evidence.",
+              "when": [
+                "independent",
+                "owner",
+                "!elapsed",
+                "hasJoin"
+              ],
+              "action": "read-isolation"
+            },
+            {
+              "on": "plan",
+              "target": "done",
+              "description": "Do not advance an independent checkpoint without its owner, time and pending join.",
+              "when": [
+                "independent"
+              ]
+            },
+            {
+              "on": "plan",
+              "target": "expired",
+              "description": "After the deadline only timely, completed observations may settle.",
+              "when": [
+                "elapsed"
+              ]
+            },
+            {
+              "on": "plan",
+              "target": "reports",
+              "description": "Finish previous writer reservations and notices before considering reports.",
+              "when": [],
+              "action": "reconcile-writers"
+            }
+          ],
+          "delivery": [
+            {
+              "on": "plan",
+              "target": "done",
+              "description": "Settle only the approved delivery on this target.",
+              "when": [
+                "owner",
+                "!elapsed"
+              ],
+              "action": "advance-delivery"
+            },
+            {
+              "on": "plan",
+              "target": "done",
+              "description": "Leave delivery to its owner before the deadline.",
+              "when": []
+            }
+          ],
+          "isolated": [
+            {
+              "on": "plan",
+              "target": "done",
+              "description": "Wait for a current, unheld isolation and its runner-owned receipt.",
+              "when": [
+                "!isolatedReceipt"
+              ]
+            },
+            {
+              "on": "plan",
+              "target": "done",
+              "description": "Record the checked subset and reserve its goal assessment, not a release.",
+              "when": [
+                "isolatedPass"
+              ],
+              "action": "accept-isolation"
+            },
+            {
+              "on": "plan",
+              "target": "done",
+              "description": "Keep the failed subset's own product diagnostic.",
+              "when": [],
+              "action": "reject-isolation"
+            }
+          ],
+          "expired": [
+            {
+              "on": "plan",
+              "target": "done",
+              "description": "Settle timely checks on the unchanged target without admitting work.",
+              "when": [
+                "sameGoalTarget",
+                "!liveWriter"
+              ],
+              "action": "settle-timely"
+            },
+            {
+              "on": "plan",
+              "target": "done",
+              "description": "Do not settle a moved target or an unfinished writer after expiry.",
+              "when": []
+            }
+          ],
+          "reports": [
+            {
+              "on": "plan",
+              "target": "inputs",
+              "description": "Apply completed reports and reconsider eligible original reports at their pins.",
+              "when": [],
+              "action": "settle-reports"
+            }
+          ],
+          "inputs": [
+            {
+              "on": "plan",
+              "target": "renewal",
+              "description": "Drain reports whose missing producers have now been declared.",
+              "when": [
+                "currentInputs"
+              ],
+              "action": "admit-arrivals"
+            },
+            {
+              "on": "plan",
+              "target": "renewal",
+              "description": "No current owner admission of newly declared inputs is possible.",
+              "when": []
+            }
+          ],
+          "renewal": [
+            {
+              "on": "plan",
+              "target": "checks",
+              "description": "Revalidate eligible reports without replaying their scouts.",
+              "when": [
+                "owner"
+              ],
+              "action": "renew-reports"
+            },
+            {
+              "on": "plan",
+              "target": "checks",
+              "description": "A participant cannot renew the owner's reports.",
+              "when": []
+            }
+          ],
+          "checks": [
+            {
+              "on": "plan",
+              "target": "retries",
+              "description": "Apply available component and product receipts before making reservations.",
+              "when": [],
+              "action": "settle-checks"
+            }
+          ],
+          "retries": [
+            {
+              "on": "conflict",
+              "target": "done",
+              "description": "Keep the planning diagnostic and any work already settled on this snapshot.",
+              "action": "record-conflict"
+            },
+            {
+              "on": "plan",
+              "target": "release",
+              "description": "Reserve eligible interrupted reads within the remaining budgets.",
+              "when": [],
+              "action": "retry-readers"
+            }
+          ],
+          "release": [
+            {
+              "on": "conflict",
+              "target": "done",
+              "description": "Keep the planning diagnostic and any work already settled on this snapshot.",
+              "action": "record-conflict"
+            },
+            {
+              "on": "plan",
+              "target": "admission",
+              "description": "Ask the release machine what work may proceed and report unowned blockers.",
+              "when": [],
+              "action": "assess-release"
+            }
+          ],
+          "admission": [
+            {
+              "on": "conflict",
+              "target": "done",
+              "description": "Keep the planning diagnostic and any work already settled on this snapshot.",
+              "action": "record-conflict"
+            },
+            {
+              "on": "plan",
+              "target": "done",
+              "description": "The release decision admits no more work in this pass.",
+              "when": [
+                "!admitted"
+              ]
+            },
+            {
+              "on": "plan",
+              "target": "allocation",
+              "description": "Revalidate moved-target outputs and take the current reservation capacity.",
+              "when": [],
+              "action": "prepare-admission"
+            }
+          ],
+          "allocation": [
+            {
+              "on": "conflict",
+              "target": "done",
+              "description": "Keep the planning diagnostic and any work already settled on this snapshot.",
+              "action": "record-conflict"
+            },
+            {
+              "on": "plan",
+              "target": "outputs",
+              "description": "Staff eligible waiting writers first, checking their inputs at each reservation.",
+              "when": [
+                "writerSlot"
+              ],
+              "action": "allocate-writers"
+            },
+            {
+              "on": "plan",
+              "target": "outputs",
+              "description": "No writer is admissible or no slot is free; already checked outputs still matter.",
+              "when": []
+            }
+          ],
+          "outputs": [
+            {
+              "on": "plan",
+              "target": "join",
+              "description": "Keep the current goal observation and select the permitted product inputs.",
+              "when": [],
+              "action": "collect-outputs"
+            }
+          ],
+          "join": [
+            {
+              "on": "conflict",
+              "target": "done",
+              "description": "Keep the planning diagnostic and any work already settled on this snapshot.",
+              "action": "record-conflict"
+            },
+            {
+              "on": "plan",
+              "target": "after-join",
+              "description": "There is no permitted set of checked outputs to integrate.",
+              "when": [
+                "!outputs"
+              ]
+            },
+            {
+              "on": "plan",
+              "target": "after-join",
+              "description": "These exact outputs already have their join on this target.",
+              "when": [
+                "sameJoin"
+              ]
+            },
+            {
+              "on": "plan",
+              "target": "after-join",
+              "description": "An outstanding product check still owns its original join.",
+              "when": [
+                "outstandingProduct"
+              ]
+            },
+            {
+              "on": "plan",
+              "target": "assembly",
+              "description": "Build the candidate Git commit and verify its input pins. Assembly is not qualification.",
+              "when": [],
+              "action": "assemble-outputs"
+            }
+          ],
+          "assembly": [
+            {
+              "on": "conflict",
+              "target": "done",
+              "description": "Keep the planning diagnostic and any work already settled on this snapshot.",
+              "action": "record-conflict"
+            },
+            {
+              "on": "plan",
+              "target": "survivors",
+              "description": "Settle a matching surviving join or clear an obsolete one after excluding incompatible inputs.",
+              "when": [
+                "excluded"
+              ],
+              "action": "settle-survivors"
+            },
+            {
+              "on": "plan",
+              "target": "novelty",
+              "description": "Compare the assembled tree with already assessed work before reserving a check.",
+              "when": [],
+              "action": "compare-assembly"
+            }
+          ],
+          "survivors": [
+            {
+              "on": "conflict",
+              "target": "done",
+              "description": "Keep the planning diagnostic and any work already settled on this snapshot.",
+              "action": "record-conflict"
+            },
+            {
+              "on": "plan",
+              "target": "readmission",
+              "description": "Ask release again after the incompatible outputs were stopped.",
+              "when": [
+                "hasGoal"
+              ],
+              "action": "reassess-survivors"
+            },
+            {
+              "on": "plan",
+              "target": "join",
+              "description": "Recompute the component-only join from the surviving outputs.",
+              "when": [],
+              "action": "refresh-outputs"
+            }
+          ],
+          "readmission": [
+            {
+              "on": "conflict",
+              "target": "done",
+              "description": "Keep the planning diagnostic and any work already settled on this snapshot.",
+              "action": "record-conflict"
+            },
+            {
+              "on": "plan",
+              "target": "done",
+              "description": "The new release assessment closes admission.",
+              "when": [
+                "!admitted"
+              ]
+            },
+            {
+              "on": "plan",
+              "target": "join",
+              "description": "Select the remaining outputs under the new admission and reconsider their join.",
+              "when": [],
+              "action": "refresh-outputs"
+            }
+          ],
+          "novelty": [
+            {
+              "on": "conflict",
+              "target": "done",
+              "description": "Keep the planning diagnostic and any work already settled on this snapshot.",
+              "action": "record-conflict"
+            },
+            {
+              "on": "plan",
+              "target": "after-join",
+              "description": "Do not reserve a product check for a repeated or unchanged assessment.",
+              "when": [
+                "noNewProduct"
+              ]
+            },
+            {
+              "on": "plan",
+              "target": "after-join",
+              "description": "Reserve the distinct product evaluator for this exact assembly; do not mark it passed.",
+              "when": [],
+              "action": "reserve-product"
+            }
+          ],
+          "after-join": [
+            {
+              "on": "conflict",
+              "target": "done",
+              "description": "Keep the planning diagnostic and any work already settled on this snapshot.",
+              "action": "record-conflict"
+            },
+            {
+              "on": "plan",
+              "target": "discovery",
+              "description": "Reassess a passing goal after its last outstanding waiter was stopped.",
+              "when": [
+                "recheckStopped"
+              ],
+              "action": "reassess-stopped"
+            },
+            {
+              "on": "plan",
+              "target": "discovery",
+              "description": "Continue with the existing goal observation.",
+              "when": []
+            }
+          ],
+          "discovery": [
+            {
+              "on": "plan",
+              "target": "done",
+              "description": "The run is no longer active.",
+              "when": [
+                "!active"
+              ]
+            },
+            {
+              "on": "plan",
+              "target": "done",
+              "description": "This admission does not permit discovery.",
+              "when": [
+                "!mayDiscover"
+              ]
+            },
+            {
+              "on": "plan",
+              "target": "done",
+              "description": "All remaining assignments were reserved.",
+              "when": [
+                "!budget"
+              ]
+            },
+            {
+              "on": "plan",
+              "target": "progress",
+              "description": "Offer eligible scouts the remaining capacity, protecting the admitted writer queue.",
+              "when": [
+                "surveyDue"
+              ],
+              "action": "reserve-surveys"
+            },
+            {
+              "on": "plan",
+              "target": "done",
+              "description": "No survey is due on this revision.",
+              "when": []
+            }
+          ],
+          "progress": [
+            {
+              "on": "plan",
+              "target": "done",
+              "description": "Record the unmet goal only after work and all current surveys have settled.",
+              "when": [
+                "unmet",
+                "!pendingWork",
+                "surveysFinished"
+              ],
+              "action": "record-stall"
+            },
+            {
+              "on": "plan",
+              "target": "done",
+              "description": "A goal, assignment, join or survey still has its own next observation.",
+              "when": []
+            }
+          ],
+          "done": []
+        },
+        "info": {
+          "description": "Plans one pass on the caller's private ledger snapshot. No planning phase survives the pass or grants release.",
+          "states": {
+            "ready": "Check activity, deadline and issuer before observing a target.",
+            "route": "Choose the kind of planning allowed on the observed target.",
+            "delivery": "Only the approved delivery may advance.",
+            "isolated": "The non-release subset has its own product observation.",
+            "expired": "Only already completed checks may still matter.",
+            "reports": "Completed or blocked reviews may change the dependency graph.",
+            "inputs": "A later producer may have released a previously rejected report.",
+            "renewal": "An owner may renew a report on revalidated inputs.",
+            "checks": "Current receipts may publish, stop or repair work.",
+            "retries": "Interrupted readers may use a remaining reservation.",
+            "release": "The current obligations and receipts determine admission.",
+            "admission": "The release decision bounds this pass.",
+            "allocation": "Waiting writers have priority over speculative discovery.",
+            "outputs": "Snapshot the goal evidence and admissible outputs after staffing.",
+            "join": "Choose whether the checked outputs need a new assembly.",
+            "assembly": "Input compatibility determines whether the assembled set survives.",
+            "survivors": "An exclusion may have changed release eligibility.",
+            "readmission": "Use the revised permission for the surviving join.",
+            "novelty": "Only a distinct, permitted assembly needs a product reservation.",
+            "after-join": "A stopped waiter can change a passing goal's release decision.",
+            "discovery": "Check the remaining authority and need for surveys.",
+            "progress": "Distinguish a demonstrated stall from outstanding work.",
+            "done": "This pass has no further steps. The caller still owns the snapshot commit."
+          }
+        }
+      },
+      "reconciliation": {
+        "id": "reconciliation",
+        "initial": "idle",
+        "states": {
+          "idle": [
+            {
+              "on": "wake",
+              "target": "done",
+              "description": "Keep the observation dirty until this session can execute again.",
+              "when": [
+                "!executable"
+              ],
+              "action": "retain-wake"
+            },
+            {
+              "on": "wake",
+              "target": "inspecting",
+              "description": "Read the ledger and arm observation before considering any work.",
+              "when": [],
+              "action": "inspect-issuer"
+            },
+            {
+              "on": "verify-batch",
+              "target": "permission",
+              "description": "Check an existing prepared call or explicit check without entering ordinary reconciliation.",
+              "when": [],
+              "action": "sample-batch"
+            }
+          ],
+          "inspecting": [
+            {
+              "on": "inspected",
+              "target": "held",
+              "description": "Recheck only this issuer's unexpired managed hold.",
+              "when": [
+                "ownHold",
+                "!expired"
+              ],
+              "action": "sample-policy"
+            },
+            {
+              "on": "inspected",
+              "target": "recovering",
+              "description": "Verify the original bound continuations, without replacing their workflows.",
+              "when": [
+                "active",
+                "!expired",
+                "continuations"
+              ],
+              "action": "continue-workflows"
+            },
+            {
+              "on": "inspected",
+              "target": "lanes",
+              "description": "Observe originals independently of planning; no continuation is due.",
+              "when": [],
+              "fork": [
+                "history",
+                "dispatch"
+              ]
+            }
+          ],
+          "held": [
+            {
+              "on": "policy",
+              "target": "recovering",
+              "description": "Revalidate the exact token and deadline under lock; an operator pause wins.",
+              "when": [
+                "permitted"
+              ],
+              "action": "clear-hold"
+            },
+            {
+              "on": "policy",
+              "target": "lanes",
+              "description": "Keep the protected hold; observation does not authorize dispatch.",
+              "when": [],
+              "fork": [
+                "history",
+                "dispatch"
+              ]
+            }
+          ],
+          "recovering": [
+            {
+              "on": "recovered",
+              "target": "lanes",
+              "description": "Continue from the ledger after checking the original hold or workflows.",
+              "when": [],
+              "fork": [
+                "history",
+                "dispatch"
+              ]
+            }
+          ],
+          "lanes": [
+            {
+              "on": "history",
+              "target": "history",
+              "description": "Attach to original calls from this issuer without waiting for or replaying a dispatch.",
+              "when": [
+                "!closed",
+                "recoverCalls"
+              ],
+              "action": "read-originals"
+            },
+            {
+              "on": "history",
+              "target": "done",
+              "description": "No history lookup is requested on this wake.",
+              "when": []
+            },
+            {
+              "on": "dispatch",
+              "target": "planning",
+              "description": "Plan against the current ledger without waiting for unrelated native history.",
+              "when": [
+                "!closed"
+              ],
+              "action": "plan"
+            },
+            {
+              "on": "dispatch",
+              "target": "done",
+              "description": "Do not plan after this runtime closes.",
+              "when": []
+            }
+          ],
+          "history": [
+            {
+              "on": "completion",
+              "target": "history",
+              "description": "A terminal original reply may have freed a slot; wake planning without another lookup.",
+              "when": [
+                "terminal"
+              ],
+              "action": "refill"
+            },
+            {
+              "on": "completion",
+              "target": "history",
+              "description": "An unconfirmed original keeps its reservation and cannot free a slot.",
+              "when": []
+            },
+            {
+              "on": "drained",
+              "target": "done",
+              "description": "All requested original-call reads for this pass have returned.",
+              "when": []
+            }
+          ],
+          "planning": [
+            {
+              "on": "planned",
+              "target": "done",
+              "description": "The issuer closed during planning; do not install observers or dispatch.",
+              "when": [
+                "closed"
+              ]
+            },
+            {
+              "on": "planned",
+              "target": "renewal",
+              "description": "Sample fresh permission before renewing the owner's original report.",
+              "when": [
+                "!missingTarget",
+                "owner",
+                "active",
+                "!expired",
+                "renewalDue"
+              ],
+              "action": "sample-policy"
+            },
+            {
+              "on": "planned",
+              "target": "offering",
+              "description": "Observe the committed plan and choose this issuer's outstanding work.",
+              "when": [],
+              "action": "watch-plan"
+            }
+          ],
+          "renewal": [
+            {
+              "on": "policy",
+              "target": "done",
+              "description": "Do not renew a report or install observers after close.",
+              "when": [
+                "closed"
+              ]
+            },
+            {
+              "on": "policy",
+              "target": "renewing",
+              "description": "Replan the same run with permission to revalidate its original report.",
+              "when": [
+                "permitted"
+              ],
+              "action": "renew"
+            },
+            {
+              "on": "policy",
+              "target": "offering",
+              "description": "Observe the issuer's permission and retain the original renewal.",
+              "when": [],
+              "action": "watch-held-renewal"
+            }
+          ],
+          "renewing": [
+            {
+              "on": "planned",
+              "target": "done",
+              "description": "The issuer closed during planning; do not install observers or dispatch.",
+              "when": [
+                "closed"
+              ]
+            },
+            {
+              "on": "planned",
+              "target": "offering",
+              "description": "Observe the committed plan and choose this issuer's outstanding work.",
+              "when": [],
+              "action": "watch-plan"
+            }
+          ],
+          "offering": [
+            {
+              "on": "work",
+              "target": "done",
+              "description": "Wait for the target to be readable; do not dispatch against a missing ref.",
+              "when": [
+                "missingTarget"
+              ]
+            },
+            {
+              "on": "work",
+              "target": "done",
+              "description": "Keep an inactive run stopped; only its already-qualified handoff can be delivered.",
+              "when": [
+                "!active",
+                "!handoff"
+              ]
+            },
+            {
+              "on": "work",
+              "target": "done",
+              "description": "A later eligible turn can deliver a timely final handoff, not start new work.",
+              "when": [
+                "expired",
+                "!handoff"
+              ]
+            },
+            {
+              "on": "work",
+              "target": "reservations",
+              "description": "Present the active owner's outstanding question independently of eligible reservations.",
+              "when": [
+                "owner",
+                "active",
+                "!expired",
+                "question"
+              ],
+              "action": "offer-question"
+            },
+            {
+              "on": "work",
+              "target": "reservations",
+              "description": "Consider only reservations belonging to this issuer.",
+              "when": [],
+              "action": "offer-batch"
+            }
+          ],
+          "reservations": [
+            {
+              "on": "batch",
+              "target": "permission",
+              "description": "Sample current policy for the selected reservations, outside the write lock.",
+              "when": [
+                "hasBatch"
+              ],
+              "action": "sample-batch"
+            },
+            {
+              "on": "batch",
+              "target": "done",
+              "description": "There is no eligible unissued batch. An outstanding call is not a new job.",
+              "when": []
+            }
+          ],
+          "permission": [
+            {
+              "on": "sampled",
+              "target": "done",
+              "description": "A changed execution mode cannot enable calls or place a run on hold.",
+              "when": [
+                "!executable"
+              ],
+              "action": "decline-mode"
+            },
+            {
+              "on": "sampled",
+              "target": "recording",
+              "description": "Protect the active run on its issuer's still-current reservation.",
+              "when": [
+                "managed"
+              ],
+              "action": "hold-run"
+            },
+            {
+              "on": "sampled",
+              "target": "recording",
+              "description": "Record the local block only on this issuer's eligible reservations.",
+              "when": [
+                "blocked"
+              ],
+              "action": "hold-issuer"
+            },
+            {
+              "on": "sampled",
+              "target": "recording",
+              "description": "Clear old local holds only if the sampled batch is still current.",
+              "when": [
+                "hadHolds"
+              ],
+              "action": "release-batch"
+            },
+            {
+              "on": "sampled",
+              "target": "enabling",
+              "description": "The sampled batch has permission and no earlier hold to update.",
+              "when": [],
+              "action": "enable"
+            }
+          ],
+          "recording": [
+            {
+              "on": "recorded",
+              "target": "done",
+              "description": "A live hold or changed reservation prevents this batch from issuing.",
+              "when": [
+                "!permitted"
+              ]
+            },
+            {
+              "on": "recorded",
+              "target": "enabling",
+              "description": "The same eligible reservations have been released.",
+              "when": [],
+              "action": "enable"
+            }
+          ],
+          "enabling": [
+            {
+              "on": "authorized",
+              "target": "done",
+              "description": "Return the permission decision to the explicit caller; it owns the claim.",
+              "when": [
+                "checkOnly"
+              ]
+            },
+            {
+              "on": "authorized",
+              "target": "native",
+              "description": "Revalidate the pool match and claim only the same still-ready reservations.",
+              "when": [
+                "pooled"
+              ],
+              "action": "send-matched"
+            },
+            {
+              "on": "authorized",
+              "target": "done",
+              "description": "Exposing a held prepared call enables planning, not automatic replay.",
+              "when": [
+                "!ready"
+              ],
+              "action": "refill"
+            },
+            {
+              "on": "authorized",
+              "target": "dispatching",
+              "description": "Dispatch the permitted scout, writer-pool and direct native groups independently.",
+              "when": [],
+              "action": "group-batch",
+              "fork": [
+                "scouts",
+                "writers",
+                "calls"
+              ]
+            }
+          ],
+          "dispatching": [
+            {
+              "on": "scouts",
+              "target": "done",
+              "description": "Claim each native workflow batch before launching it; isolate frozen-reference readers.",
+              "when": [
+                "jobs",
+                "!capacityWait"
+              ],
+              "action": "launch-scouts"
+            },
+            {
+              "on": "scouts",
+              "target": "done",
+              "description": "Absent or capacity-queued scouts need no launch on this pass.",
+              "when": []
+            },
+            {
+              "on": "writers",
+              "target": "matching",
+              "description": "Find eligible idle writers across the ready create reservations.",
+              "when": [
+                "jobs",
+                "pool"
+              ],
+              "action": "match-writers"
+            },
+            {
+              "on": "writers",
+              "target": "native",
+              "description": "Use fresh creates when native writer matching is unavailable.",
+              "when": [
+                "jobs"
+              ],
+              "action": "send-writers"
+            },
+            {
+              "on": "writers",
+              "target": "done",
+              "description": "There is no ready writer to match or launch.",
+              "when": []
+            },
+            {
+              "on": "calls",
+              "target": "native",
+              "description": "Claim and send independent native reservations without waiting for writer matching.",
+              "when": [
+                "jobs"
+              ],
+              "action": "send-calls"
+            },
+            {
+              "on": "calls",
+              "target": "done",
+              "description": "There are no direct native calls in this batch.",
+              "when": []
+            }
+          ],
+          "matching": [
+            {
+              "on": "matched",
+              "target": "permission",
+              "description": "Sample the original writer reservations' permissions again after the host lookup.",
+              "when": [
+                "!closed"
+              ],
+              "action": "sample-writer-batch"
+            },
+            {
+              "on": "matched",
+              "target": "done",
+              "description": "The issuer closed while matching writers; keep their reservations.",
+              "when": []
+            }
+          ],
+          "native": [
+            {
+              "on": "issued",
+              "target": "native",
+              "description": "The journaled goal opens eligible checkpoint discovery before its native reply.",
+              "when": [
+                "checkpointGoal",
+                "checkpointReviews"
+              ],
+              "action": "wake-checkpoint"
+            },
+            {
+              "on": "issued",
+              "target": "native",
+              "description": "Wait for the original call without opening checkpoint discovery.",
+              "when": []
+            },
+            {
+              "on": "attempt",
+              "target": "done",
+              "description": "A stale protected evaluator approval waits for a later eligible turn.",
+              "when": [
+                "!claimed",
+                "pinnedCheck"
+              ]
+            },
+            {
+              "on": "attempt",
+              "target": "done",
+              "description": "Reconcile from the ledger after the attempted call, never by repeating its request.",
+              "when": [],
+              "action": "refill"
+            }
+          ],
+          "done": []
+        },
+        "info": {
+          "description": "Coordinates one transient wake of an issuing session. The ledger, not this pass, owns reservations and evidence.",
+          "states": {
+            "idle": "A turn, receipt or observer has requested reconciliation.",
+            "inspecting": "The issuing session is executable; inspect its actual obligations.",
+            "held": "Only the original managed permission hold is being sampled.",
+            "recovering": "A guarded hold or original workflow continuation is being reconciled.",
+            "lanes": "Native history and dispatch start from this same point without waiting for one another.",
+            "history": "Read only eligible original requests and their matching completions.",
+            "planning": "Plan eligible work and look for a report that needs the owner's permission.",
+            "renewal": "The owner needs fresh permission to renew an original report.",
+            "renewing": "Revalidate the renewal and commit the resulting plan.",
+            "offering": "Select allowed work from the observed plan, including a final handoff if due.",
+            "reservations": "Check whether this issuer has a batch to authorize.",
+            "permission": "Only a fresh policy and execution mode can enable this batch.",
+            "recording": "Revalidate the original batch against the live ledger before setting or releasing a hold.",
+            "enabling": "Choose which work the sampled permission enables.",
+            "dispatching": "Scouts, writer creates and direct calls have independent native routes.",
+            "matching": "Match ready writers without holding the ledger lock.",
+            "native": "Individual ledger claims and matching replies determine what the issuer can do next.",
+            "done": "This branch of the wake owes no more work."
+          }
+        }
+      },
+      "release-preflight": {
+        "id": "release-preflight",
+        "initial": "clock",
+        "states": {
+          "clock": [
+            {
+              "on": "inspect",
+              "target": "decided",
+              "outcome": "wait",
+              "admission": "closed",
+              "reason": "deadline",
+              "description": "Stop before reading the target unless both signed passes finished before expiry.",
+              "update": "release-wait",
+              "when": [
+                "expired",
+                "!timely"
+              ]
+            },
+            {
+              "on": "inspect",
+              "target": "target",
+              "description": "Read the current target; the clock alone is not a verdict.",
+              "when": []
+            }
+          ],
+          "target": [
+            {
+              "on": "inspect",
+              "target": "decided",
+              "outcome": "wait",
+              "admission": "closed",
+              "reason": "target-unavailable",
+              "description": "Do not inspect a checkpoint or issue work for an unavailable target.",
+              "update": "release-wait",
+              "when": [
+                "!available"
+              ]
+            },
+            {
+              "on": "inspect",
+              "target": "decided",
+              "outcome": "wait",
+              "admission": "closed",
+              "reason": "ownership-conflict",
+              "description": "The independent checkpoint preserves an ownership hold; it cannot qualify.",
+              "update": "release-wait",
+              "when": [
+                "independent"
+              ]
+            },
+            {
+              "on": "inspect",
+              "target": "partition",
+              "description": "Inspect current ownership before surveying an active run.",
+              "when": [
+                "active"
+              ]
+            },
+            {
+              "on": "inspect",
+              "target": "goal",
+              "description": "Read the inactive run's ordinary decision without checking active contracts.",
+              "when": []
+            }
+          ],
+          "partition": [
+            {
+              "on": "inspect",
+              "target": "contracts",
+              "description": "Check the contract before considering repairs to a held ownership partition.",
+              "when": [
+                "ownershipConflict"
+              ]
+            },
+            {
+              "on": "inspect",
+              "target": "contracts",
+              "description": "Do not start a checkpoint survey after the deadline.",
+              "when": [
+                "expired"
+              ]
+            },
+            {
+              "on": "inspect",
+              "target": "survey",
+              "description": "Look for a signed checkpoint whose automatic survey belongs to the previous target.",
+              "when": []
+            }
+          ],
+          "survey": [
+            {
+              "on": "inspect",
+              "target": "frozen",
+              "description": "Validate the live contract without moving the survey's signed work target.",
+              "when": [
+                "movingSurvey"
+              ]
+            },
+            {
+              "on": "inspect",
+              "target": "contracts",
+              "description": "Evaluate the ordinary target when no checkpoint survey is pending.",
+              "when": []
+            }
+          ],
+          "contracts": [
+            {
+              "on": "inspect",
+              "target": "decided",
+              "outcome": "wait",
+              "admission": "closed",
+              "reason": "contract-changed",
+              "description": "Record the changed conserved contract and do not proceed.",
+              "update": "release-wait",
+              "when": [
+                "contractChanged"
+              ],
+              "action": "record-contract-conflict"
+            },
+            {
+              "on": "inspect",
+              "target": "repair-admission",
+              "description": "Consider only designated repairs while ownership is unresolved.",
+              "when": [
+                "ownershipConflict"
+              ]
+            },
+            {
+              "on": "inspect",
+              "target": "goal",
+              "description": "Evaluate the assessed goal against the checked product and the observed target.",
+              "when": []
+            }
+          ],
+          "frozen": [
+            {
+              "on": "inspect",
+              "target": "decided",
+              "outcome": "wait",
+              "admission": "checkpoint",
+              "reason": "contract-changed",
+              "description": "Keep permitted checkpoint work on its old target; do not record a run-wide conflict.",
+              "update": "checkpoint-wait",
+              "when": [
+                "contractChanged",
+                "checkpointWriters"
+              ]
+            },
+            {
+              "on": "inspect",
+              "target": "decided",
+              "outcome": "wait",
+              "admission": "closed",
+              "reason": "contract-changed",
+              "description": "Preserve the frozen survey's pins but admit no work on the changed contract.",
+              "update": "checkpoint-wait",
+              "when": [
+                "contractChanged"
+              ]
+            },
+            {
+              "on": "inspect",
+              "target": "decided",
+              "outcome": "rejoin",
+              "admission": "join-only",
+              "reason": "target-changed",
+              "description": "Rejoin published repairs on the live target instead of staffing the old survey.",
+              "update": "release-rejoin",
+              "action": "rejoin",
+              "when": [
+                "changedJoin",
+                "published"
+              ]
+            },
+            {
+              "on": "inspect",
+              "target": "decided",
+              "outcome": "wait",
+              "admission": "checkpoint",
+              "reason": "checkpoint-work",
+              "description": "Staff eligible checkpoint work only on its signed target.",
+              "update": "checkpoint-wait",
+              "when": [
+                "checkpointWriters"
+              ]
+            },
+            {
+              "on": "inspect",
+              "target": "decided",
+              "outcome": "wait",
+              "admission": "closed",
+              "reason": "checkpoint-work",
+              "description": "Leave the survey on its signed checkpoint without admitting work.",
+              "update": "checkpoint-wait",
+              "when": []
+            }
+          ],
+          "repair-admission": [
+            {
+              "on": "inspect",
+              "target": "repairs",
+              "description": "Check for a designated repair only if the ordinary decision permits a writer on unobstructed, current pins.",
+              "when": [
+                "sameTarget",
+                "!joining",
+                "!blocked",
+                "!recordedConflict",
+                "!permissionHold",
+                "eligibleWriters"
+              ]
+            },
+            {
+              "on": "inspect",
+              "target": "decided",
+              "outcome": "wait",
+              "admission": "closed",
+              "reason": "ownership-conflict",
+              "description": "Do not widen the ordinary admission or bypass a target, join or permission hold.",
+              "update": "release-wait",
+              "when": []
+            }
+          ],
+          "repairs": [
+            {
+              "on": "inspect",
+              "target": "decided",
+              "outcome": "wait",
+              "admission": "ownership-checkpoint-repairs",
+              "reason": "ownership-conflict",
+              "description": "Admit only the designated repair on checkpoint inputs.",
+              "update": "release-wait",
+              "when": [
+                "designatedRepair",
+                "scoped"
+              ]
+            },
+            {
+              "on": "inspect",
+              "target": "decided",
+              "outcome": "wait",
+              "admission": "ownership-repairs",
+              "reason": "ownership-conflict",
+              "description": "Admit only the designated repair; do not discover or integrate other work.",
+              "update": "release-wait",
+              "when": [
+                "designatedRepair"
+              ]
+            },
+            {
+              "on": "inspect",
+              "target": "decided",
+              "outcome": "wait",
+              "admission": "closed",
+              "reason": "ownership-conflict",
+              "description": "Keep ownership held when no eligible bound repair or disjoint successor exists.",
+              "update": "release-wait",
+              "when": []
+            }
+          ],
+          "goal": [
+            {
+              "on": "inspect",
+              "target": "decided",
+              "outcome": "wait",
+              "admission": "closed",
+              "reason": "deadline",
+              "description": "After expiry, do not staff, assess, join or retry; only exact handoff may settle.",
+              "update": "release-wait",
+              "when": [
+                "expired",
+                "!settlesAfterExpiry"
+              ]
+            },
+            {
+              "on": "inspect",
+              "target": "cleared",
+              "description": "Use the selected ordinary release decision and only its effects.",
+              "when": []
+            }
+          ],
+          "decided": [],
+          "cleared": []
+        },
+        "info": {
+          "description": "Checks the clock, live target, contract and ownership before an ordinary release decision may take effect.",
+          "states": {
+            "clock": "An assessment starts here, before any Git read.",
+            "target": "Observe the current delivery target, not a saved conflict.",
+            "partition": "Check whether the live target holds any unresolved ownership.",
+            "survey": "Check whether an automatic survey must stay on its original signed checkpoint.",
+            "contracts": "Validate the conserved contract on the live target.",
+            "frozen": "A survey still belongs to the signed checkpoint on the old target.",
+            "repair-admission": "Ownership is held: the ordinary decision bounds any possible repair.",
+            "repairs": "Check for a bound repair or disjoint successor within that admission.",
+            "goal": "Inspect the projected release decision; expiry can withhold it but cannot manufacture a pass.",
+            "decided": "Preflight supplied the decision; do not dispatch an ordinary release action.",
+            "cleared": "Only the inspected ordinary release decision may proceed."
+          }
+        }
+      },
       "supervision": {
         "id": "supervision",
         "initial": "dispatch",
@@ -1411,7 +2968,6 @@
             {
               "on": "sample",
               "target": "dormant",
-              "action": "stop",
               "reason": "Deadline elapsed",
               "when": [
                 "expired"
@@ -1420,7 +2976,6 @@
             {
               "on": "sample",
               "target": "managed-policy",
-              "action": "observe",
               "reason": "This issuer recorded the managed hold",
               "when": [
                 "managed"
@@ -1429,7 +2984,6 @@
             {
               "on": "sample",
               "target": "issuer-permission",
-              "action": "observe",
               "reason": "This issuer has held work",
               "when": [
                 "local"
@@ -1438,7 +2992,6 @@
             {
               "on": "sample",
               "target": "missing-target",
-              "action": "observe",
               "reason": "The target ref is unavailable",
               "when": [
                 "missing"
@@ -1447,7 +3000,6 @@
             {
               "on": "sample",
               "target": "workflow-status",
-              "action": "observe",
               "reason": "A transient failure interrupted the original workflow lookup",
               "when": [
                 "retryRead"
@@ -1456,7 +3008,6 @@
             {
               "on": "sample",
               "target": "ledger",
-              "action": "observe",
               "reason": "Watch for changed evidence or reservations",
               "when": [
                 "participant"
@@ -1465,7 +3016,6 @@
             {
               "on": "sample",
               "target": "dormant",
-              "action": "stop",
               "reason": "No automatic obligation",
               "when": []
             }

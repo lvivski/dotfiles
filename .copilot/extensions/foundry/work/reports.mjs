@@ -27,7 +27,6 @@ export function reportReceiver(io) {
 		const changed = io.record(id, run => {
 			const job = bound(run) ?? fail("foreign_assignment", "Only the bound workflow may return this report");
 			if (!awaitingReply(job)) return false;
-			delete job.error;
 			const squad = run.policy.squads.find(s => s.id === job.squad) ?? fail("invalid_charter", "No matching charter");
 			try {
 				const research = investigation(job, squad);
@@ -35,8 +34,8 @@ export function reportReceiver(io) {
 				if (raw === null && !research) fail("missing_report", "No structured scout report was returned");
 				if (!isPacket(packet) || packet.review !== job.id || packet.base !== job.base || job.diagnostic && !packet.partial)
 					fail("missing_packet", "Missing or mismatched journaled scout packet");
-				job.observation = research ? researchResult(raw, squad.charter) : parseObservation(squad, raw, classifyPrior);
-				job.packet = packet; survey(job,"report");
+				const observation=research ? researchResult(raw,squad.charter) : parseObservation(squad,raw,classifyPrior);
+				survey(job,{type:"report",observation,packet});
 			} catch (error) {
 				if (!(error instanceof FoundryError)) throw error;
 				blockReview(job, `Invalid scout result: ${error.message}`);

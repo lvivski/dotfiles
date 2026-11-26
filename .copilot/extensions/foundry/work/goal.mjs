@@ -1,19 +1,20 @@
 import { admissionPolicy } from "./admission.mjs";
 import { assign } from "./assignment.mjs";
 import { activate } from "./activity.mjs";
-import { checkpointReceipt, checkReceipt, currentEvaluation, goalReceipt, leadGoal, milestoneBlocker, productPin } from "./evidence.mjs";
+import { checkpointReceipt, checkReceipt, currentEvaluation, goalReceipt, leadGoal, milestoneBlocker, passingReceipt, productPin } from "./evidence.mjs";
 import { remainingAssignments } from "./capacity.mjs";
-import { release, transition } from "./engine.mjs";
-import { implement } from "./adapter.mjs";
+import { decisionOf, release, releasePreflight, releaseResolution, releaseState, transition } from "./engine.mjs";
+import { transition as next } from "./machine.mjs";
+import { executor } from "./adapter.mjs";
 import { pendingGoal, releaseFacts, undecided } from "./facts.mjs";
 import { expired, reserveCheck, reserveNotice, reserveProduct } from "./native.mjs";
 import { workKey } from "./plan.mjs";
 import { partitionConflict } from "./partition.mjs";
 import { heldRepair } from "./successor.mjs";
-import { descendsFrom, retain, treeOf, verifyContracts } from "./product.mjs";
+import { contractConflict, descendsFrom, retain, treeOf, verifyContracts } from "./product.mjs";
 export { frozenCheckpoint } from "./frozen.mjs";
 import { blockReview, checkpointWake, comparison, reading, reviews, staleReviewReason } from "./reviews.mjs";
-import { FoundryError, deadlineAt, text } from "./values.mjs";
+import { deadlineAt, text } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @param {string} cwd @param {Run} run @param {string} actor @param {string} target @param {string} commit */
@@ -26,7 +27,7 @@ export function assess(cwd, run, actor, target, commit) {
 
 /** Publish the timestamp and owner notification in the same transition as the exact receipt.
  * @param {Run} run @param {string} actor @param {import("./model.js").Product} product */
-export function qualify(run, actor, product) {
+function handoff(run, actor, product) {
 	product.qualifiedAt = Date.now();
 	const exclusions = [];
 	if (run.goal) {
@@ -95,45 +96,83 @@ export function movingSurvey(cwd,run,target) {
 	if (pending && descendsFrom(cwd,target,p.target)) return p;
 }
 
-/** @param {string} cwd @param {Run} run @param {()=>string} tip @param {boolean} [retry] */
-export function releaseAssessment(cwd, run, tip, retry = false) {
-	const wait = /** @type {const} */ ({ action: "wait", admission: "closed" });
+/** @typedef {import("./model.js").Product} Product */
+/** @typedef {import("./engine.mjs").Decision} Decision */
+/** @typedef {{run:Run,actor:string,cwd?:string,target?:string,error?:string,product?:Product}} Bindings */
+/** @typedef {{cwd:string,run:Run,actor:string,target:string,at:NonNullable<Run["goal"]>,last?:Product}} ReleaseContext */
+
+/** @param {string} cwd @param {Run} run @param {()=>string} tip @param {boolean} retry */
+function releasePlan(cwd,run,tip,retry) {
 	const elapsed=expired(run);
-	if (elapsed && !timelyChecks(run)) return { ...wait, reason: "deadline" };
-	const { target, error } = observeTarget(tip);
-	if (target === undefined) return { ...wait, reason: "target-unavailable", error };
-	if (run.independent) return {...wait,target,reason:"ownership-conflict",error:
-		`Non-release checkpoint ${run.independent.product}; ownership remains held at ${run.independent.checkpoint} by failed observer ${run.independent.observer}.`+
-		(target===run.independent.target?"":` Approved target ${run.independent.target} is not current (${target}); no check can advance on this target.`)};
-	if (run.active) {
-		const conflict=partitionConflict(run,undefined,target);
-		const survey=!elapsed && !conflict ? movingSurvey(cwd,run,target) : undefined;
-		const scoped=survey && transition(releaseFacts(run,survey.target)).admission;
-		const frozen=survey && {target,workTarget:survey.target,action:/** @type {const} */("wait"),
-			admission:scoped==="checkpoint" || scoped==="repaired-checkpoint" ? /** @type {const} */("checkpoint") : wait.admission};
-		try { verifyContracts(cwd, run.policy, target); }
-		catch (error) {
-			if (!(error instanceof FoundryError) || error.code !== "contract_changed") throw error;
-			return { ...wait, target, ...frozen, reason: "contract-changed", error: error.message };
-		}
-		if (frozen) return scoped==="repaired-checkpoint" && Object.values(run.nodes).some(n=>n.state==="published")
-			? /** @type {const} */ ({target,action:"rejoin",admission:"join-only",reason:"target-changed"})
-			: {...frozen,reason:"checkpoint-work"};
-		if (conflict) {
-			const normal=admissionPolicy(transition(releaseFacts(run,target),false).admission);
-			const repair=run.goal?.target===target && !run.join && !run.blocker && !run.conflict && !run.effects.some(e=>e.permissionHold) &&
-				normal.writers==="eligible" && Object.values(run.nodes).some(n=>heldRepair(run,n));
-			return /** @type {const} */ ({...wait,target,reason:"ownership-conflict",error:conflict,
-				admission:!repair ? "closed" : normal.scoped ? "ownership-checkpoint-repairs" : "ownership-repairs"});
-		}
+	/** @type {string|undefined} */ let target;
+	/** @type {string|undefined} */ let ownership;
+	/** @type {Product|undefined} */ let survey;
+	/** @type {ReturnType<typeof releaseResolution>|undefined} */ let ordinary;
+	let scoped=false;
+	const live=()=>text(target,"observed release target");
+	const contracts=()=>{
+		const error=contractConflict(cwd,run.policy,live());
+		return {target,contractChanged:!!error,...(error && {error})};
+	};
+	// Each read supplies evidence only for the phase the machine actually reached.
+	/** @satisfies {Record<Exclude<keyof typeof releasePreflight.states,"decided"|"cleared">,()=>import("./machine.mjs").Facts>} */
+	const read={
+		clock:()=>({expired:elapsed,timely:elapsed && timelyChecks(run)}),
+		target(){
+			const seen=observeTarget(tip), s=run.independent;
+			target=seen.target;
+			const isolation=s && target!==undefined && `Non-release checkpoint ${s.product}; ownership remains held at ${s.checkpoint} by failed observer ${s.observer}.`+
+				(target===s.target?"":` Approved target ${s.target} is not current (${target}); no check can advance on this target.`);
+			return {...seen,...(target===undefined && {error:seen.error}),...(isolation && {error:isolation}),available:target!==undefined,independent:!!s,active:run.active};
+		},
+		partition(){
+			ownership=partitionConflict(run,undefined,live());
+			return {expired:elapsed,ownershipConflict:!!ownership};
+		},
+		survey(){
+			survey=movingSurvey(cwd,run,live());
+			return {movingSurvey:!!survey};
+		},
+		contracts:()=>({...contracts(),ownershipConflict:!!ownership}),
+		frozen(){
+			const workTarget=text(survey?.target,"signed survey target");
+			const mode=admissionPolicy(transition(releaseFacts(run,workTarget)).admission);
+			return {...contracts(),workTarget,checkpointWriters:mode.scoped && mode.writers==="eligible",changedJoin:mode.join==="changed",
+				published:Object.values(run.nodes).some(n=>n.state==="published")};
+		},
+		"repair-admission"(){
+			const mode=admissionPolicy(transition(releaseFacts(run,live())).admission);
+			scoped=mode.scoped;
+			return {target,error:ownership,sameTarget:run.goal?.target===target,joining:!!run.join,blocked:!!run.blocker,
+				recordedConflict:!!run.conflict,permissionHold:run.effects.some(e=>e.permissionHold),eligibleWriters:mode.writers==="eligible"};
+		},
+		repairs:()=>({target,error:ownership,scoped,designatedRepair:Object.values(run.nodes).some(n=>heldRepair(run,n))}),
+		goal(){
+			ordinary=releaseResolution(releaseFacts(run,live()),retry,target);
+			const edge=ordinary.edge;
+			return {target,expired:elapsed,settlesAfterExpiry:!!edge && "settlesAfterExpiry" in edge && edge.settlesAfterExpiry===true};
+		},
+	};
+	/** @param {{value:string,context:Decision|null}} snapshot */
+	function inspect(snapshot) {
+		if (!Object.hasOwn(read,snapshot.value)) throw Error(`Missing release observation: ${snapshot.value}`);
+		const observation={type:"inspect",...read[/** @type {keyof typeof read} */ (snapshot.value)]()};
+		return next(releasePreflight,snapshot,observation,observation,true);
 	}
-	const decision=transition(releaseFacts(run, target), retry);
-	return elapsed && decision.action!=="qualify" && decision.reason!=="qualified" ? {...wait,target,reason:"deadline"} : {target,...decision};
+	let selected=inspect({value:releasePreflight.initial,context:null});
+	while (selected.snapshot.value!=="decided" && selected.snapshot.value!=="cleared") selected=inspect(selected.snapshot);
+	if (selected.snapshot.value==="decided") return {selected,perform:applyPreflight};
+	if (!ordinary) throw Error("Cleared preflight without an inspected release decision");
+	return {selected:ordinary,perform:applyRelease};
 }
 
-/** @typedef {{cwd:string,run:Run,actor:string,target:string,at:NonNullable<Run["goal"]>,last?:import("./model.js").Product}} ReleaseContext */
-/** @type {Record<import("./engine.mjs").Action,(c:ReleaseContext)=>void>} */
-const releaseActions={
+/** @param {string} cwd @param {Run} run @param {()=>string} tip @param {boolean} [retry] */
+export function releaseAssessment(cwd,run,tip,retry=false) {
+	return decisionOf(releasePlan(cwd,run,tip,retry).selected);
+}
+
+/** @type {Record<Exclude<import("./engine.mjs").Action,"wait"|"none">,(c:ReleaseContext)=>void>} */
+const goalActions={
 	assess({cwd,run,actor,at,last}) {
 		delete run.blocker;
 		assess(cwd, run, actor, last?.target ?? at.target, last?.commit ?? at.commit);
@@ -153,23 +192,46 @@ const releaseActions={
 	rejoin({at}) {delete at.stall;},
 	qualify({run,actor,last}) {
 		if (!last) throw Error("Missing checked product for qualification");
-		qualify(run, actor, last);
+		handoff(run, actor, last);
 		activate(run,"goal-met");
 		for (const r of reviews(run).filter(reading)) blockReview(r, "Goal met; no further review is needed");
 	},
 	baseline({cwd,run,actor,target,at}) {reserveProduct(run,actor,cwd,target,at.commit,{});},
-	none() {}, wait() {},
 };
-const applyRelease=implement(release,releaseActions);
+
+/** @param {(c:ReleaseContext)=>void} effect */
+const forGoal=effect=>(/** @type {Bindings} */ {run,actor,cwd,target,product})=>{
+	if (cwd===undefined || target===undefined || !run.goal) throw Error("Missing goal inputs for release effect");
+	effect({run,actor,cwd,target,at:run.goal,last:product});
+};
+const applyRelease=executor(release,{
+	...Object.fromEntries(Object.entries(goalActions).map(([name,effect])=>[name,forGoal(effect)])),
+	"handoff-product"(/** @type {Bindings} */ {run,actor,product}) {
+		if (!product) throw Error("Missing settled product for handoff");
+		handoff(run,actor,product);
+	},
+});
+const applyPreflight=executor(releasePreflight,{
+	rejoin:forGoal(goalActions.rejoin),
+	"record-contract-conflict"(/** @type {Bindings} */ {run,error}) {run.conflict=text(error,"conserved contract conflict");},
+});
+
+/** Called while settling a checked join without a goal. Handoff does not deactivate these runs.
+ * @param {Run} run @param {string} actor @param {Product} product @param {string} target */
+export function qualify(run,actor,product,target) {
+	const check=run.effects.find(e=>e.id===product.check);
+	const selected=next(release,{value:releaseState(releaseFacts(run,target)),context:null},{type:"product-settled"},{
+		oneOff:!run.policy.goalCheck,currentJoin:run.join===product && product.target===target,signedProduct:check?.evaluatorRevision===productPin(run) &&
+			!!passingReceipt(check,"product",product.commit,run.policy.productCheck),
+		alreadyHandedOff:!!product.qualifiedAt,held:!!(run.blocker || run.conflict || run.independent || check?.error || check?.permissionHold),
+	},true);
+	applyRelease(selected,{run,actor,product});
+}
 
 /** @param {string} cwd @param {Run} run @param {string} actor @param {()=>string} tip @param {boolean} retry */
 export function applyGoal(cwd, run, actor, tip, retry) {
-	const decision = releaseAssessment(cwd, run, tip, retry);
-	if ("error" in decision) {
-		if (!("workTarget" in decision) && decision.reason!=="target-unavailable" && decision.reason!=="ownership-conflict") run.conflict = decision.error;
-	} else if (decision.target!==undefined && run.goal) {
-		applyRelease(decision.action,{cwd,run,actor,target:decision.target,at:run.goal,last:run.products.at(-1)});
-	}
+	const {selected,perform}=releasePlan(cwd,run,tip,retry), decision=decisionOf(selected);
+	perform(selected,{cwd,run,actor,target:decision.target,error:decision.error,product:run.products.at(-1)});
 	return decision;
 }
 

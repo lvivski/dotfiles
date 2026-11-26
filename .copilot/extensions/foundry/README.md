@@ -18,7 +18,9 @@ The status strip separates the run phase from assignment counts. Each count uses
 
 ### Explore a state machine
 
-Open **State explorer** from the board or open the Foundry canvas with `{machine:true}`. Follow the straight lanes and rounded corners to see where transitions split, rejoin or return. Every event label has a border; hover or focus it to highlight its line without firing it. Dense charts open at a readable scale. Choose a state on the diagram or in the inspector's state picker; **Fit chart** shows the whole region. Select an event name to read why it fires. **Ordered rules** reveals guards, destination, action and admission. A loop returns to its state; an event drawn inside the state acts without leaving it. Sending a highlighted event simulates the installed machine. It never runs the action or changes a ledger. [Simulation and recovery signals](PROTOCOL.md#interruptions)
+**A machine decides; a chart shows the rules.** For example, a run can be held by a permission check or paused by its operator. When permissions return, the machine can clear the matching hold. It cannot undo the operator's pause. The chart shows why the same event has different outcomes.
+
+Open **State explorer** from the board or open the Foundry canvas with `{machine:true}`. Follow the straight lanes and rounded corners to see where transitions split, rejoin or return. Every event label has a border; hover or focus it to highlight its line without firing it. Choose a state on the diagram or in the inspector; **Fit chart** shows the whole region. Select an event to see why it fires. **Ordered rules** shows its guards, destination, context update, queued effect and admission where applicable. A loop returns to its state; an event drawn inside it acts without leaving it. The explorer uses the installed runtime definitions with hypothetical guard inputs. It cannot change a ledger or run an effect. [Simulation and recovery signals](PROTOCOL.md#interruptions)
 
 ## Commit the contract
 
@@ -50,7 +52,7 @@ Change the [specification and acceptance case](SPEC.md#keeping-the-specification
 
 ### State, signals and authority
 
-The kernel selects an edge; the ledger owns durable state; the issuing session executes only authorized effects. Descriptions explain those decisions without making them. [Architecture and extension API](PROTOCOL.md#state-signals-and-authority)
+The interpreter computes the next snapshot and effects from an event. The scheduler uses those decisions to plan work; the ledger owns durable state, and only the authorized issuer makes a native call. [Architecture and extension API](PROTOCOL.md#state-signals-and-authority)
 
 ### Goal-verdict contract for a blind rebuild
 

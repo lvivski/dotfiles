@@ -3,7 +3,7 @@ import test from "node:test";
 import { catalog } from "../work/catalog.mjs";
 import { statechart } from "./statechart.mjs";
 import {pathData} from "./connectors.mjs";
-import { chart } from "../work/chart.mjs";
+import { machine } from "../work/machine.mjs";
 
 /** @typedef {import("./connectors.mjs").Point} Point */
 
@@ -27,7 +27,7 @@ function samples(path){
 }
 
 test("a fork fans out and rejoins by topology, even with a return to the initial state",()=>{
-	const m=chart("fork","start",{
+	const m=machine("fork","start",{
 		end:[{on:"restart",target:"start"}],left:[{on:"accept",target:"end"},{on:"repeat",target:"left"}],
 		start:[{on:"choose-left",target:"left"},{on:"choose-right",target:"right"}],right:[{on:"accept",target:"end"}],
 	});
@@ -74,7 +74,7 @@ test("dense transitions retain straight runs, with rounding confined to actual b
 });
 
 test("a return spanning several ranks has a straight lane rather than a row of unrelated diagonal hops",()=>{
-	const m=chart("return","start",{start:[{on:"begin",target:"writing"}],writing:[{on:"submit",target:"check"}],
+	const m=machine("return","start",{start:[{on:"begin",target:"writing"}],writing:[{on:"submit",target:"check"}],
 		check:[{on:"pass",target:"done"}],done:[{on:"reset",target:"start"}]});
 	for(const vertical of [false,true]){
 		const s=statechart(m,vertical),edge=s.wires.find(w=>w.signal==="reset");assert.ok(edge);
@@ -86,7 +86,7 @@ test("a return spanning several ranks has a straight lane rather than a row of u
 });
 
 test("parallel returns into one state peel off in nested order, with smaller inner bends",()=>{
-	const m=chart("retry","start",{start:[{on:"begin",target:"write"}],write:[{on:"submit",target:"check"}],
+	const m=machine("retry","start",{start:[{on:"begin",target:"write"}],write:[{on:"submit",target:"check"}],
 		check:[{on:"pass",target:"end"}],end:Array.from({length:6},(_,i)=>({on:`redo-${i}`,target:"start"}))});
 	for(const vertical of [false,true])for(const compact of [false,true]){
 		const g=statechart(m,vertical,compact),target=g.nodes[0],along=vertical?"y":"x",across=vertical?"x":"y";
@@ -113,7 +113,7 @@ test("parallel returns into one state peel off in nested order, with smaller inn
 });
 
 test("nested approaches leave visible space between the painted paths all the way to their ports",()=>{
-	const retry=chart("retry","start",{start:[{on:"go",target:"write"},{on:"hold",target:"start"},{on:"review",target:"start"}],
+	const retry=machine("retry","start",{start:[{on:"go",target:"write"},{on:"hold",target:"start"},{on:"review",target:"start"}],
 		write:[{on:"submit",target:"check"}],check:[{on:"pass",target:"end"}],
 		end:Array.from({length:6},(_,i)=>({on:`redo-${i}`,target:"start"}))});
 	const {assignment,activity}=catalog().machines;
@@ -157,7 +157,7 @@ test("self-loops and transitions through offset event labels have no acute inter
 });
 
 test("the painted endpoints meet state faces rather than skimming their borders",()=>{
-	const fan=chart("fan","source",Object.fromEntries(["source",...Array.from({length:7},(_,i)=>`leaf-${i}`)].map((s,_,ids)=>
+	const fan=machine("fan","source",Object.fromEntries(["source",...Array.from({length:7},(_,i)=>`leaf-${i}`)].map((s,_,ids)=>
 		[s,s==="source"?ids.slice(1).map(target=>({on:`to-${target}`,target})):[]])));
 	for(const m of [fan,...Object.values(catalog().machines)])for(const vertical of [false,true])for(const compact of [false,true]){
 		const g=statechart(m,vertical,compact),nodes=new Map(g.nodes.map(n=>[n.id,n]));
@@ -202,7 +202,7 @@ test("both layouts draw every rule at its real endpoints, including loops, paral
 });
 
 test("routing leaves state boxes and event labels unobstructed in both orientations",()=>{
-	const stress=chart("branches","one",{
+	const stress=machine("branches","one",{
 		one:[{on:"stay-on-one",target:"one"},{on:"stay-again",target:"one"},{on:"skip-middle",target:"three"},{on:"advance",target:"two"}],
 		two:[{on:"retry",target:"one"},{on:"inspect",action:"observe"},{on:"complete",target:"three"}],
 		three:[{on:"restart",target:"one"},{on:"return",target:"two"},{on:"review",target:"three"}],

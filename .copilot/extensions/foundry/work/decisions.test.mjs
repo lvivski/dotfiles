@@ -145,6 +145,34 @@ for (const originalReply of ["closed", "before", "after"]) test(`explicit recove
 	assert.equal(s.qualified, null); assert.equal(f.workers.size, 0);
 });
 
+for(const alreadyAffected of [false,true])test(`synchronous dialog delivery failure / ${alreadyAffected?"recover previously presenting claim":"record unavailable"}`,
+	{skip:alreadyAffected&&!process.env.FOUNDRY_DIALOG_FIXTURE},async t=>{
+	const build=alreadyAffected ? (await import(String(process.env.FOUNDRY_DIALOG_FIXTURE))).factory : factory;
+	const f=trial(t,undefined,build), logs=/** @type {string[]} */([]);
+	let attempts=0;
+	const first=f.runtime(f.root,{ask(){attempts++;throw new TypeError("Dialog bridge missing");},log:m=>logs.push(m)});
+	await f.start(first);const [peer,job]=f.scouts;
+	await peer.report(noGap);await job.report(question);await first.flush();
+	const saved=first.inspect({run},"owner"), q=saved.questions?.[0];assert.ok(q?.recovery);
+	assert.deepEqual(q.recovery,{run,review:job.id,presentation:job.id});
+	assert.equal(q.delivery?.status,alreadyAffected?"presenting":"unavailable");
+	if(!alreadyAffected)assert.ok(logs.some(m=>m.includes("Question delivery is unconfirmed")));
+	first.close();
+
+	const owner=f.runtime(f.root,{ask:async prompt=>{attempts++;assert.ok(prompt.includes(question.reason));return "EUR";}},createRuntime);
+	owner.turn("owner");await owner.flush();assert.equal(attempts,1,"a lost delivery is not permission to ask again");
+	await owner.operation("clarify",q.recovery,"owner");await f.settle();
+	const after=owner.inspect({run},"owner");
+	assert.deepEqual(after.goal?.receipt,saved.goal?.receipt);
+	assert.deepEqual(after.reviews.find(r=>r.id===job.id)?.decision,{status:"answered",answer:"EUR"});
+	assert.equal(attempts,2);assert.equal(f.scouts.length,3);assert.ok(f.scouts[2].prompt.includes("EUR"));
+	await assert.rejects(owner.operation("clarify",q.recovery,"owner"),{code:"stale_question"});
+	await f.scouts[2].report(regenerate);const [w]=f.workers.values();
+	put(w.cwd,"lib/lookup/index","EUR");await f.runtime(w.cwd,{},createRuntime).operation("submit",{run,token:w.token},w.id);
+	assert.ok(owner.inspect({run},"owner").qualified);
+	assert.equal(attempts,2);
+});
+
 test("a failed replacement dialog leaves an exact explicit retry, not an automatic question", async t => {
 	const f = trial(t), opened = latch(), release = latch();
 	const original = f.runtime(f.root, { ask: async () => { opened.resolve(); await release.promise; return "Old answer"; } });

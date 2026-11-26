@@ -38,15 +38,26 @@ export function pinnedFiles(root, base) {
 	return new Set(git(root, "--no-replace-objects", "ls-tree", "-r", "-z", "--name-only", base).split("\0").filter(Boolean));
 }
 
-/** Load the real extension, substituting only the joined SDK session. @param {object} session */
+/** Capture the contributions passed to joinSession without attaching to a live session. @param {object} session */
 export async function loadEntry(session) {
-	/** @type {import("@github/copilot-sdk/extension").JoinSessionConfig} */ let declaration = {};
-	const sdk = "data:text/javascript,export let joinSession; export class CanvasError extends Error { constructor(code,message){super(message);this.code=code} } export const createCanvas = options => options; export const defineWorkflow = definition => definition; export function use(fn) { joinSession = fn; }";
+	/** @type {import("@github/copilot-sdk/extension").JoinSessionOptions} */ let declaration = {};
+	const sdk = "data:text/javascript," + encodeURIComponent(`
+		export let joinSession;
+		export function use(fn) { joinSession = fn; }
+		export class CanvasError extends Error { constructor(code,message) { super(message); this.code=code; } }
+		export const createCanvas = ({open,onClose,actions,...metadata}) => ({
+			declaration:{...metadata,actions:actions?.map(({handler,...action})=>action)},open,onClose
+		});
+		export const defineWorkflow = definition => definition;
+	`);
 	(await import(sdk)).use((/** @type {typeof declaration} */ config) => { declaration = config; return { capabilities: { ui: { elicitation: true } }, ...session }; });
 	const loader = registerHooks({ resolve: (specifier, context, next) => specifier === "@github/copilot-sdk/extension"
 		? { url: sdk, shortCircuit: true } : next(specifier, context) });
 	try { await import(`../extension.mjs?${randomUUID()}`); } finally { loader.deregister(); }
-	return declaration;
+	const tools=declaration.tools?.definitions, canvases=declaration.canvases?.definitions, agents=declaration.agents?.definitions;
+	const hooks=declaration.hooks?.handlers, workflows=declaration.workflows;
+	assert.ok(tools && canvases && agents && hooks && workflows,"Foundry must register its definitions and hook handlers through the SDK option groups");
+	return {tools,canvases,agents,hooks,workflows};
 }
 
 /** Stand-in for workflow transport only. A batch has a real issuer and ledger binding but no

@@ -1,12 +1,12 @@
-import {catalog} from "../work/catalog.mjs";
-import {step} from "../work/chart.mjs";
+import {definitions} from "../work/catalog.mjs";
+import {step} from "../work/machine.mjs";
 import {entryWitnesses} from "./entries.mjs";
 
-/** @typedef {import("../work/chart.mjs").Machine} Machine */
+/** @typedef {import("../work/machine.mjs").Machine} Machine */
 /** @typedef {Record<string,boolean>} Facts */
-/** @typedef {{from:string,to:string,rule:number,edge:import("../work/chart.mjs").Edge,facts:Facts}} Hop */
+/** @typedef {{from:string,to:string,rule:number,edge:import("../work/machine.mjs").Edge,facts:Facts}} Hop */
 /** @param {string[]} keys @param {number} [i] @param {Facts} [row] @returns {Generator<Facts>} */
-function* valuations(keys,i=0,row={}){
+export function* valuations(keys,i=0,row={}){
 	if(i===keys.length){yield {...row};return;}
 	for(const value of [false,true]){row[keys[i]]=value;yield* valuations(keys,i+1,row);}
 }
@@ -95,7 +95,7 @@ export function obstruction(start,next,done){
 
 /** @param {string[]} args */
 function report(args){
-	const {machines}=catalog();
+	const machines=definitions();
 	if(!args.length){
 		const rows=inventory(machines);
 		if(rows.some(r=>r.unreachable.length || r.winningRules!==r.rules))process.exitCode=1;

@@ -1,14 +1,17 @@
-import { chart, compose, select } from "./chart.mjs";
+import { machine, compose, transition } from "./machine.mjs";
+import { executor } from "./adapter.mjs";
 
 /** @typedef {"managed-policy"|"issuer-permission"|"workflow-status"|"missing-target"|"ledger"|"dormant"} Gate */
 /** @typedef {"permitted"|"available"|"changed"|"expired"|"managed"|"local"|"retryRead"|"missing"|"participant"} Signal */
-/** @template {Gate|"dispatch"} T @param {T} target @param {"observe"|"reconcile"|"reactivate"|"wait"|"stop"} action @param {string} reason @param {...Signal} when */
+/** @template {Gate|"dispatch"} T @param {T} target @param {"reconcile"|"reactivate"|"wait"|"stop"} action @param {string} reason @param {...Signal} when */
 const edge=(target,action,reason,...when)=>({on:"sample",target,action,reason,when});
-export const supervision=chart("supervision","dispatch",{
-	dispatch:[edge("dormant","stop","Deadline elapsed","expired"),edge("managed-policy","observe","This issuer recorded the managed hold","managed"),
-		edge("issuer-permission","observe","This issuer has held work","local"),edge("missing-target","observe","The target ref is unavailable","missing"),
-		edge("workflow-status","observe","A transient failure interrupted the original workflow lookup","retryRead"),
-		edge("ledger","observe","Watch for changed evidence or reservations","participant"),edge("dormant","stop","No automatic obligation")],
+/** @template {Gate} T @param {T} target @param {string} reason @param {...Signal} when */
+const route=(target,reason,...when)=>({on:"sample",target,reason,when});
+export const supervision=machine("supervision","dispatch",{
+	dispatch:[route("dormant","Deadline elapsed","expired"),route("managed-policy","This issuer recorded the managed hold","managed"),
+		route("issuer-permission","This issuer has held work","local"),route("missing-target","The target ref is unavailable","missing"),
+		route("workflow-status","A transient failure interrupted the original workflow lookup","retryRead"),
+		route("ledger","Watch for changed evidence or reservations","participant"),route("dormant","No automatic obligation")],
 	"managed-policy":[edge("dispatch","reactivate","Recheck this issuer and continue the original run","permitted"),edge("managed-policy","wait","Await permitted settings in the issuer")],
 	"issuer-permission":[edge("dispatch","reconcile","Dispatch the original eligible reservations","permitted"),edge("issuer-permission","wait","Await permitted settings in the issuer")],
 	"workflow-status":[edge("dispatch","reconcile","Read the original workflow again, without issuing a continuation on missing evidence")],
@@ -24,18 +27,23 @@ export const supervision=chart("supervision","dispatch",{
 	ledger:"Watch the ledger and target for changes relevant to this participant.",dormant:"No dispatch wake is owed. Outstanding native history is observed independently.",
 }});
 /** @param {Record<"expired"|"managed"|"local"|"missing"|"retryRead"|"participant",boolean>} facts @returns {Gate} */
-export const watchState=facts=>select(supervision,"dispatch","sample",facts).target;
+export function watchState(facts){
+	const {value}=transition(supervision,{value:"dispatch",context:null},{type:"sample"},facts,true).snapshot;
+	if(value==="dispatch")throw Error("A dispatch sample must select an observation");
+	return value;
+}
 
 const workflowEdge=/** @param {"continue"|"wait"} action @param {string} reason @param {...("disconnected"|"current"|"unused")} when */
 	(action,reason,...when)=>({on:"verified",action,reason,when});
-export const workflow=chart("workflow","suspended",{
+export const workflow=machine("workflow","suspended",{
 	suspended:[workflowEdge("continue","Continue the same native workflow","disconnected","current","unused"),
+		{on:"verified",action:"record-status",reason:"Record the verified non-disconnect outcome without issuing another workflow.",when:["!disconnected"]},
 		workflowEdge("wait","No proven, unused provider recovery")],
 },{description:"Decides whether a halted scout can continue on its original workflow identity.",states:{
 	suspended:"Verify the cause of the halt, current inputs and unused continuation before continuing the scout.",
 }});
 
-export const history=chart("history","idle",{
+export const history=machine("history","idle",{
 	idle:[],
 	pending:[{on:"sample",action:"lookup",reason:"Read the original call's completion or its bound workflow's status; never replay the call"}],
 },{description:"Observes original call and workflow outcomes independently of scheduler recovery.",states:{
@@ -57,6 +65,7 @@ export const historyState=(pending,workflowReads)=>pending || workflowReads ? "p
 export function supervise(io) {
 	/** @type {Map<string,Watch>} */ const watches=new Map();
 	/** @type {Map<string,()=>void>} */ const registrations=new Map();
+	const readHistory=executor(history,{lookup:(/** @type {{id:string,actor:string}} */ c)=>io.track(io.lookup(c.id,c.actor))});
 	/** Until the ledger is readable there is no run ID to watch. Retry only the
 	 * issuer's registration scan, and disarm it on success or a permanent error.
 	 * @param {string} actor @param {()=>void} scan */
@@ -94,6 +103,19 @@ export function supervise(io) {
 		const w={stop:()=>{},busy:false,delay:1,skip:0,seen:startup?{}:{stamp:io.stamp(id),tip:io.tip(ref)},
 			state:observation.state,pending:!!observation.pending,workflows:new Map()};
 		watches.set(key,w);
+		/** @typedef {{state:Gate,pending?:boolean,token?:string,seen:Watch["seen"],stamp:string,tip?:string}} Sample */
+		/** Keep the sampled stamp unacknowledged until the issuer has accepted this wake.
+		 * @param {Sample} s @param {string} [token] */
+		async function wake(s,token){
+			const delay=w.delay;
+			if(!await io.wake(id,actor,token)){backoff(delay);return;}
+			if(w.state==="workflow-status")backoff(delay);else {w.skip=0;w.delay=1;}
+			s.seen.stamp=s.stamp;s.seen.tip=s.tip;
+		}
+		const execute=executor(supervision,{
+			wait:()=>backoff(),stop:(/** @type {Sample} */ s)=>observe(id,actor,{state:"dormant",ref,pending:s.pending}),
+			reconcile:(/** @type {Sample} */ s)=>wake(s),reactivate:(/** @type {Sample} */ s)=>wake(s,s.token),
+		});
 		w.stop=io.clock(()=>{
 			if (watches.get(key)!==w || w.skip-- > 0) return;
 			try{sample();}catch(error){failed(error);}
@@ -111,11 +133,8 @@ export function supervise(io) {
 			const {state,token,pending}=io.sample(id,actor,w.state);
 			w.pending=!!pending;
 			if (state!=="dormant") w.state=state;
-			const [observation]=monitors.plan({history:historyState(pending,w.workflows.size)},"sample");
-			if(observation){
-				if(observation.edge.action!=="lookup")throw Error(`Unknown history action: ${observation.edge.action}`);
-				io.track(io.lookup(id,actor));
-			}
+			const observation=transition(history,{value:historyState(pending,w.workflows.size),context:null},{type:"sample"});
+			readHistory(observation,{id,actor});
 			if(w.busy){
 				if(state==="dormant")observe(id,actor,{state,ref,pending});
 				return; // Only the scheduler region waits for this permission sample.
@@ -125,15 +144,8 @@ export function supervise(io) {
 			async function dispatch(){
 				const permitted=(state==="managed-policy" || state==="issuer-permission") && await io.permitted();
 				if (watches.get(key)!==w || state!=="dormant" && w.state!==state)return;
-				const action=monitors.plan({supervision:state},"sample",{supervision:{permitted,available:tip!==undefined,changed}})[0]?.edge.action;
-				if (action==="stop") {observe(id,actor,{state:"dormant",ref,pending});return;}
-				const delay=w.delay;
-				if (action==="wait"){backoff(delay);return;}
-				if (action!=="reconcile" && action!=="reactivate")throw Error(`Unknown supervision action: ${action}`);
-				if (!await io.wake(id,actor,action==="reactivate"?token:undefined)){backoff(delay);return;}
-				if (w.state==="workflow-status") backoff(delay); else {w.skip=0; w.delay=1;}
-				// A detached reconciliation can invalidate this observation before or after its wake returns.
-				seen.stamp=stamp;seen.tip=tip;
+				const result=transition(supervision,{value:state,context:null},{type:"sample"},{permitted,available:tip!==undefined,changed},true);
+				await Promise.all(execute(result,{state,pending,token,seen,stamp,tip}));
 			}
 		}
 	}
