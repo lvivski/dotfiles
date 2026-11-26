@@ -11,11 +11,11 @@ import { canDispatch } from "./native.mjs";
 import { stalePins } from "./plan.mjs";
 import { presentation } from "./reviews.mjs";
 import { fail } from "./values.mjs";
-import { nodeFact, pendingFact, visible } from "./visibility.mjs";
+import { adoptionQuestions, nodeFact, pendingFact, visible } from "./visibility.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @param {Run} run @param {ReturnType<typeof visible>} view @param {unknown} detail */
-function ownerStatus(run, { receipts, questions }, detail) {
+function ownerStatus(run, { receipts, questions, summary }, detail) {
 	const last = run.products.at(-1);
 	return {
 		handoff: handoff(run, detail === "cleanup"),
@@ -52,16 +52,18 @@ function ownerStatus(run, { receipts, questions }, detail) {
 		contractPin:run.policy.contractTarget ?? run.policy.base,
 		productPin:run.productRepins?.at(-1)?.revision ?? run.policy.base,
 		productOwnership:ownershipMode(run),
-		...(run.productRepins ? {productEvaluatorChanges:run.productRepins} : {}),
+		...(run.productRepins ? {productEvaluatorChanges:run.productRepins.map(p=>detail==="proof" && p.amendments ?
+			{...p,amendments:p.amendments.map(a=>({...a,prior:{...a.prior,receipt:receipts.get(a.prior.check)}}))} : p)} : {}),
 		...(run.repins || run.productRepins || run.goal && detail === "proof" ? { goalChecks: run.effects.filter(e => e.kind === "goal").map(e => ({
 			id: e.id, commit: e.commit, evaluatorRevision: e.evaluatorRevision ?? run.policy.base, state: e.state,
 			...(e.productEvaluatorRevision ? {productEvaluatorRevision:e.productEvaluatorRevision} : {}),
 			...(e.state === "retired" ? { infrastructureFailure: { reason: "Runner failed before recording a verdict", ...e.retirement } } : {}), receipt: receipts.get(e.id) })) } : {}),
-		questions: questions.map(({ review: r, observation, fact }) => {
+		questions: [...questions.map(({ review: r, observation, fact }) => {
 			const claim = presentation(r);
 			return { ...fact, squad: r.squad, base: r.base, evidence: observation.evidence,
 				...(observation.ownerInput && claim ? { recovery: { run: run.id, review: r.id, presentation: claim } } : {}) };
-		}),
+		}),...adoptionQuestions(summary)],
+		...(detail==="proof" && run.adoptions && {targetProposals:run.adoptions.map(({basis,...a})=>a)}),
 		products: run.products.map(p => ({ ...p, receipt: receipts.get(p.check) })),
 		candidate: run.join && { ...run.join, receipt: receipts.get(run.join.check) },
 	};

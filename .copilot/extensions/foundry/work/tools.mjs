@@ -40,6 +40,7 @@ const choices={
 		pair:["pair","After a signed exit-1 restoration, observe the same primary with the published retainer's different integration bytes. Name the unchanged checkpoint, goal and passing retainer component. No writer, edits or retry of a negative pair.",{grain:string,failed:string,checkpoint:string,goal:string,retainer:string,candidate:string,component:string}],
 	},
 	grant:{
+		inherited:["inherit","On explicit request, select or reopen this owner-offered patch for unowned inherited files after a signed adopted-component failure. The operator confirms the exact diff, not the target again. No writer grant.",{check:string,blob:string}],
 		inspectBaseline:["inspectBaseline","Allow the original missing-input writers to read their exact prior directories. No write permission or new work; eligible even during a check.",baseline],
 		repairBaseline:["repairBaseline","Authorize one bounded repair for each original missing-input writer from its unchanged baseline after a settled goal. Inspection alone does not authorize repair.",baseline],
 		reuse:["reuse","Seed one new writer from the exhausted assignment's exact failed candidate and already-offered correction on the current product. No old verdict is promoted.",{grain:string,check:string,candidate:string,blob:string}],
@@ -51,7 +52,7 @@ const choices={
 };
 /** @type {Form[]} */
 const definitions = [
-	["grant","Owner, on operator direction: request one scoped baseline, candidate reuse, restoration, observer, preview approval or production grant.",{run:string}],
+	["grant","Owner, on operator direction: request one scoped baseline, reuse, restoration, observer, production or inherited-file correction approval.",{run:string}],
 	["check","Owner, on operator request: recover a check, observe or repeat a historical harness, or pair a failed restoration with its retainer. Never replace a verdict.",{run:string}],
 	["review","Owner: start one scoped scout comparison or retry an eligible blocked review. To queue context without a launch use foundry_review_note.",{run:string}],
 	["deliver","Owner, on request: approve the inventory of whole, absent, disjoint test directories with latest signed passing reruns on this product. Preserve owners and attempts; freshly check components, product and goal.",{run:string,checkpoint:string,goal:string,reruns:{...strings,minItems:1}}],

@@ -22,10 +22,11 @@ export function contention(error) {
 
 /** An already-returned result can outlive a busy transaction, not its issuer.
  * The callback must recheck the original identity on every attempt and perform no native action.
- * @template T @param {()=>T} write @param {AbortSignal} signal @param {(e:unknown)=>void} log */
+ * The callback may sample fresh authority before a conditional write; it must never replay the native request.
+ * @template T @param {()=>T|Promise<T>} write @param {AbortSignal} signal @param {(e:unknown)=>void} log @returns {Promise<T|undefined>} */
 export async function persist(write,signal,log){
 	for(let delay=1000;!signal.aborted;delay=Math.min(15_000,delay*2)){
-		try{return write();}
+		try{const result=write();return result instanceof Promise ? await result : result;}
 		catch(error){if(!contention(error))throw error;if(delay===1000)log(error);}
 		try{await sleep(delay,undefined,{signal});}
 		catch(error){if(!signal.aborted)throw error;}

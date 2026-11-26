@@ -377,6 +377,33 @@ export const stageCheckpoint=(cwd,base,updates)=>commitTree(cwd,combinedTree(cwd
  * @param {string} cwd @param {string} base @param {Update[]} updates @param {string} target */
 export const stageDelivery=(cwd,base,updates,target)=>commitTree(cwd,combinedTree(cwd,base,updates),"Foundry product candidate",target);
 
+/** Apply bytes as data to a private index. Neither the real index nor any checkout is an input.
+ * @param {string} cwd @param {string} base @param {string} target @param {string} patch */
+export function stagePatch(cwd,base,target,patch){
+	return withIndex(cwd,staged=>{
+		staged(["read-tree",base]);
+		try{staged(["apply","--cached","--whitespace=nowarn","-"],patch);}
+		catch(error){
+			if(!(error instanceof Error && "status" in error && (error.status===1 || error.status===128)))throw error;
+			fail("invalid_patch","The offered diff does not apply cleanly to the failed assembly");
+		}
+		return commitTree(cwd,staged(["write-tree"]).toString().trim(),"Foundry product candidate",target);
+	});
+}
+
+/** Pin effective changes, not patch headers, for independent consent and runner verification.
+ * @param {string} cwd @param {string} from @param {string} to */
+export function changedBlobs(cwd,from,to){
+	const paths=changedFiles(cwd,from,to);
+	if(!paths.length)fail("unchanged_candidate","The patch does not change the failed assembly");
+	const before=regularFiles(cwd,from,paths), result=regularFiles(cwd,to,paths);
+	return before.map((b,i)=>{
+		const r=result[i];
+		if(b.mode!==r.mode || b.oid===r.oid)fail("invalid_patch",`Only content changes to existing regular files are eligible: ${b.name}`);
+		return {file:b.name,mode:b.mode,before:b.oid,result:r.oid};
+	});
+}
+
 /** @param {string} cwd @param {string} tree */
 export const pairedCommit=(cwd,tree)=>pin(cwd,tree,"Foundry paired observation");
 /** Carry the actual checkpoint delta onto a moved target, not a reconstruction from past jobs.

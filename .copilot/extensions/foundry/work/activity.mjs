@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { executor } from "./adapter.mjs";
+import { invalidatePresentation } from "./dialog.mjs";
 import { machine, guard, to, transition, update } from "./machine.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
@@ -16,8 +18,8 @@ const recordHold=update("recordHold",(/** @type {Context} */ ctx,/** @type {Extr
 const pause={...to("pause","paused","Stop new work without discarding issued calls or checked outputs."),...clearHold},
 	resume={...to("resume","active","Continue eligible work on the original run under the operator's direction."),...clearHold};
 export const activity=machine("activity","active",{
-	active:[pause,resume,{...to("policy-hold","held","Suspend dispatch while the issuing session cannot confirm managed permissions."),...recordHold},
-		{...to("goal-met","qualified","End dispatch after the accepted product meets the release conditions."),...clearHold}],
+	active:[{...pause,action:"withdraw-target-proposal"},resume,{...to("policy-hold","held","Suspend dispatch while the issuing session cannot confirm managed permissions."),...recordHold,action:"withdraw-target-proposal"},
+		{...to("goal-met","qualified","End dispatch after the accepted product meets the release conditions."),...clearHold,action:"withdraw-target-proposal"}],
 	held:[pause,resume,{...to("policy-ready","active","Clear only the issuing session's matching permission hold."),
 		...guard("sameHold",(/** @type {Context} */ ctx,/** @type {Extract<ActivityEvent,{type:"policy-ready"}>} */ e)=>
 			!!ctx.policyHold && ctx.policyHold.issuer===e.issuer && ctx.policyHold.token===e.token),...clearHold}],
@@ -28,6 +30,12 @@ export const activity=machine("activity","active",{
 	held:"Dispatch is suspended by a recorded permission hold. Its issuer can observe when that same hold clears.",
 	paused:"The run keeps its work and receipts. Only an operator-directed resume can restart scheduling.",
 	qualified:"The accepted commit is ready for handoff. No more work is scheduled.",
+}});
+
+const applyActivity=executor(activity,{"withdraw-target-proposal":(/** @type {Run} */ run)=>{
+	if(!run.targetProposal)return;
+	invalidatePresentation(run.adoptions?.at(-1),"Run stopped during target approval. No target was adopted.");
+	delete run.targetProposal;
 }});
 
 /** Project the ledger; a qualified one-off product does not terminate a goal-less run.
@@ -42,6 +50,7 @@ export function sendActivity(run,event) {
 		run.active=result.snapshot.value==="active";
 		if (policyHold===undefined) delete run.policyHold; else run.policyHold=policyHold;
 		if (pauseReason===undefined) delete run.pauseReason; else run.pauseReason=pauseReason;
+		applyActivity(result,run);
 	}
 	return result;
 }

@@ -38,7 +38,8 @@ test("activity projects every ledger discriminator, event and hold identity with
 			const result=sendActivity(ledger,event);
 			const context=target ? event.type==="policy-hold" ? {policyHold:replacement,pauseReason:event.reason} : {} :
 				{...(held && {policyHold:ticket}),...(reason!==undefined && {pauseReason:reason})};
-			assert.deepEqual(result.snapshot,{value:target ?? from,context});assert.deepEqual(result.effects,[]);
+			assert.deepEqual(result.snapshot,{value:target ?? from,context});
+			assert.deepEqual(result.effects,from==="active" && target && target!=="active" ? [{type:"withdraw-target-proposal"}] : []);
 			assert.equal(result.edge?.on,target ? event.type : undefined);
 			if (target) {
 				delete before.policyHold;delete before.pauseReason;Object.assign(before,{active:target==="active"},context);

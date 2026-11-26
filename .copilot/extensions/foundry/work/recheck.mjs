@@ -1,6 +1,6 @@
 import { assign, working } from "./assignment.mjs";
 import { availableReservations, remainingAssignments } from "./capacity.mjs";
-import { checkReceipt, currentEvaluation, launcherFailure, productPin } from "./evidence.mjs";
+import { checkReceipt, currentEvaluation, launcherFailure, productPin, verification } from "./evidence.mjs";
 import { undecided } from "./facts.mjs";
 import { assess, observeTarget } from "./goal.mjs";
 import { changes, productBase, verifyJoinedInputs, verifyRepairInputs } from "./graph.mjs";
@@ -57,7 +57,7 @@ function selection(cwd,r,actor,id,signed) {
 		if (e.kind==="product" ? !join || join.check!==id || join.commit!==e.commit || e.check!==r.policy.productCheck :
 			e.kind!=="goal" || !at || at.check!==id || at.commit!==e.commit || e.check!==r.policy.goalCheck)
 			fail("stale_assignment","The check is not the current product or goal assessment");
-		if (r.productRepins?.at(-1)?.recheck===id)
+		if (verification(r.productRepins?.at(-1))===id)
 			fail("dispatch_held","Product pin approval requires its exact original verification; it cannot be replaced by a generic recheck");
 		const outputs = productOutputs(r,target,remainingAssignments(r));
 		// On a moved baseline with no outputs, assess today's target. With any earned

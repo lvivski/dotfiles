@@ -9,7 +9,8 @@ import { currentReview } from "./graph.mjs";
 import { prepareRepin } from "./repin.mjs";
 import { createRuntime } from "./runtime.mjs";
 import { decode } from "./snapshot.mjs";
-import { factory, git, put } from "../test/fixture.mjs";
+import { factory, git, loadEntry, put, recoveryClock, withLedgerLock } from "../test/fixture.mjs";
+import { setImmediate as tick } from "node:timers/promises";
 
 const run = "sample", source = ".foundry/sample.json", product = ".foundry/product.mjs", goal = ".foundry/goal.mjs";
 const primary = "view/main", exact = "view/connection", component = ".foundry/component.mjs";
@@ -17,6 +18,15 @@ function latch() {
 	let resolve=()=>{};
 	const promise=new Promise(done=>{resolve=()=>done(undefined);});
 	return {resolve,promise};
+}
+/** A refusal now records its exact presentation, but still changes no run authority, product, writer or receipt.
+ * @param {import("./model.js").Run} after @param {import("./model.js").Run} before */
+function onlyDismissed(after,before){
+	const {adoptions,targetProposal,...rest}=after, {adoptions:prior,targetProposal:old,...original}=before;
+	assert.deepEqual(rest,original);
+	assert.ok(targetProposal && adoptions?.at(-1)?.id===targetProposal);
+	assert.equal(adoptions.at(-1)?.decision?.status,"dismissed");
+	if(old)assert.equal(targetProposal,old);
 }
 /** @param {import("node:test").TestContext} t @param {boolean} [stopped] @param {typeof factory} [build] */
 async function checkpoint(t,stopped=false,build=factory) {
@@ -97,7 +107,7 @@ for (const outcome of ["pass","component fails","goal fails"]) test(`mixed targe
 	await assert.rejects(owner.operation("repin",{...args,files:[goal]},"owner"),/complete.*diff/i);
 	await assert.rejects(owner.operation("repin",args,"worker-1"),/owner/i);
 	await assert.rejects(f.runtime(f.root,{confirm:async()=>false}).operation("repin",args,"owner"),/not approved/i);
-	assert.deepEqual(read(),held); assert.deepEqual(f.checks,attempts);
+	onlyDismissed(read(),held); assert.deepEqual(f.checks,attempts);
 	const migrated=f.runtime(f.root,{confirm:async prompt=>{
 		for (const item of [f.revision,prior.check,old.goal?.check,revision,...changed]) assert.ok(item && prompt.includes(item));
 		return true;
@@ -188,7 +198,7 @@ for (const exit of [2,1]) test(`target adoption retains an unissued original rep
 		assert.throws(()=>prepareRepin(f.root,unreviewed,"owner",args,e=>db.verifySigned(run,e)),{code:"unreviewed_output"});
 	}
 	await assert.rejects(migrated.operation("repin",args,"owner"),/not approved/i);
-	assert.deepEqual(read(),before);
+	onlyDismissed(read(),before);
 	const owner=f.runtime(f.root,{confirm:async prompt=>{
 		assert.ok(prompt.includes(original.id) && original.commit && prompt.includes(original.commit));
 		return true;
@@ -229,6 +239,130 @@ test("target approval binds the live tip and cannot upgrade a directories-only c
 	assert.equal(after.productOwnership,"directories");
 });
 
+for(const outcome of ["decline","move","pause","closed issuer","permission change","owned conflict"])test(`automatic target approval / ${outcome}`,async t=>{
+	const f=await checkpoint(t),db=openDatabase(f.root);t.after(()=>db.close());
+	const original=db.read(run);assert.ok(original);
+	const charter=".foundry/spec.md";put(f.root,charter,"Prospective maintenance contract.");
+	if(outcome==="owned conflict")put(f.root,"unit/result","operator bytes");
+	git(f.root,"add",".");git(f.root,"commit","-qm","Review the new target");
+	const revision=git(f.root,"rev-parse","HEAD"),before=[...f.checks];
+	const opened=latch(),answer=latch(),clock=recoveryClock();let count=0,held=false;
+	const host={watchRecovery:clock.watch,autoConfirm:async()=>true,mode:async()=>"autopilot",
+		permissionBlocker:async()=>held ? {scope:/** @type {const} */("session"),message:"Assisted permissions unavailable."}:null,
+		adopt:async(/** @type {string} */ message)=>{
+			count++;assert.ok(message.includes(revision));opened.resolve();await answer.promise;
+			return outcome==="decline" ? null : "Keep the checked product and adopt the revised maintenance charter.";
+		}};
+	const owner=f.runtime(f.root,host);
+	const [w]=f.workers.values(), worker=f.runtime(w.cwd,host);
+	worker.turn(w.id);await worker.flush();
+	assert.equal(count,0,"a participant cannot present an adoption");
+	assert.equal(owner.inspect({run},"owner").targetAdoption,undefined,"reading status cannot create a proposal");
+	owner.turn("owner");
+	if(outcome==="owned conflict"){
+		await owner.flush();const blocked=owner.inspect({run},"owner");
+		assert.equal(count,0);assert.equal(blocked.targetAdoption?.state,"blocked");assert.match(blocked.targetAdoption?.message??"",/owned output|unit\/result/);
+		assert.equal(blocked.questions?.length,0);assert.deepEqual(f.checks,before);return;
+	}
+	await Promise.race([opened.promise,owner.flush().then(()=>assert.fail("no owner prompt"))]);
+	const offered=owner.inspect({run},"owner");assert.equal(offered.targetAdoption?.state,"presenting");
+	assert.ok(offered.questions?.some(q=>q.question.includes(revision)));assert.equal(worker.inspect({run},w.id).targetAdoption,undefined);
+	assert.ok(owner.readBoard(run,"owner").questions.some(q=>q.question.includes(revision)));
+	assert.deepEqual(db.read(run)?.effects,original.effects);
+	const peer=f.runtime(f.root,{...host,confirm:async()=>true});peer.turn("owner");await peer.flush();assert.equal(count,1,"two owner runtimes must share one presentation");
+	if(outcome==="move"){put(f.root,"manual","a later target");git(f.root,"add","manual");git(f.root,"commit","-qm","Move during approval");}
+	if(outcome==="pause"){await peer.operation("pause",{run},"owner");}
+	if(outcome==="closed issuer")owner.close();
+	if(outcome==="permission change")held=true;
+	answer.resolve();await owner.flush();
+	const end=db.read(run);assert.ok(end);
+	assert.equal(end.policy.contractTarget,undefined);assert.deepEqual(end.effects,original.effects);assert.deepEqual(f.checks,before);
+	if(outcome==="decline" || outcome==="closed issuer"){
+		peer.sessionStart("owner",f.root);await clock.pulse(peer,8);
+		assert.equal(count,1,"no automatic re-presentation after dismissal or uncertain delivery");
+		assert.equal(peer.inspect({run},"owner").targetAdoption?.state,outcome==="decline"?"dismissed":"presenting");
+		if(outcome==="closed issuer"){
+			await peer.operation("repin",{run,kind:"target",from:f.tip,revision,files:[charter],goal:original.goal?.check,checkpoint:f.prior.check,
+				acceptance:"Adopt the maintenance charter without changing the existing writer grants."},"owner");
+			const recovered=db.read(run);assert.equal(recovered?.policy.contractTarget,revision);
+			assert.equal(recovered.adoptions?.at(-1)?.previous?.[0].status,"unavailable");
+			assert.deepEqual(f.checks.slice(before.length).map(s=>s.split(" at ")[0]),["Check joined product","Check final goal"]);
+		}
+	}else assert.equal(end.adoptions?.at(-1)?.decision?.status,"unavailable");
+});
+
+for(const response of ["approved","cancelled","missing answer"])test(`native Approve All still requires the owner's exact target decision / ${response}`,async t=>{
+	const f=await checkpoint(t),db=openDatabase(f.root);t.after(()=>db.close());
+	await f.owner.operation("pause",{run},"owner");f.owner.close();
+	const before=db.read(run);assert.ok(before?.goal);
+	put(f.root,goal,"process.exit(0)");git(f.root,"commit","-qam","Change the goal on the target");
+	const revision=git(f.root,"rev-parse","HEAD"),acceptance="The new goal accepts the checked output without a connected view.";let prompts=0;
+	const entry=await loadEntry({sessionId:"owner",on(){},log(){},send:async()=>"notice",
+		ui:{elicitation:async(/** @type {import("@github/copilot-sdk").ElicitationParams} */ form)=>{
+			prompts++;assert.deepEqual(form.requestedSchema.required,["acceptance"]);
+			assert.ok([goal,revision,f.prior.check,before.goal?.check].every(s=>s && form.message.includes(s)));
+			return {action:response==="cancelled"?"cancel":"accept",content:response==="missing answer"?{}:{acceptance}};
+		}},rpc:{mode:{get:async()=>"autopilot"},managedSettings:{get:async()=>({failClosed:false,bypassPermissionsDisabled:false})},
+			permissions:{getMode:async()=>({mode:"allow-all"})},tools:{execute:(/** @type {{name:string,arguments:import("./model.js").Effect["args"],toolCallId:string}} */ a)=>
+				f.execute(a.name,a.arguments,a.toolCallId)}}});
+	const ctx={sessionId:"owner"},hook={...ctx,timestamp:new Date(),workingDirectory:f.root};
+	await entry.hooks.onSessionStart?.({...hook,source:"resume"},ctx);t.after(()=>entry.hooks.onSessionEnd?.({...hook,reason:"complete"},ctx));
+	const name="foundry_resume",resume=entry.tools.find(t=>t.name===name)?.handler;assert.ok(resume);const args={source,run};
+	const returned=await resume(args,{...ctx,toolName:name,toolCallId:"requested-resume",arguments:args});
+	assert.equal(typeof returned,"string",JSON.stringify(returned));await tick();
+	assert.equal(prompts,1);const after=db.read(run);assert.ok(after);
+	if(response==="approved"){
+		const pin=after.productRepins?.at(-1);assert.equal(pin?.acceptance,acceptance);assert.equal(pin.revision,revision);
+		assert.equal(after.products.at(-1)?.qualifiedAt!==undefined,true);
+	}else{
+		assert.equal(after.policy.contractTarget,undefined);assert.deepEqual(after.effects,before.effects);
+		assert.equal(after.adoptions?.at(-1)?.decision?.status,response==="cancelled"?"dismissed":"unavailable");
+	}
+});
+
+test("declining an explicitly requested target cannot cause the same proposal to reopen automatically",async t=>{
+	const f=await checkpoint(t),charter=".foundry/spec.md";
+	put(f.root,charter,"Prospective maintenance contract.");git(f.root,"commit","-qam","Change charter");
+	let requested=0,automatic=0;
+	const opened=latch(),done=latch();
+	const host={confirm:async()=>{requested++;opened.resolve();await done.promise;return false;},adopt:async()=>{automatic++;return null;}};
+	const owner=f.runtime(f.root,host),peer=f.runtime(f.root,host);
+	const goalId=f.before.goalChecks?.at(-1)?.id;assert.ok(goalId);
+	const declined=assert.rejects(owner.operation("repin",{run,kind:"target",from:f.tip,revision:git(f.root,"rev-parse","HEAD"),
+		files:[charter],goal:goalId,checkpoint:f.prior.check,acceptance:"Adopt the revised scope for future work."},"owner"),{code:"approval_declined"});
+	await opened.promise;
+	try{
+		peer.turn("owner");await peer.flush();
+		assert.equal(peer.inspect({run},"owner").targetAdoption?.state,"presenting","rediscovering the same contract change must preserve the open explicit dialog");
+	}finally{done.resolve();await declined;}
+	owner.turn("owner");await owner.flush();
+	assert.equal(requested,1);assert.equal(automatic,0,"a known refusal cannot trigger an automatic second dialog");
+});
+
+test("a permission wake presents the original proposal; a contended approval rechecks policy instead of replaying it",async t=>{
+	const f=await checkpoint(t),db=openDatabase(f.root);t.after(()=>db.close());
+	const original=db.read(run);assert.ok(original);const clock=recoveryClock(),opened=latch(),answer=latch();
+	put(f.root,goal,"process.exit(0)");git(f.root,"commit","-qam","Adopt the revised acceptance rules");
+	let held=true,prompts=0,busy=false;
+	const owner=f.runtime(f.root,{watchRecovery:clock.watch,autoConfirm:async()=>true,
+		permissionBlocker:async()=>held ? {scope:"session",message:"Manual approvals."} : null,
+		log:message=>{if(message.includes("record an original reply"))busy=true;},
+		adopt:async()=>{prompts++;opened.resolve();await answer.promise;return "Use the revised goal."; }});
+	owner.sessionStart("owner",f.root);await clock.pulse(owner,4);
+	const pending=owner.inspect({run},"owner").targetAdoption;
+	assert.equal(pending?.state,"ready");assert.equal(prompts,0);
+	held=false;
+	const waking=clock.pulse(owner,8);
+	await Promise.race([opened.promise,waking.then(()=>assert.fail("the existing proposal must wake when policy allows it"))]);
+	await withLedgerLock(f.root,async()=>{answer.resolve();await tick();held=true;});
+	await waking;await owner.flush();
+	const end=db.read(run);assert.ok(end);
+	assert.ok(busy,"the test must have contended on the original approval write");
+	assert.equal(end.policy.contractTarget,undefined);assert.deepEqual(end.effects,original.effects);
+	assert.equal(end.adoptions?.at(-1)?.id,pending.id);assert.equal(end.adoptions.at(-1)?.decision?.status,"unavailable");
+	held=false;await clock.pulse(owner,8);assert.equal(prompts,1);
+});
+
 test("the target manifest cannot silently drop a previously approved checker or overwrite a published directory",async t=>{
 	const f=await checkpoint(t), owner=f.runtime(f.root,{confirm:async()=>true});
 	await owner.operation("repin",f.args,"owner");
@@ -243,15 +377,17 @@ test("the target manifest cannot silently drop a previously approved checker or 
 	assert.deepEqual(f.checks,checks);assert.equal(owner.inspect({run},"owner").productPin,f.revision);
 });
 
-test("mixed target reconciles only listed unowned file conflicts on the original checked run",async t=>{
+for(const automatic of [false,true])test(automatic ? "a reloaded owner proposes the exact unowned conflict and continues the original run on approval" :
+	"mixed target reconciles only listed unowned file conflicts on the original checked run",async t=>{
 	const charter=".foundry/spec.md", file="package/guide.txt", owned="package/core/value", flag="new-target";
 	const base="Header\n\nObserve the original item.\n\nFooter\n", checkpoint=base+"Checkpoint notes.\n";
 	const target=base.replace("original","selected"), merged=checkpoint.replace("original","selected");
 	const ready=base+"Ready\n";
 	const check=`import {existsSync,readFileSync} from "node:fs"; if(existsSync("${flag}") &&
 		(readFileSync("${file}","utf8")!==${JSON.stringify(merged)} || readFileSync("${owned}","utf8")!==${JSON.stringify(ready)})) process.exit(1);`;
+	const priorFixture=automatic ? process.env.FOUNDRY_ADOPTION_FIXTURE : process.env.FOUNDRY_PRIOR_FIXTURE;
 	/** @type {typeof factory} */
-	const build=process.env.FOUNDRY_PRIOR_FIXTURE ? (await import(process.env.FOUNDRY_PRIOR_FIXTURE)).factory : factory;
+	const build=priorFixture ? (await import(priorFixture)).factory : factory;
 	const f=build(t,run,source,{[source]:JSON.stringify({version:2,id:run,target:"refs/heads/main",direction:"Publish a checked package.",
 		productCheck:product,goalCheck:goal,squads:[{id:"package",areas:["package"],charter,checks:[component]}]}),
 		".foundry/sample/journey.md":"Read the completed package.",[charter]:"Produce the package.",[file]:base,[owned]:base,
@@ -275,6 +411,37 @@ test("mixed target reconciles only listed unowned file conflicts on the original
 	const hash=(/** @type {string} */ bytes)=>execFileSync("git",["-C",f.root,"hash-object","--stdin"],{input:bytes,encoding:"utf8"}).trim();
 	const row={file,mode:"100644",base:blob(f.tip,file),checkpoint:blob(last.commit,file),target:blob(revision,file),result:hash(merged)};
 	const attempts=[...f.checks];
+	if(automatic){
+		if(priorFixture){f.owner.turn("owner");await f.owner.flush();}
+		assert.equal(f.owner.inspect({run},"owner").release?.reason,"contract-changed");
+		assert.equal(read().products.at(-1)?.check,last.check);assert.equal(read().adoptions,undefined,"recover from the saved checkpoint without a pre-existing proposal");
+		f.owner.close();
+		const clock=recoveryClock();
+		/** @type {string[]} */ const prompts=[];
+		const owner=f.runtime(f.root,{watchRecovery:clock.watch,autoConfirm:async()=>true,
+			adopt:async (/** @type {string} */ prompt)=>{
+				prompts.push(prompt);const saved=read();
+				assert.deepEqual(saved.effects,before.effects);
+				assert.equal(git(f.root,"rev-parse","HEAD"),revision);
+				return args.acceptance;
+			}},createRuntime);
+		owner.sessionStart("owner",f.root);await clock.pulse(owner,4);
+		assert.equal(prompts.length,1,"a contract-changed wait must escalate without a manual repin");
+		for(const value of [revision,last.check,args.goal,charter,...Object.values(row),base.split("\n")[2],target.split("\n")[2]])
+			assert.ok(prompts[0].includes(value),`missing from proposal: ${value}`);
+		const end=read(), proof=owner.inspect({run,detail:"proof"},"owner").qualification;assert.ok(proof);
+		assert.equal(blob(proof.commit,file),row.result);assert.equal(git(f.root,"rev-parse","main"),revision);
+		assert.deepEqual(end.effects.slice(0,before.effects.length),before.effects);
+		assert.equal(end.productRepins?.at(-1)?.acceptance,args.acceptance);
+		assert.deepEqual(end.productRepins?.at(-1)?.resolutions,[row]);
+		const proposal=end.adoptions?.at(-1);assert.ok(proposal?.manifest);assert.deepEqual(proposal.manifest.resolutions,[row]);
+		assert.deepEqual(proposal.manifest.files,[charter]);assert.deepEqual(proposal.manifest.outputs,last.outputs);
+		const forged=structuredClone(end),saved=forged.adoptions?.at(-1);assert.ok(saved?.manifest);
+		saved.manifest.files.push("unreviewed");assert.throws(()=>decode(forged),{code:"corrupt_run"});
+		assert.equal(proof.receipts.product.components?.narrow.exit,0);assert.equal(proof.receipts.goal.commit,proof.commit);
+		assert.deepEqual(f.checks.slice(attempts.length).map(s=>s.split(" at ")[0]),["Check joined product","Check final goal"]);
+		return;
+	}
 	await assert.rejects(f.owner.operation("repin",args,"owner"),/Concurrent modification since checkpoint/);
 	if(process.env.FOUNDRY_PRIOR_FIXTURE) await assert.rejects(f.owner.operation("repin",{...args,resolutions:[row]},"owner"),/Unsupported field: resolutions/);
 	let prompts=0;
@@ -295,7 +462,7 @@ test("mixed target reconciles only listed unowned file conflicts on the original
 	put(f.root,owned,base);git(f.root,"commit","-qam","Withdraw only the competing fixture edit");
 	const current=git(f.root,"rev-parse","HEAD"), request={...args,revision:current,resolutions:[row]};
 	await assert.rejects(owner.operation("repin",request,"owner"),/not approved/i);
-	assert.deepEqual(read(),before);assert.deepEqual(f.checks,attempts);
+	onlyDismissed(read(),before);assert.deepEqual(f.checks,attempts);
 	await owner.operation("repin",request,"owner");
 	const after=read(), proof=owner.inspect({run,detail:"proof"},"owner").qualification;assert.ok(proof);
 	assert.deepEqual(after.effects.slice(0,before.effects.length),before.effects);

@@ -57,6 +57,7 @@ export const reconciliation=machine("reconciliation","idle",{
 		go("work","done","Keep an inactive run stopped; only its already-qualified handoff can be delivered.","!active","!handoff"),
 		go("work","done","A later eligible turn can deliver a timely final handoff, not start new work.","expired","!handoff"),
 		act("work","reservations","offer-question","Present the active owner's outstanding question independently of eligible reservations.","owner","active","!expired","question"),
+		act("work","reservations","offer-adoption","Ask the owner once about the exact target adoption or a correction to inherited files. Presenting the proposal grants nothing.","owner","active","!expired","adoption"),
 		act("work","reservations","offer-batch","Consider only reservations belonging to this issuer."),
 	],
 	reservations:[

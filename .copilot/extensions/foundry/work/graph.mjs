@@ -14,7 +14,7 @@ import { notifyWriters, takeArtifactBrief } from "./artifacts.mjs";
 import { addresses, answeredLead, checkLinks, unownedBlockers } from "./blockers.mjs";
 import { validOutcome } from "./contract.mjs";
 import { evidenceDecision, exhaustedRead, readSource, readWake, rejectedRead, validateRead } from "./cursor.mjs";
-import { checkReceipt, comparisonGoal, comparisonVerdict, currentEvaluation, exhaustedCandidate, goalReceipt, leadGoal, milestoneBlocker, omittedStep, productPin } from "./evidence.mjs";
+import { checkReceipt, comparisonGoal, comparisonVerdict, currentEvaluation, exhaustedCandidate, goalReceipt, leadGoal, milestoneBlocker, omittedStep, productPin, verification } from "./evidence.mjs";
 import { checkpointCurrent, continuingRepair, pendingGoal, retainedRepair } from "./facts.mjs";
 import { decisionOf, release } from "./engine.mjs";
 import { discoverLeads } from "./leads.mjs";
@@ -584,21 +584,14 @@ function settleChecks(cwd, run, actor, remaining, target) {
 	if (partition) return;
 	const join = run.join, check = join && checks.get(join.check);
 	if (!join || !check) return;
-	const receipt = checkReceipt(check);
-	const upgrade = run.productRepins?.at(-1);
-	if (upgrade?.recheck === join.check) {
+	const receipt = checkReceipt(check), pin=run.productRepins?.at(-1);
+	const upgrade=verification(pin)===join.check ? pin : undefined;
+	if (upgrade) {
 		const prior = run.products.at(-1);
 		if (!receipt || check.error || run.blocker || join.target !== target || prior?.check !== upgrade.checkpoint ||
 			(upgrade.targetFrom ? target!==upgrade.revision : join.commit !== prior.commit || !sameProduct(prior,target,join.outputs))) return;
 		verifyContracts(cwd,run.policy,target);
 		if (receipt.exit !== 0) { check.error = `Product evaluator recheck did not pass: ${receipt.output || receipt.exit}`; return; }
-		run.products.push(join);
-		if (upgrade.targetFrom) for (const id of Object.keys(join.outputs)) {
-			assign(run.nodes[id],"integrate");
-			delete run.nodes[id].restoration;
-		}
-		delete run.join;
-		return;
 	}
 	const blamed = receipt?.repair && Object.hasOwn(join.outputs, receipt.repair) ? receipt.repair : undefined;
 	const failure = receipt && productFailure(receipt, blamed, remaining);
@@ -610,8 +603,8 @@ function settleChecks(cwd, run, actor, remaining, target) {
 		delete run.blocker;
 	}
 	if (!receipt || check.error || run.blocker) return;
-	if (!sameProduct(join, target, productOutputs(run, target, remaining))) return;
-	if (excludeIncompatible(cwd,run,join.outputs,productBase(cwd,run,target),join.commit)) {
+	if (!upgrade && !sameProduct(join, target, productOutputs(run, target, remaining))) return;
+	if (!upgrade && excludeIncompatible(cwd,run,join.outputs,productBase(cwd,run,target),join.commit)) {
 		delete run.join; // Preserve this receipt on its original effect, never apply it to the surviving outputs.
 		return;
 	}
@@ -619,7 +612,7 @@ function settleChecks(cwd, run, actor, remaining, target) {
 		if (!run.goal) qualify(run, actor, join,target);
 		delete run.join;
 		run.products.push(join);
-		for (const id of Object.keys(join.outputs)) {
+		if (!upgrade || upgrade.targetFrom) for (const id of Object.keys(join.outputs)) {
 			assign(run.nodes[id],"integrate");
 			delete run.nodes[id].restoration;
 		}
@@ -929,7 +922,7 @@ function isolationEvidence(run,target) {
 /** @typedef {{retryGoal?:boolean,submitToken?:string,target?:string,renew?:boolean,trace?:PlanningStep[]}} PlanningOptions */
 /** @typedef {{cwd:string,run:Run,actor:string,owner:boolean,discover:boolean,options:PlanningOptions,target?:string,base?:string,
  * isolated?:ReturnType<typeof isolationEvidence>,history:Review[],latest?:Map<string,Review>,remaining:number,reserved:number,limit:number,
- * admission:import("./admission.mjs").Admission,workTarget?:string,nodes:Node[],stoppedWaiting:boolean,gap?:Receipt,
+ * admission:import("./admission.mjs").Admission,workTarget?:string,changedTarget?:string,nodes:Node[],stoppedWaiting:boolean,gap?:Receipt,
  * outputs?:Record<string,string>,assembly?:{commit:string,attribution?:string},excluded?:boolean,unchanged?:boolean,repeated?:Receipt,diagnostic?:string,
  * squads:import("./model.js").Squad[]}} Plan */
 
@@ -1036,6 +1029,7 @@ function assessRelease(p) {
 	const decision=run.goal ? applyGoal(cwd,run,actor,()=>tip(p),p.options.retryGoal===true)
 		: decisionOf(transition(release,{value:"absent",context:null},{type:"assess"},{},true));
 	p.admission=decision.admission;
+	p.changedTarget=decision.reason==="contract-changed" || decision.reason==="adopted-component-failed" ? tip(p) : undefined;
 	p.workTarget="workTarget" in decision && typeof decision.workTarget==="string" ? decision.workTarget : undefined;
 	if (run.active && run.goal?.target===tip(p) && !run.conflict) {
 		for (const g of unownedBlockers(run,p.remaining)) if (!run.effects.some(e=>e.kind==="escalation" && e.token===g.detail)) {
@@ -1254,4 +1248,5 @@ export function advance(cwd,run,actor,discover,options={}) {
 		const [signal]=executePlanning(result,p);
 		type=signal ?? "plan";
 	}
+	return p.changedTarget;
 }

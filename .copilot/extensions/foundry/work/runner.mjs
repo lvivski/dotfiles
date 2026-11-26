@@ -8,7 +8,8 @@ import { activeDelivery, currentDelivery } from "./batch.mjs";
 import { awaitingReply, currentCheck } from "./reservation.mjs";
 import { matchesPair, pairedInput } from "./partition.mjs";
 import { origin, remedyWriter } from "./remedy.mjs";
-import { commitAt, regularFiles, verifyContracts, withProduct } from "./product.mjs";
+import { mixedVerification } from "./evidence.mjs";
+import { changedBlobs, commitAt, regularFiles, verifyContracts, withProduct } from "./product.mjs";
 import { deadlineAt, digest, fail, mixed, ownership, text } from "./values.mjs";
 import { interpret, interrupted } from "./verdict.mjs";
 const [cwd, runId, effectId] = process.argv.slice(2);
@@ -62,9 +63,12 @@ try {
 		} else if (e.kind === "goal") {
 			evaluation = { kind: e.kind, squads: run.policy.squads.map(s => s.id) };
 		} else fail("unissued_check", "Expected an evaluator");
-		const migration=e.kind==="product" && run.productRepins?.find(p=>p.recheck===e.id && p.targetFrom);
+		const migration=e.kind==="product" ? mixedVerification(run,e.id) : undefined;
+		const amendment=migration?.amendments?.find(s=>s.recheck===e.id);
+		const patch=amendment && run.adoptions?.find(a=>a.id===amendment.proposal)?.patch;
 		return { publish, evaluation, commit: text(e.commit, "check commit"), check: text(e.check, "assigned evaluator"), deadline: run.policy.deadline, env, rerun:e.rerun,delivery:e.delivery,
-			migration:migration ? {policy:run.policy,target:migration.revision,resolutions:migration.resolutions,components:Object.keys(run.join?.outputs ?? {}).map(id=>({
+			migration:migration ? {policy:run.policy,target:migration.revision,resolutions:migration.resolutions,
+				...(amendment && {amendment:{from:amendment.prior.commit,files:patch?.files}}),components:Object.keys(run.join?.outputs ?? {}).map(id=>({
 				id,check:run.nodes[id].grain.check,scope:ownership(run.nodes[id].grain.directory)
 			}))} : undefined,
 			prior: e.kind === "goal" ? priorGoal(run, e) : undefined,
@@ -90,6 +94,9 @@ try {
 			const {policy,target}=command.migration;
 			if (commitAt(cwd,policy.target)!==target) fail("stale_pin","The approved mixed target moved before verification");
 			verifyContracts(cwd,policy,command.commit);
+			const amendment=command.migration.amendment;
+			if(amendment && (!amendment.files || digest(changedBlobs(cwd,amendment.from,command.commit))!==digest(amendment.files)))
+				fail("invalid_patch","Joined product does not match the approved inherited-file changes");
 			for (const r of command.migration.resolutions ?? []) {
 				const [e]=regularFiles(cwd,command.commit,[r.file]);
 				if (e.mode!==r.mode || e.oid!==r.result) fail("invalid_resolution",`Joined product does not contain the approved resolution: ${r.file}`);

@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { assign, frozenSubmission } from "./assignment.mjs";
 import { activate, holdFor, permitted } from "./activity.mjs";
+import { adoptionBase, exactForm, planAdoption, presentAdoption, proposalForm, requestedAdoption } from "./adoption.mjs";
+import { prepareInherited } from "./inherited.mjs";
+import { pendingAdoption } from "./offers.mjs";
 import { auditor } from "./auditor.mjs";
 import { requireChangedReview } from "./inspection.mjs";
 import { boundInspections, inspectionWakes, publicationSample, readyInspections } from "./inspections.mjs";
@@ -18,7 +21,7 @@ import { activeDelivery } from "./batch.mjs";
 import { prepareDelivery } from "./delivery.mjs";
 import { presentQuestions } from "./decisions.mjs";
 import { advance, currentReview, newRun, reserveChangedRepair, reserveIteration, retryableReview, sameReviewInputs } from "./graph.mjs";
-import { baselineNotice, changedFrom, comparisonGoal, comparisonVerdict, goalReceipt, inconclusiveRepair, qualifiedProduct, relinquishable, stopForInput } from "./evidence.mjs";
+import { baselineNotice, changedFrom, comparisonGoal, comparisonVerdict, goalReceipt, inconclusiveRepair, mixedVerification, qualifiedProduct, relinquishable, stopForInput } from "./evidence.mjs";
 import { checkpointSurvey, movingSurvey, observeTarget, releaseAssessment } from "./goal.mjs";
 import { admitted, assignment, boundWriter, canDispatch, current, expired, identify, issue, receive, reserveCheck } from "./native.mjs";
 import { awaitingReply, unissued } from "./reservation.mjs";
@@ -73,7 +76,7 @@ function requireCurrentReader() {
 /** @typedef {{run:string,id:string,actor:string,inFlight?:boolean,recoveredOn?:number}} Call */
 /** @typedef {import("./auditor.mjs").Envelope} ScoutEnvelope */
 /** @typedef {{execute:(tool:string,args:Effect["args"],id:string)=>Promise<unknown>,notify:(message:string)=>Promise<string>,recover?:(effect:Effect)=>Promise<unknown>,
- * ask?:(message:string)=>Promise<string|null>,confirm?:(message:string)=>Promise<boolean>,autoConfirm?:()=>Promise<boolean>,
+ * ask?:(message:string)=>Promise<string|null>,confirm?:(message:string)=>Promise<boolean>,adopt?:(message:string)=>Promise<string|null>,autoConfirm?:()=>Promise<boolean>,
  * readHistory?:import("@github/copilot-sdk").CopilotSession["rpc"]["eventLog"]["read"],isResearcher?:(workflowId:string,agentId:string)=>Promise<boolean>,
  * scoutBudget?:()=>Promise<number>,scoutFailure?:(workflowId:string,label:string)=>Promise<string|undefined>,confirmNoReport?:(r:import("./model.js").Review)=>Promise<void>,
  * scout?:(run:string,dispatch:string,actor:string)=>Promise<ScoutEnvelope>,scoutState?:(workflowId:string)=>Promise<ScoutEnvelope>,
@@ -128,7 +131,7 @@ export function createRuntime(directory, host) {
 	/** @type {ReturnType<typeof openDatabase>|undefined} */ let database;
 	let root, closed = false, outsideRepository = false, turnNumber = 0;
 	const lifetime=new AbortController();
-	/** @template T @param {()=>T} write */
+	/** @template T @param {()=>T|Promise<T>} write */
 	const recordReply=write=>persist(write,lifetime.signal,error=>host.log?.(`Foundry is waiting to record an original reply: ${String(error)}`));
 	/** @type {Set<string>} */ const known = new Set();
 	/** @type {Set<Promise<unknown>>} */ const background = new Set();
@@ -172,6 +175,8 @@ export function createRuntime(directory, host) {
 	}
 	/** @param {string} id */
 	const read = id => db().read(id) ?? fail("missing_run", `Unknown run ${id}`);
+	/** @param {(message:string)=>Promise<string|null>} adopt @param {()=>Promise<void>} wake */
+	const approvalHost=(adopt,wake)=>({cwd:cwd(),store:db,closed:()=>closed,executable:observerExecutable,permissionBlocker:host.permissionBlocker,persist:recordReply,adopt,wake});
 	/** Settlement continues the submitted work; it does not request another fixed-charter survey.
 	 * @param {string} id @param {string} actor */
 	const receiptWake=(id,actor)=>track(drive(id,actor,false,false));
@@ -188,7 +193,7 @@ export function createRuntime(directory, host) {
 		const inspection=inspectionWakes(run,actor,previous==="issuer-permission");
 		const unfinished=run.active && own.some(e=>e.kind==="scout" && needsContinuation(e));
 		const ownerWork=previous==="issuer-permission" && run.active && actor===run.owner &&
-			(reviews(run).some(r=>r.renewal?.state==="needed") || !!host.ask && questions(run).some(r=>!r.decision));
+			(reviews(run).some(r=>r.renewal?.state==="needed") || !!host.ask && questions(run).some(r=>!r.decision) || !!proposalForm(host,pendingAdoption(run)));
 		// A paused issuer may still own an unissued reservation. Observe the owner's
 		// later resume, without treating a readable policy as permission to undo a pause.
 		const participant=!!(run.active || hold) && run.owner===actor || own.some(e=>awaitingReply(e) || unissued(e) && current(run,e)) || inspection.participant;
@@ -313,12 +318,14 @@ export function createRuntime(directory, host) {
 	}
 	/** @param {string} id @param {Effect} effect @param {string} callId */
 	const claim = (id, effect, callId) => {
-		if (effect.tool==="workflow" || !(effect.recheck || effect.pair || effect.observer || effect.isolation || effect.production || effect.remedy) || !unissued(effect)) return db().mutateLocked(id, run => issue(run, effect, callId));
+		const pinnedProduct=effect.kind==="product" && effect.evaluatorRevision;
+		if (effect.tool==="workflow" || !(pinnedProduct || effect.recheck || effect.pair || effect.observer || effect.isolation || effect.production || effect.remedy) || !unissued(effect)) return db().mutateLocked(id, run => issue(run, effect, callId));
 		let target = (effect.recheck ?? effect.pair)?.target;
 		let claimed = false;
 		db().planAndSwap(id,run => {
-			if (effect.isolation) {
-				target=run.independent?.target;
+			const mixed=pinnedProduct && mixedVerification(run,effect.id);
+			if (effect.isolation || mixed) {
+				target=mixed ? mixed.revision : run.independent?.target;
 				claimed=target===commitAt(cwd(),run.policy.target) && !run.effects.some(x=>x.permissionHold) && issue(run,effect,callId);
 			} else if (effect.production || effect.remedy) {
 				const job=effect.production?effect:remedyWriter(run,effect);
@@ -329,8 +336,8 @@ export function createRuntime(directory, host) {
 				target=effect.kind==="component" ? verifyObserver(cwd(),run,effect,text(effect.commit,"observer candidate"),true) :
 					observerBasis(cwd(),run,effect).pair.target;
 				claimed=issue(run,effect,callId);
-			} else claimed = (effect.pair ? currentPair(cwd(),run,effect) : checkAuthority(cwd(),run,effect)) && issue(run,effect,callId);
-			if (claimed) return () => !expired(run) && observeTarget(()=>commitAt(cwd(),run.policy.target)).target===target;
+			} else claimed = (effect.pair ? currentPair(cwd(),run,effect) : !effect.recheck || checkAuthority(cwd(),run,effect)) && issue(run,effect,callId);
+			if (claimed && target) return () => !expired(run) && observeTarget(()=>commitAt(cwd(),run.policy.target)).target===target;
 		});
 		return claimed;
 	};
@@ -359,6 +366,7 @@ export function createRuntime(directory, host) {
 		/** @type {import("./supervision.mjs").Gate|undefined} */ let deferredGate;
 		/** @type {string|undefined} */ let submitToken;
 		/** @type {Run} */ let planned;
+		/** @type {import("./model.js").Adoption|undefined} */ let adoption;
 		let missingTarget=false;
 		/** @type {Effect[]} */ let batch=check?.batch ?? [];
 		/** @type {Inspection[]} */ let inspections=[];
@@ -417,6 +425,20 @@ export function createRuntime(directory, host) {
 				track(presentQuestions(cwd(), () => closed ? undefined : db(), id, actor, host, executable, refill, recordReply).then(held=>{
 					if (!closed && held) supervisor.observe(id,actor,gate(read(id),actor,false,held));
 				}).finally(() => asking.delete(id)));
+				return offerBatch(next);
+			},
+			"offer-adoption":next=>{
+				const form=proposalForm(host,adoption);
+				if(!adoption || !form)throw Error("Missing owner proposal or approval form");
+				asking.add(id);
+				const offered=adoption;
+				track(presentAdoption(approvalHost(form,refill),id,actor,offered).then(held=>{
+					if(!closed && held)supervisor.observe(id,actor,gate(read(id),actor,false,held));
+				}).finally(()=>{
+					asking.delete(id);
+					const current=!closed && pendingAdoption(read(id));
+					if(current && current.id!==offered.id)track(refill());
+				}));
 				return offerBatch(next);
 			},
 			"offer-batch":offerBatch,
@@ -498,7 +520,7 @@ export function createRuntime(directory, host) {
 		function plan(next,renew) {
 			let inspectionDue=false;
 			planned=change(id,run=>{
-				inspectionDue=false;
+				inspectionDue=false;adoption=undefined;
 				const observed=run.active && !expired(run) ? observeTarget(()=>commitAt(cwd(),run.policy.target)) : undefined;
 				missingTarget=!!observed && observed.target===undefined;
 				if (missingTarget) return;
@@ -509,9 +531,12 @@ export function createRuntime(directory, host) {
 					if (e.state==="ready" && e.error===waitingForSlot && !currentReview(cwd(),run,e,checkpointSurvey(run,e) ? undefined : observed?.target))
 						blockReview(e,"Superseded while waiting for workflow capacity.");
 				}
-				if (!reservations(run,actor).some(e=>e.permissionHold))
-					advance(cwd(),run,actor,discover,{submitToken,target:observed?.target,renew});
-				if (publication.selected.length) return ()=>!closed && !expired(run);
+				if (!reservations(run,actor).some(e=>e.permissionHold)){
+					const changed=advance(cwd(),run,actor,discover,{submitToken,target:observed?.target,renew});
+					adoption=planAdoption(cwd(),run,actor,changed,e=>db().verifySigned(id,e));
+				}
+				if (publication.selected.length || adoption) return ()=>!closed && !expired(run) &&
+					(!adoption || observeTarget(()=>commitAt(cwd(),run.policy.target)).target===adoption.revision);
 			});
 			return next("planned",{closed,missingTarget,inspectionDue,owner:actor===planned.owner,active:planned.active,expired:expired(planned),
 				renewalDue:reviews(planned).some(r=>r.renewal?.state==="needed")});
@@ -524,7 +549,8 @@ export function createRuntime(directory, host) {
 			ready=batch.filter(e=>e.state==="ready");
 			inspections=readyInspections(planned,actor);
 			return next("work",{missingTarget,active:planned.active,expired:expired(planned),handoff:batch.some(e=>e.kind==="handoff"),
-				owner:actor===planned.owner,question:!!host.ask && !asking.has(id) && questions(planned).some(r=>!r.decision)});
+				owner:actor===planned.owner,question:!!host.ask && !asking.has(id) && questions(planned).some(r=>!r.decision),
+				adoption:!asking.has(id) && !!proposalForm(host,adoption)});
 		}
 		/** @param {Signal} next */
 		function offerBatch(next) {return next("batch",{hasBatch:!!batch.length || !!inspections.length});}
@@ -540,7 +566,7 @@ export function createRuntime(directory, host) {
 					await Promise.all([completion,next("issued",{checkpointGoal:e.kind==="goal" && planned.products.at(-1)?.commit===e.commit,
 						checkpointReviews:planned.scheduling?.checkpointReviews!==false})]);
 				}
-				return next("attempt",{claimed,pinnedCheck:e.tool==="bash" && !!(e.recheck || e.pair || e.isolation)});
+				return next("attempt",{claimed,pinnedCheck:e.tool==="bash" && !!(e.recheck || e.pair || e.isolation || e.kind==="product" && mixedVerification(planned,e.id))});
 			}));
 		}
 	}
@@ -886,12 +912,14 @@ export function createRuntime(directory, host) {
 			fail("missing_run", `No run to resume for ${filename}`) : undefined;
 		const { policy, grains } = saved ? {policy:saved.policy, grains:[]} : readPolicy(origin,filename);
 		const prior = saved ?? store?.read(policy.id);
+		let recoveryBase;
 		if (prior) {
 			if (prior.owner !== actor || prior.policy.source !== filename)
 				fail("run_conflict", "Another owner or contract already uses this run ID");
 			const target = saved ? commitAt(origin,policy.target) : policy.base;
 			const work = saved && movingSurvey(origin,prior,target);
-			verifyContracts(origin,prior.policy,work?.target ?? target);
+			recoveryBase=saved && !work ? adoptionBase(origin,prior,target) : undefined;
+			verifyContracts(origin,prior.policy,work?.target ?? recoveryBase ?? target);
 			if (prior.goal && qualifiedProduct(prior)) return status(prior, actor);
 			if (!resume) {
 				if (!prior.active) fail("paused",`Run ${prior.id} already exists and is paused. Use foundry_resume with its original source.`);
@@ -909,13 +937,13 @@ export function createRuntime(directory, host) {
 			db(true).insert(run);
 		} else {
 			const plan = prepareResume(prior, !!host.scoutSnapshot,inspector.canReceive);
-			if (!plan) return status(prior, actor);
+			if (!plan && !recoveryBase) return status(prior, actor);
 			await requireReadyOwner(origin);
-			change(policy.id, r => {
+			if(plan)change(policy.id, r => {
 				plan.apply(r);
 				if (plan.retryGoal) advance(origin, r, actor, false, { retryGoal: true });
 			});
-			await Promise.all([...plan.workflows].map(([ticket, workflowId]) => continueScouts(policy.id, actor, ticket, workflowId)));
+			if(plan)await Promise.all([...plan.workflows].map(([ticket, workflowId]) => continueScouts(policy.id, actor, ticket, workflowId)));
 		}
 		await drive(policy.id, actor, true);
 		return status(read(policy.id), actor);
@@ -1193,18 +1221,25 @@ export function createRuntime(directory, host) {
 			fields(a, ["run", "token", "file", "to"]);
 			db().mutateLocked(id, preparePublication(cwd(), read(id), actor, a));
 		}
-		else if (op === "repin") {
-			const origin = cwd(), request = prepareRepin(origin, read(id), actor, a,e=>db().verifySigned(id,e));
+		else if (op === "repin" || op==="inherit") {
+			const origin = cwd(), prior=read(id), prepare=op==="inherit"?prepareInherited:prepareRepin;
+			const request=prepare(origin,prior,actor,a,e=>db().verifySigned(id,e));
 			await requireReadyOwner(origin);
-			const approved = a.kind==="target" ? await host.confirm?.(request.prompt) : await confirm(request.prompt);
-			if (approved === false) {
-				const blocker = status(read(id), actor).blocker;
-				fail("approval_declined", "Evaluator change not approved. No change or recheck was made. Do not ask again unless the operator requests it." +
-					(blocker ? `\nCurrent run blocker: ${blocker}` : ""));
+			if(request.target){
+				const form=exactForm(host.confirm,request.answer)??fail("approval_required","The approval form is unavailable; nothing was applied.");
+				await presentAdoption(approvalHost(form,async()=>{}),id,actor,requestedAdoption(origin,prior,request.target),
+					{apply:request.apply,prompt:request.prompt,showing:asking.has(id)});
+			}else{
+				const approved = await confirm(request.prompt);
+				if (approved === false) {
+					const blocker = status(read(id), actor).blocker;
+					fail("approval_declined", "Evaluator change not approved. No change or recheck was made. Do not ask again unless the operator requests it." +
+						(blocker ? `\nCurrent run blocker: ${blocker}` : ""));
+				}
+				if (approved !== true) fail("approval_required", "The approval form is unavailable; the evaluator was not changed.");
+				await requireReadyOwner(origin);
+				db().planAndSwap(id, request.apply);
 			}
-			if (approved !== true) fail("approval_required", "The approval form is unavailable; the evaluator was not changed.");
-			await requireReadyOwner(origin);
-			db().planAndSwap(id, request.apply);
 		}
 		else
 			fail("unknown_operation", `Unknown Foundry operation ${op}`);

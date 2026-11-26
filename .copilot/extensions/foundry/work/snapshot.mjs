@@ -1,7 +1,7 @@
-import { planDirectory, productOverlayPaths, validOutcome } from "./contract.mjs";
+import { planDirectory, validOutcome } from "./contract.mjs";
 import { correctionBasis, revisedTask } from "./amendment.mjs";
 import { validSignals } from "./signals.mjs";
-import { checkpointReceipt, checkReceipt, comparisonVerdict, exhaustedCandidate, generationOf, goalReceipt, inconclusiveRepair, launcherFailure, missingInput, omittedStep, productReceiptAt, relinquishable, sameEvaluation } from "./evidence.mjs";
+import { checkpointReceipt, checkReceipt, comparisonVerdict, exhaustedCandidate, generationOf, goalReceipt, inconclusiveRepair, launcherFailure, missingInput, mixedVerification, omittedStep, productReceiptAt, relinquishable, sameEvaluation } from "./evidence.mjs";
 import { validFeedback } from "./feedback.mjs";
 import { validLead } from "./leads.mjs";
 import { attachedNotes, noteId, noteText, sourceReceipt } from "./notes.mjs";
@@ -19,6 +19,8 @@ import { validIsolation } from "./isolation.mjs";
 import { validRemedy } from "./remedy.mjs";
 import { validDeliveries } from "./batch.mjs";
 import { resolutions } from "./resolution.mjs";
+import { validOffers } from "./offers.mjs";
+import { productLineage } from "./migrations.mjs";
 import { assignment, frozenSubmission } from "./assignment.mjs";
 import { currentInspection, inspection, reviewedGrant } from "./inspection.mjs";
 import { publicationVerdict } from "./publication.mjs";
@@ -180,13 +182,19 @@ const native = shape({
 	runnerStarted: optional(bool), runnerClaim: optional(v => typeof v === "string" && /^[A-Za-z0-9_-]{43}$/.test(v)), receipt: optional(receipt)
 });
 const snapshot = shape({
+	targetProposal:optional(sha256),
+	adoptions:optional(list(shape({id:sha256,basis:sha256,revision:commit,checkpoint:id,goal:id,assembly:optional(commit),message:noteText,
+		failed:optional(id),patch:optional(shape({blob:commit,grain:id,files:list(shape({file:path,mode:one("100644","100755"),before:commit,result:commit}))})),
+		manifest:optional(shape({from:commit,productFrom:commit,goalFrom:commit,files:list(path),outputs:named(commit),ownership:one("directories","exact-files",retainedMode),
+			retained:list(id),resolutions:optional(v=>resolutions(v).length>0)})),decision:optional(decision),previous:optional(list(decision))}))),
 	inspections:optional(list(codeReview)),
 	deliveries:optional(list(shape({id:sha256,checkpoint:id,goal:id,assembly:commit,selected:list(shape({rerun:id,tree:commit,prior:node})),assessment:optional(id),error:optional(string)}))),
 	independent:optional(subset),
 	id, owner: string, policy, references: optional(named(commit)),
 	scheduling: optional(shape({ revision: positive, workers: optional(positive), checkpointReviews: bool })),
 	repins: optional(list(shape({ from: commit, revision: commit, files: list(path) }))),
-	productRepins: optional(list(shape({ from:commit, revision:commit, files:list(path), checkpoint:id, goal:id, recheck:id, ownership:optional(one(retainedMode)), targetFrom:optional(commit),acceptance:optional(noteText),resolutions:optional(v=>resolutions(v).length>0) }))),
+	productRepins: optional(list(shape({ from:commit, revision:commit, files:list(path), checkpoint:id, goal:id, recheck:id, ownership:optional(one(retainedMode)), targetFrom:optional(commit),acceptance:optional(noteText),resolutions:optional(v=>resolutions(v).length>0),
+		amendments:optional(list(shape({prior:product,proposal:sha256,recheck:id}))) }))),
 	artifacts: optional(list(shape({ file: path, blob: commit, base: commit, publisher: string, to: list(path) }))),
 	pendingReviewNotes: optional(list(shape({ ...noteFields, squad: id, after: count }))),
 	attributions: optional(list(shape({ receipt: id, id, directory: path, blocked: positive, excerpt: noteText }))),
@@ -228,65 +236,10 @@ function inspectLineage(run,effects){
 	return reviews;
 }
 
-/** Each approval starts at its own recheck reservation, never at the beginning of history.
- * @param {import("./model.js").Run} run @param {Map<string,import("./model.js").Product>} products */
-function productLineage(run,products) {
-	const pins = run.productRepins ?? [];
-	if (run.policy.contractTarget!==pins.findLast(p=>p.targetFrom)?.revision) return false;
-	if (!pins.length) return !run.effects.some(e=>e.productEvaluatorRevision || e.kind === "product" && e.evaluatorRevision);
-	if (!run.goal || products.size !== run.products.length || new Set([run.policy.base,...pins.map(p=>p.revision)]).size !== pins.length+1) return false;
-	let next = 0, applied = 0;
-	let retained=run.policy.ownership===retainedMode;
-	/** @type {string|undefined} */ let pin;
-	/** @type {import("./model.js").Effect|undefined} */ let lastGoal;
-	/** @type {import("./model.js").Product|undefined} */ let needsGoal;
-	const captures=pins.some(p=>p.targetFrom) ? new Map() : undefined;
-	for (const e of run.effects) {
-		if (captures && e.kind==="component" && checkReceipt(e)?.exit===0) captures.set(`${e.grain}@${e.commit}`,e.check);
-		const p = pins[next];
-		if (e.id === p?.recheck) {
-			const prior = run.products[applied-1], after = products.get(e.id) ?? (run.join?.check === e.id ? run.join : undefined);
-			if (needsGoal || !prior || prior.check !== p.checkpoint || lastGoal?.id !== p.goal || lastGoal.commit !== prior.commit ||
-				lastGoal.check !== run.policy.goalCheck || ![1,2].includes(checkReceipt(lastGoal)?.exit ?? -1) ||
-				e.kind !== "product" || e.issuer !== run.owner || !after || after.commit!==e.commit || p.from !== (pin ?? run.policy.base) ||
-				!p.files.length || new Set(p.files).size !== p.files.length) return false;
-			if (!!p.targetFrom!==!!p.acceptance || p.resolutions && (!p.targetFrom || p.resolutions.some(r=>!outside(r.file,[".foundry",...run.policy.files])))) return false;
-			if (p.targetFrom) {
-				const g=run.repins?.find(g=>g.revision===p.revision);
-				if (retained!==(p.ownership===retainedMode) || !g || digest(g.files)!==digest(p.files) || g.from!==(lastGoal.evaluatorRevision ?? run.policy.base) ||
-					p.files.includes(run.policy.source) || !p.files.every(f=>f.startsWith(".foundry/") || run.policy.files.includes(f)) ||
-					p.targetFrom!==(pins.slice(0,next).findLast(q=>q.targetFrom)?.revision ?? run.policy.base) ||
-					after.target!==p.revision || after.target===prior.target || after.commit===prior.commit) return false;
-				if (e.receipt) {
-					const map=e.receipt.components;
-					if (e.receipt.resolutionDigest!==(p.resolutions && digest(p.resolutions)) ||
-						!map || Object.entries(map).some(([id,c])=>!Object.hasOwn(after.outputs,id) || captures?.get(`${id}@${after.outputs[id]}`)!==c.check) ||
-						e.receipt.exit===0 && (Object.keys(map).length!==Object.keys(after.outputs).length || Object.values(map).some(c=>c.exit!==0))) return false;
-				}
-			} else if (e.commit!==prior.commit || after.target!==prior.target || digest(after.outputs)!==digest(prior.outputs) || !productOverlayPaths(run,p.files)) return false;
-			retained=p.ownership===retainedMode;
-			pin = p.revision;
-			next++;
-			needsGoal = after;
-		} else if (needsGoal) {
-			if (e.kind === "goal") {
-				if (!products.has(needsGoal.check) || e.commit !== needsGoal.commit || e.check !== run.policy.goalCheck) return false;
-				needsGoal = undefined;
-			} else if (["product","component","writer","repair","scout"].includes(e.kind)) return false;
-		}
-		if (e.kind === "product" && e.evaluatorRevision !== pin ||
-			e.productEvaluatorRevision !== (e.kind === "goal" || e.kind === "scout" ? pin : undefined)) return false;
-		if (e.kind === "goal") lastGoal = e;
-		if (products.has(e.id) && run.products[applied++]?.check !== e.id) return false;
-	}
-	return next === pins.length && applied === products.size && lastGoal?.id === run.goal.check &&
-		(!run.join || !products.has(run.join.check));
-}
-
 /** @param {import("./model.js").Run} run @param {import("./model.js").Effect} e
  * @param {Map<string,import("./model.js").Effect>} effects @param {Map<string,import("./model.js").Product>} products */
 function validDispatch(run, e, effects, products) {
-	if ((e.receipt?.components || e.receipt?.resolutionDigest) && !(e.kind==="product" && run.productRepins?.some(p=>p.targetFrom && p.recheck===e.id))) return false;
+	if ((e.receipt?.components || e.receipt?.resolutionDigest) && !(e.kind==="product" && mixedVerification(run,e.id))) return false;
 	if (e.tool!=="workflow") {
 		if (e.kind==="rerun" || e.rerun) {
 			const pin=e.rerun;
@@ -528,9 +481,10 @@ export function decode(value) {
 		fail("corrupt_run", "Invalid goal evaluator pin history");
 	const last = products.at(-1);
 	const checkpoints = new Map(products.map(p=>[p.check,p]));
+	if(!validOffers(value,checkpoints,effects))fail("corrupt_run","Invalid mixed-target adoption proposal or approval lineage");
 	if (!validDeliveries(value)) fail("corrupt_run","Invalid test delivery or component lineage");
 	if (!validIsolation(value)) fail("corrupt_run","Invalid independent checkpoint or original ownership hold");
-	if (!productLineage(value,checkpoints)) fail("corrupt_run","Invalid product evaluator lineage");
+	if (!productLineage(value,checkpoints,effects)) fail("corrupt_run","Invalid product evaluator lineage");
 	if (effects.size !== value.effects.length || value.effects.some(e => !validDispatch(value, e, effects, checkpoints)))
 		fail("corrupt_run", "Invalid Foundry dispatch");
 	if (areas.length && (!value.goal || areas.length !== value.policy.squads.length) ||

@@ -165,7 +165,7 @@ test("a locked ledger does not lose an issued receipt watch; permanent errors re
 test("an unrecognized goal state cannot inherit a passing checkpoint's release path", () => {
 	/** @type {import("./engine.mjs").Facts} */
 	const eligible = {active:true, qualified:false, goal:"met", blocked:false, scoped:false, stalled:false,
-		moved:false, idle:true, product:true, exactProduct:true, join:false, held:false, review:false, work:false};
+		moved:false, failedComponent:false, idle:true, product:true, exactProduct:true, join:false, held:false, review:false, work:false};
 	assert.equal(transition(eligible).action, "qualify");
 	const future = { ...eligible, goal: "needs-inspection" };
 	// Model a newer producer at the JavaScript boundary, outside the compile-time state union.
@@ -179,7 +179,7 @@ test("a pass qualifies exactly one settled product; reorderings cannot qualify p
 	for (const goal of goals) for (const active of flags) for (const exactProduct of flags) for (const moved of flags)
 	for (const review of flags) for (const work of flags) for (const blocked of flags) for (const join of flags) {
 		const scoped = exactProduct && !moved && !blocked && !join && (goal === "pending" || goal === "superseded" || review);
-		const input = Object.freeze({active,goal,exactProduct,moved,review,work,blocked,join,scoped,product:true,stalled:false,held:false,idle:false,qualified:false});
+		const input = Object.freeze({active,goal,exactProduct,moved,review,work,blocked,join,scoped,product:true,stalled:false,held:false,idle:false,qualified:false,failedComponent:false});
 		const {action, admission} = transition(input);
 		assert.equal(action === "qualify", active && goal === "met" && exactProduct && !moved && !review && !work && !blocked && !join);
 		if (goal === "pending" || goal === "superseded") {
@@ -192,7 +192,7 @@ test("a pass qualifies exactly one settled product; reorderings cannot qualify p
 test("a same-target join never turns a normal reconciliation into a retry of missing goal evidence", () => {
 	/** @type {import("./engine.mjs").Facts} */
 	const facts={active:true, qualified:false, goal:"missing", blocked:false, scoped:false, stalled:false,
-		moved:false, idle:false, product:true, exactProduct:true, join:true, held:false, review:false, work:false};
+		moved:false, failedComponent:false, idle:false, product:true, exactProduct:true, join:true, held:false, review:false, work:false};
 	assert.deepEqual(transition(facts),{action:"wait",admission:"closed",reason:"missing-evidence"});
 });
 

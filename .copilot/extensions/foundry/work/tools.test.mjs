@@ -44,6 +44,7 @@ test("the native catalog routes an explicit review, check or grant to exactly it
 		["grant","observer",observer,"diagnose"],
 		["grant","approveObserver",{...observer,preview:"draft"},"diagnose"],
 		["grant","production",{diagnostic:"check",candidate:"candidate",checkpoint:"checkpoint",goal:"goal",producer:"item",files:["one"],task:"Fix one file"},"remediate"],
+		["grant","inherited",{check:"failed",blob:"reference"},"inherit"],
 	])){
 		assert.equal(typeof await call(tool,{run,[choice]:args}),"string");
 		assert.deepEqual(calls.splice(0),[[op,{run,...args},"owner"]]);

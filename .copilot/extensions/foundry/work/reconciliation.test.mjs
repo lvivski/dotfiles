@@ -31,6 +31,9 @@ test("a missing target, pause or deadline cannot staff work; only a final handof
 		assert.deepEqual(offered,active && !expired && !missingTarget ? ["offer-question"] : []);
 	}
 	assert.deepEqual(effects(step("offering","work",{active:false,expired:true,missingTarget:false,handoff:true,owner:true,question:true})),["offer-batch"]);
+	for(const owner of [true,false])for(const adoption of [true,false])
+		assert.deepEqual(effects(step("offering","work",{active:true,expired:false,missingTarget:false,owner,question:false,adoption})),
+			[owner && adoption ? "offer-adoption" : "offer-batch"]);
 	assert.deepEqual(effects(step("reservations","batch",{hasBatch:false})),[]);
 	assert.deepEqual(effects(step("planning","planned",{closed:false,inspectionDue:false,missingTarget:false,owner:true,active:true,expired:false,renewalDue:true})),["sample-policy"]);
 	assert.deepEqual(effects(step("planning","planned",{closed:false,inspectionDue:true})),["sample-policy"]);

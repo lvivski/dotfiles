@@ -1,5 +1,5 @@
 import { assignmentCount } from "./capacity.mjs";
-import { checkReceipt, goalReceipt, milestoneBlocker, missingObservation, qualifiedProduct } from "./evidence.mjs";
+import { checkReceipt, goalReceipt, milestoneBlocker, missingObservation, qualifiedProduct, verification } from "./evidence.mjs";
 import { timingFacts } from "./metrics.mjs";
 import { current, expired } from "./native.mjs";
 import { awaitingReply } from "./reservation.mjs";
@@ -7,6 +7,7 @@ import { checked, liveNeeds } from "./plan.mjs";
 import { questions, reviews, reviewStatus } from "./reviews.mjs";
 import { fail, scopeLabel } from "./values.mjs";
 import { grant } from "./transfer.mjs";
+import { currentOffer } from "./offers.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @param {import("./model.js").NativeCall} e */
@@ -51,15 +52,21 @@ export function visible(run, actor) {
 	const pin = run.repins?.at(-1)?.revision;
 	const previous = pin && owner ? pending.find(e => e.id === run.goal?.check && e.evaluatorRevision !== pin &&
 		e.runnerStarted && awaitingReply(e) && !e.receipt && !e.permissionHold) : undefined;
-	const upgrading = run.join?.check && run.productRepins?.at(-1)?.recheck === run.join.check;
+	const upgrading = run.join?.check && verification(run.productRepins?.at(-1)) === run.join.check;
 	const blocker = run.pauseReason ?? run.blocker ?? run.conflict ?? (upgrading ? milestoneBlocker(run) : run.goal?.stall) ?? (previous
 		? `Approved evaluator ${pin} is waiting for the receipt of superseded goal ${previous.id} in session ${previous.issuer}. Verify the original runner before intervening; do not replay it.`
 		: missing ? `Goal check at ${missing.commit} awaits external evidence (exit 2): ${missing.output.trim() || "no diagnostic"}. After supplying it, use /foundry resume ${run.policy.source}.` : milestoneBlocker(run));
 	const openQuestions = owner ? questions(run).flatMap(r => r.observation ? [{ review: r, observation: r.observation,
 		fact: { question: r.observation.reason, ...(r.decision ? { delivery: r.decision } : {}) } }] : []) : [];
+	const a=owner && currentOffer(run);
+	const targetAdoption=a ? {id:a.id,revision:a.revision,checkpoint:a.checkpoint,goal:a.goal,assembly:a.assembly,manifest:a.manifest,message:a.message,
+			...(a.failed && {failed:a.failed,patch:a.patch}),
+			state:!a.assembly ? "blocked" : a.decision?.status??"ready",delivery:a.decision} : undefined;
 	return { owner, nodes, pending, receipts, inspections, attempts, unconfirmed, assignments, questions: openQuestions, summary: {
 		run: run.id, active: run.active, direction: run.policy.direction, expired: expired(run),
-		blocker: blocker && stop ? `${blocker}\n${stop}` : blocker ?? stop,
+		blocker:[blocker,stop,targetAdoption?.state==="blocked" ? targetAdoption.message :
+			targetAdoption?.delivery?.status==="unavailable" ? targetAdoption.delivery.reason : undefined].filter(Boolean).join("\n")||undefined,
+		...(targetAdoption && {targetAdoption}),
 		reviews: owner ? reviews(run).map(r => reviewStatus(run, r)) : [],
 		...(owner ? { writerAssignments, discoveryError: run.discoveryError, qualified: qualified?.commit ?? null,
 			...(run.goal ? { checkpoint: run.products.at(-1)?.commit ?? null, goal: { commit: run.goal.commit,
@@ -134,6 +141,16 @@ export function projectBoard(s, owner) {
 /** @param {Run} run @param {string} actor */
 export function boardFacts(run, actor) {
 	const view=visible(run,actor), { owner, summary, questions, nodes, pending } = view;
-	return projectBoard({ ...summary, ...(owner ? { metrics: timingFacts(run), questions: questions.map(q => q.fact) } : {}),
+	return projectBoard({ ...summary, ...(owner ? { metrics: timingFacts(run), questions:[...questions.map(q => q.fact),...adoptionQuestions(summary)] } : {}),
 		nodes: nodes.map(n => nodeFact(n,view)), pending: pending.map(pendingFact) }, owner);
+}
+
+/** @param {ReturnType<typeof visible>["summary"]} summary */
+export function adoptionQuestions(summary){
+	const a=summary.targetAdoption;
+	return summary.active && !summary.expired && a?.assembly && (a.state==="ready" || a.state==="presenting") ? [{
+		kind:a.failed?"inherited-correction":"target-adoption",question:a.failed ? `Apply the exact inherited-file correction ${a.patch?.blob} after ${a.failed} and verify ${a.assembly}?` :
+			`Adopt the changed contract on ${a.revision} and recheck ${a.assembly}?`,
+		delivery:a.delivery,squad:undefined,base:a.revision,evidence:[],recovery:undefined,
+	}] : [];
 }

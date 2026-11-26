@@ -23,8 +23,8 @@ function trial(t, ids = ["price"], policy = {}) {
 }
 const noGap = { outcome: "no-gap", reason: "Nothing to change here.", evidence: ["charter"], grains: [] };
 
-for (const phase of ["disjoint live target","overlapping writer directory","recover saved report","recover paused issuer"]) test(`operator merge during checkpoint discovery / ${phase}`, async t => {
-	const mixed=phase==="recover paused issuer", saved=phase==="recover saved report";
+for (const phase of ["disjoint live target","overlapping writer directory","recover saved report","recover paused issuer","approve frozen outputs"]) test(`operator merge during checkpoint discovery / ${phase}`, async t => {
+	const mixed=phase==="recover paused issuer", saved=phase==="recover saved report", adoption=phase==="approve frozen outputs";
 	const make=mixed || saved ? await historicalFactory(t,64) : factory;
 	const goal=`import {existsSync as has} from "node:fs";
 		if (!has("loader/ready")) { console.log('FOUNDRY_BLOCKERS=[{"id":"view","directory":"panel/view","blocked":1}]');process.exit(1); }
@@ -56,8 +56,12 @@ for (const phase of ["disjoint live target","overlapping writer directory","reco
 	put(f.root,"operator.txt","keep me");
 	if (phase==="overlapping writer directory") put(f.root,"panel/view/ready","operator work");
 	if (mixed) for (const file of ["panel.md","unit.mjs","goal.mjs","product.mjs"]) put(f.root,file,"throw Error('not the pinned contract')");
+	if(adoption)put(f.root,"panel.md","Keep the original complete panel; maintain it under the new charter.");
 	git(f.root,"add","."); git(f.root,"commit","-qm","Operator change");
-	const owner=f.runtime(f.root,{},createRuntime), proof=()=>owner.inspect({run,detail:"proof"},"owner");
+	/** @type {string[]} */ const approvals=[];
+	const owner=f.runtime(f.root,adoption ? {adopt:async message=>{
+		approvals.push(message);return "Adopt the revised panel maintenance charter; keep the complete goal.";
+	}} : {},createRuntime), proof=()=>owner.inspect({run,detail:"proof"},"owner");
 	if (mixed) {
 		await assert.rejects(f.owner.operation("resume",{source},"owner"),/conserved contract changed/);
 		assert.equal(proof().active,false);
@@ -89,8 +93,16 @@ for (const phase of ["disjoint live target","overlapping writer directory","reco
 	const worker=f.workers.get(proof().nodes.find(n=>n.grain==="panel")?.worker ?? "");
 	assert.ok(worker,"the original checkpoint reservation must still staff its writer");
 	assert.deepEqual(proof().goalChecks,receipts); assert.equal(f.checks.length,count);
+	if(adoption){owner.turn("owner");await owner.flush();assert.equal(approvals.length,0,"frozen work may still advance");}
 	put(worker.cwd,"panel/view/ready","from original assignment");
 	await f.runtime(worker.cwd,{},createRuntime).operation("submit",{run,token:worker.token},worker.id);
+	if(adoption){
+		const blocked=proof();assert.equal(blocked.nodes.find(n=>n.grain==="panel")?.state,"published");
+		assert.equal(blocked.release?.reason,"contract-changed");assert.equal(blocked.release?.admission,"checkpoint");
+		assert.equal(blocked.checkpoint,old.checkpoint);assert.equal(blocked.qualified,null);
+		owner.turn("owner");await owner.flush();
+		assert.equal(approvals.length,1);assert.ok(approvals[0].includes("panel.md") && approvals[0].includes(moved));
+	}
 	if (phase==="overlapping writer directory") {
 		const stop=proof();
 		assert.equal(stop.qualified,null); assert.deepEqual(stop.goalChecks,receipts); assert.equal(stop.checkpoint,old.checkpoint);

@@ -1,5 +1,5 @@
 import { remainingAssignments } from "./capacity.mjs";
-import { checkpointReceipt, checkReceipt, currentEvaluation, failedCandidate, goalReceipt, milestoneBlocker, productPin } from "./evidence.mjs";
+import { checkpointReceipt, checkReceipt, currentEvaluation, failedCandidate, failedComponent, goalReceipt, milestoneBlocker, productPin, verification } from "./evidence.mjs";
 import { awaitingReply } from "./reservation.mjs";
 import { discoverLeads } from "./leads.mjs";
 import { working } from "./assignment.mjs";
@@ -54,7 +54,8 @@ export function releaseFacts(run, target) {
 	const obsolete = effect?.kind === "goal" && !currentEvaluation(run,effect);
 	const old = obsolete && checkReceipt(effect), heldPin = obsolete && (awaitingReply(effect) || effect.permissionHold || effect.state === "refused");
 	const rejoin = at && run.effects.find(e=>e.kind==="product" && e.recheck?.of===at.check);
-	const goal = !at ? "absent" : upgrade && at.check === upgrade.goal && last?.check !== upgrade.recheck ? "product-repin" :
+	const pendingPin=upgrade && at?.check===upgrade.goal && last?.check!==verification(upgrade) ? upgrade : undefined;
+	const goal = !at ? "absent" : pendingPin ? "product-repin" :
 		rejoin ? last && run.effects.findIndex(e=>e.id===last.check)>=run.effects.indexOf(rejoin) ? "new-product" : "rejoining" :
 		obsolete ? heldPin ? "superseded" : "repin" : last && last.commit !== at.commit ? "new-product" :
 		effect?.state === "retired" ? "retired" : !receipt ? "pending" : receipt.exit === 2 ? "missing" : receipt.exit === 1 ? "unmet" : receipt.exit === 0 ? "met" : "incomplete";
@@ -84,6 +85,7 @@ export function releaseFacts(run, target) {
 	return { active: run.active, qualified: !!last?.qualifiedAt, goal,
 		blocked: !!run.blocker && !(goal === "repin" && old && run.blocker === undecided(old)),
 		scoped,
-		stalled: !!at?.stall, moved: !!at && at.target !== target, idle: !nodes.some(n => n.state !== "idle") && !history.some(reading),
+		failedComponent:!!pendingPin?.targetFrom && run.join?.check===verification(pendingPin) && !!failedComponent(run.effects.find(e=>e.id===run.join?.check)),
+		stalled: !!at?.stall, moved: !!at && (pendingPin?.targetFrom ? pendingPin.revision : at.target) !== target, idle: !nodes.some(n => n.state !== "idle") && !history.some(reading),
 		product: !!last, exactProduct, join: !!run.join, held: !!milestoneBlocker(run), review, work };
 }

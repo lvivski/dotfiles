@@ -44,7 +44,7 @@ Report the exact accepted commit and checked target. Exporting, landing and arch
 
 ### Interruptions
 
-Start with the original obligation. Foundry watches for receipts, restored permissions and changed inputs; it does not replay an uncertain call. An explicit pause stays paused. If the next action would change authority, name the missing decision instead of restarting. [Recovery by symptom](../../skills/foundry/references/runs.md#pause-and-resume) · [Exact recovery contracts](PROTOCOL.md#interruptions)
+Start with the original obligation. Foundry watches for receipts, restored permissions and changed inputs; it does not replay an uncertain call. An explicit pause stays paused. If a changed target contract is all that prevents integration, the owning session proposes adoption. If a component then fails on inherited files, it can propose the exact offered correction without asking to adopt the target again. A rejection or lost reply never starts checks. [Recovery by symptom](../../skills/foundry/references/runs.md#pause-and-resume) · [Exact recovery contracts](PROTOCOL.md#interruptions)
 
 ## Development
 

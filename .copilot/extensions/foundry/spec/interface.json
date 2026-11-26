@@ -697,7 +697,8 @@
               "on": "pause",
               "target": "paused",
               "description": "Stop new work without discarding issued calls or checked outputs.",
-              "update": "clearHold"
+              "update": "clearHold",
+              "action": "withdraw-target-proposal"
             },
             {
               "on": "resume",
@@ -709,13 +710,15 @@
               "on": "policy-hold",
               "target": "held",
               "description": "Suspend dispatch while the issuing session cannot confirm managed permissions.",
-              "update": "recordHold"
+              "update": "recordHold",
+              "action": "withdraw-target-proposal"
             },
             {
               "on": "goal-met",
               "target": "qualified",
               "description": "End dispatch after the accepted product meets the release conditions.",
-              "update": "clearHold"
+              "update": "clearHold",
+              "action": "withdraw-target-proposal"
             }
           ],
           "held": [
@@ -846,6 +849,17 @@
               "update": "release-wait",
               "when": [
                 "moved"
+              ]
+            },
+            {
+              "on": "assess",
+              "outcome": "wait",
+              "admission": "closed",
+              "reason": "adopted-component-failed",
+              "description": "Keep the failed assembly. Propose an eligible inherited-file correction, not another target adoption.",
+              "update": "release-wait",
+              "when": [
+                "failedComponent"
               ]
             },
             {
@@ -2518,6 +2532,18 @@
             {
               "on": "work",
               "target": "reservations",
+              "description": "Ask the owner once about the exact target adoption or a correction to inherited files. Presenting the proposal grants nothing.",
+              "when": [
+                "owner",
+                "active",
+                "!expired",
+                "adoption"
+              ],
+              "action": "offer-adoption"
+            },
+            {
+              "on": "work",
+              "target": "reservations",
               "description": "Consider only reservations belonging to this issuer.",
               "when": [],
               "action": "offer-batch"
@@ -3391,13 +3417,32 @@
   },
   "tools": {
     "foundry_grant": {
-      "description": "Owner, on operator direction: request one scoped baseline, candidate reuse, restoration, observer, preview approval or production grant.",
+      "description": "Owner, on operator direction: request one scoped baseline, reuse, restoration, observer, production or inherited-file correction approval.",
       "parameters": {
         "type": "object",
         "properties": {
           "run": {
             "type": "string",
             "minLength": 1
+          },
+          "inherited": {
+            "description": "On explicit request, select or reopen this owner-offered patch for unowned inherited files after a signed adopted-component failure. The operator confirms the exact diff, not the target again. No writer grant.",
+            "type": "object",
+            "properties": {
+              "check": {
+                "type": "string",
+                "minLength": 1
+              },
+              "blob": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "check",
+              "blob"
+            ],
+            "additionalProperties": false
           },
           "inspectBaseline": {
             "description": "Allow the original missing-input writers to read their exact prior directories. No write permission or new work; eligible even during a check.",

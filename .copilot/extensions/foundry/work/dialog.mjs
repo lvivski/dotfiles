@@ -1,8 +1,8 @@
 import { executor } from "./adapter.mjs";
 import { machine, guard, to, transition, update } from "./machine.mjs";
 
-/** @typedef {import("./model.js").Review} Review */
-/** @typedef {NonNullable<Review["decision"]>} Decision */
+/** @typedef {Pick<import("./model.js").Review,"id"|"decision">} Question */
+/** @typedef {import("./model.js").OwnerDecision} Decision */
 /** @typedef {Exclude<Decision,{status:"presenting"}>} Reply */
 /** @typedef {{question:string,presentation?:string,answer?:string,reason?:string}} Context */
 
@@ -32,7 +32,7 @@ export const dialog=machine("dialog","pending",{
 	dismissed:"The operator closed the question without an answer.",
 }});
 
-/** @param {Review} review @param {Decision} next @param {boolean} recover @param {string|undefined} expected @param {boolean} required */
+/** @param {Question} review @param {Decision} next @param {boolean} recover @param {string|undefined} expected @param {boolean} required */
 function send(review,next,recover,expected,required) {
 	const {status:value,...data}=review.decision ?? {status:"pending"};
 	/** @type {Context} */ const context={...data,question:review.id};
@@ -49,7 +49,7 @@ function send(review,next,recover,expected,required) {
 }
 
 /** Issue a required command. Only explicit recovery may reopen a lost presentation.
- * @param {Review} review @param {Decision} next @param {boolean} [recover] @param {string} [presentation] */
+ * @param {Question} review @param {Decision} next @param {boolean} [recover] @param {string} [presentation] */
 export function decide(review,next,recover=false,presentation) {
 	const prior=review.decision;
 	return send(review,next,recover,presentation ?? (prior?.status==="presenting" ? prior.presentation ?? review.id :
@@ -66,7 +66,14 @@ export function presentDialog(claim,ask) {
 }
 
 /** An asynchronous reply is an observation: a stale or duplicate reply changes nothing.
- * @param {Review} review @param {string} presentation @param {Reply} reply */
+ * @param {Question} review @param {string} presentation @param {Reply} reply */
 export function observeReply(review,presentation,reply) {
 	return send(review,reply,false,presentation,false);
+}
+
+/** @param {Question|undefined} q @param {string} reason */
+export function invalidatePresentation(q,reason) {
+	if(q?.decision?.status!=="presenting")return;
+	const presentation=q.decision.presentation??q.id;
+	observeReply(q,presentation,{status:"unavailable",presentation,reason});
 }

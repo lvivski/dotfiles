@@ -21,6 +21,7 @@ the tests without Python, network access or repository history.
 | 60 | `11aad35764` | Final signed diagnostic failure without a production repair |
 | 61 | pre-release; manifest `5d0f135efc0a37cab7dbf7abae5c3cc3d15c8fdc915f0eadb9c7396fdb214210` | Withdrawn production grant while an unrelated stopped assignment needs a narrow successor |
 | 64 | pre-release; manifest `97c58bcbab1a77648b7e40cc7c881d1f15c649142d8ac00961e6fa19fa0d12a9` | A disjoint product update overtakes an approved source comparison before its report returns |
+| 79 | pre-release; manifest `a8b4a8b9324d258b85c0643fe5b717afc31e7402f934af581db128e90d36bd17` | An adopted assembly's component fails on an inherited caller; a published correction never reaches the product |
 
 Inspect with `tar -tf legacy-readers.tar.xz` or
 `tar -xOf legacy-readers.tar.xz 59/work/observer.mjs`.

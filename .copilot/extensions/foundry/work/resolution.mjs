@@ -43,29 +43,45 @@ export function replacement(base,checkpoint,target,file) {
 	return {before,after,result};
 }
 
-/** @param {string} cwd @param {import("./model.js").Product} last @param {string} target @param {unknown} input @param {string[]} conserved */
-export function reconciledBase(cwd,last,target,input,conserved) {
+/** @param {string} cwd @param {string} id @param {string} file */
+function readText(cwd,id,file) {
+	const bytes=git(cwd,["cat-file","blob",id]);
+	if (!isUtf8(bytes) || bytes.includes(0)) fail("invalid_resolution",`Expected a regular UTF-8 text resolution: ${file}`);
+	return bytes.toString();
+}
+
+/** @param {string} cwd @param {import("./model.js").Product} last @param {string} target @param {unknown} input @param {string[]} conserved
+ * @param {{id:string,directory:import("./model.js").Scope}[]} [owners] When preparing a proposal, derive only unique reversible replacements outside every included grant. */
+export function reconciledBase(cwd,last,target,input,conserved,owners) {
 	const rows=resolutions(input);
 	/** @type {string[]} */ const details=[];
-	const base=rejoin(cwd,last,target,false,rows.length ? stages=>{
-		const expected=new Set(rows.flatMap(r=>[`${r.mode} ${r.base} 1\t${r.file}`,`${r.mode} ${r.target} 2\t${r.file}`,`${r.mode} ${r.checkpoint} 3\t${r.file}`]));
+	const base=rejoin(cwd,last,target,false,rows.length || owners ? stages=>{
 		if (!isUtf8(stages)) fail("invalid_resolution","Non-UTF-8 conflict paths cannot be reconciled");
-		for (const entry of stages.toString().split("\0").filter(Boolean)) if (!expected.delete(entry))
-			fail("tree_conflict",`Unlisted conflict or mismatched resolution input: ${entry.slice(entry.indexOf("\t")+1)}`);
-		if (expected.size) fail("invalid_resolution",`Resolution is not an exact three-stage conflict: ${[...expected][0].split("\t")[1]}`);
-		for (const r of rows) {
-			if (!outside(r.file,conserved)) fail("contract_scope",`Cannot reconcile a conserved contract file: ${r.file}`);
-			const read=/** @param {string} id */ id=>{
-				const bytes=git(cwd,["cat-file","blob",id]);
-				if (!isUtf8(bytes) || bytes.includes(0)) fail("invalid_resolution",`Expected a regular UTF-8 text resolution: ${r.file}`);
-				return bytes.toString();
-			};
-			const {before,after,result}=replacement(read(r.base),read(r.checkpoint),read(r.target),r.file);
-			if (git(cwd,["hash-object","--stdin"],result).toString().trim()!==r.result)
-				fail("invalid_resolution",`The exact replacement does not produce the reviewed resolution blob: ${r.file}`);
-			git(cwd,["hash-object","-w","--stdin"],result);
+		const supplied=new Map(rows.map(r=>[r.file,r]));
+		/** @type {Map<string,Map<string,{mode:string,oid:string}>>} */ const conflicts=new Map();
+		for(const entry of stages.toString().split("\0").filter(Boolean)){
+			const match=/^([0-7]+) ([a-f0-9]+) ([123])\t(.+)$/s.exec(entry)??fail("invalid_resolution","Invalid staged conflict");
+			const [,mode,oid,stage,path]=match,file=relative(path), group=conflicts.get(file)??new Map();
+			group.set(stage,{mode,oid});conflicts.set(file,group);
+		}
+		for(const [file,group] of conflicts){
+			const a=group.get("1"), b=group.get("3"), c=group.get("2"), given=supplied.get(file);
+			if(!given && !owners)fail("tree_conflict",`Unlisted conflict or mismatched resolution input: ${file}`);
+			if(!a || !b || !c || a.mode!=="100644" && a.mode!=="100755" || b.mode!==a.mode || c.mode!==a.mode ||
+				given && (given.mode!==a.mode || given.base!==a.oid || given.checkpoint!==b.oid || given.target!==c.oid))
+				fail("invalid_resolution",`No exact three-stage regular-file resolution: ${file}`);
+			if(!outside(file,conserved))fail("contract_scope",`Cannot reconcile a conserved contract file: ${file}`);
+			const owner=owners?.find(o=>!outside(o.directory,[file]));
+			if(owner)fail("tree_conflict",`Target edited owned output ${owner.id}: ${file}. No automatic resolution is eligible.`);
+			const {before,after,result}=replacement(readText(cwd,a.oid,file),readText(cwd,b.oid,file),readText(cwd,c.oid,file),file);
+			const oid=git(cwd,["hash-object","--stdin"],result).toString().trim();
+			if(given && oid!==given.result)fail("invalid_resolution",`The exact replacement does not produce the reviewed resolution blob: ${file}`);
+			const r=given??resolutions([{file,mode:a.mode,base:a.oid,checkpoint:b.oid,target:c.oid,result:oid}])[0];
+			if(!given)rows.push(r);
+			supplied.delete(file);git(cwd,["hash-object","-w","--stdin"],result);
 			details.push(`${JSON.stringify(r)}\nReplace ${JSON.stringify(before)} with ${JSON.stringify(after)} once in the checkpoint.`);
 		}
+		if(supplied.size)fail("invalid_resolution",`Resolution is not an exact three-stage conflict: ${supplied.keys().next().value}`);
 		return rows;
 	} : undefined);
 	return {base,rows,details};

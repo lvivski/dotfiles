@@ -58,6 +58,15 @@ const runtime = createRuntime(process.cwd(), {
 	},
 	permissionBlocker: permissions.blocker,
 	ask: message => session.ui.input(message),
+	async adopt(message){
+		const reply=await session.ui.elicitation({message,requestedSchema:{type:"object",properties:{
+			acceptance:{type:"string",title:"Reviewed change to acceptance and charter",description:"What will the new checks accept, and what changes for future assignments? Accept to adopt these exact pins and run fresh checks."},
+		},required:["acceptance"]}});
+		if(reply.action==="decline" || reply.action==="cancel")return null;
+		const answer=reply.content?.acceptance;
+		if(reply.action!=="accept" || typeof answer!=="string" || !answer.trim())throw Error("Explicit approval and a reviewed acceptance change are required");
+		return answer;
+	},
 	confirm,
 	autoConfirm: () => permissions.autoConfirm(executionMode),
 	execute: (name, args, toolCallId) => session.rpc.tools.execute({ name, arguments: args, toolCallId }),

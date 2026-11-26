@@ -2,12 +2,12 @@ import { machine, to, transition as next, update } from "./machine.mjs";
 
 /** @typedef {Exclude<keyof typeof release.states,"paused"|"qualified"|"blocked">} GoalState */
 /** @typedef {{active:boolean, qualified:boolean, goal:GoalState, blocked:boolean, scoped:boolean, stalled:boolean,
- * moved:boolean, idle:boolean, product:boolean, exactProduct:boolean, join:boolean, held:boolean, review:boolean, work:boolean}} Facts */
+ * moved:boolean, failedComponent:boolean, idle:boolean, product:boolean, exactProduct:boolean, join:boolean, held:boolean, review:boolean, work:boolean}} Facts */
 /** @typedef {"wait"|"assess"|"retry"|"assess-target"|"undecided"|"rejoin"|"qualify"|"baseline"|"none"} Action */
 /** @typedef {import("./admission.mjs").Admission} Admission */
 /** @typedef {{target?:string,workTarget?:string,error?:string}} Pins */
 /** @typedef {Pins & {action:Action,admission:Admission,reason:string}} Decision */
-/** @typedef {"scoped"|"stalled"|"moved"|"idle"|"product"|"exactProduct"|"join"|"held"|"review"|"work"|"retryEvidence"} Flag */
+/** @typedef {Exclude<keyof Facts,"goal">|"retryEvidence"} Flag */
 
 /** A public decision (including "wait" or "none") is data, not an instruction to dispatch.
  * Only an edge with a separate action can change the ledger.
@@ -38,6 +38,7 @@ export const release=machine("release","absent",{
 		{on:"product-settled",action:"handoff-product",when:["oneOff","currentJoin","signedProduct","!alreadyHandedOff","!held"],
 			description:"Hand off the exact settled product without stopping a run that has no goal evaluator."}],
 	"product-repin":[edge("wait","closed","product-repin-target-changed","Do not apply a product-checker upgrade to a different target.","moved"),
+		edge("wait","closed","adopted-component-failed","Keep the failed assembly. Propose an eligible inherited-file correction, not another target adoption.","failedComponent"),
 		edge("wait","closed","product-repin-held","Preserve the milestone hold while the upgraded check is outstanding.","held"),
 		edge("wait","closed","awaiting-product-repin","Wait for the newly pinned product checker to verify the existing checkpoint.")],
 	superseded:pending("superseded-goal"),

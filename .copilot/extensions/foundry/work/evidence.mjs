@@ -4,6 +4,21 @@ import { assign } from "./assignment.mjs";
 /** @typedef {import("./model.js").Run} Run */
 /** @param {Run} run */
 export const productPin = run => run.productRepins?.at(-1)?.revision;
+/** An amendment has its own check; the original target approval never changes.
+ * @param {import("./model.js").ProductPin|undefined} pin */
+export const verification=pin=>pin?.amendments?.at(-1)?.recheck??pin?.recheck;
+/** @param {Run} run @param {string} check */
+export const mixedVerification=(run,check)=>run.productRepins?.find(p=>p.targetFrom && (p.recheck===check || p.amendments?.some(a=>a.recheck===check)));
+/** Only an intact export and a completed component exit 1 can identify the failing observation.
+ * The outer null is not a product failure, and the component's grant does not identify a faulty path.
+ * @param {import("./model.js").Effect|undefined} e */
+export function failedComponent(e){
+	if(e?.kind!=="product" || !e.runnerClaim)return;
+	const receipt=checkReceipt(e);
+	if(receipt?.exit!==null || !receipt.components)return;
+	const observed=Object.entries(receipt.components),last=observed.pop();
+	if(last?.[1].exit===1 && observed.every(([,c])=>c.exit===0))return last[0];
+}
 /** @typedef {Pick<import("./model.js").Effect,"evaluatorRevision"|"productEvaluatorRevision">} Evaluation */
 /** @param {Evaluation} a @param {Evaluation} b */
 export const sameEvaluation = (a,b) => a.evaluatorRevision === b.evaluatorRevision && a.productEvaluatorRevision === b.productEvaluatorRevision;

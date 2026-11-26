@@ -188,6 +188,9 @@ export interface ProductCitation {
 export type DiscoveryLead = { receipt: string; checkpoint: string; priorReview?: string } &
 	({ missing: string; pending?: never } | { pending: string; missing?: never });
 
+export type OwnerDecision = { status:"presenting"; presentation?:string } | { status:"dismissed" } | { status:"answered"; answer:string }
+	| { status:"unavailable"; reason:string; presentation?:string };
+
 export interface Review extends Dispatch {
 	providerRecovery?: "needed"|"claimed";
 	kind: "scout";
@@ -212,8 +215,7 @@ export interface Review extends Dispatch {
 		{ordinary:true; blob?:never; predecessorCheck?:never; resumed?:{prior:Node; token:string}});
 	observation?: Observation;
 	deferred?: { pins: Record<string, string>; consumers: string[] };
-	decision?: { status: "presenting"; presentation?: string } | { status: "dismissed" } | { status: "answered"; answer: string }
-		| { status: "unavailable"; reason: string; presentation?: string };
+	decision?: OwnerDecision;
 }
 
 export type BlockerSignal = { id: string; directory: string } & ({ blocked: number } | { passed: true });
@@ -334,9 +336,33 @@ export interface Resolution {
 	result:string;
 }
 
+export interface Adoption {
+	id:string;
+	basis:string;
+	revision:string;
+	checkpoint:string;
+	goal:string;
+	assembly?:string;
+	manifest?:{from:string;productFrom:string;goalFrom:string;files:string[];outputs:Record<string,string>;
+		ownership:string;retained:string[];resolutions?:Resolution[]};
+	failed?:string;
+	patch?:{blob:string; grain:string; files:{file:string;mode:string;before:string;result:string}[]};
+	message:string;
+	decision?:OwnerDecision;
+	previous?:OwnerDecision[];
+}
+
 export type Effect = NativeCall | Review;
 
+export interface ProductPin {
+	from:string; revision:string; files:string[]; checkpoint:string; goal:string; recheck:string;
+	ownership?:"retain-except-transferred"; targetFrom?:string; acceptance?:string; resolutions?:Resolution[];
+	amendments?:{prior:Product; proposal:string; recheck:string}[];
+}
+
 export interface Run {
+	targetProposal?:string;
+	adoptions?:Adoption[];
 	inspections?:Inspection[]; // Present from activation for runs requiring independent candidate review.
 	deliveries?:Delivery[];
 	independent?:Subset;
@@ -347,7 +373,7 @@ export interface Run {
 	pendingReviewNotes?: (ReviewNote & { squad: string; after: number })[];
 	attributions?: Attribution[];
 	repins?: { from: string; revision: string; files: string[] }[];
-	productRepins?: { from: string; revision: string; files: string[]; checkpoint: string; goal: string; recheck: string; ownership?: "retain-except-transferred"; targetFrom?:string; acceptance?:string; resolutions?:Resolution[] }[];
+	productRepins?: ProductPin[];
 	policy: Policy;
 	scheduling?: { revision: number; workers?: number; checkpointReviews: boolean };
 	activatedAt: number;
