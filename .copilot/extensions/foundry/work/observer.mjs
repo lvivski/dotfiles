@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { assign } from "./assignment.mjs";
 import { availableReservations } from "./capacity.mjs";
 import { checkReceipt } from "./evidence.mjs";
 import { admitted, reserveWorker } from "./native.mjs";
@@ -127,7 +128,7 @@ export function prepareObserver(cwd,run,actor,a,verify) {
 				if (!job?.observer || !now.after) fail("invalid_observer","Missing bound writer and approved blob");
 				job.observer.after=now.after;
 			} else {
-				n.token=randomUUID();n.generation=now.base;n.state="writing";
+				n.token=randomUUID();n.generation=now.base;assign(n,"staff");
 				n.grain={...n.grain,task:`Improve failure attribution only in ${file}; preserve the original behavior assertions.`};
 				delete n.worker;delete n.workspace;delete n.preview;delete n.candidate;delete n.check;delete n.reason;
 				const brief=`Diagnose the behavior reported by signed component ${previous?.check??pair} on the checked assembly in this worktree. Read ${n.grain.specification}, ${n.grain.boundary.join(", ")} and the assigned check ${n.grain.check}. Author your own observer-only change to ${file}; no other file is writable. Separate expected and actual values at each phase including baseline. Preserve every behavior assertion and tolerance. Verify on intact and deliberately faulty controls in disposable copies. Do not import a coordinator patch or change product code. Join helpers and call foundry_preview({run:"${live.id}",token:"${n.token}"}); tell the owner the preview and control results. After the operator approves that exact diff submit the same bytes with foundry_submit. No local commits, branch changes or reruns of the failed pair.`;

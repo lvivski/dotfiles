@@ -2,8 +2,24 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { openDatabase } from "./database.mjs";
 import { transition } from "./engine.mjs";
+import { select, step } from "./chart.mjs";
+import { catalog } from "./catalog.mjs";
 import { receiptWakes } from "./wakes.mjs";
 import { factory, git, put } from "../test/fixture.mjs";
+
+test("every registered transition can win; unknown states, guards and unreachable rules fail closed",()=>{
+	const {machines}=catalog();
+	for (const model of Object.values(machines)) for (const [state,all] of Object.entries(model.states)) for (const signal of new Set(all.map(e=>e.on))) {
+		const edges=all.filter(e=>e.on===signal), flags=[...new Set(edges.flatMap(e=>(e.when ?? []).map(g=>g.replace(/^!/,""))))], reached=new Set();
+		for (let mask=0;mask<2**flags.length;mask++) {
+			const facts=Object.fromEntries(flags.map((g,i)=>[g,!!(mask & (1<<i))]));
+			const edge=step(model,state,signal,facts);if(edge) reached.add(edge);
+			if (model.id==="release") assert.ok(edge,"Every release assessment must have a decision");
+		}
+		assert.equal(reached.size,edges.length,`Dead transition in ${state}`);
+	}
+	assert.throws(()=>select(machines.supervision,"managed-policy","sample",{}),/missing boolean/i);
+});
 
 test("release inspection and execution agree on a changed contract and recover when restored", async t => {
 	const run = "guard", source = ".foundry/guard.json";
@@ -11,23 +27,28 @@ test("release inspection and execution agree on a changed contract and recover w
 		direction:"Build a catalog.", goalCheck:"goal.mjs", productCheck:"product.mjs",
 		squads:[{id:"catalog",areas:["app"],charter:"spec",boundary:["api"],checks:["unit.mjs"]}]}),
 		api:"Original", spec:"Own the catalog.", "goal.mjs":"process.exit(1)", "product.mjs":"", "unit.mjs":"" });
-	await f.start();
+	/** @type {(()=>void)|undefined} */ let tick;
+	const owner=f.runtime(f.root,{watchRecovery:fn=>{tick=fn;return ()=>{tick=undefined;};}});
+	await f.start(owner);
 	const ledger = openDatabase(f.root); t.after(() => ledger.close());
 	const stamp = ledger.stamp(run);
 	put(f.root, "api", "Changed"); git(f.root, "commit", "-qam", "Change conserved contract");
 	assert.equal(f.owner.inspect({run}, "owner").release?.admission, "closed");
 	assert.equal(ledger.stamp(run), stamp, "status must not journal a newly observed conflict");
-	f.owner.turn("owner"); await f.owner.flush();
+	owner.turn("owner"); await owner.flush();
 	const blocked = f.owner.inspect({run}, "owner");
 	assert.match(blocked.blocker ?? "", /conserved contract changed: api/i);
 	assert.partialDeepStrictEqual(blocked.release, { action:"wait", admission:"closed", reason:"contract-changed" });
 	assert.deepEqual(await f.status(), blocked);
 	assert.equal(f.checks.length, 1);
+	assert.ok(tick);
+	for (let i=0;i<8;i++) {tick(); await owner.flush();}
 	put(f.root, "api", "Original"); git(f.root, "commit", "-qam", "Restore contract");
 	const held = ledger.stamp(run);
 	assert.equal(f.owner.inspect({run}, "owner").release?.admission, "open", "assessment uses the restored tip before reconciliation");
 	assert.equal(ledger.stamp(run), held);
-	f.owner.turn("owner"); await f.owner.flush();
+	for (let i=0;i<8;i++) {tick(); await owner.flush();}
+	assert.notEqual(ledger.stamp(run),held,"the target repair must wake dispatch, not just change the read-only assessment");
 	const restored = f.owner.inspect({run}, "owner");
 	assert.doesNotMatch(restored.blocker ?? "", /conserved contract changed/);
 	assert.notEqual(restored.release?.reason, "contract-changed");

@@ -1,4 +1,5 @@
 import { isUtf8 } from "node:buffer";
+import { topology } from "./topology.mjs";
 import { commitAt, committedFile, git, outside, regularFiles, verifyDirectoryPin } from "./product.mjs";
 import { assignmentDirectory, deadlineAt, disjoint, fail, fields, integer, roots, name, names, record, relative, text } from "./values.mjs";
 
@@ -19,22 +20,7 @@ export function validateGraph(grains, checkScope = true) {
 	const ids = names(grains.map(g => g.id), "grain");
 	if (checkScope) disjoint(grains.flatMap(g => roots(g.directory)));
 	const byId = new Map(grains.map(g => [g.id, g]));
-	const complete = new Set(), pending = new Set();
-	/** @param {string} id */
-	function visit(id) {
-		if (complete.has(id))
-			return;
-		if (pending.has(id))
-			fail("dependency_cycle", `Output cycle at ${id}`);
-		const g = byId.get(id);
-		if (!g)
-			fail("unknown_grain", `Unknown required output: ${id}`);
-		pending.add(id);
-		g.needs.forEach(visit);
-		pending.delete(id);
-		complete.add(id);
-	}
-	ids.forEach(visit);
+	topology(id=>byId.get(id)?.needs).validate(ids);
 }
 
 /** @param {Record<string,unknown>} row */

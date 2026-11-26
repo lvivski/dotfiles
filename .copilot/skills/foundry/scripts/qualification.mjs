@@ -21,7 +21,12 @@ function objects(record) {
 		product.check === goal.check || !Array.isArray(record.outputs)) throw Error("Expected the owner's exact goal qualification record");
 	if (record.ownership && Object.keys(record.ownership).sort().join("\0")!==record.outputs.map(o=>o.id).sort().join("\0"))
 		throw Error("Ownership map does not match the checked output IDs");
+	if (product.components!==undefined && (!record.contract.activation || !product.components || Array.isArray(product.components) ||
+		Object.keys(product.components).length!==record.outputs.length || record.outputs.some(o=>
+			!Object.hasOwn(product.components,o.id) || product.components[o.id]?.exit!==0 || product.components[o.id].check!==o.receipt?.check)))
+		throw Error("Joined component observations do not match the included outputs");
 	const pins = [record.commit, record.contract.commit, record.target.commit];
+	if (record.contract.activation!==undefined) pins.push(oid(record.contract.activation));
 	if (product.evaluatorRevision !== undefined) pins.push(oid(product.evaluatorRevision));
 	if (goal.evaluatorRevision !== undefined) pins.push(oid(goal.evaluatorRevision));
 	for (const out of record.outputs) {

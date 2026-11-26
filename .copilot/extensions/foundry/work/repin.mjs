@@ -1,13 +1,18 @@
 import { remainingAssignments } from "./capacity.mjs";
-import { productOverlayPaths } from "./contract.mjs";
+import { assign } from "./assignment.mjs";
+import { journeyText, productOverlayPaths } from "./contract.mjs";
 import { checkpointReceipt, currentEvaluation, goalReceipt, productPin } from "./evidence.mjs";
 import { admitted, current, reserveProduct } from "./native.mjs";
+import { changes, verifyJoinedInputs } from "./graph.mjs";
+import { productOutputs } from "./plan.mjs";
 import { awaitingReply, unissued } from "./reservation.mjs";
-import { changedFiles, commitAt, entries, outside, regularFiles, retain, verifyContracts } from "./product.mjs";
+import { changedFiles, commitAt, contractConflict, contractPaths, descendsFrom, entries, outside, regularFiles, retain, stageDelivery, verifyContracts } from "./product.mjs";
+import { reconciledBase } from "./resolution.mjs";
 import { questions, releasedReviews, retireSuperseded, reviews } from "./reviews.mjs";
 import { digest, fail, fields, relative, text } from "./values.mjs";
-import { retainedMode } from "./transfer.mjs";
+import { ownershipMode, retainedMode } from "./transfer.mjs";
 import { partitionConflict } from "./partition.mjs";
+import { checkpointQueue } from "./quiescence.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @param {Run} run @param {string} actor @param {string} from @param {boolean} product */
@@ -21,26 +26,27 @@ function allowed(run, actor, from, product) {
 }
 
 /** @param {Run} run @param {string} target */
-export function settledCheckpoint(run, target, operation="Product repinning") {
+export function settledCheckpoint(run, target, operation="Product repinning", retarget=false) {
 	const conflict=partitionConflict(run);
 	if (conflict) fail("ownership_transition",conflict);
 	const last = run.products.at(-1), goal = run.goal, receipt = goalReceipt(run);
 	const history = reviews(run).filter(r=>currentEvaluation(run,r)), funded = remainingAssignments(run) > 0;
-	const mutable = Object.values(run.nodes).filter(n=>["writing","checking","published","waiting"].includes(n.state));
-	if (mutable.length) fail("unsettled_checkpoint",`${operation} must wait for current assignments: ${mutable.map(n=>`${n.grain.id} (${n.state})`).join(", ")}. Finish each original assignment under its existing grant; native idle does not release a writer.`);
+	const {held,retained}=checkpointQueue(run,retarget);
+	if (held.length) fail("unsettled_checkpoint",`${operation} must wait for current assignments: ${held.join(", ")}. Waiting is a scheduler queue, not a writable repair; only a current writer grant can submit.`);
 	if (!goal || !last || last.target !== target || goal.target !== target || last.commit !== goal.commit ||
 		!checkpointReceipt(run,last.check,last.commit) || !receipt || ![1,2].includes(receipt.exit ?? -1) ||
-		run.join || run.conflict || run.blocker || questions(run).some(r=>r.decision?.status !== "answered") || run.pendingReviewNotes?.length ||
+		run.join || (!retarget && run.conflict) || run.blocker || questions(run).some(r=>r.decision?.status !== "answered") || run.pendingReviewNotes?.length ||
 		funded && releasedReviews(run,history).length ||
 		run.effects.some(e => awaitingReply(e) || (unissued(e) || e.permissionHold) && current(run,e) ||
 			e.kind === "scout" && e.state === "reported" && currentEvaluation(run,e) && e.base === goal.commit))
 		fail("unsettled_checkpoint", `${operation} requires a quiescent current checked product and settled unmet or missing goal; resolve pending work and holds first`);
-	return {last, goal};
+	return {last, goal, retained};
 }
 
-/** Prepare immutable inputs outside the transaction. The approval is for both revisions and the complete diff.
- * @param {string} cwd @param {Run} run @param {string} actor @param {Record<string,unknown>} args */
-export function prepareRepin(cwd, run, actor, args) {
+/** @param {string} cwd @param {Run} run @param {string} actor @param {Record<string,unknown>} args
+ * @param {(e:import("./model.js").NativeCall)=>void} signed */
+export function prepareRepin(cwd, run, actor, args, signed) {
+	if (args.kind==="target") return prepareTarget(cwd,run,actor,args,signed);
 	fields(args, ["run", "from", "revision", "files","kind","ownership"]);
 	if (args.kind !== undefined && args.kind !== "product") fail("invalid_field","Omit kind for the goal evaluator or specify product");
 	const product = args.kind === "product";
@@ -63,6 +69,7 @@ export function prepareRepin(cwd, run, actor, args) {
 		if (!productOverlayPaths(run,files))
 			fail("contract_scope","Change only the named product evaluator or its private <evaluator>.d/ helpers");
 	}
+
 	if (files.some(p => !p.startsWith(".foundry/") || /^\.foundry\/[^/]+\.json$/i.test(p) || !outside(p, protectedFiles)))
 		fail("contract_scope", "Only the selected evaluator and its .foundry helpers may change, not the brief, other checks, or product");
 	regularFiles(cwd, revision, [evaluator]);
@@ -98,4 +105,84 @@ export function prepareRepin(cwd, run, actor, args) {
 			for (const r of reviews(live)) retireSuperseded(live, r);
 		},
 	};
+}
+
+/** Adopt the contract in the target tree, not an evaluator overlay of the mixed commit.
+ * @param {string} cwd @param {Run} run @param {string} actor @param {Record<string,unknown>} args
+ * @param {(e:import("./model.js").NativeCall)=>void} signed */
+function prepareTarget(cwd,run,actor,args,signed) {
+	fields(args,["run","kind","from","revision","files","checkpoint","goal","acceptance","resolutions"]);
+	if (actor!==run.owner) fail("foreign_run","Only the run owner can repin the target contract");
+	admitted(run);
+	const {policy}=run, from=policy.contractTarget ?? policy.base, revision=commitAt(cwd,policy.target);
+	const lastTarget=run.products.at(-1)?.target, acceptance=text(args.acceptance,"reviewed release rule and prospective charter change");
+	if (args.from!==from || args.revision!==revision || !lastTarget || lastTarget===revision || !descendsFrom(cwd,revision,lastTarget))
+		fail("stale_pin","Name the current contract pin and full live descendant target commit");
+	const productFrom=productPin(run) ?? policy.base, goalFrom=run.repins?.at(-1)?.revision ?? policy.base;
+	const paths=contractPaths({...policy,contractTarget:revision});
+	const comparisons=new Map([...new Set([from,productFrom,goalFrom])].map(pin=>[pin,changedFiles(cwd,pin,revision,paths)]));
+	const files=[...new Set([...comparisons.values()].flat())].sort();
+	if (!files.length || !Array.isArray(args.files) || digest(args.files.map(relative).sort())!==digest(files))
+		fail("invalid_pin",`Name the complete nonempty conserved-file diff from the contract and both approved evaluator pins: ${JSON.stringify(files)}`);
+	if (files.includes(policy.source) || run.independent || run.effects.some(e=>e.permissionHold) ||
+		run.conflict && run.conflict!==contractConflict(cwd,policy,revision))
+		fail("contract_scope","Cannot replace the activated plan or override a permission or integration hold");
+	const {last,goal,retained}=settledCheckpoint(run,lastTarget,"Target repinning",true);
+	if (last.check!==args.checkpoint || goal.check!==args.goal || run.repins?.some(p=>p.revision===revision) ||
+		run.productRepins?.some(p=>p.revision===revision)) fail("stale_pin","Need the exact settled checkpoint, goal, and a new target pin");
+	for (const id of [last.check,goal.check]) {
+		const e=run.effects.find(e=>e.id===id);
+		if (e?.tool!=="bash") fail("missing_receipt","Missing the original signed checkpoint or goal");
+		signed(e);
+	}
+	for (const check of retained) signed(check);
+	const required=regularFiles(cwd,revision,policy.files);
+	if (policy.sharedBrief) journeyText(cwd,required[policy.files.indexOf(policy.sharedBrief)]);
+	for (const e of entries(cwd,revision,true,files)) if (!["100644","100755"].includes(e.mode))
+		fail("invalid_pin",`Not a regular contract file: ${e.name}`);
+	const mode=ownershipMode(run);
+	const outputs=productOutputs(run,revision,remainingAssignments(run)) ?? fail("ownership_transition","An output or ownership repair is outstanding");
+	const {base,rows,details}=reconciledBase(cwd,last,revision,args.resolutions,paths), edits=changedFiles(cwd,last.commit,base);
+	for (const [id,candidate] of Object.entries(outputs)) {
+		const n=run.nodes[id];
+		if (!outside(n.grain.directory,edits)) fail("tree_conflict",`Target edited owned output ${id}; reconcile its files before adopting this target`);
+		if (last.outputs[id]===candidate) continue;
+		const e=run.effects.find(e=>e.id===n.check);
+		if (e?.kind!=="component" || e.commit!==candidate || e.grain!==id || e.check!==n.grain.check || e.receipt?.exit!==0)
+			fail("missing_receipt",`Missing passing component for published output ${id}`);
+		signed(e);
+	}
+	const conflict=partitionConflict(run,outputs,revision);
+	if (conflict) fail("ownership_transition",conflict);
+	const assembly=stageDelivery(cwd,base,changes(run,outputs),revision);
+	verifyJoinedInputs(cwd,run,outputs,base,assembly);
+	verifyContracts(cwd,{...policy,contractTarget:revision},assembly);
+	const stamp=digest(run);
+	return {prompt:`Run ${run.id}: adopt this release change on ${revision}?\n${acceptance}\n`+
+		`Current contract: ${from}. Current product evaluator: ${productFrom}. Current goal evaluator: ${goalFrom}.\n`+
+		`Review each diff to the target, including shared helpers:\n${[...comparisons].map(([pin,paths])=>`${pin}: ${JSON.stringify(paths)}`).join("\n")}\n`+
+		(details.length ? `Exact file resolutions outside the included outputs (base ${last.target}, checkpoint ${last.commit}, target ${revision}):\n${details.join("\n")}\n` : "")+
+		`Checkpoint ${last.check}, goal ${goal.check}. Recheck components ${JSON.stringify(Object.keys(outputs))}, product and goal on ${assembly}. `+
+		(retained.length ? `Keep these unavailable candidates and their signed checks as history, outside this product; no repair was issued. `+
+			`${JSON.stringify(retained.map(e=>({grain:e.grain,candidate:e.commit,check:e.id})))}. Their directories on the joined base are not replaced.\n` : "")+
+		`The target checker must retain the ${mode} ownership interface. `+
+		`The target branch, old receipts and existing writer grants do not change. New assignments use the reviewed charter.`,
+		/** @param {Run} live */
+		apply(live) {
+			if (digest(live)!==stamp || commitAt(cwd,policy.target)!==revision) fail("stale_pin","Target or checkpoint changed during approval");
+			retain(cwd,revision);retain(cwd,assembly);
+			const pin={from:productFrom,revision,files,checkpoint:last.check,goal:goal.check,recheck:"",targetFrom:from,acceptance,...(rows.length && {resolutions:rows}),...(mode===retainedMode && {ownership:mode})};
+			(live.productRepins??=[]).push(pin);
+			(live.repins??=[]).push({from:goalFrom,revision,files});
+			live.policy.contractTarget=revision;
+			for (const e of retained) {
+				const n=live.nodes[text(e.grain,"retained grain")];
+				assign(n,"stop");
+				n.reason=`Unavailable component ${e.id} (exit 2); target adoption superseded the unissued repair. Candidate ${e.commit} retained.`;
+			}
+			delete live.conflict;
+			reserveProduct(live,actor,cwd,revision,assembly,outputs);
+			pin.recheck=text(live.join?.check,"new product check");
+			return ()=>commitAt(cwd,policy.target)===revision;
+		}};
 }

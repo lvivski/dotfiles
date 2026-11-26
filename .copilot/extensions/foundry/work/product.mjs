@@ -28,6 +28,14 @@ export function git(cwd, args, input, index, maxBuffer) {
 
 /** @param {string} cwd @param {string} ref */
 export const commitAt = (cwd, ref) => git(cwd, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`]).toString().trim();
+/** @param {string} cwd @param {string} tip @param {string} ancestor */
+export function descendsFrom(cwd,tip,ancestor) {
+	try { git(cwd,["merge-base","--is-ancestor",ancestor,tip]); return true; }
+	catch (error) {
+		if (error instanceof Error && "status" in error && error.status===1) return false;
+		throw error;
+	}
+}
 /** @param {string} cwd */
 export const rootAt = cwd => realpathSync(git(cwd, ["rev-parse", "--show-toplevel"]).toString().trim());
 /** @param {string} cwd @param {string} commit @param {string[]} paths */
@@ -373,13 +381,20 @@ export const stageDelivery=(cwd,base,updates,target)=>commitTree(cwd,combinedTre
 export const pairedCommit=(cwd,tree)=>pin(cwd,tree,"Foundry paired observation");
 /** Carry the actual checkpoint delta onto a moved target, not a reconstruction from past jobs.
  * read-tree does only trivial three-way merges; no worktree, content merge drivers or real index.
- * @param {string} cwd @param {import("./model.js").Product} last @param {string} target */
-export function rejoin(cwd, last, target) {
-	return withIndex(cwd, staged => {
+ * @param {string} cwd @param {import("./model.js").Product} last @param {string} target @param {boolean} [keep]
+ * @param {(stages:Buffer)=>import("./model.js").Resolution[]} [resolve] */
+export function rejoin(cwd, last, target, keep=true,resolve) {
+	return withIndex(rootAt(cwd), staged => {
 		staged(["read-tree", "-i", "-m", "--aggressive", last.target, target, last.commit]);
-		const conflict = staged(["ls-files", "--unmerged", "-z"]).toString().split("\0", 1)[0];
-		if (conflict) fail("tree_conflict", `Concurrent modification since checkpoint: ${conflict.slice(conflict.indexOf("\t") + 1)}`);
-		return pin(cwd, staged(["write-tree"]).toString().trim(), "Foundry checkpoint on new target");
+		const stages=staged(["ls-files","--unmerged","-z"]);
+		if (resolve) {
+			const rows=resolve(stages);
+			staged(["update-index","-z","--index-info"],rows.map(r=>`${r.mode} ${r.result}\t${r.file}\0`).join(""));
+		} else if (stages.length) {
+			const [conflict]=stages.toString().split("\0",1);
+			fail("tree_conflict", `Concurrent modification since checkpoint: ${conflict.slice(conflict.indexOf("\t") + 1)}`);
+		}
+		return (keep ? pin : commitTree)(cwd, staged(["write-tree"]).toString().trim(), "Foundry checkpoint on new target");
 	});
 }
 
@@ -392,15 +407,21 @@ export function changedFiles(cwd, from, to, paths = [], maxBytes) {
 
 /** Acceptance helpers may be shared across plans. Scout reads are not contract pins.
  * @param {import("./model.js").Policy} policy */
-export const contractPaths = policy => policy.sharedBrief ? [...policy.files, ".foundry"] : policy.files;
+export const contractPaths = policy => policy.sharedBrief || policy.contractTarget ? [...policy.files, ".foundry"] : policy.files;
+
+/** @param {string} cwd @param {import("./model.js").Policy} policy @param {string} commit */
+export function contractConflict(cwd, policy, commit) {
+	const base=policy.contractTarget ?? policy.base;
+	if (commit === base)
+		return;
+	const changed = changedFiles(cwd, base, commit, contractPaths(policy));
+	if (changed.length) return `The conserved contract changed: ${changed.join(", ")}`;
+}
 
 /** @param {string} cwd @param {import("./model.js").Policy} policy @param {string} commit */
 export function verifyContracts(cwd, policy, commit) {
-	if (commit === policy.base)
-		return;
-	const changed = changedFiles(cwd, policy.base, commit, contractPaths(policy));
-	if (changed.length)
-		fail("contract_changed", `The conserved contract changed: ${changed.join(", ")}`);
+	const conflict=contractConflict(cwd,policy,commit);
+	if (conflict) fail("contract_changed",conflict);
 }
 
 /** Stream Git's raw batch (header LF, size bytes, LF) directly into the checked tree.

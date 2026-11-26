@@ -24,6 +24,53 @@ const grain = (id, directory = `stock/${id}`, needs = []) => ({ id, directory, n
 /** @param {ReturnType<typeof grain>[]} grains */
 const report = grains => ({ outcome: grains.length ? "regenerate" : "no-gap", reason: "Implement the missing journal operations", evidence: ["brief.md"], grains });
 
+for (const stop of [false,true]) test(`a reloaded issuer wakes its original managed hold without an operator command; operator pause=${stop}`, async t => {
+	const f=trial(t);
+	await f.start();
+	const [codec,...others]=f.scouts;
+	await codec.report(report([grain("parse","stock/codec/parse"),grain("emit","stock/codec/emit",["parse"])]));
+	for (const s of others) await s.report(report([]));
+	const [writer]=f.workers.values();
+	let denied=false;
+	const original=f.runtime(writer.cwd,{permissionBlocker:async()=>denied ? {scope:"run",message:"Settings not resolved"} : null,
+		execute:async (...args)=>{const result=await f.execute(...args); denied=true; return result;}});
+	put(writer.cwd,"stock/codec/parse/value","earned");
+	await original.operation("submit",{run,token:writer.token},writer.id); original.close();
+	const held=await f.status(); assert.equal(held.active,false);
+	assert.ok(held.pending.some(e=>e.issuer===writer.id && e.state==="ready"));
+	const checks=f.checks.filter(s=>s.startsWith("Check parse ")).length; assert.equal(checks,1);
+	f.owner.turn(actor); await f.owner.flush(); assert.equal((await f.status()).active,false,"another issuer's ready policy is not proof");
+	/** @type {(()=>void)|undefined} */ let tick;
+	let reads=0,operatorPaused=false;
+	const next=f.runtime(writer.cwd,{
+		watchRecovery:fn=>{tick=fn;return ()=>{tick=undefined;};},
+		permissionBlocker:async()=>{reads++; if(stop && !operatorPaused) {operatorPaused=true;await f.owner.operation("pause",{run},actor);} return null;}
+	});
+	next.sessionStart(writer.id,writer.cwd);
+	assert.ok(tick,"reloading the held issuer must arm a recovery wake");
+	tick(); await next.flush(); await f.settle();
+	assert.ok(reads);
+	const end=await f.status(); assert.equal(end.active,!stop);
+	assert.equal(f.checks.filter(s=>s.startsWith("Check parse ")).length,checks,"never replay the published dependency");
+	assert.equal(f.workers.size,stop ? 1 : 2);
+	if (!stop) {
+		const worker=f.workers.get(end.nodes.find(n=>n.grain==="emit")?.worker ?? "");
+		assert.ok(worker);
+		put(worker.cwd,"stock/codec/emit/value","consumer");
+		await f.runtime(worker.cwd).operation("submit",{run,token:worker.token},worker.id);
+		const checkpoint=(await f.status()).checkpoint; assert.ok(checkpoint);
+		assert.equal(git(f.root,"show",`${checkpoint}:stock/codec/parse/value`),"earned");
+		assert.equal(git(f.root,"show",`${checkpoint}:stock/codec/emit/value`),"consumer");
+	} else {
+		for (let i=0;i<8;i++) {tick?.(); await next.flush();}
+		assert.equal((await f.status()).active,false);
+		await f.owner.operation("resume",{source},actor);
+		for (let i=0;i<8;i++) {tick?.(); await next.flush();}
+		assert.equal(f.workers.size,2,"an explicit owner resume wakes the original issuer without another writer turn");
+		assert.equal(f.checks.filter(s=>s.startsWith("Check parse ")).length,checks);
+	}
+});
+
 test("the selected mode must be permitted by the resolved snapshot, not merely available", async () => {
 	/** @param {Awaited<ReturnType<Parameters<typeof permissionCheck>[0]>>} policy @param {string} mode */
 	const decide = (policy, mode) => permissionCheck(async () => policy, async () => ({ mode })).blocker();
@@ -54,6 +101,59 @@ test("concurrent permission reads share a timeout, not a decision for the next b
 	assert.equal((await check())?.scope, "session");
 	mode = "assisted";
 	assert.equal(await check(), null);
+});
+
+test("a paused run's issuer can read its applied policy and mode without trying its reservation", async t => {
+	const f = trial(t);
+	await f.start();
+	const [codec, ...others] = f.scouts;
+	await codec.report(report([grain("parse", "stock/codec/parse"), grain("emit", "stock/codec/emit", ["parse"])]));
+	for (const scout of others) await scout.report(report([]));
+	const [writer] = f.workers.values();
+	let closed = false, mode = "assisted", unreadable = false, reads = 0;
+	const issuing = f.runtime(writer.cwd, { permissionBlocker: async () => closed ? {scope:"run", message:"Unresolved issuer policy"} : null,
+		execute: async (...args) => { const result = await f.execute(...args); closed = true; return result; } });
+	put(writer.cwd, "stock/codec/parse/index.mjs", "export default 1;");
+	await issuing.operation("submit", {run, token:writer.token}, writer.id);
+	const held = await f.status();
+	assert.equal(held.active, false);
+	assert.ok(held.pending.some(e => e.state === "ready" && e.issuer === writer.id));
+	const declaration = await loadEntry({sessionId:writer.id, on() {}, rpc:{
+		managedSettings:{ get:async () => {
+			reads++;
+			if (unreadable) throw Error("private diagnostic");
+			return {failClosed:false, permissionsContext:{failClosed:closed}, bypassPermissionsDisabled:true};
+		} },
+		permissions:{getMode:async () => ({mode})},
+	}});
+	const ctx = {sessionId:writer.id}, hook = {...ctx, timestamp:new Date(), workingDirectory:writer.cwd};
+	await declaration.hooks?.onSessionStart?.({...hook, source:"startup"}, ctx);
+	t.after(() => declaration.hooks?.onSessionEnd?.({...hook, reason:"complete"}, ctx));
+	const tool = declaration.tools?.find((/** @type {import("@github/copilot-sdk").Tool} */ t) => t.name === "foundry_status"); assert.ok(tool?.handler);
+	const args = {run, detail:"permissions"}, invocation = {...ctx, toolName:tool.name, toolCallId:"read", arguments:args};
+	const read = async () => {
+		const result = await tool.handler(args, invocation);
+		assert.equal(typeof result, "string", JSON.stringify(result));
+		return JSON.parse(String(result));
+	};
+	assert.match(JSON.stringify(await tool.handler(args, {...invocation, agentId:"helper"})), /subagents/);
+	assert.equal(reads, 0);
+	const blocked = await read();
+	assert.deepEqual([blocked.session, blocked.policy, blocked.mode, blocked.ready], [writer.id, "unresolved", "assisted", false]);
+	assert.match(blocked.reason, /not resolved/);
+	closed = false; mode = "allow-all";
+	const restricted = await read();
+	assert.deepEqual([restricted.policy, restricted.mode, restricted.ready], ["resolved","allow-all",false]);
+	assert.match(restricted.reason, /restricts/);
+	unreadable = true; mode = "assisted";
+	const unknown = await read();
+	assert.deepEqual([unknown.policy,unknown.mode,unknown.ready], ["unknown","assisted",false]);
+	assert.doesNotMatch(JSON.stringify(unknown), /private diagnostic/);
+	unreadable = false;
+	assert.deepEqual(await read(), {session:writer.id,policy:"resolved",mode:"assisted",ready:true});
+	assert.equal(reads, 4);
+	assert.deepEqual(await f.status(), held);
+	assert.equal(f.workers.size, 1);
 });
 
 for (const approval of ["the form's accept button","effective allow-all on this call","Autopilot on this call"]) test(`extension entry: repin needs only ${approval}`, async t => {
@@ -214,7 +314,7 @@ test("permission loss after the baseline pauses once; explicit resumption dispat
 	owner.turn(actor); await owner.flush();
 	assert.equal(f.scouts.length, 0); assert.equal(f.workers.size, 0);
 	assert.equal(notices.length, 1);
-	const resumed = await f.start(owner);
+	const resumed = await owner.operation("resume",{source},actor);await f.settle();
 	assert.equal(resumed.blocker, undefined);
 	assert.equal(resumed.active, true);
 	assert.deepEqual(resumed.goal, stopped.goal);
@@ -400,7 +500,7 @@ test("prepared calls survive local holds and global pauses; stale preflight cann
 	assert.equal(held.active, false);
 	assert.ok(held.pending.every(e => e.state === "ordinary"));
 	mode = "assisted"; failClosed = false;
-	const resumed = await owner.operation("start", { source }, actor);
+	const resumed = await owner.operation("resume", { source }, actor);
 	assert.deepEqual(resumed.prepared, prepared);
 	let release = () => {};
 	const late = f.runtime(f.root, { permissionBlocker: () => new Promise(resolve => { release = () => resolve({ scope: "run", message: "Unresolved policy" }); }) });

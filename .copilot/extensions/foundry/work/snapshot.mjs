@@ -18,6 +18,9 @@ import { historicalGrant, observerInput, restoredProduct, validRestoration } fro
 import { validIsolation } from "./isolation.mjs";
 import { validRemedy } from "./remedy.mjs";
 import { validDeliveries } from "./batch.mjs";
+import { resolutions } from "./resolution.mjs";
+import { assignment } from "./assignment.mjs";
+import { call, review as discovery } from "./dispatch.mjs";
 
 /** @typedef {(value:unknown)=>boolean} Guard */
 /** @type {Guard} */
@@ -52,14 +55,15 @@ const scope = v => path(v) || Array.isArray(v) && v.length > 1 && v.every((dir,i
 const baseline = shape({directory:path,revision:commit,tree:commit});
 /** @type {Guard} */
 const inventory = v => baseline(v) || Array.isArray(v) && v.length>0 && v.every(baseline);
-const output = { id, directory: scope, revision: optional(commit), check: path, needs: list(id) };
+const output = { id, directory: scope, revision: optional(commit), check: path, needs: list(id),
+	prior:optional(v=>one("independent","unavailable")(v) || shape({clause:noteText})(v)) };
 const grain = shape({ ...output, specification: path, boundary: list(path), task: optional(string), agent: optional(string) });
 const proposal = shape({ ...output, task: string });
 const charter = { id, charter: path, agent: optional(string) };
 const fixed = shape({ ...charter, grains: list(id) });
 const area = shape({ ...charter, areas: list(path), boundary: list(path), checks: list(path), researchAgent: optional(id) });
 const policy = shape({
-	id, direction: string, target: string, source: path, sharedBrief: optional(path), base: commit, productCheck: path, ownership:optional(one("exact-files",retainedMode)), goalCheck: optional(path), files: list(path),
+	id, direction: string, target: string, source: path, sharedBrief: optional(path), base: commit, contractTarget:optional(commit), productCheck: path, ownership:optional(one("exact-files",retainedMode)), goalCheck: optional(path), files: list(path),
 	squads: list(s => object(s) && ("areas" in s ? !("grains" in s) && area(s) : fixed(s))),
 	workers: optional(positive), assignments: optional(count), repairs: count, deadline: optional(string), seed: optional(list(id))
 });
@@ -103,7 +107,7 @@ const nodeShape = shape({
 	retained: optional(list(shape({review:id,to:id,primary:path,files:list(path)}))),
 	successor: optional(shape({review:id,to:id,directory:scope})),
 	restoration: optional(restoration),
-	grain, review: optional(id), state: one("idle", "waiting", "writing", "checking", "published", "qualified", "repeated", "blocked"), token: optional(id), worker: optional(string),
+	grain, review: optional(id), state: one(...Object.keys(assignment.states)), token: optional(id), worker: optional(string),
 	generation: optional(commit), inputs: optional(named(commit)), base: optional(commit), replaces: optional(commit), candidate: optional(commit), check: optional(id),
 	supporting: optional(list(path)), excluded: optional(v => shape({path,revision:commit})(v) || shape({grain:id,revision:commit})(v)),
 	priorSource: optional(inventory), reuse: optional(id), workspace: optional(id),
@@ -126,15 +130,16 @@ const subset=shape({observer:id,checkpoint:id,goal:id,target:commit,assembly:com
 	evidence:list(shape({component:id,commit,stages:shape({component:proofNotes,generated:proofNotes,package:proofNotes,runtime:proofNotes})})),
 	product:id,assessment:optional(id)});
 const receipt = shape({ commit, check: path, completedAt:optional(positive), evaluatorRevision: optional(commit), productEvaluatorRevision:optional(commit), exit: v => v === null || count(v), output: string,
+	components:optional(named(shape({check:path,exit:v=>v===null || count(v)}))), resolutionDigest:optional(sha256),
 	failure: optional(one("changed-export", "incomplete")), repair: optional(id), squad: optional(id), blockers: optional(validSignals), feedback: optional(validFeedback),
 	feedbackFile: optional(shape({ blob: commit, legacy: optional(bool) })) });
 const dispatch = { id, issuer: string, args: object, evaluatorRevision: optional(commit), productEvaluatorRevision:optional(commit), callId: optional(string), error: optional(string), permissionHold: optional(string) };
 const noteFields = { receipt: id, question: noteText, excerpt: optional(noteText) };
 const scout = shape({ ...dispatch, kind: one("scout"), tool: one("workflow"), squad: id, base: commit, version: string,
-	state: one("ready", "issued", "uncertain", "suspended", "reported", "observed", "blocked", "deferred"), observation: optional(observation),
+	state: one(...Object.keys(discovery.states)), observation: optional(observation),
 	deferred: optional(shape({ pins: v => named(commit)(v) && object(v) && Object.keys(v).length > 0,
 		consumers: v => Array.isArray(v) && v.length > 0 && v.every(id) && new Set(v).size === v.length })),
-	workflowId: optional(string), decision: optional(decision), packet: optional(isPacket), retryOf: optional(id), retrySource: optional(commit), note: optional(shape(noteFields)),
+	workflowId: optional(string), providerRecovery:optional(one("needed","claimed")), decision: optional(decision), packet: optional(isPacket), retryOf: optional(id), retrySource: optional(commit), note: optional(shape(noteFields)),
 	lead: optional(v => object(v) && id(v.receipt) && id(v.checkpoint) && optional(id)(v.priorReview) &&
 		(v.pending === undefined ? id(v.missing) : v.missing === undefined && id(v.pending))),
 	iteration: optional(shape({receipt: id, directory: path, files:optional(list(path)), blob: commit, question: noteText, basis: optional(one("checkpoint")),
@@ -145,7 +150,7 @@ const scout = shape({ ...dispatch, kind: one("scout"), tool: one("workflow"), sq
 	otherNotes: optional(list(shape(noteFields))), diagnostic: optional(shape({ receipt: id, excerpt: noteText })), wake: optional(shape({ review: id, key: string })) });
 const native = shape({
 	delivery:optional(sha256),
-	rerun:optional(shape({of:id,checkpoint:id,candidate:commit,directory:scope,harness:list(path),current:list(path),after:optional(id)})),
+	rerun:optional(shape({of:id,checkpoint:id,candidate:commit,directory:scope,harness:list(path),current:list(path),after:optional(id),observedTarget:optional(commit)})),
 	production:optional(shape({diagnostic:id,candidate:commit,checkpoint:id,goal:id,files:list(path),task:noteText,prior:node})),
 	remedy:optional(shape({writer:id,basis:sha256})),
 	isolation:optional(sha256),
@@ -162,7 +167,7 @@ const native = shape({
 	readGrant: optional(inventory),
 	claims: optional(list(shape({ actor: string, path: string, start: string, kickoff: string, identity: string }))), claimedRequest: optional(string),
 	retirement: optional(shape({ notification: id, read: id, completion: id })),
-	token: optional(id), tool: one("create_session", "bash", "send_session_message", "session.send"), state: one("ready", "issued", "uncertain", "ordinary", "done", "refused", "retired", "withdrawn"),
+	token: optional(id), tool: one("create_session", "bash", "send_session_message", "session.send"), state: one(...Object.keys(call.states)),
 	nativeId: optional(string), boundAt: optional(positive), commit: optional(commit), check: optional(path),
 	launcherExit: optional(positive), recheck: optional(shape({ of:id, target:commit, goalPin:commit, productPin:commit })),
 	runnerStarted: optional(bool), runnerClaim: optional(v => typeof v === "string" && /^[A-Za-z0-9_-]{43}$/.test(v)), receipt: optional(receipt)
@@ -173,11 +178,11 @@ const snapshot = shape({
 	id, owner: string, policy, references: optional(named(commit)),
 	scheduling: optional(shape({ revision: positive, workers: optional(positive), checkpointReviews: bool })),
 	repins: optional(list(shape({ from: commit, revision: commit, files: list(path) }))),
-	productRepins: optional(list(shape({ from:commit, revision:commit, files:list(path), checkpoint:id, goal:id, recheck:id, ownership:optional(one(retainedMode)) }))),
+	productRepins: optional(list(shape({ from:commit, revision:commit, files:list(path), checkpoint:id, goal:id, recheck:id, ownership:optional(one(retainedMode)), targetFrom:optional(commit),acceptance:optional(noteText),resolutions:optional(v=>resolutions(v).length>0) }))),
 	artifacts: optional(list(shape({ file: path, blob: commit, base: commit, publisher: string, to: list(path) }))),
 	pendingReviewNotes: optional(list(shape({ ...noteFields, squad: id, after: count }))),
 	attributions: optional(list(shape({ receipt: id, id, directory: path, blocked: positive, excerpt: noteText }))),
-	active: bool, activatedAt: positive, pauseReason: optional(string), nodes: named(node), effects: list(v => scout(v) || native(v)),
+	active: bool, activatedAt: positive, pauseReason: optional(string), policyHold:optional(shape({issuer:string,effect:id,token:id})), nodes: named(node), effects: list(v => scout(v) || native(v)),
 	products: list(product), join: optional(product), goal: optional(shape({ ...assessment, stall: optional(string),
 		tried: optional(list(v => typeof v === "string" && /^[0-9a-f]{64}$/.test(v))) })),
 	blocker: optional(string), conflict: optional(string), discoveryError: optional(string)
@@ -190,21 +195,39 @@ function isRun(value) { return snapshot(value); }
  * @param {import("./model.js").Run} run @param {Map<string,import("./model.js").Product>} products */
 function productLineage(run,products) {
 	const pins = run.productRepins ?? [];
+	if (run.policy.contractTarget!==pins.findLast(p=>p.targetFrom)?.revision) return false;
 	if (!pins.length) return !run.effects.some(e=>e.productEvaluatorRevision || e.kind === "product" && e.evaluatorRevision);
 	if (!run.goal || products.size !== run.products.length || new Set([run.policy.base,...pins.map(p=>p.revision)]).size !== pins.length+1) return false;
 	let next = 0, applied = 0;
+	let retained=run.policy.ownership===retainedMode;
 	/** @type {string|undefined} */ let pin;
 	/** @type {import("./model.js").Effect|undefined} */ let lastGoal;
 	/** @type {import("./model.js").Product|undefined} */ let needsGoal;
+	const captures=pins.some(p=>p.targetFrom) ? new Map() : undefined;
 	for (const e of run.effects) {
+		if (captures && e.kind==="component" && checkReceipt(e)?.exit===0) captures.set(`${e.grain}@${e.commit}`,e.check);
 		const p = pins[next];
 		if (e.id === p?.recheck) {
 			const prior = run.products[applied-1], after = products.get(e.id) ?? (run.join?.check === e.id ? run.join : undefined);
 			if (needsGoal || !prior || prior.check !== p.checkpoint || lastGoal?.id !== p.goal || lastGoal.commit !== prior.commit ||
 				lastGoal.check !== run.policy.goalCheck || ![1,2].includes(checkReceipt(lastGoal)?.exit ?? -1) ||
-				e.kind !== "product" || e.issuer !== run.owner || e.commit !== prior.commit || !after || after.target !== prior.target ||
-				digest(after.outputs) !== digest(prior.outputs) || p.from !== (pin ?? run.policy.base) ||
-				new Set(p.files).size !== p.files.length || !productOverlayPaths(run,p.files)) return false;
+				e.kind !== "product" || e.issuer !== run.owner || !after || after.commit!==e.commit || p.from !== (pin ?? run.policy.base) ||
+				!p.files.length || new Set(p.files).size !== p.files.length) return false;
+			if (!!p.targetFrom!==!!p.acceptance || p.resolutions && (!p.targetFrom || p.resolutions.some(r=>!outside(r.file,[".foundry",...run.policy.files])))) return false;
+			if (p.targetFrom) {
+				const g=run.repins?.find(g=>g.revision===p.revision);
+				if (retained!==(p.ownership===retainedMode) || !g || digest(g.files)!==digest(p.files) || g.from!==(lastGoal.evaluatorRevision ?? run.policy.base) ||
+					p.files.includes(run.policy.source) || !p.files.every(f=>f.startsWith(".foundry/") || run.policy.files.includes(f)) ||
+					p.targetFrom!==(pins.slice(0,next).findLast(q=>q.targetFrom)?.revision ?? run.policy.base) ||
+					after.target!==p.revision || after.target===prior.target || after.commit===prior.commit) return false;
+				if (e.receipt) {
+					const map=e.receipt.components;
+					if (e.receipt.resolutionDigest!==(p.resolutions && digest(p.resolutions)) ||
+						!map || Object.entries(map).some(([id,c])=>!Object.hasOwn(after.outputs,id) || captures?.get(`${id}@${after.outputs[id]}`)!==c.check) ||
+						e.receipt.exit===0 && (Object.keys(map).length!==Object.keys(after.outputs).length || Object.values(map).some(c=>c.exit!==0))) return false;
+				}
+			} else if (e.commit!==prior.commit || after.target!==prior.target || digest(after.outputs)!==digest(prior.outputs) || !productOverlayPaths(run,p.files)) return false;
+			retained=p.ownership===retainedMode;
 			pin = p.revision;
 			next++;
 			needsGoal = after;
@@ -226,6 +249,7 @@ function productLineage(run,products) {
 /** @param {import("./model.js").Run} run @param {import("./model.js").Effect} e
  * @param {Map<string,import("./model.js").Effect>} effects @param {Map<string,import("./model.js").Product>} products */
 function validDispatch(run, e, effects, products) {
+	if ((e.receipt?.components || e.receipt?.resolutionDigest) && !(e.kind==="product" && run.productRepins?.some(p=>p.targetFrom && p.recheck===e.id))) return false;
 	if (e.tool!=="workflow") {
 		if (e.kind==="rerun" || e.rerun) {
 			const pin=e.rerun;
@@ -375,7 +399,7 @@ function validDispatch(run, e, effects, products) {
 				e.packet && !deliveredFile(e.packet, src.iteration.source.file, e.retrySource) : !!src.observation) return false;
 		}
 		return !!squad && !e.nativeId && !e.token && !e.receipt && !e.boundAt && (!e.workflowId || !!e.callId) &&
-			(e.state !== "suspended" || !!e.workflowId) &&
+			(e.state !== "suspended" && !e.providerRecovery || !!e.workflowId) &&
 			(e.wake?.key !== "research" && report?.outcome !== "needs-research" || "areas" in squad && !!squad.researchAgent) &&
 			(!report || investigation(e, squad) === (report.findings !== undefined)) &&
 			(!e.packet || e.packet.review === e.id && e.packet.base === e.base) &&
@@ -442,6 +466,8 @@ export function decode(value) {
 		fail("corrupt_run", "Invalid Foundry execution snapshot");
 	const { policy: p, nodes, products } = value, areas = p.squads.filter(s => "areas" in s), files = new Set(p.files);
 	const effects = new Map(value.effects.map(e => [e.id, e]));
+	if (value.policyHold && (value.active || !value.pauseReason || effects.get(value.policyHold.effect)?.issuer!==value.policyHold.issuer))
+		fail("corrupt_run","Invalid managed permission hold");
 	const attributions = value.attributions ?? [];
 	if (new Set(attributions.map(a => `${a.receipt}:${a.id}`)).size !== attributions.length || attributions.some(a => {
 		const r = sourceReceipt(effects.get(a.receipt), a);
@@ -458,7 +484,8 @@ export function decode(value) {
 	const pins = value.repins ?? [];
 	if (pins.length && (!value.goal || new Set([p.base, ...pins.map(pin => pin.revision)]).size !== pins.length + 1 ||
 		pins.some((pin, i) => pin.from !== (i ? pins[i-1].revision : p.base) || !pin.files.length ||
-			new Set(pin.files).size !== pin.files.length || !pin.files.every(f => f.startsWith(".foundry/")))))
+			new Set(pin.files).size !== pin.files.length || !pin.files.every(f => f.startsWith(".foundry/") ||
+				p.files.includes(f) && value.productRepins?.some(q=>q.targetFrom && q.revision===pin.revision)))))
 		fail("corrupt_run", "Invalid goal evaluator pin history");
 	const last = products.at(-1);
 	const checkpoints = new Map(products.map(p=>[p.check,p]));

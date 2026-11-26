@@ -18,7 +18,7 @@ import { FoundryError, contains, digest, fail, fields, members, name, record, re
 /**
  * @typedef {object} ScoutRuntime
  * @property {(run:string, dispatch:string, actor:string, workflowId:string) => Promise<ScoutItem[]>} scoutBatch
- * @property {(run:string, dispatch:string, actor:string, workflowId:string, reviewId:string, raw:unknown, packet:unknown) => Promise<void>} scoutResult
+ * @property {(run:string, dispatch:string, actor:string, workflowId:string, reviewId:string, raw:unknown, packet:unknown, classifyPrior?:boolean) => Promise<void>} scoutResult
  */
 
 /** @param {Iterable<unknown>} records */
@@ -236,11 +236,11 @@ function buildPacket(cwd, run, review, budget, directory) {
 		"Use regenerate with nonempty grains for actionable owned changes. Use no-gap with grains: [] only for an evidenced absence of actionable work in this charter, not as a claim that the whole product passes. Read the retained goal diagnostic; a combined exit code is not a per-step verdict. Never ask the operator which test failed. For missing facts use needs-evidence, authorized research, or unresolved with grains: [] and the specific unknown. Only use needs-decision with ownerInput: product-choice or external-action for a choice or action only the operator can take. State that choice or action in reason.",
 		"areas" in squad ? [
 			`If you need a frozen repository, report waiting with waitFor:"reference:<checkout-name>" and the question in reason. To wait for a checked output instead, use the producing charter ID. Other charters: ${JSON.stringify(policy.squads.filter(s => s.id !== squad.id).map(s => s.id))}. A wait does not grant file access.`,
-			"Propose disjoint complete directories inside your areas as {id,task,directory,check,needs}, using allowed checks only. Use existing graph IDs or IDs in this report for needs; no cycles. You may request an owned qualified or repeated output by ID.",
+			"Propose disjoint complete directories inside your areas as {id,task,directory,check,needs,prior}, using allowed checks only. Use existing graph IDs or IDs in this report for needs; no cycles. You may request an owned qualified or repeated output by ID.",
 			"For inseparable changes, directory may be a list of exact disjoint directories in your charter. They are one output with one check; siblings remain free. Prefer separate outputs when changes can be checked independently.",
 			"A new directory retires overlapping settled outputs, including children. To consume a checked output, keep its directory disjoint from the consumer's; do not list a retired ID in needs. If packaging requires a file at an area's root, plan that ownership before splitting the area.",
 			"For every needs entry, name the exact checked output in reason and explain why the consumer cannot start without it. If disjoint writers can start from the committed interface, propose both now. Defer only the integration that needs their outputs.",
-			"For maintenance, use directory:\"path\" for the accepted copy at kickoff, or directory:\"<full commit>:path\" for an expressly permitted pin. The writable path is the same. Neither form grants a read. If the specification or checked inputs do not authorize the needed baseline, report the missing prerequisite instead of launching a writer.",
+			"For every proposed writer classify prior input. Use prior:\"independent\" only if all work can be done without consulting its removed directory. To preserve or run a previous validator, quote the full explicit read permission from the owning charter in prior:{clause}, and cite the charter. A maintenance instruction, shared journey, or priorSource is not read permission. Use directory:\"path\" at kickoff, or \"<full commit>:path\" for an expressly permitted pin. If the permission or input is missing, omit that writer and report the missing prerequisite; prior:\"unavailable\" cannot launch one.",
 			"Only regenerate may replace IDs. Use replace and fresh IDs to split never-issued work. Repartition qualified outputs unless a current assignment pins them. A repeated output may change scope only when its bytes match the passing checkpoint. Never displace live work or retry refused work.",
 			...(stopped.some(id => supersededAttempt(run, run.nodes[id])) ? ["For a supersededAttempt only, explicitly replace its ID in a single-grain report with a fresh ID for the same directory and check, using qualified current inputs including still-current pins."] : []),
 			...(stopped.some(id => repairDetail(run.nodes[id])) ? ["A stoppedRepair is historical component evidence, not a passing output, diagnosis, read grant or permission to repeat the observation. Propose independently supported work. For a materially different task in that exact directory, use a single new ID, the same check and replace:[oldId]. Do not relabel the old task. If no permitted observation distinguishes the possibilities, report the missing prerequisite instead."] : []),
@@ -378,9 +378,10 @@ export const scoutAgent = {
 };
 
 const string = { type: "string" }, strings = { type: "array", items: string };
-const proposal = { type: "object", required: ["id", "task", "directory", "check", "needs"], additionalProperties: false,
+const proposal = { type: "object", required: ["id", "task", "directory", "check", "needs","prior"], additionalProperties: false,
 	properties: { id: string, task: string, directory: {anyOf:[string,{...strings,minItems:1},{type:"object",required:["primary","files"],additionalProperties:false,
-		properties:{primary:string,files:{...strings,minItems:1}}}]}, check: string, needs: strings } };
+		properties:{primary:string,files:{...strings,minItems:1}}}]}, check: string, needs: strings,
+		prior:{anyOf:[{type:"string",enum:["independent","unavailable"]},{type:"object",required:["clause"],additionalProperties:false,properties:{clause:string}}]} } };
 const schema = {
 	type: "object", required: ["outcome", "reason", "evidence", "grains"], additionalProperties: false,
 	properties: { outcome: { type: "string", enum: ["regenerate", "no-gap", "unresolved", "needs-decision", "waiting", "needs-evidence"] }, reason: string, evidence: strings,
@@ -422,7 +423,7 @@ export function scoutDefinition(runtimeProvider) {
 				const label = `scout:${squad}:${id}@${base}`;
 				// Re-authorize the batch on every attempt, but keep the subagent's
 				// memoization key stable if a sibling updated the graph before resume.
-				const pinned = record(await ctx.step(`packet:${label}`, () => ({ prompt, packet, canResearch: !!canResearch })));
+				const pinned = record(await ctx.step(`packet:${label}`, () => ({ prompt, packet, canResearch: !!canResearch, classifyPrior:true })));
 				ctx.signal.throwIfAborted();
 				// Use the SDK's soft-failure boundary per item. A failed scout
 				// becomes null immediately; cancellation and fatal SDK errors reject.
@@ -430,7 +431,7 @@ export function scoutDefinition(runtimeProvider) {
 					outcome: { type: "string", enum: [...schema.properties.outcome.enum, "needs-research"] } } } : schema;
 				const [raw] = await ctx.parallel([() => ctx.agent(text(pinned.prompt, "pinned scout packet"), { label, agent: researchAgent ?? scoutAgent.name, schema: resultSchema })]);
 				ctx.signal.throwIfAborted();
-				await runtime.scoutResult(run, dispatch, actor, workflowId, id, raw ?? null, pinned.packet);
+				await runtime.scoutResult(run, dispatch, actor, workflowId, id, raw ?? null, pinned.packet,pinned.classifyPrior===true);
 				return raw != null;
 			}));
 			ctx.signal.throwIfAborted();

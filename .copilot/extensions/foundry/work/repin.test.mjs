@@ -75,6 +75,262 @@ async function checkpoint(t,stopped=false,build=factory) {
 	return { ...f, before, prior, side, revision, args };
 }
 
+for (const outcome of ["pass","component fails","goal fails"]) test(`mixed target repin on the original run / ${outcome}`,async t=>{
+	const f=await checkpoint(t), owner=f.runtime(f.root,{confirm:async()=>true});
+	await owner.operation("repin",f.args,"owner"); // A previously approved product checker is in the incoming merge.
+	const db=openDatabase(f.root); t.after(()=>db.close());
+	const read=()=>db.read(run) ?? assert.fail(), old=read(), prior=old.products.at(-1); assert.ok(prior && old.goal);
+	const charter=".foundry/spec.md", changed=[charter,component,product,goal];
+	put(f.root,"operator","keep"); put(f.root,charter,"Maintain the existing output; preserve the inventory.");
+	put(f.root,product,git(f.side,"show",`HEAD:${product}`));
+	put(f.root,component,`import {readFileSync} from "node:fs"; if(readFileSync("unit/result","utf8")!=="ok" ||
+		readFileSync("operator","utf8")!=="keep" || process.env.FOUNDRY_GRAIN!=="unit") process.exit(1);
+		process.exit(${outcome==="component fails"?1:0})`);
+	const release=`import {readFileSync} from "node:fs"; if(readFileSync("unit/result","utf8")!=="ok" || readFileSync("operator","utf8")!=="keep")process.exit(1);`;
+	put(f.root,goal,release+(outcome==="goal fails" ? 'if(process.argv[2]!=="--complete")process.exit(2);' : ""));
+	git(f.root,"add",".");git(f.root,"commit","-qm","Operator changes acceptance and product together");
+	const revision=git(f.root,"rev-parse","main"), args={run,kind:"target",revision,from:f.tip,files:changed,checkpoint:prior.check,goal:old.goal.check,acceptance:"Check the maintained output with the new component and final goal."};
+	owner.turn("owner"); await owner.flush();
+	assert.equal(owner.inspect({run},"owner").release?.reason,"contract-changed");
+	const held=read(), attempts=[...f.checks];
+	await assert.rejects(owner.operation("repin",{...args,files:[goal]},"owner"),/complete.*diff/i);
+	await assert.rejects(owner.operation("repin",args,"worker-1"),/owner/i);
+	await assert.rejects(f.runtime(f.root,{confirm:async()=>false}).operation("repin",args,"owner"),/not approved/i);
+	assert.deepEqual(read(),held); assert.deepEqual(f.checks,attempts);
+	const migrated=f.runtime(f.root,{confirm:async prompt=>{
+		for (const item of [f.revision,prior.check,old.goal?.check,revision,...changed]) assert.ok(item && prompt.includes(item));
+		return true;
+	}});
+	await migrated.operation("repin",args,"owner");
+	const after=read(), fresh=after.effects.slice(held.effects.length), p=fresh.find(e=>e.kind==="product");
+	assert.deepEqual(after.effects.slice(0,held.effects.length),held.effects);
+	assert.equal(git(f.root,"rev-parse","main"),revision); assert.deepEqual(after.nodes.unit,held.nodes.unit);
+	assert.ok(p?.commit && p.receipt); assert.equal(p.evaluatorRevision,revision);
+	assert.equal(git(f.root,"show",`${p.commit}:operator`),"keep"); assert.equal(git(f.root,"show",`${p.commit}:unit/result`),"ok");
+	assert.equal(git(f.root,"rev-parse",`${p.commit}^`),revision);
+	const final=migrated.inspect({run,detail:"proof"},"owner");
+	if (outcome==="component fails") {
+		assert.notEqual(p.receipt.exit,0); assert.match(p.receipt.output,/unit/); assert.ok(!fresh.some(e=>e.kind==="goal"));
+		assert.deepEqual(p.receipt.components,{unit:{check:component,exit:1}});
+	} else {
+		assert.equal(p.receipt.exit,0); assert.equal(after.goal?.commit,p.commit);
+		assert.equal(final.goal?.receipt?.exit,outcome==="pass"?0:2); assert.equal(final.goal?.pin,revision);
+	}
+	if (outcome==="pass") {
+		assert.equal(final.qualified,p.commit); assert.equal(final.qualification?.contract.commit,revision);
+		assert.equal(final.qualification?.receipts.product.evaluatorRevision,revision);
+		assert.deepEqual(final.qualification?.receipts.product.components,{unit:{check:component,exit:0}});
+		assert.equal(final.qualification?.contract.activation,f.tip);
+		const corrupt=structuredClone(after), bad=corrupt.effects.find(e=>e.id===p.id)?.receipt?.components;
+		assert.ok(bad); bad.unit.check=goal; assert.throws(()=>decode(corrupt),/lineage|dispatch/);
+	} else assert.equal(final.qualification,null);
+	if (outcome==="goal fails") {
+		// Correct the default entrypoint off-target, retaining every full-release assertion.
+		const side=path.join(path.dirname(f.root),"full-goal");
+		git(f.root,"worktree","add","-q","--detach",side,revision);
+		put(side,goal,release);git(side,"commit","-qam","Run the full goal by default");
+		const pin=git(side,"rev-parse","HEAD"), checks=[...f.checks];
+		await owner.operation("repin",{run,from:revision,revision:pin,files:[goal]},"owner");
+		const proof=owner.inspect({run,detail:"proof"},"owner").qualification;assert.ok(proof);
+		assert.equal(proof.commit,p.commit);assert.equal(proof.receipts.goal.evaluatorRevision,pin);
+		assert.deepEqual(proof.receipts.product.components,p.receipt.components);
+		assert.deepEqual(f.checks.slice(checks.length).map(c=>c.split(" at ")[0]),["Check final goal"]);
+		const bundle=path.join(path.dirname(f.root),"adopted.bundle");
+		execFileSync(process.execPath,[fileURLToPath(new URL("../../../skills/foundry/scripts/qualification.mjs",import.meta.url)),"pack",bundle],
+			{cwd:f.root,input:JSON.stringify(proof)});
+		const heads=git(f.root,"bundle","list-heads",bundle);
+		for (const id of [f.tip,revision,pin,p.commit]) assert.ok(heads.includes(`refs/foundry/objects/${id}`));
+		assert.equal(git(f.root,"rev-parse","main"),revision);
+	}
+});
+
+for (const exit of [2,1]) test(`target adoption retains an unissued original repair without replay / signed exit ${exit}`,async t=>{
+	const charter=".foundry/spec.md", ids=["core","extra","sample"];
+	/** @type {typeof factory} */
+	const build=process.env.FOUNDRY_PRIOR_FIXTURE ? (await import(process.env.FOUNDRY_PRIOR_FIXTURE)).factory : factory;
+	const f=build(t,run,source,{[source]:JSON.stringify({version:2,id:run,target:"refs/heads/main",direction:"Produce both catalog files.",
+		productCheck:product,goalCheck:goal,limits:{repairs:1},squads:[{id:"catalog",areas:ids,charter,checks:[component]}]}),
+		".foundry/sample/journey.md":"Open the complete catalog.",[charter]:"Produce the catalog files.","sample/existing":"original tree",
+		[component]:`if (process.env.FOUNDRY_GRAIN==="sample") {console.log("Observation did not complete");process.exit(${exit});}`,
+		[product]:"",[goal]:`import {existsSync} from "node:fs"; if(!existsSync("core/value"))process.exit(1);if(!existsSync("extra/value"))process.exit(2);`});
+	await f.start(); await f.owner.operation("configure",{run,revision:0,checkpointReviews:false},"owner");
+	await f.scouts[0].report({outcome:"regenerate",reason:"Produce both files and observe the sample.",evidence:[charter],
+		grains:ids.map(id=>({id,directory:id,task:`Produce ${id}.`,check:component,needs:[]}))});
+	const db=openDatabase(f.root);t.after(()=>db.close());
+	const read=()=>db.read(run) ?? assert.fail("missing run");
+	async function submit(/** @type {string} */ id) {
+		const w=f.workers.get(read().nodes[id].worker ?? ""); assert.ok(w);
+		put(w.cwd,`${id}/value`,id);
+		const issuer=f.runtime(w.cwd);
+		if(id==="sample") await issuer.operation("preview",{run,token:w.token},w.id);
+		await issuer.operation("submit",{run,token:w.token},w.id);
+	}
+	await submit("core");
+	const checkpoint=read().products.at(-1), assessed=read().goal?.check; assert.ok(checkpoint && assessed);
+	put(f.root,"operator","keep");put(f.root,charter,"Maintain both files and report unavailable observations.");
+	git(f.root,"add",".");git(f.root,"commit","-qm","Mixed operator target");
+	await submit("extra"); await submit("sample");
+	const before=read(), node=before.nodes.sample, original=before.effects.find(e=>e.id===node.check);
+	assert.ok(original?.kind==="component" && original.receipt?.exit===exit && node.candidate===original.commit);
+	assert.deepEqual([before.nodes.extra.state,node.state,node.repairs],["published","waiting",0]);
+	const args={run,kind:"target",from:f.tip,revision:git(f.root,"rev-parse","main"),files:[charter],checkpoint:checkpoint.check,goal:assessed,acceptance:"Maintain the catalog. Keep the original release check."};
+	const checks=[...f.checks], messages=[...f.inbox], oldReceipt=original.receipt;
+	const migrated=f.runtime(f.root,{confirm:async()=>false},createRuntime);
+	if(exit!==2) {
+		await assert.rejects(migrated.operation("repin",args,"owner"),/current assignments/);
+		assert.deepEqual(read(),before);return;
+	}
+	if (process.env.FOUNDRY_PRIOR_FIXTURE) await assert.rejects(f.owner.operation("repin",args,"owner"),/current assignments/);
+	await assert.rejects(migrated.operation("repin",args,"owner"),/not approved/i);
+	assert.deepEqual(read(),before);
+	const owner=f.runtime(f.root,{confirm:async prompt=>{
+		assert.ok(prompt.includes(original.id) && original.commit && prompt.includes(original.commit));
+		return true;
+	}},createRuntime);
+	await owner.operation("repin",args,"owner");
+	const after=read(), final=owner.inspect({run,detail:"proof"},"owner").qualification;assert.ok(final);
+	for (const e of before.effects) {
+		const kept=after.effects.find(x=>x.id===e.id);
+		if (e.kind==="writer" && e.grain==="extra") assert.partialDeepStrictEqual(kept,e); // Fresh integration finishes this writer.
+		else assert.deepEqual(kept,e);
+	}
+	assert.deepEqual(after.nodes.sample,{...node,state:"blocked",reason:after.nodes.sample.reason});
+	assert.match(after.nodes.sample.reason ?? "",/unavailable/i);
+	assert.deepEqual(after.effects.find(e=>e.id===original.id)?.receipt,oldReceipt);
+	assert.deepEqual(f.inbox,messages);
+	assert.deepEqual(f.checks.slice(checks.length).map(s=>s.split(" at ")[0]),["Check joined product","Check final goal"]);
+	assert.deepEqual(Object.keys(final.receipts.product.components ?? {}).sort(),["core","extra"]);
+	assert.equal(git(f.root,"show",`${node.candidate}:sample/value`),"sample");
+	assert.equal(git(f.root,"ls-tree",final.commit,"sample"),git(f.root,"ls-tree",checkpoint.commit,"sample"));
+	assert.equal(git(f.root,"show",`${final.commit}:sample/existing`),"original tree");
+	assert.equal(git(f.root,"show",`${final.commit}:extra/value`),"extra");
+	assert.equal(git(f.root,"show",`${final.commit}:operator`),"keep");
+});
+
+test("target approval binds the live tip and cannot upgrade a directories-only checker",async t=>{
+	const f=await checkpoint(t);
+	const charter=".foundry/spec.md";put(f.root,charter,"Maintain the original output.");git(f.root,"commit","-qam","Prospective charter");
+	const args={run,kind:"target",from:f.tip,revision:git(f.root,"rev-parse","main"),files:[charter],checkpoint:f.prior.check,
+		goal:f.before.goalChecks?.at(-1)?.id,acceptance:"Retain the release criteria and adopt the new maintenance charter."};
+	const attempts=[...f.checks], auto=f.runtime(f.root,{autoConfirm:async()=>true,confirm:undefined});
+	await assert.rejects(auto.operation("repin",args,"owner"),/approval form is unavailable/i);
+	const race=f.runtime(f.root,{confirm:async()=>{put(f.root,"operator","unrelated");git(f.root,"add","operator");git(f.root,"commit","-qm","Moved again");return true;}});
+	await assert.rejects(race.operation("repin",args,"owner"),/changed during approval/i);
+	assert.deepEqual(f.checks,attempts);
+	const owner=f.runtime(f.root,{confirm:async()=>true});
+	await owner.operation("repin",{...args,revision:git(f.root,"rev-parse","main")},"owner");
+	const after=owner.inspect({run,detail:"proof"},"owner");
+	assert.equal(after.productOwnership,"directories");
+});
+
+test("the target manifest cannot silently drop a previously approved checker or overwrite a published directory",async t=>{
+	const f=await checkpoint(t), owner=f.runtime(f.root,{confirm:async()=>true});
+	await owner.operation("repin",f.args,"owner");
+	const prior=owner.inspect({run,detail:"proof"},"owner");
+	const charter=".foundry/spec.md";put(f.root,charter,"Prospective charter.");git(f.root,"commit","-qam","Amend charter only");
+	const args={run,kind:"target",from:f.tip,revision:git(f.root,"rev-parse","main"),checkpoint:prior.products?.at(-1)?.check,goal:prior.goalChecks?.at(-1)?.id,
+		acceptance:"Keep the new charter and restore the legacy product checker.",files:[charter]};
+	const checks=[...f.checks];
+	await assert.rejects(owner.operation("repin",args,"owner"),/complete.*diff/i);
+	put(f.root,"unit/extra","operator-owned");git(f.root,"add","unit");git(f.root,"commit","-qm","Edit inside included directory");
+	await assert.rejects(owner.operation("repin",{...args,revision:git(f.root,"rev-parse","main"),files:[charter,product]},"owner"),/owned output|Concurrent modification/);
+	assert.deepEqual(f.checks,checks);assert.equal(owner.inspect({run},"owner").productPin,f.revision);
+});
+
+test("mixed target reconciles only listed unowned file conflicts on the original checked run",async t=>{
+	const charter=".foundry/spec.md", file="package/guide.txt", owned="package/core/value", flag="new-target";
+	const base="Header\n\nObserve the original item.\n\nFooter\n", checkpoint=base+"Checkpoint notes.\n";
+	const target=base.replace("original","selected"), merged=checkpoint.replace("original","selected");
+	const ready=base+"Ready\n";
+	const check=`import {existsSync,readFileSync} from "node:fs"; if(existsSync("${flag}") &&
+		(readFileSync("${file}","utf8")!==${JSON.stringify(merged)} || readFileSync("${owned}","utf8")!==${JSON.stringify(ready)})) process.exit(1);`;
+	/** @type {typeof factory} */
+	const build=process.env.FOUNDRY_PRIOR_FIXTURE ? (await import(process.env.FOUNDRY_PRIOR_FIXTURE)).factory : factory;
+	const f=build(t,run,source,{[source]:JSON.stringify({version:2,id:run,target:"refs/heads/main",direction:"Publish a checked package.",
+		productCheck:product,goalCheck:goal,squads:[{id:"package",areas:["package"],charter,checks:[component]}]}),
+		".foundry/sample/journey.md":"Read the completed package.",[charter]:"Produce the package.",[file]:base,[owned]:base,
+		[component]:check,[product]:check,[goal]:check+`if(!existsSync("${flag}"))process.exit(readFileSync("${owned}","utf8")===${JSON.stringify(ready)}?2:1);`});
+	await f.start(); await f.owner.operation("configure",{run,revision:0,checkpointReviews:false},"owner");
+	for(const [id,directory] of [["broad","package"],["narrow","package/core"]]) {
+		const scout=f.scouts.at(-1);assert.ok(scout);
+		await scout.report({outcome:"regenerate",reason:"Complete the package.",evidence:[charter],grains:[{id,directory,task:`Produce ${id}.`,check:component,needs:[]}]});
+		const w=f.workers.get((await f.status()).nodes.find(n=>n.grain===id)?.worker ?? "");assert.ok(w);
+		if(id==="broad") put(w.cwd,file,checkpoint);
+		put(w.cwd,owned,id==="broad"?"interim":ready);
+		await f.runtime(w.cwd).operation("submit",{run,token:w.token},w.id);await f.settle();
+	}
+	const db=openDatabase(f.root);t.after(()=>db.close());const read=()=>db.read(run) ?? assert.fail();
+	const before=read(), last=before.products.at(-1);assert.ok(last && before.goal);
+	assert.deepEqual(Object.keys(last.outputs),["narrow"]);assert.equal(before.effects.find(e=>e.id===before.goal?.check)?.receipt?.exit,2);
+	put(f.root,file,target);put(f.root,flag,"present");put(f.root,charter,"Preserve both contributions.");
+	git(f.root,"add",".");git(f.root,"commit","-qm","Change target paragraph and charter");
+	const revision=git(f.root,"rev-parse","HEAD"), args={run,kind:"target",from:f.tip,revision,files:[charter],checkpoint:last.check,goal:before.goal.check,acceptance:"Keep the checked package and adopt the target paragraph."};
+	const blob=(/** @type {string} */ ref,/** @type {string} */ p)=>git(f.root,"rev-parse",`${ref}:${p}`);
+	const hash=(/** @type {string} */ bytes)=>execFileSync("git",["-C",f.root,"hash-object","--stdin"],{input:bytes,encoding:"utf8"}).trim();
+	const row={file,mode:"100644",base:blob(f.tip,file),checkpoint:blob(last.commit,file),target:blob(revision,file),result:hash(merged)};
+	const attempts=[...f.checks];
+	await assert.rejects(f.owner.operation("repin",args,"owner"),/Concurrent modification since checkpoint/);
+	if(process.env.FOUNDRY_PRIOR_FIXTURE) await assert.rejects(f.owner.operation("repin",{...args,resolutions:[row]},"owner"),/Unsupported field: resolutions/);
+	let prompts=0;
+	const owner=f.runtime(f.root,{confirm:async prompt=>{
+		prompts++; for(const field of Object.values(row)) assert.ok(prompt.includes(field),field);
+		assert.ok(prompt.includes("Observe the original item.") && prompt.includes("Observe the selected item."));
+		return prompts>1;
+	}},createRuntime);
+	for(const bad of [{...row,checkpoint:row.target},{...row,result:hash("invented bytes")},{...row,mode:"100755"}])
+		await assert.rejects(owner.operation("repin",{...args,resolutions:[bad]},"owner"),/resolution/i);
+	assert.equal(prompts,0);
+	// A second conflicting path needs its own proof, and approval cannot waive an included grant.
+	put(f.root,owned,target);git(f.root,"commit","-qam","Competing edit to a current output");
+	const changed=git(f.root,"rev-parse","HEAD");
+	await assert.rejects(owner.operation("repin",{...args,revision:changed,resolutions:[row]},"owner"),/package\/core\/value/);
+	const covered={...row,file:owned,checkpoint:hash(ready),result:hash(target+"Ready\n")};
+	await assert.rejects(owner.operation("repin",{...args,revision:changed,resolutions:[row,covered]},"owner"),/owned output narrow/);
+	put(f.root,owned,base);git(f.root,"commit","-qam","Withdraw only the competing fixture edit");
+	const current=git(f.root,"rev-parse","HEAD"), request={...args,revision:current,resolutions:[row]};
+	await assert.rejects(owner.operation("repin",request,"owner"),/not approved/i);
+	assert.deepEqual(read(),before);assert.deepEqual(f.checks,attempts);
+	await owner.operation("repin",request,"owner");
+	const after=read(), proof=owner.inspect({run,detail:"proof"},"owner").qualification;assert.ok(proof);
+	assert.deepEqual(after.effects.slice(0,before.effects.length),before.effects);
+	assert.equal(git(f.root,"rev-parse","main"),current);assert.equal(blob(proof.commit,file),row.result);
+	assert.equal(git(f.root,"rev-parse",`${proof.commit}^`),current);assert.deepEqual(proof.outputs.map(o=>o.id),["narrow"]);
+	assert.deepEqual(proof.receipts.product.components,{narrow:{check:component,exit:0}});
+	assert.equal(proof.receipts.goal.commit,proof.commit);assert.deepEqual(f.checks.slice(attempts.length).map(c=>c.split(" at ")[0]),["Check joined product","Check final goal"]);
+	assert.deepEqual(after.productRepins?.at(-1)?.resolutions,[row]);
+	const observed=after.effects.find(e=>e.id===after.productRepins?.at(-1)?.recheck);assert.ok(observed?.kind==="product" && observed.receipt?.resolutionDigest);
+	db.verifySigned(run,observed);
+	const forged=structuredClone(after), list=forged.productRepins?.at(-1)?.resolutions;assert.ok(list);
+	list[0].result=hash("different");assert.throws(()=>decode(forged),{code:"corrupt_run"});
+});
+
+test("a bound writer can correct its frozen task, publish, and join the reviewed mixed target",async t=>{
+	const f=await checkpoint(t), owner=f.runtime(f.root,{confirm:async()=>true});
+	await owner.operation("repin",f.args,"owner");
+	await owner.operation("configure",{run,revision:1,checkpointReviews:true},"owner");
+	const previous=owner.inspect({run,detail:"proof"},"owner"), checked=previous.products?.at(-1), receipt=previous.goalChecks?.at(-1)?.id;
+	assert.ok(receipt && checked);
+	put(f.root,"offer","Connect the view");const [offer]=(await owner.operation("publish",{run,file:"offer",to:[primary]},"owner")).artifacts;
+	await owner.operation("iterate",{run,directory:primary,files:[exact],receipt,source:{commit:checked.commit,file:exact,excerpt:"disconnected"},blob:offer.blob,question:"Connect the view."},"owner");
+	await f.settle(); const review=f.scouts.at(-1); assert.ok(review);
+	const clause=" Leave the flag disconnected.";
+	await review.report({outcome:"regenerate",reason:"Wire the view.",evidence:[exact],grains:[{id:"connection",task:"Connect the view."+clause,directory:{primary,files:[exact]},check:component,needs:[]}]});
+	const n=owner.inspect({run},"owner").nodes.find(n=>n.grain==="connection"), w=f.workers.get(n?.worker ?? "");assert.ok(w);
+	put(w.cwd,`${primary}/result`,"existing draft");
+	const charter=".foundry/spec.md"; put(f.root,charter,"Check both outputs.");put(f.root,product,git(f.side,"show",`HEAD:${product}`));
+	git(f.root,"commit","-qam","Keep operator contract");const revision=git(f.root,"rev-parse","HEAD");
+	const args={run,kind:"target",from:f.tip,revision,files:[charter,product],goal:receipt,checkpoint:checked.check,acceptance:"Use the target charter for new work; keep the full goal."};
+	await assert.rejects(owner.operation("repin",args,"owner"),/current assignments/);
+	await owner.operation("correct",{run,grain:"connection",worker:w.id,review:review.id,clause,file:exact,excerpt:"disconnected"},"owner");
+	const writer=f.runtime(w.cwd);assert.equal(writer.inspect({run},w.id).nodes[0].task,"Connect the view.");
+	put(w.cwd,exact,"connected");await writer.operation("submit",{run,token:w.token},w.id);
+	assert.equal(owner.inspect({run},"owner").nodes.find(n=>n.grain==="connection")?.state,"published");
+	await owner.operation("repin",args,"owner");
+	const proof=owner.inspect({run,detail:"proof"},"owner").qualification; assert.ok(proof);
+	assert.equal(git(f.root,"show",`${proof.commit}:${primary}/result`),"existing draft");
+	assert.deepEqual(proof.outputs.map(o=>o.id).sort(),["connection","unit"]);assert.equal(git(f.root,"rev-parse","main"),revision);
+});
+
 test("a settled legacy checkpoint recovers on the same bytes only after a new product and goal receipt",async t=>{
 	const f = await checkpoint(t,true);
 	const db = openDatabase(f.root); t.after(()=>db.close());

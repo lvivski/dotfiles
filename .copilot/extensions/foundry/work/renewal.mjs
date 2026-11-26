@@ -1,3 +1,4 @@
+import { chart, select, to } from "./chart.mjs";
 import { currentEvaluation, goalReceipt } from "./evidence.mjs";
 import { checkpointCurrent } from "./facts.mjs";
 import { availableReservations } from "./capacity.mjs";
@@ -6,10 +7,42 @@ import { partitionConflict } from "./partition.mjs";
 import { consumersOf, liveNeeds } from "./plan.mjs";
 import { changedFiles, contractPaths, outside } from "./product.mjs";
 import { comparison, reviews, staleReviewReason } from "./reviews.mjs";
-import { comparisonScope, covers, roots, sameScope } from "./values.mjs";
+import { FoundryError, comparisonScope, covers, roots, sameScope } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @typedef {import("./model.js").Review} Review */
+
+const consider=[{...to("evidence","held","Keep the saved report on hold because its inputs or ownership conflict."),when:["conflict"]},
+	{...to("evidence","approved","Use the original report after its inputs and current permissions have been revalidated."),when:["permitted"]},
+	to("evidence","needed","Keep the eligible report until the issuing session has permission to admit it.")];
+export const renewal=chart("renewal","initial",{
+	initial:consider,held:consider,needed:consider,approved:[...consider,to("invalid","closed","Retain the admission error rather than rerunning or silently changing the report.")],
+	// Older readers may already have presented an approval. Silence is not permission to replace it.
+	presenting:[],closed:[],
+},{description:"Determines whether an existing scout report can be admitted after a checkpoint changes.",states:{
+	initial:"The saved report has not been assessed for renewal.",held:"An input or ownership conflict prevents reuse of the report.",
+	needed:"The evidence supports renewal, but current permission is missing.",approved:"The report may be admitted on the reviewed checkpoint and goal.",
+	presenting:"A previous reader already presented a decision; it must not be silently replaced.",
+	closed:"The renewed proposal failed admission. Preserve its diagnostic.",
+}});
+
+/** @param {string} cwd @param {Run} run @param {Review} r @param {string} target @param {boolean} permitted
+ * @param {(report:NonNullable<Review["observation"]>)=>void} admit */
+export function renew(cwd,run,r,target,permitted,admit) {
+	const state=r.renewal?.state ?? "initial";
+	if (!r.observation || !renewal.states[state].length) return;
+	const basis=renewalBasis(cwd,run,r,target);
+	if (!basis) return;
+	const {checkpoint,goal,reason}=basis;
+	const next=select(renewal,state,"evidence",{conflict:!!reason,permitted}).target;
+	r.renewal={checkpoint,goal,state:next,...(reason && {reason})};
+	if (next!=="approved") return;
+	try {admit(r.observation);}
+	catch (error) {
+		if (!(error instanceof FoundryError)) throw error;
+		r.renewal={checkpoint,goal,state:select(renewal,next,"invalid").target,reason:error.message};
+	}
+}
 
 /** A checkpoint can move without invalidating the report. Never infer that a
  * whole-directory repair may replace an owner (or transfer only some files).

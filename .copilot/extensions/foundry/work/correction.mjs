@@ -1,8 +1,10 @@
 import { isUtf8 } from "node:buffer";
 import { randomUUID } from "node:crypto";
+import { assign } from "./assignment.mjs";
 import { correctionBasis, revisedTask } from "./amendment.mjs";
 import { availableReservations } from "./capacity.mjs";
 import { generationOf, goalReceipt, missingInput } from "./evidence.mjs";
+import { frozenCheckpoint } from "./goal.mjs";
 import { verifyRepairInputs } from "./graph.mjs";
 import { admitted, reserveNotice } from "./native.mjs";
 import { originalAttempt, stalePins, writerInputs } from "./plan.mjs";
@@ -32,10 +34,11 @@ export function prepareCorrection(cwd, run, actor, a) {
 			r.predecessor && task.trim()===r.predecessor.grain.task?.trim())
 			fail("invalid_correction","Need a unique clause from the unaltered scoped comparison task; cannot remove the entire task");
 		const target = commitAt(cwd,current.policy.target);
-		if (target !== current.goal?.target || current.blocker || current.conflict ||
+		const frozen=target!==current.goal?.target && frozenCheckpoint(cwd,current,target);
+		if (!frozen && (target !== current.goal?.target || current.blocker || current.conflict) ||
 			current.effects.some(e => (e.issuer === actor || e.issuer === worker) && e.permissionHold))
 			fail("dispatch_held","Resolve the target change, conflict or permission hold before correcting this assignment");
-		verifyContracts(cwd,current.policy,target);
+		verifyContracts(cwd,current.policy,frozen ? frozen.target : target);
 		if (basis.ordinary) {
 			const launch=originalAttempt(current,n);
 			if (!launch || launch.production || launch.observer || launch.restoration || launch.reuse || launch.finished ||
@@ -48,7 +51,9 @@ export function prepareCorrection(cwd, run, actor, a) {
 				fail("stale_assignment","Wait for a settled unmet or unavailable goal on the current product");
 			if (n.repairs>=current.policy.repairs || !availableReservations(current))
 				fail("limit","No authorized repair, assignment or worker slot remains");
-			const required=writerInputs(current.nodes,{...n,state:"waiting"});
+		}
+		if (stopped || frozen) {
+			const base=current.products.at(-1)?.commit ?? target, required=writerInputs(current.nodes,{...n,state:"waiting"});
 			if (!required) fail("stale_assignment","The original prerequisites are no longer available");
 			verifyRepairInputs(cwd,current,n,required,base);
 		}
@@ -58,7 +63,7 @@ export function prepareCorrection(cwd, run, actor, a) {
 		const bytes = committedFile(cwd,r.base,file);
 		if (bytes.includes(0) || !isUtf8(bytes) || !bytes.toString("utf8").includes(excerpt))
 			fail("invalid_correction","The excerpt must appear verbatim in the selected UTF-8 file at the reviewed product");
-		return { n, r, target, task, correction:{ worker, clause, file, excerpt, ...basis },
+		return { n, r, target, task, ...(frozen && {frozen:[frozen.check,current.goal?.check]}), correction:{ worker, clause, file, excerpt, ...basis },
 			...(stopped && {goal:current.goal?.check,checkpoint:current.products.at(-1)?.check}) };
 	}
 	const before = select(run), identity = digest(before);
@@ -75,7 +80,7 @@ export function prepareCorrection(cwd, run, actor, a) {
 			if (fresh.correction.ordinary && fresh.goal) {
 				const n=fresh.n, token=randomUUID();
 				fresh.r.correction={...fresh.correction,resumed:{prior:structuredClone(n),token}};
-				n.state="writing"; n.repairs++; n.token=token;
+				assign(n,"staff"); n.repairs++; n.token=token;
 				delete n.reason; delete n.stop;
 				reserveNotice(live,actor,token,"repair",`One clause was removed. Read your Foundry status, continue your existing work in ${scopeLabel(n.grain.directory)} and submit normally. Your scope, inputs and evaluator are unchanged. Corrected task: ${fresh.task}`,n);
 				if (live.goal) delete live.goal.stall;

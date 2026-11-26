@@ -161,7 +161,7 @@ export function partitionConflict(run,outputs,target) {
 		if (pair && !matchesPair(run,pair,target))
 			return `The approved pair for ${id} no longer matches the target, checkpoint, goal or retaining component.`;
 		if (receiver?.state==="blocked" && check && check.kind==="component" && check.observer?.previous && checkReceipt(check)?.exit===1)
-			return `Final diagnostic ${check.id} failed. Release is held. The owner may request foundry_remediate for exact production and regression files in ${receiver.grain.id} or ${retainer?.grain.id}; a local observation is not a passing receipt.`;
+			return `Final diagnostic ${check.id} failed. Release is held. The owner may request the production form of foundry_grant for exact production and regression files in ${receiver.grain.id} or ${retainer?.grain.id}; a local observation is not a passing receipt.`;
 		if (receiver && retainer && replacements.length===1 && [receiver,retainer].every(n=>n.candidate &&
 			["published","qualified"].includes(n.state) && (!outputs || outputs[n.grain.id]===n.candidate))) continue;
 		return receiver ? `Ownership restoration of ${scope.primary} requires fresh included evidence from ${receiver.grain.id} and its paired owner ${receiver.restoration?.retainer}.` :

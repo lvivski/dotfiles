@@ -1,4 +1,5 @@
 import { digest } from "./values.mjs";
+import { assign } from "./assignment.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @param {Run} run */
@@ -13,7 +14,7 @@ export const currentEvaluation = (run,e) => !!e && e.evaluatorRevision === run.r
 const missingPrefix = "Writer reports missing input: ";
 /** @param {import("./model.js").Node} n @param {string} detail */
 export function stopForInput(n, detail) {
-	n.state = "blocked";
+	assign(n,"stop");
 	n.stop = { kind: "writer-missing-input", detail };
 	n.reason = missingPrefix + detail;
 }
@@ -186,6 +187,7 @@ export function qualifiedProduct(run) {
 export function passingReceipt(e, kind, commit, check, grain) {
 	if (e?.kind === kind && e.grain === grain && e.commit === commit && e.check === check && checkReceipt(e)?.exit === 0)
 		return { commit, check, exit: 0, ...(e.evaluatorRevision ? { evaluatorRevision: e.evaluatorRevision } : {}),
+			...(kind==="product" && e.receipt?.components && {components:e.receipt.components}),
 			...(e.productEvaluatorRevision ? { productEvaluatorRevision:e.productEvaluatorRevision } : {}) };
 }
 

@@ -2,6 +2,7 @@ import { checkReceipt } from "./evidence.mjs";
 import { expired } from "./native.mjs";
 import { awaitingReply } from "./reservation.mjs";
 import { timelyChecks } from "./goal.mjs";
+import { setTimeout as sleep } from "node:timers/promises";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @param {()=>void} tick */
@@ -11,12 +12,24 @@ export function receiptClock(tick) {
 }
 
 /** @param {unknown} error */
-function contention(error) {
+export function contention(error) {
 	if (!(error instanceof Error) || !("code" in error)) return false;
 	if (error.code === "EINTR" || error.code === "EAGAIN" || error.code === "EBUSY") return true;
 	// node:sqlite exposes the extended result code. Low byte: SQLITE_BUSY or SQLITE_LOCKED.
 	return error.code === "ERR_SQLITE_ERROR" && "errcode" in error && typeof error.errcode === "number" &&
 		[5, 6].includes(error.errcode & 0xff);
+}
+
+/** An already-returned result can outlive a busy transaction, not its issuer.
+ * The callback must recheck the original identity on every attempt and perform no native action.
+ * @template T @param {()=>T} write @param {AbortSignal} signal @param {(e:unknown)=>void} log */
+export async function persist(write,signal,log){
+	for(let delay=1000;!signal.aborted;delay=Math.min(15_000,delay*2)){
+		try{return write();}
+		catch(error){if(!contention(error))throw error;if(delay===1000)log(error);}
+		try{await sleep(delay,undefined,{signal});}
+		catch(error){if(!signal.aborted)throw error;}
+	}
 }
 
 /** A changed ledger is a hint, not a verdict. Observe only already-issued checks;

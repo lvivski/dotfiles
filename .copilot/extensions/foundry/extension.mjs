@@ -72,8 +72,8 @@ const runtime = createRuntime(process.cwd(), {
 session = await joinSession({
 	customAgents: [scoutAgent, researchAgent],
 	workflows: [defineWorkflow(scoutDefinition(() => runtime))],
-	tools: buildTools(runtime, () => session.sessionId),
-	canvases: [foundryBoard(runtime.readBoard, runtime.defaultMapRun)],
+	tools: buildTools(runtime, () => session.sessionId, permissions.snapshot),
+	canvases: [foundryBoard(runtime.readBoard, runtime.defaultMapRun, runtime.readSpecification)],
 	hooks: {
 		onSessionStart(input, ctx) {
 			if (!fromHelper(input, ctx.sessionId)) runtime.sessionStart(ctx.sessionId, input.workingDirectory, input.initialPrompt);
@@ -111,4 +111,8 @@ session.on("system.notification", event => {
 		runtime.turn(session.sessionId, kind.shellId); // A matching shell wakes the ledger, not proof its check passed.
 });
 session.on("permission.completed", event => runtime.refusal(event, session.sessionId));
-session.on("tool.execution_complete", event => runtime.refusal(event, session.sessionId));
+session.on("tool.execution_complete", event => {
+	runtime.refusal(event,session.sessionId);
+	if (event.data.success && !event.agentId && !("parentToolCallId" in event.data && event.data.parentToolCallId))
+		runtime.completion(event.data.toolCallId,session.sessionId);
+});

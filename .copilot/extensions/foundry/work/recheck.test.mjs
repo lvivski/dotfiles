@@ -255,6 +255,22 @@ for (const phase of ["component","product","goal"]) test(`a missing target after
 	assert.deepEqual(f.checks.map(kind),["goal","component","product","goal"]);
 });
 
+test("a restored target wakes the interrupted original release without another user turn",async t=>{
+	const f=factory(t,run,source,files("")); git(f.root,"branch","target",f.tip);
+	/** @type {(()=>void)|undefined} */ let tick;
+	const owner=f.runtime(f.root,{watchRecovery:fn=>{tick=fn;return ()=>{tick=undefined;};},
+		execute:async(...args)=>{
+			const result=await f.execute(...args);
+			if (kind(args[1].description)==="goal") git(f.root,"branch","-d","target");
+			return result;
+		}});
+	await f.start(owner); assert.equal((await f.status()).qualified,null);
+	assert.ok(tick,"wait for the missing reference rather than a chat turn");
+	git(f.root,"branch","target",f.tip);
+	tick(); await owner.flush();
+	assert.equal((await f.status()).qualified,f.tip); assert.deepEqual(f.checks.map(kind),["goal","product"]);
+});
+
 test("a frozen goal pass over an absent target cannot qualify its restored, moved ref",async t=>{
 	const f=priorFactory(t,run,source,files(itemGoal));
 	git(f.root,"branch","target",f.tip); await f.start();

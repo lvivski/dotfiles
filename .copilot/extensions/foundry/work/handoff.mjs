@@ -29,7 +29,8 @@ export function qualification(run) {
 	}
 	return { format: last.ownership ? "foundry-qualification/v4" : product.evaluatorRevision ? "foundry-qualification/v3" : goal.evaluatorRevision ? "foundry-qualification/v2" : "foundry-qualification/v1", direction: policy.direction,
 		...(last.ownership && {ownership:last.ownership}),
-		contract: { version: policy.squads.some(s => "areas" in s) ? 2 : 1, path: policy.source, commit: policy.base },
+		contract: { version: policy.squads.some(s => "areas" in s) ? 2 : 1, path: policy.source, commit: policy.contractTarget ?? policy.base,
+			...(policy.contractTarget && {activation:policy.base}) },
 		target: { ref: policy.target, commit: last.target }, commit: last.commit, qualifiedAt: last.qualifiedAt,
 		receipts: { product, goal }, outputs };
 }

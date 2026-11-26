@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { accepts, survey } from "./dispatch.mjs";
 import { answeredLead, currentFailures, delivered, repairDirectory } from "./blockers.mjs";
 import { evidenceDecision, priorObservations, readWake } from "./cursor.mjs";
 import { workerLimit } from "./policy.mjs";
@@ -11,6 +12,40 @@ import { comparisonScope, digest, fail, referenceRepo } from "./values.mjs";
 /** @typedef {import("./model.js").Review} Review */
 /** @param {Run} run */
 export const reviews = run => run.effects.filter(e => e.kind === "scout");
+
+/** Drain the dependency frontier of saved reports. Only an actually admitted producer
+ * releases a waiter. A cycle of missing names cannot bootstrap itself into the work graph.
+ * @param {Run} run @param {Iterable<Review>} latest */
+export function* inputArrivals(run,latest) {
+	/** @typedef {{review:Review,missing:Set<string>}} Entry */
+	/** @type {Map<string,Entry[]>} */ const waiters=new Map();
+	/** @type {Entry[]} */ const ready=[];
+	for (const review of latest) {
+		const obs=review.observation;
+		if (review.state!=="blocked" || !review.workflowId || !review.callId || !review.packet || obs?.outcome!=="regenerate") continue;
+		const proposed=new Set(obs.grains.map(g=>typeof g==="string"?g:g.id));
+		const external=new Set(obs.grains.flatMap(g=>typeof g==="string"?[]:g.needs).filter(id=>!proposed.has(id)));
+		if (![...external].some(id=>review.error===`Unknown required output: ${id}`) || correction(run,review)) continue;
+		const missing=new Set([...external].filter(id=>!Object.hasOwn(run.nodes,id))), entry={review,missing};
+		if (!missing.size) ready.push(entry);
+		for (const id of missing) {
+			const list=waiters.get(id);
+			if (list) list.push(entry);else waiters.set(id,[entry]);
+		}
+	}
+	for (const {review} of ready) {
+		const obs=review.observation;
+		if (!obs) continue;
+		yield review;
+		if (review.state!=="observed") continue;
+		for (const grain of obs.grains) {
+			const id=typeof grain==="string"?grain:grain.id;
+			if (!Object.hasOwn(run.nodes,id)) continue;
+			for (const next of waiters.get(id)??[]) if (next.missing.delete(id) && !next.missing.size) ready.push(next);
+			waiters.delete(id);
+		}
+	}
+}
 export const staleReaderMessage = "The installed Foundry reader changed. Reload Foundry in this session, then check the original assignment's status. Do not restart the run.";
 /** Only the bound workflow's terminal envelope, not a scout's report or an unconfirmed exception.
  * Keep the original receipt recognizable on installations that already recorded it.
@@ -27,7 +62,7 @@ function evidenceOrigin(run, review) {
 	return original;
 }
 /** @param {Review} r */
-export const reading = r => r.state === "ready" || r.state === "issued" || r.state === "uncertain" || r.state === "suspended";
+export const reading = r => accepts(r,"issue") || accepts(r,"unconfirmed");
 /** The first dialog is already identified by its unique review, including before recovery was supported.
  * @param {Review} r */
 export const presentation = r => r.decision?.status === "presenting" ? r.decision.presentation ?? r.id :
@@ -258,7 +293,7 @@ export function checkpointWake(run, past, base, version) {
 
 /** @param {Review} r @param {string} reason */
 export function blockReview(r, reason) {
-	r.state = "blocked";
+	survey(r,"block");
 	r.error = reason;
 	delete r.permissionHold;
 }

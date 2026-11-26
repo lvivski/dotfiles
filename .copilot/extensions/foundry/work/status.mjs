@@ -5,6 +5,7 @@ import { changedFrom, inconclusiveRepair, launcherFailure, missingInput, relinqu
 import { handoff, qualification } from "./handoff.mjs";
 import { metricsFacts, timingFacts } from "./metrics.mjs";
 import { scheduling, workerLimit } from "./policy.mjs";
+import { ownershipMode } from "./transfer.mjs";
 import { workspaceName } from "./workspace.mjs";
 import { canDispatch } from "./native.mjs";
 import { stalePins } from "./plan.mjs";
@@ -45,8 +46,9 @@ function ownerStatus(run, { receipts, questions }, detail) {
 		...(run.independent && {independentCheckpoint:detail==="proof" ? run.independent :
 			{checkpoint:run.independent.checkpoint,observer:run.independent.observer,product:run.independent.product,assessment:run.independent.assessment}}),
 		...(run.repins ? { evaluatorChanges: run.repins } : {}),
+		contractPin:run.policy.contractTarget ?? run.policy.base,
 		productPin:run.productRepins?.at(-1)?.revision ?? run.policy.base,
-		productOwnership:run.productRepins?.length ? run.productRepins.at(-1)?.ownership ?? "exact-files" : run.policy.ownership ?? "directories",
+		productOwnership:ownershipMode(run),
 		...(run.productRepins ? {productEvaluatorChanges:run.productRepins} : {}),
 		...(run.repins || run.productRepins || run.goal && detail === "proof" ? { goalChecks: run.effects.filter(e => e.kind === "goal").map(e => ({
 			id: e.id, commit: e.commit, evaluatorRevision: e.evaluatorRevision ?? run.policy.base, state: e.state,
@@ -79,7 +81,7 @@ export function status(run, actor, detail) {
 		blob:e.reuse.blob, checkpoint:e.reuse.checkpoint, goal:e.reuse.goal
 	}]] : []));
 	return {
-		...view.summary, contract: { commit: run.policy.base, path: run.policy.source },
+		...view.summary, contract: { commit: run.policy.base, path: run.policy.source, ...(run.policy.contractTarget && {targetPin:run.policy.contractTarget}) },
 		limit: workerLimit(run) ?? null, ...(assignments ? { assignments } : {}), deadline: run.policy.deadline,
 		...(owner ? ownerStatus(run, view, detail) : {}),
 		artifacts: (run.artifacts ?? []).filter(a => owner || a.publisher === actor || nodes.some(n => offered(a, n))).map(a => ({ ...a, extract: materialize(a) })),

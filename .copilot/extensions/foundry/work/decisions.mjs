@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { decide } from "./dialog.mjs";
 import { currentReview } from "./graph.mjs";
 import { admitted, expired } from "./native.mjs";
 import { commitAt } from "./product.mjs";
@@ -12,13 +13,14 @@ const stale = () => fail("stale_question", "This charter question or presentatio
  * their own identity and never answer (or suppress) a scout's question.
  * @param {string} cwd @param {()=>Pick<ReturnType<typeof import("./database.mjs").openDatabase>, "planAndSwap">|undefined} liveStore
  * @param {string} id @param {string} owner @param {Pick<Parameters<typeof import("./runtime.mjs").createRuntime>[1], "ask"|"permissionBlocker"|"log">} host
- * @param {()=>Promise<boolean>} executable @param {()=>Promise<void>} wake @param {Recovery} [recover] */
-export async function presentQuestions(cwd, liveStore, id, owner, host, executable, wake, recover) {
+ * @param {()=>Promise<boolean>} executable @param {()=>Promise<void>} wake
+ * @param {(write:()=>unknown)=>Promise<unknown>} recordReply @param {Recovery} [recover] */
+export async function presentQuestions(cwd, liveStore, id, owner, host, executable, wake, recordReply, recover) {
 	do {
 		const block = await host.permissionBlocker();
 		if (!host.ask || block || !await executable()) {
 			if (recover) fail("question_unavailable", block?.message ?? "The owner session cannot present a question now.");
-			return;
+			return host.ask ? "issuer-permission" : undefined;
 		}
 		const store = liveStore();
 		if (!store) return;
@@ -36,7 +38,7 @@ export async function presentQuestions(cwd, liveStore, id, owner, host, executab
 				: !r.decision) && currentReview(cwd, run, r, target));
 			if (recover && !q) stale();
 			if (!q?.observation) return;
-			q.decision = { status: "presenting", ...(next ? { presentation: next } : {}) };
+			decide(q,{ status: "presenting", ...(next ? { presentation: next } : {}) },!!recover);
 			reviewId = q.id;
 			if (target) return () => commitAt(cwd, run.policy.target) === target;
 		});
@@ -53,9 +55,8 @@ export async function presentQuestions(cwd, liveStore, id, owner, host, executab
 			host.log?.(`Foundry ${id}: ${decision.reason}`);
 		}
 		// Record a reply even in plan mode or through a pause. Only dispatch needs permission to run.
-		if (!liveStore()) return;
 		let ready = false;
-		store.planAndSwap(id, run => {
+		const recorded=await recordReply(()=>liveStore()?.planAndSwap(id, run => {
 			ready = false;
 			const q = reviews(run).find(r => r.id === reviewId);
 			if (!q || presentation(q) !== (next ?? reviewId)) {
@@ -65,13 +66,14 @@ export async function presentQuestions(cwd, liveStore, id, owner, host, executab
 			const target = recover && commitAt(cwd, run.policy.target);
 			const current = (recover || decision.status === "answered") && !expired(run) && currentReview(cwd, run, q, target);
 			if (recover && (!current || !questions(run).includes(q))) stale();
-			q.decision = decision;
+			decide(q,decision);
 			if (decision.status === "answered" && current) {
 				if (run.goal) delete run.goal.stall;
 				ready = run.active;
 			}
 			if (target) return () => commitAt(cwd, run.policy.target) === target;
-		});
+		}));
+		if(!recorded)return;
 		if (ready) await wake();
 	} while (!recover);
 }

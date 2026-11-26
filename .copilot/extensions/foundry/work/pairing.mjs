@@ -1,3 +1,4 @@
+import { assign } from "./assignment.mjs";
 import { availableReservations } from "./capacity.mjs";
 import { checkReceipt, goalReceipt } from "./evidence.mjs";
 import { checkpointCurrent } from "./facts.mjs";
@@ -96,7 +97,7 @@ export function preparePair(cwd,run,actor,a,verify) {
 			const effect=live.effects.at(-1);
 			if (effect?.kind!=="component") fail("invalid_pair","Missing paired component reservation");
 			effect.pair=before.pair;
-			n.state="checking";delete n.reason;
+			assign(n,"recheck");delete n.reason;
 			if (live.goal) delete live.goal.stall;
 			return ()=>commitAt(cwd,live.policy.target)===before.pair.target;
 		}

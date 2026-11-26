@@ -76,7 +76,7 @@ for (const scenario of ["correct", "replay", "denied"]) test(`pre-writer researc
 		assert.ok(actual && restore, "the deciding scout needs the probe and its interpretation");
 		if (actual[1] === restore[1]) return { ...report, outcome: "no-gap", reason: "The observed mode is restore." };
 		return { ...report, outcome: "regenerate", reason: "Normal launch selected the replay mode.", grains: [
-			{ id: "fix-launch", directory: "app", task: "Route normal launch through restore.", check: "unit.mjs", needs: [] }] };
+			{ id: "fix-launch", directory: "app", task: "Route normal launch through the verified restore mode.", prior:"independent", check: "unit.mjs", needs: [] }] };
 	};
 	/** @type {Promise<unknown>[]} */ const calls = [];
 	let counter = 0;

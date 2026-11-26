@@ -298,16 +298,15 @@ for (const moved of [false,true]) test(`an unstructured failure on the same prod
 	}
 	await fresh[0].report({outcome:"regenerate",reason:"The button remains disabled in the checked view.",evidence:["detail/view/button"],
 		grains:[{id:"open",directory:"detail/view",check:"unit.mjs",task:"Enable selection.",needs:["list"]}]});
-	if (moved) {
-		const after = await proof();
-		assert.equal(after.reviews.find(r=>r.id === fresh[0].id)?.state,"blocked");
-		assert.deepEqual(after.goalChecks,before.goalChecks); assert.equal(f.workers.size,1); assert.equal(after.qualified,null);
-		return;
-	}
+	const admitted=await proof();
+	assert.equal(admitted.reviews.find(r=>r.id===fresh[0].id)?.state,"observed");
+	assert.equal(admitted.reviews.find(r=>r.id===prior.find(s=>s.squad==="detail")?.id)?.state,"blocked");
+	assert.deepEqual(admitted.goalChecks,before.goalChecks); assert.equal(admitted.qualified,null);
 	const writer = f.workers.get((await f.status()).nodes.find(n=>n.grain === "open")?.worker ?? ""); assert.ok(writer);
 	put(writer.cwd,"detail/view/button","enabled");
 	await f.runtime(writer.cwd).operation("submit",{run,token:writer.token},writer.id); await f.settle();
 	const after = await proof(); assert.ok(after.qualified && after.goal?.receipt?.commit === after.qualified);
 	assert.deepEqual(after.goalChecks?.slice(0,-1),before.goalChecks);
 	assert.equal(git(f.root,"show",`${after.qualified}:detail/view/button`),"enabled");
+	if (moved) assert.equal(git(f.root,"show",`${after.qualified}:neighbor`),"Changed target");
 });

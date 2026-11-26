@@ -77,7 +77,7 @@ for (const route of ["explicit replacement", "linked blocker", "no permitted act
 	tampered.nodes.sample.candidate = f.tip;
 	assert.throws(()=>decode(tampered),/Invalid Foundry task graph/);
 	const oldReceipt = state.effects.find(e=>e.id===failed);
-	await assert.rejects(owner.operation("publish",{run,readBaselines:["sample"]},"owner"),/original bound missing-input/);
+	await assert.rejects(f.runtime(f.root,{},createRuntime).operation("inspectBaseline",{run,grains:["sample"]},"owner"),/original bound missing-input/);
 	await assert.rejects(recovered.operation("submit",stop,w.id),/writable|assignment/);
 	await assert.rejects(recovered.operation("submit",{run,token:node.token},w.id),/writable|assignment/);
 	if (route === "no permitted action") {

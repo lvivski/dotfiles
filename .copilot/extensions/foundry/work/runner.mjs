@@ -2,15 +2,25 @@ import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { openDatabase } from "./database.mjs";
 import { goalFiles, priorGoal, retainFeedback } from "./feedback.mjs";
+import { frozenCheckpoint } from "./frozen.mjs";
 import { harnessFiles } from "./harness.mjs";
 import { activeDelivery, currentDelivery } from "./batch.mjs";
 import { awaitingReply, currentCheck } from "./reservation.mjs";
 import { matchesPair, pairedInput } from "./partition.mjs";
 import { origin, remedyWriter } from "./remedy.mjs";
-import { commitAt, withProduct } from "./product.mjs";
-import { deadlineAt, fail, mixed, ownership, text } from "./values.mjs";
+import { commitAt, regularFiles, verifyContracts, withProduct } from "./product.mjs";
+import { deadlineAt, digest, fail, mixed, ownership, text } from "./values.mjs";
 import { interpret, interrupted } from "./verdict.mjs";
 const [cwd, runId, effectId] = process.argv.slice(2);
+/** @param {string} root @param {string} check @param {NodeJS.ProcessEnv} env @param {string|undefined} deadline */
+function execute(root,check,env,deadline) {
+	const remaining=deadline===undefined ? undefined : (deadlineAt(deadline) ?? -Infinity)-Date.now();
+	if (remaining!==undefined && remaining<=0) fail("deadline","Deadline elapsed before evaluation");
+	const evaluator=path.join(root,check), js=/\.m?js$/.test(evaluator);
+	return spawnSync(js ? process.execPath : evaluator,js ? [evaluator] : [],{
+		cwd:root,env,timeout:remaining,maxBuffer:Infinity,stdio:["ignore","pipe","pipe"]
+	});
+}
 const db = openDatabase(cwd);
 try {
 	const command = db.mutateLocked(runId, run => {
@@ -52,16 +62,21 @@ try {
 		} else if (e.kind === "goal") {
 			evaluation = { kind: e.kind, squads: run.policy.squads.map(s => s.id) };
 		} else fail("unissued_check", "Expected an evaluator");
+		const migration=e.kind==="product" && run.productRepins?.find(p=>p.recheck===e.id && p.targetFrom);
 		return { publish, evaluation, commit: text(e.commit, "check commit"), check: text(e.check, "assigned evaluator"), deadline: run.policy.deadline, env, rerun:e.rerun,delivery:e.delivery,
+			migration:migration ? {policy:run.policy,target:migration.revision,resolutions:migration.resolutions,components:Object.keys(run.join?.outputs ?? {}).map(id=>({
+				id,check:run.nodes[id].grain.check,scope:ownership(run.nodes[id].grain.directory)
+			}))} : undefined,
 			prior: e.kind === "goal" ? priorGoal(run, e) : undefined,
 			productEvaluatorRevision:e.productEvaluatorRevision,
-			overlay: e.evaluatorRevision && (e.kind === "goal" || e.kind === "product") ? { base: run.policy.base, revision: e.evaluatorRevision } : undefined };
+			overlay: e.evaluatorRevision && (e.kind === "goal" || e.kind === "product") ? { base: run.policy.contractTarget ?? run.policy.base, revision: e.evaluatorRevision } : undefined };
 	});
 	const pin = { commit: command.commit, check: command.check, ...(command.overlay ? { evaluatorRevision: command.overlay.revision } : {}),
 		...(command.productEvaluatorRevision ? {productEvaluatorRevision:command.productEvaluatorRevision} : {}) };
 	/** @type {import("./model.js").Receipt} */ let receipt = { ...pin, exit: null, output: "" };
 	/** @type {ReturnType<typeof goalFiles>|undefined} */ let files;
 	/** @type {Buffer|undefined} */ let goalStdout;
+	/** @type {Record<string,{check:string,exit:number|null}>} */ const components={};
 	try {
 		const env = { ...process.env, ...command.env };
 		if (!command.env.FOUNDRY_DIRECTORY) delete env.FOUNDRY_DIRECTORY;
@@ -71,9 +86,31 @@ try {
 		delete env.FOUNDRY_GOAL_DELTA;
 		delete env.FOUNDRY_GOAL_DELTA_FILE;
 		delete env.FOUNDRY_GOAL_FEEDBACK_FILE;
+		if (command.migration) {
+			const {policy,target}=command.migration;
+			if (commitAt(cwd,policy.target)!==target) fail("stale_pin","The approved mixed target moved before verification");
+			verifyContracts(cwd,policy,command.commit);
+			for (const r of command.migration.resolutions ?? []) {
+				const [e]=regularFiles(cwd,command.commit,[r.file]);
+				if (e.mode!==r.mode || e.oid!==r.result) fail("invalid_resolution",`Joined product does not contain the approved resolution: ${r.file}`);
+			}
+			for (const {id,check,scope} of command.migration.components) {
+				/** @type {NodeJS.ProcessEnv} */
+				const local={...env,FOUNDRY_GRAIN:id,FOUNDRY_DIRECTORIES:JSON.stringify(scope.directories)};
+				delete local.FOUNDRY_OUTPUTS; delete local.FOUNDRY_OWNERSHIP;
+				if (scope.directories.length===1) local.FOUNDRY_DIRECTORY=scope.directories[0];
+				if (scope.files.length) local.FOUNDRY_FILES=JSON.stringify(scope.files);
+				components[id]={check,exit:null};
+				/** @type {Pick<import("./model.js").Receipt,"exit"|"output">} */ let result={exit:null,output:""};
+				await withProduct(cwd,command.commit,root=>{
+					result=interpret({kind:"component"},execute(root,check,local,command.deadline)).fields;
+				});
+				components[id].exit=result.exit;
+				if (result.exit!==0) fail("component_failed",`Component ${id} (${check}) did not pass on the joined target: ${result.output || result.exit}`);
+			}
+		}
 		if (command.evaluation.kind === "goal") files = goalFiles(cwd, command.commit, command.prior, env);
 		await withProduct(cwd, command.commit, root => {
-			const evaluator = path.join(root, command.check);
 			if (command.delivery) {
 				const run=db.read(runId), d=run && activeDelivery(run);
 				if (!run?.active || !d || d.id!==command.delivery || run.effects.some(e=>e.permissionHold) || !currentDelivery(run,d,commitAt(cwd,run.policy.target)))
@@ -81,19 +118,14 @@ try {
 			}
 			if (command.rerun) {
 				const run=db.read(runId), product=run?.products.at(-1), node=run?.nodes[command.env.FOUNDRY_GRAIN];
-				if (!run?.active || run.blocker || run.conflict || run.independent || run.effects.some(e=>e.permissionHold) ||
-					!product || product.qualifiedAt || product.check!==command.rerun.checkpoint || product.target!==commitAt(cwd,run.policy.target) ||
+				const target=run && commitAt(cwd,run.policy.target), observed=command.rerun.observedTarget;
+				if (!run?.active || run.blocker || run.independent || run.effects.some(e=>e.permissionHold) ||
+					!product || product.qualifiedAt || product.check!==command.rerun.checkpoint ||
+					(observed ? target!==observed || !frozenCheckpoint(cwd,run,observed) : run.conflict || product.target!==target) ||
 					node?.state!=="blocked" || node.check!==command.rerun.of)
 					fail("stale_assignment","The approved checkpoint, stopped assignment or run permissions changed; no evaluator was run");
 			}
-			const remaining = command.deadline === undefined ? undefined : (deadlineAt(command.deadline) ?? -Infinity) - Date.now();
-			if (remaining !== undefined && remaining <= 0)
-				fail("deadline", "Deadline elapsed before evaluation");
-			const js = /\.m?js$/.test(evaluator);
-			const result = spawnSync(js ? process.execPath : evaluator, js ? [evaluator] : [], {
-				cwd: root, env,
-				timeout: remaining, maxBuffer: Infinity, stdio: ["ignore", "pipe", "pipe"]
-			});
+			const result=execute(root,command.check,env,command.deadline);
 			const { fields, feedback } = interpret(command.evaluation, result);
 			receipt = { ...pin, ...fields };
 			goalStdout = feedback;
@@ -111,6 +143,8 @@ try {
 		receipt = { ...pin, ...interrupted(command.evaluation, receipt.exit, error) };
 	}
 	finally { files?.close(); }
+	if (command.migration) receipt.components=components;
+	if (command.migration?.resolutions) receipt.resolutionDigest=digest(command.migration.resolutions);
 	if (command.deadline !== undefined) receipt.completedAt=Date.now();
 	command.publish(receipt);
 	process.stdout.write(`Foundry evaluated ${receipt.commit}: ${receipt.exit ?? "blocked"}\n`);

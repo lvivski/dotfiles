@@ -5,8 +5,10 @@ import test from "node:test";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { openDatabase } from "./database.mjs";
+import { createRuntime } from "./runtime.mjs";
 import { scoutDefinition } from "./scouts.mjs";
-import { factory, git, loadEntry, put } from "../test/fixture.mjs";
+import { factory, git, loadEntry, put, withLedgerLock, recoveryClock } from "../test/fixture.mjs";
+import { historicalFactory } from "../test/legacy-readers.mjs";
 
 const run = "catalog", source = ".foundry/catalog.json";
 /** @param {import("node:test").TestContext} t @param {string[]} [ids] @param {object} [policy] */
@@ -20,6 +22,113 @@ function trial(t, ids = ["price"], policy = {}) {
 	});
 }
 const noGap = { outcome: "no-gap", reason: "Nothing to change here.", evidence: ["charter"], grains: [] };
+
+for (const phase of ["disjoint live target","overlapping writer directory","recover saved report","recover paused issuer"]) test(`operator merge during checkpoint discovery / ${phase}`, async t => {
+	const mixed=phase==="recover paused issuer", saved=phase==="recover saved report";
+	const make=mixed || saved ? await historicalFactory(t,64) : factory;
+	const goal=`import {existsSync as has} from "node:fs";
+		if (!has("loader/ready")) { console.log('FOUNDRY_BLOCKERS=[{"id":"view","directory":"panel/view","blocked":1}]');process.exit(1); }
+		if (!has("panel/view/ready")) process.exit(2);`;
+	const f=make(t,run,source,{[source]:JSON.stringify({version:2,id:run,direction:"Open the catalog.",target:"refs/heads/main",
+		goalCheck:"goal.mjs",productCheck:"product.mjs",squads:["loader","panel"].map(id=>({id,areas:[id],charter:`${id}.md`,checks:["unit.mjs"]}))}),
+		".foundry/catalog/journey.md":"Open the catalog.","loader.md":"Load it.","panel.md":"Display it.","unit.mjs":"","product.mjs":"","goal.mjs":goal});
+	const propose=(/** @type {string} */ id,/** @type {string} */ directory)=>({outcome:"regenerate",evidence:[`${id}.md`],reason:`Build ${id}.`,
+		grains:[{id,directory,task:`Build ${id}.`,check:"unit.mjs",needs:id==="loader"?[]:["loader"]}]});
+	await f.start();
+	for (const s of [...f.scouts]) await s.report(s.squad==="loader" ? propose("loader","loader") : {...noGap,evidence:["panel.md"]});
+	const [loader]=f.workers.values(); let held=false;
+	const policy=async()=>held ? {scope:/** @type {const} */("run"),message:"Managed settings unresolved."} : null;
+	const issuer=f.runtime(loader.cwd,{permissionBlocker:policy,execute:async(tool,args,id)=>{
+		const result=await f.execute(tool,args,id);
+		if (mixed && String(args.description).startsWith("Check final goal")) held=true;
+		return result;
+	}});
+	put(loader.cwd,"loader/ready","loaded");
+	await issuer.operation("submit",{run,token:loader.token},loader.id); await f.settle();
+	const old=await f.owner.operation("status",{run,detail:"proof"},"owner"), review=old.reviews.find(r=>r.lead);
+	assert.ok(review && old.checkpoint && old.goal?.receipt?.exit===2);
+	const receipts=old.goalChecks, count=f.checks.length;
+	assert.equal(old.active,!mixed);
+	if (mixed) {
+		const job=old.pending.find(e=>e.id===review.id);
+		assert.ok(job?.state==="ready" && job.issuer===loader.id && !review.workflowId && job.reason?.includes("Managed"));
+	}
+	put(f.root,"operator.txt","keep me");
+	if (phase==="overlapping writer directory") put(f.root,"panel/view/ready","operator work");
+	if (mixed) for (const file of ["panel.md","unit.mjs","goal.mjs","product.mjs"]) put(f.root,file,"throw Error('not the pinned contract')");
+	git(f.root,"add","."); git(f.root,"commit","-qm","Operator change");
+	const owner=f.runtime(f.root,{},createRuntime), proof=()=>owner.inspect({run,detail:"proof"},"owner");
+	if (mixed) {
+		await assert.rejects(f.owner.operation("resume",{source},"owner"),/conserved contract changed/);
+		assert.equal(proof().active,false);
+		git(f.root,"rm","-q",source); git(f.root,"commit","-qm","Remove the old plan from the new target");
+		await owner.operation("resume",{source},"owner");
+		assert.equal(proof().active,true);
+		const fresh=f.runtime(loader.cwd,{permissionBlocker:policy},createRuntime);
+		fresh.turn(loader.id); await fresh.flush();
+		assert.equal(proof().active,false,"the original issuer's unresolved policy must still stop dispatch");
+		assert.equal(f.scouts.filter(s=>s.id===review.id).length,0);
+		held=false; await owner.operation("resume",{source},"owner");
+		fresh.turn(loader.id); await fresh.flush(); await f.settle();
+	}
+	const moved=git(f.root,"rev-parse","HEAD");
+	const scout=f.scouts.find(s=>s.id===review.id); assert.ok(scout);
+	assert.equal(scout.issuer,loader.id); assert.equal(scout.base,old.checkpoint);
+	let deciding=scout;
+	if (mixed) {
+		await scout.report({outcome:"needs-evidence",reason:"Read the failing step.",evidence:["panel.md"],receipt:review.lead?.receipt,grains:[]});
+		deciding=f.scouts.at(-1) ?? assert.fail("missing follow-up");
+		assert.equal(deciding.packet.read?.source,`receipt:${review.lead?.receipt}`);
+	}
+	await deciding.report(propose("panel","panel/view")); await owner.flush(); await f.settle();
+	if (saved) {
+		assert.match(proof().reviews.find(r=>r.id===review.id)?.reason ?? "",/changed during review/);
+		assert.equal(f.workers.size,1);
+		owner.turn("owner"); await owner.flush();
+	}
+	const worker=f.workers.get(proof().nodes.find(n=>n.grain==="panel")?.worker ?? "");
+	assert.ok(worker,"the original checkpoint reservation must still staff its writer");
+	assert.deepEqual(proof().goalChecks,receipts); assert.equal(f.checks.length,count);
+	put(worker.cwd,"panel/view/ready","from original assignment");
+	await f.runtime(worker.cwd,{},createRuntime).operation("submit",{run,token:worker.token},worker.id);
+	if (phase==="overlapping writer directory") {
+		const stop=proof();
+		assert.equal(stop.qualified,null); assert.deepEqual(stop.goalChecks,receipts); assert.equal(stop.checkpoint,old.checkpoint);
+		assert.match(stop.blocker ?? stop.nodes.find(n=>n.grain==="panel")?.reason ?? "",/panel\/view/);
+		assert.equal(git(f.root,"show","main:panel/view/ready"),"operator work"); return;
+	}
+	if (mixed) {
+		const blocked=proof();
+		assert.equal(blocked.qualified,null); assert.equal(blocked.checkpoint,old.checkpoint);
+		assert.equal(blocked.nodes.find(n=>n.grain==="panel")?.state,"published");
+		assert.match(blocked.blocker ?? "",/goal\.mjs/);
+		assert.deepEqual(blocked.goalChecks,receipts); assert.equal(f.checks.length,count+1);
+		assert.equal(git(f.root,"rev-parse","main"),moved);
+		git(f.root,"restore","--source",f.tip,"--staged","--worktree","--",source,"panel.md","unit.mjs","goal.mjs","product.mjs");
+		git(f.root,"commit","-qm","Reconcile the contract without reverting the operator merge");
+		owner.turn("owner"); await owner.flush();
+	}
+	const end=proof(); assert.ok(end.qualified && end.goal?.receipt?.commit===end.qualified);
+	assert.equal(end.target,git(f.root,"rev-parse","main")); assert.equal(git(f.root,"show",`${end.qualified}:operator.txt`),"keep me");
+	assert.equal(git(f.root,"show",`${end.qualified}:panel/view/ready`),"from original assignment");
+	assert.deepEqual(end.goalChecks?.slice(0,receipts?.length),receipts);
+	assert.equal(f.checks.length,count+3); assert.equal(f.scouts.filter(s=>s.id===review.id).length,1);
+});
+
+test("resume disambiguates existing runs by source and owner without accepting a replacement contract", async t=>{
+	const f=trial(t);
+	await f.start();
+	const previous=JSON.parse(git(f.root,"show",`HEAD:${source}`));
+	put(f.root,source,JSON.stringify({...previous,id:"later"})); git(f.root,"commit","-qam","Start a separately named run");
+	await f.owner.operation("start",{source},"owner");
+	await assert.rejects(f.owner.operation("resume",{source},"owner"),/Multiple owned runs/);
+	await assert.rejects(f.owner.operation("resume",{source:".foundry/other.json",run:"later"},"owner"),{code:"run_conflict"});
+	await assert.rejects(f.owner.operation("resume",{source,run:"later"},"stranger"),{code:"run_conflict"});
+	await assert.rejects(f.owner.operation("resume",{source,run},"owner"),/conserved contract changed/);
+	const count=f.scouts.length;
+	assert.equal((await f.owner.operation("resume",{source,run:"later"},"owner")).run,"later");
+	assert.equal(f.scouts.length,count);
+});
 
 test("a reader upgrade automatically staffs the stranded charter once, without replaying its batch", async t => {
 	const f = trial(t, ["browse", "price"], { goalCheck: "goal.mjs" });
@@ -126,8 +235,8 @@ test("explicit review of one proven no-report charter, including the legacy ledg
 	const ctx = { sessionId: "owner" }, hook = { ...ctx, timestamp: new Date(), workingDirectory: f.root };
 	await conf.hooks?.onSessionStart?.({ ...hook, source: "resume" }, ctx);
 	t.after(() => conf.hooks?.onSessionEnd?.({ ...hook, reason: "complete" }, ctx));
-	const tool = conf.tools?.find(t => t.name === "foundry_rereview"); assert.ok(tool?.handler, "missing foundry_rereview");
-	const request = (review = old.id) => tool.handler?.({ run, review }, { ...ctx, arguments: {}, toolName: tool.name, toolCallId: "rereview" });
+	const tool = conf.tools?.find(t => t.name === "foundry_review"); assert.ok(tool?.handler);
+	const request = (review = old.id) => tool.handler?.({ run, retry:{review} }, { ...ctx, arguments: {}, toolName: tool.name, toolCallId: "rereview" });
 	assert.match(JSON.stringify(await request()), /terminal|completed/i);
 	status = "completed";
 	assert.match(JSON.stringify(await request()), /budget|recoverable/);
@@ -178,8 +287,8 @@ test("a proven zero-agent packet failure admits just one first scout with an exa
 	const ctx = { sessionId: "owner" }, hook = { ...ctx, timestamp: new Date(), workingDirectory: f.root };
 	await conf.hooks?.onSessionStart?.({ ...hook, source: "resume" }, ctx);
 	t.after(() => conf.hooks?.onSessionEnd?.({ ...hook, reason: "complete" }, ctx));
-	const tool = conf.tools?.find(t => t.name === "foundry_rereview"); assert.ok(tool?.handler);
-	const request = () => tool.handler?.({ run, review: old.id },
+	const tool = conf.tools?.find(t => t.name === "foundry_review"); assert.ok(tool?.handler);
+	const request = () => tool.handler?.({ run, retry:{review:old.id} },
 		{ ...ctx, arguments: {}, toolName: tool.name, toolCallId: "request-first-scout" });
 	assert.match(JSON.stringify(await request()), /scout budget/);
 	budget = 16000; priorAgents = 1; assert.match(JSON.stringify(await request()), /zero.agent|no agents/);
@@ -211,6 +320,32 @@ for (const changed of ["target", "paused", "limit"]) test(`owner rereview cannot
 });
 
 const full = "This session already has 4 active workflow runs, which is the concurrent limit";
+
+for(const paused of [false,true])test(`capacity retry survives ledger contention without replacing the review / paused=${paused}`,async t=>{
+	t.mock.timers.enable({apis:["setTimeout"]});
+	const f=trial(t),clock=recoveryClock();let attempts=0,occupied=true;
+	const issuer=f.runtime(f.root,{watchRecovery:clock.watch,scout:async(id,key,actor)=>{
+		attempts++;if(occupied)throw Error(full);
+		return f.owner.scoutBatch(id,key,actor,"admitted").then(async jobs=>{
+			assert.equal(jobs.length,1);await f.owner.scoutResult(id,key,actor,"admitted",jobs[0].id,{...noGap,outcome:"regenerate",grains:["price"]},jobs[0].packet);
+			return {runId:"admitted",status:"completed"};
+		});
+	}});
+	const [original]=(await f.start(issuer)).reviews;await clock.pulse(issuer,8);occupied=false;
+	await withLedgerLock(f.root,async()=>{t.mock.timers.tick(15000);await nextTurn();await issuer.flush();});
+	assert.equal(attempts,1);
+	if(paused)await f.owner.operation("pause",{run},"owner");
+	t.mock.timers.tick(60000);await nextTurn();await clock.pulse(issuer,16);
+	if(paused){
+		const s=await f.status();assert.equal(s.active,false);assert.equal(attempts,1);assert.equal(s.pending[0]?.id,original.id);
+		assert.equal(s.pending[0]?.state,"ready");return;
+	}
+	assert.equal(attempts,2,"the same confirmed, unbound capacity rejection should retry without a turn");
+	const s=await f.status();assert.equal(s.reviews[0].id,original.id);assert.equal(s.reviews[0].workflowId,"admitted");
+	const [w]=f.workers.values();assert.ok(w);put(w.cwd,"src/price/value","original");
+	await f.runtime(w.cwd).operation("submit",{run,token:w.token},w.id);
+	const done=await f.status();assert.ok(done.qualified);assert.equal(git(f.root,"show",`${done.qualified}:src/price/value`),"original");
+});
 
 test("a full native workflow slot queues the same scout until admission, without an operator turn", async t => {
 	t.mock.timers.enable({ apis: ["setTimeout"] });
@@ -312,6 +447,90 @@ test("resume cannot start a missing run or disturb a bound workflow", async t =>
 	const live = await f.start();
 	assert.deepEqual(await f.owner.operation("resume", { source }, "owner"), live);
 	assert.equal(f.scouts.length, 1);
+});
+
+for (const again of [false,true]) test(`a confirmed provider disconnect continues the same workflow once; disconnect again=${again}`,async t=>{
+	const f=trial(t,["price","browse"]), workflow="original-workflow";
+	const disconnected={runId:workflow,status:"halted",failure:{type:"workflow_provider_disconnected"}};
+	let dispatch="",resumes=0;
+	const first=f.runtime(f.root,{scout:async(id,ticket,actor)=>{
+		dispatch=ticket; const [done]=await f.owner.scoutBatch(id,ticket,actor,workflow);
+		await f.owner.scoutResult(id,ticket,actor,workflow,done.id,noGap,done.packet);
+		return disconnected;
+	}});
+	const held=await f.start(first); first.close();
+	assert.deepEqual(held.reviews.map(r=>r.state),["observed","reading"]);
+	const issuer=f.runtime(f.root,{scoutSnapshot:async()=>disconnected,scoutState:async()=>disconnected,
+		resumeScout:async id=>{
+			assert.equal(id,workflow); resumes++;
+			if (again) return disconnected;
+			const jobs=await f.owner.scoutBatch(run,dispatch,"owner",workflow);
+			assert.deepEqual(jobs.map(j=>j.id),[held.reviews[1].id]);
+			await f.owner.scoutResult(run,dispatch,"owner",workflow,jobs[0].id,noGap,jobs[0].packet);
+			return {runId:id,status:"completed"};
+		}});
+	issuer.turn("owner"); await issuer.flush(); await nextTurn(); await issuer.flush();
+	assert.equal(resumes,1);
+	issuer.turn("owner"); await issuer.flush(); assert.equal(resumes,1);
+	const end=await f.status(); assert.deepEqual(end.reviews.map(r=>r.id),held.reviews.map(r=>r.id));
+	assert.deepEqual(end.reviews.map(r=>r.state),["observed",again ? "reading" : "observed"]);
+});
+
+for (const outcome of ["continue","lookup","refused","pause"]) test(`a reloaded writer recovers its own disconnected scout without a turn / ${outcome}`,async t=>{
+	const f=factory(t,run,source,{[source]:JSON.stringify({version:2,id:run,direction:"Open the catalog.",target:"refs/heads/main",
+		goalCheck:"goal.mjs",productCheck:"product.mjs",squads:["loader","panel"].map(id=>({id,areas:[id],charter:`${id}.md`,checks:["unit.mjs"]}))}),
+		".foundry/catalog/journey.md":"Open the catalog.","loader.md":"Load the catalog.","panel.md":"Show the catalog.","unit.mjs":"","product.mjs":"",
+		"goal.mjs":`import {existsSync} from "node:fs"; if (!existsSync("loader/value")) {console.log('FOUNDRY_BLOCKERS=[{"id":"view","directory":"panel/view","blocked":1}]');process.exit(1)} if (!existsSync("panel/view/value")) process.exit(2);`});
+	const proposal=(/** @type {string} */ id,/** @type {string} */ directory)=>({outcome:"regenerate",reason:`Implement ${id}.`,evidence:[`${id}.md`],
+		grains:[{id,directory,task:`Implement ${id}.`,check:"unit.mjs",needs:id==="loader"?[]:["loader"]}]});
+	await f.start();
+	for (const s of [...f.scouts]) await s.report(s.squad==="loader"?proposal("loader","loader"):{...noGap,evidence:["panel.md"]});
+	const [writer]=f.workers.values(),workflow="original-writer-workflow";
+	let ticket="";
+	const disconnected={runId:workflow,status:"halted",failure:{type:"workflow_provider_disconnected"}};
+	const original=f.runtime(writer.cwd,{scout:async(id,dispatch,actor)=>{
+		ticket=dispatch; await f.owner.scoutBatch(id,dispatch,actor,workflow); return disconnected;
+	}});
+	put(writer.cwd,"loader/value","original"); await original.operation("submit",{run,token:writer.token},writer.id);
+	await nextTurn(); await original.flush(); original.close();
+	const before=await f.status(), review=before.reviews.find(r=>r.workflowId===workflow); assert.ok(review && ticket && before.checkpoint);
+	const prior=f.checks.slice(); let allowed=false, resumes=0, readable=outcome!=="lookup";
+	/** @type {Set<()=>void>} */ const clocks=new Set();
+	const issuers=[0,1].map(()=>f.runtime(writer.cwd,{
+		watchRecovery:fn=>{clocks.add(fn);return ()=>{clocks.delete(fn);};},
+		permissionBlocker:async()=>allowed?null:{scope:"session",message:"Manual approvals."},
+		scoutSnapshot:async()=>{
+			if (!readable) throw Object.assign(Error("Temporary read failure"),{code:"EAGAIN"});
+			if (allowed && outcome==="pause") await f.owner.operation("pause",{run},"owner");
+			return allowed && outcome==="refused"?{...disconnected,failure:{type:"workflow_resume_declined"}}:disconnected;
+		},
+		resumeScout:async id=>{
+			assert.equal(id,workflow); resumes++;
+			const jobs=await f.owner.scoutBatch(run,ticket,writer.id,workflow); assert.deepEqual(jobs.map(j=>j.id),[review.id]);
+			await f.owner.scoutResult(run,ticket,writer.id,workflow,review.id,proposal("panel","panel/view"),jobs[0].packet);
+			return {runId:id,status:"completed"};
+		},
+	}));
+	for (const issuer of issuers) issuer.sessionStart(writer.id,writer.cwd);
+	assert.equal(clocks.size,2,"each reloaded issuer must observe its unfinished workflow");
+	async function tick() {
+		for (const fn of clocks) fn();
+		await Promise.all(issuers.map(i=>i.flush())); await nextTurn(); await Promise.all(issuers.map(i=>i.flush()));
+	}
+	for(let i=0;i<5;i++) await tick();
+	assert.equal(resumes,0); readable=true; allowed=true;
+	for(let i=0;i<8;i++) await tick();
+	const after=await f.status(); assert.deepEqual(f.checks,prior);
+	const completed=outcome==="continue" || outcome==="lookup";
+	assert.equal(resumes,completed?1:0);
+	assert.equal(after.active,outcome!=="pause");
+	if(outcome==="refused") assert.match(after.reviews.find(r=>r.id===review.id)?.reason ?? "",/workflow_resume_declined/);
+	if(!completed) {assert.equal(f.workers.size,1);return;}
+	const panel=f.workers.get(after.nodes.find(n=>n.grain==="panel")?.worker ?? ""); assert.ok(panel);
+	put(panel.cwd,"panel/view/value","continued"); await f.runtime(panel.cwd).operation("submit",{run,token:panel.token},panel.id);
+	const qualified=(await f.status()).qualified; assert.ok(qualified);
+	assert.equal(git(f.root,"show",`${qualified}:panel/view/value`),"continued");
+	assert.equal(git(f.root,"show",`${qualified}:loader/value`),"original");
 });
 
 for (const status of ["paused", "halted"]) test(`explicit resume continues only the missing report of a bound ${status} batch`, async t => {

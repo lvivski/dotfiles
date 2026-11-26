@@ -1,3 +1,4 @@
+import { journal } from "./dispatch.mjs";
 import { remainingAssignments } from "./capacity.mjs";
 import { checkpointReceipt, checkReceipt } from "./evidence.mjs";
 import { admitted } from "./native.mjs";
@@ -106,7 +107,7 @@ export async function retireGoal(cwd, actor, check, io) {
 		}
 		if (digest(selection(cwd, live, original)) !== digest(selected))
 			fail("stale_assignment", "Goal, evaluator, or retained outputs changed during approval");
-		original.state = "retired"; original.retirement = proof; delete original.error;
+		journal(original,"retire"); original.retirement = proof; delete original.error;
 		reconcile = true;
 		return () => commitAt(cwd, live.policy.target) === selected.target;
 	});

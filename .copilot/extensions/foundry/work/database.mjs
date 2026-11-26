@@ -164,6 +164,15 @@ export function openDatabase(cwd, file = ledgerPath(cwd), create = false, checkS
 		},
 		/** @param {string} id */
 		read(id) { return snapshot(id)?.run; },
+		/** The checkout may no longer contain the activated brief. Never pick between two generations by recency.
+		 * @param {string} source @param {string} owner */
+		forResume(source,owner) {
+			verify();
+			const rows=db.prepare("SELECT id,owner FROM runs WHERE json_extract(document,'$.policy.source')=?").all(source);
+			const own=rows.filter(r=>r.owner===owner);
+			if (rows.length && own.length!==1) fail("run_conflict",own.length ? "Multiple owned runs use this source; specify the exact run ID" : "Only the original owner can resume this source");
+			if (own.length) return required(String(own[0].id)).run;
+		},
 		/** Recovery needs positive evidence even for a receipt already copied into the ledger.
 		 * @param {string} id @param {import("./model.js").NativeCall} e */
 		verifySigned(id,e) {

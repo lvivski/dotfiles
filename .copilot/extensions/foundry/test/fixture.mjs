@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { DatabaseSync } from "node:sqlite";
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -9,10 +10,22 @@ import path from "node:path";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { assignment } from "../work/native.mjs";
 import { createRuntime } from "../work/runtime.mjs";
+import { ledgerPath } from "../work/database.mjs";
 import { record, text } from "../work/values.mjs";
 
 /** @typedef {Parameters<typeof createRuntime>[1]} Host */
 /** @typedef {ReturnType<typeof createRuntime>} Runtime */
+/** @param {string} root @param {()=>Promise<unknown>} during */
+export async function withLedgerLock(root,during){
+	const lock=new DatabaseSync(ledgerPath(root));
+	try{lock.exec("BEGIN IMMEDIATE");await during();}finally{lock.close();}
+}
+export function recoveryClock(){
+	/** @type {Set<()=>void>} */ const ticks=new Set();
+	const tick=()=>{for(const cb of [...ticks])cb();};
+	return {tick,watch:(/** @type {()=>void} */ cb)=>{ticks.add(cb);return ()=>{ticks.delete(cb);};},
+		async pulse(/** @type {Runtime} */ issuer,n=1){for(let i=0;i<n;i++){tick();await nextTurn();await issuer.flush();}}};
+}
 /** @typedef {{id:string,squad:string,base:string,prompt:string,packet:import("../work/model.js").Packet,issuer:string,dispatch:string,workflowId:string,report:(raw:unknown)=>Promise<void>}} Scout */
 /** @param {string} cwd @param {...string} args */
 export const git = (cwd, ...args) => execFileSync("git", ["-C", cwd, "-c", "core.hooksPath=/dev/null", "-c", "user.name=Fixture", "-c", "user.email=test@invalid", ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();

@@ -62,6 +62,10 @@ for (const mode of ["independent pass","independent fail","independent incomplet
 		assert.throws(()=>prepare(unscoped),{code:"dependent_output"});
 		assert.deepEqual(db.read(run),settled);
 	}
+	const originalNode=fresh.inspect({run,detail:"proof"},"owner").nodes.find(n=>n.grain==="selector");assert.ok(originalNode);
+	const {attempts,...historical}=originalNode;
+	assert.deepEqual(historical,result);
+	assert.deepEqual(attempts?.map(a=>a.check),[original.id,paired.id,result.check]);
 	const calls=f.checks.length;
 	await fresh.operation("checkpoint",batch,"owner");
 	if (mode==="independent pass") {
@@ -96,7 +100,8 @@ for (const mode of ["independent pass","independent fail","independent incomplet
 		const goalCheck=updated.effects.at(-1);assert.ok(goalCheck?.kind==="goal");db.verifySigned(run,goalCheck);
 	}else{assert.deepEqual(report.products,proof.products);assert.deepEqual(report.goalChecks,proof.goalChecks);assert.equal(report.candidate?.receipt?.exit,mode==="independent fail"?1:null);}
 	assert.equal(report.nodes.find(n=>n.grain==="buttons")?.state,"published");
-	assert.deepEqual(report.nodes.find(n=>n.grain==="selector"),result);
+	assert.deepEqual(report.nodes.find(n=>n.grain==="selector"),originalNode);
+	assert.deepEqual(updated.nodes.selector,settled.nodes.selector);
 	await assert.rejects(reloaded.operation("checkpoint",batch,"owner"),{code:"ownership_transition"});
 	assert.equal(f.workers.size,number+1);assert.equal(report.pending.length,0);
 	assert.equal(f.checks.length,calls+(mode==="independent pass"?2:1));

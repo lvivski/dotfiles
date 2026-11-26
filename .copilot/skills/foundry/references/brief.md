@@ -2,6 +2,8 @@
 
 `/foundry brief` turns a product idea into an agreement about what a user should be able to do and how someone else can tell it works. Foundry's scouts decide what to build next. If asked only for a prompt, give an example. If asked only for a review, report gaps and questions without editing files.
 
+Follow the [interview](#interview-before-writing) for an unsettled outcome, [contract format](#write-the-smallest-runnable-contract) for an agreed one, and [rehearsal](#rehearse-and-hand-off) before handoff. None of these steps authorizes a start.
+
 ## Interview before writing
 
 For a new or revised brief, use the skill tool to load `grilling` by name if available. Otherwise conduct the interview directly. Skip the interview for help, review-only requests, and `start`.
@@ -18,7 +20,9 @@ If the journey depends on a mockup, sample, or external reference that isn't rea
 
 ## Write the smallest runnable contract
 
-Reuse existing checks where they fit. Write one `.foundry/<id>.json` using the [version-2 contract example](../../../extensions/foundry/README.md#commit-the-contract). Set `direction` to the whole agreed outcome, `target` to the intended existing local branch (`refs/heads/...`), and omit `grains` and `seed`.
+If the **product being rebuilt is Foundry itself**, use its [regeneration inputs and acceptance cases](../../../extensions/foundry/SPEC.md) as the starting point. Pin those inputs outside the implementation scopes; keep the old code and independent verification fixtures out of a blind writer's packet. Preparing the brief does not authorize the rebuild.
+
+Reuse existing checks where they fit. Write one `.foundry/<id>.json` using the [version-2 contract example](../../../extensions/foundry/PROTOCOL.md#commit-the-contract). Set `direction` to the whole agreed outcome, `target` to the intended existing local branch (`refs/heads/...`), and omit `grains` and `seed`.
 
 Put the confirmed journey, material edge cases and exclusions in `.foundry/<plan>/journey.md` (use the plan filename stem and nonempty UTF-8 text). For each answer that changes what counts as success, carry its observable result into the goal check; don't leave it only in the interview transcript. Omit per-squad `boundary` lists: scouts receive the whole journey and can request a file from the reviewed revision as supporting evidence. Keep trusted evaluators, helpers and fixtures under `.foundry/`. Sibling plans can share helpers there; changes anywhere in that tree require fresh review.
 

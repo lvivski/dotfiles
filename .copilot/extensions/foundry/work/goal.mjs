@@ -1,14 +1,18 @@
 import { admissionPolicy } from "./admission.mjs";
-import { checkReceipt, currentEvaluation, goalReceipt, milestoneBlocker, productPin } from "./evidence.mjs";
+import { assign } from "./assignment.mjs";
+import { activate } from "./activity.mjs";
+import { checkpointReceipt, checkReceipt, currentEvaluation, goalReceipt, leadGoal, milestoneBlocker, productPin } from "./evidence.mjs";
 import { remainingAssignments } from "./capacity.mjs";
-import { transition, unhandled } from "./engine.mjs";
-import { releaseFacts, undecided } from "./facts.mjs";
+import { release, transition } from "./engine.mjs";
+import { implement } from "./adapter.mjs";
+import { pendingGoal, releaseFacts, undecided } from "./facts.mjs";
 import { expired, reserveCheck, reserveNotice, reserveProduct } from "./native.mjs";
 import { workKey } from "./plan.mjs";
 import { partitionConflict } from "./partition.mjs";
 import { heldRepair } from "./successor.mjs";
-import { retain, treeOf, verifyContracts } from "./product.mjs";
-import { blockReview, reading, reviews } from "./reviews.mjs";
+import { descendsFrom, retain, treeOf, verifyContracts } from "./product.mjs";
+export { frozenCheckpoint } from "./frozen.mjs";
+import { blockReview, checkpointWake, comparison, reading, reviews, staleReviewReason } from "./reviews.mjs";
 import { FoundryError, deadlineAt, text } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
@@ -65,6 +69,32 @@ export function timelyChecks(run) {
 	return [goal,milestone].every(r=>r?.exit===0 && r.completedAt!==undefined && r.completedAt<until);
 }
 
+/** An automatic survey belongs to the signed checkpoint and goal, not to the tip of the delivery branch.
+ * Explicit comparisons, retries and grants keep their own live-target checks.
+ * @param {Run} run @param {import("./model.js").Review|undefined} r */
+export const checkpointSurvey = (run,r) => !!r?.lead && !r.retryOf && !r.correction && !comparison(run,r) &&
+	r.base===run.goal?.commit && leadGoal(r.lead)===run.goal?.check && r.lead.checkpoint===run.products.at(-1)?.check && currentEvaluation(run,r);
+
+/** @param {string} cwd @param {Run} run @param {string} target */
+export function movingSurvey(cwd,run,target) {
+	const p=run.products.at(-1), at=run.goal;
+	if (!p || !at || p.target===target || p.qualifiedAt || p.target!==at.target || p.commit!==at.commit ||
+		run.join || run.independent || run.blocker || !checkpointReceipt(run,p.check,p.commit) ||
+		!(pendingGoal(run) || goalReceipt(run)?.exit===2) || partitionConflict(run,undefined,p.target)) return;
+	const history=reviews(run).filter(r=>currentEvaluation(run,r));
+	const unfinished=new Set(Object.values(run.nodes).filter(n=>["waiting","writing","checking","published"].includes(n.state)).map(n=>n.review));
+	const latest=new Map(history.map(r=>[r.squad,r]));
+	const pending=history.some(r=>{
+		if (!checkpointSurvey(run,r)) return false;
+		if (unfinished.has(r.id)) return true;
+		if (latest.get(r.squad)!==r) return false;
+		if (reading(r) || r.state==="reported" || r.state==="blocked" && r.error===staleReviewReason) return true;
+		return r.state==="observed" && (r.observation?.ownerInput && !r.decision ||
+			checkpointWake(run,history.filter(h=>h.squad===r.squad),p.commit,r.version));
+	});
+	if (pending && descendsFrom(cwd,target,p.target)) return p;
+}
+
 /** @param {string} cwd @param {Run} run @param {()=>string} tip @param {boolean} [retry] */
 export function releaseAssessment(cwd, run, tip, retry = false) {
 	const wait = /** @type {const} */ ({ action: "wait", admission: "closed" });
@@ -77,11 +107,18 @@ export function releaseAssessment(cwd, run, tip, retry = false) {
 		(target===run.independent.target?"":` Approved target ${run.independent.target} is not current (${target}); no check can advance on this target.`)};
 	if (run.active) {
 		const conflict=partitionConflict(run,undefined,target);
+		const survey=!elapsed && !conflict ? movingSurvey(cwd,run,target) : undefined;
+		const scoped=survey && transition(releaseFacts(run,survey.target)).admission;
+		const frozen=survey && {target,workTarget:survey.target,action:/** @type {const} */("wait"),
+			admission:scoped==="checkpoint" || scoped==="repaired-checkpoint" ? /** @type {const} */("checkpoint") : wait.admission};
 		try { verifyContracts(cwd, run.policy, target); }
 		catch (error) {
 			if (!(error instanceof FoundryError) || error.code !== "contract_changed") throw error;
-			return { ...wait, target, reason: "contract-changed", error: error.message };
+			return { ...wait, target, ...frozen, reason: "contract-changed", error: error.message };
 		}
+		if (frozen) return scoped==="repaired-checkpoint" && Object.values(run.nodes).some(n=>n.state==="published")
+			? /** @type {const} */ ({target,action:"rejoin",admission:"join-only",reason:"target-changed"})
+			: {...frozen,reason:"checkpoint-work"};
 		if (conflict) {
 			const normal=admissionPolicy(transition(releaseFacts(run,target),false).admission);
 			const repair=run.goal?.target===target && !run.join && !run.blocker && !run.conflict && !run.effects.some(e=>e.permissionHold) &&
@@ -94,53 +131,46 @@ export function releaseAssessment(cwd, run, tip, retry = false) {
 	return elapsed && decision.action!=="qualify" && decision.reason!=="qualified" ? {...wait,target,reason:"deadline"} : {target,...decision};
 }
 
+/** @typedef {{cwd:string,run:Run,actor:string,target:string,at:NonNullable<Run["goal"]>,last?:import("./model.js").Product}} ReleaseContext */
+/** @type {Record<import("./engine.mjs").Action,(c:ReleaseContext)=>void>} */
+const releaseActions={
+	assess({cwd,run,actor,at,last}) {
+		delete run.blocker;
+		assess(cwd, run, actor, last?.target ?? at.target, last?.commit ?? at.commit);
+	},
+	retry({cwd,run,actor,target,at}) {
+		if (!milestoneBlocker(run)) delete run.join;
+		assess(cwd, run, actor, target, at.commit);
+	},
+	undecided({run}) {
+		const receipt = goalReceipt(run);
+		if (receipt) run.blocker = undecided(receipt);
+	},
+	"assess-target"({cwd,run,actor,target}) {
+		delete run.join;
+		assess(cwd, run, actor, target, retain(cwd, target));
+	},
+	rejoin({at}) {delete at.stall;},
+	qualify({run,actor,last}) {
+		if (!last) throw Error("Missing checked product for qualification");
+		qualify(run, actor, last);
+		activate(run,"goal-met");
+		for (const r of reviews(run).filter(reading)) blockReview(r, "Goal met; no further review is needed");
+	},
+	baseline({cwd,run,actor,target,at}) {reserveProduct(run,actor,cwd,target,at.commit,{});},
+	none() {}, wait() {},
+};
+const applyRelease=implement(release,releaseActions);
+
 /** @param {string} cwd @param {Run} run @param {string} actor @param {()=>string} tip @param {boolean} retry */
 export function applyGoal(cwd, run, actor, tip, retry) {
 	const decision = releaseAssessment(cwd, run, tip, retry);
 	if ("error" in decision) {
-		if (decision.reason!=="target-unavailable" && decision.reason!=="ownership-conflict") run.conflict = decision.error;
-		return decision.admission;
+		if (!("workTarget" in decision) && decision.reason!=="target-unavailable" && decision.reason!=="ownership-conflict") run.conflict = decision.error;
+	} else if (decision.target!==undefined && run.goal) {
+		applyRelease(decision.action,{cwd,run,actor,target:decision.target,at:run.goal,last:run.products.at(-1)});
 	}
-	if (!("target" in decision)) return decision.admission;
-	const { action, admission, target } = decision;
-	const at = run.goal, last = run.products.at(-1);
-	if (!at) return admission;
-	switch (action) {
-	case "assess":
-		delete run.blocker;
-		assess(cwd, run, actor, last?.target ?? at.target, last?.commit ?? at.commit);
-		break;
-	case "retry":
-		if (!milestoneBlocker(run)) delete run.join;
-		assess(cwd, run, actor, target, at.commit);
-		break;
-	case "undecided": {
-		const receipt = goalReceipt(run);
-		if (receipt) run.blocker = undecided(receipt);
-		break;
-	}
-	case "assess-target":
-		delete run.join;
-		assess(cwd, run, actor, target, retain(cwd, target));
-		break;
-	case "rejoin":
-		delete at.stall;
-		break;
-	case "qualify":
-		if (!last) throw Error("Missing checked product for qualification");
-		qualify(run, actor, last);
-		run.active = false;
-		for (const r of reviews(run).filter(reading)) blockReview(r, "Goal met; no further review is needed");
-		break;
-	case "baseline":
-		reserveProduct(run, actor, cwd, target, at.commit, {});
-		break;
-	case "none":
-	case "wait":
-		break;
-	default: return unhandled(action);
-	}
-	return admission;
+	return decision;
 }
 
 /** A new assignment or report is not progress if it reproduces an already assessed tree.
@@ -155,7 +185,7 @@ export function rejectRepeat(cwd, run, target, commit, outputs) {
 		const n = run.nodes[id];
 		if (n.state !== "published") continue;
 		if (n.grain.task) tried.add(workKey(n.grain, text(n.base, "producer base"), n.inputs));
-		n.state = "repeated";
+		assign(n,"repeat");
 	}
 	if (tried.size) run.goal.tried = [...tried];
 	return receipt;

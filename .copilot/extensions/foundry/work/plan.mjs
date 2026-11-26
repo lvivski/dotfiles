@@ -1,4 +1,6 @@
-import { validateGraph } from "./contract.mjs";
+import { topology } from "./topology.mjs";
+import { assignment } from "./assignment.mjs";
+import { select } from "./chart.mjs";
 import { blockedComponent, checkReceipt, exhaustedCandidate, generationOf, inconclusiveRepair, missingInput, repairDetail } from "./evidence.mjs";
 import { outside } from "./product.mjs";
 import { assignmentDirectory, covers, digest, disjoint, fail, fields, roots, mixed, name, names, record, relative, sameScope, text } from "./values.mjs";
@@ -12,7 +14,7 @@ import { protectsGrant, transferredTo } from "./transfer.mjs";
 export const owns = (squad, directory) => roots(directory).every(dir => covers(squad.areas, dir));
 
 /** @param {import("./model.js").Grain} grain @param {string} [review] @param {number} [repairs] @returns {Node} */
-export const waiting = (grain, review, repairs = 0) => ({ grain, state: "waiting", repairs, ...(review ? { review } : {}) });
+export const waiting = (grain, review, repairs = 0) => ({ grain, state:select(assignment,"idle","request").target, repairs, ...(review ? { review } : {}) });
 
 /** A published output still owns its directory until the combined tree is assessed.
  * @param {Node} n */
@@ -38,6 +40,9 @@ export function supersededAttempt(run, n) {
 /** A terminal assignment keeps its original brief and pins as history, not prerequisites.
  * @param {Node} n */
 export const liveNeeds = n => n.state === "blocked" ? [] : n.grain.needs;
+
+/** @param {Run["nodes"]} nodes */
+const workGraph=nodes=>topology(id=>Object.hasOwn(nodes,id) ? liveNeeds(nodes[id]) : undefined);
 
 /** @param {Node|undefined} n @param {import("./model.js").Effect} e */
 export function targetsWriter(n, e) {
@@ -120,12 +125,7 @@ export function stoppedHandoff(run, review, report, scopedDirectory) {
 }
 /** @param {Run["nodes"]} nodes @param {Iterable<string>} roots */
 export function dependencies(nodes, roots) {
-	const ids = new Set(roots);
-	for (const id of ids) {
-		const n = nodes[id] ?? fail("unknown_grain", `Missing required output: ${id}`);
-		for (const dep of liveNeeds(n)) ids.add(dep);
-	}
-	return ids;
+	return workGraph(nodes).upstream(roots);
 }
 
 /** Undefined means not ready; an empty map is a ready writer with no prerequisites.
@@ -148,6 +148,22 @@ const blockedInput = (run, n) => [...dependencies(run.nodes, [n.grain.id])].some
 /** @param {Run} run @param {Node} n */
 export const actionable = (run, n) => working(n) || n.state === "waiting" && !blockedInput(run, n);
 
+/** Lifetime assignments still needed by the admitted DAG, not occupied worker slots.
+ * Propagate unknown/unavailable inputs downstream once, including through diamonds.
+ * @param {Run["nodes"]} nodes */
+export function queuedWriters(nodes) {
+	const all=Object.values(nodes), held=new Set(all.filter(n=>n.state==="idle" || n.state==="blocked").map(n=>n.grain.id));
+	if (held.size) {
+		/** @type {Map<string,string[]>} */ const consumers=new Map();
+		for (const n of all) for (const id of liveNeeds(n)) {
+			const list=consumers.get(id);
+			if (list) list.push(n.grain.id);else consumers.set(id,[n.grain.id]);
+		}
+		for (const id of held) for (const consumer of consumers.get(id)??[]) held.add(consumer);
+	}
+	return all.filter(n=>n.state==="waiting" && !held.has(n.grain.id)).length;
+}
+
 /** In a goal run the product check verifies a checkpoint, not a final delivery.
  * One-off runs still wait for all actionable outputs (every output for a seed).
  * @param {Run} run @param {string|undefined} target @param {number} remaining */
@@ -167,8 +183,8 @@ export function productOutputs(run, target, remaining) {
 	if (changed || run.goal && (run.goal.target !== target || !run.products.length && run.join?.commit === target)) return outputs;
 }
 
-/** @param {Run["nodes"]} nodes */
-export function validateNodes(nodes) {
+/** @param {Run["nodes"]} nodes @param {{changed:string[],removed:Iterable<string>}} [edit] */
+export function validateNodes(nodes,edit) {
 	const all=Object.values(nodes), cut=all.some(n=>n.retained || n.successor);
 	if (cut) for (const [index,n] of all.entries()) {
 		disjoint(roots(n.grain.directory));
@@ -177,16 +193,29 @@ export function validateNodes(nodes) {
 			disjoint([...roots(n.grain.directory),...roots(other.grain.directory)]);
 		}
 	}
-	validateGraph(all.map(n=>({...n.grain,needs:liveNeeds(n)})),!cut);
+	else disjoint(all.flatMap(n=>roots(n.grain.directory)));
+	const graph=workGraph(nodes);
+	if (edit) graph.validateEdit(edit.changed,edit.removed,()=>Object.keys(nodes));
+	else {
+		names(all.map(n=>n.grain.id),"grain");
+		graph.validate(Object.keys(nodes));
+	}
 }
 
-/** A new token, report, or label does not change the job. The charter pins the spec and interface for this directory.
- * @param {Node["grain"]} g @param {string} base @param {Node["inputs"]} inputs */
-export const workKey = (g, base, inputs) => digest([base, g.directory, g.task, g.check, [...g.needs].sort(), inputs, ...(g.revision && g.revision !== base ? [g.revision] : [])]);
+/** The effective inputs are the entire versioned upstream closure. Older keys used the direct edge list.
+ * @param {Node["grain"]} g @param {string} base @param {Node["inputs"]} inputs @param {string[]} [edges] */
+export const workKey = (g, base, inputs, edges=Object.keys(inputs??{})) => digest([base, g.directory, g.task, g.check, [...edges].sort(), inputs, ...(g.revision && g.revision !== base ? [g.revision] : [])]);
 
 /** @param {Run} run @param {Node["grain"]} g @param {string} base @param {Node["inputs"]} inputs */
 export function requireNewWork(run, g, base, inputs) {
-	if (inputs && run.goal?.tried?.includes(workKey(g, base, inputs)))
+	if (!inputs || !run.goal?.tried?.length) return;
+	const tried=new Set(run.goal.tried);
+	// Older keys include the direct edges. Try the journaled spellings for this task too:
+	// adding a shortcut to an already pinned ancestor doesn't change the writer's inputs.
+	const duplicate=tried.has(workKey(g,base,inputs)) || Object.keys(inputs).length>1 && (tried.has(workKey(g,base,inputs,g.needs)) ||
+		run.effects.some(e=>e.kind==="scout" && e.observation?.grains.some(old=>typeof old!=="string" && old.task===g.task &&
+			old.check===g.check && sameScope(old.directory,g.directory) && tried.has(workKey(g,base,inputs,old.needs)))));
+	if (duplicate)
 		fail("no_progress", `${g.directory}: this assignment with these inputs already reproduced a failing tree. Reuse its checked output or propose different work.`);
 }
 
@@ -220,9 +249,15 @@ export function superseded(current, ids) {
 /** @param {unknown} value @returns {Proposal} */
 export function proposal(value) {
 	const g = record(value);
-	fields(g, ["id", "task", "directory", "check", "needs"]);
+	fields(g, ["id", "task", "directory", "check", "needs", "prior"]);
+	/** @type {Proposal["prior"]} */ let prior;
+	if (g.prior==="independent" || g.prior==="unavailable") prior=g.prior;
+	else if (g.prior!==undefined) {
+		const p=record(g.prior);fields(p,["clause"]);
+		prior={clause:text(p.clause,"verbatim prior-read clause in the charter")};
+	}
 	return { id: name(g.id, "grain"), task: text(g.task, "missing behavior"), ...assignmentDirectory(g.directory),
-		check: relative(g.check), needs: names(g.needs === undefined ? [] : g.needs, "required output") };
+		check: relative(g.check), needs: names(g.needs === undefined ? [] : g.needs, "required output"), ...(prior && {prior}) };
 }
 
 /** @param {Run["nodes"]} current @param {(string|import("./model.js").Output)[]} grains */
@@ -278,6 +313,6 @@ export function revise(current, squad, report, review, replaceable = new Set()) 
 	for (const g of added) nodes[g.id] = waiting(g, review);
 	const conflict = displacedInputs(current, added);
 	if (conflict) fail("displaced_input", conflict.reason);
-	validateNodes(nodes);
+	validateNodes(nodes,{changed:added.map(g=>g.id),removed:retired.remove});
 	return { nodes, direct: remove, deferred: retired.deferred };
 }

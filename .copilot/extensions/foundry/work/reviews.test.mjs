@@ -310,7 +310,7 @@ for (const scenario of ["repair","recover omitted source","unsupported","cited s
 	assert.deepEqual(end.nodes.find(n=>n.worker===peer.id),before.nodes.find(n=>n.worker===peer.id));
 });
 
-for (const scenario of ["manual renewal","reader 64 recovery","Autopilot renewal","Allow All renewal","Autopilot with a product question","Interactive with a product question","new approval","declined","unanswered","missing input pin","target moved during preflight","owned scope with a checked consumer"])
+for (const scenario of ["manual renewal","reader 64 recovery","policy signal","Autopilot renewal","Allow All renewal","Autopilot with a product question","Interactive with a product question","new approval","declined","unanswered","missing input pin","target moved during preflight","owned scope with a checked consumer"])
 test(`renew a superseded source comparison on its original run after a disjoint writer joins: ${scenario}`, async t => {
 	const run = "labels", plan = ".foundry/labels.json", file = "labels/spec/sample", directory = "labels/output";
 	const ids = ["data","labels","palette"], unit = "unit.mjs";
@@ -366,6 +366,25 @@ test(`renew a superseded source comparison on its original run after a disjoint 
 	assert.equal(git(f.root,"diff","--name-only",first.commit,current.commit),"palette/output/value");
 	if (scenario!=="new approval") {
 		assert.equal(review?.state,"blocked"); assert.ok(!blocked.nodes.some(n=>n.grain==="units"));
+	}
+	if (scenario==="policy signal") {
+		let allowed=false;
+		/** @type {Set<()=>void>} */ const ticks=new Set();
+		const owner=f.runtime(f.root,{watchRecovery:f=>{ticks.add(f);return ()=>{ticks.delete(f);};},
+			permissionBlocker:async()=>allowed?null:{scope:"session",message:"Manual permissions"}
+		},createRuntime);
+		const checks=[...f.checks], scouts=f.scouts.length;
+		owner.sessionStart("owner",f.root);
+		const pulse=async()=>{for(const fn of ticks)fn();await owner.flush();await f.settle();};
+		for(let i=0;i<8;i++)await pulse();
+		assert.equal(owner.inspect({run},"owner").reviews.find(r=>r.id===old.id)?.renewal?.state,"needed");
+		allowed=true;for(let i=0;i<10;i++)await pulse();
+		const active=owner.inspect({run},"owner"), saved=active.reviews.find(r=>r.id===old.id);
+		assert.equal(saved?.renewal?.state,"approved");assert.deepEqual(f.checks,checks);assert.equal(f.scouts.length,scouts);
+		const w=f.workers.get(active.nodes.find(n=>n.review===old.id)?.worker??"");assert.ok(w);
+		put(w.cwd,`${directory}/value`,"units");await f.runtime(w.cwd,{},createRuntime).operation("submit",{run,token:w.token},w.id);
+		const done=owner.inspect({run},"owner");assert.ok(done.qualified);assert.equal(git(f.root,"show",`${done.qualified}:palette/output/value`),"blue");
+		return;
 	}
 	if (scenario!=="manual renewal") {
 		const question="Which color should the legend use?";
@@ -660,8 +679,9 @@ console.log(${JSON.stringify(scenario === "step observed" ? `${step}: passed` : 
 				const ctx={sessionId:"owner"},hook={...ctx,timestamp:new Date(),workingDirectory:f.root};
 				await entry.hooks?.onSessionStart?.({...hook,source:"startup"},ctx);
 				t.after(()=>entry.hooks?.onSessionEnd?.({...hook,reason:"complete"},ctx));
-				const name="foundry_reuse", handler=entry.tools?.find((/** @type {import("@github/copilot-sdk").Tool} */ tool)=>tool.name===name)?.handler; assert.ok(handler);
-				const call=()=>handler(args,{...ctx,toolName:name,toolCallId:`reuse-${execution}-${mode}-${restricted}`,arguments:args});
+				const name="foundry_grant", handler=entry.tools?.find((/** @type {import("@github/copilot-sdk").Tool} */ tool)=>tool.name===name)?.handler; assert.ok(handler);
+				const {run:id,...reuse}=args,request={run:id,reuse};
+				const call=()=>handler(request,{...ctx,toolName:name,toolCallId:`reuse-${execution}-${mode}-${restricted}`,arguments:request});
 				assert.match(JSON.stringify(await call()),/not approved/); assert.equal(prompts,1);
 				if (scenario === "autopilot reuse") execution="autopilot";
 				mode="allow-all"; restricted=true;

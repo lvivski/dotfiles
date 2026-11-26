@@ -78,6 +78,7 @@ export function nodeFact(n, {receipts,unconfirmed,attempts,summary}) {
 	const latest=n.state==="blocked" && n.check && summary.checkpoint
 		? attempts.get(n.grain.id)?.findLast(a=>a.original===n.check && a.commit===summary.checkpoint) : undefined;
 	return { grain: n.grain.id, directory: n.grain.directory, task: n.grain.task, requires: liveNeeds(n), evaluator: n.grain.check,
+		...(!n.grain.task && {specification:n.grain.specification}),
 		...(n.retained ? {ownership:grant(n)} : {}),
 		...(n.successor ? {successor:n.successor} : {}),
 		...(n.restoration ? {restoration:n.restoration} : {}),
@@ -117,6 +118,7 @@ export function projectBoard(s, owner) {
 			reason: q.delivery?.status === "unavailable" ? q.delivery.reason : undefined })),
 		nodes: s.nodes.map(n => ({
 			id: n.grain, task: n.task ?? "", directory: scopeLabel(n.directory), needs: n.requires,
+			...(n.specification && {specification:n.specification}),
 			state: n.writerBinding === "bound" ? "assigned" : n.writerBinding === "unconfirmed" ? "unconfirmed" : n.writerBinding === "pending" ? "starting" : n.state,
 			reason: n.reason ?? "", check: n.evaluator, checked: n.checked ?? null,
 			result: n.receipt ? { commit: n.receipt.commit, exit: n.receipt.exit } : null,

@@ -27,6 +27,7 @@ export interface Output {
 	revision?: string;
 	check: string;
 	needs: string[];
+	prior?: "independent" | "unavailable" | { clause:string };
 }
 
 export interface Grain extends Output {
@@ -62,6 +63,7 @@ export interface Policy {
 	source: string;
 	sharedBrief?: string;
 	base: string;
+	contractTarget?: string;
 	productCheck: string;
 	ownership?: "exact-files" | "retain-except-transferred";
 	goalCheck?: string;
@@ -168,6 +170,7 @@ export type DiscoveryLead = { receipt: string; checkpoint: string; priorReview?:
 	({ missing: string; pending?: never } | { pending: string; missing?: never });
 
 export interface Review extends Dispatch {
+	providerRecovery?: "needed"|"claimed";
 	kind: "scout";
 	tool: "workflow";
 	state: "ready" | "issued" | "uncertain" | "suspended" | "reported" | "observed" | "blocked" | "deferred";
@@ -198,6 +201,8 @@ export type BlockerSignal = { id: string; directory: string } & ({ blocked: numb
 export interface Attribution { receipt: string; id: string; directory: string; blocked: number; excerpt: string }
 
 export interface Receipt {
+	resolutionDigest?:string;
+	components?:Record<string,{check:string;exit:number|null}>;
 	completedAt?: number;
 	commit: string;
 	check: string;
@@ -281,6 +286,7 @@ export interface CandidateReuse {
 }
 
 export interface Rerun {
+	observedTarget?:string;
 	of:string;
 	checkpoint:string;
 	candidate:string;
@@ -300,6 +306,15 @@ export interface Delivery {
 	error?:string;
 }
 
+export interface Resolution {
+	file:string;
+	mode:"100644"|"100755";
+	base:string;
+	checkpoint:string;
+	target:string;
+	result:string;
+}
+
 export type Effect = NativeCall | Review;
 
 export interface Run {
@@ -312,12 +327,13 @@ export interface Run {
 	pendingReviewNotes?: (ReviewNote & { squad: string; after: number })[];
 	attributions?: Attribution[];
 	repins?: { from: string; revision: string; files: string[] }[];
-	productRepins?: { from: string; revision: string; files: string[]; checkpoint: string; goal: string; recheck: string; ownership?: "retain-except-transferred" }[];
+	productRepins?: { from: string; revision: string; files: string[]; checkpoint: string; goal: string; recheck: string; ownership?: "retain-except-transferred"; targetFrom?:string; acceptance?:string; resolutions?:Resolution[] }[];
 	policy: Policy;
 	scheduling?: { revision: number; workers?: number; checkpointReviews: boolean };
 	activatedAt: number;
 	active: boolean;
 	pauseReason?: string;
+	policyHold?: {issuer:string; effect:string; token:string};
 	nodes: Record<string, Node>;
 	effects: Effect[];
 	products: Product[];

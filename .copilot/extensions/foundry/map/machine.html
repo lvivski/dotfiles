@@ -1,0 +1,68 @@
+<!doctype html>
+<!-- A statechart workbench: the diagram is both the model and the simulation control.
+     The blue configuration is active; inspection alone never changes it. -->
+<html lang="en">
+<head>
+	<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+	<title>Foundry · State explorer</title>
+	<link rel="stylesheet" href="./style.css"><link rel="stylesheet" href="./studio.css">
+	<script type="module" src="./map/machine.mjs"></script>
+</head>
+<body class="studio">
+<svg class="symbols" aria-hidden="true">
+	<symbol id="chart-icon" viewBox="0 0 24 24"><rect x="2.5" y="8.5" width="6" height="7" rx="1.3"/><rect x="16" y="2.5" width="5.5" height="6" rx="1.2"/><rect x="16" y="15.5" width="5.5" height="6" rx="1.2"/><path d="M8.5 12H11a2 2 0 0 0 2-2V7a1.5 1.5 0 0 1 1.5-1.5H16m-5 6a2 2 0 0 1 2 2v3a1.5 1.5 0 0 0 1.5 1.5H16"/></symbol>
+	<symbol id="fit-icon" viewBox="0 0 20 20"><path d="M3 8V3h5m4 0h5v5m0 4v5h-5m-4 0H3v-5"/></symbol>
+	<symbol id="reset-icon" viewBox="0 0 20 20"><path d="M3 4v5h5m-4.5-1a6.5 6.5 0 1 1 .8 6.7"/></symbol>
+	<symbol id="back-icon" viewBox="0 0 20 20"><path d="m12.5 4.5-5.5 5.5 5.5 5.5"/></symbol>
+	<symbol id="forward-icon" viewBox="0 0 20 20"><path d="m7.5 4.5 5.5 5.5-5.5 5.5"/></symbol>
+	<symbol id="locate-icon" viewBox="0 0 20 20"><circle cx="10" cy="10" r="5.5"/><circle cx="10" cy="10" r="1.5"/><path d="M10 1v3m0 12v3M1 10h3m12 0h3"/></symbol>
+</svg>
+<header class="bar">
+	<a id="return-to-work" href="./" title="Return to the work graph" aria-label="Return to the work graph" hidden>←</a>
+	<svg class="studio-mark" aria-hidden="true"><use href="#chart-icon"/></svg>
+	<h1>State explorer</h1><span class="divider" aria-hidden="true"></span>
+	<select id="machine" aria-label="Machine" disabled></select>
+	<span class="sim-label" title="Local simulation. No factory actions run."><i></i> Simulation</span>
+	<button id="reset" class="tool" title="Reset this simulation" aria-label="Reset this simulation" disabled><svg><use href="#reset-icon"/></svg></button>
+	<button id="inspector-toggle" class="tool" title="Toggle inspector" aria-label="Toggle inspector" aria-expanded="true" aria-controls="inspector-panel">
+		<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2" y="3" width="16" height="14" rx="2"/><path class="dock-right" d="M12 3v14"/><path class="dock-bottom" d="M2 12h16"/></svg>
+	</button>
+</header>
+<p id="notice" role="status">Loading the machine definitions…</p>
+<main class="workbench" id="workbench" hidden>
+	<section class="plot" aria-label="Statechart workspace">
+		<a class="skip" href="#pane">Skip to inspector</a>
+		<svg id="diagram" role="group" tabindex="0" aria-label="Interactive statechart. Select a state to inspect it or send a highlighted event. Arrow keys pan; plus and minus zoom; zero fits the chart.">
+			<defs>
+				<marker id="tip" viewBox="0 0 9 8" refX="9" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L9 4 L0 8z"/></marker>
+				<marker id="hot-tip" viewBox="0 0 9 8" refX="9" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L9 4 L0 8z"/></marker>
+			</defs>
+			<g id="world"></g>
+		</svg>
+		<div class="camera-tools" role="group" aria-label="Diagram navigation">
+			<button id="smaller" class="tool zoom-step" aria-label="Zoom out" title="Zoom out (−)">−</button>
+			<output id="zoom" aria-label="Zoom level">100%</output>
+			<button id="larger" class="tool zoom-step" aria-label="Zoom in" title="Zoom in (+)">+</button>
+			<span class="divider"></span>
+			<button id="fit" class="tool" aria-label="Fit chart" title="Fit chart (0)"><svg><use href="#fit-icon"/></svg></button>
+			<button id="locate" class="tool" aria-label="Locate active state" title="Locate active state"><svg><use href="#locate-icon"/></svg></button>
+		</div>
+		<svg id="overview" aria-label="Diagram overview" role="img"></svg>
+	</section>
+	<aside class="inspector" id="inspector-panel" aria-label="Simulation inspector">
+		<div class="tabs" role="tablist" aria-label="Inspector views">
+			<button id="tab-state" role="tab" aria-controls="pane" aria-selected="true">State</button>
+			<button id="tab-events" role="tab" aria-controls="pane" aria-selected="false" tabindex="-1">Events <span id="event-count">0</span></button>
+			<button id="tab-definition" role="tab" aria-controls="pane" aria-selected="false" tabindex="-1">Definition</button>
+		</div>
+		<div id="pane" role="tabpanel" aria-labelledby="tab-state" tabindex="0"></div>
+		<div class="transport" aria-label="Simulation history">
+			<button id="back" class="tool" aria-label="Previous step" title="Previous step" disabled><svg><use href="#back-icon"/></svg></button>
+			<button id="forward" class="tool" aria-label="Next step" title="Next step" disabled><svg><use href="#forward-icon"/></svg></button>
+			<span id="step-number">Step 0</span>
+		</div>
+	</aside>
+</main>
+<footer class="statusline"><span id="configuration"></span><span>Local simulation only</span></footer>
+<span class="sr-only" id="announce" aria-live="polite"></span>
+</body></html>

@@ -1,0 +1,3225 @@
+{
+  "charts": {
+    "machines": {
+      "assignment": {
+        "id": "assignment",
+        "initial": "idle",
+        "states": {
+          "idle": [
+            {
+              "on": "request",
+              "target": "waiting",
+              "description": "Put the requested output in the queue for input and writer admission."
+            }
+          ],
+          "waiting": [
+            {
+              "on": "staff",
+              "target": "writing",
+              "description": "Reserve the writer's scoped generation on its checked inputs."
+            },
+            {
+              "on": "stop",
+              "target": "blocked",
+              "description": "Record why this assignment cannot proceed under its current grant."
+            }
+          ],
+          "writing": [
+            {
+              "on": "submit",
+              "target": "checking",
+              "description": "Send the submitted candidate to its component evaluator."
+            },
+            {
+              "on": "stop",
+              "target": "blocked",
+              "description": "Record why this assignment cannot proceed under its current grant."
+            }
+          ],
+          "checking": [
+            {
+              "on": "component",
+              "target": "published",
+              "description": "Make the passing candidate available for integration.",
+              "action": "publish",
+              "when": [
+                "passed"
+              ]
+            },
+            {
+              "on": "component",
+              "target": "blocked",
+              "description": "Keep the incomplete observation without treating it as a verdict.",
+              "action": "incomplete",
+              "when": [
+                "incomplete"
+              ]
+            },
+            {
+              "on": "component",
+              "target": "blocked",
+              "description": "Stop because the run has no assignment budget for repair.",
+              "action": "unfunded",
+              "when": [
+                "unfunded"
+              ]
+            },
+            {
+              "on": "component",
+              "target": "blocked",
+              "description": "Keep the failed attestation: its grant forbids changing the bytes.",
+              "action": "attestation",
+              "when": [
+                "attestation"
+              ]
+            },
+            {
+              "on": "component",
+              "target": "blocked",
+              "description": "Preserve the candidate and failure when the repair allowance is spent.",
+              "action": "exhausted",
+              "when": [
+                "exhausted"
+              ]
+            },
+            {
+              "on": "component",
+              "target": "waiting",
+              "description": "Queue the permitted repair; the queue itself is not a write grant.",
+              "action": "repair",
+              "when": []
+            },
+            {
+              "on": "stop",
+              "target": "blocked",
+              "description": "Record why this assignment cannot proceed under its current grant."
+            },
+            {
+              "on": "paired-pass",
+              "target": "published",
+              "description": "Publish the exact output supported by the fresh component observation."
+            }
+          ],
+          "published": [
+            {
+              "on": "integrate",
+              "target": "qualified",
+              "description": "Record this output's inclusion in the checked product, not a release verdict."
+            },
+            {
+              "on": "repeat",
+              "target": "repeated",
+              "description": "Retain the checked output without treating an unchanged product as progress."
+            },
+            {
+              "on": "repair",
+              "target": "blocked",
+              "description": "Keep the failed attestation: its grant forbids changing the bytes.",
+              "action": "attestation",
+              "when": [
+                "attestation"
+              ]
+            },
+            {
+              "on": "repair",
+              "target": "blocked",
+              "description": "Preserve the candidate and failure when the repair allowance is spent.",
+              "action": "exhausted",
+              "when": [
+                "exhausted"
+              ]
+            },
+            {
+              "on": "repair",
+              "target": "waiting",
+              "description": "Queue the permitted repair; the queue itself is not a write grant.",
+              "action": "repair",
+              "when": []
+            },
+            {
+              "on": "stop",
+              "target": "blocked",
+              "description": "Record why this assignment cannot proceed under its current grant."
+            },
+            {
+              "on": "staff",
+              "target": "writing",
+              "description": "Reserve the writer's scoped generation on its checked inputs."
+            },
+            {
+              "on": "paired-pass",
+              "target": "published",
+              "description": "Publish the exact output supported by the fresh component observation."
+            }
+          ],
+          "qualified": [
+            {
+              "on": "integrate",
+              "target": "qualified",
+              "description": "Record this output's inclusion in the checked product, not a release verdict."
+            },
+            {
+              "on": "repair",
+              "target": "blocked",
+              "description": "Keep the failed attestation: its grant forbids changing the bytes.",
+              "action": "attestation",
+              "when": [
+                "attestation"
+              ]
+            },
+            {
+              "on": "repair",
+              "target": "blocked",
+              "description": "Preserve the candidate and failure when the repair allowance is spent.",
+              "action": "exhausted",
+              "when": [
+                "exhausted"
+              ]
+            },
+            {
+              "on": "repair",
+              "target": "waiting",
+              "description": "Queue the permitted repair; the queue itself is not a write grant.",
+              "action": "repair",
+              "when": []
+            },
+            {
+              "on": "request",
+              "target": "waiting",
+              "description": "Put the requested output in the queue for input and writer admission."
+            }
+          ],
+          "repeated": [
+            {
+              "on": "integrate",
+              "target": "qualified",
+              "description": "Record this output's inclusion in the checked product, not a release verdict."
+            },
+            {
+              "on": "repair",
+              "target": "blocked",
+              "description": "Keep the failed attestation: its grant forbids changing the bytes.",
+              "action": "attestation",
+              "when": [
+                "attestation"
+              ]
+            },
+            {
+              "on": "repair",
+              "target": "blocked",
+              "description": "Preserve the candidate and failure when the repair allowance is spent.",
+              "action": "exhausted",
+              "when": [
+                "exhausted"
+              ]
+            },
+            {
+              "on": "repair",
+              "target": "waiting",
+              "description": "Queue the permitted repair; the queue itself is not a write grant.",
+              "action": "repair",
+              "when": []
+            },
+            {
+              "on": "request",
+              "target": "waiting",
+              "description": "Put the requested output in the queue for input and writer admission."
+            }
+          ],
+          "blocked": [
+            {
+              "on": "staff",
+              "target": "writing",
+              "description": "Reserve the writer's scoped generation on its checked inputs."
+            },
+            {
+              "on": "recheck",
+              "target": "checking",
+              "description": "Observe the retained candidate under an authorized check."
+            },
+            {
+              "on": "repair",
+              "target": "blocked",
+              "description": "Keep the failed attestation: its grant forbids changing the bytes.",
+              "action": "attestation",
+              "when": [
+                "attestation"
+              ]
+            },
+            {
+              "on": "repair",
+              "target": "blocked",
+              "description": "Preserve the candidate and failure when the repair allowance is spent.",
+              "action": "exhausted",
+              "when": [
+                "exhausted"
+              ]
+            },
+            {
+              "on": "repair",
+              "target": "waiting",
+              "description": "Queue the permitted repair; the queue itself is not a write grant.",
+              "action": "repair",
+              "when": []
+            },
+            {
+              "on": "paired-pass",
+              "target": "published",
+              "description": "Publish the exact output supported by the fresh component observation."
+            },
+            {
+              "on": "deliver",
+              "target": "qualified",
+              "description": "Record inclusion after the separately approved delivery checks pass."
+            },
+            {
+              "on": "stop",
+              "target": "blocked",
+              "description": "Record why this assignment cannot proceed under its current grant."
+            }
+          ]
+        },
+        "info": {
+          "description": "Tracks one scoped output from request through checking and integration.",
+          "states": {
+            "idle": "The output is known but has not been requested.",
+            "waiting": "The output or its repair has been requested. Inputs, a reservation or permission may still be missing.",
+            "writing": "A writer reservation owns this generation. Its native binding is a separate fact.",
+            "checking": "The candidate is frozen for its component evaluation; the writer cannot keep editing that submission.",
+            "published": "The component check supports this candidate. It is not yet an integrated product.",
+            "qualified": "This output was included in a checked product. The whole run has a separate release decision.",
+            "repeated": "This checked output would reproduce an already assessed product.",
+            "blocked": "A recorded stop prevents this assignment from continuing on its current terms."
+          }
+        }
+      },
+      "review": {
+        "id": "review",
+        "initial": "ready",
+        "states": {
+          "ready": [
+            {
+              "on": "issue",
+              "target": "issued",
+              "description": "Claim this reservation before making its native request."
+            },
+            {
+              "on": "block",
+              "target": "blocked",
+              "description": "Preserve the review and the reason its observation cannot proceed."
+            }
+          ],
+          "issued": [
+            {
+              "on": "unconfirmed",
+              "target": "uncertain",
+              "description": "Keep the original request observable when its reply cannot yet be confirmed."
+            },
+            {
+              "on": "block",
+              "target": "blocked",
+              "description": "Preserve the review and the reason its observation cannot proceed."
+            },
+            {
+              "on": "requeue",
+              "target": "ready",
+              "description": "Return an eligible review to the queue on confirmed evidence, not a missing reply."
+            },
+            {
+              "on": "bind",
+              "target": "issued",
+              "description": "Associate this review with its confirmed native workflow."
+            },
+            {
+              "on": "suspend",
+              "target": "suspended",
+              "description": "Remember the halted workflow for possible continuation on its original identity."
+            },
+            {
+              "on": "report",
+              "target": "reported",
+              "description": "Save the scout's complete observation before deciding whether to admit it."
+            }
+          ],
+          "uncertain": [
+            {
+              "on": "unconfirmed",
+              "target": "uncertain",
+              "description": "Keep the original request observable when its reply cannot yet be confirmed."
+            },
+            {
+              "on": "block",
+              "target": "blocked",
+              "description": "Preserve the review and the reason its observation cannot proceed."
+            },
+            {
+              "on": "requeue",
+              "target": "ready",
+              "description": "Return an eligible review to the queue on confirmed evidence, not a missing reply."
+            },
+            {
+              "on": "bind",
+              "target": "issued",
+              "description": "Associate this review with its confirmed native workflow."
+            },
+            {
+              "on": "suspend",
+              "target": "suspended",
+              "description": "Remember the halted workflow for possible continuation on its original identity."
+            },
+            {
+              "on": "report",
+              "target": "reported",
+              "description": "Save the scout's complete observation before deciding whether to admit it."
+            }
+          ],
+          "suspended": [
+            {
+              "on": "unconfirmed",
+              "target": "uncertain",
+              "description": "Keep the original request observable when its reply cannot yet be confirmed."
+            },
+            {
+              "on": "block",
+              "target": "blocked",
+              "description": "Preserve the review and the reason its observation cannot proceed."
+            },
+            {
+              "on": "requeue",
+              "target": "ready",
+              "description": "Return an eligible review to the queue on confirmed evidence, not a missing reply."
+            },
+            {
+              "on": "bind",
+              "target": "issued",
+              "description": "Associate this review with its confirmed native workflow."
+            },
+            {
+              "on": "suspend",
+              "target": "suspended",
+              "description": "Remember the halted workflow for possible continuation on its original identity."
+            },
+            {
+              "on": "report",
+              "target": "reported",
+              "description": "Save the scout's complete observation before deciding whether to admit it."
+            }
+          ],
+          "reported": [
+            {
+              "on": "admit",
+              "target": "observed",
+              "description": "Apply the saved observation to discovery on validated inputs."
+            },
+            {
+              "on": "defer",
+              "target": "deferred",
+              "description": "Keep the observation without displacing work that is still needed."
+            },
+            {
+              "on": "block",
+              "target": "blocked",
+              "description": "Preserve the review and the reason its observation cannot proceed."
+            }
+          ],
+          "blocked": [
+            {
+              "on": "admit",
+              "target": "observed",
+              "description": "Apply the saved observation to discovery on validated inputs."
+            },
+            {
+              "on": "defer",
+              "target": "deferred",
+              "description": "Keep the observation without displacing work that is still needed."
+            },
+            {
+              "on": "block",
+              "target": "blocked",
+              "description": "Preserve the review and the reason its observation cannot proceed."
+            },
+            {
+              "on": "producers-declared",
+              "target": "reported",
+              "description": "Reconsider the original missing-producer report on its still-current inputs.",
+              "when": [
+                "inputsCurrent"
+              ]
+            }
+          ],
+          "observed": [
+            {
+              "on": "admit",
+              "target": "observed",
+              "description": "Apply the saved observation to discovery on validated inputs."
+            },
+            {
+              "on": "defer",
+              "target": "deferred",
+              "description": "Keep the observation without displacing work that is still needed."
+            }
+          ],
+          "deferred": []
+        },
+        "info": {
+          "description": "Turns one charter review into an evidence-backed scheduling decision.",
+          "states": {
+            "ready": "The charter is queued for a scout.",
+            "issued": "The scout request is outstanding or bound to its native workflow.",
+            "uncertain": "The original scout launch is unconfirmed; another scout cannot stand in for it.",
+            "suspended": "The bound workflow halted. Its cause and inputs determine whether it may continue.",
+            "reported": "The report was saved but has not yet been admitted.",
+            "blocked": "The review has a recorded obstacle; any saved evidence stays attached.",
+            "observed": "The charter's observation has been admitted. It is not a product verdict.",
+            "deferred": "The observation was set aside rather than replacing work still in use."
+          }
+        }
+      },
+      "call": {
+        "id": "call",
+        "initial": "ready",
+        "states": {
+          "ready": [
+            {
+              "on": "issue",
+              "target": "issued",
+              "description": "Claim this reservation before making its native request."
+            },
+            {
+              "on": "withdraw",
+              "target": "withdrawn",
+              "description": "Remove an unissued reservation that is no longer needed."
+            }
+          ],
+          "ordinary": [
+            {
+              "on": "issue",
+              "target": "issued",
+              "description": "Claim this reservation before making its native request."
+            }
+          ],
+          "issued": [
+            {
+              "on": "unconfirmed",
+              "target": "uncertain",
+              "description": "Keep the original request observable when its reply cannot yet be confirmed."
+            },
+            {
+              "on": "deny",
+              "target": "refused",
+              "description": "Record the host's explicit refusal without issuing a replacement."
+            },
+            {
+              "on": "confirm",
+              "target": "done",
+              "description": "Attach the matching completion to this reservation."
+            },
+            {
+              "on": "prepare",
+              "target": "ordinary",
+              "description": "Expose the exact call to its issuer after the automatic route was confirmed disabled."
+            },
+            {
+              "on": "retire",
+              "target": "retired",
+              "description": "Close a proven dead reservation without manufacturing a verdict."
+            }
+          ],
+          "uncertain": [
+            {
+              "on": "unconfirmed",
+              "target": "uncertain",
+              "description": "Keep the original request observable when its reply cannot yet be confirmed."
+            },
+            {
+              "on": "deny",
+              "target": "refused",
+              "description": "Record the host's explicit refusal without issuing a replacement."
+            },
+            {
+              "on": "confirm",
+              "target": "done",
+              "description": "Attach the matching completion to this reservation."
+            },
+            {
+              "on": "prepare",
+              "target": "ordinary",
+              "description": "Expose the exact call to its issuer after the automatic route was confirmed disabled."
+            },
+            {
+              "on": "retire",
+              "target": "retired",
+              "description": "Close a proven dead reservation without manufacturing a verdict."
+            }
+          ],
+          "done": [],
+          "refused": [],
+          "retired": [],
+          "withdrawn": []
+        },
+        "info": {
+          "description": "Journals one external request so a missing reply cannot cause duplicate work.",
+          "states": {
+            "ready": "The call is reserved but has not been issued.",
+            "ordinary": "The issuing session must make the exact prepared call through its ordinary tool route.",
+            "issued": "The request was claimed; wait for evidence of its original completion.",
+            "uncertain": "Delivery or completion is unknown. Look up the original call instead of replaying it.",
+            "done": "The matching native completion was recorded. That alone is not a passing evaluator verdict.",
+            "refused": "The host explicitly refused this request.",
+            "retired": "The reservation was closed on evidence that its runner ended without a verdict.",
+            "withdrawn": "The reservation was removed before it was issued."
+          }
+        }
+      },
+      "activity": {
+        "id": "activity",
+        "initial": "active",
+        "states": {
+          "active": [
+            {
+              "on": "pause",
+              "target": "paused",
+              "description": "Stop new work without discarding issued calls or checked outputs."
+            },
+            {
+              "on": "resume",
+              "target": "active",
+              "description": "Continue eligible work on the original run under the operator's direction."
+            },
+            {
+              "on": "policy-hold",
+              "target": "held",
+              "description": "Suspend dispatch while the issuing session cannot confirm managed permissions."
+            },
+            {
+              "on": "goal-met",
+              "target": "qualified",
+              "description": "End dispatch after the accepted product meets the release conditions."
+            }
+          ],
+          "held": [
+            {
+              "on": "pause",
+              "target": "paused",
+              "description": "Stop new work without discarding issued calls or checked outputs."
+            },
+            {
+              "on": "resume",
+              "target": "active",
+              "description": "Continue eligible work on the original run under the operator's direction."
+            },
+            {
+              "on": "policy-ready",
+              "target": "active",
+              "description": "Clear only the issuing session's matching permission hold.",
+              "when": [
+                "sameHold"
+              ]
+            }
+          ],
+          "paused": [
+            {
+              "on": "pause",
+              "target": "paused",
+              "description": "Stop new work without discarding issued calls or checked outputs."
+            },
+            {
+              "on": "resume",
+              "target": "active",
+              "description": "Continue eligible work on the original run under the operator's direction."
+            }
+          ],
+          "qualified": [
+            {
+              "on": "pause",
+              "target": "qualified",
+              "description": "Keep the finished product qualified; pausing it creates no new work."
+            }
+          ]
+        },
+        "info": {
+          "description": "Controls whether this run may schedule work.",
+          "states": {
+            "active": "The scheduler may admit work within the current brief, budget and permissions.",
+            "held": "Dispatch is suspended by a recorded permission hold. Its issuer can observe when that same hold clears.",
+            "paused": "The run keeps its work and receipts. Only an operator-directed resume can restart scheduling.",
+            "qualified": "The accepted commit is ready for handoff. No more work is scheduled."
+          }
+        }
+      },
+      "release": {
+        "id": "release",
+        "initial": "absent",
+        "states": {
+          "paused": [
+            {
+              "on": "assess",
+              "action": "wait",
+              "admission": "closed",
+              "reason": "paused",
+              "description": "Keep release and new work on hold.",
+              "when": []
+            }
+          ],
+          "qualified": [
+            {
+              "on": "assess",
+              "action": "wait",
+              "admission": "closed",
+              "reason": "qualified",
+              "description": "Keep the qualified commit available for handoff; no more work is needed.",
+              "when": []
+            }
+          ],
+          "blocked": [
+            {
+              "on": "assess",
+              "action": "wait",
+              "admission": "closed",
+              "reason": "blocked",
+              "description": "Keep the recorded run blocker visible rather than working around it.",
+              "when": []
+            }
+          ],
+          "absent": [
+            {
+              "on": "assess",
+              "action": "none",
+              "admission": "open",
+              "reason": "component-work",
+              "description": "Allow ordinary component work without making a goal decision.",
+              "when": []
+            }
+          ],
+          "product-repin": [
+            {
+              "on": "assess",
+              "action": "wait",
+              "admission": "closed",
+              "reason": "product-repin-target-changed",
+              "description": "Do not apply a product-checker upgrade to a different target.",
+              "when": [
+                "moved"
+              ]
+            },
+            {
+              "on": "assess",
+              "action": "wait",
+              "admission": "closed",
+              "reason": "product-repin-held",
+              "description": "Preserve the milestone hold while the upgraded check is outstanding.",
+              "when": [
+                "held"
+              ]
+            },
+            {
+              "on": "assess",
+              "action": "wait",
+              "admission": "closed",
+              "reason": "awaiting-product-repin",
+              "description": "Wait for the newly pinned product checker to verify the existing checkpoint.",
+              "when": []
+            }
+          ],
+          "superseded": [
+            {
+              "on": "assess",
+              "action": "wait",
+              "admission": "checkpoint",
+              "reason": "superseded-goal",
+              "description": "Let independent work use the checked checkpoint while the original goal call settles.",
+              "when": [
+                "scoped"
+              ]
+            },
+            {
+              "on": "assess",
+              "action": "wait",
+              "admission": "closed",
+              "reason": "superseded-goal",
+              "description": "Wait for the outstanding goal call without issuing another one.",
+              "when": []
+            }
+          ],
+          "pending": [
+            {
+              "on": "assess",
+              "action": "wait",
+              "admission": "checkpoint",
+              "reason": "awaiting-goal-receipt",
+              "description": "Let independent work use the checked checkpoint while the original goal call settles.",
+              "when": [
+                "scoped"
+              ]
+            },
+            {
+              "on": "assess",
+              "action": "wait",
+              "admission": "closed",
+              "reason": "awaiting-goal-receipt",
+              "description": "Wait for the outstanding goal call without issuing another one.",
+              "when": []
+            }
+          ],
+          "retired": [
+            {
+              "on": "assess",
+              "action": "none",
+              "admission": "open",
+              "reason": "integrate-retained-work",
+              "description": "Allow retained work to integrate without attributing a verdict to the retired runner.",
+              "when": []
+            }
+          ],
+          "rejoining": [
+            {
+              "on": "assess",
+              "action": "none",
+              "admission": "join-only",
+              "reason": "verify-current-product",
+              "description": "Verify the assembled product without staffing new work.",
+              "when": []
+            }
+          ],
+          "repin": [
+            {
+              "on": "assess",
+              "action": "assess",
+              "admission": "closed",
+              "reason": "evaluator-changed",
+              "description": "Assess the existing product with the newly approved goal evaluator.",
+              "when": []
+            }
+          ],
+          "new-product": [
+            {
+              "on": "assess",
+              "action": "assess",
+              "admission": "closed",
+              "reason": "new-checkpoint",
+              "description": "Assess the goal on the new checkpoint, not the previous commit.",
+              "when": []
+            }
+          ],
+          "incomplete": [
+            {
+              "on": "assess",
+              "action": "undecided",
+              "admission": "closed",
+              "reason": "incomplete-goal",
+              "description": "Report an undecided check rather than treating an interruption as a pass or gap.",
+              "when": []
+            }
+          ],
+          "missing": [
+            {
+              "on": "assess",
+              "action": "wait",
+              "admission": "repaired-checkpoint",
+              "reason": "missing-evidence",
+              "description": "Let scoped work produce a changed join; do not repeat the unavailable observation on unchanged bytes.",
+              "when": [
+                "!retryEvidence",
+                "scoped",
+                "work"
+              ]
+            },
+            {
+              "on": "assess",
+              "action": "wait",
+              "admission": "checkpoint",
+              "reason": "missing-evidence",
+              "description": "Allow independent checkpoint work but do not join or retry the goal.",
+              "when": [
+                "!retryEvidence",
+                "scoped"
+              ]
+            },
+            {
+              "on": "assess",
+              "action": "wait",
+              "admission": "closed",
+              "reason": "missing-evidence",
+              "description": "Keep the same target on hold until the missing observation is supplied.",
+              "when": [
+                "!retryEvidence",
+                "!moved"
+              ]
+            },
+            {
+              "on": "assess",
+              "action": "wait",
+              "admission": "closed",
+              "reason": "missing-evidence",
+              "description": "A target move alone does not justify another observation; no join is pending.",
+              "when": [
+                "!retryEvidence",
+                "!join"
+              ]
+            },
+            {
+              "on": "assess",
+              "action": "wait",
+              "admission": "closed",
+              "reason": "missing-evidence",
+              "description": "A milestone hold prevents integration while goal evidence is missing.",
+              "when": [
+                "!retryEvidence",
+                "held"
+              ]
+            },
+            {
+              "on": "assess",
+              "action": "retry",
+              "admission": "closed",
+              "reason": "retry-evidence",
+              "description": "Request a fresh observation on the unchanged target after the retry is authorized.",
+              "when": [
+                "!moved"
+              ]
+            },
+            {
+              "on": "assess",
+              "action": "none",
+              "admission": "open",
+              "reason": "milestone-held",
+              "description": "Leave the milestone unresolved while eligible work continues.",
+              "when": [
+                "held"
+              ]
+            },
+            {
+              "on": "assess",
+              "action": "assess-target",
+              "admission": "closed",
+              "reason": "new-target",
+              "description": "Assess the moved target directly when no product or assignments need carrying forward.",
+              "when": [
+                "moved",
+                "!product",
+                "idle"
+              ]
+            },
+            {
+              "on": "assess",
+              "action": "rejoin",
+              "admission": "open",
+              "reason": "target-changed",
+              "description": "Assemble retained work on the moved target instead of retrying the old goal.",
+              "when": []
+            }
+          ],
+          "unmet": [
+            {
+              "on": "assess",
+              "action": "none",
+              "admission": "open",
+              "reason": "milestone-held",
+              "description": "Leave the milestone unresolved while eligible work continues.",
+              "when": [
+                "held"
+              ]
+            },
+            {
+              "on": "assess",
+              "action": "assess-target",
+              "admission": "closed",
+              "reason": "new-target",
+              "description": "Assess the moved target directly when no product or assignments need carrying forward.",
+              "when": [
+                "moved",
+                "!product",
+                "idle"
+              ]
+            },
+            {
+              "on": "assess",
+              "action": "rejoin",
+              "admission": "open",
+              "reason": "target-changed",
+              "description": "Bring retained work onto the changed target before judging it.",
+              "when": [
+                "moved"
+              ]
+            },
+            {
+              "on": "assess",
+              "action": "wait",
+              "admission": "closed",
+              "reason": "no-new-information",
+              "description": "Wait for different evidence instead of assessing the same gap again.",
+              "when": [
+                "stalled"
+              ]
+            },
+            {
+              "on": "assess",
+              "action": "none",
+              "admission": "open",
+              "reason": "goal-unmet",
+              "description": "Discover and admit work that addresses the observed gap.",
+              "when": []
+            }
+          ],
+          "met": [
+            {
+              "on": "assess",
+              "action": "none",
+              "admission": "open",
+              "reason": "milestone-held",
+              "description": "Leave the milestone unresolved while eligible work continues.",
+              "when": [
+                "held"
+              ]
+            },
+            {
+              "on": "assess",
+              "action": "assess-target",
+              "admission": "closed",
+              "reason": "new-target",
+              "description": "Assess the moved target directly when no product or assignments need carrying forward.",
+              "when": [
+                "moved",
+                "!product",
+                "idle"
+              ]
+            },
+            {
+              "on": "assess",
+              "action": "rejoin",
+              "admission": "open",
+              "reason": "target-changed",
+              "description": "Bring retained work onto the changed target before judging it.",
+              "when": [
+                "moved"
+              ]
+            },
+            {
+              "on": "assess",
+              "action": "wait",
+              "admission": "closed",
+              "reason": "no-new-information",
+              "description": "Wait for different evidence instead of assessing the same gap again.",
+              "when": [
+                "stalled"
+              ]
+            },
+            {
+              "on": "assess",
+              "action": "wait",
+              "admission": "checkpoint",
+              "reason": "comparison-in-progress",
+              "description": "Let a scoped comparison finish on the checkpoint before release.",
+              "when": [
+                "review",
+                "scoped"
+              ]
+            },
+            {
+              "on": "assess",
+              "action": "wait",
+              "admission": "closed",
+              "reason": "comparison-in-progress",
+              "description": "Wait for the outstanding comparison without admitting new work.",
+              "when": [
+                "review"
+              ]
+            },
+            {
+              "on": "assess",
+              "action": "none",
+              "admission": "open",
+              "reason": "include-admitted-work",
+              "description": "Finish already admitted work before handing off a product.",
+              "when": [
+                "work"
+              ]
+            },
+            {
+              "on": "assess",
+              "action": "wait",
+              "admission": "closed",
+              "reason": "awaiting-baseline-product",
+              "description": "Wait for the already reserved baseline product check.",
+              "when": [
+                "!product",
+                "join"
+              ]
+            },
+            {
+              "on": "assess",
+              "action": "baseline",
+              "admission": "closed",
+              "reason": "verify-baseline-product",
+              "description": "Obtain the independent product pass even when the baseline goal already passes.",
+              "when": [
+                "!product"
+              ]
+            },
+            {
+              "on": "assess",
+              "action": "qualify",
+              "admission": "closed",
+              "reason": "exact-checks-passed",
+              "description": "Hand off the exact commit supported by both current checks.",
+              "when": [
+                "exactProduct",
+                "!join"
+              ]
+            },
+            {
+              "on": "assess",
+              "action": "wait",
+              "admission": "closed",
+              "reason": "awaiting-exact-product",
+              "description": "A goal pass alone does not prove this exact product can be released.",
+              "when": []
+            }
+          ]
+        },
+        "info": {
+          "description": "Decides what work may proceed and whether the exact assembled commit is ready for handoff.",
+          "states": {
+            "paused": "The run is inactive without a qualified product.",
+            "qualified": "The accepted product has already qualified.",
+            "blocked": "A recorded run-level obstacle prevents a release decision.",
+            "absent": "No goal observation has been requested.",
+            "product-repin": "An approved product-checker change still needs its own passing observation.",
+            "superseded": "An earlier goal call is still outstanding or held, but its evaluator is no longer current.",
+            "pending": "The current goal has no settled receipt.",
+            "retired": "The original goal reservation ended without a verdict; its retained work still matters.",
+            "rejoining": "A fresh product check is verifying the assembly before the goal can be assessed again.",
+            "repin": "The goal evidence belongs to an evaluator that has been replaced.",
+            "new-product": "There is a checked product that needs a current goal assessment.",
+            "incomplete": "The goal check ended without a recognized verdict.",
+            "missing": "The evaluator could not observe something the goal requires. This is neither a pass nor a demonstrated gap.",
+            "unmet": "The evaluator demonstrated a gap on the assessed commit.",
+            "met": "The goal passed on the assessed commit. Qualification still depends on the product check, target and outstanding work."
+          }
+        }
+      },
+      "workflow": {
+        "id": "workflow",
+        "initial": "suspended",
+        "states": {
+          "suspended": [
+            {
+              "on": "verified",
+              "action": "continue",
+              "reason": "Continue the same native workflow",
+              "when": [
+                "disconnected",
+                "current",
+                "unused"
+              ]
+            },
+            {
+              "on": "verified",
+              "action": "wait",
+              "reason": "No proven, unused provider recovery",
+              "when": []
+            }
+          ]
+        },
+        "info": {
+          "description": "Decides whether a halted scout can continue on its original workflow identity.",
+          "states": {
+            "suspended": "Verify the cause of the halt, current inputs and unused continuation before continuing the scout."
+          }
+        }
+      },
+      "quiescence": {
+        "id": "quiescence",
+        "initial": "idle",
+        "states": {
+          "idle": [
+            {
+              "on": "inspect",
+              "action": "settled",
+              "reason": "No mutable assignment",
+              "when": []
+            }
+          ],
+          "qualified": [
+            {
+              "on": "inspect",
+              "action": "settled",
+              "reason": "No mutable assignment",
+              "when": []
+            }
+          ],
+          "repeated": [
+            {
+              "on": "inspect",
+              "action": "settled",
+              "reason": "No mutable assignment",
+              "when": []
+            }
+          ],
+          "blocked": [
+            {
+              "on": "inspect",
+              "action": "settled",
+              "reason": "No mutable assignment",
+              "when": []
+            }
+          ],
+          "writing": [
+            {
+              "on": "inspect",
+              "action": "hold",
+              "reason": "Current writer reservation",
+              "when": []
+            }
+          ],
+          "checking": [
+            {
+              "on": "inspect",
+              "action": "hold",
+              "reason": "Current component observation",
+              "when": []
+            }
+          ],
+          "waiting": [
+            {
+              "on": "inspect",
+              "action": "retain",
+              "reason": "Keep the unavailable attempt outside the adopted product",
+              "when": [
+                "retarget",
+                "unissuedUnavailable"
+              ]
+            },
+            {
+              "on": "inspect",
+              "action": "hold",
+              "reason": "A pending assignment still needs scheduler admission",
+              "when": []
+            }
+          ],
+          "published": [
+            {
+              "on": "inspect",
+              "action": "settled",
+              "reason": "Recheck the published output on the adopted assembly",
+              "when": [
+                "retarget"
+              ]
+            },
+            {
+              "on": "inspect",
+              "action": "hold",
+              "reason": "Pending integration",
+              "when": []
+            }
+          ]
+        },
+        "info": {
+          "description": "Determines whether an assignment needs current authority before a checkpoint or target can change.",
+          "states": {
+            "idle": "No work was requested for this output.",
+            "qualified": "The output already belongs to a checked product.",
+            "repeated": "The output was retained without a changed product.",
+            "blocked": "The stop is recorded; it is not an active writer or evaluator.",
+            "writing": "A writer reservation must be accounted for before changing the assembly.",
+            "checking": "An outstanding component observation must keep its original inputs.",
+            "waiting": "Distinguish a live queue obligation from an unavailable observation that nobody can act on.",
+            "published": "A component passed but awaits integration; adoption requires observing it on the new assembly."
+          }
+        }
+      },
+      "dialog": {
+        "id": "dialog",
+        "initial": "pending",
+        "states": {
+          "pending": [
+            {
+              "on": "presenting",
+              "target": "presenting",
+              "description": "Present this unanswered question to its owner."
+            },
+            {
+              "on": "unavailable",
+              "target": "unavailable",
+              "description": "Retain the question and delivery failure without inferring an answer."
+            }
+          ],
+          "presenting": [
+            {
+              "on": "answered",
+              "target": "answered",
+              "description": "Record the reply to this exact presentation."
+            },
+            {
+              "on": "dismissed",
+              "target": "dismissed",
+              "description": "Preserve the dismissal; silence is not approval."
+            },
+            {
+              "on": "unavailable",
+              "target": "unavailable",
+              "description": "Retain the question and delivery failure without inferring an answer."
+            },
+            {
+              "on": "reopen",
+              "target": "presenting",
+              "description": "Present the same lost question again on explicit recovery."
+            }
+          ],
+          "unavailable": [
+            {
+              "on": "reopen",
+              "target": "presenting",
+              "description": "Present the same lost question again on explicit recovery."
+            }
+          ],
+          "answered": [],
+          "dismissed": []
+        },
+        "info": {
+          "description": "Tracks delivery of one question whose answer belongs to the operator.",
+          "states": {
+            "pending": "The question has not been presented.",
+            "presenting": "A presentation is outstanding; its reply must match its identity.",
+            "unavailable": "Delivery was unavailable. The question and original scope are retained.",
+            "answered": "The operator's answer was recorded for this question.",
+            "dismissed": "The operator closed the question without an answer."
+          }
+        }
+      },
+      "renewal": {
+        "id": "renewal",
+        "initial": "initial",
+        "states": {
+          "initial": [
+            {
+              "on": "evidence",
+              "target": "held",
+              "description": "Keep the saved report on hold because its inputs or ownership conflict.",
+              "when": [
+                "conflict"
+              ]
+            },
+            {
+              "on": "evidence",
+              "target": "approved",
+              "description": "Use the original report after its inputs and current permissions have been revalidated.",
+              "when": [
+                "permitted"
+              ]
+            },
+            {
+              "on": "evidence",
+              "target": "needed",
+              "description": "Keep the eligible report until the issuing session has permission to admit it."
+            }
+          ],
+          "held": [
+            {
+              "on": "evidence",
+              "target": "held",
+              "description": "Keep the saved report on hold because its inputs or ownership conflict.",
+              "when": [
+                "conflict"
+              ]
+            },
+            {
+              "on": "evidence",
+              "target": "approved",
+              "description": "Use the original report after its inputs and current permissions have been revalidated.",
+              "when": [
+                "permitted"
+              ]
+            },
+            {
+              "on": "evidence",
+              "target": "needed",
+              "description": "Keep the eligible report until the issuing session has permission to admit it."
+            }
+          ],
+          "needed": [
+            {
+              "on": "evidence",
+              "target": "held",
+              "description": "Keep the saved report on hold because its inputs or ownership conflict.",
+              "when": [
+                "conflict"
+              ]
+            },
+            {
+              "on": "evidence",
+              "target": "approved",
+              "description": "Use the original report after its inputs and current permissions have been revalidated.",
+              "when": [
+                "permitted"
+              ]
+            },
+            {
+              "on": "evidence",
+              "target": "needed",
+              "description": "Keep the eligible report until the issuing session has permission to admit it."
+            }
+          ],
+          "approved": [
+            {
+              "on": "evidence",
+              "target": "held",
+              "description": "Keep the saved report on hold because its inputs or ownership conflict.",
+              "when": [
+                "conflict"
+              ]
+            },
+            {
+              "on": "evidence",
+              "target": "approved",
+              "description": "Use the original report after its inputs and current permissions have been revalidated.",
+              "when": [
+                "permitted"
+              ]
+            },
+            {
+              "on": "evidence",
+              "target": "needed",
+              "description": "Keep the eligible report until the issuing session has permission to admit it."
+            },
+            {
+              "on": "invalid",
+              "target": "closed",
+              "description": "Retain the admission error rather than rerunning or silently changing the report."
+            }
+          ],
+          "presenting": [],
+          "closed": []
+        },
+        "info": {
+          "description": "Determines whether an existing scout report can be admitted after a checkpoint changes.",
+          "states": {
+            "initial": "The saved report has not been assessed for renewal.",
+            "held": "An input or ownership conflict prevents reuse of the report.",
+            "needed": "The evidence supports renewal, but current permission is missing.",
+            "approved": "The report may be admitted on the reviewed checkpoint and goal.",
+            "presenting": "A previous reader already presented a decision; it must not be silently replaced.",
+            "closed": "The renewed proposal failed admission. Preserve its diagnostic."
+          }
+        }
+      },
+      "supervision": {
+        "id": "supervision",
+        "initial": "dispatch",
+        "states": {
+          "dispatch": [
+            {
+              "on": "sample",
+              "target": "dormant",
+              "action": "stop",
+              "reason": "Deadline elapsed",
+              "when": [
+                "expired"
+              ]
+            },
+            {
+              "on": "sample",
+              "target": "managed-policy",
+              "action": "observe",
+              "reason": "This issuer recorded the managed hold",
+              "when": [
+                "managed"
+              ]
+            },
+            {
+              "on": "sample",
+              "target": "issuer-permission",
+              "action": "observe",
+              "reason": "This issuer has held work",
+              "when": [
+                "local"
+              ]
+            },
+            {
+              "on": "sample",
+              "target": "missing-target",
+              "action": "observe",
+              "reason": "The target ref is unavailable",
+              "when": [
+                "missing"
+              ]
+            },
+            {
+              "on": "sample",
+              "target": "workflow-status",
+              "action": "observe",
+              "reason": "A transient failure interrupted the original workflow lookup",
+              "when": [
+                "retryRead"
+              ]
+            },
+            {
+              "on": "sample",
+              "target": "ledger",
+              "action": "observe",
+              "reason": "Watch for changed evidence or reservations",
+              "when": [
+                "participant"
+              ]
+            },
+            {
+              "on": "sample",
+              "target": "dormant",
+              "action": "stop",
+              "reason": "No automatic obligation",
+              "when": []
+            }
+          ],
+          "managed-policy": [
+            {
+              "on": "sample",
+              "target": "dispatch",
+              "action": "reactivate",
+              "reason": "Recheck this issuer and continue the original run",
+              "when": [
+                "permitted"
+              ]
+            },
+            {
+              "on": "sample",
+              "target": "managed-policy",
+              "action": "wait",
+              "reason": "Await permitted settings in the issuer",
+              "when": []
+            }
+          ],
+          "issuer-permission": [
+            {
+              "on": "sample",
+              "target": "dispatch",
+              "action": "reconcile",
+              "reason": "Dispatch the original eligible reservations",
+              "when": [
+                "permitted"
+              ]
+            },
+            {
+              "on": "sample",
+              "target": "issuer-permission",
+              "action": "wait",
+              "reason": "Await permitted settings in the issuer",
+              "when": []
+            }
+          ],
+          "workflow-status": [
+            {
+              "on": "sample",
+              "target": "dispatch",
+              "action": "reconcile",
+              "reason": "Read the original workflow again, without issuing a continuation on missing evidence",
+              "when": []
+            }
+          ],
+          "missing-target": [
+            {
+              "on": "sample",
+              "target": "dispatch",
+              "action": "reconcile",
+              "reason": "Reassess the restored target and all input pins",
+              "when": [
+                "available"
+              ]
+            },
+            {
+              "on": "sample",
+              "target": "missing-target",
+              "action": "wait",
+              "reason": "Wait for the target ref",
+              "when": []
+            }
+          ],
+          "ledger": [
+            {
+              "on": "sample",
+              "target": "dispatch",
+              "action": "reconcile",
+              "reason": "Reassess changed ledger evidence or target revision",
+              "when": [
+                "changed"
+              ]
+            },
+            {
+              "on": "sample",
+              "target": "ledger",
+              "action": "wait",
+              "reason": "Wait for new evidence",
+              "when": []
+            }
+          ],
+          "dormant": [
+            {
+              "on": "sample",
+              "target": "dormant",
+              "action": "stop",
+              "reason": "No automatic wake",
+              "when": []
+            }
+          ]
+        },
+        "info": {
+          "description": "Selects the signal an issuing session can observe to continue its existing work.",
+          "states": {
+            "dispatch": "Choose an observation from the issuer's current obligations; a timer is not evidence.",
+            "managed-policy": "Watch for this issuer's recorded managed-policy hold to clear.",
+            "issuer-permission": "Only this session's unissued work is waiting for a permitted tool mode.",
+            "workflow-status": "Retry a read of the original workflow after a transient lookup failure.",
+            "missing-target": "Wait for the original target ref to become readable before reassessing its pins.",
+            "ledger": "Watch the ledger and target for changes relevant to this participant.",
+            "dormant": "No dispatch wake is owed. Outstanding native history is observed independently."
+          }
+        }
+      },
+      "history": {
+        "id": "history",
+        "initial": "idle",
+        "states": {
+          "idle": [],
+          "pending": [
+            {
+              "on": "sample",
+              "action": "lookup",
+              "reason": "Read the original call's completion or its bound workflow's status; never replay the call"
+            }
+          ]
+        },
+        "info": {
+          "description": "Observes original call and workflow outcomes independently of scheduler recovery.",
+          "states": {
+            "idle": "No outcome lookup is owed.",
+            "pending": "An original completion or bound workflow status is outstanding. Retry the observation, not the request."
+          }
+        }
+      }
+    },
+    "groups": [
+      [
+        "supervision",
+        "history"
+      ]
+    ]
+  },
+  "tools": {
+    "foundry_grant": {
+      "description": "Owner, on operator direction: request one scoped baseline, candidate reuse, restoration, observer, preview approval or production grant.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string",
+            "minLength": 1
+          },
+          "inspectBaseline": {
+            "description": "Allow the original missing-input writers to read their exact prior directories. No write permission or new work; eligible even during a check.",
+            "type": "object",
+            "properties": {
+              "grains": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "uniqueItems": true,
+                "minItems": 1
+              }
+            },
+            "required": [
+              "grains"
+            ],
+            "additionalProperties": false
+          },
+          "repairBaseline": {
+            "description": "Authorize one bounded repair for each original missing-input writer from its unchanged baseline after a settled goal. Inspection alone does not authorize repair.",
+            "type": "object",
+            "properties": {
+              "grains": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "uniqueItems": true,
+                "minItems": 1
+              }
+            },
+            "required": [
+              "grains"
+            ],
+            "additionalProperties": false
+          },
+          "reuse": {
+            "description": "Seed one new writer from the exhausted assignment's exact failed candidate and already-offered correction on the current product. No old verdict is promoted.",
+            "type": "object",
+            "properties": {
+              "grain": {
+                "type": "string",
+                "minLength": 1
+              },
+              "check": {
+                "type": "string",
+                "minLength": 1
+              },
+              "candidate": {
+                "type": "string",
+                "minLength": 1
+              },
+              "blob": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "grain",
+              "check",
+              "candidate",
+              "blob"
+            ],
+            "additionalProperties": false
+          },
+          "restore": {
+            "description": "Attest only the unchanged orphaned primary of a formerly checked mixed grant. The retaining owner keeps all integration files. Name the historical/current product and settled goal checks.",
+            "type": "object",
+            "properties": {
+              "from": {
+                "type": "string",
+                "minLength": 1
+              },
+              "historical": {
+                "type": "string",
+                "minLength": 1
+              },
+              "retainer": {
+                "type": "string",
+                "minLength": 1
+              },
+              "to": {
+                "type": "string",
+                "minLength": 1
+              },
+              "checkpoint": {
+                "type": "string",
+                "minLength": 1
+              },
+              "goal": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "from",
+              "historical",
+              "retainer",
+              "to",
+              "checkpoint",
+              "goal"
+            ],
+            "additionalProperties": false
+          },
+          "observer": {
+            "description": "Authorize a writer for one existing observer file after a signed negative pair. For a final replacement supply its predecessor's failed check, candidate, phases and approved file blob. No production edits.",
+            "type": "object",
+            "properties": {
+              "grain": {
+                "type": "string",
+                "minLength": 1
+              },
+              "pair": {
+                "type": "string",
+                "minLength": 1
+              },
+              "file": {
+                "type": "string",
+                "minLength": 1
+              },
+              "blob": {
+                "type": "string",
+                "minLength": 1
+              },
+              "previous": {
+                "type": "object",
+                "properties": {
+                  "check": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "candidate": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "phases": {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 8,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                },
+                "required": [
+                  "check",
+                  "candidate",
+                  "phases"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "grain",
+              "pair",
+              "file",
+              "blob"
+            ],
+            "additionalProperties": false
+          },
+          "approveObserver": {
+            "description": "Review and approve the bound writer's exact observer preview and fault controls. Use the same grant inputs; this does not authorize another writer.",
+            "type": "object",
+            "properties": {
+              "grain": {
+                "type": "string",
+                "minLength": 1
+              },
+              "pair": {
+                "type": "string",
+                "minLength": 1
+              },
+              "file": {
+                "type": "string",
+                "minLength": 1
+              },
+              "blob": {
+                "type": "string",
+                "minLength": 1
+              },
+              "preview": {
+                "type": "string",
+                "minLength": 1
+              },
+              "previous": {
+                "type": "object",
+                "properties": {
+                  "check": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "candidate": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "phases": {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 8,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                },
+                "required": [
+                  "check",
+                  "candidate",
+                  "phases"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "grain",
+              "pair",
+              "file",
+              "blob",
+              "preview"
+            ],
+            "additionalProperties": false
+          },
+          "production": {
+            "description": "After the final signed diagnostic fails, grant the named producer exact production and regression files. No observer edit or replay; both components, product and goal need fresh passes.",
+            "type": "object",
+            "properties": {
+              "diagnostic": {
+                "type": "string",
+                "minLength": 1
+              },
+              "candidate": {
+                "type": "string",
+                "minLength": 1
+              },
+              "checkpoint": {
+                "type": "string",
+                "minLength": 1
+              },
+              "goal": {
+                "type": "string",
+                "minLength": 1
+              },
+              "producer": {
+                "type": "string",
+                "minLength": 1
+              },
+              "files": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "uniqueItems": true,
+                "minItems": 1
+              },
+              "task": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "diagnostic",
+              "candidate",
+              "checkpoint",
+              "goal",
+              "producer",
+              "files",
+              "task"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "run"
+        ],
+        "additionalProperties": false,
+        "minProperties": 2,
+        "maxProperties": 2
+      }
+    },
+    "foundry_check": {
+      "description": "Owner, on operator request: recover a check, observe or repeat a historical harness, or pair a failed restoration with its retainer. Never replace a verdict.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string",
+            "minLength": 1
+          },
+          "recover": {
+            "description": "Recover a confirmed pre-claim launcher exit or signed null goal on its current pins. No retry of an unknown call.",
+            "type": "object",
+            "properties": {
+              "check": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "check"
+            ],
+            "additionalProperties": false
+          },
+          "observe": {
+            "description": "Append a non-qualifying observation of a stopped numeric component on the full current checked commit. Approve the complete historical test harness and account for changed inputs kept current; do not guess unknown inputs.",
+            "type": "object",
+            "properties": {
+              "check": {
+                "type": "string",
+                "minLength": 1
+              },
+              "product": {
+                "type": "string",
+                "minLength": 1
+              },
+              "harness": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "uniqueItems": true
+              },
+              "current": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "uniqueItems": true
+              }
+            },
+            "required": [
+              "check",
+              "product",
+              "harness"
+            ],
+            "additionalProperties": false
+          },
+          "repeat": {
+            "description": "Only on explicit repeat request: inherit the approved harness and inputs of the latest signed observation on the same product.",
+            "type": "object",
+            "properties": {
+              "check": {
+                "type": "string",
+                "minLength": 1
+              },
+              "product": {
+                "type": "string",
+                "minLength": 1
+              },
+              "after": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "check",
+              "product",
+              "after"
+            ],
+            "additionalProperties": false
+          },
+          "pair": {
+            "description": "After a signed exit-1 restoration, observe the same primary with the published retainer's different integration bytes. Name the unchanged checkpoint, goal and passing retainer component. No writer, edits or retry of a negative pair.",
+            "type": "object",
+            "properties": {
+              "grain": {
+                "type": "string",
+                "minLength": 1
+              },
+              "failed": {
+                "type": "string",
+                "minLength": 1
+              },
+              "checkpoint": {
+                "type": "string",
+                "minLength": 1
+              },
+              "goal": {
+                "type": "string",
+                "minLength": 1
+              },
+              "retainer": {
+                "type": "string",
+                "minLength": 1
+              },
+              "candidate": {
+                "type": "string",
+                "minLength": 1
+              },
+              "component": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "grain",
+              "failed",
+              "checkpoint",
+              "goal",
+              "retainer",
+              "candidate",
+              "component"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "run"
+        ],
+        "additionalProperties": false,
+        "minProperties": 2,
+        "maxProperties": 2
+      }
+    },
+    "foundry_review": {
+      "description": "Owner: start one scoped scout comparison or retry an eligible blocked review. To queue context without a launch use foundry_review_note.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string",
+            "minLength": 1
+          },
+          "compare": {
+            "description": "Open a scoped comparison of an offered blob in its production directory. Use the unmet goal receipt, or the passing checkpoint check while its goal is pending. On a settled exit 2, use the current goal and a checked source for a new approved review, or historical evidence for an omitted same-product failure. A superseded exhausted-directory overlap can use its original directory/blob on unchanged inputs.",
+            "type": "object",
+            "properties": {
+              "directory": {
+                "type": "string",
+                "minLength": 1
+              },
+              "receipt": {
+                "type": "string",
+                "minLength": 1
+              },
+              "blob": {
+                "type": "string",
+                "minLength": 1
+              },
+              "question": {
+                "type": "string",
+                "minLength": 1
+              },
+              "files": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "uniqueItems": true,
+                "minItems": 1,
+                "description": "Exact existing integration files for a source-backed review; never grants a parent directory."
+              },
+              "historical": {
+                "type": "object",
+                "properties": {
+                  "receipt": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "step": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "receipt",
+                  "step"
+                ],
+                "additionalProperties": false
+              },
+              "transfer": {
+                "type": "object",
+                "description": "Conditional transfer from the qualified parent to a new ID. Requires source, files and an exclusion-aware checker.",
+                "properties": {
+                  "from": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "candidate": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "to": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "from",
+                  "candidate",
+                  "to"
+                ],
+                "additionalProperties": false
+              },
+              "successor": {
+                "type": "object",
+                "description": "Separately approved narrower assignment after a writer stop. Requires source and the original signed component check. Cannot release an ownership hold.",
+                "properties": {
+                  "from": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "check": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "to": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "from",
+                  "check",
+                  "to"
+                ],
+                "additionalProperties": false
+              },
+              "source": {
+                "type": "object",
+                "properties": {
+                  "commit": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "file": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "excerpt": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "commit",
+                  "file",
+                  "excerpt"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "directory",
+              "receipt",
+              "blob",
+              "question"
+            ],
+            "additionalProperties": false
+          },
+          "retry": {
+            "description": "On explicit request, recover one existing blocked review with proven scout-budget failure or missing approved source. Issue one fresh scout on the same comparison, never replay its report.",
+            "type": "object",
+            "properties": {
+              "review": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "review"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "run"
+        ],
+        "additionalProperties": false,
+        "minProperties": 2,
+        "maxProperties": 2
+      }
+    },
+    "foundry_deliver": {
+      "description": "Owner, on request: approve the inventory of whole, absent, disjoint test directories with latest signed passing reruns on this product. Preserve owners and attempts; freshly check components, product and goal.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string",
+            "minLength": 1
+          },
+          "checkpoint": {
+            "type": "string",
+            "minLength": 1
+          },
+          "goal": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reruns": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "uniqueItems": true,
+            "minItems": 1
+          }
+        },
+        "required": [
+          "run",
+          "checkpoint",
+          "goal",
+          "reruns"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "foundry_checkpoint": {
+      "description": "Owner, on request after a failed paired observer: verify one non-release subset of published outputs. Prove complete build and runtime inputs for selected and held components; unknown inputs are ineligible. No retry or release.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string",
+            "minLength": 1
+          },
+          "observer": {
+            "type": "string",
+            "minLength": 1
+          },
+          "target": {
+            "type": "string",
+            "minLength": 1
+          },
+          "checkpoint": {
+            "type": "string",
+            "minLength": 1
+          },
+          "goal": {
+            "type": "string",
+            "minLength": 1
+          },
+          "selected": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "properties": {
+                "grain": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "candidate": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "component": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "grain",
+                "candidate",
+                "component"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "evidence": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "properties": {
+                "component": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "stages": {
+                  "type": "object",
+                  "properties": {
+                    "component": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "file": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "excerpt": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "inventory": {
+                            "type": "object",
+                            "properties": {
+                              "file": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "keys": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              }
+                            },
+                            "required": [
+                              "file",
+                              "keys"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "reason": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "file",
+                          "excerpt",
+                          "inventory",
+                          "reason"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "generated": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "file": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "excerpt": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "inventory": {
+                            "type": "object",
+                            "properties": {
+                              "file": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "keys": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              }
+                            },
+                            "required": [
+                              "file",
+                              "keys"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "reason": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "file",
+                          "excerpt",
+                          "inventory",
+                          "reason"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "package": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "file": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "excerpt": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "inventory": {
+                            "type": "object",
+                            "properties": {
+                              "file": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "keys": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              }
+                            },
+                            "required": [
+                              "file",
+                              "keys"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "reason": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "file",
+                          "excerpt",
+                          "inventory",
+                          "reason"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "runtime": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "file": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "excerpt": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "inventory": {
+                            "type": "object",
+                            "properties": {
+                              "file": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "keys": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              }
+                            },
+                            "required": [
+                              "file",
+                              "keys"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "reason": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "file",
+                          "excerpt",
+                          "inventory",
+                          "reason"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "component",
+                    "generated",
+                    "package",
+                    "runtime"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "component",
+                "stages"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "run",
+          "observer",
+          "target",
+          "checkpoint",
+          "goal",
+          "selected",
+          "evidence"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "foundry_workspace": {
+      "description": "Pooled writer: open or verify this assignment's checkout inside your native worktree. Work only in the returned workspace. No branch switch, old-work copy or check.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string",
+            "minLength": 1
+          },
+          "token": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "run",
+          "token"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "foundry_correct": {
+      "description": "Owner: approve removing one contradictory clause from an unsubmitted task. Cite the assigning review and frozen verbatim source, in grant for a checked handoff. A bound writer rereads status; only an ordinary missing-input stop without a verdict can use its exact preview for one same-writer repair. No new read grant or check.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string",
+            "minLength": 1
+          },
+          "grain": {
+            "type": "string",
+            "minLength": 1
+          },
+          "review": {
+            "type": "string",
+            "minLength": 1
+          },
+          "worker": {
+            "type": "string",
+            "minLength": 1
+          },
+          "clause": {
+            "type": "string",
+            "minLength": 1
+          },
+          "file": {
+            "type": "string",
+            "minLength": 1
+          },
+          "excerpt": {
+            "type": "string",
+            "minLength": 1
+          },
+          "preview": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "run",
+          "grain",
+          "review",
+          "worker",
+          "clause",
+          "file",
+          "excerpt"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "foundry_attribute": {
+      "description": "Owner: route a shared failure missing from structured blocker data. Quote the current unmet goal receipt. Count dependent journeys not run, excluding the failure; this changes scheduling, not its verdict.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string",
+            "minLength": 1
+          },
+          "receipt": {
+            "type": "string",
+            "minLength": 1
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "directory": {
+            "type": "string",
+            "minLength": 1
+          },
+          "excerpt": {
+            "type": "string",
+            "minLength": 1
+          },
+          "blocked": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "run",
+          "receipt",
+          "id",
+          "directory",
+          "excerpt",
+          "blocked"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "foundry_configure": {
+      "description": "Owner, on request: change future reservations at the current scheduling revision. workers:null restores the brief ceiling. checkpointReviews governs new checkpoint comparisons and surveys, not existing work.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string",
+            "minLength": 1
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "workers": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1
+          },
+          "checkpointReviews": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "run",
+          "revision"
+        ],
+        "additionalProperties": false,
+        "minProperties": 3
+      }
+    },
+    "foundry_preview": {
+      "description": "Bound writer, after joining helpers: pin all assigned roots on the frozen generation for inspection. No submission, evaluator or change of authority.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string",
+            "minLength": 1
+          },
+          "token": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "run",
+          "token"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "foundry_review_note": {
+      "description": "Owner: queue a historical goal receipt and question for a squad's next normal review. Use a proof receipt ID and optional verbatim excerpt. No discovery or assignment.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string",
+            "minLength": 1
+          },
+          "squad": {
+            "type": "string",
+            "minLength": 1
+          },
+          "receipt": {
+            "type": "string",
+            "minLength": 1
+          },
+          "question": {
+            "type": "string",
+            "minLength": 1
+          },
+          "excerpt": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "run",
+          "squad",
+          "receipt",
+          "question"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "foundry_start": {
+      "description": "On explicit operator direction, activate a new run for a committed .foundry brief. Repeating start does not advance or resume an existing run. Use foundry_resume for recovery.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "source"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "foundry_resume": {
+      "description": "On explicit owner request, continue an existing source from its ledger pins. Use run to disambiguate. Never create a run or replay an issued call.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string",
+            "minLength": 1
+          },
+          "run": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "source"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "foundry_pause": {
+      "description": "Stop new Foundry work without discarding native calls, evidence, worktrees or checked products.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "run"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "foundry_claim": {
+      "description": "Bind an existing uncertain writer only. The child proves its kickoff and native session identity by token or grain; the original issuer confirms by grain. Never launch another writer.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string",
+            "minLength": 1
+          },
+          "grain": {
+            "type": "string",
+            "minLength": 1
+          },
+          "token": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "run"
+        ],
+        "additionalProperties": false,
+        "minProperties": 2,
+        "maxProperties": 2
+      }
+    },
+    "foundry_retire": {
+      "description": "On explicit owner request and native proof, approve retiring a dead pre-journal goal reservation without a verdict. Integrate retained work; never rerun the old goal.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string",
+            "minLength": 1
+          },
+          "check": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "run",
+          "check"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "foundry_clarify": {
+      "description": "On explicit owner request, reopen the exact lost charter dialog from status. Only the operator answers. No contract change or permission grant.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string",
+            "minLength": 1
+          },
+          "review": {
+            "type": "string",
+            "minLength": 1
+          },
+          "presentation": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "run",
+          "review",
+          "presentation"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "foundry_repin": {
+      "description": "Owner, on request: omit kind for a goal-only diff; product rechecks the same checkpoint; target adopts a reviewed mixed descendant. Name the exact diff and pins. Target adoption requires explicit approval, acceptance changes, any exact unowned conflict resolutions, and fresh component/product/goal checks. No branch change or retroactive grant.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string",
+            "minLength": 1
+          },
+          "from": {
+            "type": "string",
+            "minLength": 1
+          },
+          "revision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "uniqueItems": true
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "product",
+              "target"
+            ]
+          },
+          "ownership": {
+            "type": "string",
+            "enum": [
+              "retain-except-transferred"
+            ]
+          },
+          "checkpoint": {
+            "type": "string",
+            "minLength": 1
+          },
+          "goal": {
+            "type": "string",
+            "minLength": 1
+          },
+          "acceptance": {
+            "type": "string",
+            "minLength": 1
+          },
+          "resolutions": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "properties": {
+                "file": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "mode": {
+                  "enum": [
+                    "100644",
+                    "100755"
+                  ]
+                },
+                "base": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "checkpoint": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "target": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "result": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "file",
+                "mode",
+                "base",
+                "checkpoint",
+                "target",
+                "result"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "run",
+          "from",
+          "revision",
+          "files"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "foundry_submit": {
+      "description": "Bound writer, after joining helpers: submit all assigned roots, or report one stop. Use missingInput for a genuine missing input; cannotRepair for a status-listed check when further repair is forbidden; relinquish for a status-listed numeric failure with neither a fix nor missing input. Stops do not capture or recheck. For changed work after an incomplete check use changedFrom from status.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string",
+            "minLength": 1
+          },
+          "token": {
+            "type": "string",
+            "minLength": 1
+          },
+          "missingInput": {
+            "type": "string",
+            "minLength": 1
+          },
+          "cannotRepair": {
+            "type": "object",
+            "properties": {
+              "check": {
+                "type": "string",
+                "minLength": 1
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "check",
+              "reason"
+            ],
+            "additionalProperties": false
+          },
+          "relinquish": {
+            "type": "object",
+            "properties": {
+              "check": {
+                "type": "string",
+                "minLength": 1
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "check",
+              "reason"
+            ],
+            "additionalProperties": false
+          },
+          "changedFrom": {
+            "type": "string",
+            "minLength": 1
+          },
+          "usedArtifacts": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "uniqueItems": true
+          },
+          "comparedArtifacts": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "run",
+          "token"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "foundry_publish": {
+      "description": "Offer one reference file to named output directories or charter areas. A bound writer must supply its token. Publishing grants no baseline access or repair authority.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string",
+            "minLength": 1
+          },
+          "file": {
+            "type": "string",
+            "minLength": 1
+          },
+          "to": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "uniqueItems": true,
+            "minItems": 1
+          },
+          "token": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "run",
+          "file",
+          "to"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "foundry_status": {
+      "description": "Read scoped work, blockers and receipts without advancing or archiving. permissions reads this issuer's live policy and mode; proof, cleanup and usage are owner-only.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string",
+            "minLength": 1
+          },
+          "detail": {
+            "type": "string",
+            "enum": [
+              "proof",
+              "cleanup",
+              "usage",
+              "permissions"
+            ]
+          }
+        },
+        "required": [
+          "run"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "foundry_reference": {
+      "description": "Bound researcher only: read permitted UTF-8 text at a published commit in a local sibling repository. Not working-tree or visual evidence.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string",
+            "minLength": 1
+          },
+          "review": {
+            "type": "string",
+            "minLength": 1
+          },
+          "repo": {
+            "type": "string",
+            "minLength": 1
+          },
+          "revision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "run",
+          "review",
+          "repo",
+          "revision",
+          "path"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "canvases": {
+    "foundry-board": {
+      "inputSchema": {
+        "type": "object",
+        "oneOf": [
+          {
+            "type": "object",
+            "maxProperties": 0
+          },
+          {
+            "type": "object",
+            "properties": {
+              "run": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "run"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "example": {
+                "const": true
+              }
+            },
+            "required": [
+              "example"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "machine": {
+                "const": true
+              }
+            },
+            "required": [
+              "machine"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "actions": {
+        "get_snapshot": null
+      }
+    }
+  },
+  "workflows": {
+    "foundry-scout": {
+      "type": "object",
+      "required": [
+        "run",
+        "dispatch"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "run": {
+          "type": "string"
+        },
+        "dispatch": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "agents": {
+    "foundry-scout": [],
+    "foundry-research": [
+      "glob",
+      "rg",
+      "view",
+      "foundry_reference",
+      "web_search",
+      "web_fetch"
+    ]
+  },
+  "hooks": [
+    "onPostToolUse",
+    "onPreToolUse",
+    "onSessionEnd",
+    "onSessionStart"
+  ],
+  "events": [
+    "assistant.turn_start",
+    "permission.completed",
+    "system.notification",
+    "tool.execution_complete"
+  ]
+}

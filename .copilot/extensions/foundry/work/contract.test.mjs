@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
-import { readPolicy } from "./contract.mjs";
+import { readPolicy, validateGraph } from "./contract.mjs";
 import { verifyContracts } from "./product.mjs";
 import { factory, git, put } from "../test/fixture.mjs";
 
@@ -10,6 +10,13 @@ const api = "interfaces/launch.txt", helper = `${suite}/observe.mjs`;
 const unit = `${suite}/unit.mjs`, goal = `${suite}/goal.mjs`, product = `${suite}/product.mjs`;
 const promised = "Fresh launch opens a populated catalog.", pinned = "Select the sample dataset.";
 const request = { outcome: "needs-evidence", reason: "Which dataset does normal launch select?", evidence: [journey], grains: [], file: api };
+
+test("deep forward dependencies validate without a call-stack limit and reject a closing cycle or a missing producer",()=>{
+	const nodes=Array.from({length:10000},(_,i)=>({id:`n${i}`,directory:`dir${i}`,check:"check",needs:i===9999 ? [] : [`n${i+1}`]}));
+	validateGraph(nodes);
+	nodes[9999].needs=["n4999"]; assert.throws(()=>validateGraph(nodes),{code:"dependency_cycle"});
+	nodes[9999].needs=["absent"]; assert.throws(()=>validateGraph(nodes),{code:"unknown_grain"});
+});
 /** @param {import("node:test").TestContext} t @param {Record<string,string>} [extra] */
 function trial(t, extra = {}) {
 	return factory(t, "catalog-run", source, {

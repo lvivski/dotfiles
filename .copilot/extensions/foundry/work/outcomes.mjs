@@ -1,6 +1,7 @@
 import { createHash, createPublicKey, generateKeyPairSync, sign, verify } from "node:crypto";
 import { digest, fail } from "./values.mjs";
 import { sameEvaluation } from "./evidence.mjs";
+import { journal } from "./dispatch.mjs";
 
 /** @typedef {import("./model.js").Effect} Effect */
 /** @typedef {import("./model.js").Receipt} Receipt */
@@ -54,5 +55,5 @@ export function acceptOutcome(run, e, signature, document) {
 		return;
 	}
 	e.receipt = receipt;
-	if (e.state !== "refused") { e.state = "done"; delete e.error; }
+	if (e.state !== "refused") { journal(e,"confirm"); delete e.error; }
 }

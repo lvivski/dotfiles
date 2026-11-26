@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { assign } from "./assignment.mjs";
+import { journal, survey } from "./dispatch.mjs";
 import { unownedBlockers } from "./blockers.mjs";
 import { remainingAssignments } from "./capacity.mjs";
 import { fileURLToPath } from "node:url";
@@ -158,7 +160,7 @@ export function issue(run, expected, callId) {
 	}
 	if (!canDispatch(run, e) || e.permissionHold || !unissued(e)) return false;
 	e.callId = text(callId, "original call ID");
-	e.state = "issued";
+	if (e.kind==="scout") survey(e,"issue"); else journal(e,"issue");
 	delete e.error;
 	return true;
 }
@@ -175,7 +177,7 @@ function block(run, e, reason) {
 	}
 	if (e.remedy) return; // Settle the two observations together, never block the untouched peer.
 	if (n) {
-		n.state = "blocked";
+		assign(n,"stop");
 		n.reason = reason;
 	} else if (e.kind === "goal")
 		run.blocker = reason;
@@ -199,12 +201,12 @@ export function receive(run, e, raw, automatic) {
 	const value = record(raw);
 	if (automatic && value.resultType === "failure" && value.error === "This session management tool is disabled" &&
 		!value.structuredContent && !value.textResultForLlm && (e.tool === "create_session" || e.tool === "send_session_message")) {
-		e.state = "ordinary";
+		journal(e,"prepare");
 		e.error = "Native route disabled; execute the exact prepared call in its owner session";
 		return;
 	}
 	if (["denied", "rejected"].includes(String(value.resultType))) {
-		e.state = "refused";
+		journal(e,"deny");
 		block(run, e, "Native permission refused");
 		return;
 	}
@@ -227,7 +229,7 @@ export function receive(run, e, raw, automatic) {
 		const exit = record(telemetry.metrics ?? {}).exit_code;
 		if (!e.runnerStarted && !e.runnerClaim && !e.receipt && properties.executionMode === "sync" && properties.shell_error_category === "command_nonzero_exit" &&
 			typeof exit === "number" && Number.isSafeInteger(exit) && exit > 0) {
-			e.state = "done";
+			journal(e,"confirm");
 			e.launcherExit = exit;
 			block(run, e, `Check launcher exited ${exit} before the evaluator started; no check result.` +
 				(exit === 127 ? " Check that Node.js is available on the shell PATH." : " Inspect the original shell diagnostic."));
@@ -245,6 +247,6 @@ export function receive(run, e, raw, automatic) {
 		const n = assignee(run,e);
 		if (n && current(run,e)) n.worker = e.nativeId;
 	}
-	e.state = "done";
+	journal(e,"confirm");
 	delete e.error;
 }

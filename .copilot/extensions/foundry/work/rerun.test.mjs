@@ -5,8 +5,35 @@ import { historicalFactory } from "../test/legacy-readers.mjs";
 import { createRuntime } from "./runtime.mjs";
 import { openDatabase } from "./database.mjs";
 import { boardFacts } from "./visibility.mjs";
+import {buildTools} from "./tools.mjs";
 
 const run="sample", source=".foundry/sample.json";
+test("a stopped component can be observed on its frozen checkpoint after a mixed target merge",async t=>{
+	const factory=await historicalFactory(t,61);
+	const f=factory(t,run,source,{
+		[source]:JSON.stringify({version:1,id:run,target:"refs/heads/main",direction:"Check the accepted row.",limits:{repairs:0},goalCheck:"goal.mjs",productCheck:"product.mjs",
+			squads:[{id:"team",charter:"spec",grains:["probe","input"]}],grains:["probe","input"].map(id=>({id,directory:id,specification:"spec",boundary:["api"],check:`${id}.mjs`}))}),
+		spec:"Check the row.",api:"row", "goal.mjs":"process.exit(1)", "product.mjs":"", "input.mjs":"",
+		"probe.mjs":`await import("./probe/observe.mjs");`
+	});
+	await f.start(); await f.scouts[0].report({outcome:"regenerate",reason:"Need both outputs.",evidence:["spec"],grains:["probe","input"]});
+	const nodes=(await f.status()).nodes, writer=(/** @type {string} */ id)=>f.workers.get(nodes.find(n=>n.grain===id)?.worker ?? "");
+	const w=writer("probe"), i=writer("input"); assert.ok(w && i);
+	put(w.cwd,"probe/observe.mjs",`import {readFileSync,existsSync} from "node:fs"; process.exit(existsSync("input/row") && readFileSync("spec","utf8")==="Check the row."?0:7)`);
+	await f.runtime(w.cwd).operation("submit",{run,token:w.token},w.id);
+	put(i.cwd,"input/row","row"); await f.runtime(i.cwd).operation("submit",{run,token:i.token},i.id);
+	const db=openDatabase(f.root);t.after(()=>db.close());
+	const original=db.read(run), p=original?.products.at(-1), n=original?.nodes.probe; assert.ok(p && n?.check);
+	put(f.root,"spec","New charter");git(f.root,"commit","-qam","Change the target contract"); const tip=git(f.root,"rev-parse","HEAD");
+	const owner=f.runtime(f.root,{confirm:async()=>true},createRuntime);
+	const tool=buildTools(owner,()=>"owner",assert.fail).find(t=>t.name==="foundry_check");assert.ok(tool?.handler);
+	const args={run,observe:{check:n.check,product:p.commit,harness:["probe/observe.mjs"],current:["input"]}};
+	const result=await tool.handler(args,{sessionId:"owner",toolName:tool.name,toolCallId:"observe",arguments:args});
+	assert.equal(typeof result,"string",JSON.stringify(result));
+	const after=db.read(run), e=after?.effects.at(-1); assert.ok(e?.kind==="rerun");db.verifySigned(run,e);
+	assert.equal(e.receipt?.exit,0);assert.equal(e.commit,p.commit);assert.deepEqual(after?.nodes.probe,n);
+	assert.deepEqual(after?.goal,original?.goal);assert.deepEqual(after?.products,original?.products);assert.equal(git(f.root,"rev-parse","HEAD"),tip);
+});
 for (const [reader,exit] of [[61,0],[61,1],[61,2],[22,2]]) test(reader===22
 	? "pre-journal exit 1 followed by missingInput has no signing key even with a signed current product"
 	: `recheck the original stopped assignment on the checked product: exit ${exit}`,async t=>{

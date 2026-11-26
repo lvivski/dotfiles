@@ -16,6 +16,8 @@ For a repinned goal, `foundry-qualification/v2` adds `receipts.goal.evaluatorRev
 
 The JSON is an **owner-reported result**, not a signature, permission to execute the evaluators, or a way to resume the ledger. Git verifies object identities, not who ran the checks. Obtain the record through a trusted channel.
 
+After a mixed target adoption, `contract.activation` is the original plan commit and `contract.commit` is the contract accepted for release. Read each writer's charter and specification at its own `outputs[].base`, not retrospectively at the adopted target. On the adoption product itself, `receipts.product.components` gives each included evaluator path and exit on that same joined commit. `outputs[].receipt` remains the earlier component capture, not that fresh observation. A later ordinary product receipt does not claim to have repeated the migration checks.
+
 `foundry-qualification/v4` includes `ownership`, the exact `FOUNDRY_OWNERSHIP` map saved at this product check's reservation. Use it verbatim for product replay. An output's original `directory` and component receipt still describe its historical capture; they do **not** replace the checked map. A donor's `exclude` is subtracted from its positive match (file equality or directory ancestry in both sets). The ordinary object pack/import procedure and evaluator overlay rules are unchanged.
 
 ### Transfer the Git objects only when requested

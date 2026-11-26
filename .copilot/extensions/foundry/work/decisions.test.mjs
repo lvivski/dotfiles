@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildTools } from "./tools.mjs";
-import { factory, git, put } from "../test/fixture.mjs";
+import { createRuntime } from "./runtime.mjs";
+import { factory, git, put, recoveryClock, withLedgerLock } from "../test/fixture.mjs";
+import { setImmediate as turn } from "node:timers/promises";
 
 const run = "lookup", source = ".foundry/lookup.json";
 const noGap = { outcome: "no-gap", reason: "No owned change needed.", evidence: ["interface"], grains: [] };
@@ -12,10 +14,10 @@ function latch() {
 	const promise = new Promise(done => { resolve = () => done(undefined); });
 	return { resolve, promise };
 }
-/** @param {import("node:test").TestContext} t @param {string|null} [goal] */
-function trial(t, goal = 'if (!existsSync("lib/lookup/index")) process.exit(1)') {
+/** @param {import("node:test").TestContext} t @param {string|null} [goal] @param {typeof factory} [build] */
+function trial(t, goal = 'if (!existsSync("lib/lookup/index")) process.exit(1)',build=factory) {
 	const ids = ["catalog", "lookup"];
-	return factory(t, run, source, {
+	return build(t, run, source, {
 		[source]: JSON.stringify({ version: 1, id: run, direction: "Look up an item.", target: "refs/heads/main",
 			grains: ids.map(id => ({ id, directory: `lib/${id}`, specification: "charter", boundary: ["interface"], check: "unit.mjs" })),
 			squads: ids.map(id => ({ id, charter: "charter", grains: [id] })), goalCheck: goal === null ? undefined : "goal.mjs", productCheck: "product.mjs" }),
@@ -23,6 +25,31 @@ function trial(t, goal = 'if (!existsSync("lib/lookup/index")) process.exit(1)')
 		"goal.mjs": `import {existsSync} from 'node:fs'; ${goal}`,
 	});
 }
+
+test("an undispatched owner question wakes when policy allows its original dialog, without a turn",async t=>{
+	/** @type {typeof factory} */
+	const build=process.env.FOUNDRY_PRIOR_FIXTURE ? (await import(process.env.FOUNDRY_PRIOR_FIXTURE)).factory : factory;
+	const f=trial(t,undefined,build);
+	await f.start();await f.scouts[0].report(question);await f.scouts[1].report(noGap);
+	const held=(await f.status()).questions?.[0];assert.ok(held && !held.delivery);
+	f.owner.close();
+	let permitted=false, asks=0;
+	/** @type {Set<()=>void>} */ const ticks=new Set();
+	const next=f.runtime(f.root,{watchRecovery:fn=>{ticks.add(fn);return ()=>{ticks.delete(fn);};},
+		permissionBlocker:async()=>permitted?null:{scope:"session",message:"Settings unavailable"},
+		ask:async prompt=>{assert.ok(prompt.includes(question.reason));asks++;return "EUR";}
+	},createRuntime);
+	next.sessionStart("owner",f.root);
+	const pulse=async()=>{for(const fn of ticks)fn();await next.flush();await f.settle();};
+	for(let i=0;i<8;i++)await pulse();assert.equal(asks,0);
+	permitted=true;
+	for(let i=0;i<10;i++)await pulse();
+	assert.equal(asks,1);
+	assert.equal(next.inspect({run},"owner").reviews.find(r=>r.id===f.scouts[0].id)?.decision?.status,"answered");
+	const follow=f.scouts.at(-1);assert.ok(follow && follow.id!==f.scouts[0].id && follow.issuer==="owner");
+	assert.ok(follow.prompt.includes("EUR"));await follow.report(noGap);
+	for(let i=0;i<6;i++)await pulse();assert.equal(asks,1);
+});
 
 test("an open owner question is claimed once across reconnect; an independent writer can qualify and hand off meanwhile", async t => {
 	const f = trial(t), gate = latch(), opened = latch();
@@ -59,6 +86,26 @@ test("an open owner question is claimed once across reconnect; an independent wr
 	assert.equal((await f.status(w.id)).handoff, undefined); assert.equal((await f.status(w.id)).metrics, undefined);
 });
 
+for(const phase of ["original","replaced","issuer closed"])test(`an answered dialog retries only its locked write / ${phase}`,async t=>{
+	const f=trial(t),answered=latch(),opened=latch(),clock=recoveryClock();let asks=0;
+	const issuer=f.runtime(f.root,{watchRecovery:clock.watch,ask:async()=>{asks++;opened.resolve();await answered.promise;return "original answer";}});
+	await f.start(issuer);const job=f.scouts[1];await f.scouts[0].report(noGap);await job.report(question);await opened.promise;
+	await withLedgerLock(f.root,async()=>{answered.resolve();await turn();});
+	const q=issuer.inspect({run},"owner").questions?.[0];assert.ok(q?.recovery);
+	if(phase==="issuer closed"){issuer.close();await issuer.flush();}
+	if(phase!=="original"){
+		const other=f.runtime(f.root,{ask:async()=>"replacement answer"});
+		await other.operation("clarify",q.recovery,"owner");
+	}
+	await clock.pulse(issuer,4);await f.settle();
+	const s=await f.status(),expected=phase==="original"?"original answer":"replacement answer";
+	assert.deepEqual(s.reviews.find(r=>r.id===job.id)?.decision,{status:"answered",answer:expected});
+	assert.equal(asks,1);const follow=f.scouts.slice(2);assert.equal(follow.length,1);
+	assert.ok(follow[0].prompt.includes(expected));await follow[0].report(regenerate);
+	const [w]=f.workers.values();put(w.cwd,"lib/lookup/index",expected);await f.runtime(w.cwd).operation("submit",{run,token:w.token},w.id);
+	const done=await f.status();assert.ok(done.qualified);assert.equal(git(f.root,"show",`${done.qualified}:lib/lookup/index`),expected);
+});
+
 for (const originalReply of ["closed", "before", "after"]) test(`explicit recovery of one owner question, old callback: ${originalReply}`, async t => {
 	const f = trial(t), opened = latch(), oldReply = latch(), recovered = latch(), newReply = latch();
 	let asks = 0;
@@ -76,7 +123,7 @@ for (const originalReply of ["closed", "before", "after"]) test(`explicit recove
 	await assert.rejects(owner.operation("clarify", { ...args, answer: "agent-supplied" }, "owner"), /unsupported field/i);
 	if (originalReply !== "closed") await assert.rejects(original.operation("clarify", args, "owner"), /already open/i);
 	assert.deepEqual((await f.status()).questions?.[0].recovery, args);
-	const tool = buildTools(owner, () => "owner").find(t => t.name === "foundry_clarify"); assert.ok(tool?.handler);
+	const tool = buildTools(owner, () => "owner", assert.fail).find(t => t.name === "foundry_clarify"); assert.ok(tool?.handler);
 	const invocation = { sessionId: "owner", toolName: tool.name, toolCallId: "clarify", arguments: args };
 	assert.match(JSON.stringify(await tool.handler(args, { ...invocation, agentId: "helper" })), /subagents/);
 	const result = tool.handler(args, invocation); await recovered.promise;
@@ -173,7 +220,7 @@ for (const hold of ["none", "pause", "plan"]) test(`an in-scope answer reaches t
 	if (hold !== "none") {
 		assert.equal(f.scouts.length, 2); assert.equal(f.workers.size, 0);
 		mode = "interactive";
-		if (hold === "pause") await f.start(owner);
+		if (hold === "pause") {await owner.operation("resume",{source},"owner");await f.settle();}
 		else { owner.turn("owner"); await owner.flush(); await f.settle(); }
 	}
 	const fresh = f.scouts[2]; assert.equal(fresh.squad, "lookup"); assert.match(fresh.prompt, /Use EUR/);

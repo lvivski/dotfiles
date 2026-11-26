@@ -1,4 +1,5 @@
 import { parseObservation } from "./graph.mjs";
+import { survey } from "./dispatch.mjs";
 import { awaitingReply } from "./reservation.mjs";
 import { researchResult } from "./research.mjs";
 import { blockReview, investigation, reviews } from "./reviews.mjs";
@@ -11,8 +12,8 @@ import { FoundryError, fail } from "./values.mjs";
  * diagnostic?:(workflow:string,label:string)=>Promise<string|undefined>, signal:(ticket:string,review:string)=>Promise<void>|undefined}} io */
 export function reportReceiver(io) {
 	/** @param {string} id @param {string} ticket @param {string} actor @param {string} workflowId @param {string} reviewId
-	 * @param {unknown} raw @param {unknown} [packet] */
-	return async function receive(id, ticket, actor, workflowId, reviewId, raw, packet) {
+	 * @param {unknown} raw @param {unknown} [packet] @param {boolean} [classifyPrior] */
+	return async function receive(id, ticket, actor, workflowId, reviewId, raw, packet, classifyPrior=false) {
 		/** @param {Run} run */
 		const bound = run => reviews(run).find(r => r.id === reviewId && r.issuer === actor && r.callId === ticket && r.workflowId === workflowId);
 		/** @type {string|undefined} */ let diagnostic;
@@ -34,8 +35,8 @@ export function reportReceiver(io) {
 				if (raw === null && !research) fail("missing_report", "No structured scout report was returned");
 				if (!isPacket(packet) || packet.review !== job.id || packet.base !== job.base || job.diagnostic && !packet.partial)
 					fail("missing_packet", "Missing or mismatched journaled scout packet");
-				job.observation = research ? researchResult(raw, squad.charter) : parseObservation(squad, raw);
-				job.packet = packet; job.state = "reported";
+				job.observation = research ? researchResult(raw, squad.charter) : parseObservation(squad, raw, classifyPrior);
+				job.packet = packet; survey(job,"report");
 			} catch (error) {
 				if (!(error instanceof FoundryError)) throw error;
 				blockReview(job, `Invalid scout result: ${error.message}`);

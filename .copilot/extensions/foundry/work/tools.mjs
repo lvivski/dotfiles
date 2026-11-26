@@ -1,4 +1,4 @@
-import { FoundryError } from "./values.mjs";
+import { FoundryError, fail, fields, record } from "./values.mjs";
 
 /** @typedef {Pick<ReturnType<typeof import("./runtime.mjs").createRuntime>, "inspect"|"claimWriter"|"operation"|"readReference">} Commands */
 export const primaryOnly = "Foundry operations belong to the assigned native session, not its subagents";
@@ -7,69 +7,123 @@ export const fromHelper = (input, primary) => !!(input.agentId || input.parentAg
 const string = { type: "string", minLength: 1 };
 const strings = { type: "array", items: string, uniqueItems: true };
 const stop = {type:"object",properties:{check:string,reason:string},required:["check","reason"],additionalProperties:false};
+const resolutions={type:"array",minItems:1,items:{type:"object",properties:{file:string,mode:{enum:["100644","100755"]},base:string,checkpoint:string,target:string,result:string},
+	required:["file","mode","base","checkpoint","target","result"],additionalProperties:false}};
 const notes={type:"array",minItems:1,items:{type:"object",properties:{file:string,excerpt:string,
 	inventory:{type:"object",properties:{file:string,keys:{type:"array",items:string}},required:["file","keys"],additionalProperties:false},reason:string},
 	required:["file","excerpt","inventory","reason"],additionalProperties:false}};
 /** @typedef {Record<string,import("./model.js").Json>} Properties */
-/** @type {Array<[name:string,description:string,required:Properties,optional?:Properties]>} */
+/** @typedef {[operation:string,description:string,required:Properties,optional?:Properties]} Form */
+const observer={grain:string,pair:string,file:string,blob:string};
+const previous={type:"object",properties:{check:string,candidate:string,phases:{type:"array",minItems:2,maxItems:8,uniqueItems:true,items:string}},required:["check","candidate","phases"],additionalProperties:false};
+const baseline={grains:{...strings,minItems:1}};
+const oneChoice={minProperties:2,maxProperties:2}; // run plus one selector
+/** @type {Record<string,Properties>} */
+const limits={
+	claim:oneChoice,
+	configure:{minProperties:3}, // run, revision and at least one setting
+};
+/** @type {Record<string,Record<string,Form>>} */
+const choices={
+	review:{
+		compare:["iterate","Open a scoped comparison of an offered blob in its production directory. Use the unmet goal receipt, or the passing checkpoint check while its goal is pending. On a settled exit 2, use the current goal and a checked source for a new approved review, or historical evidence for an omitted same-product failure. A superseded exhausted-directory overlap can use its original directory/blob on unchanged inputs.",{directory:string,receipt:string,blob:string,question:string},
+			{files:{...strings,minItems:1,description:"Exact existing integration files for a source-backed review; never grants a parent directory."},historical:{type:"object",properties:{receipt:string,step:string},required:["receipt","step"],additionalProperties:false},
+				transfer:{type:"object",description:"Conditional transfer from the qualified parent to a new ID. Requires source, files and an exclusion-aware checker.",properties:{from:string,candidate:string,to:string},required:["from","candidate","to"],additionalProperties:false},
+				successor:{type:"object",description:"Separately approved narrower assignment after a writer stop. Requires source and the original signed component check. Cannot release an ownership hold.",properties:{from:string,check:string,to:string},required:["from","check","to"],additionalProperties:false},
+				source:{type:"object",properties:{commit:string,file:string,excerpt:string},required:["commit","file","excerpt"],additionalProperties:false}}],
+		retry:["rereview","On explicit request, recover one existing blocked review with proven scout-budget failure or missing approved source. Issue one fresh scout on the same comparison, never replay its report.",{review:string}],
+	},
+	check:{
+		recover:["recheck","Recover a confirmed pre-claim launcher exit or signed null goal on its current pins. No retry of an unknown call.",{check:string}],
+		observe:["recheck","Append a non-qualifying observation of a stopped numeric component on the full current checked commit. Approve the complete historical test harness and account for changed inputs kept current; do not guess unknown inputs.",{check:string,product:string,harness:strings},{current:strings}],
+		repeat:["recheck","Only on explicit repeat request: inherit the approved harness and inputs of the latest signed observation on the same product.",{check:string,product:string,after:string}],
+		pair:["pair","After a signed exit-1 restoration, observe the same primary with the published retainer's different integration bytes. Name the unchanged checkpoint, goal and passing retainer component. No writer, edits or retry of a negative pair.",{grain:string,failed:string,checkpoint:string,goal:string,retainer:string,candidate:string,component:string}],
+	},
+	grant:{
+		inspectBaseline:["inspectBaseline","Allow the original missing-input writers to read their exact prior directories. No write permission or new work; eligible even during a check.",baseline],
+		repairBaseline:["repairBaseline","Authorize one bounded repair for each original missing-input writer from its unchanged baseline after a settled goal. Inspection alone does not authorize repair.",baseline],
+		reuse:["reuse","Seed one new writer from the exhausted assignment's exact failed candidate and already-offered correction on the current product. No old verdict is promoted.",{grain:string,check:string,candidate:string,blob:string}],
+		restore:["restore","Attest only the unchanged orphaned primary of a formerly checked mixed grant. The retaining owner keeps all integration files. Name the historical/current product and settled goal checks.",{from:string,historical:string,retainer:string,to:string,checkpoint:string,goal:string}],
+		observer:["diagnose","Authorize a writer for one existing observer file after a signed negative pair. For a final replacement supply its predecessor's failed check, candidate, phases and approved file blob. No production edits.",observer,{previous}],
+		approveObserver:["diagnose","Review and approve the bound writer's exact observer preview and fault controls. Use the same grant inputs; this does not authorize another writer.",{...observer,preview:string},{previous}],
+		production:["remediate","After the final signed diagnostic fails, grant the named producer exact production and regression files. No observer edit or replay; both components, product and goal need fresh passes.",{diagnostic:string,candidate:string,checkpoint:string,goal:string,producer:string,files:{...strings,minItems:1},task:string}],
+	},
+};
+/** @type {Form[]} */
 const definitions = [
-	["deliver","Owner on operator direction: deliver whole, absent, disjoint test-only directories selected by their latest signed passing rerun IDs on this product. Name the current checkpoint check and settled goal check. Approve the exact file inventory. Runs fresh components on the combined build, then one product check and a fresh goal; preserves production owners and the original attempts.",{run:string,checkpoint:string,goal:string,reruns:{...strings,minItems:1}}],
-	["remediate","Owner on operator direction: request an exact-file production and repository-regression grant for the blocked primary or published retainer after the final signed diagnostic failed. Name its diagnostic and candidate, current checkpoint and goal checks, producer grain, editable files and task. No observer edit or replay; both component checks, joined product and goal must pass afresh.",{run:string,diagnostic:string,candidate:string,checkpoint:string,goal:string,producer:string,files:{...strings,minItems:1},task:string}],
-	["checkpoint","Owner on operator direction: request one non-release checkpoint after a failed paired observer. Supply exact checked target, checkpoint, goal, observer component, nonempty selected published triples, and source-backed complete input proofs for each selected and held component. Unknown build or runtime dependencies are ineligible. No retry, release or cleanup.",{
+	["grant","Owner, on operator direction: request one scoped baseline, candidate reuse, restoration, observer, preview approval or production grant.",{run:string}],
+	["check","Owner, on operator request: recover a check, observe or repeat a historical harness, or pair a failed restoration with its retainer. Never replace a verdict.",{run:string}],
+	["review","Owner: start one scoped scout comparison or retry an eligible blocked review. To queue context without a launch use foundry_review_note.",{run:string}],
+	["deliver","Owner, on request: approve the inventory of whole, absent, disjoint test directories with latest signed passing reruns on this product. Preserve owners and attempts; freshly check components, product and goal.",{run:string,checkpoint:string,goal:string,reruns:{...strings,minItems:1}}],
+	["checkpoint","Owner, on request after a failed paired observer: verify one non-release subset of published outputs. Prove complete build and runtime inputs for selected and held components; unknown inputs are ineligible. No retry or release.",{
 		run:string,observer:string,target:string,checkpoint:string,goal:string,selected:{type:"array",minItems:1,items:{type:"object",properties:{grain:string,candidate:string,component:string},required:["grain","candidate","component"],additionalProperties:false}},
 		evidence:{type:"array",minItems:1,items:{type:"object",properties:{component:string,stages:{type:"object",properties:{component:notes,generated:notes,package:notes,runtime:notes},required:["component","generated","package","runtime"],additionalProperties:false}},required:["component","stages"],additionalProperties:false}}}],
-	["diagnose","Owner on operator direction: request a writer for one existing observer file after a signed negative pair. For one final replacement after that writer's signed failure, also supply previous:{check,candidate,phases} and its approved file blob. Later submit the same fields plus the bound writer's preview for separate approval of the exact diff and fault controls. No production grant or replay.",{run:string,grain:string,pair:string,file:string,blob:string},{preview:string,
-		previous:{type:"object",properties:{check:string,candidate:string,phases:{type:"array",minItems:2,maxItems:8,uniqueItems:true,items:string}},required:["check","candidate","phases"],additionalProperties:false}}],
-	["workspace", "Bound pooled writer only: open the fresh checkout inside this session's native worktree for this assignment, or verify its existing checkout after reload. Work only under the returned node's workspace. Does not switch branches, copy old work or run checks.", {run:string,token:string}],
-	["restore","Owner on operator direction: request approval for a fresh writer to attest only the unchanged, orphaned primary of a formerly checked mixed grant. The current owner retains all its integration files. Name the historical and current product check IDs and settled current goal ID. No prior output or verdict is edited or reused.",{run:string,from:string,historical:string,retainer:string,to:string,checkpoint:string,goal:string}],
-	["pair","Owner on operator direction: run one read-only observation after a signed exit-1 restoration. Name the failed check, unchanged checkpoint and goal, and the published retainer's exact grain, candidate and passing component check. Only a different assembly is eligible. No writer, edit, verdict replacement or retry of a negative pair.",{run:string,grain:string,failed:string,checkpoint:string,goal:string,retainer:string,candidate:string,component:string}],
-	["reuse", "On operator direction, the run owner may request one same-run successor for an exhausted, failed component. Supply its grain, failed component check ID, exact retained candidate commit and a correction blob already offered to this directory. On approval the new writer starts with that directory on the current checked product. No old receipt is replayed or promoted.", {run:string,grain:string,check:string,candidate:string,blob:string}],
-	["correct", "Owner: request approval to remove one verbatim contradictory clause before submission. Name the assigning review, existing worker and file + verbatim excerpt from its frozen product (in grant for a checked predecessor handoff). For a bound writer, direct them to read status after approval. Only for an ordinary missing-input stop without a verdict, also supply its exact preview to deliver one bounded repair to that same writer. No new reads, owner, or check.", {run:string, grain:string, review:string, worker:string, clause:string, file:string, excerpt:string},{preview:string}],
-	["attribute", "Owner only: route a shared failed step from the current unmet goal when its evaluator lacked structured blocker data. Quote the receipt verbatim. blocked counts dependent journeys not run, excluding the one failure. Scheduling context, not a verdict.", {run:string,receipt:string,id:string,directory:string,excerpt:string,blocked:{type:"integer",minimum:1}}],
-	["configure", "On operator direction, change scheduling for future reservations without pausing. Use the current scheduling.revision from owner status. workers:null restores the committed ceiling. checkpointReviews controls new pending-goal and source-backed comparisons, and automatic discovery from prior failures while a goal is pending or after exit 2.", {run:string,revision:{type:"integer",minimum:0}}, {workers:{type:["integer","null"],minimum:1},checkpointReviews:{type:"boolean"}}],
-	["iterate", "Owner: route an offered comparison to one production directory. Use the unmet goal ID, or the passing product check ID while its goal is pending. After a settled exit 2, use the current goal ID and source:{commit,file,excerpt} for an operator-approved new review on that exact checked product. Alternatively use historical:{receipt,step} for an omitted same-product failure, or the original directory/blob for a superseded exhausted-directory overlap on unchanged inputs. Starts a scoped review, not a writer or release check; cannot repurpose live work.", {run: string, directory: string, receipt: string, blob: string, question: string},
-		{files:{...strings,minItems:1,description:"Exact existing integration files for a source-backed review with a file-aware product checker; never grants a parent directory."}, historical:{type:"object", properties:{receipt:string, step:string}, required:["receipt","step"], additionalProperties:false},
-			transfer:{type:"object",description:"Separately approve a conditional transfer from the exact qualified parent to a new ID. Requires source, files and an exclusion-aware checker.",properties:{from:string,candidate:string,to:string},required:["from","candidate","to"],additionalProperties:false},
-			successor:{type:"object",description:"Separately approve one strictly narrower assignment from the current product after writer-relinquished or writer-cannot-repair. Requires source and the original signed component check. A disjoint successor may publish its component during an ownership hold; it cannot release the product or sibling paths.",properties:{from:string,check:string,to:string},required:["from","check","to"],additionalProperties:false},
-			source:{type:"object",properties:{commit:string,file:string,excerpt:string},required:["commit","file","excerpt"],additionalProperties:false}}],
-	["preview", "Bound writer, after joining helpers: pin a midpoint snapshot of all assigned directories on the frozen generation for owner inspection. No submission, validation, permission change or new assignment.", {run: string, token: string}],
-	["review_note", "Owner only: attach an exact historical goal receipt and a question to the named squad's next normal review. Does not start discovery or assign work. Use a receipt ID from proof status; optional excerpt must be verbatim.", { run: string, squad: string, receipt: string, question: string }, { excerpt: string }],
-	["start", "Activate a committed .foundry brief only on explicit operator direction. Use resume to recover existing reservations or a missing observation. goalCheck defines the finish line for squads; seed selects a one-off instead.", { source: string }],
-	["resume", "On explicit owner request, continue a paused run, recover interrupted discovery or an unclaimed writer launch, or retry missing goal evidence. Never create a run or replay an issued call.", { source: string }],
+	["workspace", "Pooled writer: open or verify this assignment's checkout inside your native worktree. Work only in the returned workspace. No branch switch, old-work copy or check.", {run:string,token:string}],
+	["correct", "Owner: approve removing one contradictory clause from an unsubmitted task. Cite the assigning review and frozen verbatim source, in grant for a checked handoff. A bound writer rereads status; only an ordinary missing-input stop without a verdict can use its exact preview for one same-writer repair. No new read grant or check.", {run:string, grain:string, review:string, worker:string, clause:string, file:string, excerpt:string},{preview:string}],
+	["attribute", "Owner: route a shared failure missing from structured blocker data. Quote the current unmet goal receipt. Count dependent journeys not run, excluding the failure; this changes scheduling, not its verdict.", {run:string,receipt:string,id:string,directory:string,excerpt:string,blocked:{type:"integer",minimum:1}}],
+	["configure", "Owner, on request: change future reservations at the current scheduling revision. workers:null restores the brief ceiling. checkpointReviews governs new checkpoint comparisons and surveys, not existing work.", {run:string,revision:{type:"integer",minimum:0}}, {workers:{type:["integer","null"],minimum:1},checkpointReviews:{type:"boolean"}}],
+	["preview", "Bound writer, after joining helpers: pin all assigned roots on the frozen generation for inspection. No submission, evaluator or change of authority.", {run: string, token: string}],
+	["review_note", "Owner: queue a historical goal receipt and question for a squad's next normal review. Use a proof receipt ID and optional verbatim excerpt. No discovery or assignment.", { run: string, squad: string, receipt: string, question: string }, { excerpt: string }],
+	["start", "On explicit operator direction, activate a new run for a committed .foundry brief. Repeating start does not advance or resume an existing run. Use foundry_resume for recovery.", { source: string }],
+	["resume", "On explicit owner request, continue an existing source from its ledger pins. Use run to disambiguate. Never create a run or replay an issued call.", { source: string }, {run:string}],
 	["pause", "Stop new Foundry work without discarding native calls, evidence, worktrees or checked products.", { run: string }],
-	["claim", "Recover only an existing uncertain writer. Select by grain, or from the original child by its own kickoff token. The child proves its kickoff and native get_session identity; the original issuer confirms by grain. Never launches or checks work.", { run: string }, { grain: string, token: string }],
-	["retire", "On explicit owner request, verify a dead pre-journal goal runner in the original owner's native history. Request approval to retire that reservation without a verdict and integrate retained outputs. Never rerun the old goal.", { run: string, check: string }],
-	["recheck", "Owner on operator request: with run and check only, recover a confirmed pre-claim launcher exit or signed null goal. For a stopped numeric component, also name product (full current checked commit), harness (historical test-only paths) and current (changed product inputs kept current). Account for the complete original suite and every changed path; do not guess unknown inputs. Appends a separate signed observation without repairing or qualifying. Only supply after for an explicitly requested repeat of the last signed observation on the same product.", { run: string, check: string },{product:string,harness:strings,current:strings,after:string}],
-	["rereview", "On explicit operator request, the owner can recover one current review blocked by a proven scout budget failure or a missing approved source. One fresh scout receives the corrected packet for the same comparison. No old report, writer or check is replayed.", { run: string, review: string }],
-	["clarify", "Only on the owner's explicit request after losing a charter question: reopen that exact native text dialog using its recovery fields from foundry_status. The operator enters the clarification; it cannot change the contract or approve permissions.", { run: string, review: string, presentation: string }],
-	["repin", "Owner: request approval of an evaluator-only committed diff. Omit kind for the final goal. kind:product requires a quiescent checked checkpoint, opts into exact-file ownership and rechecks the same bytes before fresh goal assessment. Declare ownership:retain-except-transferred only for a reviewed exclusion-aware checker. Grants no transfer.", { run: string, from: string, revision: string, files: strings }, {kind:{type:"string",enum:["product"]},ownership:{type:"string",enum:["retain-except-transferred"]}}],
-	["submit", "Bound writer, after joining helpers: submit all assigned roots together. For a genuinely missing input, use missingInput. If status shows cannotRepair and the assignment permits no further repair, use cannotRepair:{check,reason}. If status shows relinquish and neither a scoped fix nor a missing input exists, use relinquish:{check,reason} with that exact check. Relinquishing a repair retains its numeric failure without capturing, checking, or promoting bytes. For changed work after an older incomplete check, pass changedFrom from status to spend one repair.", { run: string, token: string }, { missingInput: string, cannotRepair:stop, relinquish:stop, changedFrom: string, usedArtifacts: strings, comparedArtifacts: strings }],
-	["publish", "Offer a reference file with file and to (writers also need token). Or, on operator direction, the owner can request approval for original missing-input writers by assignment ID: readBaselines allows inspection of their exact prior directories without starting work, even during a check; baselines starts a bounded repair after a settled unmet goal. Use only one form. File offers never grant access.", { run: string }, { file: string, to: strings, token: string, baselines: strings, readBaselines: strings }],
-	["status", "Inspect assignments, blockers and exact receipts. A goal checkpoint is not qualification. For an explicit owner request use detail: proof, cleanup or usage. Reading never advances or archives work.", { run: string }, { detail: { type: "string", enum: ["proof", "cleanup", "usage"] } }],
-	["reference", "Bound Foundry researcher: read a permitted UTF-8 file from a local sibling Git checkout at the exact published commit. Not a checkout read, shell, or visual observation.", { run: string, review: string, repo: string, revision: string, path: string }],
+	["claim", "Bind an existing uncertain writer only. The child proves its kickoff and native session identity by token or grain; the original issuer confirms by grain. Never launch another writer.", { run: string }, { grain: string, token: string }],
+	["retire", "On explicit owner request and native proof, approve retiring a dead pre-journal goal reservation without a verdict. Integrate retained work; never rerun the old goal.", { run: string, check: string }],
+	["clarify", "On explicit owner request, reopen the exact lost charter dialog from status. Only the operator answers. No contract change or permission grant.", { run: string, review: string, presentation: string }],
+	["repin", "Owner, on request: omit kind for a goal-only diff; product rechecks the same checkpoint; target adopts a reviewed mixed descendant. Name the exact diff and pins. Target adoption requires explicit approval, acceptance changes, any exact unowned conflict resolutions, and fresh component/product/goal checks. No branch change or retroactive grant.", { run: string, from: string, revision: string, files: strings }, {kind:{type:"string",enum:["product","target"]},ownership:{type:"string",enum:["retain-except-transferred"]},checkpoint:string,goal:string,acceptance:string,resolutions}],
+	["submit", "Bound writer, after joining helpers: submit all assigned roots, or report one stop. Use missingInput for a genuine missing input; cannotRepair for a status-listed check when further repair is forbidden; relinquish for a status-listed numeric failure with neither a fix nor missing input. Stops do not capture or recheck. For changed work after an incomplete check use changedFrom from status.", { run: string, token: string }, { missingInput: string, cannotRepair:stop, relinquish:stop, changedFrom: string, usedArtifacts: strings, comparedArtifacts: strings }],
+	["publish", "Offer one reference file to named output directories or charter areas. A bound writer must supply its token. Publishing grants no baseline access or repair authority.", {run:string,file:string,to:{...strings,minItems:1}}, {token:string}],
+	["status", "Read scoped work, blockers and receipts without advancing or archiving. permissions reads this issuer's live policy and mode; proof, cleanup and usage are owner-only.", { run: string }, { detail: { type: "string", enum: ["proof", "cleanup", "usage", "permissions"] } }],
+	["reference", "Bound researcher only: read permitted UTF-8 text at a published commit in a local sibling repository. Not working-tree or visual evidence.", { run: string, review: string, repo: string, revision: string, path: string }],
 ];
 
-/** @param {Commands} runtime @param {()=>string} primary @returns {import("@github/copilot-sdk").Tool[]} */
-export function buildTools(runtime, primary) {
-	return definitions.map(([op, description, required, optional]) => ({
-		name: `foundry_${op}`, description, parameters: { type: "object", properties: { ...required, ...optional }, required: Object.keys(required), additionalProperties: false },
-		handler: async (args, invocation) => {
+/** @param {Properties} required @param {Properties} [optional] */
+const object=(required,optional={})=>({type:"object",properties:{...required,...optional},required:Object.keys(required),additionalProperties:false});
+/** Enforce the selected form even when a host invokes a handler without schema validation.
+ * The domain command still validates all values, authority and live pins.
+ * @param {unknown} args @param {ReturnType<typeof object>} schema */
+function input(args,schema){
+	const a=record(args);
+	fields(a,Object.keys(schema.properties));
+	for(const key of schema.required)if(!Object.hasOwn(a,key)||a[key]===undefined)fail("missing_field",`Missing required field: ${key}`);
+	return a;
+}
+
+/** @param {Commands} runtime @param {()=>string} primary @param {ReturnType<typeof import("./permissions.mjs").permissionCheck>["snapshot"]} permissions @returns {import("@github/copilot-sdk").Tool[]} */
+export function buildTools(runtime, primary, permissions) {
+	return definitions.map(([op,description,required,optional])=>{
+		const variants=choices[op];
+		const forms=Object.fromEntries(Object.entries(variants??{}).map(([key,[,description,req,opt]])=>[key,{description,...object(req,opt)}]));
+		const parameters={...object(required,variants?forms:optional),...(variants?oneChoice:limits[op])};
+		return {name:`foundry_${op}`,description,parameters,handler: async (args, invocation) => {
 			try {
 				if (op === "reference") {
 					if (invocation.sessionId !== primary() || !invocation.agentId) throw new Error("Only a bound research subagent may use the pinned reader");
-					return await runtime.readReference(args, invocation.sessionId, invocation.agentId);
+					return await runtime.readReference(input(args,parameters), invocation.sessionId, invocation.agentId);
 				}
 				if (fromHelper(invocation, primary()))
 					throw new Error(primaryOnly);
-				if (op === "status") return JSON.stringify(runtime.inspect(args, invocation.sessionId));
-				if (op === "claim") return JSON.stringify(await runtime.claimWriter(args, invocation.sessionId));
-				return JSON.stringify(await runtime.operation(op, args, invocation.sessionId));
+				const a=input(args,parameters);
+				if(variants){
+					const selected=Object.keys(a).filter(k=>k!=="run");
+					if(selected.length!==1)fail("invalid_selector",`Choose exactly one ${op} operation: ${Object.keys(variants).join(", ")}`);
+					const [key]=selected,[command]=variants[key],body=input(a[key],forms[key]);
+					return JSON.stringify(await runtime.operation(command,{run:a.run,...body},invocation.sessionId));
+				}
+				if (op === "status") {
+					const {detail, ...base} = a;
+					if (detail !== "permissions") return JSON.stringify(runtime.inspect(a, invocation.sessionId));
+					runtime.inspect(base, invocation.sessionId);
+					return JSON.stringify({session:invocation.sessionId, ...await permissions()});
+				}
+				if (op === "claim") return JSON.stringify(await runtime.claimWriter(a, invocation.sessionId));
+				return JSON.stringify(await runtime.operation(op, a, invocation.sessionId));
 			}
 			catch (error) {
 				if (error instanceof FoundryError && error.code === "approval_declined")
 					return { resultType: "rejected", textResultForLlm: error.message };
 				return { resultType: "failure", textResultForLlm: error instanceof Error ? error.message : String(error) };
 			}
-		},
-	}));
+		}};
+	});
 }

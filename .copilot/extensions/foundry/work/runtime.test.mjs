@@ -513,7 +513,7 @@ test("review notes retain large valid inputs and reject a fabricated historical 
 	await f.start();
 	const [check] = (await f.owner.operation("status", { run, detail: "proof" }, "owner")).goalChecks ?? [];
 	const args = { run, receipt: check.id, question: "What changed?", squad: "right" }, op = "review_note";
-	const tool = buildTools(f.owner, () => "owner").find(t => t.name === `foundry_${op}`); assert.ok(tool?.handler);
+	const tool = buildTools(f.owner, () => "owner", assert.fail).find(t => t.name === `foundry_${op}`); assert.ok(tool?.handler);
 	const actor = { sessionId: "owner", toolName: tool.name, toolCallId: "note", arguments: args };
 	assert.match(JSON.stringify(await tool.handler(args, { ...actor, agentId: "helper" })), /subagents/);
 	await f.owner.operation(op, args, "owner");
@@ -938,7 +938,7 @@ test("a bound writer reports missing input without replacing the checked invento
 	assert.ok((await f.reading("pipeline")).prompt.includes(args.missingInput));
 
 	// A later, independent checkpoint need not strand a stopped writer whose own tree is unchanged.
-	const publish = { run, baselines: ["inventory"] };
+	const repair = {run,grains:["inventory"]};
 	const tree = git(f.root, "rev-parse", `${checkpoint.commit}:${assembly}`);
 	let consent = false, prompts = 0;
 	const owner = f.runtime(f.root, { confirm: async prompt => {
@@ -946,18 +946,18 @@ test("a bound writer reports missing input without replacing the checked invento
 		for (const exact of [w.id, "inventory", checkpoint.commit, assembly, tree]) assert.ok(prompt.includes(exact));
 		return consent;
 	} });
-	await assert.rejects(owner.operation("publish", publish, w.id), /owner/);
-	await assert.rejects(owner.operation("publish", { run, baselines: ["inventory", "part-0"] }, "owner"), /missing.input/);
-	await assert.rejects(owner.operation("publish", publish, "owner"), /not approved/);
+	await assert.rejects(owner.operation("repairBaseline", repair, w.id), /owner/);
+	await assert.rejects(owner.operation("repairBaseline", {run,grains:["inventory","part-0"]}, "owner"), /missing.input/);
+	await assert.rejects(owner.operation("repairBaseline", repair, "owner"), /not approved/);
 	assert.equal((await f.status(w.id)).nodes[0].token, w.token);
 	consent = true;
-	await owner.operation("publish", publish, "owner");
+	await owner.operation("repairBaseline", repair, "owner");
 	const resumed = (await f.status(w.id)).nodes[0];
 	assert.equal(resumed.worker, w.id); assert.equal(resumed.state, "writing");
 	assert.equal(resumed.repairs, 1); assert.notEqual(resumed.token, w.token);
 	assert.deepEqual(resumed.baseline, { directory: assembly, revision: checkpoint.commit, tree });
 	assert.deepEqual(f.checks, checks); assert.equal(existsSync(path.join(w.cwd, assembly, "accepted")), false);
-	await assert.rejects(owner.operation("publish", publish, "owner"), /missing.input/);
+	await assert.rejects(owner.operation("repairBaseline", repair, "owner"), /missing.input/);
 	assert.equal(prompts, 2);
 	await assert.rejects(writer.operation("submit", { run, token: w.token }, w.id), /assignment/);
 	for (const file of ["index.mjs", "accepted", "unaffected"])
@@ -1132,7 +1132,7 @@ for (const issued of [false, true]) test(`a stopped writer's baseline distinguis
 		},
 	});
 	const owner = f.runtime(f.root, { confirm: async () => { approvals++; return true; } });
-	const grant = () => owner.operation("publish", { run, baselines: ["assembly"] }, "owner");
+	const grant = () => owner.operation("repairBaseline", {run,grains:["assembly"]}, "owner");
 	const publish = publisher.operation("publish", { run, file: ".foundry/api.md", to: [assembly] }, "owner");
 	try {
 		await atNotice;
@@ -1184,19 +1184,19 @@ for (const legacy of [false, true]) test(`an owner can approve inspection of a s
 	try {
 		await Promise.race([atGoal, checking.then(() => assert.fail("Did not hold the issued goal"))]);
 		const before = await f.status(), stopped = (await f.status(w.id)).nodes[0];
-		const read = { run, readBaselines: ["inventory"] }, repair = { run, baselines: ["inventory"] };
+		const selection={run,grains:["inventory"]};
 		let consent = false, prompts = 0;
 		const owner = f.runtime(f.root, { confirm: async prompt => {
 			prompts++;
 			for (const field of [w.id, assembly, f.tip, sourceTree, "read-only", "no repair"]) assert.ok(prompt.includes(field), field);
 			return consent;
 		} });
-		await assert.rejects(owner.operation("publish", read, w.id), /owner/);
-		await assert.rejects(owner.operation("publish", repair, "owner"), /current unmet goal/);
-		await assert.rejects(owner.operation("publish", read, "owner"), /not approved/);
+		await assert.rejects(owner.operation("inspectBaseline", selection, w.id), /owner/);
+		await assert.rejects(owner.operation("repairBaseline", selection, "owner"), /current unmet goal/);
+		await assert.rejects(owner.operation("inspectBaseline", selection, "owner"), /not approved/);
 		assert.deepEqual((await f.status(w.id)).nodes[0], stopped);
 		consent = true;
-		await owner.operation("publish", read, "owner");
+		await owner.operation("inspectBaseline", selection, "owner");
 		const current = await f.runtime(w.cwd).operation("status", { run }, w.id), granted = current.nodes[0];
 		assert.deepEqual(granted.readGrant, n.priorSource);
 		assert.ok(!Array.isArray(granted.readGrant));
@@ -1207,8 +1207,8 @@ for (const legacy of [false, true]) test(`an owner can approve inspection of a s
 		assert.deepEqual((await f.status()).pending, before.pending);
 		assert.deepEqual((await f.status()).assignments, before.assignments); assert.equal(prompts, 2);
 		await assert.rejects(writer.operation("submit", { run, token: w.token }, w.id), /writable/);
-		await assert.rejects(owner.operation("publish", repair, "owner"), /current unmet goal/);
-		await assert.rejects(owner.operation("publish", read, "owner"), /already approved/);
+		await assert.rejects(owner.operation("repairBaseline", selection, "owner"), /current unmet goal/);
+		await assert.rejects(owner.operation("inspectBaseline", selection, "owner"), /already approved/);
 		assert.equal(prompts, 2);
 	} finally { release(); await checking; }
 	assert.equal((await f.status()).goal?.receipt?.exit, 1);
@@ -1216,15 +1216,59 @@ for (const legacy of [false, true]) test(`an owner can approve inspection of a s
 	const owner = f.runtime(f.root, { confirm: async prompt => {
 		assert.match(prompt,/one bounded repair using/); return true;
 	} });
-	await assert.rejects(f.runtime(f.root,{confirm:async()=>false}).operation("publish",{run,baselines:["inventory"]},"owner"),{code:"approval_declined"});
+	await assert.rejects(f.runtime(f.root,{confirm:async()=>false}).operation("repairBaseline",{run,grains:["inventory"]},"owner"),{code:"approval_declined"});
 	assert.equal((await f.status(w.id)).nodes[0].state,"blocked","inspection did not authorize use of those files for a repair");
-	await owner.operation("publish", { run, baselines: ["inventory"] }, "owner");
+	await owner.operation("repairBaseline", {run,grains:["inventory"]}, "owner");
 	const repaired = (await f.status(w.id)).nodes[0];
 	assert.equal(repaired.state, "writing"); assert.equal(repaired.repairs, 1);
 	assert.deepEqual(repaired.baseline, n.priorSource); assert.equal(repaired.readGrant, undefined);
 });
 
-for (const key of ["baselines", "readBaselines"]) test(`a changed target during baseline approval leaves the missing-input writer stopped: ${key}`, async t => {
+for (const mode of ["omitted","unavailable","uncited","permitted","independent"]) test(`maintenance planning checks the required prior read before assigning a writer: ${mode}`,async t=>{
+	const clause="Consult this output's prior regular files at the reviewed revision.";
+	const f=pipelineFixture(t,{[`${assembly}/index.mjs`]:originalAssembly,".foundry/right.md":mode==="permitted" ? clause : "Maintain the checked output."});
+	await f.start();
+	const review=await f.reading("pipeline");
+	const task=mode==="independent" ? "Replace the validator using the public interface." : "Preserve the existing validator.";
+	await f.owner.scoutResult(run,review.dispatch,review.issuer,review.workflowId,review.id,result(".foundry/right.md",[{...work("maintain",assembly),task,
+		...(mode!=="omitted" && {prior:mode==="unavailable" || mode==="independent" ? mode : {clause}})}]),review.packet,true);
+	await f.settle();
+	const state=await f.status();
+	if (mode!=="permitted" && mode!=="independent") {
+		assert.equal(f.workers.size,0);assert.match(state.reviews.find(r=>r.id===review.id)?.reason ?? "",/prior.directory/i);
+	} else {
+		const n=state.nodes.find(n=>n.grain==="maintain");assert.ok(n?.worker && n.priorSource);
+		assert.equal(n.readGrant,undefined);assert.equal(n.baseline,undefined);
+	}
+});
+
+test("a grouped baseline grant recovers original missing-input writers on a frozen exit-2 checkpoint",async t=>{
+	const dirs=["pipeline/one","pipeline/two"];
+	const f=pipelineFixture(t,{...Object.fromEntries(dirs.map(dir=>[`${dir}/index.mjs`,originalAssembly])),
+		".foundry/product.mjs":"", [goalCheck]:'import {existsSync} from "node:fs";process.exit(existsSync("engine/base/index.mjs")?2:1)'});
+	await f.start();
+	await report(await f.reading("pipeline"),".foundry/right.md",dirs.map((dir,i)=>work("unit"+i,dir)));
+	await report(await f.reading("engine"),".foundry/left.md",[work("base","engine/base")]);
+	const ns=(await f.status()).nodes, ws=dirs.map((_,i)=>{const w=f.workers.get(ns.find(n=>n.grain==="unit"+i)?.worker ?? "");assert.ok(w);return w;});
+	for (const w of ws) await f.runtime(w.cwd).operation("submit",{run,token:w.token,missingInput:"Need the prior module to maintain its behavior."},w.id);
+	await f.write("base",assemblyBody);
+	const before=await f.status();assert.equal(before.goal?.receipt?.exit,2);assert.ok(before.checkpoint);
+	put(f.root,".foundry/right.md","New charter only for future work.");git(f.root,"commit","-qam","Amend the target charter");
+	const owner=f.runtime(f.root,{confirm:async()=>true});
+	await owner.operation("inspectBaseline",{run,grains:["unit0"]},"owner");
+	const ids=["unit0","unit1"], repaired=await owner.operation("repairBaseline",{run,grains:ids},"owner");
+	for (const [i,w] of ws.entries()) {
+		const n=repaired.nodes.find(n=>n.grain===ids[i]), detail=(await f.status(w.id)).nodes.find(n=>n.grain===ids[i]);
+		assert.ok(n?.worker===w.id && detail?.token && detail.baseline && !Array.isArray(detail.baseline));
+		const prior=git(w.cwd,"show",`${detail.baseline.revision}:${dirs[i]}/index.mjs`);
+		put(w.cwd,`${dirs[i]}/index.mjs`,prior+"\n// maintained\n");
+		await f.runtime(w.cwd).operation("submit",{run,token:detail.token},w.id);
+		const done=(await f.status()).nodes.find(n=>n.grain===ids[i]);assert.ok(done?.receipt);assert.equal(done.receipt.exit,0);assert.equal(done.state,"published");
+	}
+	const after=await f.status();assert.equal(after.checkpoint,before.checkpoint);assert.equal(after.qualified,null);assert.deepEqual(after.goal,before.goal);
+});
+
+for (const op of ["repairBaseline","inspectBaseline"]) test(`a changed target during baseline approval leaves the missing-input writer stopped: ${op}`, async t => {
 	const { f, nextCore, nextPipeline } = await assemblyCheckpoint(t);
 	await report(nextCore, ".foundry/left.md", []);
 	await report(nextPipeline, ".foundry/right.md", [work("inventory", assembly)]);
@@ -1237,7 +1281,7 @@ for (const key of ["baselines", "readBaselines"]) test(`a changed target during 
 		git(f.root, "commit", "-qam", "change inventory while approval is open");
 		return true;
 	} });
-	await assert.rejects(owner.operation("publish", { run, [key]: ["inventory"] }, "owner"), /current (?:unmet goal|goal target)/);
+	await assert.rejects(owner.operation(op, {run,grains:["inventory"]}, "owner"), /current (?:unmet goal|goal target)/);
 	assert.deepEqual((await f.status(w.id)).nodes[0], before);
 	assert.deepEqual(f.inbox, inbox);
 });
@@ -1356,7 +1400,7 @@ test("a deferred area repair waits for every pinned consumer, then asks once on 
 	assert.deepEqual(held.products, before.products);
 	await f.write("adapter", assemblyBody);
 	await f.owner.operation("pause", { run }, "owner");
-	await f.start(f.runtime(f.root));
+	await f.runtime(f.root).operation("resume",{source:held.contract.path},"owner");await f.settle();
 	const intermediate = await f.status();
 	assert.ok(!intermediate.reviews.some(r => r.wake?.review === nextPipeline.id));
 	assert.equal(intermediate.nodes.find(n => n.grain === "adapter")?.state, "qualified");
@@ -1535,7 +1579,7 @@ for (const edit of ["input", "neighbor"])
 					issuer.close(); issuer = f.runtime(writer.cwd, host);
 					issuer.turn(core.issuer); await issuer.flush();
 					assert.deepEqual((await f.status()).products, held.products);
-					await f.runtime(f.root).operation("start", { source }, "owner");
+					await f.runtime(f.root).operation("resume", { source }, "owner");
 				}
 				f.owner.turn("owner"); await f.owner.flush();
 				const s = await f.status();
@@ -1581,7 +1625,7 @@ for (const form of ["id", "definition", "replace", "rename"])
 				await report(await f.reading("engine"), ".foundry/left.md", phase === "peer" ? [work("parser", "engine/parser")] : []);
 				if (restart) {
 					await f.owner.operation("pause", { run }, "owner");
-					await f.runtime(f.root).operation("start", { source }, "owner");
+					await f.runtime(f.root).operation("resume", { source }, "owner");
 				}
 				const workers = f.workers.size, old = await f.status(), next = await f.reading("pipeline");
 				await report(next, evidence, form === "id" ? ["assembly"] : [{ ...task, id: form === "rename" ? "relabeled" : task.id }], form === "replace" ? ["assembly"] : []);
@@ -1595,6 +1639,38 @@ for (const form of ["id", "definition", "replace", "rename"])
 				assert.deepEqual(rejected.products, before.products);
 			});
 		}
+
+test("a redundant transitive dependency does not buy another writer on the same failed inputs",async t=>{
+	const root=work("root","engine/root"), middle=work("middle","engine/middle",["root"]), leaf=work("leaf","pipeline/leaf",["middle"]);
+	const f=pipelineFixture(t,{...Object.fromEntries([root,middle,leaf].map(g=>[`${g.directory}/index.mjs`,originalAssembly])),
+		[goalCheck]:"process.exit(1);",".foundry/product.mjs":""});
+	await f.start();
+	const [core,pipeline]=f.scouts;
+	await report(core,".foundry/left.md",[root,middle]);
+	await report(pipeline,".foundry/right.md",[leaf]);
+	const prior=process.env.FOUNDRY_PREVIOUS_WORK;
+	for(const g of [root,middle,leaf]){
+		if(!prior || g!==leaf){await f.write(g.id,originalAssembly);continue;}
+		const old=await import(pathToFileURL(path.join(prior,"runtime.mjs")).href);
+		const w=f.workers.get((await f.status()).nodes.find(n=>n.grain===g.id)?.worker??"");assert.ok(w);
+		put(w.cwd,`${g.directory}/index.mjs`,originalAssembly);
+		const writer=f.runtime(w.cwd,{},old.createRuntime);
+		await writer.operation("submit",{run,token:w.token},w.id);await f.settle();writer.close();
+	}
+	const db=openDatabase(f.root);t.after(()=>db.close());
+	const original=db.read(run)?.nodes.leaf;assert.ok(original?.state==="repeated");
+	assert.deepEqual(Object.keys(original.inputs??{}).sort(),["middle","root"]);
+	const review=await f.reading("pipeline"), count=f.workers.size, checks=[...f.checks];
+	const proposal=result(".foundry/right.md",[{...leaf,needs:["middle","root"]}]);
+	if(prior){
+		await deliver(f.runtime(f.root),review,proposal);
+		f.owner.sessionStart("owner",f.root);f.owner.turn("owner");await f.owner.flush();
+	}else await review.report(proposal);
+	const end=await f.status();
+	assert.match(end.reviews.find(r=>r.id===review.id)?.reason??"",/already reproduced/);
+	assert.deepEqual(db.read(run)?.nodes.leaf,original);
+	assert.equal(f.workers.size,count);assert.deepEqual(f.checks,checks);
+});
 
 for (const [changed,saved] of [[false,false],[true,false],[true,true]])
 	test(`factory matrix: delayed ${changed ? "changed" : "identical"} prerequisite on the same revision${saved?" / recover original blocked report":""}`, async t => {
@@ -1802,7 +1878,7 @@ for (const crash of ["none", "before", "after"])
 		const reopened = f.runtime(f.root);
 		reopened.turn("owner"); await reopened.flush();
 		if (crash === "before") await reopened.operation("pause", { run }, "owner");
-		const s = await reopened.operation("start", { source }, "owner"), db = openDatabase(f.root); t.after(() => db.close());
+		const s = await reopened.operation("resume", { source }, "owner"), db = openDatabase(f.root); t.after(() => db.close());
 		const effects = db.read(run)?.effects; assert.ok(effects);
 		assert.ok(existsSync(path.join(gate, "left")) && existsSync(path.join(gate, "right")));
 		assert.deepEqual(effects.filter(e => e.kind === "component").map(e => e.grain).sort(), ["left", "right"]);
@@ -1883,7 +1959,8 @@ test("owner resume can recover an unbound scout dispatch from a finished writer"
 	assert.ok(failed.pending.some(e => e.issuer === "worker-1" && e.state === "uncertain"));
 	writer.close();
 	await f.owner.operation("pause", { run }, "owner");
-	const resumed = await f.start(), fresh = f.scouts.filter(s => s.base === failed.checkpoint);
+	const resumed = await f.owner.operation("resume",{source},"owner");await f.settle();
+	const fresh = f.scouts.filter(s => s.base === failed.checkpoint);
 	assert.deepEqual(fresh.map(s => s.id).sort(), failed.pending.map(e => e.id).sort());
 	assert.ok(fresh.every(s => s.issuer === "owner" && s.dispatch !== ticket));
 	await assert.rejects(f.owner.scoutBatch(run, ticket, "worker-1", "late-workflow"), { code: "foreign_assignment" });
@@ -1967,7 +2044,7 @@ test("a paused workflow result survives an issuer reload and starts exactly one 
 	assert.equal(f.workers.size, 0);
 	reloaded.turn("owner"); await reloaded.flush();
 	assert.deepEqual((await f.status()).nodes, held.nodes);
-	await f.start(reloaded);
+	await reloaded.operation("resume",{source},"owner");await f.settle();
 	let resumed = await f.status();
 	assert.equal(resumed.reviews.find(r => r.id === left.id)?.state, "observed");
 	assert.equal(resumed.nodes[0].review, left.id);
@@ -1996,7 +2073,7 @@ test("the product evaluator can attribute a bounded repair to a discovered direc
 	await report(core, ".foundry/left.md", [], []);
 	await report(pipeline, ".foundry/right.md", [work("chosen-by-scout", dir)]);
 	const before = await f.owner.operation("pause", { run }, "owner");
-	const resumed = await f.runtime(f.root).operation("start", { source }, "owner");
+	const resumed = await f.runtime(f.root).operation("resume", { source }, "owner");
 	assert.deepEqual(resumed.nodes, before.nodes);
 	await f.write("chosen-by-scout", 'export default ()=>"not sent";');
 	const repair = await f.status();
@@ -2148,7 +2225,7 @@ test("an unmet baseline admits chartered work; an inconclusive/denied call canno
 		if (result === "unconfirmed") assert.equal(s.pending[0].state, "uncertain");
 		else assert.match(String(s.blocker), result === "denied" ? /permission refused/ : /exit 3.*backend error/s);
 		await owner.operation("pause", { run }, "owner");
-		await owner.operation("start", { source }, "owner");
+		await owner.operation("resume", { source }, "owner");
 		assert.equal(calls, 1, "resume cannot provide a missing receipt or override a native refusal");
 		assert.equal(f.workers.size, 0);
 	}
@@ -2248,7 +2325,7 @@ for (const stopped of [false, true]) test(`managed hold during checked-product h
 	if (stopped) {
 		assert.equal(s.blocker, undefined);
 		assert.match(String(s.pending.find(e => e.kind === "handoff")?.reason), /next turn rechecks/);
-	} else assert.match(String(s.blocker), /explicitly resume/);
+	} else assert.match(String(s.blocker), /watches for permitted settings/);
 });
 
 for (const repeat of [false, true])
@@ -2638,7 +2715,7 @@ test("pause preserves issued workers; changed contracts cannot resume or qualify
 	await assert.rejects(f.owner.operation("pause", { run }, "other"), /owner/);
 	await f.owner.operation("pause", { run }, "owner");
 	await assert.rejects(f.submit("worker-1"), /paused/);
-	await f.start();
+	await f.owner.operation("resume",{source},"owner");
 	assert.equal(f.workers.size, 2);
 	put(f.root, ".foundry/api.md", "changed interface");
 	git(f.root, "add", ".foundry");
@@ -3061,7 +3138,7 @@ test("exclusive durable check receipt survives a lost host reply and pause", asy
 	});
 
 	assert.equal((await f.status()).qualified, null);
-	await f.runtime(f.root).operation("start", { source }, "owner");
+	await f.runtime(f.root).operation("resume", { source }, "owner");
 	assert.ok((await f.status()).qualified);
 	assert.equal(f.checks.length, 3);
 	assert.equal(f.workers.size, 2);
@@ -3086,7 +3163,7 @@ for (const kind of ["left", "joined product"])
 		assert.equal(paused.active, false);
 		assert.equal(paused.qualified, null);
 		assert.equal(f.checks.length, kind === "left" ? 1 : 2);
-		const resumed = await f.start();
+		const resumed = await f.owner.operation("resume",{source},"owner");
 		assert.ok(resumed.qualified);
 		assert.equal(f.checks.length, 2);
 		assert.equal(f.workers.size, 1);
@@ -3279,7 +3356,7 @@ test("a fixed worker cap refills from a writer's check without an owner turn, in
 	const f = fixture(t, p => { addIndependent(p); p.limits = { workers: 2 }; }, extraCheck);
 	await f.start();
 	await f.owner.operation("pause", { run }, "owner");
-	const resumed = await f.start(f.runtime(f.root));
+	const resumed = await f.runtime(f.root).operation("resume",{source},"owner");
 	assert.equal(resumed.limit, 2);
 	assert.deepEqual(resumed.nodes.map(n => n.state), ["writing", "writing", "waiting"]);
 	await f.submit("worker-2");
@@ -3345,7 +3422,7 @@ test("the total assignment limit admits late evidence, finishes in-flight checks
 	assert.equal(stopped.goal.receipt.exit, 1);
 	assert.equal(stopped.nodes.find(n => n.grain === "recover")?.state, "waiting");
 	await f.owner.operation("pause", { run }, "owner");
-	const resumed = await f.start(f.runtime(f.root));
+	const resumed = await f.runtime(f.root).operation("resume",{source},"owner");
 	assert.deepEqual(resumed.assignments, { used: 3, limit: 3 });
 	assert.deepEqual(resumed.products, stopped.products);
 	assert.deepEqual(resumed.reviews, stopped.reviews);

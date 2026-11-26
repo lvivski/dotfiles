@@ -1,0 +1,138 @@
+.studio {
+	--blue: light-dark(#165ec0,#8ebcff); --blue-ink:light-dark(#fff,#101c30);
+	--blue-wash:light-dark(#edf4ff,#1b2c44); --wire:light-dark(#8792a1,#7c899a);
+	--surface:var(--sheet); --plane:light-dark(#f4f6f8,#181c22); --frame:light-dark(#fbfcfd,#20252c);
+	--quiet:light-dark(#f0f2f5,#2a3039); --line:light-dark(#c2cad3,#495260); --dot:light-dark(#d1d7df,#353c46);
+	--mono:var(--font-mono,ui-monospace,SFMono-Regular,Menlo,monospace);
+	height:100vh;height:100dvh;display:grid;grid-template-rows:48px minmax(0,1fr) var(--status-row,26px);overflow:hidden;color:var(--fg);
+}
+.bar,.statusline,.tabs,.transport,.camera-tools,.state-heading,.event-line,.pane-actions,.sim-label {display:flex;align-items:center}
+.bar {padding:0 12px;gap:10px;border-bottom:1px solid var(--line);background:var(--surface);min-width:0}
+.studio-mark {height:23px;width:23px;color:var(--blue);fill:none;stroke:currentColor;stroke-width:1.8;flex:none}
+.bar h1 {font-size:15px;font-weight:650;letter-spacing:-.025em;white-space:nowrap}
+.divider {display:block;width:1px;height:16px;background:var(--line);flex:none}
+.bar select,.studio select {font:inherit;color:var(--fg);background:var(--surface);border:1px solid var(--line);border-radius:5px;padding:4px 6px;max-width:100%}
+.bar select {min-width:0;font:600 13px var(--mono);border-color:transparent}
+.bar select:hover {background:var(--quiet);border-color:var(--line)}
+#return-to-work {color:var(--fg);text-decoration:none;padding:4px;font-size:18px}
+.sim-label {margin-left:auto;gap:7px;font-size:12px;color:var(--sub);white-space:nowrap}
+.sim-label i,.active-tag::before {content:"";width:7px;height:7px;border-radius:50%;background:var(--blue);display:inline-block}
+.studio .tool {display:grid;place-items:center;width:30px;height:30px;flex:none;padding:3px;background:transparent;border:0;border-radius:4px;color:var(--fg)}
+.tool svg {width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linejoin:round;stroke-linecap:round}
+/* Keep these responsive paths in the button itself: WebKit can retain the old paint of a <use> clone after resize. */
+.dock-bottom {display:none}
+.studio button:disabled {opacity:.4;cursor:default}
+.studio :is(.tool,.plain,.event-choice,.history-row):not(:disabled):hover {background:var(--quiet)}
+.studio :where(button,select,input,[tabindex]):focus-visible {outline:2px solid var(--blue);outline-offset:-2px}
+.studio #notice {grid-row:2;align-self:center;justify-self:center;border:0;background:none;color:var(--sub);padding:18px}
+.studio .workbench {grid-row:2;display:grid;grid-template-columns:minmax(0,1fr) clamp(246px,27vw,348px);min-width:0;min-height:0;width:100%;max-width:none;margin:0;padding:0}
+.plot {position:relative;min-width:0;min-height:0;overflow:hidden;background-color:var(--plane);
+	background-image:radial-gradient(var(--dot) .85px,transparent .95px);background-size:16px 16px}
+#diagram {display:block;width:100%;height:100%;touch-action:none;cursor:grab;user-select:none}
+#diagram.dragging {cursor:grabbing}
+#diagram text,#overview {font-family:var(--mono)}
+.frame {fill:var(--frame);stroke:var(--line);stroke-width:1.2}
+.parallel-frame {fill:none;stroke:var(--wire);stroke-dasharray:6 5}
+.frame-head {fill:var(--quiet)}
+.frame-name {fill:var(--fg);font-size:14px;font-weight:650}
+.frame-kind {fill:var(--sub);font:11px var(--font-sans,system-ui)}
+.wire {fill:none;stroke:var(--wire);stroke-width:1.55;stroke-linejoin:round}
+#tip path,.start-dot {fill:var(--wire)}
+#hot-tip path {fill:var(--blue)}
+.wire.enabled,.wire.taken,.start-wire {stroke:var(--blue);stroke-width:2}
+.wire.context {opacity:.48}
+.wire.reading,.wire.inspected {opacity:1;stroke:var(--blue);stroke-width:2.5;marker-end:url(#hot-tip)}
+.wire.taken {stroke-dasharray:5 3}
+.sc-node,.event-chip {cursor:pointer;outline:none}
+.state-box {fill:var(--surface);stroke:var(--line);stroke-width:1.4}
+.sc-node.inspected:not(.active) .state-box {stroke:var(--fg);stroke-dasharray:4 2}
+.sc-node.active .state-box {fill:var(--blue-wash);stroke:var(--blue);stroke-width:2.5}
+.sc-node:hover .state-box {stroke:var(--fg)}
+.state-name {fill:var(--fg);font-weight:600;font-size:14px}
+.sc-node.active .state-name {fill:var(--blue)}
+.state-indicator {fill:none;stroke:var(--wire);stroke-width:1.4}
+.sc-node.active .state-indicator {fill:var(--blue);stroke:var(--blue)}
+.event-chip rect {stroke:var(--line);fill:var(--surface);stroke-width:1}
+.event-chip text {font-size:11.5px;fill:var(--fg)}
+.event-chip.enabled rect {fill:var(--blue);stroke:var(--blue)}
+.event-chip.enabled text {fill:var(--blue-ink);font-weight:600}
+.chip-play {display:none;fill:var(--blue-ink)}
+.event-chip.enabled .chip-play {display:block}
+.event-chip.enabled text {transform:translateX(3px)}
+.event-chip.inspected rect {stroke:var(--fg);stroke-width:1.8}
+.event-chip.branch rect {stroke-dasharray:2 2}
+.event-chip.taken:not(.enabled) rect {stroke:var(--blue)}
+.sc-node:focus-visible .state-box,.event-chip:focus-visible rect,.event-chip:hover rect {stroke:var(--fg);stroke-width:2.4}
+.camera-tools {position:absolute;bottom:13px;left:13px;gap:1px;padding:3px;border:1px solid var(--line);border-radius:6px;background:var(--surface);box-shadow:0 2px 5px #1112}
+.camera-tools .divider {margin:0 3px}
+.zoom-step {font-size:19px}
+#zoom {min-width:37px;text-align:center;font:11px var(--mono);color:var(--sub)}
+#overview {position:absolute;bottom:13px;right:13px;width:102px;height:62px;background:var(--surface);border:1px solid var(--line);border-radius:4px;cursor:crosshair;touch-action:none}
+.mini-node {fill:var(--line)}.mini-node.active {fill:var(--blue)}
+.mini-wire {fill:none;stroke:var(--wire);stroke-width:2}
+.mini-window {fill:color-mix(in srgb,var(--blue) 8%,transparent);stroke:var(--blue);vector-effect:non-scaling-stroke;stroke-width:1}
+.inspector {min-width:0;min-height:0;display:grid;grid-template-rows:auto minmax(0,1fr) auto;border-left:1px solid var(--line);background:var(--surface)}
+.tabs {gap:4px;padding:0 9px;border-bottom:1px solid var(--line)}
+.tabs button {font:600 12px var(--font-sans,system-ui);color:var(--sub);border:0;border-bottom:2px solid transparent;background:none;padding:13px 6px 11px}
+.tabs [aria-selected=true] {border-bottom-color:var(--blue);color:var(--fg)}
+#event-count {font:10px var(--mono);border-radius:4px;background:var(--quiet);padding:2px 4px}
+#pane {overflow:auto;scrollbar-gutter:stable;padding:16px 13px;min-height:0}
+#pane h2 {margin:0;font:650 17px var(--mono);overflow-wrap:anywhere}
+.state-heading {gap:7px;justify-content:space-between}
+.studio .state-picker {min-width:0;max-width:75%;margin-left:-5px;padding:2px 3px;border-color:transparent;font:650 17px var(--mono)}
+.studio .state-picker:hover {border-color:var(--line);background:var(--quiet)}
+.active-tag,.inactive-tag {display:inline-flex;align-items:center;gap:5px;font:11px var(--font-sans,system-ui);color:var(--sub)}
+.active-tag {color:var(--blue)}
+.subcopy,.pane-help {font-size:12px;color:var(--sub);line-height:1.45}
+.subcopy {margin:5px 0 16px}
+.purpose {font:13px/1.5 var(--font-sans,system-ui);margin:6px 0 12px;overflow-wrap:anywhere}
+#pane details summary {cursor:pointer;font-size:12px;font-weight:600;padding:3px 0}
+.pane-title {font-size:12px;font-weight:600;margin:20px 0 7px}
+.pane-help {margin:7px 0}
+.event-line {gap:3px;border-bottom:1px solid var(--border);padding:2px 0}
+.event-choice,.history-row,.plain {color:var(--fg);background:transparent;border:0}
+.event-choice,.history-row {text-align:left;min-height:30px;padding:4px 6px;border-radius:3px}
+.event-choice {font:12px var(--mono);flex:1;min-width:0;overflow-wrap:anywhere}
+.event-choice[aria-pressed=true] {color:var(--blue);background:var(--blue-wash)}
+.send {width:28px;height:26px;font-size:12px;border:0;background:transparent;color:var(--blue);border-radius:4px}
+.send:not(:disabled):hover {background:var(--blue-wash)}
+.plain {font-size:12px;padding:4px 7px;min-height:27px;border:1px solid var(--line);border-radius:4px}
+.facts {border:0;margin:14px 0 10px;padding:0}
+.facts legend {font-size:12px;font-weight:600;margin:0 0 4px}
+.facts label {display:flex;align-items:center;gap:6px;font:12px var(--mono);min-height:25px}
+.facts input {margin:0;accent-color:var(--blue)}
+.rule-list,.event-log {list-style:none;margin:0;padding:0}
+.rule-list li {border-top:1px solid var(--border);padding:7px 3px;font:12px var(--mono);overflow-wrap:anywhere}
+.rule-list .wins {color:var(--blue)}
+.rule-list .pane-help {font-family:var(--font-sans,system-ui);margin:4px 0;color:var(--fg)}
+.rule-list small,.history-row small {display:block;color:var(--sub);font:11px/1.45 var(--font-sans,system-ui);margin-top:3px}
+.pane-actions {gap:6px;flex-wrap:wrap}
+.history-row {width:100%;font:12px var(--mono);overflow-wrap:anywhere}
+.history-row[aria-current] {background:var(--blue-wash);color:var(--blue)}
+.definition {font:11px/1.6 var(--mono);color:var(--fg);white-space:pre-wrap;overflow-wrap:anywhere;tab-size:2;margin:8px 0}
+.definition .key {color:var(--blue)}
+.transport {gap:2px;padding:4px 9px;border-top:1px solid var(--border);font:11px var(--mono);color:var(--sub)}
+#step-number {margin-left:auto}
+.statusline {grid-row:3;justify-content:space-between;gap:10px;min-width:0;padding:0 12px;border-top:1px solid var(--line);color:var(--sub);font-size:11px}
+#configuration {overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-family:var(--mono)}
+.statusline>span:last-child {white-space:nowrap}
+.sr-only {position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+@media (max-width:720px) {
+	.studio .workbench {grid-template-columns:1fr;grid-template-rows:minmax(0,1.7fr) minmax(0,1fr)}
+	.inspector {border-left:0;border-top:1px solid var(--line)}
+	.dock-right {display:none}.dock-bottom {display:inline}
+	.tabs button {padding-block:9px 7px}
+	#pane {padding:10px 14px}.subcopy {margin-bottom:6px}
+	.transport {padding-block:0}
+}
+@media (max-width:420px) {
+	.studio {grid-template-rows:42px minmax(0,1fr) var(--status-row,23px)}
+	.bar {gap:5px;padding-inline:8px}.bar h1 {font-size:14px}.studio-mark {width:19px}
+	.sim-label {font-size:0;gap:0}.bar .divider {margin:0 2px}
+	.camera-tools {bottom:8px;left:8px}#overview {width:72px;height:46px;right:8px;bottom:8px}
+}
+.studio .workbench.chart-only {grid-template:1fr / 1fr}
+.chart-only .skip {display:none}
+@media (forced-colors:active) {
+	.wire,.state-box,.event-chip rect,.frame {stroke:CanvasText}.sc-node.active .state-box,.wire.enabled {stroke:Highlight}
+}

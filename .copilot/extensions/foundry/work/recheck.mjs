@@ -1,3 +1,4 @@
+import { assign } from "./assignment.mjs";
 import { availableReservations, remainingAssignments } from "./capacity.mjs";
 import { checkReceipt, currentEvaluation, launcherFailure, productPin } from "./evidence.mjs";
 import { undecided } from "./facts.mjs";
@@ -91,7 +92,7 @@ export function prepareRecheck(cwd,run,actor,id,signed) {
 				if (!e.grain) fail("invalid_check","Missing original component");
 				const n = r.nodes[e.grain];
 				if (r.goal) delete r.goal.stall; // Its no-work conclusion no longer includes this eligible component.
-				n.state = "checking"; delete n.reason;
+				assign(n,"recheck"); delete n.reason;
 				n.check = reserveCheck(r,next.issuer,cwd,next.commit,n.grain.check,e.grain,{
 					...(e.usedArtifacts && {usedArtifacts:e.usedArtifacts}),...(e.comparedArtifacts && {comparedArtifacts:e.comparedArtifacts})});
 			} else if (next.kind==="product") {

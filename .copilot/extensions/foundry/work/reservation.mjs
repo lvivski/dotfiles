@@ -3,11 +3,12 @@ import { partitionConflict } from "./partition.mjs";
 import { validIsolation } from "./isolation.mjs";
 import { currentRemedy } from "./remedy.mjs";
 import { activeDelivery } from "./batch.mjs";
+import { accepts } from "./dispatch.mjs";
 
 /** @param {import("./model.js").Effect} e */
-export const unissued = e => e.state === "ready" || e.state === "ordinary";
+export const unissued = e => accepts(e,"issue");
 /** @param {import("./model.js").Effect} e */
-export const awaitingReply = e => e.state === "issued" || e.state === "uncertain" || e.state === "suspended";
+export const awaitingReply = e => accepts(e,"unconfirmed");
 
 /** Is this still the named check? Issuing a call and claiming a runner each have additional gates.
  * @param {import("./model.js").Run} run @param {import("./model.js").NativeCall} e */

@@ -186,7 +186,7 @@ test("a stopped pair's inspection grant lists only the prior roots that exist",a
 	await writer.operation("submit",{run,token:w.token,missingInput:"Need the prior inventory."},w.id);
 	await f.runtime(f.root,{confirm:async prompt=>{
 		assert.ok(prompt.includes(`${f.tip}:codec/encode/`) && !prompt.includes("codec/other")); return true;
-	}}).operation("publish",{run,readBaselines:["pair"]},"owner");
+	}}).operation("inspectBaseline",{run,grains:["pair"]},"owner");
 	const row=f.runtime(w.cwd).inspect({run},w.id).nodes[0];
 	assert.deepEqual(row.readGrant,[{directory:"codec/encode",revision:f.tip,tree:git(f.root,"rev-parse",`${f.tip}:codec/encode`)}]);
 	assert.equal(row.state,"blocked"); assert.equal(row.baseline,undefined);

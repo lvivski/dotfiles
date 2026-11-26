@@ -1,4 +1,5 @@
 import { lstatSync, realpathSync } from "node:fs";
+import { journal } from "./dispatch.mjs";
 import path from "node:path";
 import { linkedGeneration } from "./binding.mjs";
 import { admitted } from "./native.mjs";
@@ -23,7 +24,7 @@ export function acceptWorkspace(run, actor, token, cwd) {
 	if (n.worker || w.token !== token || !w.callId || w.permissionHold || w.state !== "issued" && w.state !== "uncertain")
 		fail("dispatch_held", "The pooled assignment was not issued to this session");
 	n.worker = w.nativeId = actor;
-	w.boundAt = Date.now(); w.state = "done"; delete w.error;
+	w.boundAt = Date.now(); journal(w,"confirm"); delete w.error;
 }
 
 /** @param {string} cwd @param {Run} run @param {import("./model.js").Node} n @param {boolean} [create] */

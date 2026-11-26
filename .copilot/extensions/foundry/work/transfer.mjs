@@ -4,6 +4,12 @@ import { contains, covers, fail, fields, name, ownership, record, roots, sameSco
 /** @typedef {import("./model.js").Run} Run */
 /** @typedef {import("./model.js").Scope} Scope */
 export const retainedMode = "retain-except-transferred";
+/** Target adoption changes the contract bytes, never the ownership interface.
+ * @param {Run} run */
+export function ownershipMode(run) {
+	const upgrade=run.productRepins?.findLast(p=>!p.targetFrom);
+	return upgrade ? upgrade.ownership ?? "exact-files" : run.policy.ownership ?? "directories";
+}
 /** @param {Run} run @param {string|undefined} pin */
 export const understandsTransfers = (run,pin) => (pin ? run.productRepins?.find(p=>p.revision===pin)?.ownership : run.policy.ownership) === retainedMode;
 /** @param {unknown} input */
