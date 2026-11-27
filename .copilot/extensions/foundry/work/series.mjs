@@ -6,7 +6,7 @@ import { topology } from "./topology.mjs";
 import { approvedRecipe } from "./steps.mjs";
 import { approvedInput, correctionRefs, declaration, draftId, offerId, sameDraft } from "./consent.mjs";
 import { writerPublication } from "./origin.mjs";
-import { recordedFinding, reviewSubject } from "./publication.mjs";
+import { recordedScope, reviewSubject } from "./publication.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @typedef {import("./model.js").NativeCall} Check */
@@ -128,8 +128,8 @@ export function memberDeclaration(run,e,a,order,previous){
 			ref.base===target && ref.assembly===f.assembly && f.files.every(p=>p.file.startsWith(".foundry/") || covers(ref.to,p.file)));
 		if(!ref)return;
 		if(ref.draft){
-			const d=ref.draft,subject=prior.checks.find(c=>c.id===d.check);
-			if(!subject?.grain || (d.finding ? f.observation!==0 || prior.checks.at(-1)!==stop || !recordedFinding(run,subject,d.finding) :
+			const d=ref.draft,subject=d.finding?recordedScope(run,d,parent,prior.checks):stop;
+			if(!subject?.grain || (d.finding ? f.observation!==0 || prior.checks.at(-1)!==stop :
 				f.observation!==1) || d.id!==draftId(d) || !sameDraft(run,d,stop.id,f.assembly,f.files) ||
 				d.product!==d.assembly || d.checkpoint!==a.checkpoint || d.goal!==a.goal || !ownedContributions(run,d,change,subject.grain))return;
 		}
