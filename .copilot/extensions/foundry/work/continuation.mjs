@@ -1,8 +1,8 @@
+import { verifyFixedGrant } from "./brief.mjs";
 import { verifyRepairInputs } from "./assembly.mjs";
 import { working } from "./assignment.mjs";
-import { verifyFixedGrant } from "./contract.mjs";
 import { productPin } from "./evidence.mjs";
-import { originalScope, stalePins, validateNodes, writerInputs, writerVersion } from "./plan.mjs";
+import { originalScope, stalePins, validateNodes, writerInputs, writerVersion } from "./lineage.mjs";
 import { changedFiles, commitAt, regularFiles } from "./product.mjs";
 import { fail, roots, scopeLabel, text } from "./values.mjs";
 
@@ -12,8 +12,8 @@ import { fail, roots, scopeLabel, text } from "./values.mjs";
 
 /** Common pin check, not permission to read a baseline, accept an offer or use a newer
  * charter. Return the exact exception that would need an explicit native decision.
- * @param {string} cwd @param {Run} run @param {Node} n @param {string[]} commits */
-export function stoppedPins(cwd,run,n,commits){
+ * @param {string} cwd @param {Run} run @param {Node} n @param {string[]} commits @param {string} [tip] */
+export function stoppedPins(cwd,run,n,commits,tip){
 	const {id,specification:file,boundary,check}=n.grain,base=text(n.base,"original writer base");
 	if(n.stop?.input?.grant && n.stop.input.grant!==writerVersion(n))fail("stale_assignment",`${id}: the stopped grant changed`);
 	verifyFixedGrant(cwd,run,n);
@@ -34,7 +34,7 @@ export function stoppedPins(cwd,run,n,commits){
 	}
 	if(!changedFiles(cwd,base,current,[file]).length)return {inputs};
 	const review=run.effects.find(e=>e.id===n.review),p=run.products.at(-1);
-	if(!p || p.commit!==current || !run.goal || p.target!==run.goal.target || p.target!==commitAt(cwd,run.policy.target) ||
+	if(!p || p.commit!==current || !run.goal || p.target!==run.goal.target || p.target!==(tip??commitAt(cwd,run.policy.target)) ||
 		review?.kind!=="scout" || !originalScope(run,n,review) || changedFiles(cwd,review.base,base,[file,...boundary,check]).length)
 		fail("stale_assignment",`${id}: need the original reviewed task and frozen contract on a current checked product`);
 	for(const [dep,pin] of Object.entries(inputs)){

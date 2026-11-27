@@ -5,7 +5,8 @@ import { checkReceipt, currentEvaluation, launcherFailure, productPin, verificat
 import { undecided } from "./facts.mjs";
 import { assess, observeTarget } from "./goal.mjs";
 import { admitted, reserveCheck, reserveProduct } from "./native.mjs";
-import { productOutputs, writerInputs } from "./plan.mjs";
+import { writerInputs } from "./lineage.mjs";
+import { productOutputs } from "./plan.mjs";
 import { combine, commitAt, retain } from "./product.mjs";
 import { digest, fail } from "./values.mjs";
 
@@ -90,19 +91,19 @@ export function prepareRecheck(cwd,run,actor,id,signed) {
 			if (digest(live)!==digest(selected)) fail("stale_assignment","Check, candidate, target or evaluator changed before reservation");
 			const {e} = live;
 			if (e.kind!=="component") delete r.blocker; // selection proved ownership, including legacy product diagnostics.
+			/** @type {Call} */ let fresh;
 			if (next.kind==="component") {
 				if (!e.grain) fail("invalid_check","Missing original component");
 				const n = r.nodes[e.grain];
 				if (r.goal) delete r.goal.stall; // Its no-work conclusion no longer includes this eligible component.
 				assign(n,"recheck");
-				n.check = reserveCheck(r,next.issuer,cwd,next.commit,n.grain.check,e.grain,{
+				fresh=reserveCheck(r,next.issuer,cwd,next.commit,n.grain.check,{kind:"component",grain:e.grain},{
 					...(e.usedArtifacts && {usedArtifacts:e.usedArtifacts}),...(e.comparedArtifacts && {comparedArtifacts:e.comparedArtifacts})});
+				n.check=fresh.id;
 			} else if (next.kind==="product") {
 				if (!next.outputs) fail("invalid_check","Missing verified join inputs");
-				reserveProduct(r,actor,cwd,next.target,next.commit,next.outputs);
-			} else assess(cwd,r,actor,next.target,retain(cwd,next.commit));
-			const fresh = r.effects.at(-1);
-			if (fresh?.tool!=="bash") fail("invalid_check","Missing fresh observation reservation");
+				fresh=reserveProduct(r,actor,cwd,next.target,next.commit,next.outputs).check;
+			} else fresh=assess(cwd,r,actor,next.target,retain(cwd,next.commit));
 			fresh.recheck = {of:id,target:next.target,goalPin:next.pin,productPin:next.productPin};
 			return () => { admitted(r); return observeTarget(()=>commitAt(cwd,r.policy.target)).target===next.target; };
 		}
@@ -111,12 +112,11 @@ export function prepareRecheck(cwd,run,actor,id,signed) {
 
 /** Issuer permission reads and, for a component, a writer turn can intervene after
  * reservation. A reserved observation is not permission to check different inputs.
- * @param {string} cwd @param {Run} r @param {Call} e */
-export function checkAuthority(cwd,r,e) {
+ * @param {string} cwd @param {Run} r @param {Call} e @param {string|undefined} target */
+export function checkAuthority(cwd,r,e,target) {
 	const a=e.recheck;
 	if (!a || a.goalPin!==(r.repins?.at(-1)?.revision ?? r.policy.base) || a.productPin!==(productPin(r) ?? r.policy.base) ||
-		r.blocker || r.conflict || r.effects.some(x=>x.permissionHold) ||
-		observeTarget(()=>commitAt(cwd,r.policy.target)).target!==a.target) return false;
+		r.blocker || r.conflict || r.effects.some(x=>x.permissionHold) || target!==a.target) return false;
 	if (e.kind==="component") {
 		const n=e.grain && r.nodes[e.grain];
 		if (!n || n.check!==e.id || r.join) return false;

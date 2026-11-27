@@ -1,8 +1,8 @@
 import { checkReceipt, inconclusiveRepair, relinquishable } from "./evidence.mjs";
-import { assignmentCalls, dependencies } from "./plan.mjs";
+import { assignmentCalls, dependencies } from "./lineage.mjs";
 import { displacements } from "./partition.mjs";
 import { outside } from "./product.mjs";
-import { comparison } from "./reviews.mjs";
+import { comparison } from "./charter.mjs";
 import { activeConsumer } from "./transfer.mjs";
 import { contains, covers, fail, fields, name, ownership, record, roots, sameScope } from "./values.mjs";
 

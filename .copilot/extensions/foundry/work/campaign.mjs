@@ -1,4 +1,4 @@
-import { checkReceipt, failedComponent, productPin } from "./evidence.mjs";
+import { checkReceipt, failedComponent } from "./evidence.mjs";
 import { carriedInput, publishedComponent } from "./publication.mjs";
 import { batchMembers } from "./abi.mjs";
 import { outside } from "./product.mjs";
@@ -42,17 +42,16 @@ export function corroborated(run,join,checkpoint,id,old,scope){
 		run.effects.indexOf(passed)<run.effects.indexOf(failed) &&
 		[product,join].every(p=>p.ownership ? digest(p.ownership[id]??null)===digest(scope) : !scope.exclude);
 }
-/** @param {Run} run @param {Check} c */
-export const rolloutOffer=(run,c)=>c.rollout ? run.adoptions?.find(a=>a.id===c.rollout && a.rollout) : undefined;
 /** The fresh attempt occupies the withheld grain's original place in serial order.
  * The terminal observation remains in the ledger and the proof, never in the pass set.
  * @param {Run} run @param {Offer} a */
-export function rolloutChecks(run,a){
-	const calls=batchMembers(run.effects.filter(/** @returns {e is Check} */ e=>e.kind==="component" && e.rollout===a.id));
+export function rolloutSlots(run,a){
+	const attempts=run.effects.filter(/** @returns {e is Check} */ e=>e.kind==="component" && e.rollout===a.id);
+	const calls=batchMembers(attempts);
 	const retry=a.foreground && calls.find(c=>c.id===a.foreground?.retry);
 	const patched=calls.filter(c=>c.testPin);
 	const batch=calls.filter(c=>c!==retry && !c.testPin);
-	return batch.map(c=>patched.find(p=>p.testPin===c.id)??(c.id===a.foreground?.check && retry || c));
+	return {attempts,calls,checks:batch.map(c=>patched.find(p=>p.testPin===c.id)??(c.id===a.foreground?.check && retry || c))};
 }
 /** @param {Run} run @param {Offer} a */
 export const successor=(run,a)=>run.adoptions?.find(s=>s.rollout?.followup?.proposal===a.id && s.decision?.status==="answered");
@@ -82,12 +81,13 @@ export function rolloutPaths(run,a){
 	return [...paths].sort();
 }
 
-/** Verify the serial cut: only signed passes before the signed stop; no later call issued.
- * @param {Run} run @param {Offer} a @param {string} id @param {boolean} withdrawn @param {boolean} [allowPass] */
-export function stoppedBatch(run,a,id,withdrawn,allowPass=false){
-	const batch=rolloutChecks(run,a),pos=batch.findIndex(c=>c.id===id);
-	if(pos>=0 && batch.every((c,i)=>i<=pos ? c.runnerClaim && (i<pos?checkReceipt(c)?.exit===0:[1,2,...allowPass?[0]:[]].includes(checkReceipt(c)?.exit??-1)) :
-		c.state===(withdrawn?"withdrawn":"ready") && !c.callId && !c.runnerStarted && !c.receipt && !c.permissionHold))return batch;
+/** A signed prefix and an untouched tail determine which work can be superseded, not which owner needs a fix.
+ * @param {Run} run @param {Offer} a @param {boolean} [withdrawn] @returns {{checks:Check[],last:Check,exit:0|1|2,passed:boolean}|undefined} */
+export function serialBoundary(run,a,withdrawn=false){
+	const {checks}=rolloutSlots(run,a),pos=checks.findLastIndex(c=>!!checkReceipt(c)),last=checks[pos],exit=checkReceipt(last)?.exit;
+	if(last?.runnerClaim && (exit===0 || exit===1 || exit===2) && checks.slice(0,pos).every(c=>c.runnerClaim && checkReceipt(c)?.exit===0) &&
+		checks.slice(pos+1).every(c=>c.state===(withdrawn?"withdrawn":"ready") && !c.callId && !c.runnerStarted && !c.receipt && !c.permissionHold))
+		return {checks,last,exit,passed:exit===0 && pos===checks.length-1};
 }
 
 /** Compose the two independently approved manifests, not just their path names.
@@ -104,24 +104,11 @@ function combined(first,second){
 	}
 	return files;
 }
-/** @param {Run} run @param {Check} c */
-export function currentRollout(run,c){
-	const a=rolloutOffer(run,c),r=a?.rollout,n=c.grain && run.nodes[c.grain],o=r && c.grain && r.owners[c.grain],j=run.join;
-	return !!a && !successor(run,a) && !!r && !!n && !!o && !!j && c.issuer===run.owner && c.kind==="component" && c.commit===a.assembly && c.check===n.grain.check &&
-		a.decision?.status==="answered" && a.decision.answer===r.blob && j.commit===r.from && j.check===a.failed && j.target===a.revision &&
-		productPin(run)===a.revision && run.goal?.check===a.goal && run.products.at(-1)?.check===a.checkpoint &&
-		n.candidate===o.output && n.check===o.component && digest(n)===o.binding && !run.independent && !run.blocker && !run.conflict;
-}
 /** @param {string} grain @param {import("./model.js").HarnessRollout} r */
-const basis=(grain,r)=>({base:r.from,generation:r.from,scope:r.owners[grain].scope,
+export const rolloutBasis=(grain,r)=>({base:r.from,generation:r.from,scope:r.owners[grain].scope,
 	task:`Review ${grain} on the exact harness rollout ${r.blob} from ${r.followup?.assembly??r.from}.`+
 		(r.followup?` Review the cumulative output against ${r.from}; the earlier rollout was not published.`:"")+
 		` Preserve all behavior assertions; check the new dependency pins.`});
-/** @param {Run} run @param {Check} c */
-export function rolloutInspection(run,c){
-	const r=rolloutOffer(run,c)?.rollout;
-	if(r && c.grain && currentRollout(run,c))return {node:run.nodes[c.grain],overrides:basis(c.grain,r)};
-}
 
 /** Check historical authority against the original stopped join, never an old node's current state.
  * @param {Run} run @param {Offer} a @param {import("./model.js").Product} prior @param {Map<string,import("./model.js").Effect>} effects @param {import("./model.js").ProductPin} p */
@@ -136,15 +123,15 @@ export function validRollout(run,a,prior,effects,p){
 		r.files.some(f=>f.before===f.result || !outside(f.file,[run.policy.source,...(run.policy.sharedBrief?[run.policy.sharedBrief]:[]),
 			...run.policy.squads.flatMap(s=>[s.charter,...("boundary" in s?s.boundary:[])]),...(p.resolutions??[]).map(r=>r.file)])) ||
 		!correctionRefs(run).some(ref=>ref.draft?.id===r.draft && ref.base===a.revision && ref.blob===r.blob &&
-			matchesDraft(ref,r.followup?.check??prior.check,r.followup?.assembly??prior.commit,r.followup?.files??r.files)))return false;
-	const calls=batchMembers(run.effects.filter(/** @returns {e is Check} */ e=>e.kind==="component" && e.rollout===a.id));
+			matchesDraft(run,ref,r.followup?.check??prior.check,r.followup?.assembly??prior.commit,r.followup?.files??r.files)))return false;
+	const {calls,checks:batch}=rolloutSlots(run,a);
 	const next=successor(run,a);
 	if(f){
 		const approved=a.decision?.status==="answered",old=parent?.rollout,stop=effects.get(f.check);
 		const exit=checkReceipt(stop)?.exit;
 		if(!old || parent?.decision?.status!=="answered" || parent.assembly!==f.assembly || parent.failed!==a.failed ||
 			parent.revision!==a.revision || a.assembly===parent.assembly || !f.files.length || digest(old.included)!==digest(r.included) ||
-			approved && (successor(run,parent)!==a || !stoppedBatch(run,parent,f.check,true,f.observation===0)) ||
+			approved && (successor(run,parent)!==a || serialBoundary(run,parent,true)?.last.id!==f.check) ||
 			stop?.kind!=="component" || !stop.grain || stop.rollout!==parent.id || !stop.runnerClaim ||
 			(f.observation===undefined?![1,2].includes(exit??-1):f.observation!==exit) ||
 			f.observation===0 && !correctionRefs(run).some(ref=>ref.assembly===f.assembly && ref.blob===r.blob && ref.draft?.id===r.draft && ref.base===a.revision) ||
@@ -156,7 +143,7 @@ export function validRollout(run,a,prior,effects,p){
 		const all=combined(old.files,f.files);
 		if(!all || all.size!==r.files.length || r.files.some(e=>digest(all.get(e.file)??null)!==digest(e)))return false;
 	}
-	const lane=a.foreground,stamp=lane && digest(lane),batch=rolloutChecks(run,a);
+	const lane=a.foreground,stamp=lane && digest(lane);
 	if(lane){
 		const old=calls.find(c=>c.id===lane.check),retry=calls.at(-1);
 		if(!old || !old.grain || !retry || old===retry || retry.id!==lane.retry || retry.grain!==old.grain || retry.check!==old.check ||
@@ -193,7 +180,7 @@ export function validRollout(run,a,prior,effects,p){
 		const i=run.inspections?.find(i=>i.component===c.id);
 		if(i && (i.base!==r.from || i.generation!==r.from || i.issuer!==run.owner ||
 			(i.specification!==undefined || o.specification!==undefined) && i.specification!==spec ||
-			i.task!==basis(id,r).task || digest(i.scope)!==digest(o.scope)))return false;
+			i.task!==rolloutBasis(id,r).task || digest(i.scope)!==digest(o.scope)))return false;
 		if(step && (!publishedComponent(run,c.id,id,c.commit) ||
 			run.effects.findIndex(e=>e.id===step.recheck)<=run.effects.indexOf(c)))return false;
 	}

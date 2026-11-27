@@ -1,16 +1,18 @@
+import { journeyText } from "./brief.mjs";
+import { awaitingReply, unissued } from "./dispatch.mjs";
 import { changes, verifyJoinedInputs } from "./assembly.mjs";
 import { remainingAssignments } from "./capacity.mjs";
 import { assign } from "./assignment.mjs";
-import { journeyText, productOverlayPaths } from "./contract.mjs";
+import { productOverlayPaths } from "./contract.mjs";
 import { checkpointReceipt, currentEvaluation, goalReceipt, productPin } from "./evidence.mjs";
 import { admitted, current, reserveProduct } from "./native.mjs";
 import { productOutputs } from "./plan.mjs";
-import { awaitingReply, unissued } from "./reservation.mjs";
 import { changedFiles, commitAt, contractConflict, contractPaths, descendsFrom, entries, git, outside, regularFiles, retain, stageDelivery, verifyContracts } from "./product.mjs";
 import { carriedInput, publishedComponent } from "./publication.mjs";
 import { reconciledBase } from "./resolution.mjs";
 import { checkpointBindings } from "./offers.mjs";
-import { questions, releasedReviews, retireSuperseded, reviews } from "./reviews.mjs";
+import { reviews } from "./charter.mjs";
+import { questions, releasedReviews, retireSuperseded } from "./reviews.mjs";
 import { digest, fail, fields, relative, text } from "./values.mjs";
 import { ownershipMode, retainedMode } from "./transfer.mjs";
 import { partitionConflict } from "./partition.mjs";
@@ -107,8 +109,7 @@ export function prepareRepin(cwd, run, actor, args, signed,repair) {
 				const {last,goal} = settledCheckpoint(live,tip);
 				const upgrade = {...pin,checkpoint:last.check,goal:goal.check,recheck:""};
 				(live.productRepins ??= []).push(upgrade);
-				reserveProduct(live,actor,cwd,tip,last.commit,{...last.outputs});
-				upgrade.recheck = text(live.join?.check,"new product check");
+				upgrade.recheck=reserveProduct(live,actor,cwd,tip,last.commit,{...last.outputs}).check.id;
 				return () => commitAt(cwd,live.policy.target) === tip;
 			}
 			(live.repins ??= []).push(pin);
@@ -201,8 +202,7 @@ export function targetPlan(cwd,run,actor,requested,signed,args) {
 				assign(n,{type:"stop",reason:`Unavailable component ${e.id} (exit 2); target adoption superseded the unissued repair. Candidate ${e.commit} retained.`});
 			}
 			delete live.conflict;
-			reserveProduct(live,actor,cwd,revision,assembly,outputs);
-			pin.recheck=text(live.join?.check,"new product check");
+			pin.recheck=reserveProduct(live,actor,cwd,revision,assembly,outputs).check.id;
 			return ()=>commitAt(cwd,policy.target)===revision;
 		}};
 }

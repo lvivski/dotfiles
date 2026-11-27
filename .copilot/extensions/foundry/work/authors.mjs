@@ -1,14 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { executor } from "./adapter.mjs";
-import { permissionKey } from "./author.mjs";
-import { acceptAuthor, authorPacket, verifyDraft } from "./authorship.mjs";
+import { permissionKey } from "./critique.mjs";
+import { acceptAuthor, authorPacket, draftWorkPending, repairSubject, verifyDraft } from "./authorship.mjs";
 import { availableReservations, noWorkflowSlot } from "./capacity.mjs";
 import { draftAllowed, movePart, partId } from "./drafts.mjs";
 import { drafting } from "./rules/drafts.mjs";
 import { commitAt } from "./product.mjs";
 import { expired } from "./native.mjs";
 import { fail, FoundryError, text } from "./values.mjs";
-import { workflowIdentity } from "./workflow.mjs";
+import { repliedWorkflow, terminalWorkflow, workflowIdentity } from "./workflow.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @typedef {import("./author.mjs").Ticket} Ticket */
@@ -18,9 +18,9 @@ export function nextAuthor(r){
 	if(!r.active || expired(r) || r.policyHold || r.independent || r.conflict || r.blocker ||
 		r.effects.some(e=>e.permissionHold) || r.inspections?.some(i=>i.permissionHold))return;
 	for(const d of r.correctionDrafts??[]){
-		if(!draftAllowed(d) || d.blob || d.parts.some(p=>p.state==="held") || d.goal!==r.goal?.check ||
-			(d.evaluator?!!r.join:!r.join || !r.effects.some(e=>e.id===d.check && (e.id===r.join?.check || e.kind==="component" && e.rollout &&
-				r.adoptions?.some(a=>a.id===e.rollout && a.failed===r.join?.check)))))continue;
+		if(!draftAllowed(d) || d.blob || d.parts.some(p=>p.state==="held") || d.goal!==r.goal?.check)continue;
+		const subject=!d.evaluator && repairSubject(r,d.automatic || d.finding?undefined:d.check);
+		if(d.evaluator?!!r.join:!subject || subject.check!==d.check || draftWorkPending(r,subject.frontier))continue;
 		const p=d.parts.find(p=>p.state!=="returned");
 		if(p && (p.state==="ready" && availableReservations(r)>0 || p.state==="issued" && p.workflow))return {d,p};
 	}
@@ -35,9 +35,7 @@ function locate(r,t){
 function bind(r,p,workflow,withheld){
 	movePart(p,"bind",{workflow:workflowIdentity(r,p,workflow),...(withheld && {awaitingPacket:true})});
 }
-/** @param {Envelope|undefined} e */
-const ended=e=>!!e && ["completed","failed","error","cancelled"].includes(e.status);
-/** @param {{cwd:()=>string,store:()=>Pick<ReturnType<typeof import("./database.mjs").openDatabase>,"planAndSwap"|"verifySigned">,
+/** @param {{cwd:()=>string,store:()=>Pick<ReturnType<typeof import("./database.mjs").openDatabase>,"planAndSwap"|"reserve"|"verifySigned">,
  * closed:()=>boolean,permitted:()=>Promise<boolean>,start?: (t:Ticket)=>Promise<Envelope>,observe?:(id:string)=>Promise<Envelope>,resume?:(id:string)=>Promise<Envelope>,budget?:()=>Promise<number>,
  * persist:<T>(write:()=>T|Promise<T>)=>Promise<T|undefined>,queued:(run:string,actor:string)=>boolean,
  * queue:(run:string,actor:string)=>void,wait:(run:string,actor:string)=>void,wake:(run:string,actor:string)=>Promise<void>}} io */
@@ -72,16 +70,14 @@ export function draftDispatcher(io){
 		const key=partId(eligible.d,eligible.p);if(running.has(key) || io.queued(run.id,actor))return;
 		running.add(key);let progressed=false;
 		/** @type {Ticket|undefined} */ let ticket;
-		/** @type {string|undefined} */ let original;
-		/** @type {ReturnType<typeof movePart>|undefined} */ let selected;
 		try{
 			if(io.closed())return;
 			const budget=await io.budget?.();
 			if(io.closed() || !await io.permitted()){if(!io.closed())io.wait(run.id,actor);return;}
-			io.store().planAndSwap(run.id,r=>{
-				ticket=undefined;selected=undefined;progressed=false;const job=nextAuthor(r);
+			const claim=io.store().reserve(run.id,r=>{
+				progressed=false;const job=nextAuthor(r);
 				if(!job || partId(job.d,job.p)!==key)return;
-				const {d,p}=job;original=p.workflow;
+				const {d,p}=job,original=p.workflow;
 				try{
 					verifyDraft(io.cwd(),r,d,c=>io.store().verifySigned(r.id,c));
 					if(!original){
@@ -89,24 +85,23 @@ export function draftDispatcher(io){
 						if(budget!==undefined && Buffer.byteLength(JSON.stringify(packet))>budget)fail("unavailable","The complete frozen author packet exceeds the host's context budget.");
 					}
 					if(!(original?io.observe:io.start))fail("unavailable","No native host for the bound correction author.");
-					selected=original?movePart(p,"observe"):movePart(p,"claim",{dispatch:randomUUID()});
-					ticket={run:r.id,draft:d.id,subject:key,dispatch:text(p.dispatch,"correction dispatch")};
+					const selected=original?movePart(p,"observe"):movePart(p,"claim",{dispatch:randomUUID()});
+					const ticket={run:r.id,draft:d.id,subject:key,dispatch:text(p.dispatch,"correction dispatch")};
+					return {value:{ticket,selected,original},guard:()=>!io.closed() && !expired(r) && commitAt(io.cwd(),r.policy.target)===d.target};
 				}catch(e){if(!(e instanceof FoundryError))throw e;movePart(p,"hold",{reason:e.message});progressed=true;return;}
-				return ()=>!io.closed() && !expired(r) && commitAt(io.cwd(),r.policy.target)===d.target;
 			});
-			if(!ticket || !selected || io.closed())return;
-			const t=ticket;let envelope=await perform(selected,{ticket:t,original})[0];
+			if(!claim || io.closed())return;
+			const {ticket:t,selected,original}=claim;ticket=t;
+			let envelope=await perform(selected,{ticket:t,original})[0];
 			if(io.closed())return;
 			const permission=envelope?.status==="paused" && envelope.pauseInfo?.type==="checkpoint" && envelope.pauseInfo.key===permissionKey(t);
 			const dropped=envelope?.status==="halted" && envelope.failure?.type==="workflow_provider_disconnected";
-			if(io.resume && !envelope?.error && (!envelope?.workflowName || envelope.workflowName==="foundry-draft") && (permission || dropped) && await io.permitted()){
-				/** @type {ReturnType<typeof movePart>|undefined} */ let continuation;
-				io.store().planAndSwap(run.id,r=>{
-					continuation=undefined;const b=locate(r,t);
+			if(io.resume && !envelope?.error && repliedWorkflow(envelope,"foundry-draft") && (permission || dropped) && await io.permitted()){
+				const continuation=io.store().reserve(run.id,r=>{
+					const b=locate(r,t);
 					if(!b || !r.active || expired(r) || r.policyHold || !b.p.workflow || b.p.workflow!==envelope.runId || b.p.continued || permission && !b.p.awaitingPacket)return;
 					verifyDraft(io.cwd(),r,b.d,c=>io.store().verifySigned(r.id,c));
-					continuation=movePart(b.p,"continue");
-					return ()=>!io.closed() && !expired(r) && commitAt(io.cwd(),r.policy.target)===b.d.target;
+					return {value:movePart(b.p,"continue"),guard:()=>!io.closed() && !expired(r) && commitAt(io.cwd(),r.policy.target)===b.d.target};
 				});
 				if(continuation && !io.closed())envelope=await perform(continuation,{ticket:t,original:envelope.runId})[0];
 			}
@@ -114,16 +109,19 @@ export function draftDispatcher(io){
 				const allowed=await io.permitted();if(!allowed)io.wait(run.id,actor);
 				return io.store().planAndSwap(run.id,r=>{
 					const live=locate(r,t);progressed=false;if(!live)return;const {d,p}=live;
-					if(!original && !p.workflow && ended(envelope) && envelope.runId && (!envelope.workflowName || envelope.workflowName==="foundry-draft")){
-						bind(r,p,envelope.runId,true);
-						movePart(p,"hold",{reason:`The original author ended (${envelope.status}) without receiving a packet. No edits accepted. A new scoped author requires a separate decision.`});
-						progressed=allowed && r.active;return;
+					const workflow=repliedWorkflow(envelope,"foundry-draft",p.workflow);
+					if(!original && !p.workflow && workflow){
+						bind(r,p,workflow,true);
+						if(terminalWorkflow(envelope.status)){
+							movePart(p,"hold",{reason:`The original author ended (${envelope.status}) without receiving a packet. No edits accepted. A new scoped author requires a separate decision.`});
+							progressed=allowed && r.active;return;
+						}
 					}
 					if(!allowed || !r.active || expired(r) || r.policyHold)return; // Reobserve this workflow, not another launch.
-					if(!p.workflow || envelope?.runId!==p.workflow || envelope.workflowName!==undefined && envelope.workflowName!=="foundry-draft"){
+					if(!p.workflow || !workflow){
 						movePart(p,"uncertain",{reason:"No matching reply from the original correction author. Do not start another workflow."});return;
 					}
-					if(!ended(envelope)){
+					if(!terminalWorkflow(envelope.status)){
 						movePart(p,"uncertain",{reason:`Original author ${p.workflow}: ${envelope.status}. Await that workflow in its issuer; no replacement launch.`});return;
 					}
 					try{

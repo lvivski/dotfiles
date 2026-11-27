@@ -120,7 +120,7 @@ export function validOffers(run,products,effects){
 			if(grain!==patch.grain || !paths.length || new Set(paths).size!==paths.length || a.assembly===old.commit ||
 				patch.files.some(r=>r.before===r.result || !outside(r.file,[".foundry",...run.policy.files,...(pin.resolutions??[]).map(r=>r.file)])) ||
 				!correctionRefs(run).some(ref=>ref.draft?.id===patch.draft && ref.base===a.revision && ref.blob===patch.blob && paths.every(f=>covers(ref.to,f)) &&
-					matchesDraft(ref,old.check,old.commit,patch.files)))return false;
+					matchesDraft(run,ref,old.check,old.commit,patch.files)))return false;
 			const step=pin.amendments?.find(s=>s.proposal===a.id);
 			if(patch.owner){
 				if(!validReplacement(run,a,old,effects))return false;

@@ -5,22 +5,27 @@ import { machine, to, update } from "../machine.mjs";
 const clearReason=update("clearReason",(/** @type {Context} */ {reason,...rest})=>rest);
 const recordReason=update("recordReason",(/** @type {Context} */ ctx,/** @type {{reason?:string}} */ event)=>
 	event.reason===undefined ? ctx : {...ctx,reason:event.reason});
-const queueRepair=update("queueRepair",(/** @type {Context} */ ctx,/** @type {Outcome} */ event)=>({...ctx,reason:event.reason}));
 const replacePublished=update("replaceIntegratedOutput",(/** @type {Context} */ {replaces,...ctx},/** @type {Outcome} */ event)=>({
 	...ctx,reason:event.reason,...(event.candidate!==undefined && {replaces:event.candidate}),
 }));
-const noMoreRepairs=update("recordRepairLimit",(/** @type {Context} */ ctx,/** @type {Outcome} */ e)=>({...ctx,reason:`${e.id}: repair limit exhausted: ${e.reason}`}));
-const failedAttestation=update("recordAttestationFailure",(/** @type {Context} */ ctx,/** @type {Outcome} */ e)=>({...ctx,reason:e.observer?.final ?
+/** @param {string} name @param {(e:Outcome)=>string} explain */
+const diagnostic=(name,explain)=>update(name,(/** @type {Context} */ ctx,/** @type {Outcome} */ e)=>({...ctx,reason:explain(e)}));
+const failedAttestation=diagnostic("recordAttestationFailure",e=>e.observer?.final ?
 	`Final diagnostic ${e.observer.check} stopped on ${e.id}. Run owner: request the production form of foundry_grant for a repository regression and evidence-backed fix in the owning directory. A missing phase is not a production diagnosis. No observer replay: ${e.reason}` :
 	e.observer ? `The approved observer change failed. Inspect this new receipt; do not replay it: ${e.reason}` :
-	`The approved unchanged directory did not pass; this ownership attestation cannot change the bytes or replay the check: ${e.reason}`}));
+	`The approved unchanged directory did not pass; this ownership attestation cannot change the bytes or replay the check: ${e.reason}`);
 
-/** @template {string} E @param {E} on @param {typeof queueRepair | typeof replacePublished} [queue] */
-const repair=(on,queue=queueRepair)=>[
-	{...to(on,"blocked","Keep the failed attestation: its grant forbids changing the bytes."),when:["attestation"],...failedAttestation,action:"invalidate-consumers"},
-	{...to(on,"blocked","Preserve the candidate and failure when the repair allowance is spent."),when:["exhausted"],...noMoreRepairs,action:"invalidate-consumers"},
-	{...to(on,"waiting","Queue the permitted repair; the queue itself is not a write grant."),...queue,action:"invalidate-consumers"},
+/** @template {string} E @param {E} on @param {typeof replacePublished} [queue] */
+const writerRepair=(on,queue)=>[
+	{...to(on,"blocked","Preserve the candidate and failure when the repair allowance is spent."),when:["exhausted"],
+		...diagnostic("recordRepairLimit",e=>`${e.id}: repair limit exhausted: ${e.reason}`)},
+	{...to(on,"waiting","Queue the permitted repair; the queue itself is not a write grant."),...(queue??diagnostic("queueRepair",e=>e.reason))},
 ];
+/** @template {string} E @param {E} on @param {typeof replacePublished} [queue] */
+const invalidatingRepair=(on,queue)=>[
+	{...to(on,"blocked","Keep the failed attestation: its grant forbids changing the bytes."),when:["attestation"],...failedAttestation},
+	...writerRepair(on,queue),
+].map(edge=>({...edge,action:"invalidate-consumers"}));
 const stop={...to("stop","blocked","Record why this assignment cannot proceed under its current grant."),...recordReason},
 	staff=to("staff","writing","Reserve the writer's scoped generation on its checked inputs."),
 	submit=to("submit","checking","Send the submitted candidate to its component evaluator."),
@@ -35,18 +40,18 @@ export const assignment=machine("assignment","idle",{
 	checking:[{...to("component","reviewing","Reserve an independent review of the exact passing component before publication."),when:["passed","reviewRequired"],...clearReason,action:"reserve-inspection"},
 		{...to("component","published","Honor a run activated under its original component-only contract."),when:["passed"],...clearReason},
 		{...to("component","blocked","Keep the incomplete observation without treating it as a verdict."),when:["incomplete"],
-			...update("recordIncompleteCheck",(/** @type {Context} */ ctx,/** @type {Outcome} */ e)=>({...ctx,reason:`Evaluation did not complete: ${e.reason}`}))},
+			...diagnostic("recordIncompleteCheck",e=>`Evaluation did not complete: ${e.reason}`)},
 		{...to("component","blocked","Stop because the run has no assignment budget for repair."),when:["unfunded"],
-			...update("recordMissingBudget",(/** @type {Context} */ ctx,/** @type {Outcome} */ e)=>({...ctx,reason:`No assignment remains to repair ${e.id}: ${e.reason}`}))},
-		...repair("component"),stop,paired],
+			...diagnostic("recordMissingBudget",e=>`No assignment remains to repair ${e.id}: ${e.reason}`)},
+		...invalidatingRepair("component"),stop,paired],
 	reviewing:[{...to("inspection","published","Publish only the candidate approved by the bound independent reviewer."),when:["approved"],...clearReason},
-		{...to("inspection","blocked","The reviewer requested changes but this grant does not permit a repair."),when:["readOnly"],...recordReason},
-		{...to("inspection","blocked","Keep the findings when no repair assignment remains."),when:["unfunded"],...recordReason},
-		{...to("inspection","blocked","Keep the findings when the repair allowance is spent."),when:["exhausted"],...noMoreRepairs},
-		{...to("inspection","waiting","Return the blocking findings to the same writer within its existing grant."),...queueRepair}],
-	published:[integrate,{...to("repeat","repeated","Retain the checked output without treating an unchanged product as progress."),...recordReason},...repair("repair"),stop,staff,paired,amend],
-	qualified:[integrate,...repair("repair",replacePublished),request,amend],repeated:[integrate,...repair("repair"),request,amend],
-	blocked:[staff,{...to("recheck","checking","Observe the retained candidate under an authorized check."),...clearReason},...repair("repair"),paired,
+		{...to("inspection","blocked","The reviewer requested changes but this grant does not permit a repair."),when:["readOnly"],
+			...diagnostic("recordReadOnlyFinding",e=>`${e.reason} This grant does not authorize changing those bytes.`)},
+		{...to("inspection","blocked","Keep the findings when no repair assignment remains."),when:["unfunded"],
+			...diagnostic("recordUnfundedFinding",e=>`${e.reason} No repair assignment remains.`)},...writerRepair("inspection")],
+	published:[integrate,{...to("repeat","repeated","Retain the checked output without treating an unchanged product as progress."),...recordReason},...invalidatingRepair("repair"),stop,staff,paired,amend],
+	qualified:[integrate,...invalidatingRepair("repair",replacePublished),request,amend],repeated:[integrate,...invalidatingRepair("repair"),request,amend],
+	blocked:[staff,{...to("recheck","checking","Observe the retained candidate under an authorized check."),...clearReason},...invalidatingRepair("repair"),paired,
 		to("deliver","qualified","Record inclusion after the separately approved delivery checks pass."),stop],
 },{description:"Tracks one scoped output from request through checking and integration.",states:{
 	idle:"The output is known but has not been requested.",

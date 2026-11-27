@@ -1,22 +1,23 @@
+import { validInstruction } from "./notice.mjs";
 import { planDirectory, validOutcome } from "./contract.mjs";
 import { indexRevision } from "./revision.mjs";
+import { validWorkflows } from "./workflow.mjs";
+import { hash as sha256, oid as commit, validName as id } from "../../../skills/foundry/scripts/recipe.mjs";
 import { attemptSubject } from "./abi.mjs";
 import { correctionBasis, revisedTask } from "./amendment.mjs";
 import { validSignals } from "./signals.mjs";
-import { checkpointReceipt, checkReceipt, comparisonVerdict, exhaustedCandidate, generationOf, goalReceipt, inconclusiveRepair, launcherFailure, missingInput, mixedVerification, omittedStep, productReceiptAt, relinquishable, sameEvaluation, verificationSource } from "./evidence.mjs";
+import { changeOffer, changeOwners, checkpointReceipt, checkReceipt, comparisonVerdict, exhaustedCandidate, generationOf, goalReceipt, inconclusiveRepair, launcherFailure, missingInput, mixedVerification, omittedStep, productReceiptAt, relinquishable, sameEvaluation, verificationSource } from "./evidence.mjs";
 import { validFeedback } from "./feedback.mjs";
 import { validLead } from "./leads.mjs";
 import { attachedNotes, noteId, noteText, sourceReceipt } from "./notes.mjs";
 import { deliveredFile, indexBudgetError, rejectedSource, validMatch } from "./pages.mjs";
 import { assignmentCount } from "./capacity.mjs";
-import { unissued } from "./reservation.mjs";
-import { candidateHandoff, checked, inputAttempt, originalAttempt, originalScope, owns, validateNodes, writerVersion } from "./plan.mjs";
+import { candidateHandoff, checked, inputAttempt, originalAttempt, originalScope, owns, poolSource, validateNodes, writerVersion } from "./lineage.mjs";
 import { continuationNotice, inputMessage, inputReference } from "./reference.mjs";
-import { validInstruction } from "./instructions.mjs";
 import { validDiagnostic } from "./diagnostics.mjs";
 import { recordedDependency, sourceBinding, supplied as suppliedOffer } from "./supplier.mjs";
 import { outside } from "./product.mjs";
-import { comparison, investigation, readerInterrupted, successorDirectory } from "./reviews.mjs";
+import { comparison, investigation, readerInterrupted, successorDirectory } from "./charter.mjs";
 import { assignmentDirectory, comparisonScope, contains, covers, digest, fail, members, mixed, ownership, relative, sameScope, roots as scopePaths } from "./values.mjs";
 import { productOwnership, retainedMode, understandsTransfers } from "./transfer.mjs";
 import { narrower, stoppedCheck } from "./successor.mjs";
@@ -30,13 +31,12 @@ import { validDrafts } from "./drafts.mjs";
 import { drafting } from "./rules/drafts.mjs";
 import { validDraftScope } from "./preimages.mjs";
 import { productLineage } from "./migrations.mjs";
-import { replacementOffer } from "./replacement.mjs";
 import { frozenSubmission } from "./assignment.mjs";
 import { assignment } from "./rules/assignment.mjs";
-import { currentInspection, reviewedGrant } from "./inspection.mjs";
+import { currentInspection, priorReview, reviewedGrant } from "./inspection.mjs";
 import { inspection } from "./rules/inspection.mjs";
-import { publicationVerdict } from "./publication.mjs";
-import { disabledRoute } from "./dispatch.mjs";
+import { observedComponent, publicationVerdict } from "./publication.mjs";
+import { disabledRoute, unissued } from "./dispatch.mjs";
 import { call, review as discovery } from "./rules/dispatch.mjs";
 import { controlSubject, failedTest, priorTest } from "./calibration.mjs";
 import { boundInputs, described, replacementBlob, validInputs } from "./inputs.mjs";
@@ -44,12 +44,6 @@ import { boundInputs, described, replacementBlob, validInputs } from "./inputs.m
 /** @typedef {(value:unknown)=>boolean} Guard */
 /** @type {Guard} */
 const string = value => typeof value === "string";
-/** @type {Guard} */
-const id = value => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value) && !Object.hasOwn(Object.prototype, value);
-/** @type {Guard} */
-const commit = value => typeof value === "string" && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(value);
-/** @type {Guard} */
-const sha256=v=>typeof v==="string" && /^[0-9a-f]{64}$/.test(v);
 /** @type {Guard} */
 const path = value => typeof value === "string" && relative(value) === value;
 /** @type {Guard} */
@@ -147,9 +141,9 @@ const paths=shape({directories:list(path),files:list(path)});
 /** @type {Guard} */
 const ownedPaths=v=>object(v) && paths(v) && optional(paths)(v.exclude);
 const scopes=named(ownedPaths);
-const codeReview=shape({id,component:id,grain:id,issuer:noteText,candidate:commit,generation:commit,base:commit,scope:ownedPaths,task:noteText,specification:optional(path),
+const codeReview=shape({id,component:id,grain:id,issuer:noteText,candidate:commit,generation:commit,base:commit,scope:ownedPaths,task:noteText,assignment:optional(noteText),specification:optional(path),
 	state:one(...Object.keys(inspection.states)),dispatch:optional(id),workflow:optional(noteText),summary:optional(noteText),permissionHold:optional(noteText),
-	previous:optional(list(shape({issuer:noteText,dispatch:id,workflow:noteText,summary:noteText})))});
+	previous:optional(list(shape({issuer:noteText,dispatch:id,workflow:noteText,summary:noteText,assignment:optional(v=>v===true)})))});
 const product = shape({ ...assessment, outputs: named(commit), ownership:optional(scopes), qualifiedAt: optional(positive),
 	withdrawnHandoff:optional(shape({qualifiedAt:optional(positive),goal:id,recheck:id})) });
 const proofNote=shape({file:path,blob:commit,excerpt:string,inputs:list(path),reason:string}), inventoryNote=shape({file:path,keys:list(string),blob:commit});
@@ -232,7 +226,7 @@ const snapshot = shape({
 		instruction:shape({kind:one("blocker","correction","read","observer","diagnosis","proposal","preview","footprint","subset","supply"),assignment:id,source:id,evidence:id,step:optional(id)}),
 		token:id,grain:id,state:one(...Object.keys(call.states))}))),
 	correctionDrafts:optional(list(shape({id:sha256,check:id,checkpoint:id,goal:id,target:commit,product:commit,assembly:commit,
-		evaluator:optional(path),previousCheck:optional(id),automatic:bool,decision:optional(decision),previous:optional(list(decision)),blob:optional(commit),parts:list(shape({
+		evaluator:optional(path),previousCheck:optional(id),finding:optional(shape({inspection:id,stamp:sha256,frontier:id})),automatic:bool,decision:optional(decision),previous:optional(list(decision)),blob:optional(commit),parts:list(shape({
 			source:shape({kind:one("owned","inherited","harness","evaluator"),grant:string,grain:optional(id),component:optional(id),output:optional(commit),producer:optional(string)}),
 			files:list(shape({file:path,before:v=>v===null || commit(v),mode:one("100644","100755")})),state:one(...Object.keys(drafting.states)),
 			dispatch:optional(id),workflow:optional(id),changes:optional(list(rolloutFile)),reason:optional(string),awaitingPacket:optional(v=>v===true),continued:optional(v=>v===true)}))}))),
@@ -278,20 +272,20 @@ function isRun(value) { return snapshot(value); }
  * @param {import("./model.js").Run} run @param {Map<string,import("./model.js").Effect>} effects */
 function inspectLineage(run,effects){
 	/** @type {Map<string,import("./model.js").Inspection>} */ const reviews=new Map();
-	const approved=new Set(), ids=new Set(effects.keys()), tickets=new Set(), workflows=new Set(run.effects.flatMap(e=>e.workflowId?[e.workflowId]:[]));
+	const approved=new Set(), ids=new Set(effects.keys()), tickets=new Set();
 	for(const i of run.inspections??[]){
-		const e=effects.get(i.component);
-		if(ids.has(i.id) || reviews.has(i.component) || e?.kind!=="component" || e.grain!==i.grain || e.commit!==i.candidate ||
-			!e.runnerClaim || checkReceipt(e)?.exit!==0 || i.issuer!==e.issuer && i.issuer!==run.owner ||
+		const e=observedComponent(effects.get(i.component),i.grain,i.candidate)?.component;
+		if(ids.has(i.id) || reviews.has(i.component) || !e || i.issuer!==e.issuer && i.issuer!==run.owner ||
+			i.assignment!==undefined && priorReview(run,e)?.task!==i.assignment || i.previous?.some(a=>a.assignment && !i.assignment) ||
 			i.specification!==undefined && (!run.policy.files.includes(i.specification) || run.nodes[i.grain]?.grain.specification!==i.specification ||
 				run.nodes[i.grain].grain.task!==undefined || e.remedy || e.delivery || e.observer) ||
 			!i.scope.directories.length && !i.scope.files.length || (i.state==="ready")!==!i.dispatch || i.workflow && !i.dispatch ||
 			["approved","changes","unavailable"].includes(i.state) && (!i.summary || !i.workflow))
 			fail("corrupt_run","Invalid independent review or component lineage");
 		for(const a of [...i.previous??[],i]){
-			if(a.issuer!==e.issuer && a.issuer!==run.owner || a.dispatch && tickets.has(a.dispatch) || a.workflow && workflows.has(a.workflow))
-				fail("corrupt_run","Invalid independent review issuer, ticket or workflow");
-			if(a.dispatch)tickets.add(a.dispatch);if(a.workflow)workflows.add(a.workflow);
+			if(a.issuer!==e.issuer && a.issuer!==run.owner || a.dispatch && tickets.has(a.dispatch))
+				fail("corrupt_run","Invalid independent review issuer or ticket");
+			if(a.dispatch)tickets.add(a.dispatch);
 		}
 		ids.add(i.id);reviews.set(i.component,i);
 		if(publicationVerdict(i)==="approved")approved.add(`${i.grain}:${i.candidate}`);
@@ -349,12 +343,11 @@ function validDispatch(run, e, effects, products) {
 	if("calibration" in e || e.receipt?.control)return false;
 	if("lane" in e && !(e.kind==="component" && e.rollout || e.kind==="product" && mixedVerification(run,e.id)?.amendments?.some(s=>
 		s.recheck===e.id && run.adoptions?.some(a=>a.id===s.proposal && a.foreground && digest(a.foreground)===e.lane))))return false;
-	if("rollout" in e && (e.kind!=="component" || e.issuer!==run.owner || !e.rollout || !run.adoptions?.some(a=>a.id===e.rollout && a.rollout) ||
-		e.evaluatorRevision || e.productEvaluatorRevision || e.rerun || e.delivery || e.remedy || e.pair || e.observer || e.recheck ||
-		e.replacement || e.isolation || e.inlineRepair || e.token || e.production || e.restoration || e.reuse || e.readGrant))return false;
-	if("replacement" in e && (e.kind!=="component" || !e.replacement || !replacementOffer(run,e)?.patch?.owner || e.issuer!==run.owner ||
-		e.evaluatorRevision || e.productEvaluatorRevision || e.rerun || e.delivery || e.remedy || e.pair || e.observer || e.recheck ||
-		e.isolation || e.inlineRepair || e.token || e.production || e.restoration || e.reuse || e.readGrant))return false;
+	if("rollout" in e || "replacement" in e){
+		if(e.kind!=="component" || e.issuer!==run.owner || !changeOffer(run,e) ||
+			e.evaluatorRevision || e.productEvaluatorRevision || e.rerun || e.delivery || e.remedy || e.pair || e.observer || e.recheck ||
+			e.isolation || e.inlineRepair || e.token || e.production || e.restoration || e.reuse || e.readGrant)return false;
+	}
 	if ((e.receipt?.components || e.receipt?.resolutionDigest) && !(e.kind==="product" && mixedVerification(run,verificationSource(run,e.id)))) return false;
 	if(e.receipt?.overlay && (!e.evaluatorRevision || !e.runnerClaim || !(e.kind==="goal" || e.kind==="product")))return false;
 	if (e.tool!=="workflow") {
@@ -533,13 +526,7 @@ function validDispatch(run, e, effects, products) {
 			!c.commit || checkReceipt(c)?.exit!==0 || !e.grain || p?.outputs[e.grain]!==c.commit ||
 			!run.policy.squads.some(s=>s.id===f.squad && ("areas" in s ? owns(s,f.directory) : s.grains.includes(e.grain ?? "")))) return false;
 	}
-	if (e.pooled) {
-		const src = effects.get(e.pooled.from);
-		if (e.kind!=="writer" || !e.token || !e.grain || e.claims || e.reuse || typeof e.args.message!=="string" ||
-			src?.kind!=="writer" || !src.finished || !src.nativeId || run.effects.indexOf(effects.get(src.finished.product) ?? e)>=run.effects.indexOf(e) ||
-			(e.tool==="send_session_message" ? e.args.session_id!==src.nativeId : e.tool!=="session.send" || e.issuer!==src.nativeId) ||
-			(e.state==="done" ? e.nativeId!==src.nativeId : !!e.nativeId)) return false;
-	}
+	if(e.pooled && !poolSource(run,e,id=>effects.get(id)))return false;
 	if (e.reuse) {
 		const {predecessor:n,blob,checkpoint,goal} = e.reuse, p = run.products.find(p => p.check === checkpoint);
 		const at = run.effects.find(h => h.id === goal);
@@ -621,6 +608,7 @@ export function decode(value,storeView=false) {
 		Object.values(nodes).some(n=>n.stop?.input?.source && !sourceBinding(value,n.stop.input.source)))
 		fail("corrupt_run","Invalid original producer, source or recipient of a reference");
 	const effects = new Map(value.effects.map(e => [e.id, e]));
+	if(!validWorkflows(value))fail("corrupt_run","Native workflow belongs to more than one subject or dispatch");
 	const diagnostics=value.diagnostics??[];
 	const requests=value.footprintRequests??[];
 	if(new Set(requests.map(q=>q.id)).size!==requests.length || requests.some(({id,...q})=>{
@@ -763,15 +751,10 @@ export function decode(value,storeView=false) {
 			if (n.stop?.kind === "writer-relinquished" && (n.candidate || !relinquishable(value,n))) return true;
 			if ((frozenSubmission(n) || checked(n)) && (e?.kind !== "component" || e.grain !== id || e.commit !== n.candidate || e.check !== g.check)) return true;
 			const i=n.check && inspections.get(n.check);
-			if(checked(n) && e?.kind==="component" && e.replacement){
-				const a=replacementOffer(value,e),prior=a?.failed && effects.get(a.failed);
-				if(!a?.patch?.owner || !prior || n.worker || n.token || n.workspace || n.base!==prior.commit || n.generation!==prior.commit ||
-					n.replaces!==a.patch.owner.output || !value.productRepins?.some(p=>p.amendments?.some(s=>s.proposal===a.id)))return true;
-			}
-			if(checked(n) && e?.kind==="component" && e.rollout){
-				const a=value.adoptions?.find(a=>a.id===e.rollout),r=a?.rollout,o=r?.owners[id];
-				if(!a || !r || !o || n.worker || n.token || n.workspace || n.base!==r.from || n.generation!==r.from || n.replaces!==o.output ||
-					digest(n.inputs??null)!==digest(o.inputs) || !value.productRepins?.some(p=>p.amendments?.some(s=>s.proposal===a.id)))return true;
+			if(checked(n) && e?.kind==="component" && (e.replacement || e.rollout)){
+				const a=changeOffer(value,e),o=a && changeOwners(a)[id],base=a?.rollout?.from??(a?.failed && effects.get(a.failed)?.commit);
+				if(!a || !o || !base || n.worker || n.token || n.workspace || n.base!==base || n.generation!==base || n.replaces!==o.output ||
+					"inputs" in o && digest(n.inputs??null)!==digest(o.inputs) || !value.productRepins?.some(p=>p.amendments?.some(s=>s.proposal===a.id)))return true;
 			}
 			if(n.state==="reviewing" && (!i || !currentInspection(value,i)) || value.inspections && checked(n) &&
 				(!i || publicationVerdict(i)!=="approved" || e?.kind==="component" && !e.remedy && !e.delivery && !e.replacement && !e.rollout && !reviewedGrant(value,n,e,i)))return true;
@@ -815,6 +798,6 @@ export function decode(value,storeView=false) {
 	if (last?.qualifiedAt && value.goal && (value.active || last.commit !== value.goal.commit ||
 		last.target !== value.goal.target || !checkpointReceipt(value,last.check,last.commit) || goalReceipt(value)?.exit !== 0))
 		fail("corrupt_run", "Goal acceptance requires both exact runner receipts");
-	if(storeView)indexRevision(value,effects,checkpoints);
+	if(storeView)indexRevision(value,effects,checkpoints,inspections);
 	return value;
 }

@@ -1,11 +1,9 @@
-import { guardedAgent } from "./critique.mjs";
-import { fail, fields, FoundryError, name, record, relative, text } from "./values.mjs";
+import { frozenPacket, guardedAgent } from "./critique.mjs";
+import { fail, fields, name, record, relative, text } from "./values.mjs";
 
 /** @typedef {{run:string,draft:string,subject:string,dispatch:string}} Ticket */
 /** @typedef {ReturnType<typeof import("./authorship.mjs").authorPacket>} Packet */
 const string={type:"string"},nullable={type:["string","null"]},definition="foundry-draft",author="foundry-proposal-writer";
-/** @param {Ticket} t */
-export const permissionKey=t=>`permission:${t.dispatch}`;
 export const proposalWriter={name:author,infer:false,tools:[],description:"Draft exact changes for one frozen correction source. No worktree, tools or approval authority.",
 	prompt:"Use only the frozen packet. Return complete replacement text for changed files in your exact list; never return shell commands, an approval, or changes belonging to another source. If the evidence does not support a correction, return no edits and explain why."};
 /** @param {()=>{draftPacket:(ticket:Ticket,actor:string,workflow:string)=>Promise<Packet>}} getRuntime
@@ -16,13 +14,7 @@ export function authorDefinition(getRuntime){
 		async run(ctx){
 			const a=record(ctx.args);fields(a,["run","draft","subject","dispatch"]);for(const k of Object.keys(a))name(a[k],k);
 			const runtime=getRuntime(),actor=ctx.session.sessionId,workflow=ctx.runId,label=`draft:${a.subject}`;
-			const read=()=>runtime.draftPacket(ctx.args,actor,workflow);
-			let packet;
-			try{packet=await read();}catch(e){
-				if(!(e instanceof FoundryError) || e.code!=="draft_wait")throw e;
-				await ctx.pause(permissionKey(ctx.args));packet=await read();
-			}
-			if(packet.subject!==a.subject || await ctx.step("frozen-source",()=>packet.subject)!==packet.subject)fail("wrong_workflow","Draft source changed");
+			const packet=await frozenPacket(ctx,()=>runtime.draftPacket(ctx.args,actor,workflow),"draft_wait","frozen-source");
 			ctx.phase("Draft");ctx.signal.throwIfAborted();
 			const schema={type:"object",additionalProperties:false,required:["edits","reason"],properties:{reason:string,edits:{type:"array",items:{
 				type:"object",required:["file","before","text"],additionalProperties:false,properties:{file:string,before:nullable,text:nullable}}}}};

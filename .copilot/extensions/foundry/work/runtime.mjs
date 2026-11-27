@@ -1,3 +1,4 @@
+import { journeyText, readPolicy } from "./brief.mjs";
 import { randomUUID } from "node:crypto";
 import { describeNewChecks } from "./description.mjs";
 import { workflowIdentity } from "./workflow.mjs";
@@ -6,20 +7,18 @@ import { activate, holdFor, permitted } from "./activity.mjs";
 import { adoptionBase, exactForm, planAdoption, presentAdoption, proposalForm, requestedAdoption } from "./adoption.mjs";
 import { preparePatch } from "./patch.mjs";
 import { prepareRollout } from "./rollout.mjs";
-import { replacementOffer } from "./replacement.mjs";
 import { pendingAdoption } from "./offers.mjs";
 import { planOffers, selectedEvaluator } from "./offering.mjs";
-import { selectDraft } from "./commission.mjs";
+import { pendingScope, selectDraft } from "./commission.mjs";
 import { draftDispatcher, nextAuthor } from "./authors.mjs";
 import { formDelivery } from "./forms.mjs";
 import { claimRepair, holdRepair, planMending, queuedMechanic, queueMechanic, repairAnswer, repairCurrent, repairPacket, repairPermitted } from "./mending.mjs";
 import { repairTip } from "./calibration.mjs";
 import { auditor } from "./auditor.mjs";
-import { requireChangedReview } from "./inspection.mjs";
-import { boundInspections, inspectionWakes, publicationSample, readyInspections } from "./inspections.mjs";
-import { journal, survey } from "./dispatch.mjs";
+import { boundInspections, inspectionWakes, publicationSample, readyInspections, requireChangedReview } from "./inspections.mjs";
+import { awaitingReply, journal, survey, unissued } from "./dispatch.mjs";
 import { existsSync, readFileSync } from "node:fs";
-import { inputNotice, preparePublication, reportedReferences, verifySource } from "./artifacts.mjs";
+import { preparePublication, reportedReferences, verifySource } from "./artifacts.mjs";
 import { grantFor, recoveryRules } from "./grants.mjs";
 import { dispatches, instructionPermitted, queueInstructions } from "./instructions.mjs";
 import { frozenCheckpoint } from "./frozen.mjs";
@@ -27,16 +26,15 @@ import { recordDiagnostic } from "./diagnostics.mjs";
 import { attribute } from "./blockers.mjs";
 import { childProof, grainForToken, issuerProof, linkedGeneration, reservation, verifyGeneration } from "./binding.mjs";
 import { openDatabase, ledgerPath } from "./database.mjs";
-import { contractHold, journeyText, readPolicy } from "./contract.mjs";
+import { contractHold } from "./contract.mjs";
 import { unprovenExports } from "./attestation.mjs";
 import { activeDelivery } from "./batch.mjs";
 import { presentQuestions } from "./decisions.mjs";
 import { advance, currentReview, newRun, reserveChangedRepair, reserveIteration, retryableReview, sameReviewInputs } from "./graph.mjs";
-import { baselineNotice, changedFrom, comparisonGoal, comparisonVerdict, goalReceipt, inconclusiveRepair, mixedVerification, qualifiedProduct, relinquishable, stopForInput, verificationSource } from "./evidence.mjs";
+import { changedFrom, changeOffer, comparisonGoal, comparisonVerdict, goalReceipt, inconclusiveRepair, latestRepair, mixedVerification, qualifiedProduct, relinquishable, stopForInput, verificationSource } from "./evidence.mjs";
 import { checkpointSurvey, movingSurvey, observeTarget, releaseAssessment } from "./goal.mjs";
 import { admitted, assignment, boundWriter, canDispatch, current, expired, identify, issue, policySubject, receive, reserveCheck } from "./native.mjs";
-import { awaitingReply, unissued } from "./reservation.mjs";
-import { checked, writerVersion } from "./plan.mjs";
+import { checked, writerVersion } from "./lineage.mjs";
 import { attachNotes, queueNote } from "./notes.mjs";
 import { diagnosticLine, indexBudgetError } from "./pages.mjs";
 import { configure } from "./policy.mjs";
@@ -60,7 +58,8 @@ import { observerBasis, observerWriter, verifyObserver } from "./observer.mjs";
 import { productionBasis, submitProduction } from "./production.mjs";
 import { productionWriter, remedyWriter } from "./remedy.mjs";
 import { referenceText } from "./research.mjs";
-import { blockReview, comparison, currentPin, investigation, questions, reserveReview, retireSuperseded, reviews, staleReaderMessage } from "./reviews.mjs";
+import { comparison, investigation, reviews, staleReaderMessage } from "./charter.mjs";
+import { blockReview, currentPin, questions, reserveReview, retireSuperseded } from "./reviews.mjs";
 import { scoutPacket } from "./scouts.mjs";
 import { recoveryStatus, status as projectStatus } from "./status.mjs";
 import { FoundryError, assignmentDirectory, digest, fail, fields, mixed, name, record, referenceRepo, relative, text, roots as scopePaths } from "./values.mjs";
@@ -112,10 +111,9 @@ function writable(run, actor, token, from) {
 	}
 	if (frozenSubmission(node) || checked(node)) return;
 	if (node.state !== "writing") fail("stale_assignment", "This attempt is no longer writable");
-	const notice = baselineNotice(run, node);
-	if (notice && notice.state !== "done") fail("dispatch_held", "Await confirmed delivery of the approved baseline to the original writer");
-	const supply=inputNotice(run,node);
-	if (supply && (supply.state!=="done" || supply.error || !supply.callId))
+	const notice=latestRepair(run,node);
+	if (notice?.baseline && notice.state !== "done") fail("dispatch_held", "Await confirmed delivery of the approved baseline to the original writer");
+	if (notice?.input && (notice.state!=="done" || notice.error || !notice.callId))
 		fail("dispatch_held","Await confirmed delivery of the selected reference to the original writer");
 	const review=run.effects.find(e=>e.id===node.review);
 	if (review?.kind==="scout" && review.correction?.ordinary && review.correction.resumed?.token===token &&
@@ -124,8 +122,6 @@ function writable(run, actor, token, from) {
 	return node;
 }
 
-/** @param {Run} run @param {string} actor */
-const reservations = (run, actor) => dispatches(run).filter(e => e.issuer === actor && unissued(e) && policySubject(run, e));
 /** @param {Run} run @param {string} ticket @param {string} actor */
 const batchOf = (run, ticket, actor) => reviews(run).filter(e => e.callId === ticket && e.issuer === actor);
 /** @param {import("./model.js").Review} e */
@@ -168,9 +164,10 @@ export function createRuntime(directory, host, rules) {
 	/** @type {Map<string,{discover:boolean,recover:boolean,work:Promise<void>}>} */ const wakes = new Map();
 	/** @type {string|undefined} */ let existingPath;
 	const cwd = () => root ??= rootAt(directory);
-	/** @param {Run} run @returns {import("./instructions.mjs").Tip} */
-	function instructionPins(run){
-		/** @type {ReturnType<typeof observeTarget>|undefined} */ let observed;
+	/** @param {Run} run @param {string} actor */
+	const reservations=(run,actor)=>dispatches(run).filter(e=>e.issuer===actor && unissued(e) && policySubject(run,e,cwd()));
+	/** @param {Run} run @param {{target?:string}} [observed] @returns {import("./instructions.mjs").Tip} */
+	function instructionPins(run,observed){
 		/** @type {string|null|undefined} */ let prior;
 		return frozen=>{
 			const tip=(observed??=observeTarget(()=>commitAt(cwd(),run.policy.target))).target;
@@ -184,7 +181,7 @@ export function createRuntime(directory, host, rules) {
 	}
 	/** @param {Run} run @param {string} actor @param {unknown} [detail] */
 	const status=(run,actor,detail)=>projectStatus(run,actor,detail,instructionPins(run),
-		detail==="proof" && run.owner===actor?{cwd:cwd(),verify:e=>db().verifySigned(run.id,e)}:undefined);
+		detail==="proof" && run.owner===actor?{cwd:cwd(),verify:e=>db().verifySigned(run.id,e)}:undefined,cwd());
 	const file = () => existingPath ??= ledgerPath(directory);
 	function hasLedger() {
 		if (outsideRepository) return false;
@@ -218,11 +215,17 @@ export function createRuntime(directory, host, rules) {
 	const read = id => db().read(id) ?? fail("missing_run", `Unknown run ${id}`);
 	/** @param {(message:string)=>Promise<string|null>} adopt @param {()=>Promise<void>} wake */
 	const approvalHost=(adopt,wake)=>({cwd:cwd(),store:db,closed:()=>closed,executable:observerExecutable,permissionBlocker:host.permissionBlocker,persist:recordReply,idle:forms.idle,adopt,wake});
+	const scopeForm=host.confirmProposal??host.confirm;
+	/** @param {Run} r */
+	const scopeQuestion=r=>scopeForm && pendingScope(r,()=>observeTarget(()=>commitAt(cwd(),r.policy.target)).target);
+	/** @param {string} id @param {string} actor @param {import("./model.js").CorrectionDraft} scope @param {boolean} [automatic] */
+	const askScope=(id,actor,scope,automatic)=>selectDraft({cwd:cwd(),store:db(),closed:()=>closed,permitted:async()=>await executable() && !await host.permissionBlocker(),
+		vacant:host.formVacant,confirm:scopeForm,persist:recordReply},id,actor,scope,automatic);
 	/** Settlement continues the submitted work; it does not request another fixed-charter survey.
 	 * @param {string} id @param {string} actor */
 	const receiptWake=(id,actor)=>track(drive(id,actor,false,false));
 	const inspector=auditor({start:host.startInspection,lookup:host.inspectionState??host.scoutState,budget:host.scoutBudget,
-		cwd,read,mutate:(id,fn)=>db().mutateLocked(id,fn),plan:(id,fn)=>db().planAndSwap(id,fn),
+		cwd,read,mutate:(id,fn)=>db().mutateLocked(id,fn),reserve:(id,fn)=>db().reserve(id,fn),
 		tip:run=>observeTarget(()=>commitAt(cwd(),run.policy.target)).target,persist:recordReply,closed:()=>closed,
 		verifySigned:(id,c)=>db().verifySigned(id,c),
 		track,log:host.log,queue:wakeCapacity,wake:receiptWake,executable,permissionBlocker:host.permissionBlocker});
@@ -240,7 +243,7 @@ export function createRuntime(directory, host, rules) {
 		const unfinished=run.active && own.some(e=>e.kind==="scout" && needsContinuation(e));
 		const ownerWork=previous==="issuer-permission" && run.active && actor===run.owner &&
 			(recovery.select(run).size>0 || !!nextAuthor(run) || reviews(run).some(r=>r.renewal?.state==="needed") || run.testRepairs?.some(j=>!["held","applied","product","unobserved"].includes(j.state)) ||
-				!!host.ask && questions(run).some(r=>!r.decision) || !!proposalForm(host,pendingAdoption(run)));
+				!!host.ask && questions(run).some(r=>!r.decision) || !!proposalForm(host,pendingAdoption(run)) || !!scopeQuestion(run));
 		// A paused issuer may still own an unissued reservation. Observe the owner's
 		// later resume, without treating a readable policy as permission to undo a pause.
 		const participant=!!(run.active || hold) && run.owner===actor || own.some(e=>awaitingReply(e) || unissued(e) && current(run,e)) || inspection.participant;
@@ -248,7 +251,7 @@ export function createRuntime(directory, host, rules) {
 			local:ownerWork || inspection.local || own.some(e=>!!e.permissionHold && unissued(e) && policySubject(run,e)) || unfinished && previous==="issuer-permission",
 			retryRead:unfinished && previous==="workflow-status",
 			missing:run.active && participant && missing,formDue:!!forms.current(run,actor) ||
-				actor===run.owner && !!host.formIdle && !!proposalForm(host,pendingAdoption(run)),participant});
+				actor===run.owner && !!host.formIdle && (!!proposalForm(host,pendingAdoption(run)) || !!scopeQuestion(run)),participant});
 		const pending=!!host.recover && run.active && !expired(run) && own.some(externalReply) ||
 			inspector.canObserve && inspection.pending;
 		return {state,ref:run.policy.target,pending,...(state==="managed-policy" && {token:hold?.token})};
@@ -300,7 +303,7 @@ export function createRuntime(directory, host, rules) {
 		presentable:async(id,actor)=>{
 			if(asking.has(id) || !await observerExecutable() || await host.permissionBlocker() || !await forms.idle())return false;
 			const run=read(id);
-			return actor===run.owner && !!pendingAdoption(run) || forms.vacant(forms.current(run,actor));
+			return actor===run.owner && !!(pendingAdoption(run) || scopeQuestion(run)) || forms.vacant(forms.current(run,actor));
 		},
 		lookup:readCompletions,
 		wake:async(id,actor,token)=>{
@@ -340,15 +343,9 @@ export function createRuntime(directory, host, rules) {
 	async function inform(id,actor){
 		const queued=db().planAndSwap(id,r=>queueInstructions(r,actor));
 		const due=reservations(queued,actor).filter(e=>e.kind==="instruction" && e.state==="ready");
-		if(due.length && await dispatchBlocker(id,actor,due)===null)for(const e of due){
-			const callId=randomUUID();
-			if(claim(id,e,callId))await resolveCall(id,e,callId,()=>deliver(e,callId),true);
-		}
+		if(due.length && await dispatchBlocker(id,actor,due)===null)for(const e of due)await dispatchCall(id,e);
 		return status(read(id),actor);
 	}
-	/** @param {Effect} e @param {string} callId */
-	const deliver=(e,callId)=>e.tool==="session.send"?host.notify(text(e.args.message,"session notice")).then(messageId=>({resultType:"success",messageId})):
-		host.execute(e.tool,e.args,callId);
 	/** Commit a selected hold change only if the sampled issuer still has the same reservation.
 	 * @param {string} id @param {string} actor @param {Effect[]} batch @param {Inspection[]} inspecting @param {string|null} message @param {boolean} managed */
 	function recordBatchPolicy(id,actor,batch,inspecting,message,managed) {
@@ -399,62 +396,78 @@ export function createRuntime(directory, host, rules) {
 			return await settle(ctx, callId, result, automatic);
 		} finally { ctx.inFlight = false; }
 	}
-	/** @param {string} id @param {Effect} effect @param {string} callId */
-	const claim = (id, effect, callId) => {
-		if(effect.kind==="instruction"){
-			let claimed=false;
-			db().planAndSwap(id,r=>{
-				claimed=false;const pins=instructionPins(r);
-				if(closed || expired(r) || !instructionPermitted(r,effect.instruction,pins) || !(claimed=issue(r,effect,callId)))return;
-				const sampled=pins();
-				return ()=>!closed && !expired(r) && observeTarget(()=>commitAt(cwd(),r.policy.target)).target===sampled;
-			});return claimed;
-		}
-		if(effect.kind==="repair" && (effect.input || effect.continuation) && unissued(effect)){
-			let claimed=false;
-			db().planAndSwap(id,run=>{
-				claimed=false;
-				const e=run.effects.find(e=>e.id===effect.id);
-				if(e?.kind!=="repair" || !e.grain || !unissued(e) || !canDispatch(run,e))return;
-				const tip=deliveryTip(cwd(),run,e,job=>db().verifySigned(id,job));
-				if(!tip)return;
-				claimed=issue(run,effect,callId);
-				if(claimed)return ()=>!closed && !expired(run) && observeTarget(()=>commitAt(cwd(),run.policy.target)).target===tip;
-			});return claimed;
-		}
-		if(effect.kind==="control" || effect.tool==="bash" && effect.testPin){
-			let claimed=false;
-			db().planAndSwap(id,r=>{
-				const j=r.testRepairs?.find(j=>j.stop===(effect.calibration?.stop??effect.testPin));
-				const tip=j && (effect.kind==="control"?repairCurrent(cwd(),r,j):j.recheck===effect.id && repairTip(cwd(),r,j));
-				claimed=!!tip && repairPermitted(r) && issue(r,effect,callId);
-				if(claimed)return ()=>!closed && !expired(r) && commitAt(cwd(),r.policy.target)===tip;
-			});return claimed;
-		}
-		const pinnedProduct=effect.kind==="product" && effect.evaluatorRevision;
-		if (effect.tool==="workflow" || !(pinnedProduct || effect.rollout || effect.replacement || effect.recheck || effect.pair || effect.observer || effect.isolation || effect.production || effect.remedy) || !unissued(effect)) return db().mutateLocked(id, run => issue(run, effect, callId));
-		let target = (effect.recheck ?? effect.pair)?.target;
-		let claimed = false;
-		db().planAndSwap(id,run => {
-			const source=pinnedProduct && verificationSource(run,effect.id),mixed=pinnedProduct && mixedVerification(run,effect.id);
-			const original=source && source!==effect.id && run.products.find(p=>p.check===source);
-			if (effect.isolation || mixed || original || effect.replacement || effect.rollout) {
-				target=original ? original.target : mixed ? mixed.revision : effect.rollout ? run.adoptions?.find(a=>a.id===effect.rollout)?.revision : effect.replacement ? replacementOffer(run,effect)?.revision : run.independent?.target;
-				claimed=target===commitAt(cwd(),run.policy.target) && !run.effects.some(x=>x.permissionHold) && issue(run,effect,callId);
-			} else if (effect.production || effect.remedy) {
-				const job=effect.production?effect:remedyWriter(run,effect);
-				if (!job) fail("stale_assignment","Missing production repair binding");
-				target=productionBasis(cwd(),run,job,effect.commit).target;
-				claimed=issue(run,effect,callId);
-			} else if (effect.observer) {
-				target=effect.kind==="component" ? verifyObserver(cwd(),run,effect,text(effect.commit,"observer candidate"),true) :
-					observerBasis(cwd(),run,effect).pair.target;
-				claimed=issue(run,effect,callId);
-			} else claimed = (effect.pair ? currentPair(cwd(),run,effect) : !effect.recheck || checkAuthority(cwd(),run,effect)) && issue(run,effect,callId);
-			if (claimed && target) return () => !expired(run) && observeTarget(()=>commitAt(cwd(),run.policy.target)).target===target;
+	/** New tool calls have one journal-before-I/O path. Recovery only observes the original call.
+	 * @param {string} id @param {Effect} e @param {()=>void} [onClaim] */
+	function dispatchCall(id,e,onClaim){
+		const callId=randomUUID();
+		if(closed || !claim(id,e,callId))return;
+		onClaim?.();
+		return resolveCall(id,e,callId,()=>e.tool==="session.send"?
+			host.notify(text(e.args.message,"session notice")).then(messageId=>({resultType:"success",messageId})):
+			host.execute(e.tool,e.args,callId),true);
+	}
+	/** A new scoped review and an existing ready batch use the same committed native
+	 * ticket. A different target or a lost ledger race cannot leak into this launch.
+	 * @param {string} id @param {string} actor
+	 * @param {import("./model.js").Review[]|((r:Run)=>import("./model.js").Review|undefined)} selection */
+	function dispatchScouts(id,actor,selection){
+		const ticket=randomUUID();
+		const issued=db().reserve(id,r=>{
+			if(typeof selection!=="function")return selection.filter(e=>issue(r,e,ticket)).length?{value:true}:undefined;
+			const e=selection(r);
+			if(!e)return;
+			if(!issue(r,e,ticket))fail("stale_assignment","Cannot issue the selected charter review");
+			const tip=r.goal?.target;
+			return {value:true,guard:tip?()=>commitAt(cwd(),r.policy.target)===tip:undefined};
 		});
-		return claimed;
-	};
+		if(issued)watchScouts(id,ticket,actor,()=>host.scout?.(id,ticket,actor)??Promise.reject(new Error("Workflow scouting is unavailable")));
+	}
+	/** Consulting the target binds that observation through commit; an immutable grant need not read it.
+	 * @param {Run} r @param {Effect} effect @param {()=>string|undefined} tip */
+	function mayIssue(r,effect,tip){
+		/** @param {(target:string)=>unknown} verify */
+		const onTarget=verify=>{const target=tip();return target!==undefined && !!verify(target);};
+		if(effect.kind==="escalation")return !!r.goal && tip()===r.goal.target;
+		if(effect.kind==="instruction")return instructionPermitted(r,effect.instruction,instructionPins(r,{target:tip()}));
+		if(effect.kind==="repair" && (effect.input || effect.continuation) && unissued(effect))
+			return onTarget(target=>deliveryTip(cwd(),r,effect,job=>db().verifySigned(r.id,job),target));
+		if(effect.kind==="control" || effect.tool==="bash" && effect.testPin){
+			const j=r.testRepairs?.find(j=>j.stop===(effect.calibration?.stop??effect.testPin));
+			return !!j && repairPermitted(r) && onTarget(target=>effect.kind==="control"?repairCurrent(cwd(),r,j,target):
+				j.recheck===effect.id && repairTip(cwd(),r,j,target));
+		}
+		if(effect.tool==="workflow" || !unissued(effect))return true;
+		const pinnedProduct=effect.kind==="product" && effect.evaluatorRevision;
+		const source=pinnedProduct && verificationSource(r,effect.id),mixed=pinnedProduct && mixedVerification(r,effect.id);
+		const original=source && source!==effect.id && r.products.find(p=>p.check===source);
+		if(effect.isolation || mixed || original || effect.replacement || effect.rollout){
+			const target=original?original.target:mixed?mixed.revision:effect.rollout || effect.replacement?changeOffer(r,effect)?.revision:r.independent?.target;
+			return !!target && tip()===target && !r.effects.some(x=>x.permissionHold);
+		}
+		if(effect.production || effect.remedy){
+			const job=effect.production?effect:remedyWriter(r,effect)??fail("stale_assignment","Missing production repair binding");
+			return onTarget(target=>productionBasis(cwd(),r,job,effect.commit,target));
+		}
+		if(effect.observer)return onTarget(target=>effect.kind==="component"?verifyObserver(cwd(),r,effect,text(effect.commit,"observer candidate"),true,target):
+			observerBasis(cwd(),r,effect,target));
+		if(effect.pair)return onTarget(target=>currentPair(cwd(),r,effect,effect.id,target));
+		if(effect.recheck)return checkAuthority(cwd(),r,effect,tip());
+		return true;
+	}
+	/** @param {string} id @param {Effect} effect @param {string} callId */
+	function claim(id,effect,callId){
+		return db().reserve(id,r=>{
+			/** @type {ReturnType<typeof observeTarget>|undefined} */ let pin;
+			const sample=()=>{
+				const seen=observeTarget(()=>commitAt(cwd(),r.policy.target));
+				supervisor.sawTarget(id,effect.issuer,seen.target);
+				return seen;
+			};
+			const elapsed=expired(r);
+			if(!closed && issue(r,effect,callId,cwd(),live=>mayIssue(r,live,()=>(pin??=sample()).target) && !(pin && elapsed)))
+				return {value:true,guard:()=>!closed && (pin?!expired(r) && sample().target===pin.target:expired(r)===elapsed)};
+		});
+	}
 	/** Merge wakeups for one issuer, never its in-flight calls or permission dialogs.
 	 * @param {string} id @param {string} actor @param {boolean} [discover] @param {boolean} [recover] @returns {Promise<void>} */
 	function drive(id, actor, discover = false, recover = true) {
@@ -486,6 +499,7 @@ export function createRuntime(directory, host, rules) {
 		/** @type {string|undefined} */ let submitToken;
 		/** @type {Run} */ let planned;
 		/** @type {import("./model.js").Adoption|undefined} */ let adoption;
+		/** @type {(()=>Promise<"issuer-permission"|"approval-delivery"|"answered"|undefined|void>)|undefined} */ let question;
 		let missingTarget=false;
 		let mending=false;
 		/** @type {Effect[]} */ let batch=check?.batch ?? [];
@@ -543,9 +557,11 @@ export function createRuntime(directory, host, rules) {
 			"watch-held-renewal":next=>{deferredGate="issuer-permission";return watchPlan(next);},
 			"offer-question":next=>{
 				asking.add(id);
-				track(presentQuestions(cwd(), () => closed ? undefined : db(), id, actor, host, executable, refill, recordReply).then(held=>{
-					if (!closed && held) supervisor.observe(id,actor,gate(read(id),actor,false,held));
-				}).finally(() => asking.delete(id)));
+				track((question??fail("stale_question","No selected owner question"))().finally(()=>asking.delete(id)).then(outcome=>{
+					if(closed)return;
+					if(outcome==="answered")return refill();
+					if(outcome)supervisor.observe(id,actor,gate(read(id),actor,false,outcome));
+				}));
 				return offerBatch(next);
 			},
 			"mend-test":next=>{
@@ -588,11 +604,7 @@ export function createRuntime(directory, host, rules) {
 				// A native agent label is not an identity: frozen-reference readers cannot share a ticket.
 				const readers=scouts.filter(e=>referenceRepo(e.wake?.key) && planned.policy.squads.some(s=>s.id===e.squad && investigation(e,s)));
 				const ordinary=scouts.filter(e=>!readers.includes(e));
-				for (const jobs of [...(ordinary.length ? [ordinary] : []),...readers.map(e=>[e])]) {
-					const ticket=randomUUID();
-					if (db().mutateLocked(id,r=>jobs.filter(e=>issue(r,e,ticket)).length))
-						watchScouts(id,ticket,actor,()=>host.scout?.(id,ticket,actor) ?? Promise.reject(new Error("Workflow scouting is unavailable")));
-				}
+				for(const jobs of [...(ordinary.length?[ordinary]:[]),...readers.map(e=>[e])])dispatchScouts(id,actor,jobs);
 			},
 			"launch-inspections":()=>{for(const i of inspections) inspector.launch(id,i);},
 			"match-writers":async next=>{
@@ -704,10 +716,20 @@ export function createRuntime(directory, host, rules) {
 			batch=reservations(planned,actor).filter(e=>(!mending || e.kind!=="scout") && (e.state==="ready" || e.permissionHold));
 			ready=batch.filter(e=>e.state==="ready" && !(e.tool==="bash" && e.attempt?.version===1));
 			inspections=readyInspections(planned,actor);
+			const scope=scopeQuestion(planned);
+			if(!asking.has(id) && actor===planned.owner){
+				if(host.ask && questions(planned).some(r=>!r.decision))question=()=>presentQuestions(cwd(),()=>closed?undefined:db(),id,actor,host,executable,refill,recordReply);
+				else if(scope && !adoption?.assembly)question=async()=>{
+					if(!await forms.idle())return "approval-delivery";
+					if(!await executable() || await host.permissionBlocker())return "issuer-permission";
+					await askScope(id,actor,scope,true);
+					return "answered";
+				};
+			}
 			return next("work",{missingTarget,active:planned.active,expired:expired(planned),handoff:batch.some(e=>e.kind==="handoff"),
 				draftDue:!adoption && !mending && authors.ready(planned),
 				testRepair:!!planned.testRepairs?.some(j=>j.state==="draft" || j.state==="review" || j.workflow && (j.state==="authoring" || j.state==="reviewing")),
-				owner:actor===planned.owner,question:!!host.ask && !asking.has(id) && questions(planned).some(r=>!r.decision),
+				owner:actor===planned.owner,question:!!question,
 				adoption:!asking.has(id) && !!proposalForm(host,adoption)});
 		}
 		/** A committed claim precedes native author/reviewer work. A missing reply on reattachment is a hold, never a replay.
@@ -721,27 +743,27 @@ export function createRuntime(directory, host, rules) {
 				if(closed || !await executable())return;
 				if(await host.permissionBlocker()){supervisor.observe(id,actor,gate(read(id),actor,false,"issuer-permission"));return;}
 				const budget=await host.scoutBudget?.();
-				/** @type {import("./mending.mjs").Packet|undefined} */ let packet;
-				/** @type {import("./mending.mjs").Ticket|undefined} */ let ticket;
 				const recovering=expected.state==="authoring" || expected.state==="reviewing";
-				db().planAndSwap(id,r=>{
-					packet=undefined;ticket=undefined;claimed=false;
+				const reservation=db().reserve(id,r=>{
 					const j=r.testRepairs?.find(j=>j.stop===expected.stop);
 					const tip=j && repairCurrent(cwd(),r,j);
 					if(!j || j.state!==expected.state || !repairPermitted(r) || !tip)return;
+					let packet;
 					try{
 						packet=repairPacket(cwd(),r,j,phase);
 						if(!(recovering?host.repairState:host.repairAgent) || budget!==undefined && Buffer.byteLength(packet.message)>budget)
 							fail("unavailable","Independent test repair is unavailable or its complete packet exceeds the host budget");
-					}catch(e){if(!(e instanceof FoundryError))throw e;holdRepair(j,e.message);packet=undefined;return;}
+					}catch(e){if(!(e instanceof FoundryError))throw e;holdRepair(j,e.message);return;}
 					if(recovering){
 						if(!expected.workflow || j.workflow!==expected.workflow || j.dispatch!==expected.dispatch || packet.subject!==j.subject)return;
 					}else claimRepair(j,phase,packet.subject);
-					ticket={run:id,stop:j.stop,phase,dispatch:text(j.dispatch,"test repair dispatch"),subject:packet.subject};claimed=true;
-					return ()=>!closed && !expired(r) && commitAt(cwd(),r.policy.target)===tip;
+					const ticket={run:id,stop:j.stop,phase,dispatch:text(j.dispatch,"test repair dispatch"),subject:packet.subject};
+					return {value:{packet,ticket},guard:()=>!closed && !expired(r) && commitAt(cwd(),r.policy.target)===tip};
 				});
-				if(!claimed || !packet || !ticket || closed)return;
-				const request=packet,reply=recovering && expected.workflow ? await host.repairState?.(expected.workflow,ticket):await host.repairAgent?.(phase,request,ticket);
+				if(!reservation || closed)return;
+				claimed=true;
+				const {packet:request,ticket}=reservation;
+				const reply=recovering && expected.workflow ? await host.repairState?.(expected.workflow,ticket):await host.repairAgent?.(phase,request,ticket);
 				if(closed)return;
 				const permitted=!await host.permissionBlocker() && await executable();
 				await recordReply(()=>db().planAndSwap(id,r=>{
@@ -776,14 +798,12 @@ export function createRuntime(directory, host, rules) {
 		/** @param {Effect[]} jobs @param {Signal} next */
 		async function send(jobs,next) {
 			await Promise.all(jobs.map(async e=>{
-				const callId=randomUUID(), claimed=!closed && claim(id,e,callId);
-				if (claimed) {
-					if (e.tool==="bash") receipts.observe(read(id),actor);
-					const completion=resolveCall(id,e,callId,()=>deliver(e,callId),true);
+				const completion=dispatchCall(id,e,e.tool==="bash"?()=>receipts.observe(read(id),actor):undefined);
+				if (completion) {
 					await Promise.all([completion,next("issued",{checkpointGoal:e.kind==="goal" && planned.products.at(-1)?.commit===e.commit,
 						checkpointReviews:planned.scheduling?.checkpointReviews!==false})]);
 				}
-				return next("attempt",{claimed,pinnedCheck:e.kind==="instruction" || e.kind==="repair" && !!(e.input || e.continuation) || e.tool==="bash" && !!(e.calibration || e.testPin || e.recheck || e.pair || e.isolation || e.replacement || e.kind==="product" && mixedVerification(planned,e.id))});
+				return next("attempt",{claimed:!!completion});
 			}));
 		}
 	}
@@ -1057,12 +1077,9 @@ export function createRuntime(directory, host, rules) {
 			}
 			assign(node,"submit");
 			node.candidate = commit;
-			node.check = reserveCheck(r, actor, cwd(), commit, g.check, g.id, reports);
-			const effect=r.effects.at(-1);
-			if (observer?.observer) {
-				if (effect?.kind!=="component") fail("invalid_observer","Missing writer component reservation");
-				effect.observer={...observer.observer};
-			}
+			const effect=reserveCheck(r,actor,cwd(),commit,g.check,{kind:"component",grain:g.id},reports);
+			node.check=effect.id;
+			if(observer?.observer)effect.observer={...observer.observer};
 			if (observerTarget || target) return () => commitAt(cwd(), r.policy.target) === (observerTarget ?? target);
 		});
 		return result.nodes[g.id].token;
@@ -1227,12 +1244,6 @@ export function createRuntime(directory, host, rules) {
 			await drive(id,actor,false,false);
 			return status(read(id),actor);
 		}
-		if(op==="draft" && (a.files!==undefined || a.evaluator!==undefined)){
-			await requireReadyOwner(cwd());
-			await selectDraft({cwd:cwd(),store:db(),closed:()=>closed,permitted:async()=>await executable() && !await host.permissionBlocker(),
-				vacant:host.formVacant,confirm:host.confirmProposal??host.confirm,persist:recordReply},id,actor,a);
-			await drive(id,actor,false,false);return status(read(id),actor);
-		}
 		if (op === "workspace") {
 			fields(a,["run","token"]);
 			await requireReadyOwner(cwd());
@@ -1246,13 +1257,16 @@ export function createRuntime(directory, host, rules) {
 		if (prepare) {
 			const origin=cwd(),request=prepare(origin,live,actor,a,e=>db().verifySigned(id,e));
 			await requireReadyOwner(origin);
-			if (request.consent!=="satisfied") {
-				const approved = request.consent==="native" ? await (host.confirmProposal??host.confirm)?.(request.prompt) : await confirm(request.prompt);
-				if (approved === false) fail("approval_declined","Request not approved. No assignment changed. Do not ask again without a fresh request.");
-				if (approved !== true) fail("approval_required","Approval is unavailable; no assignment changed");
+			if(request.scope)await askScope(id,actor,request.scope);
+			else {
+				if (request.consent!=="satisfied") {
+					const approved = request.consent==="native" ? await (host.confirmProposal??host.confirm)?.(request.prompt) : await confirm(request.prompt);
+					if (approved === false) fail("approval_declined","Request not approved. No assignment changed. Do not ask again without a fresh request.");
+					if (approved !== true) fail("approval_required","Approval is unavailable; no assignment changed");
+				}
+				await requireReadyOwner(origin);
+				db().planAndSwap(id,request.apply);
 			}
-			await requireReadyOwner(origin);
-			db().planAndSwap(id,request.apply);
 			if (request.wake==="none")return inform(id,actor);
 			await drive(id,actor,false,request.wake==="recover");
 			return status(read(id),actor);
@@ -1275,10 +1289,7 @@ export function createRuntime(directory, host, rules) {
 			const saved=db().planAndSwap(id,request.apply);
 			if (rerun) {
 				const e=saved.effects.findLast(e=>e.kind==="rerun" && e.commit===a.product && e.rerun?.of===a.check && e.rerun?.after===a.after);
-				if (e?.state==="ready" && await dispatchBlocker(id,actor,[e])===null) {
-					const callId=randomUUID();
-					if (claim(id,e,callId)) await resolveCall(id,e,callId,()=>host.execute(e.tool,e.args,callId),true);
-				}
+				if (e?.state==="ready" && await dispatchBlocker(id,actor,[e])===null)await dispatchCall(id,e);
 			} else await drive(id,actor,false,false);
 			return status(read(id),actor,op==="recheck" ? "proof" : undefined);
 		}
@@ -1336,8 +1347,8 @@ export function createRuntime(directory, host, rules) {
 			}
 			const budget = await host.scoutBudget?.();
 			await requireReadyOwner(origin);
-			const ticket = randomUUID(), launch = host.scout ?? fail("unavailable", "Discovery workflow unavailable");
-			db().planAndSwap(id, run => {
+			if(!host.scout)fail("unavailable","Discovery workflow unavailable");
+			dispatchScouts(id,actor,run=>{
 				const {prior:live, sourceBlob:verified} = retryableReview(origin, run, actor, review);
 				if (digest(live) !== digest(prior) || sourceBlob!==verified || run.goal?.check !== receipt) fail("stale_assignment", "Review or goal changed during native verification");
 				if (budget === undefined || !Number.isSafeInteger(budget) || budget < 0)
@@ -1354,12 +1365,9 @@ export function createRuntime(directory, host, rules) {
 				}
 				const { prompt } = scoutPacket(origin, run, fresh, budget);
 				if (Buffer.byteLength(prompt) > budget) fail("packet_budget", "New packet exceeds the scout budget");
-				if (!issue(run, fresh, ticket)) fail("stale_assignment", "Cannot issue fresh review");
 				if (run.goal) delete run.goal.stall;
-				const target = run.goal?.target;
-				if (target) return () => commitAt(origin, run.policy.target) === target;
+				return fresh;
 			});
-			watchScouts(id, ticket, actor, () => launch(id, ticket, actor));
 			return status(read(id), actor);
 		}
 		if (op === "iterate") {
@@ -1375,7 +1383,7 @@ export function createRuntime(directory, host, rules) {
 			if (citation) fields(citation, ["commit","file","excerpt"]);
 			const source = citation && {commit:name(citation.commit,"checked product"),file:relative(citation.file),excerpt:text(citation.excerpt,"verbatim product excerpt")};
 			await requireReadyOwner(origin);
-			const launch = host.scout ?? fail("unavailable", "Discovery workflow unavailable"), ticket = randomUUID();
+			if(!host.scout)fail("unavailable","Discovery workflow unavailable");
 			/** @param {Run} run */
 			const reserve = run => {
 				const review=reserveIteration(origin,run,actor,input,historical,source);
@@ -1401,16 +1409,13 @@ export function createRuntime(directory, host, rules) {
 				if (approved !== true) fail("approval_required","Operator approval is unavailable; no review was started");
 				await requireReadyOwner(origin);
 			}
-			const after = db().planAndSwap(id, run => {
+			dispatchScouts(id,actor,run=>{
 				const fresh = reserve(run);
 				if (!fresh) return;
 				if (source && fresh.iteration?.receipt !== approvedCheckpoint) fail("stale_assignment","The approved product checkpoint changed");
-				if (!issue(run, fresh, ticket)) fail("stale_assignment", "Cannot issue focused review");
-				const target = run.goal?.target;
-				return () => commitAt(origin, run.policy.target) === target;
+				return fresh;
 			});
-			if (batchOf(after, ticket, actor).length) watchScouts(id, ticket, actor, () => launch(id, ticket, actor));
-			return status(after, actor);
+			return status(read(id),actor);
 		}
 		const reply = op === "submit" || op === "preview" ? { run: id, actor, token: text(a.token, "submission token") } : undefined;
 		if (reply) {
@@ -1521,7 +1526,7 @@ export function createRuntime(directory, host, rules) {
 			// runner claim. The original command may only close its slot at the ABI.
 			nativeCalls.set(callId,{run:id,id:legacy.id,actor});return;
 		}
-		const e = dispatches(run).find(e => e.issuer === actor && e.tool === tool && digest(e.args) === key && current(run, e));
+		const e = dispatches(run).find(e => e.issuer === actor && e.tool === tool && digest(e.args) === key && current(run,e,cwd()));
 		if (!e || e.tool==="bash" && e.attempt?.version===1 || e.state !== "ordinary" && !(e.state === "issued" && e.callId === callId))
 			fail("unreserved_call", "Not a current prepared Foundry call");
 		if (e.state === "ordinary") {

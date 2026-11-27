@@ -1,5 +1,5 @@
 import { changedFrom, inconclusiveRepair, missingInput, relinquishable } from "./evidence.mjs";
-import { stalePins } from "./plan.mjs";
+import { stalePins } from "./lineage.mjs";
 import { writerInstructions } from "./instructions.mjs";
 import { inputChoices } from "./resupply.mjs";
 import { contractHold } from "./contract.mjs";
@@ -41,10 +41,11 @@ export function guidance(run,actor,view,tip) {
 		if(d.blob || d.goal!==run.goal?.check)continue;
 		for(const p of d.parts){
 			if(p.state==="returned")continue;
-			const blocked=p.state==="held",scope=!draftAllowed(d);
-			rows.push({id:partId(d,p),kind:"author",disposition:blocked?"unsupported":scope?"decision":"wait",
+			const blocked=p.state==="held",scope=!draftAllowed(d),ended=scope && (d.decision?.status==="dismissed" || d.decision?.status==="unavailable");
+			rows.push({id:partId(d,p),kind:"author",disposition:blocked || ended?"unsupported":scope?"decision":"wait",
 				role:scope?"operator":"issuer",session:run.owner,source:d.check,grain:p.source.grain,
 				message:blocked?`No proposal for this source: ${p.reason}. The failed check and original grant are unchanged.`:
+					ended?"The scope decision was declined or unconfirmed. No author was granted access; do not repeat it automatically.":
 					scope?`Scope decision ${d.decision?.status??"pending"} for the exact files. Do not write or relay code.`:
 					p.workflow?`Wait for original author ${p.workflow}. ${p.reason??"No second launch is authorized."}`:
 					p.dispatch?`Author dispatch ${p.dispatch} has no confirmed workflow identity. Keep the original call; do not replay.`:

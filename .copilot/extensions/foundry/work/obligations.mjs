@@ -1,13 +1,14 @@
+import { componentBatch } from "./inspections.mjs";
 import { assign } from "./assignment.mjs";
 import { verifyJoinedInputs } from "./assembly.mjs";
-import { currentRollout, pendingSuccessor, rolloutChecks, rolloutPaths } from "./campaign.mjs";
+import { pendingSuccessor, rolloutSlots, rolloutPaths } from "./campaign.mjs";
 import { journal } from "./dispatch.mjs";
-import { componentBatch } from "./inspection.mjs";
+import { amendedOutputs, changeOffer, changeOwners } from "./evidence.mjs";
 import { admitted, expired, reserveCheck, reserveProduct } from "./native.mjs";
-import { checked } from "./plan.mjs";
+import { checked } from "./lineage.mjs";
 import { commitAt, retain } from "./product.mjs";
 import { publishedNodes } from "./publication.mjs";
-import { currentReplacement, replaceable, replacementChecks, replacementOffer } from "./replacement.mjs";
+import { currentChange, replaceable, replacementChecks } from "./replacement.mjs";
 import { grant, productOwnership } from "./transfer.mjs";
 import { digest, fail, text } from "./values.mjs";
 
@@ -15,9 +16,6 @@ import { digest, fail, text } from "./values.mjs";
 /** @typedef {import("./model.js").Node} Node */
 /** @typedef {import("./model.js").Adoption} Change */
 /** @typedef {import("./model.js").NativeCall} Check */
-/** A rollout names every output it may rebind; an owned patch names exactly one.
- * An inherited patch changes none. @param {Change} a */
-const owners=a=>a.rollout?.owners??(a.patch?a.patch.owner?{[a.patch.grain]:a.patch.owner}:{}:fail("invalid_patch","Missing authorized change"));
 
 /** Reserve fresh evidence, not a fresh writer. Existing attempt bindings stay
  * intact; a product amendment with no replaced output has no standalone component.
@@ -25,7 +23,7 @@ const owners=a=>a.rollout?.owners??(a.patch?a.patch.owner?{[a.patch.grain]:a.pat
  * @param {string} cwd @param {Run} run @param {Change} a @param {string} answer */
 export function reserveChange(cwd,run,a,answer){
 	admitted(run);
-	const assembly=text(a.assembly,"approved assembly"),ids=Object.keys(owners(a));
+	const assembly=text(a.assembly,"approved assembly"),ids=Object.keys(changeOwners(a));
 	if(answer!==(a.rollout??a.patch)?.blob || commitAt(cwd,run.policy.target)!==a.revision)fail("stale_pin","The approved bytes or target changed");
 	retain(cwd,assembly);
 	if(a.rollout)retain(cwd,a.rollout.harness);
@@ -33,8 +31,7 @@ export function reserveChange(cwd,run,a,answer){
 	if(parent)for(const c of run.effects)if(c.kind==="component" && c.rollout===parent && c.state==="ready")journal(c,"withdraw");
 	if(!ids.length)joinChange(cwd,run,a);
 	for(const id of ids){
-		reserveCheck(run,run.owner,cwd,assembly,run.nodes[id].grain.check,id);
-		const c=run.effects.at(-1);if(c?.kind!=="component")throw Error("Missing required component reservation");
+		const c=reserveCheck(run,run.owner,cwd,assembly,run.nodes[id].grain.check,{kind:"component",grain:id});
 		if(a.rollout)c.rollout=a.id;else c.replacement=a.id;
 	}
 	return ()=>commitAt(cwd,run.policy.target)===a.revision;
@@ -44,12 +41,11 @@ export function reserveChange(cwd,run,a,answer){
 function joinChange(cwd,run,a){
 	const prior=run.join,p=run.productRepins?.at(-1),assembly=text(a.assembly,"approved assembly");
 	if(!prior || !p?.targetFrom || p.revision!==prior.target || prior.check!==a.failed)fail("stale_pin","The original failed assembly changed");
-	const outputs={...prior.outputs},harness=a.rollout?.harness;
-	for(const [id,owner] of Object.entries(owners(a))){if(outputs[id]!==owner.output)fail("stale_pin",`Included output changed: ${id}`);outputs[id]=assembly;}
+	const {outputs,stale}=amendedOutputs(a,prior.outputs,assembly),harness=a.rollout?.harness;
+	if(!outputs)fail("stale_pin",`Included output changed: ${stale}`);
 	if(digest(productOwnership(run.nodes,outputs)??null)!==digest(prior.ownership??null))fail("ownership_transition","The included grants changed");
 	if(harness && harness!==a.revision)(run.repins??=[]).push({from:a.revision,revision:harness,files:rolloutPaths(run,a)});
-	reserveProduct(run,run.owner,cwd,prior.target,assembly,outputs);
-	const c=run.effects.at(-1);if(c?.kind!=="product")throw Error("Missing required joined product reservation");
+	const {check:c}=reserveProduct(run,run.owner,cwd,prior.target,assembly,outputs);
 	if(harness)c.evaluatorRevision=harness;
 	(p.amendments??=[]).push({prior,proposal:a.id,recheck:c.id,...(harness && {harness})});
 }
@@ -60,10 +56,10 @@ export function settleChange(cwd,run,failed,verify){
 	if(!j || j.check!==failed || expired(run) || run.effects.some(c=>c.permissionHold))return;
 	const rollout=run.adoptions?.findLast(a=>a.failed===failed && a.rollout && a.decision?.status==="answered");
 	const single=!rollout && replacementChecks(run,failed).at(-1);
-	const a=rollout || single && replacementOffer(run,single);
+	const a=rollout || single && changeOffer(run,single);
 	if(!a || !a.assembly || commitAt(cwd,run.policy.target)!==a.revision || a.rollout && pendingSuccessor(run,a))return;
-	const checks=a.rollout?rolloutChecks(run,a):single?[single]:[],required=owners(a);
-	if(!checks.length || !checks.every(c=>a.rollout?currentRollout(run,c):currentReplacement(run,c)))return;
+	const checks=a.rollout?rolloutSlots(run,a).checks:single?[single]:[],required=changeOwners(a);
+	if(!checks.length || !checks.every(c=>currentChange(run,c)?.id===a.id))return;
 	const result=componentBatch(run,a.assembly,Object.keys(required),checks,()=>{
 		if(!verify)fail("missing_receipt","This verification plan requires its original signed component observations");
 		for(const [id,pin] of Object.entries(a.rollout?.included??{})){

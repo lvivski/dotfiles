@@ -1,7 +1,7 @@
 import { isUtf8 } from "node:buffer";
 import { createHash } from "node:crypto";
-import { inspectionResult } from "./inspection.mjs";
-import { commitAt, entries, git, regularFiles } from "./product.mjs";
+import { citedLine, inspectionResult } from "./inspection.mjs";
+import { blobText, commitAt, entries, git, pathKey as key, regularEntry, regularFiles } from "./product.mjs";
 import { contains, disjoint, fail, fields, FoundryError, name, record, relative, text } from "./values.mjs";
 
 /** @typedef {import("./model.js").Inspection} Inspection */
@@ -11,8 +11,6 @@ import { contains, disjoint, fail, fields, FoundryError, name, record, relative,
 /** @typedef {Omit<Packet,"prompt"> & ReturnType<typeof inspectionResult>} Result */
 const oid = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 const unavailable = /** @param {string} why @returns {never} */ why => fail("inspection_unavailable",why);
-const key = /** @param {string} path */ path => path.normalize("NFC").toLowerCase();
-const regular = /** @param {Entry} e */ e => e.type==="blob" && (e.mode==="100644" || e.mode==="100755");
 const equal = /** @param {Entry|undefined} a @param {Entry|undefined} b */ (a,b) => a?.oid===b?.oid && a?.mode===b?.mode;
 const metadata = /** @param {Entry|undefined} e */ e => e ? {mode:e.mode,oid:e.oid} : null;
 
@@ -92,8 +90,11 @@ function safePath(file) {
 	if (sensitivePath.test(file)) unavailable("Credential file cannot be sent in a candidate review.");
 	safeText(file);
 }
-/** @param {string} file @param {string} value */
-export function safeEvidence(file,value){safePath(file);return safeText(value);}
+/** @param {string} file @param {string|Buffer} value @param {string} [code] */
+export function safeEvidence(file,value,code="unavailable"){
+	safePath(file);
+	return safeText(typeof value==="string"?value:blobText(value)??fail(code,`Unreviewable frozen file: ${file}`));
+}
 
 const locationPrefix="Review location: ";
 const tooLarge=()=>unavailable("The complete candidate evidence exceeds the review context budget; no partial review.");
@@ -147,6 +148,7 @@ export function candidatePacket(cwd,i,budget=Infinity) {
 	const add=row=>{used+=Buffer.byteLength(row)+1; if (used>budget) tooLarge(); chunks.push(row);};
 	add(instructions);
 	add("Frozen review basis and assigned task: "+JSON.stringify({grain,base,generation,task}));
+	if(i.assignment)add("Original product assignment (read-only context): "+JSON.stringify(safeText(i.assignment)));
 	const trees=new Map([...new Set([base,generation,candidate])].map(pin=>{
 		verifyCommit(cwd,pin); return [pin,scopedTree(cwd,pin,grant)];
 	}));
@@ -159,7 +161,7 @@ export function candidatePacket(cwd,i,budget=Infinity) {
 		const impact=prior && !equal(prior,to), changed=!equal(from,to);
 		if (!impact && !changed && !(unchanged && to)) return [];
 		safePath(file);
-		if ([prior,from,to].some(e=>e && !regular(e))) unavailable("A review path is not a regular Git file; no partial review.");
+		if ([prior,from,to].some(e=>e && !regularEntry(e))) unavailable("A review path is not a regular Git file; no partial review.");
 		return [{file,prior,from,to,impact,changed}];
 	});
 	const needed=rows.flatMap(({from,to,changed})=>[changed && from,(changed || unchanged) && to].flatMap(e=>e?[e.oid]:[]));
@@ -192,15 +194,12 @@ export function candidatePacket(cwd,i,budget=Infinity) {
 /** Accept a conclusion only if it can point at actual evidence. Never resolve a
  * reviewer-provided filename or follow a reference outside this packet.
  * @param {string} prompt @param {string} summary */
-function citesLocation(prompt,summary) {
+export function* citedLocations(prompt,summary) {
 	for (const line of prompt.split("\n")) if (line.startsWith(locationPrefix)) {
 		const {file,lines}=JSON.parse(line.slice(locationPrefix.length));
-		const literal=file.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
-		const citation=new RegExp(`(?:^|[\\s("'\\[\`])${literal}:([1-9]\\d*)\\b`);
-		const match=citation.exec(summary);
-		if (match && Number(match[1])<=lines && /[\p{L}\p{N}]/u.test(summary.replace(citation,""))) return true;
+		const number=citedLine(summary,file);
+		if(number && number<=lines)yield /** @type {string} */ (file);
 	}
-	return false;
 }
 
 const string={type:"string"};
@@ -258,6 +257,26 @@ export async function guardedAgent(runtime,call,invoke){
 	try{return await invoke();}finally{active.delete(call);if(!active.size)reviewing.delete(runtime);}
 }
 
+/** @param {{dispatch:string}} ticket */
+export const permissionKey=ticket=>`permission:${ticket.dispatch}`;
+
+/** Only a withheld packet may wait on the original ticket. Read it again outside the
+ * durable step: a memoized result is not permission to disclose the evidence.
+ * @template {{subject:string}} P
+ * @param {{args:{dispatch:string,subject:string},pause:(key:string)=>Promise<unknown>,step:(key:string,fn:()=>string)=>Promise<unknown>}} ctx
+ * @param {()=>Promise<P>} read @param {string} wait @param {string} step */
+export async function frozenPacket(ctx,read,wait,step){
+	let packet;
+	try{packet=await read();}catch(error){
+		if(!(error instanceof FoundryError) || error.code!==wait)throw error;
+		await ctx.pause(permissionKey(ctx.args));packet=await read();
+	}
+	const {subject}=packet;
+	if(subject!==ctx.args.subject || await ctx.step(step,()=>subject)!==subject)
+		fail("wrong_workflow","The bound workflow must receive its original frozen packet");
+	return packet;
+}
+
 /** @param {()=>{inspectionPacket:(run:string,inspection:string,dispatch:string,actor:string,workflow:string)=>Promise<Packet>}} runtimeProvider
  * @returns {import("@github/copilot-sdk/extension").WorkflowDefinition<Args,Result>} */
 export function critiqueDefinition(runtimeProvider) {
@@ -290,7 +309,7 @@ export function critiqueDefinition(runtimeProvider) {
 			ctx.signal.throwIfAborted();
 			try {
 				const result=inspectionResult(raw); safeText(result.summary);
-				if (result.outcome!=="unavailable" && !citesLocation(prompt,result.summary))
+				if (result.outcome!=="unavailable" && citedLocations(prompt,result.summary).next().done)
 					unavailable("No supported finding or conclusion.");
 				return {...pins,...result};
 			} catch (error) {

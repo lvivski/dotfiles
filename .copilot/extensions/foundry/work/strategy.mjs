@@ -5,7 +5,7 @@ export const strategy=machine("recovery","select",{
 	select:[
 		{on:"reference",when:["targeted"],action:"input",description:"Propose the requested bytes after an authorized source supplies them to this output."},
 		{on:"reference",when:["approved"],action:"input",description:"Propose the previously approved match on its original pins after a proven non-delivery."},
-		{on:"correction",when:["includedProducer","unclaimedSource"],action:"draft",description:"Send a signed adopted stop to its bounded included source without asking the owner to write a patch."},
+		{on:"correction",when:["includedProducer","unclaimedSource"],action:"draft",description:"Route a checked defect to its included source. A finding can request exact author scope, not grant it."},
 	],
 },{description:"Selects a recovery proposal from observed evidence. Selection never issues work or grants permission.",
 	states:{select:"Consider one stopped attempt and its evidence on this wake. Nothing is persisted by selection."}});

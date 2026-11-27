@@ -1,26 +1,45 @@
 import { checkReceipt } from "./receipt.mjs";
-import { effectAt, revisionLookup } from "./revision.mjs";
+import { effectAt, inspectionAt } from "./revision.mjs";
 import { fail } from "./values.mjs";
 
 /** A pending, unbound, unavailable or permission-held review is neither approval nor a confirmed code defect.
  * @param {import("./model.js").Inspection|undefined} i */
 export const publicationVerdict=i=>i?.dispatch && i.workflow && i.summary && !i.permissionHold && (i.state==="approved" || i.state==="changes") ? i.state : undefined;
 
-const approvalIndex=revisionLookup(run=>new Map(run.inspections?.map(i=>[i.component,i])));
-/** Resolve evidence for exactly one component. The scope owner must still authorize its use; the store verifies its signature.
- * A pre-journal reference is deliberately not returned here. Only its original corroboration path can use it.
- * @param {import("./model.js").Run} run @param {string|undefined} component @param {string} grain @param {string|undefined} candidate */
-export function publishedComponent(run,component,grain,candidate) {
-	const c=effectAt(run,component);
-	if(!c || !candidate || c.kind!=="component" || !c.callId || !c.runnerClaim || c.grain!==grain || c.commit!==candidate)return;
+/** A signed component observation can open review; it cannot by itself publish the bytes.
+ * @param {import("./model.js").Effect|undefined} c @param {string|undefined} grain @param {string|undefined} candidate */
+export function observedComponent(c,grain,candidate){
+	if(c?.kind!=="component" || !grain || c.grain!==grain || !candidate || c.commit!==candidate || !c.callId || !c.runnerClaim)return;
 	const receipt=checkReceipt(c);
-	if(receipt?.exit!==0 || receipt.failure)return;
-	const review=Object.isFrozen(run)?approvalIndex(run).get(c.id):run.inspections?.find(i=>i.component===c.id);
-	if(run.inspections!==undefined && (!review || publicationVerdict(review)!=="approved" || review.grain!==grain ||
-		review.candidate!==candidate || review.issuer!==run.owner && review.issuer!==c.issuer))return;
-	return {component:c,receipt,review};
+	if(receipt?.exit===0 && !receipt.failure)return {component:c,receipt};
+}
+/** Resolve the signed component and its applicable decision. A finding belongs to this
+ * candidate just as an approval does; neither may be borrowed from another issuer or grant.
+ * @param {import("./model.js").Run} run @param {string|undefined} component @param {string} grain @param {string|undefined} candidate */
+export function componentDecision(run,component,grain,candidate) {
+	const observed=observedComponent(effectAt(run,component),grain,candidate);
+	if(!observed)return;
+	const review=inspectionAt(run,component);
+	if(run.inspections!==undefined && (!review || review.grain!==grain || review.candidate!==candidate ||
+		review.issuer!==run.owner && review.issuer!==observed.component.issuer))return;
+	const verdict=review?publicationVerdict(review):"approved";
+	if(verdict)return {...observed,review,verdict};
+}
+/** A consumer needs a publication, not just a completed review. Pre-journal inputs have
+ * only their separate historical corroboration path. @param {import("./model.js").Run} run
+ * @param {string|undefined} component @param {string} grain @param {string|undefined} candidate */
+export function publishedComponent(run,component,grain,candidate){
+	const result=componentDecision(run,component,grain,candidate);
+	if(result?.verdict==="approved")return result;
 }
 
+/** A finding identifies this member, never a write grant or the last completed check.
+ * @param {import("./model.js").Run} run @param {import("./model.js").Effect|undefined} c */
+export function componentFinding(run,c){
+	if(c?.kind!=="component" || !c.grain)return;
+	const decision=componentDecision(run,c.id,c.grain,c.commit);
+	if(decision?.verdict==="changes")return decision.review;
+}
 /** A signed checkpoint can carry its own unchanged pre-journal input forward. It does not make that old component signed.
  * @param {import("./model.js").Run} run @param {import("./model.js").Product|undefined} product
  * @param {import("./model.js").Effect|undefined} old @param {string} grain @param {string} candidate */

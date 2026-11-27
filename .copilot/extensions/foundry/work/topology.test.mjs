@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { topology } from "./topology.mjs";
-import { queuedWriters,waiting,writerInputs } from "./plan.mjs";
+import { writerInputs } from "./lineage.mjs";
+import { queuedWriters, waiting } from "./plan.mjs";
 import { obstruction } from "../test/walk.mjs";
 
 test("graph edits stay local to new edges, but deletion must account for surviving consumers",()=>{

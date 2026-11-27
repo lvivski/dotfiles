@@ -1,4 +1,5 @@
 import { drafting } from "./rules/drafts.mjs";
+import { effectAt } from "./revision.mjs";
 import { transition } from "./machine.mjs";
 import { digest } from "./values.mjs";
 
@@ -18,11 +19,11 @@ export function movePart(part,type,data={}){
 	return result;
 }
 /** @param {Omit<Draft,"id">} d */
-export const draftId=d=>digest([d.check,d.checkpoint,d.goal,d.target,d.product,d.assembly,d.evaluator??null,d.previousCheck??null,d.automatic,d.parts.map(p=>[p.source,p.files])]);
+export const draftId=d=>digest([d.check,d.checkpoint,d.goal,d.target,d.product,d.assembly,d.evaluator??null,d.previousCheck??null,d.automatic,d.parts.map(p=>[p.source,p.files]),...(d.finding?[d.finding]:[])]);
 /** @param {Draft} d @param {Part} p */
 export const partId=(d,p)=>digest([d.id,p.source,p.files]);
 /** @param {Draft} d */
-export const draftAllowed=d=>d.automatic ? !d.decision : d.decision?.status==="answered" && d.decision.answer===d.id;
+export const draftAllowed=d=>d.automatic ? !d.finding && !d.decision : d.decision?.status==="answered" && d.decision.answer===d.id;
 /** @param {Draft} d */
 export const draftChanges=d=>d.parts.flatMap(p=>p.changes??[]).sort((a,b)=>a.file<b.file?-1:1);
 /** The imported references and checked workflow answers are separate inventories. No writer-published artifact can enter this projection.
@@ -34,40 +35,41 @@ export function correctionRefs(run){
 				to:d.evaluator?[d.evaluator]:draftChanges(d).map(f=>f.file),...(d.evaluator?
 					{evaluation:{from:d.assembly,checkpoint:d.checkpoint,goal:d.goal}}:{assembly:d.assembly})}]:[])];
 }
-/** @param {Ref} ref @param {string} check @param {string} assembly @param {import("./model.js").HarnessRollout["files"]} [delta] */
-export const matchesDraft=(ref,check,assembly,delta)=>!ref.draft || ref.draft.check===check && ref.draft.assembly===assembly &&
-	(!delta || digest(draftChanges(ref.draft))===digest([...delta].sort((a,b)=>a.file<b.file?-1:1)));
+/** The author fixes its diagnosed assembly. The byte grant, not the author, verifies the current frontier of that rollout.
+ * @param {Run} run @param {Ref} ref @param {string} check @param {string} assembly @param {import("./model.js").HarnessRollout["files"]} [delta] */
+export function matchesDraft(run,ref,check,assembly,delta){
+	const d=ref.draft;if(!d)return true;
+	if(d.assembly!==assembly || delta && digest(draftChanges(d))!==digest([...delta].sort((a,b)=>a.file<b.file?-1:1)))return false;
+	if(!d.finding)return d.check===check;
+	const diagnosed=effectAt(run,d.check),boundary=effectAt(run,check);
+	return diagnosed?.kind==="component" && !!diagnosed.rollout && boundary?.kind==="component" && diagnosed.rollout===boundary.rollout;
+}
 /** @param {Run} run */
 export function validDrafts(run){
 	const drafts=run.correctionDrafts??[];if(!drafts.length)return true;
-	const workflows=new Set([...run.effects.flatMap(e=>e.workflowId?[e.workflowId]:[]),
-		...(run.inspections??[]).flatMap(i=>[i.workflow,...(i.previous??[]).map(p=>p.workflow)]),
-		...(run.testRepairs??[]).flatMap(j=>[j.author,j.reviewer,j.workflow])]);
-	const tickets=new Set(),ids=new Set();
+	const tickets=new Set(),ids=new Set(),unpresented=new Set();
 	for(const d of drafts){
-		const c=run.effects.find(c=>c.id===d.check),checkpoint=run.products.find(p=>p.check===d.checkpoint),goal=run.effects.find(e=>e.id===d.goal);
-		if(ids.has(d.id) || d.id!==draftId(d) || !c?.runnerClaim || !c.receipt || !checkpoint || goal?.kind!=="goal" || goal.commit!==checkpoint.commit ||
-			!d.parts.length || d.automatic===!!d.decision || d.decision?.status==="answered" && d.decision.answer!==d.id ||
-			d.previous && (d.automatic || d.previous.some(p=>p.status!=="unavailable" && p.status!=="dismissed")) ||
-			(d.evaluator ? d.check!==d.goal || d.product!==checkpoint.commit || ![run.policy.goalCheck,run.policy.productCheck].includes(d.evaluator) :
-				d.assembly!==c.commit || d.product!==d.assembly || !(c.kind==="product" || c.kind==="component" && c.rollout)))return false;
+		const allowed=draftAllowed(d);
+		if(ids.has(d.id) || d.id!==draftId(d) || !d.parts.length || (d.automatic || d.decision?.status==="answered") && !allowed ||
+			!d.automatic && !d.decision && (!d.finding || unpresented.has(d.check)) ||
+			d.decision?.status==="presenting" && (!d.decision.presentation || d.decision.selected!==undefined) ||
+			d.previous && (!d.decision || d.previous.some(p=>p.status!=="unavailable" && p.status!=="dismissed")))return false;
 		ids.add(d.id);
+		if(d.finding && !d.decision)unpresented.add(d.check);
 		const files=d.parts.flatMap(p=>p.files.map(f=>f.file)),sources=new Set();
 		if(new Set(files).size!==files.length)return false;
 		for(const p of d.parts){
 			const key=digest(p.source);
 			if(sources.has(key) || !p.files.length ||
-				p.source.kind==="owned" && (!p.source.grain || !p.source.output || !p.source.component ||
-					!run.effects.some(e=>e.id===p.source.component && e.kind==="component" && e.grain===p.source.grain && e.commit===p.source.output)) ||
 				d.automatic && (p.source.kind!=="owned" || d.parts.length!==1 || p.files.some(f=>!f.before)) ||
-				p.state!=="ready" && !draftAllowed(d) || !!p.changes!==(p.state==="returned") ||
+				!allowed && (p.state!=="ready" || p.reason!==undefined) || !!p.changes!==(p.state==="returned") ||
 				(p.state==="issued" || p.state==="returned") && !p.dispatch || p.state==="ready" && (p.dispatch || p.workflow) ||
-				p.workflow && (!p.dispatch || workflows.has(p.workflow)) || p.dispatch && tickets.has(p.dispatch) ||
+				p.workflow && !p.dispatch || p.dispatch && tickets.has(p.dispatch) ||
 				(p.awaitingPacket || p.continued) && !p.workflow || p.awaitingPacket && p.state==="returned" ||
 				p.state==="returned" && (!p.workflow || !p.changes?.length) ||
 				p.changes && (new Set(p.changes.map(f=>f.file)).size!==p.changes.length || p.changes.some(f=>f.result===f.before ||
 					!p.files.some(b=>b.file===f.file && b.before===f.before && b.mode===f.mode))))return false;
-			sources.add(key);if(p.workflow)workflows.add(p.workflow);if(p.dispatch)tickets.add(p.dispatch);
+			sources.add(key);if(p.dispatch)tickets.add(p.dispatch);
 		}
 		if(!!d.blob!==d.parts.every(p=>p.state==="returned"))return false;
 	}

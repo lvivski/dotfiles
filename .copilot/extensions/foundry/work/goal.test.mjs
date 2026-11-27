@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -26,16 +26,34 @@ const spooler = {
 		part("core/queue", ["tag","page"], "rows=>({tag:(...a)=>tag(rows,...a),page:(...a)=>page(rows,...a)})")
 	],
 	fault: "component", bad: "rows=>({tag:(...a)=>tag(rows,...a)})",
-	shortcut: "()=>({tag:(...a)=>tag({},...a),page:(...a)=>page({},...a)})", gap: "Reopening duplicated a print job",
+	shortcut: `(()=>{const cache={};return rows=>{const send=async(fn,args)=>{
+		const state=await fn(cache,...args);Object.assign(rows,cache);return state};
+		return {tag:(...a)=>send(tag,a),page:(...a)=>send(page,a)}}})()`, gap: "Reopening duplicated a print job",
 	smoke: "assert.equal(typeof unit({}).page,'function','missing sheet printer');",
 	invariant: "assert.equal(typeof unit({}).tag,'function');",
-	journey: `const rows={},calls=[];const lose=m=>{calls.push(m);throw Error('ack lost')};
-		assert.equal(await unit(rows).tag('a','1','box 7',lose),'unknown');
-		const reopened=JSON.parse(JSON.stringify(rows));
-		assert.equal(await unit(reopened).tag('a','1','wrong retry',lose),'unknown');
-		assert.equal(await unit(reopened).page('b','1','sample',m=>calls.push(m)),'printed');
-		assert.deepEqual(calls.map(m=>[m.printer,m.format,m.text]),[['a','label','box 7'],['b','sheet','sample']],'Reopening duplicated a print job');
-		assert.equal(Object.values(reopened).find(m=>m.printer==='a').text,'box 7');`
+	journey: `const {spawnSync}=await import('node:child_process'),{fileURLToPath}=await import('node:url');
+		if(process.argv[2]==='job'){
+			const {readFileSync}=await import('node:fs'),rows=JSON.parse(readFileSync(0,'utf8')),writes=[];
+			const [, , ,method,printer,text]=process.argv;
+			const reply=await unit(rows)[method](printer,'1',text,job=>{
+				writes.push([job.printer,job.format,job.text]);if(printer==='a')throw Error('ack lost');
+			});
+			process.stdout.write(JSON.stringify({rows,reply,writes}));
+		}else for(const [first,firstFormat,other,otherFormat] of [['tag','label','page','sheet'],['page','sheet','tag','label']]){
+			let saved='{}';
+			for(const [method,printer,text,reply,writes,reason] of [
+				[first,'a','box 7','unknown',[['a',firstFormat,'box 7']],'The first job lost its acknowledgement'],
+				[first,'a','wrong retry','unknown',[],'Reopening duplicated a print job'],
+				[other,'b','sample','printed',[['b',otherFormat,'sample']],'Another printer could not accept the same job ID independently'],
+				[first,'a','third try','unknown',[],'Using the second printer forgot the uncertain job']
+			]){
+				const child=spawnSync(process.execPath,[fileURLToPath(import.meta.url),'job',method,printer,text],{input:saved,encoding:'utf8',timeout:10000});
+				if(child.error || child.signal){console.error(child.error??child.signal);process.exit(2)}
+				assert.equal(child.status,0,reason+': '+child.stderr);
+				const observation=JSON.parse(child.stdout);
+				assert.deepEqual([observation.reply,observation.writes],[reply,writes],reason);saved=JSON.stringify(observation.rows);
+			}
+		}`
 };
 const stock = {
 	id: "stock", direction: "Process scanned sales and cancellations. Report remaining stock per SKU without double-counting retried sales or overselling.",
@@ -115,6 +133,29 @@ async function slowCheck(t, cwd, command) {
 	await Promise.race([started(), child.then(() => assert.fail("runner exited before release"))]);
 	return async () => { put(gate, "finish", ""); await child; };
 }
+
+test("the print-queue goal observes fresh processes without assuming how a queue stores jobs",t=>{
+	const root=mkdtempSync(path.join(tmpdir(),"foundry-print-observer-"));t.after(()=>rmSync(root,{recursive:true,force:true}));
+	const files=contract(spooler,undefined),entry=spooler.parts.at(-1)??assert.fail();
+	for(const check of /** @type {const} */ ([unitCheck,productCheck,goalCheck]))put(root,check,files[check]);
+	for(const layout of ["process-cache","nested","confirmed-reprints","retry-label","retry-sheet"]){
+		const retries=layout==="confirmed-reprints"?"old.state==='printed'":`old.state==='unknown' && 'retry-'+format===${JSON.stringify(layout)}`;
+		put(root,entry.directory+"/index.mjs",`const cache={};export default rows=>{
+			const send=async(format,printer,id,text,write)=>{const key=JSON.stringify([printer,id]),bucket=${layout==="nested"?"(rows.printers??={})":"rows"};
+				const old=${layout==="process-cache"?"cache[key]":"bucket[key]"};if(old && !(${retries}))return old.state;
+				const job={printer,format,text,state:"unknown"};bucket[key]=job;cache[key]=job;
+				try{await write({...job});job.state="printed"}catch{}return job.state};
+			return {tag:(...a)=>send("label",...a),page:(...a)=>send("sheet",...a)};};`);
+		const env={...process.env,FOUNDRY_DIRECTORY:entry.directory,FOUNDRY_OUTPUTS:JSON.stringify({queue:entry.directory}),FOUNDRY_TEST_GATE:""};
+		for(const check of [unitCheck,productCheck,goalCheck]){
+			const r=spawnSync(process.execPath,[check],{cwd:root,env,encoding:"utf8",timeout:20000});
+			assert.ifError(r.error);assert.equal(r.signal,null);
+			if(check===goalCheck && (layout==="process-cache" || layout.startsWith("retry-"))){
+				assert.equal(r.status,1,`${layout}: ${r.stderr}`);assert.match(r.stdout+r.stderr,/Reopening duplicated a print job/);
+			}else assert.equal(r.status,0,`${layout} ${check}: ${r.stdout}${r.stderr}`);
+		}
+	}
+});
 
 for (const app of [spooler, stock]) for (const delivery of ["inline", "later", "no receipt", "replan", ...(app === stock ? ["notice unconfirmed"] : [])]) {
 	const replan = delivery === "replan";

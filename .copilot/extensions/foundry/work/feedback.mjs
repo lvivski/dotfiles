@@ -1,4 +1,4 @@
-import { checkReceipt, sameEvaluation } from "./evidence.mjs";
+import { checkReceipt, sameEvaluation } from "./receipt.mjs";
 import { changedFiles, git, retain } from "./product.mjs";
 import { FoundryError } from "./values.mjs";
 export {validFeedback,feedback,goalFiles} from "../../../skills/foundry/scripts/materialize.mjs";

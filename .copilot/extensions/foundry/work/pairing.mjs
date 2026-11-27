@@ -1,3 +1,4 @@
+import { awaitingReply } from "./dispatch.mjs";
 import { changes, verifiedCitations, verifyJoinedInputs } from "./assembly.mjs";
 import { assign } from "./assignment.mjs";
 import { availableReservations } from "./capacity.mjs";
@@ -5,12 +6,12 @@ import { checkReceipt, goalReceipt } from "./evidence.mjs";
 import { checkpointCurrent } from "./facts.mjs";
 import { admitted, reserveCheck } from "./native.mjs";
 import { historicalGrant, matchesPair, validRestoration } from "./partition.mjs";
-import { waiting, writerInputs } from "./plan.mjs";
+import { writerInputs } from "./lineage.mjs";
+import { waiting } from "./plan.mjs";
 import { changedFiles, combinedTree, commitAt, contractPaths, directoryBaseline, pairedCommit, regularFiles, treeOf, verifyContracts } from "./product.mjs";
 import { publishedComponent } from "./publication.mjs";
-import { awaitingReply } from "./reservation.mjs";
 import { activeConsumer } from "./transfer.mjs";
-import { digest, fail, fields, name } from "./values.mjs";
+import { digest, fail, fields, name, pinnedSelection } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @typedef {import("./model.js").NativeCall} Call */
@@ -28,11 +29,11 @@ function pairHold(cwd,run,grain,retainer,checkpoint,self) {
 	}
 }
 
-/** @param {string} cwd @param {Run} run @param {Call} e @param {string} [self] */
-export function currentPair(cwd,run,e,self=e.id) {
+/** @param {string} cwd @param {Run} run @param {Call} e @param {string} [self] @param {string} [tip] */
+export function currentPair(cwd,run,e,self=e.id,tip) {
 	const pair=e.pair;
 	if (!pair || !e.grain || !e.commit) return false;
-	const target=commitAt(cwd,run.policy.target), p=run.products.at(-1);
+	const target=tip??commitAt(cwd,run.policy.target),p=run.products.at(-1);
 	return !!p && matchesPair(run,pair,target) && checkpointCurrent(run,pair.checkpoint,target) &&
 		treeOf(cwd,e.commit)===pair.tree && !pairHold(cwd,run,e.grain,pair.retainer,p.commit,self);
 }
@@ -87,21 +88,19 @@ export function preparePair(cwd,run,actor,a,verify) {
 		const pair={failed,component,candidate,retainer,checkpoint,goal,target,tree:assembly};
 		return {pair,scope,grant:owner.grain.directory,check:n.grain.check,primary:r.tree};
 	}
-	const before=select(run);
+	const {revalidate}=pinnedSelection(run,select,"Paired inputs changed before reservation");
 	return {
 		/** @param {Run} live */
 		apply(live) {
-			const next=select(live);
-			if (digest(next)!==digest(before)) fail("stale_assignment","Paired inputs changed before reservation");
+			const {pair}=revalidate(live);
 			const n=live.nodes[grain];
-			n.candidate=pairedCommit(cwd,before.pair.tree);
-			n.check=reserveCheck(live,actor,cwd,n.candidate,n.grain.check,grain);
-			const effect=live.effects.at(-1);
-			if (effect?.kind!=="component") fail("invalid_pair","Missing paired component reservation");
-			effect.pair=before.pair;
+			n.candidate=pairedCommit(cwd,pair.tree);
+			const effect=reserveCheck(live,actor,cwd,n.candidate,n.grain.check,{kind:"component",grain});
+			effect.pair=pair;
+			n.check=effect.id;
 			assign(n,"recheck");
 			if (live.goal) delete live.goal.stall;
-			return ()=>commitAt(cwd,live.policy.target)===before.pair.target;
+			return ()=>commitAt(cwd,live.policy.target)===pair.target;
 		}
 	};
 }

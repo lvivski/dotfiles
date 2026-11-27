@@ -7,7 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { setImmediate as tick, setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { factory, git, put, scriptedInspections } from "../test/fixture.mjs";
+import { factory, git, put, recoveryClock, scriptedInspections } from "../test/fixture.mjs";
 import { openDatabase } from "./database.mjs";
 import { createRuntime } from "./runtime.mjs";
 
@@ -48,7 +48,8 @@ test("an issued check can read its ledger and publish its receipt without the sc
 	assert.ok(issued?.kind==="goal" && issued.callId && !issued.runnerClaim && !issued.receipt);
 
 	const work = pairedWork(path.join(path.dirname(f.root),"observer"));
-	const coordinator = new Set(["native.mjs","graph.mjs","assembly.mjs","engine.mjs","runtime.mjs","correction.mjs","repin.mjs","restoration.mjs"]);
+	const coordinator = new Set(["native.mjs","graph.mjs","assembly.mjs","engine.mjs","runtime.mjs","correction.mjs",
+		"repin.mjs","restoration.mjs","instructions.mjs","inspections.mjs","brief.mjs","reviews.mjs","cursor.mjs","plan.mjs"]);
 	cpSync(fileURLToPath(new URL("./",import.meta.url)),work,{recursive:true,filter:p=>!coordinator.has(path.basename(p))});
 	const observe = () => spawnSync(process.execPath,[path.join(work,"runner.mjs"),f.root,run,issued.id],{encoding:"utf8"});
 	const first = observe();
@@ -211,6 +212,32 @@ for (const race of ["target","pause","deadline","permission"]) test(`a ${race} c
 	await assert.rejects(owner.operation("recheck",{run,check:before.goal.check},"owner"),{
 		code:race==="target" ? "stale_assignment" : race==="pause" ? "paused" : race==="deadline" ? "deadline" : "permissions_unready"});
 	assert.deepEqual(db.read(run)?.effects,before.effects);
+});
+
+test("restoring a recheck target between clock samples releases the same unissued check",async t=>{
+	const f=priorFactory(t,run,source,files(""));git(f.root,"branch","target",f.tip);
+	const old=f.runtime(f.root,{execute:async()=>({resultType:"success",toolTelemetry:{
+		properties:{executionMode:"sync",shell_error_category:"command_nonzero_exit"},metrics:{exit_code:127}}})});
+	await f.start(old);old.close();
+	const db=openDatabase(f.root);t.after(()=>db.close());
+	const original=db.read(run)?.effects.find(e=>e.kind==="goal");assert.ok(original?.kind==="goal" && original.launcherExit===127);
+	put(f.root,"neighbor","new target");git(f.root,"add","neighbor");git(f.root,"commit","-qm","Prepare unrelated target");
+	const moved=git(f.root,"rev-parse","HEAD"),clock=recoveryClock();let interrupted=false;
+	const owner=upgrade(t,f,f.root,{watchRecovery:clock.watch,permissionBlocker:async()=>{
+		if(!interrupted && db.read(run)?.effects.some(e=>e.tool==="bash" && e.recheck?.of===original.id && e.state==="ready")){
+			git(f.root,"update-ref","refs/heads/target",moved,f.tip);interrupted=true;
+		}
+		return null;
+	}});
+	await owner.operation("recheck",{run,check:original.id},"owner");
+	const pending=db.read(run)?.effects.find(e=>e.tool==="bash" && e.recheck?.of===original.id);
+	assert.ok(interrupted && pending?.kind==="goal" && !pending.callId && !pending.runnerClaim);
+	git(f.root,"update-ref","refs/heads/target",f.tip,moved);
+	await clock.pulse(owner,3);
+	assert.equal(owner.inspect({run},"owner").qualified,f.tip);
+	const final=db.read(run);assert.ok(final);
+	assert.deepEqual(final.effects.find(e=>e.id===original.id),original);
+	assert.deepEqual(final.effects.filter(e=>e.tool==="bash" && e.recheck?.of===original.id).map(e=>e.id),[pending.id]);
 });
 
 test("a copied null receipt with its original signature missing grants no observation",async t=>{

@@ -1,6 +1,6 @@
 import { working } from "./assignment.mjs";
 import { workerLimit } from "./policy.mjs";
-import { reading } from "./reviews.mjs";
+import { reading } from "./charter.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** Count reservations, not deliveries. An inline repair records its token on

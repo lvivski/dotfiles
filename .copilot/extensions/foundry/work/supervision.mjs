@@ -107,6 +107,9 @@ export function supervise(io) {
 	return {register,observe,
 		/** @param {string} id @param {string} actor */
 		invalidate(id,actor){const w=watches.get(JSON.stringify([id,actor]));if(w)w.seen={};},
+		/** A grant can see a moved ref between ticks. Do not acknowledge its siblings' ledger wake.
+		 * @param {string} id @param {string} actor @param {string|undefined} tip */
+		sawTarget(id,actor,tip){const w=watches.get(JSON.stringify([id,actor]));if(w && w.seen.tip!==tip)w.seen={tip};},
 		/** Failed status reads belong to this watch. Its issuer must revalidate the ticket and workflow before reattaching.
 		 * @param {string} id @param {string} actor */
 		statusReads:(id,actor)=>watches.get(JSON.stringify([id,actor]))?.workflows,

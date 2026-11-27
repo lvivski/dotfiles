@@ -1,3 +1,4 @@
+import { markInspection } from "./inspections.mjs";
 import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
@@ -5,7 +6,7 @@ import { factory, git, put, scriptedInspections } from "../test/fixture.mjs";
 import { validDeliveries } from "./batch.mjs";
 import { openDatabase } from "./database.mjs";
 import { deliveryResult } from "./delivery.mjs";
-import { currentInspection, markInspection } from "./inspection.mjs";
+import { currentInspection } from "./inspection.mjs";
 import { historicalFactory } from "../test/legacy-readers.mjs";
 import { createRuntime } from "./runtime.mjs";
 import { decode } from "./snapshot.mjs";

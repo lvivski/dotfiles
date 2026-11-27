@@ -1,4 +1,4 @@
-export {};
+import { bindTabs } from "./tabs.mjs";
 /** @typedef {import("./model.mjs").MapSnapshot} Snapshot */
 /** @typedef {import("./model.mjs").Assignment} Assignment */
 /** @param {string} id */
@@ -226,13 +226,7 @@ async function board(){
 		}catch(e){hideGraph(`Work graph unavailable: ${e instanceof Error?e.message:String(e)}. Refresh to retry.`);}
 		finally{busy=false;el("refresh").setAttribute("aria-busy","false");}
 	}
-	for(const key of tabs){
-		const b=el(`tab-${key}`);b.onclick=()=>showTab(key);
-		b.onkeydown=e=>{
-			const i=tabs.indexOf(key),j=e.key==="ArrowRight"?(i+1)%tabs.length:e.key==="ArrowLeft"?(i+tabs.length-1)%tabs.length:e.key==="Home"?0:e.key==="End"?tabs.length-1:-1;
-			if(j<0)return;e.preventDefault();showTab(tabs[j]);el(`tab-${tabs[j]}`).focus();
-		};
-	}
+	bindTabs(tabs,el,showTab);
 	el("refresh").onclick=refresh;el("toggle").onclick=()=>inspector(el("rail").hasAttribute("hidden"));
 	el("smaller").onclick=()=>plot.cam.zoom(.8);el("larger").onclick=()=>plot.cam.zoom(1.25);el("fit").onclick=()=>plot.cam.fit();
 	el("locate").onclick=()=>plot.locate(selected,true);el("chain").onclick=toggleChain;

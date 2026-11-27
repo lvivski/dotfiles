@@ -5,9 +5,10 @@ import { currentEvaluation, exhaustedCandidate, goalReceipt } from "./evidence.m
 import { checkpointCurrent, pendingGoal } from "./facts.mjs";
 import { reserveWriter } from "./graph.mjs";
 import { admitted } from "./native.mjs";
-import { assignmentCalls, waiting, writerInputs } from "./plan.mjs";
+import { assignmentCalls, writerInputs } from "./lineage.mjs";
+import { waiting } from "./plan.mjs";
 import { changedFiles, commitAt, inventory, verifyContracts } from "./product.mjs";
-import { digest, fail, fields, name, scopeLabel } from "./values.mjs";
+import { fail, fields, name, pinnedSelection, scopeLabel } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @param {string} cwd @param {Run} run @param {string} actor @param {Record<string,unknown>} args */
@@ -45,16 +46,14 @@ export function prepareReuse(cwd, run, actor, args) {
 		if (!inventory(cwd,candidate,n.grain.directory)) fail("invalid_reuse","No retained directory to seed the successor");
 		return {n,inputs,base:last.commit,target,checkpoint:last.check,goal:goal.check};
 	}
-	const before = select(run);
+	const {subject:before,revalidate}=pinnedSelection(run,select,"The candidate, goal or approved inputs changed during approval");
 	return {
 		prompt:`Run ${run.id}: give a new writer access to ${id}'s failed candidate instead of a clean checkout?\n` +
 			`Seed ${scopeLabel(before.n.grain.directory)} from ${candidate} on checked product ${before.base}. ` +
 			`Failed check: ${check}. Offered correction: ${blob}. Approve only if the charter permits this reuse.`,
 		/** @param {Run} live */
 		apply(live) {
-			const fresh = select(live);
-			if (digest(fresh) !== digest(before)) fail("stale_assignment","The candidate, goal or approved inputs changed during approval");
-			const {n,base,inputs,checkpoint,goal,target} = fresh;
+			const {n,base,inputs,checkpoint,goal,target}=revalidate(live);
 			const successor = waiting(n.grain,n.review,n.repairs);
 			live.nodes[id] = successor;
 			reserveWriter(cwd,live,successor,inputs,base,actor,undefined,undefined,{predecessor:n,blob,checkpoint,goal});

@@ -6,9 +6,10 @@ import { checkpointCurrent } from "./facts.mjs";
 import { availableReservations } from "./capacity.mjs";
 import { expired } from "./native.mjs";
 import { partitionConflict } from "./partition.mjs";
-import { consumersOf, liveNeeds } from "./plan.mjs";
+import { liveNeeds } from "./lineage.mjs";
+import { consumersOf } from "./plan.mjs";
 import { changedFiles, contractPaths, outside } from "./product.mjs";
-import { comparison, obstructed, reviews } from "./reviews.mjs";
+import { comparison, obstructed, reviews } from "./charter.mjs";
 import { FoundryError, comparisonScope, covers, roots, sameScope } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */

@@ -1,11 +1,11 @@
+import { currentCheck } from "./eligibility.mjs";
 import { journal } from "./dispatch.mjs";
 import { productPin } from "./evidence.mjs";
 import { expired, reserveCheck } from "./native.mjs";
-import { currentCheck } from "./reservation.mjs";
 import { exactRunner } from "./abi.mjs";
 import { commitAt, verifyContracts } from "./product.mjs";
 import { heldOutcome } from "./revision.mjs";
-import { stalePins } from "./plan.mjs";
+import { stalePins } from "./lineage.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @typedef {import("./model.js").NativeCall} Check */
@@ -45,16 +45,17 @@ export function continueChecks(run,cwd,actor,target){
 		if(!currentCheck(run,e) || e.evaluatorRevision!==(e.kind==="goal"?run.repins?.at(-1)?.revision:e.kind==="product"?productPin(run):undefined) ||
 			e.productEvaluatorRevision!==(e.kind==="goal"?productPin(run):undefined) ||
 			e.check!==(e.kind==="goal"?run.policy.goalCheck:e.kind==="product"?run.policy.productCheck:n && n.grain.check))continue;
+		const role=e.kind==="component" && e.grain?/** @type {const} */({kind:"component",grain:e.grain}):
+			e.kind==="goal" || e.kind==="product"?{kind:e.kind}:undefined;
+		if(!role)continue;
 		verifyContracts(cwd,run.policy,target);commitAt(cwd,e.commit);
 		if(neverIssued(e))journal(e,"withdraw");
-		const id=reserveCheck(run,actor,cwd,e.commit,e.check,e.grain,{
+		const fresh=reserveCheck(run,actor,cwd,e.commit,e.check,role,{
 			...(e.usedArtifacts && {usedArtifacts:e.usedArtifacts}),...(e.comparedArtifacts && {comparedArtifacts:e.comparedArtifacts})});
-		const fresh=run.effects.at(-1);
-		if(fresh?.tool!=="bash" || fresh.attempt?.version!==2)throw Error("Missing fresh check reservation");
 		if(e.rollout)fresh.rollout=e.rollout;
 		if(e.replacement)fresh.replacement=e.replacement;
 		fresh.attempt.previous=e.id;
-		if(at)at.check=id;else if(!batch && n)n.check=id;
+		if(at)at.check=fresh.id;else if(!batch && n)n.check=fresh.id;
 		linked=true;
 	}
 	return linked;

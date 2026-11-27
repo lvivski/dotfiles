@@ -7,7 +7,7 @@ import { openDatabase } from "./database.mjs";
 import { createRuntime } from "./runtime.mjs";
 import { rootAt } from "./product.mjs";
 import { decode } from "./snapshot.mjs";
-import { supplierRequests } from "./supplier.mjs";
+import { requestedSource, sourceBinding, supplierRequests } from "./supplier.mjs";
 import { prepareInput } from "./resupply.mjs";
 import path from "node:path";
 
@@ -30,6 +30,26 @@ async function setup(t,build,dependent,fixed=false){
 	if(dependent)await f.runtime(supplier.cwd).operation("submit",{run,token:supplier.token},supplier.id);
 	return {f,db,read,supplier,blob,consumer:worker("lookup")};
 }
+
+for(const published of [false,true])test(`a producer reference needs its own assigning review, not an earlier mention / ${published?"checked":"draft"}`,async t=>{
+	const {read,db}=await setup(t,factory,published),r=structuredClone(read());
+	const n=r.nodes.source,consumer=r.nodes.lookup,at={grain:"source",file},s=requestedSource(r,consumer,at);
+	const review=r.effects.find(e=>e.id===s.review),writer=r.effects.find(e=>e.id===s.assignment);
+	assert.ok(review?.kind==="scout" && review.observation && writer?.kind==="writer");
+	if(published){const c=r.effects.find(e=>e.id===s.component);assert.ok(c?.kind==="component");db.verifySigned(run,c);}
+	assert.ok(sourceBinding(r,s));
+	writer.permissionHold="later native permission";
+	assert.throws(()=>requestedSource(r,consumer,at),{code:"stale_assignment"});
+	assert.ok(sourceBinding(r,s),"a later hold did not undo the original assignment");
+	delete writer.permissionHold;
+	const mention={...review,id:review.id+"-mention",squad:"unrelated"};
+	r.effects.splice(r.effects.indexOf(review),0,mention);
+	assert.equal(requestedSource(r,consumer,at).review,review.id);
+	assert.ok(!sourceBinding(r,{...s,review:mention.id}),"mentioning the output did not grant it");
+	n.review=mention.id;
+	assert.throws(()=>requestedSource(r,consumer,at),{code:"stale_assignment"});
+	assert.ok(sourceBinding(r,s),"the changed live pointer did not rewrite the issuing review");
+});
 
 for(const typed of [true,false])test(`a reader-94 stopped consumer can accept its original producer's fresh reference, without an owner copy / ${typed?"exact request":"explicit native match"}`,async t=>{
 	const {f,read,supplier,blob,consumer}=await setup(t,await historicalFactory(t,94),false);
@@ -164,6 +184,14 @@ for(const when of ["before pooling","after pooling","historical unnamed stop"])t
 	const location=(await publisher.operation("workspace",{run,token:reused.token},first.id)).nodes.find(n=>n.grain==="third")?.workspace;assert.ok(location);
 	const root=path.join(first.cwd,location);put(root,"parts/third/done","unrelated draft");
 	put(root,file,"different pooled checkout");put(first.cwd,file,"changed old checkout");
+	const active=structuredClone(state()),lookup=active.nodes.lookup,at={grain:"third",file:"parts/third/done"};
+	const own=requestedSource(active,lookup,at);
+	assert.equal(own.assignment,w.id);assert.equal(own.worker,first.id);assert.equal(own.revision,reused.generation);
+	assert.ok(sourceBinding(active,own),"the pooled writer has its own new producing grant");
+	const claimed=active.effects.find(e=>e.id===w.id);assert.ok(claimed?.kind==="writer" && claimed.pooled);
+	claimed.pooled.from=state().effects.find(e=>e.kind==="writer" && e.grain==="index")?.id??assert.fail();
+	assert.throws(()=>requestedSource(active,lookup,at),{code:"stale_assignment"},"a different writer's completed assignment cannot lend this native session");
+	assert.ok(!sourceBinding(active,own));
 	const publish={run,token:first.token,file,to:[target],forInput:"lookup"};
 	await assert.rejects(publisher.operation("publish",publish,first.id));await assert.rejects(publisher.operation("publish",{...publish,token:reused.token},first.id));
 	if(previous || when==="historical unnamed stop"){

@@ -1,5 +1,4 @@
 import { mending } from "./rules/mending.mjs";
-import { isUtf8 } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { transition } from "./machine.mjs";
 import { controlRule, controlSubject, failedTest, repairStop, repairTip, stoppedTest } from "./calibration.mjs";
@@ -41,10 +40,8 @@ export const queuedMechanic=j=>j.reason==="Waiting for native workflow capacity.
 /** @param {Run} run @param {Repair} j @param {string} cwd @param {keyof Repair["controls"]} role */
 function reserve(run,j,cwd,role){
 	const commit=role==="oldGood"?j.product:text(j.candidate,"control subject");
-	const id=reserveCheck(run,run.owner,cwd,commit,j.rule.probe);
-	const c=run.effects.at(-1);if(c?.tool!=="bash")throw Error("Missing calibration reservation");
-	c.kind="control";delete c.evaluatorRevision;c.calibration={role,stop:j.stop,subject:controlSubject(j,role)};
-	c.args.description=`Control ${role}: ${j.rule.check}`;j.controls[role]=id;
+	const c=reserveCheck(run,run.owner,cwd,commit,j.rule.probe,{kind:"control",calibration:{role,stop:j.stop,subject:controlSubject(j,role)}});
+	c.args.description=`Control ${role}: ${j.rule.check}`;j.controls[role]=c.id;
 }
 /** @param {Run} run @param {Repair} j @param {keyof Repair["controls"]} role @param {(c:Check)=>void} verify */
 function observation(run,j,role,verify){
@@ -61,10 +58,10 @@ function observation(run,j,role,verify){
 	if(role==="oldGood")j.assertion=receipt.control.assertion;
 	return receipt.exit;
 }
-/** @param {string} cwd @param {Run} run @param {Repair} j */
-export function repairCurrent(cwd,run,j){
+/** @param {string} cwd @param {Run} run @param {Repair} j @param {string} [target] */
+export function repairCurrent(cwd,run,j,target){
 	const c=repairStop(run,j);
-	const tip=repairTip(cwd,run,j);
+	const tip=repairTip(cwd,run,j,target);
 	if(!c || !stoppedTest(run,c) || c.commit!==j.product || !tip || run.owner!==j.owner ||
 		c.kind==="goal" && (!currentEvaluation(run,c) || run.goal?.target!==j.target || run.join) ||
 		(c.kind==="product" || c.rollout) && run.join?.target!==j.target)return;
@@ -148,13 +145,12 @@ function planStop(cwd,run,actor,verify,c,rule,grain,allowed){
 			if(c.kind==="goal"){
 				const p=prepareRepin(cwd,run,actor,{from:j.pin,revision:j.revision,files:[j.rule.check]},verify,j);p.apply(run);
 			}else{
-				const recheck=reserveCheck(run,actor,cwd,j.product,text(c.check,"original check"),c.grain);
-				const fresh=run.effects.at(-1);if(fresh?.tool!=="bash")throw Error("Missing repaired-test reservation");
-				fresh.testPin=c.id;j.recheck=recheck;
+				const fresh=reserveCheck(run,actor,cwd,j.product,text(c.check,"original check"),c.grain?{kind:"component",grain:c.grain}:{kind:"product"});
+				fresh.testPin=c.id;j.recheck=fresh.id;
 				if(c.rollout)fresh.rollout=c.rollout;
 				else if(c.kind==="component" && c.grain){
-					const n=run.nodes[c.grain];if(n.state==="blocked" || n.state==="waiting")assign(n,"recheck");n.check=recheck;
-				}else if(c.kind==="product" && run.join)run.join={...run.join,check:recheck};
+					const n=run.nodes[c.grain];if(n.state==="blocked" || n.state==="waiting")assign(n,"recheck");n.check=fresh.id;
+				}else if(c.kind==="product" && run.join)run.join={...run.join,check:fresh.id};
 				else throw Error("Missing original check for repair");
 			}
 			move(j,"install");return false;
@@ -172,17 +168,15 @@ function planStop(cwd,run,actor,verify,c,rule,grain,allowed){
 export function repairPacket(cwd,run,j,phase){
 	const original=checkReceipt(run.effects.find(e=>e.id===j.stop));
 	const source=(/** @type {string} */ rev,/** @type {string} */ file)=>{
-		const bytes=committedFile(cwd,rev,file);
-		if(!isUtf8(bytes) || bytes.includes(0))fail("invalid_controls","Binary or invalid text cannot be reviewed");
-		return safeEvidence(file,bytes.toString());
+		return safeEvidence(file,committedFile(cwd,rev,file),"invalid_controls");
 	};
 	const requirements=[...new Set([run.policy.sharedBrief,...run.policy.squads.flatMap(s=>[s.charter,...("boundary" in s?s.boundary:[])]),
 		...Object.values(run.nodes).flatMap(n=>[n.grain.specification,...n.grain.boundary])].filter(/** @returns {p is string} */ p=>!!p))];
 	const describe=(/** @type {keyof Repair["controls"]} */ role)=>{const r=checkReceipt(run.effects.find(e=>e.id===j.controls[role]));return r && {role,check:j.controls[role],commit:r.commit,exit:r.exit,observation:r.control,output:safeEvidence(j.rule.probe,r.output)};};
-	const prior=git(cwd,["cat-file","blob",j.before]);if(!isUtf8(prior) || prior.includes(0))fail("invalid_controls","The original evaluator is not reviewable text");
+	const prior=safeEvidence(j.rule.check,git(cwd,["cat-file","blob",j.before]),"invalid_controls");
 	const acceptance=run.productRepins?.flatMap(p=>p.targetFrom && p.acceptance?[{target:p.revision,change:safeEvidence(run.policy.source,p.acceptance)}]:[]);
 	const data={run:run.id,direction:safeEvidence(run.policy.source,run.policy.direction),acceptance,stop:j.stop,product:j.product,evaluator:j.pin,check:j.rule.check,grain:j.grain,assertion:j.assertion,
-		requirements:requirements.map(p=>[p,source(run.policy.base,p)]),before:safeEvidence(j.rule.check,prior.toString()),
+		requirements:requirements.map(p=>[p,source(run.policy.base,p)]),before:prior,
 		failure:original && safeEvidence(j.rule.check,original.output),...(phase==="review" && {after:source(text(j.revision,"proposed revision"),j.rule.check),
 			probe:source(run.policy.base,j.rule.probe),controls:[describe("oldGood"),describe("newGood"),describe("newBad")],candidate:j.candidate})};
 	const message=safeEvidence(j.rule.check,JSON.stringify(data));

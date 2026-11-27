@@ -45,7 +45,8 @@ test("a missing target, pause or deadline cannot staff work; only a final handof
 	assert.deepEqual(effects(step("enabling","authorized",{checkOnly:false,pooled:false,ready:false})),["refill"]);
 	assert.deepEqual(effects(step("recording","recorded",{permitted:false})),[]);
 	assert.deepEqual(effects(step("enabling","authorized",{checkOnly:true})),[]);
-	assert.deepEqual(effects(step("native","attempt",{claimed:false,pinnedCheck:true})),[]);
+	assert.deepEqual(effects(step("native","attempt",{claimed:false})),[]);
+	assert.deepEqual(effects(step("native","attempt",{claimed:true})),["refill"]);
 });
 
 test("inspecting every fork reports its independent signals; restoring the target never replays them",()=>{

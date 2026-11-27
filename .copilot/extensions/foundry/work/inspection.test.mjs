@@ -8,17 +8,19 @@ import { openDatabase } from "./database.mjs";
 import { decode } from "./snapshot.mjs";
 import { inspectionOutcome } from "./assignment.mjs";
 import { metricsFacts } from "./metrics.mjs";
-import { markInspection } from "./inspection.mjs";
-import { publicationSample } from "./inspections.mjs";
+import { markInspection, publicationSample } from "./inspections.mjs";
 import { createRuntime } from "./runtime.mjs";
 
 const run="reviewed",source=".foundry/reviewed.json";
-/** @param {import("node:test").TestContext} t @param {typeof factory} [build] */
-async function trial(t,build=factory){
+const finding="producer/value:1: the exported value is incorrect.";
+/** @returns {Promise<typeof factory>} */
+const inspectionFixture=async()=>process.env.FOUNDRY_INSPECTION_FIXTURE ? (await import(process.env.FOUNDRY_INSPECTION_FIXTURE)).factory : factory;
+/** @param {import("node:test").TestContext} t @param {typeof factory} [build] @param {string} [unit] */
+async function trial(t,build=factory,unit=""){
 	const f=build(t,run,source,{[source]:JSON.stringify({version:1,id:run,target:"refs/heads/main",direction:"Publish the checked result.",
 		seed:["consumer"],productCheck:"product.mjs",grains:["producer","consumer"].map(id=>({id,directory:id,specification:"spec",boundary:["api"],
 			check:"unit.mjs",needs:id==="consumer"?["producer"]:[]}))}),spec:"Provide a value and its use.",api:"Keep the public value.",
-		"unit.mjs":"","product.mjs":`import {readFileSync as read} from "node:fs";if(read("consumer/value","utf8")!=="correct")process.exit(1);`});
+		"unit.mjs":unit,"product.mjs":`import {readFileSync as read} from "node:fs";if(read("consumer/value","utf8")!=="correct")process.exit(1);`});
 	await f.start();const store=openDatabase(f.root);t.after(()=>store.close());
 	return {f,store};
 }
@@ -63,11 +65,10 @@ test("a slow independent reviewer holds only its own output, not unrelated ready
 });
 
 test("review findings survive reload, cannot be bypassed with the same bytes, and route one repair to the original writer",async t=>{
-	const {f,store}=await trial(t),[p]=f.workers.values();
-	const finding="producer/value:1: the exported value is incorrect.";
+	const {f,store}=await trial(t,await inspectionFixture()),[p]=f.workers.values();
 	let release=()=>{};const reviewing=new Promise(resolve=>{release=()=>resolve(undefined);});
 	/** @type {Map<string,{inspection:string,component:string,candidate:string,outcome:string,summary:string}>} */ const results=new Map();
-	const writer=f.runtime(p.cwd,{
+	/** @type {Parameters<typeof f.runtime>[1]} */ const host={
 		async startInspection(id,inspection,ticket,actor) {
 			const i=store.read(id)?.inspections?.find(i=>i.id===inspection);
 			assert.ok(i?.dispatch===ticket && i.issuer===actor);assert.equal(i.state,"issued");
@@ -77,7 +78,8 @@ test("review findings survive reload, cannot be bypassed with the same bytes, an
 			return {runId,status:"running"};
 		},
 		async inspectionState(runId){if(runId==="duck-1")await reviewing;return {runId,status:"completed",result:results.get(runId)};},
-	});
+	};
+	const writer=f.runtime(p.cwd,host);
 	put(p.cwd,"producer/value","incorrect");
 	const waiting=await writer.operation("submit",{run,token:p.token},p.id);
 	assert.equal(waiting.nodes[0].state,"reviewing");release();await turn();await writer.flush();
@@ -87,16 +89,17 @@ test("review findings survive reload, cannot be bypassed with the same bytes, an
 	const n=writer.inspect({run},p.id).nodes[0];
 	assert.ok(n.state==="writing" && n.worker===p.id && n.token && n.token!==p.token);
 	assert.equal(n.codeReview?.summary,finding);assert.ok(n.receipt && n.receipt.exit===0);
+	assert.equal(n.repairs,1);assert.deepEqual(f.inbox.filter(d=>d.token===n.token),[{worker:p.id,token:n.token}]);
 	const notice=first.effects.find(e=>e.kind==="repair" && e.token===n.token);
 	assert.ok(notice && String(notice.args.message).includes(finding),"the late finding must reach the same writer in its repair notice");
 	const check=first.effects.find(e=>e.id===reject.component);assert.ok(check?.kind==="component");store.verifySigned(run,check);
-	const reloaded=f.runtime(p.cwd);
+	writer.close();const reloaded=f.runtime(p.cwd,host,createRuntime);
 	await assert.rejects(reloaded.operation("submit",{run,token:n.token},p.id),/change the assigned output/);
 	assert.equal(store.read(run)?.effects.filter(e=>e.kind==="component").length,1);
 	const forgery=structuredClone(first);forgery.nodes.producer.state="published";forgery.nodes.producer.candidate=reject.candidate;
 	assert.throws(()=>decode(forgery),/Invalid Foundry task graph/);
 	put(p.cwd,"producer/value","correct");
-	await writer.operation("submit",{run,token:n.token},p.id);await turn();await writer.flush();
+	await reloaded.operation("submit",{run,token:n.token},p.id);await turn();await reloaded.flush();
 	const second=store.read(run),[original,approved]=second?.inspections??[];assert.ok(second && original && approved);
 	assert.deepEqual(original,reject);assert.equal(approved.state,"approved");assert.notEqual(approved.component,reject.component);
 	assert.notEqual(approved.candidate,reject.candidate);assert.equal(results.size,2);
@@ -107,10 +110,31 @@ test("review findings survive reload, cannot be bypassed with the same bytes, an
 	assert.equal(git(consumer.cwd,"show","HEAD:producer/value"),"correct");
 	assert.ok(!f.runtime(consumer.cwd).inspect({run},consumer.id).nodes.some(n=>n.codeReview?.id===reject.id));
 	put(consumer.cwd,"consumer/value","correct");
-	const cw=f.runtime(consumer.cwd);await cw.operation("submit",{run,token:consumer.token},consumer.id);await turn();await cw.flush();
+	const cw=f.runtime(consumer.cwd,{},createRuntime);await cw.operation("submit",{run,token:consumer.token},consumer.id);await turn();await cw.flush();
 	const last=store.read(run);assert.ok(last?.products.at(-1)?.qualifiedAt);assert.equal(last.inspections?.length,3);
 	assert.equal(results.size,2);assert.equal(git(f.root,"rev-parse","main"),f.tip);
 	const {workflowIds}=metricsFacts(last).history;assert.ok(workflowIds.includes("duck-1") && workflowIds.includes("duck-2"));
+});
+
+test("the same producer defect reported by its component returns one inline repair, not a review finding",async t=>{
+	const {f,store}=await trial(t,await inspectionFixture(),`import {readFileSync as read} from "node:fs";
+		if(read("producer/value","utf8")!=="correct"){console.error(${JSON.stringify(finding)});process.exit(1);}`);
+	const [p]=f.workers.values(),writer=f.runtime(p.cwd);
+	put(p.cwd,"producer/value","incorrect");
+	const status=await writer.operation("submit",{run,token:p.token},p.id),n=status.nodes[0];
+	assert.ok(n.state==="writing" && n.worker===p.id && n.repairs===1 && n.token && n.token!==p.token);
+	const held=store.read(run),check=held?.effects.find(e=>e.id===held.nodes.producer.check);
+	assert.ok(held && check?.kind==="component" && check.receipt?.exit===1);store.verifySigned(run,check);
+	assert.equal(check.inlineRepair,n.token);assert.ok(n.receipt && n.receipt.output===check.receipt.output);assert.ok(check.receipt.output.includes(finding));
+	assert.equal(n.codeReview,undefined);assert.deepEqual(held.inspections,[]);
+	assert.equal(held.nodes.consumer.worker,undefined);assert.equal(held.products.length,0);
+	assert.deepEqual(f.inbox,[{worker:p.id,token:p.token}],"an inline repair is not another message or writer");
+	writer.close();const reloaded=f.runtime(p.cwd,{},createRuntime);
+	put(p.cwd,"producer/value","correct");await reloaded.operation("submit",{run,token:n.token},p.id);
+	const done=store.read(run),[approved]=done?.inspections??[];assert.ok(done && approved?.state==="approved");
+	assert.notEqual(approved.component,check.id);assert.notEqual(approved.candidate,check.commit);
+	assert.deepEqual(done.effects.find(e=>e.id===check.id),check);assert.equal(done.nodes.producer.worker,p.id);
+	assert.equal(done.nodes.consumer.inputs?.producer,approved.candidate);assert.equal(f.workers.size,2);
 });
 
 test("a review cannot extend an attestation, a repair cap or the run's assignment budget",async t=>{
@@ -121,13 +145,16 @@ test("a review cannot extend an attestation, a repair cap or the run's assignmen
 	markInspection(i,"issue",{dispatch:"review-request"});
 	assert.throws(()=>markInspection(i,"unavailable",{summary:"unknown start"}),/Unhandled transition/);
 	markInspection(i,"bind",{workflow:"bound-review"});markInspection(i,"changes",{summary:"producer/value needs correction"});
-	for(const condition of ["attestation","repairs","assignments","permitted"]){
+	for(const condition of ["attestation","unbound and unfunded","repairs","assignments","permitted"]){
 		/** @type {import("./model.js").Run} */ const draft=structuredClone(live);
 		const n=draft.nodes.producer;draft.policy.repairs=condition==="repairs" ? 0 : 1;
 		if(condition==="attestation")n.restoration={from:"prior",retainer:"keeper",historical:"receipt",checkpoint:"checkpoint",goal:"goal",tree:i.candidate};
-		inspectionOutcome(draft,n,i,condition==="assignments"?0:1);
+		if(condition==="unbound and unfunded")delete n.worker;
+		inspectionOutcome(draft,n,i,condition==="assignments" || condition==="unbound and unfunded"?0:1);
 		assert.equal(n.state,condition==="permitted"?"waiting":"blocked");
 		assert.match(n.reason??"",/producer\/value needs correction/);assert.equal(n.token,p.token);
+		if(condition==="unbound and unfunded" || condition==="attestation")assert.match(n.reason??"",/does not authorize changing those bytes\.$/);
+		if(condition==="assignments")assert.match(n.reason??"",/No repair assignment remains\.$/);
 	}
 });
 
@@ -146,9 +173,7 @@ test("resuming a pre-review ledger preserves the original writer's contract and 
 });
 
 test("two owner resumes can recover the same unavailable candidate only once, without another writer or component",async t=>{
-	const previous=process.env.FOUNDRY_INSPECTION_FIXTURE;
-	/** @type {typeof factory} */ const build=previous ? (await import(previous)).factory : factory;
-	const {f,store}=await trial(t,build),[writer]=f.workers.values();
+	const {f,store}=await trial(t,await inspectionFixture()),[writer]=f.workers.values();
 	const original=f.runtime(writer.cwd,{startInspection:async()=>({runId:"original-duck",status:"running"}),
 		inspectionState:async id=>({runId:id,status:"error",error:"Provider unavailable"})});
 	put(writer.cwd,"producer/value","correct");

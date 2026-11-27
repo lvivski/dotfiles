@@ -2,12 +2,12 @@ import { checkpointReceipt, goalReceipt, missingObservation } from "./evidence.m
 import { unprovenExports } from "./attestation.mjs";
 import { activate } from "./activity.mjs";
 import { prepareInspectionResume } from "./inspections.mjs";
-import { survey } from "./dispatch.mjs";
+import { awaitingReply, survey, unissued } from "./dispatch.mjs";
 import { admitted, current, reserveProduct, transferableWriter } from "./native.mjs";
 import { commitAt, verifyContracts } from "./product.mjs";
-import { awaitingReply, unissued } from "./reservation.mjs";
 import { checkpointQueue } from "./quiescence.mjs";
-import { retireSuperseded, reviews } from "./reviews.mjs";
+import { reviews } from "./charter.mjs";
+import { retireSuperseded } from "./reviews.mjs";
 import { digest, fail } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
@@ -44,7 +44,7 @@ export function reassessHandoff(cwd,run,actor,checkpoint,goal,signed){
 	const qualifiedAt=p.qualifiedAt;
 	delete p.qualifiedAt;
 	activate(run,"resume");admitted(run,true);
-	const join=reserveProduct(run,actor,cwd,p.target,p.commit,{...p.outputs});
+	const {join}=reserveProduct(run,actor,cwd,p.target,p.commit,{...p.outputs});
 	if(digest(join.ownership??null)!==digest(p.ownership??null))fail("stale_assignment","The historical ownership no longer matches");
 	p.withdrawnHandoff={...(qualifiedAt && {qualifiedAt}),goal,recheck:join.check};
 	return ()=>commitAt(cwd,run.policy.target)===p.target;

@@ -2,15 +2,16 @@
 /** @typedef {import("./model.js").Effect} Effect */
 /** @typedef {import("./model.js").Product} Product */
 /** @typedef {{effect:string,code:"inadmissible-outcome",reason:string}} IntegrityHold */
-/** @type {WeakMap<Run,{effects:Map<string,Effect>,products:Map<string,Product>}>} */
+/** @typedef {import("./model.js").Inspection} Inspection */
+/** @type {WeakMap<Run,{effects:Map<string,Effect>,products:Map<string,Product>,inspections:Map<string,Inspection>}>} */
 const indexes=new WeakMap();
 /** @type {WeakMap<Run,readonly IntegrityHold[]>} */ const holds=new WeakMap();
 /** @type {WeakSet<Effect>} */ const withheld=new WeakSet();
 
 /** Only the immutable snapshot may reuse its decoder's maps. Planner drafts can
  * add and replace entities during a single transaction.
- * @param {Run} run @param {Map<string,Effect>} effects @param {Map<string,Product>} products */
-export function indexRevision(run,effects,products){indexes.set(run,{effects,products});}
+ * @param {Run} run @param {Map<string,Effect>} effects @param {Map<string,Product>} products @param {Map<string,Inspection>} inspections */
+export function indexRevision(run,effects,products,inspections){indexes.set(run,{effects,products,inspections});}
 /** Cache only data derived entirely from this validated revision. Do not cache
  * permissions, clock decisions, Git probes, or a mutable planner draft.
  * @template T @param {(run:Run)=>T} build */
@@ -26,6 +27,9 @@ export const effectAt=(run,id)=>id===undefined?undefined:Object.isFrozen(run) &&
 	indexes.get(run)?.effects.get(id):run.effects.find(e=>e.id===id);
 /** @param {Run} run @param {string} id */
 export const productAt=(run,id)=>Object.isFrozen(run) && indexes.has(run)?indexes.get(run)?.products.get(id):run.products.find(p=>p.check===id);
+/** @param {Run} run @param {string|undefined} component */
+export const inspectionAt=(run,component)=>component===undefined?undefined:Object.isFrozen(run) && indexes.has(run)?
+	indexes.get(run)?.inspections.get(component):run.inspections?.find(i=>i.component===component);
 /** @param {Run} run */
 export const integrityHolds=run=>holds.get(run)??[];
 /** @param {Effect} e */

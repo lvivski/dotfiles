@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { factory, git, put } from "../test/fixture.mjs";
+import { factory, git, put, recoveryClock } from "../test/fixture.mjs";
+import { historicalRuntime } from "../test/legacy-readers.mjs";
+import { openDatabase } from "./database.mjs";
+import { createRuntime } from "./runtime.mjs";
 
 const run = "dispatch", source = ".foundry/dispatch.json", directory = "desk/items", id = "open-item";
 const gap = { id, directory, blocked: 49 }, cleared = { id, directory, passed: true };
@@ -9,7 +12,7 @@ const other = { ...desk, id: "stock", charter: "stock.md", areas: ["stock"] };
 const report = { outcome: "no-gap", reason: "No change proposed.", evidence: ["desk.md"], grains: [] };
 const grain = { id: "row-action", task: "Open a selected item.", directory, check: "component.mjs", needs: [] };
 /** @param {import("node:test").TestContext} t @param {boolean} legacy @param {number} [workers] @param {boolean} [reportsPass] */
-function setup(t, legacy, workers = 1, reportsPass = true) {
+function setup(t, legacy, workers = 1, reportsPass = true,edition=createRuntime) {
 	return factory(t, run, source, {
 		[source]: JSON.stringify({ id: run, version: 2, direction: "Deliver openable items.", target: "refs/heads/main",
 			productCheck: "product.mjs", goalCheck: "goal.mjs", limits: { workers }, squads: [other, desk] }),
@@ -19,8 +22,58 @@ function setup(t, legacy, workers = 1, reportsPass = true) {
 			console.log(passed ? 'Item opens.' : 'Open failed; 49 dependent journeys not run.');
 			if (passed ? ${reportsPass} : !${legacy}) console.log('FOUNDRY_BLOCKERS='+JSON.stringify(passed ? [${JSON.stringify(cleared)}] : [${JSON.stringify(gap)}]));
 			process.exit(passed ? 0 : 1);`,
-	});
+	},edition);
 }
+
+test("an ordinary issuer wake delivers a previously attributed failure to the same waiting charter",async t=>{
+	const old=await historicalRuntime(t,95),f=setup(t,true,2,true,old);await f.start();
+	for(const r of f.scouts)await r.report({...report,outcome:"waiting",waitFor:r.squad==="desk"?"stock":"desk",evidence:[r.squad+".md"]});
+	const db=openDatabase(f.root);t.after(()=>db.close());
+	const read=()=>db.read(run)??assert.fail(),g=read().effects.find(e=>e.id===read().goal?.check);assert.ok(g?.kind==="goal");
+	await f.owner.operation("attribute",{run,receipt:g.id,...gap,excerpt:"Open failed;"},"owner");await f.settle();
+	const notices=read().effects.filter(e=>e.kind==="escalation");
+	assert.equal(f.scouts.length,2);assert.equal(notices.length,1);assert.equal(notices[0].state,"done");f.owner.close();
+	const clock=recoveryClock(),owner=f.runtime(f.root,{watchRecovery:clock.watch},createRuntime);
+	owner.sessionStart("owner",f.root);await clock.pulse(owner,3);await f.settle();
+	const follow=f.scouts.at(-1);assert.equal(f.scouts.length,3);assert.equal(follow?.squad,"desk");assert.ok(follow);
+	assert.match(follow.prompt,/Shared blocker open-item/);assert.doesNotMatch(follow.prompt,/Checked outputs changed for stock/);
+	assert.equal(f.workers.size,0);assert.equal(f.checks.length,1);
+	assert.equal(owner.inspect({run},"owner").sharedBlockers?.[0]?.state,"in-review");
+	await follow.report({...report,outcome:"regenerate",grains:[grain],addresses:[{id,grain:grain.id}]});
+	const [w]=f.workers.values();put(w.cwd,`${directory}/open`,"open");
+	await f.runtime(w.cwd,{},createRuntime).operation("submit",{run,token:w.token},w.id);await f.settle();
+	const result=owner.inspect({run},"owner"),end=read();assert.ok(result.qualified);assert.equal(result.sharedBlockers?.[0]?.verifiedAt,result.qualified);
+	assert.deepEqual(end.effects.filter(e=>e.kind==="escalation"),notices);assert.deepEqual(end.effects.find(e=>e.id===g.id),g);db.verifySigned(run,g);
+	for(const key of [end.nodes[grain.id].check,end.products.at(-1)?.check,end.goal?.check]){
+		const e=end.effects.find(e=>e.id===key);assert.ok(e?.tool==="bash" && e.receipt?.exit===0);db.verifySigned(run,e);
+	}
+});
+
+test("a late failure at the same commit does not borrow an active successor's review",async t=>{
+	const f=setup(t,false,3);await f.start();
+	const first=f.scouts.find(r=>r.squad==="desk"),stock=f.scouts.find(r=>r.squad==="stock");assert.ok(first && stock);
+	await stock.report({...report,evidence:["stock.md"]});
+	const side={...grain,id:"export",directory:"desk/export",task:"Export items."};
+	await first.report({...report,outcome:"regenerate",grains:[{...grain,id:"filter",task:"Filter items."},side]});
+	const db=openDatabase(f.root);t.after(()=>db.close());const read=()=>db.read(run)??assert.fail();
+	await f.owner.operation("configure",{run,revision:0,workers:1},"owner");
+	for(const id of ["filter","export"]){
+		const w=f.workers.get(read().nodes[id].worker??"");assert.ok(w);
+		await f.runtime(w.cwd).operation("submit",{run,token:w.token,missingInput:`Missing ${id} specification.`},w.id);await f.settle();
+	}
+	const handoff=f.scouts.at(-1);assert.ok(handoff && handoff.squad==="desk" && handoff.id!==first.id);
+	await handoff.report({...report,outcome:"regenerate",grains:[grain],addresses:[{id,grain:grain.id}]});
+	const before=read(),n=before.nodes[grain.id],w=f.workers.get(n.worker??""),original=before.effects.find(e=>e.id===before.goal?.check);
+	const r=before.effects.find(e=>e.id===handoff.id);assert.ok(w && original?.kind==="goal" && r?.kind==="scout" && r.predecessor?.grain.id==="filter");
+	await f.owner.operation("configure",{run,revision:1,workers:2},"owner");const count=f.scouts.length;
+	await f.owner.operation("attribute",{run,receipt:original.id,id:"menu",directory:"desk/menu",blocked:1,excerpt:"Open failed;"},"owner");await f.settle();
+	const owner=f.runtime(f.root),view=owner.inspect({run},"owner").sharedBlockers?.find(g=>g.id==="menu");
+	assert.equal(view?.state,"unowned");assert.equal(view.review,undefined);assert.equal(f.scouts.length,count);
+	assert.equal(read().effects.filter(e=>e.kind==="escalation" && e.state==="done" && String(e.args.message).includes("menu at desk/menu")).length,1);
+	assert.deepEqual(read().nodes[grain.id],n);assert.deepEqual(read().effects.find(e=>e.id===original.id),original);
+	put(w.cwd,`${directory}/open`,"open");await f.runtime(w.cwd).operation("submit",{run,token:w.token},w.id);
+	assert.ok(read().products.at(-1)?.outputs[grain.id]);db.verifySigned(run,original);
+});
 
 test("a shared failed step takes priority; a review without a repair owner escalates once and unrelated work proceeds", async t => {
 	const f = setup(t, false), notices = /** @type {string[]} */ ([]);

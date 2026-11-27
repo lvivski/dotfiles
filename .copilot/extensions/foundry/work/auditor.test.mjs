@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { setImmediate as turn } from "node:timers/promises";
-import { factory, git, put, recoveryClock, withLedgerLock } from "../test/fixture.mjs";
+import { factory, git, put, recoveryClock, scriptedInspections, withLedgerLock } from "../test/fixture.mjs";
 import { openDatabase } from "./database.mjs";
+import { stagePatch } from "./product.mjs";
+import { auditor } from "./auditor.mjs";
 
 const run="inspected",source=".foundry/inspected.json";
 /** @param {import("node:test").TestContext} t @param {string} [deadline] */
@@ -16,6 +18,69 @@ async function trial(t,deadline) {
 	const db=openDatabase(f.root);t.after(()=>db.close());
 	return {f,w,db};
 }
+
+test("a missing signed inline origin parks only its replacement review until the original evidence returns",async t=>{
+	const file="entry/value",flag=".foundry/format",task="Publish the required entry, not a placeholder.",check="unit.mjs";
+	const other="independent",second=".foundry/independent.json";
+	const f=factory(t,run,source,{[source]:JSON.stringify({version:2,id:run,target:"refs/heads/main",direction:"Publish the entry.",
+		productCheck:"product.mjs",goalCheck:"goal.mjs",squads:[{id:"entries",areas:["entry"],charter:"spec",checks:[check]}]}),
+		[second]:JSON.stringify({version:1,id:other,target:"refs/heads/main",direction:"Publish an independent value.",productCheck:"product.mjs",
+			seed:["other"],grains:[{id:"other",directory:"other",check:"other.mjs",specification:"spec",boundary:["api"]}]}),"other.mjs":"",api:"Keep the requested value.",
+		spec:"Keep the requested value.",".foundry/inspected/journey.md":"Publish the entry.",[check]:"","product.mjs":"",
+		"goal.mjs":`import{existsSync}from"node:fs";process.exit(existsSync("${file}")?2:1);`,[flag]:"old\n"});
+	await f.start();await f.owner.operation("configure",{run,revision:0,checkpointReviews:false},"owner");
+	await f.scouts[0].report({outcome:"regenerate",reason:"The entry is missing.",evidence:["spec"],grains:[{id:"entry",directory:"entry",task,check,needs:[]}]});
+	const [w]=f.workers.values();put(w.cwd,file,"draft\n");await f.runtime(w.cwd).operation("submit",{run,token:w.token},w.id);
+	const db=openDatabase(f.root);t.after(()=>db.close());
+	const read=()=>db.read(run)??assert.fail(),at=read(),original=at.nodes.entry.check,p=at.products.at(-1);assert.ok(original && p && at.goal);
+	put(f.root,check,`import{readFileSync as read}from"node:fs";if(read("${file}","utf8")==="draft\\n")process.exit(1);`);
+	git(f.root,"add",check);git(f.root,"commit","-qm","Check the adopted entry");const target=git(f.root,"rev-parse","HEAD");
+	const setup=f.runtime(f.root,{confirm:async()=>true,confirmProposal:async()=>true,formIdle:async()=>false,startInspection:undefined});
+	await setup.operation("repin",{run,kind:"target",from:f.tip,revision:target,checkpoint:p.check,goal:at.goal.check,files:[check],acceptance:task},"owner");
+	const j=read().join;assert.ok(j);
+	const patch=`--- a/${file}\n+++ b/${file}\n@@ -1 +1 @@\n-draft\n+ready\n--- a/${flag}\n+++ b/${flag}\n@@ -1 +1 @@\n-old\n+new\n`;
+	const candidate=stagePatch(f.root,j.commit,target,patch);
+	put(f.root,"entry.diff",git(f.root,"diff","--full-index",j.commit,candidate)+"\n");
+	const offer=await setup.operation("publish",{run,file:"entry.diff",to:["entry"]},"owner");
+	await setup.operation("rollout",{run,check:j.check,assembly:j.commit,blob:offer.artifacts.at(-1)?.blob},"owner");await setup.flush();
+	const saved=read(),review=saved.inspections?.find(i=>i.candidate===candidate);assert.ok(review?.state==="ready" && !review.assignment && !review.dispatch);
+	const started=await setup.operation("start",{source:second},"owner"),peer=f.workers.get(started.nodes[0].worker??"");assert.ok(peer);
+	put(peer.cwd,"other/value","independent");
+	await f.runtime(peer.cwd,{startInspection:undefined,execute:async(...args)=>{
+		const reply=await f.execute(...args);if(args[0]==="bash"){setup.turn("owner");await setup.flush();}return reply;
+	}}).operation("submit",{run:other,token:peer.token},peer.id);
+	const sibling=db.read(other)?.inspections?.[0];assert.ok(sibling?.state==="ready" && sibling.issuer==="owner");setup.close();f.owner.close();
+
+	const mail=new DatabaseSync(db.file+".outcomes");t.after(()=>mail.close());
+	const row=mail.prepare("SELECT signature,document FROM outcomes WHERE run=? AND effect=?").get(run,original);assert.ok(row);
+	assert.equal(mail.prepare("DELETE FROM outcomes WHERE run=? AND effect=?").run(run,original).changes,1);
+	const status=f.runtime(f.root),script=scriptedInspections(f.root),starts=/** @type {string[]} */([]),workflows=/** @type {Promise<void>[]} */([]);
+	let workflow="",complete=()=>{};const reviewing=new Promise(resolve=>{complete=()=>resolve(undefined);});
+	/** @type {Parameters<typeof auditor>[0]} */ const io={cwd:()=>f.root,read:id=>db.read(id)??assert.fail(),mutate:db.mutateLocked,reserve:db.reserve,verifySigned:db.verifySigned,tip:()=>target,
+		persist:async fn=>fn(),closed:()=>false,executable:async()=>true,permissionBlocker:async()=>null,track:p=>workflows.push(p),
+		wake:()=>{},queue:()=>{},start:async(...a)=>{starts.push(a[1]);const reply=await script.startInspection(...a);if(a[1]===review.id)workflow=reply.runId;return reply;},
+		lookup:async id=>{if(id===workflow)await reviewing;return script.inspectionState(id);}};
+	const before=process.env.FOUNDRY_AUDITOR_ORIGIN_BEFORE,issuer=auditor(io);
+	if(before){
+		const prior=(await import(`${before}/work/database.mjs`)).openDatabase(f.root);
+		try{const old=(await import(`${before}/work/auditor.mjs`)).auditor({...io,reserve:prior.reserve});
+			assert.throws(()=>old.launch(run,review),{code:"stale_inspection"});}finally{prior.close();}
+	}
+	const held=status.inspect({run},"owner").integrityHolds?.find(h=>h.effect===original);assert.ok(held);assert.match(held.reason,/original signed runner outcome/i);
+	auditor({...io,lookup:undefined}).launch(run,review);
+	for(let wake=0;wake<2;wake++){issuer.launch(run,review);issuer.launch(other,sibling);await turn();await Promise.all(workflows);}
+	assert.deepEqual(starts,[sibling.id]);assert.equal(db.read(other)?.inspections?.[0].state,"approved");assert.deepEqual(read().inspections,saved.inspections);
+	await assert.rejects(issuer.packet(run,review.id,"unissued","owner","guessed"),{code:"foreign_assignment"});
+	const restore=()=>mail.prepare("INSERT INTO outcomes VALUES(?,?,?,?)").run(run,original,row.signature,row.document);restore();
+	issuer.launch(run,review);await turn();await Promise.all(workflows);
+	const admitted=read().inspections?.find(i=>i.id===review.id),ticket=admitted?.dispatch;assert.ok(ticket && admitted.workflow===workflow && admitted.assignment===task);
+	const packet=()=>issuer.packet(run,review.id,ticket,"owner",workflow);
+	mail.prepare("DELETE FROM outcomes WHERE run=? AND effect=?").run(run,original);
+	await assert.rejects(packet(),{code:"inspection_held"});assert.deepEqual(read().inspections?.find(i=>i.id===review.id),admitted);
+	restore();assert.ok((await packet()).prompt.includes(task));complete();await turn();await Promise.all(workflows);
+	const done=read().inspections?.find(i=>i.id===review.id);assert.ok(done?.state==="approved" && done.workflow && done.dispatch);
+	assert.equal(done.assignment,task);assert.deepEqual(starts,[sibling.id,review.id]);assert.equal(done.component,review.component);
+});
 
 test("a copied component pass cannot supply a review packet without the signed original",async t=>{
 	const {f,w,db}=await trial(t),workflow="original-signed-review";

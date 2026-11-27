@@ -3,7 +3,8 @@ import { decide, observeReply, presentDialog } from "./dialog.mjs";
 import { currentReview } from "./graph.mjs";
 import { admitted, expired } from "./native.mjs";
 import { commitAt } from "./product.mjs";
-import { presentation, questions, reviews } from "./reviews.mjs";
+import { presentation, reviews } from "./charter.mjs";
+import { questions } from "./reviews.mjs";
 import { fail } from "./values.mjs";
 
 /** @typedef {{review:string,presentation:string}} Recovery */

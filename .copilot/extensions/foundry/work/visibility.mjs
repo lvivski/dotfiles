@@ -1,17 +1,19 @@
+import { awaitingReply, unissued } from "./dispatch.mjs";
 import { projectBoard } from "./projection.mjs";
-import { assignmentCount } from "./capacity.mjs";
+import { assignmentCount, remainingAssignments } from "./capacity.mjs";
+import { routedBlockers } from "./routing.mjs";
 import { checkReceipt, goalReceipt, milestoneBlocker, missingObservation, originalVerification, qualifiedProduct, verification } from "./evidence.mjs";
 import { timingFacts } from "./metrics.mjs";
 import { current, expired } from "./native.mjs";
-import { awaitingReply, unissued } from "./reservation.mjs";
-import { checked, liveNeeds } from "./plan.mjs";
-import { questions, reviews, reviewStatus } from "./reviews.mjs";
+import { checked, liveNeeds } from "./lineage.mjs";
+import { reviews } from "./charter.mjs";
+import { questions, reviewStatus } from "./reviews.mjs";
 import { fail } from "./values.mjs";
 import { grant } from "./transfer.mjs";
 import { currentOffer } from "./offers.mjs";
 import { contractHold } from "./contract.mjs";
 import { unprovenExports } from "./attestation.mjs";
-import { effectAt, heldOutcome, integrityHolds } from "./revision.mjs";
+import { effectAt, heldOutcome, inspectionAt, integrityHolds } from "./revision.mjs";
 import { legacyWait } from "./abi.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
@@ -26,8 +28,8 @@ function attempt(e) {
 }
 /** Ledger-only facts shared by the board and chat. Nodes and effects stay inside the
  * query; each surface projects only the fields it exposes.
- * @param {Run} run @param {string} actor @param {boolean} [history] */
-export function visible(run, actor, history=true) {
+ * @param {Run} run @param {string} actor @param {boolean} [history] @param {string} [cwd] */
+export function visible(run, actor, history=true,cwd) {
 	const owner = run.owner === actor;
 	let nodes = Object.values(run.nodes).filter(n => n.state !== "idle" && (owner || n.worker === actor));
 	if (!owner && nodes.length>1 && nodes.some(n=>n.state!=="qualified"))
@@ -35,7 +37,7 @@ export function visible(run, actor, history=true) {
 	if (!owner && !nodes.length && !run.effects.some(e => e.nativeId === actor))
 		fail("foreign_run", "No bound assignment in this run. If you are the original writer of an uncertain launch, run get_session on yourself, then foundry_claim with the run and token from your kickoff. Do not relaunch or submit until bound.");
 
-	const pending = run.effects.filter(e => (owner || e.issuer === actor) && e.state !== "done" && (awaitingReply(e) || current(run, e)));
+	const pending = run.effects.filter(e => (owner || e.issuer === actor) && e.state !== "done" && (awaitingReply(e) || current(run,e,cwd)));
 	const unconfirmed = new Set(pending.flatMap(e => e.kind === "writer" && e.state === "uncertain" && e.token ? [e.token] : []));
 	const writerAssignments = { bound: 0, pending: 0, unconfirmed: 0, sessionActivity: "not-observed" };
 	for (const n of nodes) {
@@ -43,7 +45,7 @@ export function visible(run, actor, history=true) {
 		if (binding) writerAssignments[binding]++;
 	}
 	const receipts = {get:(/** @type {string} */ id)=>{const e=history && effectAt(run,id);return e && !heldOutcome(e)?e.receipt:undefined;}};
-	const inspections = new Map((history?run.inspections??[]:[]).map(i=>[i.component,i]));
+	const inspections = {get:(/** @type {string} */ id)=>history?inspectionAt(run,id):undefined};
 	/** @type {Map<string,ReturnType<typeof attempt>[]>} */ const attempts=new Map();
 	if(history)for (const e of run.effects) if ((e.kind==="component" || e.kind==="rerun") && e.grain && (owner || e.issuer===actor)) {
 		const history=attempts.get(e.grain) ?? [];
@@ -59,6 +61,7 @@ export function visible(run, actor, history=true) {
 	const previous = pin && owner ? pending.find(e => e.id === run.goal?.check && e.evaluatorRevision !== pin &&
 		e.runnerStarted && awaitingReply(e) && !e.receipt && !e.permissionHold) : undefined;
 	const upgrading = run.join?.check && verification(run.productRepins?.at(-1)) === originalVerification(run,run.join.check);
+	const stall=run.goal?.stall && !routedBlockers(run,remainingAssignments(run),cwd).some(g=>g.state==="in-review" || g.state==="awaiting-review")?run.goal.stall:undefined;
 	const retired=run.effects.find(e=>e.tool==="bash" && e.lane && !e.receipt && (unissued(e) || awaitingReply(e)));
 	const linked=new Set(run.effects.flatMap(e=>e.tool==="bash" && e.attempt?.version===2 && e.attempt.previous?[e.attempt.previous]:[]));
 	const historical=run.effects.flatMap(e=>{
@@ -70,7 +73,7 @@ export function visible(run, actor, history=true) {
 		run.effects.some(e=>e.kind==="component" && e.id===j.stop && e.rollout && run.adoptions?.some(a=>a.id===e.rollout && a.failed===run.join?.check))));
 	const blocker = quarantine ?? (unproven.length ? `Handoff withheld: historical check ${unproven.join(", ")} does not establish the approved evaluator inputs. Resume this same run on its original target for fresh product and goal evidence.` : undefined) ??
 		run.pauseReason ?? run.blocker ?? run.conflict ?? (retired && `Historical desktop reservation ${retired.id} cannot start under this reader. No permission or verdict was carried forward.`) ??
-		run.testRepairs?.find(j=>j.wait)?.wait ?? (repair && `Test repair held (${repair.rule.check}): ${repair.reason}`) ?? (upgrading ? milestoneBlocker(run) : run.goal?.stall) ?? (previous
+		run.testRepairs?.find(j=>j.wait)?.wait ?? (repair && `Test repair held (${repair.rule.check}): ${repair.reason}`) ?? (upgrading ? milestoneBlocker(run) : stall) ?? (previous
 		? `Approved evaluator ${pin} is waiting for the receipt of superseded goal ${previous.id} in session ${previous.issuer}. Verify the original runner before intervening; do not replay it.`
 		: missing ? `Goal check at ${missing.commit} awaits external evidence (exit 2): ${missing.output.trim() || "no diagnostic"}. After supplying it, use /foundry resume ${run.policy.source}.` : milestoneBlocker(run));
 	const openQuestions = owner && !quarantine ? questions(run).flatMap(r => r.observation ? [{ review: r, observation: r.observation,

@@ -1,24 +1,28 @@
 import { outside } from "./product.mjs";
 import { checkReceipt } from "./evidence.mjs";
+import { producingGrant, submittedBy } from "./lineage.mjs";
 import { touchesCut } from "./transfer.mjs";
 import { passingRemedy, productionWriter } from "./remedy.mjs";
-import { publishedComponent } from "./publication.mjs";
+import { carriedInput, publishedComponent } from "./publication.mjs";
+import { effectAt, productAt } from "./revision.mjs";
 import { contains, covers, digest, mixed, roots, sameScope, scopeLabel } from "./values.mjs";
 
 /** @param {import("./model.js").Run} run @param {string} from @param {string} historical */
 export function historicalGrant(run,from,historical) {
-	const product=run.products.find(p=>p.check===historical), candidate=product?.outputs[from];
+	const product=productAt(run,historical), candidate=product?.outputs[from];
 	if (!product || !candidate) return;
 	const index=run.effects.findIndex(e=>e.id===historical), prior=run.effects.slice(0,index);
 	const component=prior.findLast(e=>e.kind==="component" && e.grain===from && e.commit===candidate && checkReceipt(e)?.exit===0);
 	const launch=component && prior.slice(0,prior.indexOf(component)).findLast(e=>e.kind==="writer" && e.grain===from && e.nativeId===component.issuer && e.state==="done");
-	if (!launch || !component?.commit) return;
-	const review=prior.slice(0,prior.indexOf(launch)).findLast(e=>e.kind==="scout" && e.state==="observed" &&
-		e.observation?.outcome==="regenerate" && e.observation.grains.some(g=>typeof g!=="string" && g.id===from));
-	const g=review?.kind==="scout" && review.observation?.grains.find(g=>typeof g!=="string" && g.id===from);
-	if (review?.kind==="scout" && g && typeof g!=="string" && mixed(g.directory) && component.check===g.check &&
-		launch.kind==="writer" && (!launch.finished || sameScope(launch.finished.directory,g.directory)))
-		return {product,component,candidate:component.commit,scope:g.directory,grain:g,squad:review.squad,review};
+	const origin=producingGrant(run,launch),g=origin?.output;
+	if(!component?.commit || !origin || !g || typeof g==="string" || !mixed(g.directory) || !submittedBy(component,origin) ||
+		origin.writer.finished && !sameScope(origin.writer.finished.directory,g.directory))return;
+	// This is the historical owner, not permission to publish today. A later review
+	// list cannot impose a new review contract on a component already in this checkpoint.
+	const checkpoint=effectAt(run,product.check);
+	if(component.runnerClaim ? checkpoint?.kind==="product" && checkpoint.runnerClaim && checkpoint.commit===product.commit && checkReceipt(checkpoint)?.exit===0 :
+		carriedInput(run,product,component,from,candidate))
+		return {product,component,candidate,scope:g.directory,grain:g,squad:origin.review.squad,review:origin.review};
 }
 
 /** @param {import("./model.js").Run} run @param {import("./model.js").Node} n */

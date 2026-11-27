@@ -1,21 +1,27 @@
+import { currentCheck } from "./eligibility.mjs";
 import assert from "node:assert/strict";
 import { pairedWork } from "../test/install.mjs";
 import { guideReplay, launchDescription, launchPlan, observed, recipient } from "../test/portable.mjs";
-import { chmodSync, cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { chmodSync, cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { execFile, spawnSync } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
+import { setTimeout as sleep } from "node:timers/promises";
+import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { openDatabase } from "./database.mjs";
 import { createRuntime } from "./runtime.mjs";
 import { decode } from "./snapshot.mjs";
-import { artifactDigest, stagePatch } from "./product.mjs";
+import { artifactDigest, committedFile, stagePatch } from "./product.mjs";
 import { factory, git, put, recoveryClock, scriptedInspections } from "../test/fixture.mjs";
 import { activation, failedFinalDiagnostic, submittedGrant } from "../test/ownership.mjs";
 import { directory, historicalFactory, historicalRuntime } from "../test/legacy-readers.mjs";
 import { rolloutPlan } from "./rollout.mjs";
-import { currentCheck } from "./reservation.mjs";
 import { claimOutcome } from "./outcomes.mjs";
+import { auditor } from "./auditor.mjs";
+import { reviewBinding } from "./inspection.mjs";
+import { inspectComponent } from "./inspections.mjs";
 
 const source=".foundry/catalog.json",spec="brief",component="unit.mjs",goal="goal.mjs",product="product.mjs";
 const fixture=process.env.FOUNDRY_ROLLOUT_FIXTURE,fixtureVersion=fixture && readFileSync(join(fixture,"work/reader.version"),"utf8").trim();
@@ -81,8 +87,8 @@ async function paired(t,old){
 	writer.close();owner.close();return {f,run};
 }
 
-/** @param {import("node:test").TestContext} t @param {{reader94?:boolean,before?:number,legacy?:boolean,consumer?:boolean,production?:boolean,prepared?:boolean,deferOwner?:boolean,rollout?:boolean,preJournal?:boolean,failedWitness?:boolean,tail?:boolean,probe?:boolean}} [options] */
-async function failedAssembly(t,{reader94=false,before:edition,legacy=false,consumer=false,production=false,prepared=false,deferOwner=false,rollout=false,preJournal=false,failedWitness=false,tail=false,probe=false}={}){
+/** @param {import("node:test").TestContext} t @param {{reader94?:boolean,before?:number,legacy?:boolean,consumer?:boolean,production?:boolean,prepared?:boolean,deferOwner?:boolean,rollout?:boolean,preJournal?:boolean,failedWitness?:boolean,tail?:boolean,probe?:boolean,memberCheck?:string}} [options] */
+async function failedAssembly(t,{reader94=false,before:edition,legacy=false,consumer=false,production=false,prepared=false,deferOwner=false,rollout=false,preJournal=false,failedWitness=false,tail=false,probe=false,memberCheck}={}){
 	const sourceReader=process.env.FOUNDRY_OWNED_FIXTURE;
 	const reader=rollout && fixture;
 	const frozen=reader94?94:!reader && edition;
@@ -105,7 +111,7 @@ async function failedAssembly(t,{reader94=false,before:edition,legacy=false,cons
 		put(f.root,hook,`#!/bin/sh\nset -eu\ntest -z "\${FOUNDRY_GRAIN-}\${FOUNDRY_OUTPUTS-}\${FOUNDRY_FILES-}"\ncp ${file} "$1/catalog-entry"\n`);
 		chmodSync(join(f.root,hook),0o755);files.push(hook);
 	}
-	put(f.root,component,needs+(rollout?`
+	put(f.root,component,memberCheck??needs+(rollout?`
 		if(value("${file}")==="keep:local"){
 			if(value(process.env.FOUNDRY_PREPARED_DIR+"/entry")!=="keep:local")throw Error("Missing prepared output");
 			${probe?`{
@@ -175,6 +181,156 @@ async function failedAssembly(t,{reader94=false,before:edition,legacy=false,cons
 	return {f,run,db,read,publish,prior,failed,p,revision,old,publisher,ownedFile,previousText,correctedText};
 }
 
+/** @typedef {import("./model.js").Run} PrefixRun */
+/** Synthetic eager historical scheduling: stock componentBatch schedules reviews after the batch. Reserve
+ * the first member's real inspection early; its packet, workflow binding and settlement use the normal auditor.
+ * @param {string} cwd @param {string} run @param {{read:(id:string)=>PrefixRun|undefined,verifySigned:(id:string,c:import("./model.js").NativeCall)=>void,
+ * mutateLocked:<T>(id:string,fn:(r:PrefixRun)=>T)=>T,reserve:<T>(id:string,select:(r:PrefixRun)=>{value:T,guard?:()=>boolean}|undefined)=>T|undefined}} db
+ * @param {ReturnType<typeof scriptedInspections>} transport @returns {Promise<void>} */
+async function reviewBeforeConsumer(cwd,run,db,transport){
+	/** @type {import("./model.js").Inspection|undefined} */ const job=db.reserve(run,r=>{
+		const [c,tail]=r.effects.filter(e=>e.kind==="component" && e.rollout);
+		assert.ok(c?.kind==="component" && c.grain==="selector" && c.receipt?.exit===0);db.verifySigned(run,c);
+		assert.ok(tail?.grain==="controls" && tail.state==="ready" && !tail.callId && !tail.runnerClaim && !tail.receipt);
+		const binding=reviewBinding(r,c);assert.ok(binding);
+		return {value:inspectComponent(r,binding.node,c,r.owner,binding.overrides)};
+	});
+	assert.ok(job);
+	await new Promise((resolve,reject)=>{
+		const historical=auditor({cwd:()=>cwd,tip:r=>git(cwd,"rev-parse",r.policy.target),read:id=>db.read(id)??assert.fail(),
+			mutate:db.mutateLocked,reserve:db.reserve,verifySigned:db.verifySigned,closed:()=>false,executable:async()=>true,permissionBlocker:async()=>null,
+			start:transport.startInspection,lookup:transport.inspectionState,persist:async save=>save(),track:p=>void p.catch(reject),
+			queue:()=>reject(Error("Eager review did not start")),wake:()=>resolve(undefined)});
+		historical.launch(run,job);
+	});
+}
+
+for(const stop of ["signed component","independent review","review before consumer settles","approved reader-102 prefix scope","declined reader-102 prefix scope"])test(`repair the producer of a two-member rollout / ${stop}`,async t=>{
+	const historical=stop.endsWith("reader-102 prefix scope"),declined=stop.startsWith("declined"),reviewed=stop!=="signed component",eager=historical || stop==="review before consumer settles";
+	if(historical && fixtureVersion!=="102"){t.skip("Set FOUNDRY_ROLLOUT_FIXTURE to the original reader-102 extension");return;}
+	const good="keep:local",bad=good+",extra",finding=`${file}:1: a second entry is emitted; return only the selected entry.`;
+	const memberCheck=needs+`const raw=value("${file}"),first=raw.split(",")[0];
+		if(process.env.FOUNDRY_GRAIN==="selector" && ${reviewed?"first":"raw"}!==${JSON.stringify(good)}){console.error("Unexpected entry: "+raw);process.exit(1);}
+		if(process.env.FOUNDRY_GRAIN==="controls" && (!first || value("${retainedFile}")!=="connected"))process.exit(1);`;
+	const {f,run,db,read,publish,prior,revision,old,publisher}=await failedAssembly(t,{consumer:true,rollout:true,before:eager?undefined:95,memberCheck});
+	const patch=edit(file,"keep",bad)+`--- a/.foundry/accept.mjs\n+++ b/.foundry/accept.mjs\n@@ -1 +1 @@\n-export const accepts=()=>false;\n+export const accepts=()=>true;\n`;
+	const candidate=stagePatch(f.root,prior.commit,revision,patch),blob=await publish(git(f.root,"diff","--full-index",prior.commit,candidate)+"\n",["unit"]);
+	// Reserve the consumer against an installation that can be upgraded without changing its command.
+	const install=historical?pairedWork(join(f.root,"..","prefix-install")):undefined;
+	const stage=(/** @type {string|URL} */ source)=>{if(install)cpSync(source,install,{recursive:true,filter:p=>!p.endsWith(".test.mjs")});};
+	if(install)stage(join(fixture??assert.fail(),"work"));
+	/** @type {typeof createRuntime} */ const previous=install?(await import(join(install,"runtime.mjs"))).createRuntime:old;
+	publisher.close();const inspector=scriptedInspections(f.root),reject=new Set(),packets=f.runtime(f.root,{},previous);
+	/** @type {typeof inspector} */ const transport={startInspection:async(...args)=>{
+		const started=await inspector.startInspection(...args),packet=await packets.inspectionPacket(...args,started.runId);
+		if(packet.prompt.includes(`"text":${JSON.stringify(bad)}`) && packet.prompt.includes(`"file":"${file}"`))reject.add(started.runId);
+		return started;
+	},inspectionState:async id=>{const r=await inspector.inspectionState(id);
+		return reject.has(id)?{...r,result:{...r.result,outcome:"changes",summary:finding}}:r;
+	}};
+	let yielding=false;
+	const seed=f.runtime(f.root,{...transport,confirmProposal:async()=>true,mode:async()=>yielding?"plan":"interactive",execute:async(tool,args,key)=>{
+		const reply=await f.execute(tool,args,key);
+		if(eager && tool==="bash" && read().effects.some(c=>c.kind==="component" && c.rollout && c.grain==="selector" && c.callId===key))yielding=true;
+		return reply;
+	}},previous);
+	await seed.operation("rollout",{run,assembly:prior.commit,check:prior.check,blob},"owner");await seed.flush();seed.close();f.owner.close();
+	if(eager)await reviewBeforeConsumer(f.root,run,db,transport);
+	packets.close();
+	// The seed offer introduced the defect. Reopen this ledger without importing any repair.
+	const stopped=read(),members=stopped.effects.filter(e=>e.kind==="component" && e.rollout && e.commit===candidate);
+	assert.deepEqual(members.map(e=>[e.grain,e.receipt?.exit]),[["selector",reviewed?0:1],["controls",reviewed && !eager?0:undefined]]);
+	const [producer,consumer]=members,node=stopped.nodes.selector,review=stopped.inspections?.find(i=>i.component===producer.id);
+	assert.deepEqual(stopped.join,prior);assert.equal(stopped.nodes.controls.inputs?.selector,prior.outputs.selector);
+	const grant=stopped.effects.find(e=>e.id===node.review),writer=stopped.effects.find(e=>e.kind==="writer" && e.grain==="selector" && e.state==="done");
+	assert.ok(writer?.nativeId && f.workers.has(writer.nativeId) && grant?.kind==="scout" && grant.observation?.grains.some(g=>typeof g==="object" && g.id==="selector" && g.directory===root));
+	if(reviewed){assert.ok(consumer.kind==="component" && review?.state==="changes" && reject.has(review.workflow));if(!eager)db.verifySigned(run,consumer);}
+	else{assert.equal(review,undefined);assert.ok(producer.receipt?.output.includes(bad));}
+	if(eager){assert.equal(review?.summary,finding);assert.ok(consumer.state==="ready" && !consumer.callId && !consumer.runnerStarted);assert.deepEqual(stopped.correctionDrafts??[],[]);}
+	const spool=new DatabaseSync(db.file+".outcomes",{readOnly:true});t.after(()=>spool.close());
+	const signatures=()=>spool.prepare("SELECT effect,signature FROM outcomes WHERE run=? ORDER BY rowid").all(run);let original=signatures();
+	const before=git(f.root,"rev-parse",`${candidate}:${file}`),events=/** @type {string[]} */([]);/** @type {string|null|undefined} */ let approved;
+	/** @type {import("./model.js").CorrectionDraft|undefined} */ let saved;
+	if(historical){
+		// 102 selected the reviewed files from this signed prefix. Stop its issuer after the real
+		// native scope decision, before an author or the already-reserved consumer is dispatched.
+		const decided=()=>["answered","dismissed"].includes(read().correctionDrafts?.at(-1)?.decision?.status??"");
+		const issuer=f.runtime(f.root,{mode:async()=>decided()?"plan":"interactive",confirmProposal:async prompt=>{
+			const d=read().correctionDrafts?.at(-1);assert.ok(review && d?.decision?.status==="presenting" && d.finding?.frontier===producer.id);
+			for(const pin of [review.id,producer.id,before,file])assert.ok(prompt.includes(pin));
+			assert.deepEqual(d.parts.flatMap(p=>p.files),[{file,before,mode:"100644"}]);events.push("scope");return !declined;
+		}},previous);
+		const scope=issuer.operation("draft",{run,check:producer.id},"owner");
+		if(declined)await assert.rejects(scope,{code:"approval_declined"});else await scope;
+		await issuer.flush();issuer.close();
+		const prefix=read();saved=prefix.correctionDrafts?.at(-1);
+		assert.ok(saved?.finding?.inspection===review?.id && saved?.finding?.frontier===producer.id && saved.check===producer.id);
+		assert.ok(declined?saved.decision?.status==="dismissed":saved.decision?.status==="answered" && saved.decision.answer===saved.id);
+		assert.ok(saved.parts[0].state==="ready" && !saved.parts[0].dispatch && !saved.blob);
+		assert.deepEqual(prefix.effects,stopped.effects);assert.deepEqual(signatures(),original);
+		if(!process.env.FOUNDRY_DRAFT_RED)stage(new URL("./",import.meta.url));
+	}
+	const priorDrafts=saved?[saved]:[],priorForms=saved?["scope"]:[];
+	let held=eager,consumerCalls=0;
+	/** @type {{deliver?:()=>Promise<unknown>}} */ const originalCall={};
+	/** @type {ReturnType<typeof createRuntime>} */ const now=f.runtime(f.root,{...scriptedInspections(f.root),formIdle:async()=>true,
+		permissionBlocker:async()=>held?{scope:"session",message:"Consumer awaiting permission."}:null,execute:async(tool,args,key)=>{
+			if(eager && tool==="bash" && args.shellId===consumer.args.shellId){
+				consumerCalls++;originalCall.deliver??=()=>f.execute(tool,args,key);return {resultType:"unconfirmed"};
+			}
+			return f.execute(tool,args,key);
+		},draftAgent:async ticket=>{
+		events.push("author");const id="producer-author",p=await now.draftPacket(ticket,"owner",id);
+		if(saved)assert.equal(ticket.draft,saved.id);
+		assert.equal(p.check,producer.id);assert.equal(p.assembly,candidate);assert.equal(p.task,node.grain.task);
+		assert.deepEqual(p.source,{kind:"owned",grain:"selector",grant:grant.id,component:node.check,output:prior.outputs.selector,producer:writer.nativeId});
+		assert.deepEqual(p.files,[{file,before,mode:"100644",text:bad}]);
+		assert.deepEqual(p.finding,review && {inspection:review.id,workflow:review.workflow,component:producer.id,summary:finding});
+		return {runId:id,status:"completed",result:{subject:ticket.subject,reason:"Emit only the selected entry.",edits:[{file,before,text:good}]}};
+	},confirmProposal:async prompt=>{
+		const d=read().correctionDrafts?.at(-1);assert.ok(d);
+		if(d.blob){events.push("bytes");approved=d.parts[0].changes?.[0].result;assert.ok(approved);
+			for(const v of [d.blob,before,approved,reviewed?consumer.id:producer.id,`-${bad}`,`+${good}`])assert.ok(prompt.includes(v));}
+		else{events.push("scope");assert.ok(review && [review.id,producer.id,file,before].every(v=>prompt.includes(v)));
+			assert.deepEqual(d.parts.flatMap(p=>p.files.map(f=>f.file)),[file]);}
+		return true;
+	}},process.env.FOUNDRY_DRAFT_RED?previous:createRuntime);
+	now.sessionStart("owner",f.root);now.turn("owner");await now.flush();
+	if(eager){
+		const waiting=read();assert.ok(waiting.inspections?.find(i=>i.id===review?.id)?.permissionHold || waiting.effects.find(c=>c.id===consumer.id)?.permissionHold);
+		assert.deepEqual(waiting.correctionDrafts??[],priorDrafts);assert.deepEqual(events,priorForms);assert.equal(waiting.effects.find(c=>c.id===consumer.id)?.state,"ready");
+		held=false;now.turn("owner");await now.flush();
+		now.turn("owner");await now.flush();
+		now.inspect({run},"owner"); // The issuer must still be able to open the original run.
+		const issued=read(),tail=issued.effects.find(c=>c.id===consumer.id);
+		assert.ok(originalCall.deliver && tail?.state==="uncertain" && tail.callId && !tail.runnerClaim && !tail.receipt);
+		assert.equal(consumerCalls,1);assert.deepEqual(issued.correctionDrafts??[],priorDrafts,"an issued consumer cannot change the prior scope decision");assert.deepEqual(events,priorForms);
+		await originalCall.deliver();const signed=read().effects.find(c=>c.id===consumer.id);
+		assert.ok(signed?.kind==="component" && signed.callId===tail.callId && signed.receipt?.exit===0);db.verifySigned(run,signed);
+		const settled=signatures();assert.deepEqual(settled.slice(0,original.length),original);original=settled;now.turn("owner");await now.flush();
+	}
+	now.turn("owner");await now.flush();
+	assert.deepEqual(events,declined?["scope"]:reviewed?["scope","author","bytes"]:["author","bytes"]);
+	const end=read(),proof=now.inspect({run,detail:"proof"},"owner"),q=proof.qualification;
+	if(saved)assert.deepEqual(end.correctionDrafts?.map(d=>[d.id,d.finding,d.decision]),[[saved.id,saved.finding,saved.decision]]);
+	if(declined){
+		assert.deepEqual(end.correctionDrafts,priorDrafts);assert.deepEqual(end.join,prior);assert.deepEqual(end.nodes,stopped.nodes);
+		assert.deepEqual(signatures(),original);assert.equal(q,null);return;
+	}
+	assert.ok(q,proof.qualificationUnavailable??proof.blocker??"Original run did not qualify");
+	assert.equal(q.target.commit,revision);assert.equal(git(f.root,"diff","--name-only",candidate,q.commit),file);
+	assert.equal(git(f.root,"rev-parse",`${q.commit}:${file}`),approved);assert.equal(committedFile(f.root,q.commit,file).toString(),good);
+	assert.deepEqual(end.products.at(-1)?.outputs,{selector:q.commit,controls:q.commit});
+	assert.equal(end.nodes.controls.inputs?.selector,q.commit);assert.deepEqual(end.artifacts,stopped.artifacts);
+	assert.deepEqual(end.inspections?.slice(0,stopped.inspections?.length),stopped.inspections);assert.deepEqual(signatures().slice(0,original.length),original);
+	for(const c of stopped.effects)if(c.tool==="bash" && c.receipt){assert.deepEqual(end.effects.find(e=>e.id===c.id),c);db.verifySigned(run,c);}
+	const fresh=end.effects.slice(stopped.effects.length).filter(e=>e.tool==="bash");
+	assert.deepEqual(fresh.map(c=>c.kind==="component"?c.grain:c.kind),["selector","controls","product","goal"]);
+	for(const c of fresh){assert.ok(c.tool==="bash" && c.commit===q.commit);assert.equal(c.receipt?.exit,0);db.verifySigned(run,c);
+		if(c.kind==="component")assert.ok(end.inspections?.some(i=>i.component===c.id && i.candidate===q.commit && i.state==="approved"));}
+	assert.deepEqual(Object.entries(q.receipts.product.components??{}).map(([id,c])=>[id,c.exit]).sort(),[["controls",0],["selector",0]]);
+});
+
 for(const intrude of [false,true])test(`writer-drafted multi-owner correction / ${intrude?"attempted crossing":"disjoint sources"}`,async t=>{
 	const {f,run,prior,failed,read,old,publisher,revision}=await failedAssembly(t,{reader94:true,consumer:true});
 	f.owner.close();publisher.close();const fresh=`${root}/notes.txt`,before=read();let authors=0,forms=0;
@@ -197,7 +353,7 @@ for(const intrude of [false,true])test(`writer-drafted multi-owner correction / 
 	assert.deepEqual(end.inspections?.filter(i=>i.candidate===proof.commit).map(i=>[i.grain,i.state]).sort(),[["controls","approved"],["selector","approved"]]);
 });
 
-for(const outcome of ["pass","withheld","decline","stale","component withheld","foreground retry","foreground pair","foreground fails","review changes","runner refused","previous owned output","pre-journal output","pre-journal without passing witness"])test(`exact harness rollout from a second failed amendment / ${outcome}`,async t=>{
+for(const outcome of ["pass","withheld","decline","stale","target moved before claim","prefix missing before claim","prefix missing during export","prefix missing after preparation","component withheld","foreground retry","foreground pair","foreground fails","review changes","runner refused","previous owned output","pre-journal output","pre-journal without passing witness"])test(`exact harness rollout from a second failed amendment / ${outcome}`,async t=>{
 	const foreground=outcome.startsWith("foreground"),pair=outcome==="foreground pair",declaration=`${root}/declared.sh`;
 	const previous=outcome==="previous owned output",preJournal=outcome.startsWith("pre-journal"),failedWitness=outcome==="pre-journal without passing witness";
 	const {f,run,db,read,publish,revision,old,publisher}=await failedAssembly(t,{consumer:!previous && !preJournal,rollout:true,preJournal,failedWitness,before:foreground && outcome!=="foreground retry"?89:undefined});
@@ -208,12 +364,15 @@ for(const outcome of ["pass","withheld","decline","stale","component withheld","
 		assert.ok(read().nodes.selector.candidate===read().join?.commit && read().nodes.selector.state==="published" && !read().nodes.selector.worker);
 	}
 	const prior=read().join,failed=read().effects.find(c=>c.id===prior?.check);assert.ok(prior && failed?.kind==="product");
-	const hook=".foundry/prepare-components",program=`#!/bin/sh\nset -eu\ntest -z "\${CATALOG_ALLOW_FOREGROUND-}" && cp ${file} "$1/entry"\n`;
+	const duringBuild=outcome==="prefix missing after preparation",duringExport=outcome==="prefix missing during export";
+	const hook=".foundry/prepare-components",program=`#!/bin/sh\nset -eu\ntest -z "\${CATALOG_ALLOW_FOREGROUND-}" && cp ${file} "$1/entry"\n`+
+		(duringBuild?'if test -n "${CATALOG_TEST_GATE-}"; then touch "$CATALOG_TEST_GATE.ready"; while test ! -e "$CATALOG_TEST_GATE.release"; do sleep 0.02; done; fi\n':"")+
+		(duringExport?'if test -n "${FOUNDRY_TEST_EXPORT_GATE-}"; then touch "$FOUNDRY_TEST_EXPORT_GATE.hook"; fi\n':"");
 	const patch=edit(file,previous?"keep:first":"keep","keep:local")+edit(retainedFile,"connected","retained")+edit(helper,"current",pair?"declared lane pair":foreground?"declared lane":outcome==="component withheld"?"foreground required":"new harness input")+
 		(foreground?(pair?[declaration,"unit/controls/declared.sh"]:[declaration]).map(p=>`diff --git a/${p} b/${p}\nnew file mode 100755\n--- /dev/null\n+++ b/${p}\n@@ -0,0 +1,2 @@\n+#!/bin/sh\n+./${root}/lane --require-foreground\n`).join("")+
 			`diff --git a/${root}/lane b/${root}/lane\nnew file mode 100755\n--- /dev/null\n+++ b/${root}/lane\n@@ -0,0 +1,3 @@\n+#!/bin/sh\n+test "$1" = --require-foreground && test "\${CATALOG_ALLOW_FOREGROUND-}" = 1 && exit ${outcome==="foreground fails"?1:0}\n+echo 'Set CATALOG_ALLOW_FOREGROUND=1 only on an authorized desktop.' >&2; exit 2\n`:"")+
 		`diff --git a/.foundry/accept.mjs b/.foundry/accept.mjs\n--- a/.foundry/accept.mjs\n+++ b/.foundry/accept.mjs\n@@ -1 +1 @@\n-export const accepts=()=>false;\n+export const accepts=()=>${outcome==="withheld"?"false":"true"};\n`+
-		`diff --git a/${hook} b/${hook}\nnew file mode 100755\n--- /dev/null\n+++ b/${hook}\n@@ -0,0 +1,3 @@\n${program.trimEnd().split("\n").map(l=>"+"+l).join("\n")}\n`;
+		`diff --git a/${hook} b/${hook}\nnew file mode 100755\n--- /dev/null\n+++ b/${hook}\n@@ -0,0 +1,${program.trimEnd().split("\n").length} @@\n${program.trimEnd().split("\n").map(l=>"+"+l).join("\n")}\n`;
 	const candidate=stagePatch(f.root,prior.commit,revision,patch);
 	const full=git(f.root,"diff","--full-index",prior.commit,candidate)+"\n";
 	const bad=await publish(full.replace(/^index ([a-f0-9]+)\.\./m,(_,oid)=>`index ${"a".repeat(oid.length)}..`),["unit"]);
@@ -244,11 +403,44 @@ for(const outcome of ["pass","withheld","decline","stale","component withheld","
 	publisher.close();let forms=0;
 	const inspector=scriptedInspections(f.root);
 	const initialRuntime=foreground && outcome!=="foreground retry"?await historicalRuntime(t,89):createRuntime;
+	/** @type {{id:string,status:number|null,diagnostic:string}[]} */ const challenged=[];
 	const owner=f.runtime(f.root,{...inspector,inspectionState:async id=>{
 		const reply=await inspector.inspectionState(id);
 		return outcome==="review changes"?{...reply,result:{...reply.result,outcome:"changes",summary:"Assertion removed"}}:reply;
-	},execute:async(tool,args,key)=>outcome==="runner refused" && tool==="bash"?{resultType:"denied"}:
-		pair && tool==="bash" && read().effects.some(e=>e.tool==="bash" && e.lane && args.shellId===e.args.shellId)?{resultType:"unconfirmed"}:f.execute(tool,args,key),
+	},execute:async(tool,args,key)=>{
+		if(tool!=="bash")return f.execute(tool,args,key);
+		if(outcome==="runner refused")return {resultType:"denied"};
+		const checks=read().effects.filter(e=>e.kind==="component" && e.rollout),idx=checks.findIndex(e=>e.args.shellId===args.shellId);
+		if(outcome==="target moved before claim" && idx===0 || outcome.startsWith("prefix missing") && idx===1){
+			const spool=new DatabaseSync(db.file+".outcomes");
+			const gate=join(f.root,"..","prepared"),keyFile=join(f.root,"..","challenged-keys"),command=String(args.command);
+			const env={...process.env,NODE_OPTIONS:`--import=${new URL("../test/runner-claim-gate.mjs",import.meta.url).href}`,
+				FOUNDRY_TEST_KEY_COUNT:keyFile,...(duringBuild && {CATALOG_TEST_GATE:gate}),...(duringExport && {FOUNDRY_TEST_EXPORT_GATE:gate})};
+			const child=duringBuild || duringExport?promisify(execFile)("/bin/sh",["-c",command],{cwd:f.root,env,timeout:30000})
+				.then(r=>({status:0,diagnostic:r.stderr}),error=>({status:Number(error.code),diagnostic:String(error.stderr??error)})):undefined;
+			try{
+				if(child){
+					const deadline=Date.now()+15000;
+					while(!existsSync(gate+".ready")){assert.ok(Date.now()<deadline,"the original preparation did not reach its barrier");await sleep(10);}
+					assert.ok(read().effects.find(e=>e.id===checks[idx].id)?.runnerClaim);
+				}
+				const prefix=checks[0],row=idx && spool.prepare("SELECT document,signature FROM outcomes WHERE run=? AND effect=?").get(run,prefix.id);
+				if(idx){assert.ok(row && prefix.receipt?.exit===0);spool.prepare("DELETE FROM outcomes WHERE run=? AND effect=?").run(run,prefix.id);}
+				else{put(f.root,"operator","changed since issue");git(f.root,"commit","-qam","Move synthetic target after issue");}
+				try{
+					if(child){
+						writeFileSync(gate+".release","");challenged.push({id:checks[idx].id,...await child});
+					}else{
+						const result=spawnSync("/bin/sh",["-c",command],{cwd:f.root,encoding:"utf8",timeout:20000,env});
+						challenged.push({id:checks[idx].id,status:result.status,diagnostic:result.stderr});
+					}
+				}finally{if(row)spool.prepare("INSERT INTO outcomes(run,effect,document,signature) VALUES(?,?,?,?)").run(run,prefix.id,row.document,row.signature);}
+			}finally{spool.close();if(child){writeFileSync(gate+".release","");await child;}}
+			return {resultType:"unconfirmed"};
+		}
+		if(pair && read().effects.some(e=>e.tool==="bash" && e.lane && args.shellId===e.args.shellId))return {resultType:"unconfirmed"};
+		return f.execute(tool,args,key);
+	},
 		autoConfirm:async()=>true,confirmProposal:async msg=>{
 		forms++;assert.ok([prior.commit,revision,failed.id,blob,hook,retainedFile,"100755","selector","controls"].every(s=>msg.includes(s)),msg);
 		assert.deepEqual(read().effects,stopped.effects);
@@ -265,6 +457,24 @@ for(const outcome of ["pass","withheld","decline","stale","component withheld","
 		return;
 	}
 	await owner.operation("rollout",args,"owner");await owner.flush();
+	if(outcome.endsWith("before claim") || duringBuild || duringExport){
+		assert.equal(challenged.length,1);
+		const [result]=challenged,c=read().effects.find(e=>e.id===result.id);assert.ok(c?.tool==="bash" && c.callId);
+		const keys=join(f.root,"..","challenged-keys");
+		assert.equal(existsSync(keys+".evaluators"),false,"the protected evaluator must not start");
+		if(duringBuild || duringExport){
+			assert.equal(result.status,0,result.diagnostic);assert.equal(readFileSync(keys,"utf8"),"key\n");assert.ok(c.runnerClaim);
+			assert.equal(c.receipt?.exit,null);assert.equal(c.receipt?.inputs,undefined);db.verifySigned(run,c);
+			if(duringExport)assert.equal(existsSync(join(f.root,"..","prepared.hook")),false,"do not launch the preparation hook after its predecessor evidence was withdrawn during export");
+		}else{
+			assert.equal(existsSync(keys),false,"refuse before generating a key, not just before committing it");
+			assert.equal(c.runnerClaim,undefined);assert.equal(c.runnerStarted,undefined);assert.equal(c.receipt,undefined);
+			assert.equal(result.status,1,result.diagnostic);assert.match(result.diagnostic,/stale|target|exclusive|obligation/i);
+		}
+		db.verifySigned(run,failed);
+		if(outcome.startsWith("prefix")){const prefix=read().effects.find(e=>e.kind==="component" && e.rollout);assert.ok(prefix?.kind==="component");db.verifySigned(run,prefix);}
+		assert.deepEqual(read().nodes,stopped.nodes);assert.deepEqual(read().join,prior);return;
+	}
 	let current=owner;
 	if(foreground){
 		const held=read(),c=held.effects.find(e=>e.kind==="component" && e.rollout && e.receipt?.exit===2);assert.ok(c?.kind==="component" && c.commit);

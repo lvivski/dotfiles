@@ -57,7 +57,7 @@ export const reconciliation=machine("reconciliation","idle",{
 		go("work","done","A later eligible turn can deliver a timely final handoff, not start new work.","expired","!handoff"),
 		act("work","reservations","mend-test","Dispatch only the current test-repair phase; a calibration is not a product check.","owner","active","!expired","testRepair"),
 		act("work","reservations","draft-correction","Send the signed stop directly to its bounded proposal writer. A draft never changes a release.","owner","active","!expired","draftDue"),
-		act("work","reservations","offer-question","Present the active owner's outstanding question independently of eligible reservations.","owner","active","!expired","question"),
+		act("work","reservations","offer-question","Present the active owner's outstanding charter or author-scope question independently of eligible reservations.","owner","active","!expired","question"),
 		act("work","reservations","offer-adoption","Ask the owner about the exact adoption or correction to the failed assembly. Presenting the proposal grants nothing.","owner","active","!expired","adoption"),
 		act("work","reservations","offer-batch","Consider only reservations belonging to this issuer."),
 	],
@@ -100,8 +100,8 @@ export const reconciliation=machine("reconciliation","idle",{
 	native:[
 		act("issued","native","wake-checkpoint","The journaled goal opens eligible checkpoint discovery before its native reply.","checkpointGoal","checkpointReviews"),
 		go("issued","native","Wait for the original call without opening checkpoint discovery."),
-		go("attempt","done","A stale protected check or writer handoff waits for a verified change instead of retrying the call.","!claimed","pinnedCheck"),
-		act("attempt","done","refill","Reconcile from the ledger after the attempted call, never by repeating its request."),
+		go("attempt","done","An unissued reservation waits for new evidence; a failed claim does not wake itself.","!claimed"),
+		act("attempt","done","refill","Reconcile the journaled call's reply; an unknown outcome is not permission to reissue it."),
 	],
 	done:[],
 },{description:"Coordinates one transient wake of an issuing session. The ledger, not this pass, owns reservations and evidence.",states:{

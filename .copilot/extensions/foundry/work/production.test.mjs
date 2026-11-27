@@ -1,10 +1,11 @@
+import { inspectComponent, markInspection } from "./inspections.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
 import { git, put } from "../test/fixture.mjs";
 import { activation, failedFinalDiagnostic } from "../test/ownership.mjs";
 import { candidatePacket } from "./critique.mjs";
-import { currentInspection, inspectComponent, markInspection } from "./inspection.mjs";
+import { currentInspection } from "./inspection.mjs";
 import { productionResult } from "./production.mjs";
 import { createRuntime } from "./runtime.mjs";
 import { grant as ownership } from "./transfer.mjs";

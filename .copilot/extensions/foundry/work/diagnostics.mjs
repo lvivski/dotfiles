@@ -1,5 +1,7 @@
 import { checkReceipt, generationOf } from "./evidence.mjs";
+import { tokenSource } from "./lineage.mjs";
 import { regularFiles } from "./product.mjs";
+import { effectAt, productAt } from "./revision.mjs";
 import { covers, digest, fail, fields, FoundryError, record, relative, text } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
@@ -70,7 +72,7 @@ export function diagnosticTasks(r,n){
 
 /** @param {Run} r @param {Diagnostic} d */
 export function currentDiagnostic(r,d){
-	const n=r.nodes[d.grain],w=r.effects.find(e=>e.id===d.assignment),c=r.effects.find(e=>e.id===d.check),p=r.products.at(-1);
+	const n=r.nodes[d.grain],w=effectAt(r,d.assignment),c=effectAt(r,d.check),p=r.products.at(-1);
 	if(!n || w?.kind!=="writer" || !n.token || n.worker!==w.nativeId || n.generation!==generationOf(w) || digest(n.token)!==d.attempt ||
 		p?.check!==d.checkpoint || p.target!==d.target || r.goal?.check!==d.goal || c?.kind!=="component" || !eligible(r,n,c,d.kind))return;
 	return {n,w,c,p};
@@ -125,13 +127,17 @@ export function proposedFootprint(run,check){
 
 /** @param {Run} r @param {import("./model.js").FootprintRequest} q */
 export function footprintProgress(r,q){
-	const p=r.products.at(-1),obs=r.effects.find(e=>e.id===q.observer);
+	const p=r.products.at(-1),obs=effectAt(r,q.observer);
 	if(r.independent || r.join || p?.check!==q.checkpoint || p.target!==q.target || r.goal?.check!==q.goal ||
 		obs?.kind!=="component" || !obs.grain || r.nodes[obs.grain]?.check!==obs.id ||
 		q.selected.some(s=>r.nodes[s.grain]?.candidate!==s.candidate || r.nodes[s.grain]?.check!==s.component || r.nodes[s.grain]?.state!=="published"))return;
-	const reports=r.diagnostics?.filter(d=>d.kind==="footprint" && currentDiagnostic(r,d))??[];
-	const missing=q.checks.filter(check=>!reports.some(d=>d.check===check));
-	const ambiguous=q.checks.filter(check=>reports.filter(d=>d.check===check).length>1);
+	const counts=new Map(q.checks.map(check=>[check,0]));
+	for(const d of r.diagnostics??[]){
+		const n=counts.get(d.check);
+		if(n!==undefined && d.kind==="footprint" && currentDiagnostic(r,d))counts.set(d.check,n+1);
+	}
+	const missing=[],ambiguous=[];
+	for(const [id,n] of counts){if(!n)missing.push(id);else if(n>1)ambiguous.push(id);}
 	return {missing,ambiguous,grain:obs.grain};
 }
 /** @param {string} run @param {import("./model.js").FootprintRequest} q @returns {Data} */
@@ -139,14 +145,10 @@ export const subsetRequest=(run,q)=>({run,observer:q.observer,checkpoint:q.check
 
 /** @param {Run} run @param {Diagnostic} d */
 export function validDiagnostic(run,d){
-	const {id,...body}=d,w=run.effects.find(e=>e.id===d.assignment),c=run.effects.find(e=>e.id===d.check),p=run.products.find(p=>p.check===d.checkpoint),
-		g=run.effects.find(e=>e.id===d.goal);
+	const {id,...body}=d,w=effectAt(run,d.assignment),c=effectAt(run,d.check),p=productAt(run,d.checkpoint),g=effectAt(run,d.goal);
 	if(id!==diagnosticId(run.id,body) || w?.kind!=="writer" || w.grain!==d.grain || w.state!=="done" || !w.nativeId ||
 		c?.kind!=="component" || !c.runnerClaim || !checkReceipt(c) || !p || p.target!==d.target || g?.kind!=="goal" || g.commit!==p.commit)return false;
-	if(!w.token || digest(w.token)!==d.attempt && !run.effects.some(e=>e.grain===d.grain && (
-		e.kind==="component" && e.issuer===w.nativeId && e.inlineRepair && digest(e.inlineRepair)===d.attempt ||
-		e.kind==="repair" && e.state==="done" && e.token && digest(e.token)===d.attempt &&
-			(e.tool==="session.send"?e.issuer:e.args.session_id)===w.nativeId)))return false;
+	if(!tokenSource(run.effects,w,t=>digest(t)===d.attempt))return false;
 	if(d.kind==="production"){
 		const pair=c.observer?.previous && run.effects.find(e=>e.id===c.observer?.pair);
 		if(pair?.kind!=="component" || d.grain!==c.grain && d.grain!==pair.pair?.retainer)return false;

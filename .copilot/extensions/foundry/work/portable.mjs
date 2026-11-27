@@ -1,5 +1,6 @@
+import { verifyFixedGrant } from "./brief.mjs";
 import { equivalentOverlay, overlaySeal } from "./attestation.mjs";
-import { evaluatorOverlay, verifyFixedGrant } from "./contract.mjs";
+import { evaluatorOverlay } from "./contract.mjs";
 import { priorGoal } from "./feedback.mjs";
 import { checkedOverlay, entries } from "./product.mjs";
 import { checkedOwnership, componentScope, productScope } from "./inputs.mjs";

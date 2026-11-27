@@ -1,16 +1,14 @@
-import { topology } from "./topology.mjs";
 import { assign, working } from "./assignment.mjs";
-import { blockedComponent, checkReceipt, exhaustedCandidate, generationOf, inconclusiveRepair, missingInput, repairDetail } from "./evidence.mjs";
-import { outside } from "./product.mjs";
-import { assignmentDirectory, covers, digest, disjoint, fail, fields, roots, mixed, name, names, record, relative, sameScope, text } from "./values.mjs";
+import { blockedComponent, checkReceipt, exhaustedCandidate, generationOf, missingInput, repairDetail } from "./evidence.mjs";
+import { assignmentCalls, candidateHandoff, checked, dependencies, liveNeeds, owns, settledOutput, stalePins, tokenSource, validateNodes, writerInputs } from "./lineage.mjs";
+import { changedFiles, outside } from "./product.mjs";
 import { protectsGrant, transferredTo } from "./transfer.mjs";
+import { assignmentDirectory, digest, fail, fields, mixed, name, names, record, relative, roots, sameScope, text } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @typedef {import("./model.js").Node} Node */
 /** @typedef {import("./model.js").Proposal} Proposal */
 /** @typedef {import("./model.js").Area} Area */
-/** @param {Area} squad @param {import("./model.js").Scope} directory */
-export const owns = (squad, directory) => roots(directory).every(dir => covers(squad.areas, dir));
 
 /** @param {import("./model.js").Grain} grain @param {string} [review] @param {number} [repairs] @returns {Node} */
 export function waiting(grain,review,repairs=0){
@@ -18,16 +16,6 @@ export function waiting(grain,review,repairs=0){
 	assign(n,"request");
 	return n;
 }
-
-/** A published output still owns its directory until the combined tree is assessed.
- * @param {Node} n */
-export const settledOutput = n => n.state === "qualified" || n.state === "repeated";
-/** @param {Node} n */
-export const checked = n => settledOutput(n) || n.state === "published";
-
-/** @param {Run} run @param {Node} n */
-export const stalePins = (run, n) => Object.entries(n.inputs ?? {}).filter(([id, pin]) =>
-	run.nodes[id]?.candidate !== pin || !checked(run.nodes[id]));
 
 /** A current terminal check is history, not authority to replay it. A changed
  * prerequisite can instead justify a newly reviewed assignment.
@@ -40,28 +28,32 @@ export function supersededAttempt(run, n) {
 		return { check: n.check, staleInputs: Object.fromEntries(stale) };
 }
 
-/** A terminal assignment keeps its original brief and pins as history, not prerequisites.
- * @param {Node} n */
-export const liveNeeds = n => n.state === "blocked" ? [] : n.grain.needs;
-
-/** @param {Run["nodes"]} nodes */
-const workGraph=nodes=>topology(id=>Object.hasOwn(nodes,id) ? liveNeeds(nodes[id]) : undefined);
-
-/** @param {Node|undefined} n @param {import("./model.js").Effect} e */
-export function targetsWriter(n, e) {
-	return n?.state === "writing" && n.token === e.token && (e.tool !== "session.send" || e.issuer === n.worker || e.kind === "writer" && n.workspace === e.id);
+/** @param {Run} run @param {Node} n @param {string} commit @param {string} [cwd] */
+export function changedExclusion(run,n,commit,cwd){
+	const input=n.excluded;
+	if(!input)return false;
+	if("path" in input)return cwd===undefined?undefined:changedFiles(cwd,input.revision,commit,[input.path]).length>0;
+	const checkpoint=run.products.at(-1);
+	return checkpoint?.commit===commit && checkpoint.outputs[input.grain]!==input.revision && (!!checkpoint.outputs[input.grain] || commit!==n.base);
 }
 
-/** A reference offer that never reached a native call cannot keep its former writer's directory.
- * Keep the reservation in the journal; a held, prepared, issued or uncertain call is not obsolete.
- * @param {Node} n @param {import("./model.js").Effect} e */
-function obsoleteOffer(n, e) {
-	if (e.kind !== "artifact" || e.state !== "ready" || targetsWriter(n, e)) return false;
-	return e.callId === undefined && e.permissionHold === undefined && e.error === undefined;
+/** The scheduler and read-only ownership projection use the same input version.
+ * Without a checkout a path-dependent version is unknown, not the last review's version.
+ * @param {Run} run @param {import("./model.js").Squad} squad @param {string} commit @param {string} [cwd] */
+export function goalVersion(run,squad,commit,cwd){
+	if(!("areas" in squad))return commit;
+	const stopped=[];
+	for(const n of Object.values(run.nodes)){
+		if(n.state!=="blocked" && n.state!=="repeated" || !owns(squad,n.grain.directory))continue;
+		if(n.excluded){
+			const changed=changedExclusion(run,n,commit,cwd);if(changed===undefined)return;
+			if(!changed)continue;
+		}
+		const retired=supersededAttempt(run,n);
+		stopped.push([n.grain.id,n.state,n.reason??n.candidate,...(retired?[retired]:[])]);
+	}
+	return digest([commit,run.goal?.tried??[],stopped]);
 }
-
-/** @param {Run} run @param {Node} n */
-export const assignmentCalls = (run, n) => run.effects.filter(e => e.grain === n.grain.id && e.state !== "withdrawn" && !obsoleteOffer(n, e));
 
 /** A ready reservation may already have a generated checkout or pooled recipient. Only the
  * original, never-issued start is withdrawable, not a repair, approved successor or native hold.
@@ -71,65 +63,6 @@ export function unstartedWriter(run,n) {
 	const w=run.effects.find(e=>e.kind==="writer" && e.grain===n.grain.id && e.token===n.token);
 	if (w?.kind==="writer" && w.state==="ready" && !w.callId && !w.nativeId && !w.permissionHold && !w.error &&
 		!w.reuse && !w.observer && !w.production && !w.claims && generationOf(w)===n.generation) return w;
-}
-
-/** @param {Run} run @param {Node} n */
-export function originalAttempt(run, n) {
-	const calls = assignmentCalls(run, n), launch = calls.find(e => e.kind === "writer" && e.token === n.token);
-	if (launch?.kind === "writer" && launch.callId && launch.state === "done" && launch.nativeId === n.worker &&
-		calls.every(e => e === launch || e.kind === "artifact" && e.state === "done")) return launch;
-}
-
-/** @param {Run} run @param {Node} n @param {import("./model.js").Effect|undefined} review */
-export function originalScope(run,n,review) {
-	if (review?.kind!=="scout" || review.id!==n.review || review.state!=="observed" || review.observation?.outcome!=="regenerate" ||
-		review.correction || n.reuse || n.retained || n.successor || n.excluded || n.restoration) return false;
-	const g=review.observation.grains.find(g=>(typeof g==="string"?g:g.id)===n.grain.id);
-	if (typeof g!=="object") return g===n.grain.id && run.policy.squads.some(s=>s.id===review.squad && "grains" in s && s.grains.includes(g));
-	const s=run.policy.squads.find(s=>s.id===review.squad);
-	return s && "areas" in s && s.charter===n.grain.specification && digest(s.boundary)===digest(n.grain.boundary) && s.agent===n.grain.agent &&
-		sameScope(g.directory,n.grain.directory) && g.check===n.grain.check && g.task===n.grain.task &&
-		g.revision===n.grain.revision && digest(g.needs)===digest(n.grain.needs) && digest(g.prior??null)===digest(n.grain.prior??null);
-}
-
-/** Follow only delivered reference grants to the same original launch; no check or unrelated repair can enter the chain.
- * @param {Run} run @param {Node} n */
-export function inputAttempt(run,n) {
-	const calls=assignmentCalls(run,n), writers=calls.filter(e=>e.kind==="writer"), w=writers[0];
-	if (writers.length!==1 || w?.kind!=="writer" || w.state!=="done" || !w.callId || w.nativeId!==n.worker || generationOf(w)!==n.generation ||
-		calls.some(e=>e.error || e.permissionHold || e.state!=="done" || e!==w && e.kind!=="artifact" && !(e.kind==="repair" && e.input))) return;
-	const last=calls.findLast(e=>e.kind==="repair");
-	if (!last) return w.token===n.token ? w : undefined;
-	const old=last.kind==="repair" && last.input?.prior;
-	if (old && last.token===n.token && old.worker===n.worker && old.generation===n.generation && old.base===n.base &&
-		old.review===n.review && n.repairs===old.repairs+1 && digest(old.inputs)===digest(n.inputs) && digest(old.grain)===digest(n.grain)) return w;
-}
-
-/** A producer request and a reference grant must agree on who can resume the work.
- * @param {Run} run @param {Node} n */
-export function referenceAttempt(run,n){
-	if(!n.base || !n.token || !n.worker || !n.generation || !n.review || missingInput(n)===undefined || n.candidate || n.check)return;
-	if(n.stop?.input?.grant && n.stop.input.grant!==writerVersion(n))return;
-	const w=inputAttempt(run,n);
-	if(w && !w.finished && !w.reuse && !w.observer && !w.production && !w.restoration && !w.readGrant &&
-		originalScope(run,n,run.effects.find(e=>e.id===n.review)))return w;
-}
-
-/** Identify a particular grant without sharing its token. A preview, reference cursor
- * or delivery diagnostic changes no authority and must not invalidate the request.
- * @param {Node} n */
-export const writerVersion=n=>digest([n.grain,n.worker,n.token,n.repairs,n.base,n.generation,n.review,n.inputs,
-	n.supporting??null,n.priorSource??null,n.replaces??null,n.workspace??null,n.retained??null,n.successor??null,n.restoration??null,n.reuse??null]);
-
-/** A stopped exit-2 sample can inform a different assignment but cannot seed it. An
- * exhausted exit-1 candidate instead needs a newly reviewed prerequisite.
- * @param {Run} run @param {Node} n @param {import("./model.js").Output} g @param {import("./model.js").Review} review */
-export function candidateHandoff(run, n, g, review) {
-	if (g.revision && g.revision !== review.base) return false;
-	const detail = repairDetail(n);
-	if (detail) return review.packet?.sources?.includes(`detail:${detail}`) &&
-		inconclusiveRepair(n, run.effects.find(e => e.id === n.check))?.commit === n.candidate;
-	return exhaustedCandidate(run,n) && g.needs.some(id => review.packet?.outputs[id] && review.packet.outputs[id] !== n.inputs?.[id]);
 }
 
 /** A terminal stop releases no files. On the same base the new task needs
@@ -157,32 +90,13 @@ export function stoppedHandoff(run, review, report, scopedDirectory) {
 	if (held) return { hold: `${n.grain.id}: ${held.kind} ${held.id} is ${held.state}${held.permissionHold || held.error ? `: ${held.permissionHold || held.error}` : ""}` };
 	if (launches.length !== 1 || !launches[0].callId || launches[0].nativeId !== n.worker || generationOf(launches[0]) !== n.generation)
 		return { hold: `No unique confirmed launch matches ${n.grain.id}'s writer and generation` };
-	const repaired = calls.some(e => e.kind === "component" && (exhausted || e.id === n.check) && e.issuer === n.worker && checkReceipt(e) && e.inlineRepair === n.token ||
-		e.kind === "repair" && e.token === n.token && (e.args.session_id === n.worker || e.tool === "session.send" && e.issuer === n.worker));
-	if (launches[0].token !== n.token && !repaired) return { hold: `Unconfirmed repair for ${n.grain.id}` };
+	if(!tokenSource(calls,launches[0],t=>t===n.token,e=>!!exhausted || e.id===n.check))return {hold:`Unconfirmed repair for ${n.grain.id}`};
 	const missing = g.needs.find(id => !run.nodes[id]);
 	if (missing) return { hold: `Missing prerequisite ${missing}` };
 	const deps = writerInputs(run.nodes, waiting({ ...n.grain, needs: g.needs }));
 	if (!deps) return { hold: `Unchecked prerequisites for ${g.id}` };
 	const stale = Object.entries(deps).find(([id,pin]) => run.nodes[id].state !== "qualified" || review.packet?.outputs[id] !== pin);
 	return stale ? { hold: `Prerequisite ${stale[0]} is not qualified at its reviewed revision` } : { predecessor: n };
-}
-/** @param {Run["nodes"]} nodes @param {Iterable<string>} roots */
-export function dependencies(nodes, roots) {
-	return workGraph(nodes).upstream(roots);
-}
-
-/** Undefined means not ready; an empty map is a ready writer with no prerequisites.
- * @param {Run["nodes"]} nodes @param {Node} n */
-export function writerInputs(nodes, n) {
-	if (n.state !== "waiting") return;
-	/** @type {Record<string,string>} */ const pins = {};
-	for (const id of dependencies(nodes, n.grain.needs)) {
-		const input = nodes[id];
-		if (!input.candidate || !checked(input)) return;
-		pins[id] = input.candidate;
-	}
-	return pins;
 }
 
 /** @param {Run} run @param {Node} n */
@@ -206,6 +120,9 @@ export function queuedWriters(nodes) {
 	return all.filter(n=>n.state==="waiting" && !held.has(n.grain.id)).length;
 }
 
+/** @param {Run["nodes"]} nodes @param {number} remaining */
+export const discoveryBudget=(nodes,remaining)=>Number.isFinite(remaining)?Math.max(0,remaining-queuedWriters(nodes)):remaining;
+
 /** In a goal run the product check verifies a checkpoint, not a final delivery.
  * One-off runs still wait for all actionable outputs (every output for a seed).
  * @param {Run} run @param {string|undefined} target @param {number} remaining */
@@ -223,25 +140,6 @@ export function productOutputs(run, target, remaining) {
 			actionable(run, n) && !(remaining === 0 && n.state === "waiting"))) return;
 	}
 	if (changed || run.goal && (run.goal.target !== target || !run.products.length && run.join?.commit === target)) return outputs;
-}
-
-/** @param {Run["nodes"]} nodes @param {{changed:string[],removed:Iterable<string>}} [edit] */
-export function validateNodes(nodes,edit) {
-	const all=Object.values(nodes), cut=all.some(n=>n.retained || n.successor);
-	if (cut) for (const [index,n] of all.entries()) {
-		disjoint(roots(n.grain.directory));
-		for (const other of all.slice(index+1)) {
-			if (transferredTo(n,other.grain.id,other.grain.directory) || transferredTo(other,n.grain.id,n.grain.directory)) continue;
-			disjoint([...roots(n.grain.directory),...roots(other.grain.directory)]);
-		}
-	}
-	else disjoint(all.flatMap(n=>roots(n.grain.directory)));
-	const graph=workGraph(nodes);
-	if (edit) graph.validateEdit(edit.changed,edit.removed,()=>Object.keys(nodes));
-	else {
-		names(all.map(n=>n.grain.id),"grain");
-		graph.validate(Object.keys(nodes));
-	}
 }
 
 /** The effective inputs are the entire versioned upstream closure. Older keys used the direct edge list.

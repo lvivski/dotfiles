@@ -1,7 +1,7 @@
 import { assignment } from "./rules/assignment.mjs";
 import { executor } from "./adapter.mjs";
 import { transition } from "./machine.mjs";
-import { publicationVerdict } from "./publication.mjs";
+import { componentDecision } from "./publication.mjs";
 
 /** @typedef {import("./model.js").Node} Node */
 /** @typedef {import("./model.js").Run} Run */
@@ -15,29 +15,28 @@ export const frozenSubmission=n=>n.state==="checking" || n.state==="reviewing";
 /** @param {Node} n */
 export const working=n=>n.state==="writing" || frozenSubmission(n);
 
-/** @param {Node} node */
-const snapshot=node=>({value:node.state,context:{
-	...(node.reason!==undefined && {reason:node.reason}),...(node.replaces!==undefined && {replaces:node.replaces}),
-}});
-/** @param {Node} node @param {{value:Node["state"],context:Context}} next */
-function apply(node,{value,context}) {
+/** @typedef {{invalidate:()=>void,reserve?:()=>void}} Actions */
+const carryOut=executor(assignment,{"invalidate-consumers":(/** @type {Actions} */ a)=>a.invalidate(),
+	"reserve-inspection":(/** @type {Actions} */ a)=>{if(!a.reserve)throw Error("Missing independent review reservation");a.reserve();}});
+
+/** @template {{type:string}} E @param {Node} node @param {E} event @param {import("./machine.mjs").Facts} [facts] @param {Actions} [actions] */
+function advance(node,event,facts={},actions) {
+	const result=transition(assignment,{value:node.state,context:{
+		...(node.reason!==undefined && {reason:node.reason}),...(node.replaces!==undefined && {replaces:node.replaces}),
+	}},event,facts,true);
+	if(actions)carryOut(result,actions);else if(result.effects.length)throw Error(`Missing assignment action for ${event.type}`);
+	const {value,context}=result.snapshot;
 	node.state=value;
 	if (context.reason===undefined) delete node.reason; else node.reason=context.reason;
 	if (context.replaces===undefined) delete node.replaces; else node.replaces=context.replaces;
+	return result;
 }
 
 /** @typedef {Exclude<(typeof assignment.states)[keyof typeof assignment.states][number]["on"],"component"|"repair"|"inspection">} Command */
 /** @param {Node} node @param {Command|{type:"stop"|"repeat",reason:string}} signal */
-export function assign(node,signal) {
-	const event=typeof signal==="string" ? {type:signal} : signal;
-	const result=transition(assignment,snapshot(node),event,{},true);
-	apply(node,result.snapshot);
-	return result;
-}
-
-/** @typedef {{invalidate:()=>void,reserve?:()=>void}} Actions */
-const carryOut=executor(assignment,{"invalidate-consumers":(/** @type {Actions} */ a)=>a.invalidate(),
-	"reserve-inspection":(/** @type {Actions} */ a)=>{if(!a.reserve)throw Error("Missing independent review reservation");a.reserve();}});
+export const assign=(node,signal)=>advance(node,typeof signal==="string" ? {type:signal} : signal);
+/** @param {Run} run @param {Node} node */
+const repairsSpent=(run,node)=>node.repairs>=run.policy.repairs;
 
 /** The caller verifies the exact check/attempt. Invalidation must succeed on the old pins
  * before installing the producer's new state; it cannot change the selected transition.
@@ -48,21 +47,16 @@ export function componentOutcome(run,id,reason,component,invalidateConsumers,res
 	const check=node.restoration && run.effects.find(e=>e.id===node.check);
 	/** @type {Outcome} */ const event={type:component ? "component" : "repair",id,reason,candidate,
 		...(check?.kind==="component" && check.observer && {observer:{check:check.id,final:!!check.observer.previous}})};
-	const result=transition(assignment,snapshot(node),event,{...component,reviewRequired:!!run.inspections,attestation:!!node.restoration,exhausted:node.repairs>=run.policy.repairs},true);
-	carryOut(result,{invalidate:()=>invalidateConsumers(run,id,candidate),reserve});
-	apply(node,result.snapshot);
-	return result;
+	return advance(node,event,{...component,reviewRequired:!!run.inspections,attestation:!!node.restoration,exhausted:repairsSpent(run,node)},
+		{invalidate:()=>invalidateConsumers(run,id,candidate),reserve});
 }
 
 /** @param {Run} run @param {Node} node @param {import("./model.js").Inspection} i @param {number} remaining */
 export function inspectionOutcome(run,node,i,remaining) {
-	const verdict=publicationVerdict(i);
-	if(!verdict)return;
-	const readOnly=!!node.restoration || !node.worker;
-	const reason=`Rubber Duck requested changes on ${i.candidate}: ${i.summary}`+
-		(readOnly ? " This grant does not authorize changing those bytes." : !remaining ? " No repair assignment remains." : "");
-	const result=transition(assignment,snapshot(node),{type:"inspection",id:node.grain.id,reason},{
-		approved:verdict==="approved",unfunded:!remaining,exhausted:node.repairs>=run.policy.repairs,readOnly,
-	},true);
-	apply(node,result.snapshot);
+	const decision=componentDecision(run,node.check,node.grain.id,node.candidate);
+	if(!decision?.review || decision.review.id!==i.id)return;
+	const reason=`Rubber Duck requested changes on ${decision.review.candidate}: ${decision.review.summary}`;
+	advance(node,{type:"inspection",id:node.grain.id,reason},{
+		approved:decision.verdict==="approved",unfunded:!remaining,readOnly:!!node.restoration || !node.worker,exhausted:repairsSpent(run,node),
+	});
 }

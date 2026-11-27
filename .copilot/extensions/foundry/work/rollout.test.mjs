@@ -14,7 +14,7 @@ import { observedOverlay } from "./attestation.mjs";
 import { candidatePacket } from "./critique.mjs";
 import { openDatabase } from "./database.mjs";
 import { qualifiedProduct } from "./evidence.mjs";
-import { stagePatch } from "./product.mjs";
+import { git as rawGit, stagePatch } from "./product.mjs";
 import { createRuntime } from "./runtime.mjs";
 import { decode } from "./snapshot.mjs";
 import { authorDefinition } from "./author.mjs";
@@ -32,7 +32,7 @@ const add=(file,lines,executable)=>`diff --git a/${file} b/${file}\nnew file mod
 const observe=`import {existsSync,readFileSync} from "node:fs";const read=f=>existsSync(f)?readFileSync(f,"utf8").trim():"absent";
 	const entry=read("${value}"),rule=read("${rule}"),hold=read("${hold}"),format=read("${format}"),foreground=process.env.REVIEW_ALLOW_FOREGROUND??"absent";
 	console.log(JSON.stringify({entry,rule,hold,format,foreground}));`;
-/** @param {import("node:test").TestContext} t @param {boolean} archived @param {{goal?:string,product?:string,files?:Record<string,string>,control?:string,check?:string,total?:string,area?:boolean,reader?:89|90|94|95,sourceEdition?:string,unobserved?:boolean}} [rules] */
+/** @param {import("node:test").TestContext} t @param {boolean} archived @param {{goal?:string,product?:string,files?:Record<string,string>,control?:string,check?:string,total?:string,area?:boolean,task?:string,reader?:89|90|94|95,sourceEdition?:string,unobserved?:boolean}} [rules] */
 async function stopped(t,archived,rules={}){
 	const reader=rules.reader??(rules.control?89:undefined);
 	const sourceEdition=rules.sourceEdition??(archived?legacy:undefined);
@@ -48,7 +48,7 @@ async function stopped(t,archived,rules={}){
 	if(rules.control){put(f.root,component+".control",rules.control);chmodSync(join(f.root,component+".control"),0o755);git(f.root,"add",component+".control");git(f.root,"commit","-qm","Freeze independent controls");}
 	const base=git(f.root,"rev-parse","HEAD");
 	await f.start();await f.owner.operation("configure",{run,revision:0,checkpointReviews:false},"owner");
-	await f.scouts[0].report({outcome:"regenerate",reason:"The report is missing.",evidence:[charter],grains:rules.area?[{id:"entry",directory:dir,task:requirement,needs:[],check:component}]:["entry"]});
+	await f.scouts[0].report({outcome:"regenerate",reason:"The report is missing.",evidence:[charter],grains:rules.area?[{id:"entry",directory:dir,task:rules.task??requirement,needs:[],check:component}]:["entry"]});
 	const [w]=f.workers.values();put(w.cwd,value,(rules.total??"draft")+"\n");put(w.cwd,space,"previous wording\n");
 	for(const [file,bytes] of Object.entries(rules.files??{}))put(w.cwd,file,bytes);
 	await f.runtime(w.cwd).operation("submit",{run,token:w.token},w.id);await f.settle();
@@ -90,6 +90,66 @@ async function stopped(t,archived,rules={}){
 	}
 	return {f,open,owner,original,read,j,offer,target,forms,packets,signed,consent:(/** @type {boolean} */ v)=>{consent=v;}};
 }
+
+for(const wake of ["ordinary wake","unchanged clock","restored issuer"])test(`an unissued correction waits for evidence, then uses its original reservation / ${wake}`,async t=>{
+	const reload=wake==="restored issuer";
+	const {f,owner,open,original,read,j,offer,target,signed}=await stopped(t,false,{sourceEdition:reload?process.env.FOUNDRY_ISSUER_BEFORE:undefined});
+	const change=await offer(owner,j,edit(value,"draft","ready")+edit(format,"plain","detailed"));
+	owner.close();
+	const clock=recoveryClock(),before=signed(j.check);
+	let moved="",samples=0,forms=0,starts=0,limit=1;
+	/** @type {(()=>Promise<unknown>)|undefined} */ let originalCall;
+	/** @type {Parameters<typeof f.runtime>[1]} */
+	const host={
+		watchRecovery:clock.watch,watchReceipts:()=>()=>{},
+		// Bound a broken issuer's immediate refill loop without issuing a call or changing its ledger.
+		mode:async()=>samples>limit?"plan":"autopilot",
+		confirmProposal:async()=>{forms++;return true;},
+		execute:async(tool,args,key)=>{
+			if(tool==="bash" && read().effects.some(e=>e.kind==="component" && e.rollout && e.callId===key)){
+				starts++;
+				if(reload){originalCall=()=>f.execute(tool,args,key);return {resultType:"unconfirmed"};}
+			}
+			return f.execute(tool,args,key);
+		},
+		permissionBlocker:async()=>{
+			if(read().effects.some(e=>e.kind==="component" && e.rollout && !e.callId)){
+				samples++;
+				if(!moved){put(f.root,"operator-note","Keep this work.");git(f.root,"add","operator-note");
+					git(f.root,"commit","-qm","Move target after approval");moved=git(f.root,"rev-parse","HEAD");}
+			}
+			return null;
+		},
+	};
+	let issuer=open(reload?original:createRuntime,host);
+	await issuer.operation("rollout",change.args,"owner");await issuer.flush();
+	const saved=read(),member=saved.effects.find(e=>e.kind==="component" && e.rollout);
+	assert.ok(moved && member?.kind==="component" && member.state==="ready" && !member.callId && !member.runnerClaim);
+	if(reload){
+		issuer.close();samples=0;issuer=open(createRuntime,host);
+		issuer.sessionStart("owner",f.root);await clock.pulse(issuer);
+	}
+	assert.equal(samples,1,"an unchanged unissued claim must not schedule its own second permission sample");
+	if(reload){await clock.pulse(issuer,5);assert.equal(samples,1,"unchanged ledger and ref need no further permission samples");}
+	if(wake==="unchanged clock"){
+		limit=4;await clock.pulse(issuer,8);
+		assert.ok(samples<=2,"a moved ref can wake its peers once, not ask for permission on every clock sample");
+	}
+	assert.deepEqual(read().effects,saved.effects);
+	samples=0;
+	git(f.root,"update-ref","refs/heads/main",target,moved);
+	await clock.pulse(issuer,3);
+	if(reload){
+		const uncertain=read().effects.find(e=>e.id===member.id);
+		assert.ok(originalCall && uncertain?.state==="uncertain" && uncertain.callId && !uncertain.runnerClaim);
+		await clock.pulse(issuer,3);assert.deepEqual(read().effects.find(e=>e.id===member.id),uncertain);assert.equal(starts,1);
+		await originalCall();await clock.pulse(issuer,5);
+	}
+	assert.equal(issuer.inspect({run},"owner").qualified,change.candidate);
+	assert.equal(signed(member.id).receipt?.exit,0);assert.deepEqual(signed(j.check),before);
+	assert.deepEqual(read().effects.filter(e=>e.kind==="component" && e.rollout).map(e=>e.id),[member.id]);
+	assert.equal(starts,1);assert.equal(forms,1);
+});
 
 test("the verbatim published consumer observes a prepared release with the runner's noninteractive stdio",async t=>{
 	const home=mkdtempSync(join(tmpdir(),"foundry-guide-"));t.after(()=>rmSync(home,{recursive:true,force:true}));
@@ -304,6 +364,34 @@ test("writer-drafted uncertain launch accepts only its late original binding aft
 	assert.equal(read().correctionDrafts?.[0].parts[0].workflow,id);assert.ok(read().effects.find(e=>e.id===j.check)?.receipt);
 });
 
+for(const lost of [false,true])test(`an author's start acknowledgment before packet delivery / ${lost?"previous issuer lost the ID":"reload retains the ID"}`,async t=>{
+	const {f,owner,open,read,j,signed}=await stopped(t,false,{reader:94,area:true});owner.close();f.owner.close();
+	const id="original-admission",failure=signed(j.check);
+	/** @type {import("./author.mjs").Ticket|undefined} */ let ticket;
+	let starts=0,forms=0,reads=0;
+	const first=open(lost?await historicalRuntime(t,95):createRuntime,{draftAgent:async t=>{starts++;ticket=t;return {runId:id,status:"running",workflowName:"foundry-draft"};}});
+	first.sessionStart("owner",f.root);first.turn("owner");await first.flush();first.close();
+	const issued=read().correctionDrafts?.at(-1)?.parts[0];
+	assert.ok(ticket && issued?.dispatch===ticket.dispatch);
+	assert.equal(issued.workflow,lost?undefined:id,"only an actually retained acknowledgment survives the old issuer");
+	assert.equal(issued.awaitingPacket,lost?undefined:true);
+	/** @type {import("./author.mjs").Packet|undefined} */ let packet;
+	const restored=open(createRuntime,{formIdle:async()=>true,draftAgent:async()=>assert.fail("No replacement launch"),
+		confirmProposal:async()=>{forms++;return true;},draftState:async workflow=>{
+			assert.equal(workflow,id);reads++;
+			const row=packet?.files.find(f=>f.file===value);
+			if(!row)return {runId:id,status:"running"};
+			return {runId:id,status:"completed",result:{subject:packet?.subject,reason:"Produce the promised value.",edits:[{file:value,before:row.before,text:"ready\n"}]}};
+		}});
+	restored.sessionStart("owner",f.root);restored.turn("owner");await restored.flush();
+	assert.equal(forms,0);assert.equal(reads>0,!lost);assert.equal(read().join?.check,j.check);
+	if(!lost)await assert.rejects(restored.draftPacket(ticket,"owner","other-admission"),{code:"wrong_workflow"});
+	packet=await restored.draftPacket(ticket,"owner",id);
+	restored.turn("owner");await restored.flush();restored.turn("owner");await restored.flush();
+	assert.ok(restored.inspect({run,detail:"proof"},"owner").qualification);
+	assert.deepEqual(signed(j.check),failure);assert.equal(starts,1);assert.equal(forms,1);
+});
+
 test("ordinary writer reference bytes cannot stand in for a bound proposal or external owner import",async t=>{
 	const {f,owner,read,j,offer,target}=await stopped(t,false,{reader:94,area:true});
 	const external=await offer(owner,j,edit(value,"draft","ready")),r=structuredClone(read()),db=openDatabase(f.root);t.after(()=>db.close());
@@ -407,6 +495,58 @@ test("writer-drafted distinct bytes recover an already failed standalone owned c
 	assert.equal(authors,1,"the negative replacement must reach one fresh, bounded author without an owner patch");
 	assert.equal(decisions,1);assert.ok(now.inspect({run,detail:"proof"},"owner").qualification);
 	assert.deepEqual(signed(prior.id),prior);assert.deepEqual(read().artifacts,saved.artifacts);
+});
+
+for(const detector of ["check","review","declined scope","declined bytes","unavailable","uncited","stale scope","uncertain author"])test(`repair the same unpadded output / ${detector}`,async t=>{
+	const task=requirement+" Consumers must receive the token without leading spaces.",finding=`${value}:1: remove the leading space; a raw consumer rejects it.`;
+	const check=observe+`if(entry==="draft"${detector==="check"?` || readFileSync(${JSON.stringify(value)},"utf8").startsWith(" ")`:""}){console.error("The raw token is invalid.");process.exit(1);}`;
+	const {f,owner,original,open,j,offer,read,signed,target,packets}=await stopped(t,false,{area:true,task,check,goal:'rule==="verified"',sourceEdition:process.env.FOUNDRY_FINDING_BEFORE});
+	const change=await offer(owner,j,edit(value,"draft"," ready")+edit(rule,"release","verified"));owner.close();
+	const reviewer=scriptedInspections(f.root);
+	const seed=open(original,{...reviewer,inspectionState:async w=>{
+		const r=await reviewer.inspectionState(w);return {...r,result:{...r.result,outcome:detector==="unavailable"?"unavailable":"changes",
+			summary:detector==="uncited"?`${rule}:1: change the evaluator instead.`:finding}};
+	}});
+	await seed.operation("rollout",change.args,"owner");await seed.flush();seed.close();f.owner.close();
+	const stoppedRun=read(),member=stoppedRun.effects.find(e=>e.kind==="component" && e.rollout && e.commit===change.candidate);
+	assert.ok(member?.kind==="component");const stop=signed(member.id),review=stoppedRun.inspections?.find(i=>i.component===member.id);
+	assert.equal(stop.receipt?.exit,detector==="check"?1:0);assert.equal(review?.state,detector==="check"?undefined:detector==="unavailable"?"unavailable":"changes");
+	const before=git(f.root,"rev-parse",`${change.candidate}:${value}`),clock=recoveryClock(),events=/** @type {string[]} */([]);let idle=false;
+	/** @type {ReturnType<typeof createRuntime>} */ const now=open(createRuntime,{watchRecovery:clock.watch,formIdle:async()=>idle,
+		draftAgent:async ticket=>{
+			events.push("author");if(detector==="uncertain author")throw Error("Lost author start");
+			const workflow="bound-author",p=await now.draftPacket(ticket,"owner",workflow);
+			assert.equal(p.check,member.id);assert.equal(p.source.grain,"entry");assert.equal(p.task,task);
+			assert.equal(p.source.producer,stoppedRun.nodes.entry.worker);
+			if(review){const body=JSON.stringify(p);for(const v of [review.id,review.workflow,finding])assert.ok(v && body.includes(v));}
+			const f=p.files.find(f=>f.file===value);assert.ok(f && f.before===before && f.text===" ready\n");
+			return {runId:workflow,status:"completed",result:{subject:ticket.subject,reason:"Supply the raw token.",edits:[{file:value,before,text:"ready\n"}]}};
+		},confirmProposal:async prompt=>{
+			const d=read().correctionDrafts?.at(-1);assert.ok(d);
+			if(!d.blob){
+				events.push("scope");assert.equal(d.automatic,false);assert.deepEqual(d.parts.flatMap(p=>p.files.map(f=>f.file)),[value]);
+				for(const v of [value,before,member.id])assert.ok(prompt.includes(v));
+				if(detector==="review")await assert.rejects(now.operation("draft",{run,check:member.id,files:[value]},"participant"),{code:"foreign_run"});
+				if(detector==="stale scope")git(f.root,"commit","--allow-empty","-qm","Move approval target");
+				return detector!=="declined scope";
+			}
+			events.push("bytes");assert.ok(prompt.includes(d.blob));return detector!=="declined bytes";
+		}});
+	now.sessionStart("owner",f.root);if(detector!=="check"){await clock.pulse(now,3);assert.deepEqual(events,[]);}
+	idle=true;await clock.pulse(now,8);
+	const end=read(),expected=detector==="check"?["author","bytes"]:detector==="unavailable" || detector==="uncited"?[]:
+		detector==="declined scope" || detector==="stale scope"?["scope"]:detector==="uncertain author"?["scope","author"]:["scope","author","bytes"];
+	assert.deepEqual(events,expected);assert.deepEqual(signed(member.id),stop);
+	assert.deepEqual(end.inspections?.find(i=>i.component===member.id),review);assert.deepEqual(end.artifacts,stoppedRun.artifacts);
+	const q=now.inspect({run,detail:"proof"},"owner").qualification;
+	if(detector==="check" || detector==="review"){
+		assert.ok(q);assert.equal(q.target.commit,target);assert.equal(rawGit(f.root,["show",`${q.commit}:${value}`]).toString(),"ready\n");
+		const fresh=end.effects.slice(stoppedRun.effects.length).filter(e=>e.tool==="bash");
+		assert.deepEqual(fresh.map(e=>e.kind),["component","product","goal"]);for(const e of fresh)assert.equal(signed(e.id).receipt?.exit,0);
+		assert.ok(end.inspections?.some(i=>i.component===fresh[0].id && i.state==="approved"));
+		assert.ok(packets.get(fresh[0].id)?.includes(task),"the bound replacement reviewer receives the product requirement, not just the diff instruction");
+	}else{assert.equal(q,null);assert.deepEqual(end.effects,stoppedRun.effects);assert.deepEqual(end.nodes,stoppedRun.nodes);}
+	await clock.pulse(now,4);assert.deepEqual(events,expected);
 });
 
 test("writer-drafted implementation-only follow-up keeps both evaluator pins unchanged",async t=>{

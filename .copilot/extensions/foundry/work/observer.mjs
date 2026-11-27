@@ -1,14 +1,13 @@
 import { verifiedCitations } from "./assembly.mjs";
-import { randomUUID } from "node:crypto";
-import { assign } from "./assignment.mjs";
 import { availableReservations } from "./capacity.mjs";
 import { checkReceipt } from "./evidence.mjs";
-import { admitted, reserveWorker } from "./native.mjs";
+import { admitted, reserveWorker, restaff } from "./native.mjs";
 import { currentPair } from "./pairing.mjs";
 import { observerInput, validRestoration } from "./partition.mjs";
-import { waiting, writerInputs } from "./plan.mjs";
+import { writerInputs } from "./lineage.mjs";
+import { waiting } from "./plan.mjs";
 import { changedFiles, commitAt, contractPaths, outside, regularFiles, verifyContracts } from "./product.mjs";
-import { digest, fail, fields, name, record, relative, text } from "./values.mjs";
+import { digest, fail, fields, name, pinnedSelection, record, relative, text } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @typedef {import("./model.js").NativeCall} Call */
@@ -29,11 +28,11 @@ function changedObserver(cwd,base,candidate,grant) {
 	return next.oid;
 }
 
-/** @param {string} cwd @param {Run} run @param {Call} job */
-export function observerBasis(cwd,run,job) {
+/** @param {string} cwd @param {Run} run @param {Call} job @param {string} [target] */
+export function observerBasis(cwd,run,job,target) {
 	const grant=job.observer, old=grant && run.effects.find(e=>e.id===grant.pair);
 	if (!grant || old?.kind!=="component" || !old.pair || !old.commit || old.grain!==job.grain || !old.grain ||
-		checkReceipt(old)?.exit!==1 || !currentPair(cwd,run,old,job.id) || run.blocker || run.conflict || run.join)
+		checkReceipt(old)?.exit!==1 || !currentPair(cwd,run,old,job.id,target) || run.blocker || run.conflict || run.join)
 		fail("stale_assignment","The signed negative pair, checkpoint, goal, retaining pin and consumer state must still match");
 	const source=observerInput(run.effects,grant);
 	if (!source?.commit) fail("invalid_observer","Need the first observer's exact signed negative component, candidate and approved file");
@@ -60,9 +59,9 @@ function previewBlob(cwd,basis,candidate,grant) {
 	return after;
 }
 
-/** @param {string} cwd @param {Run} run @param {Call} job @param {string} candidate @param {boolean} submit */
-export function verifyObserver(cwd,run,job,candidate,submit) {
-	const basis=observerBasis(cwd,run,job), grant=job.observer;
+/** @param {string} cwd @param {Run} run @param {Call} job @param {string} candidate @param {boolean} submit @param {string} [target] */
+export function verifyObserver(cwd,run,job,candidate,submit,target) {
+	const basis=observerBasis(cwd,run,job,target), grant=job.observer;
 	if (!grant) fail("invalid_observer","Missing observer grant");
 	const after=previewBlob(cwd,basis,candidate,grant);
 	if (submit && !grant.after) fail("approval_required","Preview the one-file observer diff for operator approval before submitting");
@@ -112,7 +111,7 @@ export function prepareObserver(cwd,run,actor,a,verify) {
 		return {base:basis.base,inputs:old.pair,worker:n.worker,token:n.token,
 			after:preview ? previewBlob(cwd,basis,preview,grant) : undefined};
 	}
-	const selected=select(run);
+	const {subject:selected,revalidate}=pinnedSelection(run,select,"Observer approval inputs changed");
 	return {
 		wake:preview?/** @type {const} */("none"):/** @type {const} */("ready"),
 		prompt:`Failed pair ${pair}, original failure ${selected.inputs.failed}; retainer ${selected.inputs.retainer}@${selected.inputs.candidate} (${selected.inputs.component}), checkpoint ${selected.inputs.checkpoint}, goal ${selected.inputs.goal}. Base ${selected.base}. `+
@@ -121,20 +120,18 @@ export function prepareObserver(cwd,run,actor,a,verify) {
 			`Authorize one fresh Foundry writer on that assembly to improve failure attribution only in ${file} (blob ${before})? No production or contract edits, copied coordinator patch, retries, or check on an unchanged tree. The writer must preview changes for separate approval. All prior receipts stand.`),
 		/** @param {Run} live */
 		apply(live) {
-			const now=select(live);
-			if (digest(now)!==digest(selected)) fail("stale_assignment","Observer approval inputs changed");
+			const now=revalidate(live);
 			const n=live.nodes[grain];
 			if (preview) {
 				const job=observerWriter(live,n.token);
 				if (!job?.observer || !now.after) fail("invalid_observer","Missing bound writer and approved blob");
 				job.observer.after=now.after;
 			} else {
-				n.token=randomUUID();n.generation=now.base;assign(n,"staff");
+				const token=restaff(n,now.base);
 				n.grain={...n.grain,task:`Improve failure attribution only in ${file}; preserve the original behavior assertions.`};
-				delete n.worker;delete n.workspace;delete n.preview;delete n.candidate;delete n.check;delete n.reason;
 				const brief=`Diagnose the behavior reported by signed component ${previous?.check??pair} on the checked assembly in this worktree. Read ${n.grain.specification}, ${n.grain.boundary.join(", ")} and the assigned check ${n.grain.check}. Author your own observer-only change to ${file}; no other file is writable. Separate expected and actual values at each phase including baseline. Preserve every behavior assertion and tolerance. Verify on intact and deliberately faulty controls in disposable copies. Do not import a coordinator patch or change product code. Join helpers and call foundry_preview({run:"${live.id}",token:"${n.token}"}). Foundry routes the exact preview for approval and notifies you when it is approved; report control results as evidence. Only then submit the same bytes with foundry_submit. No local commits, branch changes or reruns of the failed pair.`;
 				const focus=previous?` Starting from failed observer ${previous.check} at ${previous.candidate}, distinguish ${JSON.stringify(previous.phases)}. Preserve all earlier assertions including already-passing paths. Show intact and deliberately broken phase controls. On failure identify the first mismatching phase and expected/actual state or the specific missing observation for the owner. No production change or further observer assignment.`:"";
-				reserveWorker(live,actor,n.token,now.base,brief+focus,n.grain.agent,grain,undefined,grant);
+				reserveWorker(live,actor,token,now.base,brief+focus,n.grain.agent,grain,undefined,grant);
 			}
 			return ()=>commitAt(cwd,live.policy.target)===now.inputs.target;
 		}

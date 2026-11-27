@@ -1,16 +1,16 @@
+import { componentBatch } from "./inspections.mjs";
 import { verifyJoinedInputs, verifyRepairInputs } from "./assembly.mjs";
 import { checkReceipt } from "./evidence.mjs";
 import { checks, currentDelivery, seal } from "./batch.mjs";
 import { assess } from "./goal.mjs";
 import { harnessFiles } from "./harness.mjs";
-import { componentBatch } from "./inspection.mjs";
 import { admitted, expired, reserveCheck, reserveProduct } from "./native.mjs";
-import { validateNodes, writerInputs } from "./plan.mjs";
+import { validateNodes, writerInputs } from "./lineage.mjs";
 import { checkDirectory, commitAt, directoryBaseline, outside, retain, stageDelivery, verifyContracts } from "./product.mjs";
 import { publishedComponent, publishedNodes } from "./publication.mjs";
 import { settledCheckpoint } from "./repin.mjs";
 import { grant } from "./transfer.mjs";
-import { digest, fail, fields, name, names, roots } from "./values.mjs";
+import { digest, fail, fields, name, names, pinnedSelection, roots } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @typedef {import("./model.js").Delivery} Delivery */
@@ -79,15 +79,14 @@ export function prepareDelivery(cwd,run,actor,a,signed) {
 			fail("duplicate_delivery","This exact batch already has a delivery record; inspect its checks");
 		return {grant:{...basis,id:seal(basis)},files:selected.map(s=>({directory:s.update.directory,candidate:s.update.to,tree:s.item.tree,files:s.files})),target};
 	}
-	const selected=select(run);
+	const {subject:selected,revalidate}=pinnedSelection(run,select,"Test delivery changed during approval");
 	return {prompt:`Deliver these absent TEST-ONLY directories on checkpoint ${checkpoint} (goal ${goal}, target ${selected.target})?\n`+
 		`${JSON.stringify(selected.files)}\nCombined commit: ${selected.grant.assembly}.\n`+
 		"Approve only if every listed file is a test or test helper, never shipped code, and no required input is unknown. "+
 		`Run every selected component on this combined commit${run.inspections ? " and independently review each contributed test directory" : ""}, then the product check and final goal. No historical candidate is promoted and the target is not changed.`,
 		/** @param {Run} r */
 		apply(r) {
-			const again=select(r);
-			if (digest(again)!==digest(selected)) fail("stale_assignment","Test delivery changed during approval");
+			const again=revalidate(r);
 			const d=again.grant;
 			retain(cwd,d.assembly);
 			(r.deliveries??=[]).push(d);
@@ -99,10 +98,7 @@ export function prepareDelivery(cwd,run,actor,a,signed) {
 /** @param {string} cwd @param {Run} r @param {Delivery} d @param {number} i */
 function nextComponent(cwd,r,d,i) {
 	const g=d.selected[i].prior.grain;
-	reserveCheck(r,r.owner,cwd,d.assembly,g.check,g.id);
-	const e=r.effects.at(-1);
-	if (e?.kind!=="component") throw Error("Missing delivery component");
-	e.delivery=d.id;
+	reserveCheck(r,r.owner,cwd,d.assembly,g.check,{kind:"component",grain:g.id}).delivery=d.id;
 }
 
 /** Run the original default suites serially: they can share a desktop. Don't publish any
@@ -134,10 +130,7 @@ export function deliveryResult(cwd,run,d,target) {
 		if(batch.state!=="ready")return;
 		const outputs={...p.outputs};
 		for (const {prior} of d.selected) outputs[prior.grain.id]=d.assembly;
-		reserveProduct(run,run.owner,cwd,target,d.assembly,outputs);
-		const product=run.effects.at(-1);
-		if (product?.kind!=="product") throw Error("Missing delivery product reservation");
-		product.delivery=d.id;
+		reserveProduct(run,run.owner,cwd,target,d.assembly,outputs).check.delivery=d.id;
 		return;
 	}
 	const join=run.join;
@@ -146,6 +139,5 @@ export function deliveryResult(cwd,run,d,target) {
 	run.nodes=publishedNodes(run,jobs.slice(0,-1),({grain,review,inputs,supporting,repairs})=>
 		({grain,review,inputs,supporting,repairs,base:p.commit,generation:p.commit,state:"qualified"}));
 	run.products.push(join);delete run.join;
-	assess(cwd,run,run.owner,target,join.commit);
-	d.assessment=run.goal?.check;
+	d.assessment=assess(cwd,run,run.owner,target,join.commit).id;
 }

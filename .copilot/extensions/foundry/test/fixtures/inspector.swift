@@ -35,6 +35,26 @@ private struct Failure: Error { let reason: String; init(_ reason: String) { sel
                 try await Task.sleep(for: .milliseconds(40))
             }
             _ = try await js("window.f=document.querySelector('iframe');window.d=f.contentDocument;window.b=d.querySelector('.bar button[aria-controls]');window.p=d.getElementById(b.getAttribute('aria-controls'));void 0")
+			let navigation = """
+			(() => {
+				const tabs = [...d.querySelectorAll('[role=tab]')];
+				if (tabs.length < 3) return 'missing tabs';
+				tabs[0].click(); tabs[0].focus();
+				for (const [key, index, handled] of [['ArrowLeft', tabs.length-1, true], ['ArrowRight', 0, true],
+					['ArrowRight', 1, true], ['x', 1, false], ['End', tabs.length-1, true], ['Home', 0, true]]) {
+					const event = new f.contentWindow.KeyboardEvent('keydown', {key, bubbles:true, cancelable:true});
+					d.activeElement.dispatchEvent(event);
+					if (event.defaultPrevented !== handled || d.activeElement !== tabs[index] || tabs[index].tabIndex !== 0 ||
+						tabs.filter(t => t.getAttribute('aria-selected') === 'true').length !== 1 ||
+						tabs[index].getAttribute('aria-selected') !== 'true') return key;
+				}
+				return 'ok';
+			})()
+			"""
+			let result = try await js(navigation) as? String
+			guard result == "ok" else {
+				throw Failure("Inspector keyboard navigation failed on \(url.lastPathComponent): \(result ?? "no result")")
+			}
             for (width, open) in [(340,true),(940,true),(720,true),(720,false),(721,false),(940,true)] {
                 let prior = try await js("b.getAttribute('aria-expanded')") as? String
                 _ = try await js("f.style.width='\(width)px';void 0")

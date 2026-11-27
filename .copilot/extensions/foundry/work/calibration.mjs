@@ -1,4 +1,3 @@
-import { isUtf8 } from "node:buffer";
 import { evaluatorOverlay } from "./contract.mjs";
 import { changedFiles, commitAt, contractConflict, contractPaths, entries, outside, regularFiles } from "./product.mjs";
 import { digest, fail, relative } from "./values.mjs";
@@ -21,7 +20,6 @@ export function controlRule(cwd,run,check){
 	if(!outside(check,required) || !outside(probe,run.policy.files))return;
 	regularFiles(cwd,run.policy.base,[check]);return {driver:entry.oid,rule:{check,probe}};
 }
-
 /** The enclosing product did not run when a joined component failed. Only that named observer can be diagnosed.
  * @param {import("./model.js").NativeCall} c */
 export function failedTest(c){
@@ -54,9 +52,9 @@ export const repairStop=(run,job)=>run.effects.find(/** @returns {c is import(".
 
 /** An ordinary component observes an immutable candidate, not an unrelated commit on the target branch.
  * Joined and rollout grants still bind the exact target. Return the sampled tip for the write guard.
- * @param {string} cwd @param {Run} run @param {Repair} job */
-export function repairTip(cwd,run,job){
-	const tip=commitAt(cwd,run.policy.target),stop=repairStop(run,job);
+ * @param {string} cwd @param {Run} run @param {Repair} job @param {string} [tip] */
+export function repairTip(cwd,run,job,tip=commitAt(cwd,run.policy.target)){
+	const stop=repairStop(run,job);
 	if(stop?.kind!=="component" || stop.rollout)return tip===job.target?tip:undefined;
 	if(!contractConflict(cwd,run.policy,tip) && (tip===job.target ||
 		!changedFiles(cwd,job.target,tip,[...contractPaths(run.policy),job.rule.probe]).length))return tip;
@@ -104,13 +102,4 @@ export function currentControl(run,c){
 		!!stop && stoppedTest(run,stop) &&
 		j.controls[k.role]===c.id && c.check===j.rule.probe && k.subject===controlSubject(j,k.role) &&
 		(k.role==="oldGood"?j.state==="diagnosing" && c.commit===j.product:j.state==="checking" && c.commit===j.candidate);
-}
-
-/** A process exit alone cannot identify which assertion ran. No stdout diagnostic from a product is a control.
- * @param {Buffer|null} stdout @param {number|null} exit */
-export function controlObservation(stdout,exit){
-	if(!stdout || !isUtf8(stdout) || !(exit===0 || exit===1))return;
-	let v;try{v=JSON.parse(stdout.toString());}catch(error){if(error instanceof SyntaxError)return;throw error;}
-	if(v && typeof v==="object" && Object.keys(v).length===2 && typeof v.assertion==="string" && /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(v.assertion) && v.matched===(exit===0))
-		return {assertion:v.assertion,matched:exit===0};
 }

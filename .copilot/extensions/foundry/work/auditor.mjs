@@ -2,12 +2,13 @@ import { randomUUID } from "node:crypto";
 import { holdFor } from "./activity.mjs";
 import { noWorkflowSlot } from "./capacity.mjs";
 import { candidatePacket } from "./critique.mjs";
-import { currentInspection, inspectionResult, markInspection } from "./inspection.mjs";
-import { boundInspections, matchingInspections, readyInspections } from "./inspections.mjs";
+import { currentInspection, inspectionResult, priorReview } from "./inspection.mjs";
+import { boundInspections, markInspection, matchingInspections, readyInspections } from "./inspections.mjs";
 import { expired } from "./native.mjs";
-import { replacementOffer } from "./replacement.mjs";
+import { changeOffer } from "./evidence.mjs";
+import { integrityHolds } from "./revision.mjs";
 import { digest, fail, record } from "./values.mjs";
-import { workflowIdentity } from "./workflow.mjs";
+import { repliedWorkflow, terminalWorkflow, workflowIdentity } from "./workflow.mjs";
 
 /** @typedef {import("./model.js").Inspection} Inspection */
 /** @typedef {import("./model.js").Run} Run */
@@ -18,15 +19,13 @@ import { workflowIdentity } from "./workflow.mjs";
 
 const inspectionCapacity="Queued for native inspection capacity; the issuer will retry automatically.";
 /** @param {Inspection} i */
-const pins=i=>digest([i.id,i.issuer,i.component,i.grain,i.base,i.generation,i.candidate,i.scope,i.task,i.specification]);
+const pins=i=>digest([i.id,i.issuer,i.component,i.grain,i.base,i.generation,i.candidate,i.scope,i.task,i.specification,i.assignment]);
 /** These exceptional grants name a live checkpoint target. Ordinary reviews
  * inspect immutable bytes and do not inherit a moved-target ban.
  * @param {Run} run @param {Inspection} i */
 function protectedTarget(run,i) {
 	const c=run.effects.find(e=>e.id===i.component);
-	if(c?.kind==="component" && c.rollout)return run.adoptions?.find(a=>a.id===c.rollout)?.revision;
-	if(c?.kind==="component" && c.replacement)return replacementOffer(run,c)?.revision;
-	return c?.kind==="component" && (c.delivery || c.remedy) ? run.products.at(-1)?.target : undefined;
+	if(c?.kind==="component")return changeOffer(run,c)?.revision??(c.delivery || c.remedy?run.products.at(-1)?.target:undefined);
 }
 /** @param {Run} run @param {string} id @param {string} ticket @param {string} actor @param {Inspection} [expected] */
 function dispatched(run,id,ticket,actor,expected) {
@@ -60,7 +59,7 @@ function verdict(i,e) {
 			return {outcome:/** @type {const} */("unavailable"),summary:`Invalid terminal inspection result: ${String(error)}`};
 		}
 	}
-	if (e.status==="error" || e.status==="failed" || e.status==="cancelled" || e.status==="completed")
+	if (terminalWorkflow(e.status))
 		return {outcome:/** @type {const} */("unavailable"),summary:`Inspection ${e.status}: ${e.failure?.type ?? e.error ?? e.reason ?? "no review was returned"}`};
 }
 
@@ -68,7 +67,7 @@ function verdict(i,e) {
  * policy and wake scheduling. An outstanding SDK wait is detached, like a scout workflow.
  * @param {{start?:StartInspection,lookup?:(workflow:string)=>Promise<Envelope>,budget?:()=>Promise<number>,
  * cwd:()=>string,read:(id:string)=>Run,tip:(run:Run)=>string|undefined,mutate:Mutate,persist:Persist,closed:()=>boolean,
- * plan:(id:string,fn:(run:Run)=>(()=>boolean)|void)=>Run,
+ * reserve:ReturnType<typeof import("./database.mjs").openDatabase>["reserve"],
  * verifySigned:(id:string,component:import("./model.js").NativeCall)=>void,
  * executable:()=>Promise<boolean>,permissionBlocker:()=>Promise<import("./permissions.mjs").PermissionBlock|null>,track:(p:Promise<void>)=>void,
  * wake:(id:string,actor:string)=>void,queue:(id:string,actor:string)=>void,log?:(message:string)=>void}} io */
@@ -109,7 +108,7 @@ export function auditor(io) {
 				const settled=await io.persist(()=>io.mutate(id,run=>{
 					const i=issued(run,expected.id,dispatch,issuer,expected);
 					if (i?.workflow!==workflow) return false;
-					if (result.runId!==workflow || result.workflowName!==undefined && result.workflowName!=="foundry-inspect") {
+					if (!repliedWorkflow(result,"foundry-inspect",workflow)) {
 						i.summary=`Native lookup did not return the original inspection workflow ${workflow}. Await that workflow in session ${issuer}; do not start another.`;
 						return false;
 					}
@@ -134,53 +133,55 @@ export function auditor(io) {
 	/** @param {string} id @param {Inspection} expected */
 	function launch(id,expected) {
 		const start=io.start;
-		if (io.closed()) return;
-		if (!start || !io.lookup) {
-			const summary=`Independent review is waiting: this issuer cannot ${!start ? "start" : "observe"} native inspection workflows. Reload a host with Rubber Duck review support.`;
-			if (expected.summary!==summary) io.mutate(id,run=>{
-				const i=readyInspections(run,expected.issuer).find(i=>i.id===expected.id && pins(i)===pins(expected));
-				if (i && run.active && !expired(run)) i.summary=summary;
-			});
-			return;
-		}
+		const unsupported=!start || !io.lookup ? `Independent review is waiting: this issuer cannot ${!start ? "start" : "observe"} native inspection workflows. Reload a host with Rubber Duck review support.` : undefined;
+		if (io.closed() || unsupported && expected.summary===unsupported) return;
 		const dispatch=randomUUID(),{issuer}=expected;
-		/** @type {Inspection|undefined} */ let claim;
-		io.plan(id,run=>{
-			claim=undefined;
+		const claimed=io.reserve(id,run=>{
 			const i=readyInspections(run,issuer).find(i=>i.id===expected.id && pins(i)===pins(expected));
 			if (!i || io.closed() || !run.active || expired(run) || i.permissionHold || run.effects.some(e=>e.issuer===issuer && e.permissionHold)) return;
 			const target=protectedTarget(run,i);
 			if (target && io.tip(run)!==target) return;
+			const c=run.effects.find(e=>e.id===i.component);
+			let task;
+			if(c?.kind==="component" && (c.rollout || c.replacement) && run.nodes[i.grain].grain.task){
+				task=priorReview(run,c)?.task;
+				if(!task || i.assignment && i.assignment!==task){
+					// Status already names withheld receipts. Even a diagnostic may not modify their dependent review.
+					if(!integrityHolds(run).length)i.summary=`Review of ${c.id} is waiting for the original published task for ${i.grain}; no workflow was issued.`;
+					return;
+				}
+			}
+			if(unsupported){i.summary=unsupported;return;}
+			if(task)i.assignment=task;
 			markInspection(i,"issue",{dispatch});
 			i.summary="Awaiting the original native inspection workflow ID. Without confirmed admission do not repeat this dispatch.";
-			claim=i;
-			return ()=>!io.closed() && !expired(run) && (!target || io.tip(run)===target);
+			return {value:i,guard:()=>!io.closed() && !expired(run) && (!target || io.tip(run)===target)};
 		});
-		const claimed=claim;
-		if (!claimed) return;
+		if (!claimed || !start) return;
 		let starting;
 		try {starting=start(id,claimed.id,dispatch,issuer);}
 		catch(error) {starting=Promise.reject(error);}
-		void starting.then(result=>io.track(acknowledge(result)),error=>io.track(rejected(error)));
-		/** @param {Envelope} result */
-		async function acknowledge(result) {
+		void starting.then(result=>io.track(acknowledge(claimed,result)),error=>io.track(rejected(claimed,error)));
+		/** @param {Inspection} subject @param {Envelope} result */
+		async function acknowledge(subject,result) {
 			const bound=await io.persist(()=>io.mutate(id,run=>{
 				// Pin the actual admission even if current scheduling authority was lost
 				// during the SDK call. Neither this write nor the ID authorizes another launch.
-				const i=dispatched(run,expected.id,dispatch,issuer,expected);
+				const i=dispatched(run,subject.id,dispatch,issuer,subject);
 				if (!i) return;
-				if (!result?.runId || result.workflowName!==undefined && result.workflowName!=="foundry-inspect") {
+				const workflow=repliedWorkflow(result,"foundry-inspect");
+				if (!workflow) {
 					if (!i.workflow) i.summary="No confirmed native inspection workflow ID in the start acknowledgment. Do not retry this dispatch.";
 					return;
 				}
-				return bind(run,i,result.runId);
+				return bind(run,i,workflow);
 			}));
 			if (bound) observe(id,bound); // Even a "completed" start response is not the observed result.
 		}
-		/** @param {unknown} error */
-		async function rejected(error) {
+		/** @param {Inspection} subject @param {unknown} error */
+		async function rejected(subject,error) {
 			const queued=await io.persist(()=>io.mutate(id,run=>{
-				const i=issued(run,expected.id,dispatch,issuer,expected);
+				const i=issued(run,subject.id,dispatch,issuer,subject);
 				if (!i) return false;
 				if (!i.workflow && noWorkflowSlot(error)) {
 					markInspection(i,"capacity");i.summary=inspectionCapacity;return true;
@@ -220,10 +221,12 @@ export function auditor(io) {
 				fail("inspection_held","Inspection cannot execute: the dispatch is no longer current, active and permitted");
 			const target=protectedTarget(run,i);
 			if (target && io.tip(run)!==target) fail("inspection_held","The authorized checkpoint target moved before its candidate could be reviewed");
-			if (verify) {
+			if (verify || i.assignment) {
 				const c=run.effects.find(e=>e.id===i.component);
 				if (c?.kind!=="component") fail("missing_receipt","Missing original reviewed component");
-				io.verifySigned(id,c);
+				if(i.assignment && priorReview(run,c)?.task!==i.assignment)
+					fail("inspection_held",`The original published task for ${i.grain} is not verifiable; the review packet is withheld.`);
+				if(verify)io.verifySigned(id,c);
 			}
 			return i;
 		}

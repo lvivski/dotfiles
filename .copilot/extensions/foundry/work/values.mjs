@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import {FoundryError,relative,text} from "../../../skills/foundry/scripts/recipe.mjs";
+import {canonical,FoundryError,relative,text,validName} from "../../../skills/foundry/scripts/recipe.mjs";
 export {FoundryError,relative,text};
 
 /** @param {string} code @param {string} message @param {import("./model.js").ReviewObstacle} [obstacle] @returns {never} */
@@ -16,7 +16,7 @@ export function record(value) {
 /** @param {unknown} value @param {string} label */
 export function name(value, label) {
 	const id = text(value, label);
-	if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(id) || Object.hasOwn(Object.prototype, id))
+	if (!validName(id))
 		fail("invalid_name", `Invalid ${label}: ${id}`);
 	return id;
 }
@@ -119,7 +119,7 @@ export function assignmentDirectory(value) {
 }
 
 /** @param {import("./model.js").Scope|undefined} a @param {import("./model.js").Scope|undefined} b */
-export const sameScope = (a,b) => a === b || !!a && !!b && typeof a === "object" && typeof b === "object" && stable(a) === stable(b);
+export const sameScope = (a,b) => a === b || !!a && !!b && typeof a === "object" && typeof b === "object" && canonical(a) === canonical(b);
 
 /** @param {string} root @param {string} p */
 export const contains = (root, p) => p === root || p.startsWith(`${root}/`);
@@ -127,15 +127,17 @@ export const contains = (root, p) => p === root || p.startsWith(`${root}/`);
 /** @param {import("./model.js").Scope} scope @param {string} file */
 export const covers = (scope,file) => mixed(scope) ? contains(scope.primary,file) || scope.files.includes(file) : members(scope).some(dir => contains(dir,file));
 
-/** @param {unknown} value @returns {string} */
-export function stable(value) {
-	if (Array.isArray(value))
-		return `[${value.map(stable).join(",")}]`;
-	if (value && typeof value === "object")
-		return `{${Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
-			.map(([k, v]) => `${JSON.stringify(k)}:${stable(v)}`).join(",")}}`;
-	return JSON.stringify(value);
-}
-
 /** @param {unknown} value */
-export const digest = value => createHash("sha256").update(stable(value)).digest("hex");
+export const digest = value => createHash("sha256").update(canonical(value)).digest("hex");
+
+/** The power selects its own evidence and exclusions. Capture exactly what was
+ * presented, then run that same selection again on the committing snapshot.
+ * @template T @param {import("./model.js").Run} run @param {(run:import("./model.js").Run)=>T} select @param {string} changed */
+export function pinnedSelection(run,select,changed){
+	const subject=select(run),pin=digest(subject);
+	return {subject,revalidate(/** @type {import("./model.js").Run} */ live){
+		const fresh=select(live);
+		if(digest(fresh)!==pin)fail("stale_assignment",changed);
+		return fresh;
+	}};
+}

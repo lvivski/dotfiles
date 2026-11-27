@@ -1,5 +1,5 @@
 import { productOverlayPaths } from "./contract.mjs";
-import { checkReceipt, failedComponent, mixedVerification, originalVerification, verificationSource } from "./evidence.mjs";
+import { amendedOutputs, changeOwners, checkReceipt, failedComponent, mixedVerification, originalVerification, verificationSource } from "./evidence.mjs";
 import { outside } from "./product.mjs";
 import { retainedMode } from "./transfer.mjs";
 import { digest } from "./values.mjs";
@@ -48,12 +48,9 @@ export function productLineage(run,products,effects){
 			if(e.kind!=="product" || e.issuer!==run.owner || e.check!==run.policy.productCheck || !after || after.commit!==e.commit)return false;
 			if(source){
 				if(!offer || !(offer.patch || offer.rollout) || offer.assembly!==after.commit)return false;
-				const {patch,rollout}=offer,outputs={...source.outputs};
-				if(rollout){
-					for(const grain of Object.keys(rollout.owners))outputs[grain]=after.commit;
-					pin=rollout.harness;
-				}else if(patch?.owner)outputs[patch.grain]=after.commit;
-				if(!p.targetFrom || needsGoal?.check!==source.check || source.qualifiedAt || products.has(source.check) ||
+				const {outputs}=amendedOutputs(offer,source.outputs,after.commit);
+				if(offer.rollout)pin=offer.rollout.harness;
+				if(!outputs || !p.targetFrom || needsGoal?.check!==source.check || source.qualifiedAt || products.has(source.check) ||
 					!failedComponent(effects.get(source.check)) || source.target!==after.target || source.commit===after.commit ||
 					digest([outputs,source.ownership])!==digest([after.outputs,after.ownership]))return false;
 			}else{
@@ -79,14 +76,12 @@ export function productLineage(run,products,effects){
 				needsGoal=undefined;
 			}else if(e.kind==="product" && e.testPin){
 				if(originalVerification(run,e.id)!==originalVerification(run,needsGoal.check) || e.commit!==needsGoal.commit)return false;
-			}else if(e.kind==="component" && e.rollout){
-				const a=offers.get(e.rollout);
-				if(!a?.rollout || !e.grain || a.failed!==needsGoal.check || e.commit!==a.assembly || !Object.hasOwn(a.rollout.owners,e.grain) ||
-					a.rollout.owners[e.grain].output!==needsGoal.outputs[e.grain] || a.revision!==pin)return false;
-			}else if(e.kind==="component" && e.replacement){
-				const a=offers.get(e.replacement);
-				if(!a?.patch?.owner || a.failed!==needsGoal.check || !e.grain || e.grain!==a.patch.grain || e.commit!==a.assembly ||
-					a.patch.owner.output!==needsGoal.outputs[e.grain] || a.revision!==needsGoal.target || effects.get(needsGoal.check)?.evaluatorRevision!==pin)return false;
+			}else if(e.kind==="component" && (e.rollout || e.replacement)){
+				const a=offers.get(e.rollout??e.replacement??"");
+				if(!a || !e.grain || a.failed!==needsGoal.check || e.commit!==a.assembly || (e.rollout ? !a.rollout || a.revision!==pin :
+					!a.patch?.owner || a.revision!==needsGoal.target || effects.get(needsGoal.check)?.evaluatorRevision!==pin))return false;
+				const owners=changeOwners(a);
+				if(!Object.hasOwn(owners,e.grain) || owners[e.grain].output!==needsGoal.outputs[e.grain])return false;
 			}else if(["product","component","writer","repair","scout"].includes(e.kind))return false;
 		}else if(e.kind==="component" && (e.replacement || e.rollout)){
 			return false;

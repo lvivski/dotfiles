@@ -7,7 +7,7 @@ import path from "node:path";
 import { contains, covers, fail, members, mixed, ownership, relative, roots } from "./values.mjs";
 import { touchesCut } from "./transfer.mjs";
 import {git,gitArgs,env,entries,regularFiles,pathKey,pathNames,blobIds,diskEntries} from "../../../skills/foundry/scripts/git-files.mjs";
-export {git,entries,regularFiles,artifactDigest,verifyTree} from "../../../skills/foundry/scripts/git-files.mjs";
+export {git,entries,regularFiles,regularEntry,pathKey,blobText,artifactDigest,verifyTree} from "../../../skills/foundry/scripts/git-files.mjs";
 export {checkedOverlay,withProduct} from "../../../skills/foundry/scripts/materialize.mjs";
 /** @typedef {import("../../../skills/foundry/scripts/git-files.mjs").Entry} Entry */
 /** @param {string} cwd @param {string} ref */
@@ -284,19 +284,26 @@ export const stageCheckpoint=(cwd,base,updates)=>commitTree(cwd,combinedTree(cwd
  * @param {string} cwd @param {string} base @param {Update[]} updates @param {string} target */
 export const stageDelivery=(cwd,base,updates,target)=>commitTree(cwd,combinedTree(cwd,base,updates),"Foundry product candidate",target);
 
+/** @param {string} cwd @param {string} base @param {(staged:(args:string[],input?:string)=>Buffer)=>void} edit */
+function stageTree(cwd,base,edit){
+	return withIndex(cwd,staged=>{
+		staged(["read-tree",base]);
+		edit(staged);
+		return staged(["write-tree"]).toString().trim();
+	});
+}
+
 /** Apply bytes as data to a private index. Neither the real index nor any checkout is an input.
  * @param {string} cwd @param {string} base @param {string} target @param {string} patch */
 export function stagePatch(cwd,base,target,patch){
-	return withIndex(cwd,staged=>{
-		staged(["read-tree",base]);
+	const tree=stageTree(cwd,base,staged=>{
 		try{staged(["apply","--cached","--whitespace=nowarn","-"],patch);}
 		catch(error){
 			if(!(error instanceof Error && "status" in error && (error.status===1 || error.status===128)))throw error;
 			fail("invalid_patch","The offered diff does not apply cleanly to the failed assembly");
 		}
-
-		return commitTree(cwd,staged(["write-tree"]).toString().trim(),"Foundry product candidate",target);
 	});
+	return commitTree(cwd,tree,"Foundry product candidate",target);
 }
 
 /** The last rollout can revert every helper to the target. Keep a distinct evaluator pin even then.
@@ -306,13 +313,9 @@ export const stageHarness=(cwd,target,patch)=>patch?stagePatch(cwd,target,target
 /** Generate the reviewable full-index diff from verified author result blobs, never from a working copy.
  * @param {string} cwd @param {string} base @param {import("./model.js").HarnessRollout["files"]} changes */
 export function draftDiff(cwd,base,changes){
-	return withIndex(cwd,staged=>{
-		staged(["read-tree",base]);
-		staged(["update-index","-z","--index-info"],changes.map(f=>
-			`${f.result===null?"0":f.mode} ${f.result??"0".repeat(base.length)}\t${relative(f.file)}\0`).join(""));
-		const tree=staged(["write-tree"]).toString().trim();
-		return git(cwd,["diff","--no-color","--no-ext-diff","--no-textconv","--no-renames","--full-index","--src-prefix=a/","--dst-prefix=b/",base,tree,"--"]).toString();
-	});
+	const tree=stageTree(cwd,base,staged=>staged(["update-index","-z","--index-info"],changes.map(f=>
+		`${f.result===null?"0":f.mode} ${f.result??"0".repeat(base.length)}\t${relative(f.file)}\0`).join("")));
+	return git(cwd,["diff","--no-color","--no-ext-diff","--no-textconv","--no-renames","--full-index","--src-prefix=a/","--dst-prefix=b/",base,tree,"--"]).toString();
 }
 
 /** Replace only an existing regular blob on a private index, preserving its exact path and mode.
@@ -320,11 +323,8 @@ export function draftDiff(cwd,base,changes){
 export function stageTest(cwd,base,file,blob){
 	const [e]=regularFiles(cwd,base,[file]);
 	if(e.oid===blob)fail("unchanged_candidate","The proposed test repair has identical bytes");
-	return withIndex(cwd,staged=>{
-		staged(["read-tree",base]);
-		staged(["update-index","-z","--index-info"],`${e.mode} ${blob}\t${e.name}\0`);
-		return commitTree(cwd,staged(["write-tree"]).toString().trim(),"Foundry test repair",base);
-	});
+	const tree=stageTree(cwd,base,staged=>staged(["update-index","-z","--index-info"],`${e.mode} ${blob}\t${e.name}\0`));
+	return commitTree(cwd,tree,"Foundry test repair",base);
 }
 
 /** Pin effective changes, not patch headers, for independent consent and runner verification.

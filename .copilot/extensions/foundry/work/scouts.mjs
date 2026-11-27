@@ -1,15 +1,16 @@
-import { isUtf8 } from "node:buffer";
-import { answeredRoutes, currentFailures } from "./blockers.mjs";
-import { journeyText } from "./contract.mjs";
+import { journeyText } from "./brief.mjs";
+import { answeredRoutes, currentFailures, inPacketScope } from "./blockers.mjs";
 import { evidenceDecision, exhaustedRead, readCursor, readSource, validateReadParent } from "./cursor.mjs";
 import { goalReceipt, inconclusiveRepair, repairDetail } from "./evidence.mjs";
 import { sourceReceipt } from "./notes.mjs";
-import { checked, dependencies, liveNeeds, owns, supersededAttempt } from "./plan.mjs";
+import { checked, dependencies, liveNeeds, owns } from "./lineage.mjs";
+import { supersededAttempt } from "./plan.mjs";
 import { deliveredFile, evidencePage, indexBudgetError, indexBytes, preview, textPage, wholeEvidence } from "./pages.mjs";
-import { entries, git, outside, regularFiles } from "./product.mjs";
+import { blobText, entries, git, outside, regularEntry, regularFiles } from "./product.mjs";
 import { researchSchema } from "./research.mjs";
-import { canInvestigate, comparison, correction, investigation, requestedFiles, researchContext, reviews, scopedNotes, wakeSource } from "./reviews.mjs";
-import { FoundryError, contains, digest, fail, fields, members, name, record, referenceRepo, text, roots as scopePaths } from "./values.mjs";
+import { comparison, investigation, reviews, wakeSource } from "./charter.mjs";
+import { canInvestigate, correction, requestedFiles, researchContext, scopedNotes, waitChange } from "./reviews.mjs";
+import { FoundryError, contains, digest, fail, fields, name, record, text, roots as scopePaths } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @typedef {import("./model.js").Review} Review */
@@ -26,7 +27,7 @@ const rows = records => Array.from(records, row => JSON.stringify(row)).join("\n
 
 /** @param {string} cwd @param {Map<string, Entry|undefined>} files @returns {Generator<import("./pages.mjs").FileRow>} */
 function* blobs(cwd, files) {
-	const oids = new Set([...files.values()].flatMap(e => e && (e.mode === "100644" || e.mode === "100755") ? [e.oid] : []));
+	const oids = new Set([...files.values()].flatMap(e => e && regularEntry(e) ? [e.oid] : []));
 	const batch = oids.size ? git(cwd, ["cat-file", "--batch"], [...oids].join("\n") + "\n") : Buffer.alloc(0);
 	const contents = new Map();
 	let at = 0;
@@ -38,14 +39,14 @@ function* blobs(cwd, files) {
 		contents.set(oid, batch.subarray(start, end)); at = end + 1;
 	}
 	for (const [path, entry] of files) {
-		if (!entry || !["100644", "100755"].includes(entry.mode)) {
+		if (!entry || !regularEntry(entry)) {
 			yield { path, omitted: "[unavailable: not a regular committed file]" };
 			continue;
 		}
 		const { oid } = entry, bytes = contents.get(oid);
 		if (!bytes) fail("missing_blob", `Missing ${path} at ${oid}`);
-		yield bytes.includes(0) || !isUtf8(bytes) ? { path, oid, omitted: "[unavailable: binary or non-UTF-8 blob]" }
-			: { path, oid, text: bytes.toString("utf8") };
+		const text=blobText(bytes);
+		yield text===undefined?{path,oid,omitted:"[unavailable: binary or non-UTF-8 blob]"}:{path,oid,text};
 	}
 }
 
@@ -160,9 +161,9 @@ function buildPacket(cwd, run, review, budget, directory) {
 	const iteration = comparison(run, review);
 	const citation = !report ? iteration?.source : undefined;
 	const reference = iteration && git(cwd, ["cat-file", "blob", iteration.blob]);
-	const referenceText = reference && !reference.includes(0) && isUtf8(reference) ? reference.toString("utf8") : undefined;
+	const referenceText=reference?blobText(reference):undefined;
 	if (iteration && referenceText !== undefined) sources.set(`detail:${iteration.blob}`, referenceText);
-	const blockers = currentFailures(run).filter(g => g.commit === base && g.squad === squad.id && (!iteration || iteration.directory === g.directory));
+	const blockers = currentFailures(run).filter(g=>inPacketScope(g,review,iteration));
 	function historical() {
 		const rows = [...notes].map(([detail, note]) => {
 			const r = sourceReceipt(run.effects.find(e => e.id === note.receipt), note) ?? fail("invalid_receipt", "Review note lost its historical goal receipt");
@@ -221,7 +222,11 @@ function buildPacket(cwd, run, review, budget, directory) {
 	const candidates = policy.sharedBrief && !directory ? entries(cwd, base, true).filter(e => ["100644", "100755"].includes(e.mode)) : [];
 	const otherPaths = candidates.length ? `Other committed paths (names only):\n${rows(candidates.filter(e => !Object.hasOwn(whole.files, e.name)).map(e => e.name))}\nUse needs-evidence for another exact path if needed. Only delivered text may be cited. Reading it does not grant ownership.` : "";
 	if (otherPaths) context.push(otherPaths);
-	if (report?.outcome === "waiting") context.push(`${referenceRepo(report.waitFor) ? "Reference published" : "Checked outputs changed"} for ${report.waitFor}; reconsider this wait: ${report.reason}`);
+	if(prev && report?.outcome==="waiting"){
+		const change=waitChange(run,prev);
+		context.push(change && change.key===review.wake?.key?`${change.reason}; reconsider this wait: ${report.reason}`:
+			`Previous review waited for ${report.waitFor}: ${report.reason}. A new observation does not supply the missing input.`);
+	}
 	const journey = brief ? `Shared brief ${brief.path} at ${base}:\n${brief.text}\n\n` : "";
 	const complete = [`Conserved Git blobs at ${base}:\n${journey}${rows(conserved)}`, `Owned product Git blobs at ${base}:\n${rows(product)}`,
 		`Declared dependency Git blobs at ${base} (read-only):\n${rows(required)}`, focused.length ? `Requested evidence at ${base}:\n${rows(requested)}` : ""].filter(Boolean).join("\n\n");

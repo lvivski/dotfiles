@@ -1,4 +1,4 @@
-import { rolloutChecks } from "./campaign.mjs";
+import { serialBoundary } from "./campaign.mjs";
 import { correctionRefs, matchesDraft } from "./drafts.mjs";
 import { invalidatePresentation } from "./dialog.mjs";
 import { checkReceipt, currentEvaluation, failedComponent, productPin } from "./evidence.mjs";
@@ -24,7 +24,7 @@ export function evaluatorPlan(cwd,run,actor,ref,verify){
 	if(c?.kind!=="product" || checkReceipt(c)?.exit!==0)fail("missing_receipt","Missing exact product evidence for evaluator correction");
 	verify(g);verify(c);
 	const {assembly,files:delta,patch}=exactPatch(cwd,from,from,ref.blob),files=delta.map(f=>f.file).sort();
-	if(!matchesDraft(ref,g.id,from,delta))fail("patch_scope","The evaluator diff does not match its bound author");
+	if(!matchesDraft(run,ref,g.id,from,delta))fail("patch_scope","The evaluator diff does not match its bound author");
 	const requested=prepareRepin(cwd,run,actor,{from,revision:assembly,files,...(kind==="product" && {kind,
 		...(run.policy.ownership==="retain-except-transferred" || run.productRepins?.at(-1)?.ownership==="retain-except-transferred"?{ownership:"retain-except-transferred"}:{})})},verify);
 	/** @type {NonNullable<import("./model.js").Adoption["evaluator"]>} */ const evaluator={kind,from,blob:ref.blob,files,...(ref.draft && {draft:ref.draft.id})};
@@ -65,14 +65,14 @@ export function offerChoices(cwd,run,actor,verify){
 	if(actor!==run.owner || !run.active || run.independent || run.conflict || run.policyHold || run.blocker)return;
 	const candidates=correctionRefs(run);if(!candidates.length)return;
 	const j=run.join,parent=j && run.adoptions?.findLast(a=>a.rollout && a.failed===j.check && a.decision?.status==="answered");
-	const batch=parent && rolloutChecks(run,parent),last=batch?.findLast(c=>!!checkReceipt(c));
+	const last=parent && serialBoundary(run,parent)?.last;
 	const check=parent?last?.id:j && failedComponent(run.effects.find(c=>c.id===j.check))?j.check:undefined;
 	const from=parent?.assembly??j?.commit,used=new Set(run.adoptions?.flatMap(a=>a.rollout && a.decision?.status==="answered"?[a.rollout.blob]:[]));
 	const goal=checkReceipt(run.effects.find(e=>e.id===run.goal?.check));
 	const refs=candidates.filter(ref=>(ref.evaluation ? currentEvaluator(run,ref) && [1,2].includes(goal?.exit??-1) &&
 		!run.adoptions?.some(a=>a.evaluator?.blob===ref.blob && a.goal===ref.evaluation?.goal && a.checkpoint===ref.evaluation?.checkpoint &&
 			a.evaluator?.kind===(ref.to[0]===run.policy.goalCheck?"goal":"product") && a.decision && a.decision.status!=="presenting") :
-		check && from && matchesDraft(ref,check,from) && !used.has(ref.blob) && (!ref.assembly || ref.assembly===from) && (ref.assembly===from || !parent || last?.receipt?.exit!==0) &&
+		check && from && matchesDraft(run,ref,check,from) && !used.has(ref.blob) && (!ref.assembly || ref.assembly===from) && (ref.assembly===from || !parent || last?.receipt?.exit!==0) &&
 		(ref.assembly || (ref.index??-1)>=(parent?.offeredThrough??0)) &&
 		!run.adoptions?.some(a=>a.rollout?.blob===ref.blob && (!ref.assembly || (a.rollout.followup?.assembly??a.rollout.from)===from) &&
 			(a.decision?.status==="dismissed" || a.decision?.status==="unavailable"))));

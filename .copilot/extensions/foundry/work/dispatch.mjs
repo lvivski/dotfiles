@@ -9,8 +9,18 @@ import { step, transition } from "./machine.mjs";
 /** @typedef {ReviewFields & CallFields} Context */
 export const disabledRoute="Native route disabled; execute the exact prepared call in its owner session";
 
+/** @param {string} issuer @param {string} recipient @param {string} message
+ * @returns {Pick<NativeCall,"tool"|"args">} */
+export const messageTo=(issuer,recipient,message)=>issuer===recipient?{tool:"session.send",args:{message}}:
+	{tool:"send_session_message",args:{session_id:recipient,delivery_mode:"immediate",message}};
+
 const reviewKeys=/** @type {const} */ (["callId","error","permissionHold","workflowId","packet","observation","deferred","providerRecovery"]);
 const callKeys=/** @type {const} */ (["callId","error","nativeId","boundAt","retirement"]);
+
+/** An ordinary prepared call is unsent only with the recorded native route-disabled reply.
+ * @param {NativeCall} e */
+export const unsentRepair=e=>e.kind==="repair" && !!(e.input || e.continuation && e.baselineStop) && !e.permissionHold &&
+	(e.state==="ready" && !e.callId || e.state==="ordinary" && !!e.callId && e.error===disabledRoute);
 
 /** @template {import("./machine.mjs").States} T @template {{type:string}} E
  * @param {import("./machine.mjs").Machine<T>} model @param {Context & {state:keyof T & string}} job @param {readonly (keyof Context)[]} keys
@@ -48,7 +58,7 @@ export function survey(job,signal) {
  * @param {NativeCall} job @param {CallSignal|CallEvent} signal */
 export function journal(job,signal) {
 	return send(call,job,callKeys,typeof signal==="string" ? {type:signal} : signal,
-		{unsentInput:job.kind==="repair" && !!(job.input || job.continuation && job.baselineStop) && !!job.callId && job.error===disabledRoute && !job.permissionHold},true);
+		{unsentInput:unsentRepair(job)},true);
 }
 
 const readmit=executor(review,{"readmit-report":(/** @type {()=>void} */ admit)=>admit()});
@@ -63,3 +73,8 @@ export function producersDeclared(job,inputsCurrent,admit) {
 /** Inspect eligibility without dispatching a command or running its update.
  * @param {import("./model.js").Effect} e @param {"issue"|"unconfirmed"} signal */
 export function accepts(e,signal) { return !!(e.kind==="scout" ? step(review,e.state,signal) : step(call,e.state,signal)); }
+
+/** @param {import("./model.js").Effect} e */
+export const unissued = e => accepts(e,"issue");
+/** @param {import("./model.js").Effect} e */
+export const awaitingReply = e => accepts(e,"unconfirmed");

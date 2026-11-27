@@ -1,6 +1,6 @@
 # Maintaining Foundry
 
-Make each change leave Foundry simpler to operate or maintain. Name the step an operator no longer takes or the code path a maintainer no longer has to reason about. Prefer removing a rule or reusing an existing path: if the same writer can safely finish the same work, do not send it through another review. Fix a product-specific gap in its brief or evaluator, not with a framework mode.
+**After each bug fix goes green, simplify the path you touched before handoff.** If two paths decide the same thing, route their callers to one rule and delete the other. Remove any workaround or adapter the fix made obsolete. Name what disappeared, or explain why nothing in that path can safely be removed. If the same writer can safely finish the work, do not send it through another review. Keep product-specific fixes in the product, its brief or its evaluator.
 
 **Maintain the [regeneration specification](SPEC.md) with the implementation.** Before a framework or bundled-skill change, identify the affected requirement and its acceptance case. Update them, and any affected declared interfaces, in the same change. For unchanged behavior, cite the existing clause and check. Follow the [spec drift procedure](SPEC.md#keeping-the-specification-current); never bless an unexpected implementation difference by merely refreshing a snapshot.
 
@@ -26,7 +26,7 @@ After a state-machine edit, regenerate `spec/interface.json` from `test/interfac
 
 ## Changes in authority
 
-Before adding a command, state, approval or retry, identify the concrete case the simpler path cannot handle. If there is none, leave it out. Moving a decision from code into an agent prompt is not a simplification if the agent still has to make it. Never simplify by weakening permissions, ownership, evidence or release checks.
+Before adding a command, state, approval or retry, identify the concrete case the simpler path cannot handle. If there is none, leave it out. A writer can decide *how* to fix a defect within its grant; a prompt must not decide what the writer may change, whether an uncertain call may be repeated, or whether the product can ship. Applying the same rule to fresh evidence is not duplication; preserve independent ownership, permission and release checks.
 
 **Extend recovery selection, not authority.** If a new case is a combination of known facts and an existing operation, add a rule to the trusted edition's selection table, not a branch in the coordinator or another rescue command. A rule may propose an operation for an exact stopped attempt; it cannot grant it. Manual selection and an automatic wake must use the same operation to check live pins, determine consent, and journal before dispatch. Add reviewed code only for a new power or evidence verifier. Never load rules from a run's repository, chat, or offered artifact.
 
@@ -42,9 +42,13 @@ Before adding a limit that rejects input, drops evidence or forces another check
 
 **Red/green and independent Rubber Duck review are required for Foundry code**, including the scheduler, evaluator, recovery, test infrastructure and bundled tooling. This is a contributor gate, separate from the review Foundry runs on generated product code.
 
+**A bug fix is not automatically a simplification.** To accept a refactoring milestone, the independent reviewer must be able to point to a competing production decision or obsolete path that was deleted. Show the same controls passing before and after for unchanged behavior, including the same stopped work when recovery is affected. Name any operator step removed, but do not count that alone as a code reduction.
+
+Report the net change in handwritten production lines and module count across the extension and bundled skill from the last accepted snapshot (and from the starting baseline for a series). Count tests, fixtures, type declarations and generated files separately. A simplification milestone must reduce handwritten production lines; moving a switch elsewhere, compressing code or dropping a guard or test does not qualify. If correctness requires growth, name the guarantee it buys and report a fix, not a simplification. Do not delete unrelated code to meet a per-bug quota.
+
 Start a new behavior or bug fix with a synthetic test in a disposable checkout. Observe the relevant assertion fail on the old implementation, then pass on the new one. Test the user-visible outcome (e.g. exact bytes and all changed paths delivered), not the value of a constant. For a test repair, show both that the corrected test observes the promised behavior on an unchanged good implementation and that it still rejects a broken implementation. Never use a live run, a replay, or a repin for red/green validation.
 
-Before handoff, give the built-in `rubber-duck` reviewer the final scoped diff, the intended behavior, and the red/green and recovery evidence. Ask it to look for false passes, lost work, and changes to what was authorized. Address blocking findings, rerun the affected controls, and get review of the revised code. Record the actual outcomes, including an unavailable review, rather than claiming a pass. See the [development checks](PROTOCOL.md#development-checks) and [specification drift check](SPEC.md#keeping-the-specification-current).
+Before handoff, give the built-in `rubber-duck` reviewer the final scoped diff, intended behavior, and red/green and recovery evidence. Have it check the cleanup claim against the diff and look for false passes, lost work or changes to what was authorized. Address blocking findings, rerun the affected controls, and get review of the revised code. Record the actual outcomes, including an unavailable review, rather than claiming a pass. See the [development checks](PROTOCOL.md#development-checks) and [specification drift check](SPEC.md#keeping-the-specification-current).
 
 Put regression cases in `<module>.test.mjs` beside the implementation so editors can group them. Keep shared setup in `test/`. Run the cases with the normal Node test runner; do not add a separate proof runner.
 

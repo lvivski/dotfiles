@@ -1,5 +1,5 @@
-import { digest } from "./values.mjs";
-import { effectAt, heldOutcome, integrityHolds, productAt } from "./revision.mjs";
+import { digest, fail } from "./values.mjs";
+import { effectAt, integrityHolds, productAt } from "./revision.mjs";
 import { assign } from "./assignment.mjs";
 import { contractHold } from "./contract.mjs";
 import { unprovenExports } from "./attestation.mjs";
@@ -12,6 +12,53 @@ export const productPin = run => {
 	const pin=run.productRepins?.at(-1);
 	return pin?.amendments?.findLast(s=>s.harness)?.harness??pin?.revision;
 };
+/** A rollout names its owners (including affected consumers); a patch replaces one or none.
+ * @param {import("./model.js").Adoption} a */
+export function changeOwners(a){
+	if(a.rollout)return a.rollout.owners;
+	if(a.patch)return a.patch.owner?{[a.patch.grain]:a.patch.owner}:{};
+	return fail("invalid_patch","Missing authorized change");
+}
+
+/** Project the approved substitutions on the original join, or identify its stale input.
+ * @param {import("./model.js").Adoption} a @param {Record<string,string>} prior @param {string} assembly */
+export function amendedOutputs(a,prior,assembly){
+	const outputs={...prior};
+	for(const [id,owner] of Object.entries(changeOwners(a))){
+		if(prior[id]!==owner.output)return {stale:id};
+		outputs[id]=assembly;
+	}
+	return {outputs};
+}
+/** Locate the recorded approval, not a new grant. Historical readers and live validators
+ * use the same reference even after the output is replaced. @param {Run} run @param {import("./model.js").NativeCall} c */
+export function changeOffer(run,c){
+	const id=c.rollout??c.replacement;
+	if(id && !("rollout" in c && "replacement" in c))return run.adoptions?.find(a=>a.id===id && (c.rollout?a.rollout:a.patch?.owner));
+}
+/** Follow this grain's actual replaced output pins; the caller must still prove its writer or its independent review.
+ * @param {Run} run @param {string} grain @param {import("./model.js").NativeCall} c */
+export function* componentOrigins(run,grain,c){
+	const seen=new Set();
+	while(c.kind==="component" && c.grain===grain && !seen.has(c.id)){
+		seen.add(c.id);yield c;
+		const a=changeOffer(run,c),o=a && changeOwners(a)[grain],prior=o && effectAt(run,o.component);
+		if(!o || prior?.kind!=="component" || prior.commit!==o.output)return;
+		c=prior;
+	}
+}
+
+/** Original stopped adoption that a newly proposed output or harness change may address.
+ * The caller still chooses and verifies its distinct grant; a matched stop grants nothing.
+ * @param {Run} run @param {string} target @param {string} failed */
+export function adoptedStop(run,target,failed){
+	const pin=run.productRepins?.at(-1),join=run.join,last=run.products.at(-1),e=effectAt(run,failed);
+	const grain=failedComponent(e),evaluator=productPin(run),originalCheck=originalVerification(run,failed)??failed;
+	if(pin?.targetFrom && join?.check===failed && verification(pin)===originalCheck && last && last.check===pin.checkpoint &&
+		evaluator && e?.evaluatorRevision===evaluator && run.repins?.at(-1)?.revision===evaluator && run.goal?.check===pin.goal &&
+		run.policy.contractTarget===target && pin.revision===target && join.target===target && e.commit===join.commit &&
+		grain && Object.hasOwn(join.outputs,grain))return {pin,join,last,grain,evaluator,originalCheck};
+}
 /** An amendment has its own check; the original target approval never changes.
  * @param {import("./model.js").ProductPin|undefined} pin */
 export const verification=pin=>pin?.amendments?.at(-1)?.recheck??pin?.recheck;
@@ -157,18 +204,17 @@ export function exhaustedCandidate(run, n) {
 }
 
 /** @param {Run} run @param {import("./model.js").Node} n */
-export function baselineNotice(run, n) {
-	const e = run.effects.findLast(e => e.kind === "repair" && e.token === n.token && e.grain === n.grain.id);
-	return e?.kind === "repair" && e.baseline ? e : undefined;
-}
+export const latestRepair=(run,n)=>run.effects.findLast(/** @returns {e is import("./model.js").NativeCall} */
+	e=>e.kind==="repair" && e.token===n.token && e.grain===n.grain.id);
 
 /** @param {Run} run */
-export function goalReceipt(run) {
+function goalEffect(run) {
 	const at = run.goal;
-	const e = at && run.effects.find(e => e.id === at.check);
-	if (e?.kind === "goal" && e.commit === at?.commit && e.check === run.policy.goalCheck &&
-		currentEvaluation(run,e)) return checkReceipt(e);
+	const e=effectAt(run,at?.check);
+	if(e?.kind==="goal" && e.grain===undefined && e.commit===at?.commit && e.check===run.policy.goalCheck && currentEvaluation(run,e))return e;
 }
+/** @param {Run} run */
+export const goalReceipt=run=>checkReceipt(goalEffect(run));
 
 /** @param {import("./model.js").DiscoveryLead|undefined} lead */
 export const leadGoal = lead => lead?.pending ?? lead?.missing;
@@ -196,7 +242,7 @@ export function omittedStep(run, h, base, pin, productRevision) {
 /** A terminal product check holds only its own candidate, not the goal on the assessed base.
  * @param {Run} run */
 export function milestoneBlocker(run) {
-	const e = run.join && run.effects.find(e => e.id === run.join?.check);
+	const e=effectAt(run,run.join?.check);
 	if (e?.kind === "product" && (e.state === "done" || e.state === "refused")) return e.error;
 }
 
@@ -204,17 +250,6 @@ export function milestoneBlocker(run) {
 export function missingObservation(run) {
 	const receipt = goalReceipt(run);
 	if (!run.blocker && receipt?.exit === 2 && (!run.join || milestoneBlocker(run))) return receipt;
-}
-
-/** A goal milestone doesn't qualify until both exact receipts are applied to this product.
- * @param {Run} run */
-export function qualifiedProduct(run) {
-	if (run.independent) return;
-	const last = run.products.at(-1);
-	return last?.qualifiedAt && !contractHold(run) && !unprovenExports(run).length && !integrityHolds(run).some(h=>{
-		const e=effectAt(run,h.effect);
-		return e && (e.id===last.check || e.id===run.goal?.check || e.grain && e.commit===last.outputs[e.grain]);
-	}) ? last : undefined;
 }
 
 /** Select the original passing attempt. Portable projection and signature verification belong to handoff.
@@ -247,14 +282,20 @@ function productCheckAt(run,id,base,pin){
  * from different assessments do not make a goal handoff.
  * @param {Run} run */
 export function acceptedChecks(run) {
-	const last = qualifiedProduct(run);
-	if (!last) return;
+	const last=run.products.at(-1);
+	if(!last?.qualifiedAt || run.independent || contractHold(run) || unprovenExports(run).length || integrityHolds(run).some(h=>{
+		const e=effectAt(run,h.effect);
+		return e && (e.id===last.check || e.id===run.goal?.check || e.grain && e.commit===last.outputs[e.grain]);
+	}))return;
 	const { productCheck, goalCheck } = run.policy;
 	const product = productCheckAt(run,last.check,last.commit,productPin(run));
 	if (!product) return;
 	if (!goalCheck && !run.goal) return { last, product };
 	if (!goalCheck || goalCheck === productCheck || run.active || run.join || run.blocker || run.conflict ||
 		run.goal?.commit !== last.commit || run.goal.target !== last.target || run.goal.stall) return;
-	const goal = passingCheck(run.effects.find(e => e.id === run.goal?.check), "goal", last.commit, goalCheck);
-	if (goal && goalReceipt(run)?.exit === 0) return { last, product, goal };
+	const goal=goalEffect(run);
+	if(goal && checkReceipt(goal)?.exit===0)return {last,product,goal};
 }
+
+/** Status, dispatch and handoff must agree on the same applied evidence. @param {Run} run */
+export const qualifiedProduct=run=>acceptedChecks(run)?.last;

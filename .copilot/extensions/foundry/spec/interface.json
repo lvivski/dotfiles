@@ -140,7 +140,7 @@
               "when": [
                 "readOnly"
               ],
-              "update": "recordReason"
+              "update": "recordReadOnlyFinding"
             },
             {
               "on": "inspection",
@@ -149,12 +149,12 @@
               "when": [
                 "unfunded"
               ],
-              "update": "recordReason"
+              "update": "recordUnfundedFinding"
             },
             {
               "on": "inspection",
               "target": "blocked",
-              "description": "Keep the findings when the repair allowance is spent.",
+              "description": "Preserve the candidate and failure when the repair allowance is spent.",
               "when": [
                 "exhausted"
               ],
@@ -163,7 +163,7 @@
             {
               "on": "inspection",
               "target": "waiting",
-              "description": "Return the blocking findings to the same writer within its existing grant.",
+              "description": "Queue the permitted repair; the queue itself is not a write grant.",
               "update": "queueRepair"
             }
           ],
@@ -1224,9 +1224,9 @@
             {
               "on": "assess",
               "outcome": "wait",
-              "admission": "closed",
-              "reason": "no-new-information",
-              "description": "Wait for different evidence instead of assessing the same gap again.",
+              "admission": "discovery",
+              "reason": "reconsider-discovery",
+              "description": "Let discovery reconsider undelivered evidence without staffing or rechecking the stalled product.",
               "update": "release-wait",
               "when": [
                 "stalled"
@@ -2646,7 +2646,7 @@
             {
               "on": "work",
               "target": "reservations",
-              "description": "Present the active owner's outstanding question independently of eligible reservations.",
+              "description": "Present the active owner's outstanding charter or author-scope question independently of eligible reservations.",
               "when": [
                 "owner",
                 "active",
@@ -2906,16 +2906,15 @@
             {
               "on": "attempt",
               "target": "done",
-              "description": "A stale protected check or writer handoff waits for a verified change instead of retrying the call.",
+              "description": "An unissued reservation waits for new evidence; a failed claim does not wake itself.",
               "when": [
-                "!claimed",
-                "pinnedCheck"
+                "!claimed"
               ]
             },
             {
               "on": "attempt",
               "target": "done",
-              "description": "Reconcile from the ledger after the attempted call, never by repeating its request.",
+              "description": "Reconcile the journaled call's reply; an unknown outcome is not permission to reissue it.",
               "when": [],
               "action": "refill"
             }
@@ -3326,7 +3325,7 @@
             {
               "on": "resume",
               "target": "ready",
-              "description": "On explicit resume, retain the bound unavailable attempt before reviewing the same pins again.",
+              "description": "On explicit resume, retain the bound unavailable attempt and its context before a new review of the same pins.",
               "guard": "bound",
               "when": [
                 "bound"
@@ -3541,7 +3540,7 @@
                 "unclaimedSource"
               ],
               "action": "draft",
-              "description": "Send a signed adopted stop to its bounded included source without asking the owner to write a patch."
+              "description": "Route a checked defect to its included source. A finding can request exact author scope, not grant it."
             }
           ]
         },
@@ -3889,7 +3888,7 @@
             "minLength": 1
           },
           "draft": {
-            "description": "Have bounded proposal writers draft a correction on the exact signed stop. The original included producer's existing file scope is normally automatic. Select exact files or a declared evaluator only for another scope. No owner-authored patch, checkout edits or verdict.",
+            "description": "Draft for the diagnosed component. A signed failure can authorize existing producer files; a bound review finding needs explicit scope for its cited files. The exact-byte decision is separate. No owner-authored patch, checkout edits or verdict.",
             "type": "object",
             "properties": {
               "check": {

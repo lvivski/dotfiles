@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { EventEmitter } from "node:events";
 import { DatabaseSync } from "node:sqlite";
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -62,7 +63,7 @@ export async function loadEntry(session) {
 
 /** Stand-in for workflow transport only. A batch has a real issuer and ledger binding but no
  * participant session. Keep its terminal envelope pending until all its callbacks have returned. */
-export function workflowHost() {
+export function workflowHost(delivered=()=>{}) {
 	const body = new AsyncLocalStorage();
 	/** @type {Scout[]} */ const scouts = [];
 	/** @type {Set<Promise<void>>} */ const registrations = new Set();
@@ -84,7 +85,7 @@ export function workflowHost() {
 				if (!waiting.size) finish();
 				await settle();
 			} });
-			if (!waiting.size) finish();
+			if (!waiting.size) finish();else delivered();
 		});
 		registrations.add(registration);
 		try { await registration; } finally { registrations.delete(registration); }
@@ -138,8 +139,8 @@ export function settleSubmitted(r){
 	return r;
 }
 
-/** @param {string} root @param {string} [prefix] */
-export function nativeHost(root, prefix = "worker") {
+/** @param {string} root @param {string} [prefix] @param {()=>void} [delivered] */
+export function nativeHost(root, prefix = "worker", delivered=()=>{}) {
 	/** @type {Map<string,{id:string,token:string,cwd:string,prompt:string}>} */ const workers = new Map();
 	/** @type {{worker:string,token:string}[]} */ const inbox = [];
 	/** @type {string[]} */ const checks = [];
@@ -153,7 +154,7 @@ export function nativeHost(root, prefix = "worker") {
 		}
 		if (tool === "send_session_message") {
 			const marker = assignment(text(args.message, "message"));
-			if (marker) inbox.push({ worker: text(args.session_id, "recipient"), token: marker.token });
+			if (marker) {inbox.push({ worker: text(args.session_id, "recipient"), token: marker.token });delivered();}
 			return { resultType: "success", structuredContent: { status: "accepted" } };
 		}
 		assert.equal(tool, "create_session");
@@ -164,6 +165,7 @@ export function nativeHost(root, prefix = "worker") {
 		git(root, "worktree", "add", "-q", "--detach", cwd, text(args.base_branch, "generation"));
 		workers.set(id, { id, token: marker.token, cwd, prompt });
 		inbox.push({ worker: id, token: marker.token });
+		delivered();
 		return { resultType: "success", structuredContent: { project_session_id: id, path: cwd } };
 	};
 	return { workers, inbox, checks, execute };
@@ -183,7 +185,8 @@ export function factory(t, run, source, files, edition=createRuntime) {
 	for (const [name, bytes] of Object.entries(files)) put(root, name, bytes);
 	git(root, "add", ".");
 	git(root, "commit", "-qm", "fixture");
-	const tip = git(root, "rev-parse", "HEAD"), { workers, inbox, checks, execute } = nativeHost(root), discovery = workflowHost(), inspections=scriptedInspections(root);
+	const available=new EventEmitter(),delivered=()=>{available.emit("delivery");};
+	const tip = git(root, "rev-parse", "HEAD"), { workers, inbox, checks, execute } = nativeHost(root,"worker",delivered), discovery = workflowHost(delivered), inspections=scriptedInspections(root);
 	/** @param {string} cwd @param {Partial<Host>} [options] @param {typeof createRuntime} [open] */
 	function runtime(cwd, options, open = edition) {
 		/** @type {Runtime} */
@@ -193,7 +196,7 @@ export function factory(t, run, source, files, edition=createRuntime) {
 				const job = assignment(message);
 				if (!job) return "owner-notice";
 				const w = [...workers.values()].find(w => w.cwd === cwd); assert.ok(w); assert.equal(job.run, run);
-				inbox.push({ worker: w.id, token: job.token }); return `message-${job.token}`;
+				inbox.push({ worker: w.id, token: job.token });delivered();return `message-${job.token}`;
 			}, ...options });
 		t.after(() => r.close());
 		return options && ("startInspection" in options || "inspectionState" in options) ? r : settleSubmitted(r);
@@ -209,5 +212,7 @@ export function factory(t, run, source, files, edition=createRuntime) {
 		await discovery.settle();
 		return status();
 	}
-	return { root, tip, owner, scouts: discovery.scouts, settle: discovery.settle, workers, inbox, checks, execute, runtime, status, start };
+	return { root, tip, owner, scouts: discovery.scouts, settle: discovery.settle, workers, inbox, checks, execute, runtime, status, start,
+		onDelivery(/** @type {()=>void} */ fn){available.on("delivery",fn);return ()=>available.off("delivery",fn);}
+	};
 }

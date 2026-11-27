@@ -170,6 +170,7 @@ export interface Inspection {
 	base:string;
 	scope:NonNullable<Product["ownership"]>[string];
 	task:string;
+	assignment?:string;
 	specification?:string;
 	issuer:string;
 	state:"ready"|"issued"|"approved"|"changes"|"unavailable";
@@ -177,7 +178,7 @@ export interface Inspection {
 	workflow?:string;
 	summary?:string;
 	permissionHold?:string;
-	previous?:{issuer:string;dispatch:string;workflow:string;summary:string}[];
+	previous?:{issuer:string;dispatch:string;workflow:string;summary:string;assignment?:true}[];
 }
 
 export interface ReviewNote {
@@ -449,6 +450,7 @@ export interface DraftPart {
 }
 export interface CorrectionDraft {
 	id:string; check:string; checkpoint:string; goal:string; target:string; product:string; assembly:string;
+	finding?:{inspection:string;stamp:string;frontier:string};
 	evaluator?:string; previousCheck?:string; automatic:boolean; decision?:OwnerDecision; previous?:OwnerDecision[]; parts:DraftPart[]; blob?:string;
 }
 export interface TestRepair {

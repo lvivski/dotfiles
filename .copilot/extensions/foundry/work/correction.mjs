@@ -7,9 +7,9 @@ import { availableReservations } from "./capacity.mjs";
 import { generationOf, goalReceipt, missingInput } from "./evidence.mjs";
 import { frozenCheckpoint } from "./goal.mjs";
 import { admitted, reserveNotice } from "./native.mjs";
-import { originalAttempt, stalePins, writerInputs } from "./plan.mjs";
+import { originalAttempt, stalePins, writerInputs } from "./lineage.mjs";
 import { changedFiles, commitAt, committedFile, verifyContracts } from "./product.mjs";
-import { digest, fail, fields, name, relative, roots, sameScope, scopeLabel, text } from "./values.mjs";
+import { fail, fields, name, pinnedSelection, relative, roots, sameScope, scopeLabel, text } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @param {string} cwd @param {Run} run @param {string} actor @param {Record<string,unknown>} a */
@@ -66,7 +66,7 @@ export function prepareCorrection(cwd, run, actor, a) {
 		return { n, r, target, task, ...(frozen && {frozen:[frozen.check,current.goal?.check]}), correction:{ worker, clause, file, excerpt, ...basis },
 			...(stopped && {goal:current.goal?.check,checkpoint:current.products.at(-1)?.check}) };
 	}
-	const before = select(run), identity = digest(before);
+	const {subject:before,revalidate}=pinnedSelection(run,select,"The assignment or its evidence changed during approval");
 	return {
 		wake:a.preview===undefined?/** @type {const} */("none"):/** @type {const} */("ready"),
 		prompt: `Correct ${grain} for its existing writer ${worker} in ${scopeLabel(before.n.grain.directory)}?\nBefore: ${before.n.grain.task}\nAfter: ${before.task}\n` +
@@ -76,8 +76,7 @@ export function prepareCorrection(cwd, run, actor, a) {
 			"Approve only if the removed clause contradicts the existing contract. No new behavior, reads, ownership or permissions are authorized.",
 		/** @param {Run} live */
 		apply(live) {
-			const fresh = select(live);
-			if (digest(fresh) !== identity) fail("stale_assignment","The assignment or its evidence changed during approval");
+			const fresh=revalidate(live);
 			if (fresh.correction.ordinary && fresh.goal) {
 				const n=fresh.n, token=randomUUID();
 				fresh.r.correction={...fresh.correction,resumed:{prior:structuredClone(n),token}};
