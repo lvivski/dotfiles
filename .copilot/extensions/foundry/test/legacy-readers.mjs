@@ -4,6 +4,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { factory } from "./fixture.mjs";
 
 /** @typedef {import("node:test").TestContext} TestContext */
 /** @type {WeakMap<TestContext, Map<number,string>>} */
@@ -13,16 +14,17 @@ const archive = fileURLToPath(new URL("./fixtures/legacy-readers.tar.xz", import
 /** These are framework modules only. Every repo, ledger, worker and result
  * is created by the test; the old and new runtimes operate on the same fixture.
  * @param {TestContext} t @param {number} version */
-function directory(t, version) {
+export function directory(t, version) {
 	let opened = readers.get(t);
 	if (!opened) readers.set(t, opened = new Map());
 	const existing = opened.get(version);
 	if (existing) return existing;
-	assert.ok([22,51,52,54,55,56,58,59,60,61,64,79].includes(version), `Unknown fixture reader ${version}`);
+	assert.ok([22,51,52,54,55,56,58,59,60,61,64,79,80,81,89,90,91,94,95].includes(version), `Unknown fixture reader ${version}`);
 	const root = mkdtempSync(path.join(tmpdir(), "foundry-reader-"));
 	t.after(() => rmSync(root, {recursive:true, force:true}));
-	execFileSync("tar", ["-xf", archive, "-C", root, String(version)]);
-	const dir = path.join(root, String(version));
+	const dir=path.join(root,"extensions","foundry");
+	mkdirSync(dir,{recursive:true});
+	execFileSync("tar", ["-xf",archive,"-C",dir,"--strip-components=1",String(version)]);
 	assert.equal(readFileSync(path.join(dir, "work/reader.version"), "utf8").trim(), String(version));
 	mkdirSync(path.join(dir, "test"));
 	copyFileSync(new URL("./fixture.mjs", import.meta.url), path.join(dir, "test/fixture.mjs"));
@@ -37,5 +39,6 @@ export async function historicalRuntime(t, version) {
 
 /** @param {TestContext} t @param {number} version @returns {Promise<typeof import("./fixture.mjs").factory>} */
 export async function historicalFactory(t, version) {
-	return (await import(pathToFileURL(path.join(directory(t, version), "test/fixture.mjs")).href)).factory;
+	const edition=await historicalRuntime(t,version);
+	return (t,id,source,files)=>factory(t,id,source,files,edition);
 }

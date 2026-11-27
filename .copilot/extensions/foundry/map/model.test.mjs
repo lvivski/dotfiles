@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { boardSnapshot, mapSnapshot } from "./model.mjs";
+import { mapSnapshot } from "./model.mjs";
+import { boardFacts } from "../work/visibility.mjs";
 import { openDatabase } from "../work/database.mjs";
 import { recover } from "../work/recovery.mjs";
 import { status } from "../work/status.mjs";
 import { factory, git, put } from "../test/fixture.mjs";
+
+/** @param {import("../work/model.js").Run} run @param {string} actor */
+const boardSnapshot=(run,actor)=>mapSnapshot(boardFacts(run,actor));
 
 test("a saved run with eight bound writers and a lost launch reports assignments, not nine active sessions", async t => {
 	const run = "writers", source = ".foundry/writers.json", ids = [...Array.from({ length: 8 }, (_, i) => `part-${i}`), "journal"];
@@ -52,7 +56,7 @@ test("the map distinguishes a missing shell receipt from a check that recorded i
 		recover: e => recover(async () => ({ events: [], cursor: "", cursorStatus: "ok", hasMore: false }), e) });
 	await f.start(issuer); issuer.turn("owner"); await issuer.flush();
 	const db = openDatabase(f.root); t.after(() => db.close());
-	const r = db.read(run); assert.ok(r);
+	const r = structuredClone(db.read(run)); assert.ok(r);
 	const e = r.effects.find(e => e.kind === "goal"); assert.ok(e);
 	assert.equal(e.state, "uncertain"); assert.equal(launches, 1);
 	const snap = () => boardSnapshot(r, "owner");

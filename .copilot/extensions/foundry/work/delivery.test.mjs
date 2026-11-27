@@ -4,7 +4,7 @@ import test from "node:test";
 import { factory, git, put, scriptedInspections } from "../test/fixture.mjs";
 import { validDeliveries } from "./batch.mjs";
 import { openDatabase } from "./database.mjs";
-import { advanceDelivery } from "./delivery.mjs";
+import { deliveryResult } from "./delivery.mjs";
 import { currentInspection, markInspection } from "./inspection.mjs";
 import { historicalFactory } from "../test/legacy-readers.mjs";
 import { createRuntime } from "./runtime.mjs";
@@ -104,7 +104,7 @@ for (const outcome of ["pass","component","product","review blocker","review pen
 		assert.equal(currentInspection(parked,{...i,scope:{directories:["dates","store"],files:[]}}),false);
 		const held=structuredClone(parked), review=held.inspections?.find(r=>r.id===i.id), batch=held.deliveries?.at(-1);assert.ok(review && batch);
 		markInspection(review,"approved",{summary:"The second directory passes review."});review.permissionHold="issuer may not publish";
-		advanceDelivery(f.root,held,batch,f.tip);
+		deliveryResult(f.root,held,batch,f.tip);
 		assert.equal(held.join,undefined);assert.deepEqual(held.nodes,parked.nodes);assert.deepEqual(held.effects,parked.effects);
 		owner.close();hold=false;owner=f.runtime(f.root,host,createRuntime);
 		owner.turn("owner");await owner.flush();
@@ -164,6 +164,15 @@ for (const outcome of ["pass","component","product","review blocker","review pen
 		assert.equal(git(f.root,"rev-parse",`${joined.commit}:${id}`),git(f.root,"rev-parse",`${original.nodes[id].candidate}:${id}`));
 	}
 	assert.equal(!!joined.qualifiedAt,outcome!=="unmet goal");
-	assert.equal(!!owner.inspect({run,detail:"proof"},"owner").qualification,outcome!=="unmet goal");
+	const report=owner.inspect({run,detail:"proof"},"owner");
+	if(outcome==="pass"){
+		// Reader 61 signed the old store verdict, not its scope wire. The later delivery
+		// checked two other grains; it can't certify what was supplied to this capture.
+		const originalStore=end.effects.find(e=>e.id===original.nodes.store.check);
+		assert.ok(originalStore?.kind==="component" && originalStore.receipt?.exit===0 && !originalStore.receipt.inputs);
+		db.verifySigned(run,originalStore);
+		assert.equal(report.qualified,joined.commit);assert.equal(report.qualification,null);
+		assert.match(report.qualificationUnavailable??"",/store.*historical scope protocol/);
+	}else assert.equal(!!report.qualification,outcome!=="unmet goal");
 	if (outcome==="repinned checker") assert.match(added.find(e=>e.kind==="product")?.receipt?.output ?? "",/replacement checker/);
 });

@@ -1,11 +1,9 @@
 import { createHash } from "node:crypto";
-export class FoundryError extends Error {
-	/** @param {string} code @param {string} message */
-	constructor(code, message) { super(message); this.code = code; }
-}
+import {FoundryError,relative,text} from "../../../skills/foundry/scripts/recipe.mjs";
+export {FoundryError,relative,text};
 
-/** @param {string} code @param {string} message @returns {never} */
-export function fail(code, message) { throw new FoundryError(code, message); }
+/** @param {string} code @param {string} message @param {import("./model.js").ReviewObstacle} [obstacle] @returns {never} */
+export function fail(code, message,obstacle) { throw new FoundryError(code, message,obstacle); }
 
 /** @param {unknown} value @returns {Record<string,unknown>} */
 export function record(value) {
@@ -14,12 +12,6 @@ export function record(value) {
 	return /** @type {Record<string,unknown>} */ (value);
 }
 
-/** @param {unknown} value @param {string} label */
-export function text(value, label) {
-	if (typeof value !== "string" || !value.trim() || value.includes("\0"))
-		fail("invalid_field", `Expected ${label}`);
-	return value;
-}
 
 /** @param {unknown} value @param {string} label */
 export function name(value, label) {
@@ -70,14 +62,6 @@ export function deadlineAt(value) {
 	if (Number.isFinite(time) && Number.isFinite(date.getTime()) && date.toISOString().startsWith(match[1])) return time;
 }
 
-/** @param {unknown} value */
-export function relative(value) {
-	const s = text(value, "repository-relative path");
-	if (/[\\:\x00-\x1f\x7f]/.test(s) || s.split("/").some(part => !part || part === "." || part === ".." ||
-		/^\.git[ .]*$/i.test(part) || /[ .]$/.test(part)))
-		fail("invalid_path", `Invalid repository path: ${s}`);
-	return s;
-}
 
 /** @param {unknown} value */
 function pinnedDirectory(value) {
@@ -110,7 +94,7 @@ export function disjoint(directories) {
 	const roots = directories.map(dir => `${dir.normalize("NFC").toLowerCase()}/`).sort();
 	for (const [i, dir] of roots.entries()) {
 		if (dir.startsWith(".foundry/")) fail("contract_scope", "Implementation cannot own .foundry");
-		if (i && dir.startsWith(roots[i - 1])) fail("overlapping_ownership", "Writable directories must be disjoint");
+		if (i && dir.startsWith(roots[i - 1])) fail("overlapping_ownership", "Writable directories must be disjoint",{kind:"overlap"});
 	}
 }
 

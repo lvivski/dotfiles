@@ -92,6 +92,8 @@ function safePath(file) {
 	if (sensitivePath.test(file)) unavailable("Credential file cannot be sent in a candidate review.");
 	safeText(file);
 }
+/** @param {string} file @param {string} value */
+export function safeEvidence(file,value){safePath(file);return safeText(value);}
 
 const locationPrefix="Review location: ";
 const tooLarge=()=>unavailable("The complete candidate evidence exceeds the review context budget; no partial review.");
@@ -210,7 +212,7 @@ const reviewer="rubber-duck";
 const actorId=id=>typeof id==="string" && !!id.trim();
 /** Only while this extension instance is actually awaiting ctx.agent, never all Duck
  * invocations in a session. Concurrent workflows each contribute their own original ID.
- * @type {WeakMap<object,Set<{actor:string,workflow:string,label:string}>>} */
+ * @type {WeakMap<object,Set<{actor:string,workflow:string,label:string,agent?:string,definition?:string}>>} */
 const reviewing=new WeakMap();
 
 /** SDK tool hooks carry the tool caller's actor ID, not its launching tool-call ID.
@@ -228,11 +230,11 @@ export async function inspectionToolBlocked(runtime,primary,invocation,input,loo
 	if (!possible.length) return false;
 	if (!actorId(input.agentId) || input.parentAgentId!==undefined && !actorId(input.parentAgentId)) return true;
 	try {
-		for (const {workflow,label} of possible) {
+		for (const {workflow,label,agent=reviewer,definition="foundry-inspect"} of possible) {
 			const d=await lookup(workflow), running=d.agents.filter(a=>a.status==="running"), [direct]=running;
-			if (d.runId!==workflow || d.workflowName!=="foundry-inspect" || d.status!=="running" || running.length!==1 ||
+			if (d.runId!==workflow || d.workflowName!==definition || d.status!=="running" || running.length!==1 ||
 				d.liveAgentCount!==undefined && d.liveAgentCount!==1 ||
-				direct.runId!==workflow || direct.label!==label || direct.agentType!==reviewer || !actorId(direct.agentId) || !actorId(direct.toolCallId) ||
+				direct.runId!==workflow || direct.label!==label || direct.agentType!==agent || !actorId(direct.agentId) || !actorId(direct.toolCallId) ||
 				direct.agentId===input.agentId || direct.agentId===input.parentAgentId) return true;
 		}
 		return false;
@@ -242,12 +244,18 @@ export async function inspectionToolBlocked(runtime,primary,invocation,input,loo
 /** Resolve the effective catalog before handing a packet to a named agent. A project
  * profile with the same name is not an alternate reviewer.
  * @param {import("@github/copilot-sdk").CopilotSession} session */
-async function builtInReviewer(session) {
+export async function builtInReviewer(session) {
 	try {
 		const {agents}=await session.rpc.agent.list({includeBuiltInAgents:true});
 		const matching=agents.filter(a=>a.name===reviewer || a.id===reviewer);
 		return matching.length===1 && matching[0].source==="builtin";
 	} catch { return false; }
+}
+
+/** @template T @param {object} runtime @param {{actor:string,workflow:string,label:string,agent?:string,definition?:string}} call @param {()=>Promise<T>} invoke */
+export async function guardedAgent(runtime,call,invoke){
+	const active=reviewing.get(runtime)??new Set();active.add(call);reviewing.set(runtime,active);
+	try{return await invoke();}finally{active.delete(call);if(!active.size)reviewing.delete(runtime);}
 }
 
 /** @param {()=>{inspectionPacket:(run:string,inspection:string,dispatch:string,actor:string,workflow:string)=>Promise<Packet>}} runtimeProvider
@@ -278,11 +286,7 @@ export function critiqueDefinition(runtimeProvider) {
 			if (!builtin) return {...pins,outcome:"unavailable",summary:"The effective built-in Rubber Duck reviewer could not be verified."};
 			ctx.phase("Review");
 			const label=`inspect:${inspection}:${pins.component}@${pins.candidate}`, call={actor,workflow,label};
-			const active=reviewing.get(runtime)??new Set();
-			active.add(call); reviewing.set(runtime,active);
-			let raw;
-			try { raw=await ctx.agent(prompt,{agent:reviewer,label,schema}); }
-			finally { active.delete(call); if (!active.size) reviewing.delete(runtime); }
+			const raw=await guardedAgent(runtime,call,()=>ctx.agent(prompt,{agent:reviewer,label,schema}));
 			ctx.signal.throwIfAborted();
 			try {
 				const result=inspectionResult(raw); safeText(result.summary);

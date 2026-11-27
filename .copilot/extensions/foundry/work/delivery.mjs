@@ -1,13 +1,13 @@
+import { verifyJoinedInputs, verifyRepairInputs } from "./assembly.mjs";
 import { checkReceipt } from "./evidence.mjs";
 import { checks, currentDelivery, seal } from "./batch.mjs";
 import { assess } from "./goal.mjs";
-import { verifyJoinedInputs, verifyRepairInputs } from "./graph.mjs";
 import { harnessFiles } from "./harness.mjs";
-import { inspectedBatch } from "./inspection.mjs";
+import { componentBatch } from "./inspection.mjs";
 import { admitted, expired, reserveCheck, reserveProduct } from "./native.mjs";
 import { validateNodes, writerInputs } from "./plan.mjs";
 import { checkDirectory, commitAt, directoryBaseline, outside, retain, stageDelivery, verifyContracts } from "./product.mjs";
-import { approvedPublication } from "./publication.mjs";
+import { publishedComponent, publishedNodes } from "./publication.mjs";
 import { settledCheckpoint } from "./repin.mjs";
 import { grant } from "./transfer.mjs";
 import { digest, fail, fields, name, names, roots } from "./values.mjs";
@@ -35,7 +35,7 @@ export function prepareDelivery(cwd,run,actor,a,signed) {
 		}
 		for (const [id,candidate] of Object.entries(last.outputs)) {
 			const n=r.nodes[id];
-			if (n?.state!=="qualified" || n.candidate!==candidate || !approvedPublication(r,n.check,id,candidate) ||
+			if (n?.state!=="qualified" || n.candidate!==candidate || !publishedComponent(r,n.check,id,candidate) ||
 				last.ownership && digest(last.ownership[id])!==digest(grant(n)))
 				fail("ownership_transition",`Cannot preserve the current checked owner of ${id}`);
 		}
@@ -108,7 +108,7 @@ function nextComponent(cwd,r,d,i) {
 /** Run the original default suites serially: they can share a desktop. Don't publish any
  * member until the product has passed with every selected directory physically present.
  * @param {string} cwd @param {Run} run @param {Delivery} d @param {string} target */
-export function advanceDelivery(cwd,run,d,target) {
+export function deliveryResult(cwd,run,d,target) {
 	if (d.assessment || d.error) return;
 	const jobs=checks(run,d), e=jobs.at(-1);
 	if (!e) fail("corrupt_run","Missing delivery reservation");
@@ -124,11 +124,14 @@ export function advanceDelivery(cwd,run,d,target) {
 	const p=run.products.at(-1);
 	if (!p) fail("corrupt_run","Missing delivery checkpoint");
 	if (e.kind==="component") {
-		if (jobs.length<d.selected.length) return nextComponent(cwd,run,d,jobs.length);
-		if (!inspectedBatch(run,jobs,review=>{
+		const batch=componentBatch(run,d.assembly,d.selected.map(s=>s.prior.grain.id),jobs);
+		if(batch.state==="next")return nextComponent(cwd,run,d,batch.index);
+		if(batch.state==="changes"){
+			const {review}=batch;
 			d.error=`Delivery stopped at review ${review.id} of ${review.grain} (${review.component}): ${review.summary} `+
 				"This delivery authorizes only unchanged historical test files. Repair needs a separate write grant; the original stopped tasks and receipts have been kept.";
-		})) return;
+		}
+		if(batch.state!=="ready")return;
 		const outputs={...p.outputs};
 		for (const {prior} of d.selected) outputs[prior.grain.id]=d.assembly;
 		reserveProduct(run,run.owner,cwd,target,d.assembly,outputs);
@@ -140,10 +143,8 @@ export function advanceDelivery(cwd,run,d,target) {
 	const join=run.join;
 	if (e.kind!=="product" || join?.check!==e.id) fail("corrupt_run","Missing exact delivery product");
 	verifyContracts(cwd,run.policy,target);
-	for (const [i,{prior}] of d.selected.entries()) {
-		const {grain,review,inputs,supporting,repairs}=prior;
-		run.nodes[grain.id]={grain,review,inputs,supporting,repairs,base:p.commit,generation:p.commit,candidate:d.assembly,check:jobs[i].id,state:"qualified"};
-	}
+	run.nodes=publishedNodes(run,jobs.slice(0,-1),({grain,review,inputs,supporting,repairs})=>
+		({grain,review,inputs,supporting,repairs,base:p.commit,generation:p.commit,state:"qualified"}));
 	run.products.push(join);delete run.join;
 	assess(cwd,run,run.owner,target,join.commit);
 	d.assessment=run.goal?.check;

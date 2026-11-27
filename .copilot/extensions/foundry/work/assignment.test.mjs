@@ -11,12 +11,12 @@ const states=/** @type {const} */ (["idle","waiting","writing","checking","revie
 const node=state=>({state,grain,repairs:0,candidate:"candidate",check:"check",reason:"original reason",replaces:"previous",worker:"same writer"});
 
 test("the complete command matrix preserves pins and rejects unsupported assignment transitions atomically",()=>{
-	const commands=/** @type {const} */ (["request","staff","submit","stop","integrate","paired-pass","repeat","recheck","deliver"]);
+	const commands=/** @type {const} */ (["request","staff","submit","stop","integrate","paired-pass","repeat","recheck","deliver","amend"]);
 	/** @type {Record<Node["state"],Record<string,Node["state"]>>} */
 	const allowed={
-		idle:{request:"waiting"},waiting:{staff:"writing",stop:"blocked"},writing:{submit:"checking",stop:"blocked"},
-		checking:{stop:"blocked","paired-pass":"published"},reviewing:{},published:{integrate:"qualified",stop:"blocked",staff:"writing",repeat:"repeated","paired-pass":"published"},
-		qualified:{integrate:"qualified",request:"waiting"},repeated:{integrate:"qualified",request:"waiting"},
+		idle:{request:"waiting"},waiting:{staff:"writing",stop:"blocked",recheck:"checking"},writing:{submit:"checking",stop:"blocked"},
+		checking:{stop:"blocked","paired-pass":"published"},reviewing:{},published:{integrate:"qualified",stop:"blocked",staff:"writing",repeat:"repeated","paired-pass":"published",amend:"published"},
+		qualified:{integrate:"qualified",request:"waiting",amend:"published"},repeated:{integrate:"qualified",request:"waiting",amend:"published"},
 		blocked:{staff:"writing",recheck:"checking","paired-pass":"published",deliver:"qualified",stop:"blocked"},
 	};
 	for (const state of states) for (const command of commands) {
@@ -27,7 +27,7 @@ test("the complete command matrix preserves pins and rejects unsupported assignm
 		}
 		const result=assign(n,command);
 		expected.state=to;
-		if (command==="recheck" || command==="paired-pass") delete expected.reason;
+		if (command==="recheck" || command==="paired-pass" || command==="amend") delete expected.reason;
 		assert.deepEqual(result.snapshot,{value:to,context:{replaces:"previous",...(expected.reason && {reason:expected.reason})}});
 		assert.deepEqual(result.effects,[]);assert.deepEqual(n,expected);
 	}

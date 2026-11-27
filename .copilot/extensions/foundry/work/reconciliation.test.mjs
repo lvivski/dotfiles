@@ -4,7 +4,8 @@ import { setImmediate as turn } from "node:timers/promises";
 import { factory, git, put } from "../test/fixture.mjs";
 import { compose, transition } from "./machine.mjs";
 import { openDatabase } from "./database.mjs";
-import { reconciliation, reconcileWake } from "./reconciliation.mjs";
+import { reconcileWake } from "./reconciliation.mjs";
+import { reconciliation } from "./rules/reconciliation.mjs";
 import { createRuntime } from "./runtime.mjs";
 
 /** @param {string} value @param {string} type @param {Record<string,boolean>} [facts] */
@@ -26,13 +27,13 @@ test("only the unexpired recording issuer rechecks its hold; continuation needs 
 
 test("a missing target, pause or deadline cannot staff work; only a final handoff survives inactivity",()=>{
 	for(const active of [true,false]) for(const expired of [true,false]) for(const missingTarget of [true,false]) {
-		const facts={active,expired,missingTarget,handoff:false,owner:true,question:true};
+		const facts={active,expired,missingTarget,handoff:false,owner:true,question:true,testRepair:false,draftDue:false};
 		const offered=effects(step("offering","work",facts));
 		assert.deepEqual(offered,active && !expired && !missingTarget ? ["offer-question"] : []);
 	}
 	assert.deepEqual(effects(step("offering","work",{active:false,expired:true,missingTarget:false,handoff:true,owner:true,question:true})),["offer-batch"]);
 	for(const owner of [true,false])for(const adoption of [true,false])
-		assert.deepEqual(effects(step("offering","work",{active:true,expired:false,missingTarget:false,owner,question:false,adoption})),
+		assert.deepEqual(effects(step("offering","work",{active:true,expired:false,missingTarget:false,owner,question:false,adoption,testRepair:false,draftDue:false})),
 			[owner && adoption ? "offer-adoption" : "offer-batch"]);
 	assert.deepEqual(effects(step("reservations","batch",{hasBatch:false})),[]);
 	assert.deepEqual(effects(step("planning","planned",{closed:false,inspectionDue:false,missingTarget:false,owner:true,active:true,expired:false,renewalDue:true})),["sample-policy"]);

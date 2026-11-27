@@ -1,5 +1,5 @@
 import { productOverlayPaths } from "./contract.mjs";
-import { checkReceipt, failedComponent } from "./evidence.mjs";
+import { checkReceipt, failedComponent, mixedVerification, originalVerification, verificationSource } from "./evidence.mjs";
 import { outside } from "./product.mjs";
 import { retainedMode } from "./transfer.mjs";
 import { digest } from "./values.mjs";
@@ -8,8 +8,13 @@ import { digest } from "./values.mjs";
 /** @typedef {import("./model.js").Product} Product */
 /** @typedef {import("./model.js").ProductPin} Pin */
 /** A failed verification remains an assembly, never a passing checkpoint.
- * @param {Pin} pin @param {string} id @param {Map<string,Product>} products @param {Product|undefined} join */
-export const verificationAssembly=(pin,id,products,join)=>products.get(id)??(join?.check===id ? join : pin.amendments?.find(s=>s.prior.check===id)?.prior);
+ * @param {Run} run @param {Pin} pin @param {string} id @param {Map<string,Product>} products */
+export function verificationAssembly(run,pin,id,products){
+	const exact=products.get(id)??(run.join?.check===id?run.join:pin.amendments?.find(s=>s.prior.check===id)?.prior);
+	if(exact || !run.testRepairs?.length)return exact;
+	const origin=originalVerification(run,id);
+	return [...products.values(),run.join,...(pin.amendments??[]).map(s=>s.prior)].find(p=>p && originalVerification(run,p.check)===origin);
+}
 
 /** @param {Pin} p @param {import("./model.js").Receipt} receipt @param {Product} assembly @param {Map<string,string>} captures */
 function observed(p,receipt,assembly,captures){
@@ -27,8 +32,9 @@ export function productLineage(run,products,effects){
 	if(run.policy.contractTarget!==pins.findLast(p=>p.targetFrom)?.revision)return false;
 	if(!pins.length)return !run.effects.some(e=>e.productEvaluatorRevision || e.kind==="product" && e.evaluatorRevision);
 	if(!run.goal || products.size!==run.products.length || new Set([run.policy.base,...pins.map(p=>p.revision)]).size!==pins.length+1)return false;
-	const steps=pins.flatMap((p,i)=>[{p,i,id:p.recheck,source:/** @type {Product|undefined} */ (undefined)},
-		...(p.amendments??[]).map(a=>({p,i,id:a.recheck,source:a.prior}))]);
+	const offers=new Map(run.adoptions?.map(a=>[a.id,a]));
+	const steps=pins.flatMap((p,i)=>[{p,i,id:p.recheck,source:/** @type {Product|undefined} */ (undefined),offer:undefined},
+		...(p.amendments??[]).map(a=>({p,i,id:a.recheck,source:a.prior,offer:offers.get(a.proposal)}))]);
 	let next=0,applied=0,retained=run.policy.ownership===retainedMode;
 	/** @type {string|undefined} */ let pin;
 	/** @type {import("./model.js").Effect|undefined} */ let lastGoal;
@@ -38,12 +44,18 @@ export function productLineage(run,products,effects){
 		if(e.kind==="component" && checkReceipt(e)?.exit===0)captures.set(`${e.grain}@${e.commit}`,e.check);
 		const step=steps[next];
 		if(step?.id===e.id){
-			const {p,i,source}=step, after=verificationAssembly(p,e.id,products,run.join);
+			const {p,i,source,offer}=step, after=verificationAssembly(run,p,e.id,products);
 			if(e.kind!=="product" || e.issuer!==run.owner || e.check!==run.policy.productCheck || !after || after.commit!==e.commit)return false;
 			if(source){
+				if(!offer || !(offer.patch || offer.rollout) || offer.assembly!==after.commit)return false;
+				const {patch,rollout}=offer,outputs={...source.outputs};
+				if(rollout){
+					for(const grain of Object.keys(rollout.owners))outputs[grain]=after.commit;
+					pin=rollout.harness;
+				}else if(patch?.owner)outputs[patch.grain]=after.commit;
 				if(!p.targetFrom || needsGoal?.check!==source.check || source.qualifiedAt || products.has(source.check) ||
 					!failedComponent(effects.get(source.check)) || source.target!==after.target || source.commit===after.commit ||
-					digest([source.outputs,source.ownership])!==digest([after.outputs,after.ownership]))return false;
+					digest([outputs,source.ownership])!==digest([after.outputs,after.ownership]))return false;
 			}else{
 				const prior=run.products[applied-1];
 				if(needsGoal || !prior || prior.check!==p.checkpoint || lastGoal?.id!==p.goal || lastGoal.commit!==prior.commit ||
@@ -65,7 +77,26 @@ export function productLineage(run,products,effects){
 			if(e.kind==="goal"){
 				if(!products.has(needsGoal.check) || e.commit!==needsGoal.commit || e.check!==run.policy.goalCheck)return false;
 				needsGoal=undefined;
+			}else if(e.kind==="product" && e.testPin){
+				if(originalVerification(run,e.id)!==originalVerification(run,needsGoal.check) || e.commit!==needsGoal.commit)return false;
+			}else if(e.kind==="component" && e.rollout){
+				const a=offers.get(e.rollout);
+				if(!a?.rollout || !e.grain || a.failed!==needsGoal.check || e.commit!==a.assembly || !Object.hasOwn(a.rollout.owners,e.grain) ||
+					a.rollout.owners[e.grain].output!==needsGoal.outputs[e.grain] || a.revision!==pin)return false;
+			}else if(e.kind==="component" && e.replacement){
+				const a=offers.get(e.replacement);
+				if(!a?.patch?.owner || a.failed!==needsGoal.check || !e.grain || e.grain!==a.patch.grain || e.commit!==a.assembly ||
+					a.patch.owner.output!==needsGoal.outputs[e.grain] || a.revision!==needsGoal.target || effects.get(needsGoal.check)?.evaluatorRevision!==pin)return false;
 			}else if(["product","component","writer","repair","scout"].includes(e.kind))return false;
+		}else if(e.kind==="component" && (e.replacement || e.rollout)){
+			return false;
+		}
+		if(e.kind==="product" && e.receipt){
+			const source=verificationSource(run,e.id),mixed=source!==e.id && mixedVerification(run,source);
+			if(mixed){
+				const after=verificationAssembly(run,mixed,e.id,products);
+				if(!after || !observed(mixed,e.receipt,after,captures))return false;
+			}
 		}
 		if(e.kind==="product" && e.evaluatorRevision!==pin || e.productEvaluatorRevision!==(e.kind==="goal" || e.kind==="scout" ? pin : undefined))return false;
 		if(e.kind==="goal")lastGoal=e;

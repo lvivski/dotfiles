@@ -40,6 +40,8 @@ for (const mode of ["observer pass","observer fail"]) test(`partial repartition 
 	await assert.rejects(decline.operation("diagnose",{...author,preview},"owner"),{code:"approval_declined"});
 	await assert.rejects(wr.operation("submit",submission,w.id),{code:"approval_required"});
 	await approve.operation("diagnose",{...author,preview},"owner");
+	const sent=db.read(run)?.instructions?.find(e=>e.instruction?.kind==="observer");
+	assert.ok(sent?.state==="done" && sent.args.session_id===w.id && String(sent.args.message).includes(sourceFile));
 	put(w.cwd,sourceFile,"different");await assert.rejects(wr.operation("submit",submission,w.id),{code:"stale_assignment"});
 	put(w.cwd,sourceFile,"phase-aware");await wr.operation("submit",submission,w.id);
 	const proof=approve.inspect({run,detail:"proof"},"owner"), result=proof.nodes.find(n=>n.grain==="selector");

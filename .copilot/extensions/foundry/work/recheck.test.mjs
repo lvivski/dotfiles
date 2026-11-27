@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { pairedWork } from "../test/install.mjs";
 import { spawn, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
@@ -46,8 +47,8 @@ test("an issued check can read its ledger and publish its receipt without the sc
 	const before = db.read(run), issued = before?.effects.find(e=>e.id===before.goal?.check);
 	assert.ok(issued?.kind==="goal" && issued.callId && !issued.runnerClaim && !issued.receipt);
 
-	const work = path.join(path.dirname(f.root),"observer");
-	const coordinator = new Set(["native.mjs","graph.mjs","engine.mjs","runtime.mjs","correction.mjs","repin.mjs","restoration.mjs"]);
+	const work = pairedWork(path.join(path.dirname(f.root),"observer"));
+	const coordinator = new Set(["native.mjs","graph.mjs","assembly.mjs","engine.mjs","runtime.mjs","correction.mjs","repin.mjs","restoration.mjs"]);
 	cpSync(fileURLToPath(new URL("./",import.meta.url)),work,{recursive:true,filter:p=>!coordinator.has(path.basename(p))});
 	const observe = () => spawnSync(process.execPath,[path.join(work,"runner.mjs"),f.root,run,issued.id],{encoding:"utf8"});
 	const first = observe();

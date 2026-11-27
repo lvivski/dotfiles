@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {machine,extend,step} from "../work/machine.mjs";
 import {catalog} from "../work/catalog.mjs";
-import {monitors} from "../work/supervision.mjs";
+import { monitors } from "../work/rules/supervision.mjs";
 import {inventory,obstruction,walk} from "./walk.mjs";
 
 /** @type {import("../work/machine.mjs").Machine} */
@@ -55,10 +55,10 @@ test("universal progress finds an escapable livelock and distinguishes a dead en
 test("stable evidence and fair samples route each owed wake; a history lookup cannot discharge a dispatch obligation",()=>{
 	for(const [flag,gate,action] of [
 		["managed","managed-policy","reactivate"],["local","issuer-permission","reconcile"],["missing","missing-target","reconcile"],
-		["retryRead","workflow-status","reconcile"],["participant","ledger","reconcile"],
+		["retryRead","workflow-status","reconcile"],["formDue","approval-delivery","reconcile"],["participant","ledger","reconcile"],
 	])for(const evidence of [true,false])for(const pending of [true,false]){
-		const facts={expired:false,managed:false,local:false,missing:false,retryRead:false,participant:false,
-			[flag]:true,permitted:evidence,available:evidence,changed:evidence};
+		const facts={expired:false,managed:false,local:false,missing:false,retryRead:false,participant:false,formDue:false,
+			[flag]:true,permitted:evidence,presentable:evidence,available:evidence,changed:flag!=="formDue" && evidence};
 		/** @param {string} state */
 		const next=state=>{
 			const rows=monitors.plan({supervision:state,history:pending?"pending":"idle"},"sample",{supervision:facts});

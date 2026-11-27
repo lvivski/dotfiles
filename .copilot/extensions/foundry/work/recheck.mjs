@@ -1,9 +1,9 @@
+import { changes, productBase, verifyJoinedInputs, verifyRepairInputs } from "./assembly.mjs";
 import { assign, working } from "./assignment.mjs";
 import { availableReservations, remainingAssignments } from "./capacity.mjs";
 import { checkReceipt, currentEvaluation, launcherFailure, productPin, verification } from "./evidence.mjs";
 import { undecided } from "./facts.mjs";
 import { assess, observeTarget } from "./goal.mjs";
-import { changes, productBase, verifyJoinedInputs, verifyRepairInputs } from "./graph.mjs";
 import { admitted, reserveCheck, reserveProduct } from "./native.mjs";
 import { productOutputs, writerInputs } from "./plan.mjs";
 import { combine, commitAt, retain } from "./product.mjs";
@@ -19,15 +19,17 @@ function selection(cwd,r,actor,id,signed) {
 	if (r.effects.some(e=>e.tool==="bash" && e.recheck?.of===id)) return;
 	admitted(r);
 	const e = r.effects.find(x=>x.id===id);
+	if(e?.tool==="bash" && e.testPin || e?.kind==="component" && (e.replacement || e.rollout))fail("not_recoverable","An exact test or output correction cannot reuse its evidence in a generic retry");
 	if (e?.kind==="component" && (e.pair || e.observer || e.remedy)) fail("not_recoverable","A paired, production or observer observation is not repeatable");
 	if (e?.tool!=="bash" || !e.callId || !e.commit || e.args.shellId!==`foundry-${id}` ||
 		r.effects.some(x=>x!==e && x.issuer===e.issuer && (x.callId===e.callId || x.args.shellId===e.args.shellId)))
 		fail("not_recoverable","Need the exact original check and its unique native call");
 	const exit = launcherFailure(e), receipt = checkReceipt(e);
 	if (exit === undefined) {
-		if (e.kind!=="goal" || !e.runnerClaim || receipt?.exit!==null)
+		if (e.kind!=="goal" || !e.runnerClaim || e.receipt?.exit!==null)
 			fail("not_recoverable","Need a confirmed pre-claim launcher exit or the original signed null goal outcome; never repeat an unknown call");
 		signed(e);
+		if(receipt?.exit!==null)fail("not_recoverable","The original null goal outcome is not admissible");
 	}
 	const { target, error } = observeTarget(()=>commitAt(cwd,r.policy.target));
 	if (target===undefined) fail("target_unavailable",error);

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { pairedWork } from "../test/install.mjs";
 import { execFile, execFileSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, linkSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -22,6 +23,8 @@ import { reviews } from "./reviews.mjs";
 import { createRuntime } from "./runtime.mjs";
 import { buildTools } from "./tools.mjs";
 import { record, text } from "./values.mjs";
+import { historicalFactory } from "../test/legacy-readers.mjs";
+import { writeDocument } from "./wire.mjs";
 
 /** @typedef {Parameters<typeof createRuntime>[1]} Host */
 /** @typedef {import("./model.js").Effect} Effect */
@@ -38,8 +41,8 @@ const policy = () => ({
 
 /** @typedef {ReturnType<typeof policy>} FixturePolicy */
 /** @param {import("node:test").TestContext} t @param {(p:FixturePolicy)=>void} [configure]
- * @param {Record<string,string>} [files] */
-function fixture(t, configure, files = {}) {
+ * @param {Record<string,string>} [files] @param {typeof factory} [make] */
+function fixture(t, configure, files = {},make=factory) {
 	const p = policy();
 	configure?.(p);
 	const baseline = { [source]: JSON.stringify(p), ".foundry/api.md": "Default-export an integer.", "neighbor.txt": "not owned\n",
@@ -49,7 +52,7 @@ function fixture(t, configure, files = {}) {
 		baseline[`.foundry/${id}.md`] = `Implement ${id} with value ${i + 1}.`;
 		baseline[`.foundry/${id}.mjs`] = `import n from "../lib/${id}/index.mjs"; if(n!==${i + 1}) throw Error("wrong ${id}");`;
 	}
-	const f = factory(t, run, source, { ...baseline, ...files }), { workers, runtime } = f;
+	const f = make(t, run, source, { ...baseline, ...files }), { workers, runtime } = f;
 	/** @param {string} id @param {number} [value] */
 	async function submit(id, value, /** @type {Partial<Host>} */ options = {}) {
 		const w = workers.get(id);
@@ -227,12 +230,12 @@ for (const [oldExit, newExit] of [[1, 0], [0, 2]]) test(`repin finishes the issu
 	assert.deepEqual(done.goalChecks?.map(e => [e.commit, e.evaluatorRevision, e.receipt?.exit]), [[f.tip, f.tip, oldExit], [f.tip, revision, newExit]]);
 	assert.equal(done.qualified, newExit === 0 ? f.tip : null);
 	if (newExit !== 0) { assert.equal(done.qualification, null); return; }
-	assert.equal(done.qualification?.format, "foundry-qualification/v2");
+	assert.equal(done.qualification?.format, "foundry-qualification/v5");
 	assert.equal(done.qualification?.receipts.goal.evaluatorRevision, revision);
 	const bundle = path.join(path.dirname(f.root), "qualification.bundle");
 	execFileSync(process.execPath, [fileURLToPath(new URL("../../../skills/foundry/scripts/qualification.mjs", import.meta.url)), "pack", bundle],
 		{ cwd: f.root, input: JSON.stringify(done.qualification) });
-	assert.ok(git(f.root, "bundle", "list-heads", bundle).includes(`${revision} refs/foundry/objects/${revision}`));
+	assert.ok(git(f.root, "bundle", "list-heads", bundle).includes(`refs/foundry/replay/${done.qualification.receipts.goal.disclosure.subject.carrier}`));
 });
 
 /** @param {FixturePolicy} p */
@@ -612,7 +615,7 @@ const report = (job, evidence, grains, replace) => job.report(result(evidence, g
 /** @param {ReturnType<typeof createRuntime>} runtime @param {Scout} job @param {unknown} raw */
 const deliver = (runtime, job, raw) => runtime.scoutResult(run, job.dispatch, job.issuer, job.workflowId, job.id, raw, job.packet);
 /** @param {import("node:test").TestContext} t @param {Record<string,string>} [files] */
-function pipelineFixture(t, files = {}) {
+function pipelineFixture(t, files = {},make=factory) {
 	const f = fixture(t, undefined, {
 		[source]: JSON.stringify(areaPolicy()),
 		[unitCheck]: `import assert from "node:assert/strict";
@@ -630,7 +633,7 @@ function pipelineFixture(t, files = {}) {
 			}
 			console.log("Pipeline did not send the input record once and preserve the unknown outcome");process.exit(1);`,
 		...files
-	});
+	},make);
 	/** @param {string} id @param {string} body @param {Partial<Host>} [options] */
 	async function write(id, body, options) {
 		const n = (await f.status()).nodes.find(n => n.grain === id);
@@ -1193,13 +1196,15 @@ for (const legacy of [false, true]) test(`an owner can approve inspection of a s
 			return consent;
 		} });
 		await assert.rejects(owner.operation("inspectBaseline", selection, w.id), /owner/);
-		await assert.rejects(owner.operation("repairBaseline", selection, "owner"), /current unmet goal/);
 		await assert.rejects(owner.operation("inspectBaseline", selection, "owner"), /not approved/);
 		assert.deepEqual((await f.status(w.id)).nodes[0], stopped);
 		consent = true;
 		await owner.operation("inspectBaseline", selection, "owner");
 		const current = await f.runtime(w.cwd).operation("status", { run }, w.id), granted = current.nodes[0];
 		assert.deepEqual(granted.readGrant, n.priorSource);
+		const notice=ledger.read(run)?.instructions?.find(e=>e.instruction?.kind==="read" && e.grain==="inventory");
+		assert.ok(notice?.state==="done" && notice.args.session_id===w.id && String(notice.args.message).includes(sourceTree));
+		const direction=current.recovery.find(a=>a.kind==="read");assert.equal(direction?.tool,"foundry_status");assert.ok(!direction.message.includes("foundry_submit"));
 		assert.ok(!Array.isArray(granted.readGrant));
 		assert.deepEqual({ ...granted, readGrant: undefined }, { ...stopped, readGrant: undefined });
 		assert.equal(git(w.cwd, "show", `${granted.readGrant.revision}:${granted.readGrant.directory}/index.mjs`), originalAssembly);
@@ -1208,7 +1213,6 @@ for (const legacy of [false, true]) test(`an owner can approve inspection of a s
 		assert.deepEqual((await f.status()).pending, before.pending);
 		assert.deepEqual((await f.status()).assignments, before.assignments); assert.equal(prompts, 2);
 		await assert.rejects(writer.operation("submit", { run, token: w.token }, w.id), /writable/);
-		await assert.rejects(owner.operation("repairBaseline", selection, "owner"), /current unmet goal/);
 		await assert.rejects(owner.operation("inspectBaseline", selection, "owner"), /already approved/);
 		assert.equal(prompts, 2);
 	} finally { release(); await checking; }
@@ -1322,8 +1326,8 @@ test("a missing-input report cannot retire an uncertain component check", async 
 });
 
 /** @param {import("node:test").TestContext} t @param {Record<string,string>} [files] */
-async function assemblyRound(t, files) {
-	const f = pipelineFixture(t, { [`${assembly}/index.mjs`]: originalAssembly, ".foundry/product.mjs": `import "../${assembly}/index.mjs";`, ...files });
+async function assemblyRound(t, files,make=factory) {
+	const f = pipelineFixture(t, { [`${assembly}/index.mjs`]: originalAssembly, ".foundry/product.mjs": `import "../${assembly}/index.mjs";`, ...files },make);
 	await f.start();
 	const [core, pipeline] = f.scouts;
 	await report(core, ".foundry/left.md", []);
@@ -1332,8 +1336,8 @@ async function assemblyRound(t, files) {
 }
 
 /** @param {import("node:test").TestContext} t @param {Record<string,string>} [files] */
-async function assemblyCheckpoint(t, files) {
-	const f = await assemblyRound(t, files);
+async function assemblyCheckpoint(t, files,make=factory) {
+	const f = await assemblyRound(t, files,make);
 	await f.write("assembly", assemblyBody);
 	const nextCore = await f.reading("engine"), nextPipeline = await f.reading("pipeline");
 	return { f, nextCore, nextPipeline };
@@ -2481,18 +2485,15 @@ const stagesInExport = 'import {mkdirSync} from "node:fs"; mkdirSync("staging");
 
 // Keep the exact receipt shape written by pre-discriminator runners, before the
 // scheduler sees it. The check itself still runs exclusively on the pinned export.
-/** @param {ReturnType<typeof fixture>} f @param {ReturnType<typeof openDatabase>} db */
-function priorRunner(f, db) {
+/** @param {ReturnType<typeof fixture>} f */
+function priorRunner(f) {
 	/** @type {Host["execute"]} */
 	const execute = async (...args) => {
-		const result = await f.execute(...args);
-		db.mutateLocked(run, r => {
-			const e = r.effects.find(e => e.callId === args[2] && e.kind === "component");
-			if (!e) return;
-			assert.ok(e.receipt && e.state === "done");
-			delete e.receipt.failure;
-		});
-		return result;
+		if(args[0]!=="bash")return f.execute(...args);
+		f.checks.push(String(args[1].description));
+		const result=execFileSync("/bin/sh",["-c",String(args[1].command)],{cwd:f.root,encoding:"utf8",
+			env:{...process.env,NODE_OPTIONS:`--import=${new URL("../test/prior-verdict.mjs",import.meta.url).href}`}});
+		return {resultType:"success",textResultForLlm:result};
 	};
 	return execute;
 }
@@ -2500,10 +2501,10 @@ function priorRunner(f, db) {
 for (const needs of [[], ["assembly"]]) test(`changed work on a later checkpoint requires the original pins: ${needs.join() || "independent"}`, async t => {
 	const { f, nextCore, nextPipeline } = await assemblyCheckpoint(t, {
 		[goalCheck]: 'import {existsSync} from "node:fs"; process.exit(existsSync("engine/adapter/index.mjs") ? 0 : 1);'
-	});
+	},await historicalFactory(t,95));
 	await report(nextCore, ".foundry/left.md", [work("adapter", "engine/adapter", needs)]);
 	const db = openDatabase(f.root); t.after(() => db.close());
-	const prior = await f.write("adapter", stagesInExport + assemblyBody, { execute: priorRunner(f, db) });
+	const prior = await f.write("adapter", stagesInExport + assemblyBody, { execute: priorRunner(f) });
 	prior.close();
 	const adapter = (await f.status()).nodes.find(n => n.grain === "adapter"), w = f.workers.get(adapter?.worker ?? "");
 	assert.ok(w);
@@ -2512,7 +2513,7 @@ for (const needs of [[], ["assembly"]]) test(`changed work on a later checkpoint
 	const checkpoint = await f.status();
 	assert.ok(checkpoint.outputs?.controls && !checkpoint.outputs.assembly);
 	assert.equal(checkpoint.goal?.receipt?.exit, 1);
-	const writer = f.runtime(w.cwd);
+	const writer = f.runtime(w.cwd,{},createRuntime);
 	const node = (await writer.operation("status", { run }, w.id)).nodes[0];
 	assert.equal(node.state, "blocked"); assert.ok(node.receipt);
 	put(w.cwd, "engine/adapter/index.mjs", assemblyBody);
@@ -2525,7 +2526,7 @@ for (const needs of [[], ["assembly"]]) test(`changed work on a later checkpoint
 		const review = await f.reading("engine");
 		const proposal = result(".foundry/left.md", [work("fresh-adapter", "engine/adapter", ["controls"])], ["adapter"]);
 		for (const guard of ["refused", "uncertain", "older packet", "moved input", "limit"]) {
-			const snapshot = db.read(run); assert.ok(snapshot);
+			const snapshot = structuredClone(db.read(run)); assert.ok(snapshot);
 			const r = reviews(snapshot).find(r => r.id === review.id), e = snapshot.effects.find(e => e.id === snapshot.nodes.adapter.check);
 			const squad = snapshot.policy.squads.find(s => s.id === "engine"); assert.ok(r && e && squad);
 			r.packet = structuredClone(review.packet);
@@ -2575,14 +2576,14 @@ test("an exclusive post-check export violation returns one bounded repair to the
 });
 
 test("a reloaded bound writer can present changed work, not replay a prior reader's blocked component check", async t => {
-	const f = fixture(t, p => { p.seed = ["left"]; p.limits = { repairs: 1, assignments: 2 }; }, immutableCheck);
+	const f = fixture(t, p => { p.seed = ["left"]; p.limits = { repairs: 1, assignments: 2 }; }, immutableCheck,await historicalFactory(t,95));
 	await f.start();
 	const [w] = f.workers.values(), db = openDatabase(f.root); t.after(() => db.close());
-	const prior = f.runtime(w.cwd, { execute: priorRunner(f, db) });
+	const prior = f.runtime(w.cwd, { execute: priorRunner(f) });
 	put(w.cwd, "lib/left/index.mjs", stagesInExport);
 	await prior.operation("submit", { run, token: w.token }, w.id);
 	prior.close();
-	const writer = f.runtime(w.cwd);
+	const writer = f.runtime(w.cwd,{},createRuntime),owner=f.runtime(f.root,{},createRuntime);
 	writer.turn(w.id); await writer.flush();
 	const node = (await writer.operation("status", { run }, w.id)).nodes[0];
 	assert.equal(node.state, "blocked");
@@ -2599,9 +2600,9 @@ test("a reloaded bound writer can present changed work, not replay a prior reade
 	await assert.rejects(f.runtime(w.cwd, { permissionBlocker: async () => ({ scope: "session", message: "Permission unavailable" }) })
 		.operation("submit", args, w.id), /Permission unavailable/);
 	await assert.rejects(f.runtime(w.cwd, { runningHelpers: async () => ["one"] }).operation("submit", args, w.id), /helpers are still running/);
-	await f.owner.operation("pause", { run }, "owner");
+	await owner.operation("pause", { run }, "owner");
 	await assert.rejects(writer.operation("submit", args, w.id), /paused/);
-	await f.owner.operation("resume", { source }, "owner");
+	await owner.operation("resume", { source }, "owner");
 	assert.deepEqual(db.read(run)?.effects.find(e => e.kind === "component"), historical);
 	assert.equal(f.checks.length, 1);
 	const green = await writer.operation("submit", args, w.id);
@@ -2621,10 +2622,10 @@ test("a reloaded bound writer can present changed work, not replay a prior reade
 });
 
 for (const condition of ["repair limit", "assignment limit", "moved directory"]) test(`prior incomplete check does not bypass ${condition}`, async t => {
-	const f = fixture(t, p => { p.seed = ["left"]; p.limits = { repairs: condition === "repair limit" ? 0 : 1, assignments: condition === "assignment limit" ? 1 : 2 }; }, immutableCheck);
+	const f = fixture(t, p => { p.seed = ["left"]; p.limits = { repairs: condition === "repair limit" ? 0 : 1, assignments: condition === "assignment limit" ? 1 : 2 }; }, immutableCheck,await historicalFactory(t,95));
 	await f.start();
-	const [w] = f.workers.values(), db = openDatabase(f.root); t.after(() => db.close());
-	const prior = f.runtime(w.cwd, { execute: priorRunner(f, db) });
+	const [w] = f.workers.values();
+	const prior = f.runtime(w.cwd, { execute: priorRunner(f) });
 	put(w.cwd, "lib/left/index.mjs", stagesInExport);
 	const blocked = (await prior.operation("submit", { run, token: w.token }, w.id)).nodes[0];
 	prior.close();
@@ -2633,7 +2634,7 @@ for (const condition of ["repair limit", "assignment limit", "moved directory"])
 		put(f.root, "lib/left/old.mjs", "export default 27;");
 		git(f.root, "commit", "-qam", "target edited the assigned directory");
 	}
-	await assert.rejects(f.runtime(w.cwd).operation("submit", { run, token: w.token, changedFrom: blocked.changedFrom }, w.id),
+	await assert.rejects(f.runtime(w.cwd,{},createRuntime).operation("submit", { run, token: w.token, changedFrom: blocked.changedFrom }, w.id),
 		condition === "moved directory" ? /directory .* changed/ : /No authorized repair/);
 	const s = await f.status();
 	assert.equal(s.nodes[0].state, "blocked");
@@ -2886,14 +2887,14 @@ test("a matching failure without a runner cannot spend a writer repair", async t
 	await f.start();
 	await f.submit("worker-1", 1, { execute: async () => ({ resultType: "unconfirmed" }) });
 	const db = openDatabase(f.root); t.after(() => db.close());
-	for (const started of [false, true]) {
-		const snapshot = db.read(run); assert.ok(snapshot);
-		const e = snapshot.effects.find(e => e.id === snapshot.nodes.left.check); assert.ok(e?.commit && e.check);
-		e.state = "done"; e.runnerStarted = started;
+	for(const version of /** @type {const} */ ([1,2]))for (const started of [false, true]) {
+		const snapshot = structuredClone(db.read(run)); assert.ok(snapshot);
+		const e = snapshot.effects.find(e => e.id === snapshot.nodes.left.check); assert.ok(e?.tool==="bash" && e.commit && e.check);
+		e.state = "done"; e.runnerStarted = started;e.attempt=version===1?{version:1}:{version:2};
 		e.receipt = { commit: e.commit, check: e.check, exit: 1, output: "component failed" };
 		advance(f.root, snapshot, "owner", false);
-		assert.equal(snapshot.nodes.left.repairs, started ? 1 : 0);
-		assert.equal(snapshot.nodes.left.state, started ? "writing" : "checking");
+		assert.equal(snapshot.nodes.left.repairs, started && version===1 ? 1 : 0);
+		assert.equal(snapshot.nodes.left.state, started && version===1 ? "writing" : "checking");
 	}
 });
 
@@ -3518,6 +3519,65 @@ test("only the original top-level call, arguments and turn can recover an uncert
 	await assert.rejects(recover(async () => page([start, { ...rejected, data: { ...rejected.data, error: { message: "looks like a denial" } } }]), e), /not confirmed/);
 });
 
+test("uncertain sibling launches share one native history traversal after reload",async t=>{
+	const f=fixture(t);let requests=0;
+	const lost=f.runtime(f.root,{execute:async(tool,args,key)=>{
+		assert.equal(tool,"create_session");requests++;return {resultType:"unconfirmed"};
+	}});
+	await lost.operation("start",{source},"owner");lost.close();assert.equal(requests,2);
+	const db=openDatabase(f.root);t.after(()=>db.close());const original=db.read(run)?.effects;assert.ok(original);
+	const [first,other]=original.filter(e=>e.kind==="writer");assert.ok(first.callId && other.callId && first.callId!==other.callId);
+	let scans=0;const turnId="original";
+	const meta={parentId:null,timestamp:new Date().toISOString()};
+	/** @type {NonNullable<Host["readHistory"]>} */ const reader=async()=>{scans++;await turn();return {cursor:"one",cursorStatus:"ok",hasMore:false,events:[
+		{...meta,id:"boundary",type:"assistant.turn_start",data:{turnId}},
+		...[first,other].map(e=>({...meta,type:/** @type {const} */("tool.execution_start"),id:`start-${e.id}`,data:{arguments:e.args,toolName:e.tool,toolCallId:text(e.callId,"original call"),turnId}})),
+		{...meta,type:"tool.execution_complete",id:"ok",data:{toolCallId:text(first.callId,"first call"),turnId,success:true,result:{content:'{"id":"original-writer"}'}}},
+		{...meta,type:"tool.execution_complete",id:"denied",data:{toolCallId:text(other.callId,"other call"),turnId,success:false,error:{code:"denied",message:"not permitted"}}}
+	]};};
+	const restored=f.runtime(f.root,{recover:e=>recover(reader,e),readHistory:reader,
+		execute:async()=>assert.fail("Do not replay a launch")});
+	restored.turn("owner");await restored.flush();
+	assert.equal(scans,1,"the host returns full messages, including unrelated proof output: do not request a copy of each page for every original");
+	const now=db.read(run);assert.equal(now?.effects.find(e=>e.id===first.id)?.nativeId,"original-writer");
+	assert.equal(now?.effects.find(e=>e.id===other.id)?.state,"refused");
+});
+
+test("owner recovery status omits historical reports but keeps all originals available in proof",async t=>{
+	const f=fixture(t,p=>{p.seed=undefined;});
+	await f.start();await f.scouts[0].report({outcome:"no-gap",reason:"The historical comparison has no proposed work.",evidence:[".foundry/left.md"],grains:[]});
+	const full=f.owner.inspect({run,detail:"proof"},"owner"),report=full.reviews.find(r=>r.observation?.reason.includes("historical comparison"));assert.ok(report);
+	const tools=buildTools(f.owner,()=>"owner",assert.fail),tool=tools.find(t=>t.name==="foundry_status");assert.ok(tool?.handler);
+	const args={run,detail:"recovery"},reply=await tool.handler(args,{sessionId:"owner",toolName:tool.name,toolCallId:"recovery",arguments:args});
+	assert.equal(typeof reply,"string",JSON.stringify(reply));const small=JSON.parse(String(reply));
+	assert.deepEqual(small.recovery,JSON.parse(JSON.stringify(full.recovery)));assert.deepEqual(small.scheduling,full.scheduling);
+	assert.equal(small.reviews,undefined);assert.ok(!String(reply).includes(report.observation?.reason??assert.fail()));
+	assert.equal(f.owner.inspect({run,detail:"proof"},"owner").reviews.find(r=>r.id===report.id)?.observation?.reason,report.observation?.reason);
+});
+
+test("a failed early refill during a shared history scan reaches its caller, not an unhandled rejection",async t=>{
+	const f=fixture(t),lost=f.runtime(f.root,{execute:async()=>({resultType:"unconfirmed"})});await lost.operation("start",{source},"owner");lost.close();
+	const db=openDatabase(f.root);t.after(()=>db.close());const jobs=db.read(run)?.effects.filter(e=>e.kind==="writer");assert.equal(jobs?.length,2);
+	const [a,b]=jobs??assert.fail(),turnId="first",meta={parentId:null,timestamp:new Date().toISOString()};
+	let failMode=false,calls=0,release=()=>{},firstPage=()=>{};const held=new Promise(resolve=>{release=()=>resolve(undefined);}),started=new Promise(resolve=>{firstPage=()=>resolve(undefined);});
+	/** @type {string[]} */const logs=[];
+	/** @type {NonNullable<Host["readHistory"]>} */ const read=async p=>{
+		if(p.cursor){firstPage();await held;throw Error("next page unavailable");}
+		calls++;failMode=true;
+		return {cursor:"older",hasMore:true,cursorStatus:"ok",events:[
+			{...meta,id:"turn",type:"assistant.turn_start",data:{turnId}},
+			{...meta,id:"start",type:"tool.execution_start",data:{turnId,toolCallId:text(a.callId,"call"),toolName:a.tool,arguments:a.args}},
+			{...meta,id:"end",type:"tool.execution_complete",data:{turnId,toolCallId:text(a.callId,"call"),success:false,error:{code:"denied",message:"refused"}}}]};
+	};
+	const owner=f.runtime(f.root,{readHistory:read,recover:e=>recover(read,e),mode:async()=>{if(failMode)throw Error("Native mode unavailable during refill");return "interactive";},
+		log:m=>logs.push(m),execute:async()=>assert.fail("Recovery must not create a replacement")});
+	owner.turn("owner");await started;
+	try{await turn();assert.equal(db.read(run)?.effects.find(e=>e.id===a.id)?.state,"refused");}
+	finally{release();await owner.flush();}
+	assert.equal(calls,1);assert.ok(logs.some(m=>m.includes("Native mode unavailable during refill")));
+	assert.equal(db.read(run)?.effects.find(e=>e.id===b.id)?.state,"uncertain");
+});
+
 test("native recovery stops at the issuing turn without losing an earlier permission decision in that turn", async () => {
 	const callId = "original", turnId = "turn";
 	/** @type {Effect} */
@@ -3569,7 +3629,7 @@ test("an upgraded reader requires the original writer to reload before status or
 	const [w] = f.workers.values();
 	const dir = mkdtempSync(path.join(tmpdir(), "foundry-install-"));
 	t.after(() => rmSync(dir, { recursive: true, force: true }));
-	const installed = path.join(dir, "work");
+	const installed = pairedWork(dir);
 	cpSync(new URL("./", import.meta.url), installed, { recursive: true });
 	const version = path.join(installed, "reader.version");
 	writeFileSync(version, "previous\n");
@@ -3629,14 +3689,58 @@ test("unknown protocols are not migrated and invalid nested records are refused,
 		{ ...initial, effects: initial.effects.map(e => e === review ? { ...e, observation: { ...review.observation, outcome: "needs-decision", grains: ["left"] } } : e) },
 		{ ...initial, effects: initial.effects.map(e => e === review ? { ...e, observation: { reason: "missing outcome", evidence: [".foundry/left.md"], grains: [] } } : e) },
 	]) {
-		const doc = JSON.stringify(broken);
+		const doc = writeDocument(/** @type {typeof initial} */ (broken),"required");
 		raw.prepare("UPDATE runs SET document=?,checksum=? WHERE id=?").run(doc, checksum(doc), run);
 		assert.throws(() => db.read(run), /Invalid Foundry execution snapshot/);
 	}
-	const mismatched = JSON.stringify({ ...initial, join: { target: f.tip, commit: f.tip, outputs: {}, check: review.id } });
+	const mismatched = writeDocument({ ...initial, join: { target: f.tip, commit: f.tip, outputs: {}, check: review.id } },"required");
 	raw.prepare("UPDATE runs SET document=?,checksum=? WHERE id=?").run(mismatched, checksum(mismatched), run);
 	assert.throws(() => db.read(run), /exact check reservation/);
 	raw.close();
+});
+
+test("an inadmissible spool row withholds its attempt; a real late sibling publishes and another run qualifies",async t=>{
+	const other=".foundry/other.json",f=fixture(t,undefined,{[other]:JSON.stringify({version:2,id:"other",target:"refs/heads/main",
+		direction:"Observe the baseline.",productCheck:"ok.mjs",goalCheck:"done.mjs",squads:[{id:"some",areas:["some"],charter:"spec",boundary:["api"],checks:["ok.mjs"]}]}),
+		"ok.mjs":"","done.mjs":"","spec":"Observe.","api":"Stable."});
+	await f.start();const [left,right]=f.workers.values(),db=openDatabase(f.root);t.after(()=>db.close());
+	/** @type {Parameters<Host["execute"]>[1]|undefined} */ let good;
+	let bad="";
+	await f.submit(left.id,1,{execute:async(tool,args)=>{
+		assert.equal(tool,"bash");bad=String(args.shellId).slice(8);
+		db.mutateLocked(run,r=>{const e=r.effects.find(e=>e.id===bad);assert.ok(e);db.outcomeWriter(run,e);});
+		return {resultType:"unconfirmed"};
+	}});
+	await f.submit(right.id,2,{execute:async(tool,args)=>{assert.equal(tool,"bash");good=args;return {resultType:"unconfirmed"};}});
+	const row=[run,bad,"invalid-signature","original unaltered bytes"],spool=new DatabaseSync(db.file+".outcomes");t.after(()=>spool.close());
+	spool.prepare("INSERT INTO outcomes VALUES(?,?,?,?)").run(...row);
+	assert.ok(good);await f.execute("bash",good,right.id);
+	for(let i=0;i<2;i++){
+		const worker=f.runtime(right.cwd);worker.turn(right.id);await worker.flush();
+		const status=await f.status();
+		assert.deepEqual(status.integrityHolds?.map(h=>[h.effect,h.code]),[[bad,"inadmissible-outcome"]]);
+		assert.equal(status.nodes.find(n=>n.worker===left.id)?.receipt,undefined);
+		assert.equal(status.nodes.find(n=>n.worker===right.id)?.state,"published");assert.equal(status.qualified,null);
+		assert.equal((await f.status(right.id)).integrityHolds?.length??0,0,"do not disclose another writer's evidence");
+	}
+	assert.throws(()=>db.mutateLocked(run,r=>{const e=r.effects.find(e=>e.id===bad);assert.ok(e);delete e.runnerClaim;}),{code:"integrity_hold"});
+	assert.deepEqual(Object.values(spool.prepare("SELECT * FROM outcomes WHERE run=? AND effect=?").get(run,bad)??{}),row);
+	assert.equal((await f.owner.operation("start",{source:other},"owner")).qualified,f.tip);
+	assert.equal(f.checks.filter(x=>x.startsWith("Check right ")).length,1);
+});
+
+test("a contradicting row for a copied failure does not strand another already bound writer's independent review",async t=>{
+	const f=fixture(t,p=>{p.limits={repairs:0};});await f.start();
+	const [left,right]=f.workers.values(),db=openDatabase(f.root);t.after(()=>db.close());
+	await f.submit(left.id,0);const failed=db.read(run)?.nodes.left.check;assert.ok(failed);
+	const spool=new DatabaseSync(db.file+".outcomes");t.after(()=>spool.close());
+	spool.prepare("UPDATE outcomes SET signature='contradictory' WHERE run=? AND effect=?").run(run,failed);
+	const status=await f.status();assert.equal(status.integrityHolds?.[0].effect,failed);
+	await f.submit(right.id,2);const after=db.read(run);assert.ok(after);
+	assert.equal(after.nodes.right.state,"published");assert.equal(after.nodes.left.check,failed);
+	assert.equal(after.effects.find(e=>e.id===failed)?.receipt?.exit,1,"the historical copied document is preserved, not accepted as proof");
+	assert.equal((await f.status()).nodes.find(n=>n.grain==="left")?.receipt,undefined);
+	assert.equal((await f.status()).qualified,null);
 });
 
 test("independent squad observations staff two writers and qualify a single combined product", async t => {
@@ -3645,12 +3749,15 @@ test("independent squad observations staff two writers and qualify a single comb
 	await f.reportGrains("left");
 	await f.reportGrains("right");
 	assert.equal(f.workers.size, 2, "both writers can start before either submits");
-	assert.deepEqual((await f.status()).nodes.map(n => n.inputs), [{}, {}]);
+	const admitted=await f.status();
+	assert.deepEqual(admitted.nodes.map(n => n.inputs), [{}, {}]);
+	assert.deepEqual(admitted.reviews.map(r=>r.observation?.grains),[["left"],["right"]]);
 	await f.submit("worker-1"); await f.submit("worker-2");
 	const s = await f.status();
 	assert.ok(s.qualified);
 	assert.deepEqual(s.outputs, Object.fromEntries(s.nodes.map(n => [n.grain, n.checked])));
-	assert.deepEqual(s.reviews.map(r => r.observation?.grains), [["left"], ["right"]]);
+	assert.deepEqual(s.reviews.slice(0,2),admitted.reviews);
+	for(const r of s.reviews.slice(2))assert.equal(r.base,s.qualified,"ongoing discovery may already be surveying the checked product, never the old inputs");
 	assert.equal(s.products?.length, 1);
 	assert.equal(f.checks.length, 3);
 });
@@ -3712,20 +3819,26 @@ test("a passing check on a frozen candidate cannot qualify work admitted while i
 	const f = fixture(t, p => { delete p.seed; }, { ".foundry/product.mjs": 'import "../lib/left/index.mjs";' });
 	await f.start();
 	await f.reportGrains("left");
-	let oldCommit;
+	/** @type {string|undefined} */ let oldCommit,oldCheck="";
 	await f.submit("worker-1", 1, { execute: async (...args) => {
-		const result = await f.execute(...args);
 		if (String(args[1].description).startsWith("Check joined product")) {
-			oldCommit = (await f.status()).candidate?.commit;
+			const join=(await f.status()).candidate;assert.ok(join);
+			oldCommit=join.commit;oldCheck=join.check;
+			// The call is in flight, but no exclusive signed result exists when the second writer is admitted.
 			await f.reportGrains("right");
+			assert.ok((await f.status()).nodes.some(n=>n.grain==="right" && n.worker));
 		}
-		return result;
+		return f.execute(...args);
 	} });
 	assert.ok(oldCommit);
 	assert.equal((await f.status()).qualified, null);
 	await f.submit("worker-2");
 	const s = await f.status();
 	assert.notEqual(s.qualified, oldCommit);
+	const db=openDatabase(f.root);t.after(()=>db.close());
+	const original=db.read(run)?.effects.find(e=>e.id===oldCheck);
+	assert.ok(original?.kind==="product" && original.commit===oldCommit && original.receipt?.exit===0);
+	db.verifySigned(run,original);
 	assert.equal(s.products?.length, 1);
 	assert.equal(git(f.root, "show", `${s.qualified}:lib/right/index.mjs`), "export default 2;");
 });

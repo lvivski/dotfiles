@@ -173,8 +173,9 @@ export function nativeHost(root, prefix = "worker") {
  * delivery log in batch/job order. start([ownerRuntime]) and settle() wait for registration, not
  * reports. Call scout.report(rawObject) to deliver to the issuing runtime; a reloaded issuer can
  * return its journaled packet receipt together with its report through scoutResult.
- * @param {import("node:test").TestContext} t @param {string} run @param {string} source @param {Record<string,string>} files */
-export function factory(t, run, source, files) {
+ * @param {import("node:test").TestContext} t @param {string} run @param {string} source @param {Record<string,string>} files
+ * @param {typeof createRuntime} [edition] */
+export function factory(t, run, source, files, edition=createRuntime) {
 	const dir = mkdtempSync(path.join(tmpdir(), "foundry-graph-")), root = path.join(dir, "repo");
 	t.after(() => rmSync(dir, { recursive: true, force: true }));
 	mkdirSync(root);
@@ -184,7 +185,7 @@ export function factory(t, run, source, files) {
 	git(root, "commit", "-qm", "fixture");
 	const tip = git(root, "rev-parse", "HEAD"), { workers, inbox, checks, execute } = nativeHost(root), discovery = workflowHost(), inspections=scriptedInspections(root);
 	/** @param {string} cwd @param {Partial<Host>} [options] @param {typeof createRuntime} [open] */
-	function runtime(cwd, options, open = createRuntime) {
+	function runtime(cwd, options, open = edition) {
 		/** @type {Runtime} */
 		const r = open(cwd, { mode: async () => "interactive", permissionBlocker: async () => null, execute, ...inspections,
 			scout: (id, dispatch, actor) => discovery.launch(r, id, dispatch, actor),
@@ -198,8 +199,11 @@ export function factory(t, run, source, files) {
 		return options && ("startInspection" in options || "inspectionState" in options) ? r : settleSubmitted(r);
 	}
 	const owner = runtime(root);
+	// Fixture assertions and reviewer transport observe without issuing or converting.
+	// Tests of what a particular edition can see call that issuer's inspect directly.
+	const observer=edition===createRuntime?owner:runtime(root,{},createRuntime);
 	/** @param {string} [actor] */
-	const status = (actor = "owner") => owner.operation("status", { run }, actor);
+	const status = (actor = "owner") => observer.operation("status", { run }, actor);
 	async function start(issuer = owner) {
 		await issuer.operation("start", { source }, "owner");
 		await discovery.settle();

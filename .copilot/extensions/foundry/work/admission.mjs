@@ -7,6 +7,7 @@ const modes = {
 	checkpoint:                {writers:"eligible", scoped:true,  join:"none",    discover:true},
 	"repaired-checkpoint":     {writers:"eligible", scoped:true,  join:"changed", discover:true},
 	"join-only":               {writers:"none",     scoped:false, join:"product", discover:false},
+	"changed-join":            {writers:"none",     scoped:false, join:"changed", discover:false},
 	"ownership-repairs":       {writers:"repair",   scoped:false, join:"none",    discover:false},
 	"ownership-checkpoint-repairs":{writers:"repair",scoped:true, join:"none",    discover:false},
 	closed:                    {writers:"none",     scoped:false, join:"none",    discover:false},

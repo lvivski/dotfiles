@@ -8,7 +8,7 @@ import test from "node:test";
 const sync = readFileSync(new URL("./sync", import.meta.url));
 
 for (const shell of ["bash", "zsh"]) {
-	test(`sync replaces stale Foundry versions and preserves unrelated installations in ${shell}`, t => {
+	test(`sync updates Recon without touching either installed Foundry tree in ${shell}`, t => {
 		const root = mkdtempSync(path.join(tmpdir(), "foundry-sync-"));
 		t.after(() => rmSync(root, { recursive: true, force: true }));
 		const repository = path.join(root, "repository");
@@ -25,10 +25,8 @@ for (const shell of ["bash", "zsh"]) {
 			"skills/review-queue", "skills/security-review"]) {
 			mkdirSync(path.join(repository, ".copilot", relative), { recursive: true });
 		}
-		const installed = [".copilot/extensions/foundry/extension.mjs", ".copilot/extensions/recon/extension.mjs",
-			...["SKILL.md", "references/brief.md", "references/runs.md", "references/assignments.md", "references/handoff.md",
-				"references/metrics.md", "scripts/plans.mjs", "scripts/archive-check.mjs", "scripts/usage.mjs", "scripts/qualification.mjs"]
-				.map(file => `.copilot/skills/foundry/${file}`)];
+		const installed = [".copilot/extensions/foundry/extension.mjs", ".copilot/skills/foundry/SKILL.md",
+			".copilot/extensions/recon/extension.mjs", ".copilot/skills/review-queue/SKILL.md", ".copilot/skills/review-queue/scripts/fetch.sh"];
 		for (const relative of installed) {
 			const source = path.join(repository, relative);
 			const target = path.join(home, relative);
@@ -43,6 +41,7 @@ for (const shell of ["bash", "zsh"]) {
 			".copilot/extensions/foundry/verification/approval.mjs",
 			".copilot/extensions/recon/obsolete-analysis.mjs",
 			".copilot/skills/foundry/references/activation.md",
+			".copilot/skills/review-queue/scripts/obsolete.sh",
 		];
 		const preserved = ".copilot/extensions/unrelated/extension.mjs";
 		const editorPackage = ".copilot/editor/node_modules/typescript/package.json";
@@ -59,9 +58,9 @@ for (const shell of ["bash", "zsh"]) {
 		execFileSync(shell, ["-c", 'item=caller-value; source ./sync --force; test "$item" = caller-value'],
 			{ cwd: repository, env, stdio: "pipe" });
 		for (const relative of installed) {
-			assert.equal(readFileSync(path.join(home, relative), "utf8"), "new-version\n");
+			assert.equal(readFileSync(path.join(home, relative), "utf8"), relative.includes("/foundry/") ? "old-version\n" : "new-version\n",relative);
 		}
-		for (const relative of stale) assert.equal(existsSync(path.join(home, relative)), false);
+		for (const relative of stale) assert.equal(existsSync(path.join(home, relative)), relative.includes("/foundry/"),relative);
 		assert.equal(readFileSync(path.join(home, preserved), "utf8"), "preserve unless obsolete\n");
 		assert.equal(readFileSync(database, "utf8"), "repository-owned factory data\n");
 		assert.equal(existsSync(path.join(home, ".git/foundry/work.sqlite")), false);
@@ -79,14 +78,19 @@ for (const mode of ["--force", "--pull"]) test(`sync ${mode} leaves worktree poi
 	writeFileSync(path.join(home, ".bash_profile"), "");
 	for (const relative of ["extensions/foundry", "extensions/recon", "skills/foundry", "skills/deep-research", "skills/review-queue", "skills/security-review"])
 		mkdirSync(path.join(repo, ".copilot", relative), { recursive: true });
-	const paths = [".git", ".copilot/extensions/foundry/.git"];
-	mkdirSync(path.join(home, ".copilot/extensions/foundry"), { recursive: true });
+	const paths = [".git", ".copilot/extensions/foundry/.git", ".copilot/extensions/recon/.git"];
 	for (const p of paths) {
+		mkdirSync(path.dirname(path.join(home,p)), { recursive:true });
 		writeFileSync(path.join(repo, p), "gitdir: /repository/private\n");
 		writeFileSync(path.join(home, p), "gitdir: /home/sentinel\n");
 	}
 	writeFileSync(path.join(repo, "example"), "from repository\n");
 	writeFileSync(path.join(home, "example"), "from home\n");
+	for(const p of [".copilot/extensions/foundry/extension.mjs",".copilot/skills/foundry/SKILL.md"]){
+		writeFileSync(path.join(repo,p),"paired source\n");
+		mkdirSync(path.dirname(path.join(home,p)),{recursive:true});
+		writeFileSync(path.join(home,p),"active install\n");
+	}
 	writeFileSync(path.join(repo, "AGENTS.md"), "Repo instructions\n");
 	writeFileSync(path.join(home, "AGENTS.md"), "Personal instructions\n");
 	writeFileSync(path.join(repo, "sync.test.mjs"), "Repository test\n");
@@ -99,6 +103,10 @@ for (const mode of ["--force", "--pull"]) test(`sync ${mode} leaves worktree poi
 	assert.equal(readFileSync(path.join(home, "AGENTS.md"), "utf8"), "Personal instructions\n");
 	assert.equal(readFileSync(path.join(repo, "sync.test.mjs"), "utf8"), "Repository test\n");
 	assert.equal(readFileSync(path.join(home, "sync.test.mjs"), "utf8"), "Home sentinel\n");
+	for(const p of [".copilot/extensions/foundry/extension.mjs",".copilot/skills/foundry/SKILL.md"]){
+		assert.equal(readFileSync(path.join(repo,p),"utf8"),"paired source\n");
+		assert.equal(readFileSync(path.join(home,p),"utf8"),"active install\n");
+	}
 	for (const p of paths) {
 		assert.equal(readFileSync(path.join(home, p), "utf8"), "gitdir: /home/sentinel\n");
 		assert.equal(readFileSync(path.join(repo, p), "utf8"), "gitdir: /repository/private\n");

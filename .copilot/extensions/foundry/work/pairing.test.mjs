@@ -65,6 +65,10 @@ for (const mode of ["failed attestation","negative pair","unchanged pair"]) test
 	const broken=structuredClone(saved), altered=broken.effects.find(e=>e.id===checked.check);assert.ok(altered?.kind==="component" && altered.pair);
 	altered.pair.component=b.check??"";assert.throws(()=>decode(broken),{code:"corrupt_run"});
 	reserved.nodes.selector.state="published";delete reserved.nodes.rail.supporting;
+	assert.match(partitionConflict(reserved)??"",/requires fresh included evidence/,"a state label is not evidence of the paired component");
+	const index=reserved.effects.indexOf(e);assert.ok(index>=0 && paired.commit===reserved.nodes.selector.candidate);
+	db.verifySigned(run,paired);
+	reserved.effects[index]=structuredClone(paired);reserved.nodes.selector.check=paired.id;
 	assert.equal(partitionConflict(reserved),undefined);reserved.nodes.buttons.check=b.check;
 	assert.match(partitionConflict(reserved)??"",/no longer matches/);
 	assert.deepEqual(end.products?.slice(0,-1),current.products);assert.deepEqual(end.goalChecks?.slice(0,-1),current.goalChecks);

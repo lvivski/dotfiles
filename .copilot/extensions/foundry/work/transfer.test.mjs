@@ -67,6 +67,12 @@ if(${parentRepair}&&!((await import("node:fs")).existsSync("pkg/views/future")))
 		const unreviewed=structuredClone(ready);
 		unreviewed.inspections=ready.inspections.filter(i=>i.component!==ready.nodes.package.check);
 		assert.throws(()=>preflightTransfer(unreviewed,transfer,{primary:directory,files:[file]}),{code:"unreviewed_output"});
+		const unsupported=structuredClone(ready);
+		const original=unsupported.effects.find(e=>e.id===unsupported.nodes.package.check);
+		assert.ok(original?.kind==="component" && original.receipt && original.runnerClaim);
+		delete original.receipt;
+		assert.throws(()=>preflightTransfer(unsupported,transfer,{primary:directory,files:[file]}),{code:"unreviewed_output"},
+			"a bound approval does not replace its identified component receipt");
 	}
 	const stale=f.runtime(f.root,{confirm:async()=>{put(f.root,"external","moved");git(f.root,"add","external");git(f.root,"commit","-qm","Move target");return true;}},createRuntime);
 	await assert.rejects(stale.operation("iterate",input,"owner"),{code:"invalid_receipt"});
@@ -112,13 +118,13 @@ if(${parentRepair}&&!((await import("node:fs")).existsSync("pkg/views/future")))
 	assert.equal(git(f.root,"show",`${last.commit}:pkg/views/menu`),"keep menu");
 	assert.equal(end.effects.find(e=>e.id===end.goal?.check)?.receipt?.exit,0);
 	assert.ok(prompts.some(s=>s.includes(candidate)&&s.includes(file)&&s.includes("future")));
-	const proof=owner.inspect({run,detail:"proof"},"owner").qualification;assert.equal(proof?.format,"foundry-qualification/v4");
+	const proof=owner.inspect({run,detail:"proof"},"owner").qualification;assert.equal(proof?.format,"foundry-qualification/v5");
 	assert.deepEqual(proof?.ownership?.package,{directories:["pkg"],files:[],exclude:{directories:[directory],files:[file]}});
 	assert.deepEqual(proof?.ownership?.picker,{directories:[directory],files:[file]});
 	if (upgrade) {
 		const script=fileURLToPath(new URL("../../../skills/foundry/scripts/qualification.mjs",import.meta.url)), bundle=path.join(path.dirname(f.root),"display.bundle");
 		const pack=spawnSync(process.execPath,[script,"pack",bundle],{cwd:f.root,input:JSON.stringify(proof),encoding:"utf8"});
-		assert.equal(pack.status,0,pack.stderr);assert.ok(git(f.root,"bundle","list-heads",bundle).includes(last.commit));
+		assert.equal(pack.status,0,pack.stderr);assert.ok(git(f.root,"bundle","list-heads",bundle).includes(proof.receipts.product.disclosure.subject.carrier));
 	}
 	assert.deepEqual(end.effects.slice(ready.effects.length).filter(e=>e.kind==="writer").map(e=>e.grain),["picker"]);
 	const donor=end.nodes.package;assert.ok(donor.generation && donor.retained);

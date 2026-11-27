@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { assign } from "./assignment.mjs";
 import { availableReservations } from "./capacity.mjs";
-import { inspectedBatch } from "./inspection.mjs";
+import { componentBatch } from "./inspection.mjs";
 import { admitted, current, reserveCheck, reserveWorker } from "./native.mjs";
 import { verifyObserver } from "./observer.mjs";
 import { changedFiles, commitAt, contractPaths, entries, outside, regularFiles } from "./product.mjs";
-import { approvedPublication } from "./publication.mjs";
-import { origin, passingRemedy, remedyChecks } from "./remedy.mjs";
+import { publishedComponent, publishedNodes } from "./publication.mjs";
+import { origin, remedyChecks } from "./remedy.mjs";
 import { awaitingReply, unissued } from "./reservation.mjs";
 import { activeConsumer } from "./transfer.mjs";
 import { digest, fail, fields, name, relative, text } from "./values.mjs";
@@ -33,7 +33,7 @@ export function productionBasis(cwd,run,job,commit) {
 		!receiver.restoration ||
 		run.effects.some(e=>e.permissionHold))
 		fail("stale_assignment","The original diagnostic, published retaining owner or permissions changed");
-	if (!approvedPublication(run,pair.component,retainer,pair.candidate))
+	if (!publishedComponent(run,pair.component,retainer,pair.candidate))
 		fail("unreviewed_output","Production work cannot adopt an unreviewed retaining publication");
 	if (view.effects.some(e=>(e.grain===primary || e.grain===retainer) && (awaitingReply(e) || unissued(e) && current(view,e))))
 		fail("dispatch_held","Resolve the outstanding call for the affected pair before production work");
@@ -117,26 +117,24 @@ export function submitProduction(cwd,run,job,commit,actor) {
 
 /** Do not withdraw the old publication or spend the other owner's binding on a negative observation.
  * @param {string} cwd @param {Run} run @param {Call} job @param {Call} check */
-export function settleProduction(cwd,run,job,check) {
-	const g=job.production, checks=remedyChecks(run,job);
+export function productionResult(cwd,run,job,check) {
+	const g=job.production, checks=remedyChecks(run,job),authority=origin(run,job);
 	if (!g || !job.grain || run.nodes[job.grain]?.state!=="checking" || run.nodes[job.grain].check!==check.id ||
-		run.nodes[job.grain].token!==job.token || checks.length!==2 || checks.some(awaitingReply)) return;
-	if (checks.some(c=>c.state==="refused" || c.launcherExit!==undefined)) {run.nodes[job.grain]=structuredClone(g.prior);return;}
-	if (checks.some(c=>!c.receipt || c.state!=="done")) return;
-	if (!passingRemedy(run,check)) {run.nodes[job.grain]=structuredClone(g.prior);return;}
-	if (run.inspections && run.effects.some(e=>e.permissionHold)) return;
-	productionBasis(cwd,run,job,check.commit);
-	if (!inspectedBatch(run,checks,review=>{
+		run.nodes[job.grain].token!==job.token || !authority || !check.commit)return;
+	const result=componentBatch(run,check.commit,[authority.primary,authority.retainer],checks,()=>productionBasis(cwd,run,job,check.commit));
+	if(result.state==="changes"){
+		const {review}=result;
 		job.error=`Production stopped at review ${review.id} of ${review.grain} (${review.component}): ${review.summary} `+
 			`The grant covered one submission of ${JSON.stringify(g.files)} and its two checks. It does not authorize another submission or changes to its peer or observer. Both original bindings are retained.`;
-		run.nodes[g.prior.grain.id]=structuredClone(g.prior);
-	})) return;
-	for (const c of checks) {
-		const n=run.nodes[text(c.grain,"paired grain")];
+	}
+	if(result.state==="failed" || result.state==="changes")run.nodes[job.grain]=structuredClone(g.prior);
+	if(result.state!=="ready")return;
+	run.nodes=publishedNodes(run,checks,(prior,c)=>{
+		const n={...prior};
 		if (c.grain!==job.grain) {
 			delete n.token;delete n.worker;delete n.workspace;delete n.preview;
 			n.generation=g.candidate;
 		}
-		n.candidate=c.commit;n.check=c.id;assign(n,"paired-pass");
-	}
+		assign(n,"paired-pass");return n;
+	});
 }

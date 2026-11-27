@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { transition } from "./machine.mjs";
-import { decide, dialog, observeReply, presentDialog } from "./dialog.mjs";
+import { decide, observeReply, presentDialog, redisplay } from "./dialog.mjs";
+import { dialog } from "./rules/dialog.mjs";
 
 /** @typedef {import("./model.js").Review} Review */
 /** @typedef {NonNullable<Review["decision"]>} Decision */
@@ -74,4 +75,16 @@ test("the claim queues the one native presentation; restoring a pending reply ne
 	assert.equal(await presentDialog(claim,ask),"yes");assert.throws(()=>presentDialog(claim,ask),/consumed/);
 	const answered=observeReply(structuredClone(job),"q",{status:"answered",answer:"yes"});
 	assert.throws(()=>presentDialog(answered,ask),/No dialog presentation/);assert.equal(asks,1);
+});
+
+test("redisplay requires the saved presentation, a gone presenter and vacant native queues; it cannot answer",()=>{
+	for(const issuerGone of [false,true])for(const nativeVacant of [false,true])for(const expected of ["original","other"]){
+		const q=question({status:"presenting",presentation:"original"}),before=structuredClone(q);
+		const selected=redisplay(q,{status:"presenting",presentation:"replacement"},expected,{issuerGone,nativeVacant});
+		if(!issuerGone || !nativeVacant || expected!=="original"){assert.deepEqual(selected.effects,[]);assert.deepEqual(q,before);continue;}
+		assert.deepEqual(selected.effects,[{type:"present-question"}]);assert.deepEqual(q.decision,{status:"presenting",presentation:"replacement"});
+		assert.equal(observeReply(q,"original",{status:"answered",answer:"late"}).edge,undefined);
+		assert.equal(redisplay(q,{status:"presenting",presentation:"duplicate"},expected,{issuerGone,nativeVacant}).edge,undefined);
+		observeReply(q,"replacement",{status:"dismissed"});assert.deepEqual(q.decision,{status:"dismissed"});
+	}
 });

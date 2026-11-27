@@ -1,8 +1,9 @@
+import { verifyRepairInputs } from "./assembly.mjs";
 import { offered } from "./artifacts.mjs";
 import { availableReservations } from "./capacity.mjs";
 import { currentEvaluation, exhaustedCandidate, goalReceipt } from "./evidence.mjs";
 import { checkpointCurrent, pendingGoal } from "./facts.mjs";
-import { reserveWriter, verifyRepairInputs } from "./graph.mjs";
+import { reserveWriter } from "./graph.mjs";
 import { admitted } from "./native.mjs";
 import { assignmentCalls, waiting, writerInputs } from "./plan.mjs";
 import { changedFiles, commitAt, inventory, verifyContracts } from "./product.mjs";

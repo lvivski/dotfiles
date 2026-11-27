@@ -1,6 +1,8 @@
+import { InputMismatch, changes, citedFiles, excludeIncompatible, productBase, verifyEvidence, verifyRepairInputs } from "./assembly.mjs";
 import { randomUUID } from "node:crypto";
 import { assign, componentOutcome, inspectionOutcome, working } from "./assignment.mjs";
 import { currentInspection, inspectComponent } from "./inspection.mjs";
+import { settleChange } from "./obligations.mjs";
 import { transition } from "./machine.mjs";
 import { executor } from "./adapter.mjs";
 import { scheduling } from "./scheduling.mjs";
@@ -9,12 +11,13 @@ import { decide } from "./dialog.mjs";
 import { isUtf8 } from "node:buffer";
 import { admissionPolicy } from "./admission.mjs";
 import { activeDelivery } from "./batch.mjs";
-import { advanceDelivery } from "./delivery.mjs";
+import { deliveryResult } from "./delivery.mjs";
 import { notifyWriters, takeArtifactBrief } from "./artifacts.mjs";
 import { addresses, answeredLead, checkLinks, unownedBlockers } from "./blockers.mjs";
 import { validOutcome } from "./contract.mjs";
 import { evidenceDecision, exhaustedRead, readSource, readWake, rejectedRead, validateRead } from "./cursor.mjs";
-import { checkReceipt, comparisonGoal, comparisonVerdict, currentEvaluation, exhaustedCandidate, goalReceipt, leadGoal, milestoneBlocker, omittedStep, productPin, verification } from "./evidence.mjs";
+import { checkReceipt, comparisonGoal, comparisonVerdict, currentEvaluation, exhaustedCandidate, goalReceipt, leadGoal, milestoneBlocker, omittedStep, originalVerification, productPin, verification } from "./evidence.mjs";
+import { controlRule, failedTest, stoppedTest } from "./calibration.mjs";
 import { checkpointCurrent, continuingRepair, pendingGoal, retainedRepair } from "./facts.mjs";
 import { decisionOf, release } from "./engine.mjs";
 import { discoverLeads } from "./leads.mjs";
@@ -25,17 +28,17 @@ import { awaitingReply } from "./reservation.mjs";
 import { workerLimit } from "./policy.mjs";
 import { finishWriters } from "./pool.mjs";
 import { partitionConflict } from "./partition.mjs";
-import { settleProduction } from "./production.mjs";
+import { productionResult } from "./production.mjs";
 import { remedyWriter } from "./remedy.mjs";
 import { validIsolation } from "./isolation.mjs";
 import { deliveredFile, rejectedSource, unseenText, validMatch } from "./pages.mjs";
 import { actionable, consumersOf, dependencies, liveNeeds, owns, productOutputs, proposal, queuedWriters, requireNewWork, revise, settledOutput, stalePins, superseded, supersededAttempt, unstartedWriter, validateNodes, waiting, writerInputs } from "./plan.mjs";
-import { changedFiles, checkDirectory, combine, commitAt, committedFile, describeInventory, inventory, outside, regularFiles, rejoin, retain, treeOf, verifyContracts, verifyDirectoryPin, versionOf, withoutGrain } from "./product.mjs";
+import { changedFiles, checkDirectory, combine, commitAt, committedFile, describeInventory, inventory, outside, regularFiles, retain, treeOf, verifyContracts, verifyDirectoryPin, versionOf, withoutGrain } from "./product.mjs";
 import { referenceCheckout } from "./research.mjs";
 import { renew, renewalBasis } from "./renewal.mjs";
-import { ownershipMode, preflightTransfer, protectsGrant, touchesCut } from "./transfer.mjs";
+import { ownershipMode, preflightTransfer, protectsGrant } from "./transfer.mjs";
 import { disjointSuccessor, heldRepair, matchesSuccessor, preflightSuccessor, successorReads } from "./successor.mjs";
-import { atCheckpoint, availableHistory, blockReview, canInvestigate, checkpointScope, checkpointWake, comparison, discoverySquads, inputArrivals, nextReview, readerInterrupted, reading, requestedFiles, researchContext, reserveReview, reviewHandoff, reviews, scopedNotes, staleReviewReason, wakeSource } from "./reviews.mjs";
+import { atCheckpoint, availableHistory, blockReview, canInvestigate, checkpointScope, checkpointWake, comparison, discoverySquads, inputArrivals, nextReview, obstructed, readerInterrupted, reading, requestedFiles, researchContext, reserveReview, reviewHandoff, reviews, scopeReason, scopeWait, scopedNotes, staleReviewReason, wakeSource } from "./reviews.mjs";
 import { FoundryError, comparisonScope, contains, covers, digest, fail, fields, integer, members, mixed, name, names, ownership, record, referenceRepo, relative, sameScope, scopeLabel, text, waitTarget, roots as scopePaths } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
@@ -222,7 +225,7 @@ function comparableOverlap(cwd, run, directory, blob, target) {
 	const r = reviews(run).findLast(r => r.base !== last.commit && currentEvaluation(run,r) &&
 		comparison(run,r)?.directory === directory);
 	const i = comparison(run,r), report = r?.observation;
-	if (!r || !i?.basis || i.blob !== blob || !r.workflowId || r.state !== "blocked" || r.error !== "Writable directories must be disjoint" || !report ||
+	if (!r || !i?.basis || i.blob !== blob || !r.workflowId || r.state !== "blocked" || !obstructed(r,"overlap") || !report ||
 		!run.products.some(p => p.commit === r.base && p.check === i.receipt && p.target === target)) return;
 	const old = reviewHandoff(run,r,report)?.predecessor, [g] = report.grains;
 	if (!old || !exhaustedCandidate(run,old) || typeof g !== "object") return;
@@ -337,7 +340,7 @@ export function observe(cwd, run, review, observation) {
 	// proposal against the live graph; never let an older charter review edit a newer plan.
 	const renewal=review.renewal?.state==="approved" && renewalBasis(cwd,run,review,commitAt(cwd,run.policy.target));
 	if (!(renewal && !renewal.reason && review.renewal?.checkpoint===renewal.checkpoint && review.renewal.goal===renewal.goal) && !currentReview(cwd, run, review)) {
-		fail("stale_assignment", staleReviewReason);
+		fail("stale_assignment", staleReviewReason,{kind:"stale-review"});
 	}
 	if (outcome !== "no-gap" && answeredLead(run, review, grains.flatMap(g => typeof g === "string" ? [] : scopePaths(g.directory))))
 		fail("superseded", "A newer goal receipt observed this historical lead's step passing; no further work from this lead");
@@ -385,7 +388,7 @@ export function observe(cwd, run, review, observation) {
 	const handoff = "areas" in squad ? reviewHandoff(run, review, observation) : undefined;
 	const stopped = handoff?.predecessor;
 	if (handoff?.hold && observation.replace?.some(id => run.nodes[id]?.stop?.kind === "writer-cannot-repair"))
-		fail("frozen_assignment", "Writable directories must be disjoint"); // Preserve the report for guarded readmission; status explains the hold.
+		fail("frozen_assignment", "Writable directories must be disjoint",{kind:"overlap"});
 	if (stopped) {
 		if (!sameReviewInputs(cwd, run, review) || !remainingAssignments(run))
 			fail("stale_assignment", "No current reviewed assignment is available for this directory");
@@ -418,7 +421,7 @@ export function observe(cwd, run, review, observation) {
 		if (n.state!=="repeated" || grains.some(g=>typeof g==="string" ? g===id : sameScope(g.directory,n.grain.directory))) continue;
 		const checkpoint=run.products.at(-1);
 		if (!checkpoint || !n.candidate || changedFiles(cwd,n.candidate,checkpoint.commit,scopePaths(n.grain.directory)).length)
-			fail("frozen_assignment", `Cannot repartition ${n.grain.id}: its repeated output has not passed a product checkpoint`);
+			fail("frozen_assignment", `Cannot repartition ${n.grain.id}: its repeated output has not passed a product checkpoint`,{kind:"repeated-output",subject:n.grain.id});
 	}
 	checkLinks(run, review, observation, planned);
 	if (review.lead && revision) {
@@ -437,9 +440,10 @@ export function observe(cwd, run, review, observation) {
 		if (i.source && (!evidence.includes(i.source.file) || Object.values(original).some(old => planned[old.grain.id] !== old && !settledOutput(old))))
 			fail("unsupported_comparison","A new source comparison must cite the delivered product file and cannot displace an existing assignment");
 		const scope=comparisonScope(i);
-		if (ids.length !== 1 || !sameScope(n.grain.directory,scope) || observation.replace?.some(id => !sameScope(run.nodes[id]?.grain.directory,scope)) ||
-			Object.values(original).some(old => planned[old.grain.id] !== old && !sameScope(old.grain.directory,scope)))
+		if (ids.length !== 1 || !sameScope(n.grain.directory,scope) || observation.replace?.some(id => !sameScope(run.nodes[id]?.grain.directory,scope)))
 			fail("charter_scope", `This comparison is for one independent directory: ${i.directory}`);
+		const outsideScope=Object.values(original).filter(old=>planned[old.grain.id]!==old && !sameScope(old.grain.directory,scope));
+		if(outsideScope.length)fail("dependent_output",scopeReason(i.directory,outsideScope),{kind:"outside-scope",subject:i.directory});
 		if (i.basis) {
 			if (revision.deferred || n.grain.revision && n.grain.revision !== review.base)
 				fail("stale_assignment", "Comparison is not independent of other work or requests a different baseline");
@@ -557,8 +561,8 @@ function productFailure(receipt, grain, remaining) {
 }
 
 /** Apply only runner-owned receipts for the current attempt. No native calls here.
- * @param {string} cwd @param {Run} run @param {string} actor @param {number} remaining @param {string} target */
-function settleChecks(cwd, run, actor, remaining, target) {
+ * @param {string} cwd @param {Run} run @param {string} actor @param {number} remaining @param {string} target @param {PlanningOptions["verifySigned"]} [verify] */
+function settleChecks(cwd, run, actor, remaining, target,verify) {
 	const checks = new Map(run.effects.filter(e => e.tool === "bash").map(e => [e.id, e]));
 	for (const id of Object.keys(run.nodes)) {
 		const n = run.nodes[id]; // Repair can invalidate a later consumer in this same pass.
@@ -567,15 +571,23 @@ function settleChecks(cwd, run, actor, remaining, target) {
 			if(i && currentInspection(run,i))inspectionOutcome(run,n,i,remaining);
 			continue;
 		}
+		if (n.state==="waiting" && run.testRepairs?.some(j=>j.stop===n.check && (j.state==="held" || j.state==="unobserved"))){
+			const j=run.testRepairs.find(j=>j.stop===n.check);assign(n,{type:"stop",reason:`Test observation: ${j?.reason}`});continue;
+		}
 		if (n.state !== "checking" || !n.check) continue;
 		const c=checks.get(n.check);
 		if (c?.kind==="component" && c.remedy) {
 			const job=remedyWriter(run,c);
-			if (job) settleProduction(cwd,run,job,c);
+			if (job) productionResult(cwd,run,job,c);
 			continue;
 		}
 		const receipt = checkReceipt(c);
 		if (c?.kind!=="component" || !receipt) continue;
+		if(stoppedTest(run,c) && controlRule(cwd,run,n.grain.check)){
+			const j=run.testRepairs?.find(j=>j.stop===c.id);
+			if(j?.state==="held" || j?.state==="unobserved")assign(n,{type:"stop",reason:`Test observation: ${j.reason}`});
+			if(j?.state!=="product")continue;
+		}
 		const incomplete=receipt.exit===null && receipt.failure!=="changed-export";
 		componentOutcome(run,id,incomplete ? receipt.output : receipt.output || "Evaluator failed",{passed:receipt.exit===0,incomplete,unfunded:remaining===0},
 			invalidateConsumers,()=>inspectComponent(run,n,c,actor===run.owner ? actor : c.issuer));
@@ -585,13 +597,27 @@ function settleChecks(cwd, run, actor, remaining, target) {
 	const join = run.join, check = join && checks.get(join.check);
 	if (!join || !check) return;
 	const receipt = checkReceipt(check), pin=run.productRepins?.at(-1);
-	const upgrade=verification(pin)===join.check ? pin : undefined;
+	const unobserved=run.testRepairs?.find(j=>j.stop===check.id && (j.state==="unobserved" || j.state==="held" && check.tool==="bash" && failedTest(check)?.missing));
+	if(unobserved){check.error??=unobserved.reason;return;}
+	const previous=run.products.at(-1),reassessing=previous?.withdrawnHandoff?.recheck===join.check;
+	if(reassessing){
+		if(!receipt || check.error || run.blocker || target!==join.target)return;
+		if(receipt.exit!==0){check.error=`Handoff reassessment did not pass: ${receipt.output || receipt.exit}`;return;}
+		if(!verify || check.kind!=="product" || !check.runnerClaim)fail("missing_receipt","Missing signed reassessment");
+		verify(check);
+	}
+	const upgrade=verification(pin)===originalVerification(run,join.check) ? pin : undefined;
 	if (upgrade) {
 		const prior = run.products.at(-1);
-		if (!receipt || check.error || run.blocker || join.target !== target || prior?.check !== upgrade.checkpoint ||
+		if (!receipt || run.blocker || join.target !== target || prior?.check !== upgrade.checkpoint ||
 			(upgrade.targetFrom ? target!==upgrade.revision : join.commit !== prior.commit || !sameProduct(prior,target,join.outputs))) return;
+		if(check.error && receipt.exit===0)return;
 		verifyContracts(cwd,run.policy,target);
-		if (receipt.exit !== 0) { check.error = `Product evaluator recheck did not pass: ${receipt.output || receipt.exit}`; return; }
+		if (receipt.exit !== 0) {
+			check.error ??= `Product evaluator recheck did not pass: ${receipt.output || receipt.exit}`;
+			if(upgrade.targetFrom && actor===run.owner)settleChange(cwd,run,join.check,verify);
+			return;
+		}
 	}
 	const blamed = receipt?.repair && Object.hasOwn(join.outputs, receipt.repair) ? receipt.repair : undefined;
 	const failure = receipt && productFailure(receipt, blamed, remaining);
@@ -603,8 +629,8 @@ function settleChecks(cwd, run, actor, remaining, target) {
 		delete run.blocker;
 	}
 	if (!receipt || check.error || run.blocker) return;
-	if (!upgrade && !sameProduct(join, target, productOutputs(run, target, remaining))) return;
-	if (!upgrade && excludeIncompatible(cwd,run,join.outputs,productBase(cwd,run,target),join.commit)) {
+	if (!upgrade && !reassessing && !sameProduct(join, target, productOutputs(run, target, remaining))) return;
+	if (!upgrade && !reassessing && excludeIncompatible(cwd,run,join.outputs,productBase(cwd,run,target),join.commit)) {
 		delete run.join; // Preserve this receipt on its original effect, never apply it to the surviving outputs.
 		return;
 	}
@@ -612,13 +638,17 @@ function settleChecks(cwd, run, actor, remaining, target) {
 		if (!run.goal) qualify(run, actor, join,target);
 		delete run.join;
 		run.products.push(join);
-		if (!upgrade || upgrade.targetFrom) for (const id of Object.keys(join.outputs)) {
+		if (!reassessing && (!upgrade || upgrade.targetFrom)) for (const id of Object.keys(join.outputs)) {
 			assign(run.nodes[id],"integrate");
 			delete run.nodes[id].restoration;
 		}
 	} else if (failure) check.error = failure;
 	else if (blamed) {
-		const n=run.nodes[blamed];
+		const n=run.nodes[blamed], component=n.check ? checks.get(n.check) : undefined;
+		if(component?.kind==="component" && (component.replacement || component.rollout)){
+			check.error=`${blamed} was published under an exact-file correction. A new task needs its own authority; do not widen that approval into a writer grant.`;
+			return;
+		}
 		if (n.retained && n.candidate && consumersOf(run.nodes,{[blamed]:n.candidate}).some(c=>!settledOutput(c))) {
 			check.error=`Cannot reopen retained parent ${blamed} while an active consumer is pinned to its version`;
 			return;
@@ -626,110 +656,6 @@ function settleChecks(cwd, run, actor, remaining, target) {
 		applyOutcome(run, blamed, receipt.output || "Evaluator failed");
 		delete run.join;
 	}
-}
-
-/** @param {string} cwd @param {Run} run @param {string} target */
-export function productBase(cwd, run, target) {
-	verifyContracts(cwd, run.policy, target);
-	const last = run.products.at(-1);
-	if (target !== run.policy.base && target !== last?.target) retain(cwd, target);
-	if (!last)
-		return target;
-	if (last.target === target)
-		return last.commit;
-	return rejoin(cwd, last, target);
-}
-
-/** @param {Run} run @param {Record<string,string>} outputs */
-export function changes(run, outputs) {
-	return Object.entries(outputs).filter(([id]) => run.nodes[id].state !== "qualified").flatMap(([id, to]) =>
-		scopePaths(run.nodes[id].grain.directory).map(directory => ({ directory, exact:ownership(run.nodes[id].grain.directory).files.includes(directory), retained:run.nodes[id].retained, from: run.nodes[id].replaces ?? text(run.nodes[id].base, "producer base"), to })));
-}
-
-class InputMismatch extends FoundryError {
-	/** @param {string} message @param {NonNullable<Node["excluded"]>} input */
-	constructor(message, input) {
-		super("stale_assignment", `${message}: ${"path" in input ? `${input.revision}:${input.path}` : `${input.grain}@${input.revision}`}`);
-		this.input = input;
-	}
-}
-
-/** @param {Run} run @param {Node} n @param {import("./model.js").Review|undefined} review */
-function citedFiles(run, n, review) {
-	return review && run.policy.sharedBrief ? [...requestedFiles(run, review)].filter(file =>
-		!covers(n.grain.directory, file) && review.observation?.evidence.includes(file)) : [];
-}
-
-/** Older writers were explicitly given every requested, cited external path, even one
- * inside a prerequisite. Don't retroactively rewrite their kickoff after a reload.
- * @param {string} cwd @param {Run} run @param {Node} n @param {string} commit @param {string[]} [supporting] */
-function verifyEvidence(cwd, run, n, commit, supporting = n.supporting) {
-	const r = reviews(run).find(r => r.id === n.review);
-	if (!r || r.base === commit) return;
-	const frozen = [r.correction?.file, comparison(run,r)?.source?.file].filter(
-		/** @returns {file is string} */ file => !!file && !covers(n.grain.directory,file));
-	const files = [...new Set([...frozen, ...(supporting ?? citedFiles(run,n,r))])];
-	if (!files.length) return;
-	const [file] = changedFiles(cwd, r.base, commit, files);
-	if (file) throw new InputMismatch(frozen.includes(file) ? `The frozen evidence for ${n.grain.id} changed before integration` :
-		"A supporting file in the writer's brief changed since this assignment", {revision:r.base,path:file});
-}
-
-/** A stopped writer may have missed a replacement prerequisite or a newer checkpoint.
- * @param {string} cwd @param {Run} run @param {Node} n @param {Record<string,string>} required @param {string} base */
-export function verifyRepairInputs(cwd, run, n, required, base) {
-	if (!n.inputs || digest(required) !== digest(n.inputs))
-		fail("stale_assignment", "The writer's pinned prerequisites are no longer current");
-	const original = text(n.base, "writer base"), directory = n.grain.directory;
-	if (changedFiles(cwd, n.replaces ?? original, base, scopePaths(directory)).some(p=>!touchesCut(n.retained ?? [],p)))
-		fail("stale_assignment", `The reviewed directory ${directory} changed since this assignment`);
-	for (const [id, pin] of Object.entries(required)) {
-		const dirs = scopePaths(run.nodes[id].grain.directory);
-		if (changedFiles(cwd, original, base, dirs).length && changedFiles(cwd, pin, base, dirs).length)
-			fail("stale_assignment", `The reviewed input ${dirs.join(", ")} changed since this assignment`);
-	}
-	verifyEvidence(cwd, run, n, base);
-}
-
-/** Check admissions, not enduring product invariants. Verify the actual assembled tree,
- * not a producer's generation or the base underneath a sibling replacement.
- * @param {string} cwd @param {Run} run @param {Record<string,string>} outputs @param {string} base @param {string} commit */
-function* incompatibleInputs(cwd, run, outputs, base, commit) {
-	const last = run.products.at(-1);
-	for (const id of Object.keys(outputs)) {
-		const n = run.nodes[id];
-		if (n.state === "qualified" || n.state === "repeated" && last?.outputs[id] === outputs[id]) continue;
-		try {
-			if (run.goal && n.base !== base && changedFiles(cwd,n.replaces ?? text(n.base,"producer base"),base,scopePaths(n.grain.directory)).some(p=>!touchesCut(n.retained ?? [],p)))
-				fail("tree_conflict", `The reviewed directory ${n.grain.directory} changed since this assignment`);
-			for (const [dep,pin] of Object.entries(n.inputs ?? {})) {
-				if (outputs[dep] !== pin)
-					throw new InputMismatch(`A checked input of ${id} is no longer included`,{revision:pin,grain:dep});
-				const dirs = scopePaths(run.nodes[dep].grain.directory);
-				const [changed] = changedFiles(cwd,pin,commit,dirs);
-				if (changed) throw new InputMismatch(`A checked input of ${id} changed before integration`,{revision:pin,path:changed});
-			}
-			verifyEvidence(cwd,run,n,commit);
-		} catch (error) {
-			if (!(error instanceof InputMismatch)) throw error;
-			yield {n,error};
-		}
-	}
-}
-
-/** @param {string} cwd @param {Run} run @param {Record<string,string>} outputs @param {string} base @param {string} commit */
-export function verifyJoinedInputs(cwd,run,outputs,base,commit) {
-	for (const {error} of incompatibleInputs(cwd,run,outputs,base,commit)) throw error;
-}
-
-/** @param {string} cwd @param {Run} run @param {Record<string,string>} outputs @param {string} base @param {string} commit */
-function excludeIncompatible(cwd,run,outputs,base,commit) {
-	const conflicts = [...incompatibleInputs(cwd,run,outputs,base,commit)];
-	for (const {n,error} of conflicts) {
-		assign(n,{type:"stop",reason:error.message});
-		n.excluded = error.input;
-	}
-	return !!conflicts.length;
 }
 
 /** Reader 8 did not persist the source of an incomplete check's diagnostic. Never
@@ -860,16 +786,23 @@ export function reserveWriter(cwd, run, n, required, base, actor, submitToken, b
 function readmitReport(cwd, run, history, r, observation) {
 	const goal = run.goal;
 	if (!goal || r.base !== goal.commit || !currentEvaluation(run,r) || !r.workflowId || !r.callId) return;
-	const released = r.error === "Writable directories must be disjoint" && reviewHandoff(run, r, observation)?.predecessor;
+	const wait=scopeWait(run,r);
+	if(wait && !run.join && !run.blocker && !run.conflict && !run.effects.some(e=>e.permissionHold) && !run.inspections?.some(i=>i.permissionHold) &&
+		run.products.at(-1)?.commit===r.base && currentReview(cwd,run,r)){
+		if(wait.reason){if(r.error!==wait.reason)blockReview(r,wait.reason,{kind:"outside-scope",subject:comparison(run,r)?.directory});return;}
+		verifyContracts(cwd,run.policy,goal.target);
+		observe(cwd,run,r,observation);delete r.error;return;
+	}
+	const released = obstructed(r,"overlap") && reviewHandoff(run, r, observation)?.predecessor;
 	const progress = rejectedRead(history, r), unfinished = progress?.kind === "partial";
 	const retiredConsumer = observation.outcome === "regenerate" && Object.values(run.nodes).some(n =>
-		n.state === "repeated" && r.error === `Cannot repartition ${n.grain.id}: its repeated output has not passed a product checkpoint` &&
+		n.state === "repeated" && obstructed(r,"repeated-output",n.grain.id) &&
 		!observation.replace?.includes(n.grain.id) && observation.grains.every(g => typeof g === "string" ?
 			g !== n.grain.id : g.id !== n.grain.id && outside(n.grain.directory,scopePaths(g.directory))));
 	if (progress?.kind === "complete" && goal.stall &&
 		readWake(history, r, r.base, r.version)?.key === evidenceDecision &&
 		sameReviewInputs(cwd, run, r)) delete goal.stall;
-	const frozen=r.error===staleReviewReason && checkpointSurvey(run,r) && movingSurvey(cwd,run,commitAt(cwd,run.policy.target));
+	const frozen=obstructed(r,"stale-review") && checkpointSurvey(run,r) && movingSurvey(cwd,run,commitAt(cwd,run.policy.target));
 	if (frozen) {
 		if (!currentReview(cwd,run,r,frozen.target) || run.effects.some(e=>e.permissionHold)) return;
 		observe(cwd,run,r,observation); delete r.error; return;
@@ -919,7 +852,7 @@ function isolationEvidence(run,target) {
 /** @typedef {import("./model.js").Review} Review */
 /** @typedef {import("./model.js").Receipt} Receipt */
 /** @typedef {{from:string,edge:import("./machine.mjs").Edge}} PlanningStep */
-/** @typedef {{retryGoal?:boolean,submitToken?:string,target?:string,renew?:boolean,trace?:PlanningStep[]}} PlanningOptions */
+/** @typedef {{retryGoal?:boolean,submitToken?:string,target?:string,renew?:boolean,trace?:PlanningStep[],verifySigned?:(e:import("./model.js").NativeCall)=>void}} PlanningOptions */
 /** @typedef {{cwd:string,run:Run,actor:string,owner:boolean,discover:boolean,options:PlanningOptions,target?:string,base?:string,
  * isolated?:ReturnType<typeof isolationEvidence>,history:Review[],latest?:Map<string,Review>,remaining:number,reserved:number,limit:number,
  * admission:import("./admission.mjs").Admission,workTarget?:string,changedTarget?:string,nodes:Node[],stoppedWaiting:boolean,gap?:Receipt,
@@ -983,7 +916,7 @@ function settleReports({cwd,run,actor,owner,history,latest}) {
 		}
 		catch (error) {
 			if (!(error instanceof FoundryError)) throw error;
-			blockReview(r, error.message);
+			blockReview(r,error.message,error.obstacle);
 		}
 	}
 }
@@ -1001,7 +934,7 @@ function admitArrivals(p) {
 			});
 		} catch (error) {
 			if (!(error instanceof FoundryError)) throw error;
-			blockReview(r,error.message);
+			blockReview(r,error.message,error.obstacle);
 		}
 	}
 }
@@ -1067,6 +1000,9 @@ function allocateWriters(p) {
 	for (const n of nodes) {
 		if (p.reserved >= limit) break;
 		if (n.state !== "waiting") continue;
+		const check=n.check && run.effects.find(e=>e.id===n.check);
+		if(check && check.tool==="bash" && stoppedTest(run,check) && controlRule(cwd,run,n.grain.check) &&
+			!run.testRepairs?.some(j=>j.stop===check.id && j.state==="product"))continue;
 		const held = work.writers==="repair" && heldRepair(run,n);
 		if (work.writers==="repair" && !held) continue;
 		const r = n.review ? history.find(r => r.id === n.review) : undefined;
@@ -1182,7 +1118,7 @@ const fallible=effect=>(/** @type {Plan} */ p)=>{
 const planningActions={
 	"record-conflict"(p){p.run.conflict=needed(p.diagnostic,"planning diagnostic");},
 	"observe-target"(p){p.target=observeTarget(()=>p.options.target ?? commitAt(p.cwd,p.run.policy.target)).target;},
-	"advance-delivery"(p){advanceDelivery(p.cwd,p.run,needed(activeDelivery(p.run),"approved delivery"),tip(p));},
+	"advance-delivery"(p){deliveryResult(p.cwd,p.run,needed(activeDelivery(p.run),"approved delivery"),tip(p));},
 	"read-isolation"(p){p.isolated=isolationEvidence(p.run,tip(p));},
 	"reject-isolation"(p){
 		const {e,receipt}=needed(p.isolated,"isolated receipt");
@@ -1213,7 +1149,7 @@ const planningActions={
 	},
 	"settle-reports":settleReports,"admit-arrivals":admitArrivals,
 	"renew-reports"(p){for (const r of p.history) renew(p.cwd,p.run,r,tip(p),p.options.renew===true,report=>observe(p.cwd,p.run,r,report));},
-	"settle-checks":fallible(p=>{p.remaining=remainingAssignments(p.run);settleChecks(p.cwd,p.run,p.actor,p.remaining,tip(p));}),
+	"settle-checks":fallible(p=>{p.remaining=remainingAssignments(p.run);settleChecks(p.cwd,p.run,p.actor,p.remaining,tip(p),p.options.verifySigned);}),
 	"retry-readers":fallible(retryReaders),"assess-release":fallible(assessRelease),"prepare-admission":fallible(prepareAdmission),
 	"allocate-writers":allocateWriters,"collect-outputs"(p){p.gap=goalReceipt(p.run);p.outputs=joinInputs(p);},
 	"assemble-outputs":fallible(assembleOutputs),"compare-assembly":fallible(compareAssembly),

@@ -1,63 +1,77 @@
 import { randomUUID } from "node:crypto";
+import { describeNewChecks } from "./description.mjs";
+import { workflowIdentity } from "./workflow.mjs";
 import { assign, frozenSubmission } from "./assignment.mjs";
 import { activate, holdFor, permitted } from "./activity.mjs";
 import { adoptionBase, exactForm, planAdoption, presentAdoption, proposalForm, requestedAdoption } from "./adoption.mjs";
-import { prepareInherited } from "./inherited.mjs";
+import { preparePatch } from "./patch.mjs";
+import { prepareRollout } from "./rollout.mjs";
+import { replacementOffer } from "./replacement.mjs";
 import { pendingAdoption } from "./offers.mjs";
+import { planOffers, selectedEvaluator } from "./offering.mjs";
+import { selectDraft } from "./commission.mjs";
+import { draftDispatcher, nextAuthor } from "./authors.mjs";
+import { formDelivery } from "./forms.mjs";
+import { claimRepair, holdRepair, planMending, queuedMechanic, queueMechanic, repairAnswer, repairCurrent, repairPacket, repairPermitted } from "./mending.mjs";
+import { repairTip } from "./calibration.mjs";
 import { auditor } from "./auditor.mjs";
 import { requireChangedReview } from "./inspection.mjs";
 import { boundInspections, inspectionWakes, publicationSample, readyInspections } from "./inspections.mjs";
 import { journal, survey } from "./dispatch.mjs";
 import { existsSync, readFileSync } from "node:fs";
-import { preparePublication, reportedReferences } from "./artifacts.mjs";
-import { prepareBaselines } from "./baseline.mjs";
+import { inputNotice, preparePublication, reportedReferences, verifySource } from "./artifacts.mjs";
+import { grantFor, recoveryRules } from "./grants.mjs";
+import { dispatches, instructionPermitted, queueInstructions } from "./instructions.mjs";
+import { frozenCheckpoint } from "./frozen.mjs";
+import { recordDiagnostic } from "./diagnostics.mjs";
 import { attribute } from "./blockers.mjs";
 import { childProof, grainForToken, issuerProof, linkedGeneration, reservation, verifyGeneration } from "./binding.mjs";
 import { openDatabase, ledgerPath } from "./database.mjs";
-import { journeyText, readPolicy } from "./contract.mjs";
-import { prepareCorrection } from "./correction.mjs";
-import { prepareCheckpoint } from "./checkpoint.mjs";
+import { contractHold, journeyText, readPolicy } from "./contract.mjs";
+import { unprovenExports } from "./attestation.mjs";
 import { activeDelivery } from "./batch.mjs";
-import { prepareDelivery } from "./delivery.mjs";
 import { presentQuestions } from "./decisions.mjs";
 import { advance, currentReview, newRun, reserveChangedRepair, reserveIteration, retryableReview, sameReviewInputs } from "./graph.mjs";
-import { baselineNotice, changedFrom, comparisonGoal, comparisonVerdict, goalReceipt, inconclusiveRepair, mixedVerification, qualifiedProduct, relinquishable, stopForInput } from "./evidence.mjs";
+import { baselineNotice, changedFrom, comparisonGoal, comparisonVerdict, goalReceipt, inconclusiveRepair, mixedVerification, qualifiedProduct, relinquishable, stopForInput, verificationSource } from "./evidence.mjs";
 import { checkpointSurvey, movingSurvey, observeTarget, releaseAssessment } from "./goal.mjs";
-import { admitted, assignment, boundWriter, canDispatch, current, expired, identify, issue, receive, reserveCheck } from "./native.mjs";
+import { admitted, assignment, boundWriter, canDispatch, current, expired, identify, issue, policySubject, receive, reserveCheck } from "./native.mjs";
 import { awaitingReply, unissued } from "./reservation.mjs";
-import { checked } from "./plan.mjs";
+import { checked, writerVersion } from "./plan.mjs";
 import { attachNotes, queueNote } from "./notes.mjs";
 import { diagnosticLine, indexBudgetError } from "./pages.mjs";
 import { configure } from "./policy.mjs";
 import { chooseWriters } from "./pool.mjs";
 import { acceptWorkspace, writerRoot } from "./workspace.mjs";
 import { capture, changedFiles, commitAt, contractConflict, directoryBaseline, generationRoot, regularFiles, retain, rootAt, treeOf, verifyContracts } from "./product.mjs";
-import { refusedCall } from "./recovery.mjs";
+import { recoveredCalls, refusedCall } from "./recovery.mjs";
 import { checkAuthority, prepareRecheck } from "./recheck.mjs";
 import { prepareRerun } from "./rerun.mjs";
 import { prepareRepin } from "./repin.mjs";
-import { prepareResume, resumable } from "./resume.mjs";
+import { prepareResume, reassessHandoff, resumable } from "./resume.mjs";
 import { reconcileWake } from "./reconciliation.mjs";
 import { transferRequest } from "./transfer.mjs";
 import { stoppedCheck, successorRequest } from "./successor.mjs";
 import { reportReceiver } from "./reports.mjs";
 import { retireGoal } from "./retirement.mjs";
-import { prepareReuse } from "./reuse.mjs";
-import { prepareRestoration } from "./restoration.mjs";
+import { deliveryTip, inputBlob } from "./resupply.mjs";
+import { requestedSource } from "./supplier.mjs";
 import { currentPair, preparePair } from "./pairing.mjs";
-import { observerBasis, observerWriter, prepareObserver, verifyObserver } from "./observer.mjs";
-import { prepareProduction, productionBasis, submitProduction } from "./production.mjs";
+import { observerBasis, observerWriter, verifyObserver } from "./observer.mjs";
+import { productionBasis, submitProduction } from "./production.mjs";
 import { productionWriter, remedyWriter } from "./remedy.mjs";
 import { referenceText } from "./research.mjs";
 import { blockReview, comparison, currentPin, investigation, questions, reserveReview, retireSuperseded, reviews, staleReaderMessage } from "./reviews.mjs";
 import { scoutPacket } from "./scouts.mjs";
-import { status } from "./status.mjs";
+import { recoveryStatus, status as projectStatus } from "./status.mjs";
 import { FoundryError, assignmentDirectory, digest, fail, fields, mixed, name, record, referenceRepo, relative, text, roots as scopePaths } from "./values.mjs";
 import { boardFacts, visible } from "./visibility.mjs";
 import { contention, persist, receiptClock, receiptWakes } from "./wakes.mjs";
-import { supervise, watchState, workflow } from "./supervision.mjs";
+import { supervise } from "./supervision.mjs";
+import { watchState, workflow } from "./rules/supervision.mjs";
 import { transition } from "./machine.mjs";
 import { executor } from "./adapter.mjs";
+import { attachedLegacy, exactRunner } from "./abi.mjs";
+import { continueChecks } from "./cutover.mjs";
 
 const readerFile = new URL("./reader.version", import.meta.url);
 const loadedReader = readFileSync(readerFile, "utf8");
@@ -77,6 +91,10 @@ function requireCurrentReader() {
 /** @typedef {import("./auditor.mjs").Envelope} ScoutEnvelope */
 /** @typedef {{execute:(tool:string,args:Effect["args"],id:string)=>Promise<unknown>,notify:(message:string)=>Promise<string>,recover?:(effect:Effect)=>Promise<unknown>,
  * ask?:(message:string)=>Promise<string|null>,confirm?:(message:string)=>Promise<boolean>,adopt?:(message:string)=>Promise<string|null>,autoConfirm?:()=>Promise<boolean>,
+ * confirmProposal?:(message:string)=>Promise<boolean>,formVacant?:()=>Promise<boolean>,formIdle?:()=>Promise<boolean>,
+ * repairAgent?:(phase:import("./mending.mjs").Phase,packet:import("./mending.mjs").Packet,ticket:import("./mending.mjs").Ticket)=>Promise<import("./mending.mjs").Answer>,
+ * repairState?:(workflow:string,ticket:import("./mending.mjs").Ticket)=>Promise<import("./mending.mjs").Answer>,
+ * draftAgent?:(ticket:import("./author.mjs").Ticket)=>Promise<import("./auditor.mjs").Envelope>,draftState?:(id:string)=>Promise<import("./auditor.mjs").Envelope>,
  * readHistory?:import("@github/copilot-sdk").CopilotSession["rpc"]["eventLog"]["read"],isResearcher?:(workflowId:string,agentId:string)=>Promise<boolean>,
  * scoutBudget?:()=>Promise<number>,scoutFailure?:(workflowId:string,label:string)=>Promise<string|undefined>,confirmNoReport?:(r:import("./model.js").Review)=>Promise<void>,
  * scout?:(run:string,dispatch:string,actor:string)=>Promise<ScoutEnvelope>,scoutState?:(workflowId:string)=>Promise<ScoutEnvelope>,
@@ -96,6 +114,9 @@ function writable(run, actor, token, from) {
 	if (node.state !== "writing") fail("stale_assignment", "This attempt is no longer writable");
 	const notice = baselineNotice(run, node);
 	if (notice && notice.state !== "done") fail("dispatch_held", "Await confirmed delivery of the approved baseline to the original writer");
+	const supply=inputNotice(run,node);
+	if (supply && (supply.state!=="done" || supply.error || !supply.callId))
+		fail("dispatch_held","Await confirmed delivery of the selected reference to the original writer");
 	const review=run.effects.find(e=>e.id===node.review);
 	if (review?.kind==="scout" && review.correction?.ordinary && review.correction.resumed?.token===token &&
 		!run.effects.some(e=>e.kind==="repair" && e.grain===node.grain.id && e.token===token && e.state==="done" && !e.error))
@@ -104,13 +125,13 @@ function writable(run, actor, token, from) {
 }
 
 /** @param {Run} run @param {string} actor */
-const reservations = (run, actor) => run.effects.filter(e => e.issuer === actor && unissued(e) && canDispatch(run, e));
+const reservations = (run, actor) => dispatches(run).filter(e => e.issuer === actor && unissued(e) && policySubject(run, e));
 /** @param {Run} run @param {string} ticket @param {string} actor */
 const batchOf = (run, ticket, actor) => reviews(run).filter(e => e.callId === ticket && e.issuer === actor);
 /** @param {import("./model.js").Review} e */
 const needsContinuation=e=>e.state==="suspended" && e.providerRecovery==="needed";
 /** @param {Effect} e */
-const externalReply=e=>(e.tool==="create_session" || e.tool==="send_session_message") && awaitingReply(e) && !!e.callId;
+const externalReply=e=>(e.tool==="create_session" || e.tool==="send_session_message" || e.tool==="bash" && attachedLegacy(e)) && awaitingReply(e) && !!e.callId;
 /** @param {unknown} error */
 const transientStatus=error=>contention(error) || error instanceof Error && "code" in error &&
 	(error.code==="ETIMEDOUT" || error.code==="ECONNRESET");
@@ -126,8 +147,9 @@ function requeueCapacity(e) {
 	survey(e,{type:"requeue",error:waitingForSlot});
 	return true;
 }
-/** @param {string} directory @param {Host} host */
-export function createRuntime(directory, host) {
+/** @param {string} directory @param {Host} host @param {import("./machine.mjs").Machine} [rules] Trusted edition, never a project or tool input. */
+export function createRuntime(directory, host, rules) {
+	const recovery=recoveryRules(rules,!!host.draftAgent);
 	/** @type {ReturnType<typeof openDatabase>|undefined} */ let database;
 	let root, closed = false, outsideRepository = false, turnNumber = 0;
 	const lifetime=new AbortController();
@@ -137,6 +159,8 @@ export function createRuntime(directory, host) {
 	/** @type {Set<Promise<unknown>>} */ const background = new Set();
 	/** @type {Set<{run:string,actor:string,token:string}>} */ const submitting = new Set();
 	/** @type {Set<string>} */ const asking = new Set();
+	const forms=formDelivery(host);
+	/** @type {Set<string>} */ const mendingCalls=new Set();
 	/** @type {Map<string,Call>} */ const nativeCalls = new Map();
 	/** @type {Map<string,Map<string,()=>Promise<void>>>} */ const scoutCalls = new Map();
 	/** @type {Map<string,NodeJS.Timeout>} */ const capacityWakes = new Map();
@@ -144,6 +168,23 @@ export function createRuntime(directory, host) {
 	/** @type {Map<string,{discover:boolean,recover:boolean,work:Promise<void>}>} */ const wakes = new Map();
 	/** @type {string|undefined} */ let existingPath;
 	const cwd = () => root ??= rootAt(directory);
+	/** @param {Run} run @returns {import("./instructions.mjs").Tip} */
+	function instructionPins(run){
+		/** @type {ReturnType<typeof observeTarget>|undefined} */ let observed;
+		/** @type {string|null|undefined} */ let prior;
+		return frozen=>{
+			const tip=(observed??=observeTarget(()=>commitAt(cwd(),run.policy.target))).target;
+			if(!frozen || !tip)return tip;
+			if(prior===undefined){
+				try{prior=frozenCheckpoint(cwd(),run,tip)?.target??null;}
+				catch(e){if(!(e instanceof FoundryError) || e.code!=="contract_changed")throw e;prior=null;}
+			}
+			return prior??undefined;
+		};
+	}
+	/** @param {Run} run @param {string} actor @param {unknown} [detail] */
+	const status=(run,actor,detail)=>projectStatus(run,actor,detail,instructionPins(run),
+		detail==="proof" && run.owner===actor?{cwd:cwd(),verify:e=>db().verifySigned(run.id,e)}:undefined);
 	const file = () => existingPath ??= ledgerPath(directory);
 	function hasLedger() {
 		if (outsideRepository) return false;
@@ -171,12 +212,12 @@ export function createRuntime(directory, host) {
 	function db(create = false) {
 		if (closed)
 			fail("runtime_closed", "Foundry is closed");
-		return database ??= openDatabase(cwd(), file(), create, requireCurrentReader);
+		return database ??= openDatabase(cwd(), file(), create, requireCurrentReader,describeNewChecks);
 	}
 	/** @param {string} id */
 	const read = id => db().read(id) ?? fail("missing_run", `Unknown run ${id}`);
 	/** @param {(message:string)=>Promise<string|null>} adopt @param {()=>Promise<void>} wake */
-	const approvalHost=(adopt,wake)=>({cwd:cwd(),store:db,closed:()=>closed,executable:observerExecutable,permissionBlocker:host.permissionBlocker,persist:recordReply,adopt,wake});
+	const approvalHost=(adopt,wake)=>({cwd:cwd(),store:db,closed:()=>closed,executable:observerExecutable,permissionBlocker:host.permissionBlocker,persist:recordReply,idle:forms.idle,adopt,wake});
 	/** Settlement continues the submitted work; it does not request another fixed-charter survey.
 	 * @param {string} id @param {string} actor */
 	const receiptWake=(id,actor)=>track(drive(id,actor,false,false));
@@ -185,22 +226,29 @@ export function createRuntime(directory, host) {
 		tip:run=>observeTarget(()=>commitAt(cwd(),run.policy.target)).target,persist:recordReply,closed:()=>closed,
 		verifySigned:(id,c)=>db().verifySigned(id,c),
 		track,log:host.log,queue:wakeCapacity,wake:receiptWake,executable,permissionBlocker:host.permissionBlocker});
+	const authors=draftDispatcher({cwd,store:db,closed:()=>closed,permitted:async()=>await executable() && !await host.permissionBlocker() && await executable(),
+		start:host.draftAgent,observe:host.draftState,resume:host.resumeScout,budget:host.scoutBudget,persist:recordReply,queued:(id,actor)=>capacityWakes.has(issuerKey(id,actor)),
+		queue:wakeCapacity,wait:(id,actor)=>supervisor.observe(id,actor,gate(read(id),actor,false,"issuer-permission")),wake:(id,actor)=>drive(id,actor,false,false)});
 	const receipts = receiptWakes({ read, stamp: id => db().stamp(id), clock: host.watchReceipts ?? receiptClock,
 		wake:receiptWake, log: error => host.log?.(`Foundry receipt observer: ${String(error)}`) });
 	/** @param {Run} run @param {string} actor @param {boolean} [missing] @param {import("./supervision.mjs").Gate} [previous] @returns {import("./supervision.mjs").Observation} */
 	function gate(run,actor,missing=false,previous) {
-		const hold=run.policyHold, own=run.effects.filter(e=>e.issuer===actor);
+		if(contractHold(run))return {state:"dormant",ref:run.policy.target,pending:false};
+		forms.attach(run,actor);
+		const hold=run.policyHold, own=dispatches(run).filter(e=>e.issuer===actor);
 		const inspection=inspectionWakes(run,actor,previous==="issuer-permission");
 		const unfinished=run.active && own.some(e=>e.kind==="scout" && needsContinuation(e));
 		const ownerWork=previous==="issuer-permission" && run.active && actor===run.owner &&
-			(reviews(run).some(r=>r.renewal?.state==="needed") || !!host.ask && questions(run).some(r=>!r.decision) || !!proposalForm(host,pendingAdoption(run)));
+			(recovery.select(run).size>0 || !!nextAuthor(run) || reviews(run).some(r=>r.renewal?.state==="needed") || run.testRepairs?.some(j=>!["held","applied","product","unobserved"].includes(j.state)) ||
+				!!host.ask && questions(run).some(r=>!r.decision) || !!proposalForm(host,pendingAdoption(run)));
 		// A paused issuer may still own an unissued reservation. Observe the owner's
 		// later resume, without treating a readable policy as permission to undo a pause.
 		const participant=!!(run.active || hold) && run.owner===actor || own.some(e=>awaitingReply(e) || unissued(e) && current(run,e)) || inspection.participant;
 		const state=watchState({expired:expired(run),managed:!run.active && hold?.issuer===actor,
-			local:ownerWork || inspection.local || own.some(e=>!!e.permissionHold && unissued(e) && canDispatch(run,e)) || unfinished && previous==="issuer-permission",
+			local:ownerWork || inspection.local || own.some(e=>!!e.permissionHold && unissued(e) && policySubject(run,e)) || unfinished && previous==="issuer-permission",
 			retryRead:unfinished && previous==="workflow-status",
-			missing:run.active && participant && missing,participant});
+			missing:run.active && participant && missing,formDue:!!forms.current(run,actor) ||
+				actor===run.owner && !!host.formIdle && !!proposalForm(host,pendingAdoption(run)),participant});
 		const pending=!!host.recover && run.active && !expired(run) && own.some(externalReply) ||
 			inspector.canObserve && inspection.pending;
 		return {state,ref:run.policy.target,pending,...(state==="managed-policy" && {token:hold?.token})};
@@ -217,24 +265,43 @@ export function createRuntime(directory, host) {
 		const recover=host.recover;
 		// Looking up a bound workflow is observation, including through a pause or plan
 		// mode. Its receipt wakes separate, permission-checked planning.
-		if (!closed && !only && inspector.canObserve)inspector.observe(read(id),actor);
+		if(closed)return;
+		const run=read(id);
+		if(contractHold(run))return;
+		if (!only && inspector.canObserve)inspector.observe(run,actor);
 		if ((!recover && (only || !host.scoutState)) || !await observerExecutable()) return;
-		const run=read(id), workflows=only?undefined:supervisor.statusReads(id,actor);
+		const workflows=only?undefined:supervisor.statusReads(id,actor);
 		if (!run.active || expired(run)) {workflows?.clear();return;}
 		if(workflows)for(const [ticket,workflow] of workflows){
 			if(batchOf(run,ticket,actor).some(e=>e.workflowId===workflow && awaitingReply(e)))observeWorkflow(id,ticket,actor,workflow);
 			else workflows.delete(ticket);
 		}
-		if(!recover)return;
-		await Promise.all(run.effects.flatMap(e=>externalReply(e) && e.issuer===actor && e.callId &&
-			(!only || e.callId===only) && !nativeCalls.get(e.callId)?.inFlight ?
-			[resolveCall(id,e,e.callId,()=>recover(e)).then(done=>done && !closed ? drive(id,actor,true,false) : undefined)] : []));
+		const jobs=dispatches(run).filter(e=>externalReply(e) && e.issuer===actor && e.callId &&
+			(!only || e.callId===only) && !nativeCalls.get(e.callId)?.inFlight);
+		await observeCalls(id,jobs,()=>!closed?drive(id,actor,true,false):undefined);
+	}
+	/** @param {string} id @param {Effect[]} jobs @param {()=>void|Promise<void>} refill */
+	async function observeCalls(id,jobs,refill){
+		const recover=host.recover;if(!recover || !jobs.length)return;
+		/** @type {Map<Effect,(r:unknown)=>void>} */const replies=new Map();
+		const read=jobs.length>1 && host.readHistory;
+		const work=jobs.map(e=>resolveCall(id,e,text(e.callId,"original call"),()=>!read?recover(e):
+			new Promise(resolve=>replies.set(e,value=>resolve(value instanceof Error?{resultType:"unconfirmed",error:String(value)}:value))))
+			.then(done=>done && refill()));
+		const scan=read && recoveredCalls(read,jobs,(e,value)=>replies.get(e)?.(value))
+			.catch(error=>{for(const reply of replies.values())reply(error);});
+		await Promise.all([...work,scan]);
 	}
 	const supervisor=supervise({
 		clock:host.watchRecovery ?? receiptClock,track,stamp:id=>db().stamp(id),
 		sample:(id,actor,previous)=>gate(read(id),actor,previous==="missing-target",previous),
 		tip:ref=>observeTarget(()=>commitAt(cwd(),ref)).target,
 		permitted:async()=>await observerExecutable() && !await host.permissionBlocker() && await observerExecutable(),
+		presentable:async(id,actor)=>{
+			if(asking.has(id) || !await observerExecutable() || await host.permissionBlocker() || !await forms.idle())return false;
+			const run=read(id);
+			return actor===run.owner && !!pendingAdoption(run) || forms.vacant(forms.current(run,actor));
+		},
 		lookup:readCompletions,
 		wake:async(id,actor,token)=>{
 			if (!await observerExecutable()) return false;
@@ -244,16 +311,18 @@ export function createRuntime(directory, host) {
 		},retryRead:contention,log:error=>host.log?.(`Foundry recovery observer: ${String(error)}`),
 	});
 	/** @param {string} actor */
-	const writerSession = actor => known.has(actor) || hasLedger() && db().involving(actor).some(id => read(id).owner !== actor);
+	const writerSession = actor => known.has(actor) || hasLedger() && db().isWriter(actor);
 	/** @param {string} id @param {(run:Run)=>(()=>boolean)|void} mutate */
 	function change(id, mutate) {
 		return db().planAndSwap(id, run => {
-			const count = run.products.length, final = qualifiedProduct(run);
+			const count = run.products.length, final = qualifiedProduct(run),join=run.join?.check;
 			const renewed = () => reviews(run).filter(r=>r.renewal?.state==="approved" && r.state==="observed").length;
 			const prior = renewed();
 			const valid=mutate(run);
 			if (run.products.length !== count || qualifiedProduct(run) !== final)
 				return () => (!valid || valid()) && observeTarget(() => commitAt(cwd(), run.policy.target)).target === run.products.at(-1)?.target;
+			if(run.join && run.join.check!==join && mixedVerification(run,run.join.check))
+				return ()=>!expired(run) && (!valid || valid()) && observeTarget(()=>commitAt(cwd(),run.policy.target)).target===run.join?.target;
 			if (renewed()!==prior)
 				return () => (!valid || valid()) && observeTarget(() => commitAt(cwd(),run.policy.target)).target === run.goal?.target;
 			return valid;
@@ -266,6 +335,20 @@ export function createRuntime(directory, host) {
 		await reconcile(id,actor,false,false,check);
 		return check.reason;
 	}
+	/** Dispatch just the affected thread notices without turning an inspection or preview into an ordinary scheduling wake.
+	 * @param {string} id @param {string} actor */
+	async function inform(id,actor){
+		const queued=db().planAndSwap(id,r=>queueInstructions(r,actor));
+		const due=reservations(queued,actor).filter(e=>e.kind==="instruction" && e.state==="ready");
+		if(due.length && await dispatchBlocker(id,actor,due)===null)for(const e of due){
+			const callId=randomUUID();
+			if(claim(id,e,callId))await resolveCall(id,e,callId,()=>deliver(e,callId),true);
+		}
+		return status(read(id),actor);
+	}
+	/** @param {Effect} e @param {string} callId */
+	const deliver=(e,callId)=>e.tool==="session.send"?host.notify(text(e.args.message,"session notice")).then(messageId=>({resultType:"success",messageId})):
+		host.execute(e.tool,e.args,callId);
 	/** Commit a selected hold change only if the sampled issuer still has the same reservation.
 	 * @param {string} id @param {string} actor @param {Effect[]} batch @param {Inspection[]} inspecting @param {string|null} message @param {boolean} managed */
 	function recordBatchPolicy(id,actor,batch,inspecting,message,managed) {
@@ -293,7 +376,7 @@ export function createRuntime(directory, host) {
 	async function settle(ctx, callId, result, automatic = false) {
 		if (closed) return;
 		const terminal = await recordReply(()=>db().mutateLocked(ctx.run, run => {
-			const e = run.effects.find(x => x.id === ctx.id);
+			const e = dispatches(run).find(x => x.id === ctx.id);
 			if (!e || e.tool === "workflow" || e.callId !== callId || e.issuer !== ctx.actor || !awaitingReply(e)) return true;
 			try {
 				receive(run, e, result, automatic);
@@ -318,14 +401,45 @@ export function createRuntime(directory, host) {
 	}
 	/** @param {string} id @param {Effect} effect @param {string} callId */
 	const claim = (id, effect, callId) => {
+		if(effect.kind==="instruction"){
+			let claimed=false;
+			db().planAndSwap(id,r=>{
+				claimed=false;const pins=instructionPins(r);
+				if(closed || expired(r) || !instructionPermitted(r,effect.instruction,pins) || !(claimed=issue(r,effect,callId)))return;
+				const sampled=pins();
+				return ()=>!closed && !expired(r) && observeTarget(()=>commitAt(cwd(),r.policy.target)).target===sampled;
+			});return claimed;
+		}
+		if(effect.kind==="repair" && (effect.input || effect.continuation) && unissued(effect)){
+			let claimed=false;
+			db().planAndSwap(id,run=>{
+				claimed=false;
+				const e=run.effects.find(e=>e.id===effect.id);
+				if(e?.kind!=="repair" || !e.grain || !unissued(e) || !canDispatch(run,e))return;
+				const tip=deliveryTip(cwd(),run,e,job=>db().verifySigned(id,job));
+				if(!tip)return;
+				claimed=issue(run,effect,callId);
+				if(claimed)return ()=>!closed && !expired(run) && observeTarget(()=>commitAt(cwd(),run.policy.target)).target===tip;
+			});return claimed;
+		}
+		if(effect.kind==="control" || effect.tool==="bash" && effect.testPin){
+			let claimed=false;
+			db().planAndSwap(id,r=>{
+				const j=r.testRepairs?.find(j=>j.stop===(effect.calibration?.stop??effect.testPin));
+				const tip=j && (effect.kind==="control"?repairCurrent(cwd(),r,j):j.recheck===effect.id && repairTip(cwd(),r,j));
+				claimed=!!tip && repairPermitted(r) && issue(r,effect,callId);
+				if(claimed)return ()=>!closed && !expired(r) && commitAt(cwd(),r.policy.target)===tip;
+			});return claimed;
+		}
 		const pinnedProduct=effect.kind==="product" && effect.evaluatorRevision;
-		if (effect.tool==="workflow" || !(pinnedProduct || effect.recheck || effect.pair || effect.observer || effect.isolation || effect.production || effect.remedy) || !unissued(effect)) return db().mutateLocked(id, run => issue(run, effect, callId));
+		if (effect.tool==="workflow" || !(pinnedProduct || effect.rollout || effect.replacement || effect.recheck || effect.pair || effect.observer || effect.isolation || effect.production || effect.remedy) || !unissued(effect)) return db().mutateLocked(id, run => issue(run, effect, callId));
 		let target = (effect.recheck ?? effect.pair)?.target;
 		let claimed = false;
 		db().planAndSwap(id,run => {
-			const mixed=pinnedProduct && mixedVerification(run,effect.id);
-			if (effect.isolation || mixed) {
-				target=mixed ? mixed.revision : run.independent?.target;
+			const source=pinnedProduct && verificationSource(run,effect.id),mixed=pinnedProduct && mixedVerification(run,effect.id);
+			const original=source && source!==effect.id && run.products.find(p=>p.check===source);
+			if (effect.isolation || mixed || original || effect.replacement || effect.rollout) {
+				target=original ? original.target : mixed ? mixed.revision : effect.rollout ? run.adoptions?.find(a=>a.id===effect.rollout)?.revision : effect.replacement ? replacementOffer(run,effect)?.revision : run.independent?.target;
 				claimed=target===commitAt(cwd(),run.policy.target) && !run.effects.some(x=>x.permissionHold) && issue(run,effect,callId);
 			} else if (effect.production || effect.remedy) {
 				const job=effect.production?effect:remedyWriter(run,effect);
@@ -360,6 +474,11 @@ export function createRuntime(directory, host) {
 	/** @param {string} id @param {string} actor @param {boolean} discover @param {boolean} recoverCalls
 	 * @param {{batch:Effect[],reason:string|null}} [check] */
 	async function reconcile(id, actor, discover, recoverCalls,check) {
+		const entry=read(id),quarantine=contractHold(entry);
+		if(quarantine){if(check)check.reason=quarantine;return;}
+		if(entry.products.at(-1)?.qualifiedAt && unprovenExports(entry).length){
+			if(check)check.reason="The historical handoff does not establish the approved evaluator inputs";return;
+		}
 		/** @typedef {import("./reconciliation.mjs").Signal} Signal */
 		/** @type {Run["policyHold"]} */ let held;
 		/** @type {Map<string,string>} */ let workflows;
@@ -368,12 +487,14 @@ export function createRuntime(directory, host) {
 		/** @type {Run} */ let planned;
 		/** @type {import("./model.js").Adoption|undefined} */ let adoption;
 		let missingTarget=false;
+		let mending=false;
 		/** @type {Effect[]} */ let batch=check?.batch ?? [];
 		/** @type {Inspection[]} */ let inspections=[];
 		const publication=publicationSample(actor);
 		/** @type {import("./permissions.mjs").PermissionBlock|null} */ let block=null;
 		/** @type {string|null} */ let policyMessage=null;
 		let pooled=false,renewing=false;
+		/** @type {ReturnType<typeof recovery.select>} */ let proposals=new Map();
 		/** @type {Effect[]} */ let ready;
 		/** @type {import("./model.js").Review[]} */ let scouts;
 		/** @type {import("./model.js").NativeCall[]} */ let writers;
@@ -384,7 +505,7 @@ export function createRuntime(directory, host) {
 		return reconcileWake({
 			"retain-wake":()=>supervisor.invalidate(id,actor),
 			"inspect-issuer":next=>{
-				const run=read(id);
+				const run=entry;
 				supervisor.observe(id,actor,gate(run,actor));
 				inspector.observe(run,actor);
 				held=run.policyHold;
@@ -427,12 +548,21 @@ export function createRuntime(directory, host) {
 				}).finally(() => asking.delete(id)));
 				return offerBatch(next);
 			},
+			"mend-test":next=>{
+				for(const j of planned.testRepairs??[]){
+					if(j.state==="draft" || j.state==="review" || j.workflow && (j.state==="authoring" || j.state==="reviewing"))
+						track(runMechanic(id,j,j.state==="draft" || j.state==="authoring"?"author":"review",refill));
+				}
+				return offerBatch(next);
+			},
+			"draft-correction":next=>{track(authors.launch(planned,actor));return offerBatch(next);},
 			"offer-adoption":next=>{
 				const form=proposalForm(host,adoption);
 				if(!adoption || !form)throw Error("Missing owner proposal or approval form");
 				asking.add(id);
 				const offered=adoption;
-				track(presentAdoption(approvalHost(form,refill),id,actor,offered).then(held=>{
+				const lost=offered.decision?.status==="presenting" && offered.decision.presentation;
+				track(presentAdoption(approvalHost(form,refill),id,actor,offered,lost?{lost,vacant:()=>forms.vacant(offered)}:undefined).then(held=>{
 					if(!closed && held)supervisor.observe(id,actor,gate(read(id),actor,false,held));
 				}).finally(()=>{
 					asking.delete(id);
@@ -499,58 +629,147 @@ export function createRuntime(directory, host) {
 		}
 		/** @param {Signal} next */
 		async function readOriginals(next) {
-			const recover=host.recover, lookups=[];
-			for (const e of read(id).effects) {
+			/** @type {Effect[]} */ const lookups=[];
+			for (const e of dispatches(entry)) {
 				// A same-session SDK notice has no native tool history. Never replay it.
 				const callId=e.callId;
 				if (!callId || e.issuer!==actor || e.tool==="session.send" || !awaitingReply(e)) continue;
 				if (e.tool==="workflow") {
 					if (e.workflowId) observeWorkflow(id,callId,actor,e.workflowId);
-					else if (e.state==="issued" && !scoutCalls.has(callId)) unconfirmedScouts(id,actor,callId,"No workflow ID was recorded before reconnect.");
+					else if (e.state==="issued" && !scoutCalls.has(callId)) unconfirmedScouts(id,actor,callId,"No workflow ID was recorded before reconnect.",r=>awaitingReply(r) && !r.workflowId);
 					continue;
 				}
 				const call=nativeCalls.get(callId);
-				if (!recover || call?.inFlight || call?.recoveredOn===turnNumber) continue;
-				lookups.push(resolveCall(id,e,callId,()=>recover(e)).then(terminal=>next("completion",{terminal:!!terminal})));
+				if (!host.recover || call?.inFlight || call?.recoveredOn===turnNumber) continue;
+				lookups.push(e);
 			}
-			await Promise.all(lookups);
+			await observeCalls(id,lookups,()=>next("completion",{terminal:true}));
 			return next("drained");
 		}
 		/** @param {Signal} next @param {boolean} renew */
 		function plan(next,renew) {
+			const approved=actor===entry.owner?entry.testRepairs?.flatMap(j=>j.state==="approved" && j.subject?[j.subject]:[]):undefined;
+			if(approved?.length)return host.permissionBlocker().then(async block=>{
+				if(block)deferredGate="issuer-permission";
+				return commitPlan(next,renew,new Set(!block && await executable()?approved:[]));
+			});
+			return commitPlan(next,renew,new Set());
+		}
+		/** @param {Signal} next @param {boolean} renew @param {Set<string>} allowed */
+		function commitPlan(next,renew,allowed) {
 			let inspectionDue=false;
 			planned=change(id,run=>{
-				inspectionDue=false;adoption=undefined;
+				inspectionDue=false;adoption=undefined;mending=false;
+				if(actor===run.owner)delete run.offerHold;
 				const observed=run.active && !expired(run) ? observeTarget(()=>commitAt(cwd(),run.policy.target)) : undefined;
 				missingTarget=!!observed && observed.target===undefined;
 				if (missingTarget) return;
 				if(!publication.check(observed ? run : undefined)){inspectionDue=true;return;}
+				const linked=!!observed?.target && continueChecks(run,cwd(),actor,observed.target);
 				if (run.active && !expired(run)) for (const e of reviews(run)) {
 					if (e.issuer!==actor) continue;
 					requeueCapacity(e);
 					if (e.state==="ready" && e.error===waitingForSlot && !currentReview(cwd(),run,e,checkpointSurvey(run,e) ? undefined : observed?.target))
 						blockReview(e,"Superseded while waiting for workflow capacity.");
 				}
+				/** @type {(()=>boolean)|undefined} */ let recovered;
 				if (!reservations(run,actor).some(e=>e.permissionHold)){
-					const changed=advance(cwd(),run,actor,discover,{submitToken,target:observed?.target,renew});
-					adoption=planAdoption(cwd(),run,actor,changed,e=>db().verifySigned(id,e));
+					if(actor===run.owner && observed?.target) for(const e of run.effects)
+						if(e.kind==="repair" && (e.input || e.continuation) && e.state==="ordinary")deliveryTip(cwd(),run,e,job=>db().verifySigned(id,job));
+					/** @param {import("./model.js").NativeCall} e */ const verifySigned=e=>db().verifySigned(id,e);
+					mending=planMending(cwd(),run,actor,verifySigned,allowed);
+					const offers=!expired(run) && (!mending || run.testRepairs?.some(j=>j.state==="held"))?
+						planOffers(cwd(),run,actor,verifySigned,!!host.confirmProposal):undefined;
+					const chosen=offers?.offer;adoption=chosen;
+					if (renew && proposals.size && observed?.target && !mending && !chosen) recovered=recovery.apply(cwd(),run,actor,proposals,verifySigned);
+					const changed=!mending && advance(cwd(),run,actor,discover,{submitToken,target:observed?.target,renew,verifySigned});
+					if(chosen){if(chosen.decision)adoption=forms.current(run,actor);}
+					else if(!mending && (!offers?.ambiguous || changed && changed!==run.policy.contractTarget))adoption=planAdoption(cwd(),run,actor,changed||undefined,verifySigned);
+					if(changed && !adoption)adoption=forms.current(run,actor);
+					if(observed?.target)queueInstructions(run,actor);
 				}
-				if (publication.selected.length || adoption) return ()=>!closed && !expired(run) &&
+				if (allowed.size || publication.selected.length || adoption || recovered || linked) return ()=>!closed && !expired(run) &&
+					(!linked || commitAt(cwd(),run.policy.target)===observed?.target) &&
+					(!recovered || recovered()) && (!allowed.size || commitAt(cwd(),run.policy.target)===observed?.target) &&
 					(!adoption || observeTarget(()=>commitAt(cwd(),run.policy.target)).target===adoption.revision);
 			});
+			if (!renew && actor===planned.owner) proposals=recovery.select(planned);
 			return next("planned",{closed,missingTarget,inspectionDue,owner:actor===planned.owner,active:planned.active,expired:expired(planned),
-				renewalDue:reviews(planned).some(r=>r.renewal?.state==="needed")});
+				renewalDue:proposals.size>0 || reviews(planned).some(r=>r.renewal?.state==="needed")});
 		}
 		/** @param {Signal} next */
 		function watchPlan(next) {
 			receipts.observe(planned,actor);
 			supervisor.observe(id,actor,gate(planned,actor,missingTarget,deferredGate));
-			batch=reservations(planned,actor).filter(e=>e.state==="ready" || e.permissionHold);
-			ready=batch.filter(e=>e.state==="ready");
+			batch=reservations(planned,actor).filter(e=>(!mending || e.kind!=="scout") && (e.state==="ready" || e.permissionHold));
+			ready=batch.filter(e=>e.state==="ready" && !(e.tool==="bash" && e.attempt?.version===1));
 			inspections=readyInspections(planned,actor);
 			return next("work",{missingTarget,active:planned.active,expired:expired(planned),handoff:batch.some(e=>e.kind==="handoff"),
+				draftDue:!adoption && !mending && authors.ready(planned),
+				testRepair:!!planned.testRepairs?.some(j=>j.state==="draft" || j.state==="review" || j.workflow && (j.state==="authoring" || j.state==="reviewing")),
 				owner:actor===planned.owner,question:!!host.ask && !asking.has(id) && questions(planned).some(r=>!r.decision),
 				adoption:!asking.has(id) && !!proposalForm(host,adoption)});
+		}
+		/** A committed claim precedes native author/reviewer work. A missing reply on reattachment is a hold, never a replay.
+		 * @param {string} id @param {import("./model.js").TestRepair} expected @param {import("./mending.mjs").Phase} phase @param {()=>Promise<void>} wake */
+		async function runMechanic(id,expected,phase,wake){
+			if(capacityWakes.has(issuerKey(id,actor)) && (queuedMechanic(expected) || expected.state==="draft" || expected.state==="review"))return;
+			const key=digest([id,expected.stop,phase]);if(mendingCalls.has(key))return;
+			mendingCalls.add(key);
+			let claimed=false;
+			try{
+				if(closed || !await executable())return;
+				if(await host.permissionBlocker()){supervisor.observe(id,actor,gate(read(id),actor,false,"issuer-permission"));return;}
+				const budget=await host.scoutBudget?.();
+				/** @type {import("./mending.mjs").Packet|undefined} */ let packet;
+				/** @type {import("./mending.mjs").Ticket|undefined} */ let ticket;
+				const recovering=expected.state==="authoring" || expected.state==="reviewing";
+				db().planAndSwap(id,r=>{
+					packet=undefined;ticket=undefined;claimed=false;
+					const j=r.testRepairs?.find(j=>j.stop===expected.stop);
+					const tip=j && repairCurrent(cwd(),r,j);
+					if(!j || j.state!==expected.state || !repairPermitted(r) || !tip)return;
+					try{
+						packet=repairPacket(cwd(),r,j,phase);
+						if(!(recovering?host.repairState:host.repairAgent) || budget!==undefined && Buffer.byteLength(packet.message)>budget)
+							fail("unavailable","Independent test repair is unavailable or its complete packet exceeds the host budget");
+					}catch(e){if(!(e instanceof FoundryError))throw e;holdRepair(j,e.message);packet=undefined;return;}
+					if(recovering){
+						if(!expected.workflow || j.workflow!==expected.workflow || j.dispatch!==expected.dispatch || packet.subject!==j.subject)return;
+					}else claimRepair(j,phase,packet.subject);
+					ticket={run:id,stop:j.stop,phase,dispatch:text(j.dispatch,"test repair dispatch"),subject:packet.subject};claimed=true;
+					return ()=>!closed && !expired(r) && commitAt(cwd(),r.policy.target)===tip;
+				});
+				if(!claimed || !packet || !ticket || closed)return;
+				const request=packet,reply=recovering && expected.workflow ? await host.repairState?.(expected.workflow,ticket):await host.repairAgent?.(phase,request,ticket);
+				if(closed)return;
+				const permitted=!await host.permissionBlocker() && await executable();
+				await recordReply(()=>db().planAndSwap(id,r=>{
+					const j=r.testRepairs?.find(j=>j.stop===expected.stop);
+					if(!j || j.subject!==request.subject || j.state!==(phase==="author"?"authoring":"reviewing"))return;
+					if(!permitted || !repairPermitted(r))return; // The original bound result is available after permission returns.
+					const tip=repairCurrent(cwd(),r,j);
+					if(!reply || !tip){holdRepair(j,"Original repair inputs changed or no response was received; no pin was changed.");return;}
+					try{repairAnswer(cwd(),r,j,phase,request,reply);}
+					catch(e){holdRepair(j,`Test repair was not accepted: ${String(e)}`);}
+					return ()=>!closed && !expired(r) && commitAt(cwd(),r.policy.target)===tip;
+				}));
+			}catch(error){
+				if(!closed && claimed && error instanceof FoundryError && error.code==="repair_observe")return;
+				if(!closed && claimed && error instanceof FoundryError && error.code==="repair_wait"){
+					supervisor.observe(id,actor,gate(read(id),actor,false,"issuer-permission"));return;
+				}
+				if(!closed && claimed){
+					const queued=await recordReply(()=>db().mutateLocked(id,r=>{
+						const j=r.testRepairs?.find(j=>j.stop===expected.stop);
+						if(j?.state!==(phase==="author"?"authoring":"reviewing"))return false;
+						if(queueMechanic(j,error))return true;
+						holdRepair(j,`Test repair delivery unconfirmed: ${String(error)}. Do not replay it.`);return false;
+					}));
+					if(queued)wakeCapacity(id,actor);
+				}else if(!closed)throw error;
+			}finally{mendingCalls.delete(key);}
+			if(!closed && claimed)await wake();
 		}
 		/** @param {Signal} next */
 		function offerBatch(next) {return next("batch",{hasBatch:!!batch.length || !!inspections.length});}
@@ -560,13 +779,11 @@ export function createRuntime(directory, host) {
 				const callId=randomUUID(), claimed=!closed && claim(id,e,callId);
 				if (claimed) {
 					if (e.tool==="bash") receipts.observe(read(id),actor);
-					const completion=resolveCall(id,e,callId,async()=>e.tool==="session.send"
-						? {resultType:"success",messageId:await host.notify(text(e.args.message,"session notice"))}
-						: host.execute(e.tool,e.args,callId),true);
+					const completion=resolveCall(id,e,callId,()=>deliver(e,callId),true);
 					await Promise.all([completion,next("issued",{checkpointGoal:e.kind==="goal" && planned.products.at(-1)?.commit===e.commit,
 						checkpointReviews:planned.scheduling?.checkpointReviews!==false})]);
 				}
-				return next("attempt",{claimed,pinnedCheck:e.tool==="bash" && !!(e.recheck || e.pair || e.isolation || e.kind==="product" && mixedVerification(planned,e.id))});
+				return next("attempt",{claimed,pinnedCheck:e.kind==="instruction" || e.kind==="repair" && !!(e.input || e.continuation) || e.tool==="bash" && !!(e.calibration || e.testPin || e.recheck || e.pair || e.isolation || e.replacement || e.kind==="product" && mixedVerification(planned,e.id))});
 			}));
 		}
 	}
@@ -593,7 +810,7 @@ export function createRuntime(directory, host) {
 			// was superseded. The capacity wake may inspect both, never replay either.
 			if (!closed) track(Promise.resolve().then(() => {
 				const run=read(id);
-				if (run.active && !expired(run) && (readyInspections(run,actor).length ||
+				if (run.active && !expired(run) && (readyInspections(run,actor).length || run.owner===actor && (!!nextAuthor(run) || run.testRepairs?.some(j=>queuedMechanic(j) || j.state==="draft" || j.state==="review")) ||
 					reviews(run).some(e=>e.issuer===actor && e.state==="ready"))) return drive(id,actor,true,false);
 			}).catch(error=>{
 				if(!closed && contention(error))wakeCapacity(id,actor,Math.min(60_000,delay*2));
@@ -604,7 +821,8 @@ export function createRuntime(directory, host) {
 	/** @param {Run} run @param {string} actor */
 	function capacityWaiting(run,actor) {
 		return run.active && !expired(run) && (reviews(run).some(e=>e.issuer===actor && e.state==="ready" &&
-			!e.callId && !e.workflowId && e.error===waitingForSlot) || inspector.queued(run,actor));
+			!e.callId && !e.workflowId && e.error===waitingForSlot) || inspector.queued(run,actor) ||
+			run.owner===actor && (run.testRepairs?.some(queuedMechanic)===true || nextAuthor(run)?.p.reason==="Waiting for native workflow capacity."));
 	}
 	/** @param {Run} run @param {import("./model.js").Review} e @param {ScoutEnvelope} result */
 	function settleScout(run, e, result) {
@@ -700,6 +918,7 @@ export function createRuntime(directory, host) {
 			const batch = batchOf(r, ticket, actor);
 			if (!batch.length || batch.some(e => e.workflowId && e.workflowId !== workflowId))
 				fail("foreign_assignment", "No matching Foundry discovery dispatch in this session");
+			workflowIdentity(r,batch[0],workflowId);
 			// Plan retry eligibility against one tip outside the lock. Recheck that exact tip at binding.
 			const retries = batch.filter(e => e.retryOf && awaitingReply(e));
 			const target = retries.length ? commitAt(cwd(), r.policy.target) : undefined;
@@ -759,6 +978,8 @@ export function createRuntime(directory, host) {
 			if (stop) fields(stop, ["check", "reason"]);
 			const check = stop && name(stop.check, "component check");
 			const reason = text(stop ? stop.reason : args.missingInput, "why the assignment cannot be completed");
+			const blob=args.inputBlob===undefined ? undefined : inputBlob(args.inputBlob);
+			if(args.inputSource!==undefined && !blob)fail("invalid_pin","An inputSource requires the exact missing inputBlob");
 			generationRoot(writerRoot(cwd(),run,n), text(n.generation, "generation commit"));
 			db().planAndSwap(id, live => {
 				const node = writable(live, actor, token);
@@ -768,6 +989,8 @@ export function createRuntime(directory, host) {
 					e.token === token && e.kind === "repair" && e.state !== "done")))
 					fail("dispatch_held", "Resolve the pending assignment delivery or permission hold first");
 				const job=productionWriter(live,token);
+				if(blob && (job || node.check || node.candidate || node.restoration || node.reuse))
+					fail("stale_assignment","Only an ordinary missing-input stop before a component submission can request a reference");
 				if (job?.production && args.missingInput!==undefined) {
 					job.error=`Production repair stopped without submission: ${reason}`;
 					live.nodes[node.grain.id]=structuredClone(job.production.prior);
@@ -790,7 +1013,11 @@ export function createRuntime(directory, host) {
 					node.stop = {kind:"writer-cannot-repair", detail:reason};
 					node.candidate = receipt.commit;
 					assign(node,{type:"stop",reason:`Writer cannot repair component ${node.check} under this assignment: ${reason}`});
-				} else stopForInput(node, reason);
+				} else {
+					const source=args.inputSource===undefined ? undefined : requestedSource(live,node,args.inputSource);
+					if(source && blob)verifySource(cwd(),live,source,blob,e=>db().verifySigned(id,e));
+					stopForInput(node,reason,blob ? {blob,after:live.artifacts?.length??0,grant:writerVersion(node),...(source && {source})} : undefined);
+				}
 			});
 			return; // No directory capture, new component reservation, or inferred permission.
 		}
@@ -916,6 +1143,17 @@ export function createRuntime(directory, host) {
 		if (prior) {
 			if (prior.owner !== actor || prior.policy.source !== filename)
 				fail("run_conflict", "Another owner or contract already uses this run ID");
+			const quarantine=contractHold(prior);
+			if(quarantine)fail("contract_hold",quarantine);
+			const p=prior.products.at(-1),g=prior.goal;
+			if(p && g && unprovenExports(prior).length){
+				if(!resume)return status(prior,actor);
+				if(expired(prior))fail("deadline","The authorized deadline has elapsed");
+				await requireReadyOwner(origin);
+				change(prior.id,r=>reassessHandoff(origin,r,actor,p.check,g.check,e=>db().verifySigned(prior.id,e)));
+				await drive(prior.id,actor,true);
+				return status(read(prior.id),actor);
+			}
 			const target = saved ? commitAt(origin,policy.target) : policy.base;
 			const work = saved && movingSurvey(origin,prior,target);
 			recoveryBase=saved && !work ? adoptionBase(origin,prior,target) : undefined;
@@ -953,7 +1191,7 @@ export function createRuntime(directory, host) {
 		const a = record(args); fields(a, ["run", "detail"]);
 		const run = read(name(a.run, "run")), result = status(run, actor, a.detail);
 		const tip = () => commitAt(cwd(), run.policy.target);
-		const release = run.owner===actor && run.goal ? releaseAssessment(cwd(),run,tip) : undefined;
+		const release = run.owner===actor && run.goal && !contractHold(run) ? releaseAssessment(cwd(),run,tip) : undefined;
 		const missing = release ? (["target-unavailable","ownership-conflict","contract-changed"].includes(release.reason) && "error" in release && release.error) :
 			run.active && observeTarget(tip).error;
 		return { ...result, ...(release && {release}),
@@ -972,8 +1210,29 @@ export function createRuntime(directory, host) {
 			return start(a.source, actor, op === "resume",a.run);
 		}
 		const id = name(a.run, "run");
-		if (op!=="pause" && activeDelivery(read(id))) fail("dispatch_held","An approved test delivery is in progress; wait for its original checks");
-		if (op!=="pause" && read(id).independent) fail("ownership_transition","Independent checkpoint already reserved; the original ownership hold is not released");
+		const live=read(id),quarantine=contractHold(live);
+		if(quarantine)fail("contract_hold",quarantine);
+		if (op!=="pause" && activeDelivery(live)) fail("dispatch_held","An approved test delivery is in progress; wait for its original checks");
+		if (op!=="pause" && live.independent) fail("ownership_transition","Independent checkpoint already reserved; the original ownership hold is not released");
+		if(op==="propose"){
+			const origin=cwd(),token=text(a.token,"original writer token");
+			await requireReadyOwner(origin);
+			db().planAndSwap(id,r=>{
+				admitted(r);
+				const n=boundWriter(r,actor,token);
+				if(actor===r.owner)fail("foreign_assignment","Only a bound writer supplies diagnostic evidence");
+				generationRoot(writerRoot(origin,r,n),text(n.generation,"frozen writer generation"));
+				recordDiagnostic(origin,r,n,a,e=>db().verifySigned(id,e));
+			});
+			await drive(id,actor,false,false);
+			return status(read(id),actor);
+		}
+		if(op==="draft" && (a.files!==undefined || a.evaluator!==undefined)){
+			await requireReadyOwner(cwd());
+			await selectDraft({cwd:cwd(),store:db(),closed:()=>closed,permitted:async()=>await executable() && !await host.permissionBlocker(),
+				vacant:host.formVacant,confirm:host.confirmProposal??host.confirm,persist:recordReply},id,actor,a);
+			await drive(id,actor,false,false);return status(read(id),actor);
+		}
 		if (op === "workspace") {
 			fields(a,["run","token"]);
 			await requireReadyOwner(cwd());
@@ -983,26 +1242,19 @@ export function createRuntime(directory, host) {
 			writerRoot(cwd(),run,n,true);
 			return status(run,actor);
 		}
-		const baseline=op==="inspectBaseline" || op==="repairBaseline";
-		if (baseline || op === "correct" || op === "reuse" || op === "restore" || op==="diagnose" || op==="checkpoint" || op==="remediate" || op==="deliver") {
-			const origin = cwd(), run = read(id);
-			let request;
-			if(baseline){
-				fields(a,["run","grains"]);
-				request=prepareBaselines(origin,run,actor,a.grains,op==="inspectBaseline");
-			}else{
-				const prepare={correct:prepareCorrection,reuse:prepareReuse,restore:prepareRestoration,
-					diagnose:prepareObserver,checkpoint:prepareCheckpoint,remediate:prepareProduction,deliver:prepareDelivery}[op];
-				request=prepare(origin,run,actor,a,e=>db().verifySigned(id,e));
+		const prepare=grantFor(op);
+		if (prepare) {
+			const origin=cwd(),request=prepare(origin,live,actor,a,e=>db().verifySigned(id,e));
+			await requireReadyOwner(origin);
+			if (request.consent!=="satisfied") {
+				const approved = request.consent==="native" ? await (host.confirmProposal??host.confirm)?.(request.prompt) : await confirm(request.prompt);
+				if (approved === false) fail("approval_declined","Request not approved. No assignment changed. Do not ask again without a fresh request.");
+				if (approved !== true) fail("approval_required","Approval is unavailable; no assignment changed");
 			}
 			await requireReadyOwner(origin);
-			const approved = await confirm(request.prompt);
-			if (approved === false) fail("approval_declined","Request not approved. No assignment changed. Do not ask again without a fresh request.");
-			if (approved !== true) fail("approval_required","Approval is unavailable; no assignment changed");
-			await requireReadyOwner(origin);
-			const after = db().planAndSwap(id,request.apply);
-			if (op==="inspectBaseline" || op === "correct" && a.preview===undefined || op==="diagnose" && a.preview!==undefined) return status(after,actor);
-			await drive(id,actor,false,op==="repairBaseline");
+			db().planAndSwap(id,request.apply);
+			if (request.wake==="none")return inform(id,actor);
+			await drive(id,actor,false,request.wake==="recover");
 			return status(read(id),actor);
 		}
 		if (op === "recheck" || op === "pair") {
@@ -1135,7 +1387,7 @@ export function createRuntime(directory, host) {
 			};
 			/** @type {string|undefined} */ let approvedCheckpoint;
 			if (source) {
-				const preview = reserve(read(id));
+				const preview = db().preview(id,reserve);
 				if (!preview) return status(read(id),actor);
 				approvedCheckpoint = preview.iteration?.receipt;
 				const approved = await confirm(`Open one source-backed review for ${id}, ${input.directory}/ on checked product ${source.commit}?\n` +
@@ -1163,7 +1415,7 @@ export function createRuntime(directory, host) {
 		const reply = op === "submit" || op === "preview" ? { run: id, actor, token: text(a.token, "submission token") } : undefined;
 		if (reply) {
 			fields(a, op === "preview" ? ["run", "token"] : a.relinquish !== undefined ? ["run","token","relinquish"] : a.cannotRepair !== undefined ? ["run", "token", "cannotRepair"] :
-				a.missingInput !== undefined ? ["run", "token", "missingInput"] : ["run", "token", "changedFrom", "usedArtifacts", "comparedArtifacts"]);
+				a.missingInput !== undefined ? ["run", "token", "missingInput","inputBlob","inputSource"] : ["run", "token", "changedFrom", "usedArtifacts", "comparedArtifacts"]);
 			// Check the host, not a local count lost on reload. Revalidate mode and ownership after the read.
 			const run = read(id);
 			if (host.runningHelpers && writable(run, actor, reply.token, a.changedFrom)) {
@@ -1188,7 +1440,7 @@ export function createRuntime(directory, host) {
 				live.preview = commit;
 				if (target) return ()=>commitAt(cwd(),run.policy.target)===target;
 			});
-			return status(after, actor); // A preview never enters the scheduling or qualification paths.
+			return observerWriter(after,reply.token) ? inform(id,actor) : status(after,actor);
 		}
 		if (op === "review_note") {
 			fields(a, ["run", "squad", "receipt", "question", "excerpt"]);
@@ -1218,17 +1470,20 @@ export function createRuntime(directory, host) {
 			submitting.add(reply);
 		}
 		else if (op === "publish") {
-			fields(a, ["run", "token", "file", "to"]);
-			db().mutateLocked(id, preparePublication(cwd(), read(id), actor, a));
+			fields(a, ["run", "token", "file", "to","forInput"]);
+			if(a.token!==undefined || a.forInput!==undefined)await requireReadyOwner(cwd());
+			db().mutateLocked(id, preparePublication(cwd(), read(id), actor, a,e=>db().verifySigned(id,e)));
 		}
-		else if (op === "repin" || op==="inherit") {
-			const origin = cwd(), prior=read(id), prepare=op==="inherit"?prepareInherited:prepareRepin;
-			const request=prepare(origin,prior,actor,a,e=>db().verifySigned(id,e));
+		else if (op === "repin" || op==="inherit" || op==="owned" || op==="rollout" || op==="evaluator") {
+			const origin = cwd(), prior=read(id);
+			/** @param {import("./model.js").NativeCall} e */ const verify=e=>db().verifySigned(id,e);
+			const request=op==="repin"?prepareRepin(origin,prior,actor,a,verify):op==="rollout"?prepareRollout(origin,prior,actor,a,verify):
+				op==="evaluator"?selectedEvaluator(origin,prior,actor,a,verify):preparePatch(origin,prior,actor,a,verify,op==="owned");
 			await requireReadyOwner(origin);
 			if(request.target){
-				const form=exactForm(host.confirm,request.answer)??fail("approval_required","The approval form is unavailable; nothing was applied.");
-				await presentAdoption(approvalHost(form,async()=>{}),id,actor,requestedAdoption(origin,prior,request.target),
-					{apply:request.apply,prompt:request.prompt,showing:asking.has(id)});
+				const form=exactForm(op==="rollout"?host.confirmProposal:host.confirmProposal??host.confirm,request.answer)??fail("approval_required","The approval form is unavailable; nothing was applied.");
+				await presentAdoption(approvalHost(form,async()=>{}),id,actor,requestedAdoption(prior,request.target),
+					{prompt:request.prompt,showing:asking.has(id),vacant:host.formVacant});
 			}else{
 				const approved = await confirm(request.prompt);
 				if (approved === false) {
@@ -1260,15 +1515,27 @@ export function createRuntime(directory, host) {
 		if (!id)
 			return;
 		const run = read(id), key = digest(args);
-		const e = run.effects.find(e => e.issuer === actor && e.tool === tool && digest(e.args) === key && current(run, e));
-		if (!e || e.state !== "ordinary" && !(e.state === "issued" && e.callId === callId))
+		const legacy=run.effects.find(e=>e.tool==="bash" && attachedLegacy(e) && e.issuer===actor && e.callId===callId && key===digest(e.args) && exactRunner(run,e,cwd()));
+		if(legacy){
+			// This recognizes an already issued request, not a new permission or a
+			// runner claim. The original command may only close its slot at the ABI.
+			nativeCalls.set(callId,{run:id,id:legacy.id,actor});return;
+		}
+		const e = dispatches(run).find(e => e.issuer === actor && e.tool === tool && digest(e.args) === key && current(run, e));
+		if (!e || e.tool==="bash" && e.attempt?.version===1 || e.state !== "ordinary" && !(e.state === "issued" && e.callId === callId))
 			fail("unreserved_call", "Not a current prepared Foundry call");
 		if (e.state === "ordinary") {
 			if (!canDispatch(run, e)) admitted(run);
 			const reason = await dispatchBlocker(id, actor, [e]);
 			if (reason !== null) fail("dispatch_held", reason);
 		}
-		if (!claim(id, e, callId)) fail("unreserved_call", "The prepared call is no longer current");
+		if (!claim(id,e,callId)) {
+			if(e.kind==="repair" && (e.input || e.continuation)){
+				const live=read(id),notice=live.effects.find(x=>x.id===e.id);
+				if(notice?.state==="ordinary" && current(live,notice))fail("dispatch_held","The original prepared notice is retained. Wait for the target, pending check or permission hold to settle.");
+			}
+			fail("unreserved_call","The prepared call is no longer current");
+		}
 		if (!nativeCalls.has(callId)) nativeCalls.set(callId, { run: id, id: e.id, actor });
 	}
 	/** @param {Promise<unknown>} p */
@@ -1277,7 +1544,42 @@ export function createRuntime(directory, host) {
 		background.add(task);
 	}
 	return {
-		operation, inspect, pre, scoutBatch, scoutResult, inspectionPacket:inspector.packet,
+		operation, inspect, pre, scoutBatch, scoutResult, inspectionPacket:inspector.packet,draftPacket:authors.packet,
+		/** @param {unknown} id @param {string} actor */
+		inspectRecovery(id,actor){const r=read(name(id,"run"));return recoveryStatus(r,actor,instructionPins(r));},
+		/** @param {import("./mending.mjs").Ticket} ticket @param {string} actor @param {string} workflow @param {"halt"|"permission"} [continuing] @param {number} [attempt] */
+		async mechanicPacket(ticket,actor,workflow,continuing,attempt){
+			if(closed)fail("dispatch_held","The issuing runtime closed");
+			if(typeof attempt!=="number" || !Number.isSafeInteger(attempt) || attempt<1)attempt=undefined;
+			const permitted=await executable() && !await host.permissionBlocker();
+			let waiting=false;
+			/** @type {import("./mending.mjs").Packet|undefined} */ let packet;
+			db().planAndSwap(ticket.run,run=>{
+				waiting=false;packet=undefined;
+				const j=run.testRepairs?.find(j=>j.stop===ticket.stop);
+				if(!j || actor!==run.owner || j.dispatch!==ticket.dispatch || j.subject!==ticket.subject ||
+					continuing && (!j.workflow || continuing==="permission" && !j.awaitingPermission && !j.continuation) ||
+					j.state!==(ticket.phase==="author"?"authoring":"reviewing"))
+					fail("wrong_workflow","No unbound test repair matches this workflow and dispatch");
+				j.workflow=workflowIdentity(run,j,workflow);
+				if(continuing && j.continuation){
+					if(j.continuationAttempt!==undefined && attempt!==undefined && attempt>j.continuationAttempt)
+						fail("repair_interrupted","The original workflow was interrupted again after its continuation; no new attempt is authorized.");
+					fail("repair_observe","The continuation belongs to this same original workflow; no second resume was issued.");
+				}
+				if(!permitted || !repairPermitted(run)){waiting=true;j.awaitingPermission=true;return;}
+				const tip=repairCurrent(cwd(),run,j);
+				if(!tip)fail("stale_assignment","Original test repair inputs changed before packet delivery");
+				packet=repairPacket(cwd(),run,j,ticket.phase);
+				if(packet.subject!==ticket.subject)fail("stale_assignment","The frozen repair packet changed");
+				if(continuing){j.continuation=workflow;if(attempt!==undefined)j.continuationAttempt=attempt;}
+				else delete j.awaitingPermission;
+				if(queuedMechanic(j))delete j.reason;
+				return ()=>!closed && !expired(run) && commitAt(cwd(),run.policy.target)===tip;
+			});
+			if(waiting)fail("repair_wait","The original workflow is bound but cannot receive repair evidence until permission and execution return.");
+			return packet??fail("wrong_workflow","The repair workflow was not bound");
+		},
 		/** @param {string} id @param {string} actor */
 		readBoard(id, actor) { return boardFacts(read(name(id, "run")), actor); },
 		/** Read only a visible fixed grain's assigned specification, never a caller-supplied path or working copy.
@@ -1373,7 +1675,9 @@ export function createRuntime(directory, host) {
 			supervisor.register(actor,()=>{
 				if (hasLedger()) for (const id of db().involving(actor)) {
 					const run=read(id);
-					for (const e of run.effects) if (externalReply(e) && e.issuer===actor && e.callId && !nativeCalls.has(e.callId))
+					if(contractHold(run))continue;
+					forms.attach(run,actor,true);
+					for (const e of dispatches(run)) if (externalReply(e) && e.issuer===actor && e.callId && !nativeCalls.has(e.callId))
 						nativeCalls.set(e.callId,{run:id,id:e.id,actor});
 					if (capacityWaiting(run,actor)) wakeCapacity(id,actor);
 					supervisor.observe(id,actor,gate(run,actor,run.active && !observeTarget(()=>commitAt(cwd(),run.policy.target)).target),true);

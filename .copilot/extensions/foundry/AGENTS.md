@@ -8,7 +8,11 @@ Keep the [operator guide](README.md) short: point to a task first, a behavior or
 
 ## State and recovery
 
-**Recovery is part of the normal state machine.** For each stall, name the fact that would make the next action both unique and already authorized. Register the guarded transition, its wake source (including after reload), and its return to normal dispatch. Do not stop at adding an operator command. If no such fact exists, identify the exact decision, missing evidence or permission and leave the run waiting. A clock is a reason to observe, not evidence that a call failed.
+**Every manual recovery is a case for self-healing.** When adding a recovery command or using a workaround on a run, identify why an operator had to act. Fix the underlying bug or remove the unnecessary constraint. Prefer teaching an existing recovery step to handle the whole class of stalls; add a separate transition only when the existing one cannot safely do it. A new command or runbook entry alone is not a fix.
+
+**Route engineering work to its writer, not through the owner.** A precise instruction delivered into the session with the existing grant is an automatic recovery step. It need not be a new state, token, repair, or scout. Include the actual observation, current scope and permitted next operation, and confirm that the recipient can execute it. The owner coordinates real decisions; no recovery should require the owner to write, copy or republish production code. Exercise the same affected writer with owner coding and hand-relaying prohibited. A delivered message alone is not a fixed product.
+
+Make the normal state machine take the next uniquely determined, already-authorized action, including on the first wake after reload. Test that the *same stopped work* continues without the workaround. If human input really is necessary, name the missing evidence, permission or decision, automate everything up to it, and continue automatically when it arrives. An explicit pause or refusal still stands; elapsed time is not evidence that an uncertain call failed.
 
 Start with the entity that owns the state, not an operator command. Put each literal destination, context update and intended effect on its executable rule. Production code sends a typed event through `transition`; use required mode for commands and optional mode for ignorable observations. Bind effects with `executor` rather than choosing an action again in the caller. `step` and `compose().plan` are for pure inspection. Keep Git, timers, SDK calls and domain policy out of the generic interpreter. Never treat an unknown action or unhandled required decision as success.
 
@@ -24,6 +28,8 @@ After a state-machine edit, regenerate `spec/interface.json` from `test/interfac
 
 Before adding a command, state, approval or retry, identify the concrete case the simpler path cannot handle. If there is none, leave it out. Moving a decision from code into an agent prompt is not a simplification if the agent still has to make it. Never simplify by weakening permissions, ownership, evidence or release checks.
 
+**Extend recovery selection, not authority.** If a new case is a combination of known facts and an existing operation, add a rule to the trusted edition's selection table, not a branch in the coordinator or another rescue command. A rule may propose an operation for an exact stopped attempt; it cannot grant it. Manual selection and an automatic wake must use the same operation to check live pins, determine consent, and journal before dispatch. Add reviewed code only for a new power or evidence verifier. Never load rules from a run's repository, chat, or offered artifact.
+
 Keep a confirmation only when its answer changes what is authorized or settles a question the evidence cannot answer. If the request and verified inputs already settle it, remove the dialog in every mode; do not move it into chat or synthesize a yes. Preserve earlier declines and unresolved dialogs.
 
 Keep Foundry product-neutral. A run's product names, directory layout and domain vocabulary belong in its brief and evidence, not in framework code, prompts, documentation or test fixtures. Use synthetic examples for those. Preserve the actual evidence verbatim when handling a run.
@@ -34,7 +40,11 @@ Before adding a limit that rejects input, drops evidence or forces another check
 
 ## Verification
 
-Reproduce a framework defect with a synthetic test in a disposable checkout. Observe it fail before the fix and pass afterward; test the user-visible outcome (e.g. exact bytes and all changed paths delivered), not the value of a constant. Never use a live run, a replay, or a repin for red/green validation.
+**Red/green and independent Rubber Duck review are required for Foundry code**, including the scheduler, evaluator, recovery, test infrastructure and bundled tooling. This is a contributor gate, separate from the review Foundry runs on generated product code.
+
+Start a new behavior or bug fix with a synthetic test in a disposable checkout. Observe the relevant assertion fail on the old implementation, then pass on the new one. Test the user-visible outcome (e.g. exact bytes and all changed paths delivered), not the value of a constant. For a test repair, show both that the corrected test observes the promised behavior on an unchanged good implementation and that it still rejects a broken implementation. Never use a live run, a replay, or a repin for red/green validation.
+
+Before handoff, give the built-in `rubber-duck` reviewer the final scoped diff, the intended behavior, and the red/green and recovery evidence. Ask it to look for false passes, lost work, and changes to what was authorized. Address blocking findings, rerun the affected controls, and get review of the revised code. Record the actual outcomes, including an unavailable review, rather than claiming a pass. See the [development checks](PROTOCOL.md#development-checks) and [specification drift check](SPEC.md#keeping-the-specification-current).
 
 Put regression cases in `<module>.test.mjs` beside the implementation so editors can group them. Keep shared setup in `test/`. Run the cases with the normal Node test runner; do not add a separate proof runner.
 

@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { assign } from "./assignment.mjs";
-import { journal, survey } from "./dispatch.mjs";
+import { disabledRoute, journal, survey } from "./dispatch.mjs";
 import { unownedBlockers } from "./blockers.mjs";
+import { currentInstruction } from "./instructions.mjs";
 import { remainingAssignments } from "./capacity.mjs";
-import { fileURLToPath } from "node:url";
+import { closureExit, runnerArgs, runnerRun } from "./abi.mjs";
 import { productPin, qualifiedProduct } from "./evidence.mjs";
+import { contractHold } from "./contract.mjs";
 import { targetsWriter } from "./plan.mjs";
 import { productOwnership } from "./transfer.mjs";
 import { partitionConflict } from "./partition.mjs";
@@ -15,9 +17,6 @@ import { deadlineAt, digest, fail, record, text } from "./values.mjs";
 
 /** @typedef {import("./model.js").Effect} Effect */
 /** @typedef {import("./model.js").Run} Run */
-const runner = fileURLToPath(new URL("./runner.mjs", import.meta.url));
-/** @param {string} value */
-const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
 /** @param {string} run @param {string} token */
 const marker = (run, token) => `Foundry assignment: ${run} ${token}`;
 
@@ -28,7 +27,7 @@ export function assignment(value) {
 }
 
 /** @param {string} value */
-const noticeRun = value => /^Foundry (?:decision|handoff|artifact|escalation): ([A-Za-z0-9][A-Za-z0-9._-]*) (?:[a-f0-9-]{36}|[a-f0-9]{64})\n/.exec(value)?.[1];
+const noticeRun = value => /^Foundry (?:decision|handoff|artifact|escalation|instruction): ([A-Za-z0-9][A-Za-z0-9._-]*) (?:[a-f0-9-]{36}|[a-f0-9]{64})\n/.exec(value)?.[1];
 
 /** @param {string} tool @param {unknown} args */
 export function identify(tool, args) {
@@ -37,8 +36,7 @@ export function identify(tool, args) {
 	const message = tool === "create_session" && a.kickoff && typeof a.kickoff === "object" && "prompt" in a.kickoff
 		? a.kickoff.prompt : tool === "send_session_message" ? a.message : undefined;
 	if (typeof message === "string") return assignment(message)?.run ?? (tool === "send_session_message" ? noticeRun(message) : undefined);
-	if (tool === "bash" && typeof a.command === "string" && a.command.includes("/work/runner.mjs' ") && /^foundry-[a-f0-9-]{36}$/.test(String(a.shellId)))
-		return / '([A-Za-z0-9][A-Za-z0-9._-]*)' '[a-f0-9-]{36}'$/.exec(a.command)?.[1];
+	if(tool==="bash")return runnerRun(a);
 }
 
 /** @param {Run} run @param {string} issuer @param {string} token @param {"repair"|"decision"|"handoff"|"artifact"|"escalation"} kind
@@ -46,9 +44,12 @@ export function identify(tool, args) {
 export function reserveNotice(run, issuer, token, kind, body, node, baseline) {
 	const to = node ? text(node.worker, "assigned writer") : run.owner;
 	const message = `${kind === "repair" ? marker(run.id, token) : `Foundry ${kind}: ${run.id} ${kind === "artifact" ? randomUUID() : token}`}\n${body}`;
-	run.effects.push({ id: randomUUID(), issuer, token, state: "ready", kind, ...(node ? { grain: node.grain.id } : {}), ...(baseline ? { baseline } : {}),
+	/** @type {import("./model.js").NativeCall} */
+	const notice={ id: randomUUID(), issuer, token, state: "ready", kind, ...(node ? { grain: node.grain.id } : {}), ...(baseline ? { baseline } : {}),
 		tool: to === issuer ? "session.send" : "send_session_message",
-		args: to === issuer ? { message } : { session_id: to, delivery_mode: "immediate", message } });
+		args: to === issuer ? { message } : { session_id: to, delivery_mode: "immediate", message } };
+	run.effects.push(notice);
+	return notice;
 }
 
 /** @param {Run} run @param {string} issuer @param {string} token @param {string} base @param {string} brief @param {string|undefined} agent @param {string} grain @param {import("./model.js").CandidateReuse} [reuse] @param {import("./model.js").Observer} [observer] @param {import("./model.js").Production} [production] */
@@ -71,12 +72,9 @@ export function reserveCheck(run, issuer, cwd, commit, check, grain, reports, re
 	const evaluatorRevision = kind === "goal" ? run.repins?.at(-1)?.revision : kind === "product" ? productPin(run) : undefined;
 	const productEvaluatorRevision = kind === "goal" && productPin(run);
 	run.effects.push({
-		id, issuer, kind, state: "ready", tool: "bash", commit, check, ...(evaluatorRevision ? { evaluatorRevision } : {}),
+		id, issuer, kind, state: "ready", tool: "bash", attempt:{version:2}, commit, check, ...(evaluatorRevision ? { evaluatorRevision } : {}),
 		...(productEvaluatorRevision ? {productEvaluatorRevision} : {}), ...(grain ? { grain } : {}), ...(rerun && {rerun}), ...reports,
-		args: {
-			command: `command node ${[runner, cwd, run.id, id].map(quote).join(" ")}`, shellId: `foundry-${id}`, initial_wait: 120,
-			description: `Check ${grain ?? (kind === "goal" ? "final goal" : "joined product")} at ${commit.slice(0, 12)}`.slice(0, 100)
-		}
+		args:runnerArgs(cwd,run.id,id,`Check ${grain ?? (kind === "goal" ? "final goal" : "joined product")} at ${commit.slice(0, 12)}`.slice(0,100))
 	});
 	return id;
 }
@@ -87,6 +85,7 @@ export function reserveProduct(run, issuer, cwd, target, commit, outputs) {
 	if (conflict) fail("ownership_transition",conflict);
 	const ownership=productOwnership(run.nodes,outputs);
 	run.join = { target, commit, outputs, ...(ownership && {ownership}), check: reserveCheck(run, issuer, cwd, commit, run.policy.productCheck) };
+	return run.join;
 }
 
 /** @param {Run} run */
@@ -101,6 +100,7 @@ function assignee(run, e) {
 export function current(run, e) {
 	if (e.tool === "bash") return currentCheck(run, e);
 	if (e.state === "retired" || e.state === "withdrawn") return false;
+	if(e.kind==="instruction")return currentInstruction(run,e);
 	if (e.tool === "workflow")
 		return reading(e);
 	if (e.kind === "decision")
@@ -108,14 +108,16 @@ export function current(run, e) {
 	if (e.kind === "escalation")
 		return unownedBlockers(run, remainingAssignments(run)).some(g => g.detail === e.token);
 	if (e.kind === "handoff") {
-		const product = run.products.at(-1);
-		return !!product?.qualifiedAt && product.check === e.token;
+		const p=qualifiedProduct(run);
+		return !!p && p.check===e.token;
 	}
 	return targetsWriter(assignee(run, e), e);
 }
 
 /** @param {Run} run @param {boolean} [resume] */
 export function admitted(run,resume=false) {
+	const reason=contractHold(run);
+	if(reason)fail("contract_hold",reason);
 	if (!resume && activeDelivery(run)) fail("dispatch_held","An approved test delivery is in progress");
 	const final = run.goal && qualifiedProduct(run);
 	if (final) fail("goal_met", `Goal met at ${final.commit}`);
@@ -136,7 +138,14 @@ export function boundWriter(run, actor, token) {
 
 /** A final handoff may notify its owner after goal acceptance. It cannot authorize work.
  * @param {Run} run @param {Effect} e */
-export const canDispatch = (run, e) => (run.active && !expired(run) || e.kind === "handoff" && !!run.goal) && current(run, e);
+const eligible = (run, e) => !contractHold(run) &&
+	(run.active && !expired(run) || e.kind === "handoff" && !!run.goal) && current(run, e);
+/** @param {Run} run @param {Effect} e */
+export const canDispatch=(run,e)=>!(e.tool==="bash" && e.attempt?.version===1) && eligible(run,e);
+/** A historic local hold may be sampled and cleared by the original issuer.
+ * That exposes a potential successor to planning, never the old call to dispatch.
+ * @param {Run} run @param {Effect} e */
+export const policySubject=(run,e)=>e.tool==="bash" && e.attempt?.version===1?e.state==="ready" && !!e.permissionHold && eligible(run,e):canDispatch(run,e);
 
 /** Only an unclaimed create from a finished issuer can move. An ordinary/manual
  * call has already visited a native route, even if it has no worker ID yet.
@@ -150,7 +159,7 @@ export function transferableWriter(run, e) {
 /** Claim exactly the reservation seen before the permission read, inside the ledger transaction.
  * @param {Run} run @param {Effect} expected @param {string} callId */
 export function issue(run, expected, callId) {
-	const e = run.effects.find(e => e.id === expected.id);
+	const e = (expected.kind==="instruction"?run.instructions:run.effects)?.find(e => e.id === expected.id);
 	if (!e || e.issuer !== expected.issuer || e.state !== expected.state || e.tool !== expected.tool ||
 		digest(e.args) !== digest(expected.args) || !current(run, e)) return false;
 	if (e.state === "issued") {
@@ -166,11 +175,12 @@ export function issue(run, expected, callId) {
 
 /** @param {Run} run @param {import("./model.js").NativeCall} e @param {string} reason */
 function block(run, e, reason) {
-	if (e.kind === "artifact" || e.kind === "rerun" || e.delivery || !current(run, e))
+	if (e.kind==="instruction" || e.kind === "artifact" || e.kind === "rerun" || e.kind==="control" || e.delivery || e.replacement || e.rollout || !current(run, e))
 		return;
 	const n = assignee(run, e);
-	if (e.production && n && e.state==="refused") {
-		run.nodes[n.grain.id]=structuredClone(e.production.prior);
+	const prior=e.production?.prior ?? e.input?.prior ?? e.baselineStop;
+	if (prior && n && e.state==="refused") {
+		run.nodes[n.grain.id]=structuredClone(prior);
 		return;
 	}
 	if (e.remedy) return; // Settle the two observations together, never block the untouched peer.
@@ -198,7 +208,7 @@ export function receive(run, e, raw, automatic) {
 	const value = record(raw);
 	if (automatic && value.resultType === "failure" && value.error === "This session management tool is disabled" &&
 		!value.structuredContent && !value.textResultForLlm && (e.tool === "create_session" || e.tool === "send_session_message")) {
-		journal(e,{type:"prepare",error:"Native route disabled; execute the exact prepared call in its owner session"});
+		journal(e,{type:"prepare",error:disabledRoute});
 		return;
 	}
 	if (["denied", "rejected"].includes(String(value.resultType))) {
@@ -218,6 +228,11 @@ export function receive(run, e, raw, automatic) {
 	else if (e.tool === "bash") {
 		const telemetry = record(value.toolTelemetry ?? {}), properties = record(telemetry.properties ?? {});
 		const exit = record(telemetry.metrics ?? {}).exit_code;
+		if(e.attempt?.version===1 && !e.runnerStarted){
+			if(e.attempt.closure!=="closed-before-runner-claim" || exit!==closureExit || properties.executionMode!=="sync" || properties.shell_error_category!=="command_nonzero_exit")
+				fail("native_unconfirmed","Await the original closed-before-runner-claim shell settlement");
+			journal(e,"confirm");return;
+		}
 		if (!e.runnerStarted && !e.runnerClaim && !e.receipt && properties.executionMode === "sync" && properties.shell_error_category === "command_nonzero_exit" &&
 			typeof exit === "number" && Number.isSafeInteger(exit) && exit > 0) {
 			const error=`Check launcher exited ${exit} before the evaluator started; no check result.`+

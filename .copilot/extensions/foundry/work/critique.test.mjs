@@ -7,6 +7,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { candidatePacket, critiqueDefinition, inspectionToolBlocked } from "./critique.mjs";
+import { mechanicDefinition, repairResult } from "./mechanic.mjs";
+import { fail } from "./values.mjs";
 import { git, withoutGrain } from "./product.mjs";
 
 /** @param {import("node:test").TestContext} t */
@@ -201,6 +203,38 @@ test("an absent, shadowed or unverified catalog agent never receives the product
 		const result=await definition.run({...ctx,session});assert.equal(result.outcome,"unavailable");
 	}
 	assert.equal(calls,0);
+});
+
+test("the repair workflow delivers only its bound packet and guards both the test author and the independent reviewer",async()=>{
+	const runtime={async mechanicPacket(/** @type {import("./mending.mjs").Ticket} */ ticket,/** @type {string} */ actor,/** @type {string} */ w){
+		assert.equal(w,"workflow-id");assert.equal(actor,"issuer");return {subject:ticket.subject,message:"frozen evaluator bytes"};
+	}},definition=mechanicDefinition(()=>runtime);
+	for(const phase of /** @type {const} */ (["author","review"])){
+		const args={run:"r",stop:"original",dispatch:"ticket",subject:"bound",phase};
+		const ctx={...context(async(prompt,options)=>{
+			assert.equal(options?.agent,phase==="author"?"foundry-test-author":"rubber-duck");assert.match(prompt,/frozen evaluator bytes/);
+			const caller={sessionId:"child",agentId:"agent",toolName:"view",toolArgs:{},timestamp:new Date(),workingDirectory:"."};
+			assert.ok(await inspectionToolBlocked(runtime,"issuer","child",caller,async()=>{throw Error("Unknown tool caller");}));
+			return phase==="author"?{change:"fixed",reason:"Observed the field."}:{approved:true,reason:"The assertion is unchanged."};
+		}),args};
+		const result=await definition.run(ctx);assert.ok(result);
+		const envelope={runId:"workflow-id",status:"completed",result};assert.deepEqual(repairResult(envelope,args),result);
+		assert.throws(()=>repairResult(envelope,{...args,subject:"other"}));assert.throws(()=>repairResult(envelope,args,"another-workflow"));
+		if(phase==="review"){
+			ctx.session.rpc.agent.list=async()=>({agents:[]});
+			await assert.rejects(definition.run(ctx),/Rubber Duck/);
+		}
+	}
+});
+
+test("the mechanic pauses before displaying any evidence and delivers once on the resumed attempt",async()=>{
+	let permitted=false,pauses=0,agents=0;
+	const runtime={async mechanicPacket(){if(!permitted)fail("repair_wait","No evidence while paused");return {subject:"bound",message:"frozen input"};}};
+	const workflow=mechanicDefinition(()=>runtime),args=/** @type {const} */({run:"r",stop:"old",dispatch:"dispatch",phase:"author",subject:"bound"});
+	const ctx={...context(async prompt=>{assert.match(prompt,/frozen input/);agents++;return {change:"test bytes",reason:"Field was missing."};}),args,
+		async pause(/** @type {string} */ key){assert.equal(key,"permission:dispatch");pauses++;throw new DOMException("Workflow paused","AbortError");}};
+	await assert.rejects(workflow.run(ctx),{name:"AbortError"});assert.equal(pauses,1);assert.equal(agents,0);
+	permitted=true;const result=await workflow.run(ctx);assert.ok(result);assert.equal(result.subject,args.subject);assert.equal(agents,1);
 });
 
 test("a failed native review releases its tool guard without releasing another active inspection", async t => {

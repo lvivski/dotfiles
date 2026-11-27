@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { pairedWork } from "../test/install.mjs";
 import { cpSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
@@ -144,7 +145,7 @@ test("resume disambiguates existing runs by source and owner without accepting a
 
 test("a reader upgrade automatically staffs the stranded charter once, without replaying its batch", async t => {
 	const f = trial(t, ["browse", "price"], { goalCheck: "goal.mjs" });
-	const install = path.join(path.dirname(f.root), "install");
+	const install = pairedWork(path.join(path.dirname(f.root),"install"));
 	cpSync(new URL("./", import.meta.url), install, { recursive: true });
 	const { createRuntime } = await import(pathToFileURL(path.join(install, "runtime.mjs")).href);
 	/** @type {typeof f.owner} */

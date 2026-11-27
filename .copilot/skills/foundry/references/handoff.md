@@ -8,36 +8,67 @@ Stop there. Keep the sessions. No archive offer, usage query, export, landing or
 
 In the owner, read `foundry_status({run, detail:"proof"})` afresh. Save **only** its non-null `qualification` object as `qualification.json` at the operator's chosen location. A null record means no export: don't assemble a replacement from status, Git or a writer's claim. A passing `productCheck` alone (including a v1 seeded or ongoing product) is not a goal. A v1 fixed-grain goal and a v2 chartered goal both need separate runner receipts on the same accepted commit; a baseline may qualify with no outputs.
 
-`foundry-qualification/v1` names the committed contract and direction, checked target ref and revision, qualified commit, and the evaluator path, commit and exit code for each verdict. `outputs` describes the pins declared by this accepted join, not every retired assignment. Each includes its captured version, charter, specification, boundary files, accepted task where available (v1 uses the pinned specification), component receipt, reviewed base, parentless generation, and direct/transitive input pins. Paths to conserved files resolve at `contract.commit`; evaluator paths resolve at the receipt's commit. The record omits native IDs, tokens, kickoffs, decisions/answers, usage and raw evaluator output. Review the included behavior text and repository paths before sharing.
-
-For a repinned goal, `foundry-qualification/v2` adds `receipts.goal.evaluatorRevision`. The bundle includes this commit. The product is still `receipt.commit`; only the final goal used the files changed between `contract.commit` and `evaluatorRevision`. Never replay the product check against a repinned harness or the goal against the original harness.
-
-`foundry-qualification/v3` identifies a repinned **product** checker in `receipts.product.evaluatorRevision`. The goal's `productEvaluatorRevision` identifies that generation; it is not the goal executable pin. For each check use a separate export of the qualified bytes and apply only the overlay from `contract.commit` to that check's own `evaluatorRevision`, if present. The bundle retains both evaluator commits when both were repinned. Use the accepted output scopes to reconstruct `FOUNDRY_OWNERSHIP` for product checks; legacy `FOUNDRY_OUTPUTS` alone does not describe exact-file ownership.
+`foundry-qualification/v5` names the contract, target, accepted product, included outputs and their prerequisite pins. Each observation has `inputs`: its own commit, checker path/blob/Git mode, scope, and any immutable source replacements. An overlay takes **every listed path** from its named revision, including an absent file and a file reverted to its original value. A replaced checker comes from its recorded revision, not necessarily from the product or overlay commit. The goal's `productEvaluatorRevision` identifies the product generation; it is not the goal's checker source.
 
 The JSON is an **owner-reported result**, not a signature, permission to execute the evaluators, or a way to resume the ledger. Git verifies object identities, not who ran the checks. Obtain the record through a trusted channel.
 
-After a mixed target adoption, `contract.activation` is the original plan commit and `contract.commit` is the contract accepted for release. Read each writer's charter and specification at its own `outputs[].base`, not retrospectively at the adopted target. On the adoption product itself, `receipts.product.components` gives each included evaluator path and exit on that same joined commit. `outputs[].receipt` remains the earlier component capture, not that fresh observation. A later ordinary product receipt does not claim to have repeated the migration checks.
+After a mixed target adoption, `contract.activation` is the original plan commit and `contract.commit` the accepted contract. Read each writer's charter and specification at its own `outputs[].base`. `outputs[].receipt` is the standalone capture; `receipts.product.components[id]`, when present, is a **different observation** on the joined commit. Neither substitutes for the product or goal. Product `inputs.scope.outputs` lists the owners in execution order, including exclusions; a mixed grant contributes only its primary directory to the compatibility `FOUNDRY_OUTPUTS` environment.
 
-`foundry-qualification/v4` includes `ownership`, the exact `FOUNDRY_OWNERSHIP` map saved at this product check's reservation. Use it verbatim for product replay. An output's original `directory` and component receipt still describe its historical capture; they do **not** replace the checked map. A donor's `exclude` is subtracted from its positive match (file equality or directory ancestry in both sets). The ordinary object pack/import procedure and evaluator overlay rules are unchanged.
+**Earlier runs:** `inputEvidence:"signed"` means the source owner verified the original signed recipe. `"reconstructed"` means an older signed observation plus retained immutable inputs establish the recipe; no historical document was changed or signed again. A fixed directory name alone cannot establish the scope protocol, nor a signed pass an unrecorded prepared build. V5 also cannot represent the privileged environment of a historical foreground lane, including one used only inside a joined check. Owner status withholds the portable record (`qualificationUnavailable` explains why); it neither revokes the product verdict nor grants the old permission again. Previously saved v1–v4 manifests remain readable for object transfer only. Get fresh owner proof rather than deriving an evaluator overlay from a net Git diff or treating the old manifest as exact execution evidence.
 
 ### Transfer the Git objects only when requested
 
-An ordinary clone need not have the product or its **parentless** captures and generations. If the operator also wants those bytes, choose a private staging directory outside the checkout and review the disclosure first: the bundle contains the referenced trees **and reachable history**, not just the diff. Use a trusted copy of [qualification.mjs](../scripts/qualification.mjs), Git and Node. `helper`, `manifest` and `bundle` below stand for absolute paths selected by the operator; `bundle` must be a new file.
+Choose what to share. A **v5 replay bundle contains the complete effective file tree for each selected check**, not a directory inferred from its ownership or just a checker diff. A prepared component also discloses the pristine tree actually used for its build. `disclosure.subject` and optional `disclosure.preparation` give the exact tree and parentless carrier commit. `disclosure.overlay` lists every selected overlay path, original blob and mode, or `null` for absence. The original commit IDs in `inputs` are **provenance**, not bundle heads. Ancestor commits, superseded bytes not used by a selected recipe, unrelated overlay-source paths and private scheduling blobs are not replay inputs. Inspect the selected snapshots before sharing; Foundry cannot redact a secret committed in a tree the checker actually saw.
+
+Use the same trusted four files on both sides: [qualification.mjs](../scripts/qualification.mjs), [materialize.mjs](../scripts/materialize.mjs), `recipe.mjs` and `git-files.mjs`, together in one directory. The offline CLI requires Git and Node.js **22.18.0 or later in 22.x, or 24.2.0 or later** (`import.meta.main`). No extension, original checkout, or ledger is required. Choose absolute paths. The bundle must be new. Replay requires a filesystem with verifiable POSIX ownership and modes. Choose a new private staging directory outside **every** Git worktree and Git administrative directory, with canonical (not symlinked) parents, no ambient `package.json` or `node_modules`, and no untrusted writers or ACLs.
 
 ```sh
-# From the complete source checkout, where Foundry retained the pins:
-node "$helper" pack "$bundle" < "$manifest"
+# In the source repository with the verified Git inputs:
+node "$helper" pack "$bundle" release < "$manifest"
 
-# Transfer qualification.json and the bundle by the operator's chosen channel.
-# From a clean, independent clone of the same repository and object format:
-node "$helper" import "$bundle" < "$manifest"
+# Transfer the owner's record and bundle by the chosen channel.
+# In a private, even empty, repository of the same Git object format:
+node "$helper" import "$bundle" release < "$manifest"
+mkdir -m 700 "$stage" || exit 1
+destination="$stage/export"
+launch_plan="$stage/launch.json"
+node "$helper" materialize release "$destination" < "$manifest" > "$launch_plan"
 ```
 
-If making the clean clone from a local repository, use `git clone --no-local --no-tags --single-branch --branch "$branch" -- "$source" "$dest"` (`branch` is the short target name). This copies branch history rather than hard-linking the entire source object store.
+`release` is the default for v5 pack/import: joined components in their recorded order, then product and goal. `product` includes its required joined components and product; `goal` and `joined:ID` name individual observations. Standalone captures are disclosed only when explicitly selecting `component:ID` or `all`. Use the **same selection** for pack and import. Materialize that selection or a subset whose carriers were imported. `git init --object-format=sha1` (or `sha256`, matching the source) is sufficient.
 
-`pack` reads only the content-addressed refs needed by this record, not every run or branch. `import` checks the exact advertised IDs and refs, verifies and unbundles the objects, then creates only `refs/foundry/objects/<oid>` in one transaction. It refuses missing/extra heads, mismatched object IDs or existing destination pins; a failed import may leave unreachable objects, not a partially updated branch. Neither side checks out, updates a target, contacts a remote, pushes or installs Foundry. Use `git diff <target.commit> <commit>` and `git show <receipt.commit>:<receipt.check>` for inspection. Review or landing is a separate decision.
+Both pack and import audit the complete pack in a new isolated object store. The advertised heads must match; every carrier must have exactly the declared tree, recipe binding and no parent. Every packed object must belong to those snapshots. An extra unadvertised object is rejected **before any recipient object is adopted**. Import creates only `refs/foundry/replay/<carrier>` in a create-only transaction. A late ref conflict can leave validated, unreachable objects, not partially updated refs. Nothing here executes a build or checker, requests permission, or modifies a branch.
 
-If separately asked to replay **trusted** checks, use a disposable detached checkout at `qualification.commit`, not the moving target branch. Use separate exports for product and goal evaluator overlays; replay each at its own recorded pin, including deletions and executable bits. For `productCheck` on v1–v3, derive `FOUNDRY_OWNERSHIP` from the included output IDs and their scopes: `{directories:[...],files:[...]}` per ID. On v4 use the recorded map instead. For compatibility `FOUNDRY_OUTPUTS` maps each ID to its directory string or directory array; a mixed grant contributes only its primary directory there. The original receipts and a new replay are different evidence.
+### Inspect or independently observe one check
+
+`materialize` writes isolated raw Git files to a new destination and returns `foundry-launch/v2` JSON. Each ordered step has a role, working directory (`cwd`), executable, argument array (`argv`) and explicit environment. Preparation uses a separate pristine export, empty output directory and a digest-verified private copy for each component. A joined group builds independently of standalone observations. The final pre-goal verification exclusively creates its empty private feedback file; even an empty pre-existing file stops replay. Never reuse a plan: generate a fresh v2 plan and destination after interruption or an upgrade. Inspect it first; don't run a plan received from somebody else or use a shell to interpret its arguments.
+
+**Only if separately authorized to run the trusted code:** use the locally generated plan in order, including its verification/copy steps. Keep its trees private and unchanged until finished. Supply only freshly approved host variables, not the whole ambient environment:
+
+```js
+import {readFileSync} from "node:fs";
+import {spawnSync} from "node:child_process";
+const plan = JSON.parse(readFileSync(process.argv[2], "utf8"));
+if (plan.format !== "foundry-launch/v2") throw Error("Rematerialize with the current trusted scripts");
+for (const step of plan.steps) {
+  const env = {PATH: process.env.PATH, ...step.env};
+  for (const [name, file] of Object.entries(step.envFiles ?? {}))
+    env[name] = readFileSync(file, "utf8");
+  const r = spawnSync(step.executable, step.argv, {
+    cwd: step.cwd, env, stdio: ["ignore", "pipe", "pipe"], maxBuffer: Infinity
+  });
+  for (const [stream, bytes] of [[process.stdout, r.stdout], [process.stderr, r.stderr]])
+    if (bytes?.length) await new Promise((done, fail) => stream.write(bytes, err => err ? fail(err) : done()));
+  if (r.error) throw r.error;
+  if (r.status !== 0) throw Error(`${step.role}: ${step.kind} ${r.signal ? `was terminated by ${r.signal}` : `exited ${r.status}`}`);
+}
+```
+
+The child receives no caller stdin, and none of its standard streams is a terminal. The guide does not detach a controlling terminal: run it without one if a check might prompt through `/dev/tty`. Stdout and stderr are forwarded as bytes after each step. This separate observation does not change or renew an original deadline. A private directory is not a sandbox: run only trusted programs, with no concurrent writers to the staging area. Once all replay processes have exited, remove **only the private staging directory you created**, including the plan, exports, prepared bytes and feedback. Do not clean a checkout or remove the recipient repository.
+
+If `inputs.delta` is present, the digest and inline-delivery flag are **not** the private data or a retrieval address. Materialization refuses without independently authorized matching text: append `--delta-file /absolute/path/to/private.json` to the `materialize` command if available. Its raw contents never appear in the launch description. A missing or different build, private input or carrier is not evidence of a pass. A replay is a new local observation, not a ledger attempt or a replacement for the original signature.
+
+**Original history is a separate disclosure.** Only when the operator explicitly asks for original commits and **all reachable history** (e.g. for landing), use `pack --history "$bundle"` and `import --history "$bundle"` with the owner record on stdin. This retains exact original pins at `refs/foundry/objects/<oid>`; it is not a replay import. V1–v4 only support this explicitly selected mode. An earlier v5 record without carrier disclosures needs a fresh owner proof for replay. No missing evidence or failed replay switches modes automatically.
 
 ## Only on a separate cleanup request
 

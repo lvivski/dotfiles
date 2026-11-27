@@ -1,161 +1,113 @@
 import { spawnSync } from "node:child_process";
 import path from "node:path";
+import { withSourceInputs } from "../../../skills/foundry/scripts/materialize.mjs";
+import { verificationEnvironment } from "../../../skills/foundry/scripts/recipe.mjs";
+import { buildCache } from "./cache.mjs";
+import { controlObservation } from "./calibration.mjs";
 import { openDatabase } from "./database.mjs";
-import { goalFiles, priorGoal, retainFeedback } from "./feedback.mjs";
-import { frozenCheckpoint } from "./frozen.mjs";
-import { harnessFiles } from "./harness.mjs";
-import { activeDelivery, currentDelivery } from "./batch.mjs";
-import { awaitingReply, currentCheck } from "./reservation.mjs";
-import { matchesPair, pairedInput } from "./partition.mjs";
-import { origin, remedyWriter } from "./remedy.mjs";
-import { mixedVerification } from "./evidence.mjs";
-import { changedBlobs, commitAt, regularFiles, verifyContracts, withProduct } from "./product.mjs";
-import { deadlineAt, digest, fail, mixed, ownership, text } from "./values.mjs";
+import { claimable, executionAllowed } from "./eligibility.mjs";
+import { retainFeedback } from "./feedback.mjs";
+import { withPreparation } from "./preparation.mjs";
+import { commitAt, git } from "./product.mjs";
+import { closeLegacy, closureExit } from "./abi.mjs";
+import { deadlineAt, fail, text } from "./values.mjs";
 import { interpret, interrupted } from "./verdict.mjs";
-const [cwd, runId, effectId] = process.argv.slice(2);
-/** @param {string} root @param {string} check @param {NodeJS.ProcessEnv} env @param {string|undefined} deadline */
-function execute(root,check,env,deadline) {
-	const remaining=deadline===undefined ? undefined : (deadlineAt(deadline) ?? -Infinity)-Date.now();
-	if (remaining!==undefined && remaining<=0) fail("deadline","Deadline elapsed before evaluation");
-	const evaluator=path.join(root,check), js=/\.m?js$/.test(evaluator);
-	return spawnSync(js ? process.execPath : evaluator,js ? [evaluator] : [],{
-		cwd:root,env,timeout:remaining,maxBuffer:Infinity,stdio:["ignore","pipe","pipe"]
+
+/** @typedef {import("./model.js").CheckDescription["steps"][number]} Step */
+const [cwd,runId,effectId]=process.argv.slice(2),db=openDatabase(cwd);
+try{
+	const command=db.mutateLocked(runId,run=>{
+		const e=run.effects.find(e=>e.id===effectId);
+		if(e?.tool!=="bash")fail("unissued_check","No evaluator reservation for this command");
+		if(e.attempt?.version===1){closeLegacy(run,e,cwd);return;}
+		claimable(cwd,run,e);
+		const recipe=e.verification??fail("unissued_check","No immutable check description; do not claim or replay a legacy reservation");
+		const publish=db.outcomeWriter(runId,e);
+		const batch=e.rollout?{rollout:e.rollout,prior:run.effects.flatMap(c=>c.kind==="component" && c.rollout===e.rollout && c.commit===e.commit &&
+			c.receipt && c.runnerClaim?[{id:c.id,claim:c.runnerClaim}]:[]).reverse()}:undefined;
+		return {recipe,publish,batch,ref:run.policy.target,deadline:run.policy.deadline,guarded:!!(e.rollout || e.replacement || e.delivery || e.rerun),
+			pin:{commit:text(e.commit,"reserved commit"),check:text(e.check,"reserved evaluator"),
+				...(e.evaluatorRevision && {evaluatorRevision:e.evaluatorRevision}),...(e.productEvaluatorRevision && {productEvaluatorRevision:e.productEvaluatorRevision})}};
 	});
-}
-const db = openDatabase(cwd);
-try {
-	const command = db.mutateLocked(runId, run => {
-		const e = run.effects.find(e => e.id === effectId);
-		if (!e || e.tool !== "bash" || !awaitingReply(e) || !currentCheck(run, e) || e.runnerStarted)
-			fail("unissued_check", "Checks are exclusive to the current issued attempt");
-		if (e.isolation && (commitAt(cwd,run.policy.target)!==run.independent?.target || run.effects.some(x=>x.permissionHold)))
-			fail("stale_assignment","The approved independent checkpoint target or permissions changed");
-		const pair=pairedInput(run,e);
-		if (e.remedy) {
-			const job=remedyWriter(run,e), b=job && origin(run,job);
-			if (!b || b.pair.target!==commitAt(cwd,run.policy.target) || b.pair.goal!==run.goal?.check ||
-				b.pair.checkpoint!==run.products.at(-1)?.check || run.join || run.conflict || run.blocker || run.effects.some(x=>x.permissionHold))
-				fail("stale_assignment","Production repair inputs changed; no observation was made");
-		}
-		if (pair && (!matchesPair(run,pair,commitAt(cwd,run.policy.target)) || run.join || run.conflict || run.blocker || run.effects.some(x=>x.permissionHold)))
-			fail("stale_assignment","Approved paired inputs are no longer current; no observation was made");
-		const publish = db.outcomeWriter(runId, e);
-		/** @type {Record<string,string>} */ const env = {};
-		/** @type {import("./verdict.mjs").Evaluation} */ let evaluation;
-		if ((e.kind === "component" || e.kind==="rerun") && e.grain) {
-			evaluation = { kind: "component" };
-			env.FOUNDRY_GRAIN = e.grain;
-			const scope = e.rerun?.directory ?? run.nodes[e.grain].grain.directory;
-			const {directories,files}=ownership(scope);
-			env.FOUNDRY_DIRECTORIES = JSON.stringify(directories);
-			if (directories.length===1) env.FOUNDRY_DIRECTORY = directories[0];
-			if (files.length) env.FOUNDRY_FILES=JSON.stringify(files);
-		} else if (e.kind === "product") {
-			const outputs = Object.keys(run.join?.outputs ?? {});
-			evaluation = { kind: e.kind, outputs };
-			env.FOUNDRY_OWNERSHIP = JSON.stringify(run.join?.ownership ?? Object.fromEntries(outputs.map(id => [id,ownership(run.nodes[id].grain.directory)])));
-			env.FOUNDRY_OUTPUTS = JSON.stringify(Object.fromEntries(outputs.map(id => {
-				const frozen=e.isolation && run.join?.ownership?.[id].directories;
-				if (frozen) return [id,frozen.length===1?frozen[0]:frozen];
-				const scope=run.nodes[id].grain.directory;
-				return [id,mixed(scope) ? scope.primary : scope];
-			})));
-		} else if (e.kind === "goal") {
-			evaluation = { kind: e.kind, squads: run.policy.squads.map(s => s.id) };
-		} else fail("unissued_check", "Expected an evaluator");
-		const migration=e.kind==="product" ? mixedVerification(run,e.id) : undefined;
-		const amendment=migration?.amendments?.find(s=>s.recheck===e.id);
-		const patch=amendment && run.adoptions?.find(a=>a.id===amendment.proposal)?.patch;
-		return { publish, evaluation, commit: text(e.commit, "check commit"), check: text(e.check, "assigned evaluator"), deadline: run.policy.deadline, env, rerun:e.rerun,delivery:e.delivery,
-			migration:migration ? {policy:run.policy,target:migration.revision,resolutions:migration.resolutions,
-				...(amendment && {amendment:{from:amendment.prior.commit,files:patch?.files}}),components:Object.keys(run.join?.outputs ?? {}).map(id=>({
-				id,check:run.nodes[id].grain.check,scope:ownership(run.nodes[id].grain.directory)
-			}))} : undefined,
-			prior: e.kind === "goal" ? priorGoal(run, e) : undefined,
-			productEvaluatorRevision:e.productEvaluatorRevision,
-			overlay: e.evaluatorRevision && (e.kind === "goal" || e.kind === "product") ? { base: run.policy.contractTarget ?? run.policy.base, revision: e.evaluatorRevision } : undefined };
-	});
-	const pin = { commit: command.commit, check: command.check, ...(command.overlay ? { evaluatorRevision: command.overlay.revision } : {}),
-		...(command.productEvaluatorRevision ? {productEvaluatorRevision:command.productEvaluatorRevision} : {}) };
-	/** @type {import("./model.js").Receipt} */ let receipt = { ...pin, exit: null, output: "" };
-	/** @type {ReturnType<typeof goalFiles>|undefined} */ let files;
-	/** @type {Buffer|undefined} */ let goalStdout;
-	/** @type {Record<string,{check:string,exit:number|null}>} */ const components={};
-	try {
-		const env = { ...process.env, ...command.env };
-		if (!command.env.FOUNDRY_DIRECTORY) delete env.FOUNDRY_DIRECTORY;
-		if (!command.env.FOUNDRY_DIRECTORIES) delete env.FOUNDRY_DIRECTORIES;
-		for (const key of ["FOUNDRY_FILES","FOUNDRY_OUTPUTS","FOUNDRY_OWNERSHIP","FOUNDRY_GRAIN"])
-			if (!Object.hasOwn(command.env,key)) delete env[key];
-		delete env.FOUNDRY_GOAL_DELTA;
-		delete env.FOUNDRY_GOAL_DELTA_FILE;
-		delete env.FOUNDRY_GOAL_FEEDBACK_FILE;
-		if (command.migration) {
-			const {policy,target}=command.migration;
-			if (commitAt(cwd,policy.target)!==target) fail("stale_pin","The approved mixed target moved before verification");
-			verifyContracts(cwd,policy,command.commit);
-			const amendment=command.migration.amendment;
-			if(amendment && (!amendment.files || digest(changedBlobs(cwd,amendment.from,command.commit))!==digest(amendment.files)))
-				fail("invalid_patch","Joined product does not match the approved inherited-file changes");
-			for (const r of command.migration.resolutions ?? []) {
-				const [e]=regularFiles(cwd,command.commit,[r.file]);
-				if (e.mode!==r.mode || e.oid!==r.result) fail("invalid_resolution",`Joined product does not contain the approved resolution: ${r.file}`);
-			}
-			for (const {id,check,scope} of command.migration.components) {
-				/** @type {NodeJS.ProcessEnv} */
-				const local={...env,FOUNDRY_GRAIN:id,FOUNDRY_DIRECTORIES:JSON.stringify(scope.directories)};
-				delete local.FOUNDRY_OUTPUTS; delete local.FOUNDRY_OWNERSHIP;
-				if (scope.directories.length===1) local.FOUNDRY_DIRECTORY=scope.directories[0];
-				if (scope.files.length) local.FOUNDRY_FILES=JSON.stringify(scope.files);
-				components[id]={check,exit:null};
-				/** @type {Pick<import("./model.js").Receipt,"exit"|"output">} */ let result={exit:null,output:""};
-				await withProduct(cwd,command.commit,root=>{
-					result=interpret({kind:"component"},execute(root,check,local,command.deadline)).fields;
-				});
-				components[id].exit=result.exit;
-				if (result.exit!==0) fail("component_failed",`Component ${id} (${check}) did not pass on the joined target: ${result.output || result.exit}`);
-			}
-		}
-		if (command.evaluation.kind === "goal") files = goalFiles(cwd, command.commit, command.prior, env);
-		await withProduct(cwd, command.commit, root => {
-			if (command.delivery) {
-				const run=db.read(runId), d=run && activeDelivery(run);
-				if (!run?.active || !d || d.id!==command.delivery || run.effects.some(e=>e.permissionHold) || !currentDelivery(run,d,commitAt(cwd,run.policy.target)))
-					fail("stale_assignment","Test delivery authority changed; no evaluator was run");
-			}
-			if (command.rerun) {
-				const run=db.read(runId), product=run?.products.at(-1), node=run?.nodes[command.env.FOUNDRY_GRAIN];
-				const target=run && commitAt(cwd,run.policy.target), observed=command.rerun.observedTarget;
-				if (!run?.active || run.blocker || run.independent || run.effects.some(e=>e.permissionHold) ||
-					!product || product.qualifiedAt || product.check!==command.rerun.checkpoint ||
-					(observed ? target!==observed || !frozenCheckpoint(cwd,run,observed) : run.conflict || product.target!==target) ||
-					node?.state!=="blocked" || node.check!==command.rerun.of)
-					fail("stale_assignment","The approved checkpoint, stopped assignment or run permissions changed; no evaluator was run");
-			}
-			const result=execute(root,command.check,env,command.deadline);
-			const { fields, feedback } = interpret(command.evaluation, result);
-			receipt = { ...pin, ...fields };
-			goalStdout = feedback;
-		}, command.rerun ? {harness:harnessFiles(cwd,command.commit,command.check,command.rerun).files} : command.overlay);
-		if (goalStdout && files) {
-			try {
-				const value = files.collect(goalStdout);
-				if (value) receipt.feedbackFile = retainFeedback(cwd, value);
-			} catch (error) {
-				receipt.output += `\nFoundry scheduling feedback unavailable: ${error instanceof Error ? error.message : String(error)}`;
-			}
+	if(!command)fail("closed-before-runner-claim","closed-before-runner-claim: original slot closed without evaluating");
+	const {recipe,pin,deadline,guarded,ref}=command,main=recipe.steps.at(-1)??fail("invalid_inputs","Reserved check has no main invocation");
+	/** @type {import("./model.js").Receipt} */ let receipt={...pin,exit:null,output:""};
+	/** @type {NonNullable<typeof receipt.components>} */ const components={};
+	/** @type {string[]} */ const notes=[];
+	/** @type {import("./model.js").VerificationInputs|undefined} */ let actual;
+	/** @type {ReturnType<ReturnType<typeof import("./feedback.mjs").goalFiles>["collect"]>} */ let feedbackValue;
+	/** @param {string} root @param {string} executable @param {string[]} args @param {NodeJS.ProcessEnv} env */
+	function execute(root,executable,args,env){
+		const timeout=deadline===undefined?undefined:(deadlineAt(deadline)??-Infinity)-Date.now();
+		if(timeout!==undefined && timeout<=0)fail("deadline","Deadline elapsed before evaluation");
+		return spawnSync(executable,args,{cwd:root,env,timeout,maxBuffer:Infinity,stdio:["ignore","pipe","pipe"]});
+	}
+	function ensureCurrent(){
+		if(recipe.joined && commitAt(cwd,ref)!==recipe.target)fail("stale_pin","The approved mixed target moved before verification");
+		if(guarded){
+			const r=db.read(runId),e=r?.effects.find(x=>x.id===effectId);
+			if(!r || e?.tool!=="bash" || !e.runnerStarted)fail("stale_assignment","Original grant unavailable");
+			executionAllowed(cwd,r,e);
 		}
 	}
-	catch (error) {
-		receipt = { ...pin, ...interrupted(command.evaluation, receipt.exit, error) };
+	/** @param {Step["build"]} build @param {(p?:import("./preparation.mjs").Prepared)=>Promise<void>} consume
+	 * @param {import("./cache.mjs").Batch|undefined} [batch] */
+	async function prepared(build,consume,batch){
+		if(!build)return consume();
+		ensureCurrent();
+		const env=verificationEnvironment({kind:"goal"},process.env);
+		return withPreparation(cwd,build.commit,(root,hook,output)=>{
+			const result=interpret({kind:"component"},execute(root,path.join(root,hook),[output],env));
+			if(result.fields.exit!==0)fail("preparation_failed",`${hook} did not complete successfully: ${result.fields.output || result.fields.exit}`);
+		},consume,batch && buildCache(cwd,build.commit,env,batch),build);
 	}
-	finally { files?.close(); }
-	if (command.migration) receipt.components=components;
-	if (command.migration?.resolutions) receipt.resolutionDigest=digest(command.migration.resolutions);
-	if (command.deadline !== undefined) receipt.completedAt=Date.now();
+	try{
+		const delta=recipe.privateInput?git(cwd,["cat-file","blob",recipe.privateInput]).toString():undefined;
+		/** @param {Step} step @param {import("./preparation.mjs").Prepared} [build] */
+		async function observe(step,build){
+			const inputs=build?{...step.inputs,prepared:build.expected}:step.inputs;
+			const id=step.member;
+			/** @type {Pick<import("./model.js").Receipt,"exit"|"output">} */ let observed={exit:null,output:""};
+			if(id!==null)components[id]={check:inputs.checker.path,exit:null};
+			await withSourceInputs(cwd,inputs,({root,executable,args,env,feedback})=>{
+				ensureCurrent();
+				const result=execute(root,executable,args,env),{fields,feedback:stdout}=interpret(id===null?recipe.evaluation:{kind:"component"},result);
+				if(id!==null){
+					components[id].inputs=inputs;
+					observed=fields;
+				}else{
+					actual=inputs;receipt={...pin,...fields};
+					if(inputs.control){
+						const witness=controlObservation(result.stdout,fields.exit);if(witness)receipt.control=witness;
+					}else if(stdout && feedback){
+						try{feedbackValue=feedback.collect(stdout);}
+						catch(error){receipt.output+=`\nFoundry scheduling feedback unavailable: ${error instanceof Error?error.message:String(error)}`;}
+					}
+				}
+			},{env:process.env,prepared:build,delta:id===null?delta:undefined});
+			if(id!==null){
+				components[id].exit=observed.exit;
+				if(observed.exit!==0)fail("component_failed",`Component ${id} (${inputs.checker.path}) did not pass on the joined target: ${observed.output || observed.exit}`);
+			}
+		}
+		const members=recipe.steps.slice(0,-1);
+		if(members.length)await prepared(members[0].build,async build=>{for(const s of members)await observe(s,build);});
+		const batch=command.batch && {...command.batch,ledger:db.file,run:runId,effect:effectId,sign:command.publish.signPreparation,
+			note:(/** @type {string} */ message)=>{const line=`Foundry preparation: ${message}`;notes.push(line);process.stdout.write(line+"\n");}};
+		await prepared(main.build,p=>observe(main,p),batch);
+		if(feedbackValue){
+			try{receipt.feedbackFile=retainFeedback(cwd,feedbackValue);}
+			catch(error){receipt.output+=`\nFoundry scheduling feedback unavailable: ${error instanceof Error?error.message:String(error)}`;}
+		}
+	}catch(error){receipt={...pin,...interrupted(recipe.evaluation,receipt.exit,error)};}
+	if(actual)receipt.inputs=actual;
+	if(recipe.joined)receipt.components=components;
+	if(recipe.resolutions)receipt.resolutionDigest=recipe.resolutions;
+	if(notes.length)receipt.output=[receipt.output,...notes].filter(Boolean).join("\n");
+	if(deadline!==undefined)receipt.completedAt=Date.now();
 	command.publish(receipt);
-	process.stdout.write(`Foundry evaluated ${receipt.commit}: ${receipt.exit ?? "blocked"}\n`);
-}
-finally {
-	db.close();
-}
+	process.stdout.write(`Foundry evaluated ${receipt.commit}: ${receipt.exit??"blocked"}\n`);
+}catch(error){
+	if(!(error instanceof Error && "code" in error && error.code==="closed-before-runner-claim"))throw error;
+	process.stderr.write(`${error.message}\n`);process.exitCode=closureExit;
+}finally{db.close();}

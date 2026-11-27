@@ -1,36 +1,62 @@
 import { digest } from "./values.mjs";
+import { effectAt, heldOutcome, integrityHolds, productAt } from "./revision.mjs";
 import { assign } from "./assignment.mjs";
+import { contractHold } from "./contract.mjs";
+import { unprovenExports } from "./attestation.mjs";
+import { checkReceipt } from "./receipt.mjs";
+export { checkReceipt, sameEvaluation } from "./receipt.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @param {Run} run */
-export const productPin = run => run.productRepins?.at(-1)?.revision;
+export const productPin = run => {
+	const pin=run.productRepins?.at(-1);
+	return pin?.amendments?.findLast(s=>s.harness)?.harness??pin?.revision;
+};
 /** An amendment has its own check; the original target approval never changes.
  * @param {import("./model.js").ProductPin|undefined} pin */
 export const verification=pin=>pin?.amendments?.at(-1)?.recheck??pin?.recheck;
+/** The first joined check of a published rollout may receive one exact owned correction.
+ * Its subsequent check is evidence, not authority for another correction chain.
+ * @param {import("./model.js").ProductPin} pin @param {string} failed */
+export function correctionEvaluator(pin,failed){
+	if(pin.recheck===failed)return pin.revision;
+	for(const step of pin.amendments??[]){
+		if(step.recheck===failed)return step.harness??pin.revision;
+		if(step.harness)break;
+	}
+}
 /** @param {Run} run @param {string} check */
 export const mixedVerification=(run,check)=>run.productRepins?.find(p=>p.targetFrom && (p.recheck===check || p.amendments?.some(a=>a.recheck===check)));
+/** Follow only completed test adoptions, not a new authority to amend the assembly.
+ * @param {Run} run @param {string|undefined} id */
+export function originalVerification(run,id){
+	const repairs=run.testRepairs;
+	if(repairs)for(let i=repairs.length-1;i>=0;i--){const j=repairs[i];if(id && j.state==="applied" && j.recheck===id)id=j.stop;}
+	return id;
+}
+/** A reassessment repeats the original verification recipe, not its amendment authority.
+ * @param {Run} run @param {string} id */
+export const verificationSource=(run,id)=>originalVerification(run,run.products.find(p=>p.withdrawnHandoff?.recheck===id)?.check??id)??id;
 /** Only an intact export and a completed component exit 1 can identify the failing observation.
  * The outer null is not a product failure, and the component's grant does not identify a faulty path.
- * @param {import("./model.js").Effect|undefined} e */
-export function failedComponent(e){
+ * @param {import("./model.js").Effect|undefined} e @param {1|2} [exit] */
+export function failedComponent(e,exit=1){
 	if(e?.kind!=="product" || !e.runnerClaim)return;
 	const receipt=checkReceipt(e);
 	if(receipt?.exit!==null || !receipt.components)return;
 	const observed=Object.entries(receipt.components),last=observed.pop();
-	if(last?.[1].exit===1 && observed.every(([,c])=>c.exit===0))return last[0];
+	if(last?.[1].exit===exit && observed.every(([,c])=>c.exit===0))return last[0];
 }
 /** @typedef {Pick<import("./model.js").Effect,"evaluatorRevision"|"productEvaluatorRevision">} Evaluation */
-/** @param {Evaluation} a @param {Evaluation} b */
-export const sameEvaluation = (a,b) => a.evaluatorRevision === b.evaluatorRevision && a.productEvaluatorRevision === b.productEvaluatorRevision;
 /** Current goal/scout generation. Product checks have their own executable pin.
  * @param {Run} run @param {Evaluation|undefined} e */
 export const currentEvaluation = (run,e) => !!e && e.evaluatorRevision === run.repins?.at(-1)?.revision && e.productEvaluatorRevision === productPin(run);
 
 const missingPrefix = "Writer reports missing input: ";
-/** @param {import("./model.js").Node} n @param {string} detail */
-export function stopForInput(n, detail) {
+/** @param {import("./model.js").Node} n @param {string} detail @param {NonNullable<import("./model.js").Node["stop"]>["input"]} [input] */
+export function stopForInput(n, detail, input) {
 	assign(n,{type:"stop",reason:missingPrefix+detail});
-	n.stop = { kind: "writer-missing-input", detail };
+	n.stop = { kind: "writer-missing-input", detail, ...(input && {input}) };
 }
 
 /** Return the unmodified original detail; older snapshots recorded only the display reason.
@@ -39,13 +65,6 @@ export function missingInput(n) {
 	if (n.state !== "blocked") return;
 	if (n.stop) return n.stop.kind === "writer-missing-input" ? n.stop.detail : undefined;
 	if (n.reason?.startsWith(missingPrefix)) return n.reason.slice(missingPrefix.length);
-}
-
-/** Native shell completion is not evidence. Only the runner can attest to its pinned input.
- * @param {import("./model.js").Effect|undefined} e */
-export function checkReceipt(e) {
-	if (e?.tool === "bash" && e.runnerStarted && e.state === "done" && e.receipt &&
-		e.receipt.commit === e.commit && e.receipt.check === e.check && sameEvaluation(e.receipt,e)) return e.receipt;
 }
 
 /** Older readers recorded this exact terminal transition as a ledger diagnostic rather
@@ -192,17 +211,18 @@ export function missingObservation(run) {
 export function qualifiedProduct(run) {
 	if (run.independent) return;
 	const last = run.products.at(-1);
-	return last?.qualifiedAt ? last : undefined;
+	return last?.qualifiedAt && !contractHold(run) && !unprovenExports(run).length && !integrityHolds(run).some(h=>{
+		const e=effectAt(run,h.effect);
+		return e && (e.id===last.check || e.id===run.goal?.check || e.grain && e.commit===last.outputs[e.grain]);
+	}) ? last : undefined;
 }
 
-/** Project the runner verdict, not native IDs, command arguments or evaluator output.
+/** Select the original passing attempt. Portable projection and signature verification belong to handoff.
  * @param {import("./model.js").Effect|undefined} e @param {"product"|"goal"|"component"} kind
  * @param {string} commit @param {string} check @param {string} [grain] */
-export function passingReceipt(e, kind, commit, check, grain) {
+export function passingCheck(e, kind, commit, check, grain) {
 	if (e?.kind === kind && e.grain === grain && e.commit === commit && e.check === check && checkReceipt(e)?.exit === 0)
-		return { commit, check, exit: 0, ...(e.evaluatorRevision ? { evaluatorRevision: e.evaluatorRevision } : {}),
-			...(kind==="product" && e.receipt?.components && {components:e.receipt.components}),
-			...(e.productEvaluatorRevision ? { productEvaluatorRevision:e.productEvaluatorRevision } : {}) };
+		return e;
 }
 
 /** A milestone is authority for the reviewed inputs, never a goal verdict.
@@ -214,9 +234,13 @@ export function checkpointReceipt(run, id, base) {
 /** Validate historical references against the generation of their consumer, not today's pin.
  * @param {Run} run @param {string} id @param {string} base @param {string|undefined} pin */
 export function productReceiptAt(run,id,base,pin) {
-	const e = run.effects.find(e => e.id === id);
-	return run.products.some(p => p.check === id && p.commit === base) &&
-		e?.evaluatorRevision === pin && passingReceipt(e, "product", base, run.policy.productCheck);
+	return !!productCheckAt(run,id,base,pin);
+}
+/** @param {Run} run @param {string} id @param {string} base @param {string|undefined} pin */
+function productCheckAt(run,id,base,pin){
+	const e = effectAt(run,id);
+	return productAt(run,id)?.commit===base &&
+		e?.evaluatorRevision === pin && passingCheck(e, "product", base, run.policy.productCheck);
 }
 
 /** The last *applied* product. A native success, a pending join, or two green checks
@@ -226,11 +250,11 @@ export function acceptedChecks(run) {
 	const last = qualifiedProduct(run);
 	if (!last) return;
 	const { productCheck, goalCheck } = run.policy;
-	const product = checkpointReceipt(run,last.check,last.commit);
+	const product = productCheckAt(run,last.check,last.commit,productPin(run));
 	if (!product) return;
 	if (!goalCheck && !run.goal) return { last, product };
 	if (!goalCheck || goalCheck === productCheck || run.active || run.join || run.blocker || run.conflict ||
 		run.goal?.commit !== last.commit || run.goal.target !== last.target || run.goal.stall) return;
-	const goal = passingReceipt(run.effects.find(e => e.id === run.goal?.check), "goal", last.commit, goalCheck);
+	const goal = passingCheck(run.effects.find(e => e.id === run.goal?.check), "goal", last.commit, goalCheck);
 	if (goal && goalReceipt(run)?.exit === 0) return { last, product, goal };
 }

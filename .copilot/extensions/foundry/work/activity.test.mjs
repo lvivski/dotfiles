@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { run as savedRun } from "../test/timing.mjs";
-import { activate, activity, hold, permitted, sendActivity } from "./activity.mjs";
+import { activate, hold, permitted, sendActivity } from "./activity.mjs";
+import { activity } from "./rules/activity.mjs";
 import { transition } from "./machine.mjs";
 
 const ticket={issuer:"owner",effect:"dispatch-1",token:"original"};

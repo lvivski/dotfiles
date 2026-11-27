@@ -5,7 +5,7 @@ import { fail } from "./values.mjs";
  * @param {(id:string)=>readonly string[]|undefined} links */
 export function topology(links) {
 	/** @param {string} id */
-	const needs=id=>links(id) ?? fail("unknown_grain",`Unknown required output: ${id}`);
+	const needs=id=>links(id) ?? fail("unknown_grain",`Unknown required output: ${id}`,{kind:"missing-output",subject:id});
 	/** @param {Iterable<string>} seeds */
 	function validate(seeds) {
 		const complete=new Set(), active=new Set();

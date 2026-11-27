@@ -1,14 +1,67 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { openDatabase } from "./database.mjs";
-import { issue, reserveCheck } from "./native.mjs";
-import { factory, git, loadEntry, put } from "../test/fixture.mjs";
+import { git, loadEntry, put } from "../test/fixture.mjs";
+import { directory,historicalFactory } from "../test/legacy-readers.mjs";
+import { createRuntime } from "./runtime.mjs";
+import { execFile } from "node:child_process";
+import { existsSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { promisify } from "node:util";
+import { setTimeout as sleep } from "node:timers/promises";
+import { git as bytes, stageTest } from "./product.mjs";
 
 const run = "catalog", source = ".foundry/catalog.json", ids = ["names", "prices", "stock", "labels"];
 /** @param {string} type @param {object} data */
 const event = (type, data) => ({ id: crypto.randomUUID(), type, data });
 
+test("a superseded claimed goal cannot strand a different reviewed product or borrow its later verdict", {timeout:90000},async t=>{
+	const build=await historicalFactory(t,90),goal=".foundry/goal.mjs";
+	const body='import {existsSync as has,writeFileSync} from "node:fs";import {setTimeout as sleep} from "node:timers/promises";'+
+		'if(process.env.PROBE){writeFileSync(process.env.PROBE+".started","");while(!has(process.env.PROBE+".finish"))await sleep(30);}\nprocess.exit(has("extra/value")?0:1);\n';
+	const f=build(t,run,source,{[source]:JSON.stringify({version:1,id:run,target:"refs/heads/main",direction:"Provide both values.",goalCheck:goal,productCheck:"product.mjs",
+		squads:[{id:"items",charter:"spec",grains:["base","extra"]}],grains:["base","extra"].map(id=>({id,directory:id,specification:"spec",boundary:["api"],check:"component.mjs",needs:[]}))}),
+		spec:"Provide both values.",api:"Stable interface.","component.mjs":"","product.mjs":"",[goal]:body});
+	await f.start();await f.owner.operation("configure",{run,revision:0,checkpointReviews:false},"owner");await f.scouts[0].report({outcome:"regenerate",reason:"Missing values.",evidence:["spec"],grains:["base","extra"]});
+	const db=openDatabase(f.root);t.after(()=>db.close());
+	const worker=(/** @type {string} */ id)=>f.workers.get(db.read(run)?.nodes[id].worker??"")??assert.fail();
+	const w=worker("base"),other=worker("extra"),probe=join(dirname(f.root),"native-probe");
+	/** @type {Promise<unknown>|undefined} */ let executing;
+	const past=f.runtime(w.cwd,{execute:async(tool,a,id)=>{
+		if(tool!=="bash" || !String(a.description).startsWith("Check final goal"))return f.execute(tool,a,id);
+		executing=promisify(execFile)("/bin/sh",["-c",String(a.command)],{cwd:f.root,env:{...process.env,PROBE:probe},timeout:65000});
+		for(let i=0;i<300 && !existsSync(probe+".started");i++)await sleep(25);
+		assert.ok(existsSync(probe+".started"));return {resultType:"unconfirmed"};
+	}});
+	let oldId="";
+	try{
+		put(w.cwd,"base/value","base");await past.operation("submit",{run,token:w.token},w.id);await past.flush();
+		const r=db.read(run)??assert.fail(),old=r.effects.find(c=>c.id===r.goal?.check);
+		assert.ok(old?.kind==="goal" && old.state==="uncertain" && old.runnerClaim && !old.receipt);oldId=old.id;
+		put(other.cwd,"extra/value","extra");await f.runtime(other.cwd).operation("submit",{run,token:other.token},other.id);
+		const blob=bytes(f.root,["hash-object","-w","--stdin"],'import {existsSync} from "node:fs";process.exit(existsSync("base/value") && existsSync("extra/value")?0:1);').toString().trim();
+		const first=stageTest(f.root,f.tip,goal,bytes(f.root,["hash-object","-w","--stdin"],"process.exit(2);").toString().trim());
+		const pin=stageTest(f.root,first,goal,blob),oldOwner=f.runtime(f.root,{confirm:async()=>true});
+		await oldOwner.operation("repin",{run,from:f.tip,revision:first,files:[goal]},"owner");
+		await oldOwner.operation("repin",{run,from:first,revision:pin,files:[goal]},"owner");await oldOwner.flush();oldOwner.close();past.close();f.owner.close();
+		const stopped=db.read(run)??assert.fail();assert.equal(stopped.goal?.check,oldId);assert.equal(stopped.nodes.extra.state,"published");
+		const now=f.runtime(f.root,{confirm:async()=>assert.fail("the new evaluator is already approved")},createRuntime);
+		now.sessionStart("owner",f.root);now.turn("owner");await now.flush();
+		const end=db.read(run)??assert.fail(),p=end.products.at(-1),g=end.effects.find(c=>c.id===end.goal?.check);
+		assert.ok(p && p.commit!==old.commit && p.outputs.extra===stopped.nodes.extra.candidate,"normal wake must integrate the genuinely changed published output");
+		assert.ok(g?.kind==="goal" && g.commit===p.commit && g.evaluatorRevision===pin && g.receipt?.exit===0);db.verifySigned(run,g);
+		assert.equal(now.inspect({run},"owner").qualified,p.commit);assert.deepEqual(end.effects.find(c=>c.id===oldId),old);
+		const calls=end.effects.length;writeFileSync(probe+".finish","");await executing;
+		now.turn("owner");await now.flush();const late=db.read(run)??assert.fail();
+		const original=late.effects.find(c=>c.id===oldId);assert.ok(original?.kind==="goal" && original.receipt?.exit===1);db.verifySigned(run,original);
+		assert.equal(late.effects.length,calls);assert.equal(now.inspect({run},"owner").qualified,p.commit);
+	}finally{writeFileSync(probe+".finish","");await executing;}
+});
+
 for (const race of ["none", "receipt", "target"]) test(`owner retirement preserves four published outputs without replay; approval race: ${race}`, async t => {
+	const factory=await historicalFactory(t,95),past=directory(t,95);
+	/** @type {typeof import("./native.mjs")} */ const {issue,reserveCheck}=await import(join(past,"work/native.mjs"));
+	/** @type {typeof import("./database.mjs")} */ const previous=await import(join(past,"work/database.mjs"));
 	const f = factory(t, run, source, { [source]: JSON.stringify({ version: 1, id: run, target: "refs/heads/main", direction: "Publish a complete catalog.",
 		productCheck: "product.mjs", goalCheck: "goal.mjs", grains: ["base", ...ids].map(id => ({ id, directory:id, specification:"spec", boundary:["api"], check:"unit.mjs" })),
 		squads:[{id:"catalog", charter:"spec", grains:["base", ...ids]}] }), spec:"Build the catalog.", api:"Contract.", "unit.mjs":"", "product.mjs":"",
@@ -25,7 +78,8 @@ for (const race of ["none", "receipt", "target"]) test(`owner retirement preserv
 	await propose(["base"]); await publish("base"); await propose(ids);
 	// Historical checkpoint: the exclusive pre-journal runner claimed this attempt but never wrote a result.
 	const callId = crypto.randomUUID();
-	const old = store.mutateLocked(run, r => {
+	const originalStore=previous.openDatabase(f.root);t.after(()=>originalStore.close());
+	const old = originalStore.mutateLocked(run, r => {
 		const at = r.goal; assert.ok(at && r.products.at(-1)?.commit === at.commit);
 		at.check = reserveCheck(r,"owner",f.root,at.commit,"goal.mjs");
 		const e = r.effects.at(-1); assert.ok(e && issue(r,e,callId)); e.runnerStarted = true; e.state = "uncertain";
@@ -43,7 +97,7 @@ for (const race of ["none", "receipt", "target"]) test(`owner retirement preserv
 	let consent = true, prompts = 0;
 	const conf = await loadEntry({sessionId:"owner",on(){},ui:{elicitation:async() => {
 		prompts++;
-		if (consent && race === "receipt") store.mutateLocked(run, r => {
+		if (consent && race === "receipt") originalStore.mutateLocked(run, r => {
 			const pending = r.effects.find(e => e.id === old.id); assert.ok(pending && pending.kind === "goal" && pending.commit && pending.check);
 			pending.receipt = {commit:pending.commit,check:pending.check,exit:1,output:"Late real runner result"}; pending.state = "done";
 		});
@@ -75,7 +129,7 @@ for (const race of ["none", "receipt", "target"]) test(`owner retirement preserv
 		return;
 	}
 	assert.equal(typeof result,"string");
-	const done = await f.owner.inspect({run,detail:"proof"},"owner"), former=done.goalChecks?.find(e=>e.id===old.id);
+	const done = f.runtime(f.root,{},createRuntime).inspect({run,detail:"proof"},"owner"), former=done.goalChecks?.find(e=>e.id===old.id);
 	if (race === "receipt") { assert.equal(former?.state,"done"); assert.equal(former?.receipt?.output,"Late real runner result"); }
 	else {
 		assert.equal(former?.state,"retired"); assert.equal(former?.receipt,undefined);

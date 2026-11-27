@@ -16,7 +16,7 @@ export async function mixedGrant(t,mode) {
 	const build=mode==="prevent"?factory:await historicalFactory(t,52);
 	const run="display", brief=".foundry/display.json", primary="unit/picker", parent="unit/controls", file=`${parent}/entry`;
 	const production=mode.startsWith("production "), replacement=mode.startsWith("replacement ") || production, independent=mode.startsWith("independent "), observer=mode.startsWith("observer ") || independent || replacement, negative=mode==="negative pair" || observer, sourceFile=`${primary}/observer`;
-	const producer=mode==="production primary"?"selector":"buttons", scope=producer==="selector"?primary:parent;
+	const producer=mode==="production primary" || mode==="production adoption"?"selector":"buttons", scope=producer==="selector"?primary:parent;
 	const implementation=`${scope}/activation.mjs`, regression=`${scope}/test.mjs`;
 	const diagnosticReader=production?await historicalRuntime(t,60):createRuntime;
 	const beforeIndependent=replacement?await historicalRuntime(t,59):independent?await historicalRuntime(t,58):createRuntime;
@@ -45,11 +45,12 @@ export async function mixedGrant(t,mode) {
 		...(independent?{"build.json":JSON.stringify({alpha:action(["unit/alpha/change"]),buttons:action([file]),selector:action([file,sourceFile]),
 			bundle:action(["unit"]),unknown:{runtime:"inputs discovered at runtime"}})}:{}),
 		...(replacement?{"device/events.json":frames([true,false,mode==="replacement pass"])}:{}),
+		...(mode.endsWith(" adoption")?{"unit/shared/format":"old"}:{}),
 		".foundry/display/journey.md":"Select the item.","brief":"Maintain the selector.",[file]:"old","unit.mjs":mode==="restore issued"?
 			`import {existsSync} from "node:fs";if(process.env.FOUNDRY_GRAIN==="controls"&&!existsSync("${parent}/fixed"))process.exit(1)`:
 			failed?`import {existsSync,readFileSync} from "node:fs";${production?`if(process.env.FOUNDRY_GRAIN==="${producer}" && existsSync("${regression}"))await import("./${regression}");`:""}${independent?`import assert from "node:assert/strict";${loadInputs}if(process.env.FOUNDRY_GRAIN==="alpha")assert.equal(readFileSync(data[0],"utf8"),"alpha");if(process.env.FOUNDRY_GRAIN==="buttons")assert.equal(readFileSync(data[0],"utf8"),"current button");`:""}if(process.env.FOUNDRY_DIRECTORY==="${primary}"&&!process.env.FOUNDRY_FILES){const control=readFileSync(${independent?"data[0]":JSON.stringify(file)},"utf8");console.log("Checked control: "+control);if(control!=="current button")process.exit(1);${replacement?phaseCheck:`if(${observer?`readFileSync(${independent?"data[1]":JSON.stringify(sourceFile)},"utf8")!=="phase-aware" || ${mode==="observer fail" || independent}`:negative})process.exit(1);`}}`:"",
 		"product.mjs":`console.log(process.env.FOUNDRY_OWNERSHIP);${mode==="independent fail"?'if(JSON.parse(process.env.FOUNDRY_OUTPUTS).alpha)process.exit(1);':mode==="independent incomplete"?'import {writeFileSync} from "node:fs";if(JSON.parse(process.env.FOUNDRY_OUTPUTS).alpha)writeFileSync("unit/alpha/change","altered");':""}`,
-		"goal.mjs":`import {existsSync as has} from "node:fs";${independent?'if(has("unit/alpha/change"))process.exit(0);':""}process.exit(!has("unit/core/result")?1:!has("${primary}/result")?2:!has("${parent}/fixed")?1:${mode==="restore joined"?'!has("unit/done/result")?2:0':pending?`!has("${parent}/button")||!has("unit/rail/change")?1:0`:0})`});
+		"goal.mjs":`import {existsSync as has} from "node:fs";${independent?'if(has("unit/alpha/change"))process.exit(0);':""}process.exit(!has("unit/core/result")?1:!has("${primary}/result")?2:!has("${parent}/fixed")?1:${mode==="restore joined"||mode==="owned adoption"?'!has("unit/done/result")?2:0':pending?`!has("${parent}/button")||!has("unit/rail/change")?1:${mode==="production adoption"?2:0}`:0})`});
 	const proposal=(/** @type {string} */ id,/** @type {unknown} */ directory,/** @type {string} */ evidence)=>({
 		outcome:"regenerate",reason:"Implement missing behavior.",evidence:[evidence],grains:[{id,directory,task:`Implement ${id}`,check:"unit.mjs",needs:[]}]});
 	await f.start();await f.scouts[0].report(proposal("core","unit/core","brief"));
@@ -109,18 +110,21 @@ export async function publishedRetainer(t,mode) {
 	assert.ok(buttons && rail);
 	put(buttons.cwd,file,mode==="unchanged pair"?"new control":"current button");put(buttons.cwd,`${parent}/fixed`,"available");put(buttons.cwd,`${parent}/button`,"ready");
 	if (production && producer==="buttons") put(buttons.cwd,implementation,originalActivation);
-	await f.runtime(buttons.cwd,{},createRuntime).operation("submit",{run,token:buttons.token},buttons.id);
-	put(rail.cwd,"unit/rail/change","reordered");await f.runtime(rail.cwd,{},createRuntime).operation("submit",{run,token:rail.token},rail.id);
+	// These submissions precede the *original* affected reader. Do not cross
+	// the document fence and then ask reader 54/55/60 to write backwards.
+	const preparing=await historicalRuntime(t,95);
+	await f.runtime(buttons.cwd,{},preparing).operation("submit",{run,token:buttons.token},buttons.id);
+	put(rail.cwd,"unit/rail/change","reordered");await f.runtime(rail.cwd,{},preparing).operation("submit",{run,token:rail.token},rail.id);
 	for (const id of siblings) {
 		const w=f.workers.get(jobs.nodes.find(n=>n.grain===id)?.worker??"");assert.ok(w);
-		put(w.cwd,`unit/${id}/change`,id);await f.runtime(w.cwd,{},createRuntime).operation("submit",{run,token:w.token},w.id);
+		put(w.cwd,`unit/${id}/change`,id);await f.runtime(w.cwd,{},preparing).operation("submit",{run,token:w.token},w.id);
 	}
 	if (mode==="production successor") {
 		const writer=f.workers.get(jobs.nodes.find(n=>n.grain==="routes")?.worker??"");assert.ok(writer);
-		const runtime=f.runtime(writer.cwd,{},createRuntime);
+		const runtime=f.runtime(writer.cwd,{},preparing);
 		put(writer.cwd,"unit/routes/entry","active");
 		const result=await runtime.operation("submit",{run,token:writer.token},writer.id);
-		const repair=result.nodes.find(n=>n.grain==="routes"), check=f.runtime(f.root,{},createRuntime).inspect({run},"owner").nodes.find(n=>n.grain==="routes")?.check;
+		const repair=result.nodes.find(n=>n.grain==="routes"), check=f.runtime(f.root,{},preparing).inspect({run},"owner").nodes.find(n=>n.grain==="routes")?.check;
 		assert.ok(repair?.receipt && repair.token && check,JSON.stringify(repair));
 		assert.equal(repair.receipt.exit,251);
 		await runtime.operation("submit",{run,token:repair.token,relinquish:{check,reason:"Secondary observation unavailable."}},writer.id);

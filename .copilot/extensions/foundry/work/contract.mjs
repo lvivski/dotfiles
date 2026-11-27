@@ -1,7 +1,7 @@
 import { isUtf8 } from "node:buffer";
 import { topology } from "./topology.mjs";
 import { commitAt, committedFile, git, outside, regularFiles, verifyDirectoryPin } from "./product.mjs";
-import { assignmentDirectory, deadlineAt, disjoint, fail, fields, integer, roots, name, names, record, relative, text } from "./values.mjs";
+import { assignmentDirectory, deadlineAt, digest, disjoint, fail, fields, integer, roots, name, names, record, relative, text } from "./values.mjs";
 
 /** @param {unknown} outcome @param {number} grains @returns {outcome is import("./model.js").Observation["outcome"]} */
 export const validOutcome = (outcome, grains) => grains > 0 ? outcome === "regenerate" :
@@ -49,11 +49,56 @@ function fixed(row) {
 		fail("invalid_seed", "Supply a nonempty seed or discovery squad");
 	if (!seed && grains.some(g => !squads.some(s => s.grains.includes(g.id))))
 		fail("invalid_charter", "Every output needs a chartered producer");
-	return { squads, grains, ...(seed ? { seed } : {}) };
+	return { squads, grains:grains.map(g=>{
+		const agent=squads.find(s=>s.grains.includes(g.id))?.agent;
+		return agent ? {...g,agent} : g;
+	}), ...(seed ? { seed } : {}) };
 }
 
 /** @param {string} filename */
 export const planDirectory = filename => filename.replace(/\.json$/, "");
+
+/** A fixed scout selected an ID, not a duplicate copy of the writable grant.
+ * Resolve that ID in the immutable activation brief when it matters for a new permission.
+ * @param {string} cwd @param {import("./model.js").Run} run @param {import("./model.js").Node} n */
+export function verifyFixedGrant(cwd,run,n){
+	if(n.grain.task!==undefined)return;
+	const row=record(JSON.parse(committedFile(cwd,run.policy.base,run.policy.source).toString()));
+	const g=row.version===1 && fixed(row).grains.find(g=>g.id===n.grain.id);
+	if(!g || row.direction!==run.policy.direction || digest(g)!==digest(n.grain))
+		fail("stale_assignment","The fixed grant no longer matches its original activation brief");
+}
+
+/** @param {import("./model.js").Run} run @param {{file:string}[]} files */
+export function changesFixedContract(run,files){
+	const paths=Object.values(run.nodes).flatMap(({grain:g})=>g.task===undefined?[g.specification,...g.boundary]:[]);
+	return paths.length>0 && files.some(f=>!outside(f.file,paths));
+}
+/** An old approval is still inspectable evidence, not authority to change this contract.
+ * @param {import("./model.js").Run} run */
+export function contractHold(run){
+	const unsafe=run.adoptions?.find(a=>a.rollout && a.decision?.status==="answered" &&
+		(changesFixedContract(run,a.rollout.files) || a.rollout.followup && changesFixedContract(run,a.rollout.followup.files)));
+	if(unsafe)return `Approved rollout ${unsafe.id} changes a conserved fixed specification or boundary. This run is read-only; its historical receipts are not a handoff.`;
+}
+
+/** A reverted or deleted input still belongs to this evaluator's approved overlay,
+ * even when it no longer differs from the target. Do not overlay the other evaluator's repins.
+ * @param {import("./model.js").Run} run @param {"goal"|"product"} kind @param {string} revision */
+export function evaluatorOverlay(run,kind,revision){
+	const base=run.policy.contractTarget??run.policy.base, goals=run.repins??[], products=run.productRepins??[];
+	const harnesses=new Set(products.flatMap(p=>p.amendments?.flatMap(s=>s.harness?[s.harness]:[])??[]));
+	const chain=new Map((kind==="goal"?goals:[...products,...goals.filter(p=>harnesses.has(p.revision))]).map(p=>[p.revision,p]));
+	/** @type {Set<string>} */ const paths=new Set();
+	for(let at=revision;at!==base;){
+		const pin=chain.get(at)??fail("stale_pin","Evaluator history does not reach the selected contract");
+		for(const file of pin.files)paths.add(file);
+		chain.delete(at);at=pin.from;
+	}
+	const exact=run.policy.goalCheck;
+	return {revision,paths:[...paths],...(kind==="goal" && exact && !exact.startsWith(".foundry/") && paths.has(exact) &&
+		run.testRepairs?.some(j=>j.state==="applied" && j.rule.check===exact && !j.grain) && {exact})};
+}
 
 /** Product overlays must stay inside the evaluator's private namespace and outside all other grants.
  * @param {import("./model.js").Run} run @param {string[]} files */
@@ -135,8 +180,5 @@ export function readPolicy(cwd, source) {
 		...(assignments === undefined ? {} : { assignments: integer(assignments, 0, "total assignment limit") }),
 		repairs: integer(repairs, 0, "repair limit"), ...(deadline ? { deadline } : {})
 	};
-	return { policy, grains: grains.map(g => {
-		const agent = squads.find(s => "grains" in s && s.grains.includes(g.id))?.agent;
-		return agent ? { ...g, agent } : g;
-	}) };
+	return { policy, grains };
 }

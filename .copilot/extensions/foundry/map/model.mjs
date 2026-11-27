@@ -1,23 +1,18 @@
-import { boardFacts, projectBoard } from "../work/visibility.mjs";
+import { projectBoard } from "../work/projection.mjs";
 
-/** @param {ReturnType<typeof boardFacts>["pending"][number]} p */
+/** @param {ReturnType<typeof projectBoard>["pending"][number]} p */
 function pendingMessage(p) {
-	const labels = { goal: "Goal check", component: "Component check", rerun: "Component rerun", product: "Product check", writer: "Writer launch",
-		scout: "Scout", repair: "Repair notice", handoff: "Handoff notice", decision: "Decision notice", artifact: "Reference notice", escalation: "Unowned blocker notice" };
+	const labels = { goal: "Goal check", control:"Test calibration",component: "Component check", rerun: "Component rerun", product: "Product check", writer: "Writer launch",
+		scout: "Scout", repair: "Repair notice", instruction:"Writer instruction", handoff: "Handoff notice", decision: "Decision notice", artifact: "Reference notice", escalation: "Unowned blocker notice" };
 	const label = labels[p.kind] + (p.grain ? ` (${p.grain})` : "");
 	const reason = p.reason?.replace(/^(?:Error: )+/, "");
 	if (p.evaluating) return `${label} started; no evaluator result recorded yet.`;
 	return reason ? `${label}: ${reason}` : undefined;
 }
 
-/** @param {import("../work/model.js").Run} run @param {string} actor */
-export function boardSnapshot(run, actor) {
-	return mapSnapshot(boardFacts(run, actor));
-}
-
 /** The canvas supplies boardFacts. Older internal callers already holding status
  * can project it without constructing a second map implementation.
- * @param {ReturnType<typeof boardFacts>|import("../work/visibility.mjs").BoardSource} source */
+ * @param {ReturnType<typeof projectBoard>|import("../work/visibility.mjs").BoardSource} source */
 export function mapSnapshot(source) {
 	const s = "owner" in source ? source : projectBoard(source, !!source.metrics);
 	const latest = new Map(s.reviews.map(r => [r.squad, r]));
@@ -41,7 +36,7 @@ export function mapSnapshot(source) {
 	};
 }
 
-/** @typedef {ReturnType<typeof boardSnapshot>} BoardSnapshot */
+/** @typedef {ReturnType<typeof mapSnapshot>} BoardSnapshot */
 /** @typedef {BoardSnapshot} MapSnapshot */
 /** @typedef {MapSnapshot["nodes"][number]} Assignment */
 

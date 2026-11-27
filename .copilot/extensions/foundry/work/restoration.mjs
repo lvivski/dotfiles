@@ -1,34 +1,18 @@
+import { verifiedCitations } from "./assembly.mjs";
 import { working } from "./assignment.mjs";
 import { availableReservations } from "./capacity.mjs";
 import { checkReceipt, goalReceipt } from "./evidence.mjs";
 import { checkpointCurrent } from "./facts.mjs";
 import { reserveWriter } from "./graph.mjs";
 import { admitted } from "./native.mjs";
-import { deliveredFile } from "./pages.mjs";
 import { displacement, historicalGrant } from "./partition.mjs";
 import { owns, validateNodes, waiting, writerInputs } from "./plan.mjs";
 import { changedFiles, commitAt, directoryBaseline, outside, regularFiles, verifyContracts } from "./product.mjs";
 import { awaitingReply } from "./reservation.mjs";
-import { comparison, requestedFiles } from "./reviews.mjs";
 import { activeConsumer, touchesCut } from "./transfer.mjs";
 import { covers, digest, fail, fields, name, sameScope } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
-/** An assigning scout's citation is not necessarily a writer input. Only the
- * published retainer can use this distinction, and only for the same Git evidence.
- * @param {string} cwd @param {Run} run @param {import("./model.js").Node} owner @param {string} primary @param {string} commit */
-export function verifiedCitations(cwd,run,owner,primary,commit) {
-	if (owner.state!=="published") return;
-	const r=run.effects.find(e=>e.id===owner.review);
-	if (r?.kind!=="scout" || r.state!=="observed" || r.observation?.outcome!=="regenerate" || !r.packet) return;
-	const {packet}=r, paths=r.observation.evidence.filter(p=>covers(primary,p));
-	const source=comparison(run,r)?.source?.file;
-	if (!paths.length || packet.review!==r.id || packet.base!==r.base || source && covers(primary,source)) return;
-	const legacyInputs=run.policy.sharedBrief && !owner.supporting ? requestedFiles(run,r) : undefined;
-	if (paths.some(p=>legacyInputs?.has(p)) || changedFiles(cwd,r.base,commit,paths).length) return;
-	if (regularFiles(cwd,commit,paths).every(e=>deliveredFile(packet,e.name,e.oid))) return {review:r.id,paths};
-}
-
 /** @param {string} cwd @param {Run} run @param {string} actor @param {Record<string,unknown>} a
  * @param {(e:import("./model.js").NativeCall)=>void} verify */
 export function prepareRestoration(cwd,run,actor,a,verify) {

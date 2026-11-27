@@ -1,7 +1,7 @@
 import { admissionPolicy } from "./admission.mjs";
 import { assign, working } from "./assignment.mjs";
 import { activate } from "./activity.mjs";
-import { checkpointReceipt, checkReceipt, currentEvaluation, goalReceipt, leadGoal, milestoneBlocker, passingReceipt, productPin } from "./evidence.mjs";
+import { checkpointReceipt, checkReceipt, currentEvaluation, goalReceipt, leadGoal, milestoneBlocker, passingCheck, productPin } from "./evidence.mjs";
 import { remainingAssignments } from "./capacity.mjs";
 import { decisionOf, release, releasePreflight, releaseResolution, releaseState, transition } from "./engine.mjs";
 import { transition as next } from "./machine.mjs";
@@ -13,7 +13,7 @@ import { partitionConflict } from "./partition.mjs";
 import { heldRepair } from "./successor.mjs";
 import { contractConflict, descendsFrom, retain, treeOf, verifyContracts } from "./product.mjs";
 export { frozenCheckpoint } from "./frozen.mjs";
-import { blockReview, checkpointWake, comparison, reading, reviews, staleReviewReason } from "./reviews.mjs";
+import { blockReview, checkpointWake, comparison, obstructed, reading, reviews } from "./reviews.mjs";
 import { deadlineAt, text } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
@@ -89,7 +89,7 @@ export function movingSurvey(cwd,run,target) {
 		if (!checkpointSurvey(run,r)) return false;
 		if (unfinished.has(r.id)) return true;
 		if (latest.get(r.squad)!==r) return false;
-		if (reading(r) || r.state==="reported" || r.state==="blocked" && r.error===staleReviewReason) return true;
+		if (reading(r) || r.state==="reported" || r.state==="blocked" && obstructed(r,"stale-review")) return true;
 		return r.state==="observed" && (r.observation?.ownerInput && !r.decision ||
 			checkpointWake(run,history.filter(h=>h.squad===r.squad),p.commit,r.version));
 	});
@@ -222,7 +222,7 @@ export function qualify(run,actor,product,target) {
 	const check=run.effects.find(e=>e.id===product.check);
 	const selected=next(release,{value:releaseState(releaseFacts(run,target)),context:null},{type:"product-settled"},{
 		oneOff:!run.policy.goalCheck,currentJoin:run.join===product && product.target===target,signedProduct:check?.evaluatorRevision===productPin(run) &&
-			!!passingReceipt(check,"product",product.commit,run.policy.productCheck),
+			!!passingCheck(check,"product",product.commit,run.policy.productCheck),
 		alreadyHandedOff:!!product.qualifiedAt,held:!!(run.blocker || run.conflict || run.independent || check?.error || check?.permissionHold),
 	},true);
 	applyRelease(selected,{run,actor,product});

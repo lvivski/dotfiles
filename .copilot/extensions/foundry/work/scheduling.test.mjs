@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import {git,put} from "../test/fixture.mjs";
 import {api,fixture,noGap,propose,readFile,run,source,worker} from "../test/release.mjs";
@@ -139,6 +140,8 @@ test("a real pass reserves writers before surveys, records a demonstrated stall,
 
 	// Force one real stale CAS. Its speculative reservation must disappear on the paused reread.
 	const fork=openDatabase(f.root,path.join(path.dirname(db.file),"planning.sqlite"),true);t.after(()=>fork.close());
+	const originalSpool=new DatabaseSync(db.file+".outcomes");
+	try{originalSpool.prepare("VACUUM INTO ?").run(fork.file+".outcomes");}finally{originalSpool.close();}
 	fork.insert(gap);
 	/** @type {string[][]} */ const attempts=[];
 	fork.planAndSwap(run,r=>{

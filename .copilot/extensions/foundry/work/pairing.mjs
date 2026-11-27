@@ -1,15 +1,14 @@
+import { changes, verifiedCitations, verifyJoinedInputs } from "./assembly.mjs";
 import { assign } from "./assignment.mjs";
 import { availableReservations } from "./capacity.mjs";
 import { checkReceipt, goalReceipt } from "./evidence.mjs";
 import { checkpointCurrent } from "./facts.mjs";
-import { changes, verifyJoinedInputs } from "./graph.mjs";
 import { admitted, reserveCheck } from "./native.mjs";
 import { historicalGrant, matchesPair, validRestoration } from "./partition.mjs";
 import { waiting, writerInputs } from "./plan.mjs";
 import { changedFiles, combinedTree, commitAt, contractPaths, directoryBaseline, pairedCommit, regularFiles, treeOf, verifyContracts } from "./product.mjs";
-import { approvedPublication } from "./publication.mjs";
+import { publishedComponent } from "./publication.mjs";
 import { awaitingReply } from "./reservation.mjs";
-import { verifiedCitations } from "./restoration.mjs";
 import { activeConsumer } from "./transfer.mjs";
 import { digest, fail, fields, name } from "./values.mjs";
 
@@ -60,7 +59,7 @@ export function preparePair(cwd,run,actor,a,verify) {
 			owner?.state!=="published" || owner.check!==component || owner.candidate!==candidate || held?.kind!=="component" ||
 			held.grain!==retainer || held.commit!==candidate || held.issuer!==owner.worker || checkReceipt(held)?.exit!==0)
 			fail("stale_assignment","Need the exact current checkpoint, goal and published retaining candidate with its own passing component");
-		if (!approvedPublication(live,held.id,retainer,candidate))
+		if (!publishedComponent(live,held.id,retainer,candidate))
 			fail("unreviewed_output","An unchanged attestation cannot stand in for review of the retaining owner's changed output");
 		const hold=pairHold(cwd,live,grain,retainer,p.commit);
 		if (hold) fail("dispatch_held",hold);

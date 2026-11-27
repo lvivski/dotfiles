@@ -1,15 +1,15 @@
+import { changes, verifyJoinedInputs } from "./assembly.mjs";
 import { remainingAssignments } from "./capacity.mjs";
 import { assign } from "./assignment.mjs";
 import { journeyText, productOverlayPaths } from "./contract.mjs";
 import { checkpointReceipt, currentEvaluation, goalReceipt, productPin } from "./evidence.mjs";
 import { admitted, current, reserveProduct } from "./native.mjs";
-import { changes, verifyJoinedInputs } from "./graph.mjs";
 import { productOutputs } from "./plan.mjs";
 import { awaitingReply, unissued } from "./reservation.mjs";
 import { changedFiles, commitAt, contractConflict, contractPaths, descendsFrom, entries, git, outside, regularFiles, retain, stageDelivery, verifyContracts } from "./product.mjs";
-import { approvedPublication } from "./publication.mjs";
+import { carriedInput, publishedComponent } from "./publication.mjs";
 import { reconciledBase } from "./resolution.mjs";
-import { targetBasis } from "./offers.mjs";
+import { checkpointBindings } from "./offers.mjs";
 import { questions, releasedReviews, retireSuperseded, reviews } from "./reviews.mjs";
 import { digest, fail, fields, relative, text } from "./values.mjs";
 import { ownershipMode, retainedMode } from "./transfer.mjs";
@@ -17,12 +17,12 @@ import { partitionConflict } from "./partition.mjs";
 import { checkpointQueue } from "./quiescence.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
-/** @param {Run} run @param {string} actor @param {string} from @param {boolean} product */
-function allowed(run, actor, from, product) {
+/** @param {Run} run @param {string} actor @param {string} from @param {boolean} product @param {boolean} [certified] */
+function allowed(run, actor, from, product,certified=false) {
 	if (actor !== run.owner) fail("foreign_run", "Only the run owner can repin its evaluator");
 	admitted(run);
 	const evaluator = product ? run.policy.productCheck : run.policy.goalCheck;
-	if (!run.goal || !evaluator?.startsWith(".foundry/")) fail("invalid_goal", "Repinning requires a goal run and a selected evaluator under .foundry/");
+	if (!run.goal || !evaluator || !certified && !evaluator.startsWith(".foundry/")) fail("invalid_goal", "Repinning requires a goal run and a selected evaluator under .foundry/");
 	if (((product ? productPin(run) : run.repins?.at(-1)?.revision) ?? run.policy.base) !== from) fail("stale_pin", "The evaluator pin changed; review the current diff");
 	return evaluator;
 }
@@ -46,8 +46,8 @@ export function settledCheckpoint(run, target, operation="Product repinning", re
 }
 
 /** @param {string} cwd @param {Run} run @param {string} actor @param {Record<string,unknown>} args
- * @param {(e:import("./model.js").NativeCall)=>void} signed */
-export function prepareRepin(cwd, run, actor, args, signed) {
+ * @param {(e:import("./model.js").NativeCall)=>void} signed @param {import("./model.js").TestRepair} [repair] */
+export function prepareRepin(cwd, run, actor, args, signed,repair) {
 	if (args.kind==="target") {
 		fields(args,["run","kind","from","revision","files","checkpoint","goal","acceptance","resolutions"]);
 		const acceptance=text(args.acceptance,"reviewed release rule and prospective charter change");
@@ -61,9 +61,12 @@ export function prepareRepin(cwd, run, actor, args, signed) {
 		product && Object.values(run.nodes).some(n=>n.retained) && args.ownership !== retainedMode)
 		fail("unsupported_ownership","Transfers require a product checker explicitly supporting retain-except-transferred");
 	const from = text(args.from, "current evaluator pin"), revision = text(args.revision, "new evaluator pin");
-	const evaluator = allowed(run, actor, from, product), target = commitAt(cwd,run.policy.target);
+	const certified=!!repair && !product && repair.state==="approved" && repair.pin===from && repair.revision===revision &&
+		repair.rule.check===run.policy.goalCheck && repair.stop===run.goal?.check && run.testRepairs?.includes(repair)===true;
+	const evaluator = allowed(run, actor, from, product,certified), target = commitAt(cwd,run.policy.target);
 	verifyContracts(cwd, run.policy, target);
-	const checkpoint = product ? settledCheckpoint(run,target) : undefined, stamp = product && digest(run);
+	const checkpoint = product ? settledCheckpoint(run,target) : undefined;
+	const stamp=checkpoint && checkpointBindings(run,checkpoint.last.outputs);
 	if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(revision) || commitAt(cwd, revision) !== revision)
 		fail("invalid_pin", "Use the full object ID of the reviewed local commit");
 	const files = changedFiles(cwd, from, revision).map(relative).sort();
@@ -77,7 +80,7 @@ export function prepareRepin(cwd, run, actor, args, signed) {
 			fail("contract_scope","Change only the named product evaluator or its private <evaluator>.d/ helpers");
 	}
 
-	if (files.some(p => !p.startsWith(".foundry/") || /^\.foundry\/[^/]+\.json$/i.test(p) || !outside(p, protectedFiles)))
+	if (files.some(p => (certified?p!==evaluator:!p.startsWith(".foundry/")) || /^\.foundry\/[^/]+\.json$/i.test(p) || !outside(p, protectedFiles)))
 		fail("contract_scope", "Only the selected evaluator and its .foundry helpers may change, not the brief, other checks, or product");
 	regularFiles(cwd, revision, [evaluator]);
 	for (const e of entries(cwd, revision, true, files))
@@ -93,10 +96,10 @@ export function prepareRepin(cwd, run, actor, args, signed) {
 			"Approve to recheck the existing product only if this fixes evaluation without changing the product requirements.",
 		/** @param {Run} live */
 		apply(live) {
-			allowed(live, actor, from, product);
+			allowed(live, actor, from, product,certified);
 			const tip = commitAt(cwd, live.policy.target);
 			verifyContracts(cwd, live.policy, tip);
-			if (checkpoint && (tip !== target || digest(live) !== stamp)) fail("stale_pin","Checkpoint or run changed during product approval");
+			if (checkpoint && (tip !== target || checkpointBindings(live,checkpoint.last.outputs)!==stamp)) fail("stale_pin","Checkpoint or included output changed during product approval");
 			if (revision === live.policy.base || (product ? live.productRepins : live.repins)?.some(p => p.revision === revision))
 				fail("stale_pin", "Use a new reviewed commit, not a previously applied pin");
 			retain(cwd, revision);
@@ -154,19 +157,20 @@ export function targetPlan(cwd,run,actor,requested,signed,args) {
 	for (const [id,candidate] of Object.entries(outputs)) {
 		const n=run.nodes[id];
 		if (!outside(n.grain.directory,edits)) fail("tree_conflict",`Target edited owned output ${id}; reconcile its files before adopting this target`);
-		if (!approvedPublication(run,n.check,id,candidate)) fail("unreviewed_output",`Target adoption cannot include unreviewed output ${id}`);
-		if (last.outputs[id]===candidate) continue;
-		const e=run.effects.find(e=>e.id===n.check);
-		if (e?.kind!=="component" || e.commit!==candidate || e.grain!==id || e.check!==n.grain.check || e.receipt?.exit!==0)
-			fail("missing_receipt",`Missing passing component for published output ${id}`);
-		signed(e);
+		const c=publishedComponent(run,n.check,id,candidate)?.component;
+		if(!c){
+			const old=run.effects.find(e=>e.id===n.check);
+			if(old?.check===n.grain.check && carriedInput(run,last,old,id,candidate))continue;
+			fail("unreviewed_output",`Target adoption cannot include unreviewed output ${id}`);
+		}
+		if(c.check!==n.grain.check)fail("missing_receipt",`Wrong component evaluator for published output ${id}`);
+		if(last.outputs[id]!==candidate)signed(c);
 	}
 	const conflict=partitionConflict(run,outputs,revision);
 	if (conflict) fail("ownership_transition",conflict);
 	const assembly=stageDelivery(cwd,base,changes(run,outputs),revision);
 	verifyJoinedInputs(cwd,run,outputs,base,assembly);
 	verifyContracts(cwd,{...policy,contractTarget:revision},assembly);
-	const stamp=targetBasis(cwd,run,revision);
 	const prompt=`Run ${run.id}: adopt this release change on ${revision}?\n`+
 		`Current contract: ${from}. Current product evaluator: ${productFrom}. Current goal evaluator: ${goalFrom}.\n`+
 		`Use the target's ${policy.productCheck} for the joined product and ${policy.goalCheck} for final acceptance. Review the conserved changes against each pin:\n`+
@@ -186,7 +190,7 @@ export function targetPlan(cwd,run,actor,requested,signed,args) {
 		/** @param {Run} live @param {string} acceptance */
 		apply(live,acceptance) {
 			admitted(live);text(acceptance,"reviewed acceptance change");
-			if (commitAt(cwd,policy.target)!==revision || targetBasis(cwd,live,revision)!==stamp) fail("stale_pin","Target or checkpoint changed during approval");
+			if (live!==run || commitAt(cwd,policy.target)!==revision) fail("stale_pin","Revalidate the exact target manifest on the committing snapshot");
 			retain(cwd,revision);retain(cwd,assembly);
 			const pin={from:productFrom,revision,files,checkpoint:last.check,goal:goal.check,recheck:"",targetFrom:from,acceptance,...(rows.length && {resolutions:rows}),...(mode===retainedMode && {ownership:mode})};
 			(live.productRepins??=[]).push(pin);

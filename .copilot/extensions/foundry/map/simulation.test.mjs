@@ -40,6 +40,9 @@ function example(id,from,type,facts){
 	case "assignment":return {context:{replaces:"previous"},event:{type,id:"grain",reason:"original outcome",candidate:"candidate"}};
 	case "inspection":return {context:{issuer:"writer",dispatch:facts.unticketed ? undefined : "dispatch",workflow:facts.sameWorkflow || facts.bound || facts.unbound===false ? "workflow" :
 		facts.sameWorkflow===false ? "elsewhere" : undefined,summary:"original diagnostic"},event:{type,issuer:"issuer",dispatch:"new-dispatch",workflow:"workflow",summary:"review finding"}};
+	case "correction-author":return {context:{dispatch:"dispatch",workflow:facts.sameWorkflow===false?"elsewhere":facts.sameWorkflow || facts.bound || facts.uncontinued!==undefined || facts.unbound===false?"workflow":undefined,
+		continued:facts.uncontinued===false},
+		event:{type,dispatch:"new-dispatch",workflow:"workflow",reason:"original outcome",changes:[{file:"unit/value",mode:"100644",before:"before",result:"after"}]}};
 	case "review":case "call":return {context:{},event:{type,callId:"call",workflowId:"workflow",error:"reason",nativeId:"worker",boundAt:1}};
 	case "quiescence":return {context:{held:[],retained:[]},event:{type,label:`sample (${from})`,check:{id:"observation"}}};
 	case "release":case "release-preflight":return {context:null,event:{type,target:"target",workTarget:"checkpoint"}};

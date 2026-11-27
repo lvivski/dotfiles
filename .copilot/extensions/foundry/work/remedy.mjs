@@ -1,6 +1,6 @@
 import { checkReceipt, generationOf } from "./evidence.mjs";
 import { writerInputs } from "./plan.mjs";
-import { approvedPublication } from "./publication.mjs";
+import { publishedComponent } from "./publication.mjs";
 import { grant } from "./transfer.mjs";
 import { covers, digest } from "./values.mjs";
 
@@ -87,7 +87,7 @@ export function remedyInspection(run,c) {
 	if (!b || !job?.grain || !g || !p || !b.paired.commit || !b.failed.observer || !currentRemedy(run,c) ||
 		run.independent || run.blocker || run.conflict || run.join || run.effects.some(e=>e.permissionHold) ||
 		p.check!==g.checkpoint || p.target!==b.pair.target || run.goal?.check!==g.goal ||
-		!approvedPublication(run,b.pair.component,b.retainer,b.pair.candidate) ||
+		!publishedComponent(run,b.pair.component,b.retainer,b.pair.candidate) ||
 		!b.checks.includes(c) || b.checks.some(e=>!validRemedy(run,e) || checkReceipt(e)?.failure)) return;
 	const writer=run.nodes[job.grain], editor=job.grain===c.grain;
 	if (writer.generation!==g.candidate || digest(writer.grain)!==digest(g.prior.grain) || digest(writer.inputs)!==digest(g.prior.inputs)) return;

@@ -4,6 +4,43 @@ import test from "node:test";
 import { openDatabase } from "./database.mjs";
 import { observe, parseObservation } from "./graph.mjs";
 import { factory, git, put } from "../test/fixture.mjs";
+import { historicalFactory } from "../test/legacy-readers.mjs";
+import { createRuntime } from "./runtime.mjs";
+
+test("a saved single-directory report names its checked consumer and is admitted once that dependency clears",async t=>{
+	const run="measure",source=".foundry/measure.json",build=await historicalFactory(t,90);
+	const make=(/** @type {string} */ id,/** @type {string} */ dir,/** @type {string[]} */ needs=[])=>({id,directory:dir,task:`Implement ${id}.`,check:"unit.mjs",needs});
+	const f=build(t,run,source,{[source]:JSON.stringify({version:2,id:run,target:"refs/heads/main",direction:"Render a checked measurement.",
+		goalCheck:"goal.mjs",productCheck:"unit.mjs",squads:["data","display"].map(id=>({id,charter:id+".md",areas:[id],checks:["unit.mjs"]}))}),
+		".foundry/measure/journey.md":"Provide the measurement and label.","data.md":"Keep measurement.","display.md":"Keep label.","unit.mjs":"",
+		"goal.mjs":'import {existsSync as has} from "node:fs";process.exit(has("display/label/value")?2:1);'});
+	await f.start();const db=openDatabase(f.root);t.after(()=>db.close());const read=()=>db.read(run)??assert.fail();
+	for(const [s,g] of /** @type {const} */([["data",make("producer","data/item")],["display",make("consumer","display/label",["producer"])]])){
+		const scout=f.scouts.find(r=>r.squad===s);assert.ok(scout);await scout.report({outcome:"regenerate",reason:"Produce the requested output.",evidence:[s+".md"],grains:[g]});
+	}
+	for(const [id,dir] of [["producer","data/item"],["consumer","display/label"]]){
+		const w=f.workers.get(read().nodes[id].worker??"");assert.ok(w);put(w.cwd,dir+"/value",id);
+		await f.runtime(w.cwd).operation("submit",{run,token:w.token},w.id);await f.settle();
+	}
+	for(const scout of f.scouts.slice(2))if(read().effects.some(e=>e.id===scout.id && e.state==="issued"))
+		await scout.report({outcome:"no-gap",reason:"No other work.",evidence:[scout.squad+".md"],grains:[]});
+	const basis=read(),p=basis.products.at(-1),at=basis.goal;assert.ok(p && at);const before=basis.nodes.consumer;
+	async function compare(/** @type {typeof f.owner} */ owner,/** @type {string} */ dir,/** @type {string} */ prior,/** @type {string} */ next){
+		put(f.root,next+".txt",`A distinct task for ${dir}.`);const [a]=(await owner.operation("publish",{run,file:next+".txt",to:[dir]},"owner")).artifacts.filter(a=>a.file===next+".txt");
+		const file=dir+"/value";
+		await owner.operation("iterate",{run,directory:dir,receipt:at?.check,blob:a.blob,source:{file,excerpt:prior,commit:p?.commit},question:`Provide ${next}.`},"owner");
+		await f.settle();const r=f.scouts.at(-1);assert.ok(r && r.prompt.includes(next));await r.report({outcome:"regenerate",reason:`Provide ${next}.`,evidence:[file],grains:[make(next,dir)]});return r.id;
+	}
+	const old=f.runtime(f.root,{confirm:async()=>true}),id=await compare(old,"data/item","producer","new-data");old.close();
+	const original=read().effects.find(r=>r.kind==="scout" && r.id===id);assert.ok(original?.kind==="scout" && original.error==="This comparison is for one independent directory: data/item");
+	f.owner.close();const now=f.runtime(f.root,{confirm:async()=>true},createRuntime);now.turn("owner");await now.flush();
+	const held=read().effects.find(r=>r.id===id);assert.match(held?.error??"",/consumer.*display\/label/);assert.deepEqual(read().nodes.consumer,before);
+	assert.ok(!read().nodes["new-data"]);assert.equal(held?.workflowId,original.workflowId);
+	await compare(now,"display/label","consumer","new-label");now.turn("owner");await now.flush();
+	const end=read(),report=end.effects.find(r=>r.id===id);assert.equal(report?.state,"observed");assert.equal(report.workflowId,original.workflowId);
+	assert.equal(end.nodes["new-data"].review,id);assert.equal(end.nodes["new-data"].state,"writing");
+	assert.ok(end.nodes["new-label"].worker);assert.deepEqual(end.products,basis.products);assert.equal(end.effects.filter(e=>e.kind==="scout" && e.retryOf===id).length,0);
+});
 
 for (const stranded of [true, false]) test(`noted checkpoint comparison keeps its evidence and only staffs its directory / ${stranded ? "reconnect after failed goal" : "bounded first dispatch"}`, async t => {
 	const run = "chart", source = ".foundry/chart.json", directory = "screen/layout", charter = "screen.md", check = "unit.mjs";
@@ -66,7 +103,7 @@ for (const stranded of [true, false]) test(`noted checkpoint comparison keeps it
 	await focused.report({outcome:"needs-evidence", evidence:[charter], grains:[], receipt:historical.id, reason:"Check the earlier diagnostic."});
 	focused = f.scouts.at(-1); assert.ok(focused && focused.packet.read?.source === `receipt:${historical.id}`);
 	assert.ok(focused.prompt.includes(question) && focused.prompt.includes(note));
-	const snapshot = db.read(run); assert.ok(snapshot);
+	const snapshot = structuredClone(db.read(run)); assert.ok(snapshot);
 	const page = snapshot.effects.find(e => e.id === focused.id); assert.ok(page?.kind === "scout");
 	page.packet = focused.packet;
 	assert.throws(() => observe(f.root, snapshot, page, parseObservation(snapshot.policy.squads[0], change("other", "screen/other"))), /one independent directory/);

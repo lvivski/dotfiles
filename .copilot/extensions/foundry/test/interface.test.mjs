@@ -12,11 +12,11 @@ test("the registered extension and ordered machine rules match the independent r
 test("the explorer registers each production machine, not a separately authored lookalike",async()=>{
 	const root=new URL("../work/",import.meta.url), live=definitions();
 	const exported=new Map();
-	for(const file of await readdir(root)){
+	for(const file of await readdir(root,{recursive:true})){
 		if(!file.endsWith(".mjs")||file.endsWith(".test.mjs"))continue;
 		const url=new URL(file,root),source=await readFile(url,"utf8");
 		// Avoid starting CLI-only modules such as the exclusive runner.
-		if(!/import\s*\{[^}]*\bmachine\b[^}]*\}\s*from\s*["']\.\/machine\.mjs["']/.test(source))continue;
+		if(!/import\s*\{[^}]*\bmachine\b[^}]*\}\s*from\s*["']\.\.?\/machine\.mjs["']/.test(source))continue;
 		const module=await import(url.href);
 		for(const value of Object.values(module)){
 			if(!value || typeof value!=="object" || !Object.hasOwn(value,"states") || !Object.hasOwn(value,"initial"))continue;

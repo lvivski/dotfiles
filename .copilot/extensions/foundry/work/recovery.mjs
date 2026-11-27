@@ -94,14 +94,28 @@ export function refusedCall(event) {
 		return d.toolCallId;
 }
 
-/** Recover only the issuing session's original top-level call, never a similarly named worker.
- * @param {(page:Page)=>Promise<{events:unknown[],cursor:string,cursorStatus:string,hasMore:boolean}>} read @param {Effect} effect */
-export async function recover(read, effect) {
-	if (!effect.callId)
-		fail("receipt_unavailable", "No original native call identity");
-	let cursor, start, end, denied = false;
+/** @typedef {(page:Page)=>Promise<{events:unknown[],cursor:string,cursorStatus:string,hasMore:boolean}>} HistoryPage */
+/** @typedef {{effect:Effect,start?:Record<string,unknown>,end?:Record<string,unknown>,denied?:boolean,error?:Error}} Trace */
+/** Keep one backward scan per sampled issuer, not one copy of every (potentially large) SDK page per call.
+ * Match only original top-level IDs. Each trace closes at its own issuing turn boundary.
+ * @param {HistoryPage} read @param {Effect[]} effects @param {(e:Effect,result:unknown)=>void} publish */
+export async function recoveredCalls(read,effects,publish) {
+	/** @type {Map<string,Trace>} */ const active=new Map();
+	for(const e of effects){
+		if(!e.callId || active.has(e.callId))fail("receipt_unavailable","Expected unique original native call identities");
+		active.set(e.callId,{effect:e});
+	}
+	let cursor;
 	const cursors = new Set();
-	history: for (;;) {
+	/** @param {string} id @param {Trace} t */
+	const finish=(id,t)=>{
+		active.delete(id);
+		let value;
+		try{if(t.error)fail("ambiguous_receipt",t.error.message);value=matched(t);}
+		catch(e){value=e;}
+		publish(t.effect,value);
+	};
+	try{while(active.size){
 		const page = await read({
 			cursor, direction: "backward", view: "history", agentScope: "primary", includeEphemeral: false,
 			types: ["assistant.turn_start", "tool.execution_start", "tool.execution_complete", "permission.completed"], max: 256
@@ -109,32 +123,35 @@ export async function recover(read, effect) {
 		if (page.cursorStatus !== "ok")
 			fail("receipt_unavailable", "Original native history is no longer available");
 		// Backward pages arrive newest first, but each page is in chronological order.
-		for (const value of page.events.toReversed()) {
+		for(let i=page.events.length-1;i>=0;i--){
+			const value=page.events[i];
 			const e = record(value), d = record(e.data);
 			if (e.agentId || d.agentId || d.parentToolCallId) continue;
-			if (e.type === "assistant.turn_start" && start && d.turnId === record(start.data).turnId)
-				break history;
-			if (d.toolCallId !== effect.callId)
+			if(e.type==="assistant.turn_start"){
+				for(const [id,t] of active)if(t.start && d.turnId===record(t.start.data).turnId)finish(id,t);
 				continue;
-			if (refusedCall(e) === effect.callId)
-				denied = true;
+			}
+			const t=typeof d.toolCallId==="string" && active.get(d.toolCallId);if(!t)continue;
+			if(refusedCall(e)===d.toolCallId)t.denied=true;
 			if (e.type === "tool.execution_start") {
-				if (start && start.id !== e.id)
-					fail("ambiguous_receipt", "Ambiguous native start");
-				start = e;
+				if(t.start && t.start.id!==e.id)t.error=new Error("Ambiguous native start");
+				t.start=e;
 			}
 			if (e.type === "tool.execution_complete") {
-				if (start || end && end.id !== e.id)
-					fail("ambiguous_receipt", "Conflicting or out-of-order native completion");
-				end = e;
+				if(t.start || t.end && t.end.id!==e.id)t.error=new Error("Conflicting or out-of-order native completion");
+				t.end=e;
 			}
 		}
-		if (!page.hasMore) break;
+		if (!page.hasMore || !active.size) break;
 		if (cursors.has(page.cursor))
 			fail("receipt_unavailable", "Original native history cursor did not advance");
 		cursors.add(page.cursor);
 		cursor = page.cursor;
-	}
+	}}catch(e){for(const t of active.values())publish(t.effect,e);return;}
+	for(const [id,t] of active)finish(id,t);
+}
+/** @param {Trace} trace */
+function matched({effect,start,end,denied}){
 	if (start && (end || denied)) {
 		const a = record(start.data), b = end && record(end.data);
 		if (!start.id || !a.turnId || end && (!end.id || a.turnId !== b?.turnId) || text(a.toolName, "native tool").split(".").at(-1) !== effect.tool ||
@@ -151,4 +168,12 @@ export async function recover(read, effect) {
 		}
 	}
 	fail("receipt_unavailable", "Original call is not confirmed; it will not be replayed");
+}
+
+/** @param {HistoryPage} read @param {Effect} effect */
+export async function recover(read,effect){
+	/** @type {unknown} */let result;
+	await recoveredCalls(read,[effect],(_,value)=>{result=value;});
+	if(result instanceof Error)throw result;
+	return /** @type {ReturnType<typeof matched>} */(result);
 }

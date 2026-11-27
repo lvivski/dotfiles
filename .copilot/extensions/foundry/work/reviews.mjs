@@ -6,13 +6,27 @@ import { workerLimit } from "./policy.mjs";
 import { comparisonGoal, currentEvaluation, leadGoal, milestoneBlocker, productPin, qualifiedProduct, repairDetail, sameEvaluation } from "./evidence.mjs";
 import { attachedNotes, noteId } from "./notes.mjs";
 import { actionable, checked, consumersOf, displacedInputs, owns, settledOutput, stoppedHandoff } from "./plan.mjs";
-import { comparisonScope, digest, fail, referenceRepo } from "./values.mjs";
+import { comparisonScope, digest, fail, referenceRepo, sameScope, scopeLabel } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @typedef {import("./model.js").Review} Review */
 /** @param {Run} run */
 export const reviews = run => run.effects.filter(e => e.kind === "scout");
 
+export const staleReviewReason = "Chartered inputs changed during review";
+/** Only old snapshots use display text as an index. Re-admission always rechecks the actual report.
+ * @param {Review} r @param {import("./model.js").ReviewObstacle["kind"]} kind @param {string} [subject] */
+export function obstructed(r,kind,subject){
+	if(r.obstacle)return r.obstacle.kind===kind && r.obstacle.subject===subject;
+	switch(kind){
+	case "missing-output":return r.error===`Unknown required output: ${subject}`;
+	case "overlap":return r.error==="Writable directories must be disjoint";
+	case "stale-review":return r.error===staleReviewReason;
+	case "outside-scope":return r.error===`This comparison is for one independent directory: ${subject}` || !!r.error?.startsWith(`Preserving assignments outside comparison ${subject}: `);
+	case "repeated-output":return r.error===`Cannot repartition ${subject}: its repeated output has not passed a product checkpoint`;
+	default:return false;
+	}
+}
 /** Drain the dependency frontier of saved reports. Only an actually admitted producer
  * releases a waiter. A cycle of missing names cannot bootstrap itself into the work graph.
  * @param {Run} run @param {Iterable<Review>} latest */
@@ -25,7 +39,7 @@ export function* inputArrivals(run,latest) {
 		if (review.state!=="blocked" || !review.workflowId || !review.callId || !review.packet || obs?.outcome!=="regenerate") continue;
 		const proposed=new Set(obs.grains.map(g=>typeof g==="string"?g:g.id));
 		const external=new Set(obs.grains.flatMap(g=>typeof g==="string"?[]:g.needs).filter(id=>!proposed.has(id)));
-		if (![...external].some(id=>review.error===`Unknown required output: ${id}`) || correction(run,review)) continue;
+		if (![...external].some(id=>obstructed(review,"missing-output",id)) || correction(run,review)) continue;
 		const missing=new Set([...external].filter(id=>!Object.hasOwn(run.nodes,id))), entry={review,missing};
 		if (!missing.size) ready.push(entry);
 		for (const id of missing) {
@@ -90,8 +104,11 @@ export function reserveReview(run, issuer, squad, base, version, wake) {
 }
 
 /** @param {Run} run @param {Review} r */
-export const wakeSource = (run, r) => r.wake && reviews(run).find(p => p.id === r.wake?.review && p.squad === r.squad && sameEvaluation(p,r) &&
-	(r.wake.key === "released-inputs" ? p.state === "deferred" : p.base === r.base));
+export const wakeSource = (run, r) => {
+	const wake=r.wake,p=wake && run.effects.find(e=>e.id===wake.review);
+	return p?.kind==="scout" && p.squad===r.squad && sameEvaluation(p,r) &&
+		(wake?.key==="released-inputs"?p.state==="deferred":p.base===r.base) ? p : undefined;
+};
 
 /** @param {Review} review @param {import("./model.js").Squad} squad */
 export const investigation = (review, squad) => review.wake?.key === "research" ||
@@ -126,11 +143,9 @@ export const canInvestigate = (run, r, squad) => "areas" in squad && !!squad.res
 export function correction(run, review) {
 	if (review.state !== "blocked" || review.observation?.outcome !== "regenerate") return;
 	const conflict = displacedInputs(run.nodes, review.observation.grains);
-	if (conflict && (review.error === conflict.reason || conflict.lost.some(id => review.error === `Unknown required output: ${id}`)))
+	if (conflict && (review.obstacle?.kind==="displaced-input" || !review.obstacle && review.error === conflict.reason || conflict.lost.some(id => obstructed(review,"missing-output",id))))
 		return conflict.reason;
 }
-
-export const staleReviewReason = "Chartered inputs changed during review";
 
 /** Notes travel only along their own same-input evidence request chain, not to a later
  * checkpoint, another squad or an investigation. Never look up an arbitrary receipt by ID.
@@ -212,7 +227,7 @@ export const reviewHandoff = (run, r, report) => stoppedHandoff(run, r, report, 
 export function releasedReviews(run, history) {
 	const consumed = new Set(history.filter(r => r.wake?.key === "released-inputs" &&
 		(r.base === run.goal?.commit || r.state === "observed" || r.state === "deferred" ||
-			r.state === "blocked" && r.callId && r.error !== staleReviewReason)).map(r => r.wake?.review));
+			r.state === "blocked" && r.callId && !obstructed(r,"stale-review"))).map(r => r.wake?.review));
 	return history.filter(r => r.deferred && !consumed.has(r.id) &&
 		!consumersOf(run.nodes, r.deferred.pins).some(n => !settledOutput(n)));
 }
@@ -291,18 +306,33 @@ export function checkpointWake(run, past, base, version) {
 	if (wake?.review === r.id) return { wake, lead:r.lead };
 }
 
-/** @param {Review} r @param {string} reason */
-export function blockReview(r, reason) {
+/** @param {Review} r @param {string} reason @param {import("./model.js").ReviewObstacle} [obstacle] */
+export function blockReview(r, reason,obstacle={kind:"other"}) {
 	survey(r,{type:"block",error:reason});
+	r.obstacle=obstacle;
+}
+
+/** @param {string} dir @param {import("./model.js").Node[]} consumers */
+export const scopeReason=(dir,consumers)=>`Preserving assignments outside comparison ${dir}: ${consumers.map(n=>`${n.grain.id} (${scopeLabel(n.grain.directory)}, ${n.state})`).sort().join(", ")}. This report cannot retire their ownership or input pins.`;
+
+/** Identify only the legacy single-directory refusal with an otherwise matching saved report.
+ * @param {Run} run @param {Review} r */
+export function scopeWait(run,r){
+	const i=comparison(run,r),o=r.observation,g=o?.grains[0];
+	if(!i || i.transfer || i.successor || o?.outcome!=="regenerate" || o.grains.length!==1 || typeof g!=="object" || o.replace?.length ||
+		!sameScope(g.directory,comparisonScope(i)) || !obstructed(r,"outside-scope",i.directory))return;
+	const old=Object.values(run.nodes).filter(n=>settledOutput(n) && n.candidate && sameScope(n.grain.directory,g.directory));
+	const consumers=consumersOf(run.nodes,Object.fromEntries(old.map(n=>[n.grain.id,n.candidate??""]))).filter(n=>!sameScope(n.grain.directory,g.directory));
+	return {reason:consumers.length?scopeReason(i.directory,consumers):undefined};
 }
 
 /** @param {Run} run @param {Review} r */
 export function reviewStatus(run, r) {
 	const origin = comparisonReview(run, r);
 	const approved = origin?.iteration?.source?.commit, checkpoint = run.products.at(-1)?.commit;
-	const superseded = r.state === "blocked" && r.error === staleReviewReason && approved && checkpoint &&
+	const superseded = r.state === "blocked" && obstructed(r,"stale-review") && approved && checkpoint &&
 		checkpoint === run.goal?.commit && approved !== checkpoint;
-	const hold = r.state === "blocked" && r.error === "Writable directories must be disjoint" && r.observation ?
+	const hold = r.state === "blocked" && obstructed(r,"overlap") && r.observation ?
 		reviewHandoff(run, r, r.observation)?.hold : undefined;
 	return { id: r.id, squad: r.squad, state: reading(r) ? "reading" : r.state, base: r.base, version: r.version,
 		...(r.productEvaluatorRevision ? {productEvaluatorRevision:r.productEvaluatorRevision} : {}),
@@ -312,6 +342,7 @@ export function reviewStatus(run, r) {
 		...(r.note ? { note: r.note } : {}),
 		...(r.otherNotes ? { otherNotes: r.otherNotes } : {}),
 		...(hold ? { handoffHold: hold } : {}),
+		...(r.obstacle && {obstacle:r.obstacle}),
 		...(r.predecessor ? { predecessor: { grain: r.predecessor.grain.id, worker: r.predecessor.worker, base: r.predecessor.base, ...(r.predecessor.preview ? { preview: r.predecessor.preview } : {}),
 			check: r.predecessor.check, ...(r.predecessor.candidate ? { candidate:r.predecessor.candidate } : {}), reason: r.predecessor.reason } } : {}),
 		...(r.renewal && {renewal:r.renewal}),
@@ -320,7 +351,7 @@ export function reviewStatus(run, r) {
 			r.renewal?.reason ?? (r.deferred ? `Deferred: current assignments using ${Object.keys(r.deferred.pins).join(", ")}: ${r.deferred.consumers.join(", ")}` :
 			superseded && !currentEvaluation(run,r) ? "The evaluator changed since the original source comparison. The saved proposal cannot continue under a different evaluator." :
 			superseded ? `Source comparison approval covers ${approved}, not the current checked product ${checkpoint}. The report has not been admitted on the newer build.` :
-			r.state === "blocked" ? r.error : undefined),
+			r.state === "blocked" ? scopeWait(run,r)?.reason??r.error : undefined),
 		decision: r.decision };
 }
 

@@ -10,6 +10,41 @@ export function nonempty(value,label) {
 	return /** @type {unknown[]} */ (value);
 }
 
+/** A complete, unchanged invocation with only literal file operands needs no second inventory.
+ * Do not interpret a shell, accept part of a line, or guess what a variable or option reads.
+ * @param {string} source @param {string} excerpt */
+function literalInputs(source,excerpt){
+	const lines=source.replace(/\\\r?\n/g," ").split(/\r?\n/).map(s=>s.trim()),line=excerpt.replace(/\\\r?\n/g," ").trim();
+	if(!lines.includes(line) || !/^[A-Za-z][\w.-]*(?:[ \t]+(?:[\w./-]+|"[\w ./-]+"|'[\w ./-]+'))+$/.test(line))
+		fail("incomplete_evidence","Cite a complete literal input rule; options, expansions and partial invocations are not an input inventory");
+	return [...line.matchAll(/"([^"]+)"|'([^']+)'|([^ \t]+)/g)].slice(1).map(m=>{
+		const p=m[1]??m[2]??m[3];
+		if(p.startsWith("-"))fail("incomplete_evidence","An option is not a proven input");
+		return relative(p.replace(/^\.\//,""));
+	});
+}
+
+/** @param {string} cwd @param {string} pin @param {string} file @param {string} excerpt @param {unknown} input */
+function inventory(cwd,pin,file,excerpt,input){
+	const i=record(input);fields(i,["file","keys"]);
+	const manifest=relative(i.file);
+	if (!Array.isArray(i.keys) || !i.keys.every(k=>typeof k==="string" && k.length && !Object.hasOwn(Object.prototype,k)))
+		fail("incomplete_evidence","Name the exact key path to a finite build input list");
+	const keys=/** @type {string[]} */ (i.keys), local=posix.relative(posix.dirname(file),manifest);
+	if (file!==manifest && ![manifest,local,`./${local}`].some(p=>excerpt.includes(p)))
+		fail("incomplete_evidence",`Cite the rule that consumes ${manifest}, not a disconnected manifest`);
+	const [entry]=regularFiles(cwd,pin,[manifest]), contents=committedFile(cwd,pin,manifest);
+	/** @type {unknown} */ let list;
+	try { list=isUtf8(contents) && JSON.parse(contents.toString()); }
+	catch (e) { if (!(e instanceof SyntaxError)) throw e;fail("incomplete_evidence",`Invalid JSON in ${manifest}`); }
+	for (const key of keys) {
+		if (!list || typeof list!=="object" || !Object.hasOwn(list,key)) fail("incomplete_evidence",`Missing build inventory ${manifest}:${keys.join("/")}`);
+		list=Reflect.get(list,key);
+	}
+	if (!Array.isArray(list)) fail("incomplete_evidence",`No finite input list at ${manifest}:${keys.join("/")}`);
+	return {inputs:list.map(relative),inventory:{file:manifest,keys,blob:entry.oid}};
+}
+
 /** Only a final filename wildcard has unambiguous cross-platform semantics.
  * Expand against both trees so added and removed matches cannot escape the proof.
  * @param {string} cwd @param {string} pin @param {string} base @param {string} assembly @param {string[]} selectors */
@@ -47,44 +82,29 @@ export function footprints(cwd,input,roles,base,assembly,held,delta) {
 		const component=name(r.component,"component check"), role=roles.get(component);
 		if (!role || seen.has(component)) fail("incomplete_evidence","Need one evidence record for each distinct selected and held check");
 		seen.add(component);
-		const parts=record(r.stages);fields(parts,[...stages]);
+		const whole=Array.isArray(r.stages),parts=whole?{component:r.stages}:record(r.stages);fields(parts,[...stages]);
 		/** @type {import("./model.js").Footprint["stages"]} */
 		const proof={component:[],generated:[],package:[],runtime:[]};
 		const roots=new Set(), sources=new Set(), inventoryInputs=new Set();
 		/** @type {Map<string,string[]>} */ const edges=new Map();
-		for (const stage of stages) for (const raw of nonempty(parts[stage],`${component} ${stage} build evidence`)) {
+		for (const stage of whole?/** @type {const} */(["component"]):stages) for (const raw of nonempty(parts[stage],`${component} ${stage} build evidence`)) {
 			const n=record(raw);fields(n,["file","excerpt","inventory","reason"]);
 			const file=relative(n.file), excerpt=text(n.excerpt,"verbatim build or consumption evidence"), reason=text(n.reason,"explanation of this complete stage");
 			const [source]=regularFiles(cwd,role.commit,[file]), bytes=committedFile(cwd,role.commit,file);
 			if (!isUtf8(bytes) || !bytes.toString().includes(excerpt)) fail("incomplete_evidence",`Missing exact source at ${role.commit}:${file}`);
-			const i=record(n.inventory);fields(i,["file","keys"]);
-			const manifest=relative(i.file);
-			if (!Array.isArray(i.keys) || !i.keys.every(k=>typeof k==="string" && k.length && !Object.hasOwn(Object.prototype,k)))
-				fail("incomplete_evidence","Name the exact key path to a finite build input list");
-			const keys=/** @type {string[]} */ (i.keys);
-			const local=posix.relative(posix.dirname(file),manifest);
-			if (file!==manifest && ![manifest,local,`./${local}`].some(p=>excerpt.includes(p)))
-				fail("incomplete_evidence",`Cite the rule that consumes ${manifest}, not a disconnected manifest`);
-			const [entry]=regularFiles(cwd,role.commit,[manifest]), contents=committedFile(cwd,role.commit,manifest);
+			const data=n.inventory===undefined ? {inputs:literalInputs(bytes.toString(),excerpt),inventory:undefined}:inventory(cwd,role.commit,file,excerpt,n.inventory);
+			const {inputs}=data,manifest=data.inventory?.file??file;
 			if (changedFiles(cwd,base,role.commit,[manifest]).length || changedFiles(cwd,base,assembly,[manifest]).length)
 				fail("incomplete_evidence",`A proposed or held change cannot supply its own build inventory: ${manifest}`);
-			/** @type {unknown} */ let list;
-			try { list=isUtf8(contents) && JSON.parse(contents.toString()); }
-			catch (e) { if (!(e instanceof SyntaxError)) throw e;fail("incomplete_evidence",`Invalid JSON in ${manifest}`); }
-			for (const key of keys) {
-				if (!list || typeof list!=="object" || !Object.hasOwn(list,key)) fail("incomplete_evidence",`Missing build inventory ${manifest}:${keys.join("/")}`);
-				list=Reflect.get(list,key);
-			}
-			if (!Array.isArray(list)) fail("incomplete_evidence",`No finite input list at ${manifest}:${keys.join("/")}`);
-			const inputs=list.map(relative);
 			if (new Set(inputs).size!==inputs.length || inputs.some(p=>/[?[\]{}]/.test(p))) fail("incomplete_evidence","Need distinct concrete input selectors");
 			const files=concrete(cwd,role.commit,base,assembly,inputs);
 			for (const p of files) inventoryInputs.add(p);
-			proof[stage].push({file,blob:source.oid,excerpt,reason,inventory:{file:manifest,keys,blob:entry.oid},inputs});
+			proof[stage].push({file,blob:source.oid,excerpt,reason,...(data.inventory?{inventory:data.inventory}:{literal:true}),inputs});
 			edges.set(file,[...edges.get(file)??[],manifest,...files]);
 			for (const p of [file,manifest,...files]) roots.add(p);
 			sources.add(file);
 		}
+		if(whole)for(const stage of stages)proof[stage]=proof.component;
 		const reachable=new Set([role.check]);
 		for (const file of reachable) for (const source of sources) if (covers(edges.get(file)??[],source)) reachable.add(source);
 		if (!proof.component.some(n=>n.file===role.check) || [...sources].some(s=>!reachable.has(s)))

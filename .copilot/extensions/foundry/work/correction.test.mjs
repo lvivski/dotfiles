@@ -48,6 +48,10 @@ for (const stopped of [false,true]) test(`correct the original ordinary assignme
 	}},createRuntime);
 	await (stopped?guarded:owner).operation("correct",args,"owner");
 	const after=db.read(run);assert.ok(after);const current=writer.inspect({run},w.id).nodes[0];
+	if(!stopped){
+		const sent=after.instructions?.find(e=>e.instruction?.kind==="correction");assert.equal(sent?.state,"done");
+		assert.equal(sent.args.session_id,w.id);assert.ok(String(sent.args.message).includes(task));assert.ok(!String(sent.args.message).includes(excerpt));
+	}
 	assert.equal(current.task?.trim(),task);assert.equal(current.state,"writing");assert.equal(current.preview,preview);
 	assert.equal(current.worker,w.id);assert.equal(current.generation,n.generation);assert.deepEqual(current.inputs,n.inputs);
 	assert.equal(current.directory,dir);assert.equal(current.evaluator,n.grain.check);assert.equal(current.readGrant,undefined);

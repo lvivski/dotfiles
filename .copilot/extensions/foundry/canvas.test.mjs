@@ -1,9 +1,39 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import test from "node:test";
 import { mapSnapshot } from "./map/model.mjs";
 import { factory, loadEntry, put } from "./test/fixture.mjs";
 import { compose, step } from "./work/machine.mjs";
 import { catalog, definitions as runtimeModels } from "./work/catalog.mjs";
+
+test("a board with no planner, runner, ledger or effect executor can load the actual chart",()=>{
+	const script=`
+		import { registerHooks } from "node:module";
+		const root=new URL("./",process.argv[1]);
+		const sdk="data:text/javascript,export const createCanvas=x=>x;export class CanvasError extends Error{}";
+		const pure=new Set(["catalog","machine","engine","projection","strategy","scheduling","values"].map(n=>"work/"+n+".mjs"));
+		registerHooks({resolve(s,ctx,next){
+			if(s==="@github/copilot-sdk/extension")return {url:sdk,shortCircuit:true};
+			const result=next(s,ctx),local=result.url.startsWith(root.href)&&result.url.slice(root.href.length);
+			if(result.url.startsWith("node:") && !["node:crypto","node:fs/promises","node:http"].includes(result.url))
+				throw Error("Unexpected board capability: "+result.url);
+			if(local && local.startsWith("work/") && !local.startsWith("work/rules/") && !pure.has(local))
+				throw Error("Board reached a non-renderer dependency: "+local);
+			return result;
+		}});
+		const {foundryBoard}=await import(process.argv[1]);
+		const unused=()=>{throw Error("Simulation accessed a run");};
+		const board=foundryBoard(unused,unused,unused);
+		const ctx={instanceId:"probe",sessionId:"viewer",input:{machine:true}};
+		try {
+			const {url}=await board.open(ctx);
+			const chart=await (await fetch(new URL("machines",url))).json();
+			process.stdout.write(JSON.stringify(chart));
+		} finally {await board.onClose(ctx);}
+	`;
+	const result=execFileSync(process.execPath,["--input-type=module","-e",script,new URL("./canvas.mjs",import.meta.url).href],{encoding:"utf8"});
+	assert.deepEqual(JSON.parse(result),catalog());
+});
 
 /** @param {string} url */
 async function panelModules(url){

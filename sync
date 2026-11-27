@@ -12,10 +12,10 @@ fi
 git pull
 
 push() {
-	rsync --exclude ".git" --exclude ".DS_Store" --exclude "sync" --exclude "/sync.test.mjs" --exclude "/README.md" --exclude "/AGENTS.md" --exclude "/.copilot/editor/node_modules/" -av . ~ || return
-	# Extension and skill directories are mirrors
+	rsync --exclude ".git" --exclude ".DS_Store" --exclude "sync" --exclude "/sync.test.mjs" --exclude "/README.md" --exclude "/AGENTS.md" \
+		--exclude "/.copilot/editor/node_modules/" --exclude "/.copilot/extensions/foundry" --exclude "/.copilot/skills/foundry" -av . ~ || return
 	local item
-	for item in extensions/{foundry,recon} skills/{foundry,deep-research,review-queue,security-review}; do
+	for item in extensions/recon skills/{deep-research,review-queue,security-review}; do
 		rsync --exclude ".git" --delete --checksum -av ".copilot/$item/" "$HOME/.copilot/$item/" || return
 	done
 
@@ -32,10 +32,12 @@ push() {
 	)
 	local f
 	for f in "${obsolete[@]}"; do [ -n "$f" ] && rm -rf ~/"$f"; done
+	printf '%s\n' 'Foundry extension and skill left unchanged; install them together in an offline maintenance window.'
 }
 
 pull() {
-	find . \( -name ".git" -o -path "./.copilot/editor/node_modules" \) -prune -o -type f ! -name ".DS_Store" ! -path "./README.md" ! -path "./AGENTS.md" ! -name "sync" ! -path "./sync.test.mjs" -exec cp ~/{} {} \;
+	find . \( -name ".git" -o -path "./.copilot/editor/node_modules" -o -path "./.copilot/extensions/foundry" -o -path "./.copilot/skills/foundry" \) -prune \
+		-o -type f ! -name ".DS_Store" ! -path "./README.md" ! -path "./AGENTS.md" ! -name "sync" ! -path "./sync.test.mjs" -exec cp ~/{} {} \;
 }
 
 case "$1" in

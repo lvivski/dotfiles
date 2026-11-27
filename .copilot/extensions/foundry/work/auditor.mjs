@@ -1,10 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { holdFor } from "./activity.mjs";
+import { noWorkflowSlot } from "./capacity.mjs";
 import { candidatePacket } from "./critique.mjs";
 import { currentInspection, inspectionResult, markInspection } from "./inspection.mjs";
 import { boundInspections, matchingInspections, readyInspections } from "./inspections.mjs";
 import { expired } from "./native.mjs";
-import { digest, fail, record, text } from "./values.mjs";
+import { replacementOffer } from "./replacement.mjs";
+import { digest, fail, record } from "./values.mjs";
+import { workflowIdentity } from "./workflow.mjs";
 
 /** @typedef {import("./model.js").Inspection} Inspection */
 /** @typedef {import("./model.js").Run} Run */
@@ -14,7 +17,6 @@ import { digest, fail, record, text } from "./values.mjs";
 /** @typedef {<T>(fn:()=>T)=>Promise<T|undefined>} Persist */
 
 const inspectionCapacity="Queued for native inspection capacity; the issuer will retry automatically.";
-const capacity=/^This session already has [1-9]\d* active workflow runs, which is the concurrent limit\.$/;
 /** @param {Inspection} i */
 const pins=i=>digest([i.id,i.issuer,i.component,i.grain,i.base,i.generation,i.candidate,i.scope,i.task,i.specification]);
 /** These exceptional grants name a live checkpoint target. Ordinary reviews
@@ -22,6 +24,8 @@ const pins=i=>digest([i.id,i.issuer,i.component,i.grain,i.base,i.generation,i.ca
  * @param {Run} run @param {Inspection} i */
 function protectedTarget(run,i) {
 	const c=run.effects.find(e=>e.id===i.component);
+	if(c?.kind==="component" && c.rollout)return run.adoptions?.find(a=>a.id===c.rollout)?.revision;
+	if(c?.kind==="component" && c.replacement)return replacementOffer(run,c)?.revision;
 	return c?.kind==="component" && (c.delivery || c.remedy) ? run.products.at(-1)?.target : undefined;
 }
 /** @param {Run} run @param {string} id @param {string} ticket @param {string} actor @param {Inspection} [expected] */
@@ -38,10 +42,7 @@ function issued(run,id,ticket,actor,expected) {
  * Neither is a verdict. Never substitute a different ID or import a previous attempt's workflow.
  * @param {Run} run @param {Inspection} i @param {string} workflow */
 function bind(run,i,workflow) {
-	text(workflow,"inspection workflow ID");
-	if (i.workflow && i.workflow!==workflow || run.inspections?.some(other=>other!==i && other.workflow===workflow ||
-		other.previous?.some(prior=>prior.workflow===workflow)) || run.effects.some(e=>e.kind==="scout" && e.workflowId===workflow))
-		fail("wrong_workflow","The native inspection workflow does not match the original dispatch");
+	workflowIdentity(run,i,workflow);
 	if (!i.workflow) markInspection(i,"bind",{workflow});
 	return i;
 }
@@ -181,7 +182,7 @@ export function auditor(io) {
 			const queued=await io.persist(()=>io.mutate(id,run=>{
 				const i=issued(run,expected.id,dispatch,issuer,expected);
 				if (!i) return false;
-				if (!i.workflow && error instanceof Error && capacity.test(error.message)) {
+				if (!i.workflow && noWorkflowSlot(error)) {
 					markInspection(i,"capacity");i.summary=inspectionCapacity;return true;
 				}
 				i.summary=i.workflow ? "Start reply unconfirmed; observing the original bound workflow." :
@@ -194,7 +195,13 @@ export function auditor(io) {
 	/** @param {string} id @param {string} job @param {string} ticket @param {string} actor @param {string} workflow */
 	async function packet(id,job,ticket,actor,workflow) {
 		const bound=await io.persist(()=>io.mutate(id,run=>{
-			const i=issued(run,job,ticket,actor) ?? fail("foreign_assignment","No current inspection matches this issuer and dispatch");
+			const i=issued(run,job,ticket,actor);
+			if(!i){
+				const known=run.inspections?.find(i=>i.id===job && i.dispatch===ticket && i.issuer===actor && i.workflow===workflow);
+				const c=known && run.effects.find(e=>e.id===known.component);
+				if(c?.kind==="component" && c.receipt)io.verifySigned(id,c);
+				fail("foreign_assignment","No current inspection matches this issuer and dispatch");
+			}
 			return bind(run,i,workflow);
 		}));
 		if (!bound || io.closed()) fail("runtime_closed","Foundry is closed");

@@ -1,4 +1,5 @@
-import { machine, to, transition, update } from "./machine.mjs";
+import { renewal } from "./rules/renewal.mjs";
+import { transition } from "./machine.mjs";
 import { executor } from "./adapter.mjs";
 import { currentEvaluation, goalReceipt } from "./evidence.mjs";
 import { checkpointCurrent } from "./facts.mjs";
@@ -7,31 +8,13 @@ import { expired } from "./native.mjs";
 import { partitionConflict } from "./partition.mjs";
 import { consumersOf, liveNeeds } from "./plan.mjs";
 import { changedFiles, contractPaths, outside } from "./product.mjs";
-import { comparison, reviews, staleReviewReason } from "./reviews.mjs";
+import { comparison, obstructed, reviews } from "./reviews.mjs";
 import { FoundryError, comparisonScope, covers, roots, sameScope } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @typedef {import("./model.js").Review} Review */
 /** @typedef {NonNullable<Review["renewal"]>} Renewal */
 /** @typedef {Omit<Renewal,"state">} Pins */
-
-const pins=update("record-renewal-pins",(/** @type {Pins|undefined} */ _,/** @type {Pins} */ e)=>({
-	checkpoint:e.checkpoint,goal:e.goal,...(e.reason && {reason:e.reason})}));
-/** @param {string} on @param {Renewal["state"]} target @param {string} description @param {...string} when */
-const record=(on,target,description,...when)=>({...to(on,target,description),when,...pins});
-const consider=[record("evidence","held","Keep the saved report on hold because its inputs or ownership conflict.","conflict"),
-	{...record("evidence","approved","Use the original report after its inputs and current permissions have been revalidated.","permitted"),action:"admit-report"},
-	record("evidence","needed","Keep the eligible report until the issuing session has permission to admit it.")];
-export const renewal=machine("renewal","initial",{
-	initial:consider,held:consider,needed:consider,approved:[...consider,record("invalid","closed","Retain the admission error rather than rerunning or silently changing the report.")],
-	// Older readers may already have presented an approval. Silence is not permission to replace it.
-	presenting:[],closed:[],
-},{description:"Determines whether an existing scout report can be admitted after a checkpoint changes.",states:{
-	initial:"The saved report has not been assessed for renewal.",held:"An input or ownership conflict prevents reuse of the report.",
-	needed:"The evidence supports renewal, but current permission is missing.",approved:"The report may be admitted on the reviewed checkpoint and goal.",
-	presenting:"A previous reader already presented a decision; it must not be silently replaced.",
-	closed:"The renewed proposal failed admission. Preserve its diagnostic.",
-}});
 
 /** @typedef {NonNullable<Review["observation"]>} Report */
 const applyRenewal=executor(renewal,{
@@ -65,7 +48,7 @@ export function renew(cwd,run,r,target,permitted,admit) {
  * whole-directory repair may replace an owner (or transfer only some files).
  * @param {string} cwd @param {Run} run @param {Review} r @param {string} target */
 export function renewalBasis(cwd, run, r, target) {
-	if (!run.active || expired(run) || r.state!=="blocked" || r.error!==staleReviewReason || !r.packet || !r.workflowId || !r.callId ||
+	if (!run.active || expired(run) || r.state!=="blocked" || !obstructed(r,"stale-review") || !r.packet || !r.workflowId || !r.callId ||
 		r.observation?.outcome!=="regenerate" || r.observation.grains.length!==1 || r.observation.replace?.length) return;
 	const i=comparison(run,r), g=r.observation.grains[0], last=run.products.at(-1), goal=run.goal;
 	if (!i?.source || i.transfer || i.successor || typeof g!=="object" || g.revision || !sameScope(comparisonScope(i),g.directory) ||

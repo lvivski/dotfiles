@@ -49,6 +49,13 @@ test("a late producer admits the original consumer report once, including after 
 	const held=db.read(run), saved=held?.effects.find(e=>e.id===consumer.id);
 	assert.ok(held && saved?.kind==="scout" && saved.state==="blocked");
 	assert.equal(saved.error,"Unknown required output: producer");
+	if(!prior){
+		assert.deepEqual(saved.obstacle,{kind:"missing-output",subject:"producer"});
+		db.mutateLocked(run,r=>{
+			const active=r.effects.find(e=>e.id===consumer.id);assert.ok(active?.kind==="scout");
+			active.error="A localized explanation for the operator; not a scheduler selector.";
+		});
+	}
 	assert.deepEqual(held.nodes,{},"never admit a dangling edge");
 	const originalGoal=held.effects.find(e=>e.kind==="goal");assert.ok(originalGoal?.receipt);
 	await producer.report(propose("producer"));
@@ -61,7 +68,7 @@ test("a late producer admits the original consumer report once, including after 
 	const now=db.read(run), admitted=now?.effects.find(e=>e.id===saved.id);
 	assert.ok(now && admitted?.kind==="scout");
 	assert.equal(admitted.state,"observed",admitted.error??"the reported producer is now present");
-	const {error,...original}=saved;
+	const {error,obstacle,...original}=saved;
 	assert.deepEqual(admitted,{...original,state:"observed"});
 	assert.equal(now.nodes.consumer.review,consumer.id);assert.equal(now.nodes.consumer.state,"waiting");
 	assert.deepEqual(now.nodes.consumer.grain.needs,["producer"]);assert.deepEqual(now.nodes.producer,started);

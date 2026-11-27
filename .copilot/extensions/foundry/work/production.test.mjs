@@ -5,7 +5,7 @@ import { git, put } from "../test/fixture.mjs";
 import { activation, failedFinalDiagnostic } from "../test/ownership.mjs";
 import { candidatePacket } from "./critique.mjs";
 import { currentInspection, inspectComponent, markInspection } from "./inspection.mjs";
-import { settleProduction } from "./production.mjs";
+import { productionResult } from "./production.mjs";
 import { createRuntime } from "./runtime.mjs";
 import { grant as ownership } from "./transfer.mjs";
 
@@ -39,7 +39,7 @@ function exerciseReviews(cwd,draft,original,producer) {
 	function settle(r) {
 		const w=r.effects.find(e=>e.id===job?.id), e=r.effects.find(e=>e.id===producerCheck?.id);
 		assert.ok(w?.kind==="writer" && e?.kind==="component");
-		settleProduction(cwd,r,w,e);
+		productionResult(cwd,r,w,e);
 	}
 	settle(draft);
 	if (cohort.some(c=>c.receipt?.exit!==0)) {
@@ -131,7 +131,7 @@ for (const mode of ["production pass","production fail","production primary"]) t
 		assert.ok(e.kind==="component" && e.remedy);
 		db.verifySigned(run,e);assert.throws(()=>db.verifySigned(run,{...e,remedy:undefined}),{code:"wrong_outcome"});
 	}
-	assert.equal(updated.inspections,undefined);assert.ok(checked);exerciseReviews(f.root,checked,original,producer);
+	assert.equal(updated.inspections,undefined);assert.ok(checked);exerciseReviews(f.root,structuredClone(checked),original,producer);
 	for (const e of original.effects.filter(e=>e.tool==="bash")) assert.deepEqual(updated.effects.find(x=>x.id===e.id),e);
 	for (const [id,n] of Object.entries(original.nodes)) if(!["buttons","selector"].includes(id)) {
 		assert.equal(updated.nodes[id].candidate,n.candidate);assert.equal(updated.nodes[id].check,n.check);

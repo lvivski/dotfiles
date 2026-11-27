@@ -1,5 +1,7 @@
 import { remainingAssignments } from "./capacity.mjs";
-import { checkpointReceipt, checkReceipt, currentEvaluation, failedCandidate, failedComponent, goalReceipt, milestoneBlocker, productPin, verification } from "./evidence.mjs";
+import { effectAt } from "./revision.mjs";
+import { checkpointReceipt, checkReceipt, currentEvaluation, failedCandidate, failedComponent, goalReceipt, milestoneBlocker, originalVerification, productPin, qualifiedProduct, verification } from "./evidence.mjs";
+import { unprovenExports } from "./attestation.mjs";
 import { awaitingReply } from "./reservation.mjs";
 import { discoverLeads } from "./leads.mjs";
 import { working } from "./assignment.mjs";
@@ -9,7 +11,7 @@ import { atCheckpoint, checkpointScope, checkpointWake, reading, reviews } from 
 /** @typedef {import("./model.js").Run} Run */
 /** @param {Run} run */
 export function pendingGoal(run) {
-	const e = run.effects.find(e => e.id === run.goal?.check);
+	const e = effectAt(run,run.goal?.check);
 	return e?.kind === "goal" && e.commit === run.goal?.commit && !e.receipt && !e.permissionHold && awaitingReply(e);
 }
 
@@ -49,15 +51,24 @@ export const undecided = r => `Final goal check could not decide at ${r.commit} 
 
 /** @param {Run} run @param {string} target @returns {import("./engine.mjs").Facts} */
 export function releaseFacts(run, target) {
-	const at = run.goal, last = run.products.at(-1), effect = at && run.effects.find(e => e.id === at.check);
+	const at = run.goal, last = run.products.at(-1), effect=effectAt(run,at?.check);
 	const receipt = goalReceipt(run), upgrade = run.productRepins?.at(-1);
 	const obsolete = effect?.kind === "goal" && !currentEvaluation(run,effect);
 	const old = obsolete && checkReceipt(effect), heldPin = obsolete && (awaitingReply(effect) || effect.permissionHold || effect.state === "refused");
+	const approved=run.repins?.at(-1),previous=last && run.effects.find(e=>e.id===last.check);
+	const independentGoal=!!(obsolete && approved && approved.revision!==effect.evaluatorRevision && effect.state==="uncertain" &&
+		effect.runnerStarted && effect.runnerClaim && effect.callId && !effect.receipt && !effect.permissionHold &&
+		last && previous?.kind==="product" && previous.runnerClaim && checkpointReceipt(run,last.check,last.commit) &&
+		last.target===target && at?.target===target && !run.conflict && !run.independent && !run.effects.some(e=>e.permissionHold) && !run.inspections?.some(i=>i.permissionHold));
+	const withdrawn=at && run.products.findLast(p=>p.withdrawnHandoff?.goal===at.check)?.withdrawnHandoff;
+	const withheld=unprovenExports(run).length>0 || !!withdrawn && (last?.check!==withdrawn.recheck || last.target!==target);
 	const rejoin = at && run.effects.find(e=>e.kind==="product" && e.recheck?.of===at.check);
-	const pendingPin=upgrade && at?.check===upgrade.goal && last?.check!==verification(upgrade) ? upgrade : undefined;
-	const goal = !at ? "absent" : pendingPin ? "product-repin" :
+	const pendingPin=upgrade && at?.check===upgrade.goal && originalVerification(run,last?.check)!==verification(upgrade) ? upgrade : undefined;
+	const goal = !at ? "absent" : withheld ? "withheld-handoff" :
+		withdrawn ? "new-product" : pendingPin ? "product-repin" :
 		rejoin ? last && run.effects.findIndex(e=>e.id===last.check)>=run.effects.indexOf(rejoin) ? "new-product" : "rejoining" :
-		obsolete ? heldPin ? "superseded" : "repin" : last && last.commit !== at.commit ? "new-product" :
+		obsolete ? independentGoal && last?.commit!==at.commit && previous && run.effects.indexOf(previous)>run.effects.indexOf(effect) ? "new-product" :
+			heldPin ? "superseded" : "repin" : last && last.commit !== at.commit ? "new-product" :
 		effect?.state === "retired" ? "retired" : !receipt ? "pending" : receipt.exit === 2 ? "missing" : receipt.exit === 1 ? "unmet" : receipt.exit === 0 ? "met" : "incomplete";
 	const history = reviews(run).filter(r=>currentEvaluation(run,r)), nodes = Object.values(run.nodes), byId = new Map(history.map(r => [r.id, r]));
 	const remaining = remainingAssignments(run);
@@ -82,10 +93,10 @@ export function releaseFacts(run, target) {
 		!run.join && (pendingGoal(run) || review || historicalWork.some(reachable) ||
 			goal === "missing" && remaining > 0 && !!discoverLeads(run, history)?.leads.size) ||
 		goal === "missing" && work && !milestoneBlocker(run));
-	return { active: run.active, qualified: !!last?.qualifiedAt, goal,
+	return { active: run.active, qualified: !!qualifiedProduct(run), goal,
 		blocked: !!run.blocker && !(goal === "repin" && old && run.blocker === undecided(old)),
-		scoped,
-		failedComponent:!!pendingPin?.targetFrom && run.join?.check===verification(pendingPin) && !!failedComponent(run.effects.find(e=>e.id===run.join?.check)),
+		scoped,supersededWork:independentGoal && !!last && last.commit===at?.commit && nodes.some(n=>n.state==="published"),
+		failedComponent:!!pendingPin?.targetFrom && originalVerification(run,run.join?.check)===verification(pendingPin) && !!failedComponent(run.effects.find(e=>e.id===run.join?.check)),
 		stalled: !!at?.stall, moved: !!at && (pendingPin?.targetFrom ? pendingPin.revision : at.target) !== target, idle: !nodes.some(n => n.state !== "idle") && !history.some(reading),
 		product: !!last, exactProduct, join: !!run.join, held: !!milestoneBlocker(run), review, work };
 }

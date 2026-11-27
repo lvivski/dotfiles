@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { verdicts } from "../test/portable.mjs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import test from "node:test";
@@ -122,7 +123,7 @@ for (const outcome of ["pass","component fails","goal fails"]) test(`mixed targe
 	const final=migrated.inspect({run,detail:"proof"},"owner");
 	if (outcome==="component fails") {
 		assert.notEqual(p.receipt.exit,0); assert.match(p.receipt.output,/unit/); assert.ok(!fresh.some(e=>e.kind==="goal"));
-		assert.deepEqual(p.receipt.components,{unit:{check:component,exit:1}});
+		assert.deepEqual(verdicts(p.receipt.components),{unit:{check:component,exit:1}});
 	} else {
 		assert.equal(p.receipt.exit,0); assert.equal(after.goal?.commit,p.commit);
 		assert.equal(final.goal?.receipt?.exit,outcome==="pass"?0:2); assert.equal(final.goal?.pin,revision);
@@ -130,7 +131,7 @@ for (const outcome of ["pass","component fails","goal fails"]) test(`mixed targe
 	if (outcome==="pass") {
 		assert.equal(final.qualified,p.commit); assert.equal(final.qualification?.contract.commit,revision);
 		assert.equal(final.qualification?.receipts.product.evaluatorRevision,revision);
-		assert.deepEqual(final.qualification?.receipts.product.components,{unit:{check:component,exit:0}});
+		assert.deepEqual(verdicts(final.qualification?.receipts.product.components),{unit:{check:component,exit:0}});
 		assert.equal(final.qualification?.contract.activation,f.tip);
 		const corrupt=structuredClone(after), bad=corrupt.effects.find(e=>e.id===p.id)?.receipt?.components;
 		assert.ok(bad); bad.unit.check=goal; assert.throws(()=>decode(corrupt),/lineage|dispatch/);
@@ -144,13 +145,15 @@ for (const outcome of ["pass","component fails","goal fails"]) test(`mixed targe
 		await owner.operation("repin",{run,from:revision,revision:pin,files:[goal]},"owner");
 		const proof=owner.inspect({run,detail:"proof"},"owner").qualification;assert.ok(proof);
 		assert.equal(proof.commit,p.commit);assert.equal(proof.receipts.goal.evaluatorRevision,pin);
-		assert.deepEqual(proof.receipts.product.components,p.receipt.components);
+		assert.deepEqual(verdicts(proof.receipts.product.components),verdicts(p.receipt.components));
+		assert.deepEqual(proof.receipts.product.components?.unit.inputs,p.receipt.components?.unit.inputs);
 		assert.deepEqual(f.checks.slice(checks.length).map(c=>c.split(" at ")[0]),["Check final goal"]);
 		const bundle=path.join(path.dirname(f.root),"adopted.bundle");
 		execFileSync(process.execPath,[fileURLToPath(new URL("../../../skills/foundry/scripts/qualification.mjs",import.meta.url)),"pack",bundle],
 			{cwd:f.root,input:JSON.stringify(proof)});
 		const heads=git(f.root,"bundle","list-heads",bundle);
-		for (const id of [f.tip,revision,pin,p.commit]) assert.ok(heads.includes(`refs/foundry/objects/${id}`));
+		for (const obs of [proof.receipts.product,proof.receipts.goal])assert.ok(heads.includes(`refs/foundry/replay/${obs.disclosure.subject.carrier}`));
+		for (const id of [f.tip,revision,pin,p.commit])assert.ok(!heads.includes(id));
 		assert.equal(git(f.root,"rev-parse","main"),revision);
 	}
 });
@@ -239,7 +242,7 @@ test("target approval binds the live tip and cannot upgrade a directories-only c
 	assert.equal(after.productOwnership,"directories");
 });
 
-for(const outcome of ["decline","move","pause","closed issuer","permission change","owned conflict"])test(`automatic target approval / ${outcome}`,async t=>{
+for(const outcome of ["decline","move","pause","closed issuer","permission change","owned conflict","unsettled while presenting","unrelated reference"])test(`automatic target approval / ${outcome}`,async t=>{
 	const f=await checkpoint(t),db=openDatabase(f.root);t.after(()=>db.close());
 	const original=db.read(run);assert.ok(original);
 	const charter=".foundry/spec.md";put(f.root,charter,"Prospective maintenance contract.");
@@ -270,12 +273,29 @@ for(const outcome of ["decline","move","pause","closed issuer","permission chang
 	assert.ok(owner.readBoard(run,"owner").questions.some(q=>q.question.includes(revision)));
 	assert.deepEqual(db.read(run)?.effects,original.effects);
 	const peer=f.runtime(f.root,{...host,confirm:async()=>true});peer.turn("owner");await peer.flush();assert.equal(count,1,"two owner runtimes must share one presentation");
+	if(outcome==="unsettled while presenting"){
+		assert.ok(original.goal);await peer.operation("review_note",{run,squad:original.policy.squads[0].id,receipt:original.goal.check,question:"Check the later observation before adoption."},"owner");
+		peer.turn("owner");await peer.flush();assert.doesNotThrow(()=>db.read(run),"an open question cannot be left without its presentation pointer");
+	}
+	if(outcome==="unrelated reference"){
+		put(f.root,"background.txt","Read-only background for a future output.");
+		await peer.operation("publish",{run,file:"background.txt",to:[primary]},"owner");
+		peer.turn("owner");await peer.flush();
+	}
 	if(outcome==="move"){put(f.root,"manual","a later target");git(f.root,"add","manual");git(f.root,"commit","-qm","Move during approval");}
 	if(outcome==="pause"){await peer.operation("pause",{run},"owner");}
 	if(outcome==="closed issuer")owner.close();
 	if(outcome==="permission change")held=true;
 	answer.resolve();await owner.flush();
 	const end=db.read(run);assert.ok(end);
+	if(outcome==="unrelated reference"){
+		assert.equal(count,1);assert.equal(end.policy.contractTarget,revision);
+		assert.deepEqual(end.effects.slice(0,original.effects.length),original.effects);
+		assert.equal(end.adoptions?.at(-1)?.decision?.status,"answered");
+		assert.ok(end.artifacts?.some(a=>a.file==="background.txt"));
+		assert.deepEqual(f.checks.slice(before.length).map(s=>s.split(" at ")[0]),["Check joined product","Check final goal"]);
+		return;
+	}
 	assert.equal(end.policy.contractTarget,undefined);assert.deepEqual(end.effects,original.effects);assert.deepEqual(f.checks,before);
 	if(outcome==="decline" || outcome==="closed issuer"){
 		peer.sessionStart("owner",f.root);await clock.pulse(peer,8);
@@ -303,6 +323,7 @@ for(const response of ["approved","cancelled","missing answer"])test(`native App
 			assert.ok([goal,revision,f.prior.check,before.goal?.check].every(s=>s && form.message.includes(s)));
 			return {action:response==="cancelled"?"cancel":"accept",content:response==="missing answer"?{}:{acceptance}};
 		}},rpc:{mode:{get:async()=>"autopilot"},managedSettings:{get:async()=>({failClosed:false,bypassPermissionsDisabled:false})},
+			ui:{snapshot:async()=>({agentTurnActive:false,processing:false,pendingElicitationRequests:[],pendingUserInputRequests:[],pendingExitPlanModeRequests:[]})},
 			permissions:{getMode:async()=>({mode:"allow-all"})},tools:{execute:(/** @type {{name:string,arguments:import("./model.js").Effect["args"],toolCallId:string}} */ a)=>
 				f.execute(a.name,a.arguments,a.toolCallId)}}});
 	const ctx={sessionId:"owner"},hook={...ctx,timestamp:new Date(),workingDirectory:f.root};
@@ -468,7 +489,7 @@ for(const automatic of [false,true])test(automatic ? "a reloaded owner proposes 
 	assert.deepEqual(after.effects.slice(0,before.effects.length),before.effects);
 	assert.equal(git(f.root,"rev-parse","main"),current);assert.equal(blob(proof.commit,file),row.result);
 	assert.equal(git(f.root,"rev-parse",`${proof.commit}^`),current);assert.deepEqual(proof.outputs.map(o=>o.id),["narrow"]);
-	assert.deepEqual(proof.receipts.product.components,{narrow:{check:component,exit:0}});
+	assert.deepEqual(verdicts(proof.receipts.product.components),{narrow:{check:component,exit:0}});
 	assert.equal(proof.receipts.goal.commit,proof.commit);assert.deepEqual(f.checks.slice(attempts.length).map(c=>c.split(" at ")[0]),["Check joined product","Check final goal"]);
 	assert.deepEqual(after.productRepins?.at(-1)?.resolutions,[row]);
 	const observed=after.effects.find(e=>e.id===after.productRepins?.at(-1)?.recheck);assert.ok(observed?.kind==="product" && observed.receipt?.resolutionDigest);
@@ -555,7 +576,7 @@ test("a settled legacy checkpoint recovers on the same bytes only after a new pr
 	put(w.cwd,`${primary}/result`,"ok"); put(w.cwd,exact,"connected");
 	await f.runtime(w.cwd).operation("submit",{run,token:w.token},w.id);
 	const proof=inspect.inspect({run,detail:"proof"},"owner").qualification; assert.ok(proof);
-	assert.equal(proof.format,"foundry-qualification/v3"); assert.notEqual(proof.commit,current.commit);
+	assert.equal(proof.format,"foundry-qualification/v5"); assert.notEqual(proof.commit,current.commit);
 	assert.equal(proof.receipts.product.evaluatorRevision,f.revision); assert.equal(proof.receipts.goal.productEvaluatorRevision,f.revision);
 	assert.equal(proof.receipts.goal.evaluatorRevision,undefined);
 	assert.equal(git(f.root,"show",`${proof.commit}:${exact}`),"connected");
@@ -564,7 +585,7 @@ test("a settled legacy checkpoint recovers on the same bytes only after a new pr
 	const bundle=path.join(path.dirname(f.root),"qualified.bundle");
 	execFileSync(process.execPath,[fileURLToPath(new URL("../../../skills/foundry/scripts/qualification.mjs",import.meta.url)),"pack",bundle],
 		{cwd:f.root,input:JSON.stringify(proof)});
-	assert.match(git(f.root,"bundle","list-heads",bundle),new RegExp(`^${f.revision} refs/foundry/objects/${f.revision}$`,"m"));
+	assert.ok(git(f.root,"bundle","list-heads",bundle).includes(`refs/foundry/replay/${proof.receipts.product.disclosure.subject.carrier}`));
 	const final=read();
 	for (const mutate of [
 		/** @param {typeof final} r */ r=>{r.goal = old.goal;},
@@ -595,17 +616,38 @@ test("product upgrade refuses missing consent, out-of-scope diffs, and an approv
 		confirm:async()=>{revoked=true;return true;}});
 	await assert.rejects(permissions.operation("repin",f.args,"owner"),{code:"permissions_unready"});
 	assert.deepEqual(db.read(run),original);
-	const changed=f.runtime(f.root,{confirm:async()=>{
-		put(f.root,"notice","new reviewed choice"); await f.owner.operation("publish",{run,file:"notice",to:[primary]},"owner"); return true;
-	}});
-	await assert.rejects(changed.operation("repin",f.args,"owner"),{code:"stale_pin"});
-	const end=db.read(run); assert.ok(end); assert.equal(end.productRepins,undefined);
-	assert.deepEqual(end.effects,original?.effects); assert.deepEqual(end.products,original?.products);
 	const moved=f.runtime(f.root,{confirm:async()=>{
 		put(f.root,"ordinary-file","unrelated target work"); git(f.root,"add","ordinary-file"); git(f.root,"commit","-qm","Moved target"); return true;
 	}});
 	await assert.rejects(moved.operation("repin",f.args,"owner"),{code:"stale_pin"});
-	assert.deepEqual(db.read(run),end);
+	assert.deepEqual(db.read(run),original);
+});
+
+test("a product approval does not override a new review obligation on its checkpoint",async t=>{
+	const f=await checkpoint(t),db=openDatabase(f.root);t.after(()=>db.close());
+	const before=db.read(run);assert.ok(before?.goal);
+	const held=f.runtime(f.root,{confirm:async()=>{
+		await f.owner.operation("review_note",{run,squad:"unit",receipt:before.goal?.check,question:"Review the existing diagnosis before changing evaluators."},"owner");
+		return true;
+	}});
+	await assert.rejects(held.operation("repin",f.args,"owner"),/checkpoint|pending work/i);
+	const blocked=db.read(run);assert.ok(blocked?.pendingReviewNotes?.length);
+	assert.deepEqual(blocked.effects,before.effects);assert.equal(blocked.productRepins,undefined);
+});
+
+test("a product evaluator form keeps the exact checked work while an unrelated reference arrives",async t=>{
+	const f=await checkpoint(t),db=openDatabase(f.root);t.after(()=>db.close());
+	const before=db.read(run);assert.ok(before?.goal);let prompts=0;
+	const owner=f.runtime(f.root,{confirm:async()=>{
+		prompts++;put(f.root,"notice","Background for a future output.");
+		await f.owner.operation("publish",{run,file:"notice",to:[primary]},"owner");
+		return true;
+	}});
+	await owner.operation("repin",f.args,"owner");
+	const end=db.read(run);assert.ok(end);
+	assert.equal(prompts,1);assert.equal(end.productRepins?.at(-1)?.revision,f.revision);
+	assert.equal(end.products.at(-1)?.commit,f.prior.commit);assert.notEqual(end.products.at(-1)?.check,f.prior.check);
+	assert.deepEqual(end.effects.slice(0,before.effects.length),before.effects);assert.ok(end.artifacts?.some(a=>a.file==="notice"));
 });
 
 const before=process.env.FOUNDRY_RELEASE_BEFORE;
@@ -743,4 +785,96 @@ test("failed product recheck holds the original checkpoint; neither its repair h
 	assert.equal(end.release?.admission,"closed"); assert.equal(end.qualification,null);
 	assert.equal(end.goal?.receipt,undefined); assert.deepEqual(end.products,f.before.products);
 	assert.equal(f.checks.length,count); assert.equal(f.workers.size,1);
+});
+for(const kind of ["goal","product"])test(`writer-drafted ${kind} evaluator proposal checks the same reader-94 product without an owner-authored diff`,async t=>{
+	const {historicalFactory}=await import("../test/legacy-readers.mjs"),build=await historicalFactory(t,94);
+	const run="witness",source=".foundry/witness.json",goal=".foundry/goal.mjs",product=".foundry/product.mjs",file="output/item/value",evaluator=kind==="goal"?goal:product;
+	const f=build(t,run,source,{[source]:JSON.stringify({version:2,id:run,target:"refs/heads/main",direction:"Verify the complete value.",productCheck:product,goalCheck:goal,
+		squads:[{id:"values",charter:"spec",areas:["output"],checks:["check.mjs"]}]}),".foundry/witness/journey.md":"Observe the complete value.","spec":"Generate a valid record.",
+		[product]:"","check.mjs":"",[goal]:`import {existsSync} from "node:fs";process.exit(existsSync("${file}")?2:1);`});
+	await f.start();await f.scouts[0].report({outcome:"regenerate",reason:"No record.",evidence:["spec"],grains:[{id:"item",directory:"output/item",task:"Create the record.",needs:[],check:"check.mjs"}]});
+	const [w]=f.workers.values();put(w.cwd,file,"valid");await f.runtime(w.cwd).operation("submit",{run,token:w.token},w.id);await f.settle();
+	const db=openDatabase(f.root);t.after(()=>db.close());const saved=db.read(run)??assert.fail(),p=saved.products.at(-1),g=saved.goal;assert.ok(g && p);
+	f.owner.close();let forms=0,authors=0;
+	/** @type {ReturnType<typeof createRuntime>} */ const owner=f.runtime(f.root,{formIdle:async()=>true,confirmProposal:async()=>{forms++;return true;},
+		draftAgent:async ticket=>{
+			authors++;const id="goal-author",packet=await owner.draftPacket(ticket,"owner",id);
+			assert.equal(packet.assembly,f.tip);assert.equal(packet.product,p.commit);assert.deepEqual(packet.files.map(f=>f.file),[evaluator]);
+			return {runId:id,status:"completed",workflowName:"foundry-draft",result:{subject:ticket.subject,reason:"Measure the promised value.",
+				edits:[{file:evaluator,before:packet.files[0].before,text:`import{readFileSync}from"node:fs";process.exit(readFileSync("${file}","utf8")==="valid"?0:1);\n`}]}};
+		}},process.env.FOUNDRY_DRAFT_RED?undefined:createRuntime);
+	await assert.rejects(owner.operation("draft",{run,check:g.check,evaluator,files:[source]},"owner"),/protected|conserved/i);
+	await owner.operation("draft",{run,check:g.check,evaluator},"owner");await owner.flush();
+	assert.equal(owner.inspect({run},"owner").qualified,kind==="goal"?p.commit:null);assert.equal(authors,1);assert.equal(forms,2);
+	const current=db.read(run);if(kind==="product"){
+		const checked=current?.products.at(-1);assert.ok(checked?.commit===p.commit && checked.check!==p.check);
+		assert.equal(current?.effects.find(e=>e.id===checked.check)?.receipt?.exit,0);
+		assert.equal(current?.effects.find(e=>e.id===current.goal?.check)?.receipt?.exit,2);
+	}
+	assert.deepEqual(db.read(run)?.effects.find(c=>c.id===g.check),saved.effects.find(c=>c.id===g.check));assert.equal(db.read(run)?.artifacts?.length??0,0);
+});
+
+for(const scenario of ["goal","product","declined then revised","unrelated offer during consent","reopen product","competing offers","same blob both evaluators","target moves after decline"])test(`a published ${scenario} evaluator repair on a saved missing goal needs no isolated commit or manual repin`,async t=>{
+	const both=scenario==="same blob both evaluators",kind=scenario==="product" || scenario==="reopen product" || both?"product":"goal";
+	const {historicalFactory}=await import("../test/legacy-readers.mjs"),build=await historicalFactory(t,90);
+	const run="witness",source=".foundry/witness.json",goal=".foundry/goal.mjs",product=".foundry/product.mjs";
+	const evaluator=kind==="goal"?goal:product,helper=kind==="goal"?".foundry/test/read.mjs":product+".d/read.mjs";
+	const f=build(t,run,source,{[source]:JSON.stringify({version:2,id:run,target:"refs/heads/main",direction:"Measure a visible value.",
+		productCheck:product,goalCheck:goal,squads:[{id:"values",charter:"spec",areas:["output"],checks:["check.mjs"]}]}),
+		[goal]:kind==="goal"?`import {existsSync} from "node:fs";import {observe} from "./test/read.mjs";process.exit(!existsSync("output/item/value")?1:observe());\n`:'import {existsSync} from "node:fs";process.exit(existsSync("output/item/value")?2:1);',
+		[product]:kind==="goal"?"":'import {observe} from "./product.mjs.d/read.mjs";process.exit(observe());',[helper]:`export const observe=()=>${kind==="goal"?2:0};\n`,".foundry/test/expected":"valid\n",
+		".foundry/witness/journey.md":"Observe the selected value.","spec":"Generate a valid record.","check.mjs":""});
+	await f.start();await f.scouts[0].report({outcome:"regenerate",reason:"No record.",evidence:["spec"],grains:[{id:"item",directory:"output/item",task:"Create the record.",needs:[],check:"check.mjs"}]});
+	const [w]=f.workers.values();put(w.cwd,"output/item/value","valid");await f.runtime(w.cwd).operation("submit",{run,token:w.token},w.id);await f.settle();
+	const db=openDatabase(f.root);t.after(()=>db.close());const before=db.read(run)??assert.fail(),prior=before.goal,checkpoint=before.products.at(-1);
+	assert.ok(prior && checkpoint && before.effects.find(e=>e.id===prior.check)?.receipt?.exit===2);
+	const {stagePatch}=await import("./product.mjs"),diff=`--- a/${helper}\n+++ b/${helper}\n@@ -1 +1,2 @@\n-export const observe=()=>${kind==="goal"?2:0};\n+import {readFileSync as read} from "node:fs";\n+export const observe=()=>read("output/item/value","utf8")===read(".foundry/test/expected","utf8").trim()?0:1;\n`;
+	let pin=stagePatch(f.root,f.tip,f.tip,diff);put(f.root,"fix.diff",git(f.root,"diff","--full-index",f.tip,pin)+"\n");
+	await assert.rejects(f.owner.operation("publish",{run,file:"fix.diff",to:[evaluator]},"owner"),{code:"invalid_recipient"});f.owner.close();
+	let forms=0,targets=0,quiet=scenario!=="competing offers" && !both;
+	/** @type {ReturnType<typeof createRuntime>} */ const owner=f.runtime(f.root,{formIdle:async()=>quiet,adopt:async()=>{targets++;return null;},confirmProposal:async message=>{
+		forms++;assert.ok(message.includes(helper) && message.includes(prior.check) && message.includes("+export const observe"));
+		if(forms===1 && scenario==="unrelated offer during consent"){
+			put(f.root,"reading.txt","Unrelated product reference.");await owner.operation("publish",{run,file:"reading.txt",to:["output"]},"owner");
+		}
+		return forms!==1 || !["declined then revised","reopen product","target moves after decline"].includes(scenario);
+	}},createRuntime);
+	if(both)await owner.operation("publish",{run,file:"fix.diff",to:[goal]},"owner");
+	const posted=await owner.operation("publish",{run,file:"fix.diff",to:[evaluator]},"owner");owner.turn("owner");await owner.flush();
+	assert.equal(forms,scenario==="competing offers" || both?0:1);
+	if(both){
+		quiet=true;owner.turn("owner");await owner.flush();assert.equal(forms,0,"one blob offered to two evaluators is two proposals");
+		const s=owner.inspect({run},"owner"),blob=posted.artifacts.find(a=>a.to.includes(product))?.blob;assert.ok(blob && s.blocker?.includes("Competing exact corrections"));
+		await owner.operation("evaluator",{run,check:product,blob},"owner");await owner.flush();assert.equal(forms,1);assert.equal((db.read(run)?.repins??[]).length,0);
+	}
+	if(scenario==="target moves after decline"){
+		put(f.root,"spec","Generate a valid record and include a label.");git(f.root,"commit","-qam","Revise the target contract");
+		owner.turn("owner");await owner.flush();assert.equal(targets,1,"a declined old evaluator must not hide the new target proposal");
+		assert.equal(forms,1);assert.equal(owner.inspect({run},"owner").qualified,null);return;
+	}
+	if(scenario==="competing offers"){
+		pin=stagePatch(f.root,f.tip,f.tip,diff.replace('?0:1;',' ? 0 : 1;'));put(f.root,"alternative.diff",git(f.root,"diff","--full-index",f.tip,pin)+"\n");
+		const all=await owner.operation("publish",{run,file:"alternative.diff",to:[evaluator]},"owner");quiet=true;
+		owner.turn("owner");await owner.flush();assert.equal(forms,0);assert.match(owner.inspect({run},"owner").blocker??"",/Competing exact corrections/);
+		const selected=all.artifacts.find(a=>a.file==="alternative.diff");assert.ok(selected);
+		await owner.operation("evaluator",{run,check:evaluator,blob:selected.blob},"owner");await owner.flush();assert.equal(forms,1);
+	}
+	if(scenario==="declined then revised" || scenario==="reopen product"){
+		assert.equal(owner.inspect({run},"owner").qualified,null);assert.deepEqual(db.read(run)?.effects,before.effects);
+		if(scenario==="declined then revised"){
+			pin=stagePatch(f.root,f.tip,f.tip,diff.replace('?0:1;',' ? 0 : 1;'));
+			put(f.root,"fixed-again.diff",git(f.root,"diff","--full-index",f.tip,pin)+"\n");
+			await owner.operation("publish",{run,file:"fixed-again.diff",to:[evaluator]},"owner");
+		}else{
+			const ref=posted.artifacts.find(a=>a.file==="fix.diff");assert.ok(ref);await owner.operation("evaluator",{run,check:evaluator,blob:ref.blob},"owner");
+		}
+		await owner.flush();assert.equal(forms,2,"the rejected offer must not poison or duplicate the next decision");
+	}
+	const end=db.read(run)??assert.fail();assert.equal(owner.inspect({run},"owner").qualified,kind==="goal"?checkpoint.commit:null);
+	assert.deepEqual(end.effects.find(e=>e.id===prior.check),before.effects.find(e=>e.id===prior.check));assert.equal(git(f.root,"rev-parse","HEAD"),f.tip);
+	assert.equal((kind==="goal"?end.repins:end.productRepins)?.at(-1)?.revision,pin);
+	if(kind==="product"){
+		const latest=end.products.at(-1);assert.ok(latest && latest.commit===checkpoint.commit && latest.check!==checkpoint.check);
+		assert.notEqual(end.goal?.check,prior.check);assert.equal(end.effects.find(e=>e.id===end.goal?.check)?.receipt?.exit,2);
+	}
 });

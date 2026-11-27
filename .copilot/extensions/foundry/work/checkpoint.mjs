@@ -1,15 +1,16 @@
+import { changes, verifyJoinedInputs } from "./assembly.mjs";
 import { working } from "./assignment.mjs";
+import { proposedFootprint } from "./diagnostics.mjs";
 import { checkReceipt, goalReceipt } from "./evidence.mjs";
 import { checkpointCurrent } from "./facts.mjs";
 import { footprints, nonempty } from "./footprint.mjs";
-import { changes, verifyJoinedInputs } from "./graph.mjs";
 import { isolationBasis, isolationSeal } from "./isolation.mjs";
 import { admitted, current, reserveCheck } from "./native.mjs";
 import { currentPair } from "./pairing.mjs";
 import { displacements, historicalGrant, validRestoration } from "./partition.mjs";
 import { waiting, writerInputs } from "./plan.mjs";
 import { changedFiles, commitAt, outside, retain, stageCheckpoint, verifyContracts } from "./product.mjs";
-import { approvedPublication } from "./publication.mjs";
+import { publishedComponent } from "./publication.mjs";
 import { awaitingReply, unissued } from "./reservation.mjs";
 import { comparison, questions } from "./reviews.mjs";
 import { grant } from "./transfer.mjs";
@@ -39,7 +40,9 @@ function frozenReads(r,n) {
 
 /** @param {string} cwd @param {Run} run @param {string} actor @param {Record<string,unknown>} a @param {(e:Call)=>void} verify */
 export function prepareCheckpoint(cwd,run,actor,a,verify) {
-	fields(a,["run","observer","checkpoint","goal","target","selected","evidence"]);
+	fields(a,["run","observer","checkpoint","goal","target","selected","evidence","requestEvidence"]);
+	const request=a.requestEvidence===true;
+	if(a.requestEvidence!==undefined && (!request || a.evidence!==undefined))fail("invalid_selector","Request writer evidence or present a complete proof, not both");
 	const observer=name(a.observer,"failed observer check"), checkpoint=name(a.checkpoint,"current checkpoint"), goal=name(a.goal,"current goal"), target=name(a.target,"target commit");
 	const selected=nonempty(a.selected,"independent output triples").map(raw=>{
 		const n=record(raw);fields(n,["grain","candidate","component"]);
@@ -86,7 +89,7 @@ export function prepareCheckpoint(cwd,run,actor,a,verify) {
 		for (const {grain,candidate,component:id} of selected) {
 			const v=r.nodes[grain];
 			if (!v || wrote.has(grain) || heldIds.includes(grain) || !outside(v.grain.directory,heldRoots) || v.state!=="published" ||
-				v.candidate!==candidate || v.check!==id || !approvedPublication(r,id,grain,candidate) || !v.generation || v.restoration || v.retained || v.successor ||
+				v.candidate!==candidate || v.check!==id || !publishedComponent(r,id,grain,candidate) || !v.generation || v.restoration || v.retained || v.successor ||
 				r.effects.some(e=>e.id===id && e.kind==="component" && (e.usedArtifacts?.length || e.comparedArtifacts?.length)))
 				fail("dependent_output",`Need an exact independently published component and disjoint grant for ${grain}`);
 			if (Object.hasOwn(outputs,grain) && digest(ownership[grain])!==digest(grant(v))) fail("dependent_output","Cannot change an inherited grant");
@@ -117,19 +120,34 @@ export function prepareCheckpoint(cwd,run,actor,a,verify) {
 		if (!outside(heldRoots,delta) || delta.some(f=>selected.filter(({grain})=>!outside(r.nodes[grain].grain.directory,[f])).length!==1))
 			fail("dependent_output","The assembly changes files outside the selected grants");
 		verifyJoinedInputs(cwd,r,Object.fromEntries(Object.entries(outputs).filter(([id])=>r.nodes[id] && (wrote.has(id) || r.nodes[id].state==="qualified"))),p.commit,commit);
-		const evidence=footprints(cwd,a.evidence,roles,p.commit,commit,heldRoots,delta);
+		const checks=[...roles.keys()];
+		const evidence=request?[]:footprints(cwd,a.evidence??checks.map(id=>proposedFootprint(r,id)),roles,p.commit,commit,heldRoots,delta);
 		const hold={historical:historic.product.check,grain:pair.grain,original:pair.pair.failed,pair:pair.id,
 			retainer:pair.pair.retainer,candidate:pair.pair.candidate,component:pair.pair.component};
-		return {observer,checkpoint,goal,target,hold,selected,evidence,assembly:commit,basis:isolationBasis(r,"",selected),ownership,outputs,delta};
+		return {observer,checkpoint,goal,target,hold,selected,evidence,checks,assembly:commit,basis:isolationBasis(r,"",selected),ownership,outputs,delta};
 	}
 	const choice=select(run);
+	if(request){
+		const body={observer,checkpoint,goal,target,selected,checks:choice.checks},id=digest(body);
+		return {consent:/** @type {const} */("satisfied"),prompt:"Request scoped read-only evidence from the original component writers. No checkpoint is authorized.",
+			/** @param {Run} r */
+			apply(r){
+				if(digest(select(r))!==digest(choice))fail("stale_assignment","The selected subset or its original inputs changed");
+				for(const check of choice.checks){
+					const c=r.effects.find(e=>e.id===check),n=c?.grain && r.nodes[c.grain];
+					if(!n || !n.worker || !n.token)fail("missing_writer",`No bound writer can supply footprint ${check}. Do not invent its inputs.`);
+				}
+				if(!r.footprintRequests?.some(q=>q.id===id))(r.footprintRequests??=[]).push({id,...body});
+				return ()=>commitAt(cwd,r.policy.target)===target;
+			}};
+	}
 	return {prompt:`Independent NON-RELEASE checkpoint from ${checkpoint} on target ${target}, goal ${goal}; failed observer ${observer} and its entire ownership hold remain. `+
 		`Approve only if these exact sources cover every build, generated, packaged and runtime input in both directions, including optional reads and all glob matches. Decline any gap. `+
 		`Check exactly ${choice.assembly} with this delta and these component pins; a fresh passing goal cannot qualify it:\n${JSON.stringify({hold:choice.hold,delta:choice.delta,selected,evidence:choice.evidence})}`,
 		/** @param {Run} r */
 		apply(r) {
 			if (digest(select(r))!==digest(choice)) fail("stale_assignment","Independent checkpoint approval changed");
-			const {ownership,outputs,delta,...approval}=choice;
+			const {ownership,outputs,delta,checks,...approval}=choice;
 			retain(cwd,choice.assembly);
 			const product=reserveCheck(r,actor,cwd,choice.assembly,r.policy.productCheck);
 			const s=r.independent={...approval,ownership,product};

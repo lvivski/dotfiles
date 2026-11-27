@@ -1,5 +1,5 @@
 import { checkReceipt } from "./evidence.mjs";
-import { approvedPublication } from "./publication.mjs";
+import { publishedComponent } from "./publication.mjs";
 import { digest } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
@@ -41,7 +41,7 @@ export function validIsolation(run) {
 		checksNeeded.size!==s.evidence.length || s.evidence.some(x=>!checksNeeded.delete(x.component) ||
 			!run.effects.some(e=>e.kind==="component" && e.id===x.component && e.commit===x.commit) ||
 			Object.values(x.stages).some(notes=>!notes.length)) ||
-		s.selected.some(n=>run.nodes[n.grain]?.candidate!==n.candidate || run.nodes[n.grain].check!==n.component || !approvedPublication(run,n.component,n.grain,n.candidate) ||
+		s.selected.some(n=>run.nodes[n.grain]?.candidate!==n.candidate || run.nodes[n.grain].check!==n.component || !publishedComponent(run,n.component,n.grain,n.candidate) ||
 			run.nodes[n.grain].state!==(applied?"qualified":"published")) ||
 		!join || join.qualifiedAt || join.check!==s.product || join.commit!==s.assembly || join.target!==s.target ||
 		digest(join.outputs)!==digest({...p.outputs,...pins}) || !join.ownership || digest(join.ownership)!==digest(s.ownership) ||

@@ -1,3 +1,4 @@
+import { verifyRepairInputs } from "./assembly.mjs";
 import { isUtf8 } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { assign } from "./assignment.mjs";
@@ -5,7 +6,6 @@ import { correctionBasis, revisedTask } from "./amendment.mjs";
 import { availableReservations } from "./capacity.mjs";
 import { generationOf, goalReceipt, missingInput } from "./evidence.mjs";
 import { frozenCheckpoint } from "./goal.mjs";
-import { verifyRepairInputs } from "./graph.mjs";
 import { admitted, reserveNotice } from "./native.mjs";
 import { originalAttempt, stalePins, writerInputs } from "./plan.mjs";
 import { changedFiles, commitAt, committedFile, verifyContracts } from "./product.mjs";
@@ -68,6 +68,7 @@ export function prepareCorrection(cwd, run, actor, a) {
 	}
 	const before = select(run), identity = digest(before);
 	return {
+		wake:a.preview===undefined?/** @type {const} */("none"):/** @type {const} */("ready"),
 		prompt: `Correct ${grain} for its existing writer ${worker} in ${scopeLabel(before.n.grain.directory)}?\nBefore: ${before.n.grain.task}\nAfter: ${before.task}\n` +
 			`Evidence at ${before.r.base}:${file}:\n${excerpt}\n${before.correction.ordinary ? "Owner-only verification; this citation grants no writer read." :
 				before.correction.blob ? `Offered comparison: ${before.correction.blob}` : `Stopped predecessor component: ${before.correction.predecessorCheck}`}\n` +

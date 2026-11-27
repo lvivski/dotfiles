@@ -1,3 +1,4 @@
+import { verifiedCitations } from "./assembly.mjs";
 import { randomUUID } from "node:crypto";
 import { assign } from "./assignment.mjs";
 import { availableReservations } from "./capacity.mjs";
@@ -7,7 +8,6 @@ import { currentPair } from "./pairing.mjs";
 import { observerInput, validRestoration } from "./partition.mjs";
 import { waiting, writerInputs } from "./plan.mjs";
 import { changedFiles, commitAt, contractPaths, outside, regularFiles, verifyContracts } from "./product.mjs";
-import { verifiedCitations } from "./restoration.mjs";
 import { digest, fail, fields, name, record, relative, text } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
@@ -114,6 +114,7 @@ export function prepareObserver(cwd,run,actor,a,verify) {
 	}
 	const selected=select(run);
 	return {
+		wake:preview?/** @type {const} */("none"):/** @type {const} */("ready"),
 		prompt:`Failed pair ${pair}, original failure ${selected.inputs.failed}; retainer ${selected.inputs.retainer}@${selected.inputs.candidate} (${selected.inputs.component}), checkpoint ${selected.inputs.checkpoint}, goal ${selected.inputs.goal}. Base ${selected.base}. `+
 			(previous?`One final diagnostic writer after failed observer ${previous.check} on ${previous.candidate}. Distinguish these phases: ${JSON.stringify(previous.phases)}. Preserve every earlier assertion; no production grant or further observer. `:"")+
 			(preview ? `Approve this Foundry writer's exact observer diff only after reviewing it: git diff --no-ext-diff --no-textconv ${selected.base} ${preview}\n${file}: ${before} -> ${selected.after}. Approve only if every assertion and tolerance is preserved and faults are still rejected. The writer must submit these bytes for fresh checks.` :
@@ -131,7 +132,7 @@ export function prepareObserver(cwd,run,actor,a,verify) {
 				n.token=randomUUID();n.generation=now.base;assign(n,"staff");
 				n.grain={...n.grain,task:`Improve failure attribution only in ${file}; preserve the original behavior assertions.`};
 				delete n.worker;delete n.workspace;delete n.preview;delete n.candidate;delete n.check;delete n.reason;
-				const brief=`Diagnose the behavior reported by signed component ${previous?.check??pair} on the checked assembly in this worktree. Read ${n.grain.specification}, ${n.grain.boundary.join(", ")} and the assigned check ${n.grain.check}. Author your own observer-only change to ${file}; no other file is writable. Separate expected and actual values at each phase including baseline. Preserve every behavior assertion and tolerance. Verify on intact and deliberately faulty controls in disposable copies. Do not import a coordinator patch or change product code. Join helpers and call foundry_preview({run:"${live.id}",token:"${n.token}"}); tell the owner the preview and control results. After the operator approves that exact diff submit the same bytes with foundry_submit. No local commits, branch changes or reruns of the failed pair.`;
+				const brief=`Diagnose the behavior reported by signed component ${previous?.check??pair} on the checked assembly in this worktree. Read ${n.grain.specification}, ${n.grain.boundary.join(", ")} and the assigned check ${n.grain.check}. Author your own observer-only change to ${file}; no other file is writable. Separate expected and actual values at each phase including baseline. Preserve every behavior assertion and tolerance. Verify on intact and deliberately faulty controls in disposable copies. Do not import a coordinator patch or change product code. Join helpers and call foundry_preview({run:"${live.id}",token:"${n.token}"}). Foundry routes the exact preview for approval and notifies you when it is approved; report control results as evidence. Only then submit the same bytes with foundry_submit. No local commits, branch changes or reruns of the failed pair.`;
 				const focus=previous?` Starting from failed observer ${previous.check} at ${previous.candidate}, distinguish ${JSON.stringify(previous.phases)}. Preserve all earlier assertions including already-passing paths. Show intact and deliberately broken phase controls. On failure identify the first mismatching phase and expected/actual state or the specific missing observation for the owner. No production change or further observer assignment.`:"";
 				reserveWorker(live,actor,n.token,now.base,brief+focus,n.grain.agent,grain,undefined,grant);
 			}

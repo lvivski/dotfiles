@@ -7,6 +7,9 @@ Foundry takes a committed brief and works toward one result: a Git commit that p
 | Describe what success looks like | [`/foundry brief <idea>`](../../skills/foundry/references/brief.md). Reviewing or confirming a brief does not start work. |
 | Run a reviewed plan | [`/foundry plans`, then `/foundry start <plan>`](../../skills/foundry/references/runs.md#start), in the owning repository session. |
 | Understand an assignment or a wait | [`/foundry status <run-id>`](#see-what-can-run-in-parallel). Reading the board cannot advance the run. |
+| Everything appears stuck | [When nothing is moving](../../skills/foundry/references/runs.md#when-nothing-is-moving): read `recovery` for the named actor, evidence, and next allowed step. The owner need not author fixes. |
+| Recover a broken test without changing the product | Commit [independent controls](PROTOCOL.md#automatic-test-recovery) alongside the evaluator before starting. The owner diagnoses a signed failure and rechecks the same work. |
+| Correct a failed adopted assembly or evaluator | [Let a bounded writer draft the correction](../../skills/foundry/references/runs.md#evaluator-repinning). Review scope and exact bytes; an existing external patch can still be imported. |
 | Stop new work or continue the same run | [Pause and resume](../../skills/foundry/references/runs.md#pause-and-resume). Existing receipts and work stay in place. |
 | Change or regenerate Foundry itself | [Regeneration specification](SPEC.md) for the contract and acceptance cases; [protocol reference](PROTOCOL.md) for precise formats and limits. |
 
@@ -44,11 +47,11 @@ Report the exact accepted commit and checked target. Exporting, landing and arch
 
 ### Interruptions
 
-Start with the original obligation. Foundry watches for receipts, restored permissions and changed inputs; it does not replay an uncertain call. An explicit pause stays paused. If a changed target contract is all that prevents integration, the owning session proposes adoption. If a component then fails on inherited files, it can propose the exact offered correction without asking to adopt the target again. A rejection or lost reply never starts checks. [Recovery by symptom](../../skills/foundry/references/runs.md#pause-and-resume) · [Exact recovery contracts](PROTOCOL.md#interruptions)
+Start with the original obligation. Foundry watches for receipts, restored permissions and changed inputs; it does not replay an uncertain call. An explicit pause stays paused. If a changed target contract prevents integration, the owner session proposes adoption. If an included component then fails, it can propose an exact correction to inherited files or to that output alone, without adopting the target again. An owned replacement must earn a new component pass and any required review. Automatic approvals wait for the owner turn to finish. A reattached owner can restore an abandoned form, not answer it or duplicate a live request. [Recovery by symptom](../../skills/foundry/references/runs.md#pause-and-resume) · [Exact recovery contracts](PROTOCOL.md#interruptions)
 
 ## Development
 
-Change the [specification and acceptance case](SPEC.md#keeping-the-specification-current) alongside the implementation. The declaration comparison is `node --test .copilot/extensions/foundry/test/interface.test.mjs`; it supplements, rather than replaces, behavior tests. [Full development commands](PROTOCOL.md#development-checks)
+Follow the [red/green and independent Rubber Duck requirements](AGENTS.md#verification). Change the [specification and acceptance case](SPEC.md#keeping-the-specification-current) alongside the implementation. The declaration comparison is `node --test .copilot/extensions/foundry/test/interface.test.mjs`; it supplements, rather than replaces, behavior tests. [Full development commands](PROTOCOL.md#development-checks)
 
 ### State, signals and authority
 

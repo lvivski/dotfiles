@@ -23,6 +23,12 @@
               "target": "blocked",
               "description": "Record why this assignment cannot proceed under its current grant.",
               "update": "recordReason"
+            },
+            {
+              "on": "recheck",
+              "target": "checking",
+              "description": "Recheck the unchanged candidate with its independently certified observer before staffing a writer.",
+              "update": "clearReason"
             }
           ],
           "writing": [
@@ -216,6 +222,12 @@
               "target": "published",
               "description": "Publish the exact output supported by the fresh component observation.",
               "update": "clearReason"
+            },
+            {
+              "on": "amend",
+              "target": "published",
+              "description": "Publish only the approved replacement after its own passing component and required review.",
+              "update": "clearReason"
             }
           ],
           "qualified": [
@@ -255,6 +267,12 @@
               "on": "request",
               "target": "waiting",
               "description": "Put the requested output in the queue for input and writer admission."
+            },
+            {
+              "on": "amend",
+              "target": "published",
+              "description": "Publish only the approved replacement after its own passing component and required review.",
+              "update": "clearReason"
             }
           ],
           "repeated": [
@@ -294,6 +312,12 @@
               "on": "request",
               "target": "waiting",
               "description": "Put the requested output in the queue for input and writer admission."
+            },
+            {
+              "on": "amend",
+              "target": "published",
+              "description": "Publish only the approved replacement after its own passing component and required review.",
+              "update": "clearReason"
             }
           ],
           "blocked": [
@@ -603,6 +627,14 @@
               "target": "issued",
               "description": "Claim this reservation before making its native request.",
               "update": "claimReservation"
+            },
+            {
+              "on": "withdraw-input",
+              "target": "withdrawn",
+              "description": "Release an obsolete writer notice only when the automatic route confirmed non-delivery and its prepared call has not been issued.",
+              "when": [
+                "unsentInput"
+              ]
             }
           ],
           "issued": [
@@ -856,7 +888,7 @@
               "outcome": "wait",
               "admission": "closed",
               "reason": "adopted-component-failed",
-              "description": "Keep the failed assembly. Propose an eligible inherited-file correction, not another target adoption.",
+              "description": "Keep the failed assembly. Propose an exact inherited-file or single-owner correction, not another target adoption.",
               "update": "release-wait",
               "when": [
                 "failedComponent"
@@ -883,7 +915,63 @@
               "when": []
             }
           ],
+          "withheld-handoff": [
+            {
+              "on": "assess",
+              "outcome": "wait",
+              "admission": "closed",
+              "reason": "handoff-target-changed",
+              "description": "Only the original target can receive the fresh assessment.",
+              "update": "release-wait",
+              "when": [
+                "moved"
+              ]
+            },
+            {
+              "on": "assess",
+              "outcome": "wait",
+              "admission": "closed",
+              "reason": "handoff-recheck-held",
+              "description": "Keep the fresh nonpassing observation; the historical pass cannot take its place.",
+              "update": "release-wait",
+              "when": [
+                "held"
+              ]
+            },
+            {
+              "on": "assess",
+              "outcome": "wait",
+              "admission": "closed",
+              "reason": "awaiting-handoff-recheck",
+              "description": "Wait for the fresh product verification on the unchanged checkpoint.",
+              "update": "release-wait",
+              "when": [
+                "join"
+              ]
+            },
+            {
+              "on": "assess",
+              "outcome": "wait",
+              "admission": "closed",
+              "reason": "unproven-handoff",
+              "description": "Wait for an owner resume; the old receipts do not prove the selected evaluator inputs.",
+              "update": "release-wait",
+              "when": []
+            }
+          ],
           "superseded": [
+            {
+              "on": "assess",
+              "outcome": "none",
+              "admission": "changed-join",
+              "reason": "integrate-under-approved-pin",
+              "description": "Verify genuinely changed, already-published work. The obsolete claimed goal keeps its original call and any late result.",
+              "update": "release-none",
+              "when": [
+                "supersededWork",
+                "!held"
+              ]
+            },
             {
               "on": "assess",
               "outcome": "wait",
@@ -1294,6 +1382,7 @@
             "blocked": "A recorded run-level obstacle prevents a release decision.",
             "absent": "No goal observation has been requested.",
             "product-repin": "An approved product-checker change still needs its own passing observation.",
+            "withheld-handoff": "The historical handoff lacks verified evaluator inputs. Only fresh evidence on the same product can replace it.",
             "superseded": "An earlier goal call is still outstanding or held, but its evaluator is no longer current.",
             "pending": "The current goal has no settled receipt.",
             "retired": "The original goal reservation ended without a verdict; its retained work still matters.",
@@ -1509,6 +1598,19 @@
               "when": [
                 "samePresentation"
               ]
+            },
+            {
+              "on": "redisplay",
+              "target": "presenting",
+              "description": "Restore the same decision after its presenter is gone and both native input queues are clear. A new display is not a reply.",
+              "guard": "samePresentation",
+              "when": [
+                "samePresentation",
+                "issuerGone",
+                "nativeVacant"
+              ],
+              "update": "recordPresentation",
+              "action": "present-question"
             }
           ],
           "unavailable": [
@@ -2385,7 +2487,7 @@
             {
               "on": "planned",
               "target": "renewal",
-              "description": "Sample fresh permission before renewing the owner's original report.",
+              "description": "Sample fresh permission before renewing a report or reissuing a writer whose requested input arrived.",
               "when": [
                 "!missingTarget",
                 "owner",
@@ -2450,7 +2552,7 @@
             {
               "on": "policy",
               "target": "renewing",
-              "description": "Replan the same run with permission to revalidate its original report.",
+              "description": "Replan the same run and revalidate its original report or exact input request.",
               "when": [
                 "permitted"
               ],
@@ -2520,6 +2622,30 @@
             {
               "on": "work",
               "target": "reservations",
+              "description": "Dispatch only the current test-repair phase; a calibration is not a product check.",
+              "when": [
+                "owner",
+                "active",
+                "!expired",
+                "testRepair"
+              ],
+              "action": "mend-test"
+            },
+            {
+              "on": "work",
+              "target": "reservations",
+              "description": "Send the signed stop directly to its bounded proposal writer. A draft never changes a release.",
+              "when": [
+                "owner",
+                "active",
+                "!expired",
+                "draftDue"
+              ],
+              "action": "draft-correction"
+            },
+            {
+              "on": "work",
+              "target": "reservations",
               "description": "Present the active owner's outstanding question independently of eligible reservations.",
               "when": [
                 "owner",
@@ -2532,7 +2658,7 @@
             {
               "on": "work",
               "target": "reservations",
-              "description": "Ask the owner once about the exact target adoption or a correction to inherited files. Presenting the proposal grants nothing.",
+              "description": "Ask the owner about the exact adoption or correction to the failed assembly. Presenting the proposal grants nothing.",
               "when": [
                 "owner",
                 "active",
@@ -2780,7 +2906,7 @@
             {
               "on": "attempt",
               "target": "done",
-              "description": "A stale protected evaluator approval waits for a later eligible turn.",
+              "description": "A stale protected check or writer handoff waits for a verified change instead of retrying the call.",
               "when": [
                 "!claimed",
                 "pinnedCheck"
@@ -3222,6 +3348,307 @@
           }
         }
       },
+      "test-recovery": {
+        "id": "test-recovery",
+        "initial": "diagnosing",
+        "states": {
+          "diagnosing": [
+            {
+              "on": "control",
+              "target": "draft",
+              "description": "The original observer rejected a known-good case at the named assertion.",
+              "when": [
+                "rejectsGood"
+              ]
+            },
+            {
+              "on": "control",
+              "target": "unobserved",
+              "description": "The test accepts known-good behavior, but the actual observation is still missing.",
+              "when": [
+                "acceptsGood",
+                "missing"
+              ]
+            },
+            {
+              "on": "control",
+              "target": "product",
+              "description": "The original test accepted the control; investigate the product, not the test.",
+              "when": [
+                "acceptsGood"
+              ]
+            },
+            {
+              "on": "unavailable",
+              "target": "unobserved",
+              "description": "The control could not observe either. Preserve the missing observation and let independent work continue.",
+              "when": [
+                "missing"
+              ]
+            },
+            {
+              "on": "hold",
+              "target": "held",
+              "description": "Keep the original failure and explain what evidence or authority is missing.",
+              "when": []
+            }
+          ],
+          "draft": [
+            {
+              "on": "claim",
+              "target": "authoring",
+              "description": "Claim one tool-less test author on frozen inputs.",
+              "when": []
+            },
+            {
+              "on": "hold",
+              "target": "held",
+              "description": "Keep the original failure and explain what evidence or authority is missing.",
+              "when": []
+            }
+          ],
+          "authoring": [
+            {
+              "on": "submit",
+              "target": "checking",
+              "description": "Pin the exact change and check it against the independent controls.",
+              "when": []
+            },
+            {
+              "on": "capacity",
+              "target": "draft",
+              "description": "Queue the author only after confirmed non-admission.",
+              "when": []
+            },
+            {
+              "on": "hold",
+              "target": "held",
+              "description": "Keep the original failure and explain what evidence or authority is missing.",
+              "when": []
+            }
+          ],
+          "checking": [
+            {
+              "on": "control",
+              "target": "review",
+              "description": "The repaired observer accepts the good case and rejects the holdout at the named assertion.",
+              "when": [
+                "discriminates"
+              ]
+            },
+            {
+              "on": "hold",
+              "target": "held",
+              "description": "Keep the original failure and explain what evidence or authority is missing.",
+              "when": []
+            }
+          ],
+          "review": [
+            {
+              "on": "claim",
+              "target": "reviewing",
+              "description": "Claim independent Rubber Duck review of the diff and signed controls.",
+              "when": []
+            },
+            {
+              "on": "hold",
+              "target": "held",
+              "description": "Keep the original failure and explain what evidence or authority is missing.",
+              "when": []
+            }
+          ],
+          "reviewing": [
+            {
+              "on": "endorse",
+              "target": "approved",
+              "description": "The independent reviewer endorsed the unchanged requirements and exact observed assertion.",
+              "when": []
+            },
+            {
+              "on": "capacity",
+              "target": "review",
+              "description": "Queue the reviewer only after confirmed non-admission.",
+              "when": []
+            },
+            {
+              "on": "hold",
+              "target": "held",
+              "description": "Keep the original failure and explain what evidence or authority is missing.",
+              "when": []
+            }
+          ],
+          "approved": [
+            {
+              "on": "install",
+              "target": "applied",
+              "description": "Adopt the reviewed observer pin and assess the original product afresh.",
+              "when": []
+            },
+            {
+              "on": "hold",
+              "target": "held",
+              "description": "Keep the original failure and explain what evidence or authority is missing.",
+              "when": []
+            }
+          ],
+          "product": [],
+          "unobserved": [],
+          "applied": [],
+          "held": []
+        },
+        "info": {
+          "description": "Distinguishes a broken observer from a product defect and certifies a test-only repair, never a release.",
+          "states": {
+            "diagnosing": "Run the unchanged test against a predeclared good control.",
+            "draft": "A demonstrated test defect needs a test-only proposal.",
+            "authoring": "The exact author call is outstanding.",
+            "checking": "Run the proposed test separately on known-good and known-bad inputs.",
+            "review": "Independent controls passed; semantic review is still required.",
+            "reviewing": "Await the bound independent reviewer.",
+            "approved": "Revalidate the stop and original inputs before recording a new evaluator pin.",
+            "applied": "The new test pin needs fresh release evidence.",
+            "product": "The control did not demonstrate a test defect; continue ordinary product scheduling.",
+            "unobserved": "No test defect was established for the missing observation. No implementation failure or retry is inferred.",
+            "held": "No automatic change is authorized."
+          }
+        }
+      },
+      "recovery": {
+        "id": "recovery",
+        "initial": "select",
+        "states": {
+          "select": [
+            {
+              "on": "reference",
+              "when": [
+                "targeted"
+              ],
+              "action": "input",
+              "description": "Propose the requested bytes after an authorized source supplies them to this output."
+            },
+            {
+              "on": "reference",
+              "when": [
+                "approved"
+              ],
+              "action": "input",
+              "description": "Propose the previously approved match on its original pins after a proven non-delivery."
+            },
+            {
+              "on": "correction",
+              "when": [
+                "includedProducer",
+                "unclaimedSource"
+              ],
+              "action": "draft",
+              "description": "Send a signed adopted stop to its bounded included source without asking the owner to write a patch."
+            }
+          ]
+        },
+        "info": {
+          "description": "Selects a recovery proposal from observed evidence. Selection never issues work or grants permission.",
+          "states": {
+            "select": "Consider one stopped attempt and its evidence on this wake. Nothing is persisted by selection."
+          }
+        }
+      },
+      "correction-author": {
+        "id": "correction-author",
+        "initial": "ready",
+        "states": {
+          "ready": [
+            {
+              "on": "claim",
+              "target": "issued",
+              "description": "Journal one native author call for this exact source, before launching it.",
+              "action": "start-author",
+              "update": "claim-source"
+            },
+            {
+              "on": "hold",
+              "target": "held",
+              "description": "Keep the original subject and record the concrete reason no proposal can be used.",
+              "update": "record-author-reason"
+            }
+          ],
+          "issued": [
+            {
+              "on": "bind",
+              "target": "issued",
+              "description": "Bind only the original proposal workflow, never a replacement identity.",
+              "guard": "sameWorkflow",
+              "when": [
+                "sameWorkflow"
+              ],
+              "update": "bind-author"
+            },
+            {
+              "on": "observe",
+              "target": "issued",
+              "description": "Reobserve only the original bound author after reload.",
+              "guard": "bound",
+              "when": [
+                "bound"
+              ],
+              "action": "observe-author"
+            },
+            {
+              "on": "continue",
+              "target": "issued",
+              "description": "Journal one continuation of the same native author after its verified permission checkpoint or provider disconnect.",
+              "guard": "uncontinued",
+              "when": [
+                "uncontinued"
+              ],
+              "update": "claim-continuation",
+              "action": "continue-author"
+            },
+            {
+              "on": "return",
+              "target": "returned",
+              "description": "Keep only a bound author's verified changes to its frozen file list.",
+              "guard": "bound",
+              "when": [
+                "bound"
+              ],
+              "update": "record-manifest"
+            },
+            {
+              "on": "capacity",
+              "target": "ready",
+              "description": "Only a confirmed pre-admission capacity refusal releases this reservation.",
+              "guard": "unbound",
+              "when": [
+                "unbound"
+              ],
+              "update": "queue-source"
+            },
+            {
+              "on": "uncertain",
+              "target": "issued",
+              "description": "An unavailable reply retains the original dispatch for a possible late binding.",
+              "update": "record-author-reason"
+            },
+            {
+              "on": "hold",
+              "target": "held",
+              "description": "Keep the original subject and record the concrete reason no proposal can be used.",
+              "update": "record-author-reason"
+            }
+          ],
+          "returned": [],
+          "held": []
+        },
+        "info": {
+          "description": "One proposal author for one disjoint source. A returned draft is neither a write grant nor acceptance.",
+          "states": {
+            "ready": "An exact source is available to a bounded proposal author.",
+            "issued": "Observe the one original native call; never replay an unknown launch.",
+            "returned": "The answer and changed blob manifest are frozen for exact operator consent.",
+            "held": "No further author call is authorized on this scope."
+          }
+        }
+      },
       "supervision": {
         "id": "supervision",
         "initial": "dispatch",
@@ -3265,6 +3692,14 @@
               "reason": "A transient failure interrupted the original workflow lookup",
               "when": [
                 "retryRead"
+              ]
+            },
+            {
+              "on": "sample",
+              "target": "approval-delivery",
+              "reason": "An automatic or restored approval is waiting for its owner's display",
+              "when": [
+                "formDue"
               ]
             },
             {
@@ -3345,6 +3780,33 @@
               "when": []
             }
           ],
+          "approval-delivery": [
+            {
+              "on": "sample",
+              "target": "dispatch",
+              "action": "reconcile",
+              "reason": "Invalidate a changed target or decision before considering any redisplay",
+              "when": [
+                "changed"
+              ]
+            },
+            {
+              "on": "sample",
+              "target": "dispatch",
+              "action": "reconcile",
+              "reason": "Show a ready proposal after turn cleanup, or restore a proven orphan on a clear display",
+              "when": [
+                "presentable"
+              ]
+            },
+            {
+              "on": "sample",
+              "target": "approval-delivery",
+              "action": "wait",
+              "reason": "Preserve the original through a busy turn, a pending native request or an unknown delivery status",
+              "when": []
+            }
+          ],
           "ledger": [
             {
               "on": "sample",
@@ -3381,6 +3843,7 @@
             "issuer-permission": "Only this session's unissued work is waiting for a permitted tool mode.",
             "workflow-status": "Retry a read of the original workflow after a transient lookup failure.",
             "missing-target": "Wait for the original target ref to become readable before reassessing its pins.",
+            "approval-delivery": "Observe turn readiness and native input queues without answering, dismissing or repeating a live request.",
             "ledger": "Watch the ledger and target for changes relevant to this participant.",
             "dormant": "No dispatch wake is owed. Outstanding native history is observed independently."
           }
@@ -3417,7 +3880,7 @@
   },
   "tools": {
     "foundry_grant": {
-      "description": "Owner, on operator direction: request one scoped baseline, reuse, restoration, observer, production or inherited-file correction approval.",
+      "description": "Owner, on operator direction: request scoped writer work, a bounded correction draft, or approval of exact proposed bytes.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -3425,8 +3888,134 @@
             "type": "string",
             "minLength": 1
           },
+          "draft": {
+            "description": "Have bounded proposal writers draft a correction on the exact signed stop. The original included producer's existing file scope is normally automatic. Select exact files or a declared evaluator only for another scope. No owner-authored patch, checkout edits or verdict.",
+            "type": "object",
+            "properties": {
+              "check": {
+                "type": "string",
+                "minLength": 1
+              },
+              "files": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "uniqueItems": true,
+                "minItems": 1
+              },
+              "evaluator": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "check"
+            ],
+            "additionalProperties": false
+          },
+          "input": {
+            "description": "Match an offered read-only blob to an ordinary stopped writer. If its checked producer has been pooled, inputSource can identify the file within the writer's original pinned dependency. Explicitly review any charter change; continue only the original task.",
+            "type": "object",
+            "properties": {
+              "grain": {
+                "type": "string",
+                "minLength": 1
+              },
+              "blob": {
+                "type": "string",
+                "minLength": 1
+              },
+              "inputSource": {
+                "type": "object",
+                "properties": {
+                  "grain": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "file": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "grain",
+                  "file"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "grain",
+              "blob"
+            ],
+            "additionalProperties": false
+          },
+          "evaluator": {
+            "description": "Select or reopen a writer-drafted or externally imported diff for the named evaluator on its original checkpoint and goal. One native byte approval; no separate commit.",
+            "type": "object",
+            "properties": {
+              "check": {
+                "type": "string",
+                "minLength": 1
+              },
+              "blob": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "check",
+              "blob"
+            ],
+            "additionalProperties": false
+          },
+          "rollout": {
+            "description": "Select or reopen one exact full-index proposal. A sole eligible diff is proposed on a normal wake. A follow-up binds the latest signed serial observation on its assembly; never interrupt issued work. Fresh approval and checks, no target change.",
+            "type": "object",
+            "properties": {
+              "assembly": {
+                "type": "string",
+                "minLength": 1
+              },
+              "check": {
+                "type": "string",
+                "minLength": 1
+              },
+              "blob": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "assembly",
+              "check",
+              "blob"
+            ],
+            "additionalProperties": false
+          },
+          "owned": {
+            "description": "Select or reopen one exact correction wholly inside the failing included output on an adopted assembly. Name the signed joined check and proposal blob. Fresh approval, component and applicable code review precede a changed product; no writer token or target change.",
+            "type": "object",
+            "properties": {
+              "check": {
+                "type": "string",
+                "minLength": 1
+              },
+              "blob": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "check",
+              "blob"
+            ],
+            "additionalProperties": false
+          },
           "inherited": {
-            "description": "On explicit request, select or reopen this owner-offered patch for unowned inherited files after a signed adopted-component failure. The operator confirms the exact diff, not the target again. No writer grant.",
+            "description": "On explicit request, select or reopen this exact patch for unowned inherited files after a signed adopted-component failure. The operator confirms the bytes, not the target again. No writer grant.",
             "type": "object",
             "properties": {
               "check": {
@@ -3464,7 +4053,7 @@
             "additionalProperties": false
           },
           "repairBaseline": {
-            "description": "Authorize one bounded repair for each original missing-input writer from its unchanged baseline after a settled goal. Inspection alone does not authorize repair.",
+            "description": "Approve one bounded repair per original missing-input writer from its unchanged baseline. Review any exact charter revision pair explicitly; only the old scope survives. A compatible checked checkpoint suffices during an unrelated join or goal. Inspection alone cannot authorize repair.",
             "type": "object",
             "properties": {
               "grains": {
@@ -3902,7 +4491,7 @@
                 },
                 "uniqueItems": true,
                 "minItems": 1,
-                "description": "Exact existing integration files for a source-backed review; never grants a parent directory."
+                "description": "Exact existing integration files require a source-backed comparison on a settled goal. A pending-goal checkpoint is directory-only; do not drop files to bypass that boundary."
               },
               "historical": {
                 "type": "object",
@@ -4025,6 +4614,368 @@
         "maxProperties": 2
       }
     },
+    "foundry_propose": {
+      "description": "Bound writer: report scoped diagnostic evidence, not code, an approval or a check. Supply your current token, the signed component ID, and exactly one proposal. Original checks, tokens and permissions are unchanged.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string",
+            "minLength": 1
+          },
+          "token": {
+            "type": "string",
+            "minLength": 1
+          },
+          "check": {
+            "type": "string",
+            "minLength": 1
+          },
+          "observe": {
+            "type": "object",
+            "properties": {
+              "harness": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "uniqueItems": true
+              },
+              "current": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "uniqueItems": true
+              }
+            },
+            "required": [
+              "harness"
+            ],
+            "additionalProperties": false
+          },
+          "observer": {
+            "type": "object",
+            "properties": {
+              "file": {
+                "type": "string",
+                "minLength": 1
+              },
+              "phases": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "uniqueItems": true
+              }
+            },
+            "required": [
+              "file"
+            ],
+            "additionalProperties": false
+          },
+          "production": {
+            "type": "object",
+            "properties": {
+              "files": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "uniqueItems": true,
+                "minItems": 1
+              },
+              "task": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "files",
+              "task"
+            ],
+            "additionalProperties": false
+          },
+          "footprint": {
+            "type": "object",
+            "properties": {
+              "stages": {
+                "oneOf": [
+                  {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "file": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "excerpt": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "inventory": {
+                          "type": "object",
+                          "properties": {
+                            "file": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "keys": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            }
+                          },
+                          "required": [
+                            "file",
+                            "keys"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "reason": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "file",
+                        "excerpt",
+                        "reason"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "component": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "file": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "excerpt": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "inventory": {
+                              "type": "object",
+                              "properties": {
+                                "file": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "keys": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                }
+                              },
+                              "required": [
+                                "file",
+                                "keys"
+                              ],
+                              "additionalProperties": false
+                            },
+                            "reason": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "file",
+                            "excerpt",
+                            "reason"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "generated": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "file": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "excerpt": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "inventory": {
+                              "type": "object",
+                              "properties": {
+                                "file": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "keys": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                }
+                              },
+                              "required": [
+                                "file",
+                                "keys"
+                              ],
+                              "additionalProperties": false
+                            },
+                            "reason": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "file",
+                            "excerpt",
+                            "reason"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "package": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "file": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "excerpt": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "inventory": {
+                              "type": "object",
+                              "properties": {
+                                "file": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "keys": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                }
+                              },
+                              "required": [
+                                "file",
+                                "keys"
+                              ],
+                              "additionalProperties": false
+                            },
+                            "reason": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "file",
+                            "excerpt",
+                            "reason"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "runtime": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "file": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "excerpt": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "inventory": {
+                              "type": "object",
+                              "properties": {
+                                "file": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "keys": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                }
+                              },
+                              "required": [
+                                "file",
+                                "keys"
+                              ],
+                              "additionalProperties": false
+                            },
+                            "reason": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "file",
+                            "excerpt",
+                            "reason"
+                          ],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": [
+                      "component",
+                      "generated",
+                      "package",
+                      "runtime"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              }
+            },
+            "required": [
+              "stages"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "run",
+          "token",
+          "check"
+        ],
+        "additionalProperties": false,
+        "minProperties": 4,
+        "maxProperties": 4
+      }
+    },
     "foundry_deliver": {
       "description": "Owner, on request: approve the inventory of whole, absent, disjoint test directories with latest signed passing reruns on this product. Preserve owners and attempts; freshly check components, product and goal.",
       "parameters": {
@@ -4113,6 +5064,10 @@
               "additionalProperties": false
             }
           },
+          "requestEvidence": {
+            "type": "boolean",
+            "description": "Request scoped source evidence from the component writers. Does not authorize or run a checkpoint."
+          },
           "evidence": {
             "type": "array",
             "minItems": 1,
@@ -4124,9 +5079,8 @@
                   "minLength": 1
                 },
                 "stages": {
-                  "type": "object",
-                  "properties": {
-                    "component": {
+                  "oneOf": [
+                    {
                       "type": "array",
                       "minItems": 1,
                       "items": {
@@ -4169,167 +5123,216 @@
                         "required": [
                           "file",
                           "excerpt",
-                          "inventory",
                           "reason"
                         ],
                         "additionalProperties": false
                       }
                     },
-                    "generated": {
-                      "type": "array",
-                      "minItems": 1,
-                      "items": {
-                        "type": "object",
-                        "properties": {
-                          "file": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "excerpt": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "inventory": {
+                    {
+                      "type": "object",
+                      "properties": {
+                        "component": {
+                          "type": "array",
+                          "minItems": 1,
+                          "items": {
                             "type": "object",
                             "properties": {
                               "file": {
                                 "type": "string",
                                 "minLength": 1
                               },
-                              "keys": {
-                                "type": "array",
-                                "items": {
-                                  "type": "string",
-                                  "minLength": 1
-                                }
+                              "excerpt": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "inventory": {
+                                "type": "object",
+                                "properties": {
+                                  "file": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "keys": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    }
+                                  }
+                                },
+                                "required": [
+                                  "file",
+                                  "keys"
+                                ],
+                                "additionalProperties": false
+                              },
+                              "reason": {
+                                "type": "string",
+                                "minLength": 1
                               }
                             },
                             "required": [
                               "file",
-                              "keys"
+                              "excerpt",
+                              "reason"
                             ],
                             "additionalProperties": false
-                          },
-                          "reason": {
-                            "type": "string",
-                            "minLength": 1
                           }
                         },
-                        "required": [
-                          "file",
-                          "excerpt",
-                          "inventory",
-                          "reason"
-                        ],
-                        "additionalProperties": false
-                      }
-                    },
-                    "package": {
-                      "type": "array",
-                      "minItems": 1,
-                      "items": {
-                        "type": "object",
-                        "properties": {
-                          "file": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "excerpt": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "inventory": {
+                        "generated": {
+                          "type": "array",
+                          "minItems": 1,
+                          "items": {
                             "type": "object",
                             "properties": {
                               "file": {
                                 "type": "string",
                                 "minLength": 1
                               },
-                              "keys": {
-                                "type": "array",
-                                "items": {
-                                  "type": "string",
-                                  "minLength": 1
-                                }
+                              "excerpt": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "inventory": {
+                                "type": "object",
+                                "properties": {
+                                  "file": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "keys": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    }
+                                  }
+                                },
+                                "required": [
+                                  "file",
+                                  "keys"
+                                ],
+                                "additionalProperties": false
+                              },
+                              "reason": {
+                                "type": "string",
+                                "minLength": 1
                               }
                             },
                             "required": [
                               "file",
-                              "keys"
+                              "excerpt",
+                              "reason"
                             ],
                             "additionalProperties": false
-                          },
-                          "reason": {
-                            "type": "string",
-                            "minLength": 1
                           }
                         },
-                        "required": [
-                          "file",
-                          "excerpt",
-                          "inventory",
-                          "reason"
-                        ],
-                        "additionalProperties": false
-                      }
-                    },
-                    "runtime": {
-                      "type": "array",
-                      "minItems": 1,
-                      "items": {
-                        "type": "object",
-                        "properties": {
-                          "file": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "excerpt": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "inventory": {
+                        "package": {
+                          "type": "array",
+                          "minItems": 1,
+                          "items": {
                             "type": "object",
                             "properties": {
                               "file": {
                                 "type": "string",
                                 "minLength": 1
                               },
-                              "keys": {
-                                "type": "array",
-                                "items": {
-                                  "type": "string",
-                                  "minLength": 1
-                                }
+                              "excerpt": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "inventory": {
+                                "type": "object",
+                                "properties": {
+                                  "file": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "keys": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    }
+                                  }
+                                },
+                                "required": [
+                                  "file",
+                                  "keys"
+                                ],
+                                "additionalProperties": false
+                              },
+                              "reason": {
+                                "type": "string",
+                                "minLength": 1
                               }
                             },
                             "required": [
                               "file",
-                              "keys"
+                              "excerpt",
+                              "reason"
                             ],
                             "additionalProperties": false
-                          },
-                          "reason": {
-                            "type": "string",
-                            "minLength": 1
                           }
                         },
-                        "required": [
-                          "file",
-                          "excerpt",
-                          "inventory",
-                          "reason"
-                        ],
-                        "additionalProperties": false
-                      }
+                        "runtime": {
+                          "type": "array",
+                          "minItems": 1,
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "file": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "excerpt": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "inventory": {
+                                "type": "object",
+                                "properties": {
+                                  "file": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "keys": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    }
+                                  }
+                                },
+                                "required": [
+                                  "file",
+                                  "keys"
+                                ],
+                                "additionalProperties": false
+                              },
+                              "reason": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            },
+                            "required": [
+                              "file",
+                              "excerpt",
+                              "reason"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "component",
+                        "generated",
+                        "package",
+                        "runtime"
+                      ],
+                      "additionalProperties": false
                     }
-                  },
-                  "required": [
-                    "component",
-                    "generated",
-                    "package",
-                    "runtime"
-                  ],
-                  "additionalProperties": false
+                  ]
                 }
               },
               "required": [
@@ -4346,8 +5349,7 @@
           "target",
           "checkpoint",
           "goal",
-          "selected",
-          "evidence"
+          "selected"
         ],
         "additionalProperties": false
       }
@@ -4782,7 +5784,7 @@
       }
     },
     "foundry_submit": {
-      "description": "Bound writer, after joining helpers: submit all assigned roots, or report one stop. Use missingInput for a genuine missing input; cannotRepair for a status-listed check when further repair is forbidden; relinquish for a status-listed numeric failure with neither a fix nor missing input. Stops do not capture or recheck. For changed work after an incomplete check use changedFrom from status.",
+      "description": "Bound writer, after joining helpers: submit all assigned roots, or report one stop. With missingInput, optionally name an exact inputBlob and its inputSource (producing grain and file) for a direct read-only reference. No capture or recheck on a stop. Use cannotRepair, relinquish or changedFrom only for the status-listed check.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -4797,6 +5799,28 @@
           "missingInput": {
             "type": "string",
             "minLength": 1
+          },
+          "inputBlob": {
+            "type": "string",
+            "minLength": 1
+          },
+          "inputSource": {
+            "type": "object",
+            "properties": {
+              "grain": {
+                "type": "string",
+                "minLength": 1
+              },
+              "file": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "grain",
+              "file"
+            ],
+            "additionalProperties": false
           },
           "cannotRepair": {
             "type": "object",
@@ -4863,7 +5887,7 @@
       }
     },
     "foundry_publish": {
-      "description": "Offer one reference file to named output directories or charter areas. A bound writer must supply its token. Publishing grants no baseline access or repair authority.",
+      "description": "Offer one reference to named outputs or charter areas. A producer may answer a stopped consumer directly: supply its grain in forInput, its exact output in to, and your own token. Checked sources read the immutable candidate, never a working copy. Only the owner may address an evaluator diff. Publication is not a verdict.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -4887,6 +5911,10 @@
           "token": {
             "type": "string",
             "minLength": 1
+          },
+          "forInput": {
+            "type": "string",
+            "minLength": 1
           }
         },
         "required": [
@@ -4898,7 +5926,7 @@
       }
     },
     "foundry_status": {
-      "description": "Read scoped work, blockers and receipts without advancing or archiving. permissions reads this issuer's live policy and mode; proof, cleanup and usage are owner-only.",
+      "description": "Read scoped work without advancing it. For large runs use detail:recovery for current actions without historical reports. permissions reads this issuer's policy and mode; proof, cleanup and usage are owner-only.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -4912,7 +5940,8 @@
               "proof",
               "cleanup",
               "usage",
-              "permissions"
+              "permissions",
+              "recovery"
             ]
           }
         },
@@ -5048,6 +6077,62 @@
           "type": "string"
         }
       }
+    },
+    "foundry-mend": {
+      "type": "object",
+      "properties": {
+        "run": {
+          "type": "string"
+        },
+        "stop": {
+          "type": "string"
+        },
+        "dispatch": {
+          "type": "string"
+        },
+        "phase": {
+          "type": "string",
+          "enum": [
+            "author",
+            "review"
+          ]
+        },
+        "subject": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "run",
+        "stop",
+        "dispatch",
+        "phase",
+        "subject"
+      ],
+      "additionalProperties": false
+    },
+    "foundry-draft": {
+      "type": "object",
+      "properties": {
+        "run": {
+          "type": "string"
+        },
+        "draft": {
+          "type": "string"
+        },
+        "subject": {
+          "type": "string"
+        },
+        "dispatch": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "run",
+        "draft",
+        "subject",
+        "dispatch"
+      ],
+      "additionalProperties": false
     }
   },
   "agents": {
@@ -5059,7 +6144,9 @@
       "foundry_reference",
       "web_search",
       "web_fetch"
-    ]
+    ],
+    "foundry-test-author": [],
+    "foundry-proposal-writer": []
   },
   "hooks": [
     "onPostToolUse",

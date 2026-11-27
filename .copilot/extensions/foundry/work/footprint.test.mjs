@@ -20,3 +20,15 @@ test("a new match in a pinned package inventory makes the held output dependent"
 	evidence[0].stages.package[0].inventory.keys=["unused"];
 	assert.throws(()=>proof(assembly),{code:"incomplete_evidence"});
 });
+
+test("directly cited build inputs need no separate JSON inventory, but cannot hide an overlapping read",t=>{
+	const build="build src/item.rs config/settings",f=factory(t,"build",".foundry/build.json",{
+		"check.sh":build,"src/item.rs":"fixed","config/settings":"existing","other/entry":"old"});
+	put(f.root,"other/entry","new");git(f.root,"commit","-qam","unrelated output");const disjoint=git(f.root,"rev-parse","HEAD");
+	put(f.root,"config/settings","new");git(f.root,"commit","-qam","overlapping input");const overlap=git(f.root,"rev-parse","HEAD");
+	const roles=new Map([["observed",{commit:f.tip,check:"check.sh",scope:"src",selected:false}]]);
+	const evidence=(/** @type {string} */ excerpt)=>[{component:"observed",stages:[{file:"check.sh",excerpt,reason:"These literal operands are the complete inputs throughout."}]}];
+	const verify=(/** @type {string} */ tree,excerpt=build)=>footprints(f.root,evidence(excerpt),roles,f.tip,tree,["src"],git(f.root,"diff","--name-only",f.tip,tree).split("\n"));
+	for(const notes of Object.values(verify(disjoint)[0].stages))assert.deepEqual(notes[0].inputs,["src/item.rs","config/settings"]);
+	assert.throws(()=>verify(overlap),{code:"dependent_output"});assert.throws(()=>verify(disjoint,"build src/item.rs"),{code:"incomplete_evidence"});
+});

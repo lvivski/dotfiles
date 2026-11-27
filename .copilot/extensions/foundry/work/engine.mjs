@@ -2,7 +2,7 @@ import { machine, to, transition as next, update } from "./machine.mjs";
 
 /** @typedef {Exclude<keyof typeof release.states,"paused"|"qualified"|"blocked">} GoalState */
 /** @typedef {{active:boolean, qualified:boolean, goal:GoalState, blocked:boolean, scoped:boolean, stalled:boolean,
- * moved:boolean, failedComponent:boolean, idle:boolean, product:boolean, exactProduct:boolean, join:boolean, held:boolean, review:boolean, work:boolean}} Facts */
+ * moved:boolean, failedComponent:boolean, idle:boolean, product:boolean, exactProduct:boolean, join:boolean, held:boolean, review:boolean, work:boolean,supersededWork?:boolean}} Facts */
 /** @typedef {"wait"|"assess"|"retry"|"assess-target"|"undecided"|"rejoin"|"qualify"|"baseline"|"none"} Action */
 /** @typedef {import("./admission.mjs").Admission} Admission */
 /** @typedef {{target?:string,workTarget?:string,error?:string}} Pins */
@@ -38,10 +38,14 @@ export const release=machine("release","absent",{
 		{on:"product-settled",action:"handoff-product",when:["oneOff","currentJoin","signedProduct","!alreadyHandedOff","!held"],
 			description:"Hand off the exact settled product without stopping a run that has no goal evaluator."}],
 	"product-repin":[edge("wait","closed","product-repin-target-changed","Do not apply a product-checker upgrade to a different target.","moved"),
-		edge("wait","closed","adopted-component-failed","Keep the failed assembly. Propose an eligible inherited-file correction, not another target adoption.","failedComponent"),
+		edge("wait","closed","adopted-component-failed","Keep the failed assembly. Propose an exact inherited-file or single-owner correction, not another target adoption.","failedComponent"),
 		edge("wait","closed","product-repin-held","Preserve the milestone hold while the upgraded check is outstanding.","held"),
 		edge("wait","closed","awaiting-product-repin","Wait for the newly pinned product checker to verify the existing checkpoint.")],
-	superseded:pending("superseded-goal"),
+	"withheld-handoff":[edge("wait","closed","handoff-target-changed","Only the original target can receive the fresh assessment.","moved"),
+		edge("wait","closed","handoff-recheck-held","Keep the fresh nonpassing observation; the historical pass cannot take its place.","held"),
+		edge("wait","closed","awaiting-handoff-recheck","Wait for the fresh product verification on the unchanged checkpoint.","join"),
+		edge("wait","closed","unproven-handoff","Wait for an owner resume; the old receipts do not prove the selected evaluator inputs.")],
+	superseded:[edge("none","changed-join","integrate-under-approved-pin","Verify genuinely changed, already-published work. The obsolete claimed goal keeps its original call and any late result.","supersededWork","!held"),...pending("superseded-goal")],
 	pending:pending("awaiting-goal-receipt"),
 	retired:[edge("none","open","integrate-retained-work","Allow retained work to integrate without attributing a verdict to the retired runner.")],
 	rejoining:[edge("none","join-only","verify-current-product","Verify the assembled product without staffing new work.")],
@@ -68,6 +72,7 @@ export const release=machine("release","absent",{
 },{description:"Decides what work may proceed and whether the exact assembled commit is ready for handoff.",states:{
 	paused:"The run is inactive without a qualified product.",qualified:"The accepted product has already qualified.",blocked:"A recorded run-level obstacle prevents a release decision.",
 	absent:"No goal observation has been requested.","product-repin":"An approved product-checker change still needs its own passing observation.",
+	"withheld-handoff":"The historical handoff lacks verified evaluator inputs. Only fresh evidence on the same product can replace it.",
 	superseded:"An earlier goal call is still outstanding or held, but its evaluator is no longer current.",
 	pending:"The current goal has no settled receipt.",retired:"The original goal reservation ended without a verdict; its retained work still matters.",
 	rejoining:"A fresh product check is verifying the assembly before the goal can be assessed again.",repin:"The goal evidence belongs to an evaluator that has been replaced.",
@@ -77,11 +82,11 @@ export const release=machine("release","absent",{
 }});
 
 /** @param {Readonly<Facts>} f */
-export const releaseState=f=>!f.active ? f.qualified ? "qualified" : "paused" : f.goal!=="absent" && f.blocked ? "blocked" : f.goal;
+export const releaseState=f=>f.goal==="withheld-handoff" ? f.goal : !f.active ? f.qualified ? "qualified" : "paused" : f.goal!=="absent" && f.blocked ? "blocked" : f.goal;
 
 /** @param {Readonly<Facts>} f @param {boolean} [retryEvidence] @param {string} [target] */
 export function releaseResolution(f,retryEvidence=false,target) {
-	return next(release,{value:releaseState(f),context:/** @type {Decision|null} */ (null)},{type:"assess",target},{...f,retryEvidence},true);
+	return next(release,{value:releaseState(f),context:/** @type {Decision|null} */ (null)},{type:"assess",target},{...f,supersededWork:f.supersededWork===true,retryEvidence},true);
 }
 
 /** @param {{snapshot:{context:Decision|null}}} selected */

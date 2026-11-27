@@ -28,7 +28,7 @@ export function attribute(run, actor, a) {
 }
 
 /** @param {Run} run @param {string} receipt */
-function failures(run, receipt) {
+export function failures(run, receipt) {
 	const e = run.effects.find(e => e.kind === "goal" && e.id === receipt), r = checkReceipt(e);
 	if (!e || r?.exit !== 1) return [];
 	const rows = [...r.blockers ?? [], ...run.attributions?.filter(v => v.receipt === receipt) ?? []];
@@ -155,12 +155,15 @@ function ownership(nodes, g, reviews, remaining) {
 }
 
 /** @param {Run} run @param {number} remaining */
-export function unownedBlockers(run, remaining) {
+export function routedBlockers(run, remaining) {
 	const gaps = currentFailures(run);
 	if (!gaps.length) return [];
 	const history = run.effects.filter(e => e.kind === "scout").filter(r => currentEvaluation(run,r));
-	return gaps.map(g => ({ ...g, ...ownership(run.nodes, g, history, remaining) })).filter(g => g.state === "unowned");
+	return gaps.map(g => ({ ...g, ...ownership(run.nodes, g, history, remaining) }));
 }
+
+/** @param {Run} run @param {number} remaining */
+export const unownedBlockers=(run,remaining)=>routedBlockers(run,remaining).filter(g=>g.state==="unowned");
 
 /** One ledger projection: neither a writer nor a later omitted step is evidence of a fix.
  * @param {Run} run @param {number} remaining */

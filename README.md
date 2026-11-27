@@ -35,7 +35,7 @@ brew bundle dump --file=.Brewfile --force
 The skills in `.copilot/skills/` use Agent Skills frontmatter. Each `SKILL.md` holds its default workflow and essential
 safeguards; directly linked local references provide phase protocols or options only when needed.
 Bundled script paths are resolved from the skill directory, not a hard-coded installation path.
-`source ./sync` installs these skills along with their references and scripts.
+`source ./sync` installs these skills along with their references and scripts, except for the paired Foundry installation below.
 
 Test the queue fetcher's CLI offline with Bash. The provider integration suite also needs `jq`
 and Node.js; it passes manifests from mock GitHub and Azure CLIs through Recon's review workflow.
@@ -47,9 +47,9 @@ bash .copilot/skills/review-queue/scripts/review-queue-providers.test.sh
 
 ## Copilot extensions
 
-`source ./sync` checksum-mirrors the Foundry and Recon extensions and their bundled skills under
-`~/.copilot/`. It prunes stale files from those mirrors and preserves unrelated extensions and
-repository run data. Both sync directions leave `.git` directories and linked-worktree `.git` files untouched.
+`source ./sync` checksum-mirrors Recon and the non-Foundry skills under `~/.copilot/`, pruning obsolete files from those mirrors only. Both directions skip the Foundry extension and skill, `.git` directories and linked-worktree `.git` files.
+
+**Foundry must be installed as a matched pair.** Stage both trees outside the discovery paths. Before replacing either, all hosts and launchers that could issue calls or load either tree must be stopped and prevented from restarting; account for pending native calls, approvals and runner processes first. Keep that exclusion in force until both trees match their staged checksums and modes, including after an interruption. A run pause, an idle status or an extension reload does not establish this window. If any participant or call is unaccounted for, leave the installed pair unchanged.
 
 **[Foundry](.copilot/extensions/foundry/README.md)** regenerates directories from a committed
 product brief. Goal contracts pin writable areas and checks. Tool-less workflow scouts review the

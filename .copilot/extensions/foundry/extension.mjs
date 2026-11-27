@@ -5,8 +5,11 @@ import { identify } from "./work/native.mjs";
 import { idleHome } from "./work/pool.mjs";
 import { permissionCheck } from "./work/permissions.mjs";
 import { confirmNoReport, recover, scoutFailure } from "./work/recovery.mjs";
+import { mechanicDefinition, mechanicAgent, resumeMechanic, settleMechanic } from "./work/mechanic.mjs";
+import { authorDefinition, proposalWriter } from "./work/author.mjs";
 import { researchAgent } from "./work/research.mjs";
 import { createRuntime } from "./work/runtime.mjs";
+import { formIdle, formVacant } from "./work/forms.mjs";
 import { scoutAgent, scoutDefinition } from "./work/scouts.mjs";
 import { buildTools, fromHelper, primaryOnly } from "./work/tools.mjs";
 
@@ -14,8 +17,14 @@ import { buildTools, fromHelper, primaryOnly } from "./work/tools.mjs";
 let session;
 const executionMode = () => session.rpc.mode.get();
 const permissions = permissionCheck(() => session.rpc.managedSettings.get(), () => session.rpc.permissions.getMode());
-/** @param {string} message */
-const confirm = async message => (await session.ui.elicitation({ message, requestedSchema: { type: "object", properties: {} } })).action === "accept";
+/** The SDK's ui.confirm adds a checkbox; an empty schema uses just the native buttons.
+ * @param {string} message */
+async function confirm(message) {
+	const { action, content } = await session.ui.elicitation({ message, requestedSchema: { type: "object", properties: {} } });
+	if (action === "decline" || action === "cancel") return false;
+	if (action === "accept" && !Object.keys(content ?? {}).length) return true;
+	throw Error("No button decision was received for this confirmation");
+}
 /** The task registry also contains direct agents of discovery workflows hosted by this writer.
  * Only an exact native identity from one of its bound workflows can exempt a running task.
  * @param {string[]} workflows */
@@ -68,9 +77,17 @@ const runtime = createRuntime(process.cwd(), {
 		return answer;
 	},
 	confirm,
+	confirmProposal:confirm,
+	formIdle:async()=>formIdle(await session.rpc.ui.snapshot()),
+	formVacant:()=>formVacant(session.sessionId,()=>session.rpc.ui.snapshot(),
+		()=>session.rpc.tools.execute({name:"get_session",arguments:{project_session_id:session.sessionId}})),
 	autoConfirm: () => permissions.autoConfirm(executionMode),
 	execute: (name, args, toolCallId) => session.rpc.tools.execute({ name, arguments: args, toolCallId }),
 	scout: (run, dispatch) => session.workflow.run("foundry-scout", { args: { run, dispatch }, notifyOnComplete: false }),
+	draftAgent:ticket=>session.workflow.run("foundry-draft",{args:ticket,notifyOnComplete:false}),
+	draftState:id=>session.workflow.waitForRun(id),
+	repairAgent:async(_phase,_packet,ticket)=>settleMechanic(await session.workflow.run("foundry-mend",{args:ticket,notifyOnComplete:false}),ticket,undefined,(id,paused,attempt)=>continueMechanic(ticket,id,paused,attempt)),
+	repairState:async(id,ticket)=>settleMechanic(await session.workflow.waitForRun(id),ticket,id,(w,paused,attempt)=>continueMechanic(ticket,w,paused,attempt)),
 	startInspection: (run, inspection, dispatch) => session.workflow.start("foundry-inspect", { args: { run, inspection, dispatch }, notifyOnComplete: false }),
 	scoutState: id => session.workflow.waitForRun(id),
 	scoutSnapshot: id => session.workflow.getRun(id),
@@ -80,9 +97,14 @@ const runtime = createRuntime(process.cwd(), {
 	readHistory: page => session.rpc.eventLog.read(page),
 	log: message => session.log(message, { level: "warning" }),
 });
+/** @param {import("./work/mending.mjs").Ticket} ticket @param {string} id @param {boolean} paused @param {number|undefined} attempt @returns {Promise<import("./work/auditor.mjs").Envelope>} */
+async function continueMechanic(ticket,id,paused,attempt){
+	await runtime.mechanicPacket(ticket,session.sessionId,id,paused?"permission":"halt",attempt);
+	return resumeMechanic(id,w=>session.workflow.resume(w,{notifyOnComplete:false}),w=>session.workflow.waitForRun(w));
+}
 session = await joinSession({
-	agents: { definitions: [scoutAgent, researchAgent] },
-	workflows: [defineWorkflow(scoutDefinition(() => runtime)),defineWorkflow(critiqueDefinition(() => runtime))],
+	agents: { definitions: [scoutAgent, researchAgent, mechanicAgent,proposalWriter] },
+	workflows: [defineWorkflow(scoutDefinition(() => runtime)),defineWorkflow(critiqueDefinition(() => runtime)),defineWorkflow(mechanicDefinition(()=>runtime)),defineWorkflow(authorDefinition(()=>runtime))],
 	tools: { definitions: buildTools(runtime, () => session.sessionId, permissions.snapshot) },
 	canvases: { definitions: [foundryBoard(runtime.readBoard, runtime.defaultMapRun, runtime.readSpecification)] },
 	hooks: { handlers: {

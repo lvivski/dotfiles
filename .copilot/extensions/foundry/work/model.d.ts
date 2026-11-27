@@ -9,7 +9,8 @@ export interface Restoration { from: string; historical: string; checkpoint: str
 export interface Observer { pair: string; file: string; before: string; after?: string; previous?: {check:string; candidate:string; phases:string[]} }
 export interface Production { diagnostic:string; candidate:string; checkpoint:string; goal:string; files:string[]; task:string; prior:Node }
 export interface Pairing { failed: string; component: string; candidate: string; retainer: string; checkpoint: string; goal: string; target: string; tree: string }
-export interface Footnote { file:string; blob:string; excerpt:string; inventory:{file:string; keys:string[]; blob:string}; inputs:string[]; reason:string }
+export type Footnote = { file:string; blob:string; excerpt:string; inputs:string[]; reason:string } &
+	({inventory:{file:string;keys:string[];blob:string};literal?:never}|{literal:true;inventory?:never});
 export interface Footprint { component:string; commit:string; stages:Record<"component"|"generated"|"package"|"runtime",Footnote[]> }
 export interface Subset {
 	observer:string; checkpoint:string; goal:string; target:string; assembly:string; basis:string;
@@ -97,7 +98,16 @@ export interface Observation {
 export interface Finding { kind: string; source: string; finding: string }
 export interface Reference { repo: string; revision: string }
 
+export interface ReferenceSource {
+	grain:string; file:string; assignment:string; review:string; worker:string; generation:string; grant:string; revision:string; component?:string;
+}
+export interface DependencyReference { source:ReferenceSource & {component:string}; pooled:string }
+export interface CharterContinuation { file:string; from:string; to:string; target:string; productEvaluator:string; goalEvaluator:string }
+
 export interface Artifact {
+	source?:ReferenceSource & {consumer:string;receiver:string;request:string};
+	assembly?:string; // The immutable join or unpublished rollout on which the owner offered this diff.
+	evaluation?:{from:string;checkpoint:string;goal:string};
 	file: string;
 	blob: string;
 	publisher: string;
@@ -134,7 +144,8 @@ export interface Node {
 	check?: string;
 	repairs: number;
 	reason?: string;
-	stop?: { kind: "writer-missing-input" | "writer-cannot-repair" | "writer-relinquished"; detail: string };
+	stop?: { kind: "writer-missing-input" | "writer-cannot-repair" | "writer-relinquished"; detail: string;
+		input?: {blob:string; after:number; grant?:string; source?:ReferenceSource; hold?:string; decision?:"input"} };
 }
 
 export interface Assessment {
@@ -147,6 +158,7 @@ export interface Product extends Assessment {
 	outputs: Record<string, string>;
 	ownership?: Record<string,{directories:string[];files:string[];exclude?:{directories:string[];files:string[]}}>;
 	qualifiedAt?: number;
+	withdrawnHandoff?: { qualifiedAt?:number; goal:string; recheck:string };
 }
 
 export interface Inspection {
@@ -188,10 +200,12 @@ export interface ProductCitation {
 export type DiscoveryLead = { receipt: string; checkpoint: string; priorReview?: string } &
 	({ missing: string; pending?: never } | { pending: string; missing?: never });
 
-export type OwnerDecision = { status:"presenting"; presentation?:string } | { status:"dismissed" } | { status:"answered"; answer:string }
+export type OwnerDecision = { status:"presenting"; presentation?:string; presenter?:{host:string;pid:number}; selected?:string } | { status:"dismissed" } | { status:"answered"; answer:string }
 	| { status:"unavailable"; reason:string; presentation?:string };
 
+export interface ReviewObstacle {kind:"missing-output"|"overlap"|"stale-review"|"outside-scope"|"repeated-output"|"displaced-input"|"other";subject?:string}
 export interface Review extends Dispatch {
+	obstacle?:ReviewObstacle;
 	providerRecovery?: "needed"|"claimed";
 	kind: "scout";
 	tool: "workflow";
@@ -221,9 +235,16 @@ export interface Review extends Dispatch {
 export type BlockerSignal = { id: string; directory: string } & ({ blocked: number } | { passed: true });
 export interface Attribution { receipt: string; id: string; directory: string; blocked: number; excerpt: string }
 
+import type {Checker,VerificationInputs} from "../../../skills/foundry/scripts/recipe-types.js";
+export type {VerificationInputs,VerificationScope,Checker} from "../../../skills/foundry/scripts/recipe-types.js";
+export interface ComponentObservation {check:string;exit:number|null;inputs?:VerificationInputs;test?:string}
 export interface Receipt {
+	inputs?:VerificationInputs;
+	test?:string; // Historical signed field; new observations use inputs.checker.
+	control?:{assertion:string;matched:boolean};
+	overlay?:string; // Historical digest only; new observations use inputs.overlay.
 	resolutionDigest?:string;
-	components?:Record<string,{check:string;exit:number|null}>;
+	components?:Record<string,ComponentObservation>;
 	completedAt?: number;
 	commit: string;
 	check: string;
@@ -274,7 +295,44 @@ export interface Baseline {
 }
 export type Inventory = Baseline | Baseline[];
 
+export interface Instruction {
+	kind:"blocker"|"correction"|"read"|"observer"|"diagnosis"|"proposal"|"preview"|"footprint"|"subset"|"supply";
+	assignment:string;
+	source:string;
+	evidence:string;
+	step?:string;
+}
+
+export interface Diagnostic {
+	id:string; kind:"observe"|"observer"|"production"|"footprint"; grain:string; assignment:string; attempt:string;
+	check:string; checkpoint:string; goal:string; target:string; data:Record<string,Json>;
+}
+export type FootprintRequest = Pick<Subset,"target"|"checkpoint"|"goal"|"observer"|"selected"> & {id:string;checks:string[]};
+
+/** A reservation binds a use and an ordered physical recipe, not a verdict. The prepared tree digest
+ * belongs to the observation; before launch only the immutable build input and hook (or absence) are known. */
+export interface CheckDescription {
+	version:1;
+	use:"component"|"attestation"|"historical-observation"|"calibration"|"product"|"goal"|"subset";
+	grant:string;
+	target:string;
+	contract:string;
+	evaluation:{kind:"component"}|{kind:"product",outputs:string[]}|{kind:"goal",squads:string[]};
+	steps:{member:string|null,inputs:VerificationInputs,build:null|{commit:string,hook:Checker|null}}[];
+	privateInput?:string;
+	joined?:true;
+	resolutions?:string;
+}
+
 export interface NativeCall extends Dispatch, ArtifactReport {
+	verification?:CheckDescription;
+	attempt?:{version:1;closure?:"never-issued"|"closed-before-runner-claim"} | {version:2;previous?:string};
+	instruction?:Instruction;
+	testPin?:string; // Stop whose certified observer this evaluation uses; never a production-tree substitution.
+	calibration?:{stop:string;role:"oldGood"|"newGood"|"newBad";subject:string};
+	lane?:string; // Digest of the exact scoped foreground retry, included in the runner signature.
+	replacement?:string; // Exact operator-approved proposal; only its own component can carry this.
+	rollout?:string;
 	delivery?:string;
 	rerun?: Rerun;
 	production?:Production;
@@ -290,10 +348,14 @@ export interface NativeCall extends Dispatch, ArtifactReport {
 	reuse?: CandidateReuse;
 	retirement?: { notification: string; read: string; completion: string };
 	baseline?: Inventory;
+	baselineStop?:Node;
+	continuation?:CharterContinuation;
+	input?: {prior:Node; assignment:string; review:string; blob:string; target:string; goal:string; checkpoint?:string; requested:boolean; withdrawn?:string} &
+		({offer:number;offerDigest?:string;dependency?:never}|{dependency:DependencyReference;offer?:never;offerDigest?:never});
 	readGrant?: Inventory;
 	claims?: { actor: string; path: string; start: string; kickoff: string; identity: string }[];
 	claimedRequest?: string;
-	kind: "writer" | "component" | "rerun" | "product" | "goal" | "repair" | "decision" | "handoff" | "artifact" | "escalation";
+	kind: "writer" | "component" | "rerun" | "product" | "goal" | "repair" | "decision" | "handoff" | "artifact" | "escalation" | "control" | "instruction";
 	inlineRepair?: string;
 	tool: "create_session" | "bash" | "send_session_message" | "session.send";
 	state: "ready" | "issued" | "uncertain" | "ordinary" | "done" | "refused" | "retired" | "withdrawn";
@@ -336,7 +398,22 @@ export interface Resolution {
 	result:string;
 }
 
+export interface OutputOwner {
+	source:string; squad:string; directory:Scope; output:string; component:string; binding:string;
+}
+
+export interface HarnessRollout {
+	from:string; blob:string; harness:string; draft?:string;
+	followup?:{proposal:string;assembly:string;check:string;files:HarnessRollout["files"];observation?:0|1|2;recipe?:{file:string;blob:string;command:string}};
+	files:{file:string;mode:string;before:string|null;result:string|null}[];
+	included:Record<string,{scope:Inspection["scope"];inputs:Record<string,string>;legacy?:string}>;
+	owners:Record<string,{output:string;component:string;binding:string;scope:Inspection["scope"];inputs:Record<string,string>;specification?:string}>;
+}
+
 export interface Adoption {
+	offeredThrough?:number; // Earlier unbound references were not selected for the next assembly.
+	evaluator?:{kind:"goal"|"product";from:string;blob:string;files:string[];draft?:string};
+	foreground?:{check:string;retry:string;variable:string;grains:Record<string,{file:string;number:number;line:string;blob:string}>};
 	id:string;
 	basis:string;
 	revision:string;
@@ -346,7 +423,8 @@ export interface Adoption {
 	manifest?:{from:string;productFrom:string;goalFrom:string;files:string[];outputs:Record<string,string>;
 		ownership:string;retained:string[];resolutions?:Resolution[]};
 	failed?:string;
-	patch?:{blob:string; grain:string; files:{file:string;mode:string;before:string;result:string}[]};
+	rollout?:HarnessRollout;
+	patch?:{blob:string; grain:string; files:{file:string;mode:string;before:string;result:string}[]; owner?:OutputOwner;draft?:string};
 	message:string;
 	decision?:OwnerDecision;
 	previous?:OwnerDecision[];
@@ -357,10 +435,39 @@ export type Effect = NativeCall | Review;
 export interface ProductPin {
 	from:string; revision:string; files:string[]; checkpoint:string; goal:string; recheck:string;
 	ownership?:"retain-except-transferred"; targetFrom?:string; acceptance?:string; resolutions?:Resolution[];
-	amendments?:{prior:Product; proposal:string; recheck:string}[];
+	amendments?:{prior:Product; proposal:string; recheck:string; harness?:string}[];
 }
 
+export interface TestRule {check:string;probe:string}
+export interface DraftSource {
+	kind:"owned"|"inherited"|"harness"|"evaluator"; grant:string; grain?:string; component?:string; output?:string; producer?:string;
+}
+export interface DraftPart {
+	source:DraftSource; files:Omit<HarnessRollout["files"][number],"result">[];
+	state:"ready"|"issued"|"returned"|"held"; dispatch?:string; workflow?:string; reason?:string; changes?:HarnessRollout["files"];
+	awaitingPacket?:true; continued?:true;
+}
+export interface CorrectionDraft {
+	id:string; check:string; checkpoint:string; goal:string; target:string; product:string; assembly:string;
+	evaluator?:string; previousCheck?:string; automatic:boolean; decision?:OwnerDecision; previous?:OwnerDecision[]; parts:DraftPart[]; blob?:string;
+}
+export interface TestRepair {
+	stop:string; owner:string; target:string; product:string; pin:string; before:string; driver:string; rule:TestRule; grain?:string; assertion?:string;recheck?:string;
+	dispatch?:string;workflow?:string;continuation?:string;continuationAttempt?:number;awaitingPermission?:boolean;
+	state:"diagnosing"|"draft"|"authoring"|"checking"|"review"|"reviewing"|"approved"|"applied"|"product"|"unobserved"|"held";
+	controls:{oldGood:string;newGood?:string;newBad?:string};
+	candidate?:string; revision?:string; blob?:string; reason?:string;wait?:string;
+	author?:string; reviewer?:string; subject?:string;
+}
+
+export type RunDocument=Omit<Run,"nodes"> & {format:"foundry-run/2";reviewContract:"required"|"legacy-no-review";graph:{nodes:Run["nodes"]}};
 export interface Run {
+	footprintRequests?:FootprintRequest[];
+	diagnostics?:Diagnostic[]; // A writer supplies evidence. Only the existing scoped operation can authorize its use.
+	instructions?:NativeCall[]; // Informational deliveries use the native call journal, not the product/assignment queue.
+	offerHold?:string;
+	correctionDrafts?:CorrectionDraft[];
+	testRepairs?:TestRepair[];
 	targetProposal?:string;
 	adoptions?:Adoption[];
 	inspections?:Inspection[]; // Present from activation for runs requiring independent candidate review.

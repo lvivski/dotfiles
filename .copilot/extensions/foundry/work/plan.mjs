@@ -80,6 +80,47 @@ export function originalAttempt(run, n) {
 		calls.every(e => e === launch || e.kind === "artifact" && e.state === "done")) return launch;
 }
 
+/** @param {Run} run @param {Node} n @param {import("./model.js").Effect|undefined} review */
+export function originalScope(run,n,review) {
+	if (review?.kind!=="scout" || review.id!==n.review || review.state!=="observed" || review.observation?.outcome!=="regenerate" ||
+		review.correction || n.reuse || n.retained || n.successor || n.excluded || n.restoration) return false;
+	const g=review.observation.grains.find(g=>(typeof g==="string"?g:g.id)===n.grain.id);
+	if (typeof g!=="object") return g===n.grain.id && run.policy.squads.some(s=>s.id===review.squad && "grains" in s && s.grains.includes(g));
+	const s=run.policy.squads.find(s=>s.id===review.squad);
+	return s && "areas" in s && s.charter===n.grain.specification && digest(s.boundary)===digest(n.grain.boundary) && s.agent===n.grain.agent &&
+		sameScope(g.directory,n.grain.directory) && g.check===n.grain.check && g.task===n.grain.task &&
+		g.revision===n.grain.revision && digest(g.needs)===digest(n.grain.needs) && digest(g.prior??null)===digest(n.grain.prior??null);
+}
+
+/** Follow only delivered reference grants to the same original launch; no check or unrelated repair can enter the chain.
+ * @param {Run} run @param {Node} n */
+export function inputAttempt(run,n) {
+	const calls=assignmentCalls(run,n), writers=calls.filter(e=>e.kind==="writer"), w=writers[0];
+	if (writers.length!==1 || w?.kind!=="writer" || w.state!=="done" || !w.callId || w.nativeId!==n.worker || generationOf(w)!==n.generation ||
+		calls.some(e=>e.error || e.permissionHold || e.state!=="done" || e!==w && e.kind!=="artifact" && !(e.kind==="repair" && e.input))) return;
+	const last=calls.findLast(e=>e.kind==="repair");
+	if (!last) return w.token===n.token ? w : undefined;
+	const old=last.kind==="repair" && last.input?.prior;
+	if (old && last.token===n.token && old.worker===n.worker && old.generation===n.generation && old.base===n.base &&
+		old.review===n.review && n.repairs===old.repairs+1 && digest(old.inputs)===digest(n.inputs) && digest(old.grain)===digest(n.grain)) return w;
+}
+
+/** A producer request and a reference grant must agree on who can resume the work.
+ * @param {Run} run @param {Node} n */
+export function referenceAttempt(run,n){
+	if(!n.base || !n.token || !n.worker || !n.generation || !n.review || missingInput(n)===undefined || n.candidate || n.check)return;
+	if(n.stop?.input?.grant && n.stop.input.grant!==writerVersion(n))return;
+	const w=inputAttempt(run,n);
+	if(w && !w.finished && !w.reuse && !w.observer && !w.production && !w.restoration && !w.readGrant &&
+		originalScope(run,n,run.effects.find(e=>e.id===n.review)))return w;
+}
+
+/** Identify a particular grant without sharing its token. A preview, reference cursor
+ * or delivery diagnostic changes no authority and must not invalidate the request.
+ * @param {Node} n */
+export const writerVersion=n=>digest([n.grain,n.worker,n.token,n.repairs,n.base,n.generation,n.review,n.inputs,
+	n.supporting??null,n.priorSource??null,n.replaces??null,n.workspace??null,n.retained??null,n.successor??null,n.restoration??null,n.reuse??null]);
+
 /** A stopped exit-2 sample can inform a different assignment but cannot seed it. An
  * exhausted exit-1 candidate instead needs a newly reviewed prerequisite.
  * @param {Run} run @param {Node} n @param {import("./model.js").Output} g @param {import("./model.js").Review} review */
@@ -313,7 +354,7 @@ export function revise(current, squad, report, review, replaceable = new Set()) 
 	for (const id of retired.remove) delete nodes[id];
 	for (const g of added) nodes[g.id] = waiting(g, review);
 	const conflict = displacedInputs(current, added);
-	if (conflict) fail("displaced_input", conflict.reason);
+	if (conflict) fail("displaced_input", conflict.reason,{kind:"displaced-input"});
 	validateNodes(nodes,{changed:added.map(g=>g.id),removed:retired.remove});
 	return { nodes, direct: remove, deferred: retired.deferred };
 }

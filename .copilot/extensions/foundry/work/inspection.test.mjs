@@ -117,7 +117,7 @@ test("a review cannot extend an attestation, a repair cap or the run's assignmen
 	const {f,store}=await trial(t),[p]=f.workers.values();
 	put(p.cwd,"producer/value","needs repair");
 	await f.runtime(p.cwd,{startInspection:undefined}).operation("submit",{run,token:p.token},p.id);
-	const live=store.read(run),i=live?.inspections?.[0];assert.ok(live && i);
+	const live=structuredClone(store.read(run)),i=live?.inspections?.[0];assert.ok(live && i);
 	markInspection(i,"issue",{dispatch:"review-request"});
 	assert.throws(()=>markInspection(i,"unavailable",{summary:"unknown start"}),/Unhandled transition/);
 	markInspection(i,"bind",{workflow:"bound-review"});markInspection(i,"changes",{summary:"producer/value needs correction"});
@@ -183,7 +183,7 @@ test("two owner resumes can recover the same unavailable candidate only once, wi
 test("a permission sample cannot publish a replaced decision or lift another issuer's hold",async t=>{
 	const {f,store}=await trial(t),[w]=f.workers.values();put(w.cwd,"producer/value","correct");
 	await f.runtime(w.cwd,{startInspection:undefined}).operation("submit",{run,token:w.token},w.id);
-	const r=store.read(run),[i]=r?.inspections??[];assert.ok(r && i);
+	const r=structuredClone(store.read(run)),[i]=r?.inspections??[];assert.ok(r && i);
 	markInspection(i,"issue",{dispatch:"issued"});markInspection(i,"bind",{workflow:"bound"});
 	markInspection(i,"approved",{summary:"producer/value:1 supplies the expected result."});
 	const sample=publicationSample(w.id);assert.equal(sample.check(r),false);sample.permit();

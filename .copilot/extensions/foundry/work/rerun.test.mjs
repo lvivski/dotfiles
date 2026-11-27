@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { git, put } from "../test/fixture.mjs";
-import { historicalFactory } from "../test/legacy-readers.mjs";
+import { pairedWork } from "../test/install.mjs";
+import { directory,historicalFactory } from "../test/legacy-readers.mjs";
+import { cpSync,existsSync,writeFileSync } from "node:fs";
+import { execFile,spawnSync } from "node:child_process";
+import { dirname,join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { setTimeout as sleep } from "node:timers/promises";
+import { promisify } from "node:util";
 import { createRuntime } from "./runtime.mjs";
 import { openDatabase } from "./database.mjs";
 import { boardFacts } from "./visibility.mjs";
@@ -28,13 +35,21 @@ test("a stopped component can be observed on its frozen checkpoint after a mixed
 	const owner=f.runtime(f.root,{confirm:async()=>true},createRuntime);
 	const tool=buildTools(owner,()=>"owner",assert.fail).find(t=>t.name==="foundry_check");assert.ok(tool?.handler);
 	const args={run,observe:{check:n.check,product:p.commit,harness:["probe/observe.mjs"],current:["input"]}};
-	const result=await tool.handler(args,{sessionId:"owner",toolName:tool.name,toolCallId:"observe",arguments:args});
+	const writerRuntime=f.runtime(w.cwd,{},createRuntime);
+	const suggestion={run,token:w.token,check:n.check,observe:{harness:["probe/observe.mjs"],current:["input"]}};
+	await assert.rejects(f.runtime(i.cwd,{},createRuntime).operation("propose",suggestion,i.id),{code:"stale_assignment"});
+	const count=f.checks.length;await writerRuntime.operation("propose",suggestion,w.id);await writerRuntime.operation("propose",suggestion,w.id);
+	assert.equal(f.checks.length,count,"reporting diagnostic evidence is not authorization for a check");
+	const next=owner.inspect({run},"owner").recovery.find(a=>a.kind==="proposal");
+	assert.ok(next?.disposition==="decision");assert.equal(next.tool,"foundry_check");assert.deepEqual(next.arguments,args);
+	assert.ok(!JSON.stringify(next).includes(w.token));
+	const result=await tool.handler(next.arguments,{sessionId:"owner",toolName:tool.name,toolCallId:"observe",arguments:next.arguments});
 	assert.equal(typeof result,"string",JSON.stringify(result));
 	const after=db.read(run), e=after?.effects.at(-1); assert.ok(e?.kind==="rerun");db.verifySigned(run,e);
 	assert.equal(e.receipt?.exit,0);assert.equal(e.commit,p.commit);assert.deepEqual(after?.nodes.probe,n);
 	assert.deepEqual(after?.goal,original?.goal);assert.deepEqual(after?.products,original?.products);assert.equal(git(f.root,"rev-parse","HEAD"),tip);
 });
-for (const [reader,exit] of [[61,0],[61,1],[61,2],[22,2]]) test(reader===22
+for (const [reader,exit] of [[61,0],[61,1],[61,2],[22,2],[95,0]]) test(reader===95?"a loaded reader-95 historical observer signs its own interruption on a same-path cutover":reader===22
 	? "pre-journal exit 1 followed by missingInput has no signing key even with a signed current product"
 	: `recheck the original stopped assignment on the checked product: exit ${exit}`,async t=>{
 	const factory=await historicalFactory(t,reader);
@@ -45,7 +60,8 @@ for (const [reader,exit] of [[61,0],[61,1],[61,2],[22,2]]) test(reader===22
 			goalCheck:"goal.mjs",productCheck:"product.mjs",squads:[{id:"team",charter:"spec",grains:["probe","input"]}],
 			grains:["probe","input"].map(id=>({id,directory:id,specification:"spec",boundary:["api"],check:id==="probe"?"component.mjs":"input.mjs"}))}),
 		spec:"Check both rows.",api:"Data format.", "goal.mjs":"process.exit(1)", "product.mjs":"", "input.mjs":"",
-		"component.mjs":`if(process.env.FOUNDRY_GRAIN!=="probe" || process.env.FOUNDRY_DIRECTORY!=="probe" ||
+		"component.mjs":`${reader===95?'if(process.env.LAUNCH_LOG)(await import("node:fs")).appendFileSync(process.env.LAUNCH_LOG,"launched\\n");':""}
+			if(process.env.FOUNDRY_GRAIN!=="probe" || process.env.FOUNDRY_DIRECTORY!=="probe" ||
 			process.env.FOUNDRY_DIRECTORIES!==${reader===22 ? 'undefined' : `'["probe"]'`}) throw Error("wrong binding");
 			await import("./"+process.env.FOUNDRY_DIRECTORY+"/main.mjs");`,
 	});
@@ -74,6 +90,32 @@ for (const [reader,exit] of [[61,0],[61,1],[61,2],[22,2]]) test(reader===22
 	const args={run,check:n.check,product:p.commit,harness:["probe/main.mjs","probe/second.mjs"],current:["input"]};
 	if (reader!==22) await assert.rejects(f.owner.operation("recheck",{run,check:n.check},"owner"),{code:"not_recoverable"});
 	f.owner.close();
+	if(reader===95){
+		const install=directory(t,95),gate=join(dirname(f.root),"claimed"),log=gate+".evaluator";
+		/** @type {Promise<unknown>|undefined} */ let child;
+		const owner=f.runtime(f.root,{confirm:async()=>true,execute:async(tool,args,callId)=>{
+			assert.equal(tool,"bash");await owner.pre(tool,args,"owner",callId);
+			child=promisify(execFile)("/bin/sh",["-c",String(args.command)],{cwd:f.root,timeout:60_000,env:{...process.env,
+				FOUNDRY_TEST_CLAIM_GATE:gate,FOUNDRY_TEST_AFTER_CLAIM:"1",LAUNCH_LOG:log,NODE_OPTIONS:`--import=${new URL("../test/runner-claim-gate.mjs",import.meta.url).href}`}});
+			const end=Date.now()+20_000;
+			while(!existsSync(gate+".loaded")){assert.ok(Date.now()<end,"old runner did not claim");await sleep(10);}
+			return {resultType:"unconfirmed"};
+		}});
+		try{
+			await owner.operation("recheck",args,"owner");owner.close();
+			const pending=db.read(run)?.effects.at(-1);assert.ok(pending?.kind==="rerun" && pending.runnerClaim && !pending.receipt);
+			cpSync(new URL("./",import.meta.url),pairedWork(join(install,"../..")),{recursive:true});
+			const now=spawnSync(process.execPath,[fileURLToPath(new URL("../test/installed-reader.mjs",import.meta.url)),install,f.root],
+				{encoding:"utf8",input:JSON.stringify({action:"configure",params:{run,revision:0,checkpointReviews:false}})});
+			assert.equal(now.status,0,now.stderr);assert.equal(JSON.parse(now.stdout).ok,true,now.stdout);
+			writeFileSync(gate+".continue","");assert.ok(child);await child;
+			const after=db.read(run),result=after?.effects.find(e=>e.id===pending.id);
+			assert.ok(result?.kind==="rerun" && result.receipt);assert.equal(result.runnerClaim,pending.runnerClaim);db.verifySigned(run,result);
+			assert.equal(result.receipt.exit,null);assert.match(result.receipt.output,/Invalid Foundry execution snapshot/);
+			assert.equal(existsSync(log),false);assert.deepEqual(after?.goal,before.goal);assert.deepEqual(after?.products,before.products);
+		}finally{writeFileSync(gate+".continue","");await child;}
+		return;
+	}
 	if (reader===22) {
 		assert.equal(original.runnerStarted,true); assert.equal(original.runnerClaim,undefined);
 		const product=before.effects.find(e=>e.id===p.check); assert.ok(product?.kind==="product"); db.verifySigned(run,product);
