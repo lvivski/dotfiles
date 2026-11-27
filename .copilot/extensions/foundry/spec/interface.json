@@ -3564,8 +3564,10 @@
             {
               "on": "approved-members",
               "action": "source-member",
-              "description": "Check each admitted member against its own original reviewed output. Exact byte approval, predecessor checks and final review remain mandatory.",
-              "requires": []
+              "description": "Check each admitted member against its own original reviewed output. Exact byte approval, predecessor checks and final review remain mandatory. Wait for independent review of a changed dependency before checking its consumer.",
+              "requires": [
+                "dependency-reviews"
+              ]
             }
           ]
         },
