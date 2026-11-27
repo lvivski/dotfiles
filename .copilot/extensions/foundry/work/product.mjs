@@ -1,17 +1,15 @@
 import { execFileSync } from "node:child_process";
-import { isUtf8 } from "node:buffer";
+import {changedFiles,commitAt,joinedIndex,retain,rootAt,withIndex} from "./objects.mjs";
 import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, mkdtempSync, openSync, realpathSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { closeSync, constants, fstatSync, lstatSync, openSync, realpathSync } from "node:fs";
 import path from "node:path";
-import { contains, covers, fail, members, mixed, ownership, relative, roots } from "./values.mjs";
+import { covers, fail, members, mixed, ownership, relative, roots } from "./values.mjs";
 import { touchesCut } from "./transfer.mjs";
 import {git,gitArgs,env,entries,regularFiles,pathKey,pathNames,blobIds,diskEntries} from "../../../skills/foundry/scripts/git-files.mjs";
 export {git,entries,regularFiles,regularEntry,pathKey,blobText,artifactDigest,verifyTree} from "../../../skills/foundry/scripts/git-files.mjs";
 export {checkedOverlay,withProduct} from "../../../skills/foundry/scripts/materialize.mjs";
 /** @typedef {import("../../../skills/foundry/scripts/git-files.mjs").Entry} Entry */
-/** @param {string} cwd @param {string} ref */
-export const commitAt = (cwd, ref) => git(cwd, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`]).toString().trim();
+export {changedFiles,commitAt,contractPaths,contractConflict,outside,rolloutFiles,rootAt,verifyContracts} from "./objects.mjs";
 /** @param {string} cwd @param {string} tip @param {string} ancestor */
 export function descendsFrom(cwd,tip,ancestor) {
 	try { git(cwd,["merge-base","--is-ancestor",ancestor,tip]); return true; }
@@ -20,8 +18,6 @@ export function descendsFrom(cwd,tip,ancestor) {
 		throw error;
 	}
 }
-/** @param {string} cwd */
-export const rootAt = cwd => realpathSync(git(cwd, ["rev-parse", "--show-toplevel"]).toString().trim());
 /** @param {string} cwd @param {string} commit @param {string[]} paths */
 export const versionOf = (cwd, commit, paths) => createHash("sha256").update(git(cwd, ["ls-tree", "--full-tree", "-z", commit, "--", ...paths])).digest("hex");
 
@@ -102,11 +98,7 @@ function replace(cwd, tree, directory, replacement, expected) {
 	return rest.length ? build(cwd, rest) : null;
 }
 
-/** @param {string} cwd @param {string} oid */
-export function retain(cwd, oid) {
-	git(cwd, ["update-ref", "--no-deref", `refs/foundry/objects/${oid}`, oid]);
-	return oid;
-}
+export {retain} from "./objects.mjs";
 
 /** Pin only the explicitly selected file, including untracked or binary data. Never touch the index.
  * @param {string} cwd @param {string} file */
@@ -161,16 +153,6 @@ export function withoutGrain(cwd, commit, directory) {
 	/** @type {string|null} */ let tree = treeOf(cwd,commit);
 	if (directory) for (const dir of ownership(directory).directories) tree = replace(cwd,tree,dir,null);
 	return pin(cwd,tree,"Foundry generation base");
-}
-
-/** @param {string} cwd @param {(staged:(args:string[], input?:string)=>Buffer)=>string} use */
-function withIndex(cwd, use) {
-	const dir = mkdtempSync(path.join(tmpdir(), "foundry-index-"));
-	try {
-		return use((args, input) => git(cwd, ["-c", "core.splitIndex=false", "-c", "core.sparseCheckout=false", "-c", "core.fsmonitor=false", ...args], input, path.join(dir, "index")));
-	} finally {
-		rmSync(dir, { recursive: true, force: true });
-	}
 }
 
 /** @param {string} root @param {string} directory @param {import("./model.js").Retained[]} [cuts] */
@@ -340,27 +322,6 @@ export function changedBlobs(cwd,from,to){
 	});
 }
 
-/** Record both sides of every regular-file change, including a reviewed deletion.
- * A diff cannot change type/mode, introduce case aliases, or hide non-text bytes.
- * @param {string} cwd @param {string} from @param {string} to */
-export function rolloutFiles(cwd,from,to){
-	const paths=changedFiles(cwd,from,to);
-	if(!paths.length)fail("unchanged_candidate","No effective changes");
-	const before=new Map(entries(cwd,from,false,paths).map(b=>[b.name,b]));
-	const after=new Map(entries(cwd,to,false,paths).map(e=>[e.name,e]));
-	pathNames([...entries(cwd,to,true),...before.values()]);
-	return paths.map(file=>{
-		const b=before.get(file),r=after.get(file),mode=r?.mode??b?.mode;
-		if(!mode || !["100644","100755"].includes(mode) || b && r && (b.mode!==r.mode || b.oid===r.oid))
-			fail("invalid_patch",`Unsupported mode or type change: ${file}`);
-		for(const e of [b,r])if(e){
-			const bytes=git(cwd,["cat-file","blob",e.oid]);
-			if(!isUtf8(bytes) || bytes.includes(0))fail("invalid_patch",`Not reviewable text: ${file}`);
-		}
-		return {file,mode,before:b?.oid??null,result:r?.oid??null};
-	});
-}
-
 /** @param {string} cwd @param {string} tree */
 export const pairedCommit=(cwd,tree)=>pin(cwd,tree,"Foundry paired observation");
 /** Carry the actual checkpoint delta onto a moved target, not a reconstruction from past jobs.
@@ -368,48 +329,5 @@ export const pairedCommit=(cwd,tree)=>pin(cwd,tree,"Foundry paired observation")
  * @param {string} cwd @param {import("./model.js").Product} last @param {string} target @param {boolean} [keep]
  * @param {(stages:Buffer)=>import("./model.js").Resolution[]} [resolve] */
 export function rejoin(cwd, last, target, keep=true,resolve) {
-	return withIndex(rootAt(cwd), staged => {
-		staged(["read-tree", "-i", "-m", "--aggressive", last.target, target, last.commit]);
-		const stages=staged(["ls-files","--unmerged","-z"]);
-		if (resolve) {
-			const rows=resolve(stages);
-			staged(["update-index","-z","--index-info"],rows.map(r=>`${r.mode} ${r.result}\t${r.file}\0`).join(""));
-		} else if (stages.length) {
-			const [conflict]=stages.toString().split("\0",1);
-			fail("tree_conflict", `Concurrent modification since checkpoint: ${conflict.slice(conflict.indexOf("\t") + 1)}`);
-		}
-		return (keep ? pin : commitTree)(cwd, staged(["write-tree"]).toString().trim(), "Foundry checkpoint on new target");
-	});
+	return joinedIndex(cwd,last,target,staged=>(keep?pin:commitTree)(cwd,staged(["write-tree"]).toString().trim(),"Foundry checkpoint on new target"),resolve);
 }
-
-/** @param {string} cwd @param {string} from @param {string} to @param {string[]} [paths] @param {number} [maxBytes] */
-export function changedFiles(cwd, from, to, paths = [], maxBytes) {
-	const raw = git(cwd, ["diff-tree", "--no-ext-diff", "--no-renames", "--ignore-submodules=none", "-r", "--name-only", "-z", from, to, "--", ...paths], undefined, undefined, maxBytes);
-	if (!isUtf8(raw)) fail("unsupported_tree", "Non-UTF-8 changed paths cannot be represented");
-	return raw.toString().split("\0").filter(Boolean);
-}
-
-/** Acceptance helpers may be shared across plans. Scout reads are not contract pins.
- * @param {import("./model.js").Policy} policy */
-export const contractPaths = policy => policy.sharedBrief || policy.contractTarget ? [...policy.files, ".foundry"] : policy.files;
-
-/** @param {string} cwd @param {import("./model.js").Policy} policy @param {string} commit */
-export function contractConflict(cwd, policy, commit) {
-	const base=policy.contractTarget ?? policy.base;
-	if (commit === base)
-		return;
-	const changed = changedFiles(cwd, base, commit, contractPaths(policy));
-	if (changed.length) return `The conserved contract changed: ${changed.join(", ")}`;
-}
-
-/** @param {string} cwd @param {import("./model.js").Policy} policy @param {string} commit */
-export function verifyContracts(cwd, policy, commit) {
-	const conflict=contractConflict(cwd,policy,commit);
-	if (conflict) fail("contract_changed",conflict);
-}
-
-/** @param {import("./model.js").Scope} dir @param {string[]} paths */
-export const outside = (dir, paths) => roots(dir).every(root => !paths.some(p => {
-	const a = pathKey(root), b = pathKey(p);
-	return contains(a, b) || contains(b, a);
-}));
