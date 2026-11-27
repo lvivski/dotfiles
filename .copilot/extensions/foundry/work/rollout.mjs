@@ -1,14 +1,14 @@
+import { awaitingReply, unissued } from "./dispatch.mjs";
 import { isUtf8 } from "node:buffer";
 import { working } from "./assignment.mjs";
-import { corroborated, currentRollout, rolloutChain, rolloutOffer, selection, stoppedBatch, within } from "./campaign.mjs";
+import { corroborated, currentRollout, rolloutChain, selection, stoppedBatch, within } from "./campaign.mjs";
 import { changesFixedContract } from "./contract.mjs";
 import { correctionRefs, matchesDraft } from "./drafts.mjs";
-import { checkReceipt, failedComponent, originalVerification, productPin, verification } from "./evidence.mjs";
+import { adoptedStop, changeOffer, checkReceipt } from "./evidence.mjs";
 import { admitted, current } from "./native.mjs";
-import { checked, dependencies } from "./plan.mjs";
+import { checked, dependencies } from "./lineage.mjs";
 import { publishedComponent } from "./publication.mjs";
 import { changedFiles, commitAt, git, outside, rolloutFiles, stageHarness, stagePatch, treeOf, verifyContracts } from "./product.mjs";
-import { awaitingReply, unissued } from "./reservation.mjs";
 import { grant } from "./transfer.mjs";
 import { digest, fail, fields, name } from "./values.mjs";
 
@@ -71,21 +71,19 @@ export function prepareRollout(cwd,run,actor,a,verify){
 export function rolloutPlan(cwd,run,actor,from,failed,blob,verify){
 	if(actor!==run.owner)fail("foreign_run","Only the run owner can propose a harness rollout");
 	admitted(run);
-	const target=commitAt(cwd,run.policy.target),p=run.productRepins?.at(-1),j=run.join,stop=run.effects.find(c=>c.id===failed);
+	const target=commitAt(cwd,run.policy.target),stop=run.effects.find(c=>c.id===failed);
 	const ref=correctionRefs(run).find(ref=>ref.base===target && ref.blob===blob && !ref.evaluation && (!ref.assembly || ref.assembly===from) && matchesDraft(ref,failed,from));
-	const parent=stop?.kind==="component"?rolloutOffer(run,stop):undefined;
+	const parent=stop?.kind==="component" && stop.rollout?changeOffer(run,stop):undefined;
 	const witness=stop && checkReceipt(stop)?.exit;
 	const cut=parent && stoppedBatch(run,parent,failed,false,ref?.assembly===from);
-	if(parent && (!cut || !j || !parent.rollout || parent.assembly!==from || !cut.every(c=>currentRollout(run,c)) ||
-		digest(rolloutFiles(cwd,j.commit,from))!==digest(parent.rollout.files)))
+	if(parent && (!cut || !run.join || !parent.rollout || parent.assembly!==from || !cut.every(c=>currentRollout(run,c)) ||
+		digest(rolloutFiles(cwd,run.join.commit,from))!==digest(parent.rollout.files)))
 		fail("stale_pin","Need the signed current standalone stop on the exact approved rollout; later checks must be unissued");
-	const joined=parent?.failed??failed,old=run.effects.find(c=>c.id===joined);
-	const grain=failedComponent(old);
-	if(!j || !p?.targetFrom || !grain || !Object.hasOwn(j.outputs,grain) || !old || old.commit!==j.commit || old.evaluatorRevision!==target ||
-		(!parent && j.commit!==from) || j.check!==joined || verification(p)!==originalVerification(run,joined) || j.target!==target || p.revision!==target || run.policy.contractTarget!==target ||
-		p.amendments?.some(s=>s.harness && s.recheck===originalVerification(run,joined)) ||
-		productPin(run)!==target || run.repins?.at(-1)?.revision!==target || run.goal?.check!==p.goal || run.products.at(-1)?.check!==p.checkpoint)
+	const joined=parent?.failed??failed,basis=adoptedStop(run,target,joined);
+	if(!basis || basis.evaluator!==target || !parent && basis.join.commit!==from ||
+		basis.pin.amendments?.some(s=>s.harness && s.recheck===basis.originalCheck))
 		fail("stale_pin","Need the exact current failed adopted assembly, signed component failure, and unchanged evaluator pins");
+	const {pin:p,join:j,grain}=basis;
 	const chain=rolloutChain(run,joined);
 	if(!chain || chain.at(-1)!==parent || run.independent || run.blocker || run.conflict || run.effects.some(x=>x.permissionHold || awaitingReply(x) ||
 		unissued(x) && current(run,x) && !(cut && x.kind==="component" && cut.includes(x))) ||

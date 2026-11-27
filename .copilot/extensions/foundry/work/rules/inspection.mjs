@@ -1,8 +1,8 @@
 import { guard, machine, to, update } from "../machine.mjs";
 import { text } from "../values.mjs";
 
-/** @typedef {import("../inspection.mjs").Context} Context */
-/** @typedef {import("../inspection.mjs").Data} Data */
+/** @typedef {import("../inspections.mjs").Context} Context */
+/** @typedef {import("../inspections.mjs").Data} Data */
 const issue=update("claim-review",(/** @type {Context} */ c,/** @type {Data} */ e)=>({
 	issuer:c.issuer,...(c.previous && {previous:c.previous}),dispatch:text(e.dispatch,"review dispatch"),
 }));

@@ -19,6 +19,8 @@ For `start`, pass the operator's target as one literal argument to that same [re
 
 Repeating start returns an existing active or qualified run without advancing it. It cannot lift a pause. To continue existing work use [resume](#pause-and-resume) only on explicit direction.
 
+If the same filename is committed with a different brief ID, an explicit start creates a separate run; it inherits no work or receipts. Resume never substitutes that new ID for the original. Supply the original run ID if more than one owned run used the filename.
+
 On direct operator direction in the interactive or Autopilot owning session, pass **only** the resolved `source` to `foundry_start({source})`. The explicit start or resume request authorizes the named committed brief; do not ask for a second confirmation. An installation, schedule, child kickoff or queued message is not authorization. Neither the request nor Autopilot grants tool permissions. If managed settings are unresolved or the session uses Manual approvals, relay the blocker; Assisted is sufficient if policy permits. Don't start replacement workers.
 
 Do not ask in chat to reconfirm routine recovery. In Interactive Assisted, Foundry asks when access, ownership, the assigned task or evaluator changes, or an input classification needs judgment. **Autopilot** and **Approve all tool calls** omit eligible yes/no forms when policy permits; [mixed target adoption](#mixed-target-adoption) still requires explicit operator confirmation. Operator direction and host permissions still apply; a product question still needs an answer.

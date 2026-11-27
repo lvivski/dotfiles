@@ -1,5 +1,5 @@
 import { corroborated, within } from "./campaign.mjs";
-import { checkReceipt, failedComponent } from "./evidence.mjs";
+import { changeOffer, checkReceipt, failedComponent } from "./evidence.mjs";
 import { verificationAssembly } from "./migrations.mjs";
 import { historicalGrant } from "./partition.mjs";
 import { publishedComponent } from "./publication.mjs";
@@ -30,7 +30,7 @@ export function originalProducer(run,grain,check){
 	for(let c=check;!path.has(c.id);){
 		path.add(c.id);
 		if(run.effects.slice(0,run.effects.indexOf(c)).some(w=>w.kind==="writer" && w.state==="done" && w.grain===grain && w.nativeId===c.issuer))return c.issuer;
-		const a=run.adoptions?.find(a=>a.id===(c.replacement??c.rollout)),prior=a?.patch?.owner?.component??a?.rollout?.owners[grain]?.component;
+		const a=changeOffer(run,c),prior=a?.patch?.owner?.component??a?.rollout?.owners[grain]?.component;
 		const prev=run.effects.find(e=>e.id===prior);
 		if(prev?.kind!=="component" || prev.grain!==grain)return;c=prev;
 	}
@@ -41,7 +41,7 @@ export function validDraftScope(run,d){
 	const e=run.effects.find(c=>c.id===d.check),goal=run.effects.find(c=>c.id===d.goal),p=run.products.find(p=>p.check===d.checkpoint);
 	if(!e?.receipt || !e.runnerClaim || goal?.kind!=="goal" || !p || goal.commit!==p.commit || ![1,2].includes(checkReceipt(goal)?.exit??-1))return false;
 	const pin=run.productRepins?.find(p=>p.revision===d.target && p.targetFrom);
-	const parent=e.kind==="component"?run.adoptions?.find(a=>a.id===e.rollout):undefined,joined=parent?.failed??e.id;
+	const parent=e.kind==="component" && e.rollout?changeOffer(run,e):undefined,joined=parent?.failed??e.id;
 	const join=pin && verificationAssembly(run,pin,joined,new Map(run.products.map(p=>[p.check,p])));
 	const failGrain=parent?e.grain:failedComponent(e);
 	if(d.previousCheck){

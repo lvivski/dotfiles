@@ -1224,9 +1224,9 @@
             {
               "on": "assess",
               "outcome": "wait",
-              "admission": "closed",
-              "reason": "no-new-information",
-              "description": "Wait for different evidence instead of assessing the same gap again.",
+              "admission": "discovery",
+              "reason": "reconsider-discovery",
+              "description": "Let discovery reconsider undelivered evidence without staffing or rechecking the stalled product.",
               "update": "release-wait",
               "when": [
                 "stalled"

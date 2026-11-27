@@ -304,6 +304,34 @@ test("writer-drafted uncertain launch accepts only its late original binding aft
 	assert.equal(read().correctionDrafts?.[0].parts[0].workflow,id);assert.ok(read().effects.find(e=>e.id===j.check)?.receipt);
 });
 
+for(const lost of [false,true])test(`an author's start acknowledgment before packet delivery / ${lost?"previous issuer lost the ID":"reload retains the ID"}`,async t=>{
+	const {f,owner,open,read,j,signed}=await stopped(t,false,{reader:94,area:true});owner.close();f.owner.close();
+	const id="original-admission",failure=signed(j.check);
+	/** @type {import("./author.mjs").Ticket|undefined} */ let ticket;
+	let starts=0,forms=0,reads=0;
+	const first=open(lost?await historicalRuntime(t,95):createRuntime,{draftAgent:async t=>{starts++;ticket=t;return {runId:id,status:"running",workflowName:"foundry-draft"};}});
+	first.sessionStart("owner",f.root);first.turn("owner");await first.flush();first.close();
+	const issued=read().correctionDrafts?.at(-1)?.parts[0];
+	assert.ok(ticket && issued?.dispatch===ticket.dispatch);
+	assert.equal(issued.workflow,lost?undefined:id,"only an actually retained acknowledgment survives the old issuer");
+	assert.equal(issued.awaitingPacket,lost?undefined:true);
+	/** @type {import("./author.mjs").Packet|undefined} */ let packet;
+	const restored=open(createRuntime,{formIdle:async()=>true,draftAgent:async()=>assert.fail("No replacement launch"),
+		confirmProposal:async()=>{forms++;return true;},draftState:async workflow=>{
+			assert.equal(workflow,id);reads++;
+			const row=packet?.files.find(f=>f.file===value);
+			if(!row)return {runId:id,status:"running"};
+			return {runId:id,status:"completed",result:{subject:packet?.subject,reason:"Produce the promised value.",edits:[{file:value,before:row.before,text:"ready\n"}]}};
+		}});
+	restored.sessionStart("owner",f.root);restored.turn("owner");await restored.flush();
+	assert.equal(forms,0);assert.equal(reads>0,!lost);assert.equal(read().join?.check,j.check);
+	if(!lost)await assert.rejects(restored.draftPacket(ticket,"owner","other-admission"),{code:"wrong_workflow"});
+	packet=await restored.draftPacket(ticket,"owner",id);
+	restored.turn("owner");await restored.flush();restored.turn("owner");await restored.flush();
+	assert.ok(restored.inspect({run,detail:"proof"},"owner").qualification);
+	assert.deepEqual(signed(j.check),failure);assert.equal(starts,1);assert.equal(forms,1);
+});
+
 test("ordinary writer reference bytes cannot stand in for a bound proposal or external owner import",async t=>{
 	const {f,owner,read,j,offer,target}=await stopped(t,false,{reader:94,area:true});
 	const external=await offer(owner,j,edit(value,"draft","ready")),r=structuredClone(read()),db=openDatabase(f.root);t.after(()=>db.close());

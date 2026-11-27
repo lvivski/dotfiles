@@ -1,17 +1,18 @@
+import { currentCheck } from "./eligibility.mjs";
 import { randomUUID } from "node:crypto";
 import { assign } from "./assignment.mjs";
-import { disabledRoute, journal, survey } from "./dispatch.mjs";
-import { unownedBlockers } from "./blockers.mjs";
+import { disabledRoute, journal, messageTo, survey, unissued } from "./dispatch.mjs";
+import { unownedBlockers } from "./routing.mjs";
 import { currentInstruction } from "./instructions.mjs";
 import { remainingAssignments } from "./capacity.mjs";
 import { closureExit, runnerArgs, runnerRun } from "./abi.mjs";
 import { productPin, qualifiedProduct } from "./evidence.mjs";
 import { contractHold } from "./contract.mjs";
-import { targetsWriter } from "./plan.mjs";
+import { targetsWriter } from "./lineage.mjs";
 import { productOwnership } from "./transfer.mjs";
 import { partitionConflict } from "./partition.mjs";
-import { currentCheck, unissued } from "./reservation.mjs";
-import { questions, reading } from "./reviews.mjs";
+import { reading } from "./charter.mjs";
+import { questions } from "./reviews.mjs";
 import { activeDelivery } from "./batch.mjs";
 import { deadlineAt, digest, fail, record, text } from "./values.mjs";
 
@@ -46,10 +47,17 @@ export function reserveNotice(run, issuer, token, kind, body, node, baseline) {
 	const message = `${kind === "repair" ? marker(run.id, token) : `Foundry ${kind}: ${run.id} ${kind === "artifact" ? randomUUID() : token}`}\n${body}`;
 	/** @type {import("./model.js").NativeCall} */
 	const notice={ id: randomUUID(), issuer, token, state: "ready", kind, ...(node ? { grain: node.grain.id } : {}), ...(baseline ? { baseline } : {}),
-		tool: to === issuer ? "session.send" : "send_session_message",
-		args: to === issuer ? { message } : { session_id: to, delivery_mode: "immediate", message } };
+		...messageTo(issuer,to,message) };
 	run.effects.push(notice);
 	return notice;
+}
+
+/** The owning operation has admitted a new grant, not approved a preview on the old one.
+ * @param {import("./model.js").Node} n @param {string} generation */
+export function restaff(n,generation){
+	assign(n,"staff");n.generation=generation;n.token=randomUUID();
+	delete n.worker;delete n.workspace;delete n.preview;delete n.candidate;delete n.check;delete n.reason;
+	return n.token;
 }
 
 /** @param {Run} run @param {string} issuer @param {string} token @param {string} base @param {string} brief @param {string|undefined} agent @param {string} grain @param {import("./model.js").CandidateReuse} [reuse] @param {import("./model.js").Observer} [observer] @param {import("./model.js").Production} [production] */
@@ -64,19 +72,22 @@ export function reserveWorker(run, issuer, token, base, brief, agent, grain, reu
 	return id;
 }
 
-/** @param {Run} run @param {string} issuer @param {string} cwd @param {string} commit @param {string} check @param {string} [grain]
- * @param {import("./model.js").ArtifactReport} [reports] @param {import("./model.js").NativeCall["rerun"]} [rerun] */
-export function reserveCheck(run, issuer, cwd, commit, check, grain, reports, rerun) {
-	const id = randomUUID();
-	const kind = rerun ? "rerun" : grain ? "component" : check === run.policy.goalCheck ? "goal" : "product";
+/** @typedef {{kind:"product"|"goal"} | {kind:"component",grain:string} |
+ * {kind:"rerun",grain:string,rerun:import("./model.js").Rerun} |
+ * {kind:"control",calibration:NonNullable<import("./model.js").NativeCall["calibration"]>}} CheckRole */
+/** @param {Run} run @param {string} issuer @param {string} cwd @param {string} commit @param {string} check
+ * @param {CheckRole} role @param {import("./model.js").ArtifactReport} [reports] */
+export function reserveCheck(run, issuer, cwd, commit, check, role, reports) {
+	const id=randomUUID(),{kind}=role;
 	const evaluatorRevision = kind === "goal" ? run.repins?.at(-1)?.revision : kind === "product" ? productPin(run) : undefined;
 	const productEvaluatorRevision = kind === "goal" && productPin(run);
-	run.effects.push({
-		id, issuer, kind, state: "ready", tool: "bash", attempt:{version:2}, commit, check, ...(evaluatorRevision ? { evaluatorRevision } : {}),
-		...(productEvaluatorRevision ? {productEvaluatorRevision} : {}), ...(grain ? { grain } : {}), ...(rerun && {rerun}), ...reports,
-		args:runnerArgs(cwd,run.id,id,`Check ${grain ?? (kind === "goal" ? "final goal" : "joined product")} at ${commit.slice(0, 12)}`.slice(0,100))
-	});
-	return id;
+	const label="grain" in role?role.grain:kind==="goal"?"final goal":"joined product";
+	/** @type {import("./model.js").NativeCall & {attempt:{version:2,previous?:string}}} */
+	const effect={id,issuer,...role,state:"ready",tool:"bash",attempt:{version:2},commit,check,...reports,
+		...(evaluatorRevision && {evaluatorRevision}),...(productEvaluatorRevision && {productEvaluatorRevision}),
+		args:runnerArgs(cwd,run.id,id,`Check ${label} at ${commit.slice(0,12)}`.slice(0,100))};
+	run.effects.push(effect);
+	return effect;
 }
 
 /** @param {Run} run @param {string} issuer @param {string} cwd @param {string} target @param {string} commit @param {Record<string,string>} outputs */
@@ -84,8 +95,9 @@ export function reserveProduct(run, issuer, cwd, target, commit, outputs) {
 	const conflict=partitionConflict(run,outputs,target);
 	if (conflict) fail("ownership_transition",conflict);
 	const ownership=productOwnership(run.nodes,outputs);
-	run.join = { target, commit, outputs, ...(ownership && {ownership}), check: reserveCheck(run, issuer, cwd, commit, run.policy.productCheck) };
-	return run.join;
+	const effect=reserveCheck(run,issuer,cwd,commit,run.policy.productCheck,{kind:"product"});
+	run.join = { target, commit, outputs, ...(ownership && {ownership}), check:effect.id };
+	return {join:run.join,check:effect};
 }
 
 /** @param {Run} run */
@@ -96,8 +108,8 @@ function assignee(run, e) {
 	return e.grain ? run.nodes[e.grain] : undefined;
 }
 
-/** @param {Run} run @param {Effect} e */
-export function current(run, e) {
+/** @param {Run} run @param {Effect} e @param {string} [cwd] */
+export function current(run, e, cwd) {
 	if (e.tool === "bash") return currentCheck(run, e);
 	if (e.state === "retired" || e.state === "withdrawn") return false;
 	if(e.kind==="instruction")return currentInstruction(run,e);
@@ -106,7 +118,7 @@ export function current(run, e) {
 	if (e.kind === "decision")
 		return questions(run).some(r => r.id === e.token && !r.decision);
 	if (e.kind === "escalation")
-		return unownedBlockers(run, remainingAssignments(run)).some(g => g.detail === e.token);
+		return unownedBlockers(run, remainingAssignments(run),cwd).some(g => g.detail === e.token);
 	if (e.kind === "handoff") {
 		const p=qualifiedProduct(run);
 		return !!p && p.check===e.token;
@@ -137,15 +149,15 @@ export function boundWriter(run, actor, token) {
 }
 
 /** A final handoff may notify its owner after goal acceptance. It cannot authorize work.
- * @param {Run} run @param {Effect} e */
-const eligible = (run, e) => !contractHold(run) &&
-	(run.active && !expired(run) || e.kind === "handoff" && !!run.goal) && current(run, e);
-/** @param {Run} run @param {Effect} e */
-export const canDispatch=(run,e)=>!(e.tool==="bash" && e.attempt?.version===1) && eligible(run,e);
+ * @param {Run} run @param {Effect} e @param {string} [cwd] */
+const eligible = (run, e,cwd) => !contractHold(run) &&
+	(run.active && !expired(run) || e.kind === "handoff" && !!run.goal) && current(run, e,cwd);
+/** @param {Run} run @param {Effect} e @param {string} [cwd] */
+export const canDispatch=(run,e,cwd)=>!(e.tool==="bash" && e.attempt?.version===1) && eligible(run,e,cwd);
 /** A historic local hold may be sampled and cleared by the original issuer.
  * That exposes a potential successor to planning, never the old call to dispatch.
- * @param {Run} run @param {Effect} e */
-export const policySubject=(run,e)=>e.tool==="bash" && e.attempt?.version===1?e.state==="ready" && !!e.permissionHold && eligible(run,e):canDispatch(run,e);
+ * @param {Run} run @param {Effect} e @param {string} [cwd] */
+export const policySubject=(run,e,cwd)=>e.tool==="bash" && e.attempt?.version===1?e.state==="ready" && !!e.permissionHold && eligible(run,e,cwd):canDispatch(run,e,cwd);
 
 /** Only an unclaimed create from a finished issuer can move. An ordinary/manual
  * call has already visited a native route, even if it has no worker ID yet.
@@ -157,17 +169,15 @@ export function transferableWriter(run, e) {
 }
 
 /** Claim exactly the reservation seen before the permission read, inside the ledger transaction.
- * @param {Run} run @param {Effect} expected @param {string} callId */
-export function issue(run, expected, callId) {
+ * @param {Run} run @param {Effect} expected @param {string} callId @param {string} [cwd] */
+export function issue(run, expected, callId,cwd) {
 	const e = (expected.kind==="instruction"?run.instructions:run.effects)?.find(e => e.id === expected.id);
 	if (!e || e.issuer !== expected.issuer || e.state !== expected.state || e.tool !== expected.tool ||
-		digest(e.args) !== digest(expected.args) || !current(run, e)) return false;
+		digest(e.args) !== digest(expected.args)) return false;
 	if (e.state === "issued") {
-		if (e.callId !== callId) return false;
-		if (e.tool !== "bash" && !canDispatch(run, e)) return false; // An already-issued runner may finish through a pause.
-		return true;
+		return e.callId===callId && (e.tool==="bash"?current(run,e,cwd):canDispatch(run,e,cwd)); // An already-issued runner may finish through a pause.
 	}
-	if (!canDispatch(run, e) || e.permissionHold || !unissued(e)) return false;
+	if (!canDispatch(run, e,cwd) || e.permissionHold || !unissued(e)) return false;
 	const event=/** @type {const} */ ({type:"issue",callId:text(callId,"original call ID")});
 	if (e.kind==="scout") survey(e,event); else journal(e,event);
 	return true;

@@ -40,9 +40,6 @@ export const matchesDraft=(ref,check,assembly,delta)=>!ref.draft || ref.draft.ch
 /** @param {Run} run */
 export function validDrafts(run){
 	const drafts=run.correctionDrafts??[];if(!drafts.length)return true;
-	const workflows=new Set([...run.effects.flatMap(e=>e.workflowId?[e.workflowId]:[]),
-		...(run.inspections??[]).flatMap(i=>[i.workflow,...(i.previous??[]).map(p=>p.workflow)]),
-		...(run.testRepairs??[]).flatMap(j=>[j.author,j.reviewer,j.workflow])]);
 	const tickets=new Set(),ids=new Set();
 	for(const d of drafts){
 		const c=run.effects.find(c=>c.id===d.check),checkpoint=run.products.find(p=>p.check===d.checkpoint),goal=run.effects.find(e=>e.id===d.goal);
@@ -62,12 +59,12 @@ export function validDrafts(run){
 				d.automatic && (p.source.kind!=="owned" || d.parts.length!==1 || p.files.some(f=>!f.before)) ||
 				p.state!=="ready" && !draftAllowed(d) || !!p.changes!==(p.state==="returned") ||
 				(p.state==="issued" || p.state==="returned") && !p.dispatch || p.state==="ready" && (p.dispatch || p.workflow) ||
-				p.workflow && (!p.dispatch || workflows.has(p.workflow)) || p.dispatch && tickets.has(p.dispatch) ||
+				p.workflow && !p.dispatch || p.dispatch && tickets.has(p.dispatch) ||
 				(p.awaitingPacket || p.continued) && !p.workflow || p.awaitingPacket && p.state==="returned" ||
 				p.state==="returned" && (!p.workflow || !p.changes?.length) ||
 				p.changes && (new Set(p.changes.map(f=>f.file)).size!==p.changes.length || p.changes.some(f=>f.result===f.before ||
 					!p.files.some(b=>b.file===f.file && b.before===f.before && b.mode===f.mode))))return false;
-			sources.add(key);if(p.workflow)workflows.add(p.workflow);if(p.dispatch)tickets.add(p.dispatch);
+			sources.add(key);if(p.dispatch)tickets.add(p.dispatch);
 		}
 		if(!!d.blob!==d.parts.every(p=>p.state==="returned"))return false;
 	}

@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import {writeFileSync} from "node:fs";
+import {join} from "node:path";
 import { fileURLToPath } from "node:url";
 import { openDatabase } from "../work/database.mjs";
 import { assignment } from "../work/native.mjs";
@@ -9,11 +11,15 @@ import { nativeHost, pinnedFiles, put, scriptedInspections, settleSubmitted, wor
 /** @typedef {{direction:string,check:string,parts:Part[]}} Projections */
 /** Apply scripted workflow results where their batch was actually dispatched (owner or writer).
  * Only the script and the pinned Git tree inform each report; no scout process or checkout.
- * @param {string} root @param {Pick<ReturnType<typeof workflowHost>,"scouts"|"settle">} discovery @param {Projections} plan */
-export async function reportProjections(root, discovery, plan) {
+ * @param {string} root @param {Pick<ReturnType<typeof workflowHost>,"scouts"|"settle">} discovery @param {Projections} plan
+ * @param {()=>Promise<void>} [flush] */
+export async function reportProjections(root, discovery, plan,flush) {
 	const parts = new Map(plan.parts.map(p => [p.id, p]));
+	const reported=[];
 	await discovery.settle();
-	for (const review of discovery.scouts) {
+	for(let index=0;;index++){
+		if(index===discovery.scouts.length && flush){await flush();await discovery.settle();}
+		const review=discovery.scouts[index];if(!review)break;
 		const files = pinnedFiles(root, review.base);
 		/** @param {string} id */
 		const present = id => files.has(`${parts.get(id)?.directory ?? assert.fail(id)}/index.mjs`);
@@ -25,8 +31,43 @@ export async function reportProjections(root, discovery, plan) {
 		const grains = batch.map(p => ({ id: p.id, directory: p.directory, needs: p.needs, task: `Implement ${p.id}: ${plan.direction}`, check: plan.check }));
 		await review.report({ grains, outcome: grains.length ? "regenerate" : "no-gap",
 			reason: "Implement the next incomplete projection on this checked tree", evidence: [`.foundry/${review.squad}.md`] });
+		reported.push({id:review.id,base:review.base});
 	}
-	return discovery.scouts.map(({ id, base }) => ({ id, base }));
+	return reported;
+}
+
+/** @typedef {ReturnType<typeof import("./fixture.mjs").factory>} Factory */
+/** Follow real owner-native deliveries while descendant processes run; their
+ * replies cannot carry a later call delivered to the owner.
+ * @param {Factory} f @param {Projections} plan
+ * @param {(reviews:Awaited<ReturnType<typeof reportProjections>>)=>Promise<void>} record
+ * @param {(inbox:Factory["inbox"])=>Promise<void>} deliver */
+export async function driveProjections(f,plan,record,deliver){
+	let scouts=0,writers=0;
+	/** @type {Set<Promise<void>>} */ const active=new Set();
+	/** @type {unknown[]} */ const errors=[];
+	let wake=()=>{};
+	const stop=f.onDelivery(()=>wake());
+	try{
+		for(;;){
+			const next=new Promise(resolve=>{wake=()=>resolve(undefined);});
+			await f.owner.flush();await f.settle();
+			if(!errors.length){
+				const reports=f.scouts.slice(scouts);scouts+=reports.length;
+				if(reports.length){
+					await record(await reportProjections(f.root,{scouts:reports,settle:f.settle},plan));
+					continue;
+				}
+				const calls=f.inbox.slice(writers);writers+=calls.length;
+				if(calls.length){
+					const task=deliver(calls).catch(error=>{errors.push(error);}).finally(()=>{active.delete(task);wake();});
+					active.add(task);
+				}
+			}
+			if(!active.size){if(errors.length)throw errors[0];return;}
+			await next;
+		}
+	}finally{stop();await Promise.all(active);}
 }
 
 /** @param {string} root @param {string} run @param {string} actor @param {string} grain
@@ -47,7 +88,7 @@ export function inlineDelivery(root, run, actor, grain, submitted, reply) {
 
 // Each subprocess is a delivered writer turn in its actual assigned worktree.
 if (fileURLToPath(import.meta.url) === process.argv[1]) {
-	const [root, run, actor, token, payload, gate, withhold, plan] = process.argv.slice(2);
+	const [root, run, actor, token, payload, gate, withhold, plan, barrier] = process.argv.slice(2);
 	const host = nativeHost(root, token), discovery = workflowHost();
 	/** @type {string[]} */ const lost = [];
 	/** @type {ReturnType<typeof createRuntime>} */
@@ -74,6 +115,22 @@ if (fileURLToPath(import.meta.url) === process.argv[1]) {
 		process.env.FOUNDRY_TEST_RENDEZVOUS = gate;
 		put(process.cwd(), `${n.directory}/index.mjs`, payload);
 		const reply = await runtime.operation("submit", { run, token }, actor);
+		if(barrier){
+			// Observe the same facts before the unrelated reports below or a
+			// delayed parent stdout callback can exhaust the evaluator's deadline.
+			const {held,consumer}=JSON.parse(barrier),db=openDatabase(root);
+			try{
+				const r=db.read(run),own=r?.nodes[n.grain],peer=r?.nodes[held],waiting=r?.nodes[consumer];
+				const c=r?.effects.find(e=>e.id===own?.check),p=r?.effects.find(e=>e.id===peer?.check);
+				assert.ok(r && own?.worker===actor && own.token===token && c?.kind==="component" && c.issuer===actor &&
+					c.state==="done" && c.receipt?.exit===0,"expected the original passing independent submission");
+				db.verifySigned(run,c);
+				assert.ok(peer?.state==="checking" && p?.tool==="bash" && p.runnerClaim && !p.receipt,"held peer already completed or never claimed");
+				assert.ok(waiting?.state==="waiting" && waiting.generation===undefined,"unobserved prerequisite cannot admit the dependent");
+				assert.equal(reply.qualified??null,null);assert.ok(!r.products.at(-1)?.qualifiedAt);
+				writeFileSync(join(gate,"release"),"",{flag:"wx"});
+			}finally{db.close();}
+		}
 		const inline = inlineDelivery(root, run, actor, n.grain, token, reply);
 		if (inline) host.inbox.push(inline);
 		if (withhold) {
@@ -81,8 +138,7 @@ if (fileURLToPath(import.meta.url) === process.argv[1]) {
 			runtime.turn(actor, lost[0]); await runtime.flush();
 			assert.equal(lost.length, 1, "a shell completion without a receipt must not replay the check");
 		}
-		const reviews = await reportProjections(root, discovery, JSON.parse(plan));
-		await runtime.flush();
+		const reviews = await reportProjections(root, discovery, JSON.parse(plan),()=>runtime.flush());
 		process.stdout.write(JSON.stringify({ workers: [...host.workers.values()], inbox: host.inbox, reviews }));
 	} finally { runtime.close(); }
 }

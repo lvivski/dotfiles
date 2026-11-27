@@ -6,14 +6,14 @@ import { copyPrepared } from "./preparation.mjs";
 import { artifactDigest } from "./product.mjs";
 import { digest, fail, FoundryError } from "./values.mjs";
 
-/** @typedef {{ledger:string,run:string,rollout:string,effect:string,prior:{id:string,claim:string}[],
+/** @typedef {{ledger:string,run:string,group:string,effect:string,prior:{id:string,claim:string}[],
  * sign:(inputs:string,tree:string)=>string,note:(message:string)=>void}} Batch */
 
 /** A serial rollout needs no shared writable index or build lock. Each producer atomically
  * publishes its own disposable slot. Only a prior runner claim for this batch can attest it.
  * @param {string} cwd @param {string} commit @param {NodeJS.ProcessEnv} env @param {Batch} batch */
 export function buildCache(cwd,commit,env,batch){
-	const home=realpathSync(tmpdir()),inputs=digest(["prepared-v1",batch.ledger,batch.run,batch.rollout,commit,
+	const home=realpathSync(tmpdir()),inputs=digest(["prepared-v1",batch.ledger,batch.run,batch.group,commit,
 		hostname(),process.platform,release(),process.arch,process.execPath,process.version,process.umask(),env]);
 	/** @param {string} id */
 	const slot=id=>path.join(home,`foundry-build-${digest([id,inputs])}`);

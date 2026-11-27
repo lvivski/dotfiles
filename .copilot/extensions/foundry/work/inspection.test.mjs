@@ -8,8 +8,7 @@ import { openDatabase } from "./database.mjs";
 import { decode } from "./snapshot.mjs";
 import { inspectionOutcome } from "./assignment.mjs";
 import { metricsFacts } from "./metrics.mjs";
-import { markInspection } from "./inspection.mjs";
-import { publicationSample } from "./inspections.mjs";
+import { markInspection, publicationSample } from "./inspections.mjs";
 import { createRuntime } from "./runtime.mjs";
 
 const run="reviewed",source=".foundry/reviewed.json";

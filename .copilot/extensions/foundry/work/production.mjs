@@ -1,15 +1,14 @@
-import { randomUUID } from "node:crypto";
+import { componentBatch } from "./inspections.mjs";
+import { awaitingReply, unissued } from "./dispatch.mjs";
 import { assign } from "./assignment.mjs";
 import { availableReservations } from "./capacity.mjs";
-import { componentBatch } from "./inspection.mjs";
-import { admitted, current, reserveCheck, reserveWorker } from "./native.mjs";
+import { admitted, current, reserveCheck, reserveWorker, restaff } from "./native.mjs";
 import { verifyObserver } from "./observer.mjs";
 import { changedFiles, commitAt, contractPaths, entries, outside, regularFiles } from "./product.mjs";
 import { publishedComponent, publishedNodes } from "./publication.mjs";
 import { origin, remedyChecks } from "./remedy.mjs";
-import { awaitingReply, unissued } from "./reservation.mjs";
 import { activeConsumer } from "./transfer.mjs";
-import { digest, fail, fields, name, relative, text } from "./values.mjs";
+import { digest, fail, fields, name, pinnedSelection, relative, text } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @typedef {import("./model.js").NativeCall} Call */
@@ -84,16 +83,13 @@ export function prepareProduction(cwd,run,actor,a,verify) {
 		}
 		return {grant,target:basis.target,retained:basis.pair.component};
 	}
-	const before=select(run);
+	const {subject:before,revalidate}=pinnedSelection(run,select,"Production approval inputs changed");
 	return {prompt:`Authorize a production writer for ${producer} on ${candidate} after diagnostic ${diagnostic}? Retaining check ${before.retained}, checkpoint ${checkpoint}, goal ${goal}. Exact editable files: ${JSON.stringify(files)}. Task: ${task}. Reproduce with a repository regression before changing implementation. Both owners' original evaluators must pass on the new assembly, then a joined product and goal. No observer edits or replay.`+
 		(run.inspections ? " This grants one submission. Independent reviews of both owners' contributions must approve it before publication." : ""),
 		/** @param {Run} r */
 		apply(r) {
-			const choice=select(r);
-			if (digest(choice)!==digest(before)) fail("stale_assignment","Production approval inputs changed");
-			const n=r.nodes[producer], token=randomUUID();
-			assign(n,"staff");n.generation=candidate;n.token=token;
-			delete n.worker;delete n.workspace;delete n.preview;delete n.candidate;delete n.check;delete n.reason;
+			const choice=revalidate(r);
+			const n=r.nodes[producer], token=restaff(n,candidate);
 			reserveWorker(r,actor,token,candidate,`Production assignment for ${producer} on failed assembly ${candidate}; read ${n.grain.specification} and ${n.grain.boundary.join(", ")}. ${task}\nOnly edit ${JSON.stringify(files)}. Start with a durable regression in the normal repository suite. Demonstrate red before a production change and green afterward. Do not infer a production cause from the diagnostic alone or weaken existing checks. If the behavior cannot be reproduced, stop with foundry_submit missingInput explaining the missing evidence; do not make a speculative fix. Join helpers and call foundry_submit({run:"${r.id}",token:"${token}"}).`,n.grain.agent,producer,undefined,undefined,choice.grant);
 			return ()=>commitAt(cwd,r.policy.target)===choice.target;
 		}};
@@ -106,11 +102,9 @@ export function submitProduction(cwd,run,job,commit,actor) {
 	const n=run.nodes[job.grain];
 	n.candidate=commit;assign(n,"submit");
 	for (const id of [primary,retainer]) {
-		const check=reserveCheck(run,actor,cwd,commit,run.nodes[id].grain.check,id);
-		const e=run.effects.at(-1);
-		if (e?.kind!=="component") fail("invalid_production","Missing component reservation");
+		const e=reserveCheck(run,actor,cwd,commit,run.nodes[id].grain.check,{kind:"component",grain:id});
 		e.remedy={writer:job.id,basis:digest(job.production)};
-		if (id===job.grain) n.check=check;
+		if (id===job.grain) n.check=e.id;
 	}
 	return target;
 }

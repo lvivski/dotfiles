@@ -20,15 +20,22 @@ export const replacementBlob=receipt=>receipt?.inputs?(receipt.inputs.checker.re
 export const checkUse=e=>e.kind==="control"?"calibration":e.isolation?"subset":e.kind==="rerun"?"historical-observation":
 	e.kind==="component"?e.pair || e.observer?"attestation":"component":e.kind==="goal" || e.kind==="product"?e.kind:undefined;
 
+/** Compare the proposed or observed main invocation with the same reservation. Controls use
+ * the independent driver, not the subject's checker, and historical observations have their own overlay.
+ * @param {import("./model.js").Effect} e @param {Inputs} v */
+function matchesReservation(e,v){
+	if(e.kind==="control")return !!v.control && v.control.checker.path===e.check && v.control.example===(e.calibration?.role==="newBad"?"bad":"good");
+	return !v.control && v.commit===e.commit && v.checker.path===e.check && v.scope.kind===(e.kind==="rerun"?"component":e.kind) &&
+		(v.scope.kind!=="component" || v.scope.grain===e.grain) && (e.kind==="rerun" || v.overlay?.revision===e.evaluatorRevision);
+}
+
 /** Validate a reserved recipe before it reaches a claimant, not only after it signs something.
  * @param {import("./model.js").NativeCall} e */
 export function described(e){
 	const d=e.verification,main=d?.steps.at(-1);
 	if(!d || !main || main.member!==null || d.use!==checkUse(e))return false;
 	const {inputs:v}=main,scope=v.scope,control=v.control,members=d.steps.slice(0,-1);
-	if(!!v.delta!==!!d.privateInput || !!control!==(e.kind==="control") || (control?control.checker.path:v.checker.path)!==e.check ||
-		(!control && (v.commit!==e.commit || scope.kind!==(e.kind==="rerun"?"component":e.kind) ||
-			scope.kind==="component" && scope.grain!==e.grain)) || d.evaluation.kind!==(control?"component":scope.kind) ||
+	if(!!v.delta!==!!d.privateInput || !matchesReservation(e,v) || d.evaluation.kind!==(control?"component":scope.kind) ||
 		(d.evaluation.kind==="product" && !(scope.kind==="product" && digest(d.evaluation.outputs)===digest(scope.outputs.map(o=>o.id)))) ||
 		(main.build && (scope.kind!=="component" || main.build.commit!==v.commit)))return false;
 	return d.joined ? e.kind==="product" && scope.kind==="product" && members.length===scope.outputs.length &&
@@ -43,10 +50,7 @@ export function described(e){
 export function boundInputs(e,r){
 	const v=r.inputs;
 	if(e.tool==="bash" && e.verification && !observedSteps(e.verification,r))return false;
-	if(v && (!validInputs(v) || !e.runnerClaim || r.test!==undefined || r.overlay!==undefined ||
-		(e.kind==="control"?!v.control || v.control.checker.path!==e.check || v.control.example!==(e.calibration?.role==="newBad"?"bad":"good"):
-			v.control || v.commit!==e.commit || v.checker.path!==e.check || v.scope.kind!==(e.kind==="rerun"?"component":e.kind) ||
-			v.scope.kind==="component" && v.scope.grain!==e.grain || e.kind!=="rerun" && v.overlay?.revision!==e.evaluatorRevision)))return false;
+	if(v && (!validInputs(v) || !e.runnerClaim || r.test!==undefined || r.overlay!==undefined || !matchesReservation(e,v)))return false;
 	return Object.entries(r.components??{}).every(([grain,c])=>!c.inputs || validInputs(c.inputs) && e.kind==="product" && e.runnerClaim &&
 		c.test===undefined && !c.inputs.control && c.inputs.commit===e.commit && c.inputs.checker.path===c.check && !c.inputs.overlay &&
 		c.inputs.scope.kind==="component" && c.inputs.scope.grain===grain);

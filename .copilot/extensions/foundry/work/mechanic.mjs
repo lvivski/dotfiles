@@ -1,6 +1,6 @@
-import { builtInReviewer, guardedAgent } from "./critique.mjs";
+import { builtInReviewer, frozenPacket, guardedAgent } from "./critique.mjs";
 import { noWorkflowSlot } from "./capacity.mjs";
-import { fail, fields, FoundryError, record, text } from "./values.mjs";
+import { fail, fields, record, text } from "./values.mjs";
 
 const string={type:"string"},definition="foundry-mend",author="foundry-test-author",reviewer="rubber-duck";
 /** @param {import("./auditor.mjs").Envelope} e @param {Args} t @param {string} [original]
@@ -43,17 +43,8 @@ export function mechanicDefinition(runtime){
 			const a=record(ctx.args);fields(a,["run","stop","dispatch","phase","subject"]);
 			const phase=a.phase;
 			if(phase!=="author" && phase!=="review")fail("invalid_field","Invalid test repair phase");
-			const packet=()=>runtime().mechanicPacket(ctx.args,ctx.session.sessionId,ctx.runId);
-			let shown;
-			try{shown=await packet();}
-			catch(error){
-				if(!(error instanceof FoundryError) || error.code!=="repair_wait")throw error;
-				await ctx.pause(`permission:${ctx.args.dispatch}`);
-				shown=await packet();
-			}
-			const {subject,message}=shown;
-			if(subject!==ctx.args.subject || await ctx.step(`packet-only-v1:${phase}`,()=>subject)!==subject)
-				fail("wrong_workflow","A resumed test repair must use the identical bound packet");
+			const {subject,message}=await frozenPacket(ctx,()=>runtime().mechanicPacket(ctx.args,ctx.session.sessionId,ctx.runId),
+				"repair_wait",`packet-only-v1:${phase}`);
 			const agent=phase==="author"?author:reviewer,label=`${phase}:${subject}`;
 			if(phase==="review" && !await builtInReviewer(ctx.session))fail("unavailable","Built-in Rubber Duck is unavailable");
 			const instruction=phase==="author"?"The original observer failed its independent known-good control. Diagnose it against the frozen contract and diagnostic. If the observer, not the product, is wrong, return the complete corrected text of the named evaluator in change; otherwise return an empty change and explain the missing evidence. Never suppress failures or detect calibration.":

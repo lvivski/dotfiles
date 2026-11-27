@@ -16,6 +16,11 @@ export const env = {
 /** @param {string} cwd @param {string[]} args */
 export const gitArgs = (cwd, args) => ["--no-pager", "--no-replace-objects", "--no-lazy-fetch", "--literal-pathspecs", "-c", "core.hooksPath=/dev/null", "-C", cwd, ...args];
 
+/** An empty blob is text. Binary or lossy text is not evidence. @param {Buffer} bytes */
+export const blobText=bytes=>!bytes.includes(0) && isUtf8(bytes)?bytes.toString("utf8"):undefined;
+/** @param {Entry} e */
+export const regularEntry=e=>e.type==="blob" && (e.mode==="100644" || e.mode==="100755");
+
 /** @param {string} cwd @param {string[]} args @param {string|Buffer} [input] @param {string} [index] @param {number} [maxBuffer] @param {number} [timeout] */
 export function git(cwd, args, input, index, maxBuffer, timeout=30000) {
 	return execFileSync("git", gitArgs(cwd, args), {
@@ -29,7 +34,7 @@ export function regularFiles(cwd, commit, files) {
 	const byName = new Map(items.map(e => [e.name, e]));
 	return files.map(filename => {
 		const e = byName.get(filename);
-		if (!e || !["100644", "100755"].includes(e.mode))
+		if (!e || !regularEntry(e))
 			fail("missing_contract", `No regular file at ${commit}:${filename}`);
 		return e;
 	});

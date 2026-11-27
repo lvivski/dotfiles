@@ -13,16 +13,19 @@ import { partitionConflict } from "./partition.mjs";
 import { heldRepair } from "./successor.mjs";
 import { contractConflict, descendsFrom, retain, treeOf, verifyContracts } from "./product.mjs";
 export { frozenCheckpoint } from "./frozen.mjs";
-import { blockReview, checkpointWake, comparison, obstructed, reading, reviews } from "./reviews.mjs";
+import { comparison, obstructed, reading, reviews } from "./charter.mjs";
+import { blockReview, checkpointWake } from "./reviews.mjs";
 import { deadlineAt, text } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @param {string} cwd @param {Run} run @param {string} actor @param {string} target @param {string} commit */
 export function assess(cwd, run, actor, target, commit) {
 	verifyContracts(cwd, run.policy, target);
-	run.goal = { target, commit, check: reserveCheck(run, actor, cwd, commit, text(run.policy.goalCheck, "goal evaluator")) };
+	const effect=reserveCheck(run,actor,cwd,commit,text(run.policy.goalCheck,"goal evaluator"),{kind:"goal"});
+	run.goal = { target, commit, check:effect.id };
 	for (const r of reviews(run)) if (r.state === "ready" && r.base !== commit)
 		blockReview(r, "Reviewed revision was superseded before dispatch");
+	return effect;
 }
 
 /** Publish the timestamp and owner notification in the same transition as the exact receipt.

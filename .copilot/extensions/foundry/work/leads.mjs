@@ -1,9 +1,9 @@
 import { answeredRoutes } from "./blockers.mjs";
 import { checkpointReceipt, checkReceipt, currentEvaluation, goalReceipt, leadGoal, productReceiptAt, sameEvaluation } from "./evidence.mjs";
 import { indexBudgetError } from "./pages.mjs";
-import { owns } from "./plan.mjs";
+import { owns } from "./lineage.mjs";
 import { outside } from "./product.mjs";
-import { comparison, reading } from "./reviews.mjs";
+import { comparison, reading } from "./charter.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @typedef {import("./model.js").Review} Review */

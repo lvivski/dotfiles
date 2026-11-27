@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { checksum, ledgerPath, openDatabase } from "./database.mjs";
 import { historicalFactory,historicalRuntime } from "../test/legacy-readers.mjs";
-import { factory,put } from "../test/fixture.mjs";
+import { factory,git,put } from "../test/fixture.mjs";
 import { createRuntime } from "./runtime.mjs";
 import { integrityHolds } from "./revision.mjs";
 import { serialize } from "node:v8";
@@ -64,18 +64,41 @@ test("an unclaimed reservation cannot change its physical scope or turn a non-re
 	const db=openDatabase(f.root),raw=new DatabaseSync(db.file);t.after(()=>{raw.close();db.close();});
 	const row=()=>raw.prepare("SELECT document,checksum FROM runs WHERE id=?").get(run)??assert.fail(),saved=row();
 	const original=JSON.parse(String(saved.document));
-	for(const part of ["scope","release","preparation","role"]){
+	for(const part of ["scope","release","preparation","role","overlay"]){
 		const doc=structuredClone(original),e=doc.effects.find((/** @type {import("./model.js").Effect} */ e)=>e.kind==="goal"),d=e.verification,s=d.steps.at(-1);
 		if(part==="scope")s.inputs.scope={kind:"component",grain:"entries",directories:["entries"],files:[]};
 		if(part==="release")d.use="subset";
 		if(part==="preparation")s.build={commit:e.commit,hook:null};
 		if(part==="role")d.evaluation={kind:"product",outputs:[]};
+		if(part==="overlay")s.inputs.overlay={revision:e.commit,paths:[]};
 		const bytes=JSON.stringify(doc);raw.prepare("UPDATE runs SET document=?,checksum=? WHERE id=?").run(bytes,checksum(bytes),run);
 		assert.throws(()=>db.mutateLocked(run,()=>assert.fail("invalid obligation reached a claimant")),{code:"corrupt_run"},part);
 	}
 	raw.prepare("UPDATE runs SET document=?,checksum=? WHERE id=?").run(saved.document,saved.checksum,run);
 	const restored=db.read(run)?.effects.find(e=>e.kind==="goal");assert.ok(restored?.kind==="goal" && !restored.runnerStarted && !restored.receipt);
 	assert.equal(restored.id,original.goal.check);
+});
+
+test("reopening a workflow shared by different dispatches holds the original ledger without replay",async t=>{
+	const build=await historicalFactory(t,95),policy=JSON.parse(files[source]);
+	policy.squads.push({...policy.squads[0],id:"totals",areas:["totals"]});
+	const f=build(t,run,source,{...files,[source]:JSON.stringify(policy),"goal.mjs":"process.exit(1)"});
+	await f.start();f.owner.close();
+	const raw=new DatabaseSync(ledgerPath(f.root));t.after(()=>raw.close());
+	const row=()=>raw.prepare("SELECT document,checksum FROM runs WHERE id=?").get(run)??assert.fail();
+	const original=row(),data=JSON.parse(String(original.document));
+	const scouts=data.effects.filter((/** @type {import("./model.js").Effect} */ e)=>e.kind==="scout");
+	assert.equal(scouts.length,2);assert.ok(scouts[0].workflowId && scouts[0].callId);
+	assert.equal(scouts[0].workflowId,scouts[1].workflowId);assert.equal(scouts[0].callId,scouts[1].callId);
+	const current=f.runtime(f.root,{scout:async()=>assert.fail("Do not start another scout")},createRuntime);
+	assert.equal(current.inspect({run},"owner").reviews.length,2,"one original native batch legitimately serves both scouts");
+	scouts[1].callId="another-dispatch";
+	const document=JSON.stringify(data);raw.prepare("UPDATE runs SET document=?,checksum=? WHERE id=?").run(document,checksum(document),run);
+	const held=row(),calls=[...f.checks];
+	assert.throws(()=>current.inspect({run},"owner"),{code:"corrupt_run"});
+	await assert.rejects(current.operation("resume",{run,source},"owner"),{code:"corrupt_run"});
+	assert.deepEqual(row(),held);assert.deepEqual(f.checks,calls);
+	current.close();
 });
 
 test("downgraded SQL discovery still binds the original writer and source; the current writer finishes its own draft",async t=>{
@@ -96,6 +119,27 @@ test("downgraded SQL discovery still binds the original writer and source; the c
 	assert.deepEqual(db.read(run)?.nodes.entry,old);
 	const now=f.runtime(writer.cwd,{},createRuntime);await now.operation("submit",{run,token:writer.token},writer.id);await now.flush();
 	assert.equal(db.read(run)?.nodes.entry.state,"qualified");assert.equal(f.workers.size,1);
+});
+
+for(const version of [80,95])test(`reader ${version} needs a separate explicit start for a new ID at the same filename`,async t=>{
+	const build=await historicalFactory(t,version),f=build(t,run,source,{...files,"goal.mjs":"process.exit(2)"});
+	await f.start();f.owner.close();
+	const db=openDatabase(f.root),raw=new DatabaseSync(db.file,{readOnly:true});t.after(()=>{db.close();raw.close();});
+	db.mutateLocked(run,r=>{r.scheduling={revision:1,checkpointReviews:false};});
+	const row=()=>raw.prepare("SELECT document,checksum FROM runs WHERE id=?").get(run),before=row();
+	const state=db.read(run),original=state?.effects.find(e=>e.id===state.goal?.check);
+	assert.ok(original?.kind==="goal" && original.receipt?.exit===2);db.verifySigned(run,original);
+	const other="different-brief",actor=version===95?"owner":"other-owner";
+	put(f.root,source,JSON.stringify({...JSON.parse(files[source]),id:other}));git(f.root,"commit","-qam","Name a separate brief");
+	let calls=0;const old=f.runtime(f.root,{execute:async()=>{calls++;return {resultType:"unconfirmed"};}});
+	await assert.rejects(old.operation("resume",{source},"owner"),{code:"corrupt_run"});
+	assert.equal(db.read(other),undefined);assert.equal(calls,0);
+	await old.operation("start",{source},actor);await old.flush();old.close();
+	const fresh=db.read(other);assert.ok(fresh?.goal);assert.equal(fresh.owner,actor);assert.equal(calls,1);
+	assert.notEqual(fresh.goal.check,original.id);assert.deepEqual(fresh.products,[]);assert.deepEqual(fresh.nodes,{});
+	assert.ok(fresh.effects.every(e=>!e.receipt && !e.runnerClaim && !e.token));
+	if(actor==="owner")assert.throws(()=>db.forResume(source,actor),{code:"run_conflict"});
+	assert.deepEqual(row(),before);db.verifySigned(run,original);
 });
 
 for(const [version,wanted] of /** @type {const} */ ([[95,"required"],[22,"legacy-no-review"]]))test(`preserve reader ${version}'s independent-review contract at conversion`,async t=>{
@@ -150,6 +194,20 @@ test("a valid runner that finishes between the document and spool reads never su
 		assert.deepEqual(integrityHolds(snapshot),[],"a signature valid for the concurrent claim is not a corrupt spool row");
 		const e=snapshot.effects[0];assert.ok(e.kind==="goal" && e.receipt?.exit===0);db.verifySigned(run,e);
 	}finally{DatabaseSync.prototype.prepare=saved;}
+});
+
+test("a stale read-only reservation cannot hand a native ticket to its caller",async t=>{
+	const {db,f}=await setup(t),peer=openDatabase(f.root);t.after(()=>peer.close());
+	const original=db.read(run)?.effects[0];assert.ok(original?.callId);
+	let selections=0;
+	const ticket=db.reserve(run,r=>{
+		selections++;
+		if(!r.active)return;
+		peer.mutateLocked(run,other=>{other.active=false;});
+		return {value:original.callId};
+	});
+	assert.equal(ticket,undefined,"the discarded private snapshot must not return its earlier ticket");
+	assert.equal(selections,2);assert.deepEqual(db.read(run)?.effects[0],original);
 });
 
 test("the validated revision shares neither a mutable graph nor a planner draft and discovers an independently created spool",async t=>{

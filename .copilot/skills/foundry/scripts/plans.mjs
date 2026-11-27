@@ -1,4 +1,4 @@
-import { readPolicy } from "../../../extensions/foundry/work/contract.mjs";
+import { readPolicy } from "../../../extensions/foundry/work/brief.mjs";
 import { commitAt, contractPaths, git, rootAt, verifyContracts } from "../../../extensions/foundry/work/product.mjs";
 
 /** @param {string[]} args */

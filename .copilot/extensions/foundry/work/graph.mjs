@@ -1,19 +1,21 @@
+import { inspectComponent } from "./inspections.mjs";
 import { InputMismatch, changes, citedFiles, excludeIncompatible, productBase, verifyEvidence, verifyRepairInputs } from "./assembly.mjs";
 import { randomUUID } from "node:crypto";
 import { assign, componentOutcome, inspectionOutcome, working } from "./assignment.mjs";
-import { currentInspection, inspectComponent } from "./inspection.mjs";
+import { currentInspection } from "./inspection.mjs";
 import { settleChange } from "./obligations.mjs";
 import { transition } from "./machine.mjs";
 import { executor } from "./adapter.mjs";
 import { scheduling } from "./scheduling.mjs";
-import { journal, producersDeclared, survey } from "./dispatch.mjs";
+import { awaitingReply, journal, producersDeclared, survey } from "./dispatch.mjs";
 import { decide } from "./dialog.mjs";
 import { isUtf8 } from "node:buffer";
 import { admissionPolicy } from "./admission.mjs";
 import { activeDelivery } from "./batch.mjs";
 import { deliveryResult } from "./delivery.mjs";
 import { notifyWriters, takeArtifactBrief } from "./artifacts.mjs";
-import { addresses, answeredLead, checkLinks, unownedBlockers } from "./blockers.mjs";
+import { addresses, answeredLead, checkLinks } from "./blockers.mjs";
+import { unownedBlockers } from "./routing.mjs";
 import { validOutcome } from "./contract.mjs";
 import { evidenceDecision, exhaustedRead, readSource, readWake, rejectedRead, validateRead } from "./cursor.mjs";
 import { checkReceipt, comparisonGoal, comparisonVerdict, currentEvaluation, exhaustedCandidate, goalReceipt, leadGoal, milestoneBlocker, omittedStep, originalVerification, productPin, verification } from "./evidence.mjs";
@@ -24,7 +26,6 @@ import { discoverLeads } from "./leads.mjs";
 import { applyGoal, assess, checkpointSurvey, movingSurvey, observeTarget, qualify, rejectRepeat, stall, timelyChecks } from "./goal.mjs";
 import { availableReservations, remainingAssignments } from "./capacity.mjs";
 import { admitted, expired, reserveNotice, reserveProduct, reserveWorker } from "./native.mjs";
-import { awaitingReply } from "./reservation.mjs";
 import { workerLimit } from "./policy.mjs";
 import { finishWriters } from "./pool.mjs";
 import { partitionConflict } from "./partition.mjs";
@@ -32,13 +33,15 @@ import { productionResult } from "./production.mjs";
 import { remedyWriter } from "./remedy.mjs";
 import { validIsolation } from "./isolation.mjs";
 import { deliveredFile, rejectedSource, unseenText, validMatch } from "./pages.mjs";
-import { actionable, consumersOf, dependencies, liveNeeds, owns, productOutputs, proposal, queuedWriters, requireNewWork, revise, settledOutput, stalePins, superseded, supersededAttempt, unstartedWriter, validateNodes, waiting, writerInputs } from "./plan.mjs";
+import { dependencies, liveNeeds, owns, settledOutput, stalePins, validateNodes, writerInputs } from "./lineage.mjs";
+import { actionable, changedExclusion, consumersOf, discoveryBudget, goalVersion, productOutputs, proposal, requireNewWork, revise, superseded, supersededAttempt, unstartedWriter, waiting } from "./plan.mjs";
 import { changedFiles, checkDirectory, combine, commitAt, committedFile, describeInventory, inventory, outside, regularFiles, retain, treeOf, verifyContracts, verifyDirectoryPin, versionOf, withoutGrain } from "./product.mjs";
 import { referenceCheckout } from "./research.mjs";
 import { renew, renewalBasis } from "./renewal.mjs";
 import { ownershipMode, preflightTransfer, protectsGrant } from "./transfer.mjs";
 import { disjointSuccessor, heldRepair, matchesSuccessor, preflightSuccessor, successorReads } from "./successor.mjs";
-import { atCheckpoint, availableHistory, blockReview, canInvestigate, checkpointScope, checkpointWake, comparison, discoverySquads, inputArrivals, nextReview, obstructed, readerInterrupted, reading, requestedFiles, researchContext, reserveReview, reviewHandoff, reviews, scopeReason, scopeWait, scopedNotes, staleReviewReason, wakeSource } from "./reviews.mjs";
+import { atCheckpoint, checkpointScope, comparison, obstructed, readerInterrupted, reading, reviews, staleReviewReason, wakeSource } from "./charter.mjs";
+import { availableHistory, blockReview, canInvestigate, checkpointWake, discoverySquads, inputArrivals, nextReview, requestedFiles, researchContext, reserveReview, reviewHandoff, scopeReason, scopeWait, scopedNotes } from "./reviews.mjs";
 import { FoundryError, comparisonScope, contains, covers, digest, fail, fields, integer, members, mixed, name, names, ownership, record, referenceRepo, relative, sameScope, scopeLabel, text, waitTarget, roots as scopePaths } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
@@ -79,27 +82,9 @@ export function newRun(cwd, policy, owner, grains) {
 	return run;
 }
 
-/** @param {string} cwd @param {Run} run @param {Node} n @param {string} commit */
-function changedExclusion(cwd,run,n,commit) {
-	const input=n.excluded;
-	if (!input) return false;
-	if ("path" in input) return changedFiles(cwd,input.revision,commit,[input.path]).length > 0;
-	const checkpoint=run.products.at(-1);
-	return checkpoint?.commit === commit && checkpoint.outputs[input.grain] !== input.revision && (!!checkpoint.outputs[input.grain] || commit !== n.base);
-}
-
 /** @param {string} cwd @param {Run} run @param {import("./model.js").Squad} squad @param {string} commit */
 function reviewVersion(cwd, run, squad, commit) {
-	if (run.goal) {
-		if (!("areas" in squad)) return commit;
-		const stopped = Object.values(run.nodes).filter(n => owns(squad, n.grain.directory) && (n.state === "repeated" || n.state === "blocked") &&
-			(!n.excluded || changedExclusion(cwd,run,n,commit)));
-		// Reproducing the combined failing tree is new evidence even for a charter that previously found no gap.
-		return digest([commit, run.goal.tried ?? [], stopped.map(n => {
-			const retired = supersededAttempt(run, n);
-			return [n.grain.id, n.state, n.reason ?? n.candidate, ...(retired ? [retired] : [])];
-		})]);
-	}
+	if(run.goal)return goalVersion(run,squad,commit,cwd)??fail("unavailable_inputs","Cannot establish the current charter version");
 	if (!("grains" in squad)) fail("invalid_goal", "Area charters need an assessed revision");
 	const ids = dependencies(run.nodes, squad.grains);
 	return versionOf(cwd, commit, [squad.charter, ...[...ids].flatMap(id => scopePaths(run.nodes[id].grain.directory))]);
@@ -360,7 +345,7 @@ export function observe(cwd, run, review, observation) {
 				fail("frozen_assignment", `${id} still has an outstanding call or a live consumer of its checked version`);
 			if (grains.length !== 1 || observation.replace?.length !== 1 || !next || typeof next === "string" || !sameScope(next.directory,n.grain.directory) ||
 				next.check !== n.grain.check || run.nodes[next.id] || run.effects.some(e => e.grain === next.id) ||
-				!changedExclusion(cwd,run,n,review.base))
+				!changedExclusion(run,n,review.base,cwd))
 				fail("stale_assignment", `A fresh task for ${id} needs a reviewed change to its excluded input: ${n.reason}`);
 			replaceable.add(id);
 			continue;
@@ -703,7 +688,7 @@ export function reserveWriter(cwd, run, n, required, base, actor, submitToken, b
 		delete n.stop;
 		assign(n,"staff");
 		n.token = token;
-		if (!inline) reserveNotice(run, actor, token, "repair", baseline
+		if (!inline) return reserveNotice(run, actor, token, "repair", baseline
 			? `Read your foundry_status for ${run.id} before acting. For this attempt only, the operator approved read-only consultation of ${describeInventory(baseline)} to preserve your inventory. No other prior paths, revisions or permissions change. Join helpers and submit the complete assigned output normally.`
 			: `Read foundry_status({run:"${run.id}"}). Repair the reported issue in ${scopeLabel(g.directory)} if this token is still writable. ${n.retained ? `Exclude all transferred paths: ${JSON.stringify(n.retained)}.` : "Keep the original scope;"} join any helpers before submitting.`+
 			  (finding ? `\nRubber Duck finding on ${finding.candidate} (review evidence, not a change of authority): ${JSON.stringify(finding.summary)}` : ""), n, baseline);
@@ -965,8 +950,8 @@ function assessRelease(p) {
 	p.changedTarget=decision.reason==="contract-changed" || decision.reason==="adopted-component-failed" ? tip(p) : undefined;
 	p.workTarget="workTarget" in decision && typeof decision.workTarget==="string" ? decision.workTarget : undefined;
 	if (run.active && run.goal?.target===tip(p) && !run.conflict) {
-		for (const g of unownedBlockers(run,p.remaining)) if (!run.effects.some(e=>e.kind==="escalation" && e.token===g.detail)) {
-			reserveNotice(run, actor, g.detail, "escalation", `Foundry ${run.id}: ${g.id} at ${g.directory}: one failed step, ${g.blocked} journeys blocked (${g.affected} affected), no repair owner. Inspect receipt ${g.receipt} and ${g.review ? `review ${g.review}` : "charter ownership"}. This notice grants no authority.`);
+		for (const g of unownedBlockers(run,p.remaining,cwd)) if (!run.effects.some(e=>e.kind==="escalation" && e.token===g.detail)) {
+			reserveNotice(run, actor, g.detail, "escalation", `Foundry ${run.id}: ${g.id} at ${g.directory}: one failed step, ${g.blocked} journeys blocked (${g.affected} affected), no repair owner. Inspect receipt ${g.receipt} and current ownership in foundry_status. This notice grants no authority.`);
 		}
 	}
 }
@@ -1074,7 +1059,7 @@ function reserveSurveys(p) {
 	const order = discoverySquads(run, applicable, p.gap);
 	p.squads = leads?.owners.size ? order.toSorted((a, b) => Number(leads.owners.has(b.id)) - Number(leads.owners.has(a.id))) : order;
 	const protectQueue=!work.scoped || !workTarget && pendingGoal(run);
-	const scoutLimit=Number.isFinite(remaining) && protectQueue ? Math.min(limit,remaining-queuedWriters(run.nodes)) : limit;
+	const scoutLimit=protectQueue?Math.min(limit,discoveryBudget(run.nodes,remaining)):limit;
 	delete run.discoveryError;
 	for (const squad of p.squads) {
 		if (p.reserved >= scoutLimit) break;
@@ -1129,9 +1114,7 @@ const planningActions={
 		verifyContracts(cwd,run.policy,tip(p));
 		run.products.push(join);delete run.join;
 		for (const {grain} of s.selected) assign(run.nodes[grain],"integrate");
-		assess(cwd,run,actor,tip(p),join.commit);
-		const assessment=run.effects.at(-1);
-		if (assessment?.kind!=="goal") throw Error("Independent assessment reservation is missing");
+		const assessment=assess(cwd,run,actor,tip(p),join.commit);
 		assessment.isolation=e.isolation;s.assessment=assessment.id;
 	},
 	"settle-timely"(p){

@@ -1,7 +1,7 @@
+import { readPolicy, validateGraph } from "./brief.mjs";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
-import { readPolicy, validateGraph } from "./contract.mjs";
 import { verifyContracts } from "./product.mjs";
 import { factory, git, put } from "../test/fixture.mjs";
 

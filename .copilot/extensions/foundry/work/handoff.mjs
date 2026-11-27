@@ -1,5 +1,5 @@
 import { acceptedChecks } from "./evidence.mjs";
-import { dependencies, owns } from "./plan.mjs";
+import { dependencies, owns } from "./lineage.mjs";
 import { portableReceipt } from "./portable.mjs";
 import { publishedComponent } from "./publication.mjs";
 import { FoundryError } from "./values.mjs";

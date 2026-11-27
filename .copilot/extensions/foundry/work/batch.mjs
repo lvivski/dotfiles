@@ -1,5 +1,5 @@
 import { checkReceipt } from "./evidence.mjs";
-import { publicationVerdict } from "./publication.mjs";
+import { observedComponent, publishedComponent } from "./publication.mjs";
 import { grant } from "./transfer.mjs";
 import { digest } from "./values.mjs";
 
@@ -18,9 +18,7 @@ export const checks=(run,d)=>run.effects.filter(/** @returns {e is Call} */ e=>e
 
 /** @param {Run} run @param {Delivery} d @param {Call|undefined} c @param {import("./model.js").Node} node */
 function passedMember(run,d,c,node) {
-	const receipt=checkReceipt(c);
-	return c?.kind==="component" && c.delivery===d.id && c.issuer===run.owner && c.commit===d.assembly &&
-		c.grain===node.grain.id && c.check===node.grain.check && !!c.runnerClaim && receipt?.exit===0 && !receipt.failure;
+	return c?.delivery===d.id && c.issuer===run.owner && c.check===node.grain.check && !!observedComponent(c,node.grain.id,d.assembly);
 }
 
 /** A delivery contributes the entire previously absent directory, not the delta from the failed writer's draft.
@@ -45,11 +43,10 @@ export function deliveryInspection(run,c) {
  * @param {Run} run @param {Delivery} d @param {Call[]} jobs @param {string} base */
 function reviewedBatch(run,d,jobs,base) {
 	if (!run.inspections) return true;
-	const reviews=new Map(run.inspections.map(i=>[i.component,i]));
 	return d.selected.every(({prior},j)=>{
-		const c=jobs[j], i=reviews.get(c?.id);
-		if (!passedMember(run,d,c,prior) || !i || publicationVerdict(i)!=="approved" || i.issuer!==run.owner ||
-			i.grain!==c.grain || i.candidate!==c.commit || i.generation!==base || i.base!==base) return false;
+		const c=jobs[j],i=publishedComponent(run,c?.id,prior.grain.id,d.assembly)?.review;
+		if(!i || i.issuer!==run.owner || i.generation!==base || i.base!==base ||
+			c.delivery!==d.id || c.issuer!==run.owner || c.check!==prior.grain.check)return false;
 		const {overrides}=deliveryBinding(run,prior,base);
 		return i.task===overrides.task && digest(i.scope)===digest(overrides.scope);
 	});

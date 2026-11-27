@@ -60,7 +60,8 @@ test("a superseded claimed goal cannot strand a different reviewed product or bo
 
 for (const race of ["none", "receipt", "target"]) test(`owner retirement preserves four published outputs without replay; approval race: ${race}`, async t => {
 	const factory=await historicalFactory(t,95),past=directory(t,95);
-	/** @type {typeof import("./native.mjs")} */ const {issue,reserveCheck}=await import(join(past,"work/native.mjs"));
+	/** @type {{issue:typeof import("./native.mjs").issue,reserveCheck:(r:import("./model.js").Run,issuer:string,cwd:string,commit:string,check:string)=>string}} */
+	const {issue,reserveCheck}=await import(join(past,"work/native.mjs"));
 	/** @type {typeof import("./database.mjs")} */ const previous=await import(join(past,"work/database.mjs"));
 	const f = factory(t, run, source, { [source]: JSON.stringify({ version: 1, id: run, target: "refs/heads/main", direction: "Publish a complete catalog.",
 		productCheck: "product.mjs", goalCheck: "goal.mjs", grains: ["base", ...ids].map(id => ({ id, directory:id, specification:"spec", boundary:["api"], check:"unit.mjs" })),

@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { firstObserver, observerInputs, failedFinalDiagnostic } from "../test/ownership.mjs";
 import { createRuntime } from "./runtime.mjs";
+import { diagnosticId, footprintProgress, validDiagnostic } from "./diagnostics.mjs";
+import { digest } from "./values.mjs";
 
 test("the stopped attester prepares the exact observer grant without writing or asking the owner to identify blobs",async t=>{
 	const {f,run,db,attester,paired,author}=await observerInputs(t,"observer pass"), owner=f.runtime(f.root,{confirm:async()=>true},createRuntime),
@@ -11,6 +13,20 @@ test("the stopped attester prepares the exact observer grant without writing or 
 	const offer=owner.inspect({run},"owner").recovery.find(a=>a.kind==="proposal");assert.ok(offer);
 	const {run:_,...observer}=author;assert.deepEqual(offer.arguments,{run,observer});
 	assert.deepEqual(db.read(run)?.nodes,before.nodes);assert.deepEqual(db.read(run)?.effects,before.effects);
+	const state=structuredClone(db.read(run));assert.ok(state);
+	const d=state.diagnostics?.at(-1),w=d && state.effects.find(e=>e.id===d.assignment);
+	assert.ok(d && w?.kind==="writer" && w.nativeId && validDiagnostic(state,d));
+	const {id,...body}=d,token="distinct-fixture-repair",next={...body,attempt:digest(token)};
+	const repaired={...next,id:diagnosticId(run,next)};
+	/** @type {import("./model.js").NativeCall} */
+	const notice={id:"repair-notice",kind:"repair",tool:"send_session_message",state:"done",args:{session_id:w.nativeId},issuer:"owner",grain:w.grain,token,callId:"notice-call"};
+	const at=state.effects.indexOf(w);
+	state.effects.splice(at,0,notice);
+	assert.equal(validDiagnostic(state,repaired),false,"a delivery before this writer's launch is not its repair");
+	state.effects.splice(at,1);state.effects.push(notice);
+	assert.equal(validDiagnostic(state,repaired),true);
+	notice.args.session_id="different-writer";assert.equal(validDiagnostic(state,repaired),false);
+	notice.args.session_id=w.nativeId;notice.state="uncertain";assert.equal(validDiagnostic(state,repaired),false);
 	await owner.operation("diagnose",author,"owner");assert.equal(f.workers.size,count+1);
 	assert.ok([...f.workers.values()].at(-1)?.prompt.includes(author.file));
 });
@@ -49,6 +65,14 @@ test("component writers supply all their own checkpoint footprints; missing proo
 	assert.equal(db.read(run)?.independent,undefined);
 	const offer=owner.inspect({run},"owner").recovery.find(a=>a.kind==="subset");assert.ok(offer?.arguments);
 	assert.deepEqual(offer.arguments,batch);
+	const reports=structuredClone(db.read(run)),q=reports?.footprintRequests?.at(-1);
+	assert.ok(reports?.diagnostics && q && q.checks.length>=3);
+	const [first,second,third]=q.checks;
+	const one=reports.diagnostics.find(d=>d.check===first),two=reports.diagnostics.find(d=>d.check===second);
+	assert.ok(one && two);
+	reports.diagnostics=reports.diagnostics.filter(d=>d.check!==third);
+	reports.diagnostics.push({...one,attempt:"stale"},{...two},{...two,check:"foreign"});
+	assert.deepEqual(footprintProgress(reports,q),{missing:[third],ambiguous:[second],grain:settled.effects.find(e=>e.id===q.observer)?.grain});
 	await owner.operation("checkpoint",offer.arguments,"owner");
 	assert.ok(db.read(run)?.independent);assert.equal(owner.inspect({run},"owner").qualified,null);
 });

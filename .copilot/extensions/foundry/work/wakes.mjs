@@ -1,6 +1,6 @@
+import { awaitingReply } from "./dispatch.mjs";
 import { checkReceipt } from "./evidence.mjs";
 import { expired } from "./native.mjs";
-import { awaitingReply } from "./reservation.mjs";
 import { timelyChecks } from "./goal.mjs";
 import { setTimeout as sleep } from "node:timers/promises";
 

@@ -1,5 +1,5 @@
 import { checkReceipt, generationOf } from "./evidence.mjs";
-import { writerInputs } from "./plan.mjs";
+import { writerInputs } from "./lineage.mjs";
 import { publishedComponent } from "./publication.mjs";
 import { grant } from "./transfer.mjs";
 import { covers, digest } from "./values.mjs";

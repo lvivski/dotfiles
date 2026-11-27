@@ -1,5 +1,5 @@
-import { candidateHandoff } from "./plan.mjs";
-import { comparison } from "./reviews.mjs";
+import { candidateHandoff } from "./lineage.mjs";
+import { comparison } from "./charter.mjs";
 import { comparisonScope, covers, sameScope } from "./values.mjs";
 
 /** Remove exactly one literal occurrence from the original scoped proposal; never accept replacement instructions.

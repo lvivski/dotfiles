@@ -1,6 +1,6 @@
 import { offered } from "./artifacts.mjs";
 import { materialize } from "./reference.mjs";
-import { sharedBlockers } from "./blockers.mjs";
+import { sharedBlockers } from "./routing.mjs";
 import { remainingAssignments } from "./capacity.mjs";
 import { changedFrom, inconclusiveRepair, launcherFailure, missingInput, productPin, relinquishable } from "./evidence.mjs";
 import { handoff, portableProof } from "./handoff.mjs";
@@ -9,14 +9,14 @@ import { scheduling, workerLimit } from "./policy.mjs";
 import { ownershipMode } from "./transfer.mjs";
 import { workspaceName } from "./workspace.mjs";
 import { canDispatch } from "./native.mjs";
-import { stalePins } from "./plan.mjs";
-import { presentation } from "./reviews.mjs";
+import { stalePins } from "./lineage.mjs";
+import { presentation } from "./charter.mjs";
 import { replacementChecks, replacementStop } from "./replacement.mjs";
 import { fail } from "./values.mjs";
 import { adoptionQuestions, nodeFact, pendingFact, visible } from "./visibility.mjs";
 import { guidance } from "./guidance.mjs";
 import { instructionPermitted } from "./instructions.mjs";
-import { effectAt,revisionLookup } from "./revision.mjs";
+import { effectAt,inspectionAt,revisionLookup } from "./revision.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @param {Run} run @param {string} actor @param {import("./instructions.mjs").Tip} [tip] */
@@ -33,11 +33,11 @@ export function recoveryStatus(run,actor,tip){
 /** @param {Run} run @param {string} actor @param {Run["effects"]} pending @param {import("./instructions.mjs").Tip} [tip] */
 const prepared=(run,actor,pending,tip)=>[...pending,...run.instructions??[]].filter(e=>e.issuer===actor && e.state==="ordinary" && !e.permissionHold &&
 	canDispatch(run,e) && (!tip || instructionPermitted(run,e.instruction,tip))).map(e=>({tool:e.tool,arguments:e.args}));
-/** @param {Run} run @param {ReturnType<typeof visible>} view @param {unknown} detail @param {import("./portable.mjs").Evidence} [evidence] */
-function ownerStatus(run, { receipts, questions, summary }, detail,evidence) {
+/** @param {Run} run @param {ReturnType<typeof visible>} view @param {unknown} detail @param {import("./portable.mjs").Evidence} [evidence] @param {string} [cwd] */
+function ownerStatus(run, { receipts, questions, summary }, detail,evidence,cwd) {
 	const last = run.products.at(-1);
 	const correction=run.join && replacementChecks(run,run.join.check).at(-1);
-	const inspection=correction && run.inspections?.find(i=>i.component===correction.id);
+	const inspection=correction && inspectionAt(run,correction.id);
 	const rollout=run.adoptions?.findLast(a=>a.rollout && a.decision?.status==="answered");
 	return {
 		handoff: handoff(run, detail === "cleanup"),
@@ -51,7 +51,7 @@ function ownerStatus(run, { receipts, questions, summary }, detail,evidence) {
 			...(detail==="proof" && {controls:j.controls,recheck:j.recheck,author:j.author,reviewer:j.reviewer,subject:j.subject,
 				product:j.product,revision:j.revision,driver:j.driver})}))}),
 		scheduling: scheduling(run),
-		sharedBlockers: sharedBlockers(run, remainingAssignments(run)),
+		sharedBlockers: sharedBlockers(run, remainingAssignments(run),cwd),
 		...(rollout && {harnessRollout:{check:rollout.failed,from:rollout.rollout?.from,assembly:rollout.assembly,blob:rollout.rollout?.blob,
 			harness:rollout.rollout?.harness,...(rollout.rollout?.followup && {followup:rollout.rollout.followup}),...(rollout.foreground && {foreground:rollout.foreground}),checks:run.effects.flatMap(e=>e.kind==="component" && e.rollout===rollout.id ?
 				[{grain:e.grain,id:e.id,state:e.state,exit:receipts.get(e.id)?.exit,reason:replacementStop(run,e)??e.permissionHold??e.error}]:[])}}),
@@ -128,20 +128,20 @@ const statusRows=revisionLookup(run=>{
 	})]] : []));
 	return {baselines,supplied,charters,inspections,observers,producers,reuse};
 });
-/** @param {Run} run @param {string} actor @param {unknown} [detail] @param {import("./instructions.mjs").Tip} [tip] @param {import("./portable.mjs").Evidence} [evidence] */
-export function status(run, actor, detail, tip,evidence) {
+/** @param {Run} run @param {string} actor @param {unknown} [detail] @param {import("./instructions.mjs").Tip} [tip] @param {import("./portable.mjs").Evidence} [evidence] @param {string} [cwd] */
+export function status(run, actor, detail, tip,evidence,cwd) {
 	if (detail !== undefined) {
 		if (run.owner !== actor) fail("foreign_run", "Only the owner can request handoff details");
 		if (detail !== "proof" && detail !== "cleanup" && detail !== "usage") fail("invalid_field", "Unknown status detail");
 	}
-	const view = visible(run, actor), { owner, nodes, pending, receipts, assignments } = view;
+	const view = visible(run, actor,true,cwd), { owner, nodes, pending, assignments } = view;
 	const {baselines,supplied,charters,inspections,observers,producers,reuse}=statusRows(run);
 	const correction=(/** @type {string|undefined} */ id)=>{const e=effectAt(run,id);return e?.kind==="scout" && e.correction && (owner || !e.correction.ordinary)?{correction:e.correction}:{};};
 	return {
 		...view.summary, contract: { commit: run.policy.base, path: run.policy.source, ...(run.policy.contractTarget && {targetPin:run.policy.contractTarget}) },
 		recovery:guidance(run,actor,view,tip),
 		limit: workerLimit(run) ?? null, ...(assignments ? { assignments } : {}), deadline: run.policy.deadline,
-		...(owner ? ownerStatus(run, view, detail,evidence) : {}),
+		...(owner ? ownerStatus(run, view, detail,evidence,cwd) : {}),
 		artifacts: (run.artifacts ?? []).filter(a => owner || a.publisher === actor || nodes.some(n => offered(a, n))).map(a => ({ ...a, extract: materialize(a) })),
 		artifactReports: run.effects.flatMap(e => e.kind === "component" && (owner || e.issuer === actor) && (e.usedArtifacts || e.comparedArtifacts)
 			? [{ grain: e.grain, worker: e.issuer, candidate: e.commit, usedArtifacts: e.usedArtifacts, comparedArtifacts: e.comparedArtifacts }] : []),

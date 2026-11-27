@@ -1,8 +1,8 @@
 import { parseObservation } from "./graph.mjs";
-import { survey } from "./dispatch.mjs";
-import { awaitingReply } from "./reservation.mjs";
+import { awaitingReply, survey } from "./dispatch.mjs";
 import { researchResult } from "./research.mjs";
-import { blockReview, investigation, reviews } from "./reviews.mjs";
+import { investigation, reviews } from "./charter.mjs";
+import { blockReview } from "./reviews.mjs";
 import { isPacket } from "./snapshot.mjs";
 import { FoundryError, fail } from "./values.mjs";
 

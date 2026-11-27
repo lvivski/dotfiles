@@ -1,3 +1,4 @@
+import { awaitingReply } from "./dispatch.mjs";
 import { verifiedCitations } from "./assembly.mjs";
 import { working } from "./assignment.mjs";
 import { availableReservations } from "./capacity.mjs";
@@ -6,11 +7,11 @@ import { checkpointCurrent } from "./facts.mjs";
 import { reserveWriter } from "./graph.mjs";
 import { admitted } from "./native.mjs";
 import { displacement, historicalGrant } from "./partition.mjs";
-import { owns, validateNodes, waiting, writerInputs } from "./plan.mjs";
+import { owns, validateNodes, writerInputs } from "./lineage.mjs";
+import { waiting } from "./plan.mjs";
 import { changedFiles, commitAt, directoryBaseline, outside, regularFiles, verifyContracts } from "./product.mjs";
-import { awaitingReply } from "./reservation.mjs";
 import { activeConsumer, touchesCut } from "./transfer.mjs";
-import { covers, digest, fail, fields, name, sameScope } from "./values.mjs";
+import { covers, fail, fields, name, pinnedSelection, sameScope } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @param {string} cwd @param {Run} run @param {string} actor @param {Record<string,unknown>} a
@@ -65,7 +66,7 @@ export function prepareRestoration(cwd,run,actor,a,verify) {
 		return {node,pins,target,commit:p.commit,files:h.scope.files,owner:owner.grain.directory,tree:baseline.tree,citations,
 			binding:{state:owner.state,worker:owner.worker,generation:owner.generation,check:owner.check,candidate:owner.candidate}};
 	}
-	const before=select(run);
+	const {subject:before,revalidate}=pinnedSelection(run,select,"Approved ownership, source, or inputs changed");
 	return {
 		prompt:`Restore only ${before.node.grain.directory} as ${to} from current checked product ${before.commit} (${checkpoint}), goal ${goal}?\n`+
 			`Historical mixed output ${from} at ${historical}. ${retainer} (${before.binding.state}) retains ${JSON.stringify(before.owner)}, including ${JSON.stringify(before.files)}. `+
@@ -74,8 +75,7 @@ export function prepareRestoration(cwd,run,actor,a,verify) {
 			`The new writer submits only unchanged tree ${before.tree} to ${before.node.grain.check}. Authorize fresh component, product and goal checks for the new ownership map; do not replay or amend any previous verdict.`,
 		/** @param {Run} live */
 		apply(live) {
-			const fresh=select(live);
-			if (digest(fresh)!==digest(before)) fail("stale_assignment","Approved ownership, source, or inputs changed");
+			const fresh=revalidate(live);
 			live.nodes[to]=fresh.node;validateNodes(live.nodes);
 			reserveWriter(cwd,live,fresh.node,fresh.pins,fresh.commit,actor);
 			if (live.goal) delete live.goal.stall;

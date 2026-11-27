@@ -4,7 +4,7 @@ import { closeSync, constants, cpSync, fstatSync, lstatSync, mkdirSync, mkdtempS
 import { tmpdir } from "node:os";
 import path, { join } from "node:path";
 import { artifactDigest, entries, git, pathNames, regularFiles, verifyTree, writeBlobs } from "./git-files.mjs";
-import { FoundryError, fail, inputCommits, relative, validInputs, verificationEnvironment } from "./recipe.mjs";
+import { canonical, FoundryError, fail, inputCommits, relative, validInputs, verificationEnvironment } from "./recipe.mjs";
 import { isDeepStrictEqual } from "node:util";
 export const hook=".foundry/prepare-components";
 /** @param {string} cwd @param {string} commit */
@@ -245,13 +245,6 @@ export async function withSourceInputs(cwd,inputs,observe,supply={}){
 /** @typedef {{subject:Snapshot,overlay:OverlayFile[],preparation?:Snapshot}} Disclosure */
 /** @typedef {{inputs:Inputs,disclosure:Disclosure}} Observation */
 /** @typedef {(type:"tree"|"commit",id:string,bytes:Buffer)=>void} Store */
-/** @param {unknown} value @returns {string} */
-function canonical(value){
-	if(Array.isArray(value))return "["+value.map(canonical).join(",")+"]";
-	if(value && typeof value==="object")return "{"+Object.entries(value).sort(([a],[b])=>a<b?-1:a>b?1:0)
-		.map(([k,v])=>JSON.stringify(k)+":"+canonical(v)).join(",")+"}";
-	return JSON.stringify(value);
-}
 /** @param {string} format @param {"tree"|"commit"} type @param {Buffer} bytes @param {Store} [store] */
 function objectID(format,type,bytes,store){
 	const id=createHash(format).update(`${type} ${bytes.length}\0`).update(bytes).digest("hex");store?.(type,id,bytes);return id;

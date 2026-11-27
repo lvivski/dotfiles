@@ -1,11 +1,11 @@
+import { awaitingReply, unissued } from "./dispatch.mjs";
 import { verifyJoinedInputs } from "./assembly.mjs";
 import { isUtf8 } from "node:buffer";
 import { correctionRefs, matchesDraft } from "./drafts.mjs";
 import { working } from "./assignment.mjs";
-import { correctionEvaluator, failedComponent, originalVerification, productPin, verification } from "./evidence.mjs";
+import { adoptedStop, correctionEvaluator } from "./evidence.mjs";
 import { admitted, current } from "./native.mjs";
 import { changedBlobs, changedFiles, commitAt, contractPaths, git, outside, stagePatch, verifyContracts } from "./product.mjs";
-import { awaitingReply, unissued } from "./reservation.mjs";
 import { patchSource, replaceable, replacementChecks, replacementStop } from "./replacement.mjs";
 import { covers, digest, fail, fields, FoundryError, name } from "./values.mjs";
 
@@ -27,14 +27,10 @@ export function preparePatch(cwd,run,actor,a,verify,owned){
 export function patchPlan(cwd,run,actor,target,verify,failed,selected){
 	if(actor!==run.owner)fail("foreign_run","Only the owner can approve a correction on the adopted assembly");
 	admitted(run);
-	const pin=run.productRepins?.at(-1),join=run.join,last=run.products.at(-1),e=run.effects.find(e=>e.id===failed);
-	const grain=failedComponent(e),evaluator=productPin(run);
-	const originalCheck=originalVerification(run,failed)??failed;
-	if(!pin?.targetFrom || !join || join.check!==failed || verification(pin)!==originalCheck || !last || last.check!==pin.checkpoint ||
-		!evaluator || e?.evaluatorRevision!==evaluator || run.repins?.at(-1)?.revision!==evaluator ||
-		run.goal?.check!==pin.goal || run.policy.contractTarget!==target || pin.revision!==target ||
-		join.target!==target || commitAt(cwd,run.policy.target)!==target || e?.kind!=="product" || e.commit!==join.commit || !grain || !Object.hasOwn(join.outputs,grain))
+	const stopped=adoptedStop(run,target,failed);
+	if(!stopped || commitAt(cwd,run.policy.target)!==target)
 		fail("stale_pin","Need the current adopted target and its exact signed exit-1 component on the failed assembly");
+	const {pin,join,last,grain,evaluator,originalCheck}=stopped;
 	if(correctionEvaluator(pin,originalCheck)!==evaluator)
 		fail("not_recoverable","The owned correction after the rollout join has already been checked. Preserve this signed failure; another correction is not authorized.");
 	if(run.independent || run.blocker || run.conflict || run.effects.some(x=>x.permissionHold || awaitingReply(x) || unissued(x) && current(run,x)))

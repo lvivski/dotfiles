@@ -4,7 +4,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { linkedGeneration } from "./binding.mjs";
 import { checkReceipt, generationOf } from "./evidence.mjs";
 import { canDispatch } from "./native.mjs";
-import { owns } from "./plan.mjs";
+import { owns } from "./lineage.mjs";
 import { record, sameScope, text } from "./values.mjs";
 import { workspaceName } from "./workspace.mjs";
 

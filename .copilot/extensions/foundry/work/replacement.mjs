@@ -1,8 +1,9 @@
-import { checkReceipt, correctionEvaluator, failedComponent, originalVerification, productPin, verification } from "./evidence.mjs";
+import { boundChange, checkReceipt, correctionEvaluator, failedComponent, originalVerification, productPin, verification } from "./evidence.mjs";
 import { batchMembers } from "./abi.mjs";
 import { historicalGrant, restoredProduct } from "./partition.mjs";
-import { owns, writerInputs } from "./plan.mjs";
+import { assigningGrant, owns, writerInputs } from "./lineage.mjs";
 import { publishedComponent, publicationVerdict } from "./publication.mjs";
+import { inspectionAt } from "./revision.mjs";
 import { changedFiles } from "./product.mjs";
 import { activeConsumer } from "./transfer.mjs";
 import { covers, digest, fail, ownership, roots, sameScope } from "./values.mjs";
@@ -18,25 +19,24 @@ import { covers, digest, fail, ownership, roots, sameScope } from "./values.mjs"
  * @param {Run} run @param {string} grain @param {import("./model.js").Scope} directory @param {string} check
  * @param {import("./model.js").Effect|undefined} source @param {boolean} rolled */
 export function assigningCharter(run,grain,directory,check,source,rolled){
-	/** @type {string|undefined} */ let squad;
 	/** @type {string[]} */ const witnesses=[];
-	if(rolled && source?.kind==="scout" && source.state==="observed" && source.observation?.outcome==="regenerate" && source.observation.grains.includes(grain)){
-		const s=run.policy.squads.find(s=>s.id===source.squad),g=run.nodes[grain]?.grain;
-		if(s && "grains" in s && s.grains.includes(grain) && g && g.task===undefined && g.check===check && sameScope(g.directory,directory))
-			return {squad:s,areas:roots(directory),witnesses};
+	const declared=source && assigningGrant(run,source,grain);
+	if(declared){
+		const {squad,output}=declared,g=typeof output==="string"?run.nodes[grain]?.grain:output;
+		if(g && g.check===check && sameScope(g.directory,directory)){
+			if("areas" in squad)return {squad,areas:squad.areas,witnesses};
+			if(rolled && g.task===undefined)return {squad,areas:roots(directory),witnesses};
+		}
 	}
-	if(source?.kind==="scout" && source.state==="observed" && source.observation?.outcome==="regenerate" &&
-		source.observation.grains.some(g=>typeof g!=="string" && g.id===grain && g.check===check && sameScope(g.directory,directory)))squad=source.squad;
 	if(source?.kind==="writer" && source.grain===grain && source.restoration && source.state==="done"){
 		const h=historicalGrant(run,source.restoration.from,source.restoration.historical);
 		const restored=h?.scope.primary===directory && h.grain.check===check && restoredProduct(run,source);
 		if(h && restored){
-			squad=h.squad;
+			const s=run.policy.squads.find(s=>s.id===h.squad);
 			witnesses.push(h.component.id,h.product.check,source.restoration.checkpoint,source.restoration.goal,restored.check);
+			if(s && "areas" in s && s.checks.includes(check) && owns(s,directory))return {squad:s,areas:s.areas,witnesses};
 		}
 	}
-	const s=run.policy.squads.find(s=>s.id===squad);
-	if(s && "areas" in s && s.checks.includes(check) && owns(s,directory))return {squad:s,areas:s.areas,witnesses};
 }
 
 /** @param {Run} run @param {Node} n @param {boolean} rolled */
@@ -75,8 +75,6 @@ export function replaceable(cwd,run,join,n,paths){
 	return c;
 }
 
-/** @param {Run} run @param {Check} c */
-export const replacementOffer=(run,c)=>c.replacement ? run.adoptions?.find(a=>a.id===c.replacement) : undefined;
 /** @param {Run} run @param {string} failed */
 export function replacementChecks(run,failed){
 	const offers=new Set(run.adoptions?.filter(a=>a.failed===failed && a.patch?.owner && a.decision?.status==="answered").map(a=>a.id));
@@ -84,7 +82,7 @@ export function replacementChecks(run,failed){
 }
 /** @param {Run} run @param {Check} c */
 export function replacementStop(run,c){
-	const r=checkReceipt(c),i=run.inspections?.find(i=>i.component===c.id);
+	const r=checkReceipt(c),i=inspectionAt(run,c.id);
 	if(r && r.exit!==0)return `Replacement component ${c.id} exited ${r.exit??"without a verdict"}: ${r.output}`;
 	if(c.state==="refused" || c.launcherExit!==undefined)return c.error??`Replacement component ${c.id} did not run`;
 	if(publicationVerdict(i)==="changes")return `Independent review rejected replacement ${c.id}: ${i?.summary}`;
@@ -93,16 +91,13 @@ export function replacementStop(run,c){
 /** Nothing writable is installed while the new check or its independent review is outstanding.
  * @param {Run} run @param {Check} c */
 export function currentReplacement(run,c){
-	const a=replacementOffer(run,c),o=a?.patch?.owner,j=run.join,p=run.productRepins?.at(-1),n=c.grain&&run.nodes[c.grain];
-	const original=originalVerification(run,j?.check),evaluator=p && original && correctionEvaluator(p,original);
-	return !!a && !!o && !!j && !!p?.targetFrom && !!n && a.decision?.status==="answered" && a.decision.answer===a.patch?.blob &&
-		c.issuer===run.owner && c.kind==="component" && c.commit===a.assembly && c.grain===a.patch.grain && c.check===n.grain.check &&
-		j.check===a.failed && original===verification(p) && j.outputs[c.grain]===o.output && n.candidate===o.output && n.check===o.component &&
-		digest(n)===o.binding && !consumerOf(run,j,c.grain,a.patch.files.map(f=>f.file)) && j.target===a.revision && p.revision===a.revision &&
+	const b=boundChange(run,c),a=b?.offer,p=run.productRepins?.at(-1);
+	if(!b || !a?.patch?.owner || !p?.targetFrom)return;
+	const original=originalVerification(run,b.join.check),evaluator=original && correctionEvaluator(p,original);
+	return original===verification(p) && b.join.outputs[b.grain]===b.owner.output &&
+		!consumerOf(run,b.join,b.grain,a.patch.files.map(f=>f.file)) && p.revision===a.revision &&
 		run.policy.contractTarget===a.revision && !!evaluator && productPin(run)===evaluator && run.repins?.at(-1)?.revision===evaluator &&
-		run.goal?.check===a.goal && run.products.at(-1)?.check===a.checkpoint &&
-		!run.blocker && !run.conflict && !run.independent && !run.effects.some(e=>e.permissionHold && e.id!==c.id) &&
-		replacementChecks(run,j.check).at(-1)?.id===c.id;
+		!run.effects.some(e=>e.permissionHold && e.id!==c.id) && replacementChecks(run,b.join.check).at(-1)?.id===c.id?a:undefined;
 }
 
 /** @param {Offer} a @param {Product} prior */
@@ -114,8 +109,8 @@ export function replacementBasis(a,prior){
 
 /** @param {Run} run @param {Check} c */
 export function replacementInspection(run,c){
-	const a=replacementOffer(run,c);
-	if(!a || !c.grain || !run.join || !currentReplacement(run,c) || !c.runnerClaim || checkReceipt(c)?.exit!==0)return;
+	const a=currentReplacement(run,c);
+	if(!a || !c.grain || !run.join || !c.runnerClaim || checkReceipt(c)?.exit!==0)return;
 	return {node:run.nodes[c.grain],overrides:replacementBasis(a,run.join)};
 }
 
@@ -137,10 +132,10 @@ export function validReplacement(run,a,prior,effects){
 	const [c]=calls;
 	if(calls.length!==1 || c.issuer!==run.owner || c.commit!==a.assembly || c.grain!==patch.grain || c.check!==previous.check ||
 		run.effects.indexOf(c)<=run.effects.indexOf(failed))return false;
-	const i=run.inspections?.find(i=>i.component===c.id),b=replacementBasis(a,prior);
+	const i=inspectionAt(run,c.id),b=replacementBasis(a,prior);
 	const g=run.nodes[patch.grain]?.grain;
 	if(i && (i.issuer!==run.owner || i.generation!==b.generation || i.base!==b.base || i.task!==b.task || i.specification!==(g?.task===undefined?g?.specification:undefined) ||
 		digest(i.scope)!==digest(b.scope)))return false;
 	const step=run.productRepins?.flatMap(p=>p.amendments??[]).find(s=>s.proposal===a.id);
-	return !step || !!c.runnerClaim && checkReceipt(c)?.exit===0 && (!run.inspections || publicationVerdict(i)==="approved");
+	return !step || !!publishedComponent(run,c.id,patch.grain,a.assembly);
 }

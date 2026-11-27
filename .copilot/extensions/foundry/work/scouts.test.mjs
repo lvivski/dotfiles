@@ -5,7 +5,8 @@ import { mapSnapshot } from "../map/model.mjs";
 import { openDatabase } from "./database.mjs";
 import { observe } from "./graph.mjs";
 import { git } from "./product.mjs";
-import { availableHistory, nextReview, reviews } from "./reviews.mjs";
+import { reviews } from "./charter.mjs";
+import { availableHistory, nextReview } from "./reviews.mjs";
 import { scoutAgent, scoutDefinition, scoutPacket } from "./scouts.mjs";
 import { factory, loadEntry, put } from "../test/fixture.mjs";
 

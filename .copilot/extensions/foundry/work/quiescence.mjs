@@ -1,7 +1,7 @@
 import { quiescence } from "./rules/quiescence.mjs";
 import { transition } from "./machine.mjs";
 import { checkReceipt, generationOf } from "./evidence.mjs";
-import { assignmentCalls, liveNeeds } from "./plan.mjs";
+import { assignmentCalls, liveNeeds } from "./lineage.mjs";
 
 /** @typedef {NonNullable<ReturnType<typeof unavailable>>} Check */
 /** @typedef {{held:string[],retained:Check[]}} Queue */

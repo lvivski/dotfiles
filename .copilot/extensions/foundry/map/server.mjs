@@ -10,7 +10,7 @@ const assets = new Map([
 	["studio.css",["studio.css","text/css; charset=utf-8"]],
 	["run.css",["run.css","text/css; charset=utf-8"]],
 ]);
-for(const name of ["view","plot","network","layout","layers","routes","connectors","camera","drawing","svg","simulation","statechart"])
+for(const name of ["view","plot","network","layout","layers","routes","connectors","camera","drawing","svg","simulation","statechart","tabs"])
 	assets.set(`map/${name}.mjs`,[`${name}.mjs`,"text/javascript; charset=utf-8"]);
 
 /** @param {()=>Promise<import("./model.mjs").MapSnapshot|{notice:string}|ReturnType<typeof catalog>>} snapshot @param {boolean} [machine]

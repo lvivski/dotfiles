@@ -28,22 +28,22 @@ const record=x=>!!x && typeof x==="object" && !Array.isArray(x);
 /** @param {Record<string,unknown>} x @param {string[]} keys */
 const only=(x,keys)=>Object.keys(x).every(k=>keys.includes(k));
 /** @param {unknown} x */
-const oid=x=>typeof x==="string" && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(x);
+export const oid=x=>typeof x==="string" && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(x);
 /** @param {unknown} x */
-const hash=x=>typeof x==="string" && /^[0-9a-f]{64}$/.test(x);
+export const hash=x=>typeof x==="string" && /^[0-9a-f]{64}$/.test(x);
 /** @param {unknown} x */
 const path=x=>typeof x==="string" && relative(x)===x;
 /** @param {unknown} x */
 const paths=x=>Array.isArray(x) && x.every(path) && x.length===new Set(x).size;
 /** @param {unknown} x */
-const name=x=>typeof x==="string" && /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(x) && !Object.hasOwn(Object.prototype,x);
+export const validName=x=>typeof x==="string" && /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(x) && !Object.hasOwn(Object.prototype,x);
 /** @param {unknown} x */
 const files=x=>record(x) && paths(x.directories) && paths(x.files);
 /** @param {unknown} x */
 const scope=x=>record(x) && (x.kind==="goal" && only(x,["kind"]) ||
-	x.kind==="component" && only(x,["kind","grain","directories","files"]) && name(x.grain) && files(x) ||
+	x.kind==="component" && only(x,["kind","grain","directories","files"]) && validName(x.grain) && files(x) ||
 	x.kind==="product" && only(x,["kind","outputs"]) && Array.isArray(x.outputs) &&
-	x.outputs.every(o=>record(o) && name(o.id) && only(o,["id","directories","files","exclude"]) && files(o) &&
+	x.outputs.every(o=>record(o) && validName(o.id) && only(o,["id","directories","files","exclude"]) && files(o) &&
 		(o.exclude===undefined || record(o.exclude) && only(o.exclude,["directories","files"]) && files(o.exclude))) &&
 	x.outputs.length===new Set(x.outputs.map(o=>o.id)).size);
 /** @param {unknown} x @param {boolean} [replacement] */
@@ -71,6 +71,14 @@ export function inputCommits(v){
 	if(!validInputs(v))fail("invalid_inputs","Unrecognized verification inputs");
 	return [v.commit,...(v.overlay?[v.overlay.revision]:[]),...(v.checker.replacement?[v.checker.replacement.revision]:[]),
 		...(v.control?[v.control.commit]:[])];
+}
+/** Identical bytes for signed ledger subjects and standalone replay-carrier identities.
+ * Object keys are ordered; arrays keep their original order. @param {unknown} value @returns {string} */
+export function canonical(value){
+	if(Array.isArray(value))return "["+value.map(canonical).join(",")+"]";
+	if(value && typeof value==="object")return "{"+Object.entries(value).sort(([a],[b])=>a<b?-1:a>b?1:0)
+		.map(([k,v])=>JSON.stringify(k)+":"+canonical(v)).join(",")+"}";
+	return JSON.stringify(value);
 }
 /** Explicit row order and field order keep the evaluator's JSON environment stable even
  * if a recipient reserializes the manifest. @param {Extract<Scope,{kind:"product"}>} scope */

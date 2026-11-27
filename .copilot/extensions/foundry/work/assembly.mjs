@@ -1,7 +1,8 @@
 import { assign } from "./assignment.mjs";
 import { deliveredFile } from "./pages.mjs";
 import { changedFiles, rejoin, regularFiles, retain, verifyContracts } from "./product.mjs";
-import { comparison, requestedFiles, reviews } from "./reviews.mjs";
+import { comparison, reviews } from "./charter.mjs";
+import { requestedFiles } from "./reviews.mjs";
 import { touchesCut } from "./transfer.mjs";
 import { covers, digest, fail, FoundryError, ownership, roots as scopePaths, text } from "./values.mjs";
 

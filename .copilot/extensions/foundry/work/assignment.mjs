@@ -1,7 +1,7 @@
 import { assignment } from "./rules/assignment.mjs";
 import { executor } from "./adapter.mjs";
 import { transition } from "./machine.mjs";
-import { publicationVerdict } from "./publication.mjs";
+import { componentDecision } from "./publication.mjs";
 
 /** @typedef {import("./model.js").Node} Node */
 /** @typedef {import("./model.js").Run} Run */
@@ -56,13 +56,13 @@ export function componentOutcome(run,id,reason,component,invalidateConsumers,res
 
 /** @param {Run} run @param {Node} node @param {import("./model.js").Inspection} i @param {number} remaining */
 export function inspectionOutcome(run,node,i,remaining) {
-	const verdict=publicationVerdict(i);
-	if(!verdict)return;
+	const decision=componentDecision(run,node.check,node.grain.id,node.candidate);
+	if(!decision?.review || decision.review.id!==i.id)return;
 	const readOnly=!!node.restoration || !node.worker;
-	const reason=`Rubber Duck requested changes on ${i.candidate}: ${i.summary}`+
+	const reason=`Rubber Duck requested changes on ${decision.review.candidate}: ${decision.review.summary}`+
 		(readOnly ? " This grant does not authorize changing those bytes." : !remaining ? " No repair assignment remains." : "");
 	const result=transition(assignment,snapshot(node),{type:"inspection",id:node.grain.id,reason},{
-		approved:verdict==="approved",unfunded:!remaining,exhausted:node.repairs>=run.policy.repairs,readOnly,
+		approved:decision.verdict==="approved",unfunded:!remaining,exhausted:node.repairs>=run.policy.repairs,readOnly,
 	},true);
 	apply(node,result.snapshot);
 }

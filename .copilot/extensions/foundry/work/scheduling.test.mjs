@@ -1,3 +1,4 @@
+import { readPolicy } from "./brief.mjs";
 import assert from "node:assert/strict";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -6,7 +7,6 @@ import {git,put} from "../test/fixture.mjs";
 import {api,fixture,noGap,propose,readFile,run,source,worker} from "../test/release.mjs";
 import {activate} from "./activity.mjs";
 import {transition} from "./machine.mjs";
-import {readPolicy} from "./contract.mjs";
 import {openDatabase} from "./database.mjs";
 import {advance,newRun} from "./graph.mjs";
 import {reportReceiver} from "./reports.mjs";

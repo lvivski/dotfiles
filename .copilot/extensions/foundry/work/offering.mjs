@@ -1,4 +1,4 @@
-import { rolloutChecks } from "./campaign.mjs";
+import { rolloutSlots } from "./campaign.mjs";
 import { correctionRefs, matchesDraft } from "./drafts.mjs";
 import { invalidatePresentation } from "./dialog.mjs";
 import { checkReceipt, currentEvaluation, failedComponent, productPin } from "./evidence.mjs";
@@ -65,7 +65,7 @@ export function offerChoices(cwd,run,actor,verify){
 	if(actor!==run.owner || !run.active || run.independent || run.conflict || run.policyHold || run.blocker)return;
 	const candidates=correctionRefs(run);if(!candidates.length)return;
 	const j=run.join,parent=j && run.adoptions?.findLast(a=>a.rollout && a.failed===j.check && a.decision?.status==="answered");
-	const batch=parent && rolloutChecks(run,parent),last=batch?.findLast(c=>!!checkReceipt(c));
+	const batch=parent && rolloutSlots(run,parent).checks,last=batch?.findLast(c=>!!checkReceipt(c));
 	const check=parent?last?.id:j && failedComponent(run.effects.find(c=>c.id===j.check))?j.check:undefined;
 	const from=parent?.assembly??j?.commit,used=new Set(run.adoptions?.flatMap(a=>a.rollout && a.decision?.status==="answered"?[a.rollout.blob]:[]));
 	const goal=checkReceipt(run.effects.find(e=>e.id===run.goal?.check));

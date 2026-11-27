@@ -1,8 +1,12 @@
+import { currentCheck } from "./eligibility.mjs";
 import assert from "node:assert/strict";
 import { pairedWork } from "../test/install.mjs";
 import { guideReplay, launchDescription, launchPlan, observed, recipient } from "../test/portable.mjs";
-import { chmodSync, cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { chmodSync, cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { execFile, spawnSync } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
+import { setTimeout as sleep } from "node:timers/promises";
+import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -14,7 +18,6 @@ import { factory, git, put, recoveryClock, scriptedInspections } from "../test/f
 import { activation, failedFinalDiagnostic, submittedGrant } from "../test/ownership.mjs";
 import { directory, historicalFactory, historicalRuntime } from "../test/legacy-readers.mjs";
 import { rolloutPlan } from "./rollout.mjs";
-import { currentCheck } from "./reservation.mjs";
 import { claimOutcome } from "./outcomes.mjs";
 
 const source=".foundry/catalog.json",spec="brief",component="unit.mjs",goal="goal.mjs",product="product.mjs";
@@ -197,7 +200,7 @@ for(const intrude of [false,true])test(`writer-drafted multi-owner correction / 
 	assert.deepEqual(end.inspections?.filter(i=>i.candidate===proof.commit).map(i=>[i.grain,i.state]).sort(),[["controls","approved"],["selector","approved"]]);
 });
 
-for(const outcome of ["pass","withheld","decline","stale","component withheld","foreground retry","foreground pair","foreground fails","review changes","runner refused","previous owned output","pre-journal output","pre-journal without passing witness"])test(`exact harness rollout from a second failed amendment / ${outcome}`,async t=>{
+for(const outcome of ["pass","withheld","decline","stale","target moved before claim","prefix missing before claim","prefix missing during export","prefix missing after preparation","component withheld","foreground retry","foreground pair","foreground fails","review changes","runner refused","previous owned output","pre-journal output","pre-journal without passing witness"])test(`exact harness rollout from a second failed amendment / ${outcome}`,async t=>{
 	const foreground=outcome.startsWith("foreground"),pair=outcome==="foreground pair",declaration=`${root}/declared.sh`;
 	const previous=outcome==="previous owned output",preJournal=outcome.startsWith("pre-journal"),failedWitness=outcome==="pre-journal without passing witness";
 	const {f,run,db,read,publish,revision,old,publisher}=await failedAssembly(t,{consumer:!previous && !preJournal,rollout:true,preJournal,failedWitness,before:foreground && outcome!=="foreground retry"?89:undefined});
@@ -208,12 +211,15 @@ for(const outcome of ["pass","withheld","decline","stale","component withheld","
 		assert.ok(read().nodes.selector.candidate===read().join?.commit && read().nodes.selector.state==="published" && !read().nodes.selector.worker);
 	}
 	const prior=read().join,failed=read().effects.find(c=>c.id===prior?.check);assert.ok(prior && failed?.kind==="product");
-	const hook=".foundry/prepare-components",program=`#!/bin/sh\nset -eu\ntest -z "\${CATALOG_ALLOW_FOREGROUND-}" && cp ${file} "$1/entry"\n`;
+	const duringBuild=outcome==="prefix missing after preparation",duringExport=outcome==="prefix missing during export";
+	const hook=".foundry/prepare-components",program=`#!/bin/sh\nset -eu\ntest -z "\${CATALOG_ALLOW_FOREGROUND-}" && cp ${file} "$1/entry"\n`+
+		(duringBuild?'if test -n "${CATALOG_TEST_GATE-}"; then touch "$CATALOG_TEST_GATE.ready"; while test ! -e "$CATALOG_TEST_GATE.release"; do sleep 0.02; done; fi\n':"")+
+		(duringExport?'if test -n "${FOUNDRY_TEST_EXPORT_GATE-}"; then touch "$FOUNDRY_TEST_EXPORT_GATE.hook"; fi\n':"");
 	const patch=edit(file,previous?"keep:first":"keep","keep:local")+edit(retainedFile,"connected","retained")+edit(helper,"current",pair?"declared lane pair":foreground?"declared lane":outcome==="component withheld"?"foreground required":"new harness input")+
 		(foreground?(pair?[declaration,"unit/controls/declared.sh"]:[declaration]).map(p=>`diff --git a/${p} b/${p}\nnew file mode 100755\n--- /dev/null\n+++ b/${p}\n@@ -0,0 +1,2 @@\n+#!/bin/sh\n+./${root}/lane --require-foreground\n`).join("")+
 			`diff --git a/${root}/lane b/${root}/lane\nnew file mode 100755\n--- /dev/null\n+++ b/${root}/lane\n@@ -0,0 +1,3 @@\n+#!/bin/sh\n+test "$1" = --require-foreground && test "\${CATALOG_ALLOW_FOREGROUND-}" = 1 && exit ${outcome==="foreground fails"?1:0}\n+echo 'Set CATALOG_ALLOW_FOREGROUND=1 only on an authorized desktop.' >&2; exit 2\n`:"")+
 		`diff --git a/.foundry/accept.mjs b/.foundry/accept.mjs\n--- a/.foundry/accept.mjs\n+++ b/.foundry/accept.mjs\n@@ -1 +1 @@\n-export const accepts=()=>false;\n+export const accepts=()=>${outcome==="withheld"?"false":"true"};\n`+
-		`diff --git a/${hook} b/${hook}\nnew file mode 100755\n--- /dev/null\n+++ b/${hook}\n@@ -0,0 +1,3 @@\n${program.trimEnd().split("\n").map(l=>"+"+l).join("\n")}\n`;
+		`diff --git a/${hook} b/${hook}\nnew file mode 100755\n--- /dev/null\n+++ b/${hook}\n@@ -0,0 +1,${program.trimEnd().split("\n").length} @@\n${program.trimEnd().split("\n").map(l=>"+"+l).join("\n")}\n`;
 	const candidate=stagePatch(f.root,prior.commit,revision,patch);
 	const full=git(f.root,"diff","--full-index",prior.commit,candidate)+"\n";
 	const bad=await publish(full.replace(/^index ([a-f0-9]+)\.\./m,(_,oid)=>`index ${"a".repeat(oid.length)}..`),["unit"]);
@@ -244,11 +250,44 @@ for(const outcome of ["pass","withheld","decline","stale","component withheld","
 	publisher.close();let forms=0;
 	const inspector=scriptedInspections(f.root);
 	const initialRuntime=foreground && outcome!=="foreground retry"?await historicalRuntime(t,89):createRuntime;
+	/** @type {{id:string,status:number|null,diagnostic:string}[]} */ const challenged=[];
 	const owner=f.runtime(f.root,{...inspector,inspectionState:async id=>{
 		const reply=await inspector.inspectionState(id);
 		return outcome==="review changes"?{...reply,result:{...reply.result,outcome:"changes",summary:"Assertion removed"}}:reply;
-	},execute:async(tool,args,key)=>outcome==="runner refused" && tool==="bash"?{resultType:"denied"}:
-		pair && tool==="bash" && read().effects.some(e=>e.tool==="bash" && e.lane && args.shellId===e.args.shellId)?{resultType:"unconfirmed"}:f.execute(tool,args,key),
+	},execute:async(tool,args,key)=>{
+		if(tool!=="bash")return f.execute(tool,args,key);
+		if(outcome==="runner refused")return {resultType:"denied"};
+		const checks=read().effects.filter(e=>e.kind==="component" && e.rollout),idx=checks.findIndex(e=>e.args.shellId===args.shellId);
+		if(outcome==="target moved before claim" && idx===0 || outcome.startsWith("prefix missing") && idx===1){
+			const spool=new DatabaseSync(db.file+".outcomes");
+			const gate=join(f.root,"..","prepared"),keyFile=join(f.root,"..","challenged-keys"),command=String(args.command);
+			const env={...process.env,NODE_OPTIONS:`--import=${new URL("../test/runner-claim-gate.mjs",import.meta.url).href}`,
+				FOUNDRY_TEST_KEY_COUNT:keyFile,...(duringBuild && {CATALOG_TEST_GATE:gate}),...(duringExport && {FOUNDRY_TEST_EXPORT_GATE:gate})};
+			const child=duringBuild || duringExport?promisify(execFile)("/bin/sh",["-c",command],{cwd:f.root,env,timeout:30000})
+				.then(r=>({status:0,diagnostic:r.stderr}),error=>({status:Number(error.code),diagnostic:String(error.stderr??error)})):undefined;
+			try{
+				if(child){
+					const deadline=Date.now()+15000;
+					while(!existsSync(gate+".ready")){assert.ok(Date.now()<deadline,"the original preparation did not reach its barrier");await sleep(10);}
+					assert.ok(read().effects.find(e=>e.id===checks[idx].id)?.runnerClaim);
+				}
+				const prefix=checks[0],row=idx && spool.prepare("SELECT document,signature FROM outcomes WHERE run=? AND effect=?").get(run,prefix.id);
+				if(idx){assert.ok(row && prefix.receipt?.exit===0);spool.prepare("DELETE FROM outcomes WHERE run=? AND effect=?").run(run,prefix.id);}
+				else{put(f.root,"operator","changed since issue");git(f.root,"commit","-qam","Move synthetic target after issue");}
+				try{
+					if(child){
+						writeFileSync(gate+".release","");challenged.push({id:checks[idx].id,...await child});
+					}else{
+						const result=spawnSync("/bin/sh",["-c",command],{cwd:f.root,encoding:"utf8",timeout:20000,env});
+						challenged.push({id:checks[idx].id,status:result.status,diagnostic:result.stderr});
+					}
+				}finally{if(row)spool.prepare("INSERT INTO outcomes(run,effect,document,signature) VALUES(?,?,?,?)").run(run,prefix.id,row.document,row.signature);}
+			}finally{spool.close();if(child){writeFileSync(gate+".release","");await child;}}
+			return {resultType:"unconfirmed"};
+		}
+		if(pair && read().effects.some(e=>e.tool==="bash" && e.lane && args.shellId===e.args.shellId))return {resultType:"unconfirmed"};
+		return f.execute(tool,args,key);
+	},
 		autoConfirm:async()=>true,confirmProposal:async msg=>{
 		forms++;assert.ok([prior.commit,revision,failed.id,blob,hook,retainedFile,"100755","selector","controls"].every(s=>msg.includes(s)),msg);
 		assert.deepEqual(read().effects,stopped.effects);
@@ -265,6 +304,24 @@ for(const outcome of ["pass","withheld","decline","stale","component withheld","
 		return;
 	}
 	await owner.operation("rollout",args,"owner");await owner.flush();
+	if(outcome.endsWith("before claim") || duringBuild || duringExport){
+		assert.equal(challenged.length,1);
+		const [result]=challenged,c=read().effects.find(e=>e.id===result.id);assert.ok(c?.tool==="bash" && c.callId);
+		const keys=join(f.root,"..","challenged-keys");
+		assert.equal(existsSync(keys+".evaluators"),false,"the protected evaluator must not start");
+		if(duringBuild || duringExport){
+			assert.equal(result.status,0,result.diagnostic);assert.equal(readFileSync(keys,"utf8"),"key\n");assert.ok(c.runnerClaim);
+			assert.equal(c.receipt?.exit,null);assert.equal(c.receipt?.inputs,undefined);db.verifySigned(run,c);
+			if(duringExport)assert.equal(existsSync(join(f.root,"..","prepared.hook")),false,"do not launch the preparation hook after its predecessor evidence was withdrawn during export");
+		}else{
+			assert.equal(existsSync(keys),false,"refuse before generating a key, not just before committing it");
+			assert.equal(c.runnerClaim,undefined);assert.equal(c.runnerStarted,undefined);assert.equal(c.receipt,undefined);
+			assert.equal(result.status,1,result.diagnostic);assert.match(result.diagnostic,/stale|target|exclusive|obligation/i);
+		}
+		db.verifySigned(run,failed);
+		if(outcome.startsWith("prefix")){const prefix=read().effects.find(e=>e.kind==="component" && e.rollout);assert.ok(prefix?.kind==="component");db.verifySigned(run,prefix);}
+		assert.deepEqual(read().nodes,stopped.nodes);assert.deepEqual(read().join,prior);return;
+	}
 	let current=owner;
 	if(foreground){
 		const held=read(),c=held.effects.find(e=>e.kind==="component" && e.rollout && e.receipt?.exit===2);assert.ok(c?.kind==="component" && c.commit);

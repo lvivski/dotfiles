@@ -101,6 +101,21 @@ test("cleanup rechecks every root in the selected qualified writer capture", asy
 	assert.throws(()=>archiveCheck(root,"recheck",input),/Unexpected path/);
 });
 
+test("status and handoff agree when a stamped goal still carries a hold",async t=>{
+	const {state,h,root}=await qualify(t,true);
+	const db=openDatabase(root);t.after(()=>db.close());
+	const check=state.goal?.check,product=state.products.at(-1);assert.ok(check && product?.qualifiedAt);
+	db.planAndSwap(run,r=>{r.blocker="Awaiting original evidence";});
+	const saved=db.read(run)??assert.fail(),view=status(saved,"owner",undefined);
+	assert.equal(view.handoff,null);
+	assert.equal(view.qualified,null,"a timestamp cannot advertise a release the same owner cannot hand off");
+	assert.equal(view.checkpoint,h.commit);
+	assert.deepEqual(saved.effects,state.effects);
+	for(const id of [check,product.check]){
+		const e=saved.effects.find(e=>e.id===id);assert.ok(e?.tool==="bash");db.verifySigned(run,e);
+	}
+});
+
 test("goal: only the accepted exact product reaches the owner; no inferred authority over delegated work", async t => {
 	const note=randomUUID(),prior=process.env.FOUNDRY_TEST_HANDOFF_NOTE;
 	process.env.FOUNDRY_TEST_HANDOFF_NOTE=note;

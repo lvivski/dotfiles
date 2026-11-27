@@ -1,3 +1,4 @@
+import { awaitingReply, unissued } from "./dispatch.mjs";
 import { changes, verifyJoinedInputs } from "./assembly.mjs";
 import { working } from "./assignment.mjs";
 import { proposedFootprint } from "./diagnostics.mjs";
@@ -8,13 +9,14 @@ import { isolationBasis, isolationSeal } from "./isolation.mjs";
 import { admitted, current, reserveCheck } from "./native.mjs";
 import { currentPair } from "./pairing.mjs";
 import { displacements, historicalGrant, validRestoration } from "./partition.mjs";
-import { waiting, writerInputs } from "./plan.mjs";
+import { writerInputs } from "./lineage.mjs";
+import { waiting } from "./plan.mjs";
 import { changedFiles, commitAt, outside, retain, stageCheckpoint, verifyContracts } from "./product.mjs";
 import { publishedComponent } from "./publication.mjs";
-import { awaitingReply, unissued } from "./reservation.mjs";
-import { comparison, questions } from "./reviews.mjs";
+import { comparison } from "./charter.mjs";
+import { questions } from "./reviews.mjs";
 import { grant } from "./transfer.mjs";
-import { digest, fail, fields, name, ownership, record, roots } from "./values.mjs";
+import { digest, fail, fields, name, ownership, pinnedSelection, record, roots } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @typedef {import("./model.js").NativeCall} Call */
@@ -126,14 +128,13 @@ export function prepareCheckpoint(cwd,run,actor,a,verify) {
 			retainer:pair.pair.retainer,candidate:pair.pair.candidate,component:pair.pair.component};
 		return {observer,checkpoint,goal,target,hold,selected,evidence,checks,assembly:commit,basis:isolationBasis(r,"",selected),ownership,outputs,delta};
 	}
-	const choice=select(run);
+	const {subject:choice,revalidate}=pinnedSelection(run,select,request?"The selected subset or its original inputs changed":"Independent checkpoint approval changed");
 	if(request){
 		const body={observer,checkpoint,goal,target,selected,checks:choice.checks},id=digest(body);
 		return {consent:/** @type {const} */("satisfied"),prompt:"Request scoped read-only evidence from the original component writers. No checkpoint is authorized.",
 			/** @param {Run} r */
 			apply(r){
-				if(digest(select(r))!==digest(choice))fail("stale_assignment","The selected subset or its original inputs changed");
-				for(const check of choice.checks){
+				for(const check of revalidate(r).checks){
 					const c=r.effects.find(e=>e.id===check),n=c?.grain && r.nodes[c.grain];
 					if(!n || !n.worker || !n.token)fail("missing_writer",`No bound writer can supply footprint ${check}. Do not invent its inputs.`);
 				}
@@ -146,15 +147,12 @@ export function prepareCheckpoint(cwd,run,actor,a,verify) {
 		`Check exactly ${choice.assembly} with this delta and these component pins; a fresh passing goal cannot qualify it:\n${JSON.stringify({hold:choice.hold,delta:choice.delta,selected,evidence:choice.evidence})}`,
 		/** @param {Run} r */
 		apply(r) {
-			if (digest(select(r))!==digest(choice)) fail("stale_assignment","Independent checkpoint approval changed");
-			const {ownership,outputs,delta,checks,...approval}=choice;
+			const {ownership,outputs,delta,checks,...approval}=revalidate(r);
 			retain(cwd,choice.assembly);
-			const product=reserveCheck(r,actor,cwd,choice.assembly,r.policy.productCheck);
-			const s=r.independent={...approval,ownership,product};
-			const e=r.effects.at(-1);
-			if (e?.kind!=="product") throw Error("Missing independent product reservation");
-			e.isolation=isolationSeal(s);
-			r.join={check:product,commit:choice.assembly,target,ownership,outputs};
+			const product=reserveCheck(r,actor,cwd,choice.assembly,r.policy.productCheck,{kind:"product"});
+			const s=r.independent={...approval,ownership,product:product.id};
+			product.isolation=isolationSeal(s);
+			r.join={check:product.id,commit:choice.assembly,target,ownership,outputs};
 			return ()=>commitAt(cwd,r.policy.target)===target;
 		}};
 }

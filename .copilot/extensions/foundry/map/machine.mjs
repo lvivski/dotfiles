@@ -1,4 +1,4 @@
-export {};
+import { bindTabs } from "./tabs.mjs";
 /** @typedef {import("./statechart.mjs").Model} Model */
 /** @typedef {import("./statechart.mjs").Transition} Transition */
 /** @param {string} id */
@@ -181,14 +181,7 @@ async function studio({machines,groups}) {
 		}
 		pane.scrollTop=scroll;
 	}
-	for(const t of tabs){
-		const b=el(`tab-${t}`);
-		b.onclick=()=>{tab=t;pane.scrollTop=0;render();};
-		b.onkeydown=e=>{const i=tabs.indexOf(t);
-			const next=e.key==="Home"?0:e.key==="End"?tabs.length-1:e.key==="ArrowRight"?(i+1)%tabs.length:e.key==="ArrowLeft"?(i+tabs.length-1)%tabs.length:-1;
-			if(next<0)return;e.preventDefault();const target=el(`tab-${tabs[next]}`);target.click();target.focus();
-		};
-	}
+	bindTabs(tabs,el,t=>{tab=t;pane.scrollTop=0;render();});
 	el("smaller").onclick=()=>cam.zoom(.8);el("larger").onclick=()=>cam.zoom(1.25);el("fit").onclick=()=>cam.fit();
 	el("locate").onclick=()=>{const p=drawing?.point(region,session().current().states[region]);if(p)cam.locate(p);};
 	function showInspector(open=el("inspector-panel").hidden) {

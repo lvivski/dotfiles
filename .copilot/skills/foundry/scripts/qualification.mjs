@@ -10,11 +10,11 @@ import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual as same } from "node:util";
 import { entries, env, git, gitArgs, verifyTree } from "./git-files.mjs";
 import { carrierEntries, copyPrepared, describeDisclosure, materializePlan, replayDestination } from "./materialize.mjs";
-import { checkedOwnership, inputCommits, validInputs } from "./recipe.mjs";
+import { checkedOwnership, inputCommits, oid as validOid, validInputs, validName } from "./recipe.mjs";
 
 const cwd=process.cwd(),self=fileURLToPath(import.meta.url);
 const refuse=why=>{throw Error(why);};
-const oid=id=>typeof id==="string" && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(id)?id:refuse("Expected a full object ID");
+const oid=id=>validOid(id)?id:refuse("Expected a full object ID");
 const command=(root,args,input)=>git(root,args,input,undefined,Infinity,0);
 const text=(root,args,input)=>command(root,args,input).toString().trimEnd();
 const lines=s=>s?s.split("\n").sort():[];
@@ -37,7 +37,7 @@ function record(r,history){
 	if(!v5 && !history)refuse("Historical object transfer only: explicitly select --history; this record has no replay recipes");
 	const ids=r.outputs.map(o=>o.id),pins=[r.commit,r.target.commit,r.contract.commit],components=product.components;
 	for(const id of [r.contract.activation,product.evaluatorRevision,goal.evaluatorRevision])if(id!==undefined)pins.push(oid(id));
-	if(new Set(ids).size!==ids.length || ids.some(id=>typeof id!=="string" || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id) || Object.hasOwn(Object.prototype,id)) ||
+	if(new Set(ids).size!==ids.length || ids.some(id=>!validName(id)) ||
 		r.ownership!==undefined && (!r.ownership || !idsEqual(ids,Object.keys(r.ownership))) || components!==undefined &&
 		(!r.contract.activation || !components || Array.isArray(components) || !idsEqual(ids,Object.keys(components)) || r.outputs.some(o=>components[o.id]?.exit!==0 || components[o.id].check!==o.receipt?.check)))
 		refuse("Included owners and joined component observations disagree");

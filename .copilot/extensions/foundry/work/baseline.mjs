@@ -2,16 +2,15 @@ import { checkReceipt, generationOf, goalReceipt, missingInput, productPin } fro
 import { availableReservations } from "./capacity.mjs";
 import { continuationPrompt, stoppedPins } from "./continuation.mjs";
 import { continuationNotice } from "./reference.mjs";
-import { disabledRoute, journal } from "./dispatch.mjs";
+import { awaitingReply, unissued } from "./dispatch.mjs";
 import { pendingGoal, releaseFacts } from "./facts.mjs";
 import { frozenCheckpoint } from "./goal.mjs";
 import { reserveWriter } from "./graph.mjs";
 import { admitted } from "./native.mjs";
 import { partitionConflict } from "./partition.mjs";
-import { originalAttempt, validateNodes } from "./plan.mjs";
+import { originalAttempt, validateNodes } from "./lineage.mjs";
 import { commitAt, describeInventory, entries, inventory, verifyContracts } from "./product.mjs";
-import { awaitingReply, unissued } from "./reservation.mjs";
-import { digest, fail, FoundryError, members, names, roots as scopePaths } from "./values.mjs";
+import { digest, fail, members, names, pinnedSelection, roots as scopePaths } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @typedef {(e:import("./model.js").NativeCall)=>void} Verify */
@@ -82,7 +81,8 @@ function manifest(cwd, run, actor, ids, inspect,verify,reserved=false) {
 
 /** @param {string} cwd @param {Run} run @param {string} actor @param {unknown} selections @param {boolean} inspect @param {Verify} verify */
 export function prepareBaselines(cwd, run, actor, selections, inspect,verify) {
-	const ids = names(selections, "blocked assignment"), before = manifest(cwd, run, actor, ids, inspect,verify);
+	const ids=names(selections,"blocked assignment");
+	const {subject:before,revalidate}=pinnedSelection(run,r=>manifest(cwd,r,actor,ids,inspect,verify),"The approved assignments or baseline pins changed");
 	return {
 		consent:inspect?/** @type {const} */("policy"):/** @type {const} */("native"),
 		wake:inspect?/** @type {const} */("none"):/** @type {const} */("recover"),
@@ -96,15 +96,13 @@ export function prepareBaselines(cwd, run, actor, selections, inspect,verify) {
 		/** @param {Run} live */
 		apply(live) {
 			if (commitAt(cwd,live.policy.target)!==before[0].target) fail("stale_assignment","The current goal target moved during baseline approval");
-			const fresh = manifest(cwd, live, actor, ids, inspect,verify);
-			if (digest(fresh) !== digest(before)) fail("stale_assignment", "The approved assignments or baseline pins changed");
+			const fresh=revalidate(live);
 			if (inspect) {
 				for (const row of fresh) row.launch.readGrant = row.baseline;
 			} else {
 				for (const row of fresh){
 					const n=live.nodes[row.id],prior=structuredClone(n);
-					reserveWriter(cwd,live,n,row.inputs,row.revision,actor,undefined,row.baseline);
-					const notice=live.effects.at(-1);
+					const notice=reserveWriter(cwd,live,n,row.inputs,row.revision,actor,undefined,row.baseline);
 					if(notice?.kind!=="repair" || notice.grain!==row.id || notice.token!==n.token || !notice.baseline)
 						throw Error("Missing same-writer baseline notice");
 					notice.baselineStop=prior;
@@ -125,23 +123,16 @@ export function prepareBaselines(cwd, run, actor, selections, inspect,verify) {
  * assembly just as on the form, without purchasing another reservation.
  * @param {string} cwd @param {Run} run @param {import("./model.js").NativeCall} e @param {Verify} verify */
 export function baselineTip(cwd,run,e,verify){
-	const prior=e.baselineStop,n=e.grain && run.nodes[e.grain];
-	if(!prior || !e.continuation || !n || n.token!==e.token || n.state!=="writing" || e.permissionHold ||
-		!(e.state==="ready" && !e.callId || e.state==="ordinary" && e.callId && e.error===disabledRoute))return;
-	try {
-		if(!run.active || run.effects.some(x=>x.permissionHold && (x.issuer===run.owner || x.issuer===n.worker)) ||
-			run.inspections?.some(i=>i.permissionHold && (i.issuer===run.owner || i.issuer===n.worker)))return;
-		if(commitAt(cwd,run.policy.target)!==e.continuation.target)fail("stale_assignment","The target changed before delivery of the approved charter continuation");
-		if(run.conflict || run.blocker || run.independent || run.join && Object.hasOwn(run.join.outputs,n.grain.id))return;
-		const original={...run,nodes:{...run.nodes,[n.grain.id]:prior},effects:run.effects.filter(x=>x!==e)};
-		const [row]=manifest(cwd,original,run.owner,[n.grain.id],false,verify,true);
-		if(digest(row.continuation??null)!==digest(e.continuation) || digest(row.baseline)!==digest(e.baseline))
-			fail("stale_assignment","The approved charter pair or baseline changed before delivery");
-		return row.target;
-	} catch(error){
-		if(!(error instanceof FoundryError))throw error;
-		if(["dispatch_held","paused","deadline","contract_hold"].includes(error.code))return;
-		journal(e,e.state==="ordinary"?"withdraw-input":"withdraw");
-		run.nodes[n.grain.id]=structuredClone(prior);
-	}
+	const prior=e.baselineStop;
+	if(!prior || !e.continuation)return;
+	const {id}=prior.grain;
+	if(!run.active || run.effects.some(x=>x.permissionHold && (x.issuer===run.owner || x.issuer===prior.worker)) ||
+		run.inspections?.some(i=>i.permissionHold && (i.issuer===run.owner || i.issuer===prior.worker)))return;
+	if(commitAt(cwd,run.policy.target)!==e.continuation.target)fail("stale_assignment","The target changed before delivery of the approved charter continuation");
+	if(run.conflict || run.blocker || run.independent || run.join && Object.hasOwn(run.join.outputs,id))return;
+	const original={...run,nodes:{...run.nodes,[id]:prior},effects:run.effects.filter(x=>x!==e)};
+	const [row]=manifest(cwd,original,run.owner,[id],false,verify,true);
+	if(digest(row.continuation??null)!==digest(e.continuation) || digest(row.baseline)!==digest(e.baseline))
+		fail("stale_assignment","The approved charter pair or baseline changed before delivery");
+	return row.target;
 }

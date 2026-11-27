@@ -1,8 +1,8 @@
+import { verifyFixedGrant } from "./brief.mjs";
 import { verifyRepairInputs } from "./assembly.mjs";
 import { working } from "./assignment.mjs";
-import { verifyFixedGrant } from "./contract.mjs";
 import { productPin } from "./evidence.mjs";
-import { originalScope, stalePins, validateNodes, writerInputs, writerVersion } from "./plan.mjs";
+import { originalScope, stalePins, validateNodes, writerInputs, writerVersion } from "./lineage.mjs";
 import { changedFiles, commitAt, regularFiles } from "./product.mjs";
 import { fail, roots, scopeLabel, text } from "./values.mjs";
 

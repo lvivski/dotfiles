@@ -1,9 +1,19 @@
+import { isUtf8 } from "node:buffer";
 import { FoundryError } from "./values.mjs";
 import { signals } from "./signals.mjs";
 
 /** @typedef {{kind:"component"} | {kind:"product",outputs:string[]} | {kind:"goal",squads:string[]}} Evaluation */
 /** @typedef {Pick<import("./model.js").Receipt,"exit"|"output"|"failure"|"repair"|"squad"|"blockers">} Fields */
 /** @typedef {{status:number|null,signal:string|null,error?:Error,stdout:Buffer|null,stderr:Buffer|null}} ProcessResult */
+
+/** A process exit alone cannot identify which assertion ran. No stdout diagnostic from a product is a control.
+ * @param {Buffer|null} stdout @param {number|null} exit */
+export function controlObservation(stdout,exit){
+	if(!stdout || !isUtf8(stdout) || !(exit===0 || exit===1))return;
+	let v;try{v=JSON.parse(stdout.toString());}catch(error){if(error instanceof SyntaxError)return;throw error;}
+	if(v && typeof v==="object" && Object.keys(v).length===2 && typeof v.assertion==="string" && /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(v.assertion) && v.matched===(exit===0))
+		return {assertion:v.assertion,matched:exit===0};
+}
 
 /** @param {Evaluation} check @param {ProcessResult} result @returns {{fields:Fields, feedback?:Buffer}} */
 export function interpret(check, result) {

@@ -1,13 +1,13 @@
+import { verifyFixedGrant } from "./brief.mjs";
 import { materialize } from "./reference.mjs";
 import { isDeepStrictEqual } from "node:util";
 import { admitted, boundWriter, reserveNotice } from "./native.mjs";
-import { owns } from "./plan.mjs";
+import { owns } from "./lineage.mjs";
 import { responseSource } from "./supplier.mjs";
-import { verifyFixedGrant } from "./contract.mjs";
 import { touchesCut } from "./transfer.mjs";
 import { writerRoot } from "./workspace.mjs";
 import { commitAt, generationRoot, git, pinFile, regularFiles } from "./product.mjs";
-import { checkReceipt, productPin } from "./evidence.mjs";
+import { checkReceipt, latestRepair, productPin } from "./evidence.mjs";
 import { covers, fail, name, names, relative, text, roots as scopePaths } from "./values.mjs";
 
 /** @typedef {import("./model.js").Artifact} Artifact */
@@ -66,8 +66,8 @@ export function preparePublication(cwd, run, actor, args,verify) {
 		const node = boundWriter(current, actor, text(args.token, "assignment token"));
 		const source=response(current,node);
 		if (node.state !== "writing" && !(recipient && source?.component)) fail("stale_assignment", "This assignment is no longer writing");
-		const notice=inputNotice(current,node);
-		if (notice && notice.state!=="done") fail("dispatch_held","Await confirmed delivery of the selected reference before publishing");
+		const notice=latestRepair(current,node);
+		if (notice?.input && notice.state!=="done") fail("dispatch_held","Await confirmed delivery of the selected reference before publishing");
 		if (!covers(node.grain.directory, file) || touchesCut(node.retained ?? [],file)) fail("charter_scope", "File is outside the publisher's assignment");
 		return {generation:text(node.generation, "generation"),source};
 	}
@@ -109,19 +109,13 @@ export function preparePublication(cwd, run, actor, args,verify) {
 export const offered = (a, n) => (!a.source || a.source.consumer===n.grain.id && a.source.receiver===n.worker) &&
 	scopePaths(n.grain.directory).some(dir => covers(a.to,dir));
 
-/** @param {Run} run @param {Node} n */
-export function inputNotice(run,n) {
-	const e=run.effects.findLast(e=>e.kind==="repair" && e.token===n.token && e.grain===n.grain.id);
-	return e?.kind==="repair" && e.input ? e : undefined;
-}
-
 /** @param {Run} run @param {Node} node @param {number} [since] */
 const offersFor = (run, node, since = 0) => run.artifacts?.slice(since).filter(a => offered(a, node)) ?? [];
 
 /** @param {Run} run @param {Node} node @param {Record<string,unknown>} args */
 export function reportedReferences(run, node, args) {
 	const allowed = new Set(offersFor(run, node).map(a => a.blob));
-	const supplied=inputNotice(run,node);
+	const supplied=latestRepair(run,node);
 	if(supplied?.state==="done" && supplied.input?.dependency)allowed.add(supplied.input.blob);
 	/** @type {import("./model.js").ArtifactReport} */ const report = {};
 	for (const key of /** @type {const} */ (["usedArtifacts", "comparedArtifacts"])) {
@@ -138,7 +132,7 @@ export function takeArtifactBrief(run, n, issuer) {
 	let items = offersFor(run, n, n.artifactCursor);
 	if (!items.length || issuer && issuer !== run.owner && issuer !== n.worker && items.some(a => a.publisher !== issuer)) return "";
 	n.artifactCursor = run.artifacts?.length;
-	const supplied=inputNotice(run,n)?.input?.blob;
+	const supplied=latestRepair(run,n)?.input?.blob;
 	if (supplied) items=items.filter(a=>a.blob!==supplied);
 	if (!items.length) return "";
 	return ["Read-only reference material (not a change in scope or evidence of comparison). From your worktree, extract the selected version and inspect the resulting file:",

@@ -4,6 +4,7 @@
  * @satisfies {Record<string,{writers:"eligible"|"repair"|"none", scoped:boolean, join:"product"|"changed"|"none", discover:boolean}>} */
 const modes = {
 	open:                      {writers:"eligible", scoped:false, join:"product", discover:true},
+	discovery:                 {writers:"none",     scoped:false, join:"none",    discover:true},
 	checkpoint:                {writers:"eligible", scoped:true,  join:"none",    discover:true},
 	"repaired-checkpoint":     {writers:"eligible", scoped:true,  join:"changed", discover:true},
 	"join-only":               {writers:"none",     scoped:false, join:"product", discover:false},

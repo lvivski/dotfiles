@@ -2,14 +2,12 @@ import { checkedOverlay, pinnedChecker, preparationHook, resolveInputs } from ".
 import { inputCommits } from "../../../skills/foundry/scripts/recipe.mjs";
 import { certifiedTest, controlOverlay, repairStop } from "./calibration.mjs";
 import { evaluatorOverlay } from "./contract.mjs";
-import { mixedVerification, verificationSource } from "./evidence.mjs";
+import { changeOffer, mixedVerification, verificationSource } from "./evidence.mjs";
 import { priorGoal, schedulingInput } from "./feedback.mjs";
 import { harnessFiles } from "./harness.mjs";
 import { checkUse, componentScope, described, productScope } from "./inputs.mjs";
 import { isolationSeal } from "./isolation.mjs";
 import { changedBlobs, git, regularFiles, retain, rolloutFiles, verifyContracts } from "./product.mjs";
-import { replacementOffer } from "./replacement.mjs";
-import { rolloutOffer } from "./campaign.mjs";
 import { grant as ownership } from "./transfer.mjs";
 import { digest, fail, text } from "./values.mjs";
 
@@ -31,10 +29,10 @@ export function describeCheck(cwd,run,e){
 	const evaluation=repair || scope.kind==="component"?/** @type {const} */({kind:"component"}):
 		scope.kind==="product"?/** @type {const} */({kind:"product",outputs:scope.outputs.map(o=>o.id)}):
 			/** @type {const} */({kind:"goal",squads:run.policy.squads.map(s=>s.id)});
-	const migration=e.kind==="product" && mixedVerification(run,verificationSource(run,e.id)),control=k&&repair&&controlOverlay(run,repair,k.role);
-	const amended=migration && migration.amendments?.find(s=>s.recheck===verificationSource(run,e.id));
-	const replacementOwner=replacementOffer(run,e),offer=rolloutOffer(run,e)??(amended && run.adoptions?.find(a=>a.id===amended.proposal));
-	const patch=replacementOwner?.patch??(offer && offer.patch),rollout=offer && offer.rollout,from=amended && amended.prior.commit || replacementOwner && run.join?.commit;
+	const joined=e.kind==="product"?verificationSource(run,e.id):undefined,migration=joined?mixedVerification(run,joined):undefined;
+	const amended=migration?.amendments?.find(s=>s.recheck===joined),control=k&&repair&&controlOverlay(run,repair,k.role);
+	const offer=changeOffer(run,e)??(amended && run.adoptions?.find(a=>a.id===amended.proposal));
+	const patch=offer?.patch,rollout=offer?.rollout,from=amended?.prior.commit??(e.replacement && run.join?.commit);
 	if(rollout && digest(rolloutFiles(cwd,rollout.from,commit))!==digest(rollout.files))
 		fail("invalid_patch","The assembly differs from the complete approved harness rollout");
 	if(!rollout && from && (!patch || digest(changedBlobs(cwd,from,commit))!==digest(patch.files)))

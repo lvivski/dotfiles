@@ -257,8 +257,32 @@ export function openDatabase(cwd, file = ledgerPath(cwd), create = false, checkS
 			fail("ownership_transition","Mutation conflicts with the approved non-release checkpoint");
 		return writeDocument(run,before.base.inspections===undefined?"legacy-no-review":"required");
 	}
+	/** Only return the value from the successful private plan. Even when an observation
+	 * changes no bytes, its native ticket must survive the same revision check.
+	 * @template T @param {string} id @param {(run:Run)=>{value:T,guard?:(()=>boolean)|void,confirm?:boolean}} plan */
+	function commitPlan(id,plan){
+		for(;;){
+			const before=required(id),run=draft(before),{value,guard,confirm}=plan(run);
+			prepareChecks?.(cwd,run,before.run.effects.length);
+			const next=changed(before,run);
+			if(next===undefined && !guard && !confirm)return value;
+			if(write(()=>stamp(id).stamp===before.stamp && (!guard || guard()) && (next===undefined ||
+				db.prepare("UPDATE runs SET document=?,checksum=? WHERE id=? AND checksum=?").run(next,checksum(next),id,before.sum).changes===1)))return value;
+		}
+	}
 	return {
 		file,
+		/** @param {string} id @param {(run:Run)=>(()=>boolean)|void} plan */
+		planAndSwap(id,plan){return commitPlan(id,run=>({value:run,guard:plan(run)}));},
+		/** Only the committed plan can hand its caller a native ticket. A lost CAS,
+		 * withdrawn selection or failed guard cannot leak the earlier draft's ticket.
+		 * @template T @param {string} id @param {(run:Run)=>{value:T,guard?:()=>boolean}|undefined} select */
+		reserve(id,select){
+			return commitPlan(id,run=>{
+				const chosen=select(run);
+				return {value:chosen?.value,guard:chosen?.guard,confirm:chosen!==undefined};
+			});
+		},
 		metrics:()=>({...metrics}),
 		/** Inside the exclusive claim transaction. Only the holder can publish; publishing
 		 * never reads or mutates the run document. @param {string} run @param {import("./model.js").Effect} effect */
@@ -316,19 +340,6 @@ export function openDatabase(cwd, file = ledgerPath(cwd), create = false, checkS
 			return db.prepare(`SELECT id FROM runs WHERE owner=? OR EXISTS (
 				SELECT 1 FROM json_each(document,'$.effects') WHERE json_extract(value,'$.nativeId')=?
 			) ORDER BY id`).all(actor, actor).map(r => String(r.id));
-		},
-		/** The planner may run repeatedly. Never send, prompt or launch from it.
-		 * A guarded no-op still needs to confirm the same snapshot and external tip.
-		 * @param {string} id @param {(run:Run)=>(()=>boolean)|void} plan */
-		planAndSwap(id, plan) {
-			for (;;) {
-				const before=required(id),run=draft(before),valid=plan(run);
-				prepareChecks?.(cwd,run,before.run.effects.length);
-				const next=changed(before,run);
-				if(next===undefined && !valid)return run;
-				if(write(()=>stamp(id).stamp===before.stamp && (!valid || valid()) && (next===undefined ||
-					db.prepare("UPDATE runs SET document=?,checksum=? WHERE id=? AND checksum=?").run(next,checksum(next),id,before.sum).changes===1)))return run;
-			}
 		},
 		/** @param {Run} run */
 		insert(run) {

@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { setTimeout as wait } from "node:timers/promises";
 import { openDatabase } from "./database.mjs";
-import { factory, git } from "../test/fixture.mjs";
-import { reportProjections } from "../test/participant.mjs";
+import { factory, git, nativeHost, put, scriptedInspections, settleSubmitted, workflowHost } from "../test/fixture.mjs";
+import { driveProjections, reportProjections } from "../test/participant.mjs";
+import { createRuntime } from "./runtime.mjs";
 
 const source = ".foundry/contract.json", unit = ".foundry/unit.mjs", product = ".foundry/product.mjs", goal = ".foundry/goal.mjs";
 const participant = fileURLToPath(new URL("../test/participant.mjs", import.meta.url)), exec = promisify(execFile);
@@ -165,17 +167,9 @@ for (const app of [transit, clearing]) for (const missing of app === clearing ? 
 				assert.ok(pass < 2, `unbounded regeneration of ${grain}`); attempts.set(grain, pass + 1);
 				const payload = app === clearing && grain === "reduce-0" && !pass ? p.body.replace("!r.reversed", "true") : p.body;
 				const wave = path.join(gate, String(pass)), withhold = missing && pass && grain === "reduce-0" ? grain : "";
-				const { stdout } = await exec(process.execPath, [participant, f.root, app.id, worker, token, payload, wave, withhold, script],
+				const { stdout } = await exec(process.execPath, [participant, f.root, app.id, worker, token, payload, wave, withhold, script,
+					...(grain==="section-0"?[JSON.stringify({held,consumer})]:[])],
 					{ cwd: w.cwd, timeout: 180000, maxBuffer: 8 * 1024 * 1024 });
-				if (grain === "section-0") {
-					const s = await f.status(), independent = s.nodes.find(n => n.grain === grain);
-					assert.ok(independent?.receipt && independent.receipt.exit === 0);
-					assert.equal(s.nodes.find(n => n.grain === held)?.state, "checking");
-					const waiting = s.nodes.find(n => n.grain === consumer);
-					assert.equal(waiting?.state, "waiting"); assert.equal(waiting?.generation, undefined);
-					assert.equal(s.qualified, null);
-					writeFileSync(path.join(wave, "release"), "", { flag: "wx" }); // Release only the test evaluator, not the scheduler.
-				}
 				const reply = /** @type {Reply} */ (JSON.parse(stdout));
 				await recordReviews(reply.reviews);
 				for (const child of reply.workers) { assert.ok(!f.workers.has(child.id)); f.workers.set(child.id, child); }
@@ -189,8 +183,7 @@ for (const app of [transit, clearing]) for (const missing of app === clearing ? 
 	assert.equal((await f.start()).limit, null);
 	assert.equal(f.workers.size, 0);
 	assert.deepEqual(f.scouts.map(s => s.squad), squads);
-	await recordReviews(await reportProjections(f.root, f, plan));
-	await drain(f.inbox);
+	await driveProjections(f,plan,recordReviews,drain);
 	const s = await f.status(), db = openDatabase(f.root); t.after(() => db.close());
 	const run = db.read(app.id); assert.ok(run);
 	assert.ok(s.products && s.products.length >= (missing ? 3 : 4), s.blocker ?? "delivery queue drained before the expected checkpoint");
@@ -234,4 +227,74 @@ for (const app of [transit, clearing]) for (const missing of app === clearing ? 
 	for (const stage of ["read","reduce","view"]) assertOverlap(path.join(gate, "0"), stage, lanes);
 	if (repair && !missing) assertOverlap(path.join(gate, "1"), "view", lanes);
 	t.diagnostic(`${squads.length} squads, ${nodes.size} directories; ${app.width} overlapping writers in ${repair && !missing ? 4 : 3} waves; ${s.products.length} checked milestones`);
+});
+
+test("a checkpoint survey delivered to the original owner while a writer is in flight drives its original dependent once",async t=>{
+	const id="late",file=".foundry/late.json",squad="team",direction="Deliver both outputs.";
+	const parts=[{id:"first",directory:"unit/first",squad,needs:[]},{id:"second",directory:"unit/second",squad,needs:["first"]}];
+	const f=factory(t,id,file,{[file]:JSON.stringify({version:2,id,target:"refs/heads/main",direction,productCheck:"product.mjs",goalCheck:"goal.mjs",
+		squads:[{id:squad,areas:["unit"],charter:".foundry/team.md",boundary:["api"],checks:["unit.mjs"]}]}),".foundry/team.md":"Provide both.",
+		api:"Stable.","unit.mjs":"","product.mjs":"","goal.mjs":'import {existsSync} from "node:fs";if(!existsSync("unit/second/index.mjs"))process.exit(1);'});
+	await f.start();let woke=false;const plan={direction,check:"unit.mjs",parts};
+	const delivered=new Set(),jobs=new Set();
+	/** @param {Awaited<ReturnType<typeof reportProjections>>} rows */
+	async function received(rows){for(const r of rows){assert.ok(!jobs.has(r.id));jobs.add(r.id);}}
+	/** @param {typeof f.inbox} entries */
+	async function deliver(entries){
+		await Promise.all(entries.map(async ({worker,token})=>{
+			assert.ok(!delivered.has(token));delivered.add(token);
+			const w=f.workers.get(worker);assert.ok(w);
+			const state=await f.status(w.id),node=state.nodes.find(n=>n.token===token);assert.ok(node && typeof node.directory==="string");
+			const host=nativeHost(f.root,token),scouts=workflowHost();
+			/** @type {ReturnType<typeof createRuntime>} */
+			const writer=settleSubmitted(createRuntime(w.cwd,{mode:async()=>"interactive",permissionBlocker:async()=>null,...scriptedInspections(f.root),
+				notify:async()=>"notice",scout:(run,dispatch,actor)=>scouts.launch(writer,run,dispatch,actor),
+				execute:async(tool,args,key)=>{
+					const result=await host.execute(tool,args,key);
+					if(!woke && tool==="bash" && String(args.description).startsWith("Check joined product")){
+						woke=true;f.owner.turn("owner");await f.owner.flush();await f.settle();
+					}return result;
+				}}));
+			try{
+				put(w.cwd,node.directory+"/index.mjs","export default 1;");
+				await writer.operation("submit",{run:id,token},w.id);
+				await received(await reportProjections(f.root,scouts,plan));await writer.flush();
+				for(const [id,w] of host.workers)f.workers.set(id,w);
+				await deliver(host.inbox);
+			}finally{writer.close();}
+		}));
+	}
+	await driveProjections(f,plan,received,deliver);
+	const s=await f.status();assert.ok(woke);assert.ok(s.qualified,"the checkpoint's already-delivered owner survey must reach the original dependent");
+	assert.equal(delivered.size,2);assert.deepEqual(Object.keys(s.outputs??{}).sort(),["first","second"]);
+	assert.ok(f.scouts.length>1 && f.scouts.every(x=>jobs.has(x.id)),"all actually emitted owner reports were serviced once");
+});
+
+for(const pass of [true,false])test(`the original signed district submission, not its later stdout delivery, releases its peer / ${pass?"pass":"failure"}`,async t=>{
+	const run="barrier",brief=".foundry/barrier.json",ids=["independent","held","dependent"];
+	const f=factory(t,run,brief,{[brief]:JSON.stringify({version:1,id:run,target:"refs/heads/main",direction:"Check independent outputs.",
+		seed:ids,limits:{repairs:0},productCheck:"product.mjs",grains:ids.map(id=>({id,directory:id,check:"unit.mjs",specification:"spec",boundary:["api"],
+			needs:id==="dependent"?["held"]:[]}))}),spec:"Check the output.",api:"Stable.","product.mjs":"",
+		"unit.mjs":`import {writeFileSync,existsSync} from "node:fs";import {setTimeout as wait} from "node:timers/promises";
+			const dir=process.env.FOUNDRY_TEST_RENDEZVOUS;if(process.env.FOUNDRY_GRAIN==="held"){
+				writeFileSync(dir+"/entered","");while(!existsSync(dir+"/release")){if(existsSync(dir+"/abort"))process.exit(2);await wait(10);}
+			}else if(!${pass})process.exit(1);`});
+	const gate=path.join(path.dirname(f.root),"proof");mkdirSync(gate);
+	const s=await f.start(),worker=(/** @type {string} */ id)=>f.workers.get(s.nodes.find(n=>n.grain===id)?.worker??"")??assert.fail();
+	const held=worker("held"),section=worker("independent"),plan=JSON.stringify({direction:"Check.",check:"unit.mjs",parts:[]});
+	const start=(/** @type {typeof held} */ w,probe="")=>exec(process.execPath,[participant,f.root,run,w.id,w.token,"export default 1;",gate,"",plan,probe],
+		{cwd:w.cwd,timeout:180000,maxBuffer:8*1024*1024});
+	const first=start(held);
+	try{
+		const end=Date.now()+30_000;
+		while(!existsSync(path.join(gate,"entered"))){assert.ok(Date.now()<end,"original peer never claimed");await wait(10);}
+		const probe=start(section,JSON.stringify({held:"held",consumer:"dependent"}));
+		if(pass){
+			await probe;assert.ok(existsSync(path.join(gate,"release")),"the completed original submission must release its peer without the owner processing stdout");
+			await first;const receipt=(await f.status()).nodes.find(n=>n.grain==="held")?.receipt;assert.ok(receipt && receipt.exit===0);
+		}else{
+			await assert.rejects(probe,/passing independent submission/);assert.equal(existsSync(path.join(gate,"release")),false);
+			assert.equal((await f.status()).nodes.find(n=>n.grain==="held")?.receipt,undefined);
+		}
+	}finally{writeFileSync(path.join(gate,"abort"),"");await first;}
 });

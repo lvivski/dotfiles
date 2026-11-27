@@ -48,7 +48,8 @@ test("an issued check can read its ledger and publish its receipt without the sc
 	assert.ok(issued?.kind==="goal" && issued.callId && !issued.runnerClaim && !issued.receipt);
 
 	const work = pairedWork(path.join(path.dirname(f.root),"observer"));
-	const coordinator = new Set(["native.mjs","graph.mjs","assembly.mjs","engine.mjs","runtime.mjs","correction.mjs","repin.mjs","restoration.mjs"]);
+	const coordinator = new Set(["native.mjs","graph.mjs","assembly.mjs","engine.mjs","runtime.mjs","correction.mjs",
+		"repin.mjs","restoration.mjs","instructions.mjs","inspections.mjs","brief.mjs","reviews.mjs","cursor.mjs","plan.mjs"]);
 	cpSync(fileURLToPath(new URL("./",import.meta.url)),work,{recursive:true,filter:p=>!coordinator.has(path.basename(p))});
 	const observe = () => spawnSync(process.execPath,[path.join(work,"runner.mjs"),f.root,run,issued.id],{encoding:"utf8"});
 	const first = observe();

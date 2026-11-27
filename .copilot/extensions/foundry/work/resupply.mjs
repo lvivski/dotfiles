@@ -3,7 +3,7 @@ import { offered, verifyDependency, verifySource } from "./artifacts.mjs";
 import { baselineTip } from "./baseline.mjs";
 import { continuationNotice, inputMessage, inputReference } from "./reference.mjs";
 import { continuationPrompt, stoppedPins } from "./continuation.mjs";
-import { disabledRoute, journal } from "./dispatch.mjs";
+import { journal, unsentRepair } from "./dispatch.mjs";
 import { assign } from "./assignment.mjs";
 import { availableReservations } from "./capacity.mjs";
 import { milestoneBlocker, missingInput } from "./evidence.mjs";
@@ -11,10 +11,10 @@ import { pendingGoal, releaseFacts } from "./facts.mjs";
 import { observeTarget } from "./goal.mjs";
 import { admitted, reserveNotice } from "./native.mjs";
 import { partitionConflict } from "./partition.mjs";
-import { referenceAttempt } from "./plan.mjs";
+import { referenceAttempt, writerVersion } from "./lineage.mjs";
 import { commitAt, git, verifyContracts } from "./product.mjs";
 import { currentSupply, pooledDependency, sourceLocator } from "./supplier.mjs";
-import { digest, fail, fields, FoundryError, name, roots, scopeLabel, text } from "./values.mjs";
+import { digest, fail, fields, FoundryError, name, pinnedSelection, roots, scopeLabel, text } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @typedef {import("./model.js").Node} Node */
@@ -118,7 +118,8 @@ export function prepareInput(cwd,run,actor,args,verify) {
 		const grant=select(cwd,r,n,blob,requested,verify,dependency);
 		return {...grant,satisfied:!grant.continuation && (requested || !locator && match.approved)};
 	};
-	const before=selected(run), n=before.input.prior, artifact=inputReference(run,before.input);
+	const {subject:before,revalidate}=pinnedSelection(run,selected,"The stopped writer, original pins or selected input changed during approval");
+	const n=before.input.prior,artifact=inputReference(run,before.input);
 	return {consent:before.satisfied ? /** @type {const} */("satisfied") : /** @type {const} */("native"),
 		prompt:`Does ${JSON.stringify(artifact?.file)} (${blob}) resolve this stop for ${id}, writer ${n.worker}?\n`+
 		(artifact && "dependency" in artifact ? `Already granted dependency ${artifact.dependency.source.grain}@${artifact.dependency.source.revision}, signed component ${artifact.dependency.source.component}. Read its checked file; no new publication or writer authority.\n` :
@@ -130,8 +131,7 @@ export function prepareInput(cwd,run,actor,args,verify) {
 		...(before.continuation && {hold:`A reference cannot authorize a charter change. Request the native input grant to review ${before.continuation.from} → ${before.continuation.to} for ${id}.`}),
 		/** @param {Run} current */
 		apply(current) {
-			const fresh=selected(current);
-			if (digest(fresh)!==digest(before)) fail("stale_assignment","The stopped writer, original pins or selected input changed during approval");
+			const fresh=revalidate(current);
 			reopen(current,current.nodes[id],fresh.input,fresh.continuation);
 			return ()=>commitAt(cwd,current.policy.target)===before.input.target;
 		}};
@@ -157,7 +157,8 @@ export function* inputEvidence(run) {
 	for (const n of Object.values(run.nodes)) {
 		if (!n.token || missingInput(n)===undefined) continue;
 		const {blob,targeted,approved,pending}=matchInput(run,n);
-		if (blob && !pending) yield {signal:/** @type {const} */ ("reference"),facts:{targeted,approved},attempt:n.token,args:{grain:n.grain.id,blob}};
+		if (blob && !pending) yield {signal:/** @type {const} */ ("reference"),facts:{targeted,approved},attempt:n.token,args:{grain:n.grain.id,blob},
+			grant:digest([writerVersion(n),n.stop?.input?.source??null])};
 	}
 }
 
@@ -165,11 +166,10 @@ export function* inputEvidence(run) {
  * Never withdraw a claimed, uncertain or explicitly denied delivery.
  * @param {string} cwd @param {Run} run @param {import("./model.js").NativeCall} e @param {Verify} verify */
 export function deliveryTip(cwd,run,e,verify) {
-	if(!e.input && e.continuation)return baselineTip(cwd,run,e,verify);
-	const n=e.grain && run.nodes[e.grain];
-	if (!e.input || !n || n.state!=="writing" || n.token!==e.token || e.permissionHold ||
-		!(e.state==="ready" && !e.callId || e.state==="ordinary" && e.callId && e.error===disabledRoute)) return;
+	const n=e.grain && run.nodes[e.grain],prior=e.input?.prior??e.baselineStop;
+	if(!prior || !n || n.state!=="writing" || n.token!==e.token || !unsentRepair(e))return;
 	try {
+		if(!e.input)return baselineTip(cwd,run,e,verify);
 		const {target,continuation}=inputContext(cwd,run,e.input.prior);
 		if(digest(continuation??null)!==digest(e.continuation??null))fail("stale_assignment","The approved charter pair changed before delivery");
 		const a=inputReference(run,e.input);
@@ -187,7 +187,7 @@ export function deliveryTip(cwd,run,e,verify) {
 		if (!(error instanceof FoundryError)) throw error;
 		if (["dispatch_held","paused","deadline","contract_hold"].includes(error.code)) return;
 		journal(e,e.state==="ordinary"?"withdraw-input":"withdraw");
-		e.input.withdrawn=error.message;
-		run.nodes[n.grain.id]=structuredClone(e.input.prior);
+		if(e.input)e.input.withdrawn=error.message;
+		run.nodes[n.grain.id]=structuredClone(prior);
 	}
 }

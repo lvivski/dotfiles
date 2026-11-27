@@ -6,7 +6,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { metricsFacts } from "../../../extensions/foundry/work/metrics.mjs";
 import { usageQuery } from "./usage.mjs";
-import { activation, commit, prompt, run, tip, writer } from "../../../extensions/foundry/test/timing.mjs";
+import { activation, finished, prompt, run, writer } from "../../../extensions/foundry/test/timing.mjs";
 
 /** Execute the generated native query, not a mock of its attribution algorithm. SQLite represents
  * both timestamps and epoch milliseconds as integers, so both DuckDB epoch_ms overloads are identities here.
@@ -32,11 +32,10 @@ function history(t) {
 	};
 }
 
-test("native IDs resolve through task_id or history id; only verified, bounded writer activity is billed", t => {
-	const h = history(t), r = run(), a = "app-writer", b = "writer's-history", repair = "Foundry assignment: catalog private-repair\nRepair prices";
+test("native IDs resolve through task_id or history id; only verified, bounded writer activity is billed", async t => {
+	const h = history(t), r = await finished(t,20,true), a = "app-writer", b = "writer's-history", repair = "Foundry assignment: catalog private-repair\nRepair prices";
 	r.effects.push(writer(a), writer(b), { id: "repair", issuer: "owner", kind: "repair", tool: "send_session_message",
 		state: "done", args: { session_id: a, message: repair } });
-	r.products.push({ commit, target: tip, check: "batch", outputs: {}, qualifiedAt: activation + 20 });
 	h.session("history-A", a); h.session(b, "another-task");
 	h.session("owner", null, -10); h.session("workflow", null); h.session("helper", null);
 	for (const id of ["owner", "workflow", "helper"]) { h.input(id, 2, prompt(a)); h.usage(id, 5, 1000); }

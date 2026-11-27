@@ -1,17 +1,16 @@
-import { isUtf8 } from "node:buffer";
+import { awaitingReply, unissued } from "./dispatch.mjs";
 import { working } from "./assignment.mjs";
 import { remainingAssignments } from "./capacity.mjs";
-import { corroborated, currentRollout, rolloutChain, rolloutChecks, stoppedBatch, within } from "./campaign.mjs";
+import { corroborated, currentRollout, rolloutChain, rolloutSlots, stoppedBatch, within } from "./campaign.mjs";
 import { safeEvidence } from "./critique.mjs";
 import { draftChanges, draftId, movePart, partId } from "./drafts.mjs";
 import { checkerPaths, originalProducer, protectedDraftPath } from "./preimages.mjs";
-import { checkReceipt, correctionEvaluator, currentEvaluation, failedComponent, originalVerification, productPin, verification } from "./evidence.mjs";
+import { adoptedStop, changeOffer, checkReceipt, correctionEvaluator, currentEvaluation, failedComponent, productPin } from "./evidence.mjs";
 import { admitted, current } from "./native.mjs";
 import { offerChoices } from "./offering.mjs";
 import { changedFiles, checkDirectory, commitAt, committedFile, draftDiff, entries, git, outside, retain } from "./product.mjs";
 import { publishedComponent } from "./publication.mjs";
 import { patchSource, replacementChecks, replacementStop } from "./replacement.mjs";
-import { awaitingReply, unissued } from "./reservation.mjs";
 import { exactPatch } from "./rollout.mjs";
 import { grant } from "./transfer.mjs";
 import { contains, covers, digest, fail, fields, name, record, relative, text } from "./values.mjs";
@@ -31,7 +30,7 @@ function signed(run,id,verify){
 /** @param {Run} run */
 export function stoppedDraftCheck(run){
 	const j=run.join,chain=j && rolloutChain(run,j.check),last=chain?.at(-1);
-	if(last)return rolloutChecks(run,last).find(c=>c.receipt?.exit===1 && stoppedBatch(run,last,c.id,false))?.id;
+	if(last)return rolloutSlots(run,last).checks.find(c=>c.receipt?.exit===1 && stoppedBatch(run,last,c.id,false))?.id;
 	return j && failedComponent(run.effects.find(e=>e.id===j.check))?j.check:undefined;
 }
 /** Select and re-select the *actual* bytes the writer will see at dispatch and return. No checkout, diff or diagnosis from the owner.
@@ -46,20 +45,18 @@ export function draftScope(cwd,run,req,verify){
 	const checkpoint=signed(run,p.check,verify),goal=signed(run,g.check,verify),stop=signed(run,check,verify);
 	if(checkpoint.kind!=="product" || checkpoint.commit!==p.commit || checkpoint.receipt?.exit!==0 || goal.kind!=="goal" || goal.commit!==p.commit ||
 		![1,2].includes(goal.receipt?.exit??-1))fail("missing_receipt","Need the exact passing checkpoint and its settled unmet or missing goal");
-	const pin=run.productRepins?.at(-1),original=originalVerification(run,j?.check),chain=j&&rolloutChain(run,j.check),parent=chain?.at(-1);
-	const rolled=pin?.amendments?.some(s=>s.harness && s.recheck===original);
+	const pin=run.productRepins?.at(-1),basis=j && adoptedStop(run,tip,j.check),parent=j && rolloutChain(run,j.check)?.at(-1);
+	const rolled=basis && pin?.amendments?.some(s=>s.harness && s.recheck===basis.originalCheck);
 	const previous=j && replacementChecks(run,j.check).at(-1);
-	const grain=parent?stop.grain:failedComponent(stop),evalPin=productPin(run);
+	const grain=parent?stop.grain:basis?.grain;
 	let assembly,product,paths=req.files;
 	if(evaluator){
 		if(automatic || check!==g.check || j || !currentEvaluation(run,goal) || p.target!==tip || g.target!==tip ||
 			(evaluator!==run.policy.goalCheck && evaluator!==run.policy.productCheck))fail("stale_pin","Select the declared evaluator on its current checked product and signed goal");
-		assembly=(evaluator===run.policy.goalCheck?run.repins?.at(-1)?.revision:evalPin)??run.policy.base;product=p.commit;paths??=[evaluator];
+		assembly=(evaluator===run.policy.goalCheck?run.repins?.at(-1)?.revision:productPin(run))??run.policy.base;product=p.commit;paths??=[evaluator];
 	}else{
-		if(!j || !grain || !Object.hasOwn(j.outputs,grain) || !pin?.targetFrom || !original || stoppedDraftCheck(run)!==check ||
-			j.target!==tip || pin.revision!==tip || run.policy.contractTarget!==tip || pin.checkpoint!==p.check || pin.goal!==g.check ||
-			!evalPin || correctionEvaluator(pin,original)!==evalPin || run.repins?.at(-1)?.revision!==evalPin || verification(pin)!==original ||
-			(parent?parent.assembly!==stop.commit || !currentRollout(run,stop):stop.commit!==j.commit || stop.evaluatorRevision!==evalPin))
+		if(!basis || !grain || !Object.hasOwn(basis.join.outputs,grain) || stoppedDraftCheck(run)!==check ||
+			correctionEvaluator(basis.pin,basis.originalCheck)!==basis.evaluator || parent && (parent.assembly!==stop.commit || !currentRollout(run,stop)))
 			fail("stale_pin","No eligible signed adopted component failure at this exact assembly and evaluator pin");
 		if(previous){
 			if(rolled || !replacementStop(run,previous) || ![0,1].includes(previous.receipt?.exit??-1))
@@ -145,26 +142,24 @@ export function verifyDraft(cwd,run,d,verify){
 /** @param {string} cwd @param {Run} run @param {Draft} d @param {Part} p */
 export function authorPacket(cwd,run,d,p){
 	const read=(/** @type {string} */ pin,/** @type {string} */ f)=>{
-		const b=committedFile(cwd,pin,f);if(!isUtf8(b) || b.includes(0))fail("unavailable","Unreviewable frozen file: "+f);
-		return safeEvidence(f,b.toString());
+		return safeEvidence(f,committedFile(cwd,pin,f));
 	};
 	const stop=run.effects.find(e=>e.id===d.check),s=p.source,
 		observed=s.kind==="owned" && s.grain?run.nodes[s.grain]:undefined;
 	const observation=stop?.kind==="product"?stop.receipt?.components?.[failedComponent(stop)??""]:undefined;
 	const actual=observation??stop?.receipt,checker=d.evaluator??actual?.check??stop?.check,test=d.evaluator?undefined:actual?.inputs?.checker.blob??actual?.test;
 	const measured=test && checker?git(cwd,["cat-file","blob",test]):undefined;
-	if(measured && (!isUtf8(measured) || measured.includes(0)))fail("unavailable","The actual test recorded in the receipt is not reviewable text.");
 	const files=p.files.map(f=>({...f,text:f.before===null?null:read(d.assembly,f.file)}));
 	const previous=d.previousCheck?run.effects.find(e=>e.id===d.previousCheck):undefined;
 	const earlier=previous?.commit && previous.kind==="component"?{check:previous.id,commit:previous.commit,exit:previous.receipt?.exit,
 		diagnostic:previous.receipt?.output,review:run.inspections?.find(i=>i.component===previous.id)?.summary,
-		files:(run.adoptions?.find(a=>a.id===previous.replacement)?.patch?.files??[]).filter(f=>files.some(x=>x.file===f.file)).map(f=>({...f,text:read(text(previous.commit,"previous candidate"),f.file)}))}:undefined;
+		files:(changeOffer(run,previous)?.patch?.files??[]).filter(f=>files.some(x=>x.file===f.file)).map(f=>({...f,text:read(text(previous.commit,"previous candidate"),f.file)}))}:undefined;
 	const packet={subject:partId(d,p),check:d.check,assembly:d.assembly,product:d.product,source:s,files,
 		...(earlier && {previous:earlier}),
 		direction:run.policy.direction,...(run.productRepins?.at(-1)?.acceptance && {acceptance:run.productRepins.at(-1)?.acceptance}),
 		...(observed && {task:observed.grain.task??read(d.assembly,observed.grain.specification)}),
 		...(run.policy.sharedBrief && {requirements:read(d.assembly,run.policy.sharedBrief)}),
-		...(checker && {observer:{file:checker,text:measured?safeEvidence(checker,measured.toString()):read(d.assembly,checker)}}),diagnostic:stop?.receipt?.output};
+		...(checker && {observer:{file:checker,text:measured?safeEvidence(checker,measured):read(d.assembly,checker)}}),diagnostic:stop?.receipt?.output};
 	safeEvidence("correction-packet",JSON.stringify(packet));return packet;
 }
 /** @param {string} cwd @param {Draft} d @param {Part} p @param {unknown} input */
@@ -199,10 +194,11 @@ export function authorEvidence(run){
 	const check=stoppedDraftCheck(run);
 	if(!check)return;
 	const stop=run.effects.find(e=>e.id===check),grain=stop?.kind==="component"?stop.grain:failedComponent(stop);
-	const previous=replacementChecks(run,check).at(-1);
+	const previous=replacementChecks(run,check).at(-1),source=grain && run.nodes[grain];
 	return {signal:/** @type {const} */ ("correction"),facts:{includedProducer:!!grain && !!run.join?.outputs[grain],unclaimedSource:
 		!run.correctionDrafts?.some(d=>d.check===check && d.previousCheck===previous?.id) &&
-		!run.adoptions?.some(a=>a.failed===check && a.assembly && !(previous && a.patch?.owner && a.decision?.status==="answered"))},attempt:previous?.id??check,args:{check}};
+		!run.adoptions?.some(a=>a.failed===check && a.assembly && !(previous && a.patch?.owner && a.decision?.status==="answered"))},attempt:previous?.id??check,args:{check},
+		grant:source?digest([source.check,source.candidate,source.review??null,source.restoration??null,grant(source),source.inputs??null]):null};
 }
 /** @type {import("./grants.mjs").Prepare} */
 export function prepareAutomaticDraft(cwd,run,actor,a,verify){

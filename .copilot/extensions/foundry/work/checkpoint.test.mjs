@@ -1,9 +1,9 @@
+import { inspectComponent, markInspection } from "./inspections.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { git } from "../test/fixture.mjs";
 import { firstObserver } from "../test/ownership.mjs";
 import { prepareCheckpoint } from "./checkpoint.mjs";
-import { inspectComponent, markInspection } from "./inspection.mjs";
 import { createRuntime } from "./runtime.mjs";
 import { decode } from "./snapshot.mjs";
 

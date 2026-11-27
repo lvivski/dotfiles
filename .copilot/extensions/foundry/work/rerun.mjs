@@ -73,7 +73,7 @@ export function prepareRerun(cwd,run,actor,a,signed) {
 			const again=select(r);
 			if (!again) return;
 			if (digest(again)!==digest(selected)) fail("stale_assignment","Recheck inputs changed before reservation");
-			reserveCheck(r,actor,cwd,product,check,grain,undefined,pin);
+			reserveCheck(r,actor,cwd,product,check,{kind:"rerun",grain,rerun:pin});
 			return ()=>{admitted(r);return commitAt(cwd,r.policy.target)===target;};
 		}};
 }

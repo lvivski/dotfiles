@@ -1,5 +1,5 @@
 import { changedFrom, inconclusiveRepair, missingInput, relinquishable } from "./evidence.mjs";
-import { stalePins } from "./plan.mjs";
+import { stalePins } from "./lineage.mjs";
 import { writerInstructions } from "./instructions.mjs";
 import { inputChoices } from "./resupply.mjs";
 import { contractHold } from "./contract.mjs";
