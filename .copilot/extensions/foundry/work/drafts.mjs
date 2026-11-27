@@ -1,12 +1,13 @@
 import { drafting } from "./rules/drafts.mjs";
-import { effectAt } from "./revision.mjs";
 import { transition } from "./machine.mjs";
 import { digest } from "./values.mjs";
+import { draftAllowed, draftId, sameDraft } from "./consent.mjs";
+export { correctionRefs, draftAllowed, draftChanges, draftId } from "./consent.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @typedef {import("./model.js").CorrectionDraft} Draft */
 /** @typedef {import("./model.js").DraftPart} Part */
-/** @typedef {import("./model.js").Artifact & {draft?:Draft,index?:number}} Ref */
+/** @typedef {import("./consent.mjs").Ref} Ref */
 /** @typedef {Pick<Part,"dispatch"|"workflow"|"reason"|"changes"|"awaitingPacket"|"continued">} Context */
 /** @param {Part} part @param {string} type @param {Context} [data] */
 export function movePart(part,type,data={}){
@@ -18,32 +19,10 @@ export function movePart(part,type,data={}){
 	}
 	return result;
 }
-/** @param {Omit<Draft,"id">} d */
-export const draftId=d=>digest([d.check,d.checkpoint,d.goal,d.target,d.product,d.assembly,d.evaluator??null,d.previousCheck??null,d.automatic,d.parts.map(p=>[p.source,p.files]),...(d.finding?[d.finding]:[])]);
 /** @param {Draft} d @param {Part} p */
 export const partId=(d,p)=>digest([d.id,p.source,p.files]);
-/** @param {Draft} d */
-export const draftAllowed=d=>d.automatic ? !d.finding && !d.decision : d.decision?.status==="answered" && d.decision.answer===d.id;
-/** @param {Draft} d */
-export const draftChanges=d=>d.parts.flatMap(p=>p.changes??[]).sort((a,b)=>a.file<b.file?-1:1);
-/** The imported references and checked workflow answers are separate inventories. No writer-published artifact can enter this projection.
- * @param {Run} run @returns {Ref[]} */
-export function correctionRefs(run){
-	return [...(run.artifacts??[]).flatMap((a,index)=>a.publisher===run.owner?[{...a,index,draft:undefined}]:[]),
-		...(run.correctionDrafts??[]).flatMap(d=>d.blob && draftAllowed(d) && d.parts.every(p=>p.state==="returned" && !!p.workflow)?
-			[{draft:d,base:d.target,file:"writer-correction.diff",blob:d.blob,publisher:d.parts.map(p=>p.workflow).join(", "),
-				to:d.evaluator?[d.evaluator]:draftChanges(d).map(f=>f.file),...(d.evaluator?
-					{evaluation:{from:d.assembly,checkpoint:d.checkpoint,goal:d.goal}}:{assembly:d.assembly})}]:[])];
-}
-/** The author fixes its diagnosed assembly. The byte grant, not the author, verifies the current frontier of that rollout.
- * @param {Run} run @param {Ref} ref @param {string} check @param {string} assembly @param {import("./model.js").HarnessRollout["files"]} [delta] */
-export function matchesDraft(run,ref,check,assembly,delta){
-	const d=ref.draft;if(!d)return true;
-	if(d.assembly!==assembly || delta && digest(draftChanges(d))!==digest([...delta].sort((a,b)=>a.file<b.file?-1:1)))return false;
-	if(!d.finding)return d.check===check;
-	const diagnosed=effectAt(run,d.check),boundary=effectAt(run,check);
-	return diagnosed?.kind==="component" && !!diagnosed.rollout && boundary?.kind==="component" && diagnosed.rollout===boundary.rollout;
-}
+/** @param {Run} run @param {Ref} ref @param {string} check @param {string} assembly @param {import("./model.js").HarnessRollout["files"]} [delta] */
+export const matchesDraft=(run,ref,check,assembly,delta)=>!ref.draft || sameDraft(run,ref.draft,check,assembly,delta);
 /** @param {Run} run */
 export function validDrafts(run){
 	const drafts=run.correctionDrafts??[];if(!drafts.length)return true;

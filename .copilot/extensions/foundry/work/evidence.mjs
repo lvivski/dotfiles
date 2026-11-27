@@ -1,9 +1,11 @@
 import { digest, fail } from "./values.mjs";
+import { generationOf } from "./origin.mjs";
+export { generationOf } from "./origin.mjs";
 import { effectAt, integrityHolds, productAt } from "./revision.mjs";
 import { assign } from "./assignment.mjs";
 import { contractHold } from "./contract.mjs";
 import { unprovenExports } from "./attestation.mjs";
-import { checkReceipt } from "./receipt.mjs";
+import { checkReceipt, memberApproval } from "./receipt.mjs";
 export { checkReceipt, sameEvaluation } from "./receipt.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
@@ -33,8 +35,23 @@ export function amendedOutputs(a,prior,assembly){
 /** Locate the recorded approval, not a new grant. Historical readers and live validators
  * use the same reference even after the output is replaced. @param {Run} run @param {import("./model.js").NativeCall} c */
 export function changeOffer(run,c){
-	const id=c.rollout??c.replacement;
-	if(id && !("rollout" in c && "replacement" in c))return run.adoptions?.find(a=>a.id===id && (c.rollout?a.rollout:a.patch?.owner));
+	if(c.kind!=="component" || ("rollout" in c && "replacement" in c) ||
+		c.attempt?.version===3 && ("rollout" in c || "replacement" in c))return;
+	const batch=memberApproval(c),id=batch??c.replacement;
+	if(id)return run.adoptions?.find(a=>a.id===id && (batch?a.rollout:a.patch?.owner));
+}
+/** The original approval and its output still occupy the failed join. A successor or
+ * single-owner grant has additional restrictions; this binding is not itself a grant.
+ * @param {Run} run @param {import("./model.js").NativeCall} c */
+export function boundChange(run,c){
+	const offer=changeOffer(run,c),join=run.join,grain=c.grain;
+	if(!offer || !join || !grain || c.issuer!==run.owner || c.commit!==offer.assembly || join.check!==offer.failed ||
+		join.target!==offer.revision || run.goal?.check!==offer.goal || run.products.at(-1)?.check!==offer.checkpoint ||
+		run.independent || run.conflict || run.blocker)return;
+	const n=run.nodes[grain],owner=changeOwners(offer)[grain];
+	if(n && owner && offer.decision?.status==="answered" && offer.decision.answer===(offer.rollout??offer.patch)?.blob &&
+		c.check===n.grain.check && n.candidate===owner.output && n.check===owner.component && digest(n)===owner.binding)
+		return {offer,join,grain,owner};
 }
 /** Follow this grain's actual replaced output pins; the caller must still prove its writer or its independent review.
  * @param {Run} run @param {string} grain @param {import("./model.js").NativeCall} c */
@@ -184,9 +201,6 @@ export function changedFrom(n, e) {
 	const receipt = blockedComponent(n, e);
 	if (receipt && !receipt.failure) return receipt.commit;
 }
-
-/** @param {import("./model.js").Effect|undefined} w */
-export const generationOf = w => w?.kind === "writer" ? w.pooled?.generation ?? w.args.base_branch : undefined;
 
 /** @param {Run} run @param {import("./model.js").Node} n */
 export function failedCandidate(run, n) {

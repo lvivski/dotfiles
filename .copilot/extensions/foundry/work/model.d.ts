@@ -205,6 +205,8 @@ export type OwnerDecision = { status:"presenting"; presentation?:string; present
 	| { status:"unavailable"; reason:string; presentation?:string };
 
 export interface ReviewObstacle {kind:"missing-output"|"overlap"|"stale-review"|"outside-scope"|"repeated-output"|"displaced-input"|"other";subject?:string}
+export type CorrectionBasis={blob:string; predecessorCheck?:never; ordinary?:never} | {predecessorCheck:string; blob?:never; ordinary?:never} |
+	{ordinary:true; blob?:never; predecessorCheck?:never; resumed?:{prior:Node; token:string}};
 export interface Review extends Dispatch {
 	obstacle?:ReviewObstacle;
 	providerRecovery?: "needed"|"claimed";
@@ -225,9 +227,7 @@ export interface Review extends Dispatch {
 	note?: ReviewNote;
 	otherNotes?: ReviewNote[];
 	predecessor?: Node;
-	correction?: { worker: string; clause: string; file: string; excerpt: string } &
-		({blob:string; predecessorCheck?:never; ordinary?:never} | {predecessorCheck:string; blob?:never; ordinary?:never} |
-		{ordinary:true; blob?:never; predecessorCheck?:never; resumed?:{prior:Node; token:string}});
+	correction?: { worker: string; clause: string; file: string; excerpt: string } & CorrectionBasis;
 	observation?: Observation;
 	deferred?: { pins: Record<string, string>; consumers: string[] };
 	decision?: OwnerDecision;
@@ -325,9 +325,31 @@ export interface CheckDescription {
 	resolutions?:string;
 }
 
+export type AssessmentSource={policy:string;commit:string;target:string} & ({kind:"activation"}|{kind:"receipt";check:string;use:"goal"|"product"}|
+	{kind:"writer";id:string;renewed?:string}|{kind:"assembly"}|{kind:"approval";id:string});
+export type Requirement={kind:"activation";policy:string}|{kind:"assessment";use:"goal"|"product";target:string;commit:string;check:string}|
+	{kind:"signed";use:"goal"|"product"|"component";check:string;commit:string;exit:number|null}|
+	{kind:"target";ref:string;commit:string}|{kind:"clear";issuer:string}|
+	{kind:"approved";id:string;bytes:string;manifest:string}|{kind:"closed-slot";original:string;request:string;position:number}|
+	{kind:"writer";assignment:string;origin:string}|
+	{kind:"consent";offer:string;answer:string;terms:string}|
+	{kind:"evaluator";assessment:string;terms:string;from:string;revision:string;files:string[]}|
+	{kind:"publication";component:string;subject:string}|
+	{kind:"review";component:string;inspection:string;workflow:string;dispatch:string}|
+	{kind:"build-group";group:string;prior:string[]};
+export interface CurrentAttempt {
+	version:3;
+	source:AssessmentSource;
+	use:"goal"|"product"|"component";
+	grant:string;
+	facts:Requirement[];
+	previous?:string;
+}
+
 export interface NativeCall extends Dispatch, ArtifactReport {
+	writing?:{version:3;source:{review:string;seed?:never}|{seed:string;review?:never};base:string;terms:string;inputs:Record<string,{revision:string;component:string;review:string|null}>};
 	verification?:CheckDescription;
-	attempt?:{version:1;closure?:"never-issued"|"closed-before-runner-claim"} | {version:2;previous?:string};
+	attempt?:{version:1;closure?:"never-issued"|"closed-before-runner-claim"} | {version:2;previous?:string} | CurrentAttempt;
 	instruction?:Instruction;
 	testPin?:string; // Stop whose certified observer this evaluation uses; never a production-tree substitution.
 	calibration?:{stop:string;role:"oldGood"|"newGood"|"newBad";subject:string};
@@ -412,6 +434,7 @@ export interface HarnessRollout {
 }
 
 export interface Adoption {
+	accepted?:{presentation:string;after:string;order?:string[];inputs?:({component:string;inspection:string}|{member:string;afterReviewOf:string})[]};
 	offeredThrough?:number; // Earlier unbound references were not selected for the next assembly.
 	evaluator?:{kind:"goal"|"product";from:string;blob:string;files:string[];draft?:string};
 	foreground?:{check:string;retry:string;variable:string;grains:Record<string,{file:string;number:number;line:string;blob:string}>};
@@ -462,8 +485,15 @@ export interface TestRepair {
 	author?:string; reviewer?:string; subject?:string;
 }
 
-export type RunDocument=Omit<Run,"nodes"> & {format:"foundry-run/2";reviewContract:"required"|"legacy-no-review";graph:{nodes:Run["nodes"]}};
+export interface HistoricalSlot {
+	request:string;
+	closure:"never-issued"|"closed-before-runner-claim";
+	settlement?:{kind:"declined"}|{kind:"terminal";request:string;turn:string;start:string;end:string;exit:number};
+}
+export type RunDocument=Omit<Run,"nodes"> & {format:"foundry-run/3";reviewContract:"required"|"legacy-no-review";graph:{nodes:Run["nodes"]}};
 export interface Run {
+	historicalPrefix?:{length:number;last:string|null};
+	history?:Record<string,HistoricalSlot>; // Only pre-claim facts, never part of a signed check.
 	footprintRequests?:FootprintRequest[];
 	diagnostics?:Diagnostic[]; // A writer supplies evidence. Only the existing scoped operation can authorize its use.
 	instructions?:NativeCall[]; // Informational deliveries use the native call journal, not the product/assignment queue.
@@ -481,7 +511,7 @@ export interface Run {
 	artifacts?: Artifact[];
 	pendingReviewNotes?: (ReviewNote & { squad: string; after: number })[];
 	attributions?: Attribution[];
-	repins?: { from: string; revision: string; files: string[] }[];
+	repins?: { from: string; revision: string; files: string[]; assessment?:string }[];
 	productRepins?: ProductPin[];
 	policy: Policy;
 	scheduling?: { revision: number; workers?: number; checkpointReviews: boolean };

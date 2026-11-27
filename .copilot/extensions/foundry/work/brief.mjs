@@ -1,65 +1,8 @@
 import { planDirectory } from "./contract.mjs";
-import { topology } from "./topology.mjs";
+import { fixed, list } from "./fixed.mjs";
+export { validateGraph, verifyFixedGrant } from "./fixed.mjs";
 import { blobText, commitAt, committedFile, git, outside, regularFiles, verifyDirectoryPin } from "./product.mjs";
-import { assignmentDirectory, deadlineAt, digest, disjoint, fail, fields, integer, roots, name, names, record, relative, text } from "./values.mjs";
-
-/** @param {unknown} value @param {string} label */
-function list(value, label) {
-	if (!Array.isArray(value) || !value.length)
-		fail("incomplete_contract", `Expected nonempty ${label}`);
-	return value;
-}
-
-/** @param {import("./model.js").Output[]} grains @param {boolean} [checkScope] */
-export function validateGraph(grains, checkScope = true) {
-	const ids = names(grains.map(g => g.id), "grain");
-	if (checkScope) disjoint(grains.flatMap(g => roots(g.directory)));
-	const byId = new Map(grains.map(g => [g.id, g]));
-	topology(id=>byId.get(id)?.needs).validate(ids);
-}
-
-/** @param {Record<string,unknown>} row */
-function fixed(row) {
-	const grains = list(row.grains, "grains").map(v => {
-		const g = record(v);
-		fields(g, ["id", "directory", "specification", "boundary", "check", "needs"]);
-		if (typeof g.directory !== "string") fail("invalid_charter", "A directory set requires one area's charter in a version 2 plan");
-		return { id: name(g.id, "grain"), ...assignmentDirectory(g.directory), specification: relative(g.specification),
-			boundary: list(g.boundary, "boundary files").map(relative), check: relative(g.check), needs: names(g.needs ?? [], "required output") };
-	});
-	validateGraph(grains);
-	const known = new Set(grains.map(g => g.id));
-	if (!Array.isArray(row.squads ?? [])) fail("invalid_charter", "Expected flat squads");
-	const squads = (Array.isArray(row.squads) ? row.squads : []).map(v => {
-		const s = record(v);
-		fields(s, ["id", "charter", "grains", "agent"]);
-		const allowed = names(s.grains, "chartered grain");
-		if (!allowed.length || allowed.some(id => !known.has(id)))
-			fail("invalid_charter", "Each squad needs actual grain outputs");
-		return { id: name(s.id, "squad"), charter: relative(s.charter), grains: allowed, ...(s.agent === undefined ? {} : { agent: text(s.agent, "native agent") }) };
-	});
-	names(squads.flatMap(s => s.grains), "chartered producer");
-	const seed = row.seed === undefined ? undefined : names(row.seed, "seed grain");
-	if (seed && (!seed.length || seed.some(id => !known.has(id))) || !seed && !squads.length)
-		fail("invalid_seed", "Supply a nonempty seed or discovery squad");
-	if (!seed && grains.some(g => !squads.some(s => s.grains.includes(g.id))))
-		fail("invalid_charter", "Every output needs a chartered producer");
-	return { squads, grains:grains.map(g=>{
-		const agent=squads.find(s=>s.grains.includes(g.id))?.agent;
-		return agent ? {...g,agent} : g;
-	}), ...(seed ? { seed } : {}) };
-}
-
-/** A fixed scout selected an ID, not a duplicate copy of the writable grant.
- * Resolve that ID in the immutable activation brief when it matters for a new permission.
- * @param {string} cwd @param {import("./model.js").Run} run @param {import("./model.js").Node} n */
-export function verifyFixedGrant(cwd,run,n){
-	if(n.grain.task!==undefined)return;
-	const row=record(JSON.parse(committedFile(cwd,run.policy.base,run.policy.source).toString()));
-	const g=row.version===1 && fixed(row).grains.find(g=>g.id===n.grain.id);
-	if(!g || row.direction!==run.policy.direction || digest(g)!==digest(n.grain))
-		fail("stale_assignment","The fixed grant no longer matches its original activation brief");
-}
+import { deadlineAt, disjoint, fail, fields, integer, roots, name, names, record, relative, text } from "./values.mjs";
 
 /** @param {string} cwd @param {{name:string,oid:string}} entry */
 export function journeyText(cwd, entry) {

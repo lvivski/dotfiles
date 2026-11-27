@@ -5,6 +5,7 @@ import { setImmediate as turn } from "node:timers/promises";
 import { factory,git,put } from "../test/fixture.mjs";
 import { historicalFactory } from "../test/legacy-readers.mjs";
 import { openDatabase } from "./database.mjs";
+import { effectAt } from "./revision.mjs";
 import { decode } from "./snapshot.mjs";
 import { inspectionOutcome } from "./assignment.mjs";
 import { metricsFacts } from "./metrics.mjs";
@@ -170,6 +171,14 @@ test("resuming a pre-review ledger preserves the original writer's contract and 
 	await f.runtime(p.cwd,{startInspection:undefined},createRuntime).operation("submit",{run,token:p.token},p.id);
 	const prior=store.read(run);assert.ok(prior?.nodes.consumer.worker);assert.equal(prior.inspections,undefined);
 	assert.equal(prior.nodes.producer.state,"published");assert.equal(prior.nodes.producer.token,p.token);
+	const w=f.workers.get(prior.nodes.consumer.worker);assert.ok(w);
+	put(w.cwd,"consumer/value",git(w.cwd,"show",`${prior.nodes.consumer.inputs?.producer}:producer/value`));
+	await f.runtime(w.cwd,{startInspection:async()=>assert.fail("no invented reviewer")},createRuntime).operation("submit",{run,token:w.token},w.id);
+	const end=store.read(run);assert.ok(end?.products.at(-1)?.qualifiedAt);
+	assert.equal(end.inspections,undefined);assert.equal(end.nodes.producer.check,prior.nodes.producer.check);
+	for(const id of [end.nodes.producer.check,end.nodes.consumer.check,end.products.at(-1)?.check]){
+		const c=effectAt(end,id);assert.ok(c?.tool==="bash" && c.receipt?.exit===0);store.verifySigned(run,c);
+	}
 });
 
 test("two owner resumes can recover the same unavailable candidate only once, without another writer or component",async t=>{

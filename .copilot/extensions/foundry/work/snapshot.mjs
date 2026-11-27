@@ -4,7 +4,11 @@ import { indexRevision } from "./revision.mjs";
 import { validWorkflows } from "./workflow.mjs";
 import { hash as sha256, oid as commit, validName as id } from "../../../skills/foundry/scripts/recipe.mjs";
 import { attemptSubject } from "./abi.mjs";
+import { recordedAttempt, closedAttempt } from "./requirements.mjs";
+import { sourceAt } from "./description.mjs";
 import { correctionBasis, revisedTask } from "./amendment.mjs";
+import { memberApproval } from "./receipt.mjs";
+import { approvedInput } from "./consent.mjs";
 import { validSignals } from "./signals.mjs";
 import { changeOffer, changeOwners, checkpointReceipt, checkReceipt, comparisonVerdict, exhaustedCandidate, generationOf, goalReceipt, inconclusiveRepair, launcherFailure, missingInput, mixedVerification, omittedStep, productReceiptAt, relinquishable, sameEvaluation, verificationSource } from "./evidence.mjs";
 import { validFeedback } from "./feedback.mjs";
@@ -183,7 +187,7 @@ const scout = shape({ ...dispatch, kind: one("scout"), tool: one("workflow"), sq
 const native = shape({
 	verification:optional(description),
 	attempt:optional(v=>object(v) && (v.version===1 && optional(one("never-issued","closed-before-runner-claim"))(v.closure) && Object.keys(v).every(k=>k==="version" || k==="closure") ||
-		v.version===2 && optional(id)(v.previous) && Object.keys(v).every(k=>k==="version" || k==="previous"))),
+		v.version===2 && optional(id)(v.previous) && Object.keys(v).every(k=>k==="version" || k==="previous") || v.version===3)),
 	testPin:optional(id),
 	calibration:optional(shape({stop:id,role:one("oldGood","newGood","newBad"),subject:sha256})),
 	lane:optional(sha256),
@@ -236,6 +240,7 @@ const snapshot = shape({
 		author:optional(id),reviewer:optional(id),subject:optional(sha256),dispatch:optional(id),workflow:optional(id),continuation:optional(id),continuationAttempt:optional(positive),awaitingPermission:optional(v=>v===true),candidate:optional(commit),revision:optional(commit),blob:optional(commit),recheck:optional(id)}))),
 	targetProposal:optional(sha256),offerHold:optional(noteText),
 	adoptions:optional(list(shape({id:sha256,basis:v=>sha256(v) || typeof v==="string" && /^inputs\/1:[0-9a-f]{64}$/.test(v),revision:commit,checkpoint:id,goal:id,assembly:optional(commit),message:noteText,offeredThrough:optional(count),
+		accepted:optional(shape({presentation:id,after:id,inputs:optional(list(approvedInput)),order:optional(list(id))})),
 		evaluator:optional(shape({kind:one("goal","product"),from:commit,blob:commit,files:list(path),draft:optional(sha256)})),
 		foreground:optional(shape({check:id,retry:id,variable:string,grains:named(shape({file:path,number:positive,line:string,blob:commit}))})),
 		rollout:optional(shape({from:commit,blob:commit,harness:commit,files:list(rolloutFile),draft:optional(sha256),
@@ -251,7 +256,7 @@ const snapshot = shape({
 	independent:optional(subset),
 	id, owner: string, policy, references: optional(named(commit)),
 	scheduling: optional(shape({ revision: positive, workers: optional(positive), checkpointReviews: bool })),
-	repins: optional(list(shape({ from: commit, revision: commit, files: list(path) }))),
+	repins: optional(list(shape({ from: commit, revision: commit, files: list(path), assessment:optional(id) }))),
 	productRepins: optional(list(shape({ from:commit, revision:commit, files:list(path), checkpoint:id, goal:id, recheck:id, ownership:optional(one(retainedMode)), targetFrom:optional(commit),acceptance:optional(noteText),resolutions:optional(v=>resolutions(v).length>0),
 		amendments:optional(list(shape({prior:product,proposal:sha256,recheck:id,harness:optional(commit)}))) }))),
 	artifacts: optional(list(shape({ file: path, blob: commit, base: commit, publisher: string, to: list(path),assembly:optional(commit),
@@ -302,6 +307,8 @@ function validDispatch(run, e, effects, products) {
 	if("instruction" in e)return false;
 	if(e.tool==="bash"){
 		const a=e.attempt;
+		if(a?.version===3 && (!closedAttempt(e) || !run.history || (a.previous===undefined?a.source.kind==="activation" && run.effects[0]!==e:
+			!run.history[a.previous]) || (!e.runnerStarted || a.source.kind==="approval") && !recordedAttempt(run,e,sourceAt(run,e)) || !!e.runnerStarted!==!!e.runnerClaim))return false;
 		if(a?.version===2 && (!described(e) || !!e.runnerStarted!==!!e.runnerClaim || e.receipt && !e.runnerClaim || e.lane))return false;
 		if(a?.version===1 && a.closure && (e.runnerStarted || e.runnerClaim || e.receipt || e.launcherExit ||
 			(a.closure==="never-issued"?!["ready","withdrawn"].includes(e.state) || e.callId!==undefined || e.error!==undefined || e.permissionHold!==undefined:
@@ -408,7 +415,8 @@ function validDispatch(run, e, effects, products) {
 		const input=e.kind==="repair" && (e.input || e.continuation && e.baselineStop);
 		if((e.callId || e.error) && !(input && e.callId && e.error===disabledRoute) || e.permissionHold || e.claims || e.reuse || e.observer || e.receipt || !e.grain)return false;
 		if(e.kind==="component"){
-			if(!e.rollout || e.runnerStarted || !run.adoptions?.some(a=>a.rollout?.followup?.proposal===e.rollout && a.decision?.status==="answered"))return false;
+			const id=memberApproval(e);
+			if(!id || e.runnerStarted || !run.adoptions?.some(a=>a.rollout?.followup?.proposal===id && a.decision?.status==="answered"))return false;
 		}else if(e.kind!=="writer" && !input || !e.token || run.nodes[e.grain]?.token===e.token)return false;
 	}
 	if (e.state === "retired" || "retirement" in e) {
@@ -751,13 +759,14 @@ export function decode(value,storeView=false) {
 			if (n.stop?.kind === "writer-relinquished" && (n.candidate || !relinquishable(value,n))) return true;
 			if ((frozenSubmission(n) || checked(n)) && (e?.kind !== "component" || e.grain !== id || e.commit !== n.candidate || e.check !== g.check)) return true;
 			const i=n.check && inspections.get(n.check);
-			if(checked(n) && e?.kind==="component" && (e.replacement || e.rollout)){
+			const substitution=e?.kind==="component" && (memberApproval(e) || e.replacement);
+			if(checked(n) && e?.kind==="component" && substitution){
 				const a=changeOffer(value,e),o=a && changeOwners(a)[id],base=a?.rollout?.from??(a?.failed && effects.get(a.failed)?.commit);
 				if(!a || !o || !base || n.worker || n.token || n.workspace || n.base!==base || n.generation!==base || n.replaces!==o.output ||
 					"inputs" in o && digest(n.inputs??null)!==digest(o.inputs) || !value.productRepins?.some(p=>p.amendments?.some(s=>s.proposal===a.id)))return true;
 			}
 			if(n.state==="reviewing" && (!i || !currentInspection(value,i)) || value.inspections && checked(n) &&
-				(!i || publicationVerdict(i)!=="approved" || e?.kind==="component" && !e.remedy && !e.delivery && !e.replacement && !e.rollout && !reviewedGrant(value,n,e,i)))return true;
+				(!i || publicationVerdict(i)!=="approved" || e?.kind==="component" && !e.remedy && !e.delivery && !substitution && !reviewedGrant(value,n,e,i)))return true;
 			if (checked(n) && checkReceipt(e)?.exit !== 0) return true;
 			if (n.state === "qualified" && last?.outputs[id] !== n.candidate) return true;
 			return areas.length ? n.state === "idle" || !g.task || !areas.some(s => owns(s, g.directory) && s.checks.includes(g.check) &&

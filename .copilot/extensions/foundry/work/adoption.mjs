@@ -85,7 +85,8 @@ export function planAdoption(cwd,run,actor,revision,verify) {
 
 /** @typedef {{cwd:string,store:()=>Pick<ReturnType<typeof import("./database.mjs").openDatabase>,"planAndSwap"|"verifySigned">,
  * closed:()=>boolean,executable:()=>Promise<boolean>,permissionBlocker:()=>Promise<import("./permissions.mjs").PermissionBlock|null>,
- * persist:<T>(write:()=>T|Promise<T>)=>Promise<T|undefined>,idle:()=>boolean|Promise<boolean>,adopt:(message:string)=>Promise<string|null>,wake:()=>Promise<void>}} ApprovalHost */
+ * persist:<T>(write:()=>T|Promise<T>)=>Promise<T|undefined>,idle:()=>boolean|Promise<boolean>,adopt:(message:string)=>Promise<string|null>,wake:()=>Promise<void>,
+ * admittedInputs:ReturnType<typeof import("./grants.mjs").recoveryRules>["admittedInputs"]}} ApprovalHost */
 /** @typedef {{showing:boolean,prompt:string,vacant?:()=>Promise<boolean>}|{lost:string,vacant:()=>Promise<boolean>}} Presentation */
 /** Present exactly once after a committed claim. A new display does not adopt, approve, or recheck.
  * @param {ApprovalHost} io @param {string} runId @param {string} actor @param {Adoption} expected @param {Presentation} [request] */
@@ -184,10 +185,14 @@ async function present(io,runId,actor,expected,presentation,request){
 			if(offerId(plan.offer)!==live.id || !explicit && !live.failed && plan.prompt!==a.message){
 				invalidatePresentation(live,"The prepared target no longer matches the original proposal.");return;
 			}
+			// The exact answer and its obligations commit together or neither does.
+			observeReply(live,presentation,reply);
+			live.accepted={presentation,after:text(r.effects.at(-1)?.id,"last effect before the approval")};
+			if(live.rollout)live.accepted.inputs=io.admittedInputs(r,live);
 			const guard=live.failed ? reserveChange(io.cwd,r,live,reply.answer) :
 				"apply" in plan ? plan.apply(r,reply.answer) : fail("invalid_patch","No verification operation for the approved change");
 			if(live.rollout)live.offeredThrough=r.artifacts?.length??0;
-			observeReply(live,presentation,reply);delete r.targetProposal;applied=true;
+			delete r.targetProposal;applied=true;
 			return ()=>!io.closed() && !expired(r) && guard();
 		});
 	});

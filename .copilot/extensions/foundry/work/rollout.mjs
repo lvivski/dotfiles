@@ -8,6 +8,7 @@ import { adoptedStop, changeOffer } from "./evidence.mjs";
 import { admitted, current } from "./native.mjs";
 import { checked, dependencies } from "./lineage.mjs";
 import { publishedComponent } from "./publication.mjs";
+import { memberApproval } from "./receipt.mjs";
 import { changedFiles, commitAt, git, outside, rolloutFiles, stageHarness, stagePatch, treeOf, verifyContracts } from "./product.mjs";
 import { currentChange } from "./replacement.mjs";
 import { grant } from "./transfer.mjs";
@@ -73,7 +74,7 @@ export function rolloutPlan(cwd,run,actor,from,failed,blob,verify){
 	if(actor!==run.owner)fail("foreign_run","Only the run owner can propose a harness rollout");
 	admitted(run);
 	const target=commitAt(cwd,run.policy.target),stop=run.effects.find(c=>c.id===failed);
-	const parent=stop?.kind==="component" && stop.rollout?changeOffer(run,stop):undefined;
+	const parent=stop?.kind==="component" && memberApproval(stop)?changeOffer(run,stop):undefined;
 	const ref=correctionRefs(run).find(ref=>ref.base===target && ref.blob===blob && !ref.evaluation && (!ref.assembly || ref.assembly===from) && matchesDraft(run,ref,failed,from));
 	const frontier=parent && serialBoundary(run,parent),cut=frontier?.checks;
 	if(parent && (!frontier || frontier.last.id!==failed || frontier.exit===0 && ref?.assembly!==from || !run.join || !parent.rollout ||

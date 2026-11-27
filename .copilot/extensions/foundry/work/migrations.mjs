@@ -1,5 +1,7 @@
 import { productOverlayPaths } from "./contract.mjs";
-import { amendedOutputs, changeOwners, checkReceipt, failedComponent, mixedVerification, originalVerification, verificationSource } from "./evidence.mjs";
+import { assemblyAt } from "./revision.mjs";
+import { memberApproval } from "./receipt.mjs";
+import { amendedOutputs, changeOffer, changeOwners, checkReceipt, failedComponent, mixedVerification, originalVerification, verificationSource } from "./evidence.mjs";
 import { outside } from "./product.mjs";
 import { retainedMode } from "./transfer.mjs";
 import { digest } from "./values.mjs";
@@ -10,7 +12,7 @@ import { digest } from "./values.mjs";
 /** A failed verification remains an assembly, never a passing checkpoint.
  * @param {Run} run @param {Pin} pin @param {string} id @param {Map<string,Product>} products */
 export function verificationAssembly(run,pin,id,products){
-	const exact=products.get(id)??(run.join?.check===id?run.join:pin.amendments?.find(s=>s.prior.check===id)?.prior);
+	const exact=assemblyAt(run,pin,id,products);
 	if(exact || !run.testRepairs?.length)return exact;
 	const origin=originalVerification(run,id);
 	return [...products.values(),run.join,...(pin.amendments??[]).map(s=>s.prior)].find(p=>p && originalVerification(run,p.check)===origin);
@@ -76,14 +78,14 @@ export function productLineage(run,products,effects){
 				needsGoal=undefined;
 			}else if(e.kind==="product" && e.testPin){
 				if(originalVerification(run,e.id)!==originalVerification(run,needsGoal.check) || e.commit!==needsGoal.commit)return false;
-			}else if(e.kind==="component" && (e.rollout || e.replacement)){
-				const a=offers.get(e.rollout??e.replacement??"");
-				if(!a || !e.grain || a.failed!==needsGoal.check || e.commit!==a.assembly || (e.rollout ? !a.rollout || a.revision!==pin :
-					!a.patch?.owner || a.revision!==needsGoal.target || effects.get(needsGoal.check)?.evaluatorRevision!==pin))return false;
+			}else if(e.kind==="component"){
+				const a=changeOffer(run,e);
+				if(!a || !e.grain || a.failed!==needsGoal.check || e.commit!==a.assembly || (a.rollout ? a.revision!==pin :
+					a.revision!==needsGoal.target || effects.get(needsGoal.check)?.evaluatorRevision!==pin))return false;
 				const owners=changeOwners(a);
 				if(!Object.hasOwn(owners,e.grain) || owners[e.grain].output!==needsGoal.outputs[e.grain])return false;
-			}else if(["product","component","writer","repair","scout"].includes(e.kind))return false;
-		}else if(e.kind==="component" && (e.replacement || e.rollout)){
+			}else if(["product","writer","repair","scout"].includes(e.kind))return false;
+		}else if(e.kind==="component" && (e.replacement || e.rollout || memberApproval(e))){
 			return false;
 		}
 		if(e.kind==="product" && e.receipt){

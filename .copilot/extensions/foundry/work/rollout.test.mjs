@@ -14,6 +14,7 @@ import { observedOverlay } from "./attestation.mjs";
 import { candidatePacket } from "./critique.mjs";
 import { openDatabase } from "./database.mjs";
 import { qualifiedProduct } from "./evidence.mjs";
+import { memberApproval } from "./receipt.mjs";
 import { git as rawGit, stagePatch } from "./product.mjs";
 import { createRuntime } from "./runtime.mjs";
 import { decode } from "./snapshot.mjs";
@@ -106,14 +107,14 @@ for(const wake of ["ordinary wake","unchanged clock","restored issuer"])test(`an
 		mode:async()=>samples>limit?"plan":"autopilot",
 		confirmProposal:async()=>{forms++;return true;},
 		execute:async(tool,args,key)=>{
-			if(tool==="bash" && read().effects.some(e=>e.kind==="component" && e.rollout && e.callId===key)){
+			if(tool==="bash" && read().effects.some(e=>memberApproval(e) && e.callId===key)){
 				starts++;
 				if(reload){originalCall=()=>f.execute(tool,args,key);return {resultType:"unconfirmed"};}
 			}
 			return f.execute(tool,args,key);
 		},
 		permissionBlocker:async()=>{
-			if(read().effects.some(e=>e.kind==="component" && e.rollout && !e.callId)){
+			if(read().effects.some(e=>memberApproval(e) && !e.callId)){
 				samples++;
 				if(!moved){put(f.root,"operator-note","Keep this work.");git(f.root,"add","operator-note");
 					git(f.root,"commit","-qm","Move target after approval");moved=git(f.root,"rev-parse","HEAD");}
@@ -123,7 +124,7 @@ for(const wake of ["ordinary wake","unchanged clock","restored issuer"])test(`an
 	};
 	let issuer=open(reload?original:createRuntime,host);
 	await issuer.operation("rollout",change.args,"owner");await issuer.flush();
-	const saved=read(),member=saved.effects.find(e=>e.kind==="component" && e.rollout);
+	const saved=read(),member=saved.effects.find(e=>memberApproval(e));
 	assert.ok(moved && member?.kind==="component" && member.state==="ready" && !member.callId && !member.runnerClaim);
 	if(reload){
 		issuer.close();samples=0;issuer=open(createRuntime,host);
@@ -147,7 +148,7 @@ for(const wake of ["ordinary wake","unchanged clock","restored issuer"])test(`an
 	}
 	assert.equal(issuer.inspect({run},"owner").qualified,change.candidate);
 	assert.equal(signed(member.id).receipt?.exit,0);assert.deepEqual(signed(j.check),before);
-	assert.deepEqual(read().effects.filter(e=>e.kind==="component" && e.rollout).map(e=>e.id),[member.id]);
+	assert.deepEqual(read().effects.filter(e=>memberApproval(e)).map(e=>e.id),[member.id]);
 	assert.equal(starts,1);assert.equal(forms,1);
 });
 
@@ -364,17 +365,17 @@ test("writer-drafted uncertain launch accepts only its late original binding aft
 	assert.equal(read().correctionDrafts?.[0].parts[0].workflow,id);assert.ok(read().effects.find(e=>e.id===j.check)?.receipt);
 });
 
-for(const lost of [false,true])test(`an author's start acknowledgment before packet delivery / ${lost?"previous issuer lost the ID":"reload retains the ID"}`,async t=>{
+test("an author's start acknowledgment survives reload before its packet is delivered",async t=>{
 	const {f,owner,open,read,j,signed}=await stopped(t,false,{reader:94,area:true});owner.close();f.owner.close();
 	const id="original-admission",failure=signed(j.check);
 	/** @type {import("./author.mjs").Ticket|undefined} */ let ticket;
 	let starts=0,forms=0,reads=0;
-	const first=open(lost?await historicalRuntime(t,95):createRuntime,{draftAgent:async t=>{starts++;ticket=t;return {runId:id,status:"running",workflowName:"foundry-draft"};}});
+	const first=open(createRuntime,{draftAgent:async t=>{starts++;ticket=t;return {runId:id,status:"running",workflowName:"foundry-draft"};}});
 	first.sessionStart("owner",f.root);first.turn("owner");await first.flush();first.close();
 	const issued=read().correctionDrafts?.at(-1)?.parts[0];
 	assert.ok(ticket && issued?.dispatch===ticket.dispatch);
-	assert.equal(issued.workflow,lost?undefined:id,"only an actually retained acknowledgment survives the old issuer");
-	assert.equal(issued.awaitingPacket,lost?undefined:true);
+	assert.equal(issued.workflow,id,"persist the admitted identity even when the body has not read its packet");
+	assert.equal(issued.awaitingPacket,true);
 	/** @type {import("./author.mjs").Packet|undefined} */ let packet;
 	const restored=open(createRuntime,{formIdle:async()=>true,draftAgent:async()=>assert.fail("No replacement launch"),
 		confirmProposal:async()=>{forms++;return true;},draftState:async workflow=>{
@@ -384,8 +385,8 @@ for(const lost of [false,true])test(`an author's start acknowledgment before pac
 			return {runId:id,status:"completed",result:{subject:packet?.subject,reason:"Produce the promised value.",edits:[{file:value,before:row.before,text:"ready\n"}]}};
 		}});
 	restored.sessionStart("owner",f.root);restored.turn("owner");await restored.flush();
-	assert.equal(forms,0);assert.equal(reads>0,!lost);assert.equal(read().join?.check,j.check);
-	if(!lost)await assert.rejects(restored.draftPacket(ticket,"owner","other-admission"),{code:"wrong_workflow"});
+	assert.equal(forms,0);assert.ok(reads>0);assert.equal(read().join?.check,j.check);
+	await assert.rejects(restored.draftPacket(ticket,"owner","other-admission"),{code:"wrong_workflow"});
 	packet=await restored.draftPacket(ticket,"owner",id);
 	restored.turn("owner");await restored.flush();restored.turn("owner");await restored.flush();
 	assert.ok(restored.inspect({run,detail:"proof"},"owner").qualification);
@@ -462,7 +463,7 @@ for(const joined of [false,true])test(`writer-drafted correction on an already s
 		`if test -f ${counter} && cmp -s ${counter} ${value}; then echo joined; else echo standalone; fi > "$1/scope"`,`cp ${value} ${counter}`],true):
 		edit(space,"previous wording","measure totals")+edit(rule,"release","measured"));
 	await owner.operation("rollout",first.args,"owner");await owner.flush();
-	const saved=read(),failure=joined?signed(saved.join?.check??assert.fail()):saved.effects.findLast(c=>c.kind==="component" && c.rollout && c.receipt?.exit===1);
+	const saved=read(),failure=joined?signed(saved.join?.check??assert.fail()):saved.effects.findLast(c=>memberApproval(c) && c.receipt?.exit===1);
 	assert.ok(failure?.commit===first.candidate);owner.close();f.owner.close();let calls=0,decisions=0;
 	/** @type {ReturnType<typeof createRuntime>} */ const now=open(process.env.FOUNDRY_DRAFT_RED?original:createRuntime,{formIdle:async()=>true,
 		draftAgent:async ticket=>{
@@ -508,7 +509,7 @@ for(const detector of ["check","review","declined scope","declined bytes","unava
 			summary:detector==="uncited"?`${rule}:1: change the evaluator instead.`:finding}};
 	}});
 	await seed.operation("rollout",change.args,"owner");await seed.flush();seed.close();f.owner.close();
-	const stoppedRun=read(),member=stoppedRun.effects.find(e=>e.kind==="component" && e.rollout && e.commit===change.candidate);
+	const stoppedRun=read(),member=stoppedRun.effects.find(e=>memberApproval(e) && e.commit===change.candidate);
 	assert.ok(member?.kind==="component");const stop=signed(member.id),review=stoppedRun.inspections?.find(i=>i.component===member.id);
 	assert.equal(stop.receipt?.exit,detector==="check"?1:0);assert.equal(review?.state,detector==="check"?undefined:detector==="unavailable"?"unavailable":"changes");
 	const before=git(f.root,"rev-parse",`${change.candidate}:${value}`),clock=recoveryClock(),events=/** @type {string[]} */([]);let idle=false;
@@ -570,7 +571,7 @@ for(const accept of [true,false])test(`normal wake reconciles the third owner-of
 	const {f,owner,open,j,offer,read,signed}=await stopped(t,false,{reader:90,files:{[obsolete]:"duplicate reader\n"}});
 	const first=await offer(owner,j,edit(space,"previous wording","first")+edit(rule,"release","first"));
 	await owner.operation("rollout",first.args,"owner");await owner.flush();
-	const stop=()=>read().effects.findLast(c=>c.kind==="component" && c.rollout && c.receipt?.exit===1)??assert.fail();
+	const stop=()=>read().effects.findLast(c=>memberApproval(c) && c.receipt?.exit===1)??assert.fail();
 	const c1=stop(),next=await offer(owner,{...j,commit:first.candidate,check:c1.id},edit(space,"first","second")+edit(rule,"first","second"));
 	await owner.operation("rollout",next.args,"owner");await owner.flush();const c2=stop();assert.notEqual(c1.id,c2.id);
 	const delta=edit(value,"draft","ready")+edit(rule,"second","release")+`--- a/${obsolete}\n+++ /dev/null\n@@ -1 +0,0 @@\n-duplicate reader\n`;

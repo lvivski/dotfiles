@@ -36,12 +36,13 @@ test("only a committed logical edit crosses the wire barrier; mixed and unknown 
 	assert.equal(document(),before);
 	db.planAndSwap(run,r=>{r.scheduling={revision:1,checkpointReviews:false};});
 	const converted=JSON.parse(document());
-	assert.equal(converted.format,"foundry-run/2");assert.equal("nodes" in converted,false);
+	assert.equal(converted.format,"foundry-run/3");assert.equal("nodes" in converted,false);
+	assert.equal(converted.historicalPrefix.length,old.effects.length);
 	assert.deepEqual(converted.graph.nodes,old.nodes);
 	assert.deepEqual(converted.effects.map((/** @type {import("./model.js").NativeCall} */ {attempt,...e})=>e),old.effects);
 	assert.equal(converted.effects.find((/** @type {import("./model.js").Effect} */ e)=>e.tool==="bash").attempt.version,1);
 	assert.equal(db.forResume(source,"owner")?.id,run);assert.deepEqual(db.involving("owner"),[run]);
-	for(const v of [{...converted,nodes:old.nodes},{...old,graph:converted.graph},{...converted,format:"foundry-run/3"},
+	for(const v of [{...converted,nodes:old.nodes},{...old,graph:converted.graph},{...converted,format:"foundry-run/2"},{...converted,format:"unknown"},
 		{...converted,effects:old.effects}]){
 		save(v);assert.throws(()=>db.mutateLocked(run,()=>assert.fail("invalid document reached a writer")),{code:"corrupt_run"});
 	}
@@ -50,11 +51,11 @@ test("only a committed logical edit crosses the wire barrier; mixed and unknown 
 	assert.throws(()=>db.read(run),{code:"corrupt_run"},"cache hits must not hide an external checksum mismatch");
 });
 
-test("a version-two reservation cannot masquerade as an unsigned pre-journal completion",async t=>{
+test("a current reservation cannot masquerade as an unsigned pre-journal completion",async t=>{
 	const f=factory(t,run,source,files),owner=f.runtime(f.root,{execute:async()=>({resultType:"unconfirmed"})});await f.start(owner);
 	const db=openDatabase(f.root),raw=new DatabaseSync(db.file);t.after(()=>{raw.close();db.close();});
 	const doc=JSON.parse(String(raw.prepare("SELECT document FROM runs WHERE id=?").get(run)?.document)),e=doc.effects[0];
-	assert.equal(e.attempt.version,2);e.runnerStarted=true;e.state="done";e.receipt={commit:e.commit,check:e.check,exit:0,output:"not signed"};
+	assert.equal(e.attempt.version,3);e.runnerStarted=true;e.state="done";e.receipt={commit:e.commit,check:e.check,exit:0,output:"not signed"};
 	const forged=JSON.stringify(doc);raw.prepare("UPDATE runs SET document=?,checksum=? WHERE id=?").run(forged,checksum(forged),run);
 	assert.throws(()=>db.read(run),{code:"corrupt_run"});assert.throws(()=>db.mutateLocked(run,()=>assert.fail("unsigned result reached planner")),{code:"corrupt_run"});
 });
@@ -160,7 +161,7 @@ test("process loss on either side of the first wire commit and a stale competing
 			env:{...process.env,CRASH_SIDE:side}});
 		assert.equal(crash.status,side==="before"?86:87,crash.stderr || crash.stdout);
 		if(side==="before")assert.equal(document(),before);
-		else{assert.equal(JSON.parse(document()).format,"foundry-run/2");assert.equal(db.forResume(source,"owner")?.scheduling?.revision,1);}
+		else{assert.equal(JSON.parse(document()).format,"foundry-run/3");assert.equal(db.forResume(source,"owner")?.scheduling?.revision,1);}
 	}
 	const peer=openDatabase(f.root);t.after(()=>peer.close());let attempts=0;
 	db.planAndSwap(run,r=>{

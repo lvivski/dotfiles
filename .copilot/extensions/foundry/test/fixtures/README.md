@@ -1,7 +1,7 @@
 # Historical reader fixtures
 
 `legacy-readers.tar.xz` is a source archive, not a run snapshot. Each member is
-`VERSION/work/{reader.version,*.mjs,rules/*.mjs}`. There are **no** ledgers, outcome keys,
+`VERSION/work/{reader.version,*.mjs,rules/*.mjs}` plus the edition's `work/prerequisites.json` when present. There are **no** ledgers, outcome keys,
 Git objects, persisted sessions, user files, or historical tests. The common
 test host creates fresh synthetic Git repositories and executes the archived
 framework's original evaluator processes. The recovery reader then opens that

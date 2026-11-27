@@ -1,124 +1,23 @@
-import { closeSync, constants, lstatSync, mkdirSync, openSync, realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
-import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
-import { git } from "./product.mjs";
+import { checksum, ledgerPath, openLedger } from "./storage.mjs";
+export {checksum,ledgerPath,protocol} from "./storage.mjs";
 import { fail } from "./values.mjs";
 import { decode, receiptShape } from "./snapshot.mjs";
 import { readDocument, writeDocument } from "./wire.mjs";
 import { effectAt, immutable, integrityHolds, privateCopy, sameDocument, withhold } from "./revision.mjs";
-import { acceptOutcome, claimOutcome } from "./outcomes.mjs";
+import { acceptOutcome } from "./outcomes.mjs";
 import { isolationSeal, keepsIsolation } from "./isolation.mjs";
 import { inspectExports } from "./attestation.mjs";
 import { contractHold } from "./contract.mjs";
-import { attemptSubject } from "./abi.mjs";
+import { attemptSubject, supportedNewCall } from "./abi.mjs";
+import {fenceHistory,historical,preserveHistory} from "./historical.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
-export const protocol = 13;
-/** @param {string} document */
-export const checksum = document => createHash("sha256").update(document).digest("hex");
-
-/** @param {string} cwd */
-export function ledgerPath(cwd) {
-	const common = git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).toString().trim();
-	return path.join(realpathSync(common), "foundry", "work.sqlite");
-}
-
-/** @param {string} file @param {boolean} create @param {(db:DatabaseSync,version:unknown,objects:Record<string,unknown>[])=>void} schema @param {()=>void} [checkSession] */
-function openStore(file, create, schema, checkSession) {
-	checkSession?.();
-	const home = path.dirname(file);
-	if (create) mkdirSync(home, { recursive: true, mode: 0o700 });
-	else if (!lstatSync(file, { throwIfNoEntry: false })) fail("missing_run", "No Foundry ledger in this repository");
-	const dir = lstatSync(home);
-	if (!dir.isDirectory() || realpathSync(home) !== home)
-		fail("unsafe_storage", "Expected an unlinked Foundry directory");
-	if (!lstatSync(file, { throwIfNoEntry: false })) {
-		for (const suffix of ["-wal", "-shm", "-journal"])
-			if (lstatSync(file + suffix, { throwIfNoEntry: false }))
-				fail("unsafe_storage", "Orphaned SQLite sidecar");
-		try {
-			closeSync(openSync(file, constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW | constants.O_RDWR, 0o600));
-		}
-		catch (error) {
-			if (!(error instanceof Error && "code" in error && error.code === "EEXIST"))
-				throw error;
-		}
-	}
-	const inode = lstatSync(file);
-	function verify() {
-		checkSession?.();
-		const d = lstatSync(home), f = lstatSync(file);
-		if (!d.isDirectory() || d.ino !== dir.ino || d.dev !== dir.dev || realpathSync(home) !== home || f.ino !== inode.ino || f.dev !== inode.dev)
-			fail("unsafe_storage", "Ledger or directory was replaced");
-		if (!f.isFile() || f.nlink !== 1) fail("unsafe_storage", "Expected an unlinked regular ledger");
-		for (const suffix of ["-wal", "-shm", "-journal"]) {
-			const stat = lstatSync(file + suffix, { throwIfNoEntry: false });
-			// A concurrent SQLite unlink can return a regular sidecar with zero links on macOS.
-			if (stat && (!stat.isFile() || stat.nlink > 1))
-				fail("unsafe_storage", `Expected an unlinked regular SQLite ${suffix.slice(1)} file`);
-		}
-	}
-	verify();
-	const db = new DatabaseSync(file);
-	try {
-		db.exec(`PRAGMA busy_timeout=5000; PRAGMA trusted_schema=OFF; BEGIN${create?" IMMEDIATE":""}`);
-		const version = db.prepare("PRAGMA user_version").get()?.user_version;
-		const objects = db.prepare("SELECT type,name FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all();
-		schema(db, version, objects);
-		db.exec("COMMIT");
-	}
-	catch (error) {
-		db.close();
-		throw error;
-	}
-	/** @template T @param {()=>T} fn @returns {T} */
-	function write(fn) {
-		verify();
-		db.exec("BEGIN IMMEDIATE");
-		try {
-			const value = fn();
-			if (value && typeof value === "object" && "then" in value)
-				fail("async_transaction", "Native I/O cannot run in a ledger transaction");
-			verify();
-			db.exec("COMMIT");
-			return value;
-		}
-		catch (error) {
-			db.exec("ROLLBACK");
-			throw error;
-		}
-	}
-	return { db, verify, write };
-}
-
 /** @param {string} cwd @param {string} [file] @param {boolean} [create] @param {()=>void} [checkSession]
  * @param {(cwd:string,r:import("./model.js").Run,start:number)=>void} [prepareChecks] On new reservations only, outside the write lock. */
 export function openDatabase(cwd, file = ledgerPath(cwd), create = false, checkSession,prepareChecks) {
-	const { db, verify, write } = openStore(file, create, (db, version, objects) => {
-		if (create && version === 0 && !objects.length) {
-			db.exec(`CREATE TABLE runs(id TEXT PRIMARY KEY, owner TEXT NOT NULL, document TEXT NOT NULL, checksum TEXT NOT NULL) STRICT;
-				CREATE INDEX runs_owner ON runs(owner); PRAGMA user_version=${protocol}`);
-		} else if (version !== protocol || objects.length !== 2 || objects[0].type !== "table" || objects[0].name !== "runs" ||
-			objects[1].type !== "index" || objects[1].name !== "runs_owner")
-			fail("unsupported_store", "Incompatible Foundry execution protocol; leave the old ledger intact");
-	}, checkSession);
-	const spool = `${file}.outcomes`;
+	const store=openLedger(file,create,checkSession),{db,write,verify,journal,close}=store;
 	/** @type {Map<string,boolean>} */ const overlays=new Map();
-	/** @type {ReturnType<typeof openStore>|undefined} */ let mailbox;
-	function journal(create = false) {
-		if (!mailbox && (create || lstatSync(spool, { throwIfNoEntry: false }))) {
-			mailbox = openStore(spool, create, (db, version, objects) => {
-				if (create && version === 0 && !objects.length)
-					db.exec(`CREATE TABLE outcomes(run TEXT NOT NULL, effect TEXT NOT NULL, signature TEXT NOT NULL,
-						document TEXT NOT NULL, PRIMARY KEY(run,effect)) STRICT; PRAGMA user_version=1`);
-				else if (version !== 1 || objects.length !== 1 || objects[0].type !== "table" || objects[0].name !== "outcomes")
-					fail("unsupported_store", "Incompatible Foundry runner outcome journal");
-			}, verify);
-		}
-		mailbox?.verify();
-		return mailbox;
-	}
 	/** @param {string} id @param {import("./model.js").NativeCall} e */
 	function verifySigned(id,e) {
 		const row = journal()?.db.prepare("SELECT signature,document FROM outcomes WHERE run=? AND effect=?").get(id,e.id);
@@ -127,7 +26,6 @@ export function openDatabase(cwd, file = ledgerPath(cwd), create = false, checkS
 		acceptOutcome(id,e,String(row.signature),String(row.document));
 	}
 	const metrics={decodedBytes:0,rowBytes:0,validations:0};
-	/** @type {{run:Run,guard:{committed:boolean}}|undefined} */ let locked;
 	/** @typedef {{run:Run,base:Run,sum:string,stamp:string,mail:string}} Revision */
 	/** @type {Revision|undefined} */ let latest;
 	/** Only the most recent full history is strongly retained by this connection.
@@ -240,22 +138,62 @@ export function openDatabase(cwd, file = ledgerPath(cwd), create = false, checkS
 	function changed(before,run){
 		if(sameDocument(run,before.run))return;
 		writable(run);preserveHeld(before.run,run);
-		if(before.run.effects.some((old,i)=>old.tool==="bash" && old.attempt?.version===1 && run.effects[i]?.id!==old.id))
+		preserveHistory(before.run,run);
+		for(const a of before.run.adoptions??[])if(a.accepted && !sameDocument(a.accepted,run.adoptions?.find(next=>next.id===a.id)?.accepted))
+			fail("corrupt_run","Cannot replace the original accepted presentation");
+		if(before.run.effects.some((w,i)=>w.kind==="writer" && w.writing && (run.effects[i]?.kind!=="writer" ||
+			run.effects[i].id!==w.id || !sameDocument(w.writing,/** @type {import("./model.js").NativeCall} */(run.effects[i]).writing))))
+			fail("corrupt_run","Cannot replace a writer's original grant");
+		if(before.run.effects.some((old,i)=>historical(old) && (run.effects[i]?.id!==old.id || run.effects[i]?.tool!=="bash")))
 			fail("corrupt_run","Cannot remove or reorder original historical attempts");
 		for(const e of run.effects)if(e.tool==="bash"){
 			const old=effectAt(before.run,e.id);
-			if(e.attempt?.version!==(old?.tool==="bash"?old.attempt?.version:2))
+			if(old?.tool==="bash" ? !sameDocument(old.attempt,e.attempt) : historical(e))
 				fail("corrupt_run","Cannot change or fabricate historical attempt identity");
 			if(old?.tool==="bash" && JSON.stringify(old.verification)!==JSON.stringify(e.verification))
 				fail("corrupt_run","Cannot replace the input description of an existing attempt");
-			if(old?.tool==="bash" && old.attempt?.version===1 && (old.issuer!==e.issuer || old.callId!==e.callId ||
-				old.runnerClaim!==e.runnerClaim || old.runnerStarted!==e.runnerStarted || old.attempt.closure && e.attempt?.version===1 && old.attempt.closure!==e.attempt.closure ||
+			if(old?.tool==="bash" && old.attempt?.version===3 && (old.issuer!==e.issuer || !sameDocument(old.args,e.args) ||
+				old.callId!==undefined && old.callId!==e.callId || attemptSubject(old)!==attemptSubject(e)))
+				fail("corrupt_run","Cannot change the original issuer, native request or subject of a declared check");
+			if(old?.tool==="bash" && historical(old) && (old.issuer!==e.issuer || old.callId!==e.callId ||
+				old.runnerClaim!==e.runnerClaim || old.runnerStarted!==e.runnerStarted ||
 				JSON.stringify(old.args)!==JSON.stringify(e.args) || JSON.stringify(old.receipt)!==JSON.stringify(e.receipt) || attemptSubject(old)!==attemptSubject(e)))
 				fail("corrupt_run","The original historical claim, signing subject and evidence must remain unchanged");
 		}
 		if(!keepsIsolation(run,before.run.independent && isolationSeal(before.run.independent)))
 			fail("ownership_transition","Mutation conflicts with the approved non-release checkpoint");
-		return writeDocument(run,before.base.inspections===undefined?"legacy-no-review":"required");
+		const review=before.base.inspections===undefined?"legacy-no-review":"required";
+		if(before.base.history)return writeDocument(run,review);
+		// A speculative plan may lose to a loaded old runner. Census the re-read
+		// original row AND spool under BEGIN IMMEDIATE, never the pre-lock draft.
+		return ()=>{
+			const original=load(run.id,stamp(run.id).stamp,undefined);
+			if(!original || original.sum!==before.sum || original.mail!==before.mail)
+				fail("stale_fence","Original check evidence changed before conversion");
+			/** @type {Map<string,boolean>} */ const ledgers=new Map();
+			fenceHistory(original.run,run,path=>{
+				if(!ledgers.has(path)){
+					try{ledgers.set(path,ledgerPath(path)===file);}catch{ledgers.set(path,false);}
+				}
+				return ledgers.get(path)===true;
+			});
+			const effects=run.effects.map((now,i)=>{
+				const raw=original.base.effects[i],observed=original.run.effects[i];
+				return raw && raw!==observed && historical(raw) && !raw.receipt && observed.receipt && sameDocument(now,observed)?raw:now;
+			});
+			if(!effects.some((e,i)=>e!==run.effects[i]))return writeDocument(run,review);
+			// Hydrating the signed spool is a read. A wire conversion must not
+			// turn that view into an edit of the historical claim.
+			const fenced={...run,effects};
+			try{decode(fenced,true);}
+			catch(error){if(!inadmissible(error))throw error;fail("historical_outcome_hold","This first edit needs a spool-only result in the stored graph; original rows left intact");}
+			return writeDocument(fenced,review);
+		};
+	}
+	/** @param {Run} run @param {number} from */
+	function currentReservations(run,from){
+		if(run.effects.slice(from).some(e=>!supportedNewCall(e)))
+			fail("current_authority_required","A new check requires its own proven current declaration; historical formats are read/close only");
 	}
 	/** Only return the value from the successful private plan. Even when an observation
 	 * changes no bytes, its native ticket must survive the same revision check.
@@ -264,10 +202,15 @@ export function openDatabase(cwd, file = ledgerPath(cwd), create = false, checkS
 		for(;;){
 			const before=required(id),run=draft(before),{value,guard,confirm}=plan(run);
 			prepareChecks?.(cwd,run,before.run.effects.length);
+			currentReservations(run,before.run.effects.length);
 			const next=changed(before,run);
 			if(next===undefined && !guard && !confirm)return value;
-			if(write(()=>stamp(id).stamp===before.stamp && (!guard || guard()) && (next===undefined ||
-				db.prepare("UPDATE runs SET document=?,checksum=? WHERE id=? AND checksum=?").run(next,checksum(next),id,before.sum).changes===1)))return value;
+			if(write(()=>{
+				if(stamp(id).stamp!==before.stamp || guard && !guard())return false;
+				if(next===undefined)return true;
+				const doc=typeof next==="function"?next():next;
+				return db.prepare("UPDATE runs SET document=?,checksum=? WHERE id=? AND checksum=?").run(doc,checksum(doc),id,before.sum).changes===1;
+			}))return value;
 		}
 	}
 	return {
@@ -284,30 +227,6 @@ export function openDatabase(cwd, file = ledgerPath(cwd), create = false, checkS
 			});
 		},
 		metrics:()=>({...metrics}),
-		/** Inside the exclusive claim transaction. Only the holder can publish; publishing
-		 * never reads or mutates the run document. @param {string} run @param {import("./model.js").Effect} effect */
-		outcomeWriter(run, effect) {
-			const claim=locked?.guard,id=effect.id;
-			if(!claim || locked?.run.id!==run || !locked.run.effects.includes(effect))fail("unissued_check","Only the original locked reservation can create a runner key");
-			const seal = claimOutcome(run, effect);
-			const store = journal(true) ?? fail("missing_store", "No runner outcome journal");
-			/** @param {import("./model.js").Receipt} receipt */
-			const publish=receipt => {
-				if(!claim.committed)fail("unissued_check","Runner claim did not commit");
-				const {document, signature} = seal(receipt);
-				store.write(() => {
-					const inserted = store.db.prepare("INSERT INTO outcomes VALUES(?,?,?,?) ON CONFLICT(run,effect) DO NOTHING")
-						.run(run, id, signature, document);
-					if (inserted.changes) return;
-					const prior = store.db.prepare("SELECT signature,document FROM outcomes WHERE run=? AND effect=?").get(run,id);
-					if (prior?.signature !== signature || prior.document !== document)
-						fail("conflicting_outcome", "Refusing to replace the original runner outcome");
-				});
-			};
-			return Object.assign(publish,{signPreparation:(/** @type {string} */ inputs,/** @type {string} */ tree)=>{
-				if(!claim.committed)fail("unissued_check","Runner claim did not commit");return seal.signPreparation(inputs,tree);
-			}});
-		},
 		/** Change notification only; consumers must still read and verify the snapshot. @param {string} id */
 		stamp:id=>stamp(id).stamp,
 		/** @param {string} id */
@@ -344,26 +263,25 @@ export function openDatabase(cwd, file = ledgerPath(cwd), create = false, checkS
 		/** @param {Run} run */
 		insert(run) {
 			writable(run);
-			if(run.effects.some(e=>e.tool==="bash" && e.attempt?.version!==2))fail("corrupt_run","New run requires a current attempt binding");
+			if(run.history)fail("corrupt_run","A new run cannot inherit historical slots");
 			prepareChecks?.(cwd,run,0);
-			const doc = writeDocument(run,"required");
+			currentReservations(run,0);
+			const doc = writeDocument({...run,history:{},historicalPrefix:{length:0,last:null}},"required");
 			return write(() => db.prepare("INSERT INTO runs VALUES(?,?,?,?)").run(run.id, run.owner, doc, checksum(doc)));
 		},
 		/** Single synchronous transaction; keep only final identity checks and bounded mutations here.
 		 * @template T @param {string} id @param {(run:Run)=>T} fn @returns {T} */
 		mutateLocked(id, fn) {
-			const claim={committed:false};
-			const result=write(() => {
-				const before=required(id,false),run=draft(before);locked={run,guard:claim};
-				try{
-					const result=fn(run),doc=changed(before,run);
-					if(doc!==undefined)db.prepare("UPDATE runs SET document=?,checksum=? WHERE id=?").run(doc,checksum(doc),id);
-					return result;
-				}finally{locked=undefined;}
+			return write(() => {
+				const before=required(id,false),run=draft(before),result=fn(run),next=changed(before,run);
+				if(next!==undefined){
+					const doc=typeof next==="function"?next():next;
+					db.prepare("UPDATE runs SET document=?,checksum=? WHERE id=?").run(doc,checksum(doc),id);
+				}
+				return result;
 			});
-			claim.committed=true;return result;
 		},
-		close() { mailbox?.db.close(); db.close(); },
+		close,
 	};
 }
 
@@ -386,8 +304,8 @@ function preserveHeld(before,after){
 			count=affected.size;
 			for(const n of Object.values(after.nodes))if(n.grain.needs.some(id=>affected.has(id)) || Object.keys(n.inputs??{}).some(id=>affected.has(id)))affected.add(n.grain.id);
 		}
-		const {nodes,effects,inspections,active,pauseReason,policyHold,...old}=before,
-			{nodes:fresh,effects:calls,inspections:reviews,active:running,pauseReason:reason,policyHold:policy,...now}=after;
+		const {nodes,effects,inspections,active,pauseReason,policyHold,history,...old}=before,
+			{nodes:fresh,effects:calls,inspections:reviews,active:running,pauseReason:reason,policyHold:policy,history:slots,...now}=after;
 		const earlier=effects.slice(0,effects.indexOf(prior));
 		/** A product-wide result cannot have admitted a writer already bound before
 		 * that check was reserved. Do not grant a fresh owner on this inference. @param {string|undefined} id */

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { verdicts } from "../test/portable.mjs";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -648,6 +649,30 @@ test("a product evaluator form keeps the exact checked work while an unrelated r
 	assert.equal(prompts,1);assert.equal(end.productRepins?.at(-1)?.revision,f.revision);
 	assert.equal(end.products.at(-1)?.commit,f.prior.commit);assert.notEqual(end.products.at(-1)?.check,f.prior.check);
 	assert.deepEqual(end.effects.slice(0,before.effects.length),before.effects);assert.ok(end.artifacts?.some(a=>a.file==="notice"));
+});
+
+test("an issued checker upgrade waits for its original signed goal, not a copy in the run",async t=>{
+	const f=await checkpoint(t),db=openDatabase(f.root);t.after(()=>db.close());
+	const read=()=>db.read(run)??assert.fail(),old=read(),g=old.goal;assert.ok(g);
+	let held=true,forms=0;
+	const owner=f.runtime(f.root,{confirm:async()=>{forms++;return true;},execute:async(...a)=>
+		held && a[0]==="bash"?{resultType:"unconfirmed"}:f.execute(...a)});
+	await owner.operation("repin",f.args,"owner");
+	const c=read().effects.find(e=>e.id===read().join?.check);assert.ok(c?.tool==="bash" && c.callId && !c.runnerClaim);
+	const journal=new DatabaseSync(db.file+".outcomes");t.after(()=>journal.close());
+	const row=journal.prepare("SELECT document,signature FROM outcomes WHERE run=? AND effect=?").get(run,g.check);assert.ok(row);
+	const shell=()=>spawnSync("/bin/sh",["-c",String(c.args.command)],{cwd:f.root,encoding:"utf8"});
+	assert.equal(journal.prepare("DELETE FROM outcomes WHERE run=? AND effect=?").run(run,g.check).changes,1);
+	try{
+		const refused=shell();assert.notEqual(refused.status,0);assert.match(refused.stderr,/original signed result/);
+		const parked=read().effects.find(e=>e.id===c.id);assert.ok(parked?.tool==="bash");assert.equal(parked.runnerClaim,undefined);
+		assert.deepEqual(read().products,old.products);
+	}finally{journal.prepare("INSERT INTO outcomes(run,effect,document,signature) VALUES(?,?,?,?)").run(run,g.check,row.document,row.signature);}
+	const accepted=shell();assert.equal(accepted.status,0,accepted.stderr);
+	held=false;owner.turn("owner");await owner.flush();
+	const end=read(),product=end.products.at(-1);assert.equal(product?.check,c.id);
+	const signed=end.effects.find(e=>e.id===c.id);assert.ok(signed?.tool==="bash" && signed.receipt?.exit===0);db.verifySigned(run,signed);
+	assert.equal(end.effects.find(e=>e.id===end.goal?.check)?.receipt?.exit,2);assert.equal(forms,1);
 });
 
 const before=process.env.FOUNDRY_RELEASE_BEFORE;

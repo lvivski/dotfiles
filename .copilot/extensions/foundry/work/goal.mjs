@@ -16,13 +16,34 @@ export { frozenCheckpoint } from "./frozen.mjs";
 import { comparison, obstructed, reading, reviews } from "./charter.mjs";
 import { blockReview, checkpointWake } from "./reviews.mjs";
 import { deadlineAt, text } from "./values.mjs";
+import { declareAssessment } from "./requirements.mjs";
+import { bindOutput } from "./description.mjs";
+import { originalProduct } from "./ancestry.mjs";
+import { approvalId, declareApproved } from "./approved.mjs";
+import { effectAt } from "./revision.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @param {string} cwd @param {Run} run @param {string} actor @param {string} target @param {string} commit */
 export function assess(cwd, run, actor, target, commit) {
 	verifyContracts(cwd, run.policy, target);
+	const prior=run.goal?.check;
 	const effect=reserveCheck(run,actor,cwd,commit,text(run.policy.goalCheck,"goal evaluator"),{kind:"goal"});
 	run.goal = { target, commit, check:effect.id };
+	if(run.effects.length===1)effect.attempt=declareAssessment(run,effect,target);
+	else{
+		const product=run.products.at(-1),c=effectAt(run,product?.check),id=c?.kind==="product" && approvalId(c);
+		const pin=run.repins?.at(-1),a=id && product?.commit===commit && product.target===target && run.adoptions?.find(a=>a.id===id);
+		if(a && a.manifest)bindOutput(run,effect,{kind:"approval",id:a.id},target);
+		else if(pin?.assessment && pin.assessment===prior && pin.revision===effect.evaluatorRevision &&
+			effectAt(run,prior)?.commit===commit)
+			bindOutput(run,effect,{kind:"receipt",use:"goal",check:pin.assessment},target);
+		else if(c?.kind==="product" && (c.attempt?.version===3?c.attempt.source.kind==="assembly":originalProduct(run,c)))
+			bindOutput(run,effect,{kind:"receipt",use:"product",check:c.id},target);
+		else if(a && a.rollout){
+			const declaration=declareApproved(run,effect,a);
+			if(declaration)effect.attempt=declaration;
+		}
+	}
 	for (const r of reviews(run)) if (r.state === "ready" && r.base !== commit)
 		blockReview(r, "Reviewed revision was superseded before dispatch");
 	return effect;
@@ -199,7 +220,10 @@ const goalActions={
 		activate(run,"goal-met");
 		for (const r of reviews(run).filter(reading)) blockReview(r, "Goal met; no further review is needed");
 	},
-	baseline({cwd,run,actor,target,at}) {reserveProduct(run,actor,cwd,target,at.commit,{});},
+	baseline({cwd,run,actor,target,at}) {
+		const {check}=reserveProduct(run,actor,cwd,target,at.commit,{});
+		check.attempt=declareAssessment(run,check,target,at.check);
+	},
 };
 
 /** @param {(c:ReleaseContext)=>void} effect */

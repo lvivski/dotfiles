@@ -1,21 +1,51 @@
 import { componentBatch } from "./inspections.mjs";
 import { assign } from "./assignment.mjs";
 import { verifyJoinedInputs } from "./assembly.mjs";
-import { pendingSuccessor, rolloutSlots, rolloutPaths } from "./campaign.mjs";
+import { pendingSuccessor, rolloutSlots, rolloutPaths, stoppedBatch } from "./campaign.mjs";
 import { journal } from "./dispatch.mjs";
 import { amendedOutputs, changeOffer, changeOwners } from "./evidence.mjs";
 import { admitted, expired, reserveCheck, reserveProduct } from "./native.mjs";
-import { checked } from "./lineage.mjs";
+import { checked, producingGrant, submittedBy } from "./lineage.mjs";
 import { commitAt, retain } from "./product.mjs";
 import { publishedNodes } from "./publication.mjs";
 import { currentChange, replaceable, replacementChecks } from "./replacement.mjs";
 import { grant, productOwnership } from "./transfer.mjs";
 import { digest, fail, text } from "./values.mjs";
+import { activeApproval, approvalId, declareApproved } from "./approved.mjs";
+import { currentOrder, memberDeclaration, scheduleMembers } from "./series.mjs";
+import { effectAt } from "./revision.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @typedef {import("./model.js").Node} Node */
 /** @typedef {import("./model.js").Adoption} Change */
 /** @typedef {import("./model.js").NativeCall} Check */
+
+/** The original answered approval owns its continuation, not the storage fence,
+ * selector or executor. Verify the actual historical producer and original signed
+ * rows before admitting a new component. This never creates a writer grant.
+ * @param {string} cwd @param {Run} run @param {string} actor @param {string} tip
+ * @param {{approval:Change,original:Check}} slot @param {(c:Check)=>void} verify */
+export function reserveApprovedMember(cwd,run,actor,tip,{approval:a,original:old},verify){
+	const id=old.grain,n=id && run.nodes[id],owner=id && a.rollout?.owners[id];
+	if(!id || !n || !owner || !old.commit || !old.check || actor!==run.owner || old.issuer!==actor || !run.active || expired(run) ||
+		!run.adoptions?.includes(a) || a.revision!==tip || commitAt(cwd,run.policy.target)!==tip || digest(n)!==owner.binding ||
+		run.effects.some(c=>c.permissionHold) || run.inspections?.some(i=>i.permissionHold))return false;
+	const original=effectAt(run,owner.component),launches=run.effects.slice(0,original?run.effects.indexOf(original):0)
+		.filter(w=>w.kind==="writer" && w.nativeId===n.worker && w.grain===id && w.token===n.token);
+	const origin=launches.length===1 && producingGrant(run,launches[0]);
+	if(!origin || origin.review.id!==n.review || origin.generation!==n.generation || !submittedBy(original,origin))return false;
+	const c=reserveCheck(run,actor,cwd,old.commit,old.check,{kind:"component",grain:id});
+	const declaration=declareApproved(run,c,a,old.id);
+	if(!declaration){run.effects.pop();return false;}
+	for(const f of declaration.facts)if(f.kind==="signed"){
+		const previous=effectAt(run,f.check);
+		if(previous?.tool!=="bash")fail("missing_receipt","Missing signed input to the original approval");
+		verify(previous);
+	}
+	c.attempt=declaration;
+	if(!activeApproval(run,c,a)){run.effects.pop();return false;}
+	return true;
+}
 
 /** Reserve fresh evidence, not a fresh writer. Existing attempt bindings stay
  * intact; a product amendment with no replaced output has no standalone component.
@@ -23,16 +53,24 @@ import { digest, fail, text } from "./values.mjs";
  * @param {string} cwd @param {Run} run @param {Change} a @param {string} answer */
 export function reserveChange(cwd,run,a,answer){
 	admitted(run);
-	const assembly=text(a.assembly,"approved assembly"),ids=Object.keys(changeOwners(a));
+	const assembly=text(a.assembly,"approved assembly");
 	if(answer!==(a.rollout??a.patch)?.blob || commitAt(cwd,run.policy.target)!==a.revision)fail("stale_pin","The approved bytes or target changed");
+	if(a.rollout && a.accepted)scheduleMembers(a);
+	const ids=(a.rollout && a.accepted?.order)??Object.keys(changeOwners(a));
 	retain(cwd,assembly);
 	if(a.rollout)retain(cwd,a.rollout.harness);
-	const parent=a.rollout?.followup?.proposal;
-	if(parent)for(const c of run.effects)if(c.kind==="component" && c.rollout===parent && c.state==="ready")journal(c,"withdraw");
+	const f=a.rollout?.followup;
+	if(f){
+		const parent=run.adoptions?.find(p=>p.id===f.proposal),draft=run.correctionDrafts?.find(d=>d.id===a.rollout?.draft);
+		const batch=parent && (!a.rollout?.draft || draft) && stoppedBatch(run,parent,f.check,false,f.observation===0,!!draft?.finding);
+		if(!batch)fail("stale_pin","Cannot displace an unknown or issued serial suffix");
+		for(const c of batch)if(c.state==="ready")journal(c,"withdraw");
+	}
 	if(!ids.length)joinChange(cwd,run,a);
 	for(const id of ids){
 		const c=reserveCheck(run,run.owner,cwd,assembly,run.nodes[id].grain.check,{kind:"component",grain:id});
-		if(a.rollout)c.rollout=a.id;else c.replacement=a.id;
+		if(a.rollout)c.attempt=memberDeclaration(run,c,a,currentOrder(run,a,c))??fail("current_authority_required","Missing ordered, approved member declaration");
+		else c.replacement=a.id;
 	}
 	return ()=>commitAt(cwd,run.policy.target)===a.revision;
 }
@@ -48,6 +86,9 @@ function joinChange(cwd,run,a){
 	const {check:c}=reserveProduct(run,run.owner,cwd,prior.target,assembly,outputs);
 	if(harness)c.evaluatorRevision=harness;
 	(p.amendments??=[]).push({prior,proposal:a.id,recheck:c.id,...(harness && {harness})});
+	if(a.rollout && run.effects.some(e=>e.kind==="component" && approvalId(e)===a.id)){
+		c.attempt=declareApproved(run,c,a)??fail("current_authority_required","Missing signed and reviewed members for the approved join");
+	}
 }
 
 /** @param {string} cwd @param {Run} run @param {string} failed @param {((c:Check)=>void)|undefined} verify */
@@ -59,15 +100,15 @@ export function settleChange(cwd,run,failed,verify){
 	const a=rollout || single && changeOffer(run,single);
 	if(!a || !a.assembly || commitAt(cwd,run.policy.target)!==a.revision || a.rollout && pendingSuccessor(run,a))return;
 	const checks=a.rollout?rolloutSlots(run,a).checks:single?[single]:[],required=changeOwners(a);
-	if(!checks.length || !checks.every(c=>currentChange(run,c)?.id===a.id))return;
-	const result=componentBatch(run,a.assembly,Object.keys(required),checks,()=>{
+	if(!checks.length || !checks.every(c=>currentChange(run,c)===a && (c.attempt?.version!==3 || activeApproval(run,c,a))))return;
+	const result=componentBatch(run,a.assembly,(a.rollout && a.accepted?.order)??Object.keys(required),checks,observed=>{
 		if(!verify)fail("missing_receipt","This verification plan requires its original signed component observations");
 		for(const [id,pin] of Object.entries(a.rollout?.included??{})){
 			const n=run.nodes[id];
 			if(!n || !checked(n) || n.candidate!==j.outputs[id] || pin.legacy && n.check!==pin.legacy ||
 				digest([pin.scope,pin.inputs])!==digest([grant(n),n.inputs??{}]))fail("stale_assignment",`Included output or dependency changed: ${id}`);
 		}
-		for(const c of checks)verify(c);
+		for(const c of observed)verify(c);
 	});
 	if(result.state!=="ready")return;
 	if(a.patch?.owner){

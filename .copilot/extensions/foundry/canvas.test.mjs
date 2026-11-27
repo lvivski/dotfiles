@@ -17,7 +17,8 @@ test("a board with no planner, runner, ledger or effect executor can load the ac
 			const result=next(s,ctx),local=result.url.startsWith(root.href)&&result.url.slice(root.href.length);
 			if(result.url.startsWith("node:") && !["node:crypto","node:fs/promises","node:http"].includes(result.url))
 				throw Error("Unexpected board capability: "+result.url);
-			if(local && local.startsWith("work/") && !local.startsWith("work/rules/") && !pure.has(local))
+			const memberData=local==="work/prerequisites.json" && ctx.importAttributes.type==="json" && ctx.parentURL===new URL("work/strategy.mjs",root).href;
+			if(local && local.startsWith("work/") && !local.startsWith("work/rules/") && !pure.has(local) && !memberData)
 				throw Error("Board reached a non-renderer dependency: "+local);
 			return result;
 		}});

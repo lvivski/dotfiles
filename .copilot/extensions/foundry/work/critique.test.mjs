@@ -293,3 +293,28 @@ test("check the original authority every attempt, including a resume; no packet,
 	allowed=false;await assert.rejects(definition.run(ctx),/not this bound review/);
 	assert.equal(calls,1);
 });
+
+test("a parked review receives its original complete packet; a new review receives the scoped assignment",async t=>{
+	const {root,i}=fixture(t),assigned="Preserve the original line endings.",old=candidatePacket(root,i),current=candidatePacket(root,i,Infinity,assigned);
+	const {prompt,...pins}=old;
+	/** @param {string} bytes */
+	const subject=bytes=>createHash("sha256").update("packet-only-v1\0").update(JSON.stringify(pins)).update("\0").update(bytes).digest("hex");
+	let budget=Buffer.byteLength(prompt),canRead=true;
+	const definition=critiqueDefinition(()=>({async inspectionPacket(_run,_job,_ticket,_actor,_workflow,original){
+		if(!canRead)fail("inspection_held","Original issuer held");
+		return candidatePacket(root,i,budget,assigned,original);
+	}}));
+	/** @type {string[]} */ const delivered=[];
+	const ctx=context(async bytes=>{delivered.push(String(bytes));return {outcome:"approved",summary:"pkg/unit/replaced:1: the generated line retains the required ending."};});
+	const parked={...ctx,step:async()=>subject(prompt)},enriched={...ctx,step:async()=>subject(current.prompt)};
+	assert.equal((await definition.run(parked)).outcome,"approved");
+	assert.deepEqual(delivered,[prompt],"use the journaled bytes, not a new task or partial evidence");
+	await assert.rejects(definition.run(ctx),/budget/,"a fresh review may not drop the task to fit");
+	await assert.rejects(definition.run(enriched),/budget/,"an already enriched packet may not be downgraded either");
+	budget--;await assert.rejects(definition.run(parked),/budget/,"the historical packet still needs to fit today's budget");
+	budget=Infinity;
+	await assert.rejects(definition.run({...ctx,step:async()=>"0".repeat(64)}),/original review subject/);
+	canRead=false;await assert.rejects(definition.run(parked),{code:"inspection_held"});
+	canRead=true;assert.equal((await definition.run(enriched)).outcome,"approved");assert.equal((await definition.run(ctx)).outcome,"approved");
+	assert.deepEqual(delivered,[prompt,current.prompt,current.prompt]);assert.ok(current.prompt.includes(assigned));
+});

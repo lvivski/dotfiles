@@ -6,6 +6,7 @@ import { currentInspection, inspectionResult, priorReview } from "./inspection.m
 import { boundInspections, markInspection, matchingInspections, readyInspections } from "./inspections.mjs";
 import { expired } from "./native.mjs";
 import { changeOffer } from "./evidence.mjs";
+import { memberApproval } from "./receipt.mjs";
 import { integrityHolds } from "./revision.mjs";
 import { digest, fail, record } from "./values.mjs";
 import { repliedWorkflow, terminalWorkflow, workflowIdentity } from "./workflow.mjs";
@@ -143,7 +144,7 @@ export function auditor(io) {
 			if (target && io.tip(run)!==target) return;
 			const c=run.effects.find(e=>e.id===i.component);
 			let task;
-			if(c?.kind==="component" && (c.rollout || c.replacement) && run.nodes[i.grain].grain.task){
+			if(c?.kind==="component" && (memberApproval(c) || c.replacement) && run.nodes[i.grain].grain.task){
 				task=priorReview(run,c)?.task;
 				if(!task || i.assignment && i.assignment!==task){
 					// Status already names withheld receipts. Even a diagnostic may not modify their dependent review.
@@ -193,8 +194,8 @@ export function auditor(io) {
 			if (queued && !io.closed()) io.queue(id,issuer);
 		}
 	}
-	/** @param {string} id @param {string} job @param {string} ticket @param {string} actor @param {string} workflow */
-	async function packet(id,job,ticket,actor,workflow) {
+	/** @param {string} id @param {string} job @param {string} ticket @param {string} actor @param {string} workflow @param {string} [original] */
+	async function packet(id,job,ticket,actor,workflow,original) {
 		const bound=await io.persist(()=>io.mutate(id,run=>{
 			const i=issued(run,job,ticket,actor);
 			if(!i){
@@ -221,17 +222,19 @@ export function auditor(io) {
 				fail("inspection_held","Inspection cannot execute: the dispatch is no longer current, active and permitted");
 			const target=protectedTarget(run,i);
 			if (target && io.tip(run)!==target) fail("inspection_held","The authorized checkpoint target moved before its candidate could be reviewed");
-			if (verify || i.assignment) {
-				const c=run.effects.find(e=>e.id===i.component);
-				if (c?.kind!=="component") fail("missing_receipt","Missing original reviewed component");
-				if(i.assignment && priorReview(run,c)?.task!==i.assignment)
-					fail("inspection_held",`The original published task for ${i.grain} is not verifiable; the review packet is withheld.`);
-				if(verify)io.verifySigned(id,c);
-			}
-			return i;
+			const c=run.effects.find(e=>e.id===i.component);
+			if (c?.kind!=="component") fail("missing_receipt","Missing original reviewed component");
+			const inline=(memberApproval(c) || c.replacement) && run.nodes[i.grain].grain.task;
+			// A stock workflow may have journaled the scoped task without storing it on the inspection.
+			const needsTask=i.assignment!==undefined || inline && (original!==undefined || c.attempt?.version===3);
+			const assignment=needsTask?priorReview(run,c)?.task:undefined;
+			if(needsTask && (!assignment || i.assignment!==undefined && i.assignment!==assignment))
+				fail("inspection_held",`The original published task for ${i.grain} is not verifiable; the review packet is withheld.`);
+			if (verify) io.verifySigned(id,c);
+			return {inspection:i,assignment};
 		}
-		const result=candidatePacket(io.cwd(),live(),budget);
-		live(true);
+		const {inspection,assignment}=live(),result=candidatePacket(io.cwd(),inspection,budget,assignment,original);
+		if(live(true).assignment!==assignment)fail("stale_inspection","The original scoped assignment changed before packet delivery");
 		return result;
 	}
 	return {launch,packet,permission,canReceive:!!(io.start && io.lookup),canObserve:!!io.lookup,

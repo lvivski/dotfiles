@@ -1,19 +1,24 @@
 import { checkReceipt, sameEvaluation } from "./receipt.mjs";
-import { changedFiles, git, retain } from "./product.mjs";
+import { git } from "../../../skills/foundry/scripts/git-files.mjs";
+import { changedFiles } from "./objects.mjs";
 import { FoundryError } from "./values.mjs";
 export {validFeedback,feedback,goalFiles} from "../../../skills/foundry/scripts/materialize.mjs";
 /** @typedef {{base:string, previous:string} | {base:string, file:NonNullable<import("./model.js").Receipt["feedbackFile"]>}} Prior */
 /** @param {import("./model.js").Run} run @param {import("./model.js").Effect} current @returns {Prior|undefined} */
 export function priorGoal(run, current) {
+	const e=feedbackSource(run,current),r=checkReceipt(e);
+	if(r?.feedbackFile)return { base:r.commit, file:r.feedbackFile };
+	if(r?.feedback!==undefined)return { base:r.commit, previous:r.feedback };
+}
+/** @param {import("./model.js").Run} run @param {import("./model.js").Effect} current */
+export function feedbackSource(run,current){
 	for (let i = run.effects.indexOf(current) - 1; i >= 0; i--) {
 		const e = run.effects[i];
 		if (e.kind !== "goal") continue;
 		if (e.check !== current.check || !sameEvaluation(e,current)) return;
 		const r = checkReceipt(e);
 		if (!r || r.exit !== 0 && r.exit !== 1) continue;
-		if (r.feedbackFile) return { base: r.commit, file: r.feedbackFile };
-		if (r.feedback !== undefined) return { base: r.commit, previous: r.feedback };
-		return; // Never combine the latest candidate with an older summary.
+		return r.feedbackFile || r.feedback!==undefined ? e : undefined;
 	}
 }
 
@@ -39,8 +44,4 @@ export function schedulingInput(cwd,head,prior){
 	return prior && bytes!==undefined ? {bytes,inline:("previous" in prior || !!prior.file.legacy) && Buffer.byteLength(bytes)<=32768}:undefined;
 }
 
-/** @param {string} cwd @param {{json:string,legacy:boolean}} value */
-export function retainFeedback(cwd, { json, legacy }) {
-	const oid = git(cwd, ["hash-object", "-w", "--stdin"], json).toString().trim();
-	return { blob: retain(cwd, oid), ...(legacy ? { legacy: true } : {}) };
-}
+export {retainFeedback} from "./objects.mjs";

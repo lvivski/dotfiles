@@ -10,6 +10,7 @@ import { prepareDraft } from "./authorship.mjs";
 import { reviewBinding } from "./inspection.mjs";
 import { inspectComponent } from "./inspections.mjs";
 import { validDraftScope } from "./preimages.mjs";
+import { memberApproval } from "./receipt.mjs";
 import { stagePatch } from "./product.mjs";
 import { integrityHolds } from "./revision.mjs";
 import { rolloutPlan } from "./rollout.mjs";
@@ -59,7 +60,7 @@ for(const mixed of [false,true])test(mixed?"only an explicit signed-stop scope m
 	await owner.flush();const clock=recoveryClock();
 	if(mixed){
 		// Record a genuine independent producer review on the already signed two-member batch.
-		const [head,tail]=read().effects.filter(e=>e.kind==="component" && e.rollout);
+		const [head,tail]=read().effects.filter(e=>memberApproval(e));
 		assert.ok(head?.kind==="component" && tail?.kind==="component");db.verifySigned(run,head);db.verifySigned(run,tail);
 		assert.deepEqual([head.receipt?.exit,tail.receipt?.exit],[0,1]);
 		db.mutateLocked(run,r=>{const b=reviewBinding(r,head);assert.ok(b);inspectComponent(r,b.node,head,r.owner,b.overrides);});
@@ -75,7 +76,7 @@ for(const mixed of [false,true])test(mixed?"only an explicit signed-stop scope m
 		draftAgent:async()=>assert.fail("No scope approval")});
 	issuer.sessionStart("owner",f.root);await clock.pulse(issuer,3);issuer.close();
 	const state=read(),d=state.correctionDrafts?.find(d=>d.finding);assert.ok(d?.finding && !d.decision);
-	const batch=state.effects.filter(e=>e.kind==="component" && e.rollout);
+	const batch=state.effects.filter(e=>memberApproval(e));
 	assert.deepEqual(batch.map(c=>c.grain),ids);for(const c of batch){assert.ok(c.kind==="component");db.verifySigned(run,c);}
 	assert.equal(d.check,batch[0].id);assert.equal(d.finding.frontier,batch[1].id);
 	assert.equal(draftAllowed(d),false);assert.equal(pendingScope(state)?.id,d.id);

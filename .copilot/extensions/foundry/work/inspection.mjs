@@ -1,9 +1,12 @@
 import { deliveryInspection } from "./batch.mjs";
-import { rolloutBasis } from "./campaign.mjs";
+import { activeApproval } from "./approved.mjs";
 import { componentOrigins } from "./evidence.mjs";
 import { observedComponent, publishedComponent } from "./publication.mjs";
+export { citedLine } from "./publication.mjs";
+import { memberApproval } from "./receipt.mjs";
 import { remedyInspection } from "./remedy.mjs";
 import { currentChange, replacementBasis } from "./replacement.mjs";
+import { memberBasis } from "./series.mjs";
 import { grant } from "./transfer.mjs";
 import { digest, fail, fields, record, text } from "./values.mjs";
 
@@ -28,14 +31,6 @@ export function inspectionResult(raw){
 	return {outcome,summary:text(value.summary,"review finding or conclusion")};
 }
 
-/** A literal citation is necessary, not proof the line was in the packet. Bound it to actual Git evidence before offering files.
- * @param {string} summary @param {string} file */
-export function citedLine(summary,file){
-	const literal=file.replace(/[.*+?^${}()|[\]\\]/g,"\\$&"),citation=new RegExp(`(?:^|[\\s("'\\[\`])${literal}:([1-9]\\d*)\\b`);
-	const line=Number(citation.exec(summary)?.[1]);
-	return Number.isSafeInteger(line) && /[\p{L}\p{N}]/u.test(summary.replace(citation,""))?line:0;
-}
-
 /** Ownership transfers may narrow an already published output, never lend a narrower review to a larger grant.
  * @param {Inspection} i @param {Basis} b @param {boolean} [published] */
 function matchesBasis(i,b,published=false){
@@ -55,7 +50,7 @@ export function priorReview(run,c){
 	if(c.grain)for(const prior of componentOrigins(run,c.grain,c)){
 		if(prior===c)continue;
 		const i=publishedComponent(run,prior.id,c.grain,prior.commit)?.review;
-		if(!i || !prior.rollout && !prior.replacement)return i;
+		if(!i || !memberApproval(prior) && !prior.replacement)return i;
 	}
 }
 
@@ -64,10 +59,10 @@ export function priorReview(run,c){
 export function reviewBinding(run,c,ordinary){
 	if(c.delivery)return deliveryInspection(run,c);
 	if(c.remedy)return remedyInspection(run,c);
-	if(c.replacement || c.rollout){
+	if(c.replacement || c.rollout || memberApproval(c)){
 		const a=currentChange(run,c);
-		if(a && c.grain && run.join && observedComponent(c,c.grain,c.commit))
-			return {node:run.nodes[c.grain],overrides:a.rollout?rolloutBasis(c.grain,a.rollout):replacementBasis(a,run.join)};
+		if(a && c.grain && run.join && observedComponent(c,c.grain,c.commit) && (c.attempt?.version!==3 || activeApproval(run,c,a)))
+			return {node:run.nodes[c.grain],overrides:a.rollout?memberBasis(c.grain,a.rollout):replacementBasis(a,run.join)};
 		return;
 	}
 	if(ordinary?.state==="reviewing" && ordinary.check===c.id && ordinary.candidate===c.commit)return {node:ordinary,overrides:{}};

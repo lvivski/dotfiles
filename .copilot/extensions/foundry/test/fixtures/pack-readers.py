@@ -14,7 +14,7 @@ def pack(output, directories):
 		if version in versions:
 			raise ValueError(f"duplicate reader {version}")
 		versions.add(version)
-		for source in [work / "reader.version", *work.glob("*.mjs"), *work.glob("rules/*.mjs")]:
+		for source in [work / "reader.version", *work.glob("prerequisites.json"), *work.glob("*.mjs"), *work.glob("rules/*.mjs")]:
 			if not source.name.endswith(".test.mjs"):
 				entries.append((source.relative_to(work).as_posix(), version, source))
 	with tarfile.open(output, "w:xz", format=tarfile.USTAR_FORMAT) as archive:

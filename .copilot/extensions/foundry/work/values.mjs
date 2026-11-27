@@ -124,6 +124,12 @@ export const sameScope = (a,b) => a === b || !!a && !!b && typeof a === "object"
 /** @param {string} root @param {string} p */
 export const contains = (root, p) => p === root || p.startsWith(`${root}/`);
 
+/** @param {import("./model.js").Inspection["scope"]} scope @param {string} path */
+export function within(scope,path){
+	const match=(/** @type {{directories:string[];files:string[]}} */ s)=>s.files.includes(path)||s.directories.some(d=>contains(d,path));
+	return match(scope) && !(scope.exclude && match(scope.exclude));
+}
+
 /** @param {import("./model.js").Scope} scope @param {string} file */
 export const covers = (scope,file) => mixed(scope) ? contains(scope.primary,file) || scope.files.includes(file) : members(scope).some(dir => contains(dir,file));
 

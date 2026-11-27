@@ -1,14 +1,15 @@
 import { corroborated, rolloutSlots, within } from "./campaign.mjs";
 import { changeOffer, checkReceipt, componentOrigins, failedComponent } from "./evidence.mjs";
-import { citedLine, priorReview } from "./inspection.mjs";
+import { priorReview } from "./inspection.mjs";
 import { assigningGrant } from "./lineage.mjs";
 import { verificationAssembly } from "./migrations.mjs";
 import { historicalGrant } from "./partition.mjs";
-import { observedComponent, publicationVerdict, publishedComponent } from "./publication.mjs";
+import { publishedComponent, recordedScope } from "./publication.mjs";
+import { memberApproval } from "./receipt.mjs";
 import { outside } from "./product.mjs";
 import { assigningCharter } from "./replacement.mjs";
 import { effectAt, inspectionAt, productAt } from "./revision.mjs";
-import { contains, covers, digest, ownership } from "./values.mjs";
+import { contains, covers, ownership } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @typedef {import("./model.js").CorrectionDraft} Draft */
@@ -32,16 +33,6 @@ export function originalProducer(run,grain,check){
 	for(const c of componentOrigins(run,grain,check))
 		if(run.effects.slice(0,run.effects.indexOf(c)).some(w=>w.kind==="writer" && w.state==="done" && w.grain===grain && w.nativeId===c.issuer))return c.issuer;
 }
-/** A later permission hold changes whether the issuer may act, not what the original
- * workflow reported. Authenticate that frozen record without clearing the live hold.
- * @param {Run} run @param {import("./model.js").Effect} check @param {NonNullable<Draft["finding"]>} finding */
-function recordedFinding(run,check,finding){
-	const i=inspectionAt(run,check.id);
-	if(!i || i.id!==finding.inspection || i.issuer!==run.owner || !observedComponent(check,i.grain,i.candidate))return;
-	const {permissionHold,...original}=i;
-	if(publicationVerdict(original)==="changes" && digest(original)===finding.stamp)return i;
-}
-
 /** Validate the historical grant, not today's mutable node or a directory selected by a writer.
  * @param {Run} run @param {Draft} d */
 export function validDraftScope(run,d){
@@ -50,7 +41,7 @@ export function validDraftScope(run,d){
 		checkpoint.commit!==p.commit || checkReceipt(checkpoint)?.exit!==0 || goal?.kind!=="goal" || !goal.runnerClaim ||
 		goal.commit!==p.commit || ![1,2].includes(checkReceipt(goal)?.exit??-1))return false;
 	const pin=run.productRepins?.find(p=>p.revision===d.target && p.targetFrom);
-	const parent=e.kind==="component" && e.rollout?changeOffer(run,e):undefined,joined=parent?.failed??e.id;
+	const parent=e.kind==="component" && memberApproval(e)?changeOffer(run,e):undefined,joined=parent?.failed??e.id;
 	const join=pin && verificationAssembly(run,pin,joined,new Map(run.products.map(p=>[p.check,p])));
 	const failGrain=parent?e.grain:failedComponent(e);
 	if(d.previousCheck){
@@ -64,22 +55,7 @@ export function validDraftScope(run,d){
 	}else if(!join || !failGrain || !pin || pin.goal!==d.goal || pin.checkpoint!==p.check || join.target!==pin.revision ||
 		d.product!==d.assembly || d.assembly!==(parent?.assembly??join.commit) || d.assembly!==e.commit || parent &&
 		(parent.decision?.status!=="answered" || parent.decision.answer!==parent.rollout?.blob || !failedComponent(effectAt(run,joined)) || !d.finding && checkReceipt(e)?.exit!==1))return false;
-	if(d.finding){
-		const r=parent?.rollout,i=recordedFinding(run,e,d.finding),[part]=d.parts;
-		if(!r || !i || !failGrain || e.kind!=="component" ||
-			d.automatic || d.evaluator || d.previousCheck || d.parts.length!==1 || part.source.kind!=="owned" || part.source.grain!==failGrain)return false;
-		// The draft records the signed prefix, not its time relative to later claims.
-		// Whether the remaining slots are still unissued is a live spend check.
-		const {checks}=rolloutSlots(run,parent),members=Object.keys(r.owners);
-		const prefix=checks.slice(0,checks.findIndex(c=>c.id===d.finding?.frontier)+1);
-		if(!prefix.includes(e) || prefix.some((c,k)=>c.issuer!==run.owner || c.check!==effectAt(run,r.owners[members[k]]?.component)?.check ||
-			!observedComponent(c,members[k],d.assembly)))return false;
-		const owner=r.owners[failGrain],changes=r.files.filter(f=>within(i.scope,f.file));
-		if(!owner || part.source.component!==owner.component || part.source.output!==owner.output || part.files.some(f=>{
-			const delta=changes.find(d=>d.file===f.file);
-			return !f.before || !within(i.scope,f.file) || !citedLine(i.summary??"",f.file) || changes.length>0 && (delta?.result!==f.before || delta.mode!==f.mode);
-		}))return false;
-	}
+	if(d.finding && (!parent || !recordedScope(run,d,parent,rolloutSlots(run,parent).checks)))return false;
 	return d.parts.every(({source:s,files})=>{
 		if(files.some(f=>protectedDraftPath(run,f.file,pin,d.evaluator)))return false;
 		if(s.kind==="evaluator")return !!d.evaluator && s.grant===d.evaluator;

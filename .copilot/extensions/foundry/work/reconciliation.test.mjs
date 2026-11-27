@@ -36,8 +36,9 @@ test("a missing target, pause or deadline cannot staff work; only a final handof
 		assert.deepEqual(effects(step("offering","work",{active:true,expired:false,missingTarget:false,owner,question:false,adoption,testRepair:false,draftDue:false})),
 			[owner && adoption ? "offer-adoption" : "offer-batch"]);
 	assert.deepEqual(effects(step("reservations","batch",{hasBatch:false})),[]);
-	assert.deepEqual(effects(step("planning","planned",{closed:false,inspectionDue:false,missingTarget:false,owner:true,active:true,expired:false,renewalDue:true})),["sample-policy"]);
-	assert.deepEqual(effects(step("planning","planned",{closed:false,inspectionDue:true})),["sample-policy"]);
+	for(const phase of ["planning","renewing"])assert.deepEqual(effects(step(phase,"planned",{closed:false,fenced:true,inspectionDue:true})),["refill"]);
+	assert.deepEqual(effects(step("planning","planned",{closed:false,fenced:false,inspectionDue:false,missingTarget:false,owner:true,active:true,expired:false,renewalDue:true})),["sample-policy"]);
+	assert.deepEqual(effects(step("planning","planned",{closed:false,fenced:false,inspectionDue:true})),["sample-policy"]);
 	assert.deepEqual(effects(step("publication","policy",{closed:false,executable:true,permitted:false})),["watch-held-inspections"]);
 	assert.deepEqual(effects(step("publication","policy",{closed:false,executable:true,permitted:true})),["apply-verdicts"]);
 	assert.deepEqual(effects(step("renewal","policy",{closed:false,permitted:false})),["watch-held-renewal"]);
@@ -101,7 +102,7 @@ test("declared lanes dispatch from one observation while native history and writ
 	const inspected={
 		"inspect-issuer":next=>next("inspected",{ownHold:false,active:true,expired:false,continuations:false}),
 		"read-originals":async next=>{events.push("history");await history.wait;await next("completion",{terminal:false});await next("drained");},
-		plan:next=>next("planned",{closed:false,inspectionDue:false,missingTarget:false,owner:false}),
+		plan:next=>next("planned",{closed:false,fenced:false,inspectionDue:false,missingTarget:false,owner:false}),
 		"watch-plan":next=>next("work",{missingTarget:false,active:true,expired:false,owner:false,question:false}),
 		"offer-batch":next=>next("batch",{hasBatch:true}),
 		"sample-batch":next=>next("sampled",{executable:true,managed:false,blocked:false,hadHolds:false}),

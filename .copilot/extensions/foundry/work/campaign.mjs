@@ -1,18 +1,18 @@
 import { checkReceipt, failedComponent } from "./evidence.mjs";
-import { carriedInput, publishedComponent } from "./publication.mjs";
+import { carriedInput, observedComponent, publishedComponent } from "./publication.mjs";
+import { memberApproval, stoppedMembers } from "./receipt.mjs";
 import { batchMembers } from "./abi.mjs";
+import { approvedOrder } from "./approved.mjs";
+import { memberBasis } from "./series.mjs";
+export { memberBasis as rolloutBasis } from "./series.mjs";
 import { outside } from "./product.mjs";
-import { contains, digest } from "./values.mjs";
+import { digest, within } from "./values.mjs";
+export { within } from "./values.mjs";
 import { correctionRefs, matchesDraft } from "./drafts.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @typedef {import("./model.js").NativeCall} Check */
 /** @typedef {import("./model.js").Adoption} Offer */
-/** @param {import("./model.js").Inspection["scope"]} scope @param {string} path */
-export function within(scope,path){
-	const match=(/** @type {{directories:string[];files:string[]}} */ s)=>s.files.includes(path)||s.directories.some(d=>contains(d,path));
-	return match(scope) && !(scope.exclude && match(scope.exclude));
-}
 /** Each touched path has at most one included owner after exclusions. Rebind every
  * consumer of a replaced pin, including a consumer with unchanged output bytes.
  * @param {import("./model.js").HarnessRollout["included"]} included @param {import("./model.js").HarnessRollout["files"]} files @param {string[]} [previous] */
@@ -46,7 +46,12 @@ export function corroborated(run,join,checkpoint,id,old,scope){
  * The terminal observation remains in the ledger and the proof, never in the pass set.
  * @param {Run} run @param {Offer} a */
 export function rolloutSlots(run,a){
-	const attempts=run.effects.filter(/** @returns {e is Check} */ e=>e.kind==="component" && e.rollout===a.id);
+	const attempts=run.effects.filter(/** @returns {e is Check} */ e=>e.kind==="component" && memberApproval(e)===a.id);
+	if(attempts.some(c=>c.attempt?.version===3)){
+		const translated=approvedOrder(run,a);
+		const checks=translated?.checks??[];
+		return {attempts,calls:checks,checks};
+	}
 	const calls=batchMembers(attempts);
 	const retry=a.foreground && calls.find(c=>c.id===a.foreground?.retry);
 	const patched=calls.filter(c=>c.testPin);
@@ -84,10 +89,19 @@ export function rolloutPaths(run,a){
 /** A signed prefix and an untouched tail determine which work can be superseded, not which owner needs a fix.
  * @param {Run} run @param {Offer} a @param {boolean} [withdrawn] @returns {{checks:Check[],last:Check,exit:0|1|2,passed:boolean}|undefined} */
 export function serialBoundary(run,a,withdrawn=false){
-	const {checks}=rolloutSlots(run,a),pos=checks.findLastIndex(c=>!!checkReceipt(c)),last=checks[pos],exit=checkReceipt(last)?.exit;
-	if(last?.runnerClaim && (exit===0 || exit===1 || exit===2) && checks.slice(0,pos).every(c=>c.runnerClaim && checkReceipt(c)?.exit===0) &&
-		checks.slice(pos+1).every(c=>c.state===(withdrawn?"withdrawn":"ready") && !c.callId && !c.runnerStarted && !c.receipt && !c.permissionHold))
-		return {checks,last,exit,passed:exit===0 && pos===checks.length-1};
+	const {checks}=rolloutSlots(run,a),ids=a.accepted?.order??Object.keys(a.rollout?.owners??{});
+	const last=checks.findLast(c=>!!checkReceipt(c)),exit=checkReceipt(last)?.exit;
+	if(!last || !(exit===0 || exit===1 || exit===2) || checks.length!==ids.length ||
+		checks.some((c,i)=>c.grain!==ids[i] || c.issuer!==run.owner || c.commit!==a.assembly || memberApproval(c)!==a.id) ||
+		!stoppedMembers(checks,last.id,withdrawn,true))return;
+	return {checks,last,exit,passed:exit===0 && checks.every((c,i)=>!!observedComponent(c,ids[i],a.assembly))};
+}
+/** Only the current cut can displace an unissued suffix. A finding additionally needs
+ * the intact, complete passing series, even if its scope recorded an earlier prefix.
+ * @param {Run} run @param {Offer} a @param {string} id @param {boolean} withdrawn @param {boolean} [allowPass] @param {boolean} [finding] */
+export function stoppedBatch(run,a,id,withdrawn,allowPass=false,finding=false){
+	const b=serialBoundary(run,a,withdrawn);
+	if(b?.last.id===id && (b.exit!==0 || allowPass) && (!finding || b.passed))return b.checks;
 }
 
 /** Compose the two independently approved manifests, not just their path names.
@@ -104,26 +118,21 @@ function combined(first,second){
 	}
 	return files;
 }
-/** @param {string} grain @param {import("./model.js").HarnessRollout} r */
-export const rolloutBasis=(grain,r)=>({base:r.from,generation:r.from,scope:r.owners[grain].scope,
-	task:`Review ${grain} on the exact harness rollout ${r.blob} from ${r.followup?.assembly??r.from}.`+
-		(r.followup?` Review the cumulative output against ${r.from}; the earlier rollout was not published.`:"")+
-		` Preserve all behavior assertions; check the new dependency pins.`});
 
 /** Check historical authority against the original stopped join, never an old node's current state.
  * @param {Run} run @param {Offer} a @param {import("./model.js").Product} prior @param {Map<string,import("./model.js").Effect>} effects @param {import("./model.js").ProductPin} p */
 export function validRollout(run,a,prior,effects,p){
 	const r=a.rollout, failed=effects.get(prior.check), step=p.amendments?.find(s=>s.proposal===a.id),chain=rolloutChain(run,prior.check);
 	const f=r?.followup,parent=f && run.adoptions?.find(o=>o.id===f.proposal);
+	const ref=r && correctionRefs(run).find(ref=>ref.draft?.id===r.draft && ref.base===a.revision && ref.blob===r.blob &&
+		matchesDraft(run,ref,f?.check??prior.check,f?.assembly??prior.commit,f?.files??r.files));
 	const untouched=r?.harness===a.revision && !r.files.some(f=>f.file.startsWith(".foundry/")) &&
 		(parent?parent.rollout?.harness===a.revision:!!r.draft);
 	if(!r || !chain || r.from!==prior.commit || prior.check!==a.failed || prior.target!==a.revision || !a.assembly || a.assembly===r.from ||
 		r.harness===a.revision && !untouched || !r.files.length || !Object.keys(r.owners).length || new Set(r.files.map(f=>f.file)).size!==r.files.length ||
 		!r.files.some(f=>f.file.startsWith(".foundry/")) && r.followup?.observation===undefined && !untouched || !failed || failed.evaluatorRevision!==a.revision ||
 		r.files.some(f=>f.before===f.result || !outside(f.file,[run.policy.source,...(run.policy.sharedBrief?[run.policy.sharedBrief]:[]),
-			...run.policy.squads.flatMap(s=>[s.charter,...("boundary" in s?s.boundary:[])]),...(p.resolutions??[]).map(r=>r.file)])) ||
-		!correctionRefs(run).some(ref=>ref.draft?.id===r.draft && ref.base===a.revision && ref.blob===r.blob &&
-			matchesDraft(run,ref,r.followup?.check??prior.check,r.followup?.assembly??prior.commit,r.followup?.files??r.files)))return false;
+			...run.policy.squads.flatMap(s=>[s.charter,...("boundary" in s?s.boundary:[])]),...(p.resolutions??[]).map(r=>r.file)])) || !ref)return false;
 	const {calls,checks:batch}=rolloutSlots(run,a);
 	const next=successor(run,a);
 	if(f){
@@ -131,8 +140,8 @@ export function validRollout(run,a,prior,effects,p){
 		const exit=checkReceipt(stop)?.exit;
 		if(!old || parent?.decision?.status!=="answered" || parent.assembly!==f.assembly || parent.failed!==a.failed ||
 			parent.revision!==a.revision || a.assembly===parent.assembly || !f.files.length || digest(old.included)!==digest(r.included) ||
-			approved && (successor(run,parent)!==a || serialBoundary(run,parent,true)?.last.id!==f.check) ||
-			stop?.kind!=="component" || !stop.grain || stop.rollout!==parent.id || !stop.runnerClaim ||
+			approved && (successor(run,parent)!==a || !stoppedBatch(run,parent,f.check,true,f.observation===0,!!ref.draft?.finding)) ||
+			stop?.kind!=="component" || !stop.grain || memberApproval(stop)!==parent.id || !stop.runnerClaim ||
 			(f.observation===undefined?![1,2].includes(exit??-1):f.observation!==exit) ||
 			f.observation===0 && !correctionRefs(run).some(ref=>ref.assembly===f.assembly && ref.blob===r.blob && ref.draft?.id===r.draft && ref.base===a.revision) ||
 			calls.some(c=>run.effects.indexOf(c)<=run.effects.indexOf(stop)))return false;
@@ -180,7 +189,7 @@ export function validRollout(run,a,prior,effects,p){
 		const i=run.inspections?.find(i=>i.component===c.id);
 		if(i && (i.base!==r.from || i.generation!==r.from || i.issuer!==run.owner ||
 			(i.specification!==undefined || o.specification!==undefined) && i.specification!==spec ||
-			i.task!==rolloutBasis(id,r).task || digest(i.scope)!==digest(o.scope)))return false;
+			i.task!==memberBasis(id,r).task || digest(i.scope)!==digest(o.scope)))return false;
 		if(step && (!publishedComponent(run,c.id,id,c.commit) ||
 			run.effects.findIndex(e=>e.id===step.recheck)<=run.effects.indexOf(c)))return false;
 	}

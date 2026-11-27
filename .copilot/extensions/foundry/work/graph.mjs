@@ -26,6 +26,9 @@ import { discoverLeads } from "./leads.mjs";
 import { applyGoal, assess, checkpointSurvey, movingSurvey, observeTarget, qualify, rejectRepeat, stall, timelyChecks } from "./goal.mjs";
 import { availableReservations, remainingAssignments } from "./capacity.mjs";
 import { admitted, expired, reserveNotice, reserveProduct, reserveWorker } from "./native.mjs";
+import { declareWriter, unstaffedGrant } from "./lineage.mjs";
+import { bindOutput } from "./description.mjs";
+import { approvalId } from "./approved.mjs";
 import { workerLimit } from "./policy.mjs";
 import { finishWriters } from "./pool.mjs";
 import { partitionConflict } from "./partition.mjs";
@@ -630,7 +633,7 @@ function settleChecks(cwd, run, actor, remaining, target,verify) {
 	} else if (failure) check.error = failure;
 	else if (blamed) {
 		const n=run.nodes[blamed], component=n.check ? checks.get(n.check) : undefined;
-		if(component?.kind==="component" && (component.replacement || component.rollout)){
+		if(component?.kind==="component" && (component.replacement || component.rollout || approvalId(component))){
 			check.error=`${blamed} was published under an exact-file correction. A new task needs its own authority; do not widen that approval into a writer grant.`;
 			return;
 		}
@@ -694,6 +697,7 @@ export function reserveWriter(cwd, run, n, required, base, actor, submitToken, b
 			  (finding ? `\nRubber Duck finding on ${finding.candidate} (review evidence, not a change of authority): ${JSON.stringify(finding.summary)}` : ""), n, baseline);
 		return;
 	}
+	const live=n;n={...live};
 	const review = reviews(run).find(r => r.id === n.review);
 	const iteration=comparison(run,review), narrow=iteration?.successor;
 	if (narrow && review) {
@@ -760,8 +764,11 @@ export function reserveWriter(cwd, run, n, required, base, actor, submitToken, b
 		"Split independent work across native in-session `task` agents in parallel. Give each a disjoint set of files under your directory or a read-only question, the permitted inputs and the same constraints; ask for results, not further delegation. Keep shared files for yourself. Work solo for small or indivisible changes, or if helpers are unavailable.",
 		"Keep the token and all Foundry calls to yourself. Do not start desktop sessions, change the contract or evaluators, switch base, commit or land. Join the helpers and integrate their results before you submit. For a repair, reuse finished work; parallelize only the remaining independent pieces.",
 		`From this worktree call foundry_submit({run:"${run.id}",token:"${token}"}).`].filter(Boolean).join("\n");
+	const writing=!reuse && (review || run.policy.seed)?declareWriter(run,n,review):undefined;
 	const launch = reserveWorker(run, actor, token, n.generation, brief, g.agent, g.id, reuse);
-	if (reuse) n.reuse = launch;
+	if(reuse)n.reuse=launch.id;
+	if(writing)launch.writing=writing;
+	Object.assign(live,n);
 }
 
 /** Only the latest report can be reconsidered, and only for a rejection whose cause we can
@@ -888,7 +895,8 @@ function planningFacts(p) {
 }
 
 /** @param {Plan} p */
-function settleReports({cwd,run,actor,owner,history,latest}) {
+function settleReports(p) {
+	const {cwd,run,actor,owner,history,latest}=p;
 	for (const r of history) if (r.observation) {
 		try {
 			if (r.state !== "reported") {
@@ -903,6 +911,20 @@ function settleReports({cwd,run,actor,owner,history,latest}) {
 			if (!(error instanceof FoundryError)) throw error;
 			blockReview(r,error.message,error.obstacle);
 		}
+	}
+	const verify=p.options.verifySigned;
+	if(!owner || !verify || run.join || run.blocker || run.policyHold || !run.goal || run.goal.target!==tip(p) ||
+		goalReceipt(run)?.exit!==1 || !remainingAssignments(run))return;
+	for(const n of Object.values(run.nodes)){
+		const source=unstaffedGrant(run,n);
+		if(!source || !currentEvaluation(run,source.review))continue;
+		for(const fact of source.witnesses)if(fact.kind==="signed"){
+			const c=run.effects.find(e=>e.id===fact.check);
+			if(c?.tool!=="bash")fail("missing_receipt","Missing the original signed assignment evidence");
+			verify(c);
+		}
+		run.nodes[n.grain.id]=waiting(n.grain,n.review);
+		delete run.goal.stall;
 	}
 }
 
@@ -1143,7 +1165,10 @@ const planningActions={
 	}),
 	"reassess-survivors":fallible(p=>{p.admission=applyGoal(p.cwd,p.run,p.actor,()=>tip(p),false).admission;}),
 	"refresh-outputs":fallible(p=>{p.outputs=joinInputs(p);}),
-	"reserve-product":fallible(p=>{reserveProduct(p.run,p.actor,p.cwd,tip(p),needed(p.assembly,"verified assembly").commit,needed(p.outputs,"join outputs"));}),
+	"reserve-product":fallible(p=>{
+		const {check}=reserveProduct(p.run,p.actor,p.cwd,tip(p),needed(p.assembly,"verified assembly").commit,needed(p.outputs,"join outputs"));
+		bindOutput(p.run,check,{kind:"assembly"},tip(p));
+	}),
 	"reassess-stopped"(p){applyGoal(p.cwd,p.run,p.actor,()=>tip(p),false);},
 	"reserve-surveys":reserveSurveys,
 	"record-stall"(p){

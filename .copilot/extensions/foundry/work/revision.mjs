@@ -27,6 +27,11 @@ export const effectAt=(run,id)=>id===undefined?undefined:Object.isFrozen(run) &&
 	indexes.get(run)?.effects.get(id):run.effects.find(e=>e.id===id);
 /** @param {Run} run @param {string} id */
 export const productAt=(run,id)=>Object.isFrozen(run) && indexes.has(run)?indexes.get(run)?.products.get(id):run.products.find(p=>p.check===id);
+/** An unpublished assembly may move from the live join into an amendment's prior
+ * record. Its check ID does not change; another join is never a substitute.
+ * @param {Run} run @param {import("./model.js").ProductPin} pin @param {string} id @param {Map<string,Product>} [products] */
+export const assemblyAt=(run,pin,id,products)=>(products?products.get(id):productAt(run,id))??
+	(run.join?.check===id?run.join:pin.amendments?.find(step=>step.prior.check===id)?.prior);
 /** @param {Run} run @param {string|undefined} component */
 export const inspectionAt=(run,component)=>component===undefined?undefined:Object.isFrozen(run) && indexes.has(run)?
 	indexes.get(run)?.inspections.get(component):run.inspections?.find(i=>i.component===component);
@@ -34,6 +39,19 @@ export const inspectionAt=(run,component)=>component===undefined?undefined:Objec
 export const integrityHolds=run=>holds.get(run)??[];
 /** @param {Effect} e */
 export const heldOutcome=e=>withheld.has(e);
+/** The boundary is a position in the journal, not just a valid-looking count.
+ * Never interpret a current grant or signature in the historical prefix, or a
+ * historical call as newly issued. All readers use the same partition.
+ * @param {Run} run */
+export function editionBoundary(run){
+	const p=run.historicalPrefix;
+	if(!p || Object.keys(p).length!==2 || !Number.isSafeInteger(p.length) || p.length<0 || p.length>run.effects.length ||
+		p.last!==(p.length?run.effects[p.length-1].id:null) || !p.length && (!Array.isArray(run.inspections) || Object.keys(run.history??{}).length))return false;
+	return run.effects.every((e,i)=>{
+		if(e.tool==="bash")return i<p.length?e.attempt?.version===1 || e.attempt?.version===2:e.attempt?.version===3;
+		return !("attempt" in e) && !("verification" in e) && (e.kind==="writer" && i>=p.length?e.writing?.version===3:!("writing" in e));
+	});
+}
 /** @param {Run} run @param {readonly IntegrityHold[]} list */
 export function withhold(run,list){
 	if(!list.length)return;
